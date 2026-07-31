@@ -92,7 +92,7 @@ A bare "snug <dir>" selects the defaults setting: @sys @home @cwd-rw @parent-ro.
 See "snug config" for the effective list and where it came from.
 
 Profiles only ever GRANT. There is no un-grant — not in a profile, not on the
-command line, nowhere. To grant less, select fewer profiles. See docs/DESIGN.md.
+command line, nowhere. To grant less, select fewer profiles. See .claude/design/DESIGN.md.
 `)
 }
 

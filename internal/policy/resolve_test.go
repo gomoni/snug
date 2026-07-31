@@ -173,7 +173,7 @@ func TestResolveIsIdempotent(t *testing.T) {
 }
 
 // THE invariant: adding a profile may never remove or weaken a grant. This is
-// the executable form of docs/DESIGN.md §2.4.
+// the executable form of .claude/design/DESIGN.md §2.4.
 func TestResolveIsMonotone(t *testing.T) {
 	base := []string{"@sys", "@cwd-rw"}
 	basePol := mustResolve(t, base...)
@@ -536,7 +536,7 @@ func TestParentRoGrantsTheParentAndNoHigher(t *testing.T) {
 // flag. A resolved policy now has exactly one way to grant less: fewer
 // profiles. If a `Clamp`, an `Apply`, or any other demote appears here again,
 // the model has grown a carve-out and every monotonicity argument in
-// docs/DESIGN.md needs re-reading.
+// .claude/design/DESIGN.md needs re-reading.
 func TestPolicyHasNoRestrictionOperation(t *testing.T) {
 	p := mustResolveDefaults(t)
 	if got := p.Mounts["/home/u/proj/sub"].Access; got != AccessRW {

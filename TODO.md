@@ -106,7 +106,7 @@ Two things worth keeping from the discussion:
   survive untouched. That is far cheaper than making identity `(name, args)`,
   which would put a fingerprint on the core property tests.
 
-**The design note is `docs/PARAMETERISED-PROFILES.md`. Read it before starting.**
+**The design note is `.claude/design/PARAMETERISED-PROFILES.md`. Read it before starting.**
 Headline: the sketched example is not actually parameterisation — a profile
 granting /srv, /foo and /bar is an ad-hoc list of grants wanting a name, and
 that already works today by writing `~/.config/snug/profiles.d/mine.toml`. The
@@ -202,7 +202,7 @@ Neither is about parameterisation; both stand on their own.
 bind `~/.ssh` into the sandbox. Not reachable today (no builtin uses a
 `{target}`-relative subpath grant) but live the moment anyone writes one.
 
-Fix sketched in `docs/PARAMETERISED-PROFILES.md`: refuse a grant at or below the
+Fix sketched in `.claude/design/PARAMETERISED-PROFILES.md`: refuse a grant at or below the
 target whose `EvalSymlinks` result differs from the lexical join under the
 canonical target. Comparing against the lexical join rather than against the
 path itself is what avoids false positives from `/home -> /var/home`. Apply the
@@ -217,7 +217,7 @@ not. Fix is one call in `Resolve`. Expect a golden argv diff on any host where
 
 ## Pseudo-filesystem exposure (`/proc`, `/sys`, `/dev`)
 
-Full report: [`docs/PSEUDOFS-AUDIT.md`](docs/PSEUDOFS-AUDIT.md) — deep research +
+Full report: [`.claude/design/PSEUDOFS-AUDIT.md`](.claude/design/PSEUDOFS-AUDIT.md) — deep research +
 live verification against HEAD. Headline: **no escape** (every `/proc` write
 primitive is refused by kernel DAC + zero capabilities), but the **read side of
 `/proc` leaks more than crun's default** and it is snug's to fix. `/sys` is absent

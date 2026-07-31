@@ -10,7 +10,7 @@ hooks, test suites, and AI agents among them. Nothing in the model is
 agent-specific — an agent is just one more thing you would rather not hand your
 `~/.ssh` to.
 
-**The full design is [docs/DESIGN.md](docs/DESIGN.md).** Read it before implementing
+**The full design is [.claude/design/DESIGN.md](.claude/design/DESIGN.md).** Read it before implementing
 anything. This file is the working agreement: the invariants that must not be
 broken, who does what, and the facts about this environment that were expensive
 to learn.
@@ -40,7 +40,7 @@ bound. The `@claude` profile stages credentials as writable copies and injects a
 `~/.claude/CLAUDE.md` generated from the ACTUAL resolved policy.
 
 `snug --dry-run` shows exactly what will happen; `snug doctor` says whether a
-host can run it. `make gate` is the pre-commit check, and `docs/VERIFY.md` is the
+host can run it. `make gate` is the pre-commit check, and `docs/src/verify.md` is the
 by-hand checklist — run it rather than trusting this paragraph.
 
 Containers and `podman build` both work, each behind its own profile and its own
@@ -331,7 +331,7 @@ on any flag.
   one that persists; `/tmp`, `$HOME`, `$HOME/.cache`, `$HOME/.config`,
   `$HOME/.local/state` and **`/dev`** are all writable tmpfs that die with the
   sandbox. `/dev` is bwrap's own synthetic device tree and is easy to forget —
-  it was found by running `docs/VERIFY.md`, not by review. Say "the only
+  it was found by running `docs/src/verify.md`, not by review. Say "the only
   writable thing that persists", never "the only writable thing".
 - **The sandbox sets `PS1`.** snug does not grant `/etc/bash.bashrc`, so without
   it the shell shows bash's built-in `bash-5.3$` and nothing on screen says you
@@ -345,7 +345,11 @@ on any flag.
 ## Development agents
 
 `.claude/agents/` — use them; they carry the context that keeps the invariants
-intact.
+intact. `.claude/design/` holds the design and research material they work from
+(DESIGN.md, the pseudo-filesystem audit, parked designs). **`docs/` is the USER
+guide and nothing else** — an mdBook, built with `make docs`. Keep the two
+apart: a reader looking for "how do I give this sandbox my work GitHub account"
+must not land in a threat model.
 
 | agent | owns |
 |---|---|
@@ -365,7 +369,7 @@ All five, in order. A milestone is not finished until the last one is.
 
 1. `make gate` green — gofmt, vet, and the full test suite.
 2. `make integration` green (`SNUG_REQUIRE_SANDBOX=1`), with a new named test for
-   whatever the milestone added. `docs/VERIFY.md` gets the human-readable
+   whatever the milestone added. `docs/src/verify.md` gets the human-readable
    equivalent — it is the by-hand checklist and is not made redundant by the
    automated one.
 3. **`redteam` has attacked it.** Not optional, not "if there's time". Every

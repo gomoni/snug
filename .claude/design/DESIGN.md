@@ -1171,7 +1171,7 @@ A tmpfs, because: it must be writable (every tool expects to write dotfiles), an
 snug/
 ├── go.mod                          module snug; go 1.26
 ├── Makefile                        build, gate, live-test, golden-update
-├── docs/DESIGN.md                  this document
+├── .claude/design/DESIGN.md                  this document
 │
 ├── cmd/snug/
 │   ├── main.go                     signal trap, stage dispatch, os.Exit(code)

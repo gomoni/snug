@@ -214,34 +214,49 @@ the code it is working on. Review your diffs.
 ## Verifying it yourself
 
 A sandbox you have not personally tried to break is one you are trusting on
-someone's word. [`docs/VERIFY.md`](docs/VERIFY.md) is a hands-on checklist —
+someone's word. [Verify it yourself](docs/src/verify.md) is a hands-on checklist —
 every command was run on a real host, with the output it should produce.
 
 The project also keeps an in-house red team (`.claude/agents/redteam.md`) whose
-job is to escape. It runs before every milestone lands, and it has earned its
-keep: across two runs it found five real issues — a host-environment leak
-readable at `/proc/1/environ`, a masking rule that only covered one of two
-spellings, a seccomp filter that was requested but never installed, a directory
-on stdin that bypassed every mount grant, and a `clone3` call that created a
-nested user namespace. **Every one was in code that had been written and tested,
-with the tests passing.** Each is now a permanent regression test.
+job is to escape. It runs before every milestone lands, and it keeps earning its
+keep. A sample: a host-environment leak readable at `/proc/1/environ`; a masking
+rule that covered one of two spellings; a seccomp filter that was requested but
+never installed; a directory on stdin that bypassed every mount grant; a
+`clone3` call that created a nested user namespace; a `--secret` source that
+climbed out of the build context with `..` and read an arbitrary host file.
+
+**Every one was in code that had been written and tested, with the tests
+passing.** Twice the red team has broken a fix within the hour of it landing —
+once because `strings.ToLower` is narrower than the fold `encoding/json` uses,
+so a lookalike Unicode letter smuggled a field past the filter that had just
+been written to stop exactly that. Each finding is now a permanent regression
+test, and each was verified to fail against the code that preceded it.
 
 ## Status
 
-**M4.** Filesystem isolation, seccomp hardening, networking, scoped git/ssh/gh
-identity, and container support — a per-sandbox `podman` engine reached through a
-filtering proxy — all work. The engine belongs to one sandbox, dies with it, and
-never touches the host's images or containers.
+**M5.** Filesystem isolation, seccomp hardening, networking, scoped git/ssh/gh
+identity, containers, and `podman build` all work. The container engine belongs
+to one sandbox, dies with it, and never touches the host's images or containers;
+a build cannot bind a host path, take a device, or join the host network.
 
 **Being hardened, and honestly not finished.** The container proxy is the newest
-surface and is treated as such. The in-house red team has already found two
-escapes through it — a create request that smuggles past the filter with an
-`Upgrade:` header, and case-variant JSON keys that slip a denied field past an
-exact-key denylist — and both are recorded, with reproductions, in
-[`TODO.md`](TODO.md) pending the fix. The exposure of `/proc`, `/sys` and `/dev`
-is under a separate audit. The filesystem, network and identity boundaries have
-been through several red-team rounds; the container proxy has not yet, so trust
-it accordingly. TODO.md is the honest ledger of what is known-open.
+surface and is treated as such. Four escapes have been found through it and
+closed, each with a regression test: a create request that skipped the whole
+filter by carrying an `Upgrade:` header, case-variant JSON keys that beat an
+exact-key denylist, a Unicode lookalike that beat the *fix* for that, and a
+`--secret` source that climbed out of the build context and read an arbitrary
+host file. It has now been through several red-team rounds — but it is still the
+part to trust least, because it is the part where the interesting bugs keep
+being found.
+
+**Known-open, and written down rather than glossed:** the read side of `/proc`
+leaks more than a container runtime's default, and a profile can currently
+displace snug's own `/proc` and `/dev` mounts — both contradict the monotonicity
+invariant as written, and both are cheap refusals-to-add rather than new
+machinery. [`.claude/design/PSEUDOFS-AUDIT.md`](.claude/design/PSEUDOFS-AUDIT.md) is the full report;
+[`TODO.md`](TODO.md) is the ledger. `/sys` is absent by construction and `/dev`
+is a 14-entry synthetic tree — both verified, both stronger than the docs
+claimed.
 
 **Not planned.** Passing through a GUI, audio or D-Bus socket — Wayland,
 PulseAudio, X11 — is out of scope. Proxying those protocols safely is a large
@@ -251,10 +266,30 @@ property to keep, not a gap to close.
 
 ## Documentation
 
+**The user guide is [`docs/`](docs/src/introduction.md)** — an mdBook. Build it
+with `make docs`, or read it as plain markdown on GitHub.
+
+| chapter | |
+|---|---|
+| [Getting started](docs/src/getting-started.md) | Install it and run something |
+| [Profiles](docs/src/profiles.md) | The vocabulary for everything else |
+| [Identities](docs/src/identity.md) | Two GitHub accounts, one sandbox each |
+| [Networking](docs/src/networking.md) | Egress, the closed loopback, publishing a port |
+| [Containers and builds](docs/src/containers.md) | `@podman-socket` and `@podman-build` |
+| [Running Claude Code](docs/src/claude.md) | The `@claude` profile |
+| [Verify it yourself](docs/src/verify.md) | Check the sandbox holds, by hand |
+| [Threat model](docs/src/threat-model.md) | What it defends, and what it does not |
+| [Profile format](docs/src/profile-format.md) | Every key |
+| [Troubleshooting](docs/src/troubleshooting.md) | Error messages and what they mean |
+
+Design and research material is **not** user documentation and lives apart, under
+[`.claude/design/`](.claude/design/), beside the agents that work from it:
+
 | | |
 |---|---|
-| [`docs/DESIGN.md`](docs/DESIGN.md) | Architecture, threat model, the policy model, roadmap |
-| [`docs/VERIFY.md`](docs/VERIFY.md) | Check the sandbox holds, by hand |
+| [`DESIGN.md`](.claude/design/DESIGN.md) | Architecture, threat model, the policy model, roadmap |
+| [`PSEUDOFS-AUDIT.md`](.claude/design/PSEUDOFS-AUDIT.md) | What `/proc`, `/sys` and `/dev` expose, measured |
+| [`PARAMETERISED-PROFILES.md`](.claude/design/PARAMETERISED-PROFILES.md) | A deferred design, and why |
 | [`CLAUDE.md`](CLAUDE.md) | Working agreement: invariants, and hard-won facts about this environment |
 | [`TODO.md`](TODO.md) | What is deferred, and known gaps between docs and code |
 

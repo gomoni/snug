@@ -64,7 +64,7 @@ type rawIdentity struct {
 //	     the sandbox's own account of what was selected. A profile named "a,b"
 //	     corrupts it, and anything reading it back is silently misled.
 //	":"  reserved for a parked design where a profile takes arguments
-//	     (docs/PARAMETERISED-PROFILES.md): "name:arg" must split unambiguously.
+//	     (.claude/design/PARAMETERISED-PROFILES.md): "name:arg" must split unambiguously.
 //	"-"  leading, because `snug -p -v` would otherwise name a profile "-v"
 //	     rather than fail.
 //	"@"  leading, because that mark means "snug ships this" and is added by
@@ -219,7 +219,7 @@ func (r Registry) merge(other Registry) error {
 // There is deliberately NO fourth layer. snug never auto-loads .snug/ or
 // snug.toml from beside the target: a hostile repository that ships its own
 // profile would be granting itself permissions, which defeats the entire threat
-// model. See docs/DESIGN.md §2.7.
+// model. See .claude/design/DESIGN.md §2.7.
 func Load() (Registry, error) {
 	reg, err := builtins()
 	if err != nil {

@@ -1,6 +1,6 @@
 BIN := bin/snug
 
-.PHONY: all build test gate integration golden clean install
+.PHONY: all build test gate integration golden clean install docs docs-serve
 
 all: build
 
@@ -50,3 +50,11 @@ install: build
 
 clean:
 	rm -rf bin
+
+# The user guide (docs/). Needs mdbook, a single static binary:
+#   https://github.com/rust-lang/mdBook/releases
+docs:
+	mdbook build docs
+
+docs-serve:
+	mdbook serve docs --open
