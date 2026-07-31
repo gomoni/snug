@@ -41,7 +41,7 @@ func startContainers(pol *policy.Policy, verbose bool) (cleanup func(), err erro
 		audit = func(msg string) { fmt.Fprintln(os.Stderr, "snug: containers: "+msg) }
 	}
 
-	p, err := dockerproxy.New(pol, eng.Socket(), sock, audit, eng.Start)
+	p, err := dockerproxy.New(pol, eng.Socket(), sock, eng.RunLabel(), audit, eng.Start)
 	if err != nil {
 		return nil, err
 	}

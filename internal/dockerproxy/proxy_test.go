@@ -59,7 +59,7 @@ func startProxy(t *testing.T) (sock string, eng *fakeEngine, target string) {
 		},
 	}
 	sock = filepath.Join(dir, "proxy.sock")
-	p, err := New(pol, up, sock, nil, nil)
+	p, err := New(pol, up, sock, "snug.run=test", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -881,6 +881,64 @@ func TestTmpfsIsForwardedNotSilentlyDropped(t *testing.T) {
 		t.Errorf("Tmpfs did not reach the engine, so `docker run --tmpfs` silently "+
 			"does nothing: %s", sent)
 	}
+}
+
+// Teardown stops the containers THIS run started, and it can only do that if
+// every container carries this run's label.
+//
+// The store is shared with any concurrent sandbox that resolved to the same key
+// — deliberately, so a warm start is warm — so the `stop --all` that teardown
+// used to run was collateral damage on a sibling that was still working.
+func TestEveryContainerIsStampedWithTheRunLabel(t *testing.T) {
+	labels := func(t *testing.T, eng *fakeEngine) map[string]string {
+		t.Helper()
+		sent, _ := eng.lastBody.Load().(string)
+		var got struct{ Labels map[string]string }
+		if err := json.Unmarshal([]byte(sent), &got); err != nil {
+			t.Fatalf("the engine did not receive JSON: %s", sent)
+		}
+		return got.Labels
+	}
+
+	t.Run("a plain create", func(t *testing.T) {
+		sock, eng, _ := startProxy(t)
+		if code, resp := post(t, sock, "/v1.41/containers/create", `{"Image":"alpine"}`); code != 200 {
+			t.Fatalf("status %d: %s", code, resp)
+		}
+		if got := labels(t, eng)["snug.run"]; got != "test" {
+			t.Errorf("snug.run = %q, want %q — teardown cannot find this container", got, "test")
+		}
+	})
+
+	// The client's own labels survive. Dropping them would be the silent-strip
+	// mistake this file already learned once with Binds.
+	t.Run("the client's labels are kept", func(t *testing.T) {
+		sock, eng, _ := startProxy(t)
+		if code, resp := post(t, sock, "/v1.41/containers/create",
+			`{"Image":"alpine","Labels":{"mine":"yes"}}`); code != 200 {
+			t.Fatalf("status %d: %s", code, resp)
+		}
+		got := labels(t, eng)
+		if got["mine"] != "yes" {
+			t.Errorf("the client's own label was dropped: %v", got)
+		}
+		if got["snug.run"] != "test" {
+			t.Errorf("snug.run = %q, want %q", got["snug.run"], "test")
+		}
+	})
+
+	// And the sandbox cannot disown its container by claiming another run.
+	t.Run("a client value for snug.run loses", func(t *testing.T) {
+		sock, eng, _ := startProxy(t)
+		if code, resp := post(t, sock, "/v1.41/containers/create",
+			`{"Image":"alpine","Labels":{"snug.run":"somebody-else"}}`); code != 200 {
+			t.Fatalf("status %d: %s", code, resp)
+		}
+		if got := labels(t, eng)["snug.run"]; got != "test" {
+			t.Errorf("snug.run = %q: the sandbox chose its own owner, so it would either "+
+				"survive its own teardown or be stopped by a sibling's", got)
+		}
+	})
 }
 
 // Volume create decodes its own body and had the same hole.

@@ -67,10 +67,19 @@ const idleTimeout = 10 * time.Second
 // could not land.
 const quietBudget = idleTimeout + 5*time.Second
 
+// RunLabelKey is the container label snug stamps every container it creates
+// with, so that teardown can reach this run's containers and only those.
+//
+// A dotted, namespaced key rather than a bare word: labels are a flat namespace
+// shared with whatever the image and the user set, and `run` alone would be a
+// plausible thing for someone else to mean.
+const RunLabelKey = "snug.run"
+
 type Engine struct {
-	sock    string
-	store   string
-	runroot string
+	sock     string
+	store    string
+	runroot  string
+	runLabel string
 
 	mu     sync.Mutex
 	podman string
@@ -113,6 +122,14 @@ func New(profiles []string, target string) (*Engine, error) {
 	}
 
 	e := &Engine{
+		// runLabel is what teardown stops, and it identifies THIS RUN rather
+		// than the store. The store is shared on purpose — that is what makes a
+		// warm start warm — so `stop --all` scoped to it stopped a concurrent
+		// sibling's containers as collateral. The proxy stamps this label on
+		// every container it creates; stopLocked and the reaper both filter on
+		// it, so a teardown reaches exactly the containers this run started.
+		runLabel: fmt.Sprintf("%s=%d", RunLabelKey, os.Getpid()),
+
 		store: filepath.Join(dataHome, "snug", "engines", key, "storage"),
 		// runroot lives on a tmpfs, so a hard-killed snug cannot leave a stale
 		// lock that survives a reboot.
@@ -129,6 +146,10 @@ func New(profiles []string, target string) (*Engine, error) {
 }
 
 func (e *Engine) Socket() string { return e.sock }
+
+// RunLabel is the `key=value` this run's containers are stamped with. The proxy
+// applies it at create; teardown filters on it.
+func (e *Engine) RunLabel() string { return e.runLabel }
 
 // Start brings the engine up if it is not already running. Safe to call from
 // several requests at once; only the first does the work.
@@ -148,7 +169,7 @@ func (e *Engine) Start() error {
 
 	// Arm the reaper BEFORE starting anything, so a snug killed during startup
 	// is covered too.
-	if e.reap, err = startReaper(podman, e.store, e.runroot, e.sock); err != nil {
+	if e.reap, err = startReaper(podman, e.store, e.runroot, e.sock, e.runLabel); err != nil {
 		return err
 	}
 
@@ -232,8 +253,13 @@ func (e *Engine) stopLocked() {
 	// 1. Containers. They are not the engine's children either, and they
 	//    outlive it, so this has to happen before anything is killed.
 	if e.podman != "" {
+		// --filter, not just --all: the store is shared with any concurrent
+		// sandbox that resolved to the same key, and stopping ITS containers
+		// because this one is going away is collateral a user cannot predict.
+		// Verified against podman 5.8.3 that `stop --all --filter label=k=v`
+		// stops only the matching container.
 		stop := exec.Command(e.podman, "--root", e.store, "--runroot", e.runroot,
-			"stop", "--all", "--time", "5")
+			"stop", "--all", "--filter", "label="+e.runLabel, "--time", "5")
 		stop.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME")}
 		_ = stop.Run()
 	}

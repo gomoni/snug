@@ -39,17 +39,17 @@ import (
 // line does not name the socket the sweep in reap.go matches on — otherwise
 // teardown would find the reaper and count snug's own cleanup as a leak.
 //
-// Known and NOT fixed here: `stop --all` is scoped to the STORE, and the store
-// is shared by every sandbox with the same profiles on the same target. So a
-// sandbox that dies stops a concurrent sibling's containers too. That is the
-// original behaviour of this teardown, not something the reaper introduced, and
-// closing it needs a per-run label on containers, which lives in the proxy.
+// The stop is FILTERED to this run's label, not `--all`. The store is shared by
+// every sandbox with the same profiles on the same target — that sharing is what
+// makes a warm start warm — so an unfiltered stop reached a concurrent sibling's
+// containers as collateral. The proxy stamps engine.RunLabelKey on everything it
+// creates, and both this and Engine.stopLocked filter on it.
 const reaperScript = `
 read -r tok
 [ "$tok" = ok ] && exit 0
 echo "snug: the sandbox died without cleaning up; stopping its containers" >&2
 "$SNUG_REAP_PODMAN" --root "$SNUG_REAP_STORE" --runroot "$SNUG_REAP_RUNROOT" \
-	stop --all --time 5 >/dev/null 2>&1
+	stop --all --filter "label=$SNUG_REAP_LABEL" --time 5 >/dev/null 2>&1
 rm -f "$SNUG_REAP_SOCK"
 `
 
@@ -60,7 +60,7 @@ type reaper struct {
 
 // startReaper arms the helper. Called before the engine is started, so that a
 // snug killed during startup is still covered.
-func startReaper(podman, store, runroot, sock string) (*reaper, error) {
+func startReaper(podman, store, runroot, sock, runLabel string) (*reaper, error) {
 	r, w, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -76,6 +76,7 @@ func startReaper(podman, store, runroot, sock string) (*reaper, error) {
 		"SNUG_REAP_STORE=" + store,
 		"SNUG_REAP_RUNROOT=" + runroot,
 		"SNUG_REAP_SOCK=" + sock,
+		"SNUG_REAP_LABEL=" + runLabel,
 	}
 	// Own process group, and NO Pdeathsig. See the comment above.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

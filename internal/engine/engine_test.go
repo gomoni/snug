@@ -181,7 +181,7 @@ func TestReaperFiresOnEOFAndStandsDown(t *testing.T) {
 		}
 
 		sock := filepath.Join(dir, "podman-1.sock")
-		r, err := startReaper(fake, filepath.Join(dir, "storage"), filepath.Join(dir, "rr"), sock)
+		r, err := startReaper(fake, filepath.Join(dir, "storage"), filepath.Join(dir, "rr"), sock, RunLabelKey+"=test")
 		if err != nil {
 			t.Fatal(err)
 		}

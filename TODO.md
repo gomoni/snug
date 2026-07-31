@@ -131,11 +131,14 @@ All five are FIXED. What the fixes were, since two of them changed the product:
 
 ## Engine — found by host-bridge (teardown work)
 
-- **[🟡 correctness] `stop --all` at teardown is store-wide.** A sandbox's teardown
-  stops a *concurrent* sibling's containers when both resolve to the same store
-  (warm-start sharing). The engine-level collateral is fixed (socket carries the
-  run's pid; the store never does), but closing this needs a per-run label applied
-  at container create, which lives in `internal/dockerproxy`.
+- ~~`stop --all` at teardown is store-wide~~ — fixed. The proxy stamps
+  `snug.run=<pid>` (`engine.RunLabelKey`) on every container it creates, and both
+  `Engine.stopLocked` and the reaper script stop with
+  `--all --filter label=snug.run=…`. Verified against podman 5.8.3 that the filter
+  scopes a stop to the matching container and leaves a sibling running. The
+  client's own labels survive; a client VALUE for `snug.run` does not, because a
+  container that could name its own owner would either survive its own teardown or
+  be stopped by a sibling's.
 - **[🟡 papercut] Warm stores are silently orphaned by profile renames.** The store
   key includes the resolved profile list, so a rename like `parent-ro`->`@parent-ro`
   changes it mid-session and a warm store with a pulled image becomes unreachable.

@@ -134,6 +134,23 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 	hc["Privileged"] = json.RawMessage(`false`)
 	hc["SecurityOpt"] = json.RawMessage(`["no-new-privileges:true"]`)
 
+	// And stamp this run's label, which is what lets teardown stop the
+	// containers THIS sandbox started and no others. The engine store is shared
+	// with any concurrent sandbox that resolved to the same key — deliberately,
+	// so a warm start is warm — so without the label `stop --all` was collateral
+	// damage on a sibling that was still working.
+	//
+	// MERGED into whatever labels the client sent, and merged by REPLACING our
+	// own key only: a client that sets its own labels keeps them, and a client
+	// that tries to set ours loses, because teardown correctness is not the
+	// sandbox's to negotiate.
+	if p.runLabel != "" {
+		if err := stampRunLabel(req, p.runLabel); err != nil {
+			p.deny(w, "%v", err)
+			return
+		}
+	}
+
 	// 5. Re-encode from our own map. This is a second, independent drift guard:
 	//    only what survived the checks above reaches the engine.
 	encHC, err := json.Marshal(hc)
@@ -459,6 +476,40 @@ func decodeObject(raw []byte) (map[string]json.RawMessage, error) {
 		out[name] = in[k]
 	}
 	return out, nil
+}
+
+// stampRunLabel merges snug's own container label into the create body's
+// top-level Labels, replacing any value the client set for that key.
+//
+// Client labels are kept: they are container metadata, they reach nothing, and
+// dropping them would be the silent-strip mistake this file already learned
+// once. Only snug's key is authoritative, because teardown correctness is not
+// the sandbox's to negotiate — a container that lies about which run owns it
+// would either survive its own sandbox or be stopped by a sibling's.
+//
+// Labels is a map[string]string in the docker-compat schema; anything else is a
+// request podman would reject anyway, and it is refused here rather than
+// silently reshaped.
+func stampRunLabel(req map[string]json.RawMessage, runLabel string) error {
+	key, value, ok := strings.Cut(runLabel, "=")
+	if !ok {
+		return fmt.Errorf("internal: run label %q is not key=value", runLabel)
+	}
+
+	labels := map[string]string{}
+	if raw, ok := req["Labels"]; ok && !isEmptyJSON(raw) {
+		if err := json.Unmarshal(raw, &labels); err != nil {
+			return fmt.Errorf("Labels is not a map of strings")
+		}
+	}
+	labels[key] = value
+
+	enc, err := json.Marshal(labels)
+	if err != nil {
+		return err
+	}
+	req["Labels"] = enc
+	return nil
 }
 
 // isDefaultLogConfig reports whether a LogConfig asks for nothing at all.

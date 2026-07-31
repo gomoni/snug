@@ -40,9 +40,13 @@ import (
 type Proxy struct {
 	pol          *policy.Policy
 	upstreamSock string
-	client       *http.Client
-	ln           net.Listener
-	audit        func(string)
+	// runLabel is `key=value`, stamped on every container this proxy creates so
+	// that teardown can stop THIS run's containers and only those. Empty means
+	// no stamping, which is only the case in tests that do not care.
+	runLabel string
+	client   *http.Client
+	ln       net.Listener
+	audit    func(string)
 
 	srv  *http.Server
 	once sync.Once
@@ -56,7 +60,7 @@ type Proxy struct {
 
 // New binds the socket the sandbox will see and prepares a client for the
 // engine's socket.
-func New(pol *policy.Policy, upstreamSock, socketPath string, audit func(string), ensureEngine func() error) (*Proxy, error) {
+func New(pol *policy.Policy, upstreamSock, socketPath, runLabel string, audit func(string), ensureEngine func() error) (*Proxy, error) {
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("container proxy socket: %w", err)
@@ -67,6 +71,7 @@ func New(pol *policy.Policy, upstreamSock, socketPath string, audit func(string)
 	p := &Proxy{
 		pol:          pol,
 		upstreamSock: upstreamSock,
+		runLabel:     runLabel,
 		ln:           ln,
 		audit:        audit,
 		ensureEngine: ensureEngine,
