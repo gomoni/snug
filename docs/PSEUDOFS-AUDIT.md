@@ -35,7 +35,7 @@ default.**
   crun and runc mask `/proc/kcore`, `/proc/keys`, `/proc/timer_list`,
   `/proc/interrupts`, `/proc/acpi`, `/proc/asound`, `/proc/scsi` and mount
   `/proc/sys` read-only. snug masks nothing. Consequence, confirmed live: **a
-  container the agent starts through `podman-socket` has a better-masked `/proc`
+  container the agent starts through `@podman-socket` has a better-masked `/proc`
   than the sandbox that spawned it.**
 
 What a default `snug <dir>` leaks to a hostile payload, all [lead-verified] in one
@@ -105,7 +105,7 @@ kernel bug — correct today) vs *snug-level* (a leak snug could close).
 | D5 | /dev | `/dev` and `/dev/shm` are unbounded tmpfs (= host RAM, no `size=`), and `/dev` is writable. Host RAM exhaustion. The engine's own containers get `size=64000k` | Low (DoS only) |
 | Y5 | /sys | `cmd/snug/dryrun.go:162` appends the literal `/sys /tmp/.X11-unix …` to the NOT-GRANTED block **without consulting the policy** — so with `/sys` granted, `--dry-run` prints `ro /sys` *and* "never mounted" on one screen | Low sev, **high leverage** (the trust artifact) |
 
-### Reachable today, but only with `podman-socket` selected
+### Reachable today, but only with `@podman-socket` selected
 
 | # | fs | finding | sev |
 |---|---|---|---|
@@ -173,7 +173,7 @@ Correct outcomes today; each depends on something snug does not own.
 a *deeper mount with lower access* — the exact case invariant 1 already documents
 as "effective write access at a strict subpath is NOT monotone, by design." It is
 **not** a `Clamp`-style restriction: nothing is demoted in place, a second mount is
-added at a deeper key, and it is snug-authored with `(builtin)` provenance. Say so
+added at a deeper key, and it is snug-authored with `(snug)` provenance. Say so
 in the commit, because "snug emits a read-only mount" reads like the thing
 invariant 1 removed and is not.
 
@@ -193,14 +193,14 @@ demote-in-place.
   re-key the `KindData` exemption on provenance. Closes S2; restores invariant 1's
   literal truth.** Treat mounts strictly beneath a `KindProc`/`KindDev`/`KindTmpfs`
   mount as masks and refuse them. Simultaneously narrow the exemption from
-  `m.Kind == KindData` to `provenance == "(builtin)"` — the existing comment
+  `m.Kind == KindData` to `provenance == "(snug)"` — the existing comment
   already warns the kind-keyed version reopens the moment a TOML key can produce
   `KindData`, and **R3 is exactly what makes snug produce more of them**. These two
   must land together or R3 hands profiles the subtraction verb. *(Distinct from the
   already-recorded identity-file `KindData` displacement on the same code path —
   don't make that worse.)*
 - **R3 — Snug-authored empty-file replacements at a named procfs set. Closes P1,
-  P3, most of P4/P5.** Provenance `(builtin)`, `--ro-bind-data`/empty-file,
+  P3, most of P4/P5.** Provenance `(snug)`, `--ro-bind-data`/empty-file,
   **printed in `--dry-run`**.
   - *Tier 1, no compat cost:* `/proc/config.gz`, `/proc/keys`, `/proc/key-users`.
     `keys` is what crun/runc already mask, and snug half-made this decision already
@@ -231,7 +231,7 @@ demote-in-place.
   correct §5.3's fingerprint claim; rewrite the doc that says snug ships
   `[profile.sysfs]` (it does not — state the stronger truth, and that a `/sys`
   profile must enumerate leaves because **bwrap binds are recursive**); amend N5 to
-  name `/proc/interrupts`; add one sentence to the `podman-socket` ABUSE comment;
+  name `/proc/interrupts`; add one sentence to the `@podman-socket` ABUSE comment;
   add the time-namespace and `nodev`-on-ordinary-binds facts to CLAUDE.md.
 - **R10 — Offer `--new-session` as an opt-in for non-interactive payloads (D1).**
   **Do not filter escape sequences** — a 95%-correct terminal filter is the
@@ -257,7 +257,7 @@ Each gets a **positive control** (the `pasta.avx2` lesson):
   *(R1: S1 + D2)*
 - `TestProfileCannotMaskInsidePseudoFS` — `ro=["/proc/config.gz"]`,
   `ro=["/proc/sys"]`, and grants under `/dev`/`/tmp` all refused; a snug-authored
-  `(builtin)` replacement at the same path still accepted. *(R2: S2, + the
+  `(snug)` replacement at the same path still accepted. *(R2: S2, + the
   provenance-keyed exemption)*
 - `TestUsermodeHelperFamilyIsDenied` — writes to `core_pattern`, `modprobe`,
   `poweroff_cmd`, `usermodehelper/{bset,inheritable}`, `sysrq-trigger`,
@@ -299,7 +299,7 @@ Each gets a **positive control** (the `pasta.avx2` lesson):
   is declined this must be an explicit N5 decision, not an omission.
 - Host fingerprinting defeats the generated machine-id (P6) — Medium; `boot_id` is
   a one-file replacement if host anonymity is wanted, else scope the §5.3 claim.
-- `podman-socket` transitively grants read-only host sysfs/procfs to containers,
+- `@podman-socket` transitively grants read-only host sysfs/procfs to containers,
   copyable back via `-v <target>:/out` (Y4) — Medium.
 - `/dev/console` + `/dev/tty` OSC-52 / escape-sequence channel to the operator's
   terminal (D1) — Medium; R10's opt-in `--new-session` is the mitigation, not a
@@ -331,7 +331,7 @@ Each gets a **positive control** (the `pasta.avx2` lesson):
 - DESIGN §5.2: `--proc /proc` as "a fresh procfs bound to the sandbox's own PID
   namespace" — true and incomplete; the host-global files are all there.
 - DESIGN N5: side channels list undersells `/proc/interrupts`.
-- `base.toml:255-267`: `podman-socket` host resources "untouched and unreachable" —
+- `base.toml:255-267`: `@podman-socket` host resources "untouched and unreachable" —
   silent on host sysfs/procfs reaching the container (Y4).
 - CLAUDE.md facts: `--unshare-all` does **not** unshare the time namespace — a
   "never trust a helper's default" fact worth adding.

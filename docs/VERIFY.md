@@ -104,23 +104,23 @@ there to deny access to.
 Try the same for anything else you care about — `~/.gnupg`, `~/.aws`,
 `~/.config/gh`, your other projects.
 
-## 5. What `parent-ro` actually grants
+## 5. What `@parent-ro` actually grants
 
 ```bash
 ./bin/snug $SC/proj/sub -- /bin/sh -c "ls $SC/proj"
 ```
 
-Expect `sibling  sub` — **both**. This is correct and intentional: `parent-ro`
+Expect `sibling  sub` — **both**. This is correct and intentional: `@parent-ro`
 grants the target's *parent*, so the target's siblings are readable. That is
 what makes `../other-package` work in a monorepo.
 
 What must not be reachable is anything **above** the parent, which is what
 check 4 confirms with `$SC/other` and `$SC/CANARY-TOP`.
 
-If you do not want siblings readable, drop `parent-ro`:
+If you do not want siblings readable, drop `@parent-ro`:
 
 ```bash
-./bin/snug --no-defaults -p sys -p cwd-rw $SC/proj/sub -- /bin/sh -c "ls $SC/proj"
+./bin/snug --no-defaults -p @sys -p @cwd-rw $SC/proj/sub -- /bin/sh -c "ls $SC/proj"
 ```
 
 Expect `No such file or directory`.
@@ -137,7 +137,7 @@ Expect ~14 variables, all of them snug's own (`HOME`, `PATH`, `SNUG`,
 tokens.
 
 Caveat worth knowing: `--clearenv` is not the last word. `/etc/profile.d/*`
-runs inside a login shell and can put variables back. That is why `sys`
+runs inside a login shell and can put variables back. That is why `@sys`
 enumerates `/etc` instead of binding it wholesale — see DESIGN §5.3.
 
 ### 6b. …including via PID 1 (regression check)
@@ -227,8 +227,8 @@ the floor, and networking arrives as an explicit profile in M2.
 ## 8. Profile order is irrelevant
 
 ```bash
-A=$(./bin/snug --dry-run -p sys -p cwd-rw -p parent-ro $SC/proj/sub | sed -n '/── bwrap/,$p' | md5sum)
-B=$(./bin/snug --dry-run -p parent-ro -p cwd-rw -p sys $SC/proj/sub | sed -n '/── bwrap/,$p' | md5sum)
+A=$(./bin/snug --dry-run -p @sys -p @cwd-rw -p @parent-ro $SC/proj/sub | sed -n '/── bwrap/,$p' | md5sum)
+B=$(./bin/snug --dry-run -p @parent-ro -p @cwd-rw -p @sys $SC/proj/sub | sed -n '/── bwrap/,$p' | md5sum)
 [ "$A" = "$B" ] && echo "identical: ok" || echo "DIFFERENT <-- FAIL"
 ```
 
@@ -277,14 +277,14 @@ rm -rf $X
 Expect four refusals:
 
 ```
-snug: conflict at /etc/ssl: tmpfs (from hide-ssl) vs bind (from sys)
+snug: conflict at /etc/ssl: tmpfs (from hide-ssl) vs bind (from @sys)
 
 snug: profile hide-profiled puts an empty tmpfs at /etc/profile.d, which is inside /etc
       from profile etc-full. That hides what /etc already exposes there, and profiles
       may only ever grant.
 
 snug: profile mask-misc puts a bind of .../empty at /usr/share/misc, which is inside
-      /usr from profile sys. That hides what /usr already exposes there...
+      /usr from profile @sys. That hides what /usr already exposes there...
 
 snug: refusing to bind / (from greedy)
 ```
@@ -295,7 +295,7 @@ tmpfs grants, so a *bind* of an unrelated directory walked straight through it �
 `redteam` agent.
 
 Confirm the legitimate nesting still works, since the fix could easily have
-broken it — the default selection lays `cwd-rw`'s writable target over `parent-ro`'s
+broken it — the default selection lays `@cwd-rw`'s writable target over `@parent-ro`'s
 read-only parent, which is re-granting the same tree, not masking:
 
 ```bash
@@ -314,12 +314,42 @@ rm -rf $X
 Expect a parse error naming the unknown key. A silently-ignored `mask` would let
 someone believe their sandbox is tighter than it is.
 
+## 9b. The `@` namespace belongs to snug
+
+`@` marks a profile snug ships. Nothing else may wear it, so a name in
+`--dry-run` or in `$SNUG_PROFILES` tells you whose grant it is without a lookup.
+
+```bash
+X=$(mktemp -d); mkdir -p $X/snug/profiles.d
+
+# a profile of your own is fine, and is the control: if this fails, the
+# refusals below prove nothing about the sigil
+printf '[profile.mysys]\nro = ["/usr"]\n' > $X/snug/profiles.d/mine.toml
+XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p mysys $SC/proj/sub >/dev/null && echo "control ok"
+
+# claiming the mark is refused at load, whether or not it collides
+printf '[profile."@sys"]\nro = ["/"]\n' > $X/snug/profiles.d/mine.toml
+XDG_CONFIG_HOME=$X ./bin/snug --dry-run $SC/proj/sub
+printf '[profile."@mine"]\nro = ["/usr"]\n' > $X/snug/profiles.d/mine.toml
+XDG_CONFIG_HOME=$X ./bin/snug --dry-run $SC/proj/sub
+
+rm -rf $X
+
+# and the mistake the convention creates is answered with the fix
+./bin/snug --dry-run -p sys $SC/proj/sub
+```
+
+Expect: `control ok`; then two refusals naming the offending profile and saying
+the mark means snug ships it; then `unknown profile "sys" ... you probably meant
+"@sys"`. Note the third one fails at *load* — snug will not start at all while
+such a file is on the search path, rather than quietly ignoring that one file.
+
 ## 10. A repository cannot grant itself anything
 
 ```bash
 cd $SC/proj/sub
 mkdir -p .snug
-printf '[profile.cwd-rw]\nro = ["/"]\n' > .snug/profiles.toml
+printf '[profile.evil-cwd]\nro = ["/"]\n' > .snug/profiles.toml
 cp .snug/profiles.toml ./snug.toml
 
 /path/to/snug/bin/snug . -- /bin/sh -c 'ls / ; ls ~'
@@ -339,7 +369,7 @@ repository's profiles:
 
 ```bash
 mkdir -p $SC/proj/sub/.config/snug/profiles.d
-printf '[profile.evil]\ninclude=["sys"]\nrw=["/etc"]\n' \
+printf '[profile.evil]\ninclude=["@sys"]\nrw=["/etc"]\n' \
   > $SC/proj/sub/.config/snug/profiles.d/evil.toml
 XDG_CONFIG_HOME=$SC/proj/sub/.config ./bin/snug --dry-run -p evil $SC/proj/sub | grep '/etc'
 ```

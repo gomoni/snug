@@ -24,9 +24,10 @@ keyctl, perf_event_open, userfaultfd, TIOCSTI and nested user namespaces. The
 flag list travels through a memfd, and inherited descriptors are sealed CLOEXEC.
 Networking is a private netns per sandbox with a pasta helper: full egress, host
 loopback unreachable, abstract sockets (X11/D-Bus) unreachable. Offline is the
-absence of the `net` profile. Profiles: `null`, `sys`, `home`,
-`cwd-rw`, `parent-ro`, `tmp-shared`, `git-ro`, `net`, `net-publish`, `net-anon`,
-`net-host`, `claude`, `podman-socket`. There is deliberately **no `default`
+absence of the `@net` profile. Profiles: `@null`, `@sys`, `@home`,
+`@cwd-rw`, `@parent-ro`, `@tmp-shared`, `@git-ro`, `@net`, `@net-publish`,
+`@net-anon`, `@net-host`, `@claude`, `@podman-socket` — the `@` marks a profile
+snug ships, and nothing else may wear it. There is deliberately **no `@default`
 profile**: what a bare `snug <dir>` selects is the `defaults` *setting*
 (`internal/profile/defaults.go`, overridable by `defaults = [...]` in
 `~/.config/snug/config.toml`), because a default selection is a preference and a
@@ -35,7 +36,7 @@ profile is a grant.
 Identity pins one git/ssh/gh account: a filtering ssh-agent proxy exposes exactly
 one key (no key material inside, other keys not enumerable), and `.gitconfig`,
 `.ssh/config`, `known_hosts` and gh's `hosts.yml` are all generated rather than
-bound. The `claude` profile stages credentials as writable copies and injects a
+bound. The `@claude` profile stages credentials as writable copies and injects a
 `~/.claude/CLAUDE.md` generated from the ACTUAL resolved policy.
 
 `snug --dry-run` shows exactly what will happen; `snug doctor` says whether a
@@ -71,7 +72,7 @@ The base state is an empty tmpfs root, an empty network namespace, and an empty
 environment. Nothing is inherited. A profile is a *named hole*.
 
 There is no "deny rule" in snug, because there is nothing to deny — the thing you
-would deny was never there. `parent-ro` does not hide your other projects; it simply
+would deny was never there. `@parent-ro` does not hide your other projects; it simply
 never grants them. This is why a missing capability (no X11, no Wayland, no
 D-Bus, no host loopback, no `~/.ssh`) is a **feature to state plainly**, not a
 gap to apologise for.
@@ -92,8 +93,8 @@ Break any of these and the project has lost its point.
    `~/.gitconfig`, `~/.ssh/config`, `known_hosts`) are assigned **directly into
    `p.Mounts`** at the end of `Resolve` — they do not go through `join`, and
    `rejectMasking` exempts `KindData` by kind. At an identical path that is a
-   silent overwrite: with `git-ro` and an identity profile both selected, the
-   `git-ro` bind of `~/.gitconfig` disappears from the policy entirely and the
+   silent overwrite: with `@git-ro` and an identity profile both selected, the
+   `@git-ro` bind of `~/.gitconfig` disappears from the policy entirely and the
    provenance reads `identity:<profile>` alone. **Verified by execution.** That
    is the intended direction — the pinned identity must not sit alongside the
    host's credential helpers, and `GIT_CONFIG_GLOBAL` exists for the same reason
@@ -127,8 +128,8 @@ Break any of these and the project has lost its point.
    behind it existed — restriction applied by the human after resolution, on the
    argument that a file may not tighten but a person may — and both are **gone**.
    snug stays minimal; bwrap is the swiss knife. To grant less, select fewer
-   profiles: a read-only project is `snug --no-defaults -p sys -p home -p
-   parent-ro <dir>`, verbose on purpose. The point of removing it is not the
+   profiles: a read-only project is `snug --no-defaults -p @sys -p @home -p
+   @parent-ro <dir>`, verbose on purpose. The point of removing it is not the
    flag, it is the *carve-out*: an invariant with no exceptions can be checked by
    grepping for a demote and finding none (`TestPolicyHasNoRestrictionOperation`);
    one with an exception can only be checked by understanding where the exception
@@ -138,7 +139,7 @@ Break any of these and the project has lost its point.
    **Corollary — wanting "X but not Y" means X was too coarse a grant.** The
    urge to exclude is a design smell pointing at the grant above it, not a
    missing feature. Two ways out, both additive:
-   - *Enumerate.* Grant the parts of X you meant. This is why `sys` lists
+   - *Enumerate.* Grant the parts of X you meant. This is why `@sys` lists
      fourteen `/etc` entries instead of binding all 109.
    - *Layer by access.* Grant the tree read-only and the parts you want to
      write separately. Access joins by max, so `ro /proj` + `rw /proj/src`
@@ -198,7 +199,7 @@ on any flag.
   direction.** Pass every security-relevant flag explicitly even when it matches
   the current default, and assert the *behaviour* in an integration test — a
   golden-argv test would have passed on the buggy configuration.
-- **`--clearenv` is not the last word on the environment.** `sys` binds `/etc`,
+- **`--clearenv` is not the last word on the environment.** `@sys` binds `/etc`,
   so `/etc/profile.d/*` runs inside the sandbox and can put variables back. On
   this box `distrobox_profile.sh` sees the empty environment, *re-derives*
   `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` from the uid, and calls
@@ -264,7 +265,7 @@ on any flag.
   the same shape for `NPM_CONFIG_USERCONFIG`, `CARGO_HOME`, `DOCKER_CONFIG`,
   `PIP_CONFIG_FILE` when they arrive. It never binds the host's. Two reasons,
   and both matter: a bind carries every unrelated thing in that file (see the
-  `git` two-file bullet below — `git-ro` reintroduced the host's credential
+  `git` two-file bullet below — `@git-ro` reintroduced the host's credential
   helpers alongside a pinned identity), and **the env var then carries a PATH,
   not a credential.** `/proc/self/environ` is passively readable by every
   process in the sandbox and inherited by every child; a file has to be
@@ -309,7 +310,7 @@ on any flag.
   only when the consumer reads an absolute path it will not let you configure.
 - **`git` merges its global config from TWO files.** `~/.gitconfig` AND
   `$XDG_CONFIG_HOME/git/config` are both read. So generating `~/.gitconfig` was
-  not enough: with `git-ro` also selected, the host's credential helpers,
+  not enough: with `@git-ro` also selected, the host's credential helpers,
   `insteadOf` rules and `user.email` sat alongside the pinned identity. Setting
   `GIT_CONFIG_GLOBAL` replaces both outright, which is why snug sets it whenever
   an identity is pinned. Verified by execution, both directions.
@@ -416,13 +417,39 @@ meant. It cannot prove the sandbox holds.
 - **One vocabulary: `profile`.** Grants live in profiles and nowhere else. The
   CLI says the same word the config says: `-p/--profile`, `snug profile list`,
   `snug profile show NAME`. No second noun for the same concept.
+- **`@` marks a profile snug ships, and the mark is derived, not written.**
+  `@sys`, `@net`, `@claude`; a profile in `~/.config/snug/profiles.d` has no
+  mark, and `checkName` refuses one. The point is provenance: `--dry-run`, a
+  `Validate` error and `$SNUG_PROFILES` all render a profile name, and a bare
+  name could not tell you whether the grant was snug's or something a file on
+  this host defined — you had to go and look.
+
+  Two properties fall out, and both are structural rather than checked.
+  `profile.builtins()` adds the mark and is the ONLY code that does, while
+  `checkName` refuses a leading `@` in **every** file it parses — `base.toml`
+  included, which is why the builtins are written there under bare names. So a
+  builtin cannot forget the mark and a user profile cannot borrow it. And the
+  two namespaces can no longer collide: a user file defining `sys` defines a
+  profile of their own, so "a config file could quietly change what `sys` means"
+  stops being a thing `merge` has to prevent. That matters most where invariant 3
+  is weakest — `$XDG_CONFIG_HOME` is still trusted unconditionally, and a
+  profiles.d loaded from the wrong place still cannot impersonate `@sys`.
+
+  Consequence to keep in mind: `include` inside a builtin is rewritten with the
+  names, so a builtin can only ever include another builtin. That is correct (it
+  is compiled in and cannot know a user's names) but it is a rule, not an
+  accident — see `profile.mark`.
+
+  The provenance snug writes for its OWN mounts (`/proc`, `/dev`, the generated
+  `/etc/resolv.conf`) reads `(snug)`, renamed from `(builtin)` in the same pass:
+  with `@`-marked builtin profiles on the screen, one word meant two things.
 - **`--dry-run`, not `explain`.** It is the conventional name and the tool
   should not invent vocabulary. What it prints is unchanged: the resolved
   policy and the exact bwrap command, having started nothing.
 - **`snug config` holds preferences, never grants.** Today that is `defaults` —
   which profiles a bare `snug <dir>` selects. It names profiles and cannot
   define one, because a config file able to redefine a builtin could quietly
-  change what `sys` means.
+  change what `@sys` means.
 - **There is no `default` profile; there is a `defaults` setting.** A default
   selection is a *preference*, a profile is a *grant*, and having both was two
   mechanisms for one idea: the builtin `[profile.default]` granted nothing yet
@@ -433,8 +460,8 @@ meant. It cannot prove the sandbox holds.
   `internal/profile/defaults.go`; `defaults = [...]` in config.toml **replaces**
   it wholesale (merging would make "fewer defaults than snug ships" impossible);
   `-p` **adds** to whatever that resolved to; `--no-defaults` declines it
-  entirely. The list is `sys home cwd-rw parent-ro` — enough that snug is usable
-  by just running it — and `net` must never join it, because offline is the
+  entirely. The list is `@sys @home @cwd-rw @parent-ro` — enough that snug is
+  usable by just running it — and `@net` must never join it, because offline is the
   *absence* of a profile and that is what stops it being switched on by accident.
 - **The directory is positional, not `-C`.** `go -C` and `make -C` mean "go
   somewhere else, then do the usual thing"; for snug the directory *is* the
@@ -461,7 +488,7 @@ meant. It cannot prove the sandbox holds.
   resolved policy, so a run whose engine failed to start truthfully reads "no
   engine". Every sentence in it removes a class of wasted agent turns.
 - **Networking**: private netns per sandbox, egress via pasta, host loopback
-  closed. Offline is the *absence* of the `net` profile, not a setting — so it
+  closed. Offline is the *absence* of the `@net` profile, not a setting — so it
   cannot be accidentally re-enabled. Host→sandbox port publishing is off by
   default and scoped to `127.0.0.1` when enabled: with `-t auto` the *agent*
   would choose which host loopback ports appear, which inverts the guiding

@@ -21,7 +21,7 @@ The base state of a `snug` sandbox is *not* "the host filesystem with some thing
 This has three consequences that shape the whole system:
 
 1. **Monotonicity is free.** Since the base is empty, every operation a profile can express is additive. There is no syntax for removal, so composition cannot tighten. (§2.4)
-2. **"Hiding" is emergent, not implemented.** The `parent-ro` profile does not hide your other projects; it simply never grants them. There is no masking pass, no `--tmpfs` overlay trick in the emitter, no ordering hazard from hiding. (§3)
+2. **"Hiding" is emergent, not implemented.** The `@parent-ro` profile does not hide your other projects; it simply never grants them. There is no masking pass, no `--tmpfs` overlay trick in the emitter, no ordering hazard from hiding. (§3)
 3. **A missing capability is a feature, and is stated as such.** No X11 socket, no Wayland socket, no D-Bus, no host loopback, no `~/.ssh` — not gaps to apologise for, but the default. Where a hole is worth opening it gets a named profile that documents what it costs; where it is not (GUI, audio, D-Bus — §7.5) the absence is simply the answer.
 
 ---
@@ -33,7 +33,7 @@ This has three consequences that shape the whole system:
 - **G1** Run an untrusted payload (a build, a test suite, a coding agent — Claude Code, Codex, aider, …) against one project directory with **no root, no setuid, no daemon, no unit files**. `snug` is a process; when it exits, nothing remains.
 - **G2** Deny-by-default filesystem. The agent sees the project, the OS runtime, and exactly what a profile granted.
 - **G3** The sandbox **cannot reach the host's loopback**. This is a hard requirement, not a nice-to-have (§4.1).
-- **G4** Internet egress works by default when a `net` profile is selected; fully-offline is the *absence* of that profile, so it is trivially achievable and cannot be accidentally re-enabled.
+- **G4** Internet egress works by default when a `@net` profile is selected; fully-offline is the *absence* of that profile, so it is trivially achievable and cannot be accidentally re-enabled.
 - **G5** Works inside `distrobox`/containers with nested user namespaces. Where a capability is genuinely missing, `snug` **fails loudly with a diagnosis**, and never silently downgrades its security posture.
 - **G6** Host integration (ssh signing, container engine, tmp sharing) is possible but goes through *filtering proxies* that `snug` owns, never through raw socket passthrough.
 - **G7** Total transparency: `snug --dry-run` prints the resolved policy and the exact `bwrap` and `pasta` argv. If you cannot read what it is going to do, you cannot trust it.
@@ -238,7 +238,7 @@ The prior generation (`agent-sandbox`) let a profile *override* a scalar, with t
 
 Keys that would only ever *weaken* the sandbox in a way profiles must not control — notably `seccomp` — **are not profile keys at all**. `--no-seccomp` is a CLI flag only. A human may weaken; a file may not.
 
-`network = "isolated"` is therefore a no-op, and there is deliberately no `network = "offline"`. **Offline is the absence of the `net` profile.** If you write `include = ["net", "net-offline"]`, the result is `net` — and that is correct, not a bug: you asked for the union of two grant sets, one of which was empty. To be offline, do not include `net`. `snug --dry-run` states this in plain words when it detects the pattern.
+`network = "isolated"` is therefore a no-op, and there is deliberately no `network = "offline"`. **Offline is the absence of the `@net` profile.** If you write `include = ["@net", "@net-offline"]`, the result is `@net` — and that is correct, not a bug: you asked for the union of two grant sets, one of which was empty. To be offline, do not include `@net`. `snug --dry-run` states this in plain words when it detects the pattern.
 
 ### 2.4 Monotonicity by construction — the actual argument
 
@@ -260,7 +260,7 @@ Policy_final = Resolve(profiles)
 
 That is the whole pipeline. An earlier design had a *clamp*: a post-resolution stage (`--read-only`, `--offline`) that moved the policy *down* the lattice, justified by "profiles are data that may originate near untrusted material; the CLI is the human, and only the human may tighten". The asymmetry was defensible, and it is still the right answer to *"may a profile tighten?"* — no. But it was the model's one carve-out, and both the flag and the machinery behind it are now gone. `snug` stays minimal; `bwrap` is the swiss knife.
 
-What that costs, stated plainly: a read-only project is obtained by not selecting `cwd-rw` — `snug --no-defaults -p sys -p home -p parent-ro <dir>` — which is verbose on purpose. A read-only cwd is possible but highly nonstandard, and the verbosity is proportionate to how rarely it is wanted.
+What that costs, stated plainly: a read-only project is obtained by not selecting `@cwd-rw` — `snug --no-defaults -p @sys -p @home -p @parent-ro <dir>` — which is verbose on purpose. A read-only cwd is possible but highly nonstandard, and the verbosity is proportionate to how rarely it is wanted.
 
 What it buys: an invariant with no exceptions. "Nothing anywhere reduces what a resolved policy grants" is a property a reader can check by grepping for a demote and finding none, and a test can assert directly (`TestPolicyHasNoRestrictionOperation`). One with a carve-out can only be checked by understanding where the carve-out applies.
 
@@ -269,7 +269,7 @@ What it buys: an invariant with no exceptions. "Nothing anywhere reduces what a 
 ```toml
 # ── the lattice floor. Grants nothing. ──
 [profile.null]
-description = "Nothing. The floor of the lattice. `snug --dry-run --profile null` shows the true base."
+description = "Nothing. The floor of the lattice. `snug --dry-run --profile @null` shows the true base."
 
 # ── the OS runtime ──
 [profile.sys]
@@ -319,7 +319,7 @@ network = "egress"
 dns = true
 
 [profile.net-publish]
-description = "As `net`, plus: ports the sandbox binds become reachable on the HOST's 127.0.0.1."
+description = "As `@net`, plus: ports the sandbox binds become reachable on the HOST's 127.0.0.1."
 include = ["net"]
 publish_auto = true
 
@@ -363,14 +363,14 @@ optional = ["{home}/.config/git", "{home}/.gitconfig"]
 # NOT a profile. It is the `defaults` setting in ~/.config/snug/config.toml,
 # because a default SELECTION is a preference and not a grant:
 #
-#   defaults = ["sys", "home", "cwd-rw", "parent-ro"]
+#   defaults = ["@sys", "@home", "@cwd-rw", "@parent-ro"]
 #
 # Built-in value in internal/profile/defaults.go; setting it replaces that list
 # wholesale. `-p` adds to whatever it resolved to, `--no-defaults` declines it.
 
 # ── identity scoping (§9.1) ──
 [profile.plainsof]
-include = ["net", "claude", "git-ro"]
+include = ["@net", "@claude", "@git-ro"]
 match   = ["~/projects/plainsof/**"]
   [profile.plainsof.identity]
   gh_user   = "plainsof"
@@ -380,6 +380,15 @@ match   = ["~/projects/plainsof/**"]
   ssh_mode  = "agent-proxy"
 ```
 
+**Names are written bare here and published with a leading `@`.** `[profile.sys]` above is `@sys` everywhere a human meets it — on the command line, in `--dry-run` provenance, in `$SNUG_PROFILES`. The mark means *snug ships this*, and it is added by `profile.builtins()` when the embedded file is loaded rather than written into the file. `checkName` refuses a leading `@` in **every** file it parses, this one included, so the mark is unforgeable in both directions: a builtin cannot miss it, a profile in `~/.config/snug/profiles.d` cannot claim it.
+
+Two things follow.
+
+- **Provenance is legible without a lookup.** Every place a profile name is rendered is a place where "is this snug's grant or one this host defined?" is the question being asked, and the bare name could not answer it.
+- **The two namespaces cannot collide,** which retires a rule rather than adding one. "A config file must not redefine a builtin" was previously enforced by the merge check; now a user file saying `[profile.sys]` defines a profile of *theirs*, and `@sys` is untouched. The merge check remains for collisions between the layers below (a site profile against a user one), where a hard error is still right. This matters most where §2.7's gate is weakest — `$XDG_CONFIG_HOME` is trusted unconditionally today, and a `profiles.d` loaded from the wrong place still cannot impersonate `@sys`.
+
+`include` inside a builtin is rewritten along with the names, so a builtin can only ever include another builtin. That is not a restriction being imposed — it is compiled in and cannot know a user's names — but it is a rule rather than an accident, and `profile.mark` says so.
+
 **Why TOML** (decided by the owner; recorded for the record): it is what the previous generation converged on, `github.com/pelletier/go-toml/v2` supports `DisallowUnknownFields()` which is load-bearing for fail-closed parsing, and profiles are flat name→grant-list tables with no need for expressions. A programmable format (Starlark/HCL) would be strictly worse here: computation in a profile is exactly the thing that would make monotonicity un-provable by inspection.
 
 **`include` stays monotone** because it is expanded into a *set* before folding, and because every key it can carry has a permissive-ward join. `include` has no "override" or "exclude" counterpart. A profile can only ever be `⊒` the union of what it includes.
@@ -388,7 +397,7 @@ match   = ["~/projects/plainsof/**"]
 
 Profiles are loaded from, in order (all layers merged; **later layers may only add new profile names, never redefine an existing one — a redefinition is a fatal error**):
 
-1. **Embedded builtins** — compiled into the binary. `null`, `sys`, `home`, `cwd-rw`, `parent-ro`, `tmp-shared`, `net`, `net-publish`, `net-host`, `podman-socket`, `podman-build`, `claude`, `git-ro`. Always present, cannot be shadowed. There is deliberately no `default` among them: what a bare `snug <dir>` selects is the `defaults` *setting* (§11), not a grant.
+1. **Embedded builtins** — compiled into the binary, and the only profiles that carry the `@` mark (§2.6). `@null`, `@sys`, `@home`, `@cwd-rw`, `@parent-ro`, `@tmp-shared`, `@net`, `@net-publish`, `@net-host`, `@podman-socket`, `@podman-build`, `@claude`, `@git-ro`. Always present, and unshadowable by construction rather than by check: no later layer can spell an `@` name at all. There is deliberately no `default` among them: what a bare `snug <dir>` selects is the `defaults` *setting* (§11), not a grant.
 2. **`/etc/snug/profiles.d/*.toml`** — site/admin profiles.
 3. **`$XDG_CONFIG_HOME/snug/profiles.d/*.toml`** (default `~/.config/snug/profiles.d/`) — the user's own profiles. **This is the trusted layer.**
 
@@ -442,7 +451,7 @@ the sandbox observes:
 /home/michal/projects/plainsof -> cv                  # 6 siblings invisible
 ```
 
-`bwrap` auto-creates every intermediate mountpoint inside its root tmpfs. Those skeleton directories are the *only* thing that exists at each ancestor level. This is why `parent-ro` is one line of TOML.
+`bwrap` auto-creates every intermediate mountpoint inside its root tmpfs. Those skeleton directories are the *only* thing that exists at each ancestor level. This is why `@parent-ro` is one line of TOML.
 
 Two refinements `snug` applies:
 
@@ -505,7 +514,7 @@ Before emitting anything, `Validate()` checks:
 - No `Guest` is `/` with `KindBind` unless the `unsafe-root` builtin is selected (which does not ship).
 - The target directory exists, is a directory, and its canonical path is granted `AccessRW`. **Fail closed** — no target means no policy, never a permissive default.
 - Symlink hazards (§3.3).
-- At least one of `/usr` or `/bin` is granted, otherwise nothing can execute — reported as *"no runtime granted; add the `sys` profile"* rather than a confusing `exec: no such file`.
+- At least one of `/usr` or `/bin` is granted, otherwise nothing can execute — reported as *"no runtime granted; add the `@sys` profile"* rather than a confusing `exec: no such file`.
 - `Podman != PodmanOff` implies a topology that can host an engine (§4.4, §8).
 
 ---
@@ -638,7 +647,7 @@ snug                                                    (host)
 
 ### 4.5 The exact `pasta` argv
 
-For the default `net` profile, topology (b):
+For the default `@net` profile, topology (b):
 
 ```
 pasta \
@@ -646,7 +655,7 @@ pasta \
                                         #   joining via --netns (VERIFIED: without it the tap
                                         #   interface exists but stays DOWN with no address)
   --map-host-loopback none \            # do not translate any address to the host's loopback
-  -t none \                             # host -> ns TCP forwards: none. `net-publish` overrides
+  -t none \                             # host -> ns TCP forwards: none. `@net-publish` overrides
   -u none \                             # host -> ns UDP forwards: none
   -T none \                             # ns -> host-init TCP forwards: NONE. *** THE FIX ***
   -U none \                             # ns -> host-init UDP forwards: NONE. *** THE FIX ***
@@ -675,15 +684,15 @@ Deliberately **not** passed:
 | Profile | Compiles to | Cost |
 |---|---|---|
 | *(none)* | `bwrap --unshare-all`, no `pasta`. Netns with `lo` only. | No network at all. This is the floor and requires no helper binary. |
-| `net` | topology (b) + the argv in §4.5 | Full internet in/out. Host loopback unreachable. Host cannot reach sandbox ports. |
-| `net-publish` | `net`, but `-t 127.0.0.1/auto` | Every port the sandbox binds becomes reachable on the **host's** `127.0.0.1` — and only there. **VERIFIED**: with `-t 127.0.0.1/auto`, a listener on `:18099` inside the ns answered `200` from the host at `127.0.0.1:18099` and was **refused** at `192.168.1.120:18099`. The LAN never sees it. |
-| `net-publish = [3000, 8080]` | `net`, `-t 127.0.0.1/3000,8080` | As above but only the named ports. Preferred. |
-| `net-anon` | `net` + `-a/-n/-g` from a private range | Sandbox does not learn the host's LAN address. |
-| `net-host` | `bwrap --unshare-all --share-net`, **no `pasta`** | **Everything.** Host loopback, every abstract AF_UNIX socket (X11, D-Bus), the LAN as the host. Requires `--i-know` on the command line *and* prints a five-line warning. Exists so that "I need to debug a host service" does not become "so I stopped using snug". |
+| `@net` | topology (b) + the argv in §4.5 | Full internet in/out. Host loopback unreachable. Host cannot reach sandbox ports. |
+| `@net-publish` | `@net`, but `-t 127.0.0.1/auto` | Every port the sandbox binds becomes reachable on the **host's** `127.0.0.1` — and only there. **VERIFIED**: with `-t 127.0.0.1/auto`, a listener on `:18099` inside the ns answered `200` from the host at `127.0.0.1:18099` and was **refused** at `192.168.1.120:18099`. The LAN never sees it. |
+| `publish = [3000, 8080]` | `@net`, `-t 127.0.0.1/3000,8080` | As above but only the named ports. Preferred. |
+| `@net-anon` | `@net` + `-a/-n/-g` from a private range | Sandbox does not learn the host's LAN address. |
+| `@net-host` | `bwrap --unshare-all --share-net`, **no `pasta`** | **Everything.** Host loopback, every abstract AF_UNIX socket (X11, D-Bus), the LAN as the host. Requires `--i-know` on the command line *and* prints a five-line warning. Exists so that "I need to debug a host service" does not become "so I stopped using snug". |
 
-**Recommended default: `net` with `-t none`, not `-t auto`.** The owner asked that the host be able to reach sandbox ports "if that is easy" — and it is easy, one flag. `snug` still defaults it off, for a specific reason: with `-t auto`, **the sandbox chooses which host loopback ports appear**. That inverts the guiding principle — the agent, not the human, would author a host-visible surface, and a prompt-injected agent could squat `127.0.0.1:8080` ahead of your own dev server and intercept your browser. With `-t 127.0.0.1/3000` the human named the port and the hole is exactly one port wide.
+**Recommended default: `@net` with `-t none`, not `-t auto`.** The owner asked that the host be able to reach sandbox ports "if that is easy" — and it is easy, one flag. `snug` still defaults it off, for a specific reason: with `-t auto`, **the sandbox chooses which host loopback ports appear**. That inverts the guiding principle — the agent, not the human, would author a host-visible surface, and a prompt-injected agent could squat `127.0.0.1:8080` ahead of your own dev server and intercept your browser. With `-t 127.0.0.1/3000` the human named the port and the hole is exactly one port wide.
 
-The ergonomic cost is one word. `snug --dry-run` prints `network: egress; host→sandbox: closed (add profile 'net-publish' or publish=[…] to open)`, and `net-publish` remains a first-class, documented, one-word profile for people who want the convenience. This is a deliberate, stated departure from the owner's "should", with the mechanism to get the other behaviour trivially available.
+The ergonomic cost is one word. `snug --dry-run` prints `network: egress; host→sandbox: closed (add profile '@net-publish' or publish=[…] to open)`, and `@net-publish` remains a first-class, documented, one-word profile for people who want the convenience. This is a deliberate, stated departure from the owner's "should", with the mechanism to get the other behaviour trivially available.
 
 ### 4.7 DNS, on both kinds of host
 
@@ -705,7 +714,7 @@ options edns0
 Two additional cases:
 
 - **`--dns-host` override.** If the host's first nameserver is itself unusable from `pasta`'s position (a container with a broken `resolv.conf`), `[profile.net] dns_host = "1.1.1.1"` pins it, and `snug doctor` flags the situation.
-- **Offline.** With no `net` profile there is no `pasta` and no DNS. `/etc/resolv.conf` is generated as an empty file with a comment (`# snug: no network profile selected; DNS is intentionally unavailable`) so that resolver libraries fail immediately and legibly instead of hanging on a 5-second timeout.
+- **Offline.** With no `@net` profile there is no `pasta` and no DNS. `/etc/resolv.conf` is generated as an empty file with a comment (`# snug: no network profile selected; DNS is intentionally unavailable`) so that resolver libraries fail immediately and legibly instead of hanging on a 5-second timeout.
 
 `search .` (rather than copying the host's search domains) prevents the sandbox from learning the host's internal domain names, and prevents accidental resolution of bare hostnames against a corporate suffix.
 
@@ -713,7 +722,7 @@ Two additional cases:
 
 - **IPv6** is enabled by default. `pasta --config-net` copies the host's v6 configuration; **VERIFIED**, the sandbox got global and link-local v6 addresses and a default v6 route, and `[::1]:3100` (host loopback over v6) was **refused**. Both `--map-host-loopback` and `-T`/`-U` take up to two addresses, one per family, and `none` covers both. `[profile.net-v4] ipv4_only = true` compiles to `-4` for networks where v6 is broken.
 - **MTU** is `pasta`'s default 65520 (**VERIFIED** on the namespace interface). Knob: `mtu = 1500`.
-- **The sandbox's own address** is, by default, the host's — `pasta` copies host addresses into the namespace. Stated plainly because it is a (small) information disclosure: the agent learns your LAN IP. `net-anon` fixes it.
+- **The sandbox's own address** is, by default, the host's — `pasta` copies host addresses into the namespace. Stated plainly because it is a (small) information disclosure: the agent learns your LAN IP. `@net-anon` fixes it.
 - **Hostname.** `--unshare-all` includes a UTS namespace, and `snug` sets `--hostname snug` (or `snug-<basename target>`). **VERIFIED**: `hostname` inside returns `snug` while the host remains `zelva`. This is worth doing for a reason beyond cosmetics: shell prompts, `tmux` status lines and agent transcripts all show it, so **you can always tell at a glance whether you are inside a sandbox**. `snug` additionally exports `SNUG=1` and `SNUG_PROFILES=<list>`.
 - `/etc/hosts` is generated (`127.0.0.1 localhost snug`, `::1 localhost ip6-localhost`) rather than bound, so the sandbox does not inherit host entries that name internal services.
 
@@ -727,8 +736,8 @@ A silent downgrade is worse than a failure, because the user believes a guarante
 |---|---|---|---|
 | Unprivileged userns unavailable (`kernel.unprivileged_userns_clone=0`, AppArmor `apparmor_restrict_unprivileged_userns=1`, `max_user_namespaces=0`) | preflight probe: `bwrap --unshare-user --ro-bind /usr /usr -- /bin/true` | **FATAL.** `snug` cannot function. | Names the exact sysctl and the exact value needed, plus the Ubuntu 24.04 AppArmor case. |
 | `bwrap` not on `PATH` | `LookPath` | **FATAL** | `snug requires bubblewrap (bwrap). Install: <distro hint>.` |
-| `net` requested, `pasta` not installed | `LookPath` | **FATAL** | `profile 'net' requires pasta (from the passt package). Without it snug will not silently run you with no network or, worse, the host's network. Install pasta, or drop the 'net' profile to run offline.` |
-| `net` requested, `pasta` fails to attach | non-zero `Wait()` or no non-`lo` device within 3s | **FATAL**, payload never released (§4.3) | `pasta` stderr is reproduced verbatim. |
+| `@net` requested, `pasta` not installed | `LookPath` | **FATAL** | `profile '@net' requires pasta (from the passt package). Without it snug will not silently run you with no network or, worse, the host's network. Install pasta, or drop the '@net' profile to run offline.` |
+| `@net` requested, `pasta` fails to attach | non-zero `Wait()` or no non-`lo` device within 3s | **FATAL**, payload never released (§4.3) | `pasta` stderr is reproduced verbatim. |
 | `--unshare-net` refused (deeply nested userns, some seccomp-restricted CI) | `bwrap` exit + stderr | **FATAL** | `cannot create a network namespace here. Run with --net-host --i-know if you accept that the sandbox will see the host's loopback, or drop networking.` |
 | **Inside `distrobox`/podman container** | `/run/.containerenv` or `/.dockerenv` present | **Works.** No special handling. | Everything in this document was verified inside a rootless-podman distrobox: nested userns, netns creation, `pasta` attach, egress, DNS, loopback isolation. `snug doctor` reports the nesting for context. |
 | Seccomp unavailable (`/proc/sys/kernel/seccomp/actions_avail` missing, or filter install fails) | probe + install error | **Degrade with a warning.** | `seccomp filter unavailable (<reason>); continuing WITHOUT it. The namespace boundary is unaffected; ptrace/keyctl/TIOCSTI hardening is not active.` |
@@ -757,7 +766,7 @@ A silent downgrade is worse than a failure, because the user believes a guarante
 
 Container-to-container networking on a `snug`-created bridge network **is** allowed, so multi-container workflows (app + database) work. Only the sandbox↔container path is broken, and the injected `~/.claude/CLAUDE.md` says so in one sentence so the agent does not waste turns discovering it.
 
-**(ii) Topology A fixes it properly, and is what `podman-socket` actually selects (§4.4).** With the engine inside the sandbox's netns N, published ports land on **N's** loopback: the agent *can* `curl localhost:8080`, and the host **cannot** — the prior generation verified exactly this (`podman run -p 18082:80` inside N: reachable from a sibling in N, connection *refused* from the host). This is why `podman-socket` costs a whole extra topology, and it is worth it. When topology A is unavailable (no subuid delegation), `snug` **refuses** rather than falling back to topology (b)'s degraded container networking, because the difference is user-visible and would be attributed to a bug.
+**(ii) Topology A fixes it properly, and is what `@podman-socket` actually selects (§4.4).** With the engine inside the sandbox's netns N, published ports land on **N's** loopback: the agent *can* `curl localhost:8080`, and the host **cannot** — the prior generation verified exactly this (`podman run -p 18082:80` inside N: reachable from a sibling in N, connection *refused* from the host). This is why `@podman-socket` costs a whole extra topology, and it is worth it. When topology A is unavailable (no subuid delegation), `snug` **refuses** rather than falling back to topology (b)'s degraded container networking, because the difference is user-visible and would be attributed to a bug.
 
 ---
 
@@ -785,7 +794,7 @@ Container-to-container networking on a `snug`-created bridge network **is** allo
 - `--proc /proc`. A fresh procfs bound to the sandbox's own PID namespace. Without a PID namespace this would leak the host process table; with `--unshare-all` it shows only the sandbox's own processes.
 - `--dev /dev`. `bwrap`'s synthetic minimal `/dev`: `null`, `zero`, `full`, `random`, `urandom`, `tty`, plus a private `devpts`. **Verified contents** on this host. No `--dev-bind /dev /dev` — that would hand over every block device, `/dev/kmsg`, `/dev/mem`, and the input devices.
 - **`/sys` is not mounted at all.** This is deliberate and is a real, if small, compatibility cost: some tooling reads `/sys/fs/cgroup` or `/sys/devices/system/cpu` for parallelism hints. `snug` mitigates by exporting `NPROC`-shaped env hints, and ships `[profile.sysfs] ro = ["/sys"]` for the cases that genuinely need it. `/sys` read-only still exposes a lot of host topology (network interfaces, PCI devices, DMI/serial numbers, thermal data) and is a recurring source of container escapes when combined with anything writable, so it is opt-in.
-- `--tmpfs /tmp` by default (private, ephemeral, dies with the sandbox). The `tmp-shared` profile replaces it with a bind of a per-sandbox host directory (§7.3).
+- `--tmpfs /tmp` by default (private, ephemeral, dies with the sandbox). The `@tmp-shared` profile replaces it with a bind of a per-sandbox host directory (§7.3).
 
 ### 5.3 On `/etc`: enumerate, do not bind wholesale
 
@@ -801,7 +810,7 @@ test -z "${DBUS_SESSION_BUS_ADDRESS:-}" && export DBUS_SESSION_BUS_ADDRESS="unix
 
 Because `--clearenv` did its job, the script sees an empty environment, *reconstructs* the bus address from the uid, and calls `host-spawn` — which then fails, repeatedly and visibly, against a bus the sandbox correctly cannot reach. The noise is harmless. The mechanism is not: a script shipped by the host got to run arbitrary code inside the sandbox and rewrite its environment. `distrobox` exists to maximise host integration; `snug` exists to minimise it, and inheriting its startup scripts inherits its goal.
 
-So `sys` enumerates. The list is what things actually need, and it is short:
+So `@sys` enumerates. The list is what things actually need, and it is short:
 
 ```
 /etc/ld.so.cache /etc/ld.so.conf /etc/ld.so.conf.d      dynamic linker
@@ -864,7 +873,7 @@ The previous generation (`/home/michal/projects/plainsof/cv/agent-sandbox`, ~45 
 ### 6.1 What carries over unchanged
 
 - **The anti-drift thesis, which is the single best idea in the prior design.** One `Policy` value, computed once, is the sole author of *both* the `bwrap` argv *and* the container-proxy's decisions. The set of host paths a container may bind therefore cannot widen past what the sandbox itself exposes — divergence is impossible by construction, not by review. `snug` keeps this verbatim, and extends it: the same `Policy` now also authors the `pasta` argv.
-- **The `null` profile as an explicit lattice floor** — grants nothing, will not run a shell, by design. Kept, and made more useful: `snug --dry-run --profile null` prints the true empty base, which is the fastest way to understand the model.
+- **The `@null` profile as an explicit lattice floor** — grants nothing, will not run a shell, by design. Kept, and made more useful: `snug --dry-run --profile @null` prints the true empty base, which is the fastest way to understand the model.
 - **`include` composes upward.** Kept, with the resolution semantics tightened (§2.3).
 - **The filtering ssh-agent proxy with `ssh_mode = "agent-proxy"`.** Kept as the recommended answer (§7.1).
 - **The `[identity]` block vocabulary** (`gh_user`, `gh_host`, `git_name`, `git_email`, `ssh_key`, `ssh_mode`). Kept as-is.
@@ -877,7 +886,7 @@ The previous generation (`/home/michal/projects/plainsof/cv/agent-sandbox`, ~45 
 - **`allowlist_root = false`** — the escape hatch that inverted the model back to "whole host read-only plus masks". **Removed with no replacement.** It is not expressible: it requires a `mask` concept, and `snug` has no subtraction. This is the single largest deviation from the prior config, and it is the point of the rewrite. If you want the whole host readable, say `ro = ["/"]` in a profile in your *own* config directory, and `snug --dry-run` will show you exactly what you did.
 - **`mask = [...]`** — a deny list. Removed for the same reason. In the prior design, `mask` was needed because the base was permissive; with an empty base there is nothing to mask.
 - **Scalar override by include order.** Replaced by permissive-ward joins (§2.3). The prior behaviour ("the including profile's scalars win over what it builds on") is order-dependent and can tighten, which is exactly the property snug must not have.
-- **`offline` and `network = "offline"`.** Offline is the absence of `net` (§2.3).
+- **`offline` and `network = "offline"`.** Offline is the absence of `@net` (§2.3).
 - **The `AGENT_*` env-var surface** as a primary interface. Env vars remain for CI, but the CLI and profiles are the interface.
 
 ### 6.3 Where the prior TOML vocabulary is kept vs changed
@@ -901,7 +910,7 @@ The previous generation (`/home/michal/projects/plainsof/cv/agent-sandbox`, ~45 
 ### 6.4 Open questions the prior design already answered
 
 - **ssh identities** — answered by `ssh_mode = "agent-proxy"`. Adopted and specified concretely in §7.1.
-- **`~/.config` subsetting** — the prior design granted `~/.config/git` read-only via the `git-ro` preset and nothing else. `snug` keeps exactly that shape (§9.5).
+- **`~/.config` subsetting** — the prior design granted `~/.config/git` read-only via the `@git-ro` preset and nothing else. `snug` keeps exactly that shape (§9.5).
 - **Claude Code's files** — the prior design established that auth needs *both* the staged writable `~/.claude/.credentials.json` **and** `~/.claude.json` (without the latter Claude re-onboards and shows the login prompt), that `settings.json`/`skills`/`plugins` load read-only, and that the rest of `~/.claude` should stay ephemeral. `snug` keeps all of it and adds one correction (§9.3).
 - **The injected `~/.claude/CLAUDE.md`** — the prior design generated it dynamically from a base file plus a paragraph reflecting the actual container state, delivered via `--ro-bind-data` from a memfd so a requested-but-degraded run truthfully reads "no engine". Kept and extended to networking (§9.4).
 
@@ -913,7 +922,7 @@ The previous generation (`/home/michal/projects/plainsof/cv/agent-sandbox`, ~45 
 
 ## 7. Host integration surfaces
 
-Every surface below is off by default and reached by naming a profile. Each is a *proxy* `snug` owns, never a raw passthrough — except `tmp-shared`, which is a plain bind by nature.
+Every surface below is off by default and reached by naming a profile. Each is a *proxy* `snug` owns, never a raw passthrough — except `@tmp-shared`, which is a plain bind by nature.
 
 ### 7.1 ssh — the filtering agent proxy
 
@@ -971,7 +980,7 @@ Every outcome — allow, rewrite, reject — is one audit line. Streaming and hi
 
 ### 7.3 Shared `/tmp`
 
-`tmp-shared` allocates `/tmp/snug-<uid>-<hash(target)>-<random>/` on the host with mode `0700` and binds it as the sandbox's `/tmp`, replacing the default private tmpfs. Use case: handing a file to a host tool, or a large build cache that should survive a crash.
+`@tmp-shared` allocates `/tmp/snug-<uid>-<hash(target)>-<random>/` on the host with mode `0700` and binds it as the sandbox's `/tmp`, replacing the default private tmpfs. Use case: handing a file to a host tool, or a large build cache that should survive a crash.
 
 `snug` removes the directory at teardown unless `--keep-tmp` is given. It refuses to bind a path that is a symlink, is not owned by the invoking uid, or has group/other write bits — the classic `/tmp` races. The hash of the target makes the directory stable across runs of the same project, so a build cache warms.
 
@@ -1056,7 +1065,7 @@ The failure mode is real and must be written down: **the target path chooses the
 
 Mitigations `snug` applies:
 
-1. `match` may not select a profile carrying any privileged grant (§2.7). A matched profile may pin `[identity]`, but a profile that also opens `podman` or `net-host` must be named explicitly.
+1. `match` may not select a profile carrying any privileged grant (§2.7). A matched profile may pin `[identity]`, but a profile that also opens `podman` or `@net-host` must be named explicitly.
 2. Auto-selection **always** prints one line before launch: `snug: profile 'plainsof' auto-selected by match '~/projects/plainsof/**'; identity gh_user=plainsof, ssh_key=key3…`. Silent credential selection is the actual danger; a visible line makes the mistake self-evident.
 3. Exactly one profile may match; two matches is a fatal error rather than a precedence rule.
 4. `--profile X` always wins over `match`, and `--no-match` disables it.
@@ -1092,7 +1101,7 @@ A generated file, delivered read-only from an anonymous memfd via `--ro-bind-dat
 >
 > **Filesystem.** Only `<target>` is writable and persists. `<target-parent>` is readable. `$HOME`, `/tmp` and `~/.claude` are writable but **ephemeral — they are gone when this session ends**. Put anything meant to survive in the project tree. Everything else is read-only or absent. Secrets (`~/.ssh`, `~/.gnupg`, cloud credentials), personal data, and every other project on this machine are not hidden — they were never mounted. They read as absent. Do not try to reach them; there is nothing there and it wastes your turns.
 >
-> **Network.** *(when `net`)* You have internet access. You **cannot** reach services on the host's `127.0.0.1` — this is intentional and is not a misconfiguration. Ports you bind are *(not visible to the host / visible to the host on 127.0.0.1)*. *(when offline)* You have no network. Do not attempt to fetch anything.
+> **Network.** *(when `@net`)* You have internet access. You **cannot** reach services on the host's `127.0.0.1` — this is intentional and is not a misconfiguration. Ports you bind are *(not visible to the host / visible to the host on 127.0.0.1)*. *(when offline)* You have no network. Do not attempt to fetch anything.
 >
 > **Containers.** *(when wired)* `docker`/`podman` work through a filtering proxy against a sandbox-private engine. Bind mounts of paths this sandbox cannot see are rejected, as are `--privileged`, `--network=host`, and device passthrough. *(topology-b caveat, when applicable)* Published container ports are **not** reachable from here; use container-to-container networking. *(when not wired)* There is no container engine.
 >
@@ -1227,11 +1236,11 @@ Dependencies: `github.com/pelletier/go-toml/v2` (strict decode), `github.com/doc
 snug [flags] [dir] [-- cmd ...]
 ```
 
-`dir` defaults to `.`; `cmd` defaults to `claude` when the `claude` profile is active, else `$SHELL -l`.
+`dir` defaults to `.`; `cmd` defaults to `@claude` when the `@claude` profile is active, else `$SHELL -l`.
 
-A bare `snug <dir>` selects the **`defaults` setting**, not a profile: built-in `["sys", "home", "cwd-rw", "parent-ro"]` (internal/profile/defaults.go), replaced wholesale by `defaults = [...]` in `~/.config/snug/config.toml`. `-p` **adds** to it; `--no-defaults` declines it. There is no `[profile.default]`, because a default selection is a preference and a profile is a grant — one idea, one mechanism. `net` is not in the list and must not be added: offline is the *absence* of the `net` profile, so it cannot be re-enabled by accident.
+A bare `snug <dir>` selects the **`defaults` setting**, not a profile: built-in `["@sys", "@home", "@cwd-rw", "@parent-ro"]` (internal/profile/defaults.go), replaced wholesale by `defaults = [...]` in `~/.config/snug/config.toml`. `-p` **adds** to it; `--no-defaults` declines it. There is no `[profile.default]`, because a default selection is a preference and a profile is a grant — one idea, one mechanism. `@net` is not in the list and must not be added: offline is the *absence* of the `@net` profile, so it cannot be re-enabled by accident.
 
-There is no flag that grants less. A read-only project means not selecting `cwd-rw`: `snug --no-defaults -p sys -p home -p parent-ro <dir>`. Verbose on purpose (§2.5).
+There is no flag that grants less. A read-only project means not selecting `@cwd-rw`: `snug --no-defaults -p @sys -p @home -p @parent-ro <dir>`. Verbose on purpose (§2.5).
 
 | Flag | Meaning |
 |---|---|
@@ -1240,8 +1249,8 @@ There is no flag that grants less. A read-only project means not selecting `cwd-
 | `--config PATH` | Load an additional profile file explicitly. Privileged grants restricted (§2.7). |
 | `--publish PORT` | Add to `NetPolicy.Publish`. Repeatable. |
 | `--no-seccomp` | Human-only weakening (§2.3). |
-| `--i-know` | Required by `net-host`, `host-agent`, `--allow-privileged-config`. |
-| `--keep-tmp` | Do not remove the `tmp-shared` directory at teardown. |
+| `--i-know` | Required by `@net-host`, `host-agent`, `--allow-privileged-config`. |
+| `--keep-tmp` | Do not remove the `@tmp-shared` directory at teardown. |
 | `-v, --verbose` | Per-decision audit lines from both proxies on stderr. |
 
 Subcommands:
@@ -1262,32 +1271,32 @@ Subcommands:
 This is not a debugging convenience; **it is the mechanism by which a human can trust `snug` at all.** A sandbox you cannot read is a sandbox you are guessing about. `snug --dry-run` starts no process, binds no socket, and creates no file.
 
 ```
-$ snug --dry-run --profile sys --profile cwd-rw --profile parent-ro --profile net /home/u/proj/sub
+$ snug --dry-run --profile @sys --profile @cwd-rw --profile @parent-ro --profile @net /home/u/proj/sub
 
 snug 0.1.0 — dry run, nothing was started
 
 TARGET   /home/u/proj/sub          (canonical; writable)
 HOME     /home/u                   (tmpfs, ephemeral)
-PROFILES sys cwd-rw parent-ro net     (+ home, via cwd-rw)
+PROFILES @sys @cwd-rw @parent-ro @net  (+ @home, via @cwd-rw)
 TOPOLOGY b — bwrap creates the netns, pasta joins it
 
 FILESYSTEM  (deny-by-default; every line below is a grant, there are no deny rules)
-  ro    /usr                                       sys
-  ro    /etc                                       sys
-  ro    /opt                                    ?  sys           (optional, present)
-  link  /bin -> usr/bin                            sys
-  link  /sbin -> usr/sbin                          sys
-  link  /lib -> usr/lib                            sys
-  link  /lib64 -> usr/lib64                        sys
-  proc  /proc                                      (builtin)
-  dev   /dev                                       (builtin)
-  tmpfs /tmp                                       (builtin)
-  tmpfs /home/u                                    home
-  tmpfs /home/u/.cache /home/u/.config …           home
-  ro    /home/u/proj                               parent-ro
-  rw    /home/u/proj/sub                           cwd-rw
-  data  /etc/resolv.conf   (generated, 61 B)       net
-  data  /etc/hosts /etc/passwd /etc/group          (builtin)
+  ro    /usr                                       @sys
+  ro    /etc                                       @sys
+  ro    /opt                                    ?  @sys          (optional, present)
+  link  /bin -> usr/bin                            @sys
+  link  /sbin -> usr/sbin                          @sys
+  link  /lib -> usr/lib                            @sys
+  link  /lib64 -> usr/lib64                        @sys
+  proc  /proc                                      (snug)
+  dev   /dev                                       (snug)
+  tmpfs /tmp                                       (snug)
+  tmpfs /home/u                                    @home
+  tmpfs /home/u/.cache /home/u/.config …           @home
+  ro    /home/u/proj                               @parent-ro
+  rw    /home/u/proj/sub                           @cwd-rw
+  data  /etc/resolv.conf   (generated, 61 B)       @net
+  data  /etc/hosts /etc/passwd /etc/group          (snug)
   ro-/  everything else is READ-ONLY skeleton      --remount-ro /
 
   NOT GRANTED (never mounted, reads as absent):
@@ -1377,9 +1386,9 @@ The `NOT GRANTED` block is generated by probing the host for paths a reasonable 
 
 `test/golden/*.bwrap.txt` and `test/golden/*.pasta.txt`, one pair per interesting profile combination, generated against a **fake `Environ`** with a fixed host layout so they are byte-stable across machines. `make golden-update` regenerates; a diff in review is a diff in the sandbox's boundary and is reviewed as such.
 
-Golden coverage: `null`; `sys`; `sys+cwd-rw`; the §13 worked example; `+tmp-shared`; `+podman-socket` (topology A); `+claude` (staged fds); `net-publish`; `net-host`.
+Golden coverage: `@null`; `@sys`; `@sys+@cwd-rw`; the §13 worked example; `+@tmp-shared`; `+@podman-socket` (topology A); `+@claude` (staged fds); `@net-publish`; `@net-host`.
 
-**The `pasta` golden file has a dedicated assertion beyond the diff:** `--map-host-loopback none`, `-T none` and `-U none` must be present in *every* generated `pasta` argv except `net-host` (which generates none at all). A test that checks these three flags by name, with a comment pointing at §4.2, is cheap insurance against exactly the regression that shipped last time.
+**The `pasta` golden file has a dedicated assertion beyond the diff:** `--map-host-loopback none`, `-T none` and `-U none` must be present in *every* generated `pasta` argv except `@net-host` (which generates none at all). A test that checks these three flags by name, with a comment pointing at §4.2, is cheap insurance against exactly the regression that shipped last time.
 
 ### 12.3 Behavioural sandbox tests (`//go:build integration`)
 
@@ -1398,7 +1407,7 @@ These really run `bwrap` and assert observations from inside. Structure: a table
 TestHostLoopbackUnreachable
   1. bind a TCP listener on the host's 127.0.0.1:<ephemeral> that serves a known token
   2. also bind on [::1]:<ephemeral>
-  3. launch a real sandbox with the `net` profile
+  3. launch a real sandbox with the `@net` profile
   4. from inside: connect to BOTH, over v4 and v6
   5. assert: connection refused / network unreachable, and the token NEVER appears
 ```
@@ -1411,9 +1420,9 @@ Companions:
 - `TestDNSWorks` — resolution succeeds through `169.254.1.1`; a variant with a synthetic `resolv.conf` naming `127.0.0.53` asserts the systemd-resolved path.
 - `TestAbstractSocketUnreachable` — the host binds an abstract AF_UNIX socket; the sandbox cannot `connect()` to it. This is the netns-scoping property from §4.1, and nothing else in the suite covers it.
 - `TestNoPublishByDefault` — a listener inside the sandbox is **not** reachable from the host.
-- `TestPublishScopedToLoopback` — with `net-publish`, a sandbox listener is reachable at host `127.0.0.1:<p>` and **refused** at the host's LAN address. (This exact assertion was verified by hand: `200` vs `000`.)
+- `TestPublishScopedToLoopback` — with `@net-publish`, a sandbox listener is reachable at host `127.0.0.1:<p>` and **refused** at the host's LAN address. (This exact assertion was verified by hand: `200` vs `000`.)
 - `TestNoOrphans` — after a `SIGKILL` of `snug`, no `pasta` process, no sandbox process, no netns, and no socket survives. Run with a process-table and `/proc/*/ns/net` diff.
-- `TestNoSilentDowngrade` — with `pasta` removed from `PATH`, `snug --profile net` exits non-zero and its stderr names `pasta`. It must **never** exit 0.
+- `TestNoSilentDowngrade` — with `pasta` removed from `PATH`, `snug --profile @net` exits non-zero and its stderr names `pasta`. It must **never** exit 0.
 
 ### 12.5 Live host-integration tests (`//go:build live`, opt-in)
 
@@ -1451,10 +1460,10 @@ For the integration tier, `snug doctor --json` runs first and the job either pro
 ## 13. Worked example
 
 ```
-$ snug --profile sys --profile cwd-rw --profile parent-ro --profile net /home/u/proj/sub
+$ snug --profile @sys --profile @cwd-rw --profile @parent-ro --profile @net /home/u/proj/sub
 ```
 
-Host facts: uid/gid 1000, `$HOME=/home/u`, `/home/u/proj` contains `sub` plus 11 sibling directories, `/home/u` contains `.ssh`, `.gnupg`, `.aws`, `Documents`, and 9 other projects. `cwd-rw` pulls in `home`.
+Host facts: uid/gid 1000, `$HOME=/home/u`, `/home/u/proj` contains `sub` plus 11 sibling directories, `/home/u` contains `.ssh`, `.gnupg`, `.aws`, `Documents`, and 9 other projects. `@cwd-rw` pulls in `@home`.
 
 **Step 1 — `bwrap` starts, payload blocked.** `snug` creates two pipes, opens memfds for the generated files and the seccomp filter, and runs:
 
@@ -1571,19 +1580,19 @@ touch /ZZ                         -> Read-only file system
 Each milestone is independently shippable and independently useful.
 
 **M1 — the sandbox (no network helper).**
-`internal/profile`, `internal/policy` (types, resolve, join, validate, bwrap emitter), `internal/sandbox` (exec, fd model, seccomp), `cmd/snug` (`run`, `--dry-run`, `doctor`, `profile`, `config`). Profiles: `null`, `sys`, `home`, `cwd-rw`, `parent-ro`, `tmp-shared`, `git-ro`. Networking is `--unshare-all` with no helper — **offline only**, which is a coherent and secure product. Tests: the whole of §12.1, §12.2, §12.3.
+`internal/profile`, `internal/policy` (types, resolve, join, validate, bwrap emitter), `internal/sandbox` (exec, fd model, seccomp), `cmd/snug` (`run`, `--dry-run`, `doctor`, `profile`, `config`). Profiles: `@null`, `@sys`, `@home`, `@cwd-rw`, `@parent-ro`, `@tmp-shared`, `@git-ro`. Networking is `--unshare-all` with no helper — **offline only**, which is a coherent and secure product. Tests: the whole of §12.1, §12.2, §12.3.
 *Ships:* `snug ~/src/proj -- make test` in a genuinely isolated filesystem.
 
 **M2 — networking.**
-`internal/netns` topology B, `Policy.PastaArgs`, the fd handshake, `pasta` supervision and teardown, DNS generation, profiles `net` / `net-publish` / `net-anon` / `net-host`. Tests: **all of §12.4** — `TestHostLoopbackUnreachable` is the acceptance criterion for this milestone and nothing ships without it green.
+`internal/netns` topology B, `Policy.PastaArgs`, the fd handshake, `pasta` supervision and teardown, DNS generation, profiles `@net` / `@net-publish` / `@net-anon` / `@net-host`. Tests: **all of §12.4** — `TestHostLoopbackUnreachable` is the acceptance criterion for this milestone and nothing ships without it green.
 *Ships:* the full default posture.
 
 **M3 — identity and agent files.**
-`internal/sshproxy`, `[identity]` resolution, generated `.gitconfig`/`.ssh/config`/`known_hosts`, `GH_TOKEN` scoping, the `claude` profile with staged credentials, the injected `~/.claude/CLAUDE.md`, `match` with its guardrails, the env allowlist.
+`internal/sshproxy`, `[identity]` resolution, generated `.gitconfig`/`.ssh/config`/`known_hosts`, `GH_TOKEN` scoping, the `@claude` profile with staged credentials, the injected `~/.claude/CLAUDE.md`, `match` with its guardrails, the env allowlist.
 *Ships:* `snug` as a daily driver for a coding agent with a scoped identity.
 
 **M4 — containers.**
-Topology A (subuid userns + `unshare --net` + engine inside the sandwich netns), `internal/sandbox/engine.go` (per-sandbox store, `StoreKey`, lazy start, group teardown), `internal/dockerproxy` + `policy/{allow,create,volume,canon}.go`, SELinux relabel, `podman-socket`. Tests: §12.5 live tier.
+Topology A (subuid userns + `unshare --net` + engine inside the sandwich netns), `internal/sandbox/engine.go` (per-sandbox store, `StoreKey`, lazy start, group teardown), `internal/dockerproxy` + `policy/{allow,create,volume,canon}.go`, SELinux relabel, `@podman-socket`. Tests: §12.5 live tier.
 *Ships:* the agent can use containers, including reaching its own containers' published ports, with the host engine untouched.
 
 **M5 — `podman build`.**
@@ -1605,12 +1614,12 @@ Topology A (subuid userns + `unshare --net` + engine inside the sandwich netns),
 - **R4 — Credential sync-back (§9.3) writes to a host file from sandbox-authored bytes.** Structurally validated, but it is a real host-write channel from inside. It is opt-outable and its default (`credentials.json` yes, `.claude.json` no) is chosen so the sensitive-by-configuration file is the one that never syncs.
 - **R5 — Ubuntu/AppArmor userns restrictions and Docker-based CI** will make `snug` unusable for some users out of the box. Mitigated by `doctor` naming the exact sysctl, not by working around it.
 - **R6 — The whole-`/etc` bind (§5.3)** is a judgement call. It is defensible ("grants nothing you could not already read") but it does hand the agent a large surface for reconnaissance, and on unusual hosts a uid-readable secret could live there. `sys-min` exists; the default may need to flip if evidence accumulates.
-- **R7 — Topology A's subuid requirement** means `podman-socket` simply does not work on hosts without `/etc/subuid` delegation, including some corporate images and some CI runners. `snug` refuses rather than degrading, which is correct but will read as a regression to users of the previous generation.
+- **R7 — Topology A's subuid requirement** means `@podman-socket` simply does not work on hosts without `/etc/subuid` delegation, including some corporate images and some CI runners. `snug` refuses rather than degrading, which is correct but will read as a regression to users of the previous generation.
 - **R8 — `--remount-ro /` interacts with anything that expects to create top-level directories.** Some build systems do. The failure is legible (`Read-only file system` on a path the human can see in `--dry-run`) and the fix is a one-line profile grant, but it will be hit.
 
 ### Open questions
 
-- **Q1 — Should `net` default to `-t 127.0.0.1/auto` after all?** §4.6 argues no, on the principle that the agent should not author a host-visible surface. This is the single most likely decision to be reversed by real use, and it is a one-constant change. Revisit after M2 with actual usage.
+- **Q1 — Should `@net` default to `-t 127.0.0.1/auto` after all?** §4.6 argues no, on the principle that the agent should not author a host-visible surface. This is the single most likely decision to be reversed by real use, and it is a one-constant change. Revisit after M2 with actual usage.
 - **Q2 — Credential sync-back scope.** Should it extend beyond Claude's credentials to, say, a `gh` token refresh? Current answer: no, add cases only with a demonstrated need and a structural validator each time.
 - **Q3 — Multiple simultaneous sandboxes on the same target.** Two `snug` runs against the same directory today both get write access and will fight. Should `snug` take a `--lock-file` on the target (`bwrap` has the flag) and refuse the second, or warn? Leaning: warn by default, `--exclusive` to refuse.
 - **Q4 — `clone3` and the 32-bit compat arch** are documented seccomp gaps inherited from `agent-sandbox`. Closing `clone3` needs `SECCOMP_RET_USER_NOTIF` and a supervisor thread. Worth it, or is the namespace boundary sufficient? Deferred to M6 pending evidence that anything real exploits it.

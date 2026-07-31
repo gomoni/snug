@@ -3,6 +3,8 @@ package profile
 import (
 	"strings"
 	"testing"
+
+	"snug/internal/policy"
 )
 
 // Strict decoding is a security control, not a style choice. If a key snug does
@@ -73,7 +75,7 @@ func TestBuiltinsLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"null", "sys", "home", "cwd-rw", "parent-ro"} {
+	for _, want := range []string{"@null", "@sys", "@home", "@cwd-rw", "@parent-ro"} {
 		if _, ok := reg[want]; !ok {
 			t.Errorf("builtin profile %q is missing", want)
 		}
@@ -84,12 +86,12 @@ func TestBuiltinsLoad(t *testing.T) {
 	// Mount's provenance as though it were a hole in the sandbox, and it
 	// duplicated an idea config.toml already expressed. Reintroducing it would
 	// bring back two mechanisms for one idea.
-	if _, ok := reg["default"]; ok {
-		t.Error("a builtin profile named `default` is back; the default SELECTION is a " +
+	if _, ok := reg["@default"]; ok {
+		t.Error("a builtin profile named `@default` is back; the default SELECTION is a " +
 			"preference (profile.BuiltinDefaults), not a profile")
 	}
-	if len(reg["null"].RO)+len(reg["null"].RW)+len(reg["null"].Tmpfs) != 0 {
-		t.Error("the null profile must grant nothing; it is the floor of the lattice")
+	if len(reg["@null"].RO)+len(reg["@null"].RW)+len(reg["@null"].Tmpfs) != 0 {
+		t.Error("the @null profile must grant nothing; it is the floor of the lattice")
 	}
 	for name, p := range reg {
 		for _, g := range append(append([]string{}, p.RO...), p.RW...) {
@@ -121,7 +123,7 @@ func TestBuiltinDefaultsNameRealProfiles(t *testing.T) {
 	// principle, and offline-is-the-absence-of-a-profile is a property worth
 	// keeping: it cannot then be switched back on by accident.
 	for _, n := range names {
-		if strings.HasPrefix(n, "net") {
+		if strings.HasPrefix(n, policy.Sigil+"net") {
 			t.Errorf("built-in default %q opens the network; offline must stay the default", n)
 		}
 	}
@@ -146,19 +148,23 @@ func TestLoadIgnoresRepoLocalConfig(t *testing.T) {
 // not start, and both used to report a tidy, healthy configuration while the
 // profile set was unloadable. A diagnostic that gives a clean bill of health for
 // a broken configuration is worse than no diagnostic.
+//
+// This is now about the layers a HUMAN controls — /etc/snug/profiles.d against
+// their own ~/.config — because a user file can no longer collide with a builtin
+// at all: see TestUserProfileCannotClaimTheSigil.
 func TestRedefinitionIsRejectedRegardlessOfLayer(t *testing.T) {
-	builtin, err := builtins()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, name := range []string{"sys", "net", "cwd-rw", "null"} {
+	for _, name := range []string{"work", "build", "ci"} {
 		t.Run(name, func(t *testing.T) {
-			if _, ok := builtin[name]; !ok {
-				t.Skipf("%s is not a builtin", name)
-			}
 			reg, err := builtins()
 			if err != nil {
+				t.Fatal(err)
+			}
+			sys, err := parse([]byte("[profile."+name+"]\nro = [\"/usr\"]\n"),
+				"/etc/snug/profiles.d/site.toml", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := reg.merge(sys); err != nil {
 				t.Fatal(err)
 			}
 			user, err := parse([]byte("[profile."+name+"]\nro = [\"/\"]\n"),
@@ -168,15 +174,96 @@ func TestRedefinitionIsRejectedRegardlessOfLayer(t *testing.T) {
 			}
 			err = reg.merge(user)
 			if err == nil {
-				t.Fatalf("a user file redefining the builtin %q was accepted", name)
+				t.Fatalf("a user file redefining %q from a lower layer was accepted", name)
 			}
 			// The message must name BOTH files: the user knows what they wrote,
 			// not what it collided with.
-			for _, want := range []string{name, "mine.toml", "builtin:"} {
+			for _, want := range []string{name, "mine.toml", "site.toml"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("error does not mention %q: %v", want, err)
 				}
 			}
 		})
+	}
+}
+
+// ── the sigil ────────────────────────────────────────────────────────────────
+
+// Every builtin wears the mark. This is the half of the invariant that says the
+// namespace is not partially adopted: a profile shipped without one would be
+// indistinguishable, in --dry-run and in SNUG_PROFILES, from a file someone
+// wrote on this host.
+func TestEveryBuiltinCarriesTheSigil(t *testing.T) {
+	reg, err := builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reg) == 0 {
+		t.Fatal("no builtins loaded, so this test cannot fail — the embed is broken")
+	}
+	for name, p := range reg {
+		if !strings.HasPrefix(name, policy.Sigil) {
+			t.Errorf("builtin %q does not carry %q", name, policy.Sigil)
+		}
+		if p.Name != name {
+			t.Errorf("builtin registered as %q but names itself %q; provenance would lie", name, p.Name)
+		}
+		// An include is rewritten with the rest, or a builtin resolves against
+		// whatever the user happens to have called `sys`.
+		for _, inc := range p.Include {
+			if !strings.HasPrefix(inc, policy.Sigil) {
+				t.Errorf("builtin %q includes %q, which is not a builtin name", name, inc)
+			}
+			if _, ok := reg[inc]; !ok {
+				t.Errorf("builtin %q includes %q, which no builtin defines", name, inc)
+			}
+		}
+	}
+}
+
+// And the other half: nobody else may wear it. The two together are what make
+// "@ means snug shipped this" a fact rather than a convention — including for
+// the builtin TOML itself, which writes bare names and is marked on load.
+func TestUserProfileCannotClaimTheSigil(t *testing.T) {
+	for _, name := range []string{"@sys", "@mine", "@"} {
+		src := "[profile.\"" + name + "\"]\nro = [\"/\"]\n"
+		_, err := parse([]byte(src), "/home/u/.config/snug/profiles.d/evil.toml", true)
+		if err == nil {
+			t.Errorf("a profile named %q was accepted; it would be indistinguishable "+
+				"from one snug ships", name)
+			continue
+		}
+		// The error has to say what to do about it, not just refuse.
+		if !strings.Contains(err.Error(), "snug ships") {
+			t.Errorf("unhelpful error for %q: %v", name, err)
+		}
+	}
+}
+
+// The sigil is what stops a user file from redefining a builtin — so a file
+// defining `sys` must now LOAD, as a profile of the author's own, rather than
+// collide. If this ever starts failing, the two namespaces have grown back
+// together and the merge check is doing load-bearing work again.
+func TestUserProfileMayReuseABuiltinsBareName(t *testing.T) {
+	reg, err := builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg["@sys"]; !ok {
+		t.Fatal("@sys is missing, so this test proves nothing")
+	}
+	user, err := parse([]byte("[profile.sys]\nro = [\"/usr\"]\n"),
+		"/home/u/.config/snug/profiles.d/mine.toml", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.merge(user); err != nil {
+		t.Fatalf("a user profile named `sys` collided with the builtin `@sys`: %v", err)
+	}
+	if reg["@sys"].Source == reg["sys"].Source {
+		t.Error("`sys` and `@sys` resolved to the same profile")
+	}
+	if len(reg["@sys"].RO) < 2 {
+		t.Error("the builtin @sys lost its grants; the user file overwrote it after all")
 	}
 }

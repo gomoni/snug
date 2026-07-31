@@ -19,13 +19,13 @@ func TestGoldenBwrapArgs(t *testing.T) {
 		name string
 		sel  []string
 	}{
-		{"sys", []string{"sys", "cwd-rw"}},
+		{"sys", []string{"@sys", "@cwd-rw"}},
 		// What a bare `snug <dir>` produces: the `defaults` setting. It is
 		// byte-identical to the parent-ro case today, because `home` arrives via
 		// `cwd-rw` anyway — but this is the file that changes if the shipped
 		// defaults ever do, which is the diff a human most needs to see.
 		{"defaults", testDefaults},
-		{"parent-ro", []string{"sys", "cwd-rw", "parent-ro"}},
+		{"parent-ro", []string{"@sys", "@cwd-rw", "@parent-ro"}},
 	}
 
 	for _, tc := range cases {
@@ -74,8 +74,8 @@ func goldenFormat(args []string) string {
 // The argv must be a pure function of the RESOLVED policy, never of the order
 // the profiles were named. Emission order comes from the depth sort.
 func TestBwrapArgsAreOrderIndependent(t *testing.T) {
-	a := mustResolve(t, "sys", "home", "cwd-rw", "parent-ro")
-	b := mustResolve(t, "parent-ro", "cwd-rw", "home", "sys")
+	a := mustResolve(t, "@sys", "@home", "@cwd-rw", "@parent-ro")
+	b := mustResolve(t, "@parent-ro", "@cwd-rw", "@home", "@sys")
 	if strings.Join(a.BwrapArgs(1000, 1000), " ") != strings.Join(b.BwrapArgs(1000, 1000), " ") {
 		t.Error("argv depends on the order profiles were named")
 	}

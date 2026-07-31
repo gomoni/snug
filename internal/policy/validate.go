@@ -134,7 +134,7 @@ func (p *Policy) rejectMasking(env Environ) error {
 		// Exempting the kind rather than the specific paths is safe because no
 		// TOML key produces a KindData grant — only snug does. If a profile key
 		// is ever added that can, this exemption must be narrowed to grants whose
-		// provenance is "(builtin)" or the subtraction hole reopens.
+		// provenance is "(snug)" or the subtraction hole reopens.
 		if m.Kind == KindData {
 			continue
 		}

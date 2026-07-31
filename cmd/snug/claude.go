@@ -15,7 +15,7 @@ import (
 // profile cannot express: files that must be WRITABLE COPIES, and a file whose
 // content depends on the resolved policy.
 func claudeFiles(pol *policy.Policy, home string) {
-	if !hasProfile(pol, "claude") {
+	if !hasProfile(pol, "@claude") {
 		return
 	}
 
@@ -39,7 +39,7 @@ func claudeFiles(pol *policy.Policy, home string) {
 		guest := filepath.Join(home, rel)
 		m := policy.Mount{
 			Guest: guest, Kind: policy.KindData, Access: policy.AccessRW,
-			Content: data, Perms: &perm, From: []string{"claude"},
+			Content: data, Perms: &perm, From: []string{"@claude"},
 		}
 		pol.Mounts[guest] = m
 	}
@@ -49,7 +49,7 @@ func claudeFiles(pol *policy.Policy, home string) {
 	guest := filepath.Join(home, ".claude", "CLAUDE.md")
 	pol.Mounts[guest] = policy.Mount{
 		Guest: guest, Kind: policy.KindData, Access: policy.AccessRO,
-		Content: claudeGuidance(pol), From: []string{"claude"},
+		Content: claudeGuidance(pol), From: []string{"@claude"},
 	}
 }
 

@@ -255,10 +255,10 @@ change.
   classification. **Prerequisite for M-d.**
 - **M-d** templates, as specified above.
 
-Do not reparameterise `tmp-shared` or any shipped builtin in the same change, or
+Do not reparameterise `@tmp-shared` or any shipped builtin in the same change, or
 the golden diff stops being readable as a security review artifact. Same reason
-to land the `dotdot` → `parent-ro` rename before or after, never concurrently.
-(That rename has since landed; the profile is `parent-ro` everywhere now.)
+to land the `dotdot` → `@parent-ro` rename before or after, never concurrently.
+(That rename has since landed; the profile is `@parent-ro` everywhere now.)
 
 ## Open questions the architect flagged
 

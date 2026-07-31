@@ -24,7 +24,7 @@
 --setenv PS1 🔒 snug:\w\$ 
 --setenv SHELL /bin/sh
 --setenv SNUG 1
---setenv SNUG_PROFILES cwd-rw,home,sys
+--setenv SNUG_PROFILES @cwd-rw,@home,@sys
 --setenv SNUG_TARGET /home/u/proj/sub
 --setenv TMPDIR /tmp
 --setenv USER u

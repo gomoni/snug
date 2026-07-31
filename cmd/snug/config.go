@@ -25,6 +25,9 @@ type userConfig struct {
 	// merging with it: merging would make it impossible to have fewer defaults
 	// than snug ships with, which is a legitimate thing to want. `-p` still
 	// adds on top, and `--no-defaults` is the only way to decline the list.
+	//
+	// The names are written exactly as they are selected: snug's own carry the
+	// @ mark (`@sys`), a profile from profiles.d does not.
 	Defaults []string `toml:"defaults"`
 }
 
@@ -110,14 +113,14 @@ func configCmd(args []string) int {
 	fmt.Println("REPLACES the built-in list rather than adding to it. -p NAME then adds to")
 	fmt.Println("whatever it resolved to, and --no-defaults declines it entirely:")
 	fmt.Println()
-	fmt.Println("  defaults = [\"sys\", \"home\", \"cwd-rw\", \"parent-ro\"]")
+	fmt.Println("  defaults = [\"@sys\", \"@home\", \"@cwd-rw\", \"@parent-ro\"]")
 	fmt.Println()
 	fmt.Println("Nothing grants less: profiles only ever grant, and no flag reduces a resolved")
 	fmt.Println("policy. A read-only project is --no-defaults plus the profiles you do want.")
 	fmt.Println()
 
 	fmt.Println("profile search path, in order (later layers may add names, never redefine one):")
-	fmt.Println("  builtin                                    compiled in, cannot be shadowed")
+	fmt.Println("  builtin (@name)                            compiled in, cannot be shadowed")
 	for _, d := range profile.ConfigDirs() {
 		state := "absent"
 		if entries, err := os.ReadDir(d); err == nil {
@@ -160,10 +163,11 @@ func profileCmd(args []string) int {
 			if strings.Contains(" "+def+" ", " "+n+" ") {
 				marker = "*"
 			}
-			fmt.Printf("%s %-14s %s\n", marker, n, p.Description)
+			fmt.Printf("%s %-16s %s\n", marker, n, p.Description)
 		}
 		fmt.Println()
-		fmt.Printf("* = selected by a bare `snug <dir>`.  Details: snug profile show NAME\n")
+		fmt.Printf("* = selected by a bare `snug <dir>`.  @ = shipped by snug, cannot be redefined.\n")
+		fmt.Printf("Details: snug profile show NAME\n")
 		return 0
 
 	case "show":
@@ -174,7 +178,10 @@ func profileCmd(args []string) int {
 		name := args[1]
 		p, ok := reg[name]
 		if !ok {
-			fmt.Fprintf(os.Stderr, "snug: unknown profile %q (see: snug profile list)\n", name)
+			// Same error the resolver gives, so `snug profile show sys` and
+			// `snug -p sys` both point at `@sys` rather than one of them
+			// leaving the reader to guess.
+			fmt.Fprintf(os.Stderr, "snug: %v\n", policy.UnknownProfile(reg, name))
 			return exitPolicy
 		}
 		fmt.Printf("profile     %s\n", name)
@@ -219,7 +226,7 @@ func profileCmd(args []string) int {
 		}
 		for _, r := range roots {
 			if _, ok := reg[r]; !ok {
-				fmt.Fprintf(os.Stderr, "snug: unknown profile %q (see: snug profile list)\n", r)
+				fmt.Fprintf(os.Stderr, "snug: %v\n", policy.UnknownProfile(reg, r))
 				return exitPolicy
 			}
 			printTree(reg, r, "", "", map[string]bool{})

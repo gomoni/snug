@@ -640,7 +640,7 @@ func TestDotdotGrantsTheParentAndNothingAbove(t *testing.T) {
 
 	// Drop parent-ro and the parent's other children disappear. Only the
 	// directory bwrap had to create to host the target's bind mount remains.
-	r = run(t, []string{"--no-defaults", "-p", "sys", "-p", "home", "-p", "cwd-rw"},
+	r = run(t, []string{"--no-defaults", "-p", "@sys", "-p", "@home", "-p", "@cwd-rw"},
 		proj, `ls ..`).mustRun(t)
 	if strings.Contains(r.out, "sibling") {
 		t.Errorf("without parent-ro the sibling must not be visible:\n%s", r.out)
@@ -728,14 +728,14 @@ func TestProfileFlagAddsToTheDefaultRatherThanReplacingIt(t *testing.T) {
 	requireSandbox(t)
 	proj, _ := target(t)
 
-	r := run(t, []string{"-p", "git-ro"}, proj,
+	r := run(t, []string{"-p", "@git-ro"}, proj,
 		`ls /usr >/dev/null && echo SYS-PRESENT; touch ./x && echo TARGET-WRITABLE; echo "$SNUG_PROFILES"`).mustRun(t)
 	for _, want := range []string{"SYS-PRESENT", "TARGET-WRITABLE"} {
 		if !strings.Contains(r.out, want) {
 			t.Errorf("-p git-ro appears to have REPLACED the default (%s missing):\n%s", want, r.out)
 		}
 	}
-	for _, want := range []string{"git-ro", "sys", "cwd-rw"} {
+	for _, want := range []string{"@git-ro", "@sys", "@cwd-rw"} {
 		if !strings.Contains(r.out, want) {
 			t.Errorf("SNUG_PROFILES should list %q:\n%s", want, r.out)
 		}
@@ -751,7 +751,7 @@ func TestProfileFlagAddsToTheDefaultRatherThanReplacingIt(t *testing.T) {
 	// the positive half below — the same string MUST be present without
 	// --no-defaults, so a future rename turns this into a failure rather than
 	// into silence.
-	const fromDefaults = "parent-ro"
+	const fromDefaults = "@parent-ro"
 
 	withDefaults := run(t, nil, proj, `echo "$SNUG_PROFILES"`).mustRun(t)
 	if !strings.Contains(withDefaults.out, fromDefaults) {
@@ -760,12 +760,12 @@ func TestProfileFlagAddsToTheDefaultRatherThanReplacingIt(t *testing.T) {
 			"really contain:\n%s", fromDefaults, withDefaults.out)
 	}
 
-	r = run(t, []string{"--no-defaults", "-p", "sys", "-p", "home", "-p", "cwd-rw"},
+	r = run(t, []string{"--no-defaults", "-p", "@sys", "-p", "@home", "-p", "@cwd-rw"},
 		proj, `echo "$SNUG_PROFILES"`).mustRun(t)
 	if strings.Contains(r.out, fromDefaults) {
 		t.Errorf("--no-defaults should not pull in the defaults' profiles:\n%s", r.out)
 	}
-	if !strings.Contains(r.out, "sys") {
+	if !strings.Contains(r.out, "@sys") {
 		t.Errorf("SNUG_PROFILES was not printed at all, so the check above is "+
 			"satisfied by empty output:\n%s", r.out)
 	}
@@ -996,7 +996,7 @@ func TestOfflineHasOnlyLoopback(t *testing.T) {
 	// it, "only lo" is equally what you get from a payload whose awk printed
 	// nothing useful, or from a /proc/net/dev that was never readable.
 	requirePasta(t)
-	c := run(t, []string{"-p", "net"}, proj, list).mustRun(t)
+	c := run(t, []string{"-p", "@net"}, proj, list).mustRun(t)
 	if got := strings.Fields(c.out); len(got) < 2 {
 		t.Errorf("control: with -p net the same probe still reports only %v, so it "+
 			"cannot distinguish offline from online and the check above proves "+
@@ -1136,7 +1136,7 @@ print("PROBE-COMPLETE")
 		t.Fatal(err)
 	}
 
-	r := run(t, []string{"-p", "net"}, proj, `python3 loopback.py`).mustRun(t)
+	r := run(t, []string{"-p", "@net"}, proj, `python3 loopback.py`).mustRun(t)
 
 	if !strings.Contains(r.out, "PROBE-COMPLETE") {
 		t.Fatalf("the probe did not run to the end, so every verdict below is missing "+
@@ -1319,7 +1319,7 @@ except OSError as e:
 	// the `net` half is the one that would regress if pasta were ever given the
 	// host's namespace. The pasta gate sits inside the loop so a host without it
 	// still gets the offline half checked before skipping.
-	for _, args := range [][]string{nil, {"-p", "net"}} {
+	for _, args := range [][]string{nil, {"-p", "@net"}} {
 		if args != nil {
 			requirePasta(t)
 		}
@@ -1389,7 +1389,7 @@ func TestSandboxPortsAreNotPublishedByDefault(t *testing.T) {
 
 	// THE ASSERTION. Same payload, same probe, same machine — only the profile
 	// differs, so a difference in outcome is attributable to the profile alone.
-	def := probeSandboxPort(t, proj, baseEnv(), "-p", "net")
+	def := probeSandboxPort(t, proj, baseEnv(), "-p", "@net")
 	switch {
 	case def.dialErr == nil:
 		t.Errorf("the host reached a sandbox listener on 127.0.0.1:%d without net-publish", def.port)
@@ -1547,7 +1547,7 @@ func publishProfileEnv(t *testing.T, port int) []string {
 	}
 	toml := fmt.Sprintf("[profile.published]\n"+
 		"description = \"publish exactly one port, as a control\"\n"+
-		"include = [\"net\"]\npublish = [%d]\n", port)
+		"include = [\"@net\"]\npublish = [%d]\n", port)
 	if err := os.WriteFile(filepath.Join(dir, "published.toml"), []byte(toml), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1648,7 +1648,7 @@ func TestSandboxHasItsOwnWorkingLoopback(t *testing.T) {
 	requirePasta(t)
 	proj, _ := target(t)
 
-	r := run(t, []string{"-p", "net"}, proj, `
+	r := run(t, []string{"-p", "@net"}, proj, `
 command -v python3 >/dev/null || { echo NO-PYTHON; exit 0; }
 python3 - <<'EOF'
 import socket, threading
@@ -1681,7 +1681,7 @@ func TestEgressWorks(t *testing.T) {
 	// --connect-timeout is separate from --max-time on purpose: it distinguishes
 	// "the name did not resolve or the SYN went nowhere" from "the transfer was
 	// slow", and the first is the failure mode a CI runner actually has.
-	r := run(t, []string{"-p", "net"}, proj,
+	r := run(t, []string{"-p", "@net"}, proj,
 		`curl -sf -o /dev/null --connect-timeout 5 --max-time 10 https://example.com && echo EGRESS-OK`).mustRun(t)
 	if r.code != 0 || !strings.Contains(r.out, "EGRESS-OK") {
 		t.Errorf("no egress with the net profile (exit %d). If DNS is the cause, note "+
@@ -1700,7 +1700,7 @@ func TestNetHostIsRefusedWithoutIKnow(t *testing.T) {
 	budget(t)
 	proj, _ := target(t)
 
-	out, code := cli(t, nil, "--dry-run", "-p", "net-host", proj)
+	out, code := cli(t, nil, "--dry-run", "-p", "@net-host", proj)
 	if code == 0 {
 		t.Fatalf("net-host was accepted without --i-know:\n%s", out)
 	}
@@ -1708,7 +1708,7 @@ func TestNetHostIsRefusedWithoutIKnow(t *testing.T) {
 		t.Errorf("the refusal should name the flag that overrides it:\n%s", out)
 	}
 
-	out, code = cli(t, nil, "--dry-run", "--i-know", "-p", "net-host", proj)
+	out, code = cli(t, nil, "--dry-run", "--i-know", "-p", "@net-host", proj)
 	if code != 0 {
 		t.Errorf("net-host with --i-know should be accepted (exit %d):\n%s", code, out)
 	}
@@ -1745,7 +1745,7 @@ func TestAbortedNetworkNeverRunsThePayload(t *testing.T) {
 	sawExpectedFailure := false
 	for i := range 20 {
 		os.Remove(marker)
-		out, code := cli(t, baseEnv("PATH="+fakeBin), "-p", "net", proj, "--",
+		out, code := cli(t, baseEnv("PATH="+fakeBin), "-p", "@net", proj, "--",
 			"/bin/sh", "-c", `echo pwned > "$SNUG_TARGET/PWNED"`)
 
 		if _, err := os.Stat(marker); err == nil {
@@ -1774,7 +1774,7 @@ func TestNoLeakedHelpersAfterSIGKILL(t *testing.T) {
 
 	before := pastaPIDs()
 
-	cmd := exec.Command(snugBin, "-p", "net", proj, "--", "/bin/sleep", "30")
+	cmd := exec.Command(snugBin, "-p", "@net", proj, "--", "/bin/sleep", "30")
 	cmd.Env = baseEnv()
 	cmd.WaitDelay = waitDelay
 	if err := cmd.Start(); err != nil {
@@ -2004,6 +2004,63 @@ func TestAnUnknownProfileKeyIsFatal(t *testing.T) {
 	}
 }
 
+// The @ namespace belongs to snug and nobody else. This is what keeps
+// provenance honest end to end: a reader who sees `@sys` in --dry-run or in
+// SNUG_PROFILES knows the grant is snug's own and not something a file on this
+// host defined. It matters most where invariant 3 is weakest — XDG_CONFIG_HOME
+// is trusted unconditionally today, so a profiles.d snug read from the wrong
+// place must still be unable to impersonate a builtin.
+func TestAUserProfileCannotClaimTheBuiltinSigil(t *testing.T) {
+	budget(t)
+	proj, _ := target(t)
+
+	write := func(body string) string {
+		cfg := t.TempDir()
+		dir := filepath.Join(cfg, "snug", "profiles.d")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "mine.toml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+
+	// CONTROL: the same grants under a name of the author's own load and run.
+	// Without it, "snug refused" would be equally true of a snug that rejects
+	// every profile from this layer — which is how a test stops being able to
+	// fail.
+	okCfg := write("[profile.mysys]\nro = [\"/usr\"]\n")
+	if out, code := cli(t, baseEnv("XDG_CONFIG_HOME="+okCfg), "--dry-run", "-p", "mysys", proj); code != 0 {
+		t.Fatalf("control: the same profile under an unmarked name must be accepted, "+
+			"or the refusals below are not attributable to the sigil (exit %d):\n%s", code, out)
+	}
+
+	// Impersonating a builtin, and inventing a new marked name, are both refused
+	// — and refused at LOAD, so it is not a question of which name gets selected.
+	for _, name := range []string{"@sys", "@mine"} {
+		cfg := write("[profile.\"" + name + "\"]\nro = [\"/\"]\n")
+		out, code := cli(t, baseEnv("XDG_CONFIG_HOME="+cfg), "--dry-run", "-p", "@sys", proj)
+		if code == 0 {
+			t.Errorf("a user profile named %q was loaded; it would be indistinguishable "+
+				"from one snug ships:\n%s", name, out)
+		}
+		if !strings.Contains(out, name) {
+			t.Errorf("the refusal of %q should name it:\n%s", name, out)
+		}
+	}
+
+	// And the mistake this convention creates — typing the bare name — must be
+	// answered with the fix rather than a bare "unknown profile".
+	out, code := cli(t, nil, "--dry-run", "-p", "sys", proj)
+	if code == 0 {
+		t.Fatalf("`-p sys` was accepted; snug's own profile is `@sys`:\n%s", out)
+	}
+	if !strings.Contains(out, "@sys") {
+		t.Errorf("the error for a missing sigil should point at %q:\n%s", "@sys", out)
+	}
+}
+
 // Invariant 3: the trusted profile set comes from OUTSIDE the sandboxed
 // material. A hostile repository shipping .snug/ would be an attacker granting
 // themselves permissions on the first run — a complete defeat of the threat
@@ -2020,7 +2077,7 @@ func TestRepoLocalConfigIsNeverAutoLoaded(t *testing.T) {
 	// repo-local config would have failed this, for the wrong reason, forever.
 	// The control below is what keeps that honest.
 	const evil = "[profile.evil]\ndescription = \"a hostile repo granting itself /etc\"\n" +
-		"include = [\"sys\", \"home\", \"cwd-rw\"]\nrw = [\"/etc\"]\n"
+		"include = [\"@sys\", \"@home\", \"@cwd-rw\"]\nrw = [\"/etc\"]\n"
 
 	for _, rel := range []string{
 		".snug/profiles.toml",

@@ -89,7 +89,7 @@ func describeNetwork(out *os.File, p *policy.Policy) {
 	case policy.NetIsolated:
 		fmt.Fprintf(out, "NETWORK  isolated — private netns, loopback only, no helper process.\n")
 		fmt.Fprintf(out, "         No egress. No host loopback. No abstract sockets (X11/D-Bus are\n")
-		fmt.Fprintf(out, "         netns-scoped, so they are out too). Add the 'net' profile for egress.\n")
+		fmt.Fprintf(out, "         netns-scoped, so they are out too). Add the '@net' profile for egress.\n")
 	case policy.NetEgress:
 		fmt.Fprintf(out, "NETWORK  egress — private netns (one per sandbox) with a pasta helper.\n")
 		fmt.Fprintf(out, "         host loopback   UNREACHABLE (--map-host-loopback none, -T none, -U none)\n")
@@ -104,12 +104,12 @@ func describeNetwork(out *os.File, p *policy.Policy) {
 		case len(p.Net.Publish) > 0:
 			fmt.Fprintf(out, "         host -> sandbox ports %v, on the host's 127.0.0.1 only\n", p.Net.Publish)
 		default:
-			fmt.Fprintf(out, "         host -> sandbox CLOSED (add 'net-publish', or publish=[3000], to open)\n")
+			fmt.Fprintf(out, "         host -> sandbox CLOSED (add '@net-publish', or publish=[3000], to open)\n")
 		}
 		if p.Net.Address != "" {
 			fmt.Fprintf(out, "         address         %s (synthetic; the host's LAN address is hidden)\n", p.Net.Address)
 		} else {
-			fmt.Fprintf(out, "         address         copied from the host — add 'net-anon' to hide it\n")
+			fmt.Fprintf(out, "         address         copied from the host — add '@net-anon' to hide it\n")
 		}
 	case policy.NetHost:
 		fmt.Fprintf(out, "NETWORK  HOST — the sandbox SHARES your network namespace.\n")

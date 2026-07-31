@@ -5,8 +5,19 @@ belongs in CLAUDE.md or the code itself, not here.
 
 ## Nest fixes - M4 phase
 
- - builtin profiles starts with sigil @
- - user defined profiles can't start with @
+ - ~~builtin profiles starts with sigil @~~ — done. The mark is DERIVED
+   (`profile.mark`, the only code that adds one) and `checkName` refuses a
+   leading `@` in every file it parses, base.toml included, so both halves are
+   structural rather than checked: a builtin cannot miss the mark, a user
+   profile cannot claim it. Side effects worth knowing: a user file defining
+   `sys` is now a profile of their own rather than a rejected redefinition, so
+   `merge`'s collision check is only about the /etc-vs-~/.config layers; and
+   snug's own mounts (`/proc`, `/dev`, generated `/etc/resolv.conf`) now say
+   `(snug)` instead of `(builtin)`, which had come to mean two things at once.
+   **Note for R2 below: the string to key the `KindData` exemption on is now
+   `"(snug)"`.** Warm engine stores keyed on the resolved profile list are
+   orphaned by the rename — a re-pull, per the papercut already recorded below.
+ - ~~user defined profiles can't start with @~~ — done, same change.
  - better examples in README
    * show a different gh account (or git user on ssh git@github.com) active per
      profile - note this may require user configuration somehow - so a longer
@@ -59,16 +70,9 @@ environment variables (direnv would let a repo author its own boundary).
 
 ### Prompt could show an unusually wide profile set
 
-`PS1` is `🔒 snug:\w\$ `. A marker when something wide is active — `net-host`,
+`PS1` is `🔒 snug:\w\$ `. A marker when something wide is active — `@net-host`,
 or a user-written profile granting a large tree — would make a permissive
 sandbox visible at a glance rather than only in `--dry-run`.
-
-### `test/integration/sandbox_test.go` still uses the old vocabulary
-
-Not done here because another agent owned the file. It references `dotdot`, the
-`default` profile, `--no-default` and `--read-only`, all of which are gone. The
-exact edits are listed in the report accompanying that change; until they land,
-`make integration` fails while `make gate` stays green.
 
 ## Container proxy — found by mutation-testing (M4 review round)
 
@@ -122,7 +126,7 @@ because they share the handler:
   run's pid; the store never does), but closing this needs a per-run label applied
   at container create, which lives in `internal/dockerproxy`.
 - **[🟡 papercut] Warm stores are silently orphaned by profile renames.** The store
-  key includes the resolved profile list, so a rename like `dotdot`->`parent-ro`
+  key includes the resolved profile list, so a rename like `parent-ro`->`@parent-ro`
   changes it mid-session and a warm store with a pulled image becomes unreachable.
   Harmless (a re-pull), but worth a note.
 
@@ -176,7 +180,7 @@ restrictions, so both are cheap and invariant-safe):
   `ro = ["/proc/sys"]` both accepted and live. This is the subtraction verb
   invariant 1 says the grant language cannot express. **Fix R2:** treat mounts
   strictly beneath a `KindProc`/`KindDev`/`KindTmpfs` mount as masks, and re-key
-  the `KindData` exemption from kind to `provenance == "(builtin)"` (must land with
+  the `KindData` exemption from kind to `provenance == "(snug)"` (must land with
   R2, or R3 below hands profiles the verb).
 
 Leak closures snug *could* make (bwrap has no procfs masking options, so each is a

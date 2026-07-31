@@ -8,6 +8,14 @@
 # Each profile that opens something a hostile process could use says, in a
 # comment, what that process could do with it at full abuse. If you add a
 # profile and cannot write that sentence, it is not ready to ship.
+#
+# NAMES. Written here bare, published with a leading @: [profile.sys] below is
+# `@sys` everywhere a human sees it — on the command line, in --dry-run
+# provenance, in SNUG_PROFILES. snug adds the mark when it loads this file
+# (internal/profile/builtin.go), and refuses a leading @ in EVERY file it parses,
+# this one included. So do not write one here; the mark means "snug ships this",
+# and it stays true because no file can claim it and no builtin can miss it.
+# `include` is rewritten with the names, so write those bare as well.
 
 # ── the lattice floor ────────────────────────────────────────────────────────
 # Grants nothing. `snug explain -p null <dir>` prints the true empty base, which

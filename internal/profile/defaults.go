@@ -11,11 +11,14 @@ package profile
 // The list is chosen so that snug is usable by just running it: a shell, the
 // target writable, its parent readable, nothing else.
 //
-// It deliberately does NOT include `net`. "Make it usable out of the box" is
+// It deliberately does NOT include `@net`. "Make it usable out of the box" is
 // exactly the pressure that would push networking in here later, and it must be
-// resisted: offline is the ABSENCE of the `net` profile, so it cannot be
+// resisted: offline is the ABSENCE of the `@net` profile, so it cannot be
 // switched back on by accident, and a default that opens a hole contradicts the
-// guiding principle. `snug -p net` is one word.
+// guiding principle. `snug -p @net` is one word.
+//
+// The names carry the @ mark because these ARE the builtins (policy.Sigil). A
+// user replacing this list in config.toml writes their own names without one.
 //
 // Precedence, implemented in cmd/snug/config.go:
 //
@@ -30,5 +33,5 @@ package profile
 //
 // Returned by value so no caller can mutate the shipped defaults.
 func BuiltinDefaults() []string {
-	return []string{"sys", "home", "cwd-rw", "parent-ro"}
+	return []string{"@sys", "@home", "@cwd-rw", "@parent-ro"}
 }

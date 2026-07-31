@@ -79,12 +79,16 @@ flags:
       --no-defaults    select nothing at all to begin with
                        (-p adds to the defaults setting; --no-defaults declines it)
       --no-seccomp     run without the seccomp filter (debugging; weakens defence in depth)
-      --i-know         acknowledge a knowingly-large hole (required by net-host)
+      --i-know         acknowledge a knowingly-large hole (required by @net-host)
   -n, --dry-run        print the resolved policy and the bwrap command, run nothing
   -v, --verbose        audit lines from the ssh-agent proxy
   -h, --help           this
 
-A bare "snug <dir>" selects the defaults setting: sys home cwd-rw parent-ro.
+A leading @ marks a profile snug ships — "@sys", "@net", "@claude". Yours, from
+~/.config/snug/profiles.d, are written without it, so a grant's origin is legible
+wherever a profile name appears and the two sets can never collide.
+
+A bare "snug <dir>" selects the defaults setting: @sys @home @cwd-rw @parent-ro.
 See "snug config" for the effective list and where it came from.
 
 Profiles only ever GRANT. There is no un-grant — not in a profile, not on the
@@ -143,9 +147,9 @@ func run(cfg config) int {
 	}
 
 	// -p ADDS to the `defaults` setting rather than replacing it. `snug -p
-	// git-ro` means "the usual sandbox, plus my git config" — which is both what
+	// @git-ro` means "the usual sandbox, plus my git config" — which is both what
 	// the flag's help text says and the only reading consistent with the model,
-	// where naming a profile can never take anything away. (`snug -p git-ro`
+	// where naming a profile can never take anything away. (`snug -p @git-ro`
 	// once replaced the selection instead, producing a sandbox with no /usr that
 	// could not execute anything.) --no-defaults is how you start from nothing.
 	selected, _ := defaultProfiles()
@@ -230,7 +234,7 @@ func run(cfg config) int {
         - the LAN, with the host's identity
 
       This is not a sandbox with networking; it is a process with a different
-      filesystem view. If you meant "the sandbox needs internet", use the 'net'
+      filesystem view. If you meant "the sandbox needs internet", use the '@net'
       profile instead. To proceed anyway, add --i-know.`)
 		return exitPolicy
 	}

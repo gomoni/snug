@@ -1,5 +1,28 @@
 package policy
 
+// Sigil marks a profile snug itself ships: `@sys`, `@net`, `@claude`. Nothing
+// else may wear it, and every builtin does.
+//
+// It is not decoration. Provenance is the thing --dry-run exists to show, and a
+// bare name cannot tell you whether a grant came from snug or from a file
+// someone wrote on this host — you had to go and look. With the mark, `@sys` is
+// snug's and `work` is yours, on the line you are already reading.
+//
+// The mark is DERIVED, not written: profile.builtins() adds it to the embedded
+// layer and is the only code that does, while profile.checkName refuses a
+// leading @ in every file it parses, base.toml included. "Starts with @" and "is
+// compiled into snug" are therefore the same statement by construction rather
+// than by a check someone has to remember. A user profile cannot borrow the
+// mark, and a builtin cannot forget to wear it.
+//
+// The second thing it buys: the two namespaces cannot collide. A user file
+// defining `sys` now defines a NEW profile rather than colliding with snug's,
+// and `@sys` still means exactly what snug ships.
+//
+// It lives in this package, not in internal/profile, because internal/profile
+// imports this one and the constant must have a single definition.
+const Sigil = "@"
+
 // Profile is a named, composable generator of grants — the parsed form of one
 // [profile.NAME] table.
 //

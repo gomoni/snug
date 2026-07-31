@@ -67,6 +67,11 @@ type rawIdentity struct {
 //	     (docs/PARAMETERISED-PROFILES.md): "name:arg" must split unambiguously.
 //	"-"  leading, because `snug -p -v` would otherwise name a profile "-v"
 //	     rather than fail.
+//	"@"  leading, because that mark means "snug ships this" and is added by
+//	     builtins() alone — see policy.Sigil. Note that this rule applies to
+//	     EVERY file, base.toml included: the builtins are written here under
+//	     bare names and marked on load, so no file anywhere may claim the mark
+//	     for itself.
 //	     whitespace/NUL, because every --dry-run line and every Validate error
 //	     renders provenance as a space-free token; a name with a space in it
 //	     turns those into nonsense.
@@ -81,6 +86,12 @@ func checkName(name, source string) error {
 	if strings.HasPrefix(name, "-") {
 		return fmt.Errorf("%s: profile %q may not start with '-'; it would be "+
 			"indistinguishable from a flag on the command line", source, name)
+	}
+	if strings.HasPrefix(name, policy.Sigil) {
+		return fmt.Errorf("%s: profile %q may not start with '%s'; that mark means "+
+			"\"snug ships this profile\" and snug adds it itself. Drop it and the "+
+			"profile is yours: %q", source, name, policy.Sigil,
+			strings.TrimPrefix(name, policy.Sigil))
 	}
 	for _, bad := range []struct {
 		s    string
@@ -172,8 +183,17 @@ func asStrict(err error, target **toml.StrictMissingError) bool {
 }
 
 // merge folds a layer into the registry. A later layer may ADD profile names but
-// never redefine one: shadowing a builtin would let a config file quietly change
-// what `sys` or `net` means, which is the same class of problem as a deny rule.
+// never redefine one: silently taking the last definition of a name would make
+// what a profile grants depend on which file was read last, which is the same
+// class of problem as a deny rule.
+//
+// Shadowing a BUILTIN no longer reaches this check at all, and that is the
+// improvement the sigil bought. `@sys` is a name no file can write (checkName
+// refuses a leading @, see policy.Sigil), so a user file saying [profile.sys]
+// defines a profile of their own rather than half-redefining snug's. What
+// remains here is collisions between the layers a human does control —
+// /etc/snug/profiles.d against their own ~/.config — where a hard error naming
+// both files is still the right answer.
 func (r Registry) merge(other Registry) error {
 	names := make([]string, 0, len(other))
 	for n := range other {

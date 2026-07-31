@@ -3,6 +3,8 @@ package profile
 import (
 	"embed"
 	"fmt"
+
+	"snug/internal/policy"
 )
 
 //go:embed profiles/*.toml
@@ -24,9 +26,34 @@ func builtins() (Registry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("builtin profile %s: %w", e.Name(), err)
 		}
-		if err := reg.merge(layer); err != nil {
+		if err := reg.merge(mark(layer)); err != nil {
 			return nil, err
 		}
 	}
 	return reg, nil
+}
+
+// mark moves a builtin layer into the @-namespace (see policy.Sigil).
+//
+// This is the ONLY place a sigil is ever added, which is what makes "@ means
+// snug shipped it" true by construction: the TOML says [profile.sys], checkName
+// refuses a leading @ in any file, and a builtin therefore cannot be published
+// under a bare name or a user profile under a marked one.
+//
+// Includes are rewritten too, and unconditionally, because inside a builtin an
+// include can only mean another builtin: base.toml is compiled in, so it cannot
+// know a name from ~/.config, and the layers that could supply one are merged
+// afterwards. A builtin reaching for a user profile is not a thing to preserve.
+func mark(layer Registry) Registry {
+	out := make(Registry, len(layer))
+	for name, p := range layer {
+		q := *p
+		q.Name = policy.Sigil + name
+		q.Include = nil
+		for _, inc := range p.Include {
+			q.Include = append(q.Include, policy.Sigil+inc)
+		}
+		out[q.Name] = &q
+	}
+	return out
 }

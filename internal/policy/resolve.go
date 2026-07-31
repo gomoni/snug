@@ -224,13 +224,21 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 		}
 	}
 
-	// 4. Builtins that every sandbox gets. /proc needs the pid namespace to be
-	//    meaningful; /dev is bwrap's synthetic minimal set, never a bind of the
-	//    host's (which would hand over every block device and input device).
-	p.mustJoin(Mount{Guest: "/proc", Kind: KindProc, Access: AccessRW, From: []string{"(builtin)"}})
-	p.mustJoin(Mount{Guest: "/dev", Kind: KindDev, Access: AccessRW, From: []string{"(builtin)"}})
+	// 4. Mounts snug authors ITSELF, in every sandbox. /proc needs the pid
+	//    namespace to be meaningful; /dev is bwrap's synthetic minimal set,
+	//    never a bind of the host's (which would hand over every block device
+	//    and input device).
+	//
+	//    Their provenance reads "(snug)" rather than naming a profile, and the
+	//    distinction is the one the invariants turn on: a profile may not mount
+	//    over another profile's grant, snug may replace a path with its own
+	//    generated content. It used to read "(builtin)", which now collides with
+	//    the @-marked builtin PROFILES (policy.Sigil) — two different things one
+	//    word, on the same --dry-run screen.
+	p.mustJoin(Mount{Guest: "/proc", Kind: KindProc, Access: AccessRW, From: []string{"(snug)"}})
+	p.mustJoin(Mount{Guest: "/dev", Kind: KindDev, Access: AccessRW, From: []string{"(snug)"}})
 	if _, ok := p.Mounts["/tmp"]; !ok {
-		p.mustJoin(Mount{Guest: "/tmp", Kind: KindTmpfs, Access: AccessRW, From: []string{"(builtin)"}})
+		p.mustJoin(Mount{Guest: "/tmp", Kind: KindTmpfs, Access: AccessRW, From: []string{"(snug)"}})
 	}
 
 	if p.Net.DNS {
@@ -281,7 +289,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 		Kind:    KindData,
 		Access:  AccessRO,
 		Content: p.Net.ResolvConf(),
-		From:    []string{"(builtin)"},
+		From:    []string{"(snug)"},
 	})
 
 	// 5. The environment is reconstructed, not filtered. --clearenv discards the
@@ -456,6 +464,31 @@ func Expand(reg map[string]*Profile, selected []string) (map[string]*Profile, er
 	return out, nil
 }
 
+// UnknownProfile is the error for a name nothing defines. It exists rather than
+// a bare fmt.Errorf because the mistake people will actually make is the sigil:
+// snug's own profiles are `@sys`, `@net`, `@claude`, and typing `sys` is the
+// natural slip. An error that names the fix is worth the six lines — see the
+// working agreement in CLAUDE.md.
+//
+// Every caller that looks a name up in a registry should route through here, so
+// `snug -p sys`, `snug profile show sys` and `include = ["sys"]` inside a
+// user's own file all say the same thing.
+func UnknownProfile(reg map[string]*Profile, name string) error {
+	if _, ok := reg[Sigil+name]; ok {
+		return fmt.Errorf("unknown profile %q; snug's own profiles carry a leading %s, "+
+			"so you probably meant %q (see: snug profile list)", name, Sigil, Sigil+name)
+	}
+	if bare, marked := strings.CutPrefix(name, Sigil); marked {
+		if p, ok := reg[bare]; ok {
+			return fmt.Errorf("unknown profile %q; %s marks a profile snug ships, and %q is "+
+				"one of yours (defined in %s)", name, Sigil, bare, p.Source)
+		}
+		return fmt.Errorf("unknown profile %q; snug ships no profile by that name "+
+			"(see: snug profile list)", name)
+	}
+	return fmt.Errorf("unknown profile %q (see: snug profile list)", name)
+}
+
 func expand(reg map[string]*Profile, name string, out map[string]*Profile, stack []string) error {
 	for _, s := range stack {
 		if s == name {
@@ -467,7 +500,7 @@ func expand(reg map[string]*Profile, name string, out map[string]*Profile, stack
 	}
 	prof, ok := reg[name]
 	if !ok {
-		return fmt.Errorf("unknown profile %q", name)
+		return UnknownProfile(reg, name)
 	}
 	out[name] = prof
 	for _, inc := range prof.Include {
