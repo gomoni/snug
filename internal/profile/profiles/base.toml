@@ -195,3 +195,50 @@ network = "host"
 [profile.default]
 description = "sys + a writable target + a readable parent. Offline."
 include = ["sys", "home", "cwd-rw", "dotdot"]
+
+# ── identity: one git/ssh/gh account, and nothing else ───────────────────────
+# ABUSE: the sandbox gets a SIGNING ORACLE for one ssh key. It can push to any
+# repository that key can reach, and authenticate to any host that trusts it.
+# Pinning bounds WHICH identity, not WHAT is done with it — that is inherent to
+# every agent forwarder, not a gap to be closed later. ~/.ssh is never mounted,
+# so no key material enters the sandbox and the other keys in your agent cannot
+# be enumerated or used.
+#
+# This profile is a TEMPLATE: copy it into ~/.config/snug/profiles.d/ and fill in
+# your own account. It grants nothing on its own.
+#
+#   [profile.work]
+#   include = ["default", "net", "git-ro"]
+#     [profile.work.identity]
+#     gh_user   = "you"
+#     git_name  = "Your Name"
+#     git_email = "you@example.com"
+#     ssh_key   = "{home}/.ssh/id_ed25519.pub"   # the PUBLIC half
+#     ssh_mode  = "agent-proxy"
+
+# ── Claude Code ──────────────────────────────────────────────────────────────
+# ABUSE: the sandbox can spend your Anthropic credits and read your Claude
+# settings and personal skills. It CANNOT read your host session history, your
+# MCP server configuration, or any other project's transcripts.
+#
+# Credentials are staged as a writable COPY, so a token refreshed inside does not
+# reach the host unless you ask for it. ~/.claude.json is needed as well as
+# .credentials.json — without it Claude re-onboards and shows a login prompt.
+[profile.claude]
+description = "Claude Code: binary and skills read-only, credentials staged writable."
+include = ["sys", "home"]
+ro = [
+  "{home}/.local/bin/claude",
+  "{home}/.local/share/claude",
+  "{home}/.claude/settings.json",
+  "{home}/.claude/skills",
+  "{home}/.claude/plugins",
+]
+optional = [
+  "{home}/.local/bin/claude",
+  "{home}/.local/share/claude",
+  "{home}/.claude/settings.json",
+  "{home}/.claude/skills",
+  "{home}/.claude/plugins",
+]
+env = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "EDITOR", "VISUAL", "PAGER", "NO_COLOR"]

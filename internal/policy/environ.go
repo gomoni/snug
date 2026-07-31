@@ -44,6 +44,15 @@ type Context struct {
 	// caller. Resolve keeps only the routable ones; see NetPolicy.ResolvConf.
 	HostNameservers []string
 
+	// PinnedPubKey is the public half of the identity's ssh key, read by the
+	// caller so the resolver stays pure.
+	PinnedPubKey []byte
+
+	// KnownHosts is the subset of the host's known_hosts for the pinned host,
+	// filtered by the caller. Binding the whole file would tell the sandbox
+	// every host you have ever connected to.
+	KnownHosts []byte
+
 	// HostTmpDir backs the {host_tmpdir} variable used by the tmp-shared
 	// profile. The caller allocates and safety-checks it, because creating
 	// directories is not something a pure resolver may do.

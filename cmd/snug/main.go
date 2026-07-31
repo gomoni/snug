@@ -31,6 +31,7 @@ type config struct {
 	noSeccomp bool
 	noDefault bool
 	iKnow     bool
+	verbose   bool
 }
 
 func main() {
@@ -81,6 +82,7 @@ flags:
       --no-seccomp     run without the seccomp filter (debugging; weakens defence in depth)
       --i-know         acknowledge a knowingly-large hole (required by net-host)
   -n, --dry-run        print the resolved policy and the bwrap command, run nothing
+  -v, --verbose        audit lines from the ssh-agent proxy
   -h, --help           this
 
 Profiles only ever relax the sandbox. To grant less, select fewer profiles;
@@ -108,6 +110,8 @@ func parseArgs(argv []string) (config, error) {
 			cfg.noDefault = true
 		case a == "--read-only":
 			cfg.readOnly = true
+		case a == "-v" || a == "--verbose":
+			cfg.verbose = true
 		case a == "--i-know":
 			cfg.iKnow = true
 		case a == "--no-seccomp":
@@ -203,6 +207,8 @@ func run(cfg config) int {
 		Command:         command,
 		LegacyTIOCSTI:   legacyTIOCSTI(),
 		HostNameservers: hostNameservers(),
+		KnownHosts:      knownHostsFor(identityHost(reg, selected)),
+		PinnedPubKey:    pinnedPubKey(reg, selected),
 	}
 
 	pol, err := policy.Resolve(reg, selected, ctx, env)
@@ -227,6 +233,15 @@ func run(cfg config) int {
       profile instead. To proceed anyway, add --i-know.`)
 		return exitPolicy
 	}
+
+	claudeFiles(pol, home)
+
+	idCleanup, err := startIdentity(pol, cfg.verbose, cfg.iKnow)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
+		return exitPolicy
+	}
+	defer idCleanup()
 
 	pol.Apply(policy.Clamp{ReadOnly: cfg.readOnly})
 

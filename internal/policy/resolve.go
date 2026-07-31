@@ -84,6 +84,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	sort.Strings(names)
 	p.Profiles = names
 
+	identityOwner := ""
 	for _, name := range names {
 		prof := set[name]
 		optional := map[string]bool{}
@@ -158,6 +159,32 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 				return nil, err
 			}
 		}
+		// Identity does NOT join. Two profiles pinning different accounts is a
+		// question with no safe answer — silently picking one would mean the
+		// agent pushes as an identity the human did not choose — so it is a
+		// conflict, reported with both names.
+		if prof.Identity != nil {
+			if p.Identity != nil && *p.Identity != *prof.Identity {
+				return nil, fmt.Errorf("profiles %q and %q pin different identities; "+
+					"select only one", identityOwner, name)
+			}
+			mode, err := ParseSSHMode(string(prof.Identity.SSHMode))
+			if err != nil {
+				return nil, fmt.Errorf("profile %q: %w", name, err)
+			}
+			id := *prof.Identity
+			id.SSHMode = mode
+			if id.SSHKey != "" {
+				expanded, err := expandVars(id.SSHKey, vars)
+				if err != nil {
+					return nil, fmt.Errorf("profile %q: %w", name, err)
+				}
+				id.SSHKey = expanded
+			}
+			p.Identity = &id
+			identityOwner = name
+		}
+
 		// Network scalars, each joined permissive-ward. A profile can only ever
 		// move the sandbox further open; there is no value that closes it.
 		if prof.Network != "" {
@@ -201,6 +228,42 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 
 	if p.Net.DNS {
 		p.Net.Nameservers = RoutableNameservers(ctx.HostNameservers)
+	}
+
+	// Identity files are GENERATED, never bound. ~/.ssh is not mounted at all,
+	// so the sandbox learns nothing about which hosts or keys you have.
+	if id := p.Identity; id != nil {
+		if cfg := id.GitConfig(); len(cfg) > 0 {
+			p.Mounts[home+"/.gitconfig"] = Mount{
+				Guest: home + "/.gitconfig", Kind: KindData, Access: AccessRO,
+				Content: cfg, From: []string{"identity:" + identityOwner},
+			}
+			// GIT_CONFIG_GLOBAL REPLACES the global config; without it git reads
+			// ~/.gitconfig AND $XDG_CONFIG_HOME/git/config and merges them. So
+			// with the git-ro profile also selected, the host's credential
+			// helpers, insteadOf rules and user.email would sit alongside the
+			// pinned identity — silently overriding what the human chose.
+			// Verified: git merges both files; GIT_CONFIG_GLOBAL replaces both.
+			p.Env["GIT_CONFIG_GLOBAL"] = home + "/.gitconfig"
+		}
+		if cfg := id.SSHConfig(home); len(cfg) > 0 {
+			p.Mounts[home+"/.ssh/config"] = Mount{
+				Guest: home + "/.ssh/config", Kind: KindData, Access: AccessRO,
+				Content: cfg, From: []string{"identity:" + identityOwner},
+			}
+			// The pinned PUBLIC key, so IdentityFile above resolves. Public
+			// material only; the private key never enters the sandbox.
+			if len(ctx.PinnedPubKey) > 0 {
+				p.Mounts[home+"/"+PubKeyGuest] = Mount{
+					Guest: home + "/" + PubKeyGuest, Kind: KindData, Access: AccessRO,
+					Content: ctx.PinnedPubKey, From: []string{"identity:" + identityOwner},
+				}
+			}
+			p.Mounts[home+"/.ssh/known_hosts"] = Mount{
+				Guest: home + "/.ssh/known_hosts", Kind: KindData, Access: AccessRO,
+				Content: ctx.KnownHosts, From: []string{"identity:" + identityOwner},
+			}
+		}
 	}
 
 	// /etc/resolv.conf is GENERATED, never bound from the host. The host's may

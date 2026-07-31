@@ -34,6 +34,9 @@ type Profile struct {
 	Gateway     string
 	MTU         int
 
+	// Identity pins one git/ssh/gh account. See identity.go.
+	Identity *Identity
+
 	// Env names host variables to re-admit past --clearenv. Values are read from
 	// the host at launch; a profile never carries a value.
 	Env []string

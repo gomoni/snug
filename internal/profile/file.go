@@ -39,6 +39,17 @@ type rawProfile struct {
 	Address     string `toml:"address"`
 	Gateway     string `toml:"gateway"`
 	MTU         int    `toml:"mtu"`
+
+	Identity *rawIdentity `toml:"identity"`
+}
+
+type rawIdentity struct {
+	SSHKey   string `toml:"ssh_key"`
+	SSHMode  string `toml:"ssh_mode"`
+	GitName  string `toml:"git_name"`
+	GitEmail string `toml:"git_email"`
+	GhUser   string `toml:"gh_user"`
+	GhHost   string `toml:"gh_host"`
 }
 
 // Registry is the merged set of known profiles.
@@ -77,11 +88,28 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 			Address:     r.Address,
 			Gateway:     r.Gateway,
 			MTU:         r.MTU,
+			Identity:    toIdentity(r.Identity),
 			Source:      source,
 			Trusted:     trusted,
 		}
 	}
 	return reg, nil
+}
+
+func toIdentity(r *rawIdentity) *policy.Identity {
+	if r == nil {
+		return nil
+	}
+	// ssh_mode is validated in policy.Resolve, not here: an unknown mode should
+	// name the profile it came from, and only the resolver knows that.
+	return &policy.Identity{
+		SSHKey:   r.SSHKey,
+		SSHMode:  policy.SSHMode(r.SSHMode),
+		GitName:  r.GitName,
+		GitEmail: r.GitEmail,
+		GhUser:   r.GhUser,
+		GhHost:   r.GhHost,
+	}
 }
 
 func asStrict(err error, target **toml.StrictMissingError) bool {

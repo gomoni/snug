@@ -14,7 +14,7 @@ to learn.
 
 ## Status
 
-**M2 works: share nothing, hardened, with networking.** `snug <dir>` runs a command in a
+**M3 works: share nothing, hardened, networking, scoped identity.** `snug <dir>` runs a command in a
 sandbox where the target is the only writable thing that *persists*, the parent
 is readable, and nothing else exists. A seccomp filter denies ptrace, bpf,
 keyctl, perf_event_open, userfaultfd, TIOCSTI and nested user namespaces. The
@@ -23,14 +23,19 @@ Networking is a private netns per sandbox with a pasta helper: full egress, host
 loopback unreachable, abstract sockets (X11/D-Bus) unreachable. Offline is the
 absence of the `net` profile. Profiles: `null`, `sys`, `etc-full`, `home`,
 `cwd-rw`, `dotdot`, `tmp-shared`, `git-ro`, `net`, `net-publish`, `net-anon`,
-`net-host`, `default`.
+`net-host`, `claude`, `default`.
+
+Identity pins one git/ssh/gh account: a filtering ssh-agent proxy exposes exactly
+one key (no key material inside, other keys not enumerable), and `.gitconfig`,
+`.ssh/config`, `known_hosts` and gh's `hosts.yml` are all generated rather than
+bound. The `claude` profile stages credentials as writable copies and injects a
+`~/.claude/CLAUDE.md` generated from the ACTUAL resolved policy.
 
 `snug --dry-run` shows exactly what will happen; `snug doctor` says whether a
 host can run it. `make gate` is the pre-commit check, and `docs/VERIFY.md` is the
 by-hand checklist — run it rather than trusting this paragraph.
 
-Not built yet, in the order the design expects them:
-identity/ssh-agent proxy, the `claude` profile, containers, GUI profiles. Each is
+Not built yet, in the order the design expects them: containers, GUI profiles. Each is
 a hole. Add them one at a time, and see "Definition of done for a milestone"
 below — `redteam` runs on every one, without exception.
 
@@ -144,7 +149,7 @@ on any flag.
   --map-host-loopback none -t none -u none -T none -U none
   ```
 
-  The previous generation (`../agent-sandbox`) passes the first three and not
+  The previous generation of this project passed the first three and not
   `-T`/`-U`, so its "private" netns reaches every host loopback service. Its
   probe notes saw the symptom and dismissed it as an `ss`/procfs artifact. It
   was a live TCP forward. See DESIGN §4.2.
@@ -194,6 +199,43 @@ on any flag.
   `/proc/self/fd/0`. `safeStdio` now substitutes /dev/null for a directory on
   stdio. **When you exempt something from a security sweep, ask what the
   exemption itself lets through.**
+- **A test that cannot fail is worse than no test.** The leak check matched
+  `/proc/<pid>/comm` against the literal `"pasta"`; passt ships CPU-dispatched
+  binaries, so the real comm is `pasta.avx2` and the count was always zero —
+  `after > before` could never be true. It passed cleanly for as long as it
+  existed. Every negative test in the integration suite now has a positive
+  control: assert the thing you are measuring is actually present before
+  asserting it did not grow, and make every payload emit a marker so "the
+  sandbox did not reach X" cannot pass on a sandbox that never started.
+- **A gate that is documented but not implemented is not a gate.**
+  `ssh_mode = "host-agent"` forwards the entire ssh-agent, and three separate
+  places — the profile, the mode's doc comment, and the code comment at the call
+  site — said it required `--i-know`. Nothing checked it. The redteam agent
+  enumerated every key in the agent and signed with one the profile had not
+  pinned. `cfg.iKnow` existed and was consulted only for `NetHost`.
+  **When you write "requires X" in a comment, grep for X before you believe it.**
+- **Secrets go in files, not the environment.** `/proc/self/environ` is passively
+  readable by every process in the sandbox and inherited by every child; a file
+  has to be deliberately opened. So snug generates a private config DIRECTORY per
+  tool and points the tool at it with its own env var — `GH_CONFIG_DIR`,
+  `GIT_CONFIG_GLOBAL`, and the same shape for `NPM_CONFIG_USERCONFIG`,
+  `CARGO_HOME`, `DOCKER_CONFIG` when those arrive. The env var then carries a
+  PATH, not a credential. This is the existing "generate, don't bind" rule
+  extended from /etc to per-tool config, and it has the same cost: each adapter
+  must track that tool's format. Bound it the same way — one opt-in profile per
+  tool, never in `default`, so an unmaintained adapter degrades to "that tool has
+  no config" rather than to a leak.
+- **`git` merges its global config from TWO files.** `~/.gitconfig` AND
+  `$XDG_CONFIG_HOME/git/config` are both read. So generating `~/.gitconfig` was
+  not enough: with `git-ro` also selected, the host's credential helpers,
+  `insteadOf` rules and `user.email` sat alongside the pinned identity. Setting
+  `GIT_CONFIG_GLOBAL` replaces both outright, which is why snug sets it whenever
+  an identity is pinned. Verified by execution, both directions.
+- **`gh` rewrites its token file on first use.** It migrates a file-stored token
+  and writes the config back; a read-only `hosts.yml` fails with "failed to write
+  config after migration" (gh 2.96). So the staged copy is deliberately WRITABLE
+  — it is a private copy on tmpfs, so the rewrite goes nowhere and the host's gh
+  config is never touched.
 - **bwrap stops parsing flags at `--`.** A flag appended to the full argv lands
   after the separator and is handed to the payload instead — so `--seccomp` was
   once passed, accepted, and never installed, with a zero exit code and no
@@ -238,8 +280,10 @@ only ever be closable once.
 All five, in order. A milestone is not finished until the last one is.
 
 1. `make gate` green — gofmt, vet, and the full test suite.
-2. The relevant `docs/VERIFY.md` checks pass by hand, including a new check for
-   whatever the milestone added.
+2. `make integration` green (`SNUG_REQUIRE_SANDBOX=1`), with a new named test for
+   whatever the milestone added. `docs/VERIFY.md` gets the human-readable
+   equivalent — it is the by-hand checklist and is not made redundant by the
+   automated one.
 3. **`redteam` has attacked it.** Not optional, not "if there's time". Every
    milestone that adds a hole gets a run before it lands, and so does any change
    to the policy model, mount generation, the seccomp filter, or a
@@ -306,7 +350,8 @@ meant. It cannot prove the sandbox holds.
 - **ssh identities**: `ssh_mode = "agent-proxy"` — a filtering proxy to the
   already-unlocked host agent exposing exactly one pinned key. No key material
   inside, no passphrase prompt, other keys not enumerable. The `[identity]`
-  vocabulary carries over from `../agent-sandbox` unchanged. What it *cannot* do:
+  vocabulary carries over from the previous generation unchanged. What it
+  *cannot* do:
   restrict what gets signed. That is inherent to every agent forwarder.
 - **`~/.config`**: no blanket bind — it is a credential dump and a persistence
   vector in one. Only `~/.config/git` by default; anything else is a line the
@@ -329,13 +374,3 @@ meant. It cannot prove the sandbox holds.
 - **D-Bus**: no profile ships. A filtering bus proxy that is 95% correct is a
   sandbox that is 0% sound.
 
-## Prior generation
-
-`../agent-sandbox` is the previous incarnation (bash+Go CLI → Go daemon+CLI).
-Mine it for hard-won detail — it is the source of the fd model, the pure-Go
-seccomp filter, the strict-decode drift guard, the SELinux relabel story, and
-several bugs whose regression tests carry over. DESIGN §6 records what carries
-over, what is deliberately dropped (the daemon, `allowlist_root`, `mask`), and
-where the TOML vocabulary changed.
-
-Do not copy its pasta flags.

@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -95,7 +96,19 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 		case KindData:
 			// Mounting over a path inside a read-only bind is fine: bwrap does
 			// it in its own mount namespace before the payload ever runs.
-			a = append(a, "--ro-bind-data", strconv.Itoa(dataFD(m.Guest)), m.Guest)
+			//
+			// --file copies the content into the sandbox and leaves it
+			// WRITABLE; --ro-bind-data binds it read-only. Staged credentials
+			// need the former (Claude rewrites its own token file), generated
+			// config the latter.
+			if m.Perms != nil {
+				a = append(a, "--perms", fmt.Sprintf("%04o", *m.Perms))
+			}
+			if m.Access == AccessRW {
+				a = append(a, "--file", strconv.Itoa(dataFD(m.Guest)), m.Guest)
+			} else {
+				a = append(a, "--ro-bind-data", strconv.Itoa(dataFD(m.Guest)), m.Guest)
+			}
 		}
 	}
 

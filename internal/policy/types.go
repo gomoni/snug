@@ -79,6 +79,9 @@ type Mount struct {
 	Access   Access
 	Optional bool // -try semantics: silently skip when Host is absent
 
+	// Perms is the mode for a KindData file. nil means bwrap's default.
+	Perms *uint32
+
 	// Content is the file body for KindData. It is materialised into an
 	// anonymous memfd at exec time, so nothing lands on disk and there is no
 	// window for another process to read or swap it.
@@ -100,9 +103,10 @@ type Policy struct {
 	Chdir    string
 	Command  []string
 
-	Mounts map[string]Mount
-	Env    map[string]string
-	Net    NetPolicy
+	Mounts   map[string]Mount
+	Env      map[string]string
+	Net      NetPolicy
+	Identity *Identity
 
 	// NewSession asks bwrap for a fresh TTY session, which blocks TIOCSTI input
 	// injection into the parent terminal. It also breaks job control for an
@@ -168,6 +172,20 @@ func (p *Policy) Implied() []string {
 		}
 	}
 	return out
+}
+
+// BindSocket grants a host socket at a fixed guest path, after the policy is
+// resolved. It is how the CLI hands the sandbox something it had to create
+// first — an ssh-agent proxy socket, say — and it is deliberately the only way
+// to add a grant post-resolution, so the set of such things stays countable.
+//
+// It bypasses no check that matters: the path is snug's own choice under
+// /run/snug, not a profile's, and the socket is one snug just created.
+func (p *Policy) BindSocket(hostPath, guestPath string) {
+	p.Mounts[guestPath] = Mount{
+		Guest: guestPath, Host: hostPath, Kind: KindBind,
+		Access: AccessRW, From: []string{"(identity)"},
+	}
 }
 
 // Clamp is restriction, and it is deliberately NOT part of the profile lattice.
