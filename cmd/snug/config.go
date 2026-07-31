@@ -17,11 +17,15 @@ import (
 // what a bare `snug <dir>` selects, and nothing that could widen a sandbox on
 // its own. Grants live in profiles, which is the one vocabulary for them.
 type userConfig struct {
-	// DefaultProfile is what a bare `snug <dir>` selects. It names profiles
-	// rather than redefining the builtin `default`, because a config file that
-	// could redefine a builtin would let `sys` silently come to mean something
-	// else.
-	DefaultProfile []string `toml:"default_profile"`
+	// Defaults is what a bare `snug <dir>` selects. It NAMES profiles; it cannot
+	// define one, because a config file able to redefine a builtin would let
+	// `sys` silently come to mean something else.
+	//
+	// Naming it here REPLACES profile.BuiltinDefaults wholesale rather than
+	// merging with it: merging would make it impossible to have fewer defaults
+	// than snug ships with, which is a legitimate thing to want. `-p` still
+	// adds on top, and `--no-defaults` is the only way to decline the list.
+	Defaults []string `toml:"defaults"`
 }
 
 func configPath() string {
@@ -55,11 +59,15 @@ func loadUserConfig() userConfig {
 	return cfg
 }
 
-func defaultProfiles() []string {
-	if c := loadUserConfig(); len(c.DefaultProfile) > 0 {
-		return c.DefaultProfile
+// defaultProfiles is the effective `defaults` setting, with the source it came
+// from so `snug config` can say which one is in effect. There is no profile
+// called `default` any more: the built-in list is a preference (see
+// profile.BuiltinDefaults), and a config file replaces it wholesale.
+func defaultProfiles() (names []string, source string) {
+	if c := loadUserConfig(); len(c.Defaults) > 0 {
+		return c.Defaults, configPath()
 	}
-	return []string{"default"}
+	return profile.BuiltinDefaults(), "built-in"
 }
 
 // configCmd prints the resolved configuration and where each part came from.
@@ -72,14 +80,40 @@ func configCmd(args []string) int {
 		return exitUsage
 	}
 
+	// Load the profiles even though this command does not otherwise need them.
+	//
+	// A redefinition is a HARD failure everywhere, and that has to include the
+	// commands people reach for when something is wrong. `snug config` reporting
+	// a tidy configuration while the profile set is unloadable is the worst
+	// possible answer to "why will snug not start".
+	if _, err := profile.Load(); err != nil {
+		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
+		return exitPolicy
+	}
+
 	path := configPath()
 	fmt.Printf("config file      %s", path)
 	if _, err := os.Stat(path); err != nil {
-		fmt.Print("   (absent — using built-in defaults)")
+		fmt.Print("   (absent)")
 	}
 	fmt.Println()
 
-	fmt.Printf("default_profile  %s\n", strings.Join(defaultProfiles(), " "))
+	names, source := defaultProfiles()
+	origin := "built-in (internal/profile/defaults.go)"
+	if source != "built-in" {
+		origin = "from " + source
+	}
+	fmt.Printf("defaults         %s\n", strings.Join(names, " "))
+	fmt.Printf("                 %s\n", origin)
+	fmt.Println()
+	fmt.Println("`defaults` is what a bare `snug <dir>` selects. Setting it in the config file")
+	fmt.Println("REPLACES the built-in list rather than adding to it. -p NAME then adds to")
+	fmt.Println("whatever it resolved to, and --no-defaults declines it entirely:")
+	fmt.Println()
+	fmt.Println("  defaults = [\"sys\", \"home\", \"cwd-rw\", \"parent-ro\"]")
+	fmt.Println()
+	fmt.Println("Nothing grants less: profiles only ever grant, and no flag reduces a resolved")
+	fmt.Println("policy. A read-only project is --no-defaults plus the profiles you do want.")
 	fmt.Println()
 
 	fmt.Println("profile search path, in order (later layers may add names, never redefine one):")
@@ -118,7 +152,8 @@ func profileCmd(args []string) int {
 	switch sub {
 	case "list":
 		names := sortedNames(reg)
-		def := strings.Join(defaultProfiles(), " ")
+		sel, _ := defaultProfiles()
+		def := strings.Join(sel, " ")
 		for _, n := range names {
 			p := reg[n]
 			marker := " "
@@ -180,7 +215,7 @@ func profileCmd(args []string) int {
 	case "tree":
 		roots := args[1:]
 		if len(roots) == 0 {
-			roots = defaultProfiles()
+			roots, _ = defaultProfiles()
 		}
 		for _, r := range roots {
 			if _, ok := reg[r]; !ok {

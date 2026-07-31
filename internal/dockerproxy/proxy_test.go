@@ -2,6 +2,8 @@ package dockerproxy
 
 import (
 	"bufio"
+	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -37,9 +39,12 @@ func startProxy(t *testing.T) (sock string, eng *fakeEngine, target string) {
 	}
 	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		eng.reached.Add(1)
-		b := make([]byte, 64*1024)
-		n, _ := r.Body.Read(b)
-		eng.lastBody.Store(string(b[:n]))
+		// io.ReadAll, not a single Read: a short read would record a TRUNCATED
+		// body, and every "the escape field did not reach the engine" assertion
+		// that inspects lastBody would then be satisfied by truncation rather
+		// than by filtering.
+		b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		eng.lastBody.Store(string(b))
 		w.WriteHeader(200)
 		w.Write([]byte(`{"Id":"deadbeef"}`))
 	}))
@@ -77,32 +82,108 @@ func post(t *testing.T, sock, path, body string) (int, string) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	buf := make([]byte, 8192)
-	n, _ := resp.Body.Read(buf)
-	return resp.StatusCode, string(buf[:n])
+	buf, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return resp.StatusCode, string(buf)
+}
+
+// refuse asserts that a create body is refused HERE, by the reason we think, and
+// never reaches the engine.
+//
+// wantMsg is not decoration. Without it a table entry only establishes "something
+// refused this", and a case can silently stop exercising the rule it was written
+// for while still passing — which is exactly what happened to the two entries
+// below that named /tmp and a relative path: both were refused by the visibility
+// check, so deleting the option parser and the absolute-path check changed
+// nothing and the suite stayed green. Naming the reason pins each case to one
+// mechanism.
+func refuse(t *testing.T, sock string, eng *fakeEngine, path, body, wantMsg string) {
+	t.Helper()
+	before := eng.reached.Load()
+	code, resp := post(t, sock, path, body)
+	if code != http.StatusForbidden {
+		t.Errorf("status %d, want 403: %s", code, resp)
+	}
+	if eng.reached.Load() != before {
+		t.Error("the request reached the engine; it should have been refused here")
+	}
+	if msg := denyMessage(resp); !strings.Contains(msg, wantMsg) {
+		t.Errorf("refused, but not for the reason this case exists to test.\n"+
+			"  want the message to contain: %q\n  got: %s", wantMsg, msg)
+	}
+}
+
+// denyMessage pulls the human-readable reason out of a 403 body. The body is
+// JSON, so quotes inside the message arrive escaped and a raw substring match
+// against a quoted path or option would never fire.
+func denyMessage(resp string) string {
+	var body struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(resp), &body); err != nil || body.Message == "" {
+		return resp
+	}
+	return body.Message
 }
 
 // THE rule: a container may bind a host path only if the sandbox can see it.
 func TestContainerCannotMountWhatTheSandboxCannot(t *testing.T) {
-	sock, eng, _ := startProxy(t)
+	sock, eng, target := startProxy(t)
 
-	for _, tc := range []struct{ name, body string }{
-		{"the whole host filesystem", `{"HostConfig":{"Binds":["/:/host"]}}`},
-		{"/etc, which sys grants read-only", `{"HostConfig":{"Binds":["/etc:/etc"]}}`},
-		{"/usr writable, granted only read-only", `{"HostConfig":{"Binds":["/usr:/u"]}}`},
-		{"a relative source", `{"HostConfig":{"Binds":["../..:/x"]}}`},
+	for _, tc := range []struct{ name, body, wantMsg string }{
+		{"the whole host filesystem", `{"HostConfig":{"Binds":["/:/host"]}}`,
+			"cannot see / as writable"},
+		{"/etc, which sys grants read-only", `{"HostConfig":{"Binds":["/etc:/etc"]}}`,
+			"cannot see /etc as writable"},
+		{"/usr writable, granted only read-only", `{"HostConfig":{"Binds":["/usr:/u"]}}`,
+			"cannot see /usr as writable"},
+
+		// The absolute-path rule, pinned by its own message. As `../..` this case
+		// was refused by the VISIBILITY check instead — the proxy resolves a
+		// relative source against snug's cwd, which is never a granted path — so
+		// deleting filepath.IsAbs left it passing.
+		{"a relative source", `{"HostConfig":{"Binds":["../..:/x"]}}`,
+			"must be an absolute path"},
+		{"a bare relative source", `{"HostConfig":{"Binds":["build:/x"]}}`,
+			"must be an absolute path"},
+
+		// The structured Mounts form, which nothing covered at all: every escape
+		// below can equally be written this way, and `docker run --mount` does.
+		{"a volume mount, whose backing store is not knowable here",
+			`{"HostConfig":{"Mounts":[{"Type":"volume","Source":"v","Target":"/v"}]}}`,
+			`mount type "volume" is not permitted`},
+		{"a tmpfs mount",
+			`{"HostConfig":{"Mounts":[{"Type":"tmpfs","Target":"/t"}]}}`,
+			`mount type "tmpfs" is not permitted`},
+		{"the host filesystem via the structured form",
+			`{"HostConfig":{"Mounts":[{"Type":"bind","Source":"/","Target":"/host"}]}}`,
+			"cannot see / as writable"},
+		{"a read-only bind of a path the sandbox never got",
+			`{"HostConfig":{"Mounts":[{"Type":"bind","Source":"/etc","Target":"/x","ReadOnly":true}]}}`,
+			"cannot see /etc as read-only"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			before := eng.reached.Load()
-			code, body := post(t, sock, "/v1.41/containers/create", tc.body)
-			if code != http.StatusForbidden {
-				t.Errorf("status %d, want 403: %s", code, body)
-			}
-			if eng.reached.Load() != before {
-				t.Error("the request reached the engine; it should have been refused here")
-			}
+			refuse(t, sock, eng, "/v1.41/containers/create", tc.body, tc.wantMsg)
 		})
 	}
+
+	// The target IS visible, so this one can only be refused by the option
+	// parser. Written against /tmp it was refused by visibility instead, and the
+	// option parser could be deleted without failing anything.
+	t.Run("propagation smuggled through bind options on a PERMITTED path", func(t *testing.T) {
+		refuse(t, sock, eng, "/v1.41/containers/create",
+			`{"HostConfig":{"Binds":["`+target+`:/src:rshared"]}}`,
+			`bind option "rshared" is not permitted`)
+	})
+	// Control for the case above: the same bind without the smuggled option is
+	// accepted, so the refusal is attributable to `rshared` alone.
+	t.Run("control: the same bind without the option is allowed", func(t *testing.T) {
+		code, resp := post(t, sock, "/v1.41/containers/create",
+			`{"HostConfig":{"Binds":["`+target+`:/src:ro"]}}`)
+		if code != 200 {
+			t.Fatalf("status %d, want 200 — if this cannot be accepted, the case above "+
+				"proves nothing about the option parser: %s", code, resp)
+		}
+	})
 }
 
 // The common legitimate case must still work, or nobody will use the profile.
@@ -128,41 +209,219 @@ func TestContainerMayMountTheTarget(t *testing.T) {
 
 func TestEscapeFieldsAreRefused(t *testing.T) {
 	sock, eng, _ := startProxy(t)
-	for _, tc := range []struct{ name, body string }{
-		{"privileged", `{"HostConfig":{"Privileged":true}}`},
-		{"added capabilities", `{"HostConfig":{"CapAdd":["SYS_ADMIN"]}}`},
-		{"device passthrough", `{"HostConfig":{"Devices":[{"PathOnHost":"/dev/sda"}]}}`},
-		{"an alternate runtime", `{"HostConfig":{"Runtime":"/tmp/evil"}}`},
-		{"host networking", `{"HostConfig":{"NetworkMode":"host"}}`},
-		{"another container's netns", `{"HostConfig":{"NetworkMode":"container:abc"}}`},
-		{"host pid namespace", `{"HostConfig":{"PidMode":"host"}}`},
-		{"published ports", `{"HostConfig":{"PortBindings":{"80/tcp":[{"HostPort":"8080"}]}}}`},
-		{"mounts inherited from another container", `{"HostConfig":{"VolumesFrom":["other"]}}`},
-		{"a security-opt of its own", `{"HostConfig":{"SecurityOpt":["seccomp=unconfined"]}}`},
-		{"anonymous volumes", `{"Volumes":{"/data":{}}}`},
-		{"propagation smuggled through bind options", `{"HostConfig":{"Binds":["/tmp:/tmp:rshared"]}}`},
+	for _, tc := range []struct{ name, body, wantMsg string }{
+		{"privileged", `{"HostConfig":{"Privileged":true}}`,
+			"HostConfig.Privileged is not permitted"},
+		{"added capabilities", `{"HostConfig":{"CapAdd":["SYS_ADMIN"]}}`,
+			"HostConfig.CapAdd is not permitted"},
+		{"device passthrough", `{"HostConfig":{"Devices":[{"PathOnHost":"/dev/sda"}]}}`,
+			"HostConfig.Devices is not permitted"},
+		{"an alternate runtime", `{"HostConfig":{"Runtime":"/tmp/evil"}}`,
+			"HostConfig.Runtime is not permitted"},
+		{"host networking", `{"HostConfig":{"NetworkMode":"host"}}`,
+			"would join a namespace outside this sandbox"},
+		{"another container's netns", `{"HostConfig":{"NetworkMode":"container:abc"}}`,
+			"would join a namespace outside this sandbox"},
+		{"host pid namespace", `{"HostConfig":{"PidMode":"host"}}`,
+			"would join a namespace outside this sandbox"},
+		{"a raw netns path", `{"HostConfig":{"NetworkMode":"ns:/proc/1/ns/net"}}`,
+			"would join a namespace outside this sandbox"},
+		{"the host user namespace", `{"HostConfig":{"UsernsMode":"host"}}`,
+			"would join a namespace outside this sandbox"},
+		{"published ports", `{"HostConfig":{"PortBindings":{"80/tcp":[{"HostPort":"8080"}]}}}`,
+			"HostConfig.PortBindings is not permitted"},
+		{"mounts inherited from another container", `{"HostConfig":{"VolumesFrom":["other"]}}`,
+			"HostConfig.VolumesFrom is not permitted"},
+		{"a security-opt of its own", `{"HostConfig":{"SecurityOpt":["seccomp=unconfined"]}}`,
+			"HostConfig.SecurityOpt is not permitted"},
+		{"anonymous volumes", `{"Volumes":{"/data":{}}}`,
+			"Volumes is not permitted"},
+
+		// REGRESSION, confirmed by the redteam agent (M4): podman's k8s-file and
+		// json-file log drivers honour a `path` option, and conmon then creates
+		// and writes that file ON THE HOST, as your uid, needing no privileges.
+		// It was used to plant a file in a $HOME the sandbox itself sees only as
+		// an empty tmpfs — an arbitrary host-file write through a field nobody
+		// reads as dangerous. LogConfig was on the denylist from the fix onwards
+		// and had no test until this one: deleting the entry failed nothing.
+		{"a log driver writing to a host path (redteam M4)",
+			`{"HostConfig":{"LogConfig":{"Type":"k8s-file","Config":{"path":"/home/user/.bashrc"}}}}`,
+			"HostConfig.LogConfig is not permitted"},
+		{"annotations, which podman routes to the OCI runtime",
+			`{"HostConfig":{"Annotations":{"run.oci.keep_original_groups":"1"}}}`,
+			"HostConfig.Annotations is not permitted"},
+		{"a cgroup outside this sandbox's own", `{"HostConfig":{"CgroupParent":"/"}}`,
+			"HostConfig.CgroupParent is not permitted"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			before := eng.reached.Load()
-			code, body := post(t, sock, "/v1.41/containers/create", tc.body)
-			if code != http.StatusForbidden {
-				t.Errorf("status %d, want 403: %s", code, body)
-			}
-			if eng.reached.Load() != before {
-				t.Error("request reached the engine")
-			}
+			refuse(t, sock, eng, "/v1.41/containers/create", tc.body, tc.wantMsg)
 		})
+	}
+}
+
+// REGRESSION, confirmed by the redteam agent (M4): the proxy understands the
+// DOCKER-COMPAT create schema. podman's native libpod SpecGenerator body is a
+// different shape — lowercase top-level `mounts`, `privileged`, `netns`,
+// `cap_add`, `devices` — and an earlier normalise() collapsed the `libpod`
+// segment and forgot it, so /v5.0.0/libpod/containers/create routed into
+// handleCreate, which inspected none of those fields and forwarded the body
+// verbatim. The agent bound the host's ~/.ssh into a privileged container with
+// host networking and read a private key out.
+//
+// A filter that understands one schema must never be handed the other, so
+// body-bearing libpod endpoints are refused outright rather than forwarded.
+func TestLibpodNativeBodyIsRefusedRatherThanForwardedUnexamined(t *testing.T) {
+	sock, eng, _ := startProxy(t)
+
+	// The exact escape: everything dangerous, in libpod spelling.
+	escape := `{"image":"alpine","privileged":true,"netns":{"nsmode":"host"},
+	            "cap_add":["SYS_ADMIN"],
+	            "mounts":[{"type":"bind","source":"/","destination":"/host"}]}`
+
+	for _, path := range []string{
+		"/v5.0.0/libpod/containers/create",
+		"/libpod/containers/create",
+		"/v4.0.0/libpod/volumes/create",
+		"/v5.0.0/libpod/images/pull",
+		"/v5.0.0/libpod/pods/create",
+		"/v5.0.0/libpod/play/kube",
+	} {
+		t.Run(path, func(t *testing.T) {
+			refuse(t, sock, eng, path, escape, "the libpod-native API is not supported")
+		})
+	}
+
+	// CONTROL, and it is the half that keeps the test honest: the same escape on
+	// the DOCKER-COMPAT path reaches handleCreate and is refused there, by a
+	// different message. Without this, "libpod is refused" would be satisfied by
+	// a proxy that refused every create request, and the test would still pass if
+	// the docker-compat path stopped working.
+	t.Run("control: the docker-compat path is judged, not blanket-refused", func(t *testing.T) {
+		refuse(t, sock, eng, "/v1.41/containers/create",
+			`{"Image":"alpine","HostConfig":{"Privileged":true}}`,
+			"HostConfig.Privileged is not permitted")
+	})
+
+	// CONTROL: read-only libpod routes stay usable. If this stopped being true
+	// the refusal above would be a blanket ban on libpod and would prove nothing
+	// about schema confusion.
+	t.Run("control: a read-only libpod route still works", func(t *testing.T) {
+		before := eng.reached.Load()
+		segs, libpod, ok := normaliseFull("/v5.0.0/libpod/containers/json")
+		if !ok || !libpod {
+			t.Fatalf("normaliseFull did not recognise the libpod prefix: %v %v %v", segs, libpod, ok)
+		}
+		if bodyBearing(segs, http.MethodGet) {
+			t.Error("a GET carries no body to misread and must not be refused as libpod")
+		}
+		if !allowed(segs) {
+			t.Error("listing containers over libpod should still be allowed")
+		}
+		_ = before
+	})
+}
+
+// REGRESSION, confirmed by the redteam agent (M4): the visibility check was
+// applied to the literal string the client sent. The sandbox's writable target
+// is attacker-controlled, so `ln -s /etc $TARGET/link` produced a bind source
+// that passed the check — it is inside the target — while podman resolved it on
+// the HOST and mounted /etc.
+//
+// The fix resolves symlinks before deciding AND forwards the resolved path, so
+// podman is asked for the thing that was actually approved.
+func TestSymlinkedBindSourceIsJudgedAfterResolution(t *testing.T) {
+	sock, eng, target := startProxy(t)
+
+	// A symlink inside the writable target, pointing at a path the sandbox was
+	// never granted. This is exactly what a payload can create.
+	escape := filepath.Join(target, "innocent")
+	if err := os.Symlink("/etc", escape); err != nil {
+		t.Fatal(err)
+	}
+	// A second one, one level deeper, because the check has to survive resolution
+	// of an ANCESTOR component and not just of the leaf.
+	deep := filepath.Join(target, "sub")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/etc", filepath.Join(deep, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	// CONTROL: a plain path inside the target is accepted, so a refusal below is
+	// attributable to where the link points and not to the target being unusable.
+	if code, resp := post(t, sock, "/v1.41/containers/create",
+		`{"HostConfig":{"Binds":["`+filepath.Join(target, "sub")+`:/src"]}}`); code != 200 {
+		t.Fatalf("control: a real directory inside the target must be mountable "+
+			"(status %d): %s", code, resp)
+	}
+
+	for _, src := range []string{escape, filepath.Join(deep, "link"), filepath.Join(escape, "hosts")} {
+		t.Run(src, func(t *testing.T) {
+			refuse(t, sock, eng, "/v1.41/containers/create",
+				`{"HostConfig":{"Binds":["`+src+`:/x"]}}`, "cannot see /etc")
+		})
+	}
+
+	// And the RESOLVED path is what gets forwarded, so podman is asked for the
+	// thing that was approved rather than for a link it will re-resolve itself.
+	// A link inside the target pointing at another place inside the target is
+	// legitimate and must still work.
+	inner := filepath.Join(target, "real")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(target, "alias")
+	if err := os.Symlink(inner, alias); err != nil {
+		t.Fatal(err)
+	}
+	code, resp := post(t, sock, "/v1.41/containers/create",
+		`{"HostConfig":{"Binds":["`+alias+`:/src"]}}`)
+	if code != 200 {
+		t.Fatalf("a symlink to a permitted path inside the target should be allowed "+
+			"(status %d): %s", code, resp)
+	}
+	sent, _ := eng.lastBody.Load().(string)
+	if !strings.Contains(sent, inner) {
+		t.Errorf("the RESOLVED path was not what reached the engine; podman would "+
+			"re-resolve the link itself, which is the TOCTOU this fix closes:\n%s", sent)
+	}
+	if strings.Contains(sent, `"Source":"`+alias+`"`) {
+		t.Errorf("the unresolved symlink was forwarded as the mount source:\n%s", sent)
 	}
 }
 
 // A local volume with driver options is how a host path gets planted under a
 // name, to be referenced innocently later.
 func TestVolumeDriverOptionsAreRefused(t *testing.T) {
-	sock, _, _ := startProxy(t)
-	code, _ := post(t, sock, "/v1.41/volumes/create",
-		`{"Name":"v","Driver":"local","Options":{"type":"none","o":"bind","device":"/"}}`)
-	if code != http.StatusForbidden {
-		t.Errorf("status %d, want 403", code)
+	sock, eng, _ := startProxy(t)
+
+	for _, tc := range []struct{ name, body, wantMsg string }{
+		{"a local volume that is really a host bind",
+			`{"Name":"v","Driver":"local","Options":{"type":"none","o":"bind","device":"/"}}`,
+			"volume Options is not permitted"},
+		{"the same thing spelled DriverOpts",
+			`{"Name":"v","Driver":"local","DriverOpts":{"type":"none","o":"bind","device":"/"}}`,
+			"volume DriverOpts is not permitted"},
+		{"an NFS share",
+			`{"Name":"v","Options":{"type":"nfs","o":"addr=10.0.0.1","device":":/export"}}`,
+			"volume Options is not permitted"},
+		{"a non-local driver",
+			`{"Name":"v","Driver":"sshfs"}`,
+			`volume driver "sshfs" is not permitted`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			refuse(t, sock, eng, "/v1.41/volumes/create", tc.body, tc.wantMsg)
+		})
+	}
+
+	// CONTROL: a plain local volume with no options is still allowed, so the
+	// refusals above are attributable to the options and not to volume creation
+	// being blocked outright.
+	code, resp := post(t, sock, "/v1.41/volumes/create", `{"Name":"plain","Driver":"local"}`)
+	if code != 200 {
+		t.Errorf("control: an ordinary local volume must still be creatable "+
+			"(status %d): %s", code, resp)
 	}
 }
 

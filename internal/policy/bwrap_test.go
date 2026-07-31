@@ -20,8 +20,12 @@ func TestGoldenBwrapArgs(t *testing.T) {
 		sel  []string
 	}{
 		{"sys", []string{"sys", "cwd-rw"}},
-		{"default", []string{"default"}},
-		{"dotdot", []string{"sys", "cwd-rw", "dotdot"}},
+		// What a bare `snug <dir>` produces: the `defaults` setting. It is
+		// byte-identical to the parent-ro case today, because `home` arrives via
+		// `cwd-rw` anyway — but this is the file that changes if the shipped
+		// defaults ever do, which is the diff a human most needs to see.
+		{"defaults", testDefaults},
+		{"parent-ro", []string{"sys", "cwd-rw", "parent-ro"}},
 	}
 
 	for _, tc := range cases {
@@ -70,8 +74,8 @@ func goldenFormat(args []string) string {
 // The argv must be a pure function of the RESOLVED policy, never of the order
 // the profiles were named. Emission order comes from the depth sort.
 func TestBwrapArgsAreOrderIndependent(t *testing.T) {
-	a := mustResolve(t, "sys", "home", "cwd-rw", "dotdot")
-	b := mustResolve(t, "dotdot", "cwd-rw", "home", "sys")
+	a := mustResolve(t, "sys", "home", "cwd-rw", "parent-ro")
+	b := mustResolve(t, "parent-ro", "cwd-rw", "home", "sys")
 	if strings.Join(a.BwrapArgs(1000, 1000), " ") != strings.Join(b.BwrapArgs(1000, 1000), " ") {
 		t.Error("argv depends on the order profiles were named")
 	}
@@ -80,7 +84,7 @@ func TestBwrapArgsAreOrderIndependent(t *testing.T) {
 // Ancestors must be emitted before descendants, or a read-only parent bind
 // shadows the writable child and the sandbox silently loses its project.
 func TestParentBindPrecedesChildBind(t *testing.T) {
-	p := mustResolve(t, "default")
+	p := mustResolveDefaults(t)
 	args := p.BwrapArgs(1000, 1000)
 
 	parent, child := -1, -1
@@ -103,7 +107,7 @@ func TestParentBindPrecedesChildBind(t *testing.T) {
 // --remount-ro / must be the LAST filesystem operation, otherwise a later mount
 // lands on a read-only root, or the skeleton stays writable.
 func TestRemountRoIsLastFilesystemOp(t *testing.T) {
-	args := mustResolve(t, "default").BwrapArgs(1000, 1000)
+	args := mustResolveDefaults(t).BwrapArgs(1000, 1000)
 
 	remount := -1
 	for i, a := range args {
@@ -133,7 +137,7 @@ func TestNewSessionTracksTIOCSTI(t *testing.T) {
 		ctx := testCtx()
 		ctx.LegacyTIOCSTI = legacy
 
-		p, err := Resolve(testRegistry(), []string{"default"}, ctx, newFakeEnv())
+		p, err := Resolve(testRegistry(), testDefaults, ctx, newFakeEnv())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -161,7 +165,7 @@ func slicesContains(hay []string, needle string) bool {
 // BwrapFlags must therefore contain no separator, so a caller has somewhere
 // safe to add flags.
 func TestBwrapFlagsHasNoSeparator(t *testing.T) {
-	for i, a := range mustResolve(t, "default").BwrapFlags(1000, 1000, func(string) int { return 9 }) {
+	for i, a := range mustResolveDefaults(t).BwrapFlags(1000, 1000, func(string) int { return 9 }) {
 		if a == "--" {
 			t.Fatalf("BwrapFlags contains a `--` separator at %d; anything a caller appends "+
 				"after it would be passed to the payload instead of to bwrap", i)
@@ -172,7 +176,7 @@ func TestBwrapFlagsHasNoSeparator(t *testing.T) {
 // And the full form must still end with the separator followed by the command,
 // because that is what --dry-run shows and what the golden files record.
 func TestBwrapArgsEndsWithSeparatorThenCommand(t *testing.T) {
-	args := mustResolve(t, "default").BwrapArgs(1000, 1000)
+	args := mustResolveDefaults(t).BwrapArgs(1000, 1000)
 	sep := -1
 	for i, a := range args {
 		if a == "--" {
@@ -191,7 +195,7 @@ func TestBwrapArgsEndsWithSeparatorThenCommand(t *testing.T) {
 // The sandbox is offline in M0, and that must be visible in the argv rather
 // than assumed: --unshare-all with no --share-net means a netns with only lo.
 func TestSandboxIsOffline(t *testing.T) {
-	args := mustResolve(t, "default").BwrapArgs(1000, 1000)
+	args := mustResolveDefaults(t).BwrapArgs(1000, 1000)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--unshare-all") {
 		t.Error("--unshare-all missing: the sandbox would share the host's namespaces")

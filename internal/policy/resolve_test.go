@@ -71,18 +71,35 @@ func testRegistry() map[string]*Profile {
 			Optional: []string{"/opt"},
 			Symlink:  []Symlink{{At: "/bin", Target: "usr/bin"}},
 		},
-		"home":   {Name: "home", Tmpfs: []string{"{home}", "{home}/.cache"}},
-		"cwd-rw": {Name: "cwd-rw", Include: []string{"home"}, RW: []string{"{target}"}},
-		"dotdot": {Name: "dotdot", RO: []string{"{target_parent}"}},
+		"home":      {Name: "home", Tmpfs: []string{"{home}", "{home}/.cache"}},
+		"cwd-rw":    {Name: "cwd-rw", Include: []string{"home"}, RW: []string{"{target}"}},
+		"parent-ro": {Name: "parent-ro", RO: []string{"{target_parent}"}},
 		// Deliberately overlaps cwd-rw at the same guest path with weaker
 		// access, to prove the join takes the max rather than the last writer.
-		"cwd-ro":  {Name: "cwd-ro", RO: []string{"{target}"}},
-		"default": {Name: "default", Include: []string{"sys", "cwd-rw", "dotdot"}},
+		"cwd-ro": {Name: "cwd-ro", RO: []string{"{target}"}},
+		// A pure composition point with a two-level include chain
+		// (combo -> cwd-rw -> home). The builtin `default` used to be one of
+		// these; it is now the `defaults` SETTING (internal/profile/defaults.go),
+		// but the resolver must still handle include-only profiles, so the fake
+		// registry keeps one.
+		"combo": {Name: "combo", Include: []string{"sys", "cwd-rw", "parent-ro"}},
 	}
 }
 
+// testDefaults mirrors profile.BuiltinDefaults() — what a bare `snug <dir>`
+// selects. internal/policy cannot import internal/profile (that is the
+// dependency the other way round), so the list is repeated here; if it ever
+// diverges, the goldens are describing a sandbox no user gets.
+var testDefaults = []string{"sys", "home", "cwd-rw", "parent-ro"}
+
 func testCtx() Context {
 	return Context{Target: "/home/u/proj/sub", Home: "/home/u", Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+}
+
+// mustResolveDefaults resolves what a bare `snug <dir>` produces.
+func mustResolveDefaults(t *testing.T) *Policy {
+	t.Helper()
+	return mustResolve(t, testDefaults...)
 }
 
 func mustResolve(t *testing.T, sel ...string) *Policy {
@@ -117,7 +134,7 @@ func canon(p *Policy) string {
 // Resolve must be commutative. If it is not, the order profiles are named
 // changes what the sandbox grants, and "profiles only relax" becomes unprovable.
 func TestResolveIsCommutative(t *testing.T) {
-	all := []string{"sys", "home", "cwd-rw", "dotdot", "cwd-ro"}
+	all := []string{"sys", "home", "cwd-rw", "parent-ro", "cwd-ro"}
 	want := canon(mustResolve(t, all...))
 
 	rng := rand.New(rand.NewSource(1))
@@ -132,7 +149,7 @@ func TestResolveIsCommutative(t *testing.T) {
 
 // Selecting a profile twice must be identical to selecting it once.
 func TestResolveIsIdempotent(t *testing.T) {
-	for _, name := range []string{"sys", "cwd-rw", "dotdot", "default"} {
+	for _, name := range []string{"sys", "cwd-rw", "parent-ro", "combo"} {
 		once := canon(mustResolve(t, "sys", "cwd-rw", name))
 		twice := canon(mustResolve(t, "sys", "cwd-rw", name, name))
 		if once != twice {
@@ -234,7 +251,7 @@ func TestSymlinkAboveTargetIsStillFollowed(t *testing.T) {
 	env.links["/home/u/proj"] = "/var/home/u/proj"
 	env.links["/home/u/proj/sub"] = "/var/home/u/proj/sub"
 
-	p, err := Resolve(testRegistry(), []string{"default"}, testCtx(), env)
+	p, err := Resolve(testRegistry(), testDefaults, testCtx(), env)
 	if err != nil {
 		t.Fatalf("a host-level symlink above the target broke resolution: %v", err)
 	}
@@ -268,11 +285,11 @@ func TestFailsClosed(t *testing.T) {
 		{"no runtime granted", []string{"cwd-rw"}, nil, "no OS runtime granted"},
 		{"grants nothing", []string{"null"}, nil, "grant nothing"},
 		{"target not visible", []string{"sys"}, nil, "is not visible"},
-		{"missing target", []string{"default"}, func(c Context) Context {
+		{"missing target", testDefaults, func(c Context) Context {
 			c.Target = "/home/u/nope"
 			return c
 		}, "does not exist"},
-		{"empty target", []string{"default"}, func(c Context) Context {
+		{"empty target", testDefaults, func(c Context) Context {
 			c.Target = ""
 			return c
 		}, "no target"},
@@ -333,10 +350,10 @@ func TestMaskingByNestedBindIsRejected(t *testing.T) {
 }
 
 // The legitimate nesting must keep working: cwd-rw lays rw {target} over
-// dotdot's ro {target_parent}. That re-grants the SAME host tree at stronger
-// access — a superset, not a mask — and the default profile depends on it.
+// parent-ro's ro {target_parent}. That re-grants the SAME host tree at stronger
+// access — a superset, not a mask — and the default selection depends on it.
 func TestReGrantingTheSameTreeIsAllowed(t *testing.T) {
-	p := mustResolve(t, "default")
+	p := mustResolveDefaults(t)
 
 	parent := p.Mounts["/home/u/proj"]
 	target := p.Mounts["/home/u/proj/sub"]
@@ -407,7 +424,7 @@ func TestSharedTmpReplacesThePrivateTmpfs(t *testing.T) {
 // Without tmp-shared, /tmp must stay a private tmpfs — a sandbox whose /tmp
 // leaked to the host by default would be a nasty surprise.
 func TestTmpIsPrivateByDefault(t *testing.T) {
-	if got := mustResolve(t, "default").Mounts["/tmp"].Kind; got != KindTmpfs {
+	if got := mustResolveDefaults(t).Mounts["/tmp"].Kind; got != KindTmpfs {
 		t.Errorf("/tmp is %s by default, want tmpfs", got)
 	}
 }
@@ -430,7 +447,7 @@ func TestForbiddenEnvIsRefusedLoudly(t *testing.T) {
 	env := newFakeEnv()
 	env.env["LD_PRELOAD"] = "/tmp/evil.so"
 
-	_, err := Resolve(reg, []string{"default", "bad"}, testCtx(), env)
+	_, err := Resolve(reg, append(append([]string{}, testDefaults...), "bad"), testCtx(), env)
 	if err == nil || !strings.Contains(err.Error(), "LD_PRELOAD") {
 		t.Fatalf("expected a refusal naming LD_PRELOAD, got %v", err)
 	}
@@ -466,7 +483,7 @@ func reachable(p *Policy, host string) bool {
 
 // Deny-by-default is only real if unrelated host paths never appear.
 func TestUngrantedPathsAreAbsent(t *testing.T) {
-	p := mustResolve(t, "default")
+	p := mustResolveDefaults(t)
 	for _, absent := range []string{
 		"/home/u/secrets", // a sibling of the project's ancestors
 		"/sys",            // never granted
@@ -479,36 +496,42 @@ func TestUngrantedPathsAreAbsent(t *testing.T) {
 	}
 }
 
-// dotdot grants the target's PARENT, so the target's siblings are readable by
+// parent-ro grants the target's PARENT, so the target's siblings are readable by
 // design — that is the point of the profile (../other-package in a monorepo).
 // What must stay out of reach is everything above the parent. Pinning this down
-// means a future change to dotdot cannot quietly widen it by one level.
-func TestDotdotGrantsTheParentAndNoHigher(t *testing.T) {
-	p := mustResolve(t, "default")
+// means a future change to parent-ro cannot quietly widen it by one level.
+func TestParentRoGrantsTheParentAndNoHigher(t *testing.T) {
+	p := mustResolveDefaults(t)
 
 	if !reachable(p, "/home/u/proj/other") {
-		t.Error("a sibling of the target should be readable: dotdot grants the parent")
+		t.Error("a sibling of the target should be readable: parent-ro grants the parent")
 	}
 	if reachable(p, "/home/u/secrets") {
-		t.Error("dotdot leaked a level: the parent's siblings must stay unreachable")
+		t.Error("parent-ro leaked a level: the parent's siblings must stay unreachable")
 	}
 
-	// Without dotdot, the parent itself is gone.
+	// Without parent-ro, the parent itself is gone.
 	q := mustResolve(t, "sys", "cwd-rw")
 	if reachable(q, "/home/u/proj/other") {
-		t.Error("without dotdot the parent must not be granted at all")
+		t.Error("without parent-ro the parent must not be granted at all")
 	}
 }
 
-// The clamp is the only thing allowed to tighten, and it is applied by the
-// human, never by a file.
-func TestClampOnlyTightens(t *testing.T) {
-	p := mustResolve(t, "default")
-	if p.Mounts["/home/u/proj/sub"].Access != AccessRW {
-		t.Fatal("precondition: target should start writable")
+// Nothing tightens. The clamp (`--read-only`) used to be the one exception —
+// restriction applied by a human after resolution — and it is gone with the
+// flag. A resolved policy now has exactly one way to grant less: fewer
+// profiles. If a `Clamp`, an `Apply`, or any other demote appears here again,
+// the model has grown a carve-out and every monotonicity argument in
+// docs/DESIGN.md needs re-reading.
+func TestPolicyHasNoRestrictionOperation(t *testing.T) {
+	p := mustResolveDefaults(t)
+	if got := p.Mounts["/home/u/proj/sub"].Access; got != AccessRW {
+		t.Fatalf("target access = %s, want rw", got)
 	}
-	p.Apply(Clamp{ReadOnly: true})
-	if got := p.Mounts["/home/u/proj/sub"].Access; got != AccessRO {
-		t.Errorf("after --read-only clamp target access = %s, want ro", got)
+	// Selecting a read-only view of the same tree does not demote the writable
+	// grant: the join takes the maximum, in both directions.
+	q := mustResolve(t, "sys", "cwd-rw", "cwd-ro")
+	if got := q.Mounts["/home/u/proj/sub"].Access; got != AccessRW {
+		t.Errorf("adding cwd-ro demoted the target to %s; profiles may only ever grant", got)
 	}
 }

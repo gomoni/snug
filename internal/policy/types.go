@@ -225,22 +225,9 @@ func ParsePodmanMode(s string) (PodmanMode, error) {
 	}
 }
 
-// Clamp is restriction, and it is deliberately NOT part of the profile lattice.
-// Profiles are data that may originate near untrusted material; the CLI is the
-// human. Only the human may tighten, and tightening is always safe.
-type Clamp struct {
-	ReadOnly bool // demote every RW grant to RO
-}
-
-// Apply moves the policy DOWN the lattice. It can only ever remove capability.
-func (p *Policy) Apply(c Clamp) {
-	if !c.ReadOnly {
-		return
-	}
-	for k, m := range p.Mounts {
-		if m.Access == AccessRW && m.Kind == KindBind {
-			m.Access = AccessRO
-			p.Mounts[k] = m
-		}
-	}
-}
+// There is deliberately no restriction operation here — no Clamp, no Apply, no
+// demote. An earlier version had one, serving a `--read-only` flag, and both are
+// gone: snug stays minimal (bwrap is the swiss knife), and removing the flag
+// removed the model's one exception. Profiles only ever GRANT, nothing anywhere
+// un-grants, and an invariant with no carve-out is easier to trust and to test
+// than one with. To grant less, select fewer profiles.

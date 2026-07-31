@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"snug/internal/profile"
 )
 
 // doctor reports whether this host can run snug, so a user diagnoses a machine
@@ -86,6 +88,16 @@ func doctor() int {
 		fmt.Println("  📦 running inside a container (distrobox/podman) — supported")
 	} else if _, err := os.Stat("/.dockerenv"); err == nil {
 		fmt.Println("  📦 running inside a docker container — supported")
+	}
+
+	// A host can be perfectly capable and snug still refuse to start because the
+	// profile set will not load. doctor is what someone runs to find out why, so
+	// it must say so rather than reporting a clean bill of health.
+	if _, err := profile.Load(); err != nil {
+		fmt.Printf("  ❌ the profile set will not load\n     %v\n", err)
+		ok = false
+	} else {
+		fmt.Println("  ✅ profiles load cleanly")
 	}
 
 	fmt.Println()

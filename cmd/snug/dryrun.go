@@ -31,9 +31,6 @@ func dryRun(p *policy.Policy, args []string, cfg config) {
 	} else {
 		fmt.Fprintf(out, "TTY      shared session — job control works (TIOCSTI is disabled kernel-wide)\n")
 	}
-	if cfg.readOnly {
-		fmt.Fprintln(out, "CLAMP    --read-only: every writable grant demoted to read-only")
-	}
 	fmt.Fprintln(out)
 
 	fmt.Fprintln(out, "FILESYSTEM  (deny-by-default; every line is a grant, there are no deny rules)")
@@ -146,7 +143,7 @@ func notGranted(p *policy.Policy) []string {
 		lines = append(lines, strings.Join(absent, "  "))
 	}
 
-	// Siblings of the target, which is the property the dotdot profile is
+	// Siblings of the target, which is the property the parent-ro profile is
 	// really about: the parent is readable, its other children are not.
 	parent := filepath.Dir(p.Target)
 	if entries, err := os.ReadDir(parent); err == nil {

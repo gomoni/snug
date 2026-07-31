@@ -86,14 +86,19 @@ symlink = [
   { at = "/lib64", target = "usr/lib64" },
 ]
 
-# ABUSE: every script in /etc/profile.d and /etc/bash.bashrc runs inside the
-# sandbox, so the host distribution gets to inject code into the agent's shell.
-# On a distrobox host that means the sandbox tries to reach the session bus.
-# Nothing here is a confidentiality problem — it is an execution one. Select it
-# when a tool genuinely needs the distro's shell environment, and expect noise.
-[profile.etc-full]
-description = "All of /etc read-only, including the distro's shell startup scripts."
-ro = ["/etc"]
+# There is deliberately NO `etc-full` builtin. A profile granting all of /etc is
+# one line —
+#
+#   [profile.etc-full]
+#   ro = ["/etc"]
+#
+# — that anyone can put in ~/.config/snug/profiles.d/. Shipping it bought nothing
+# but a maintenance obligation and a thing to explain. snug ships the curated
+# /etc above; whoever wants the whole tree writes that line and accepts what
+# comes with it (every script in /etc/profile.d and /etc/bash.bashrc then RUNS
+# inside the sandbox, so the distribution injects code into the agent's shell).
+# Same minimalism as having no --read-only: the tool stays small, and the escape
+# hatch is the profile format itself.
 
 # ── an ephemeral, writable HOME ──────────────────────────────────────────────
 # $HOME is the same absolute path as on the host, because tooling bakes absolute
@@ -115,7 +120,7 @@ rw = ["{target}"]
 # The target's parent is readable. Everything under higher ancestors stays
 # invisible — not hidden, never granted. This is one line because the model has
 # no hiding operation to get wrong.
-[profile.dotdot]
+[profile.parent-ro]
 description = "The target's parent directory is readable."
 ro = ["{target_parent}"]
 
@@ -191,10 +196,14 @@ gateway = "10.13.13.1"
 description = "DANGEROUS. Shares the HOST network namespace. Requires --i-know."
 network = "host"
 
-# ── the default a bare `snug <dir>` selects ──────────────────────────────────
-[profile.default]
-description = "sys + a writable target + a readable parent. Offline."
-include = ["sys", "home", "cwd-rw", "dotdot"]
+# ── what a bare `snug <dir>` selects ─────────────────────────────────────────
+# There is deliberately NO [profile.default] here. What a bare `snug <dir>`
+# selects is a PREFERENCE, not a grant: it is the `defaults` setting in
+# ~/.config/snug/config.toml, whose built-in value lives in
+# internal/profile/defaults.go. A profile that grants nothing still showed up in
+# SNUG_PROFILES, in `snug profile tree` and in every Mount's provenance as
+# though it were a hole in the sandbox, and it duplicated an idea the config
+# file already expressed. One idea, one mechanism.
 
 # ── identity: one git/ssh/gh account, and nothing else ───────────────────────
 # ABUSE: the sandbox gets a SIGNING ORACLE for one ssh key. It can push to any
@@ -208,7 +217,7 @@ include = ["sys", "home", "cwd-rw", "dotdot"]
 # your own account. It grants nothing on its own.
 #
 #   [profile.work]
-#   include = ["default", "net", "git-ro"]
+#   include = ["net", "git-ro"]     # the `defaults` are selected as well; -p adds
 #     [profile.work.identity]
 #     gh_user   = "you"
 #     git_name  = "Your Name"

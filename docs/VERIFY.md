@@ -104,23 +104,23 @@ there to deny access to.
 Try the same for anything else you care about — `~/.gnupg`, `~/.aws`,
 `~/.config/gh`, your other projects.
 
-## 5. What `dotdot` actually grants
+## 5. What `parent-ro` actually grants
 
 ```bash
 ./bin/snug $SC/proj/sub -- /bin/sh -c "ls $SC/proj"
 ```
 
-Expect `sibling  sub` — **both**. This is correct and intentional: `dotdot`
+Expect `sibling  sub` — **both**. This is correct and intentional: `parent-ro`
 grants the target's *parent*, so the target's siblings are readable. That is
 what makes `../other-package` work in a monorepo.
 
 What must not be reachable is anything **above** the parent, which is what
 check 4 confirms with `$SC/other` and `$SC/CANARY-TOP`.
 
-If you do not want siblings readable, drop `dotdot`:
+If you do not want siblings readable, drop `parent-ro`:
 
 ```bash
-./bin/snug --no-default -p sys -p cwd-rw $SC/proj/sub -- /bin/sh -c "ls $SC/proj"
+./bin/snug --no-defaults -p sys -p cwd-rw $SC/proj/sub -- /bin/sh -c "ls $SC/proj"
 ```
 
 Expect `No such file or directory`.
@@ -227,8 +227,8 @@ the floor, and networking arrives as an explicit profile in M2.
 ## 8. Profile order is irrelevant
 
 ```bash
-A=$(./bin/snug --dry-run -p sys -p cwd-rw -p dotdot $SC/proj/sub | sed -n '/── bwrap/,$p' | md5sum)
-B=$(./bin/snug --dry-run -p dotdot -p cwd-rw -p sys $SC/proj/sub | sed -n '/── bwrap/,$p' | md5sum)
+A=$(./bin/snug --dry-run -p sys -p cwd-rw -p parent-ro $SC/proj/sub | sed -n '/── bwrap/,$p' | md5sum)
+B=$(./bin/snug --dry-run -p parent-ro -p cwd-rw -p sys $SC/proj/sub | sed -n '/── bwrap/,$p' | md5sum)
 [ "$A" = "$B" ] && echo "identical: ok" || echo "DIFFERENT <-- FAIL"
 ```
 
@@ -249,6 +249,10 @@ cat > $X/snug/profiles.d/evil.toml <<EOF
 description = "try to mask part of another profile's grant"
 tmpfs = ["/etc/ssl"]
 
+[profile.etc-full]
+description = "all of /etc — not a builtin; one line in your own profiles.d"
+ro = ["/etc"]
+
 [profile.hide-profiled]
 description = "try to mask a path nested inside another grant"
 tmpfs = ["/etc/profile.d"]
@@ -262,10 +266,10 @@ description = "try to grant the whole host"
 ro = ["/"]
 EOF
 
-XDG_CONFIG_HOME=$X ./bin/snug -p default -p hide-ssl      $SC/proj/sub -- /bin/true
-XDG_CONFIG_HOME=$X ./bin/snug -p default -p etc-full -p hide-profiled $SC/proj/sub -- /bin/true
-XDG_CONFIG_HOME=$X ./bin/snug -p default -p mask-misc     $SC/proj/sub -- /bin/true
-XDG_CONFIG_HOME=$X ./bin/snug -p default -p greedy        $SC/proj/sub -- /bin/true
+XDG_CONFIG_HOME=$X ./bin/snug -p hide-ssl               $SC/proj/sub -- /bin/true
+XDG_CONFIG_HOME=$X ./bin/snug -p etc-full -p hide-profiled $SC/proj/sub -- /bin/true   # etc-full is defined in evil.toml above, not a builtin
+XDG_CONFIG_HOME=$X ./bin/snug -p mask-misc              $SC/proj/sub -- /bin/true
+XDG_CONFIG_HOME=$X ./bin/snug -p greedy                 $SC/proj/sub -- /bin/true
 
 rm -rf $X
 ```
@@ -291,7 +295,7 @@ tmpfs grants, so a *bind* of an unrelated directory walked straight through it �
 `redteam` agent.
 
 Confirm the legitimate nesting still works, since the fix could easily have
-broken it — the default profile lays `cwd-rw`'s writable target over `dotdot`'s
+broken it — the default selection lays `cwd-rw`'s writable target over `parent-ro`'s
 read-only parent, which is re-granting the same tree, not masking:
 
 ```bash
@@ -303,7 +307,7 @@ Also try an unknown key, which must be fatal rather than ignored:
 ```bash
 X=$(mktemp -d); mkdir -p $X/snug/profiles.d
 printf '[profile.x]\nmask = ["/etc"]\n' > $X/snug/profiles.d/x.toml
-XDG_CONFIG_HOME=$X ./bin/snug -p default -p x $SC/proj/sub -- /bin/true
+XDG_CONFIG_HOME=$X ./bin/snug -p x $SC/proj/sub -- /bin/true
 rm -rf $X
 ```
 
@@ -315,7 +319,7 @@ someone believe their sandbox is tighter than it is.
 ```bash
 cd $SC/proj/sub
 mkdir -p .snug
-printf '[profile.default]\nro = ["/"]\n' > .snug/profiles.toml
+printf '[profile.cwd-rw]\nro = ["/"]\n' > .snug/profiles.toml
 cp .snug/profiles.toml ./snug.toml
 
 /path/to/snug/bin/snug . -- /bin/sh -c 'ls / ; ls ~'
@@ -323,7 +327,9 @@ cp .snug/profiles.toml ./snug.toml
 rm -rf .snug snug.toml
 ```
 
-Expect the normal restricted view — the host root must **not** appear. snug
+The name is deliberately one the `defaults` already select, so auto-loading the
+file would either widen the sandbox or abort as a redefinition. Expect neither:
+the normal restricted view, and the host root must **not** appear. snug
 never auto-loads config from beside the target, because a hostile repository
 shipping its own profile would be granting itself permissions on the first run.
 
@@ -333,7 +339,7 @@ repository's profiles:
 
 ```bash
 mkdir -p $SC/proj/sub/.config/snug/profiles.d
-printf '[profile.evil]\ninclude=["default"]\nrw=["/etc"]\n' \
+printf '[profile.evil]\ninclude=["sys"]\nrw=["/etc"]\n' \
   > $SC/proj/sub/.config/snug/profiles.d/evil.toml
 XDG_CONFIG_HOME=$SC/proj/sub/.config ./bin/snug --dry-run -p evil $SC/proj/sub | grep '/etc'
 ```

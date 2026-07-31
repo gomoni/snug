@@ -24,9 +24,13 @@ keyctl, perf_event_open, userfaultfd, TIOCSTI and nested user namespaces. The
 flag list travels through a memfd, and inherited descriptors are sealed CLOEXEC.
 Networking is a private netns per sandbox with a pasta helper: full egress, host
 loopback unreachable, abstract sockets (X11/D-Bus) unreachable. Offline is the
-absence of the `net` profile. Profiles: `null`, `sys`, `etc-full`, `home`,
-`cwd-rw`, `dotdot`, `tmp-shared`, `git-ro`, `net`, `net-publish`, `net-anon`,
-`net-host`, `claude`, `default`.
+absence of the `net` profile. Profiles: `null`, `sys`, `home`,
+`cwd-rw`, `parent-ro`, `tmp-shared`, `git-ro`, `net`, `net-publish`, `net-anon`,
+`net-host`, `claude`, `podman-socket`. There is deliberately **no `default`
+profile**: what a bare `snug <dir>` selects is the `defaults` *setting*
+(`internal/profile/defaults.go`, overridable by `defaults = [...]` in
+`~/.config/snug/config.toml`), because a default selection is a preference and a
+profile is a grant.
 
 Identity pins one git/ssh/gh account: a filtering ssh-agent proxy exposes exactly
 one key (no key material inside, other keys not enumerable), and `.gitconfig`,
@@ -67,7 +71,7 @@ The base state is an empty tmpfs root, an empty network namespace, and an empty
 environment. Nothing is inherited. A profile is a *named hole*.
 
 There is no "deny rule" in snug, because there is nothing to deny — the thing you
-would deny was never there. `dotdot` does not hide your other projects; it simply
+would deny was never there. `parent-ro` does not hide your other projects; it simply
 never grants them. This is why a missing capability (no X11, no Wayland, no
 D-Bus, no host loopback, no `~/.ssh`) is a **feature to state plainly**, not a
 gap to apologise for.
@@ -82,6 +86,23 @@ Break any of these and the project has lost its point.
    negation, no priority/override fields. Adding a profile can never make a path
    stop being visible: `rejectMasking` refuses anything mounted on top of what
    another grant exposes, and the grant language cannot express subtraction.
+
+   *One exception, and it is snug's own writing, not a profile's.* The generated
+   `KindData` mounts (`/etc/resolv.conf`, and the identity files
+   `~/.gitconfig`, `~/.ssh/config`, `known_hosts`) are assigned **directly into
+   `p.Mounts`** at the end of `Resolve` — they do not go through `join`, and
+   `rejectMasking` exempts `KindData` by kind. At an identical path that is a
+   silent overwrite: with `git-ro` and an identity profile both selected, the
+   `git-ro` bind of `~/.gitconfig` disappears from the policy entirely and the
+   provenance reads `identity:<profile>` alone. **Verified by execution.** That
+   is the intended direction — the pinned identity must not sit alongside the
+   host's credential helpers, and `GIT_CONFIG_GLOBAL` exists for the same reason
+   — but note what it is: a *profile* cannot displace another profile's grant,
+   while *snug* can, and does, without saying so in `--dry-run`. The
+   `rejectMasking` comment justifies the exemption by "no TOML key produces a
+   `KindData` grant", which is true and is the right guard against a profile
+   reaching this path; it does not cover the displacement. If a TOML key ever
+   does produce `KindData`, both holes open at once.
 
    *Effective write access at a strict subpath is NOT monotone, by design.*
    `join` is keyed by `Mount.Guest`, so it only applies at identical paths.
@@ -100,8 +121,19 @@ Break any of these and the project has lost its point.
 
    Resolution remains commutative and idempotent: if `resolve([a,b]) !=
    resolve([b,a])`, the model is broken — fix the model, not the test.
-   Restriction is real and lives in the CLI *clamp*, applied by the human after
-   resolution. A human may tighten; a file may not.
+
+   *There is no restriction operation anywhere.* Not in a profile, not on the
+   command line. `--read-only` and the `policy.Clamp`/`Policy.Apply` machinery
+   behind it existed — restriction applied by the human after resolution, on the
+   argument that a file may not tighten but a person may — and both are **gone**.
+   snug stays minimal; bwrap is the swiss knife. To grant less, select fewer
+   profiles: a read-only project is `snug --no-defaults -p sys -p home -p
+   parent-ro <dir>`, verbose on purpose. The point of removing it is not the
+   flag, it is the *carve-out*: an invariant with no exceptions can be checked by
+   grepping for a demote and finding none (`TestPolicyHasNoRestrictionOperation`);
+   one with an exception can only be checked by understanding where the exception
+   applies. If a patch reintroduces a demote — anywhere, under any name — it is
+   reintroducing the exception, not just a convenience.
 2. **Deny by default.** Every visible path traces to exactly one explicit grant.
    **Corollary — wanting "X but not Y" means X was too coarse a grant.** The
    urge to exclude is a design smell pointing at the grant above it, not a
@@ -223,17 +255,58 @@ on any flag.
   enumerated every key in the agent and signed with one the profile had not
   pinned. `cfg.iKnow` existed and was consulted only for `NetHost`.
   **When you write "requires X" in a comment, grep for X before you believe it.**
-- **Secrets go in files, not the environment.** `/proc/self/environ` is passively
-  readable by every process in the sandbox and inherited by every child; a file
-  has to be deliberately opened. So snug generates a private config DIRECTORY per
-  tool and points the tool at it with its own env var — `GH_CONFIG_DIR`,
-  `GIT_CONFIG_GLOBAL`, and the same shape for `NPM_CONFIG_USERCONFIG`,
-  `CARGO_HOME`, `DOCKER_CONFIG` when those arrive. The env var then carries a
-  PATH, not a credential. This is the existing "generate, don't bind" rule
-  extended from /etc to per-tool config, and it has the same cost: each adapter
-  must track that tool's format. Bound it the same way — one opt-in profile per
-  tool, never in `default`, so an unmaintained adapter degrades to "that tool has
-  no config" rather than to a leak.
+- **Generate, don't bind — and put the secret in a file, not the environment.**
+  One rule, stated once, because it was previously spread over four bullets.
+
+  *The rule.* Where the sandbox needs a tool configured, snug **generates** a
+  private config file or DIRECTORY from the resolved policy and points the tool
+  at it with that tool's own env var: `GH_CONFIG_DIR`, `GIT_CONFIG_GLOBAL`, and
+  the same shape for `NPM_CONFIG_USERCONFIG`, `CARGO_HOME`, `DOCKER_CONFIG`,
+  `PIP_CONFIG_FILE` when they arrive. It never binds the host's. Two reasons,
+  and both matter: a bind carries every unrelated thing in that file (see the
+  `git` two-file bullet below — `git-ro` reintroduced the host's credential
+  helpers alongside a pinned identity), and **the env var then carries a PATH,
+  not a credential.** `/proc/self/environ` is passively readable by every
+  process in the sandbox and inherited by every child; a file has to be
+  deliberately opened. `/etc/resolv.conf` is the same rule one layer down.
+
+  *The cost, accepted.* Each adapter must track that tool's config format, and
+  formats change under us (`gh` rewrites `hosts.yml` on first use — see below).
+  There is no version of this that is free.
+
+  *The bound, which is what keeps the cost finite.* One **opt-in profile per
+  tool**, never in `defaults`. An adapter nobody maintains then degrades to
+  "that tool has no config inside the sandbox" — visible, annoying, harmless —
+  rather than to a leak. If you find yourself wanting the adapter on by default
+  because it is convenient, you are proposing to make the failure mode a leak.
+
+- **PATH precedence, not overmounting, is how snug substitutes a host binary —
+  and the reason is authorship, not capability.** Correcting the record: it was
+  once claimed, confidently, that "snug structurally cannot overmount
+  `/usr/bin/podman`". That was **WRONG**. snug overmounts generated files inside
+  bound directories all the time — `/etc/resolv.conf` sits inside the `/etc`
+  bind, and `rejectMasking` carries an explicit `KindData` exemption for exactly
+  that case.
+
+  The real distinction is **who authors the replacement**:
+
+  - A *profile* mounting something over what *another profile's* grant exposes
+    is **masking**. Refused, unconditionally, because it destroys the property
+    that lets you compose profiles without reading every one of them.
+  - *snug itself* replacing a specific path with its OWN generated content is
+    **replacement**. Allowed: the sandbox still sees a file there, just a
+    truthful one, and no profile's grant is silently subtracted.
+
+  So the capability exists. It is simply not the right tool for a whole binary.
+  Where a command needs substituting — the live case is `/usr/bin/podman` being
+  a distrobox shim that cannot work from inside (`cmd/snug/podmanshim.go`) —
+  **write the replacement into the writable tmpfs `$HOME` and put that directory
+  first on `PATH`.** It is additive (nothing is hidden; the original is still
+  there and still reachable by absolute path), it needs no mount at all, it
+  cannot fail on a host where the target path is a symlink (bwrap cannot create
+  a mountpoint at a symlink destination — DESIGN §3.3), and it is one line of
+  policy instead of a new exemption in the masking rule. Reach for an overmount
+  only when the consumer reads an absolute path it will not let you configure.
 - **`git` merges its global config from TWO files.** `~/.gitconfig` AND
   `$XDG_CONFIG_HOME/git/config` are both read. So generating `~/.gitconfig` was
   not enough: with `git-ro` also selected, the host's credential helpers,
@@ -346,10 +419,23 @@ meant. It cannot prove the sandbox holds.
 - **`--dry-run`, not `explain`.** It is the conventional name and the tool
   should not invent vocabulary. What it prints is unchanged: the resolved
   policy and the exact bwrap command, having started nothing.
-- **`snug config` holds preferences, never grants.** Today that is
-  `default_profile` — which profiles a bare `snug <dir>` selects. It names
-  profiles rather than redefining the builtin `default`, because a config file
-  able to redefine a builtin could quietly change what `sys` means.
+- **`snug config` holds preferences, never grants.** Today that is `defaults` —
+  which profiles a bare `snug <dir>` selects. It names profiles and cannot
+  define one, because a config file able to redefine a builtin could quietly
+  change what `sys` means.
+- **There is no `default` profile; there is a `defaults` setting.** A default
+  selection is a *preference*, a profile is a *grant*, and having both was two
+  mechanisms for one idea: the builtin `[profile.default]` granted nothing yet
+  appeared in `SNUG_PROFILES`, in `snug profile tree`, and in every `Mount.From`
+  provenance as though it were a hole in the sandbox — while `default_profile`
+  in config.toml expressed the same idea with a level of indirection whose
+  built-in value was, circularly, `["default"]`. Now: built-in list in
+  `internal/profile/defaults.go`; `defaults = [...]` in config.toml **replaces**
+  it wholesale (merging would make "fewer defaults than snug ships" impossible);
+  `-p` **adds** to whatever that resolved to; `--no-defaults` declines it
+  entirely. The list is `sys home cwd-rw parent-ro` — enough that snug is usable
+  by just running it — and `net` must never join it, because offline is the
+  *absence* of a profile and that is what stops it being switched on by accident.
 - **The directory is positional, not `-C`.** `go -C` and `make -C` mean "go
   somewhere else, then do the usual thing"; for snug the directory *is* the
   thing being sandboxed, like `git clone <url>`. Defaults to `.`.

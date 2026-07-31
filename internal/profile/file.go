@@ -53,6 +53,52 @@ type rawIdentity struct {
 	GhHost   string `toml:"gh_host"`
 }
 
+// checkName rejects a profile name that would break a mechanism.
+//
+// These are not style rules and this is not namespace policing — a user may
+// call a profile whatever they like, including uppercase or dotted. Each
+// character below breaks something concrete, and every one of them parsed
+// happily before this existed:
+//
+//	","  snug joins the resolved names with commas into SNUG_PROFILES, which is
+//	     the sandbox's own account of what was selected. A profile named "a,b"
+//	     corrupts it, and anything reading it back is silently misled.
+//	":"  reserved for a parked design where a profile takes arguments
+//	     (docs/PARAMETERISED-PROFILES.md): "name:arg" must split unambiguously.
+//	"-"  leading, because `snug -p -v` would otherwise name a profile "-v"
+//	     rather than fail.
+//	     whitespace/NUL, because every --dry-run line and every Validate error
+//	     renders provenance as a space-free token; a name with a space in it
+//	     turns those into nonsense.
+//	""   the empty name, which TOML accepts as [profile.""].
+//
+// Checked in parse rather than merge: the FILE is what is wrong, and parse is
+// where the source path and the offending name are both in hand.
+func checkName(name, source string) error {
+	if name == "" {
+		return fmt.Errorf("%s: a profile with an empty name", source)
+	}
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("%s: profile %q may not start with '-'; it would be "+
+			"indistinguishable from a flag on the command line", source, name)
+	}
+	for _, bad := range []struct {
+		s    string
+		what string
+	}{
+		{",", "a comma (snug joins profile names with commas into SNUG_PROFILES)"},
+		{":", "a colon (reserved for profile arguments)"},
+		{" ", "a space"},
+		{"\t", "a tab"},
+		{"\x00", "a NUL"},
+	} {
+		if strings.Contains(name, bad.s) {
+			return fmt.Errorf("%s: profile %q contains %s", source, name, bad.what)
+		}
+	}
+	return nil
+}
+
 // Registry is the merged set of known profiles.
 type Registry map[string]*policy.Profile
 
@@ -72,6 +118,9 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 
 	reg := Registry{}
 	for name, r := range f.Profile {
+		if err := checkName(name, source); err != nil {
+			return nil, err
+		}
 		reg[name] = &policy.Profile{
 			Name:        name,
 			Description: r.Description,

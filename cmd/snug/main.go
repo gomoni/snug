@@ -23,15 +23,15 @@ const (
 )
 
 type config struct {
-	profiles  []string
-	target    string
-	command   []string
-	dryRun    bool
-	readOnly  bool
-	noSeccomp bool
-	noDefault bool
-	iKnow     bool
-	verbose   bool
+	profiles []string
+	target   string
+	command  []string
+	dryRun   bool
+	// removed (snug stays minimal; bwrap is the swiss knife). cmd/snug/dryrun.go
+	noSeccomp  bool
+	noDefaults bool
+	iKnow      bool
+	verbose    bool
 }
 
 func main() {
@@ -76,17 +76,19 @@ usage:
 
 flags:
   -p, --profile NAME   add a profile (repeatable; order is irrelevant)
-      --no-default     start from nothing instead of the default profile
-                       (-p adds to the default; --no-default replaces it)
-      --read-only      demote every writable grant to read-only
+      --no-defaults    select nothing at all to begin with
+                       (-p adds to the defaults setting; --no-defaults declines it)
       --no-seccomp     run without the seccomp filter (debugging; weakens defence in depth)
       --i-know         acknowledge a knowingly-large hole (required by net-host)
   -n, --dry-run        print the resolved policy and the bwrap command, run nothing
   -v, --verbose        audit lines from the ssh-agent proxy
   -h, --help           this
 
-Profiles only ever relax the sandbox. To grant less, select fewer profiles;
-there is no key that takes something away. See docs/DESIGN.md.
+A bare "snug <dir>" selects the defaults setting: sys home cwd-rw parent-ro.
+See "snug config" for the effective list and where it came from.
+
+Profiles only ever GRANT. There is no un-grant — not in a profile, not on the
+command line, nowhere. To grant less, select fewer profiles. See docs/DESIGN.md.
 `)
 }
 
@@ -106,10 +108,8 @@ func parseArgs(argv []string) (config, error) {
 			cfg.profiles = append(cfg.profiles, argv[i])
 		case strings.HasPrefix(a, "--profile="):
 			cfg.profiles = append(cfg.profiles, strings.TrimPrefix(a, "--profile="))
-		case a == "--no-default":
-			cfg.noDefault = true
-		case a == "--read-only":
-			cfg.readOnly = true
+		case a == "--no-defaults":
+			cfg.noDefaults = true
 		case a == "-v" || a == "--verbose":
 			cfg.verbose = true
 		case a == "--i-know":
@@ -142,20 +142,21 @@ func run(cfg config) int {
 		return exitPolicy
 	}
 
-	// -p ADDS to the default rather than replacing it. `snug -p git-ro` means
-	// "the usual sandbox, plus my git config" — which is both what the flag's
-	// help text says and the only reading consistent with the model, where
-	// naming a profile can never take anything away. --no-default is how you
-	// start from nothing.
-	selected := defaultProfiles()
-	if cfg.noDefault {
+	// -p ADDS to the `defaults` setting rather than replacing it. `snug -p
+	// git-ro` means "the usual sandbox, plus my git config" — which is both what
+	// the flag's help text says and the only reading consistent with the model,
+	// where naming a profile can never take anything away. (`snug -p git-ro`
+	// once replaced the selection instead, producing a sandbox with no /usr that
+	// could not execute anything.) --no-defaults is how you start from nothing.
+	selected, _ := defaultProfiles()
+	if cfg.noDefaults {
 		selected = nil
 	}
 	selected = append(selected, cfg.profiles...)
 	if len(selected) == 0 {
 		fmt.Fprintln(os.Stderr, "snug: no profile selected, so nothing at all is granted — "+
 			"a sandbox with no profile cannot run anything.\n"+
-			"      Drop --no-default, or name a profile with -p. See: snug profile list")
+			"      Drop --no-defaults, or name a profile with -p. See: snug profile list")
 		return exitPolicy
 	}
 
@@ -249,8 +250,6 @@ func run(cfg config) int {
 		return exitPolicy
 	}
 	defer ctrCleanup()
-
-	pol.Apply(policy.Clamp{ReadOnly: cfg.readOnly})
 
 	args := pol.BwrapArgs(env.Uid(), env.Gid())
 

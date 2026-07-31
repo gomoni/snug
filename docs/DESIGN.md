@@ -21,7 +21,7 @@ The base state of a `snug` sandbox is *not* "the host filesystem with some thing
 This has three consequences that shape the whole system:
 
 1. **Monotonicity is free.** Since the base is empty, every operation a profile can express is additive. There is no syntax for removal, so composition cannot tighten. (§2.4)
-2. **"Hiding" is emergent, not implemented.** The `dotdot` profile does not hide your other projects; it simply never grants them. There is no masking pass, no `--tmpfs` overlay trick in the emitter, no ordering hazard from hiding. (§3)
+2. **"Hiding" is emergent, not implemented.** The `parent-ro` profile does not hide your other projects; it simply never grants them. There is no masking pass, no `--tmpfs` overlay trick in the emitter, no ordering hazard from hiding. (§3)
 3. **A missing capability is a feature, and is stated as such.** No X11 socket, no Wayland socket, no D-Bus, no host loopback, no `~/.ssh` — not gaps to apologise for, but the default. Where a hole is worth opening it gets a named profile that documents what it costs; where it is not (GUI, audio, D-Bus — §7.5) the absence is simply the answer.
 
 ---
@@ -183,15 +183,9 @@ type Policy struct {
     Chdir    string
     Command  []string
 
-    // Clamps: applied by the HUMAN at the CLI, after profile resolution. NOT part of the
-    // profile lattice. See §2.5.
-    Clamp Clamp
-}
-
-type Clamp struct {
-    Offline   bool // force NetMode down to NetIsolated
-    NoSeccomp bool // omit the seccomp filter (a human debugging decision)
-    ReadOnly  bool // demote every AccessRW to AccessRO
+    // No clamp field, and no Clamp type: nothing reduces a resolved policy (§2.5).
+    // `--no-seccomp` is not an exception — it never enters the Policy at all; it is
+    // a launch-time decision handed to internal/sandbox.
 }
 ```
 
@@ -220,7 +214,7 @@ join(a, b) where a.Guest == b.Guest:
 
 5. **Join scalars** using each key's declared permissive-ward join (§2.3).
 6. **Union the env allowlist**; conflicting explicit `setenv` values are an ERROR.
-7. **Validate** (§3.4), then **apply the CLI clamp** (§2.5).
+7. **Validate** (§3.4). There is no clamp stage: the resolved policy is final (§2.5).
 
 **Why it is commutative:** every fold operation is a commutative, associative, idempotent binary join, or an *error* (which is symmetric). `From` is excluded from equality, so accumulating provenance does not perturb the fixpoint. Emission order is derived from the *result* (§3.2), never from profile order.
 
@@ -240,6 +234,8 @@ The prior generation (`agent-sandbox`) let a profile *override* a scalar, with t
 | `ro` / `rw` / `dev` | path sets | union + `Access.Join` | more access |
 | `env` | name set | union | more variables |
 
+**Three keys are not joins, and the code says so even though this section did not: `address`, `gateway` and `mtu` are last-writer-wins.** `Resolve` folds profiles in sorted-name order, so two profiles setting different addresses resolve deterministically (the alphabetically later one wins) and commutativity survives — but the winner is arbitrary, silent, and not "more permissive" in any sense. It is tolerable only because these three are pasta cosmetics: they change which address the sandbox *sees*, never what it can reach. Do not take them as a precedent. Any new scalar that affects reachability must be a genuine join, or an ERROR naming both profiles, which is what `identity` does.
+
 Keys that would only ever *weaken* the sandbox in a way profiles must not control — notably `seccomp` — **are not profile keys at all**. `--no-seccomp` is a CLI flag only. A human may weaken; a file may not.
 
 `network = "isolated"` is therefore a no-op, and there is deliberately no `network = "offline"`. **Offline is the absence of the `net` profile.** If you write `include = ["net", "net-offline"]`, the result is `net` — and that is correct, not a bug: you asked for the union of two grant sets, one of which was empty. To be offline, do not include `net`. `snug --dry-run` states this in plain words when it detects the pattern.
@@ -254,15 +250,19 @@ Three properties together make "a profile can never tighten the sandbox" a *stru
 
 The one place order matters is *emission*, and emission order is computed from the resolved set by a deterministic sort (§3.2), not from the order profiles were named. So the argv is a pure function of the resolved policy.
 
-### 2.5 The clamp — where restriction legitimately lives
+### 2.5 There is no restriction operation — anywhere
 
-Restriction is a real requirement (`--offline`, `--read-only`) and it must not be expressible in profiles. `snug` puts it in a separate, clearly-labelled post-resolution stage:
+**Profiles only ever grant. There is no un-grant — not in a profile, not on the command line, nowhere. To grant less, select fewer profiles.**
 
 ```
-Policy_final = clamp(Resolve(profiles), cliClamp)
+Policy_final = Resolve(profiles)
 ```
 
-`clamp` only ever moves *down* the lattice. It is applied by the human at the command line, never by a file. `snug --dry-run` prints both the resolved policy and the clamped policy when they differ, so a clamp is never invisible. Rationale: **profiles are data that may originate near untrusted material; the CLI is the human.** Only the human may restrict, and restriction is always safe.
+That is the whole pipeline. An earlier design had a *clamp*: a post-resolution stage (`--read-only`, `--offline`) that moved the policy *down* the lattice, justified by "profiles are data that may originate near untrusted material; the CLI is the human, and only the human may tighten". The asymmetry was defensible, and it is still the right answer to *"may a profile tighten?"* — no. But it was the model's one carve-out, and both the flag and the machinery behind it are now gone. `snug` stays minimal; `bwrap` is the swiss knife.
+
+What that costs, stated plainly: a read-only project is obtained by not selecting `cwd-rw` — `snug --no-defaults -p sys -p home -p parent-ro <dir>` — which is verbose on purpose. A read-only cwd is possible but highly nonstandard, and the verbosity is proportionate to how rarely it is wanted.
+
+What it buys: an invariant with no exceptions. "Nothing anywhere reduces what a resolved policy grants" is a property a reader can check by grepping for a demote and finding none, and a test can assert directly (`TestPolicyHasNoRestrictionOperation`). One with a carve-out can only be checked by understanding where the carve-out applies.
 
 ### 2.6 Profile file format: TOML
 
@@ -301,7 +301,7 @@ description = "The target directory is writable and persists."
 include = ["home"]
 rw = ["{target}"]
 
-[profile.dotdot]
+[profile.parent-ro]
 description = """
 The target's PARENT is readable. Everything else under every higher ancestor stays
 invisible — not because it is hidden, but because it is never granted."""
@@ -359,13 +359,18 @@ env = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "EDITOR", "VISUAL", "PAGER", "
 ro = ["{home}/.config/git", "{home}/.gitconfig"]
 optional = ["{home}/.config/git", "{home}/.gitconfig"]
 
-# ── the default a bare `snug <dir>` selects ──
-[profile.default]
-include = ["sys", "home", "cwd-rw", "dotdot", "net", "claude", "git-ro"]
+# ── what a bare `snug <dir>` selects ──
+# NOT a profile. It is the `defaults` setting in ~/.config/snug/config.toml,
+# because a default SELECTION is a preference and not a grant:
+#
+#   defaults = ["sys", "home", "cwd-rw", "parent-ro"]
+#
+# Built-in value in internal/profile/defaults.go; setting it replaces that list
+# wholesale. `-p` adds to whatever it resolved to, `--no-defaults` declines it.
 
 # ── identity scoping (§9.1) ──
 [profile.plainsof]
-include = ["default"]
+include = ["net", "claude", "git-ro"]
 match   = ["~/projects/plainsof/**"]
   [profile.plainsof.identity]
   gh_user   = "plainsof"
@@ -383,13 +388,13 @@ match   = ["~/projects/plainsof/**"]
 
 Profiles are loaded from, in order (all layers merged; **later layers may only add new profile names, never redefine an existing one — a redefinition is a fatal error**):
 
-1. **Embedded builtins** — compiled into the binary. `null`, `sys`, `home`, `cwd-rw`, `dotdot`, `tmp-shared`, `net`, `net-publish`, `net-host`, `podman-socket`, `podman-build`, `claude`, `git-ro`, `default`. Always present, cannot be shadowed.
+1. **Embedded builtins** — compiled into the binary. `null`, `sys`, `home`, `cwd-rw`, `parent-ro`, `tmp-shared`, `net`, `net-publish`, `net-host`, `podman-socket`, `podman-build`, `claude`, `git-ro`. Always present, cannot be shadowed. There is deliberately no `default` among them: what a bare `snug <dir>` selects is the `defaults` *setting* (§11), not a grant.
 2. **`/etc/snug/profiles.d/*.toml`** — site/admin profiles.
 3. **`$XDG_CONFIG_HOME/snug/profiles.d/*.toml`** (default `~/.config/snug/profiles.d/`) — the user's own profiles. **This is the trusted layer.**
 
 **There is no fourth layer.** `snug` **never** auto-loads `./.snug/`, `./snug.toml`, or anything else from inside or beside the target directory.
 
-The prior generation stated the reason in a comment and it is correct: repo-local config is a persistence-attack vector. Under `snug`'s threat model (T2/T4) it is worse than that — it is a *complete* defeat. A hostile repository that ships `.snug/profiles.toml` containing `[profile.default] ro = ["/"]` would grant itself read of the entire host on the very first `snug ~/src/hostile-repo`. The material inside the sandbox must never be able to author the sandbox's boundary.
+The prior generation stated the reason in a comment and it is correct: repo-local config is a persistence-attack vector. Under `snug`'s threat model (T2/T4) it is worse than that — it is a *complete* defeat. A hostile repository that ships `.snug/profiles.toml` redefining a profile the user's `defaults` already select — `[profile.cwd-rw] ro = ["/"]` — would grant itself read of the entire host on the very first `snug ~/src/hostile-repo`. The material inside the sandbox must never be able to author the sandbox's boundary.
 
 This is a monotonicity-adjacent property, and worth naming: **the trusted profile set must originate outside the material being sandboxed.** Monotonicity guarantees that composing profiles cannot tighten; it says nothing about *who gets to compose*. Both are needed.
 
@@ -437,7 +442,7 @@ the sandbox observes:
 /home/michal/projects/plainsof -> cv                  # 6 siblings invisible
 ```
 
-`bwrap` auto-creates every intermediate mountpoint inside its root tmpfs. Those skeleton directories are the *only* thing that exists at each ancestor level. This is why `dotdot` is one line of TOML.
+`bwrap` auto-creates every intermediate mountpoint inside its root tmpfs. Those skeleton directories are the *only* thing that exists at each ancestor level. This is why `parent-ro` is one line of TOML.
 
 Two refinements `snug` applies:
 
@@ -822,7 +827,14 @@ The files snug generates are still overridden on top of the enumerated set:
 - `/etc/passwd`, `/etc/group` — generated, containing only `root` (with `/usr/sbin/nologin`) and the sandbox user, so the agent cannot enumerate every account on the machine
 - `/etc/machine-id` — generated, per-sandbox random, so the sandbox cannot fingerprint the host
 
-`[profile.etc-full]` ships as the opt-in escape hatch for workloads that genuinely need the distribution's shell environment. Its description says what it costs, in those words.
+There is deliberately **no `etc-full` builtin**. A profile granting the whole tree is one line —
+
+```toml
+[profile.etc-full]
+ro = ["/etc"]
+```
+
+— that any user can drop in `~/.config/snug/profiles.d/`. Shipping it as a builtin bought nothing except a maintenance obligation and a thing to explain, and what it costs (every `/etc/profile.d` script and `/etc/bash.bashrc` then *runs* inside the sandbox, so the distribution injects code into the agent's shell) is a cost the person writing that line is choosing knowingly. snug ships the curated `/etc` that things actually need. Same minimalism as having no `--read-only` (§2.5): the tool stays small, and the escape hatch is the profile format itself.
 
 ### 5.4 Seccomp
 
@@ -1142,10 +1154,10 @@ snug/
 │   ├── builtin.go                  //go:embed profiles/*.toml — the shipped profile set
 │   ├── discover.go                 embedded -> /etc -> XDG; NEVER repo-local (§2.7)
 │   ├── privileged.go               the privileged-grant classifier (§2.7)
-│   └── profiles/*.toml             sys, home, cwd-rw, dotdot, net, claude, podman-*, …
+│   └── profiles/*.toml             sys, home, cwd-rw, parent-ro, net, claude, podman-*, …
 │
 ├── internal/policy/                THE CORE. Pure. Imports nothing internal.
-│   ├── types.go                    Access, Kind, Mount, NetPolicy, Identity, Policy, Clamp
+│   ├── types.go                    Access, Kind, Mount, NetPolicy, Identity, Policy
 │   ├── resolve.go                  Resolve(): expand, canonicalise, join, validate (§2.2)
 │   ├── join.go                     the join laws, one function per lattice (§2.3)
 │   ├── validate.go                 symlink hazards, containment, fail-closed checks (§3.4)
@@ -1189,7 +1201,7 @@ Dependencies: `github.com/pelletier/go-toml/v2` (strict decode), `github.com/doc
 ```
  1. cfg  := parseArgs(argv, getenv)                      pure
  2. set  := profile.Discover(...).Select(cfg.Profiles)   lookup precedence, privileged check
- 3. pol  := policy.Resolve(set, ctx); pol.Clamp(cfg)     pure; fail-closed
+ 3. pol  := policy.Resolve(set, ctx)                     pure; fail-closed; final
  4. if cfg.Explain { render(pol); return 0 }             dry run — no process, no socket
  5. preflight()                                          userns, bwrap, pasta, subuid, seccomp
  6. topology := pol.Topology()                           b (default) | a (podman)
@@ -1217,13 +1229,15 @@ snug [flags] [dir] [-- cmd ...]
 
 `dir` defaults to `.`; `cmd` defaults to `claude` when the `claude` profile is active, else `$SHELL -l`.
 
+A bare `snug <dir>` selects the **`defaults` setting**, not a profile: built-in `["sys", "home", "cwd-rw", "parent-ro"]` (internal/profile/defaults.go), replaced wholesale by `defaults = [...]` in `~/.config/snug/config.toml`. `-p` **adds** to it; `--no-defaults` declines it. There is no `[profile.default]`, because a default selection is a preference and a profile is a grant — one idea, one mechanism. `net` is not in the list and must not be added: offline is the *absence* of the `net` profile, so it cannot be re-enabled by accident.
+
+There is no flag that grants less. A read-only project means not selecting `cwd-rw`: `snug --no-defaults -p sys -p home -p parent-ro <dir>`. Verbose on purpose (§2.5).
+
 | Flag | Meaning |
 |---|---|
 | `-p, --profile NAME` | Add a profile. Repeatable. Order is irrelevant (§2.2). |
-| `--no-default` | Do not include `default`. Start from `null`. |
+| `--no-defaults` | Decline the `defaults` selection entirely. Start from nothing. Running without the standard set is unusual enough to deserve an explicit switch. |
 | `--config PATH` | Load an additional profile file explicitly. Privileged grants restricted (§2.7). |
-| `--offline` | Clamp: force `NetMode` to `isolated`. |
-| `--read-only` | Clamp: demote every `RW` grant to `RO`. |
 | `--publish PORT` | Add to `NetPolicy.Publish`. Repeatable. |
 | `--no-seccomp` | Human-only weakening (§2.3). |
 | `--i-know` | Required by `net-host`, `host-agent`, `--allow-privileged-config`. |
@@ -1248,13 +1262,13 @@ Subcommands:
 This is not a debugging convenience; **it is the mechanism by which a human can trust `snug` at all.** A sandbox you cannot read is a sandbox you are guessing about. `snug --dry-run` starts no process, binds no socket, and creates no file.
 
 ```
-$ snug --dry-run --profile sys --profile cwd-rw --profile dotdot --profile net /home/u/proj/sub
+$ snug --dry-run --profile sys --profile cwd-rw --profile parent-ro --profile net /home/u/proj/sub
 
 snug 0.1.0 — dry run, nothing was started
 
 TARGET   /home/u/proj/sub          (canonical; writable)
 HOME     /home/u                   (tmpfs, ephemeral)
-PROFILES sys cwd-rw dotdot net     (+ home, via cwd-rw)
+PROFILES sys cwd-rw parent-ro net     (+ home, via cwd-rw)
 TOPOLOGY b — bwrap creates the netns, pasta joins it
 
 FILESYSTEM  (deny-by-default; every line below is a grant, there are no deny rules)
@@ -1270,7 +1284,7 @@ FILESYSTEM  (deny-by-default; every line below is a grant, there are no deny rul
   tmpfs /tmp                                       (builtin)
   tmpfs /home/u                                    home
   tmpfs /home/u/.cache /home/u/.config …           home
-  ro    /home/u/proj                               dotdot
+  ro    /home/u/proj                               parent-ro
   rw    /home/u/proj/sub                           cwd-rw
   data  /etc/resolv.conf   (generated, 61 B)       net
   data  /etc/hosts /etc/passwd /etc/group          (builtin)
@@ -1293,7 +1307,7 @@ NETWORK
 
 ENVIRONMENT  (--clearenv, then:)
   HOME=/home/u  PATH=/usr/bin:/bin  USER=u  SHELL=/bin/bash  TERM=xterm-256color
-  SNUG=1  SNUG_PROFILES=sys,cwd-rw,dotdot,net,home  SNUG_TARGET=/home/u/proj/sub
+  SNUG=1  SNUG_PROFILES=cwd-rw,home,net,parent-ro,sys  SNUG_TARGET=/home/u/proj/sub
 
 INTEGRATION
   ssh-agent  off        podman  off        tmp  private tmpfs        gui  off
@@ -1335,7 +1349,7 @@ bwrap --args 3 -- /bin/bash -l
   --setenv HOME /home/u --setenv PATH /usr/bin:/bin --setenv USER u --setenv LOGNAME u
   --setenv SHELL /bin/bash --setenv TERM xterm-256color --setenv LANG en_US.UTF-8
   --setenv XDG_RUNTIME_DIR /tmp/xdg --setenv TMPDIR /tmp
-  --setenv SNUG 1 --setenv SNUG_PROFILES sys,cwd-rw,dotdot,net,home
+  --setenv SNUG 1 --setenv SNUG_PROFILES cwd-rw,home,net,parent-ro,sys
   --setenv SNUG_TARGET /home/u/proj/sub
   --chdir /home/u/proj/sub
 ```
@@ -1363,7 +1377,7 @@ The `NOT GRANTED` block is generated by probing the host for paths a reasonable 
 
 `test/golden/*.bwrap.txt` and `test/golden/*.pasta.txt`, one pair per interesting profile combination, generated against a **fake `Environ`** with a fixed host layout so they are byte-stable across machines. `make golden-update` regenerates; a diff in review is a diff in the sandbox's boundary and is reviewed as such.
 
-Golden coverage: `null`; `sys`; `sys+cwd-rw`; the §13 worked example; `+tmp-shared`; `+podman-socket` (topology A); `+claude` (staged fds); `net-publish`; `net-host`; every clamp.
+Golden coverage: `null`; `sys`; `sys+cwd-rw`; the §13 worked example; `+tmp-shared`; `+podman-socket` (topology A); `+claude` (staged fds); `net-publish`; `net-host`.
 
 **The `pasta` golden file has a dedicated assertion beyond the diff:** `--map-host-loopback none`, `-T none` and `-U none` must be present in *every* generated `pasta` argv except `net-host` (which generates none at all). A test that checks these three flags by name, with a comment pointing at §4.2, is cheap insurance against exactly the regression that shipped last time.
 
@@ -1437,7 +1451,7 @@ For the integration tier, `snug doctor --json` runs first and the job either pro
 ## 13. Worked example
 
 ```
-$ snug --profile sys --profile cwd-rw --profile dotdot --profile net /home/u/proj/sub
+$ snug --profile sys --profile cwd-rw --profile parent-ro --profile net /home/u/proj/sub
 ```
 
 Host facts: uid/gid 1000, `$HOME=/home/u`, `/home/u/proj` contains `sub` plus 11 sibling directories, `/home/u` contains `.ssh`, `.gnupg`, `.aws`, `Documents`, and 9 other projects. `cwd-rw` pulls in `home`.
@@ -1495,7 +1509,7 @@ with fd 3 carrying (NUL-separated; shown expanded):
 --setenv XDG_RUNTIME_DIR /tmp/xdg
 --setenv TMPDIR /tmp
 --setenv SNUG 1
---setenv SNUG_PROFILES cwd-rw,dotdot,home,net,sys
+--setenv SNUG_PROFILES cwd-rw,home,net,parent-ro,sys
 --setenv SNUG_TARGET /home/u/proj/sub
 --chdir /home/u/proj/sub
 ```
@@ -1541,7 +1555,7 @@ connect [::1]:3100                -> refused
 cat /etc/resolv.conf              -> nameserver 169.254.1.1 / search . / options edns0
 curl https://example.com          -> 200
 ls -a /home/u                     -> . ..  (+ the tmpfs dotdirs)  — .ssh/.gnupg/.aws absent
-ls -a /home/u/proj                -> . .. sub  + the 11 siblings ARE visible (dotdot grants the parent)
+ls -a /home/u/proj                -> . .. sub  + the 11 siblings ARE visible (parent-ro grants the parent)
 ls /sys                           -> ENOENT
 touch /home/u/proj/sub/x          -> ok
 touch /home/u/proj/x              -> Read-only file system
@@ -1557,7 +1571,7 @@ touch /ZZ                         -> Read-only file system
 Each milestone is independently shippable and independently useful.
 
 **M1 — the sandbox (no network helper).**
-`internal/profile`, `internal/policy` (types, resolve, join, validate, bwrap emitter), `internal/sandbox` (exec, fd model, seccomp), `cmd/snug` (`run`, `--dry-run`, `doctor`, `profile`, `config`). Profiles: `null`, `sys`, `home`, `cwd-rw`, `dotdot`, `tmp-shared`, `git-ro`. Networking is `--unshare-all` with no helper — **offline only**, which is a coherent and secure product. Tests: the whole of §12.1, §12.2, §12.3.
+`internal/profile`, `internal/policy` (types, resolve, join, validate, bwrap emitter), `internal/sandbox` (exec, fd model, seccomp), `cmd/snug` (`run`, `--dry-run`, `doctor`, `profile`, `config`). Profiles: `null`, `sys`, `home`, `cwd-rw`, `parent-ro`, `tmp-shared`, `git-ro`. Networking is `--unshare-all` with no helper — **offline only**, which is a coherent and secure product. Tests: the whole of §12.1, §12.2, §12.3.
 *Ships:* `snug ~/src/proj -- make test` in a genuinely isolated filesystem.
 
 **M2 — networking.**

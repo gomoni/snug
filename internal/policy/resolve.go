@@ -241,10 +241,10 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	// so the sandbox learns nothing about which hosts or keys you have.
 	if id := p.Identity; id != nil {
 		if cfg := id.GitConfig(); len(cfg) > 0 {
-			p.Mounts[home+"/.gitconfig"] = Mount{
+			p.replace(Mount{
 				Guest: home + "/.gitconfig", Kind: KindData, Access: AccessRO,
 				Content: cfg, From: []string{"identity:" + identityOwner},
-			}
+			})
 			// GIT_CONFIG_GLOBAL REPLACES the global config; without it git reads
 			// ~/.gitconfig AND $XDG_CONFIG_HOME/git/config and merges them. So
 			// with the git-ro profile also selected, the host's credential
@@ -254,35 +254,35 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 			p.Env["GIT_CONFIG_GLOBAL"] = home + "/.gitconfig"
 		}
 		if cfg := id.SSHConfig(home); len(cfg) > 0 {
-			p.Mounts[home+"/.ssh/config"] = Mount{
+			p.replace(Mount{
 				Guest: home + "/.ssh/config", Kind: KindData, Access: AccessRO,
 				Content: cfg, From: []string{"identity:" + identityOwner},
-			}
+			})
 			// The pinned PUBLIC key, so IdentityFile above resolves. Public
 			// material only; the private key never enters the sandbox.
 			if len(ctx.PinnedPubKey) > 0 {
-				p.Mounts[home+"/"+PubKeyGuest] = Mount{
+				p.replace(Mount{
 					Guest: home + "/" + PubKeyGuest, Kind: KindData, Access: AccessRO,
 					Content: ctx.PinnedPubKey, From: []string{"identity:" + identityOwner},
-				}
+				})
 			}
-			p.Mounts[home+"/.ssh/known_hosts"] = Mount{
+			p.replace(Mount{
 				Guest: home + "/.ssh/known_hosts", Kind: KindData, Access: AccessRO,
 				Content: ctx.KnownHosts, From: []string{"identity:" + identityOwner},
-			}
+			})
 		}
 	}
 
 	// /etc/resolv.conf is GENERATED, never bound from the host. The host's may
 	// name 127.0.0.53 (systemd-resolved), which the sandbox must not be able to
 	// reach — and a tmpfs the agent could rewrite would be worse still.
-	p.Mounts["/etc/resolv.conf"] = Mount{
+	p.replace(Mount{
 		Guest:   "/etc/resolv.conf",
 		Kind:    KindData,
 		Access:  AccessRO,
 		Content: p.Net.ResolvConf(),
 		From:    []string{"(builtin)"},
-	}
+	})
 
 	// 5. The environment is reconstructed, not filtered. --clearenv discards the
 	//    host's, and each variable below is set explicitly.
@@ -358,6 +358,29 @@ func under(canonTarget, p string) (string, bool) {
 		return rest, true
 	}
 	return "", false
+}
+
+// replace installs one of snug's own generated files, recording what it
+// displaced.
+//
+// These writes deliberately bypass `join`: a generated file must win over a
+// profile's bind at the same path — a pinned git identity must not sit beside
+// the host's credential helpers, which is the whole point of generating it. But
+// the displacement was previously SILENT, so selecting `git-ro` alongside an
+// identity profile made git-ro's bind of ~/.gitconfig vanish from the policy
+// with no trace in --dry-run. Found by the sandbox-policy agent's invariant
+// audit.
+//
+// The invariant is unharmed — "adding a profile can never make a path stop
+// being visible" is a statement about PROFILES, and the path stays visible with
+// different content — but a human reading --dry-run deserves to see that their
+// git-ro grant was superseded rather than quietly ignored.
+func (p *Policy) replace(m Mount) {
+	if old, ok := p.Mounts[m.Guest]; ok {
+		m.From = append(append([]string{}, m.From...),
+			"replaces:"+strings.Join(old.From, "+"))
+	}
+	p.Mounts[m.Guest] = m
 }
 
 // forbiddenEnv are code-injection vectors into every process the sandbox

@@ -439,6 +439,13 @@ func TestUngrantedPathsAreAbsent(t *testing.T) {
 	requireSandbox(t)
 	proj, secret := target(t)
 
+	// CONTROL: the file exists and IS readable from the host. "The sandbox could
+	// not read it" is trivially true of a file that was never written.
+	if got, err := os.ReadFile(secret); err != nil || !strings.Contains(string(got), "must-not-be-readable") {
+		t.Fatalf("precondition: the secret is not readable on the host (%v), so the "+
+			"assertion below would prove nothing", err)
+	}
+
 	// Absent, not permission-denied. There is nothing there to deny access to.
 	r := run(t, nil, proj, fmt.Sprintf(
 		`ls %s 2>&1; ls ~/.ssh 2>&1; ls /sys 2>&1`, secret)).mustRun(t)
@@ -489,6 +496,12 @@ func TestRootSkeletonIsReadOnly(t *testing.T) {
 	}
 	// Proves the loop ran to the end, so "no WRITABLE lines" cannot be satisfied
 	// by a payload that died on the first touch.
+	//
+	// The second line is the positive control: the same `touch`, in the same
+	// payload, on the one directory that IS supposed to be writable. Without it
+	// "nothing was writable" is equally true of a sandbox where nothing is
+	// writable at all, or where the shell's touch is broken.
+	script.WriteString("touch ./CONTROL 2>/dev/null && echo CONTROL-WRITABLE\n")
 	script.WriteString("echo CHECKED-ALL\n")
 
 	r := run(t, nil, proj, script.String()).mustRun(t)
@@ -507,6 +520,10 @@ func TestRootSkeletonIsReadOnly(t *testing.T) {
 	if !said["CHECKED-ALL"] {
 		t.Errorf("the payload did not reach the end, so the checks above prove nothing:\n%s", r.out)
 	}
+	if !said["CONTROL-WRITABLE"] {
+		t.Errorf("the target itself was not writable, so `touch` proves nothing about "+
+			"the skeleton directories above:\n%s", r.out)
+	}
 }
 
 // /dev is writable and that surprises people — it surprised the author, and it
@@ -515,21 +532,88 @@ func TestRootSkeletonIsReadOnly(t *testing.T) {
 // read-only (it is not) but that a write there reaches neither the host nor the
 // next sandbox. Say "the only writable thing that PERSISTS", never "the only
 // writable thing".
+//
+// # The identity check, and why the escape check alone was vacuous
+//
+// This test used to open with "if the write failed, t.Skip". Bind the HOST's
+// /dev into the sandbox and the write fails with EACCES — an unprivileged user
+// cannot create a file in /dev — so the test SKIPPED, silently, on precisely the
+// escape it exists to detect. Under SNUG_REQUIRE_SANDBOX too: skipOrFail was not
+// used, so the "a green run that checked nothing" guard did not apply.
+//
+// The fix is to lead with a check that cannot be skipped and does not depend on
+// writing anything: the sandbox's /dev must be bwrap's fourteen-entry synthetic
+// tree, not the host's. The host-only entry is discovered at runtime rather than
+// hard-coded, so it cannot rot into another literal that matches nothing.
 func TestDevIsWritableButNeitherPersistsNorEscapes(t *testing.T) {
 	budget(t)
 	requireSandbox(t)
 	proj, _ := target(t)
 
-	if r := run(t, nil, proj, `echo pwned > /dev/ESCAPE_PROBE`).mustRun(t); r.code != 0 {
-		t.Skipf("/dev is not writable here, which is tighter than expected: %s", r.out)
+	// bwrap's --dev creates exactly this set. Anything the HOST has in /dev that
+	// is not in it is a fingerprint of the host's device tree.
+	synthetic := map[string]bool{
+		"console": true, "core": true, "fd": true, "full": true, "null": true,
+		"ptmx": true, "pts": true, "random": true, "shm": true, "stderr": true,
+		"stdin": true, "stdout": true, "tty": true, "urandom": true, "zero": true,
 	}
+	entries, err := os.ReadDir("/dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostOnly := ""
+	for _, e := range entries {
+		if !synthetic[e.Name()] {
+			hostOnly = e.Name()
+			break
+		}
+	}
+	if hostOnly == "" {
+		t.Fatal("the host's /dev contains nothing outside bwrap's synthetic set, so " +
+			"there is no way to tell the two apart and this test would prove nothing")
+	}
+
+	r := run(t, nil, proj, `ls /dev
+echo "---"
+echo pwned > /dev/ESCAPE_PROBE 2>&1 && echo DEV-WRITABLE || echo DEV-READ-ONLY
+echo CHECKED-ALL`).mustRun(t)
+	if !strings.Contains(r.out, "CHECKED-ALL") {
+		t.Fatalf("the payload did not reach the end:\n%s", r.out)
+	}
+
+	listing, _, _ := strings.Cut(r.out, "---")
+	seen := map[string]bool{}
+	for _, line := range strings.Split(listing, "\n") {
+		seen[strings.TrimSpace(line)] = true
+	}
+	// Control: we really listed a device tree, so the absence below is a fact
+	// about /dev and not about `ls` having failed.
+	if !seen["null"] {
+		t.Fatalf("/dev inside the sandbox does not even contain `null`, so it was not "+
+			"listed and the check below proves nothing:\n%s", r.out)
+	}
+	if seen[hostOnly] {
+		t.Errorf("the sandbox's /dev contains %q, which only the HOST's /dev has — "+
+			"this is a bind of the host device tree, not bwrap's synthetic one:\n%s",
+			hostOnly, r.out)
+	}
+
+	// The escape check. It runs whether or not the write succeeded; a failed
+	// write is reported, never skipped over, because "we could not write" is
+	// itself a signal that /dev is not the private tmpfs it should be.
 	if _, err := os.Stat("/dev/ESCAPE_PROBE"); err == nil {
 		os.Remove("/dev/ESCAPE_PROBE")
 		t.Fatal("a write to /dev inside the sandbox reached the HOST's /dev")
 	}
-	r := run(t, nil, proj, `ls /dev/ESCAPE_PROBE 2>&1`).mustRun(t)
-	if r.code == 0 {
-		t.Errorf("a write to /dev survived into the next sandbox:\n%s", r.out)
+	if strings.Contains(r.out, "DEV-READ-ONLY") {
+		t.Logf("/dev was not writable here, which is tighter than the documented "+
+			"behaviour. The identity check above still ran:\n%s", r.out)
+		return
+	}
+
+	next := run(t, nil, proj, `ls /dev/ESCAPE_PROBE 2>&1`).mustRun(t)
+	if next.code == 0 {
+		t.Errorf("a write to /dev survived into the next sandbox:\n%s", next.out)
 	}
 }
 
@@ -554,37 +638,84 @@ func TestDotdotGrantsTheParentAndNothingAbove(t *testing.T) {
 		t.Errorf("the grandparent directory was reachable:\n%s", r.out)
 	}
 
-	// Drop dotdot and the parent's other children disappear. Only the directory
-	// bwrap had to create to host the target's bind mount remains.
-	r = run(t, []string{"--no-default", "-p", "sys", "-p", "home", "-p", "cwd-rw"},
+	// Drop parent-ro and the parent's other children disappear. Only the
+	// directory bwrap had to create to host the target's bind mount remains.
+	r = run(t, []string{"--no-defaults", "-p", "sys", "-p", "home", "-p", "cwd-rw"},
 		proj, `ls ..`).mustRun(t)
 	if strings.Contains(r.out, "sibling") {
-		t.Errorf("without dotdot the sibling must not be visible:\n%s", r.out)
+		t.Errorf("without parent-ro the sibling must not be visible:\n%s", r.out)
+	}
+	// Positive control for the line above. "sibling is not in the output" is
+	// equally true of a payload whose `ls ..` failed for an unrelated reason, so
+	// require the listing to have happened at all.
+	if r.code != 0 {
+		t.Errorf("`ls ..` itself failed without parent-ro, so its silence about "+
+			"the sibling proves nothing:\n%s", r.out)
 	}
 }
 
-// The clamp is the one place restriction lives, and it belongs to the human at
-// the CLI rather than to a file: "a human may tighten; a file may not"
-// (CLAUDE.md invariant 1). Verified by execution because a clamp that resolved
-// correctly but was applied after BwrapArgs would produce identical --dry-run
-// output and a writable sandbox.
-func TestReadOnlyClampDemotesTheWritableTarget(t *testing.T) {
+// CLAUDE.md invariant 1, second half, and the sentence it ends with is why this
+// test exists: "Verified by execution, not inferred."
+//
+// Visibility is monotone, but effective WRITE access at a strict subpath is not:
+// `join` is keyed by Mount.Guest, so grants at different depths become two
+// mounts and the access at a path is that of the deepest mount covering it. A
+// profile adding `ro {target}/.git` therefore DEMOTES .git inside an otherwise
+// writable target. TestResolveDeeperMountWins in internal/policy proves the
+// resolver computes that; only running it proves bwrap honours the ordering.
+//
+// (This replaced a test for `--read-only`, a CLI clamp that no longer exists —
+// the flag was removed and parseArgs now rejects it as unknown, so the test had
+// stopped exercising anything. Same invariant, mechanism that still ships.)
+func TestADeeperReadOnlyGrantDemotesASubpathOfTheWritableTarget(t *testing.T) {
 	budget(t)
 	requireSandbox(t)
 	proj, _ := target(t)
 
-	// Control: without the clamp the target IS writable, so a failure below
-	// cannot be the sandbox simply being broken.
-	if r := run(t, nil, proj, `touch ./control`).mustRun(t); r.code != 0 {
-		t.Fatalf("precondition: the target should be writable without --read-only:\n%s", r.out)
+	if err := os.MkdirAll(filepath.Join(proj, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
-	r := run(t, []string{"--read-only"}, proj, `touch ./clamped`).mustRun(t)
-	if r.code == 0 {
-		t.Errorf("--read-only left the target writable:\n%s", r.out)
+	// CONTROL. Without the demoting profile .git is writable like the rest of the
+	// target, so the refusal below is attributable to the profile and not to the
+	// sandbox simply being broken.
+	ctl := run(t, nil, proj, `touch .git/CONTROL && echo GIT-WRITABLE`).mustRun(t)
+	if !strings.Contains(ctl.out, "GIT-WRITABLE") {
+		t.Fatalf("precondition: .git should be writable without the demoting profile:\n%s", ctl.out)
 	}
-	if r := run(t, []string{"--read-only"}, proj, `ls ./control`).mustRun(t); r.code != 0 {
-		t.Errorf("--read-only should demote the target to read-only, not remove it:\n%s", r.out)
+
+	cfg := t.TempDir()
+	dir := filepath.Join(cfg, "snug", "profiles.d")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "protect-git.toml"), []byte(
+		"[profile.protect-git]\n"+
+			"description = \"demote .git inside an otherwise writable target\"\n"+
+			"ro = [\"{target}/.git\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := baseEnv("XDG_CONFIG_HOME=" + cfg)
+
+	r := runEnv(t, env, []string{"-p", "protect-git"}, proj,
+		`touch ./sibling-file && echo TARGET-STILL-WRITABLE
+cat .git/HEAD
+touch .git/DEMOTED 2>&1 && echo GIT-WRITABLE || echo GIT-READ-ONLY`).mustRun(t)
+
+	if !strings.Contains(r.out, "GIT-READ-ONLY") {
+		t.Errorf("a deeper `ro {target}/.git` grant did not demote .git:\n%s", r.out)
+	}
+	// Demoted, not removed: the tightening must leave the content readable, or
+	// the "no subtraction" invariant is broken in the other direction.
+	if !strings.Contains(r.out, "ref: refs/heads/main") {
+		t.Errorf(".git was hidden rather than demoted; profiles may only ever grant:\n%s", r.out)
+	}
+	// And the demotion must be scoped to the deeper path, not to the whole target.
+	if !strings.Contains(r.out, "TARGET-STILL-WRITABLE") {
+		t.Errorf("the deeper grant demoted the whole target, not just .git:\n%s", r.out)
 	}
 }
 
@@ -610,11 +741,33 @@ func TestProfileFlagAddsToTheDefaultRatherThanReplacingIt(t *testing.T) {
 		}
 	}
 
-	// --no-default is the escape hatch, and it really does start from nothing.
-	r = run(t, []string{"--no-default", "-p", "sys", "-p", "home", "-p", "cwd-rw"},
+	// --no-defaults is the escape hatch, and it really does start from nothing.
+	//
+	// The name of the profile being looked for is load-bearing, and the previous
+	// version of this check got it wrong in the way this file exists to prevent:
+	// it asserted the absence of "dotdot", a profile that was renamed to
+	// `parent-ro` and therefore could never appear in SNUG_PROFILES at all. The
+	// assertion was structurally unable to fail. The guard against a repeat is
+	// the positive half below — the same string MUST be present without
+	// --no-defaults, so a future rename turns this into a failure rather than
+	// into silence.
+	const fromDefaults = "parent-ro"
+
+	withDefaults := run(t, nil, proj, `echo "$SNUG_PROFILES"`).mustRun(t)
+	if !strings.Contains(withDefaults.out, fromDefaults) {
+		t.Fatalf("the defaults no longer include %q, so asserting its ABSENCE below "+
+			"would prove nothing. Update the constant to a profile the defaults "+
+			"really contain:\n%s", fromDefaults, withDefaults.out)
+	}
+
+	r = run(t, []string{"--no-defaults", "-p", "sys", "-p", "home", "-p", "cwd-rw"},
 		proj, `echo "$SNUG_PROFILES"`).mustRun(t)
-	if strings.Contains(r.out, "dotdot") {
-		t.Errorf("--no-default should not pull in the default's profiles:\n%s", r.out)
+	if strings.Contains(r.out, fromDefaults) {
+		t.Errorf("--no-defaults should not pull in the defaults' profiles:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "sys") {
+		t.Errorf("SNUG_PROFILES was not printed at all, so the check above is "+
+			"satisfied by empty output:\n%s", r.out)
 	}
 }
 
@@ -722,13 +875,39 @@ for name, nr in [("ptrace",101),("add_key",248),("keyctl",250),
 
 // REGRESSION (redteam, M1): clone3 bypassed the CLONE_NEWUSER guard because
 // classic BPF cannot dereference its argument pointer.
+//
+// Two positive controls, because a bare "the command exited non-zero" is the
+// weakest possible evidence: `unshare: command not found` is also non-zero, and
+// so is every other way the payload might fail. So the binary is located first,
+// and the same command is shown to SUCCEED with the filter off.
 func TestNestedUserNamespaceIsRefused(t *testing.T) {
 	budget(t)
 	requireSandbox(t)
 	proj, _ := target(t)
 
-	if r := run(t, nil, proj, `unshare -U /bin/true`).mustRun(t); r.code == 0 {
-		t.Error("a nested user namespace was created; that is the standard escape first move")
+	r := run(t, nil, proj,
+		`command -v unshare >/dev/null || { echo NO-UNSHARE; exit 0; }
+unshare -U /bin/true && echo NESTED-USERNS-CREATED || echo REFUSED
+echo CHECKED`).mustRun(t)
+	if strings.Contains(r.out, "NO-UNSHARE") {
+		skipOrFail(t, "util-linux's unshare is not available inside the sandbox, so "+
+			"this check has nothing to run")
+	}
+	if !strings.Contains(r.out, "CHECKED") {
+		t.Fatalf("the payload did not reach the end:\n%s", r.out)
+	}
+	if strings.Contains(r.out, "NESTED-USERNS-CREATED") {
+		t.Errorf("a nested user namespace was created; that is the standard escape "+
+			"first move:\n%s", r.out)
+	}
+
+	// CONTROL: with the filter off the same command succeeds, so the refusal
+	// above is attributable to seccomp and not to `unshare` failing for some
+	// unrelated reason on this kernel.
+	ctl := run(t, []string{"--no-seccomp"}, proj, `unshare -U /bin/true && echo CONTROL-CREATED`).mustRun(t)
+	if !strings.Contains(ctl.out, "CONTROL-CREATED") {
+		t.Errorf("--no-seccomp did not restore nested-userns creation, so the check "+
+			"above may be measuring something other than the filter:\n%s", ctl.out)
 	}
 }
 
@@ -806,9 +985,22 @@ func TestOfflineHasOnlyLoopback(t *testing.T) {
 	requireSandbox(t)
 	proj, _ := target(t)
 
-	r := run(t, nil, proj, `awk 'NR>2{print $1}' /proc/net/dev | tr -d ' :'`).mustRun(t)
+	const list = `awk 'NR>2{print $1}' /proc/net/dev | tr -d ' :'`
+
+	r := run(t, nil, proj, list).mustRun(t)
 	if got := strings.Fields(r.out); len(got) != 1 || got[0] != "lo" {
 		t.Errorf("offline sandbox has interfaces %v, want only lo", got)
+	}
+
+	// CONTROL: with `net` the same command reports a second interface. Without
+	// it, "only lo" is equally what you get from a payload whose awk printed
+	// nothing useful, or from a /proc/net/dev that was never readable.
+	requirePasta(t)
+	c := run(t, []string{"-p", "net"}, proj, list).mustRun(t)
+	if got := strings.Fields(c.out); len(got) < 2 {
+		t.Errorf("control: with -p net the same probe still reports only %v, so it "+
+			"cannot distinguish offline from online and the check above proves "+
+			"nothing:\n%s", got, c.out)
 	}
 }
 
@@ -817,87 +1009,241 @@ func TestOfflineHasOnlyLoopback(t *testing.T) {
 // could reach every host loopback service. A golden-argv test passed on that
 // build; only a behavioural check catches it, and only this one catches a pasta
 // default changing upstream.
+//
+// # Why the GATEWAY address is probed, and why the earlier version was vacuous
+//
+// This test used to probe 127.0.0.1 and ::1 only, and it could not fail. Removing
+// `--map-host-loopback none` — restoring pasta's own default, which is THE
+// GATEWAY ADDRESS — left it passing, while a payload inside the sandbox read the
+// banner off a host loopback service over both TCP and UDP at 192.168.1.1.
+// Verified by execution, not reasoned about: the mutation was applied, the suite
+// stayed green, and the escape was performed by hand on the same build.
+//
+// The reason is that `--map-host-loopback ADDR` does not open 127.0.0.1 inside
+// the namespace. It makes ADDR — the gateway, i.e. pasta itself — a door onto the
+// host's loopback. So the address the flag actually controls was the one address
+// the test never looked at. CLAUDE.md's layer-3 list has said "plus the network
+// helper's gateway address" since M2; the test simply did not do it.
+//
+// UDP is here for the same reason: `-u`/`-U` are separate flags from `-t`/`-T`,
+// and a TCP-only probe cannot tell them apart. The gateway UDP path was live in
+// the same mutation.
 func TestHostLoopbackIsUnreachable(t *testing.T) {
 	budget(t)
 	requireSandbox(t)
 	requirePasta(t)
+	requirePython(t)
 	proj, _ := target(t)
 
 	// Both families, as DESIGN §12.4 spells out: v4 and v6 loopback are closed
 	// by different pasta flags, so checking only 127.0.0.1 leaves half the
 	// property untested.
-	families := []struct{ network, listen, dial string }{
-		{"tcp4", "127.0.0.1:0", "127.0.0.1"},
-		{"tcp6", "[::1]:0", "::1"},
+	//
+	// A net.Listener owned by the test and closed by t.Cleanup. This is the whole
+	// reason these checks are no longer shell: the bash version backgrounded
+	// `python3 -m http.server`, which held the CI step's stdout open, and the
+	// runner waited eleven minutes on that pipe before cancelling a job whose
+	// every assertion had passed.
+	ln4, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveBanner(t, ln4)
+	tcpPort := ln4.Addr().(*net.TCPAddr).Port
+
+	udpPort := serveUDPBanner(t)
+
+	haveV6 := true
+	v6Port := 0
+	if ln6, err := net.Listen("tcp6", "[::1]:0"); err != nil {
+		t.Logf("no IPv6 loopback on this host, skipping the v6 half: %v", err)
+		haveV6 = false
+	} else {
+		serveBanner(t, ln6)
+		v6Port = ln6.Addr().(*net.TCPAddr).Port
 	}
 
-	var script strings.Builder
-	var want []string
-	tried := 0
-	for _, f := range families {
-		// A net.Listener owned by the test and closed by t.Cleanup. This is the
-		// whole reason these checks are no longer shell: the bash version
-		// backgrounded `python3 -m http.server`, which held the CI step's stdout
-		// open, and the runner waited eleven minutes on that pipe before
-		// cancelling a job whose every assertion had passed.
-		ln, err := net.Listen(f.network, f.listen)
+	// PRECONDITIONS. Every one of them is "the measurement works", and without
+	// them each assertion below is equally true of a listener nobody could ever
+	// have reached.
+	c, err := net.DialTimeout("tcp4", fmt.Sprintf("127.0.0.1:%d", tcpPort), 5*time.Second)
+	if err != nil {
+		t.Fatalf("precondition: the host cannot reach its own tcp4 listener: %v", err)
+	}
+	c.Close()
+	if haveV6 {
+		c, err := net.DialTimeout("tcp6", fmt.Sprintf("[::1]:%d", v6Port), 5*time.Second)
 		if err != nil {
-			if f.network == "tcp6" {
-				t.Logf("no IPv6 loopback on this host, skipping the v6 half: %v", err)
-				continue
-			}
-			t.Fatal(err)
-		}
-		serveBanner(t, ln)
-		port := ln.Addr().(*net.TCPAddr).Port
-
-		// The host can see it — otherwise the test proves nothing.
-		c, err := net.DialTimeout(f.network, net.JoinHostPort(f.dial, fmt.Sprint(port)), 5*time.Second)
-		if err != nil {
-			t.Fatalf("precondition: the host cannot reach its own %s listener: %v", f.network, err)
+			t.Fatalf("precondition: the host cannot reach its own tcp6 listener: %v", err)
 		}
 		c.Close()
-
-		// The probe must REFUSE, not time out. Inside the sandbox's netns the
-		// address 127.0.0.1 is its own loopback, where nothing is listening, so
-		// the kernel answers with RST and connect() fails in microseconds. The
-		// `timeout 2` is a backstop for a hang, never the measurement: waiting
-		// longer could not turn a refusal into a connection, and a timeout would
-		// mean the packet was silently dropped, which proves strictly less than a
-		// refusal does. So the verdict is recorded rather than inferred.
-		fmt.Fprintf(&script, `
-out=$(timeout 2 bash -c 'exec 3<>/dev/tcp/%[1]s/%[2]d' 2>&1); rc=$?
-case "$rc" in
-  0)   echo "REACHED-%[3]s" ;;
-  124) echo "TIMEDOUT-%[3]s" ;;
-  *)   echo "REFUSED-%[3]s ($out)" ;;
-esac
-`, f.dial, port, f.network)
-		want = append(want, f.network)
-		tried++
 	}
-	if tried == 0 {
-		t.Fatal("no loopback listener could be started, so nothing was tested")
+	if got := dialUDPBanner(t, udpPort); got != hostBanner {
+		t.Fatalf("precondition: the host cannot reach its own UDP listener (got %q), "+
+			"so the UDP half below would pass on a probe that never works", got)
 	}
 
-	r := run(t, []string{"-p", "net"}, proj, script.String()).mustRun(t)
-	if strings.Contains(r.out, "REACHED-") {
-		t.Errorf("the sandbox reached a service on the HOST's loopback:\n%s", r.out)
+	// The probe runs inside the sandbox and prints one RESULT line per address,
+	// so a verdict is RECORDED rather than inferred from silence. The gateway
+	// comes from /proc/net/route rather than from `ip`, which keeps the probe
+	// independent of iproute2 being present.
+	//
+	// Timeouts are backstops, never the measurement. In the expected case the
+	// sandbox's own kernel answers with RST (its loopback is empty) or pasta
+	// refuses, both in microseconds; only a DROPPED packet costs the timeout, and
+	// a drop is a weaker observation than a refusal anyway.
+	probe := fmt.Sprintf(`import socket, struct
+
+def gateway():
+    with open("/proc/net/route") as f:
+        for line in f.read().splitlines()[1:]:
+            fs = line.split()
+            if len(fs) > 3 and fs[1] == "00000000":
+                return socket.inet_ntoa(struct.pack("<L", int(fs[2], 16)))
+    return None
+
+gw = gateway()
+print("GATEWAY", gw or "NONE")
+
+def probe(label, family, kind, host, port, timeout):
+    s = socket.socket(family, kind)
+    s.settimeout(timeout)
+    try:
+        s.connect((host, port))
+        if kind == socket.SOCK_DGRAM:
+            s.send(b"probe")
+        print("RESULT", label, "REACHED", s.recv(64).decode(errors="replace").strip())
+    except ConnectionRefusedError:
+        print("RESULT", label, "REFUSED")
+    except socket.timeout:
+        print("RESULT", label, "TIMEDOUT")
+    except OSError as e:
+        print("RESULT", label, "ERROR", type(e).__name__, e)
+    finally:
+        s.close()
+
+probe("v4-tcp", socket.AF_INET, socket.SOCK_STREAM, "127.0.0.1", %[1]d, 2)
+probe("v4-udp", socket.AF_INET, socket.SOCK_DGRAM, "127.0.0.1", %[2]d, 0.5)
+if %[4]s:
+    probe("v6-tcp", socket.AF_INET6, socket.SOCK_STREAM, "::1", %[3]d, 2)
+if gw:
+    probe("gw-tcp", socket.AF_INET, socket.SOCK_STREAM, gw, %[1]d, 2)
+    probe("gw-udp", socket.AF_INET, socket.SOCK_DGRAM, gw, %[2]d, 0.5)
+print("PROBE-COMPLETE")
+`, tcpPort, udpPort, v6Port, map[bool]string{true: "True", false: "False"}[haveV6])
+
+	if err := os.WriteFile(filepath.Join(proj, "loopback.py"), []byte(probe), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(r.out, "SECRET-SERVICE-BANNER") {
-		t.Errorf("the sandbox read from a host loopback service:\n%s", r.out)
+
+	r := run(t, []string{"-p", "net"}, proj, `python3 loopback.py`).mustRun(t)
+
+	if !strings.Contains(r.out, "PROBE-COMPLETE") {
+		t.Fatalf("the probe did not run to the end, so every verdict below is missing "+
+			"rather than negative:\n%s", r.out)
 	}
-	for _, network := range want {
-		if strings.Contains(r.out, "REFUSED-"+network) {
-			continue
+	if strings.Contains(r.out, hostBanner) {
+		t.Errorf("the sandbox READ from a host loopback service:\n%s", r.out)
+	}
+
+	// The gateway must have been found. "The gateway was unreachable" is
+	// trivially true of a probe that had no gateway address to try, and that is
+	// the shape of vacuous pass this file exists to prevent.
+	if strings.Contains(r.out, "GATEWAY NONE") {
+		t.Fatalf("the sandbox has no default route, so the gateway — the address "+
+			"--map-host-loopback actually controls — was never probed:\n%s", r.out)
+	}
+
+	verdicts := map[string]string{}
+	for _, line := range strings.Split(r.out, "\n") {
+		if f := strings.Fields(line); len(f) >= 3 && f[0] == "RESULT" {
+			verdicts[f[1]] = f[2]
 		}
-		// Not a nitpick and not merely slow: an unreachable-because-dropped is a
-		// different property from unreachable-because-refused, and only the
-		// second one tells us the sandbox's own loopback answered.
-		t.Errorf("the %s probe was neither refused nor reached — it was dropped. "+
-			"That is a weaker result than this test claims to establish, and it is "+
-			"where seconds of CI time go:\n%s", network, r.out)
 	}
+
+	// TCP: only a REFUSED tells us something answered "there is nothing here". A
+	// drop is weaker, and it is where seconds of CI time go, so it is reported as
+	// a defect in the probe rather than accepted as a pass.
+	wantRefused := []string{"v4-tcp", "gw-tcp"}
+	if haveV6 {
+		wantRefused = append(wantRefused, "v6-tcp")
+	}
+	for _, label := range wantRefused {
+		switch verdicts[label] {
+		case "REFUSED":
+		case "":
+			t.Errorf("the %s probe produced no verdict at all:\n%s", label, r.out)
+		case "REACHED":
+			t.Errorf("the sandbox REACHED a service on the host's loopback via %s:\n%s", label, r.out)
+		default:
+			t.Errorf("the %s probe was %s, neither refused nor reached. That is a weaker "+
+				"result than this test claims to establish:\n%s", label, verdicts[label], r.out)
+		}
+	}
+
+	// UDP: a refusal needs an ICMP port-unreachable getting back, which pasta is
+	// under no obligation to relay, so a timeout is an acceptable negative here.
+	// REACHED is not, and neither is a missing verdict.
+	for _, label := range []string{"v4-udp", "gw-udp"} {
+		switch verdicts[label] {
+		case "REFUSED", "TIMEDOUT":
+		case "":
+			t.Errorf("the %s probe produced no verdict at all:\n%s", label, r.out)
+		default:
+			t.Errorf("the sandbox reached a host UDP service via %s (%s):\n%s",
+				label, verdicts[label], r.out)
+		}
+	}
+}
+
+// hostBanner is what every host-side probe listener answers with. Seeing it
+// inside the sandbox is proof of a completed conversation, not merely of a
+// completed handshake.
+const hostBanner = "SECRET-SERVICE-BANNER"
+
+// serveUDPBanner answers every datagram with the banner and shuts down when the
+// test ends. Returns the port.
+func serveUDPBanner(t *testing.T) int {
+	t.Helper()
+	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 64)
+		for {
+			n, addr, err := pc.ReadFrom(buf)
+			if err != nil {
+				return // closed
+			}
+			_ = n
+			pc.WriteTo([]byte(hostBanner), addr)
+		}
+	}()
+	t.Cleanup(func() { pc.Close(); <-done })
+	return pc.LocalAddr().(*net.UDPAddr).Port
+}
+
+// dialUDPBanner is the host-side positive control for the UDP half.
+func dialUDPBanner(t *testing.T, port int) string {
+	t.Helper()
+	c, err := net.DialTimeout("udp4", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
+	if err != nil {
+		t.Fatalf("precondition: %v", err)
+	}
+	defer c.Close()
+	if _, err := c.Write([]byte("probe")); err != nil {
+		t.Fatalf("precondition: %v", err)
+	}
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 64)
+	n, err := c.Read(buf)
+	if err != nil {
+		return fmt.Sprintf("<%v>", err)
+	}
+	return string(buf[:n])
 }
 
 // serveBanner answers every connection with a token and shuts the listener down
@@ -914,7 +1260,7 @@ func serveBanner(t *testing.T, ln net.Listener) {
 				return // the listener was closed; nothing is left running
 			}
 			c.SetDeadline(time.Now().Add(5 * time.Second))
-			c.Write([]byte("SECRET-SERVICE-BANNER\n"))
+			c.Write([]byte(hostBanner + "\n"))
 			c.Close()
 		}
 	}()
@@ -1580,11 +1926,25 @@ ro = [%q]
 [profile.greedy]
 description = "grant the whole host"
 ro = ["/"]
+
+# The control. Same file, same loader, same invocation — it simply does not mask
+# anything, and it must be ACCEPTED. Without it "snug refused" is equally true of
+# a snug that refuses every profile from this layer, and the three checks below
+# would prove nothing about rejectMasking.
+[profile.benign]
+description = "an ordinary additive grant that masks nothing"
+ro = ["/usr/share/misc"]
 `, empty+":/usr/share/misc")
 	if err := os.WriteFile(filepath.Join(dir, "evil.toml"), []byte(evil), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	env := baseEnv("XDG_CONFIG_HOME=" + cfg)
+
+	if out, code := cli(t, env, "--dry-run", "-p", "benign", proj); code != 0 {
+		t.Fatalf("control: an ordinary additive profile from this same file must be "+
+			"accepted, or the refusals below say nothing about masking (exit %d):\n%s",
+			code, out)
+	}
 
 	for _, tc := range []struct{ profile, wantIn string }{
 		{"hide-ssl", "/etc/ssl"},
@@ -1616,6 +1976,24 @@ func TestAnUnknownProfileKeyIsFatal(t *testing.T) {
 		[]byte("[profile.x]\nmask = [\"/etc\"]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// CONTROL: the identical profile with the unknown key REMOVED, in its own
+	// config directory, is accepted. Without it "snug refused" is equally what
+	// you get from a config layer snug never read, a profile name it does not
+	// know, or --dry-run failing for reasons of its own.
+	okCfg := t.TempDir()
+	okDir := filepath.Join(okCfg, "snug", "profiles.d")
+	if err := os.MkdirAll(okDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(okDir, "x.toml"),
+		[]byte("[profile.x]\nro = [\"/etc\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := cli(t, baseEnv("XDG_CONFIG_HOME="+okCfg), "--dry-run", "-p", "x", proj); code != 0 {
+		t.Fatalf("control: the same profile without the unknown key must be accepted, "+
+			"or the refusal below is not attributable to strict decoding (exit %d):\n%s",
+			code, out)
+	}
 
 	out, code := cli(t, baseEnv("XDG_CONFIG_HOME="+cfg), "--dry-run", "-p", "x", proj)
 	if code == 0 {
@@ -1635,7 +2013,15 @@ func TestRepoLocalConfigIsNeverAutoLoaded(t *testing.T) {
 	requireSandbox(t)
 	proj, _ := target(t)
 
-	evil := "[profile.evil]\ninclude = [\"default\"]\nrw = [\"/etc\"]\n"
+	// The profile has to be one that WOULD work if it were trusted, or "snug
+	// refused it" is attributable to the profile being broken rather than to
+	// where it came from. The earlier version wrote `include = ["default"]`, and
+	// there is no builtin called `default` — so even a snug that happily loaded
+	// repo-local config would have failed this, for the wrong reason, forever.
+	// The control below is what keeps that honest.
+	const evil = "[profile.evil]\ndescription = \"a hostile repo granting itself /etc\"\n" +
+		"include = [\"sys\", \"home\", \"cwd-rw\"]\nrw = [\"/etc\"]\n"
+
 	for _, rel := range []string{
 		".snug/profiles.toml",
 		"snug.toml",
@@ -1648,6 +2034,23 @@ func TestRepoLocalConfigIsNeverAutoLoaded(t *testing.T) {
 		if err := os.WriteFile(path, []byte(evil), 0o644); err != nil {
 			t.Fatal(err)
 		}
+	}
+
+	// POSITIVE CONTROL: the very same bytes, in a TRUSTED config directory, are
+	// loaded and accepted. So the refusal below is caused by the location and by
+	// nothing else — which is the whole claim of invariant 3.
+	trusted := t.TempDir()
+	dir := filepath.Join(trusted, "snug", "profiles.d")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "evil.toml"), []byte(evil), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctlOut, ctlCode := cli(t, baseEnv("XDG_CONFIG_HOME="+trusted), "--dry-run", "-p", "evil", proj)
+	if ctlCode != 0 {
+		t.Fatalf("control: this profile is rejected even from a TRUSTED directory, so "+
+			"the check below would pass on any snug at all (exit %d):\n%s", ctlCode, ctlOut)
 	}
 
 	// The profile the repo shipped does not exist as far as snug is concerned.

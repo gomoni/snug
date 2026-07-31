@@ -49,10 +49,18 @@ Useful shapes:
 snug ~/src/proj -- make test     # run one command, exit code propagates
 snug -p net ~/src/proj           # ...with internet access
 snug -p git-ro -p net ~/src/proj # ...and your git identity, read-only
-snug --read-only ~/src/proj      # nothing writable at all
 ```
 
-`-p` **adds** to the default profile. `--no-default` starts from nothing.
+`-p` **adds** to the `defaults` setting — a bare `snug <dir>` selects
+`sys home cwd-rw parent-ro`, which is what makes snug usable by just running it.
+`--no-defaults` declines that selection entirely and starts from nothing; it is
+deliberately an explicit, unusual act, because running without the standard set
+is unusual. `snug config` prints the effective list and where it came from.
+
+There is no flag that grants *less*. Profiles only ever grant; to grant less,
+select fewer profiles. A read-only project is
+`snug --no-defaults -p sys -p home -p parent-ro <dir>` — verbose on purpose,
+because a read-only cwd is possible but highly nonstandard.
 
 ## The model
 
@@ -62,7 +70,7 @@ The base state is an empty tmpfs root, an empty network namespace, and an empty
 environment. Nothing is inherited. A profile is a *named hole*.
 
 There is no deny rule, no `mask`, no negation — because there is nothing to
-deny. `dotdot` does not hide your other projects; it never grants them. Which
+deny. `parent-ro` does not hide your other projects; it never grants them. Which
 means:
 
 - **Adding a profile can never make a path stop being visible.** You can compose
@@ -91,23 +99,40 @@ $ snug profile dot | dot -Tpng -o profiles.png
 | `sys` | `/usr` plus the dozen `/etc` entries things actually need. |
 | `home` | `$HOME` as an empty tmpfs at the host path. Ephemeral. |
 | `cwd-rw` | The target directory, writable and persistent. |
-| `dotdot` | The target's parent, read-only. |
-| `default` | `sys` + `home` + `cwd-rw` + `dotdot`. Offline. |
+| `parent-ro` | The target's parent, read-only. |
 | `git-ro` | `~/.config/git` and `~/.gitconfig`, read-only. |
 | `tmp-shared` | A per-project host directory as `/tmp`. Survives the sandbox. |
 | `net` | Internet access. Host loopback unreachable. |
 | `net-publish` | As `net`, plus sandbox ports on the host's `127.0.0.1`. |
 | `net-anon` | As `net`, but the sandbox does not learn your LAN address. |
 | `net-host` | **Dangerous.** Shares the host network namespace. Needs `--i-know`. |
-| `etc-full` | All of `/etc`, including the distro's shell startup scripts. |
+
+There is deliberately **no `default` profile**. What a bare `snug <dir>` selects
+is the `defaults` *setting*, not a grant:
+
+```toml
+# ~/.config/snug/config.toml — preferences, never grants
+defaults = ["sys", "home", "cwd-rw", "parent-ro"]
+```
+
+Setting it REPLACES the built-in list rather than merging with it, so you can
+have fewer defaults than snug ships with. `net` is not in the list and should
+not be added to it: offline is the *absence* of the `net` profile, so it cannot
+be switched back on by accident — `snug -p net` is one word.
 
 Write your own in `~/.config/snug/profiles.d/*.toml`:
 
 ```toml
 [profile.srv-rw]
 description = "The directories my build reaches outside the project."
-include = ["default", "net"]
+include = ["net"]     # the `defaults` are selected too; -p adds to them
 rw = ["/srv", "/opt/cache"]
+
+# All of /etc, including the distro's shell startup scripts — which then RUN
+# inside the sandbox. Not a builtin: it is one line, and the cost is yours to
+# accept.
+[profile.etc-full]
+ro = ["/etc"]
 ```
 
 Then `snug -p srv-rw ~/src/proj`. Profiles compose with `include`, and a config

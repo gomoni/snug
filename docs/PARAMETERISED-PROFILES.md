@@ -109,7 +109,7 @@ material. Parameterisation adds a *second* thing that authors a grant, so:
 | `-p dir-rw:/srv` on the CLI | **true** — the human typed it |
 | a literal in `include` in a trusted-layer file | inherit that file's `Trusted` |
 | a literal in `include` in a `--config` file | **false** (§2.7: convenience, not promotion) |
-| `default_profile` in `~/.config/snug/config.toml` | **true** |
+| `defaults` in `~/.config/snug/config.toml` | **true** |
 
 `Profile.Trusted` is currently set and never read. Templates make reading it
 mandatory.
@@ -258,6 +258,7 @@ change.
 Do not reparameterise `tmp-shared` or any shipped builtin in the same change, or
 the golden diff stops being readable as a security review artifact. Same reason
 to land the `dotdot` → `parent-ro` rename before or after, never concurrently.
+(That rename has since landed; the profile is `parent-ro` everywhere now.)
 
 ## Open questions the architect flagged
 

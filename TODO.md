@@ -44,21 +44,74 @@ environment variables (direnv would let a repo author its own boundary).
 
 ## Pending
 
-### Rename the `dotdot` profile to `parent-ro`
-
-`dotdot` is cute and opaque. `parent-ro` says what it does and matches the `-ro`
-suffix already used by `git-ro`. Rename everywhere, including `docs/DESIGN.md`,
-which also calls the concept "access ..".
-
-Held back only because a redteam run was in flight and renaming a profile
-mid-run would produce phantom "unknown profile" failures in its report. Do it
-once that lands.
-
 ### Prompt could show an unusually wide profile set
 
-`PS1` is `🔒 snug:\w\$ `. A marker when something wide is active — `etc-full`
-or `net-host` — would make a permissive sandbox visible at a glance rather than
-only in `--dry-run`.
+`PS1` is `🔒 snug:\w\$ `. A marker when something wide is active — `net-host`,
+or a user-written profile granting a large tree — would make a permissive
+sandbox visible at a glance rather than only in `--dry-run`.
+
+### `test/integration/sandbox_test.go` still uses the old vocabulary
+
+Not done here because another agent owned the file. It references `dotdot`, the
+`default` profile, `--no-default` and `--read-only`, all of which are gone. The
+exact edits are listed in the report accompanying that change; until they land,
+`make integration` fails while `make gate` stays green.
+
+## Container proxy — found by mutation-testing (M4 review round)
+
+The sandbox-tester ran 73 mutations against the committed suite; nine tests were
+decorative or dead and are fixed. Two surviving mutations are **product bugs, not
+test bugs** — both are full escapes through the docker/podman proxy, both verified
+by forwarding real bytes to the engine. Regression tests are written and withheld
+so `make gate` stays green until the fix lands; they arrive with it.
+
+- **[🔴 escape] Any create request with an `Upgrade:` header bypasses the whole
+  proxy.** `isHijack` (`internal/dockerproxy/proxy.go:354`) returns true on
+  `Upgrade`/`Connection: upgrade` for **any path**, before `handleCreate` runs, and
+  `hijack` does `r.Write(up)` — the raw request goes to podman. Verified:
+  `POST /v1.41/containers/create` + `Upgrade: tcp` with
+  `{"Privileged":true,"Binds":["/:/host"]}` reached the engine byte-for-byte,
+  200 OK. Fix: gate hijack on a known streaming PATH (containers attach; containers
+  start *with* upgrade; exec start), never on the header alone.
+- **[🔴 escape] Case-variant JSON keys bypass every denylist.** Lookups are
+  exact-key on a `map[string]json.RawMessage` (`create.go:39,52`); podman decodes
+  with `encoding/json`, which is **case-insensitive**, and `json.Marshal` sorts map
+  keys so the attacker's lowercase variant always sorts last and wins.
+  `{"hostconfig":{"privileged":true,"binds":["/:/host"]}}` reached the engine with
+  snug's `"Privileged":false` sitting harmlessly beside it. Fix: reject any object
+  with two keys equal under case-fold, fold `req`/`hc` keys to canonical case before
+  filtering, and delete any case-variant of an injected key (`Privileged`,
+  `SecurityOpt`) before re-inserting snug's own.
+
+Both are `host-bridge`'s surface (the podman socket proxy). To fix in the same pass,
+because they share the handler:
+
+- **[🟠 capability not delivered] `net-publish` auto does not work.** `-t 127.0.0.1/auto`
+  only scans at pasta startup; a port bound afterwards is never published (measured
+  to 10 s). `--dry-run` prints "host -> sandbox EVERY port the sandbox binds" — a
+  claim not delivered, which is invariant 5's territory. Fails safe (nothing extra
+  is exposed), but the `-t auto` mutation cannot be caught until this is fixed. A
+  *named* port does work (`TestPublishedPortsAreReachable`).
+- **[🟡 correctness] `docker run`/`create` is refused today.** The docker CLI always
+  sends `HostConfig.LogConfig: {"Type":"","Config":{}}`; `isEmptyJSON` does not treat
+  that as empty (`create.go:308`), so the `LogConfig` denylist entry refuses every
+  create. The hazard is only a non-empty `Type` or a `Config` option (the `path`);
+  refuse `LogConfig` only when one of those is set, so the empty default passes.
+- **[🟡 silent drop] `HostConfig.Tmpfs` is silently deleted** (`create.go:100`),
+  contradicting the "nothing is silently dropped" rule two comments above it. Either
+  forward it (container-internal, harmless) or refuse it by name.
+
+## Engine — found by host-bridge (teardown work)
+
+- **[🟡 correctness] `stop --all` at teardown is store-wide.** A sandbox's teardown
+  stops a *concurrent* sibling's containers when both resolve to the same store
+  (warm-start sharing). The engine-level collateral is fixed (socket carries the
+  run's pid; the store never does), but closing this needs a per-run label applied
+  at container create, which lives in `internal/dockerproxy`.
+- **[🟡 papercut] Warm stores are silently orphaned by profile renames.** The store
+  key includes the resolved profile list, so a rename like `dotdot`->`parent-ro`
+  changes it mid-session and a warm store with a pulled image becomes unreachable.
+  Harmless (a re-pull), but worth a note.
 
 ## Independent bugs found while reviewing that idea
 

@@ -24,9 +24,8 @@ func (p *Policy) Validate(env Environ) error {
 		}
 	}
 	// The target must be REACHABLE, not necessarily writable. A read-only view
-	// of a project is a legitimate sandbox — it is what `sys dotdot` gives you,
-	// and what the --read-only clamp produces — so requiring rw here would
-	// forbid a perfectly good configuration.
+	// of a project is a legitimate sandbox — it is what `sys parent-ro` gives
+	// you — so requiring rw here would forbid a perfectly good configuration.
 	hasTarget := false
 	for _, m := range p.Mounts {
 		if m.Kind != KindBind {
@@ -43,7 +42,7 @@ func (p *Policy) Validate(env Environ) error {
 		return fmt.Errorf("the selected profiles (%s) grant nothing: no OS runtime to execute, "+
 			"and no writable target.\n"+
 			"       This is the empty sandbox — it is the correct floor of the model, but nothing can run in it.\n"+
-			"       Try:  snug %s          (uses the 'default' profile)\n"+
+			"       Try:  snug %s          (uses the default profile selection)\n"+
 			"       See:  snug profile list",
 			strings.Join(p.Profiles, " "), p.Target)
 	case !hasRuntime:
@@ -51,7 +50,7 @@ func (p *Policy) Validate(env Environ) error {
 			"(add the 'sys' profile)")
 	case !hasTarget:
 		return fmt.Errorf("target %s is not visible inside the sandbox: no profile grants it.\n"+
-			"       Add 'cwd-rw' to make it writable, or 'dotdot' to see it read-only.", p.Target)
+			"       Add 'cwd-rw' to make it writable, or 'parent-ro' to see it read-only.", p.Target)
 	}
 
 	// Build the sandbox's own symlink map so we can resolve guest paths through
@@ -113,7 +112,7 @@ func (p *Policy) Validate(env Environ) error {
 //
 // The one nesting that is legitimate is re-granting the SAME underlying host
 // tree at a stronger access — which is exactly what the default does, with
-// `cwd-rw` laying rw {target} over `dotdot`'s ro {target_parent}. That exposes a
+// `cwd-rw` laying rw {target} over `parent-ro`'s ro {target_parent}. That exposes a
 // superset, not a subset. So a nested grant is allowed only when it is a bind
 // whose host source is the corresponding subpath of the outer bind's host.
 //
@@ -145,7 +144,7 @@ func (p *Policy) rejectMasking(env Environ) error {
 				continue
 			}
 			if m.Kind == KindBind && sameUnderlyingTree(env, outer, m, d) {
-				break // re-granting the same tree, e.g. cwd-rw over dotdot
+				break // re-granting the same tree, e.g. cwd-rw over parent-ro
 			}
 			what := "an empty tmpfs"
 			if m.Kind == KindBind {

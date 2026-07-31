@@ -3,11 +3,14 @@ package sshproxy
 import (
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // fakeAgent stands in for the host's ssh-agent and records whether it was
@@ -186,32 +189,108 @@ func TestMutatingRequestsAreRefused(t *testing.T) {
 
 // A length prefix read from the sandbox is attacker-controlled. Unbounded, it
 // is a memory-exhaustion primitive aimed at snug itself.
+//
+// The deadline is the point of this test, not a nicety. Without a bound, the
+// proxy allocates the claimed size and then BLOCKS in ReadFull waiting for bytes
+// the sandbox will never send — so the connection is neither answered nor
+// closed, and `readMessage(c) != nil` was satisfied only by the whole test
+// binary eventually dying on go test's ten-minute default timeout. Deleting the
+// bound therefore "passed" for ten minutes and then failed anonymously. Here a
+// hang is its own named failure, in two seconds.
 func TestOversizedMessageIsRejected(t *testing.T) {
-	sock, _, _ := startProxy(t)
-	c, err := net.Dial("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
+	sock, _, pinned := startProxy(t)
 
-	// Claim 4 GiB without sending it.
-	if _, err := c.Write([]byte{0xff, 0xff, 0xff, 0xff}); err != nil {
-		t.Fatal(err)
+	// Two sizes, both refused for the same reason. maxMessage+1 is the boundary;
+	// 4 GiB is the memory-exhaustion case, and a proxy that only bounded the
+	// obviously-absurd value would still be a primitive at 256 KiB a connection.
+	for _, tc := range []struct {
+		name   string
+		prefix []byte
+	}{
+		{"one byte over the bound", []byte{0x00, 0x04, 0x00, 0x01}},
+		{"4 GiB", []byte{0xff, 0xff, 0xff, 0xff}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := net.Dial("unix", sock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+
+			// Claim the size without sending it.
+			if _, err := c.Write(tc.prefix); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			_, err = readMessage(c)
+			switch {
+			case err == nil:
+				t.Error("the proxy accepted an absurd message length instead of closing the connection")
+			case errors.Is(err, os.ErrDeadlineExceeded):
+				t.Error("the proxy neither answered nor closed the connection: it is sitting " +
+					"on an unbounded read, having already allocated the size the sandbox " +
+					"asked for. That is the memory-exhaustion primitive this test exists " +
+					"to deny, and it looks identical to a pass unless the read is bounded.")
+			}
+		})
 	}
-	if _, err := readMessage(c); err == nil {
-		t.Error("proxy accepted an absurd message length instead of closing the connection")
-	}
+
+	// POSITIVE CONTROL. The probe above concludes from a closed connection, and a
+	// closed connection is equally what you get from a proxy that is broken, has
+	// crashed, or never started. So show the same machinery getting a real answer
+	// out of the same proxy afterwards.
+	t.Run("control: a well-formed message on the same proxy is answered", func(t *testing.T) {
+		reply := ask(t, sock, []byte{requestIdentities})
+		if reply[0] != identitiesAnswer {
+			t.Fatalf("control: reply type %d, want IDENTITIES_ANSWER — the proxy is not "+
+				"answering anything, so the refusals above prove nothing", reply[0])
+		}
+		if blob, _, ok := takeString(reply[5:]); !ok || string(blob) != string(pinned) {
+			t.Error("control: the proxy answered, but not with the pinned key")
+		}
+	})
 }
 
 // The socket must not be usable by other users on the machine: anything that
 // can connect can ask for a signature.
+//
+// The umask is forced to 0 first, and that is what makes this an assertion
+// rather than an observation about the developer's shell. bind(2) applies the
+// umask, so under the common 0077 the socket comes out 0600 whether or not the
+// code chmods it — the test would hold, and go on holding, with the chmod
+// deleted. At umask 0 the only thing that can produce 0600 is snug doing it.
+//
+// Nothing in this package runs in parallel, and the umask is restored, so the
+// process-wide change is contained.
 func TestSocketIsPrivate(t *testing.T) {
-	sock, _, _ := startProxy(t)
-	fi, err := os.Stat(sock)
+	old := syscall.Umask(0)
+	t.Cleanup(func() { syscall.Umask(old) })
+
+	// Control: prove the umask really is permissive now, so a 0600 socket below
+	// cannot be attributed to it.
+	probe := filepath.Join(t.TempDir(), "umask-probe")
+	f, err := os.OpenFile(probe, os.O_CREATE|os.O_WRONLY, 0o666)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+	f.Close()
+	fi, err := os.Stat(probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o666 {
+		t.Fatalf("could not clear the umask (a 0666 file came out %#o), so a private "+
+			"socket below would prove nothing", fi.Mode().Perm())
+	}
+
+	sock, _, _ := startProxy(t)
+	si, err := os.Stat(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := si.Mode().Perm(); perm&0o077 != 0 {
 		t.Errorf("agent socket is mode %#o; it must not be group- or world-accessible", perm)
 	}
 }
