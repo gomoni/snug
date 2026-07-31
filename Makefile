@@ -30,8 +30,15 @@ gate:
 # they are missing the tests SKIP with a reason. Set SNUG_REQUIRE_SANDBOX=1 (CI
 # does) to turn those skips into failures, and SNUG_TEST_NET=1 to allow the
 # checks that reach the public internet.
+#
+# -timeout is 4m, not 15m. The whole suite runs in about 6 seconds here and every
+# test carries its own budget (see test/integration: budget()), so this is the
+# outermost of three nested bounds and should never be the one that fires. When
+# it was 15m it was the ONLY bound, and a single hung test could burn the entire
+# CI job and end in an anonymous goroutine dump. If this timeout fires, the
+# per-test watchdog did not — which is itself the bug worth looking at.
 integration:
-	go test -tags integration -timeout 15m -v ./test/integration/...
+	go test -tags integration -timeout 4m -v ./test/integration/...
 
 # Regenerate the golden argv files, then READ THE DIFF. A change to a golden
 # file is a change to the sandbox boundary.

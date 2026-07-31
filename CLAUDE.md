@@ -5,7 +5,10 @@
 > offering safe concealment
 > a small private room or compartment in a pub (British)
 
-Bubblewrap-based sandbox for agents.
+Bubblewrap-based sandbox for running untrusted code: builds, dependency install
+hooks, test suites, and AI agents among them. Nothing in the model is
+agent-specific — an agent is just one more thing you would rather not hand your
+`~/.ssh` to.
 
 **The full design is [docs/DESIGN.md](docs/DESIGN.md).** Read it before implementing
 anything. This file is the working agreement: the invariants that must not be

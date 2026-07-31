@@ -34,6 +34,9 @@ type Profile struct {
 	Gateway     string
 	MTU         int
 
+	// Podman is "off" | "socket", joined by max like every other scalar.
+	Podman string
+
 	// Identity pins one git/ssh/gh account. See identity.go.
 	Identity *Identity
 

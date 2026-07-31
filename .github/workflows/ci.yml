@@ -33,16 +33,33 @@ jobs:
   # `python3 -m http.server` held the step's stdout open, the runner waited on
   # that pipe rather than on the commands, and it cancelled the job after eleven
   # minutes with every assertion already passed. In Go the listener is a
-  # net.Listener owned by the test and closed by t.Cleanup, and there is no
-  # step-stdout pipe for a child to inherit.
+  # net.Listener owned by the test and closed by t.Cleanup.
+  #
+  # Moving it to Go did not by itself make the pipe problem go away, and the
+  # earlier version of this comment said it had. os/exec gives every sandbox a
+  # pipe for its output and Wait does not return until the last write end closes,
+  # so the same hang was reachable one level down — the harness now sets
+  # Cmd.WaitDelay on every invocation to bound it. See test/integration.
   #
   # So what stays in this file is only what genuinely belongs to CI: installing
   # the host packages, the sysctl, and the timeout.
+  #
+  # On bounding the runtime — there are now three nested bounds, and this file
+  # owns only the outermost:
+  #
+  #   1. budget() in the Go suite: per-test, seconds. Fails naming the test.
+  #   2. `go test -timeout 4m` in the Makefile: whole package.
+  #   3. timeout-minutes here: the job, including apt and setup-go.
+  #
+  # Only (1) can say WHICH test was slow, which is why the numbers below are
+  # deliberately not generous: if (2) or (3) ever fires, the interesting fact is
+  # that (1) did not.
   integration:
     name: real sandbox behaviour
     runs-on: ubuntu-latest
-    # A hung step should fail fast rather than burn the job's full allowance.
-    timeout-minutes: 15
+    # The suite is ~6s locally; apt and setup-go dominate this number. Was 15,
+    # which was long enough for a hung job to look like a slow one.
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -52,6 +69,25 @@ jobs:
 
       - name: Install bubblewrap and pasta
         run: sudo apt-get update && sudo apt-get install -y bubblewrap passt
+
+      # snug passes --map-host-loopback, which is THE flag that closes the host's
+      # loopback to the sandbox. It arrived in passt 2024_08_21, and distribution
+      # images can ship something older — Ubuntu 24.04's passt is from February
+      # 2024. On such a runner pasta exits instantly with "unrecognized option",
+      # snug correctly refuses to run the payload, and every -p net test fails
+      # with a different message about the network not coming up. None of them
+      # says "your passt is too old", so this does, once, before the suite runs.
+      #
+      # The harness makes the same check (requirePasta) so a developer machine
+      # gets the same answer; this step exists so the runner reports it in the
+      # step that installed the package rather than twenty tests later.
+      - name: Check pasta is new enough
+        run: |
+          pasta --version
+          if ! pasta --help 2>&1 | grep -q -- --map-host-loopback; then
+            echo "::error::this passt predates --map-host-loopback (2024_08_21); snug cannot close the host loopback on it, so nothing below would be testing what it claims"
+            exit 1
+          fi
 
       # Ubuntu 24.04+ ships kernel.apparmor_restrict_unprivileged_userns=1,
       # which breaks bwrap. Named explicitly because a failure here otherwise
@@ -79,5 +115,14 @@ jobs:
           # Allows the checks that reach the public internet (egress via pasta).
           # With SNUG_REQUIRE_SANDBOX set, omitting this is itself a failure
           # rather than a silent loss of coverage.
+          #
+          # Kept in THIS step rather than split into a separate non-blocking one,
+          # deliberately. There is exactly one such test (TestEgressWorks), its
+          # curl is capped at --connect-timeout 5 --max-time 10, and it carries a
+          # 20s budget — so it can no longer be the reason a job runs long. What
+          # a separate non-blocking step would buy is the ability to ignore its
+          # failure, and the only thing that proves egress works at all is this
+          # test failing when it does not. Splitting it would be deleting the
+          # coverage with extra steps.
           SNUG_TEST_NET: '1'
         run: make integration

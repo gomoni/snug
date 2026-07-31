@@ -10,7 +10,10 @@
 // than a review convention.
 package policy
 
-import "sort"
+import (
+	"fmt"
+	"sort"
+)
 
 // Access is a total order joined by max. More access always wins, which is what
 // makes profile composition monotone.
@@ -107,6 +110,7 @@ type Policy struct {
 	Env      map[string]string
 	Net      NetPolicy
 	Identity *Identity
+	Podman   PodmanMode
 
 	// NewSession asks bwrap for a fresh TTY session, which blocks TIOCSTI input
 	// injection into the parent terminal. It also breaks job control for an
@@ -185,6 +189,39 @@ func (p *Policy) BindSocket(hostPath, guestPath string) {
 	p.Mounts[guestPath] = Mount{
 		Guest: guestPath, Host: hostPath, Kind: KindBind,
 		Access: AccessRW, From: []string{"(identity)"},
+	}
+}
+
+// PodmanMode is a total order joined by max: more engine surface wins.
+type PodmanMode uint8
+
+const (
+	PodmanOff PodmanMode = iota
+	PodmanSocket
+)
+
+func (m PodmanMode) Join(o PodmanMode) PodmanMode {
+	if o > m {
+		return o
+	}
+	return m
+}
+
+func (m PodmanMode) String() string {
+	if m == PodmanSocket {
+		return "socket"
+	}
+	return "off"
+}
+
+func ParsePodmanMode(s string) (PodmanMode, error) {
+	switch s {
+	case "", "off":
+		return PodmanOff, nil
+	case "socket":
+		return PodmanSocket, nil
+	default:
+		return 0, fmt.Errorf("unknown podman mode %q (want off or socket)", s)
 	}
 }
 

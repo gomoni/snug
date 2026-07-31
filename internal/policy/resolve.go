@@ -194,6 +194,13 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 			}
 			p.Net.Mode = p.Net.Mode.Join(mode)
 		}
+		if prof.Podman != "" {
+			mode, err := ParsePodmanMode(prof.Podman)
+			if err != nil {
+				return nil, fmt.Errorf("profile %q: %w", name, err)
+			}
+			p.Podman = p.Podman.Join(mode)
+		}
 		p.Net.DNS = p.Net.DNS || prof.DNS
 		p.Net.PublishAuto = p.Net.PublishAuto || prof.PublishAuto
 		p.Net.Publish = append(p.Net.Publish, prof.Publish...)

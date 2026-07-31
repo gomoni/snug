@@ -2,7 +2,9 @@
 
 > *snug*: fitting closely and comfortably · marked by cordiality and secure privacy · offering safe concealment · a small private room in a pub
 
-`snug` is an unprivileged sandbox launcher for coding agents. It is a single Go binary that reads a policy, generates a `bubblewrap` command line and (when networking is requested) a `pasta` command line, wires up a small number of tightly-controlled host-integration helpers, runs the agent, and tears everything down.
+`snug` is an unprivileged sandbox launcher for untrusted code: a build you did not write, a dependency's install hook, a test suite from a freshly cloned repository, an AI agent. It is a single Go binary that reads a policy, generates a `bubblewrap` command line and (when networking is requested) a `pasta` command line, wires up a small number of tightly-controlled host-integration helpers, runs the payload, and tears everything down.
+
+The model is general: everything below applies equally to `snug ~/src/proj -- make test`. Where this document says "the agent", read "the sandboxed process". An AI agent is simply the sharpest instance of the problem, because it is *supposed* to run arbitrary commands — so "do not run untrusted code" is not available as advice — but a dependency's postinstall script is untrusted in exactly the same way and gets exactly the same boundary.
 
 **Status of this document:** every kernel/tool behaviour asserted here was verified by execution on the development host (openSUSE, kernel 7.1.4, `bubblewrap 0.11.2`, `pasta 20260612`, running *inside* a rootless-podman `distrobox` container). Findings that contradict documentation or prior implementations are flagged with **VERIFIED**.
 
@@ -28,7 +30,7 @@ This has three consequences that shape the whole system:
 
 ### 1.1 Goals
 
-- **G1** Run a coding agent (Claude Code, Codex, aider, …) against one project directory with **no root, no setuid, no daemon, no unit files**. `snug` is a process; when it exits, nothing remains.
+- **G1** Run an untrusted payload (a build, a test suite, a coding agent — Claude Code, Codex, aider, …) against one project directory with **no root, no setuid, no daemon, no unit files**. `snug` is a process; when it exits, nothing remains.
 - **G2** Deny-by-default filesystem. The agent sees the project, the OS runtime, and exactly what a profile granted.
 - **G3** The sandbox **cannot reach the host's loopback**. This is a hard requirement, not a nice-to-have (§4.1).
 - **G4** Internet egress works by default when a `net` profile is selected; fully-offline is the *absence* of that profile, so it is trivially achievable and cannot be accidentally re-enabled.

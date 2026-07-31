@@ -242,3 +242,25 @@ optional = [
   "{home}/.claude/plugins",
 ]
 env = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "EDITOR", "VISUAL", "PAGER", "NO_COLOR"]
+
+# ── containers ───────────────────────────────────────────────────────────────
+# ABUSE: the sandbox can run containers, pull arbitrary images, and execute
+# whatever is in them. Every request goes through a filtering proxy over an
+# engine that is PRIVATE to this sandbox, so the host's images, containers and
+# volumes are untouched and unreachable. A container may bind only what the
+# sandbox itself can see; --privileged, host networking, device passthrough and
+# published ports are all refused.
+#
+# LIMITATION, stated because it will otherwise look like a bug: containers run
+# in the ENGINE's network namespace, not the sandbox's. `podman run -p 8080:80`
+# followed by `curl localhost:8080` from the sandbox will NOT work. Use
+# container-to-container networking. Making published ports reachable needs the
+# engine inside the sandbox's netns, which is a further milestone.
+[profile.podman-socket]
+description = "Containers via a filtering proxy over a per-sandbox podman engine."
+include = ["sys", "home"]
+podman = "socket"
+# podman reads its registries, signature policy and defaults from here. Without
+# it the client fails with an error that names none of that.
+ro = ["/etc/containers"]
+optional = ["/etc/containers"]

@@ -40,6 +40,7 @@ type rawProfile struct {
 	Gateway     string `toml:"gateway"`
 	MTU         int    `toml:"mtu"`
 
+	Podman   string       `toml:"podman"`
 	Identity *rawIdentity `toml:"identity"`
 }
 
@@ -88,6 +89,7 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 			Address:     r.Address,
 			Gateway:     r.Gateway,
 			MTU:         r.MTU,
+			Podman:      r.Podman,
 			Identity:    toIdentity(r.Identity),
 			Source:      source,
 			Trusted:     trusted,

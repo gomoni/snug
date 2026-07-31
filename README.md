@@ -3,9 +3,15 @@
 > *fitting closely and comfortably* · *marked by cordiality and secure privacy* ·
 > *offering safe concealment* · *a small private room in a pub*
 
-An unprivileged sandbox for running coding agents. One Go binary, no root, no
-daemon, no setuid. It reads a policy, builds a `bubblewrap` command line, and
-runs your agent in a world that contains your project and almost nothing else.
+An unprivileged sandbox for running **untrusted code**: a build you did not
+write, a dependency's install hook, a test suite from a repository you just
+cloned, a `Makefile` off the internet — or an AI agent. One Go binary, no root,
+no daemon, no setuid. It reads a policy, builds a `bubblewrap` command line, and
+runs the thing in a world that contains your project and almost nothing else.
+
+Nothing in the model is agent-specific. There is a `claude` profile because that
+is a common case worth smoothing, and others will follow, but an AI agent is
+just one more piece of code you would rather not hand your `~/.ssh` to.
 
 ```console
 $ snug ~/src/myproject
@@ -125,9 +131,15 @@ switched back on by adding something.
 
 ## What it defends, and what it does not
 
-Designed against a **prompt-injected or misbehaving agent**: one that reads a
-hostile README, runs a malicious `npm install`, or simply does the wrong thing
-with confidence. It contains what that process can read, write and reach.
+Designed against **code you are running but do not fully trust**: a build script
+from a repository you just cloned, a dependency's install hook, a test suite, or
+an AI agent that read a hostile README and did what it was told. It contains what
+that process can read, write and reach.
+
+An AI agent is the sharpest version of the problem, because it is *supposed* to
+run arbitrary commands — "just don't run untrusted code" is not advice you can
+follow. But a postinstall script is untrusted in exactly the same way, and gets
+exactly the same boundary.
 
 | defended | how |
 |---|---|

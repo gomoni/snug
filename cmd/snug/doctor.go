@@ -67,6 +67,13 @@ func doctor() int {
 		fmt.Printf("  ✅ %s\n     📍 %s\n", firstLine(capture(pasta, "--version")), pasta)
 	}
 
+	if ok, detail := podmanClientUsable(); ok {
+		fmt.Println("  ✅ podman client is usable inside a sandbox")
+	} else {
+		fmt.Printf("  ⚠️  podman CLI will not work inside a sandbox — %s\n", detail)
+		fmt.Println("     🔒 snug's engine and proxy still work; drive the API at $CONTAINER_HOST")
+	}
+
 	if legacyTIOCSTI() {
 		fmt.Println("  ⚠️  this kernel still allows the TIOCSTI ioctl")
 		fmt.Println("     🛡️  snug will add --new-session to stop the sandbox typing into your")
