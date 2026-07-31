@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Tier 1 and 2: the resolver's algebraic invariants and the golden argv files.
+  # These need no privileges and no namespaces — that is the payoff for keeping
+  # internal/policy pure with an injected Environ, and it is why the
+  # security-critical checks run on any runner.
+  gate:
+    name: gofmt, vet, unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+      - run: make gate
+
+  # Tier 3: really launch sandboxes and assert what is and is not reachable.
+  #
+  # A green run that silently skipped these would be the same failure mode as a
+  # silent security downgrade, so the job fails loudly if the sandbox cannot
+  # start, rather than skipping.
+  integration:
+    name: real sandbox behaviour
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+
+      - name: Install bubblewrap and pasta
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap passt
+
+      # Ubuntu 24.04+ ships kernel.apparmor_restrict_unprivileged_userns=1,
+      # which breaks bwrap. Named explicitly because a failure here otherwise
+      # looks like a snug bug and costs an afternoon.
+      - name: Allow unprivileged user namespaces
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+
+      - run: make build
+
+      - name: doctor
+        run: ./bin/snug doctor
+
+      - name: the sandbox holds
+        run: |
+          set -euo pipefail
+          T=$(mktemp -d); mkdir -p "$T/proj/sub" "$T/proj/sibling"
+          echo secret > "$T/CANARY"
+
+          echo "--- target writable, parent read-only"
+          ./bin/snug "$T/proj/sub" -- sh -c 'touch ok'
+          ! ./bin/snug "$T/proj/sub" -- sh -c "touch $T/proj/NOPE" 2>/dev/null
+
+          echo "--- ungranted paths are ABSENT, not denied"
+          ! ./bin/snug "$T/proj/sub" -- sh -c "cat $T/CANARY" 2>/dev/null
+          ! ./bin/snug "$T/proj/sub" -- sh -c 'ls ~/.ssh' 2>/dev/null
+          ! ./bin/snug "$T/proj/sub" -- sh -c 'ls /sys'    2>/dev/null
+
+          echo "--- root skeleton is read-only"
+          ! ./bin/snug "$T/proj/sub" -- sh -c 'touch /ZZ' 2>/dev/null
+
+          echo "--- the environment is rebuilt, including via PID 1"
+          export CI_CANARY=must-not-appear
+          ./bin/snug "$T/proj/sub" -- sh -c '
+            tr "\0" "\n" < /proc/1/environ | grep -q . && exit 1
+            printenv | grep -q CI_CANARY && exit 1
+            exit 0'
+
+          echo "--- seccomp is INSTALLED, not merely requested"
+          ./bin/snug "$T/proj/sub" -- sh -c 'grep -q "^Seccomp:.*2" /proc/self/status'
+
+          echo "--- a nested user namespace is refused"
+          ! ./bin/snug "$T/proj/sub" -- sh -c 'unshare -U /bin/true' 2>/dev/null
+
+          echo "--- offline by default: loopback only"
+          ./bin/snug "$T/proj/sub" -- sh -c '
+            test "$(awk "NR>2{print \$1}" /proc/net/dev | tr -d " :" | tr -d "\n")" = lo'
+
+      # THE test. The previous generation of this project passed
+      # --map-host-loopback none but not -T none -U none, and its "private" netns
+      # could reach every host loopback service. A golden-argv test passed on that
+      # build; only this behavioural check catches it, and only this one catches a
+      # pasta default changing upstream.
+      - name: the host loopback stays unreachable
+        run: |
+          set -euo pipefail
+          T=$(mktemp -d); mkdir -p "$T/proj"
+          python3 -m http.server 18099 --bind 127.0.0.1 &
+          sleep 1
+          curl -sf -o /dev/null http://127.0.0.1:18099/   # the host CAN see it
+
+          ./bin/snug -p net "$T/proj" -- sh -c '
+            timeout 5 bash -c "exec 3<>/dev/tcp/127.0.0.1/18099" 2>/dev/null && exit 1
+            exit 0'
+          echo "host loopback unreachable from inside: ok"
+
+          ./bin/snug -p net "$T/proj" -- sh -c '
+            curl -sf -o /dev/null --max-time 20 https://example.com'
+          echo "egress works: ok"
+
+      - name: an aborted network setup never runs the payload
+        run: |
+          set -euo pipefail
+          T=$(mktemp -d); mkdir -p "$T/proj"
+          B=$(mktemp -d)
+          for b in bwrap sh bash cat echo sleep touch; do ln -sf "$(command -v $b)" "$B/$b"; done
+          for i in $(seq 1 20); do
+            rm -f "$T/proj/PWNED"
+            PATH="$B" ./bin/snug -p net "$T/proj" -- sh -c 'echo x > "$SNUG_TARGET/PWNED"' >/dev/null 2>&1 || true
+            if [ -f "$T/proj/PWNED" ]; then
+              echo "FAIL: payload executed on a run snug reported as aborted"; exit 1
+            fi
+          done
+          echo "fail-closed across 20 aborted runs: ok"
+
+      - name: nothing is left behind
+        run: |
+          set -euo pipefail
+          T=$(mktemp -d); mkdir -p "$T/proj"
+          before=$(pgrep -c pasta || true)
+          ./bin/snug -p net "$T/proj" -- sleep 30 &
+          sleep 3; kill -9 %1 || true; sleep 2
+          after=$(pgrep -c pasta || true)
+          test "${before:-0}" = "${after:-0}" || { echo "FAIL: leaked a pasta helper"; exit 1; }
+          echo "no leaked helpers after SIGKILL: ok"

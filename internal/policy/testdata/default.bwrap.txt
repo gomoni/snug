@@ -1,0 +1,33 @@
+--unshare-all
+--uid 1000
+--gid 1000
+--hostname snug
+--die-with-parent
+--perms 0755
+--dir /home
+--symlink usr/bin /bin
+--dev /dev
+--ro-bind /etc /etc
+--ro-bind-try /opt /opt
+--proc /proc
+--tmpfs /tmp
+--ro-bind /usr /usr
+--ro-bind-data 10 /etc/resolv.conf
+--tmpfs /home/u
+--tmpfs /home/u/.cache
+--ro-bind /home/u/proj /home/u/proj
+--bind /home/u/proj/sub /home/u/proj/sub
+--remount-ro /
+--clearenv
+--setenv HOME /home/u
+--setenv LOGNAME u
+--setenv PATH /usr/bin:/bin:/usr/sbin:/sbin
+--setenv PS1 🔒 snug:\w\$ 
+--setenv SHELL /bin/sh
+--setenv SNUG 1
+--setenv SNUG_PROFILES cwd-rw,default,dotdot,home,sys
+--setenv SNUG_TARGET /home/u/proj/sub
+--setenv TMPDIR /tmp
+--setenv USER u
+--chdir /home/u/proj/sub
+-- /bin/sh

@@ -1,0 +1,379 @@
+# Verifying snug by hand
+
+A sandbox you have not personally tried to break is a sandbox you are trusting
+on someone's word. This is the checklist for not doing that.
+
+Every command below was run on the development host and produced the output
+shown. If yours differs, that is a finding — see [If a check fails](#if-a-check-fails).
+
+Setup used throughout:
+
+```bash
+cd /path/to/snug
+make build
+
+SC=$(mktemp -d)
+mkdir -p $SC/proj/sub $SC/proj/sibling $SC/other
+echo secret > $SC/other/CANARY
+echo top    > $SC/CANARY-TOP
+```
+
+`$SC/proj/sub` is the sandbox target. `$SC/proj/sibling` sits beside it,
+`$SC/other` is one level above, and `$SC/CANARY-TOP` is two.
+
+---
+
+## 0. The gate
+
+```bash
+make gate        # gofmt, go vet, go test ./...
+```
+
+Expect: all packages `ok`. These tests need no privileges and no namespaces —
+that is deliberate, so the security-critical parts are checkable anywhere.
+
+## 1. Can this host run it at all
+
+```bash
+./bin/snug doctor
+```
+
+Expect ✅ on bubblewrap, user namespaces, and a private network namespace. A ❌
+names the exact sysctl or package to fix. Running inside distrobox/podman is
+reported and supported.
+
+## 2. Read before you run
+
+```bash
+./bin/snug --dry-run $SC/proj/sub
+```
+
+This starts nothing. Read the `FILESYSTEM` block: **every line is a grant, and
+the sandbox is the sum of exactly those lines.** Then check the rest of this
+document against what it claimed. If `--dry-run` and reality ever disagree, that
+is the most serious class of bug in this project, because every other guarantee
+is read off this output.
+
+## 3. The writable surface
+
+```bash
+./bin/snug $SC/proj/sub -- /bin/sh -c '
+for d in / /home /usr /etc /var /proc; do
+  touch $d/ZZ 2>/dev/null && echo "WRITABLE: $d  <-- FAIL" || echo "ro: $d"
+done'
+```
+
+Expect every line `ro:`. Anything reported WRITABLE is a real finding.
+
+The complete writable surface is **seven** paths, and only the first survives
+the sandbox:
+
+| path | kind | persists? |
+|---|---|---|
+| the target directory | bind, rw | **yes** — this is the point |
+| `/tmp` | tmpfs | no |
+| `$HOME` | tmpfs | no |
+| `$HOME/.cache`, `$HOME/.config`, `$HOME/.local/state` | tmpfs | no |
+| `/dev` | tmpfs (bwrap's synthetic `/dev`) | no |
+
+`/dev` being writable surprises people (it surprised the author — it was found
+by this checklist, not by design review). It is bwrap's own minimal `/dev` on a
+private tmpfs, so it is contained. Confirm that yourself rather than believing
+it:
+
+```bash
+./bin/snug $SC/proj/sub -- /bin/sh -c 'echo pwned > /dev/ESCAPE_PROBE'
+ls /dev/ESCAPE_PROBE                                    # host: No such file
+./bin/snug $SC/proj/sub -- /bin/sh -c 'ls /dev/ESCAPE_PROBE'   # next run: gone
+```
+
+Expect both to report the file missing. The write never reached the host and did
+not survive the sandbox.
+
+## 4. What must be absent
+
+```bash
+./bin/snug $SC/proj/sub -- /bin/sh -c "
+ls $SC/CANARY-TOP ; ls $SC/other ; ls ~/.ssh ; ls /sys"
+```
+
+Expect four × `No such file or directory`. Note the wording: these paths are
+**absent**, not permission-denied. They were never mounted, so there is nothing
+there to deny access to.
+
+Try the same for anything else you care about — `~/.gnupg`, `~/.aws`,
+`~/.config/gh`, your other projects.
+
+## 5. What `dotdot` actually grants
+
+```bash
+./bin/snug $SC/proj/sub -- /bin/sh -c "ls $SC/proj"
+```
+
+Expect `sibling  sub` — **both**. This is correct and intentional: `dotdot`
+grants the target's *parent*, so the target's siblings are readable. That is
+what makes `../other-package` work in a monorepo.
+
+What must not be reachable is anything **above** the parent, which is what
+check 4 confirms with `$SC/other` and `$SC/CANARY-TOP`.
+
+If you do not want siblings readable, drop `dotdot`:
+
+```bash
+./bin/snug --no-default -p sys -p cwd-rw $SC/proj/sub -- /bin/sh -c "ls $SC/proj"
+```
+
+Expect `No such file or directory`.
+
+## 6. The environment is rebuilt, not inherited
+
+```bash
+./bin/snug $SC/proj/sub -- /usr/bin/printenv | sort
+```
+
+Expect ~14 variables, all of them snug's own (`HOME`, `PATH`, `SNUG`,
+`SNUG_PROFILES`, `SNUG_TARGET`, …). Specifically expect **no**
+`DBUS_SESSION_BUS_ADDRESS`, no `SSH_AUTH_SOCK`, no `XDG_RUNTIME_DIR`, no API
+tokens.
+
+Caveat worth knowing: `--clearenv` is not the last word. `/etc/profile.d/*`
+runs inside a login shell and can put variables back. That is why `sys`
+enumerates `/etc` instead of binding it wholesale — see DESIGN §5.3.
+
+### 6b. …including via PID 1 (regression check)
+
+```bash
+export CANARY_TOKEN="sk-must-not-appear"
+./bin/snug $SC/proj/sub -- /bin/sh -c 'tr "\0" "\n" < /proc/1/environ | grep -c .'
+./bin/snug $SC/proj/sub -- /bin/sh -c 'tr "\0" "\n" < /proc/1/environ | grep -E "CANARY|SSH_AUTH|SECRET"'
+```
+
+Expect `0` and no matches.
+
+This one earned its place. bwrap is PID 1 in the sandbox's own PID namespace and
+runs as your uid, so `/proc/1/environ` is readable from inside. `--clearenv`
+only clears the environment given to the *payload* — it says nothing about
+bwrap's own. Before this was fixed, the payload's `env` was spotlessly clean
+while `/proc/1/environ` handed over 106 host variables including
+`SSH_AUTH_SOCK`. Found by the `redteam` agent, not by review, and invisible to
+the golden-argv tests.
+
+### 6a. You can tell you are inside
+
+```bash
+./bin/snug $SC/proj/sub
+```
+
+Expect the prompt `🔒 snug:~/...$` and `hostname` reporting `snug`. Because snug
+does not grant `/etc/bash.bashrc`, the shell is spartan — no completion, no
+distro prompt — which is expected. The lock prompt is set by snug itself so that
+neither a human nor an agent has to guess whether a shell is sandboxed. Type
+`exit` to leave.
+
+## 6c. The seccomp filter is actually installed
+
+Requested is not the same as active. Check the kernel's view first:
+
+```bash
+./bin/snug $SC/proj/sub -- /bin/sh -c 'grep ^Seccomp: /proc/self/status'
+```
+
+Expect `Seccomp: 2` (filter mode). A `0` means no filter, whatever snug claimed —
+this exact reading is what caught `--seccomp` being passed *after* bwrap's `--`
+separator, where it was silently treated as an argument to the payload.
+
+Then check it denies the right things:
+
+```bash
+cat > $SC/proj/sub/probe.py <<'EOF'
+import ctypes, os
+libc = ctypes.CDLL("libc.so.6", use_errno=True)
+for name, nr in [("ptrace",101),("keyctl",250),("perf_event_open",298),
+                 ("add_key",248),("bpf",321),("userfaultfd",323)]:
+    ctypes.set_errno(0); libc.syscall(nr, 0,0,0,0,0); e = ctypes.get_errno()
+    print("%-16s %s" % (name, os.strerror(e) if e else "ALLOWED"))
+EOF
+
+./bin/snug $SC/proj/sub -- python3 probe.py                 # all: Operation not permitted
+./bin/snug --no-seccomp $SC/proj/sub -- python3 probe.py    # host behaviour returns
+./bin/snug $SC/proj/sub -- /bin/sh -c 'unshare -U /bin/true' # Operation not permitted
+```
+
+Syscall numbers above are x86_64. Note the cost, which is deliberate: with the
+filter on you cannot run snug inside snug, or rootless podman inside it.
+
+## 7. The network namespace
+
+```bash
+# host listener the sandbox must not reach
+python3 -m http.server 18099 --bind 127.0.0.1 &
+sleep 1; curl -s -o /dev/null -w "host sees it: %{http_code}\n" http://127.0.0.1:18099/
+
+./bin/snug $SC/proj/sub -- /bin/sh -c '
+  cat /proc/net/dev | awk "NR>2{print \$1}" | tr -d " "
+  timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/18099" 2>/dev/null \
+    && echo "REACHED HOST <-- FAIL" || echo "host loopback: refused (correct)"'
+
+kill %1
+```
+
+Expect `host sees it: 200`, then `lo:` as the only interface, then
+`host loopback: refused`. The sandbox's `127.0.0.1` is its own loopback, a
+different one from the host's.
+
+M0 is offline by design — there is no egress either. That is not a bug; it is
+the floor, and networking arrives as an explicit profile in M2.
+
+## 8. Profile order is irrelevant
+
+```bash
+A=$(./bin/snug --dry-run -p sys -p cwd-rw -p dotdot $SC/proj/sub | sed -n '/── bwrap/,$p' | md5sum)
+B=$(./bin/snug --dry-run -p dotdot -p cwd-rw -p sys $SC/proj/sub | sed -n '/── bwrap/,$p' | md5sum)
+[ "$A" = "$B" ] && echo "identical: ok" || echo "DIFFERENT <-- FAIL"
+```
+
+Expect `identical: ok`. Order-dependence would mean the sandbox you get depends
+on how you typed the command, and "profiles only relax" would stop being
+checkable.
+
+## 9. A profile cannot take anything away
+
+Use a throwaway config dir so you do not touch your real one:
+
+```bash
+X=$(mktemp -d); mkdir -p $X/snug/profiles.d
+
+mkdir -p $X/empty
+cat > $X/snug/profiles.d/evil.toml <<EOF
+[profile.hide-ssl]
+description = "try to mask part of another profile's grant"
+tmpfs = ["/etc/ssl"]
+
+[profile.hide-profiled]
+description = "try to mask a path nested inside another grant"
+tmpfs = ["/etc/profile.d"]
+
+[profile.mask-misc]
+description = "mask by binding an unrelated empty dir over it"
+ro = ["$X/empty:/usr/share/misc"]
+
+[profile.greedy]
+description = "try to grant the whole host"
+ro = ["/"]
+EOF
+
+XDG_CONFIG_HOME=$X ./bin/snug -p default -p hide-ssl      $SC/proj/sub -- /bin/true
+XDG_CONFIG_HOME=$X ./bin/snug -p default -p etc-full -p hide-profiled $SC/proj/sub -- /bin/true
+XDG_CONFIG_HOME=$X ./bin/snug -p default -p mask-misc     $SC/proj/sub -- /bin/true
+XDG_CONFIG_HOME=$X ./bin/snug -p default -p greedy        $SC/proj/sub -- /bin/true
+
+rm -rf $X
+```
+
+Expect four refusals:
+
+```
+snug: conflict at /etc/ssl: tmpfs (from hide-ssl) vs bind (from sys)
+
+snug: profile hide-profiled puts an empty tmpfs at /etc/profile.d, which is inside /etc
+      from profile etc-full. That hides what /etc already exposes there, and profiles
+      may only ever grant.
+
+snug: profile mask-misc puts a bind of .../empty at /usr/share/misc, which is inside
+      /usr from profile sys. That hides what /usr already exposes there...
+
+snug: refusing to bind / (from greedy)
+```
+
+The third is a regression check. `rejectMasking` originally inspected only
+tmpfs grants, so a *bind* of an unrelated directory walked straight through it —
+`/usr/share/misc` went from three entries to zero, silently. Found by the
+`redteam` agent.
+
+Confirm the legitimate nesting still works, since the fix could easily have
+broken it — the default profile lays `cwd-rw`'s writable target over `dotdot`'s
+read-only parent, which is re-granting the same tree, not masking:
+
+```bash
+./bin/snug $SC/proj/sub -- /bin/sh -c 'ls /usr/share/misc | wc -l; touch ./x && echo "target writable ok"'
+```
+
+Also try an unknown key, which must be fatal rather than ignored:
+
+```bash
+X=$(mktemp -d); mkdir -p $X/snug/profiles.d
+printf '[profile.x]\nmask = ["/etc"]\n' > $X/snug/profiles.d/x.toml
+XDG_CONFIG_HOME=$X ./bin/snug -p default -p x $SC/proj/sub -- /bin/true
+rm -rf $X
+```
+
+Expect a parse error naming the unknown key. A silently-ignored `mask` would let
+someone believe their sandbox is tighter than it is.
+
+## 10. A repository cannot grant itself anything
+
+```bash
+cd $SC/proj/sub
+mkdir -p .snug
+printf '[profile.default]\nro = ["/"]\n' > .snug/profiles.toml
+cp .snug/profiles.toml ./snug.toml
+
+/path/to/snug/bin/snug . -- /bin/sh -c 'ls / ; ls ~'
+
+rm -rf .snug snug.toml
+```
+
+Expect the normal restricted view — the host root must **not** appear. snug
+never auto-loads config from beside the target, because a hostile repository
+shipping its own profile would be granting itself permissions on the first run.
+
+**Known gap, do not mistake this for a full guarantee.** `$XDG_CONFIG_HOME` is
+trusted unconditionally, so pointing it into a repository *does* load that
+repository's profiles:
+
+```bash
+mkdir -p $SC/proj/sub/.config/snug/profiles.d
+printf '[profile.evil]\ninclude=["default"]\nrw=["/etc"]\n' \
+  > $SC/proj/sub/.config/snug/profiles.d/evil.toml
+XDG_CONFIG_HOME=$SC/proj/sub/.config ./bin/snug --dry-run -p evil $SC/proj/sub | grep '/etc'
+```
+
+This resolves, and `--dry-run` honestly shows `rw /etc`. It is low severity —
+`XDG_CONFIG_HOME` is your own environment variable, not something the sandboxed
+agent can set — but the `--config` gate described in DESIGN §2.7 is not built
+yet. Found by the `redteam` agent.
+
+## 11. Nothing is left behind
+
+```bash
+./bin/snug $SC/proj/sub -- /bin/sh -c 'sleep 30' &
+sleep 2
+pgrep -a bwrap                 # one process
+kill -9 %1; sleep 1
+pgrep -a bwrap || echo "no leftovers: ok"
+```
+
+Expect the bwrap process to be gone. `--die-with-parent` kills the payload even
+when snug is SIGKILLed and cannot clean up after itself.
+
+---
+
+## If a check fails
+
+1. Re-run it with `--dry-run` and compare what snug *claimed* against what you
+   *observed*. Those two disagreeing is itself the most important finding.
+2. Capture the exact commands and both outputs.
+3. Note which grant is responsible — `--dry-run` prints the contributing profile
+   at the end of each `FILESYSTEM` line.
+4. That reproduction becomes a permanent regression test. The rule in this
+   project is that a hole should only ever be closable once.
+
+## What this checklist does not cover
+
+M0 is filesystem isolation, offline. Deliberately absent, so do not read their
+absence as a failure: seccomp, networking (pasta), the ssh-agent proxy,
+containers, GUI sockets. Each is a hole, each arrives with its own profile, and
+each gets attacked by the `redteam` agent before it lands.
+
+It also does not cover the threats snug does not defend against at all: kernel
+0-days, and a determined human attacker with a shell. See DESIGN §1.2.
