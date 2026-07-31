@@ -83,7 +83,14 @@ func testRegistry() map[string]*Profile {
 		"@parent-ro": {Name: "@parent-ro", RO: []string{"{target_parent}"}},
 		// Deliberately overlaps @cwd-rw at the same guest path with weaker
 		// access, to prove the join takes the max rather than the last writer.
-		"cwd-ro": {Name: "cwd-ro", RO: []string{"{target}"}},
+		//
+		// It also carries the `path` entry, and that placement is deliberate:
+		// canon() renders the environment, so the commutativity and idempotence
+		// property tests cover PATH assembly for free — while keeping it OFF the
+		// profiles in testDefaults, which the goldens are built from. A fake
+		// @home with a grant the real one does not have would make the goldens
+		// describe a sandbox no user gets.
+		"cwd-ro": {Name: "cwd-ro", RO: []string{"{target}"}, Path: []string{"{home}/.local/bin"}},
 		// A pure composition point with a two-level include chain
 		// (combo -> @cwd-rw -> @home). The builtin `default` used to be one of
 		// these; it is now the `defaults` SETTING (internal/profile/defaults.go),
@@ -540,5 +547,66 @@ func TestPolicyHasNoRestrictionOperation(t *testing.T) {
 	q := mustResolve(t, "@sys", "@cwd-rw", "cwd-ro")
 	if got := q.Mounts["/home/u/proj/sub"].Access; got != AccessRW {
 		t.Errorf("adding cwd-ro demoted the target to %s; profiles may only ever grant", got)
+	}
+}
+
+// A profile may put a directory on PATH. It grants nothing by doing so — an
+// unmounted directory on PATH is inert — but a profile that mounts a binary
+// somewhere nothing looks is broken on its own terms, which is what `@claude`
+// was: it bound ~/.local/bin/claude and `snug -p @claude . -- claude` answered
+// "execvp claude: No such file or directory".
+func TestProfilePathReachesPATH(t *testing.T) {
+	p := mustResolve(t, "@sys", "@cwd-rw", "cwd-ro")
+	got := p.Env["PATH"]
+
+	if !strings.HasPrefix(got, "/home/u/.local/bin:") {
+		t.Errorf("PATH = %q; a profile's directory must come FIRST, or a distro "+
+			"binary of the same name wins over the one the profile provided", got)
+	}
+	for _, base := range []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"} {
+		if !strings.Contains(got, base) {
+			t.Errorf("PATH = %q, missing the base entry %q", got, base)
+		}
+	}
+}
+
+// Two profiles contributing directories must produce the same PATH whichever
+// order they were named in. PATH is the only env var assembled from several
+// profiles, so it is the one place an order dependence could hide.
+func TestPATHIsOrderIndependent(t *testing.T) {
+	reg := testRegistry()
+	reg["tools-a"] = &Profile{Name: "tools-a", Path: []string{"/opt/a/bin"}}
+	reg["tools-b"] = &Profile{Name: "tools-b", Path: []string{"/opt/b/bin"}}
+
+	one, err := Resolve(reg, []string{"@sys", "@cwd-rw", "tools-a", "tools-b"}, testCtx(), newFakeEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := Resolve(reg, []string{"tools-b", "tools-a", "@cwd-rw", "@sys"}, testCtx(), newFakeEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one.Env["PATH"] != two.Env["PATH"] {
+		t.Errorf("naming the profiles in a different order changed PATH:\n  %s\n  %s",
+			one.Env["PATH"], two.Env["PATH"])
+	}
+	for _, want := range []string{"/opt/a/bin", "/opt/b/bin"} {
+		if !strings.Contains(one.Env["PATH"], want) {
+			t.Errorf("PATH = %q, missing %q", one.Env["PATH"], want)
+		}
+	}
+}
+
+// A relative entry would be resolved against whatever the payload's cwd happens
+// to be, which is a different directory per invocation.
+func TestRelativeProfilePathIsRefused(t *testing.T) {
+	reg := testRegistry()
+	reg["bad"] = &Profile{Name: "bad", Path: []string{"bin"}}
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "bad"}, testCtx(), newFakeEnv())
+	if err == nil {
+		t.Fatal("a relative path entry was accepted")
+	}
+	if !strings.Contains(err.Error(), "must be absolute") {
+		t.Errorf("unhelpful error: %v", err)
 	}
 }

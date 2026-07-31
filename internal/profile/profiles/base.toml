@@ -273,6 +273,28 @@ optional = [
   "{home}/.claude/plugins",
 ]
 env = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "EDITOR", "VISUAL", "PAGER", "NO_COLOR"]
+# Without this the profile mounts a binary nothing can find: the default PATH is
+# /usr/bin:/bin:/usr/sbin:/sbin, so `snug -p @claude . -- claude` answered
+# "execvp claude: No such file or directory" while the bind was sitting right
+# there in --dry-run. `path` grants nothing on its own — see policy.Profile.Path.
+#
+# It names the DIRECTORY, not the file, because that is what PATH takes; only
+# ~/.local/bin/claude is actually mounted, so nothing else in it exists.
+path = ["{home}/.local/bin"]
+
+# There is deliberately NO `local-path` builtin granting all of ~/.local/bin.
+# Same reasoning as `etc-full` above, and the same one-line escape hatch:
+#
+#   [profile.local-bin]
+#   ro   = ["{home}/.local/bin"]
+#   path = ["{home}/.local/bin"]
+#
+# What it costs is why snug does not ship it. ~/.local/bin is wherever pipx, uv,
+# cargo-install and your own scripts land — a mixed, personal, host-managed set.
+# Granting the directory tells the sandbox what tools you have and lets it run
+# all of them, when what you wanted was one. That is the "X but not Y" smell from
+# CLAUDE.md pointing at too coarse a grant: if you want a tool in the sandbox,
+# name that tool, the way this profile names `claude`.
 
 # ── containers ───────────────────────────────────────────────────────────────
 # ABUSE: the sandbox can run containers, pull arbitrary images, and execute
@@ -295,3 +317,20 @@ podman = "socket"
 # it the client fails with an error that names none of that.
 ro = ["/etc/containers"]
 optional = ["/etc/containers"]
+
+# ── building images ──────────────────────────────────────────────────────────
+# ABUSE: the sandbox can build an image from a Dockerfile it wrote, which means
+# running arbitrary commands in a container — but that is already true of
+# `@podman-socket`, so this adds no new execution. What it adds is a SECOND SET
+# OF OPTIONS to get wrong: a build can ask for host binds (`-v`), a host path as
+# a named context (`--build-context x=/etc`), host devices, host networking and
+# a chosen seccomp profile, none of it through HostConfig. Every one of those is
+# judged, `-v` and `--build-context` by the same visibility rule as any other
+# mount, and anything snug has not been taught about is refused by name.
+#
+# Separate from `@podman-socket` for exactly that reason: someone who only wants
+# to RUN containers should not carry the build surface as well.
+[profile.podman-build]
+description = "As podman-socket, plus `podman build` with a filtered option set."
+include = ["podman-socket"]
+podman = "build"

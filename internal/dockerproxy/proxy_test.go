@@ -26,6 +26,14 @@ type fakeEngine struct {
 
 func startProxy(t *testing.T) (sock string, eng *fakeEngine, target string) {
 	t.Helper()
+	return startProxyMode(t, policy.PodmanSocket)
+}
+
+// startProxyMode is startProxy with the engine surface the case needs. Building
+// is gated on policy.PodmanBuild, so the build tests ask for it explicitly and
+// every other test keeps the container-only mode.
+func startProxyMode(t *testing.T, mode policy.PodmanMode) (sock string, eng *fakeEngine, target string) {
+	t.Helper()
 	dir := t.TempDir()
 	target = filepath.Join(dir, "proj")
 	if err := os.MkdirAll(target, 0o755); err != nil {
@@ -53,6 +61,7 @@ func startProxy(t *testing.T) (sock string, eng *fakeEngine, target string) {
 
 	pol := &policy.Policy{
 		Target: target,
+		Podman: mode,
 		Mounts: map[string]policy.Mount{
 			target: {Guest: target, Host: target, Kind: policy.KindBind, Access: policy.AccessRW},
 			"/usr": {Guest: "/usr", Host: "/usr", Kind: policy.KindBind, Access: policy.AccessRO},

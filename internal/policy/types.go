@@ -198,6 +198,12 @@ type PodmanMode uint8
 const (
 	PodmanOff PodmanMode = iota
 	PodmanSocket
+	// PodmanBuild adds POST /build on top of PodmanSocket. Separate because a
+	// build's options are a second, larger surface — a host bind is `-v` in a
+	// query string rather than HostConfig.Binds, and every one of them has to
+	// be judged again. Someone who only wants to RUN containers should not have
+	// to carry that.
+	PodmanBuild
 )
 
 func (m PodmanMode) Join(o PodmanMode) PodmanMode {
@@ -208,8 +214,11 @@ func (m PodmanMode) Join(o PodmanMode) PodmanMode {
 }
 
 func (m PodmanMode) String() string {
-	if m == PodmanSocket {
+	switch m {
+	case PodmanSocket:
 		return "socket"
+	case PodmanBuild:
+		return "build"
 	}
 	return "off"
 }
@@ -220,8 +229,10 @@ func ParsePodmanMode(s string) (PodmanMode, error) {
 		return PodmanOff, nil
 	case "socket":
 		return PodmanSocket, nil
+	case "build":
+		return PodmanBuild, nil
 	default:
-		return 0, fmt.Errorf("unknown podman mode %q (want off or socket)", s)
+		return 0, fmt.Errorf("unknown podman mode %q (want off, socket or build)", s)
 	}
 }
 

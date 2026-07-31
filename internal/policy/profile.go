@@ -69,6 +69,25 @@ type Profile struct {
 	// the host at launch; a profile never carries a value.
 	Env []string
 
+	// Path names directories to put on the sandbox's PATH.
+	//
+	// This is the one key here that GRANTS NOTHING, and that is what makes it
+	// safe rather than an exception. A directory on PATH that was never mounted
+	// is inert, PATH is not an access control, and the payload can set its own
+	// PATH or call anything by absolute path — so there is no abuse sentence to
+	// write, which is the argument for allowing it at all.
+	//
+	// It exists because a profile that mounts an executable somewhere nothing
+	// looks is broken on its own terms: `@claude` bound ~/.local/bin/claude and
+	// `snug -p @claude . -- claude` answered "No such file or directory". The
+	// alternative — a second profile the human has to remember — makes one
+	// profile depend on another to do its job.
+	//
+	// Composes like everything else: the directories are collected into a SET
+	// and sorted, so resolution stays commutative and idempotent, and adding a
+	// profile can only ever ADD entries.
+	Path []string
+
 	// Source is the file this profile came from, and Trusted records whether
 	// that file was a trusted layer. Profiles from an explicitly-named config
 	// may not carry privileged grants — see docs/DESIGN.md §2.7.

@@ -125,6 +125,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch {
+	case isBuild(segs):
+		// Gated on the profile, not merely on the path: `@podman-socket` runs
+		// containers, `@podman-build` also builds them. See policy.PodmanBuild.
+		if p.pol.Podman < policy.PodmanBuild {
+			p.deny(w, "building images is not permitted by this sandbox's profiles. "+
+				"`@podman-socket` runs containers; add `@podman-build` to build them, "+
+				"which opens a second set of options (a build can ask for host binds, "+
+				"devices and host networking of its own).")
+			return
+		}
+		p.handleBuild(w, r)
 	case isContainerCreate(segs):
 		p.handleCreate(w, r)
 	case isExecCreate(segs, r.Method):
@@ -211,6 +222,14 @@ func isVolumeCreate(s []string) bool {
 // instance that exec/{id}/start then runs.
 func isExecCreate(s []string, method string) bool {
 	return method == http.MethodPost && len(s) == 3 && s[0] == "containers" && s[2] == "exec"
+}
+
+// isBuild matches both the docker-compat /build and podman's own /libpod/build.
+// The podman CLI uses the latter, which is worth knowing: an earlier reading of
+// this endpoint assumed /v1.41/build and would have filtered a path no real
+// client posts to.
+func isBuild(s []string) bool {
+	return len(s) == 1 && s[0] == "build"
 }
 
 func isImageCreate(s []string) bool {

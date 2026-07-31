@@ -85,6 +85,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	p.Profiles = names
 
 	identityOwner := ""
+	pathDirs := map[string]bool{}
 	for _, name := range names {
 		prof := set[name]
 		optional := map[string]bool{}
@@ -213,6 +214,17 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 			p.Net.MTU = prof.MTU
 		}
 
+		for _, d := range prof.Path {
+			e, err := expandVars(d, vars)
+			if err != nil {
+				return nil, fmt.Errorf("profile %q: %w", name, err)
+			}
+			if !filepath.IsAbs(e) {
+				return nil, fmt.Errorf("profile %q: path %q must be absolute", name, d)
+			}
+			pathDirs[filepath.Clean(e)] = true
+		}
+
 		for _, e := range prof.Env {
 			if v := env.Getenv(e); v != "" {
 				if forbiddenEnv[e] {
@@ -294,7 +306,12 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	// 5. The environment is reconstructed, not filtered. --clearenv discards the
 	//    host's, and each variable below is set explicitly.
 	p.Env["HOME"] = home
-	p.Env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+	// PATH is the base plus whatever profiles asked for, profile entries FIRST
+	// so a profile-provided tool wins over a distro one of the same name — that
+	// is the point of asking. Sorted, because a set has no order and resolution
+	// must not invent one: two profiles contributing directories must produce
+	// the same PATH whichever order they were named in.
+	p.Env["PATH"] = strings.Join(append(sortedKeys(pathDirs), basePATH...), ":")
 	p.Env["USER"] = envOr(env, "USER", "user")
 	p.Env["LOGNAME"] = p.Env["USER"]
 	p.Env["SHELL"] = ctx.Shell
@@ -508,6 +525,18 @@ func expand(reg map[string]*Profile, name string, out map[string]*Profile, stack
 		}
 	}
 	return nil
+}
+
+// basePATH is what every sandbox gets. Profile `path` entries go in front.
+var basePATH = []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // splitSpec parses "path" or "host:guest" and expands {variables} in both.

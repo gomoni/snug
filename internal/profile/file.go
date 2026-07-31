@@ -31,6 +31,7 @@ type rawProfile struct {
 	Symlink     []policy.Symlink `toml:"symlink"`
 	Optional    []string         `toml:"optional"`
 	Env         []string         `toml:"env"`
+	Path        []string         `toml:"path"`
 
 	Network string `toml:"network"`
 	DNS     bool   `toml:"dns"`
@@ -141,6 +142,7 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 			Symlink:     r.Symlink,
 			Optional:    r.Optional,
 			Env:         r.Env,
+			Path:        r.Path,
 			Network:     r.Network,
 			DNS:         r.DNS,
 			Publish:     r.Publish,
