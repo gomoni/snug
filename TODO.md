@@ -3,6 +3,19 @@
 Only things that are genuinely outstanding. Anything already true of the code
 belongs in CLAUDE.md or the code itself, not here.
 
+## Nest fixes - M4 phase
+
+ - builtin profiles starts with sigil @
+ - user defined profiles can't start with @
+ - better examples in README
+   * show a different gh account (or git user on ssh git@github.com) active per
+     profile - note this may require user configuration somehow - so a longer
+     example
+   * show a running podman/docker ps, run images, whatever
+   * show all ssh-keys available
+   * claude credentials should be copied into a sandbox, so the claude can be executed without a need for immediate login
+   * 
+
 ## Postponed by decision
 
 ### Parameterised profiles
