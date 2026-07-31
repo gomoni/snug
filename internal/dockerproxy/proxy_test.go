@@ -818,6 +818,71 @@ func TestPrivilegedExecIsRefused(t *testing.T) {
 	}
 }
 
+// The docker CLI sends HostConfig.LogConfig {"Type":"","Config":{}} on EVERY
+// create. isEmptyJSON does not see that as empty, so the LogConfig denylist
+// refused every `docker run` this proxy had ever seen — the profile's whole
+// purpose, failing with a message about log drivers.
+//
+// The hazard is the `path` option (conmon writes it on the HOST as your uid),
+// so that is what must stay refused, and both halves are asserted here.
+func TestTheDefaultLogConfigIsAccepted(t *testing.T) {
+	sock, eng, target := startProxy(t)
+
+	t.Run("the docker CLI default passes", func(t *testing.T) {
+		code, resp := post(t, sock, "/v1.41/containers/create",
+			`{"Image":"alpine","HostConfig":{"LogConfig":{"Type":"","Config":{}},"Binds":["`+target+`:/w"]}}`)
+		if code != 200 {
+			t.Fatalf("`docker run` sends this on every create; refusing it refuses "+
+				"everything (status %d): %s", code, resp)
+		}
+		// And it must not arrive at the engine as an empty driver spec that
+		// podman then has to interpret.
+		//
+		// Decoded rather than substring-matched, which is not fastidiousness:
+		// the first version looked for "LogConfig" in the forwarded bytes and
+		// failed, because t.TempDir() names the directory after the test and
+		// this test is called ...LogConfig..., so the bind source matched.
+		sent, _ := eng.lastBody.Load().(string)
+		var got struct {
+			HostConfig map[string]json.RawMessage
+		}
+		if err := json.Unmarshal([]byte(sent), &got); err != nil {
+			t.Fatalf("the engine did not receive JSON: %s", sent)
+		}
+		if _, ok := got.HostConfig["LogConfig"]; ok {
+			t.Errorf("the default LogConfig was forwarded rather than dropped: %s", sent)
+		}
+	})
+
+	// The hazard, in both fields.
+	for name, body := range map[string]string{
+		"a named driver": `{"HostConfig":{"LogConfig":{"Type":"k8s-file","Config":{}}}}`,
+		"a path option":  `{"HostConfig":{"LogConfig":{"Type":"","Config":{"path":"/home/u/pwned"}}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			refuse(t, sock, eng, "/v1.41/containers/create", body, "HostConfig.LogConfig")
+		})
+	}
+}
+
+// HostConfig.Tmpfs used to be deleted without a word, two comments below the
+// paragraph saying nothing is silently dropped. It is container-internal — a
+// tmpfs has no source, so there is no host path for the mount rule to judge —
+// so it is forwarded.
+func TestTmpfsIsForwardedNotSilentlyDropped(t *testing.T) {
+	sock, eng, _ := startProxy(t)
+	code, resp := post(t, sock, "/v1.41/containers/create",
+		`{"Image":"alpine","HostConfig":{"Tmpfs":{"/run":"rw,size=64m"}}}`)
+	if code != 200 {
+		t.Fatalf("status %d: %s", code, resp)
+	}
+	sent, _ := eng.lastBody.Load().(string)
+	if !strings.Contains(sent, `"Tmpfs"`) || !strings.Contains(sent, "/run") {
+		t.Errorf("Tmpfs did not reach the engine, so `docker run --tmpfs` silently "+
+			"does nothing: %s", sent)
+	}
+}
+
 // Volume create decodes its own body and had the same hole.
 func TestVolumeCreateIsCaseProof(t *testing.T) {
 	sock, eng, _ := startProxy(t)

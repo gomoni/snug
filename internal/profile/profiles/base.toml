@@ -172,19 +172,33 @@ description = "Internet access via a private network namespace. Host loopback un
 network = "egress"
 dns = true
 
-# ABUSE: every port the SANDBOX binds appears on the host's 127.0.0.1. That
-# inverts who chooses: a prompt-injected agent could squat 127.0.0.1:8080 ahead
-# of your own dev server and intercept your browser. Prefer naming ports:
+# ── publishing a port back to the host ───────────────────────────────────────
+# ABUSE: the named port on the host's 127.0.0.1 reaches whatever the sandbox has
+# listening there — so anything you publish, a hostile process inside can answer.
+# The forward is bound to 127.0.0.1 only, never the LAN.
+#
+# There is no builtin for this, and no "publish whatever the sandbox binds".
+# Write the ports you mean, in your own profile:
 #
 #   [profile.myports]
-#   include = ["net"]
+#   include = ["@net"]
 #   publish = [3000, 8080]
 #
-# Either way the forward is bound to 127.0.0.1 only, never the LAN.
-[profile.net-publish]
-description = "As net, plus: every port the sandbox binds is reachable on the HOST's 127.0.0.1."
-include = ["net"]
-publish_auto = true
+# Two reasons it is a human naming ports rather than a switch.
+#
+# The design reason (DESIGN §4.6): with `auto` the SANDBOX chooses what appears
+# on your loopback, which inverts the guiding principle — a prompt-injected agent
+# could squat 127.0.0.1:8080 ahead of your own dev server and intercept your
+# browser.
+#
+# The empirical one: a `net-publish` profile shipped here with publish_auto, and
+# it NEVER WORKED. pasta's `-t 127.0.0.1/auto` scans the namespace for bound
+# ports once, when pasta starts — which is before the payload exists, so there is
+# nothing to find and nothing is ever forwarded. Measured at 3, 10, 20 and 30
+# seconds after a listener came up inside: connection refused every time, while
+# --dry-run said "EVERY port the sandbox binds". A claim snug does not deliver is
+# invariant 5's territory, and the honest fix for a capability that cannot work
+# is to stop offering it.
 
 # The sandbox does not learn your LAN address. pasta copies the host's addresses
 # into the namespace by default, which is a small information disclosure.

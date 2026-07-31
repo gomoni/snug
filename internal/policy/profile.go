@@ -49,13 +49,15 @@ type Profile struct {
 	// cannot be re-enabled by adding one.
 	Network string
 	DNS     bool
+
+	// Publish names the ports the host's 127.0.0.1 forwards into the sandbox.
+	// The human names them, one at a time. There is deliberately no "publish
+	// everything the sandbox binds" — see NetPolicy.Publish.
 	Publish []int
-	// PublishAuto forwards every port the sandbox binds. Off by default because
-	// it lets the SANDBOX choose what appears on the host's loopback.
-	PublishAuto bool
-	Address     string
-	Gateway     string
-	MTU         int
+
+	Address string
+	Gateway string
+	MTU     int
 
 	// Podman is "off" | "socket", joined by max like every other scalar.
 	Podman string

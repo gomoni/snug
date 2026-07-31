@@ -76,11 +76,13 @@ sandbox visible at a glance rather than only in `--dry-run`.
 
 ## Container proxy — found by mutation-testing (M4 review round)
 
-The sandbox-tester ran 73 mutations against the committed suite; nine tests were
-decorative or dead and are fixed. Two surviving mutations are **product bugs, not
-test bugs** — both are full escapes through the docker/podman proxy, both verified
-by forwarding real bytes to the engine. Regression tests are written and withheld
-so `make gate` stays green until the fix lands; they arrive with it.
+**ALL FIXED**, plus a third the redteam found in the fix itself (long s, U+017F —
+`strings.ToLower` is narrower than `encoding/json`'s fold, so `Bindſ` smuggled an
+unchecked host-root bind past the mount rule). `decodeObject` now refuses
+non-ASCII keys, which closes the class rather than the rune. Every one has a
+named regression test verified to fail against the code before its fix. Kept here
+as the record of what was wrong, because the next person to touch this handler
+needs it.
 
 - **[🔴 escape] Any create request with an `Upgrade:` header bypasses the whole
   proxy.** `isHijack` (`internal/dockerproxy/proxy.go:354`) returns true on
@@ -103,20 +105,29 @@ so `make gate` stays green until the fix lands; they arrive with it.
 Both are `host-bridge`'s surface (the podman socket proxy). To fix in the same pass,
 because they share the handler:
 
-- **[🟠 capability not delivered] `net-publish` auto does not work.** `-t 127.0.0.1/auto`
-  only scans at pasta startup; a port bound afterwards is never published (measured
-  to 10 s). `--dry-run` prints "host -> sandbox EVERY port the sandbox binds" — a
-  claim not delivered, which is invariant 5's territory. Fails safe (nothing extra
-  is exposed), but the `-t auto` mutation cannot be caught until this is fixed. A
-  *named* port does work (`TestPublishedPortsAreReachable`).
-- **[🟡 correctness] `docker run`/`create` is refused today.** The docker CLI always
-  sends `HostConfig.LogConfig: {"Type":"","Config":{}}`; `isEmptyJSON` does not treat
-  that as empty (`create.go:308`), so the `LogConfig` denylist entry refuses every
-  create. The hazard is only a non-empty `Type` or a `Config` option (the `path`);
-  refuse `LogConfig` only when one of those is set, so the empty default passes.
-- **[🟡 silent drop] `HostConfig.Tmpfs` is silently deleted** (`create.go:100`),
-  contradicting the "nothing is silently dropped" rule two comments above it. Either
-  forward it (container-internal, harmless) or refuse it by name.
+All five are FIXED. What the fixes were, since two of them changed the product:
+
+- ~~`net-publish` auto does not work~~ — **the capability is removed, not
+  repaired.** Re-measured before acting and it is worse than recorded: `-t
+  127.0.0.1/auto` publishes nothing EVER, not merely late. pasta scans the
+  namespace for bound ports once, at its own startup, which is before the payload
+  exists — refused at 3, 10, 20 and 30 s after a listener came up inside. There is
+  no pasta reconfigure API, so making it work would mean snug growing a
+  port-forwarding daemon that watches the sandbox's /proc/net/tcp — i.e. handing
+  the AGENT the choice of what appears on your loopback, which DESIGN §4.6 argues
+  against on its own merits. So `publish_auto`, and the `@net-publish` profile
+  built on it, are gone; `publish = [3000]` stays and works. Strict decoding turns
+  an existing `publish_auto` into a fatal parse error naming the key
+  (`TestRetiredPublishAutoIsAHardError`) rather than a profile that quietly does
+  nothing.
+- ~~`docker run`/`create` refused by LogConfig~~ — `isDefaultLogConfig` lets
+  `{"Type":"","Config":{}}` through (decoded, not pattern-matched, so key order and
+  case reach the same verdict). A named `Type` or any `Config` option is still
+  refused, which is where the host-file-write hazard lives.
+- ~~`HostConfig.Tmpfs` silently deleted~~ — forwarded, with the abuse sentence in
+  the code. A tmpfs has no source, so the mount rule has nothing to check; the RAM
+  is the same RAM any process in the container could allocate, and that is R8's
+  gap, not a new one.
 
 ## Engine — found by host-bridge (teardown work)
 

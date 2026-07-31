@@ -92,7 +92,7 @@ func claudeGuidance(pol *policy.Policy) []byte {
 	case policy.NetEgress:
 		b.WriteString("You have internet access. You **cannot** reach services on the host's\n")
 		b.WriteString("`127.0.0.1`; this is intentional and is not a misconfiguration.\n")
-		if pol.Net.PublishAuto || len(pol.Net.Publish) > 0 {
+		if len(pol.Net.Publish) > 0 {
 			b.WriteString("Ports you bind ARE visible to the host on its 127.0.0.1.\n")
 		} else {
 			b.WriteString("Ports you bind are NOT visible to the host.\n")

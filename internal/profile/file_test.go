@@ -20,6 +20,34 @@ func TestUnknownKeysAreFatal(t *testing.T) {
 	}
 }
 
+// `publish_auto` was a shipped key that could never work: pasta's
+// `-t 127.0.0.1/auto` scans the namespace for bound ports once, at ITS startup,
+// which is before the payload exists. Measured refused at 3, 10, 20 and 30
+// seconds after a listener came up inside, while --dry-run claimed "EVERY port
+// the sandbox binds" — invariant 5, in the artifact a human trusts most.
+//
+// It is gone, and strict decoding is what makes that safe: anyone carrying it in
+// their own profiles.d gets a fatal parse error naming the key, not a profile
+// that silently does nothing. That is the whole reason DisallowUnknownFields is
+// load-bearing, applied to snug's own retired key.
+func TestRetiredPublishAutoIsAHardError(t *testing.T) {
+	_, err := parse([]byte("[profile.x]\ninclude = [\"@net\"]\npublish_auto = true\n"),
+		"/home/u/.config/snug/profiles.d/mine.toml", true)
+	if err == nil {
+		t.Fatal("publish_auto was accepted; a key that does nothing must not parse quietly")
+	}
+	if !strings.Contains(err.Error(), "publish_auto") {
+		t.Errorf("the error must name the key so the fix is obvious: %v", err)
+	}
+
+	// CONTROL: naming the ports, which does work, still parses.
+	if _, err := parse([]byte("[profile.x]\ninclude = [\"@net\"]\npublish = [3000]\n"),
+		"mine.toml", true); err != nil {
+		t.Fatalf("publish = [...] must still work, or the refusal above is a ban on "+
+			"publishing rather than on the broken form: %v", err)
+	}
+}
+
 func TestKnownKeysParse(t *testing.T) {
 	src := `
 [profile.x]

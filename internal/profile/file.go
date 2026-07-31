@@ -32,13 +32,12 @@ type rawProfile struct {
 	Optional    []string         `toml:"optional"`
 	Env         []string         `toml:"env"`
 
-	Network     string `toml:"network"`
-	DNS         bool   `toml:"dns"`
-	Publish     []int  `toml:"publish"`
-	PublishAuto bool   `toml:"publish_auto"`
-	Address     string `toml:"address"`
-	Gateway     string `toml:"gateway"`
-	MTU         int    `toml:"mtu"`
+	Network string `toml:"network"`
+	DNS     bool   `toml:"dns"`
+	Publish []int  `toml:"publish"`
+	Address string `toml:"address"`
+	Gateway string `toml:"gateway"`
+	MTU     int    `toml:"mtu"`
 
 	Podman   string       `toml:"podman"`
 	Identity *rawIdentity `toml:"identity"`
@@ -145,7 +144,6 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 			Network:     r.Network,
 			DNS:         r.DNS,
 			Publish:     r.Publish,
-			PublishAuto: r.PublishAuto,
 			Address:     r.Address,
 			Gateway:     r.Gateway,
 			MTU:         r.MTU,

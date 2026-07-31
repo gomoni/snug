@@ -30,7 +30,7 @@ func TestPastaArgsAlwaysCloseHostLoopback(t *testing.T) {
 		{"plain", NetPolicy{Mode: NetEgress}},
 		{"dns", NetPolicy{Mode: NetEgress, DNS: true}},
 		{"publish", NetPolicy{Mode: NetEgress, Publish: []int{3000}}},
-		{"publish auto", NetPolicy{Mode: NetEgress, PublishAuto: true}},
+		{"many ports", NetPolicy{Mode: NetEgress, Publish: []int{3000, 8080, 9229}}},
 		{"anon", NetPolicy{Mode: NetEgress, Address: "10.13.13.2/24", Gateway: "10.13.13.1"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -65,7 +65,6 @@ func TestPublishIsScopedToLoopback(t *testing.T) {
 	}{
 		{"closed by default", NetPolicy{Mode: NetEgress}, "none"},
 		{"named ports", NetPolicy{Mode: NetEgress, Publish: []int{8080, 3000}}, "127.0.0.1/3000,8080"},
-		{"auto", NetPolicy{Mode: NetEgress, PublishAuto: true}, "127.0.0.1/auto"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := (&Policy{Net: tc.net}).PastaArgs(1)

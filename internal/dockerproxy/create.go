@@ -62,10 +62,22 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 	// 1. Refuse outright. Each of these is either a direct escape or a way to
 	//    reach something the sandbox itself cannot.
 	for _, k := range refusedHostConfig {
-		if v, ok := hc[k]; ok && !isEmptyJSON(v) {
-			p.deny(w, "HostConfig.%s is not permitted: %s", k, refusalReason[k])
-			return
+		v, ok := hc[k]
+		if !ok || isEmptyJSON(v) {
+			continue
 		}
+		// LogConfig is refused for its `path` option, not for existing: the
+		// docker CLI sends {"Type":"","Config":{}} on EVERY create, which is the
+		// driver default and asks for nothing. isEmptyJSON does not see that
+		// object as empty, so the denylist refused every `docker run` there has
+		// ever been through this proxy — the profile's whole purpose, failing
+		// with a message about log drivers.
+		if k == "LogConfig" && isDefaultLogConfig(v) {
+			delete(hc, k)
+			continue
+		}
+		p.deny(w, "HostConfig.%s is not permitted: %s", k, refusalReason[k])
+		return
 	}
 
 	// 2. Namespace modes must not join the host's or another container's.
@@ -99,11 +111,24 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	delete(hc, "Binds")
 	delete(hc, "Mounts")
-	delete(hc, "Tmpfs")
 	if len(mounts) > 0 {
 		enc, _ := json.Marshal(mounts)
 		hc["Mounts"] = enc
 	}
+
+	// HostConfig.Tmpfs is FORWARDED, and used to be deleted here — silently,
+	// two comments below the paragraph saying nothing is silently dropped.
+	//
+	// ABUSE: a hostile process inside the sandbox can use this to allocate host
+	// RAM as a container tmpfs, and to give itself an exec/suid filesystem
+	// inside its own container.
+	//
+	// Neither reaches a host resource, which is why it is forwarded rather than
+	// refused: a tmpfs has no source, so the mount rule in the package comment
+	// has nothing to check — there is no host path to be visible or not. The RAM
+	// is the same RAM any process in the container could allocate anyway, and it
+	// is the tmpfs-sizing gap snug already has on its own mounts (TODO R8), not
+	// a new one. `docker run --tmpfs /run` is ordinary and worked nowhere.
 
 	// 4. Inject the hardening the sandbox cannot rely on the client to set.
 	hc["Privileged"] = json.RawMessage(`false`)
@@ -434,6 +459,30 @@ func decodeObject(raw []byte) (map[string]json.RawMessage, error) {
 		out[name] = in[k]
 	}
 	return out, nil
+}
+
+// isDefaultLogConfig reports whether a LogConfig asks for nothing at all.
+//
+// The hazard in LogConfig is entirely in its two fields: a `Type` selects a
+// driver, and `Config` carries the k8s-file/json-file `path` option that makes
+// conmon write a file ON THE HOST as your uid. {"Type":"","Config":{}} selects
+// no driver and sets no option — it is what the docker CLI sends on every
+// create, and refusing it refuses everything.
+//
+// Decoded into a pinned struct rather than pattern-matched on the raw bytes,
+// so key order, whitespace and a case variant of either field name all reach
+// the same verdict. (decodeObject has already refused non-ASCII keys and
+// case-fold collisions by the time this runs, so this decode sees what podman
+// will see.)
+func isDefaultLogConfig(raw json.RawMessage) bool {
+	var lc struct {
+		Type   string          `json:"Type"`
+		Config json.RawMessage `json:"Config"`
+	}
+	if err := json.Unmarshal(raw, &lc); err != nil {
+		return false // not the shape we understand; let the refusal stand
+	}
+	return lc.Type == "" && isEmptyJSON(lc.Config)
 }
 
 // isASCII reports whether every byte is below 0x80. Checked on the raw string

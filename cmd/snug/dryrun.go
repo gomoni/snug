@@ -98,13 +98,10 @@ func describeNetwork(out *os.File, p *policy.Policy) {
 		if p.Net.DNS {
 			fmt.Fprintf(out, "         dns             169.254.1.1 -> pasta -> host resolver\n")
 		}
-		switch {
-		case p.Net.PublishAuto:
-			fmt.Fprintf(out, "         host -> sandbox EVERY port the sandbox binds, on the host's 127.0.0.1\n")
-		case len(p.Net.Publish) > 0:
+		if len(p.Net.Publish) > 0 {
 			fmt.Fprintf(out, "         host -> sandbox ports %v, on the host's 127.0.0.1 only\n", p.Net.Publish)
-		default:
-			fmt.Fprintf(out, "         host -> sandbox CLOSED (add '@net-publish', or publish=[3000], to open)\n")
+		} else {
+			fmt.Fprintf(out, "         host -> sandbox CLOSED (publish = [3000] in a profile opens one)\n")
 		}
 		if p.Net.Address != "" {
 			fmt.Fprintf(out, "         address         %s (synthetic; the host's LAN address is hidden)\n", p.Net.Address)

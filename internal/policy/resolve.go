@@ -202,7 +202,6 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 			p.Podman = p.Podman.Join(mode)
 		}
 		p.Net.DNS = p.Net.DNS || prof.DNS
-		p.Net.PublishAuto = p.Net.PublishAuto || prof.PublishAuto
 		p.Net.Publish = append(p.Net.Publish, prof.Publish...)
 		if prof.Address != "" {
 			p.Net.Address = prof.Address

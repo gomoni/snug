@@ -1362,7 +1362,8 @@ except OSError as e:
 	}
 }
 
-// Host→sandbox publishing is OFF by default and only `net-publish` turns it on.
+// Host→sandbox publishing is OFF by default and only a `publish = [...]` profile
+// turns it on.
 // With pasta's -t auto the SANDBOX would choose which host loopback ports
 // appear, which inverts the guiding principle: the agent would be punching its
 // own holes.
@@ -1386,7 +1387,8 @@ except OSError as e:
 // The control was not paranoia. Running the old test against a profile that
 // publishes showed it passing: it could not fail, and had been unable to fail
 // since it was written. See TestPublishedPortsAreReachable, which is the control
-// extracted into a named test of its own, and the report on publish_auto.
+// extracted into a named test of its own. (The `publish_auto` form it was first
+// written against is gone: it never forwarded anything — see base.toml.)
 func TestSandboxPortsAreNotPublishedByDefault(t *testing.T) {
 	budget(t, 20*time.Second)
 	requireSandbox(t)
@@ -1417,7 +1419,7 @@ func TestSandboxPortsAreNotPublishedByDefault(t *testing.T) {
 	def := probeSandboxPort(t, proj, baseEnv(), "-p", "@net")
 	switch {
 	case def.dialErr == nil:
-		t.Errorf("the host reached a sandbox listener on 127.0.0.1:%d without net-publish", def.port)
+		t.Errorf("the host reached a sandbox listener on 127.0.0.1:%d without a publish grant", def.port)
 	case !errors.Is(def.dialErr, syscall.ECONNREFUSED):
 		// A refusal is the host's kernel saying "there is nothing here". Anything
 		// else — a timeout above all — means the packet went somewhere and was
@@ -1429,7 +1431,7 @@ func TestSandboxPortsAreNotPublishedByDefault(t *testing.T) {
 			def.port, def.dialErr, def.dialTook.Round(time.Millisecond))
 	}
 	if strings.Contains(def.out, "HOST-REACHED-THE-SANDBOX") {
-		t.Errorf("the sandbox accepted a connection from the host without net-publish:\n%s", def.out)
+		t.Errorf("the sandbox accepted a connection from the host without a publish grant:\n%s", def.out)
 	}
 	// The listener has to have reached its verdict. Absent this, a python that
 	// died on the bind would satisfy every check above.

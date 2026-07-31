@@ -25,8 +25,8 @@ flag list travels through a memfd, and inherited descriptors are sealed CLOEXEC.
 Networking is a private netns per sandbox with a pasta helper: full egress, host
 loopback unreachable, abstract sockets (X11/D-Bus) unreachable. Offline is the
 absence of the `@net` profile. Profiles: `@null`, `@sys`, `@home`,
-`@cwd-rw`, `@parent-ro`, `@tmp-shared`, `@git-ro`, `@net`, `@net-publish`,
-`@net-anon`, `@net-host`, `@claude`, `@podman-socket` — the `@` marks a profile
+`@cwd-rw`, `@parent-ro`, `@tmp-shared`, `@git-ro`, `@net`, `@net-anon`,
+`@net-host`, `@claude`, `@podman-socket` — the `@` marks a profile
 snug ships, and nothing else may wear it. There is deliberately **no `@default`
 profile**: what a bare `snug <dir>` selects is the `defaults` *setting*
 (`internal/profile/defaults.go`, overridable by `defaults = [...]` in

@@ -114,7 +114,6 @@ $ snug profile dot | dot -Tpng -o profiles.png
 | `@git-ro` | `~/.config/git` and `~/.gitconfig`, read-only. |
 | `@tmp-shared` | A per-project host directory as `/tmp`. Survives the sandbox. |
 | `@net` | Internet access. Host loopback unreachable. |
-| `@net-publish` | As `@net`, plus sandbox ports on the host's `127.0.0.1`. |
 | `@net-anon` | As `@net`, but the sandbox does not learn your LAN address. |
 | `@net-host` | **Dangerous.** Shares the host network namespace. Needs `--i-know`. |
 | `@claude` | Claude Code: binary and skills read-only, credentials staged as writable copies. |
@@ -168,6 +167,20 @@ there is no path to not-mount.
 
 Offline is the **absence** of the `@net` profile, not a setting — so it cannot be
 switched back on by adding something.
+
+Host→sandbox publishing is off, and opening it means naming the ports yourself:
+
+```toml
+[profile.myports]
+include = ["@net"]
+publish = [3000, 8080]     # bound to the host's 127.0.0.1 only, never the LAN
+```
+
+There is deliberately no "publish whatever the sandbox binds": that would let the
+*sandbox* choose what appears on your loopback, and a prompt-injected agent could
+squat `127.0.0.1:8080` ahead of your own dev server. A `@net-publish` profile
+that did exactly that used to ship, and it never forwarded a single port — see
+`internal/profile/profiles/base.toml` for why.
 
 ## What it defends, and what it does not
 

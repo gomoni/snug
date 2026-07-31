@@ -63,9 +63,8 @@ type NetPolicy struct {
 	Mode NetMode
 
 	// Publish names ports the HOST's 127.0.0.1 should forward into the sandbox.
-	// PublishAuto forwards every port the sandbox binds.
-	Publish     []int
-	PublishAuto bool
+	// A human names each one; there is no "whatever the sandbox binds" form.
+	Publish []int
 
 	// DNS installs a generated /etc/resolv.conf, and pasta's --dns-forward when
 	// the host has no nameserver the sandbox could reach directly.
@@ -246,9 +245,6 @@ func (p *Policy) PastaArgs(childPID int) []string {
 // addresses, which would publish the agent's dev server to the LAN — a thing
 // the human did not ask for and would not see.
 func publishSpec(n NetPolicy) string {
-	if n.PublishAuto {
-		return "127.0.0.1/auto"
-	}
 	if len(n.Publish) == 0 {
 		return "none"
 	}
