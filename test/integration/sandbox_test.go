@@ -1161,10 +1161,13 @@ print("PROBE-COMPLETE")
 		}
 	}
 
-	// TCP: only a REFUSED tells us something answered "there is nothing here". A
-	// drop is weaker, and it is where seconds of CI time go, so it is reported as
-	// a defect in the probe rather than accepted as a pass.
-	wantRefused := []string{"v4-tcp", "gw-tcp"}
+	// LOOPBACK TCP: only a REFUSED tells us something answered "there is nothing
+	// here". A drop is weaker, and it is where seconds of CI time go, so it is
+	// reported as a defect in the probe rather than accepted as a pass. These
+	// addresses are the sandbox's OWN loopback, which is empty, so its kernel
+	// sends RST in microseconds — there is no environment in which a timeout
+	// here is legitimate.
+	wantRefused := []string{"v4-tcp"}
 	if haveV6 {
 		wantRefused = append(wantRefused, "v6-tcp")
 	}
@@ -1179,6 +1182,28 @@ print("PROBE-COMPLETE")
 			t.Errorf("the %s probe was %s, neither refused nor reached. That is a weaker "+
 				"result than this test claims to establish:\n%s", label, verdicts[label], r.out)
 		}
+	}
+
+	// THE GATEWAY is different in kind, and demanding REFUSED of it was wrong.
+	//
+	// It is the address --map-host-loopback would map the host's 127.0.0.1 onto,
+	// so it is the one that matters most — but with `none` the packet is not
+	// translated at all and goes to a REAL router, which is under no obligation
+	// to answer. On this developer's box (inside podman) it sends RST; on a
+	// GitHub runner it drops, and the job failed with the sandbox behaving
+	// perfectly. What establishes the property is that the probe did not REACH
+	// anything and the host's banner appears nowhere in the output — both still
+	// asserted, and both still fail loudly.
+	switch verdicts["gw-tcp"] {
+	case "REFUSED", "TIMEDOUT":
+	case "":
+		t.Errorf("the gw-tcp probe produced no verdict at all:\n%s", r.out)
+	case "REACHED":
+		t.Errorf("the sandbox REACHED a service on the host's loopback via the gateway "+
+			"address, which is exactly what --map-host-loopback none exists to prevent:\n%s", r.out)
+	default:
+		t.Errorf("the gw-tcp probe ended as %s; only a refusal or a drop is a negative "+
+			"result:\n%s", verdicts["gw-tcp"], r.out)
 	}
 
 	// UDP: a refusal needs an ICMP port-unreachable getting back, which pasta is

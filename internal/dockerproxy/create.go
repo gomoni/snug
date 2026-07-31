@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"snug/internal/policy"
@@ -36,9 +37,9 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req map[string]json.RawMessage
-	if err := json.Unmarshal(body, &req); err != nil {
-		p.deny(w, "create body is not a JSON object")
+	req, err := decodeObject(body)
+	if err != nil {
+		p.deny(w, "create body: %v", err)
 		return
 	}
 
@@ -51,8 +52,9 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	hc := map[string]json.RawMessage{}
 	if raw, ok := req["HostConfig"]; ok && !isEmptyJSON(raw) {
-		if err := json.Unmarshal(raw, &hc); err != nil {
-			p.deny(w, "HostConfig is not a JSON object")
+		hc, err = decodeObject(raw)
+		if err != nil {
+			p.deny(w, "HostConfig: %v", err)
 			return
 		}
 	}
@@ -67,7 +69,7 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. Namespace modes must not join the host's or another container's.
-	for _, k := range []string{"NetworkMode", "PidMode", "IpcMode", "UTSMode", "UsernsMode", "CgroupnsMode"} {
+	for _, k := range namespaceModeKeys {
 		var mode string
 		if v, ok := hc[k]; ok {
 			_ = json.Unmarshal(v, &mode)
@@ -123,6 +125,12 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	p.audit(fmt.Sprintf("container create: %d mount(s) allowed", len(mounts)))
 	p.forward(w, r, out)
+}
+
+// namespaceModeKeys are the HostConfig fields that can join a namespace outside
+// this sandbox. Named rather than inline so canonicalKey covers them too.
+var namespaceModeKeys = []string{
+	"NetworkMode", "PidMode", "IpcMode", "UTSMode", "UsernsMode", "CgroupnsMode",
 }
 
 var refusedHostConfig = []string{
@@ -281,9 +289,9 @@ func (p *Proxy) handleVolumeCreate(w http.ResponseWriter, r *http.Request) {
 		p.deny(w, "reading request: %v", err)
 		return
 	}
-	var req map[string]json.RawMessage
-	if err := json.Unmarshal(body, &req); err != nil {
-		p.deny(w, "volume create body is not a JSON object")
+	req, err := decodeObject(body)
+	if err != nil {
+		p.deny(w, "volume create body: %v", err)
 		return
 	}
 
@@ -304,6 +312,85 @@ func (p *Proxy) handleVolumeCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	p.forward(w, r, body)
 }
+
+// decodeObject decodes a JSON object into a map whose keys are spelled the way
+// the checks below expect, and refuses any object that spells one key two ways.
+//
+// Both halves close the same escape, and it exists because Go's decoder and a
+// Go map disagree about what a key IS. encoding/json matches struct fields
+// CASE-INSENSITIVELY, so podman reads {"privileged":true} as Privileged — while
+// a map[string]json.RawMessage does not, so every exact-key lookup here missed
+// it. json.Marshal then sorts map keys, and "Privileged" sorts before
+// "privileged", so snug's injected `"Privileged":false` was emitted FIRST and
+// the attacker's variant, arriving last, won the decode. Verified reaching the
+// engine: {"hostconfig":{"privileged":true,"binds":["/:/host"]}} started a
+// privileged container with the host root bound, with snug's own
+// `"Privileged":false` sitting harmlessly beside it. Found by mutation-testing
+// the committed suite (M4 review).
+//
+// Canonicalising cannot change what podman does with the request, precisely
+// BECAUSE podman is case-insensitive: `binds` and `Binds` are the same field to
+// it. What changes is that snug now sees the same field podman will.
+//
+// Rejecting a case-fold collision outright, rather than picking a winner, is
+// the deliberate part. Go's map decode is last-wins over an order the JSON text
+// chose, so any rule for which spelling to keep is a rule about text order —
+// and getting it wrong is silent. There is no legitimate reason for one object
+// to carry both spellings.
+func decodeObject(raw []byte) (map[string]json.RawMessage, error) {
+	var in map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return nil, fmt.Errorf("not a JSON object")
+	}
+
+	// Sorted so a collision is reported the same way every time; map order is
+	// random and an error message that changes run to run is one nobody trusts.
+	keys := make([]string, 0, len(in))
+	for k := range in {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	out := make(map[string]json.RawMessage, len(in))
+	seen := make(map[string]string, len(in))
+	for _, k := range keys {
+		fold := strings.ToLower(k)
+		if prev, dup := seen[fold]; dup {
+			return nil, fmt.Errorf("keys %q and %q differ only in case; podman would read one "+
+				"of them and snug the other, so this request is refused rather than guessed at",
+				prev, k)
+		}
+		seen[fold] = k
+		name := k
+		if c, ok := canonicalKey[fold]; ok {
+			name = c
+		}
+		out[name] = in[k]
+	}
+	return out, nil
+}
+
+// canonicalKey maps a case-folded key to the spelling the code below tests
+// against. Only keys snug DECIDES on need to be here — an unrecognised key is
+// passed through untouched, and the collision check above covers it either way.
+//
+// Keeping it derived from the same lists the checks use is what stops it from
+// drifting: a new entry in refusedHostConfig is canonicalised automatically,
+// and TestEveryCheckedKeyIsCanonicalised fails if a hand-written one is missed.
+var canonicalKey = func() map[string]string {
+	m := map[string]string{}
+	add := func(names ...string) {
+		for _, n := range names {
+			m[strings.ToLower(n)] = n
+		}
+	}
+	add(refusedHostConfig...)
+	add(namespaceModeKeys...)
+	add("HostConfig", "Volumes")                                // top-level create
+	add("Binds", "Mounts", "Tmpfs")                             // what checkedMounts consumes
+	add("Driver", "Options", "DriverOpts", "ClusterVolumeSpec") // volume create
+	return m
+}()
 
 func isEmptyJSON(raw json.RawMessage) bool {
 	s := strings.TrimSpace(string(raw))

@@ -278,6 +278,17 @@ func allowed(segs []string) bool {
 		// "unable to upgrade to tcp, received 403".
 		return true // start, stop, wait, logs, inspect, kill, rm, stats, attach, exec
 
+	case "exec":
+		// An exec INSTANCE is created by containers/{id}/exec, which the clause
+		// above already permits, and these routes only inspect or resize that
+		// instance. exec/{id}/start is a stream and isHijack takes it first.
+		//
+		// This case is new with the isHijack fix and is not a widening: the
+		// header clause that used to hijack any upgraded request was what made
+		// `docker exec` work, so these paths were reachable all along — just via
+		// the hole rather than via the allowlist.
+		return true
+
 	case "build":
 		// `podman build` arrives in M5 with a constrained build context.
 		return false
@@ -350,12 +361,51 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, body []byte) {
 }
 
 // isHijack reports whether this request becomes a raw bidirectional stream.
+//
+// It is decided by PATH, and that is the entire point. The previous version
+// returned true whenever an `Upgrade:` or `Connection: upgrade` header was
+// present, on ANY path — and ServeHTTP consults it BEFORE handleCreate, while
+// hijack() forwards the request byte for byte with r.Write(up). So
+// `POST /v1.41/containers/create` carrying `Upgrade: tcp` and
+// {"Privileged":true,"Binds":["/:/host"]} reached the engine verbatim, 200 OK,
+// with every check skipped. **The client chose whether snug's filter ran at
+// all**, which is not a bug in a check but the absence of one. Found by
+// mutation-testing the committed suite (M4 review); verified by forwarding real
+// bytes to podman.
+//
+// A header may narrow this set (a detached start is an ordinary POST and must
+// keep going through forward), but it may never widen it. Every path below
+// operates on a container or exec instance that has already been through
+// handleCreate, so the stream carries no authority the policy did not grant.
 func isHijack(segs []string, r *http.Request) bool {
-	if strings.EqualFold(r.Header.Get("Connection"), "upgrade") || r.Header.Get("Upgrade") != "" {
+	switch {
+	case len(segs) >= 3 && segs[0] == "containers" && segs[2] == "attach":
+		// .../attach and .../attach/ws
+		return true
+	case len(segs) == 3 && segs[0] == "containers" && segs[2] == "start":
+		// `docker run` in the foreground upgrades on start; `docker start -d`
+		// does not, and must stay on the normal path.
+		return upgradeRequested(r)
+	case len(segs) == 3 && segs[0] == "exec" && segs[2] == "start":
 		return true
 	}
-	return len(segs) >= 3 && segs[0] == "containers" &&
-		(segs[2] == "attach" || segs[2] == "start" && r.Header.Get("Upgrade") != "")
+	return false
+}
+
+// upgradeRequested reports whether the client asked to upgrade the connection.
+//
+// `Connection:` is a comma-separated list — `keep-alive, Upgrade` is valid and
+// common — so an equality test against "upgrade" reads a live upgrade as absent.
+func upgradeRequested(r *http.Request) bool {
+	if r.Header.Get("Upgrade") != "" {
+		return true
+	}
+	for _, v := range strings.Split(r.Header.Get("Connection"), ",") {
+		if strings.EqualFold(strings.TrimSpace(v), "upgrade") {
+			return true
+		}
+	}
+	return false
 }
 
 // hijack proxies an upgraded connection byte for byte in both directions.

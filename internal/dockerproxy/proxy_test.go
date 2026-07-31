@@ -3,6 +3,7 @@ package dockerproxy
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -470,3 +471,225 @@ func TestPathTraversalIsRejected(t *testing.T) {
 }
 
 func bufReader(c net.Conn) *bufio.Reader { return bufio.NewReader(c) }
+
+// postHdr is post with extra request headers, which is the whole subject of the
+// hijack regression below.
+func postHdr(t *testing.T, sock, path, body string, hdr map[string]string) (int, string) {
+	t.Helper()
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	req, _ := http.NewRequest("POST", "http://d"+path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	if err := req.Write(conn); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(bufReader(conn), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	buf, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return resp.StatusCode, string(buf)
+}
+
+// ── the two escapes found by mutation-testing the suite (M4 review) ──────────
+
+// REGRESSION: an `Upgrade:` header made the client, not snug, decide whether
+// the filter ran.
+//
+// isHijack returned true on Upgrade/Connection: upgrade for ANY path, and
+// ServeHTTP consults it BEFORE handleCreate — so a create request carrying the
+// header went straight to hijack(), which writes it to podman byte for byte.
+// {"Privileged":true,"Binds":["/:/host"]} reached the engine, 200 OK. Verified
+// against a real engine before the fix.
+//
+// The hijack set is now decided by PATH. A header may narrow it (a detached
+// start is an ordinary POST) but can never widen it.
+func TestUpgradeHeaderCannotBypassTheFilter(t *testing.T) {
+	const escape = `{"Image":"alpine","HostConfig":{"Privileged":true,"Binds":["/:/host"]}}`
+
+	// CONTROL 1: without the header this body is refused. If it were not, the
+	// assertion below would pass on a proxy that filters nothing at all.
+	t.Run("control: the body is refused on the ordinary path", func(t *testing.T) {
+		sock, eng, _ := startProxy(t)
+		refuse(t, sock, eng, "/v1.41/containers/create", escape, "HostConfig.Privileged")
+	})
+
+	// CONTROL 2: a real streaming endpoint still upgrades and still reaches the
+	// engine. Without it, "the header no longer hijacks" would be equally true
+	// of a proxy that had simply lost the ability to attach — and `docker run`
+	// in the foreground would be broken with the suite green.
+	t.Run("control: attach still streams to the engine", func(t *testing.T) {
+		sock, eng, _ := startProxy(t)
+		before := eng.reached.Load()
+		code, resp := postHdr(t, sock, "/v1.41/containers/abc/attach", "",
+			map[string]string{"Upgrade": "tcp", "Connection": "Upgrade"})
+		if eng.reached.Load() == before {
+			t.Fatalf("attach did not reach the engine (status %d): %s", code, resp)
+		}
+	})
+
+	// THE ESCAPE, in every spelling of the header that used to work.
+	for _, hdr := range []map[string]string{
+		{"Upgrade": "tcp"},
+		{"Connection": "Upgrade"},
+		{"Connection": "keep-alive, Upgrade"},
+		{"Upgrade": "tcp", "Connection": "Upgrade"},
+		{"Upgrade": "h2c"},
+	} {
+		t.Run("create with headers "+fmt.Sprint(hdr), func(t *testing.T) {
+			sock, eng, _ := startProxy(t)
+			before := eng.reached.Load()
+			code, resp := postHdr(t, sock, "/v1.41/containers/create", escape, hdr)
+			if eng.reached.Load() != before {
+				t.Fatalf("the create request reached the engine unfiltered; "+
+					"the client chose whether snug's filter ran. body seen by engine: %v",
+					eng.lastBody.Load())
+			}
+			if code != http.StatusForbidden {
+				t.Errorf("status %d, want 403: %s", code, resp)
+			}
+			if msg := denyMessage(resp); !strings.Contains(msg, "HostConfig.Privileged") {
+				t.Errorf("refused, but not by the create filter: %s", msg)
+			}
+		})
+	}
+}
+
+// A detached start must NOT be hijacked — it is an ordinary POST whose response
+// the client parses. Pins the one direction in which the header still counts.
+func TestDetachedStartIsNotHijacked(t *testing.T) {
+	segs, _ := normalise("/v1.41/containers/abc/start")
+	plain, _ := http.NewRequest("POST", "http://d/", nil)
+	if isHijack(segs, plain) {
+		t.Error("a start with no upgrade header was treated as a stream")
+	}
+	up, _ := http.NewRequest("POST", "http://d/", nil)
+	up.Header.Set("Upgrade", "tcp")
+	if !isHijack(segs, up) {
+		t.Error("a start WITH an upgrade header must stream, or foreground `docker run` breaks")
+	}
+}
+
+// REGRESSION: a case-variant JSON key bypassed every denylist.
+//
+// encoding/json matches struct fields case-INSENSITIVELY, so podman reads
+// {"privileged":true} as Privileged — while snug's exact-key map lookups did
+// not. json.Marshal then sorts map keys, so snug's injected "Privileged":false
+// was emitted first and the attacker's lowercase variant, arriving last, won
+// the decode. Verified reaching a real engine:
+// {"hostconfig":{"privileged":true,"binds":["/:/host"]}} started a privileged
+// container with the host root bound.
+func TestCaseVariantKeysCannotBypassTheDenylist(t *testing.T) {
+	t.Run("control: the canonical spelling is refused", func(t *testing.T) {
+		sock, eng, _ := startProxy(t)
+		refuse(t, sock, eng, "/v1.41/containers/create",
+			`{"HostConfig":{"Privileged":true}}`, "HostConfig.Privileged")
+	})
+
+	t.Run("control: an ordinary create still succeeds", func(t *testing.T) {
+		sock, _, target := startProxy(t)
+		code, resp := post(t, sock, "/v1.41/containers/create",
+			`{"Image":"alpine","HostConfig":{"Binds":["`+target+`:/w"]}}`)
+		if code != 200 {
+			t.Fatalf("a legitimate create must still work (status %d): %s", code, resp)
+		}
+	})
+
+	// The top-level key, the nested keys, and the mount keys — each was a
+	// separate way through.
+	for name, body := range map[string]string{
+		"lowercase HostConfig":  `{"hostconfig":{"privileged":true,"binds":["/:/host"]}}`,
+		"uppercase HostConfig":  `{"HOSTCONFIG":{"PRIVILEGED":true}}`,
+		"mixed-case Privileged": `{"HostConfig":{"pRiViLeGeD":true}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			sock, eng, _ := startProxy(t)
+			refuse(t, sock, eng, "/v1.41/containers/create", body, "HostConfig.Privileged")
+		})
+	}
+
+	// A lowercase Binds must be CHECKED, not ignored: the mount rule has to see
+	// the same field podman will.
+	t.Run("lowercase Binds is checked against visibility", func(t *testing.T) {
+		sock, eng, _ := startProxy(t)
+		refuse(t, sock, eng, "/v1.41/containers/create",
+			`{"HostConfig":{"binds":["/etc:/etc"]}}`, "this sandbox cannot see")
+	})
+
+	// Two spellings at once is refused rather than resolved. Any rule for
+	// picking a winner is a rule about JSON text order, and getting it wrong is
+	// silent.
+	for name, body := range map[string]string{
+		"nested collision":    `{"HostConfig":{"Privileged":false,"privileged":true}}`,
+		"top-level collision": `{"HostConfig":{},"hostconfig":{"Privileged":true}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			sock, eng, _ := startProxy(t)
+			refuse(t, sock, eng, "/v1.41/containers/create", body, "differ only in case")
+		})
+	}
+
+	// And the injected hardening must be the only spelling in what is forwarded.
+	// This is the assertion that would have caught the marshal-ordering half.
+	t.Run("exactly one Privileged reaches the engine, and it is false", func(t *testing.T) {
+		sock, eng, target := startProxy(t)
+		code, resp := post(t, sock, "/v1.41/containers/create",
+			`{"Image":"alpine","HostConfig":{"Binds":["`+target+`:/w"]}}`)
+		if code != 200 {
+			t.Fatalf("status %d: %s", code, resp)
+		}
+		sent, _ := eng.lastBody.Load().(string)
+		if n := strings.Count(strings.ToLower(sent), `"privileged"`); n != 1 {
+			t.Errorf("%d spellings of Privileged in the forwarded body, want exactly 1: %s", n, sent)
+		}
+		if !strings.Contains(sent, `"Privileged":false`) {
+			t.Errorf("the forwarded body does not pin Privileged false: %s", sent)
+		}
+	})
+}
+
+// Every denylist entry must be case-proof, not just the one the escape used.
+// A new entry added to refusedHostConfig is covered the moment it is added,
+// which is the property that keeps this from rotting.
+func TestEveryRefusedHostConfigKeyIsCaseProof(t *testing.T) {
+	for _, k := range refusedHostConfig {
+		lower := strings.ToLower(k)
+		if lower == k {
+			continue // no variant to test
+		}
+		t.Run(k, func(t *testing.T) {
+			sock, eng, _ := startProxy(t)
+			// A non-empty value of a shape isEmptyJSON does not swallow.
+			refuse(t, sock, eng, "/v1.41/containers/create",
+				`{"HostConfig":{"`+lower+`":["x"]}}`, "HostConfig."+k)
+		})
+	}
+}
+
+// The namespace-mode checks are a separate loop and were separately exposed.
+func TestNamespaceModesAreCaseProof(t *testing.T) {
+	for _, k := range namespaceModeKeys {
+		t.Run(k, func(t *testing.T) {
+			sock, eng, _ := startProxy(t)
+			refuse(t, sock, eng, "/v1.41/containers/create",
+				`{"HostConfig":{"`+strings.ToLower(k)+`":"host"}}`,
+				"HostConfig."+k)
+		})
+	}
+}
+
+// Volume create decodes its own body and had the same hole.
+func TestVolumeCreateIsCaseProof(t *testing.T) {
+	sock, eng, _ := startProxy(t)
+	refuse(t, sock, eng, "/v1.41/volumes/create",
+		`{"Name":"v","driver":"local-persist"}`, "volume driver")
+	refuse(t, sock, eng, "/v1.41/volumes/create",
+		`{"Name":"v","options":{"device":"/","o":"bind","type":"none"}}`, "not permitted")
+}
