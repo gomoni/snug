@@ -2155,3 +2155,124 @@ func TestRepoLocalConfigIsNeverAutoLoaded(t *testing.T) {
 		t.Errorf("the sandbox root looks like the host's:\n%s", r.out)
 	}
 }
+
+// ── containers: `podman build` (M5) ─────────────────────────────────────────
+
+// requireEngine gates the checks that need a real container engine.
+//
+// A plain skip even under SNUG_REQUIRE_SANDBOX, unlike requireInternet: CI
+// installs bubblewrap and pasta but not podman, and pretending otherwise would
+// turn every CI run red for a capability the runner was never given. What keeps
+// that honest is that the unit suite covers the same filter against RECORDED
+// podman queries — see internal/dockerproxy/build_test.go — so this tier adds
+// end-to-end proof rather than being the only coverage.
+func requireEngine(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("podman"); err != nil {
+		t.Skip("SKIP: podman is not installed; the build checks need a real engine")
+	}
+}
+
+// `podman build` really builds, and really cannot reach past the sandbox.
+//
+// This drives the container API directly rather than running the podman CLI
+// inside the sandbox, and that is not a shortcut: on a host where /usr/bin/podman
+// is a distrobox shim the CLI cannot work from inside at all (snug says so, at
+// length), while snug's own engine and proxy are fine. The API is the surface
+// under test anyway — every escape below is a query parameter, not a CLI flag.
+func TestPodmanBuildIsFilteredEndToEnd(t *testing.T) {
+	budget(t, 300*time.Second)
+	requireSandbox(t)
+	requireEngine(t)
+	requirePython(t)
+	requireInternet(t) // the build pulls alpine
+	proj, _ := target(t)
+
+	if err := os.WriteFile(filepath.Join(proj, "probe.py"), []byte(buildProbe), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := run(t, []string{"-p", "@podman-build", "-p", "@net"}, proj, `python3 probe.py`).mustRun(t)
+
+	// THE CONTROL FIRST. Without a build that actually succeeds, every refusal
+	// below is equally true of a proxy that refuses all builds, and the profile
+	// would be useless with this test green.
+	if !strings.Contains(r.out, "ordinary build: 200") {
+		t.Fatalf("an ordinary build did not succeed, so the refusals below prove "+
+			"nothing about filtering:\n%s", r.out)
+	}
+	// And the build must really have RUN something. Verified to fail when the
+	// marker is broken, rather than assumed to be checking anything.
+	if !strings.Contains(r.out, "BUILT-INSIDE-SNUG") {
+		t.Errorf("the build reported success but its RUN step never executed, so "+
+			"nothing was really built:\n%s", r.out)
+	}
+
+	for _, want := range []struct{ marker, why string }{
+		{"host bind: 403", "`build -v /etc:/x` binds a host path the sandbox cannot see"},
+		{"host network: 403", "`build --network=host` joins the host's network namespace"},
+		{"host ns: 403", "the nsoptions spelling of --network=host"},
+		{"unknown option: 403", "an option snug has not been taught about must fail closed"},
+	} {
+		if !strings.Contains(r.out, want.marker) {
+			t.Errorf("%s — expected %q in:\n%s", want.why, want.marker, r.out)
+		}
+	}
+	if !strings.Contains(r.out, "PROBE-COMPLETE") {
+		t.Errorf("the probe did not run to the end, so a missing marker above is "+
+			"absent rather than negative:\n%s", r.out)
+	}
+}
+
+// buildProbe posts context tars to $CONTAINER_HOST with the query parameters a
+// real `podman build` sends, one per case. The parameter sets are the ones
+// recorded from podman 5.8.3; see internal/dockerproxy/build_test.go.
+const buildProbe = `import http.client, socket, os, tarfile, io, urllib.parse
+
+class UnixHTTP(http.client.HTTPConnection):
+    def __init__(self, path):
+        super().__init__("localhost")
+        self.path = path
+    def connect(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(self.path)
+        self.sock = s
+
+sock = os.environ["CONTAINER_HOST"].replace("unix://", "")
+
+buf = io.BytesIO()
+with tarfile.open(fileobj=buf, mode="w") as tf:
+    data = b"FROM alpine\nRUN echo BUILT-INSIDE-SNUG\n"
+    ti = tarfile.TarInfo("Dockerfile")
+    ti.size = len(data)
+    tf.addfile(ti, io.BytesIO(data))
+ctx = buf.getvalue()
+
+BASE = {"dockerfile": '["Dockerfile"]', "t": "snugtest:1", "output": "snugtest:1",
+        "networkmode": "0", "nsoptions": '[{"Name":"user","Host":true,"Path":""}]',
+        "isolation": "0", "rm": "1", "layers": "1", "pullpolicy": "missing",
+        "seccomp": "/usr/share/containers/seccomp.json", "shmsize": "67108864"}
+
+def build(label, extra):
+    q = dict(BASE)
+    q.update(extra)
+    c = UnixHTTP(sock)
+    c.request("POST", "/v5.0.0/libpod/build?" + urllib.parse.urlencode(q), body=ctx,
+              headers={"Content-Type": "application/x-tar"})
+    r = c.getresponse()
+    body = r.read().decode(errors="replace")
+    print("%s: %d" % (label, r.status), flush=True)
+    if "BUILT-INSIDE-SNUG" in body:
+        print("BUILT-INSIDE-SNUG", flush=True)
+
+# nocache on the control, deliberately: with a warm layer cache podman prints
+# "Using cache" and the RUN step's own output never appears, so the
+# BUILT-INSIDE-SNUG assertion would pass by not being checked. A control that
+# can silently stop controlling is the failure mode this suite exists to avoid.
+build("ordinary build", {"nocache": "1"})
+build("host bind", {"volume": "/etc:/x"})
+build("host network", {"networkmode": "2"})
+build("host ns", {"nsoptions": '[{"Name":"network","Host":true,"Path":""}]'})
+build("unknown option", {"mountfromhost": "/etc"})
+print("PROBE-COMPLETE", flush=True)
+`

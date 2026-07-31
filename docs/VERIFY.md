@@ -344,6 +344,27 @@ the mark means snug ships it; then `unknown profile "sys" ... you probably meant
 "@sys"`. Note the third one fails at *load* — snug will not start at all while
 such a file is on the search path, rather than quietly ignoring that one file.
 
+## 9c. A build cannot reach past the sandbox
+
+Needs a working container engine. The podman CLI cannot run inside the sandbox
+on a host where /usr/bin/podman is a distrobox shim — snug says so at length —
+so this drives the API, which is the surface under test anyway: every escape
+below is a query parameter, not a CLI flag.
+
+```bash
+cp /path/to/snug/test/integration/buildProbe.py $SC/proj/sub/probe.py   # or paste it
+./bin/snug -p @podman-build -p @net $SC/proj/sub -- python3 probe.py
+```
+
+Expect, in order: `ordinary build: 200` followed by `BUILT-INSIDE-SNUG` (the
+control — without a build that really works, every refusal below is equally true
+of a proxy that refuses everything), then `403` for the host bind, for both
+spellings of `--network=host`, and for an option snug does not know.
+
+`--network=host` sets TWO parameters and either alone re-opens the host network,
+which is the same shape as the pasta flags in check 7. Both are refused, and the
+suite pins each to its own message so neither can cover for the other.
+
 ## 10. A repository cannot grant itself anything
 
 ```bash

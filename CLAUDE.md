@@ -26,7 +26,7 @@ Networking is a private netns per sandbox with a pasta helper: full egress, host
 loopback unreachable, abstract sockets (X11/D-Bus) unreachable. Offline is the
 absence of the `@net` profile. Profiles: `@null`, `@sys`, `@home`,
 `@cwd-rw`, `@parent-ro`, `@tmp-shared`, `@git-ro`, `@net`, `@net-anon`,
-`@net-host`, `@claude`, `@podman-socket` — the `@` marks a profile
+`@net-host`, `@claude`, `@podman-socket`, `@podman-build` — the `@` marks a profile
 snug ships, and nothing else may wear it. There is deliberately **no `@default`
 profile**: what a bare `snug <dir>` selects is the `defaults` *setting*
 (`internal/profile/defaults.go`, overridable by `defaults = [...]` in
@@ -43,8 +43,9 @@ bound. The `@claude` profile stages credentials as writable copies and injects a
 host can run it. `make gate` is the pre-commit check, and `docs/VERIFY.md` is the
 by-hand checklist — run it rather than trusting this paragraph.
 
-Not built yet: container support. Add holes one at a time, and see "Definition of
-done for a milestone" below — `redteam` runs on every one, without exception.
+Containers and `podman build` both work, each behind its own profile and its own
+filter. Add holes one at a time, and see "Definition of done for a milestone"
+below — `redteam` runs on every one, without exception.
 
 **Out of scope, deliberately:** GUI, audio and D-Bus passthrough (Wayland,
 PulseAudio, X11). Proxying those protocols safely is a project in its own right,

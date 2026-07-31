@@ -974,7 +974,29 @@ Normalisation first: strip the `/v1.x` API-version prefix, split into segments, 
 
 `POST /volumes/create` permits driver `""`/`local` with **zero** `DriverOpts` and a nil `ClusterVolumeSpec`. That one rule kills `type=none,o=bind,device=/host`, `device=/dev/*`, and `o=addr=` NFS/CIFS remotes at their source — the separate call that plants a host-path volume later referenced as `Mounts[type=volume]`.
 
-`POST /build` (only with `podman = "build"`): the build context must be a tar stream (never `remote=`/`git://`), `dockerfile` must resolve inside the context, `extrahosts`/`networkmode`/`cachefrom` outside the policy set are rejected, and `--build-context`/`RUN --mount=type=bind` sources are subject to the same rule as step 4. `RUN --mount=type=ssh` and `type=secret` are rejected.
+`POST /build` (only with `podman = "build"`) — **IMPLEMENTED, and the shape is not what this paragraph originally described.** Corrected against a recording of the real podman CLI 5.8.3, because the docs and this design note both had it wrong:
+
+- The CLI posts to **`/v5.x/libpod/build`**, not the docker-compat `/v1.41/build`. Both are handled; a filter written only for the compat path would have covered a path no real client uses.
+- **Every policy-relevant option is a QUERY PARAMETER.** The body is only the context tar. So the libpod/compat schema split that forces `bodyBearing` to refuse libpod bodies elsewhere does not apply here — there is no body to misread.
+- The context tar is **forwarded unread**: the client assembled it inside the sandbox from files the sandbox can already read, so it reaches nothing new.
+- `RUN --mount=type=secret` needs no rejection. The CLI reads the file **itself**, client-side, and ships the bytes in the tar under a generated name (`--secret id=s,src=/etc/hostname` became `secrets=["id=s,src=podman-build-secret-4284765652"]`). It therefore names no host path and grants no read the sandbox did not already have.
+
+The filter is a **default-deny allowlist over the query string** (`buildParams` in `internal/dockerproxy/build.go`), for the same reason `allowed()` is one: build options are a large, fast-moving set, and one snug has not been taught about must fail closed. Each host-reaching parameter and the flag that produces it:
+
+| flag | parameter | judged by |
+|---|---|---|
+| `-v /etc:/x` | `volume` | the §7.2 step-4 mount rule, unchanged |
+| `--build-context x=/etc` | `additionalbuildcontexts` | the same rule, read-only; a URL is refused outright |
+| `--device` | `devices` | refused |
+| `--network=host` | `networkmode` **and** `nsoptions` | both, separately |
+| `--cgroup-parent` | `cgroupparent` | refused |
+| `--add-host` | `extrahosts` | refused |
+| `--isolation` | `isolation` | default only |
+| `--security-opt seccomp=` | `seccomp` | `unconfined` refused; a path gets the mount rule |
+| a git/URL context | `remote` | refused |
+| `--file ../x` | `dockerfile` | must stay inside the context |
+
+**`--network=host` is the one to look at twice**, and it is why this table exists. It sets `networkmode=2` *and* an `nsoptions` entry with `Host:true`, and either alone re-opens the host network — the identical shape to §4.2's pasta flags, where passing three of the four closing options left every host loopback service reachable. Both are checked, each pinned by its own test message so neither can cover for the other's absence.
 
 Every outcome — allow, rewrite, reject — is one audit line. Streaming and hijacked endpoints (attach, `logs --follow`, `wait`) are proxied byte-for-byte with headers flushed immediately (§6.1).
 
@@ -1595,9 +1617,9 @@ Each milestone is independently shippable and independently useful.
 Topology A (subuid userns + `unshare --net` + engine inside the sandwich netns), `internal/sandbox/engine.go` (per-sandbox store, `StoreKey`, lazy start, group teardown), `internal/dockerproxy` + `policy/{allow,create,volume,canon}.go`, SELinux relabel, `@podman-socket`. Tests: §12.5 live tier.
 *Ships:* the agent can use containers, including reaching its own containers' published ports, with the host engine untouched.
 
-**M5 — `podman build`.**
-`policy/build.go`, constrained build contexts, `RUN --mount` source validation, `podman-build`.
-*Ships:* `docker build` works safely.
+**M5 — `podman build`.** DONE.
+`internal/dockerproxy/build.go`, a default-deny allowlist over the build endpoint's query string, `@podman-build`. See §7.2 — the endpoint's real shape was established by recording the podman CLI, and differs from what this roadmap assumed.
+*Ships:* `podman build` works, and cannot bind a host path, take a device, or join the host network.
 
 **M6 — hardening and ergonomics.**
 `--bind-fd`/`openat2(RESOLVE_BENEATH)` to close the resolve→mount TOCTOU (§3.3); `clone3` filtering via `SECCOMP_RET_USER_NOTIF`; `snug prune`; shell completion; a `snug --dry-run --json` machine format; `--net-strict`.

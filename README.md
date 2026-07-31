@@ -50,7 +50,8 @@ snug ~/src/proj -- make test           # run one command; its exit code propagat
 snug -p @net ~/src/proj                # ...with internet access
 snug -p @git-ro -p @net ~/src/proj     # ...and your git identity, read-only
 snug -p @claude -p @net ~/src/proj     # Claude Code, its credentials staged (not your host's)
-snug -p @podman-socket -p @net ~/src/proj  # build and run containers, via a filtering proxy
+snug -p @podman-socket -p @net ~/src/proj  # run containers, via a filtering proxy
+snug -p @podman-build -p @net ~/src/proj   # ...and build images too
 snug -p @tmp-shared ~/src/proj         # a /tmp that survives, shared with future runs
 snug --dry-run -p @net ~/src/proj      # print the policy and the exact bwrap line; start nothing
 ```
@@ -117,7 +118,8 @@ $ snug profile dot | dot -Tpng -o profiles.png
 | `@net-anon` | As `@net`, but the sandbox does not learn your LAN address. |
 | `@net-host` | **Dangerous.** Shares the host network namespace. Needs `--i-know`. |
 | `@claude` | Claude Code: binary and skills read-only, credentials staged as writable copies. |
-| `@podman-socket` | Build and run containers, via a filtering proxy over a per-sandbox engine. |
+| `@podman-socket` | Run containers, via a filtering proxy over a per-sandbox engine. |
+| `@podman-build` | As `@podman-socket`, plus `podman build` with a filtered option set. |
 
 There is deliberately **no `@default` profile**. What a bare `snug <dir>` selects
 is the `defaults` *setting*, not a grant:

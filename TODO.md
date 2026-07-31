@@ -27,6 +27,53 @@ belongs in CLAUDE.md or the code itself, not here.
    * claude credentials should be copied into a sandbox, so the claude can be executed without a need for immediate login
    * 
 
+## M5 — `podman build` — known gaps
+
+Shipped and redteamed. The redteam found two, both in the WAVED-THROUGH half of
+the allowlist and both fixed before landing:
+
+- **[🔴 host read, fixed] `secrets` src= climbed out of the build context.**
+  buildah resolves it against the context dir without clamping `..`, so
+  `secrets=["id=leak,src=../../../../home/u/.ssh/id_ed25519"]` plus
+  `RUN --mount=type=secret` read a host file the sandbox is not granted and
+  streamed it back. It was waved through because the podman CLI reads the file
+  itself, client-side — true, and NOT a security argument: the threat model is an
+  agent that POSTs to the socket directly. "The friendly client would never send
+  that" is never a reason to skip a check, and this is the second time that shape
+  has cost something (see the long-s note above).
+- **[🟡 hardening, fixed] the seccomp check asked the wrong question.** It applied
+  the mount rule — "a path the sandbox can see" — and the target is visible AND
+  writable, so an allow-all profile written into the project passed the check
+  meant to stop `unconfined`. Visibility is right for a MOUNT; for a file the
+  engine applies AS THE SECURITY POLICY the question is who wrote it. Now
+  readable-but-not-writable.
+
+Both have named regression tests verified to fail against the code before them.
+
+These are the things M5 does NOT do, recorded so they are not mistaken for
+oversights.
+
+- **[🟡 teardown] A build's working containers do not carry the run label.**
+  buildah creates them inside the engine, server-side, not through the proxy — so
+  `stop --all --filter label=snug.run=…` does not reach them. `rm=1` (the CLI's
+  default) removes them when the build finishes, so this only bites an INTERRUPTED
+  build, and only until the engine's idle timeout takes the whole engine down.
+  Note it narrowed with the label fix: the previous store-wide `stop --all` would
+  have caught them, at the cost of stopping a sibling's containers too. Closing it
+  properly needs the label applied engine-side.
+- **`cachefrom`/`cacheto` are refused.** A cache reference is resolved by the
+  engine and can name a local path, so it needs the mount rule applying to it
+  before it can be allowed. Nobody has asked for it yet.
+- **The context tar is forwarded unread**, on the argument that the client
+  assembled it inside the sandbox from files the sandbox can already read. The
+  redteam tried `..`, absolute and symlink entries in the tar and could not get
+  buildah 5.8.3 to write outside its builder directory — but that is the ENGINE's
+  securejoin protecting us, not snug's, so it is a dependency to remember rather
+  than a property snug holds.
+- **`TestEveryBuildValidatorIsExercised` skips the waved-through parameters**,
+  which is exactly why `secrets` had no coverage while it was `nil`. A test that
+  a NEW nil entry must be justified would have caught it; nobody has written one.
+
 ## Postponed by decision
 
 ### Parameterised profiles

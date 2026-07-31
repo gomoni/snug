@@ -80,6 +80,84 @@ func TestBuildRefusesTheHostReachingOptions(t *testing.T) {
 	}
 }
 
+// REGRESSION (redteam, M5): `secrets` was waved through, on the reasoning that
+// the podman CLI reads a --secret's file itself and ships the bytes in the tar.
+// True of the CLI, and not a security argument — the threat model is an agent
+// that POSTs to the socket directly and sends whatever it likes.
+//
+// buildah resolves src= against the context dir without clamping `..`, so a
+// traversing source read a host file the sandbox is not granted and streamed it
+// back. Verified end to end: the same file was FileNotFoundError to a direct
+// open() inside the sandbox and TOP-SECRET on the build stream.
+func TestBuildSecretsCannotEscapeTheContext(t *testing.T) {
+	for _, tc := range []struct{ name, src, wantMsg string }{
+		{"a traversing source", "../../../../etc/hostname", "escapes the build context"},
+		{"a deeply traversing source",
+			"../../../../../../../../home/u/.ssh/id_ed25519", "escapes the build context"},
+		{"an absolute source", "/etc/hostname", "must name a file inside the build context"},
+		{"a URL source", "https://evil/x", "is a URL"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sock, eng, _ := startBuildProxy(t)
+			q := "secrets=" + url.QueryEscape(`["id=leak,src=`+tc.src+`"]`)
+			refuse(t, sock, eng, buildURL(q), "", tc.wantMsg)
+		})
+	}
+
+	// CONTROL: the shape the real CLI sends — a name inside the context — must
+	// still build, or this is a ban on --secret rather than on escaping.
+	t.Run("control: a context-relative secret still builds", func(t *testing.T) {
+		sock, eng, _ := startBuildProxy(t)
+		before := eng.reached.Load()
+		q := "secrets=" + url.QueryEscape(`["id=s,src=podman-build-secret-4284765652"]`)
+		if code, resp := post(t, sock, buildURL(q), ""); code != 200 {
+			t.Fatalf("the CLI's own secret form was refused (status %d): %s", code, resp)
+		}
+		if eng.reached.Load() == before {
+			t.Fatal("the build never reached the engine")
+		}
+	})
+
+	// An env-form secret names no path at all.
+	t.Run("control: an env secret is untouched", func(t *testing.T) {
+		sock, _, _ := startBuildProxy(t)
+		q := "secrets=" + url.QueryEscape(`["id=s,env=MY_TOKEN"]`)
+		if code, resp := post(t, sock, buildURL(q), ""); code != 200 {
+			t.Fatalf("an env-form secret was refused (status %d): %s", code, resp)
+		}
+	})
+}
+
+// REGRESSION (redteam, M5): the seccomp check applied the ordinary mount rule —
+// "a path the sandbox can see" — and the sandbox's own target is both visible
+// AND writable. So the agent wrote an allow-all profile into its own project and
+// passed that: `unconfined` by another name, straight through the check meant to
+// prevent it.
+//
+// Visibility is the right test for a MOUNT. For a file the engine applies AS THE
+// SECURITY POLICY the question is not what the container may reach but who wrote
+// it.
+func TestSeccompProfileMustNotBeSandboxAuthored(t *testing.T) {
+	sock, eng, target := startBuildProxy(t)
+
+	refuse(t, sock, eng, buildURL("seccomp="+url.QueryEscape(target+"/allow.json")), "",
+		"could have written itself")
+	refuse(t, sock, eng, buildURL("seccomp=unconfined"), "", "does not get to")
+	refuse(t, sock, eng, buildURL("seccomp="+url.QueryEscape("/etc/shadow")), "",
+		"not a path this sandbox can see")
+
+	// CONTROL: the read-only system profile the CLI actually sends still passes.
+	// /usr is granted read-only in the test policy, which is the real shape.
+	before := eng.reached.Load()
+	if code, resp := post(t, sock, buildURL("seccomp="+
+		url.QueryEscape("/usr/share/containers/seccomp.json")), ""); code != 200 {
+		t.Fatalf("the CLI's default seccomp profile was refused (status %d): %s", code, resp)
+	}
+	if eng.reached.Load() == before {
+		t.Fatal("the build never reached the engine")
+	}
+}
+
 // `--network=host` sets TWO parameters, and either one alone re-opens the host
 // network. This is the shape of the pasta bug this project already paid for
 // once: three of four closing flags were passed and every host loopback service
@@ -184,7 +262,7 @@ func TestEveryBuildValidatorIsExercised(t *testing.T) {
 	covered := map[string]bool{
 		"volume": true, "volumes": true, "additionalbuildcontexts": true,
 		"networkmode": true, "nsoptions": true, "seccomp": true,
-		"isolation": true, "dockerfile": true,
+		"isolation": true, "dockerfile": true, "secrets": true,
 	}
 	for name, check := range buildParams {
 		if check == nil || isFlatRefusal(name) {

@@ -109,12 +109,7 @@ var buildParams = map[string]buildParamCheck{
 	"cpushares": nil, "cpusetcpus": nil, "cpusetmems": nil,
 	"cpuperiod": nil, "cpuquota": nil,
 
-	// The CLI reads a --secret's file ITSELF, inside the sandbox, and ships the
-	// bytes in the context tar under a generated name. So this names no host
-	// path and grants no read the sandbox did not already have. Verified by
-	// recording: --secret id=s,src=/etc/hostname became
-	// secrets=["id=s,src=podman-build-secret-4284765652"].
-	"secrets": nil,
+	"secrets": checkBuildSecrets,
 
 	// The engine's own proxy environment, not the sandbox's, and the CLI sends
 	// it on every build.
@@ -150,6 +145,79 @@ func refuseBuildParam(reason string) buildParamCheck {
 	return func(*Proxy, string) error { return fmt.Errorf("is not permitted: %s", reason) }
 }
 
+// checkBuildSecrets keeps a secret's source inside the build context.
+//
+// REGRESSION (redteam, M5): this was waved through, on the reasoning that the
+// podman CLI reads a --secret's file ITSELF, client-side, and ships the bytes in
+// the context tar under a generated name — verified by recording, and true.
+//
+// It is also not a security argument, and the mistake is worth naming because it
+// is easy to repeat: what the CLI does is a description of BENIGN behaviour. The
+// threat model is an agent with full control of its own execution, which does not
+// use the CLI at all — it POSTs to $CONTAINER_HOST directly and sends whatever
+// value it likes. "The friendly client would never send that" is never a reason
+// to skip a check.
+//
+// What it cost: buildah resolves src= against the context directory but does not
+// clamp `..`, so
+//
+//	secrets=["id=leak,src=../../../../../../home/u/.ssh/id_ed25519"]
+//	RUN --mount=type=secret,id=leak,target=/leak cat /leak
+//
+// read a host file the sandbox is not granted and streamed it back — an arbitrary
+// host-filesystem READ primitive. Verified end to end: the same file was
+// FileNotFoundError to a direct open() inside the sandbox and TOP-SECRET on the
+// build stream.
+//
+// The rule is the one checkDockerfile already applies, for the same reason: a
+// legitimate src names something in the context, and a context name cannot climb
+// out of it.
+func checkBuildSecrets(_ *Proxy, v string) error {
+	var specs []string
+	if strings.HasPrefix(strings.TrimSpace(v), "[") {
+		if err := json.Unmarshal([]byte(v), &specs); err != nil {
+			return fmt.Errorf("is not a JSON list of secret specs")
+		}
+	} else {
+		specs = []string{v}
+	}
+	for _, spec := range specs {
+		for _, field := range strings.Split(spec, ",") {
+			k, val, ok := strings.Cut(field, "=")
+			if !ok {
+				continue
+			}
+			switch strings.ToLower(strings.TrimSpace(k)) {
+			case "src", "source":
+				if err := insideContext(val); err != nil {
+					return fmt.Errorf("secret source %w", err)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// insideContext refuses a name that does not stay within the build context.
+// Shared by the Dockerfile and secret-source rules so the two cannot drift —
+// they are the same question asked about different fields.
+func insideContext(n string) error {
+	if n == "" {
+		return nil
+	}
+	if strings.Contains(n, "://") {
+		return fmt.Errorf("%q is a URL; it must come from the context the client sent, "+
+			"not from somewhere the engine fetches", n)
+	}
+	if path.IsAbs(n) {
+		return fmt.Errorf("%q is absolute; it must name a file inside the build context", n)
+	}
+	if cleaned := path.Clean(n); cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return fmt.Errorf("%q escapes the build context", n)
+	}
+	return nil
+}
+
 // checkDockerfile keeps the Dockerfile inside the context.
 //
 // podman sends a JSON array of names; the compat endpoint sends a bare string.
@@ -165,18 +233,8 @@ func checkDockerfile(_ *Proxy, v string) error {
 		names = list
 	}
 	for _, n := range names {
-		if n == "" {
-			continue
-		}
-		if strings.Contains(n, "://") {
-			return fmt.Errorf("%q is a URL; the Dockerfile must come from the context "+
-				"the client sent, not from somewhere the engine fetches", n)
-		}
-		if path.IsAbs(n) {
-			return fmt.Errorf("%q is absolute; it must name a file inside the build context", n)
-		}
-		if cleaned := path.Clean(n); cleaned == ".." || strings.HasPrefix(cleaned, "../") {
-			return fmt.Errorf("%q escapes the build context", n)
+		if err := insideContext(n); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -289,13 +347,24 @@ func checkNSOptions(_ *Proxy, v string) error {
 	return nil
 }
 
-// checkSeccompProfile keeps the profile a path the SANDBOX can see.
+// checkSeccompProfile keeps the profile one the sandbox can READ but did not
+// AUTHOR.
 //
 // The CLI sends /usr/share/containers/seccomp.json on every build, so this
-// cannot simply be refused. What it must not be is `unconfined` — a hardening
-// downgrade the sandbox chooses for itself — or an arbitrary host path, which
-// would have the engine read a file on snug's behalf from outside every grant.
-// The same rule as a mount, for the same reason.
+// cannot simply be refused; `unconfined` must be, because turning the filter off
+// is not the sandbox's call.
+//
+// The first version stopped there and applied the ordinary mount rule — "a path
+// the sandbox can see" — which the redteam pointed out is the wrong test, and it
+// was right. The sandbox's target is both visible AND writable, so the agent
+// wrote {"defaultAction":"SCMP_ACT_ALLOW"} into its own project and passed that:
+// `unconfined` by another name, through the check meant to prevent it.
+//
+// Visibility is the right test for a MOUNT, where the question is what the
+// container may reach. It is the wrong test for a file the engine applies AS THE
+// SECURITY POLICY, where the question is who wrote it. So the rule here is
+// readable-but-not-writable: a distro profile under /usr passes, anything the
+// sandbox could have authored does not.
 func checkSeccompProfile(p *Proxy, v string) error {
 	if v == "" {
 		return nil
@@ -304,8 +373,17 @@ func checkSeccompProfile(p *Proxy, v string) error {
 		return fmt.Errorf("`unconfined` is not permitted; the sandbox does not get to " +
 			"turn off the build container's seccomp filter")
 	}
-	if _, err := p.checkOne(v, "/", true); err != nil {
-		return err
+	real, err := resolveExisting(v)
+	if err != nil {
+		return fmt.Errorf("%q cannot be resolved: %v", v, err)
+	}
+	if !p.hostPathVisible(real, false) {
+		return fmt.Errorf("%q is not a path this sandbox can see", v)
+	}
+	if p.hostPathVisible(real, true) {
+		return fmt.Errorf("%q is writable by this sandbox, so it is a profile the sandbox "+
+			"could have written itself — which is `unconfined` with extra steps. A seccomp "+
+			"profile must be one the sandbox can read but did not author", v)
 	}
 	return nil
 }
