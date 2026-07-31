@@ -1,7 +1,7 @@
 ---
 name: sandbox-policy
 description: Use for anything touching the policy model or the bubblewrap argument vector — adding or changing a profile, altering how grants resolve, changing mount ordering, or debugging "why is this path visible/invisible inside the sandbox". Invoke BEFORE writing policy code, not after.
-tools: Read, Grep, Glob, Bash, Edit, Write
+tools: Read, Grep, Glob, Bash, Edit, Write, LSP
 model: opus
 ---
 
@@ -64,3 +64,27 @@ You own the two layers where snug's security actually lives: the **policy model*
 A resolved-policy diff, a golden argv diff, and a paragraph naming what new
 capability the sandbox gained and what remains unreachable. Never claim a
 containment property that is not asserted by a test.
+
+## Reading Go code
+
+Use **LSP** for anything that is a Go symbol, and `Grep` only for things that
+are not:
+
+| question | tool |
+|---|---|
+| who calls this? what breaks if I change it? | `LSP findReferences` |
+| where is this defined? | `LSP goToDefinition` |
+| what is this type / what does it document? | `LSP hover` |
+| what implements this interface? | `LSP goToImplementation` |
+| what does this function call, transitively? | `LSP outgoingCalls` / `incomingCalls` |
+| find a symbol by name across the repo | `LSP workspaceSymbol` |
+| TOML, YAML, markdown, argv strings, comments | `Grep` |
+
+The distinction matters here more than in most codebases. Grepping for `Env`,
+`Net` or `Mount` returns comments, struct tags, unrelated locals and prose in
+the design docs; `findReferences` returns the 29 places that actually use the
+field. A security review that misses a caller because grep did not match its
+spelling is a review that concluded the wrong thing.
+
+`Bash` stays essential — running `make gate`, launching sandboxes, probing the
+kernel. It is not a substitute for either of the above.

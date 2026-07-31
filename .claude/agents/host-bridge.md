@@ -1,7 +1,7 @@
 ---
 name: host-bridge
 description: Use when punching a deliberate hole between sandbox and host — networking (netns + pasta), the ssh-agent proxy, the podman/docker socket proxy, Wayland/X11 sockets, shared tmp, or any new host-integration surface. Also use to audit an existing hole. Every hole is off by default and must be justified here first.
-tools: Read, Grep, Glob, Bash, Edit, Write
+tools: Read, Grep, Glob, Bash, Edit, Write, LSP
 model: opus
 ---
 
@@ -59,3 +59,27 @@ that this was decided against — not that it is unimplemented.
 The profile TOML, the helper wiring, the abuse sentence, a teardown analysis,
 and an integration test that asserts the hole opens *only* what it claims —
 including at least one assertion that something adjacent is still closed.
+
+## Reading Go code
+
+Use **LSP** for anything that is a Go symbol, and `Grep` only for things that
+are not:
+
+| question | tool |
+|---|---|
+| who calls this? what breaks if I change it? | `LSP findReferences` |
+| where is this defined? | `LSP goToDefinition` |
+| what is this type / what does it document? | `LSP hover` |
+| what implements this interface? | `LSP goToImplementation` |
+| what does this function call, transitively? | `LSP outgoingCalls` / `incomingCalls` |
+| find a symbol by name across the repo | `LSP workspaceSymbol` |
+| TOML, YAML, markdown, argv strings, comments | `Grep` |
+
+The distinction matters here more than in most codebases. Grepping for `Env`,
+`Net` or `Mount` returns comments, struct tags, unrelated locals and prose in
+the design docs; `findReferences` returns the 29 places that actually use the
+field. A security review that misses a caller because grep did not match its
+spelling is a review that concluded the wrong thing.
+
+`Bash` stays essential — running `make gate`, launching sandboxes, probing the
+kernel. It is not a substitute for either of the above.
