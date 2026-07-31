@@ -35,9 +35,15 @@ bound. The `claude` profile stages credentials as writable copies and injects a
 host can run it. `make gate` is the pre-commit check, and `docs/VERIFY.md` is the
 by-hand checklist — run it rather than trusting this paragraph.
 
-Not built yet, in the order the design expects them: containers, GUI profiles. Each is
-a hole. Add them one at a time, and see "Definition of done for a milestone"
-below — `redteam` runs on every one, without exception.
+Not built yet: container support. Add holes one at a time, and see "Definition of
+done for a milestone" below — `redteam` runs on every one, without exception.
+
+**Out of scope, deliberately:** GUI, audio and D-Bus passthrough (Wayland,
+PulseAudio, X11). Proxying those protocols safely is a project in its own right,
+and a filtering proxy that is 95% correct is a sandbox that is 0% sound. The
+private netns already excludes them by construction — that is a property to
+keep, not a gap to close. Do not add a profile for them without a decision to
+reopen this.
 
 ## Key features
 
@@ -266,7 +272,7 @@ intact.
 | agent | owns |
 |---|---|
 | `sandbox-policy` | The policy model and the bwrap argv. Invoke *before* writing policy code. Guards monotonicity. |
-| `host-bridge` | Every deliberate hole: netns/pasta, ssh-agent proxy, podman socket proxy, Wayland/X11, shared tmp. Decides the shape of a hole and says no when it is wider than the need. |
+| `host-bridge` | Every deliberate hole: netns/pasta, ssh-agent proxy, podman socket proxy, shared tmp. Decides the shape of a hole and says no when it is wider than the need. |
 | `redteam` | Our own adversary: tries to escape the sandbox we build, with the maintainer's authority, so we find the holes first. Deliberately has no edit tools, so discovery stays separate from the code being graded. |
 | `sandbox-tester` | The committed suite: resolver invariants, golden argv, integration tests that assert negatives. |
 | `go-implementer` | Ordinary Go work. Explicitly forbidden from inventing policy — hands security decisions back. |

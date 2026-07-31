@@ -161,9 +161,14 @@ with the tests passing.** Each is now a permanent regression test.
 
 ## Status
 
-**M2.** Filesystem isolation, seccomp hardening, and networking all work.
-Not built yet: the ssh-agent proxy and git identity scoping, a `claude` profile,
-container support, and GUI socket profiles.
+**M3.** Filesystem isolation, seccomp hardening, networking, and scoped
+git/ssh/gh identity all work. Not built yet: container support.
+
+**Not planned.** Passing through a GUI, audio or D-Bus socket — Wayland,
+PulseAudio, X11 — is out of scope. Proxying those protocols safely is a large
+project on its own, and a filtering proxy that is 95% correct is a sandbox that
+is 0% sound. The private network namespace already keeps them out; that is a
+property to keep, not a gap to close.
 
 ## Documentation
 

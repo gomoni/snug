@@ -57,8 +57,8 @@ once that lands.
 ### Prompt could show an unusually wide profile set
 
 `PS1` is `🔒 snug:\w\$ `. A marker when something wide is active — `etc-full`
-today, `net-host` or `x11` later — would make a permissive sandbox visible at a
-glance rather than only in `--dry-run`.
+or `net-host` — would make a permissive sandbox visible at a glance rather than
+only in `--dry-run`.
 
 ## Independent bugs found while reviewing that idea
 

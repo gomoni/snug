@@ -20,7 +20,7 @@ This has three consequences that shape the whole system:
 
 1. **Monotonicity is free.** Since the base is empty, every operation a profile can express is additive. There is no syntax for removal, so composition cannot tighten. (§2.4)
 2. **"Hiding" is emergent, not implemented.** The `dotdot` profile does not hide your other projects; it simply never grants them. There is no masking pass, no `--tmpfs` overlay trick in the emitter, no ordering hazard from hiding. (§3)
-3. **A missing capability is a feature, and is stated as such.** No X11 socket, no Wayland socket, no D-Bus, no host loopback, no `~/.ssh` — not gaps to apologise for, but the default. Each has a named profile that opens it, and each profile documents what it costs.
+3. **A missing capability is a feature, and is stated as such.** No X11 socket, no Wayland socket, no D-Bus, no host loopback, no `~/.ssh` — not gaps to apologise for, but the default. Where a hole is worth opening it gets a named profile that documents what it costs; where it is not (GUI, audio, D-Bus — §7.5) the absence is simply the answer.
 
 ---
 
@@ -327,21 +327,6 @@ DANGEROUS. Shares the HOST network namespace. The sandbox can reach every servic
 127.0.0.1 and every abstract AF_UNIX socket, including X11 and D-Bus. Requires --i-know."""
 network = "host"
 
-# ── GUI: explicit, off by default (§7.5) ──
-[profile.wayland]
-description = "Binds only $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY. Costs: the compositor's client surface."
-rw = ["{xdg_runtime}/{wayland_display}"]
-env = ["WAYLAND_DISPLAY", "XDG_SESSION_TYPE"]
-
-[profile.x11]
-description = """
-DANGEROUS. X11 clients can keylog, screenshot and synthesise input into every OTHER X11
-client on the same display. This is a knowingly-large hole. Costs: your entire desktop
-session's confidentiality and integrity. Requires --i-know."""
-rw = ["/tmp/.X11-unix/X0"]
-ro = ["{home}/.Xauthority"]
-env = ["DISPLAY", "XAUTHORITY"]
-
 # ── containers (§7.2, §8) ──
 [profile.podman-socket]
 description = "A filtering Docker/Podman HTTP proxy over a per-sandbox engine + storage."
@@ -396,7 +381,7 @@ match   = ["~/projects/plainsof/**"]
 
 Profiles are loaded from, in order (all layers merged; **later layers may only add new profile names, never redefine an existing one — a redefinition is a fatal error**):
 
-1. **Embedded builtins** — compiled into the binary. `null`, `sys`, `home`, `cwd-rw`, `dotdot`, `tmp-shared`, `net`, `net-publish`, `net-host`, `wayland`, `x11`, `podman-socket`, `podman-build`, `claude`, `git-ro`, `default`. Always present, cannot be shadowed.
+1. **Embedded builtins** — compiled into the binary. `null`, `sys`, `home`, `cwd-rw`, `dotdot`, `tmp-shared`, `net`, `net-publish`, `net-host`, `podman-socket`, `podman-build`, `claude`, `git-ro`, `default`. Always present, cannot be shadowed.
 2. **`/etc/snug/profiles.d/*.toml`** — site/admin profiles.
 3. **`$XDG_CONFIG_HOME/snug/profiles.d/*.toml`** (default `~/.config/snug/profiles.d/`) — the user's own profiles. **This is the trusted layer.**
 
@@ -417,7 +402,6 @@ SNUG_CONFIG=./snug.toml snug ~/src/proj       # explicit env
 
 - `network = "host"`
 - `podman = "socket"` / `"build"`
-- the `x11` grant (any bind under `/tmp/.X11-unix` or of `~/.Xauthority`)
 - any `rw`/`ro`/`dev` grant whose canonical path escapes `{target}`'s ancestor chain and is not under `/usr`, `/etc`, or `/opt`
 
 A privileged grant appearing in a non-trusted-layer config is a **fatal error** naming the file, the profile, and the grant. To use it, the human must move that profile into `~/.config/snug/profiles.d/`, which is an act of the human on the human's own machine, outside any repository. `--allow-privileged-config` exists as a one-shot escape hatch and prints a loud warning; it is not settable from a file.
@@ -531,7 +515,7 @@ This section is as load-bearing as the filesystem. A sandbox that cannot read `~
 
 **The abstract AF_UNIX bonus, which people forget.** The abstract Unix socket namespace (`\0`-prefixed names, `@/tmp/.X11-unix/X0`, `@/tmp/dbus-*`, and a long tail of application IPC) is **scoped by the network namespace**, not the mount namespace. A sandbox that unshares its mount namespace but keeps the host netns can still `connect()` to every abstract socket on the host — including X11 on many setups, and D-Bus. Filesystem sandboxing does *nothing* about this; there is no path to not-mount. A private netns closes it completely and for free.
 
-Per the guiding principle: this is a **win**, not a limitation. The default `snug` sandbox has no X11, no Wayland, no D-Bus and no host IPC, because it has no netns in common with your session and no sockets bound into its filesystem. If you want a GUI, §7.5 tells you the one word to add and what it costs.
+Per the guiding principle: this is a **win**, not a limitation. The default `snug` sandbox has no X11, no Wayland, no D-Bus and no host IPC, because it has no netns in common with your session and no sockets bound into its filesystem. GUI, audio and D-Bus passthrough are out of scope (§7.5), so this is the permanent state rather than a default awaiting a profile.
 
 **One netns per sandbox.** Sandboxes never share a netns. Sharing would require joining an existing netns from outside (`setns`), which forces either a daemon to own it or a bind-mounted netns path that can leak — and it would let two sandboxes see each other's ports. Per-sandbox netns keeps the whole thing a single process tree with no persistent kernel object.
 
@@ -985,18 +969,25 @@ The session bus is an RPC surface onto your entire desktop: `org.freedesktop.por
 
 A coding agent does not need D-Bus. If a specific need appears, the right answer is a purpose-built proxy for that one interface, designed then, with its own threat model — not a general bus hole. Additionally, the private netns already blocks the abstract-socket path to D-Bus for free (§4.1), so `snug` would have to work to open this hole.
 
-### 7.5 GUI: Wayland and X11 — explicit holes, off by default
+### 7.5 GUI, audio and D-Bus — out of scope
 
-Having no GUI socket is a **feature**. The private netns closes the abstract-socket path and the empty filesystem closes the named-socket path, so the default sandbox has no route to your display server at all. This is stated as a win, not a gap.
+An earlier draft of this section specified `wayland` and `x11` profiles as
+explicit, knowingly-large holes. **That is no longer planned**, and the design
+is removed rather than left sitting here looking like a roadmap item.
 
-For the cases that genuinely need it (a Playwright run, a GUI test suite), `snug` ships two profiles:
+The reasoning is the same as §7.4's for D-Bus, and it generalises: passing a
+display, audio or bus socket into the sandbox either hands over the protocol
+wholesale — X11 in particular has no client isolation at all, so any client can
+keylog and screenshot every other — or requires a filtering proxy for an
+extensible, service-defined interface set. That is a project in its own right,
+and a proxy that is 95% correct is a sandbox that is 0% sound.
 
-- **`wayland`** — binds only `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY` and passes `WAYLAND_DISPLAY`. **Cost:** the sandbox becomes a Wayland client of your compositor — it can create windows and read its own input, and it inherits whatever your compositor's client-isolation model provides (on modern compositors, clients cannot read each other's input or contents, which is why this is the *acceptable* GUI hole).
-- **`x11`** — binds `/tmp/.X11-unix/X<n>` and `~/.Xauthority`. **Cost: your entire desktop session's confidentiality and integrity.** X11 has no client isolation: any client can read every keystroke destined for any other client, screenshot any window, and synthesise input into any window. Granting this to a prompt-injectable agent is granting it your password manager, your terminal, and your browser. `snug` requires `--i-know`, prints a five-line warning naming keylogging and screenshotting explicitly, and `snug --dry-run` renders the profile in red. It exists because refusing to ship it means people run agents outside `snug` instead — but it is a knowingly-large hole and the documentation never softens that.
+The private network namespace already excludes all of them by construction,
+because abstract AF_UNIX sockets are netns-scoped (§4.1). **That is a property
+to preserve, not a gap to close.** A coding agent does not need a display.
 
-`XWayland` is worth noting as the trap: if you grant `wayland` and the sandbox launches an X client, it will find no X socket and fail, which is correct. Do not "fix" that by adding the X socket; if the workload needs X, select `x11` deliberately.
-
----
+If a concrete need ever appears, it should be designed then, for that one
+interface, with its own threat model — not anticipated here.
 
 ## 8. Per-sandbox podman storage
 
@@ -1051,7 +1042,7 @@ The failure mode is real and must be written down: **the target path chooses the
 
 Mitigations `snug` applies:
 
-1. `match` may not select a profile carrying any privileged grant (§2.7). A matched profile may pin `[identity]`, but a profile that also opens `podman`, `net-host`, or `x11` must be named explicitly.
+1. `match` may not select a profile carrying any privileged grant (§2.7). A matched profile may pin `[identity]`, but a profile that also opens `podman` or `net-host` must be named explicitly.
 2. Auto-selection **always** prints one line before launch: `snug: profile 'plainsof' auto-selected by match '~/projects/plainsof/**'; identity gh_user=plainsof, ssh_key=key3…`. Silent credential selection is the actual danger; a visible line makes the mistake self-evident.
 3. Exactly one profile may match; two matches is a fatal error rather than a precedence rule.
 4. `--profile X` always wins over `match`, and `--no-match` disables it.
@@ -1149,7 +1140,7 @@ snug/
 │   ├── builtin.go                  //go:embed profiles/*.toml — the shipped profile set
 │   ├── discover.go                 embedded -> /etc -> XDG; NEVER repo-local (§2.7)
 │   ├── privileged.go               the privileged-grant classifier (§2.7)
-│   └── profiles/*.toml             sys, home, cwd-rw, dotdot, net, claude, podman-*, x11, …
+│   └── profiles/*.toml             sys, home, cwd-rw, dotdot, net, claude, podman-*, …
 │
 ├── internal/policy/                THE CORE. Pure. Imports nothing internal.
 │   ├── types.go                    Access, Kind, Mount, NetPolicy, Identity, Policy, Clamp
@@ -1233,7 +1224,7 @@ snug [flags] [dir] [-- cmd ...]
 | `--read-only` | Clamp: demote every `RW` grant to `RO`. |
 | `--publish PORT` | Add to `NetPolicy.Publish`. Repeatable. |
 | `--no-seccomp` | Human-only weakening (§2.3). |
-| `--i-know` | Required by `net-host`, `x11`, `host-agent`, `--allow-privileged-config`. |
+| `--i-know` | Required by `net-host`, `host-agent`, `--allow-privileged-config`. |
 | `--keep-tmp` | Do not remove the `tmp-shared` directory at teardown. |
 | `-v, --verbose` | Per-decision audit lines from both proxies on stderr. |
 
@@ -1584,7 +1575,7 @@ Topology A (subuid userns + `unshare --net` + engine inside the sandwich netns),
 *Ships:* `docker build` works safely.
 
 **M6 — hardening and ergonomics.**
-`--bind-fd`/`openat2(RESOLVE_BENEATH)` to close the resolve→mount TOCTOU (§3.3); `clone3` filtering via `SECCOMP_RET_USER_NOTIF`; `wayland` and `x11` profiles with their warnings; `snug prune`; shell completion; a `snug --dry-run --json` machine format; `--net-strict`.
+`--bind-fd`/`openat2(RESOLVE_BENEATH)` to close the resolve→mount TOCTOU (§3.3); `clone3` filtering via `SECCOMP_RET_USER_NOTIF`; `snug prune`; shell completion; a `snug --dry-run --json` machine format; `--net-strict`.
 
 ---
 

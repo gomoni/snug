@@ -46,12 +46,13 @@ who says no when a proposed hole is wider than the need.
   the forward binds; binding all interfaces publishes the agent's dev server to
   the LAN.
 
-## GUI sockets
+## Out of scope: GUI, audio, D-Bus
 
-Wayland and X11 access are large, knowingly-accepted holes, never defaults. X11
-in particular gives any client the ability to keylog and screenshot every other
-client on that display — say so in the profile comment, in those words. Prefer
-Wayland (bind only the one socket) and treat X11 as the legacy escape hatch.
+Do not design a passthrough or a proxy for Wayland, X11, PulseAudio or D-Bus.
+Proxying those protocols safely is a project in its own right, and a filtering
+proxy that is 95% correct is a sandbox that is 0% sound. The private netns
+already excludes them by construction. If someone asks for one, the answer is
+that this was decided against — not that it is unimplemented.
 
 ## What you hand back
 
