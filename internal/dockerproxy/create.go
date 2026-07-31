@@ -278,6 +278,44 @@ type mount struct {
 	ReadOnly bool   `json:"ReadOnly,omitempty"`
 }
 
+// handleExecCreate refuses a privileged exec.
+//
+// Found by the redteam agent right after the hijack fix: `containers/{id}/exec`
+// matched the allowlist and was forwarded unexamined, so a client refused
+// `Privileged` at create time could simply ask for it again on the way in —
+// {"Privileged":true,"Cmd":["id"]} reached the engine verbatim.
+//
+// Severity is genuinely low and worth stating so nobody reads this as a
+// second escape: the exec body carries no mount, device or namespace fields, so
+// it reaches no host resource the container did not already have, and the
+// engine is rootless — "privileged" here means capabilities inside a user
+// namespace snug already owns. What it does buy is kernel attack surface and a
+// seccomp profile dropped for that process, and it left create-time and
+// exec-time posture disagreeing about the same word. Cheaper to close than to
+// explain.
+//
+// Everything else about an exec stays forwarded: the container is the sandbox's
+// own, created under this policy, so a shell in it grants nothing that running
+// it did not.
+func (p *Proxy) handleExecCreate(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
+	if err != nil {
+		p.deny(w, "reading request: %v", err)
+		return
+	}
+	req, err := decodeObject(body)
+	if err != nil {
+		p.deny(w, "exec create body: %v", err)
+		return
+	}
+	if v, ok := req["Privileged"]; ok && !isEmptyJSON(v) {
+		p.deny(w, "exec Privileged is not permitted: %s. It is refused at container "+
+			"create, and an exec must not be the way back in", refusalReason["Privileged"])
+		return
+	}
+	p.forward(w, r, body)
+}
+
 // handleVolumeCreate permits only a plain local volume with no driver options.
 //
 // That single rule kills `type=none,o=bind,device=/host`, `device=/dev/*`, and
@@ -337,6 +375,29 @@ func (p *Proxy) handleVolumeCreate(w http.ResponseWriter, r *http.Request) {
 // chose, so any rule for which spelling to keep is a rule about text order —
 // and getting it wrong is silent. There is no legitimate reason for one object
 // to carry both spellings.
+//
+// NON-ASCII KEYS ARE REFUSED, and that line is the load-bearing one.
+//
+// The first version of this function folded with strings.ToLower and its
+// comment asserted that snug's fold and podman's were the same. They are not:
+// encoding/json folds with EqualFold semantics, which additionally unify LONG S
+// (U+017F) with `s` — and `strings.ToLower("Bindſ")` is `"bindſ"`, because ſ is
+// ALREADY lowercase. So `{"HostConfig":{"Bindſ":["/:/host"]}}` missed the
+// canonical lookup AND the collision check, was re-marshalled verbatim, and
+// podman folded it back to Binds and bind-mounted host `/` into the container —
+// which the engine, running as the host uid outside bwrap, was happy to do.
+// checkedMounts never saw a mount at all. Found by the redteam agent within an
+// hour of the ASCII fix landing; reproduced against the proxy with the bytes.
+// (Kelvin sign U+212A is not a bypass — ToLower does fold it to `k`. Long s was
+// the one divergent rune, which is exactly why a rule aimed at one rune would
+// have been the wrong fix.)
+//
+// Refusing non-ASCII is what makes the two folds provably equal rather than
+// approximately equal: over ASCII, ToLower-equality and EqualFold agree by
+// definition. Every key in the docker-compat create schema and in HostConfig is
+// ASCII; non-ASCII text that legitimately appears in a create body (label keys,
+// env values) lives inside RawMessages this function never walks. So the cost
+// is nil and the class — not the rune — is closed.
 func decodeObject(raw []byte) (map[string]json.RawMessage, error) {
 	var in map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &in); err != nil {
@@ -354,6 +415,11 @@ func decodeObject(raw []byte) (map[string]json.RawMessage, error) {
 	out := make(map[string]json.RawMessage, len(in))
 	seen := make(map[string]string, len(in))
 	for _, k := range keys {
+		if !isASCII(k) {
+			return nil, fmt.Errorf("key %q is not ASCII; podman folds non-ASCII letters onto "+
+				"ASCII field names (long s is the letter s) while snug's own comparison does "+
+				"not, so the two would disagree about which field this is", k)
+		}
 		fold := strings.ToLower(k)
 		if prev, dup := seen[fold]; dup {
 			return nil, fmt.Errorf("keys %q and %q differ only in case; podman would read one "+
@@ -368,6 +434,18 @@ func decodeObject(raw []byte) (map[string]json.RawMessage, error) {
 		out[name] = in[k]
 	}
 	return out, nil
+}
+
+// isASCII reports whether every byte is below 0x80. Checked on the raw string
+// rather than by decoding runes: a key is a JSON string and the question is
+// only whether anything outside ASCII is present at all.
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 // canonicalKey maps a case-folded key to the spelling the code below tests

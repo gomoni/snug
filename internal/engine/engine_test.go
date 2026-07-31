@@ -66,31 +66,17 @@ func TestOwnedPIDsMatchesOnlyThisEnginesPaths(t *testing.T) {
 	// Positive control: a process whose command line names our socket. Without
 	// this assertion the negative ones below could pass on a sweep that never
 	// matches anything at all.
-	mine := exec.Command("/bin/sh", "-c", "sleep 30; true", "unix://"+e.sock)
-	if err := mine.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = mine.Process.Kill(); _, _ = mine.Process.Wait() }()
+	mine := marker(t, "unix://"+e.sock)
 
 	// Two things that must NEVER match: the user's own rootless podman, and a
 	// CONCURRENT snug sandbox that resolved to the same store. The store is
 	// shared on purpose (warm start), so it is not an identity.
 	home, _ := os.UserHomeDir()
-	theirs := exec.Command("/bin/sh", "-c", "sleep 30; true",
-		"podman --root "+filepath.Join(home, ".local/share/containers/storage")+
-			" --runroot /run/user/1000/containers system service")
-	if err := theirs.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = theirs.Process.Kill(); _, _ = theirs.Process.Wait() }()
+	theirs := marker(t, "podman --root "+filepath.Join(home, ".local/share/containers/storage")+
+		" --runroot /run/user/1000/containers system service")
 
-	sibling := exec.Command("/bin/sh", "-c", "sleep 30; true",
-		"podman --root "+e.store+" --runroot "+e.runroot+
-			" system service --time 10 unix://"+filepath.Join(filepath.Dir(e.sock), "podman-999999.sock"))
-	if err := sibling.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = sibling.Process.Kill(); _, _ = sibling.Process.Wait() }()
+	sibling := marker(t, "podman --root "+e.store+" --runroot "+e.runroot+
+		" system service --time 10 unix://"+filepath.Join(filepath.Dir(e.sock), "podman-999999.sock"))
 
 	var pids []int
 	for i := 0; i < 100; i++ {
@@ -120,9 +106,65 @@ func TestOwnedPIDsMatchesOnlyThisEnginesPaths(t *testing.T) {
 			"cannot see", mine.Process.Pid, e.store)
 	}
 
-	if excl := ownedPIDs(e.paths(), map[int]bool{os.Getpid(): true, mine.Process.Pid: true}); len(excl) != 0 {
-		t.Errorf("exclusion is not honoured: still got %v", excl)
+	// Exclusion is honoured: the pid named in `exclude` is not returned, and
+	// nothing else under test has crept in.
+	//
+	// It asserts about THESE pids rather than demanding the result be empty,
+	// and the difference is what a CI failure taught. `len(excl) != 0` is a
+	// claim about the whole machine — that no other process anywhere names our
+	// socket — which is not what this test is named for and not something the
+	// code under test controls. It failed once on a GitHub runner with one
+	// unexplained pid, and the message said only "still got [4381]", so the
+	// cause is not known and this comment will not pretend otherwise: the
+	// helpers below no longer fork (one candidate removed) and anything
+	// unexpected is now logged WITH ITS COMMAND LINE, so a recurrence explains
+	// itself instead of costing another round trip.
+	excl := ownedPIDs(e.paths(), map[int]bool{os.Getpid(): true, mine.Process.Pid: true})
+	for _, p := range excl {
+		switch p {
+		case mine.Process.Pid:
+			t.Errorf("exclusion is not honoured: pid %d was named in exclude and returned anyway", p)
+		case theirs.Process.Pid, sibling.Process.Pid:
+			t.Errorf("the sweep claimed pid %d, which does not own this engine's socket:\n%s",
+				p, describe([]int{p}))
+		}
 	}
+	if len(excl) > 0 {
+		t.Logf("note: %d process(es) other than the ones under test name %s:\n%s",
+			len(excl), e.sock, describe(excl))
+	}
+}
+
+// marker starts a process whose command line contains arg and which NEVER
+// FORKS, then blocks until the test ends.
+//
+// The non-forking part is deliberate. The helper used to be
+// `sh -c "sleep 30; true" ARG`, and sh forks to run sleep — between the fork
+// and the exec the child is a copy of sh, command line and marker included, so
+// a /proc sweep can see a second pid carrying our socket. That was the leading
+// theory for the CI failure above and it is NOT confirmed: 40 trials of a tight
+// scan immediately after Start never caught the window on this developer's box.
+// Removing the fork is still right (fewer processes, and one fewer thing the
+// test depends on), it is simply not known to be the cause.
+//
+// `read` is a shell builtin, so this sh runs it in-process and never has a
+// child at all; closing stdin is what ends it.
+func marker(t *testing.T, arg string) *exec.Cmd {
+	t.Helper()
+	c := exec.Command("/bin/sh", "-c", "read x", arg)
+	stdin, err := c.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = c.Process.Kill()
+		_, _ = c.Process.Wait()
+	})
+	return c
 }
 
 // The reaper is the only thing that runs after snug is SIGKILLed, and it is

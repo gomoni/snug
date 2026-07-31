@@ -122,6 +122,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case isContainerCreate(segs):
 		p.handleCreate(w, r)
+	case isExecCreate(segs, r.Method):
+		p.handleExecCreate(w, r)
 	case isVolumeCreate(segs):
 		p.handleVolumeCreate(w, r)
 	case isImageCreate(segs):
@@ -198,6 +200,12 @@ func isContainerCreate(s []string) bool {
 
 func isVolumeCreate(s []string) bool {
 	return len(s) == 2 && s[0] == "volumes" && s[1] == "create"
+}
+
+// isExecCreate matches POST /containers/{id}/exec, which creates an exec
+// instance that exec/{id}/start then runs.
+func isExecCreate(s []string, method string) bool {
+	return method == http.MethodPost && len(s) == 3 && s[0] == "containers" && s[2] == "exec"
 }
 
 func isImageCreate(s []string) bool {

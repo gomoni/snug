@@ -685,6 +685,139 @@ func TestNamespaceModesAreCaseProof(t *testing.T) {
 	}
 }
 
+// REGRESSION (redteam, M4 review): the ASCII case fix above was not enough,
+// and its own comment stated the false premise that caused it.
+//
+// encoding/json folds field names with EqualFold semantics, which unify LONG S
+// (U+017F) with `s`. strings.ToLower does not — ſ is already lowercase — so
+// `{"HostConfig":{"Bindſ":["/:/host"]}}` missed the canonical lookup AND the
+// collision check, was re-marshalled verbatim, and podman folded it back to
+// Binds. The engine runs as the host uid outside bwrap, so that is host `/`
+// mounted into the container with checkedMounts never having seen a mount.
+// Confirmed by the bytes reaching a real engine.
+//
+// The fix refuses non-ASCII keys outright, which is why this test asserts the
+// CLASS rather than the rune.
+func TestNonASCIIKeysCannotSmuggleAField(t *testing.T) {
+	t.Run("the escape as found", func(t *testing.T) {
+		sock, eng, _ := startProxy(t)
+		refuse(t, sock, eng, "/v1.41/containers/create",
+			"{\"Image\":\"alpine\",\"HostConfig\":{\"Bindſ\":[\"/:/host\"]}}", "not ASCII")
+	})
+
+	// Every canonical key containing an s or a k is spellable this way, so the
+	// table is generated from the same list the checks use: a key added to
+	// refusedHostConfig is covered the moment it is added.
+	for fold, canon := range canonicalKey {
+		if !strings.ContainsAny(fold, "sk") {
+			continue
+		}
+		t.Run(canon, func(t *testing.T) {
+			sock, eng, _ := startProxy(t)
+			// Long s for every s, Kelvin sign for every k — the two runes
+			// encoding/json folds onto ASCII letters.
+			for _, variant := range []string{
+				strings.ReplaceAll(canon, "s", "ſ"),
+				strings.ReplaceAll(canon, "S", "ſ"),
+				strings.ReplaceAll(canon, "k", "K"),
+				strings.ReplaceAll(canon, "K", "K"),
+			} {
+				if variant == canon {
+					continue
+				}
+				body := `{"HostConfig":{"` + variant + `":["x"]}}`
+				if canon == "HostConfig" || canon == "Volumes" {
+					body = `{"` + variant + `":{"Privileged":true}}`
+				}
+				refuse(t, sock, eng, "/v1.41/containers/create", body, "not ASCII")
+			}
+		})
+	}
+
+	// CONTROL: an ordinary ASCII body still works. Without it, "non-ASCII is
+	// refused" would be equally true of a proxy that refuses everything.
+	t.Run("control: an ASCII create still succeeds", func(t *testing.T) {
+		sock, _, target := startProxy(t)
+		code, resp := post(t, sock, "/v1.41/containers/create",
+			`{"Image":"alpine","HostConfig":{"Binds":["`+target+`:/w"]}}`)
+		if code != 200 {
+			t.Fatalf("a legitimate create must still work (status %d): %s", code, resp)
+		}
+	})
+}
+
+// The premise decodeObject rests on, asserted directly against encoding/json
+// rather than trusted — because trusting it is precisely what went wrong.
+//
+// The property is NOT "snug's fold equals podman's". Refusing a spelling podman
+// would accept is fine: nothing reaches the engine, and fail-closed is the
+// direction this project errs in. What must never happen is the third case —
+// snug forwards a key under a name it did NOT inspect while encoding/json folds
+// that same key onto a field it acts on. That is the long-s escape exactly, and
+// this assertion fails on it.
+//
+// Written by asking encoding/json itself, so it tracks whatever the standard
+// library's folding does in a future Go rather than a rule copied from its docs.
+func TestSnugNeverForwardsAFieldItDidNotInspect(t *testing.T) {
+	// Binds stands in for every canonical key: the fold is a property of
+	// encoding/json's field matching, not of the field.
+	type probe struct {
+		Binds []string
+	}
+	for _, spelling := range []string{
+		"Binds", "binds", "BINDS", "BiNdS",
+		"Bindſ", "ſinds", "BINDſ", // long s: folded by encoding/json, not by ToLower
+		"Unrelated",
+	} {
+		body := []byte(`{"` + spelling + `":["x"]}`)
+
+		var got probe
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatal(err)
+		}
+		podmanReadsItAsBinds := len(got.Binds) == 1
+
+		m, err := decodeObject(body)
+		switch {
+		case err != nil:
+			// Refused outright: nothing is forwarded, so nothing can be acted on.
+			continue
+		case !podmanReadsItAsBinds:
+			continue
+		default:
+			if _, inspected := m["Binds"]; !inspected {
+				t.Errorf("spelling %q: encoding/json reads it as the Binds field, but snug "+
+					"neither canonicalised it nor refused the request — so it is forwarded "+
+					"under a name no mount check ever looks at, and podman acts on it",
+					spelling)
+			}
+		}
+	}
+}
+
+// REGRESSION (redteam, M4 review): Privileged was refused at create and then
+// available again on the way in. Low severity — the exec body reaches no host
+// resource — but create-time and exec-time must not disagree about one word.
+func TestPrivilegedExecIsRefused(t *testing.T) {
+	sock, eng, _ := startProxy(t)
+
+	refuse(t, sock, eng, "/v1.41/containers/abc/exec",
+		`{"Privileged":true,"Cmd":["id"]}`, "exec Privileged is not permitted")
+
+	// The same body in the spelling the ASCII fix was about.
+	refuse(t, sock, eng, "/v1.41/containers/abc/exec",
+		`{"privileged":true,"Cmd":["id"]}`, "exec Privileged is not permitted")
+
+	// CONTROL: an ordinary exec still works, or `docker exec` is broken and the
+	// refusals above would be equally true of a proxy that blocks exec entirely.
+	before := eng.reached.Load()
+	code, resp := post(t, sock, "/v1.41/containers/abc/exec",
+		`{"Cmd":["id"],"AttachStdout":true}`)
+	if code != 200 || eng.reached.Load() == before {
+		t.Fatalf("an ordinary exec must still reach the engine (status %d): %s", code, resp)
+	}
+}
+
 // Volume create decodes its own body and had the same hole.
 func TestVolumeCreateIsCaseProof(t *testing.T) {
 	sock, eng, _ := startProxy(t)
