@@ -46,9 +46,13 @@ make build
 Useful shapes:
 
 ```bash
-snug ~/src/proj -- make test     # run one command, exit code propagates
-snug -p net ~/src/proj           # ...with internet access
-snug -p git-ro -p net ~/src/proj # ...and your git identity, read-only
+snug ~/src/proj -- make test          # run one command; its exit code propagates
+snug -p net ~/src/proj                # ...with internet access
+snug -p git-ro -p net ~/src/proj      # ...and your git identity, read-only
+snug -p claude -p net ~/src/proj      # Claude Code, its credentials staged (not your host's)
+snug -p podman-socket -p net ~/src/proj  # build and run containers, via a filtering proxy
+snug -p tmp-shared ~/src/proj         # a /tmp that survives, shared with future runs
+snug --dry-run -p net ~/src/proj      # print the policy and the exact bwrap line; start nothing
 ```
 
 `-p` **adds** to the `defaults` setting — a bare `snug <dir>` selects
@@ -106,6 +110,8 @@ $ snug profile dot | dot -Tpng -o profiles.png
 | `net-publish` | As `net`, plus sandbox ports on the host's `127.0.0.1`. |
 | `net-anon` | As `net`, but the sandbox does not learn your LAN address. |
 | `net-host` | **Dangerous.** Shares the host network namespace. Needs `--i-know`. |
+| `claude` | Claude Code: binary and skills read-only, credentials staged as writable copies. |
+| `podman-socket` | Build and run containers, via a filtering proxy over a per-sandbox engine. |
 
 There is deliberately **no `default` profile**. What a bare `snug <dir>` selects
 is the `defaults` *setting*, not a grant:
@@ -198,8 +204,20 @@ with the tests passing.** Each is now a permanent regression test.
 
 ## Status
 
-**M3.** Filesystem isolation, seccomp hardening, networking, and scoped
-git/ssh/gh identity all work. Not built yet: container support.
+**M4.** Filesystem isolation, seccomp hardening, networking, scoped git/ssh/gh
+identity, and container support — a per-sandbox `podman` engine reached through a
+filtering proxy — all work. The engine belongs to one sandbox, dies with it, and
+never touches the host's images or containers.
+
+**Being hardened, and honestly not finished.** The container proxy is the newest
+surface and is treated as such. The in-house red team has already found two
+escapes through it — a create request that smuggles past the filter with an
+`Upgrade:` header, and case-variant JSON keys that slip a denied field past an
+exact-key denylist — and both are recorded, with reproductions, in
+[`TODO.md`](TODO.md) pending the fix. The exposure of `/proc`, `/sys` and `/dev`
+is under a separate audit. The filesystem, network and identity boundaries have
+been through several red-team rounds; the container proxy has not yet, so trust
+it accordingly. TODO.md is the honest ledger of what is known-open.
 
 **Not planned.** Passing through a GUI, audio or D-Bus socket — Wayland,
 PulseAudio, X11 — is out of scope. Proxying those protocols safely is a large
