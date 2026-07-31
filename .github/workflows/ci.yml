@@ -67,25 +67,46 @@ jobs:
           go-version: '1.26'
           check-latest: true
 
-      - name: Install bubblewrap and pasta
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap passt
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
 
-      # snug passes --map-host-loopback, which is THE flag that closes the host's
-      # loopback to the sandbox. It arrived in passt 2024_08_21, and distribution
-      # images can ship something older — Ubuntu 24.04's passt is from February
-      # 2024. On such a runner pasta exits instantly with "unrecognized option",
-      # snug correctly refuses to run the payload, and every -p net test fails
-      # with a different message about the network not coming up. None of them
-      # says "your passt is too old", so this does, once, before the suite runs.
+      # pasta comes from UPSTREAM, not from apt, and that is not a preference.
       #
+      # snug passes --map-host-loopback, which is THE flag that closes the host's
+      # loopback to the sandbox. It arrived in passt 2024_08_21 and Ubuntu
+      # 24.04's passt is from February 2024 — so on a stock runner pasta exits
+      # instantly with "unrecognized option", snug correctly refuses to run the
+      # payload, and the whole integration job failed at the version check. It
+      # had been failing on every push for some time: the job was asserting the
+      # runner was inadequate rather than testing snug.
+      #
+      # These are the upstream static x86_64 builds (no runtime deps, ~200 KB).
+      # Both files are needed: `pasta` dispatches to `pasta.avx2` when the CPU
+      # has it, and without the sibling it prints "Can't run AVX2 build" on
+      # stderr for every single sandbox.
+      #
+      # `latest` is a moving target, deliberately. Pinning a build would go
+      # stale and the version assertion below turns any upstream regression into
+      # a loud failure in this step rather than a confusing one twenty tests
+      # later — which is the same trade snug makes everywhere: no silent
+      # downgrade, and the error names the fix.
+      - name: Install pasta from upstream
+        run: |
+          for f in pasta pasta.avx2; do
+            curl -fsSL --retry 3 -o "$f" "https://passt.top/builds/latest/x86_64/$f"
+          done
+          chmod +x pasta pasta.avx2
+          sudo install -m 0755 pasta pasta.avx2 /usr/local/bin/
+
       # The harness makes the same check (requirePasta) so a developer machine
       # gets the same answer; this step exists so the runner reports it in the
-      # step that installed the package rather than twenty tests later.
+      # step that installed the binary rather than twenty tests later.
       - name: Check pasta is new enough
         run: |
+          command -v pasta
           pasta --version
           if ! pasta --help 2>&1 | grep -q -- --map-host-loopback; then
-            echo "::error::this passt predates --map-host-loopback (2024_08_21); snug cannot close the host loopback on it, so nothing below would be testing what it claims"
+            echo "::error::this pasta predates --map-host-loopback (2024_08_21); snug cannot close the host loopback on it, so nothing below would be testing what it claims"
             exit 1
           fi
 
