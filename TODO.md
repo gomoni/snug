@@ -137,6 +137,75 @@ sides of `{home}/...` grants get canonicalised by `add()`, the guest side does
 not. Fix is one call in `Resolve`. Expect a golden argv diff on any host where
 `$HOME` traverses a symlink — correct, and to be reviewed as a security change.
 
+## Pseudo-filesystem exposure (`/proc`, `/sys`, `/dev`)
+
+Full report: [`docs/PSEUDOFS-AUDIT.md`](docs/PSEUDOFS-AUDIT.md) — deep research +
+live verification against HEAD. Headline: **no escape** (every `/proc` write
+primitive is refused by kernel DAC + zero capabilities), but the **read side of
+`/proc` leaks more than crun's default** and it is snug's to fix. `/sys` is absent
+by construction and `/dev` is a 14-entry synthetic tree with the classic
+device-escape surface missing — both verified, both stronger than the docs say.
+
+Two of the findings are **structural defects that contradict invariant 1 as
+written** and are the highest-value fixes (both are refusals-to-add, not
+restrictions, so both are cheap and invariant-safe):
+
+- **[🔴 structural] A profile can displace the `/proc` and `/dev` builtins.**
+  `mustJoin` (`resolve.go:426`) installs a builtin only if the guest path is
+  unclaimed, so `ro = ["/dev"]` yields `--ro-bind /dev /dev` (250+ host nodes, the
+  host `/dev/shm` with readable contents) and `ro = ["/proc"]` yields the full
+  outer process table. Gated today on the recorded invariant-3 XDG gap, but the
+  payoff of that gap is far larger than its "low severity" note implies. **Fix R1:**
+  a hard `Validate` error on a grant at exactly `/proc` or `/dev`.
+- **[🔴 structural] `rejectMasking` skips non-`KindBind` ancestors**
+  (`validate.go:143`), so a profile *can* mount host content on top of any path
+  inside `/proc`, `/dev` or `/tmp` — `ro = ["/proc/config.gz"]` and
+  `ro = ["/proc/sys"]` both accepted and live. This is the subtraction verb
+  invariant 1 says the grant language cannot express. **Fix R2:** treat mounts
+  strictly beneath a `KindProc`/`KindDev`/`KindTmpfs` mount as masks, and re-key
+  the `KindData` exemption from kind to `provenance == "(builtin)"` (must land with
+  R2, or R3 below hands profiles the verb).
+
+Leak closures snug *could* make (bwrap has no procfs masking options, so each is a
+snug-authored **replacement**, which the author distinction licenses — verified
+feasible with an empty regular file, NOT `/dev/null`, which yields EACCES not
+empty content):
+
+- **[🟠 leak] R3** — empty-file replacements at `/proc/config.gz`, `/proc/keys`,
+  `/proc/key-users` (tier 1, no compat cost; `keys` is what crun/runc mask and snug
+  already seccomp-denies the keyring syscalls); tier 2 is `kallsyms`, `modules`,
+  `interrupts`, `sysrq-trigger`. Print every replacement in `--dry-run`.
+- **[🟠 leak] R4** — `--ro-bind /proc/sys /proc/sys` makes the write side snug's
+  (EROFS) instead of the kernel's; costs nothing, matches crun.
+- **[🟡] R5** — `snug doctor` should read and report the host hardening it silently
+  depends on (`kptr_restrict`, `dmesg_restrict`, `perf_event_paranoid`,
+  `ptrace_scope`, `unprivileged_bpf_disabled`). It checks none today.
+- **[🟡] R6** — refuse a **rw** grant at/under `/sys` (cgroup delegation gives
+  kill/freeze over out-of-sandbox processes); keep **ro** `/sys` expressible.
+- **[🟡] R7** — route `dryrun.go:162`'s hard-coded NOT-GRANTED literal through
+  `covered()`; today it can print `ro /sys` and "never mounted" on one screen, in
+  the one artifact a human trusts. One line.
+- **[🟢] R8** — bound the `/dev`, `/dev/shm`, `/tmp`, `$HOME` tmpfs with `size=`
+  (host-RAM-exhaustion DoS; the engine's own containers already do this).
+- **R9** — batched doc corrections (DESIGN §5.2 `/dev` enumeration and §5.3
+  fingerprint claim, the phantom `[profile.sysfs]`, N5's side-channel list,
+  `podman-socket`'s host-resource claim, the time-namespace fact for CLAUDE.md).
+- **R10** — opt-in `--new-session` for non-interactive payloads (closes the
+  `/dev/tty` OSC-52 channel to the operator's terminal); do **not** filter escape
+  sequences.
+- **R11** — `SECCOMP_RET_ERRNO` on non-native arches instead of ALLOW (the i386
+  path is the only remaining native route toward a writable remount).
+
+Accepted gaps and the full test list (§Disposition) are in the report. **Every
+confirmed finding becomes a named regression test with a positive control before
+its fix lands** — several existing pseudo-fs tests fail the `pasta.avx2` "can this
+test ever fail?" check and are named in the report.
+
+Note: the workflow's `redteam`-typed phase did not spawn (that agent type is not
+in the workflow runner's registry), so this rests on the research agents' own live
+probing plus lead re-verification. A dedicated `redteam` pass over this surface is
+still worth running before a fix lands.
+
 ## Known gaps in what the docs claim
 
 Both are documented where they bite; listed here so they are not forgotten.
