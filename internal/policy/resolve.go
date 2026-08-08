@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -87,9 +88,21 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 		NewSession: ctx.LegacyTIOCSTI,
 	}
 
-	// 3. Fold every profile's grants into map[Guest]Mount. Iteration order over
-	//    `set` is random by construction in Go, which is a feature here: if the
-	//    fold were order-dependent, tests would flake and we would find out.
+	// 3. Fold every profile's grants into map[Guest]Mount, in sorted name order.
+	//
+	//    THE FOLD ORDER MUST NOT BE OBSERVABLE. It is sorted, not randomised, and
+	//    that is a deliberate choice against the obvious alternative: randomising
+	//    it in production would make a resolver bug INTERMITTENT, and a security
+	//    tool that is wrong occasionally is worse than one that is wrong
+	//    reproducibly. Randomness belongs in the test suite, where a shuffle is a
+	//    property test and a flake is a finding — see TestResolveIsCommutative,
+	//    which shuffles 200 selections and compares the whole resolved policy.
+	//
+	//    So sorting here is a determinism device, NOT a tie-break: no resolved
+	//    value may depend on which profile the fold reached first. Every scalar
+	//    below is either a join or a symmetric error for exactly that reason.
+	//    (This comment previously claimed map iteration order was "a feature
+	//    here", three lines above the sort that removed it.)
 	names := make([]string, 0, len(set))
 	for n := range set {
 		names = append(names, n)
@@ -97,7 +110,11 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	sort.Strings(names)
 	p.Profiles = names
 
+	// Which profile last set each non-lattice scalar, so a conflict can name both
+	// sides rather than just reporting that there is one.
 	identityOwner := ""
+	addressOwner, gatewayOwner, mtuOwner := "", "", ""
+	publish := map[int]bool{}
 	pathDirs := map[string]bool{}
 	for _, name := range names {
 		prof := set[name]
@@ -216,15 +233,39 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 			p.Podman = p.Podman.Join(mode)
 		}
 		p.Net.DNS = p.Net.DNS || prof.DNS
-		p.Net.Publish = append(p.Net.Publish, prof.Publish...)
+
+		// Publish is a SET, unioned — not a list appended to. Appending made
+		// `publish = [3000]` in two profiles resolve to [3000 3000] and reach
+		// pasta's -t as a duplicate, and it made the value depend on the fold
+		// order, which the model does not have. DESIGN §2.3 already said "union".
+		for _, port := range prof.Publish {
+			publish[port] = true
+		}
+
+		// address / gateway / mtu are NOT joins: there is no "more permissive"
+		// IP address. They were last-writer-wins, which survived only because the
+		// fold is sorted — the alphabetically later profile won, silently and
+		// arbitrarily. No key in the model may be last-writer-wins, so two
+		// profiles disagreeing is a symmetric error naming both, exactly as
+		// `identity` already is. They are pasta cosmetics either way: they change
+		// which address the sandbox SEES, never what it can reach.
 		if prof.Address != "" {
-			p.Net.Address = prof.Address
+			if p.Net.Address != "" && p.Net.Address != prof.Address {
+				return nil, scalarConflict("network addresses", addressOwner, p.Net.Address, name, prof.Address)
+			}
+			p.Net.Address, addressOwner = prof.Address, name
 		}
 		if prof.Gateway != "" {
-			p.Net.Gateway = prof.Gateway
+			if p.Net.Gateway != "" && p.Net.Gateway != prof.Gateway {
+				return nil, scalarConflict("network gateways", gatewayOwner, p.Net.Gateway, name, prof.Gateway)
+			}
+			p.Net.Gateway, gatewayOwner = prof.Gateway, name
 		}
 		if prof.MTU > 0 {
-			p.Net.MTU = prof.MTU
+			if p.Net.MTU > 0 && p.Net.MTU != prof.MTU {
+				return nil, scalarConflict("MTUs", mtuOwner, p.Net.MTU, name, prof.MTU)
+			}
+			p.Net.MTU, mtuOwner = prof.MTU, name
 		}
 
 		for _, d := range prof.Path {
@@ -248,22 +289,29 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 		}
 	}
 
+	// A set has no order, so the one rendered here is sorted rather than the one
+	// profiles happened to be folded in.
+	if len(publish) > 0 {
+		p.Net.Publish = sortedInts(publish)
+	}
+
 	// 4. Mounts snug authors ITSELF, in every sandbox. /proc needs the pid
 	//    namespace to be meaningful; /dev is bwrap's synthetic minimal set,
 	//    never a bind of the host's (which would hand over every block device
 	//    and input device).
 	//
-	//    Their provenance reads "(snug)" rather than naming a profile, and the
-	//    distinction is the one the invariants turn on: a profile may not mount
-	//    over another profile's grant, snug may replace a path with its own
+	//    Their provenance reads "(snug)" rather than naming a profile, and they
+	//    are Authored — the distinction the invariants turn on: a profile may not
+	//    mount over another profile's grant, snug may replace a path with its own
 	//    generated content. It used to read "(builtin)", which now collides with
 	//    the @-marked builtin PROFILES (policy.Sigil) — two different things one
 	//    word, on the same --dry-run screen.
-	p.mustJoin(Mount{Guest: "/proc", Kind: KindProc, Access: AccessRW, From: []string{"(snug)"}})
-	p.mustJoin(Mount{Guest: "/dev", Kind: KindDev, Access: AccessRW, From: []string{"(snug)"}})
-	if _, ok := p.Mounts["/tmp"]; !ok {
-		p.mustJoin(Mount{Guest: "/tmp", Kind: KindTmpfs, Access: AccessRW, From: []string{"(snug)"}})
-	}
+	//
+	//    /proc and /dev yield to a profile's grant only so Validate can refuse it
+	//    by name (RULE 4); /tmp yields for real, which is how @tmp-shared works.
+	p.yieldTo(Mount{Guest: "/proc", Kind: KindProc, Access: AccessRW, From: []string{"(snug)"}})
+	p.yieldTo(Mount{Guest: "/dev", Kind: KindDev, Access: AccessRW, From: []string{"(snug)"}})
+	p.yieldTo(Mount{Guest: "/tmp", Kind: KindTmpfs, Access: AccessRW, From: []string{"(snug)"}})
 
 	if p.Net.DNS {
 		p.Net.Nameservers = RoutableNameservers(ctx.HostNameservers)
@@ -273,7 +321,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	// so the sandbox learns nothing about which hosts or keys you have.
 	if id := p.Identity; id != nil {
 		if cfg := id.GitConfig(); len(cfg) > 0 {
-			p.replace(Mount{
+			p.Replace(Mount{
 				Guest: home + "/.gitconfig", Kind: KindData, Access: AccessRO,
 				Content: cfg, From: []string{"identity:" + identityOwner},
 			})
@@ -286,19 +334,19 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 			p.Env["GIT_CONFIG_GLOBAL"] = home + "/.gitconfig"
 		}
 		if cfg := id.SSHConfig(home); len(cfg) > 0 {
-			p.replace(Mount{
+			p.Replace(Mount{
 				Guest: home + "/.ssh/config", Kind: KindData, Access: AccessRO,
 				Content: cfg, From: []string{"identity:" + identityOwner},
 			})
 			// The pinned PUBLIC key, so IdentityFile above resolves. Public
 			// material only; the private key never enters the sandbox.
 			if len(ctx.PinnedPubKey) > 0 {
-				p.replace(Mount{
+				p.Replace(Mount{
 					Guest: home + "/" + PubKeyGuest, Kind: KindData, Access: AccessRO,
 					Content: ctx.PinnedPubKey, From: []string{"identity:" + identityOwner},
 				})
 			}
-			p.replace(Mount{
+			p.Replace(Mount{
 				Guest: home + "/.ssh/known_hosts", Kind: KindData, Access: AccessRO,
 				Content: ctx.KnownHosts, From: []string{"identity:" + identityOwner},
 			})
@@ -308,7 +356,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	// /etc/resolv.conf is GENERATED, never bound from the host. The host's may
 	// name 127.0.0.53 (systemd-resolved), which the sandbox must not be able to
 	// reach — and a tmpfs the agent could rewrite would be worse still.
-	p.replace(Mount{
+	p.Replace(Mount{
 		Guest:   "/etc/resolv.conf",
 		Kind:    KindData,
 		Access:  AccessRO,
@@ -397,28 +445,11 @@ func under(canonTarget, p string) (string, bool) {
 	return "", false
 }
 
-// replace installs one of snug's own generated files, recording what it
-// displaced.
-//
-// These writes deliberately bypass `join`: a generated file must win over a
-// profile's bind at the same path — a pinned git identity must not sit beside
-// the host's credential helpers, which is the whole point of generating it. But
-// the displacement was previously SILENT, so selecting `git-ro` alongside an
-// identity profile made git-ro's bind of ~/.gitconfig vanish from the policy
-// with no trace in --dry-run. Found by the sandbox-policy agent's invariant
-// audit.
-//
-// The invariant is unharmed — "adding a profile can never make a path stop
-// being visible" is a statement about PROFILES, and the path stays visible with
-// different content — but a human reading --dry-run deserves to see that their
-// git-ro grant was superseded rather than quietly ignored.
-func (p *Policy) replace(m Mount) {
-	if old, ok := p.Mounts[m.Guest]; ok {
-		m.From = append(append([]string{}, m.From...),
-			"replaces:"+strings.Join(old.From, "+"))
-	}
-	p.Mounts[m.Guest] = m
-}
+// The unexported `replace` that used to live here is now Policy.Replace
+// (types.go), exported and marking Mount.Authored — because the same operation
+// is needed by cmd/snug's staging layer, and three sites there were assigning
+// p.Mounts[...] directly instead, bypassing both the provenance record and
+// Validate.
 
 // forbiddenEnv are code-injection vectors into every process the sandbox
 // launches. This is the one place snug overrides an explicit grant, and it does
@@ -436,9 +467,33 @@ func envOr(e Environ, k, def string) string {
 	return def
 }
 
-// join folds one grant into the policy. This is the whole of the monotonicity
-// argument in code: every outcome is either a permissive-ward join or a
-// symmetric error. There is no branch that lowers Access.
+// join folds one grant into the policy — RULE 1, the same-path rule.
+//
+// Two grants at one guest path join IFF they describe the IDENTICAL node: same
+// Kind, same Host, same Perms, same Content. Then Access joins by max, Optional
+// by AND, From unions. Anything else is a symmetric error naming both profiles
+// and both values, because there is no join between two answers to "what node
+// exists here" — only between two answers to "how much access to it".
+//
+// This is the whole of the monotonicity argument in code: every outcome is
+// either a permissive-ward join or a symmetric error, and there is no branch
+// that lowers Access. `ro` + `rw` STAYS a join for that reason and not for
+// convenience: Access is the only field whose value domain is a semilattice, and
+// DESIGN §2.4's third leg (Resolve(A ∪ B) ⊒ Resolve(A)) is a statement about
+// that lattice. Make differing access fatal and Resolve stops being a total
+// join, at which point monotonicity is something we hope for rather than
+// something the model IS.
+//
+// THE HOST COMPARISON IS NOT GUARDED BY KIND, and that guard was a real hole.
+// For a KindSymlink, Host is the LINK TARGET; `old.Kind == KindBind &&` in front
+// of the comparison meant two profiles pointing one symlink at two different
+// targets silently kept whichever sorted first, and printed BOTH names as the
+// provenance. A user profile called `0shadow` (a digit sorts before `@`) could
+// therefore repoint `@sys`'s `/bin -> usr/bin` at `usr/sbin` while --dry-run
+// read `0shadow+@sys`, as though the two agreed. That is a profile displacing
+// another profile's grant — the thing invariant 1 says is structurally
+// impossible. Host is "" for every kind that has no host side, so comparing it
+// unconditionally is free.
 func (p *Policy) join(m Mount) error {
 	old, ok := p.Mounts[m.Guest]
 	if !ok {
@@ -446,12 +501,29 @@ func (p *Policy) join(m Mount) error {
 		return nil
 	}
 	if old.Kind != m.Kind {
-		return fmt.Errorf("conflict at %s: %s (from %s) vs %s (from %s)",
-			m.Guest, old.Kind, strings.Join(old.From, "+"), m.Kind, strings.Join(m.From, "+"))
+		return fmt.Errorf("conflict at %s: %s (from %s) vs %s (from %s).\n"+
+			"       Two profiles ask for a different kind of node at one path. There is no join\n"+
+			"       between them, so select one of the two, not both.",
+			m.Guest, old.Kind, provenance(old), m.Kind, provenance(m))
 	}
-	if old.Kind == KindBind && old.Host != m.Host {
-		return fmt.Errorf("conflict at %s: bound from %s (by %s) and from %s (by %s)",
-			m.Guest, old.Host, strings.Join(old.From, "+"), m.Host, strings.Join(m.From, "+"))
+	if old.Host != m.Host {
+		if m.Kind == KindSymlink {
+			return fmt.Errorf("conflict at %s: symlink to %s (from %s) and to %s (from %s).\n"+
+				"       A symlink has one target; profiles may only ever grant, so neither may\n"+
+				"       silently repoint the other's. Select one of the two.",
+				m.Guest, old.Host, provenance(old), m.Host, provenance(m))
+		}
+		return fmt.Errorf("conflict at %s: bound from %s (by %s) and from %s (by %s).\n"+
+			"       One guest path, two host sources. Select one of the two profiles.",
+			m.Guest, old.Host, provenance(old), m.Host, provenance(m))
+	}
+	if !samePerms(old.Perms, m.Perms) {
+		return fmt.Errorf("conflict at %s: mode %s (from %s) and %s (from %s)",
+			m.Guest, permString(old.Perms), provenance(old), permString(m.Perms), provenance(m))
+	}
+	if !bytes.Equal(old.Content, m.Content) {
+		return fmt.Errorf("conflict at %s: two different generated contents (from %s and from %s)",
+			m.Guest, provenance(old), provenance(m))
 	}
 	old.Access = old.Access.Join(m.Access)
 	old.Optional = old.Optional && m.Optional
@@ -460,11 +532,42 @@ func (p *Policy) join(m Mount) error {
 	return nil
 }
 
-func (p *Policy) mustJoin(m Mount) {
+// yieldTo installs one of snug's base mounts only where no profile already
+// claimed that guest path. It exists for /tmp, and ONLY /tmp is meant to be
+// yielded: `@tmp-shared` replaces the private tmpfs with a host directory, and
+// stepping aside is how that profile works.
+//
+// /proc and /dev go through it too, and there the yield is a diagnostic device
+// rather than an intention: Validate refuses any non-authored mount at either
+// path (RULE 4), and leaving the profile's grant in place is what lets the
+// refusal NAME the profile that wrote it instead of silently discarding it.
+// This used to be one function called mustJoin serving both intentions at once,
+// which is how "ro = [\"/proc/sys\"]" and a bind at /proc came to be accepted.
+func (p *Policy) yieldTo(m Mount) {
+	m.Authored = true
 	if _, ok := p.Mounts[m.Guest]; !ok {
 		p.Mounts[m.Guest] = m
 	}
 }
+
+func samePerms(a, b *uint32) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func permString(p *uint32) string {
+	if p == nil {
+		return "default"
+	}
+	return fmt.Sprintf("%04o", *p)
+}
+
+// provenance renders a mount's contributing profiles for an error message.
+// Every refusal in this package names BOTH sides, so "it broke" becomes "I know
+// which line to delete".
+func provenance(m Mount) string { return strings.Join(m.From, "+") }
 
 func union(a, b []string) []string {
 	seen := map[string]bool{}
@@ -557,6 +660,26 @@ func expand(reg map[string]*Profile, name string, out map[string]*Profile, stack
 
 // basePATH is what every sandbox gets. Profile `path` entries go in front.
 var basePATH = []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"}
+
+// scalarConflict is the refusal for a key whose value domain is not a
+// semilattice. It names BOTH profiles and BOTH values, so "it broke" becomes "I
+// know which line to delete".
+func scalarConflict(key, ownerA string, a any, ownerB string, b any) error {
+	return fmt.Errorf("profiles %q and %q set different %s (%v and %v); select only one.\n"+
+		"       This key has no permissive direction — there is no \"more open\" address — so snug\n"+
+		"       refuses rather than choosing. Picking one would make the answer depend on the order\n"+
+		"       profiles are folded, and the model has no such order.",
+		ownerA, ownerB, key, a, b)
+}
+
+func sortedInts(m map[int]bool) []int {
+	out := make([]int, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Ints(out)
+	return out
+}
 
 func sortedKeys(m map[string]bool) []string {
 	out := make([]string, 0, len(m))

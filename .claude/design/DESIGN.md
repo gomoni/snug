@@ -201,24 +201,44 @@ The algorithm:
 1. **Expand `include` transitively** into a *set* of profiles (depth-first, cycle-detected). Because the result is a set, `include` is idempotent and diamond includes are harmless.
 2. **Expand path variables** (`{target}`, `{target_parent}`, `{target_ancestor:N}`, `{home}`, `~`) against `ctx`.
 3. **Canonicalise host paths** with `EvalSymlinks`, and lexically clean guest paths.
-4. **Fold the grant multiset into `map[Guest]Mount`** with this join:
+4. **Fold the grant multiset into `map[Guest]Mount`** with this join — **RULE 1, the same-path rule**:
 
 ```
 join(a, b) where a.Guest == b.Guest:
-    if a.Kind != b.Kind          -> ERROR (conflict; report both provenances)
-    if a.Kind == KindBind && a.Host != b.Host -> ERROR (conflict)
-    else                          -> a with Access = a.Access.Join(b.Access)
+    if a.Kind    != b.Kind     -> ERROR (two kinds of node at one path)
+    if a.Host    != b.Host     -> ERROR (bind: two host sources. symlink: two targets.)
+    if a.Perms   != b.Perms    -> ERROR
+    if a.Content != b.Content  -> ERROR
+    else                        -> a with Access = a.Access.Join(b.Access)
                                        Optional  = a.Optional && b.Optional
                                        From      = union(a.From, b.From)
 ```
 
-5. **Join scalars** using each key's declared permissive-ward join (§2.3).
+**Two grants join iff they describe the identical node.** Every error names both profiles and both values, so *"it broke"* becomes *"I know which line to delete"*.
+
+***`ro` + `rw` must stay a join, and the reason is structural, not convenience.*** `Access` is the only field whose value domain is a semilattice; every other field answers *"what node exists here"*, and two answers to that have no join, only an error. §2.4's third leg — `Resolve(A ∪ B) ⊒ Resolve(A)` — is a statement about the access lattice. Make differing access fatal and `Resolve` stops being a total join, at which point monotonicity is no longer something the model *is*, only something we hope it does.
+
+***The `Host` comparison is NOT guarded by kind, and that guard was a real hole.*** It used to read `a.Kind == KindBind && a.Host != b.Host`. For a `KindSymlink`, `Host` **is the link target**, so it was never compared: two profiles pointing one symlink at two different targets silently kept whichever name sorted first, and printed *both* as the provenance. A user profile named `0shadow` (a digit sorts before `@`) could repoint `@sys`'s `/bin -> usr/bin` at `usr/sbin` while `--dry-run` read `0shadow+@sys`, as though the two agreed — a profile displacing another profile's grant, which §2.4 says is structurally impossible. `Host` is `""` for every kind with no host side, so comparing it unconditionally is free.
+
+5. **Join scalars** using each key's declared permissive-ward join, or refuse symmetrically where the key has no permissive direction (§2.3).
 6. **Union the env allowlist**; conflicting explicit `setenv` values are an ERROR.
-7. **Validate** (§3.4). There is no clamp stage: the resolved policy is final (§2.5).
+7. **Validate** (§3.4), which is where the *nesting* rules live: same-path conflicts are settled here, nested ones there. There is no clamp stage: the resolved policy is final (§2.5).
 
 **Why it is commutative:** every fold operation is a commutative, associative, idempotent binary join, or an *error* (which is symmetric). `From` is excluded from equality, so accumulating provenance does not perturb the fixpoint. Emission order is derived from the *result* (§3.2), never from profile order.
 
 **Why it is idempotent:** `join(a, a) == a` for every join used. Selecting `[sys, sys, cwd-rw]` is identical to `[cwd-rw, sys]`.
+
+**Three different orders get conflated, and only one of them exists at runtime.**
+
+| order | status |
+|---|---|
+| *selection* — the order `-p` names profiles | already irrelevant; kept only so `--dry-run` can say "you asked for this" vs "an include pulled it in" |
+| *fold* — the order profiles are visited | sorted by name, and **no resolved value may depend on it**. Sorting is a determinism device, not a tie-break |
+| *emission* — the order mounts reach bwrap's argv | depth-ascending and **load-bearing** (§3.2). A compiler concern that must never surface in the file format |
+
+The fold is **sorted, deliberately not randomised**, and that is the stronger form of the requirement rather than a weaker one: randomising it in production would make a resolver bug *intermittent*, and a security tool that is wrong occasionally is worse than one that is wrong reproducibly. Randomness belongs in the test suite, where a shuffle is a property test and a flake is a finding — `TestResolveIsCommutative` shuffles 200 selections and compares the whole resolved policy, scalars included.
+
+**Selecting a profile twice is already a no-op** for resolution: `expand` builds a *set*. Only the cosmetic `PROFILES` line in `--dry-run` echoes `p.Selected` verbatim, which implies a multiset and an order the model does not have.
 
 ### 2.3 Why scalars do not break monotonicity
 
@@ -227,14 +247,18 @@ The prior generation (`agent-sandbox`) let a profile *override* a scalar, with t
 | Key | Domain | Join | Permissive direction |
 |---|---|---|---|
 | `network` | `isolated < egress < host` | `max` | more reachability |
-| `publish_auto` | `bool` | `OR` | more host visibility |
-| `publish` | `[]int` | union | more ports |
+| `publish` | `[]int` | union (a SET) | more ports |
 | `podman` | `off < socket < build` | `max` | more engine surface |
 | `dns` | `bool` | `OR` | working DNS |
 | `ro` / `rw` / `dev` | path sets | union + `Access.Join` | more access |
 | `env` | name set | union | more variables |
+| `path` | dir set | union, then sorted | more PATH entries (grants nothing) |
 
-**Three keys are not joins, and the code says so even though this section did not: `address`, `gateway` and `mtu` are last-writer-wins.** `Resolve` folds profiles in sorted-name order, so two profiles setting different addresses resolve deterministically (the alphabetically later one wins) and commutativity survives — but the winner is arbitrary, silent, and not "more permissive" in any sense. It is tolerable only because these three are pasta cosmetics: they change which address the sandbox *sees*, never what it can reach. Do not take them as a precedent. Any new scalar that affects reachability must be a genuine join, or an ERROR naming both profiles, which is what `identity` does.
+**No key in the model is last-writer-wins.** Three used to be: `address`, `gateway` and `mtu` took whichever profile the fold reached last. That survived only *because* the fold is sorted — the alphabetically later profile won, arbitrarily and silently — which is precisely the shape of dependence §2.2 says no resolved value may have. There is no "more open" IP address, so these three cannot be joins; two profiles disagreeing is now a **symmetric ERROR naming both profiles and both values**, exactly as `identity` already was. They remain pasta cosmetics — they change which address the sandbox *sees*, never what it can reach — and the refusal costs nothing, because selecting two profiles that each pin a different synthetic address was never a coherent request.
+
+`publish` is a **set**, and appending was a second, smaller version of the same bug: `publish = [3000]` in two profiles resolved to `[3000 3000]` and reached pasta's `-t` as a duplicate, with the rendered order depending on the fold. This table already said "union"; the code now agrees.
+
+**The rule for any new scalar:** a genuine permissive-ward join, or an error naming both profiles. Nothing in between.
 
 Keys that would only ever *weaken* the sandbox in a way profiles must not control — notably `seccomp` — **are not profile keys at all**. `--no-seccomp` is a CLI flag only. A human may weaken; a file may not.
 
@@ -263,6 +287,26 @@ That is the whole pipeline. An earlier design had a *clamp*: a post-resolution s
 What that costs, stated plainly: a read-only project is obtained by not selecting `@cwd-rw` — `snug --no-defaults -p @sys -p @home -p @parent-ro <dir>` — which is verbose on purpose. A read-only cwd is possible but highly nonstandard, and the verbosity is proportionate to how rarely it is wanted.
 
 What it buys: an invariant with no exceptions. "Nothing anywhere reduces what a resolved policy grants" is a property a reader can check by grepping for a demote and finding none, and a test can assert directly (`TestPolicyHasNoRestrictionOperation`). One with a carve-out can only be checked by understanding where the carve-out applies.
+
+#### Visibility is monotone. Effective write access at a strict subpath is not.
+
+That is the honest sentence, and it is written here rather than left implicit because the behaviour exists whether or not it is documented — confirmed against a live sandbox, not inferred from the argv.
+
+**The rule, stated once: the DEEPEST mount covering a path decides what is true at that path.** `join` is keyed by `Mount.Guest`, so it only fires at *identical* paths. Grants at different depths do not join — they become two mounts, and bwrap applies them in depth order (§3.2), so the innermost one wins.
+
+It runs in both directions, and both are load-bearing:
+
+| arrangement | effect | who depends on it |
+|---|---|---|
+| `ro {parent}` + `rw {target}` | target is writable inside a read-only parent | the default selection — `@cwd-rw` over `@parent-ro` |
+| `rw {target}` + `ro {target}/.git` | `.git` is read-only inside a writable target | the arrangement invariant 2 recommends for "X but not Y" |
+| tmpfs `$HOME` + `ro ~/.gitconfig` | a read-only host file inside a writable ephemeral home | `@git-ro`, `@claude`, every generated identity file |
+
+So the second row — a profile *lowering* effective write access at a strict subpath — is not removable without breaking the third. Forbidding "a deeper grant may not be less permissive" would break `@git-ro`, `@claude` and every pinned identity on the first invocation.
+
+**What is and is not conceded by writing this down.** It is a subtraction verb with a spelling (`ro = ["{target}/.git"]` inside a writable target), and §2.5 deleted `--read-only` and `Clamp` precisely so no exception would exist. But the two are not the same act: the clamp moved *the whole policy* down the lattice after resolution, while this is one grant being *more specific* than another. Nothing becomes invisible; the path is still there, still readable, and `rejectMasking` still refuses anything that would hide content (§3.4). A profile that only lowers write access at a path it names is a **nuisance, not an escalation** — and unlike the clamp, it is visible: it is a line in `--dry-run`'s FILESYSTEM block with a profile name next to it, and `--dry-run`'s headline annotation walks the same deepest-mount rule so it cannot report `(writable)` over a demoted subtree, nor `(read-only)` over a writable one.
+
+**Do not read `TestResolveIsMonotone` as proving more than it does.** It compares `Access` per existing `Guest` key, and a deeper key did not exist in the base policy, so it cannot see this at all. `TestDeeperGrantOverridesShallowerAccess` pins the scope explicitly — it exists to stop the first test being over-read.
 
 ### 2.6 Profile file format: TOML
 
@@ -476,6 +520,10 @@ sort.Slice(mounts, func(i, j int) bool {
 
 **Depth-ascending is sufficient and necessary.** Necessary: `--ro-bind /home/u/proj` must precede `--bind /home/u/proj/sub`, or the writable bind is shadowed. Sufficient: the only ordering constraint in a subtraction-free model is containment, and containment implies strictly greater depth. Ties cannot conflict, because two grants at the same `Guest` path were already joined or rejected in §2.2.
 
+**Ordering is a compiler concern and must never surface in the file format.** This is the one place in `snug` where order is load-bearing, and it is computed *from the resolved set* — a set that has no order of its own (§2.2). A TOML key whose meaning depended on where it appeared in the file, or on which profile was named first, would move an argv-generation detail up into the policy model, where it would then have to be reasoned about every time two profiles are composed. `BwrapFlags` is a pure function of the resolved `Policy`: `snug -p a -p b` and `snug -p b -p a` produce byte-identical output, and the golden files assert exactly that.
+
+**This sort is also what makes the deepest-mount rule true** (§2.5): the innermost grant is emitted last, so it is the one in effect at its own path.
+
 **VERIFIED**: `--ro-bind /home/.../cv` followed by `--bind /home/.../cv/snug` yields a read-only parent (`touch ../ZZ` → `Read-only file system`) with a writable child. The reverse order silently loses the writable child, which is why the sort is not optional.
 
 The full phase order:
@@ -520,6 +568,43 @@ Before emitting anything, `Validate()` checks:
 - Symlink hazards (§3.3).
 - At least one of `/usr` or `/bin` is granted, otherwise nothing can execute — reported as *"no runtime granted; add the `@sys` profile"* rather than a confusing `exec: no such file`.
 - `Podman != PodmanOff` implies a topology that can host an engine (§4.4, §8).
+- **RULE 4** — nothing but `snug` may put a node at `/proc` or `/dev` (below).
+- **RULE 2** — nesting, judged on the outer mount (below).
+
+`Validate` is the *only* refuser, which is what lets `--dry-run` render a policy it would not run (`Resolve` returns `(p, err)` for a validation failure and `(nil, err)` for everything else). It is also run **a second time**, in `cmd/snug`, after the staging layer has added the mounts that had to be created on the host first: the staged Claude credentials, the generated `gh` `hosts.yml`, the ssh-agent and container proxy sockets. Those are added after `Resolve` returned, so without the second pass they were never validated at all.
+
+#### RULE 4 — `/proc` and `/dev` are `snug`'s, and a profile may not take them
+
+`snug` authors `/proc`, `/dev` and `/tmp` *after* the profile fold, and yields to whatever is already there. That yield is intended for **`/tmp` only** — `@tmp-shared` replacing the private tmpfs with a host directory is how that profile works. For the other two it was an accident of a single `mustJoin` helper serving two opposite intentions, and it accepted `ro = ["/proc"]`, handing the sandbox the *host's* procfs instead of one bound to its own pid namespace.
+
+The helper is now `yieldTo`, and a non-authored mount at `/proc` or `/dev` is a **refusal** naming the profile. `/proc` and `/dev` still go through the yield rather than being overwritten, for one reason: it lets the error name the profile that did it instead of silently discarding its grant.
+
+#### RULE 2 — nesting is judged on the OUTER mount's content
+
+A grant *inside* another grant is only masking if the outer mount **has content at the inner path**. So the outer kind decides:
+
+| outer | inner allowed? | why |
+|---|---|---|
+| `KindTmpfs` | **yes** | a fresh tmpfs exposes nothing, so nothing can be hidden by mounting inside it |
+| `KindBind` of *H* | **yes** iff the inner is a bind of *H/rel* | re-granting the same tree at stronger access is a superset (`@cwd-rw` over `@parent-ro`); anything else substitutes content |
+| `KindProc`, `KindDev` | **no** | populated by the kernel and by bwrap; a mount inside substitutes host content for kernel content |
+| `KindData` | **no** | a grant beneath a regular file is meaningless |
+| anything | **yes** if the inner is `snug`'s own authored replacement | RULE 3, below |
+
+The `KindTmpfs` row is not a convenience: every shipped profile that exposes a host file into the ephemeral `$HOME` is a bind inside `@home`'s tmpfs — `@git-ro`'s `.gitconfig`, `@claude`'s `settings.json`, every generated identity file — so treating a tmpfs as maskable breaks three profiles on the first invocation.
+
+Only the **nearest** covering mount is consulted. It is the one that actually supplies content at that path, and anything further up was already judged when it was itself the inner mount, because the walk is depth-ascending.
+
+#### RULE 3 — authorship is a FIELD, not a convention
+
+`Mount.Authored` is set **only** by `Policy.Replace`, which is the only permitted writer of `p.Mounts` once `Resolve` has assembled them. `rejectMasking` exempts on `Authored`.
+
+This is the distinction the whole masking rule turns on, restated: **a profile mounting over another profile's grant is masking and is refused; `snug` replacing a path with its own generated content is replacement and is allowed** — the sandbox still sees a node there, just a truthful one, and `Replace` records what it displaced (`identity:work+replaces:@git-ro`) so `--dry-run` says so.
+
+Two spellings of this were tried and are worse:
+
+- ***Exempt `Kind == KindData`.*** True today ("no TOML key produces a `KindData` grant") but a *proxy* for the property that matters, and one that had already drifted: `/proc`, `/dev`, `/tmp` and the proxy sockets are `snug`'s too and are not `KindData`, while a future TOML key producing `KindData` would inherit the exemption for free.
+- ***Exempt `provenance == "(snug)"`.*** Exempts nothing: the authored mounts carry four different provenance strings — `(snug)`, `identity:<name>`, `@claude`, `(containers)` — so a single string match covers none of them and breaks `@claude`.
 
 ---
 

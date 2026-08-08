@@ -259,6 +259,22 @@ func run(cfg config) int {
 	}
 	defer ctrCleanup()
 
+	// Re-validate. Everything above this line ADDS mounts to a policy Resolve
+	// already validated — the staged Claude credentials, the generated gh
+	// hosts.yml, the ssh-agent and container proxy sockets — and it does so after
+	// Resolve returned, so none of it had been through Validate at all. They all
+	// go through policy.Replace and are therefore Authored, which is precisely
+	// what makes them legitimate; running Validate again is how that claim gets
+	// checked rather than asserted. It must be cheap and it must be silent on a
+	// policy that was fine, so a passing run is byte-identical to before.
+	if err := pol.Validate(env); err != nil {
+		if cfg.dryRun {
+			dryRun(pol, pol.BwrapArgs(env.Uid(), env.Gid()), cfg, err)
+		}
+		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
+		return exitPolicy
+	}
+
 	args := pol.BwrapArgs(env.Uid(), env.Gid())
 
 	if cfg.dryRun {

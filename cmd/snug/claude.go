@@ -37,20 +37,23 @@ func claudeFiles(pol *policy.Policy, home string) {
 			return // absent on this host; nothing to stage
 		}
 		guest := filepath.Join(home, rel)
-		m := policy.Mount{
+		// Policy.Replace, never a raw pol.Mounts[...] = assignment: it marks the
+		// mount Authored (which is what exempts it from the masking rule — it is
+		// snug's own content, not a profile mounting over another profile's
+		// grant) and records anything it displaced, so --dry-run still says so.
+		pol.Replace(policy.Mount{
 			Guest: guest, Kind: policy.KindData, Access: policy.AccessRW,
 			Content: data, Perms: &perm, From: []string{"@claude"},
-		}
-		pol.Mounts[guest] = m
+		})
 	}
 	stage(".claude/.credentials.json", 0o600)
 	stage(".claude.json", 0o600)
 
 	guest := filepath.Join(home, ".claude", "CLAUDE.md")
-	pol.Mounts[guest] = policy.Mount{
+	pol.Replace(policy.Mount{
 		Guest: guest, Kind: policy.KindData, Access: policy.AccessRO,
 		Content: claudeGuidance(pol), From: []string{"@claude"},
-	}
+	})
 }
 
 func hasProfile(pol *policy.Policy, name string) bool {

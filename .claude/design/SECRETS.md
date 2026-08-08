@@ -691,6 +691,75 @@ and what stops "the adapter is late" from becoming "so we injected it quietly".
 
 ---
 
+### 3.8 Docker, registries and credentials — POSTPONED, and why it belongs here
+
+**Decision (owner, this session): the registry allowlist is postponed.** Not
+dropped — deferred *into this document*, because it is a credential question
+wearing a network question's clothes, and designing it under `@podman-socket`'s
+networking work would get half of it.
+
+#### The measurement that arrived after §1.3 was written
+
+§1.3 established the sandbox is not offline, via `images/create`. It is worse
+than that. In a sandbox with `@podman-socket` and **no `@net`**:
+
+    SANDBOX DIRECT: blocked - gaierror      # cannot resolve DNS. Correct.
+    pull: 200  create: 201  start: 204  logs: 200
+    CONTAINER REACHED THE INTERNET: True    # wget https://example.com, read back via logs
+
+So it is not a registry-shaped channel at all. A container gets **arbitrary URLs,
+arbitrary payloads, and the response readable back** through `containers/{id}/
+logs`. Containers run in the ENGINE's network namespace, which `base.toml`
+already documents — as an ergonomics footnote about `curl localhost:8080` not
+working, never as a statement about the boundary.
+
+#### The two problems are ORTHOGONAL, and this is the whole point
+
+|  | what it is | what fixes it |
+|---|---|---|
+| **Network** | a container reaches anything the ENGINE can reach | put the engine in the sandbox's netns (TODO MVY5 option 2), or declare it (`include = ["@net"]`) |
+| **Credential** | the engine acts with the HOST's stored registry auth, inherited silently (§1.1 row 6) | point the engine's auth away from the host, or grant registries explicitly |
+
+**Neither fix addresses the other, and it is easy to believe otherwise.**
+
+- Move the engine into the sandbox's netns and a sandbox with `@net` still
+  pushes with *your* credentials. The network became honest; the identity did
+  not.
+- Add a registry allowlist and a container still `wget`s anything on the
+  internet. The identity became bounded; the network did not.
+
+That is why the allowlist waits for this document rather than riding along with
+MVY5: solving it there would produce a narrower version of the wrong problem.
+
+#### What a design here has to answer
+
+1. **Should the engine have ANY host registry credential by default?** The
+   severity model (§2) says no: the authority outlives the sandbox — a pushed
+   artifact persists in the registry after teardown — which is the axis that
+   separates tolerable from never. §3.0 is the honest default: the engine gets a
+   scratch auth file and anonymous pulls work, which is what most builds need.
+2. **If a run needs a private registry, how is it named?** This is the first
+   credential grant that is neither a broker nor an injection: the credential
+   never enters the sandbox (good) but the sandbox directs its use (§1.1 row 6
+   calls this "broker-shaped already, and undocumented"). Candidate shape: an
+   explicit per-profile grant naming registry AND credential source, with
+   `dockerproxy` refusing every other host. Note §5's warning that `allow` lists
+   union across profiles, so a "read-only registry" profile cannot stop a second
+   profile widening it.
+3. **Is `push` separable from `pull`?** Pull is ingress of attacker-chosen
+   content; push is egress of attacker-chosen content *under your identity*.
+   They are not the same risk and the allowlist should probably not treat them
+   as one verb.
+4. **What about the distrobox case**, where the engine is a shim forwarding to
+   the host session and snug controls neither its environment nor its
+   namespaces? Every fix above assumes snug can hand the engine an environment.
+   Where it cannot, the honest answer may be that `@podman-socket` cannot be
+   credential-isolated on such a host, and must say so rather than imply it.
+
+**Cross-references:** `TODO.md` MVY5 (the network half, with its own feasibility
+question about topology A), §1.1 row 6 (the inherited credential, measured),
+§3.7 (registry auth listed as already-brokered-by-accident), §6 (open questions).
+
 ## 4. Principles — a draft that survives the severity model
 
 MVY2's principle text is good and most of it should be kept verbatim. It has one
@@ -837,18 +906,106 @@ Flagged, per the brief. Some extend MVY2's list; the last three are new.
 
 ---
 
-## 6. Open questions — the owner's to decide
+## 6. Decisions — 2026-08-08
 
-**Q1 — which principle text?** Draft A (absolute + a differently-named thing) or
-Draft B (capability vs. credential)? A is cheaper to check by grep; B is what
-the measurements support and does not need a false absolute. This choice
-determines whether `@claude` has to be renamed before the principle can be
-written down truthfully.
+### D1 (was Q1) — Draft B, with the weasel word removed. SETTLED.
 
-**Q2 — is the Anthropic access token, alone, acceptable inside?** The severity
-model says *arguably yes* if and only if the refresh token is stripped and
-`ANTHROPIC_API_KEY` is not passed. This is the owner's risk call, not a
-technical one. It also depends on Q3.
+Draft B wins: state the rule the measurements support rather than an absolute
+with an exception that swallows it. `@claude` therefore does **not** need
+renaming — that was Draft A's entire cost.
+
+The owner's first phrasing was *"credentials SHALL NOT enter the sandbox **if
+possible**"*. `if possible` is struck: it is the only clause nobody can check,
+and it hands every future adapter author the right to decide what "possible"
+means for their own case — the same pressure that would put `@net` in
+`defaults`. The test replaces it. Final text:
+
+> **No credential enters the sandbox. A capability may — under a profile that
+> names it.**
+>
+> A *credential* is a bearer secret that is broad, long-lived, or
+> self-renewing: it can mint further access, and revoking it costs the human
+> something. A *capability* is scoped, independently revocable, and its worst
+> case fits in one sentence. **Which one a given secret is, is measured, not
+> asserted — if you cannot write the blast radius in one sentence, it is a
+> credential.**
+>
+> A capability enters only under an opt-in profile, never in `defaults`, and
+> that profile's TOML carries its abuse sentence and its blast radius.
+> `--dry-run` names every secret the run places inside, and where.
+>
+> **A broker answers from what the policy pinned, not by filtering what the
+> host offers.** Where snug brokers access to a secret, the sandbox can neither
+> enumerate what else exists nor request it: the ssh-agent proxy answers
+> `REQUEST_IDENTITIES` with the pinned key alone and never forwards the
+> question (`internal/sshproxy/proxy.go:139`); `gh`'s `hosts.yml` is generated
+> with one account rather than bound (`cmd/snug/identity.go:192`). Where snug
+> cannot broker and must place a secret inside, it places the smallest form
+> that works, and the profile states what that form still grants.
+
+The last paragraph is a **requirement on brokers, not a description of snug
+today**: `@claude` currently copies `.credentials.json` whole
+(`cmd/snug/claude.go:49`) and so fails its final clause until D2 lands. The
+paragraph earns its place by being the sentence a future adapter fails —
+"forward the request and filter the reply" is the design that always looks
+equivalent and never is; one missed message type and the filter is a sieve.
+
+Surfacing, per the owner: `--dry-run` gets a SECRETS section (per-run: what
+this run places inside, and where — it is the only surface that knows the
+selection). `doctor` gets the static inventory instead: *"profiles installed on
+this host that place a secret inside: …"*, with each one's class and blast
+radius read from its TOML. `doctor` runs before any profile selection exists,
+so it cannot answer the per-run question and must not pretend to.
+
+### D2 (was Q2) — two profiles, access token by default. SETTLED in shape; the size of the box still needs Q3/Q4.
+
+Today `@claude` stages the credential file byte-for-byte, so the sandbox holds
+the refresh token too: ~20 days, self-renewing. That is the row the severity
+model marks **never inject**, so `@claude` as shipped violates D1.
+
+The split, agreed with the owner:
+
+- **`@claude`** — stages `accessToken` only (§3.5's parse-and-project). Hours,
+  non-renewing. The common case, and the default.
+- **`@claude-refresh`** — stages the pair. Abuse sentence: *"a hostile process
+  inside can renew this token for ~20 days and rotate it."* For the overnight
+  agent where re-login is not acceptable.
+
+**Not a boolean in `config.toml`.** A switch that widens what enters the
+sandbox *is* a grant, and config holds preferences and never grants — a boolean
+there would be the first exception, and it would be invisible in `--dry-run`
+and `SNUG_PROFILES`, so you would have to read a host file to know which of the
+two things your sandbox is holding. Same shape as `@net` / `@net-host`: the
+wider grant costs one more word and shows up everywhere the narrow one does.
+
+Bounding facts, verified while deciding this:
+
+- **There is no sync-back** (`cmd/snug/claude.go:31`) — the staged copies are
+  tmpfs and die with the run, deliberately, because writing a host file from
+  sandbox-authored bytes is a channel out. So a token refreshed or re-acquired
+  inside never reaches the host. (The repo's own CLAUDE.md claims the opposite;
+  that is on the truth-telling list.)
+- **`/login` inside the sandbox mints a fresh pair, refresh token included**, so
+  stripping is a speed bump rather than a boundary. Two things bound it: OAuth
+  needs the human's browser session, so re-acquisition is not an autonomous
+  escalation — only one the agent can *ask* for ("your session expired, please
+  log in again"), which is a social-engineering class, not a technical one; and
+  with no sync-back the re-acquired token dies with the sandbox. Blast radius is
+  that sandbox's lifetime, which is why it matters for a long-running agent and
+  not for a 20-minute build.
+
+Still open, and both are measurements rather than decisions: **Q3** (what
+`user:sessions:claude_code` grants — if it reads sessions account-wide, the
+one-sentence blast radius is "read every transcript on this account" and the
+remaining access token is a credential, not a capability) and **Q4** (does
+Claude Code run at all with `refreshToken` absent; does `/login` complete
+headless; what happens at the ~8 h boundary — fail cleanly, or hang. If it
+hangs, `@claude-refresh` is not a convenience but a requirement for anything
+long-running).
+
+---
+
+## 6a. Open questions — the owner's to decide
 
 **Q3 — what does `user:sessions:claude_code` grant? [unmeasured]** If it reads
 Claude Code sessions across the account, the access token's A4 is "read every

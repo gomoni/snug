@@ -125,7 +125,7 @@ func startIdentity(pol *policy.Policy, verbose, iKnow bool) (cleanup func(), err
 			cleanup()
 			return nil, fmt.Errorf("ssh_mode = \"host-agent\" but no agent is running on the host")
 		}
-		pol.BindSocket(upstream, "/run/snug/ssh-agent.sock")
+		pol.BindSocket(upstream, "/run/snug/ssh-agent.sock", "(identity)")
 
 	case policy.SSHAgentProxy:
 		if id.SSHKey == "" {
@@ -145,7 +145,7 @@ func startIdentity(pol *policy.Policy, verbose, iKnow bool) (cleanup func(), err
 		go p.Serve()
 		inner := cleanup
 		cleanup = func() { p.Close(); inner() }
-		pol.BindSocket(sock, "/run/snug/ssh-agent.sock")
+		pol.BindSocket(sock, "/run/snug/ssh-agent.sock", "(identity)")
 	}
 
 	pol.Env["SSH_AUTH_SOCK"] = "/run/snug/ssh-agent.sock"
@@ -193,10 +193,10 @@ func stageGhConfig(pol *policy.Policy, id *policy.Identity) {
 		host, tok, user)
 
 	perm := uint32(0o600)
-	pol.Mounts[dir+"/hosts.yml"] = policy.Mount{
+	pol.Replace(policy.Mount{
 		Guest: dir + "/hosts.yml", Kind: policy.KindData, Access: policy.AccessRW,
 		Content: []byte(hosts), Perms: &perm, From: []string{"(identity)"},
-	}
+	})
 	pol.Env["GH_CONFIG_DIR"] = dir
 	pol.Env["GH_HOST"] = host
 }

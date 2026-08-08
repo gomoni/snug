@@ -13,6 +13,7 @@ package policy
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // Access is a total order joined by max. More access always wins, which is what
@@ -94,6 +95,24 @@ type Mount struct {
 	// `snug explain` only and is deliberately NOT part of equality — otherwise
 	// accumulating it would perturb the fixpoint and break idempotence.
 	From []string
+
+	// Authored marks a mount snug wrote ITSELF rather than one a profile
+	// granted, and it is the distinction the masking rule turns on: a profile
+	// mounting over another profile's grant is MASKING and is refused, while
+	// snug replacing a path with its own generated content is REPLACEMENT and is
+	// allowed (the sandbox still sees a node there, just a truthful one).
+	//
+	// It is a FIELD rather than a convention because the previous spelling of
+	// the same idea — "exempt Kind == KindData" — was a proxy that had already
+	// drifted: /proc, /dev, /tmp and the ssh-agent socket are snug's too and are
+	// not KindData, while a future TOML key producing KindData would have
+	// inherited the exemption for free. Keying on provenance would be worse
+	// still: the strings are "(snug)", "identity:<name>", "@claude" and
+	// "(containers)", so no single match covers them.
+	//
+	// Set ONLY by Policy.Replace, which is the only permitted writer of p.Mounts
+	// once Resolve has returned. Nothing a profile can write reaches it.
+	Authored bool
 }
 
 // Policy is the single computed, immutable object. It is the sole author of the
@@ -178,18 +197,54 @@ func (p *Policy) Implied() []string {
 	return out
 }
 
+// Replace installs one of snug's OWN mounts, marking it Authored and recording
+// what it displaced. It is the ONLY way to write p.Mounts once Resolve has
+// assembled them — inside Resolve for the generated identity files and
+// /etc/resolv.conf, and in cmd/snug for the things that must be created on the
+// host before they can be granted (proxy sockets, staged credentials).
+//
+// These writes deliberately bypass `join`: a generated file must win over a
+// profile's bind at the same path — a pinned git identity must not sit beside
+// the host's credential helpers, which is the whole point of generating it. But
+// the displacement must not be SILENT: selecting `@git-ro` alongside an identity
+// profile used to make git-ro's bind of ~/.gitconfig vanish from the policy with
+// no trace in --dry-run, so the provenance carries "replaces:<what it displaced>".
+//
+// The invariant is unharmed — "adding a profile can never make a path stop being
+// visible" is a statement about PROFILES, and the path stays visible with
+// different content — but a human reading --dry-run deserves to see that their
+// grant was superseded rather than quietly ignored.
+//
+// Every caller that used to assign p.Mounts[g] directly (cmd/snug's claude and
+// gh staging, BindSocket) now routes through here, which is what makes
+// Mount.Authored true of exactly the things snug wrote.
+func (p *Policy) Replace(m Mount) {
+	m.Authored = true
+	if old, ok := p.Mounts[m.Guest]; ok {
+		m.From = append(append([]string{}, m.From...),
+			"replaces:"+strings.Join(old.From, "+"))
+	}
+	p.Mounts[m.Guest] = m
+}
+
 // BindSocket grants a host socket at a fixed guest path, after the policy is
 // resolved. It is how the CLI hands the sandbox something it had to create
-// first — an ssh-agent proxy socket, say — and it is deliberately the only way
-// to add a grant post-resolution, so the set of such things stays countable.
+// first — an ssh-agent proxy socket, say — and it is deliberately one of the
+// two post-resolution writers (the other being Replace, which it uses), so the
+// set of such things stays countable.
+//
+// `from` is the provenance the socket appears under in --dry-run. It is a
+// parameter because it used to be hard-coded "(identity)", which made the
+// CONTAINER socket — a completely different hole, granted by @podman-socket —
+// read as though the identity machinery had opened it.
 //
 // It bypasses no check that matters: the path is snug's own choice under
 // /run/snug, not a profile's, and the socket is one snug just created.
-func (p *Policy) BindSocket(hostPath, guestPath string) {
-	p.Mounts[guestPath] = Mount{
+func (p *Policy) BindSocket(hostPath, guestPath, from string) {
+	p.Replace(Mount{
 		Guest: guestPath, Host: hostPath, Kind: KindBind,
-		Access: AccessRW, From: []string{"(identity)"},
-	}
+		Access: AccessRW, From: []string{from},
+	})
 }
 
 // PodmanMode is a total order joined by max: more engine surface wins.

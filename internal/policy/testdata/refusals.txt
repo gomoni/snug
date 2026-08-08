@@ -1,0 +1,81 @@
+# MVY1 refusals — a table of (profile selection -> exact refusal text).
+# Regenerate with: go test ./internal/policy -update
+# Every case here used to be ACCEPTED; read TODO.md's MVY1 findings before
+# changing any line below — a change here is a change to the security boundary.
+
+== symlink_conflict_different_targets ==
+conflict at /custom/tool: symlink to vendor-a (from link-a) and to vendor-b (from link-b).
+       A symlink has one target; profiles may only ever grant, so neither may
+       silently repoint the other's. Select one of the two.
+
+== symlink_cannot_repoint_sys_bin ==
+conflict at /bin: symlink to usr/sbin (from 0shadow) and to usr/bin (from @sys).
+       A symlink has one target; profiles may only ever grant, so neither may
+       silently repoint the other's. Select one of the two.
+
+== join_conflict_different_content ==
+conflict at /generated: two different generated contents (from gen-a and from gen-b)
+
+== join_conflict_different_perms ==
+conflict at /generated: mode 0600 (from gen-a) and 0644 (from gen-b)
+
+== grant_at_root_tmpfs ==
+profile takeroot puts an empty tmpfs at /, but the sandbox root is snug's own:
+       it is already an empty tmpfs, and the masking rule cannot see inside a grant
+       at / — nothing above it can be judged. Grant the paths you meant instead.
+
+== grant_at_root_ro ==
+profile takeroot puts a bind of /opt at /, but the sandbox root is snug's own:
+       it is already an empty tmpfs, and the masking rule cannot see inside a grant
+       at / — nothing above it can be judged. Grant the paths you meant instead.
+
+== grant_at_exactly_proc ==
+profile claim puts a bind of /opt at /proc, but /proc is snug's own: it must be a fresh procfs bound to the sandbox's OWN pid namespace, or the sandbox reads the host's process table.
+       Whatever a profile puts there displaces it, so this is a hole no profile may
+       open. Remove the grant at /proc from profile claim.
+
+== grant_at_exactly_dev ==
+profile claim puts a bind of /opt at /dev, but /dev is snug's own: it must be bwrap's synthetic minimal device set, never a bind of the host's (which hands over every block device and every input device).
+       Whatever a profile puts there displaces it, so this is a hole no profile may
+       open. Remove the grant at /dev from profile claim.
+
+== grant_strictly_inside_proc ==
+profile nest puts a bind of /opt at /proc/sys, which is inside /proc — a pseudo-filesystem the kernel and bwrap populate, not a grant any profile made.
+       That hides what /proc already exposes there, and substitutes host content for kernel
+       content: it must be a fresh procfs bound to the sandbox's OWN pid namespace, or the sandbox reads the host's process table.
+       Remove the grant at /proc/sys.
+
+== grant_strictly_inside_dev ==
+profile nest puts a bind of /opt at /dev/null, which is inside /dev — a pseudo-filesystem the kernel and bwrap populate, not a grant any profile made.
+       That hides what /dev already exposes there, and substitutes host content for kernel
+       content: it must be bwrap's synthetic minimal device set, never a bind of the host's (which hands over every block device and every input device).
+       Remove the grant at /dev/null.
+
+== grant_strictly_inside_resolv_conf ==
+profile nest puts a bind of /opt at /etc/resolv.conf/x, which is inside /etc/resolv.conf — a generated FILE (from (snug)).
+       A grant beneath a file is meaningless: nothing can be mounted inside a regular file.
+       Remove the grant at /etc/resolv.conf/x.
+
+== scalar_conflict_address ==
+profiles "addr-a" and "addr-b" set different network addresses (10.0.0.2/24 and 10.0.0.3/24); select only one.
+       This key has no permissive direction — there is no "more open" address — so snug
+       refuses rather than choosing. Picking one would make the answer depend on the order
+       profiles are folded, and the model has no such order.
+
+== scalar_conflict_gateway ==
+profiles "gw-a" and "gw-b" set different network gateways (10.0.0.1 and 10.0.0.9); select only one.
+       This key has no permissive direction — there is no "more open" address — so snug
+       refuses rather than choosing. Picking one would make the answer depend on the order
+       profiles are folded, and the model has no such order.
+
+== scalar_conflict_mtu ==
+profiles "mtu-a" and "mtu-b" set different MTUs (1400 and 9000); select only one.
+       This key has no permissive direction — there is no "more open" address — so snug
+       refuses rather than choosing. Picking one would make the answer depend on the order
+       profiles are folded, and the model has no such order.
+
+== poststaging_nested_grant_under_later_replace ==
+profile hostile puts a bind of /opt at /home/u/.claude.json/evil, which is inside /home/u/.claude.json — a generated FILE (from @claude).
+       A grant beneath a file is meaningless: nothing can be mounted inside a regular file.
+       Remove the grant at /home/u/.claude.json/evil.
+

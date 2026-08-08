@@ -104,6 +104,18 @@ func testRegistry() map[string]*Profile {
 		// but the resolver must still handle include-only profiles, so the fake
 		// registry keeps one.
 		"combo": {Name: "combo", Include: []string{"@sys", "@cwd-rw", "@parent-ro"}},
+		// Carries the SCALARS, so the commutativity and idempotence property
+		// tests actually exercise them now that canon() renders them. Without a
+		// fixture setting one, widening canon() would assert nothing: the
+		// last-writer-wins bug in address/gateway/mtu was invisible to
+		// TestResolveIsCommutative for exactly that reason. Kept off testDefaults
+		// so the goldens still describe the sandbox a real user gets.
+		"netty": {Name: "netty", Network: "egress", DNS: true, Publish: []int{4000, 3000},
+			Address: "10.13.13.2/24", Gateway: "10.13.13.1", MTU: 1400, Podman: "socket"},
+		// Same values, different name: two profiles agreeing on a scalar must
+		// join, not conflict, whichever order they are folded in.
+		"netty-too": {Name: "netty-too", Network: "egress", Publish: []int{3000},
+			Address: "10.13.13.2/24"},
 	}
 }
 
@@ -134,10 +146,17 @@ func mustResolve(t *testing.T, sel ...string) *Policy {
 
 // canon renders the security-relevant content of a policy: the grants and their
 // access. Provenance is excluded, exactly as it is from the join.
+//
+// It covers the SCALARS as well, and that is not decoration. It used to render
+// Mounts and Env only, so TestResolveIsCommutative could not see a break in
+// Net.Address, Net.Publish, Identity or Podman — and three of those were
+// last-writer-wins at the time, decided by which profile the sorted fold reached
+// last. A commutativity test that does not render a field does not test it.
 func canon(p *Policy) string {
 	var b strings.Builder
 	for _, m := range p.SortedMounts() {
-		fmt.Fprintf(&b, "%s %s %s %s optional=%v\n", m.Guest, m.Kind, m.Access, m.Host, m.Optional)
+		fmt.Fprintf(&b, "%s %s %s %s optional=%v authored=%v\n",
+			m.Guest, m.Kind, m.Access, m.Host, m.Optional, m.Authored)
 	}
 	keys := make([]string, 0, len(p.Env))
 	for k := range p.Env {
@@ -147,6 +166,12 @@ func canon(p *Policy) string {
 	for _, k := range keys {
 		fmt.Fprintf(&b, "env %s=%s\n", k, p.Env[k])
 	}
+	fmt.Fprintf(&b, "net mode=%s dns=%v publish=%v nameservers=%v address=%s gateway=%s mtu=%d\n",
+		p.Net.Mode, p.Net.DNS, p.Net.Publish, p.Net.Nameservers,
+		p.Net.Address, p.Net.Gateway, p.Net.MTU)
+	fmt.Fprintf(&b, "podman %s\n", p.Podman)
+	fmt.Fprintf(&b, "identity %+v\n", p.Identity)
+	fmt.Fprintf(&b, "profiles %v\n", p.Profiles)
 	return b.String()
 }
 
@@ -155,7 +180,7 @@ func canon(p *Policy) string {
 // Resolve must be commutative. If it is not, the order profiles are named
 // changes what the sandbox grants, and "profiles only relax" becomes unprovable.
 func TestResolveIsCommutative(t *testing.T) {
-	all := []string{"@sys", "@home", "@cwd-rw", "@parent-ro", "cwd-ro"}
+	all := []string{"@sys", "@home", "@cwd-rw", "@parent-ro", "cwd-ro", "netty", "netty-too"}
 	want := canon(mustResolve(t, all...))
 
 	rng := rand.New(rand.NewSource(1))
@@ -688,6 +713,106 @@ func TestRetiredNullProfileNamesTheFix(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unknown profile") {
 		t.Errorf("a genuinely unknown profile should say so plainly: %v", err)
+	}
+}
+
+// ── MVY1: positive controls for the nesting rules ───────────────────────────
+//
+// The rules Validate now enforces (RULE 2, RULE 4) are permissive in three
+// shipped arrangements, and a future tightening must not be able to break any
+// of them silently. Each of these pins one arrangement directly, with a fake
+// fixture shaped exactly like the real profile it stands in for — so it needs
+// no host state and runs the same everywhere. See refusals_test.go for the
+// negative side of the same rules.
+
+// @git-ro and @claude both bind host FILES inside @home's writable tmpfs
+// ({home}/.gitconfig, {home}/.claude/settings.json, ...). RULE 2 must keep
+// allowing a bind nested inside a KindTmpfs mount, or every identity file and
+// every @claude grant breaks on the first invocation. An earlier draft of the
+// rule (R2 in the findings report) would have included KindTmpfs among the
+// masking outer kinds; this is the test that draft would have failed.
+func TestNestedBindInsideHomeTmpfsIsAllowed(t *testing.T) {
+	reg := testRegistry()
+	reg["id-file"] = &Profile{Name: "id-file", Include: []string{"@home"}, RO: []string{"/opt:{home}/.gitconfig"}}
+
+	p, err := Resolve(reg, []string{"@sys", "@cwd-rw", "id-file"}, testCtx(), newFakeEnv())
+	if err != nil {
+		t.Fatalf("a bind INSIDE @home's tmpfs must stay legal — @git-ro and @claude depend on "+
+			"it for every identity and credential file they expose: %v", err)
+	}
+	m, ok := p.Mounts["/home/u/.gitconfig"]
+	if !ok || m.Kind != KindBind || m.Host != "/opt" {
+		t.Fatalf("the nested grant did not survive resolution: %+v", p.Mounts["/home/u/.gitconfig"])
+	}
+}
+
+// The real @sys profile (internal/profile/profiles/base.toml) binds
+// /usr/share/ca-certificates a SECOND time, nested inside its own /usr bind —
+// same profile, same underlying host tree, deeper guest path. RULE 2's
+// KindBind row must keep allowing that: "yes iff the inner is a bind of
+// H/rel". This mirrors the real shape with a fake host tree, so it does not
+// depend on ca-certificates actually existing on the machine running the test.
+func TestSysStyleNestedBindOfTheSameTreeIsAllowed(t *testing.T) {
+	env := newFakeEnv()
+	env.dirs["/usr/share/ca-certificates"] = true
+
+	reg := testRegistry()
+	sys := *reg["@sys"]
+	sys.RO = append(append([]string(nil), sys.RO...), "/usr/share/ca-certificates")
+	reg["@sys"] = &sys
+
+	p, err := Resolve(reg, []string{"@sys", "@cwd-rw"}, testCtx(), env)
+	if err != nil {
+		t.Fatalf("a bind nested inside another bind of the SAME host tree, from the SAME "+
+			"profile, must stay legal — this is @sys's own shape: %v", err)
+	}
+	m, ok := p.Mounts["/usr/share/ca-certificates"]
+	if !ok || m.Access != AccessRO {
+		t.Fatalf("nested grant did not survive resolution: %+v", p.Mounts["/usr/share/ca-certificates"])
+	}
+}
+
+// publish is a SET, unioned — not a list appended to. `publish = [3000]` in
+// two profiles used to resolve to [3000 3000], reaching pasta's -t as a
+// duplicate and depending on fold order for WHICH copy survived where. Two
+// profiles agreeing on an address, and one repeating a port the other already
+// named, must join cleanly rather than conflict or duplicate.
+func TestPublishUnionsAndAddressesAgree(t *testing.T) {
+	p := mustResolve(t, "@sys", "@cwd-rw", "netty", "netty-too")
+
+	if p.Net.Address != "10.13.13.2/24" {
+		t.Errorf("address = %q, want 10.13.13.2/24 — two profiles agreeing on a scalar must join, not conflict", p.Net.Address)
+	}
+
+	want := []int{3000, 4000}
+	if len(p.Net.Publish) != len(want) {
+		t.Fatalf("publish = %v, want %v — repeating a port across profiles must not duplicate it", p.Net.Publish, want)
+	}
+	for i, v := range want {
+		if p.Net.Publish[i] != v {
+			t.Errorf("publish = %v, want %v", p.Net.Publish, want)
+		}
+	}
+}
+
+// BindSocket's provenance used to be hard-coded "(identity)" for every socket
+// it granted, so the CONTAINER socket — a completely different hole, opened by
+// @podman-socket — read in --dry-run as though the ssh identity machinery had
+// granted it. `from` is now a parameter; this pins both call shapes.
+func TestBindSocketProvenanceIsParameterized(t *testing.T) {
+	p := mustResolveDefaults(t)
+	p.BindSocket("/run/host/podman.sock", "/run/snug/containers.sock", "(containers)")
+
+	m, ok := p.Mounts["/run/snug/containers.sock"]
+	if !ok {
+		t.Fatal("BindSocket did not install a mount")
+	}
+	if len(m.From) != 1 || m.From[0] != "(containers)" {
+		t.Errorf("provenance = %v, want [(containers)] — a hard-coded \"(identity)\" would "+
+			"misattribute the container hole to the ssh identity machinery", m.From)
+	}
+	if !m.Authored {
+		t.Error("BindSocket must mark its mount Authored: it is snug's own socket, not a profile's grant")
 	}
 }
 

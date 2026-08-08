@@ -47,7 +47,12 @@ func startContainers(pol *policy.Policy, verbose bool) (cleanup func(), err erro
 	}
 	go p.Serve()
 
-	pol.BindSocket(sock, containerSocketGuest)
+	// Provenance is "(containers)", not "(identity)". BindSocket used to hard-code
+	// the latter, so the container socket — a completely different hole, opened by
+	// @podman-socket — read in --dry-run as though the ssh identity machinery had
+	// granted it. A trust artifact that misattributes a grant is worse than one
+	// that omits it.
+	pol.BindSocket(sock, containerSocketGuest, "(containers)")
 	// podman's own CLI reads CONTAINER_HOST; DOCKER_HOST is set too so anything
 	// speaking the compat API finds the same proxy. snug targets podman.
 	pol.Env["CONTAINER_HOST"] = "unix://" + containerSocketGuest
