@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -58,6 +59,17 @@ func loadUserConfig() userConfig {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
+		// Only "there is no config file" is a non-event. Every OTHER read error
+		// — unreadable mode, EIO, a dangling symlink — used to return the empty
+		// config, which silently WIDENS the sandbox back to the built-in four
+		// while `snug config` reports the source as "built-in". `chmod 000` on a
+		// file saying `defaults = []` produced a full default sandbox. A parse
+		// error was already fatal; a read error must be too, for the same reason
+		// (invariant 5: no silent downgrade).
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "snug: %s: %v\n", path, err)
+			os.Exit(exitPolicy)
+		}
 		return cfg
 	}
 	dec := toml.NewDecoder(strings.NewReader(string(data)))
@@ -113,8 +125,17 @@ func configCmd(args []string) int {
 	if source != "built-in" {
 		origin = "from " + source
 	}
-	shown := strings.Join(names, " ")
-	if shown == "" {
+	// Test the LIST, not the rendered string: `defaults = [""]` joined to "" and
+	// displayed as the empty selection, so `snug config` — the "what is in
+	// effect" command — showed neither the file nor reality. The run then failed
+	// with `unknown profile ""`. Quote each name so an empty or space-bearing
+	// one is visible rather than invisible.
+	quoted := make([]string, len(names))
+	for i, n := range names {
+		quoted[i] = strconv.Quote(n)
+	}
+	shown := strings.Join(quoted, " ")
+	if len(names) == 0 {
 		// `defaults = []` is a legitimate, explicit choice: the empty selection,
 		// same floor `--no-defaults` reaches. Say so rather than printing a
 		// blank line that reads like the value failed to load.

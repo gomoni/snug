@@ -187,6 +187,14 @@ func run(cfg config) int {
 	if need, err := needsHostTmpDir(reg, selected); err != nil {
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 		return exitPolicy
+	} else if need && cfg.dryRun {
+		// Name it, do not create it. A dry run that leaves a directory behind
+		// contradicts its own first line, and the path is all --dry-run needs to
+		// show what would be mounted. The ownership and symlink checks below the
+		// MkdirAll are deliberately NOT run here: they inspect host state a dry
+		// run has not touched, and failing on them would make --dry-run refuse a
+		// policy the real run might well accept.
+		hostTmp = hostTmpDirPath(abs)
 	} else if need {
 		hostTmp, err = prepareHostTmpDir(abs)
 		if err != nil {

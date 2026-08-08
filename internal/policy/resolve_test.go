@@ -829,3 +829,36 @@ func TestRelativeProfilePathIsRefused(t *testing.T) {
 		t.Errorf("unhelpful error: %v", err)
 	}
 }
+
+// TestAUserProfileNamedNullBeatsTheRetiredTable — MVY0 red team. `null` is a
+// perfectly legal name for a profile someone defines on their own host, and the
+// retired table used to be consulted FIRST, so `snug profile show @null` told
+// that user their profile did not exist and lectured them about a builtin they
+// had never heard of. A name is only retired when nothing on this host defines
+// it.
+func TestAUserProfileNamedNullBeatsTheRetiredTable(t *testing.T) {
+	reg := testRegistry()
+	reg["null"] = &Profile{Name: "null", Source: "/home/u/.config/snug/profiles.d/mine.toml"}
+
+	err := UnknownProfile(reg, "@null")
+	if err == nil {
+		t.Fatal("@null must still be an error — the sigil marks a profile snug ships")
+	}
+	if strings.Contains(err.Error(), "--no-defaults") {
+		t.Errorf("with a user profile named null present, @null must point at THEIR profile, "+
+			"not recite MVY0's reasoning about a builtin they never had: %v", err)
+	}
+	for _, want := range []string{"one of yours", "mine.toml"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error should contain %q so the user can find their own file: %v", want, err)
+		}
+	}
+
+	// CONTROL: with NO user profile of that name, the retired message must
+	// survive intact. Without this, the fix above could have deleted the retired
+	// table's only reason to exist and this file would not notice.
+	if err := UnknownProfile(testRegistry(), "@null"); err == nil ||
+		!strings.Contains(err.Error(), "--no-defaults") {
+		t.Errorf("control: with no user profile named null, @null must still name the fix: %v", err)
+	}
+}

@@ -1003,6 +1003,59 @@ headless; what happens at the ~8 h boundary — fail cleanly, or hang. If it
 hangs, `@claude-refresh` is not a convenience but a requirement for anything
 long-running).
 
+### D3 (was Q10) — no extensibility mechanism. YAGNI. SETTLED.
+
+The owner's ruling: **ignore third parties and extensibility.** No plugin API,
+no adapter registry, no generic description format — "it'll be much clearer how
+the declarative description will look like" once there is more than one real
+adapter to generalise from, and inventing the shape before then is guessing.
+
+Two options were on the table and both are dropped for now:
+
+- **Executable plugins — dropped, and not only on YAGNI.** An adapter runs on
+  the HOST, reads the host's secrets, and decides what enters the sandbox: the
+  most privileged position in the system, strictly above a profile, which can
+  only name paths. Plugins would load from `~/.config/snug/plugins.d` — the same
+  layer invariant 3 already admits is trusted unconditionally, so pointing
+  `XDG_CONFIG_HOME` at a checked-out repo loads it. Today that hole yields
+  profile grants; with plugins it would yield host code execution with the
+  user's credentials. If this is ever revisited, invariant 3's designed gate
+  (explicit `--config`, privileged grants refused from untrusted layers) is a
+  PREREQUISITE, not a follow-up.
+- **Declarative descriptions — deferred, not rejected.** A third party
+  contributing *data* ("this tool reads config from $X, these fields, this env
+  var repoints it") and snug's generator doing the work is the safe half of the
+  idea: reviewable, diffable, cannot execute. It is what `.gitconfig` and
+  `hosts.yml` already are, hard-coded. Revisit when there is a third adapter to
+  generalise from; the shape will be obvious then and is not now.
+
+**What this does NOT settle, and must not be mistaken for settled.** Q10's
+original worry was the opposite pressure from the one YAGNI answers. YAGNI stops
+snug building a *general mechanism* speculatively; it does nothing to stop snug
+accreting *one-off adapters*, because each one is individually justified at the
+moment it is proposed ("we need gh today"). That is precisely how this becomes
+an integration project with a security story attached.
+
+So there is no numeric cap, but there is a **bar every proposed adapter must
+clear before it is written**, and it is the D-Bus test the project already
+applies:
+
+1. Can the tool's credential handling be expressed in a handful of rules a human
+   can read and verify? If not, it gets §3.1 (vendor-side scoping — a narrow
+   token the user mints) and no code. A filtering proxy that is 95% correct is a
+   sandbox that is 0% sound, and a vendor-API adapter is the same species.
+2. Is the tool's config format one the vendor is likely to change under us?
+   `gh` rewriting `hosts.yml` on first use cost real time. Cost is accepted only
+   where the alternative is a leak.
+3. The failure mode of a missing or broken adapter is **"that tool has no
+   credentials inside"** — a hard, visible error. **Never** a fallback to
+   injection. A fallback path is how deadline pressure reopens a closed hole.
+
+Also unchanged by D3: **profiles are already the extension point.** Anyone can
+write one in `profiles.d` today and stage their own credential with their own
+abuse sentence, no snug code and no API. What they cannot do is *broker* — and
+brokering is the part that needs snug to be involved at all.
+
 ---
 
 ## 6a. Open questions — the owner's to decide

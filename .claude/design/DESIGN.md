@@ -726,7 +726,7 @@ Failure at any step before (4) means `snug` closes `B` unwritten and kills `bwra
 > The consequence is live and user-visible: with `@podman-socket` and no `@net`,
 > `--dry-run` prints "No egress" while a container reaches the whole internet,
 > because the engine is on the host and its containers get the host's network.
-> Tracked as MVY5. **Verified feasible** — see `.claude/design/MVY5.md` for the
+> **Verified feasible** — see `.claude/design/ENGINE-NETNS.md` for the
 > experiment, including the parts of the plan below that turned out to be wrong.
 > Read the paragraphs beneath as a *proposal*, not a description.
 

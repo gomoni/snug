@@ -618,7 +618,16 @@ var retiredProfiles = map[string]string{
 // `snug -p sys`, `snug profile show sys` and `include = ["sys"]` inside a
 // user's own file all say the same thing.
 func UnknownProfile(reg map[string]*Profile, name string) error {
-	if msg, retired := retiredProfiles[strings.TrimPrefix(name, Sigil)]; retired {
+	// The user's OWN profiles are checked before the retired table, not after.
+	// `null` is a perfectly legal name for a profile someone defines, and the
+	// table used to preempt it: `snug profile show @null` told that user their
+	// profile did not exist, pointing them at MVY0's reasoning about a builtin
+	// they had never heard of. A retired name is only retired when nothing on
+	// this host defines it.
+	bare := strings.TrimPrefix(name, Sigil)
+	_, mineBare := reg[bare]
+	_, mineMarked := reg[name]
+	if msg, retired := retiredProfiles[bare]; retired && !mineBare && !mineMarked {
 		return fmt.Errorf("%s", msg)
 	}
 	if _, ok := reg[Sigil+name]; ok {

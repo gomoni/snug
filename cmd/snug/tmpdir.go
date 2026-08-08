@@ -46,9 +46,17 @@ func needsHostTmpDir(reg profile.Registry, selected []string) (bool, error) {
 // is a way to get the sandbox to write somewhere it was never granted. Refuse
 // rather than repair, because a surprising directory here means something on
 // the host is already wrong.
-func prepareHostTmpDir(target string) (string, error) {
+// hostTmpDirPath is the name alone, with no side effect. Split out so --dry-run
+// can render the exact path it WOULD use without creating it: `--dry-run` says
+// "It starts no process and creates no file", and this was the one place that
+// was false — `--dry-run -p @tmp-shared` left a /tmp/snug-* behind.
+func hostTmpDirPath(target string) string {
 	sum := sha256.Sum256([]byte(target))
-	path := filepath.Join(os.TempDir(), fmt.Sprintf("snug-%d-%s", os.Getuid(), hex.EncodeToString(sum[:])[:12]))
+	return filepath.Join(os.TempDir(), fmt.Sprintf("snug-%d-%s", os.Getuid(), hex.EncodeToString(sum[:])[:12]))
+}
+
+func prepareHostTmpDir(target string) (string, error) {
+	path := hostTmpDirPath(target)
 
 	fi, err := os.Lstat(path)
 	switch {
