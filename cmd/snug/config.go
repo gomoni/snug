@@ -28,7 +28,14 @@ type userConfig struct {
 	//
 	// The names are written exactly as they are selected: snug's own carry the
 	// @ mark (`@sys`), a profile from profiles.d does not.
-	Defaults []string `toml:"defaults"`
+	//
+	// A POINTER, deliberately: `defaults = []` must mean "replace the built-in
+	// list with nothing" (equivalent to always running --no-defaults), not
+	// "the key was absent". A plain []string cannot tell an explicit empty list
+	// from an unset one, since both decode to len 0 — that told a user's
+	// written `defaults = []` a lie by silently widening it back to the
+	// built-in four.
+	Defaults *[]string `toml:"defaults"`
 }
 
 func configPath() string {
@@ -67,8 +74,8 @@ func loadUserConfig() userConfig {
 // called `default` any more: the built-in list is a preference (see
 // profile.BuiltinDefaults), and a config file replaces it wholesale.
 func defaultProfiles() (names []string, source string) {
-	if c := loadUserConfig(); len(c.Defaults) > 0 {
-		return c.Defaults, configPath()
+	if c := loadUserConfig(); c.Defaults != nil {
+		return *c.Defaults, configPath()
 	}
 	return profile.BuiltinDefaults(), "built-in"
 }
@@ -106,7 +113,14 @@ func configCmd(args []string) int {
 	if source != "built-in" {
 		origin = "from " + source
 	}
-	fmt.Printf("defaults         %s\n", strings.Join(names, " "))
+	shown := strings.Join(names, " ")
+	if shown == "" {
+		// `defaults = []` is a legitimate, explicit choice: the empty selection,
+		// same floor `--no-defaults` reaches. Say so rather than printing a
+		// blank line that reads like the value failed to load.
+		shown = "(none — every run starts from the empty floor, same as --no-defaults)"
+	}
+	fmt.Printf("defaults         %s\n", shown)
 	fmt.Printf("                 %s\n", origin)
 	fmt.Println()
 	fmt.Println("`defaults` is what a bare `snug <dir>` selects. Setting it in the config file")

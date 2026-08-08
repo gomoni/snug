@@ -17,6 +17,13 @@ package profile
 // switched back on by accident, and a default that opens a hole contradicts the
 // guiding principle. `snug -p @net` is one word.
 //
+// There is deliberately no `@null` profile either (MVY0), for the same reason
+// there is no `[profile.default]`: a profile that grants nothing is a
+// preference wearing a profile's clothes. The floor of the lattice is not
+// something a file needs to name — it is what Resolve computes from an empty
+// selection, reached directly with `--no-defaults`, which declines this list
+// entirely rather than adding a no-op profile to work around it.
+//
 // The names carry the @ mark because these ARE the builtins (policy.Sigil). A
 // user replacing this list in config.toml writes their own names without one.
 //

@@ -38,6 +38,19 @@ func (p *Policy) Validate(env Environ) error {
 	}
 
 	switch {
+	case !hasRuntime && !hasTarget && len(p.Profiles) == 0:
+		// Nothing was selected AT ALL — not "a profile that happens to grant
+		// nothing", there is no such profile any more (see @null's removal,
+		// MVY0). This is the lattice floor: /proc, /dev, /tmp and
+		// /etc/resolv.conf, and no KindBind anywhere. It is the correct result
+		// of resolving an empty selection, and it is also --no-defaults's exact
+		// destination — say so, since that is the flag whoever got here typed
+		// (or the one their config.toml's `defaults = []` reaches silently).
+		return fmt.Errorf("no profile selected: this is the floor of the lattice — an empty tmpfs "+
+			"root, no OS runtime, no target — and nothing can run in it.\n"+
+			"       This is what --no-defaults selects.\n"+
+			"       Try:  snug %s          (uses the default profile selection)\n"+
+			"       See:  snug profile list", p.Target)
 	case !hasRuntime && !hasTarget:
 		return fmt.Errorf("the selected profiles (%s) grant nothing: no OS runtime to execute, "+
 			"and no writable target.\n"+

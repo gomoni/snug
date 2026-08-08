@@ -24,7 +24,7 @@ keyctl, perf_event_open, userfaultfd, TIOCSTI and nested user namespaces. The
 flag list travels through a memfd, and inherited descriptors are sealed CLOEXEC.
 Networking is a private netns per sandbox with a pasta helper: full egress, host
 loopback unreachable, abstract sockets (X11/D-Bus) unreachable. Offline is the
-absence of the `@net` profile. Profiles: `@null`, `@sys`, `@home`,
+absence of the `@net` profile. Profiles: `@sys`, `@home`,
 `@cwd-rw`, `@parent-ro`, `@tmp-shared`, `@git-ro`, `@net`, `@net-anon`,
 `@net-host`, `@claude`, `@podman-socket`, `@podman-build` — the `@` marks a profile
 snug ships, and nothing else may wear it. There is deliberately **no `@default`
@@ -468,6 +468,11 @@ meant. It cannot prove the sandbox holds.
   entirely. The list is `@sys @home @cwd-rw @parent-ro` — enough that snug is
   usable by just running it — and `@net` must never join it, because offline is the
   *absence* of a profile and that is what stops it being switched on by accident.
+  For the same reason there is no `@null` profile either: a profile that grants
+  nothing is a preference wearing a profile's clothes, and the floor of the
+  lattice is not something a file needs to name — it is what `Resolve` computes
+  from an empty selection, reachable directly with `snug --no-defaults`.
+  `-p @null` is a retired name that errors, naming `--no-defaults` (MVY0).
 - **The directory is positional, not `-C`.** `go -C` and `make -C` mean "go
   somewhere else, then do the usual thing"; for snug the directory *is* the
   thing being sandboxed, like `git clone <url>`. Defaults to `.`.

@@ -104,6 +104,15 @@ var (
 // every other invocation observed locally.
 const cmdTimeout = 30 * time.Second
 
+// exitPolicyCode mirrors cmd/snug's unexported exitPolicy (main.go). Repeated
+// here rather than imported: this package cannot see it (it is unexported in
+// package main, and this suite deliberately drives the built binary rather
+// than linking against it — see the package doc above), so a change to the
+// exit-code scheme in main.go and a change to the number below are two
+// separate edits. If cmd/snug ever changes what exitPolicy means, the tests
+// that use this constant are exactly what should go red.
+const exitPolicyCode = 77
+
 // waitDelay bounds Wait() AFTER the process has gone.
 //
 // os/exec gives a Cmd whose Stdout is not an *os.File a pipe, and Wait blocks
@@ -2153,6 +2162,122 @@ func TestRepoLocalConfigIsNeverAutoLoaded(t *testing.T) {
 	}
 	if strings.Contains(r.out, "root") || strings.Contains(r.out, "boot") {
 		t.Errorf("the sandbox root looks like the host's:\n%s", r.out)
+	}
+}
+
+// ── MVY0: kill @null, keep --no-defaults ────────────────────────────────────
+//
+// TODO.md's MVY0 findings: there is no @null profile any more — a profile
+// that grants nothing is a preference, not a grant, and the lattice floor it
+// used to name is what an empty selection already resolves to. Reaching the
+// floor is now --no-defaults, not `-p @null`.
+
+// @null is retired, not merely unknown, and both routes that used to reach it
+// must say so by name rather than "see: snug profile list". Mirrors
+// TestRetiredPublishAutoIsAHardError's shape (internal/profile/file_test.go),
+// which does the same for a retired TOML key — this is the CLI-level half of
+// TestRetiredNullProfileNamesTheFix (internal/policy/resolve_test.go), which
+// pins the same message at the policy.UnknownProfile call site directly.
+func TestRetiredNullProfileIsANamedError(t *testing.T) {
+	budget(t)
+	proj, _ := target(t)
+
+	// POSITIVE CONTROL: a real builtin, through both entry points, works and
+	// exits 0. Without this, "exit 77" below could be true of a snug binary
+	// that refuses every `-p` and every `profile show` for unrelated reasons.
+	if out, code := cli(t, nil, "--dry-run", "-p", "@sys", proj); code != 0 {
+		t.Fatalf("control: -p @sys should be accepted, got %d:\n%s", code, out)
+	}
+	if out, code := cli(t, nil, "profile", "show", "@sys"); code != 0 {
+		t.Fatalf("control: `snug profile show @sys` should succeed, got %d:\n%s", code, out)
+	}
+
+	out, code := cli(t, nil, "--dry-run", "-p", "@null", proj)
+	if code != exitPolicyCode {
+		t.Errorf("`-p @null` should exit %d, got %d:\n%s", exitPolicyCode, code, out)
+	}
+	if !strings.Contains(out, "--no-defaults") {
+		t.Errorf("the refusal should point at --no-defaults:\n%s", out)
+	}
+
+	out, code = cli(t, nil, "profile", "show", "@null")
+	if code != exitPolicyCode {
+		t.Errorf("`snug profile show @null` should exit %d, got %d:\n%s", exitPolicyCode, code, out)
+	}
+	if !strings.Contains(out, "--no-defaults") {
+		t.Errorf("the refusal should point at --no-defaults:\n%s", out)
+	}
+}
+
+// The structural guard for Resolve's riskiest change (see its doc comment):
+// on a Validate failure it now returns the refused policy ALONGSIDE the error,
+// precisely so --dry-run can show what would have run. The one non-test
+// caller (cmd/snug/main.go) must never let that non-nil policy reach
+// sandbox.Run regardless. If it ever did, this is the test that would catch
+// it — not by inspecting the code, but by trying to make the refused policy
+// actually do something and checking that it did not.
+func TestRefusedPolicyIsNeverExecuted(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	// POSITIVE CONTROL: the identical command, with the default profile
+	// selection, actually executes and prints the marker. Without this, "no
+	// MARKER" below could mean the payload never runs at all, on any
+	// selection — which would make the refusal below vacuous.
+	r := run(t, nil, proj, "echo MARKER").mustRun(t)
+	if !strings.Contains(r.out, "MARKER") {
+		t.Fatalf("control: with the defaults selected the payload must run and print MARKER:\n%s", r.out)
+	}
+
+	// --no-defaults resolves to the floor: no OS runtime, no target, and
+	// Validate refuses it. The exit code has to be exitPolicyCode AND the marker
+	// has to be absent — either one alone is a weaker claim than the pair:
+	// a wrong exit code with no marker printed could still be a policy that
+	// silently degraded to something narrower but still running, and a right
+	// exit code alongside a printed marker would be exactly the escape this
+	// test exists to catch.
+	out, code := cli(t, nil, "--no-defaults", proj, "--", "/bin/echo", "MARKER")
+	if code != exitPolicyCode {
+		t.Errorf("--no-defaults should refuse with exit %d, got %d:\n%s", exitPolicyCode, code, out)
+	}
+	if strings.Contains(out, "MARKER") {
+		t.Fatalf("REGRESSION: a policy Validate refused still executed the payload:\n%s", out)
+	}
+}
+
+// --dry-run must be able to show a REFUSED policy — that is the entire point
+// of Resolve returning (p, err) instead of (nil, err) on a Validate failure —
+// but it must still exit non-zero, and the argv it prints must be the FLOOR's,
+// not the default sandbox's.
+func TestDryRunShowsARefusedPolicy(t *testing.T) {
+	budget(t)
+	proj, _ := target(t)
+
+	// POSITIVE CONTROL: with the defaults, --dry-run succeeds and the argv
+	// genuinely mounts /usr. Without this, "no --ro-bind /usr" below could be
+	// true of a --dry-run that never renders any argv at all.
+	out, code := cli(t, nil, "--dry-run", proj)
+	if code != 0 {
+		t.Fatalf("control: --dry-run with the defaults should succeed, got %d:\n%s", code, out)
+	}
+	if !strings.Contains(out, "--ro-bind /usr") {
+		t.Fatalf("control: expected --ro-bind /usr in the default argv:\n%s", out)
+	}
+
+	out, code = cli(t, nil, "--dry-run", "--no-defaults", proj)
+	if code != exitPolicyCode {
+		t.Errorf("--dry-run --no-defaults should still exit %d (refused, not runnable), got %d:\n%s",
+			exitPolicyCode, code, out)
+	}
+	if !strings.Contains(out, "--proc /proc") {
+		t.Errorf("the refused policy's argv should still show the floor's --proc /proc:\n%s", out)
+	}
+	if !strings.Contains(out, "--remount-ro /") {
+		t.Errorf("the refused policy's argv should still show --remount-ro /:\n%s", out)
+	}
+	if strings.Contains(out, "--ro-bind /usr") {
+		t.Errorf("the floor must not grant /usr:\n%s", out)
 	}
 }
 

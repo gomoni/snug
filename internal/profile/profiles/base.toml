@@ -17,12 +17,6 @@
 # and it stays true because no file can claim it and no builtin can miss it.
 # `include` is rewritten with the names, so write those bare as well.
 
-# ── the lattice floor ────────────────────────────────────────────────────────
-# Grants nothing. `snug explain -p null <dir>` prints the true empty base, which
-# is the fastest way to understand the model. It will not run a shell, by design.
-[profile.null]
-description = "Nothing. The floor of the lattice."
-
 # ── the OS runtime ───────────────────────────────────────────────────────────
 # ABUSE: the sandbox can read every world-readable file in /usr and the few /etc
 # entries below. It gains no authority it did not already have — snug runs as

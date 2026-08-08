@@ -48,6 +48,28 @@ func TestRetiredPublishAutoIsAHardError(t *testing.T) {
 	}
 }
 
+// TestNoNullProfileShips pins MVY0's headline claim on its own, separate from
+// TestBuiltinsLoad's broader sweep: @null must be absent from the builtin
+// registry. The positive control matters — without it, a registry that failed
+// to embed anything at all (a broken go:embed, say) would pass this trivially,
+// the exact shape CLAUDE.md's pasta.avx2 lesson warns about: a check that
+// cannot fail is worse than no check.
+func TestNoNullProfileShips(t *testing.T) {
+	reg, err := builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// CONTROL: if @sys is missing too, the registry did not load and the
+	// assertion below is vacuous.
+	if _, ok := reg["@sys"]; !ok {
+		t.Fatal("@sys is missing; the registry failed to load, so the absence of @null below proves nothing")
+	}
+	if _, ok := reg["@null"]; ok {
+		t.Error("@null ships as a builtin; a profile that grants nothing is a preference " +
+			"(profile.BuiltinDefaults / --no-defaults), not a grant (MVY0)")
+	}
+}
+
 func TestKnownKeysParse(t *testing.T) {
 	src := `
 [profile.x]
@@ -103,23 +125,24 @@ func TestBuiltinsLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"@null", "@sys", "@home", "@cwd-rw", "@parent-ro"} {
+	for _, want := range []string{"@sys", "@home", "@cwd-rw", "@parent-ro"} {
 		if _, ok := reg[want]; !ok {
 			t.Errorf("builtin profile %q is missing", want)
 		}
 	}
-	// There is deliberately no profile called `default`. What a bare
-	// `snug <dir>` selects is the `defaults` SETTING, not a grant — a profile
-	// that grants nothing was still appearing in SNUG_PROFILES and in every
-	// Mount's provenance as though it were a hole in the sandbox, and it
-	// duplicated an idea config.toml already expressed. Reintroducing it would
-	// bring back two mechanisms for one idea.
+	// There is deliberately no profile called `default`, and (MVY0) no profile
+	// called `null` either — for the same reason: a default SELECTION is a
+	// preference (profile.BuiltinDefaults), and the lattice floor is what
+	// Resolve computes from an empty selection, not a grant either name would
+	// have to be. Both kept appearing in SNUG_PROFILES and in every Mount's
+	// provenance as though granting something were the point.
 	if _, ok := reg["@default"]; ok {
 		t.Error("a builtin profile named `@default` is back; the default SELECTION is a " +
 			"preference (profile.BuiltinDefaults), not a profile")
 	}
-	if len(reg["@null"].RO)+len(reg["@null"].RW)+len(reg["@null"].Tmpfs) != 0 {
-		t.Error("the @null profile must grant nothing; it is the floor of the lattice")
+	if _, ok := reg["@null"]; ok {
+		t.Error("a builtin profile named `@null` is back; the lattice floor is what Resolve " +
+			"computes from an empty selection (--no-defaults), not a profile that has to name it")
 	}
 	for name, p := range reg {
 		for _, g := range append(append([]string{}, p.RO...), p.RW...) {

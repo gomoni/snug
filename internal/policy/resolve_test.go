@@ -67,12 +67,19 @@ func (f *fakeEnv) Gid() int               { return 1000 }
 // mirror the real ones, sigil included (policy.Sigil): the resolver treats a
 // name as opaque, but SNUG_PROFILES and every provenance string end up in the
 // goldens, and a golden describing names no user ever types is a golden nobody
-// can review. The two unmarked entries are deliberate — they play the part of a
-// profile written in ~/.config/snug/profiles.d, which is exactly where a
-// composition point like `combo` belongs.
+// can review. The unmarked entries (`nothing`, `cwd-ro`, `combo`) are
+// deliberate — they play the part of a profile written in
+// ~/.config/snug/profiles.d, which is exactly where a composition point like
+// `combo`, or a fixture that grants nothing without being `@null`, belongs.
 func testRegistry() map[string]*Profile {
 	return map[string]*Profile{
-		"@null": {Name: "@null"},
+		// Unmarked deliberately: there is no @null builtin (MVY0) — a profile
+		// that grants nothing is a preference, not something snug ships. This
+		// fixture plays the part of a hand-written profiles.d entry that
+		// happens to grant nothing, which TestFailsClosed still needs to
+		// exercise "profiles selected but nothing granted" separately from
+		// "nothing selected at all".
+		"nothing": {Name: "nothing"},
 		"@sys": {Name: "@sys",
 			RO:       []string{"/usr", "/etc", "/opt"},
 			Optional: []string{"/opt"},
@@ -297,7 +304,7 @@ func TestFailsClosed(t *testing.T) {
 		{"no profile", nil, nil, "no profile selected"},
 		{"unknown profile", []string{"nope"}, nil, "unknown profile"},
 		{"no runtime granted", []string{"@cwd-rw"}, nil, "no OS runtime granted"},
-		{"grants nothing", []string{"@null"}, nil, "grant nothing"},
+		{"grants nothing", []string{"nothing"}, nil, "grant nothing"},
 		{"target not visible", []string{"@sys"}, nil, "is not visible"},
 		{"missing target", testDefaults, func(c Context) Context {
 			c.Target = "/home/u/nope"
@@ -594,6 +601,93 @@ func TestPATHIsOrderIndependent(t *testing.T) {
 		if !strings.Contains(one.Env["PATH"], want) {
 			t.Errorf("PATH = %q, missing %q", one.Env["PATH"], want)
 		}
+	}
+}
+
+// ── MVY0: @null is retired, and the floor it used to name has no profile ────
+
+// The lattice floor, asserted directly. Before this test, deny-by-default was
+// only ever INFERRED — from the absence of a leak somewhere else. Resolve's
+// "other" return contract (see its doc comment) applies here: an empty
+// selection is refused by Validate, but the non-nil policy it returns
+// alongside the error must be EXACTLY the four things Resolve authors itself,
+// and nothing a profile could have granted.
+func TestEmptySelectionResolvesToTheFloor(t *testing.T) {
+	p, err := Resolve(testRegistry(), nil, testCtx(), newFakeEnv())
+	if p == nil {
+		t.Fatal("Resolve(nil selection) returned a nil policy; --dry-run would have nothing " +
+			"to show for a refused selection")
+	}
+	if err == nil {
+		t.Fatal("Resolve(nil selection) returned no error; the floor must still be refused by Validate")
+	}
+
+	want := map[string]bool{"/proc": true, "/dev": true, "/tmp": true, "/etc/resolv.conf": true}
+	if len(p.Mounts) != len(want) {
+		t.Fatalf("floor has %d mount(s), want exactly %d: %v", len(p.Mounts), len(want), mountGuests(p))
+	}
+	for g := range want {
+		if _, ok := p.Mounts[g]; !ok {
+			t.Errorf("floor is missing %s", g)
+		}
+	}
+	for _, m := range p.Mounts {
+		if m.Kind == KindBind {
+			t.Errorf("floor contains a KindBind mount at %s (from %s); an empty selection "+
+				"must grant nothing from the host — that is deny-by-default itself, not "+
+				"something inferred from a leak test elsewhere", m.Guest, m.Host)
+		}
+	}
+}
+
+func mountGuests(p *Policy) []string {
+	out := make([]string, 0, len(p.Mounts))
+	for g := range p.Mounts {
+		out = append(out, g)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// A profile name snug used to ship and deliberately removed is a different
+// mistake from a typo: the fix is not "see: snug profile list", it is "here is
+// what replaced it". Mirrors TestRetiredPublishAutoIsAHardError's shape
+// (internal/profile/file_test.go), which does the same for a retired TOML key.
+//
+// Both routes that used to reach @null go through UnknownProfile: -p @null via
+// Resolve -> expand, and `snug profile show @null` via a direct registry miss
+// (cmd/snug/config.go). Exercising UnknownProfile itself, rather than only
+// Resolve, is what actually pins the second route — see
+// TestRetiredNullProfileIsANamedError in test/integration for the CLI-level
+// (exit code) half of this.
+func TestRetiredNullProfileNamesTheFix(t *testing.T) {
+	_, err := Resolve(testRegistry(), append(append([]string{}, testDefaults...), "@null"), testCtx(), newFakeEnv())
+	if err == nil {
+		t.Fatal("-p @null was accepted; there is no @null profile any more (MVY0)")
+	}
+	if !strings.Contains(err.Error(), "--no-defaults") {
+		t.Errorf("the error should point at --no-defaults, got: %v", err)
+	}
+
+	err = UnknownProfile(testRegistry(), "@null")
+	if err == nil || !strings.Contains(err.Error(), "--no-defaults") {
+		t.Errorf("UnknownProfile(@null), the route `snug profile show @null` takes, should "+
+			"point at --no-defaults, got: %v", err)
+	}
+
+	// CONTROL: a name that is merely unknown — never shipped, never retired —
+	// must get the ordinary "unknown profile" message, not the retired one.
+	// Without this, retiredProfiles could swallow every miss and nothing here
+	// would distinguish "retired" from "typo".
+	err = UnknownProfile(testRegistry(), "@zzz-not-a-real-profile")
+	if err == nil {
+		t.Fatal("expected an error for a genuinely unknown profile")
+	}
+	if strings.Contains(err.Error(), "--no-defaults") {
+		t.Errorf("a genuinely unknown profile must NOT get the retired-@null message: %v", err)
+	}
+	if !strings.Contains(err.Error(), "unknown profile") {
+		t.Errorf("a genuinely unknown profile should say so plainly: %v", err)
 	}
 }
 

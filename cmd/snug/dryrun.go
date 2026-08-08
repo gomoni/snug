@@ -13,12 +13,22 @@ import (
 // dryRun is not a debugging convenience. It is the mechanism by which a human
 // can trust snug at all: a sandbox you cannot read is a sandbox you are
 // guessing about. It starts no process and creates no file.
-func dryRun(p *policy.Policy, args []string, cfg config) {
+//
+// refusedBy is nil for a policy that can actually run. When it is not nil, p
+// is a policy Validate refused (see policy.Resolve's doc comment for the
+// contract) — dryRun renders it anyway, so a human can see exactly what was
+// refused, but says so at the top and bottom instead of implying this is a
+// runnable sandbox.
+func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 	out := os.Stdout
-	fmt.Fprintln(out, "snug — dry run, nothing was started")
+	if refusedBy != nil {
+		fmt.Fprintln(out, "snug — dry run of a REFUSED policy (nothing below can run; nothing was started)")
+	} else {
+		fmt.Fprintln(out, "snug — dry run, nothing was started")
+	}
 	fmt.Fprintln(out)
-	fmt.Fprintf(out, "TARGET   %s  (writable)\n", p.Target)
-	fmt.Fprintf(out, "HOME     %s  (tmpfs, ephemeral)\n", p.Home)
+	fmt.Fprintf(out, "TARGET   %s  %s\n", p.Target, targetAnnotation(p))
+	fmt.Fprintf(out, "HOME     %s  %s\n", p.Home, homeAnnotation(p))
 	fmt.Fprintf(out, "PROFILES %s\n", strings.Join(p.Selected, " "))
 	if implied := p.Implied(); len(implied) > 0 {
 		fmt.Fprintf(out, "         + %s  (pulled in by include; see: snug profile tree)\n",
@@ -79,7 +89,120 @@ func dryRun(p *policy.Policy, args []string, cfg config) {
 
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "── bwrap ─────────────────────────────────────────────────────────────────")
+	if refusedBy != nil {
+		fmt.Fprintln(out, "(this argv describes the REFUSED policy above; it is not a command you can")
+		fmt.Fprintln(out, " paste and run — see the refusal below)")
+	}
 	fmt.Fprintln(out, formatArgs(args))
+
+	if refusedBy != nil {
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "REFUSED: %v\n", refusedBy)
+	}
+}
+
+// mountedAt finds the mount that determines what is visible at path — the
+// deepest KindBind or KindTmpfs mount whose Guest is path itself or an
+// ancestor of it. This mirrors the "deepest mount wins" rule Resolve itself
+// applies (CLAUDE.md invariant 1): effective access at a path is a property of
+// the covering set, not of any one grant, so --dry-run must compute it the
+// same way rather than assuming which profile was selected.
+func mountedAt(p *policy.Policy, path string) (policy.Mount, bool) {
+	var best policy.Mount
+	found := false
+	for _, m := range p.Mounts {
+		if m.Kind != policy.KindBind && m.Kind != policy.KindTmpfs {
+			continue
+		}
+		if m.Guest != path && !strings.HasPrefix(path, m.Guest+"/") {
+			continue
+		}
+		if !found || len(m.Guest) > len(best.Guest) {
+			best = m
+			found = true
+		}
+	}
+	return best, found
+}
+
+// targetAnnotation and homeAnnotation replace two claims that used to be
+// hard-coded true — "(writable)" and "(tmpfs, ephemeral)" — and were false
+// for any selection that did not include @cwd-rw / @home, the floor (no
+// profile at all) most of all: neither path is mounted, so the honest
+// annotation is "never granted", not "writable".
+func targetAnnotation(p *policy.Policy) string {
+	return pathAnnotation(p, p.Target)
+}
+
+func homeAnnotation(p *policy.Policy) string {
+	return pathAnnotation(p, p.Home)
+}
+
+func pathAnnotation(p *policy.Policy, path string) string {
+	m, ok := mountedAt(p, path)
+	if !ok {
+		return "(not mounted — never granted)"
+	}
+	word := accessWord(m)
+	where := ""
+	if m.Guest != path {
+		where = fmt.Sprintf(", via %s covering %s", strings.Join(m.From, "+"), m.Guest)
+	}
+	return fmt.Sprintf("(%s%s%s)", word, where, writableBelow(p, path, m))
+}
+
+// writableBelow names the writable grants STRICTLY INSIDE path, so a read-only
+// headline cannot hide them.
+//
+// REGRESSION (redteam, MVY0). The annotation above reports the DEEPEST mount
+// covering the path, which is the right answer for "what is this path itself",
+// and the wrong answer for "what can the sandbox write in here". Grants below it
+// are invisible to that walk — and those are exactly the ones that RAISE the
+// write surface. The result was `TARGET <dir>  (read-only)`, bare and
+// unqualified, for the arrangement CLAUDE.md invariant 2 explicitly recommends:
+//
+//	ro = ["{target}"]        # grant the tree read-only...
+//	rw = ["{target}/src"]    # ...and the part you want to write separately
+//
+// A write inside {target}/src then persisted to the host while the trust
+// artifact said read-only. That is worse than the hard-coded "(writable)" this
+// replaced: over-warning is a nuisance, under-warning is invariant 5.
+//
+// The information was never missing — the FILESYSTEM block lists every grant.
+// Only the headline discarded it, and the headline is the line people read.
+func writableBelow(p *policy.Policy, path string, covering policy.Mount) string {
+	var inside []string
+	for _, m := range p.SortedMounts() {
+		// KindBind only, and that is the whole point rather than a shortcut. A
+		// tmpfs below a tmpfs is not a surprise — it is ephemeral either way, and
+		// listing @home's .cache/.config/.local/state under HOME would be noise
+		// that trains the reader to skip the line. What must never hide is a
+		// grant that PERSISTS TO THE HOST underneath a headline saying read-only
+		// or ephemeral, and that is exactly a writable bind.
+		if m.Kind != policy.KindBind || m.Access != policy.AccessRW {
+			continue
+		}
+		if m.Guest == covering.Guest || !strings.HasPrefix(m.Guest, path+"/") {
+			continue
+		}
+		inside = append(inside, m.Guest)
+	}
+	if len(inside) == 0 {
+		return ""
+	}
+	// Named, not counted: "1 writable grant below" would still leave the reader
+	// guessing which one, and the whole point is that they can see it.
+	return fmt.Sprintf("; WRITABLE and PERSISTS below: %s", strings.Join(inside, " "))
+}
+
+func accessWord(m policy.Mount) string {
+	if m.Kind == policy.KindTmpfs {
+		return "tmpfs, ephemeral"
+	}
+	if m.Access == policy.AccessRW {
+		return "writable"
+	}
+	return "read-only"
 }
 
 // describeNetwork spells out what the sandbox can and cannot reach. The

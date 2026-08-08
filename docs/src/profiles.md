@@ -34,7 +34,6 @@ snug: unknown profile "sys"; snug's own profiles carry a leading @, so you
 
 | profile | grants |
 |---|---|
-| `@null` | Nothing. The floor — useful for understanding the base. |
 | `@sys` | `/usr` plus the dozen `/etc` entries things actually need. |
 | `@home` | `$HOME` as an empty tmpfs at the host path. Ephemeral. |
 | `@cwd-rw` | The target directory, writable and persistent. |
@@ -50,7 +49,11 @@ snug: unknown profile "sys"; snug's own profiles carry a leading @, so you
 
 ## The `defaults` setting
 
-There is deliberately **no `@default` profile**. What a bare `snug <dir>` selects
+There is deliberately **no `@default` profile, and no `@null` profile either**.
+A default selection is a preference and a profile is a grant — one idea, one
+mechanism — and the floor of the lattice (grant nothing) is not something a
+profile needs to name: it is what resolving an empty selection already gives
+you, reachable directly with `--no-defaults`. What a bare `snug <dir>` selects
 is a *preference*, not a grant:
 
 ```toml

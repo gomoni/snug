@@ -157,12 +157,6 @@ func run(cfg config) int {
 		selected = nil
 	}
 	selected = append(selected, cfg.profiles...)
-	if len(selected) == 0 {
-		fmt.Fprintln(os.Stderr, "snug: no profile selected, so nothing at all is granted — "+
-			"a sandbox with no profile cannot run anything.\n"+
-			"      Drop --no-defaults, or name a profile with -p. See: snug profile list")
-		return exitPolicy
-	}
 
 	target := cfg.target
 	if target == "" {
@@ -218,6 +212,16 @@ func run(cfg config) int {
 
 	pol, err := policy.Resolve(reg, selected, ctx, env)
 	if err != nil {
+		// Resolve's contract (see its doc comment): a Validate failure returns
+		// the policy it refused ALONGSIDE the error, precisely so --dry-run can
+		// show what was refused instead of just saying "no". Every other
+		// failure returns a nil policy, so there is nothing to show. Either
+		// way, a non-nil err means this policy must never be executed — it is
+		// never run below, whichever branch fires.
+		if cfg.dryRun && pol != nil {
+			args := pol.BwrapArgs(env.Uid(), env.Gid())
+			dryRun(pol, args, cfg, err)
+		}
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 		return exitPolicy
 	}
@@ -258,7 +262,7 @@ func run(cfg config) int {
 	args := pol.BwrapArgs(env.Uid(), env.Gid())
 
 	if cfg.dryRun {
-		dryRun(pol, args, cfg)
+		dryRun(pol, args, cfg, nil)
 		return 0
 	}
 

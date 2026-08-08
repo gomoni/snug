@@ -54,6 +54,49 @@ func TestGoldenBwrapArgs(t *testing.T) {
 	}
 }
 
+// TestGoldenBwrapArgsFloor pins the argv the lattice's FLOOR produces — what an
+// empty selection resolves to, reached directly with --no-defaults.
+// DESIGN §12.1 has claimed @null golden coverage since M0 and never delivered
+// it, because @null could never actually resolve (Resolve refused it before
+// there was ever an argv to pin). This delivers it under the honest name: there
+// is no @null profile any more (MVY0), so what this pins is the RESOLVER's
+// floor, not a profile's.
+//
+// It is a separate test from TestGoldenBwrapArgs, rather than another row in
+// its table, because the floor is REFUSED (Validate: "no profile selected") —
+// Resolve's other return contract applies: a non-nil policy alongside a
+// non-nil error. BwrapArgs is still a pure function of that policy, but the
+// argv it produces must never reach sandbox.Run (see cmd/snug/main.go and
+// TestRefusedPolicyIsNeverExecuted in test/integration).
+func TestGoldenBwrapArgsFloor(t *testing.T) {
+	p, err := Resolve(testRegistry(), nil, testCtx(), newFakeEnv())
+	if p == nil {
+		t.Fatal("the floor must still produce a policy to show, even though it is refused")
+	}
+	if err == nil {
+		t.Fatal("the floor must be refused by Validate — an empty selection cannot run")
+	}
+
+	got := goldenFormat(p.BwrapArgs(1000, 1000))
+	path := filepath.Join("testdata", "floor.bwrap.txt")
+	if *update {
+		if err := os.MkdirAll("testdata", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%v (run: go test ./internal/policy -update)", err)
+	}
+	if got != string(want) {
+		t.Errorf("argv changed — this is a change to the sandbox boundary.\n--- got\n%s\n--- want\n%s", got, want)
+	}
+}
+
 // goldenFormat puts each flag and its operands on one line. The golden file is
 // read by a human deciding whether a security change is safe, so it has to be
 // legible; one token per line is technically stable and practically useless.

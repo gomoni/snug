@@ -14,11 +14,24 @@ import (
 // and Resolve([a,a]) == Resolve([a]). Both properties are asserted by property
 // tests in resolve_test.go, and both are load-bearing — if either fails, profile
 // composition can tighten the sandbox and the whole model is void.
+//
+// An EMPTY selection is not special-cased: it resolves like any other, folding
+// zero profiles' grants into the base topology (/proc, /dev, /tmp,
+// /etc/resolv.conf), and is then refused by Validate as a policy nothing
+// selected can run. Describing a policy is not the same act as admitting it —
+// Validate is the only refuser, so --dry-run can show precisely what a refused
+// selection would have been. This means Resolve's return contract is NOT the
+// usual (nil, err) / (p, nil):
+//
+//   - Validate failure: returns (p, err) — the non-nil policy is EXACTLY what
+//     was refused and why, for display. It must never be executed.
+//   - every other failure (bad profile name, bad target, bad $HOME, ...):
+//     returns (nil, err), because no policy was ever assembled to show.
+//   - success: (p, nil).
+//
+// Callers must check err first and treat a non-nil err as "do not run this",
+// regardless of whether p is nil.
 func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Environ) (*Policy, error) {
-	if len(selected) == 0 {
-		return nil, fmt.Errorf("no profile selected: the empty policy grants nothing and cannot run a command")
-	}
-
 	// 1. Expand includes transitively into a SET. Because the result is a set,
 	//    include is idempotent and diamond includes are harmless.
 	set := map[string]*Profile{}
@@ -341,7 +354,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	}
 
 	if err := p.Validate(env); err != nil {
-		return nil, err
+		return p, err
 	}
 	return p, nil
 }
@@ -480,6 +493,18 @@ func Expand(reg map[string]*Profile, selected []string) (map[string]*Profile, er
 	return out, nil
 }
 
+// retiredProfiles names builtins snug shipped and then removed on purpose,
+// mapped to what replaces them. A retired name is not "unknown" — the mistake
+// is not a typo, it is that the thing it asked for no longer exists as a
+// profile — so it gets a specific error rather than the generic "see: snug
+// profile list", the same shape TestRetiredPublishAutoIsAHardError already
+// uses for a retired TOML key.
+var retiredProfiles = map[string]string{
+	"null": "there is no @null profile (MVY0): a profile that grants nothing " +
+		"is a preference, not a grant. The lattice floor is what an empty " +
+		"selection already resolves to — use --no-defaults, not -p @null",
+}
+
 // UnknownProfile is the error for a name nothing defines. It exists rather than
 // a bare fmt.Errorf because the mistake people will actually make is the sigil:
 // snug's own profiles are `@sys`, `@net`, `@claude`, and typing `sys` is the
@@ -490,6 +515,9 @@ func Expand(reg map[string]*Profile, selected []string) (map[string]*Profile, er
 // `snug -p sys`, `snug profile show sys` and `include = ["sys"]` inside a
 // user's own file all say the same thing.
 func UnknownProfile(reg map[string]*Profile, name string) error {
+	if msg, retired := retiredProfiles[strings.TrimPrefix(name, Sigil)]; retired {
+		return fmt.Errorf("%s", msg)
+	}
 	if _, ok := reg[Sigil+name]; ok {
 		return fmt.Errorf("unknown profile %q; snug's own profiles carry a leading %s, "+
 			"so you probably meant %q (see: snug profile list)", name, Sigil, Sigil+name)

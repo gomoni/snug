@@ -107,7 +107,6 @@ $ snug profile dot | dot -Tpng -o profiles.png
 
 | profile | grants |
 |---|---|
-| `@null` | Nothing. The floor — useful for understanding the base. |
 | `@sys` | `/usr` plus the dozen `/etc` entries things actually need. |
 | `@home` | `$HOME` as an empty tmpfs at the host path. Ephemeral. |
 | `@cwd-rw` | The target directory, writable and persistent. |
@@ -121,7 +120,11 @@ $ snug profile dot | dot -Tpng -o profiles.png
 | `@podman-socket` | Run containers, via a filtering proxy over a per-sandbox engine. |
 | `@podman-build` | As `@podman-socket`, plus `podman build` with a filtered option set. |
 
-There is deliberately **no `@default` profile**. What a bare `snug <dir>` selects
+There is deliberately **no `@default` profile, and no `@null` profile either**.
+A default selection is a preference and a profile is a grant — one idea, one
+mechanism — and the floor of the lattice (grant nothing) is not something a
+profile needs to name: it is what resolving an empty selection already gives
+you, reachable directly with `--no-defaults`. What a bare `snug <dir>` selects
 is the `defaults` *setting*, not a grant:
 
 ```toml
