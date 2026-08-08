@@ -237,7 +237,7 @@ demote-in-place.
   **Do not filter escape sequences** — a 95%-correct terminal filter is the
   D-Bus-proxy mistake in another costume. For CI/hooks/tests, losing job control
   costs nothing and closes the channel outright. Meanwhile state the channel in
-  DESIGN §5.2, `docs/src/verify.md`, and the injected `~/.claude/CLAUDE.md`.
+  DESIGN §5.2, `VERIFY.md`, and the injected `~/.claude/CLAUDE.md`.
 - **R11 — Consider `SECCOMP_RET_ERRNO` on non-native audit arches (i386/x32)
   rather than falling through to ALLOW (P13).** Nothing snug supports needs a
   32-bit payload; "no silent downgrade" argues for failing loudly.

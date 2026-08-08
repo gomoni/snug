@@ -1,6 +1,6 @@
 BIN := bin/snug
 
-.PHONY: all build test gate integration golden clean install docs docs-serve
+.PHONY: all build test gate integration golden clean install
 
 all: build
 
@@ -22,7 +22,7 @@ gate:
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This
-# is the automated half of docs/VERIFY.md — the by-hand checklist stays, because
+# is the automated half of VERIFY.md — the by-hand checklist stays, because
 # it carries the reasoning; this is the ratchet.
 #
 # Build-tagged, so it is excluded from `make gate` by construction: it needs
@@ -51,10 +51,3 @@ install: build
 clean:
 	rm -rf bin
 
-# The user guide (docs/). Needs mdbook, a single static binary:
-#   https://github.com/rust-lang/mdBook/releases
-docs:
-	mdbook build docs
-
-docs-serve:
-	mdbook serve docs --open

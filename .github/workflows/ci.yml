@@ -148,31 +148,3 @@ jobs:
           SNUG_TEST_NET: '1'
         run: make integration
 
-  # The user guide. Building it in CI is not decoration: SUMMARY.md is a manifest,
-  # and a chapter renamed without updating it becomes a silently missing page.
-  # mdBook is a single static binary with no toolchain behind it, which is why it
-  # was chosen over Docusaurus or MkDocs for a Go project that ships one binary.
-  #
-  # This job BUILDS and uploads the site; it does not publish it. Turning on
-  # GitHub Pages (Settings -> Pages -> Source: GitHub Actions) and adding a
-  # deploy-pages step is the remaining click - deliberately not committed blind,
-  # because a deploy job against a repo without Pages enabled fails every run.
-  docs:
-    name: user guide builds
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install mdBook
-        run: |
-          MDBOOK=v0.4.52
-          curl -fsSL --retry 3 -o mdbook.tar.gz \
-            "https://github.com/rust-lang/mdBook/releases/download/${MDBOOK}/mdbook-${MDBOOK}-x86_64-unknown-linux-gnu.tar.gz"
-          tar xzf mdbook.tar.gz
-          sudo install -m 0755 mdbook /usr/local/bin/
-          mdbook --version
-      - run: mdbook build docs
-      - uses: actions/upload-artifact@v4
-        with:
-          name: user-guide
-          path: docs/book

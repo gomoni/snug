@@ -20,7 +20,7 @@ import (
 // notes recorded the symptom and dismissed it as a procfs artifact.
 //
 // This asserts the flags are present. It is necessary and NOT sufficient: only
-// the behavioural check in docs/src/verify.md §7 can catch an upstream default
+// the behavioural check in VERIFY.md §7 can catch an upstream default
 // changing under us, which is exactly how the original bug survived review.
 func TestPastaArgsAlwaysCloseHostLoopback(t *testing.T) {
 	for _, tc := range []struct {

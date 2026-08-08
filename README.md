@@ -217,7 +217,7 @@ the code it is working on. Review your diffs.
 ## Verifying it yourself
 
 A sandbox you have not personally tried to break is one you are trusting on
-someone's word. [Verify it yourself](docs/src/verify.md) is a hands-on checklist —
+someone's word. [`VERIFY.md`](VERIFY.md) is a hands-on checklist —
 every command was run on a real host, with the output it should produce.
 
 The project also keeps an in-house red team (`.claude/agents/redteam.md`) whose
@@ -269,21 +269,8 @@ property to keep, not a gap to close.
 
 ## Documentation
 
-**The user guide is [`docs/`](docs/src/introduction.md)** — an mdBook. Build it
-with `make docs`, or read it as plain markdown on GitHub.
-
-| chapter | |
-|---|---|
-| [Getting started](docs/src/getting-started.md) | Install it and run something |
-| [Profiles](docs/src/profiles.md) | The vocabulary for everything else |
-| [Identities](docs/src/identity.md) | Two GitHub accounts, one sandbox each |
-| [Networking](docs/src/networking.md) | Egress, the closed loopback, publishing a port |
-| [Containers and builds](docs/src/containers.md) | `@podman-socket` and `@podman-build` |
-| [Running Claude Code](docs/src/claude.md) | The `@claude` profile |
-| [Verify it yourself](docs/src/verify.md) | Check the sandbox holds, by hand |
-| [Threat model](docs/src/threat-model.md) | What it defends, and what it does not |
-| [Profile format](docs/src/profile-format.md) | Every key |
-| [Troubleshooting](docs/src/troubleshooting.md) | Error messages and what they mean |
+[`VERIFY.md`](VERIFY.md) is the hands-on checklist: run it rather than trusting
+this file.
 
 Design and research material is **not** user documentation and lives apart, under
 [`.claude/design/`](.claude/design/), beside the agents that work from it:
@@ -293,6 +280,7 @@ Design and research material is **not** user documentation and lives apart, unde
 | [`DESIGN.md`](.claude/design/DESIGN.md) | Architecture, threat model, the policy model, roadmap |
 | [`PSEUDOFS-AUDIT.md`](.claude/design/PSEUDOFS-AUDIT.md) | What `/proc`, `/sys` and `/dev` expose, measured |
 | [`PARAMETERISED-PROFILES.md`](.claude/design/PARAMETERISED-PROFILES.md) | A deferred design, and why |
+| [`SECRETS.md`](.claude/design/SECRETS.md) | What snug does with credentials, and what it should |
 | [`CLAUDE.md`](CLAUDE.md) | Working agreement: invariants, and hard-won facts about this environment |
 | [`TODO.md`](TODO.md) | What is deferred, and known gaps between docs and code |
 

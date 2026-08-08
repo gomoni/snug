@@ -26,7 +26,7 @@
 //	go test -tags integration ./test/integration/...
 //	make integration
 //
-// docs/src/verify.md still exists and is not redundant: it is for a human checking
+// VERIFY.md still exists and is not redundant: it is for a human checking
 // by hand, with the reasoning inline. This is the automated ratchet.
 //
 // # Two environment knobs, deliberately separate
@@ -320,7 +320,7 @@ func requireInternet(t *testing.T) {
 // ── plumbing ────────────────────────────────────────────────────────────────
 
 // target builds a throwaway project directory with a sibling beside it and a
-// secret above it, mirroring the shape docs/src/verify.md uses.
+// secret above it, mirroring the shape VERIFY.md uses.
 //
 //	root/                 (two levels above the target — must be invisible)
 //	  SECRET
@@ -536,7 +536,7 @@ func TestRootSkeletonIsReadOnly(t *testing.T) {
 }
 
 // /dev is writable and that surprises people — it surprised the author, and it
-// was found by running docs/src/verify.md rather than by review. It is bwrap's own
+// was found by running VERIFY.md rather than by review. It is bwrap's own
 // synthetic device tree on a private tmpfs, so what matters is not that it is
 // read-only (it is not) but that a write there reaches neither the host nor the
 // next sandbox. Say "the only writable thing that PERSISTS", never "the only
@@ -849,7 +849,7 @@ func TestSeccompDeniesTheHardeningSyscalls(t *testing.T) {
 	requirePython(t)
 	proj, _ := target(t)
 
-	// x86_64 syscall numbers, as in docs/src/verify.md §6c. userfaultfd is
+	// x86_64 syscall numbers, as in VERIFY.md §6c. userfaultfd is
 	// deliberately absent: many kernels already refuse it via
 	// vm.unprivileged_userfaultfd, so it cannot distinguish our filter from the
 	// host's default.
