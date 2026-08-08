@@ -713,6 +713,23 @@ Failure at any step before (4) means `snug` closes `B` unwritten and kills `bwra
 
 ### 4.4 Topology A — the podman variant
 
+> **NOT IMPLEMENTED, and this section has described it in the present tense
+> since M4.** There is no code that has ever done this. `internal/engine/engine.go`
+> starts `podman system service` as an ordinary **host child** — no namespace work
+> at all — and a repo-wide grep for the machinery below (`__stage`, `--map-auto`,
+> `subuid`, `setns`, `CLONE_NEWNET`) returns zero hits. `--share-net` appears in
+> exactly one place, `internal/policy/bwrap.go`, and only under `NetHost`.
+> `internal/profile/profiles/base.toml` is the honest document ("needs the engine
+> inside the sandbox's netns, which is a further milestone"); this section is the
+> one that lied, and §7.2 and §8's cross-references inherited it.
+>
+> The consequence is live and user-visible: with `@podman-socket` and no `@net`,
+> `--dry-run` prints "No egress" while a container reaches the whole internet,
+> because the engine is on the host and its containers get the host's network.
+> Tracked as MVY5. **Verified feasible** — see `.claude/design/MVY5.md` for the
+> experiment, including the parts of the plan below that turned out to be wrong.
+> Read the paragraphs beneath as a *proposal*, not a description.
+
 Topology (b)'s virtue (a single-uid userns, no subuid) is exactly what makes it unable to host a rootless container engine: `podman` inside a namespace with one mapped uid fails with `cannot set user namespace`. If the sandbox is to reach its own containers' published ports, the engine must live in the **same netns as the sandbox** while retaining a **subuid range**.
 
 So when `Podman != PodmanOff`, `snug` re-execs itself into a second topology:

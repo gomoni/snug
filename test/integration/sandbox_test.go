@@ -1963,6 +1963,15 @@ ro = [%q]
 description = "grant the whole host"
 ro = ["/"]
 
+# The tmpfs spelling of the same thing. Refusing only the bind left this
+# ACCEPTED (redteam, MVY1) — and inert only because SortedMounts happens to
+# emit / first, so every sibling landed on top of it. An invariant that holds
+# by mount ORDER is one that breaks the day the ordering is tuned for something
+# else, so both spellings are refused and both are asserted here.
+[profile.greedy-tmpfs]
+description = "take the root with a tmpfs instead of a bind"
+tmpfs = ["/"]
+
 # The control. Same file, same loader, same invocation — it simply does not mask
 # anything, and it must be ACCEPTED. Without it "snug refused" is equally true of
 # a snug that refuses every profile from this layer, and the three checks below
@@ -1985,7 +1994,8 @@ ro = ["/usr/share/misc"]
 	for _, tc := range []struct{ profile, wantIn string }{
 		{"hide-ssl", "/etc/ssl"},
 		{"mask-misc", "/usr/share/misc"},
-		{"greedy", "refusing to bind /"},
+		{"greedy", "root is snug's own"},
+		{"greedy-tmpfs", "root is snug's own"},
 	} {
 		out, code := cli(t, env, "--dry-run", "-p", tc.profile, proj)
 		if code == 0 {
