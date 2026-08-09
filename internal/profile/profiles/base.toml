@@ -309,7 +309,8 @@ path = ["{home}/.local/bin"]
 # ENGINE's netns, it has the ENGINE's network — so a sandbox with only
 # `@podman-socket` could `wget` any URL from inside a container and read the
 # response back out through `containers/{id}/logs`. Measured, not inferred
-# (MVY5). Meanwhile `--dry-run` printed "No egress. No host loopback."
+# (.claude/design/ENGINE-NETNS.md §0). Meanwhile `--dry-run` printed
+# "No egress. No host loopback."
 #
 # `include = ["net"]` makes the profile tell the truth: selecting it grants
 # egress, and `--dry-run` now says so. It does NOT narrow the hole — it stops
@@ -326,7 +327,7 @@ path = ["{home}/.local/bin"]
 # .claude/design/ENGINE-NETNS.md — §5 is the implementation shape, §3 is where
 # it does not work (distrobox, no subuid delegation, cgroup delegation).
 [profile.podman-socket]
-description = "Containers via a filtering proxy over a per-sandbox podman engine. Includes @net (interim: containers run on the engine's network — see MVY5)."
+description = "Containers via a filtering proxy over a per-sandbox podman engine. Includes @net (interim: containers run on the engine's network — see .claude/design/ENGINE-NETNS.md)."
 include = ["sys", "home", "net"]
 podman = "socket"
 # podman reads its registries, signature policy and defaults from here. Without

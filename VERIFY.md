@@ -368,7 +368,8 @@ suite pins each to its own message so neither can cover for the other.
 ## 9d. `@podman-socket` admits that it grants the network
 
 Needs no engine — this is a `--dry-run` check, and `--dry-run` is the artifact
-the guarantee is read off, which is exactly where MVY5 was wrong.
+the guarantee is read off, which is exactly where it was wrong
+(`.claude/design/ENGINE-NETNS.md` §0).
 
 ```bash
 ./bin/snug --dry-run -p @podman-socket $SC/proj/sub | grep -E '^ *\+|^NETWORK|^CONTAINERS'

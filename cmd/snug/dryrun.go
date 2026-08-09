@@ -210,7 +210,8 @@ func accessWord(m policy.Mount) string {
 // today it is NOT the sandbox's and the NETWORK block immediately above is
 // therefore not the whole story.
 //
-// This exists because of MVY5: `@podman-socket` granted full egress through a
+// This exists because of the engine-netns finding
+// (.claude/design/ENGINE-NETNS.md §0): `@podman-socket` granted full egress through a
 // container while `--dry-run` printed "No egress. No host loopback." The
 // profile now includes `net`, so the NETWORK block is no longer false — but a
 // reader still has to be told that the container and the sandbox get their
@@ -224,7 +225,7 @@ func describeContainers(out *os.File, p *policy.Policy) {
 		containerSocketGuest)
 	fmt.Fprintf(out, "         INTERIM: a container runs in the ENGINE's netns, not this sandbox's,\n")
 	fmt.Fprintf(out, "         so it has the engine's network — which is why this profile includes\n")
-	fmt.Fprintf(out, "         '@net' rather than pretending to be offline (MVY5). The pasta\n")
+	fmt.Fprintf(out, "         '@net' rather than pretending to be offline. The pasta\n")
 	fmt.Fprintf(out, "         guarantees above cover the SANDBOX; they do not cover containers.\n")
 	fmt.Fprintf(out, "         Consequence: '@podman-socket' cannot currently be offline, and\n")
 	fmt.Fprintf(out, "         'podman run -p N:80' is not reachable from the sandbox.\n")

@@ -153,7 +153,8 @@ func TestBuiltinsLoad(t *testing.T) {
 	}
 }
 
-// MVY5, pinned so its removal is deliberate rather than incidental.
+// The engine-netns finding (.claude/design/ENGINE-NETNS.md §0), pinned so its
+// removal is deliberate rather than incidental.
 //
 // `@podman-socket` grants egress, because a container runs in the ENGINE's
 // network namespace and therefore has the engine's network — measured, with the
@@ -189,7 +190,8 @@ func TestPodmanSocketIncludesNetAsAnInterimHonestyFix(t *testing.T) {
 			"should be deleted along with the interim comment in base.toml — check that "+
 			"`@podman-socket` without `@net` really is offline first, with a container "+
 			"probe that has a positive control.\n"+
-			"If the engine still runs on the host's network, this is MVY5 reopening: the "+
+			"If the engine still runs on the host's network, this reopens the engine-netns "+
+			"finding (.claude/design/ENGINE-NETNS.md §0): the "+
 			"sandbox has egress through a container while --dry-run says it does not.",
 			p.Include)
 	}
