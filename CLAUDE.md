@@ -24,7 +24,8 @@ keyctl, perf_event_open, userfaultfd, TIOCSTI and nested user namespaces. The
 flag list travels through a memfd, and inherited descriptors are sealed CLOEXEC.
 Networking is a private netns per sandbox with a pasta helper: full egress, host
 loopback unreachable, abstract sockets (X11/D-Bus) unreachable. Offline is the
-absence of the `@net` profile. Profiles: `@sys`, `@home`,
+absence of the `@net` profile — with one interim exception, `@podman-socket`,
+which includes it and says so (MVY5; see "Decisions made"). Profiles: `@sys`, `@home`,
 `@cwd-rw`, `@parent-ro`, `@tmp-shared`, `@git-ro`, `@net`, `@net-anon`,
 `@net-host`, `@claude`, `@podman-socket`, `@podman-build` — the `@` marks a profile
 snug ships, and nothing else may wear it. There is deliberately **no `@default`
@@ -403,6 +404,15 @@ meant. It cannot prove the sandbox holds.
 - **Write the abuse sentence first.** Before implementing any grant: "a hostile
   process inside the sandbox can use this to ___". It goes in the profile TOML as
   a comment. If you cannot write it, the grant is not ready.
+- **When you write down a limitation, ask what it GRANTS as well as what it
+  costs.** MVY5 sat in `base.toml` for a whole milestone as an ergonomics
+  footnote — "containers run in the ENGINE's network namespace, not the
+  sandbox's… `podman run -p 8080:80` will NOT work" — and every word of it was
+  true. Read from the user's side it is an annoyance; read from an attacker's
+  side the same sentence says *a container has the engine's network, so a
+  sandbox with no `@net` reaches the internet through one*. The observation was
+  made and written down; nobody turned it around. A limitation and a hole are
+  frequently the same fact facing two different directions.
 - **Golden argv diffs are the review artifact.** A change to a golden file is a
   change to the security boundary and is read as such. A security change that
   produces no golden diff is probably untested.
@@ -500,7 +510,20 @@ meant. It cannot prove the sandbox holds.
   engine". Every sentence in it removes a class of wasted agent turns.
 - **Networking**: private netns per sandbox, egress via pasta, host loopback
   closed. Offline is the *absence* of the `@net` profile, not a setting — so it
-  cannot be accidentally re-enabled. Host→sandbox port publishing is off by
+  cannot be accidentally re-enabled.
+
+  *One qualification, and it is live today (MVY5).* `@podman-socket` includes
+  `net`, so selecting containers selects egress. That is not a weakening of the
+  rule — it is the rule finally being told the truth: a container runs in the
+  ENGINE's netns and therefore always had the engine's network, measured, while
+  `--dry-run` printed "No egress". The include makes the grant match the
+  behaviour rather than narrowing the behaviour to match the grant, which is why
+  it is **interim**. When the engine moves into the sandbox's netns
+  (`.claude/design/ENGINE-NETNS.md` §5 — feasibility measured on this host, §3
+  is where it does not work), container network becomes sandbox network, the
+  include goes away, and the sentence above regains its unqualified form.
+  `TestPodmanSocketIncludesNetAsAnInterimHonestyFix` is what makes that removal
+  a conscious act. Host→sandbox port publishing is off by
   default and scoped to `127.0.0.1` when enabled: with `-t auto` the *agent*
   would choose which host loopback ports appear, which inverts the guiding
   principle. See DESIGN §4.6 — this is the decision most likely to be revisited.

@@ -35,6 +35,7 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 			strings.Join(implied, " "))
 	}
 	describeNetwork(out, p)
+	describeContainers(out, p)
 	if p.NewSession {
 		fmt.Fprintf(out, "TTY      --new-session (this kernel allows TIOCSTI, so the sandbox is kept\n")
 		fmt.Fprintf(out, "         out of your terminal — the cost is no job control inside)\n")
@@ -203,6 +204,33 @@ func accessWord(m policy.Mount) string {
 		return "writable"
 	}
 	return "read-only"
+}
+
+// describeContainers states where a container's network comes from, because
+// today it is NOT the sandbox's and the NETWORK block immediately above is
+// therefore not the whole story.
+//
+// This exists because of MVY5: `@podman-socket` granted full egress through a
+// container while `--dry-run` printed "No egress. No host loopback." The
+// profile now includes `net`, so the NETWORK block is no longer false — but a
+// reader still has to be told that the container and the sandbox get their
+// network from two different places, or they will read the pasta guarantees
+// above as covering containers. They do not.
+func describeContainers(out *os.File, p *policy.Policy) {
+	if p.Podman == policy.PodmanOff {
+		return
+	}
+	fmt.Fprintf(out, "CONTAINERS  a per-sandbox engine behind a filtering proxy at %s\n",
+		containerSocketGuest)
+	fmt.Fprintf(out, "         INTERIM: a container runs in the ENGINE's netns, not this sandbox's,\n")
+	fmt.Fprintf(out, "         so it has the engine's network — which is why this profile includes\n")
+	fmt.Fprintf(out, "         '@net' rather than pretending to be offline (MVY5). The pasta\n")
+	fmt.Fprintf(out, "         guarantees above cover the SANDBOX; they do not cover containers.\n")
+	fmt.Fprintf(out, "         Consequence: '@podman-socket' cannot currently be offline, and\n")
+	fmt.Fprintf(out, "         'podman run -p N:80' is not reachable from the sandbox.\n")
+	fmt.Fprintf(out, "         Planned fix: engine inside the sandbox's netns, after which the\n")
+	fmt.Fprintf(out, "         '@net' include goes away and both lines above stop being true.\n")
+	fmt.Fprintf(out, "         Design and feasibility: .claude/design/ENGINE-NETNS.md\n")
 }
 
 // describeNetwork spells out what the sandbox can and cannot reach. The
