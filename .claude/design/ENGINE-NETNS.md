@@ -126,7 +126,9 @@ talks to it directly across the namespace boundary. Verified with `_ping` and
 
 ## 3. What it costs, and where it does not work
 
-**Distrobox — the decisive negative.** `/usr/bin/podman` is
+**Distrobox — the decisive negative, where `podman` has been replaced.** Not a
+distrobox default; a configuration choice this host happens to carry. Where it
+holds, `/usr/bin/podman` is
 `distrobox-host-exec`, which forwards over a **filesystem** socket. A network
 namespace does not touch that at all:
 
@@ -137,7 +139,7 @@ engine-hostname=zelva store=/home/michal/.local/share/containers/storage
 ```
 
 From a netns with no route, the shim reached the **host's** engine. So on a
-distrobox host, topology A puts a *shim* in N, the engine stays on the host, and
+host so configured, topology A puts a *shim* in N, the engine stays on the host, and
 the guarantee evaporates while everything looks like it worked. `podmanClientUsable()`
 in `cmd/snug/podmanshim.go` already performs exactly this detection and is
 currently used only for a cosmetic warning. It must become a **hard refusal**,

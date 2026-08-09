@@ -15,10 +15,14 @@ answer is "type a different command than you would outside", which is why
 
 ## 1. The problem this starts from
 
-`/usr/bin/podman` on this host is a symlink to `distrobox-host-exec`, a POSIX
-shell script that forwards to the engine outside the container. `rpm -V podman`
-reports `....L....` — the package's binary was replaced by distrobox for
-usability. So the CLI named after the profile cannot work inside the sandbox at
+`/usr/bin/podman` **on this host** is a symlink to `distrobox-host-exec`, a
+POSIX shell script that forwards to the engine outside the container. `rpm -V
+podman` reports `....L....` — the packaged binary was replaced, for usability.
+
+**This is a property of this machine, not of distrobox.** It is a configuration
+someone chose, not a default, so nothing in the design may assume it: snug
+DETECTS a host-escape shim and does nothing when it does not find one. Read
+every "on a distrobox host" in this document as "where this has been done". So the CLI named after the profile cannot work inside the sandbox at
 all: it tries to reach a host socket the sandbox correctly cannot see.
 
 snug currently prints a 15-line warning about this and recommends "any

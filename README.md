@@ -206,10 +206,12 @@ podman-remote ps                                       # works, read-only only
 request carrying a body it would have to inspect — so it inspects fine and
 cannot `run` or `pull`. There is no flag that changes this.
 
-**The shim.** On a distrobox host `/usr/bin/podman` is a symlink to
-`distrobox-host-exec`, which forwards to an engine *outside* the container. From
-inside a sandbox that cannot work, and podman's own error for it names neither
-the cause nor a fix. So snug stages its own `podman` at `/run/snug/bin/podman`
+**The shim.** `/usr/bin/podman` **may** be a symlink to `distrobox-host-exec`,
+which forwards to an engine *outside* the container. That is not distrobox's
+default — it is a choice someone made on that machine, for usability — so snug
+detects it rather than assuming it. From inside a sandbox the forwarding cannot
+work, and podman's own error for it names neither the cause nor a fix. Where snug
+finds such a shim it stages its own `podman` at `/run/snug/bin/podman`
 and puts that directory on `PATH` ahead of `/usr/bin`. It forwards the
 subcommands `docker` can serve, byte-for-byte, and refuses the rest in its own
 voice:
