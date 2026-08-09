@@ -1,6 +1,6 @@
 # Secrets
 
-**Status: living design document.** §6 records what is settled; everything else
+**Status: living design document.** §5 records what is settled; everything else
 is analysis, not a decision. It exists so each decision is made against measured
 ground truth rather than against what the comments say.
 
@@ -662,7 +662,7 @@ container `wget`ing anything (the identity became bounded, the network did not).
    grant that is neither a broker nor an injection: the credential never enters
    the sandbox (good) but the sandbox directs its use. Candidate shape: an
    explicit per-profile grant naming registry AND credential source, with
-   `dockerproxy` refusing every other host. Note §5's warning that `allow` lists
+   `dockerproxy` refusing every other host. Note §4's warning that `allow` lists
    union across profiles, so a "read-only registry" profile cannot stop a second
    profile widening it.
 3. **Is `push` separable from `pull`?** Pull is ingress of attacker-chosen
@@ -679,60 +679,7 @@ container `wget`ing anything (the identity became bounded, the network did not).
 
 ---
 
-## 4. Principles — how the wording was chosen
-
-MVY2's principle text is good and mostly worth keeping verbatim. Its one
-structural problem: it is written as an absolute (*"No credential … is placed
-inside the sandbox"*) and then carries an exception (*"a profile may still stage
-a real credential"*) that swallows it. An invariant with an exception can only be
-checked by understanding where the exception applies — precisely the argument
-CLAUDE.md invariant 1 makes about `--read-only`.
-
-Two ways out were drafted. **Draft A** kept the absolute and made the exception a
-different noun: a profile whose name ends in `-credentials`, never in `defaults`,
-never implied by `include`, requiring `--i-know`. Attractive because the
-invariant stays checkable by grep — nothing outside `*-credentials` staging a
-credential — rather than by judgement; it lost because the absolute is a
-dishonest sentence for as long as `@claude` stages a credential, and the only fix
-is renaming `@claude`. **Draft B** — *"a sandbox may hold
-capabilities, never durable authority"* — states the rule the measurements
-support: a **capability** ends with the sandbox and cannot extend itself (the
-ssh-agent proxy is canonical), a **credential** outlives the run or can renew or
-widen itself, and the test is §2.3's A1 ∧ A2 in that order. **D1 chose B**,
-because it explains why ssh-agent is fine and `admin:public_key` is not without
-special-casing either, and with no false absolute. Cost accepted: "capability" is
-a second noun, against the project's standing rule — allowed because these are
-genuinely two concepts.
-
-Neither draft bounds what the sandbox *does* with a capability — a broker pins
-the identity and the operation set, never intent (§3.2) — nor what the sandbox
-writes into the target directory (§1.2f). The final wording is in D1.
-
-**Two clauses survive from Draft A regardless of which draft won, because both
-are definitional rather than structural:**
-
-> *Public material is not a secret.* A public key, username, email or host
-> fingerprint is generated into the sandbox on purpose. Without this said out
-> loud, D1's "no credential enters the sandbox" appears to forbid `known_hosts`,
-> the pinned `.gitconfig`'s `user.email`, and `hosts.yml`'s account name — all of
-> which snug generates deliberately and none of which is a credential.
-
-> *A broker stays small, snug's own, and reviewable — **never a user-supplied
-> script, and never a host command whose arguments the sandbox chose**.* The
-> second half is the one-line verdict on §3.3.2: an argv filter in front of a
-> real host binary is the shape this rule exists to refuse.
-
-**A sentence that belongs wherever this is written down**, because it is the
-failure mode this area actually has:
-
-> The failure mode of a missing or broken adapter is **"that tool has no
-> credentials inside"** — a hard error, visible and annoying. It is **never** a
-> fallback to injection. A fallback path is how deadline pressure reopens a hole
-> that was already closed once.
-
----
-
-## 5. Interactions with the profile model
+## 4. Interactions with the profile model
 
 - **A `broker` key needs sub-structure** (`host`, `listen`, `env`, a *secret
   reference*, an `allow` list) — MVY2 covered this. Additions: it would be the
@@ -782,16 +729,41 @@ failure mode this area actually has:
 
 ---
 
-## 6. Decisions — 2026-08-08
+## 5. Decisions — 2026-08-08
 
-### D1 (was Q1) — Draft B, with the weasel word removed. SETTLED.
+### D1 (was Q1) — the principle. SETTLED.
 
-Draft B wins: state the rule the measurements support rather than an absolute
-with an exception that swallows it. `@claude` therefore does **not** need
-renaming — that was Draft A's entire cost.
+**The problem being fixed.** MVY2's principle text is good and mostly worth
+keeping verbatim, but it is written as an absolute (*"No credential … is placed
+inside the sandbox"*) and then carries an exception (*"a profile may still stage
+a real credential"*) that swallows it. An invariant with an exception can only be
+checked by understanding where the exception applies — precisely the argument
+CLAUDE.md invariant 1 makes about `--read-only`.
 
-The owner's first phrasing was *"credentials SHALL NOT enter the sandbox **if
-possible**"*. `if possible` is struck: it is the only clause nobody can check,
+**Two drafts.** **Draft A** kept the absolute and made the exception a different
+noun: a profile whose name ends in `-credentials`, never in `defaults`, never
+implied by `include`, requiring `--i-know`. Attractive because the invariant
+stays checkable by grep — nothing outside `*-credentials` staging a credential —
+rather than by judgement; it lost because the absolute is a dishonest sentence
+for as long as `@claude` stages a credential, and the only fix is renaming
+`@claude`. **Draft B** — *"a sandbox may hold capabilities, never durable
+authority"* — states the rule the measurements support: a **capability** ends
+with the sandbox and cannot extend itself (the ssh-agent proxy is canonical), a
+**credential** outlives the run or can renew or widen itself, and the test is
+§2.3's A1 ∧ A2 in that order.
+
+**Draft B wins**, because it explains why ssh-agent is fine and
+`admin:public_key` is not without special-casing either, and with no false
+absolute. `@claude` therefore does **not** need renaming — that was Draft A's
+entire cost. Cost accepted: "capability" is a second noun, against the project's
+standing rule against second nouns for one concept — allowed because these are
+genuinely two concepts. Neither draft bounds what the sandbox *does* with a
+capability — a broker pins the identity and the operation set, never intent
+(§3.2) — nor what the sandbox writes into the target directory (§1.2f).
+
+**And the weasel word is struck.** The owner's first phrasing was *"credentials
+SHALL NOT enter the sandbox **if possible**"*. `if possible` goes: it is the only
+clause nobody can check,
 and it hands every future adapter author the right to decide what "possible"
 means for their own case — the same pressure that would put `@net` in
 `defaults`. The test replaces it. Final text:
@@ -824,6 +796,28 @@ today**: `@claude` currently copies `.credentials.json` whole
 its place by being the sentence a future adapter fails — "forward the request and
 filter the reply" is the design that always looks equivalent and never is; one
 missed message type and the filter is a sieve.
+
+**Two clauses survive from Draft A regardless of which draft won, because both
+are definitional rather than structural:**
+
+> *Public material is not a secret.* A public key, username, email or host
+> fingerprint is generated into the sandbox on purpose. Without this said out
+> loud, "no credential enters the sandbox" appears to forbid `known_hosts`, the
+> pinned `.gitconfig`'s `user.email`, and `hosts.yml`'s account name — all of
+> which snug generates deliberately and none of which is a credential.
+
+> *A broker stays small, snug's own, and reviewable — **never a user-supplied
+> script, and never a host command whose arguments the sandbox chose**.* The
+> second half is the one-line verdict on §3.3.2: an argv filter in front of a
+> real host binary is the shape this rule exists to refuse.
+
+**And the closing rule, because it is the failure mode this whole area actually
+has:**
+
+> The failure mode of a missing or broken adapter is **"that tool has no
+> credentials inside"** — a hard error, visible and annoying. It is **never** a
+> fallback to injection. A fallback path is how deadline pressure reopens a hole
+> that was already closed once.
 
 Surfacing, per the owner: `--dry-run` gets a SECRETS section (per-run: what this
 run places inside, and where — it is the only surface that knows the selection).
@@ -907,8 +901,8 @@ clear** — the D-Bus test the project already applies:
 2. Is the tool's config format one the vendor is likely to change under us? `gh`
    rewriting `hosts.yml` on first use cost real time. Cost is accepted only where
    the alternative is a leak.
-3. The failure mode of a missing or broken adapter is §4's closing rule: a hard,
-   visible error, **never** a fallback to injection.
+3. The failure mode of a missing or broken adapter is D1's closing rule: a
+   hard, visible error, **never** a fallback to injection.
 
 Also unchanged by D3: **profiles are already the extension point.** Anyone can
 write one in `profiles.d` today and stage their own credential with their own
@@ -917,7 +911,7 @@ brokering is the part that needs snug to be involved at all.
 
 ---
 
-## 6a. Open questions — the owner's to decide
+## 5a. Open questions — the owner's to decide
 
 **Q3 — what does `user:sessions:claude_code` grant? [unmeasured]** If it reads
 Claude Code sessions across the account, the access token's A4 is "read every
