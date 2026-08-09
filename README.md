@@ -42,8 +42,15 @@ hello from snug
 
 In 2026? Every code
 
-1. LLM agents - the worst kind of an untrusted code, which can make a decisions on its own, while
-   having a complete access to the system.
+* LLM agents - the worst kind of such code. It runs autonomously,
+  having a complete access to the system and the safeguards are just
+  _a prompt_. They're ever changing blackox prone to prompt injections,
+  manipulations and hallucinations.
+* Supply chain dependencies - everything allowing post-install scripts
+  (node, python, Ruby, ...) can get rogue and has been used to exfiltrate
+  the production secrets in the past.
+* A homework assigments, LLM code snippet, random post on web, curl | bash
+  installing instructions and so
 
 ## Why
 
