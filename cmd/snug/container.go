@@ -5,9 +5,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"snug/internal/dockerproxy"
-	"snug/internal/engine"
-	"snug/internal/policy"
+	"github.com/gomoni/snug/internal/dockerproxy"
+	"github.com/gomoni/snug/internal/engine"
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // containerSocketGuest is where the sandbox sees the proxy. A fixed path snug

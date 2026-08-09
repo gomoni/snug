@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"snug/internal/policy"
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // Strict decoding is a security control, not a style choice. If a key snug does

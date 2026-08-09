@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"snug/internal/policy"
-	"snug/internal/profile"
-	"snug/internal/sshproxy"
+	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/profile"
+	"github.com/gomoni/snug/internal/sshproxy"
 )
 
 // runtimeDir is a private per-run directory for sockets. Under

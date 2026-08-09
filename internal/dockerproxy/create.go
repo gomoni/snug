@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"snug/internal/policy"
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // maxBody bounds a request body read from the sandbox. Unbounded, it is a

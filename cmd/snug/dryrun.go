@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"snug/internal/policy"
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // dryRun is not a debugging convenience. It is the mechanism by which a human

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"syscall"
 
-	"snug/internal/policy"
-	"snug/internal/profile"
+	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/profile"
 )
 
 // needsHostTmpDir reports whether any selected profile refers to the

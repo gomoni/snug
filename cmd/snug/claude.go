@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"snug/internal/policy"
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // claudeFiles stages Claude Code's writable state and injects the guidance file.
