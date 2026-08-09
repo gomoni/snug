@@ -153,3 +153,111 @@ func TestDryRunAnnotationDoesNotUnderstateWriteAccess(t *testing.T) {
 		t.Errorf("HOME lists tmpfs children as if they were surprises: %q", got)
 	}
 }
+
+// captureFile runs fn with an *os.File --dry-run's describe* helpers can
+// write to (they take *os.File, matching os.Stdout, not io.Writer) and
+// returns what it wrote.
+func captureFile(t *testing.T, fn func(*os.File)) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "dryrun-capture-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	fn(f)
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// TestDescribeCommandsNamesTheStagedStub is the --dry-run review artifact for
+// the podman dispatcher stub: it must be legible as "a new executable is
+// running before the tool you typed", not just a line in FILESYSTEM that
+// happens to read "exec" instead of "data" (CLAUDE.md's staged-executable
+// abuse sentence, CONTAINER-CLIENT.md §8).
+func TestDescribeCommandsNamesTheStagedStub(t *testing.T) {
+	reg := loadTestRegistry(t)
+	home, target := testTree(t)
+	ctx := policy.Context{
+		Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"},
+		HostShims: []policy.HostShim{
+			{Name: "podman", Path: "/usr/bin/podman", Resolved: "/usr/bin/distrobox-host-exec"},
+		},
+	}
+	p, err := policy.Resolve(reg, []string{"@sys", "@home", "@cwd-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	got := captureFile(t, func(f *os.File) { describeCommands(f, p) })
+	if !strings.Contains(got, "COMMANDS") {
+		t.Fatalf("no COMMANDS block: %q", got)
+	}
+	if !strings.Contains(got, policy.PodmanStubDir+"/podman") {
+		t.Errorf("COMMANDS block does not name the staged path: %q", got)
+	}
+	if !strings.Contains(got, "read-only") {
+		t.Errorf("COMMANDS block does not say the stub is read-only: %q", got)
+	}
+	if !strings.Contains(got, "/usr/bin/podman") || !strings.Contains(got, "UNTOUCHED") {
+		t.Errorf("COMMANDS block does not say /usr/bin/podman is untouched: %q", got)
+	}
+
+	// CONTROL: without a detected shim, no podman profile grants a stub, and
+	// the block must not print at all — a block that always prints proves
+	// nothing about the staging condition.
+	plain := resolveFor(t, []string{"@sys", "@home", "@cwd-rw"})
+	if got := captureFile(t, func(f *os.File) { describeCommands(f, plain) }); got != "" {
+		t.Errorf("COMMANDS block printed with no stub staged: %q", got)
+	}
+}
+
+// TestFilesystemBlockRendersTheStubAsExec pins the dry-run-only kind
+// rendering: a KindData mount with an executable permission bit reads "exec"
+// in the FILESYSTEM block, not "data" — the one visual cue that this line is
+// code rather than config, without a human having to notice a permission
+// column.
+func TestFilesystemBlockRendersTheStubAsExec(t *testing.T) {
+	reg := loadTestRegistry(t)
+	home, target := testTree(t)
+	ctx := policy.Context{
+		Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"},
+		HostShims: []policy.HostShim{
+			{Name: "podman", Path: "/usr/bin/podman", Resolved: "/usr/bin/distrobox-host-exec"},
+		},
+	}
+	p, err := policy.Resolve(reg, []string{"@sys", "@home", "@cwd-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	args := p.BwrapArgs(0, 0)
+
+	// dryRun writes to os.Stdout directly rather than taking a writer, so
+	// this redirects the real thing for the duration of the call.
+	orig := os.Stdout
+	f, err := os.CreateTemp(t.TempDir(), "dryrun-stdout-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = f
+	dryRun(p, args, config{}, nil)
+	os.Stdout = orig
+	f.Close()
+	b, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(b)
+
+	if !strings.Contains(got, "exec   "+policy.PodmanStubDir+"/podman") {
+		t.Errorf("FILESYSTEM block does not render the stub as kind 'exec':\n%s", got)
+	}
+	if strings.Contains(got, "data   "+policy.PodmanStubDir+"/podman") {
+		t.Errorf("FILESYSTEM block still renders the stub as kind 'data'")
+	}
+}

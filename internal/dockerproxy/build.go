@@ -93,6 +93,16 @@ var buildParams = map[string]buildParamCheck{
 	// ── the Dockerfile, which must stay inside the context ───────────────
 	"dockerfile": checkDockerfile,
 
+	// "version" selects which BUILDER handles the request, not a capability —
+	// same shape as "isolation" and "networkmode" below, which is why it is a
+	// checked selector and not a bare `nil`. `1` is the classic builder, which
+	// POSTs the tar to THIS endpoint and is the one snug's filter reads;
+	// `docker build` sends it on every request once DOCKER_BUILDKIT=0 forces
+	// the classic path (see cmd/snug/container.go). `2` selects a BuildKit
+	// backend whose option surface is a different set from the one enumerated
+	// here and is refused by name rather than silently accepted.
+	"version": checkBuilderVersion,
+
 	// ── ordinary build behaviour, none of it host-reaching ───────────────
 	"buildargs": nil, "labels": nil, "target": nil, "platform": nil,
 	"nocache": nil, "rm": nil, "forcerm": nil, "layers": nil, "squash": nil,
@@ -386,6 +396,23 @@ func checkSeccompProfile(p *Proxy, v string) error {
 			"profile must be one the sandbox can read but did not author", v)
 	}
 	return nil
+}
+
+// checkBuilderVersion allows only the classic builder. `version=2` selects
+// BuildKit, whose options (secrets, mounts, cache imports, exporters) are a
+// DIFFERENT SET from the ones buildParams enumerates here — accepting it
+// would mean this allowlist stopped being the whole story for a request
+// that took that path. `""` is the CLI's own default when the flag is not
+// sent at all, and is treated the same as `1`.
+func checkBuilderVersion(_ *Proxy, v string) error {
+	switch strings.TrimSpace(v) {
+	case "", "1":
+		return nil
+	}
+	return fmt.Errorf("%q is not permitted: `version` selects the BUILDER, and `2` is "+
+		"BuildKit — a backend whose build options are a different set from the ones snug "+
+		"filters here. Only the classic builder (version 1, docker's DOCKER_BUILDKIT=0 path) "+
+		"is supported", v)
 }
 
 // checkIsolation allows only the default. `--isolation chroot` sends 2, and an

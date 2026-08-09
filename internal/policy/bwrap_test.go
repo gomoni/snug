@@ -18,19 +18,30 @@ func TestGoldenBwrapArgs(t *testing.T) {
 	cases := []struct {
 		name string
 		sel  []string
+		ctx  Context
 	}{
-		{"sys", []string{"@sys", "@cwd-rw"}},
+		{"sys", []string{"@sys", "@cwd-rw"}, testCtx()},
 		// What a bare `snug <dir>` produces: the `defaults` setting. It is
 		// byte-identical to the parent-ro case today, because `home` arrives via
 		// `cwd-rw` anyway — but this is the file that changes if the shipped
 		// defaults ever do, which is the diff a human most needs to see.
-		{"defaults", testDefaults},
-		{"parent-ro", []string{"@sys", "@cwd-rw", "@parent-ro"}},
+		{"defaults", testDefaults, testCtx()},
+		{"parent-ro", []string{"@sys", "@cwd-rw", "@parent-ro"}, testCtx()},
+		// No prior golden selected a podman profile at all, so this is the
+		// review artifact for the whole podman-client change: the container
+		// proxy socket AND the staged dispatcher stub (this fixture's host
+		// detects podman as a distrobox shim — see testCtxWithPodmanShim),
+		// including its PATH placement ahead of the base but behind nothing
+		// else this selection grants.
+		{"podman-socket", []string{"@sys", "@cwd-rw", "@podman-socket"}, testCtxWithPodmanShim()},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p := mustResolve(t, tc.sel...)
+			p, err := Resolve(testRegistry(), tc.sel, tc.ctx, newFakeEnv())
+			if err != nil {
+				t.Fatalf("Resolve(%v): %v", tc.sel, err)
+			}
 			got := goldenFormat(p.BwrapArgs(1000, 1000))
 
 			path := filepath.Join("testdata", tc.name+".bwrap.txt")

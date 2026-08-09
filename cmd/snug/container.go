@@ -57,6 +57,23 @@ func startContainers(pol *policy.Policy, verbose bool) (cleanup func(), err erro
 	// speaking the compat API finds the same proxy. snug targets podman.
 	pol.Env["CONTAINER_HOST"] = "unix://" + containerSocketGuest
 	pol.Env["DOCKER_HOST"] = "unix://" + containerSocketGuest
+	// DOCKER_BUILDKIT=0 is a TIGHTENING, not a convenience: with BuildKit on
+	// (docker's own default), `docker build` never POSTs to /build at all — it
+	// tries to boot a moby/buildkit builder CONTAINER instead, and negotiates
+	// build options over a buildkit session the /build query-string filter in
+	// internal/dockerproxy never inspects. Forcing the classic path is what
+	// makes `docker build` go through the one endpoint snug actually filters.
+	//
+	// It is also attacker-overridable: the payload can set
+	// DOCKER_BUILDKIT=1 itself and boot a buildkit builder (its `create` is
+	// still filtered), then negotiate `RUN --mount=type=bind,...` over the
+	// buildkit session — a channel the /build filter cannot see. So this
+	// default is not the only backstop; it narrows the common case, and the
+	// buildkit session itself is not something snug filters at all.
+	//
+	// (This function already returned above when pol.Podman == PodmanOff, so
+	// setting it unconditionally here is correct, not merely convenient.)
+	pol.Env["DOCKER_BUILDKIT"] = "0"
 
 	return func() { p.Close(); eng.Stop() }, nil
 }

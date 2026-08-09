@@ -254,6 +254,30 @@ func TestBothBuildPathsAreFiltered(t *testing.T) {
 	}
 }
 
+// `version` selects the BUILDER, not a capability — the classic one (1, or
+// unsent) is what `docker build` uses once DOCKER_BUILDKIT=0 forces the
+// legacy path (cmd/snug/container.go), and it is the endpoint this filter
+// actually reads. `2` selects BuildKit, whose options are a different set
+// from the ones buildParams enumerates, so it is refused by name rather than
+// silently accepted — accepting it would make this whole allowlist not the
+// full story for a request that took that path.
+func TestBuildVersionSelectorAllowsClassicOnly(t *testing.T) {
+	sock, eng, _ := startBuildProxy(t)
+
+	for _, v := range []string{"", "1"} {
+		before := eng.reached.Load()
+		code, resp := post(t, sock, buildURL("version="+v), "")
+		if code != 200 {
+			t.Fatalf("version=%q (the classic builder) was refused (status %d): %s", v, code, resp)
+		}
+		if eng.reached.Load() == before {
+			t.Fatalf("version=%q never reached the engine", v)
+		}
+	}
+
+	refuse(t, sock, eng, buildURL("version=2"), "", "BuildKit")
+}
+
 // Every validator in the allowlist must be exercised by a case above. A check
 // nothing tests is a check that can rot, and this file's whole claim is that
 // the dangerous parameters are judged rather than merely listed.
@@ -262,7 +286,7 @@ func TestEveryBuildValidatorIsExercised(t *testing.T) {
 	covered := map[string]bool{
 		"volume": true, "volumes": true, "additionalbuildcontexts": true,
 		"networkmode": true, "nsoptions": true, "seccomp": true,
-		"isolation": true, "dockerfile": true, "secrets": true,
+		"isolation": true, "dockerfile": true, "secrets": true, "version": true,
 	}
 	for name, check := range buildParams {
 		if check == nil || isFlatRefusal(name) {

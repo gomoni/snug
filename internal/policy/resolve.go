@@ -295,6 +295,33 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 		p.Net.Publish = sortedInts(publish)
 	}
 
+	// 3b. If podman resolves to a host-escape shim on this host AND a podman
+	// profile is selected, stage a dispatcher stub ahead of it on PATH rather
+	// than leave a binary that fails cryptically from inside. Gated on
+	// p.Podman so a sandbox that never asked for containers never sees it.
+	// See podmanstub.go and CONTAINER-CLIENT.md §8 for the abuse sentence and
+	// the two load-bearing constraints (unwritable; every message says
+	// "stub").
+	stubPathDir := ""
+	if p.Podman != PodmanOff {
+		for _, shim := range ctx.HostShims {
+			if shim.Name != "podman" {
+				continue
+			}
+			content, err := podmanStubScript(shim)
+			if err != nil {
+				return nil, err
+			}
+			perm := uint32(0755)
+			p.Replace(Mount{
+				Guest: PodmanStubDir + "/podman", Kind: KindData, Access: AccessRO,
+				Perms: &perm, Content: []byte(content), From: []string{"(snug)"},
+			})
+			stubPathDir = PodmanStubDir
+			break
+		}
+	}
+
 	// 4. Mounts snug authors ITSELF, in every sandbox. /proc needs the pid
 	//    namespace to be meaningful; /dev is bwrap's synthetic minimal set,
 	//    never a bind of the host's (which would hand over every block device
@@ -371,8 +398,16 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	// so a profile-provided tool wins over a distro one of the same name — that
 	// is the point of asking. Sorted, because a set has no order and resolution
 	// must not invent one: two profiles contributing directories must produce
-	// the same PATH whichever order they were named in.
-	p.Env["PATH"] = strings.Join(append(sortedKeys(pathDirs), basePATH...), ":")
+	// the same PATH whichever order they were named in. The podman stub's
+	// directory goes NEXT, after every profile entry and before the base: it
+	// must beat /usr/bin/podman, which is its whole job, and must LOSE to any
+	// profile entry, because a profile entry is an explicit human grant and the
+	// stub is snug's own generated fallback.
+	pathEntries := sortedKeys(pathDirs)
+	if stubPathDir != "" {
+		pathEntries = append(pathEntries, stubPathDir)
+	}
+	p.Env["PATH"] = strings.Join(append(pathEntries, basePATH...), ":")
 	p.Env["USER"] = envOr(env, "USER", "user")
 	p.Env["LOGNAME"] = p.Env["USER"]
 	p.Env["SHELL"] = ctx.Shell

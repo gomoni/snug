@@ -67,4 +67,34 @@ type Context struct {
 	// It lives in Context rather than being read inside Resolve so that argv
 	// generation stays a pure function and the golden tests stay deterministic.
 	LegacyTIOCSTI bool
+
+	// HostShims records commands snug looked up on PATH that resolve to a
+	// host-escape helper (distrobox-host-exec, host-spawn, flatpak-spawn)
+	// rather than the genuine binary — detected by cmd/snug via
+	// exec.LookPath + filepath.EvalSymlinks. When podman is one of these AND
+	// a podman profile is selected, Resolve stages a dispatcher stub ahead of
+	// it on PATH (see podmanstub.go and CONTAINER-CLIENT.md §8) rather than
+	// leaving a binary that fails with a message naming neither cause.
+	//
+	// It lives in Context, exactly like LegacyTIOCSTI and for the same
+	// reason: the lookup is impure (PATH search, symlink resolution), and
+	// Resolve must stay a pure function of its inputs so the golden tests
+	// stay deterministic.
+	HostShims []HostShim
+}
+
+// HostShim is one command snug found on PATH that resolves to a host-escape
+// helper rather than a genuine binary. The trigger is resolving to one of a
+// short, named list of helpers — NOT "is a symlink": ordinary symlinks
+// (/bin -> usr/bin, vi -> vim) are common and harmless, while a host-escape
+// helper cannot work from inside a sandbox at all (it forwards to a socket
+// or bus the sandbox correctly cannot see).
+//
+// Detection is impure and lives in cmd/snug (exec.LookPath +
+// filepath.EvalSymlinks); this is the value it carries into Context so
+// Resolve can stay pure. See CONTAINER-CLIENT.md §8.
+type HostShim struct {
+	Name     string // the command snug looked up, e.g. "podman"
+	Path     string // exec.LookPath's answer
+	Resolved string // Path after filepath.EvalSymlinks
 }

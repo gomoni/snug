@@ -144,6 +144,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.handleVolumeCreate(w, r)
 	case isImageCreate(segs):
 		p.handleImageCreate(w, r)
+	case isArchive(segs):
+		// A specific refusal, not the generic one below: this endpoint is
+		// permanently refused (see the case "archive", "export" comment in
+		// allowed()), and the generic message would leave a reader guessing at
+		// an alternative. There is one, and it goes through the mount boundary
+		// this proxy actually enforces.
+		p.deny(w, "the container archive endpoint (%s /%s) is not permitted; it is "+
+			"serviced by the ENGINE, outside the sandbox, as the host uid, so it is not "+
+			"bounded by this sandbox's mount grants the way `exec` is. Read or write the "+
+			"file with `docker exec <container> cat <path>` or `... | docker exec -i "+
+			"<container> tar -x ...` instead.", r.Method, strings.Join(segs, "/"))
 	case allowed(segs):
 		p.forward(w, r, nil)
 	default:
@@ -236,6 +247,14 @@ func isImageCreate(s []string) bool {
 	return len(s) == 2 && s[0] == "images" && s[1] == "create"
 }
 
+// isArchive matches GET/PUT /containers/{id}/archive — `docker cp`'s
+// endpoint. Matched separately from allowed() (which already refuses it, see
+// the case "archive", "export" comment below) purely so the refusal can name
+// the alternative rather than fall through to the generic "not permitted".
+func isArchive(s []string) bool {
+	return len(s) >= 3 && s[0] == "containers" && s[2] == "archive"
+}
+
 // handleImageCreate separates a pull from an import.
 //
 //	?fromImage=alpine&tag=latest   a pull from a registry — allowed
@@ -291,9 +310,17 @@ func allowed(segs []string) bool {
 		if len(segs) >= 3 {
 			switch segs[2] {
 			case "archive", "export":
-				// Direct host-filesystem read/write channels: archive copies
-				// files in and out of a container by path, and export streams a
-				// whole filesystem. Neither is bounded by the mount policy.
+				// NOT because these are "unbounded by the mount policy" — that
+				// reasoning, which used to live here, would indict `exec`
+				// equally, and `exec` is (correctly) allowed below. The real
+				// distinction is WHERE the request runs and AS WHOM: archive and
+				// export are serviced by the ENGINE, outside the sandbox, as the
+				// HOST UID — not confined by the container's own mount namespace
+				// the way `exec` is — and archive path resolution is the home of
+				// the CVE-2018-15664 symlink-escape class. Allowing it would rest
+				// safety on PODMAN's path resolution rather than on snug's own
+				// boundary (redteam, CONTAINER-CLIENT.md §9). isArchive() above
+				// gives the refusal a named alternative; this stays a hard no.
 				return false
 			case "commit", "update":
 				// commit turns a container into an image snug never inspected;
