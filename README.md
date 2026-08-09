@@ -3,34 +3,59 @@
 > *fitting closely and comfortably* · *marked by cordiality and secure privacy* ·
 > *offering safe concealment* · *a small private room in a pub*
 
-An unprivileged sandbox for running **untrusted code**: a build you did not
-write, a dependency's install hook, a test suite from a repository you just
-cloned, a `Makefile` off the internet — or an AI agent. One Go binary, no root,
-no daemon, no setuid. It reads a policy, builds a `bubblewrap` command line, and
-runs the thing in a world that contains your project and almost nothing else.
+[Merriam-Webster on snug](https://www.merriam-webster.com/dictionary/snug)
 
-Nothing in the model is agent-specific. There is a `@claude` profile because that
-is a common case worth smoothing, and others will follow, but an AI agent is
-just one more piece of code you would rather not hand your `~/.ssh` to.
+## What is it
 
-```console
-$ snug ~/src/myproject
-🔒 snug:~/src/myproject$ ls ~/.ssh
+A sandbox for running an **untrusted code** on modern Linux machines. As
+seamless experience as possible. It works without `root`, without any daemon,
+without an installation. Static linked binary written in Go, which
+
+1. reads the policy - aka _profiles_
+2. builds a cli arguments for `bwrap`, which confines the access to the
+    filesystem
+3. provides a proxy or wrappers for well known services including `ssh-agent`
+    or `podman` socket, ensuring `ssh` or `podman`/`docker` CLI can be
+    safely used from the sandbox.
+4. can use a private network namespace via `pasta`
+5. supports running Claude Code via `@claude` profile
+
+```bash
+echo "hello" > hello
+snug ~/src/myproject
+
+# sandbox hides and protects the filesystem
+🔒 snug:~/src/myproject> ls ~/.ssh
 ls: cannot access '/home/you/.ssh': No such file or directory
+🔒 snug:~/src/myproject$ echo "hello" > ../hello
+bash: ../hello: Read-only file system
+🔒 snug:~/projects/plainsof/cv/snug$
+
+# yet allow a write access to cwd by default
+🔒 snug:~/src/myproject$ cat hello
+hello
+🔒 snug:~/src/myproject$ echo "hello from snug" > hello
+hello from snug
 ```
 
-Not permission denied. **Absent.** It was never mounted.
+### What is untrusted code
+
+In 2026? Every code
+
+1. LLM agents - the worst kind of an untrusted code, which can make a decisions on its own, while
+   having a complete access to the system.
 
 ## Why
 
-`bubblewrap` can already build that sandbox. It just takes forty arguments in the
-right order, and getting one wrong fails open rather than closed. snug's job is
-to let a human write a *policy* once — a named, reusable, reviewable thing — and
-stop thinking about mount mechanics.
+There is no tool I was aware about, which would match all points
 
-The other half of the job is that you should not have to take snug's word for
-any of it. `snug --dry-run` prints the resolved policy and the exact command
-line, having started nothing.
+1. Easy to use - `bwrap` is an excellent sandboxing tool on its own. Yet
+   building the proper CLI invocation is anything than easy.
+2. Sharing as much as environment with a regular system as possible.
+3. Easy to poke holes into the sandbox, so developer flow feels like being
+   on unrestricted host system, rather than inside sealed sandbox.
+4. Must be compatible with `distrobox`.
+5. It should enable users to inspect what command is supposed to do.
 
 ## Quick start
 
@@ -56,45 +81,26 @@ snug -p @tmp-shared ~/src/proj         # a /tmp that survives, shared with futur
 snug --dry-run -p @net ~/src/proj      # print the policy and the exact bwrap line; start nothing
 ```
 
-A leading `@` marks a profile **snug ships**. Yours, written in
-`~/.config/snug/profiles.d`, carry no mark — so wherever a profile name appears
-(the command line, `--dry-run` provenance, `$SNUG_PROFILES` inside the sandbox)
-you can see at a glance whether a grant is snug's or something on this host
-defined it. The two namespaces cannot collide: no file may define an `@` name,
-and every builtin has one.
-
-`-p` **adds** to the `defaults` setting — a bare `snug <dir>` selects
-`@sys @home @cwd-rw @parent-ro`, which is what makes snug usable by just running it.
-`--no-defaults` declines that selection entirely and starts from nothing; it is
-deliberately an explicit, unusual act, because running without the standard set
-is unusual. `snug config` prints the effective list and where it came from.
-
-There is no flag that grants *less*. Profiles only ever grant; to grant less,
-select fewer profiles. A read-only project is
-`snug --no-defaults -p @sys -p @home -p @parent-ro <dir>` — verbose on purpose,
-because a read-only cwd is possible but highly nonstandard.
-
 ## The model
 
-**Share nothing. Then punch explicit, named, minimal holes until it is useful.**
+The default is **share nothing** and then define a named minimal holes aka
+***profiles** which make the sandbox less contained and more useful.
 
 The base state is an empty tmpfs root, an empty network namespace, and an empty
 environment. Nothing is inherited. A profile is a *named hole*.
 
-There is no deny rule, no `mask`, no negation — because there is nothing to
-deny. `@parent-ro` does not hide your other projects; it never grants them. Which
-means:
+![TODO] the `./bin/snug --no-defaults . -- ./bin/snug doctor` MAY work.
 
-- **Adding a profile can never make a path stop being visible.** You can compose
-  profiles without reading every one of them.
-- **Order never matters.** `snug -p a -p b` and `snug -p b -p a` produce a
-  byte-identical sandbox.
-- **A missing capability is a feature.** No X11, no Wayland, no D-Bus, no host
-  loopback, no `~/.ssh` — stated plainly, not apologised for.
+The profiles themselves are supposed to be easy
 
-When you want *"X but not Y"*, that means X was too coarse a grant. Grant the
-parts of X you meant, or grant X read-only and the parts you want to write
-separately.
+1. They're declarative - no fancy programming language, no conditionals
+2. Order does not matter
+3. Profile can include others, but this is to enable a reusability
+4. Profile can never exclude or disable access
+5. Profile conflicts are hard fails. Some conflicts like the same path requested
+   as `ro` and `rw` are _coerced_ to `rw`.
+6. They're restricted to ascii alphanumeric characters, hyphen (-) and those starting
+   with `@` are `snug`'s own builtin.
 
 ## Profiles
 
@@ -120,45 +126,29 @@ $ snug profile dot | dot -Tpng -o profiles.png
 | `@podman-socket` | Run containers, via a filtering proxy over a per-sandbox engine. |
 | `@podman-build` | As `@podman-socket`, plus `podman build` with a filtered option set. |
 
-There is deliberately **no `@default` profile, and no `@null` profile either**.
-A default selection is a preference and a profile is a grant — one idea, one
-mechanism — and the floor of the lattice (grant nothing) is not something a
-profile needs to name: it is what resolving an empty selection already gives
-you, reachable directly with `--no-defaults`. What a bare `snug <dir>` selects
-is the `defaults` *setting*, not a grant:
+### Default profiles
+
+Those are implicitly used unless `--no-defaults` are specified and makes
+the CLI a bit shorter to type. This REPLACES the builtin defaults.
 
 ```toml
 # ~/.config/snug/config.toml — preferences, never grants
 defaults = ["@sys", "@home", "@cwd-rw", "@parent-ro"]
 ```
 
-Setting it REPLACES the built-in list rather than merging with it, so you can
-have fewer defaults than snug ships with. `@net` is not in the list and should
-not be added to it: offline is the *absence* of the `@net` profile, so it cannot
-be switched back on by accident — `snug -p @net` is one word.
+### Own profile
 
-Write your own in `~/.config/snug/profiles.d/*.toml`:
+Write your own in `~/.config/snug/profiles.d/srv-rw.toml`:
 
 ```toml
-[profile.srv-rw]                # yours: no @, and snug refuses one if you write it
+[profile.srv-rw]
 description = "The directories my build reaches outside the project."
-include = ["@net"]    # the `defaults` are selected too; -p adds to them
-rw = ["/srv", "/opt/cache"]
-
-# All of /etc, including the distro's shell startup scripts — which then RUN
-# inside the sandbox. Not a builtin: it is one line, and the cost is yours to
-# accept.
-[profile.etc-full]
-ro = ["/etc"]
+include = ["@net"]    # enable networking
+rw = ["/srv/project", "/opt/cache/project"]
 ```
 
-Then `snug -p srv-rw ~/src/proj`. Profiles compose with `include`, and a config
-file may add names but never redefine one from a layer below it. Redefining a
-*builtin* is not even expressible: `@sys` is a name no file can write, so a
-profile of your own called `sys` is simply yours.
-
-Repo-local config is **never** auto-loaded. A repository that could ship its own
-profile would be granting itself permissions.
+Then `snug -p srv-rw ~/src/proj` will mount `/srv/project` and
+`/opt/cache/project` as read-write and enable the networking.
 
 ## Networking
 
@@ -187,17 +177,12 @@ squat `127.0.0.1:8080` ahead of your own dev server. A `@net-publish` profile
 that did exactly that used to ship, and it never forwarded a single port — see
 `internal/profile/profiles/base.toml` for why.
 
-## What it defends, and what it does not
+## What snug defends against
 
-Designed against **code you are running but do not fully trust**: a build script
-from a repository you just cloned, a dependency's install hook, a test suite, or
-an AI agent that read a hostile README and did what it was told. It contains what
-that process can read, write and reach.
-
-An AI agent is the sharpest version of the problem, because it is *supposed* to
-run arbitrary commands — "just don't run untrusted code" is not advice you can
-follow. But a postinstall script is untrusted in exactly the same way, and gets
-exactly the same boundary.
+The first and most important aspect is that it prevents a filesystem access. So
+no `~/.ssh`, no `~/.aws`, no browser or desktop keyring, no tokens, no
+`~/Documents` or `~/.bashrc` access. By a design it prevents an access to Wayland,
+systemd, PulseAudio, X11 or any other sockets, which can be used for a sandbox escape.
 
 | defended | how |
 |---|---|
@@ -207,65 +192,43 @@ exactly the same boundary.
 | X11 keylogging, D-Bus, the desktop session | not mounted; netns-scoped |
 | host persistence (`.bashrc`, autostart, cron) | `$HOME` is an ephemeral tmpfs |
 
-**Not** a defence against kernel 0-days, and **not** a boundary against a
-determined human attacker — everything runs as your uid, so anything that
-escapes has your authority. Use a VM if you need a real boundary.
+## What snug does not defends against
 
-And the project directory is writable by definition: an agent can always poison
-the code it is working on. Review your diffs.
+Kernel zero days - the security perimeter is a Linux itself, so escape by
+exploit is possible. Run the VM if expects more strict isolation though.
 
-## Verifying it yourself
+## Verifying the sandbox
 
-A sandbox you have not personally tried to break is one you are trusting on
-someone's word. [`VERIFY.md`](VERIFY.md) is a hands-on checklist —
-every command was run on a real host, with the output it should produce.
+[`VERIFY.md`](VERIFY.md) constains a set of instructions for humans to test the
+sandbox.
 
 The project also keeps an in-house red team (`.claude/agents/redteam.md`) whose
 job is to escape. It runs before every milestone lands, and it keeps earning its
-keep. A sample: a host-environment leak readable at `/proc/1/environ`; a masking
-rule that covered one of two spellings; a seccomp filter that was requested but
-never installed; a directory on stdin that bypassed every mount grant; a
-`clone3` call that created a nested user namespace; a `--secret` source that
-climbed out of the build context with `..` and read an arbitrary host file.
+keep. 
 
-**Every one was in code that had been written and tested, with the tests
-passing.** Twice the red team has broken a fix within the hour of it landing —
-once because `strings.ToLower` is narrower than the fold `encoding/json` uses,
-so a lookalike Unicode letter smuggled a field past the filter that had just
-been written to stop exactly that. Each finding is now a permanent regression
-test, and each was verified to fail against the code that preceded it.
+ * a host-environment leak readable at `/proc/1/environ`
+ * a masking rule that covered one of two spellings
+ * a seccomp filter that was requested but never installed
+ * a directory on stdin that bypassed every mount grant
+ * a `clone3` call that created a nested user namespace
+ * a `--secret` source that climbed out of the build context with `..` and
+   read an arbitrary host file.
+ * and so on
 
 ## Status
 
-**M5.** Filesystem isolation, seccomp hardening, networking, scoped git/ssh/gh
-identity, containers, and `podman build` all work. The container engine belongs
-to one sandbox, dies with it, and never touches the host's images or containers;
-a build cannot bind a host path, take a device, or join the host network.
+This is alpha status - while the basic concept feels solid, more real world usage are needed.
 
-**Being hardened, and honestly not finished.** The container proxy is the newest
-surface and is treated as such. Four escapes have been found through it and
-closed, each with a regression test: a create request that skipped the whole
-filter by carrying an `Upgrade:` header, case-variant JSON keys that beat an
-exact-key denylist, a Unicode lookalike that beat the *fix* for that, and a
-`--secret` source that climbed out of the build context and read an arbitrary
-host file. It has now been through several red-team rounds — but it is still the
-part to trust least, because it is the part where the interesting bugs keep
-being found.
+The builtin profiles, their dependencies, CLI or an ability to attach to an existing sandbox - all of this
+may be refined in the near future.
 
-**Known-open, and written down rather than glossed:** the read side of `/proc`
-leaks more than a container runtime's default, and a profile can currently
-displace snug's own `/proc` and `/dev` mounts — both contradict the monotonicity
-invariant as written, and both are cheap refusals-to-add rather than new
-machinery. [`.claude/design/PSEUDOFS-AUDIT.md`](.claude/design/PSEUDOFS-AUDIT.md) is the full report;
-[`TODO.md`](TODO.md) is the ledger. `/sys` is absent by construction and `/dev`
-is a 14-entry synthetic tree — both verified, both stronger than the docs
-claimed.
+## TODO
 
-**Not planned.** Passing through a GUI, audio or D-Bus socket — Wayland,
-PulseAudio, X11 — is out of scope. Proxying those protocols safely is a large
-project on its own, and a filtering proxy that is 95% correct is a sandbox that
-is 0% sound. The private network namespace already keeps them out; that is a
-property to keep, not a gap to close.
+ * how to properly deal with [secrets](.claude/design/SECRETS.md)
+ * [podman network](.claude/design/ENGINE-NETNS.md)
+ * environment variable handling
+ * tighten the podman build
+ * better defined identities - requires secrets to be final
 
 ## Documentation
 
