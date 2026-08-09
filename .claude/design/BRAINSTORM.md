@@ -43,9 +43,12 @@ not a decision anyone made about search precedence. A profile author who cares
 which of their two directories wins has no way to say so, and no way to find out
 they have no way.
 
-**(b) `/run/snug/bin` is a Go constant, and on `main` it is gated only on
-`p.Podman`.** `Resolve` appends `PodmanStubDir` after the sorted set whenever a
-podman profile is selected. So the *mechanism* generalises — any profile may
+**(b) `/run/snug/bin` is a Go constant, gated in Go.** `Resolve` appends
+`PodmanStubDir` after the sorted set when **both** `p.Podman != PodmanOff` **and**
+`ctx.HostShims` contains a detected `podman` shim (`resolve.go:305-322`; the
+second half has its own test). On a host where podman is a real binary rather
+than a distrobox shim, `/run/snug/bin` never appears at all. So the *mechanism*
+generalises — any profile may
 prepend a directory — while the one instance snug ships does not use it. The
 reason is not that builtins are special: the required order is *profile entries,
 then snug's, then base*, and `path` cannot express it, because `path` entries are
@@ -326,6 +329,171 @@ grants, otherwise **unset**. That is the same criterion §7F uses to scope
 operation that repairs §2's three live instances. Excluding it would have put the
 one class of variable with a measured dangling-path problem outside the scope of
 the one new capability being proposed.
+
+---
+
+## 3a. Reference taxonomy — the variables that matter, by type
+
+*Companion to §3. §3 argues the type decides the algebra; this is the type table.
+Measured on this host (bash 5.3.15, glibc 2.43, Python 3.13.14, perl 5.44.0, node
+26.4.0, go 1.26.5, git 2.55.0, man-db 2.13.1) unless marked **unverified**.*
+
+Operations: **author** (snug writes it from policy), **pass** (copy the host's),
+**sanitise** (inherit, rebuild from granted elements), **±** (prepend/append).
+
+### 3a.1 There are three states, not two — and for `PATH` none of them is safe
+
+*unset*, *set to empty*, *set with an empty element*, *set*. Not interchangeable,
+and the mapping differs per variable. §3(d) ended "unset rather than empty". That
+is **half right**, and the other half inverts:
+
+```
+env -i PATH="" ./execvp_probe   →  PWD-BINARY-RAN        # empty = the CWD
+env -i         ./execvp_probe   →  rc=7                  # unset = confstr(_CS_PATH)
+
+env -i /bin/bash --noprofile --norc -c 'echo "${PATH-UNSET}"'
+  /usr/local/bin:/usr/bin:/bin:.                          # ← bash's compiled-in default
+env -i /bin/bash --noprofile --norc -c 'command -v victim'
+  ./victim
+```
+
+For `execvp` unset is the safe floor and empty is the CWD. For **bash** unset is
+*worse*, because it substitutes `DEFAULT_PATH_VALUE`, which on this distro build
+ends in `.`. So **`PATH` has no safe absent state at all** — it must always be
+authored, and `sanitise` must be unable to produce either degenerate value.
+
+### 3a.2 Lists — search paths
+
+"→ CWD" means the empty element resolves to the current directory, which inside
+snug is the target: the writable thing a hostile payload controls.
+
+| variable | sep | empty element | author | pass | sanitise | note |
+|---|---|---|---|---|---|---|
+| `PATH` | `:` | **→ CWD** (POSIX: a zero-length prefix indicates the cwd) | ✓ | ✗ | ⚠ rebuild only | no safe absent state |
+| `LD_LIBRARY_PATH` | **`:` or `;`** | **→ CWD** | ⚠ | ✗ | ✗ | `ld.so(8)`: two separators, **no escaping** |
+| `LD_PRELOAD` | **`:` or space** | n/a | ✗ | ✗ | ✗ | a path with a space is inexpressible |
+| `MANPATH` | `:` | **an OPERATOR** — leading = prepend system path, trailing = append, `::` = insert here | ✓ | ✗ | **✗** | see below |
+| `INFOPATH` | `:` | trailing only = system default | ✓ | ✗ | ⚠ | **unverified** |
+| `CDPATH` | `:` | **→ CWD, positionally** | ⚠ | ✗ | ✗ | affects every `cd sub` |
+| `PKG_CONFIG_PATH` | `:` | **ignored** | ✓ | ✗ | ✓ | cleanest in the set |
+| `PYTHONPATH` | `:` | **→ CWD** | ⚠ | **✗** | ✗ | **also an exec vector — §3a.4** |
+| `PERL5LIB` | `:` | **ignored** | ✓ | ✗ | ✓ | shadowing only |
+| `NODE_PATH` | `:` | **ignored** | ✓ | ✗ | ✓ | shadowing only |
+| `CLASSPATH` | `:` / `;` | **unverified** | ✓ | ✗ | ⚠ | unset = CWD; the platform separator §3(c) names |
+| `GOPATH` | `:` | element 0 is privileged; empty first ⇒ empty `GOMODCACHE` | ✓ | ✗ | ⚠ | relative entry is a hard error |
+| `TERMINFO_DIRS` | `:` | = the system location | ✓ | ✗ | ⚠ | partially verified |
+| `GOFLAGS` | **space** | n/a | ✓ | ✗ | ✗ | a flag list, not a path list |
+
+**`MANPATH` cannot be sanitised at all, and it is the sharpest case.** An empty
+element is not a path, it is an instruction — so *removing* an element can *add*
+directories. man-db announces the choice:
+
+```
+env -i MANPATH=/a    manpath  →  ignoring /etc/manpath.config      → /a
+env -i MANPATH=:/a   manpath  →  prepending /etc/manpath.config    → /usr/share/man:/a
+env -i MANPATH=/a::/b manpath →  inserting /etc/manpath.config     → /a:/usr/share/man:/b
+```
+
+§3(d)'s rule ("rebuild, never edit the string") is necessary but **not
+sufficient** here: a rebuild that emits an empty element for a dropped entry has
+the identical effect.
+
+### 3a.3 XDG — five scalars and two lists, and the spec is unusually specific
+
+| variable | type | default when not set **or empty** |
+|---|---|---|
+| `XDG_DATA_HOME` / `XDG_CONFIG_HOME` / `XDG_STATE_HOME` / `XDG_CACHE_HOME` | scalar path | `$HOME/.local/share`, `.config`, `.local/state`, `.cache` |
+| `XDG_RUNTIME_DIR` | scalar path | **no default value** |
+| `XDG_DATA_DIRS` | **list**, `:` | `/usr/local/share/:/usr/share/` |
+| `XDG_CONFIG_DIRS` | **list**, `:` | `/etc/xdg` |
+
+Three things the spec settles that code would otherwise guess. **Empty is unset**
+— so unlike `PATH`, XDG variables have a genuine no-op value. **Relative paths
+must be ignored**, which makes these the only two lists here where the naive
+sanitiser is safe *by specification*. And **`XDG_RUNTIME_DIR` carries obligations**
+— owned by the user, mode 0700, lifetime bound to the session — so authoring it
+*is* a grant, which is exactly §2's point. One correction to §1(d): the spec does
+give a fallback ("a replacement directory with similar capabilities and print a
+warning"); what it lacks is a *default value*.
+
+### 3a.4 Semi-structured, and the naive classification that would bite
+
+| variable | looks like | actually is |
+|---|---|---|
+| `PS0`–`PS4` | a string | a template language; `promptvars` is on by default, so it performs **command substitution** |
+| `PROMPT_COMMAND` | a command | may be an **array** in bash ≥5.1; only the scalar form crosses the environment |
+| `LS_COLORS` | a `:`-list | `key=value` pairs whose **values contain `;`** — the character that is a *separator* in `LD_LIBRARY_PATH` |
+| `DBUS_SESSION_BUS_ADDRESS` | a `:`-list | **`;`**-separated addresses, each `transport:` + **`,`**-separated `key=value`, percent-encoded |
+| `GIT_CONFIG_PARAMETERS` | a string | space-separated sq-quoted `'key'='value'` pairs |
+| `BASH_FUNC_*` | nothing — a **name pattern** | exported shell functions. **Function lookup precedes `PATH` entirely**, so this defeats every ordering question in §4 |
+| `IFS` | a list | a *set* of delimiter characters. bash and `sh` discard an inherited one — but `system(3)` does not |
+
+### 3a.5 Two structural findings, and they outrank every row above
+
+**(a) The environment outranks the file, so "generate, don't bind" does not close
+the channel it claims to.** CLAUDE.md's rule points a tool at a generated config
+with that tool's own variable. Measured — that pins the **file** and leaves the
+**environment**, which is a higher-precedence config source:
+
+```
+env -i GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+       GIT_CONFIG_PARAMETERS="'user.name'='StillInjected'" git config --get user.name
+  StillInjected
+
+env -i GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+       GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=AlsoInjected \
+       git config --get user.name
+  AlsoInjected
+```
+
+*A hostile process inside the sandbox can set `GIT_CONFIG_COUNT=1
+GIT_CONFIG_KEY_0=core.sshCommand` and have the next `git fetch` — including one an
+unsuspecting user or agent runs — execute its command, while `GIT_CONFIG_GLOBAL`
+points at a perfectly clean generated file.* This is not a break in the sandbox
+boundary; the payload already runs code. It is a break in **identity pinning**,
+which is the guarantee `GIT_CONFIG_GLOBAL` was introduced to make. The same shape
+holds by documentation for npm (`npm_config_*` outranks `.npmrc`) and pip
+(`PIP_*` outranks the file — though `PIP_CONFIG_FILE=/dev/null` is a documented
+off switch). **This deserves its own investigation and probably its own fix; it is
+outside the scope of the environment language and is recorded here because this is
+where it was found.**
+
+**(b) Four vectors are name PREFIXES, not names.** `BASH_FUNC_*`,
+`GIT_CONFIG_KEY_n`/`VALUE_n`, `npm_config_*` (case-insensitive), `PIP_*`.
+`forbiddenEnv` is a `map[string]bool` and cannot express any of them.
+
+### 3a.6 What this says about `forbiddenEnv`
+
+Measured against the table, today's list is **both too wide and too narrow**, in
+an instructive way: `PYTHONSTARTUP` is in it and does **not** fire for a
+non-interactive interpreter, while `PYTHONPATH` is **not** in it and fires on
+every `python3` via `sitecustomize.py` (measured: `SITECUSTOMIZE-INJECTED`). The
+list was assembled from names that sound dangerous rather than from measurements.
+
+Missing, each measured to execute: `GIT_EXEC_PATH`, `GIT_CONFIG_PARAMETERS`, the
+`GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` family, `GIT_EXTERNAL_DIFF`,
+`GIT_EDITOR`/`EDITOR`/`VISUAL`, `LESSOPEN`, `PYTHONPATH`, `PYTHONBREAKPOINT`,
+`BASH_FUNC_*`. Missing on glibc's own authority — `ld.so(8)` strips exactly these
+under secure execution, which is the closest thing to an authoritative denylist
+and should seed ours: `GCONV_PATH`, `LOCPATH`, `NLSPATH`, `HOSTALIASES`,
+`RESOLV_HOST_CONF`, `RES_OPTIONS`, `TZDIR`, `MALLOC_TRACE`, `GETCONF_DIR`,
+`NIS_PATH`.
+
+**And the discriminator for `sanitise` is not the type — it is the empty-element
+column.** Sanitise is safe where an empty element is *ignored*
+(`PKG_CONFIG_PATH`, `PERL5LIB`, `NODE_PATH`, and by specification the two XDG
+lists), hazardous where it means the *CWD* (`PATH`, `LD_LIBRARY_PATH`,
+`PYTHONPATH`, `CDPATH`), and **illegal where it is an operator** (`MANPATH`,
+`INFOPATH` trailing). A type that carries a `separator` must also carry an
+`emptyElement` of that three-way kind, or the sanitiser will be written once and
+be wrong for a third of its inputs.
+
+*One more, and it is `TZ`:* it is a grammar with two branches, and when the file
+is unreachable glibc silently re-reads the value as an inline rule string.
+`TZDIR=/nonexistent TZ=Asia/Tokyo date` gives `+0000 Asia` — every timestamp
+wrong, no error on any channel. Authoring `TZ` without granting
+`/usr/share/zoneinfo` is a guarantee snug does not keep, which invariant 5 says is
+worse than refusing.
 
 ---
 
