@@ -161,11 +161,28 @@ XDG_CONFIG_HOME=/home/michal/.config     ls: No such file or directory
 XDG_DATA_HOME=/home/michal/.local/share  ls: No such file or directory
 ```
 
-**This is not a defect on `main`** — `main` authors no XDG variable at all, so
-there is nothing to point at nothing. It is a **trap for whoever implements
-them**, and it is the most concrete thing in this document, because the obvious
-implementation walks straight into it: five assignments in `Resolve` next to the
-other authored values, which is exactly where they do not belong.
+**An earlier draft said "this is not a defect on `main`", and that was wrong.**
+`main` authors no XDG variable, which is true and is not the point: the *pattern*
+is already instantiated three times on `main`, and it already dangles. `HOME` is
+assigned unconditionally at `resolve.go:396` while the directory it names is
+created by `@home`'s `tmpfs`; `SHELL` and `PATH` name things `@sys` grants.
+Measured on `main`:
+
+```
+snug --dry-run --no-defaults -p @parent-ro . -- true
+
+ENVIRONMENT  (--clearenv, then:)
+  HOME=/home/michal                     ← no @home: does not exist
+  SHELL=/usr/bin/bash                   ← no @sys: does not exist
+  PATH=/usr/bin:/bin:/usr/sbin:/sbin    ← no @sys: none of the four exist
+  TMPDIR=/tmp                           ← fine; snug's own tmpfs
+```
+
+So this is not a forward-looking warning, it is **an existing violation with
+three instances**, and the XDG work would be the fourth. That also upgrades §9's
+checklist item — "select a set without `@home` and assert the variables are
+absent, not dangling" is a test that **fails on `main` today**, which makes it a
+repair rather than a nicety.
 
 The reviewer's own framing is the fix:
 
@@ -223,11 +240,34 @@ bash runs before every prompt. `LS_COLORS` is `key=value` pairs that happen to b
 `:`-separated — which means **naive list handling would "merge" it and produce
 garbage**, or worse, silently split a value containing a colon.
 
-So `forbiddenEnv` is not an ad-hoc blocklist of scary names. It is a **type
-judgement**: semi-structured variables may be *authored* by snug and must never
-be *passthrough* or *merged*. Stating it that way tells you what else belongs
-there without waiting to be bitten — anything whose value is a grammar rather
-than a datum.
+**A tempting overstatement, and it is wrong: `forbiddenEnv` is not this rule.**
+An earlier draft claimed the list was "a type judgement in disguise". Checked
+against `main` (`resolve.go:492`) it is `LD_PRELOAD`, `LD_LIBRARY_PATH`,
+`LD_AUDIT`, `BASH_ENV`, `ENV`, `PERL5OPT`, `PYTHONSTARTUP`, `GIT_SSH_COMMAND`,
+`NODE_OPTIONS` — **not one** semi-structured name among them, while
+`LD_LIBRARY_PATH` is in it and is a *list*. Measured with a profile carrying
+`env = ["PROMPT_COMMAND","LS_COLORS","GIT_CONFIG_PARAMETERS"]`:
+
+```
+GIT_CONFIG_PARAMETERS='core.pager=id'
+LS_COLORS=di=01;34
+PROMPT_COMMAND=echo PWNED-PROMPT
+exit=0                                  ← all three pass through, unrefused
+```
+
+The two rules are **orthogonal, and both are needed**:
+
+- *`forbiddenEnv` is about what the value DOES.* Code injection, at any type.
+  That is what its doc comment says and what §7F says later; it is why
+  `LD_LIBRARY_PATH` belongs there and why merging the rules would argue for
+  removing it.
+- *Semi-structured values have no join.* A type fact, and a **separate, currently
+  unenforced** one. Nothing on `main` stops `PROMPT_COMMAND` passing through, and
+  the type argument is what says it should be stopped.
+
+Merging them would have produced two wrong recommendations at once: add `PS1`
+(which snug authors and must keep authoring) and drop `LD_LIBRARY_PATH` (which is
+genuinely dangerous). Keep them apart.
 
 **(c) The separator is per-variable and must be declared, not assumed.** `:` is
 the Unix norm, `CLASSPATH` uses `;` on Windows, and some tools take
@@ -269,12 +309,23 @@ legal**:
 |---|---|---|---|
 | **authored** | yes | yes | yes — the only legal cell for this type (`PS1`) |
 | **passthrough** | yes | risky: inherits host paths wholesale | **never** — grammar the host controls, executed inside |
-| **sanitised** | meaningless — nothing to filter | **the capability being asked for** | **never** |
+| **sanitised** | **yes — the degenerate case, and the most useful one** | **the capability being asked for** | **never** |
 
 A table with holes in it is a better specification than prose, because the holes
-are the design. Two of the illegal cells are exactly what `forbiddenEnv` refuses
-today; the third — sanitised scalar — is simply nonsense, and a language that can
-express nonsense will eventually be asked to.
+are the design. Note that the illegal cells are **not** the ones `forbiddenEnv`
+refuses — see §3(b); this table and that list are two different rules, and a
+value needs to clear both.
+
+**The scalar/sanitised cell deserves its own sentence, because calling it
+"meaningless — nothing to filter" was a mistake an earlier draft made and §8
+inherited.** A scalar is the one-element list, and filtering it is exactly the
+*points-inside* check: inherit the host's `SSH_AUTH_SOCK`, `CARGO_HOME`,
+`DOCKER_HOST` or `GIT_CONFIG_GLOBAL`, keep it iff it names something the policy
+grants, otherwise **unset**. That is the same criterion §7F uses to scope
+`sanitise` — danger is *pointing outside*, not *what it does* — and it is the
+operation that repairs §2's three live instances. Excluding it would have put the
+one class of variable with a measured dangling-path problem outside the scope of
+the one new capability being proposed.
 
 ---
 
@@ -567,10 +618,38 @@ than set empty.
 
 **For:** each key does one thing. `authors` next to `tmpfs` is the §2 fix,
 structural rather than checked. `sanitise` is the asked-for capability.
-**Against:** `authors` lets a profile set an arbitrary value, which is a new power
-— today only snug authors. It needs the same name refusal `forbiddenEnv` applies,
-now justified by type rather than by list membership, plus a points-inside check
-on profile-authored values. A real widening; wants a `redteam` run.
+
+**Against, and these are the two that would break an invariant if missed.**
+
+*`passthrough` and `sanitise` over the same name is subtraction between
+profiles.* Profile A says `passthrough = ["MANPATH"]`; profile B says
+`sanitise = ["MANPATH"]`. Selecting B **removes elements A's grant put in the
+sandbox** — invariant 1, structurally, with no `deny` key anywhere. This is not
+the ergonomics question §10 once framed it as. Three ways out, and only the first
+two are acceptable: make the pair a **resolve-time conflict**, CUE-style and
+consistent with §7C; or make them one key. (The third — `sanitise` loses to
+`passthrough` by join — is monotone but leaves `sanitise` unable to do its job
+whenever anyone else asks for the name.)
+
+*`authors` needs a reserved namespace, and it is the FIRST guard, not the third.*
+The obvious guards — the `forbiddenEnv` name refusal and a points-inside check —
+miss the sharp case: `authors = { PATH = "/evil" }` subtracts `basePATH` and every
+other profile's `path` entries in one line, and carries §3(d)'s empty-element
+hazard with it. Worse in kind, `authors = { SNUG_PROFILES = "@sys" }` or
+`{ SNUG_TARGET = "/lies" }` lets a profile lie to the artifacts a human reads to
+decide whether to trust the sandbox — `--dry-run` and the injected
+`~/.claude/CLAUDE.md`. Today this is closed **by accident of ordering**: the
+`prof.Env` loop runs at `resolve.go:282`, before snug's own assignments at
+396–436, so snug always wins. Measured — a profile with `env = ["PATH"]` and a
+hostile host `PATH` changes nothing inside. An `authors` key would have to make
+that accident deliberate: **the names snug authors are not writable by a profile,
+refused loudly.**
+
+Related, and fixable today: `env = ["PATH"]` is currently **accepted and silently
+discarded** — no error, no warning, nothing in `--dry-run`. Under "no silent
+downgrade, ever" that should be a named refusal.
+
+A real widening either way; wants a `redteam` run.
 
 **Sanitising does not make a dangerous variable safe.** `LD_PRELOAD` names a file
 loaded into every process; that it lives inside the sandbox does not make loading
@@ -620,9 +699,15 @@ matter:
 
 ## 9. What would have to be true before any of it ships
 
-- A test that `resolve([a,b]) == resolve([b,a])` for **environment**, not only
-  mounts. `TestResolveIsMonotone` compares `Access` per `Guest`; there is no
-  equivalent for `Env`, and every candidate here makes one mandatory.
+- ~~A commutativity test for the environment~~ — **this already exists**, and an
+  earlier draft of this document wrongly reported it missing.
+  `TestResolveIsCommutative` (`resolve_test.go:200`) shuffles seven profiles 200
+  times and compares `canon()`, which renders `p.Env`; the fixture registry
+  carries a `path` entry deliberately so that PATH assembly is covered. What
+  `TestResolveIsMonotone` does not cover is mounts-at-different-depths, which is
+  a separate and correctly-described gap. The correction matters in the other
+  direction too: it means §1(a)'s alphabetical sort is an **enforced** property,
+  not an accident nobody noticed.
 - A test that an undeclared shadow is refused, **with a positive control** — a
   declared one that resolves — so the refusal cannot pass on a resolver that
   refuses everything.
