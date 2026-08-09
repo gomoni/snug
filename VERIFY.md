@@ -365,6 +365,30 @@ spellings of `--network=host`, and for an option snug does not know.
 which is the same shape as the pasta flags in check 7. Both are refused, and the
 suite pins each to its own message so neither can cover for the other.
 
+## 9d. `@podman-socket` admits that it grants the network
+
+Needs no engine — this is a `--dry-run` check, and `--dry-run` is the artifact
+the guarantee is read off, which is exactly where MVY5 was wrong.
+
+```bash
+./bin/snug --dry-run -p @podman-socket $SC/proj/sub | grep -E '^ *\+|^NETWORK|^CONTAINERS'
+./bin/snug --dry-run $SC/proj/sub                   | grep -E '^NETWORK|^CONTAINERS'
+```
+
+Expect from the first: `+ @net  (pulled in by include; …)`, then the **egress**
+NETWORK block, then a `CONTAINERS` block saying the container runs in the
+engine's netns and that the pasta guarantees above it do not cover containers.
+
+Expect from the second — this is the positive control, and it is the half that
+matters: a bare `snug <dir>` still prints `NETWORK  isolated` and **no**
+`CONTAINERS` block at all. `@net` reaching `defaults` would be the real
+regression here, and a check that only looked at the first command could not
+tell the difference.
+
+Both lines are interim. When the engine moves into the sandbox's netns, the
+first command must stop showing `+ @net` — at which point this check inverts and
+`@podman-socket` alone must print `NETWORK  isolated`.
+
 ## 10. A repository cannot grant itself anything
 
 ```bash

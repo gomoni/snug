@@ -153,6 +153,48 @@ func TestBuiltinsLoad(t *testing.T) {
 	}
 }
 
+// MVY5, pinned so its removal is deliberate rather than incidental.
+//
+// `@podman-socket` grants egress, because a container runs in the ENGINE's
+// network namespace and therefore has the engine's network — measured, with the
+// response read back out of `containers/{id}/logs`, while `--dry-run` printed
+// "No egress. No host loopback." Including `net` does not narrow that hole; it
+// stops snug asserting a guarantee it was not delivering (invariant 5).
+//
+// This test exists to make the eventual REMOVAL a conscious act. When the engine
+// moves into the sandbox's netns (.claude/design/ENGINE-NETNS.md §5), container
+// network becomes sandbox network, `@podman-socket` without `@net` is genuinely
+// offline, and this include becomes actively wrong — because offline goes back
+// to being the ABSENCE of a profile, which is the property that stops it being
+// switched on by accident. Deleting this test is then part of the milestone, and
+// the failure message is where the next person finds out why.
+func TestPodmanSocketIncludesNetAsAnInterimHonestyFix(t *testing.T) {
+	reg, err := builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, ok := reg["@podman-socket"]
+	if !ok {
+		t.Fatal("@podman-socket is missing")
+	}
+	found := false
+	for _, inc := range p.Include {
+		if inc == "@net" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("@podman-socket no longer includes @net (includes: %v).\n"+
+			"If the engine now runs in the SANDBOX's netns, this is correct and this test "+
+			"should be deleted along with the interim comment in base.toml — check that "+
+			"`@podman-socket` without `@net` really is offline first, with a container "+
+			"probe that has a positive control.\n"+
+			"If the engine still runs on the host's network, this is MVY5 reopening: the "+
+			"sandbox has egress through a container while --dry-run says it does not.",
+			p.Include)
+	}
+}
+
 // The built-in `defaults` are the selection a bare `snug <dir>` uses, so every
 // name in them must resolve to a real builtin. A typo here is not a compile
 // error and would surface as `unknown profile` on the user's first ever run.

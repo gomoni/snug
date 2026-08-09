@@ -303,9 +303,31 @@ path = ["{home}/.local/bin"]
 # followed by `curl localhost:8080` from the sandbox will NOT work. Use
 # container-to-container networking. Making published ports reachable needs the
 # engine inside the sandbox's netns, which is a further milestone.
+#
+# THAT SAME SENTENCE IS A HOLE IN THE NETWORK BOUNDARY, which is why `net` is
+# included below. Read it the other way round: if a container runs in the
+# ENGINE's netns, it has the ENGINE's network — so a sandbox with only
+# `@podman-socket` could `wget` any URL from inside a container and read the
+# response back out through `containers/{id}/logs`. Measured, not inferred
+# (MVY5). Meanwhile `--dry-run` printed "No egress. No host loopback."
+#
+# `include = ["net"]` makes the profile tell the truth: selecting it grants
+# egress, and `--dry-run` now says so. It does NOT narrow the hole — it stops
+# snug asserting a guarantee it was not delivering, which is invariant 5. The
+# cost is real and is accepted deliberately: you cannot have containers AND
+# offline, and the sandbox itself gets network it did not separately ask for.
+#
+# THIS LINE IS INTERIM AND MUST BE REMOVED. The fix is topology A — the engine
+# inside the SANDBOX's netns — after which container network == sandbox network,
+# `@podman-socket` without `@net` is genuinely offline, published ports start
+# working from the sandbox, and `include = ["net"]` becomes actively wrong
+# because offline goes back to being the ABSENCE of a profile. That work is
+# designed and its feasibility is measured, on this host, in
+# .claude/design/ENGINE-NETNS.md — §5 is the implementation shape, §3 is where
+# it does not work (distrobox, no subuid delegation, cgroup delegation).
 [profile.podman-socket]
-description = "Containers via a filtering proxy over a per-sandbox podman engine."
-include = ["sys", "home"]
+description = "Containers via a filtering proxy over a per-sandbox podman engine. Includes @net (interim: containers run on the engine's network — see MVY5)."
+include = ["sys", "home", "net"]
 podman = "socket"
 # podman reads its registries, signature policy and defaults from here. Without
 # it the client fails with an error that names none of that.
