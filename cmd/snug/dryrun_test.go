@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"snug/internal/policy"
-	"snug/internal/profile"
+	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/profile"
 )
 
 // loadTestRegistry loads the REAL builtin profile set, isolated from whatever

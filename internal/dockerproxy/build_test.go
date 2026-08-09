@@ -4,7 +4,7 @@ import (
 	"net/url"
 	"testing"
 
-	"snug/internal/policy"
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // startBuildProxy is startProxy with the build surface switched on.

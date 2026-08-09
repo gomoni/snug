@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"snug/internal/policy"
-	"snug/internal/profile"
-	"snug/internal/sandbox"
+	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/profile"
+	"github.com/gomoni/snug/internal/sandbox"
 )
 
 // Exit codes are sysexits-flavoured so snug's own failures stay distinguishable

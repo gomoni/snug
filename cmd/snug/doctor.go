@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"snug/internal/profile"
+	"github.com/gomoni/snug/internal/profile"
 )
 
 // doctor reports whether this host can run snug, so a user diagnoses a machine

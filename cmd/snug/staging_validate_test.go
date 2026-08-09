@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"snug/internal/policy"
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // MVY1, item 7: everything the staging layer adds — claudeFiles' staged

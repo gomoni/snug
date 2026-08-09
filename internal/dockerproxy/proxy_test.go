@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"snug/internal/policy"
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // fakeEngine stands in for podman and records whether it was reached. "snug

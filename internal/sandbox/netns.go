@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"snug/internal/policy"
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // Topology B: bwrap creates the network namespace, pasta joins it.

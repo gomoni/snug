@@ -10,8 +10,8 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
-	"snug/internal/policy"
-	"snug/internal/profile"
+	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/profile"
 )
 
 // userConfig is ~/.config/snug/config.toml. It holds preferences, never grants:

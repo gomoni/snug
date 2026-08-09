@@ -34,7 +34,7 @@ import (
 	"strings"
 	"sync"
 
-	"snug/internal/policy"
+	"github.com/gomoni/snug/internal/policy"
 )
 
 type Proxy struct {

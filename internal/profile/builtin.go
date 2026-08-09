@@ -4,7 +4,7 @@ import (
 	"embed"
 	"fmt"
 
-	"snug/internal/policy"
+	"github.com/gomoni/snug/internal/policy"
 )
 
 //go:embed profiles/*.toml

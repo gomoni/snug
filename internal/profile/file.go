@@ -15,7 +15,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
-	"snug/internal/policy"
+	"github.com/gomoni/snug/internal/policy"
 )
 
 type file struct {

@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"snug/internal/policy"
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // Options are the run-time choices a human makes at the CLI. Nothing here is
