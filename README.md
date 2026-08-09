@@ -184,6 +184,61 @@ squat `127.0.0.1:8080` ahead of your own dev server. A `@net-publish` profile
 that did exactly that used to ship, and it never forwarded a single port — see
 `internal/profile/profiles/base.toml` for why.
 
+## Containers, and the `podman` shim
+
+> **Provisional.** This section documents behaviour that landed ahead of its
+> documentation. The measured version is
+> [`.claude/design/CONTAINER-CLIENT.md`](.claude/design/CONTAINER-CLIENT.md).
+
+The engine behind `@podman-socket` is podman, rootless, one per sandbox. What
+snug *filters* is the **docker-compatible** schema — which podman itself serves —
+so the client you run inside can be anything that speaks it. `CONTAINER_HOST` and
+`DOCKER_HOST` both point at snug's proxy.
+
+In practice that means **`docker` is the client to use inside a sandbox**:
+
+```bash
+docker pull alpine && docker run --rm alpine echo hi   # works
+podman-remote ps                                       # works, read-only only
+```
+
+`podman-remote` speaks podman's *native* libpod API, which snug refuses for any
+request carrying a body it would have to inspect — so it inspects fine and
+cannot `run` or `pull`. There is no flag that changes this.
+
+**The shim.** On a distrobox host `/usr/bin/podman` is a symlink to
+`distrobox-host-exec`, which forwards to an engine *outside* the container. From
+inside a sandbox that cannot work, and podman's own error for it names neither
+the cause nor a fix. So snug stages its own `podman` at `/run/snug/bin/podman`
+and puts that directory on `PATH` ahead of `/usr/bin`. It forwards the
+subcommands `docker` can serve, byte-for-byte, and refuses the rest in its own
+voice:
+
+```
+$ podman pod ps
+snug: stub refuses 'podman pod' -- pods are a podman-only grouping; docker has
+      no equivalent command.
+```
+
+Nothing is hidden: `/usr/bin/podman` is untouched and still runs by absolute
+path, `/run/snug/bin` is read-only from inside, and a `podman` provided by a
+profile's `path` still wins over snug's. It appears only when a podman profile
+is selected — a default `snug <dir>` has no stub and an unchanged `PATH`.
+
+**Known rough edges**, measured and not yet fixed:
+
+- `docker run` exits 0 but prints nothing — the container's stdout is not
+  relayed back. Plain `docker` behaves the same, so this is the proxy, not the
+  stub.
+- `docker build` needs the classic builder; snug sets `DOCKER_BUILDKIT=0` for
+  you, because BuildKit bypasses the filter entirely rather than being filtered.
+- `docker run -p` is refused: published ports land on the engine's side of the
+  boundary today. [ENGINE-NETNS.md](.claude/design/ENGINE-NETNS.md) is the fix.
+- `docker cp` is refused, deliberately — the engine resolves that path outside
+  the sandbox as your user. Use `docker exec C tar -cf - …` instead.
+- On an SELinux host, `-v` needs `:z` (`docker run -v "$PWD:/w:z" …`). That is
+  rootless podman, not snug.
+
 ## What snug defends against
 
 The first and most important aspect is that it prevents a filesystem access. So
