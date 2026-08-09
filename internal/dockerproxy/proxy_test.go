@@ -435,6 +435,17 @@ func TestVolumeDriverOptionsAreRefused(t *testing.T) {
 	}
 }
 
+// `docker cp` stays refused — CONTAINER-CLIENT.md §9 found the equivalence
+// argument for allowing it unsound: archive/export run on the ENGINE, outside
+// the sandbox, as the host uid, and archive path resolution is the home of
+// the CVE-2018-15664 symlink-escape class. This pins the refusal AND that its
+// message names the alternative that IS bounded by the sandbox's own mount
+// namespace, rather than the generic "endpoint ... is not permitted".
+func TestDockerCpStaysRefusedWithTheExecTarAlternativeNamed(t *testing.T) {
+	sock, eng, _ := startProxy(t)
+	refuse(t, sock, eng, "/v1.41/containers/abc/archive", "", "docker exec")
+}
+
 func TestEndpointAllowlist(t *testing.T) {
 	for _, tc := range []struct {
 		path string

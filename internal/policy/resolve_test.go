@@ -116,6 +116,13 @@ func testRegistry() map[string]*Profile {
 		// join, not conflict, whichever order they are folded in.
 		"netty-too": {Name: "netty-too", Network: "egress", Publish: []int{3000},
 			Address: "10.13.13.2/24"},
+		// Sigil-marked and mirroring the real @podman-socket in base.toml
+		// (include sys+home+net, podman=socket) rather than reusing `netty`,
+		// which also carries scalars (address/gateway/mtu/publish) that would
+		// make the podman-socket golden noisy with values unrelated to what
+		// it is meant to review — the stub and the container proxy hole.
+		"@podman-socket": {Name: "@podman-socket", Include: []string{"@sys", "@home"},
+			Network: "egress", DNS: true, Podman: "socket"},
 	}
 }
 
@@ -127,6 +134,17 @@ var testDefaults = []string{"@sys", "@home", "@cwd-rw", "@parent-ro"}
 
 func testCtx() Context {
 	return Context{Target: "/home/u/proj/sub", Home: "/home/u", Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+}
+
+// testCtxWithPodmanShim is testCtx plus a detected podman shim — the fixture
+// for every test exercising podmanstub.go, so a fake distrobox-shaped host
+// need not be reinvented per test.
+func testCtxWithPodmanShim() Context {
+	ctx := testCtx()
+	ctx.HostShims = []HostShim{
+		{Name: "podman", Path: "/usr/bin/podman", Resolved: "/usr/bin/distrobox-host-exec"},
+	}
+	return ctx
 }
 
 // mustResolveDefaults resolves what a bare `snug <dir>` produces.

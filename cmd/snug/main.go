@@ -216,6 +216,7 @@ func run(cfg config) int {
 		HostNameservers: hostNameservers(),
 		KnownHosts:      knownHostsFor(identityHost(reg, selected)),
 		PinnedPubKey:    pinnedPubKey(reg, selected),
+		HostShims:       detectHostShims(),
 	}
 
 	pol, err := policy.Resolve(reg, selected, ctx, env)

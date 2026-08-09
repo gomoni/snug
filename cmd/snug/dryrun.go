@@ -36,6 +36,7 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 	}
 	describeNetwork(out, p)
 	describeContainers(out, p)
+	describeCommands(out, p)
 	if p.NewSession {
 		fmt.Fprintf(out, "TTY      --new-session (this kernel allows TIOCSTI, so the sandbox is kept\n")
 		fmt.Fprintf(out, "         out of your terminal — the cost is no job control inside)\n")
@@ -49,6 +50,15 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 		kind := m.Kind.String()
 		if m.Kind == policy.KindBind {
 			kind = m.Access.String()
+		}
+		// A KindData file with an executable permission bit is CODE, not
+		// config — the podman stub is the one case of this today (see
+		// podmanstub.go). Kind.String() itself stays "data" for every other
+		// caller; this is a dry-run-only rendering so a human scanning the
+		// FILESYSTEM block sees "this one runs" at a glance rather than
+		// having to notice a permission column.
+		if m.Kind == policy.KindData && m.Perms != nil && *m.Perms&0o111 != 0 {
+			kind = "exec"
 		}
 		opt := ""
 		if m.Optional {
@@ -232,6 +242,29 @@ func describeContainers(out *os.File, p *policy.Policy) {
 	fmt.Fprintf(out, "         Planned fix: engine inside the sandbox's netns, after which the\n")
 	fmt.Fprintf(out, "         '@net' include goes away and both lines above stop being true.\n")
 	fmt.Fprintf(out, "         Design and feasibility: .claude/design/ENGINE-NETNS.md\n")
+}
+
+// describeCommands names snug's OWN staged executables — today, exactly one:
+// the podman dispatcher stub. It exists because CONTAINERS above says a
+// filtering proxy is listening, but not that a fresh `podman` command was
+// placed on PATH ahead of the real one, and "there is a new executable
+// running before the tool you typed" is exactly the kind of thing --dry-run
+// exists to make legible rather than a human having to notice a FILESYSTEM
+// line reads "exec" instead of "data".
+func describeCommands(out *os.File, p *policy.Policy) {
+	m, ok := p.Mounts[policy.PodmanStubDir+"/podman"]
+	if !ok || !m.Authored {
+		return
+	}
+	fmt.Fprintf(out, "COMMANDS  %s\n", m.Guest)
+	fmt.Fprintf(out, "         podman on this host resolves to a shim that cannot reach the host from\n")
+	fmt.Fprintf(out, "         inside a sandbox (distrobox-host-exec, host-spawn or flatpak-spawn), so\n")
+	fmt.Fprintf(out, "         snug staged a dispatcher ahead of it on PATH: it forwards a fixed\n")
+	fmt.Fprintf(out, "         allowlist of docker subcommands to 'docker', byte for byte, and refuses\n")
+	fmt.Fprintf(out, "         everything else by name — never a flag rewrite, never a translation.\n")
+	fmt.Fprintf(out, "         It is read-only (see the FILESYSTEM line above: 'exec', not writable),\n")
+	fmt.Fprintf(out, "         and /usr/bin/podman is UNTOUCHED — still reachable by its absolute path,\n")
+	fmt.Fprintf(out, "         just no longer first on PATH. See .claude/design/CONTAINER-CLIENT.md §8.\n")
 }
 
 // describeNetwork spells out what the sandbox can and cannot reach. The
