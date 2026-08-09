@@ -94,6 +94,52 @@ CLAUDE.md already has the rule this violates (*a gate that is documented but not
 implemented is not a gate*) in a third spelling: a gate that is implemented and
 fires on state it does not control.
 
+**(f) `snug . -- podman` resolves `podman` against the SANDBOX's `PATH`, not the
+host's — and nothing tests it.** This is a precondition for everything below: if
+the payload's own name were resolved on the host side, every ordering question in
+this document would be moot, `shadows` could not work, and the podman stub would
+be decoration. It holds. bwrap `--clearenv`s, sets `PATH` with `--setenv`, and
+then `execvp`s *inside* the namespaces with its own modified environ, so the
+lookup happens inside. Measured four ways:
+
+```
+# 1. a binary on the HOST's PATH, in a directory no profile grants
+PATH=/…/hostonly:$PATH  snug . -- hostmarker
+  bwrap: execvp hostmarker: No such file or directory        ← host PATH contributes nothing
+
+# 2. the same binary by absolute path, under a directory @parent-ro DOES grant
+PATH=/…/hostonly:$PATH  snug . -- /…/hostonly/hostmarker
+  HOSTONLY-RAN                                                ← the grant, working as documented
+
+# 2b. an absolute path outside every grant
+snug . -- /…/outside/outmarker
+  bwrap: execvp /…/outside/outmarker: No such file or directory
+
+# 3. SHADOWING: a fake `ls` in a profile's `path` directory, against /usr/bin/ls
+snug -p tbin . -- ls
+  SANDBOX-LS-RAN                                              ← sandbox PATH ORDER governs
+```
+
+Case 3 is the decisive one — it is `shadows` (§7C) already working, unnamed and
+undeclared. Case 2 is worth keeping in the record because it looks like a leak
+and is not: `@parent-ro` grants the target's parent read-only, the binary lived
+under it, and `touch` in the same directory returns `Read-only file system`.
+
+Two gaps follow.
+
+*No test covers any of it.* There is no assertion anywhere that the payload name
+is resolved inside, and it is exactly the kind of property that would survive a
+refactor to `exec.LookPath` on the host side with every existing test still
+green — a host-side lookup would make case 1 *succeed*, which reads like a
+feature. This is the "test the negative" rule with nothing behind it.
+
+*The error is bwrap's, and it does not name the fix.* `bwrap: execvp podman: No
+such file or directory` is what a user gets for the most ordinary mistake there
+is — asking for a command no profile granted. It says nothing about the sandbox
+having its own `PATH`, nothing about which profile would grant the binary, and it
+carries bwrap's name rather than snug's. "Errors name the fix" is a working
+agreement rule, and this is the highest-traffic error in the tool.
+
 ---
 
 ## 2. The trap: authoring a variable and granting the directory are two acts
@@ -560,10 +606,17 @@ language.**
    every neighbour except CUE ships subtraction, so borrowing their vocabulary
    means borrowing that too.
 
-Independent of all of it, and fixable now: **§1(e)**, the conditional
-`forbiddenEnv` guard. Move the refusal out of the `v != ""` guard, or better,
-check it at parse time next to `checkName` and `DisallowUnknownFields`, so the
-verdict never depends on the invoking shell.
+Independent of all of it, and fixable now, in rising order of how much they
+matter:
+
+- **§1(e)**, the conditional `forbiddenEnv` guard. Move the refusal out of the
+  `v != ""` guard, or better, check it at parse time next to `checkName` and
+  `DisallowUnknownFields`, so the verdict never depends on the invoking shell.
+- **§1(f)'s error message.** Catch the "no such file" case and say what is
+  actually true: the sandbox has its own `PATH`, the command was looked up in it,
+  and here is what it contains. `snug` should own this message, not bwrap.
+- **§1(f)'s missing test.** The property that the payload name resolves inside is
+  load-bearing for every candidate here, and nothing asserts it.
 
 ## 9. What would have to be true before any of it ships
 
@@ -573,6 +626,13 @@ verdict never depends on the invoking shell.
 - A test that an undeclared shadow is refused, **with a positive control** — a
   declared one that resolves — so the refusal cannot pass on a resolver that
   refuses everything.
+- **A named regression test for §1(f)**, and it is a prerequisite rather than a
+  nicety: a binary present only on the host's `PATH` must NOT run, a binary in a
+  profile's `path` directory must, and a name present in both must resolve to the
+  profile's. The first is the negative, the second is its positive control, and
+  the third is what makes `shadows` meaningful. Without it, a refactor to
+  host-side `exec.LookPath` passes every test in the suite while silently
+  resolving the payload's name in the wrong namespace.
 - **A named regression test for §3(d)**: sanitise a `PATH` down to one surviving
   element and assert the result has no empty element, with a positive control
   that a planted binary in the target *is* found when an empty element is present.
