@@ -5,11 +5,40 @@ command was **executed**; everything else is marked as reasoning.
 
 ## 0. Why this exists
 
-`@podman-socket` today grants **arbitrary egress with no `@net`**, and
-`--dry-run` says "No egress" while it does. A container started through the
-proxy runs on the *host's* engine, so it gets the *host's* network; the payload
-reads the response back through container logs. That is a false guarantee, which
-is the one failure mode invariant 5 forbids outright.
+**This section is the canonical write-up of the finding.** Code and prose across
+the repo cite it — `CLAUDE.md`, `base.toml`, `cmd/snug/dryrun.go`,
+`internal/profile/file_test.go`, `VERIFY.md`, `.claude/design/SECRETS.md` §1.3.
+If you arrived from one of those, this is the whole story; §5 is what is left to
+do.
+
+**The finding, as measured 2026-08-08.** `@podman-socket` granted **arbitrary
+egress with no `@net`**, while `--dry-run` said "No egress. No host loopback."
+A container started through the proxy runs on the *host's* engine, so it gets
+the *host's* network; the payload reads the response back through
+`containers/{id}/logs`. Measured with a positive control — the sandbox itself
+could not resolve DNS, and a container reached `https://example.com` anyway.
+That is a false guarantee, which is the one failure mode invariant 5 forbids
+outright.
+
+**Status, 2026-08-09 — step M-a landed (commit `ae848de`); the channel is still
+open.** `@podman-socket` now carries `include = ["sys", "home", "net"]`, so
+selecting containers selects egress *visibly*, `--dry-run` renders the egress
+block, and a `CONTAINERS` block states that containers run in the engine's netns
+and that the pasta guarantees do not cover them. **What changed is that snug
+stopped denying it — not that a container can reach less.** Two consequences
+worth stating plainly:
+
+- The original measurement is **no longer reproducible on this tree**: there is
+  no way to select `@podman-socket` without `@net`, so the "egress without
+  `@net`" configuration no longer exists. Reproducing it needs a pre-`ae848de`
+  checkout.
+- The **host-loopback half is unaffected** and is now the sharper finding: a
+  container can port-scan and reach the host's loopback, which is a channel
+  `@net` never grants and `--dry-run` still does not describe.
+
+The `net` include is interim and its removal is part of M-b;
+`TestPodmanSocketIncludesNetAsAnInterimHonestyFix` makes that removal a
+conscious act.
 
 DESIGN §4.4 described the fix ("topology A") in the present tense. It was never
 implemented — see the banner now on that section.
