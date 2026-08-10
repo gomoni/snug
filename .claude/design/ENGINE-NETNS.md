@@ -40,7 +40,7 @@ The `net` include is interim and its removal is part of M-b;
 `TestPodmanSocketIncludesNetAsAnInterimHonestyFix` makes that removal a
 conscious act.
 
-DESIGN §4.4 described the fix ("topology A") in the present tense. It was never
+INDEX §4.4 described the fix ("topology A") in the present tense. It was never
 implemented — see the banner now on that section.
 
 ## 1. The crux: you cannot join only the netns
@@ -177,7 +177,7 @@ re-execs itself, the host uid must be passed, or the sandbox becomes root-shaped
 
 ## 4. Two guarantees change shape
 
-**Teardown is no longer unconditional.** DESIGN §4.3 says orphan netns leaks are
+**Teardown is no longer unconditional.** INDEX §4.3 says orphan netns leaks are
 "impossible by construction" — true today, because N dies with bwrap. Under
 topology A, N holds the engine and the containers, so N lives as long as the
 engine does. Measured under `Pdeathsig: SIGKILL`:

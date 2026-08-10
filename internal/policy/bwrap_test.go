@@ -67,7 +67,7 @@ func TestGoldenBwrapArgs(t *testing.T) {
 
 // TestGoldenBwrapArgsFloor pins the argv the lattice's FLOOR produces — what an
 // empty selection resolves to, reached directly with --no-defaults.
-// DESIGN §12.1 has claimed @null golden coverage since M0 and never delivered
+// INDEX §12.1 has claimed @null golden coverage since M0 and never delivered
 // it, because @null could never actually resolve (Resolve refused it before
 // there was ever an argv to pin). This delivers it under the honest name: there
 // is no @null profile any more (MVY0), so what this pins is the RESOLVER's

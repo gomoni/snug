@@ -92,7 +92,7 @@ A bare "snug <dir>" selects the defaults setting: @sys @home @cwd-rw @parent-ro.
 See "snug config" for the effective list and where it came from.
 
 Profiles only ever GRANT. There is no un-grant — not in a profile, not on the
-command line, nowhere. To grant less, select fewer profiles. See .claude/design/DESIGN.md.
+command line, nowhere. To grant less, select fewer profiles. See .claude/design/INDEX.md.
 `)
 }
 
@@ -120,7 +120,7 @@ func parseArgs(argv []string) (config, error) {
 			cfg.iKnow = true
 		case a == "--no-seccomp":
 			// Weakening lives on the CLI, never in a profile: a human may
-			// lower defences, a config file may not (DESIGN §2.3).
+			// lower defences, a config file may not (INDEX §2.3).
 			cfg.noSeccomp = true
 		case a == "-n" || a == "--dry-run":
 			cfg.dryRun = true

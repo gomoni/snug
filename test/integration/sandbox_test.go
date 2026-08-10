@@ -1044,7 +1044,7 @@ func TestHostLoopbackIsUnreachable(t *testing.T) {
 	requirePython(t)
 	proj, _ := target(t)
 
-	// Both families, as DESIGN §12.4 spells out: v4 and v6 loopback are closed
+	// Both families, as INDEX §12.4 spells out: v4 and v6 loopback are closed
 	// by different pasta flags, so checking only 127.0.0.1 leaves half the
 	// property untested.
 	//
@@ -1306,7 +1306,7 @@ func serveBanner(t *testing.T, ln net.Listener) {
 // them out. X11 and D-Bus both listen on abstract sockets; if the sandbox could
 // reach them it could log keystrokes and screenshot the desktop. This property
 // is the reason `net-host` needs --i-know, and nothing else in the suite covers
-// it (DESIGN §12.4).
+// it (INDEX §12.4).
 func TestAbstractSocketsAreUnreachable(t *testing.T) {
 	budget(t)
 	requireSandbox(t)

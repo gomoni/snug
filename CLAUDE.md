@@ -10,7 +10,7 @@ hooks, test suites, and AI agents among them. Nothing in the model is
 agent-specific — an agent is just one more thing you would rather not hand your
 `~/.ssh` to.
 
-**The full design is [.claude/design/DESIGN.md](.claude/design/DESIGN.md).** Read it before implementing
+**The full design is [.claude/design/INDEX.md](.claude/design/INDEX.md).** Read it before implementing
 anything. This file is the working agreement: the invariants that must not be
 broken, who does what, and the facts about this environment that were expensive
 to learn.
@@ -159,7 +159,7 @@ Break any of these and the project has lost its point.
    model.
 
    *M0 reality, verified:* `.snug/`, `snug.toml` and `.config/snug/` inside a
-   target are all ignored. **But the gate is weaker than DESIGN §2.7 describes.**
+   target are all ignored. **But the gate is weaker than INDEX §2.7 describes.**
    `$XDG_CONFIG_HOME/snug/profiles.d` is trusted unconditionally, so pointing
    `XDG_CONFIG_HOME` into a checked-out repo does load that repo's profiles,
    privileged grants included. The designed defences — an explicit `--config`
@@ -197,7 +197,7 @@ on any flag.
   The previous generation of this project passed the first three and not
   `-T`/`-U`, so its "private" netns reaches every host loopback service. Its
   probe notes saw the symptom and dismissed it as an `ss`/procfs artifact. It
-  was a live TCP forward. See DESIGN §4.2.
+  was a live TCP forward. See INDEX §4.2.
 - The lesson generalises: **never trust a helper's default, in either
   direction.** Pass every security-relevant flag explicitly even when it matches
   the current default, and assert the *behaviour* in an integration test — a
@@ -308,7 +308,7 @@ on any flag.
   first on `PATH`.** It is additive (nothing is hidden; the original is still
   there and still reachable by absolute path), it needs no mount at all, it
   cannot fail on a host where the target path is a symlink (bwrap cannot create
-  a mountpoint at a symlink destination — DESIGN §3.3), and it is one line of
+  a mountpoint at a symlink destination — INDEX §3.3), and it is one line of
   policy instead of a new exemption in the masking rule. Reach for an overmount
   only when the consumer reads an absolute path it will not let you configure.
 - **`git` merges its global config from TWO files.** `~/.gitconfig` AND
@@ -348,7 +348,7 @@ on any flag.
 
 `.claude/agents/` — use them; they carry the context that keeps the invariants
 intact. `.claude/design/` holds the design and research material they work from
-(DESIGN.md, the pseudo-filesystem audit, the secrets analysis, parked designs).
+(INDEX.md, the pseudo-filesystem audit, the secrets analysis, parked designs).
 There is deliberately **no `docs/` tree**: a generated user guide was tried and
 removed, because the prose churned faster than the code it described and nobody
 was going to keep it honest. `VERIFY.md` at the root is the exception, and it
@@ -528,7 +528,7 @@ meant. It cannot prove the sandbox holds.
   a conscious act. Host→sandbox port publishing is off by
   default and scoped to `127.0.0.1` when enabled: with `-t auto` the *agent*
   would choose which host loopback ports appear, which inverts the guiding
-  principle. See DESIGN §4.6 — this is the decision most likely to be revisited.
+  principle. See INDEX §4.6 — this is the decision most likely to be revisited.
 - **D-Bus**: no profile ships. A filtering bus proxy that is 95% correct is a
   sandbox that is 0% sound.
 

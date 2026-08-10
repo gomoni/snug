@@ -90,7 +90,7 @@ type Profile struct {
 
 	// Source is the file this profile came from, and Trusted records whether
 	// that file was a trusted layer. Profiles from an explicitly-named config
-	// may not carry privileged grants — see .claude/design/DESIGN.md §2.7.
+	// may not carry privileged grants — see .claude/design/INDEX.md §2.7.
 	Source  string
 	Trusted bool
 }

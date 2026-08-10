@@ -28,7 +28,7 @@ jobs:
   # Tier 3: really launch sandboxes and assert what is and is not reachable.
   #
   # The assertions live in Go, under the `integration` build tag, in
-  # test/integration/ — see .claude/design/DESIGN.md §12.3–12.4. They were briefly written
+  # test/integration/ — see .claude/design/INDEX.md §12.3–12.4. They were briefly written
   # as shell in this file and that was a mistake: a backgrounded
   # `python3 -m http.server` held the step's stdout open, the runner waited on
   # that pipe rather than on the commands, and it cancelled the job after eleven

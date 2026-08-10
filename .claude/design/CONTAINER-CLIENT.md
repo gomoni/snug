@@ -190,7 +190,7 @@ three, which are about misattributed error messages.
 
 *It cannot be a mount, and not merely as a preference.* `/usr/bin/podman` **is a
 symlink**, and bwrap cannot create a mountpoint at a symlink destination
-(DESIGN §3.3). CLAUDE.md's rule — *"PATH precedence, not overmounting, is how
+(INDEX §3.3). CLAUDE.md's rule — *"PATH precedence, not overmounting, is how
 snug substitutes a host binary"* — is therefore the only mechanism available
 here, not the tidier of two. The replacement is written into the writable tmpfs
 `$HOME` and that directory goes first on `PATH`, which is additive: nothing is

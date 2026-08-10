@@ -42,7 +42,7 @@ different error message: on `--no-defaults -p @null` it exists purely to make th
 | pedagogy — `--dry-run` showing the true empty base | **No — and `--no-defaults` does not cover it either.** Both routes error. Unserved by everything. |
 | a lattice floor the model needs | No. `@null` is the identity element of the grant union, which is why adding it changes nothing. The floor is `⋁∅` — what `Resolve` computes from an empty selection. It exists whether or not a profile names it. |
 | a composition target (`include = ["@null"]`) | Vacuous — omit the key. |
-| golden coverage (DESIGN §12.1 lists `@null` first) | Not delivered. There is no `testdata/null.bwrap.txt`, because it cannot resolve. |
+| golden coverage (INDEX §12.1 lists `@null` first) | Not delivered. There is no `testdata/null.bwrap.txt`, because it cannot resolve. |
 | `defaults = ["@null"]` meaning "empty" | **The one live job**, and only because `defaultProfiles()` tests `len(c.Defaults) > 0` and cannot tell absent from empty. |
 
 #### Why idea 1 is wrong — and it is not "confusing", it is unsafe
@@ -128,7 +128,7 @@ deny-by-default directly for the first time); `TestRefusedPolicyIsNeverExecuted`
 (integration, the structural guard for the non-nil-policy-with-error contract);
 `TestDryRunShowsARefusedPolicy`; `TestDryRunAnnotationsAreTruthful`;
 `TestEmptyDefaultsMeansEmpty`; and a new golden
-`internal/policy/testdata/floor.bwrap.txt` — **DESIGN §12.1 has claimed `@null`
+`internal/policy/testdata/floor.bwrap.txt` — **INDEX §12.1 has claimed `@null`
 golden coverage since M0 and never delivered it**; this delivers it under an
 honest name and pins what snug does when told to do nothing.
 
@@ -241,7 +241,7 @@ inner path. R2 narrows to `KindProc`/`KindDev`.
 `Perms`, `Content`; `Access` joins by max, `Optional` by AND, `From` unions.
 This is the existing rule with the symlink hole closed.
 
-*`ro` + `rw` must STAY a join, and the reason is structural.* DESIGN §2.4's third
+*`ro` + `rw` must STAY a join, and the reason is structural.* INDEX §2.4's third
 leg is `Resolve(A ∪ B) ⊒ Resolve(A)` — a statement about the access lattice.
 `Access` is the only field whose value domain is a semilattice; everything else
 names *what node exists here*, and two answers to that have no join, only an
@@ -782,7 +782,7 @@ All five are FIXED. What the fixes were, since two of them changed the product:
   exists — refused at 3, 10, 20 and 30 s after a listener came up inside. There is
   no pasta reconfigure API, so making it work would mean snug growing a
   port-forwarding daemon that watches the sandbox's /proc/net/tcp — i.e. handing
-  the AGENT the choice of what appears on your loopback, which DESIGN §4.6 argues
+  the AGENT the choice of what appears on your loopback, which INDEX §4.6 argues
   against on its own merits. So `publish_auto`, and the `@net-publish` profile
   built on it, are gone; `publish = [3000]` stays and works. Strict decoding turns
   an existing `publish_auto` into a fatal parse error naming the key
@@ -886,7 +886,7 @@ empty content):
   the one artifact a human trusts. One line.
 - **[🟢] R8** — bound the `/dev`, `/dev/shm`, `/tmp`, `$HOME` tmpfs with `size=`
   (host-RAM-exhaustion DoS; the engine's own containers already do this).
-- **R9** — batched doc corrections (DESIGN §5.2 `/dev` enumeration and §5.3
+- **R9** — batched doc corrections (INDEX §5.2 `/dev` enumeration and §5.3
   fingerprint claim, the phantom `[profile.sysfs]`, N5's side-channel list,
   `podman-socket`'s host-resource claim, the time-namespace fact for CLAUDE.md).
 - **R10** — opt-in `--new-session` for non-interactive payloads (closes the
@@ -909,7 +909,7 @@ still worth running before a fix lands.
 
 Both are documented where they bite; listed here so they are not forgotten.
 
-- **`--config` and privileged-grant gating do not exist.** DESIGN §2.7 describes
+- **`--config` and privileged-grant gating do not exist.** INDEX §2.7 describes
   them; `profile.Profile.Trusted` is set and never read. Consequence found by
   the redteam agent: `$XDG_CONFIG_HOME` is trusted unconditionally, so pointing
   it at a checked-out repository loads that repository's profiles. Low severity

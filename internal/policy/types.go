@@ -6,7 +6,7 @@
 // in CI with no privileges, and it is not a detail to trade away for convenience.
 //
 // The model has no subtraction. There is no mask, no deny, no un-grant. See
-// .claude/design/DESIGN.md §2.4 for why that makes monotonicity a structural fact rather
+// .claude/design/INDEX.md §2.4 for why that makes monotonicity a structural fact rather
 // than a review convention.
 package policy
 

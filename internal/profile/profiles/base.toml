@@ -2,7 +2,7 @@
 #
 # Every profile here is a NAMED HOLE in a sandbox that starts out sharing
 # nothing. There is no key in this format that can take something away — see
-# .claude/design/DESIGN.md §2.4. If you find yourself wanting one, the answer is a finer
+# .claude/design/INDEX.md §2.4. If you find yourself wanting one, the answer is a finer
 # grant, not a subtraction.
 #
 # Each profile that opens something a hostile process could use says, in a
@@ -180,7 +180,7 @@ dns = true
 #
 # Two reasons it is a human naming ports rather than a switch.
 #
-# The design reason (DESIGN §4.6): with `auto` the SANDBOX chooses what appears
+# The design reason (INDEX §4.6): with `auto` the SANDBOX chooses what appears
 # on your loopback, which inverts the guiding principle — a prompt-injected agent
 # could squat 127.0.0.1:8080 ahead of your own dev server and intercept your
 # browser.

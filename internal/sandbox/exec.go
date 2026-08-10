@@ -15,7 +15,7 @@ import (
 )
 
 // Options are the run-time choices a human makes at the CLI. Nothing here is
-// expressible in a profile — weakening is the human's prerogative (DESIGN §2.5).
+// expressible in a profile — weakening is the human's prerogative (INDEX §2.5).
 type Options struct {
 	NoSeccomp bool
 	Warn      func(string) // where degradation notices go; never silently dropped

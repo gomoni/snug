@@ -200,7 +200,7 @@ The honest statement, now in CLAUDE.md:
 
 Defensible: lowering write access is a tightening, and a profile that only
 tightens is a nuisance, not an escalation. But it must be *stated*, because
-DESIGN §2.4 reads as though the per-key join is the whole story.
+INDEX §2.4 reads as though the per-key join is the whole story.
 
 ### 2. **[latent security]** A symlink planted in the target can divert a grant
 

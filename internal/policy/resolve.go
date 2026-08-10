@@ -237,7 +237,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 		// Publish is a SET, unioned — not a list appended to. Appending made
 		// `publish = [3000]` in two profiles resolve to [3000 3000] and reach
 		// pasta's -t as a duplicate, and it made the value depend on the fold
-		// order, which the model does not have. DESIGN §2.3 already said "union".
+		// order, which the model does not have. INDEX §2.3 already said "union".
 		for _, port := range prof.Publish {
 			publish[port] = true
 		}
@@ -514,7 +514,7 @@ func envOr(e Environ, k, def string) string {
 // either a permissive-ward join or a symmetric error, and there is no branch
 // that lowers Access. `ro` + `rw` STAYS a join for that reason and not for
 // convenience: Access is the only field whose value domain is a semilattice, and
-// DESIGN §2.4's third leg (Resolve(A ∪ B) ⊒ Resolve(A)) is a statement about
+// INDEX §2.4's third leg (Resolve(A ∪ B) ⊒ Resolve(A)) is a statement about
 // that lattice. Make differing access fatal and Resolve stops being a total
 // join, at which point monotonicity is something we hope for rather than
 // something the model IS.
