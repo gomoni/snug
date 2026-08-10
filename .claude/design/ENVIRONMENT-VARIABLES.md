@@ -1,6 +1,6 @@
-# The environment configuration format
+# Environment variables — the configuration format
 
-**Status: proposed, shape decided.** §1–§3 = format. §4 = measured evidence forcing each rule. §5 = sidenote on considered-and-rejected — read only to reopen something.
+**Status: accepted; implementation in progress.** §1–§3 = format. §4 = measured evidence forcing each rule. §5 = sidenote on considered-and-rejected — read only to reopen something.
 
 Decided: five verbs nested under one `environ` section, all of them profile
 keys; `prepend` usable **once per variable** across the selected set, a second is
