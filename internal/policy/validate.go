@@ -126,7 +126,7 @@ func (p *Policy) Validate(env Environ) error {
 		// bwrap cannot create a mountpoint at a symlink destination. Catch the
 		// case where a grant's guest path traverses a symlink snug itself
 		// created — this is the failure that cost the previous generation a day
-		// (.claude/design/DESIGN.md §3.3).
+		// (.claude/design/INDEX.md §3.3).
 		if m.Kind != KindSymlink {
 			if via, resolved := resolveVia(links, g); via != "" {
 				return fmt.Errorf("grant %s (from %s) resolves through the symlink %s -> %s, landing at %s; "+

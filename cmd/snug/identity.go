@@ -109,7 +109,7 @@ func startIdentity(pol *policy.Policy, verbose, iKnow bool) (cleanup func(), err
 		// This gate was documented in three places and implemented in none —
 		// the redteam agent walked in and signed with a key the profile had not
 		// pinned. A weakening this large must be a human act at the CLI, never
-		// something a profile can assert on its own (DESIGN §2.3).
+		// something a profile can assert on its own (INDEX §2.3).
 		if !iKnow {
 			cleanup()
 			return nil, fmt.Errorf(`refusing ssh_mode = "host-agent" without --i-know.

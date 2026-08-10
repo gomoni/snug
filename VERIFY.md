@@ -138,7 +138,7 @@ tokens.
 
 Caveat worth knowing: `--clearenv` is not the last word. `/etc/profile.d/*`
 runs inside a login shell and can put variables back. That is why `@sys`
-enumerates `/etc` instead of binding it wholesale — see DESIGN §5.3.
+enumerates `/etc` instead of binding it wholesale — see INDEX §5.3.
 
 ### 6b. …including via PID 1 (regression check)
 
@@ -422,7 +422,7 @@ XDG_CONFIG_HOME=$SC/proj/sub/.config ./bin/snug --dry-run -p evil $SC/proj/sub |
 
 This resolves, and `--dry-run` honestly shows `rw /etc`. It is low severity —
 `XDG_CONFIG_HOME` is your own environment variable, not something the sandboxed
-agent can set — but the `--config` gate described in DESIGN §2.7 is not built
+agent can set — but the `--config` gate described in INDEX §2.7 is not built
 yet. Found by the `redteam` agent.
 
 ## 11. Nothing is left behind
@@ -458,4 +458,4 @@ containers, GUI sockets. Each is a hole, each arrives with its own profile, and
 each gets attacked by the `redteam` agent before it lands.
 
 It also does not cover the threats snug does not defend against at all: kernel
-0-days, and a determined human attacker with a shell. See DESIGN §1.2.
+0-days, and a determined human attacker with a shell. See INDEX §1.2.

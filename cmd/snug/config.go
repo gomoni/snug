@@ -171,7 +171,7 @@ func configCmd(args []string) int {
 	}
 	fmt.Println()
 	fmt.Println("repo-local config is never auto-loaded: a repository that could ship its own")
-	fmt.Println("profile would be granting itself permissions. See .claude/design/DESIGN.md §2.7.")
+	fmt.Println("profile would be granting itself permissions. See .claude/design/INDEX.md §2.7.")
 	return 0
 }
 

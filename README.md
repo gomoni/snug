@@ -304,7 +304,7 @@ Design and research material is **not** user documentation and lives apart, unde
 
 | | |
 |---|---|
-| [`DESIGN.md`](.claude/design/DESIGN.md) | Architecture, threat model, the policy model, roadmap |
+| [`INDEX.md`](.claude/design/INDEX.md) | Architecture, threat model, the policy model, roadmap |
 | [`PSEUDOFS-AUDIT.md`](.claude/design/PSEUDOFS-AUDIT.md) | What `/proc`, `/sys` and `/dev` expose, measured |
 | [`PARAMETERISED-PROFILES.md`](.claude/design/PARAMETERISED-PROFILES.md) | A deferred design, and why |
 | [`SECRETS.md`](.claude/design/SECRETS.md) | What snug does with credentials, and what it should |

@@ -219,7 +219,7 @@ func (r Registry) merge(other Registry) error {
 // There is deliberately NO fourth layer. snug never auto-loads .snug/ or
 // snug.toml from beside the target: a hostile repository that ships its own
 // profile would be granting itself permissions, which defeats the entire threat
-// model. See .claude/design/DESIGN.md §2.7.
+// model. See .claude/design/INDEX.md §2.7.
 func Load() (Registry, error) {
 	reg, err := builtins()
 	if err != nil {

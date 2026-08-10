@@ -75,7 +75,7 @@ func TestUserProfileCannotRepointSysBin(t *testing.T) {
 // refusalJoinDifferentContent: two grants at one guest path with different
 // KindData Content. No TOML key can produce this today — Content is only ever
 // written by snug itself (Policy.Replace) — so it is exercised directly at the
-// `join` level, the same way DESIGN §2.2 documents the rule. It matters
+// `join` level, the same way INDEX §2.2 documents the rule. It matters
 // because `join` is the ONE place the whole monotonicity argument lives: if a
 // future TOML key ever reaches KindData, this is the test that keeps it honest.
 func refusalJoinDifferentContent(t testing.TB) error {

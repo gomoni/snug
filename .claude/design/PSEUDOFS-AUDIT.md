@@ -56,7 +56,7 @@ run:
 
 Two of these are load-bearing beyond recon:
 
-- **`/proc/asound` + `boot_id` falsify DESIGN §5.3**, which says the generated
+- **`/proc/asound` + `boot_id` falsify INDEX §5.3**, which says the generated
   per-sandbox `/etc/machine-id` means "the sandbox cannot fingerprint the host." It
   can, several ways, and `boot_id` lets two sandboxes prove they share a host.
 - **`/proc/interrupts` is a live keystroke-timing oracle against the *operator*.**
@@ -96,7 +96,7 @@ kernel bug — correct today) vs *snug-level* (a leak snug could close).
 | P3 | /proc | `/proc/keys` + `/proc/key-users` — host user's live keyring incl. Kerberos ccache. Key *use* is dead (seccomp), this is enumeration | Medium |
 | P4 | /proc | `/proc/kallsyms` + `/proc/modules`. Addresses zeroed **only** by host `kptr_restrict=1`; on `=0` this is a full KASLR base leak snug neither checks nor reports | Medium (High on an unhardened host) |
 | P5 | /proc | `/proc/interrupts` — operator keystroke/touchpad timing oracle; `/proc/bus/input/devices` names the hardware | Medium |
-| P6 | /proc | Fingerprint set: `boot_id`, `btime`/`uptime`, `/proc/asound`, `/proc/bus/pci`, `/proc/partitions`, `loginuid`/`sessionid`/`attr/current`. `--unshare-all` does **not** unshare the time namespace, which is why `uptime`/`btime` leak. Contradicts DESIGN §5.3 | Medium |
+| P6 | /proc | Fingerprint set: `boot_id`, `btime`/`uptime`, `/proc/asound`, `/proc/bus/pci`, `/proc/partitions`, `loginuid`/`sessionid`/`attr/current`. `--unshare-all` does **not** unshare the time namespace, which is why `uptime`/`btime` leak. Contradicts INDEX §5.3 | Medium |
 | P7 | /proc | `/proc/self/mountinfo` — real host paths of every grant, launcher home, container storage layout. Inherent to guest==host path convention | Medium — **accept + document** |
 | P8 | /proc | Hardening-posture sysctls readable | Low |
 | P9 | /proc | Structural: procfs `rw`, no `hidepid=`, no `subset=pid`; `--remount-ro /` does not reach it. The cause behind every row above | Low as finding, High as cause |
@@ -136,7 +136,7 @@ Correct outcomes today; each depends on something snug does not own.
 | P10b | /proc | `/proc/sysrq-trigger` — write → EPERM. OCI runtimes bind `/dev/null` over it; snug does not | same |
 | P10c | /proc,/dev | `/proc/kcore` (EACCES), and **`/dev/core → /proc/kcore`** — the path exists twice. Same for `kmsg`, `slabinfo`, `vmallocinfo`, `timer_list` | same — if the uid mapping ever became 0, `/dev/core` is physical memory |
 | P11 | /proc | `/proc/sys/net/*` is owned `<user>:<user>` mode 0644 — DAC alone would permit the write; what refuses it is `CAP_NET_ADMIN`. The one procfs region protected by a capability check rather than ownership | `CapBnd = 0` |
-| P13 | /proc | procfs re-mount / namespace-regain: native paths closed (`unshare(CLONE_NEWUSER)` seccomp-denied, `clone3`→ENOSYS, `mount`→EPERM). **Residual:** the filter ALLOWs non-native arches, so a 32-bit `unshare` is unfiltered, and the remount target is real (`/` tmpfs and `/usr` overlay superblocks are both `rw`; the `ro` comes from the bind). DESIGN §5.4 calls the i386 path "a bypass" without saying what it buys | seccomp non-native ALLOW |
+| P13 | /proc | procfs re-mount / namespace-regain: native paths closed (`unshare(CLONE_NEWUSER)` seccomp-denied, `clone3`→ENOSYS, `mount`→EPERM). **Residual:** the filter ALLOWs non-native arches, so a 32-bit `unshare` is unfiltered, and the remount target is real (`/` tmpfs and `/usr` overlay superblocks are both `rw`; the `ro` comes from the bind). INDEX §5.4 calls the i386 path "a bypass" without saying what it buys | seccomp non-native ALLOW |
 | D4 | /dev | devpts is a fresh `newinstance`; no host pty enumerable; TIOCSTI EPERM on both a fresh pty and `/dev/tty` | seccomp + host `legacy_tiocsti=0` — working |
 
 ## What bwrap can and cannot do (the honesty section — all run live)
@@ -226,7 +226,7 @@ demote-in-place.
   Y5.** One line; the only screen a human has for trusting snug.
 - **R8 — Bound the tmpfs (`--tmpfs /dev/shm` with `size=`). Closes D5.** A
   `KindTmpfs` mount at a deeper path — an addition, not a subtraction.
-- **R9 — Documentation, batched:** correct DESIGN §5.2's `/dev` enumeration (name
+- **R9 — Documentation, batched:** correct INDEX §5.2's `/dev` enumeration (name
   `console` as a bind of the host pty, `core` as a symlink to `/proc/kcore`);
   correct §5.3's fingerprint claim; rewrite the doc that says snug ships
   `[profile.sysfs]` (it does not — state the stronger truth, and that a `/sys`
@@ -237,7 +237,7 @@ demote-in-place.
   **Do not filter escape sequences** — a 95%-correct terminal filter is the
   D-Bus-proxy mistake in another costume. For CI/hooks/tests, losing job control
   costs nothing and closes the channel outright. Meanwhile state the channel in
-  DESIGN §5.2, `VERIFY.md`, and the injected `~/.claude/CLAUDE.md`.
+  INDEX §5.2, `VERIFY.md`, and the injected `~/.claude/CLAUDE.md`.
 - **R11 — Consider `SECCOMP_RET_ERRNO` on non-native audit arches (i386/x32)
   rather than falling through to ALLOW (P13).** Nothing snug supports needs a
   32-bit payload; "no silent downgrade" argues for failing loudly.
@@ -320,15 +320,15 @@ Each gets a **positive control** (the `pasta.avx2` lesson):
 
 ## Documentation defects found (not exploitable, but the shape that burned before)
 
-- DESIGN §787: says snug "ships `[profile.sysfs] ro=["/sys"]`" and exports
+- INDEX §787: says snug "ships `[profile.sysfs] ro=["/sys"]`" and exports
   `NPROC`-shaped env hints — **neither exists**. Reality is *stronger*, but a
   reader will "wire up what's documented," i.e. `ro=["/sys"]`, which is exactly
   Y2/Y3.
-- DESIGN §5.2 / VERIFY §77: synthetic `/dev` described as "null, zero, full,
+- INDEX §5.2 / VERIFY §77: synthetic `/dev` described as "null, zero, full,
   random, urandom, tty, plus a private devpts" — also contains `console` (host
   pty), `core → /proc/kcore`, `shm`, `ptmx`, `fd`, `std{in,out,err}`.
-- DESIGN §5.3: generated machine-id ⇒ "cannot fingerprint the host" — false (P6).
-- DESIGN §5.2: `--proc /proc` as "a fresh procfs bound to the sandbox's own PID
+- INDEX §5.3: generated machine-id ⇒ "cannot fingerprint the host" — false (P6).
+- INDEX §5.2: `--proc /proc` as "a fresh procfs bound to the sandbox's own PID
   namespace" — true and incomplete; the host-global files are all there.
 - DESIGN N5: side channels list undersells `/proc/interrupts`.
 - `base.toml:255-267`: `@podman-socket` host resources "untouched and unreachable" —
@@ -346,7 +346,7 @@ and snug masks nothing, so a default sandbox hands a hostile payload the complet
 host kernel config, the boot cmdline with the root UUID, the host user's kernel
 keyring including a Kerberos ccache, all kernel symbol names, a live
 keystroke-timing oracle against the operator, and a stable hardware fingerprint
-that falsifies DESIGN §5.3. **No escape — every write primitive is refused by
+that falsifies INDEX §5.3. **No escape — every write primitive is refused by
 kernel DAC and zero capabilities — but the read side leaks more than crun's
 default, which is an awkward place for a sandbox to be, and it is snug's to fix.**
 The two structural defects behind the worst cases are that a profile can displace
