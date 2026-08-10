@@ -1,8 +1,12 @@
 # BRAINSTORM — what a profile may say about the environment
 
-**Status: exploration, not a decision.** Filed so the reasoning is not
-re-derived later, in the shape of `PARAMETERISED-PROFILES.md`, which this
-document leans on in §4.
+**Status: exploration, with the syntax decided in shape — see §11.** Filed so the
+reasoning is not re-derived later, in the shape of `PARAMETERISED-PROFILES.md`,
+which this document leans on in §4.
+
+**§11 is the part to read if you are implementing.** §1–§10 are the argument and
+the measurements that constrain it; §11 is the proposed syntax, its errors, and
+what it costs.
 
 Everything measured is marked, and every measurement was executed **against
 `main`** (`408e8e4`), not against a branch. That matters here more than usual: an
@@ -916,6 +920,213 @@ matter:
   `stubs-in-path:/some/dir` would make the directory a value rather than a
   constant — §4's fifth route — attractive right up to the point where two
   instances need an order between them.
+
+---
+
+## 11. The proposed syntax — **decided in shape**
+
+*Owner's sketch, 2026-08-10, with one rule settled:* **`prepend` may be used once
+across the whole selected set of profiles. A second one is a failure, not a
+merge.** The examples below are that sketch, filled in where it was rough.
+
+### 11.1 Three keys, and one of them moves out of profiles
+
+```toml
+[profile.stubs-in-path]
+description = "snug's wrappers ahead of /usr/bin"
+environ-prepend = { PATH = "/run/snug/bin" }      # once per selected set
+
+[profile.sys]
+environ = { PATH = ["/usr/bin", "/usr/sbin"], SHELL = "/usr/bin/bash" }
+
+[profile.home]
+environ = { XDG_CONFIG_HOME = "{home}/.config", XDG_CACHE_HOME = "{home}/.cache" }
+```
+
+```toml
+# ~/.config/snug/config.toml — preferences, not grants
+defaults    = ["@sys", "@home", "@cwd-rw", "@parent-ro", "@stubs-in-path"]
+inherit-env = ["USER", "TERM", "LANG"]
+```
+
+### 11.2 The rule that was hard to express: **the TOML type IS the variable type**
+
+The sketch says *"lists like PATH can be merged, while scalars like SHELL do not
+— this is not very well expressed here."* It does not need expressing. TOML
+already has both types, so let the value's own type carry it:
+
+| written as | means | two profiles both set it |
+|---|---|---|
+| `PATH = ["/usr/bin", "/usr/sbin"]` | **array → list variable** | **merge** (union, then sorted) |
+| `SHELL = "/usr/bin/bash"` | **string → scalar** | identical values fine; **different values are an error** |
+
+No lookup table, no `type =` key, nothing to keep in sync. You already say which
+one you mean by how you write it.
+
+**And it closes the empty-element hazard by construction.** A profile never
+writes a separator, so it cannot write `"/usr/bin:"` and it cannot produce
+`"/usr/bin::/bin"` by dropping an element from a string. snug joins the array
+with the right separator for that variable — `:` for `PATH`, and `;` where
+`ld.so` wants one — and refuses an empty array element. §3(d)'s hazard, and the
+`MANPATH`-operator problem in §3a.2, both stop being things an implementation has
+to remember.
+
+One consequence worth stating: `environ = { PATH = "/usr/bin:/usr/sbin" }` — a
+string where the variable is a list — is a **load error**, not a helpful
+coercion. Otherwise the separator comes back in through the front door.
+
+### 11.3 The three worked profiles
+
+```toml
+[profile.sys]
+description = "The system's binaries, libraries and a curated /etc."
+ro = ["/usr", "/etc/ssl", "/etc/pki", "/etc/passwd", "…"]
+symlink = [{ at = "/bin", target = "usr/bin" }, "…"]
+environ = {
+  PATH  = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"],
+  SHELL = "/usr/bin/bash",
+}
+
+[profile.home]
+description = "$HOME is an empty tmpfs at the host path. Writable, ephemeral."
+tmpfs = ["{home}", "{home}/.config", "{home}/.cache",
+         "{home}/.local/state", "{home}/.local/share"]
+environ = {
+  XDG_CONFIG_HOME = "{home}/.config",
+  XDG_CACHE_HOME  = "{home}/.cache",
+  XDG_STATE_HOME  = "{home}/.local/state",
+  XDG_DATA_HOME   = "{home}/.local/share",
+}
+
+[profile.stubs-in-path]
+description = "snug's wrappers ahead of /usr/bin, so a host tool that cannot work inside says so"
+environ-prepend = { PATH = "/run/snug/bin" }
+```
+
+Three notes, all of which are the design doing work:
+
+**`@home` is §2 fixed.** The variables sit next to the `tmpfs` that creates the
+directories. A rule that every path in `environ` must be granted by the same
+profile makes "select without `@home` and `XDG_CONFIG_HOME` names nothing"
+**unspellable**, not merely detectable — and the same rule catches the three
+instances §2 measured live on `main` today (`HOME`, `SHELL`, `PATH`).
+
+**The sketch wrote `XDG_CONFIG_DIR`; the real name is `XDG_CONFIG_HOME`.**
+`XDG_CONFIG_DIRS` is a different variable — plural, a *list*, defaulting to
+`/etc/xdg` (§3a.3). Worth pointing out because it is exactly the confusion the
+type table exists to catch: one is a scalar you author, the other is a list that
+merges, and they are one character apart.
+
+**`@sys` sets `PATH` as an array, `@stubs-in-path` prepends.** Those are
+different operations on the same variable and they compose: the merged array
+sorts, and the prepend goes in front of all of it.
+
+### 11.4 `inherit-env` moves passthrough out of profiles, and that is an improvement
+
+Today `env = ["ANTHROPIC_API_KEY"]` lives in `@claude`, so *selecting a profile*
+is what puts a host credential inside. Moving it to `config.toml` changes who
+decides: the human writes the line, once, for their own machine.
+
+That is worth having on its own terms. It also shrinks the thing this document
+has been complaining about since §3 — passthrough is the leak class, and a
+profile can no longer reach for it silently.
+
+**One honest objection.** CLAUDE.md says *"`snug config` holds preferences, never
+grants"*, and copying a host value into the sandbox looks more like a grant than
+a preference. The counter-argument is that the host's environment is not
+something a profile can know — it is a fact about the invoking shell, so the
+human is the only one in a position to name it. I think that holds, but it is a
+rule being amended rather than applied, and it should be amended out loud.
+
+`forbiddenEnv` still applies to `inherit-env`, unconditionally rather than only
+when the host happens to have the variable set (§1(e)). And per §3a.6 the list
+needs to grow — `PYTHONPATH`, `GIT_EXEC_PATH`, the `GIT_CONFIG_*` family,
+`LESSOPEN` and `BASH_FUNC_*` are all measured code-execution vectors that are not
+on it today.
+
+### 11.5 The failures
+
+```toml
+# 1. Two prepends. The rule the owner set.
+[profile.stubs-in-path]
+environ-prepend = { PATH = "/run/snug/bin" }
+[profile.mytools]
+environ-prepend = { PATH = "/opt/bin" }
+```
+```
+snug: @stubs-in-path and mytools both prepend to PATH (/run/snug/bin and
+       /opt/bin). Only one profile may prepend — prepending is a claim about
+       which binary wins, and two claims cannot both hold.
+       Use environ = { PATH = [...] } if the order does not matter to you.
+```
+
+**The cost, stated plainly:** `@stubs-in-path` is in `defaults`, so it holds the
+prepend slot on every ordinary run. A user profile that wants the slot has to
+displace it — `--no-defaults`, or a `defaults` list without it. That is the price
+of the rule being simple, and it is visible rather than silent.
+
+```toml
+# 2. Two scalars disagree.
+[profile.a]
+environ = { SHELL = "/usr/bin/bash" }
+[profile.b]
+environ = { SHELL = "/usr/bin/zsh" }
+```
+```
+snug: profiles a and b both set SHELL, to /usr/bin/bash and /usr/bin/zsh.
+       A scalar has one value. Select one profile, or make them agree.
+```
+Setting it to the *same* value in both is fine — that is what keeps `include`
+usable.
+
+```toml
+# 3. A separator written by hand.
+environ = { PATH = "/usr/bin:/usr/sbin" }
+```
+```
+snug: PATH is a list; write it as an array — PATH = ["/usr/bin", "/usr/sbin"].
+       snug joins list variables with the right separator, and a hand-written
+       one can smuggle in an empty element, which in PATH means the current
+       directory.
+```
+
+```toml
+# 4. A value naming something the profile does not grant.
+[profile.broken]
+tmpfs = ["{home}/.config"]
+environ = { XDG_DATA_HOME = "{home}/.local/share" }
+```
+```
+snug: profile broken sets XDG_DATA_HOME=/home/u/.local/share, which it does not
+       grant. Add it to tmpfs/ro/rw, or drop the variable — a variable naming a
+       path that does not exist inside is worse than an absent one.
+```
+
+```toml
+# 5. A name snug owns.
+environ = { SNUG_PROFILES = "@sys", PS1 = "$(id)" }
+```
+Refused: `SNUG_*` is what `--dry-run` and the injected `~/.claude/CLAUDE.md` are
+read against, and `PS1` is executed by bash (§3a.4). The refusal has to cover
+**prefixes**, not just names — `BASH_FUNC_*`, `GIT_CONFIG_*`, `LD_*` — which
+today's `map[string]bool` cannot express.
+
+### 11.6 What is still open
+
+- **The `env` key has to go.** `environ` replaces it and `inherit-env` takes its
+  meaning, so any existing user profile with `env = [...]` breaks. It should be a
+  named error pointing at `inherit-env`, in the shape of the retired `@null`.
+- **Naming.** `environ` / `environ-prepend` next to `ro`, `rw`, `tmpfs`,
+  `symlink` is the only hyphenated pair in the language. `env` / `env-prepend`
+  would match, and `env` is free once passthrough moves out.
+- **Is `append` needed?** Nothing has asked for it. Leaving it out keeps exactly
+  one ordered operation, which is what makes the "once" rule easy to state.
+- **`XDG_RUNTIME_DIR`** has obligations, not just a value (mode 0700, owned by
+  the user — §3a.3), so it belongs to whichever profile creates a directory
+  meeting them. The schema forces that question to be answered rather than
+  letting the variable float.
+- §3a.5(a), the environment outranking a pinned config file, is untouched by any
+  of this and still wants its own fix.
 
 ---
 
