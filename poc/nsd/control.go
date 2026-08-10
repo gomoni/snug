@@ -154,6 +154,16 @@ func (s *server) startSandbox() response {
 		return response{Err: err.Error()}
 	}
 	defer statusR.Close()
+	// bwrap announces the child pid as soon as the child EXISTS, which is well
+	// before its mounts are in place. Attaching on the strength of that pid
+	// lands a process in a half-built mount namespace, and the symptom is
+	// execve returning ENOENT for a binary that stat() can see a moment later.
+	// So the sandbox's own init reports readiness on its own pipe.
+	readyR, readyW, err := os.Pipe()
+	if err != nil {
+		return response{Err: err.Error()}
+	}
+	defer readyR.Close()
 
 	self := os.Getenv("NSD_SELF")
 	bind := os.Getenv("NSD_BIND")
@@ -186,7 +196,7 @@ func (s *server) startSandbox() response {
 
 	cmd := exec.Command("bwrap", args...)
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "NSD_RUN=" + runDir}
-	cmd.ExtraFiles = []*os.File{statusW}
+	cmd.ExtraFiles = []*os.File{statusW, readyW}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	logf, err := os.Create(filepath.Join(runDir, "sandbox.log"))
 	if err != nil {
@@ -197,9 +207,14 @@ func (s *server) startSandbox() response {
 		return response{Err: "starting bwrap: " + err.Error()}
 	}
 	statusW.Close()
+	readyW.Close()
 
 	pid, err := readChildPID(statusR)
 	if err != nil {
+		_ = cmd.Process.Kill()
+		return response{Err: err.Error()}
+	}
+	if err := waitReady(readyR); err != nil {
 		_ = cmd.Process.Kill()
 		return response{Err: err.Error()}
 	}
@@ -210,6 +225,23 @@ func (s *server) startSandbox() response {
 		"sandbox_init_pid": strconv.Itoa(pid),
 		"bwrap_pid":        strconv.Itoa(cmd.Process.Pid),
 	}}
+}
+
+// waitReady blocks until the sandbox's init says its filesystem is real.
+func waitReady(r *os.File) error {
+	type res struct{ err error }
+	ch := make(chan res, 1)
+	go func() {
+		buf := make([]byte, 16)
+		_, err := r.Read(buf)
+		ch <- res{err}
+	}()
+	select {
+	case v := <-ch:
+		return v.err
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("sandbox init never reported ready")
+	}
 }
 
 func readChildPID(r *os.File) (int, error) {
@@ -302,6 +334,11 @@ func sandboxInit() error {
 	}
 	fmt.Println("SANDBOX-INIT ready")
 	os.Stdout.Sync()
+	ready := os.NewFile(4, "ready")
+	if _, err := ready.Write([]byte("READY\n")); err != nil {
+		fmt.Printf("SANDBOX-INIT could not report ready: %v\n", err)
+	}
+	ready.Close()
 	select {}
 }
 
