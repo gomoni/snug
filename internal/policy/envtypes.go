@@ -194,6 +194,26 @@ var forbiddenEnv = map[string]forbidKind{
 	// git executes each of these, measured
 	"GIT_SSH_COMMAND": forbidBoth, "GIT_EXEC_PATH": forbidBoth,
 	"GIT_EXTERNAL_DIFF": forbidBoth, "GIT_EDITOR": forbidBoth,
+	// The same power under older or adjacent spellings. A redteam run reached
+	// git's transport through GIT_SSH while GIT_SSH_COMMAND — its exact
+	// equivalent — was refused two lines up, and hijacked a `git fetch` in a
+	// sandbox that had been given a PINNED ssh identity by a DIFFERENT profile:
+	//
+	//   snug -p work -p helper <tgt> -- git fetch origin
+	//     HIJACKED-GIT-TRANSPORT host=git@github.com … SSH_AUTH_SOCK=/run/snug/ssh-agent.sock
+	//
+	// `helper` granted no filesystem path at all. That is one profile defeating
+	// a guarantee another profile established, which is the composability case
+	// this whole table exists to prevent — so the rule was never "the newest
+	// spelling"; it is "the value is code". Anything git or ssh execs belongs
+	// here, and forgetting one is indistinguishable from allowing it.
+	"GIT_SSH": forbidBoth, "GIT_PROXY_COMMAND": forbidBoth,
+	"GIT_ASKPASS": forbidBoth, "SSH_ASKPASS": forbidBoth,
+	"GIT_SEQUENCE_EDITOR": forbidBoth,
+	// Same class, different runtime: each is a flag string the runtime parses
+	// before main(), and each can load code from a path.
+	"JAVA_TOOL_OPTIONS": forbidBoth, "_JAVA_OPTIONS": forbidBoth,
+	"JDK_JAVA_OPTIONS": forbidBoth, "RUBYOPT": forbidBoth,
 	// bash performs command substitution on the prompt templates, before the
 	// user has typed anything (§3.5)
 	"PS0": forbidBoth, "PS2": forbidBoth, "PS3": forbidBoth, "PS4": forbidBoth,

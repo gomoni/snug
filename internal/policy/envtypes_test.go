@@ -143,7 +143,14 @@ func TestForbidListSplitsBySetAndInherit(t *testing.T) {
 	// And the names refused at BOTH verbs, because the value is code wherever
 	// it came from.
 	for _, name := range []string{"LD_PRELOAD", "LD_AUDIT", "GCONV_PATH", "TZDIR",
-		"GIT_SSH_COMMAND", "GIT_EXEC_PATH", "PROMPT_COMMAND", "PS4"} {
+		"GIT_SSH_COMMAND", "GIT_EXEC_PATH", "PROMPT_COMMAND", "PS4",
+		// Reached by a redteam run: GIT_SSH hijacked `git fetch` in a sandbox
+		// whose ssh identity a different profile had pinned, while
+		// GIT_SSH_COMMAND was refused. The rule is "the value is code", not
+		// "the newest spelling" — see envtypes.go.
+		"GIT_SSH", "GIT_PROXY_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS",
+		"GIT_SEQUENCE_EDITOR", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS",
+		"JDK_JAVA_OPTIONS", "RUBYOPT"} {
 		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{name: "x"}}); err == nil {
 			t.Errorf("environ.set %s was accepted; the value is executed by every process "+
 				"the sandbox launches", name)
