@@ -934,52 +934,111 @@ merge.** The examples below are that sketch, filled in where it was rough.
 *"The verb itself may tell how the variable will be handled."* Taken literally,
 that gives five verbs, and each has exactly one meaning:
 
-| key | where | operates on | two profiles both use it |
+*"The verb itself may tell how the variable will be handled."* Taken literally,
+that gives five verbs, each with exactly one meaning — and they nest under one
+`environ` section rather than being five top-level keys. **Recommended, and §11.2
+is why.**
+
+| verb | where | operates on | two profiles both use it |
 |---|---|---|---|
-| `environ-set` | profile | **scalars** | same value fine; **different values are an error** |
-| `environ-merge` | profile | **lists** | **union**, then sorted |
-| `environ-prepend` | profile | **lists** | **error** — at most one across the selected set |
-| `environ-inherit` | config | any | copy the host's value verbatim |
-| `environ-sanitise` | config | **lists** | copy the host's value, keep only elements the policy grants |
+| `environ.set` | profile | **scalars** | same value fine; **different values are an error** |
+| `environ.merge` | profile | **lists** | **union**, then sorted |
+| `environ.prepend` | profile | **lists** | **error** — at most one across the selected set |
+| `environ.inherit` | config | any | copy the host's value verbatim |
+| `environ.sanitise` | config | **lists** | copy the host's value, keep only elements the policy grants |
 
 ```toml
 [profile.sys]
-environ-set   = { SHELL = "/usr/bin/bash" }
-environ-merge = { PATH  = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"] }
+description = "The system's binaries, libraries and a curated /etc."
+ro = ["/usr", "/etc/ssl", "…"]
 
-[profile.home]
-environ-set = { XDG_CONFIG_HOME = "{home}/.config", XDG_CACHE_HOME = "{home}/.cache" }
+[profile.sys.environ.set]
+SHELL = "/usr/bin/bash"
+
+[profile.sys.environ.merge]
+PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+
 
 [profile.stubs-in-path]
-environ-prepend = { PATH = "/run/snug/bin" }
+description = "snug's wrappers ahead of /usr/bin"
+
+[profile.stubs-in-path.environ.prepend]
+PATH = "/run/snug/bin"
 ```
 
 ```toml
 # ~/.config/snug/config.toml — preferences
-defaults         = ["@sys", "@home", "@cwd-rw", "@parent-ro", "@stubs-in-path"]
-environ-inherit  = ["USER", "TERM", "LANG"]
-environ-sanitise = ["PKG_CONFIG_PATH"]
+defaults = ["@sys", "@home", "@cwd-rw", "@parent-ro", "@stubs-in-path"]
+
+[environ]
+inherit  = ["USER", "TERM", "LANG"]
+sanitise = ["PKG_CONFIG_PATH"]
 ```
 
-Why this beats letting the TOML value type imply the operation (the previous
-draft's idea): **the verb is greppable and the type is not.** `grep
-environ-prepend ~/.config/snug/profiles.d/` finds every ordered claim on the
-host in one command. And a reader does not need to know whether `PATH` is a list
-to understand the line — the line says what it does.
+### 11.2 Why nested, and why the flat spelling was not merely uglier
 
-### 11.2 The verb and the variable must agree, and snug owns the types
+Four reasons, in descending order of how much they matter.
+
+**(a) It resolves the noun/verb inconsistency instead of arguing around it.** An
+earlier draft flagged this as open: `environ.set` next to `ro`, `rw`, `tmpfs`,
+`symlink` puts a verb among nouns, and the defence — "mount keys are one
+operation differing by access, the environment has five" — read as justification
+after the fact. Nesting removes the problem rather than excusing it. `environ` is
+a **noun**, at the same level as `ro` and `tmpfs`; the verbs live one level down,
+where they are describing operations *within* a thing rather than competing with
+grants for the top-level namespace.
+
+**(b) The flat spelling does not parse for the case that needs it most.**
+Multi-line inline tables are invalid in TOML 1.0, so `environ.set = { …several
+variables… }` across lines is a syntax error — measured, in both a reference
+parser and snug's own:
+
+```
+[profile.home]                      python3 tomllib:  Invalid initial character for a key part
+environ.set = {                     go-toml/v2:       toml: invalid character at start of key
+  XDG_CONFIG_HOME = "/h/.config",
+  XDG_CACHE_HOME  = "/h/.cache",
+}
+```
+
+```
+[profile.home.environ.set]          both parsers: OK
+XDG_CONFIG_HOME = "/h/.config"
+XDG_CACHE_HOME  = "/h/.cache"
+```
+
+So the flat form forces every profile onto one long line, or onto invalid TOML.
+`@home` sets four XDG variables and `@sys` sets several — the one-per-line
+rendering the section header gives is the readable one, and it is the only legal
+one.
+
+**(c) An unknown verb is refused for free.** `environ` becomes a struct with
+known fields, so `DisallowUnknownFields` catches `environ.deny` exactly as it
+catches an unknown top-level key today. The "a negation key cannot be smuggled
+in" guarantee applies one level down with no new code.
+
+**(d) It extends without spending top-level names.** If `append` is ever wanted,
+it is `environ.append` rather than a sixth root key.
+
+**Greppability survives, which was the reason to prefer verbs at all.** `grep -rn
+'environ.prepend' ~/.config/snug/profiles.d/` still finds every ordered claim on
+the host in one command, because the section header spells the whole path. That
+would *not* hold for a nested inline form — another argument for writing these as
+table headers rather than inline tables.
+
+### 11.3 The verb and the variable must agree, and snug owns the types
 
 Making the verb explicit does not make the type go away; it turns a silent
 mistake into a named one. snug ships the type table from §3a — `PATH` is a list,
 `SHELL` is a scalar — and a mismatch is a load error:
 
 ```
-environ-merge = { SHELL = "..." }
-  snug: SHELL is a scalar, not a list — use environ-set.
+environ.merge = { SHELL = "..." }
+  snug: SHELL is a scalar, not a list — use environ.set.
 
-environ-set = { PATH = [...] }
-  snug: PATH is a list — use environ-merge, or environ-prepend if the order
-         matters to you. environ-set on a list would replace every other
+environ.set = { PATH = [...] }
+  snug: PATH is a list — use environ.merge, or environ.prepend if the order
+         matters to you. environ.set on a list would replace every other
          profile's entries, which snug does not allow.
 ```
 
@@ -995,35 +1054,43 @@ right separator for the variable and refuses an empty element. §3(d)'s
 `PATH`-means-cwd hazard and §3a.2's `MANPATH`-empty-element-is-an-operator
 problem both stop being things an implementation has to remember to avoid.
 
-`environ-prepend = { PATH = "/run/snug/bin" }` is therefore a **one-element**
+`environ.prepend = { PATH = "/run/snug/bin" }` is therefore a **one-element**
 prepend, not a string to be parsed. Several at once is an array, and the order
 within one profile is unambiguous because one profile wrote it:
-`environ-prepend = { PATH = ["/run/snug/bin", "/run/snug/bin2"] }`.
+`environ.prepend = { PATH = ["/run/snug/bin", "/run/snug/bin2"] }`.
 
-### 11.3 The three worked profiles
+### 11.4 The three worked profiles
 
 ```toml
 [profile.sys]
 description = "The system's binaries, libraries and a curated /etc."
 ro = ["/usr", "/etc/ssl", "/etc/pki", "/etc/passwd", "…"]
 symlink = [{ at = "/bin", target = "usr/bin" }, "…"]
-environ-set   = { SHELL = "/usr/bin/bash" }
-environ-merge = { PATH  = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"] }
+
+[profile.sys.environ.set]
+SHELL = "/usr/bin/bash"
+
+[profile.sys.environ.merge]
+PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+
 
 [profile.home]
 description = "$HOME is an empty tmpfs at the host path. Writable, ephemeral."
 tmpfs = ["{home}", "{home}/.config", "{home}/.cache",
          "{home}/.local/state", "{home}/.local/share"]
-environ-set = {
-  XDG_CONFIG_HOME = "{home}/.config",
-  XDG_CACHE_HOME  = "{home}/.cache",
-  XDG_STATE_HOME  = "{home}/.local/state",
-  XDG_DATA_HOME   = "{home}/.local/share",
-}
+
+[profile.home.environ.set]
+XDG_CONFIG_HOME = "{home}/.config"
+XDG_CACHE_HOME  = "{home}/.cache"
+XDG_STATE_HOME  = "{home}/.local/state"
+XDG_DATA_HOME   = "{home}/.local/share"
+
 
 [profile.stubs-in-path]
 description = "snug's wrappers ahead of /usr/bin, so a host tool that cannot work inside says so"
-environ-prepend = { PATH = "/run/snug/bin" }
+
+[profile.stubs-in-path.environ.prepend]
+PATH = "/run/snug/bin"
 ```
 
 Three notes, all of which are the design doing work:
@@ -1037,14 +1104,14 @@ three instances §2 measured live on `main` today (`HOME`, `SHELL`, `PATH`).
 **The sketch wrote `XDG_CONFIG_DIR`; the real name is `XDG_CONFIG_HOME`.**
 `XDG_CONFIG_DIRS` is a different variable — plural, a *list*, defaulting to
 `/etc/xdg` (§3a.3). Worth pointing out because it is exactly the confusion the
-type table exists to catch: one is `environ-set`, the other is `environ-merge`,
+type table exists to catch: one is `environ.set`, the other is `environ.merge`,
 and they are one character apart.
 
 **`@sys` merges `PATH`, `@stubs-in-path` prepends it.** Different verbs on the
 same variable, and they compose: merged entries sort among themselves, the
 prepend goes in front of all of them, and no profile ever spells the separator.
 
-### 11.4 `environ-inherit` moves passthrough out of profiles, and that is an improvement
+### 11.5 `environ.inherit` moves passthrough out of profiles, and that is an improvement
 
 Today `env = ["ANTHROPIC_API_KEY"]` lives in `@claude`, so *selecting a profile*
 is what puts a host credential inside. Moving it to `config.toml` changes who
@@ -1061,26 +1128,27 @@ something a profile can know — it is a fact about the invoking shell, so the
 human is the only one in a position to name it. I think that holds, but it is a
 rule being amended rather than applied, and it should be amended out loud.
 
-`forbiddenEnv` still applies to `environ-inherit`, unconditionally rather than only
+`forbiddenEnv` still applies to `environ.inherit`, unconditionally rather than only
 when the host happens to have the variable set (§1(e)). And per §3a.6 the list
 needs to grow — `PYTHONPATH`, `GIT_EXEC_PATH`, the `GIT_CONFIG_*` family,
 `LESSOPEN` and `BASH_FUNC_*` are all measured code-execution vectors that are not
 on it today.
 
-### 11.5 The failures
+### 11.6 The failures
 
 ```toml
 # 1. Two prepends. The rule the owner set.
-[profile.stubs-in-path]
-environ-prepend = { PATH = "/run/snug/bin" }
-[profile.mytools]
-environ-prepend = { PATH = "/opt/bin" }
+[profile.stubs-in-path.environ.prepend]
+PATH = "/run/snug/bin"
+
+[profile.mytools.environ.prepend]
+PATH = "/opt/bin"
 ```
 ```
 snug: @stubs-in-path and mytools both prepend to PATH (/run/snug/bin and
        /opt/bin). Only one profile may prepend — prepending is a claim about
        which binary wins, and two claims cannot both hold.
-       Use environ-merge = { PATH = [...] } if the order does not matter to you.
+       Use [profile.mytools.environ.merge] if the order does not matter to you.
 ```
 
 **The cost, stated plainly:** `@stubs-in-path` is in `defaults`, so it holds the
@@ -1090,10 +1158,11 @@ of the rule being simple, and it is visible rather than silent.
 
 ```toml
 # 2. Two scalars disagree.
-[profile.a]
-environ-set = { SHELL = "/usr/bin/bash" }
-[profile.b]
-environ-set = { SHELL = "/usr/bin/zsh" }
+[profile.a.environ.set]
+SHELL = "/usr/bin/bash"
+
+[profile.b.environ.set]
+SHELL = "/usr/bin/zsh"
 ```
 ```
 snug: profiles a and b both set SHELL, to /usr/bin/bash and /usr/bin/zsh.
@@ -1104,10 +1173,12 @@ usable.
 
 ```toml
 # 3. A separator written by hand.
-environ-merge = { PATH = "/usr/bin:/usr/sbin" }
+[profile.x.environ.merge]
+PATH = "/usr/bin:/usr/sbin"
 ```
 ```
-snug: environ-merge needs an array — PATH = ["/usr/bin", "/usr/sbin"].
+snug: PATH is a list, so environ.merge needs an array —
+         PATH = ["/usr/bin", "/usr/sbin"].
        snug joins list variables with the right separator, and a hand-written
        one can smuggle in an empty element, which in PATH means the current
        directory.
@@ -1117,7 +1188,9 @@ snug: environ-merge needs an array — PATH = ["/usr/bin", "/usr/sbin"].
 # 4. A value naming something the profile does not grant.
 [profile.broken]
 tmpfs = ["{home}/.config"]
-environ-set = { XDG_DATA_HOME = "{home}/.local/share" }
+
+[profile.broken.environ.set]
+XDG_DATA_HOME = "{home}/.local/share"
 ```
 ```
 snug: profile broken sets XDG_DATA_HOME=/home/u/.local/share, which it does not
@@ -1127,14 +1200,16 @@ snug: profile broken sets XDG_DATA_HOME=/home/u/.local/share, which it does not
 
 ```toml
 # 5. A name snug owns.
-environ-set = { SNUG_PROFILES = "@sys", PS1 = "$(id)" }
+[profile.evil.environ.set]
+SNUG_PROFILES = "@sys"
+PS1 = "$(id)"
 ```
 Refused: `SNUG_*` is what `--dry-run` and the injected `~/.claude/CLAUDE.md` are
 read against, and `PS1` is executed by bash (§3a.4). The refusal has to cover
 **prefixes**, not just names — `BASH_FUNC_*`, `GIT_CONFIG_*`, `LD_*` — which
 today's `map[string]bool` cannot express.
 
-### 11.6 Semi-structured variables get no verb — and `PS1` is the one exception
+### 11.7 Semi-structured variables get no verb — and `PS1` is the one exception
 
 `LS_COLORS`, `TERMCAP`, `DBUS_SESSION_BUS_ADDRESS`, `GIT_CONFIG_PARAMETERS`,
 `IFS`: **snug ignores them, and "ignore" is a design position rather than a
@@ -1156,7 +1231,7 @@ expensive.
 
 Two things follow, and they point in opposite directions:
 
-- **`environ-inherit = ["PS1"]` must be refused.** Not because of the marker, but
+- **`environ.inherit = ["PS1"]` must be refused.** Not because of the marker, but
   because bash performs command substitution on prompt strings — `promptvars` is
   on by default, measured — so inheriting the host's `PS1` is a code channel that
   fires before the user types anything. Same for `PS0`–`PS4` and
@@ -1187,22 +1262,21 @@ characters. Cheap either way, and unpleasant to discover later.
 
 *Machine-readable is a separate channel and already solved:* `SNUG=1` and
 `SNUG_PROFILES` are what an agent or a script should test, and they are
-`environ-set` by snug under a reserved name that no profile and no `prompt`
+`environ.set` by snug under a reserved name that no profile and no `prompt`
 template can touch. The prompt is for humans; do not make it carry both jobs.
 
-### 11.7 What is still open
+### 11.8 What is still open
 
-- **The `env` key has to go.** The five verbs replace it and `environ-inherit`
+- **The `env` key has to go.** The five verbs replace it and `environ.inherit`
   takes its meaning, so any existing user profile with `env = [...]` breaks.
-  It should be a named error pointing at `environ-inherit`, in the shape of the
+  It should be a named error pointing at `environ.inherit`, in the shape of the
   retired `@null`. Keeping the prefix `environ` rather than reusing `env` is
   deliberate: a silently *changed* meaning is worse than a removed key.
-- **Naming, and it is a real inconsistency.** The environ family are verbs;
-  `ro`, `rw`, `tmpfs`, `symlink` are nouns. The defence is that the mount keys
-  are all the *same* operation — grant — differing only in access, so the noun
-  is the access; the environment genuinely has five different operations, so the
-  verb is the operation. That reads as a justification after the fact, and it
-  should be argued or the mount keys should move too. Not both.
+- ~~Naming: verbs among nouns~~ — **closed by nesting (§11.2a).** `environ` is a
+  noun at the top level alongside `ro`, `rw`, `tmpfs` and `symlink`; the verbs
+  live inside it, describing operations within one thing rather than competing
+  with grants for the root namespace. Recorded because the earlier flat spelling
+  had no answer to this and the nested one did not need to invent one.
 - **Is `environ-append` needed?** Nothing has asked for it. Leaving it out keeps
   exactly *one* ordered operation, which is what makes "at most one across the
   selected set" easy to state and to check. Adding it later means answering
