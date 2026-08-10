@@ -35,39 +35,59 @@ an `Authored` field and `Policy.Replace` is its single writer. The environment
 needs the same, and an earlier draft of this document did not have it — which
 made the format contradict itself in three places (§1.2 note, §2.5, §4.2).
 
-Nested, not five root keys. Written as table headers, not inline tables. Four reasons, heaviest first:
+Nested, not five root keys. Written as table headers, not inline tables. Three
+reasons, heaviest first — and one that was claimed and does not hold.
 
-**(a) Multi-line inline tables are invalid TOML 1.0** — flat spelling not parse for case needing it most. Measured in reference parser and in snug's own:
+**(a) Keep root namespace nouns.** `environ` sit beside `ro`, `rw`, `tmpfs`, `symlink`. Verbs one level down describe operations *within* a thing, not compete with grants for root.
+
+**(b) Unknown verb refused for free.** `environ` = struct with known fields, so `DisallowUnknownFields` catch `environ.deny` exactly as it catch unknown root key. "A negation key cannot be smuggled in" apply one level down, no new code.
+
+**(c) `append` later cost a nested field, not a sixth root key.**
+
+**Retracted: "the flat spelling does not parse".** An earlier draft made this the
+heaviest argument, on a measurement taken against the wrong parser. Multi-line
+inline tables are invalid in **TOML 1.0** and `python3 -m tomllib` refuses them —
+but snug uses `go-toml/v2 v2.4.3`, which **accepts** them:
 
 ```
-environ-set = {                 python3 tomllib: Invalid initial character for a key part
-  XDG_CONFIG_HOME = "...",      go-toml/v2:      toml: invalid character at start of key
+environ-set = {                 python3 tomllib:      Invalid initial character for a key part
+  XDG_CONFIG_HOME = "...",      go-toml/v2 v2.4.3:    accepted, parses to a nested map
   XDG_CACHE_HOME  = "...",
 }
 ```
 
-`@home` set four XDG variables. Flat force one long line, or invalid TOML.
+The scratch module used to "verify" this pinned v2.2.3, not the version in
+`go.mod`. **Check the version the project actually builds with, not the one the
+test module resolved to.**
 
-**(b) Keep root namespace nouns.** `environ` sit beside `ro`, `rw`, `tmpfs`, `symlink`. Verbs one level down describe operations *within* a thing, not compete with grants for root.
-
-**(c) Unknown verb refused for free.** `environ` = struct with known fields, so `DisallowUnknownFields` catch `environ.deny` exactly as it catch unknown root key. "A negation key cannot be smuggled in" apply one level down, no new code.
-
-**(d) `append` later cost a nested field, not a sixth root key.**
+What survives is smaller and worth stating on its own: the flat form is
+spec-invalid but *silently accepted here*, so a profile written that way works on
+this host and breaks on any TOML 1.0 parser. That is a portability trap, not a
+parse error — a weaker argument for nesting than (a)–(c), and an argument for
+snug rejecting the form deliberately rather than inheriting whatever the
+dependency allows this month.
 
 Greppability survive — why verbs beat inferring operation from value type: `grep -rn 'environ.prepend' ~/.config/snug/profiles.d/` find every ordered claim on host, because header spell whole path. That would **not** hold for nested inline form.
 
 ### 1.2 Worked profiles
 
 ```toml
+# NOTE: @sys sets NO environment. SHELL and the four base PATH entries are
+# snug's (§1.1) — an earlier draft showed them here, which contradicted §1.1 in
+# the same document. A profile that wants a tool on PATH grants the directory
+# and merges it, like @rust below.
 [profile.sys]
 description = "The system's binaries, libraries and a curated /etc."
 ro = ["/usr", "/etc/ssl", "/etc/pki", "/etc/passwd"]
+symlink = [{ at = "/bin", target = "usr/bin" }, { at = "/sbin", target = "usr/sbin" }]
 
-[profile.sys.environ.set]
-SHELL = "/usr/bin/bash"
 
-[profile.sys.environ.merge]
-PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+[profile.rust]
+description = "cargo's binaries on PATH"
+ro = ["{home}/.cargo/bin"]
+
+[profile.rust.environ.merge]
+PATH = ["{home}/.cargo/bin"]
 
 
 [profile.home]
@@ -137,18 +157,37 @@ only how narrowly it can be *scoped*, and that gets strictly worse.
 snug ship type table (§3). Mismatch = load error naming right verb:
 
 ```
-environ.merge on SHELL   →  SHELL is a scalar, not a list — use environ.set.
+environ.merge on EDITOR  →  EDITOR is a scalar, not a list — use environ.set.
 environ.set   on PATH    →  PATH is a list — use environ.merge, or environ.prepend
                             if the order matters. environ.set on a list would
                             replace every other profile's entries, which snug
                             does not allow.
 ```
 
-Unknown name default to **scalar** — conservative reading: scalar merge with nothing, so can only conflict, never silently combine.
+Unknown name default to **scalar** — conservative reading: a scalar merges with
+nothing, so it can only conflict, never silently combine.
+
+**`inherit` is refused for every list variable, without exception.** Copying a
+host search path wholesale imports directories that do not exist inside — what
+§2.4 case 4 refuses for `set`, and what `sanitise` exists to do properly.
+`inherit` is the scalar form; `sanitise` is the list form. An earlier draft
+carried this as a column on every table row and lost it in a rewrite; it is a
+rule, not a row.
+
+**`forbiddenEnv` survives all of this, unchanged and orthogonal.** The type table
+says what may be *merged*; the forbidden list says what may never be *inherited at
+all*, at any type, because the value is code — `LD_PRELOAD` is a list and is
+refused. Two rules, both applied, neither replacing the other. An earlier draft
+tried to collapse them and got two wrong answers at once (add `PS1`, drop
+`LD_LIBRARY_PATH`). §4.4 is a list to be **extended**, not retired.
 
 ### 2.2 snug never splits a string on a separator
 
 String = exactly one element. Profile cannot write `"/usr/bin:"`, cannot produce `"/usr/bin::/bin"` by dropping element, cannot smuggle `;` into `LD_LIBRARY_PATH`. snug join with right separator for variable and refuse empty element.
+
+**If nothing survives a `sanitise`, the variable is UNSET, not set empty.** §4.3
+is why: an empty `PATH` is the current directory, and an empty `LD_LIBRARY_PATH`
+is not the same thing as an absent one to the loader.
 
 Close §4.3 hazards by construction, not by implementer remembering. `environ.prepend` with `PATH = "/opt/bin"` = one-element prepend, not string to parse; several at once = array, and order within one profile unambiguous because one profile wrote it.
 
@@ -211,14 +250,15 @@ snug quietly holding it forever would not have been.
 ```toml
 # 2. Two scalars disagree.
 [profile.a.environ.set]
-SHELL = "/usr/bin/bash"
+XDG_DATA_HOME = "{home}/.local/share"
 
 [profile.b.environ.set]
-SHELL = "/usr/bin/zsh"
+XDG_DATA_HOME = "{home}/.share"
 ```
 ```
-snug: profiles a and b both set SHELL, to /usr/bin/bash and /usr/bin/zsh.
-       A scalar has one value. Select one profile, or make them agree.
+snug: profiles a and b both set XDG_DATA_HOME, to /home/u/.local/share and
+       /home/u/.share. A scalar has one value. Select one profile, or make
+       them agree.
 ```
 *Same* value in both fine — that what keep `include` usable.
 
@@ -269,16 +309,31 @@ Provenance per entry = product. Mounts already render this way; environment shou
 
 ```
 ENVIRONMENT  (--clearenv, then:)
-  HOME             /home/michal                    set       @home
-  LANG             en_US.UTF-8                     inherit   (config)
-  PATH             /run/snug/bin                   prepend   @stubs-in-path
-                   /usr/bin /bin /usr/sbin /sbin   merge     @sys
-  PKG_CONFIG_PATH  /usr/lib64/pkgconfig            sanitise  (config)  1 of 3 kept
-  SHELL            /usr/bin/bash                   set       @sys
+  EDITOR           vim                             inherit   @claude
+  HOME             /home/michal                    (snug)
+  PATH             /opt/bin                        prepend   mytools
+                   /home/michal/.cargo/bin         merge     @rust
+                   /run/snug/bin                   (snug)    podman stub
+                   /usr/bin /bin /usr/sbin /sbin   (snug)    base
+  PKG_CONFIG_PATH  /usr/lib64/pkgconfig            sanitise  @pkgconfig
+                   (2 host entries dropped: /opt/x/lib/pkgconfig, /srv/pkgconfig)
+  SHELL            /usr/bin/bash                   (snug)
   XDG_CONFIG_HOME  /home/michal/.config            set       @home
 ```
 
-Two things flat list cannot say: **which verb** produced value, and for `sanitise`, **what dropped**. Filter that silently remove two of three elements = exact shape of failure this document try to avoid.
+Three things a flat list cannot say: **which verb** produced the value, **which
+profile**, and for `sanitise`, **what was dropped** — named, not counted. A filter
+that silently removes two of three elements is the exact shape of failure this
+document exists to avoid, and a bare "1 of 3 kept" does not let anyone check it.
+
+`(snug)` is the provenance for snug's own authorship (§1.1), matching what mounts
+already print. The `PATH` bands read top to bottom in resolution order, so the
+rendering *is* the §2.3 diagram — which is the point: if the two ever disagree,
+the renderer is lying.
+
+Note `HOME` and `SHELL` carry `(snug)` and no verb. They are not profile-writable
+(§1.1), and §4.2's repair is that this block also **marks** an authored value
+whose path nothing grants.
 
 ---
 
@@ -473,11 +528,46 @@ env -i GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
 
 Short on purpose. Reopen one only with a reason.
 
-**Prior art.** makeWrapper (`--set` / `--prefix ENV SEP VAL` / `--unset`, argv order, imperative). systemd (`Environment=` / `PassEnvironment=` / `UnsetEnvironment=`, later wins). flatpak (`[Environment]`, empty value means unset). Environment Modules and Lmod (`prepend-path` with optional **priority** plus reference counting for unload). NixOS modules (`mkDefault`/`mkForce` = override priority 1000/50, `mkBefore`/`mkAfter` = order rank 500/1500). Nickel (symmetric merge, numeric priorities). CUE (unification = greatest lower bound; commutative, associative, idempotent; **conflict is an error, no override**). Kubernetes (`env`/`envFrom`, last wins).
+**Prior art.** makeWrapper (`--set` / `--prefix ENV SEP VAL` / `--unset`, argv
+order, imperative). systemd (`Environment=` / `PassEnvironment=` /
+`UnsetEnvironment=`, later wins). flatpak (`[Environment]` sets, including to an
+empty value; removal is `unset-environment` / `--unset-env` — empty-means-unset
+was the pre-1.10 behaviour and is now back-compat only). Environment Modules
+(`prepend-path`, `-d` for the delimiter, reference counting for unload, and **no**
+priority) and Lmod (the same plus an optional **priority** argument). NixOS
+modules (`mkDefault`/`mkForce` = override priority 1000/50, `mkBefore`/`mkAfter` =
+order rank 500/1500). Nickel (symmetric merge, numeric priorities). CUE
+(unification = greatest lower bound; commutative, associative, idempotent;
+**conflict is an error, no override**). Kubernetes (`env`/`envFrom`, last wins —
+documented for `envFrom`; for duplicate keys inside `env` it is kubelet behaviour
+rather than a validated rule).
 
-Two conclusions shaped format. **Every system offering `prepend` give up commutativity and buy it back with a number** — Lmod need both priority argument and reference counting, own docs admit it "does not remember which module inserted which directory where". And **everyone except CUE and Kubernetes ship subtraction** — `--unset`, `UnsetEnvironment=`, `--unset-env`, `remove-path`, `mkForce` — so borrowing a vocabulary by analogy import the thing invariant 1 exist to prevent. Read any proposal asking "what is the `unset` here?"; answer must be *there isn't one*.
+Two conclusions shaped the format, and both were **overstated in an earlier
+draft**. The corrected versions are narrower and still decisive.
 
-makeWrapper also only one putting separator in the signature (`--prefix ENV SEP VAL`) — §3.1's requirement already paid for by someone else.
+*Ordering.* Not "everyone buys commutativity back with a number". Systems where
+**one author controls the sequence** just use the sequence — makeWrapper takes
+argv order, Environment Modules takes load order, and neither needs a priority. A
+number appears exactly where units are **independently authored** and no sequence
+exists: Lmod's optional priority, NixOS's `mkOrder`. snug's profiles are
+independently authored, which is why sorting alone is not an answer and why the
+real choice is between a number and a refusal. Lmod needed reference counting on
+top, and its docs concede that *when duplicates are allowed* it "does not remember
+which module inserted which directory where".
+
+*Subtraction.* Not "everyone except CUE and Kubernetes". Three-way: **real
+removal** (makeWrapper `--unset`, systemd `UnsetEnvironment=`, flatpak
+`unset-environment`, Modules/Lmod `remove-path`); **override only** — NixOS
+`mkForce` and Nickel `force` win a priority comparison and never delete a
+definition; and **neither** (CUE, Kubernetes). The conclusion survives and is
+sharper for being right: borrowing a vocabulary by analogy imports removal from
+the first group and a priority field from the second, and invariant 1 forbids
+both. Read any proposal asking *"what is the `unset` here?"*; the answer must be
+*there isn't one*.
+
+Putting the separator in the signature is not unique to makeWrapper either —
+Environment Modules has `prepend-path -d` and Lmod takes a delimiter argument. So
+§3.1's requirement is not novel, which is the point worth keeping.
 
 **Rejected approaches.**
 
