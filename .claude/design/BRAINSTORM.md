@@ -169,7 +169,7 @@ nothing, so it can only conflict, never silently combine.
 
 **`inherit` is refused for every list variable, without exception.** Copying a
 host search path wholesale imports directories that do not exist inside — what
-§2.4 case 4 refuses for `set`, and what `sanitise` exists to do properly.
+§2.5 case 4 refuses for `set`, and what `sanitise` exists to do properly.
 `inherit` is the scalar form; `sanitise` is the list form. An earlier draft
 carried this as a column on every table row and lost it in a rewrite; it is a
 rule, not a row.
@@ -191,7 +191,31 @@ is not the same thing as an absent one to the loader.
 
 Close §4.3 hazards by construction, not by implementer remembering. `environ.prepend` with `PATH = "/opt/bin"` = one-element prepend, not string to parse; several at once = array, and order within one profile unambiguous because one profile wrote it.
 
-### 2.3 What `prepend` actually guarantees, and what it does not
+### 2.3 A variable name must look like a variable name
+
+TOML keys are arbitrary strings, so nothing in the *syntax* stops
+`[profile.x.environ.set]` carrying `"A=B" = "c"`, an empty key, or a name with a
+newline in it — and those go straight to `--setenv NAME VALUE`. Profile names
+have `checkName` for precisely this reason; variable names need the same.
+
+The rule, matching what `execve(2)` and every shell already assume:
+
+```
+name  ::=  [A-Za-z_][A-Za-z0-9_]*
+```
+
+Refused, each with its own message: an empty name; anything containing `=`, NUL
+or a newline; a leading digit; and any name snug owns (§1.1) or `forbiddenEnv`
+covers. **Checked at parse time**, next to `checkName` and
+`DisallowUnknownFields`, so `snug profile show` reports it too and the verdict
+never depends on the invoking host.
+
+`=` is the one worth naming separately. `NAME=VALUE` is the wire format of the
+environment itself, so a key containing `=` is not a weird name — it is a second
+assignment smuggled inside the first, and the only reason it is not exploitable
+today is that no key accepts a variable name yet.
+
+### 2.4 What `prepend` actually guarantees, and what it does not
 
 A list variable is rendered in **bands**, and the band is structural — nothing a
 profile writes can change which band its entry lands in:
@@ -223,7 +247,7 @@ That last point is an effective-behaviour non-monotonicity of the same shape
 CLAUDE.md already carves out for mount depth, and it should be stated in the same
 place rather than left to be discovered.
 
-### 2.4 The errors
+### 2.5 The errors
 
 Errors = specification. Each name both profiles and fix.
 
@@ -294,7 +318,7 @@ snug: profile broken sets XDG_DATA_HOME=/home/u/.local/share, which it does not
 SNUG_PROFILES = "@sys"
 PS1 = "$(id)"
 ```
-Refused. `SNUG_*` = what `--dry-run` and injected `~/.claude/CLAUDE.md` read against, so profile that can set it can lie to artifacts a human read to decide whether to trust sandbox. `PS1` executed by bash (§3.3). Refusal must cover **prefixes** — `BASH_FUNC_*`, `GIT_CONFIG_*`, `LD_*`, `npm_config_*`, `PIP_*` — which today's `map[string]bool` cannot express.
+Refused. `SNUG_*` = what `--dry-run` and injected `~/.claude/CLAUDE.md` read against, so profile that can set it can lie to artifacts a human read to decide whether to trust sandbox. `PS1` executed by bash (§3.5). Refusal must cover **prefixes** — `BASH_FUNC_*`, `GIT_CONFIG_*`, `LD_*`, `npm_config_*`, `PIP_*` — which today's `map[string]bool` cannot express.
 
 ```toml
 # 6. A verb that does not exist.
@@ -303,7 +327,7 @@ PATH = "/usr/bin"
 ```
 Refused by `DisallowUnknownFields`, same as any unknown key.
 
-### 2.5 What `--dry-run` shows
+### 2.6 What `--dry-run` shows
 
 Provenance per entry = product. Mounts already render this way; environment should match, with verb and profile that supplied it:
 
@@ -328,7 +352,7 @@ document exists to avoid, and a bare "1 of 3 kept" does not let anyone check it.
 
 `(snug)` is the provenance for snug's own authorship (§1.1), matching what mounts
 already print. The `PATH` bands read top to bottom in resolution order, so the
-rendering *is* the §2.3 diagram — which is the point: if the two ever disagree,
+rendering *is* the §2.4 diagram — which is the point: if the two ever disagree,
 the renderer is lying.
 
 Note `HOME` and `SHELL` carry `(snug)` and no verb. They are not profile-writable
@@ -341,7 +365,58 @@ whose path nothing grants.
 
 Everything `char*`; that all they share. Three types, and type decide which verbs apply.
 
-### 3.1 Lists, and the empty-element column that decides `sanitise`
+### 3.1 Reading the tables
+
+Both tables use the same marks, which an earlier draft never defined:
+
+| mark | means |
+|---|---|
+| **✓** | the verb is allowed on this variable |
+| **⚠** | allowed, with the stated constraint — never "probably fine" |
+| **✗** | refused at load time, with the reason in the note |
+| **—** | not applicable to this type at all |
+
+`sanitise` and `merge` are list-only, `set` is scalar-only, and `inherit` is
+scalar-only (§2.1). `prepend` gets no column because it is allowed wherever
+`merge` is: the question it answers is *who is first*, not *what type is this*.
+
+### 3.2 Scalars
+
+Scalars have no order to get wrong, so the whole ordering argument passes them
+by. What they do have is the `set`-versus-`inherit` question, and for the
+path-valued ones the §2.5-case-4 rule: a value naming something nothing grants is
+worse than an absent value.
+
+| variable | path? | set | inherit | note |
+|---|---|---|---|---|
+| `HOME`, `SHELL`, `USER`, `LOGNAME`, `TMPDIR`, `PS1`, `SNUG*` | yes/no | **—** | **✗** | snug's (§1.1); no profile may write them |
+| `EDITOR`, `VISUAL`, `PAGER` | no | ✓ | ✓ | exec vectors, but the host's own choice; refused inside `@git-ro`-style identity, see §4.4 |
+| `TERM` | no | ⚠ | ✓ | the standard exception to authoring: the host terminal is a fact snug cannot know |
+| `LANG`, `LC_*` | no | ✓ | ✓ | genuine scalars; `LC_ALL` > `LC_<cat>` > `LANG` is a consumer rule, not a merge rule |
+| `TZ` | **sort of** | ⚠ | ⚠ | **two-branch grammar — see below** |
+| `NO_COLOR`, `CI` | no | ⚠ | ⚠ | **flags: empty is not unset.** `NO_COLOR` is "set to any value, including empty", so the usual "drop it if empty" rule inverts |
+| `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`, `XDG_DATA_HOME` | yes | ✓ | **✗** | must name a granted path; empty **is** unset per spec (§3.4) |
+| `XDG_RUNTIME_DIR` | yes | ⚠ | **✗** | carries obligations, not just a value — mode 0700, owned by the user |
+| `SSH_AUTH_SOCK`, `GIT_CONFIG_GLOBAL`, `GH_CONFIG_DIR` | yes | **—** | **✗** | authored by the machinery that creates the socket or file |
+| `CARGO_HOME`, `DOCKER_CONFIG`, `NPM_CONFIG_USERCONFIG`, `PIP_CONFIG_FILE` | yes | ✓ | **✗** | "generate, don't bind" — the value is a path, never a credential |
+| `CONTAINER_HOST`, `DOCKER_HOST` | **no — URLs** | **—** | **✗** | `ssh://` makes the client exec `ssh`; scalar-shaped, parsed, exec-capable |
+
+**`TZ` is the sharpest scalar, and it is this document's own rule biting.** It is
+not a plain string: it is either a file reference resolved under `TZDIR`, or an
+inline POSIX rule. When the file is unreachable glibc does **not** fail — it
+re-reads the same value as a rule string. Measured:
+
+```
+env -i TZ=Asia/Tokyo                    date -d @0 +"%z %Z"  →  +0900 JST
+env -i TZDIR=/nonexistent TZ=Asia/Tokyo date -d @0 +"%z %Z"  →  +0000 Asia
+```
+
+`Asia` became a timezone abbreviation with a zero offset. Every timestamp in the
+sandbox is silently wrong, on no channel at all. A profile that sets `TZ` without
+granting `/usr/share/zoneinfo` has made a guarantee it does not keep — invariant
+5 says that is worse than refusing, which is why the cell is `⚠` and not `✓`.
+
+### 3.3 Lists, and the empty-element column that decides `sanitise`
 
 "→ CWD" mean empty element resolve to current directory, which inside snug = target: writable thing hostile payload control.
 
@@ -374,7 +449,7 @@ env -i MANPATH=/a::/b manpath  →  inserting /etc/manpath.config   → /a:/usr/
 
 `LD_LIBRARY_PATH` and `LD_PRELOAD` = why separator live in type, not parser: `ld.so(8)` give them two different separator sets, neither escapable.
 
-### 3.2 XDG — five scalars and two lists
+### 3.4 XDG — five scalars and two lists
 
 | variable | type | default when not set **or empty** |
 |---|---|---|
@@ -387,7 +462,7 @@ Three things spec settle. **Empty is unset** — unlike `PATH`, XDG variables ha
 
 Note `XDG_CONFIG_HOME` (scalar, `environ.set`) against `XDG_CONFIG_DIRS` (list, `environ.merge`). One character apart, different verbs — exactly what type table exist to catch.
 
-### 3.3 Semi-structured: no verb — except `PS1`
+### 3.5 Semi-structured: no verb — except `PS1`
 
 `LS_COLORS`, `TERMCAP`, `DBUS_SESSION_BUS_ADDRESS`, `GIT_CONFIG_PARAMETERS`, `IFS`: **snug ignore them — position, not gap.** No verb accept semi-structured name, so nothing to refuse — operation not exist, same shape as "no X11 profile ships". Tool inside wanting colourful `ls` can set `LS_COLORS` itself.
 
@@ -567,7 +642,7 @@ both. Read any proposal asking *"what is the `unset` here?"*; the answer must be
 
 Putting the separator in the signature is not unique to makeWrapper either —
 Environment Modules has `prepend-path -d` and Lmod takes a delimiter argument. So
-§3.1's requirement is not novel, which is the point worth keeping.
+§3.3's requirement is not novel, which is the point worth keeping.
 
 **Rejected approaches.**
 
@@ -636,7 +711,7 @@ Environment Modules has `prepend-path -d` and Lmod takes a delimiter argument. S
   getting it wrong add a hole rather than fail to close one.
 - **§4.1's payload-name resolution**: binary only on host `PATH` must not run;
   one in a profile's directory must; name in both resolve to the profile's.
-- `--dry-run` render §2.4, and golden file changes.
+- `--dry-run` renders §2.6, and golden file changes.
 - `redteam` on `environ.set`, only genuinely new power here.
 
 ## Sources
