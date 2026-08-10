@@ -266,7 +266,22 @@ optional = [
   "{home}/.claude/skills",
   "{home}/.claude/plugins",
 ]
-env = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "EDITOR", "VISUAL", "PAGER", "NO_COLOR"]
+# ANTHROPIC_API_KEY is deliberately NOT here, and must not come back.
+#
+# /proc/self/environ is passively readable by every process in the sandbox and
+# is inherited by every child, so a variable is the worst place to put a
+# long-lived credential — CLAUDE.md's rule is "put the secret in a file, not the
+# environment". Claude Code also PREFERS the key over the OAuth token when both
+# are present, so passing it made the sandbox use the more dangerous of the two
+# credentials it had. Without it Claude authenticates from the staged, writable
+# copy of ~/.claude/.credentials.json (cmd/snug/claude.go), which is a file the
+# payload has to open on purpose and which never syncs a modified token back
+# without structural validation.
+#
+# ANTHROPIC_BASE_URL stays: it names an endpoint, not a credential, and users
+# behind a gateway need it. If you need the key inside, that is a decision to
+# make explicitly and per-run, not a line in a shipped profile.
+env = ["ANTHROPIC_BASE_URL", "EDITOR", "VISUAL", "PAGER", "NO_COLOR"]
 # Without this the profile mounts a binary nothing can find: the default PATH is
 # /usr/bin:/bin:/usr/sbin:/sbin, so `snug -p @claude . -- claude` answered
 # "execvp claude: No such file or directory" while the bind was sitting right

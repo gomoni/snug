@@ -362,3 +362,56 @@ func TestUserProfileMayReuseABuiltinsBareName(t *testing.T) {
 		t.Error("the builtin @sys lost its grants; the user file overwrote it after all")
 	}
 }
+
+// No shipped profile may pass a long-lived credential through the environment.
+//
+// This is a regression test for a real one: `@claude` carried
+// ANTHROPIC_API_KEY, so selecting the profile put an org key into
+// /proc/self/environ — passively readable by every process in the sandbox and
+// inherited by every child — and Claude Code PREFERS the key over the OAuth
+// token when both are present, so the sandbox used the more dangerous of the
+// two credentials it had.
+//
+// The check is by NAME rather than by value, deliberately: an `env` entry is a
+// name and the value only exists on the invoking host, so a value-based check
+// would pass on any machine where the variable happened to be unset. That is
+// the same defect the conditional `forbiddenEnv` guard has (see
+// .claude/design/BRAINSTORM.md §4.4) and it is worth not repeating here.
+//
+// Matching is substring-based on purpose, so a NEW credential variable nobody
+// has thought of yet — FOO_API_KEY, BAR_TOKEN — is caught the day it is added
+// rather than the day someone reads the profile. If a legitimate name trips
+// this, name it in the allowlist below with a comment saying why it is not a
+// secret; do not soften the match.
+func TestNoBuiltinPassesASecretThroughTheEnvironment(t *testing.T) {
+	markers := []string{"API_KEY", "SECRET", "TOKEN", "PASSWORD", "PASSWD", "CREDENTIAL"}
+	// Names that contain a marker and are demonstrably not credentials.
+	allowed := map[string]bool{}
+
+	reg, err := builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, p := range reg {
+		for _, e := range p.Env {
+			if allowed[e] {
+				continue
+			}
+			for _, m := range markers {
+				if strings.Contains(strings.ToUpper(e), m) {
+					t.Errorf("profile %s passes %q through the environment.\n"+
+						"A variable is the worst place for a long-lived credential: "+
+						"/proc/self/environ is passively readable by every process in the "+
+						"sandbox and inherited by every child. CLAUDE.md's rule is 'put the "+
+						"secret in a file, not the environment' — stage a file and point the "+
+						"tool at it with its own config variable, as @claude does with "+
+						"~/.claude/.credentials.json and as the identity code does with "+
+						"GH_CONFIG_DIR.\n"+
+						"If %q is genuinely not a credential, add it to the allowlist in this "+
+						"test with a comment explaining why.", name, e, e)
+					break
+				}
+			}
+		}
+	}
+}
