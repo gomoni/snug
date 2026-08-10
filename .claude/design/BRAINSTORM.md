@@ -782,6 +782,67 @@ env -i GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
 
 ---
 
+### 4.6 Three live bugs, none of which needs this format to be fixed
+
+Found while reviewing the design, all measured on `main`. They are recorded here
+because this is where they surfaced, **not** because they depend on anything
+proposed above. If the format never ships, these still want fixing.
+
+**(a) A variable set to the empty string is silently dropped, and for flags that
+inverts the meaning.** `resolve.go:283` reads
+`if v := env.Getenv(e); v != ""`, so set-but-empty is indistinguishable from
+unset:
+
+```
+NO_COLOR=  snug --dry-run -p @claude .   →  no NO_COLOR at all
+NO_COLOR=1 snug --dry-run -p @claude .   →  NO_COLOR=1 / --setenv NO_COLOR 1
+```
+
+`NO_COLOR`'s specification is "set to **any** value, including empty", so
+`NO_COLOR=` means *disable colour* and snug silently re-enables it. §3.2's flag
+row is already right about the semantics; the code is wrong. The fix is an
+`Environ.LookupEnv(k) (string, bool)` and a presence check — and it is the same
+one line that carries §4.4's host-conditional refusal, so both go together.
+
+**(b) One unparseable file in `profiles.d` disables the entire registry,
+builtins included.** `Load()` returns on the first bad file rather than
+collecting. Measured with a single file containing one unknown key:
+
+```
+snug profile list        →  the parse error, and nothing else
+snug --dry-run -p @sys . →  the same error; @sys is unreachable
+```
+
+So a file the user may not have edited takes down `@sys`, and `snug profile list`
+— the one command that would tell them what still works — is exactly what stops
+working. This is a live outage path, and it is also what would make any future
+change to the variable type table frightening: reclassifying one name turns into
+a total registry failure on every host whose profile used the old verb.
+
+The shape of the fix, which is the interesting part: **diagnostic commands
+(`profile list`, `config`, `doctor`) should report the broken file loudly and
+continue with what did load; anything that runs a sandbox stays fatal.** One
+caveat or it becomes a silent downgrade — `unknown profile` must consult the
+skipped-file record, so `-p thatprofile` says *"the file defining it failed to
+parse"* rather than *"unknown profile"*.
+
+**(c) `PATH` entries are not deduplicated, and an ungranted directory is accepted
+in silence.** A profile with `path = ["/nonexistent/bin", "/bin"]`:
+
+```
+snug --dry-run -p tpath .
+  PATH=/bin:/nonexistent/bin:/usr/bin:/bin:/usr/sbin:/sbin
+```
+
+`/bin` twice — once from the profile, once from `basePATH` — and
+`/nonexistent/bin` accepted with no message despite the profile granting nothing
+there. Harmless today, and it is the present-day state that §2.5's coupling rule
+and §2.6's dedup-to-earliest-band both change. Worth its own fix regardless: a
+duplicated entry means the rendered value depends on how many profiles happened
+to name a directory, which is a fold artifact.
+
+---
+
 ## 5. Sidenote — what was considered and rejected
 
 Short on purpose. Reopen one only with a reason.
@@ -879,7 +940,12 @@ Environment Modules has `prepend-path -d` and Lmod takes a delimiter argument. S
   prevent. Same named-error treatment.
 - **`XDG_RUNTIME_DIR`** need an owner — whichever profile create a directory
   meeting the spec's obligations.
-- §4.5 untouched by any of this.
+- §4.5 (the environment outranking a pinned config file) is untouched by any of
+  this and wants its own fix.
+- **§4.6's three bugs are independent of the format.** (a) set-empty is dropped,
+  (b) one bad profile file disables the whole registry, (c) `PATH` entries are
+  not deduplicated. None needs this design to land, and (a) shares its one-line
+  fix with §4.4.
 
 ## Tests this needs
 
