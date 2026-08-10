@@ -24,6 +24,7 @@ build() {
   go build -o nsd . || exit 1
   cc -O2 -o nsdjoin join/nsdjoin.c || exit 1
   cc -O2 -o nsowner join/nsowner.c || exit 1
+  cc -O2 -o nsdmount join/nsdmount.c || exit 1
 }
 
 up() { # up [--net]
@@ -188,6 +189,27 @@ section "E9  two payloads in one sandbox — the tmux shape"
        "$(inbox /usr/bin/sh -c 'ps -eo comm= | grep -c "^sleep$"')"
   want "the host does NOT see that file" "1" \
        "$(test -e /tmp/shared >/dev/null 2>&1; echo $?)"
+  down
+fi
+
+if run E10; then
+section "E10 the engine in a view DERIVED from the sandbox, with storage grafted in"
+  up
+  echo hostfile > "$WORK/from-host"
+  ctl sandbox >/dev/null
+  STORE="$HOME/.local/share/containers/storage"
+  out=$(ctl graft "$STORE" /storage /usr/bin/sh -c '
+     ls /storage >/dev/null 2>&1 && echo GRAFT=yes
+     ls -d '"$HOME"'/.ssh >/dev/null 2>&1 && echo HOSTTREE=yes || echo HOSTTREE=no
+     cat /work/from-host 2>/dev/null || echo NOWORK
+     test -e /proc/self/mountinfo && echo PROC=yes || echo PROC=no')
+  want "the host path is grafted into the derived view" "GRAFT=yes" "$(echo "$out" | sed -n 1p)"
+  want "the rest of the host tree is NOT there — this is the sandbox's view" "HOSTTREE=no" "$(echo "$out" | sed -n 2p)"
+  want "the sandbox's own grants ARE there" "hostfile" "$(echo "$out" | sed -n 3p)"
+  want "but /proc belongs to the sandbox's pid namespace, so the engine has none" "PROC=no" "$(echo "$out" | sed -n 4p)"
+  want "the graft does NOT propagate into the sandbox" "0" "$(inbox /usr/bin/sh -c 'ls /storage 2>/dev/null | wc -l')"
+  want "it does leave an empty directory behind, though" "0" \
+       "$(inbox /usr/bin/test -d /storage >/dev/null 2>&1; echo $?)"
   down
 fi
 

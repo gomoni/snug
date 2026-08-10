@@ -11,7 +11,7 @@ own Go module so `./...` and `make gate` never see it.
 KEEP=1 ./run.sh E3   leave the stage running afterwards to poke at it
 ```
 
-Last full run on this host: **pass=38 fail=0**.
+Last full run on this host: **pass=44 fail=0**.
 
 ## What is here
 
@@ -21,7 +21,8 @@ Last full run on this host: **pass=38 fail=0**.
 | `stage.go` | P0 (launcher: clone, `newuidmap`, pasta, lifeline) and P1 (the namespace holder) |
 | `control.go` | the control protocol, the bwrap child, the attach op, the sandbox init |
 | `join/nsdjoin.c` | the `setns` helper — C because Go cannot `setns(CLONE_NEWUSER)` |
-| `join/nsowner.c` | prints which user namespace owns each of a pid's namespaces |
+| `join/nsowner.c` | prints which user namespace owns each of a pid’s namespaces |
+| `join/nsdmount.c` | builds a mount view derived from the sandbox’s, with one host path grafted in |
 | `run.sh` | every claim in the design doc, re-measured, each with a positive control |
 
 ## By hand

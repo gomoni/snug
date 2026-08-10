@@ -2,7 +2,7 @@
 
 Investigation and proof of concept, 2026-08-11. Everything marked **MEASURED**
 was executed on this host; the code that measures it is `poc/nsd/`, and
-`poc/nsd/run.sh` re-runs all 38 checks (`pass=38 fail=0` at the time of writing).
+`poc/nsd/run.sh` re-runs all 44 checks (`pass=44 fail=0` at the time of writing).
 Everything else is reasoning and is marked as such.
 
 Read [ENGINE-NETNS.md](ENGINE-NETNS.md) first. This document does not replace it
@@ -88,6 +88,7 @@ is nothing to connect to.
 | E7 | an engine-shaped child keeps N and gets a private copy of the host mount tree | PASS |
 | E8 | SIGKILL the launcher: stage, sandbox, attached payloads and the netns all go | PASS |
 | E9 | two payloads share one sandbox's tmpfs and pid namespace; the host sees neither | PASS |
+| E10 | the engine can run in a mount view **derived from the sandbox's**, with the container storage grafted in from outside, and the graft does not propagate back | PASS |
 
 ## 3. The kernel facts this rests on
 
@@ -234,7 +235,54 @@ these is a restriction bwrap applies that `setns` does not inherit:
   purpose-built **filtering** proxy per hole (the podman socket proxy, the
   ssh-agent proxy), each of which assumes its client is hostile.
 
-## 6. The control protocol: not varlink
+## 6. The engine's mount view, and how much proxy it deletes — MEASURED
+
+The owner's guess was that running the engine in the same namespace set "may
+reduce the amount of code inside a podman proxy". It does, and by more than the
+netns alone would.
+
+P1 holds `CAP_SYS_ADMIN` over the user namespace that owns the sandbox's mounts
+(§3.3). So it can build the engine's mount namespace **out of the sandbox's own
+view** instead of the host's:
+
+1. `open_tree(AT_FDCWD, storage, OPEN_TREE_CLONE|AT_RECURSIVE)` — clone the host
+   subtree while the host tree is still visible. A mount descriptor does not care
+   about mount namespaces; this is the same property that makes a stray dirfd a
+   complete sandbox bypass, used deliberately, from outside, by the process that
+   owns the policy.
+2. `setns(CLONE_NEWNS)` into the sandbox's mount namespace — **without** joining
+   its user namespace, so the authority used is the one P1 already holds.
+3. `unshare(CLONE_NEWNS)` + `MS_REC|MS_PRIVATE`. Everything after this point is
+   invisible to the sandbox. Not optional: skip it and the graft lands in the
+   sandbox's own mount namespace, which hands the payload the container storage.
+4. `move_mount(fd, "", AT_FDCWD, dest, MOVE_MOUNT_F_EMPTY_PATH)`.
+
+MEASURED (E10, `poc/nsd/join/nsdmount.c`): the grafted storage is readable in the
+derived view; `~/.ssh` and the rest of the host tree are **not** there; the
+sandbox's own grants (`/work`) **are**; and the sandbox sees an empty directory
+at the graft point and nothing inside it.
+
+Why this matters for `internal/dockerproxy`: today the bind-mount rule has to
+*prove* that a requested source is one the sandbox may see, against the whole
+host filesystem, with a daemon-namespace `realpath` and component-wise
+containment checks to defeat symlinks the agent planted (DESIGN §7.2 step 4).
+Under a derived view the engine **cannot resolve a path the sandbox cannot**,
+because the paths are not in its namespace. The remaining job is to refuse
+snug's own grafts, which is a short list snug wrote itself. Fail-closed still
+applies; the surface it has to fail closed over shrinks from "the host" to
+"three paths".
+
+Two costs, both measured or obvious:
+
+- **The graft leaves an empty directory** on the sandbox's writable tmpfs
+  (`mkdir` acts on the shared superblock; only the *mount* is namespaced). Use a
+  mountpoint snug creates deliberately, and say so in `--dry-run`.
+- **The derived view has no usable `/proc`** — MEASURED, `/proc/self/mountinfo`
+  is absent, because the procfs mounted there belongs to the sandbox's pid
+  namespace and the engine is not a member. The engine needs its own `proc`
+  mount, and podman will not start without one.
+
+## 7. The control protocol: not varlink
 
 Varlink is the natural first thought — simple, an IDL, JSON, systemd uses it.
 Two reasons not to:
@@ -256,7 +304,7 @@ Recommendation: newline-delimited JSON over `AF_UNIX`, strict decode, one
 request per connection, and a byte relay for interactive sessions. If an IDL is
 wanted later it can be written against a protocol that already works.
 
-## 7. Not proven here, and honestly so
+## 8. Not proven here, and honestly so
 
 - **The container engine leg.** `/usr/bin/podman` on this host is
   `distrobox-host-exec`; the only real engine binary present is
@@ -272,16 +320,11 @@ wanted later it can be written against a protocol that already works.
   when the last client detaches.
 - **Seccomp on an attached process.** The filter snug generates has to be
   installed by the joiner. Straightforward; unwritten.
-- **The prize worth testing next.** P1 holds `CAP_SYS_ADMIN` over the namespace
-  that owns the sandbox's mounts (§3.3). So it can, in principle, `setns` into
-  the sandbox's mount namespace, `unshare(CLONE_NEWNS)` again, bind the container
-  storage, and run the engine **in a mount namespace derived from the sandbox's
-  own view**. If that works, a container could only ever bind what the sandbox
-  can already see, and a large part of the bind-mount filtering in
-  `internal/dockerproxy` becomes structurally unnecessary rather than carefully
-  checked. Unmeasured. It is the single highest-value experiment left.
+- **`/etc/containers`, `/run`, `/var/tmp` and the rest of the engine's host
+  shape** under §6's derived view. Storage was measured; the others are the same
+  mechanism repeated, but each is a named hole and none is free.
 
-## 8. The decision this needs from the owner
+## 9. The decision this needs from the owner
 
 **How long does P1 live?** `tmux` keeps its server after the last client
 detaches; that is what makes `tmux attach` useful from a new terminal, and it is

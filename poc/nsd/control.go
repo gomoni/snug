@@ -113,6 +113,8 @@ func (s *server) dispatch(req request) response {
 		return s.startSandbox()
 	case "attach":
 		return s.attach(req)
+	case "graft":
+		return s.graft(req)
 	case "kill":
 		return s.killSandbox()
 	}
@@ -305,6 +307,36 @@ func boolArg(b bool) string {
 		return "1"
 	}
 	return "0"
+}
+
+// graft runs a command in a mount namespace derived from the SANDBOX's, with one
+// host path grafted in. See join/nsdmount.c — this is the engine-view experiment.
+//
+// Argv is [hostSrc, dest, cmd, args...].
+func (s *server) graft(req request) response {
+	s.mu.Lock()
+	box := s.box
+	s.mu.Unlock()
+	target := req.Target
+	if target == 0 {
+		if box == nil {
+			return response{Err: "no sandbox running"}
+		}
+		target = box.initPID
+	}
+	if len(req.Argv) < 3 {
+		return response{Err: "graft needs SRC DEST CMD..."}
+	}
+	tool := filepath.Join(filepath.Dir(os.Getenv("NSD_SELF")), "nsdmount")
+	cmd := exec.Command(tool, append([]string{strconv.Itoa(target)}, req.Argv...)...)
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=/tmp"}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	out, err := cmd.CombinedOutput()
+	r := response{OK: err == nil, Out: string(out)}
+	if err != nil {
+		r.Err = err.Error()
+	}
+	return r
 }
 
 func (s *server) killSandbox() response {
