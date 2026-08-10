@@ -115,11 +115,9 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	identityOwner := ""
 	addressOwner, gatewayOwner, mtuOwner := "", "", ""
 	publish := map[int]bool{}
-	// dir -> the profiles that asked for it. A set, so two profiles naming one
-	// directory contribute one PATH entry with two names against it rather than
-	// two entries; keeping the names is what lets --dry-run say which profile put
-	// a directory in front of /usr/bin.
-	pathDirs := map[string][]string{}
+	// Environment claims are ACCUMULATED here and resolved after the fold — see
+	// envresolve.go for why deciding during the fold cannot name every claimant.
+	envClaims := newEnvClaims()
 	for _, name := range names {
 		prof := set[name]
 		optional := map[string]bool{}
@@ -281,31 +279,8 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 		if err := ValidateEnvGrants(prof.Environ); err != nil {
 			return nil, fmt.Errorf("profile %q: %w", name, err)
 		}
-		if err := refuseUnresolvedEnvVerbs(name, prof.Environ); err != nil {
+		if err := collectEnv(envClaims, name, prof.Environ, vars, env); err != nil {
 			return nil, err
-		}
-
-		for _, d := range prof.Environ.Merge["PATH"] {
-			e, err := expandVars(d, vars)
-			if err != nil {
-				return nil, fmt.Errorf("profile %q: %w", name, err)
-			}
-			if !filepath.IsAbs(e) {
-				return nil, fmt.Errorf("profile %q: environ.merge PATH entry %q must be an absolute path", name, d)
-			}
-			dir := filepath.Clean(e)
-			pathDirs[dir] = append(pathDirs[dir], name)
-		}
-
-		for _, e := range prof.Environ.Inherit {
-			// PRESENCE, not non-emptiness. A variable the host has set to the
-			// empty string is SET, and for a flag like NO_COLOR that is the
-			// whole meaning — "set to any value, including empty" (§3.2, §4.6a).
-			// bwrap delivers it faithfully: --setenv NO_COLOR '' produces a
-			// present, empty variable inside.
-			if v, ok := env.LookupEnv(e); ok {
-				p.inheritEnv(e, v, name)
-			}
 		}
 	}
 
@@ -413,23 +388,27 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 
 	// 5. The environment is reconstructed, not filtered. --clearenv discards the
 	//    host's, and each variable below is set explicitly.
+	//
+	//    The PROFILES' bands go in first, and this is the earliest point they
+	//    can: `sanitise` asks "is this guest path granted", so it has to see the
+	//    whole mount set — including the authored mounts and every Replace
+	//    above. Conflicts are reported here rather than during the fold, so the
+	//    message can name every claimant (envresolve.go).
+	if err := p.applyEnvClaims(envClaims, env); err != nil {
+		return nil, err
+	}
+
 	p.AuthorEnv("HOME", home)
 	// PATH is the base plus whatever profiles asked for, profile entries FIRST
 	// so a profile-provided tool wins over a distro one of the same name — that
-	// is the point of asking. Sorted, because a set has no order and resolution
-	// must not invent one: two profiles contributing directories must produce
-	// the same PATH whichever order they were named in. The podman stub's
-	// directory goes NEXT, after every profile entry and before the base: it
-	// must beat /usr/bin/podman, which is its whole job, and must LOSE to any
-	// profile entry, because a profile entry is an explicit human grant and the
-	// stub is snug's own generated fallback.
+	// is the point of asking. The podman stub's directory goes NEXT, after every
+	// profile entry and before the base: it must beat /usr/bin/podman, which is
+	// its whole job, and must LOSE to any profile entry, because a profile entry
+	// is an explicit human grant and the stub is snug's own generated fallback.
 	//
 	// Each band is a separate write, in the order it is rendered: a profile's
 	// directories are the profile's authorship, while the stub directory and the
 	// base are snug's own and say so.
-	for _, dir := range sortedPathDirs(pathDirs) {
-		p.mergeEnvList("PATH", ":", dir, pathDirs[dir])
-	}
 	if stubPathDir != "" {
 		p.AuthorEnvList("PATH", []string{stubPathDir}, "podman stub")
 	}
@@ -462,6 +441,11 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	if ctx.TZ != "" {
 		p.AuthorEnv("TZ", ctx.TZ)
 	}
+
+	// LAST, after every band including snug's own: a repeated element collapses
+	// to its earliest band, which is what makes prepend's guarantee literally
+	// true and what stops a profile naming /bin producing it twice.
+	p.dedupeEnvLists()
 
 	if err := p.Validate(env); err != nil {
 		return p, err
@@ -512,35 +496,6 @@ func under(canonTarget, p string) (string, bool) {
 // is needed by cmd/snug's staging layer, and three sites there were assigning
 // p.Mounts[...] directly instead, bypassing both the provenance record and
 // Validate.
-
-// refuseUnresolvedEnvVerbs fails closed on a verb snug can parse but cannot yet
-// apply.
-//
-// Accepting one and quietly doing nothing with it is the failure mode this
-// project treats as the worst it has: a human reads the profile, believes the
-// variable is set, and nothing on any channel says otherwise. A refusal naming
-// the verb costs an error message; a silent no-op costs the trust that makes
-// --dry-run worth reading. It goes away the moment the fold below learns the
-// remaining verbs.
-func refuseUnresolvedEnvVerbs(name string, g EnvGrants) error {
-	for _, unresolved := range []struct {
-		verb string
-		n    int
-	}{
-		{"set", len(g.Set)},
-		{"prepend", len(g.Prepend)},
-		{"sanitise", len(g.Sanitise)},
-	} {
-		if unresolved.n == 0 {
-			continue
-		}
-		return fmt.Errorf("profile %q uses environ.%s, which this build of snug parses and "+
-			"checks but does not yet apply. Rather than accept it and set nothing, snug "+
-			"refuses: a variable a profile says it sets and snug silently drops is worse "+
-			"than one that never resolved", name, unresolved.verb)
-	}
-	return nil
-}
 
 // forbiddenEnv lives in envtypes.go now, split by verb: a value carried by a
 // reviewed profile file and a value inherited from whoever launched snug are
@@ -781,18 +736,6 @@ func sortedInts(m map[int]bool) []int {
 		out = append(out, k)
 	}
 	sort.Ints(out)
-	return out
-}
-
-// sortedPathDirs orders the directories profiles put on PATH. Sorted because a
-// set has no order and resolution must not invent one — see the comment at the
-// call site for why sorting is the honest answer here and not an arbitrary one.
-func sortedPathDirs(m map[string][]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
 	return out
 }
 

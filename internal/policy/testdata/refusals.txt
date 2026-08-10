@@ -155,3 +155,36 @@ environ.prepend on PATH has the element "/a:/b", which contains ":" — a separa
          PATH = ["/a", "/b"]
        snug never splits a value on a separator, so a hand-written one can smuggle in an empty element, which in a search path means the current directory
 
+== env_two_prepends ==
+profiles mytools and othertools prepend to PATH, and they do not agree:
+         mytools wants /opt/bin
+         othertools wants /srv/bin
+       Only one profile may hold the front of a variable. Use environ.merge in
+       the ones that do not need to be first — a merged entry still beats every
+       entry snug adds, so nothing is lost but the guarantee of being first.
+
+== env_prepend_order_disagreement ==
+profiles ordera and orderb prepend to PATH, and they do not agree:
+         ordera wants /opt/a /opt/b
+         orderb wants /opt/b /opt/a
+       Only one profile may hold the front of a variable. Use environ.merge in
+       the ones that do not need to be first — a merged entry still beats every
+       entry snug adds, so nothing is lost but the guarantee of being first.
+
+== env_two_sets_disagree ==
+profiles seta, setb and setc disagree about MY_EDITOR:
+         setb (environ.set) says "emacs"
+         seta (environ.set) says "vim"
+         setc (environ.set) says "vim"
+       A scalar has one value and snug will not choose: picking one would make
+       the answer depend on the order profiles were folded, and the model has no
+       such order. Select one of them, or make them agree.
+
+== env_set_disagrees_with_inherit ==
+profiles emacsy and envy disagree about EDITOR:
+         emacsy (environ.set) says "emacs"
+         envy (environ.inherit) says "vim"
+       A scalar has one value and snug will not choose: picking one would make
+       the answer depend on the order profiles were folded, and the model has no
+       such order. Select one of them, or make them agree.
+

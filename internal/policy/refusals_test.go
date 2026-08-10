@@ -416,6 +416,60 @@ func refusalEnv(g EnvGrants) func(testing.TB) error {
 	return func(testing.TB) error { return ValidateEnvGrants(g) }
 }
 
+// ── the environment: the resolve-time conflicts ──────────────────────────────
+//
+// A single-valued slot with two different claims is a symmetric error naming
+// EVERY claimant, checked after the fold completes so there is no fold order
+// left to keep order-independent.
+
+// refusalTwoPrepends: §2.7 case 1. Only one profile may hold the front of a
+// variable, and two wanting it is a genuine disagreement.
+func refusalTwoPrepends(t testing.TB) error {
+	reg := testRegistry()
+	reg["mytools"] = &Profile{Name: "mytools", Environ: EnvGrants{
+		Prepend: map[string][]string{"PATH": {"/opt/bin"}}}}
+	reg["othertools"] = &Profile{Name: "othertools", Environ: EnvGrants{
+		Prepend: map[string][]string{"PATH": {"/srv/bin"}}}}
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "mytools", "othertools"}, testCtx(), newFakeEnv())
+	return err
+}
+
+// refusalPrependOrder: the same directories, different order. Equality is over
+// the whole ordered sequence, because the order is the entire content of the
+// claim.
+func refusalPrependOrder(t testing.TB) error {
+	reg := testRegistry()
+	reg["ordera"] = &Profile{Name: "ordera", Environ: EnvGrants{
+		Prepend: map[string][]string{"PATH": {"/opt/a", "/opt/b"}}}}
+	reg["orderb"] = &Profile{Name: "orderb", Environ: EnvGrants{
+		Prepend: map[string][]string{"PATH": {"/opt/b", "/opt/a"}}}}
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "ordera", "orderb"}, testCtx(), newFakeEnv())
+	return err
+}
+
+// refusalTwoSets: §2.7 case 2. Three profiles, two of which AGREE — the shape
+// today's scalar conflicts get wrong, naming the alphabetically-last agreeing
+// profile and never mentioning the first.
+func refusalTwoSets(t testing.TB) error {
+	reg := testRegistry()
+	reg["seta"] = &Profile{Name: "seta", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "vim"}}}
+	reg["setb"] = &Profile{Name: "setb", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "emacs"}}}
+	reg["setc"] = &Profile{Name: "setc", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "vim"}}}
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "seta", "setb", "setc"}, testCtx(), newFakeEnv())
+	return err
+}
+
+// refusalSetVsInherit: CALL 2. `set` and `inherit` on one scalar are one slot.
+// "set beats inherit" would be a priority field wearing a verb's clothes.
+func refusalSetVsInherit(t testing.TB) error {
+	reg := testRegistry()
+	reg["emacsy"] = &Profile{Name: "emacsy", Environ: EnvGrants{
+		Set: map[string]string{"EDITOR": "emacs"}}}
+	// `envy` inherits EDITOR, and the fake host has EDITOR=vim.
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "emacsy", "envy"}, testCtx(), newFakeEnv())
+	return err
+}
+
 // ── the review artifact ──────────────────────────────────────────────────────
 
 // TestGoldenRefusals pins the EXACT text of every refusal above. This change
@@ -473,6 +527,13 @@ func TestGoldenRefusals(t *testing.T) {
 		// hand-written separators (CALL 1 / §2.7 case 3)
 		{"env_separator_in_a_merge_string", refusalEnv(EnvGrants{Merge: map[string][]string{"PATH": {"/usr/bin:/usr/sbin"}}})},
 		{"env_separator_in_a_prepend_element", refusalEnv(EnvGrants{Prepend: map[string][]string{"PATH": {"/opt/bin", "/a:/b"}}})},
+
+		// single-valued slots with more than one claim (§2.7 cases 1 and 2,
+		// CALL 2)
+		{"env_two_prepends", refusalTwoPrepends},
+		{"env_prepend_order_disagreement", refusalPrependOrder},
+		{"env_two_sets_disagree", refusalTwoSets},
+		{"env_set_disagrees_with_inherit", refusalSetVsInherit},
 	}
 
 	var b strings.Builder

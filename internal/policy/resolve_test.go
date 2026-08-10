@@ -42,7 +42,13 @@ func newFakeEnv() *fakeEnv {
 		// past --clearenv. Widening canon() to render the environment asserts
 		// nothing unless a fixture exercises it — the same trap the canon
 		// comment already records for the network scalars.
-		env: map[string]string{"USER": "u", "EDITOR": "vim"},
+		env: map[string]string{
+			"USER": "u", "EDITOR": "vim",
+			// One granted element and one that is not, so `sanitise` has
+			// something to keep AND something to drop. A filter fixture where
+			// everything survives tests only half the filter.
+			"PKG_CONFIG_PATH": "/usr/lib64/pkgconfig:/srv/pkgconfig",
+		},
 	}
 }
 
@@ -119,6 +125,24 @@ func testRegistry() map[string]*Profile {
 		"envy-too": {Name: "envy-too", Environ: EnvGrants{
 			Inherit: []string{"EDITOR"},
 			Merge:   map[string][]string{"PATH": {"/opt/tools/bin"}}}},
+		// `set` agreeing with `envy`'s `inherit` of the same name: equal claims
+		// join rather than conflicting, and neither verb outranks the other
+		// (CALL 2). The fake host has EDITOR=vim, which is what makes this an
+		// agreement rather than a refusal.
+		"setty": {Name: "setty", Environ: EnvGrants{
+			Set: map[string]string{"EDITOR": "vim"}}},
+		// The front of PATH. Exactly ONE profile in the commutativity set may
+		// hold it — a second is a refusal, which is its own test.
+		"firsty": {Name: "firsty", Environ: EnvGrants{
+			Prepend: map[string][]string{"PATH": {"/opt/first/bin"}}}},
+		// The filter, over the fake host's PKG_CONFIG_PATH.
+		"sanity": {Name: "sanity", Environ: EnvGrants{
+			Sanitise: []string{"PKG_CONFIG_PATH"}}},
+		// Names a directory that is ALSO in the base PATH, so
+		// dedup-to-the-earliest-band is exercised by the property tests rather
+		// than only by the one test that names it.
+		"dupe-path": {Name: "dupe-path", Environ: EnvGrants{
+			Merge: map[string][]string{"PATH": {"/usr/bin"}}}},
 		// A pure composition point with a two-level include chain
 		// (combo -> @cwd-rw -> @home). The builtin `default` used to be one of
 		// these; it is now the `defaults` SETTING (internal/profile/defaults.go),
@@ -232,7 +256,7 @@ func canon(p *Policy) string {
 // changes what the sandbox grants, and "profiles only relax" becomes unprovable.
 func TestResolveIsCommutative(t *testing.T) {
 	all := []string{"@sys", "@home", "@cwd-rw", "@parent-ro", "cwd-ro", "netty", "netty-too",
-		"envy", "envy-too"}
+		"envy", "envy-too", "setty", "firsty", "sanity", "dupe-path"}
 	want := canon(mustResolve(t, all...))
 
 	rng := rand.New(rand.NewSource(1))
