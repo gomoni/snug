@@ -191,24 +191,13 @@ func (p *Policy) AuthorEnvList(name string, values []string, note string) {
 	p.Env[name] = v
 }
 
-// inheritEnv records a host variable a profile re-admitted past --clearenv.
-// Unexported: this is a PROFILE's authorship, not snug's, and it must never
-// produce a VerbSnug entry — the ownership test would then credit snug with a
-// name a profile chose.
+// addEnvEntry is the single writer behind every profile-authored entry, and it
+// is deliberately the ONLY one: two one-line wrappers over it (inheritEnv,
+// mergeEnvList) were orphaned when the resolver landed and are gone, because a
+// spare writer of environment entries is a place a future caller can add one
+// without passing the verb the resolver would have chosen.
 //
-// Two profiles naming the same variable read the same host value, so they are
-// one entry with two contributors rather than two entries.
-func (p *Policy) inheritEnv(name, value, from string) {
-	p.addEnvEntry(name, false, "", EnvEntry{Value: value, Verb: VerbInherit, From: []string{from}})
-}
-
-// mergeEnvList records one element a profile contributed to a list variable.
-func (p *Policy) mergeEnvList(name, sep, value string, from []string) {
-	p.addEnvEntry(name, true, sep, EnvEntry{Value: value, Verb: VerbMerge, From: from})
-}
-
-// addEnvEntry is the single writer behind every profile-authored entry. An
-// entry that already exists with the same verb and value gains a contributor
+// An entry that already exists with the same verb and value gains a contributor
 // rather than being repeated: the value is the same either way, and a duplicate
 // would make the rendered result depend on how many profiles happened to name
 // it, which is a fold artifact and not a decision anybody made.
