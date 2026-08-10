@@ -14,9 +14,23 @@ Decided: five verbs nested under one `environ` section; `prepend` usable **once*
 |---|---|---|---|
 | `environ.set` | profile | **scalars** | same value fine; **different values are an error** |
 | `environ.merge` | profile | **lists** | **union**, then sorted |
-| `environ.prepend` | profile | **lists** | **error** — at most one across the selected set |
-| `environ.inherit` | config | any | copy host value verbatim |
-| `environ.sanitise` | config | **lists** | copy host value, keep only elements policy grants |
+| `environ.prepend` | profile | **lists** | **error** — at most one per variable across the selected set |
+| `environ.inherit` | profile | any | copy host value verbatim |
+| `environ.sanitise` | profile | **lists** | copy host value, keep only elements policy grants |
+
+**And a sixth thing that is not a verb: snug's own authorship.** snug sets
+`HOME`, `SHELL`, `USER`, `LOGNAME`, `TMPDIR`, `PS1`, `SNUG*`, the base `PATH`,
+and — when a podman profile is selected on a host where podman is a shim —
+`/run/snug/bin` on `PATH`. **No profile may write any of those, and snug is not
+bound by the verbs' rules when writing them.**
+
+This is not an exemption invented for convenience; it is the distinction the
+codebase already draws for mounts and CLAUDE.md already states: *a profile
+mounting over another profile's grant is masking and is refused; snug replacing a
+path with its own generated content is replacement and is allowed.* `Mount` has
+an `Authored` field and `Policy.Replace` is its single writer. The environment
+needs the same, and an earlier draft of this document did not have it — which
+made the format contradict itself in three places (§1.2 note, §2.5, §4.2).
 
 Nested, not five root keys. Written as table headers, not inline tables. Four reasons, heaviest first:
 
@@ -66,27 +80,50 @@ XDG_DATA_HOME   = "{home}/.local/share"
 
 
 [profile.stubs-in-path]
-description = "snug's wrappers ahead of /usr/bin"
+description = "permit snug's own stubs on PATH, ahead of /usr/bin"
+# No environ key at all. This profile is a SWITCH, not a value — it decides
+# whether snug may author /run/snug/bin onto PATH. The directory is a Go
+# constant that only snug can create (KindData, via Policy.Replace), so no
+# profile could legally name it under the rule below.
 
-[profile.stubs-in-path.environ.prepend]
-PATH = "/run/snug/bin"
+
+[profile.claude]
+description = "Claude Code's configuration and credentials"
+
+[profile.claude.environ.inherit]
+ANTHROPIC_API_KEY = true
+EDITOR            = true
 ```
 
 ```toml
-# ~/.config/snug/config.toml — preferences
+# ~/.config/snug/config.toml — preferences, no grants
 defaults = ["@sys", "@home", "@cwd-rw", "@parent-ro", "@stubs-in-path"]
 prompt   = "{lock} snug[{profiles}]:{cwd}$ "
-
-[environ]
-inherit  = ["USER", "TERM", "LANG"]
-sanitise = ["PKG_CONFIG_PATH"]
 ```
 
-Two things layout do:
+Three things the layout does:
 
-**`@home` bind authorship to grant.** Variables sit next to `tmpfs` that create directories. Rule: every path in `environ.*` value must be granted by same profile. "Select without `@home` and `XDG_CONFIG_HOME` names nothing" become **unspellable**, not merely detectable — see §4.2, where that failure live on `main` today for `HOME`, `SHELL`, `PATH`.
+**`@home` binds authorship to the grant.** Variables sit next to the `tmpfs` that
+creates the directories. Rule: every path a *profile* writes must be granted by
+that same profile. This is a rule about profiles only — snug's own variables
+(§1.1) are not subject to it, which is what makes `HOME` and the base `PATH`
+still unconditional. See §4.2.
 
-**`@sys` merge `PATH`, `@stubs-in-path` prepend it.** Different verbs, same variable, and they compose: merged entries sort among themselves, prepend go in front, no profile ever spell separator.
+**`@stubs-in-path` grants nothing and writes nothing.** An earlier draft had it
+`prepend` `/run/snug/bin`, and that was wrong twice over: the directory is
+snug-authored so no profile can legally name it, and making it a profile's
+prepend **inverted a documented decision** — `resolve.go:395-409` deliberately
+places the stub *after* every profile `path` entry, because "a profile entry is
+an explicit human grant and the stub is snug's own generated fallback".
+
+**`@claude` keeps `inherit`, and that is deliberate.** An earlier draft moved
+`inherit`/`sanitise` to `config.toml`. That is a regression: `ANTHROPIC_API_KEY`
+enters only when `@claude` is selected today, whereas a host-wide config line
+would put it in **every** sandbox on the machine — inverting CLAUDE.md's bound on
+adapters ("one opt-in profile per tool, never in `defaults`"). The trust argument
+for moving it does not survive either: `profiles.d` and `config.toml` sit in the
+same `$XDG_CONFIG_HOME/snug/` tree at the same trust level, so moving it changes
+only how narrowly it can be *scoped*, and that gets strictly worse.
 
 ---
 
@@ -112,26 +149,61 @@ String = exactly one element. Profile cannot write `"/usr/bin:"`, cannot produce
 
 Close §4.3 hazards by construction, not by implementer remembering. `environ.prepend` with `PATH = "/run/snug/bin"` = one-element prepend, not string to parse; several at once = array, and order within one profile unambiguous because one profile wrote it.
 
-### 2.3 The errors
+### 2.3 What `prepend` actually guarantees, and what it does not
+
+A list variable is rendered in **bands**, and the band is structural — nothing a
+profile writes can change which band its entry lands in:
+
+```
+prepend (at most one profile)  →  merge (sorted)  →  snug's generated  →  base
+```
+
+This is what `resolve.go` does today, with `prepend` added in front.
+
+**Be precise about the guarantee, because an earlier draft overclaimed it.**
+`prepend` guarantees *the front* — ahead of every merged entry. It does **not**
+make merge order-free: merged entries are sorted, so between two profiles ASCII
+decides, and `/opt/bin` beats `/usr/bin` without anyone using `prepend` or
+consuming the slot. Two profiles merging directories that both contain `git` will
+resolve to one of them silently.
+
+So the honest statement is narrower than "two claims cannot both hold":
+
+- **The front is exclusive**, and that is checkable from declarations alone.
+- **Base entries are structurally last**, so a merged entry always beats the
+  distro's — deliberately, because that is the point of a profile providing a
+  tool.
+- **Merge-vs-merge is sorted, and sorting is not a decision.** If you care which
+  of two *profiles* wins, `prepend` is the only way to say so, and only one of
+  you gets it.
+
+That last point is an effective-behaviour non-monotonicity of the same shape
+CLAUDE.md already carves out for mount depth, and it should be stated in the same
+place rather than left to be discovered.
+
+### 2.4 The errors
 
 Errors = specification. Each name both profiles and fix.
 
 ```toml
-# 1. Two prepends.
-[profile.stubs-in-path.environ.prepend]
-PATH = "/run/snug/bin"
-
+# 1. Two prepends of one variable.
 [profile.mytools.environ.prepend]
 PATH = "/opt/bin"
+
+[profile.othertools.environ.prepend]
+PATH = "/srv/bin"
 ```
 ```
-snug: @stubs-in-path and mytools both prepend to PATH (/run/snug/bin and
-       /opt/bin). Only one profile may prepend — prepending is a claim about
-       which binary wins, and two claims cannot both hold.
-       Use [profile.mytools.environ.merge] if the order does not matter to you.
+snug: mytools and othertools both prepend to PATH (/opt/bin and /srv/bin).
+       Only one profile may hold the front of a variable. Use
+       [profile.othertools.environ.merge] if you do not need to be first.
 ```
 
-**Cost, stated plain:** `@stubs-in-path` in `defaults`, so hold prepend slot on every ordinary run. Profile wanting slot must displace it — `--no-defaults`, or `defaults` list without it. Price of rule being simple, and visible not silent.
+**The slot is a user's to take.** snug's own contribution (§1.1) is authored, not
+a prepend, so `defaults` does not consume the slot — which an earlier draft got
+wrong, leaving no way to prepend on an ordinary run short of `--no-defaults`.
+Two profiles wanting the front is a genuine disagreement and is worth an error;
+snug quietly holding it forever would not have been.
 
 ```toml
 # 2. Two scalars disagree.
@@ -188,7 +260,7 @@ PATH = "/usr/bin"
 ```
 Refused by `DisallowUnknownFields`, same as any unknown key.
 
-### 2.4 What `--dry-run` shows
+### 2.5 What `--dry-run` shows
 
 Provenance per entry = product. Mounts already render this way; environment should match, with verb and profile that supplied it:
 
