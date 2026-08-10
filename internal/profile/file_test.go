@@ -55,7 +55,7 @@ func TestRetiredPublishAutoIsAHardError(t *testing.T) {
 // the exact shape CLAUDE.md's pasta.avx2 lesson warns about: a check that
 // cannot fail is worse than no check.
 func TestNoNullProfileShips(t *testing.T) {
-	reg, err := builtins()
+	reg, err := Builtins()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestRedefinitionIsRejected(t *testing.T) {
 // The builtin set must load, and must not contain a profile that grants the
 // whole filesystem — the shipped defaults are the ones nobody reviews.
 func TestBuiltinsLoad(t *testing.T) {
-	reg, err := builtins()
+	reg, err := Builtins()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestBuiltinsLoad(t *testing.T) {
 // switched on by accident. Deleting this test is then part of the milestone, and
 // the failure message is where the next person finds out why.
 func TestPodmanSocketIncludesNetAsAnInterimHonestyFix(t *testing.T) {
-	reg, err := builtins()
+	reg, err := Builtins()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestPodmanSocketIncludesNetAsAnInterimHonestyFix(t *testing.T) {
 // name in them must resolve to a real builtin. A typo here is not a compile
 // error and would surface as `unknown profile` on the user's first ever run.
 func TestBuiltinDefaultsNameRealProfiles(t *testing.T) {
-	reg, err := builtins()
+	reg, err := Builtins()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestLoadIgnoresRepoLocalConfig(t *testing.T) {
 func TestRedefinitionIsRejectedRegardlessOfLayer(t *testing.T) {
 	for _, name := range []string{"work", "build", "ci"} {
 		t.Run(name, func(t *testing.T) {
-			reg, err := builtins()
+			reg, err := Builtins()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -289,7 +289,7 @@ func TestRedefinitionIsRejectedRegardlessOfLayer(t *testing.T) {
 // indistinguishable, in --dry-run and in SNUG_PROFILES, from a file someone
 // wrote on this host.
 func TestEveryBuiltinCarriesTheSigil(t *testing.T) {
-	reg, err := builtins()
+	reg, err := Builtins()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func TestUserProfileCannotClaimTheSigil(t *testing.T) {
 // collide. If this ever starts failing, the two namespaces have grown back
 // together and the merge check is doing load-bearing work again.
 func TestUserProfileMayReuseABuiltinsBareName(t *testing.T) {
-	reg, err := builtins()
+	reg, err := Builtins()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +388,7 @@ func TestNoBuiltinPassesASecretThroughTheEnvironment(t *testing.T) {
 	// Names that contain a marker and are demonstrably not credentials.
 	allowed := map[string]bool{}
 
-	reg, err := builtins()
+	reg, err := Builtins()
 	if err != nil {
 		t.Fatal(err)
 	}

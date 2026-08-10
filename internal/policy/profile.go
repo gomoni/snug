@@ -8,7 +8,7 @@ package policy
 // someone wrote on this host — you had to go and look. With the mark, `@sys` is
 // snug's and `work` is yours, on the line you are already reading.
 //
-// The mark is DERIVED, not written: profile.builtins() adds it to the embedded
+// The mark is DERIVED, not written: profile.Builtins() adds it to the embedded
 // layer and is the only code that does, while profile.checkName refuses a
 // leading @ in every file it parses, base.toml included. "Starts with @" and "is
 // compiled into snug" are therefore the same statement by construction rather

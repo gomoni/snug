@@ -68,7 +68,7 @@ type rawIdentity struct {
 //	"-"  leading, because `snug -p -v` would otherwise name a profile "-v"
 //	     rather than fail.
 //	"@"  leading, because that mark means "snug ships this" and is added by
-//	     builtins() alone — see policy.Sigil. Note that this rule applies to
+//	     Builtins() alone — see policy.Sigil. Note that this rule applies to
 //	     EVERY file, base.toml included: the builtins are written here under
 //	     bare names and marked on load, so no file anywhere may claim the mark
 //	     for itself.
@@ -221,7 +221,7 @@ func (r Registry) merge(other Registry) error {
 // profile would be granting itself permissions, which defeats the entire threat
 // model. See .claude/design/INDEX.md §2.7.
 func Load() (Registry, error) {
-	reg, err := builtins()
+	reg, err := Builtins()
 	if err != nil {
 		return nil, err
 	}

@@ -81,15 +81,7 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 	}
 
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "ENVIRONMENT  (--clearenv, then:)")
-	keys := make([]string, 0, len(p.Env))
-	for k := range p.Env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		fmt.Fprintf(out, "  %s=%s\n", k, p.Env[k])
-	}
+	describeEnvironment(out, p)
 
 	if p.Net.Mode == policy.NetEgress {
 		fmt.Fprintln(out)
@@ -109,6 +101,27 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 	if refusedBy != nil {
 		fmt.Fprintln(out)
 		fmt.Fprintf(out, "REFUSED: %v\n", refusedBy)
+	}
+}
+
+// describeEnvironment renders what the sandbox's environment will be. bwrap
+// --clearenv discards the host's, so this block is the WHOLE of it — there is
+// nothing inherited that does not appear here (with the one caveat CLAUDE.md
+// records: a bound /etc means /etc/profile.d can still put variables back).
+//
+// It is a function of its own, rather than eight lines inside dryRun, because
+// it is the review artifact for the environment the same way the .bwrap.txt
+// goldens are for the argv: cmd/snug/testdata/env.*.txt is exactly this block,
+// resolved against the REAL builtin profiles rather than a fake registry.
+func describeEnvironment(out *os.File, p *policy.Policy) {
+	fmt.Fprintln(out, "ENVIRONMENT  (--clearenv, then:)")
+	keys := make([]string, 0, len(p.Env))
+	for k := range p.Env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(out, "  %s=%s\n", k, p.Env[k])
 	}
 }
 
