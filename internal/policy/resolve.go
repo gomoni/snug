@@ -292,8 +292,17 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 			// passed review on one machine and failed on another. Whether a
 			// grant is allowed is a property of the profile, not of whoever
 			// launched snug (§4.4).
-			if forbiddenEnv[e] {
+			if yes, _ := forbiddenFor(e, VerbInherit); yes {
 				return nil, fmt.Errorf("profile %q grants env %q, which is a code-injection vector into every process in the sandbox and is never passed", name, e)
+			}
+			// The rest of the parse-time rules — the name grammar, ownership,
+			// and "inherit is refused for every list variable" — applied to the
+			// legacy key, which is semantically `inherit`. The forbidden check
+			// above keeps its own older wording rather than checkEnvName's:
+			// its text is pinned in the refusals golden, and this key is on its
+			// way out. Everything NEW says it in checkEnvName's words.
+			if err := checkEnvEntry(e, VerbInherit); err != nil {
+				return nil, fmt.Errorf("profile %q: %w", name, err)
 			}
 			// PRESENCE, not non-emptiness. A variable the host has set to the
 			// empty string is SET, and for a flag like NO_COLOR that is the
@@ -510,14 +519,10 @@ func under(canonTarget, p string) (string, bool) {
 // p.Mounts[...] directly instead, bypassing both the provenance record and
 // Validate.
 
-// forbiddenEnv are code-injection vectors into every process the sandbox
-// launches. This is the one place snug overrides an explicit grant, and it does
-// so with a loud error rather than a silent drop so the human learns why.
-var forbiddenEnv = map[string]bool{
-	"LD_PRELOAD": true, "LD_LIBRARY_PATH": true, "LD_AUDIT": true,
-	"BASH_ENV": true, "ENV": true, "PERL5OPT": true, "PYTHONSTARTUP": true,
-	"GIT_SSH_COMMAND": true, "NODE_OPTIONS": true,
-}
+// forbiddenEnv lives in envtypes.go now, split by verb: a value carried by a
+// reviewed profile file and a value inherited from whoever launched snug are
+// two different things, and one middle bucket is legal as the first and not the
+// second (CALL 4).
 
 // envOr keeps Getenv's "empty means absent" reading DELIBERATELY, and it is the
 // one place that is right. Its callers want a value snug can fall back on —

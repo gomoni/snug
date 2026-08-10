@@ -405,6 +405,17 @@ func refusalForbiddenEnvUnsetOnHost(t testing.TB) error {
 	return err
 }
 
+// ── the environment: the parse-time rules ────────────────────────────────────
+//
+// Every case below is a property of the profile TEXT, so the verdict is the
+// same on every host. That is the point of checking here rather than in
+// Resolve: §4.4's defect was a refusal that depended on the environment of
+// whoever launched snug, and it is adopted as a design in the other direction.
+
+func refusalEnv(g EnvGrants) func(testing.TB) error {
+	return func(testing.TB) error { return ValidateEnvGrants(g) }
+}
+
 // ── the review artifact ──────────────────────────────────────────────────────
 
 // TestGoldenRefusals pins the EXACT text of every refusal above. This change
@@ -433,6 +444,35 @@ func TestGoldenRefusals(t *testing.T) {
 		{"scalar_conflict_mtu", func(t testing.TB) error { return refusalScalarConflict(t, "mtu") }},
 		{"poststaging_nested_grant_under_later_replace", refusalNestedGrantUnderLaterReplace},
 		{"forbidden_env_unset_on_host", refusalForbiddenEnvUnsetOnHost},
+
+		// the name grammar (§2.3): name ::= [A-Za-z_][A-Za-z0-9_]*
+		{"env_name_empty", refusalEnv(EnvGrants{Set: map[string]string{"": "x"}})},
+		{"env_name_equals", refusalEnv(EnvGrants{Set: map[string]string{"PATH=/evil:": "x"}})},
+		{"env_name_nul", refusalEnv(EnvGrants{Set: map[string]string{"EDIT\x00OR": "x"}})},
+		{"env_name_newline", refusalEnv(EnvGrants{Set: map[string]string{"EDITOR\nPS1": "x"}})},
+		{"env_name_leading_digit", refusalEnv(EnvGrants{Set: map[string]string{"1PATH": "x"}})},
+		{"env_name_bad_character", refusalEnv(EnvGrants{Set: map[string]string{"MY-VAR": "x"}})},
+		{"env_name_snug_owned", refusalEnv(EnvGrants{Set: map[string]string{"SNUG_PROFILES": "@sys"}})},
+		{"env_name_snug_owned_ps1", refusalEnv(EnvGrants{Inherit: []string{"PS1"}})},
+		{"env_name_forbidden_both", refusalEnv(EnvGrants{Set: map[string]string{"GIT_SSH_COMMAND": "x"}})},
+		{"env_name_forbidden_prefix_both", refusalEnv(EnvGrants{Set: map[string]string{"BASH_FUNC_build": "x"}})},
+		{"env_name_forbidden_prefix_git_config", refusalEnv(EnvGrants{Set: map[string]string{"GIT_CONFIG_COUNT": "1"}})},
+		{"env_name_forbidden_prefix_inherit_only", refusalEnv(EnvGrants{Inherit: []string{"PIP_INDEX_URL"}})},
+		{"env_name_forbidden_inherit_only", refusalEnv(EnvGrants{Inherit: []string{"BASH_ENV"}})},
+
+		// verb/type agreement (§2.1)
+		{"env_set_on_a_list", refusalEnv(EnvGrants{Set: map[string]string{"PATH": "/opt/bin"}})},
+		{"env_merge_on_a_scalar", refusalEnv(EnvGrants{Merge: map[string][]string{"EDITOR": {"vim"}}})},
+		{"env_merge_on_an_uncomposable_list", refusalEnv(EnvGrants{Merge: map[string][]string{"CDPATH": {"/opt"}}})},
+		{"env_inherit_on_a_list", refusalEnv(EnvGrants{Inherit: []string{"PKG_CONFIG_PATH"}})},
+		{"env_inherit_on_a_generated_config_path", refusalEnv(EnvGrants{Inherit: []string{"XDG_CONFIG_HOME"}})},
+		{"env_sanitise_on_a_scalar", refusalEnv(EnvGrants{Sanitise: []string{"EDITOR"}})},
+		{"env_sanitise_on_manpath", refusalEnv(EnvGrants{Sanitise: []string{"MANPATH"}})},
+		{"env_sanitise_on_an_unfilterable_list", refusalEnv(EnvGrants{Sanitise: []string{"PYTHONPATH"}})},
+
+		// hand-written separators (CALL 1 / §2.7 case 3)
+		{"env_separator_in_a_merge_string", refusalEnv(EnvGrants{Merge: map[string][]string{"PATH": {"/usr/bin:/usr/sbin"}}})},
+		{"env_separator_in_a_prepend_element", refusalEnv(EnvGrants{Prepend: map[string][]string{"PATH": {"/opt/bin", "/a:/b"}}})},
 	}
 
 	var b strings.Builder
