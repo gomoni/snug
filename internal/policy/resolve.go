@@ -279,6 +279,14 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 		if err := ValidateEnvGrants(prof.Environ); err != nil {
 			return nil, fmt.Errorf("profile %q: %w", name, err)
 		}
+		// The other half runs here and not at parse time, because it needs
+		// {target} and {home} expanded — but it is still over profile TEXT, so
+		// the verdict does not depend on which mounts survived. See
+		// envcoupling.go, and read the first paragraph there before citing this
+		// as a boundary: it stops a profile lying, not a profile reaching.
+		if err := checkEnvCoupling(reg, name, prof.Environ, vars); err != nil {
+			return nil, err
+		}
 		if err := collectEnv(envClaims, name, prof.Environ, vars, env); err != nil {
 			return nil, err
 		}

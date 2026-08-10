@@ -426,9 +426,9 @@ func refusalEnv(g EnvGrants) func(testing.TB) error {
 // variable, and two wanting it is a genuine disagreement.
 func refusalTwoPrepends(t testing.TB) error {
 	reg := testRegistry()
-	reg["mytools"] = &Profile{Name: "mytools", Environ: EnvGrants{
+	reg["mytools"] = &Profile{Name: "mytools", RO: []string{"/opt/bin"}, Environ: EnvGrants{
 		Prepend: map[string][]string{"PATH": {"/opt/bin"}}}}
-	reg["othertools"] = &Profile{Name: "othertools", Environ: EnvGrants{
+	reg["othertools"] = &Profile{Name: "othertools", RO: []string{"/srv/bin"}, Environ: EnvGrants{
 		Prepend: map[string][]string{"PATH": {"/srv/bin"}}}}
 	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "mytools", "othertools"}, testCtx(), newFakeEnv())
 	return err
@@ -439,9 +439,9 @@ func refusalTwoPrepends(t testing.TB) error {
 // claim.
 func refusalPrependOrder(t testing.TB) error {
 	reg := testRegistry()
-	reg["ordera"] = &Profile{Name: "ordera", Environ: EnvGrants{
+	reg["ordera"] = &Profile{Name: "ordera", RO: []string{"/opt/a", "/opt/b"}, Environ: EnvGrants{
 		Prepend: map[string][]string{"PATH": {"/opt/a", "/opt/b"}}}}
-	reg["orderb"] = &Profile{Name: "orderb", Environ: EnvGrants{
+	reg["orderb"] = &Profile{Name: "orderb", RO: []string{"/opt/a", "/opt/b"}, Environ: EnvGrants{
 		Prepend: map[string][]string{"PATH": {"/opt/b", "/opt/a"}}}}
 	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "ordera", "orderb"}, testCtx(), newFakeEnv())
 	return err
@@ -467,6 +467,57 @@ func refusalSetVsInherit(t testing.TB) error {
 		Set: map[string]string{"EDITOR": "emacs"}}}
 	// `envy` inherits EDITOR, and the fake host has EDITOR=vim.
 	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "emacsy", "envy"}, testCtx(), newFakeEnv())
+	return err
+}
+
+// ── the environment: the grant-coupling rule (§2.5, §2.7 case 4) ─────────────
+//
+// Resolve-time rather than parse-time, because it needs {target} and {home}
+// expanded — but still over profile TEXT, so the verdict is the same on every
+// host. Read envcoupling.go before citing any of these as a boundary: they stop
+// a profile lying, not a profile reaching.
+
+// refusalUncoupledSet is §2.7 case 4 verbatim: the profile grants .config and
+// names .local/share.
+func refusalUncoupledSet(t testing.TB) error {
+	reg := testRegistry()
+	reg["broken"] = &Profile{Name: "broken", Tmpfs: []string{"{home}/.config"}, Environ: EnvGrants{
+		Set: map[string]string{"XDG_DATA_HOME": "{home}/.local/share"}}}
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "broken"}, testCtx(), newFakeEnv())
+	return err
+}
+
+// refusalUncoupledMerge: the live bug §4.6(c) records — `/nonexistent/bin` on
+// PATH, accepted in silence, measured on main.
+func refusalUncoupledMerge(t testing.TB) error {
+	reg := testRegistry()
+	reg["tpath"] = &Profile{Name: "tpath", Environ: EnvGrants{
+		Merge: map[string][]string{"PATH": {"/nonexistent/bin"}}}}
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "tpath"}, testCtx(), newFakeEnv())
+	return err
+}
+
+// refusalUncoupledDespiteAnotherProfile: the verdict is a property of the
+// profile's own text plus its include closure, and NOT of what else was
+// selected — otherwise adding a profile would change another profile's
+// legality. See TestCouplingVerdictDoesNotDependOnTheSelectedSet.
+func refusalUncoupledDespiteAnotherProfile(t testing.TB) error {
+	reg := testRegistry()
+	reg["namer"] = &Profile{Name: "namer", Environ: EnvGrants{
+		Merge: map[string][]string{"PATH": {"/opt/tools/bin"}}}}
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "namer", "envy"}, testCtx(), newFakeEnv())
+	return err
+}
+
+// refusalRelativeSet: a relative path in a path-valued scalar. It is refused by
+// the coupling check reaching the one function that owns this message, which is
+// also the only way a relative `set` is refused at all — checkAbsoluteElement is
+// called from the list verbs alone.
+func refusalRelativeSet(t testing.TB) error {
+	reg := testRegistry()
+	reg["rel"] = &Profile{Name: "rel", Environ: EnvGrants{
+		Set: map[string]string{"CARGO_HOME": "cargo"}}}
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "rel"}, testCtx(), newFakeEnv())
 	return err
 }
 
@@ -530,6 +581,12 @@ func TestGoldenRefusals(t *testing.T) {
 
 		// single-valued slots with more than one claim (§2.7 cases 1 and 2,
 		// CALL 2)
+		// the grant-coupling rule (§2.5 / §2.7 case 4)
+		{"env_uncoupled_set", refusalUncoupledSet},
+		{"env_uncoupled_merge", refusalUncoupledMerge},
+		{"env_uncoupled_despite_another_profile_granting_it", refusalUncoupledDespiteAnotherProfile},
+		{"env_relative_set", refusalRelativeSet},
+
 		{"env_two_prepends", refusalTwoPrepends},
 		{"env_prepend_order_disagreement", refusalPrependOrder},
 		{"env_two_sets_disagree", refusalTwoSets},

@@ -155,6 +155,33 @@ environ.prepend on PATH has the element "/a:/b", which contains ":" — a separa
          PATH = ["/a", "/b"]
        snug never splits a value on a separator, so a hand-written one can smuggle in an empty element, which in a search path means the current directory
 
+== env_uncoupled_set ==
+profile "broken" sets XDG_DATA_HOME=/home/u/.local/share, which it does not grant.
+       Add the path to that profile's ro/rw/tmpfs — or to a profile it includes — or
+       drop the variable: a variable naming a path that is not inside the sandbox is
+       worse than an absent one, because every tool that reads it will believe it.
+       snug is not checking that the path EXISTS (it cannot: a tmpfs grant creates an
+       empty directory), only that the profile naming it is the profile that granted it.
+
+== env_uncoupled_merge ==
+profile "tpath" merges PATH=/nonexistent/bin, which it does not grant.
+       Add the path to that profile's ro/rw/tmpfs — or to a profile it includes — or
+       drop the variable: a variable naming a path that is not inside the sandbox is
+       worse than an absent one, because every tool that reads it will believe it.
+       snug is not checking that the path EXISTS (it cannot: a tmpfs grant creates an
+       empty directory), only that the profile naming it is the profile that granted it.
+
+== env_uncoupled_despite_another_profile_granting_it ==
+profile "namer" merges PATH=/opt/tools/bin, which it does not grant.
+       Add the path to that profile's ro/rw/tmpfs — or to a profile it includes — or
+       drop the variable: a variable naming a path that is not inside the sandbox is
+       worse than an absent one, because every tool that reads it will believe it.
+       snug is not checking that the path EXISTS (it cannot: a tmpfs grant creates an
+       empty directory), only that the profile naming it is the profile that granted it.
+
+== env_relative_set ==
+profile "rel": environ.set CARGO_HOME entry "cargo" must be an absolute path: a relative one is resolved against whatever directory the payload happens to be in, which is not something a profile can know
+
 == env_two_prepends ==
 profiles mytools and othertools prepend to PATH, and they do not agree:
          mytools wants /opt/bin

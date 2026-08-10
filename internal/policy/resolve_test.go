@@ -36,6 +36,15 @@ func newFakeEnv() *fakeEnv {
 			"/usr": true, "/etc": true, "/opt": true,
 			"/home/u": true, "/home/u/proj": true, "/home/u/proj/sub": true,
 			"/home/u/proj/other": true, "/home/u/secrets": true,
+			// The directories the environment fixtures NAME, so they can also
+			// GRANT them — §2.5's coupling rule is why every one of these exists.
+			// A fixture that named a path it did not grant used to resolve
+			// happily, which is exactly the profile-side mistake the rule stops.
+			"/home/u/.local/bin": true,
+			"/usr/bin":           true, "/usr/share/pkgconfig": true,
+			"/opt/tools/bin": true, "/opt/first/bin": true, "/opt/bin": true,
+			"/opt/a": true, "/opt/b": true, "/opt/a/bin": true, "/opt/b/bin": true,
+			"/srv/bin": true,
 		},
 		links: map[string]string{},
 		// EDITOR is here so a fixture profile can actually re-admit something
@@ -112,17 +121,23 @@ func testRegistry() map[string]*Profile {
 		// profiles in testDefaults, which the goldens are built from. A fake
 		// @home with a grant the real one does not have would make the goldens
 		// describe a sandbox no user gets.
-		"cwd-ro": {Name: "cwd-ro", RO: []string{"{target}"},
+		//
+		// It GRANTS the directory it names on PATH, because §2.5's coupling rule
+		// requires the profile that names a path to be the profile that put a
+		// node on the chain to it. The real @claude satisfies the same rule a
+		// different way — it includes @home, whose tmpfs covers all of $HOME —
+		// and both spellings are legal; this one is the narrower.
+		"cwd-ro": {Name: "cwd-ro", RO: []string{"{target}", "{home}/.local/bin"},
 			Environ: EnvGrants{Merge: map[string][]string{"PATH": {"{home}/.local/bin"}}}},
 		// Carries the environment grants, for the same reason `netty` carries
 		// the network scalars: canon() renders them, so the commutativity and
 		// idempotence tests only cover them if a fixture uses them. Two profiles
 		// naming ONE variable and one directory is deliberate — that is the case
 		// where provenance could come out fold-order-dependent.
-		"envy": {Name: "envy", Environ: EnvGrants{
+		"envy": {Name: "envy", RO: []string{"/opt/tools/bin"}, Environ: EnvGrants{
 			Inherit: []string{"EDITOR"},
 			Merge:   map[string][]string{"PATH": {"/opt/tools/bin"}}}},
-		"envy-too": {Name: "envy-too", Environ: EnvGrants{
+		"envy-too": {Name: "envy-too", RO: []string{"/opt/tools/bin"}, Environ: EnvGrants{
 			Inherit: []string{"EDITOR"},
 			Merge:   map[string][]string{"PATH": {"/opt/tools/bin"}}}},
 		// `set` agreeing with `envy`'s `inherit` of the same name: equal claims
@@ -133,7 +148,7 @@ func testRegistry() map[string]*Profile {
 			Set: map[string]string{"EDITOR": "vim"}}},
 		// The front of PATH. Exactly ONE profile in the commutativity set may
 		// hold it — a second is a refusal, which is its own test.
-		"firsty": {Name: "firsty", Environ: EnvGrants{
+		"firsty": {Name: "firsty", RO: []string{"/opt/first/bin"}, Environ: EnvGrants{
 			Prepend: map[string][]string{"PATH": {"/opt/first/bin"}}}},
 		// The filter, over the fake host's PKG_CONFIG_PATH.
 		"sanity": {Name: "sanity", Environ: EnvGrants{
@@ -141,7 +156,7 @@ func testRegistry() map[string]*Profile {
 		// Names a directory that is ALSO in the base PATH, so
 		// dedup-to-the-earliest-band is exercised by the property tests rather
 		// than only by the one test that names it.
-		"dupe-path": {Name: "dupe-path", Environ: EnvGrants{
+		"dupe-path": {Name: "dupe-path", RO: []string{"/usr/bin"}, Environ: EnvGrants{
 			Merge: map[string][]string{"PATH": {"/usr/bin"}}}},
 		// A pure composition point with a two-level include chain
 		// (combo -> @cwd-rw -> @home). The builtin `default` used to be one of
@@ -746,8 +761,10 @@ func TestProfilePathReachesPATH(t *testing.T) {
 // profiles, so it is the one place an order dependence could hide.
 func TestPATHIsOrderIndependent(t *testing.T) {
 	reg := testRegistry()
-	reg["tools-a"] = &Profile{Name: "tools-a", Environ: EnvGrants{Merge: map[string][]string{"PATH": {"/opt/a/bin"}}}}
-	reg["tools-b"] = &Profile{Name: "tools-b", Environ: EnvGrants{Merge: map[string][]string{"PATH": {"/opt/b/bin"}}}}
+	reg["tools-a"] = &Profile{Name: "tools-a", RO: []string{"/opt/a/bin"},
+		Environ: EnvGrants{Merge: map[string][]string{"PATH": {"/opt/a/bin"}}}}
+	reg["tools-b"] = &Profile{Name: "tools-b", RO: []string{"/opt/b/bin"},
+		Environ: EnvGrants{Merge: map[string][]string{"PATH": {"/opt/b/bin"}}}}
 
 	one, err := Resolve(reg, []string{"@sys", "@cwd-rw", "tools-a", "tools-b"}, testCtx(), newFakeEnv())
 	if err != nil {

@@ -60,7 +60,7 @@ func TestListBandsResolveInOrder(t *testing.T) {
 // arbitrates between two profiles.
 func TestSanitiseBandComesAfterMerge(t *testing.T) {
 	reg := testRegistry()
-	reg["pkg"] = &Profile{Name: "pkg", Environ: EnvGrants{
+	reg["pkg"] = &Profile{Name: "pkg", RO: []string{"/usr/share/pkgconfig"}, Environ: EnvGrants{
 		Merge: map[string][]string{"PKG_CONFIG_PATH": {"/usr/share/pkgconfig"}},
 	}}
 	p, err := Resolve(reg, []string{"@sys", "@cwd-rw", "pkg", "sanity"}, testCtx(), newFakeEnv())
@@ -268,8 +268,10 @@ func TestSecondPrependIsRefused(t *testing.T) {
 	// directory do not disagree about who is first, and the resolved policy is
 	// byte-identical either way — refusing that would refuse a non-conflict.
 	reg := testRegistry()
-	reg["a"] = &Profile{Name: "a", Environ: EnvGrants{Prepend: map[string][]string{"PATH": {"/opt/bin"}}}}
-	reg["b"] = &Profile{Name: "b", Environ: EnvGrants{Prepend: map[string][]string{"PATH": {"/opt/bin"}}}}
+	reg["a"] = &Profile{Name: "a", RO: []string{"/opt/bin"},
+		Environ: EnvGrants{Prepend: map[string][]string{"PATH": {"/opt/bin"}}}}
+	reg["b"] = &Profile{Name: "b", RO: []string{"/opt/bin"},
+		Environ: EnvGrants{Prepend: map[string][]string{"PATH": {"/opt/bin"}}}}
 	p, err := Resolve(reg, []string{"@sys", "@cwd-rw", "a", "b"}, testCtx(), newFakeEnv())
 	if err != nil {
 		t.Fatalf("control: two profiles prepending the SAME value must agree: %v", err)
