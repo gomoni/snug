@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gomoni/snug/internal/policy"
 )
@@ -112,11 +113,133 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 // it is the review artifact for the environment the same way the .bwrap.txt
 // goldens are for the argv: cmd/snug/testdata/env.*.txt is exactly this block,
 // resolved against the REAL builtin profiles rather than a fake registry.
+// The layout is §2.8's, and the PATH bands read top to bottom in RESOLUTION
+// ORDER — so the rendering IS the §2.4 band diagram. If the two ever disagree,
+// the renderer is lying, and a flat NAME=value list (which this replaced) could
+// not disagree because it said nothing: not which verb produced a value, not
+// which profile, and not what a filter dropped on the way.
 func describeEnvironment(out *os.File, p *policy.Policy) {
 	fmt.Fprintln(out, "ENVIRONMENT  (--clearenv, then:)")
-	for _, kv := range p.EnvPairs() {
-		fmt.Fprintf(out, "  %s=%s\n", kv[0], kv[1])
+	for _, name := range p.EnvNames() {
+		v := p.Env[name]
+		lines := envLines(p, v)
+		if len(lines) == 0 && len(v.Dropped) == 0 {
+			continue
+		}
+		label := name
+		if len(lines) == 0 {
+			// Nothing survived the filter, so the variable is UNSET rather than
+			// set empty (§4.3). Say so on the screen: a variable that vanished
+			// silently is exactly the failure §2.8 exists to prevent, and the
+			// drops below are the whole explanation.
+			fmt.Fprintf(out, "  %-16s %s\n", label, "(unset — nothing survived)")
+		}
+		for _, l := range lines {
+			fmt.Fprintln(out, strings.TrimRight("  "+pad(label, 16)+" "+
+				pad(strings.Join(l.values, " "), 31)+" "+pad(l.verb, 9)+" "+l.from+l.mark, " "))
+			label = ""
+		}
+		// Dropped elements are NAMED, not counted. "1 of 3 kept" does not let
+		// anyone check a filter, and a filter nobody can check is the exact shape
+		// of failure this whole model exists to avoid.
+		if len(v.Dropped) > 0 {
+			var vals []string
+			for _, d := range v.Dropped {
+				vals = append(vals, d.Value)
+			}
+			word := "entries"
+			if len(vals) == 1 {
+				word = "entry"
+			}
+			fmt.Fprintf(out, "  %-16s (%d host %s dropped: %s)\n",
+				"", len(vals), word, strings.Join(vals, ", "))
+		}
 	}
+}
+
+// pad is %-Ns counted in RUNES rather than bytes. PS1 is snug's own and carries
+// a lock emoji, so byte padding shifted every column on that one line — in the
+// file a human reads to check the environment.
+func pad(s string, n int) string {
+	if w := utf8.RuneCountInString(s); w < n {
+		return s + strings.Repeat(" ", n-w)
+	}
+	return s
+}
+
+// envLine is one rendered row: consecutive entries that agree on verb, note and
+// provenance are one line, which is what makes a band read as a band rather than
+// as four unrelated rows.
+type envLine struct {
+	values []string
+	verb   string
+	from   string
+	mark   string
+}
+
+func envLines(p *policy.Policy, v policy.EnvVar) []envLine {
+	var out []envLine
+	for _, e := range v.Entries {
+		verb, from := e.Verb.String(), strings.Join(e.From, "+")
+		if e.Verb == policy.VerbSnug {
+			from = e.Note
+		}
+		mark := grantMark(p, e.Value)
+		if n := len(out); n > 0 && out[n-1].verb == verb && out[n-1].from == from && out[n-1].mark == mark {
+			out[n-1].values = append(out[n-1].values, e.Value)
+			continue
+		}
+		out = append(out, envLine{values: []string{e.Value}, verb: verb, from: from, mark: mark})
+	}
+	return out
+}
+
+// grantMark is §4.2's repair, and it is a MARK rather than a refusal on purpose.
+//
+// snug authors HOME, PATH and SHELL unconditionally, and must keep doing so:
+// there is no safe absent state for any of them (§4.3 — unset PATH and bash
+// substitutes a compiled-in default ending in ".", which inside snug is the
+// target). An earlier draft concluded the opposite and would have converted
+// twenty minutes of confusion into a reachable hole. So the repair is to say
+// which authored values name a path that is not inside this sandbox:
+//
+//	snug --dry-run --no-defaults -p @parent-ro .
+//	  HOME, SHELL and all four PATH entries name directories that do not exist
+//	  inside, and until now the screen said nothing about it.
+//
+// Computed against the RESOLVED MOUNTS, unlike the coupling rule in
+// envcoupling.go, which is deliberately text-only. The asymmetry is the point:
+// REFUSING must not depend on the host, or the same profile passes review on one
+// machine and fails on another — but MARKING may, and here it must, or the mark
+// is not about the sandbox that is actually going to run.
+// The count of grants INSIDE an unmarked path is not decoration either. The
+// predicate is "does a grant cover this path", and it must stay the one the
+// sanitise filter uses (policy.GrantsGuestPath) — two implementations of "is
+// this granted" eventually disagree, and the one on screen is the one a human
+// trusts. But that predicate alone says "not granted" about /run/snug/bin, which
+// is the directory snug creates to hold the podman stub: true in the policy's
+// own vocabulary, and misleading on a line whose whole point is that a binary
+// WILL be found there. Naming what is mounted inside keeps one predicate and
+// stops the mark reading as a bug report — the difference between "$HOME is not
+// yours to write" and "this directory holds exactly one generated file" is then
+// visible without a second rule.
+func grantMark(p *policy.Policy, value string) string {
+	if !strings.HasPrefix(value, "/") || p.GrantsGuestPath(value) {
+		return ""
+	}
+	inside := 0
+	for _, m := range p.Mounts {
+		if strings.HasPrefix(m.Guest, value+"/") {
+			inside++
+		}
+	}
+	switch inside {
+	case 0:
+		return "  ← not granted"
+	case 1:
+		return "  ← not granted (1 grant inside)"
+	}
+	return fmt.Sprintf("  ← not granted (%d grants inside)", inside)
 }
 
 // mountedAt finds the mount that determines what is visible at path — the

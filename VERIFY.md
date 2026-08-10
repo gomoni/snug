@@ -140,6 +140,40 @@ Caveat worth knowing: `--clearenv` is not the last word. `/etc/profile.d/*`
 runs inside a login shell and can put variables back. That is why `@sys`
 enumerates `/etc` instead of binding it wholesale — see INDEX §5.3.
 
+### 6d. Every variable says where it came from
+
+```bash
+./bin/snug --dry-run $SC/proj/sub -- true | sed -n '/^ENVIRONMENT/,/^$/p'
+```
+
+Expect one line per variable, each carrying a **verb** and a **profile**:
+`(snug)` for the ones snug authors, `set`/`merge`/`prepend`/`inherit`/`sanitise`
+plus the profile name for the ones a profile asked for. `PATH` is several lines,
+one per band, reading top to bottom in resolution order — a profile's entries,
+then snug's stub directory if there is one, then the base. That ordering **is**
+the model's; if the screen and the resolver ever disagree, the screen is lying.
+
+Where a `sanitise` dropped host elements, the line below names them — named, not
+counted. "2 of 3 kept" is not something anybody can check.
+
+### 6e. An authored value naming an ungranted path says so
+
+```bash
+./bin/snug --dry-run --no-defaults -p @parent-ro $SC/proj/sub -- true \
+  | sed -n '/^ENVIRONMENT/,/^$/p'
+```
+
+Expect `HOME`, `SHELL` and the four `PATH` entries to carry `← not granted`.
+This selection is refused (nothing can run in it), and `--dry-run` renders it
+anyway — which is the only way to see the mark.
+
+snug authors `HOME`, `PATH` and `SHELL` in *every* sandbox and must keep doing
+so: unset `PATH` and bash substitutes a compiled-in default ending in `.`, which
+inside snug is the target. So the repair for "this names a directory that is not
+in here" is to **say so**, never to stop authoring it. If a future version
+refuses instead, it has converted twenty minutes of confusion into a reachable
+hole.
+
 ### 6b. …including via PID 1 (regression check)
 
 ```bash

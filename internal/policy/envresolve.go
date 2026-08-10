@@ -319,7 +319,7 @@ func (p *Policy) sanitiseHostList(name string, t envType, from []string, env Env
 		if elem == "" {
 			continue
 		}
-		if p.grantsGuestPath(elem) {
+		if p.GrantsGuestPath(elem) {
 			p.addEnvEntry(name, true, t.sep, EnvEntry{Value: elem, Verb: VerbSanitise, From: from})
 			continue
 		}
@@ -330,10 +330,15 @@ func (p *Policy) sanitiseHostList(name string, t envType, from []string, env Env
 	}
 }
 
-// grantsGuestPath reports whether some grant covers a path, read verbatim as a
+// GrantsGuestPath reports whether some grant covers a path, read verbatim as a
 // guest path. Coverage is downward with no depth limit, on `/` boundaries — the
 // same lexical containment the mount rules use.
-func (p *Policy) grantsGuestPath(guest string) bool {
+//
+// Exported because --dry-run marks an authored value naming a path nothing
+// grants (§4.2), and that mark MUST be computed by the same predicate the filter
+// above uses. Two implementations of "is this granted" would eventually disagree,
+// and the one on screen is the one a human trusts.
+func (p *Policy) GrantsGuestPath(guest string) bool {
 	if !filepath.IsAbs(guest) {
 		return false
 	}

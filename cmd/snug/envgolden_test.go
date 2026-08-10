@@ -117,24 +117,39 @@ func TestGoldenEnvironment(t *testing.T) {
 		name string
 		sel  []string
 		ctx  policy.Context
+		// refused is true where Validate rejects the selection. Resolve's
+		// contract returns the policy ANYWAY in that case (see its doc comment),
+		// and --dry-run renders it — which is the only way to see the §4.2 marks,
+		// since the selection that produces them is one nothing can run.
+		refused bool
 	}{
 		// What a bare `snug <dir>` selects.
-		{"defaults", profile.BuiltinDefaults(), envGoldenCtx()},
+		{"defaults", profile.BuiltinDefaults(), envGoldenCtx(), false},
 		// The one shipped profile that touches the environment today: @claude's
 		// `env = [...]` and `path = [...]`. None of its host variables is set on
 		// this fake host, so what the golden shows is the `path` entry reaching
 		// PATH — and, once the verbs land, whatever inherit does instead.
-		{"claude", append(append([]string{}, profile.BuiltinDefaults()...), "@claude"), envGoldenCtx()},
+		{"claude", append(append([]string{}, profile.BuiltinDefaults()...), "@claude"), envGoldenCtx(), false},
 		// Containers, with a host whose podman is a distrobox shim — so the
 		// staged stub's directory appears on PATH and the golden shows where in
 		// the ordering it lands.
-		{"podman-socket", []string{"@sys", "@cwd-rw", "@podman-socket"}, envGoldenCtxWithShim()},
+		{"podman-socket", []string{"@sys", "@cwd-rw", "@podman-socket"}, envGoldenCtxWithShim(), false},
+		// §4.2, the case the design measured and nothing rendered: snug authors
+		// HOME, SHELL and the four base PATH entries unconditionally, and with
+		// only @parent-ro selected NONE of those paths is granted. It must keep
+		// authoring them — §4.3 shows PATH and HOME have no safe absent state —
+		// so the repair is that this block SAYS SO.
+		{"parent-ro-marks", []string{"@parent-ro"}, envGoldenCtx(), true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p, err := policy.Resolve(map[string]*policy.Profile(reg), tc.sel, tc.ctx, newEnvFakeEnv())
-			if err != nil {
+			switch {
+			case tc.refused && err == nil:
+				t.Fatalf("Resolve(%v) was expected to be refused; if this selection became "+
+					"runnable, the case no longer shows what it was written for", tc.sel)
+			case !tc.refused && err != nil:
 				t.Fatalf("Resolve(%v): %v", tc.sel, err)
 			}
 			got := captureFile(t, func(f *os.File) { describeEnvironment(f, p) })
