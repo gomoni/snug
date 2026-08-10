@@ -43,6 +43,14 @@ conscious act.
 INDEX §4.4 described the fix ("topology A") in the present tense. It was never
 implemented — see the banner now on that section.
 
+> **Read [`SUPERVISOR.md`](SUPERVISOR.md) alongside §5.** §1 below is still
+> correct — you cannot join only the netns — but the shape it forces on the
+> answer was too narrow: snug may fork a process whose only job is to hold the
+> namespaces, and hang the engine, the sandbox and later payloads off it as
+> siblings. The M-b re-exec then stops being a one-shot stage, `snug attach`
+> becomes possible, and the engine can be given a mount view derived from the
+> sandbox's own. All measured.
+
 ## 1. The crux: you cannot join only the netns
 
 The owner's steer was "start podman inside the sandbox's netns but outside its

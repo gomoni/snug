@@ -23,6 +23,7 @@ This was `DESIGN.md`, a single 1768-line document written **before most of the c
 | document | the question it answers |
 |---|---|
 | [`ENGINE-NETNS.md`](ENGINE-NETNS.md) | Why a container started through `@podman-socket` has the *engine's* network and not the sandbox's — and what moving the engine into the sandbox's netns costs. §0 is the canonical write-up of that finding; §5 is the plan. |
+| [`SUPERVISOR.md`](SUPERVISOR.md) | The fork-exec topology: one child holds the user and network namespaces, and the sandbox, the engine and any later payload hang off it as siblings. Answers ENGINE-NETNS's problem from the other side, adds `snug attach`, and measures how much of the container proxy it deletes. Proof of concept in `poc/nsd`. |
 | [`SECRETS.md`](SECRETS.md) | Which credentials reach a sandbox, why each is or is not allowed, the severity model, and brokering versus injection. |
 | [`CONTAINER-CLIENT.md`](CONTAINER-CLIENT.md) | Which container CLI actually works inside the sandbox, measured — and the `podman` stub that replaces a host-escape shim. |
 | [`ENVIRONMENT-VARIABLES.md`](ENVIRONMENT-VARIABLES.md) | The environment configuration format: five `environ` verbs, the variable type table, resolution order, and the measured evidence behind each rule. |
