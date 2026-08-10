@@ -157,6 +157,84 @@ rw = ["/srv/project", "/opt/cache/project"]
 Then `snug -p srv-rw ~/src/proj` will mount `/srv/project` and
 `/opt/cache/project` as read-write and enable the networking.
 
+## Environment variables
+
+Empty environment is base state, same as filesystem. `bwrap --clearenv` drops
+every host variable. Sandbox gets what snug writes plus what a profile asked for.
+`snug --dry-run` prints all of it:
+
+```console
+$ snug --dry-run .
+ENVIRONMENT  (--clearenv, then:)
+  HOME             /home/u                         (snug)
+  PATH             /usr/bin /bin /usr/sbin /sbin   (snug)    base
+  PS1              🔒 snug:\w\$                     (snug)
+  SNUG_PROFILES    @cwd-rw,@home,@parent-ro,@sys   (snug)
+  XDG_CONFIG_HOME  /home/u/.config                 set       @home
+```
+
+Every line names its verb and the profile that wrote it. `(snug)` is snug's own.
+
+Profiles use five verbs under one `environ` section. Verb says how value merges:
+
+```toml
+[profile.mytools]
+ro = ["/opt/tools/bin", "/opt/tools/override"]   # a profile grants what it names
+
+[profile.mytools.environ.set]
+EDITOR = "/usr/bin/vim"            # scalar. Two profiles disagreeing = error
+
+[profile.mytools.environ.merge]
+PATH = ["/opt/tools/bin"]          # list. Union, sorted, deduplicated
+
+[profile.mytools.environ.prepend]
+PATH = ["/opt/tools/override"]     # list, front. At most ONE profile per variable
+
+[profile.mytools.environ.inherit]
+COLORTERM = true                   # copy the host's value, if set
+
+[profile.mytools.environ.sanitise]
+PKG_CONFIG_PATH = true             # copy the host's list, drop what is not granted
+```
+
+Profile order never matters. Two profiles setting the same scalar to different
+values = **fatal error naming both**, never a silent winner — same rule as two
+profiles fighting over a mount. Lists join, so cannot conflict. `prepend` is the
+one slot only one profile may hold: "first" is not a thing two profiles share.
+
+Resolution by band. Nothing a profile writes chooses its band:
+
+```
+prepend  ->  merge  ->  sanitise  ->  snug's own  ->  base
+```
+
+So a profile's contribution always beats the distro's, and `PATH` reads top to
+bottom in the order the sandbox searches it.
+
+Four rules to know before writing a profile:
+
+- **Profile must grant what it names.** `merge PATH = ["/opt/tools/bin"]` without
+  a grant for that path is refused at parse time. A search path pointing at
+  nothing inside the sandbox is a lie the tool acts on.
+- **Some names refused outright, because the value is code.** `LD_PRELOAD`,
+  `GIT_SSH`, `GIT_CONFIG_*`, `BASH_FUNC_*`, `JAVA_TOOL_OPTIONS` and relatives.
+  Otherwise a profile granting no path at all hijacks the next `git fetch` a
+  human runs inside.
+- **Names snug writes itself cannot be replaced.** `HOME`, `SHELL`, `PS1`,
+  `TERM`, `SNUG*` — a profile able to set `SNUG_PROFILES` could lie to the
+  artifact you read to decide whether to trust the sandbox. `PATH` is owned the
+  same way, but it is a list, so a profile may still `merge` or `prepend` into
+  it: contributing is not replacing.
+- **`sanitise` copies the host, so it filters hard.** Element survives only if a
+  grant covers it *and* the mount there really holds the host's content. An empty
+  tmpfs (`/tmp`, `$HOME`) and `/proc` do not; elements under them are dropped and
+  named on screen. Otherwise the payload creates the directory, drops a file
+  called `git` in it, shadows the real one.
+
+Secrets go in files, not here. `/proc/self/environ` is readable by every process
+in the sandbox and inherited by every child, so `@claude` passes an endpoint,
+never a key.
+
 ## Networking
 
 Each sandbox gets its own network namespace with a `pasta` helper. Egress is
@@ -308,6 +386,7 @@ Design and research material is **not** user documentation and lives apart, unde
 | [`PSEUDOFS-AUDIT.md`](.claude/design/PSEUDOFS-AUDIT.md) | What `/proc`, `/sys` and `/dev` expose, measured |
 | [`PARAMETERISED-PROFILES.md`](.claude/design/PARAMETERISED-PROFILES.md) | A deferred design, and why |
 | [`SECRETS.md`](.claude/design/SECRETS.md) | What snug does with credentials, and what it should |
+| [`ENVIRONMENT-VARIABLES.md`](.claude/design/ENVIRONMENT-VARIABLES.md) | The five `environ` verbs, the variable types behind them, measured |
 | [`CLAUDE.md`](CLAUDE.md) | Working agreement: invariants, and hard-won facts about this environment |
 | [`TODO.md`](TODO.md) | What is deferred, and known gaps between docs and code |
 
