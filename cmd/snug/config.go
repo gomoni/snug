@@ -211,11 +211,15 @@ func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
 		}
 		show(label, vals)
 	}
-	pairs("set", g.Set)
-	lists("merge", g.Merge)
-	lists("prepend", g.Prepend)
-	show("inherit", g.Inherit)
-	show("sanitise", g.Sanitise)
+	// The labels carry the `environ.` prefix the TOML uses. Bare "set" and
+	// "merge" sit directly under "ro" and "tmpfs" on this screen, where they read
+	// as two more kinds of filesystem grant; the prefix is what says these are
+	// the environment, and it is also the string somebody will grep for.
+	pairs("environ.set", g.Set)
+	lists("environ.merge", g.Merge)
+	lists("environ.prepend", g.Prepend)
+	show("environ.inherit", g.Inherit)
+	show("environ.sanitise", g.Sanitise)
 }
 
 func profileCmd(args []string) int {
@@ -274,7 +278,7 @@ func profileCmd(args []string) int {
 				if i == 0 {
 					head = label
 				}
-				fmt.Printf("  %-10s %s\n", head, v)
+				fmt.Printf("  %-16s %s\n", head, v)
 			}
 		}
 		show("includes", p.Include)
@@ -287,10 +291,10 @@ func profileCmd(args []string) int {
 			if i == 0 {
 				head = "symlink"
 			}
-			fmt.Printf("  %-10s %s -> %s\n", head, s.At, s.Target)
+			fmt.Printf("  %-16s %s -> %s\n", head, s.At, s.Target)
 		}
 		if len(p.Optional) > 0 {
-			fmt.Printf("  %-10s %s\n", "optional", strings.Join(p.Optional, " "))
+			fmt.Printf("  %-16s %s\n", "optional", strings.Join(p.Optional, " "))
 		}
 		fmt.Println()
 		fmt.Println("To see what this actually produces for a directory:")
