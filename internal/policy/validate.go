@@ -128,7 +128,7 @@ func (p *Policy) Validate(env Environ) error {
 		// created — this is the failure that cost the previous generation a day
 		// (.claude/design/INDEX.md §3.3).
 		if m.Kind != KindSymlink {
-			if via, resolved := resolveVia(links, g); via != "" {
+			if via, resolved := resolveViaDeepest(links, g); via != "" {
 				return fmt.Errorf("grant %s (from %s) resolves through the symlink %s -> %s, landing at %s; "+
 					"bwrap cannot create a mountpoint at a symlink destination — grant %s instead",
 					g, strings.Join(m.From, "+"), via, links[via], resolved, resolved)
@@ -309,16 +309,61 @@ func sameUnderlyingTree(env Environ, outer, inner Mount, outerGuest string) bool
 	return false
 }
 
-// resolveVia reports whether guest path g passes through one of our own
-// symlinks, and where it would actually land.
-func resolveVia(links map[string]string, g string) (via, resolved string) {
+// One symlink map, TWO entry points, because two different questions are asked
+// of it and a single function answering both would have to hide the difference
+// behind a bool. They are deliberately not folded together: the comment on each
+// has to be able to say which question it answers.
+//
+// Both pick the DEEPEST matching link. The single function these replace
+// returned the first match Go's map iteration happened to produce, which is
+// nondeterministic the moment one link prefixes another — /lib and /lib64 on a
+// usr-merged host is the shipped case — and a security tool whose verdict flips
+// between runs is worse than one that is wrong reproducibly.
+
+// resolveViaDeepest reports whether guest path g passes THROUGH one of our own
+// symlinks, and where a mountpoint at g would actually land.
+//
+// g == link is SKIPPED, and that is right for a MOUNTPOINT: a grant at the link
+// path is the link itself, and there is nothing being diverted. bwrap's failure
+// is about creating a mountpoint at a symlink DESTINATION (.claude/design/INDEX.md
+// §3.3), which only arises for a path below the link.
+func resolveViaDeepest(links map[string]string, g string) (via, resolved string) {
 	for link, target := range links {
-		if g == link {
+		if g == link || !strings.HasPrefix(g, link+"/") {
 			continue
 		}
-		if strings.HasPrefix(g, link+"/") {
-			return link, filepath.Join(target, strings.TrimPrefix(g, link+"/"))
+		if len(link) <= len(via) {
+			continue
 		}
+		via, resolved = link, filepath.Join(target, strings.TrimPrefix(g, link+"/"))
 	}
-	return "", ""
+	return via, resolved
+}
+
+// resolveLinkForEnv rewrites a guest path through one of our own symlinks, so a
+// path a profile WROTE into the environment can be compared against the paths
+// that profile granted.
+//
+// g == link is MATCHED, and that is the difference: an environment value can be
+// literally /bin, and on a usr-merged host /bin is a symlink to usr/bin rather
+// than a grant. Judging it unrewritten would refuse a profile that granted /usr
+// and named the path the sandbox will actually see. It returns g unchanged when
+// no link applies, so the caller has one path to compare either way.
+func resolveLinkForEnv(links map[string]string, g string) string {
+	via, resolved := "", g
+	for link, target := range links {
+		if g != link && !strings.HasPrefix(g, link+"/") {
+			continue
+		}
+		if len(link) <= len(via) {
+			continue
+		}
+		via = link
+		if g == link {
+			resolved = target
+			continue
+		}
+		resolved = filepath.Join(target, strings.TrimPrefix(g, link+"/"))
+	}
+	return resolved
 }
