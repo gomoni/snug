@@ -987,6 +987,272 @@ cat /proc/self/fd/0/SECRET 2>&1`)
 	}
 }
 
+// ── the environment boundary ────────────────────────────────────────────────
+
+// envProfileLayer writes one throwaway profile into a fresh $XDG_CONFIG_HOME and
+// returns the environment that selects it, with PATH REPLACED by hostPath.
+//
+// Replaced, not extended, because both tests below are about what the host's
+// PATH does and does not contribute — one filters it, the other checks that a
+// binary reachable only through it never runs — and a test that inherited the
+// developer's PATH would be measuring a different string on every machine.
+// os/exec keeps the LAST duplicate, so these win over the copy baseEnv inherits.
+//
+// hostPath must contain the directory holding bwrap: snug finds it with
+// exec.LookPath against its own environment, so a PATH that omits it turns every
+// assertion below into "snug could not start".
+func envProfileLayer(t *testing.T, file, toml, hostPath string) []string {
+	t.Helper()
+	cfg := t.TempDir()
+	dir := filepath.Join(cfg, "snug", "profiles.d")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, file), []byte(toml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return baseEnv("XDG_CONFIG_HOME="+cfg, "PATH="+hostPath)
+}
+
+// writeScript plants an executable shell script that announces itself. Every
+// binary these tests plant emits a marker, so "the sandbox did not run X" can
+// never be satisfied by an X that could not have run anywhere.
+func writeScript(t *testing.T, path, marker string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Control on the plumbing itself: a script that does not execute on the HOST
+	// would make every assertion about it inside the sandbox meaningless.
+	out, err := exec.Command(path).CombinedOutput()
+	if err != nil || !strings.Contains(string(out), marker) {
+		t.Fatalf("precondition: the planted binary %s does not run on the host (%v):\n%s",
+			path, err, out)
+	}
+}
+
+// pathElements splits a rendered PATH the way execvp(3) does — on every colon,
+// keeping empties — because the empties are the whole subject of the test below.
+func pathElements(rendered string) []string { return strings.Split(rendered, ":") }
+
+// 2026-08-10. The empty-element hazard, and the ONE place in the environment
+// design where getting it wrong ADDS a hole rather than failing to close one.
+// ENVIRONMENT-VARIABLES.md §4.3 and §2.2.
+//
+// An empty element in PATH is the CURRENT DIRECTORY, and inside snug the current
+// directory is the target — the one writable thing a hostile payload controls.
+// Measured: `env -i PATH="/usr/bin:" sh -c 'victim'` runs ./victim, through the
+// shell and through execvp(3) alike. So a `sanitise` written the obvious way, as
+// a string replacement, turns "/usr/bin:/ungranted" into "/usr/bin:" — and a
+// feature sold as TIGHTENING the environment becomes "drop a file named git in
+// the project root and it runs". Hence §2.2: snug never splits a string on a
+// separator, and a variable whose elements all fail the filter is UNSET rather
+// than set empty.
+//
+// The host PATH below is chosen to push the filter into exactly that state:
+// four elements, of which policy grants precisely one, so three gaps have to be
+// closed by construction rather than by an implementer remembering.
+//
+// # The positive control, and what it is controlling for
+//
+// The last thing the payload does is run the planted binary with an empty
+// element deliberately present. It MUST print VICTIM-RAN. Without it, "the
+// sandbox did not run ./snugvictim" is equally true of a sandbox that never
+// started, of a target that is not on the search path for unrelated reasons, and
+// of a binary that was never executable — the pasta.avx2 failure shape, where a
+// matcher that cannot match passes forever.
+func TestSanitiseNeverLeavesAnEmptyPATHElement(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	// The one host PATH element policy grants. It lives inside the target, so
+	// @cwd-rw covers it, and it holds a symlink to bwrap so that snug can still
+	// find bwrap through the PATH it is about to filter.
+	bwrap, err := exec.LookPath("bwrap")
+	if err != nil {
+		t.Fatal(err) // requireSandbox already proved it is installed
+	}
+	granted := filepath.Join(proj, "hostbin")
+	if err := os.MkdirAll(granted, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(bwrap, filepath.Join(granted, "bwrap")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The binary a gap would reach. In the target, which is where an empty
+	// element resolves to.
+	writeScript(t, filepath.Join(proj, "snugvictim"), "VICTIM-RAN")
+
+	hostPath := strings.Join([]string{
+		"/nonexistent/one", granted, "/nonexistent/two", "/nonexistent/three",
+	}, ":")
+	env := envProfileLayer(t, "sanitise-path.toml",
+		"[profile.sanitise-path]\n"+
+			"description = \"copy the host PATH, keep only what policy grants\"\n"+
+			"\n[profile.sanitise-path.environ.sanitise]\nPATH = true\n",
+		hostPath)
+
+	r := runEnv(t, env, []string{"-p", "sanitise-path"}, proj,
+		`echo "RENDERED[$PATH]"
+echo "--- bare ---"
+snugvictim 2>&1 || echo VICTIM-NOT-FOUND
+echo "--- control ---"
+/usr/bin/env PATH="/usr/bin:" snugvictim 2>&1 || echo CONTROL-NOT-FOUND
+echo CHECKED-ALL`).mustRun(t)
+
+	if !strings.Contains(r.out, "CHECKED-ALL") {
+		t.Fatalf("the payload did not reach the end, so nothing below is attributable:\n%s", r.out)
+	}
+
+	_, rest, ok := strings.Cut(r.out, "RENDERED[")
+	if !ok {
+		t.Fatalf("the payload did not print its PATH:\n%s", r.out)
+	}
+	rendered, _, _ := strings.Cut(rest, "]")
+
+	// CONTROL for the filter itself: the one granted element survived. Without
+	// this, every assertion below is equally satisfied by a `sanitise` that
+	// contributed nothing at all, which is a different bug wearing the same
+	// green tick.
+	if !strings.Contains(rendered, granted) {
+		t.Fatalf("the one host PATH element policy grants (%s) is not in the sandbox's "+
+			"PATH, so sanitise did not run and its output cannot be checked:\n%s",
+			granted, rendered)
+	}
+	if strings.Contains(rendered, "/nonexistent") {
+		t.Errorf("sanitise kept a host PATH element nothing grants:\n%s", rendered)
+	}
+
+	// THE ASSERTION. Not "the value looks tidy" — every one of these spellings
+	// is the current directory to execvp(3).
+	if strings.HasPrefix(rendered, ":") {
+		t.Errorf("PATH begins with an empty element, which is the target directory:\n%s", rendered)
+	}
+	if strings.HasSuffix(rendered, ":") {
+		t.Errorf("PATH ends with an empty element, which is the target directory:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "::") {
+		t.Errorf("PATH contains '::', an empty element in the middle, which is the "+
+			"target directory:\n%s", rendered)
+	}
+	for i, elem := range pathElements(rendered) {
+		if elem == "" {
+			t.Errorf("PATH element %d is empty, which resolves to the current directory — "+
+				"inside snug that is the target, and a hostile payload writes there:\n%s",
+				i, rendered)
+		}
+	}
+
+	bare, control, _ := strings.Cut(r.out, "--- control ---")
+	_, bare, _ = strings.Cut(bare, "--- bare ---")
+	if strings.Contains(bare, "VICTIM-RAN") {
+		t.Errorf("a binary in the target ran off the sandbox's own PATH, so an empty "+
+			"element reached it:\n%s", r.out)
+	}
+	// The positive control. See the comment above the test: if this stops being
+	// true the negative just above proves nothing, so it is a Fatal.
+	if !strings.Contains(control, "VICTIM-RAN") {
+		t.Fatalf("the planted binary did NOT run even with an empty PATH element present, "+
+			"so the check above cannot distinguish a closed hazard from a payload that "+
+			"could never have executed it:\n%s", r.out)
+	}
+}
+
+// 2026-08-10. §4.1's untested precondition: `snug . -- podman` resolves against
+// the SANDBOX's PATH, not the host's. Measured true and, until this test,
+// asserted nowhere — which matters because it is what makes the whole ordering
+// model mean anything. A profile that puts a directory on PATH is only a grant
+// if the payload's own name is looked up inside.
+//
+// Three parts, and the third is the one that earns its place:
+//
+//  1. a binary only on the HOST's PATH, in a directory no profile grants, must
+//     not run — the negative;
+//  2. a binary in a directory a profile grants and merges onto PATH must run —
+//     its positive control, through the identical invocation shape, so "did not
+//     run" cannot mean "snug cannot run anything";
+//  3. a name present in BOTH resolves to the profile's, even though the host
+//     directory comes first on the host's PATH.
+//
+// Why (3) rather than (1) is the discriminator. Refactor the lookup to a
+// host-side exec.LookPath and (1) still fails — snug would resolve the name to a
+// host path that does not exist inside, and bwrap would still refuse. It reads
+// like the feature working. (3) is where that refactor goes red: the host copy
+// would win the lookup and then fail to exist inside, so the profile's binary
+// never runs.
+func TestThePayloadNameResolvesAgainstTheSandboxPATH(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	bwrap, err := exec.LookPath("bwrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Two directories outside the target's tree. hostOnly is granted by nothing;
+	// tools is granted by the profile below, which is the only difference between
+	// them.
+	hostOnly, tools := t.TempDir(), t.TempDir()
+	writeScript(t, filepath.Join(hostOnly, "snughostmarker"), "HOST-ONLY-RAN")
+	writeScript(t, filepath.Join(hostOnly, "snugbothmarker"), "HOST-VERSION-RAN")
+	writeScript(t, filepath.Join(tools, "snugtoolmarker"), "PROFILE-TOOL-RAN")
+	writeScript(t, filepath.Join(tools, "snugbothmarker"), "PROFILE-VERSION-RAN")
+
+	// hostOnly is FIRST, ahead of the directory holding bwrap, so nothing about
+	// the result can be blamed on it having been at the back.
+	env := envProfileLayer(t, "toolbox.toml",
+		"[profile.toolbox]\n"+
+			"description = \"a directory of tools, granted and merged onto PATH\"\n"+
+			"ro = [\""+tools+"\"]\n"+
+			"\n[profile.toolbox.environ.merge]\nPATH = [\""+tools+"\"]\n",
+		hostOnly+":"+filepath.Dir(bwrap))
+
+	// CONTROL: both host-only binaries really are reachable through the PATH snug
+	// is being launched with. Otherwise "the sandbox did not run it" is a fact
+	// about the fixture and not about the sandbox.
+	ctl := exec.Command("/bin/sh", "-c", "snughostmarker; snugbothmarker")
+	ctl.Env = env
+	ctlOut, err := ctl.CombinedOutput()
+	if err != nil || !strings.Contains(string(ctlOut), "HOST-ONLY-RAN") ||
+		!strings.Contains(string(ctlOut), "HOST-VERSION-RAN") {
+		t.Fatalf("precondition: the host-only binaries are not reachable through the PATH "+
+			"snug is given (%v), so their absence inside proves nothing:\n%s", err, ctlOut)
+	}
+
+	// 1. Only on the host's PATH.
+	out, code := cli(t, env, "-p", "toolbox", proj, "--", "snughostmarker")
+	if code == 0 {
+		t.Errorf("a binary reachable only through the HOST's PATH ran inside the sandbox:\n%s", out)
+	}
+	if strings.Contains(out, "HOST-ONLY-RAN") {
+		t.Errorf("the host's PATH contributed a binary to the sandbox:\n%s", out)
+	}
+
+	// 2. The positive control for 1: same flags, same target, same machinery,
+	// binary in a directory the profile grants and merges.
+	out, code = cli(t, env, "-p", "toolbox", proj, "--", "snugtoolmarker")
+	if code != 0 || !strings.Contains(out, "PROFILE-TOOL-RAN") {
+		t.Fatalf("a binary in a directory the profile grants and merges onto PATH did not "+
+			"run (exit %d), so the refusal above is not attributable to the host PATH:\n%s",
+			code, out)
+	}
+
+	// 3. The same name in both. The profile's must win — and this is the part a
+	// host-side lookup would break while leaving 1 and 2 green.
+	out, code = cli(t, env, "-p", "toolbox", proj, "--", "snugbothmarker")
+	if strings.Contains(out, "HOST-VERSION-RAN") {
+		t.Errorf("a name present on both PATHs resolved to the HOST's copy, so the lookup "+
+			"is not happening inside the sandbox:\n%s", out)
+	}
+	if code != 0 || !strings.Contains(out, "PROFILE-VERSION-RAN") {
+		t.Errorf("a name present on both PATHs did not resolve to the profile's copy "+
+			"(exit %d):\n%s", code, out)
+	}
+}
+
 // ── the network boundary ────────────────────────────────────────────────────
 
 func TestOfflineHasOnlyLoopback(t *testing.T) {
