@@ -88,11 +88,33 @@ type Profile struct {
 	// profile can only ever ADD entries.
 	Path []string
 
+	// Environ is a profile's `environ` block: the five verbs, parsed. Not yet
+	// populated by anything — the parser lands with the verbs — but the type
+	// belongs beside the grants it sits next to in the TOML.
+	Environ EnvGrants
+
 	// Source is the file this profile came from, and Trusted records whether
 	// that file was a trusted layer. Profiles from an explicitly-named config
 	// may not carry privileged grants — see .claude/design/INDEX.md §2.7.
 	Source  string
 	Trusted bool
+}
+
+// EnvGrants is a profile's `environ` block. Unordered, like every other grant:
+// argv ordering is a COMPILER concern — which band an entry lands in is
+// structural (§2.4) — and never something a profile writes.
+//
+// Inherit and Sanitise are []string of NAMES rather than map[string]bool on
+// purpose. The TOML spelling is `NAME = true`, and a bool in the model would
+// read like a switch that could be turned off, whereas `= false` has to be a
+// refusal: there is no way to un-inherit, because nothing was inherited to
+// begin with, and a stored false would be a negation key that parsed.
+type EnvGrants struct {
+	Set      map[string]string
+	Merge    map[string][]string
+	Prepend  map[string][]string
+	Inherit  []string
+	Sanitise []string
 }
 
 // Symlink is a symlink snug creates inside the sandbox (usr-merge, mostly).

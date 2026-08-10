@@ -38,7 +38,11 @@ func newFakeEnv() *fakeEnv {
 			"/home/u/proj/other": true, "/home/u/secrets": true,
 		},
 		links: map[string]string{},
-		env:   map[string]string{"USER": "u"},
+		// EDITOR is here so a fixture profile can actually re-admit something
+		// past --clearenv. Widening canon() to render the environment asserts
+		// nothing unless a fixture exercises it — the same trap the canon
+		// comment already records for the network scalars.
+		env: map[string]string{"USER": "u", "EDITOR": "vim"},
 	}
 }
 
@@ -98,6 +102,13 @@ func testRegistry() map[string]*Profile {
 		// @home with a grant the real one does not have would make the goldens
 		// describe a sandbox no user gets.
 		"cwd-ro": {Name: "cwd-ro", RO: []string{"{target}"}, Path: []string{"{home}/.local/bin"}},
+		// Carries the environment grants, for the same reason `netty` carries
+		// the network scalars: canon() renders them, so the commutativity and
+		// idempotence tests only cover them if a fixture uses them. Two profiles
+		// naming ONE variable and one directory is deliberate — that is the case
+		// where provenance could come out fold-order-dependent.
+		"envy":     {Name: "envy", Env: []string{"EDITOR"}, Path: []string{"/opt/tools/bin"}},
+		"envy-too": {Name: "envy-too", Env: []string{"EDITOR"}, Path: []string{"/opt/tools/bin"}},
 		// A pure composition point with a two-level include chain
 		// (combo -> @cwd-rw -> @home). The builtin `default` used to be one of
 		// these; it is now the `defaults` SETTING (internal/profile/defaults.go),
@@ -176,13 +187,25 @@ func canon(p *Policy) string {
 		fmt.Fprintf(&b, "%s %s %s %s optional=%v authored=%v\n",
 			m.Guest, m.Kind, m.Access, m.Host, m.Optional, m.Authored)
 	}
-	keys := make([]string, 0, len(p.Env))
-	for k := range p.Env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		fmt.Fprintf(&b, "env %s=%s\n", k, p.Env[k])
+	// The environment is rendered ENTRY BY ENTRY, not as its joined value, and
+	// that is the same lesson as the paragraph above one level down. The joined
+	// value hides which verb produced an entry, which profile got the credit,
+	// and what a filter dropped — all three of which --dry-run prints as a trust
+	// artifact (§2.8). If any of them depended on fold order, that screen would
+	// lie and a commutativity test comparing only strings would stay green.
+	for _, name := range p.EnvNames() {
+		v := p.Env[name]
+		shape := "scalar"
+		if v.List {
+			shape = fmt.Sprintf("list sep=%q", v.Sep)
+		}
+		fmt.Fprintf(&b, "env %s %s\n", name, shape)
+		for i, e := range v.Entries {
+			fmt.Fprintf(&b, "env %s [%d] %s %s %v %q\n", name, i, e.Value, e.Verb, e.From, e.Note)
+		}
+		for _, d := range v.Dropped {
+			fmt.Fprintf(&b, "env %s drop %s %v\n", name, d.Value, d.From)
+		}
 	}
 	fmt.Fprintf(&b, "net mode=%s dns=%v publish=%v nameservers=%v address=%s gateway=%s mtu=%d\n",
 		p.Net.Mode, p.Net.DNS, p.Net.Publish, p.Net.Nameservers,
@@ -198,7 +221,8 @@ func canon(p *Policy) string {
 // Resolve must be commutative. If it is not, the order profiles are named
 // changes what the sandbox grants, and "profiles only relax" becomes unprovable.
 func TestResolveIsCommutative(t *testing.T) {
-	all := []string{"@sys", "@home", "@cwd-rw", "@parent-ro", "cwd-ro", "netty", "netty-too"}
+	all := []string{"@sys", "@home", "@cwd-rw", "@parent-ro", "cwd-ro", "netty", "netty-too",
+		"envy", "envy-too"}
 	want := canon(mustResolve(t, all...))
 
 	rng := rand.New(rand.NewSource(1))
@@ -607,7 +631,7 @@ func TestPolicyHasNoRestrictionOperation(t *testing.T) {
 // "execvp claude: No such file or directory".
 func TestProfilePathReachesPATH(t *testing.T) {
 	p := mustResolve(t, "@sys", "@cwd-rw", "cwd-ro")
-	got := p.Env["PATH"]
+	got, _ := p.EnvValue("PATH")
 
 	if !strings.HasPrefix(got, "/home/u/.local/bin:") {
 		t.Errorf("PATH = %q; a profile's directory must come FIRST, or a distro "+
@@ -636,13 +660,15 @@ func TestPATHIsOrderIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if one.Env["PATH"] != two.Env["PATH"] {
+	onePath, _ := one.EnvValue("PATH")
+	twoPath, _ := two.EnvValue("PATH")
+	if onePath != twoPath {
 		t.Errorf("naming the profiles in a different order changed PATH:\n  %s\n  %s",
-			one.Env["PATH"], two.Env["PATH"])
+			onePath, twoPath)
 	}
 	for _, want := range []string{"/opt/a/bin", "/opt/b/bin"} {
-		if !strings.Contains(one.Env["PATH"], want) {
-			t.Errorf("PATH = %q, missing %q", one.Env["PATH"], want)
+		if !strings.Contains(onePath, want) {
+			t.Errorf("PATH = %q, missing %q", onePath, want)
 		}
 	}
 }

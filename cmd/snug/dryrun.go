@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/gomoni/snug/internal/policy"
@@ -115,13 +114,8 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 // resolved against the REAL builtin profiles rather than a fake registry.
 func describeEnvironment(out *os.File, p *policy.Policy) {
 	fmt.Fprintln(out, "ENVIRONMENT  (--clearenv, then:)")
-	keys := make([]string, 0, len(p.Env))
-	for k := range p.Env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		fmt.Fprintf(out, "  %s=%s\n", k, p.Env[k])
+	for _, kv := range p.EnvPairs() {
+		fmt.Fprintf(out, "  %s=%s\n", kv[0], kv[1])
 	}
 }
 

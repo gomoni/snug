@@ -65,7 +65,7 @@ func TestPodmanStubBeatsUsrBinPodmanButLosesToProfilePath(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 
-	path := p.Env["PATH"]
+	path, _ := p.EnvValue("PATH")
 	profileDir := "/home/u/.local/bin"
 	iProfile := strings.Index(path, profileDir)
 	iStub := strings.Index(path, PodmanStubDir)

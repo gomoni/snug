@@ -119,14 +119,14 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 	// real and then confuses itself.
 	a = append(a, "--remount-ro", "/")
 
+	// --clearenv first and unconditional: the environment is reconstructed by
+	// name, never filtered. EnvPairs omits a variable that resolved to nothing,
+	// and there is deliberately no --unsetenv anywhere — after --clearenv there
+	// is nothing left to unset, and emitting one would put a subtraction into an
+	// argv that has none.
 	a = append(a, "--clearenv")
-	keys := make([]string, 0, len(p.Env))
-	for k := range p.Env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		a = append(a, "--setenv", k, p.Env[k])
+	for _, kv := range p.EnvPairs() {
+		a = append(a, "--setenv", kv[0], kv[1])
 	}
 
 	return append(a, "--chdir", p.Chdir)

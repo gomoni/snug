@@ -83,7 +83,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 		Chdir:      target,
 		Command:    ctx.Command,
 		Mounts:     map[string]Mount{},
-		Env:        map[string]string{},
+		Env:        map[string]EnvVar{},
 		Selected:   append([]string(nil), selected...),
 		NewSession: ctx.LegacyTIOCSTI,
 	}
@@ -115,7 +115,11 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	identityOwner := ""
 	addressOwner, gatewayOwner, mtuOwner := "", "", ""
 	publish := map[int]bool{}
-	pathDirs := map[string]bool{}
+	// dir -> the profiles that asked for it. A set, so two profiles naming one
+	// directory contribute one PATH entry with two names against it rather than
+	// two entries; keeping the names is what lets --dry-run say which profile put
+	// a directory in front of /usr/bin.
+	pathDirs := map[string][]string{}
 	for _, name := range names {
 		prof := set[name]
 		optional := map[string]bool{}
@@ -276,7 +280,8 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 			if !filepath.IsAbs(e) {
 				return nil, fmt.Errorf("profile %q: path %q must be absolute", name, d)
 			}
-			pathDirs[filepath.Clean(e)] = true
+			dir := filepath.Clean(e)
+			pathDirs[dir] = append(pathDirs[dir], name)
 		}
 
 		for _, e := range prof.Env {
@@ -284,7 +289,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 				if forbiddenEnv[e] {
 					return nil, fmt.Errorf("profile %q grants env %q, which is a code-injection vector into every process in the sandbox and is never passed", name, e)
 				}
-				p.Env[e] = v
+				p.inheritEnv(e, v, name)
 			}
 		}
 	}
@@ -358,7 +363,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 			// helpers, insteadOf rules and user.email would sit alongside the
 			// pinned identity — silently overriding what the human chose.
 			// Verified: git merges both files; GIT_CONFIG_GLOBAL replaces both.
-			p.Env["GIT_CONFIG_GLOBAL"] = home + "/.gitconfig"
+			p.AuthorEnv("GIT_CONFIG_GLOBAL", home+"/.gitconfig")
 		}
 		if cfg := id.SSHConfig(home); len(cfg) > 0 {
 			p.Replace(Mount{
@@ -393,7 +398,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 
 	// 5. The environment is reconstructed, not filtered. --clearenv discards the
 	//    host's, and each variable below is set explicitly.
-	p.Env["HOME"] = home
+	p.AuthorEnv("HOME", home)
 	// PATH is the base plus whatever profiles asked for, profile entries FIRST
 	// so a profile-provided tool wins over a distro one of the same name — that
 	// is the point of asking. Sorted, because a set has no order and resolution
@@ -403,21 +408,28 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	// must beat /usr/bin/podman, which is its whole job, and must LOSE to any
 	// profile entry, because a profile entry is an explicit human grant and the
 	// stub is snug's own generated fallback.
-	pathEntries := sortedKeys(pathDirs)
+	//
+	// Each band is a separate write, in the order it is rendered: a profile's
+	// directories are the profile's authorship, while the stub directory and the
+	// base are snug's own and say so.
+	for _, dir := range sortedPathDirs(pathDirs) {
+		p.mergeEnvList("PATH", ":", dir, pathDirs[dir])
+	}
 	if stubPathDir != "" {
-		pathEntries = append(pathEntries, stubPathDir)
+		p.AuthorEnvList("PATH", []string{stubPathDir}, "podman stub")
 	}
-	p.Env["PATH"] = strings.Join(append(pathEntries, basePATH...), ":")
-	p.Env["USER"] = envOr(env, "USER", "user")
-	p.Env["LOGNAME"] = p.Env["USER"]
-	p.Env["SHELL"] = ctx.Shell
-	p.Env["TMPDIR"] = "/tmp"
+	p.AuthorEnvList("PATH", basePATH, "base")
+	user := envOr(env, "USER", "user")
+	p.AuthorEnv("USER", user)
+	p.AuthorEnv("LOGNAME", user)
+	p.AuthorEnv("SHELL", ctx.Shell)
+	p.AuthorEnv("TMPDIR", "/tmp")
 	if ctx.Term != "" {
-		p.Env["TERM"] = ctx.Term
+		p.AuthorEnv("TERM", ctx.Term)
 	}
-	p.Env["SNUG"] = "1"
-	p.Env["SNUG_PROFILES"] = strings.Join(names, ",")
-	p.Env["SNUG_TARGET"] = target
+	p.AuthorEnv("SNUG", "1")
+	p.AuthorEnv("SNUG_PROFILES", strings.Join(names, ","))
+	p.AuthorEnv("SNUG_TARGET", target)
 
 	// A prompt that says where you are. This matters more than cosmetics: snug
 	// does not curate /etc/bash.bashrc, so without this the shell falls back to
@@ -428,12 +440,12 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	//
 	// The escapes are bash/zsh syntax. A strict POSIX sh prints them literally,
 	// which is ugly but harmless; the shells people actually get here expand them.
-	p.Env["PS1"] = `🔒 snug:\w\$ `
+	p.AuthorEnv("PS1", `🔒 snug:\w\$ `)
 	if ctx.Lang != "" {
-		p.Env["LANG"] = ctx.Lang
+		p.AuthorEnv("LANG", ctx.Lang)
 	}
 	if ctx.TZ != "" {
-		p.Env["TZ"] = ctx.TZ
+		p.AuthorEnv("TZ", ctx.TZ)
 	}
 
 	if err := p.Validate(env); err != nil {
@@ -722,6 +734,18 @@ func sortedInts(m map[int]bool) []int {
 		out = append(out, k)
 	}
 	sort.Ints(out)
+	return out
+}
+
+// sortedPathDirs orders the directories profiles put on PATH. Sorted because a
+// set has no order and resolution must not invent one — see the comment at the
+// call site for why sorting is the honest answer here and not an arbitrary one.
+func sortedPathDirs(m map[string][]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
 	return out
 }
 

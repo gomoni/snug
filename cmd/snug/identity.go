@@ -148,7 +148,7 @@ func startIdentity(pol *policy.Policy, verbose, iKnow bool) (cleanup func(), err
 		pol.BindSocket(sock, "/run/snug/ssh-agent.sock", "(identity)")
 	}
 
-	pol.Env["SSH_AUTH_SOCK"] = "/run/snug/ssh-agent.sock"
+	pol.AuthorEnv("SSH_AUTH_SOCK", "/run/snug/ssh-agent.sock")
 
 	stageGhConfig(pol, id)
 	return cleanup, nil
@@ -197,8 +197,8 @@ func stageGhConfig(pol *policy.Policy, id *policy.Identity) {
 		Guest: dir + "/hosts.yml", Kind: policy.KindData, Access: policy.AccessRW,
 		Content: []byte(hosts), Perms: &perm, From: []string{"(identity)"},
 	})
-	pol.Env["GH_CONFIG_DIR"] = dir
-	pol.Env["GH_HOST"] = host
+	pol.AuthorEnv("GH_CONFIG_DIR", dir)
+	pol.AuthorEnv("GH_HOST", host)
 }
 
 // identityHost peeks at the selected profiles for a pinned gh_host, so the
