@@ -304,13 +304,25 @@ on any flag.
   So the capability exists. It is simply not the right tool for a whole binary.
   Where a command needs substituting — the live case is `/usr/bin/podman` being
   a distrobox shim that cannot work from inside (`cmd/snug/podmanshim.go`) —
-  **write the replacement into the writable tmpfs `$HOME` and put that directory
-  first on `PATH`.** It is additive (nothing is hidden; the original is still
-  there and still reachable by absolute path), it needs no mount at all, it
-  cannot fail on a host where the target path is a symlink (bwrap cannot create
-  a mountpoint at a symlink destination — INDEX §3.3), and it is one line of
-  policy instead of a new exemption in the masking rule. Reach for an overmount
-  only when the consumer reads an absolute path it will not let you configure.
+  **stage the replacement in a directory snug owns and put that directory first
+  on `PATH`.** It is additive (nothing is hidden; the original is still there and
+  still reachable by absolute path), it cannot fail on a host where the target
+  path is a symlink (bwrap cannot create a mountpoint at a symlink destination —
+  INDEX §3.3), and it is one line of policy instead of a new exemption in the
+  masking rule. Reach for an overmount only when the consumer reads an absolute
+  path it will not let you configure.
+
+  **That directory must not be writable from inside, and the earlier draft of
+  this bullet said `$HOME` — which is a writable tmpfs, and therefore wrong.** A
+  writable directory ahead of `/usr/bin` on `PATH` is a *shadow slot*: the
+  payload writes a file called `git` into it and the next `git` a human or
+  another agent runs inside the sandbox is that file. The live case stages at
+  `/run/snug/bin` — `KindData`, `AccessRO`, and measured to refuse `touch` after
+  `--remount-ro /` (CONTAINER-CLIENT.md §8). The same hazard is why `sanitise`
+  drops a host `PATH` element whose only coverage is a tmpfs: not because it
+  closes the attack — the payload can rewrite `PATH` at will and nothing stops
+  it — but because **the environment snug itself hands over must not ship the
+  shadow slot pre-installed.**
 - **`git` merges its global config from TWO files.** `~/.gitconfig` AND
   `$XDG_CONFIG_HOME/git/config` are both read. So generating `~/.gitconfig` was
   not enough: with `@git-ro` also selected, the host's credential helpers,

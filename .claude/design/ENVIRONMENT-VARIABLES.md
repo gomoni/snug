@@ -222,8 +222,25 @@ not.** So one middle bucket — `BASH_ENV`, `ENV`, `PERL5OPT`, `NODE_OPTIONS`,
 `set` and refused for `inherit`**: `BASH_ENV = "{home}/.snug-init"` with the file
 granted by the same profile is coherent and reviewable, while the same name
 inherited points at a host path. That composes §2.5's grant rule with the forbid
-list instead of maintaining two independent lists. Names snug owns, `LD_*` and
-`BASH_FUNC_*` are refused for both. The type table
+list instead of maintaining two independent lists.
+
+**Refused for both verbs** are the names snug owns, the prefixes `LD_*`,
+`BASH_FUNC_*` and `GIT_CONFIG_*`, the ten glibc strips §4.4 takes from `ld.so(8)`,
+the git and ssh transport hooks (`GIT_SSH`, `GIT_SSH_COMMAND`,
+`GIT_PROXY_COMMAND`, `GIT_ASKPASS`, `SSH_ASKPASS`, `GIT_EXEC_PATH`,
+`GIT_EXTERNAL_DIFF`, `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`), the interpreter option
+channels (`JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`, `JDK_JAVA_OPTIONS`, `RUBYOPT`),
+and the prompt hooks other than `PS1` (`PS0`, `PS2`, `PS3`, `PS4`,
+`PROMPT_COMMAND`). **Refused for `inherit` only**, alongside the middle bucket
+above, are the prefixes `PIP_*` and `npm_config_*` — §4.5's finding that a tool's
+environment outranks the file snug generated for it. `internal/policy/envtypes.go`
+is the list; this paragraph is a summary of it and the code is what runs.
+
+The git group is where the split earns its keep, and it was not got right first
+time: the red team found `GIT_SSH` passing while `GIT_SSH_COMMAND` sat two
+entries above it in the same table, and used it to hijack a real `git fetch` in a
+sandbox whose ssh identity a *different* profile had pinned. The rule is not "the
+newest spelling of the name" — it is **the value is code**. The type table
 says what may be *merged*; the forbidden list says what may never be *inherited at
 all*, at any type, because the value is code — `LD_PRELOAD` is a list and is
 refused. Two rules, both applied, neither replacing the other. An earlier draft
@@ -689,7 +706,11 @@ snug render from fixed placeholder set — `{lock}`, `{profiles}`, `{target}`, `
 
 ## 4. Why — the measured evidence
 
-Every measurement executed against `main` (`408e8e4`).
+Every measurement executed against `main` (`408e8e4`), and **every one of them is
+still reported in the present tense on purpose**: this section is the evidence
+that argued for the design, not a description of the tree you are reading. Where
+the implementation has since closed one, the subsection carries a `**Closed by**`
+line naming the commit. A subsection with no such line is still live on `main`.
 
 ### 4.1 What `main` does today
 
@@ -779,6 +800,15 @@ Measured against type table, list wrong in both directions. `PYTHONSTARTUP` in i
 
 Four of these = name **prefixes**, which `map[string]bool` cannot express.
 
+**Closed by `86fea49` (Step 3).** The refusal no longer consults the host at all,
+so a profile's verdict is the same on every machine, and the table moved to
+`internal/policy/envtypes.go` where it is split by verb (§2.1) and carries the
+prefix rules `LD_`, `BASH_FUNC_`, `GIT_CONFIG_`, `PIP_`, `npm_config_`. It has
+since been extended once more, by `68c6363`, after the red team demonstrated that
+`GIT_SSH` passed while `GIT_SSH_COMMAND` — its exact equivalent — was refused two
+entries above it. As this section says, the list is to be **extended**, not
+retired.
+
 ### 4.5 Out of scope but found here: the environment outranks the file
 
 CLAUDE.md's "generate, don't bind" rule pin a tool's config **file** and leave its **environment** — higher-precedence source:
@@ -822,6 +852,11 @@ row is already right about the semantics; the code is wrong. The fix is an
 `Environ.LookupEnv(k) (string, bool)` and a presence check — and it is the same
 one line that carries §4.4's host-conditional refusal, so both go together.
 
+**Closed by `86fea49` (Step 3)**, together with §4.4, exactly as predicted above.
+One caveat the fix had to keep straight: the collapse is inverted for lists,
+where unset and empty both mean absent, so `sanitiseHostList` keeps its own
+check rather than sharing a helper (§2.6).
+
 **(b) One unparseable file in `profiles.d` disables the entire registry,
 builtins included.** `Load()` returns on the first bad file rather than
 collecting. Measured with a single file containing one unknown key:
@@ -844,6 +879,9 @@ caveat or it becomes a silent downgrade — `unknown profile` must consult the
 skipped-file record, so `-p thatprofile` says *"the file defining it failed to
 parse"* rather than *"unknown profile"*.
 
+**Closed by `99d5c10` (Step 12a)**, including the caveat: a name defined only by
+a file that failed to parse is reported as such, not as unknown.
+
 **(c) `PATH` entries are not deduplicated, and an ungranted directory is accepted
 in silence.** A profile with `path = ["/nonexistent/bin", "/bin"]`:
 
@@ -858,6 +896,9 @@ there. Harmless today, and it is the present-day state that §2.5's coupling rul
 and §2.6's dedup-to-earliest-band both change. Worth its own fix regardless: a
 duplicated entry means the rendered value depends on how many profiles happened
 to name a directory, which is a fold artifact.
+
+**Closed by `2078b69` (Step 6)** for the duplicate, and by §2.5's coupling rule
+for the ungranted directory.
 
 ---
 
