@@ -223,6 +223,219 @@ func TestSanitiseAcceptsAReadOnlyGrant(t *testing.T) {
 	}
 }
 
+// ── sanitise-C: keepHostElement's Kind-switch (the tmpfs-shadow-slot fix) ──
+//
+// GrantsGuestPath used to answer "is this path granted" for ANY covering
+// mount, regardless of Kind — so a host PATH element whose only coverage was
+// an empty writable tmpfs (`/tmp`, or `{home}` from @home) survived sanitise
+// and reached the argv ahead of `/usr/bin`. keepHostElement narrows the
+// SANITISE FILTER's predicate (not GrantsGuestPath itself, which grantMark
+// still uses — see TestGrantMarkStillUsesTheWiderPredicate) to "does the
+// sandbox have the HOST'S CONTENT here", which a tmpfs answers no to. See
+// the design's table in envresolve.go's keepHostElement doc comment.
+//
+// sanitiseProbeHost exercises every row of that table in one host value:
+// a genuine tmpfs shadow slot, the tmpfs mountpoint itself, the writable
+// target, a bind nested inside the {home} tmpfs, the SAME directory shadowed
+// by the tmpfs above it, and a path nothing grants at all.
+const sanitiseProbeHost = "/opt/tools/bin:/tmp/x/bin:/tmp:/home/u/.local/bin:/home/u/.local/bin/tool:/home/u/proj/sub/bin:/srv/nothing"
+
+func sanitiseProbeSelection() []string {
+	return []string{"@sys", "@home", "@cwd-rw", "envy", "nested-bin", "sanity-path"}
+}
+
+func sanitiseProbeEnv() *fakeEnv {
+	env := newFakeEnv()
+	env.env["PATH"] = sanitiseProbeHost
+	return env
+}
+
+// pathOperand finds the exact `--setenv PATH <value>` operand bwrap will
+// receive. "not in Entries" and "not in the argv" are two separate claims —
+// a struct field a payload cannot read is not a security property.
+func pathOperand(t *testing.T, p *Policy) string {
+	t.Helper()
+	args := p.BwrapFlags(1000, 1000, func(string) int { return 10 })
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--setenv" && args[i+1] == "PATH" {
+			return args[i+2]
+		}
+	}
+	t.Fatal("no --setenv PATH in the argv")
+	return ""
+}
+
+func hasEntry(entries []string, v string) bool {
+	for _, e := range entries {
+		if e == v {
+			return true
+		}
+	}
+	return false
+}
+
+// Test 1 — the named regression for the finding itself: a host PATH element
+// whose ONLY covering mount is a tmpfs must not survive sanitise, must be
+// recorded as Dropped with DropTmpfsOnly, and — the claim that actually
+// matters — must not reach the argv bwrap executes.
+func TestSanitiseDropsAShadowSlotOnlyATmpfsCovers(t *testing.T) {
+	p, err := Resolve(testRegistry(), sanitiseProbeSelection(), testCtx(), sanitiseProbeEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entries := entryValues(p, "PATH")
+	for _, shadow := range []string{"/tmp/x/bin", "/tmp"} {
+		if hasEntry(entries, shadow) {
+			t.Errorf("%s survived sanitise: a writable directory ahead of /usr/bin on the PATH "+
+				"snug itself wrote is exactly the shadow-slot abuse this rule exists to close — "+
+				"the payload creates it and drops a file named `git` inside", shadow)
+		}
+	}
+
+	dropped := map[string]EnvDropReason{}
+	for _, d := range p.Env["PATH"].Dropped {
+		dropped[d.Value] = d.Reason
+	}
+	for _, shadow := range []string{"/tmp/x/bin", "/tmp"} {
+		if r, ok := dropped[shadow]; !ok || r != DropTmpfsOnly {
+			t.Errorf("%s: Dropped present=%v reason=%v, want present with DropTmpfsOnly", shadow, ok, r)
+		}
+	}
+
+	// The claim that actually matters: absence from the argv, not merely from
+	// p.Env. A struct field the payload never reads protects nothing.
+	operand := pathOperand(t, p)
+	for _, part := range strings.Split(operand, ":") {
+		if part == "/tmp/x/bin" || part == "/tmp" {
+			t.Errorf("--setenv PATH operand %q still names the shadow slot %q", operand, part)
+		}
+	}
+}
+
+// Test 2 — the positive control for test 1, without which it could pass on a
+// filter that drops EVERYTHING. Three assertions, each pinning a different
+// row of keepHostElement's table.
+func TestSanitiseKeepsAnElementARealBindCovers(t *testing.T) {
+	p, err := Resolve(testRegistry(), sanitiseProbeSelection(), testCtx(), sanitiseProbeEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := entryValues(p, "PATH")
+
+	if !hasEntry(entries, "/opt/tools/bin") {
+		t.Error("/opt/tools/bin (a real ro bind) did not survive sanitise. If this fails, " +
+			"keepHostElement has stopped being a truthfulness filter and become a capability " +
+			"filter — see the design's rejection of candidate A")
+	}
+
+	// PINS CANDIDATE C OVER CANDIDATE A. A — drop anything whose covering
+	// mount is writable — was rejected specifically because it would drop the
+	// TARGET's own bind, which is rw. The directory need not exist on the
+	// fake host; sanitise never stats.
+	if !hasEntry(entries, "/home/u/proj/sub/bin") {
+		t.Error("/home/u/proj/sub/bin (a writable bind of the TARGET) did not survive sanitise. " +
+			"Candidate A was rejected precisely because dropping every writable-covered element " +
+			"would have dropped this one too; keeping it is what makes this candidate C, not A")
+	}
+
+	if !hasEntry(entries, "/home/u/.local/bin/tool") {
+		t.Error("/home/u/.local/bin/tool (a bind nested inside @home's tmpfs) did not survive " +
+			"sanitise — this is @claude's real shape (base.toml: {home}/.local/bin/claude), and " +
+			"losing it would break every credential file staged the same way")
+	}
+}
+
+// Test 3 — both directions of "deepest, not first, covering mount" in one
+// test. An implementation that kept an element because SOME mount exists AT
+// OR BELOW it (a second, downward walk) would pass the second assertion here
+// and fail the first — which is exactly why both live in one test rather
+// than two.
+func TestSanitiseUsesTheDeepestCoveringMount(t *testing.T) {
+	p, err := Resolve(testRegistry(), sanitiseProbeSelection(), testCtx(), sanitiseProbeEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := entryValues(p, "PATH")
+
+	if hasEntry(entries, "/home/u/.local/bin") {
+		t.Error("/home/u/.local/bin survived sanitise. Its deepest covering mount is @home's " +
+			"{home} tmpfs — a bind exists only BELOW it, at .../bin/tool — and keeping it means " +
+			"an implementation re-admitted 'keep if any mount exists at or below', which the " +
+			"design explicitly forbids")
+	}
+	if !hasEntry(entries, "/home/u/.local/bin/tool") {
+		t.Error("/home/u/.local/bin/tool did not survive sanitise. Its deepest covering mount " +
+			"is the bind nested-bin installs there, and deepest must win over the tmpfs above it — " +
+			"the same 'effective access is the deepest mount' rule CLAUDE.md states for join")
+	}
+}
+
+// Test 4 — the two drop reasons must never be conflated: "nothing grants
+// that path" and "only an empty writable tmpfs is mounted there" are
+// materially different facts for a human debugging a vanished PATH entry.
+func TestSanitiseDropReasonDistinguishesUngrantedFromTmpfsOnly(t *testing.T) {
+	p, err := Resolve(testRegistry(), sanitiseProbeSelection(), testCtx(), sanitiseProbeEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reasons := map[string]EnvDropReason{}
+	for _, d := range p.Env["PATH"].Dropped {
+		reasons[d.Value] = d.Reason
+	}
+	if r, ok := reasons["/srv/nothing"]; !ok || r != DropNoGrant {
+		t.Errorf("/srv/nothing: reason=%v present=%v, want DropNoGrant — nothing grants this path "+
+			"at all, a different fact from a tmpfs granting an empty directory there", r, ok)
+	}
+	if r, ok := reasons["/tmp/x/bin"]; !ok || r != DropTmpfsOnly {
+		t.Errorf("/tmp/x/bin: reason=%v present=%v, want DropTmpfsOnly — conflating the two "+
+			"reasons is exactly the ambiguity EnvDropReason exists to remove", r, ok)
+	}
+}
+
+// Test 6 — pins the clean-to-decide / emit-verbatim split against a
+// well-meaning "fix" that writes the cleaned path into Entries. The walk
+// that DECIDES an element's fate cleans the path; the VALUE recorded is
+// always the raw host string (DROP-NEVER-REWRITE, envresolve.go:284-287).
+func TestSanitiseEmitsTheHostElementVerbatimNotCleaned(t *testing.T) {
+	env := newFakeEnv()
+	env.env["PATH"] = "/tmp/../usr/bin:/tmp/"
+
+	p, err := Resolve(testRegistry(), []string{"@sys", "@home", "@cwd-rw", "sanity-path"}, testCtx(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Look at the SANITISE band specifically, not the joined PATH: snug's own
+	// base band legitimately contributes a genuine "/usr/bin" entry
+	// (VerbSnug), so asserting against entryValues(p, "PATH") as a whole would
+	// find that one and prove nothing about what sanitise itself wrote.
+	var sanitised []string
+	for _, e := range p.Env["PATH"].Entries {
+		if e.Verb == VerbSanitise {
+			sanitised = append(sanitised, e.Value)
+		}
+	}
+	if hasEntry(sanitised, "/usr/bin") {
+		t.Errorf("the SANITISE band carries the CLEANED /usr/bin rather than the raw host "+
+			"element /tmp/../usr/bin — sanitise must decide on the cleaned path but emit the "+
+			"element verbatim, or DROP-NEVER-REWRITE is violated: %v", sanitised)
+	}
+	if !hasEntry(sanitised, "/tmp/../usr/bin") {
+		t.Errorf("/tmp/../usr/bin (cleans to the granted /usr/bin) did not survive verbatim in "+
+			"the sanitise band: %v", sanitised)
+	}
+
+	dropped := map[string]EnvDropReason{}
+	for _, d := range p.Env["PATH"].Dropped {
+		dropped[d.Value] = d.Reason
+	}
+	if r, ok := dropped["/tmp/"]; !ok || r != DropTmpfsOnly {
+		t.Errorf(`"/tmp/" (trailing slash, cleans to the tmpfs mountpoint /tmp): dropped=%v `+
+			"reason=%v, want present with DropTmpfsOnly, recorded with the trailing slash intact", ok, r)
+	}
+}
+
 // ── dedup ────────────────────────────────────────────────────────────────────
 
 // §4.6(c), measured on main: `path = ["/nonexistent/bin", "/bin"]` resolved to

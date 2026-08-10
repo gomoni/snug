@@ -384,7 +384,7 @@ injection posts your source to attacker.com" is closed by construction.
 |---|---|---|---|
 | 1 | Anthropic OAuth access+refresh token | writable-tmpfs copy at `~/.claude/.credentials.json` (`claude.go:46`) | exfiltrate it; use your account **after the sandbox exits**, until expiry. Scopes `user:inference`,`user:profile` — quota theft + profile |
 | 2 | `~/.claude.json`, 56 KB verbatim host copy | writable tmpfs (`claude.go:47`) | no token, but `emailAddress`, `organizationName/Uuid`, `accountUuid`, `machineID`, **the absolute paths of all 7 projects on this host**, per-project `allowedTools`, `mcpServers`. A host-filesystem inventory `@parent-ro` deliberately did not grant |
-| 3 | `ANTHROPIC_API_KEY` | **the environment** (`base.toml:275`) | `/proc/self/environ`, passively, for every process and child. **Violates the project's own rule** "put the secret in a file, not the environment" |
+| 3 | ~~`ANTHROPIC_API_KEY`~~ | **nowhere — closed** | Was in the environment, readable from `/proc/self/environ` by every process and child, in violation of the project's own "put the secret in a file, not the environment" rule. `@claude` no longer names it, and `base.toml:313` says so in a comment that reads *"deliberately NOT here, and must not come back"*. `ANTHROPIC_BASE_URL` stays: it names an endpoint, not a credential |
 | 4 | GitHub token from `gh auth token` | `oauth_token:` in generated `hosts.yml` (`identity.go:192`) | full user token — commonly `admin:public_key`, so **the agent can add an SSH key to your GitHub account, an effect that outlives the sandbox** |
 | 5 | ssh private keys | **never** (`internal/sshproxy`) | signing oracle for one pinned key, sandbox lifetime only. **The model.** |
 
@@ -581,11 +581,15 @@ sub-structure (`host`, `listen`, `env`, a **secret reference**, an `allow` list)
   same-path conflict. **Fatal**, for MVY1's reason: silently picking one would make
   the effective credential boundary depend on profile order.
 
-Also for whoever owns the profile model: `forbiddenEnv` (`resolve.go:413`) exists
-to stop code-injection vectors. There is a case for a parallel refusal — or at
-minimum a `--dry-run` redaction — for credential-shaped names (`*_TOKEN`, `*_KEY`,
-`*_SECRET`, `*_PASSWORD`). `@claude` shipping `ANTHROPIC_API_KEY` in `env` is the
-existing counter-example.
+Also for whoever owns the profile model: `forbiddenEnv` (now
+`internal/policy/envtypes.go`, split by verb) exists to stop code-injection
+vectors. There is a case for a parallel refusal — or at minimum a `--dry-run`
+redaction — for credential-shaped names (`*_TOKEN`, `*_KEY`, `*_SECRET`,
+`*_PASSWORD`). **Still open**, and the counter-example that motivated it is gone:
+`@claude` no longer names `ANTHROPIC_API_KEY`, and the `env` key it used is
+retired in favour of `environ.inherit`. So the refusal would today cost nothing
+that ships — which is an argument for writing it before something needs it, not
+after.
 
 ## MVY3: Further profile model definitions
 

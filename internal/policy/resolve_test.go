@@ -45,6 +45,10 @@ func newFakeEnv() *fakeEnv {
 			"/opt/tools/bin": true, "/opt/first/bin": true, "/opt/bin": true,
 			"/opt/a": true, "/opt/b": true, "/opt/a/bin": true, "/opt/b/bin": true,
 			"/srv/bin": true,
+			// A bind nested inside @home's tmpfs, mirroring @claude's real shape —
+			// the sanitise-C fixtures (nested-bin) need this to exist so it can be
+			// GRANTED as well as named (§2.5's coupling rule).
+			"/home/u/.local/bin/tool": true,
 		},
 		links: map[string]string{},
 		// EDITOR is here so a fixture profile can actually re-admit something
@@ -196,6 +200,16 @@ func testRegistry() map[string]*Profile {
 		// it is meant to review — the stub and the container proxy hole.
 		"@podman-socket": {Name: "@podman-socket", Include: []string{"@sys", "@home"},
 			Network: "egress", DNS: true, Podman: "socket"},
+		// The sanitise-C regression fixtures (envresolve_test.go's
+		// TestSanitiseXxx tests below TestSanitiseKeepsGrantedElementsInHostOrder).
+		// PATH deliberately, not PKG_CONFIG_PATH — the band ordering that makes
+		// the finding exploitable is PATH's, because it precedes /usr/bin.
+		"sanity-path": {Name: "sanity-path", Environ: EnvGrants{Sanitise: []string{"PATH"}}},
+		// A bind nested INSIDE @home's tmpfs, mirroring @claude's real shape
+		// (base.toml: {home}/.local/bin/claude). Its own directory,
+		// {home}/.local/bin, is NOT granted — only the file below it is — which
+		// is exactly the shape TestSanitiseUsesTheDeepestCoveringMount needs.
+		"nested-bin": {Name: "nested-bin", RO: []string{"{home}/.local/bin/tool"}},
 	}
 }
 
@@ -496,6 +510,38 @@ func TestMaskingByNestedBindIsRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "hides what") {
 		t.Fatalf("unhelpful error: %v", err)
+	}
+}
+
+// sanitise-C's monotonicity argument (envresolve.go's keepHostElement doc
+// comment, §2 of the design) rests entirely on rejectMasking: the one shape
+// that would turn a KEPT element into a DROPPED one — a tmpfs appearing
+// beneath an existing bind — is refused before Resolve ever returns. That
+// coupling is invisible from keepHostElement's own code, so it is asserted
+// here directly: relaxing rejectMasking must fail THIS test loudly, rather
+// than quietly re-breaking TestEnvIsMonotoneAsASet's guarantee somewhere no
+// one is looking.
+func TestSanitiseMonotonicityRestsOnRejectMasking(t *testing.T) {
+	reg := testRegistry()
+	// A tmpfs installed beneath @sys's `ro /usr` bind is masking: it would
+	// shadow /usr/bin, and if it were ever allowed, a profile adding it after
+	// another profile's PATH entry survived sanitise as a bind could flip that
+	// entry to a tmpfs-covered one — an element sanitise would then drop,
+	// which is monotonicity failing from a totally unrelated profile choice.
+	reg["mask-usr"] = &Profile{Name: "mask-usr", Tmpfs: []string{"/usr/local"}}
+	if _, err := Resolve(reg, []string{"@sys", "@cwd-rw", "mask-usr"}, testCtx(), newFakeEnv()); err == nil {
+		t.Fatal("a tmpfs installed beneath @sys's /usr bind was accepted; sanitise's " +
+			"monotonicity depends on rejectMasking refusing exactly this arrangement")
+	}
+
+	// POSITIVE CONTROL: a tmpfs nested inside ANOTHER tmpfs is not masking —
+	// there is nothing underneath a fresh tmpfs to hide — and must keep
+	// resolving. Without this, the assertion above could be passing merely
+	// because Resolve refuses every tmpfs nested inside anything, which would
+	// prove nothing about the specific coupling this test exists to pin.
+	reg["scratch"] = &Profile{Name: "scratch", Include: []string{"@home"}, Tmpfs: []string{"{home}/scratch"}}
+	if _, err := Resolve(reg, []string{"@sys", "@cwd-rw", "scratch"}, testCtx(), newFakeEnv()); err != nil {
+		t.Fatalf("control: a tmpfs nested inside another tmpfs must resolve fine, got %v", err)
 	}
 }
 

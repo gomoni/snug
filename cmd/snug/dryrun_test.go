@@ -217,6 +217,79 @@ func TestDescribeCommandsNamesTheStagedStub(t *testing.T) {
 	}
 }
 
+// TestGrantMarkStillUsesTheWiderPredicate guards against "unifying" grantMark
+// with sanitise's narrower keepHostElement predicate. The two ask different
+// questions on purpose (dryrun.go's grantMark doc comment): grantMark asks
+// "does the sandbox have A NODE at this path", sanitise asks "does it have
+// the HOST'S CONTENT here". @claude merges {home}/.local/bin onto PATH, and
+// {home} is only a tmpfs — sanitise's predicate would say no — but the
+// directory really is mounted and really does hold `claude` (the nested
+// bind), so the mark must stay blank. If grantMark switched to the narrower
+// rule, this line would grow "← not granted (1 grant inside)" — a false
+// statement on the exact screen CLAUDE.md calls *the* mechanism by which a
+// human trusts snug.
+func TestGrantMarkStillUsesTheWiderPredicate(t *testing.T) {
+	reg := loadTestRegistry(t)
+	home, target := testTree(t)
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	p, err := policy.Resolve(reg, []string{"@sys", "@home", "@cwd-rw", "@claude"}, ctx, policy.OSEnviron{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	localBin := filepath.Join(home, ".local", "bin")
+	if got := grantMark(p, localBin); got != "" {
+		t.Errorf("grantMark(%s) = %q, want no mark — grantMark must keep asking 'is there a "+
+			"node here' (policy.GrantsGuestPath), not sanitise's narrower 'is the host's "+
+			"content here' (policy.keepHostElement); unifying them would print a false "+
+			"'not granted' next to a directory that genuinely holds `claude`", localBin, got)
+	}
+}
+
+// TestDropLinesNameTheirReason is the --dry-run review artifact for
+// EnvDropReason: "nothing grants that path" and "only an empty writable
+// tmpfs is mounted there" are materially different facts and must render as
+// two distinct, correctly-ordered lines rather than one ungrouped "N host
+// entries dropped" line that conflates them.
+//
+// Hand-built rather than resolved: this file's other helpers use
+// policy.OSEnviron, whose REAL PATH would make the exact set of dropped
+// elements depend on the machine running the test.
+func TestDropLinesNameTheirReason(t *testing.T) {
+	p := &policy.Policy{
+		Env: map[string]policy.EnvVar{
+			"PATH": {
+				Name: "PATH",
+				List: true,
+				Sep:  ":",
+				Dropped: []policy.EnvDrop{
+					{Value: "/srv/nothing", Var: "PATH", From: []string{"x"}, Reason: policy.DropNoGrant},
+					{Value: "/tmp/x/bin", Var: "PATH", From: []string{"x"}, Reason: policy.DropTmpfsOnly},
+				},
+			},
+		},
+	}
+
+	got := captureFile(t, func(f *os.File) { describeEnvironment(f, p) })
+
+	noGrantLine := "nothing grants that path: /srv/nothing"
+	tmpfsLine := "only an empty writable tmpfs is mounted there: /tmp/x/bin"
+	iNoGrant := strings.Index(got, noGrantLine)
+	iTmpfs := strings.Index(got, tmpfsLine)
+	if iNoGrant < 0 {
+		t.Errorf("no line names the DropNoGrant element:\n%s", got)
+	}
+	if iTmpfs < 0 {
+		t.Errorf("no line names the DropTmpfsOnly element:\n%s", got)
+	}
+	if iNoGrant >= 0 && iTmpfs >= 0 && iNoGrant > iTmpfs {
+		t.Errorf("drop lines are not in the fixed {DropNoGrant, DropTmpfsOnly} order:\n%s", got)
+	}
+	if n := strings.Count(got, "dropped —"); n != 2 {
+		t.Errorf("expected exactly two drop lines (one per reason, never conflated), got %d:\n%s", n, got)
+	}
+}
+
 // TestFilesystemBlockRendersTheStubAsExec pins the dry-run-only kind
 // rendering: a KindData mount with an executable permission bit reads "exec"
 // in the FILESYSTEM block, not "data" — the one visual cue that this line is
