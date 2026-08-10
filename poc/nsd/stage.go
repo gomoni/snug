@@ -63,6 +63,17 @@ func cmdUp(argv []string) error {
 	if err != nil {
 		return err
 	}
+	// fd 5: the lifeline. P0 holds the write end and never writes to it; the
+	// stage sees EOF the moment P0 dies, whatever killed it.
+	//
+	// This exists because Pdeathsig DOES NOT SURVIVE the stage's re-exec —
+	// measured, see stage1. A supervisor that leaks its whole tree when the
+	// launcher is SIGKILLed is worse than no supervisor.
+	lifeR, lifeW, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	defer lifeW.Close()
 
 	cmd := exec.Command(self, "__stage0")
 	cmd.Env = []string{
@@ -74,7 +85,7 @@ func cmdUp(argv []string) error {
 		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
 	}
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	cmd.ExtraFiles = []*os.File{goR, readyW}
+	cmd.ExtraFiles = []*os.File{goR, readyW, lifeR}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		// One clone(2) creates all four. CLONE_NEWNET and CLONE_NEWCGROUP each
 		// need CAP_SYS_ADMIN/CAP_NET_ADMIN, which the child gets *in the
@@ -89,6 +100,7 @@ func cmdUp(argv []string) error {
 	}
 	goR.Close()
 	readyW.Close()
+	lifeR.Close()
 	pid := cmd.Process.Pid
 
 	// Full subuid delegation. This is the step that needs newuidmap's file
@@ -239,10 +251,12 @@ func stage0() error {
 	}
 	goPipe.Close()
 
-	// fd 4 must survive execve: Go marks ExtraFiles CLOEXEC-free for the fork,
-	// but syscall.Exec is a different boundary.
-	if _, _, errno := syscall.Syscall(syscall.SYS_FCNTL, 4, syscall.F_SETFD, 0); errno != 0 {
-		return fmt.Errorf("clearing CLOEXEC on fd 4: %v", errno)
+	// fds 4 and 5 must survive execve: Go marks ExtraFiles CLOEXEC-free for the
+	// fork, but syscall.Exec is a different boundary.
+	for _, fd := range []uintptr{4, 5} {
+		if _, _, errno := syscall.Syscall(syscall.SYS_FCNTL, fd, syscall.F_SETFD, 0); errno != 0 {
+			return fmt.Errorf("clearing CLOEXEC on fd %d: %v", fd, errno)
+		}
 	}
 	self := os.Getenv("NSD_SELF")
 	return syscall.Exec(self, []string{"nsd", "__stage1"}, os.Environ())
@@ -273,6 +287,8 @@ func stage1() error {
 	if err != nil {
 		return err
 	}
+
+	go watchLifeline(os.NewFile(5, "lifeline"), srv)
 
 	ready := os.NewFile(4, "ready")
 	fmt.Fprintf(ready, "pid=%d uid=%d netns=%s userns=%s cgroupns=%s mntns=%s\n",
@@ -327,4 +343,34 @@ func waitForNetDevice(pid int) error {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// watchLifeline is the teardown trigger.
+//
+// MEASURED, and it is the sharpest thing this proof of concept found: the stage
+// re-exec that restores capabilities ALSO clears PR_SET_PDEATHSIG. execve sets
+// bprm->secureexec whenever the new permitted capability set is not a subset of
+// the old one, and secureexec zeroes pdeath_signal so that a parent cannot
+// signal a process that just became more privileged. So `Pdeathsig: SIGKILL` on
+// the stage is silently a no-op: SIGKILL the launcher and the entire tree —
+// stage, bwrap, sandbox, every attached process — survives, reparented to init.
+//
+// (Pdeathsig is doubly unreliable from Go anyway: it fires when the parent
+// THREAD exits, and the Go runtime does not promise which thread forked.)
+//
+// A pipe has none of those semantics to get wrong.
+func watchLifeline(f *os.File, srv *server) {
+	buf := make([]byte, 1)
+	for {
+		n, err := f.Read(buf)
+		if n == 0 || err != nil {
+			break
+		}
+	}
+	fmt.Fprintln(os.Stderr, "P1: lifeline closed, tearing down")
+	srv.dispatch(request{Op: "kill"})
+	// Everything else in the sandbox is in its pid namespace, whose init is
+	// bwrap's child; killing bwrap collapses it. The engine stage, when there is
+	// one, is a direct child and gets the same treatment.
+	os.Exit(1)
 }
