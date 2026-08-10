@@ -18,7 +18,7 @@ import (
 func loadTestRegistry(t *testing.T) profile.Registry {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	reg, err := profile.Load()
+	reg, _, err := profile.Load()
 	if err != nil {
 		t.Fatal(err)
 	}

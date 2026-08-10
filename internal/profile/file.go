@@ -416,6 +416,26 @@ func (r Registry) merge(other Registry) error {
 	return nil
 }
 
+// BadFile is a profile file that would not parse, kept rather than returned as
+// the whole answer.
+//
+// Load used to stop at the first one, and the consequence was measured: a single
+// stale file in profiles.d took down the ENTIRE registry, builtins included, so
+// `snug --dry-run -p @sys .` reported that error and `snug profile list` — the
+// one command that would tell the user what still works — was exactly what
+// stopped working. A file the user may not have edited disabled @sys.
+//
+// The split is by consequence, not by severity. A command that RUNS A SANDBOX
+// stays fatal on any bad file: the file that did not parse may be the one
+// granting what was asked for, and a sandbox assembled from what happened to
+// load is a silent downgrade (invariant 5). A DIAGNOSTIC command reports the
+// file loudly and continues with what did load, because "what still works" is
+// the question being asked.
+type BadFile struct {
+	Path string
+	Err  error
+}
+
 // Load assembles the registry from the trusted layers, in precedence order:
 //
 //  1. embedded builtins   — compiled in, cannot be shadowed
@@ -426,21 +446,29 @@ func (r Registry) merge(other Registry) error {
 // snug.toml from beside the target: a hostile repository that ships its own
 // profile would be granting itself permissions, which defeats the entire threat
 // model. See .claude/design/INDEX.md §2.7.
-func Load() (Registry, error) {
+//
+// The returned error is for failures that leave no usable registry at all: a
+// builtin that will not parse (a bug in snug), an unreadable directory entry, or
+// a REDEFINITION, which stays hard everywhere — two files claiming one name is a
+// question with no answer, and continuing would mean picking one silently.
+// Per-file parse failures come back as BadFiles instead; see there for why.
+func Load() (Registry, []BadFile, error) {
 	reg, err := Builtins()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	var bad []BadFile
 	for _, dir := range ConfigDirs() {
-		layer, err := loadDir(dir)
+		layer, layerBad, err := loadDir(dir)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		bad = append(bad, layerBad...)
 		if err := reg.merge(layer); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return reg, nil
+	return reg, bad, nil
 }
 
 // ConfigDirs are the directories snug reads profiles from, in precedence order.
@@ -459,11 +487,11 @@ func ConfigDirs() []string {
 	return dirs
 }
 
-func loadDir(dir string) (Registry, error) {
+func loadDir(dir string) (Registry, []BadFile, error) {
 	reg := Registry{}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return reg, nil // absent config dir is normal, not an error
+		return reg, nil, nil // absent config dir is normal, not an error
 	}
 	names := []string{}
 	for _, e := range entries {
@@ -472,19 +500,25 @@ func loadDir(dir string) (Registry, error) {
 		}
 	}
 	sort.Strings(names)
+	var bad []BadFile
 	for _, n := range names {
 		path := filepath.Join(dir, n)
+		// A file that cannot be READ is recorded the same way as one that cannot
+		// be parsed: it is one file's problem, and the rest of the layer is still
+		// perfectly good.
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil, err
+			bad = append(bad, BadFile{Path: path, Err: err})
+			continue
 		}
 		layer, err := parse(data, path, true)
 		if err != nil {
-			return nil, err
+			bad = append(bad, BadFile{Path: path, Err: err})
+			continue
 		}
 		if err := reg.merge(layer); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return reg, nil
+	return reg, bad, nil
 }

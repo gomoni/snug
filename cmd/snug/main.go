@@ -140,8 +140,15 @@ func parseArgs(argv []string) (config, error) {
 }
 
 func run(cfg config) int {
-	reg, err := profile.Load()
+	reg, bad, err := profile.Load()
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
+		return exitPolicy
+	}
+	// FATAL here, and only here-shaped commands. See cmd/snug/badfiles.go: this
+	// is the path that starts a sandbox, and a sandbox assembled from whichever
+	// profile files happened to parse is a silent downgrade.
+	if err := refuseBadFiles(bad); err != nil {
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 		return exitPolicy
 	}

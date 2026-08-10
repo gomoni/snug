@@ -108,10 +108,12 @@ func configCmd(args []string) int {
 	// commands people reach for when something is wrong. `snug config` reporting
 	// a tidy configuration while the profile set is unloadable is the worst
 	// possible answer to "why will snug not start".
-	if _, err := profile.Load(); err != nil {
+	_, bad, err := profile.Load()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 		return exitPolicy
 	}
+	broken := reportBadFiles(bad)
 
 	path := configPath()
 	fmt.Printf("config file      %s", path)
@@ -172,6 +174,12 @@ func configCmd(args []string) int {
 	fmt.Println()
 	fmt.Println("repo-local config is never auto-loaded: a repository that could ship its own")
 	fmt.Println("profile would be granting itself permissions. See .claude/design/INDEX.md §2.7.")
+	// The output above is still worth printing — it is what someone runs this
+	// command for — but the exit code must not say everything is fine while a
+	// file in the search path above did not load.
+	if broken {
+		return exitPolicy
+	}
 	return 0
 }
 
@@ -223,10 +231,19 @@ func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
 }
 
 func profileCmd(args []string) int {
-	reg, err := profile.Load()
+	// DIAGNOSTIC, so a file that will not parse is reported and skipped rather
+	// than taking the registry down with it. `snug profile list` is precisely the
+	// command someone runs to find out what still works, and it used to be the
+	// first casualty. The exit code still says something is wrong.
+	reg, bad, err := profile.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 		return exitPolicy
+	}
+	broken := reportBadFiles(bad)
+	code := 0
+	if broken {
+		code = exitPolicy
 	}
 
 	sub := "list"
@@ -250,7 +267,7 @@ func profileCmd(args []string) int {
 		fmt.Println()
 		fmt.Printf("* = selected by a bare `snug <dir>`.  @ = shipped by snug, cannot be redefined.\n")
 		fmt.Printf("Details: snug profile show NAME\n")
-		return 0
+		return code
 
 	case "show":
 		if len(args) < 2 {
@@ -263,7 +280,7 @@ func profileCmd(args []string) int {
 			// Same error the resolver gives, so `snug profile show sys` and
 			// `snug -p sys` both point at `@sys` rather than one of them
 			// leaving the reader to guess.
-			fmt.Fprintf(os.Stderr, "snug: %v\n", policy.UnknownProfile(reg, name))
+			fmt.Fprintf(os.Stderr, "snug: %v\n", unknownProfile(reg, name, bad))
 			return exitPolicy
 		}
 		fmt.Printf("profile     %s\n", name)
@@ -299,7 +316,7 @@ func profileCmd(args []string) int {
 		fmt.Println()
 		fmt.Println("To see what this actually produces for a directory:")
 		fmt.Printf("  snug --dry-run -p %s <dir>\n", name)
-		return 0
+		return code
 
 	case "tree":
 		roots := args[1:]
@@ -308,15 +325,18 @@ func profileCmd(args []string) int {
 		}
 		for _, r := range roots {
 			if _, ok := reg[r]; !ok {
-				fmt.Fprintf(os.Stderr, "snug: %v\n", policy.UnknownProfile(reg, r))
+				fmt.Fprintf(os.Stderr, "snug: %v\n", unknownProfile(reg, r, bad))
 				return exitPolicy
 			}
 			printTree(reg, r, "", "", map[string]bool{})
 		}
-		return 0
+		return code
 
 	case "dot":
-		return profileDot(reg, args[1:])
+		if rc := profileDot(reg, args[1:]); rc != 0 {
+			return rc
+		}
+		return code
 
 	default:
 		fmt.Fprintf(os.Stderr, "snug: unknown subcommand %q\nusage: snug profile [list|show NAME|tree [NAME...]|dot]\n", sub)

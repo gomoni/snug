@@ -1,6 +1,8 @@
 package profile
 
 import (
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -632,5 +634,78 @@ func TestEnvironIsValidatedAtParseTime(t *testing.T) {
 				t.Errorf("error %q does not contain %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// ── §4.6(b): one unparseable file must not take the registry down ────────────
+
+// MEASURED ON MAIN, and the reason this is a prerequisite rather than a
+// cleanup: Load() returned at the first bad file, so a single stale file in
+// profiles.d made `snug --dry-run -p @sys .` fail AND made `snug profile list`
+// — the one command that would have told the user what still works — fail with
+// the same error. A file the user may not have edited disabled @sys.
+func TestOneBadFileDoesNotDisableTheRegistry(t *testing.T) {
+	dir := t.TempDir()
+	pd := filepath.Join(dir, "snug", "profiles.d")
+	if err := os.MkdirAll(pd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Sorted first, so it is reached BEFORE the good one — otherwise the test
+	// would pass on an implementation that merely finished the loop.
+	write(t, filepath.Join(pd, "a-broken.toml"), "[profile.broken]\nnope = true\n")
+	write(t, filepath.Join(pd, "b-fine.toml"), "[profile.mine]\nro = [\"/opt\"]\n")
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	reg, bad, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned a hard error for one unparseable file: %v", err)
+	}
+
+	// POSITIVE CONTROL, and it is the whole point: the builtins must still be
+	// there. Without this assertion the test passes on a registry that loaded
+	// nothing at all.
+	if _, ok := reg["@sys"]; !ok {
+		t.Error("@sys is missing: one bad file in profiles.d took down the builtins, which " +
+			"is the outage this change exists to remove")
+	}
+	if _, ok := reg["mine"]; !ok {
+		t.Error("the good file in the same directory did not load; the loop stopped at the bad one")
+	}
+	if _, ok := reg["broken"]; ok {
+		t.Error("a profile from the file that did not parse is in the registry")
+	}
+
+	if len(bad) != 1 || !strings.HasSuffix(bad[0].Path, "a-broken.toml") {
+		t.Fatalf("bad = %+v, want exactly the one file that did not parse — a file skipped "+
+			"without being reported is a silent downgrade", bad)
+	}
+	if bad[0].Err == nil || !strings.Contains(bad[0].Err.Error(), "unknown key") {
+		t.Errorf("the recorded error must say what was wrong with the file, got %v", bad[0].Err)
+	}
+}
+
+// A REDEFINITION stays hard, because two files claiming one name is a question
+// with no answer and continuing would mean picking one silently. That is a
+// different failure from a file that will not parse, and the split must not
+// blur.
+func TestRedefinitionIsStillAHardError(t *testing.T) {
+	dir := t.TempDir()
+	pd := filepath.Join(dir, "snug", "profiles.d")
+	if err := os.MkdirAll(pd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(pd, "a.toml"), "[profile.mine]\nro = [\"/opt\"]\n")
+	write(t, filepath.Join(pd, "b.toml"), "[profile.mine]\nro = [\"/usr\"]\n")
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	if _, _, err := Load(); err == nil {
+		t.Fatal("two files defining one profile name were accepted")
+	}
+}
+
+func write(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

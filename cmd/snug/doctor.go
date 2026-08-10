@@ -93,10 +93,21 @@ func doctor() int {
 	// A host can be perfectly capable and snug still refuse to start because the
 	// profile set will not load. doctor is what someone runs to find out why, so
 	// it must say so rather than reporting a clean bill of health.
-	if _, err := profile.Load(); err != nil {
+	_, bad, err := profile.Load()
+	switch {
+	case err != nil:
 		fmt.Printf("  ❌ the profile set will not load\n     %v\n", err)
 		ok = false
-	} else {
+	case len(bad) > 0:
+		// Named, not counted, and not fatal: doctor is the command someone runs
+		// to find out WHY, so it has to name the file rather than report a clean
+		// bill of health or die on the way to printing one.
+		fmt.Printf("  ❌ %d profile file(s) did not load; snug will refuse to start a sandbox\n", len(bad))
+		for _, f := range bad {
+			fmt.Printf("     %s\n       %v\n", f.Path, f.Err)
+		}
+		ok = false
+	default:
 		fmt.Println("  ✅ profiles load cleanly")
 	}
 
