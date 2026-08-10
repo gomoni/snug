@@ -109,7 +109,20 @@ func testRegistry() map[string]*Profile {
 			Optional: []string{"/opt"},
 			Symlink:  []Symlink{{At: "/bin", Target: "usr/bin"}},
 		},
-		"@home":      {Name: "@home", Tmpfs: []string{"{home}", "{home}/.cache"}},
+		// Matches the real @home in base.toml, entry for entry, because the
+		// .bwrap.txt goldens are built from this registry: a fake @home with
+		// fewer grants than the shipped one makes those files describe a sandbox
+		// no user gets. It had two of the five tmpfs directories and none of the
+		// XDG block.
+		"@home": {Name: "@home",
+			Tmpfs: []string{"{home}", "{home}/.cache", "{home}/.config",
+				"{home}/.local/state", "{home}/.local/share"},
+			Environ: EnvGrants{Set: map[string]string{
+				"XDG_CONFIG_HOME": "{home}/.config",
+				"XDG_CACHE_HOME":  "{home}/.cache",
+				"XDG_STATE_HOME":  "{home}/.local/state",
+				"XDG_DATA_HOME":   "{home}/.local/share",
+			}}},
 		"@cwd-rw":    {Name: "@cwd-rw", Include: []string{"@home"}, RW: []string{"{target}"}},
 		"@parent-ro": {Name: "@parent-ro", RO: []string{"{target_parent}"}},
 		// Deliberately overlaps @cwd-rw at the same guest path with weaker

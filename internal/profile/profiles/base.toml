@@ -107,9 +107,45 @@ symlink = [
 # paths and the target usually lives under it. It is a tmpfs because persistence
 # in $HOME is the primary escape-into-your-next-session vector: .bashrc,
 # .profile, .config/autostart, .local/bin shadowing a command on your PATH.
+#
+# ABUSE: a hostile process inside the sandbox can write anything it likes into
+# any of these directories. All of it dies with the sandbox — none of them is a
+# host path — so what it buys an attacker is a place to stage files for the rest
+# of THIS run, not a foothold in the next one.
+#
+# {home}/.local/share is the fifth entry and the newest. It is here because
+# XDG_DATA_HOME below names it, and a profile must grant every path it names
+# (§2.5): without the tmpfs the variable would point at a directory that is not
+# inside, and every tool honouring XDG would fail on a path snug itself wrote.
 [profile.home]
 description = "$HOME is an empty tmpfs at the host path. Writable, ephemeral."
-tmpfs = ["{home}", "{home}/.cache", "{home}/.config", "{home}/.local/state"]
+tmpfs = [
+  "{home}",
+  "{home}/.cache",
+  "{home}/.config",
+  "{home}/.local/state",
+  "{home}/.local/share",
+]
+
+# The XDG base directories, pointed at the tmpfs directories immediately above.
+#
+# ABUSE: a hostile process inside the sandbox can use these to make any tool that
+# honours XDG write its state into the ephemeral tmpfs — which is exactly the
+# point. Nothing here reaches a host path, each value names a directory this same
+# profile creates, and a variable grants nothing on its own: it only tells a tool
+# where to look.
+#
+# They are `set` and not `inherit` deliberately. The host's XDG_CONFIG_HOME names
+# a real directory full of real credentials, and admitting it past --clearenv
+# would point every tool in the sandbox at a path the sandbox does not have —
+# which is the good case. The bad one is a host that has moved XDG_CONFIG_HOME
+# somewhere @home does not cover, where the tool would silently fall back to
+# writing wherever that says.
+[profile.home.environ.set]
+XDG_CONFIG_HOME = "{home}/.config"
+XDG_CACHE_HOME = "{home}/.cache"
+XDG_STATE_HOME = "{home}/.local/state"
+XDG_DATA_HOME = "{home}/.local/share"
 
 # ── the project ──────────────────────────────────────────────────────────────
 # ABUSE: the sandbox can rewrite anything in the target directory. That is the
@@ -266,6 +302,14 @@ optional = [
   "{home}/.claude/skills",
   "{home}/.claude/plugins",
 ]
+
+# Host variables re-admitted past --clearenv, one name per line.
+#
+# ABUSE: a hostile process inside the sandbox can read every one of these out of
+# /proc/self/environ, and so can every child it spawns. That is the whole cost of
+# `inherit` and the reason the list is five names rather than a prefix: each is
+# an endpoint or a preference, none is a credential.
+#
 # ANTHROPIC_API_KEY is deliberately NOT here, and must not come back.
 #
 # /proc/self/environ is passively readable by every process in the sandbox and
@@ -281,15 +325,29 @@ optional = [
 # ANTHROPIC_BASE_URL stays: it names an endpoint, not a credential, and users
 # behind a gateway need it. If you need the key inside, that is a decision to
 # make explicitly and per-run, not a line in a shipped profile.
-env = ["ANTHROPIC_BASE_URL", "EDITOR", "VISUAL", "PAGER", "NO_COLOR"]
+[profile.claude.environ.inherit]
+ANTHROPIC_BASE_URL = true
+EDITOR = true
+VISUAL = true
+PAGER = true
+NO_COLOR = true
+
 # Without this the profile mounts a binary nothing can find: the default PATH is
 # /usr/bin:/bin:/usr/sbin:/sbin, so `snug -p @claude . -- claude` answered
 # "execvp claude: No such file or directory" while the bind was sitting right
-# there in --dry-run. `path` grants nothing on its own — see policy.Profile.Path.
+# there in --dry-run.
 #
-# It names the DIRECTORY, not the file, because that is what PATH takes; only
-# ~/.local/bin/claude is actually mounted, so nothing else in it exists.
-path = ["{home}/.local/bin"]
+# ABUSE: a hostile process inside the sandbox can run whatever is in this
+# directory ahead of the distro's copy of the same name — and there is exactly
+# one thing in it, because only ~/.local/bin/claude is mounted. A directory on
+# PATH grants nothing on its own; it names the DIRECTORY because that is what
+# PATH takes.
+#
+# `merge` and not `prepend`: this profile has no claim to be ahead of every other
+# profile's entry, and at most one profile may hold that slot. A merged entry
+# still beats every entry snug adds, which is all this needs.
+[profile.claude.environ.merge]
+PATH = ["{home}/.local/bin"]
 
 # There is deliberately NO `local-path` builtin granting all of ~/.local/bin.
 # Same reasoning as `etc-full` above, and the same one-line escape hatch:
