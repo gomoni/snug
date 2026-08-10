@@ -50,7 +50,7 @@ column that matters most is the last, and MVY2 did not have it.
 | 1a | Anthropic OAuth **access** token | `KindData` writable-tmpfs copy at `~/.claude/.credentials.json` (`cmd/snug/claude.go:49`) | every process in the sandbox | `user:inference`, `user:profile`, `user:file_upload`, `user:mcp_servers`, `user:sessions:claude_code` **[M]** | **yes, ~8 h** **[M]** |
 | 1b | Anthropic OAuth **refresh** token | *same file, same line* | same | mints new access tokens | **yes, ~20 days remaining of a rolling window** **[M]** |
 | 2 | `~/.claude.json`, 56 500 bytes verbatim | writable tmpfs (`claude.go:50`) | every process in the sandbox | not a credential — a host inventory | disclosure is permanent |
-| 3 | `ANTHROPIC_API_KEY` | **the environment** (`base.toml:269`) | every process, passively, via `/proc/*/environ` | **overrides the OAuth token entirely** **[M]** | as long as the key lives |
+| 3 | ~~`ANTHROPIC_API_KEY`~~ | **FIXED** — removed from `@claude`'s `env`; Claude now authenticates from the staged `.credentials.json` | — | — | — |
 | 4 | GitHub token from `gh auth token` | `oauth_token:` in a generated `hosts.yml` (`identity.go:192`) | every process in the sandbox | on this host: `admin:public_key`, `gist`, `read:org`, `repo` **[M]** | **yes, indefinitely** |
 | 5 | ssh private keys | **never** (`internal/sshproxy`) | nothing — no key material crosses | signing oracle, one pinned key | **no** — dies with the proxy |
 | 6 | host container-registry auth | **never enters the sandbox**, but the engine may use it on the sandbox's behalf | — | pull/push as you | broker-shaped already, and undocumented **[R]** |

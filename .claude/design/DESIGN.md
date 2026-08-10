@@ -401,7 +401,7 @@ ro = [
 optional = ["{home}/.claude/skills", "{home}/.claude/plugins"]
 claude_credentials = true       # snug stages ~/.claude/.credentials.json + ~/.claude.json RW (§9.3)
 claude_notice      = true       # snug injects a generated ~/.claude/CLAUDE.md (§9.4)
-env = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "EDITOR", "VISUAL", "PAGER", "NO_COLOR"]
+env = ["ANTHROPIC_BASE_URL", "EDITOR", "VISUAL", "PAGER", "NO_COLOR"]
 
 [profile.git-ro]
 ro = ["{home}/.config/git", "{home}/.gitconfig"]
@@ -1255,7 +1255,7 @@ The point is not politeness. Every sentence here removes a class of wasted turns
 
 `snug` sets when wired: `SSH_AUTH_SOCK` (the proxy), `DOCKER_HOST`/`CONTAINER_HOST` (the proxy), `GH_TOKEN`, `GIT_*`.
 
-Profiles opt in by name: `env = ["ANTHROPIC_API_KEY", "EDITOR", "PAGER", "NO_COLOR", "HTTPS_PROXY"]` — the *value* is taken from the host at launch.
+Profiles opt in by name: `env = ["ANTHROPIC_BASE_URL", "EDITOR", "PAGER", "NO_COLOR", "HTTPS_PROXY"]` — the *value* is taken from the host at launch. A credential must never appear in such a list; see `TestNoBuiltinPassesASecretThroughTheEnvironment`.
 
 Never passed, even if listed: `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `BASH_ENV`, `ENV`, `PERL5OPT`, `PYTHONSTARTUP`, `GIT_SSH_COMMAND`, `NODE_OPTIONS`. These are code-injection vectors into every process the sandbox launches, and they are the one place `snug` overrides an explicit grant — with a loud error at resolve time rather than a silent drop, so the human learns why.
 
