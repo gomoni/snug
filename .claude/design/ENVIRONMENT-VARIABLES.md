@@ -388,7 +388,39 @@ which is also the intuitive answer from inside, where `/tmp` *is* the shared
 directory. The cost is that genuinely-real elements get dropped; §2.7 prints them
 **named**, and the repair is one visible `merge` line.
 
-**`ro` is enough, and the honest scope is narrower than the name.** `sanitise`
+**OPEN DEFECT — `ro` is not enough, and "is it granted" is the wrong predicate.**
+Confirmed by execution against the implementation:
+
+```
+PATH=/tmp/attacker/bin:/usr/bin:/bin  snug --no-defaults -p sanp .   # sanitise PATH = true
+  PATH  /tmp/attacker/bin /usr/bin /bin   sanitise  sanp     ← survived, and it is FIRST
+```
+
+`GrantsGuestPath("/tmp/anything")` is true, because `/tmp` is a tmpfs mount in
+the policy. So the element survives the filter — and inside the sandbox `/tmp`
+is **writable**, so the payload creates the directory itself:
+
+```
+snug ... -- sh -c 'mkdir -p /tmp/attacker/bin; printf "#!/bin/sh\necho SHADOWED-GIT-RAN\n" > /tmp/attacker/bin/git; chmod +x $_; git --version'
+  SHADOWED-GIT-RAN
+```
+
+*A hostile process inside the sandbox can shadow every system binary, given one
+host `PATH` element under any path that is writable inside — and it does not
+need that directory to exist on the host.* This is the empty-element hazard
+(§4.3) wearing different clothes: there the writable directory was the target via
+the cwd, here it is `/tmp` via an inherited element the filter was trusted to
+remove.
+
+The rule that is missing: **a directory writable inside the sandbox must not
+reach `PATH` from ambient host state.** Note the asymmetry that makes this a
+`sanitise` problem specifically and not a `merge` one — `@rust` merging
+`{home}/.cargo/bin` also puts a writable directory on `PATH`, but a human wrote
+that line; a `sanitise` element is host state nobody named. Deciding the fix is a
+policy call (drop-if-writable, refuse-at-parse, or narrow the predicate); it is
+**not** made here.
+
+**`ro` is enough — the original reasoning, which the above narrows.** `sanitise`
 removes elements naming paths the sandbox has no grant for. It is a
 **truthfulness filter, not a capability filter** — it cannot promise a surviving
 `PATH` element contains an executable, because the mount may be an empty bind.
