@@ -56,7 +56,10 @@ func newEnvFakeEnv() *envFakeEnv {
 		// host actually has, the @claude golden would be identical to the
 		// defaults one and could not tell "nothing was inherited" from "the
 		// inherit machinery is broken".
-		env: map[string]string{"USER": "u", "EDITOR": "vim"},
+		// NO_COLOR is present and EMPTY, which is its specified spelling — "set
+		// to any value, including empty" — and the case a `v != ""` read of the
+		// host silently turned back into "colour on".
+		env: map[string]string{"USER": "u", "EDITOR": "vim", "NO_COLOR": ""},
 	}
 }
 
@@ -75,8 +78,13 @@ func (f *envFakeEnv) Stat(p string) (fs.FileInfo, error) {
 }
 
 func (f *envFakeEnv) Getenv(k string) string { return f.env[k] }
-func (f *envFakeEnv) Uid() int               { return 1000 }
-func (f *envFakeEnv) Gid() int               { return 1000 }
+
+func (f *envFakeEnv) LookupEnv(k string) (string, bool) {
+	v, ok := f.env[k]
+	return v, ok
+}
+func (f *envFakeEnv) Uid() int { return 1000 }
+func (f *envFakeEnv) Gid() int { return 1000 }
 
 type envFakeInfo struct{ name string }
 

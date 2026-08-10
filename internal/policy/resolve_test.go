@@ -64,8 +64,13 @@ func (f *fakeEnv) Stat(p string) (fs.FileInfo, error) {
 }
 
 func (f *fakeEnv) Getenv(k string) string { return f.env[k] }
-func (f *fakeEnv) Uid() int               { return 1000 }
-func (f *fakeEnv) Gid() int               { return 1000 }
+
+func (f *fakeEnv) LookupEnv(k string) (string, bool) {
+	v, ok := f.env[k]
+	return v, ok
+}
+func (f *fakeEnv) Uid() int { return 1000 }
+func (f *fakeEnv) Gid() int { return 1000 }
 
 // testRegistry is a fake standing in for the loaded profile set. The names
 // mirror the real ones, sigil included (policy.Sigil): the resolver treats a
@@ -538,6 +543,69 @@ func TestForbiddenEnvIsRefusedLoudly(t *testing.T) {
 	_, err := Resolve(reg, append(append([]string{}, testDefaults...), "bad"), testCtx(), env)
 	if err == nil || !strings.Contains(err.Error(), "LD_PRELOAD") {
 		t.Fatalf("expected a refusal naming LD_PRELOAD, got %v", err)
+	}
+}
+
+// ...and it must fire on a host where the variable is not set at all.
+//
+// The refusal used to sit INSIDE the "is it set on the host" check, so the same
+// profile passed review on a machine where LD_PRELOAD happened to be unset and
+// failed on one where it was set. Whether a grant is legal is a property of the
+// profile; it must not depend on who launched snug (§4.4).
+func TestForbiddenEnvIsRefusedEvenWhenUnsetOnTheHost(t *testing.T) {
+	env := newFakeEnv()
+	if _, ok := env.LookupEnv("LD_PRELOAD"); ok {
+		t.Fatal("control: this fixture host must NOT have LD_PRELOAD set, or the test " +
+			"proves nothing about the unconditional refusal")
+	}
+	err := refusalForbiddenEnvUnsetOnHost(t)
+	if err == nil || !strings.Contains(err.Error(), "LD_PRELOAD") {
+		t.Fatalf("expected a refusal naming LD_PRELOAD on a host that does not have it, got %v", err)
+	}
+}
+
+// A variable the host has set to the EMPTY STRING is set, and must reach the
+// sandbox as a present, empty variable. NO_COLOR's specification is "set to any
+// value, including empty", so dropping it means snug silently turns colour back
+// on — and more generally, "empty means absent" is wrong for every flag (§3.2,
+// §4.6a).
+func TestSetButEmptyHostVariableReachesTheSandbox(t *testing.T) {
+	reg := testRegistry()
+	reg["flags"] = &Profile{Name: "flags", Env: []string{"NO_COLOR", "PAGER"}}
+	env := newFakeEnv()
+	env.env["NO_COLOR"] = ""
+
+	p, err := Resolve(reg, append(append([]string{}, testDefaults...), "flags"), testCtx(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v, ok := p.EnvValue("NO_COLOR")
+	if !ok {
+		t.Error("NO_COLOR was set to the empty string on the host and did not reach the " +
+			"sandbox at all; set-but-empty is SET, and for a flag it is the whole meaning")
+	}
+	if v != "" {
+		t.Errorf("NO_COLOR = %q, want the host's empty value verbatim", v)
+	}
+	// CONTROL: a name the host genuinely does not have must still be absent, or
+	// the assertion above would pass on a resolver that invents every variable a
+	// profile mentions.
+	if _, ok := p.EnvValue("PAGER"); ok {
+		t.Error("PAGER is unset on this host but reached the sandbox anyway")
+	}
+
+	// And it must survive all the way into the argv: bwrap delivers
+	// `--setenv NO_COLOR ''` as a present, empty variable (measured, §0).
+	args := p.BwrapFlags(1000, 1000, func(string) int { return 10 })
+	found := false
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--setenv" && args[i+1] == "NO_COLOR" && args[i+2] == "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no `--setenv NO_COLOR ''` in the argv: %v", args)
 	}
 }
 

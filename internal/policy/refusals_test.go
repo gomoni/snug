@@ -392,6 +392,19 @@ func TestPostStagingValidateCatchesNestedGrant(t *testing.T) {
 	}
 }
 
+// refusalForbiddenEnvUnsetOnHost: §4.4. A profile naming a code-injection
+// variable is refused whether or not the launching host has that variable set.
+// Before, the check sat inside the presence guard, so the verdict on a PROFILE
+// depended on the environment of whoever ran snug — accepted here, refused
+// there, with nothing in either message explaining the difference.
+func refusalForbiddenEnvUnsetOnHost(t testing.TB) error {
+	reg := testRegistry()
+	reg["bad"] = &Profile{Name: "bad", Env: []string{"LD_PRELOAD"}}
+	env := newFakeEnv() // deliberately WITHOUT LD_PRELOAD set
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "bad"}, testCtx(), env)
+	return err
+}
+
 // ── the review artifact ──────────────────────────────────────────────────────
 
 // TestGoldenRefusals pins the EXACT text of every refusal above. This change
@@ -419,6 +432,7 @@ func TestGoldenRefusals(t *testing.T) {
 		{"scalar_conflict_gateway", func(t testing.TB) error { return refusalScalarConflict(t, "gateway") }},
 		{"scalar_conflict_mtu", func(t testing.TB) error { return refusalScalarConflict(t, "mtu") }},
 		{"poststaging_nested_grant_under_later_replace", refusalNestedGrantUnderLaterReplace},
+		{"forbidden_env_unset_on_host", refusalForbiddenEnvUnsetOnHost},
 	}
 
 	var b strings.Builder

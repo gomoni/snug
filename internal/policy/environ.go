@@ -16,6 +16,17 @@ type Environ interface {
 	EvalSymlinks(path string) (string, error)
 	Stat(path string) (fs.FileInfo, error)
 	Getenv(key string) string
+
+	// LookupEnv distinguishes SET-BUT-EMPTY from UNSET, which Getenv cannot.
+	//
+	// That difference is not pedantry. NO_COLOR's specification is "set to any
+	// value, INCLUDING empty", so `NO_COLOR=` means disable colour — and a
+	// resolver that reads the host with `v != ""` silently re-enables it. The
+	// same collapse is wrong for every flag-shaped variable (§3.2), and it is
+	// the difference between a variable reaching the sandbox and not reaching
+	// it at all.
+	LookupEnv(key string) (string, bool)
+
 	Uid() int
 	Gid() int
 }
@@ -26,6 +37,7 @@ type OSEnviron struct{}
 func (OSEnviron) EvalSymlinks(p string) (string, error) { return filepath.EvalSymlinks(p) }
 func (OSEnviron) Stat(p string) (fs.FileInfo, error)    { return os.Stat(p) }
 func (OSEnviron) Getenv(k string) string                { return os.Getenv(k) }
+func (OSEnviron) LookupEnv(k string) (string, bool)     { return os.LookupEnv(k) }
 func (OSEnviron) Uid() int                              { return os.Getuid() }
 func (OSEnviron) Gid() int                              { return os.Getgid() }
 

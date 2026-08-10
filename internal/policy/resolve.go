@@ -285,10 +285,22 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 		}
 
 		for _, e := range prof.Env {
-			if v := env.Getenv(e); v != "" {
-				if forbiddenEnv[e] {
-					return nil, fmt.Errorf("profile %q grants env %q, which is a code-injection vector into every process in the sandbox and is never passed", name, e)
-				}
+			// The refusal is UNCONDITIONAL, and it used to sit inside the
+			// presence check below. That made a profile carrying
+			// env = ["LD_PRELOAD"] legal on a host where LD_PRELOAD happens to
+			// be unset and refused on one where it is set: the same profile
+			// passed review on one machine and failed on another. Whether a
+			// grant is allowed is a property of the profile, not of whoever
+			// launched snug (§4.4).
+			if forbiddenEnv[e] {
+				return nil, fmt.Errorf("profile %q grants env %q, which is a code-injection vector into every process in the sandbox and is never passed", name, e)
+			}
+			// PRESENCE, not non-emptiness. A variable the host has set to the
+			// empty string is SET, and for a flag like NO_COLOR that is the
+			// whole meaning — "set to any value, including empty" (§3.2, §4.6a).
+			// bwrap delivers it faithfully: --setenv NO_COLOR '' produces a
+			// present, empty variable inside.
+			if v, ok := env.LookupEnv(e); ok {
 				p.inheritEnv(e, v, name)
 			}
 		}
@@ -507,6 +519,13 @@ var forbiddenEnv = map[string]bool{
 	"GIT_SSH_COMMAND": true, "NODE_OPTIONS": true,
 }
 
+// envOr keeps Getenv's "empty means absent" reading DELIBERATELY, and it is the
+// one place that is right. Its callers want a value snug can fall back on —
+// USER, and nothing else today — where an empty host value is no more useful
+// than an unset one and "user" is a better answer than "". The presence
+// distinction above exists for FLAG variables, where empty is a value; do not
+// unify the two, because "right for one type, wrong for the other" is how this
+// class of bug ships (§2.6).
 func envOr(e Environ, k, def string) string {
 	if v := e.Getenv(k); v != "" {
 		return v

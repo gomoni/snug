@@ -79,3 +79,6 @@ profile hostile puts a bind of /opt at /home/u/.claude.json/evil, which is insid
        A grant beneath a file is meaningless: nothing can be mounted inside a regular file.
        Remove the grant at /home/u/.claude.json/evil.
 
+== forbidden_env_unset_on_host ==
+profile "bad" grants env "LD_PRELOAD", which is a code-injection vector into every process in the sandbox and is never passed
+
