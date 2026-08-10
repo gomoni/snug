@@ -87,13 +87,24 @@ const (
 	// built without a reason reads as the conservative one.
 	DropNoGrant EnvDropReason = iota
 	DropTmpfsOnly
+	// DropPseudoOnly is /proc and /dev. The directory really is populated, so
+	// this is not the tmpfs reason wearing another name: what makes the element
+	// untruthful is that /proc's magic symlinks resolve OUT of /proc, to
+	// whatever the reading process has open — /proc/self/cwd is the target and
+	// /proc/self/root/tmp is the writable tmpfs. The filter is lexical and does
+	// not follow them.
+	DropPseudoOnly
 )
 
 func (r EnvDropReason) String() string {
-	if r == DropTmpfsOnly {
+	switch r {
+	case DropTmpfsOnly:
 		return "only an empty writable tmpfs is mounted there"
+	case DropPseudoOnly:
+		return "only a kernel pseudo-filesystem is mounted there, and its magic symlinks leave it"
+	default:
+		return "nothing grants that path"
 	}
-	return "nothing grants that path"
 }
 
 // EnvDrop is a host element a filter removed. Named, not counted: a filter that

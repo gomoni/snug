@@ -152,11 +152,13 @@ func describeEnvironment(out *os.File, p *policy.Policy) {
 		//
 		// Iterates a FIXED slice, never map order, so the rendering does not vary
 		// run to run for the identical policy.
-		for _, reason := range []policy.EnvDropReason{policy.DropNoGrant, policy.DropTmpfsOnly} {
+		for _, reason := range []policy.EnvDropReason{
+			policy.DropNoGrant, policy.DropTmpfsOnly, policy.DropPseudoOnly,
+		} {
 			var vals []string
 			for _, d := range v.Dropped {
 				if d.Reason == reason {
-					vals = append(vals, d.Value)
+					vals = append(vals, visibleValue(d.Value))
 				}
 			}
 			if len(vals) == 0 {
@@ -201,12 +203,39 @@ func envLines(p *policy.Policy, v policy.EnvVar) []envLine {
 		}
 		mark := grantMark(p, e.Value)
 		if n := len(out); n > 0 && out[n-1].verb == verb && out[n-1].from == from && out[n-1].mark == mark {
-			out[n-1].values = append(out[n-1].values, e.Value)
+			out[n-1].values = append(out[n-1].values, visibleValue(e.Value))
 			continue
 		}
-		out = append(out, envLine{values: []string{e.Value}, verb: verb, from: from, mark: mark})
+		out = append(out, envLine{values: []string{visibleValue(e.Value)}, verb: verb, from: from, mark: mark})
 	}
 	return out
+}
+
+// visibleValue renders a value so it cannot forge a line in this block.
+//
+// A sanitised element is HOST text — snug copies the host's value and filters
+// it — and the drop line printed it verbatim. The red team put a newline in a
+// host PATH element and the drop line split, the injected second line reading as
+// a legitimate ENVIRONMENT row:
+//
+//	(2 host entries dropped — only an empty writable tmpfs is mounted there: /tmp/x/bin
+//	  FORGED_VAR       fake-value                    forged-provenance, /tmp/y)
+//
+// --dry-run is the mechanism by which a human trusts snug, so a value that can
+// author a row in it is a hole in the trust artifact even though it escapes
+// nothing. internal/policy already applies exactly this guard to variable NAMES
+// in its error messages (quoteVisible); the values had no equivalent.
+//
+// Applied to kept entries as well as dropped ones: a host element under a bind
+// survives the filter, and it can carry a newline just as easily.
+//
+// A value with no control characters renders unchanged, so the ordinary screen —
+// and every golden — is untouched.
+func visibleValue(s string) string {
+	if !strings.ContainsFunc(s, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return s
+	}
+	return strings.Trim(fmt.Sprintf("%q", s), `"`)
 }
 
 // grantMark is §4.2's repair, and it is a MARK rather than a refusal on purpose.

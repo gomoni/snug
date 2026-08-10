@@ -933,11 +933,59 @@ grant the human selected:
   `/tmp/x/bin` survives sanitise — and that survivor **persists to the host**.
   The drop-never-rewrite half of this is already settled policy.
 - A user profile creating a `KindSymlink` pointing into a tmpfs keeps its
-  element (symlinks are not followed by the filter).
-- `/dev` is a writable synthetic tree and `KindDev` is a keep. Widening the
-  rule to `KindDev` was considered and not taken: an element under `/dev` on a
-  host `PATH` does not occur, and it would trade a one-line justification for
-  a second one.
+  element (symlinks are not followed by the filter). This one stays: a
+  `KindSymlink` is authored by a grant and points where that grant says, so
+  following it here would be a second resolution rule with its own failure
+  modes.
+- ~~`/dev` is a writable synthetic tree and `KindDev` is a keep.~~ **Closed —
+  and the bullet argued its own way out.** It said widening to `KindDev` was
+  not worth it because "an element under `/dev` on a host `PATH` does not
+  occur". If it never legitimately occurs, keeping it costs nothing to drop and
+  serves only an attacker's spelling. `KindProc` and `KindDev` now both drop,
+  with their own `DropPseudoOnly` reason. See the entry below for what forced
+  it.
+
+### **[fixed]** `/proc`'s magic symlinks were a fourth shadow slot, and the walk could not see them
+
+Found by the red team against `a8652ba`, after the tmpfs fix had shipped.
+`keepHostElement` kept `KindProc` and `KindDev` on the grounds that they are
+"kernel- and bwrap-populated, not empty". That is true of the **directory** and
+false of what `/proc`'s magic symlinks **resolve to**. The filter is lexical and
+deliberately does not follow symlinks, so `coveringMount` stops at `/proc` while
+the kernel walks:
+
+```
+/proc/self/root/tmp/x/bin   ->  the writable tmpfs        SHADOWED-GIT-RAN-VIA-PROC-ROOT
+/proc/self/cwd              ->  the target, and the shadow file PERSISTS TO THE HOST
+                                                          SHADOWED-GIT-VIA-PROC-CWD
+/proc/1/root/tmp/x/bin      ->  the writable tmpfs
+```
+
+Same precondition as the finding it follows — a user-written `environ.sanitise
+= ["PATH"]` plus a host `PATH` carrying the element — so the same bound, not a
+weaker one. The general lesson is worth more than the fix: **a lexical
+predicate answers about the path it was given, and the kernel answers about the
+path it resolves. Wherever those two can differ, the difference is the
+attack.** `..`, trailing slashes and repeated slashes were all probed and are
+NOT exploitable, because `coveringMount` cleans before it walks.
+
+Fixed by dropping both kinds. Asserted by
+`TestSanitiseDropsProcAndDevMagicSymlinkElements`.
+
+### **[fixed]** A newline in a host `PATH` element forged a `--dry-run` line
+
+Also from the same run. The drop line rendered the host-supplied value verbatim,
+so an element containing a newline split the line, and the injected second line
+read as a legitimate ENVIRONMENT row complete with a fake provenance column.
+Escapes nothing — but `--dry-run` is *the* mechanism by which a human can trust
+snug, and a value that can author a row in it is a hole in the trust artifact.
+`internal/policy` already applied this guard to variable NAMES in its error
+messages (`quoteVisible`); the values had no equivalent.
+
+Fixed by `visibleValue` in `cmd/snug/dryrun.go`, applied to kept entries as well
+as dropped ones. A value with no control characters renders unchanged, so no
+golden moved. Asserted by
+`TestDryRunDropLineDoesNotRenderControlCharsVerbatim`.
 
 ### **[latent]** `sanitise`'s monotonicity now rests on `rejectMasking`
 

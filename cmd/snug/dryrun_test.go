@@ -290,6 +290,86 @@ func TestDropLinesNameTheirReason(t *testing.T) {
 	}
 }
 
+// TestDryRunDropLineDoesNotRenderControlCharsVerbatim is the REGRESSION
+// (redteam, confirmed 2026-08-10) for the FORGED-ROW finding: a dropped or kept
+// environment value was rendered VERBATIM, so an element containing a newline
+// split the line it was printed on, and the injected second line read as a
+// legitimate ENVIRONMENT row — a fake variable name, a fake value, a fake
+// provenance column — on the exact screen CLAUDE.md calls the mechanism by
+// which a human trusts snug:
+//
+//	(1 host entry dropped — only an empty writable tmpfs is mounted there: /tmp/x/bin
+//	  FORGED_VAR       fake-value                    forged-provenance)
+//
+// The fix is visibleValue (dryrun.go): any control character (a bare newline
+// above all) forces the whole value through %q-style quoting, so it can only
+// ever be text WITHIN one line, never a line of its own. Applied at BOTH call
+// sites — the drop-reason line and a kept EnvEntry's value in envLines — and
+// this test pins both, because a fix at only one site would look identical on
+// the drop line alone.
+func TestDryRunDropLineDoesNotRenderControlCharsVerbatim(t *testing.T) {
+	// Same text either way; only whether the separator is a real newline or a
+	// plain space differs. The SAFE variant is the positive control that gives
+	// the expected line count when nothing is being forged.
+	forgedDrop := "/tmp/x/bin\n  FORGED_VAR       fake-value                    forged-provenance"
+	safeDrop := "/tmp/x/bin   FORGED_VAR       fake-value                    forged-provenance"
+	forgedKept := "/opt/tool\n  FORGED_KEPT      fake-value2                   forged-provenance2"
+	safeKept := "/opt/tool   FORGED_KEPT      fake-value2                   forged-provenance2"
+
+	build := func(drop, kept string) *policy.Policy {
+		return &policy.Policy{
+			Env: map[string]policy.EnvVar{
+				"PATH": {
+					Name: "PATH", List: true, Sep: ":",
+					Dropped: []policy.EnvDrop{
+						{Value: drop, Var: "PATH", From: []string{"x"}, Reason: policy.DropTmpfsOnly},
+					},
+				},
+				// A KEPT entry, not another dropped one: visibleValue is applied at a
+				// second call site (envLines) and nothing else would notice if that
+				// call were removed — a test that only exercised the drop line would
+				// pass on a half-applied fix.
+				"SAFEVAR": {
+					Name: "SAFEVAR",
+					Entries: []policy.EnvEntry{
+						{Value: kept, Verb: policy.VerbSet, From: []string{"x"}},
+					},
+				},
+			},
+		}
+	}
+
+	forged := captureFile(t, func(f *os.File) { describeEnvironment(f, build(forgedDrop, forgedKept)) })
+	safe := captureFile(t, func(f *os.File) { describeEnvironment(f, build(safeDrop, safeKept)) })
+
+	// THE ASSERTION THAT ACTUALLY MATTERS: a value with a newline in it must
+	// not add a line to the block. Comparing against the space-separated
+	// control means this does not depend on hand-counting the layout.
+	forgedLines, safeLines := strings.Count(forged, "\n"), strings.Count(safe, "\n")
+	if forgedLines != safeLines {
+		t.Errorf("a newline in a value changed the ENVIRONMENT block's line count: "+
+			"forged=%d safe=%d — an injected line reads as a legitimate row:\n%s",
+			forgedLines, safeLines, forged)
+	}
+
+	// The escaped form is what actually appears — on the ONE line, not a raw
+	// newline that the reader (or a script parsing --dry-run) would see as two.
+	if !strings.Contains(forged, `\n`) {
+		t.Errorf("the value's newline was not rendered as the escaped \\n at all:\n%s", forged)
+	}
+	if strings.Contains(forged, "\n  FORGED_VAR") {
+		t.Errorf("a raw (unescaped) newline put FORGED_VAR at the start of its own line "+
+			"in the ENVIRONMENT block:\n%s", forged)
+	}
+	if !strings.Contains(forged, "FORGED_KEPT") {
+		t.Fatalf("control: the kept entry's forged text did not even appear in the output:\n%s", forged)
+	}
+	if strings.Contains(forged, "\n  FORGED_KEPT") {
+		t.Errorf("a raw (unescaped) newline in a KEPT entry's value put FORGED_KEPT at the "+
+			"start of its own line in the ENVIRONMENT block:\n%s", forged)
+	}
+}
+
 // TestFilesystemBlockRendersTheStubAsExec pins the dry-run-only kind
 // rendering: a KindData mount with an executable permission bit reads "exec"
 // in the FILESYSTEM block, not "data" — the one visual cue that this line is

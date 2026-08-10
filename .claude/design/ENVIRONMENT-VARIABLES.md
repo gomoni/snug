@@ -394,7 +394,7 @@ one link prefixes another. One map, two entry points; the environ one must match
 |---|---|
 | host path vs guest path? | **drop, never rewrite.** An element survives iff, read verbatim as a *guest* path, a grant covers it |
 | what access counts? | **`ro` is enough.** No mode bits, no `stat` |
-| what *kind* counts? | **a tmpfs is not enough.** An element whose deepest covering mount is `KindTmpfs` is dropped |
+| what *kind* counts? | **a bind, generated data or a granted symlink.** An element whose deepest covering mount is `KindTmpfs`, `KindProc` or `KindDev` is dropped |
 | host unset vs empty? | **both mean absent**, and neither may change a verdict |
 | with `merge` on one name? | **legal, never an error** — both are unions |
 | where in the order? | **a fourth band, after `merge`** |
@@ -432,6 +432,25 @@ directory that is **empty and writable inside**, in a band **ahead of**
 `/usr/bin`. The payload creates the directory, drops a file called `git` in it,
 and the next `git` a human or another agent runs inside is that file. Verified
 end to end (marker `SHADOWED-GIT-RAN`).
+
+***`/proc` and `/dev` are dropped too, and getting that arm wrong is the most
+instructive part of this section.*** They were kept at first, on the reasoning
+that both are "kernel- and bwrap-populated, not empty" — true of the
+**directory**, false of what `/proc`'s magic symlinks **resolve to**. The filter
+is lexical and does not follow symlinks, so the walk stops at `/proc` while the
+kernel walks `/proc/self/root/tmp/x/bin` to the writable tmpfs and
+`/proc/self/cwd` to the target, where the shadow file also persists to the host.
+Both reproduced. The general form is worth keeping in mind well beyond this
+filter: **a lexical predicate answers about the path it was handed, the kernel
+answers about the path it resolves, and wherever those differ is where the attack
+is.** `..`, trailing slashes and repeated slashes were probed and are not
+exploitable, because the walk cleans before it starts.
+
+`KindSymlink` still survives, and the line between the two is not arbitrary: a
+`KindSymlink` is a link some **grant** authored, pointing where that grant says,
+and following it here would be a second resolution rule with its own failure
+modes. `/proc`'s magic links are authored by the **kernel**, point at whatever
+the reading process happens to have open, and are not a grant at all.
 
 The narrower fix was chosen over "drop anything writable" deliberately, and the
 reason bounds what this claims: *the payload can rewrite `PATH` at will, so no

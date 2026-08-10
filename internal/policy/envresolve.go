@@ -385,9 +385,31 @@ func (p *Policy) coveringMount(guest string) (Mount, bool) {
 //	  nested inside the {home} tmpfs)
 //	{home}/.gitconfig                  KindData                   KEEP            a real node with real content at exactly that path, put there deliberately
 //	/bin (usr-merged host)             KindSymlink (@sys)         KEEP            a node exists; what it resolves to is decided by the OTHER grants — following it here would be a second resolution rule, and keeping it is exactly today's behaviour
-//	under /proc, /dev                  KindProc / KindDev         KEEP            kernel- and bwrap-populated, not empty
+//	under /proc, /dev                  KindProc / KindDev         DROP (Pseudo)   see below — this arm was KEEP, and the red team walked through it
 //	a future Kind                      —                          DROP (NoGrant)  trailing default: a new kind fails closed until someone decides
 //	not absolute, e.g. "bin"           —                          DROP (NoGrant)  unchanged; coveringMount keeps the !filepath.IsAbs guard
+//
+// /proc AND /dev ARE DROPPED, and the reasoning that kept them was wrong in an
+// instructive way. It read: "kernel- and bwrap-populated, not empty". That is
+// true of the DIRECTORY and false of what /proc's magic symlinks RESOLVE TO.
+// This function does not follow symlinks, so the walk stops at /proc (KindProc)
+// while the kernel walks /proc/self/root/tmp/x/bin all the way to the writable
+// tmpfs, and /proc/self/cwd to the target — where the shadow file also PERSISTS
+// TO THE HOST. Reproduced end to end: markers SHADOWED-GIT-RAN-VIA-PROC-ROOT and
+// SHADOWED-GIT-VIA-PROC-CWD. The mount the walk lands on was not the mount the
+// kernel resolves, which is the whole class of bug a lexical predicate has.
+//
+// The argument for dropping is the one that had been written down as an argument
+// for keeping. TODO.md declined to widen the rule to KindDev because "an element
+// under /dev on a host PATH does not occur" — and if it never legitimately
+// occurs, then keeping it costs nothing and serves only an attacker's spelling.
+// The same holds for /proc. So both drop, and the cost is zero.
+//
+// KindSymlink stays KEEP, and the distinction is not arbitrary: a KindSymlink is
+// a link some GRANT authored, pointing where that grant says, and following it
+// here would be a second resolution rule with its own failure modes. /proc's
+// magic links are authored by the KERNEL, point at whatever the reading process
+// happens to have open, and are not a grant at all.
 //
 // Three deliberate non-changes, not to be "improved":
 //
@@ -403,10 +425,12 @@ func (p *Policy) keepHostElement(guest string) (bool, EnvDropReason) {
 		return false, DropNoGrant
 	}
 	switch m.Kind {
-	case KindBind, KindData, KindSymlink, KindProc, KindDev:
+	case KindBind, KindData, KindSymlink:
 		return true, DropNoGrant
 	case KindTmpfs:
 		return false, DropTmpfsOnly
+	case KindProc, KindDev:
+		return false, DropPseudoOnly
 	default:
 		// A future Kind fails closed until someone decides what it means here.
 		return false, DropNoGrant

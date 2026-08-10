@@ -179,6 +179,46 @@ in here" is to **say so**, never to stop authoring it. If a future version
 refuses instead, it has converted twenty minutes of confusion into a reachable
 hole.
 
+### 6f. `/proc`'s magic symlinks do not resurrect the shadow slot
+
+`environ.sanitise` copies a host list variable and keeps only elements policy
+grants; no shipped profile uses it on `PATH` today, so this drops in a
+throwaway one that does. `coveringMount` is a **lexical** walk over guest
+paths — it does not follow symlinks — so it used to stop at `/proc` (a
+`KindProc` mount, "kernel- and bwrap-populated, not empty") and KEEP any
+element under it, while the KERNEL resolves `/proc/self/cwd` to wherever the
+reading process's cwd actually is. Inside snug that is the **target** — a real
+bind mount, not a copy, so anything written through that PATH entry persists
+to the host after the sandbox exits.
+
+```bash
+X=$(mktemp -d); mkdir -p $X/snug/profiles.d
+printf '[profile.sanpath]\n\n[profile.sanpath.environ.sanitise]\nPATH = true\n' \
+  > $X/snug/profiles.d/sanpath.toml
+
+# Simulates a hostile repo leaving a same-named binary in the target, the way
+# a compromised dependency-install hook or a previous agent turn could.
+cat > $SC/proj/sub/id <<'SH'
+#!/bin/sh
+echo SHADOWED-ID-RAN-VIA-PROC-CWD
+SH
+chmod +x $SC/proj/sub/id
+
+XDG_CONFIG_HOME=$X PATH="/proc/self/cwd:/usr/bin:/bin" \
+  ./bin/snug --no-defaults -p @sys -p @cwd-rw -p sanpath $SC/proj/sub -- id
+
+rm -f $SC/proj/sub/id
+rm -rf $X
+```
+
+Expect the real `uid=... gid=... groups=...` line from `/usr/bin/id` —
+**never** `SHADOWED-ID-RAN-VIA-PROC-CWD`. Confirm with `--dry-run` (swap `--
+id` for `--dry-run ... -- true | sed -n '/^ENVIRONMENT/,/^$/p'`) that `PATH`
+carries a drop line naming `/proc/self/cwd`, reason "only a kernel
+pseudo-filesystem is mounted there, and its magic symlinks leave it" — a
+different fact from `DropTmpfsOnly`'s "only an empty writable tmpfs is
+mounted there", and the two must never read the same.
+
 ### 6b. …including via PID 1 (regression check)
 
 ```bash

@@ -436,6 +436,129 @@ func TestSanitiseEmitsTheHostElementVerbatimNotCleaned(t *testing.T) {
 	}
 }
 
+// ── sanitise-D: /proc and /dev magic symlinks (a shadow slot RE-OPENED) ────
+//
+// REGRESSION (redteam, confirmed 2026-08-10). keepHostElement's Kind-switch
+// KEPT KindProc and KindDev, on the argument "kernel- and bwrap-populated, not
+// empty" — true of the DIRECTORY, false of what /proc's magic symlinks
+// RESOLVE TO. coveringMount is a LEXICAL walk and does not follow them, so it
+// stops at /proc (a KindProc mount) while the KERNEL walks
+// /proc/self/root/tmp/x/bin all the way to the writable tmpfs, and
+// /proc/self/cwd to the target — where the shadow binary also PERSISTS TO THE
+// HOST. Reproduced end to end with markers SHADOWED-GIT-RAN-VIA-PROC-ROOT and
+// SHADOWED-GIT-VIA-PROC-CWD: a payload that put a file named `git` under the
+// (nominally empty, nominally ephemeral) tmpfs shadow slot got it executed
+// through /proc/self/root, and a file dropped at /proc/self/cwd/git persisted
+// on the host's disk after the sandbox exited.
+//
+// The fix (env.go, envresolve.go): both kinds now DROP, with a new
+// DropPseudoOnly reason distinct from DropTmpfsOnly — the directory really is
+// populated, so this is a DIFFERENT untruthfulness than a tmpfs granting an
+// empty directory, and a human reading --dry-run should be told which. A
+// KindSymlink still KEEPs, and the asymmetry is deliberate: a KindSymlink is
+// authored by a GRANT and points where that grant says, while /proc's magic
+// links are authored by the KERNEL and point at whatever the reading process
+// happens to have open — following THAT here would be a second resolution
+// rule with its own failure modes, not a fix.
+//
+// This is the pure table: it builds a Policy by hand (no Resolve, no fake
+// host) so it runs everywhere with no privileges, per Layer 1 of the test
+// architecture. TestSanitiseResolvesProcSelfCwdOutOfPathAndArgv below is the
+// same finding through Resolve and the bwrap argv.
+func TestSanitiseDropsProcAndDevMagicSymlinkElements(t *testing.T) {
+	p := &Policy{Mounts: map[string]Mount{
+		"/tmp":  {Guest: "/tmp", Kind: KindTmpfs},
+		"/proc": {Guest: "/proc", Kind: KindProc},
+		"/dev":  {Guest: "/dev", Kind: KindDev},
+		"/usr":  {Guest: "/usr", Kind: KindBind, Access: AccessRO},
+	}}
+
+	cases := []struct {
+		elem       string
+		wantKeep   bool
+		wantReason EnvDropReason
+	}{
+		// THE FINDING: /proc's magic symlinks resolve OUT of /proc, to the
+		// writable tmpfs and to the target, and a lexical walk cannot see it.
+		{"/proc/self/root/tmp/x/bin", false, DropPseudoOnly},
+		{"/proc/self/cwd", false, DropPseudoOnly},
+		{"/proc/1/root/tmp/x/bin", false, DropPseudoOnly},
+		{"/dev/rt/bin", false, DropPseudoOnly},
+		// Positive controls. Each pins a DIFFERENT row of the table, so a patch
+		// that folds DropPseudoOnly into DropTmpfsOnly (right verdict, wrong
+		// reason) or that widens the drop to swallow a real bind is caught here,
+		// not just in the shadow-slot test above.
+		{"/tmp/x/bin", false, DropTmpfsOnly},
+		// filepath.Clean collapses this to /tmp/x/bin before the walk even
+		// starts — it was never a second bypass, and the reason must say so:
+		// the tmpfs one, not the pseudo-filesystem one.
+		{"/usr/../tmp/x/bin", false, DropTmpfsOnly},
+		{"/usr/bin", true, DropNoGrant}, // reason is unused when keep is true
+	}
+
+	for _, c := range cases {
+		keep, reason := p.keepHostElement(c.elem)
+		if keep != c.wantKeep {
+			t.Errorf("keepHostElement(%q) keep=%v, want %v", c.elem, keep, c.wantKeep)
+			continue
+		}
+		// Assert the REASON, not merely the verdict. "The directory is
+		// populated but its magic symlinks leave it" (Pseudo) is a different
+		// fact from "the directory is empty" (Tmpfs), and a test that checked
+		// only keep would pass on a patch that folded the two together.
+		if !keep && reason != c.wantReason {
+			t.Errorf("keepHostElement(%q) reason=%v, want %v", c.elem, reason, c.wantReason)
+		}
+	}
+}
+
+// End to end: the same finding, through Resolve and the exact argv bwrap
+// executes — not merely the pure predicate above. "not in Entries" and "not in
+// the argv" are two separate claims; a struct field the payload never reads
+// protects nothing (same discipline as
+// TestSanitiseDropsAShadowSlotOnlyATmpfsCovers).
+func TestSanitiseResolvesProcSelfCwdOutOfPathAndArgv(t *testing.T) {
+	env := newFakeEnv()
+	env.env["PATH"] = "/proc/self/cwd:/usr/bin"
+
+	p, err := Resolve(testRegistry(), []string{"@sys", "@cwd-rw", "sanity-path"}, testCtx(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entries := entryValues(p, "PATH")
+	if hasEntry(entries, "/proc/self/cwd") {
+		t.Errorf("/proc/self/cwd survived sanitise and reached the resolved PATH: it resolves to "+
+			"the TARGET, the one writable thing the payload controls, and a file named `git` "+
+			"dropped there would run for the next command that uses this PATH entry — entries: %v",
+			entries)
+	}
+	if !hasEntry(entries, "/usr/bin") {
+		t.Errorf("/usr/bin (a real bind under @sys) did not survive — the fix must not have "+
+			"widened past KindProc/KindDev: entries: %v", entries)
+	}
+
+	dropped := map[string]EnvDropReason{}
+	for _, d := range p.Env["PATH"].Dropped {
+		dropped[d.Value] = d.Reason
+	}
+	if r, ok := dropped["/proc/self/cwd"]; !ok || r != DropPseudoOnly {
+		t.Errorf("/proc/self/cwd: Dropped present=%v reason=%v, want present with DropPseudoOnly", ok, r)
+	}
+
+	// THE CLAIM THAT ACTUALLY MATTERS: absence from the --setenv PATH operand
+	// bwrap receives, not merely from p.Env.
+	operand := pathOperand(t, p)
+	for _, part := range strings.Split(operand, ":") {
+		if part == "/proc/self/cwd" {
+			t.Errorf("--setenv PATH operand %q still names /proc/self/cwd", operand)
+		}
+	}
+	if !strings.Contains(operand, "/usr/bin") {
+		t.Errorf("--setenv PATH operand %q lost the granted /usr/bin", operand)
+	}
+}
+
 // ── dedup ────────────────────────────────────────────────────────────────────
 
 // §4.6(c), measured on main: `path = ["/nonexistent/bin", "/bin"]` resolved to
