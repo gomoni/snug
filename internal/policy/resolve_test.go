@@ -266,7 +266,7 @@ func canon(p *Policy) string {
 			fmt.Fprintf(&b, "env %s [%d] %s %s %v %q\n", name, i, e.Value, e.Verb, e.From, e.Note)
 		}
 		for _, d := range v.Dropped {
-			fmt.Fprintf(&b, "env %s drop %s %v\n", name, d.Value, d.From)
+			fmt.Fprintf(&b, "env %s drop %s %s %v\n", name, d.Value, d.Reason, d.From)
 		}
 	}
 	fmt.Fprintf(&b, "net mode=%s dns=%v publish=%v nameservers=%v address=%s gateway=%s mtu=%d\n",

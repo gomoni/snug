@@ -142,17 +142,32 @@ func describeEnvironment(out *os.File, p *policy.Policy) {
 		// Dropped elements are NAMED, not counted. "1 of 3 kept" does not let
 		// anyone check a filter, and a filter nobody can check is the exact shape
 		// of failure this whole model exists to avoid.
-		if len(v.Dropped) > 0 {
+		//
+		// Grouped by REASON, one line per group, because "nothing grants that
+		// path" and "only a tmpfs grants it" are materially different facts: the
+		// second means the directory IS inside, is empty, and is writable, and
+		// snug removed the element because keeping it would ship that shadow slot
+		// pre-installed. Conflating the two into one ungrouped line is exactly
+		// the ambiguity the drop's own Reason field exists to remove.
+		//
+		// Iterates a FIXED slice, never map order, so the rendering does not vary
+		// run to run for the identical policy.
+		for _, reason := range []policy.EnvDropReason{policy.DropNoGrant, policy.DropTmpfsOnly} {
 			var vals []string
 			for _, d := range v.Dropped {
-				vals = append(vals, d.Value)
+				if d.Reason == reason {
+					vals = append(vals, d.Value)
+				}
+			}
+			if len(vals) == 0 {
+				continue
 			}
 			word := "entries"
 			if len(vals) == 1 {
 				word = "entry"
 			}
-			fmt.Fprintf(out, "  %-16s (%d host %s dropped: %s)\n",
-				"", len(vals), word, strings.Join(vals, ", "))
+			fmt.Fprintf(out, "  %-16s (%d host %s dropped — %s: %s)\n",
+				"", len(vals), word, reason.String(), strings.Join(vals, ", "))
 		}
 	}
 }
@@ -248,6 +263,9 @@ func grantMark(p *policy.Policy, value string) string {
 // applies (CLAUDE.md invariant 1): effective access at a path is a property of
 // the covering set, not of any one grant, so --dry-run must compute it the
 // same way rather than assuming which profile was selected.
+//
+// see policy.coveringMount — different question (the TARGET/HOME headline
+// here vs. "is the host's content really at this path").
 func mountedAt(p *policy.Policy, path string) (policy.Mount, bool) {
 	var best policy.Mount
 	found := false

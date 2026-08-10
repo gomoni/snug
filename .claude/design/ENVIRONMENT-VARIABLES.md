@@ -394,6 +394,7 @@ one link prefixes another. One map, two entry points; the environ one must match
 |---|---|
 | host path vs guest path? | **drop, never rewrite.** An element survives iff, read verbatim as a *guest* path, a grant covers it |
 | what access counts? | **`ro` is enough.** No mode bits, no `stat` |
+| what *kind* counts? | **a tmpfs is not enough.** An element whose deepest covering mount is `KindTmpfs` is dropped |
 | host unset vs empty? | **both mean absent**, and neither may change a verdict |
 | with `merge` on one name? | **legal, never an error** — both are unions |
 | where in the order? | **a fourth band, after `merge`** |
@@ -402,13 +403,44 @@ one link prefixes another. One map, two entry points; the environ one must match
 mounts have no host path at all, and `Mount.Host` is already canonicalised. With
 `@tmp-shared`, `/tmp/x/lib` is kept and `/tmp/snug-1000-xxx/lib` is dropped —
 which is also the intuitive answer from inside, where `/tmp` *is* the shared
-directory. The cost is that genuinely-real elements get dropped; §2.7 prints them
+directory. **Without `@tmp-shared` both are dropped**, because `/tmp` is then a
+tmpfs and the kind rule below applies; the two answers differ because the two
+sandboxes differ, which is the filter reporting the policy rather than the host. The cost is that genuinely-real elements get dropped; §2.7 prints them
 **named**, and the repair is one visible `merge` line.
 
 **`ro` is enough, and the honest scope is narrower than the name.** `sanitise`
 removes elements naming paths the sandbox has no grant for. It is a
 **truthfulness filter, not a capability filter** — it cannot promise a surviving
 `PATH` element contains an executable, because the mount may be an empty bind.
+
+**A tmpfs is not enough, and this is the same rule rather than a second one.**
+The filter's contract is *"copy the host value, keep only what policy grants"* —
+so the question at each element is *does the sandbox have the **host's content**
+at this path*, and a tmpfs answers no: it grants an **empty** directory. An
+element covered only by one was never a truthful survivor, and the correction is
+the existing predicate giving a correct answer to the question it already asks.
+The **deepest** covering mount decides, so a bind nested inside a tmpfs is kept
+(`{home}/.local/bin/claude`, which `@claude` really does stage) while the tmpfs
+directory above it is dropped (`{home}/.local/bin`). Do not read that as "keep if
+any mount exists at or below" — that is a second, downward walk, and it re-admits
+the element the rule exists to remove.
+
+*Why it matters, and the bound on the claim.* Under `@home`, `{home}` and four
+subdirectories are tmpfs, and `/tmp` is tmpfs in every policy. So a host `PATH`
+carrying `/tmp/x/bin` used to survive into the `PATH` snug writes — at a
+directory that is **empty and writable inside**, in a band **ahead of**
+`/usr/bin`. The payload creates the directory, drops a file called `git` in it,
+and the next `git` a human or another agent runs inside is that file. Verified
+end to end (marker `SHADOWED-GIT-RAN`).
+
+The narrower fix was chosen over "drop anything writable" deliberately, and the
+reason bounds what this claims: *the payload can rewrite `PATH` at will, so no
+filter closes shadowing. What the filter owes is that the environment **snug
+itself** hands over does not ship the shadow slot pre-installed.* Dropping every
+writable element would also drop the target's own `bin/`, which is a truthful
+element — a real bind of real host content — and would chase an invariant the
+sandbox cannot hold. A writable **bind** therefore still survives, target
+included, and `TODO.md` records the residual shadow slots that leaves.
 
 **Unset and empty collapse to absent** for lists. But write it as a rule for
 lists only, **not a shared helper**: §3.2's flag scalars (`NO_COLOR`, `CI`) are
@@ -431,6 +463,16 @@ remove the dependence, it only mangles the value.
 *Monotone, and that is the non-obvious half:* the filter predicate is "is this
 path granted", and grants only ever grow, so adding a profile can only make
 **more** host elements survive.
+
+*But once the kind decides the verdict, that argument acquires a dependency.* The
+one shape that would break monotonicity is a **tmpfs appearing beneath an
+existing bind**, which would turn a kept element into a dropped one. It cannot
+happen only because `rejectMasking` refuses it (`validate.go`). A tmpfs nested
+inside another tmpfs is legal and harmless here — the element was already
+dropped. So `sanitise`'s monotonicity now **rests on the masking rule**, a
+coupling that is invisible in either file, which is why
+`TestSanitiseMonotonicityRestsOnRejectMasking` exists: relax the masking rule one
+day and the environment stops being monotone, loudly rather than quietly.
 
 **Duplicates collapse to their earliest band.** That keeps `prepend`'s guarantee
 literally true, and it fixes a live bug — today a profile `path` entry is not

@@ -889,6 +889,59 @@ payload-authored route wants its own investigation and its own fix —
 "generate, don't bind" pins a tool's **file** and leaves its **environment**,
 which is the higher-precedence source.
 
+### **[fixed, with the reasoning that bounds it]** `sanitise` kept a host element a tmpfs covered
+
+`GrantsGuestPath` returned true for any covering mount regardless of kind, so a
+host `PATH` containing `/tmp/x/bin` survived the filter. `/tmp` is empty
+inside, the payload can `mkdir -p /tmp/x/bin` and drop a binary named `git`,
+and the sanitise band sits ahead of snug's base band — so that file wins
+`PATH` resolution for any later `git` a human or another agent runs inside.
+Reproduced end to end (marker `SHADOWED-GIT-RAN`). Reachable only via a
+user-written `environ.sanitise = ["PATH"]`; no shipped profile sanitises
+anything.
+
+Two candidates. **A — drop an element whose covering mount is writable — was
+rejected**, and the reason governs everything below it:
+
+> the payload can rewrite `PATH` inside the sandbox at will, so no filter can
+> close the shadowing attack. What the filter owes is that the environment
+> SNUG ITSELF hands over does not ship the shadow slot pre-installed. A chases
+> an invariant the sandbox cannot hold; C makes snug's own output truthful.
+
+**C — drop an element whose coverage comes only from a `KindTmpfs` mount —
+shipped.** It is the existing truthfulness contract (`envresolve.go:288`)
+giving a correct answer to the question it already asks: a tmpfs grants an
+EMPTY directory, not the host's content, so such an element was never a
+truthful survivor. A writable *bind* still survives, target included.
+
+Also rejected as part of this decision, and out of scope: refusing
+`environ.merge PATH` entries naming a path granted `rw`.
+
+### **[residual, accepted]** Shadow slots C does not remove, by construction
+
+Each is a writable directory that can precede `/usr/bin` on the `PATH` snug
+writes. None is closable by a filter — see the reasoning above — and each is a
+grant the human selected:
+
+- `@claude` merges `{home}/.local/bin`, which is inside `@home`'s tmpfs. The
+  merge band is a profile's own declaration and is unfiltered.
+- With `@tmp-shared`, `/tmp` is a `rw` bind of a host directory, so
+  `/tmp/x/bin` survives sanitise — and that survivor **persists to the host**.
+  The drop-never-rewrite half of this is already settled policy.
+- A user profile creating a `KindSymlink` pointing into a tmpfs keeps its
+  element (symlinks are not followed by the filter).
+- `/dev` is a writable synthetic tree and `KindDev` is a keep. Widening the
+  rule to `KindDev` was considered and not taken: an element under `/dev` on a
+  host `PATH` does not occur, and it would trade a one-line justification for
+  a second one.
+
+### **[latent]** `sanitise`'s monotonicity now rests on `rejectMasking`
+
+Adding a profile can only turn a drop into a keep *because* a `KindTmpfs`
+cannot be installed beneath a `KindBind` (`validate.go:245-252`). Relax that
+and the environment stops being monotone as a set. Asserted by
+`TestSanitiseMonotonicityRestsOnRejectMasking`.
+
 ## Pseudo-filesystem exposure (`/proc`, `/sys`, `/dev`)
 
 Full report: [`.claude/design/PSEUDOFS-AUDIT.md`](.claude/design/PSEUDOFS-AUDIT.md) — deep research +

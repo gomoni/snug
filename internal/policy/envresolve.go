@@ -319,13 +319,14 @@ func (p *Policy) sanitiseHostList(name string, t envType, from []string, env Env
 		if elem == "" {
 			continue
 		}
-		if p.GrantsGuestPath(elem) {
+		keep, reason := p.keepHostElement(elem)
+		if keep {
 			p.addEnvEntry(name, true, t.sep, EnvEntry{Value: elem, Verb: VerbSanitise, From: from})
 			continue
 		}
 		v = p.Env[name]
 		v.Name, v.List, v.Sep = name, true, t.sep
-		v.Dropped = append(v.Dropped, EnvDrop{Value: elem, Var: name, From: from})
+		v.Dropped = append(v.Dropped, EnvDrop{Value: elem, Var: name, From: from, Reason: reason})
 		p.Env[name] = v
 	}
 }
@@ -339,16 +340,76 @@ func (p *Policy) sanitiseHostList(name string, t envType, from []string, env Env
 // above uses. Two implementations of "is this granted" would eventually disagree,
 // and the one on screen is the one a human trusts.
 func (p *Policy) GrantsGuestPath(guest string) bool {
+	_, ok := p.coveringMount(guest)
+	return ok
+}
+
+// coveringMount finds the DEEPEST mount whose Guest path lexically contains
+// guest: the walk starts at filepath.Clean(guest) and shortens one component
+// per iteration, so the first p.Mounts[d] hit is the longest covering
+// prefix, not merely some covering mount — the same "effective access is the
+// deepest mount covering it" rule CLAUDE.md states for join. That stopped
+// being incidental the moment keepHostElement started reading the mount's
+// Kind: which mount answers now decides the verdict, not just whether one
+// exists.
+func (p *Policy) coveringMount(guest string) (Mount, bool) {
 	if !filepath.IsAbs(guest) {
-		return false
+		return Mount{}, false
 	}
 	for d := filepath.Clean(guest); ; d = filepath.Dir(d) {
-		if _, ok := p.Mounts[d]; ok {
-			return true
+		if m, ok := p.Mounts[d]; ok {
+			return m, true
 		}
 		if d == "/" || d == "." {
-			return false
+			return Mount{}, false
 		}
+	}
+}
+
+// keepHostElement decides whether one element of a sanitised host list
+// survives, and why not when it does not. It finds the DEEPEST covering mount
+// (coveringMount) and switches EXHAUSTIVELY on its Kind, fail-closed for any
+// kind the switch does not name.
+//
+// The verdict at every kind, and at nesting — verbatim from the sanitise-C
+// design, §2:
+//
+//	element                            deepest covering mount    verdict         why
+//	/tmp/x/bin                         /tmp KindTmpfs             DROP (Tmpfs)    a tmpfs grants an EMPTY directory; the host's content is definitionally absent, so the element was never a truthful survivor
+//	/tmp (the mountpoint itself)       /tmp KindTmpfs, exact      DROP (Tmpfs)    same rule, no exact-match special case — the purest shadow slot of all
+//	/usr/bin                           /usr KindBind ro           KEEP            the host's directory really is there; `ro` IS ENOUGH is the standing contract
+//	{target}/bin                       {target} KindBind rw       KEEP            the host's directory is there and the element is truthful; that it is also writable is a fact about the sandbox the human chose, not a lie in the value snug wrote
+//	{home}/.local/bin (bind exists     {home} KindTmpfs           DROP (Tmpfs)    one bind INSIDE a directory does not make the host's directory content present — do NOT implement "keep if any mount exists at or below"
+//	  below it)
+//	{home}/.local/bin/claude (bind     that KindBind               KEEP            deepest wins; a bind under a tmpfs is still a bind
+//	  nested inside the {home} tmpfs)
+//	{home}/.gitconfig                  KindData                   KEEP            a real node with real content at exactly that path, put there deliberately
+//	/bin (usr-merged host)             KindSymlink (@sys)         KEEP            a node exists; what it resolves to is decided by the OTHER grants — following it here would be a second resolution rule, and keeping it is exactly today's behaviour
+//	under /proc, /dev                  KindProc / KindDev         KEEP            kernel- and bwrap-populated, not empty
+//	a future Kind                      —                          DROP (NoGrant)  trailing default: a new kind fails closed until someone decides
+//	not absolute, e.g. "bin"           —                          DROP (NoGrant)  unchanged; coveringMount keeps the !filepath.IsAbs guard
+//
+// Three deliberate non-changes, not to be "improved":
+//
+//   - VERBATIM, NEVER REWRITTEN. This decides only whether elem survives; the
+//     value written to Entries is elem itself, never the cleaned path — see
+//     sanitiseHostList's own DROP-NEVER-REWRITE contract.
+//   - NO SYMLINK RESOLUTION. What a KindSymlink resolves to is somebody else's
+//     grant to make truthful, not this function's to chase.
+//   - NO stat, no mode bits. internal/policy stays pure.
+func (p *Policy) keepHostElement(guest string) (bool, EnvDropReason) {
+	m, ok := p.coveringMount(guest)
+	if !ok {
+		return false, DropNoGrant
+	}
+	switch m.Kind {
+	case KindBind, KindData, KindSymlink, KindProc, KindDev:
+		return true, DropNoGrant
+	case KindTmpfs:
+		return false, DropTmpfsOnly
+	default:
+		// A future Kind fails closed until someone decides what it means here.
+		return false, DropNoGrant
 	}
 }
 

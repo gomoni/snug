@@ -154,7 +154,12 @@ then snug's stub directory if there is one, then the base. That ordering **is**
 the model's; if the screen and the resolver ever disagree, the screen is lying.
 
 Where a `sanitise` dropped host elements, the line below names them — named, not
-counted. "2 of 3 kept" is not something anybody can check.
+counted. "2 of 3 kept" is not something anybody can check. Drops are grouped by
+**why**, one line per reason: "nothing grants that path" for an element with no
+covering grant at all, and "only an empty writable tmpfs is mounted there" for
+an element whose only covering mount is a `KindTmpfs` — the directory really is
+inside the sandbox and really is empty, so keeping the element would ship a
+shadow slot pre-installed ahead of `/usr/bin`.
 
 ### 6e. An authored value naming an ungranted path says so
 

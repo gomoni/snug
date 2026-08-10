@@ -77,13 +77,33 @@ type EnvEntry struct {
 	Note string
 }
 
+// EnvDropReason is why sanitise dropped one host element, distinct from the
+// fact that it did — "1 of 3 kept" was the failure §2.8 already guards
+// against; this guards against the reason itself being wrong.
+type EnvDropReason uint8
+
+const (
+	// The zero value is the pre-existing behaviour, deliberately: an EnvDrop
+	// built without a reason reads as the conservative one.
+	DropNoGrant EnvDropReason = iota
+	DropTmpfsOnly
+)
+
+func (r EnvDropReason) String() string {
+	if r == DropTmpfsOnly {
+		return "only an empty writable tmpfs is mounted there"
+	}
+	return "nothing grants that path"
+}
+
 // EnvDrop is a host element a filter removed. Named, not counted: a filter that
 // silently removes two of three elements is the exact failure this whole model
 // exists to avoid, and "1 of 3 kept" does not let anyone check it (§2.8).
 type EnvDrop struct {
-	Value string
-	Var   string
-	From  []string
+	Value  string
+	Var    string
+	From   []string
+	Reason EnvDropReason
 }
 
 // EnvVar is one variable and everything that went into it.
