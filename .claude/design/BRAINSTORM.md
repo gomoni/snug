@@ -2,7 +2,10 @@
 
 **Status: proposed, shape decided.** §1–§3 = format. §4 = measured evidence forcing each rule. §5 = sidenote on considered-and-rejected — read only to reopen something.
 
-Decided: five verbs nested under one `environ` section; `prepend` usable **once** across whole selected set, second = failure; snug own variable types; snug never split string on separator.
+Decided: five verbs nested under one `environ` section, all of them profile
+keys; `prepend` usable **once per variable** across the selected set, a second is
+a failure; snug authors its own variables and is not bound by the verbs; snug
+owns the variable types; snug never splits a string on a separator.
 
 ---
 
@@ -147,7 +150,7 @@ Unknown name default to **scalar** — conservative reading: scalar merge with n
 
 String = exactly one element. Profile cannot write `"/usr/bin:"`, cannot produce `"/usr/bin::/bin"` by dropping element, cannot smuggle `;` into `LD_LIBRARY_PATH`. snug join with right separator for variable and refuse empty element.
 
-Close §4.3 hazards by construction, not by implementer remembering. `environ.prepend` with `PATH = "/run/snug/bin"` = one-element prepend, not string to parse; several at once = array, and order within one profile unambiguous because one profile wrote it.
+Close §4.3 hazards by construction, not by implementer remembering. `environ.prepend` with `PATH = "/opt/bin"` = one-element prepend, not string to parse; several at once = array, and order within one profile unambiguous because one profile wrote it.
 
 ### 2.3 What `prepend` actually guarantees, and what it does not
 
@@ -400,7 +403,22 @@ snug --dry-run --no-defaults -p @parent-ro . -- true
   PATH=/usr/bin:/bin:/usr/sbin:/sbin    ← no @sys:  none of the four exist
 ```
 
-Not a hole — twenty-minutes-of-confusion class. But **three existing violations**, not hypothetical — why §1.2's rule = repair, not precaution.
+Not a hole — twenty-minutes-of-confusion class. But **three existing
+violations**, not hypothetical.
+
+**The repair is to MARK them, not to stop authoring them.** An earlier draft
+concluded the opposite — author only what the profile grants — and that converts
+a confusion bug into a reachable hole, because §4.3 shows `PATH` has no safe
+absent state: leave it unset and bash substitutes a compiled-in default ending in
+`.`, which is the target. Same for `HOME`, which is where the identity generator
+writes `~/.gitconfig`, `~/.ssh/config` and `known_hosts` — a profile able to move
+it would silently defeat identity pinning.
+
+So snug keeps authoring `HOME`, `PATH` and `SHELL` unconditionally (§1.1), and
+`--dry-run` flags any authored value whose path nothing grants. That is
+invariant 5's shape — say it rather than degrade silently — and it leaves the
+"every path must be granted" rule where it belongs: on *profiles*, which have no
+such floor to protect.
 
 ### 4.3 An empty element is not nothing
 
@@ -502,12 +520,15 @@ makeWrapper also only one putting separator in the signature (`--prefix ENV SEP 
   one ordered operation — what make "at most one across the set" easy to state
   and check. Adding it mean answering whether prepend and append coexist (they
   do — different ends) and whether two appends conflict (yes, same argument).
-- **Is `environ.inherit` a preference or a grant?** CLAUDE.md say config hold
-  preferences and never grant, and copying a host value in look like a grant.
-  Counter: host environment = fact about invoking shell, so human is only one
-  positioned to name it — and moving it out of profiles mean selecting a profile
-  can no longer put a host credential inside. Holds, but it is a rule being
-  **amended**, and should be amended out loud.
+- ~~Is `environ.inherit` a preference or a grant?~~ **Settled: a grant, so it
+  stays in a profile.** An earlier draft moved it to `config.toml` and argued
+  CLAUDE.md's "config holds preferences, never grants" should be amended. Wrong
+  direction — see §1.2. Config keeps `defaults` and `prompt`, which really are
+  preferences.
+- **`path` must be retired alongside `env`.** `path = [...]` does exactly what
+  `environ.merge` on `PATH` would, and `@claude` uses it today. Shipping both is
+  two mechanisms for one idea — what the `default`-profile decision exists to
+  prevent. Same named-error treatment.
 - **`XDG_RUNTIME_DIR`** need an owner — whichever profile create a directory
   meeting the spec's obligations.
 - §4.5 untouched by any of this.
