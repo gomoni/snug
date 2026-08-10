@@ -80,7 +80,7 @@ profile hostile puts a bind of /opt at /home/u/.claude.json/evil, which is insid
        Remove the grant at /home/u/.claude.json/evil.
 
 == forbidden_env_unset_on_host ==
-profile "bad" grants env "LD_PRELOAD", which is a code-injection vector into every process in the sandbox and is never passed
+profile "bad": environ.inherit names LD_PRELOAD, which snug refuses for this verb: the value is code, executed by every process the sandbox launches. Remove the line
 
 == env_name_empty ==
 environ.set has an entry with an empty name. A variable with no name cannot be set; delete the line

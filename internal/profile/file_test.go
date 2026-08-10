@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"sort"
 	"strings"
 	"testing"
 
@@ -93,7 +94,7 @@ symlink = [{ at = "/bin", target = "usr/bin" }]
 	if len(p.Symlink) != 1 || p.Symlink[0].At != "/bin" || p.Symlink[0].Target != "usr/bin" {
 		t.Errorf("symlink parsed as %+v", p.Symlink)
 	}
-	if p.Description != "d" || len(p.RO) != 1 || len(p.Env) != 1 {
+	if p.Description != "d" || len(p.RO) != 1 || len(p.Environ.Inherit) != 1 {
 		t.Errorf("unexpected profile: %+v", p)
 	}
 }
@@ -393,7 +394,11 @@ func TestNoBuiltinPassesASecretThroughTheEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, p := range reg {
-		for _, e := range p.Env {
+		// EVERY verb, not just inherit. A `set` carries a literal value from
+		// the file, which is a worse place for a credential than a name the
+		// host supplies — so the sweep has to cover the names a profile writes
+		// as well as the ones it re-admits.
+		for _, e := range environNames(p.Environ) {
 			if allowed[e] {
 				continue
 			}
@@ -413,5 +418,219 @@ func TestNoBuiltinPassesASecretThroughTheEnvironment(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// environNames is every variable name a profile mentions, across all five
+// verbs.
+func environNames(g policy.EnvGrants) []string {
+	var out []string
+	for k := range g.Set {
+		out = append(out, k)
+	}
+	for k := range g.Merge {
+		out = append(out, k)
+	}
+	for k := range g.Prepend {
+		out = append(out, k)
+	}
+	out = append(out, g.Inherit...)
+	out = append(out, g.Sanitise...)
+	sort.Strings(out)
+	return out
+}
+
+// ── the environ block ────────────────────────────────────────────────────────
+//
+// The review artifact for the parser is this table, not a golden file: the
+// legacy rewrite is value-identical, so nothing downstream moves. What has to
+// be pinned is which SPELLINGS reach the resolver and which are refused before
+// they get there.
+
+func TestEnvironBlockParses(t *testing.T) {
+	src := `
+[profile.x]
+ro = ["/usr"]
+
+[profile.x.environ.set]
+XDG_CONFIG_HOME = "{home}/.config"
+
+[profile.x.environ.merge]
+PATH            = ["{home}/.cargo/bin", "{home}/.local/bin"]
+PKG_CONFIG_PATH = "/opt/x/lib/pkgconfig"
+
+[profile.x.environ.prepend]
+PATH = "/opt/first/bin"
+
+[profile.x.environ.inherit]
+EDITOR = true
+PAGER  = true
+
+[profile.x.environ.sanitise]
+PERL5LIB = true
+`
+	reg, err := parse([]byte(src), "test.toml", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := reg["x"].Environ
+
+	if g.Set["XDG_CONFIG_HOME"] != "{home}/.config" {
+		t.Errorf("set = %v", g.Set)
+	}
+	if len(g.Merge["PATH"]) != 2 || g.Merge["PATH"][0] != "{home}/.cargo/bin" {
+		t.Errorf("merge PATH = %v; an array is its elements, in the order written", g.Merge["PATH"])
+	}
+	// A bare string is exactly ONE element, for merge as well as prepend
+	// (CALL 1). snug never splits a value on a separator, so this must not
+	// become two entries however it is written.
+	if len(g.Merge["PKG_CONFIG_PATH"]) != 1 {
+		t.Errorf("merge PKG_CONFIG_PATH = %v; a string is one element", g.Merge["PKG_CONFIG_PATH"])
+	}
+	if len(g.Prepend["PATH"]) != 1 || g.Prepend["PATH"][0] != "/opt/first/bin" {
+		t.Errorf("prepend PATH = %v", g.Prepend["PATH"])
+	}
+	if strings.Join(g.Inherit, " ") != "EDITOR PAGER" {
+		t.Errorf("inherit = %v; names are sorted so resolution cannot depend on map order", g.Inherit)
+	}
+	if strings.Join(g.Sanitise, " ") != "PERL5LIB" {
+		t.Errorf("sanitise = %v", g.Sanitise)
+	}
+}
+
+// `environ.deny` must be refused for free, by the same DisallowUnknownFields
+// that refuses an unknown ROOT key. That is the load-bearing reason the verbs
+// are nested under one key instead of being five root keys (§1.1b): "a negation
+// key cannot be smuggled in" then applies one level down with no new code.
+func TestUnknownEnvironVerbIsFatal(t *testing.T) {
+	for _, verb := range []string{"deny", "unset", "remove", "filter", "append"} {
+		src := "[profile.x]\n[profile.x.environ." + verb + "]\nPATH = \"/opt/bin\"\n"
+		if _, err := parse([]byte(src), "test.toml", true); err == nil {
+			t.Errorf("environ.%s was accepted; the environment must not grow a verb snug "+
+				"does not understand any more than the grant language may grow a `deny`", verb)
+		}
+	}
+}
+
+// `NAME = false` is a negation key that would otherwise parse. There is no way
+// to un-inherit, because nothing was inherited to begin with — the environment
+// starts empty and everything in it was put there by name.
+func TestInheritFalseIsRefusedByName(t *testing.T) {
+	for _, verb := range []string{"inherit", "sanitise"} {
+		src := "[profile.x]\n[profile.x.environ." + verb + "]\nEDITOR = false\n"
+		_, err := parse([]byte(src), "mine.toml", true)
+		if err == nil {
+			t.Fatalf("environ.%s EDITOR = false was accepted; a stored false is a negation "+
+				"key wearing a verb's clothes", verb)
+		}
+		for _, want := range []string{"EDITOR", "false", "Remove the line"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("environ.%s = false: error %q does not contain %q", verb, err, want)
+			}
+		}
+		// CONTROL: `= true`, the spelling that means something, still parses.
+		src = "[profile.x]\n[profile.x.environ." + verb + "]\n" +
+			map[string]string{"inherit": "EDITOR", "sanitise": "PERL5LIB"}[verb] + " = true\n"
+		if _, err := parse([]byte(src), "mine.toml", true); err != nil {
+			t.Errorf("environ.%s = true must parse, or the refusal above reads as a ban on "+
+				"the verb rather than on the spelling: %v", verb, err)
+		}
+	}
+}
+
+// go-toml's own decode error for a wrong value type names neither the profile
+// nor the file nor the verb, and a profile author with several files gets no
+// help from it.
+func TestEnvironValueTypeErrorsNameTheProfile(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{"a number in an array", "[profile.x.environ.merge]\nPATH = [1, 2]\n"},
+		{"a bare boolean", "[profile.x.environ.merge]\nPATH = true\n"},
+		{"a nested array", "[profile.x.environ.prepend]\nPATH = [[\"/opt/bin\"]]\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parse([]byte("[profile.x]\n"+tc.src), "/home/u/.config/snug/profiles.d/mine.toml", true)
+			if err == nil {
+				t.Fatal("accepted a value that is not a string or an array of strings")
+			}
+			for _, want := range []string{"mine.toml", `"x"`, "PATH"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// The retired keys are REWRITTEN, not carried alongside: `env` is exactly
+// `environ.inherit` and `path` is exactly `environ.merge` on PATH. Shipping
+// both spellings would be two mechanisms for one idea.
+func TestRetiredEnvAndPathAreRewritten(t *testing.T) {
+	src := `
+[profile.x]
+env  = ["EDITOR", "PAGER"]
+path = ["{home}/.local/bin"]
+`
+	reg, err := parse([]byte(src), "mine.toml", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := reg["x"].Environ
+	if strings.Join(g.Inherit, " ") != "EDITOR PAGER" {
+		t.Errorf("env = [...] did not become environ.inherit: %v", g.Inherit)
+	}
+	if strings.Join(g.Merge["PATH"], " ") != "{home}/.local/bin" {
+		t.Errorf("path = [...] did not become environ.merge on PATH: %v", g.Merge)
+	}
+
+	// And the two spellings coexist in one profile without one dropping the
+	// other — the rewrite APPENDS to whatever the new spelling already said.
+	src = `
+[profile.y]
+path = ["/opt/old/bin"]
+[profile.y.environ.merge]
+PATH = ["/opt/new/bin"]
+`
+	reg, err = parse([]byte(src), "mine.toml", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reg["y"].Environ.Merge["PATH"]; len(got) != 2 {
+		t.Errorf("merge PATH = %v, want both spellings' entries; a rewrite that REPLACED "+
+			"would silently drop a grant", got)
+	}
+}
+
+// The parse-time checks run in parse, beside checkName — so `snug profile show`
+// reports them and the verdict on a profile never depends on the host reading
+// it (§2.3).
+func TestEnvironIsValidatedAtParseTime(t *testing.T) {
+	bad := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"a name snug owns", "[profile.x.environ.set]\nHOME = \"/tmp\"\n", "HOME"},
+		{"a forbidden name", "[profile.x.environ.set]\nLD_PRELOAD = \"/tmp/x.so\"\n", "LD_PRELOAD"},
+		{"a name with '='", "[profile.x.environ.set]\n\"A=B\" = \"c\"\n", "="},
+		{"the wrong verb for the type", "[profile.x.environ.set]\nPATH = \"/opt/bin\"\n", "environ.merge"},
+		{"a hand-written separator", "[profile.x.environ.merge]\nPATH = \"/a:/b\"\n", "separator"},
+	}
+	for _, tc := range bad {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parse([]byte("[profile.x]\n"+tc.src), "/home/u/.config/snug/profiles.d/mine.toml", true)
+			if err == nil {
+				t.Fatal("accepted; this must not wait until a sandbox is resolved")
+			}
+			if !strings.Contains(err.Error(), "mine.toml") {
+				t.Errorf("the error must name the file to edit: %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not contain %q", err, tc.want)
+			}
+		})
 	}
 }

@@ -272,38 +272,32 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 			p.Net.MTU, mtuOwner = prof.MTU, name
 		}
 
-		for _, d := range prof.Path {
+		// The environment grants. Every rule that is a property of the profile
+		// TEXT runs at parse time (internal/profile calls ValidateEnvGrants), so
+		// a profile's verdict does not depend on the host reading it — but a
+		// Profile built in code never went through a parser, so the same check
+		// runs here too. It is pure and cheap, and the alternative is a gate
+		// that exists on one of two paths.
+		if err := ValidateEnvGrants(prof.Environ); err != nil {
+			return nil, fmt.Errorf("profile %q: %w", name, err)
+		}
+		if err := refuseUnresolvedEnvVerbs(name, prof.Environ); err != nil {
+			return nil, err
+		}
+
+		for _, d := range prof.Environ.Merge["PATH"] {
 			e, err := expandVars(d, vars)
 			if err != nil {
 				return nil, fmt.Errorf("profile %q: %w", name, err)
 			}
 			if !filepath.IsAbs(e) {
-				return nil, fmt.Errorf("profile %q: path %q must be absolute", name, d)
+				return nil, fmt.Errorf("profile %q: environ.merge PATH entry %q must be an absolute path", name, d)
 			}
 			dir := filepath.Clean(e)
 			pathDirs[dir] = append(pathDirs[dir], name)
 		}
 
-		for _, e := range prof.Env {
-			// The refusal is UNCONDITIONAL, and it used to sit inside the
-			// presence check below. That made a profile carrying
-			// env = ["LD_PRELOAD"] legal on a host where LD_PRELOAD happens to
-			// be unset and refused on one where it is set: the same profile
-			// passed review on one machine and failed on another. Whether a
-			// grant is allowed is a property of the profile, not of whoever
-			// launched snug (§4.4).
-			if yes, _ := forbiddenFor(e, VerbInherit); yes {
-				return nil, fmt.Errorf("profile %q grants env %q, which is a code-injection vector into every process in the sandbox and is never passed", name, e)
-			}
-			// The rest of the parse-time rules — the name grammar, ownership,
-			// and "inherit is refused for every list variable" — applied to the
-			// legacy key, which is semantically `inherit`. The forbidden check
-			// above keeps its own older wording rather than checkEnvName's:
-			// its text is pinned in the refusals golden, and this key is on its
-			// way out. Everything NEW says it in checkEnvName's words.
-			if err := checkEnvEntry(e, VerbInherit); err != nil {
-				return nil, fmt.Errorf("profile %q: %w", name, err)
-			}
+		for _, e := range prof.Environ.Inherit {
 			// PRESENCE, not non-emptiness. A variable the host has set to the
 			// empty string is SET, and for a flag like NO_COLOR that is the
 			// whole meaning — "set to any value, including empty" (§3.2, §4.6a).
@@ -518,6 +512,35 @@ func under(canonTarget, p string) (string, bool) {
 // is needed by cmd/snug's staging layer, and three sites there were assigning
 // p.Mounts[...] directly instead, bypassing both the provenance record and
 // Validate.
+
+// refuseUnresolvedEnvVerbs fails closed on a verb snug can parse but cannot yet
+// apply.
+//
+// Accepting one and quietly doing nothing with it is the failure mode this
+// project treats as the worst it has: a human reads the profile, believes the
+// variable is set, and nothing on any channel says otherwise. A refusal naming
+// the verb costs an error message; a silent no-op costs the trust that makes
+// --dry-run worth reading. It goes away the moment the fold below learns the
+// remaining verbs.
+func refuseUnresolvedEnvVerbs(name string, g EnvGrants) error {
+	for _, unresolved := range []struct {
+		verb string
+		n    int
+	}{
+		{"set", len(g.Set)},
+		{"prepend", len(g.Prepend)},
+		{"sanitise", len(g.Sanitise)},
+	} {
+		if unresolved.n == 0 {
+			continue
+		}
+		return fmt.Errorf("profile %q uses environ.%s, which this build of snug parses and "+
+			"checks but does not yet apply. Rather than accept it and set nothing, snug "+
+			"refuses: a variable a profile says it sets and snug silently drops is worse "+
+			"than one that never resolved", name, unresolved.verb)
+	}
+	return nil
+}
 
 // forbiddenEnv lives in envtypes.go now, split by verb: a value carried by a
 // reviewed profile file and a value inherited from whoever launched snug are

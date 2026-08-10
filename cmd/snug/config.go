@@ -175,6 +175,49 @@ func configCmd(args []string) int {
 	return 0
 }
 
+// showEnviron renders all five environment verbs.
+//
+// It renders ALL of them for the same reason `snug profile show` exists at all:
+// this line used to read `show("env", p.Env)` and never rendered `path` either,
+// so a profile putting a directory on the sandbox's PATH looked, on this
+// screen, like a profile that granted nothing to the environment. A display
+// that omits a grant is worse than no display, because it is read as complete.
+//
+// The parse-time checks in policy.ValidateEnvGrants are part of the argument
+// for `snug profile show` reporting a verdict with no target; showing what it
+// checked is the other half.
+func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
+	pairs := func(label string, m map[string]string) {
+		names := make([]string, 0, len(m))
+		for k := range m {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		vals := make([]string, 0, len(names))
+		for _, n := range names {
+			vals = append(vals, n+" = "+m[n])
+		}
+		show(label, vals)
+	}
+	lists := func(label string, m map[string][]string) {
+		names := make([]string, 0, len(m))
+		for k := range m {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		vals := make([]string, 0, len(names))
+		for _, n := range names {
+			vals = append(vals, n+" = "+strings.Join(m[n], " "))
+		}
+		show(label, vals)
+	}
+	pairs("set", g.Set)
+	lists("merge", g.Merge)
+	lists("prepend", g.Prepend)
+	show("inherit", g.Inherit)
+	show("sanitise", g.Sanitise)
+}
+
 func profileCmd(args []string) int {
 	reg, err := profile.Load()
 	if err != nil {
@@ -238,7 +281,7 @@ func profileCmd(args []string) int {
 		show("ro", p.RO)
 		show("rw", p.RW)
 		show("tmpfs", p.Tmpfs)
-		show("env", p.Env)
+		showEnviron(p.Environ, show)
 		for i, s := range p.Symlink {
 			head := ""
 			if i == 0 {

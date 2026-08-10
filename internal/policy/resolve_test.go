@@ -106,14 +106,19 @@ func testRegistry() map[string]*Profile {
 		// profiles in testDefaults, which the goldens are built from. A fake
 		// @home with a grant the real one does not have would make the goldens
 		// describe a sandbox no user gets.
-		"cwd-ro": {Name: "cwd-ro", RO: []string{"{target}"}, Path: []string{"{home}/.local/bin"}},
+		"cwd-ro": {Name: "cwd-ro", RO: []string{"{target}"},
+			Environ: EnvGrants{Merge: map[string][]string{"PATH": {"{home}/.local/bin"}}}},
 		// Carries the environment grants, for the same reason `netty` carries
 		// the network scalars: canon() renders them, so the commutativity and
 		// idempotence tests only cover them if a fixture uses them. Two profiles
 		// naming ONE variable and one directory is deliberate — that is the case
 		// where provenance could come out fold-order-dependent.
-		"envy":     {Name: "envy", Env: []string{"EDITOR"}, Path: []string{"/opt/tools/bin"}},
-		"envy-too": {Name: "envy-too", Env: []string{"EDITOR"}, Path: []string{"/opt/tools/bin"}},
+		"envy": {Name: "envy", Environ: EnvGrants{
+			Inherit: []string{"EDITOR"},
+			Merge:   map[string][]string{"PATH": {"/opt/tools/bin"}}}},
+		"envy-too": {Name: "envy-too", Environ: EnvGrants{
+			Inherit: []string{"EDITOR"},
+			Merge:   map[string][]string{"PATH": {"/opt/tools/bin"}}}},
 		// A pure composition point with a two-level include chain
 		// (combo -> @cwd-rw -> @home). The builtin `default` used to be one of
 		// these; it is now the `defaults` SETTING (internal/profile/defaults.go),
@@ -536,7 +541,7 @@ func TestIncludeCycleIsDetected(t *testing.T) {
 // the human learns why their profile did not do what it said.
 func TestForbiddenEnvIsRefusedLoudly(t *testing.T) {
 	reg := testRegistry()
-	reg["bad"] = &Profile{Name: "bad", Env: []string{"LD_PRELOAD"}}
+	reg["bad"] = &Profile{Name: "bad", Environ: EnvGrants{Inherit: []string{"LD_PRELOAD"}}}
 	env := newFakeEnv()
 	env.env["LD_PRELOAD"] = "/tmp/evil.so"
 
@@ -571,7 +576,7 @@ func TestForbiddenEnvIsRefusedEvenWhenUnsetOnTheHost(t *testing.T) {
 // §4.6a).
 func TestSetButEmptyHostVariableReachesTheSandbox(t *testing.T) {
 	reg := testRegistry()
-	reg["flags"] = &Profile{Name: "flags", Env: []string{"NO_COLOR", "PAGER"}}
+	reg["flags"] = &Profile{Name: "flags", Environ: EnvGrants{Inherit: []string{"NO_COLOR", "PAGER"}}}
 	env := newFakeEnv()
 	env.env["NO_COLOR"] = ""
 
@@ -717,8 +722,8 @@ func TestProfilePathReachesPATH(t *testing.T) {
 // profiles, so it is the one place an order dependence could hide.
 func TestPATHIsOrderIndependent(t *testing.T) {
 	reg := testRegistry()
-	reg["tools-a"] = &Profile{Name: "tools-a", Path: []string{"/opt/a/bin"}}
-	reg["tools-b"] = &Profile{Name: "tools-b", Path: []string{"/opt/b/bin"}}
+	reg["tools-a"] = &Profile{Name: "tools-a", Environ: EnvGrants{Merge: map[string][]string{"PATH": {"/opt/a/bin"}}}}
+	reg["tools-b"] = &Profile{Name: "tools-b", Environ: EnvGrants{Merge: map[string][]string{"PATH": {"/opt/b/bin"}}}}
 
 	one, err := Resolve(reg, []string{"@sys", "@cwd-rw", "tools-a", "tools-b"}, testCtx(), newFakeEnv())
 	if err != nil {
@@ -932,12 +937,12 @@ func TestBindSocketProvenanceIsParameterized(t *testing.T) {
 // to be, which is a different directory per invocation.
 func TestRelativeProfilePathIsRefused(t *testing.T) {
 	reg := testRegistry()
-	reg["bad"] = &Profile{Name: "bad", Path: []string{"bin"}}
+	reg["bad"] = &Profile{Name: "bad", Environ: EnvGrants{Merge: map[string][]string{"PATH": {"bin"}}}}
 	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "bad"}, testCtx(), newFakeEnv())
 	if err == nil {
 		t.Fatal("a relative path entry was accepted")
 	}
-	if !strings.Contains(err.Error(), "must be absolute") {
+	if !strings.Contains(err.Error(), "must be an absolute path") {
 		t.Errorf("unhelpful error: %v", err)
 	}
 }

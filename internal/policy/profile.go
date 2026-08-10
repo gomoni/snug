@@ -65,32 +65,20 @@ type Profile struct {
 	// Identity pins one git/ssh/gh account. See identity.go.
 	Identity *Identity
 
-	// Env names host variables to re-admit past --clearenv. Values are read from
-	// the host at launch; a profile never carries a value.
-	Env []string
-
-	// Path names directories to put on the sandbox's PATH.
+	// Environ is a profile's `environ` block: the five verbs, parsed.
 	//
-	// This is the one key here that GRANTS NOTHING, and that is what makes it
-	// safe rather than an exception. A directory on PATH that was never mounted
-	// is inert, PATH is not an access control, and the payload can set its own
-	// PATH or call anything by absolute path — so there is no abuse sentence to
-	// write, which is the argument for allowing it at all.
+	// It replaces two earlier keys that said less. `env = [...]` named host
+	// variables to re-admit past --clearenv, which is exactly `environ.inherit`;
+	// `path = [...]` named directories for the sandbox's PATH, which is exactly
+	// `environ.merge` on PATH. Both are rewritten into this at parse time.
 	//
-	// It exists because a profile that mounts an executable somewhere nothing
-	// looks is broken on its own terms: `@claude` bound ~/.local/bin/claude and
-	// `snug -p @claude . -- claude` answered "No such file or directory". The
-	// alternative — a second profile the human has to remember — makes one
-	// profile depend on another to do its job.
-	//
-	// Composes like everything else: the directories are collected into a SET
-	// and sorted, so resolution stays commutative and idempotent, and adding a
-	// profile can only ever ADD entries.
-	Path []string
-
-	// Environ is a profile's `environ` block: the five verbs, parsed. Not yet
-	// populated by anything — the parser lands with the verbs — but the type
-	// belongs beside the grants it sits next to in the TOML.
+	// PATH deserves the note the old `path` key carried, because it is what
+	// makes the whole key safe rather than an exception: a directory on PATH
+	// that was never mounted GRANTS NOTHING. PATH is not an access control, and
+	// the payload can set its own or call anything by absolute path. What the
+	// key buys is that a profile mounting an executable somewhere nothing looks
+	// is broken on its own terms — @claude bound ~/.local/bin/claude and
+	// `snug -p @claude . -- claude` answered "No such file or directory".
 	Environ EnvGrants
 
 	// Source is the file this profile came from, and Trusted records whether

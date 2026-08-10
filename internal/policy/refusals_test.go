@@ -399,7 +399,7 @@ func TestPostStagingValidateCatchesNestedGrant(t *testing.T) {
 // there, with nothing in either message explaining the difference.
 func refusalForbiddenEnvUnsetOnHost(t testing.TB) error {
 	reg := testRegistry()
-	reg["bad"] = &Profile{Name: "bad", Env: []string{"LD_PRELOAD"}}
+	reg["bad"] = &Profile{Name: "bad", Environ: EnvGrants{Inherit: []string{"LD_PRELOAD"}}}
 	env := newFakeEnv() // deliberately WITHOUT LD_PRELOAD set
 	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "bad"}, testCtx(), env)
 	return err
