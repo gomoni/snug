@@ -82,8 +82,10 @@ ro = ["/usr"]
 rw = ["{target}"]
 tmpfs = ["{home}"]
 optional = ["/opt"]
-env = ["EDITOR"]
 symlink = [{ at = "/bin", target = "usr/bin" }]
+
+[profile.x.environ.inherit]
+EDITOR = true
 `
 	reg, err := parse([]byte(src), "test.toml", true)
 	if err != nil {
@@ -567,42 +569,66 @@ func TestEnvironValueTypeErrorsNameTheProfile(t *testing.T) {
 	}
 }
 
-// The retired keys are REWRITTEN, not carried alongside: `env` is exactly
-// `environ.inherit` and `path` is exactly `environ.merge` on PATH. Shipping
-// both spellings would be two mechanisms for one idea.
-func TestRetiredEnvAndPathAreRewritten(t *testing.T) {
-	src := `
-[profile.x]
-env  = ["EDITOR", "PAGER"]
-path = ["{home}/.local/bin"]
-`
-	reg, err := parse([]byte(src), "mine.toml", true)
-	if err != nil {
-		t.Fatal(err)
+// ── the retired keys ─────────────────────────────────────────────────────────
+//
+// `env` and `path` are gone, and the error names the replacement rather than
+// letting DisallowUnknownFields say "unknown key". That is the difference
+// between a key that should never have existed (publish_auto, deleted outright)
+// and a key whose MEANING MOVED: `env = [...]` is still a thing a profile wants
+// to say, and the reader needs the new spelling, not the news that a word does
+// not exist.
+//
+// The prefix changed on purpose. A silently CHANGED meaning is worse than a
+// removed key, so anyone whose muscle memory reaches for `env` gets an error
+// naming `environ.inherit` instead of a subtly different grant that parses.
+
+func TestRetiredEnvKeyNamesTheFix(t *testing.T) {
+	_, err := parse([]byte("[profile.x]\nenv = [\"EDITOR\", \"PAGER\"]\n"), "mine.toml", true)
+	if err == nil {
+		t.Fatal("`env = [...]` is retired and must be refused")
 	}
-	g := reg["x"].Environ
-	if strings.Join(g.Inherit, " ") != "EDITOR PAGER" {
-		t.Errorf("env = [...] did not become environ.inherit: %v", g.Inherit)
-	}
-	if strings.Join(g.Merge["PATH"], " ") != "{home}/.local/bin" {
-		t.Errorf("path = [...] did not become environ.merge on PATH: %v", g.Merge)
+	for _, want := range []string{"mine.toml", `"x"`, "environ.inherit", "EDITOR = true", "PAGER = true"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q — the message has to be pasteable, or the\n"+
+				"author has to go and read the design to find out what replaced the key", err, want)
+		}
 	}
 
-	// And the two spellings coexist in one profile without one dropping the
-	// other — the rewrite APPENDS to whatever the new spelling already said.
-	src = `
-[profile.y]
-path = ["/opt/old/bin"]
-[profile.y.environ.merge]
-PATH = ["/opt/new/bin"]
-`
-	reg, err = parse([]byte(src), "mine.toml", true)
+	// POSITIVE CONTROL. Without it the refusal reads as a ban on the CAPABILITY
+	// rather than on the retired spelling, which is the exact control
+	// TestRetiredPublishAutoIsAHardError already carries.
+	reg, err := parse([]byte("[profile.x.environ.inherit]\nEDITOR = true\nPAGER = true\n"), "mine.toml", true)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("the replacement spelling must parse: %v", err)
 	}
-	if got := reg["y"].Environ.Merge["PATH"]; len(got) != 2 {
-		t.Errorf("merge PATH = %v, want both spellings' entries; a rewrite that REPLACED "+
-			"would silently drop a grant", got)
+	if got := strings.Join(reg["x"].Environ.Inherit, " "); got != "EDITOR PAGER" {
+		t.Errorf("environ.inherit = %q, want both names", got)
+	}
+}
+
+func TestRetiredPathKeyNamesTheFix(t *testing.T) {
+	_, err := parse([]byte("[profile.x]\npath = [\"{home}/.local/bin\"]\n"), "mine.toml", true)
+	if err == nil {
+		t.Fatal("`path = [...]` is retired and must be refused")
+	}
+	for _, want := range []string{"mine.toml", `"x"`, "environ.merge", `PATH = ["{home}/.local/bin"]`,
+		"environ.prepend", "GRANT"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+
+	// POSITIVE CONTROL, and one that says more than the env one: the replacement
+	// spelling parses AND the message told the author about the new obligation
+	// (the profile must grant what it names), which is the part that would
+	// otherwise surface later as a refusal from a different file.
+	reg, err := parse([]byte("[profile.x]\nro = [\"{home}/.local/bin\"]\n"+
+		"[profile.x.environ.merge]\nPATH = [\"{home}/.local/bin\"]\n"), "mine.toml", true)
+	if err != nil {
+		t.Fatalf("the replacement spelling must parse: %v", err)
+	}
+	if got := strings.Join(reg["x"].Environ.Merge["PATH"], " "); got != "{home}/.local/bin" {
+		t.Errorf("environ.merge PATH = %q", got)
 	}
 }
 

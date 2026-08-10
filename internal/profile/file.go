@@ -44,8 +44,8 @@ type rawProfile struct {
 	// Env and Path are the retired spellings, kept as FIELDS rather than
 	// deleted. Deleting them would let DisallowUnknownFields produce the generic
 	// "unknown key" message, and a key whose meaning MOVED deserves a named
-	// error pointing at the replacement (§6). Today they are rewritten into
-	// Environ with a warning; the hard error comes later.
+	// error pointing at the replacement — see retiredEnvKey and retiredPathKey,
+	// which is the whole reason these two lines are still here.
 	Env  []string `toml:"env"`
 	Path []string `toml:"path"`
 
@@ -206,13 +206,8 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 	return reg, nil
 }
 
-// toEnvGrants turns one profile's raw `environ` block — plus the two retired
-// keys it absorbs — into the value the resolver folds.
-//
-// The retired keys are REWRITTEN, not carried alongside: `env = [...]` is
-// exactly `environ.inherit` and `path = [...]` is exactly `environ.merge` on
-// PATH, and shipping both spellings would be two mechanisms for one idea, which
-// is what the retired `default` profile exists to warn about.
+// toEnvGrants turns one profile's raw `environ` block into the value the
+// resolver folds, and refuses the two keys it replaced.
 func toEnvGrants(r rawProfile, name, source string) (policy.EnvGrants, error) {
 	g := policy.EnvGrants{}
 	if e := r.Environ; e != nil {
@@ -233,34 +228,72 @@ func toEnvGrants(r rawProfile, name, source string) (policy.EnvGrants, error) {
 	}
 
 	if len(r.Env) > 0 {
-		warnRetiredKey(source, name, "env", "[profile."+name+".environ.inherit] with NAME = true per variable")
-		g.Inherit = mergeNames(g.Inherit, r.Env)
+		return g, retiredEnvKey(source, name, r.Env)
 	}
 	if len(r.Path) > 0 {
-		warnRetiredKey(source, name, "path", "[profile."+name+".environ.merge] on PATH")
-		if g.Merge == nil {
-			g.Merge = map[string][]string{}
-		}
-		g.Merge["PATH"] = append(append([]string(nil), g.Merge["PATH"]...), r.Path...)
+		return g, retiredPathKey(source, name, r.Path)
 	}
 	return g, nil
 }
 
-// warnRetiredKey tells the human which file to edit and what to write instead.
-// Non-fatal for now; the named hard error comes when the keys are retired.
+// The two retired keys, and why they are FIELDS on rawProfile rather than
+// deletions.
 //
-// It is silent for a BUILTIN, and that is not snug covering for itself: the
-// source of a builtin is a file compiled into the binary, so the message would
-// name something the reader cannot edit — and a warning nobody can act on
-// trains people to ignore warnings. snug's own use of the retired keys is
-// caught by its own test suite the moment they become fatal, which is a harder
-// gate than a line on stderr.
-func warnRetiredKey(source, profile, key, replacement string) {
-	if strings.HasPrefix(source, "builtin:") {
-		return
+// `publish_auto` was retired by deleting its struct field and letting
+// DisallowUnknownFields fire, which yields the generic "unknown key" message.
+// That is right for a key that never should have existed and wrong for a key
+// whose MEANING MOVED: `env = [...]` is still a thing a profile wants to say,
+// and the reader needs to be told the new spelling rather than told the key does
+// not exist. So both fields stay, and both errors name the replacement — spelled
+// out with this profile's own variables, so the fix can be pasted.
+//
+// The prefix changed deliberately. `env` became `environ.inherit` and not
+// `environ.env`, because a silently CHANGED meaning is worse than a removed key:
+// anyone whose muscle memory reaches for the old word gets an error naming the
+// new one, rather than a subtly different grant that parses.
+
+func retiredEnvKey(source, name string, names []string) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s: profile %q uses `env = [...]`, which snug no longer accepts.\n", source, name)
+	fmt.Fprintf(&b, "       It is now [profile.%s.environ.inherit], one NAME = true per variable:\n", name)
+	fmt.Fprintf(&b, "         [profile.%s.environ.inherit]\n", name)
+	for _, n := range sortedCopy(names) {
+		fmt.Fprintf(&b, "         %s = true\n", n)
 	}
-	fmt.Fprintf(os.Stderr, "snug: %s: profile %q uses `%s = [...]`, which is being retired. "+
-		"Write it as %s.\n", source, profile, key, replacement)
+	b.WriteString("       One name per line because `inherit` is a hole punched in --clearenv, and a\n")
+	b.WriteString("       list is easy to extend without reading. Each name is now checked: snug\n")
+	b.WriteString("       refuses the ones whose value is code, and refuses a list variable outright\n")
+	b.WriteString("       (use environ.sanitise, which keeps only the elements policy grants).")
+	return fmt.Errorf("%s", b.String())
+}
+
+func retiredPathKey(source, name string, dirs []string) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s: profile %q uses `path = [...]`, which snug no longer accepts.\n", source, name)
+	fmt.Fprintf(&b, "       It is now [profile.%s.environ.merge] on PATH:\n", name)
+	fmt.Fprintf(&b, "         [profile.%s.environ.merge]\n", name)
+	fmt.Fprintf(&b, "         PATH = [%s]\n", quotedList(dirs))
+	b.WriteString("       Use environ.prepend instead if you need to be ahead of every other\n")
+	b.WriteString("       profile's entry — at most one profile may hold the front of a variable, and\n")
+	b.WriteString("       two claiming it is a refusal rather than whichever sorted first.\n")
+	b.WriteString("       Note that the profile must now GRANT the directories it names: a variable\n")
+	b.WriteString("       pointing at a path that is not inside the sandbox is worse than an absent one.")
+	return fmt.Errorf("%s", b.String())
+}
+
+func quotedList(in []string) string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		out = append(out, fmt.Sprintf("%q", s))
+	}
+	return strings.Join(out, ", ")
+}
+
+// sortedCopy mirrors policy's, for a message that does not depend on map order.
+func sortedCopy(in []string) []string {
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	return out
 }
 
 // toElementLists accepts a bare string as ONE element and an array as its
@@ -320,19 +353,6 @@ func toNameSet(in map[string]bool, verb, profile, source string) ([]string, erro
 		out = append(out, name)
 	}
 	return out, nil
-}
-
-func mergeNames(a, b []string) []string {
-	seen := map[string]bool{}
-	out := []string{}
-	for _, s := range append(append([]string(nil), a...), b...) {
-		if !seen[s] {
-			seen[s] = true
-			out = append(out, s)
-		}
-	}
-	sort.Strings(out)
-	return out
 }
 
 func copyStringMap(in map[string]string) map[string]string {

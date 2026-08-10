@@ -836,6 +836,59 @@ sides of `{home}/...` grants get canonicalised by `add()`, the guest side does
 not. Fix is one call in `Resolve`. Expect a golden argv diff on any host where
 `$HOME` traverses a symlink — correct, and to be reviewed as a security change.
 
+## Left open by the `environ` work
+
+Two things the environment-variable change deliberately did not fix. Both were
+found while implementing it; neither is a regression of it.
+
+### **[portability]** The flat `environ = { set = { … } }` form parses here
+
+TOML 1.0 does not allow a multi-line inline table, and go-toml v2.4.3 accepts one
+anyway — measured. So a profile written
+
+```toml
+[profile.x]
+environ = { set = {
+  MY_VAR = "1",
+} }
+```
+
+works on this host and fails on a stricter parser. **It is not implementable
+post-decode:** the decoded value is byte-identical to the header form
+(`[profile.x.environ.set]`), and go-toml hands us no syntax provenance, so
+refusing it needs a second independent pass over the document text.
+
+Recorded rather than fixed, and the important half is what must NOT happen: no
+comment anywhere may claim snug refuses this form. A gate that is documented and
+not implemented is not a gate. Write the header form.
+
+### **[security, pre-existing]** The environment outranks the pinned config file
+
+Untouched by the `environ` work, and a reader will assume `environ.set` made it
+worse. It did not — a profile is reviewed text in a trusted layer — but the
+underlying fact is live and measured:
+
+```
+env -i GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+       GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=Injected \
+       git config --get user.name          →  Injected
+```
+
+*A hostile process inside the sandbox can set `GIT_CONFIG_KEY_0=core.sshCommand`
+and have the next `git fetch` — including one an unsuspecting user or agent runs
+— execute its command, with `GIT_CONFIG_GLOBAL` pointing at a perfectly clean
+generated file.* Not a break in the sandbox boundary (the payload already runs
+code); a break in **identity pinning**, which is the guarantee `GIT_CONFIG_GLOBAL`
+exists to make. The same shape is documented for npm (`npm_config_*` outrank
+`.npmrc`) and pip (`PIP_*` outrank the file).
+
+What the `environ` work did do is refuse those names in a profile:
+`GIT_CONFIG_*` and `LD_*` are forbidden at every verb, `PIP_*` and `npm_config_*`
+for `inherit`. That closes the profile-authored route and nothing else. The
+payload-authored route wants its own investigation and its own fix —
+"generate, don't bind" pins a tool's **file** and leaves its **environment**,
+which is the higher-precedence source.
+
 ## Pseudo-filesystem exposure (`/proc`, `/sys`, `/dev`)
 
 Full report: [`.claude/design/PSEUDOFS-AUDIT.md`](.claude/design/PSEUDOFS-AUDIT.md) — deep research +

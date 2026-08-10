@@ -353,8 +353,10 @@ PATH = ["{home}/.local/bin"]
 # Same reasoning as `etc-full` above, and the same one-line escape hatch:
 #
 #   [profile.local-bin]
-#   ro   = ["{home}/.local/bin"]
-#   path = ["{home}/.local/bin"]
+#   ro = ["{home}/.local/bin"]
+#
+#   [profile.local-bin.environ.merge]
+#   PATH = ["{home}/.local/bin"]
 #
 # What it costs is why snug does not ship it. ~/.local/bin is wherever pipx, uv,
 # cargo-install and your own scripts land — a mixed, personal, host-managed set.
