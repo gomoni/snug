@@ -213,6 +213,22 @@ section "E10 the engine in a view DERIVED from the sandbox, with storage grafted
   down
 fi
 
+if run E11; then
+section "E11 P1 is not a daemon: it dies when its last payload does"
+  up
+  ctl sandbox 2 >/dev/null          # sandbox whose payload exits after 2s
+  INIT=$(ctl info | sed -n 's/sandbox_init_pid=//p')
+  NETNS=$(readlink /proc/$P1/ns/net | tr -d 'net:[]')
+  want "positive control: the stage is serving while the payload runs" "pong" "$(ctl ping)"
+  sleep 3.5
+  want "the stage exited on its own" "0" "$(ls -d /proc/$P1 2>/dev/null | grep -c .)"
+  want "so did the launcher" "0" "$(ls -d /proc/$P0 2>/dev/null | grep -c .)"
+  want "the network namespace is gone" "0" "$(ls -l /proc/*/ns/net 2>/dev/null | grep -cF "$NETNS")"
+  want "and it did NOT stay up waiting for a client" "1" \
+       "$(ctl ping >/dev/null 2>&1; echo $?)"
+  down
+fi
+
 if run E8; then
 section "E8  teardown: SIGKILL the launcher, nothing survives"
   up --net

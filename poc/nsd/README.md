@@ -11,7 +11,7 @@ own Go module so `./...` and `make gate` never see it.
 KEEP=1 ./run.sh E3   leave the stage running afterwards to poke at it
 ```
 
-Last full run on this host: **pass=44 fail=0**.
+Last full run on this host: **pass=49 fail=0**.
 
 ## What is here
 

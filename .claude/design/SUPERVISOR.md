@@ -2,7 +2,7 @@
 
 Investigation and proof of concept, 2026-08-11. Everything marked **MEASURED**
 was executed on this host; the code that measures it is `poc/nsd/`, and
-`poc/nsd/run.sh` re-runs all 44 checks (`pass=44 fail=0` at the time of writing).
+`poc/nsd/run.sh` re-runs all 49 checks (`pass=49 fail=0` at the time of writing).
 Everything else is reasoning and is marked as such.
 
 Read [ENGINE-NETNS.md](ENGINE-NETNS.md) first. This document does not replace it
@@ -88,6 +88,7 @@ is nothing to connect to.
 | E7 | an engine-shaped child keeps N and gets a private copy of the host mount tree | PASS |
 | E8 | SIGKILL the launcher: stage, sandbox, attached payloads and the netns all go | PASS |
 | E9 | two payloads share one sandbox's tmpfs and pid namespace; the host sees neither | PASS |
+| E11 | the stage exits when its last payload does, taking the launcher and the netns with it, and does not stay up for the next client | PASS |
 | E10 | the engine can run in a mount view **derived from the sandbox's**, with the container storage grafted in from outside, and the graft does not propagate back | PASS |
 
 ## 3. The kernel facts this rests on
@@ -324,19 +325,42 @@ wanted later it can be written against a protocol that already works.
   shape** under §6's derived view. Storage was measured; the others are the same
   mechanism repeated, but each is a named hole and none is free.
 
-## 9. The decision this needs from the owner
+## 9. P1 is not a daemon — DECIDED, and enforced
 
-**How long does P1 live?** `tmux` keeps its server after the last client
-detaches; that is what makes `tmux attach` useful from a new terminal, and it is
-also the thing invariant 4 is nervous about.
+**Decision (owner, 2026-08-11): the stage exits as soon as its last payload
+does. There is no detached mode, no `--keep`, and it is never converted into a
+service.** MEASURED (E11): with a sandbox whose payload exits after two seconds,
+the stage tears itself down, the launcher exits, the network namespace is
+destroyed, and a subsequent `ping` on the control socket fails — it did not stay
+up waiting for a client.
 
-Recommendation: P1 exits when its last payload exits (so `snug <dir> -- make
-test` behaves exactly as it does today, and nothing lingers), with an explicit
-`--keep`/detached mode for the `attach` workflow. No auto-start, no
-socket activation, no restart, nothing that survives a logout unless the human
-asked for it in that invocation. The lifeline makes "the launcher died" a
-teardown rather than an orphan, which is the property that keeps this a fork and
-not a daemon.
+The mechanism is a reference count over payloads (a sandbox, and any process
+attached to one), and the rule that ends the process is `count == 0` after the
+count has been non-zero at least once. That last clause is the whole
+implementation subtlety: without it the stage exits during its own startup.
+
+This is deliberately *unlike* tmux, whose server survives the last client. tmux
+was the model for the **shape** — a process that owns namespaces, several
+children hanging off it, a control socket — and is not the model for the
+**lifetime**. Invariant 4's promise is that helpers die with the sandbox and
+leave nothing behind, and a stage that outlives its payloads to wait for the
+next one has quietly become a service with a socket, which is exactly what
+"no daemon, no service files" was written to prevent.
+
+What this costs, stated plainly so nobody rediscovers it as a bug:
+
+- **`snug attach` only works while a payload is running.** Attaching to an idle
+  sandbox is not a thing, because an idle sandbox is not a thing. `snug <dir> --
+  claude` in one terminal and `snug attach` in another is the supported shape;
+  `snug attach` to nothing is an error naming the fix.
+- **No reconnecting to a detached session.** If the payload's terminal goes
+  away, the payload goes away. Running a multiplexer *inside* the sandbox is the
+  answer, and it is the payload's choice rather than snug's.
+- **Two independent teardown paths, both needed.** The reference count handles
+  the ordinary exit; the lifeline pipe (§3.2) handles the launcher being
+  SIGKILLed. Neither subsumes the other: the count never reaches zero if the
+  payload is still alive, and the lifeline says nothing when the launcher is
+  alive and healthy.
 
 **The abuse sentence, for the topology as a whole:**
 

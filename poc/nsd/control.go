@@ -26,6 +26,7 @@ type request struct {
 	Argv     []string `json:"argv,omitempty"`
 	Target   int      `json:"target,omitempty"`
 	DropCaps bool     `json:"drop_caps,omitempty"`
+	TTL      int      `json:"ttl,omitempty"` // sandbox init exits after this many seconds
 }
 
 type response struct {
@@ -39,6 +40,37 @@ type server struct {
 	ln  net.Listener
 	mu  sync.Mutex
 	box *sandboxHandle
+
+	// P1 IS NOT A DAEMON. It holds namespaces for as long as something is using
+	// them and not one second longer: when the last payload exits, the stage
+	// tears itself down. Nothing here restarts, re-listens or waits for the next
+	// client — that is the line between a fork and a service.
+	//
+	// Only payloads count: a sandbox, and any process attached to one. The
+	// experiment scaffolding (run/runmnt/graft) does not, because in the real
+	// thing those are not user-visible processes.
+	payloads int
+	everRan  bool
+}
+
+// hold and release are the reference count. release is what ends the process.
+func (s *server) hold() {
+	s.mu.Lock()
+	s.payloads++
+	s.everRan = true
+	s.mu.Unlock()
+}
+
+func (s *server) release() {
+	s.mu.Lock()
+	s.payloads--
+	last := s.payloads <= 0 && s.everRan
+	s.mu.Unlock()
+	if last {
+		fmt.Fprintln(os.Stderr, "P1: last payload exited, tearing down")
+		s.dispatch(request{Op: "kill"})
+		os.Exit(0)
+	}
 }
 
 type sandboxHandle struct {
@@ -110,7 +142,7 @@ func (s *server) dispatch(req request) response {
 		// mount tree rather than the sandbox's.
 		return runChild(req.Argv, true)
 	case "sandbox":
-		return s.startSandbox()
+		return s.startSandbox(req.TTL)
 	case "attach":
 		return s.attach(req)
 	case "graft":
@@ -144,7 +176,7 @@ func runChild(argv []string, ownMountNS bool) response {
 // startSandbox is P2. bwrap is a plain child of P1, so it inherits U and N by
 // descent; it then builds the sandbox's mount, pid, ipc and uts namespaces on
 // top. --unshare-net is deliberately absent.
-func (s *server) startSandbox() response {
+func (s *server) startSandbox(ttl int) response {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.box != nil {
@@ -197,7 +229,8 @@ func (s *server) startSandbox() response {
 	args = append(args, "--", "/nsd", "__sandbox-init")
 
 	cmd := exec.Command("bwrap", args...)
-	cmd.Env = []string{"PATH=/usr/bin:/bin", "NSD_RUN=" + runDir}
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "NSD_RUN=" + runDir,
+		"NSD_TTL=" + strconv.Itoa(ttl)}
 	cmd.ExtraFiles = []*os.File{statusW, readyW}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	logf, err := os.Create(filepath.Join(runDir, "sandbox.log"))
@@ -221,7 +254,15 @@ func (s *server) startSandbox() response {
 		return response{Err: err.Error()}
 	}
 	s.box = &sandboxHandle{cmd: cmd, initPID: pid}
-	go func() { _ = cmd.Wait() }()
+	s.payloads++
+	s.everRan = true
+	go func() {
+		_ = cmd.Wait()
+		s.mu.Lock()
+		s.box = nil
+		s.mu.Unlock()
+		s.release()
+	}()
 
 	return response{OK: true, Data: map[string]string{
 		"sandbox_init_pid": strconv.Itoa(pid),
@@ -294,6 +335,8 @@ func (s *server) attach(req request) response {
 	cmd := exec.Command(joiner, argv...)
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=/tmp"}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	s.hold()
+	defer s.release()
 	out, err := cmd.CombinedOutput()
 	r := response{OK: err == nil, Out: string(out)}
 	if err != nil {
@@ -371,6 +414,12 @@ func sandboxInit() error {
 		fmt.Printf("SANDBOX-INIT could not report ready: %v\n", err)
 	}
 	ready.Close()
+
+	if ttl, _ := strconv.Atoi(os.Getenv("NSD_TTL")); ttl > 0 {
+		time.Sleep(time.Duration(ttl) * time.Second)
+		fmt.Println("SANDBOX-INIT exiting")
+		return nil
+	}
 	select {}
 }
 
@@ -419,6 +468,14 @@ func cmdCtl(argv []string) error {
 		req.Target = t
 		req.DropCaps = rest[1] == "1"
 		rest = rest[2:]
+	}
+	if op == "sandbox" && len(rest) == 1 {
+		t, err := strconv.Atoi(rest[0])
+		if err != nil {
+			return err
+		}
+		req.TTL = t
+		rest = nil
 	}
 	req.Argv = rest
 
