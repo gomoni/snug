@@ -1,0 +1,12 @@
+profile     @podman-socket
+            Containers via a filtering proxy over a per-sandbox podman engine. Includes @net (interim: containers run on the engine's network — see .claude/design/ENGINE-NETNS.md).
+defined in  builtin:base.toml
+
+  includes         @sys
+                   @home
+                   @net
+  ro               /etc/containers
+  optional         /etc/containers
+
+To see what this actually produces for a directory:
+  snug --dry-run -p @podman-socket <dir>
