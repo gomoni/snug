@@ -799,3 +799,126 @@ One asymmetry re-confirmed rather than counted as new: attached processes have
 `Seccomp: 0`, so **until that is written, an attached payload is *less* confined
 than the primary** — ptrace, nested userns and keyctl are available to it among
 siblings at the same uid. That is the sharpest statement of the §1.5 downgrade.
+
+---
+
+## 5. Consolidated verdict
+
+Four agents, four lenses, run independently. They converged on three things
+without being able to see each other's work, which is the strongest signal in
+this document:
+
+- **The descriptor class.** `redteam` found it by inode from inside;
+  `host-bridge` found it by reasoning about what P1 *is*. Same fd, same
+  conclusion: `sealInheritedFDs` has to move into P1 and run before every fork.
+- **The shared-netns rule is a third of a rule.** `host-bridge` found the
+  listening half (loopback is as exposed as `0.0.0.0`; the payload can squat a
+  name first); `redteam` found the connecting half (a host-authority process that
+  dials an abstract name in N gets an impostor). Neither half is in the doc.
+- **The engine leg is where this ships or does not.** `sandbox-policy` reached it
+  from the reference count (the engine holds none, so the stage exits under it);
+  `host-bridge` reached it from the kernel (`mount -t proc` is refused even with
+  a full capability set, because P1 owns no pid namespace); `sandbox-tester`
+  reached it from the evidence (§6's "podman will not start without one" is
+  stated as fact, and §8 admits podman was never run). It is the same gap seen
+  three ways.
+
+### 5.1 What survives
+
+The model works, and these parts are right for stated reasons rather than by
+luck. Nothing below was successfully attacked:
+
+- The topology itself: P1 holds N, the sandbox is its child, the engine is a
+  **sibling** of the sandbox and not its parent.
+- **No control socket inside the sandbox**, and its argument — any socket a shim
+  inside can reach, the payload can reach. Enforced by absence from the mount
+  namespace, not by a permission check.
+- The lifeline pipe over `PR_SET_PDEATHSIG`, and the reason (`secureexec`).
+- The `setns` ordering, and the two-user-namespace discovery behind it.
+- `unshare` before `move_mount`, with its negative test — and the graft survived
+  a symlink-planting TOCTOU attack (`move_mount` onto a payload-planted symlink
+  returned EINVAL).
+- §9's lifetime decision: P1 exits with its last payload, and does not become a
+  daemon.
+- The payload's own confinement: `CapEff=0`, `CapBnd=0`, `NoNewPrivs=1`, no
+  file-capability binary in the bound `/usr`, no netns reconfiguration, and a
+  SIGSTOPped attached process does not pin teardown.
+- Host loopback stays closed, measured in both N and the sandbox, with a live
+  positive control.
+
+### 5.2 What must change before this ships, ranked
+
+1. **`sealInheritedFDs` in P1, before every fork** — not the one-line CLOEXEC fix
+   on fd 5. The fd 5 leak is harmless; the next one will not be. (§2.1, §4-F1)
+2. **The netns rule, in its full form**, plus the ordering guarantee that snug's
+   helpers bind before the payload exists. (§2.2, §4-F2)
+3. **The engine's `/proc`.** Refused by the kernel in the derived view. The fix
+   is another namespace, which changes who reaps conmon. Unmeasured. (§2.4)
+4. **The graft becomes a policy object** with provenance, a masking check over
+   the derived view, and a `--dry-run` rendering — or invariant 1 has an
+   unbounded exception. (§1.1)
+5. **Attach is compiled from the policy**, not hand-written: seccomp, the
+   environment, `safeStdio`, the caps drop. Until then an attached payload is
+   *less* confined than the primary. (§1.5, §1.8)
+6. **The proxy keeps its allowlist.** The derived view changes its vocabulary
+   from `Mount.Host` to `Mount.Guest`; it does not license replacing "may bind
+   iff the sandbox can see it" with "anything in the view except our grafts".
+   (§1.2, §2.4)
+7. **The lifetime rule fires on the startup-failure path**, and teardown asserts
+   on the namespace object rather than a process count. (§1.4)
+8. **`--dry-run` grows a topology block**, and the golden discipline extends to
+   the stage argv, the derived view and the attach spec — because after this
+   change the bwrap argv **no longer determines the network posture**.
+   `--share-net` is byte-identical whether it means N or the host's netns; the
+   difference is which process called `fork`. (§1.8, §2.6)
+9. **`/proc/self/exe` instead of `$NSD_SELF`**, and a shipped path for the
+   joiner. (§1.6)
+10. **The subuid delegation becomes conditional** on the engine being wanted.
+    (§1.3)
+
+### 5.3 What the transition owes `@podman-socket`
+
+Removing the interim `include = ["net"]` is safe only if the old path cannot be
+silently taken. Five preconditions (§2.5), of which the dangerous one is
+`podmanClientUsable()` becoming a **hard refusal**: today a fallback is honest,
+because the include says egress is there. After the include goes, a fallback
+means the sandbox says offline while a container reaches the internet — the
+original measured bug, restored, by a code path whose only trigger is a host we
+cannot test on. And `TestPodmanSocketIncludesNetAsAnInterimHonestyFix` should be
+replaced by a test of the *refusal*, not deleted: the include's absence is not
+the property that matters, the impossibility of the old path is.
+
+### 5.4 Regressions this owes `sandbox-tester`
+
+Every confirmed finding, per the project rule — and the failed attacks too, so
+the defences cannot silently regress:
+
+1. No descriptor in the primary or an attached payload resolves to an inode also
+   open in P1.
+2. A host-side helper that connects to an abstract name or a loopback port in N
+   reaches snug's service, not the payload's; and no snug helper listens on any
+   IP port in N.
+3. Two attached payloads: B can read A's environ today, so any per-payload-secret
+   design must break this test.
+4. `move_mount` onto a payload-planted symlink is refused.
+5. The primary payload's `NoNewPrivs=1`/`CapEff=0`, and no file-capability binary
+   in the bound `/usr`.
+6. A SIGSTOPped attached process does not pin teardown.
+7. The stage exits when `startSandbox` fails — the `everRan` path.
+
+### 5.5 Acted on already
+
+`run.sh`'s four vacuous checks are fixed (commit `4c1b94c`): negatives are
+markers the payload emits, namespace comparisons refuse an empty side, and the
+`ctl sandbox` exit code is checked. Verified in both directions — `pass=51
+fail=0` with a working sandbox, and each repaired check fails against the
+condition that used to pass it. The two rules are stated at the top of the file.
+
+SUPERVISOR.md §4, §5 and §9 are corrected in the same pass: "no fd handed in" is
+withdrawn and replaced with what was measured, the netns rule is restated in its
+full form with its own weakness named, the secrets-broker bullet carries its
+constraint, and the abuse sentence now says loopback, squatting, the socket
+tables, the inherited descriptor and the privileged ancestor userns.
+
+Everything else in §5.2 is a design debt, not a fix, and belongs in `TODO.md`
+with a severity the moment this stops being a proof of concept.

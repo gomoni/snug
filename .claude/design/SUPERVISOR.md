@@ -178,9 +178,31 @@ pid namespaces, reads a file the first payload wrote to the sandbox's tmpfs, is
 counted in `ps` alongside it, and cannot see `~/.ssh`; the host cannot see the
 file either.
 
-This is worth stating plainly because it inverts the usual worry: **attach adds
-no attack surface inside the sandbox.** No socket, no listener, no fd handed in.
-The authority stays where it already was, in a process the payload cannot name.
+The half of this that survives review: **attach opens no listener inside the
+sandbox.** No socket, no port, nothing to connect to; the authority stays where
+it already was, in a process the payload cannot name (MEASURED: P1 is not in the
+sandbox's pid namespace, and the control socket's path is not in its mount
+namespace).
+
+**"No fd handed in" was false, and it was false for the primary payload too.**
+MEASURED, by inode: P1's lifeline read end (fd 5) is open in every attached
+payload *and* in the sandbox's own init. `stage0()` clears CLOEXEC on fds 4 and 5
+so they survive the privileged re-exec — needed exactly once — and `stage1()`
+never restores it, so every later child of P1 inherits it: bwrap from
+`startSandbox`, the joiner from `attach`.
+
+Today that fd is harmless: it is the *read* end of an anonymous pipe, so the
+payload can neither forge a write end nor suppress EOF, and teardown still fires.
+The mechanism is the finding. **The process that forks the sandbox is no longer a
+short-lived launcher whose fd table snug controls at `cmd.Start()`; it is a
+long-lived server with an accept loop, per-connection sockets, pidfds, an
+eventpoll and an eventfd, whose fd table at fork time depends on which control
+connections happen to be open.** The first authority-bearing descriptor P1 holds
+without CLOEXEC — a broker socket, a host `open_tree` for the graft — reaches
+every sandbox by this same path, with no new code and no visible change. So
+`sealInheritedFDs` must run **in P1, immediately before every fork**, not once in
+the launcher; and a real `snug attach` passes a pty over `SCM_RIGHTS`, which is a
+deliberate fd-into-the-sandbox channel and needs its own argument.
 
 What the joiner must still reproduce before this is shippable — every one of
 these is a restriction bwrap applies that `setns` does not inherit:
@@ -203,20 +225,52 @@ these is a restriction bwrap applies that `setns` does not inherit:
 - **Several payloads in one sandbox** — `claude` and a shell, sharing the
   policy, the tmpfs and the pid namespace. This is the feature; everything else
   above is what it costs.
-- **A natural home for the MVY2 secrets broker.** P1 is outside the sandbox,
-  holds host authority, and already has a control socket. A broker that signs,
-  or that proxies one API, belongs there rather than in the launcher.
+- **A possible home for the MVY2 secrets broker — with one constraint that is
+  not optional.** P1 is outside the sandbox, holds host authority, and already
+  has a control socket. But it is also the one process that now shares a network
+  namespace with the payload and with every container, so a broker living there
+  **must bind nothing in N** — not an abstract name, not a loopback port — and
+  must reach nothing in N by either. Its channel is a pathname AF_UNIX socket in
+  a directory the sandbox does not mount, which is the mechanism snug already
+  has. Note also what co-residency costs the broker: two payloads in one sandbox
+  are one trust domain (same uid, shared pid and mount namespaces), and MEASURED,
+  a sibling reads another payload's `/proc/<pid>/environ`. A per-payload secret
+  delivered by environment or uid-readable file is a per-*sandbox* secret.
 
 **Worse, and each one needs a rule.**
 
 - **Abstract sockets in N are now reachable from the sandbox.** MEASURED: a
   helper running as a child of P1 bound `\0nsd-secret`, and the payload connected
   and read the bytes. Today's guarantee ("abstract sockets unreachable") holds
-  only because nothing else lives in N. Rule: **no process in N may bind an
-  abstract socket** — every snug-owned socket is a pathname socket in a directory
-  the sandbox does not mount. This needs a test that asserts `ss -xl` inside the
-  sandbox reports zero abstract sockets *with the engine running*, which
-  ENGINE-NETNS §4 already proposed for a different reason.
+  only because nothing else lives in N.
+
+  The first draft of this rule read "no process in N may bind an abstract
+  socket". Review showed it covers about a third of the exposure, in three ways,
+  all MEASURED. **Loopback is not safer than `0.0.0.0`**: a helper bound on
+  `127.0.0.1:19099` in N was read by the payload while the host got `000`.
+  **The rule binds snug and not the attacker**: the payload bound `0.0.0.0:19100`
+  and `\0snug-broker` first, and a later host-side helper got `EADDRINUSE` on
+  both — so the payload can deny service to snug's helpers and to the engine's
+  (aardvark-dns on :53, rootlessport), and whatever P1 starts must start before
+  the payload. **And it runs both directions**: a host-authority process that
+  *connects* to an abstract name or a loopback port in N gets the payload's
+  impostor, MEASURED on both (`ABSTRACT MITM`, `TCP MITM`).
+
+  Rule, in the form that survives: **no snug-owned or host-authority process in N
+  may bind or connect to an abstract name or any IP address, 127.0.0.1
+  included.** Everything snug exposes in N is a pathname AF_UNIX socket in a
+  directory the sandbox does not mount. The test is `ss -xl` reporting zero
+  abstract sockets inside the sandbox *with the engine running* (ENGINE-NETNS §4
+  proposed it for a different reason), plus an assertion that no snug helper
+  listens on any TCP or UDP port in N.
+
+  Note what makes this rule weaker than the ones it replaces: it constrains code
+  snug does not own — podman, conmon, netavark, aardvark-dns, crun — so it cannot
+  be checked at build time, and on this host it cannot be tested at all, because
+  the engine leg does not run (§8). Until that test exists somewhere, CLAUDE.md's
+  two "abstract sockets unreachable **by construction**" sentences must change in
+  the same commit that lands this topology, or snug is asserting a guarantee it
+  no longer delivers.
 - **`ss -xl` inside the sandbox lists the stage's control socket path.** MEASURED.
   It cannot be connected to (the path is not in the sandbox's mount namespace,
   MEASURED) but the leak of a host path is real. Put the run directory under a
@@ -364,9 +418,15 @@ What this costs, stated plainly so nobody rediscovers it as a bug:
 
 **The abuse sentence, for the topology as a whole:**
 
-> a hostile process inside the sandbox can attach to nothing and connect to
-> nothing new — but it now shares a network namespace with snug's own helpers and
-> with every container the engine starts, so it reaches any socket they bind on
-> `0.0.0.0` or in the abstract namespace, and any port a container publishes. It
-> cannot reach the host's loopback, the host's containers, or the stage's control
-> socket.
+> a hostile process inside the sandbox can attach to nothing and open no listener
+> the host can reach — but it now shares a network namespace with snug's own
+> helpers and with every container the engine starts, so it reaches any socket
+> they bind **on any address, `127.0.0.1` included, or in the abstract
+> namespace**, and any port a container publishes; it can bind those names
+> *first* and be connected to in their place; it can read the socket tables to
+> enumerate what they talk to; and it holds any descriptor P1 forgot to mark
+> CLOEXEC. It cannot reach the host's loopback, the host's containers, or the
+> stage's control socket. Its ancestor user namespace is no longer the initial
+> one — it is U, which holds the full subuid range and CAP_SYS_ADMIN over N and
+> over the sandbox's own mounts, so a userns-escape bug is worth more here than
+> it is today.
