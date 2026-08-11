@@ -36,6 +36,28 @@ You own the two layers where snug's security actually lives: the **policy model*
    (broadest first, then by path depth) to produce a correct filesystem. The
    policy itself is an unordered set. Never leak argv ordering up into the
    profile file format.
+6. **snug never puts an executable anywhere the payload can write.** One staging
+   directory, `policy.StagedBinDir` (`/run/snug/bin`), for everything snug puts
+   in front of the payload — the generated podman dispatcher and `@claude`'s
+   bound binary alike. It is on the root tmpfs, so `--remount-ro /` covers it.
+   `$HOME`, `/tmp`, `$HOME/.cache`, `$HOME/.config`, `$HOME/.local/state` and
+   `/dev` are all writable, and a command staged in any of them is a **shadow
+   slot**: the payload writes `git` there and the next `git` anything in the
+   sandbox runs is that file. A *human's own* profile may do this — it is their
+   declaration, an accepted residual in `TODO.md` — but a **shipped profile may
+   never be one**, and no profile names a PATH directory at all: snug adds the
+   staging directory itself, iff something is staged there.
+
+   **Check this explicitly on every review, because it has shipped once
+   already.** `@claude` bound one file read-only under `{home}/.local/bin` and
+   merged that directory onto `PATH`; the bind was sound and the *directory* was
+   the hole. It passed review, passed `make gate`, and was filed in `TODO.md` as
+   accepted under a defence ("a profile's own declaration") that only applies to
+   profiles a human wrote. `sanitise` cannot catch it — that filter only inspects
+   the *host's* value for an imported variable, never a `merge` entry from a
+   file. `TestNoBuiltinPutsAWritableDirectoryOnPATH` sweeps the builtins with
+   `policy.IsShadowSlot`; when you add or change a profile that carries an
+   executable, confirm the sweep still covers it rather than assuming it does.
 
 ## How you work
 

@@ -316,13 +316,39 @@ on any flag.
   this bullet said `$HOME` — which is a writable tmpfs, and therefore wrong.** A
   writable directory ahead of `/usr/bin` on `PATH` is a *shadow slot*: the
   payload writes a file called `git` into it and the next `git` a human or
-  another agent runs inside the sandbox is that file. The live case stages at
-  `/run/snug/bin` — `KindData`, `AccessRO`, and measured to refuse `touch` after
-  `--remount-ro /` (CONTAINER-CLIENT.md §8). The same hazard is why `sanitise`
-  drops a host `PATH` element whose only coverage is a tmpfs: not because it
-  closes the attack — the payload can rewrite `PATH` at will and nothing stops
-  it — but because **the environment snug itself hands over must not ship the
-  shadow slot pre-installed.**
+  another agent runs inside the sandbox is that file. The same hazard is why
+  `sanitise` drops a host `PATH` element whose only coverage is a tmpfs: not
+  because it closes the attack — the payload can rewrite `PATH` at will and
+  nothing stops it — but because **the environment snug itself hands over must
+  not ship the shadow slot pre-installed.**
+- **One staging directory: `policy.StagedBinDir` (`/run/snug/bin`). snug never
+  mounts an executable into `$HOME`, `/tmp`, or anything else writable from
+  inside.** A profile's *user* may write there; snug may not put a command there.
+  Every executable snug puts in front of the payload goes in that one directory —
+  whether snug generated it (the podman dispatcher, `KindData`/`AccessRO`) or a
+  profile bound it (`@claude`'s binary, `ro = ["{home}/.local/bin/claude:/run/snug/bin/claude"]`).
+  It is on the root tmpfs, so `--remount-ro /` covers it; measured to refuse
+  `touch` and `echo >` with EROFS (CONTAINER-CLIENT.md §8). A `tmpfs` grant at
+  that path would be a separate mount, would *not* be covered, and would quietly
+  undo it.
+
+  **No profile names a PATH directory of its own.** snug adds `/run/snug/bin` to
+  `PATH` in its own band — after every profile entry, before the base — iff
+  something is actually staged there, computed from the resolved mounts. That is
+  what removes the choice: a profile cannot pick a writable directory by
+  accident, because it does not pick one at all.
+
+  This is written as a rule because it was already violated once, in shipped
+  code, and nothing caught it. `@claude` bound one file read-only at
+  `{home}/.local/bin/claude` and then merged `{home}/.local/bin` onto `PATH` —
+  a directory that is `@home`'s writable tmpfs. The bind was sound; the directory
+  was the hole, and `sanitise` structurally cannot reach it, because that filter
+  only ever inspects the *host's* value for a variable a profile imported and a
+  `merge` entry is written in the file. It survived a milestone as an accepted
+  residual in `TODO.md` and was found by reading, not by a test.
+  `TestNoBuiltinPutsAWritableDirectoryOnPATH` now sweeps every builtin with
+  `policy.IsShadowSlot`, and has a positive control that reconstructs the old
+  `@claude` shape and asserts the predicate fires on it.
 - **`git` merges its global config from TWO files.** `~/.gitconfig` AND
   `$XDG_CONFIG_HOME/git/config` are both read. So generating `~/.gitconfig` was
   not enough: with `@git-ro` also selected, the host's credential helpers,

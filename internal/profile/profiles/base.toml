@@ -288,8 +288,13 @@ network = "host"
 [profile.claude]
 description = "Claude Code: binary and skills read-only, credentials staged writable."
 include = ["sys", "home"]
+#
+# The BINARY lands at /run/snug/bin/claude, not at its host path. snug stages
+# every executable it puts in front of the payload in that one directory,
+# because that directory is not writable from inside — see the note under `ro`
+# below and CLAUDE.md's shadow-slot rule.
 ro = [
-  "{home}/.local/bin/claude",
+  "{home}/.local/bin/claude:/run/snug/bin/claude",
   "{home}/.local/share/claude",
   "{home}/.claude/settings.json",
   "{home}/.claude/skills",
@@ -332,22 +337,28 @@ VISUAL = true
 PAGER = true
 NO_COLOR = true
 
-# Without this the profile mounts a binary nothing can find: the default PATH is
-# /usr/bin:/bin:/usr/sbin:/sbin, so `snug -p @claude . -- claude` answered
-# "execvp claude: No such file or directory" while the bind was sitting right
-# there in --dry-run.
+# This profile deliberately has NO `environ.merge PATH`, and what replaced it is
+# the point rather than a tidy-up.
 #
-# ABUSE: a hostile process inside the sandbox can run whatever is in this
-# directory ahead of the distro's copy of the same name — and there is exactly
-# one thing in it, because only ~/.local/bin/claude is mounted. A directory on
-# PATH grants nothing on its own; it names the DIRECTORY because that is what
-# PATH takes.
+# The binary still has to be findable — the default PATH is
+# /usr/bin:/bin:/usr/sbin:/sbin, so `snug -p @claude . -- claude` once answered
+# "execvp claude: No such file or directory" while the bind sat right there in
+# --dry-run. The fix then was `merge PATH = ["{home}/.local/bin"]`, and it was
+# WRONG in a way that took a review of §9.2 to see: {home} is a writable tmpfs,
+# so that line put a directory the PAYLOAD CAN WRITE TO ahead of /usr/bin. The
+# payload writes `git` into it and the next `git` a human or another agent runs
+# inside the sandbox is that file. Nothing about the bind of `claude` was unsafe;
+# the DIRECTORY it lived in was.
 #
-# `merge` and not `prepend`: this profile has no claim to be ahead of every other
-# profile's entry, and at most one profile may hold that slot. A merged entry
-# still beats every entry snug adds, which is all this needs.
-[profile.claude.environ.merge]
-PATH = ["{home}/.local/bin"]
+# Now the binary is bound at /run/snug/bin/claude and snug adds /run/snug/bin to
+# PATH itself, in its own band, whenever anything is staged there — so no profile
+# names a PATH directory at all and none can pick a writable one by accident.
+# See policy.StagedBinDir and CLAUDE.md.
+#
+# ABUSE: a hostile process inside the sandbox can run whatever is in
+# /run/snug/bin ahead of the distro's copy of the same name — and it cannot add
+# to it, because that directory sits on the root tmpfs and --remount-ro / covers
+# it (measured: `touch` and `echo >` both EROFS).
 
 # There is deliberately NO `local-path` builtin granting all of ~/.local/bin.
 # Same reasoning as `etc-full` above, and the same one-line escape hatch:
@@ -364,6 +375,13 @@ PATH = ["{home}/.local/bin"]
 # all of them, when what you wanted was one. That is the "X but not Y" smell from
 # CLAUDE.md pointing at too coarse a grant: if you want a tool in the sandbox,
 # name that tool, the way this profile names `claude`.
+#
+# Read the second cost off the two lines above as well, because it is the one
+# @claude got wrong for a milestone. That `ro` grant covers the DIRECTORY, so
+# {home}/.local/bin is a real read-only bind and the `merge` is safe — a payload
+# cannot write into it. Drop the `ro` line and keep the `merge`, and the same two
+# lines put a writable tmpfs directory ahead of /usr/bin instead. The verb that
+# made it safe is the grant, not the merge.
 
 # ── containers ───────────────────────────────────────────────────────────────
 # ABUSE: the sandbox can run containers, pull arbitrary images, and execute

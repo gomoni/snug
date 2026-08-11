@@ -50,6 +50,13 @@ func newEnvFakeEnv() *envFakeEnv {
 			"/etc/nsswitch.conf": true, "/etc/passwd": true, "/etc/group": true,
 			// the fixture home and project
 			"/home/u": true, "/home/u/proj": true, "/home/u/proj/sub": true,
+			// @claude's binary. Present on purpose, and it is a POSITIVE
+			// CONTROL rather than scenery: every other @claude grant is
+			// optional and absent here, so this one file is what makes the
+			// staged-bin band appear at all. Remove it and the golden shows a
+			// PATH with no /run/snug/bin entry — which is correct (nothing was
+			// staged) and would silently stop testing that staging reaches PATH.
+			"/home/u/.local/bin/claude": true,
 		},
 		// EDITOR is set because @claude re-admits it past --clearenv. It is the
 		// POSITIVE CONTROL for that whole mechanism: without one variable the
@@ -125,10 +132,12 @@ func TestGoldenEnvironment(t *testing.T) {
 	}{
 		// What a bare `snug <dir>` selects.
 		{"defaults", profile.BuiltinDefaults(), envGoldenCtx(), false},
-		// The one shipped profile that touches the environment today: @claude's
-		// `env = [...]` and `path = [...]`. None of its host variables is set on
-		// this fake host, so what the golden shows is the `path` entry reaching
-		// PATH — and, once the verbs land, whatever inherit does instead.
+		// The one shipped profile that touches the environment today. What the
+		// golden shows: EDITOR and NO_COLOR arriving through `inherit`, and
+		// /run/snug/bin on PATH because the profile's binary is staged there.
+		// @claude names NO PATH directory of its own — the band is snug's, and
+		// that is the fix for the shadow slot the old `merge {home}/.local/bin`
+		// installed (TestNoBuiltinPutsAWritableDirectoryOnPATH).
 		{"claude", append(append([]string{}, profile.BuiltinDefaults()...), "@claude"), envGoldenCtx(), false},
 		// Containers, with a host whose podman is a distrobox shim — so the
 		// staged stub's directory appears on PATH and the golden shows where in

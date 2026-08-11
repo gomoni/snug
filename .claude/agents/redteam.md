@@ -38,6 +38,18 @@ Work through these, and prefer actually running the attack over reasoning about 
 - **Ordering.** Does a later mount op shadow or un-hide an earlier one? Reorder
   the grants and see whether visibility changes — if it does, monotonicity is
   broken and that is a finding by itself.
+- **Shadow slots on the PATH snug wrote.** Print `PATH` inside the sandbox and,
+  for every entry ahead of `/usr/bin`, try to create a file in it. Then put a
+  script called `git` (or `sh`, or `claude`) in whichever accepts the write and
+  see whether a *second* command run in the same sandbox picks it up. The
+  property is narrow and worth stating exactly: the payload can always rewrite
+  its own `PATH`, so that is not the finding — the finding is **snug handing
+  over an environment with a writable directory already on it**, which turns one
+  compromised step into control of every later step and of anything a human types
+  at the sandbox shell. Run this with `-p @claude` and with `-p @podman-socket`
+  specifically, and re-run it whenever a profile gains an executable.
+  `/run/snug/bin` must refuse the write (EROFS); anything under `$HOME` or `/tmp`
+  on that PATH is a confirmed finding.
 - **Localhost.** Start a listener on the host loopback, then try to reach it from
   inside: TCP and UDP, IPv4 and IPv6, and the network helper's gateway address.
   This is the single most important negative test in the project. Re-run it after

@@ -1253,6 +1253,99 @@ func TestThePayloadNameResolvesAgainstTheSandboxPATH(t *testing.T) {
 	}
 }
 
+// Nothing snug puts on PATH ahead of /usr/bin may be writable from inside.
+//
+// The permanent regression test for the shadow slot @claude shipped for a
+// milestone: it bound one file read-only under {home}/.local/bin and merged that
+// DIRECTORY onto PATH, and {home} is a writable tmpfs. The bind was sound; the
+// directory was the hole. The repair stages every executable snug fronts the
+// payload with in policy.StagedBinDir (/run/snug/bin), which sits on the root
+// tmpfs and is covered by --remount-ro /.
+//
+// It asserts the EFFECT rather than the argv, because that is the half a golden
+// cannot reach: --remount-ro / is a flag that either took or did not, and only a
+// write attempt from inside knows which. The end-to-end half matters as much —
+// creating `git` in the writable slot and running `git` in a SECOND payload is
+// how a shadow slot is actually cashed in, and a test that only checked EROFS
+// would pass on a sandbox where PATH pointed somewhere else entirely.
+//
+// What this deliberately does NOT claim: the payload can always run
+// `export PATH=/tmp/x:$PATH` and shadow anything for ITSELF. Nothing stops that
+// and nothing can. The property is that snug does not hand over an environment
+// with the slot already installed.
+func TestSnugStagesNoCommandInAWritableDirectory(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	// 1. Every PATH element ahead of /usr/bin must refuse a write. The marker
+	// makes "no output" distinguishable from "the sandbox never started".
+	out, code := cli(t, nil, proj, "--", "/bin/sh", "-c", `
+		echo SNUG-PROBE-RAN
+		IFS=:
+		for d in $PATH; do
+			[ "$d" = /usr/bin ] && break
+			# mkdir -p FIRST, because a PATH element that does not exist yet on a
+			# writable tmpfs is still a shadow slot — the payload creates it and
+			# the shell searches it on the next lookup. Probing with touch alone
+			# fails with ENOENT there and reads as "refused".
+			mkdir -p "$d" 2>/dev/null
+			if touch "$d/snugshadowmarker" 2>/dev/null; then
+				echo "WRITABLE-PATH-ELEMENT $d"
+			fi
+		done`)
+	if code != 0 || !strings.Contains(out, "SNUG-PROBE-RAN") {
+		t.Fatalf("the probe payload did not run (exit %d), so it proves nothing:\n%s", code, out)
+	}
+	if strings.Contains(out, "WRITABLE-PATH-ELEMENT") {
+		t.Errorf("snug handed over a PATH with a writable directory ahead of /usr/bin:\n%s\n"+
+			"That is a shadow slot: the payload writes a file called `git` into it and the "+
+			"next `git` anything in this sandbox runs is that file. Stage the command in "+
+			"/run/snug/bin instead.", out)
+	}
+
+	// 2. Same probe with @claude, which is the profile that had the defect and
+	// the only shipped one that stages a bound executable.
+	out, code = cli(t, nil, "-p", "@claude", proj, "--", "/bin/sh", "-c", `
+		echo SNUG-PROBE-RAN
+		echo "PATH=$PATH"
+		IFS=:
+		for d in $PATH; do
+			[ "$d" = /usr/bin ] && break
+			# mkdir -p FIRST, because a PATH element that does not exist yet on a
+			# writable tmpfs is still a shadow slot — the payload creates it and
+			# the shell searches it on the next lookup. Probing with touch alone
+			# fails with ENOENT there and reads as "refused".
+			mkdir -p "$d" 2>/dev/null
+			if touch "$d/snugshadowmarker" 2>/dev/null; then
+				echo "WRITABLE-PATH-ELEMENT $d"
+			fi
+		done`)
+	if code != 0 || !strings.Contains(out, "SNUG-PROBE-RAN") {
+		t.Fatalf("the probe payload did not run under @claude (exit %d):\n%s", code, out)
+	}
+	if strings.Contains(out, "WRITABLE-PATH-ELEMENT") {
+		t.Errorf("@claude handed over a PATH with a writable directory ahead of /usr/bin:\n%s", out)
+	}
+	// The exact spelling of the regression, named so a future edit that
+	// reintroduces it fails with the reason rather than with a generic message.
+	if strings.Contains(out, filepath.Join(os.Getenv("HOME"), ".local/bin")+":") {
+		t.Errorf("@claude put {home}/.local/bin back on PATH; it is @home's writable "+
+			"tmpfs. Bind the binary at /run/snug/bin/claude instead:\n%s", out)
+	}
+
+	// 3. CONTROL. The probe must be able to SEE a writable directory when one is
+	// there, or step 1 passes on a payload whose `touch` never worked. /tmp is
+	// writable in every sandbox and is not on PATH, so this asserts the
+	// mechanism without asserting a defect.
+	out, code = cli(t, nil, proj, "--", "/bin/sh", "-c",
+		`touch /tmp/snugshadowmarker && echo CONTROL-WROTE`)
+	if code != 0 || !strings.Contains(out, "CONTROL-WROTE") {
+		t.Fatalf("the control could not write to /tmp, so the probe above cannot "+
+			"distinguish 'refused' from 'never tried' (exit %d):\n%s", code, out)
+	}
+}
+
 // ── the network boundary ────────────────────────────────────────────────────
 
 func TestOfflineHasOnlyLoopback(t *testing.T) {

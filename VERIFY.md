@@ -179,6 +179,61 @@ in here" is to **say so**, never to stop authoring it. If a future version
 refuses instead, it has converted twenty minutes of confusion into a reachable
 hole.
 
+### 6e2. A writable `PATH` entry says so too
+
+The mark above says *nothing is there*. This one says *something is there and
+the payload can add to it* — the two are different facts and must never render
+as one.
+
+```bash
+X=$(mktemp -d); mkdir -p $X/snug/profiles.d $X/tools
+cat > $X/snug/profiles.d/both.toml <<EOF
+[profile.both]
+rw = ["$X/tools"]
+
+[profile.both.environ.merge]
+PATH = ["$X/tools"]
+
+[profile.both.environ.sanitise]
+PATH = true
+EOF
+
+PATH="/tmp/attacker/bin:/usr/bin:/bin" XDG_CONFIG_HOME=$X \
+  ./bin/snug --dry-run -p both $SC/proj/sub | sed -n '/^  PATH/,/^  PS1/p'
+rm -rf $X
+```
+
+Expect:
+
+```
+  PATH             /tmp/tmp.XXXXXXXX/tools         merge     both  ← writable from inside
+                   /usr/bin /bin                   sanitise  both
+                   /usr/sbin /sbin                 (snug)    base
+                   (1 host entry dropped — only an empty writable tmpfs is mounted there: /tmp/attacker/bin)
+```
+
+Read those four lines together, because they are the point. Both marked paths
+are directories the payload can write to and that precede `/usr/bin`. One is
+dropped by the filter and one is kept — correctly, because `sanitise` judges
+only the *host's* value for an imported variable and never a profile's own
+`merge` — and before the mark existed the screen showed one being removed for a
+hazard while the other sat unremarked four lines above. That is how `@claude`'s
+`{home}/.local/bin` survived a milestone in plain sight (§6g).
+
+The `rw` bind is deliberate and is the *worse* of the two cases: it is not a
+tmpfs that dies with the sandbox, so a `git` written into that slot **persists
+to the host**. Note also that this profile is a legal one — `rw` grants the
+directory, so the grant-coupling rule is satisfied and nothing refuses it. The
+mark is the only thing standing between a human and that arrangement, which is
+why it is a mark and not a refusal: a *human's own* profile may do this
+deliberately (`TODO.md` records it as an accepted residual). What snug may never
+do is ship it (§6g).
+
+Check the scope too: the mark is `PATH`-only, because `PATH` entries are
+searched for **commands**. A writable `XDG_CACHE_HOME` is correct and must stay
+unmarked — confirm the four `XDG_*` lines in the same block carry no mark, or
+the mark has become noise the reader will learn to skip.
+
 ### 6f. `/proc`'s magic symlinks do not resurrect the shadow slot
 
 `environ.sanitise` copies a host list variable and keeps only elements policy
@@ -218,6 +273,58 @@ carries a drop line naming `/proc/self/cwd`, reason "only a kernel
 pseudo-filesystem is mounted there, and its magic symlinks leave it" — a
 different fact from `DropTmpfsOnly`'s "only an empty writable tmpfs is
 mounted there", and the two must never read the same.
+
+### 6g. Nothing snug puts on `PATH` is writable from inside
+
+§6f closes the slot a *host* `PATH` element could open. This closes the one
+**snug itself** could hand over. The two are different halves of the same rule
+and only one of them is a filter.
+
+```bash
+probe='echo SNUG-PROBE-RAN; IFS=:
+       for d in $PATH; do
+         [ "$d" = /usr/bin ] && break
+         mkdir -p "$d" 2>/dev/null
+         touch "$d/shadow" 2>/dev/null && echo "WRITABLE $d"
+       done'
+
+./bin/snug             $SC/proj/sub -- /bin/sh -c "$probe"
+./bin/snug -p @claude  $SC/proj/sub -- /bin/sh -c "$probe"
+```
+
+Expect `SNUG-PROBE-RAN` and **no** `WRITABLE` line from either. The marker is
+the point: without it, a sandbox that failed to start would print nothing and
+read as a pass.
+
+`mkdir -p` before `touch` is not tidiness. A `PATH` element that does not exist
+*yet* on a writable tmpfs is still a slot — the payload creates the directory
+and the shell finds it on the next lookup — and probing with `touch` alone
+fails there with ENOENT, which reads exactly like a refusal.
+
+Then check the staging directory directly, and that the binary really came from
+it:
+
+```bash
+./bin/snug -p @claude $SC/proj/sub -- /bin/sh -c '
+  echo "PATH=$PATH"; command -v claude
+  touch /run/snug/bin/git || echo "touch REFUSED"
+  echo x > /run/snug/bin/git || echo "redirect REFUSED"'
+```
+
+Expect `/run/snug/bin` first on `PATH`, `command -v claude` answering
+`/run/snug/bin/claude`, and **both** write attempts refused with
+`Read-only file system` — `touch` and the shell redirect are different syscall
+paths and a check of one is not a check of the other.
+
+This earned its place by having shipped. `@claude` bound its binary read-only
+at `{home}/.local/bin/claude` and merged `{home}/.local/bin` onto `PATH`; the
+bind was sound and the *directory* was `@home`'s writable tmpfs. A payload
+could drop a `git` there and own every later command in the sandbox, including
+whatever a human typed at the prompt. `sanitise` cannot reach it — that filter
+only inspects the **host's** value for an imported variable, never a `merge`
+entry written in a file — and `make gate` was green throughout. It was found by
+reading, which is why it now has both an integration test
+(`TestSnugStagesNoCommandInAWritableDirectory`) and this check.
 
 ### 6b. …including via PID 1 (regression check)
 

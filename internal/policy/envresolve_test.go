@@ -40,7 +40,7 @@ func TestListBandsResolveInOrder(t *testing.T) {
 		"/opt/first/bin",                         // prepend
 		"/home/u/.local/bin",                     // merge, sorted by value
 		"/opt/tools/bin",                         // merge
-		PodmanStubDir,                            // snug's own, generated
+		StagedBinDir,                             // snug's own, generated
 		"/usr/bin", "/bin", "/usr/sbin", "/sbin", // snug's own, base
 	}
 	got := entryValues(p, "PATH")

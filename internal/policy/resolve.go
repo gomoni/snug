@@ -305,7 +305,10 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	// See podmanstub.go and CONTAINER-CLIENT.md §8 for the abuse sentence and
 	// the two load-bearing constraints (unwritable; every message says
 	// "stub").
-	stubPathDir := ""
+	//
+	// It goes in StagedBinDir because EVERY executable snug puts in front of the
+	// payload goes there, whether snug generated it (this stub) or a profile
+	// bound it (@claude's binary). Nothing decides a directory locally.
 	if p.Podman != PodmanOff {
 		for _, shim := range ctx.HostShims {
 			if shim.Name != "podman" {
@@ -317,10 +320,9 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 			}
 			perm := uint32(0755)
 			p.Replace(Mount{
-				Guest: PodmanStubDir + "/podman", Kind: KindData, Access: AccessRO,
+				Guest: StagedBinDir + "/podman", Kind: KindData, Access: AccessRO,
 				Perms: &perm, Content: []byte(content), From: []string{"(snug)"},
 			})
-			stubPathDir = PodmanStubDir
 			break
 		}
 	}
@@ -409,16 +411,26 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	p.AuthorEnv("HOME", home)
 	// PATH is the base plus whatever profiles asked for, profile entries FIRST
 	// so a profile-provided tool wins over a distro one of the same name — that
-	// is the point of asking. The podman stub's directory goes NEXT, after every
-	// profile entry and before the base: it must beat /usr/bin/podman, which is
-	// its whole job, and must LOSE to any profile entry, because a profile entry
-	// is an explicit human grant and the stub is snug's own generated fallback.
+	// is the point of asking. StagedBinDir goes NEXT, after every profile entry
+	// and before the base: what is staged there must beat the distro's copy of
+	// the same name, which is the whole reason it was staged, and must LOSE to a
+	// profile entry, because a profile entry is an explicit human grant.
+	//
+	// The band appears IFF something was actually staged, computed from the
+	// resolved mounts rather than tracked by whoever did the staging. That is
+	// what lets a profile put a binary there — @claude binds its executable at
+	// StagedBinDir/claude — without every such profile having to remember a
+	// matching `environ.merge` line, and without the grant-coupling rule being
+	// asked to reason about a directory no profile grants. The alternative,
+	// letting each profile name its own directory, is how @claude came to merge
+	// {home}/.local/bin, which is a WRITABLE tmpfs and therefore a shadow slot
+	// snug itself installed (StagedBinDir's doc comment; CLAUDE.md).
 	//
 	// Each band is a separate write, in the order it is rendered: a profile's
-	// directories are the profile's authorship, while the stub directory and the
-	// base are snug's own and say so.
-	if stubPathDir != "" {
-		p.AuthorEnvList("PATH", []string{stubPathDir}, "podman stub")
+	// directories are the profile's authorship, while the staged directory and
+	// the base are snug's own and say so.
+	if p.HasStagedBin() {
+		p.AuthorEnvList("PATH", []string{StagedBinDir}, "staged bin")
 	}
 	p.AuthorEnvList("PATH", basePATH, "base")
 	user := envOr(env, "USER", "user")

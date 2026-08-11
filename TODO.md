@@ -927,8 +927,20 @@ Each is a writable directory that can precede `/usr/bin` on the `PATH` snug
 writes. None is closable by a filter — see the reasoning above — and each is a
 grant the human selected:
 
-- `@claude` merges `{home}/.local/bin`, which is inside `@home`'s tmpfs. The
-  merge band is a profile's own declaration and is unfiltered.
+- ~~`@claude` merges `{home}/.local/bin`, which is inside `@home`'s tmpfs. The
+  merge band is a profile's own declaration and is unfiltered.~~ **Closed, and
+  the bullet was wrong about whose declaration it was.** "A profile's own
+  declaration" is the right defence for a profile a *human on this host* wrote;
+  `@claude` is one snug ships, so this was snug installing the slot and then
+  filing it as accepted. Everything about the filter reasoning stands — no
+  filter can reach a `merge` entry — but the repair was never meant to be a
+  filter: the binary is now bound at `/run/snug/bin/claude`, snug adds that
+  directory to `PATH` itself, and `@claude` names no PATH directory at all. See
+  `policy.StagedBinDir`, CLAUDE.md's staging rule, and
+  `TestNoBuiltinPutsAWritableDirectoryOnPATH` with its positive control.
+
+  The general rule this leaves: **the residuals below are ones a human selected;
+  a shipped profile is never allowed to be one.**
 - With `@tmp-shared`, `/tmp` is a `rw` bind of a host directory, so
   `/tmp/x/bin` survives sanitise — and that survivor **persists to the host**.
   The drop-never-rewrite half of this is already settled policy.

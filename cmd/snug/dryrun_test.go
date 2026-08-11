@@ -198,7 +198,7 @@ func TestDescribeCommandsNamesTheStagedStub(t *testing.T) {
 	if !strings.Contains(got, "COMMANDS") {
 		t.Fatalf("no COMMANDS block: %q", got)
 	}
-	if !strings.Contains(got, policy.PodmanStubDir+"/podman") {
+	if !strings.Contains(got, policy.StagedBinDir+"/podman") {
 		t.Errorf("COMMANDS block does not name the staged path: %q", got)
 	}
 	if !strings.Contains(got, "read-only") {
@@ -220,14 +220,17 @@ func TestDescribeCommandsNamesTheStagedStub(t *testing.T) {
 // TestGrantMarkStillUsesTheWiderPredicate guards against "unifying" grantMark
 // with sanitise's narrower keepHostElement predicate. The two ask different
 // questions on purpose (dryrun.go's grantMark doc comment): grantMark asks
-// "does the sandbox have A NODE at this path", sanitise asks "does it have
-// the HOST'S CONTENT here". @claude merges {home}/.local/bin onto PATH, and
-// {home} is only a tmpfs — sanitise's predicate would say no — but the
-// directory really is mounted and really does hold `claude` (the nested
-// bind), so the mark must stay blank. If grantMark switched to the narrower
-// rule, this line would grow "← not granted (1 grant inside)" — a false
-// statement on the exact screen CLAUDE.md calls *the* mechanism by which a
-// human trusts snug.
+// "does the sandbox have A NODE at this path", sanitise asks "does it have the
+// HOST'S CONTENT here".
+//
+// The fixture is a directory covered only by @home's tmpfs that nonetheless
+// holds a real nested bind — {home}/.local/share, where @claude binds its
+// support directory. sanitise's predicate says no (a tmpfs grants an EMPTY
+// directory, so a host PATH element there was never truthful); grantMark must
+// still say yes, because the sandbox really does have a node there. Switching to
+// the narrower rule would print "← not granted (1 grant inside)" next to a
+// directory that demonstrably holds something — a false statement on the exact
+// screen CLAUDE.md calls *the* mechanism by which a human trusts snug.
 func TestGrantMarkStillUsesTheWiderPredicate(t *testing.T) {
 	reg := loadTestRegistry(t)
 	home, target := testTree(t)
@@ -237,12 +240,70 @@ func TestGrantMarkStillUsesTheWiderPredicate(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 
-	localBin := filepath.Join(home, ".local", "bin")
-	if got := grantMark(p, localBin); got != "" {
+	localShare := filepath.Join(home, ".local", "share")
+	// CONTROL: the fixture only means something if a nested grant is actually
+	// there and the covering mount really is a tmpfs. Otherwise this passes on a
+	// path that is plainly granted and proves nothing about the predicate.
+	if !p.GrantsGuestPath(localShare) {
+		t.Fatalf("%s is not granted at all, so it cannot show which predicate is in use", localShare)
+	}
+	if !p.IsShadowSlot(localShare) {
+		t.Fatalf("%s is not writable, so it is not the tmpfs-covered case this test needs", localShare)
+	}
+
+	if got := grantMark(p, "SOME_PATH_VAR", localShare); got != "" {
 		t.Errorf("grantMark(%s) = %q, want no mark — grantMark must keep asking 'is there a "+
 			"node here' (policy.GrantsGuestPath), not sanitise's narrower 'is the host's "+
 			"content here' (policy.keepHostElement); unifying them would print a false "+
-			"'not granted' next to a directory that genuinely holds `claude`", localBin, got)
+			"'not granted' next to a directory that genuinely holds a bind", localShare, got)
+	}
+}
+
+// The two marks answer two different questions and must never be confused for
+// each other: "not granted" means NOTHING IS THERE, "writable from inside" means
+// something is there AND the payload can add to it. They are also mutually
+// exclusive by construction — IsShadowSlot needs a covering mount, and
+// GrantsGuestPath returning false means there is none — and this pins that.
+//
+// The writable mark is PATH-only, and that scope is the substance rather than a
+// detail. PATH entries are searched for COMMANDS, so a writable one is a shadow
+// slot; a writable CARGO_HOME or XDG_CACHE_HOME is what those variables are FOR,
+// and marking them would train the reader to skip the mark on the one line where
+// it matters.
+func TestWritableMarkIsPathOnlyAndDistinctFromNotGranted(t *testing.T) {
+	reg := loadTestRegistry(t)
+	home, target := testTree(t)
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	p, err := policy.Resolve(reg, []string{"@sys", "@home", "@cwd-rw"}, ctx, policy.OSEnviron{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	// $HOME is @home's writable tmpfs: the arrangement @claude shipped.
+	if got := grantMark(p, "PATH", home); !strings.Contains(got, "writable from inside") {
+		t.Errorf("grantMark(PATH, %s) = %q, want the writable mark. %s is a writable tmpfs, "+
+			"so a PATH entry naming it is a shadow slot the payload can fill — and the screen "+
+			"saying nothing is how @claude's {home}/.local/bin survived a milestone in plain "+
+			"sight", home, got, home)
+	}
+	if got := grantMark(p, "CARGO_HOME", home); got != "" {
+		t.Errorf("grantMark(CARGO_HOME, %s) = %q, want no mark — the mark is about directories "+
+			"searched for COMMANDS. A writable CARGO_HOME is correct, and marking it teaches "+
+			"the reader to ignore the mark where it matters", home, got)
+	}
+
+	// Not granted at all: nothing is there, so it is not a slot to fill.
+	if got := grantMark(p, "PATH", "/nowhere/at/all"); !strings.Contains(got, "not granted") {
+		t.Errorf("grantMark(PATH, /nowhere/at/all) = %q, want the not-granted mark", got)
+	}
+	if strings.Contains(grantMark(p, "PATH", "/nowhere/at/all"), "writable") {
+		t.Error("an ungranted path was marked writable; the two marks must stay exclusive")
+	}
+
+	// snug's own staging directory must never be marked writable — the rule
+	// would otherwise be flagging its own repair.
+	if strings.Contains(grantMark(p, "PATH", policy.StagedBinDir), "writable") {
+		t.Errorf("%s was marked writable from inside", policy.StagedBinDir)
 	}
 }
 
@@ -407,10 +468,10 @@ func TestFilesystemBlockRendersTheStubAsExec(t *testing.T) {
 	}
 	got := string(b)
 
-	if !strings.Contains(got, "exec   "+policy.PodmanStubDir+"/podman") {
+	if !strings.Contains(got, "exec   "+policy.StagedBinDir+"/podman") {
 		t.Errorf("FILESYSTEM block does not render the stub as kind 'exec':\n%s", got)
 	}
-	if strings.Contains(got, "data   "+policy.PodmanStubDir+"/podman") {
+	if strings.Contains(got, "data   "+policy.StagedBinDir+"/podman") {
 		t.Errorf("FILESYSTEM block still renders the stub as kind 'data'")
 	}
 }

@@ -437,6 +437,39 @@ func (p *Policy) keepHostElement(guest string) (bool, EnvDropReason) {
 	}
 }
 
+// IsShadowSlot reports whether a directory named in the environment is writable
+// from inside the sandbox — a PATH entry the payload can drop a file into and so
+// choose what the next `git` or `sh` resolves to.
+//
+// It is the SAME predicate keepHostElement uses for its Tmpfs verdict, deliberately
+// sharing coveringMount and the deepest-mount rule rather than asking the question
+// a second way, because two implementations of "what is at this path" eventually
+// disagree and the reader only ever checks one.
+//
+// It is NOT a refusal, and must not become one without a decision. A human's own
+// profile merging a writable directory onto PATH is their declaration, recorded as
+// an accepted residual in TODO.md; what snug must never do is ship that slot
+// pre-installed. So the caller is a test over the BUILTINS (and the red team),
+// not Validate.
+//
+// Writable rather than tmpfs: a `rw` bind of a host directory is a shadow slot
+// too, and a worse one, because what the payload writes there PERSISTS TO THE
+// HOST.
+func (p *Policy) IsShadowSlot(guest string) bool {
+	m, ok := p.coveringMount(guest)
+	if !ok {
+		return false // nothing is there at all; a PATH entry naming it is inert
+	}
+	switch m.Kind {
+	case KindTmpfs:
+		return true // an empty writable directory, by construction
+	case KindBind:
+		return m.Access == AccessRW
+	default:
+		return false
+	}
+}
+
 // dedupeEnvLists collapses a repeated element to its EARLIEST band.
 //
 // This is what makes `prepend`'s guarantee literally true, and it fixes a

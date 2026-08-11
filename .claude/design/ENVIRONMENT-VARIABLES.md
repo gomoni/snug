@@ -420,10 +420,21 @@ at this path*, and a tmpfs answers no: it grants an **empty** directory. An
 element covered only by one was never a truthful survivor, and the correction is
 the existing predicate giving a correct answer to the question it already asks.
 The **deepest** covering mount decides, so a bind nested inside a tmpfs is kept
-(`{home}/.local/bin/claude`, which `@claude` really does stage) while the tmpfs
-directory above it is dropped (`{home}/.local/bin`). Do not read that as "keep if
-any mount exists at or below" — that is a second, downward walk, and it re-admits
-the element the rule exists to remove.
+while the tmpfs directory above it is dropped. Do not read that as "keep if any
+mount exists at or below" — that is a second, downward walk, and it re-admits the
+element the rule exists to remove.
+
+The example this paragraph used to give was `{home}/.local/bin/claude` kept and
+`{home}/.local/bin` dropped, "which `@claude` really does stage". **It no longer
+does, and the reason is worth keeping in view here of all places.** `@claude`
+staged a read-only bind inside a *writable* directory and then put that directory
+on `PATH` with `merge` — and no amount of correctness in this filter could reach
+it, because `sanitise` only ever inspects the **host's** value for an imported
+variable and a `merge` entry is written in a profile. The binary now lands in
+`policy.StagedBinDir` (`/run/snug/bin`), which is unwritable from inside. The
+nesting rule above is unchanged and still right; what changed is that its
+best-known example was itself a hole, in the half of the environment this
+document does not govern.
 
 *Why it matters, and the bound on the claim.* Under `@home`, `{home}` and four
 subdirectories are tmpfs, and `/tmp` is tmpfs in every policy. So a host `PATH`
@@ -637,6 +648,34 @@ the renderer is lying.
 Note `HOME` and `SHELL` carry `(snug)` and no verb. They are not profile-writable
 (§1.1), and §4.2's repair is that this block also **marks** an authored value
 whose path nothing grants.
+
+**A second mark, added after §4.2 shipped: `← writable from inside`, on `PATH`
+entries only.** §4.2's mark answers *is anything there*; this one answers *can
+the payload write there*, and both draw on `coveringMount` so there is still one
+answer to "what is at this path".
+
+It exists because the block was rendering two entries with the identical property
+in opposite ways, four lines apart — a profile's `merge` of a writable directory
+kept and unmarked, directly above a `sanitise` drop line explaining that a
+writable directory is a shadow slot. The filter was right in both cases:
+`sanitise` judges only the **host's** value for an imported variable, and can
+never reach a `merge` entry written in a file. But a reader cannot see that
+distinction on the screen, and the gap is not academic — it is exactly where
+`@claude`'s `{home}/.local/bin` sat, unmarked, for a milestone.
+
+The scope is the substance. `PATH` entries are searched for **commands**, so a
+writable one is a slot the payload can fill; a writable `CARGO_HOME` or
+`XDG_CACHE_HOME` is what those variables are *for*, and marking them would teach
+the reader to skip the mark on the one line that matters. The two marks cannot
+collide: the writable mark needs a covering mount, and the `not granted` mark
+means there is none.
+
+It stays a **mark, not a refusal**, for the same reason §4.2's does — and the
+reason is now sharper than "restriction is not snug's job". A human's own profile
+may deliberately put a writable directory on `PATH`; that is their declaration,
+recorded as an accepted residual in `TODO.md`. What snug may never do is *ship*
+one, and that is enforced separately and absolutely, by a test over the builtins
+(`TestNoBuiltinPutsAWritableDirectoryOnPATH`) rather than by anything on screen.
 
 ---
 

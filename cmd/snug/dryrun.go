@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -201,7 +202,7 @@ func envLines(p *policy.Policy, v policy.EnvVar) []envLine {
 		if e.Verb == policy.VerbSnug {
 			from = e.Note
 		}
-		mark := grantMark(p, e.Value)
+		mark := grantMark(p, v.Name, e.Value)
 		if n := len(out); n > 0 && out[n-1].verb == verb && out[n-1].from == from && out[n-1].mark == mark {
 			out[n-1].values = append(out[n-1].values, visibleValue(e.Value))
 			continue
@@ -260,15 +261,45 @@ func visibleValue(s string) string {
 // predicate is "does a grant cover this path", and it must stay the one the
 // sanitise filter uses (policy.GrantsGuestPath) — two implementations of "is
 // this granted" eventually disagree, and the one on screen is the one a human
-// trusts. But that predicate alone says "not granted" about /run/snug/bin, which
-// is the directory snug creates to hold the podman stub: true in the policy's
-// own vocabulary, and misleading on a line whose whole point is that a binary
-// WILL be found there. Naming what is mounted inside keeps one predicate and
+// trusts. But that predicate alone says "not granted" about policy.StagedBinDir,
+// the directory snug creates to hold every executable it stages: true in the
+// policy's own vocabulary, and misleading on a line whose whole point is that a
+// binary WILL be found there. Naming what is mounted inside keeps one predicate and
 // stops the mark reading as a bug report — the difference between "$HOME is not
 // yours to write" and "this directory holds exactly one generated file" is then
 // visible without a second rule.
-func grantMark(p *policy.Policy, value string) string {
-	if !strings.HasPrefix(value, "/") || p.GrantsGuestPath(value) {
+//
+// THE SECOND MARK, and why it is scoped to PATH rather than to every path-valued
+// name. The screen used to render two entries with the IDENTICAL property in
+// opposite ways, four lines apart:
+//
+//	PATH  /opt/scratch/bin   merge   both      <- kept, unmarked
+//	      (1 host entry dropped — only an empty writable tmpfs is mounted
+//	       there: /tmp/attacker/bin)
+//
+// Both are empty writable tmpfs directories. The filter dropped one and named
+// its reason; the other is a profile's own `merge`, which `sanitise` structurally
+// cannot reach (it only ever judges the HOST's value for a variable a profile
+// imported). Correct in every particular, and it reads as a bug in the filter —
+// or worse, does not read at all, which is how @claude's {home}/.local/bin
+// survived a milestone on screen in front of everybody.
+//
+// So the mark answers policy.IsShadowSlot's question — "can the payload write
+// here" — and only for PATH, because PATH is the variable whose entries are
+// searched for COMMANDS. A writable CARGO_HOME or XDG_CACHE_HOME is not a defect,
+// it is the point of those variables, and marking them would train the reader to
+// ignore the mark on the one line where it matters.
+//
+// It cannot collide with "not granted": IsShadowSlot needs a covering mount to
+// return true, and GrantsGuestPath returning false means there is none.
+func grantMark(p *policy.Policy, name, value string) string {
+	if !strings.HasPrefix(value, "/") {
+		return ""
+	}
+	if p.GrantsGuestPath(value) {
+		if name == "PATH" && p.IsShadowSlot(value) {
+			return "  ← writable from inside"
+		}
 		return ""
 	}
 	inside := 0
@@ -421,27 +452,54 @@ func describeContainers(out *os.File, p *policy.Policy) {
 	fmt.Fprintf(out, "         Design and feasibility: .claude/design/ENGINE-NETNS.md\n")
 }
 
-// describeCommands names snug's OWN staged executables — today, exactly one:
-// the podman dispatcher stub. It exists because CONTAINERS above says a
-// filtering proxy is listening, but not that a fresh `podman` command was
-// placed on PATH ahead of the real one, and "there is a new executable
-// running before the tool you typed" is exactly the kind of thing --dry-run
-// exists to make legible rather than a human having to notice a FILESYSTEM
-// line reads "exec" instead of "data".
+// describeCommands names EVERY executable staged in policy.StagedBinDir, which
+// is every command snug puts on PATH ahead of the distro's.
+//
+// It exists because "there is a new executable running before the tool you
+// typed" is exactly the kind of thing --dry-run exists to make legible, rather
+// than a human having to notice that one FILESYSTEM line reads "exec" instead of
+// "data". The block used to hard-code the podman stub, which was true while the
+// stub was the only thing ever staged and became a silent omission the moment
+// @claude's binary moved here — so it now enumerates the directory and cannot
+// fall behind whatever staged next.
+//
+// The paragraph under a name is per-command and only the stub has one. A staged
+// bind gets the one-line form: what it is and where it came from is a profile's
+// grant, already on the FILESYSTEM lines above, and repeating it here would be
+// two places to keep true.
 func describeCommands(out *os.File, p *policy.Policy) {
-	m, ok := p.Mounts[policy.PodmanStubDir+"/podman"]
-	if !ok || !m.Authored {
+	var staged []string
+	for guest := range p.Mounts {
+		if strings.HasPrefix(guest, policy.StagedBinDir+"/") {
+			staged = append(staged, guest)
+		}
+	}
+	if len(staged) == 0 {
 		return
 	}
-	fmt.Fprintf(out, "COMMANDS  %s\n", m.Guest)
-	fmt.Fprintf(out, "         podman on this host resolves to a shim that cannot reach the host from\n")
-	fmt.Fprintf(out, "         inside a sandbox (distrobox-host-exec, host-spawn or flatpak-spawn), so\n")
-	fmt.Fprintf(out, "         snug staged a dispatcher ahead of it on PATH: it forwards a fixed\n")
-	fmt.Fprintf(out, "         allowlist of docker subcommands to 'docker', byte for byte, and refuses\n")
-	fmt.Fprintf(out, "         everything else by name — never a flag rewrite, never a translation.\n")
-	fmt.Fprintf(out, "         It is read-only (see the FILESYSTEM line above: 'exec', not writable),\n")
-	fmt.Fprintf(out, "         and /usr/bin/podman is UNTOUCHED — still reachable by its absolute path,\n")
-	fmt.Fprintf(out, "         just no longer first on PATH. See .claude/design/CONTAINER-CLIENT.md §8.\n")
+	sort.Strings(staged)
+
+	for _, guest := range staged {
+		fmt.Fprintf(out, "COMMANDS  %s\n", guest)
+		m := p.Mounts[guest]
+		switch {
+		case guest == policy.StagedBinDir+"/podman" && m.Authored:
+			fmt.Fprintf(out, "         podman on this host resolves to a shim that cannot reach the host from\n")
+			fmt.Fprintf(out, "         inside a sandbox (distrobox-host-exec, host-spawn or flatpak-spawn), so\n")
+			fmt.Fprintf(out, "         snug staged a dispatcher ahead of it on PATH: it forwards a fixed\n")
+			fmt.Fprintf(out, "         allowlist of docker subcommands to 'docker', byte for byte, and refuses\n")
+			fmt.Fprintf(out, "         everything else by name — never a flag rewrite, never a translation.\n")
+			fmt.Fprintf(out, "         It is read-only (see the FILESYSTEM line above: 'exec', not writable),\n")
+			fmt.Fprintf(out, "         and /usr/bin/podman is UNTOUCHED — still reachable by its absolute path,\n")
+			fmt.Fprintf(out, "         just no longer first on PATH. See .claude/design/CONTAINER-CLIENT.md §8.\n")
+		case m.Host != "":
+			fmt.Fprintf(out, "         %s, staged here from %s and read-only.\n",
+				filepath.Base(guest), m.Host)
+		}
+	}
+	fmt.Fprintf(out, "         %s is snug's own and is NOT writable from inside, so nothing running\n", policy.StagedBinDir)
+	fmt.Fprintf(out, "         here can add a command to it — the directory ahead of /usr/bin on PATH is\n")
+	fmt.Fprintf(out, "         not a slot the payload can fill.\n")
 }
 
 // describeNetwork spells out what the sandbox can and cannot reach. The
