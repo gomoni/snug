@@ -11,7 +11,15 @@ own Go module so `./...` and `make gate` never see it.
 KEEP=1 ./run.sh E3   leave the stage running afterwards to poke at it
 ```
 
-Last full run on this host: **pass=49 fail=0**.
+Last full run on this host: **pass=51 fail=0**.
+
+It read `pass=49 fail=0` until an independent review found that four of those
+checks passed on a sandbox and an attach that never happened — the same shape as
+the `pasta.avx2` test in CLAUDE.md, in the script whose header claimed the
+property. They are fixed, two positive controls were added, and the two rules
+that hold it up are at the top of `run.sh`. The count went up by two because
+nothing was actually broken; the point is that it could not have told us if it
+had been. See [SUPERVISOR-REVIEW.md](../../.claude/design/SUPERVISOR-REVIEW.md) §3.
 
 ## What is here
 
@@ -24,6 +32,7 @@ Last full run on this host: **pass=49 fail=0**.
 | `join/nsowner.c` | prints which user namespace owns each of a pid’s namespaces |
 | `join/nsdmount.c` | builds a mount view derived from the sandbox’s, with one host path grafted in |
 | `run.sh` | every claim in the design doc, re-measured, each with a positive control |
+| `../../.claude/design/SUPERVISOR-REVIEW.md` | four agents trying to disprove all of it, and what they found |
 
 ## By hand
 

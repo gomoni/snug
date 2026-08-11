@@ -1,6 +1,18 @@
 #!/bin/bash
-# Every claim in FINDINGS.md, re-measured. Each check has a positive control:
-# a negative result on a sandbox that never started is not a result.
+# Every claim in SUPERVISOR.md, re-measured.
+#
+# A negative result on a sandbox that never started is not a result, and this
+# script claimed that property before it had it: four checks used to PASS with no
+# sandbox and no attach at all (see SUPERVISOR-REVIEW.md §3). Two rules now hold
+# it up, and any new check must obey both.
+#
+#   1. Never assert an exit code as a negative. `nsd` collapses every
+#      client-side failure — no sandbox, refused setns, a socket it could not
+#      even dial — to exit 1, which is also what `test -e` returns for a file
+#      that is not there. Assert a MARKER the payload emits instead: see probe().
+#   2. Never compare two namespace ids with a bare `!=`. readlink prints nothing
+#      for a pid that does not exist, and an empty string differs from
+#      everything. Use differs(), which refuses an empty side.
 #
 #   ./run.sh            all experiments
 #   ./run.sh E4         one of them
@@ -39,6 +51,31 @@ down() { [ -n "${KEEP:-}" ] && return 0; pkill -x nsd 2>/dev/null; sleep 0.3; }
 ctl() { ./nsd ctl "$RUN" "$@" 2>&1; }
 inbox() { ctl attach 0 1 "$@"; }   # in the sandbox, capabilities dropped
 
+differs() { # differs <description> <a> <b> — an empty side is a failure, not a difference
+  if [ -z "$2" ] || [ -z "$3" ]; then
+    bad "$1 (a namespace id was empty — did it start?)"
+  elif [ "$2" != "$3" ]; then ok "$1"
+  else bad "$1 (both are '$2')"
+  fi
+}
+
+startbox() { # start the sandbox and set INIT, or say so loudly
+  local out
+  out=$(ctl sandbox 2>&1)
+  if [ $? -ne 0 ]; then bad "PRECONDITION: the sandbox failed to start: $out"; INIT=NOSANDBOX; return 1; fi
+  INIT=$(ctl info | sed -n 's/sandbox_init_pid=//p')
+  if [ -z "$INIT" ]; then bad "PRECONDITION: the sandbox started but reported no init pid"; INIT=NOSANDBOX; return 1; fi
+  # INIT is deliberately a sentinel and not empty on failure: every check below
+  # reads /proc/$INIT/..., and an empty pid there silently yields an empty
+  # string that compares equal to another empty string.
+}
+
+probe() { # probe <path> — PRESENT or ABSENT, from inside the sandbox, or nothing
+  # A marker, not an exit code. If the attach never happened this prints the
+  # client's error and no assertion against it can pass.
+  inbox /bin/sh -c "if [ -e '$1' ]; then echo NSDPROBE-PRESENT; else echo NSDPROBE-ABSENT; fi"
+}
+
 build
 
 if run E1; then
@@ -50,8 +87,8 @@ section "E1  the stage: full subuid map, own netns, capabilities restored by re-
   want "uid_map has both the host uid and the subuid range" "2" "$(grep -c . /proc/$P1/uid_map)"
   want "gid_map has both" "2" "$(grep -c . /proc/$P1/gid_map)"
   want "capabilities present in its own userns" "000001ffffffffff" "$(awk '/^CapEff/{print $2}' /proc/$P1/status)"
-  [ "$(readlink /proc/$P1/ns/net)" != "$(readlink /proc/self/ns/net)" ] \
-    && ok "netns differs from the host's" || bad "netns is the host's"
+  differs "netns differs from the host's" \
+          "$(readlink /proc/$P1/ns/net)" "$(readlink /proc/self/ns/net)"
   want "control socket answers from the host" "pong" "$(ctl ping)"
   down
 fi
@@ -59,11 +96,10 @@ fi
 if run E2; then
 section "E2  the sandbox is a child of the stage: netns inherited, host uid carried"
   up
-  ctl sandbox >/dev/null
-  INIT=$(ctl info | sed -n 's/sandbox_init_pid=//p')
+  startbox
   want "sandbox netns is the stage's netns" "$(readlink /proc/$P1/ns/net)" "$(readlink /proc/$INIT/ns/net)"
-  [ "$(readlink /proc/$INIT/ns/user)" != "$(readlink /proc/$P1/ns/user)" ] \
-    && ok "sandbox has its own user namespace" || bad "sandbox shares the stage's userns"
+  differs "sandbox has its own user namespace" \
+          "$(readlink /proc/$INIT/ns/user)" "$(readlink /proc/$P1/ns/user)"
   want "payload sees the host uid, not 0" "1000" "$(inbox /usr/bin/id -u)"
   want "a file it writes on the bind is owned by the host user" "1000" \
        "$(stat -c %u "$WORK/written-by-sandbox" 2>/dev/null)"
@@ -73,16 +109,20 @@ fi
 if run E3; then
 section "E3  attach: a new process injected into a running sandbox from outside"
   up
-  ctl sandbox >/dev/null
-  INIT=$(ctl info | sed -n 's/sandbox_init_pid=//p')
+  startbox
   want "attached process is in the sandbox mount namespace" \
        "$(readlink /proc/$INIT/ns/mnt)" "$(inbox /usr/bin/readlink /proc/self/ns/mnt)"
   want "attached process is in the sandbox pid namespace" \
        "$(readlink /proc/$INIT/ns/pid)" "$(inbox /usr/bin/readlink /proc/self/ns/pid)"
   want "it sees the sandbox's tmpfs, not the host's /tmp" "init was here" \
        "$(inbox /usr/bin/cat /tmp/marker-from-init)"
-  want "it does NOT see an ungranted host path" "1" \
-       "$(inbox /usr/bin/test -e "$HOME/.ssh" >/dev/null 2>&1; echo $?)"
+  # Positive control first: assert the path IS there to be seen, on the host,
+  # or "the sandbox cannot see it" is a statement about the host and not about
+  # the sandbox. HOSTONLY is whatever exists; $HOME/.ssh when it does.
+  HOSTONLY="$HOME/.ssh"; [ -e "$HOSTONLY" ] || HOSTONLY="$HOME"
+  want "control: the ungranted path exists on the host" "yes" \
+       "$([ -e "$HOSTONLY" ] && echo yes || echo no)"
+  want "it does NOT see an ungranted host path" "NSDPROBE-ABSENT" "$(probe "$HOSTONLY")"
 
   # Positive control on the ORDER, which is the whole trick.
   out=$(NSDJOIN_ORDER=user,mnt,pid,ipc,uts,net,cgroup ./nsdjoin "$INIT" 1 /usr/bin/true 2>&1)
@@ -96,7 +136,7 @@ fi
 if run E4; then
 section "E4  attach must drop what it is handed: setns into a userns grants every capability"
   up
-  ctl sandbox >/dev/null
+  startbox
   want "undropped: bounding set is full — a file-capability binary would be a way back up" \
        "000001ffffffffff" "$(ctl attach 0 0 /usr/bin/grep CapBnd /proc/self/status | awk '{print $2}')"
   want "undropped: no_new_privs is NOT set" "0" \
@@ -117,7 +157,7 @@ section "E5  network: egress works, host loopback does not, in the namespace and
   want "host control: the listener answers on the host" "200" \
        "$(curl -s -m 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:18099/)"
   up --net
-  ctl sandbox >/dev/null
+  startbox
   want "egress from the namespace" "200" \
        "$(ctl run /usr/bin/curl -s -m 8 -o /dev/null -w '%{http_code}' http://example.com)"
   want "egress from the sandbox" "200" \
@@ -133,7 +173,7 @@ fi
 if run E6; then
 section "E6  the new hole this topology opens: the stage now SHARES the sandbox's netns"
   up
-  ctl sandbox >/dev/null
+  startbox
   # A host-side helper binds an ABSTRACT socket in the namespace the sandbox shares.
   ctl run /usr/bin/python3 -c '
 import socket,os,sys
@@ -163,8 +203,10 @@ except Exception as e: print("REFUSED",e)
   else
     bad "expected the control socket to be listed"
   fi
-  want "but it cannot be connected to: the path is not in the sandbox's mount ns" "1" \
-       "$(inbox /usr/bin/test -e "$RUN/control.sock" >/dev/null 2>&1; echo $?)"
+  want "control: the socket exists on the host" "NSDPROBE-PRESENT" \
+       "$([ -e "$RUN/control.sock" ] && echo NSDPROBE-PRESENT || echo NSDPROBE-ABSENT)"
+  want "but it cannot be connected to: the path is not in the sandbox's mount ns" \
+       "NSDPROBE-ABSENT" "$(probe "$RUN/control.sock")"
   down
 fi
 
@@ -180,7 +222,7 @@ fi
 if run E9; then
 section "E9  two payloads in one sandbox — the tmux shape"
   up
-  ctl sandbox >/dev/null
+  startbox
   (inbox /usr/bin/sh -c 'echo from-payload-A > /tmp/shared; sleep 30' >/dev/null 2>&1 &)
   sleep 0.7
   want "a second attached payload sees the first one's file on the shared tmpfs" "from-payload-A" \
@@ -196,7 +238,7 @@ if run E10; then
 section "E10 the engine in a view DERIVED from the sandbox, with storage grafted in"
   up
   echo hostfile > "$WORK/from-host"
-  ctl sandbox >/dev/null
+  startbox
   STORE="$HOME/.local/share/containers/storage"
   out=$(ctl graft "$STORE" /storage /usr/bin/sh -c '
      ls /storage >/dev/null 2>&1 && echo GRAFT=yes
@@ -232,8 +274,7 @@ fi
 if run E8; then
 section "E8  teardown: SIGKILL the launcher, nothing survives"
   up --net
-  ctl sandbox >/dev/null
-  INIT=$(ctl info | sed -n 's/sandbox_init_pid=//p')
+  startbox
   NETNS=$(readlink /proc/$P1/ns/net | tr -d 'net:[]')
   (ctl attach 0 1 /usr/bin/sleep 300 >/dev/null 2>&1 &)
   sleep 0.7
