@@ -547,3 +547,255 @@ Relatedly: `poc/nsd/stage.go:19-33` copies the pasta closing set verbatim out of
 `internal/policy/net.go`. Correct for a PoC, and the comment says so — but if that
 copy lands in the tree it is the drift path CLAUDE.md warns about. The real
 implementation calls `p.PastaArgs(stagePID)` and changes nothing else.
+
+---
+
+## 3. The evidence (`sandbox-tester`)
+
+Reproduced `pass=49 fail=0`, then attacked each check. **Four checks are
+provably vacuous — they PASS on a sandbox and an attach that never happened.**
+That is the `pasta.avx2` shape this project's own culture warns about, in the
+run that was supposed to have learned the lesson.
+
+### 3.1 The exit-code collapse — E3 and E6
+
+`nsdjoin` forwards the exec'd command's exit code verbatim, but `main.go`
+collapses **every** client-side failure — bad target pid, "no sandbox running",
+refused setns, JOIN-FAIL, and a failure to dial at all — to `os.Exit(1)`. So
+"the file does not exist" and "the attach never happened" are indistinguishable
+at the shell, and both are what these two checks read as success:
+
+```
+run.sh:84   want "1" "$(inbox test -e "$HOME/.ssh"        >/dev/null 2>&1; echo $?)"
+run.sh:166  want "1" "$(inbox test -e "$RUN/control.sock" >/dev/null 2>&1; echo $?)"
+```
+
+Reproduced with a stage up and **no sandbox ever started**:
+
+```
+$ nsd ctl "$R" attach 0 1 /usr/bin/test -e "$HOME/.ssh" >/dev/null 2>&1; echo $?
+1                          # run.sh prints PASS "it does NOT see an ungranted host path"
+$ nsd ctl "$R" attach 0 1 /usr/bin/test -e "$HOME/.ssh"
+nsd: dial unix …/control.sock: connect: invalid argument
+```
+
+Note what the second line is: in that run the socket path was too long for
+`sockaddr_un`, so the client never reached the stage at all. **Total
+infrastructure failure scores as a security guarantee.** E3 also has no positive
+control — a working attach querying `/this/path/is/nowhere/on/earth` produces the
+identical exit 1.
+
+### 3.2 The empty-readlink collapse — E1 and E2
+
+`run.sh:53` and `:65` compare namespace ids with a hand-rolled `[ a != b ]` and
+never check that either `readlink` succeeded. `readlink` on a nonexistent
+`/proc/<pid>/ns/*` prints nothing and fails silently inside `$(...)`, and an
+empty string is `!=` any real namespace id — so a stage or sandbox that never
+started reads as "PASS, it has its own namespace."
+
+Demonstrated through the unmodified check expressions, with only a mundane
+failure (the bind directory does not exist — no PATH tampering, no binary
+replacement). The two E2 assertions sit side by side, share the same broken
+precondition, and disagree:
+
+```
+  FAIL  sandbox netns is the stage's netns (want 'net:[4026533003]', got '')
+  PASS  sandbox has its own user namespace
+```
+
+The one that compares against a known value fails correctly; the one that only
+asserts inequality lies. That is a check-construction bug, not a one-off.
+
+### 3.3 The precondition nobody checks
+
+`up()` calls `ctl sandbox >/dev/null` and never inspects `$?` — used by E2, E3,
+E6, E9 and E10. A `startSandbox` failure (bad bind dir, bwrap missing, the 5s
+`waitReady` timeout under load) degrades silently into "proceed with `$INIT`
+empty" instead of aborting the section. This is the precondition that trips 3.2,
+and it is also how a *timing flake* turns into a false PASS rather than a red.
+
+**So `run.sh`'s own header boast — "Each check has a positive control: a negative
+result on a sandbox that never started is not a result" — is false for at least
+four checks.** The headline `pass=49 fail=0` is inflated by those four, and
+possibly more under specific failure interleavings.
+
+### 3.4 Portability of the "kernel facts"
+
+Two of the seven are misfiled, and one piece of evidence is an accident of this
+box:
+
+| # | claim | classification |
+|---|---|---|
+| 1 | re-exec required after the uid map is written | **kernel** — `capabilities(7)` execve algorithm |
+| 2 | re-exec clears `PR_SET_PDEATHSIG` | **kernel** — `secureexec` whenever new permitted ⊄ old permitted |
+| 3 | bwrap creates TWO user namespaces; setns order is the trick | **bwrap implementation detail.** Reconfirmed present in 0.11.2 with *and* without `--uid`/`--gid`, so it is not conditioned on nsd's invocation — but it is bwrap-specific hardening, not a kernel guarantee, and it needs re-verification on every bwrap upgrade. To its credit it fails loudly (`JOIN-FAIL setns: Operation not permitted`), not silently. |
+| 4 | the joiner needs C (single-threaded caller for `setns(CLONE_NEWUSER)`) | **kernel** — `setns(2)`; the Go-runtime framing is a correct corollary |
+| 5 | joining a userns grants a full capability set | **kernel** (`user_namespaces(7)` ancestor rule) — but the hex literal `000001ffffffffff` is `cap_last_cap`-dependent (40 on this kernel), and "`/usr/bin/newuidmap` on this host has a file capability" is distro packaging; many ship it setuid-root instead. The underlying danger generalises; the artifacts cited do not. |
+| 6 | `--json-status-fd` reports the pid before the mounts are ready | **bwrap implementation detail** — internal execution order, can change between releases |
+| 7 | `/proc/<pid>/status` renders uids in the reader's userns | **kernel**, stable |
+
+The hex-literal dependency fails *safe* (false red, not false green), but it
+means "49 checks" is not a portable number as written.
+
+### 3.5 Claims with no check behind them
+
+- §3 fact 5's "the exec'd payload's effective set is empty" — E4 measures the
+  **attach** path's capabilities and never the sandbox's own init or payload.
+- §6's "podman will not start without one [a proc mount]" is stated as fact in
+  the body; §8 self-corrects that no real podman was ever exercised, but that
+  caveat does not travel with the §6 sentence.
+- §9's "without `everRan` the stage exits during its own startup" — an asserted
+  implementation necessity with no counterfactual test. There is no `_test.go` in
+  `poc/nsd` at all.
+- §5's "sandbox and containers become network peers" — inferred from E5/E7's
+  egress results, never directly measured; no second instance was ever run to
+  probe reachability between them.
+- §4's entire "must still reproduce" list. The doc is honest that these are
+  unimplemented, so this is unmeasured rather than false.
+
+### 3.6 The pasta copy protects nothing
+
+`poc/nsd/stage.go:19-33` is a hand-typed literal, separately maintained from
+`internal/policy/net.go:184-239` (which computes `-t` via `publishSpec()`, has a
+conditional `--dns-forward`, and optional `-a`/`-n`/`-g`/`--mtu`). The comment
+says "copied verbatim", and E5 passing proves **the PoC's own copy** is safe. If
+someone weakens `internal/policy/net.go` tomorrow, `run.sh` still reports
+`pass=49`. Zero regression protection for the production code.
+
+### 3.7 What survives
+
+Genuinely sound — real positive controls, content-based comparisons, no
+exit-code collapse: **E5** (egress works, host loopback refused, in both the
+namespace and the sandbox, with a working positive control before the negative);
+**E6's hole-confirmation half** (distinctive marker string, content-matched —
+not the "cannot connect" half); **E8** (teardown on SIGKILL, with a positive
+control, and the mechanism checks out on code reading); **E9** (shared
+tmpfs/pidns, content-based); **E11** (not-a-daemon teardown, positive control
+before the negative). And the core two-userns/setns-ordering finding is real and
+was independently reconfirmed — only its filing is wrong.
+
+---
+
+## 4. The attack (`redteam`)
+
+Ran the PoC green, then attacked it with live sandboxes. Three confirmed, ranked.
+
+### F1 — P1's lifeline fd leaks into every payload, primary and attached
+
+SUPERVISOR §4 says attach hands in "**No socket, no listener, no fd handed in.**"
+False, and not only for attach. Exact inode match:
+
+```
+LIFELINE: P1 fd5 = pipe:[480455]
+payload  fd5 = pipe:[480455]      # inside the sandbox, attached payload
+PID2 (sandbox-init) /proc/2/fd/5 -> pipe:[475973]   # == P1 fd5, primary payload
+```
+
+`stage0()` clears CLOEXEC on fds 4 and 5 so they survive `syscall.Exec` into
+`stage1` — needed exactly once. `stage1()` never restores it on fd 5, which stays
+open for `watchLifeline`, so every subsequent child of P1 inherits it: `bwrap`
+from `startSandbox`, `nsdjoin` from `attach`.
+
+**Impact today: low.** fd 5 is the *read* end (`lr-x`); a payload cannot forge a
+write end of an anonymous pipe, so it cannot spoof P0's death, and EOF teardown
+still fires (verified). **The mechanism is the finding.** The moment P1 holds any
+authority-bearing fd without CLOEXEC — a future secrets-broker socket, or a host
+`open_tree`/dirfd for the graft — that fd lands in every sandbox by this same
+path, with no new code and no visible change.
+
+Narrowest fix: `fcntl(5, F_SETFD, FD_CLOEXEC)` in `stage1()` right after the
+handshake. This is the same finding `host-bridge` reached from the other
+direction (§2.1), and the two together say the real fix is `sealInheritedFDs`
+running in P1 before every fork, not a one-line patch.
+
+*Abuse sentence: a hostile process inside the sandbox holds an open host-side
+pipe descriptor it was never meant to see, and any future P1 fd added without
+CLOEXEC reaches it the same way.*
+
+### F2 — the shared-netns exposure is bidirectional; the stated rule covers half
+
+E6 tests the payload as a *client* reading a host-side helper's abstract socket.
+The payload works as a *server* too: a host-authority P1 child that **connects**
+to an abstract name or a loopback port gets the payload's impostor.
+
+```
+# payload binds \0snug-agent and 127.0.0.1:19099, serves "IMPOSTOR-PAYLOAD-SERVED-THIS"
+ABSTRACT MITM: IMPOSTOR-PAYLOAD-SERVED-THIS
+TCP MITM:      IMPOSTOR-PAYLOAD-SERVED-THIS
+```
+
+Plain loopback is reachable payload→helper in both protocols (`TCP REACHED:
+SECRET-P1-TCP-LOOPBACK`, `UDP REACHED: SECRET-P1-UDP-LOOPBACK`), and the payload
+can enumerate host-authority traffic metadata via sock_diag:
+
+```
+ss -tan (inside sandbox): CLOSE-WAIT 192.168.1.120:38948 172.66.147.243:80
+                                            # P1 helper's outbound to example.com
+```
+
+SUPERVISOR's rule — "no process in N may bind an abstract socket" — does not
+cover a snug process *connecting* to an abstract name or a loopback address,
+where the payload is the binder and therefore the impersonator; nor the engine's
+own netns helpers, which the engine will run in N. ENGINE-NETNS §4 frames
+"sandbox and containers are network peers" as untrusted-equal and does not say
+that a **host-authority** process talking loopback in N is impersonable.
+
+Stronger rule, and it should be tested rather than written: *no snug or
+host-authority process in N may bind **or connect to** a loopback address or an
+abstract name; all snug IPC in N is a pathname AF_UNIX socket in a directory the
+sandbox does not mount.* (`host-bridge` reached the same rule from the listening
+side — §2.2. Together they are one rule with two halves, and the doc currently
+has neither.)
+
+*Abuse sentence: a hostile payload impersonates any snug or engine service that a
+host-authority process reaches by loopback address or abstract name in the shared
+netns.*
+
+### F3 — co-resident payloads are one trust domain
+
+The "several payloads in one sandbox" feature (§5) and a P1 secrets broker (§5)
+are dangerous together. Same uid, shared pid and mount namespaces:
+
+```
+victim pid=8
+read victim /proc/8/environ -> INJECTED_SECRET=host-token-xyz
+```
+
+By design — attach joins the sandbox's pidns and there is no per-payload
+isolation. The doc notes a joiner must clear its environment and must not leak
+P1's; it does not say that a *legitimately* per-payload injected secret, in the
+environment or in any uid-readable file, is readable by every sibling.
+
+The fix is a design constraint, not code: never deliver a secret to one payload
+by environment or uid-readable file. A broker in P1 must mediate per request over
+a channel a sibling cannot name — or the feature documents that all co-resident
+payloads share every grant and every secret.
+
+### Attacks that failed — defences that held
+
+Worth pinning as positive regressions so they cannot silently regress:
+
+- **Netns reconfiguration.** Payload has `CapEff=0`, `CapBnd=0`, `NoNewPrivs=1`;
+  `ip link add` → EPERM; binding `127.0.0.1:53` and `0.0.0.0:80` → EACCES. The
+  netns is owned by P1's userns and the payload sits in a grandchild with no
+  authority over it.
+- **Primary-payload escalation.** `/proc/1/status`: `NoNewPrivs=1`, `CapEff=0`,
+  `CapBnd=000001ffffffffff`. The full bounding set is inert under nnp=1, and
+  `getcap -r /usr/bin /usr/sbin` found no file-capability binary in the bound
+  `/usr`. `mount` → "must be superuser."
+- **Graft symlink/TOCTOU.** The payload pre-planted `/storage -> /work` on the
+  shared tmpfs; the graft's `move_mount` onto the symlink returned **EINVAL** and
+  leaked no host storage. The `unshare` + `MS_REC|MS_PRIVATE` before `move_mount`
+  holds, and the graft does not propagate into the sandbox.
+- **Undropped attach.** Reachable only through the control socket, which is not
+  in the sandbox's mount namespace; the payload cannot request `DropCaps=0`.
+- **SIGSTOP teardown pin.** A SIGSTOPped attached process does not keep the stage
+  alive: the pidns collapse SIGKILLs stopped members, `nsdjoin`'s `waitpid`
+  returns, the count releases. The lifeline overrides regardless.
+- **Reaching P1.** Invisible to the payload — separate pidns; only `bwrap` (1)
+  and `sandbox-init` (2) appear inside.
+
+One asymmetry re-confirmed rather than counted as new: attached processes have
+`Seccomp: 0`, so **until that is written, an attached payload is *less* confined
+than the primary** — ptrace, nested userns and keyctl are available to it among
+siblings at the same uid. That is the sharpest statement of the §1.5 downgrade.
