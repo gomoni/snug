@@ -202,6 +202,56 @@ func TestPodmanSocketIncludesNetAsAnInterimHonestyFix(t *testing.T) {
 	}
 }
 
+// No builtin sanitises, and the reason is that `sanitise` ADDS.
+//
+// It is easy to read the verb as hygiene — "clean the unwanted references out of
+// PATH" — and in this codebase that reading is backwards. snug's floor is an
+// empty environment (`cmd.Env = []string{}` plus bwrap's `--clearenv`), so
+// nothing of the host's is inside to be cleaned. `sanitise` is the LIST
+// counterpart of `inherit`: it copies the host's value and keeps the elements
+// some grant covers. Its band sits alongside merge's in applyEnvClaims, which is
+// the same statement in the resolver. A builtin that sanitised would therefore
+// make every sandbox carry host-derived entries it does not carry today, on
+// behalf of a human who never asked.
+//
+// So the bound is: the host's environment enters only where a human on this host
+// wrote a profile saying so. What snug ships instead is the KNOWLEDGE, in two
+// tables that are both stronger than a profile could be —
+//
+//   - forbiddenEnv / forbiddenEnvPrefixes: the names whose value is code
+//     (ld.so(8)'s secure-execution list, GIT_SSH, BASH_FUNC_*, RUBYOPT, …),
+//     refused at EVERY verb, so no profile can bring them in at all;
+//   - envTypes' `sanitisable` column: which lists may be filtered at all. PATH,
+//     GOPATH, CLASSPATH and friends yes; MANPATH illegal, because removing an
+//     element there can ADD directories; PYTHONPATH and CDPATH no, because an
+//     empty element is the current directory, which inside snug is the target.
+//
+// Adding a builtin that sanitises is a decision to hand every user host state by
+// default, and this test is where that decision has to be made out loud.
+func TestNoBuiltinSanitises(t *testing.T) {
+	reg, err := Builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(reg))
+	for name := range reg {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if got := reg[name].Environ.Sanitise; len(got) > 0 {
+			t.Errorf("builtin profile %q sanitises %v.\n"+
+				"`sanitise` imports the HOST's value for those variables, filtered by what "+
+				"policy grants — it does not strip anything, because an unselected variable "+
+				"was never there. A builtin doing it gives every sandbox host-derived entries "+
+				"by default.\n"+
+				"If that is genuinely intended, it belongs in an opt-in profile that is never "+
+				"in `defaults`, with its own abuse sentence, and this test should be narrowed "+
+				"to name it rather than deleted.", name, got)
+		}
+	}
+}
+
 // The built-in `defaults` are the selection a bare `snug <dir>` uses, so every
 // name in them must resolve to a real builtin. A typo here is not a compile
 // error and would surface as `unknown profile` on the user's first ever run.
