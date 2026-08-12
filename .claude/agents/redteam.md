@@ -50,6 +50,26 @@ Work through these, and prefer actually running the attack over reasoning about 
   specifically, and re-run it whenever a profile gains an executable.
   `/run/snug/bin` must refuse the write (EROFS); anything under `$HOME` or `/tmp`
   on that PATH is a confirmed finding.
+
+  Then attack the staging directory from the *profile* side, which is where the
+  same defect was found a second time: write a throwaway profile that mounts
+  something AT `/run/snug/bin` — a `tmpfs`, a `rw` bind — and stages one file
+  inside it. snug must refuse before the sandbox starts. If it runs, the profile
+  has obtained a writable directory that **snug itself** puts first on PATH,
+  without ever naming PATH, which defeats the "a human declared it" defence
+  entirely.
+- **Text you wrote appearing on a screen a human trusts.** Put a NUL escape
+  (`\u0000`), a newline, and an ESC sequence into an `environ.set` value, a
+  `merge` element, a `ro`/`tmpfs` path, and a profile description, then read
+  `--dry-run` and `snug profile show` through `cat -v` AND in a real terminal —
+  the two disagree, and the terminal is the one a human uses. Ask both questions
+  separately, because they have different severities: can the value **forge or
+  erase a line** (a lie in the trust artifact), and can it **author a bwrap
+  flag** (a real mount that no `Mount`, no `Validate` pass and no `--dry-run`
+  line knows about)? The second reached `--ro-bind ~/.ssh` and `--tmpfs /usr`
+  from one `environ.set` line. Check every sink, not the one you found: this
+  project has fixed exactly one block and left the block four lines below it
+  broken, twice.
 - **Localhost.** Start a listener on the host loopback, then try to reach it from
   inside: TCP and UDP, IPv4 and IPv6, and the network helper's gateway address.
   This is the single most important negative test in the project. Re-run it after

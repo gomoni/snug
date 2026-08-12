@@ -1077,7 +1077,23 @@ still worth running before a fix lands.
 
 ## Known gaps in what the docs claim
 
-Both are documented where they bite; listed here so they are not forgotten.
+All are documented where they bite; listed here so they are not forgotten.
+
+- **`forbiddenEnv` does not close the exec class for git.** `EDITOR`, `VISUAL`
+  and `PAGER` are legal at `set` and at `inherit` by ENVIRONMENT-VARIABLES.md
+  §3.2's decision, and `@claude` inherits all three — while git falls back
+  `GIT_EDITOR → core.editor → VISUAL → EDITOR` and `GIT_PAGER → core.pager →
+  PAGER`. Measured: `PAGER="sh -c '…'" git log` runs the command. So the `GIT_*`
+  spellings being refused closes the INVISIBLE half of the class, not the class.
+  Profiles are the trusted layer, so this is a composability defect — one
+  profile weakening what another established — rather than an escape. Closing it
+  means withdrawing a grant from every profile that inherits those three, which
+  is a §3.2 decision and not a table edit.
+  `TestForbidListDoesNotCloseTheExecClassForGit` pins the current state so the
+  change has to be deliberate.
+  *(A separate clause claiming these were "refused inside `@git-ro`-style
+  identity" was a phantom gate — nothing anywhere read `Policy.Identity` — and
+  has been deleted from §3.2 rather than implemented.)*
 
 - **`--config` and privileged-grant gating do not exist.** INDEX §2.7 describes
   them; `profile.Profile.Trusted` is set and never read. Consequence found by

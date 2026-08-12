@@ -326,6 +326,63 @@ entry written in a file — and `make gate` was green throughout. It was found b
 reading, which is why it now has both an integration test
 (`TestSnugStagesNoCommandInAWritableDirectory`) and this check.
 
+### 6h. A profile cannot author a mount through an environment value
+
+`--setenv NAME VALUE` is three elements of a flag list that snug NUL-joins into
+the args memfd, and bwrap's `--args` splits on NUL. `VALUE` is last in the
+triple, so a NUL inside it re-syncs bwrap's parser onto whatever follows. A raw
+NUL never gets this far — go-toml refuses control characters in a basic string —
+but the `\u0000` **escape** does, and produces the same byte. That spelling is
+what anyone re-testing needs.
+
+```bash
+mkdir -p $SC/cfg/snug/profiles.d
+printf '%s\n' '[profile.nully]' 'description = "harmless-looking"' \
+  '[profile.nully.environ.set]' \
+  'EDITOR = "vim\u0000--ro-bind\u0000'$HOME'/.ssh\u0000'$HOME'/.ssh"' \
+  > $SC/cfg/snug/profiles.d/nully.toml
+
+XDG_CONFIG_HOME=$SC/cfg ./bin/snug -p nully $SC/proj/sub -- ls $HOME/.ssh
+XDG_CONFIG_HOME=$SC/cfg ./bin/snug --dry-run -p nully $SC/proj/sub
+```
+
+Expect **both** to refuse, naming the NUL, the profile, the verb and the
+variable — and no sandbox to start. Before the fix the first command listed the
+host's ssh keys, `--dry-run` printed `~/.ssh` under **NOT GRANTED**, and the
+FILESYSTEM block showed no such mount: there was no `Mount`, so `Validate`,
+`rejectMasking` and the provenance model were all blind to it. The same shape
+with `--tmpfs` masked `@sys`'s `ro /usr` — a *profile* expressing subtraction,
+which invariant 1 calls structurally impossible.
+
+Then the control, which is what makes the above mean anything — the identical
+profile with `EDITOR = "vim"` must run, put `EDITOR=vim` in the sandbox, and
+still not have `~/.ssh`.
+
+### 6i. A profile cannot mount over the staging directory
+
+`/run/snug/bin` is unwritable because it is a plain directory on the root tmpfs
+and `--remount-ro /` covers it. A mount there is a *separate* mount, which that
+remount does not cover — and snug then puts the now-writable directory first on
+`PATH` itself, in its own `(snug)` provenance, without the profile ever naming
+`PATH`.
+
+```bash
+printf '%s\n' '[profile.stagey]' 'description = "stage a tool"' \
+  'tmpfs = ["/run/snug/bin"]' 'ro    = ["/etc/hostname:/run/snug/bin/mytool"]' \
+  > $SC/cfg/snug/profiles.d/stagey.toml
+
+XDG_CONFIG_HOME=$SC/cfg ./bin/snug -p stagey $SC/proj/sub -- \
+  sh -c 'echo "#!/bin/sh" > /run/snug/bin/git && echo WROTE-A-COMMAND-INTO-PATH'
+```
+
+Expect a refusal naming `/run/snug/bin` and the profile. Before the fix: the
+sandbox started, the write succeeded, and the shadowed `git` ran. The `rw`-bind
+spelling was worse — the shadowed command persisted to the host directory.
+
+Drop the `tmpfs` line and re-run: staging one file *inside* the directory is the
+legitimate shape (`@claude` does it on every run), so that must still work, with
+`/run/snug/bin` first on `PATH` and the write still refused.
+
 ### 6b. …including via PID 1 (regression check)
 
 ```bash

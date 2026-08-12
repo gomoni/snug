@@ -59,6 +59,27 @@ You own the two layers where snug's security actually lives: the **policy model*
    `policy.IsShadowSlot`; when you add or change a profile that carries an
    executable, confirm the sweep still covers it rather than assuming it does.
 
+   **And the directory itself is snug's, in `snugsOwn` alongside `/proc` and
+   `/dev`.** An independent review found the same defect one indirection out: a
+   profile that mounts a tmpfs (or a `rw` bind) AT `/run/snug/bin` and stages one
+   file inside gets a writable directory that snug then puts first on PATH *in
+   its own `(snug)` provenance*, with the profile never naming PATH at all. That
+   is not the accepted-residual class — no human read a declaration — and it is
+   the exact case "a profile cannot pick a writable directory by accident"
+   claimed was impossible. A grant at a path INSIDE the directory stays legal and
+   must: staging one executable is what the directory exists for.
+7. **Text a profile wrote is not text snug wrote, at any sink.** A value reaching
+   the argv, the FILESYSTEM block, the ENVIRONMENT block or `snug profile show`
+   goes through `visibleValue`, and a control character in an environ value or a
+   guest path is refused outright (`checkEnvValue`, `Validate`). The reason is
+   both halves at once: a NUL in an environ value re-synced bwrap's `--args`
+   parser and authored a MOUNT no `Mount` existed for — invisible to `Validate`,
+   `rejectMasking` and `--dry-run` — while a newline or an ESC forges or erases
+   rows in the artifact a human reads to decide whether to trust the sandbox.
+   When you add a sink, ask which of those two it is; when you add a guard, ask
+   what the OTHER sinks do with the same string. Every one of these was fixed at
+   the site where it was found and left broken four lines below.
+
 ## How you work
 
 - Before changing the compiler, run `bwrap --help` in this environment. Do not

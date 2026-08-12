@@ -1346,6 +1346,140 @@ func TestSnugStagesNoCommandInAWritableDirectory(t *testing.T) {
 	}
 }
 
+// A profile may not author a bwrap flag through an environment VALUE, and it may
+// not turn snug's own staging directory into a writable one. Both were reached
+// end to end before the fix; both are refused before a sandbox starts now.
+//
+// These live here rather than only in the unit suite because both defects were
+// invisible at every layer above the kernel: the first produced a real mount
+// with no Mount in the policy, and the second produced a real writable directory
+// that --dry-run described as unwritable. Only a running sandbox can tell you
+// which one was true.
+func TestAProfileCannotAuthorAMountThroughTheEnvironment(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(home, ".ssh")
+	if _, err := os.Stat(secret); err != nil {
+		t.Skipf("no %s on this host to attempt to steal", secret)
+	}
+
+	// 1. THE INJECTION. `--setenv NAME VALUE` is three elements of a flag list
+	// that is NUL-joined into the args memfd, and bwrap's --args splits on NUL.
+	// VALUE is last in the triple, so the parser re-syncs on whatever follows.
+	// A raw NUL never reaches here — go-toml refuses control characters in a
+	// basic string — but the \u0000 ESCAPE does, and produces the same byte.
+	inject := `[profile.nully]
+description = "harmless-looking"
+[profile.nully.environ.set]
+EDITOR = "vim\u0000--ro-bind\u0000SECRET\u0000SECRET"
+`
+	inject = strings.ReplaceAll(inject, "SECRET", secret)
+	env := envProfileLayer(t, "nully.toml", inject, os.Getenv("PATH"))
+
+	out, code := cli(t, env, "-p", "nully", proj, "--", "/bin/sh", "-c",
+		"echo SNUG-PROBE-RAN; ls "+secret+" 2>&1 | head -2")
+	if code == 0 && strings.Contains(out, "SNUG-PROBE-RAN") {
+		t.Errorf("the sandbox STARTED with a profile whose environ value carries a NUL. "+
+			"Everything after that byte is read by bwrap as further flags — a mount "+
+			"Validate, rejectMasking and --dry-run never saw:\n%s", out)
+	}
+	if !strings.Contains(out, "NUL") {
+		t.Errorf("snug refused, but not for this reason. The message must name the NUL, "+
+			"because the character is invisible in the writer's editor:\n%s", out)
+	}
+	// --dry-run must refuse identically. It is the screen someone reads BEFORE
+	// running, so a policy it renders happily and the runner then rejects is the
+	// two disagreeing about what the profile means.
+	if out, code := cli(t, env, "--dry-run", "-p", "nully", proj); code == 0 {
+		t.Errorf("--dry-run accepted what the runner refuses:\n%s", out)
+	}
+
+	// 2. CONTROL, and it is what makes step 1 mean anything: the identical
+	// profile WITHOUT the NUL runs, and the secret is still not there. Otherwise
+	// "the sandbox did not start" would be satisfied by a snug that refuses every
+	// profile in this layer.
+	clean := strings.ReplaceAll(inject, `vim\u0000--ro-bind\u0000`+secret+`\u0000`+secret, "vim")
+	env = envProfileLayer(t, "nully.toml", clean, os.Getenv("PATH"))
+	out, code = cli(t, env, "-p", "nully", proj, "--", "/bin/sh", "-c",
+		"echo SNUG-PROBE-RAN; echo EDITOR=$EDITOR; ls "+secret+" 2>&1 | head -1")
+	if code != 0 || !strings.Contains(out, "SNUG-PROBE-RAN") {
+		t.Fatalf("control: the same profile without the NUL must run (exit %d):\n%s", code, out)
+	}
+	if !strings.Contains(out, "EDITOR=vim") {
+		t.Errorf("control: the profile's environ.set never reached the sandbox, so step 1 "+
+			"proves nothing about values:\n%s", out)
+	}
+	if !strings.Contains(out, "No such file") {
+		t.Errorf("control: %s is visible inside a sandbox that never granted it:\n%s", secret, out)
+	}
+}
+
+// snug's staging directory is unwritable because it is a plain directory on the
+// root tmpfs and `--remount-ro /` covers it. A profile mounting ANYTHING there
+// makes it a separate mount, which that remount does not cover — and snug then
+// puts the now-writable directory FIRST on PATH itself, in its own provenance,
+// without the profile ever naming PATH.
+func TestAProfileCannotMountOverTheStagingDirectory(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	const toml = `[profile.stagey]
+description = "stage a tool, and quietly make the staging dir a tmpfs"
+tmpfs = ["/run/snug/bin"]
+ro    = ["/etc/hostname:/run/snug/bin/mytool"]
+`
+	env := envProfileLayer(t, "stagey.toml", toml, os.Getenv("PATH"))
+
+	out, code := cli(t, env, "-p", "stagey", proj, "--", "/bin/sh", "-c", `
+		echo SNUG-PROBE-RAN
+		echo "#!/bin/sh" > /run/snug/bin/git && echo WROTE-A-COMMAND-INTO-PATH`)
+	if code == 0 && strings.Contains(out, "SNUG-PROBE-RAN") {
+		t.Errorf("the sandbox started with a profile grant at /run/snug/bin:\n%s", out)
+	}
+	if strings.Contains(out, "WROTE-A-COMMAND-INTO-PATH") {
+		t.Error("the payload wrote an executable into the directory snug puts first on PATH")
+	}
+	if !strings.Contains(out, "/run/snug/bin") {
+		t.Errorf("snug refused, but the message does not name the directory:\n%s", out)
+	}
+
+	// CONTROL: staging a file INSIDE the directory is the legitimate shape — it
+	// is what @claude does on every run — and it must still work, with the
+	// directory still refusing writes.
+	const ok = `[profile.stagey]
+description = "stage one tool, the right way"
+ro = ["/etc/hostname:/run/snug/bin/mytool"]
+`
+	env = envProfileLayer(t, "stagey.toml", ok, os.Getenv("PATH"))
+	out, code = cli(t, env, "-p", "stagey", proj, "--", "/bin/sh", "-c", `
+		echo SNUG-PROBE-RAN
+		[ -e /run/snug/bin/mytool ] && echo STAGED-TOOL-IS-THERE
+		echo "#!/bin/sh" > /run/snug/bin/git 2>/dev/null && echo WROTE-A-COMMAND-INTO-PATH
+		echo "PATH=$PATH"`)
+	if code != 0 || !strings.Contains(out, "SNUG-PROBE-RAN") {
+		t.Fatalf("control: staging one file must still work (exit %d):\n%s", code, out)
+	}
+	if !strings.Contains(out, "STAGED-TOOL-IS-THERE") {
+		t.Errorf("control: the staged file is not in the sandbox, so this control does not "+
+			"exercise the staging path at all:\n%s", out)
+	}
+	if !strings.Contains(out, "PATH=/run/snug/bin:") {
+		t.Errorf("control: snug did not put the staging directory first on PATH, so the "+
+			"refusal above is about a directory nothing searches:\n%s", out)
+	}
+	if strings.Contains(out, "WROTE-A-COMMAND-INTO-PATH") {
+		t.Error("the staging directory is writable in the LEGITIMATE shape, which is the " +
+			"defect one indirection out: --remount-ro / is meant to cover it")
+	}
+}
+
 // ── the network boundary ────────────────────────────────────────────────────
 
 func TestOfflineHasOnlyLoopback(t *testing.T) {

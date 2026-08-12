@@ -338,6 +338,17 @@ on any flag.
   what removes the choice: a profile cannot pick a writable directory by
   accident, because it does not pick one at all.
 
+  **That sentence was false for one milestone, one indirection out, and the
+  directory is now in `snugsOwn` alongside `/proc` and `/dev`.** A profile could
+  mount a `tmpfs` (or a `rw` bind) AT `/run/snug/bin` and stage one file inside
+  it: `HasStagedBin` then saw the staged file, snug put the now-writable
+  directory first on `PATH` in its own `(snug)` provenance, and the payload
+  wrote `git` into it — measured, with the `rw` spelling persisting the shadowed
+  command to the host. The profile named `PATH` nowhere, so "a human declared
+  it" did not apply either. A grant at a path INSIDE the directory stays legal
+  and must; only the directory itself is snug's. This is the second time the same
+  rule was defeated by the layer beneath the one it was written about.
+
   This is written as a rule because it was already violated once, in shipped
   code, and nothing caught it. `@claude` bound one file read-only at
   `{home}/.local/bin/claude` and then merged `{home}/.local/bin` onto `PATH` —
@@ -360,6 +371,32 @@ on any flag.
   config after migration" (gh 2.96). So the staged copy is deliberately WRITABLE
   — it is a private copy on tmpfs, so the rewrite goes nowhere and the host's gh
   config is never touched.
+- **A profile's bytes are not snug's bytes, and the flag list is a NUL-separated
+  string.** `--setenv NAME VALUE` is three elements of the list that travels
+  through the args memfd, and bwrap's `--args` splits it on NUL. `VALUE` is last
+  in the triple, so a NUL inside it re-syncs bwrap's parser onto the remainder:
+  one `environ.set` line mounted `~/.ssh` into the sandbox, and another masked
+  `@sys`'s `ro /usr` with a `--tmpfs`. There was no `Mount`, so `Validate`,
+  `rejectMasking`, the provenance model and `--dry-run` were all blind — **a
+  profile expressing subtraction**, which invariant 1 calls structurally
+  impossible. A raw NUL never got that far (go-toml refuses control characters in
+  a basic string); the `\u0000` **escape** did.
+
+  `checkEnvName` had refused a NUL in a NAME from the beginning, with reasoning
+  that applies word for word to the value. That is the shape to watch for: **a
+  rule written once and applied to one of its two halves.** Now `checkEnvValue`
+  refuses every control character in a profile-supplied value, `Validate` refuses
+  one in a guest path, and `nulJoin` refuses an element containing the separator
+  it owns — the last being the backstop for whatever writes a flag next.
+
+  The other control characters are in that refusal for a different reason, and it
+  is worth keeping distinct: NUL authors a **mount**, newline and ESC author a
+  **lie** — a forged row in the FILESYSTEM block, a line erased from `snug
+  profile show` by `ESC[1A CR`. `visibleValue` guarded one block of one screen
+  and four other sinks rendered the same text verbatim; the commit that added it
+  fixed the ENVIRONMENT block and left the argv block four lines below it. **When
+  you add a guard for a value, name every sink that value can reach, and assert
+  the set rather than the site** (`TestNoSnugScreenEmitsARawControlCharacter`).
 - **bwrap stops parsing flags at `--`.** A flag appended to the full argv lands
   after the separator and is handed to the payload instead — so `--seccomp` was
   once passed, accepted, and never installed, with a zero exit code and no

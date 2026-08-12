@@ -708,7 +708,7 @@ worse than an absent value.
 | variable | path? | set | inherit | note |
 |---|---|---|---|---|
 | `HOME`, `SHELL`, `USER`, `LOGNAME`, `TMPDIR`, `PS1`, `SNUG*` | yes/no | **—** | **✗** | snug's (§1.1); no profile may write them |
-| `EDITOR`, `VISUAL`, `PAGER` | no | ✓ | ✓ | exec vectors, but the host's own choice; refused inside `@git-ro`-style identity, see §4.4 |
+| `EDITOR`, `VISUAL`, `PAGER` | no | ✓ | ✓ | exec vectors, but the host's own choice — **legal at both verbs, with no identity-conditional refusal.** See the note below |
 | `TERM` | no | ⚠ | ✓ | the standard exception to authoring: the host terminal is a fact snug cannot know |
 | `LANG`, `LC_*` | no | ✓ | ✓ | genuine scalars; `LC_ALL` > `LC_<cat>` > `LANG` is a consumer rule, not a merge rule |
 | `TZ` | **sort of** | ⚠ | ⚠ | **two-branch grammar — see below** |
@@ -718,6 +718,31 @@ worse than an absent value.
 | `SSH_AUTH_SOCK`, `GIT_CONFIG_GLOBAL`, `GH_CONFIG_DIR` | yes | **—** | **✗** | authored by the machinery that creates the socket or file |
 | `CARGO_HOME`, `DOCKER_CONFIG`, `NPM_CONFIG_USERCONFIG`, `PIP_CONFIG_FILE` | yes | ✓ | **✗** | "generate, don't bind" — the value is a path, never a credential |
 | `CONTAINER_HOST`, `DOCKER_HOST` | **no — URLs** | **—** | **✗** | `ssh://` makes the client exec `ssh`; scalar-shaped, parsed, exec-capable |
+
+**The `EDITOR`/`VISUAL`/`PAGER` row said "refused inside `@git-ro`-style
+identity" for a whole milestone, and nothing ever refused anything.** No env
+check anywhere reads `Policy.Identity`; `grep -rnE 'EDITOR|VISUAL|PAGER'` over
+the non-test Go files returns two `GIT_*` entries in `forbiddenEnv` and one
+comment. It was a documented gate with nothing behind it — the exact defect
+CLAUDE.md records twice ("when you write 'requires X' in a comment, grep for X
+before you believe it"), reproduced in this document rather than in code.
+
+The clause is **deleted rather than implemented**, and that is a decision, not
+an omission. Implementing it would withdraw a grant from every profile that
+inherits those three — `@claude` inherits all three today — and would do it
+conditionally on another profile being selected, which is a profile's grant
+changing meaning because of its neighbours. That is the shape invariant 1
+exists to refuse. So the three stay legal, and the residual is written down
+where it can be argued with:
+
+> A profile may set `PAGER` or `EDITOR` to a command, and git will run it —
+> `PAGER="sh -c '…'" git log` was measured hijacked, and git's fallback chains
+> are `GIT_EDITOR → core.editor → VISUAL → EDITOR` and `GIT_PAGER → core.pager
+> → PAGER`. The `GIT_*` spellings are refused (§4.4's list) and the generic
+> ones are not, so **`forbiddenEnv` does not close the exec class for git; it
+> closes the invisible half of it.** Profiles are the trusted layer, so this is
+> a composability defect — one profile weakening what another established —
+> rather than an escape. Carried in `TODO.md`.
 
 **`TZ` is the sharpest scalar, and it is this document's own rule biting.** It is
 not a plain string: it is either a file reference resolved under `TZDIR`, or an
