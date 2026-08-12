@@ -30,8 +30,24 @@ type rawProfile struct {
 	Tmpfs       []string         `toml:"tmpfs"`
 	Symlink     []policy.Symlink `toml:"symlink"`
 	Optional    []string         `toml:"optional"`
-	Env         []string         `toml:"env"`
-	Path        []string         `toml:"path"`
+
+	// Environ is the five verbs, nested under one key. Nested rather than five
+	// root keys for three reasons, the load-bearing one being that `environ` is
+	// a struct with known fields, so DisallowUnknownFields catches
+	// `environ.deny` exactly as it catches an unknown root key — "a negation key
+	// cannot be smuggled in" applies one level down for free (§1.1b).
+	//
+	// A pointer so an absent block and an empty one are the same thing here and
+	// neither needs a special case below.
+	Environ *rawEnviron `toml:"environ"`
+
+	// Env and Path are the retired spellings, kept as FIELDS rather than
+	// deleted. Deleting them would let DisallowUnknownFields produce the generic
+	// "unknown key" message, and a key whose meaning MOVED deserves a named
+	// error pointing at the replacement — see retiredEnvKey and retiredPathKey,
+	// which is the whole reason these two lines are still here.
+	Env  []string `toml:"env"`
+	Path []string `toml:"path"`
 
 	Network string `toml:"network"`
 	DNS     bool   `toml:"dns"`
@@ -42,6 +58,27 @@ type rawProfile struct {
 
 	Podman   string       `toml:"podman"`
 	Identity *rawIdentity `toml:"identity"`
+}
+
+// rawEnviron is the `[profile.NAME.environ.*]` block as TOML delivers it.
+//
+// Merge and Prepend are map[string]any rather than map[string][]string, and
+// that is measured rather than defensive: go-toml v2.4.3 accepts BOTH
+// `PATH = "/a"` and `PATH = ["/a","/b"]` into an `any`, and only into an `any`.
+// Both spellings are legal — a string is exactly ONE element, because snug
+// never splits a value on a separator (CALL 1, §2.2) — so the converter has to
+// see either and say something useful about anything else. go-toml's own decode
+// error names neither the profile nor the file.
+//
+// Inherit and Sanitise are map[string]bool because the TOML spelling is
+// `NAME = true`: the profile supplies a name, never a value. `= false` is
+// refused by name rather than stored, or it would be a negation key that parsed.
+type rawEnviron struct {
+	Set      map[string]string `toml:"set"`
+	Merge    map[string]any    `toml:"merge"`
+	Prepend  map[string]any    `toml:"prepend"`
+	Inherit  map[string]bool   `toml:"inherit"`
+	Sanitise map[string]bool   `toml:"sanitise"`
 }
 
 type rawIdentity struct {
@@ -68,7 +105,7 @@ type rawIdentity struct {
 //	"-"  leading, because `snug -p -v` would otherwise name a profile "-v"
 //	     rather than fail.
 //	"@"  leading, because that mark means "snug ships this" and is added by
-//	     builtins() alone — see policy.Sigil. Note that this rule applies to
+//	     Builtins() alone — see policy.Sigil. Note that this rule applies to
 //	     EVERY file, base.toml included: the builtins are written here under
 //	     bare names and marked on load, so no file anywhere may claim the mark
 //	     for itself.
@@ -132,6 +169,18 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 		if err := checkName(name, source); err != nil {
 			return nil, err
 		}
+		environ, err := toEnvGrants(r, name, source)
+		if err != nil {
+			return nil, err
+		}
+		// Checked HERE, beside checkName and DisallowUnknownFields, and not in
+		// Resolve: the name grammar, verb/type agreement and the forbidden names
+		// are all properties of the profile TEXT, so `snug profile show` reports
+		// them too and the verdict on a profile never depends on the host that
+		// happens to be reading it (§2.3, §2.5).
+		if err := policy.ValidateEnvGrants(environ); err != nil {
+			return nil, fmt.Errorf("%s: profile %q: %w", source, name, err)
+		}
 		reg[name] = &policy.Profile{
 			Name:        name,
 			Description: r.Description,
@@ -141,8 +190,7 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 			Tmpfs:       r.Tmpfs,
 			Symlink:     r.Symlink,
 			Optional:    r.Optional,
-			Env:         r.Env,
-			Path:        r.Path,
+			Environ:     environ,
 			Network:     r.Network,
 			DNS:         r.DNS,
 			Publish:     r.Publish,
@@ -156,6 +204,184 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 		}
 	}
 	return reg, nil
+}
+
+// toEnvGrants turns one profile's raw `environ` block into the value the
+// resolver folds, and refuses the two keys it replaced.
+func toEnvGrants(r rawProfile, name, source string) (policy.EnvGrants, error) {
+	g := policy.EnvGrants{}
+	if e := r.Environ; e != nil {
+		g.Set = copyStringMap(e.Set)
+		var err error
+		if g.Merge, err = toElementLists(e.Merge, "merge", name, source); err != nil {
+			return g, err
+		}
+		if g.Prepend, err = toElementLists(e.Prepend, "prepend", name, source); err != nil {
+			return g, err
+		}
+		if g.Inherit, err = toNameSet(e.Inherit, "inherit", name, source); err != nil {
+			return g, err
+		}
+		if g.Sanitise, err = toNameSet(e.Sanitise, "sanitise", name, source); err != nil {
+			return g, err
+		}
+	}
+
+	if len(r.Env) > 0 {
+		return g, retiredEnvKey(source, name, r.Env)
+	}
+	if len(r.Path) > 0 {
+		return g, retiredPathKey(source, name, r.Path)
+	}
+	return g, nil
+}
+
+// The two retired keys, and why they are FIELDS on rawProfile rather than
+// deletions.
+//
+// `publish_auto` was retired by deleting its struct field and letting
+// DisallowUnknownFields fire, which yields the generic "unknown key" message.
+// That is right for a key that never should have existed and wrong for a key
+// whose MEANING MOVED: `env = [...]` is still a thing a profile wants to say,
+// and the reader needs to be told the new spelling rather than told the key does
+// not exist. So both fields stay, and both errors name the replacement — spelled
+// out with this profile's own variables, so the fix can be pasted.
+//
+// The prefix changed deliberately. `env` became `environ.inherit` and not
+// `environ.env`, because a silently CHANGED meaning is worse than a removed key:
+// anyone whose muscle memory reaches for the old word gets an error naming the
+// new one, rather than a subtly different grant that parses.
+
+func retiredEnvKey(source, name string, names []string) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s: profile %q uses `env = [...]`, which snug no longer accepts.\n", source, name)
+	fmt.Fprintf(&b, "       It is now [profile.%s.environ.inherit], one NAME = true per variable:\n", name)
+	fmt.Fprintf(&b, "         [profile.%s.environ.inherit]\n", name)
+	for _, n := range sortedCopy(names) {
+		fmt.Fprintf(&b, "         %s = true\n", n)
+	}
+	b.WriteString("       One name per line because `inherit` is a hole punched in --clearenv, and a\n")
+	b.WriteString("       list is easy to extend without reading. Each name is now checked: snug\n")
+	b.WriteString("       refuses the ones whose value is code, and refuses a list variable outright\n")
+	b.WriteString("       (use environ.sanitise, which keeps only the elements policy grants).")
+	return fmt.Errorf("%s", b.String())
+}
+
+func retiredPathKey(source, name string, dirs []string) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s: profile %q uses `path = [...]`, which snug no longer accepts.\n", source, name)
+	fmt.Fprintf(&b, "       It is now [profile.%s.environ.merge] on PATH:\n", name)
+	fmt.Fprintf(&b, "         [profile.%s.environ.merge]\n", name)
+	fmt.Fprintf(&b, "         PATH = [%s]\n", quotedList(dirs))
+	b.WriteString("       Use environ.prepend instead if you need to be ahead of every other\n")
+	b.WriteString("       profile's entry — at most one profile may hold the front of a variable, and\n")
+	b.WriteString("       two claiming it is a refusal rather than whichever sorted first.\n")
+	b.WriteString("       Note that the profile must now GRANT the directories it names: a variable\n")
+	b.WriteString("       pointing at a path that is not inside the sandbox is worse than an absent one.")
+	return fmt.Errorf("%s", b.String())
+}
+
+func quotedList(in []string) string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		out = append(out, fmt.Sprintf("%q", s))
+	}
+	return strings.Join(out, ", ")
+}
+
+// sortedCopy mirrors policy's, for a message that does not depend on map order.
+func sortedCopy(in []string) []string {
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	return out
+}
+
+// toElementLists accepts a bare string as ONE element and an array as its
+// elements, per CALL 1. Anything else gets an error naming the profile, the
+// file, the verb and the variable — go-toml's own would name none of them.
+func toElementLists(in map[string]any, verb, profile, source string) (map[string][]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make(map[string][]string, len(in))
+	for _, key := range sortedAnyKeys(in) {
+		switch v := in[key].(type) {
+		case string:
+			// One element, NOT a value to be split. That is the whole of §2.2,
+			// and the separator check in policy.ValidateEnvGrants is what makes
+			// it safe: a hand-written separator can smuggle in an empty element,
+			// and an empty element in a search path is the current directory.
+			out[key] = []string{v}
+		case []any:
+			elems := make([]string, 0, len(v))
+			for i, e := range v {
+				s, ok := e.(string)
+				if !ok {
+					return nil, fmt.Errorf("%s: profile %q: environ.%s %s[%d] is %T, but an "+
+						"environment value is a string — every element of a list variable is "+
+						"one path or one word, written whole",
+						source, profile, verb, key, i, e)
+				}
+				elems = append(elems, s)
+			}
+			out[key] = elems
+		default:
+			return nil, fmt.Errorf("%s: profile %q: environ.%s %s is %T, but it must be a "+
+				"string or an array of strings — a string is exactly one element, because "+
+				"snug never splits a value on a separator",
+				source, profile, verb, key, in[key])
+		}
+	}
+	return out, nil
+}
+
+// toNameSet turns `NAME = true` into a sorted list of names, and refuses
+// `NAME = false` by name.
+func toNameSet(in map[string]bool, verb, profile, source string) ([]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(in))
+	for _, name := range sortedBoolKeys(in) {
+		if !in[name] {
+			return nil, fmt.Errorf("%s: profile %q: environ.%s %s = false. `%s` takes `true`; "+
+				"there is no way to un-%s, because nothing was %sed to begin with — the "+
+				"environment starts empty and every variable in it was put there by name. "+
+				"Remove the line",
+				source, profile, verb, name, verb, verb, verb)
+		}
+		out = append(out, name)
+	}
+	return out, nil
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func sortedAnyKeys(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedBoolKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func toIdentity(r *rawIdentity) *policy.Identity {
@@ -210,6 +436,26 @@ func (r Registry) merge(other Registry) error {
 	return nil
 }
 
+// BadFile is a profile file that would not parse, kept rather than returned as
+// the whole answer.
+//
+// Load used to stop at the first one, and the consequence was measured: a single
+// stale file in profiles.d took down the ENTIRE registry, builtins included, so
+// `snug --dry-run -p @sys .` reported that error and `snug profile list` — the
+// one command that would tell the user what still works — was exactly what
+// stopped working. A file the user may not have edited disabled @sys.
+//
+// The split is by consequence, not by severity. A command that RUNS A SANDBOX
+// stays fatal on any bad file: the file that did not parse may be the one
+// granting what was asked for, and a sandbox assembled from what happened to
+// load is a silent downgrade (invariant 5). A DIAGNOSTIC command reports the
+// file loudly and continues with what did load, because "what still works" is
+// the question being asked.
+type BadFile struct {
+	Path string
+	Err  error
+}
+
 // Load assembles the registry from the trusted layers, in precedence order:
 //
 //  1. embedded builtins   — compiled in, cannot be shadowed
@@ -220,21 +466,29 @@ func (r Registry) merge(other Registry) error {
 // snug.toml from beside the target: a hostile repository that ships its own
 // profile would be granting itself permissions, which defeats the entire threat
 // model. See .claude/design/INDEX.md §2.7.
-func Load() (Registry, error) {
-	reg, err := builtins()
+//
+// The returned error is for failures that leave no usable registry at all: a
+// builtin that will not parse (a bug in snug), an unreadable directory entry, or
+// a REDEFINITION, which stays hard everywhere — two files claiming one name is a
+// question with no answer, and continuing would mean picking one silently.
+// Per-file parse failures come back as BadFiles instead; see there for why.
+func Load() (Registry, []BadFile, error) {
+	reg, err := Builtins()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	var bad []BadFile
 	for _, dir := range ConfigDirs() {
-		layer, err := loadDir(dir)
+		layer, layerBad, err := loadDir(dir)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		bad = append(bad, layerBad...)
 		if err := reg.merge(layer); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return reg, nil
+	return reg, bad, nil
 }
 
 // ConfigDirs are the directories snug reads profiles from, in precedence order.
@@ -253,11 +507,11 @@ func ConfigDirs() []string {
 	return dirs
 }
 
-func loadDir(dir string) (Registry, error) {
+func loadDir(dir string) (Registry, []BadFile, error) {
 	reg := Registry{}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return reg, nil // absent config dir is normal, not an error
+		return reg, nil, nil // absent config dir is normal, not an error
 	}
 	names := []string{}
 	for _, e := range entries {
@@ -266,19 +520,25 @@ func loadDir(dir string) (Registry, error) {
 		}
 	}
 	sort.Strings(names)
+	var bad []BadFile
 	for _, n := range names {
 		path := filepath.Join(dir, n)
+		// A file that cannot be READ is recorded the same way as one that cannot
+		// be parsed: it is one file's problem, and the rest of the layer is still
+		// perfectly good.
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil, err
+			bad = append(bad, BadFile{Path: path, Err: err})
+			continue
 		}
 		layer, err := parse(data, path, true)
 		if err != nil {
-			return nil, err
+			bad = append(bad, BadFile{Path: path, Err: err})
+			continue
 		}
 		if err := reg.merge(layer); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return reg, nil
+	return reg, bad, nil
 }

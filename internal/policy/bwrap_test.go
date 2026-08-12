@@ -19,26 +19,45 @@ func TestGoldenBwrapArgs(t *testing.T) {
 		name string
 		sel  []string
 		ctx  Context
+		// env supplies this case's fake host. nil means newFakeEnv() — every
+		// case but one shares the plain fixture, and PATH stays off it
+		// deliberately (see "sanitise" below) so the shared fixture does not
+		// silently grow a host value every future case inherits.
+		env func() *fakeEnv
 	}{
-		{"sys", []string{"@sys", "@cwd-rw"}, testCtx()},
+		{"sys", []string{"@sys", "@cwd-rw"}, testCtx(), nil},
 		// What a bare `snug <dir>` produces: the `defaults` setting. It is
 		// byte-identical to the parent-ro case today, because `home` arrives via
 		// `cwd-rw` anyway — but this is the file that changes if the shipped
 		// defaults ever do, which is the diff a human most needs to see.
-		{"defaults", testDefaults, testCtx()},
-		{"parent-ro", []string{"@sys", "@cwd-rw", "@parent-ro"}, testCtx()},
+		{"defaults", testDefaults, testCtx(), nil},
+		{"parent-ro", []string{"@sys", "@cwd-rw", "@parent-ro"}, testCtx(), nil},
 		// No prior golden selected a podman profile at all, so this is the
 		// review artifact for the whole podman-client change: the container
 		// proxy socket AND the staged dispatcher stub (this fixture's host
 		// detects podman as a distrobox shim — see testCtxWithPodmanShim),
 		// including its PATH placement ahead of the base but behind nothing
 		// else this selection grants.
-		{"podman-socket", []string{"@sys", "@cwd-rw", "@podman-socket"}, testCtxWithPodmanShim()},
+		{"podman-socket", []string{"@sys", "@cwd-rw", "@podman-socket"}, testCtxWithPodmanShim(), nil},
+		// The review artifact for the sanitise-C fix (envresolve.go's
+		// keepHostElement): no prior golden selected environ.sanitise at all, so
+		// the whole change to the filter's Kind-switch produced zero golden
+		// diff until this case existed. The single reviewable line is the
+		// --setenv PATH operand: /tmp/x/bin, /tmp, /home/u/.local/bin and
+		// /srv/nothing are all absent, and /opt/tools/bin appears once, not
+		// twice — dedup collapses envy's merge entry and the sanitise
+		// survivor to the earliest band. Supplies its own env (sanitiseProbeEnv)
+		// so the shared newFakeEnv() fixture stays free of a PATH value.
+		{"sanitise", sanitiseProbeSelection(), testCtx(), sanitiseProbeEnv},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p, err := Resolve(testRegistry(), tc.sel, tc.ctx, newFakeEnv())
+			env := newFakeEnv()
+			if tc.env != nil {
+				env = tc.env()
+			}
+			p, err := Resolve(testRegistry(), tc.sel, tc.ctx, env)
 			if err != nil {
 				t.Fatalf("Resolve(%v): %v", tc.sel, err)
 			}

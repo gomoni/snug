@@ -90,6 +90,36 @@ func (p *Policy) Validate(env Environ) error {
 		if !filepath.IsAbs(g) || filepath.Clean(g) != g {
 			return fmt.Errorf("grant %q (from %s) is not an absolute clean path", g, provenance(m))
 		}
+		// A control character in a GUEST path is refused next to the clean-path
+		// check, because it is the same kind of rule — a property of the text —
+		// and because filepath.Clean does not touch one.
+		//
+		// The reason is the screen, not the kernel. --dry-run renders one grant
+		// per line in fixed columns, so a newline inside a guest path prints as
+		// TWO rows, and the second can be spelled to look like a grant nobody
+		// wrote:
+		//
+		//	tmpfs = ["/a\n  ro     /etc/shadow                          @sys"]
+		//
+		// The sandbox in that case really has one directory whose name contains a
+		// newline, and /etc/shadow is not mounted at all — the line is a lie about
+		// a policy, in the artifact CLAUDE.md calls the mechanism by which a human
+		// can trust snug. The renderer escapes these too; this refusal is what
+		// keeps a profile from putting one there in the first place.
+		//
+		// GUEST only. A HOST path is not snug's to refuse: a file on this machine
+		// may legally be named with a newline, and refusing to bind it would be
+		// snug inventing a rule about someone else's filesystem. The renderer
+		// handles that half.
+		if i := strings.IndexFunc(g, func(r rune) bool { return r < 0x20 || r == 0x7f }); i >= 0 {
+			return fmt.Errorf("grant %q (from %s) has a control character (%q) in its path INSIDE "+
+				"the sandbox.\n"+
+				"       Every line of `snug --dry-run` is one grant, so a path that spans two lines "+
+				"can forge\n"+
+				"       a row for a grant that does not exist. No mountpoint needs one; write the "+
+				"path you meant.",
+				g, provenance(m), string(g[i]))
+		}
 		// The root is snug's, whatever the kind. This used to refuse only a BIND
 		// at /, which left `tmpfs = ["/"]` accepted — and inert, but only by
 		// accident: nearestCovering stops before / and never returns it, so the
@@ -128,7 +158,7 @@ func (p *Policy) Validate(env Environ) error {
 		// created — this is the failure that cost the previous generation a day
 		// (.claude/design/INDEX.md §3.3).
 		if m.Kind != KindSymlink {
-			if via, resolved := resolveVia(links, g); via != "" {
+			if via, resolved := resolveViaDeepest(links, g); via != "" {
 				return fmt.Errorf("grant %s (from %s) resolves through the symlink %s -> %s, landing at %s; "+
 					"bwrap cannot create a mountpoint at a symlink destination — grant %s instead",
 					g, strings.Join(m.From, "+"), via, links[via], resolved, resolved)
@@ -147,6 +177,39 @@ var snugsOwn = map[string]string{
 		"or the sandbox reads the host's process table.",
 	"/dev": "it must be bwrap's synthetic minimal device set, never a bind of the host's " +
 		"(which hands over every block device and every input device).",
+
+	// StagedBinDir is here for a different reason from the other two, and the
+	// difference is the point. /proc and /dev are refused because a profile grant
+	// DISPLACES snug's own node. Nothing is mounted at StagedBinDir at all — it is
+	// a plain directory on the root tmpfs, and that is precisely what makes it
+	// unwritable, because `--remount-ro /` covers it. A profile mounting ANYTHING
+	// there — a tmpfs, or a rw bind — is a separate mount, is not covered by that
+	// remount, and turns the directory writable.
+	//
+	// What that buys the profile is not its own writable directory. It is
+	// SNUG's PATH band: HasStagedBin sees the staged executable, snug puts
+	// StagedBinDir first on PATH in `(snug)` provenance, and the payload then
+	// writes `git` into a directory that runs ahead of /usr/bin. Measured, with
+	// `tmpfs = ["/run/snug/bin"]` plus one staged bind: WROTE-OK, and the
+	// shadowed git ran. The rw-bind spelling is worse — the shadowed command
+	// persists to the host directory.
+	//
+	// This is the case the staging rule in CLAUDE.md says cannot happen ("a
+	// profile cannot pick a writable directory by accident, because it does not
+	// pick one at all"), and it is not the accepted residual class either: the
+	// profile writes no PATH declaration, so no human ever read a line saying a
+	// writable directory would go on PATH.
+	//
+	// Note what is NOT refused, and must not be: a grant at a path INSIDE the
+	// directory. snugsOwn is keyed on the exact guest path, so @claude's
+	// `{home}/.local/bin/claude:/run/snug/bin/claude` is untouched — staging one
+	// executable is the whole purpose of the directory. Only the directory itself
+	// is snug's.
+	StagedBinDir: "it is a plain directory on the root tmpfs, which is what makes it " +
+		"unwritable once / is remounted read-only, and snug puts it FIRST on PATH. " +
+		"A mount there is not covered by that remount, so it would hand the payload a " +
+		"writable directory ahead of /usr/bin. Stage the file itself — " +
+		"`ro = [\"/host/path/tool:" + StagedBinDir + "/tool\"]` — never the directory.",
 }
 
 // rejectMasking closes the ways the grant language could still express
@@ -309,16 +372,61 @@ func sameUnderlyingTree(env Environ, outer, inner Mount, outerGuest string) bool
 	return false
 }
 
-// resolveVia reports whether guest path g passes through one of our own
-// symlinks, and where it would actually land.
-func resolveVia(links map[string]string, g string) (via, resolved string) {
+// One symlink map, TWO entry points, because two different questions are asked
+// of it and a single function answering both would have to hide the difference
+// behind a bool. They are deliberately not folded together: the comment on each
+// has to be able to say which question it answers.
+//
+// Both pick the DEEPEST matching link. The single function these replace
+// returned the first match Go's map iteration happened to produce, which is
+// nondeterministic the moment one link prefixes another — /lib and /lib64 on a
+// usr-merged host is the shipped case — and a security tool whose verdict flips
+// between runs is worse than one that is wrong reproducibly.
+
+// resolveViaDeepest reports whether guest path g passes THROUGH one of our own
+// symlinks, and where a mountpoint at g would actually land.
+//
+// g == link is SKIPPED, and that is right for a MOUNTPOINT: a grant at the link
+// path is the link itself, and there is nothing being diverted. bwrap's failure
+// is about creating a mountpoint at a symlink DESTINATION (.claude/design/INDEX.md
+// §3.3), which only arises for a path below the link.
+func resolveViaDeepest(links map[string]string, g string) (via, resolved string) {
 	for link, target := range links {
-		if g == link {
+		if g == link || !strings.HasPrefix(g, link+"/") {
 			continue
 		}
-		if strings.HasPrefix(g, link+"/") {
-			return link, filepath.Join(target, strings.TrimPrefix(g, link+"/"))
+		if len(link) <= len(via) {
+			continue
 		}
+		via, resolved = link, filepath.Join(target, strings.TrimPrefix(g, link+"/"))
 	}
-	return "", ""
+	return via, resolved
+}
+
+// resolveLinkForEnv rewrites a guest path through one of our own symlinks, so a
+// path a profile WROTE into the environment can be compared against the paths
+// that profile granted.
+//
+// g == link is MATCHED, and that is the difference: an environment value can be
+// literally /bin, and on a usr-merged host /bin is a symlink to usr/bin rather
+// than a grant. Judging it unrewritten would refuse a profile that granted /usr
+// and named the path the sandbox will actually see. It returns g unchanged when
+// no link applies, so the caller has one path to compare either way.
+func resolveLinkForEnv(links map[string]string, g string) string {
+	via, resolved := "", g
+	for link, target := range links {
+		if g != link && !strings.HasPrefix(g, link+"/") {
+			continue
+		}
+		if len(link) <= len(via) {
+			continue
+		}
+		via = link
+		if g == link {
+			resolved = target
+			continue
+		}
+		resolved = filepath.Join(target, strings.TrimPrefix(g, link+"/"))
+	}
+	return resolved
 }

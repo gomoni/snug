@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gomoni/snug/internal/policy"
 )
@@ -64,13 +65,25 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 		if m.Optional {
 			opt = " (optional)"
 		}
-		detail := m.Guest
+		// Escaped for the same reason the ENVIRONMENT block escapes values, and
+		// this block is the one where a forged line reads as a GRANT. A newline
+		// survives filepath.Clean, so a profile could write
+		//
+		//	tmpfs = ["/a\n  ro     /etc/shadow      @sys"]
+		//
+		// and get a correctly-columned row for a mount that does not exist —
+		// while the sandbox really had one directory whose name contained a
+		// newline. Validate now refuses a control character in a GUEST path
+		// outright, which closes the profile-written half; the escaping stays
+		// because a HOST path is not snug's to refuse (a real file may legally
+		// be named with a newline) and it still renders here.
+		detail := visibleValue(m.Guest)
 		if m.Kind == policy.KindSymlink {
-			detail = fmt.Sprintf("%s -> %s", m.Guest, m.Host)
+			detail = fmt.Sprintf("%s -> %s", visibleValue(m.Guest), visibleValue(m.Host))
 		} else if m.Kind == policy.KindBind && m.Host != m.Guest {
-			detail = fmt.Sprintf("%s (from %s)", m.Guest, m.Host)
+			detail = fmt.Sprintf("%s (from %s)", visibleValue(m.Guest), visibleValue(m.Host))
 		}
-		fmt.Fprintf(out, "  %-6s %-46s %s%s\n", kind, detail, strings.Join(m.From, "+"), opt)
+		fmt.Fprintf(out, "  %-6s %-46s %s%s\n", kind, detail, visibleValue(strings.Join(m.From, "+")), opt)
 	}
 	fmt.Fprintf(out, "  %-6s %s\n", "ro-/", "everything else is a read-only skeleton (--remount-ro /)")
 
@@ -81,15 +94,7 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 	}
 
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "ENVIRONMENT  (--clearenv, then:)")
-	keys := make([]string, 0, len(p.Env))
-	for k := range p.Env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		fmt.Fprintf(out, "  %s=%s\n", k, p.Env[k])
-	}
+	describeEnvironment(out, p)
 
 	if p.Net.Mode == policy.NetEgress {
 		fmt.Fprintln(out)
@@ -112,12 +117,244 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 	}
 }
 
+// describeEnvironment renders what the sandbox's environment will be. bwrap
+// --clearenv discards the host's, so this block is the WHOLE of it — there is
+// nothing inherited that does not appear here (with the one caveat CLAUDE.md
+// records: a bound /etc means /etc/profile.d can still put variables back).
+//
+// It is a function of its own, rather than eight lines inside dryRun, because
+// it is the review artifact for the environment the same way the .bwrap.txt
+// goldens are for the argv: cmd/snug/testdata/env.*.txt is exactly this block,
+// resolved against the REAL builtin profiles rather than a fake registry.
+// The layout is §2.8's, and the PATH bands read top to bottom in RESOLUTION
+// ORDER — so the rendering IS the §2.4 band diagram. If the two ever disagree,
+// the renderer is lying, and a flat NAME=value list (which this replaced) could
+// not disagree because it said nothing: not which verb produced a value, not
+// which profile, and not what a filter dropped on the way.
+func describeEnvironment(out *os.File, p *policy.Policy) {
+	fmt.Fprintln(out, "ENVIRONMENT  (--clearenv, then:)")
+	for _, name := range p.EnvNames() {
+		v := p.Env[name]
+		lines := envLines(p, v)
+		if len(lines) == 0 && len(v.Dropped) == 0 {
+			continue
+		}
+		label := name
+		if len(lines) == 0 {
+			// Nothing survived the filter, so the variable is UNSET rather than
+			// set empty (§4.3). Say so on the screen: a variable that vanished
+			// silently is exactly the failure §2.8 exists to prevent, and the
+			// drops below are the whole explanation.
+			fmt.Fprintf(out, "  %-16s %s\n", label, "(unset — nothing survived)")
+		}
+		for _, l := range lines {
+			fmt.Fprintln(out, strings.TrimRight("  "+pad(label, 16)+" "+
+				pad(strings.Join(l.values, " "), 31)+" "+pad(l.verb, 9)+" "+l.from+l.mark, " "))
+			label = ""
+		}
+		// Dropped elements are NAMED, not counted. "1 of 3 kept" does not let
+		// anyone check a filter, and a filter nobody can check is the exact shape
+		// of failure this whole model exists to avoid.
+		//
+		// Grouped by REASON, one line per group, because "nothing grants that
+		// path" and "only a tmpfs grants it" are materially different facts: the
+		// second means the directory IS inside, is empty, and is writable, and
+		// snug removed the element because keeping it would ship that shadow slot
+		// pre-installed. Conflating the two into one ungrouped line is exactly
+		// the ambiguity the drop's own Reason field exists to remove.
+		//
+		// Iterates a FIXED slice, never map order, so the rendering does not vary
+		// run to run for the identical policy.
+		for _, reason := range []policy.EnvDropReason{
+			policy.DropNoGrant, policy.DropTmpfsOnly, policy.DropPseudoOnly,
+		} {
+			var vals []string
+			for _, d := range v.Dropped {
+				if d.Reason == reason {
+					vals = append(vals, visibleValue(d.Value))
+				}
+			}
+			if len(vals) == 0 {
+				continue
+			}
+			word := "entries"
+			if len(vals) == 1 {
+				word = "entry"
+			}
+			fmt.Fprintf(out, "  %-16s (%d host %s dropped — %s: %s)\n",
+				"", len(vals), word, reason.String(), strings.Join(vals, ", "))
+		}
+	}
+}
+
+// pad is %-Ns counted in RUNES rather than bytes. PS1 is snug's own and carries
+// a lock emoji, so byte padding shifted every column on that one line — in the
+// file a human reads to check the environment.
+func pad(s string, n int) string {
+	if w := utf8.RuneCountInString(s); w < n {
+		return s + strings.Repeat(" ", n-w)
+	}
+	return s
+}
+
+// envLine is one rendered row: consecutive entries that agree on verb, note and
+// provenance are one line, which is what makes a band read as a band rather than
+// as four unrelated rows.
+type envLine struct {
+	values []string
+	verb   string
+	from   string
+	mark   string
+}
+
+func envLines(p *policy.Policy, v policy.EnvVar) []envLine {
+	var out []envLine
+	for _, e := range v.Entries {
+		verb, from := e.Verb.String(), strings.Join(e.From, "+")
+		if e.Verb == policy.VerbSnug {
+			from = e.Note
+		}
+		mark := grantMark(p, v.Name, e.Value)
+		if n := len(out); n > 0 && out[n-1].verb == verb && out[n-1].from == from && out[n-1].mark == mark {
+			out[n-1].values = append(out[n-1].values, elementValue(v.Name, e.Value))
+			continue
+		}
+		out = append(out, envLine{values: []string{elementValue(v.Name, e.Value)}, verb: verb, from: from, mark: mark})
+	}
+	return out
+}
+
+// elementValue is visibleValue for one element of a LIST, and it adds the one
+// thing a list needs: an element containing a space is quoted.
+//
+// Consecutive entries from the same verb and the same profiles are collapsed
+// onto one line and joined with a space, so `/srv/a /srv/b` on the screen could
+// be two elements or one element with a space in it — and those are different
+// policies. The same ambiguity in `checkPrependAgreement`'s KEY made two
+// disagreeing profiles compare equal and silently deleted one's entry (seqKey,
+// envresolve.go); this is the display half of it. Fixing only the key would
+// leave the screen unable to show what the key now distinguishes.
+func elementValue(name, s string) string {
+	if policy.IsEnvList(name) && strings.ContainsAny(s, " \t") {
+		return fmt.Sprintf("%q", s)
+	}
+	return visibleValue(s)
+}
+
+// visibleValue renders a value so it cannot forge a line in this block.
+//
+// A sanitised element is HOST text — snug copies the host's value and filters
+// it — and the drop line printed it verbatim. The red team put a newline in a
+// host PATH element and the drop line split, the injected second line reading as
+// a legitimate ENVIRONMENT row:
+//
+//	(2 host entries dropped — only an empty writable tmpfs is mounted there: /tmp/x/bin
+//	  FORGED_VAR       fake-value                    forged-provenance, /tmp/y)
+//
+// --dry-run is the mechanism by which a human trusts snug, so a value that can
+// author a row in it is a hole in the trust artifact even though it escapes
+// nothing. internal/policy already applies exactly this guard to variable NAMES
+// in its error messages (quoteVisible); the values had no equivalent.
+//
+// Applied to kept entries as well as dropped ones: a host element under a bind
+// survives the filter, and it can carry a newline just as easily.
+//
+// A value with no control characters renders unchanged, so the ordinary screen —
+// and every golden — is untouched.
+func visibleValue(s string) string {
+	if !strings.ContainsFunc(s, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return s
+	}
+	return strings.Trim(fmt.Sprintf("%q", s), `"`)
+}
+
+// grantMark is §4.2's repair, and it is a MARK rather than a refusal on purpose.
+//
+// snug authors HOME, PATH and SHELL unconditionally, and must keep doing so:
+// there is no safe absent state for any of them (§4.3 — unset PATH and bash
+// substitutes a compiled-in default ending in ".", which inside snug is the
+// target). An earlier draft concluded the opposite and would have converted
+// twenty minutes of confusion into a reachable hole. So the repair is to say
+// which authored values name a path that is not inside this sandbox:
+//
+//	snug --dry-run --no-defaults -p @parent-ro .
+//	  HOME, SHELL and all four PATH entries name directories that do not exist
+//	  inside, and until now the screen said nothing about it.
+//
+// Computed against the RESOLVED MOUNTS, unlike the coupling rule in
+// envcoupling.go, which is deliberately text-only. The asymmetry is the point:
+// REFUSING must not depend on the host, or the same profile passes review on one
+// machine and fails on another — but MARKING may, and here it must, or the mark
+// is not about the sandbox that is actually going to run.
+// The count of grants INSIDE an unmarked path is not decoration either. The
+// predicate is "does a grant cover this path", and it must stay the one the
+// sanitise filter uses (policy.GrantsGuestPath) — two implementations of "is
+// this granted" eventually disagree, and the one on screen is the one a human
+// trusts. But that predicate alone says "not granted" about policy.StagedBinDir,
+// the directory snug creates to hold every executable it stages: true in the
+// policy's own vocabulary, and misleading on a line whose whole point is that a
+// binary WILL be found there. Naming what is mounted inside keeps one predicate and
+// stops the mark reading as a bug report — the difference between "$HOME is not
+// yours to write" and "this directory holds exactly one generated file" is then
+// visible without a second rule.
+//
+// THE SECOND MARK, and why it is scoped to PATH rather than to every path-valued
+// name. The screen used to render two entries with the IDENTICAL property in
+// opposite ways, four lines apart:
+//
+//	PATH  /opt/scratch/bin   merge   both      <- kept, unmarked
+//	      (1 host entry dropped — only an empty writable tmpfs is mounted
+//	       there: /tmp/attacker/bin)
+//
+// Both are empty writable tmpfs directories. The filter dropped one and named
+// its reason; the other is a profile's own `merge`, which `sanitise` structurally
+// cannot reach (it only ever judges the HOST's value for a variable a profile
+// imported). Correct in every particular, and it reads as a bug in the filter —
+// or worse, does not read at all, which is how @claude's {home}/.local/bin
+// survived a milestone on screen in front of everybody.
+//
+// So the mark answers policy.IsShadowSlot's question — "can the payload write
+// here" — and only for PATH, because PATH is the variable whose entries are
+// searched for COMMANDS. A writable CARGO_HOME or XDG_CACHE_HOME is not a defect,
+// it is the point of those variables, and marking them would train the reader to
+// ignore the mark on the one line where it matters.
+//
+// It cannot collide with "not granted": IsShadowSlot needs a covering mount to
+// return true, and GrantsGuestPath returning false means there is none.
+func grantMark(p *policy.Policy, name, value string) string {
+	if !strings.HasPrefix(value, "/") {
+		return ""
+	}
+	if p.GrantsGuestPath(value) {
+		if name == "PATH" && p.IsShadowSlot(value) {
+			return "  ← writable from inside"
+		}
+		return ""
+	}
+	inside := 0
+	for _, m := range p.Mounts {
+		if strings.HasPrefix(m.Guest, value+"/") {
+			inside++
+		}
+	}
+	switch inside {
+	case 0:
+		return "  ← not granted"
+	case 1:
+		return "  ← not granted (1 grant inside)"
+	}
+	return fmt.Sprintf("  ← not granted (%d grants inside)", inside)
+}
+
 // mountedAt finds the mount that determines what is visible at path — the
 // deepest KindBind or KindTmpfs mount whose Guest is path itself or an
 // ancestor of it. This mirrors the "deepest mount wins" rule Resolve itself
 // applies (CLAUDE.md invariant 1): effective access at a path is a property of
 // the covering set, not of any one grant, so --dry-run must compute it the
 // same way rather than assuming which profile was selected.
+//
+// see policy.coveringMount — different question (the TARGET/HOME headline
+// here vs. "is the host's content really at this path").
 func mountedAt(p *policy.Policy, path string) (policy.Mount, bool) {
 	var best policy.Mount
 	found := false
@@ -244,27 +481,81 @@ func describeContainers(out *os.File, p *policy.Policy) {
 	fmt.Fprintf(out, "         Design and feasibility: .claude/design/ENGINE-NETNS.md\n")
 }
 
-// describeCommands names snug's OWN staged executables — today, exactly one:
-// the podman dispatcher stub. It exists because CONTAINERS above says a
-// filtering proxy is listening, but not that a fresh `podman` command was
-// placed on PATH ahead of the real one, and "there is a new executable
-// running before the tool you typed" is exactly the kind of thing --dry-run
-// exists to make legible rather than a human having to notice a FILESYSTEM
-// line reads "exec" instead of "data".
+// describeCommands names EVERY executable staged in policy.StagedBinDir, which
+// is every command snug puts on PATH ahead of the distro's.
+//
+// It exists because "there is a new executable running before the tool you
+// typed" is exactly the kind of thing --dry-run exists to make legible, rather
+// than a human having to notice that one FILESYSTEM line reads "exec" instead of
+// "data". The block used to hard-code the podman stub, which was true while the
+// stub was the only thing ever staged and became a silent omission the moment
+// @claude's binary moved here — so it now enumerates the directory and cannot
+// fall behind whatever staged next.
+//
+// The paragraph under a name is per-command and only the stub has one. A staged
+// bind gets the one-line form: what it is and where it came from is a profile's
+// grant, already on the FILESYSTEM lines above, and repeating it here would be
+// two places to keep true.
 func describeCommands(out *os.File, p *policy.Policy) {
-	m, ok := p.Mounts[policy.PodmanStubDir+"/podman"]
-	if !ok || !m.Authored {
+	var staged []string
+	for guest := range p.Mounts {
+		if strings.HasPrefix(guest, policy.StagedBinDir+"/") {
+			staged = append(staged, guest)
+		}
+	}
+	if len(staged) == 0 {
 		return
 	}
-	fmt.Fprintf(out, "COMMANDS  %s\n", m.Guest)
-	fmt.Fprintf(out, "         podman on this host resolves to a shim that cannot reach the host from\n")
-	fmt.Fprintf(out, "         inside a sandbox (distrobox-host-exec, host-spawn or flatpak-spawn), so\n")
-	fmt.Fprintf(out, "         snug staged a dispatcher ahead of it on PATH: it forwards a fixed\n")
-	fmt.Fprintf(out, "         allowlist of docker subcommands to 'docker', byte for byte, and refuses\n")
-	fmt.Fprintf(out, "         everything else by name — never a flag rewrite, never a translation.\n")
-	fmt.Fprintf(out, "         It is read-only (see the FILESYSTEM line above: 'exec', not writable),\n")
-	fmt.Fprintf(out, "         and /usr/bin/podman is UNTOUCHED — still reachable by its absolute path,\n")
-	fmt.Fprintf(out, "         just no longer first on PATH. See .claude/design/CONTAINER-CLIENT.md §8.\n")
+	sort.Strings(staged)
+
+	for _, guest := range staged {
+		fmt.Fprintf(out, "COMMANDS  %s\n", guest)
+		m := p.Mounts[guest]
+		switch {
+		case guest == policy.StagedBinDir+"/podman" && m.Authored:
+			fmt.Fprintf(out, "         podman on this host resolves to a shim that cannot reach the host from\n")
+			fmt.Fprintf(out, "         inside a sandbox (distrobox-host-exec, host-spawn or flatpak-spawn), so\n")
+			fmt.Fprintf(out, "         snug staged a dispatcher ahead of it on PATH: it forwards a fixed\n")
+			fmt.Fprintf(out, "         allowlist of docker subcommands to 'docker', byte for byte, and refuses\n")
+			fmt.Fprintf(out, "         everything else by name — never a flag rewrite, never a translation.\n")
+			fmt.Fprintf(out, "         It is read-only (see the FILESYSTEM line above: 'exec', not writable),\n")
+			fmt.Fprintf(out, "         and /usr/bin/podman is UNTOUCHED — still reachable by its absolute path,\n")
+			fmt.Fprintf(out, "         just no longer first on PATH. See .claude/design/CONTAINER-CLIENT.md §8.\n")
+		case m.Host != "":
+			// Read m.Access rather than asserting it. This line said "and
+			// read-only" unconditionally, and a profile staging a `rw` bind got
+			// that sentence while the payload overwrote the command and the
+			// overwrite persisted to the HOST file. A staged command that can be
+			// rewritten is the worst line on this screen to be wrong about, so it
+			// is the one that has to come from the policy.
+			how := "read-only"
+			if m.Access == policy.AccessRW {
+				how = "WRITABLE from inside — anything running here can rewrite this " +
+					"command, and the rewrite persists to the host file"
+			}
+			fmt.Fprintf(out, "         %s, staged here from %s and %s.\n",
+				filepath.Base(guest), m.Host, how)
+		}
+	}
+	// The closing paragraph is a CLAIM about the directory, so it is gated on the
+	// same predicate the PATH mark uses rather than being printed unconditionally.
+	//
+	// It used to be unconditional, and with a profile grant at StagedBinDir the
+	// screen contradicted itself four lines apart: this paragraph said "NOT
+	// writable from inside" while the ENVIRONMENT block below rendered
+	// `PATH  /run/snug/bin  (snug) staged bin  ← writable from inside`. Validate
+	// now refuses that arrangement outright, so this branch should be
+	// unreachable — which is exactly why it is worth keeping. A refusal that is
+	// later relaxed must not silently restore a false sentence.
+	if p.IsShadowSlot(policy.StagedBinDir) {
+		fmt.Fprintf(out, "         %s IS WRITABLE from inside, which it must never be: it is first on\n", policy.StagedBinDir)
+		fmt.Fprintf(out, "         PATH, so anything running here can drop a file called 'git' or 'ssh'\n")
+		fmt.Fprintf(out, "         into it and the next one a human runs is that file. Report this.\n")
+		return
+	}
+	fmt.Fprintf(out, "         %s is snug's own and is NOT writable from inside, so nothing running\n", policy.StagedBinDir)
+	fmt.Fprintf(out, "         here can add a command to it — the directory ahead of /usr/bin on PATH is\n")
+	fmt.Fprintf(out, "         not a slot the payload can fill.\n")
 }
 
 // describeNetwork spells out what the sandbox can and cannot reach. The
@@ -367,7 +658,20 @@ func formatArgs(args []string) string {
 		} else {
 			b.WriteString(" ")
 		}
-		b.WriteString(a)
+		// visibleValue, for the same reason the ENVIRONMENT block uses it and
+		// with a sharper consequence: this block starts every element that
+		// begins with "--" on its own line, so a newline INSIDE an element is
+		// indistinguishable from the start of a new flag. A host EDITOR of
+		//
+		//	vim\n  --ro-bind /home/u/.ssh /home/u/.ssh
+		//
+		// rendered, through @claude's shipped `inherit EDITOR`, as a --ro-bind
+		// line in the argv block of a policy that has no such mount — no profile
+		// file required. The ENVIRONMENT block on the SAME screen escaped the
+		// same string correctly, which is exactly the failure mode its own
+		// comment warns about: a fix at one site looks identical to a fix at all
+		// of them.
+		b.WriteString(visibleValue(a))
 	}
 	return b.String()
 }

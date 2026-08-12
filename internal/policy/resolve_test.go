@@ -36,9 +36,39 @@ func newFakeEnv() *fakeEnv {
 			"/usr": true, "/etc": true, "/opt": true,
 			"/home/u": true, "/home/u/proj": true, "/home/u/proj/sub": true,
 			"/home/u/proj/other": true, "/home/u/secrets": true,
+			// The directories the environment fixtures NAME, so they can also
+			// GRANT them — §2.5's coupling rule is why every one of these exists.
+			// A fixture that named a path it did not grant used to resolve
+			// happily, which is exactly the profile-side mistake the rule stops.
+			"/home/u/.local/bin": true,
+			"/usr/bin":           true, "/usr/share/pkgconfig": true,
+			"/opt/tools/bin": true, "/opt/first/bin": true, "/opt/bin": true,
+			"/opt/a": true, "/opt/b": true, "/opt/a/bin": true, "/opt/b/bin": true,
+			"/srv/bin": true,
+			// A directory whose NAME CONTAINS A SPACE. It is here so a fixture
+			// can grant one, which is what
+			// TestPrependsDifferingOnlyInElementBoundariesDisagree needs: the
+			// space-joined key it exists to catch is only wrong when an element
+			// legitimately contains a space, and the coupling rule refuses a
+			// prepend of a path the profile has not granted.
+			"/opt/a b": true,
+			// A bind nested inside @home's tmpfs, mirroring @claude's real shape —
+			// the sanitise-C fixtures (nested-bin) need this to exist so it can be
+			// GRANTED as well as named (§2.5's coupling rule).
+			"/home/u/.local/bin/tool": true,
 		},
 		links: map[string]string{},
-		env:   map[string]string{"USER": "u"},
+		// EDITOR is here so a fixture profile can actually re-admit something
+		// past --clearenv. Widening canon() to render the environment asserts
+		// nothing unless a fixture exercises it — the same trap the canon
+		// comment already records for the network scalars.
+		env: map[string]string{
+			"USER": "u", "EDITOR": "vim",
+			// One granted element and one that is not, so `sanitise` has
+			// something to keep AND something to drop. A filter fixture where
+			// everything survives tests only half the filter.
+			"PKG_CONFIG_PATH": "/usr/lib64/pkgconfig:/srv/pkgconfig",
+		},
 	}
 }
 
@@ -60,8 +90,13 @@ func (f *fakeEnv) Stat(p string) (fs.FileInfo, error) {
 }
 
 func (f *fakeEnv) Getenv(k string) string { return f.env[k] }
-func (f *fakeEnv) Uid() int               { return 1000 }
-func (f *fakeEnv) Gid() int               { return 1000 }
+
+func (f *fakeEnv) LookupEnv(k string) (string, bool) {
+	v, ok := f.env[k]
+	return v, ok
+}
+func (f *fakeEnv) Uid() int { return 1000 }
+func (f *fakeEnv) Gid() int { return 1000 }
 
 // testRegistry is a fake standing in for the loaded profile set. The names
 // mirror the real ones, sigil included (policy.Sigil): the resolver treats a
@@ -85,7 +120,20 @@ func testRegistry() map[string]*Profile {
 			Optional: []string{"/opt"},
 			Symlink:  []Symlink{{At: "/bin", Target: "usr/bin"}},
 		},
-		"@home":      {Name: "@home", Tmpfs: []string{"{home}", "{home}/.cache"}},
+		// Matches the real @home in base.toml, entry for entry, because the
+		// .bwrap.txt goldens are built from this registry: a fake @home with
+		// fewer grants than the shipped one makes those files describe a sandbox
+		// no user gets. It had two of the five tmpfs directories and none of the
+		// XDG block.
+		"@home": {Name: "@home",
+			Tmpfs: []string{"{home}", "{home}/.cache", "{home}/.config",
+				"{home}/.local/state", "{home}/.local/share"},
+			Environ: EnvGrants{Set: map[string]string{
+				"XDG_CONFIG_HOME": "{home}/.config",
+				"XDG_CACHE_HOME":  "{home}/.cache",
+				"XDG_STATE_HOME":  "{home}/.local/state",
+				"XDG_DATA_HOME":   "{home}/.local/share",
+			}}},
 		"@cwd-rw":    {Name: "@cwd-rw", Include: []string{"@home"}, RW: []string{"{target}"}},
 		"@parent-ro": {Name: "@parent-ro", RO: []string{"{target_parent}"}},
 		// Deliberately overlaps @cwd-rw at the same guest path with weaker
@@ -97,7 +145,43 @@ func testRegistry() map[string]*Profile {
 		// profiles in testDefaults, which the goldens are built from. A fake
 		// @home with a grant the real one does not have would make the goldens
 		// describe a sandbox no user gets.
-		"cwd-ro": {Name: "cwd-ro", RO: []string{"{target}"}, Path: []string{"{home}/.local/bin"}},
+		//
+		// It GRANTS the directory it names on PATH, because §2.5's coupling rule
+		// requires the profile that names a path to be the profile that put a
+		// node on the chain to it. The real @claude satisfies the same rule a
+		// different way — it includes @home, whose tmpfs covers all of $HOME —
+		// and both spellings are legal; this one is the narrower.
+		"cwd-ro": {Name: "cwd-ro", RO: []string{"{target}", "{home}/.local/bin"},
+			Environ: EnvGrants{Merge: map[string][]string{"PATH": {"{home}/.local/bin"}}}},
+		// Carries the environment grants, for the same reason `netty` carries
+		// the network scalars: canon() renders them, so the commutativity and
+		// idempotence tests only cover them if a fixture uses them. Two profiles
+		// naming ONE variable and one directory is deliberate — that is the case
+		// where provenance could come out fold-order-dependent.
+		"envy": {Name: "envy", RO: []string{"/opt/tools/bin"}, Environ: EnvGrants{
+			Inherit: []string{"EDITOR"},
+			Merge:   map[string][]string{"PATH": {"/opt/tools/bin"}}}},
+		"envy-too": {Name: "envy-too", RO: []string{"/opt/tools/bin"}, Environ: EnvGrants{
+			Inherit: []string{"EDITOR"},
+			Merge:   map[string][]string{"PATH": {"/opt/tools/bin"}}}},
+		// `set` agreeing with `envy`'s `inherit` of the same name: equal claims
+		// join rather than conflicting, and neither verb outranks the other
+		// (CALL 2). The fake host has EDITOR=vim, which is what makes this an
+		// agreement rather than a refusal.
+		"setty": {Name: "setty", Environ: EnvGrants{
+			Set: map[string]string{"EDITOR": "vim"}}},
+		// The front of PATH. Exactly ONE profile in the commutativity set may
+		// hold it — a second is a refusal, which is its own test.
+		"firsty": {Name: "firsty", RO: []string{"/opt/first/bin"}, Environ: EnvGrants{
+			Prepend: map[string][]string{"PATH": {"/opt/first/bin"}}}},
+		// The filter, over the fake host's PKG_CONFIG_PATH.
+		"sanity": {Name: "sanity", Environ: EnvGrants{
+			Sanitise: []string{"PKG_CONFIG_PATH"}}},
+		// Names a directory that is ALSO in the base PATH, so
+		// dedup-to-the-earliest-band is exercised by the property tests rather
+		// than only by the one test that names it.
+		"dupe-path": {Name: "dupe-path", RO: []string{"/usr/bin"}, Environ: EnvGrants{
+			Merge: map[string][]string{"PATH": {"/usr/bin"}}}},
 		// A pure composition point with a two-level include chain
 		// (combo -> @cwd-rw -> @home). The builtin `default` used to be one of
 		// these; it is now the `defaults` SETTING (internal/profile/defaults.go),
@@ -123,6 +207,16 @@ func testRegistry() map[string]*Profile {
 		// it is meant to review — the stub and the container proxy hole.
 		"@podman-socket": {Name: "@podman-socket", Include: []string{"@sys", "@home"},
 			Network: "egress", DNS: true, Podman: "socket"},
+		// The sanitise-C regression fixtures (envresolve_test.go's
+		// TestSanitiseXxx tests below TestSanitiseKeepsGrantedElementsInHostOrder).
+		// PATH deliberately, not PKG_CONFIG_PATH — the band ordering that makes
+		// the finding exploitable is PATH's, because it precedes /usr/bin.
+		"sanity-path": {Name: "sanity-path", Environ: EnvGrants{Sanitise: []string{"PATH"}}},
+		// A bind nested INSIDE @home's tmpfs, mirroring @claude's real shape
+		// (base.toml: {home}/.local/bin/claude). Its own directory,
+		// {home}/.local/bin, is NOT granted — only the file below it is — which
+		// is exactly the shape TestSanitiseUsesTheDeepestCoveringMount needs.
+		"nested-bin": {Name: "nested-bin", RO: []string{"{home}/.local/bin/tool"}},
 	}
 }
 
@@ -176,13 +270,25 @@ func canon(p *Policy) string {
 		fmt.Fprintf(&b, "%s %s %s %s optional=%v authored=%v\n",
 			m.Guest, m.Kind, m.Access, m.Host, m.Optional, m.Authored)
 	}
-	keys := make([]string, 0, len(p.Env))
-	for k := range p.Env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		fmt.Fprintf(&b, "env %s=%s\n", k, p.Env[k])
+	// The environment is rendered ENTRY BY ENTRY, not as its joined value, and
+	// that is the same lesson as the paragraph above one level down. The joined
+	// value hides which verb produced an entry, which profile got the credit,
+	// and what a filter dropped — all three of which --dry-run prints as a trust
+	// artifact (§2.8). If any of them depended on fold order, that screen would
+	// lie and a commutativity test comparing only strings would stay green.
+	for _, name := range p.EnvNames() {
+		v := p.Env[name]
+		shape := "scalar"
+		if v.List {
+			shape = fmt.Sprintf("list sep=%q", v.Sep)
+		}
+		fmt.Fprintf(&b, "env %s %s\n", name, shape)
+		for i, e := range v.Entries {
+			fmt.Fprintf(&b, "env %s [%d] %s %s %v %q\n", name, i, e.Value, e.Verb, e.From, e.Note)
+		}
+		for _, d := range v.Dropped {
+			fmt.Fprintf(&b, "env %s drop %s %s %v\n", name, d.Value, d.Reason, d.From)
+		}
 	}
 	fmt.Fprintf(&b, "net mode=%s dns=%v publish=%v nameservers=%v address=%s gateway=%s mtu=%d\n",
 		p.Net.Mode, p.Net.DNS, p.Net.Publish, p.Net.Nameservers,
@@ -198,7 +304,8 @@ func canon(p *Policy) string {
 // Resolve must be commutative. If it is not, the order profiles are named
 // changes what the sandbox grants, and "profiles only relax" becomes unprovable.
 func TestResolveIsCommutative(t *testing.T) {
-	all := []string{"@sys", "@home", "@cwd-rw", "@parent-ro", "cwd-ro", "netty", "netty-too"}
+	all := []string{"@sys", "@home", "@cwd-rw", "@parent-ro", "cwd-ro", "netty", "netty-too",
+		"envy", "envy-too", "setty", "firsty", "sanity", "dupe-path"}
 	want := canon(mustResolve(t, all...))
 
 	rng := rand.New(rand.NewSource(1))
@@ -413,6 +520,38 @@ func TestMaskingByNestedBindIsRejected(t *testing.T) {
 	}
 }
 
+// sanitise-C's monotonicity argument (envresolve.go's keepHostElement doc
+// comment, §2 of the design) rests entirely on rejectMasking: the one shape
+// that would turn a KEPT element into a DROPPED one — a tmpfs appearing
+// beneath an existing bind — is refused before Resolve ever returns. That
+// coupling is invisible from keepHostElement's own code, so it is asserted
+// here directly: relaxing rejectMasking must fail THIS test loudly, rather
+// than quietly re-breaking TestEnvIsMonotoneAsASet's guarantee somewhere no
+// one is looking.
+func TestSanitiseMonotonicityRestsOnRejectMasking(t *testing.T) {
+	reg := testRegistry()
+	// A tmpfs installed beneath @sys's `ro /usr` bind is masking: it would
+	// shadow /usr/bin, and if it were ever allowed, a profile adding it after
+	// another profile's PATH entry survived sanitise as a bind could flip that
+	// entry to a tmpfs-covered one — an element sanitise would then drop,
+	// which is monotonicity failing from a totally unrelated profile choice.
+	reg["mask-usr"] = &Profile{Name: "mask-usr", Tmpfs: []string{"/usr/local"}}
+	if _, err := Resolve(reg, []string{"@sys", "@cwd-rw", "mask-usr"}, testCtx(), newFakeEnv()); err == nil {
+		t.Fatal("a tmpfs installed beneath @sys's /usr bind was accepted; sanitise's " +
+			"monotonicity depends on rejectMasking refusing exactly this arrangement")
+	}
+
+	// POSITIVE CONTROL: a tmpfs nested inside ANOTHER tmpfs is not masking —
+	// there is nothing underneath a fresh tmpfs to hide — and must keep
+	// resolving. Without this, the assertion above could be passing merely
+	// because Resolve refuses every tmpfs nested inside anything, which would
+	// prove nothing about the specific coupling this test exists to pin.
+	reg["scratch"] = &Profile{Name: "scratch", Include: []string{"@home"}, Tmpfs: []string{"{home}/scratch"}}
+	if _, err := Resolve(reg, []string{"@sys", "@cwd-rw", "scratch"}, testCtx(), newFakeEnv()); err != nil {
+		t.Fatalf("control: a tmpfs nested inside another tmpfs must resolve fine, got %v", err)
+	}
+}
+
 // The legitimate nesting must keep working: cwd-rw lays rw {target} over
 // parent-ro's ro {target_parent}. That re-grants the SAME host tree at stronger
 // access — a superset, not a mask — and the default selection depends on it.
@@ -507,13 +646,76 @@ func TestIncludeCycleIsDetected(t *testing.T) {
 // the human learns why their profile did not do what it said.
 func TestForbiddenEnvIsRefusedLoudly(t *testing.T) {
 	reg := testRegistry()
-	reg["bad"] = &Profile{Name: "bad", Env: []string{"LD_PRELOAD"}}
+	reg["bad"] = &Profile{Name: "bad", Environ: EnvGrants{Inherit: []string{"LD_PRELOAD"}}}
 	env := newFakeEnv()
 	env.env["LD_PRELOAD"] = "/tmp/evil.so"
 
 	_, err := Resolve(reg, append(append([]string{}, testDefaults...), "bad"), testCtx(), env)
 	if err == nil || !strings.Contains(err.Error(), "LD_PRELOAD") {
 		t.Fatalf("expected a refusal naming LD_PRELOAD, got %v", err)
+	}
+}
+
+// ...and it must fire on a host where the variable is not set at all.
+//
+// The refusal used to sit INSIDE the "is it set on the host" check, so the same
+// profile passed review on a machine where LD_PRELOAD happened to be unset and
+// failed on one where it was set. Whether a grant is legal is a property of the
+// profile; it must not depend on who launched snug (§4.4).
+func TestForbiddenEnvIsRefusedEvenWhenUnsetOnTheHost(t *testing.T) {
+	env := newFakeEnv()
+	if _, ok := env.LookupEnv("LD_PRELOAD"); ok {
+		t.Fatal("control: this fixture host must NOT have LD_PRELOAD set, or the test " +
+			"proves nothing about the unconditional refusal")
+	}
+	err := refusalForbiddenEnvUnsetOnHost(t)
+	if err == nil || !strings.Contains(err.Error(), "LD_PRELOAD") {
+		t.Fatalf("expected a refusal naming LD_PRELOAD on a host that does not have it, got %v", err)
+	}
+}
+
+// A variable the host has set to the EMPTY STRING is set, and must reach the
+// sandbox as a present, empty variable. NO_COLOR's specification is "set to any
+// value, including empty", so dropping it means snug silently turns colour back
+// on — and more generally, "empty means absent" is wrong for every flag (§3.2,
+// §4.6a).
+func TestSetButEmptyHostVariableReachesTheSandbox(t *testing.T) {
+	reg := testRegistry()
+	reg["flags"] = &Profile{Name: "flags", Environ: EnvGrants{Inherit: []string{"NO_COLOR", "PAGER"}}}
+	env := newFakeEnv()
+	env.env["NO_COLOR"] = ""
+
+	p, err := Resolve(reg, append(append([]string{}, testDefaults...), "flags"), testCtx(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v, ok := p.EnvValue("NO_COLOR")
+	if !ok {
+		t.Error("NO_COLOR was set to the empty string on the host and did not reach the " +
+			"sandbox at all; set-but-empty is SET, and for a flag it is the whole meaning")
+	}
+	if v != "" {
+		t.Errorf("NO_COLOR = %q, want the host's empty value verbatim", v)
+	}
+	// CONTROL: a name the host genuinely does not have must still be absent, or
+	// the assertion above would pass on a resolver that invents every variable a
+	// profile mentions.
+	if _, ok := p.EnvValue("PAGER"); ok {
+		t.Error("PAGER is unset on this host but reached the sandbox anyway")
+	}
+
+	// And it must survive all the way into the argv: bwrap delivers
+	// `--setenv NO_COLOR ''` as a present, empty variable (measured, §0).
+	args := p.BwrapFlags(1000, 1000, func(string) int { return 10 })
+	found := false
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--setenv" && args[i+1] == "NO_COLOR" && args[i+2] == "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no `--setenv NO_COLOR ''` in the argv: %v", args)
 	}
 }
 
@@ -607,7 +809,7 @@ func TestPolicyHasNoRestrictionOperation(t *testing.T) {
 // "execvp claude: No such file or directory".
 func TestProfilePathReachesPATH(t *testing.T) {
 	p := mustResolve(t, "@sys", "@cwd-rw", "cwd-ro")
-	got := p.Env["PATH"]
+	got, _ := p.EnvValue("PATH")
 
 	if !strings.HasPrefix(got, "/home/u/.local/bin:") {
 		t.Errorf("PATH = %q; a profile's directory must come FIRST, or a distro "+
@@ -625,8 +827,10 @@ func TestProfilePathReachesPATH(t *testing.T) {
 // profiles, so it is the one place an order dependence could hide.
 func TestPATHIsOrderIndependent(t *testing.T) {
 	reg := testRegistry()
-	reg["tools-a"] = &Profile{Name: "tools-a", Path: []string{"/opt/a/bin"}}
-	reg["tools-b"] = &Profile{Name: "tools-b", Path: []string{"/opt/b/bin"}}
+	reg["tools-a"] = &Profile{Name: "tools-a", RO: []string{"/opt/a/bin"},
+		Environ: EnvGrants{Merge: map[string][]string{"PATH": {"/opt/a/bin"}}}}
+	reg["tools-b"] = &Profile{Name: "tools-b", RO: []string{"/opt/b/bin"},
+		Environ: EnvGrants{Merge: map[string][]string{"PATH": {"/opt/b/bin"}}}}
 
 	one, err := Resolve(reg, []string{"@sys", "@cwd-rw", "tools-a", "tools-b"}, testCtx(), newFakeEnv())
 	if err != nil {
@@ -636,13 +840,15 @@ func TestPATHIsOrderIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if one.Env["PATH"] != two.Env["PATH"] {
+	onePath, _ := one.EnvValue("PATH")
+	twoPath, _ := two.EnvValue("PATH")
+	if onePath != twoPath {
 		t.Errorf("naming the profiles in a different order changed PATH:\n  %s\n  %s",
-			one.Env["PATH"], two.Env["PATH"])
+			onePath, twoPath)
 	}
 	for _, want := range []string{"/opt/a/bin", "/opt/b/bin"} {
-		if !strings.Contains(one.Env["PATH"], want) {
-			t.Errorf("PATH = %q, missing %q", one.Env["PATH"], want)
+		if !strings.Contains(onePath, want) {
+			t.Errorf("PATH = %q, missing %q", onePath, want)
 		}
 	}
 }
@@ -838,12 +1044,12 @@ func TestBindSocketProvenanceIsParameterized(t *testing.T) {
 // to be, which is a different directory per invocation.
 func TestRelativeProfilePathIsRefused(t *testing.T) {
 	reg := testRegistry()
-	reg["bad"] = &Profile{Name: "bad", Path: []string{"bin"}}
+	reg["bad"] = &Profile{Name: "bad", Environ: EnvGrants{Merge: map[string][]string{"PATH": {"bin"}}}}
 	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "bad"}, testCtx(), newFakeEnv())
 	if err == nil {
 		t.Fatal("a relative path entry was accepted")
 	}
-	if !strings.Contains(err.Error(), "must be absolute") {
+	if !strings.Contains(err.Error(), "must be an absolute path") {
 		t.Errorf("unhelpful error: %v", err)
 	}
 }
@@ -878,5 +1084,81 @@ func TestAUserProfileNamedNullBeatsTheRetiredTable(t *testing.T) {
 	if err := UnknownProfile(testRegistry(), "@null"); err == nil ||
 		!strings.Contains(err.Error(), "--no-defaults") {
 		t.Errorf("control: with no user profile named null, @null must still name the fix: %v", err)
+	}
+}
+
+// {variable} expansion is ONE PASS: substituted text is never re-scanned.
+//
+// The loop this replaced restarted the search over the whole result after each
+// substitution, so a value that expanded to text containing braces was expanded
+// again — and the values are paths the human running snug chose, not profile
+// text. A directory literally named `{home}` therefore resolved to a DIFFERENT
+// directory than the one on the command line, writable and persistent, while the
+// one the user named was read-only.
+func TestExpandVarsDoesNotRescanItsOwnOutput(t *testing.T) {
+	vars := map[string]string{
+		"home":   "/home/u",
+		"target": "/proj/{target}", // pathological on purpose: expands to itself
+		"brace":  "{home}",
+	}
+
+	cases := []struct{ in, want string }{
+		// The live case: a path COMPONENT that looks like a placeholder is
+		// literal text, because nothing in it was substituted.
+		// The double slash is expansion's long-standing behaviour — {home} is
+		// itself absolute — and splitSpec runs filepath.Clean afterwards. It is
+		// spelled out rather than cleaned here so this test measures expansion
+		// alone.
+		{"/tmp/x/{home}/sub", "/tmp/x//home/u/sub"},
+		// …and a substituted value that CONTAINS a placeholder is committed as
+		// it stands. Re-scanning here is what made a real directory resolve to
+		// somewhere else entirely.
+		{"{brace}/bin", "{home}/bin"},
+		// Ordinary cases, so a function that stopped expanding altogether would
+		// not pass the three above.
+		{"{home}/.config", "/home/u/.config"},
+		{"~/.ssh", "/home/u/.ssh"},
+		{"/usr/bin", "/usr/bin"},
+		{"{home}:{home}/g", "/home/u:/home/u/g"},
+	}
+	for _, tc := range cases {
+		got, err := expandVars(tc.in, vars)
+		if err != nil {
+			t.Errorf("expandVars(%q): %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("expandVars(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+
+	// Self-reference must TERMINATE. Under the old loop this case did not
+	// fail, it SPUN — 224% CPU, RSS flat at 18 MB, killed at 12 seconds — so it
+	// is run with a deadline rather than inline: a regression here would
+	// otherwise hang the whole package until go test's global timeout, and a
+	// hang reads as infrastructure trouble rather than as this bug.
+	done := make(chan string, 1)
+	go func() {
+		got, _ := expandVars("{target}/x", vars)
+		done <- got
+	}()
+	select {
+	case got := <-done:
+		if got != "/proj/{target}/x" {
+			t.Errorf("expandVars(\"{target}/x\") = %q, want %q — the substituted value "+
+				"contains a placeholder and must be committed as it stands", got, "/proj/{target}/x")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("expandVars did not terminate on a value that expands to itself; it is " +
+			"re-scanning its own output")
+	}
+
+	// The errors still fire, and on the FIRST placeholder rather than on
+	// whatever a second pass produced.
+	if _, err := expandVars("/a/{nosuch}/b", vars); err == nil {
+		t.Error("an unknown variable was accepted")
+	}
+	if _, err := expandVars("/a/{unterminated", vars); err == nil {
+		t.Error("an unterminated variable was accepted")
 	}
 }

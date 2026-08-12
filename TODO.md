@@ -384,7 +384,7 @@ injection posts your source to attacker.com" is closed by construction.
 |---|---|---|---|
 | 1 | Anthropic OAuth access+refresh token | writable-tmpfs copy at `~/.claude/.credentials.json` (`claude.go:46`) | exfiltrate it; use your account **after the sandbox exits**, until expiry. Scopes `user:inference`,`user:profile` — quota theft + profile |
 | 2 | `~/.claude.json`, 56 KB verbatim host copy | writable tmpfs (`claude.go:47`) | no token, but `emailAddress`, `organizationName/Uuid`, `accountUuid`, `machineID`, **the absolute paths of all 7 projects on this host**, per-project `allowedTools`, `mcpServers`. A host-filesystem inventory `@parent-ro` deliberately did not grant |
-| 3 | `ANTHROPIC_API_KEY` | **the environment** (`base.toml:275`) | `/proc/self/environ`, passively, for every process and child. **Violates the project's own rule** "put the secret in a file, not the environment" |
+| 3 | ~~`ANTHROPIC_API_KEY`~~ | **nowhere — closed** | Was in the environment, readable from `/proc/self/environ` by every process and child, in violation of the project's own "put the secret in a file, not the environment" rule. `@claude` no longer names it, and `base.toml:313` says so in a comment that reads *"deliberately NOT here, and must not come back"*. `ANTHROPIC_BASE_URL` stays: it names an endpoint, not a credential |
 | 4 | GitHub token from `gh auth token` | `oauth_token:` in generated `hosts.yml` (`identity.go:192`) | full user token — commonly `admin:public_key`, so **the agent can add an SSH key to your GitHub account, an effect that outlives the sandbox** |
 | 5 | ssh private keys | **never** (`internal/sshproxy`) | signing oracle for one pinned key, sandbox lifetime only. **The model.** |
 
@@ -581,11 +581,15 @@ sub-structure (`host`, `listen`, `env`, a **secret reference**, an `allow` list)
   same-path conflict. **Fatal**, for MVY1's reason: silently picking one would make
   the effective credential boundary depend on profile order.
 
-Also for whoever owns the profile model: `forbiddenEnv` (`resolve.go:413`) exists
-to stop code-injection vectors. There is a case for a parallel refusal — or at
-minimum a `--dry-run` redaction — for credential-shaped names (`*_TOKEN`, `*_KEY`,
-`*_SECRET`, `*_PASSWORD`). `@claude` shipping `ANTHROPIC_API_KEY` in `env` is the
-existing counter-example.
+Also for whoever owns the profile model: `forbiddenEnv` (now
+`internal/policy/envtypes.go`, split by verb) exists to stop code-injection
+vectors. There is a case for a parallel refusal — or at minimum a `--dry-run`
+redaction — for credential-shaped names (`*_TOKEN`, `*_KEY`, `*_SECRET`,
+`*_PASSWORD`). **Still open**, and the counter-example that motivated it is gone:
+`@claude` no longer names `ANTHROPIC_API_KEY`, and the `env` key it used is
+retired in favour of `environ.inherit`. So the refusal would today cost nothing
+that ships — which is an argument for writing it before something needs it, not
+after.
 
 ## MVY3: Further profile model definitions
 
@@ -836,6 +840,172 @@ sides of `{home}/...` grants get canonicalised by `add()`, the guest side does
 not. Fix is one call in `Resolve`. Expect a golden argv diff on any host where
 `$HOME` traverses a symlink — correct, and to be reviewed as a security change.
 
+## Left open by the `environ` work
+
+Two things the environment-variable change deliberately did not fix. Both were
+found while implementing it; neither is a regression of it.
+
+### **[portability]** The flat `environ = { set = { … } }` form parses here
+
+TOML 1.0 does not allow a multi-line inline table, and go-toml v2.4.3 accepts one
+anyway — measured. So a profile written
+
+```toml
+[profile.x]
+environ = { set = {
+  MY_VAR = "1",
+} }
+```
+
+works on this host and fails on a stricter parser. **It is not implementable
+post-decode:** the decoded value is byte-identical to the header form
+(`[profile.x.environ.set]`), and go-toml hands us no syntax provenance, so
+refusing it needs a second independent pass over the document text.
+
+Recorded rather than fixed, and the important half is what must NOT happen: no
+comment anywhere may claim snug refuses this form. A gate that is documented and
+not implemented is not a gate. Write the header form.
+
+### **[security, pre-existing]** The environment outranks the pinned config file
+
+Untouched by the `environ` work, and a reader will assume `environ.set` made it
+worse. It did not — a profile is reviewed text in a trusted layer — but the
+underlying fact is live and measured:
+
+```
+env -i GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+       GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=Injected \
+       git config --get user.name          →  Injected
+```
+
+*A hostile process inside the sandbox can set `GIT_CONFIG_KEY_0=core.sshCommand`
+and have the next `git fetch` — including one an unsuspecting user or agent runs
+— execute its command, with `GIT_CONFIG_GLOBAL` pointing at a perfectly clean
+generated file.* Not a break in the sandbox boundary (the payload already runs
+code); a break in **identity pinning**, which is the guarantee `GIT_CONFIG_GLOBAL`
+exists to make. The same shape is documented for npm (`npm_config_*` outrank
+`.npmrc`) and pip (`PIP_*` outrank the file).
+
+What the `environ` work did do is refuse those names in a profile:
+`GIT_CONFIG_*` and `LD_*` are forbidden at every verb, `PIP_*` and `npm_config_*`
+for `inherit`. That closes the profile-authored route and nothing else. The
+payload-authored route wants its own investigation and its own fix —
+"generate, don't bind" pins a tool's **file** and leaves its **environment**,
+which is the higher-precedence source.
+
+### **[fixed, with the reasoning that bounds it]** `sanitise` kept a host element a tmpfs covered
+
+`GrantsGuestPath` returned true for any covering mount regardless of kind, so a
+host `PATH` containing `/tmp/x/bin` survived the filter. `/tmp` is empty
+inside, the payload can `mkdir -p /tmp/x/bin` and drop a binary named `git`,
+and the sanitise band sits ahead of snug's base band — so that file wins
+`PATH` resolution for any later `git` a human or another agent runs inside.
+Reproduced end to end (marker `SHADOWED-GIT-RAN`). Reachable only via a
+user-written `environ.sanitise = ["PATH"]`; no shipped profile sanitises
+anything.
+
+Two candidates. **A — drop an element whose covering mount is writable — was
+rejected**, and the reason governs everything below it:
+
+> the payload can rewrite `PATH` inside the sandbox at will, so no filter can
+> close the shadowing attack. What the filter owes is that the environment
+> SNUG ITSELF hands over does not ship the shadow slot pre-installed. A chases
+> an invariant the sandbox cannot hold; C makes snug's own output truthful.
+
+**C — drop an element whose coverage comes only from a `KindTmpfs` mount —
+shipped.** It is the existing truthfulness contract (`envresolve.go:288`)
+giving a correct answer to the question it already asks: a tmpfs grants an
+EMPTY directory, not the host's content, so such an element was never a
+truthful survivor. A writable *bind* still survives, target included.
+
+Also rejected as part of this decision, and out of scope: refusing
+`environ.merge PATH` entries naming a path granted `rw`.
+
+### **[residual, accepted]** Shadow slots C does not remove, by construction
+
+Each is a writable directory that can precede `/usr/bin` on the `PATH` snug
+writes. None is closable by a filter — see the reasoning above — and each is a
+grant the human selected:
+
+- ~~`@claude` merges `{home}/.local/bin`, which is inside `@home`'s tmpfs. The
+  merge band is a profile's own declaration and is unfiltered.~~ **Closed, and
+  the bullet was wrong about whose declaration it was.** "A profile's own
+  declaration" is the right defence for a profile a *human on this host* wrote;
+  `@claude` is one snug ships, so this was snug installing the slot and then
+  filing it as accepted. Everything about the filter reasoning stands — no
+  filter can reach a `merge` entry — but the repair was never meant to be a
+  filter: the binary is now bound at `/run/snug/bin/claude`, snug adds that
+  directory to `PATH` itself, and `@claude` names no PATH directory at all. See
+  `policy.StagedBinDir`, CLAUDE.md's staging rule, and
+  `TestNoBuiltinPutsAWritableDirectoryOnPATH` with its positive control.
+
+  The general rule this leaves: **the residuals below are ones a human selected;
+  a shipped profile is never allowed to be one.**
+- With `@tmp-shared`, `/tmp` is a `rw` bind of a host directory, so
+  `/tmp/x/bin` survives sanitise — and that survivor **persists to the host**.
+  The drop-never-rewrite half of this is already settled policy.
+- A user profile creating a `KindSymlink` pointing into a tmpfs keeps its
+  element (symlinks are not followed by the filter). This one stays: a
+  `KindSymlink` is authored by a grant and points where that grant says, so
+  following it here would be a second resolution rule with its own failure
+  modes.
+- ~~`/dev` is a writable synthetic tree and `KindDev` is a keep.~~ **Closed —
+  and the bullet argued its own way out.** It said widening to `KindDev` was
+  not worth it because "an element under `/dev` on a host `PATH` does not
+  occur". If it never legitimately occurs, keeping it costs nothing to drop and
+  serves only an attacker's spelling. `KindProc` and `KindDev` now both drop,
+  with their own `DropPseudoOnly` reason. See the entry below for what forced
+  it.
+
+### **[fixed]** `/proc`'s magic symlinks were a fourth shadow slot, and the walk could not see them
+
+Found by the red team against `a8652ba`, after the tmpfs fix had shipped.
+`keepHostElement` kept `KindProc` and `KindDev` on the grounds that they are
+"kernel- and bwrap-populated, not empty". That is true of the **directory** and
+false of what `/proc`'s magic symlinks **resolve to**. The filter is lexical and
+deliberately does not follow symlinks, so `coveringMount` stops at `/proc` while
+the kernel walks:
+
+```
+/proc/self/root/tmp/x/bin   ->  the writable tmpfs        SHADOWED-GIT-RAN-VIA-PROC-ROOT
+/proc/self/cwd              ->  the target, and the shadow file PERSISTS TO THE HOST
+                                                          SHADOWED-GIT-VIA-PROC-CWD
+/proc/1/root/tmp/x/bin      ->  the writable tmpfs
+```
+
+Same precondition as the finding it follows — a user-written `environ.sanitise
+= ["PATH"]` plus a host `PATH` carrying the element — so the same bound, not a
+weaker one. The general lesson is worth more than the fix: **a lexical
+predicate answers about the path it was given, and the kernel answers about the
+path it resolves. Wherever those two can differ, the difference is the
+attack.** `..`, trailing slashes and repeated slashes were all probed and are
+NOT exploitable, because `coveringMount` cleans before it walks.
+
+Fixed by dropping both kinds. Asserted by
+`TestSanitiseDropsProcAndDevMagicSymlinkElements`.
+
+### **[fixed]** A newline in a host `PATH` element forged a `--dry-run` line
+
+Also from the same run. The drop line rendered the host-supplied value verbatim,
+so an element containing a newline split the line, and the injected second line
+read as a legitimate ENVIRONMENT row complete with a fake provenance column.
+Escapes nothing — but `--dry-run` is *the* mechanism by which a human can trust
+snug, and a value that can author a row in it is a hole in the trust artifact.
+`internal/policy` already applied this guard to variable NAMES in its error
+messages (`quoteVisible`); the values had no equivalent.
+
+Fixed by `visibleValue` in `cmd/snug/dryrun.go`, applied to kept entries as well
+as dropped ones. A value with no control characters renders unchanged, so no
+golden moved. Asserted by
+`TestDryRunDropLineDoesNotRenderControlCharsVerbatim`.
+
+### **[latent]** `sanitise`'s monotonicity now rests on `rejectMasking`
+
+Adding a profile can only turn a drop into a keep *because* a `KindTmpfs`
+cannot be installed beneath a `KindBind` (`validate.go:245-252`). Relax that
+and the environment stops being monotone as a set. Asserted by
+`TestSanitiseMonotonicityRestsOnRejectMasking`.
+
 ## Pseudo-filesystem exposure (`/proc`, `/sys`, `/dev`)
 
 Full report: [`.claude/design/PSEUDOFS-AUDIT.md`](.claude/design/PSEUDOFS-AUDIT.md) — deep research +
@@ -907,7 +1077,23 @@ still worth running before a fix lands.
 
 ## Known gaps in what the docs claim
 
-Both are documented where they bite; listed here so they are not forgotten.
+All are documented where they bite; listed here so they are not forgotten.
+
+- **`forbiddenEnv` does not close the exec class for git.** `EDITOR`, `VISUAL`
+  and `PAGER` are legal at `set` and at `inherit` by ENVIRONMENT-VARIABLES.md
+  §3.2's decision, and `@claude` inherits all three — while git falls back
+  `GIT_EDITOR → core.editor → VISUAL → EDITOR` and `GIT_PAGER → core.pager →
+  PAGER`. Measured: `PAGER="sh -c '…'" git log` runs the command. So the `GIT_*`
+  spellings being refused closes the INVISIBLE half of the class, not the class.
+  Profiles are the trusted layer, so this is a composability defect — one
+  profile weakening what another established — rather than an escape. Closing it
+  means withdrawing a grant from every profile that inherits those three, which
+  is a §3.2 decision and not a table edit.
+  `TestForbidListDoesNotCloseTheExecClassForGit` pins the current state so the
+  change has to be deliberate.
+  *(A separate clause claiming these were "refused inside `@git-ro`-style
+  identity" was a phantom gate — nothing anywhere read `Policy.Identity` — and
+  has been deleted from §3.2 rather than implemented.)*
 
 - **`--config` and privileged-grant gating do not exist.** INDEX §2.7 describes
   them; `profile.Profile.Trusted` is set and never read. Consequence found by

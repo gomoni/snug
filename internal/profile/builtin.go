@@ -10,7 +10,14 @@ import (
 //go:embed profiles/*.toml
 var embedded embed.FS
 
-func builtins() (Registry, error) {
+// Builtins is the registry snug ships, with no host layers merged in: the
+// embedded profiles/*.toml, marked into the @-namespace.
+//
+// Exported because it is the only registry that is a pure function of the
+// binary — no $XDG_CONFIG_HOME, no /etc/snug — which makes it the one a golden
+// test may resolve against. Load() reads host directories, so a golden built
+// from it would describe a different sandbox on every developer's machine.
+func Builtins() (Registry, error) {
 	reg := Registry{}
 	entries, err := embedded.ReadDir("profiles")
 	if err != nil {

@@ -18,7 +18,7 @@ import (
 func loadTestRegistry(t *testing.T) profile.Registry {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	reg, err := profile.Load()
+	reg, _, err := profile.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestDescribeCommandsNamesTheStagedStub(t *testing.T) {
 	if !strings.Contains(got, "COMMANDS") {
 		t.Fatalf("no COMMANDS block: %q", got)
 	}
-	if !strings.Contains(got, policy.PodmanStubDir+"/podman") {
+	if !strings.Contains(got, policy.StagedBinDir+"/podman") {
 		t.Errorf("COMMANDS block does not name the staged path: %q", got)
 	}
 	if !strings.Contains(got, "read-only") {
@@ -214,6 +214,269 @@ func TestDescribeCommandsNamesTheStagedStub(t *testing.T) {
 	plain := resolveFor(t, []string{"@sys", "@home", "@cwd-rw"})
 	if got := captureFile(t, func(f *os.File) { describeCommands(f, plain) }); got != "" {
 		t.Errorf("COMMANDS block printed with no stub staged: %q", got)
+	}
+}
+
+// TestGrantMarkStillUsesTheWiderPredicate guards against "unifying" grantMark
+// with sanitise's narrower keepHostElement predicate. The two ask different
+// questions on purpose (dryrun.go's grantMark doc comment): grantMark asks
+// "does the sandbox have A NODE at this path", sanitise asks "does it have the
+// HOST'S CONTENT here".
+//
+// The fixture is a directory covered only by @home's tmpfs that nonetheless
+// holds a real nested bind — {home}/.local/share, where @claude binds its
+// support directory. sanitise's predicate says no (a tmpfs grants an EMPTY
+// directory, so a host PATH element there was never truthful); grantMark must
+// still say yes, because the sandbox really does have a node there. Switching to
+// the narrower rule would print "← not granted (1 grant inside)" next to a
+// directory that demonstrably holds something — a false statement on the exact
+// screen CLAUDE.md calls *the* mechanism by which a human trusts snug.
+func TestGrantMarkStillUsesTheWiderPredicate(t *testing.T) {
+	reg := loadTestRegistry(t)
+	home, target := testTree(t)
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	p, err := policy.Resolve(reg, []string{"@sys", "@home", "@cwd-rw", "@claude"}, ctx, policy.OSEnviron{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	localShare := filepath.Join(home, ".local", "share")
+	// CONTROL: the fixture only means something if a nested grant is actually
+	// there and the covering mount really is a tmpfs. Otherwise this passes on a
+	// path that is plainly granted and proves nothing about the predicate.
+	if !p.GrantsGuestPath(localShare) {
+		t.Fatalf("%s is not granted at all, so it cannot show which predicate is in use", localShare)
+	}
+	if !p.IsShadowSlot(localShare) {
+		t.Fatalf("%s is not writable, so it is not the tmpfs-covered case this test needs", localShare)
+	}
+
+	if got := grantMark(p, "SOME_PATH_VAR", localShare); got != "" {
+		t.Errorf("grantMark(%s) = %q, want no mark — grantMark must keep asking 'is there a "+
+			"node here' (policy.GrantsGuestPath), not sanitise's narrower 'is the host's "+
+			"content here' (policy.keepHostElement); unifying them would print a false "+
+			"'not granted' next to a directory that genuinely holds a bind", localShare, got)
+	}
+}
+
+// The two marks answer two different questions and must never be confused for
+// each other: "not granted" means NOTHING IS THERE, "writable from inside" means
+// something is there AND the payload can add to it. They are also mutually
+// exclusive by construction — IsShadowSlot needs a covering mount, and
+// GrantsGuestPath returning false means there is none — and this pins that.
+//
+// The writable mark is PATH-only, and that scope is the substance rather than a
+// detail. PATH entries are searched for COMMANDS, so a writable one is a shadow
+// slot; a writable CARGO_HOME or XDG_CACHE_HOME is what those variables are FOR,
+// and marking them would train the reader to skip the mark on the one line where
+// it matters.
+func TestWritableMarkIsPathOnlyAndDistinctFromNotGranted(t *testing.T) {
+	reg := loadTestRegistry(t)
+	home, target := testTree(t)
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	p, err := policy.Resolve(reg, []string{"@sys", "@home", "@cwd-rw"}, ctx, policy.OSEnviron{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	// $HOME is @home's writable tmpfs: the arrangement @claude shipped.
+	if got := grantMark(p, "PATH", home); !strings.Contains(got, "writable from inside") {
+		t.Errorf("grantMark(PATH, %s) = %q, want the writable mark. %s is a writable tmpfs, "+
+			"so a PATH entry naming it is a shadow slot the payload can fill — and the screen "+
+			"saying nothing is how @claude's {home}/.local/bin survived a milestone in plain "+
+			"sight", home, got, home)
+	}
+	if got := grantMark(p, "CARGO_HOME", home); got != "" {
+		t.Errorf("grantMark(CARGO_HOME, %s) = %q, want no mark — the mark is about directories "+
+			"searched for COMMANDS. A writable CARGO_HOME is correct, and marking it teaches "+
+			"the reader to ignore the mark where it matters", home, got)
+	}
+
+	// Not granted at all: nothing is there, so it is not a slot to fill.
+	if got := grantMark(p, "PATH", "/nowhere/at/all"); !strings.Contains(got, "not granted") {
+		t.Errorf("grantMark(PATH, /nowhere/at/all) = %q, want the not-granted mark", got)
+	}
+	if strings.Contains(grantMark(p, "PATH", "/nowhere/at/all"), "writable") {
+		t.Error("an ungranted path was marked writable; the two marks must stay exclusive")
+	}
+
+	// snug's own staging directory must never be marked writable — the rule
+	// would otherwise be flagging its own repair.
+	//
+	// The fixture has to STAGE something first. This assertion used to run against
+	// the selection above, which stages nothing, so grantMark returned "not
+	// granted" and the check could never fail — it measured ABSENT and read as
+	// UNWRITABLE. Two different facts, and the one being claimed is the second.
+	stageMount(p, policy.KindBind, policy.AccessRO)
+	if got := grantMark(p, "PATH", policy.StagedBinDir); strings.Contains(got, "writable") {
+		t.Errorf("grantMark(PATH, %s) = %q with a read-only bind staged there. The directory "+
+			"is the root tmpfs, which --remount-ro / covers, so nothing on this line may say "+
+			"writable", policy.StagedBinDir, got)
+	}
+	// It renders as "not granted (1 grant inside)": no Mount covers the directory
+	// itself, because it is snug's `--dir`. That wording is the documented
+	// compromise above, and it is asserted here so this test fails if the mark
+	// ever silently starts claiming something stronger.
+	if got := grantMark(p, "PATH", policy.StagedBinDir); !strings.Contains(got, "1 grant inside") {
+		t.Errorf("grantMark(PATH, %s) = %q, want the count of what is staged inside — "+
+			"without it the fixture is not staging anything and both assertions here are "+
+			"about an empty policy", policy.StagedBinDir, got)
+	}
+
+	// …and the same assertion has to be able to FAIL, or the line above is a
+	// sentence about a predicate that cannot say yes at this path. This is the
+	// shape Validate now refuses (snugsOwn), reconstructed here after resolution
+	// precisely because it can no longer come out of one.
+	stageMount(p, policy.KindTmpfs, policy.AccessRW)
+	if got := grantMark(p, "PATH", policy.StagedBinDir); !strings.Contains(got, "writable from inside") {
+		t.Errorf("grantMark(PATH, %s) = %q with a tmpfs mounted there, want the writable mark. "+
+			"If this does not fire, the assertion above is vacuous and the shadow-slot rule is "+
+			"unguarded at the one path snug puts on PATH itself", policy.StagedBinDir, got)
+	}
+}
+
+// stageMount replaces whatever is at policy.StagedBinDir with one mount, so a
+// test can put the directory into a state Validate refuses and still ask what
+// the RENDERER would say about it. Both callers want the same two states, and
+// spelling them out twice invites them to drift apart.
+func stageMount(p *policy.Policy, kind policy.Kind, access policy.Access) {
+	guest := policy.StagedBinDir
+	if kind == policy.KindBind {
+		// A staged executable is a file INSIDE the directory, which is the only
+		// legitimate shape; the directory itself stays the root tmpfs.
+		delete(p.Mounts, guest)
+		guest += "/tool"
+	}
+	p.Mounts[guest] = policy.Mount{
+		Guest:  guest,
+		Kind:   kind,
+		Access: access,
+		Host:   "/etc/hostname",
+		From:   []string{"fixture"},
+	}
+}
+
+// TestDropLinesNameTheirReason is the --dry-run review artifact for
+// EnvDropReason: "nothing grants that path" and "only an empty writable
+// tmpfs is mounted there" are materially different facts and must render as
+// two distinct, correctly-ordered lines rather than one ungrouped "N host
+// entries dropped" line that conflates them.
+//
+// Hand-built rather than resolved: this file's other helpers use
+// policy.OSEnviron, whose REAL PATH would make the exact set of dropped
+// elements depend on the machine running the test.
+func TestDropLinesNameTheirReason(t *testing.T) {
+	p := &policy.Policy{
+		Env: map[string]policy.EnvVar{
+			"PATH": {
+				Name: "PATH",
+				List: true,
+				Sep:  ":",
+				Dropped: []policy.EnvDrop{
+					{Value: "/srv/nothing", Var: "PATH", From: []string{"x"}, Reason: policy.DropNoGrant},
+					{Value: "/tmp/x/bin", Var: "PATH", From: []string{"x"}, Reason: policy.DropTmpfsOnly},
+				},
+			},
+		},
+	}
+
+	got := captureFile(t, func(f *os.File) { describeEnvironment(f, p) })
+
+	noGrantLine := "nothing grants that path: /srv/nothing"
+	tmpfsLine := "only an empty writable tmpfs is mounted there: /tmp/x/bin"
+	iNoGrant := strings.Index(got, noGrantLine)
+	iTmpfs := strings.Index(got, tmpfsLine)
+	if iNoGrant < 0 {
+		t.Errorf("no line names the DropNoGrant element:\n%s", got)
+	}
+	if iTmpfs < 0 {
+		t.Errorf("no line names the DropTmpfsOnly element:\n%s", got)
+	}
+	if iNoGrant >= 0 && iTmpfs >= 0 && iNoGrant > iTmpfs {
+		t.Errorf("drop lines are not in the fixed {DropNoGrant, DropTmpfsOnly} order:\n%s", got)
+	}
+	if n := strings.Count(got, "dropped —"); n != 2 {
+		t.Errorf("expected exactly two drop lines (one per reason, never conflated), got %d:\n%s", n, got)
+	}
+}
+
+// TestDryRunDropLineDoesNotRenderControlCharsVerbatim is the REGRESSION
+// (redteam, confirmed 2026-08-10) for the FORGED-ROW finding: a dropped or kept
+// environment value was rendered VERBATIM, so an element containing a newline
+// split the line it was printed on, and the injected second line read as a
+// legitimate ENVIRONMENT row — a fake variable name, a fake value, a fake
+// provenance column — on the exact screen CLAUDE.md calls the mechanism by
+// which a human trusts snug:
+//
+//	(1 host entry dropped — only an empty writable tmpfs is mounted there: /tmp/x/bin
+//	  FORGED_VAR       fake-value                    forged-provenance)
+//
+// The fix is visibleValue (dryrun.go): any control character (a bare newline
+// above all) forces the whole value through %q-style quoting, so it can only
+// ever be text WITHIN one line, never a line of its own. Applied at BOTH call
+// sites — the drop-reason line and a kept EnvEntry's value in envLines — and
+// this test pins both, because a fix at only one site would look identical on
+// the drop line alone.
+func TestDryRunDropLineDoesNotRenderControlCharsVerbatim(t *testing.T) {
+	// Same text either way; only whether the separator is a real newline or a
+	// plain space differs. The SAFE variant is the positive control that gives
+	// the expected line count when nothing is being forged.
+	forgedDrop := "/tmp/x/bin\n  FORGED_VAR       fake-value                    forged-provenance"
+	safeDrop := "/tmp/x/bin   FORGED_VAR       fake-value                    forged-provenance"
+	forgedKept := "/opt/tool\n  FORGED_KEPT      fake-value2                   forged-provenance2"
+	safeKept := "/opt/tool   FORGED_KEPT      fake-value2                   forged-provenance2"
+
+	build := func(drop, kept string) *policy.Policy {
+		return &policy.Policy{
+			Env: map[string]policy.EnvVar{
+				"PATH": {
+					Name: "PATH", List: true, Sep: ":",
+					Dropped: []policy.EnvDrop{
+						{Value: drop, Var: "PATH", From: []string{"x"}, Reason: policy.DropTmpfsOnly},
+					},
+				},
+				// A KEPT entry, not another dropped one: visibleValue is applied at a
+				// second call site (envLines) and nothing else would notice if that
+				// call were removed — a test that only exercised the drop line would
+				// pass on a half-applied fix.
+				"SAFEVAR": {
+					Name: "SAFEVAR",
+					Entries: []policy.EnvEntry{
+						{Value: kept, Verb: policy.VerbSet, From: []string{"x"}},
+					},
+				},
+			},
+		}
+	}
+
+	forged := captureFile(t, func(f *os.File) { describeEnvironment(f, build(forgedDrop, forgedKept)) })
+	safe := captureFile(t, func(f *os.File) { describeEnvironment(f, build(safeDrop, safeKept)) })
+
+	// THE ASSERTION THAT ACTUALLY MATTERS: a value with a newline in it must
+	// not add a line to the block. Comparing against the space-separated
+	// control means this does not depend on hand-counting the layout.
+	forgedLines, safeLines := strings.Count(forged, "\n"), strings.Count(safe, "\n")
+	if forgedLines != safeLines {
+		t.Errorf("a newline in a value changed the ENVIRONMENT block's line count: "+
+			"forged=%d safe=%d — an injected line reads as a legitimate row:\n%s",
+			forgedLines, safeLines, forged)
+	}
+
+	// The escaped form is what actually appears — on the ONE line, not a raw
+	// newline that the reader (or a script parsing --dry-run) would see as two.
+	if !strings.Contains(forged, `\n`) {
+		t.Errorf("the value's newline was not rendered as the escaped \\n at all:\n%s", forged)
+	}
+	if strings.Contains(forged, "\n  FORGED_VAR") {
+		t.Errorf("a raw (unescaped) newline put FORGED_VAR at the start of its own line "+
+			"in the ENVIRONMENT block:\n%s", forged)
+	}
+	if !strings.Contains(forged, "FORGED_KEPT") {
+		t.Fatalf("control: the kept entry's forged text did not even appear in the output:\n%s", forged)
+	}
+	if strings.Contains(forged, "\n  FORGED_KEPT") {
+		t.Errorf("a raw (unescaped) newline in a KEPT entry's value put FORGED_KEPT at the "+
+			"start of its own line in the ENVIRONMENT block:\n%s", forged)
 	}
 }
 
@@ -254,10 +517,10 @@ func TestFilesystemBlockRendersTheStubAsExec(t *testing.T) {
 	}
 	got := string(b)
 
-	if !strings.Contains(got, "exec   "+policy.PodmanStubDir+"/podman") {
+	if !strings.Contains(got, "exec   "+policy.StagedBinDir+"/podman") {
 		t.Errorf("FILESYSTEM block does not render the stub as kind 'exec':\n%s", got)
 	}
-	if strings.Contains(got, "data   "+policy.PodmanStubDir+"/podman") {
+	if strings.Contains(got, "data   "+policy.StagedBinDir+"/podman") {
 		t.Errorf("FILESYSTEM block still renders the stub as kind 'data'")
 	}
 }

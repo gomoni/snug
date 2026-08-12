@@ -6,13 +6,40 @@ import (
 	"strings"
 )
 
-// PodmanStubDir is where snug stages the dispatcher when podman resolves to
-// a host-escape shim on this host. Under /run/snug, alongside the container
-// proxy socket — both are snug's own, both unwritable from inside once
-// --remount-ro / has run (constraint 1, CONTAINER-CLIENT.md §8: measured —
-// /run/snug/bin refuses `touch` and `echo >` with EROFS), and both gone with
-// the sandbox.
-const PodmanStubDir = "/run/snug/bin"
+// StagedBinDir is the ONE directory snug puts executables in, and the only
+// directory of snug's own making that ever goes on PATH.
+//
+// It is under /run/snug, alongside the container proxy socket and the ssh-agent
+// proxy socket — all snug's own, all unwritable from inside once --remount-ro /
+// has run (constraint 1, CONTAINER-CLIENT.md §8: measured — /run/snug/bin
+// refuses `touch` and `echo >` with EROFS), and all gone with the sandbox.
+//
+// UNWRITABLE IS THE WHOLE POINT, and it is why there is one directory rather
+// than a per-caller choice. A writable directory ahead of /usr/bin on PATH is a
+// SHADOW SLOT: the payload writes a file called `git` into it and the next `git`
+// a human or another agent runs inside the sandbox is that file. The payload can
+// always rewrite its own PATH and nothing stops it — what this rule buys is that
+// the environment SNUG ITSELF hands over does not ship the slot pre-installed.
+//
+// It gets its read-only property from being a plain directory on the ROOT tmpfs,
+// which --remount-ro / covers. A `tmpfs` grant at this path would be a separate
+// mount, would NOT be covered, and would quietly undo it.
+const StagedBinDir = "/run/snug/bin"
+
+// HasStagedBin reports whether anything was staged in StagedBinDir, and is what
+// decides whether that directory joins PATH at all.
+//
+// Strictly UNDER the directory, never the directory itself: a mount AT
+// StagedBinDir would be a grant of the whole directory rather than of one
+// executable in it, which is the shape this rule exists to refuse.
+func (p *Policy) HasStagedBin() bool {
+	for guest := range p.Mounts {
+		if strings.HasPrefix(guest, StagedBinDir+"/") {
+			return true
+		}
+	}
+	return false
+}
 
 // podmanStubDelim is the heredoc delimiter the script's one host-derived
 // string — the detected shim's resolved path — is wrapped in. A quoted
@@ -67,7 +94,7 @@ var connectionShapingFlags = []string{
 	"--remote", "--url", "--connection", "--root", "--runroot", "--runtime",
 }
 
-// podmanStubScript generates the dispatcher staged at PodmanStubDir/podman.
+// podmanStubScript generates the dispatcher staged at StagedBinDir/podman.
 // It is a pure function of the detected shim — no filesystem, no exec — so
 // Resolve can call it directly and stay pure itself.
 //

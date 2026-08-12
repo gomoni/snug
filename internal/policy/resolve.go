@@ -83,7 +83,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 		Chdir:      target,
 		Command:    ctx.Command,
 		Mounts:     map[string]Mount{},
-		Env:        map[string]string{},
+		Env:        map[string]EnvVar{},
 		Selected:   append([]string(nil), selected...),
 		NewSession: ctx.LegacyTIOCSTI,
 	}
@@ -115,7 +115,9 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	identityOwner := ""
 	addressOwner, gatewayOwner, mtuOwner := "", "", ""
 	publish := map[int]bool{}
-	pathDirs := map[string]bool{}
+	// Environment claims are ACCUMULATED here and resolved after the fold — see
+	// envresolve.go for why deciding during the fold cannot name every claimant.
+	envClaims := newEnvClaims()
 	for _, name := range names {
 		prof := set[name]
 		optional := map[string]bool{}
@@ -268,24 +270,25 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 			p.Net.MTU, mtuOwner = prof.MTU, name
 		}
 
-		for _, d := range prof.Path {
-			e, err := expandVars(d, vars)
-			if err != nil {
-				return nil, fmt.Errorf("profile %q: %w", name, err)
-			}
-			if !filepath.IsAbs(e) {
-				return nil, fmt.Errorf("profile %q: path %q must be absolute", name, d)
-			}
-			pathDirs[filepath.Clean(e)] = true
+		// The environment grants. Every rule that is a property of the profile
+		// TEXT runs at parse time (internal/profile calls ValidateEnvGrants), so
+		// a profile's verdict does not depend on the host reading it — but a
+		// Profile built in code never went through a parser, so the same check
+		// runs here too. It is pure and cheap, and the alternative is a gate
+		// that exists on one of two paths.
+		if err := ValidateEnvGrants(prof.Environ); err != nil {
+			return nil, fmt.Errorf("profile %q: %w", name, err)
 		}
-
-		for _, e := range prof.Env {
-			if v := env.Getenv(e); v != "" {
-				if forbiddenEnv[e] {
-					return nil, fmt.Errorf("profile %q grants env %q, which is a code-injection vector into every process in the sandbox and is never passed", name, e)
-				}
-				p.Env[e] = v
-			}
+		// The other half runs here and not at parse time, because it needs
+		// {target} and {home} expanded — but it is still over profile TEXT, so
+		// the verdict does not depend on which mounts survived. See
+		// envcoupling.go, and read the first paragraph there before citing this
+		// as a boundary: it stops a profile lying, not a profile reaching.
+		if err := checkEnvCoupling(reg, name, prof.Environ, vars); err != nil {
+			return nil, err
+		}
+		if err := collectEnv(envClaims, name, prof.Environ, vars, env); err != nil {
+			return nil, err
 		}
 	}
 
@@ -302,7 +305,10 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	// See podmanstub.go and CONTAINER-CLIENT.md §8 for the abuse sentence and
 	// the two load-bearing constraints (unwritable; every message says
 	// "stub").
-	stubPathDir := ""
+	//
+	// It goes in StagedBinDir because EVERY executable snug puts in front of the
+	// payload goes there, whether snug generated it (this stub) or a profile
+	// bound it (@claude's binary). Nothing decides a directory locally.
 	if p.Podman != PodmanOff {
 		for _, shim := range ctx.HostShims {
 			if shim.Name != "podman" {
@@ -314,10 +320,9 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 			}
 			perm := uint32(0755)
 			p.Replace(Mount{
-				Guest: PodmanStubDir + "/podman", Kind: KindData, Access: AccessRO,
+				Guest: StagedBinDir + "/podman", Kind: KindData, Access: AccessRO,
 				Perms: &perm, Content: []byte(content), From: []string{"(snug)"},
 			})
-			stubPathDir = PodmanStubDir
 			break
 		}
 	}
@@ -358,7 +363,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 			// helpers, insteadOf rules and user.email would sit alongside the
 			// pinned identity — silently overriding what the human chose.
 			// Verified: git merges both files; GIT_CONFIG_GLOBAL replaces both.
-			p.Env["GIT_CONFIG_GLOBAL"] = home + "/.gitconfig"
+			p.AuthorEnv("GIT_CONFIG_GLOBAL", home+"/.gitconfig")
 		}
 		if cfg := id.SSHConfig(home); len(cfg) > 0 {
 			p.Replace(Mount{
@@ -393,31 +398,52 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 
 	// 5. The environment is reconstructed, not filtered. --clearenv discards the
 	//    host's, and each variable below is set explicitly.
-	p.Env["HOME"] = home
+	//
+	//    The PROFILES' bands go in first, and this is the earliest point they
+	//    can: `sanitise` asks "is this guest path granted", so it has to see the
+	//    whole mount set — including the authored mounts and every Replace
+	//    above. Conflicts are reported here rather than during the fold, so the
+	//    message can name every claimant (envresolve.go).
+	if err := p.applyEnvClaims(envClaims, env); err != nil {
+		return nil, err
+	}
+
+	p.AuthorEnv("HOME", home)
 	// PATH is the base plus whatever profiles asked for, profile entries FIRST
 	// so a profile-provided tool wins over a distro one of the same name — that
-	// is the point of asking. Sorted, because a set has no order and resolution
-	// must not invent one: two profiles contributing directories must produce
-	// the same PATH whichever order they were named in. The podman stub's
-	// directory goes NEXT, after every profile entry and before the base: it
-	// must beat /usr/bin/podman, which is its whole job, and must LOSE to any
-	// profile entry, because a profile entry is an explicit human grant and the
-	// stub is snug's own generated fallback.
-	pathEntries := sortedKeys(pathDirs)
-	if stubPathDir != "" {
-		pathEntries = append(pathEntries, stubPathDir)
+	// is the point of asking. StagedBinDir goes NEXT, after every profile entry
+	// and before the base: what is staged there must beat the distro's copy of
+	// the same name, which is the whole reason it was staged, and must LOSE to a
+	// profile entry, because a profile entry is an explicit human grant.
+	//
+	// The band appears IFF something was actually staged, computed from the
+	// resolved mounts rather than tracked by whoever did the staging. That is
+	// what lets a profile put a binary there — @claude binds its executable at
+	// StagedBinDir/claude — without every such profile having to remember a
+	// matching `environ.merge` line, and without the grant-coupling rule being
+	// asked to reason about a directory no profile grants. The alternative,
+	// letting each profile name its own directory, is how @claude came to merge
+	// {home}/.local/bin, which is a WRITABLE tmpfs and therefore a shadow slot
+	// snug itself installed (StagedBinDir's doc comment; CLAUDE.md).
+	//
+	// Each band is a separate write, in the order it is rendered: a profile's
+	// directories are the profile's authorship, while the staged directory and
+	// the base are snug's own and say so.
+	if p.HasStagedBin() {
+		p.AuthorEnvList("PATH", []string{StagedBinDir}, "staged bin")
 	}
-	p.Env["PATH"] = strings.Join(append(pathEntries, basePATH...), ":")
-	p.Env["USER"] = envOr(env, "USER", "user")
-	p.Env["LOGNAME"] = p.Env["USER"]
-	p.Env["SHELL"] = ctx.Shell
-	p.Env["TMPDIR"] = "/tmp"
+	p.AuthorEnvList("PATH", basePATH, "base")
+	user := envOr(env, "USER", "user")
+	p.AuthorEnv("USER", user)
+	p.AuthorEnv("LOGNAME", user)
+	p.AuthorEnv("SHELL", ctx.Shell)
+	p.AuthorEnv("TMPDIR", "/tmp")
 	if ctx.Term != "" {
-		p.Env["TERM"] = ctx.Term
+		p.AuthorEnv("TERM", ctx.Term)
 	}
-	p.Env["SNUG"] = "1"
-	p.Env["SNUG_PROFILES"] = strings.Join(names, ",")
-	p.Env["SNUG_TARGET"] = target
+	p.AuthorEnv("SNUG", "1")
+	p.AuthorEnv("SNUG_PROFILES", strings.Join(names, ","))
+	p.AuthorEnv("SNUG_TARGET", target)
 
 	// A prompt that says where you are. This matters more than cosmetics: snug
 	// does not curate /etc/bash.bashrc, so without this the shell falls back to
@@ -428,13 +454,18 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	//
 	// The escapes are bash/zsh syntax. A strict POSIX sh prints them literally,
 	// which is ugly but harmless; the shells people actually get here expand them.
-	p.Env["PS1"] = `🔒 snug:\w\$ `
+	p.AuthorEnv("PS1", `🔒 snug:\w\$ `)
 	if ctx.Lang != "" {
-		p.Env["LANG"] = ctx.Lang
+		p.AuthorEnv("LANG", ctx.Lang)
 	}
 	if ctx.TZ != "" {
-		p.Env["TZ"] = ctx.TZ
+		p.AuthorEnv("TZ", ctx.TZ)
 	}
+
+	// LAST, after every band including snug's own: a repeated element collapses
+	// to its earliest band, which is what makes prepend's guarantee literally
+	// true and what stops a profile naming /bin producing it twice.
+	p.dedupeEnvLists()
 
 	if err := p.Validate(env); err != nil {
 		return p, err
@@ -486,15 +517,18 @@ func under(canonTarget, p string) (string, bool) {
 // p.Mounts[...] directly instead, bypassing both the provenance record and
 // Validate.
 
-// forbiddenEnv are code-injection vectors into every process the sandbox
-// launches. This is the one place snug overrides an explicit grant, and it does
-// so with a loud error rather than a silent drop so the human learns why.
-var forbiddenEnv = map[string]bool{
-	"LD_PRELOAD": true, "LD_LIBRARY_PATH": true, "LD_AUDIT": true,
-	"BASH_ENV": true, "ENV": true, "PERL5OPT": true, "PYTHONSTARTUP": true,
-	"GIT_SSH_COMMAND": true, "NODE_OPTIONS": true,
-}
+// forbiddenEnv lives in envtypes.go now, split by verb: a value carried by a
+// reviewed profile file and a value inherited from whoever launched snug are
+// two different things, and one middle bucket is legal as the first and not the
+// second (CALL 4).
 
+// envOr keeps Getenv's "empty means absent" reading DELIBERATELY, and it is the
+// one place that is right. Its callers want a value snug can fall back on —
+// USER, and nothing else today — where an empty host value is no more useful
+// than an unset one and "user" is a better answer than "". The presence
+// distinction above exists for FLAG variables, where empty is a value; do not
+// unify the two, because "right for one type, wrong for the other" is how this
+// class of bug ships (§2.6).
 func envOr(e Environ, k, def string) string {
 	if v := e.Getenv(k); v != "" {
 		return v
@@ -751,14 +785,40 @@ func splitSpec(spec string, vars map[string]string) (host, guest string, err err
 	return filepath.Clean(host), filepath.Clean(guest), nil
 }
 
+// expandVars substitutes {name} from vars, in ONE PASS.
+//
+// The single pass is the substance, not an optimisation. The loop this replaced
+// restarted `strings.Index(s, "{")` over the whole result after every
+// substitution, so substituted text was itself scanned for placeholders — and
+// the substituted text is a PATH, which the human running snug chose. Measured:
+//
+//	mkdir -p '/tmp/x/{home}' /tmp/x/home/michal
+//	snug '/tmp/x/{home}'
+//	  -> TARGET  /tmp/x/{home}   read-only, via @parent-ro
+//	  -> rw      /tmp/x/home/michal   @cwd-rw    <- a DIFFERENT directory, writable
+//
+// The payload wrote to it and the write persisted to the host, while the
+// directory the user actually named was read-only. "The target is the only
+// writable thing that persists" was false for that input. A directory named
+// `{target}` was worse: expansion fed its own result back in and the process
+// spun at 224% CPU until killed — quadratic in TIME, not memory (RSS stayed at
+// 18 MB), so it presents as a hang rather than an OOM.
+//
+// Neither needs a hostile profile — a directory with a brace in its name is
+// enough — and both stop being expressible once the output is written once.
 func expandVars(s string, vars map[string]string) (string, error) {
 	if strings.HasPrefix(s, "~/") {
 		s = vars["home"] + s[1:]
 	}
+	if !strings.Contains(s, "{") {
+		return s, nil // the overwhelmingly common case, and no allocation
+	}
+	var b strings.Builder
 	for {
 		i := strings.Index(s, "{")
 		if i < 0 {
-			return s, nil
+			b.WriteString(s)
+			return b.String(), nil
 		}
 		j := strings.Index(s[i:], "}")
 		if j < 0 {
@@ -769,6 +829,11 @@ func expandVars(s string, vars map[string]string) (string, error) {
 		if !ok {
 			return "", fmt.Errorf("unknown variable {%s} in %q", key, s)
 		}
-		s = s[:i] + val + s[i+j+1:]
+		// The literal text before the placeholder and the substituted value are
+		// both COMMITTED — appended to the builder and never looked at again.
+		// Only the unexamined remainder continues round the loop.
+		b.WriteString(s[:i])
+		b.WriteString(val)
+		s = s[i+j+1:]
 	}
 }

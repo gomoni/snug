@@ -36,6 +36,49 @@ You own the two layers where snug's security actually lives: the **policy model*
    (broadest first, then by path depth) to produce a correct filesystem. The
    policy itself is an unordered set. Never leak argv ordering up into the
    profile file format.
+6. **snug never puts an executable anywhere the payload can write.** One staging
+   directory, `policy.StagedBinDir` (`/run/snug/bin`), for everything snug puts
+   in front of the payload — the generated podman dispatcher and `@claude`'s
+   bound binary alike. It is on the root tmpfs, so `--remount-ro /` covers it.
+   `$HOME`, `/tmp`, `$HOME/.cache`, `$HOME/.config`, `$HOME/.local/state` and
+   `/dev` are all writable, and a command staged in any of them is a **shadow
+   slot**: the payload writes `git` there and the next `git` anything in the
+   sandbox runs is that file. A *human's own* profile may do this — it is their
+   declaration, an accepted residual in `TODO.md` — but a **shipped profile may
+   never be one**, and no profile names a PATH directory at all: snug adds the
+   staging directory itself, iff something is staged there.
+
+   **Check this explicitly on every review, because it has shipped once
+   already.** `@claude` bound one file read-only under `{home}/.local/bin` and
+   merged that directory onto `PATH`; the bind was sound and the *directory* was
+   the hole. It passed review, passed `make gate`, and was filed in `TODO.md` as
+   accepted under a defence ("a profile's own declaration") that only applies to
+   profiles a human wrote. `sanitise` cannot catch it — that filter only inspects
+   the *host's* value for an imported variable, never a `merge` entry from a
+   file. `TestNoBuiltinPutsAWritableDirectoryOnPATH` sweeps the builtins with
+   `policy.IsShadowSlot`; when you add or change a profile that carries an
+   executable, confirm the sweep still covers it rather than assuming it does.
+
+   **And the directory itself is snug's, in `snugsOwn` alongside `/proc` and
+   `/dev`.** An independent review found the same defect one indirection out: a
+   profile that mounts a tmpfs (or a `rw` bind) AT `/run/snug/bin` and stages one
+   file inside gets a writable directory that snug then puts first on PATH *in
+   its own `(snug)` provenance*, with the profile never naming PATH at all. That
+   is not the accepted-residual class — no human read a declaration — and it is
+   the exact case "a profile cannot pick a writable directory by accident"
+   claimed was impossible. A grant at a path INSIDE the directory stays legal and
+   must: staging one executable is what the directory exists for.
+7. **Text a profile wrote is not text snug wrote, at any sink.** A value reaching
+   the argv, the FILESYSTEM block, the ENVIRONMENT block or `snug profile show`
+   goes through `visibleValue`, and a control character in an environ value or a
+   guest path is refused outright (`checkEnvValue`, `Validate`). The reason is
+   both halves at once: a NUL in an environ value re-synced bwrap's `--args`
+   parser and authored a MOUNT no `Mount` existed for — invisible to `Validate`,
+   `rejectMasking` and `--dry-run` — while a newline or an ESC forges or erases
+   rows in the artifact a human reads to decide whether to trust the sandbox.
+   When you add a sink, ask which of those two it is; when you add a guard, ask
+   what the OTHER sinks do with the same string. Every one of these was fixed at
+   the site where it was found and left broken four lines below.
 
 ## How you work
 

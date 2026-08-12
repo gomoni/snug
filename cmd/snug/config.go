@@ -108,10 +108,12 @@ func configCmd(args []string) int {
 	// commands people reach for when something is wrong. `snug config` reporting
 	// a tidy configuration while the profile set is unloadable is the worst
 	// possible answer to "why will snug not start".
-	if _, err := profile.Load(); err != nil {
+	_, bad, err := profile.Load()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 		return exitPolicy
 	}
+	broken := reportBadFiles(bad)
 
 	path := configPath()
 	fmt.Printf("config file      %s", path)
@@ -172,14 +174,76 @@ func configCmd(args []string) int {
 	fmt.Println()
 	fmt.Println("repo-local config is never auto-loaded: a repository that could ship its own")
 	fmt.Println("profile would be granting itself permissions. See .claude/design/INDEX.md §2.7.")
+	// The output above is still worth printing — it is what someone runs this
+	// command for — but the exit code must not say everything is fine while a
+	// file in the search path above did not load.
+	if broken {
+		return exitPolicy
+	}
 	return 0
 }
 
+// showEnviron renders all five environment verbs.
+//
+// It renders ALL of them for the same reason `snug profile show` exists at all:
+// this line used to read `show("env", p.Env)` and never rendered `path` either,
+// so a profile putting a directory on the sandbox's PATH looked, on this
+// screen, like a profile that granted nothing to the environment. A display
+// that omits a grant is worse than no display, because it is read as complete.
+//
+// The parse-time checks in policy.ValidateEnvGrants are part of the argument
+// for `snug profile show` reporting a verdict with no target; showing what it
+// checked is the other half.
+func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
+	pairs := func(label string, m map[string]string) {
+		names := make([]string, 0, len(m))
+		for k := range m {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		vals := make([]string, 0, len(names))
+		for _, n := range names {
+			vals = append(vals, n+" = "+m[n])
+		}
+		show(label, vals)
+	}
+	lists := func(label string, m map[string][]string) {
+		names := make([]string, 0, len(m))
+		for k := range m {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		vals := make([]string, 0, len(names))
+		for _, n := range names {
+			vals = append(vals, n+" = "+strings.Join(m[n], " "))
+		}
+		show(label, vals)
+	}
+	// The labels carry the `environ.` prefix the TOML uses. Bare "set" and
+	// "merge" sit directly under "ro" and "tmpfs" on this screen, where they read
+	// as two more kinds of filesystem grant; the prefix is what says these are
+	// the environment, and it is also the string somebody will grep for.
+	pairs("environ.set", g.Set)
+	lists("environ.merge", g.Merge)
+	lists("environ.prepend", g.Prepend)
+	show("environ.inherit", g.Inherit)
+	show("environ.sanitise", g.Sanitise)
+}
+
 func profileCmd(args []string) int {
-	reg, err := profile.Load()
+	// DIAGNOSTIC, so a file that will not parse is reported and skipped rather
+	// than taking the registry down with it. `snug profile list` is precisely the
+	// command someone runs to find out what still works, and it used to be the
+	// first casualty. The exit code still says something is wrong.
+	reg, bad, err := profile.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 		return exitPolicy
+	}
+	broken := reportBadFiles(bad)
+	code := 0
+	if broken {
+		code = exitPolicy
 	}
 
 	sub := "list"
@@ -198,12 +262,15 @@ func profileCmd(args []string) int {
 			if strings.Contains(" "+def+" ", " "+n+" ") {
 				marker = "*"
 			}
-			fmt.Printf("%s %-16s %s\n", marker, n, p.Description)
+			// One line per profile here, unlike `show`, so the whole description
+			// is escaped: a newline in it would produce a second row on the one
+			// screen whose job is to say what profiles exist.
+			fmt.Printf("%s %-16s %s\n", marker, visibleValue(n), visibleValue(p.Description))
 		}
 		fmt.Println()
 		fmt.Printf("* = selected by a bare `snug <dir>`.  @ = shipped by snug, cannot be redefined.\n")
 		fmt.Printf("Details: snug profile show NAME\n")
-		return 0
+		return code
 
 	case "show":
 		if len(args) < 2 {
@@ -216,43 +283,63 @@ func profileCmd(args []string) int {
 			// Same error the resolver gives, so `snug profile show sys` and
 			// `snug -p sys` both point at `@sys` rather than one of them
 			// leaving the reader to guess.
-			fmt.Fprintf(os.Stderr, "snug: %v\n", policy.UnknownProfile(reg, name))
+			fmt.Fprintf(os.Stderr, "snug: %v\n", unknownProfile(reg, name, bad))
 			return exitPolicy
 		}
 		fmt.Printf("profile     %s\n", name)
 		if p.Description != "" {
-			fmt.Printf("            %s\n", strings.ReplaceAll(p.Description, "\n", "\n            "))
+			// A multi-line description is deliberate and stays multi-line, so
+			// this escapes each line rather than the whole string: newline is
+			// the one control character with a meaning here, and every other
+			// one — ESC above all — is a way to rewrite lines the reader has
+			// already been shown.
+			lines := strings.Split(p.Description, "\n")
+			for i, l := range lines {
+				lines[i] = visibleValue(l)
+			}
+			fmt.Printf("            %s\n", strings.Join(lines, "\n            "))
 		}
 		fmt.Printf("defined in  %s\n", p.Source)
 		fmt.Println()
+		// visibleValue on every value, in the closure rather than at each call
+		// site, so `includes`, `ro`, `rw`, `tmpfs`, `optional` and all five
+		// environ verbs are covered by one line and a new key cannot be added
+		// without it.
+		//
+		// This is the screen someone reads to decide WHETHER to select a profile,
+		// which puts it upstream of every --dry-run — and it rendered profile text
+		// verbatim. Measured in a real terminal: an environ.set value ending in
+		// ESC[1A CR overwrote the row above it, and `rw  /home/michal` — the whole
+		// of $HOME, writable — was simply not on the screen. `cat -v` showed it
+		// there all along.
 		show := func(label string, vals []string) {
 			for i, v := range vals {
 				head := ""
 				if i == 0 {
 					head = label
 				}
-				fmt.Printf("  %-10s %s\n", head, v)
+				fmt.Printf("  %-16s %s\n", head, visibleValue(v))
 			}
 		}
 		show("includes", p.Include)
 		show("ro", p.RO)
 		show("rw", p.RW)
 		show("tmpfs", p.Tmpfs)
-		show("env", p.Env)
+		showEnviron(p.Environ, show)
 		for i, s := range p.Symlink {
 			head := ""
 			if i == 0 {
 				head = "symlink"
 			}
-			fmt.Printf("  %-10s %s -> %s\n", head, s.At, s.Target)
+			fmt.Printf("  %-16s %s -> %s\n", head, visibleValue(s.At), visibleValue(s.Target))
 		}
 		if len(p.Optional) > 0 {
-			fmt.Printf("  %-10s %s\n", "optional", strings.Join(p.Optional, " "))
+			fmt.Printf("  %-16s %s\n", "optional", visibleValue(strings.Join(p.Optional, " ")))
 		}
 		fmt.Println()
 		fmt.Println("To see what this actually produces for a directory:")
 		fmt.Printf("  snug --dry-run -p %s <dir>\n", name)
-		return 0
+		return code
 
 	case "tree":
 		roots := args[1:]
@@ -261,15 +348,18 @@ func profileCmd(args []string) int {
 		}
 		for _, r := range roots {
 			if _, ok := reg[r]; !ok {
-				fmt.Fprintf(os.Stderr, "snug: %v\n", policy.UnknownProfile(reg, r))
+				fmt.Fprintf(os.Stderr, "snug: %v\n", unknownProfile(reg, r, bad))
 				return exitPolicy
 			}
 			printTree(reg, r, "", "", map[string]bool{})
 		}
-		return 0
+		return code
 
 	case "dot":
-		return profileDot(reg, args[1:])
+		if rc := profileDot(reg, args[1:]); rc != 0 {
+			return rc
+		}
+		return code
 
 	default:
 		fmt.Fprintf(os.Stderr, "snug: unknown subcommand %q\nusage: snug profile [list|show NAME|tree [NAME...]|dot]\n", sub)

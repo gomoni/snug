@@ -53,10 +53,21 @@ func startContainers(pol *policy.Policy, verbose bool) (cleanup func(), err erro
 	// granted it. A trust artifact that misattributes a grant is worse than one
 	// that omits it.
 	pol.BindSocket(sock, containerSocketGuest, "(containers)")
+	containerEnv(pol)
+
+	return func() { p.Close(); eng.Stop() }, nil
+}
+
+// containerEnv points the client at the proxy. A function of its own so it can
+// be exercised without starting an engine: these three names are half of the
+// post-Resolve writers, and those are the dangerous half of the ownership set —
+// a profile allowed to write DOCKER_HOST = "ssh://you@host/..." would make the
+// client exec ssh (§1.1, §3.2).
+func containerEnv(pol *policy.Policy) {
 	// podman's own CLI reads CONTAINER_HOST; DOCKER_HOST is set too so anything
 	// speaking the compat API finds the same proxy. snug targets podman.
-	pol.Env["CONTAINER_HOST"] = "unix://" + containerSocketGuest
-	pol.Env["DOCKER_HOST"] = "unix://" + containerSocketGuest
+	pol.AuthorEnv("CONTAINER_HOST", "unix://"+containerSocketGuest)
+	pol.AuthorEnv("DOCKER_HOST", "unix://"+containerSocketGuest)
 	// DOCKER_BUILDKIT=0 is a TIGHTENING, not a convenience: with BuildKit on
 	// (docker's own default), `docker build` never POSTs to /build at all — it
 	// tries to boot a moby/buildkit builder CONTAINER instead, and negotiates
@@ -71,9 +82,7 @@ func startContainers(pol *policy.Policy, verbose bool) (cleanup func(), err erro
 	// default is not the only backstop; it narrows the common case, and the
 	// buildkit session itself is not something snug filters at all.
 	//
-	// (This function already returned above when pol.Podman == PodmanOff, so
-	// setting it unconditionally here is correct, not merely convenient.)
-	pol.Env["DOCKER_BUILDKIT"] = "0"
-
-	return func() { p.Close(); eng.Stop() }, nil
+	// (The caller already returned when pol.Podman == PodmanOff, so setting it
+	// unconditionally here is correct, not merely convenient.)
+	pol.AuthorEnv("DOCKER_BUILDKIT", "0")
 }

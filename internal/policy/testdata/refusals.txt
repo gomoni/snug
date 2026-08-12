@@ -79,3 +79,139 @@ profile hostile puts a bind of /opt at /home/u/.claude.json/evil, which is insid
        A grant beneath a file is meaningless: nothing can be mounted inside a regular file.
        Remove the grant at /home/u/.claude.json/evil.
 
+== forbidden_env_unset_on_host ==
+profile "bad": environ.inherit names LD_PRELOAD, which snug refuses for this verb: the value is code, executed by every process the sandbox launches. Remove the line
+
+== env_name_empty ==
+environ.set has an entry with an empty name. A variable with no name cannot be set; delete the line
+
+== env_name_equals ==
+environ.set names "PATH=/evil:", which contains '='. NAME=VALUE is the wire format of the environment itself, so a name with '=' in it is a second assignment smuggled inside the first. Use one entry per variable
+
+== env_name_nul ==
+environ.set names a variable containing a NUL byte. The environment is a NUL-terminated list, so the name would be truncated at that byte and the remainder read as something else entirely
+
+== env_name_newline ==
+environ.set names "EDITOR\\nPS1", which contains a newline. Every --dry-run line and every refusal renders a variable name on one line; a name that spans two makes those unreadable and unparseable
+
+== env_name_leading_digit ==
+environ.set names "1PATH", which starts with a digit. A variable name is [A-Za-z_][A-Za-z0-9_]*, and a shell cannot expand a name starting with a digit — $1 is a positional parameter
+
+== env_name_bad_character ==
+environ.set names "MY-VAR", which contains "-". A variable name is [A-Za-z_][A-Za-z0-9_]* — the rule execve(2) and every shell already assume. Rename it
+
+== env_name_snug_owned ==
+environ.set names SNUG_PROFILES, which snug writes itself. No profile may write a name snug writes: HOME, PATH and SHELL have no safe absent state, PS1 is executed by bash, and SNUG* is what --dry-run is read against — a profile that could set one could lie to the artifact a human reads to decide whether to trust the sandbox. Remove the line
+
+== env_name_snug_owned_ps1 ==
+environ.inherit names PS1, which snug writes itself. No profile may write a name snug writes: HOME, PATH and SHELL have no safe absent state, PS1 is executed by bash, and SNUG* is what --dry-run is read against — a profile that could set one could lie to the artifact a human reads to decide whether to trust the sandbox. Remove the line
+
+== env_name_forbidden_both ==
+environ.set names GIT_SSH_COMMAND, which snug refuses for this verb: the value is code, executed by every process the sandbox launches. Remove the line
+
+== env_name_forbidden_prefix_both ==
+environ.set names BASH_FUNC_build, and snug refuses the whole BASH_FUNC_* prefix for this verb: the value is executed, or it outranks the config file snug generates. Remove the line
+
+== env_name_forbidden_prefix_git_config ==
+environ.set names GIT_CONFIG_COUNT, and snug refuses the whole GIT_CONFIG_* prefix for this verb: the value is executed, or it outranks the config file snug generates. Remove the line
+
+== env_name_forbidden_prefix_inherit_only ==
+environ.inherit names PIP_INDEX_URL, and snug refuses the whole PIP_* prefix for this verb: the value is executed, or it outranks the config file snug generates. Remove the line
+
+== env_name_forbidden_inherit_only ==
+environ.inherit names BASH_ENV, which snug refuses for this verb: the value is code, executed by every process the sandbox launches. Remove the line
+
+== env_set_on_a_list ==
+environ.set on PATH, which is a list — use environ.merge, or environ.prepend if the order matters. environ.set on a list would replace every other profile's entries, which snug does not allow
+
+== env_merge_on_a_scalar ==
+environ.merge on EDITOR, which is a scalar, not a list — use environ.set
+
+== env_merge_on_an_uncomposable_list ==
+environ.merge on CDPATH, which snug does not compose. Its elements are not independent — see .claude/design/ENVIRONMENT-VARIABLES.md §3.3 — so joining two profiles' entries would change what the value MEANS rather than lengthen it
+
+== env_inherit_on_a_list ==
+environ.inherit on PKG_CONFIG_PATH, which is a list. Inheriting a host search path wholesale imports directories the sandbox does not have — use environ.sanitise, which copies the host value and keeps only the elements policy grants
+
+== env_inherit_on_a_generated_config_path ==
+environ.inherit on XDG_CONFIG_HOME, which snug refuses to take from the host: the host's value names a path this sandbox does not have, and for a config-file variable it would outrank the file snug generates. Use environ.set with a path the same profile grants
+
+== env_sanitise_on_a_scalar ==
+environ.sanitise on EDITOR, which is a scalar. sanitise filters the ELEMENTS of a host list; for a scalar there is nothing to filter — use environ.inherit to take the host's value, or environ.set to write one
+
+== env_sanitise_on_manpath ==
+environ.sanitise on MANPATH, where an empty element is an INSTRUCTION rather than a gap: a leading one prepends the system path, a trailing one appends it, and '::' inserts it in place. Removing an element there can ADD directories, which is the opposite of what a filter is for. Use environ.merge with the directories you mean
+
+== env_sanitise_on_an_unfilterable_list ==
+environ.sanitise on PYTHONPATH, which snug refuses to filter: an empty or dropped element changes the meaning of the value rather than shortening it — see .claude/design/ENVIRONMENT-VARIABLES.md §3.3. Use environ.merge with the directories you mean
+
+== env_separator_in_a_merge_string ==
+environ.merge on PATH has the element "/usr/bin:/usr/sbin", which contains ":" — a separator PATH is read with. Write the elements:
+         PATH = ["/usr/bin", "/usr/sbin"]
+       snug never splits a value on a separator, so a hand-written one can smuggle in an empty element, which in a search path means the current directory
+
+== env_separator_in_a_prepend_element ==
+environ.prepend on PATH has the element "/a:/b", which contains ":" — a separator PATH is read with. Write the elements:
+         PATH = ["/a", "/b"]
+       snug never splits a value on a separator, so a hand-written one can smuggle in an empty element, which in a search path means the current directory
+
+== env_uncoupled_set ==
+profile "broken" sets XDG_DATA_HOME=/home/u/.local/share, which it does not grant.
+       Add the path to that profile's ro/rw/tmpfs — or to a profile it includes — or
+       drop the variable: a variable naming a path that is not inside the sandbox is
+       worse than an absent one, because every tool that reads it will believe it.
+       snug is not checking that the path EXISTS (it cannot: a tmpfs grant creates an
+       empty directory), only that the profile naming it is the profile that granted it.
+
+== env_uncoupled_merge ==
+profile "tpath" merges PATH=/nonexistent/bin, which it does not grant.
+       Add the path to that profile's ro/rw/tmpfs — or to a profile it includes — or
+       drop the variable: a variable naming a path that is not inside the sandbox is
+       worse than an absent one, because every tool that reads it will believe it.
+       snug is not checking that the path EXISTS (it cannot: a tmpfs grant creates an
+       empty directory), only that the profile naming it is the profile that granted it.
+
+== env_uncoupled_despite_another_profile_granting_it ==
+profile "namer" merges PATH=/opt/tools/bin, which it does not grant.
+       Add the path to that profile's ro/rw/tmpfs — or to a profile it includes — or
+       drop the variable: a variable naming a path that is not inside the sandbox is
+       worse than an absent one, because every tool that reads it will believe it.
+       snug is not checking that the path EXISTS (it cannot: a tmpfs grant creates an
+       empty directory), only that the profile naming it is the profile that granted it.
+
+== env_relative_set ==
+profile "rel": environ.set CARGO_HOME entry "cargo" must be an absolute path: a relative one is resolved against whatever directory the payload happens to be in, which is not something a profile can know
+
+== env_two_prepends ==
+profiles mytools and othertools prepend to PATH, and they do not agree:
+         mytools wants ["/opt/bin"]
+         othertools wants ["/srv/bin"]
+       Only one profile may hold the front of a variable. Use environ.merge in
+       the ones that do not need to be first — a merged entry still beats every
+       entry snug adds, so nothing is lost but the guarantee of being first.
+
+== env_prepend_order_disagreement ==
+profiles ordera and orderb prepend to PATH, and they do not agree:
+         ordera wants ["/opt/a" "/opt/b"]
+         orderb wants ["/opt/b" "/opt/a"]
+       Only one profile may hold the front of a variable. Use environ.merge in
+       the ones that do not need to be first — a merged entry still beats every
+       entry snug adds, so nothing is lost but the guarantee of being first.
+
+== env_two_sets_disagree ==
+profiles seta, setb and setc disagree about MY_EDITOR:
+         setb (environ.set) says "emacs"
+         seta (environ.set) says "vim"
+         setc (environ.set) says "vim"
+       A scalar has one value and snug will not choose: picking one would make
+       the answer depend on the order profiles were folded, and the model has no
+       such order. Select one of them, or make them agree.
+
+== env_set_disagrees_with_inherit ==
+profiles emacsy and envy disagree about EDITOR:
+         emacsy (environ.set) says "emacs"
+         envy (environ.inherit) says "vim"
+       A scalar has one value and snug will not choose: picking one would make
+       the answer depend on the order profiles were folded, and the model has no
+       such order. Select one of them, or make them agree.
+

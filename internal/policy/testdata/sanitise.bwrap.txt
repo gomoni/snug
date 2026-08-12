@@ -16,19 +16,21 @@
 --tmpfs /home/u
 --tmpfs /home/u/.cache
 --tmpfs /home/u/.config
---ro-bind /home/u/proj /home/u/proj
+--ro-bind /opt/tools/bin /opt/tools/bin
 --tmpfs /home/u/.local/share
 --tmpfs /home/u/.local/state
 --bind /home/u/proj/sub /home/u/proj/sub
+--ro-bind /home/u/.local/bin/tool /home/u/.local/bin/tool
 --remount-ro /
 --clearenv
+--setenv EDITOR vim
 --setenv HOME /home/u
 --setenv LOGNAME u
---setenv PATH /usr/bin:/bin:/usr/sbin:/sbin
+--setenv PATH /opt/tools/bin:/home/u/.local/bin/tool:/home/u/proj/sub/bin:/usr/bin:/bin:/usr/sbin:/sbin
 --setenv PS1 🔒 snug:\w\$ 
 --setenv SHELL /bin/sh
 --setenv SNUG 1
---setenv SNUG_PROFILES @cwd-rw,@home,@parent-ro,@sys
+--setenv SNUG_PROFILES @cwd-rw,@home,@sys,envy,nested-bin,sanity-path
 --setenv SNUG_TARGET /home/u/proj/sub
 --setenv TMPDIR /tmp
 --setenv USER u

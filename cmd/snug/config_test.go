@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // TestEmptyDefaultsMeansEmpty pins the fix for the bug TODO.md's MVY0 findings
@@ -116,5 +118,60 @@ func TestDryRunCreatesNoHostTmpDir(t *testing.T) {
 	}
 	if other := hostTmpDirPath(target + "-other"); other == path {
 		t.Error("two different targets produced the same host tmp dir; they would share a cache")
+	}
+}
+
+// `snug profile show` must render ALL FIVE verbs.
+//
+// The line this replaced was `show("env", p.Env)`, which rendered one of the two
+// keys that existed and never rendered `path` at all — so a profile putting a
+// directory on the sandbox's PATH looked, on this screen, like a profile that
+// granted nothing to the environment. A display that omits a grant is worse than
+// no display, because it is read as complete.
+//
+// It is also half of §2.3's argument: the environment rules are checked at parse
+// time so `snug profile show` can report a verdict with no target, and showing
+// what it checked is the other half.
+func TestProfileShowRendersEveryEnvironVerb(t *testing.T) {
+	g := policy.EnvGrants{
+		Set:      map[string]string{"XDG_DATA_HOME": "{home}/.local/share"},
+		Merge:    map[string][]string{"PATH": {"{home}/.local/bin", "/opt/tools/bin"}},
+		Prepend:  map[string][]string{"PATH": {"/opt/first/bin"}},
+		Inherit:  []string{"EDITOR"},
+		Sanitise: []string{"PKG_CONFIG_PATH"},
+	}
+	got := map[string][]string{}
+	showEnviron(g, func(label string, vals []string) {
+		if len(vals) > 0 {
+			got[label] = vals
+		}
+	})
+
+	want := map[string]string{
+		// The prefix is the TOML's own spelling. Bare "set" and "merge" sit
+		// directly under "ro" and "tmpfs" on this screen and read as two more
+		// kinds of filesystem grant.
+		"environ.set":      "XDG_DATA_HOME = {home}/.local/share",
+		"environ.merge":    "PATH = {home}/.local/bin /opt/tools/bin",
+		"environ.prepend":  "PATH = /opt/first/bin",
+		"environ.inherit":  "EDITOR",
+		"environ.sanitise": "PKG_CONFIG_PATH",
+	}
+	for label, first := range want {
+		vals, ok := got[label]
+		if !ok {
+			t.Errorf("%s was not rendered at all — a profile using it would look, on this "+
+				"screen, like a profile that granted nothing to the environment", label)
+			continue
+		}
+		if vals[0] != first {
+			t.Errorf("%s rendered %q, want %q", label, vals[0], first)
+		}
+	}
+
+	// NEGATIVE CONTROL: a verb nobody used must not print an empty heading, or
+	// the reader learns to skim the block.
+	if len(got) != len(want) {
+		t.Errorf("rendered %d verbs, want exactly %d: %v", len(got), len(want), got)
 	}
 }

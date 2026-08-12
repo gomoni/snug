@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-const podmanStubGuest = PodmanStubDir + "/podman"
+const podmanStubGuest = StagedBinDir + "/podman"
 
 // TestPodmanStubStagedOnlyForADetectedShim is the positive/negative pair for
 // the trigger CONTAINER-CLIENT.md §8 specifies: staging follows detection,
@@ -65,10 +65,10 @@ func TestPodmanStubBeatsUsrBinPodmanButLosesToProfilePath(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 
-	path := p.Env["PATH"]
+	path, _ := p.EnvValue("PATH")
 	profileDir := "/home/u/.local/bin"
 	iProfile := strings.Index(path, profileDir)
-	iStub := strings.Index(path, PodmanStubDir)
+	iStub := strings.Index(path, StagedBinDir)
 	iBase := strings.Index(path, "/usr/bin")
 
 	if iProfile < 0 || iStub < 0 || iBase < 0 {
@@ -76,7 +76,7 @@ func TestPodmanStubBeatsUsrBinPodmanButLosesToProfilePath(t *testing.T) {
 	}
 	if !(iProfile < iStub && iStub < iBase) {
 		t.Errorf("PATH order wrong: got %q, want profile dir, then %s, then the base PATH",
-			path, PodmanStubDir)
+			path, StagedBinDir)
 	}
 }
 

@@ -286,6 +286,17 @@ Two constraints follow and both are load-bearing:
 > the sandbox cannot write, and put that directory on `PATH` ahead of
 > `/usr/bin`."* Pre-existing and separate: `@claude` already puts writable
 > `~/.local/bin` first on `PATH`.
+>
+> **Both closed.** CLAUDE.md carries the amendment, and the `@claude` half — the
+> one this note filed as "pre-existing and separate", which is how it survived a
+> further milestone — is gone: its binary is bound at `/run/snug/bin/claude`,
+> `@claude` names no `PATH` directory at all, and snug adds the staging directory
+> itself whenever anything is staged there. So the abuse sentence above no longer
+> has its second clause: **no shipped profile puts a writable directory ahead of
+> snug's on `PATH`**, and `TestNoBuiltinPutsAWritableDirectoryOnPATH` plus
+> `TestSnugStagesNoCommandInAWritableDirectory` are what keep that true. Constraint
+> 1 generalised from "the staged file and its directory" to every executable snug
+> stages — see `policy.StagedBinDir`.
 
 **Mechanism.** `/run/snug/bin/podman`, `KindData`, `AccessRO`, `Perms 0755`,
 `From ["(snug)"]`, installed via `Policy.Replace` (sets `Authored`, so

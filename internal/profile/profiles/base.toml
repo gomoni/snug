@@ -107,9 +107,45 @@ symlink = [
 # paths and the target usually lives under it. It is a tmpfs because persistence
 # in $HOME is the primary escape-into-your-next-session vector: .bashrc,
 # .profile, .config/autostart, .local/bin shadowing a command on your PATH.
+#
+# ABUSE: a hostile process inside the sandbox can write anything it likes into
+# any of these directories. All of it dies with the sandbox — none of them is a
+# host path — so what it buys an attacker is a place to stage files for the rest
+# of THIS run, not a foothold in the next one.
+#
+# {home}/.local/share is the fifth entry and the newest. It is here because
+# XDG_DATA_HOME below names it, and a profile must grant every path it names
+# (§2.5): without the tmpfs the variable would point at a directory that is not
+# inside, and every tool honouring XDG would fail on a path snug itself wrote.
 [profile.home]
 description = "$HOME is an empty tmpfs at the host path. Writable, ephemeral."
-tmpfs = ["{home}", "{home}/.cache", "{home}/.config", "{home}/.local/state"]
+tmpfs = [
+  "{home}",
+  "{home}/.cache",
+  "{home}/.config",
+  "{home}/.local/state",
+  "{home}/.local/share",
+]
+
+# The XDG base directories, pointed at the tmpfs directories immediately above.
+#
+# ABUSE: a hostile process inside the sandbox can use these to make any tool that
+# honours XDG write its state into the ephemeral tmpfs — which is exactly the
+# point. Nothing here reaches a host path, each value names a directory this same
+# profile creates, and a variable grants nothing on its own: it only tells a tool
+# where to look.
+#
+# They are `set` and not `inherit` deliberately. The host's XDG_CONFIG_HOME names
+# a real directory full of real credentials, and admitting it past --clearenv
+# would point every tool in the sandbox at a path the sandbox does not have —
+# which is the good case. The bad one is a host that has moved XDG_CONFIG_HOME
+# somewhere @home does not cover, where the tool would silently fall back to
+# writing wherever that says.
+[profile.home.environ.set]
+XDG_CONFIG_HOME = "{home}/.config"
+XDG_CACHE_HOME = "{home}/.cache"
+XDG_STATE_HOME = "{home}/.local/state"
+XDG_DATA_HOME = "{home}/.local/share"
 
 # ── the project ──────────────────────────────────────────────────────────────
 # ABUSE: the sandbox can rewrite anything in the target directory. That is the
@@ -252,8 +288,13 @@ network = "host"
 [profile.claude]
 description = "Claude Code: binary and skills read-only, credentials staged writable."
 include = ["sys", "home"]
+#
+# The BINARY lands at /run/snug/bin/claude, not at its host path. snug stages
+# every executable it puts in front of the payload in that one directory,
+# because that directory is not writable from inside — see the note under `ro`
+# below and CLAUDE.md's shadow-slot rule.
 ro = [
-  "{home}/.local/bin/claude",
+  "{home}/.local/bin/claude:/run/snug/bin/claude",
   "{home}/.local/share/claude",
   "{home}/.claude/settings.json",
   "{home}/.claude/skills",
@@ -266,6 +307,14 @@ optional = [
   "{home}/.claude/skills",
   "{home}/.claude/plugins",
 ]
+
+# Host variables re-admitted past --clearenv, one name per line.
+#
+# ABUSE: a hostile process inside the sandbox can read every one of these out of
+# /proc/self/environ, and so can every child it spawns. That is the whole cost of
+# `inherit` and the reason the list is five names rather than a prefix: each is
+# an endpoint or a preference, none is a credential.
+#
 # ANTHROPIC_API_KEY is deliberately NOT here, and must not come back.
 #
 # /proc/self/environ is passively readable by every process in the sandbox and
@@ -281,22 +330,44 @@ optional = [
 # ANTHROPIC_BASE_URL stays: it names an endpoint, not a credential, and users
 # behind a gateway need it. If you need the key inside, that is a decision to
 # make explicitly and per-run, not a line in a shipped profile.
-env = ["ANTHROPIC_BASE_URL", "EDITOR", "VISUAL", "PAGER", "NO_COLOR"]
-# Without this the profile mounts a binary nothing can find: the default PATH is
-# /usr/bin:/bin:/usr/sbin:/sbin, so `snug -p @claude . -- claude` answered
-# "execvp claude: No such file or directory" while the bind was sitting right
-# there in --dry-run. `path` grants nothing on its own — see policy.Profile.Path.
+[profile.claude.environ.inherit]
+ANTHROPIC_BASE_URL = true
+EDITOR = true
+VISUAL = true
+PAGER = true
+NO_COLOR = true
+
+# This profile deliberately has NO `environ.merge PATH`, and what replaced it is
+# the point rather than a tidy-up.
 #
-# It names the DIRECTORY, not the file, because that is what PATH takes; only
-# ~/.local/bin/claude is actually mounted, so nothing else in it exists.
-path = ["{home}/.local/bin"]
+# The binary still has to be findable — the default PATH is
+# /usr/bin:/bin:/usr/sbin:/sbin, so `snug -p @claude . -- claude` once answered
+# "execvp claude: No such file or directory" while the bind sat right there in
+# --dry-run. The fix then was `merge PATH = ["{home}/.local/bin"]`, and it was
+# WRONG in a way that took a review of §9.2 to see: {home} is a writable tmpfs,
+# so that line put a directory the PAYLOAD CAN WRITE TO ahead of /usr/bin. The
+# payload writes `git` into it and the next `git` a human or another agent runs
+# inside the sandbox is that file. Nothing about the bind of `claude` was unsafe;
+# the DIRECTORY it lived in was.
+#
+# Now the binary is bound at /run/snug/bin/claude and snug adds /run/snug/bin to
+# PATH itself, in its own band, whenever anything is staged there — so no profile
+# names a PATH directory at all and none can pick a writable one by accident.
+# See policy.StagedBinDir and CLAUDE.md.
+#
+# ABUSE: a hostile process inside the sandbox can run whatever is in
+# /run/snug/bin ahead of the distro's copy of the same name — and it cannot add
+# to it, because that directory sits on the root tmpfs and --remount-ro / covers
+# it (measured: `touch` and `echo >` both EROFS).
 
 # There is deliberately NO `local-path` builtin granting all of ~/.local/bin.
 # Same reasoning as `etc-full` above, and the same one-line escape hatch:
 #
 #   [profile.local-bin]
-#   ro   = ["{home}/.local/bin"]
-#   path = ["{home}/.local/bin"]
+#   ro = ["{home}/.local/bin"]
+#
+#   [profile.local-bin.environ.merge]
+#   PATH = ["{home}/.local/bin"]
 #
 # What it costs is why snug does not ship it. ~/.local/bin is wherever pipx, uv,
 # cargo-install and your own scripts land — a mixed, personal, host-managed set.
@@ -304,6 +375,13 @@ path = ["{home}/.local/bin"]
 # all of them, when what you wanted was one. That is the "X but not Y" smell from
 # CLAUDE.md pointing at too coarse a grant: if you want a tool in the sandbox,
 # name that tool, the way this profile names `claude`.
+#
+# Read the second cost off the two lines above as well, because it is the one
+# @claude got wrong for a milestone. That `ro` grant covers the DIRECTORY, so
+# {home}/.local/bin is a real read-only bind and the `merge` is safe — a payload
+# cannot write into it. Drop the `ro` line and keep the `merge`, and the same two
+# lines put a writable tmpfs directory ahead of /usr/bin instead. The verb that
+# made it safe is the grant, not the merge.
 
 # ── containers ───────────────────────────────────────────────────────────────
 # ABUSE: the sandbox can run containers, pull arbitrary images, and execute

@@ -1,0 +1,30 @@
+profile     @sys
+            Read-only OS runtime: /usr plus the few /etc files things actually need.
+defined in  builtin:base.toml
+
+  ro               /usr
+                   /opt
+                   /etc/ld.so.cache
+                   /etc/ld.so.conf
+                   /etc/ld.so.conf.d
+                   /etc/ssl
+                   /etc/pki
+                   /etc/ca-certificates
+                   /etc/ca-certificates.conf
+                   /etc/crypto-policies
+                   /var/lib/ca-certificates
+                   /usr/share/ca-certificates
+                   /etc/nsswitch.conf
+                   /etc/passwd
+                   /etc/group
+                   /etc/localtime
+                   /etc/os-release
+                   /etc/alternatives
+  symlink          /bin -> usr/bin
+                   /sbin -> usr/sbin
+                   /lib -> usr/lib
+                   /lib64 -> usr/lib64
+  optional         /opt /etc/ld.so.conf.d /etc/ssl /etc/pki /etc/ca-certificates /etc/ca-certificates.conf /etc/crypto-policies /var/lib/ca-certificates /usr/share/ca-certificates /etc/localtime /etc/os-release /etc/alternatives
+
+To see what this actually produces for a directory:
+  snug --dry-run -p @sys <dir>

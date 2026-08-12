@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -106,7 +107,11 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	//   - it removes every shell-quoting concern from what --dry-run prints
 	//
 	// Nothing may be appended to `flags` after this point.
-	argsFile, err := memfd("snug-args", nulJoin(flags))
+	joined, err := nulJoin(flags)
+	if err != nil {
+		return 0, err
+	}
+	argsFile, err := memfd("snug-args", joined)
 	if err != nil {
 		return 0, err
 	}
@@ -229,14 +234,42 @@ func (o Options) warn(msg string) {
 	fmt.Fprintln(os.Stderr, "snug: "+msg)
 }
 
-// nulJoin renders the flag list in the NUL-separated form bwrap's --args reads.
-func nulJoin(args []string) []byte {
+// nulJoin renders the flag list in the NUL-separated form bwrap's --args reads,
+// and refuses any element that contains the separator.
+//
+// This code OWNS the separator, so it is the one place entitled to say that no
+// element may contain it — and it is the last place the whole argv exists as
+// Go values, so a check here holds for every flag whatever authored it, not
+// just for the ones whose author was remembered.
+//
+// It is deliberately the SECOND guard. `checkEnvValue` refuses a NUL in a
+// profile-supplied environment value at parse time, where the error can name
+// the profile, the verb and the variable; that is the one that will fire in
+// practice and the one a human can act on. This one fires when something else
+// puts a NUL into a flag — a path, a generated value, a future writer nobody
+// has thought of — and it fails the run rather than handing bwrap a flag list
+// that means something other than the policy.
+//
+// The reachable case, measured: an environ.set value carrying a NUL escape
+// re-synced bwrap's --args parser onto its own remainder, so
+// `--setenv EDITOR "vim\\u0000--ro-bind\\u0000/home/u/.ssh\\u0000/home/u/.ssh"`
+// mounted ~/.ssh — a mount no Mount ever existed for, so Validate,
+// rejectMasking and --dry-run were all blind to it.
+func nulJoin(args []string) ([]byte, error) {
 	var b bytes.Buffer
-	for _, a := range args {
+	for i, a := range args {
+		if strings.ContainsRune(a, 0) {
+			return nil, fmt.Errorf("refusing to run: flag %d of the bwrap argument list "+
+				"contains a NUL byte, which is the separator the list is joined with — "+
+				"everything after it would be read by bwrap as further flags, and no "+
+				"such flag is in the resolved policy. This is a bug in snug unless a "+
+				"profile put it there; run `snug --dry-run` and look at the ENVIRONMENT "+
+				"block", i)
+		}
 		b.WriteString(a)
 		b.WriteByte(0)
 	}
-	return b.Bytes()
+	return b.Bytes(), nil
 }
 
 // safeStdio returns the three standard descriptors, with any that is a

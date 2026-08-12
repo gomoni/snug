@@ -136,9 +136,431 @@ Expect ~14 variables, all of them snug's own (`HOME`, `PATH`, `SNUG`,
 `DBUS_SESSION_BUS_ADDRESS`, no `SSH_AUTH_SOCK`, no `XDG_RUNTIME_DIR`, no API
 tokens.
 
+Do it once more with a variable you set yourself, and with the positive control,
+because a count of zero is also what a typo produces:
+
+```bash
+SECRET_TOKEN=leakme ./bin/snug $SC/proj/sub -- env | grep -c SECRET_TOKEN   # 0
+SECRET_TOKEN=leakme sh -c 'env | grep -c SECRET_TOKEN'                      # 1
+```
+
+One thing on that screen looks like a leak and is not: `XDG_CONFIG_HOME` reads
+`/home/michal/.config` even when the host's was somewhere else entirely. `@home`
+authors it, and inside, that path is an empty tmpfs.
+
 Caveat worth knowing: `--clearenv` is not the last word. `/etc/profile.d/*`
 runs inside a login shell and can put variables back. That is why `@sys`
 enumerates `/etc` instead of binding it wholesale — see INDEX §5.3.
+
+### 6d. Every variable says where it came from
+
+```bash
+./bin/snug --dry-run $SC/proj/sub -- true | sed -n '/^ENVIRONMENT/,/^$/p'
+```
+
+Expect one line per variable, each carrying a **verb** and a **profile**:
+`(snug)` for the ones snug authors, `set`/`merge`/`prepend`/`inherit`/`sanitise`
+plus the profile name for the ones a profile asked for. `PATH` is several lines,
+one per band, reading top to bottom in resolution order — a profile's entries,
+then snug's stub directory if there is one, then the base. That ordering **is**
+the model's; if the screen and the resolver ever disagree, the screen is lying.
+
+Where a `sanitise` dropped host elements, the line below names them — named, not
+counted. "2 of 3 kept" is not something anybody can check. Drops are grouped by
+**why**, one line per reason: "nothing grants that path" for an element with no
+covering grant at all, and "only an empty writable tmpfs is mounted there" for
+an element whose only covering mount is a `KindTmpfs` — the directory really is
+inside the sandbox and really is empty, so keeping the element would ship a
+shadow slot pre-installed ahead of `/usr/bin`.
+
+There are three reasons and one run can show all of them, which is the way to
+check they never collapse into one another:
+
+```bash
+X=$(mktemp -d); mkdir -p $X/snug/profiles.d
+printf '[profile.sanp]\n\n[profile.sanp.environ.sanitise]\nPATH = true\n' \
+  > $X/snug/profiles.d/sanp.toml
+
+PATH="/tmp/attacker/bin:/proc/self/cwd:/srv/nothing:/usr/bin:/bin" \
+XDG_CONFIG_HOME=$X ./bin/snug --dry-run --no-defaults \
+  -p @sys -p @home -p @cwd-rw -p sanp $SC/proj/sub | sed -n '/^  PATH/,/^  PS1/p'
+rm -rf $X
+```
+
+```
+  PATH             /usr/bin /bin                   sanitise  sanp
+                   /usr/sbin /sbin                 (snug)    base
+                   (1 host entry dropped — nothing grants that path: /srv/nothing)
+                   (1 host entry dropped — only an empty writable tmpfs is mounted there: /tmp/attacker/bin)
+                   (1 host entry dropped — only a kernel pseudo-filesystem is mounted there, and its magic symlinks leave it: /proc/self/cwd)
+```
+
+`/srv/nothing` is not in the sandbox at all; the other two **are**, and are
+writable, and empty — which is what makes them dangerous rather than merely
+useless. §6f is that third reason at length.
+
+### 6e. An authored value naming an ungranted path says so
+
+```bash
+./bin/snug --dry-run --no-defaults -p @parent-ro $SC/proj/sub -- true \
+  | sed -n '/^ENVIRONMENT/,/^$/p'
+```
+
+Expect `HOME`, `SHELL` and the four `PATH` entries to carry `← not granted`.
+This selection is refused (nothing can run in it), and `--dry-run` renders it
+anyway — which is the only way to see the mark.
+
+snug authors `HOME`, `PATH` and `SHELL` in *every* sandbox and must keep doing
+so: unset `PATH` and bash substitutes a compiled-in default ending in `.`, which
+inside snug is the target. So the repair for "this names a directory that is not
+in here" is to **say so**, never to stop authoring it. If a future version
+refuses instead, it has converted twenty minutes of confusion into a reachable
+hole.
+
+### 6e2. A writable `PATH` entry says so too
+
+The mark above says *nothing is there*. This one says *something is there and
+the payload can add to it* — the two are different facts and must never render
+as one.
+
+```bash
+X=$(mktemp -d); mkdir -p $X/snug/profiles.d $X/tools
+cat > $X/snug/profiles.d/both.toml <<EOF
+[profile.both]
+rw = ["$X/tools"]
+
+[profile.both.environ.merge]
+PATH = ["$X/tools"]
+
+[profile.both.environ.sanitise]
+PATH = true
+EOF
+
+PATH="/tmp/attacker/bin:/usr/bin:/bin" XDG_CONFIG_HOME=$X \
+  ./bin/snug --dry-run -p both $SC/proj/sub | sed -n '/^  PATH/,/^  PS1/p'
+rm -rf $X
+```
+
+Expect:
+
+```
+  PATH             /tmp/tmp.XXXXXXXX/tools         merge     both  ← writable from inside
+                   /usr/bin /bin                   sanitise  both
+                   /usr/sbin /sbin                 (snug)    base
+                   (1 host entry dropped — only an empty writable tmpfs is mounted there: /tmp/attacker/bin)
+```
+
+Read those four lines together, because they are the point. Both marked paths
+are directories the payload can write to and that precede `/usr/bin`. One is
+dropped by the filter and one is kept — correctly, because `sanitise` judges
+only the *host's* value for an imported variable and never a profile's own
+`merge` — and before the mark existed the screen showed one being removed for a
+hazard while the other sat unremarked four lines above. That is how `@claude`'s
+`{home}/.local/bin` survived a milestone in plain sight (§6g).
+
+The `rw` bind is deliberate and is the *worse* of the two cases: it is not a
+tmpfs that dies with the sandbox, so a `git` written into that slot **persists
+to the host**. Note also that this profile is a legal one — `rw` grants the
+directory, so the grant-coupling rule is satisfied and nothing refuses it. The
+mark is the only thing standing between a human and that arrangement, which is
+why it is a mark and not a refusal: a *human's own* profile may do this
+deliberately (`TODO.md` records it as an accepted residual). What snug may never
+do is ship it (§6g).
+
+Check the scope too: the mark is `PATH`-only, because `PATH` entries are
+searched for **commands**. A writable `XDG_CACHE_HOME` is correct and must stay
+unmarked — confirm the four `XDG_*` lines in the same block carry no mark, or
+the mark has become noise the reader will learn to skip.
+
+### 6f. `/proc`'s magic symlinks do not resurrect the shadow slot
+
+`environ.sanitise` copies a host list variable and keeps only elements policy
+grants; no shipped profile uses it on `PATH` today, so this drops in a
+throwaway one that does. `coveringMount` is a **lexical** walk over guest
+paths — it does not follow symlinks — so it used to stop at `/proc` (a
+`KindProc` mount, "kernel- and bwrap-populated, not empty") and KEEP any
+element under it, while the KERNEL resolves `/proc/self/cwd` to wherever the
+reading process's cwd actually is. Inside snug that is the **target** — a real
+bind mount, not a copy, so anything written through that PATH entry persists
+to the host after the sandbox exits.
+
+```bash
+X=$(mktemp -d); mkdir -p $X/snug/profiles.d
+printf '[profile.sanpath]\n\n[profile.sanpath.environ.sanitise]\nPATH = true\n' \
+  > $X/snug/profiles.d/sanpath.toml
+
+# Simulates a hostile repo leaving a same-named binary in the target, the way
+# a compromised dependency-install hook or a previous agent turn could.
+cat > $SC/proj/sub/id <<'SH'
+#!/bin/sh
+echo SHADOWED-ID-RAN-VIA-PROC-CWD
+SH
+chmod +x $SC/proj/sub/id
+
+XDG_CONFIG_HOME=$X PATH="/proc/self/cwd:/usr/bin:/bin" \
+  ./bin/snug --no-defaults -p @sys -p @cwd-rw -p sanpath $SC/proj/sub -- id
+
+rm -f $SC/proj/sub/id
+rm -rf $X
+```
+
+Expect the real `uid=... gid=... groups=...` line from `/usr/bin/id` —
+**never** `SHADOWED-ID-RAN-VIA-PROC-CWD`. Confirm with `--dry-run` (swap `--
+id` for `--dry-run ... -- true | sed -n '/^ENVIRONMENT/,/^$/p'`) that `PATH`
+carries a drop line naming `/proc/self/cwd`, reason "only a kernel
+pseudo-filesystem is mounted there, and its magic symlinks leave it" — a
+different fact from `DropTmpfsOnly`'s "only an empty writable tmpfs is
+mounted there", and the two must never read the same.
+
+### 6g. Nothing snug puts on `PATH` is writable from inside
+
+§6f closes the slot a *host* `PATH` element could open. This closes the one
+**snug itself** could hand over. The two are different halves of the same rule
+and only one of them is a filter.
+
+```bash
+probe='echo SNUG-PROBE-RAN; IFS=:
+       for d in $PATH; do
+         [ "$d" = /usr/bin ] && break
+         mkdir -p "$d" 2>/dev/null
+         touch "$d/shadow" 2>/dev/null && echo "WRITABLE $d"
+       done'
+
+./bin/snug             $SC/proj/sub -- /bin/sh -c "$probe"
+./bin/snug -p @claude  $SC/proj/sub -- /bin/sh -c "$probe"
+```
+
+Expect `SNUG-PROBE-RAN` and **no** `WRITABLE` line from either. The marker is
+the point: without it, a sandbox that failed to start would print nothing and
+read as a pass.
+
+`mkdir -p` before `touch` is not tidiness. A `PATH` element that does not exist
+*yet* on a writable tmpfs is still a slot — the payload creates the directory
+and the shell finds it on the next lookup — and probing with `touch` alone
+fails there with ENOENT, which reads exactly like a refusal.
+
+Then check the staging directory directly, and that the binary really came from
+it:
+
+```bash
+./bin/snug -p @claude $SC/proj/sub -- /bin/sh -c '
+  echo "PATH=$PATH"; command -v claude
+  touch /run/snug/bin/git || echo "touch REFUSED"
+  echo x > /run/snug/bin/git || echo "redirect REFUSED"'
+```
+
+Expect `/run/snug/bin` first on `PATH`, `command -v claude` answering
+`/run/snug/bin/claude`, and **both** write attempts refused with
+`Read-only file system` — `touch` and the shell redirect are different syscall
+paths and a check of one is not a check of the other.
+
+This earned its place by having shipped. `@claude` bound its binary read-only
+at `{home}/.local/bin/claude` and merged `{home}/.local/bin` onto `PATH`; the
+bind was sound and the *directory* was `@home`'s writable tmpfs. A payload
+could drop a `git` there and own every later command in the sandbox, including
+whatever a human typed at the prompt. `sanitise` cannot reach it — that filter
+only inspects the **host's** value for an imported variable, never a `merge`
+entry written in a file — and `make gate` was green throughout. It was found by
+reading, which is why it now has both an integration test
+(`TestSnugStagesNoCommandInAWritableDirectory`) and this check.
+
+### 6h. A profile cannot author a mount through an environment value
+
+`--setenv NAME VALUE` is three elements of a flag list that snug NUL-joins into
+the args memfd, and bwrap's `--args` splits on NUL. `VALUE` is last in the
+triple, so a NUL inside it re-syncs bwrap's parser onto whatever follows. A raw
+NUL never gets this far — go-toml refuses control characters in a basic string —
+but the `\u0000` **escape** does, and produces the same byte. That spelling is
+what anyone re-testing needs.
+
+```bash
+mkdir -p $SC/cfg/snug/profiles.d
+printf '%s\n' '[profile.nully]' 'description = "harmless-looking"' \
+  '[profile.nully.environ.set]' \
+  'EDITOR = "vim\u0000--ro-bind\u0000'$HOME'/.ssh\u0000'$HOME'/.ssh"' \
+  > $SC/cfg/snug/profiles.d/nully.toml
+
+XDG_CONFIG_HOME=$SC/cfg ./bin/snug -p nully $SC/proj/sub -- ls $HOME/.ssh
+XDG_CONFIG_HOME=$SC/cfg ./bin/snug --dry-run -p nully $SC/proj/sub
+```
+
+Expect **both** to refuse, naming the NUL, the profile, the verb and the
+variable — and no sandbox to start. Before the fix the first command listed the
+host's ssh keys, `--dry-run` printed `~/.ssh` under **NOT GRANTED**, and the
+FILESYSTEM block showed no such mount: there was no `Mount`, so `Validate`,
+`rejectMasking` and the provenance model were all blind to it. The same shape
+with `--tmpfs` masked `@sys`'s `ro /usr` — a *profile* expressing subtraction,
+which invariant 1 calls structurally impossible.
+
+Then the control, which is what makes the above mean anything — the identical
+profile with `EDITOR = "vim"` must run, put `EDITOR=vim` in the sandbox, and
+still not have `~/.ssh`.
+
+### 6i. A profile cannot mount over the staging directory
+
+`/run/snug/bin` is unwritable because it is a plain directory on the root tmpfs
+and `--remount-ro /` covers it. A mount there is a *separate* mount, which that
+remount does not cover — and snug then puts the now-writable directory first on
+`PATH` itself, in its own `(snug)` provenance, without the profile ever naming
+`PATH`.
+
+```bash
+printf '%s\n' '[profile.stagey]' 'description = "stage a tool"' \
+  'tmpfs = ["/run/snug/bin"]' 'ro    = ["/etc/hostname:/run/snug/bin/mytool"]' \
+  > $SC/cfg/snug/profiles.d/stagey.toml
+
+XDG_CONFIG_HOME=$SC/cfg ./bin/snug -p stagey $SC/proj/sub -- \
+  sh -c 'echo "#!/bin/sh" > /run/snug/bin/git && echo WROTE-A-COMMAND-INTO-PATH'
+```
+
+Expect a refusal naming `/run/snug/bin` and the profile. Before the fix: the
+sandbox started, the write succeeded, and the shadowed `git` ran. The `rw`-bind
+spelling was worse — the shadowed command persisted to the host directory.
+
+Drop the `tmpfs` line and re-run: staging one file *inside* the directory is the
+legitimate shape (`@claude` does it on every run), so that must still work, with
+`/run/snug/bin` first on `PATH` and the write still refused.
+
+### 6j. All five verbs at once, and the payload agrees with the screen
+
+One profile using every verb, so the bands can be read against each other rather
+than one at a time:
+
+```bash
+mkdir -p $SC/five/snug/profiles.d $SC/tools/bin $SC/tools/override
+cat > $SC/five/snug/profiles.d/mytools.toml <<EOF
+[profile.mytools]
+description = "five verbs at once"
+ro = ["$SC/tools/bin", "$SC/tools/override"]
+
+[profile.mytools.environ.set]
+EDITOR = "/usr/bin/vim"
+
+[profile.mytools.environ.merge]
+PATH = ["$SC/tools/bin"]
+
+[profile.mytools.environ.prepend]
+PATH = ["$SC/tools/override"]
+
+[profile.mytools.environ.inherit]
+COLORTERM = true
+
+[profile.mytools.environ.sanitise]
+PKG_CONFIG_PATH = true
+EOF
+
+COLORTERM=truecolor PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/tmp/nope/pc \
+XDG_CONFIG_HOME=$SC/five ./bin/snug --dry-run -p mytools $SC/proj/sub \
+  | sed -n '/^ENVIRONMENT/,/^$/p'
+```
+
+```
+  COLORTERM        truecolor                       inherit   mytools
+  EDITOR           /usr/bin/vim                    set       mytools
+  PATH             /tmp/tmp.XXXXXXXXXX/tools/override prepend   mytools
+                   /tmp/tmp.XXXXXXXXXX/tools/bin   merge     mytools
+                   /usr/bin /bin /usr/sbin /sbin   (snug)    base
+  PKG_CONFIG_PATH  /usr/lib64/pkgconfig            sanitise  mytools
+                   (1 host entry dropped — only an empty writable tmpfs is mounted there: /tmp/nope/pc)
+```
+
+Every line names its verb **and** its profile — no anonymous values — and
+`prepend` sits ahead of `merge`, both ahead of `base`.
+
+The screen agreeing with itself proves nothing. Put two different binaries of
+the same name in the two directories and see which one the sandbox runs:
+
+```bash
+printf '#!/bin/sh\necho FAKE-TOOL-FROM-OVERRIDE\n' > $SC/tools/override/mytool
+printf '#!/bin/sh\necho FAKE-TOOL-FROM-BIN\n'      > $SC/tools/bin/mytool
+chmod +x $SC/tools/override/mytool $SC/tools/bin/mytool
+
+COLORTERM=truecolor XDG_CONFIG_HOME=$SC/five ./bin/snug -p mytools $SC/proj/sub -- mytool
+```
+
+Expect `FAKE-TOOL-FROM-OVERRIDE`. `prepend` won, and the name resolved against
+the sandbox's `PATH` rather than the host's — the property `snug . -- podman`
+depends on.
+
+### 6k. A host variable set to empty arrives set
+
+```bash
+mkdir -p $SC/nc/snug/profiles.d
+printf '[profile.nc]\n\n[profile.nc.environ.inherit]\nNO_COLOR = true\n' \
+  > $SC/nc/snug/profiles.d/nc.toml
+
+NO_COLOR= XDG_CONFIG_HOME=$SC/nc ./bin/snug -p nc $SC/proj/sub -- sh -c 'env | grep -c "^NO_COLOR="'
+         XDG_CONFIG_HOME=$SC/nc ./bin/snug -p nc $SC/proj/sub -- sh -c 'env | grep -c "^NO_COLOR=" || true'
+```
+
+Expect `1` then `0`: host-set-to-empty arrives set-to-empty, host-unset does not
+arrive at all. `NO_COLOR` is specified as "set to **any** value, including
+empty", so treating empty as absent silently re-enabled colour — and the same
+shape holds for `CI`, `DEBUG` and every other flag variable. The check is worth
+running because both the bug and the fix print nothing on any other screen.
+
+### 6l. The refusals fire at parse time, one file at a time
+
+These need no sandbox and no privileges — the file is rejected as it is read.
+Give each profile its **own** config dir: a file that fails to parse takes its
+own file down, and any later command that runs a sandbox is then fatal, which
+would mask the next case.
+
+```bash
+one() {  # one <name> <toml-body>
+  D=$SC/one; rm -rf $D; mkdir -p $D/snug/profiles.d
+  printf '%s' "$2" > $D/snug/profiles.d/$1.toml
+  XDG_CONFIG_HOME=$D ./bin/snug --dry-run -p $1 $SC/proj/sub 2>&1 | head -4
+}
+
+one c '[profile.c]
+
+[profile.c.environ.set]
+PATH = "/evil"
+'
+one d '[profile.d]
+
+[profile.d.environ.set]
+GIT_SSH = "/tmp/x"
+'
+one e '[profile.e]
+
+[profile.e.environ.merge]
+PATH = ["/opt/nowhere/bin"]
+'
+```
+
+The first two are file-load failures, so each is reported under
+`snug: 1 profile file(s) in the search path did not load:` with the file named
+and then the reason:
+
+```
+profile "c": environ.set on PATH, which is a list — use environ.merge, or
+  environ.prepend if the order matters. …
+profile "d": environ.set names GIT_SSH, which snug refuses for this verb: the
+  value is code, executed by every process the sandbox launches. Remove the line
+```
+
+The third parses fine and fails at resolution, so it is snug's own error with no
+file preamble: `profile "e" merges PATH=/opt/nowhere/bin, which it does not
+grant.` That is the grant-coupling rule, and the mistake most people make first.
+
+Worth trying by hand, because these are the boundaries most likely to be wrong:
+
+- `TERM`, `HOME`, `SNUG_PROFILES` under `environ.set` — refused, snug owns them;
+- `GIT_SSH_COMMAND`, `GIT_ASKPASS`, `GIT_PAGER`, `GIT_DIR`, `GIT_TEMPLATE_DIR`,
+  `LD_PRELOAD`, `JAVA_TOOL_OPTIONS`, `RUBYOPT` — refused for the same reason;
+- `BASH_ENV` under `set` — **allowed** (a reviewable value in a trusted layer);
+  under `inherit` — refused. That split is deliberate, and is the one to decide
+  whether you agree with;
+- a lowercase name, a name with a hyphen, a name starting with a digit —
+  refused by the grammar.
+
+What that list does **not** close is git's exec class as a whole: `PAGER`,
+`EDITOR` and `VISUAL` stay legal by ENVIRONMENT-VARIABLES §3.2 and git falls
+back to them, so `PAGER='sh -c …' git log` runs the command. `TODO.md` carries
+it, and a test pins it so withdrawing those three has to be a deliberate §3.2
+decision rather than a table edit.
 
 ### 6b. …including via PID 1 (regression check)
 
@@ -221,8 +643,9 @@ Expect `host sees it: 200`, then `lo:` as the only interface, then
 `host loopback: refused`. The sandbox's `127.0.0.1` is its own loopback, a
 different one from the host's.
 
-M0 is offline by design — there is no egress either. That is not a bug; it is
-the floor, and networking arrives as an explicit profile in M2.
+A sandbox with no `@net` is offline by design — there is no egress either. That
+is not a bug; it is the floor, and egress arrives only by naming `@net` (§9d is
+the one interim exception, and it says so on the screen).
 
 ## 8. Profile order is irrelevant
 
@@ -235,6 +658,82 @@ B=$(./bin/snug --dry-run -p @parent-ro -p @cwd-rw -p @sys $SC/proj/sub | sed -n 
 Expect `identical: ok`. Order-dependence would mean the sandbox you get depends
 on how you typed the command, and "profiles only relax" would stop being
 checkable.
+
+## 8b. Disagreements are fatal, and name every claimant in a stable order
+
+Two profiles, one scalar, two values:
+
+```bash
+mkdir -p $SC/ab/snug/profiles.d
+printf '[profile.a]\n\n[profile.a.environ.set]\nEDITOR = "/usr/bin/vim"\n'  > $SC/ab/snug/profiles.d/a.toml
+printf '[profile.b]\n\n[profile.b.environ.set]\nEDITOR = "/usr/bin/nano"\n' > $SC/ab/snug/profiles.d/b.toml
+
+XDG_CONFIG_HOME=$SC/ab ./bin/snug --dry-run -p a -p b $SC/proj/sub; echo "exit=$?"
+XDG_CONFIG_HOME=$SC/ab ./bin/snug --dry-run -p b -p a $SC/proj/sub; echo "exit=$?"
+```
+
+```
+snug: profiles a and b disagree about EDITOR:
+         b (environ.set) says "/usr/bin/nano"
+         a (environ.set) says "/usr/bin/vim"
+       A scalar has one value and snug will not choose: …
+exit=77
+```
+
+**The two runs must print the same bytes.** The claimants are sorted, not
+fold-ordered; if `-p b -p a` names them differently, resolution is not
+commutative and that is a model bug rather than a cosmetic one — §8 with the
+environment attached.
+
+Same shape for the slot only one profile may hold:
+
+```bash
+mkdir -p $SC/pq/snug/profiles.d
+printf '[profile.p]\nro = ["/usr/share"]\n\n[profile.p.environ.prepend]\nPATH = ["/usr/share"]\n' > $SC/pq/snug/profiles.d/p.toml
+printf '[profile.q]\nro = ["/usr/lib"]\n\n[profile.q.environ.prepend]\nPATH = ["/usr/lib"]\n'     > $SC/pq/snug/profiles.d/q.toml
+
+XDG_CONFIG_HOME=$SC/pq ./bin/snug --dry-run -p p -p q $SC/proj/sub
+```
+
+```
+snug: profiles p and q prepend to PATH, and they do not agree:
+         q wants ["/usr/lib"]
+         p wants ["/usr/share"]
+```
+
+The quoting is load-bearing, not decoration: agreement is over the whole ordered
+sequence, and an element may contain a space, so `/opt/a /opt/b` on one line
+could be two elements or one. Keying that comparison on a space-join made two
+different sequences compare equal and silently deleted one profile's entry —
+`["/opt/a" "/opt/b"]` versus `["/opt/a b"]` is the distinction being drawn.
+
+Note both profiles here **grant** what they prepend. Drop either `ro =` line and
+the coupling error from §6l fires first instead.
+
+## 8c. A file that does not parse degrades diagnostics, never a sandbox
+
+```bash
+mkdir -p $SC/bad/snug/profiles.d
+printf '[profile.oops]\nnosuchkey = 1\n' > $SC/bad/snug/profiles.d/oops.toml
+
+XDG_CONFIG_HOME=$SC/bad ./bin/snug profile list;         echo "exit=$?"
+XDG_CONFIG_HOME=$SC/bad ./bin/snug $SC/proj/sub -- true; echo "exit=$?"
+XDG_CONFIG_HOME=$SC/bad ./bin/snug --dry-run -p oops $SC/proj/sub
+```
+
+`profile list` prints the diagnostic on stderr — with the offending line and a
+`~~~~ unknown field` caret — **and the builtins on stdout**, then exits 77.
+Running a sandbox refuses outright with the same code, and so does `--dry-run`.
+
+That split is the design: **diagnostics degrade, sandboxes do not.** A sandbox
+built from whatever happened to load is a guess about its own boundary. Note
+that `profile list` exits 77 despite producing useful output, which is
+deliberate for scripts.
+
+Check the last command's wording specifically: asking for `-p oops` must say the
+file defining it failed to parse, **never** "unknown profile". The second
+message would send someone to fix a typo in their command line while the real
+grant sat unloaded — a silent downgrade wearing a helpful error's clothes.
 
 ## 9. A profile cannot take anything away
 
@@ -452,10 +951,27 @@ when snug is SIGKILLed and cannot clean up after itself.
 
 ## What this checklist does not cover
 
-M0 is filesystem isolation, offline. Deliberately absent, so do not read their
-absence as a failure: seccomp, networking (pasta), the ssh-agent proxy,
-containers, GUI sockets. Each is a hole, each arrives with its own profile, and
-each gets attacked by the `redteam` agent before it lands.
+Deliberately absent, so do not read their absence as a failure: GUI, audio and
+D-Bus passthrough. No profile ships for them and none is planned — the private
+netns excludes them by construction, which is a property to keep rather than a
+gap to close.
 
 It also does not cover the threats snug does not defend against at all: kernel
 0-days, and a determined human attacker with a shell. See INDEX §1.2.
+
+## Where the reasoning is thinnest
+
+Not checks — the places to push on if you are reviewing rather than verifying.
+
+1. **`sanitise` is off by default and no shipped profile uses it.** Every check
+   above that exercises it writes a throwaway profile first. Decide whether that
+   bound is doing real work or is only how things happen to be today.
+2. **The `--dry-run` marks and the `sanitise` filter answer different
+   questions.** A `PATH` entry can be shown without a `← not granted` mark and
+   still be dropped, and one can be kept and marked `← writable from inside`.
+   That is argued in the code and in §6e2, and it is the sort of subtlety that
+   reads as a bug at 11pm.
+3. **A refusal that is later relaxed must not silently restore a false
+   sentence.** §6i's arrangement is refused at `Validate`, so the branch that
+   prints the opposite in `--dry-run` should be unreachable. It is kept anyway,
+   for exactly the case where someone narrows the refusal.

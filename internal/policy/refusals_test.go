@@ -392,6 +392,135 @@ func TestPostStagingValidateCatchesNestedGrant(t *testing.T) {
 	}
 }
 
+// refusalForbiddenEnvUnsetOnHost: §4.4. A profile naming a code-injection
+// variable is refused whether or not the launching host has that variable set.
+// Before, the check sat inside the presence guard, so the verdict on a PROFILE
+// depended on the environment of whoever ran snug — accepted here, refused
+// there, with nothing in either message explaining the difference.
+func refusalForbiddenEnvUnsetOnHost(t testing.TB) error {
+	reg := testRegistry()
+	reg["bad"] = &Profile{Name: "bad", Environ: EnvGrants{Inherit: []string{"LD_PRELOAD"}}}
+	env := newFakeEnv() // deliberately WITHOUT LD_PRELOAD set
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "bad"}, testCtx(), env)
+	return err
+}
+
+// ── the environment: the parse-time rules ────────────────────────────────────
+//
+// Every case below is a property of the profile TEXT, so the verdict is the
+// same on every host. That is the point of checking here rather than in
+// Resolve: §4.4's defect was a refusal that depended on the environment of
+// whoever launched snug, and it is adopted as a design in the other direction.
+
+func refusalEnv(g EnvGrants) func(testing.TB) error {
+	return func(testing.TB) error { return ValidateEnvGrants(g) }
+}
+
+// ── the environment: the resolve-time conflicts ──────────────────────────────
+//
+// A single-valued slot with two different claims is a symmetric error naming
+// EVERY claimant, checked after the fold completes so there is no fold order
+// left to keep order-independent.
+
+// refusalTwoPrepends: §2.7 case 1. Only one profile may hold the front of a
+// variable, and two wanting it is a genuine disagreement.
+func refusalTwoPrepends(t testing.TB) error {
+	reg := testRegistry()
+	reg["mytools"] = &Profile{Name: "mytools", RO: []string{"/opt/bin"}, Environ: EnvGrants{
+		Prepend: map[string][]string{"PATH": {"/opt/bin"}}}}
+	reg["othertools"] = &Profile{Name: "othertools", RO: []string{"/srv/bin"}, Environ: EnvGrants{
+		Prepend: map[string][]string{"PATH": {"/srv/bin"}}}}
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "mytools", "othertools"}, testCtx(), newFakeEnv())
+	return err
+}
+
+// refusalPrependOrder: the same directories, different order. Equality is over
+// the whole ordered sequence, because the order is the entire content of the
+// claim.
+func refusalPrependOrder(t testing.TB) error {
+	reg := testRegistry()
+	reg["ordera"] = &Profile{Name: "ordera", RO: []string{"/opt/a", "/opt/b"}, Environ: EnvGrants{
+		Prepend: map[string][]string{"PATH": {"/opt/a", "/opt/b"}}}}
+	reg["orderb"] = &Profile{Name: "orderb", RO: []string{"/opt/a", "/opt/b"}, Environ: EnvGrants{
+		Prepend: map[string][]string{"PATH": {"/opt/b", "/opt/a"}}}}
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "ordera", "orderb"}, testCtx(), newFakeEnv())
+	return err
+}
+
+// refusalTwoSets: §2.7 case 2. Three profiles, two of which AGREE — the shape
+// today's scalar conflicts get wrong, naming the alphabetically-last agreeing
+// profile and never mentioning the first.
+func refusalTwoSets(t testing.TB) error {
+	reg := testRegistry()
+	reg["seta"] = &Profile{Name: "seta", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "vim"}}}
+	reg["setb"] = &Profile{Name: "setb", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "emacs"}}}
+	reg["setc"] = &Profile{Name: "setc", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "vim"}}}
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "seta", "setb", "setc"}, testCtx(), newFakeEnv())
+	return err
+}
+
+// refusalSetVsInherit: CALL 2. `set` and `inherit` on one scalar are one slot.
+// "set beats inherit" would be a priority field wearing a verb's clothes.
+func refusalSetVsInherit(t testing.TB) error {
+	reg := testRegistry()
+	reg["emacsy"] = &Profile{Name: "emacsy", Environ: EnvGrants{
+		Set: map[string]string{"EDITOR": "emacs"}}}
+	// `envy` inherits EDITOR, and the fake host has EDITOR=vim.
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "emacsy", "envy"}, testCtx(), newFakeEnv())
+	return err
+}
+
+// ── the environment: the grant-coupling rule (§2.5, §2.7 case 4) ─────────────
+//
+// Resolve-time rather than parse-time, because it needs {target} and {home}
+// expanded — but still over profile TEXT, so the verdict is the same on every
+// host. Read envcoupling.go before citing any of these as a boundary: they stop
+// a profile lying, not a profile reaching.
+
+// refusalUncoupledSet is §2.7 case 4 verbatim: the profile grants .config and
+// names .local/share.
+func refusalUncoupledSet(t testing.TB) error {
+	reg := testRegistry()
+	reg["broken"] = &Profile{Name: "broken", Tmpfs: []string{"{home}/.config"}, Environ: EnvGrants{
+		Set: map[string]string{"XDG_DATA_HOME": "{home}/.local/share"}}}
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "broken"}, testCtx(), newFakeEnv())
+	return err
+}
+
+// refusalUncoupledMerge: the live bug §4.6(c) records — `/nonexistent/bin` on
+// PATH, accepted in silence, measured on main.
+func refusalUncoupledMerge(t testing.TB) error {
+	reg := testRegistry()
+	reg["tpath"] = &Profile{Name: "tpath", Environ: EnvGrants{
+		Merge: map[string][]string{"PATH": {"/nonexistent/bin"}}}}
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "tpath"}, testCtx(), newFakeEnv())
+	return err
+}
+
+// refusalUncoupledDespiteAnotherProfile: the verdict is a property of the
+// profile's own text plus its include closure, and NOT of what else was
+// selected — otherwise adding a profile would change another profile's
+// legality. See TestCouplingVerdictDoesNotDependOnTheSelectedSet.
+func refusalUncoupledDespiteAnotherProfile(t testing.TB) error {
+	reg := testRegistry()
+	reg["namer"] = &Profile{Name: "namer", Environ: EnvGrants{
+		Merge: map[string][]string{"PATH": {"/opt/tools/bin"}}}}
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "namer", "envy"}, testCtx(), newFakeEnv())
+	return err
+}
+
+// refusalRelativeSet: a relative path in a path-valued scalar. It is refused by
+// the coupling check reaching the one function that owns this message, which is
+// also the only way a relative `set` is refused at all — checkAbsoluteElement is
+// called from the list verbs alone.
+func refusalRelativeSet(t testing.TB) error {
+	reg := testRegistry()
+	reg["rel"] = &Profile{Name: "rel", Environ: EnvGrants{
+		Set: map[string]string{"CARGO_HOME": "cargo"}}}
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "rel"}, testCtx(), newFakeEnv())
+	return err
+}
+
 // ── the review artifact ──────────────────────────────────────────────────────
 
 // TestGoldenRefusals pins the EXACT text of every refusal above. This change
@@ -419,6 +548,49 @@ func TestGoldenRefusals(t *testing.T) {
 		{"scalar_conflict_gateway", func(t testing.TB) error { return refusalScalarConflict(t, "gateway") }},
 		{"scalar_conflict_mtu", func(t testing.TB) error { return refusalScalarConflict(t, "mtu") }},
 		{"poststaging_nested_grant_under_later_replace", refusalNestedGrantUnderLaterReplace},
+		{"forbidden_env_unset_on_host", refusalForbiddenEnvUnsetOnHost},
+
+		// the name grammar (§2.3): name ::= [A-Za-z_][A-Za-z0-9_]*
+		{"env_name_empty", refusalEnv(EnvGrants{Set: map[string]string{"": "x"}})},
+		{"env_name_equals", refusalEnv(EnvGrants{Set: map[string]string{"PATH=/evil:": "x"}})},
+		{"env_name_nul", refusalEnv(EnvGrants{Set: map[string]string{"EDIT\x00OR": "x"}})},
+		{"env_name_newline", refusalEnv(EnvGrants{Set: map[string]string{"EDITOR\nPS1": "x"}})},
+		{"env_name_leading_digit", refusalEnv(EnvGrants{Set: map[string]string{"1PATH": "x"}})},
+		{"env_name_bad_character", refusalEnv(EnvGrants{Set: map[string]string{"MY-VAR": "x"}})},
+		{"env_name_snug_owned", refusalEnv(EnvGrants{Set: map[string]string{"SNUG_PROFILES": "@sys"}})},
+		{"env_name_snug_owned_ps1", refusalEnv(EnvGrants{Inherit: []string{"PS1"}})},
+		{"env_name_forbidden_both", refusalEnv(EnvGrants{Set: map[string]string{"GIT_SSH_COMMAND": "x"}})},
+		{"env_name_forbidden_prefix_both", refusalEnv(EnvGrants{Set: map[string]string{"BASH_FUNC_build": "x"}})},
+		{"env_name_forbidden_prefix_git_config", refusalEnv(EnvGrants{Set: map[string]string{"GIT_CONFIG_COUNT": "1"}})},
+		{"env_name_forbidden_prefix_inherit_only", refusalEnv(EnvGrants{Inherit: []string{"PIP_INDEX_URL"}})},
+		{"env_name_forbidden_inherit_only", refusalEnv(EnvGrants{Inherit: []string{"BASH_ENV"}})},
+
+		// verb/type agreement (§2.1)
+		{"env_set_on_a_list", refusalEnv(EnvGrants{Set: map[string]string{"PATH": "/opt/bin"}})},
+		{"env_merge_on_a_scalar", refusalEnv(EnvGrants{Merge: map[string][]string{"EDITOR": {"vim"}}})},
+		{"env_merge_on_an_uncomposable_list", refusalEnv(EnvGrants{Merge: map[string][]string{"CDPATH": {"/opt"}}})},
+		{"env_inherit_on_a_list", refusalEnv(EnvGrants{Inherit: []string{"PKG_CONFIG_PATH"}})},
+		{"env_inherit_on_a_generated_config_path", refusalEnv(EnvGrants{Inherit: []string{"XDG_CONFIG_HOME"}})},
+		{"env_sanitise_on_a_scalar", refusalEnv(EnvGrants{Sanitise: []string{"EDITOR"}})},
+		{"env_sanitise_on_manpath", refusalEnv(EnvGrants{Sanitise: []string{"MANPATH"}})},
+		{"env_sanitise_on_an_unfilterable_list", refusalEnv(EnvGrants{Sanitise: []string{"PYTHONPATH"}})},
+
+		// hand-written separators (CALL 1 / §2.7 case 3)
+		{"env_separator_in_a_merge_string", refusalEnv(EnvGrants{Merge: map[string][]string{"PATH": {"/usr/bin:/usr/sbin"}}})},
+		{"env_separator_in_a_prepend_element", refusalEnv(EnvGrants{Prepend: map[string][]string{"PATH": {"/opt/bin", "/a:/b"}}})},
+
+		// single-valued slots with more than one claim (§2.7 cases 1 and 2,
+		// CALL 2)
+		// the grant-coupling rule (§2.5 / §2.7 case 4)
+		{"env_uncoupled_set", refusalUncoupledSet},
+		{"env_uncoupled_merge", refusalUncoupledMerge},
+		{"env_uncoupled_despite_another_profile_granting_it", refusalUncoupledDespiteAnotherProfile},
+		{"env_relative_set", refusalRelativeSet},
+
+		{"env_two_prepends", refusalTwoPrepends},
+		{"env_prepend_order_disagreement", refusalPrependOrder},
+		{"env_two_sets_disagree", refusalTwoSets},
+		{"env_set_disagrees_with_inherit", refusalSetVsInherit},
 	}
 
 	var b strings.Builder
