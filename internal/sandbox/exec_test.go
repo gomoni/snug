@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -66,5 +67,40 @@ func TestNonDirectoryStdioIsUntouched(t *testing.T) {
 	}
 	if stdout != os.Stdout || stderr != os.Stderr {
 		t.Error("stdout/stderr were replaced without cause")
+	}
+}
+
+// nulJoin owns the separator, so it is the one place that can say no element may
+// contain it — and it is the last point at which the whole bwrap argv exists as
+// Go values, so the check holds for every flag whatever authored it.
+//
+// The reachable case was an environ value: `--setenv NAME VALUE` is three
+// elements, the list is NUL-joined into the args memfd, and bwrap's --args splits
+// on NUL, so a NUL inside VALUE re-synced the parser onto the remainder and
+// mounted a host directory that no Mount, no Validate pass and no --dry-run line
+// ever knew about. checkEnvValue refuses that at parse time, where the error can
+// name the profile; this is the backstop for every other writer.
+func TestNulJoinRefusesAnElementContainingTheSeparator(t *testing.T) {
+	// The positive control first: the ordinary argv must still join, or the
+	// refusal below is indistinguishable from a function that always errors.
+	got, err := nulJoin([]string{"--ro-bind", "/usr", "/usr"})
+	if err != nil {
+		t.Fatalf("nulJoin refused an ordinary flag list: %v", err)
+	}
+	if string(got) != "--ro-bind\x00/usr\x00/usr\x00" {
+		t.Errorf("nulJoin produced %q; --args reads a NUL-TERMINATED list, so every element "+
+			"including the last one carries a trailing separator", got)
+	}
+
+	if _, err := nulJoin([]string{"--setenv", "EDITOR", "vim\x00--ro-bind\x00/etc\x00/etc"}); err == nil {
+		t.Error("nulJoin accepted a value containing a NUL. bwrap would read everything after " +
+			"it as further flags — a mount the policy model never saw and --dry-run never " +
+			"printed")
+	}
+	// The index is in the message because a failure here is a bug hunt, and
+	// "which flag" is the first question.
+	_, err = nulJoin([]string{"--dev", "/dev", "x\x00y"})
+	if err == nil || !strings.Contains(err.Error(), "flag 2") {
+		t.Errorf("want the offending element's index in the error, got %v", err)
 	}
 }

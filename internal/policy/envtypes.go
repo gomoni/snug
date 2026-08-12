@@ -151,6 +151,20 @@ var envTypes = map[string]envType{
 }
 
 // typeOf returns what snug knows about a name. An unknown name is a scalar.
+// IsEnvList reports whether snug treats this name as a LIST — several elements
+// joined by a separator — rather than as one scalar value.
+//
+// Exported for the renderer, which needs it to know whether the space in a value
+// is part of the value or a gap between two of them. That is not a cosmetic
+// question: a list element containing a space renders identically to two
+// elements, and the same ambiguity in checkPrependAgreement's key silently
+// deleted a profile's entry (seqKey). A scalar has no such reading — PS1 is
+// mostly spaces — so the renderer must not quote one.
+//
+// It answers from the same table typeOf reads, because a second opinion about
+// what a name IS is how the screen and the resolver come to disagree.
+func IsEnvList(name string) bool { return typeOf(name).list }
+
 func typeOf(name string) envType {
 	if t, ok := envTypes[name]; ok {
 		return t
@@ -183,6 +197,23 @@ const (
 // refused by ownership, which is the stronger statement. Adding a prefix rule
 // for either would let a name pass the ownership check and be caught by a weaker
 // mechanism instead.
+//
+// WHAT THIS LIST DOES NOT CLOSE, stated here because reading it as a class
+// closure is the mistake it invites. EDITOR, VISUAL and PAGER are legal at
+// `set` and at `inherit` by §3.2's decision, and @claude inherits all three. git
+// falls back GIT_EDITOR -> core.editor -> VISUAL -> EDITOR, and GIT_PAGER ->
+// core.pager -> PAGER, both measured. So the GIT_EDITOR and GIT_PAGER entries
+// below do not make git unhijackable by a profile — a profile that wanted to
+// would write the generic spelling.
+//
+// They are still worth having, and the reason is not defence in depth, it is
+// that the two spellings differ in who they surprise. A profile setting EDITOR
+// is doing a legible thing to a variable a human recognises; the GIT_* names are
+// invisible in every screen a human reads and fire during operations nobody
+// thinks of as running a command. Refusing the invisible half is not the same as
+// closing the class, and the day someone decides the generic three must go too,
+// it is a §3.2 decision — a grant being withdrawn from every profile that
+// inherits them — not an addition to this table. Carried in TODO.md.
 var forbiddenEnv = map[string]forbidKind{
 	// the value is code, at any verb — §4.4 plus ld.so(8)'s own secure-execution
 	// list, which is the closest thing to an authoritative denylist that exists
@@ -210,6 +241,29 @@ var forbiddenEnv = map[string]forbidKind{
 	"GIT_SSH": forbidBoth, "GIT_PROXY_COMMAND": forbidBoth,
 	"GIT_ASKPASS": forbidBoth, "SSH_ASKPASS": forbidBoth,
 	"GIT_SEQUENCE_EDITOR": forbidBoth,
+	// Found missing by an independent review, and each measured on git 2.55
+	// before being added here rather than reasoned about:
+	//
+	//   GIT_PAGER="sh -c 'echo HIJACK; cat >/dev/null'" git log   -> HIJACK
+	//
+	// GIT_TEMPLATE_DIR and GIT_DIR are the same power one indirection out: the
+	// value is a DIRECTORY, and the hooks in it are code. A template dir installs
+	// its hooks into every repository `git clone` and `git init` create
+	// afterwards (measured: post-checkout fired on the clone), and GIT_DIR points
+	// git at a repository whose hooks run on the next commit (measured). They
+	// belong here rather than in the path-coupling rule, because granting the
+	// path is not what makes them safe — nothing does.
+	"GIT_PAGER": forbidBoth, "GIT_TEMPLATE_DIR": forbidBoth, "GIT_DIR": forbidBoth,
+	// A different shape again, and the reason the rule is "the value is code"
+	// rather than "the value is a command": these two carry no code at all. They
+	// switch OFF git's own refusal to use the ext:: transport, which runs an
+	// arbitrary command as the transport. Measured, with the control:
+	//
+	//   GIT_ALLOW_PROTOCOL=ext git ls-remote "ext::sh -c '…'"   -> ran
+	//                           git ls-remote "ext::sh -c '…'"   -> refused
+	//
+	// A name that re-enables an exec path is the exec path.
+	"GIT_ALLOW_PROTOCOL": forbidBoth, "GIT_PROTOCOL_FROM_USER": forbidBoth,
 	// Same class, different runtime: each is a flag string the runtime parses
 	// before main(), and each can load code from a path.
 	"JAVA_TOOL_OPTIONS": forbidBoth, "_JAVA_OPTIONS": forbidBoth,
@@ -458,6 +512,65 @@ func checkEnvElement(name string, verb EnvVerb, value string) error {
 	return nil
 }
 
+// checkEnvValue refuses a control character in a value a PROFILE wrote.
+//
+// checkEnvName has refused NUL in a name since the beginning, with a reason
+// that applies verbatim to the value and was never applied there — and the gap
+// was not cosmetic. `--setenv NAME VALUE` is three elements of the flag list,
+// the whole list is NUL-joined into the args memfd, and bwrap's `--args` splits
+// it on NUL. VALUE is the last element of the triple, so a NUL inside it
+// re-syncs the parser cleanly on whatever follows:
+//
+//	EDITOR = "vim\\u0000--ro-bind\\u0000/home/u/.ssh\\u0000/home/u/.ssh"
+//
+// mounted ~/.ssh into the sandbox. Measured. `Validate`, `rejectMasking` and
+// the whole provenance model never saw that mount, because it was never a
+// Mount — and `--dry-run` printed one harmless `--setenv EDITOR vim` line while
+// listing ~/.ssh under NOT GRANTED. The same shape with `--tmpfs` masked
+// @sys's `ro /usr`: a PROFILE expressing subtraction, which invariant 1 calls
+// structurally impossible.
+//
+// Note the spelling: a RAW NUL byte never got this far, because go-toml refuses
+// control characters in a basic string. The `\\u0000` ESCAPE is accepted and
+// produces the same byte. Anyone re-testing this needs the escape.
+//
+// Why every C0 control and DEL, not just NUL. NUL is the one that authors a
+// mount, and on its own it would be enough to close the hole — but the other
+// controls author a LIE, which this project treats as the same class of defect
+// (§2.3, and the `--dry-run` block that `d2888b5` closed): a newline forges a
+// grant row in the FILESYSTEM block, and ESC rewrites the terminal so a line
+// vanishes from `snug profile show`. `visibleValue` escapes those where it is
+// called; refusing them at parse time means the rendering guard is a second
+// line of defence rather than the only one. No environment variable snug is in
+// the business of setting needs a control character in its value.
+//
+// The verdict is a property of the profile TEXT, so it is the same on every
+// host — which is why it belongs here and not in Resolve. It therefore does NOT
+// and CANNOT cover `inherit`/`sanitise`, whose values are the host's: those are
+// host-dependent, and by construction cannot contain a NUL (the environment
+// execve hands over is a NUL-terminated list). Their rendering is the
+// renderer's problem.
+func checkEnvValue(name string, verb EnvVerb, value string) error {
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if c >= 0x20 && c != 0x7f {
+			continue
+		}
+		what := fmt.Sprintf("%q", string(c))
+		if c == 0 {
+			return fmt.Errorf("environ.%s on %s has a value containing a NUL byte. The whole "+
+				"bwrap flag list is NUL-separated, so a NUL inside a value ENDS the value "+
+				"and everything after it is read as further flags — a mount snug's policy "+
+				"model never sees and --dry-run never prints. Remove it", verb, name)
+		}
+		return fmt.Errorf("environ.%s on %s has a value containing %s. Every screen a human "+
+			"reads to decide whether to trust a sandbox renders a value on one line; a "+
+			"control character forges rows in it or erases them from the terminal. "+
+			"Remove it", verb, name, what)
+	}
+	return nil
+}
+
 func splitHint(value, sep string) string {
 	parts := strings.Split(value, sep)
 	out := make([]string, 0, len(parts))
@@ -488,6 +601,9 @@ func ValidateEnvGrants(g EnvGrants) error {
 		if err := checkEnvEntry(name, VerbSet); err != nil {
 			return err
 		}
+		if err := checkEnvValue(name, VerbSet, g.Set[name]); err != nil {
+			return err
+		}
 		if err := checkEnvElement(name, VerbSet, g.Set[name]); err != nil {
 			return err
 		}
@@ -502,6 +618,9 @@ func ValidateEnvGrants(g EnvGrants) error {
 				return err
 			}
 			for _, v := range m[name] {
+				if err := checkEnvValue(name, verb, v); err != nil {
+					return err
+				}
 				if err := checkEnvElement(name, verb, v); err != nil {
 					return err
 				}
