@@ -90,6 +90,36 @@ func (p *Policy) Validate(env Environ) error {
 		if !filepath.IsAbs(g) || filepath.Clean(g) != g {
 			return fmt.Errorf("grant %q (from %s) is not an absolute clean path", g, provenance(m))
 		}
+		// A control character in a GUEST path is refused next to the clean-path
+		// check, because it is the same kind of rule — a property of the text —
+		// and because filepath.Clean does not touch one.
+		//
+		// The reason is the screen, not the kernel. --dry-run renders one grant
+		// per line in fixed columns, so a newline inside a guest path prints as
+		// TWO rows, and the second can be spelled to look like a grant nobody
+		// wrote:
+		//
+		//	tmpfs = ["/a\n  ro     /etc/shadow                          @sys"]
+		//
+		// The sandbox in that case really has one directory whose name contains a
+		// newline, and /etc/shadow is not mounted at all — the line is a lie about
+		// a policy, in the artifact CLAUDE.md calls the mechanism by which a human
+		// can trust snug. The renderer escapes these too; this refusal is what
+		// keeps a profile from putting one there in the first place.
+		//
+		// GUEST only. A HOST path is not snug's to refuse: a file on this machine
+		// may legally be named with a newline, and refusing to bind it would be
+		// snug inventing a rule about someone else's filesystem. The renderer
+		// handles that half.
+		if i := strings.IndexFunc(g, func(r rune) bool { return r < 0x20 || r == 0x7f }); i >= 0 {
+			return fmt.Errorf("grant %q (from %s) has a control character (%q) in its path INSIDE "+
+				"the sandbox.\n"+
+				"       Every line of `snug --dry-run` is one grant, so a path that spans two lines "+
+				"can forge\n"+
+				"       a row for a grant that does not exist. No mountpoint needs one; write the "+
+				"path you meant.",
+				g, provenance(m), string(g[i]))
+		}
 		// The root is snug's, whatever the kind. This used to refuse only a BIND
 		// at /, which left `tmpfs = ["/"]` accepted — and inert, but only by
 		// accident: nearestCovering stops before / and never returns it, so the

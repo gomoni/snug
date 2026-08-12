@@ -65,13 +65,25 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 		if m.Optional {
 			opt = " (optional)"
 		}
-		detail := m.Guest
+		// Escaped for the same reason the ENVIRONMENT block escapes values, and
+		// this block is the one where a forged line reads as a GRANT. A newline
+		// survives filepath.Clean, so a profile could write
+		//
+		//	tmpfs = ["/a\n  ro     /etc/shadow      @sys"]
+		//
+		// and get a correctly-columned row for a mount that does not exist —
+		// while the sandbox really had one directory whose name contained a
+		// newline. Validate now refuses a control character in a GUEST path
+		// outright, which closes the profile-written half; the escaping stays
+		// because a HOST path is not snug's to refuse (a real file may legally
+		// be named with a newline) and it still renders here.
+		detail := visibleValue(m.Guest)
 		if m.Kind == policy.KindSymlink {
-			detail = fmt.Sprintf("%s -> %s", m.Guest, m.Host)
+			detail = fmt.Sprintf("%s -> %s", visibleValue(m.Guest), visibleValue(m.Host))
 		} else if m.Kind == policy.KindBind && m.Host != m.Guest {
-			detail = fmt.Sprintf("%s (from %s)", m.Guest, m.Host)
+			detail = fmt.Sprintf("%s (from %s)", visibleValue(m.Guest), visibleValue(m.Host))
 		}
-		fmt.Fprintf(out, "  %-6s %-46s %s%s\n", kind, detail, strings.Join(m.From, "+"), opt)
+		fmt.Fprintf(out, "  %-6s %-46s %s%s\n", kind, detail, visibleValue(strings.Join(m.From, "+")), opt)
 	}
 	fmt.Fprintf(out, "  %-6s %s\n", "ro-/", "everything else is a read-only skeleton (--remount-ro /)")
 
@@ -629,7 +641,20 @@ func formatArgs(args []string) string {
 		} else {
 			b.WriteString(" ")
 		}
-		b.WriteString(a)
+		// visibleValue, for the same reason the ENVIRONMENT block uses it and
+		// with a sharper consequence: this block starts every element that
+		// begins with "--" on its own line, so a newline INSIDE an element is
+		// indistinguishable from the start of a new flag. A host EDITOR of
+		//
+		//	vim\n  --ro-bind /home/u/.ssh /home/u/.ssh
+		//
+		// rendered, through @claude's shipped `inherit EDITOR`, as a --ro-bind
+		// line in the argv block of a policy that has no such mount — no profile
+		// file required. The ENVIRONMENT block on the SAME screen escaped the
+		// same string correctly, which is exactly the failure mode its own
+		// comment warns about: a fix at one site looks identical to a fix at all
+		// of them.
+		b.WriteString(visibleValue(a))
 	}
 	return b.String()
 }

@@ -262,7 +262,10 @@ func profileCmd(args []string) int {
 			if strings.Contains(" "+def+" ", " "+n+" ") {
 				marker = "*"
 			}
-			fmt.Printf("%s %-16s %s\n", marker, n, p.Description)
+			// One line per profile here, unlike `show`, so the whole description
+			// is escaped: a newline in it would produce a second row on the one
+			// screen whose job is to say what profiles exist.
+			fmt.Printf("%s %-16s %s\n", marker, visibleValue(n), visibleValue(p.Description))
 		}
 		fmt.Println()
 		fmt.Printf("* = selected by a bare `snug <dir>`.  @ = shipped by snug, cannot be redefined.\n")
@@ -285,17 +288,37 @@ func profileCmd(args []string) int {
 		}
 		fmt.Printf("profile     %s\n", name)
 		if p.Description != "" {
-			fmt.Printf("            %s\n", strings.ReplaceAll(p.Description, "\n", "\n            "))
+			// A multi-line description is deliberate and stays multi-line, so
+			// this escapes each line rather than the whole string: newline is
+			// the one control character with a meaning here, and every other
+			// one — ESC above all — is a way to rewrite lines the reader has
+			// already been shown.
+			lines := strings.Split(p.Description, "\n")
+			for i, l := range lines {
+				lines[i] = visibleValue(l)
+			}
+			fmt.Printf("            %s\n", strings.Join(lines, "\n            "))
 		}
 		fmt.Printf("defined in  %s\n", p.Source)
 		fmt.Println()
+		// visibleValue on every value, in the closure rather than at each call
+		// site, so `includes`, `ro`, `rw`, `tmpfs`, `optional` and all five
+		// environ verbs are covered by one line and a new key cannot be added
+		// without it.
+		//
+		// This is the screen someone reads to decide WHETHER to select a profile,
+		// which puts it upstream of every --dry-run — and it rendered profile text
+		// verbatim. Measured in a real terminal: an environ.set value ending in
+		// ESC[1A CR overwrote the row above it, and `rw  /home/michal` — the whole
+		// of $HOME, writable — was simply not on the screen. `cat -v` showed it
+		// there all along.
 		show := func(label string, vals []string) {
 			for i, v := range vals {
 				head := ""
 				if i == 0 {
 					head = label
 				}
-				fmt.Printf("  %-16s %s\n", head, v)
+				fmt.Printf("  %-16s %s\n", head, visibleValue(v))
 			}
 		}
 		show("includes", p.Include)
@@ -308,10 +331,10 @@ func profileCmd(args []string) int {
 			if i == 0 {
 				head = "symlink"
 			}
-			fmt.Printf("  %-16s %s -> %s\n", head, s.At, s.Target)
+			fmt.Printf("  %-16s %s -> %s\n", head, visibleValue(s.At), visibleValue(s.Target))
 		}
 		if len(p.Optional) > 0 {
-			fmt.Printf("  %-16s %s\n", "optional", strings.Join(p.Optional, " "))
+			fmt.Printf("  %-16s %s\n", "optional", visibleValue(strings.Join(p.Optional, " ")))
 		}
 		fmt.Println()
 		fmt.Println("To see what this actually produces for a directory:")
