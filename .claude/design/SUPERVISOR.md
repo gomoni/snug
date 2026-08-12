@@ -209,7 +209,16 @@ these is a restriction bwrap applies that `setns` does not inherit:
 
 - the seccomp filter (`Seccomp: 0` on an attached process today — MEASURED);
 - the capability drop and `no_new_privs` (done in the PoC);
-- the environment (`snug` clears it; a joiner must too, and must not leak P1's);
+- the environment — and note this got harder, not easier, since this section was
+  written. `snug` no longer merely *clears* it: the `environ` verbs (`set`,
+  `merge`, `prepend`, `inherit`, `sanitise`) make the environment part of the
+  resolved policy, authored per variable by a named profile. So a joiner must
+  reproduce **the environment that policy computed for this sandbox**, not an
+  empty one, and must still not leak P1's. Clearing is now the wrong shape twice
+  over: it drops what the policy granted, and "we cleared it" stops being a
+  statement anyone can check against `--dry-run`, which prints one line per
+  variable naming its verb and its profile. The joiner should read the same
+  resolved policy, exactly as invariant 6 requires — one `Policy`, one author;
 - the cgroup, and the `Pdeathsig`/lifeline story for the attached process;
 - stdio: a real attach needs a pty, and §6 says where that lives.
 
