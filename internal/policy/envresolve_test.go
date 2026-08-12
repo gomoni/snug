@@ -632,6 +632,55 @@ func TestPrependOrderDisagreementIsRefused(t *testing.T) {
 	}
 }
 
+// Two prepends that differ ONLY in where the element boundaries fall are a
+// disagreement, and the key that decides must be able to see the difference.
+//
+// checkPrependAgreement keyed on `strings.Join(values, " ")`, directly under a
+// doc comment saying equality is over the whole ordered sequence. A space-join
+// is injective only if no element contains a space, and an absolute path may:
+//
+//	-p qtools              one element, "/srv/a /srv/b"
+//	-p ptools              two elements, "/srv/a" and "/srv/b"
+//	-p ptools -p qtools    keys equal -> "they agree" -> qtools' entry deleted,
+//	                       exit 0, nothing on the screen
+//
+// A profile removing what another profile put on PATH is the property this file
+// opens by promising. The effect here is a MISSING entry rather than an extra
+// one, so it is a tightening rather than an escalation — but a silent deletion
+// resting on a coincidence about spaces is not a thing to leave in place.
+func TestPrependsDifferingOnlyInElementBoundariesDisagree(t *testing.T) {
+	reg := testRegistry()
+	// ptools wants two elements; qtools wants ONE element that happens to
+	// contain a space — and /opt/a b is a real directory on the fake host, so
+	// both profiles grant every path they name and the coupling rule is happy.
+	reg["ptools"] = &Profile{Name: "ptools", RO: []string{"/opt/a", "/opt/b"},
+		Environ: EnvGrants{Prepend: map[string][]string{"PATH": {"/opt/a", "/opt/b"}}}}
+	reg["qtools"] = &Profile{Name: "qtools", RO: []string{"/opt/a b"},
+		Environ: EnvGrants{Prepend: map[string][]string{"PATH": {"/opt/a b"}}}}
+
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "ptools", "qtools"}, testCtx(), newFakeEnv())
+	if err == nil {
+		t.Fatal("two profiles prepending DIFFERENT sequences resolved silently: one wants two " +
+			"elements, the other wants one element containing a space. They cannot both be " +
+			"first, and one of them just lost an entry without a word")
+	}
+	// Commutative, like every other refusal here: the verdict may not depend on
+	// selection order, or the same pair passes review one way round and fails the
+	// other.
+	if _, err2 := Resolve(reg, []string{"@sys", "@cwd-rw", "qtools", "ptools"}, testCtx(), newFakeEnv()); err2 == nil {
+		t.Error("refused in one selection order and accepted in the other")
+	}
+
+	// POSITIVE CONTROL, and it is the whole point of the fix: the two spellings
+	// must still be distinguishable, so a profile prepending the one-element
+	// version ALONE is perfectly legal. A key that refused everything would pass
+	// the assertion above.
+	delete(reg, "ptools")
+	if _, err := Resolve(reg, []string{"@sys", "@cwd-rw", "qtools"}, testCtx(), newFakeEnv()); err != nil {
+		t.Errorf("one profile prepending a single element containing a space was refused: %v", err)
+	}
+}
+
 func TestConflictingScalarSetsAreRefused(t *testing.T) {
 	err := refusalTwoSets(t)
 	if err == nil {

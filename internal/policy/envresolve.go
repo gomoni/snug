@@ -553,14 +553,34 @@ func checkScalarAgreement(name string, claims []envClaim) error {
 // refusing that would refuse a non-conflict. Equality is over the WHOLE ORDERED
 // SEQUENCE after {var} expansion, so ["/a","/b"] against ["/b","/a"] is still a
 // disagreement about order and still fails.
+// seqKey renders an ordered sequence as a key that is injective — two different
+// sequences never produce the same string.
+//
+// The doc comment above says equality is over the whole ordered sequence, and
+// the code said `strings.Join(values, " ")`, which is only injective if no
+// element contains a space. An absolute path may. Measured, before this:
+//
+//	-p ptools              PATH gets /srv/a  then  /srv/b     (two elements)
+//	-p qtools              PATH gets "/srv/a /srv/b"          (ONE element, one space)
+//	-p ptools -p qtools    the two "agree" — one entry silently deleted, exit 0
+//
+// So a profile removed a directory another profile put on PATH, which is the
+// property stated at the top of this file as the reason merge and prepend are
+// unions. The effect is a MISSING entry rather than an extra one — a tightening,
+// and the two-profile arrangement needs a literal space inside an absolute path
+// — but a silent deletion is not something to leave keyed on a coincidence.
+//
+// %q of the slice is injective because it quotes and escapes each element
+// separately, and it reads well enough to put in the error message directly.
+func seqKey(values []string) string { return fmt.Sprintf("%q", values) }
+
 func checkPrependAgreement(name string, seqs []envSeq) error {
 	if len(seqs) < 2 {
 		return nil
 	}
 	distinct := map[string][]string{} // rendered sequence -> profiles
 	for _, s := range seqs {
-		key := strings.Join(s.values, " ")
-		distinct[key] = append(distinct[key], s.profile)
+		distinct[seqKey(s.values)] = append(distinct[seqKey(s.values)], s.profile)
 	}
 	if len(distinct) < 2 {
 		return nil

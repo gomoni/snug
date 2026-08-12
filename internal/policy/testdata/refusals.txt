@@ -184,16 +184,16 @@ profile "rel": environ.set CARGO_HOME entry "cargo" must be an absolute path: a 
 
 == env_two_prepends ==
 profiles mytools and othertools prepend to PATH, and they do not agree:
-         mytools wants /opt/bin
-         othertools wants /srv/bin
+         mytools wants ["/opt/bin"]
+         othertools wants ["/srv/bin"]
        Only one profile may hold the front of a variable. Use environ.merge in
        the ones that do not need to be first — a merged entry still beats every
        entry snug adds, so nothing is lost but the guarantee of being first.
 
 == env_prepend_order_disagreement ==
 profiles ordera and orderb prepend to PATH, and they do not agree:
-         ordera wants /opt/a /opt/b
-         orderb wants /opt/b /opt/a
+         ordera wants ["/opt/a" "/opt/b"]
+         orderb wants ["/opt/b" "/opt/a"]
        Only one profile may hold the front of a variable. Use environ.merge in
        the ones that do not need to be first — a merged entry still beats every
        entry snug adds, so nothing is lost but the guarantee of being first.

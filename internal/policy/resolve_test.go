@@ -45,6 +45,13 @@ func newFakeEnv() *fakeEnv {
 			"/opt/tools/bin": true, "/opt/first/bin": true, "/opt/bin": true,
 			"/opt/a": true, "/opt/b": true, "/opt/a/bin": true, "/opt/b/bin": true,
 			"/srv/bin": true,
+			// A directory whose NAME CONTAINS A SPACE. It is here so a fixture
+			// can grant one, which is what
+			// TestPrependsDifferingOnlyInElementBoundariesDisagree needs: the
+			// space-joined key it exists to catch is only wrong when an element
+			// legitimately contains a space, and the coupling rule refuses a
+			// prepend of a path the profile has not granted.
+			"/opt/a b": true,
 			// A bind nested inside @home's tmpfs, mirroring @claude's real shape —
 			// the sanitise-C fixtures (nested-bin) need this to exist so it can be
 			// GRANTED as well as named (§2.5's coupling rule).
@@ -1077,5 +1084,81 @@ func TestAUserProfileNamedNullBeatsTheRetiredTable(t *testing.T) {
 	if err := UnknownProfile(testRegistry(), "@null"); err == nil ||
 		!strings.Contains(err.Error(), "--no-defaults") {
 		t.Errorf("control: with no user profile named null, @null must still name the fix: %v", err)
+	}
+}
+
+// {variable} expansion is ONE PASS: substituted text is never re-scanned.
+//
+// The loop this replaced restarted the search over the whole result after each
+// substitution, so a value that expanded to text containing braces was expanded
+// again — and the values are paths the human running snug chose, not profile
+// text. A directory literally named `{home}` therefore resolved to a DIFFERENT
+// directory than the one on the command line, writable and persistent, while the
+// one the user named was read-only.
+func TestExpandVarsDoesNotRescanItsOwnOutput(t *testing.T) {
+	vars := map[string]string{
+		"home":   "/home/u",
+		"target": "/proj/{target}", // pathological on purpose: expands to itself
+		"brace":  "{home}",
+	}
+
+	cases := []struct{ in, want string }{
+		// The live case: a path COMPONENT that looks like a placeholder is
+		// literal text, because nothing in it was substituted.
+		// The double slash is expansion's long-standing behaviour — {home} is
+		// itself absolute — and splitSpec runs filepath.Clean afterwards. It is
+		// spelled out rather than cleaned here so this test measures expansion
+		// alone.
+		{"/tmp/x/{home}/sub", "/tmp/x//home/u/sub"},
+		// …and a substituted value that CONTAINS a placeholder is committed as
+		// it stands. Re-scanning here is what made a real directory resolve to
+		// somewhere else entirely.
+		{"{brace}/bin", "{home}/bin"},
+		// Ordinary cases, so a function that stopped expanding altogether would
+		// not pass the three above.
+		{"{home}/.config", "/home/u/.config"},
+		{"~/.ssh", "/home/u/.ssh"},
+		{"/usr/bin", "/usr/bin"},
+		{"{home}:{home}/g", "/home/u:/home/u/g"},
+	}
+	for _, tc := range cases {
+		got, err := expandVars(tc.in, vars)
+		if err != nil {
+			t.Errorf("expandVars(%q): %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("expandVars(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+
+	// Self-reference must TERMINATE. Under the old loop this case did not
+	// fail, it SPUN — 224% CPU, RSS flat at 18 MB, killed at 12 seconds — so it
+	// is run with a deadline rather than inline: a regression here would
+	// otherwise hang the whole package until go test's global timeout, and a
+	// hang reads as infrastructure trouble rather than as this bug.
+	done := make(chan string, 1)
+	go func() {
+		got, _ := expandVars("{target}/x", vars)
+		done <- got
+	}()
+	select {
+	case got := <-done:
+		if got != "/proj/{target}/x" {
+			t.Errorf("expandVars(\"{target}/x\") = %q, want %q — the substituted value "+
+				"contains a placeholder and must be committed as it stands", got, "/proj/{target}/x")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("expandVars did not terminate on a value that expands to itself; it is " +
+			"re-scanning its own output")
+	}
+
+	// The errors still fire, and on the FIRST placeholder rather than on
+	// whatever a second pass produced.
+	if _, err := expandVars("/a/{nosuch}/b", vars); err == nil {
+		t.Error("an unknown variable was accepted")
+	}
+	if _, err := expandVars("/a/{unterminated", vars); err == nil {
+		t.Error("an unterminated variable was accepted")
 	}
 }

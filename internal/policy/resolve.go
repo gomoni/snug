@@ -785,14 +785,40 @@ func splitSpec(spec string, vars map[string]string) (host, guest string, err err
 	return filepath.Clean(host), filepath.Clean(guest), nil
 }
 
+// expandVars substitutes {name} from vars, in ONE PASS.
+//
+// The single pass is the substance, not an optimisation. The loop this replaced
+// restarted `strings.Index(s, "{")` over the whole result after every
+// substitution, so substituted text was itself scanned for placeholders — and
+// the substituted text is a PATH, which the human running snug chose. Measured:
+//
+//	mkdir -p '/tmp/x/{home}' /tmp/x/home/michal
+//	snug '/tmp/x/{home}'
+//	  -> TARGET  /tmp/x/{home}   read-only, via @parent-ro
+//	  -> rw      /tmp/x/home/michal   @cwd-rw    <- a DIFFERENT directory, writable
+//
+// The payload wrote to it and the write persisted to the host, while the
+// directory the user actually named was read-only. "The target is the only
+// writable thing that persists" was false for that input. A directory named
+// `{target}` was worse: expansion fed its own result back in and the process
+// spun at 224% CPU until killed — quadratic in TIME, not memory (RSS stayed at
+// 18 MB), so it presents as a hang rather than an OOM.
+//
+// Neither needs a hostile profile — a directory with a brace in its name is
+// enough — and both stop being expressible once the output is written once.
 func expandVars(s string, vars map[string]string) (string, error) {
 	if strings.HasPrefix(s, "~/") {
 		s = vars["home"] + s[1:]
 	}
+	if !strings.Contains(s, "{") {
+		return s, nil // the overwhelmingly common case, and no allocation
+	}
+	var b strings.Builder
 	for {
 		i := strings.Index(s, "{")
 		if i < 0 {
-			return s, nil
+			b.WriteString(s)
+			return b.String(), nil
 		}
 		j := strings.Index(s[i:], "}")
 		if j < 0 {
@@ -803,6 +829,11 @@ func expandVars(s string, vars map[string]string) (string, error) {
 		if !ok {
 			return "", fmt.Errorf("unknown variable {%s} in %q", key, s)
 		}
-		s = s[:i] + val + s[i+j+1:]
+		// The literal text before the placeholder and the substituted value are
+		// both COMMITTED — appended to the builder and never looked at again.
+		// Only the unexamined remainder continues round the loop.
+		b.WriteString(s[:i])
+		b.WriteString(val)
+		s = s[i+j+1:]
 	}
 }

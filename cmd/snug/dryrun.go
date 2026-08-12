@@ -216,12 +216,29 @@ func envLines(p *policy.Policy, v policy.EnvVar) []envLine {
 		}
 		mark := grantMark(p, v.Name, e.Value)
 		if n := len(out); n > 0 && out[n-1].verb == verb && out[n-1].from == from && out[n-1].mark == mark {
-			out[n-1].values = append(out[n-1].values, visibleValue(e.Value))
+			out[n-1].values = append(out[n-1].values, elementValue(v.Name, e.Value))
 			continue
 		}
-		out = append(out, envLine{values: []string{visibleValue(e.Value)}, verb: verb, from: from, mark: mark})
+		out = append(out, envLine{values: []string{elementValue(v.Name, e.Value)}, verb: verb, from: from, mark: mark})
 	}
 	return out
+}
+
+// elementValue is visibleValue for one element of a LIST, and it adds the one
+// thing a list needs: an element containing a space is quoted.
+//
+// Consecutive entries from the same verb and the same profiles are collapsed
+// onto one line and joined with a space, so `/srv/a /srv/b` on the screen could
+// be two elements or one element with a space in it — and those are different
+// policies. The same ambiguity in `checkPrependAgreement`'s KEY made two
+// disagreeing profiles compare equal and silently deleted one's entry (seqKey,
+// envresolve.go); this is the display half of it. Fixing only the key would
+// leave the screen unable to show what the key now distinguishes.
+func elementValue(name, s string) string {
+	if policy.IsEnvList(name) && strings.ContainsAny(s, " \t") {
+		return fmt.Sprintf("%q", s)
+	}
+	return visibleValue(s)
 }
 
 // visibleValue renders a value so it cannot forge a line in this block.
