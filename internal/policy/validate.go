@@ -147,6 +147,39 @@ var snugsOwn = map[string]string{
 		"or the sandbox reads the host's process table.",
 	"/dev": "it must be bwrap's synthetic minimal device set, never a bind of the host's " +
 		"(which hands over every block device and every input device).",
+
+	// StagedBinDir is here for a different reason from the other two, and the
+	// difference is the point. /proc and /dev are refused because a profile grant
+	// DISPLACES snug's own node. Nothing is mounted at StagedBinDir at all — it is
+	// a plain directory on the root tmpfs, and that is precisely what makes it
+	// unwritable, because `--remount-ro /` covers it. A profile mounting ANYTHING
+	// there — a tmpfs, or a rw bind — is a separate mount, is not covered by that
+	// remount, and turns the directory writable.
+	//
+	// What that buys the profile is not its own writable directory. It is
+	// SNUG's PATH band: HasStagedBin sees the staged executable, snug puts
+	// StagedBinDir first on PATH in `(snug)` provenance, and the payload then
+	// writes `git` into a directory that runs ahead of /usr/bin. Measured, with
+	// `tmpfs = ["/run/snug/bin"]` plus one staged bind: WROTE-OK, and the
+	// shadowed git ran. The rw-bind spelling is worse — the shadowed command
+	// persists to the host directory.
+	//
+	// This is the case the staging rule in CLAUDE.md says cannot happen ("a
+	// profile cannot pick a writable directory by accident, because it does not
+	// pick one at all"), and it is not the accepted residual class either: the
+	// profile writes no PATH declaration, so no human ever read a line saying a
+	// writable directory would go on PATH.
+	//
+	// Note what is NOT refused, and must not be: a grant at a path INSIDE the
+	// directory. snugsOwn is keyed on the exact guest path, so @claude's
+	// `{home}/.local/bin/claude:/run/snug/bin/claude` is untouched — staging one
+	// executable is the whole purpose of the directory. Only the directory itself
+	// is snug's.
+	StagedBinDir: "it is a plain directory on the root tmpfs, which is what makes it " +
+		"unwritable once / is remounted read-only, and snug puts it FIRST on PATH. " +
+		"A mount there is not covered by that remount, so it would hand the payload a " +
+		"writable directory ahead of /usr/bin. Stage the file itself — " +
+		"`ro = [\"/host/path/tool:" + StagedBinDir + "/tool\"]` — never the directory.",
 }
 
 // rejectMasking closes the ways the grant language could still express

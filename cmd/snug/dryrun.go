@@ -493,9 +493,36 @@ func describeCommands(out *os.File, p *policy.Policy) {
 			fmt.Fprintf(out, "         and /usr/bin/podman is UNTOUCHED — still reachable by its absolute path,\n")
 			fmt.Fprintf(out, "         just no longer first on PATH. See .claude/design/CONTAINER-CLIENT.md §8.\n")
 		case m.Host != "":
-			fmt.Fprintf(out, "         %s, staged here from %s and read-only.\n",
-				filepath.Base(guest), m.Host)
+			// Read m.Access rather than asserting it. This line said "and
+			// read-only" unconditionally, and a profile staging a `rw` bind got
+			// that sentence while the payload overwrote the command and the
+			// overwrite persisted to the HOST file. A staged command that can be
+			// rewritten is the worst line on this screen to be wrong about, so it
+			// is the one that has to come from the policy.
+			how := "read-only"
+			if m.Access == policy.AccessRW {
+				how = "WRITABLE from inside — anything running here can rewrite this " +
+					"command, and the rewrite persists to the host file"
+			}
+			fmt.Fprintf(out, "         %s, staged here from %s and %s.\n",
+				filepath.Base(guest), m.Host, how)
 		}
+	}
+	// The closing paragraph is a CLAIM about the directory, so it is gated on the
+	// same predicate the PATH mark uses rather than being printed unconditionally.
+	//
+	// It used to be unconditional, and with a profile grant at StagedBinDir the
+	// screen contradicted itself four lines apart: this paragraph said "NOT
+	// writable from inside" while the ENVIRONMENT block below rendered
+	// `PATH  /run/snug/bin  (snug) staged bin  ← writable from inside`. Validate
+	// now refuses that arrangement outright, so this branch should be
+	// unreachable — which is exactly why it is worth keeping. A refusal that is
+	// later relaxed must not silently restore a false sentence.
+	if p.IsShadowSlot(policy.StagedBinDir) {
+		fmt.Fprintf(out, "         %s IS WRITABLE from inside, which it must never be: it is first on\n", policy.StagedBinDir)
+		fmt.Fprintf(out, "         PATH, so anything running here can drop a file called 'git' or 'ssh'\n")
+		fmt.Fprintf(out, "         into it and the next one a human runs is that file. Report this.\n")
+		return
 	}
 	fmt.Fprintf(out, "         %s is snug's own and is NOT writable from inside, so nothing running\n", policy.StagedBinDir)
 	fmt.Fprintf(out, "         here can add a command to it — the directory ahead of /usr/bin on PATH is\n")

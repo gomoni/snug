@@ -302,8 +302,57 @@ func TestWritableMarkIsPathOnlyAndDistinctFromNotGranted(t *testing.T) {
 
 	// snug's own staging directory must never be marked writable — the rule
 	// would otherwise be flagging its own repair.
-	if strings.Contains(grantMark(p, "PATH", policy.StagedBinDir), "writable") {
-		t.Errorf("%s was marked writable from inside", policy.StagedBinDir)
+	//
+	// The fixture has to STAGE something first. This assertion used to run against
+	// the selection above, which stages nothing, so grantMark returned "not
+	// granted" and the check could never fail — it measured ABSENT and read as
+	// UNWRITABLE. Two different facts, and the one being claimed is the second.
+	stageMount(p, policy.KindBind, policy.AccessRO)
+	if got := grantMark(p, "PATH", policy.StagedBinDir); strings.Contains(got, "writable") {
+		t.Errorf("grantMark(PATH, %s) = %q with a read-only bind staged there. The directory "+
+			"is the root tmpfs, which --remount-ro / covers, so nothing on this line may say "+
+			"writable", policy.StagedBinDir, got)
+	}
+	// It renders as "not granted (1 grant inside)": no Mount covers the directory
+	// itself, because it is snug's `--dir`. That wording is the documented
+	// compromise above, and it is asserted here so this test fails if the mark
+	// ever silently starts claiming something stronger.
+	if got := grantMark(p, "PATH", policy.StagedBinDir); !strings.Contains(got, "1 grant inside") {
+		t.Errorf("grantMark(PATH, %s) = %q, want the count of what is staged inside — "+
+			"without it the fixture is not staging anything and both assertions here are "+
+			"about an empty policy", policy.StagedBinDir, got)
+	}
+
+	// …and the same assertion has to be able to FAIL, or the line above is a
+	// sentence about a predicate that cannot say yes at this path. This is the
+	// shape Validate now refuses (snugsOwn), reconstructed here after resolution
+	// precisely because it can no longer come out of one.
+	stageMount(p, policy.KindTmpfs, policy.AccessRW)
+	if got := grantMark(p, "PATH", policy.StagedBinDir); !strings.Contains(got, "writable from inside") {
+		t.Errorf("grantMark(PATH, %s) = %q with a tmpfs mounted there, want the writable mark. "+
+			"If this does not fire, the assertion above is vacuous and the shadow-slot rule is "+
+			"unguarded at the one path snug puts on PATH itself", policy.StagedBinDir, got)
+	}
+}
+
+// stageMount replaces whatever is at policy.StagedBinDir with one mount, so a
+// test can put the directory into a state Validate refuses and still ask what
+// the RENDERER would say about it. Both callers want the same two states, and
+// spelling them out twice invites them to drift apart.
+func stageMount(p *policy.Policy, kind policy.Kind, access policy.Access) {
+	guest := policy.StagedBinDir
+	if kind == policy.KindBind {
+		// A staged executable is a file INSIDE the directory, which is the only
+		// legitimate shape; the directory itself stays the root tmpfs.
+		delete(p.Mounts, guest)
+		guest += "/tool"
+	}
+	p.Mounts[guest] = policy.Mount{
+		Guest:  guest,
+		Kind:   kind,
+		Access: access,
+		Host:   "/etc/hostname",
+		From:   []string{"fixture"},
 	}
 }
 

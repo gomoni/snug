@@ -128,11 +128,106 @@ func TestShadowSlotPredicateFiresOnAWritableHomeDirectory(t *testing.T) {
 
 	// …and the directory snug stages into must NOT trip it, or the rule would
 	// forbid its own repair.
+	//
+	// Read what this measures, because the earlier version of these three lines
+	// measured something else. Nothing is mounted at StagedBinDir — it is a plain
+	// directory on the root tmpfs, made with bwrap's `--dir` — so coveringMount
+	// finds nothing and IsShadowSlot answers false through its "nothing is there"
+	// branch. That is the RIGHT answer for the right reason (an uncovered path is
+	// the root tmpfs, and --remount-ro / covers that), but it is the answer this
+	// assertion would give for ANY path in the policy, which made it unfalsifiable
+	// at the one path it names. The control below is what makes it mean something.
 	if p.IsShadowSlot(policy.StagedBinDir) {
 		t.Errorf("IsShadowSlot(%s) = true; snug's own staged-bin directory must be unwritable "+
 			"from inside", policy.StagedBinDir)
 	}
 	if strings.HasPrefix(policy.StagedBinDir, "/tmp") {
 		t.Errorf("StagedBinDir = %s, which is under a writable tmpfs", policy.StagedBinDir)
+	}
+
+	// The control: mount a tmpfs at StagedBinDir and the predicate must say yes.
+	// This is the arrangement a profile could once write — `tmpfs =
+	// ["/run/snug/bin"]` plus one staged bind, measured as WROTE-OK with the
+	// shadowed git running — and Validate refuses it now (snugsOwn), which is why
+	// it has to be constructed here rather than resolved.
+	p.Mounts[policy.StagedBinDir] = policy.Mount{
+		Guest: policy.StagedBinDir, Kind: policy.KindTmpfs,
+		Access: policy.AccessRW, From: []string{"control"},
+	}
+	if !p.IsShadowSlot(policy.StagedBinDir) {
+		t.Errorf("IsShadowSlot(%s) = false with a writable tmpfs mounted there. The assertion "+
+			"above is then vacuous, and so is the one in TestWritableMarkIsPathOnly...: both "+
+			"would keep passing on a policy that hands the payload a writable directory first "+
+			"on PATH", policy.StagedBinDir)
+	}
+}
+
+// A profile may not mount anything AT policy.StagedBinDir, and this is the
+// regression test for the finding that made it a rule.
+//
+// The route was indirect, which is why nothing caught it. The profile writes no
+// PATH declaration at all: it mounts a tmpfs at /run/snug/bin and stages one
+// file inside, HasStagedBin sees the staged file, and SNUG then puts the
+// directory first on PATH in its own `(snug)` provenance. Measured before the
+// fix: `echo > /run/snug/bin/git` succeeded and the shadowed git ran. The rw-bind
+// spelling was worse — the shadowed command persisted to the host directory.
+//
+// That is the case CLAUDE.md's staging rule says cannot happen ("a profile
+// cannot pick a writable directory by accident, because it does not pick one at
+// all"), and it is not the accepted-residual class either, because no human ever
+// read a line saying a writable directory would go on PATH.
+func TestProfileMayNotMountAtStagedBinDir(t *testing.T) {
+	reg, err := profile.Builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		prof *policy.Profile
+		want bool // want a refusal
+	}{
+		{"tmpfs at the directory", &policy.Profile{
+			Name: "p", Include: []string{"@sys", "@home"},
+			Tmpfs: []string{policy.StagedBinDir},
+			RO:    []string{"/etc/passwd:" + policy.StagedBinDir + "/tool"},
+		}, true},
+		{"rw bind of the directory", &policy.Profile{
+			Name: "p", Include: []string{"@sys", "@home"},
+			RW: []string{"/usr:" + policy.StagedBinDir},
+		}, true},
+		{"ro bind of the directory", &policy.Profile{
+			Name: "p", Include: []string{"@sys", "@home"},
+			RO: []string{"/usr:" + policy.StagedBinDir},
+		}, true},
+		// The positive control, and the reason the rule is keyed on the EXACT
+		// guest path: staging one executable INSIDE the directory is what the
+		// directory is for, and @claude does it on every run.
+		{"a file staged inside — the legitimate shape", &policy.Profile{
+			Name: "p", Include: []string{"@sys", "@home"},
+			RO: []string{"/etc/passwd:" + policy.StagedBinDir + "/tool"},
+		}, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := map[string]*policy.Profile(reg)
+			m["p"] = tc.prof
+			_, err := policy.Resolve(m, append(append([]string{}, profile.BuiltinDefaults()...), "p"),
+				envGoldenCtx(), newEnvFakeEnv())
+			switch {
+			case tc.want && err == nil:
+				t.Errorf("Resolve accepted a profile grant at %s. snug puts that directory "+
+					"FIRST on PATH, and a mount there is not covered by --remount-ro /, so "+
+					"the payload gets a writable directory ahead of /usr/bin without any "+
+					"profile ever naming PATH", policy.StagedBinDir)
+			case tc.want && !strings.Contains(err.Error(), policy.StagedBinDir):
+				t.Errorf("refused, but the message does not name %s: %v", policy.StagedBinDir, err)
+			case !tc.want && err != nil:
+				t.Errorf("Resolve refused the legitimate shape — one executable staged INSIDE "+
+					"%s, which is what the directory exists for and what @claude does: %v",
+					policy.StagedBinDir, err)
+			}
+		})
 	}
 }
