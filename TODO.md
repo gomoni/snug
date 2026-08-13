@@ -1277,11 +1277,42 @@ transitively fatal to the sandbox via that flag. `parked.abort()` used to SIGKIL
 the sandbox child and wait for the pid namespace to collapse; nothing inherited
 that job when it was deleted.
 
-*Candidate fix, NOT yet measured in place:* bwrap's `--sync-fd`, held by snug
-itself so it does not depend on the stage running code. An isolated probe could
-not reproduce the window at all (raw bwrap orphans 0/7), so this needs measuring
-inside snug's real structure rather than in a harness — which is exactly the
-mistake the earlier "arm the guard earlier" fix made.
+*Candidate fix `--sync-fd`: TRIED AND REFUTED, by measurement.* The flag runs
+the other way round. `man bwrap`: it keeps the descriptor open **while the
+sandbox runs, so the parent can detect the sandbox exiting**. It is an output,
+not an input. Measured directly — bwrap started with `--sync-fd` on a pipe, the
+write end then closed, and the sandbox carried on:
+
+```
+sandbox alive before closing the write end: True
+sandbox alive AFTER  closing the write end: True
+```
+
+Implemented end to end anyway before measuring the flag in isolation, and the
+real repro was unchanged: target written after snug's death 3/3, both with and
+without it. Reverted. **That is now twice a plausible-sounding mechanism has
+been agreed for this defect and been wrong** — first "arm the parked guard
+earlier" (a guard cannot catch SIGKILL), now `--sync-fd` (wrong direction). Do
+not accept a third without a measurement of the mechanism ITSELF, separate from
+a measurement of the whole system.
+
+*Why the sandbox survives, restated precisely, because both wrong fixes came
+from a fuzzy version of it.* bwrap's `--die-with-parent` is armed on the
+sandbox's INIT, late, after that init's own setup. snug's death reaches the
+stage (lifeline EOF), the stage exits, and the OUTER bwrap dies because ITS
+parent was the stage — but the init, whose pdeathsig is not yet armed, survives
+and is reparented. Every mechanism that acts on snug or on the stage is
+therefore one process too far away. **The fix has to reach the init.**
+
+*The remaining candidate, and it does not conflict with a documented decision:*
+re-introduce `--json-status-fd`, but read it in the STAGE rather than in snug —
+the stage is bwrap's actual parent and is already the process watching the
+lifeline — and have it SIGKILL that pid before exiting, then wait for the pid
+namespace to collapse. That is what `parked.abort()` used to do and nothing
+inherited. Rejected alternative: put the sandbox in its own process group and
+`kill(-pgid)`. It would work, and CLAUDE.md forbids `Setpgid` in this chain on
+purpose, because the tree must stay in the terminal's foreground process group
+for Ctrl-C and job control to reach an interactive payload.
 
 *The test that should exist:* sweep the kill offset across 0–300ms with the REAL
 pasta, for all four signals, and assert zero surviving descendants and zero
