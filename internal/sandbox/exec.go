@@ -177,8 +177,9 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 // the sandbox init and bwrap arming --die-with-parent on it, nothing in snug
 // guarantees the sandbox dies, so a signal to snug in that interval leaves an
 // init reparented to the subreaper, holding the payload and the netns, with
-// write access to the target. Measured 3/3, all four signals. TODO.md carries
-// it. Do not read the deletions above as covering it.
+// write access to the target. Measured 3/3, all four signals. Tracked as
+// https://github.com/gomoni/snug/issues/13, which carries the measurements and
+// the three refuted candidates. Do not read the deletions above as covering it.
 //
 // What made the reorder possible, having previously been recorded as a blocker:
 // confirming the interface is up needed a process inside N to read

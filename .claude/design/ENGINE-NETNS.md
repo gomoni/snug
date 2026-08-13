@@ -293,8 +293,8 @@ topology, so they survived the move intact:
 5. Teardown must be *asserted* rather than assumed, because §4 measured that it
    stopped being unconditional the moment N held the engine.
 
-The current implementation status of all of the above lives in `TODO.md` and in
-the supervisor phase documents, not here. This section states what must be true;
+The current implementation status of all of the above lives in the GitHub
+issues and in the supervisor phase documents, not here. This section states what must be true;
 it deliberately no longer states when.
 
 **The abuse sentence changes shape rather than shrinking:**

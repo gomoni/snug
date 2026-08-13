@@ -213,7 +213,8 @@ const (
 // thinks of as running a command. Refusing the invisible half is not the same as
 // closing the class, and the day someone decides the generic three must go too,
 // it is a §3.2 decision — a grant being withdrawn from every profile that
-// inherits them — not an addition to this table. Carried in TODO.md.
+// inherits them — not an addition to this table. Carried as
+// https://github.com/gomoni/snug/issues/35.
 var forbiddenEnv = map[string]forbidKind{
 	// the value is code, at any verb — §4.4 plus ld.so(8)'s own secure-execution
 	// list, which is the closest thing to an authoritative denylist that exists

@@ -70,7 +70,7 @@ func resolveFor(t *testing.T, sel []string) *policy.Policy {
 	return p
 }
 
-// TestDryRunAnnotationsAreTruthful pins the fix for the bug TODO.md's MVY0
+// TestDryRunAnnotationsAreTruthful pins the fix for the bug the MVY0
 // findings recorded: dryrun.go used to hard-code "(writable)" for TARGET and
 // "(tmpfs, ephemeral)" for HOME, which is true only for the default selection
 // and false the moment a human selected fewer profiles —

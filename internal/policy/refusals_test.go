@@ -15,7 +15,7 @@ import (
 // in TestGoldenRefusals, which pins the EXACT text. The helper below is what
 // both share, so the fixture cannot drift between the two.
 //
-// Before this change every one of these was accepted (see TODO.md's MVY1
+// Before this change every one of these was accepted (see the MVY1
 // findings). Each helper is written so that reverting the corresponding fix in
 // resolve.go/validate.go makes ONLY that case's Test* function fail — verified
 // by running them against `git stash` (see the report for which method).
@@ -596,7 +596,7 @@ func TestGoldenRefusals(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("# MVY1 refusals — a table of (profile selection -> exact refusal text).\n")
 	b.WriteString("# Regenerate with: go test ./internal/policy -update\n")
-	b.WriteString("# Every case here used to be ACCEPTED; read TODO.md's MVY1 findings before\n")
+	b.WriteString("# Every case here used to be ACCEPTED; read INDEX.md \u00a73.4 before\n")
 	b.WriteString("# changing any line below — a change here is a change to the security boundary.\n\n")
 	for _, tc := range cases {
 		err := tc.run(t)

@@ -8,7 +8,7 @@ import (
 	"github.com/gomoni/snug/internal/policy"
 )
 
-// TestEmptyDefaultsMeansEmpty pins the fix for the bug TODO.md's MVY0 findings
+// TestEmptyDefaultsMeansEmpty pins the fix for the bug the MVY0 findings
 // recorded: `defaults = []` used to silently fall back to the built-in four,
 // because Defaults was a plain []string and could not distinguish an explicit
 // empty list from an absent key — both decode to len 0. Defaults is now

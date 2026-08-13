@@ -298,7 +298,7 @@ to the host**. Note also that this profile is a legal one — `rw` grants the
 directory, so the grant-coupling rule is satisfied and nothing refuses it. The
 mark is the only thing standing between a human and that arrangement, which is
 why it is a mark and not a refusal: a *human's own* profile may do this
-deliberately (`TODO.md` records it as an accepted residual). What snug may never
+deliberately, an accepted residual. What snug may never
 do is ship it (§6g).
 
 Check the scope too: the mark is `PATH`-only, because `PATH` entries are
@@ -592,8 +592,8 @@ Worth trying by hand, because these are the boundaries most likely to be wrong:
 
 What that list does **not** close is git's exec class as a whole: `PAGER`,
 `EDITOR` and `VISUAL` stay legal by ENVIRONMENT-VARIABLES §3.2 and git falls
-back to them, so `PAGER='sh -c …' git log` runs the command. `TODO.md` carries
-it, and a test pins it so withdrawing those three has to be a deliberate §3.2
+back to them, so `PAGER='sh -c …' git log` runs the command.
+https://github.com/gomoni/snug/issues/35 carries it, and a test pins it so withdrawing those three has to be a deliberate §3.2
 decision rather than a table edit.
 
 ### 6b. …including via PID 1 (regression check)

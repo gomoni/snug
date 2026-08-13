@@ -91,7 +91,8 @@ func ghToken(host, user string) string {
 // On error it returns a nil cleanup, having already run its own.
 //
 // dryRun does not stop the proxy or the runtime directory — those are still
-// started, and TODO.md records that as a finding with its reproduction — but it
+// started, and https://github.com/gomoni/snug/issues/21 records that with its
+// reproduction — but it
 // does decide what a MISSING gh token means: a refusal for a real run, a warning
 // for a dry run. main.go makes the same distinction for the @tmp-shared host
 // directory, and for the same stated reason: failing on host state would make

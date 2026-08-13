@@ -519,7 +519,6 @@ Design and research material is **not** user documentation and lives apart, unde
 | [`GIT-CONFIG.md`](.claude/design/GIT-CONFIG.md) | Why `~/.gitconfig` is generated rather than bound, measured |
 | [`ENVIRONMENT-VARIABLES.md`](.claude/design/ENVIRONMENT-VARIABLES.md) | The five `environ` verbs, the variable types behind them, measured |
 | [`CLAUDE.md`](CLAUDE.md) | Working agreement: invariants, and hard-won facts about this environment |
-| [`TODO.md`](TODO.md) | What is deferred, and known gaps between docs and code |
 
 ## Requirements
 

@@ -132,15 +132,16 @@ The keep-list objection is answered rather than dismissed, by a test that parses
 `bwrap --help` for every `--unshare-<name>` and fails if the stage set does not
 cover all of them except `net`. **Known weakness:** that test currently compares
 against a hardcoded literal set, so deleting a flag from `bwrap.go` leaves it
-green and is caught only indirectly by two goldens. It is in `TODO.md`.
+green and is caught only indirectly by two goldens. It is
+https://github.com/gomoni/snug/issues/31.
 
 The spelling is deliberately `-try` for `user` and `cgroup`, matching what
 `--unshare-all` expands to, so the stage path introduces no new failure mode. The
 strict spellings would be better — a host with unprivileged user namespaces
 disabled currently gets none, with no error — but that is a live defect on the
 non-stage path too, and fixing it inside a phase whose contract is "adds and
-removes nothing" is how a user-visible regression gets smuggled in. It is in
-`TODO.md` with its severity.
+removes nothing" is how a user-visible regression gets smuggled in. It is
+https://github.com/gomoni/snug/issues/24.
 
 ### 3.2 The stage runs only when it is needed
 
@@ -275,7 +276,7 @@ The order is part of the design, because one step was a gate.
   map against the real `BwrapFlags` argv. Everything downstream of §3.6 depended
   on it, and the rule was that nothing downstream would be built before it ran.
   It came back green; had it not, the phase would have fallen back to full maps
-  plus `newuidmap`/`newgidmap` and recorded the cost in `TODO.md` rather than
+  plus `newuidmap`/`newgidmap` and recorded the cost as an issue rather than
   carrying it silently.
 - **Step 1 — `internal/policy`: `Topology`.** A derived scalar on `Policy`,
   computed once from `Net.Mode` and `Podman`, pinned by `Validate`, rendered by
@@ -354,6 +355,23 @@ signal that cannot be caught.
 
 It was closed by **deleting the thing that had a window** rather than by
 defending it — see §7.
+
+**Three review rounds agreed on a diagnosis that measurement contradicted, and
+the agreed fix would not have worked.** The rounds reported SIGTERM as open too,
+at 10/10, 6/6 and 3/3. All three killed at a fixed wall-clock offset — 60 ms,
+100 ms — and the release happens at ~30 ms, so the payload had legitimately
+started. **A positive control that only shows an unkilled run writing its marker
+cannot tell "released early by the bug" from "released correctly, then killed".**
+Measured properly, SIGTERM and SIGINT were **0/5**: the catchable signals had
+been closed all along, and the defect was SIGKILL-only over ~17 ms. Both red
+teams then converged on "arm the guard earlier, pid-less" — a guard catches
+signals, and the only signal left cannot be caught, so it would have changed
+nothing.
+
+The shape to carry forward: **a positive control must distinguish the two
+explanations, not merely prove the machinery runs.** The same mistake recurs in
+[#13](https://github.com/gomoni/snug/issues/13), where two further plausible
+mechanisms were agreed and refuted by measurement.
 
 ---
 

@@ -4,8 +4,9 @@
 is analysis, not a decision. It exists so each decision is made against measured
 ground truth rather than against what the comments say.
 
-Builds on `TODO.md` §MVY2 → *Findings*. Where this contradicts MVY2 it says so
-and gives the measurement.
+Builds on the MVY2 findings, which used to live in `TODO.md` and are now
+[issue #18](https://github.com/gomoni/snug/issues/18). Where this contradicts
+them it says so and gives the measurement.
 
 **[M]** measured on this host this pass (method in the appendix) · **[R]**
 reasoned from code or docs, not executed · **[M-prior]** measured by MVY2, not
@@ -26,7 +27,64 @@ drifted and are corrected.
 
 ---
 
-## 0. The three sentences this document is trying to make true
+## 0. The principle
+
+Stated here because it is the thing every section below is measuring against.
+It is a goal, not a description of the code: today snug injects an Anthropic
+OAuth token and a GitHub token (§1), and [#18](https://github.com/gomoni/snug/issues/18)
+is the work that would make this true.
+
+> ### Secrets are never injected
+>
+> No credential the host holds — token, key, cookie, password — is placed inside
+> the sandbox: not in a file, not in the environment, not behind a mount. Where
+> the sandbox needs to *act* with an identity, snug **brokers the act**: a
+> host-side helper holds the secret, speaks the tool's own protocol over a socket
+> or loopback address the sandbox can reach, and applies the credential on the
+> host side of the fence. The sandbox receives **authority, bounded by what the
+> broker will forward and by the lifetime of the sandbox** — never the credential.
+>
+> Three consequences, all of them the point:
+>
+> 1. Exfiltrating the sandbox buys nothing that outlives the run.
+> 2. The blast radius is the broker's allowlist, not the credential's scope.
+> 3. The security argument lives in the broker, so the broker is small, snug's
+>    own, and reviewable — **never a user-supplied script, and never a host
+>    command whose arguments the sandbox chose.** A wrapper that runs a CLI on the
+>    host with sandbox-chosen argv is not a broker; it is remote code execution
+>    with the credential attached, and it is strictly worse than injecting it.
+>
+> Two honest exceptions:
+>
+> - **Public material is not a secret.** A public key, a username, an email, a
+>   host fingerprint: generated into the sandbox on purpose.
+> - **A secret with no broker is refused, not injected — unless the human names
+>   it.** Where no adapter exists the tool has no credentials inside, and that is
+>   the correct degradation: visible, annoying, harmless. A profile may still
+>   stage a real credential, but only under a name that says so
+>   (`@<tool>-credentials`), never as a side effect of a profile named after a
+>   tool, never in `defaults`, always with the abuse sentence in its TOML, and
+>   `--dry-run` prints it as `SECRET`.
+>
+> What this does **not** claim: it does not bound what the sandbox *does* with the
+> authority. A broker, exactly like the ssh-agent proxy, pins the identity and the
+> operation set; it cannot pin intent.
+
+The ssh-agent proxy (`internal/sshproxy`) is the one shipped instance: no key
+material inside, one pinned key, other keys not enumerable, signing available
+only while the sandbox lives.
+
+**And read §3.3's warning in the same breath.** The target directory persists
+and the sandbox writes to it. A `Makefile`, a git hook, an `.envrc`, a
+`package.json` `postinstall`, a `.vscode/tasks.json` — every one runs **on the
+host, as you, with all your credentials**, the next time you do the ordinary
+thing in that directory. "Secrets are never injected" must never be read as "the
+sandbox cannot get your secrets". It cannot get them *now*; it can arrange to be
+handed them later.
+
+---
+
+## 0b. The three sentences this document is trying to make true
 
 1. It should be possible to say, of any credential, *why* it is or is not
    allowed inside a snug sandbox, in one line, without appeal to taste.
@@ -1633,7 +1691,7 @@ supplying the mechanism.
 
 **Parameterisation is parked, and composition by `include` is the better answer
 for this case anyway** — the owner, 2026-08-13. `PARAMETERISED-PROFILES.md` is an
-idea, not a plan (TODO.md, *Postponed by decision*), and nothing below should be
+idea, not a plan — deliberately deferred, see that document's own status — and nothing below should be
 read as scheduling it. The concrete question is how a user pins one of two
 accounts, and there are two spellings:
 
