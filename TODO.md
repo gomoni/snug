@@ -1516,3 +1516,109 @@ comments, and two tests that could not fail. Left open:
   Phase 1 with escalation shape, and the mitigation Phase 2 needs (an
   authenticated request, or a nonce established at clone time) is much cheaper
   to design before a pathname socket exists than after. Severity: low.
+
+## Found by the placement-D review round (2026-08-13)
+
+Four adversarial reviews (red team, policy model, host bridge, memory hygiene)
+were run against `.claude/design/SECRETS.md` §3.3.6/§3.9 before any code existed.
+The design findings live in that document; these are the ones that landed on
+**shipped code** and are independent of whether placement D is ever built. Each
+was measured on this host.
+
+- **[leak] `/proc/self/mountinfo` inside the sandbox names snug's host pid.** The
+  run directory is `run-<pid>` (`cmd/snug/identity.go`), and mountinfo prints the
+  host source path of every bind, so the payload reads `run-882383` — plus, with
+  `@podman-socket`, the full container-storage overlay `lowerdir`/`upperdir`
+  chain and the btrfs subvolume path. The payload cannot signal or read that
+  process (own pidns, zero capabilities), so severity is low; the claim to
+  correct is "nothing inside can *name* it", which was never true. It matters
+  more for any future design that bind-mounts a control socket at a pathname:
+  prefer an inherited descriptor, which is what `internal/stage/proto.go` already
+  chose and for this reason.
+  Regression test: `TestMountinfoNeverNamesTheSupervisorPid` — currently red.
+
+- **[truth-telling] `--dry-run` states a false fact about DNS.**
+  `cmd/snug/dryrun.go` prints `dns 169.254.1.1 -> pasta -> host resolver`
+  whenever `p.Net.DNS`, ignoring `NetPolicy.NeedsDNSForward()` — which exists at
+  `internal/policy/net.go` and prefers the host's *routable* nameservers.
+  Measured, same run: the sandbox received `nameserver 192.168.1.1`. Two things
+  are misreported — which party answers DNS, and the fact that the sandbox is
+  handed the host's LAN resolver addresses, four lines above a line offering
+  `@net-anon` because "the host's LAN address is hidden". Fix: branch on
+  `NeedsDNSForward()`, else print the actual `p.Net.Nameservers`.
+
+- **[hardening] `main` passed no explicit `--cap-drop`. FIXED by the supervisor
+  merge.** Measured, the payload's `CapInh/CapPrm/CapEff/CapBnd/CapAmb` were all
+  zero anyway — so the guarantee rested entirely on **bwrap's default**, which is
+  the thing CLAUDE.md's "never trust a helper's default" exists to forbid relying
+  on. `--cap-drop ALL` is now passed unconditionally
+  (`internal/policy/bwrap.go:118`), with the golden diff, and the comment beside
+  it records the kernel fact that makes it necessary rather than decorative:
+  `create_user_ns` sets `cap_bset = CAP_FULL_SET`, so a drop in the stage would
+  be theatre while a drop in the sandbox is not.
+
+- **[gap] The time namespace is not unshared.** `/proc/self/ns/time` inside is
+  `time:[4026531834]`, the host's initial time namespace; `--unshare-all` does
+  not cover it. Consequence is a shared `CLOCK_BOOTTIME` timebase, which is what
+  makes cross-sandbox timing channels easy to align. Either fix or record as a
+  documented gap. `TestSandboxUnsharesTheTimeNamespace` — currently red.
+
+- **[test does not test what it claims] `TestPolicyHasNoRestrictionOperation`
+  does not sweep for a demote.** It resolves defaults, adds `cwd-ro` and asserts
+  the target is still `rw` — an assertion that `Access.Join` takes the max.
+  CLAUDE.md claims the invariant "can be checked by grepping for a demote and
+  finding none (`TestPolicyHasNoRestrictionOperation`)"; it cannot. A
+  `func (p *Policy) Derive(...) *Policy` returning a stripped copy would ship
+  green. Either write the source-scanning sweep the claim describes
+  (`cmd/snug/ownedenv_test.go` is the precedent for parsing Go in a test), or
+  correct CLAUDE.md.
+
+- **[latent security] `identity.ssh_key` is expanded but not symlink-resolved.
+  FIXED.** It went through `expandVars` against the full `vars` map — which
+  contains `{target}` — and unlike a `ro`/`rw` grant it did not pass through
+  `underTargetIsLiteral` or `EvalSymlinks`. So `ssh_key = "{target}/deploy.pub"`
+  followed a symlink a previous sandbox run planted, and `sshproxy.New` pinned
+  whatever key that link pointed at — this path is *read* for the blob the proxy
+  answers `REQUEST_IDENTITIES` with, so redirecting it selects which host key
+  the sandbox may sign with. Not reachable from any builtin (no shipped profile
+  sets `identity`), which is why it was latent rather than live — but SECRETS.md
+  §4 asserted the rule already held, and it did not. Same family as "A symlink
+  in the target can divert a grant" above.
+
+  Fixed in `internal/policy/resolve.go`: a key **under the target** now gets
+  exactly what `add()` gives a bind — `EvalSymlinks` while the filesystem is
+  still trusted, then `underTargetIsLiteral`. Outside the target it is
+  deliberately **not** canonicalised, which is narrower than `add()`: the path
+  carries the same trust as a grant's host side, and canonicalising would make
+  resolution depend on the file existing, turning `snug profile show` and
+  `--dry-run` into hard failures for a profile whose key is merely absent.
+  `internal/policy/identitykey_test.go` — three tests, because a fix that
+  refused every key under the target would pass the negative one alone.
+
+- **[disclosure] `--dry-run` resolves and stages a live credential without
+  saying so.** `startIdentity` runs before the dry-run branch, so `snug
+  --dry-run` really does shell `gh auth token` and stage the token, then prints
+  it as an unremarkable `data` mount row. Sharper than Q9 as written: the dry run
+  does not merely start things, it resolves a secret and does not disclose it.
+  D1 requires `--dry-run` to name every secret the run places inside.
+
+- **[behaviour to pin, not a bug] The payload's exit status is propagated
+  verbatim.** `snug <dir> -- sh -c 'exit 137'` returns 137, which is correct and
+  wanted. It is recorded here because any future design that runs a tool on the
+  payload's behalf and returns its status is handing the payload an 8-bit-per-
+  invocation channel out — measured at ≈10 seconds for a 40-byte token at the
+  245 ms sibling-launch cost. `TestExitStatusFromInsideIsNotAByteChannel` should
+  pin today's behaviour and cite SECRETS.md §3.3.6 (b), so that design has to
+  argue with a test.
+
+- **[behaviour to pin] git executes repo-local configuration even under snug's
+  identity neutering.** Measured with `GIT_CONFIG_GLOBAL=/dev/null` and `HOME`
+  unset: a payload-authored `.git/hooks/pre-push` and `core.fsmonitor` both ran.
+  This is git working as designed and is not a snug defect; it is pinned because
+  it is the measurement that rules out argv filtering as a boundary for any
+  git-touching tool. `TestGitExecutesRepoLocalConfigWithGeneratedIdentity`.
+
+- **[host-global procfs] `/proc/interrupts` and `/proc/softirqs` are readable
+  inside** and count host-wide events — a coarse activity channel. `sched_debug`,
+  `timer_list` and `kcore` are not readable. Assert the *set* rather than the
+  site, so a future `/proc` change shows up as a diff.
