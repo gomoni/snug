@@ -89,7 +89,7 @@ func TestGoldenBwrapArgs(t *testing.T) {
 // INDEX §12.1 has claimed @null golden coverage since M0 and never delivered
 // it, because @null could never actually resolve (Resolve refused it before
 // there was ever an argv to pin). This delivers it under the honest name: there
-// is no @null profile any more (MVY0), so what this pins is the RESOLVER's
+// is no @null profile any more, so what this pins is the RESOLVER's
 // floor, not a profile's.
 //
 // It is a separate test from TestGoldenBwrapArgs, rather than another row in

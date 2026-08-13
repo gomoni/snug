@@ -9,7 +9,7 @@ import (
 	"github.com/gomoni/snug/internal/policy"
 )
 
-// MVY1, item 7: everything the staging layer adds — claudeFiles' staged
+// The profile-model hardening, item 7: everything the staging layer adds — claudeFiles' staged
 // credentials, stageGhConfig's generated hosts.yml, the ssh-agent and
 // container proxy sockets — is added to the policy AFTER policy.Resolve
 // returns, which means it is added AFTER Resolve's own Validate call already

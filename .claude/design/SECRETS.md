@@ -4,19 +4,19 @@
 is analysis, not a decision. It exists so each decision is made against measured
 ground truth rather than against what the comments say.
 
-Builds on the MVY2 findings, which used to live in `TODO.md` and are now
+Builds on **the earlier secrets audit**, whose findings are now
 [issue #18](https://github.com/gomoni/snug/issues/18). Where this contradicts
-them it says so and gives the measurement.
+that audit it says so and gives the measurement.
 
 **[M]** measured on this host this pass (method in the appendix) · **[R]**
-reasoned from code or docs, not executed · **[M-prior]** measured by MVY2, not
+reasoned from code or docs, not executed · **[M-prior]** measured by that audit, not
 re-measured.
 
 Versions at measurement: snug `d3e6430`, claude 2.1.226, gh 2.96.0, podman
 5.8.3, bwrap 0.11.2, git 2.55.0, Go 1.26.5.
 
 **Re-checked against `ae848de` (2026-08-09), and two findings had moved.** §1.2d
-is **fixed** — MVY1 reduced the post-resolution writers to one and made the
+is **fixed** — the profile-model hardening reduced the post-resolution writers to one and made the
 masking exemption a field rather than a kind heuristic. §1.3's measurement is
 **no longer reproducible on this tree**: it was taken with `@podman-socket` and
 no `@net`, and the profile now includes `net` unconditionally, so the "egress
@@ -100,8 +100,8 @@ handed them later.
 
 ### 1.1 What snug touches today
 
-MVY2's table is right in shape and wrong or incomplete in five places. The
-column that matters most is the last, and MVY2 did not have it.
+The earlier audit's table is right in shape and wrong or incomplete in five places. The
+column that matters most is the last, and the earlier audit did not have it.
 
 | # | secret | where it lands | who can read it | authority | outlives sandbox? |
 |---|---|---|---|---|---|
@@ -113,25 +113,25 @@ column that matters most is the last, and MVY2 did not have it.
 | 5 | ssh private keys | **never** (`internal/sshproxy`) | nothing — no key material crosses | signing oracle, one pinned key | **no** — dies with the proxy |
 | 6 | host container-registry auth | **never enters the sandbox**, but the engine may use it on the sandbox's behalf | — | pull/push as you | broker-shaped already, and undocumented **[R]** |
 
-**Corrections to MVY2:**
+**Corrections to the earlier audit:**
 
-- **The scope list was wrong.** MVY2 wrote two scopes; measured, there are five,
+- **The scope list was wrong.** The earlier audit wrote two scopes; measured, there are five,
   including `user:mcp_servers` and `user:sessions:claude_code`. If the last
   grants read access to Claude Code *sessions*, the blast radius is not "quota
   theft" but "read the transcripts of every other project on this account".
   Nobody has established what it does (Q3).
-- **MVY2 counted one Anthropic credential; there are two, unequally severe.**
+- **The earlier audit counted one Anthropic credential; there are two, unequally severe.**
   The access token expires in hours; the refresh token had ~20 days left and
   mints access tokens. "Until expiry" hides a factor of sixty. Splitting rows
   1a/1b is the whole of the severity argument, and it makes visible a cheap
-  mitigation MVY2 did not propose (§3.5).
+  mitigation the earlier audit did not propose (§3.5).
 - **`ANTHROPIC_API_KEY` is not merely leaky, it is authoritative.** Measured:
   with it set, Claude Code sends `x-api-key: <value>` and does **not** send the
   OAuth `Authorization: Bearer`. So `@claude` can put a long-lived org API key
-  in `/proc/self/environ` and have it be the credential actually in use. MVY2
+  in `/proc/self/environ` and have it be the credential actually in use. The earlier audit
   called this a rule violation; it is also a severity upgrade, because an org
   key is typically not user-scoped and not auto-expiring.
-- **Row 6 did not exist in MVY2.** `internal/engine` starts the podman service
+- **Row 6 did not exist in the earlier audit.** `internal/engine` starts the podman service
   with `HOME` set to the host's home (`engine.go:189`), and podman resolves
   registry credentials from `$HOME/.config/containers/auth.json`. This host has
   none **[M]**, so nothing was observed; on a host that has one, a
@@ -140,7 +140,7 @@ column that matters most is the last, and MVY2 did not have it.
   `import`, so `images/{name}/push` is reachable **[R, `proxy.go:270`]**. A
   credential broker that already exists, was never designed as one, and has no
   allowlist over *which registry*.
-- **MVY2 said `~/.claude.json` carries "no token".** True on this host **[M]**,
+- **The earlier audit said `~/.claude.json` carries "no token".** True on this host **[M]**,
   but the file has two structural slots for one: `mcpServers[*].env` (a map
   injected into MCP server processes; empty here) and, in the sibling
   `settings.json` that `@claude` binds read-only, `env` and `apiKeyHelper`. "No
@@ -179,13 +179,13 @@ falsifies the one artifact whose entire purpose is to be trustworthy, and it
 makes "just dry-run it to see what it would do" advice that touches your
 credential store. Q9 is the trade.
 
-**(b) `--dry-run` denies, on screen, the credential it is staging. [M]** MVY2
-found this for `~/.claude`; it is worse. With an identity profile, one screen
+**(b) `--dry-run` denies, on screen, the credential it is staging. [M]** The
+earlier audit found this for `~/.claude`; it is worse. With an identity profile, one screen
 prints `data /home/u/.config/gh/hosts.yml (identity)` and, eleven lines
 below, lists `~/.ssh ~/.gnupg ~/.aws ~/.config/gh ~/.kube …` under *"NOT GRANTED
 (never mounted — these read as absent, they are not hidden)"* — reporting as
 absent the very directory it has just staged an `admin:public_key` token into.
-Cause is MVY2's: `covered()` (`cmd/snug/dryrun.go:315`) only considers
+Cause is the earlier audit's: `covered()` (`cmd/snug/dryrun.go:315`) only considers
 `KindBind`.
 
 **(c) `--dry-run` prints secret values in cleartext, twice. [M]** Once in
@@ -199,7 +199,7 @@ finding was that `BindSocket` was a *third* path writing straight into
 `p.Mounts`, bypassing `join` and `rejectMasking` alongside `replace` and
 `claudeFiles` — so invariant 1 named one exception where there were three.
 
-**Commit `af5f550` (MVY1) closed both halves, and the current shape is stronger
+**Commit `af5f550` (the profile-model hardening) closed both halves, and the current shape is stronger
 than the fix this document was going to ask for.** Provenance is now a parameter
 (`internal/policy/types.go:243`), and `cmd/snug/container.go:55` passes
 `"(containers)"`; measured, `--dry-run -p @podman-socket` prints `rw
@@ -328,7 +328,7 @@ channel closes only when the engine moves into the sandbox's netns
 
 This remains a redteam finding rather than a secrets finding, and it is here
 because it invalidates the broker plan's most attractive property — *"a brokered
-Claude needs no `@net`, so exfiltration is closed by construction"* (MVY2). That
+Claude needs no `@net`, so exfiltration is closed by construction"* (that audit). That
 holds only if no other profile opens a channel, and one does. The credential
 half of the same hole is §3.8.
 
@@ -348,7 +348,7 @@ dies with the run converts "the agent was compromised" into "…for twenty
 minutes, and then it was over". *dies with the sandbox / hours / days /
 indefinite.*
 
-**A2. Can it extend its own life or scope?** The axis MVY2 lacked, and the one
+**A2. Can it extend its own life or scope?** The axis the earlier audit lacked, and the one
 separating the two halves of the same file. A refresh token mints access tokens;
 `admin:public_key` mints an SSH key — independent, non-expiring, and surviving
 revocation of the token that created it. A token that can create tokens is not a
@@ -428,7 +428,7 @@ The human issues a narrow credential: a fine-grained PAT scoped to one
 repository, a GitHub App installation token (1 h, repo-scoped), an Anthropic key
 on a dedicated low-limit workspace. **Abuse:** *whatever the vendor's scope
 permits, for the credential's lifetime, which outlives the sandbox.* Cost is
-documentation; there is no code. It does not protect A1 — MVY2's objection, and
+documentation; there is no code. It does not protect A1 — the earlier audit's objection, and
 correct.
 
 **It is nonetheless the strongest single lever available**, because it is the
@@ -456,7 +456,7 @@ cannot read the credential, cannot use the account afterwards, cannot reach an
 endpoint outside the allowlist.*
 
 **For Anthropic the cost is small and the shape is confirmed [M]**, measured this
-pass independently of MVY2: Claude Code honours `ANTHROPIC_BASE_URL` over **plain
+pass independently of the earlier audit: Claude Code honours `ANTHROPIC_BASE_URL` over **plain
 HTTP** to a loopback address (no CA, no TLS, no certificate wiring); across two
 runs the *only* endpoint called was `POST /v1/messages?beta=true`, so the
 allowlist is one rule, not three; auth is `Authorization: Bearer sk-ant-oat01-…`
@@ -489,8 +489,8 @@ The proposal: *mount a stub in place of the `gh` binary which (a) implements the
 same sandbox policy for the command — e.g. refuses accessing paths outside the
 grants — and (b) calls the real `gh` with the proper tokens.*
 
-MVY2 filed this under "user-scripted wrapper = arbitrary host code execution"
-and dismissed it. **That dismissal does not apply as written.** MVY2 objected to
+The earlier audit filed this under "user-scripted wrapper = arbitrary host code execution"
+and dismissed it. **That dismissal does not apply as written.** The earlier audit objected to
 a *user-supplied script* deciding on sandbox-controlled input; a snug-authored
 stub with a snug-authored filter is the same authorship as `dockerproxy`, which
 the project already accepts. And the staging mechanism already exists and was
@@ -566,7 +566,7 @@ the host's `~/.config/gh`, the host's `~/.netrc`; it writes to whatever cwd it i
 given; it spawns `git`, which reads all of that again. The argv filter is
 necessary and nowhere near sufficient.
 
-**The synthesis MVY2 missed:** *snug can sandbox its own helper.* Run the
+**The synthesis the earlier audit missed:** *snug can sandbox its own helper.* Run the
 host-side tool in a second, tighter snug sandbox — no `$HOME` but a generated
 config directory, no `@net` beyond the vendor's host, no target bind, credential
 staged in *that* sandbox where nothing the agent controls runs. The argv filter
@@ -586,7 +586,7 @@ constructing the invocation — or calling the vendor's REST API directly.
 **Abuse:** *a hostile process can perform any operation in snug's verb set, with
 field values it chose, for the sandbox's lifetime.* Short, complete, reviewable.
 
-This is MVY2's "shape 2" wearing the stub's clothes, and the clothes matter: MVY2
+This is the earlier audit's "shape 2" wearing the stub's clothes, and the clothes matter: it
 dispreferred a verb broker because "the agent's real tools do not speak it", and
 a stub on `PATH` fixes that — *provided it is not named after the real tool*.
 Naming it `gh` would be a lie an agent acts on, assuming the full `gh` surface
@@ -602,12 +602,12 @@ naming decision with a security consequence, and the same argument
 | **blast radius if the filter is right** | the allowlist | the allowlist **plus** everything the host binary does on its own (host config, host cwd, spawned `git`) |
 | **blast radius if the filter is wrong** | one extra API call | **arbitrary host code execution** (`gh extension install`) |
 | **how it is reviewed** | read ~10 rules against an API reference | read N subcommand grammars against `--help` output that has no schema |
-| **vendor ships a new flag** | invisible; the wire is unchanged | unknown flag → **default-deny → tool errors visibly**. *MVY2 implied this was the discriminator. It is not — both fail closed and loudly* |
+| **vendor ships a new flag** | invisible; the wire is unchanged | unknown flag → **default-deny → tool errors visibly**. *The earlier audit implied this was the discriminator. It is not — both fail closed and loudly* |
 | **vendor changes a flag's meaning** | n/a | silent widening. **This is the real discriminator** |
 | **adapter out of date** | endpoint moves → "Claude stops working" | verb refused → "that command stopped working" |
 | **escape hatches in the surface** | none — an endpoint is an endpoint | `gh api`, `gh alias`, `gh config`, trailing `git` args. **Fatal** |
 
-**The honest verdict.** The argv stub is *not* "not a security boundary"; MVY2
+**The honest verdict.** The argv stub is *not* "not a security boundary"; the earlier audit
 overstated. It is a boundary whose specification is a CLI's argv grammar instead
 of a protocol, worse in two specific ways: a wrong decision costs host code
 execution rather than one API call, and a flag's semantics can change without its
@@ -1087,7 +1087,7 @@ what it does at the ~8 h boundary, was **not tested this pass** (the probe neede
 a copy of the real credential file and was refused by tooling, correctly). **A
 five-minute experiment; run it before believing this** (Q4).
 
-Generalises to `~/.claude.json`: MVY2 measured that it is not needed at all
+Generalises to `~/.claude.json`: the earlier audit measured that it is not needed at all
 **[M-prior]**; if that survives re-measurement, the 56 KB host inventory should
 be *generated minimal*, not copied — the "generate, don't bind" rule the project
 already applies to `.gitconfig` and `hosts.yml`.
@@ -1592,7 +1592,7 @@ should be checked first.
 ## 4. Interactions with the profile model
 
 - **A `broker` key needs sub-structure** (`host`, `listen`, `env`, a *secret
-  reference*, an `allow` list) — MVY2 covered this. Additions: it would be the
+  reference*, an `allow` list) — the earlier audit covered this. Additions: it would be the
   first **declarative** profile key whose value *references a secret* — **not the
   first, as this bullet claimed until 2026-08-13**: `identity.gh_user`/`gh_host`
   already select which host account's OAuth token is minted and staged inside
@@ -1606,7 +1606,7 @@ should be checked first.
   monotonicity — adding a profile can only widen the broker, so a "read-only
   GitHub" profile cannot prevent a second profile widening it, and that must be
   said out loud; and two profiles declaring a broker on the same `listen` address
-  is MVY1's same-path conflict and should be **fatal**, because silently picking
+  is the same-path conflict of INDEX §3.4 and should be **fatal**, because silently picking
   one makes the effective credential boundary depend on profile order.
 - **A `stub` key would be the first key that stages an executable.** Today a
   profile stages one by binding a file *inside* `policy.StagedBinDir`, and that is
@@ -1630,9 +1630,9 @@ should be checked first.
 - **`--dry-run`'s `covered()` must understand `KindData`** (§1.2b). A correctness
   fix to the trust artifact, not a feature.
 - **A broker socket must be staged through `Policy.Replace`, not written into
-  `p.Mounts` directly** (§1.2d). MVY1 reduced the post-resolution writers to
+  `p.Mounts` directly** (§1.2d). That hardening reduced the post-resolution writers to
   exactly one and made `rejectMasking` exempt on the `Authored` field; a broker
-  that bypasses `Replace` re-opens the hole MVY1 closed, and would do it in the
+  that bypasses `Replace` re-opens the hole it closed, and would do it in the
   one place — a socket carrying a credential — where the provenance line matters
   most.
 - **A broker socket is a new *kind* of hole in the `--dry-run` rendering.** Today
@@ -1781,7 +1781,7 @@ document states the split, so the next reader will cite one at the other.
 
 ### D1 (was Q1) — the principle. SETTLED.
 
-**The problem being fixed.** MVY2's principle text is good and mostly worth
+**The problem being fixed.** The earlier audit's principle text is good and mostly worth
 keeping verbatim, but it is written as an absolute (*"No credential … is placed
 inside the sandbox"*) and then carries an exception (*"a profile may still stage
 a real credential"*) that swallows it. An invariant with an exception can only be
@@ -2146,6 +2146,6 @@ Scratch under `$CLAUDE_JOB_DIR/tmp/sec`; `snug` built from `d3e6430` at
 | no `auth.json` on this host | `ls ~/.config/containers/` and `$XDG_RUNTIME_DIR/containers/` |
 
 **Explicitly not measured this pass**, and each one is cheap: Q3
-(`user:sessions:claude_code`), Q4 (Claude without `refreshToken`), MVY2's claim
+(`user:sessions:claude_code`), Q4 (Claude without `refreshToken`), the earlier audit's claim
 that `~/.claude.json` is unnecessary, and whether `gh` can be MITM'd via
 `GH_HOST` + `SSL_CERT_FILE`.

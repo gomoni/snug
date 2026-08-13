@@ -357,7 +357,7 @@ podman   = "socket"               # off < socket < build
   ssh_mode  = "agent-proxy"
 ```
 
-There is deliberately no `[profile.null]`. It was tried and removed (MVY0): a profile that grants nothing is a preference wearing a profile's clothes, and it is unreachable by its own documented purpose besides — `-p` only ever ADDS to `defaults`, so `-p @null` cannot subtract them, and cannot show "the true empty base" it claimed to. The floor of the lattice does not need a name in this file; it is what `Resolve` returns for an empty selection, and it is reachable directly with `snug --no-defaults --dry-run <dir>`. `-p @null` is a retired name that errors, naming `--no-defaults`.
+There is deliberately no `[profile.null]`. It was tried and removed: a profile that grants nothing is a preference wearing a profile's clothes, and it is unreachable by its own documented purpose besides — `-p` only ever ADDS to `defaults`, so `-p @null` cannot subtract them, and cannot show "the true empty base" it claimed to. The floor of the lattice does not need a name in this file; it is what `Resolve` returns for an empty selection, and it is reachable directly with `snug --no-defaults --dry-run <dir>`. `-p @null` is a retired name that errors, naming `--no-defaults`.
 
 Nor is there a `[profile.default]`. **What a bare `snug <dir>` selects is the `defaults` *setting***, built in at `internal/profile/defaults.go` (`@sys @home @cwd-rw @parent-ro`) and replaceable wholesale by `defaults = [...]` in `~/.config/snug/config.toml`, because a default *selection* is a preference and a profile is a *grant*. `-p` adds to it; `--no-defaults` declines it.
 
@@ -884,7 +884,7 @@ The previous generation (`/home/u/projects/work/team/agent-sandbox`, ~45 Go file
 - **The daemon (`engined`).** The prior project had already removed it, for a structural reason worth restating: podman must live inside the run's own netns, so the netns must be *owned by the run*, so there is one process tree per run and nothing to share. **What is lost:** a warm, shared container engine across runs. **How `snug` compensates:** per-sandbox storage is *persistent on disk* keyed by profile+target (§8), so the recurring cost is engine startup rather than re-pulling images; and the engine is started **lazily**, only when the sandbox's first request reaches the proxy socket.
 - **`allowlist_root = false`** — the escape hatch that inverted the model back to "whole host read-only plus masks". **Removed with no replacement.** It is not expressible: it requires a `mask` concept, and `snug` has no subtraction. This is the single largest deviation from the prior config, and it is the point of the rewrite. If you want the whole host readable, say `ro = ["/"]` in a profile in your *own* config directory, and `snug --dry-run` will show you exactly what you did.
 - **`mask = [...]`** — a deny list. Removed for the same reason. In the prior design, `mask` was needed because the base was permissive; with an empty base there is nothing to mask.
-- **The `@null` profile as an explicit lattice floor.** Tried, then removed (MVY0) — see §2.6.
+- **The `@null` profile as an explicit lattice floor.** Tried, then removed — see §2.6.
 - **Scalar override by include order.** Replaced by permissive-ward joins (§2.3).
 - **`offline` and `network = "offline"`.** Offline is the absence of `@net` (§2.3).
 - **The `AGENT_*` env-var surface** as a primary interface. The CLI and profiles are the interface.

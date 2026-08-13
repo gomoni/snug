@@ -108,7 +108,7 @@ func (f *fakeEnv) Gid() int { return 1000 }
 // `combo`, or a fixture that grants nothing without being `@null`, belongs.
 func testRegistry() map[string]*Profile {
 	return map[string]*Profile{
-		// Unmarked deliberately: there is no @null builtin (MVY0) — a profile
+		// Unmarked deliberately: there is no @null builtin — a profile
 		// that grants nothing is a preference, not something snug ships. This
 		// fixture plays the part of a hand-written profiles.d entry that
 		// happens to grant nothing, which TestFailsClosed still needs to
@@ -865,7 +865,7 @@ func TestPATHIsOrderIndependent(t *testing.T) {
 	}
 }
 
-// ── MVY0: @null is retired, and the floor it used to name has no profile ────
+// ── @null is retired, and the floor it used to name has no profile ──────────
 
 // The lattice floor, asserted directly. Before this test, deny-by-default was
 // only ever INFERRED — from the absence of a leak somewhere else. Resolve's
@@ -924,7 +924,7 @@ func mountGuests(p *Policy) []string {
 func TestRetiredNullProfileNamesTheFix(t *testing.T) {
 	_, err := Resolve(testRegistry(), append(append([]string{}, testDefaults...), "@null"), testCtx(), newFakeEnv())
 	if err == nil {
-		t.Fatal("-p @null was accepted; there is no @null profile any more (MVY0)")
+		t.Fatal("-p @null was accepted; there is no @null profile any more")
 	}
 	if !strings.Contains(err.Error(), "--no-defaults") {
 		t.Errorf("the error should point at --no-defaults, got: %v", err)
@@ -952,7 +952,7 @@ func TestRetiredNullProfileNamesTheFix(t *testing.T) {
 	}
 }
 
-// ── MVY1: positive controls for the nesting rules ───────────────────────────
+// ── Positive controls for the nesting rules ─────────────────────────────────
 //
 // The rules Validate now enforces (RULE 2, RULE 4) are permissive in three
 // shipped arrangements, and a future tightening must not be able to break any
@@ -1066,7 +1066,7 @@ func TestRelativeProfilePathIsRefused(t *testing.T) {
 	}
 }
 
-// TestAUserProfileNamedNullBeatsTheRetiredTable — MVY0 red team. `null` is a
+// TestAUserProfileNamedNullBeatsTheRetiredTable — red team. `null` is a
 // perfectly legal name for a profile someone defines on their own host, and the
 // retired table used to be consulted FIRST, so `snug profile show @null` told
 // that user their profile did not exist and lectured them about a builtin they
@@ -1082,7 +1082,7 @@ func TestAUserProfileNamedNullBeatsTheRetiredTable(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "--no-defaults") {
 		t.Errorf("with a user profile named null present, @null must point at THEIR profile, "+
-			"not recite MVY0's reasoning about a builtin they never had: %v", err)
+			"not recite snug's reasoning about a builtin they never had: %v", err)
 	}
 	for _, want := range []string{"one of yours", "mine.toml"} {
 		if !strings.Contains(err.Error(), want) {

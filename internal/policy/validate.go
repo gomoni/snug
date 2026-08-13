@@ -52,8 +52,8 @@ func (p *Policy) Validate(env Environ) error {
 	switch {
 	case !hasRuntime && !hasTarget && len(p.Profiles) == 0:
 		// Nothing was selected AT ALL — not "a profile that happens to grant
-		// nothing", there is no such profile any more (see @null's removal,
-		// MVY0). This is the lattice floor: /proc, /dev, /tmp and
+		// nothing", there is no such profile any more (see @null's removal).
+		// This is the lattice floor: /proc, /dev, /tmp and
 		// /etc/resolv.conf, and no KindBind anywhere. It is the correct result
 		// of resolving an empty selection, and it is also --no-defaults's exact
 		// destination — say so, since that is the flag whoever got here typed
@@ -142,7 +142,7 @@ func (p *Policy) Validate(env Environ) error {
 		// ordering is tuned for an unrelated reason. Refuse the whole path
 		// instead: bwrap's root is already a tmpfs, so a profile has nothing to
 		// gain here, and an invariant with no exception can be checked by
-		// grepping for one. (redteam, MVY1.)
+		// grepping for one. (redteam.)
 		if g == "/" && !m.Authored {
 			return fmt.Errorf("profile %s puts %s at /, but the sandbox root is snug's own:\n"+
 				"       it is already an empty tmpfs, and the masking rule cannot see inside a grant\n"+

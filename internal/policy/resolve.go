@@ -754,7 +754,7 @@ func Expand(reg map[string]*Profile, selected []string) (map[string]*Profile, er
 // profile list", the same shape TestRetiredPublishAutoIsAHardError already
 // uses for a retired TOML key.
 var retiredProfiles = map[string]string{
-	"null": "there is no @null profile (MVY0): a profile that grants nothing " +
+	"null": "there is no @null profile: a profile that grants nothing " +
 		"is a preference, not a grant. The lattice floor is what an empty " +
 		"selection already resolves to — use --no-defaults, not -p @null",
 }
@@ -772,7 +772,7 @@ func UnknownProfile(reg map[string]*Profile, name string) error {
 	// The user's OWN profiles are checked before the retired table, not after.
 	// `null` is a perfectly legal name for a profile someone defines, and the
 	// table used to preempt it: `snug profile show @null` told that user their
-	// profile did not exist, pointing them at MVY0's reasoning about a builtin
+	// profile did not exist, pointing them at snug's reasoning about a builtin
 	// they had never heard of. A retired name is only retired when nothing on
 	// this host defines it.
 	bare := strings.TrimPrefix(name, Sigil)
