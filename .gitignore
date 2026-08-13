@@ -1,1 +1,12 @@
 bin/
+
+# Working documents: implementation plans, review write-ups, red-team round
+# reports, buildable specs. One committed design document per subject lives in
+# .claude/design/; the process that got there does not.
+#
+# Ignored rather than merely untracked, and that is the point: these files were
+# once removed with `git rm --cached` and a later `git add -A` in the same
+# session put every one of them straight back, including a plan that had been
+# deliberately untracked from the day it was written. An instruction a command
+# can quietly undo is not a rule.
+.claude/scratchpad/

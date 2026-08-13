@@ -798,18 +798,20 @@ Wrong three ways.
   their abstract namespace".
 
 **Correction of fact, and the `[R]` is retired.** The first draft said *"there is
-no `--cap-drop` anywhere in `internal/policy`"*. True on `main`; **false on
-`forkexec-supervisor`**, which passes `--cap-drop ALL` unconditionally
-(`internal/policy/bwrap.go:118`, landed `898bfbe`) after a red team found it
-missing. **[M]** on both topologies the payload's `CapInh/CapPrm/CapEff/CapBnd/CapAmb`
-are all zero, `NoNewPrivs: 1`, `Seccomp: 2`, and `AF_PACKET`/raw sockets fail
-`EPERM`. It also survives a hypothetical seccomp bypass: **[M]** a nested userns
-with a full effective set still cannot open a raw socket over a *foreign* netns,
-because `CAP_NET_RAW` is evaluated against the userns that **owns** the netns.
+no `--cap-drop` anywhere in `internal/policy`"*. That was true of the tree it was
+written against and is **no longer true of any tree**: the supervisor merge
+brought `--cap-drop ALL`, passed unconditionally
+(`internal/policy/bwrap.go:118`), after a red team found it missing. **[M]** on
+both topologies the payload's `CapInh/CapPrm/CapEff/CapBnd/CapAmb` are all zero,
+`NoNewPrivs: 1`, `Seccomp: 2`, and `AF_PACKET`/raw sockets fail `EPERM`. It also
+survives a hypothetical seccomp bypass: **[M]** a nested userns with a full
+effective set still cannot open a raw socket over a *foreign* netns, because
+`CAP_NET_RAW` is evaluated against the userns that **owns** the netns.
 
-So the conclusion held and the stated reason did not — on `main` the guarantee
-rests on **bwrap's default**, which is precisely what "never trust a helper's
-default" forbids relying on. That is a finding against `main`, independent of D.
+The conclusion held and the stated reason did not, which is the part worth
+keeping: for one milestone the guarantee rested on **bwrap's default** while the
+document asserted it as a property. That is the shape "never trust a helper's
+default" exists to catch, and it was caught by measuring rather than by reading.
 
 *Related, and it is the engine phase that opens it:* **[M]** the only thing
 between the payload and a DNS server on a shared resolver address is
@@ -1261,8 +1263,12 @@ matter.
    (`SUPERVISOR-DESIGN.md` §1). Either set it after pasta has attached, or not at
    all. Independent of secrets, the stage is worth making non-dumpable: it holds
    `CAP_SYS_ADMIN` over its user and network namespaces for the whole run.
-   *Conditional on unmerged work:* the stage, its re-exec and the P0/P1 split live
-   on `forkexec-supervisor` (PR #11) and are not in this branch's tree.
+   *The stage is now in the tree* — it started as unmerged work this section was
+   written against, and `SUPERVISOR-DESIGN.md` §9 already records the neighbouring
+   finding from its own side: a same-uid ancestor can steal the supervisor's end
+   of the socketpair in the `ready`→`start` window. Both point the same way, and
+   §9 says it in one line — *"much cheaper to design before a pathname socket
+   exists than after"*.
 
 ##### The tension has two resolutions, not three
 
@@ -2009,15 +2015,19 @@ decided to build it. What remains open is not whether but at what cost —
 - The sibling's policy must be **derived** from the resolved parent policy, or
   invariant 6 ("one `Policy`, one author") is gone. Nobody has designed that
   derivation.
-- A sandbox launch per tool invocation, unmeasured, and plausibly fatal to the
-  whole design.
-- §3.3.6's D-sinks leg (1) — egress pinned to one host — has no implementation in
-  the tree, because pasta offers egress or none. Cost this first.
+- A sandbox launch per tool invocation — **measured after this was written**: 245
+  ms and ≈53 MB, a ≈2.2× latency tax, not the fatal problem. §3.3.6 (m).
+- §3.3.6's D-sinks leg (1) — egress pinned to one host — **is buildable after
+  all**, and was measured: `pasta --splice-only` plus a CONNECT allowlist. What it
+  does *not* buy is the thing it was wanted for. §3.3.6 (f), §3.10.
 
-The supervisor stage (`SUPERVISOR-DESIGN.md`, PR #11) is what makes the
-mechanism affordable: P0 already builds a sandbox from a `Policy` and P1 already
-holds the namespaces, so a sibling is a normal operation rather than a fork of
-`main`.
+The supervisor stage (`SUPERVISOR-DESIGN.md`, merged) is what makes the mechanism
+affordable: the supervisor already builds a sandbox from a `Policy` and the stage
+already holds the namespaces, so a sibling is a normal operation rather than a
+fork of `main`. **And it is also where D's largest cost sits**: §8 defers the
+control listener, and §9 records that a same-uid ancestor can already steal the
+supervisor's socketpair end in the `ready`→`start` window. D would make the
+untrusted payload a client of exactly that op. See §3.3.6 (m).
 
 **Q7 — GitHub: build an adapter, or document §3.1 and stop? ANSWERED 2026-08-13,
 and the answer is better than either option as posed.** §3.10 opens the space

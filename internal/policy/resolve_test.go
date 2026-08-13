@@ -294,6 +294,7 @@ func canon(p *Policy) string {
 		p.Net.Mode, p.Net.DNS, p.Net.Publish, p.Net.Nameservers,
 		p.Net.Address, p.Net.Gateway, p.Net.MTU)
 	fmt.Fprintf(&b, "podman %s\n", p.Podman)
+	fmt.Fprintf(&b, "topology %s\n", p.Topology)
 	fmt.Fprintf(&b, "identity %+v\n", p.Identity)
 	fmt.Fprintf(&b, "profiles %v\n", p.Profiles)
 	return b.String()

@@ -160,8 +160,48 @@ func RoutableNameservers(hostServers []string) []string {
 	return out
 }
 
-// PastaArgs builds the pasta invocation for a sandbox whose netns is owned by
-// the bwrap child at childPID.
+// PastaTarget is what pasta must be aimed at: the paths it opens for --netns
+// and --userns. A single pid cannot always produce both — under the stage
+// topology, no process is both IN the sandbox's network namespace N and IN the
+// user namespace U that owns it (bwrap's child is in N but its own userns is a
+// descendant of U with no authority over it) — so the two paths are named
+// separately rather than derived from one pid.
+//
+// SUPERVISOR-DESIGN.md §3.4 measured (0b) that a pid alone cannot express
+// the stage case: after P1 leaves N, /proc/<P1>/ns/net names P1's own empty
+// namespace, and pasta accepts that path SILENTLY and attaches to the wrong
+// one. Handing pasta the descriptor P1 pinned before it moved is refused
+// outright — pasta drops privileges before it opens /proc/self/fd/<n> — so the
+// only reference that works is P1's OWN fd table, named from outside as
+// /proc/<P1>/fd/<n>.
+type PastaTarget struct {
+	NetnsPath  string // what pasta opens for --netns
+	UsernsPath string // what pasta opens for --userns
+}
+
+// PastaTargetChild is today's shape: bwrap's own child owns both N (which
+// bwrap's --unshare-net created) and the userns that owns it, so one pid names
+// both paths.
+func PastaTargetChild(childPID int) PastaTarget {
+	return PastaTarget{
+		NetnsPath:  fmt.Sprintf("/proc/%d/ns/net", childPID),
+		UsernsPath: fmt.Sprintf("/proc/%d/ns/user", childPID),
+	}
+}
+
+// PastaTargetStage is the stage shape: netnsFD is the descriptor P1 pinned on N
+// BEFORE it left — never P1's own /proc/<pid>/ns/net, which after the move
+// names the wrong (empty) namespace and which pasta will accept without
+// complaint.
+func PastaTargetStage(stagePID, netnsFD int) PastaTarget {
+	return PastaTarget{
+		NetnsPath:  fmt.Sprintf("/proc/%d/fd/%d", stagePID, netnsFD),
+		UsernsPath: fmt.Sprintf("/proc/%d/ns/user", stagePID),
+	}
+}
+
+// PastaArgs builds the pasta invocation for a sandbox whose netns and userns
+// are named by t.
 //
 // EVERY security-relevant flag is passed explicitly, even where it matches the
 // current default. pasta is tuned for "make the container work like the host",
@@ -181,7 +221,7 @@ func RoutableNameservers(hostServers []string) []string {
 // TestPastaArgsAlwaysCloseHostLoopback asserts these by name, and an
 // integration test asserts the BEHAVIOUR — because a golden argv test would
 // have passed on the buggy configuration.
-func (p *Policy) PastaArgs(childPID int) []string {
+func (p *Policy) PastaArgs(t PastaTarget) []string {
 	n := p.Net
 	a := []string{
 		// Configure address/routes/MTU inside the netns. NOT implied when
@@ -233,9 +273,9 @@ func (p *Policy) PastaArgs(childPID int) []string {
 	}
 
 	return append(a,
-		"--netns", fmt.Sprintf("/proc/%d/ns/net", childPID),
+		"--netns", t.NetnsPath,
 		// Joining a netns needs CAP_SYS_ADMIN in the userns that owns it.
-		"--userns", fmt.Sprintf("/proc/%d/ns/user", childPID),
+		"--userns", t.UsernsPath,
 	)
 }
 

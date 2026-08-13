@@ -78,6 +78,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -2904,3 +2905,129 @@ build("host ns", {"nsoptions": '[{"Name":"network","Host":true,"Path":""}]'})
 build("unknown option", {"mountfromhost": "/etc"})
 print("PROBE-COMPLETE", flush=True)
 `
+
+// TestAPayloadCannotSignalHostProcesses is the property that makes snug worth
+// running at all, written down after it was violated ON the host by a person
+// rather than by a payload: a stray `pkill -9 -x bwrap`, typed outside any
+// sandbox, killed every Flatpak application on the machine, because Flatpak
+// runs each app under bwrap and pkill matches by name across the whole uid.
+//
+// Inside a sandbox that command is inert, and this test pins why. Three
+// mechanisms, asserted separately so a regression names which one broke:
+//
+//  1. the host's processes are not VISIBLE — a private pid namespace means the
+//     payload's /proc contains only the sandbox;
+//  2. a host pid is not ADDRESSABLE — signalling it by number fails, because
+//     that number means something else (or nothing) in the payload's namespace;
+//  3. name-matched killing finds nothing to match.
+//
+// The positive control is the victim itself: this test kills it from the host
+// afterwards and requires that to work, so "the payload could not kill it"
+// cannot pass on a process that was already dead or unkillable.
+func TestAPayloadCannotSignalHostProcesses(t *testing.T) {
+	budget(t, 20*time.Second)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	// A victim on the HOST, ours, killable, and outside the sandbox entirely.
+	victim := exec.Command("/bin/sleep", "300")
+	if err := victim.Start(); err != nil {
+		t.Fatal(err)
+	}
+	victimPID := victim.Process.Pid
+	defer func() {
+		_ = victim.Process.Kill()
+		_, _ = victim.Process.Wait()
+	}()
+
+	script := `
+echo MARKER-PAYLOAD-RAN
+echo "visible: $(ls -d /proc/[0-9]* 2>/dev/null | wc -l)"
+if [ -d /proc/` + strconv.Itoa(victimPID) + ` ]; then echo "SEES-VICTIM"; else echo "no-victim-in-proc"; fi
+kill -9 ` + strconv.Itoa(victimPID) + ` 2>/dev/null && echo "KILL-BY-PID-ACCEPTED" || echo "kill-by-pid-refused"
+pkill -9 -x sleep 2>/dev/null && echo "PKILL-MATCHED" || echo "pkill-matched-nothing"
+`
+	out, code := cli(t, baseEnv(), proj, "--", "/bin/sh", "-c", script)
+	if !strings.Contains(out, "MARKER-PAYLOAD-RAN") {
+		t.Fatalf("PRECONDITION: the payload never ran; this test cannot prove anything.\n%s", out)
+	}
+	if code != 0 {
+		t.Fatalf("PRECONDITION: the sandbox exited %d\n%s", code, out)
+	}
+
+	if strings.Contains(out, "SEES-VICTIM") {
+		t.Errorf("the payload can see host pid %d in /proc — the pid namespace is not private\n%s",
+			victimPID, out)
+	}
+	if strings.Contains(out, "KILL-BY-PID-ACCEPTED") {
+		t.Errorf("kill -9 %d was ACCEPTED inside the sandbox; a host pid must not be addressable\n%s",
+			victimPID, out)
+	}
+	if strings.Contains(out, "PKILL-MATCHED") {
+		t.Errorf("pkill -x sleep matched something inside the sandbox; name-matched killing must "+
+			"reach nothing outside it\n%s", out)
+	}
+
+	// The victim must still be alive — that is the whole claim.
+	if err := victim.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("the host victim %d is gone after the sandbox ran: %v\n%s", victimPID, err, out)
+	}
+
+	// POSITIVE CONTROL: it was killable all along, from out here.
+	if err := victim.Process.Kill(); err != nil {
+		t.Fatalf("CONTROL FAILED: could not kill the victim from the host either: %v", err)
+	}
+	_, _ = victim.Process.Wait()
+	if err := victim.Process.Signal(syscall.Signal(0)); err == nil {
+		t.Fatal("CONTROL FAILED: the victim survived a kill from the host, so 'the payload could " +
+			"not kill it' proves nothing")
+	}
+}
+
+// TestKillingPidOneFromInsideDoesNotEndTheSandbox is the second half of the
+// same question, and the answer is the kernel's rather than snug's: the payload
+// CAN name pid 1 (it is bwrap, the init of the sandbox's own pid namespace) and
+// signalling it does nothing, because a namespace's init only receives signals
+// from inside that namespace if it has installed a handler for them. SIGKILL
+// cannot be handled, so it is never delivered.
+//
+// Worth a test rather than a comment because it is the difference between "an
+// agent inside can accidentally destroy its own sandbox mid-run" and "it
+// cannot", and nothing in snug's own code would notice if a future topology
+// change made the payload a sibling of the init rather than its descendant.
+func TestKillingPidOneFromInsideDoesNotEndTheSandbox(t *testing.T) {
+	budget(t, 20*time.Second)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	script := `
+echo MARKER-PAYLOAD-RAN
+kill -9 1 2>/dev/null; echo "kill1-exit=$?"
+sleep 0.2
+echo "pid1-still=$(cat /proc/1/comm 2>/dev/null)"
+# Positive control: a sibling in the SAME namespace dies normally, so the
+# survival above is pid 1's protection and not a broken kill.
+sleep 30 & C=$!
+kill -9 $C 2>/dev/null
+sleep 0.2
+if kill -0 $C 2>/dev/null; then echo "CONTROL-FAILED-SIBLING-SURVIVED"; else echo "control-sibling-died"; fi
+echo MARKER-STILL-ALIVE
+`
+	out, code := cli(t, baseEnv(), proj, "--", "/bin/sh", "-c", script)
+	if !strings.Contains(out, "MARKER-PAYLOAD-RAN") {
+		t.Fatalf("PRECONDITION: the payload never ran\n%s", out)
+	}
+	if !strings.Contains(out, "control-sibling-died") {
+		t.Fatalf("PRECONDITION: killing an ordinary sibling did not work, so nothing below is "+
+			"evidence about pid 1\n%s", out)
+	}
+	if !strings.Contains(out, "MARKER-STILL-ALIVE") {
+		t.Errorf("the sandbox did not survive `kill -9 1` from inside\n%s", out)
+	}
+	if !strings.Contains(out, "pid1-still=bwrap") {
+		t.Errorf("pid 1 is not bwrap after the kill; the sandbox's init changed or died\n%s", out)
+	}
+	if code != 0 {
+		t.Errorf("the run exited %d after the payload signalled pid 1\n%s", code, out)
+	}
+}

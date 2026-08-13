@@ -36,6 +36,7 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 			strings.Join(implied, " "))
 	}
 	describeNetwork(out, p)
+	describeTopology(out, p)
 	describeContainers(out, p)
 	describeCommands(out, p)
 	if p.NewSession {
@@ -99,17 +100,24 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 	if p.Net.Mode == policy.NetEgress {
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "── pasta ─────────────────────────────────────────────────────────────────")
-		fmt.Fprintln(out, "pasta "+strings.Join(p.PastaArgs(0), " "))
-		fmt.Fprintln(out, "  (/proc/0/... is a placeholder; the real pid is bwrap's child)")
+		// The placeholder must name the same KIND of reference the real run
+		// uses, or this screen stops being the thing a human can trust: under
+		// NetnsSandbox that is bwrap's child pid (ns/net and ns/user together);
+		// under NetnsStage no single pid can produce both (policy.PastaTarget's
+		// doc comment), so pasta is aimed at a DESCRIPTOR the stage pinned,
+		// named from outside as /proc/<stage>/fd/<n>.
+		if p.Topology.Netns == policy.NetnsStage {
+			fmt.Fprintln(out, "pasta "+strings.Join(p.PastaArgs(policy.PastaTargetStage(0, 63)), " "))
+			fmt.Fprintln(out, "  (/proc/0/fd/63 is a placeholder; the real pid is the stage's, "+
+				"and 63 is fdNetnsN)")
+		} else {
+			fmt.Fprintln(out, "pasta "+strings.Join(p.PastaArgs(policy.PastaTargetChild(0)), " "))
+			fmt.Fprintln(out, "  (/proc/0/... is a placeholder; the real pid is bwrap's child)")
+		}
 	}
 
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "── bwrap ─────────────────────────────────────────────────────────────────")
-	if refusedBy != nil {
-		fmt.Fprintln(out, "(this argv describes the REFUSED policy above; it is not a command you can")
-		fmt.Fprintln(out, " paste and run — see the refusal below)")
-	}
-	fmt.Fprintln(out, formatArgs(args))
+	describeBwrap(out, p, args, refusedBy)
 
 	if refusedBy != nil {
 		fmt.Fprintln(out)
@@ -588,6 +596,173 @@ func describeNetwork(out *os.File, p *policy.Policy) {
 		fmt.Fprintf(out, "NETWORK  HOST — the sandbox SHARES your network namespace.\n")
 		fmt.Fprintf(out, "         Every 127.0.0.1 service, every abstract socket (X11 keylogging and\n")
 		fmt.Fprintf(out, "         screenshots included), and the LAN as you. Requires --i-know.\n")
+	}
+}
+
+// describeTopology is not a debugging convenience either — it is the one place
+// a human learns that snug started a SECOND long-lived process ahead of the
+// sandbox, what that process holds, and when it dies. "No daemon, no service
+// files" is a claim the README already makes; a process that outlives the
+// command belongs on screen with its lifetime rule, printed always — including
+// the one-process case, where saying so plainly is the point (Phase 1 adds no
+// user-visible capability, and this block is how that claim stays checkable
+// rather than merely asserted).
+func describeTopology(out *os.File, p *policy.Policy) {
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "TOPOLOGY")
+	// One denominator, counted the same way in both arms: every long-lived
+	// process snug will run, snug itself included. The two arms used to count
+	// differently — "1 — bwrap only" excluded snug, "2 — snug, and a stage"
+	// excluded bwrap, and neither mentioned pasta — so the one line a human
+	// reads to answer "how many processes" was wrong under either reading.
+	if !p.Topology.NeedsStage() {
+		fmt.Fprintf(out, "  processes       2 — snug and bwrap. No stage, no privileged ancestor namespace.\n")
+	} else {
+		fmt.Fprintf(out, "  processes       4 — snug, a stage (P1) that creates the sandbox's network\n")
+		fmt.Fprintf(out, "                  namespace, pasta attached to that namespace, and bwrap, which\n")
+		fmt.Fprintf(out, "                  the stage forks back into it. (A fifth, __innetns, is the\n")
+		fmt.Fprintf(out, "                  setns shim that becomes bwrap; it never coexists with it.)\n")
+	}
+	fmt.Fprintf(out, "  netns owner     %s\n", p.Topology.Netns)
+	if p.Topology.NeedsStage() {
+		fmt.Fprintf(out, "                  the sandbox's user namespace has a PRIVILEGED ANCESTOR: the\n")
+		fmt.Fprintf(out, "                  stage is root in its own user namespace (U) for the whole run,\n")
+		fmt.Fprintf(out, "                  holding CAP_SYS_ADMIN over the sandbox's network namespace (N)\n")
+		fmt.Fprintf(out, "                  and over the sandbox's own mounts.\n")
+	}
+	fmt.Fprintf(out, "  subuid          %s", p.Topology.Subuid)
+	if p.Topology.Subuid == policy.SubuidNone {
+		fmt.Fprintf(out, " (no delegated range; nothing needs one yet)\n")
+	} else {
+		fmt.Fprintln(out)
+	}
+	if !p.Topology.NeedsStage() {
+		fmt.Fprintf(out, "  control         none — there is no stage to control.\n")
+	} else {
+		// Not "none". There IS a channel, and it is the most authority-bearing
+		// object in the topology: one request on it makes the stage execve an
+		// arbitrary path as root-in-U inside N. Saying "no socket" was the half
+		// a reviewer would use to decide there was nothing here to audit.
+		fmt.Fprintf(out, "  control         an anonymous SOCK_SEQPACKET socketpair, inherited, between snug\n")
+		fmt.Fprintf(out, "                  and the stage. UNREACHABLE from the sandbox: no pathname, no\n")
+		fmt.Fprintf(out, "                  listener, and no descriptor for it in the payload's table. It\n")
+		fmt.Fprintf(out, "                  carries at most two requests — is the network up, then start\n")
+		fmt.Fprintf(out, "                  the sandbox — and the stage exits after the second.\n")
+	}
+	if p.Topology.NeedsStage() {
+		fmt.Fprintf(out, "  host-visible    the stage's namespaces are nameable from the host by a\n")
+		fmt.Fprintf(out, "                  same-uid process, as /proc/<stage>/ns/user and its pinned\n")
+		fmt.Fprintf(out, "                  /proc/<stage>/fd/<n> for N. Measured equivalent to what such a\n")
+		fmt.Fprintf(out, "                  process can already reach without a stage, via NS_GET_USERNS on\n")
+		fmt.Fprintf(out, "                  the sandbox's own namespace descriptors. Same-uid is outside\n")
+		fmt.Fprintf(out, "                  the threat model either way; it is listed so it is not a\n")
+		fmt.Fprintf(out, "                  surprise.\n")
+		fmt.Fprintf(out, "  lifetime        the stage exits when its one payload does, whatever the\n")
+		fmt.Fprintf(out, "                  outcome, and dies with snug even if snug is SIGKILLed. Two\n")
+		fmt.Fprintf(out, "                  mechanisms, covering different failures: an inherited pipe (the\n")
+		fmt.Fprintf(out, "                  lifeline) for a stage that can still run code, and Pdeathsig\n")
+		fmt.Fprintf(out, "                  for one that is stopped and cannot.\n")
+		fmt.Fprintf(out, "  abuse sentence  a hostile process inside the sandbox gains no new reach — the\n")
+		fmt.Fprintf(out, "                  stage is in neither its network namespace nor its pid\n")
+		fmt.Fprintf(out, "                  namespace, binds nothing it can name, and holds no descriptor\n")
+		fmt.Fprintf(out, "                  it can open — but its user namespace now has a privileged\n")
+		fmt.Fprintf(out, "                  ancestor that lives for the whole run, so a userns-escape bug\n")
+		fmt.Fprintf(out, "                  is worth more here than it was.\n")
+	}
+}
+
+// describeBwrap prints the argv, framed by what the argv CANNOT say.
+//
+// Under NetnsStage the bwrap argv no longer determines the network posture.
+// bwrap does not create the sandbox's network namespace on that path — the
+// stage does, then a setns shim puts bwrap inside it — so --unshare-net is
+// absent, and absence has no line. Run exactly as printed, the command lands in
+// the HOST network namespace: MEASURED here, the payload's own
+// readlink /proc/self/ns/net came back byte-identical to the host's and a live
+// 127.0.0.1 listener answered from inside, while the real snug run of the same
+// policy reported a different namespace id and a refused connection. Nothing on
+// the screen said the command was incomplete.
+//
+// That is not a cosmetic defect, and the reader it costs is a specific one:
+// VERIFY.md's whole style is "every line is a command with its expected
+// output", so a reviewer checking the netns guarantee by hand reproduces this
+// argv, gets host loopback and the host's abstract sockets, and concludes
+// either that snug is broken or — worse — that the guarantee is weaker than it
+// is, and writes that down.
+//
+// THREE OPTIONS, and they are not equivalent. The one chosen is prose at both
+// ends of the argv, with the argv itself byte-faithful to what snug passes.
+//
+//   - Print a command that is complete on its own. MEASURED impossible: bwrap
+//     0.11.2 takes --userns FD and --pidns FD and has NO --netns FD, so no
+//     bwrap argv can name an existing network namespace. Making the printed
+//     command self-contained would mean printing a different program (an
+//     nsenter wrapper snug never runs) or adding --unshare-net for display
+//     only — which is paste-safe by being false: an empty netns with no pasta
+//     is a different sandbox, and a screen that lies to be tidy is the
+//     engine-netns finding again.
+//   - Print the stage invocation as well. Honest, and not runnable either (the
+//     pinned descriptor and the hidden verbs do not exist in a shell), and it
+//     duplicates the TOPOLOGY block above, which already says this and has its
+//     own golden. Its one true sentence is adopted below instead.
+//   - Put a marker INSIDE the argv where --unshare-net would be. The only
+//     option a copied FRAGMENT carries with it, and rejected anyway. A '#'
+//     comment line survives the obvious `tr '\n' ' '` join and comments out the
+//     rest of the argv (MEASURED: bwrap then printed usage and exited 1 — fail
+//     closed at this position, but only because the omission is near the top;
+//     the same device further down truncates the mounts and still runs). A
+//     fabricated --flag fails closed loudly but puts a flag in the block that
+//     snug does not pass. Both make the block stop being a rendering of the
+//     argv, and "a value that can author a row in --dry-run is a hole in the
+//     trust artifact even though it escapes nothing" is this file's own rule
+//     (visibleValue). A paste-safety device that corrupts the artifact defeats
+//     the artifact.
+//
+// So the reader optimised for is the one who RUNS what is printed, subject to
+// the block staying byte-faithful for the one who reads a golden diff. What is
+// NOT solved: a human who copies one line out of the middle meets neither end.
+// Nothing that keeps the argv byte-faithful can solve that, which is why the
+// note names the by-hand check that DOES settle the question rather than only
+// warning about the one that does not.
+//
+// The complete topologies get one line saying so, always. It is not decoration:
+// it tells a reviewer that a hand-run IS valid there, and it makes the stage
+// case's warning a contrast rather than an isolated scare. MEASURED, bwrap
+// 0.11.2: --unshare-all yields a netns id different from the host's,
+// --unshare-all --share-net yields the host's exactly.
+func describeBwrap(out *os.File, p *policy.Policy, args []string, refusedBy error) {
+	fmt.Fprintln(out, "── bwrap ─────────────────────────────────────────────────────────────────")
+	if refusedBy != nil {
+		fmt.Fprintln(out, "(this argv describes the REFUSED policy above; it is not a command you can")
+		fmt.Fprintln(out, " paste and run — see the refusal below)")
+	}
+	switch p.Topology.Netns {
+	case policy.NetnsStage:
+		fmt.Fprintln(out, "INCOMPLETE ON ITS OWN — the network namespace is NOT in this argv.")
+		fmt.Fprintln(out, "  The stage created it, pinned it, and a setns shim put bwrap inside it before")
+		fmt.Fprintln(out, "  bwrap ran, so no --unshare-net appears below. Nothing could appear in its")
+		fmt.Fprintln(out, "  place: bwrap takes --userns FD and --pidns FD, and has no --netns FD.")
+		fmt.Fprintln(out, "  RUN AS PRINTED, this command lands in YOUR network namespace and starts no")
+		fmt.Fprintln(out, "  pasta helper — host loopback and the host's abstract sockets (X11, D-Bus)")
+		fmt.Fprintln(out, "  are both reachable, every line of the NETWORK block above is false of what")
+		fmt.Fprintln(out, "  you ran, and what you measured is your own host network.")
+	case policy.NetnsHost:
+		fmt.Fprintln(out, "(this argv determines the network posture on its own: --share-net keeps the")
+		fmt.Fprintln(out, " network namespace of whatever starts bwrap, and snug starts it directly, so")
+		fmt.Fprintln(out, " running it by hand reproduces the HOST networking described above.)")
+	default:
+		fmt.Fprintln(out, "(this argv determines the network posture on its own: --unshare-all creates")
+		fmt.Fprintln(out, " the sandbox's own empty network namespace, so running it by hand reproduces")
+		fmt.Fprintln(out, " it.)")
+	}
+	fmt.Fprintln(out, formatArgs(args))
+	if p.Topology.Netns == policy.NetnsStage {
+		fmt.Fprintln(out, "(the argv ends here and the network namespace was never in it — see the note")
+		fmt.Fprintln(out, " above it. To check the netns by hand, compare inside against outside:")
+		fmt.Fprintln(out, "     readlink /proc/self/ns/net                        # on the host")
+		fmt.Fprintln(out, "     snug -p @net <dir> -- readlink /proc/self/ns/net  # inside")
+		fmt.Fprintln(out, " The two must DIFFER, and an empty answer from either side is a failed check")
+		fmt.Fprintln(out, " rather than a pass: an empty string is != any real namespace id.)")
 	}
 }
 

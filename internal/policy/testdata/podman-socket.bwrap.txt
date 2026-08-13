@@ -1,8 +1,13 @@
---unshare-all
+--unshare-user-try
+--unshare-ipc
+--unshare-pid
+--unshare-uts
+--unshare-cgroup-try
 --uid 1000
 --gid 1000
 --hostname snug
 --die-with-parent
+--cap-drop ALL
 --perms 0755
 --dir /home
 --perms 0755

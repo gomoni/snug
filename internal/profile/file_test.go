@@ -785,3 +785,41 @@ func write(t *testing.T, path, body string) {
 		t.Fatal(err)
 	}
 }
+
+// TestNoTOMLKeyProducesATopology is the other half of internal/policy's
+// TestTopologyIsDerivedNotSettable, and it exists because that test guards the
+// wrong type on its own.
+//
+// Topology is DERIVED — deriveTopology computes it from Net.Mode and Podman —
+// and the whole point is that no file can set it. policy.Profile is what a
+// parsed profile becomes, but rawProfile is what TOML actually decodes into,
+// and internal/policy cannot import this package to check it without a cycle.
+// So the guard has to be written twice, in two packages, over two types.
+//
+// The literal is UNKEYED on purpose: adding a field anywhere in rawProfile
+// breaks this build, which a keyed literal would not. Combined with
+// DisallowUnknownFields — an unknown key is already a fatal parse error — the
+// pair means a `topology = ...` key cannot be introduced without someone
+// deliberately editing this line.
+func TestNoTOMLKeyProducesATopology(t *testing.T) {
+	_ = rawProfile{
+		"",  // Description
+		nil, // Include
+		nil, // RO
+		nil, // RW
+		nil, // Tmpfs
+		nil, // Symlink
+		nil, // Optional
+		nil, // Environ
+		nil, // Env (retired spelling)
+		nil, // Path (retired spelling)
+		"",  // Network
+		false,
+		nil, // Publish
+		"",  // Address
+		"",  // Gateway
+		0,   // MTU
+		"",  // Podman
+		nil, // Identity
+	}
+}
