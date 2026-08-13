@@ -40,7 +40,8 @@ You own the two layers where snug's security actually lives: the **policy model*
    directory, `policy.StagedBinDir` (`/run/snug/bin`), for everything snug puts
    in front of the payload — the generated podman dispatcher and `@claude`'s
    bound binary alike. It is on the root tmpfs, so `--remount-ro /` covers it.
-   `$HOME`, `/tmp`, `$HOME/.cache`, `$HOME/.config`, `$HOME/.local/state` and
+   `$HOME`, `/tmp`, `$HOME/.cache`, `$HOME/.config`, `$HOME/.local/state`,
+   `$HOME/.local/share` and
    `/dev` are all writable, and a command staged in any of them is a **shadow
    slot**: the payload writes `git` there and the next `git` anything in the
    sandbox runs is that file. A *human's own* profile may do this — it is their
