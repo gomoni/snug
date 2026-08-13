@@ -135,6 +135,14 @@ type Policy struct {
 	Identity *Identity
 	Podman   PodmanMode
 
+	// IdentityOwner names the profile that pinned Identity, so a mount staged
+	// AFTER resolution can carry the same `identity:<profile>` provenance as the
+	// ones Resolve stages itself. Without it the public key staged by
+	// startIdentity read `(identity)` while its three siblings on the same
+	// --dry-run screen read `identity:acct-a` — one file attributed to nobody,
+	// in the block whose entire job is saying who asked for what.
+	IdentityOwner string
+
 	// Topology is the process shape this policy requires — DERIVED by
 	// deriveTopology at the end of Resolve, never granted by a profile, a TOML
 	// key or a CLI flag. See topology.go.

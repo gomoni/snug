@@ -111,6 +111,178 @@ func waitForSocket(t *testing.T, path string) {
 	t.Fatalf("ssh-agent never created %s", path)
 }
 
+// sshAgentAndKey starts a throwaway agent with one key loaded and returns the
+// public key path plus SSH_AUTH_SOCK, so a test can write its own profile.
+func sshAgentAndKey(t *testing.T) (pub, sock string) {
+	t.Helper()
+	for _, bin := range []string{"ssh", "ssh-keygen", "ssh-agent", "ssh-add"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("%s is not installed; nothing to measure", bin)
+		}
+	}
+	dir := t.TempDir()
+	key := filepath.Join(dir, "id_ed25519")
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C",
+		"snug-integration@example.invalid", "-f", key).CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen: %v\n%s", err, out)
+	}
+	sock = filepath.Join(dir, "agent.sock")
+	agent := exec.Command("ssh-agent", "-D", "-a", sock)
+	if err := agent.Start(); err != nil {
+		t.Fatalf("ssh-agent: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = agent.Process.Kill()
+		_, _ = agent.Process.Wait()
+	})
+	waitForSocket(t, sock)
+	add := exec.Command("ssh-add", key)
+	add.Env = append(os.Environ(), "SSH_AUTH_SOCK="+sock)
+	if out, err := add.CombinedOutput(); err != nil {
+		t.Fatalf("ssh-add: %v\n%s", err, out)
+	}
+	return key + ".pub", sock
+}
+
+func writeProfile(t *testing.T, toml string, extraEnv ...string) []string {
+	t.Helper()
+	cfg := t.TempDir()
+	pd := filepath.Join(cfg, "snug", "profiles.d")
+	if err := os.MkdirAll(pd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pd, "p.toml"), []byte(toml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return baseEnv(append([]string{"XDG_CONFIG_HOME=" + cfg}, extraEnv...)...)
+}
+
+// The generated ~/.ssh/config carries `IdentitiesOnly yes` and an IdentityFile
+// naming ~/.ssh/id_snug.pub, and resolve.go writes that config for EVERY ssh
+// mode except none. So the key has to be staged for every one of them too: an
+// IdentityFile pointing at a file that does not exist, under IdentitiesOnly, is
+// the state SSHConfig's own doc comment says "would have broken agent auth".
+//
+// Written because a draft of this milestone staged the key inside `case
+// SSHAgentProxy:` and silently dropped it for host-agent. Nothing failed: both
+// modes still start, and the breakage only shows up when ssh declines to offer
+// an identity to a real server.
+func TestThePinnedPublicKeyIsStagedInEverySSHMode(t *testing.T) {
+	pub, sock := sshAgentAndKey(t)
+	proj, _ := target(t)
+
+	for _, tc := range []struct {
+		mode  string
+		flags []string
+	}{
+		{"agent-proxy", nil},
+		// host-agent forwards the whole agent and is gated on --i-know; the
+		// staged key is not what makes it safe, but the ssh config still names
+		// it and ssh still has to find it.
+		{"host-agent", []string{"--i-know"}},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			env := writeProfile(t, "[profile.pinned]\n"+
+				"description = \"one throwaway key\"\n"+
+				"[profile.pinned.identity]\n"+
+				"ssh_mode = \""+tc.mode+"\"\n"+
+				"ssh_key = \""+pub+"\"\n", "SSH_AUTH_SOCK="+sock)
+
+			args := append(append([]string{"--dry-run", "-p", "pinned"}, tc.flags...), proj)
+			out, code := cli(t, env, args...)
+			if code != 0 {
+				t.Fatalf("snug --dry-run exited %d:\n%s", code, out)
+			}
+			if !strings.Contains(out, ".ssh/id_snug.pub") {
+				t.Errorf("ssh_mode = %q stages no public key, while the generated "+
+					"~/.ssh/config names one under IdentitiesOnly:\n%s", tc.mode, out)
+			}
+			// And it must be attributed to the profile that pinned it, like the
+			// three identity files staged beside it. FILESYSTEM rows only — the
+			// bwrap argv block names the same file with no provenance, by design.
+			found := false
+			for _, line := range strings.Split(out, "\n") {
+				if !strings.HasPrefix(strings.TrimSpace(line), "data ") ||
+					!strings.Contains(line, "id_snug.pub") {
+					continue
+				}
+				found = true
+				if !strings.Contains(line, "identity:pinned") {
+					t.Errorf("the staged key is attributed to nobody, while its three "+
+						"siblings on the same screen name the profile: %q", strings.TrimSpace(line))
+				}
+			}
+			if !found {
+				t.Errorf("no FILESYSTEM row for the staged key:\n%s", out)
+			}
+		})
+	}
+}
+
+// A dry run inspects a policy. Refusing to print one because the HOST cannot
+// mint a token makes the policy unreadable on exactly the machines where
+// reading it matters — a CI box, a machine with no gh, someone reviewing a
+// colleague's profile. main.go makes the same call for the @tmp-shared host
+// directory, in as many words.
+func TestDryRunStillPrintsThePolicyWhenTheGhAccountHasNoToken(t *testing.T) {
+	pub, sock := sshAgentAndKey(t)
+	proj, _ := target(t)
+	env := writeProfile(t, "[profile.pinned]\n"+
+		"description = \"an account gh is not logged in to\"\n"+
+		"[profile.pinned.identity]\n"+
+		"ssh_mode = \"agent-proxy\"\n"+
+		"ssh_key = \""+pub+"\"\n"+
+		"gh_user = \"snug-no-such-account-here\"\n", "SSH_AUTH_SOCK="+sock)
+
+	out, code := cli(t, env, "--dry-run", "-p", "pinned", proj)
+	if code != 0 {
+		t.Fatalf("--dry-run refused a policy because the host has no token for the "+
+			"pinned account; it must warn and print (exit %d):\n%s", code, out)
+	}
+	if !strings.Contains(out, "FILESYSTEM") {
+		t.Errorf("--dry-run printed no policy:\n%s", out)
+	}
+	if !strings.Contains(out, "no gh token") {
+		t.Errorf("--dry-run continued without saying the credential is missing, which is "+
+			"the silent downgrade this milestone set out to close:\n%s", out)
+	}
+	// The real run must still refuse. Same code path, opposite verdict, and the
+	// pair is the whole point.
+	out2, code2 := cli(t, env, "-p", "pinned", proj, "--", "/bin/true")
+	if code2 == 0 {
+		t.Errorf("a real run started with no credential for the pinned account:\n%s", out2)
+	}
+}
+
+// An identity that names no gh account gets NO token — not the host's active
+// one. The previous version called `gh auth token` unconditionally, so a profile
+// pinning only an ssh key had whatever account the human last logged into staged
+// inside as `x-access-token`: a credential nobody named, from an account the
+// profile does not mention.
+func TestAnIdentityWithNoGhAccountStagesNoToken(t *testing.T) {
+	pub, sock := sshAgentAndKey(t)
+	proj, _ := target(t)
+	env := writeProfile(t, "[profile.pinned]\n"+
+		"description = \"ssh only, no gh account named\"\n"+
+		"[profile.pinned.identity]\n"+
+		"ssh_mode = \"agent-proxy\"\n"+
+		"ssh_key = \""+pub+"\"\n"+
+		"git_email = \"snug@example.invalid\"\n", "SSH_AUTH_SOCK="+sock)
+
+	out, code := cli(t, env, "--dry-run", "-p", "pinned", proj)
+	if code != 0 {
+		t.Fatalf("snug --dry-run exited %d:\n%s", code, out)
+	}
+	// The positive control: the identity DID take effect, so "no hosts.yml" is
+	// attributable to the gh rule and not to the profile having been ignored.
+	if !strings.Contains(out, "identity:pinned") {
+		t.Fatalf("the identity profile contributed nothing at all:\n%s", out)
+	}
+	if strings.Contains(out, "hosts.yml") || strings.Contains(out, "GH_CONFIG_DIR") {
+		t.Errorf("an identity naming no gh account still staged a gh credential:\n%s", out)
+	}
+}
+
 func TestSSHRunsInsideTheSandboxWhenAnIdentityIsPinned(t *testing.T) {
 	sysconf := hostSystemSSHConfig(t)
 	if sysconf == "" {

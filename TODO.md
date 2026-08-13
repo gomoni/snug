@@ -772,6 +772,37 @@ they are recorded because each one is a shape that will recur.
    block actually asks. This is `SECRETS.md` §1.2b, arriving from a different
    direction.
 
+An independent review of the diff found five more, all fixed in the same branch
+and all worth reading as shapes rather than as incidents:
+
+5. **The public-key read was moved AND narrowed.** Staging it inside `case
+   SSHAgentProxy:` dropped it for `host-agent`, while `resolve.go` generates
+   `~/.ssh/config` for every mode but `none` — `IdentitiesOnly yes` plus an
+   `IdentityFile` naming a file that was no longer there, which is the exact
+   state `SSHConfig`'s doc comment calls broken agent auth. *A move is a
+   behaviour change unless the guard set is identical, and the review question
+   is "what did the enclosing scope add", not "is the new line correct".*
+6. **`--dry-run` refused to print anything** when the host could not mint the
+   token, on the same code path as the new refusal. `main.go` states the
+   opposite policy for the `@tmp-shared` host directory, in as many words:
+   failing on host state makes a dry run refuse a policy the real run might
+   accept. A dry run now warns and prints; a real run still refuses.
+7. **Identity fields could smuggle directives into the files snug generates.**
+   `git_name = "x\u000A[core]\u000A\tsshCommand = …"` writes a git directive
+   into the generated `~/.gitconfig`; `gh_host = "a\u000Ab: {oauth_token: …}"`
+   writes a second host entry into gh's `hosts.yml`.
+   Neither is a Mount, so `Validate` and `rejectMasking` were blind. Pre-existing
+   and not introduced here, but this milestone added a terminal sink for the same
+   text. `Identity.CheckText` now refuses every C0 control and DEL in every
+   identity field, and the two new error messages use `%q`.
+8. **`authored()` keyed on `Kind == KindData`** — the exact proxy `Mount.Authored`
+   was introduced to retire, reintroduced one package over. Now `m.Authored`.
+9. **`authored()` deleted the `~/.ssh` line from NOT GRANTED**, which was
+   technically right (snug does generate files there) and practically a
+   regression: it removed the only sentence saying the host's `~/.ssh` is not
+   mounted. Now qualified — `~/.ssh (host's; snug generates its own here)` —
+   rather than dropped.
+
 Left open, in descending order of how much they matter:
 
 - **[gap] Nothing checks that `ssh_key` and `gh_user` name the SAME account.**
@@ -794,11 +825,40 @@ Left open, in descending order of how much they matter:
   defaults** inside the sandbox — on this host, openSUSE's crypto-policy
   include. Accepted: the alternative was ssh not running. Revisit if a host
   turns up where the defaults are load-bearing rather than cosmetic.
-- **[unchanged] `--dry-run` still mints a real gh token** before the dry-run
-  branch and renders it as an unremarkable `data` row (`SECRETS.md` §4.1,
-  finding 3). Not touched here; the refusal added in (3) runs on the same path,
-  so a dry run now also fails when the account has no token, which is arguably
-  the more honest behaviour and is worth confirming is what we want.
+- **[🟡 host side effect] `--dry-run` starts things, and it is three things, not
+  one.** Confirmed by the red team on this milestone, sharpening `SECRETS.md`
+  §4.1 finding 3 from "it mints a token" to the full set. `startIdentity` is
+  called at `cmd/snug/main.go:296`, *unconditionally*, before the `if cfg.dryRun`
+  branch at :328, and it (a) creates `$XDG_RUNTIME_DIR/snug/run-<pid>/`,
+  (b) opens the ssh-agent proxy's listening socket and starts serving it, and
+  (c) executes `gh auth token --hostname … --user …` on the host. Reproduced
+  with a `gh` shim first on `PATH`: a dry run logs `GH-CALLED auth token
+  --hostname github.com --user …`. `startContainers` at :303 is the same shape.
+
+  Compare :230, where the `@tmp-shared` host directory is deliberately *named
+  and not created* for a dry run. The rule was applied one indirection away and
+  missed here.
+
+  Secondary, same cause: if snug dies before its deferred `idCleanup()` — e.g.
+  `snug --dry-run -p <identity> <dir> | head`, which is SIGPIPE — the runtime
+  dir and `ssh-agent.sock` are left behind. Measured 2→3 leaked sockets on one
+  piped invocation. The leaked socket has no live listener (the goroutine died
+  with the process), so it is stale-file accumulation rather than a live host
+  capability — but "no state that survives them" is a key feature, stated in
+  those words.
+
+  Narrowest fix: thread `dryRun bool` into `startIdentity` and
+  `startContainers`; in a dry run name the socket path instead of binding it,
+  skip the runtime dir, and render the `hosts.yml` row from the policy without
+  minting a token. Regression test (owner: `sandbox-tester`): a dry run spawns
+  no `gh` process and creates no `run-*` directory, with a positive control that
+  catches today's code — the shim IS called and the directory IS created, so a
+  test that cannot see that is measuring nothing.
+
+  Note this milestone made the same path *fail* when the account has no token
+  (finding 3 above), so a dry run now also refuses in that case. That is more
+  honest than staging nothing, and it is a second reason to decide deliberately
+  what a dry run is allowed to do.
 
 ### Prompt could show an unusually wide profile set
 

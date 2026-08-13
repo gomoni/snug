@@ -201,6 +201,13 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 				return nil, fmt.Errorf("profiles %q and %q pin different identities; "+
 					"select only one", identityOwner, name)
 			}
+			// Before anything is expanded or read: every field here ends up
+			// inside a config file snug generates, so a control character
+			// authors a directive that is not a Mount and that nothing
+			// downstream can refuse.
+			if err := prof.Identity.CheckText(name); err != nil {
+				return nil, err
+			}
 			mode, err := ParseSSHMode(string(prof.Identity.SSHMode))
 			if err != nil {
 				return nil, fmt.Errorf("profile %q: %w", name, err)
@@ -243,6 +250,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 			}
 			p.Identity = &id
 			identityOwner = name
+			p.IdentityOwner = name
 		}
 
 		// Network scalars, each joined permissive-ward. A profile can only ever

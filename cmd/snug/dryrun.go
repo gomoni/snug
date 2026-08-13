@@ -89,7 +89,8 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 	fmt.Fprintf(out, "  %-6s %s\n", "ro-/", "everything else is a read-only skeleton (--remount-ro /)")
 
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "  NOT GRANTED (never mounted — these read as absent, they are not hidden):")
+	fmt.Fprintln(out, "  NOT GRANTED (never mounted — these read as absent, they are not hidden;")
+	fmt.Fprintln(out, "  where it says \"host's\", snug generates its own file at that path instead):")
 	for _, line := range notGranted(p) {
 		fmt.Fprintf(out, "    %s\n", line)
 	}
@@ -783,9 +784,19 @@ func notGranted(p *policy.Policy) []string {
 		if _, err := os.Stat(full); err != nil {
 			continue // not on this host either; do not claim credit for it
 		}
-		if !covered(p, full) && !authored(p, full) {
-			absent = append(absent, "~/"+c)
+		if covered(p, full) {
+			continue
 		}
+		// The host's copy is not granted — but if snug generates content at
+		// that path, "reads as absent" is false and this block must not say it.
+		// Qualified rather than deleted: suppressing the line entirely removed
+		// the only sentence on the screen saying the host's ~/.ssh is not
+		// mounted, leaving a reader to infer it from three `data` rows.
+		if authored(p, full) {
+			absent = append(absent, "~/"+c+" (host's; snug generates its own here)")
+			continue
+		}
+		absent = append(absent, "~/"+c)
 	}
 	if len(absent) > 0 {
 		lines = append(lines, strings.Join(absent, "  "))
@@ -823,9 +834,15 @@ func notGranted(p *policy.Policy) []string {
 // block is the artifact a human is supposed to be able to trust.
 //
 // Guest paths, not host paths: a generated file has no host side.
+//
+// Keyed on Mount.Authored, NOT on `Kind == KindData`. types.go records why that
+// field exists: the KindData spelling is a PROXY for "snug wrote this" that had
+// already drifted once, and a future TOML key producing KindData would inherit
+// every exemption written against it. It also under-reports today — a socket
+// staged by BindSocket is authored and is not KindData.
 func authored(p *policy.Policy, guest string) bool {
 	for _, m := range p.Mounts {
-		if m.Kind != policy.KindData {
+		if !m.Authored {
 			continue
 		}
 		if guest == m.Guest || strings.HasPrefix(m.Guest, guest+"/") {

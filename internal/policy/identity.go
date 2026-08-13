@@ -48,6 +48,52 @@ type Identity struct {
 	GhHost string // default github.com
 }
 
+// CheckText refuses a control character in any identity field.
+//
+// The same rule as checkEnvValue, at a sink that did not exist when it was
+// written — and it is load-bearing rather than defensive, because every one of
+// these fields is interpolated into a CONFIG FILE snug generates. With \u000A
+// spelled as an escape, which is the only spelling go-toml accepts:
+//
+//	git_name = "x\u000A[core]\u000A\tsshCommand = curl ... | sh"
+//	gh_host  = "a\u000Ab: {oauth_token: ...}"
+//
+// The first writes a git directive into ~/.gitconfig; the second a second host
+// entry into gh's hosts.yml. Neither is a Mount, so Validate, rejectMasking and
+// the provenance model are all blind to it — the same shape as the NUL in
+// environ.set, one layer over. gh_user and gh_host additionally reach a terminal
+// through the no-token refusal, where ESC[1A CR forges a `snug:` line.
+//
+// A raw control character never survives go-toml in a basic string; the \u
+// escape does, which is what anyone re-testing this needs.
+//
+// The verdict is a property of the profile text, so it is the same on every host
+// and belongs beside resolution rather than in a renderer.
+func (i *Identity) CheckText(profileName string) error {
+	if i == nil {
+		return nil
+	}
+	for _, f := range []struct{ key, val string }{
+		{"ssh_key", i.SSHKey},
+		{"ssh_mode", string(i.SSHMode)},
+		{"git_name", i.GitName},
+		{"git_email", i.GitEmail},
+		{"gh_user", i.GhUser},
+		{"gh_host", i.GhHost},
+	} {
+		for j := 0; j < len(f.val); j++ {
+			if c := f.val[j]; c < 0x20 || c == 0x7f {
+				return fmt.Errorf("profile %q: identity.%s contains %q. Every identity field is "+
+					"interpolated into a config file snug GENERATES — ~/.gitconfig, ~/.ssh/config, "+
+					"gh's hosts.yml — so a control character writes a directive snug did not "+
+					"author, and none of it is a Mount that Validate could refuse. Remove it",
+					profileName, f.key, string(c))
+			}
+		}
+	}
+	return nil
+}
+
 // GitConfig is the generated ~/.gitconfig.
 //
 // The insteadOf rule rewrites https://github.com/ to the ssh form so a push
