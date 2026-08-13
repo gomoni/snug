@@ -2,7 +2,6 @@ CLONE FLAGS (P1, __stage-setup — stageCloneflags)
   CLONE_NEWUSER
   CLONE_NEWNET
   CLONE_NEWNS
-  CLONE_NEWCGROUP
 
 UID MAP
   0 <hostuid> 1

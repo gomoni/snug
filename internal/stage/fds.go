@@ -6,15 +6,29 @@ import (
 )
 
 // stageCloneflags is the exact clone(2) flag set Start passes when it forks
-// P1: a fresh user namespace (U, one uid mapped — SUPERVISOR-DESIGN.md
-// §3.6), a fresh network namespace (N, pinned then left — §1), a private
-// mount namespace (§4 Step 4's `mount("", "/", "", MS_REC|MS_PRIVATE, "")`
-// happens inside it), and a fresh cgroup namespace. It is a named constant
-// rather than an inline expression in Start so that TestGoldenStageSpec
-// watches the SAME value Start uses instead of a re-typed copy of it — a
-// golden that could drift from the code it describes would not be a golden.
+// P1: a fresh user namespace (U, one uid mapped — SUPERVISOR-DESIGN.md §3.6),
+// a fresh network namespace (N, pinned then left — §1), and a private mount
+// namespace (§4 Step 4's `mount("", "/", "", MS_REC|MS_PRIVATE, "")` happens
+// inside it). It is a named constant rather than an inline expression in Start
+// so that TestGoldenStageSpec watches the SAME value Start uses instead of a
+// re-typed copy of it — a golden that could drift from the code it describes
+// would not be a golden.
+//
+// CLONE_NEWCGROUP is deliberately NOT here, and its absence is the point.
+//
+// It was taken originally because the engine will need a cgroup namespace when
+// it moves into N. Nothing in Phase 1 uses one: the stage clones, pins, moves,
+// forks once and then waits. Taking it early cost something real — clone(2)
+// fails as a unit, so a kernel built without CONFIG_CGROUPS killed every `@net`
+// run for a namespace no code read. That is the same "a capability with no
+// consumer" argument this package already applies to subuid delegation, and it
+// was being applied to one of its two halves.
+//
+// The phase that puts an engine in N adds it back, as a conscious edit with a
+// consumer to point at and a golden line to review. TestGoldenStageSpec is what
+// makes that edit visible rather than incidental.
 const stageCloneflags = syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET |
-	syscall.CLONE_NEWNS | syscall.CLONE_NEWCGROUP
+	syscall.CLONE_NEWNS
 
 // Fixed descriptor numbers, and they are constants with names — nothing
 // travels in the environment. /proc/self/environ is passively readable by
