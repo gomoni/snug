@@ -37,8 +37,26 @@ gate:
 # it was 15m it was the ONLY bound, and a single hung test could burn the entire
 # CI job and end in an anonymous goroutine dump. If this timeout fires, the
 # per-test watchdog did not — which is itself the bug worth looking at.
+#
+# SNUG_REQUIRE_SANDBOX=1 make integration used to FAIL outright, every time,
+# on any host — requireInternet (test/integration/sandbox_test.go) correctly
+# treats "require the sandbox but leave SNUG_TEST_NET unset" as a config
+# error rather than a silent skip, because there is no such thing as a
+# "strict but no network" mode: the code has no third state for it. So
+# without this default, the one CLI invocation that means "run the whole
+# committed suite" (this target) was guaranteed to fail unless the caller
+# separately knew to export a second variable — a trap three prior sessions
+# walked into and each recorded as "known pre-existing failure", which it was
+# not. If the caller has already set SNUG_TEST_NET (to anything, including
+# empty-to-opt-out — see requireInternet), that choice is left alone; this
+# only fills in the value SNUG_REQUIRE_SANDBOX already implies. A bare
+# `go test -tags integration ./test/integration/...`, run outside `make`,
+# still gets no defaults and fails loudly if asked to be strict about a host
+# it was not told is allowed to reach the network — exactly per "a bare go
+# test invocation still refuses to pretend".
 integration:
-	go test -tags integration -timeout 4m -v ./test/integration/...
+	SNUG_TEST_NET=$${SNUG_TEST_NET:-$${SNUG_REQUIRE_SANDBOX:+1}} \
+		go test -tags integration -timeout 4m -v ./test/integration/...
 
 # Regenerate the golden argv files, then READ THE DIFF. A change to a golden
 # file is a change to the sandbox boundary.

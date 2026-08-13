@@ -48,23 +48,24 @@ import (
 //     as before — which matters, because snug deliberately keeps the whole
 //     tree in the terminal's foreground process group.
 //
-//   - The window is NOT closed, and the reason is not the one this comment
-//     used to give. It said --die-with-parent "has to travel two process hops
-//     … so it loses the race". MEASURED FALSE: bwrap does not arm the init's
-//     --die-with-parent until the --block-fd read RETURNS, so the init is
-//     unprotected for the whole parked window rather than for an instant at
-//     the start of it. And it is not only SIGKILL: SIGTERM during setup
-//     releases the payload too — 10/10, 6/6 and 3/3 in three independent
-//     runs — because this guard is registered only once readChildPID has
-//     returned, roughly 60ms after bwrap already forked and parked the child.
-//     The signals below are handled correctly; they are simply not yet being
-//     watched for when it matters.
+//   - SIGKILL of snug during the window is NOT closed and CANNOT be closed
+//     from inside snug, which is the whole of what remains. Measured with the
+//     window widened to ~3s by a slow pasta, killing 1.0s in: SIGTERM 0/5,
+//     SIGINT 0/5, SIGKILL 5/5 payload ran with an orphaned sandbox 5/5.
 //
-//     The fix is to arm a pid-less guard immediately after the fork and fill
-//     the pid in later, and beyond that to start pasta before any payload
-//     exists — which the stage topology makes possible and Phase 1
-//     deliberately does not do. TODO.md carries it with its severity and with
-//     the corrected mechanism.
+//     Two things this comment previously got wrong, both now measured. It is
+//     NOT that --die-with-parent "travels two process hops and loses a race":
+//     bwrap does not arm it on the sandbox's init until the --block-fd read
+//     RETURNS, so the init is unprotected for the whole window. And SIGTERM is
+//     NOT open — three reviews said it was, having killed at fixed offsets
+//     (60ms, 100ms) that fall AFTER the release at ~30ms, where the payload
+//     running is correct behaviour rather than a defect.
+//
+//     Arming this guard earlier does not help: the only signal left cannot be
+//     caught. The fix is to remove the window instead — under the stage the
+//     netns exists before bwrap does, so pasta can start FIRST and bwrap can
+//     be forked with no --block-fd at all. TODO.md carries the measurement
+//     that removes the blocker previously recorded against that.
 type parked struct {
 	childPID int
 	teardown func()

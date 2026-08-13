@@ -1200,51 +1200,95 @@ bwrap releases a payload parked on `--block-fd` on **EOF just as readily as on a
 byte**, and snug's own death closes the write end. So between bwrap forking the
 payload and pasta being confirmed up, an exit of snug releases the payload.
 
-**What was claimed and is false.** The previous text said SIGINT/SIGTERM/SIGHUP/
-SIGQUIT were closed (0 in 10, measured) and that only SIGKILL remained, because
-`--die-with-parent` "has to travel two process hops … so it loses the race", and
-therefore "a SIGKILL has to land inside a few tens of milliseconds". Two errors:
+**Measured directly, 2026-08-13, and the earlier numbers in this entry were
+wrong in BOTH directions.** The window is ~12 ms, not ~90 ms, and it is
+**SIGKILL-only** — the catchable signals really are closed.
 
-- **SIGTERM is NOT closed.** MEASURED at 10/10 (round 2), 6/6 at a 60 ms offset
-  (round 3), and 3/3 independently by the architecture review, each with a
-  positive control. The earlier 0-in-10 measured a window the guard already
-  covered. The signal handler is not the problem; **when it is installed** is:
-  `park()` is registered only after `readChildPID` returns (`internal/sandbox/exec.go:180`
-  and `:267`), and bwrap forks and parks the payload well before it writes its
-  `--json-status-fd` document. The guard arms roughly 60 ms too late. This is
-  Ctrl-C, a CI cancel, a timeout wrapper and `systemd` stop — not an edge case.
-- **`--die-with-parent` does not lose a race; it is not armed at all.** MEASURED
-  with a matched pair killing the outer bwrap two seconds after start: bwrap does
-  not arm the init's `--die-with-parent` **until the `--block-fd` read returns**.
-  The init is unprotected for the *whole* parked window, not for an instant at
-  the start of it. The wrong mechanism matters because it points a future editor
-  at "widen the readiness bar", which does nothing.
+*The timeline*, from an instrumented build of the stage arm, milliseconds from
+process start:
 
-Consequences, all measured: SIGKILL in a ~20–110 ms window leaves a **fully
-orphaned sandbox that runs the payload to completion** (7/10 under load), and
-`netHelper.stop()`'s post-`Kill` `<-h.done` was unbounded and could hang forever
-with a payload parked. What the orphan retains was characterised in round 3 and
-is narrower than it sounds: the stage, pasta and the privileged ancestor
-namespace are all gone by then, so what is left is the bwrap tree, unbounded
-runtime and persistent write access to the target — the same shape an orphan on
-the pre-stage path leaves. **It is a lifetime defect, not a confinement defect.**
+```
+13.0  bwrap forked          <- the payload exists and parks from here
+19.5  readChildPID returns
+19.6  park() armed          <- 6.6 ms after the fork, not 60 ms
+30.1  pasta up
+30.2  release               <- the payload legitimately runs from here
+```
 
-**The fix, and why it is not in this branch.** Arm a pid-less guard immediately
-after `st.StartSandbox`/`cmd.Start`, and fill the pid in when `readChildPID`
-returns. Both red teams converged on that shape independently. Beyond it, the
-real fix is topological: under `NetnsStage` the namespace exists **before bwrap
-does**, so pasta can start before any payload is forked and there is nothing
-parked to release. Phase 1 deliberately kept today's ordering as the minimum
-diff and the reordering is deferred, because confirming the interface is up
-without a process inside N to read `/proc/<pid>/net/dev` is a control-protocol
-addition and must be designed rather than patched in.
+*The kills*, with the window widened to ~3 s by a deliberately slow pasta so
+that a fixed offset lands unambiguously **inside** it, killing at 1.0 s:
 
-**The regression test must signal at a fixed early offset**, not after a
-`/proc`-scanning helper returns — otherwise it measures the interval the guard
-already covers and passes forever.
-`TestKillingSnugWhileThePayloadIsParkedDoesNotRunIt` currently states the SIGKILL
-exclusion in its own doc comment; that comment carries the falsified mechanism
-and must be corrected with the entry above.
+| signal | payload ran | orphaned bwrap |
+|---|---|---|
+| SIGTERM | **0/5** | 0/5 |
+| SIGINT | **0/5** | 0/5 |
+| SIGKILL | **5/5** | 5/5 |
+
+**Why three reviews said SIGTERM was open, and were wrong.** Each killed at a
+fixed wall-clock offset — 60 ms, 100 ms — and observed the payload had run.
+At those offsets the payload had *already been released*, at ~30 ms, on
+purpose. Their positive control (an unkilled run writing the marker) cannot
+tell "released early by the bug" from "released correctly, then killed", and
+none of them established where release actually falls. Three independent agents
+reached one wrong conclusion from one shared method error. **A fixed offset is
+not a measurement of a window whose position you have not measured.**
+
+**What is real, and it is real:** SIGKILL of snug between bwrap forking the
+init and the release runs the payload, every time, and leaves an orphaned
+sandbox. SIGKILL cannot be caught, so no guard inside snug can close it. The
+chain: snug dies → `blockW` closes → the init's `--block-fd` read returns EOF →
+bwrap releases on EOF exactly as readily as on a byte → the payload runs. The
+stage's own teardown loses because bwrap does not arm the init's
+`--die-with-parent` until that same read returns, so the init is unprotected for
+the whole window rather than for an instant at the start of it (measured with a
+matched pair, round 2).
+
+What the orphan retains is narrower than it sounds: the stage, pasta and the
+privileged ancestor user namespace are all gone by then, so what is left is the
+bwrap tree, unbounded runtime, and persistent write access to the target — the
+same shape an orphan on the pre-stage path leaves. **A lifetime defect, not a
+confinement defect.**
+
+**Arming the guard earlier does NOT fix it.** That was the agreed fix and it is
+wrong: the guard exists to catch signals, and the only signal left cannot be
+caught. Moving `park()` earlier narrows nothing that matters. (It is still worth
+doing for tidiness, and costs a pid-less `park(0, …)` filled in later, but do not
+record it as the fix.)
+
+**The real fix is topological, and the blocker recorded against it is FALSE —
+measured.** Under `NetnsStage` the namespace exists before bwrap does, so pasta
+can be started *first* and bwrap forked with no `--block-fd` and no
+`--json-status-fd` at all. Nothing is parked, so nothing can be released early,
+and the `parked` type stops being needed on this path. The design deferred this
+because "confirming the interface is up needs a process inside N to read
+`/proc/<pid>/net/dev`, which is a control-protocol addition".
+
+That premise does not hold. **A socket's network namespace is fixed when the
+socket is created, and does not follow the process.** The stage already opens an
+`AF_INET` datagram socket inside N to bring `lo` up; if it keeps that
+descriptor, `SIOCGIFFLAGS` on `snug0` through it still queries N after the stage
+has left. Measured, with both controls:
+
+```
+in N   : lo flags=0x0049 IFF_UP=true    <- positive control
+in N2  : lo flags=0x0008 IFF_UP=false   <- fresh socket in the new namespace
+in N2  : lo flags=0x0049 IFF_UP=true    <- the socket created in N, after the move
+```
+
+So the readiness check needs no extra process, no protocol message and no
+`/proc` path — one descriptor the stage already has. That removes the stated
+reason for deferring, and makes closing this a bounded piece of work rather than
+a design question.
+
+**One thing to know before touching it:** the parked machinery on the
+NON-stage arm (`internal/sandbox/exec.go:165–197`) is **unreachable**.
+`needsNet` is `Net.Mode == NetEgress`, and `deriveTopology` maps `NetEgress`
+to `NetnsStage` and nothing else does, so `needsNet` ⟺ `NeedsStage()` and the
+non-stage arm always returns at the `!needsNet` branch above it. There is one
+site to fix, not two — and the second copy is dead code that reads like a
+second implementation of the same discipline. (It becomes reachable only for a
+`Policy` whose `Topology` disagrees with its `Net.Mode`, which `Validate`
+refuses.)
 
 ### Supervisor review round 3 — confirmed, not fixed here
 
@@ -1323,12 +1367,21 @@ comments, and two tests that could not fail. Left open:
   asserts `n > 10`, and measures exactly 10 — correct today with zero margin in
   either direction. Assert the set of link targets rather than a count.
   Severity: low.
-- **`TestPodmanBuildIsFilteredEndToEnd` is red on this host** for an engine
-  reason, not a snug one, and it is the only end-to-end exercise of the stage
-  under the container proxy (`@podman-socket` includes `net`). Quarantine it
-  with a stated reason or cover the combination another way; a permanently red
-  test means nobody notices when it goes red for a *new* reason. Severity:
-  medium as a coverage gap.
+- ~~**`TestPodmanBuildIsFilteredEndToEnd` is red on this host** for an engine
+  reason.~~ **Wrong, and the wrongness is the finding.** It passes. Three
+  separate sessions recorded it as a known pre-existing failure and none
+  checked. What actually happened: `SNUG_REQUIRE_SANDBOX=1 make integration`
+  failed on *every* host, because `requireInternet` correctly treats "be strict
+  about the sandbox but leave `SNUG_TEST_NET` unset" as a configuration error
+  rather than a silent skip — there is no strict-but-offline mode. So the one
+  command that means "run the whole committed suite" was guaranteed to fail
+  unless the caller separately knew to export a second variable, and the two
+  tests it named got blamed. Fixed in the Makefile: `SNUG_REQUIRE_SANDBOX`
+  now implies `SNUG_TEST_NET` unless the caller set it, while a bare `go test`
+  outside `make` still refuses to pretend. **The lesson is the durable part:
+  three sessions carried "known failure" without running it once.** A test
+  believed broken is a test whose output nobody reads, which is the same defect
+  as a test that cannot fail, arriving from the other direction.
 - **Same-uid descriptor theft in the `ready`→`start` window.** With
   `yama/ptrace_scope = 1` a same-uid *ancestor* — a launcher-side wrapper
   qualifies — can steal P0's end of the socketpair and send the one `start`
