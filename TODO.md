@@ -1381,10 +1381,14 @@ comments, and two tests that could not fail. Left open:
   stalled pasta a first-class tested case. Severity: low.
 - **Two tests assert less than their names say.** The fd-budget unit test never
   reaches `checkFDBudget` (the topology guard rejects the zero-value config
-  first), and `TestTheStageHoldsFourDescriptorsAtTheFork` is named "four",
-  asserts `n > 10`, and measures exactly 10 — correct today with zero margin in
-  either direction. Assert the set of link targets rather than a count.
-  Severity: low.
+  first). The descriptor test's half is FIXED: it was named "four", asserted
+  `n > 10`, and measured exactly 10 — and the audit's prediction came true the
+  moment a descriptor was legitimately added, when parking the N-socket at fd 62
+  took the stage to 11 and reddened CI on a correct change. It now asserts the
+  SET of link targets (no `memfd:snug-` may survive the fork) with a positive
+  control, and is renamed `TestTheStageClosesTheSandboxsDescriptorsAtTheFork`
+  after the property rather than the count. Severity: low; the fd-budget half
+  above is still open.
 - ~~**`TestPodmanBuildIsFilteredEndToEnd` is red on this host** for an engine
   reason.~~ **Wrong, and the wrongness is the finding.** It passes. Three
   separate sessions recorded it as a known pre-existing failure and none

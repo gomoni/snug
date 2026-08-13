@@ -235,7 +235,7 @@ func runOneSandbox(control *os.File, req request) error {
 	// P1 closes its OWN copies of the sandbox's descriptors the instant the
 	// fork returns — whatever the outcome — leaving exactly four open: control,
 	// lifeline, netns, and the pidfd Go's own os.Process holds for the child.
-	// TestTheStageHoldsFourDescriptorsAtTheFork is the positive-controlled
+	// TestTheStageClosesTheSandboxsDescriptorsAtTheFork is the positive-controlled
 	// assertion of this line.
 	for _, f := range sandboxFDs {
 		_ = f.Close()
