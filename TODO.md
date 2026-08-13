@@ -1345,6 +1345,42 @@ measurement: the pid must be read **as early as it is available** rather than at
 the point it is needed (the window opens 2 ms after it is published), and the
 init must be killed **as well as**, not instead of, whatever else is torn down.
 
+**BUILT, MEASURED, AND REVERTED — the stage cannot be the one to do it.** The
+whole thing was wired: a fixed `fdStatus`, the stage reading `child-pid` off
+bwrap's status pipe from a goroutine started before anything can block, and
+`killSandboxInit()` on the lifeline path. It does not fire. With a marker on the
+teardown path:
+
+```
+did the stage run its teardown? 0 marker(s)
+```
+
+**The stage is SIGKILLed by its own `Pdeathsig` at the same instant snug dies**,
+so it runs no code at all — the very property that makes it survive a frozen
+tree is what stops it acting here. Any teardown that requires the stage to
+execute something is unreachable for exactly the case it is needed in. Reverted
+rather than shipped: a mechanism with no consumer is what this file argues
+against everywhere else.
+
+**That is the third refuted candidate**, and the three failures now describe the
+constraint precisely:
+
+| candidate | why it cannot work |
+|---|---|
+| arm the parked guard earlier | a guard catches signals; the remaining signal is SIGKILL |
+| `--sync-fd` | runs the other way — bwrap holds it so the PARENT can watch the SANDBOX |
+| stage kills the init on teardown | the stage is SIGKILLed at the same instant and never runs |
+
+**What is left, and it is a trade rather than a fix.** Something must run code
+after snug dies, or nothing can reach the init. The only candidate is the stage,
+which means its `Pdeathsig` would have to become **catchable** (SIGTERM, with a
+handler that kills the init and then exits). The cost is measured and real: a
+SIGSTOPped stage cannot handle a signal either, so
+`TestAFrozenStageTreeStillDiesWithSnug` — which exists because a comment once
+invited deleting that line — would need a second mechanism to stay green.
+Whether a ~35 ms orphan window is worth weakening the frozen-tree teardown is a
+judgement call, not something to decide from inside the diff.
+
 Rejected alternative: put the sandbox in its own process group and
 `kill(-pgid)`. It would work, and CLAUDE.md forbids `Setpgid` in this chain on
 purpose, because the tree must stay in the terminal's foreground process group
