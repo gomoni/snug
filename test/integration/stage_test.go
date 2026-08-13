@@ -720,11 +720,30 @@ func TestFdTargetProbeDetectsARealSharedDescriptor(t *testing.T) {
 			"TestNoDescriptorInThePayloadResolvesToAnInodeOpenInTheStage's 'nothing shared' "+
 			"result proves nothing rather than proving containment.\na=%v\nb=%v", aTargets, bTargets)
 	}
+	// The DELIBERATELY shared pipe must be among the matches. Note what is NOT
+	// asserted: that every match is a pipe.
+	//
+	// That stronger form was here and it was wrong — it went red on CI with
+	// "/usr/lib/x86_64-linux-gnu/libc.so.6 reported as shared". Two children
+	// caught between fork and the end of exec both have the dynamic loader's
+	// libc open, and an identical file target legitimately appears in both fd
+	// tables. Nothing was leaking; the probe was right and the assertion was
+	// too strong, which made a timing difference between hosts look like a
+	// finding.
+	//
+	// What this test exists to prove is that the intersection technique CAN see
+	// a shared descriptor, so that the containment test's "nothing shared"
+	// result means something. A pipe among the matches proves exactly that.
+	sawPipe := false
 	for _, target := range sharedFound {
-		if !strings.Contains(target, "pipe:") {
-			t.Errorf("the probe reported %q as shared, which is not a pipe: target — "+
-				"unexpected kind of match for this setup", target)
+		if strings.Contains(target, "pipe:") {
+			sawPipe = true
 		}
+	}
+	if !sawPipe {
+		t.Errorf("the probe found shared targets %v but none of them is the pipe both "+
+			"children were deliberately handed — it is matching on something incidental "+
+			"rather than on the descriptor under test", sharedFound)
 	}
 
 	// The negative half: onlyAR/onlyAW were never given to b at all, so NOTHING
