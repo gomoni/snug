@@ -814,21 +814,19 @@ Left open from that work:
   line sits, so a later key beats the included file; snug overlays matched
   includes after the whole global file. Only observable when the same whitelisted
   key appears both after an include and inside it. Written up in GIT-CONFIG.md §7.
-- **[🟡 confirmed] `@claude` binds `~/.claude/settings.json` read-only, and that
-  file is a command table.** It carries `hooks` — shell commands run on tool
-  events — and `apiKeyHelper`, a program that prints a credential, which is
-  `credential.helper`'s exact shape. Every word of the `@git-ro` argument applies
-  to it: read-only does not restrain those keys, it supplies them. Found by an
-  independent review, which also caught the catalogue test *asserting the path
-  was ordinary* — a decision nobody made, now removed.
+- **[🟡 confirmed] `@claude` binds `~/.claude/settings.json`, which is a command
+  table.** It carries `hooks` (shell commands run on tool events) and
+  `apiKeyHelper` (a program that prints a credential — `credential.helper`'s
+  exact shape), so every word of the `@git-ro` argument applies: read-only does
+  not restrain those keys, it supplies them. Found by an independent review,
+  which also caught the catalogue test *asserting the path was ordinary* — a
+  decision nobody made, now removed. The path is deliberately absent from the
+  catalogue rather than blessed in it.
 
-  Not fixed here because the fix is the same one git got and it is a piece of
-  work: stage a FILTERED copy (drop `hooks`, `apiKeyHelper`, `env`; keep the
-  rest) instead of binding the host's. Until then the path is deliberately absent
-  from the catalogue rather than blessed in it, and this entry is the record.
-  Note the threat is narrower than git's — the host file is the user's own and
-  the sandbox cannot write it — but "the user's own config runs commands inside
-  the sandbox" is exactly what `@git-ro` used to say too.
+  **Tracked as https://github.com/gomoni/snug/issues/17**, with the proposed fix
+  (stage a filtered copy, the way git's is generated) and its definition of done.
+  Kept out of the git-config work on purpose: two adapters in one change is two
+  security reviews wearing one diff.
 - **[gap] The catalogue is a fixed list.** It knows the tools we thought of. A
   config file that becomes a command table when its upstream adds a hook key
   passes it silently — which is precisely what the red team's inventory sweep is
