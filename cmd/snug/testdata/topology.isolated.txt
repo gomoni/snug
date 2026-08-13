@@ -1,0 +1,6 @@
+
+TOPOLOGY
+  processes       2 — snug and bwrap. No stage, no privileged ancestor namespace.
+  netns owner     sandbox
+  subuid          none (no delegated range; nothing needs one yet)
+  control         none — there is no stage to control.

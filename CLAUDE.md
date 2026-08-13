@@ -23,7 +23,23 @@ is readable, and nothing else exists. A seccomp filter denies ptrace, bpf,
 keyctl, perf_event_open, userfaultfd, TIOCSTI and nested user namespaces. The
 flag list travels through a memfd, and inherited descriptors are sealed CLOEXEC.
 Networking is a private netns per sandbox with a pasta helper: full egress, host
-loopback unreachable, abstract sockets (X11/D-Bus) unreachable. Offline is the
+loopback unreachable, abstract sockets (X11/D-Bus) unreachable.
+
+**`@net` runs a second long-lived process, the stage.** It creates the network
+namespace, pins it, *leaves* it, and forks bwrap back in through a `setns` shim,
+so that a later phase can put a container engine in the same namespace. Nothing
+else starts one: an offline run and an `--i-know` host-network run take the
+single-process path unchanged, which is deny-by-default applied to snug's own
+process tree. It is one-shot — it exits when its one payload does — it binds no
+pathname and opens no listener, and it is torn down two ways because they cover
+different failures: an inherited pipe for a stage that can still run code, and
+`PR_SET_PDEATHSIG` for one that has been stopped and cannot. What it costs is
+real and is on screen in `--dry-run`: the sandbox's user namespace now has a
+**privileged ancestor** that lives for the whole run, so a userns-escape bug is
+worth more than it was. Measured not to give the payload any new reach, and
+measured not to widen the host surface either — a same-uid host process already
+reaches the same authority without a stage, via `NS_GET_USERNS` on the sandbox's
+own namespace descriptors. Offline is the
 absence of the `@net` profile — with one interim exception, `@podman-socket`,
 which includes it and says so (see "Decisions made", and
 `.claude/design/ENGINE-NETNS.md` §0). Profiles: `@sys`, `@home`,
@@ -60,7 +76,9 @@ reopen this.
 
  1. No root, no setuid — it has always been questionable that restricting access
     and improving security should need elevated privileges.
- 2. No daemon, no service files — just execute a binary.
+ 2. No daemon, no service files — just execute a binary. **That means no process
+    the user did not start and no state that survives them, not "exactly one
+    process".** `@net` runs a second one; see the stage, under Status.
  3. Works everywhere, including from containers like a `distrobox` environment.
  4. Host integration is possible, just tightly controlled.
  5. Written in Go around bubblewrap — it reads the configuration, creates a
@@ -418,6 +436,47 @@ on any flag.
   is unnecessary here and snug omits it, which is why job control works inside
   an interactive sandbox shell. On a host where it is `1`, snug adds the flag
   and `--dry-run` says so. Never make this decision silently.
+- **`unshare(CLONE_NEWNET)` is PER-TASK, not per-process, and this cost the
+  supervisor work a scheduler-dependent false green before it was written
+  down.** A Go process that calls it does not move as a whole: one thread
+  (the one that made the call) leaves the old network namespace; every other
+  thread the runtime has already started stays in it. Measured on this host:
+  1 of 11 threads moved, and `/proc/self/ns/net` — which always names the
+  THREAD GROUP LEADER — kept reporting the OLD namespace, because the leader
+  itself never called `unshare`. Reading that path is how "the move worked"
+  gets asserted about a process that is still split across two network
+  namespaces. The only join point at which a multithreaded Go process moves
+  as a WHOLE is `execve` immediately afterwards, on a thread locked with
+  `runtime.LockOSThread()`: exec collapses the thread group onto the calling
+  thread, so the new process image starts single-threaded in the namespace
+  that thread was in, and every thread the runtime spawns from then on
+  inherits it correctly. `setns(CLONE_NEWNET)` is the identical shape (see
+  `internal/stage`'s `__innetns` shim). Any verification of "did this process
+  really move" must sweep `/proc/<pid>/task/*/ns/net` and check every thread —
+  never read `/proc/<pid>/ns/net` alone and call it proven.
+
+- **`setns` into a user or mount namespace is closed to pure Go, and
+  `LockOSThread` is the red herring you will reach for first.**
+  `setns(CLONE_NEWUSER)` returns **EINVAL** on a multithreaded caller
+  (`userns_install` checks `!thread_group_empty(current)`), and
+  `setns(CLONE_NEWNS)` returns **EINVAL** unless `fs->users == 1` — and Go
+  creates every thread with `CLONE_FS`, so `fs->users` *is* the thread count.
+  Two independent checks, one root cause. Measured: `runtime.LockOSThread`
+  changes **no row**, and neither does `GOMAXPROCS=1`; a Go process has 5
+  threads at the first statement of `main` and 3 under `GOMAXPROCS=1`, never 1.
+  The other namespaces (pid, ipc, uts, net, cgroup) join fine.
+
+  **The two errnos are a diagnostic and must be kept apart.** EPERM means the
+  joiner lacks `CAP_SYS_ADMIN` in its *own* user namespace. EINVAL means the
+  wrong thread or fs state. Confusing them costs an hour.
+- **An fd is a TOCTOU-free reference to an inode; a path is a lookup that can be
+  re-pointed between the check and the exec.** Measured both ways: replacing a
+  binary on disk while holding an fd and then `execveat`ing the fd ran the OLD
+  inode, while exec by path ran the new one. And `open("/proc/self/exe")`
+  succeeds **inside a mount namespace that does not contain the binary's path**
+  — `stat` on that path returns ENOENT while the fd works, because it is a magic
+  link to the inode rather than a path resolution. Use the fd; `readlink` returns
+  a stale string.
 
 ## Development agents
 
@@ -428,6 +487,30 @@ There is deliberately **no `docs/` tree**: a generated user guide was tried and
 removed, because the prose churned faster than the code it described and nobody
 was going to keep it honest. `VERIFY.md` at the root is the exception, and it
 earns it by being executable — every line is a command with its expected output.
+
+**Every new document starts in `.claude/scratchpad/`, which is in `.gitignore`.**
+Not "start it in design/ and remember not to commit it" — start it somewhere a
+routine `git add -A` cannot reach. Implementation plans, review write-ups,
+red-team round reports, buildable specifications and working notes all live
+there and stay there. A document is *promoted* into `.claude/design/` by a
+deliberate `git mv`, and only when it has become one of two things:
+
+- **the** design for a subject, describing what was built rather than what was
+  proposed — one per subject, no second document with a `-PLAN` or `-REVIEW`
+  suffix beside it;
+- a research record whose *measurements* stay useful after the work lands
+  (`NOCGO.md`, `PODMAN-STATIC.md`, `ENGINE-NETNS.md`).
+
+Findings never depend on a document being promoted: a confirmed finding goes to
+`TODO.md` with its severity, which is the milestone rule anyway.
+
+*Written as a rule because the weaker version failed, twice in one session.* A
+plan that had been kept untracked by hand from the day it was written was
+committed by a `git add -A` — in the very commit whose purpose was to untrack it
+and its three companions, which the same command also restored. The PR then
+carried 3800 lines of process next to 370 lines of design. **An instruction that
+a routine command can quietly undo is not a rule; the `.gitignore` entry is what
+makes it one.**
 
 | agent | owns |
 |---|---|
@@ -564,6 +647,26 @@ meant. It cannot prove the sandbox holds.
 - **The directory is positional, not `-C`.** `go -C` and `make -C` mean "go
   somewhere else, then do the usual thing"; for snug the directory *is* the
   thing being sandboxed, like `git clone <url>`. Defaults to `.`.
+- **No cgo.** snug builds with `CGO_ENABLED=0` and nothing in it may change
+  that. The full statement, with the measurements, is
+  [`.claude/design/NOCGO.md`](.claude/design/NOCGO.md); the short version is that
+  the temptation is concrete and the price is paid somewhere else.
+
+  A cgo `__attribute__((constructor))` runs before the Go runtime starts its
+  threads, which is the one clean way to satisfy `setns(CLONE_NEWUSER)`'s
+  single-threaded requirement, and it is less code than the alternative. What it
+  costs: a cgo binary is bound to the libc it linked against, so key feature 3 —
+  works everywhere, including from a distrobox — becomes a glibc build *and* a
+  musl build; cross-compiling stops being `GOOS=… GOARCH=… go build` and starts
+  needing a toolchain per target; and a sandbox that will not start on the host
+  where you need it is worth less than one that cost more code. snug also
+  re-execs itself through `/proc/self/exe` as part of how the stage works, so
+  the binary is a runtime dependency of itself and wants to be self-contained.
+
+  It stayed affordable because the requirement turned out to be avoidable rather
+  than merely unwelcome: a raw `fork` from a multithreaded Go program yields a
+  child that is single-threaded *and* owns its own `fs_struct`, which are exactly
+  the two states the kernel checks.
 - **Config format is TOML.** Strict decoding with `DisallowUnknownFields()` is
   load-bearing: an unknown key is a fatal parse error, so a negation key cannot
   be smuggled in.

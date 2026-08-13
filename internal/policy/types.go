@@ -135,6 +135,11 @@ type Policy struct {
 	Identity *Identity
 	Podman   PodmanMode
 
+	// Topology is the process shape this policy requires — DERIVED by
+	// deriveTopology at the end of Resolve, never granted by a profile, a TOML
+	// key or a CLI flag. See topology.go.
+	Topology Topology
+
 	// NewSession asks bwrap for a fresh TTY session, which blocks TIOCSTI input
 	// injection into the parent terminal. It also breaks job control for an
 	// interactive shell, so snug only asks for it on hosts where TIOCSTI is

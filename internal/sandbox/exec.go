@@ -8,11 +8,11 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
+	"time"
 
-	"golang.org/x/sys/unix"
-
+	"github.com/gomoni/snug/internal/fdseal"
 	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/stage"
 )
 
 // Options are the run-time choices a human makes at the CLI. Nothing here is
@@ -71,34 +71,21 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 		}
 	}
 
-	// Networking needs a handshake with bwrap: it must create the netns before
-	// pasta can join, and the payload must not run until pasta has attached.
+	// Networking needs NO handshake with bwrap any more, and the absence is the
+	// point.
 	//
-	// This block MUST come before the args memfd below. The memfd is a snapshot
-	// of `flags`, so anything appended afterwards is silently dropped — which is
-	// the same shape as the --seccomp-after-`--` bug: the flag exists in a
-	// variable, bwrap never sees it, and everything reports success.
-	var statusR, statusW, blockR, blockW *os.File
-	needsNet := p.Net.Mode == policy.NetEgress
-	if needsNet {
-		statusR, statusW, err = os.Pipe()
-		if err != nil {
-			return 0, err
-		}
-		defer statusR.Close()
-		defer statusW.Close()
-		blockR, blockW, err = os.Pipe()
-		if err != nil {
-			return 0, err
-		}
-		defer blockR.Close()
-		defer blockW.Close()
-
-		flags = append(flags, "--json-status-fd", strconv.Itoa(nextFD()))
-		extra = append(extra, statusW)
-		flags = append(flags, "--block-fd", strconv.Itoa(nextFD()))
-		extra = append(extra, blockR)
-	}
+	// bwrap used to be started first and told to park its payload on --block-fd
+	// until pasta had attached, because pasta needs a netns and only bwrap could
+	// make one. Under the stage the netns exists BEFORE bwrap does, so pasta
+	// attaches first and there is nothing to park. That deletes --block-fd,
+	// --json-status-fd, the two pipes, readChildPID and the whole `parked` type
+	// along with the SIGKILL window they carried: a payload that has not been
+	// forked cannot be released early.
+	//
+	// Nothing here is conditional on networking any more, which is why this block
+	// is gone rather than shortened. Note for anyone adding a flag near here: the
+	// args memfd below is a SNAPSHOT of `flags`, so anything appended after it is
+	// silently dropped — the same shape as the --seccomp-after-`--` bug.
 
 	// The whole flag list travels through a memfd rather than real argv:
 	//   - it sidesteps ARG_MAX for large policies
@@ -126,6 +113,10 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 		return 0, err
 	}
 
+	if p.Topology.NeedsStage() {
+		return runStaged(p, bwrap, argv, extra, stdin, stdout, stderr, opts)
+	}
+
 	cmd := exec.Command(bwrap, argv...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
 	cmd.ExtraFiles = extra
@@ -147,72 +138,114 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	// No Setpgid anywhere in this chain: the tree stays in the terminal's
 	// foreground process group so Ctrl-C reaches the payload and job control
 	// works for an interactive shell inside the sandbox.
-	if err := sealInheritedFDs(extra); err != nil {
+	if err := fdseal.SealFor(cmd); err != nil {
 		return 0, err
 	}
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
-	if !needsNet {
-		// Offline: bwrap made a netns with only loopback and there is no helper
-		// to attach, so the payload is already running.
-		return wait(cmd)
-	}
-	// Our copies of the child's ends must be closed or the reads never EOF.
-	statusW.Close()
-	blockR.Close()
+	// This arm is the OFFLINE and host-network one: bwrap made its own namespace
+	// (or was given the host's) and there is no helper to attach, so the payload
+	// is already running. Every networked run goes through runStaged above —
+	// NetEgress is the only mode deriveTopology maps to NetnsStage, and the only
+	// mode that ever needed a helper.
+	return wait(cmd)
+}
 
-	childPID, err := readChildPID(statusR)
+// runStaged is the NetnsStage arm, and its ORDER is the security property.
+//
+//	stage.Start   -> N exists, pinned by a descriptor, with nobody in it
+//	startPasta    -> pasta attaches to that empty N and configures snug0
+//	WaitNetReady  -> the stage confirms snug0 is UP and RUNNING, from inside N
+//	StartSandbox  -> only NOW does a payload exist
+//
+// The previous order was the reverse — bwrap first, its payload parked on
+// --block-fd, released once pasta was up — because pasta needs a netns and
+// only bwrap could create one. That parked interval was a real defect: bwrap
+// releases a parked payload on EOF exactly as readily as on a byte, and snug's
+// own death closes the write end, so a SIGKILL of snug inside the window ran
+// the payload with no network and left an orphaned sandbox. Measured 5/5.
+//
+// Reordering does not narrow that window, it removes the thing that had a
+// window: there is no payload to release, so there is nothing for a dying snug
+// to release. --block-fd, --json-status-fd, readChildPID and the entire parked
+// type are gone with it.
+//
+// BUT ONLY THE RELEASE HALF. F2 had two clauses — a killed snug released the
+// payload AND left an orphaned sandbox — and this closes the first. The second
+// is open on both topologies and predates this change: between bwrap forking
+// the sandbox init and bwrap arming --die-with-parent on it, nothing in snug
+// guarantees the sandbox dies, so a signal to snug in that interval leaves an
+// init reparented to the subreaper, holding the payload and the netns, with
+// write access to the target. Measured 3/3, all four signals. TODO.md carries
+// it. Do not read the deletions above as covering it.
+//
+// What made the reorder possible, having previously been recorded as a blocker:
+// confirming the interface is up needed a process inside N to read
+// /proc/<pid>/net/dev, and before bwrap there is none. But a socket's network
+// namespace is fixed when the SOCKET is created, not by where its owner later
+// goes — so the socket the stage opens in N to bring lo up still answers for N
+// after the stage has left, and the stage answers the question over the control
+// socket. Both halves measured; see stage.WaitNetReady.
+func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
+	stdin, stdout, stderr *os.File, opts Options) (int, error) {
+	st, err := stage.Start(stage.Config{
+		Netns:   p.Topology.Netns,
+		Sandbox: extra,
+		Stdin:   stdin, Stdout: stdout, Stderr: stderr,
+	})
 	if err != nil {
-		abort(cmd, 0)
 		return 0, err
 	}
+	defer st.Close()
 
-	helper, err := startPasta(p, childPID)
+	// pasta attaches to a namespace with NO process in it. Measured: it starts,
+	// stays up, and its interface is waiting when bwrap arrives.
+	helper, err := startPasta(p, st.Target())
 	if err != nil {
-		abort(cmd, childPID)
 		return 0, err
 	}
 	defer helper.stop()
 	helper.watch(opts.warn)
 
-	// Release the payload.
-	if _, err := blockW.Write([]byte{0}); err != nil {
-		return 0, fmt.Errorf("releasing the sandbox: %w", err)
+	// Fail here rather than run a payload that was promised a network it does not
+	// have. This is invariant 5 at the exact point it used to be enforced by
+	// parking a process that already existed.
+	//
+	// Raced against pasta dying, because the two failures need different
+	// messages and very different latencies. A pasta that exits at once — the
+	// crashing or OOM-killed shape — would otherwise be reported only when the
+	// stage's interface timeout expired, turning a 300ms error into a ten-second
+	// one that a human interrupts before reading.
+	ready := make(chan error, 1)
+	go func() { ready <- st.WaitNetReady(netReadyTimeout) }()
+	select {
+	case err := <-ready:
+		if err != nil {
+			return 0, err
+		}
+	case <-helper.died():
+		return 0, fmt.Errorf("pasta exited before the network came up: %s", helper.failure())
 	}
-	blockW.Close()
 
-	return wait(cmd)
+	if err := st.StartSandbox(bwrap, argv); err != nil {
+		return 0, err
+	}
+
+	ws, err := st.Wait()
+	if err != nil {
+		return 0, err
+	}
+	if ws.Exited() {
+		return ws.ExitStatus(), nil
+	}
+	return -1, nil
 }
 
-// abort tears down a sandbox whose network never came up, WITHOUT letting the
-// parked payload run. Pass childPID 0 if it is not known yet.
-//
-// The subtlety, and it cost two wrong fixes to find: the payload is parked on
-// bwrap's --block-fd, and that fd is released by EOF just as readily as by a
-// byte. So the deferred blockW.Close() in Run is itself a release signal. It is
-// not enough to "not write" — the child has to be dead before any close.
-//
-// Killing bwrap alone does not do it. --die-with-parent arms PR_SET_PDEATHSIG
-// on the child, but the delivery races teardown, and measured here the parked
-// child reliably survived long enough for the deferred close to release it: a
-// stalled pasta produced a payload that ran 6 seconds later, during cleanup, on
-// a run that reported exit 69. An earlier version closed the write end first and
-// then killed, which released the payload and raced the kill — 1 abort in 15
-// executed the payload and wrote to the target.
-//
-// So: SIGKILL the parked child by pid first, using the pid bwrap already told us
-// through --json-status-fd, then reap bwrap. After this nothing is left to
-// release and the deferred close is inert.
-//
-// Found by the redteam agent as "the abort path is not fail-closed".
-func abort(cmd *exec.Cmd, childPID int) {
-	if childPID > 0 {
-		_ = syscall.Kill(childPID, syscall.SIGKILL)
-	}
-	_ = cmd.Process.Kill()
-	_, _ = cmd.Process.Wait()
-}
+// netReadyTimeout is P0's patience with the STAGE, not with pasta: the stage
+// applies its own shorter bound to the interface itself, so exceeding this one
+// means the stage is wedged rather than the network being slow.
+const netReadyTimeout = 15 * time.Second
 
 func wait(cmd *exec.Cmd) (int, error) {
 	err := cmd.Wait()
@@ -319,46 +352,7 @@ func safeStdio() (stdin, stdout, stderr *os.File, err error) {
 	return out[0], out[1], out[2], nil
 }
 
-// sealInheritedFDs marks every descriptor we did not deliberately open as
-// close-on-exec, so nothing our own parent left lying around is inherited into
-// the sandbox. bwrap does not close inherited fds, and an open fd on a host
-// directory is a complete bypass of the mount policy — the sandbox can walk it
-// with openat(2) regardless of what was mounted.
-//
-// It sets CLOEXEC rather than closing. Closing arbitrary descriptors in a Go
-// process is how you break the runtime's netpoller; setting the flag is
-// harmless on descriptors that already have it, which includes everything Go
-// itself opens.
-func sealInheritedFDs(keep []*os.File) error {
-	dir, err := os.Open("/proc/self/fd")
-	if err != nil {
-		return nil // not fatal: Go already marks its own fds CLOEXEC
-	}
-	defer dir.Close()
-
-	names, err := dir.Readdirnames(-1)
-	if err != nil {
-		return nil
-	}
-
-	spare := map[int]bool{int(dir.Fd()): true}
-	for _, f := range keep {
-		spare[int(f.Fd())] = true
-	}
-
-	for _, n := range names {
-		fd, err := strconv.Atoi(n)
-		if err != nil || fd <= 2 || spare[fd] {
-			continue
-		}
-		flags, _, errno := unix.Syscall(unix.SYS_FCNTL, uintptr(fd), unix.F_GETFD, 0)
-		if errno != 0 {
-			continue
-		}
-		if flags&unix.FD_CLOEXEC != 0 {
-			continue
-		}
-		unix.Syscall(unix.SYS_FCNTL, uintptr(fd), unix.F_SETFD, flags|unix.FD_CLOEXEC)
-	}
-	return nil
-}
+// sealInheritedFDs moved to internal/fdseal (SealFor) in Phase 1: the stage
+// (P1) is a long-lived process that forks more than once, and a keep-list
+// derived from the *exec.Cmd being forked is what stays correct as such a
+// process's descriptor table drifts — see that package's doc comment.

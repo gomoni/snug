@@ -43,6 +43,31 @@ conscious act.
 INDEX §4.4 described the fix ("topology A") in the present tense. It was never
 implemented — see the banner now on that section.
 
+## 0.1 What in this document is still live, and what has moved
+
+Updated 2026-08-13, when the supervisor work overtook parts of this file. This
+document is **not** obsolete — §0 is the canonical record of a finding that is
+still open, and §1–§4 are the measurements every later document builds on. But
+three sections now have a newer companion, and reading this file alone will give
+you a stale answer in exactly those places.
+
+| section | status |
+|---|---|
+| §0, the finding | **Live and canonical.** `@podman-socket` still implies the engine's network. Cited by `CLAUDE.md`, `base.toml`, `cmd/snug/dryrun.go`, `internal/profile/file_test.go`, `VERIFY.md`, `README.md` and `SECRETS.md` §1.3. Nothing has closed it. |
+| §1, you cannot join only the netns | **Live.** A kernel fact, unchanged. [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md) §0 accepts it and works around the *shape* it imposed, not the fact. |
+| §2, the inversion works | **Live, and since reproduced.** The numbers here were taken with plain `unshare`. [`PODMAN-STATIC.md`](PODMAN-STATIC.md) §7 reproduces the same baseline against a real pinned engine, and `poc/nsd/` measures it under the actual supervisor topology. |
+| §3, where it does not work | **Live, with one blocker now answered.** The distrobox shim is no longer decisive — see the note in §3 itself. The subuid, cgroup, `$XDG_RUNTIME_DIR` and host-uid findings all still stand and are still preflight requirements. |
+| §4, two guarantees change shape | **Live.** Still the reason teardown needs asserting rather than assuming, and `PODMAN-STATIC.md` §4 measured `conmon` surviving a Pdeathsig teardown a second time. |
+| §5, the proposed shape | **Superseded — see §5.** M-a landed; M-b's topology is now [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md)'s, and the requirements list in §5 is what carried over. |
+
+> **Read [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md) alongside §5.** §1 below is still
+> correct — you cannot join only the netns — but the shape it forces on the
+> answer was too narrow: snug may fork a process whose only job is to hold the
+> namespaces, and hang the engine, the sandbox and later payloads off it as
+> siblings. The M-b re-exec then stops being a one-shot stage, `snug attach`
+> becomes possible, and the engine can be given a mount view derived from the
+> sandbox's own. All measured.
+
 ## 1. The crux: you cannot join only the netns
 
 The owner's steer was "start podman inside the sandbox's netns but outside its
@@ -146,6 +171,19 @@ currently used only for a cosmetic warning. It must become a **hard refusal**,
 with a test — per the standing rule that a documented-but-unchecked gate is not
 a gate.
 
+> **No longer decisive, 2026-08-13.** Calling this "the decisive negative" read
+> the symptom as the cause. The engine is not broken on such a host; only the
+> `/usr/bin/podman` *path* is, and `rpm -V podman` shows the package differing
+> from its manifest in the symlink alone. A self-contained engine bundle sidesteps
+> it entirely — [`PODMAN-STATIC.md`](PODMAN-STATIC.md) pins one, and the engine
+> then runs rootless inside a netns on this very host, which is what unblocked
+> the measurement this section said could not be taken here.
+>
+> The refusal above is still owed, and for an unchanged reason: where a shim
+> *is* what gets invoked, the guarantee evaporates while everything looks like it
+> worked. What changes is that the refusal now has an alternative to name — bring
+> your own engine — rather than being a dead end.
+
 **Full subuid delegation is structurally required.** A single-uid map fails:
 
 ```
@@ -210,38 +248,54 @@ No capability change for the payload: bwrap already drops caps, so the sandbox
 cannot `ip link add` today either. The marginal gain is that N is owned by an
 *ancestor* userns, so even a hypothetical regained-caps path cannot reconfigure it.
 
-## 5. Proposed shape — two stages
+## 5. The plan — M-a landed, M-b moved
 
-**M-a, now, one line.** `[profile.podman-socket] include = [… , "net"]`. Stops
-`--dry-run` lying today. Independent of everything below.
+**M-a, done.** `[profile.podman-socket] include = ["sys", "home", "net"]`,
+commit `ae848de`. It stopped `--dry-run` lying, and it is interim by
+construction: `TestPodmanSocketIncludesNetAsAnInterimHonestyFix` makes removing
+it a conscious act rather than a tidy-up.
 
-*Note the tension, which is the owner's call:* this makes `@podman-socket` imply
-egress, which is honest about today's behaviour but grants the sandbox itself
-network it did not ask for. The alternative is to keep the profile as-is and fix
-only the `--dry-run` text. Under M-b, `include = ["net"]` becomes **wrong** and
-must be removed again, because then `@net` genuinely implies nothing extra and
-offline goes back to being the absence of a profile.
+*The tension it settled, recorded because the trade is still the one being made:*
+the include makes `@podman-socket` imply egress, which is honest about today's
+behaviour but grants the sandbox itself network it did not ask for. The
+alternative was to keep the profile as-is and fix only the `--dry-run` text —
+that is, to keep the guarantee narrow on screen while the behaviour stayed wide.
+Under M-b `include = ["net"]` becomes **wrong** and must be removed again,
+because then `@net` genuinely implies nothing extra and offline goes back to
+being the absence of a profile.
 
-**M-b, the engine in the sandbox's netns.**
+**M-b's topology has moved to [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md).** The six steps
+that stood here described a single one-shot `snug __netns-stage` re-exec, and
+that shape came from an assumption — that snug must *become* the sandbox — which
+`SUPERVISOR-DESIGN.md` §0 removed. Read that document for the topology; do not
+reconstruct it from the list that used to be here. What it changes: the stage
+holds the namespaces and the engine, the sandbox and later payloads are its
+siblings rather than its successors, which is also what makes `snug attach`
+possible.
 
-1. **Preflight, all fatal, each naming its fix**, before anything starts: real
-   podman binary (`podmanClientUsable`, promoted from warning to refusal);
-   `unshare --user --map-auto --map-root-user -- true`; `newuidmap`/`newgidmap`
-   with caps; a cgroup write probe. **Refuse — never fall back to today's
-   topology**, because the difference is invisible to the user.
-2. `snug __netns-stage` re-exec: `CLONE_NEWUSER` (full map) + `CLONE_NEWNET` +
-   `CLONE_NEWCGROUP` + `CLONE_NEWNS` with `MS_REC|MS_PRIVATE` on `/`; tmpfs on
-   `/run` and `/var/cache`; `lo` up; assert
-   `readlink /proc/self/ns/net != /proc/<parent>/ns/net` before proceeding.
-3. Engine socket out of `$XDG_RUNTIME_DIR` (masked) into `/tmp/snug-<uid>-<runid>/`.
-   Proxy stays on the host, unchanged.
-4. pasta: unchanged argv, aimed at the stage's pid instead of bwrap's.
-5. bwrap: `--unshare-all --share-net`, entered via the stage. Carry the **host**
-   uid explicitly. The `--json-status-fd`/`--block-fd` handshake is unnecessary
-   on this path (N exists before bwrap, so there is no race to lose); topology B
-   keeps it.
-6. `--dry-run` renders the topology: which process owns the netns, and that
-   containers share it.
+**What carried over unchanged, and is still owed.** These are requirements, not
+topology, so they survived the move intact:
+
+1. **Preflight, all fatal, each naming its fix**, before anything starts: a real
+   podman binary (`podmanClientUsable`, promoted from warning to refusal — see
+   the §3 note on bringing your own engine); `unshare --user --map-auto
+   --map-root-user -- true`; `newuidmap`/`newgidmap` with file capabilities; a
+   cgroup write probe. **Refuse — never fall back to today's topology**, because
+   the difference is invisible to the user. This is invariant 5 applied to a
+   whole leg of the design.
+2. The engine socket cannot live under `$XDG_RUNTIME_DIR`, which the engine's own
+   `/run` tmpfs masks (§3). `/tmp/snug-<uid>-<runid>/` is the replacement.
+3. The **host** uid must be carried explicitly across the re-exec, or the sandbox
+   becomes root-shaped (§3).
+4. `--dry-run` must render the topology: which process owns the netns, and that
+   containers share it. Phase 1 has landed a first version of this
+   (`cmd/snug/testdata/topology.*.txt`).
+5. Teardown must be *asserted* rather than assumed, because §4 measured that it
+   stopped being unconditional the moment N held the engine.
+
+The current implementation status of all of the above lives in `TODO.md` and in
+the supervisor phase documents, not here. This section states what must be true;
+it deliberately no longer states when.
 
 **The abuse sentence changes shape rather than shrinking:**
 

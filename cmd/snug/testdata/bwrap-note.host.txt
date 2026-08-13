@@ -1,0 +1,7 @@
+── bwrap ─────────────────────────────────────────────────────────────────
+(this argv determines the network posture on its own: --share-net keeps the
+ network namespace of whatever starts bwrap, and snug starts it directly, so
+ running it by hand reproduces the HOST networking described above.)
+bwrap
+  --ro-bind /usr /usr
+  -- /bin/sh

@@ -467,6 +467,12 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	// true and what stops a profile naming /bin producing it twice.
 	p.dedupeEnvLists()
 
+	// Topology is DERIVED, after p.Net and p.Podman are fully folded and before
+	// Validate runs, so a hand-built *Policy that skips Resolve cannot carry a
+	// Topology inconsistent with its own Net/Podman — Validate refuses exactly
+	// that (see the rule below).
+	p.Topology = deriveTopology(p.Net.Mode, p.Podman)
+
 	if err := p.Validate(env); err != nil {
 		return p, err
 	}
