@@ -52,7 +52,7 @@ func TestRetiredPublishAutoIsAHardError(t *testing.T) {
 	}
 }
 
-// TestNoNullProfileShips pins MVY0's headline claim on its own, separate from
+// TestNoNullProfileShips pins the @null retirement's headline claim on its own, separate from
 // TestBuiltinsLoad's broader sweep: @null must be absent from the builtin
 // registry. The positive control matters — without it, a registry that failed
 // to embed anything at all (a broken go:embed, say) would pass this trivially,
@@ -70,7 +70,7 @@ func TestNoNullProfileShips(t *testing.T) {
 	}
 	if _, ok := reg["@null"]; ok {
 		t.Error("@null ships as a builtin; a profile that grants nothing is a preference " +
-			"(profile.BuiltinDefaults / --no-defaults), not a grant (MVY0)")
+			"(profile.BuiltinDefaults / --no-defaults), not a grant")
 	}
 }
 
@@ -136,7 +136,7 @@ func TestBuiltinsLoad(t *testing.T) {
 			t.Errorf("builtin profile %q is missing", want)
 		}
 	}
-	// There is deliberately no profile called `default`, and (MVY0) no profile
+	// There is deliberately no profile called `default`, and no profile
 	// called `null` either — for the same reason: a default SELECTION is a
 	// preference (profile.BuiltinDefaults), and the lattice floor is what
 	// Resolve computes from an empty selection, not a grant either name would

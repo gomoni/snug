@@ -412,7 +412,7 @@ func pathAnnotation(p *policy.Policy, path string) string {
 // writableBelow names the writable grants STRICTLY INSIDE path, so a read-only
 // headline cannot hide them.
 //
-// REGRESSION (redteam, MVY0). The annotation above reports the DEEPEST mount
+// REGRESSION (redteam). The annotation above reports the DEEPEST mount
 // covering the path, which is the right answer for "what is this path itself",
 // and the wrong answer for "what can the sandbox write in here". Grants below it
 // are invisible to that walk — and those are exactly the ones that RAISE the

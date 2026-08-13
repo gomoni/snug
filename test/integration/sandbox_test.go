@@ -2458,7 +2458,7 @@ description = "grant the whole host"
 ro = ["/"]
 
 # The tmpfs spelling of the same thing. Refusing only the bind left this
-# ACCEPTED (redteam, MVY1) — and inert only because SortedMounts happens to
+# ACCEPTED (redteam) — and inert only because SortedMounts happens to
 # emit / first, so every sibling landed on top of it. An invariant that holds
 # by mount ORDER is one that breaks the day the ordering is tuned for something
 # else, so both spellings are refused and both are asserted here.
@@ -2669,9 +2669,9 @@ func TestRepoLocalConfigIsNeverAutoLoaded(t *testing.T) {
 	}
 }
 
-// ── MVY0: kill @null, keep --no-defaults ────────────────────────────────────
+// ── Killing @null, keeping --no-defaults ────────────────────────────────────
 //
-// The MVY0 findings: there is no @null profile any more — a profile
+// There is no @null profile any more — a profile
 // that grants nothing is a preference, not a grant, and the lattice floor it
 // used to name is what an empty selection already resolves to. Reaching the
 // floor is now --no-defaults, not `-p @null`.

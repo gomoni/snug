@@ -70,8 +70,8 @@ func resolveFor(t *testing.T, sel []string) *policy.Policy {
 	return p
 }
 
-// TestDryRunAnnotationsAreTruthful pins the fix for the bug the MVY0
-// findings recorded: dryrun.go used to hard-code "(writable)" for TARGET and
+// TestDryRunAnnotationsAreTruthful pins the fix for a bug found while
+// retiring the @null profile: dryrun.go used to hard-code "(writable)" for TARGET and
 // "(tmpfs, ephemeral)" for HOME, which is true only for the default selection
 // and false the moment a human selected fewer profiles —
 // `snug --dry-run --no-defaults -p @sys -p @parent-ro <dir>` printed both
@@ -102,7 +102,7 @@ func TestDryRunAnnotationsAreTruthful(t *testing.T) {
 	}
 }
 
-// REGRESSION (redteam, MVY0): the annotation must not UNDERSTATE write access.
+// REGRESSION (redteam): the annotation must not UNDERSTATE write access.
 //
 // TestDryRunAnnotationsAreTruthful above covers the safe direction — do not
 // claim writable when it is not. This covers the dangerous one, which the fix

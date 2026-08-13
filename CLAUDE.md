@@ -710,7 +710,7 @@ meant. It cannot prove the sandbox holds.
   nothing is a preference wearing a profile's clothes, and the floor of the
   lattice is not something a file needs to name — it is what `Resolve` computes
   from an empty selection, reachable directly with `snug --no-defaults`.
-  `-p @null` is a retired name that errors, naming `--no-defaults` (MVY0).
+  `-p @null` is a retired name that errors, naming `--no-defaults`.
 - **The directory is positional, not `-C`.** `go -C` and `make -C` mean "go
   somewhere else, then do the usual thing"; for snug the directory *is* the
   thing being sandboxed, like `git clone <url>`. Defaults to `.`.

@@ -8,8 +8,8 @@ import (
 	"github.com/gomoni/snug/internal/policy"
 )
 
-// TestEmptyDefaultsMeansEmpty pins the fix for the bug the MVY0 findings
-// recorded: `defaults = []` used to silently fall back to the built-in four,
+// TestEmptyDefaultsMeansEmpty pins the fix for a bug found while retiring the
+// @null profile: `defaults = []` used to silently fall back to the built-in four,
 // because Defaults was a plain []string and could not distinguish an explicit
 // empty list from an absent key — both decode to len 0. Defaults is now
 // *[]string precisely so the written intent survives decoding, in both
@@ -51,7 +51,7 @@ func TestEmptyDefaultsMeansEmpty(t *testing.T) {
 	}
 }
 
-// TestUnreadableConfigIsFatal — the MVY0 red team's finding, and the same class
+// TestUnreadableConfigIsFatal — a red team finding from the same round, and the same class
 // as TestEmptyDefaultsMeansEmpty above: a parse error was fatal, a READ error
 // was not. `chmod 000` on a file saying `defaults = []` returned the zero config
 // and so widened the sandbox back to the built-in four, while `snug config`
