@@ -5,6 +5,24 @@ import (
 	"testing"
 )
 
+// directives strips the generated file's comments, leaving only lines git would
+// act on.
+//
+// It exists because every assertion here is about what the file MAKES GIT DO,
+// and the file's own comment explains which keys are excluded by naming them —
+// `credential.helper`, `alias = !cmd`, `core.pager`. Three tests in this package
+// have now been written against the raw text and failed on their own
+// documentation. Assert against the directives, not the bytes.
+func directives(config string) string {
+	var keep []string
+	for _, line := range strings.Split(config, "\n") {
+		if t := strings.TrimSpace(line); t != "" && !strings.HasPrefix(t, "#") {
+			keep = append(keep, line)
+		}
+	}
+	return strings.Join(keep, "\n")
+}
+
 // The gitdir matcher is snug's, not git's, and the reason is measured rather
 // than stylistic: there is no git invocation that both honours a `gitdir:`
 // condition and keeps the sandboxed material out of the decision. See
@@ -55,17 +73,47 @@ func TestGitConfigFromCarriesOnlyWhitelistedKeys(t *testing.T) {
 			t.Errorf("generated config is missing %q:\n%s", want, out)
 		}
 	}
-	// Directives only: the file's own comment explains which keys are excluded
-	// and must not be mistaken for one of them.
-	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "#") {
-			continue
+	for _, forbidden := range []string{"credential", "helper", "pager", "curl"} {
+		if strings.Contains(strings.ToLower(directives(out)), forbidden) {
+			t.Errorf("generated config has %q in a directive, which names a program "+
+				"to run:\n%s", forbidden, out)
 		}
-		for _, forbidden := range []string{"credential", "helper", "pager", "curl"} {
-			if strings.Contains(strings.ToLower(line), forbidden) {
-				t.Errorf("generated config has %q in a directive, which names a program "+
-					"to run: %q", forbidden, line)
+	}
+}
+
+// A whitelist of KEYS is half a rule: a git config VALUE may legally span lines,
+// so `user.name = "evil\n[alias]\n\tx = !touch /tmp/PWNED"` closed the
+// `name = …` line and opened a real section in the generated file. The red team
+// ran the injected alias inside the sandbox. Every one of the three whitelisted
+// keys worked as the carrier, which is why this test iterates all of them: the
+// carrier is the value channel, not any particular key.
+func TestNoExtractedValueCanAuthorADirective(t *testing.T) {
+	for _, key := range []string{"user.name", "user.email", "init.defaultbranch"} {
+		t.Run(key, func(t *testing.T) {
+			out := string(GitConfigFrom(GitValues{
+				key: "benign\n[alias]\n\tanything = !touch /tmp/PWNED\n[core]\n\tpager = !cmd",
+			}, nil))
+			for _, forbidden := range []string{"[alias]", "anything", "pager", "!touch", "!cmd"} {
+				if strings.Contains(directives(out), forbidden) {
+					t.Errorf("a value authored %q in the generated config:\n%s", forbidden, out)
+				}
 			}
+		})
+	}
+}
+
+func TestABenignValueStillSurvives(t *testing.T) {
+	// The control. A guard that drops everything would pass the test above and
+	// make the profile useless — names have spaces, emails have dots and plus
+	// signs, branches have slashes.
+	out := string(GitConfigFrom(GitValues{
+		"user.name":          "Some One-Two Jr.",
+		"user.email":         "some.one+tag@example.com",
+		"init.defaultbranch": "release/main",
+	}, nil))
+	for _, want := range []string{"Some One-Two Jr.", "some.one+tag@example.com", "release/main"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("an ordinary value was dropped: %q\n%s", want, out)
 		}
 	}
 }

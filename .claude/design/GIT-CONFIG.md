@@ -143,6 +143,37 @@ Not on it, and the reasoning is not "we ran out of time":
 - **`safe.directory`** — snug writes `*` itself, because the sandbox uid and the
   bind's owner differ often enough that anything else is a support burden.
 
+## 5a. A whitelist of KEYS is half a rule — the value channel
+
+Found by the red team against the first version of this code, and it defeated
+the whole design rather than a corner of it.
+
+git config values may legally span lines. `git config --file … --list -z`
+returns the embedded newline faithfully, and the renderer wrote it verbatim:
+
+```
+[user]
+	name = "evil\n[alias]\n\tanything = !touch /tmp/PWNED"
+```
+
+produced a generated `~/.gitconfig` containing a real `[alias]` section. Inside
+the sandbox, `git config --get alias.anything` returned the command and
+`git anything` ran it. All three whitelisted keys worked as the carrier — so
+`credential.helper`, `core.pager`, `core.sshCommand` and `filter.*.clean` came
+back through the VALUE channel, which is exactly the class the key whitelist
+exists to strip.
+
+The fix is the rule that already existed one layer over: `checkEnvValue` has
+refused control characters in a profile-supplied environment value since the NUL
+finding. Extracted git values now get the same treatment — **dropped, named on
+stderr, not escaped.** Escaping into git's `"…\n…"` form is one more quoting
+rule to get subtly wrong, and no name, email address or branch needs a control
+character. `GitConfigFrom` repeats the check as a backstop for whatever calls
+the renderer next.
+
+**The general shape, for the third time in this project: a rule written once and
+applied to one of its two halves.** Keys were bounded; values were not.
+
 ## 6. What a human sees
 
 ```

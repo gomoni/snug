@@ -141,9 +141,36 @@ func readGitFile(git, file, home, gitDir string, out policy.GitValues, verbose b
 		lower := strings.ToLower(key)
 
 		for _, w := range policy.GitKeyWhitelist {
-			if lower == w {
-				out[lower] = value
+			if lower != w {
+				continue
 			}
+			// A git config VALUE may legally span lines, and the whitelist is a
+			// list of KEYS — which is half a rule. Found by the red team: with
+			//
+			//	[user]
+			//	  name = "evil\n[alias]\n\tanything = !touch /tmp/PWNED"
+			//
+			// `git config --list -z` returns the embedded newline faithfully, the
+			// renderer wrote it verbatim as `name = <value>`, and the value closed
+			// that line and opened a real `[alias]` section in the file the
+			// sandbox trusts. `git anything` then ran the command. Every one of
+			// the three whitelisted keys worked as the carrier, so the exact class
+			// this profile exists to strip — credential.helper, core.pager,
+			// core.sshCommand, alias = !cmd — came back through the value channel.
+			//
+			// This is the same shape as checkEnvValue, which has refused control
+			// characters in a profile-supplied env value since that hole was
+			// found: a rule written once and applied to one of its two halves.
+			// Dropped rather than escaped, and named on stderr — git's quoting
+			// rules are one more thing to get subtly wrong, and no name, email or
+			// branch needs a control character.
+			if i := strings.IndexFunc(value, func(r rune) bool { return r < 0x20 || r == 0x7f }); i >= 0 {
+				fmt.Fprintf(os.Stderr, "snug: dropping git %s from %s: the value contains a "+
+					"control character, which would author directives in the config snug "+
+					"generates rather than being carried as a value\n", lower, file)
+				continue
+			}
+			out[lower] = value
 		}
 
 		switch {

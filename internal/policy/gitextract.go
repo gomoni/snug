@@ -88,6 +88,15 @@ func GitConfigFrom(v GitValues, id *Identity) []byte {
 	if len(v) == 0 && id == nil {
 		return nil
 	}
+	// Second guard, deliberately not the only one. The extractor already drops a
+	// value carrying a control character (cmd/snug/gitconfig.go), and this is the
+	// backstop for whatever calls the renderer next — because the failure it
+	// prevents is not cosmetic: a newline inside `user.name` closes the
+	// `name = …` line and opens a real `[alias] x = !cmd` section in the file the
+	// sandbox trusts. Measured by the red team, with the injected alias executing
+	// inside the sandbox. Rendering is the last place this can be caught, so it
+	// is caught here too.
+	v = withoutControlCharacters(v)
 	name, email := v["user.name"], v["user.email"]
 	if id != nil {
 		if id.GitName != "" {
@@ -121,6 +130,20 @@ func GitConfigFrom(v GitValues, id *Identity) []byte {
 	}
 	b.WriteString("[safe]\n\tdirectory = *\n")
 	return []byte(b.String())
+}
+
+// withoutControlCharacters drops any value that could author a directive rather
+// than be one. A name, an email address and a branch name have no use for a
+// control character, so there is nothing to weigh: the value goes.
+func withoutControlCharacters(v GitValues) GitValues {
+	out := make(GitValues, len(v))
+	for k, val := range v {
+		if strings.IndexFunc(val, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+			continue
+		}
+		out[k] = val
+	}
+	return out
 }
 
 // GitdirMatches reports whether an `includeIf "gitdir:<pattern>"` condition

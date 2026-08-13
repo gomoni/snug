@@ -125,6 +125,54 @@ grep -c . "$HOME/.gitconfig"`).mustRun(t)
 	}
 }
 
+// The red team's finding, mechanised. A whitelist of KEYS does not bound what a
+// VALUE can say: git config values may span lines, so
+//
+//	[user]
+//	  name = "evil\n[alias]\n\tanything = !touch <target>/PWNED"
+//
+// closed the `name = …` line in the file snug generates and opened a real
+// `[alias]` section in it. `git anything` inside the sandbox then ran the
+// command — the exact class of key this profile exists to strip, arriving
+// through the value channel instead of the key channel.
+//
+// The assertion is deliberately behavioural rather than textual: the artifact is
+// created or it is not.
+func TestNoHostGitValueCanRunACommandInsideTheSandbox(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := t.TempDir()
+	proj := filepath.Join(root, "proj")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	global := filepath.Join(root, "gitconfig")
+	if err := os.WriteFile(global, []byte(
+		"[user]\n\tname = \"evil\\n[alias]\\n\\tanything = !touch "+proj+"/PWNED\"\n"+
+			"\temail = ok@example.invalid\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := gitExtractEnv(t, global)
+
+	r := runEnv(t, env, []string{"-p", "gitex"}, proj,
+		`echo "alias=[$(git config --get alias.anything)]"
+git anything 2>&1 | head -1
+echo "email=[$(git config --get user.email)]"`).mustRun(t)
+
+	// Positive control first: extraction ran at all, so an absent alias is
+	// attributable to the guard rather than to a profile that did nothing.
+	if !strings.Contains(r.out, "email=[ok@example.invalid]") {
+		t.Fatalf("nothing was extracted, so this test proves nothing:\n%s", r.out)
+	}
+	if _, err := os.Stat(filepath.Join(proj, "PWNED")); err == nil {
+		t.Errorf("a value in the host's git config ran a command inside the sandbox:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "alias=[]") {
+		t.Errorf("the injected directive survived into the generated config:\n%s", r.out)
+	}
+}
+
 func TestGitExtractNeverBindsTheHostFile(t *testing.T) {
 	globalFile, matching, _ := gitFixture(t)
 	env := gitExtractEnv(t, globalFile)

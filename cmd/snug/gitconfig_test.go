@@ -64,6 +64,37 @@ func TestExtractGitConfigHonoursGitdirIncludes(t *testing.T) {
 	}
 }
 
+// The extractor is where the value channel has to be closed, because the
+// renderer is not the only consumer and a dropped value should be REPORTED. A
+// multi-line value in the host's config authored a real `[alias] x = !cmd`
+// section in the generated file, and `git x` ran it inside the sandbox.
+func TestExtractGitConfigDropsAValueThatWouldAuthorADirective(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := t.TempDir()
+	global := filepath.Join(root, "gitconfig")
+	// The `"…"` quoting with a \n escape is how git spells a multi-line value,
+	// and it is the spelling anyone re-testing this needs.
+	if err := os.WriteFile(global, []byte(
+		"[user]\n\tname = \"evil\\n[alias]\\n\\tanything = !touch /tmp/PWNED\"\n"+
+			"\temail = ok@example.invalid\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+
+	got := extractGitConfig("/home/u", filepath.Join(root, "proj"), false)
+	if _, ok := got["user.name"]; ok {
+		t.Errorf("a multi-line user.name survived extraction: %q", got["user.name"])
+	}
+	// And the rest of the file still comes through: dropping one poisoned value
+	// must not quietly disable the profile.
+	if got["user.email"] != "ok@example.invalid" {
+		t.Errorf("user.email = %q, want the ordinary value beside the dropped one",
+			got["user.email"])
+	}
+}
+
 func TestExtractGitConfigCarriesNoKeyThatNamesAProgram(t *testing.T) {
 	globalFile, work, _ := writeGitFixture(t)
 	t.Setenv("GIT_CONFIG_GLOBAL", globalFile)

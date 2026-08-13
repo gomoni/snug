@@ -764,6 +764,19 @@ Two things worth keeping from how it was found:
   a standing inventory-sweep objective in `.claude/agents/redteam.md`, plus a
   data-vs-command-table classification rule in `.claude/agents/sandbox-policy.md`.
 
+**The red team broke the first version of the fix.** A whitelist of KEYS says
+nothing about VALUES, and git config values may span lines: `user.name = "evil\u000A[alias]\u000A\tanything = !touch /tmp/PWNED"` authored a real
+`[alias]` section in the file snug generates, and `git anything` ran it inside
+the sandbox. All three whitelisted keys worked as the carrier. Fixed by dropping
+any extracted value containing a control character — the same rule
+`checkEnvValue` has applied to profile-supplied env values since the NUL
+finding, which makes this the third instance of *a rule written once and applied
+to one of its two halves*. Regression tests at three levels: the renderer
+(`TestNoExtractedValueCanAuthorADirective`), the extractor
+(`TestExtractGitConfigDropsAValueThatWouldAuthorADirective`), and behaviourally
+inside a real sandbox (`TestNoHostGitValueCanRunACommandInsideTheSandbox`, which
+asserts the artifact the injected command would have created does not exist).
+
 Left open from that work:
 
 - **[gap] Signed commits still do not work inside.** The signing keys
