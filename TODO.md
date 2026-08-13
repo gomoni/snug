@@ -1304,12 +1304,48 @@ parent was the stage — but the init, whose pdeathsig is not yet armed, survive
 and is reparented. Every mechanism that acts on snug or on the stage is
 therefore one process too far away. **The fix has to reach the init.**
 
-*The remaining candidate, and it does not conflict with a documented decision:*
+*The remaining candidate is MEASURED SOUND, in isolation, before any wiring.*
+Plain bwrap, no snug, killing at fixed offsets from bwrap's own start:
+
+```
+kill outer      at 0.002s -> payload ran 0/3   (init not yet forked; pid never published)
+kill outer      at 0.005s -> payload ran 3/3   <- the window, reproduced without snug
+kill outer      at 0.010s -> payload ran 3/3
+kill outer      at 0.020s -> payload ran 3/3
+kill outer      at 0.040s -> payload ran 0/3   (init has armed its own pdeathsig by now)
+
+kill init+outer at 0.005s -> payload ran 0/3
+kill init+outer at 0.010s -> payload ran 0/3
+kill init+outer at 0.020s -> payload ran 0/3
+```
+
+Three facts fall out, and the third is what makes the fix buildable:
+
+1. **The defect is bwrap's, not snug's.** Killing only the outer process leaves
+   the init alive for a ~5–40 ms interval, with no snug in the picture at all.
+2. **Killing the init by pid closes it**, at every offset inside the window.
+3. **The pid is available in time.** bwrap publishes `child-pid` on
+   `--json-status-fd` at **2.6–3.4 ms**, before the window opens at ~5 ms. So a
+   parent that reads it can always kill by pid when it needs to.
+
+Note what this corrects in the entry above: "every mechanism that acts on snug
+or on the stage is one process too far away" is right, but the reason is not
+that the stage is too far from the init — it is that **killing a parent is not
+what kills the init**, and that is true one level up as well.
+
+*The shape, and it does not conflict with a documented decision:*
 re-introduce `--json-status-fd`, but read it in the STAGE rather than in snug —
 the stage is bwrap's actual parent and is already the process watching the
 lifeline — and have it SIGKILL that pid before exiting, then wait for the pid
 namespace to collapse. That is what `parked.abort()` used to do and nothing
-inherited. Rejected alternative: put the sandbox in its own process group and
+inherited when it was deleted.
+
+Two things the implementation must not get wrong, both visible in the
+measurement: the pid must be read **as early as it is available** rather than at
+the point it is needed (the window opens 2 ms after it is published), and the
+init must be killed **as well as**, not instead of, whatever else is torn down.
+
+Rejected alternative: put the sandbox in its own process group and
 `kill(-pgid)`. It would work, and CLAUDE.md forbids `Setpgid` in this chain on
 purpose, because the tree must stay in the terminal's foreground process group
 for Ctrl-C and job control to reach an interactive payload.
