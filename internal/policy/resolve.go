@@ -212,6 +212,33 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 				if err != nil {
 					return nil, fmt.Errorf("profile %q: %w", name, err)
 				}
+				// This path is READ, not mounted — sshproxy.New parses it for
+				// the blob the proxy answers REQUEST_IDENTITIES with — so a
+				// symlink AT it does not widen a grant, it selects WHICH host
+				// key the sandbox can sign with. Under the target that is a
+				// path the sandbox itself can write, and a previous run could
+				// have planted the link, so it gets exactly what add() gives a
+				// bind: resolve while the filesystem is still trusted, and
+				// refuse a redirect out of the target.
+				//
+				// Outside the target it is deliberately NOT canonicalised, and
+				// that is a narrower choice than add() makes. Two reasons: the
+				// path carries the same trust as a grant's host side — the
+				// human named it on their own filesystem — and canonicalising
+				// would make resolution depend on the file existing, which
+				// turns `snug profile show` and `--dry-run` into hard failures
+				// for a profile whose key is merely absent. The hole being
+				// closed here is the sandbox-writable one.
+				if _, ok := under(target, expanded); ok {
+					real, err := env.EvalSymlinks(expanded)
+					if err != nil {
+						return nil, fmt.Errorf("profile %q: ssh_key %s: %w", name, expanded, err)
+					}
+					if err := underTargetIsLiteral(target, expanded, real); err != nil {
+						return nil, fmt.Errorf("profile %q: ssh_key: %w", name, err)
+					}
+					expanded = real
+				}
 				id.SSHKey = expanded
 			}
 			p.Identity = &id

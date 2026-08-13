@@ -1163,14 +1163,27 @@ was measured on this host.
   (`cmd/snug/ownedenv_test.go` is the precedent for parsing Go in a test), or
   correct CLAUDE.md.
 
-- **[latent security] `identity.ssh_key` is expanded but not symlink-resolved.**
-  It goes through `expandVars` against the full `vars` map — which contains
-  `{target}` — and unlike a `ro`/`rw` grant it does not pass through
+- **[latent security] `identity.ssh_key` is expanded but not symlink-resolved.
+  FIXED.** It went through `expandVars` against the full `vars` map — which
+  contains `{target}` — and unlike a `ro`/`rw` grant it did not pass through
   `underTargetIsLiteral` or `EvalSymlinks`. So `ssh_key = "{target}/deploy.pub"`
-  follows a symlink a previous sandbox run planted. Not reachable from any
-  builtin (no shipped profile sets `identity`), which is why this is latent
-  rather than live — but SECRETS.md §4 asserts this rule already holds, and it
-  does not. Same family as "A symlink in the target can divert a grant" above.
+  followed a symlink a previous sandbox run planted, and `sshproxy.New` pinned
+  whatever key that link pointed at — this path is *read* for the blob the proxy
+  answers `REQUEST_IDENTITIES` with, so redirecting it selects which host key
+  the sandbox may sign with. Not reachable from any builtin (no shipped profile
+  sets `identity`), which is why it was latent rather than live — but SECRETS.md
+  §4 asserted the rule already held, and it did not. Same family as "A symlink
+  in the target can divert a grant" above.
+
+  Fixed in `internal/policy/resolve.go`: a key **under the target** now gets
+  exactly what `add()` gives a bind — `EvalSymlinks` while the filesystem is
+  still trusted, then `underTargetIsLiteral`. Outside the target it is
+  deliberately **not** canonicalised, which is narrower than `add()`: the path
+  carries the same trust as a grant's host side, and canonicalising would make
+  resolution depend on the file existing, turning `snug profile show` and
+  `--dry-run` into hard failures for a profile whose key is merely absent.
+  `internal/policy/identitykey_test.go` — three tests, because a fix that
+  refused every key under the target would pass the negative one alone.
 
 - **[disclosure] `--dry-run` resolves and stages a live credential without
   saying so.** `startIdentity` runs before the dry-run branch, so `snug

@@ -1640,13 +1640,19 @@ selector, never the resolved secret.
 
 **Three findings this comparison produced, all against shipped code:**
 
-1. **`identity.ssh_key` already breaks the rule the bullet above asserts.** It
-   goes through `expandVars` against the full `vars` map, which contains
-   `{target}` — and unlike a `ro`/`rw` grant it does **not** pass through
+1. **`identity.ssh_key` broke the rule the bullet above asserts. FIXED
+   2026-08-13.** It went through `expandVars` against the full `vars` map, which
+   contains `{target}` — and unlike a `ro`/`rw` grant it did **not** pass through
    `underTargetIsLiteral` or `EvalSymlinks`. A profile writing `ssh_key =
-   "{target}/deploy.pub"` follows a symlink a previous sandbox run planted. Not
-   reachable from any builtin (no shipped profile sets `identity`), so the
-   severity is low — but the rule §4 states as already holding does not hold.
+   "{target}/deploy.pub"` followed a symlink a previous sandbox run planted, and
+   since the path is *read* for the blob the proxy answers `REQUEST_IDENTITIES`
+   with, redirecting it selects **which host key the sandbox may sign with**.
+   Not reachable from any builtin, so the severity was low — but the rule §4
+   stated as already holding did not hold, which is the part worth remembering:
+   this section's whole argument is that the selector rules are shared, and the
+   one place they were already needed was the one place they were missing.
+   A key under the target now gets what a bind gets; outside it is deliberately
+   not canonicalised (`internal/policy/identitykey_test.go`).
 2. **The control-character rule is missing from both design documents, from
    opposite halves.** `PARAMETERISED-PROFILES.md` refuses `,`, `:` and NUL in an
    argument but justifies it *only* by canonical-name injectivity, never
