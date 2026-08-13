@@ -57,6 +57,7 @@ type rawProfile struct {
 	MTU     int    `toml:"mtu"`
 
 	Podman   string       `toml:"podman"`
+	Git      string       `toml:"git"`
 	Identity *rawIdentity `toml:"identity"`
 }
 
@@ -198,6 +199,7 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 			Gateway:     r.Gateway,
 			MTU:         r.MTU,
 			Podman:      r.Podman,
+			Git:         r.Git,
 			Identity:    toIdentity(r.Identity),
 			Source:      source,
 			Trusted:     trusted,

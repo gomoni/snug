@@ -114,9 +114,13 @@ Break any of these and the project has lost its point.
    `~/.gitconfig`, `~/.ssh/config`, `known_hosts`) are assigned **directly into
    `p.Mounts`** at the end of `Resolve` — they do not go through `join`, and
    `rejectMasking` exempts `KindData` by kind. At an identical path that is a
-   silent overwrite: with `@git-ro` and an identity profile both selected, the
-   `@git-ro` bind of `~/.gitconfig` disappears from the policy entirely and the
-   provenance reads `identity:<profile>` alone. **Verified by execution.** That
+   silent overwrite: when `@git-ro` still BOUND `~/.gitconfig` and an identity
+   profile was selected too, that bind disappeared from the policy entirely and
+   the provenance read `identity:<profile>` alone. **Verified by execution.**
+   (`@git-ro` no longer binds anything — it extracts and generates, see
+   `.claude/design/GIT-CONFIG.md` — so this particular collision is gone, but the
+   mechanism that produced it is unchanged and the next generated file will meet
+   it.) That
    is the intended direction — the pinned identity must not sit alongside the
    host's credential helpers, and `GIT_CONFIG_GLOBAL` exists for the same reason
    — but note what it is: a *profile* cannot displace another profile's grant,
@@ -380,10 +384,35 @@ on any flag.
   `@claude` shape and asserts the predicate fires on it.
 - **`git` merges its global config from TWO files.** `~/.gitconfig` AND
   `$XDG_CONFIG_HOME/git/config` are both read. So generating `~/.gitconfig` was
-  not enough: with `@git-ro` also selected, the host's credential helpers,
-  `insteadOf` rules and `user.email` sat alongside the pinned identity. Setting
-  `GIT_CONFIG_GLOBAL` replaces both outright, which is why snug sets it whenever
-  an identity is pinned. Verified by execution, both directions.
+  not enough: with `@git-ro` also selected — while it still bound the host's
+  files — the host's credential helpers, `insteadOf` rules and `user.email` sat
+  alongside the pinned identity. Setting `GIT_CONFIG_GLOBAL` replaces both
+  outright, which is why snug sets it whenever it generates that file. Verified
+  by execution, both directions.
+- **A config file a tool INTERPRETS is not data — ask whether it is a command
+  table, because read-only does not demote one into the other.** `~/.gitconfig`
+  names programs git will run: `credential.helper`, `alias.x = !cmd`,
+  `core.pager`, `core.editor`, `core.sshCommand`, `diff.*.textconv`,
+  `filter.*.clean/smudge`, `core.fsmonitor`. A read-only bind stops the sandbox
+  *editing* the file and **supplies every command in it**. `@git-ro` shipped
+  binding it for a milestone, with an abuse comment that said "any secrets you
+  unwisely put in `~/.gitconfig`" — the wrong noun and the wrong owner, since
+  those keys are what the file is FOR. It now extracts a whitelist and generates
+  the file (`.claude/design/GIT-CONFIG.md`).
+
+  Three things fall out, and the third is the general one. The whitelist
+  deliberately omits the signing keys, because `commit.gpgsign = true` with a
+  key that is not inside makes every commit FAIL — a downgrade worse than the
+  gap it fills. snug evaluates git's `includeIf "gitdir:"` itself, because
+  measured, `git -C <target> config --get` lets the REPOSITORY win and
+  `git config --global --get` never fires the condition at all — there is no
+  invocation that both honours it and keeps the sandboxed material out of the
+  decision. And **the abuse sentence existed, was honest, and still missed it**:
+  it was written once, at authoring time, and nothing re-read it as the code
+  grew around it. That is why the check is now mechanical
+  (`TestNoBuiltinGrantsACredentialOrCommandTablePath`, no allowlist) and why
+  `redteam` carries a standing inventory sweep: *working exactly as designed,
+  what did we hand over?* — a question none of the escape-shaped checks ask.
 - **`gh` rewrites its token file on first use.** It migrates a file-stored token
   and writes the config back; a read-only `hosts.yml` fails with "failed to write
   config after migration" (gh 2.96). So the staged copy is deliberately WRITABLE

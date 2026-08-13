@@ -821,6 +821,7 @@ func TestNoTOMLKeyProducesATopology(t *testing.T) {
 		"",  // Gateway
 		0,   // MTU
 		"",  // Podman
+		"",  // Git
 		nil, // Identity
 	}
 }

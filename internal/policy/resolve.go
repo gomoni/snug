@@ -113,6 +113,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	// Which profile last set each non-lattice scalar, so a conflict can name both
 	// sides rather than just reporting that there is one.
 	identityOwner := ""
+	gitOwner := ""
 	addressOwner, gatewayOwner, mtuOwner := "", "", ""
 	publish := map[int]bool{}
 	// Environment claims are ACCUMULATED here and resolved after the fold — see
@@ -262,6 +263,16 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 			}
 			p.Net.Mode = p.Net.Mode.Join(mode)
 		}
+		if prof.Git != "" {
+			mode, err := ParseGitMode(prof.Git)
+			if err != nil {
+				return nil, fmt.Errorf("profile %q: %w", name, err)
+			}
+			if mode > p.Git {
+				gitOwner = name
+			}
+			p.Git = p.Git.Join(mode)
+		}
 		if prof.Podman != "" {
 			mode, err := ParsePodmanMode(prof.Podman)
 			if err != nil {
@@ -384,22 +395,43 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 		p.Net.Nameservers = RoutableNameservers(ctx.HostNameservers)
 	}
 
-	// Identity files are GENERATED, never bound. ~/.ssh is not mounted at all,
-	// so the sandbox learns nothing about which hosts or keys you have.
-	if id := p.Identity; id != nil {
-		if cfg := id.GitConfig(); len(cfg) > 0 {
+	// The git config is GENERATED whenever anything asks for one — an identity
+	// pin, `git = "extract"`, or both. One writer, one path: two code paths
+	// racing to author ~/.gitconfig is how the last silent displacement got in.
+	//
+	// GitConfigFrom folds them in the right order: values extracted from the
+	// host fill in, an [identity] block overrides. A pin that a host value could
+	// silently override would not be a pin.
+	if p.Git == GitExtract || p.Identity != nil {
+		// Provenance names the stronger claimant: an [identity] block PINS this
+		// file, `git = "extract"` merely fills it in, and when both are present
+		// the pin is what a reader needs to see.
+		from := "git:" + gitOwner
+		if identityOwner != "" {
+			from = "identity:" + identityOwner
+		}
+		if cfg := GitConfigFrom(ctx.HostGit, p.Identity); len(cfg) > 0 {
 			p.Replace(Mount{
 				Guest: home + "/.gitconfig", Kind: KindData, Access: AccessRO,
-				Content: cfg, From: []string{"identity:" + identityOwner},
+				Content: cfg, From: []string{from},
 			})
 			// GIT_CONFIG_GLOBAL REPLACES the global config; without it git reads
-			// ~/.gitconfig AND $XDG_CONFIG_HOME/git/config and merges them. So
-			// with the git-ro profile also selected, the host's credential
-			// helpers, insteadOf rules and user.email would sit alongside the
-			// pinned identity — silently overriding what the human chose.
+			// ~/.gitconfig AND $XDG_CONFIG_HOME/git/config and merges them, so
+			// the host's credential helpers, insteadOf rules and user.email
+			// would sit alongside what snug generated — silently overriding it.
 			// Verified: git merges both files; GIT_CONFIG_GLOBAL replaces both.
+			//
+			// It is also what stops a conditional include from firing inside:
+			// the host's global file is not read at all, so an `includeIf` in it
+			// cannot pull in a file that happens to be reachable through a grant.
 			p.AuthorEnv("GIT_CONFIG_GLOBAL", home+"/.gitconfig")
 		}
+	}
+
+	// The remaining identity files are GENERATED too, never bound. ~/.ssh is not
+	// mounted at all, so the sandbox learns nothing about which hosts or keys
+	// you have.
+	if id := p.Identity; id != nil {
 		if cfg := id.SSHConfig(home); len(cfg) > 0 {
 			p.Replace(Mount{
 				Guest: home + "/.ssh/config", Kind: KindData, Access: AccessRO,

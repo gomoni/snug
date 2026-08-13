@@ -56,6 +56,13 @@ type Context struct {
 	// caller. Resolve keeps only the routable ones; see NetPolicy.ResolvConf.
 	HostNameservers []string
 
+	// HostGit is the whitelisted subset of the host's RESOLVED git config,
+	// extracted by the caller because reading files is not the resolver's job.
+	// Only keys in GitKeyWhitelist ever appear here; nothing in it names a
+	// program, a file or a credential. Empty unless a profile asks for
+	// `git = "extract"`.
+	HostGit GitValues
+
 	// KnownHosts is the subset of the host's known_hosts for the pinned host,
 	// filtered by the caller. Binding the whole file would tell the sandbox
 	// every host you have ever connected to.

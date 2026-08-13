@@ -109,6 +109,7 @@ func TestTopologyIsDerivedNotSettable(t *testing.T) {
 		nil,       // Publish
 		"", "", 0, // Address, Gateway, MTU
 		"",          // Podman
+		"",          // Git
 		nil,         // Identity
 		EnvGrants{}, // Environ
 		"", false,   // Source, Trusted

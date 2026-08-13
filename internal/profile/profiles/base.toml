@@ -176,18 +176,34 @@ ro = ["{target_parent}"]
 description = "A per-project host directory becomes the sandbox's /tmp. Survives the sandbox."
 rw = ["{host_tmpdir}:/tmp"]
 
-# ── git identity, read-only ──────────────────────────────────────────────────
-# ABUSE: the sandbox learns your git name, email, aliases, and any secrets you
-# unwisely put in ~/.gitconfig (some people keep tokens in url.insteadOf or
-# credential helper config — check yours before selecting this).
+# ── git identity, generated ──────────────────────────────────────────────────
+# ABUSE: the sandbox learns the name and email you commit under, and nothing
+# else from your git config. It is a name and an address, both of which are in
+# every commit you have ever pushed.
 #
-# Deliberately NOT a blanket ~/.config bind: that directory holds gh tokens,
-# cloud credentials and autostart entries, so it is a credential dump and a
-# persistence vector in one. One grant, named explicitly.
+# THIS PROFILE USED TO BIND ~/.gitconfig READ-ONLY, AND THAT WAS THE WRONG SHAPE.
+# The file is not a data file with a name and an email in it — it is a COMMAND
+# TABLE. credential.helper, alias.x = !cmd, core.pager, core.sshCommand,
+# diff.*.textconv, filter.*.clean/smudge and core.fsmonitor all name programs for
+# git to run, and binding the file read-only does not stop any of them: it
+# SUPPLIES them. The old abuse sentence here called the hazard "secrets you
+# unwisely put in ~/.gitconfig", which reads as a user error and understates a
+# file whose keys are executable by design.
+#
+# So snug reads it as DATA and generates the config the sandbox sees, keeping
+# only keys that carry no execution: user.name, user.email, init.defaultBranch.
+# `includeIf "gitdir:"` is honoured — snug evaluates the condition itself against
+# the target — so a per-directory identity keeps working. `includeIf
+# "hasconfig:"` is refused and named on stderr, because that condition is decided
+# by the REPOSITORY's own config: measured, a repo whose only property was a
+# crafted remote URL pulled in a host file carrying credential.helper = !command.
+#
+# Not in `defaults`: it reads a host file, and reading a host file is a thing a
+# human should ask for. Combine with an [identity] block and the block wins —
+# a pin that a host value could override would not be a pin.
 [profile.git-ro]
-description = "Your git config, read-only. Nothing else from ~/.config."
-ro = ["{home}/.config/git", "{home}/.gitconfig"]
-optional = ["{home}/.config/git", "{home}/.gitconfig"]
+description = "Your git name and email, extracted from the host config. Generated, never bound."
+git = "extract"
 
 # ── networking ───────────────────────────────────────────────────────────────
 # ABUSE: the sandbox can reach the whole internet — exfiltrate anything it can

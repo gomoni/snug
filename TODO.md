@@ -740,6 +740,49 @@ environment variables (direnv would let a repo author its own boundary).
 
 ## Pending
 
+### `@git-ro` bound a command table for a milestone
+
+**FIXED.** The profile bound `~/.gitconfig` and `~/.config/git` read-only. That
+file is not data with secrets in it — it is a **command table**
+(`credential.helper`, `alias.x = !cmd`, `core.pager`, `core.sshCommand`,
+`diff.*.textconv`, `filter.*.clean/smudge`, `core.fsmonitor`), and read-only does
+not restrain any of it: the bind SUPPLIES the commands. `@git-ro` now extracts a
+whitelist and generates the file; `.claude/design/GIT-CONFIG.md` is the design,
+with the measurements.
+
+Two things worth keeping from how it was found:
+
+- **The abuse sentence existed and was honest, and still missed it.** It said
+  "any secrets you unwisely put in `~/.gitconfig`" — the wrong noun (secrets, not
+  executable keys) and the wrong owner (the user's unwisdom, not the file's
+  purpose). It was written before identity, `GIT_CONFIG_GLOBAL` and credential
+  staging existed, and nothing re-read it as those grew around it. **A comment
+  cannot fail.**
+- **No agent owned the question.** `redteam` asks what it can break out of;
+  nobody asked what a *correct* profile hands over. Both gaps are now closed:
+  `TestNoBuiltinGrantsACredentialOrCommandTablePath` (no allowlist, no flag) and
+  a standing inventory-sweep objective in `.claude/agents/redteam.md`, plus a
+  data-vs-command-table classification rule in `.claude/agents/sandbox-policy.md`.
+
+Left open from that work:
+
+- **[gap] Signed commits still do not work inside.** The signing keys
+  (`user.signingkey`, `gpg.format`, `commit.gpgsign`, `tag.gpgsign`) are
+  deliberately off the whitelist, because carrying `commit.gpgsign = true` without
+  the key inside turns every commit into a hard failure. Making them work needs
+  the signing public key staged AND the ssh-agent proxy willing to sign with it —
+  the proxy pins exactly one key today, and an auth key is usually not the
+  signing key. Same entry as "commit signing is not generated" below; they are
+  one feature.
+- **[deviation] Include ordering.** git applies an include where the `includeIf`
+  line sits, so a later key beats the included file; snug overlays matched
+  includes after the whole global file. Only observable when the same whitelisted
+  key appears both after an include and inside it. Written up in GIT-CONFIG.md §7.
+- **[gap] The catalogue is a fixed list.** It knows the tools we thought of. A
+  config file that becomes a command table when its upstream adds a hook key
+  passes it silently — which is precisely what the red team's inventory sweep is
+  for.
+
 ### Identity: what the two-account work found, and what it left open
 
 The goal was two sandboxes on one host, one GitHub account each. It needed **no
