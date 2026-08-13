@@ -89,6 +89,41 @@ Work through these, and prefer actually running the attack over reasoning about 
 - **Teardown.** Kill things in the wrong order and look for leaked helpers,
   orphaned network namespaces, or leftover writable state.
 
+## The inventory sweep — a standing objective, every milestone
+
+Everything above asks *what can I break out of*. This asks a different question,
+and it is the one that has been missed: **working exactly as designed, what did
+we hand over?** A profile can be correct, documented, reviewed and still be the
+problem, so a sweep that finds "nothing is escapable" is not an answer to it.
+
+For the default selection, and then for each shipped profile in turn:
+
+1. **Enumerate every host secret reachable inside.** Not "is `~/.ssh` absent" —
+   walk what IS granted and ask what a credential could be sitting in. Keys,
+   tokens, cookies, keyrings, `.netrc`-shaped files, anything under a granted
+   directory that a tool would read a password out of.
+2. **Enumerate every reachable file whose contents name a program to run.** This
+   is the class that was missed for a milestone: `~/.gitconfig` was bound
+   read-only, and read-only does not restrain `credential.helper`,
+   `alias.x = !cmd`, `core.pager`, `core.sshCommand`, `diff.*.textconv` or
+   `filter.*.clean` — it supplies them. Ask it of every config file any grant
+   exposes: shell rc files, editor config, `~/.config/containers`, `.npmrc`,
+   anything with a hook key.
+3. **Say what a compromise of each one buys**, and whether the effect outlives
+   the sandbox. An `admin:public_key` token that can add an SSH key to an account
+   is worth more than a scoped read token, and both are worth reporting even
+   though neither is an escape.
+4. **Report even when the answer is "nothing new".** The inventory is the
+   artifact; a milestone with no sweep on record is a milestone where nobody
+   asked.
+
+`internal/profile`'s `TestNoBuiltinGrantsACredentialOrCommandTablePath` is the
+mechanical half of this and it only covers **builtin** grants against a fixed
+catalogue. Your half is everything the catalogue does not know about yet — a new
+tool's config format, a path a user profile is likely to add, a file that became
+a command table when its upstream grew a hook key. What you find there belongs in
+the catalogue.
+
 ## Boundary with sandbox-tester
 
 You are exploratory; `sandbox-tester` is the ratchet. You run one-off commands,

@@ -113,6 +113,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	// Which profile last set each non-lattice scalar, so a conflict can name both
 	// sides rather than just reporting that there is one.
 	identityOwner := ""
+	gitOwner := ""
 	addressOwner, gatewayOwner, mtuOwner := "", "", ""
 	publish := map[int]bool{}
 	// Environment claims are ACCUMULATED here and resolved after the fold — see
@@ -201,6 +202,13 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 				return nil, fmt.Errorf("profiles %q and %q pin different identities; "+
 					"select only one", identityOwner, name)
 			}
+			// Before anything is expanded or read: every field here ends up
+			// inside a config file snug generates, so a control character
+			// authors a directive that is not a Mount and that nothing
+			// downstream can refuse.
+			if err := prof.Identity.CheckText(name); err != nil {
+				return nil, err
+			}
 			mode, err := ParseSSHMode(string(prof.Identity.SSHMode))
 			if err != nil {
 				return nil, fmt.Errorf("profile %q: %w", name, err)
@@ -243,6 +251,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 			}
 			p.Identity = &id
 			identityOwner = name
+			p.IdentityOwner = name
 		}
 
 		// Network scalars, each joined permissive-ward. A profile can only ever
@@ -253,6 +262,16 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 				return nil, fmt.Errorf("profile %q: %w", name, err)
 			}
 			p.Net.Mode = p.Net.Mode.Join(mode)
+		}
+		if prof.Git != "" {
+			mode, err := ParseGitMode(prof.Git)
+			if err != nil {
+				return nil, fmt.Errorf("profile %q: %w", name, err)
+			}
+			if mode > p.Git {
+				gitOwner = name
+			}
+			p.Git = p.Git.Join(mode)
 		}
 		if prof.Podman != "" {
 			mode, err := ParsePodmanMode(prof.Podman)
@@ -376,39 +395,69 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 		p.Net.Nameservers = RoutableNameservers(ctx.HostNameservers)
 	}
 
-	// Identity files are GENERATED, never bound. ~/.ssh is not mounted at all,
-	// so the sandbox learns nothing about which hosts or keys you have.
-	if id := p.Identity; id != nil {
-		if cfg := id.GitConfig(); len(cfg) > 0 {
+	// The git config is GENERATED whenever anything asks for one — an identity
+	// pin, `git = "extract"`, or both. One writer, one path: two code paths
+	// racing to author ~/.gitconfig is how the last silent displacement got in.
+	//
+	// GitConfigFrom folds them in the right order: values extracted from the
+	// host fill in, an [identity] block overrides. A pin that a host value could
+	// silently override would not be a pin.
+	if p.Git == GitExtract || p.Identity != nil {
+		// Provenance names the stronger claimant: an [identity] block PINS this
+		// file, `git = "extract"` merely fills it in, and when both are present
+		// the pin is what a reader needs to see.
+		from := "git:" + gitOwner
+		if identityOwner != "" {
+			from = "identity:" + identityOwner
+		}
+		if cfg := GitConfigFrom(ctx.HostGit, p.Identity); len(cfg) > 0 {
 			p.Replace(Mount{
 				Guest: home + "/.gitconfig", Kind: KindData, Access: AccessRO,
-				Content: cfg, From: []string{"identity:" + identityOwner},
+				Content: cfg, From: []string{from},
 			})
 			// GIT_CONFIG_GLOBAL REPLACES the global config; without it git reads
-			// ~/.gitconfig AND $XDG_CONFIG_HOME/git/config and merges them. So
-			// with the git-ro profile also selected, the host's credential
-			// helpers, insteadOf rules and user.email would sit alongside the
-			// pinned identity — silently overriding what the human chose.
+			// ~/.gitconfig AND $XDG_CONFIG_HOME/git/config and merges them, so
+			// the host's credential helpers, insteadOf rules and user.email
+			// would sit alongside what snug generated — silently overriding it.
 			// Verified: git merges both files; GIT_CONFIG_GLOBAL replaces both.
+			//
+			// It is also what stops a conditional include from firing inside:
+			// the host's global file is not read at all, so an `includeIf` in it
+			// cannot pull in a file that happens to be reachable through a grant.
 			p.AuthorEnv("GIT_CONFIG_GLOBAL", home+"/.gitconfig")
 		}
+	}
+
+	// The remaining identity files are GENERATED too, never bound. ~/.ssh is not
+	// mounted at all, so the sandbox learns nothing about which hosts or keys
+	// you have.
+	if id := p.Identity; id != nil {
 		if cfg := id.SSHConfig(home); len(cfg) > 0 {
 			p.Replace(Mount{
 				Guest: home + "/.ssh/config", Kind: KindData, Access: AccessRO,
 				Content: cfg, From: []string{"identity:" + identityOwner},
 			})
-			// The pinned PUBLIC key, so IdentityFile above resolves. Public
-			// material only; the private key never enters the sandbox.
-			if len(ctx.PinnedPubKey) > 0 {
-				p.Replace(Mount{
-					Guest: home + "/" + PubKeyGuest, Kind: KindData, Access: AccessRO,
-					Content: ctx.PinnedPubKey, From: []string{"identity:" + identityOwner},
-				})
-			}
+			// The pinned PUBLIC key is staged by startIdentity, not here: it is
+			// read from id.SSHKey AFTER expansion, so `{home}/...` and `~/...`
+			// are one path rather than two spellings with different fates.
 			p.Replace(Mount{
 				Guest: home + "/.ssh/known_hosts", Kind: KindData, Access: AccessRO,
 				Content: ctx.KnownHosts, From: []string{"identity:" + identityOwner},
 			})
+			// The system-wide ssh_config is replaced wherever this host has one.
+			// Without this, ssh refuses to run at all inside the sandbox on a
+			// host whose system config is root-owned — see SystemSSHConfig.
+			if cfg := id.SystemSSHConfig(); len(cfg) > 0 {
+				for _, path := range SystemSSHConfigPaths {
+					if _, err := env.Stat(path); err != nil {
+						continue
+					}
+					p.Replace(Mount{
+						Guest: path, Kind: KindData, Access: AccessRO,
+						Content: cfg, From: []string{"identity:" + identityOwner},
+					})
+				}
+			}
 		}
 	}
 
@@ -825,10 +874,10 @@ func splitSpec(spec string, vars map[string]string) (host, guest string, err err
 // substitution, so substituted text was itself scanned for placeholders — and
 // the substituted text is a PATH, which the human running snug chose. Measured:
 //
-//	mkdir -p '/tmp/x/{home}' /tmp/x/home/michal
+//	mkdir -p '/tmp/x/{home}' /tmp/x/home/u
 //	snug '/tmp/x/{home}'
 //	  -> TARGET  /tmp/x/{home}   read-only, via @parent-ro
-//	  -> rw      /tmp/x/home/michal   @cwd-rw    <- a DIFFERENT directory, writable
+//	  -> rw      /tmp/x/home/u        @cwd-rw    <- a DIFFERENT directory, writable
 //
 // The payload wrote to it and the write persisted to the host, while the
 // directory the user actually named was read-only. "The target is the only

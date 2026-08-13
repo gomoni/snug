@@ -160,7 +160,7 @@ namespace does not touch that at all:
 ```
 $ unshare --user --map-root-user --net -- sh -c 'ip -o link | wc -l; podman info'
 ifaces: 1                       # lo only, no route out
-engine-hostname=zelva store=/home/michal/.local/share/containers/storage
+engine-hostname=laptop store=/home/u/.local/share/containers/storage
 ```
 
 From a netns with no route, the shim reached the **host's** engine. So on a

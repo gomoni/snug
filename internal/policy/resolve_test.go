@@ -182,6 +182,12 @@ func testRegistry() map[string]*Profile {
 		// than only by the one test that names it.
 		"dupe-path": {Name: "dupe-path", RO: []string{"/usr/bin"}, Environ: EnvGrants{
 			Merge: map[string][]string{"PATH": {"/usr/bin"}}}},
+		// Two profiles asking for the same git mode, so the commutativity and
+		// idempotence sweeps actually exercise the scalar. Rendering it in canon
+		// asserts nothing unless a fixture sets it — the same trap the canon
+		// comment records for the network scalars.
+		"gitty":     {Name: "gitty", Git: "extract"},
+		"gitty-too": {Name: "gitty-too", Git: "extract"},
 		// A pure composition point with a two-level include chain
 		// (combo -> @cwd-rw -> @home). The builtin `default` used to be one of
 		// these; it is now the `defaults` SETTING (internal/profile/defaults.go),
@@ -294,6 +300,11 @@ func canon(p *Policy) string {
 		p.Net.Mode, p.Net.DNS, p.Net.Publish, p.Net.Nameservers,
 		p.Net.Address, p.Net.Gateway, p.Net.MTU)
 	fmt.Fprintf(&b, "podman %s\n", p.Podman)
+	// Git joins by max like every other scalar, and it was added without this
+	// line — the exact omission this function's own comment warns about, three
+	// scalars later. A commutativity test that does not render a field does not
+	// test it.
+	fmt.Fprintf(&b, "git %s owner=%s\n", p.Git, p.IdentityOwner)
 	fmt.Fprintf(&b, "topology %s\n", p.Topology)
 	fmt.Fprintf(&b, "identity %+v\n", p.Identity)
 	fmt.Fprintf(&b, "profiles %v\n", p.Profiles)
@@ -306,7 +317,7 @@ func canon(p *Policy) string {
 // changes what the sandbox grants, and "profiles only relax" becomes unprovable.
 func TestResolveIsCommutative(t *testing.T) {
 	all := []string{"@sys", "@home", "@cwd-rw", "@parent-ro", "cwd-ro", "netty", "netty-too",
-		"envy", "envy-too", "setty", "firsty", "sanity", "dupe-path"}
+		"envy", "envy-too", "setty", "firsty", "sanity", "dupe-path", "gitty", "gitty-too"}
 	want := canon(mustResolve(t, all...))
 
 	rng := rand.New(rand.NewSource(1))

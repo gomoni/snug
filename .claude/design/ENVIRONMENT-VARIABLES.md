@@ -624,15 +624,15 @@ Provenance per entry = product. Mounts already render this way; environment shou
 ```
 ENVIRONMENT  (--clearenv, then:)
   EDITOR           vim                             inherit   @claude
-  HOME             /home/michal                    (snug)
+  HOME             /home/u                    (snug)
   PATH             /opt/bin                        prepend   mytools
-                   /home/michal/.cargo/bin         merge     @rust
+                   /home/u/.cargo/bin         merge     @rust
                    /run/snug/bin                   (snug)    podman stub
                    /usr/bin /bin /usr/sbin /sbin   (snug)    base
   PKG_CONFIG_PATH  /usr/lib64/pkgconfig            sanitise  @pkgconfig
                    (2 host entries dropped: /opt/x/lib/pkgconfig, /srv/pkgconfig)
   SHELL            /usr/bin/bash                   (snug)
-  XDG_CONFIG_HOME  /home/michal/.config            set       @home
+  XDG_CONFIG_HOME  /home/u/.config            set       @home
 ```
 
 Three things a flat list cannot say: **which verb** produced the value, **which
@@ -875,7 +875,7 @@ Second case = `prepend` already working, unnamed and undeclared. Two gaps follow
 ```
 snug --dry-run --no-defaults -p @parent-ro . -- true
 
-  HOME=/home/michal                     ← no @home: does not exist
+  HOME=/home/u                     ← no @home: does not exist
   SHELL=/usr/bin/bash                   ← no @sys:  does not exist
   PATH=/usr/bin:/bin:/usr/sbin:/sbin    ← no @sys:  none of the four exist
 ```

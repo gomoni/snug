@@ -740,6 +740,223 @@ environment variables (direnv would let a repo author its own boundary).
 
 ## Pending
 
+### `@git-ro` bound a command table for a milestone
+
+**FIXED.** The profile bound `~/.gitconfig` and `~/.config/git` read-only. That
+file is not data with secrets in it — it is a **command table**
+(`credential.helper`, `alias.x = !cmd`, `core.pager`, `core.sshCommand`,
+`diff.*.textconv`, `filter.*.clean/smudge`, `core.fsmonitor`), and read-only does
+not restrain any of it: the bind SUPPLIES the commands. `@git-ro` now extracts a
+whitelist and generates the file; `.claude/design/GIT-CONFIG.md` is the design,
+with the measurements.
+
+Two things worth keeping from how it was found:
+
+- **The abuse sentence existed and was honest, and still missed it.** It said
+  "any secrets you unwisely put in `~/.gitconfig`" — the wrong noun (secrets, not
+  executable keys) and the wrong owner (the user's unwisdom, not the file's
+  purpose). It was written before identity, `GIT_CONFIG_GLOBAL` and credential
+  staging existed, and nothing re-read it as those grew around it. **A comment
+  cannot fail.**
+- **No agent owned the question.** `redteam` asks what it can break out of;
+  nobody asked what a *correct* profile hands over. Both gaps are now closed:
+  `TestNoBuiltinGrantsACredentialOrCommandTablePath` (no allowlist, no flag) and
+  a standing inventory-sweep objective in `.claude/agents/redteam.md`, plus a
+  data-vs-command-table classification rule in `.claude/agents/sandbox-policy.md`.
+
+**The red team broke the first version of the fix.** A whitelist of KEYS says
+nothing about VALUES, and git config values may span lines: `user.name = "evil\u000A[alias]\u000A\tanything = !touch /tmp/PWNED"` authored a real
+`[alias]` section in the file snug generates, and `git anything` ran it inside
+the sandbox. All three whitelisted keys worked as the carrier. Fixed by dropping
+any extracted value containing a control character — the same rule
+`checkEnvValue` has applied to profile-supplied env values since the NUL
+finding, which makes this the third instance of *a rule written once and applied
+to one of its two halves*. Regression tests at three levels: the renderer
+(`TestNoExtractedValueCanAuthorADirective`), the extractor
+(`TestExtractGitConfigDropsAValueThatWouldAuthorADirective`), and behaviourally
+inside a real sandbox (`TestNoHostGitValueCanRunACommandInsideTheSandbox`, which
+asserts the artifact the injected command would have created does not exist).
+
+**An independent review then found eight more, all fixed in the same branch.**
+Worth reading as a set, because six of the eight are the same shape — snug now
+owns semantics that used to be git's, and owning them means owning every way
+they can drift:
+
+- values were written unquoted, so `#`, `;`, a leading space and `\` changed
+  meaning, and a `"` in the host's `user.name` made **`git version` itself fail**
+  inside the sandbox. Now re-quoted and escaped.
+- the `gitdir:` matcher disagreed with git in **seven** measured cases, in both
+  directions (relative patterns, `./`, character classes, escapes, `**` treated
+  as always crossing `/`, a symlinked target, and `gitdir/i` on a home path with
+  a capital). Rewritten component-wise, which also removed an exponential case,
+  and pinned by an ORACLE test that asks real git for the answer per case.
+- unconditional `[include] path = …` was not followed at all — the commonest way
+  people split a gitconfig.
+- `includeIf "onbranch:"` was ignored silently while `hasconfig:` was ignored
+  loudly; both are decided by the sandboxed material, so both are named now.
+- four silent-downgrade paths (no git on the host, a file git refuses to parse,
+  nothing extracted) now report, with the identity band's dry-run/real-run split.
+- `Git` was missing from `canon()`, so the commutativity and idempotence sweeps
+  did not cover the new scalar — the exact omission that function's own comment
+  warns about.
+
+Left open from that work:
+
+- **[gap] Signed commits still do not work inside.** The signing keys
+  (`user.signingkey`, `gpg.format`, `commit.gpgsign`, `tag.gpgsign`) are
+  deliberately off the whitelist, because carrying `commit.gpgsign = true` without
+  the key inside turns every commit into a hard failure. Making them work needs
+  the signing public key staged AND the ssh-agent proxy willing to sign with it —
+  the proxy pins exactly one key today, and an auth key is usually not the
+  signing key. Same entry as "commit signing is not generated" below; they are
+  one feature.
+- **[deviation] Include ordering.** git applies an include where the `includeIf`
+  line sits, so a later key beats the included file; snug overlays matched
+  includes after the whole global file. Only observable when the same whitelisted
+  key appears both after an include and inside it. Written up in GIT-CONFIG.md §7.
+- **[🟡 confirmed] `@claude` binds `~/.claude/settings.json`, which is a command
+  table.** It carries `hooks` (shell commands run on tool events) and
+  `apiKeyHelper` (a program that prints a credential — `credential.helper`'s
+  exact shape), so every word of the `@git-ro` argument applies: read-only does
+  not restrain those keys, it supplies them. Found by an independent review,
+  which also caught the catalogue test *asserting the path was ordinary* — a
+  decision nobody made, now removed. The path is deliberately absent from the
+  catalogue rather than blessed in it.
+
+  **Tracked as https://github.com/gomoni/snug/issues/17**, with the proposed fix
+  (stage a filtered copy, the way git's is generated) and its definition of done.
+  Kept out of the git-config work on purpose: two adapters in one change is two
+  security reviews wearing one diff.
+- **[gap] The catalogue is a fixed list.** It knows the tools we thought of. A
+  config file that becomes a command table when its upstream adds a hook key
+  passes it silently — which is precisely what the red team's inventory sweep is
+  for.
+- **[gap] The two-file global path has no test coverage.** `globalGitFiles`
+  returns `$XDG_CONFIG_HOME/git/config` then `~/.gitconfig`, matching git's merge
+  order so the later file wins — but every test sets `GIT_CONFIG_GLOBAL`, which
+  takes the single-file branch. The ordering is right by reading and untested by
+  execution.
+
+### Identity: what the two-account work found, and what it left open
+
+The goal was two sandboxes on one host, one GitHub account each. It needed **no
+new mechanism** — one `[identity]` block per profile already pins the ssh key,
+the gh account and the git author together, and selecting two is a hard error.
+Measured end to end: `gh api user`, `ssh -T git@github.com` and
+`git config user.email` all name the same account, and the other account is
+unreachable from that sandbox. `.claude/design/SECRETS.md` §4.1 predicted exactly
+this (the include-based spelling wins because it needs nothing new); it is now
+confirmed by execution rather than by argument.
+
+Four defects were found on the way. All four are fixed with regression tests;
+they are recorded because each one is a shape that will recur.
+
+1. **ssh did not run inside the sandbox at all** on a host whose system-wide
+   `ssh_config` is root-owned (`/usr/etc/ssh` on openSUSE) — 65534 inside, and
+   OpenSSH refuses. `git clone git@github.com:…` failed for every account and
+   every profile. Fixed by replacing the system-wide file when an identity is
+   pinned. *The suite tested everything snug GENERATES and never ran the
+   consumer.*
+2. **`ssh_key = "{home}/…"` staged no public key**, silently — the pre-resolve
+   reader understood `~/` alone, and `{home}` is the spelling `base.toml`'s own
+   example uses. The read moved into `startIdentity`, against the expanded and
+   symlink-checked path. *One value, two readers, two spellings.*
+3. **An unknown `gh_user` produced a sandbox with no credential and no message**
+   — invariant 5 broken in the quietest way. Now a refusal that names the fix.
+4. **`--dry-run` claimed `~/.config/gh` "reads as absent"** six lines below the
+   `data ~/.config/gh/hosts.yml` row it had just staged. `covered()` understood
+   binds only; `authored()` now answers the guest-side question the NOT GRANTED
+   block actually asks. This is `SECRETS.md` §1.2b, arriving from a different
+   direction.
+
+An independent review of the diff found five more, all fixed in the same branch
+and all worth reading as shapes rather than as incidents:
+
+5. **The public-key read was moved AND narrowed.** Staging it inside `case
+   SSHAgentProxy:` dropped it for `host-agent`, while `resolve.go` generates
+   `~/.ssh/config` for every mode but `none` — `IdentitiesOnly yes` plus an
+   `IdentityFile` naming a file that was no longer there, which is the exact
+   state `SSHConfig`'s doc comment calls broken agent auth. *A move is a
+   behaviour change unless the guard set is identical, and the review question
+   is "what did the enclosing scope add", not "is the new line correct".*
+6. **`--dry-run` refused to print anything** when the host could not mint the
+   token, on the same code path as the new refusal. `main.go` states the
+   opposite policy for the `@tmp-shared` host directory, in as many words:
+   failing on host state makes a dry run refuse a policy the real run might
+   accept. A dry run now warns and prints; a real run still refuses.
+7. **Identity fields could smuggle directives into the files snug generates.**
+   `git_name = "x\u000A[core]\u000A\tsshCommand = …"` writes a git directive
+   into the generated `~/.gitconfig`; `gh_host = "a\u000Ab: {oauth_token: …}"`
+   writes a second host entry into gh's `hosts.yml`.
+   Neither is a Mount, so `Validate` and `rejectMasking` were blind. Pre-existing
+   and not introduced here, but this milestone added a terminal sink for the same
+   text. `Identity.CheckText` now refuses every C0 control and DEL in every
+   identity field, and the two new error messages use `%q`.
+8. **`authored()` keyed on `Kind == KindData`** — the exact proxy `Mount.Authored`
+   was introduced to retire, reintroduced one package over. Now `m.Authored`.
+9. **`authored()` deleted the `~/.ssh` line from NOT GRANTED**, which was
+   technically right (snug does generate files there) and practically a
+   regression: it removed the only sentence saying the host's `~/.ssh` is not
+   mounted. Now qualified — `~/.ssh (host's; snug generates its own here)` —
+   rather than dropped.
+
+Left open, in descending order of how much they matter:
+
+- **[gap] Nothing checks that `ssh_key` and `gh_user` name the SAME account.**
+  A profile can pin account A's key and account B's token, and the sandbox will
+  push as one and comment as the other. Both halves work, so nothing errors. A
+  `snug doctor`-style check could compare `gh api user` against the key's
+  fingerprint in `gh api user/keys`, but that is a network call at resolve time
+  and the design forbids one — likelier answer is a `snug identity check`
+  subcommand a human runs deliberately.
+- **[gap] Commit signing is not generated.** `user.signingkey`, `gpg.format =
+  ssh` and `commit.gpgsign` are not written, so a per-account signing key is not
+  expressible even though the agent proxy could sign with it. The `[identity]`
+  block would need one more field; the abuse sentence is easy (the sandbox can
+  sign commits as that identity — which is the point).
+- **[ergonomics] `gh` is not always under `/usr`.** A tarball in `~/bin` is
+  common, and then `@sys` does not carry it and the staged token has no client.
+  One-line user profile (`ro = ["…/gh:/run/snug/bin/gh"]`), documented in
+  `base.toml`; deliberately not a builtin, because the path is host-specific.
+- **[unchanged] The system ssh_config replacement drops the host's ssh
+  defaults** inside the sandbox — on this host, openSUSE's crypto-policy
+  include. Accepted: the alternative was ssh not running. Revisit if a host
+  turns up where the defaults are load-bearing rather than cosmetic.
+- **[🟡 host side effect] `--dry-run` starts things, and it is three things, not
+  one.** Confirmed by the red team on this milestone, sharpening `SECRETS.md`
+  §4.1 finding 3 from "it mints a token" to the full set. `startIdentity` is
+  called at `cmd/snug/main.go:296`, *unconditionally*, before the `if cfg.dryRun`
+  branch at :328, and it (a) creates `$XDG_RUNTIME_DIR/snug/run-<pid>/`,
+  (b) opens the ssh-agent proxy's listening socket and starts serving it, and
+  (c) executes `gh auth token --hostname … --user …` on the host. Reproduced
+  with a `gh` shim first on `PATH`: a dry run logs `GH-CALLED auth token
+  --hostname github.com --user …`. `startContainers` at :303 is the same shape.
+
+  Compare :230, where the `@tmp-shared` host directory is deliberately *named
+  and not created* for a dry run. The rule was applied one indirection away and
+  missed here.
+
+  Secondary, same cause: if snug dies before its deferred `idCleanup()` — e.g.
+  `snug --dry-run -p <identity> <dir> | head`, which is SIGPIPE — the runtime
+  dir and `ssh-agent.sock` are left behind. Measured 2→3 leaked sockets on one
+  piped invocation. The leaked socket has no live listener (the goroutine died
+  with the process), so it is stale-file accumulation rather than a live host
+  capability — but "no state that survives them" is a key feature, stated in
+  those words.
+
+  Narrowest fix: thread `dryRun bool` into `startIdentity` and
+  `startContainers`; in a dry run name the socket path instead of binding it,
+  skip the runtime dir, and render the `hosts.yml` row from the policy without
+  minting a token. Regression test (owner: `sandbox-tester`): a dry run spawns
+  no `gh` process and creates no `run-*` directory, with a positive control that
+  catches today's code — the shim IS called and the directory IS created, so a
+  test that cannot see that is measuring nothing.
+
+  Note this milestone made the same path *fail* when the account has no token
+  (finding 3 above), so a dry run now also refuses in that case. That is more
+  honest than staging nothing, and it is a second reason to decide deliberately
+  what a dry run is allowed to do.
+
 ### Prompt could show an unusually wide profile set
 
 `PS1` is `🔒 snug:\w\$ `. A marker when something wide is active — `@net-host`,

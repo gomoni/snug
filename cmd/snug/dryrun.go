@@ -38,6 +38,7 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 	describeNetwork(out, p)
 	describeTopology(out, p)
 	describeContainers(out, p)
+	describeGit(out, p)
 	describeCommands(out, p)
 	if p.NewSession {
 		fmt.Fprintf(out, "TTY      --new-session (this kernel allows TIOCSTI, so the sandbox is kept\n")
@@ -89,7 +90,8 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 	fmt.Fprintf(out, "  %-6s %s\n", "ro-/", "everything else is a read-only skeleton (--remount-ro /)")
 
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "  NOT GRANTED (never mounted — these read as absent, they are not hidden):")
+	fmt.Fprintln(out, "  NOT GRANTED (never mounted — these read as absent, they are not hidden;")
+	fmt.Fprintln(out, "  where it says \"host's\", snug generates its own file at that path instead):")
 	for _, line := range notGranted(p) {
 		fmt.Fprintf(out, "    %s\n", line)
 	}
@@ -490,6 +492,29 @@ func describeContainers(out *os.File, p *policy.Policy) {
 	fmt.Fprintf(out, "         Design and feasibility: .claude/design/ENGINE-NETNS.md\n")
 }
 
+// describeGit states that the sandbox's git config was RECONSTRUCTED, and from
+// what.
+//
+// A `data ~/.gitconfig` row on its own says a file was generated; it does not say
+// that the host's was read to build it, nor that most of the host's file was
+// deliberately left behind. Both are decisions a human is entitled to see before
+// they run something — the first is host IO, the second is why their aliases are
+// missing inside.
+//
+// It also gives Policy.Git a reader. A field that is written and never read is a
+// field nobody notices going wrong.
+func describeGit(out *os.File, p *policy.Policy) {
+	if p.Git != policy.GitExtract {
+		return
+	}
+	fmt.Fprintf(out, "GIT      config RECONSTRUCTED from the host's, never bound\n")
+	fmt.Fprintf(out, "         carried    %s\n", strings.Join(policy.SortedGitKeys(), " "))
+	fmt.Fprintf(out, "         left out   everything that names a program — credential.helper,\n")
+	fmt.Fprintf(out, "                    alias = !cmd, core.pager, core.sshCommand, textconv\n")
+	fmt.Fprintf(out, "         includeIf  \"gitdir:\" evaluated against this target; \"hasconfig:\"\n")
+	fmt.Fprintf(out, "                    and \"onbranch:\" ignored — the repository decides those\n")
+}
+
 // describeCommands names EVERY executable staged in policy.StagedBinDir, which
 // is every command snug puts on PATH ahead of the distro's.
 //
@@ -784,9 +809,19 @@ func notGranted(p *policy.Policy) []string {
 		if _, err := os.Stat(full); err != nil {
 			continue // not on this host either; do not claim credit for it
 		}
-		if !covered(p, full) {
-			absent = append(absent, "~/"+c)
+		if covered(p, full) {
+			continue
 		}
+		// The host's copy is not granted — but if snug generates content at
+		// that path, "reads as absent" is false and this block must not say it.
+		// Qualified rather than deleted: suppressing the line entirely removed
+		// the only sentence on the screen saying the host's ~/.ssh is not
+		// mounted, leaving a reader to infer it from three `data` rows.
+		if authored(p, full) {
+			absent = append(absent, "~/"+c+" (host's; snug generates its own here)")
+			continue
+		}
+		absent = append(absent, "~/"+c)
 	}
 	if len(absent) > 0 {
 		lines = append(lines, strings.Join(absent, "  "))
@@ -810,6 +845,36 @@ func notGranted(p *policy.Policy) []string {
 
 	lines = append(lines, "/sys  /tmp/.X11-unix  the Wayland socket  the session D-Bus socket")
 	return lines
+}
+
+// authored reports whether snug generates content AT or BELOW a guest path.
+//
+// `covered` answers "is the HOST's copy reachable", which is the right question
+// for a bind and the wrong one on its own for the NOT GRANTED block, whose
+// claim is "these read as ABSENT". Both were true of `~/.config/gh` until
+// identity staged a generated `hosts.yml` there — and then the same screen
+// printed a `data ~/.config/gh/hosts.yml` row six lines above a line promising
+// the directory was never mounted. The host's gh config is still not granted,
+// which is why the mount is not a hole; the sentence was simply false, and this
+// block is the artifact a human is supposed to be able to trust.
+//
+// Guest paths, not host paths: a generated file has no host side.
+//
+// Keyed on Mount.Authored, NOT on `Kind == KindData`. types.go records why that
+// field exists: the KindData spelling is a PROXY for "snug wrote this" that had
+// already drifted once, and a future TOML key producing KindData would inherit
+// every exemption written against it. It also under-reports today — a socket
+// staged by BindSocket is authored and is not KindData.
+func authored(p *policy.Policy, guest string) bool {
+	for _, m := range p.Mounts {
+		if !m.Authored {
+			continue
+		}
+		if guest == m.Guest || strings.HasPrefix(m.Guest, guest+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // covered reports whether a host path is reachable through some grant.

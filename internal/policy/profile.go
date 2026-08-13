@@ -62,6 +62,11 @@ type Profile struct {
 	// Podman is "off" | "socket", joined by max like every other scalar.
 	Podman string
 
+	// Git is "off" | "extract", joined by max. "extract" reconstructs the
+	// sandbox's git config from the host's — whitelisted keys only, never a
+	// bind. See gitextract.go for why binding the file is the wrong shape.
+	Git string
+
 	// Identity pins one git/ssh/gh account. See identity.go.
 	Identity *Identity
 

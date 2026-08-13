@@ -81,6 +81,36 @@ You own the two layers where snug's security actually lives: the **policy model*
    what the OTHER sinks do with the same string. Every one of these was fixed at
    the site where it was found and left broken four lines below.
 
+8. **A grant of a file a tool INTERPRETS is a grant of whatever that file can
+   say.** Before binding any config file, classify it and put the classification
+   in the abuse sentence:
+
+   - **data** — the tool reads values out of it and does nothing else with them;
+   - **command table** — some key names a program the tool will execute.
+
+   Read-only does not demote the second into the first. It stops the sandbox
+   *editing* the file and supplies every command in it. `~/.gitconfig` is the
+   worked example and it shipped bound for a milestone: `credential.helper`,
+   `alias.x = !cmd`, `core.pager`, `core.editor`, `core.sshCommand`,
+   `diff.*.textconv`, `filter.*.clean/smudge` and `core.fsmonitor` all name
+   programs, and the profile's abuse sentence called the hazard "secrets you
+   unwisely put in ~/.gitconfig" — the wrong noun and the wrong owner.
+
+   The mitigation is the one already written down for credentials, extended one
+   step: **generate, do not bind** — read the host's file as data, keep a
+   whitelist of keys that carry no execution, generate the file the sandbox sees
+   and point the tool at it with its own env var. `.claude/design/GIT-CONFIG.md`
+   is the built example, including why snug evaluates git's `includeIf`
+   condition itself rather than asking git.
+
+   Two consequences you enforce. `internal/profile`'s
+   `TestNoBuiltinGrantsACredentialOrCommandTablePath` refuses this class in any
+   BUILTIN, with no allowlist — when a grant trips it the answer is a generator,
+   never an exception. And a whitelist is a security boundary: adding a key to
+   one is a policy change, so ask what the key makes the tool DO. (The signing
+   keys are the trap: `commit.gpgsign = true` with a key that is not inside turns
+   every commit into a hard failure.)
+
 ## How you work
 
 - Before changing the compiler, run `bwrap --help` in this environment. Do not
