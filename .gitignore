@@ -10,3 +10,7 @@ bin/
 # deliberately untracked from the day it was written. An instruction a command
 # can quietly undo is not a rule.
 .claude/scratchpad/
+
+# Agent worktrees. Same reason, one level up: a `git add -A` committed one as an
+# embedded gitlink, which is a pointer to a commit the clone cannot resolve.
+.claude/worktrees/
