@@ -1625,7 +1625,44 @@ is D3's executable plugins under a shorter name. It also resolves D3 against thi
 section: profiles *can* broker, because they select from a closed set rather than
 supplying the mechanism.
 
-**Sketch, if it is ever built:** a typed sub-table whose `from` is a closed enum
+**Parameterisation is parked, and composition by `include` is the better answer
+for this case anyway** — the owner, 2026-08-13. `PARAMETERISED-PROFILES.md` is an
+idea, not a plan (TODO.md, *Postponed by decision*), and nothing below should be
+read as scheduling it. The concrete question is how a user pins one of two
+accounts, and there are two spellings:
+
+```toml
+# parameterised:  -p '@claude(personal)'
+# include-based:  -p claude-personal
+[profile.claude-personal]
+include = ["claude"]
+  [profile.claude-personal.identity]
+  gh_user = "personal"
+  ssh_key = "~/.ssh/personal.pub"
+```
+
+**The include-based spelling wins, and it wins by needing no new mechanism.** It
+works today. The name is a *name*, so it renders as-is in `SNUG_PROFILES`, in
+every `Mount.From` provenance and in `--dry-run`, where a parameterised instance
+needs `canon` to render the argument — which is the entire complexity of the
+parked design, along with its injectivity rule about `,`, `:` and NUL. Four lines
+of file, not a duplicate of `@claude`, because `include` does the work.
+
+Crucially it also makes **the whole shared-selector half of this section moot**.
+A literal in a trusted-layer file has no argument-origin question: no
+`-p name:arg` token to classify, no `--config` layer to demote, no `SNUG_PROFILE`
+environment hazard, nothing for `Profile.Trusted` to gate. Those rules only
+become load-bearing **if** parameterisation lands, and they are written here so
+that whoever builds it inherits them rather than rediscovering them.
+
+Two accounts at once is not a gap either way: **identity does not join.** Two
+profiles pinning different identities is a hard conflict naming both
+(`internal/policy/resolve.go`), which is the right answer and is what you want —
+and a parameterised `@claude(personal) @claude(work)` produces two instances with
+different canonical names, so the same conflict fires through more machinery.
+
+**Sketch, if a declarative secret reference is ever built:** a typed sub-table
+whose `from` is a closed enum
 validated at parse time (so an unknown resolver is a fatal parse error, not a
 silently ignored grant), every other field a selector going through the ordinary
 expander. Selector expansion stays in `Resolve`, pure and host-side. The secret
