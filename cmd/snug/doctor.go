@@ -63,19 +63,31 @@ func doctor() int {
 	// running doctor inside a snug sandbox. A false alarm is expensive in the
 	// one command whose entire job is telling a human what is wrong.
 	if usernsWorks {
-		ifaces := exec.Command(bwrap, append(probeBase(), "--", "/bin/sh", "-c",
-			"cat /proc/net/dev | awk 'NR>2{print $1}' | tr -d ' :'")...)
+		// `cat` and nothing else. The parsing happens HERE, in Go.
+		//
+		// This used to pipe through awk, and awk is not reliably present in the
+		// probe sandbox: probeBase binds /usr but not /etc, and on a Debian-family
+		// host /usr/bin/awk is a symlink into /etc/alternatives, so it dangles.
+		// The runner then produced "/bin/sh: 1: awk: not found", which the field
+		// split turned into three interface names and doctor reported the sandbox
+		// as possibly not isolated. Every tool this probe needs is one more way
+		// for it to be wrong about the thing it is measuring.
+		ifaces := exec.Command(bwrap, append(probeBase(), "--", "/bin/cat", "/proc/net/dev")...)
 		out, err := ifaces.CombinedOutput()
-		got := strings.Fields(strings.TrimSpace(string(out)))
+		got := parseNetDev(string(out))
 		switch {
-		case err != nil:
-			fmt.Println("  ⚠️  could not list the sandbox's interfaces")
-			fmt.Printf("     💬 %s\n", strings.TrimSpace(string(out)))
+		case err != nil || len(got) == 0:
+			// NOT fatal: this is the probe failing, not the sandbox. A host that
+			// cannot run `cat` inside the probe base still runs snug fine.
+			fmt.Println("  ⚠️  could not list the sandbox's interfaces — probe inconclusive")
+			fmt.Printf("     💬 %s\n", firstLine(strings.TrimSpace(string(out))))
 		case len(got) == 1 && got[0] == "lo":
 			fmt.Println("  ✅ private network namespace — loopback only")
 			fmt.Println("     🔒 no egress, no host loopback, no abstract sockets (X11/D-Bus)")
-		case len(got) > 0:
-			fmt.Printf("  ⚠️  network namespace has more than loopback: %s\n", strings.Join(got, " "))
+		default:
+			// Fatal, and this one has earned it: the interfaces parsed cleanly
+			// and there is something in the namespace that should not be there.
+			fmt.Printf("  ❌ network namespace has more than loopback: %s\n", strings.Join(got, " "))
 			fmt.Println("     this should not happen — the sandbox may not be isolated")
 			ok = false
 		}
@@ -193,4 +205,29 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return strings.TrimSpace(s)
+}
+
+// parseNetDev extracts interface names from /proc/net/dev, which has two header
+// lines and then "  name: <counters>". Parsing here rather than shelling out to
+// awk is deliberate: every tool the probe needs inside the sandbox is one more
+// way for it to report a wrong answer about the thing it is measuring, and awk
+// on a Debian-family host is a symlink into /etc/alternatives that probeBase
+// does not bind.
+//
+// Returns nil when nothing parses, which the caller treats as "probe
+// inconclusive" rather than as a finding — the difference between the sandbox
+// being wrong and the probe being unable to look.
+func parseNetDev(out string) []string {
+	var names []string
+	for i, line := range strings.Split(out, "\n") {
+		if i < 2 { // "Inter-|   Receive ..." and the column headings
+			continue
+		}
+		name, _, found := strings.Cut(strings.TrimSpace(line), ":")
+		if !found || name == "" || strings.ContainsAny(name, " \t/") {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
 }
