@@ -470,7 +470,7 @@ itself** hands over does not ship the shadow slot pre-installed.* Dropping every
 writable element would also drop the target's own `bin/`, which is a truthful
 element — a real bind of real host content — and would chase an invariant the
 sandbox cannot hold. A writable **bind** therefore still survives, target
-included, and `TODO.md` records the residual shadow slots that leaves.
+included, and the residual shadow slots that leaves are recorded in §4.3.
 
 **Unset and empty collapse to absent** for lists. But write it as a rule for
 lists only, **not a shared helper**: §3.2's flag scalars (`NO_COLOR`, `CI`) are
@@ -673,7 +673,7 @@ means there is none.
 It stays a **mark, not a refusal**, for the same reason §4.2's does — and the
 reason is now sharper than "restriction is not snug's job". A human's own profile
 may deliberately put a writable directory on `PATH`; that is their declaration,
-recorded as an accepted residual in `TODO.md`. What snug may never do is *ship*
+an accepted residual. What snug may never do is *ship*
 one, and that is enforced separately and absolutely, by a test over the builtins
 (`TestNoBuiltinPutsAWritableDirectoryOnPATH`) rather than by anything on screen.
 
@@ -742,7 +742,7 @@ where it can be argued with:
 > ones are not, so **`forbiddenEnv` does not close the exec class for git; it
 > closes the invisible half of it.** Profiles are the trusted layer, so this is
 > a composability defect — one profile weakening what another established —
-> rather than an escape. Carried in `TODO.md`.
+> rather than an escape. Carried as https://github.com/gomoni/snug/issues/35.
 
 **`TZ` is the sharpest scalar, and it is this document's own rule biting.** It is
 not a plain string: it is either a file reference resolved under `TZDIR`, or an

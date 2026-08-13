@@ -400,7 +400,7 @@ func (p *Policy) coveringMount(guest string) (Mount, bool) {
 // kernel resolves, which is the whole class of bug a lexical predicate has.
 //
 // The argument for dropping is the one that had been written down as an argument
-// for keeping. TODO.md declined to widen the rule to KindDev because "an element
+// for keeping. An earlier round declined to widen the rule to KindDev because "an element
 // under /dev on a host PATH does not occur" — and if it never legitimately
 // occurs, then keeping it costs nothing and serves only an attacker's spelling.
 // The same holds for /proc. So both drop, and the cost is zero.
@@ -448,7 +448,7 @@ func (p *Policy) keepHostElement(guest string) (bool, EnvDropReason) {
 //
 // It is NOT a refusal, and must not become one without a decision. A human's own
 // profile merging a writable directory onto PATH is their declaration, recorded as
-// an accepted residual in TODO.md; what snug must never do is ship that slot
+// an accepted residual; what snug must never do is ship that slot
 // pre-installed. So the caller is a test over the BUILTINS (and the red team),
 // not Validate.
 //

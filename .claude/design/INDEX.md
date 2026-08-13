@@ -32,7 +32,7 @@ This was `DESIGN.md`, a single 1768-line document written **before most of the c
 | [`PSEUDOFS-AUDIT.md`](PSEUDOFS-AUDIT.md) | What `/proc`, `/sys` and `/dev` expose, measured against a real host. |
 | [`PARAMETERISED-PROFILES.md`](PARAMETERISED-PROFILES.md) | Profiles that take arguments — postponed by decision, with the reasoning kept so it is not re-derived. |
 
-Outside this directory: [`../../CLAUDE.md`](../../CLAUDE.md) is the working agreement and the list of expensive environment facts, [`../../VERIFY.md`](../../VERIFY.md) is the executable by-hand checklist, and [`../../TODO.md`](../../TODO.md) is the live list of known gaps and deferred work.
+Outside this directory: [`../../CLAUDE.md`](../../CLAUDE.md) is the working agreement and the list of expensive environment facts, [`../../VERIFY.md`](../../VERIFY.md) is the executable by-hand checklist, and the [GitHub issues](https://github.com/gomoni/snug/issues) are the live list of known gaps and deferred work — each carries a severity label and the measurement that confirmed it.
 
 **Status of the verification claims below:** every kernel/tool behaviour marked **VERIFIED** was executed on the development host (openSUSE, kernel 7.1.4, `bubblewrap 0.11.2`, `pasta 20260612`, running *inside* a rootless-podman `distrobox` container) at the time it was written. Age is a risk; `VERIFY.md` is the re-runnable form.
 
@@ -338,12 +338,16 @@ rw       = ["{target}"]
 tmpfs    = ["{home}", "{home}/.cache"]
 symlink  = [ { at = "/bin", target = "usr/bin" } ]
 optional = ["{home}/.gitconfig"]  # -try semantics: skip silently when absent
-env      = ["EDITOR", "NO_COLOR"] # names; the VALUE is taken from the host (§9.6)
-path     = ["{home}/.local/bin"]  # PATH entries. Grants no visibility on its own.
 network  = "egress"               # isolated < egress < host
 dns      = true
 publish  = [3000]                 # host 127.0.0.1 -> sandbox, named ports only
 podman   = "socket"               # off < socket < build
+
+  [profile.example.environ.set]   # snug authors the value (§9.6)
+  NO_COLOR = "1"
+
+  [profile.example.environ.inherit]  # the VALUE comes from the host
+  EDITOR = true
 
   [profile.example.identity]      # pins ONE git/ssh/gh account (§9.1)
   gh_user   = "work"
@@ -363,6 +367,15 @@ Two things follow.
 
 - **Provenance is legible without a lookup.** Every place a profile name is rendered is a place where "is this snug's grant or one this host defined?" is the question being asked, and the bare name could not answer it.
 - **The two namespaces cannot collide,** which retires a rule rather than adding one. "A config file must not redefine a builtin" was previously enforced by the merge check; now a user file saying `[profile.sys]` defines a profile of *theirs*, and `@sys` is untouched. The merge check remains for collisions between the layers below (a site profile against a user one), where a hard error is still right. This matters most where §2.7's gate is weakest — `$XDG_CONFIG_HOME` is trusted unconditionally today, and a `profiles.d` loaded from the wrong place still cannot impersonate `@sys`.
+
+**The name charset — DECIDED, NOT BUILT ([#20](https://github.com/gomoni/snug/issues/20)).**
+
+```
+first character   [a-zA-Z0-9]
+rest              [a-zA-Z0-9-]
+```
+
+The hyphen is in, decided by the owner; eight builtins depend on it (`cwd-rw`, `parent-ro`, `tmp-shared`, `git-ro`, `net-anon`, `net-host`, `podman-socket`, `podman-build`), so the naive "alphanumerics only" reading would outlaw snug's own names. Underscore stays out until asked for, on the grounds that adding a character later is additive and removing one is a breaking change. Refusing punctuation in the FIRST position is the point: every printable ASCII symbol then stays free to become a sigil later without breaking a name somebody already chose, and `@` is already one. `checkName` today is a **denylist** of five individually-broken characters, which is the wrong direction — what snug has not been taught about must fail closed.
 
 `include` inside a builtin is rewritten along with the names, so a builtin can only ever include another builtin. That is not a restriction being imposed — it is compiled in and cannot know a user's names — but it is a rule rather than an accident, and `profile.mark` says so.
 
@@ -386,7 +399,7 @@ This is a monotonicity-adjacent property, and worth naming: **the trusted profil
 
 #### DESIGNED, NOT BUILT — the explicit-config gate
 
-Everything from here to the end of §2.7 describes machinery that **does not exist**. There is no `--config` flag, no `SNUG_CONFIG`, and no privileged-grant classifier; `Profile.Trusted` is set and never read. The residual gap is recorded in `TODO.md` and in CLAUDE.md invariant 3: `$XDG_CONFIG_HOME` is trusted unconditionally, so pointing that variable into a checked-out repository does load that repository's profiles. Low severity — it is the host user's own environment variable, not something the sandboxed process controls — but **do not cite §2.7 as a gate that exists.**
+Everything from here to the end of §2.7 describes machinery that **does not exist**. There is no `--config` flag, no `SNUG_CONFIG`, and no privileged-grant classifier; `Profile.Trusted` is set and never read. The residual gap is https://github.com/gomoni/snug/issues/27 and is stated in CLAUDE.md invariant 3: `$XDG_CONFIG_HOME` is trusted unconditionally, so pointing that variable into a checked-out repository does load that repository's profiles. Low severity — it is the host user's own environment variable, not something the sandboxed process controls — but **do not cite §2.7 as a gate that exists.**
 
 The intended shape, kept because it is still the answer:
 
@@ -1058,6 +1071,12 @@ The OCI runtime is **unpinned** by default — the engine uses whatever `contain
 
 Result: inside the sandbox, `gh api user` and `git push` act as exactly that account, and no other identity is reachable. `~/.ssh`, `~/.config/gh`, and `~/.netrc` are never mounted.
 
+**snug also replaces the SYSTEM-WIDE `ssh_config` whenever an identity is pinned** (`policy.SystemSSHConfigPaths`), and the reason is not cosmetic. Only one uid is mapped, so every root-owned file reads as 65534 inside, and OpenSSH refuses a configuration file owned by neither root nor the caller. On a host whose system-wide config lives under the `/usr` bind — openSUSE's `/usr/etc/ssh` — *every* `ssh` inside the sandbox died with `Bad owner or permissions on /usr/etc/ssh/ssh_config.d/50-suse.conf`, `git clone git@github.com:…` included. Pinning an identity is *about* pushing as one account, so the feature did not work at all on that host, for any profile. Replacing the file once is the same escape `ssh -F` gives, applied in one place instead of by every caller.
+
+*Accepted cost:* the host's ssh defaults are dropped inside — on this host, openSUSE's crypto-policy include. The alternative was ssh not running. Revisit if a host turns up where those defaults are load-bearing rather than cosmetic.
+
+*Ask the same question of every other root-owned file the sandbox exposes.* `git` needed `safe.directory = *` for the sibling of this reason, and the next tool with an ownership check will need its own answer.
+
 **The generalisation of all of this — "generate, don't bind, and put the secret in a file rather than the environment" — is a standing rule in CLAUDE.md, and [`SECRETS.md`](SECRETS.md) is where each credential is placed against a severity model.**
 
 ### 9.2 `match` — DESIGNED, NOT BUILT
@@ -1348,7 +1367,7 @@ The *mechanism* the example illustrated — the `--json-status-fd` / `--block-fd
 
 ## 14. Roadmap
 
-**`TODO.md` is the live list.** This is the milestone history, kept for orientation.
+**The [GitHub issues](https://github.com/gomoni/snug/issues) are the live list.** This is the milestone history, kept for orientation.
 
 | | | status |
 |---|---|---|
@@ -1359,13 +1378,13 @@ The *mechanism* the example illustrated — the `--json-status-fd` / `--block-fd
 | **M5** | `podman build`: a default-deny allowlist over the build endpoint's query string, `@podman-build`. | **done** |
 | **M6** | hardening and ergonomics: `--bind-fd`/`openat2(RESOLVE_BENEATH)` for the resolve→mount TOCTOU (§3.3); `clone3` via `SECCOMP_RET_USER_NOTIF`; `snug prune`; shell completion; `--dry-run --json`; `--net-strict`. | open |
 
-The named work in flight is tracked as MVY items in `TODO.md`: the environment ([`ENVIRONMENT-VARIABLES.md`](ENVIRONMENT-VARIABLES.md)), secrets ([`SECRETS.md`](SECRETS.md)), the engine netns ([`ENGINE-NETNS.md`](ENGINE-NETNS.md)), and the pseudo-filesystem recommendations ([`PSEUDOFS-AUDIT.md`](PSEUDOFS-AUDIT.md)).
+The named work in flight is tracked as issues, with a design document each: the environment ([`ENVIRONMENT-VARIABLES.md`](ENVIRONMENT-VARIABLES.md)), secrets ([`SECRETS.md`](SECRETS.md)), the engine netns ([`ENGINE-NETNS.md`](ENGINE-NETNS.md)), and the pseudo-filesystem recommendations ([`PSEUDOFS-AUDIT.md`](PSEUDOFS-AUDIT.md)).
 
 ---
 
 ## 15. Risks and open questions
 
-`TODO.md` carries the *known gaps with severities*; this is the list of things that are structural rather than fixable.
+The issues carry the *known gaps with severities*; this is the list of things that are structural rather than fixable.
 
 - **R1 — Kernel is the boundary, and it is a big boundary.** Every guarantee here rests on user namespaces, seccomp, and `bwrap`. A userns LPE ends the discussion. Stated in §1.2; restated here because it is the risk that matters most and the one most easily forgotten after reading several thousand words about mount ordering.
 - **R2 — Helper defaults change under us.** §4.2 is a lived example. Mitigation: pass every security-relevant flag explicitly, and assert *behaviour* in integration tests rather than reading man pages. Residual risk: a flag `snug` does not know about is added with an unsafe default.
@@ -1391,4 +1410,4 @@ The named work in flight is tracked as MVY items in `TODO.md`: the environment (
 
 ## 16. Where to start implementing
 
-**Removed.** This section opened "Nothing exists in the `snug` repository yet beyond `CLAUDE.md` and this document" and gave a five-step build order. All five steps are done; M1–M5 shipped. The orientation it provided now lives in three places that stay true: §10 for the package layout, `CLAUDE.md` for the invariants and the agent roster, and `TODO.md` for what is actually next.
+**Removed.** This section opened "Nothing exists in the `snug` repository yet beyond `CLAUDE.md` and this document" and gave a five-step build order. All five steps are done; M1–M5 shipped. The orientation it provided now lives in three places that stay true: §10 for the package layout, `CLAUDE.md` for the invariants and the agent roster, and the issue list for what is actually next.

@@ -171,7 +171,8 @@ func TestTheCredentialCatalogueActuallyMatches(t *testing.T) {
 	// a COMMAND TABLE. Asserting it is ordinary recorded a decision nobody made.
 	// It is not in the catalogue either, because adding it without also
 	// generating a filtered copy would just fail the build — it is written up in
-	// TODO.md as a confirmed open finding instead of blessed here.
+	// https://github.com/gomoni/snug/issues/17 as a confirmed open finding
+	// instead of blessed here.
 	for _, ordinary := range []string{
 		"/usr", "/etc/passwd", "{home}/.local/bin/claude", "{home}/.claude/skills",
 		"{home}/.local/share/claude", "{target}", "/etc/containers",

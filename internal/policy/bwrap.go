@@ -56,7 +56,8 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 		// better (a host with unprivileged userns disabled currently gets no
 		// user namespace and no error, on EITHER path) but fixing that inside a
 		// phase whose contract is "adds and removes nothing" would smuggle in a
-		// user-visible change; see TODO.md.
+		// user-visible change; see
+		// https://github.com/gomoni/snug/issues/24.
 		a = append(a,
 			"--unshare-user-try", "--unshare-ipc", "--unshare-pid",
 			"--unshare-uts", "--unshare-cgroup-try")

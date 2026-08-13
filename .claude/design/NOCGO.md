@@ -135,8 +135,9 @@ already changed identity.
 
 ## 6. A defect in shipped snug, found on the way
 
-Recorded here because this is where it was measured; it is tracked in `TODO.md`
-with its severity, and it is independent of the supervisor work.
+Recorded here because this is where it was measured; it is tracked as
+https://github.com/gomoni/snug/issues/23, and it is independent of the
+supervisor work.
 
 **`pidfd_getfd(2)` is an fd-theft primitive and `deniedSyscalls` in
 `internal/sandbox/seccomp.go` does not list it.** MEASURED succeeding inside a

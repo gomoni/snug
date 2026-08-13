@@ -886,7 +886,8 @@ func TestTheStageLeavesNoNamespaceObjectAfterSIGKILL(t *testing.T) {
 	// INIT until the --block-fd read returns, so the init is unprotected for the
 	// whole parked window. Waiting for the payload waits past the release, which
 	// is the point at which the protection actually exists. That is also why
-	// this bar cannot be widened to fix the underlying defect — see TODO.md.
+	// this bar cannot be widened to fix the underlying defect — see
+	// https://github.com/gomoni/snug/issues/13.
 	//
 	// Waiting for "sleep" (the payload bwrap execs once its setup is done) is
 	// the same readiness bar every other test in this suite uses via

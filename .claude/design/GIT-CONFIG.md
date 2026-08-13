@@ -136,8 +136,9 @@ Not on it, and the reasoning is not "we ran out of time":
   is not inside the sandbox makes **every commit fail**, which is worse than an
   unsigned commit. Signing needs the public key staged *and* an agent willing to
   sign with it, and the ssh-agent proxy pins exactly one key today. That is a
-  feature with a design of its own; it is in `TODO.md`, and the whitelist grows
-  when it is built.
+  feature with a design of its own; it is
+  https://github.com/gomoni/snug/issues/35, and the whitelist grows when it is
+  built.
 - **`url.*.insteadOf`** — rewrites where a fetch goes. An identity pin already
   generates the one rewrite it needs.
 - **`safe.directory`** — snug writes `*` itself, because the sandbox uid and the
@@ -250,5 +251,5 @@ Stated because a divergence nobody wrote down is a bug report waiting to happen:
 
 It does not verify that the identity it extracted matches the account an
 `[identity]` block pins, or that either matches the ssh key. Nothing does — see
-`TODO.md`. The three commands that answer the question are in the README, next
-to the profile that needs them.
+https://github.com/gomoni/snug/issues/30. The three commands that answer the
+question are in the README, next to the profile that needs them.

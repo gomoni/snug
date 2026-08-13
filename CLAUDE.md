@@ -378,7 +378,7 @@ on any flag.
   was the hole, and `sanitise` structurally cannot reach it, because that filter
   only ever inspects the *host's* value for a variable a profile imported and a
   `merge` entry is written in the file. It survived a milestone as an accepted
-  residual in `TODO.md` and was found by reading, not by a test.
+  residual and was found by reading, not by a test.
   `TestNoBuiltinPutsAWritableDirectoryOnPATH` now sweeps every builtin with
   `policy.IsShadowSlot`, and has a positive control that reconstructs the old
   `@claude` shape and asserts the predicate fires on it.
@@ -564,8 +564,8 @@ deliberate `git mv`, and only when it has become one of two things:
 - a research record whose *measurements* stay useful after the work lands
   (`NOCGO.md`, `PODMAN-STATIC.md`, `ENGINE-NETNS.md`).
 
-Findings never depend on a document being promoted: a confirmed finding goes to
-`TODO.md` with its severity, which is the milestone rule anyway.
+Findings never depend on a document being promoted: a confirmed finding becomes a
+GitHub issue with its severity label, which is the milestone rule anyway.
 
 *Written as a rule because the weaker version failed, twice in one session.* A
 plan that had been kept untracked by hand from the day it was written was
@@ -600,8 +600,12 @@ All five, in order. A milestone is not finished until the last one is.
    milestone that adds a hole gets a run before it lands, and so does any change
    to the policy model, mount generation, the seccomp filter, or a
    host-integration surface.
-4. Every confirmed finding is either fixed, or written into `TODO.md` as a known
-   gap with its severity — never silently carried.
+4. Every confirmed finding is either fixed, or **filed as a GitHub issue** with
+   its severity label (`sev:high`/`sev:medium`/`sev:low`) and the measurement
+   that confirmed it — never silently carried. The issue body carries the
+   reproduction, because the reproduction is the valuable half. There is no
+   `TODO.md`: it grew into 1800 lines mixing open work with shipped work written
+   in the future tense, and the rule that grew it is this one.
 5. Every confirmed finding becomes a permanent named regression test owned by
    `sandbox-tester`. A hole should only ever be closable once.
 

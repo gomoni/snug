@@ -19,7 +19,7 @@ import (
 // nothing can — the property being defended is narrower and is entirely snug's
 // to keep: **the environment snug itself hands over must not ship the slot
 // pre-installed.** A human's own profile doing this is their declaration and is
-// an accepted residual (TODO.md); snug doing it is a defect.
+// an accepted residual; snug doing it is a defect.
 //
 // This is not hypothetical. @claude carried exactly this for a milestone:
 //

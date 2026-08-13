@@ -69,7 +69,8 @@ func ParseGitMode(s string) (GitMode, error) {
 // inside the sandbox turns every commit into a hard failure, which is worse
 // than an unsigned commit. Signing needs the key staged AND the agent proxy
 // willing to sign with it, and the proxy pins exactly one key today. See
-// TODO.md; this list grows when that is built, not before.
+// https://github.com/gomoni/snug/issues/35; this list grows when that is built,
+// not before.
 var GitKeyWhitelist = []string{
 	"user.name",
 	"user.email",

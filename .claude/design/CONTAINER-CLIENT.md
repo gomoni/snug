@@ -365,6 +365,25 @@ negatives worth pinning as regression tests:
   it, so snug cannot leak an fd into it. It is content the payload could have
   written itself.
 
+**The build context tar is forwarded unread, and what protects us is the ENGINE.**
+The argument for waving it through is that the client assembled the tar inside
+the sandbox out of files the sandbox can already read, so nothing new crosses.
+The red team probed `..`, absolute and symlink entries in the tar and could not
+get buildah 5.8.3 to write outside its builder directory — **but that is
+buildah's securejoin protecting us, not snug's**. It is a property of a
+dependency, and the version it was measured against is written here so a future
+bump is read as a security change rather than a routine one.
+
+The same distinction caught a real host read in the `secrets` parameter, which
+had been waved through on the identical reasoning — *"the podman CLI reads the
+file itself, client-side"* — which is true and is **not a security argument**,
+because the threat model is an agent that POSTs to the socket directly.
+`secrets=["id=leak,src=../../../../home/u/.ssh/id_ed25519"]` plus
+`RUN --mount=type=secret` read a host file the sandbox was not granted and
+streamed it back; buildah resolves `src=` against the context dir without
+clamping `..`. **"The friendly client would never send that" is never a reason
+to skip a check.**
+
 **Concerns to carry into the implementation:**
 
 - **`docker cp` — the equivalence argument in §4.2 is unsound**, independently of

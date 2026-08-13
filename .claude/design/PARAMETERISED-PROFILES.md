@@ -202,7 +202,22 @@ Defensible: lowering write access is a tightening, and a profile that only
 tightens is a nuisance, not an escalation. But it must be *stated*, because
 INDEX §2.4 reads as though the per-key join is the whole story.
 
-### 2. **[latent security]** A symlink planted in the target can divert a grant
+### 2. **[latent security — FIXED]** A symlink planted in the target can divert a grant
+
+**Shipped as `underTargetIsLiteral` (`internal/policy/resolve.go`), called from
+both grant paths.** It was later found to be needed a third time and was not
+there: `identity.ssh_key` went through `expandVars` against a map containing
+`{target}` and skipped both `EvalSymlinks` and this check, so
+`ssh_key = "{target}/deploy.pub"` followed a link a previous run had planted and
+`sshproxy.New` pinned whatever key it named — which selects *which host key the
+sandbox may sign with*. Fixed in the same function; `internal/policy/identitykey_test.go`
+carries three tests, because a fix that refused every key under the target would
+pass the negative one alone. Outside the target the key is deliberately **not**
+canonicalised — narrower than `add()`, so that `snug profile show` on a profile
+whose key is merely absent does not become a hard failure.
+
+The original report follows, because the reasoning is what made the fix correct.
+
 
 `Resolve` canonicalises the host side of every bind with `EvalSymlinks`. So a
 grant of `{target}/build`, where a *previous sandbox run* left
@@ -232,7 +247,11 @@ Comparing against the *lexical join under the canonical target* — rather than
 against `p` itself — is what avoids false positives from `/home -> /var/home` on
 Silverblue-style hosts. Apply the same rule to `ctx.HostTmpDir`.
 
-### 3. `ctx.Home` is never canonicalised
+### 3. `ctx.Home` is never canonicalised — FIXED
+
+**Shipped**: `Resolve` now does `env.EvalSymlinks(ctx.Home)` and fails closed
+(`internal/policy/resolve.go:67`). The original report follows.
+
 
 `ctx.Home` is used verbatim while the target is `EvalSymlinks`'d and fail-closed.
 Host sides of `{home}/...` grants get canonicalised by `add()`, but the guest

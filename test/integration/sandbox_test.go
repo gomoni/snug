@@ -2671,7 +2671,7 @@ func TestRepoLocalConfigIsNeverAutoLoaded(t *testing.T) {
 
 // ── MVY0: kill @null, keep --no-defaults ────────────────────────────────────
 //
-// TODO.md's MVY0 findings: there is no @null profile any more — a profile
+// The MVY0 findings: there is no @null profile any more — a profile
 // that grants nothing is a preference, not a grant, and the lattice floor it
 // used to name is what an empty selection already resolves to. Reaching the
 // floor is now --no-defaults, not `-p @null`.

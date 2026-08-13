@@ -1,6 +1,6 @@
 # MVY1 refusals — a table of (profile selection -> exact refusal text).
 # Regenerate with: go test ./internal/policy -update
-# Every case here used to be ACCEPTED; read TODO.md's MVY1 findings before
+# Every case here used to be ACCEPTED; read INDEX.md §3.4 before
 # changing any line below — a change here is a change to the security boundary.
 
 == symlink_conflict_different_targets ==

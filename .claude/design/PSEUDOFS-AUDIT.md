@@ -291,7 +291,7 @@ Each gets a **positive control** (the `pasta.avx2` lesson):
 - *(with R3/R4)* `TestProcReplacementsAreEmptyAndDeclared` — replaced paths read 0
   bytes, `/proc/sys` write → **EROFS**, both appear in `--dry-run`.
 
-### Accepted gaps (→ TODO.md, with severity)
+### Accepted gaps (→ a GitHub issue, with severity)
 
 - `/proc/self/mountinfo` discloses real host paths (P7) — Medium, inherent. Also
   state in the injected `~/.claude/CLAUDE.md`.
