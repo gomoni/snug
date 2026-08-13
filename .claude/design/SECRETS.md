@@ -505,6 +505,9 @@ then becomes defence in depth rather than the only line. It is the one shape in
 which placement B is arguable, and it costs a `snug`-inside-`snug` story the
 project does not have yet (Q6).
 
+§3.3.6 takes that synthesis and drops the host half entirely: there is no
+host-side execution left to be defence-in-depth *about*.
+
 #### 3.3.3 Placement C — stub inside, **typed verbs cross**
 
 The stub is `snug-gh`, not `gh`: a small snug-defined set of operations with
@@ -548,6 +551,14 @@ syntax changing. Whether that is acceptable turns on one property:
 > protocol. If no, and the verb set is small and closed, an argv filter is a
 > legitimate boundary — and placement C is a better spelling of it than B.
 
+**§3.3.6 deletes the row this verdict turns on.** *"Blast radius if the filter is
+wrong = arbitrary host code execution"* is what makes an argv surface too
+expensive to get wrong. Run the tool in a sibling sandbox instead of on the host
+and a filter bug costs one capability, in a sandbox that dies with the call, with
+no host reach — which is the blast radius already accepted the moment the
+capability was allowed inside anything. Read §3.3.6 before treating this table as
+the last word.
+
 #### 3.3.5 Which side each tool falls on
 
 | tool | escape hatch | verdict |
@@ -558,6 +569,143 @@ syntax changing. Whether that is acceptable turns on one property:
 | `docker`/`podman` registry auth | n/a | **protocol, and the proxy already exists.** Put the credential at `dockerproxy`, host-side, with a registry allowlist. §3.8 |
 | `npm`/`cargo`/`twine` **publish** | none in the publish path | **stub, placement C.** One write-only verb, one artefact path, judged by `hostPathVisible`. The best candidate in the list |
 | Anthropic | n/a (no CLI) | **broker.** One endpoint, no TLS **[M]** |
+
+#### 3.3.6 Placement D — stub inside, real tool in a **sibling sandbox**
+
+The owner's correction to §3.3.2, 2026-08-13: the real tool never runs on the
+host. It runs in a *second snug sandbox* — per-invocation, ephemeral, its own
+policy — and the credential is placed there rather than in the payload's sandbox.
+The stub in `policy.StagedBinDir` forwards, the sibling executes, stdout returns
+down a pipe.
+
+**D1's refusal does not reach this.** The clause is *"never a **host** command
+whose arguments the sandbox chose"*, and `host` is the operative word. D is not
+host, so the clause stands unamended and D sits outside it. Worth saying out
+loud, because the sentence reads like a ban on argv crossing a boundary in
+general, and it is not.
+
+**What it buys over placement A.** Separate pid and mount namespaces mean the
+payload's `/proc` never contains the tool's pid. §1.2g's `/proc/<pid>/mem`
+measurement — the finding that killed A — stops applying, and not because the
+read is denied: there is no pid to name. Same for `/proc/<pid>/environ`. That is
+a real boundary, and A could not have had it at any price.
+
+**What it does not buy, and this is where the design actually lives.** Stdout
+returns to the payload — that is the entire point of the stub. So:
+
+```
+gh auth token
+```
+
+One verb, no exploit, credential on stdout, stub pipes it home. `gh alias set x
+'!sh -c …'`, `gh api -F body=@<path>` and `gh gist create <file>` are the same
+move wearing different flags. **Confinement bounds where the credential may be
+used. It does nothing to bound what gets printed.**
+
+So the sinks have to be enumerated, and the set is bigger than the pipe:
+
+| sink | bounded by |
+|---|---|
+| stdout / stderr | redaction, or a closed verb set |
+| **network egress from the sibling** | **nothing, by default** |
+| files the sibling writes where the payload reads | policy: no shared writable path |
+| exit status, timing | unbounded; one bit per invocation |
+
+The network row decides it. The payload does not need the credential *printed* —
+it needs it *sent*. If the sibling shares the payload's netns N, the payload
+listens on `127.0.0.1` inside N, the argv aims the tool at it, and the tool
+delivers `Authorization: Bearer …` to a socket the payload owns. A redactor on
+the pipe never sees that byte.
+
+**Decision (owner, 2026-08-13): build both bounds, composed, and accept the code
+complexity.**
+
+- **D-verbs** — §3.3.3 placement C unchanged. A closed allowlist; snug constructs
+  the argv from typed fields rather than forwarding what the payload wrote.
+- **D-sinks** — three legs: (1) the sibling has its own netns whose egress reaches
+  the vendor and nothing else; (2) no writable path is shared with the payload,
+  so output returns only down the pipe; (3) the pipe is redacted.
+
+**The case that discriminates them is `gh extension install`.** D-verbs excludes
+it. D-sinks lets it run — arbitrary code, beside the credential — and it still
+cannot get the credential out: egress reaches only the party the credential is
+already for, nothing it writes is readable by the payload, and the pipe is
+filtered. **D-sinks surviving arbitrary code next to the credential is the
+strongest argument for it**, and it is exactly the property D-verbs buys by
+enumeration instead. Composed, a miss in either is covered by the other, which is
+the only reason paying for both is worth it.
+
+**Ephemerality is load-bearing, not hygiene.** The sibling must be
+per-invocation and must die with the call. A sibling that persists its
+`~/.config/gh` turns `gh extension install` back into the thing that made
+placement B fatal — code that runs on every later invocation, next to the
+credential. Ephemeral, the same command is code execution the payload already
+commanded by choosing the argv, for one call, with no persistence: no escalation
+over what D grants anyway.
+
+**What redaction can and cannot do.** It is worth building and it is not a
+boundary on its own:
+
+- *Encodings.* The payload picks the argv, so it picks the encoding. A literal
+  match misses base64, hex, URL- and JSON-escaping, and case changes. Any
+  templating flag — `gh api --jq`, `--template`, `--format` — hands the caller an
+  arbitrary function over data the tool holds; `--jq '@base64'` is one flag.
+- *Chunk boundaries.* A credential split across two `read()`s passes through
+  unless the redactor keeps an overlap buffer of `len(secret)-1`. The standard
+  bug in this shape; name it before writing the code.
+- *Oracle.* Redaction fires visibly. Any verb that echoes a caller-supplied value
+  turns the redactor into a confirmation oracle for guesses.
+
+**The netns choice, and it is unmeasured.** Sharing N is one pasta instead of two
+and is the cheap option; the cost is handing the payload a network-adjacent
+position against the tool. TLS covers that *provided* the sibling's trust store
+is snug-granted read-only and the payload holds no `CAP_NET_RAW` in N. There is
+no `--cap-drop` anywhere in `internal/policy`; the absence of capabilities is
+bwrap's default plus `--uid 1000`, which is **[R]** and not measured. Measure it
+before relying on it. A sibling with its own netns removes the question and costs
+a pasta per invocation.
+
+**D-sinks' weak leg, and the thing to cost first.** pasta gives egress or none;
+it has no host allowlist. "The vendor and nothing else" needs an HTTP CONNECT
+proxy or a DNS-plus-IP pin, and neither exists in the tree. Until one does, leg
+(1) degrades to *the sibling has the same egress the payload has*, which is
+precisely where the `127.0.0.1` attack lives. **This decides whether D-sinks is
+buildable, and it should be costed before any code is written.**
+
+**Testing, and the trap it walks into.** Under composition D-verbs blocks nearly
+everything D-sinks exists to catch, so the redactor and the egress pin will
+almost never fire — a test that cannot fail, which CLAUDE.md rates worse than no
+test at all. Every D-sinks control needs a fixture with the verb set disabled,
+and a positive control asserting the sink is reachable before asserting it was
+bounded.
+
+**The two failure modes are asymmetric and must both stay visible.** A denied
+verb is a hard error the human sees. A redaction is silent by construction, and a
+redaction firing means either a D-verbs bug or an attack — so it is an audit
+event, with the same discipline `sshproxy`'s `audit(…)` call sites already
+follow: say that it happened, never what it matched.
+
+**Abuse sentence.** *A hostile process inside the sandbox can invoke any
+operation in snug's verb set, with field values it chose, for the sandbox's
+lifetime; it can cause arbitrary code to run beside the credential in a sibling
+sandbox whose only egress is the vendor and whose only output channel is a
+redacted pipe; it cannot read the credential out of that sandbox's memory,
+environment or filesystem.*
+
+**Cost, and what it depends on.**
+
+- **Q6 stops being optional.** D *is* snug-inside-snug; there is no smaller
+  version of it.
+- **Invariant 6 needs a story.** "One `Policy`, one author" holds only if the
+  sibling's policy is *derived* from the resolved parent policy rather than
+  authored separately. Two authors and the invariant is gone — and it is the
+  invariant that makes the container proxy's decisions trustworthy today.
+- **A sandbox launch per tool invocation.** An agent runs `gh` often. The cost is
+  unmeasured and is a plausible reason for the whole design to fail.
+- **`--dry-run` must name the credential, the sibling and the verb set.** D1's
+  surfacing requirement applies to the sibling exactly as it applies to the
+  payload's sandbox; a secret placed somewhere the human cannot see named is the
+  thing D1 was written against.
 
 ### 3.4 Agent-proxy (the ssh model)
 
@@ -676,6 +824,87 @@ container `wget`ing anything (the identity became bounded, the network did not).
 
 **Cross-references:** `ENGINE-NETNS.md` §3 and §5, §1.1 row 6,
 §1.3, §3.7, Q8.
+
+---
+
+### 3.9 Where the secret lives on snug's own side of the wire
+
+Every strategy above moves the credential out of the payload's sandbox and into
+snug's process. That is progress, and it relocates the question rather than
+answering it: what can read P0's memory?
+
+**Not the payload.** P0 sits outside the payload's pid namespace, so nothing
+inside can name it. The threats are host-side and mundane: a core dump written to
+disk (and retained — `systemd-coredump` keeps them), swap, and another process of
+the same user.
+
+**The strongest form is not "do not retain" but "never receive".** Where the
+credential can be re-queried from its source, wire that source's stdout straight
+into the sibling's input descriptor and never read a byte of it in P0:
+
+```go
+cred := exec.Command("gh", "auth", "token")
+cred.Stdout = siblingInput   // P0 never reads it
+```
+
+The kernel copies buffer to buffer. No Go `[]byte`, no `string`, no GC copies,
+nothing for a dump to contain. `sshproxy` is the same idea one layer out — it
+holds no key material and asks the host agent per operation — which is why this
+is the shape to reach for rather than an invention. The path already exists:
+snug shells `gh auth token` today (appendix). Keyring-backed accounts may prompt
+or be slow, and that cost is per-invocation and unmeasured.
+
+**Why the Go caveat forces that shape.** A credential read into a variable
+becomes a heap slice; the GC may move and copy it; a `string` conversion is
+immutable and unfindable; zeroing what you still hold does not reach the copies.
+So `mlock` and in-memory encryption are cosmetic *unless* the plaintext is
+off-heap — `mmap(MAP_ANON|MAP_PRIVATE)`, locked, never converted to a `string`.
+
+**Decision (owner, 2026-08-13): no in-memory cipher.** It is weak on its own
+terms — the key shares the address space with the ciphertext, so anyone who can
+read one reads the other, and it narrows only a one-shot or post-mortem read —
+and the Go caveat removes even that unless the off-heap work is done first. The
+three controls below are cheaper and strictly stronger. `mlock` goes with it: it
+needs a buffer that lives long enough to matter, and under "never receive" there
+is not one.
+
+Ordered, cheapest first:
+
+1. **`RLIMIT_CORE = 0` in P0.** Inherited across fork and exec, so one call covers
+   the whole tree. Only cost: the payload loses core dumps too — say so in
+   `--dry-run` if anywhere.
+2. **`PR_SET_DUMPABLE = 0` on P0.** One syscall, and it does more than block the
+   dump: it reparents `/proc/<pid>` to root, so a same-uid process can no longer
+   `ptrace` it or read `/proc/<pid>/mem` either.
+3. **On P1 the same call collides with the pasta attach [R, unmeasured].**
+   `/proc/<P1>` becomes root-owned while P0 aims pasta at `/proc/<P1>/fd/<n>` and
+   `--userns /proc/<P1>/ns/user`; pasta drops privileges before opening a path,
+   which is already why it refuses `/proc/self/fd/<n>` (`SUPERVISOR-DESIGN.md`
+   §1). Either set it after pasta has attached, or not at all. Independent of
+   secrets, P1 is worth making non-dumpable: it holds `CAP_SYS_ADMIN` over U and
+   N for the whole run.
+4. **Dumpable resets on `execve`,** and P1 re-execs `__stage-setup →
+   __stage-serve`. That is the exact inverse of `SUPERVISOR-DESIGN.md` §1's
+   *`PR_SET_PDEATHSIG` survives the re-exec* row, and belongs beside it in that
+   table once measured. A control set before a re-exec and assumed afterwards is
+   the `--seccomp`-after-`--` shape again.
+
+**The tension this creates, and the way out.** *"P0 never sees the secret"* and
+*"P0 redacts the secret from the sibling's output"* (§3.3.6, D-sinks leg 3) are
+mutually exclusive: a redactor must know the value. Three resolutions —
+
+- **Redactor in P0**, which then sees the credential. Simple; controls 1 and 2
+  carry the weight; the plaintext window is short but real.
+- **Redactor inside the sibling.** Keeps P0 clean, but arbitrary code in the
+  sibling — the `gh extension install` shape — bypasses it, leaving D-sinks' other
+  two legs load-bearing alone. Defensible, since those are the structural ones.
+- **Rolling hash.** P0 holds only `H(secret)` and `len(secret)` and matches a
+  rolling hash over every window of that length. Literal redaction with no
+  plaintext in P0 at all.
+
+**Recommended: the rolling hash.** It keeps both properties, loses nothing
+redaction had — encodings defeated a literal match either way (§3.3.6) — and
+leaks `len(secret)` to a dump, which is nothing.
 
 ---
 
@@ -909,6 +1138,34 @@ write one in `profiles.d` today and stage their own credential with their own
 abuse sentence, no snug code and no API. What they cannot do is *broker* — and
 brokering is the part that needs snug to be involved at all.
 
+### D4 (2026-08-13) — placement D, with both bounds. SETTLED in shape; three costs unmeasured.
+
+Where a real tool must run with a credential, it runs in a **sibling snug
+sandbox**, never on the host, and both bounds are built: a closed verb set
+(D-verbs) *and* structurally bounded sinks (D-sinks — pinned egress, no shared
+writable path, redacted pipe). The owner's ruling is that the duplication is
+defence in depth and the code complexity is worth it.
+
+The full argument, the sink enumeration, the abuse sentence and the reasons each
+half exists are §3.3.6; this entry exists so §5 remains the place a decision can
+be found. What it overrules: §3.3.4's verdict table, whose deciding row assumed
+host execution — see the note under that table.
+
+**Not settled, and each is a measurement rather than a judgement:** the sibling's
+egress pin has no implementation (pasta offers egress or none); the per-invocation
+sandbox launch cost is unknown; and deriving the sibling's policy from the
+parent's without breaking invariant 6 has not been designed. Q6.
+
+### D5 (2026-08-13) — no in-memory cipher; never receive the secret instead. SETTLED.
+
+snug does not encrypt credentials in its own memory. The key would share the
+address space with the ciphertext, and Go's heap makes the plaintext window
+uncontrollable regardless. In its place: re-query the credential per invocation
+and wire the source's output straight into the sibling, so the plaintext never
+enters P0's address space; `RLIMIT_CORE = 0` and `PR_SET_DUMPABLE = 0` for the
+window that remains. Where a redactor must still recognise the value, P0 holds a
+hash and a length, not the credential. §3.9.
+
 ---
 
 ## 5a. Open questions — the owner's to decide
@@ -930,9 +1187,22 @@ long-running.
 legibly, or `gh` on `PATH`, which is ergonomic and a lie an agent will act on?
 
 **Q6 — is "snug runs its own helper inside a snug sandbox" a direction?**
-(§3.3.2.) The only version of placement B with a defensible blast radius, **and
-the strongest form of the owner's proposal**. It implies a `snug`-inside-`snug`
-story that does not exist. Milestone, or out of scope?
+(§3.3.2.) **Answered yes, 2026-08-13, and it is now a prerequisite rather than a
+direction:** §3.3.6's placement D *is* snug-inside-snug, and the owner has
+decided to build it. What remains open is not whether but at what cost —
+
+- The sibling's policy must be **derived** from the resolved parent policy, or
+  invariant 6 ("one `Policy`, one author") is gone. Nobody has designed that
+  derivation.
+- A sandbox launch per tool invocation, unmeasured, and plausibly fatal to the
+  whole design.
+- §3.3.6's D-sinks leg (1) — egress pinned to one host — has no implementation in
+  the tree, because pasta offers egress or none. Cost this first.
+
+The supervisor stage (`SUPERVISOR-DESIGN.md`, PR #11) is what makes the
+mechanism affordable: P0 already builds a sandbox from a `Policy` and P1 already
+holds the namespaces, so a sibling is a normal operation rather than a fork of
+`main`.
 
 **Q7 — GitHub: build an adapter, or document §3.1 and stop?** This document's
 honest reading is that a fine-grained PAT plus the ssh-agent proxy covers most
