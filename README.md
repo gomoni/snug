@@ -80,7 +80,8 @@ Useful shapes:
 ```bash
 snug ~/src/proj -- make test           # run one command; its exit code propagates
 snug -p @net ~/src/proj                # ...with internet access
-snug -p @git-ro -p @net ~/src/proj     # ...and your git identity, read-only
+snug -p @git-ro -p @net ~/src/proj     # ...and your git config, read-only
+snug -p work ~/src/proj                # pinned to one git/ssh/GitHub account — see Identity
 snug -p @claude -p @net ~/src/proj     # Claude Code, its credentials staged (not your host's)
 snug -p @podman-socket -p @net ~/src/proj  # run containers, via a filtering proxy
 snug -p @podman-build -p @net ~/src/proj   # ...and build images too
@@ -156,6 +157,94 @@ rw = ["/srv/project", "/opt/cache/project"]
 
 Then `snug -p srv-rw ~/src/proj` will mount `/srv/project` and
 `/opt/cache/project` as read-write and enable the networking.
+
+## Identity — one account per sandbox
+
+An `[identity]` block pins the sandbox to one git/ssh/GitHub account. Bounds
+blast radius, not secrecy: an agent that can sign with one key pushes as that
+account and no other, and `gh` answers as that account and no other. Without
+pinning, "the agent has ssh" means "the agent is you, everywhere".
+
+```toml
+# ~/.config/snug/profiles.d/accounts.toml
+[profile.work]
+include = ["@sys", "@home", "@cwd-rw", "@parent-ro", "@net"]
+  [profile.work.identity]
+  ssh_mode  = "agent-proxy"
+  ssh_key   = "{home}/.ssh/work.pub"     # the PUBLIC half
+  gh_user   = "work-account"
+  gh_host   = "github.com"               # optional, this is the default
+  git_name  = "Your Name"
+  git_email = "you@work.example"
+```
+
+`snug -p work ~/src/proj`. What that gets you:
+
+- **ssh** — a filtering proxy to your already-unlocked host agent, exposing
+  exactly the one key. No key material inside, no passphrase prompt, your other
+  keys neither usable nor enumerable. What no agent forwarder can do is restrict
+  *what* gets signed.
+- **git** — `~/.gitconfig` is generated, not bound, and `GIT_CONFIG_GLOBAL`
+  points at it. The host's credential helpers and `insteadOf` rules do not come
+  along.
+- **gh** — a private `hosts.yml` holding that account's token, with
+  `GH_CONFIG_DIR` pointing at it. The env var carries a path, not a credential.
+- `~/.ssh/config` and a `known_hosts` filtered to that one host, both generated.
+  Your real `~/.ssh` is never mounted.
+
+### Two accounts, two profiles
+
+Write the block twice. Each sandbox then acts as one account through **both**
+channels, and cannot act as the other.
+
+```console
+$ snug -p personal ~/src/proj    # one account
+$ snug -p work     ~/src/proj    # the other
+$ snug -p personal -p work ~/src/proj
+snug: profiles "personal" and "work" pin different identities; select only one
+```
+
+Selecting both is an error rather than a merge: an identity is a pin, and two
+pins are a contradiction.
+
+### Checking which account you are
+
+```console
+$ gh auth status              # the account snug staged
+$ gh api user --jq .login     # the account GitHub answers with
+$ ssh -T git@github.com       # Hi <account>! You've successfully authenticated...
+```
+
+The middle one is the check that counts — it asks GitHub rather than reading
+what snug wrote. **snug does not verify that `ssh_key` and `gh_user` name the
+same account**; pin one account's key and another's token and both halves work,
+so run all three the first time you write a profile.
+
+### Two things that will bite
+
+`gh` must be *inside* for the staged token to be usable. If your `gh` is not
+under `/usr` — a tarball in `~/bin` is common — `@sys` does not carry it:
+
+```toml
+[profile.gh-cli]
+ro = ["{home}/bin/gh_X.Y.Z_linux_amd64/bin/gh:/run/snug/bin/gh"]
+```
+
+And a normal `gh auth login` token carries `repo`, `gist`, `read:org` and
+`admin:public_key`. With `admin:public_key` a sandbox that reads the staged file
+can add an SSH key to the account — an effect that **outlives the sandbox**. Use
+a fine-grained token if that matters.
+
+### Why ssh works at all
+
+The sandbox maps one uid, so every root-owned file reads as `65534` inside it,
+and OpenSSH refuses a configuration file owned by neither root nor the caller.
+On a host whose system-wide `ssh_config` lives under `/usr` (openSUSE), every
+`ssh` inside the sandbox died with `Bad owner or permissions on
+/usr/etc/ssh/ssh_config.d/50-suse.conf` — `git clone git@github.com:…` included.
+So when an identity is pinned, snug replaces the system-wide `ssh_config` with
+one it generates. The cost, stated plainly: your host's system-wide ssh defaults
+do not apply inside. ssh's compiled-in defaults do.
 
 ## Environment variables
 
@@ -338,6 +427,12 @@ systemd, PulseAudio, X11 or any other sockets, which can be used for a sandbox e
 
 Kernel zero days - the security perimeter is a Linux itself, so escape by
 exploit is possible. Run the VM if expects more strict isolation though.
+
+Misconfiguration. Every grant is a line somebody wrote, and snug will not
+second-guess it: a profile granting `/` grants `/`, and an identity pinning one
+account's key next to another account's token pins both. `snug --dry-run` prints
+the resolved policy in full precisely so the configuration is reviewable before
+it runs — read it rather than trusting the profile's name.
 
 ## Verifying the sandbox
 
