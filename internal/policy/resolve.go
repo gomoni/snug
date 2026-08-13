@@ -397,18 +397,27 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 				Guest: home + "/.ssh/config", Kind: KindData, Access: AccessRO,
 				Content: cfg, From: []string{"identity:" + identityOwner},
 			})
-			// The pinned PUBLIC key, so IdentityFile above resolves. Public
-			// material only; the private key never enters the sandbox.
-			if len(ctx.PinnedPubKey) > 0 {
-				p.Replace(Mount{
-					Guest: home + "/" + PubKeyGuest, Kind: KindData, Access: AccessRO,
-					Content: ctx.PinnedPubKey, From: []string{"identity:" + identityOwner},
-				})
-			}
+			// The pinned PUBLIC key is staged by startIdentity, not here: it is
+			// read from id.SSHKey AFTER expansion, so `{home}/...` and `~/...`
+			// are one path rather than two spellings with different fates.
 			p.Replace(Mount{
 				Guest: home + "/.ssh/known_hosts", Kind: KindData, Access: AccessRO,
 				Content: ctx.KnownHosts, From: []string{"identity:" + identityOwner},
 			})
+			// The system-wide ssh_config is replaced wherever this host has one.
+			// Without this, ssh refuses to run at all inside the sandbox on a
+			// host whose system config is root-owned — see SystemSSHConfig.
+			if cfg := id.SystemSSHConfig(); len(cfg) > 0 {
+				for _, path := range SystemSSHConfigPaths {
+					if _, err := env.Stat(path); err != nil {
+						continue
+					}
+					p.Replace(Mount{
+						Guest: path, Kind: KindData, Access: AccessRO,
+						Content: cfg, From: []string{"identity:" + identityOwner},
+					})
+				}
+			}
 		}
 	}
 

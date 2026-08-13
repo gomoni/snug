@@ -255,7 +255,6 @@ func run(cfg config) int {
 		LegacyTIOCSTI:   legacyTIOCSTI(),
 		HostNameservers: hostNameservers(),
 		KnownHosts:      knownHostsFor(identityHost(reg, selected)),
-		PinnedPubKey:    pinnedPubKey(reg, selected),
 		HostShims:       detectHostShims(),
 	}
 

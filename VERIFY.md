@@ -1119,6 +1119,134 @@ finds, not a golden diff.
 
 ---
 
+## 13. Two accounts on one host — an identity is a pin, not a preference
+
+The claim: a sandbox pinned to one GitHub account acts as that account through
+**both** channels — `gh` and git-over-ssh — and cannot act as the other. Two
+sandboxes side by side, two accounts, no crossing.
+
+Nothing new is needed to express it. One `[identity]` block per profile pins the
+ssh key, the gh account and the git author together; two profiles are two
+accounts. Write them somewhere that is not the repository being sandboxed
+(invariant 3) — `~/.config/snug/profiles.d/accounts.toml`:
+
+```toml
+[profile.acct-a]
+include = ["@sys", "@home", "@cwd-rw", "@parent-ro", "@net"]
+  [profile.acct-a.identity]
+  ssh_mode  = "agent-proxy"
+  ssh_key   = "{home}/.ssh/ACCOUNT-A.pub"   # the PUBLIC half
+  gh_user   = "ACCOUNT-A"
+  git_name  = "Your Name"
+  git_email = "a@example.com"
+
+[profile.acct-b]
+include = ["@sys", "@home", "@cwd-rw", "@parent-ro", "@net"]
+  [profile.acct-b.identity]
+  ssh_mode  = "agent-proxy"
+  ssh_key   = "{home}/.ssh/ACCOUNT-B.pub"
+  gh_user   = "ACCOUNT-B"
+  git_name  = "Your Name"
+  git_email = "b@example.com"
+```
+
+`gh` must be inside for the staged token to be usable, and on a host where it is
+not under `/usr` — a tarball in `~/bin`, which is common — `@sys` does not carry
+it. Grant it into the one directory snug stages commands in:
+
+```toml
+[profile.gh-cli]
+ro = ["{home}/bin/gh_X.Y.Z_linux_amd64/bin/gh:/run/snug/bin/gh"]
+```
+
+Both accounts must be logged in on the host (`gh auth status`), and the key for
+each must be loaded in your ssh-agent. Then, per account:
+
+```bash
+./bin/snug -p acct-a $SC/proj/sub -- /bin/sh -c '
+  echo "gh:     $(gh api user --jq .login)"
+  echo "ssh:    $(ssh -o BatchMode=yes -T git@github.com 2>&1 | head -1)"
+  echo "author: $(git config --global user.email)"'
+```
+
+Expect all three to name the SAME account, and `-p acct-b` to name the other:
+
+```
+gh:     ACCOUNT-A
+ssh:    Hi ACCOUNT-A! You've successfully authenticated, but GitHub does not provide shell access.
+author: a@example.com
+```
+
+The negative is the half that matters, and it is three separate refusals:
+
+```bash
+./bin/snug --dry-run -p acct-a -p acct-b $SC/proj/sub
+# snug: profiles "acct-a" and "acct-b" pin different identities; select only one
+
+./bin/snug --dry-run -p acct-badkey $SC/proj/sub     # ssh_key names a missing file
+# snug: pinned ssh key: open /home/u/.ssh/does-not-exist.pub: no such file or directory
+
+./bin/snug --dry-run -p acct-baduser $SC/proj/sub    # gh_user gh is not logged in to
+# snug: no gh token for no-such-account-here on github.com.
+```
+
+The third one used to be silent — you got a sandbox with no credential, no
+`GH_CONFIG_DIR` and nothing on screen, which is invariant 5's "no silent
+downgrade" broken in the quietest possible way.
+
+Inside a pinned sandbox, `ssh-add -l` must list exactly one key, and it must be
+that account's:
+
+```bash
+./bin/snug -p acct-a $SC/proj/sub -- ssh-add -l
+```
+
+Expect one line. Every other key in your host agent is not merely unusable — it
+is not enumerable, which is the difference between `agent-proxy` and forwarding
+the agent.
+
+### 13b. ssh runs at all — the check that was missing
+
+`ssh` inside the sandbox is not a given, and on this host it was broken for
+every account and every profile until it was measured:
+
+```bash
+./bin/snug $SC/proj/sub -- sh -c 'ssh -G github.com >/dev/null 2>&1 && echo SSH-OK || echo SSH-REFUSED'
+```
+
+Without a pinned identity, expect `SSH-REFUSED` on a host whose system-wide
+`ssh_config` is root-owned — and the reason is worth reading, because it
+generalises past ssh:
+
+```bash
+./bin/snug $SC/proj/sub -- ssh -G github.com
+# Bad owner or permissions on /usr/etc/ssh/ssh_config.d/50-suse.conf
+./bin/snug $SC/proj/sub -- stat -c '%u %n' /usr/etc/ssh/ssh_config
+# 65534 /usr/etc/ssh/ssh_config
+```
+
+The sandbox maps one uid, so every root-owned file under the read-only `/usr`
+bind reads as **65534** inside it, and OpenSSH refuses a configuration file
+owned by neither root nor the caller. `git clone git@github.com:…` failed the
+same way, which made pinning an identity useless on such a host.
+
+With an identity pinned, snug replaces the system-wide file with one it authors:
+
+```bash
+./bin/snug -p acct-a $SC/proj/sub -- sh -c '
+  ssh -G github.com >/dev/null 2>&1 && echo SSH-OK || echo SSH-REFUSED
+  stat -c "owner=%u" /usr/etc/ssh/ssh_config; id -u'
+```
+
+Expect `SSH-OK` and `owner=1000` (your uid). `--dry-run` shows it as a `data`
+row with `identity:<profile>` provenance, next to the generated `~/.gitconfig`.
+
+What it costs, and say it out loud: the host's system-wide ssh defaults — on
+this host openSUSE's crypto-policy include — do not apply inside. ssh's
+compiled-in defaults do.
+
+---
+
 ## If a check fails
 
 1. Re-run it with `--dry-run` and compare what snug *claimed* against what you

@@ -783,7 +783,7 @@ func notGranted(p *policy.Policy) []string {
 		if _, err := os.Stat(full); err != nil {
 			continue // not on this host either; do not claim credit for it
 		}
-		if !covered(p, full) {
+		if !covered(p, full) && !authored(p, full) {
 			absent = append(absent, "~/"+c)
 		}
 	}
@@ -809,6 +809,30 @@ func notGranted(p *policy.Policy) []string {
 
 	lines = append(lines, "/sys  /tmp/.X11-unix  the Wayland socket  the session D-Bus socket")
 	return lines
+}
+
+// authored reports whether snug generates content AT or BELOW a guest path.
+//
+// `covered` answers "is the HOST's copy reachable", which is the right question
+// for a bind and the wrong one on its own for the NOT GRANTED block, whose
+// claim is "these read as ABSENT". Both were true of `~/.config/gh` until
+// identity staged a generated `hosts.yml` there — and then the same screen
+// printed a `data ~/.config/gh/hosts.yml` row six lines above a line promising
+// the directory was never mounted. The host's gh config is still not granted,
+// which is why the mount is not a hole; the sentence was simply false, and this
+// block is the artifact a human is supposed to be able to trust.
+//
+// Guest paths, not host paths: a generated file has no host side.
+func authored(p *policy.Policy, guest string) bool {
+	for _, m := range p.Mounts {
+		if m.Kind != policy.KindData {
+			continue
+		}
+		if guest == m.Guest || strings.HasPrefix(m.Guest, guest+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // covered reports whether a host path is reachable through some grant.

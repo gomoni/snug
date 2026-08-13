@@ -740,6 +740,66 @@ environment variables (direnv would let a repo author its own boundary).
 
 ## Pending
 
+### Identity: what the two-account work found, and what it left open
+
+The goal was two sandboxes on one host, one GitHub account each. It needed **no
+new mechanism** — one `[identity]` block per profile already pins the ssh key,
+the gh account and the git author together, and selecting two is a hard error.
+Measured end to end: `gh api user`, `ssh -T git@github.com` and
+`git config user.email` all name the same account, and the other account is
+unreachable from that sandbox. `.claude/design/SECRETS.md` §4.1 predicted exactly
+this (the include-based spelling wins because it needs nothing new); it is now
+confirmed by execution rather than by argument.
+
+Four defects were found on the way. All four are fixed with regression tests;
+they are recorded because each one is a shape that will recur.
+
+1. **ssh did not run inside the sandbox at all** on a host whose system-wide
+   `ssh_config` is root-owned (`/usr/etc/ssh` on openSUSE) — 65534 inside, and
+   OpenSSH refuses. `git clone git@github.com:…` failed for every account and
+   every profile. Fixed by replacing the system-wide file when an identity is
+   pinned. *The suite tested everything snug GENERATES and never ran the
+   consumer.*
+2. **`ssh_key = "{home}/…"` staged no public key**, silently — the pre-resolve
+   reader understood `~/` alone, and `{home}` is the spelling `base.toml`'s own
+   example uses. The read moved into `startIdentity`, against the expanded and
+   symlink-checked path. *One value, two readers, two spellings.*
+3. **An unknown `gh_user` produced a sandbox with no credential and no message**
+   — invariant 5 broken in the quietest way. Now a refusal that names the fix.
+4. **`--dry-run` claimed `~/.config/gh` "reads as absent"** six lines below the
+   `data ~/.config/gh/hosts.yml` row it had just staged. `covered()` understood
+   binds only; `authored()` now answers the guest-side question the NOT GRANTED
+   block actually asks. This is `SECRETS.md` §1.2b, arriving from a different
+   direction.
+
+Left open, in descending order of how much they matter:
+
+- **[gap] Nothing checks that `ssh_key` and `gh_user` name the SAME account.**
+  A profile can pin account A's key and account B's token, and the sandbox will
+  push as one and comment as the other. Both halves work, so nothing errors. A
+  `snug doctor`-style check could compare `gh api user` against the key's
+  fingerprint in `gh api user/keys`, but that is a network call at resolve time
+  and the design forbids one — likelier answer is a `snug identity check`
+  subcommand a human runs deliberately.
+- **[gap] Commit signing is not generated.** `user.signingkey`, `gpg.format =
+  ssh` and `commit.gpgsign` are not written, so a per-account signing key is not
+  expressible even though the agent proxy could sign with it. The `[identity]`
+  block would need one more field; the abuse sentence is easy (the sandbox can
+  sign commits as that identity — which is the point).
+- **[ergonomics] `gh` is not always under `/usr`.** A tarball in `~/bin` is
+  common, and then `@sys` does not carry it and the staged token has no client.
+  One-line user profile (`ro = ["…/gh:/run/snug/bin/gh"]`), documented in
+  `base.toml`; deliberately not a builtin, because the path is host-specific.
+- **[unchanged] The system ssh_config replacement drops the host's ssh
+  defaults** inside the sandbox — on this host, openSUSE's crypto-policy
+  include. Accepted: the alternative was ssh not running. Revisit if a host
+  turns up where the defaults are load-bearing rather than cosmetic.
+- **[unchanged] `--dry-run` still mints a real gh token** before the dry-run
+  branch and renders it as an unremarkable `data` row (`SECRETS.md` §4.1,
+  finding 3). Not touched here; the refusal added in (3) runs on the same path,
+  so a dry run now also fails when the account has no token, which is arguably
+  the more honest behaviour and is worth confirming is what we want.
+
 ### Prompt could show an unusually wide profile set
 
 `PS1` is `🔒 snug:\w\$ `. A marker when something wide is active — `@net-host`,

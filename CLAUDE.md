@@ -389,6 +389,30 @@ on any flag.
   config after migration" (gh 2.96). So the staged copy is deliberately WRITABLE
   — it is a private copy on tmpfs, so the rewrite goes nowhere and the host's gh
   config is never touched.
+- **One uid is mapped, so every root-owned file reads as 65534 inside — and a
+  tool may refuse to run rather than degrade.** OpenSSH refuses a configuration
+  file owned by neither root nor the caller, so on a host whose system-wide
+  `ssh_config` lives under the `/usr` bind (openSUSE: `/usr/etc/ssh`), *every*
+  `ssh` inside the sandbox died with `Bad owner or permissions on
+  /usr/etc/ssh/ssh_config.d/50-suse.conf` — `git clone git@github.com:…`
+  included. Pinning an identity is *about* pushing as one account, so the
+  feature did not work at all on this host, for any profile. snug now replaces
+  the system-wide file with one it authors whenever an identity is pinned
+  (`policy.SystemSSHConfigPaths`), which is the same escape `ssh -F` gives,
+  applied once instead of by every caller.
+
+  Two lessons, and the second is the reusable one. `ssh -F <file>` had always
+  worked, which is why the failure looked like a broken key rather than a broken
+  config chain. And **everything the identity band tested was what snug
+  GENERATES** — the gitconfig, the ssh config, the pinned public key, the agent
+  proxy's filtering — while nothing ran `ssh`. A generator suite cannot fail on
+  a consumer that refuses its output. When you add an adapter for a tool, add
+  one test that RUNS the tool; `ssh -G <host>` parses the whole chain and needs
+  no network, so the cost was one command.
+
+  Ask the same question of every other root-owned file the sandbox exposes:
+  `git` needed `safe.directory = *` for the sibling of this reason, and the next
+  tool with an ownership check will need its own answer.
 - **A profile's bytes are not snug's bytes, and the flag list is a NUL-separated
   string.** `--setenv NAME VALUE` is three elements of the list that travels
   through the args memfd, and bwrap's `--args` splits it on NUL. `VALUE` is last

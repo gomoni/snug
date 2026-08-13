@@ -14,3 +14,9 @@ bin/
 # Agent worktrees. Same reason, one level up: a `git add -A` committed one as an
 # embedded gitlink, which is a pointer to a commit the clone cannot resolve.
 .claude/worktrees/
+
+# Real profiles used to test snug against real accounts on this machine. They
+# name host paths, host account names and host key files, so they are local by
+# construction — symlink one into $XDG_CONFIG_HOME/snug/profiles.d to use it.
+# Ignored rather than untracked for the reason above it.
+local-profiles/

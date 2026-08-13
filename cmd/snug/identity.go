@@ -146,11 +146,41 @@ func startIdentity(pol *policy.Policy, verbose, iKnow bool) (cleanup func(), err
 		inner := cleanup
 		cleanup = func() { p.Close(); inner() }
 		pol.BindSocket(sock, "/run/snug/ssh-agent.sock", "(identity)")
+
+		// The pinned PUBLIC key, so the generated ~/.ssh/config's IdentityFile
+		// resolves. Public material only; the private half stays in the host
+		// agent.
+		//
+		// Read HERE rather than before Resolve, and that is the fix for a bug
+		// rather than a tidy-up: the pre-resolve version read the profile's raw
+		// text and understood `~/` alone, so `ssh_key = "{home}/.ssh/id.pub"` —
+		// the spelling base.toml's own example uses, and the one every grant in
+		// every profile uses — read a file called `{home}/...`, failed, and
+		// staged nothing. Silently: the agent proxy still pinned the right key,
+		// so the failure surfaced later as ssh declining to offer any identity.
+		// pol.Identity.SSHKey has been through the same expansion and the same
+		// under-target symlink check as a mount path, so there is one spelling
+		// with one fate.
+		if data, rerr := os.ReadFile(id.SSHKey); rerr == nil {
+			pol.Replace(policy.Mount{
+				Guest: pol.Home + "/" + policy.PubKeyGuest, Kind: policy.KindData,
+				Access: policy.AccessRO, Content: data, From: []string{"(identity)"},
+			})
+		} else {
+			cleanup()
+			return nil, fmt.Errorf("ssh_key %s: %w\n\n"+
+				"      This is the PUBLIC half of the key the sandbox may sign with. snug\n"+
+				"      stages it inside so ssh can select that one identity; without it ssh\n"+
+				"      offers nothing and every push fails with 'Permission denied'.", id.SSHKey, rerr)
+		}
 	}
 
 	pol.AuthorEnv("SSH_AUTH_SOCK", "/run/snug/ssh-agent.sock")
 
-	stageGhConfig(pol, id)
+	if err := stageGhConfig(pol, id); err != nil {
+		cleanup()
+		return nil, err
+	}
 	return cleanup, nil
 }
 
@@ -174,14 +204,35 @@ func startIdentity(pol *policy.Policy, verbose, iKnow bool) (cleanup func(), err
 // admin:public_key a sandbox that reads the file can add an SSH key to the
 // account — an effect that OUTLIVES the sandbox. Use a fine-grained token if
 // that matters.
-func stageGhConfig(pol *policy.Policy, id *policy.Identity) {
-	tok := ghToken(id.GhHost, id.GhUser)
-	if tok == "" {
-		return
-	}
+func stageGhConfig(pol *policy.Policy, id *policy.Identity) error {
 	host := id.GhHost
 	if host == "" {
 		host = "github.com"
+	}
+	if id.GhUser == "" && id.GhHost == "" {
+		// No gh account was asked for. Nothing to fail about.
+		return nil
+	}
+	tok := ghToken(host, id.GhUser)
+	if tok == "" {
+		// Invariant 5: no silent downgrade. gh_user is an explicit request for
+		// a capability, and the previous version of this function returned
+		// quietly — you got a sandbox with no gh credential, no GH_CONFIG_DIR
+		// and no line anywhere saying so, which is indistinguishable from a
+		// working one until `gh` asks you to log in.
+		who := id.GhUser
+		if who == "" {
+			who = "the active account"
+		}
+		return fmt.Errorf("no gh token for %s on %s.\n\n"+
+			"      The profile pins a GitHub account, so snug will not start a sandbox\n"+
+			"      that silently has no credential for it. Either:\n"+
+			"        - log in on the host:  gh auth login --hostname %s\n"+
+			"        - check the spelling:  gh auth status\n"+
+			"        - or drop gh_user/gh_host from the profile if the sandbox does not\n"+
+			"          need gh (ssh_key alone still pins git-over-ssh).\n"+
+			"      If gh is not installed on the host there is nothing to mint, and the\n"+
+			"      same applies.", who, host, host)
 	}
 	user := id.GhUser
 	if user == "" {
@@ -199,6 +250,7 @@ func stageGhConfig(pol *policy.Policy, id *policy.Identity) {
 	})
 	pol.AuthorEnv("GH_CONFIG_DIR", dir)
 	pol.AuthorEnv("GH_HOST", host)
+	return nil
 }
 
 // identityHost peeks at the selected profiles for a pinned gh_host, so the
@@ -218,26 +270,9 @@ func identityHost(reg profileRegistry, selected []string) string {
 	return "github.com"
 }
 
-// pinnedPubKey reads the public key a selected profile pins, so the resolver
-// can stage it without doing IO of its own.
-func pinnedPubKey(reg profileRegistry, selected []string) []byte {
-	set, err := policy.Expand(map[string]*policy.Profile(reg), selected)
-	if err != nil {
-		return nil
-	}
-	for _, p := range set {
-		if p.Identity == nil || p.Identity.SSHKey == "" {
-			continue
-		}
-		path := p.Identity.SSHKey
-		if strings.HasPrefix(path, "~/") {
-			if home, err := os.UserHomeDir(); err == nil {
-				path = filepath.Join(home, path[2:])
-			}
-		}
-		if data, err := os.ReadFile(path); err == nil {
-			return data
-		}
-	}
-	return nil
-}
+// pinnedPubKey is gone deliberately. It read the profile's RAW ssh_key text
+// before Resolve ran, so it understood `~/` and nothing else — `{home}/…`, the
+// spelling base.toml's own example uses, silently staged no key at all. The
+// read now happens in startIdentity against pol.Identity.SSHKey, which has been
+// expanded and symlink-checked exactly like a mount path. One spelling, one
+// fate, and a missing file is an error instead of an absence.
