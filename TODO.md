@@ -1276,9 +1276,35 @@ in N2  : lo flags=0x0049 IFF_UP=true    <- the socket created in N, after the mo
 ```
 
 So the readiness check needs no extra process, no protocol message and no
-`/proc` path — one descriptor the stage already has. That removes the stated
-reason for deferring, and makes closing this a bounded piece of work rather than
-a design question.
+`/proc` path — one descriptor the stage already has.
+
+**And the reordering itself is MEASURED to work.** The remaining unknown was
+whether pasta will attach to a network namespace that has *no process in it* —
+today it is always started after bwrap is already inside N, and the design
+warned against assuming. Tried directly, with a build that starts pasta before
+`StartSandbox` and stubs out the readiness poll:
+
+```
+EXP: pasta started against an empty netns, pid 101834
+EXP: pasta still alive after 1.5s with nothing in N
+interfaces: lo snug0
+DNS-OK
+HTTP=200
+```
+
+pasta attaches, stays up with nothing in the namespace, and its interface is
+waiting when bwrap arrives. Full egress from the sandbox.
+
+**So the fix exists and is bounded.** Shape: start pasta first; poll readiness
+through the socket the stage already holds in N; fork bwrap with **no
+`--block-fd` and no `--json-status-fd`**; delete `parked.go` and its two
+call sites, which are then unreachable in both arms. What it needs beyond the
+diff: one new control request so P0 can ask the stage "is the interface up?",
+a golden argv change (removing a security-relevant flag is exactly the kind of
+diff the project wants reviewed), and a red-team pass on the new ordering —
+`--block-fd` currently exists to stop a payload running before its network
+guarantee holds, so removing it must be shown to remove the *need* rather than
+the *check*.
 
 **One thing to know before touching it:** the parked machinery on the
 NON-stage arm (`internal/sandbox/exec.go:165–197`) is **unreachable**.
