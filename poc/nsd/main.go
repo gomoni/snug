@@ -37,6 +37,10 @@ func main() {
 		err = stage0()
 	case "__stage1":
 		err = stage1()
+	case "__stage2":
+		err = stage2()
+	case "__innetns":
+		err = enterNetns(os.Args[2:])
 	case "__sandbox-init":
 		err = sandboxInit()
 	case "probe":
@@ -52,9 +56,15 @@ func main() {
 
 func usage() {
 	fmt.Fprint(os.Stderr, `usage:
-  nsd up --run DIR [--net] [--bind DIR]     start the supervisor (P1), stay in foreground
+  nsd up --run DIR [--net] [--bind DIR] [--p1-outside-n] [--pasta-naive]
+                                            start the supervisor (P1), stay in foreground
   nsd ctl DIR OP [args...]                  talk to a running supervisor
   nsd probe                                 print namespace ids, uid, caps of the calling process
+
+  --p1-outside-n   P1 pins N, then unshare(CLONE_NEWNET)s out of it; children
+                   that belong in N are put back by setns. Phase 0b.
+  --pasta-naive    aim pasta at /proc/<P1>/ns/net even when P1 has left N — the
+                   memfd-snapshot bug shape, kept so it can be measured.
 `)
 	os.Exit(2)
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +28,45 @@ type request struct {
 	Target   int      `json:"target,omitempty"`
 	DropCaps bool     `json:"drop_caps,omitempty"`
 	TTL      int      `json:"ttl,omitempty"` // sandbox init exits after this many seconds
+
+	// ArgvFile is a host path to a NUL-separated bwrap argv, exactly as
+	// policy.Policy.BwrapFlags would produce for a REAL Run() invocation — used
+	// by "realbox" so Step 0 measures against snug's real code path rather than
+	// the PoC's own hand-maintained bwrapBaseArgs(). A sibling
+	// "<argvfile-dir>/manifest.json" names the --ro-bind-data/--file fds the argv
+	// references and the plain host file holding each one's content. See
+	// SUPERVISOR-PHASE1-SPEC.md §4 Step 0.
+	ArgvFile string `json:"argv_file,omitempty"`
+}
+
+// netnsN is P1's only reference to N once it has left. nil means P1 never left —
+// the topology run.sh measures — and every child is in N by descent, as before.
+//
+// pinnedNetnsID is the readlink form of N, reported over the control socket so a
+// test can compare it against /proc/<sandbox>/ns/net without ever asking P1 for
+// its own, which after the move is the wrong answer.
+var (
+	netnsN        *os.File
+	pinnedNetnsID string
+)
+
+// inNetnsCmd builds a command that will run inside N.
+//
+// pre are descriptors the FINAL program must receive at fds 3, 4, …; the netns
+// reference is appended after them, so their numbering is unchanged and the
+// helper knows where to find it. When netnsN is nil this is exec.Command with
+// its ExtraFiles set, byte for byte the old behaviour.
+func inNetnsCmd(pre []*os.File, name string, args ...string) *exec.Cmd {
+	if netnsN == nil {
+		c := exec.Command(name, args...)
+		c.ExtraFiles = pre
+		return c
+	}
+	fd := 3 + len(pre)
+	argv := append([]string{"__innetns", strconv.Itoa(fd), name}, args...)
+	c := exec.Command(os.Getenv("NSD_SELF"), argv...)
+	c.ExtraFiles = append(append([]*os.File{}, pre...), netnsN)
+	return c
 }
 
 type response struct {
@@ -124,23 +164,35 @@ func (s *server) dispatch(req request) response {
 		box := s.box
 		s.mu.Unlock()
 		d := map[string]string{
-			"stage_pid": strconv.Itoa(os.Getpid()),
-			"uid":       strconv.Itoa(os.Getuid()),
-			"netns":     nsID("net"),
-			"userns":    nsID("user"),
-			"mntns":     nsID("mnt"),
-			"cgroupns":  nsID("cgroup"),
+			"stage_pid":    strconv.Itoa(os.Getpid()),
+			"uid":          strconv.Itoa(os.Getuid()),
+			"netns":        nsID("net"),
+			"pinned_netns": pinnedNetnsID,
+			"userns":       nsID("user"),
+			"mntns":        nsID("mnt"),
+			"cgroupns":     nsID("cgroup"),
+			"p1_outside_n": boolArg(netnsN != nil),
 		}
 		if box != nil {
 			d["sandbox_init_pid"] = strconv.Itoa(box.initPID)
 		}
 		return response{OK: true, Data: d}
 	case "run":
-		return runChild(req.Argv, false)
+		return runChild(req.Argv, false, true)
 	case "runmnt":
 		// Engine-shaped child: same U and N, but a private copy of the HOST
 		// mount tree rather than the sandbox's.
-		return runChild(req.Argv, true)
+		return runChild(req.Argv, true, true)
+	case "runstage":
+		// The control for every "run" assertion: same everything, except that it
+		// stays in P1's OWN network namespace instead of being put back into N.
+		return runChild(req.Argv, false, false)
+	case "boxcmd":
+		return s.boxcmd(req.Argv)
+	case "realbox":
+		return s.realbox(req.ArgvFile)
+	case "bindabstract":
+		return s.bindAbstract(req.Argv)
 	case "sandbox":
 		return s.startSandbox(req.TTL)
 	case "attach":
@@ -153,11 +205,16 @@ func (s *server) dispatch(req request) response {
 	return response{Err: "unknown op " + req.Op}
 }
 
-func runChild(argv []string, ownMountNS bool) response {
+func runChild(argv []string, ownMountNS, inN bool) response {
 	if len(argv) == 0 {
 		return response{Err: "empty argv"}
 	}
-	cmd := exec.Command(argv[0], argv[1:]...)
+	var cmd *exec.Cmd
+	if inN {
+		cmd = inNetnsCmd(nil, argv[0], argv[1:]...)
+	} else {
+		cmd = exec.Command(argv[0], argv[1:]...)
+	}
 	cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=" + os.Getenv("HOME")}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	if ownMountNS {
@@ -172,6 +229,159 @@ func runChild(argv []string, ownMountNS bool) response {
 	}
 	return r
 }
+
+// bwrapBaseArgs is the sandbox's shape, shared by the long-lived sandbox and by
+// boxcmd, so that a one-shot probe is not a differently-configured sandbox.
+func bwrapBaseArgs() []string {
+	self := os.Getenv("NSD_SELF")
+	bind := os.Getenv("NSD_BIND")
+	args := []string{
+		"--die-with-parent",
+		"--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup",
+		// N is inherited. This is the whole point of the topology.
+		"--uid", os.Getenv("NSD_HOST_UID"), "--gid", os.Getenv("NSD_HOST_GID"),
+		"--tmpfs", "/",
+		"--ro-bind", "/usr", "/usr",
+		"--symlink", "usr/bin", "/bin",
+		"--symlink", "usr/lib", "/lib",
+		"--symlink", "usr/lib64", "/lib64",
+		"--symlink", "usr/sbin", "/sbin",
+		"--ro-bind", "/etc", "/etc",
+		"--proc", "/proc",
+		"--dev", "/dev",
+		"--tmpfs", "/tmp",
+		"--ro-bind", self, "/nsd",
+	}
+	if bind != "" {
+		args = append(args, "--bind", bind, "/work")
+	}
+	return args
+}
+
+// boxcmd runs one command in a sandbox built exactly like the long-lived one.
+//
+// It exists so that the network-namespace questions can be answered without
+// depending on the setns joiner: everything asked here is a property of N, and a
+// second bwrap child of P1 is in N by precisely the same mechanism as the first.
+func (s *server) boxcmd(argv []string) response {
+	if len(argv) == 0 {
+		return response{Err: "empty argv"}
+	}
+	args := append(bwrapBaseArgs(), "--")
+	args = append(args, argv...)
+	cmd := inNetnsCmd(nil, "bwrap", args...)
+	cmd.Env = []string{"PATH=/usr/bin:/bin"}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	// Deliberately NOT hold()/release(): boxcmd is experiment scaffolding, and a
+	// scaffolding process that takes the payload reference count from 0 to 1 and
+	// back tears the whole stage down between two checks. MEASURED — the second
+	// probe of a run got "EOF" from a P1 that had correctly decided its last
+	// payload had exited.
+	out, err := cmd.CombinedOutput()
+	r := response{OK: err == nil, Out: string(out)}
+	if err != nil {
+		r.Err = err.Error()
+	}
+	return r
+}
+
+// realbox runs bwrap with the EXACT argv snug's own BwrapFlags produced —
+// dumped NUL-separated to argvFile by cmd/snug's Step 0 measurement helper —
+// rather than the PoC's own hand-maintained bwrapBaseArgs(). This is the "have
+// the PoC start it as the sandbox child rather than a hand-built bwrap" half of
+// SUPERVISOR-PHASE1-SPEC.md §4 Step 0.
+func (s *server) realbox(argvFile string) response {
+	if argvFile == "" {
+		return response{Err: "realbox: argv_file is required"}
+	}
+	raw, err := os.ReadFile(argvFile)
+	if err != nil {
+		return response{Err: "realbox: reading argv file: " + err.Error()}
+	}
+	var args []string
+	for _, a := range strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00") {
+		args = append(args, a)
+	}
+	if len(args) == 0 {
+		return response{Err: "realbox: argv file was empty"}
+	}
+
+	// The sibling manifest.json (data-fd -> content file), if present. The
+	// entries must be dense from fd 3 upward — exec.Cmd.ExtraFiles has no other
+	// way to place a descriptor at a specific child number — which is exactly
+	// how internal/sandbox.Run() itself allocates them.
+	var pre []*os.File
+	manifestPath := filepath.Join(filepath.Dir(argvFile), "manifest.json")
+	if mb, err := os.ReadFile(manifestPath); err == nil {
+		var entries []struct {
+			FD    int    `json:"fd"`
+			Guest string `json:"guest"`
+			Path  string `json:"path"`
+		}
+		if err := json.Unmarshal(mb, &entries); err != nil {
+			return response{Err: "realbox: bad manifest: " + err.Error()}
+		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].FD < entries[j].FD })
+		for i, e := range entries {
+			if want := 3 + i; e.FD != want {
+				return response{Err: fmt.Sprintf(
+					"realbox: manifest fd %d for %s is not contiguous from 3 (wanted %d)",
+					e.FD, e.Guest, want)}
+			}
+			f, err := os.Open(e.Path)
+			if err != nil {
+				return response{Err: "realbox: opening " + e.Path + ": " + err.Error()}
+			}
+			pre = append(pre, f)
+		}
+	}
+
+	cmd := inNetnsCmd(pre, "bwrap", args...)
+	cmd.Env = []string{"PATH=/usr/bin:/bin"}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	out, err := cmd.CombinedOutput()
+	for _, f := range pre {
+		_ = f.Close()
+	}
+	r := response{OK: err == nil, Out: string(out)}
+	if err != nil {
+		r.Err = err.Error()
+	}
+	return r
+}
+
+// bindAbstract makes P1 itself bind an abstract AF_UNIX name. Abstract names are
+// scoped to the NETWORK namespace, so this is the direct test of what the move
+// is for: with P1 in N the sandbox reaches it (SUPERVISOR §5, measured), with P1
+// outside N it must not.
+func (s *server) bindAbstract(argv []string) response {
+	if len(argv) != 1 || argv[0] == "" {
+		return response{Err: "usage: bindabstract NAME"}
+	}
+	ln, err := net.Listen("unix", "@"+argv[0])
+	if err != nil {
+		return response{Err: err.Error()}
+	}
+	heldMu.Lock()
+	held = append(held, ln)
+	heldMu.Unlock()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = c.Write([]byte("SECRET-FROM-P1"))
+			_ = c.Close()
+		}
+	}()
+	return response{OK: true, Out: "bound @" + argv[0] + " in " + nsID("net")}
+}
+
+var (
+	heldMu sync.Mutex
+	held   []net.Listener
+)
 
 // startSandbox is P2. bwrap is a plain child of P1, so it inherits U and N by
 // descent; it then builds the sandbox's mount, pid, ipc and uts namespaces on
@@ -199,39 +409,17 @@ func (s *server) startSandbox(ttl int) response {
 	}
 	defer readyR.Close()
 
-	self := os.Getenv("NSD_SELF")
-	bind := os.Getenv("NSD_BIND")
 	runDir := os.Getenv("NSD_RUN")
-	hostUID := os.Getenv("NSD_HOST_UID")
-	hostGID := os.Getenv("NSD_HOST_GID")
 
-	args := []string{
-		"--die-with-parent",
-		"--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup",
-		// N is inherited. This is the whole point of the topology.
-		"--uid", hostUID, "--gid", hostGID,
-		"--tmpfs", "/",
-		"--ro-bind", "/usr", "/usr",
-		"--symlink", "usr/bin", "/bin",
-		"--symlink", "usr/lib", "/lib",
-		"--symlink", "usr/lib64", "/lib64",
-		"--symlink", "usr/sbin", "/sbin",
-		"--ro-bind", "/etc", "/etc",
-		"--proc", "/proc",
-		"--dev", "/dev",
-		"--tmpfs", "/tmp",
-		"--ro-bind", self, "/nsd",
-		"--json-status-fd", "3",
-	}
-	if bind != "" {
-		args = append(args, "--bind", bind, "/work")
-	}
-	args = append(args, "--", "/nsd", "__sandbox-init")
+	args := append(bwrapBaseArgs(), "--json-status-fd", "3", "--", "/nsd", "__sandbox-init")
 
-	cmd := exec.Command("bwrap", args...)
+	// bwrap is a plain child of P1 when P1 is in N, and goes through __innetns
+	// when it is not. Either way the sandbox ends up in N — but note that the
+	// bwrap ARGV is byte-identical in both cases, which is Phase 1's exit
+	// criterion 2 arriving early: the argv no longer determines the netns.
+	cmd := inNetnsCmd([]*os.File{statusW, readyW}, "bwrap", args...)
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "NSD_RUN=" + runDir,
 		"NSD_TTL=" + strconv.Itoa(ttl)}
-	cmd.ExtraFiles = []*os.File{statusW, readyW}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	logf, err := os.Create(filepath.Join(runDir, "sandbox.log"))
 	if err != nil {
@@ -448,6 +636,25 @@ func cmdProbe(argv []string) error {
 	return nil
 }
 
+// call is the whole client transport: one request, one response, one connection.
+// P0 uses it too, because after the move it has no other way to look inside N.
+func call(runDir string, req request) (response, error) {
+	conn, err := net.Dial("unix", filepath.Join(runDir, "control.sock"))
+	if err != nil {
+		return response{}, err
+	}
+	defer conn.Close()
+	b, _ := json.Marshal(req)
+	if _, err := conn.Write(append(b, '\n')); err != nil {
+		return response{}, err
+	}
+	var resp response
+	if err := json.NewDecoder(bufio.NewReader(conn)).Decode(&resp); err != nil {
+		return response{}, err
+	}
+	return resp, nil
+}
+
 // cmdCtl is the client. In the real thing this is `snug attach`.
 func cmdCtl(argv []string) error {
 	if len(argv) < 2 {
@@ -469,6 +676,13 @@ func cmdCtl(argv []string) error {
 		req.DropCaps = rest[1] == "1"
 		rest = rest[2:]
 	}
+	if op == "realbox" {
+		if len(rest) != 1 {
+			return fmt.Errorf("usage: nsd ctl DIR realbox ARGVFILE")
+		}
+		req.ArgvFile = rest[0]
+		rest = nil
+	}
 	if op == "sandbox" && len(rest) == 1 {
 		t, err := strconv.Atoi(rest[0])
 		if err != nil {
@@ -479,17 +693,8 @@ func cmdCtl(argv []string) error {
 	}
 	req.Argv = rest
 
-	conn, err := net.Dial("unix", filepath.Join(runDir, "control.sock"))
+	resp, err := call(runDir, req)
 	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	b, _ := json.Marshal(req)
-	if _, err := conn.Write(append(b, '\n')); err != nil {
-		return err
-	}
-	var resp response
-	if err := json.NewDecoder(bufio.NewReader(conn)).Decode(&resp); err != nil {
 		return err
 	}
 	if resp.Out != "" {
