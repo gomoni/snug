@@ -99,7 +99,7 @@ Three of these are new defects.
 **(a) `--dry-run` is not a dry run. [M]** `cmd/snug/main.go:254-291` calls
 `claudeFiles`, `startIdentity` and `startContainers` *before* the `cfg.dryRun`
 branch. Measured with a `gh` shim first on `PATH`, which logged `auth token
---hostname github.com --user vyskocilm`. So `snug --dry-run` — whose first line
+--hostname github.com --user personal-account`. So `snug --dry-run` — whose first line
 of output is *"nothing was started"* and whose doc comment says *"It starts no
 process and creates no file"* — shells out to `gh auth token`,
 **extracting a live credential from the host's gh store, including from the
@@ -123,7 +123,7 @@ credential store. Q9 is the trade.
 
 **(b) `--dry-run` denies, on screen, the credential it is staging. [M]** MVY2
 found this for `~/.claude`; it is worse. With an identity profile, one screen
-prints `data /home/michal/.config/gh/hosts.yml (identity)` and, eleven lines
+prints `data /home/u/.config/gh/hosts.yml (identity)` and, eleven lines
 below, lists `~/.ssh ~/.gnupg ~/.aws ~/.config/gh ~/.kube …` under *"NOT GRANTED
 (never mounted — these read as absent, they are not hidden)"* — reporting as
 absent the very directory it has just staged an `admin:public_key` token into.

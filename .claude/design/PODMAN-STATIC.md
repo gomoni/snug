@@ -174,14 +174,14 @@ MEASURED — the pinning is real, not aspirational. With a container running,
 
 ```
 $ ps -eo pid,ppid,args | grep <container-id>
-87244  8553 /home/michal/.local/opt/podman-static/usr/local/lib/podman/conmon
-             --api-version 1 -c 0bc316b0… -r /home/michal/.local/opt/podman-static/usr/local/bin/crun …
+87244  8553 /home/u/.local/opt/podman-static/usr/local/lib/podman/conmon
+             --api-version 1 -c 0bc316b0… -r /home/u/.local/opt/podman-static/usr/local/bin/crun …
 
 $ pgrep -a -f podman-static/usr/local          # pids and argv only, no ppid
-87229 /home/michal/.local/opt/podman-static/usr/local/bin/fuse-overlayfs -o lowerdir=…
-87238 /home/michal/.local/opt/podman-static/usr/local/bin/pasta --config-net --dns-forward
+87229 /home/u/.local/opt/podman-static/usr/local/bin/fuse-overlayfs -o lowerdir=…
+87238 /home/u/.local/opt/podman-static/usr/local/bin/pasta --config-net --dns-forward
       169.254.1.1 -t none -u none -T none -U none --no-map-gw --quiet --netns …
-87244 /home/michal/.local/opt/podman-static/usr/local/lib/podman/conmon …
+87244 /home/u/.local/opt/podman-static/usr/local/lib/podman/conmon …
 ```
 
 Two host paths leaked in at first and were closed, both found by reading
@@ -226,7 +226,7 @@ paths:
 
 ```
 Error: no policy.json file found at any of the following:
-  "/home/michal/.config/containers/policy.json", "/etc/containers/policy.json"
+  "/home/u/.config/containers/policy.json", "/etc/containers/policy.json"
 ```
 
 Neither exists on this host — openSUSE ships `/usr/share/containers/policy.json`,
@@ -339,11 +339,11 @@ $ ~/.local/opt/podman-static/bin/snug-podman-ns info | grep -E \
   databaseBackend: sqlite
   networkBackend: netavark
     rootless: false
-    seccompProfilePath: /home/michal/.local/opt/podman-static/etc/containers/seccomp.json
+    seccompProfilePath: /home/u/.local/opt/podman-static/etc/containers/seccomp.json
   serviceIsRemote: false
-  configFile: /home/michal/.local/opt/podman-static/etc/snug/storage.conf
+  configFile: /home/u/.local/opt/podman-static/etc/snug/storage.conf
   graphDriverName: overlay
-  graphRoot: /home/michal/.local/opt/podman-static/var/lib/containers/storage
+  graphRoot: /home/u/.local/opt/podman-static/var/lib/containers/storage
     Backing Filesystem: btrfs
 ```
 
@@ -351,21 +351,21 @@ and, from the same `podman info`, the helper block in full:
 
 ```
   conmon:
-    path: /home/michal/.local/opt/podman-static/usr/local/lib/podman/conmon
+    path: /home/u/.local/opt/podman-static/usr/local/lib/podman/conmon
     version: 'conmon version 2.2.1, commit: c8cc2c4db27531bd4e084ce7857f73cd21ee639d'
   ociRuntime:
     name: crun
-    path: /home/michal/.local/opt/podman-static/usr/local/bin/crun
+    path: /home/u/.local/opt/podman-static/usr/local/bin/crun
     version: crun version 1.28
   networkBackendInfo:
     backend: netavark
-    path: /home/michal/.local/opt/podman-static/usr/local/lib/podman/netavark
+    path: /home/u/.local/opt/podman-static/usr/local/lib/podman/netavark
     version: netavark 1.17.2
     dns:
-      path: /home/michal/.local/opt/podman-static/usr/local/lib/podman/aardvark-dns
+      path: /home/u/.local/opt/podman-static/usr/local/lib/podman/aardvark-dns
       version: aardvark-dns 1.17.1
   pasta:
-    executable: /home/michal/.local/opt/podman-static/usr/local/bin/pasta
+    executable: /home/u/.local/opt/podman-static/usr/local/bin/pasta
     version: pasta 2026_06_11.a9c61ff
 ```
 
@@ -408,7 +408,7 @@ CONTAINER-RAN-PLAIN
 … cat /proc/1/comm` prints `podman-init`).
 
 **It is rootless — no sudo, anywhere.** MEASURED: `id` reports
-`uid=1000(michal)`; `/proc/self/status` reports `CapEff: 0000000000000000`; no
+`uid=1000(u)`; `/proc/self/status` reports `CapEff: 0000000000000000`; no
 command in this document was run under `sudo` and no `sudo` is present in either
 wrapper. The only privileged component is the uid delegation, which is §8.
 
@@ -519,9 +519,9 @@ security.capability xattr, decoded:
   /usr/bin/newuidmap: rev=3 effective=True permitted=[CAP_SETUID] rootid=1000
   /usr/bin/newgidmap: rev=3 effective=True permitted=[CAP_SETGID] rootid=1000
 
-$ grep ^michal: /etc/subuid /etc/subgid
-/etc/subuid:michal:1001:64535
-/etc/subgid:michal:1001:64535
+$ grep ^u: /etc/subuid /etc/subgid
+/etc/subuid:u:1001:64535
+/etc/subgid:u:1001:64535
 
 $ unshare --user --map-auto --map-root-user -- cat /proc/self/uid_map
          0       1000          1

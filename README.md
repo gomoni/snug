@@ -29,7 +29,7 @@ snug ~/src/myproject
 ls: cannot access '/home/you/.ssh': No such file or directory
 🔒 snug:~/src/myproject$ echo "hello" > ../hello
 bash: ../hello: Read-only file system
-🔒 snug:~/projects/plainsof/cv/snug$
+🔒 snug:~/src/myproject$
 
 # yet allow a write access to cwd by default
 🔒 snug:~/src/myproject$ cat hello

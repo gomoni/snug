@@ -842,10 +842,10 @@ func splitSpec(spec string, vars map[string]string) (host, guest string, err err
 // substitution, so substituted text was itself scanned for placeholders — and
 // the substituted text is a PATH, which the human running snug chose. Measured:
 //
-//	mkdir -p '/tmp/x/{home}' /tmp/x/home/michal
+//	mkdir -p '/tmp/x/{home}' /tmp/x/home/u
 //	snug '/tmp/x/{home}'
 //	  -> TARGET  /tmp/x/{home}   read-only, via @parent-ro
-//	  -> rw      /tmp/x/home/michal   @cwd-rw    <- a DIFFERENT directory, writable
+//	  -> rw      /tmp/x/home/u        @cwd-rw    <- a DIFFERENT directory, writable
 //
 // The payload wrote to it and the write persisted to the host, while the
 // directory the user actually named was read-only. "The target is the only

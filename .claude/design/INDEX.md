@@ -283,7 +283,7 @@ Keys that would only ever *weaken* the sandbox in a way profiles must not contro
 
 Three properties together make "a profile can never tighten the sandbox" a *structural* fact rather than a review convention:
 
-1. **The base is empty, and the emitter has no removal operation.** `snug`'s bwrap emitter can produce `--bind`, `--ro-bind`, `--dev-bind`, `--tmpfs`, `--symlink`, `--proc`, `--dev`, `--file`, `--ro-bind-data`, `--dir`, `--setenv`. There is no `--mask`, no deny path, no "hide" verb, because nothing needs hiding — **VERIFIED**: `bwrap`'s new root is a fresh, empty tmpfs. With `--ro-bind /usr /usr` and a bind of one project directory, `ls /home/michal/projects` lists exactly `plainsof` and nothing else, with no `--tmpfs` anywhere in the command line. Siblings are invisible because they were never mounted.
+1. **The base is empty, and the emitter has no removal operation.** `snug`'s bwrap emitter can produce `--bind`, `--ro-bind`, `--dev-bind`, `--tmpfs`, `--symlink`, `--proc`, `--dev`, `--file`, `--ro-bind-data`, `--dir`, `--setenv`. There is no `--mask`, no deny path, no "hide" verb, because nothing needs hiding — **VERIFIED**: `bwrap`'s new root is a fresh, empty tmpfs. With `--ro-bind /usr /usr` and a bind of one project directory, `ls /home/u/projects` lists exactly `work` and nothing else, with no `--tmpfs` anywhere in the command line. Siblings are invisible because they were never mounted.
 2. **The grant language cannot express negation.** TOML keys are `ro`, `rw`, `dev`, `tmpfs`, `symlink`, `env`, `path`, `publish`, `include`. There is no `mask`, no `hide`, no `deny`, no `remove`, no `!`-prefix, no `unset`. This is enforced by strict decoding: unknown keys are a fatal parse error, so a future key cannot be smuggled in by a config written for a different tool.
 3. **Resolution is a join over semilattices.** For any profile sets *A* and *B*, `Resolve(A ∪ B) ⊒ Resolve(A)` and `⊒ Resolve(B)` — the result is above both in the grant lattice. Adding a profile can only move you up.
 
@@ -346,9 +346,9 @@ publish  = [3000]                 # host 127.0.0.1 -> sandbox, named ports only
 podman   = "socket"               # off < socket < build
 
   [profile.example.identity]      # pins ONE git/ssh/gh account (§9.1)
-  gh_user   = "plainsof"
-  git_name  = "Michal Vyskocil"
-  git_email = "michal.vyskocil@plainsof.com"
+  gh_user   = "work"
+  git_name  = "Your Name"
+  git_email = "you@work.example"
   ssh_key   = "~/.ssh/id_ed25519.pub"
   ssh_mode  = "agent-proxy"
 ```
@@ -419,8 +419,8 @@ The requirement — *for `snug /some/other/project/sub`: `/some/other/project` r
 bwrap --unshare-all \
   --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib64 /lib64 --symlink usr/lib /lib \
   --proc /proc --dev /dev \
-  --ro-bind /home/michal/projects/plainsof/cv /home/michal/projects/plainsof/cv \
-  --bind    /home/michal/projects/plainsof/cv/snug /home/michal/projects/plainsof/cv/snug \
+  --ro-bind /home/u/projects/work/team /home/u/projects/work/team \
+  --bind    /home/u/projects/work/team/snug /home/u/projects/work/team/snug \
   -- /bin/sh
 ```
 
@@ -428,18 +428,18 @@ the sandbox observes:
 
 ```
 /                              -> bin dev home lib lib64 proc usr
-/home                          -> michal
-/home/michal                   -> projects
-/home/michal/projects          -> plainsof            # 12 other projects invisible
-/home/michal/projects/plainsof -> cv                  # 6 siblings invisible
+/home                          -> u
+/home/u                        -> projects
+/home/u/projects               -> work       # 12 other projects invisible
+/home/u/projects/work          -> team       # 6 siblings invisible
 ```
 
 `bwrap` auto-creates every intermediate mountpoint inside its root tmpfs. Those skeleton directories are the *only* thing that exists at each ancestor level. This is why `@parent-ro` is one line of TOML.
 
 Two refinements `snug` applies:
 
-- **`--remount-ro /` as the final filesystem operation.** **VERIFIED**: the root tmpfs and its auto-created skeleton directories are writable by default; `--remount-ro /` makes them read-only and is explicitly non-recursive, so `/tmp`, `$HOME`, and the project bind keep their own flags. Result: `touch /ZZ` and `touch /home/michal/ZZ` fail; `/tmp`, `$HOME` and the project remain writable. Without it, an agent can litter a shadow filesystem that looks real and confuses it. Note what non-recursive also means: it does **not** cover procfs, which stays `rw` — see [`PSEUDOFS-AUDIT.md`](PSEUDOFS-AUDIT.md).
-- **Explicit skeleton permissions.** `bwrap` creates auto-mountpoint parents as `0700` (**VERIFIED**: `/home/michal/projects/plainsof` came out `drwx------`). That is fine when the sandbox uid owns them, but `snug` emits `--perms 0755 --dir <path>` for every ancestor it can predict, so the tree is traversable regardless of `--uid`/`--gid` choices.
+- **`--remount-ro /` as the final filesystem operation.** **VERIFIED**: the root tmpfs and its auto-created skeleton directories are writable by default; `--remount-ro /` makes them read-only and is explicitly non-recursive, so `/tmp`, `$HOME`, and the project bind keep their own flags. Result: `touch /ZZ` and `touch /home/u/ZZ` fail; `/tmp`, `$HOME` and the project remain writable. Without it, an agent can litter a shadow filesystem that looks real and confuses it. Note what non-recursive also means: it does **not** cover procfs, which stays `rw` — see [`PSEUDOFS-AUDIT.md`](PSEUDOFS-AUDIT.md).
+- **Explicit skeleton permissions.** `bwrap` creates auto-mountpoint parents as `0700` (**VERIFIED**: `/home/u/projects/work` came out `drwx------`). That is fine when the sandbox uid owns them, but `snug` emits `--perms 0755 --dir <path>` for every ancestor it can predict, so the tree is traversable regardless of `--uid`/`--gid` choices.
 
 ### 3.2 Emission order
 
@@ -730,7 +730,7 @@ options edns0
 - **IPv6** is enabled by default. `pasta --config-net` copies the host's v6 configuration; **VERIFIED**, the sandbox got global and link-local v6 addresses and a default v6 route, and `[::1]:3100` (host loopback over v6) was **refused**. Both `--map-host-loopback` and `-T`/`-U` take up to two addresses, one per family, and `none` covers both.
 - **MTU** is `pasta`'s default 65520 (**VERIFIED** on the namespace interface). Knob: `mtu = 1500`.
 - **The sandbox's own address** is, by default, the host's — `pasta` copies host addresses into the namespace. Stated plainly because it is a (small) information disclosure: the agent learns your LAN IP. `@net-anon` fixes it.
-- **Hostname.** `--unshare-all` includes a UTS namespace, and `snug` sets `--hostname snug`. **VERIFIED**: `hostname` inside returns `snug` while the host remains `zelva`. This is worth doing for a reason beyond cosmetics: shell prompts, `tmux` status lines and agent transcripts all show it, so **you can always tell at a glance whether you are inside a sandbox**. `snug` additionally exports `SNUG=1`, `SNUG_PROFILES=<list>` and a distinctive `PS1`.
+- **Hostname.** `--unshare-all` includes a UTS namespace, and `snug` sets `--hostname snug`. **VERIFIED**: `hostname` inside returns `snug` while the host remains `laptop`. This is worth doing for a reason beyond cosmetics: shell prompts, `tmux` status lines and agent transcripts all show it, so **you can always tell at a glance whether you are inside a sandbox**. `snug` additionally exports `SNUG=1`, `SNUG_PROFILES=<list>` and a distinctive `PS1`.
 - **`/etc/hosts` is NOT generated** and is not granted by `@sys`, so the sandbox has no hosts file at all. That was once described here as generated; it never was. It is a real (small) gap — a tool that expects `localhost` to resolve from a file rather than from the resolver will not find it — recorded here rather than fixed silently.
 
 ### 4.9 Fallback matrix — and the rule that governs it
@@ -855,7 +855,7 @@ Inherited gap, documented and **not** silently "fixed": non-native architectures
 
 ## 6. Lessons from `agent-sandbox`
 
-The previous generation (`/home/michal/projects/plainsof/cv/agent-sandbox`, ~45 Go files, 624-line `DESIGN.md`) is the source of most of the hard-won detail here. This section is history and rationale; nothing in it is a live specification.
+The previous generation (`/home/u/projects/work/team/agent-sandbox`, ~45 Go files, 624-line `DESIGN.md`) is the source of most of the hard-won detail here. This section is history and rationale; nothing in it is a live specification.
 
 ### 6.1 What carries over unchanged
 
@@ -1062,16 +1062,16 @@ Result: inside the sandbox, `gh api user` and `git push` act as exactly that acc
 
 ### 9.2 `match` — DESIGNED, NOT BUILT
 
-`match = ["~/projects/plainsof/**"]` would auto-select a profile by target path. **No code implements it**; the key is not parsed and nothing consults it. It is kept here because the design is right and the failure mode is the interesting part.
+`match = ["~/projects/work/**"]` would auto-select a profile by target path. **No code implements it**; the key is not parsed and nothing consults it. It is kept here because the design is right and the failure mode is the interesting part.
 
 **Recommendation, if it is ever built: keep it, but never let it select a privileged profile, and always print what it chose.**
 
-The failure mode is real and must be written down: **the target path chooses the credentials.** Clone a hostile repository into `~/projects/plainsof/evil` and it is handed your work identity — an ssh signing oracle and a `gh` token — because of where it sits on disk. Nothing about the repository was consulted.
+The failure mode is real and must be written down: **the target path chooses the credentials.** Clone a hostile repository into `~/projects/work/evil` and it is handed your work identity — an ssh signing oracle and a `gh` token — because of where it sits on disk. Nothing about the repository was consulted.
 
 Mitigations the design requires:
 
 1. `match` may not select a profile carrying any privileged grant (§2.7).
-2. Auto-selection **always** prints one line before launch: `snug: profile 'plainsof' auto-selected by match '…'; identity gh_user=plainsof, ssh_key=key3…`. Silent credential selection is the actual danger; a visible line makes the mistake self-evident.
+2. Auto-selection **always** prints one line before launch: `snug: profile 'work' auto-selected by match '…'; identity gh_user=work, ssh_key=personal.pub…`. Silent credential selection is the actual danger; a visible line makes the mistake self-evident.
 3. Exactly one profile may match; two matches is a fatal error rather than a precedence rule.
 4. `--profile X` always wins over `match`, and `--no-match` disables it.
 
@@ -1131,7 +1131,7 @@ The two sentences that belong in an index: `--clearenv` first, then an explicit 
 
 ### 9.7 `$HOME` inside the sandbox
 
-**`$HOME` is the same absolute path as on the host (`/home/michal`), and it is an empty tmpfs.**
+**`$HOME` is the same absolute path as on the host (`/home/u`), and it is an empty tmpfs.**
 
 Same path, because: agent tooling, `git`, `node`, and the project's own config bake absolute paths; the target directory frequently lives under `$HOME` and must keep its identity so that error messages, `git` remotes, and the injected `CLAUDE.md` all agree with what the human sees outside; and stack traces and build caches that leak paths stay comparable.
 

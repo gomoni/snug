@@ -309,7 +309,7 @@ func profileCmd(args []string) int {
 		// This is the screen someone reads to decide WHETHER to select a profile,
 		// which puts it upstream of every --dry-run — and it rendered profile text
 		// verbatim. Measured in a real terminal: an environ.set value ending in
-		// ESC[1A CR overwrote the row above it, and `rw  /home/michal` — the whole
+		// ESC[1A CR overwrote the row above it, and `rw  /home/u` — the whole
 		// of $HOME, writable — was simply not on the screen. `cat -v` showed it
 		// there all along.
 		show := func(label string, vals []string) {

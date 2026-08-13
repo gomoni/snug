@@ -32,7 +32,7 @@ func (o NetnsOwner) String() string {
 
 // SubuidMode records WHETHER the host's subuid range is delegated to U. It
 // never records how big it is: /etc/subuid on this host reads
-// `michal:1001:64535`, so the conventional 65536-at-100000 layout is wrong here
+// `u:1001:64535`, so the conventional 65536-at-100000 layout is wrong here
 // and a size in the model is a fact the next unusual host falsifies.
 type SubuidMode uint8
 

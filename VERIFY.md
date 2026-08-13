@@ -179,7 +179,7 @@ SECRET_TOKEN=leakme sh -c 'env | grep -c SECRET_TOKEN'                      # 1
 ```
 
 One thing on that screen looks like a leak and is not: `XDG_CONFIG_HOME` reads
-`/home/michal/.config` even when the host's was somewhere else entirely. `@home`
+`/home/u/.config` even when the host's was somewhere else entirely. `@home`
 authors it, and inside, that path is an empty tmpfs.
 
 Caveat worth knowing: `--clearenv` is not the last word. `/etc/profile.d/*`
