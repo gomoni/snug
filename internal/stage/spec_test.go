@@ -74,6 +74,7 @@ func spec() string {
 	fmt.Fprintf(&b, "  fd %-4d control       SOCK_SEQPACKET socketpair, P1's end\n", fdControl)
 	fmt.Fprintf(&b, "  fd %-4d lifeline      read end of an anonymous pipe; P0 holds the write end\n", fdLife)
 	fmt.Fprintf(&b, "  fd %-4d.. sandbox     K descriptors, dup3'd to 3..3+K-1 in the bwrap child\n", fdSandboxBase)
+	fmt.Fprintf(&b, "  fd %-4d N-socket      AF_INET socket CREATED IN N; still answers for N after the move\n", fdNetSock)
 	fmt.Fprintf(&b, "  fd %-4d netns-N       the descriptor P1 pins on N before it leaves (not CLOEXEC until __stage-serve)\n", fdNetnsN)
 	fmt.Fprintf(&b, "  budget        K <= %d, checked on BOTH sides of the control socket (checkFDBudget)\n", maxPassthrough)
 	fmt.Fprintln(&b)

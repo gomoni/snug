@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/gomoni/snug/internal/fdseal"
 )
@@ -25,15 +26,24 @@ import (
 //  4. start the lifeline watcher.
 //  5. send "ready" on the control socket, carrying the pinned netns id, the
 //     userns id and the fd number.
-//  6. serve exactly one request, then exit — whatever that request's outcome.
-//     everRan does not exist as a concept: this function returns after one
-//     request, full stop.
+//  6. serve AT MOST TWO requests, then exit: one "netready" (optional to send,
+//     mandatory to have succeeded before "start" is accepted) and one "start",
+//     after which this function returns whatever the outcome. everRan does not
+//     exist as a concept — there is no third request and no way back.
 func MainServe() error {
 	requireFD(fdControl, "control")
 	requireFD(fdLife, "lifeline")
 
 	if err := setCloexec(fdNetnsN); err != nil {
 		return fmt.Errorf("__stage-serve: marking fd %d CLOEXEC: %w", fdNetnsN, err)
+	}
+	// Same instant, same reason, for the socket that still speaks to N: from
+	// here it reaches a child only by being named in ExtraFiles, and nothing
+	// ever names it. A descriptor that can query N is not something bwrap or a
+	// payload has any business inheriting.
+	requireFD(fdNetSock, "N socket")
+	if err := setCloexec(fdNetSock); err != nil {
+		return fmt.Errorf("__stage-serve: marking fd %d CLOEXEC: %w", fdNetSock, err)
 	}
 
 	pinned := fdNS(fdNetnsN)
@@ -62,19 +72,79 @@ func MainServe() error {
 		return fmt.Errorf("__stage-serve: reporting ready: %w", err)
 	}
 
-	req, err := recvRequest(control)
-	if err != nil {
-		return fmt.Errorf("__stage-serve: reading control request: %w", err)
-	}
-	switch req.Op {
-	case "stop":
-		return nil
-	case "start":
-		return runOneSandbox(control, req)
-	default:
-		return fmt.Errorf("__stage-serve: unknown control op %q", req.Op)
+	// At most two requests, and the shape is a small state machine rather than a
+	// loop ON PURPOSE. "start" is still strictly one-shot — it runs the sandbox
+	// and this function returns, whatever the outcome, exactly as before.
+	// "netready" is the one thing that may legitimately precede it, and it may
+	// be asked ONCE.
+	//
+	// A loop would have been shorter and would have quietly turned a one-shot
+	// stage into a server. The channel has no name and no listener, so nothing
+	// could reach it to abuse that today — which is precisely the argument that
+	// would let it rot into Phase 2, when there IS a second client.
+	netReadyAsked, netReadyOK := false, false
+	for {
+		req, err := recvRequest(control)
+		if err != nil {
+			return fmt.Errorf("__stage-serve: reading control request: %w", err)
+		}
+		switch req.Op {
+		case "stop":
+			return nil
+		case "netready":
+			if netReadyAsked {
+				return fmt.Errorf("__stage-serve: \"netready\" asked twice; this stage answers it once")
+			}
+			netReadyAsked = true
+			ev := event{Op: "netready"}
+			if err := waitForIface(fdNetSock, netIfaceName, netReadyTimeout); err != nil {
+				ev.Err = err.Error()
+			}
+			if err := sendEvent(control, ev); err != nil {
+				return fmt.Errorf("__stage-serve: reporting netready: %w", err)
+			}
+			if ev.Err != "" {
+				// Answered honestly, then stop: there is no point holding a
+				// namespace open for a sandbox whose network never arrived, and
+				// P0 is about to tear us down anyway.
+				return fmt.Errorf("__stage-serve: %s", ev.Err)
+			}
+			netReadyOK = true
+		case "start":
+			// The property this whole ordering exists to establish — no payload
+			// exists before its network is confirmed — must be enforced HERE and
+			// not only by the order of calls in P0.
+			//
+			// A red team found it stated nowhere but in runStaged's call
+			// sequence, which is the wrong place: proto.go's own header calls
+			// this "the enforcement point Phase 2 inherits", and Phase 2 gives
+			// the stage a pathname socket and a second client. A stolen or
+			// confused client that sends "start" first would otherwise get a
+			// sandbox in an unconfigured namespace, with no netready ever asked.
+			if !netReadyOK {
+				err := fmt.Errorf("__stage-serve: refusing \"start\" before a successful " +
+					"\"netready\": a payload must not exist before its network is confirmed")
+				_ = sendEvent(control, event{Op: "started", Err: err.Error()})
+				return err
+			}
+			return runOneSandbox(control, req)
+		default:
+			return fmt.Errorf("__stage-serve: unknown control op %q", req.Op)
+		}
 	}
 }
+
+// netIfaceName is the interface pasta creates inside N. It is not a guess: snug
+// passes `--ns-ifname snug0` itself (internal/policy/net.go), so the name is
+// snug's own and the readiness check can be an exact lookup rather than an
+// enumeration. If that flag ever changes, this must change with it —
+// TestStageWaitsForTheInterfaceSnugItselfNames is what makes that fail loudly.
+const netIfaceName = "snug0"
+
+// netReadyTimeout bounds how long the stage waits for pasta to configure its
+// interface. Generous against a loaded host, and it is an upper bound rather
+// than an expectation: measured, the interface appears in well under 100ms.
+const netReadyTimeout = 10 * time.Second
 
 // watchLifeline is the teardown trigger for the case where P1 can still run
 // code. P0 holds the write end of the lifeline pipe and never writes to it, so

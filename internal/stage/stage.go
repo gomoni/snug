@@ -154,13 +154,12 @@ func Start(cfg Config) (*Stage, error) {
 		// the wrong fix". snug doctor probes bwrap's namespaces, not this one,
 		// so on a host where the stage cannot start doctor is still green.
 		return nil, fmt.Errorf("stage: starting P1: %w\n"+
-			"  This clone asks for four namespaces at once (user, network, mount, cgroup).\n"+
+			"  This clone asks for three namespaces at once (user, network, mount).\n"+
 			"  Check, in this order:\n"+
 			"    unprivileged user namespaces  /proc/sys/kernel/unprivileged_userns_clone (and max_user_namespaces)\n"+
 			"    a nesting limit               you may already be at the maximum depth, e.g. inside a container\n"+
 			"    network namespaces            /proc/sys/user/max_net_namespaces\n"+
-			"    cgroup namespaces             a kernel built without CONFIG_CGROUPS reports EINVAL here\n"+
-			"  A quick check that reproduces all four: unshare --user --net --mount --cgroup -- true", err)
+			"  A quick check that reproduces all three: unshare --user --net --mount -- true", err)
 	}
 	p1Control.Close()
 	lifeR.Close()
@@ -219,6 +218,42 @@ func (s *Stage) Target() policy.PastaTarget {
 // PinnedNetns is the "net:[...]" id P1 reported for N at readiness — what
 // every namespace assertion compares against.
 func (s *Stage) PinnedNetns() string { return s.netns }
+
+// WaitNetReady blocks until the network helper's interface is up INSIDE the
+// sandbox's network namespace, and is the reason bwrap no longer has to be
+// started before the network exists.
+//
+// P0 cannot answer this question itself. It is not in N, and the old answer —
+// poll /proc/<pid>/net/dev of a process inside N — required a process inside N,
+// which is exactly the bwrap-first ordering that made a parked payload
+// necessary. The stage can answer it, because the socket it opened in N before
+// it left still speaks to N (a socket's network namespace is fixed at
+// creation, measured).
+//
+// So the order becomes: start pasta, ask this, THEN fork bwrap. Nothing is ever
+// parked, and there is no window in which a payload exists but its network
+// guarantee does not.
+//
+// The timeout here is P0's patience with the STAGE; the stage applies its own,
+// shorter, bound to the interface itself, so a hang here means the stage is
+// wedged rather than the network being slow.
+func (s *Stage) WaitNetReady(timeout time.Duration) error {
+	if err := sendRequest(s.control, request{Op: "netready"}); err != nil {
+		return fmt.Errorf("stage: asking whether the sandbox's network is up: %w", err)
+	}
+	ev, err := recvEventTimeout(s.control, timeout)
+	if err != nil {
+		return fmt.Errorf("stage: waiting for the network to come up in the sandbox's "+
+			"namespace: %w", err)
+	}
+	if ev.Op != "netready" {
+		return fmt.Errorf("stage: expected a \"netready\" event, got %q", ev.Op)
+	}
+	if ev.Err != "" {
+		return fmt.Errorf("stage: %s", ev.Err)
+	}
+	return nil
+}
 
 // StartSandbox sends the one request this phase's protocol has, and blocks
 // until P1 reports the fork happened. The stage will not serve a second one —

@@ -1136,25 +1136,31 @@ func TestAStalledPastaNeitherHangsNorRunsThePayload(t *testing.T) {
 	}
 }
 
-// TestKillingSnugWhileThePayloadIsParkedDoesNotRunIt is the regression for
-// F2's second half, and the more serious one: the abort path was not
-// fail-closed against the only thing a human can do to a stuck snug.
+// TestKillingSnugDuringStartupNeverRunsThePayload is what the old
+// TestKillingSnugWhileThePayloadIsParkedDoesNotRunIt became when the parked
+// window was deleted, and the rename is the finding.
 //
-// bwrap releases a payload parked on --block-fd on EOF just as readily as on a
-// byte, so snug's own death is a release signal. MEASURED before the fix, with
-// a pasta that never brings an interface up: SIGTERM to snug ran the payload
-// and wrote to the target in 4 runs out of 5, on a run that reported failure.
-// Killing the parked child by pid alone was not enough either — kill(2) queues
-// the signal and snug's very next act was to die — which is why the fix waits
-// for the sandbox's pid namespace to collapse before letting go.
+// The old test could not assert SIGKILL and said so in its own doc comment:
+// bwrap releases a payload parked on --block-fd on EOF exactly as readily as
+// on a byte, snug's death closes the write end, and SIGKILL gives snug no
+// chance to intervene. Measured 5/5 with the payload running and an orphaned
+// sandbox left behind. Three review rounds also reported SIGTERM as open; that
+// was a measurement error — they killed after the release point — but the
+// SIGKILL half was real and unfixable by any guard, because a guard catches
+// signals and that is the one signal that cannot be caught.
 //
-// SIGKILL of snug is deliberately NOT asserted here: it cannot be caught, the
-// EOF beats bwrap's two-hop --die-with-parent, and TODO.md carries that
-// residual with its severity rather than this test pretending otherwise.
+// It is fixed by ordering rather than by defending: pasta now attaches to the
+// namespace BEFORE bwrap is forked, so during startup there is no payload in
+// existence to release. SIGKILL is therefore asserted here alongside the
+// catchable signals — the assertion the previous version had to exclude.
+//
+// The fake pasta hangs without ever configuring an interface, which holds snug
+// in exactly the phase this is about: helper started, network not up, sandbox
+// deliberately not forked yet.
 //
 // Positive control: an identical run with the real pasta writes the marker.
-func TestKillingSnugWhileThePayloadIsParkedDoesNotRunIt(t *testing.T) {
-	budget(t, 40*time.Second)
+func TestKillingSnugDuringStartupNeverRunsThePayload(t *testing.T) {
+	budget(t, 60*time.Second)
 	requireSandbox(t)
 	requirePasta(t)
 	proj, _ := target(t)
@@ -1170,9 +1176,6 @@ func TestKillingSnugWhileThePayloadIsParkedDoesNotRunIt(t *testing.T) {
 		t.Fatalf("PRECONDITION: the payload did not write %s on a run that succeeded: %v", marker, err)
 	}
 
-	// A pasta that starts and then hangs without ever bringing up an
-	// interface, so snug sits in waitForNetDevice with the payload parked for
-	// a whole, comfortably signal-able window.
 	fakeBin := t.TempDir()
 	if err := os.WriteFile(fakeBin+"/pasta", []byte("#!/bin/sh\nexec sleep 300\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -1182,7 +1185,9 @@ func TestKillingSnugWhileThePayloadIsParkedDoesNotRunIt(t *testing.T) {
 		realPath = "/usr/bin:/bin"
 	}
 
-	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP} {
+	for _, sig := range []syscall.Signal{
+		syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGKILL,
+	} {
 		t.Run(sig.String(), func(t *testing.T) {
 			if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
 				t.Fatal(err)
@@ -1194,13 +1199,25 @@ func TestKillingSnugWhileThePayloadIsParkedDoesNotRunIt(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// Signal only once the payload really is parked: bwrap existing
-			// means the fork happened, and the fake pasta never releases it.
-			if _, ok := findDescendant(cmd.Process.Pid, isComm("bwrap"), 10*time.Second); !ok {
+			// PRECONDITION, and it is the one that makes the whole test mean
+			// something: wait until the STAGE exists and pasta has been started,
+			// so the signal lands in the interval this test is named for. Under
+			// the old ordering the bar was "bwrap exists"; there is deliberately
+			// no bwrap here yet, and asserting on its absence is the point.
+			if _, ok := findDescendant(cmd.Process.Pid, isStageProcess, 10*time.Second); !ok {
 				cmd.Process.Kill()
 				cmd.Wait()
-				t.Fatal("PRECONDITION: bwrap never appeared, so nothing was ever parked")
+				t.Fatal("PRECONDITION: the stage never appeared, so nothing was exercised")
 			}
+			if pid, ok := findDescendant(cmd.Process.Pid, isComm("bwrap"), 500*time.Millisecond); ok {
+				cmd.Process.Kill()
+				cmd.Wait()
+				t.Fatalf("PRECONDITION FAILED, and this is a REGRESSION rather than a flake: "+
+					"bwrap (pid %d) exists while the network is not up. The ordering that "+
+					"closes this window is pasta-first; if bwrap is being forked before the "+
+					"stage confirms the interface, the parked window is back", pid)
+			}
+
 			if err := cmd.Process.Signal(sig); err != nil {
 				t.Fatal(err)
 			}
@@ -1208,10 +1225,11 @@ func TestKillingSnugWhileThePayloadIsParkedDoesNotRunIt(t *testing.T) {
 
 			// Give a released payload every chance to run before looking: a
 			// check made too early would pass for the wrong reason.
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(700 * time.Millisecond)
 			if _, err := os.Stat(marker); err == nil {
-				t.Errorf("%s to a snug whose payload was parked ran the payload and wrote to "+
-					"the target; killing a stuck snug must never be the thing that releases it", sig)
+				t.Errorf("%s to a starting snug ran the payload and wrote to the target. "+
+					"With pasta-first ordering no payload exists during startup, so this "+
+					"means bwrap was forked before the network was confirmed", sig)
 			}
 		})
 	}

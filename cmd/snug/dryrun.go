@@ -646,7 +646,8 @@ func describeTopology(out *os.File, p *policy.Policy) {
 		fmt.Fprintf(out, "  control         an anonymous SOCK_SEQPACKET socketpair, inherited, between snug\n")
 		fmt.Fprintf(out, "                  and the stage. UNREACHABLE from the sandbox: no pathname, no\n")
 		fmt.Fprintf(out, "                  listener, and no descriptor for it in the payload's table. It\n")
-		fmt.Fprintf(out, "                  carries exactly one request, once, and the stage then exits.\n")
+		fmt.Fprintf(out, "                  carries at most two requests — is the network up, then start\n")
+		fmt.Fprintf(out, "                  the sandbox — and the stage exits after the second.\n")
 	}
 	if p.Topology.NeedsStage() {
 		fmt.Fprintf(out, "  host-visible    the stage's namespaces are nameable from the host by a\n")

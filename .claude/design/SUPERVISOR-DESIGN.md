@@ -66,18 +66,23 @@ The distinction that matters is **who owns the process**, not how many there are
 ```
 P0  snug                          host userns, host netns, host mount tree
  │   resolves the policy, builds every descriptor the sandbox needs, clones P1,
- │   writes its uid map, runs pasta at N, holds the lifeline, then supervises
+ │   writes its uid map, runs pasta at N, waits for the interface, THEN asks for
+ │   the sandbox. Holds the lifeline and supervises.
  │
  ├── pasta --netns /proc/<P1>/fd/<n> --userns /proc/<P1>/ns/user
+ │        started SECOND, while N still has no process in it at all
  │
  └── P1  snug __stage-setup → __stage-serve   THE NAMESPACE HOLDER
       │   U: user ns, ONE uid mapped (root inside)
       │   N: network ns, private — created by the clone, PINNED by a descriptor,
       │      and then LEFT: after __stage-serve, P1 is in a fresh empty netns
-      │   + own mount ns (MS_REC|MS_PRIVATE) and cgroup ns
+      │   + own mount ns (MS_REC|MS_PRIVATE)
+      │   + an AF_INET socket CREATED IN N, kept: how it answers "is snug0 up?"
+      │     after it has left N (§7)
       │   NO control socket on any filesystem. NO listener.
       │
       └── snug __innetns <fd> bwrap ...       a setns shim, one execve deep
+           │                                  forked LAST, once the network is up
            └── bwrap (in N)                   THE SANDBOX, unchanged in every respect
                 └── payload
 ```
@@ -157,7 +162,11 @@ the stage is a construction detail, not a grant.
 The channel between snug and the stage is an inherited
 `socketpair(AF_UNIX, SOCK_SEQPACKET|SOCK_CLOEXEC)`. No pathname, no listener, no
 run directory, no `accept` loop — nothing for anything running as your uid to
-connect to. It carries exactly one request, once, and the stage then exits.
+connect to. It carries at most two requests — "is the network up?" and then
+"start the sandbox" — and the stage exits after the second. The stage REFUSES a
+"start" that was not preceded by a successful "netready", so the ordering that
+keeps a payload from existing before its network is enforced by the stage
+itself and not only by the order of calls in snug.
 
 The **protocol** is written even so — strict decoder, typed request struct,
 default-deny dispatch, and a descriptor-budget check on **both** sides because
@@ -336,17 +345,71 @@ on both. The parity conclusion holds; the reasoning that had been written down
 for it did not, and a reader who tested the stated route would have concluded the
 stage widened the host surface.
 
-**One defect is open and is not this phase's to close.** The guard that stops a
-dying snug from releasing a parked payload is armed *after* the payload is
-already parked, so SIGTERM during setup releases it, and a SIGKILL in a narrow
-window leaves an orphaned sandbox. `TODO.md` carries it with the corrected
-mechanism and with the shape of the fix, and it is a **lifetime** defect rather
-than a confinement one: the stage, pasta and the privileged ancestor namespace
-are all gone by the time the orphan exists.
+**One defect was open when this document was first written, and is now closed.**
+The guard that stopped a dying snug from releasing a parked payload was armed
+*after* the payload was already parked, and a SIGKILL inside the window ran the
+payload and left an orphaned sandbox — measured 5/5. It was not fixable by
+arming the guard earlier, because a guard catches signals and SIGKILL is the one
+signal that cannot be caught.
+
+It was closed by **deleting the thing that had a window** rather than by
+defending it — see §7.
 
 ---
 
-## 6. Deferred, with reasons
+## 7. The ordering that removed the parked window
+
+The startup sequence is now:
+
+```
+stage.Start   -> N exists, pinned by a descriptor, with nobody in it
+startPasta    -> pasta attaches to that EMPTY N and configures snug0
+WaitNetReady  -> the stage confirms snug0 is UP and RUNNING, from inside N
+StartSandbox  -> only NOW does a payload exist
+```
+
+bwrap is forked with **no `--block-fd` and no `--json-status-fd`**. There is no
+parked payload, so there is nothing for a dying snug to release, and
+`internal/sandbox/parked.go` is gone along with `readChildPID` and
+`waitForNetDevice`.
+
+**What made it possible, having been recorded as a blocker.** Confirming the
+interface needed a process inside N to read `/proc/<pid>/net/dev`, and before
+bwrap there is none. But **a socket's network namespace is fixed when the socket
+is created and does not follow the process** — measured, with both controls:
+
+```
+in N   : lo IFF_UP=true     positive control
+in N2  : lo IFF_UP=false    a fresh socket in the stage's new namespace
+in N2  : lo IFF_UP=true     the socket created in N, after the move
+```
+
+So the stage keeps the `AF_INET` socket it already opens in N to bring `lo` up,
+parks it at `fdNetSock` across its own re-exec, and answers a `netready` control
+request with `SIOCGIFFLAGS` on `snug0` — a name snug itself passes to pasta with
+`--ns-ifname`, so the check is an exact lookup rather than an enumeration.
+
+**Also measured before any of it was built:** pasta attaches to a network
+namespace with no process in it at all, stays up, and its interface is waiting
+when bwrap arrives.
+
+Three consequences worth stating:
+
+- **The regression test asserts SIGKILL now.** Its predecessor documented, in
+  its own doc comment, that it could not. Same property, strictly stronger
+  claim.
+- **A dead pasta is still detected immediately.** Readiness is raced against the
+  helper exiting, because otherwise a pasta that crashes at once would be
+  reported only when the interface timeout expired — a 300ms error turned into a
+  ten-second one that a human interrupts before reading.
+- **The protocol grew a second op, and deliberately not a loop.** `netready` may
+  be asked once, before `start`; `start` remains strictly one-shot. A loop would
+  have been shorter and would have quietly turned a one-shot stage into a server
+  — which matters when Phase 2 gives it a pathname socket and a second client.
+
+---
+
+## 8. Deferred, with reasons
 
 - **The control listener** — a pathname socket, an accept loop, the 108-byte
   `sockaddr_un` budget. There is no client but the stage's own parent yet, and a
@@ -361,11 +424,6 @@ are all gone by the time the orphan exists.
   the sandbox's mounts with no `no_new_privs` and no filter" become one sentence.
 - **Subuid delegation and `Topology.Attach`.** No consumer until an engine moves
   into the stage. The floor and the lattice law exist; nothing raises them.
-- **Starting pasta before bwrap**, which is the topological fix for the parked
-  window: with the namespace existing before bwrap does, there is nothing parked
-  to release. It needs a way to confirm the interface is up without a process
-  inside N to read `/proc/<pid>/net/dev`, which is a protocol addition and must
-  be designed rather than patched in.
 - **The engine in the sandbox's netns** — the thing all of this is for.
   [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §2 measured that it works and §3 measured
   where it does not; [`PODMAN-STATIC.md`](PODMAN-STATIC.md) is the pinned engine

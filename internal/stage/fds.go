@@ -56,6 +56,23 @@ const (
 	// child, which is why the seal is not optional (see internal/fdseal).
 	fdSandboxBase = 5
 
+	// fdNetSock is an AF_INET datagram socket CREATED INSIDE N, kept for the
+	// whole run so the stage can answer "is pasta's interface up in N?" after it
+	// has left N.
+	//
+	// The mechanism, and it is the reason the parked window could be deleted: a
+	// socket's network namespace is fixed when the socket is created and does
+	// NOT follow the process. Measured, with both controls — after the move, a
+	// freshly created socket sees lo DOWN in the stage's new empty namespace
+	// while this one still sees lo UP in N.
+	//
+	// Readiness used to be answered by polling /proc/<pid>/net/dev of a process
+	// inside N, which required a process inside N, which meant bwrap had to be
+	// started BEFORE pasta and parked until pasta came up. That parking is what
+	// a SIGKILL of snug could release early. One descriptor removes the whole
+	// ordering constraint.
+	fdNetSock = 62
+
 	// fdNetnsN is the descriptor P1 pins on N before it leaves. Chosen high so
 	// it never collides with the pass-through block above, whose size is
 	// policy-dependent (as many data mounts as a resolved Policy has, plus one
@@ -72,10 +89,12 @@ const (
 	fdNetnsN = 63
 )
 
-// maxPassthrough is how many descriptors the pass-through block can hold
-// before it reaches fdNetnsN. Derived, never written down twice: raising
-// fdNetnsN raises this with it.
-const maxPassthrough = fdNetnsN - fdSandboxBase
+// maxPassthrough is how many descriptors the pass-through block can hold before
+// it reaches the LOWEST reserved descriptor above it. Derived, never written
+// down twice: it follows fdNetSock, which is now the first thing the block
+// would collide with — adding a second reserved fd above the block without
+// moving this bound is exactly the collision checkFDBudget exists to refuse.
+const maxPassthrough = fdNetSock - fdSandboxBase
 
 // checkFDBudget refuses a pass-through block that would collide with the
 // pinned netns descriptor, LOUDLY and by name, at the two points where the

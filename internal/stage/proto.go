@@ -25,10 +25,11 @@ import (
 // pid it is asked to trust).
 const maxMessage = 64 * 1024
 
-// request is the one P0 -> P1 message Phase 1's protocol has. A second message
-// (Op: "stop") tears the stage down — sent by Close, not StartSandbox.
+// request is a P0 -> P1 message. Three ops, and the stage answers at most one
+// "netready" and exactly one "start" before it exits; "stop" tears it down and
+// is sent by Close rather than StartSandbox.
 type request struct {
-	Op string `json:"op"` // "start" | "stop"
+	Op string `json:"op"` // "netready" | "start" | "stop"
 
 	// "start" only.
 	Bwrap string   `json:"bwrap,omitempty"`
@@ -40,11 +41,13 @@ type request struct {
 	Passthrough int `json:"passthrough,omitempty"`
 }
 
-// event is a P1 -> P0 message. Two shapes: "ready", sent once at startup with
-// the namespace ids and the pinned netns fd; "exited", sent once after P1 has
-// reaped the one payload this stage will ever run, whatever the outcome.
+// event is a P1 -> P0 message. Three shapes: "ready", sent once at startup with
+// the namespace ids and the pinned netns fd; "netready", the answer to a
+// "netready" request, carrying Err when the interface never came up; "exited",
+// sent once after P1 has reaped the one payload this stage will ever run,
+// whatever the outcome.
 type event struct {
-	Op string `json:"op"` // "ready" | "exited"
+	Op string `json:"op"` // "ready" | "netready" | "exited"
 
 	// "ready" only.
 	Netns   string `json:"netns,omitempty"`

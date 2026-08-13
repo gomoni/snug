@@ -13,7 +13,8 @@ TOPOLOGY
   control         an anonymous SOCK_SEQPACKET socketpair, inherited, between snug
                   and the stage. UNREACHABLE from the sandbox: no pathname, no
                   listener, and no descriptor for it in the payload's table. It
-                  carries exactly one request, once, and the stage then exits.
+                  carries at most two requests — is the network up, then start
+                  the sandbox — and the stage exits after the second.
   host-visible    the stage's namespaces are nameable from the host by a
                   same-uid process, as /proc/<stage>/ns/user and its pinned
                   /proc/<stage>/fd/<n> for N. Measured equivalent to what such a

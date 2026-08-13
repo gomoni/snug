@@ -1190,131 +1190,117 @@ removes nothing"), or a gap Phase 1 deliberately leaves for Phase 2/3.
   this for the engine; unmeasured whether a socket bound in N before P1 leaves
   it stays usable, per §8 — do not design around it before measuring it).
 
-### The parked-payload window: the guard is armed after the thing it guards exists
+### The parked-payload window — HALF closed, and the other half is still open
 
-Severity: **medium**. This entry replaces an earlier one that stated a mechanism
-three independent measurements have since falsified. Reproduced by four separate
-runs across three review rounds; the numbers below are the current ones.
+Kept rather than removed, because the shape of the mistake is worth more than
+the fix: **three review rounds agreed on a diagnosis that measurement
+contradicted, and the agreed fix would not have worked.**
 
-bwrap releases a payload parked on `--block-fd` on **EOF just as readily as on a
-byte**, and snug's own death closes the write end. So between bwrap forking the
-payload and pasta being confirmed up, an exit of snug releases the payload.
+*What it was.* Between bwrap forking the payload and snug releasing it, a
+process existed inside the sandbox blocked on `--block-fd`. bwrap releases such
+a payload on EOF exactly as readily as on a byte, and snug's death closes the
+write end — so a SIGKILL of snug inside that window ran the payload with no
+network and left an orphaned sandbox. Measured 5/5, deep inside a window
+widened to ~3s by a slow pasta.
 
-**Measured directly, 2026-08-13, and the earlier numbers in this entry were
-wrong in BOTH directions.** The window is ~12 ms, not ~90 ms, and it is
-**SIGKILL-only** — the catchable signals really are closed.
+*What three rounds got wrong.* They reported SIGTERM as open too, at 10/10, 6/6
+and 3/3. All three killed at a fixed wall-clock offset — 60ms, 100ms — and the
+release happens at ~30ms, so the payload had legitimately started. A positive
+control that only shows an unkilled run writing its marker cannot tell
+"released early by the bug" from "released correctly, then killed". Measured
+properly, SIGTERM and SIGINT were **0/5**: the catchable signals were closed all
+along, and the defect was SIGKILL-only over ~17ms.
 
-*The timeline*, from an instrumented build of the stage arm, milliseconds from
-process start:
+*Why the agreed fix was wrong.* Both red teams converged on "arm the guard
+earlier, pid-less". A guard catches signals. The only signal left cannot be
+caught. It would have changed nothing.
 
-```
-13.0  bwrap forked          <- the payload exists and parks from here
-19.5  readChildPID returns
-19.6  park() armed          <- 6.6 ms after the fork, not 60 ms
-30.1  pasta up
-30.2  release               <- the payload legitimately runs from here
-```
+*What actually closed it.* Ordering. pasta now attaches to N while N is still
+empty, the stage confirms the interface, and bwrap is forked only then — so no
+payload exists during startup and there is nothing to release. `--block-fd`,
+`--json-status-fd`, `readChildPID`, `waitForNetDevice` and
+`internal/sandbox/parked.go` are all deleted.
+`TestKillingSnugDuringStartupNeverRunsThePayload` asserts **SIGKILL** among its
+signals — the assertion its predecessor documented that it could not make.
 
-*The kills*, with the window widened to ~3 s by a deliberately slow pasta so
-that a fixed offset lands unambiguously **inside** it, killing at 1.0 s:
+*The blocker that was recorded against this, and was false.* "Confirming the
+interface needs a process inside N to read `/proc/<pid>/net/dev`." A socket's
+network namespace is fixed at creation and does not follow the process, so the
+socket the stage already opens in N to bring `lo` up still answers for N after
+the stage leaves. Measured with both controls. And pasta was measured to attach
+to a namespace with no process in it at all, which was the other unknown.
 
-| signal | payload ran | orphaned bwrap |
-|---|---|---|
-| SIGTERM | **0/5** | 0/5 |
-| SIGINT | **0/5** | 0/5 |
-| SIGKILL | **5/5** | 5/5 |
+### The orphaned sandbox — OPEN, and it was wrongly declared closed above
 
-**Why three reviews said SIGTERM was open, and were wrong.** Each killed at a
-fixed wall-clock offset — 60 ms, 100 ms — and observed the payload had run.
-At those offsets the payload had *already been released*, at ~30 ms, on
-purpose. Their positive control (an unkilled run writing the marker) cannot
-tell "released early by the bug" from "released correctly, then killed", and
-none of them established where release actually falls. Three independent agents
-reached one wrong conclusion from one shared method error. **A fixed offset is
-not a measurement of a window whose position you have not measured.**
+Severity: **medium**. Found by the red team run on the reordering, and confirmed
+independently.
 
-**What is real, and it is real:** SIGKILL of snug between bwrap forking the
-init and the release runs the payload, every time, and leaves an orphaned
-sandbox. SIGKILL cannot be caught, so no guard inside snug can close it. The
-chain: snug dies → `blockW` closes → the init's `--block-fd` read returns EOF →
-bwrap releases on EOF exactly as readily as on a byte → the payload runs. The
-stage's own teardown loses because bwrap does not arm the init's
-`--die-with-parent` until that same read returns, so the init is unprotected for
-the whole window rather than for an instant at the start of it (measured with a
-matched pair, round 2).
-
-What the orphan retains is narrower than it sounds: the stage, pasta and the
-privileged ancestor user namespace are all gone by then, so what is left is the
-bwrap tree, unbounded runtime, and persistent write access to the target — the
-same shape an orphan on the pre-stage path leaves. **A lifetime defect, not a
-confinement defect.**
-
-**Arming the guard earlier does NOT fix it.** That was the agreed fix and it is
-wrong: the guard exists to catch signals, and the only signal left cannot be
-caught. Moving `park()` earlier narrows nothing that matters. (It is still worth
-doing for tidiness, and costs a pid-less `park(0, …)` filled in later, but do not
-record it as the fix.)
-
-**The real fix is topological, and the blocker recorded against it is FALSE —
-measured.** Under `NetnsStage` the namespace exists before bwrap does, so pasta
-can be started *first* and bwrap forked with no `--block-fd` and no
-`--json-status-fd` at all. Nothing is parked, so nothing can be released early,
-and the `parked` type stops being needed on this path. The design deferred this
-because "confirming the interface is up needs a process inside N to read
-`/proc/<pid>/net/dev`, which is a control-protocol addition".
-
-That premise does not hold. **A socket's network namespace is fixed when the
-socket is created, and does not follow the process.** The stage already opens an
-`AF_INET` datagram socket inside N to bring `lo` up; if it keeps that
-descriptor, `SIOCGIFFLAGS` on `snug0` through it still queries N after the stage
-has left. Measured, with both controls:
+F2 always had two clauses: a killed snug *released the payload*, **and** it *left
+an orphaned sandbox*. The reordering closes the first. The second is untouched,
+and an earlier version of this entry said the whole thing was closed. It is not.
 
 ```
-in N   : lo flags=0x0049 IFF_UP=true    <- positive control
-in N2  : lo flags=0x0008 IFF_UP=false   <- fresh socket in the new namespace
-in N2  : lo flags=0x0049 IFF_UP=true    <- the socket created in N, after the move
+timeout 0.1 ./bin/snug -p @net $T -- /bin/sleep 47
+sleep 2
+pid=708469 ppid=6392 name=bwrap netns=net:[4026533570]
+pid=708478 ppid=708469 name=sleep netns=net:[4026533570]
 ```
 
-So the readiness check needs no extra process, no protocol message and no
-`/proc` path — one descriptor the stage already has.
+The survivor is bwrap's sandbox **init** — pid 1 of the sandbox's pid namespace,
+reparented to the subreaper, holding the payload and holding N, running
+indefinitely with write access to the target. Confirmed with the target file
+written four seconds after snug was killed, 3/3.
 
-**And the reordering itself is MEASURED to work.** The remaining unknown was
-whether pasta will attach to a network namespace that has *no process in it* —
-today it is always started after bwrap is already inside N, and the design
-warned against assuming. Tried directly, with a build that starts pasta before
-`StartSandbox` and stubs out the readiness poll:
+Three things that make it worse than it first reads, all measured:
 
-```
-EXP: pasta started against an empty netns, pid 101834
-EXP: pasta still alive after 1.5s with nothing in N
-interfaces: lo snug0
-DNS-OK
-HTTP=200
-```
+- **Every signal, not only SIGKILL.** SIGTERM, SIGINT, SIGHUP and SIGKILL all
+  orphan 3/3 at 0.06/0.10/0.14s. snug installs no handler outside the (now
+  deleted) parked window, so a catchable signal ends it exactly as SIGKILL does.
+- **Both topologies**, and it predates the reordering: the offline path and the
+  pre-change binary do it too.
+- **The new test structurally cannot see it.**
+  `TestKillingSnugDuringStartupNeverRunsThePayload` uses a pasta that hangs
+  forever, so bwrap is never forked and there is nothing to orphan — its own
+  precondition asserts bwrap's absence.
 
-pasta attaches, stays up with nothing in the namespace, and its interface is
-waiting when bwrap arrives. Full egress from the sandbox.
+*What is NOT true of the orphan:* it does not gain reach. pasta dies with snug
+via `Pdeathsig`, so the orphan has loopback only — measured `NO-EGRESS`. What it
+keeps is persistence, host writes to the target it was already granted, and a
+netns for as long as it lives.
 
-**So the fix exists and is bounded.** Shape: start pasta first; poll readiness
-through the socket the stage already holds in N; fork bwrap with **no
-`--block-fd` and no `--json-status-fd`**; delete `parked.go` and its two
-call sites, which are then unreachable in both arms. What it needs beyond the
-diff: one new control request so P0 can ask the stage "is the interface up?",
-a golden argv change (removing a security-relevant flag is exactly the kind of
-diff the project wants reviewed), and a red-team pass on the new ordering —
-`--block-fd` currently exists to stop a payload running before its network
-guarantee holds, so removing it must be shown to remove the *need* rather than
-the *check*.
+*Mechanism.* bwrap's `--die-with-parent` works once armed — a control with bwrap
+as a direct child, killed at seven offsets from 0.02s to 2s, orphaned 0/7. The
+window is the interval between the sandbox init being forked and bwrap arming
+`pdeathsig` on it, during which nothing in snug guarantees the sandbox dies. The
+lifeline and `Pdeathsig` both act on the STAGE, and the stage's death is only
+transitively fatal to the sandbox via that flag. `parked.abort()` used to SIGKILL
+the sandbox child and wait for the pid namespace to collapse; nothing inherited
+that job when it was deleted.
 
-**One thing to know before touching it:** the parked machinery on the
-NON-stage arm (`internal/sandbox/exec.go:165–197`) is **unreachable**.
-`needsNet` is `Net.Mode == NetEgress`, and `deriveTopology` maps `NetEgress`
-to `NetnsStage` and nothing else does, so `needsNet` ⟺ `NeedsStage()` and the
-non-stage arm always returns at the `!needsNet` branch above it. There is one
-site to fix, not two — and the second copy is dead code that reads like a
-second implementation of the same discipline. (It becomes reachable only for a
-`Policy` whose `Topology` disagrees with its `Net.Mode`, which `Validate`
-refuses.)
+*Candidate fix, NOT yet measured in place:* bwrap's `--sync-fd`, held by snug
+itself so it does not depend on the stage running code. An isolated probe could
+not reproduce the window at all (raw bwrap orphans 0/7), so this needs measuring
+inside snug's real structure rather than in a harness — which is exactly the
+mistake the earlier "arm the guard earlier" fix made.
+
+*The test that should exist:* sweep the kill offset across 0–300ms with the REAL
+pasta, for all four signals, and assert zero surviving descendants and zero
+processes in the sandbox's netns. Positive control: unkilled runs at the same
+offsets must produce a live sandbox, proving the sweep hits the window. It must
+NOT gate on the payload having appeared — that gate is why the current test is
+green.
+
+### The fd budget bounds the block against reserved fds, not against the Go runtime
+
+Severity: low, and now doubled rather than new. `maxPassthrough = 57` is
+arithmetically correct for what it checks — at K=57 the block is 5..61 and
+reaches neither 62 nor 63. What it does not check is that 62 and 63 are FREE.
+Measured in a live stage: the Go runtime allocates its epoll and eventfd
+immediately above the block, so at the permitted maximum they land exactly on 62
+and 63, and `Dup3` onto an occupied descriptor closes it silently. Previously
+this was recorded for fd 63 alone; `fdNetSock` doubles it, while the comment on
+`maxPassthrough` now reads as though the check were complete. Fix: reserve
+headroom for the runtime, or `F_GETFD` on both before the `Dup3` and refuse.
 
 ### Supervisor review round 3 — confirmed, not fixed here
 

@@ -1027,6 +1027,31 @@ sandbox's own init are genuinely in `N`) and `0` after: SIGKILL on snug takes
 the whole tree with it, and the namespace itself — which nothing bind-mounts
 anywhere — goes with the last reference.
 
+**The ordering that removed the parked window.** pasta attaches to the network
+namespace before bwrap is forked, so during startup no payload exists to be
+released early. The by-hand check is that a pasta which never configures an
+interface leaves snug with a stage and NO bwrap — and that killing snug there,
+with SIGKILL, still never runs the payload:
+
+```bash
+FAKE=$(mktemp -d); printf '#!/bin/sh\nexec sleep 300\n' > $FAKE/pasta; chmod +x $FAKE/pasta
+rm -f $SC/proj/sub/PWNED
+PATH=$FAKE:$PATH ./bin/snug -p @net $SC/proj/sub -- \
+  /bin/sh -c 'echo pwned > "$SNUG_TARGET/PWNED"' &
+SNUGPID=$!
+sleep 2
+ps -o pid,args --ppid $SNUGPID          # expect a stage; expect NO bwrap anywhere below it
+pgrep -c -P $(pgrep -P $SNUGPID | head -1) || true
+kill -9 $SNUGPID; sleep 1
+ls $SC/proj/sub/PWNED                   # expect: No such file or directory
+```
+
+Expect a `snug __stage-serve` under snug and **no bwrap at all** — bwrap is not
+forked until the interface is up. Then expect the marker to be absent after a
+SIGKILL. If bwrap is present at that point the ordering has regressed and the
+window is back; `TestKillingSnugDuringStartupNeverRunsThePayload` is the
+automated form and asserts all four signals including SIGKILL.
+
 **Teardown when the stage cannot run any code.** The check above proves the
 lifeline pipe works. The lifeline needs the stage to run a goroutine to notice
 EOF, so it says nothing about a stage that has been stopped — and a stopped

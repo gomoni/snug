@@ -2,9 +2,7 @@ package sandbox
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"sync/atomic"
@@ -50,11 +48,6 @@ import (
 // difference from `ip netns add`, which bind-mounts under /run/netns and leaks
 // exactly that way.
 
-// bwrapStatus is the single-line JSON document bwrap writes to --json-status-fd.
-type bwrapStatus struct {
-	ChildPID int `json:"child-pid"`
-}
-
 // netHelper supervises pasta for the lifetime of a sandbox.
 type netHelper struct {
 	cmd    *exec.Cmd
@@ -83,14 +76,11 @@ type netHelper struct {
 	stopping atomic.Bool
 }
 
-// startPasta launches pasta against the sandbox's netns and waits until the
-// interface is actually up.
-//
-// The payload is still blocked on bwrap's --block-fd at this point. That is the
-// whole reason for the handshake: if the agent ran first, its opening request
-// would race the tap device. There is no window in which the payload runs with a
-// half-configured network, and none in which it runs with the host's.
-func startPasta(p *policy.Policy, target policy.PastaTarget, childPID int) (*netHelper, error) {
+// startPasta launches pasta against the sandbox's netns. It does NOT wait for
+// the interface, and there is nothing to park while it does not: at this point
+// no payload exists, because the sandbox is not forked until the stage confirms
+// the network is up (see runStaged).
+func startPasta(p *policy.Policy, target policy.PastaTarget) (*netHelper, error) {
 	pasta, err := exec.LookPath("pasta")
 	if err != nil {
 		return nil, fmt.Errorf("profile requires networking but pasta is not installed "+
@@ -120,36 +110,16 @@ func startPasta(p *policy.Policy, target policy.PastaTarget, childPID int) (*net
 		close(h.done)
 	}()
 
-	if err := waitForNetDevice(childPID, h); err != nil {
-		h.stop()
-		return nil, err
-	}
+	// Readiness is NOT checked here any more, and the caller must not assume it.
+	// pasta is now started against a namespace with no process in it, so there
+	// is no /proc/<pid>/net/dev to poll — internal/stage answers the question
+	// instead, through a socket it created inside the namespace before leaving
+	// it. See runStaged's ordering comment and stage.WaitNetReady.
+	//
+	// What this function still guarantees is only that pasta was EXECED. Its
+	// having exited is caught by watch(); its having failed to configure
+	// anything is caught by the stage.
 	return h, nil
-}
-
-// waitForNetDevice polls the sandbox's own /proc/<pid>/net/dev until an
-// interface other than loopback appears. Readable from here because we share a
-// uid and own the enclosing user namespace.
-func waitForNetDevice(childPID int, h *netHelper) error {
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		select {
-		case <-h.done:
-			return fmt.Errorf("pasta exited before the network came up (%v): %s",
-				h.waitErr, strings.TrimSpace(h.stderr.String()))
-		default:
-		}
-
-		data, err := os.ReadFile(fmt.Sprintf("/proc/%d/net/dev", childPID))
-		if err == nil && hasNonLoopback(string(data)) {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("pasta did not bring up an interface within 3s: %s",
-				strings.TrimSpace(h.stderr.String()))
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
 }
 
 func hasNonLoopback(procNetDev string) bool {
@@ -164,6 +134,28 @@ func hasNonLoopback(procNetDev string) bool {
 		}
 	}
 	return false
+}
+
+// died is closed when pasta has exited, however it exited. It exists so a
+// caller can RACE a slow readiness check against the helper dying, rather than
+// waiting out a timeout for a process that is already gone: a pasta that starts
+// and immediately fails is the shape a crashing or OOM-killed helper has, and
+// the difference between reporting that in 300ms and reporting it in ten
+// seconds is the difference between an error a human reads and an error a human
+// interrupts.
+func (h *netHelper) died() <-chan struct{} { return h.done }
+
+// failure describes why pasta is gone, for the message a human sees. Safe to
+// call only after died() has fired — waitErr is written before the close.
+func (h *netHelper) failure() string {
+	msg := strings.TrimSpace(h.stderr.String())
+	if msg == "" && h.waitErr != nil {
+		msg = h.waitErr.Error()
+	}
+	if msg == "" {
+		msg = "no output"
+	}
+	return msg
 }
 
 // stop tears pasta down. Called on every exit path, including the failure ones.
@@ -201,18 +193,4 @@ func (h *netHelper) watch(warn func(string)) {
 		warn(fmt.Sprintf("the network helper exited (%v); the sandbox now has loopback only.\n"+
 			"      %s", h.waitErr, strings.TrimSpace(h.stderr.String())))
 	}()
-}
-
-// readChildPID reads bwrap's status document. bwrap writes it after the
-// namespaces exist and before it releases the payload.
-func readChildPID(r *os.File) (int, error) {
-	dec := json.NewDecoder(r)
-	var st bwrapStatus
-	if err := dec.Decode(&st); err != nil {
-		return 0, fmt.Errorf("reading bwrap status: %w", err)
-	}
-	if st.ChildPID == 0 {
-		return 0, fmt.Errorf("bwrap reported no child pid")
-	}
-	return st.ChildPID, nil
 }

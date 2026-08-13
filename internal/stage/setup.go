@@ -18,7 +18,10 @@ import (
 //
 //  1. uid 0 / full caps, or refuse.
 //  2. make / private.
-//  3. bring lo up WHILE STILL IN N.
+//  3. open a socket IN N and bring lo up through it, then park that socket at
+//     fdNetSock without CLOEXEC — both halves must happen while still in N,
+//     because a socket's namespace is fixed at creation and lo is configured
+//     in whichever namespace the caller is in.
 //  4. lock the OS thread.
 //  5. pin N via /proc/thread-self/ns/net.
 //  6. dup3 it to fdNetnsN WITHOUT CLOEXEC — it must survive the exec that
@@ -44,9 +47,25 @@ func MainSetup() error {
 
 	// lo comes up in N, while P1 is still in it. After the move this would
 	// configure the WRONG (empty) namespace — §3.5.
-	if err := bringLoopbackUp(); err != nil {
+	//
+	// The socket is KEPT, not closed, and that is what deletes the parked
+	// window. A socket's network namespace is fixed at creation, so this one
+	// still answers for N after the move — which is how __stage-serve can be
+	// asked "is pasta's interface up?" with no process inside N. Before this,
+	// readiness needed a process in N, so bwrap had to be started first and its
+	// payload parked until pasta arrived, and that parking is what a SIGKILL of
+	// snug could release early.
+	netSock, err := openNetSocketInN()
+	if err != nil {
 		return fmt.Errorf("__stage-setup: %w", err)
 	}
+	// Same dup3-with-flags-0 discipline as the netns descriptor below: NOT
+	// CLOEXEC, because it has to survive the execve into __stage-serve.
+	if err := unix.Dup3(netSock, fdNetSock, 0); err != nil {
+		unix.Close(netSock)
+		return fmt.Errorf("__stage-setup: parking the N socket at fd %d: %w", fdNetSock, err)
+	}
+	unix.Close(netSock)
 
 	runtime.LockOSThread()
 
