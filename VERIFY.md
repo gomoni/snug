@@ -65,7 +65,7 @@ done'
 
 Expect every line `ro:`. Anything reported WRITABLE is a real finding.
 
-The complete writable surface is **seven** paths, and only the first survives
+The complete writable surface is **eight** paths, and only the first survives
 the sandbox:
 
 | path | kind | persists? |
@@ -73,8 +73,42 @@ the sandbox:
 | the target directory | bind, rw | **yes** — this is the point |
 | `/tmp` | tmpfs | no |
 | `$HOME` | tmpfs | no |
-| `$HOME/.cache`, `$HOME/.config`, `$HOME/.local/state` | tmpfs | no |
+| `$HOME/.cache`, `$HOME/.config`, `$HOME/.local/state`, `$HOME/.local/share` | tmpfs | no |
 | `/dev` | tmpfs (bwrap's synthetic `/dev`) | no |
+
+Do not trust that table — it is prose, and prose drifts. It said **seven** for a
+milestone after `@home` grew `{home}/.local/share`. Enumerate the set instead:
+
+```bash
+./bin/snug $SC/proj/sub -- /bin/sh -c '
+awk '"'"'$4 ~ /^rw(,|$)/ {print $2}'"'"' /proc/self/mounts |
+  sed -e "s#^/dev/.*#/dev#" -e "s#^$HOME#\$HOME#" -e "s#^/tmp/tmp\.[A-Za-z0-9]*#\$SC#" |
+  grep -v "^/proc" | sort -u; echo PROBE-RAN'
+```
+
+Expect exactly these nine lines:
+
+```
+$HOME
+$HOME/.cache
+$HOME/.config
+$HOME/.local/share
+$HOME/.local/state
+$SC/proj/sub
+/dev
+/tmp
+PROBE-RAN
+```
+
+The three `sed` expressions only normalise names that vary per host and per run:
+bwrap's synthetic device nodes collapse to `/dev`, your real `$HOME` and the
+`mktemp` directory get their symbolic names back. `/proc` is dropped because it
+is a procfs, not a writable surface in the sense this section means. `PROBE-RAN`
+is the positive control — without it an empty result reads as a pass on a
+sandbox that never started.
+
+A line you do not recognise is a finding. A missing line means a grant went
+away, which is a documentation bug at least.
 
 `/dev` being writable surprises people (it surprised the author — it was found
 by this checklist, not by design review). It is bwrap's own minimal `/dev` on a

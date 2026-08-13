@@ -446,12 +446,22 @@ on any flag.
   `BwrapFlags` (no separator) and `BwrapArgs` (with it) are separate, and a test
   asserts the first contains no `--`. **Verify a security feature is active, not
   merely requested.**
-- **The writable surface is seven paths, not one.** The target bind is the only
+- **The writable surface is eight paths, not one.** The target bind is the only
   one that persists; `/tmp`, `$HOME`, `$HOME/.cache`, `$HOME/.config`,
-  `$HOME/.local/state` and **`/dev`** are all writable tmpfs that die with the
-  sandbox. `/dev` is bwrap's own synthetic device tree and is easy to forget —
-  it was found by running `VERIFY.md`, not by review. Say "the only
-  writable thing that persists", never "the only writable thing".
+  `$HOME/.local/state`, `$HOME/.local/share` and **`/dev`** are all writable
+  tmpfs that die with the sandbox. `/dev` is bwrap's own synthetic device tree
+  and is easy to forget — it was found by running `VERIFY.md`, not by review.
+  Say "the only writable thing that persists", never "the only writable thing".
+
+  *It said seven for a milestone, and the drift is the lesson.* The list was
+  written by hand from what `@home` granted at the time; `@home` grew a fifth
+  tmpfs (`{home}/.local/share`, so that `XDG_DATA_HOME` names a path that
+  exists) and nothing connected the profile to the two documents quoting it.
+  Neither document was wrong when written and no test could fail. A count in
+  prose is a copy of state held somewhere else, and a copy with no link back to
+  its source drifts silently — so when you write one, name the source
+  (`internal/profile/profiles/base.toml`, `[profile.home]`) and prefer a probe
+  that enumerates over a sentence that asserts.
 - **The sandbox sets `PS1`.** snug does not grant `/etc/bash.bashrc`, so without
   it the shell shows bash's built-in `bash-5.3$` and nothing on screen says you
   are sandboxed. Humans and agents both act on the prompt, and "am I inside?" is

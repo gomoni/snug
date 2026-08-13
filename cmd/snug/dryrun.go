@@ -432,7 +432,8 @@ func writableBelow(p *policy.Policy, path string, covering policy.Mount) string 
 	for _, m := range p.SortedMounts() {
 		// KindBind only, and that is the whole point rather than a shortcut. A
 		// tmpfs below a tmpfs is not a surprise — it is ephemeral either way, and
-		// listing @home's .cache/.config/.local/state under HOME would be noise
+		// listing @home's .cache/.config/.local/state/.local/share under HOME
+		// would be noise
 		// that trains the reader to skip the line. What must never hide is a
 		// grant that PERSISTS TO THE HOST underneath a headline saying read-only
 		// or ephemeral, and that is exactly a writable bind.
