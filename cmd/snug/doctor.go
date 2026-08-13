@@ -6,7 +6,9 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/profile"
+	"github.com/gomoni/snug/internal/stage"
 )
 
 // doctor reports whether this host can run snug, so a user diagnoses a machine
@@ -33,6 +35,7 @@ func doctor() int {
 	// The real test is not a sysctl read but whether a sandbox actually starts:
 	// AppArmor on Ubuntu 24.04+, seccomp policy in CI containers, and nested
 	// userns limits all fail in different places.
+	usernsWorks := false
 	if ok {
 		cmd := exec.Command(bwrap, append(probeBase(), "--", "/bin/true")...)
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -44,21 +47,61 @@ func doctor() int {
 			ok = false
 		} else {
 			fmt.Println("  ✅ unprivileged user namespaces work")
+			usernsWorks = true
 		}
+	}
 
-		// Prove the netns is real and empty rather than asserting it: list the
-		// interfaces inside and expect nothing but loopback.
+	// Prove the netns is real and empty rather than asserting it: list the
+	// interfaces inside and expect nothing but loopback.
+	//
+	// Guarded on the probe ABOVE having worked, and the error checked, because
+	// otherwise this misreports spectacularly: when bwrap cannot start, its
+	// error text goes to the same combined output, gets split into fields, and
+	// is printed as though those words were interface names — "network
+	// namespace has more than loopback: bwrap: No permissions to create a new
+	// namespace…", followed by "the sandbox may not be isolated". Measured, by
+	// running doctor inside a snug sandbox. A false alarm is expensive in the
+	// one command whose entire job is telling a human what is wrong.
+	if usernsWorks {
 		ifaces := exec.Command(bwrap, append(probeBase(), "--", "/bin/sh", "-c",
 			"cat /proc/net/dev | awk 'NR>2{print $1}' | tr -d ' :'")...)
-		out, _ := ifaces.CombinedOutput()
+		out, err := ifaces.CombinedOutput()
 		got := strings.Fields(strings.TrimSpace(string(out)))
-		if len(got) == 1 && got[0] == "lo" {
+		switch {
+		case err != nil:
+			fmt.Println("  ⚠️  could not list the sandbox's interfaces")
+			fmt.Printf("     💬 %s\n", strings.TrimSpace(string(out)))
+		case len(got) == 1 && got[0] == "lo":
 			fmt.Println("  ✅ private network namespace — loopback only")
 			fmt.Println("     🔒 no egress, no host loopback, no abstract sockets (X11/D-Bus)")
-		} else if len(got) > 0 {
+		case len(got) > 0:
 			fmt.Printf("  ⚠️  network namespace has more than loopback: %s\n", strings.Join(got, " "))
 			fmt.Println("     this should not happen — the sandbox may not be isolated")
+			ok = false
 		}
+	}
+
+	// The stage is a SECOND set of namespaces, created by snug itself with its
+	// own clone(2) rather than by bwrap, so nothing above covers it: the probe
+	// two blocks up asks bwrap to make a user namespace, and bwrap's own
+	// spelling is --unshare-user-TRY, which succeeds on a host where the stage's
+	// strict clone fails. A host where doctor was entirely green and every
+	// `-p @net` run died was constructible until this block existed.
+	//
+	// It calls stage.Start rather than re-typing the clone flags, for the same
+	// reason the golden spec test reads the real constant: a probe that
+	// approximates the code path can pass while the code path fails. This runs
+	// the real one — the clone, the uid map, bringing lo up inside N, pinning
+	// N, leaving it, and the re-exec that has to survive all of that — and then
+	// tears it straight down again. No sandbox is started.
+	if st, err := stage.Start(stage.Config{Netns: policy.NetnsStage}); err != nil {
+		fmt.Println("  ❌ cannot create the stage that `-p @net` needs")
+		fmt.Printf("     💬 %v\n", err)
+		ok = false
+	} else {
+		_ = st.Close()
+		fmt.Println("  ✅ the stage starts — clone, uid map, loopback, and the netns move")
+		fmt.Println("     🔒 offline sandboxes do not use it and are unaffected either way")
 	}
 
 	if pasta, err := exec.LookPath("pasta"); err != nil {

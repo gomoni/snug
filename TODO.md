@@ -1327,11 +1327,17 @@ comments, and two tests that could not fail. Left open:
   bwrap side deliberately uses `--unshare-cgroup-try` so the path adds no new
   failure mode; P1's own clone then takes the same namespace strictly, and
   nothing in `internal/stage` uses it. Kept because the engine needs it in
-  Phase 3, so dropping and re-adding is churn — but `snug doctor` probes bwrap's
-  namespaces and **not** the stage's clone, its uid-map write or `SIOCSIFFLAGS`
-  on `lo`, so a host where `doctor` is green and every `@net` run fails is
-  constructible. The error message now names all four causes; the `doctor` probe
-  is still owed. Severity: medium (invariant 5).
+  Phase 3, so dropping and re-adding is churn. The error message now names all
+  four causes, and **the `doctor` probe has landed**: it calls `stage.Start`
+  itself rather than re-typing the clone flags, so it exercises the real path —
+  the clone, the uid map, `lo` coming up inside N, the pin, the move and the
+  re-exec — and tears it down again without starting a sandbox. Verified in both
+  directions, the negative by running `snug doctor` *inside* a snug sandbox,
+  where the seccomp filter denies nested user namespaces. What remains is only
+  the question of whether `CLONE_NEWCGROUP` should be taken at all before Phase
+  3 has a consumer for it. Severity: low, downgraded from medium — the
+  invariant-5 half (a green `doctor` on a host where every `@net` run dies) is
+  closed.
 - **`Topology.Subuid` and `Topology.Attach` have no consumer but `--dry-run`.**
   The stage hardcodes the single-uid map independently and `stage.Config`
   carries only `Netns`, so `subuid none` on screen is true by coincidence rather
