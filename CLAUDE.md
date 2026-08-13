@@ -488,6 +488,30 @@ removed, because the prose churned faster than the code it described and nobody
 was going to keep it honest. `VERIFY.md` at the root is the exception, and it
 earns it by being executable — every line is a command with its expected output.
 
+**Every new document starts in `.claude/scratchpad/`, which is in `.gitignore`.**
+Not "start it in design/ and remember not to commit it" — start it somewhere a
+routine `git add -A` cannot reach. Implementation plans, review write-ups,
+red-team round reports, buildable specifications and working notes all live
+there and stay there. A document is *promoted* into `.claude/design/` by a
+deliberate `git mv`, and only when it has become one of two things:
+
+- **the** design for a subject, describing what was built rather than what was
+  proposed — one per subject, no second document with a `-PLAN` or `-REVIEW`
+  suffix beside it;
+- a research record whose *measurements* stay useful after the work lands
+  (`NOCGO.md`, `PODMAN-STATIC.md`, `ENGINE-NETNS.md`).
+
+Findings never depend on a document being promoted: a confirmed finding goes to
+`TODO.md` with its severity, which is the milestone rule anyway.
+
+*Written as a rule because the weaker version failed, twice in one session.* A
+plan that had been kept untracked by hand from the day it was written was
+committed by a `git add -A` — in the very commit whose purpose was to untrack it
+and its three companions, which the same command also restored. The PR then
+carried 3800 lines of process next to 370 lines of design. **An instruction that
+a routine command can quietly undo is not a rule; the `.gitignore` entry is what
+makes it one.**
+
 | agent | owns |
 |---|---|
 | `sandbox-policy` | The policy model and the bwrap argv. Invoke *before* writing policy code. Guards monotonicity. |
