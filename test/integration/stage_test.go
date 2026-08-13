@@ -428,13 +428,31 @@ func TestOnlyBwrapAndTheSandboxAreInN(t *testing.T) {
 			"including bwrap itself — the sweep is broken")
 	}
 
+	// Classify BEFORE the kill, not after. Ancestry is only readable while the
+	// ancestors are alive: killing snug collapses the tree, and a payload that
+	// outlives its parent by a few milliseconds is reparented to the nearest
+	// reaper — at which point walking its PPid can no longer reach bwrap and it
+	// reads as "an unexpected process in N". MEASURED on a loaded CI runner,
+	// where `sleep` was reported as neither bwrap nor a descendant of it; the
+	// sandbox was correct and the test was asking its question too late.
+	type member struct {
+		pid       int
+		comm      string
+		descended bool
+	}
+	members := make([]member, 0, len(inN))
+	for _, pid := range inN {
+		members = append(members, member{
+			pid: pid, comm: commOf(pid), descended: isDescendantOf(pid, bwrapPID),
+		})
+	}
+
 	cmd.Process.Kill()
 	cmd.Wait()
 	killed = true
 
-	for _, pid := range inN {
-		comm := commOf(pid)
-		if comm == "" {
+	for _, m := range members {
+		if m.comm == "" {
 			// The process was already gone by the time we read its comm — a
 			// transient helper bwrap itself forks and reaps during setup/teardown
 			// (measured: this raced the sweep at least once). A pid that cannot
@@ -442,9 +460,9 @@ func TestOnlyBwrapAndTheSandboxAreInN(t *testing.T) {
 			// catching something mid-exit.
 			continue
 		}
-		if comm != "bwrap" && !isDescendantOf(pid, bwrapPID) {
+		if m.comm != "bwrap" && !m.descended {
 			t.Errorf("pid %d (comm %q) is in the sandbox's netns %s but is neither bwrap "+
-				"nor a descendant of it — an unexpected process reaches N", pid, comm, sandboxNet)
+				"nor a descendant of it — an unexpected process reaches N", m.pid, m.comm, sandboxNet)
 		}
 	}
 }
