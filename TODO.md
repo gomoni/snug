@@ -1230,10 +1230,12 @@ socket the stage already opens in N to bring `lo` up still answers for N after
 the stage leaves. Measured with both controls. And pasta was measured to attach
 to a namespace with no process in it at all, which was the other unknown.
 
-### The orphaned sandbox — OPEN, and it was wrongly declared closed above
+### The orphaned sandbox — OPEN, tracked as issue #13
 
 Severity: **medium**. Found by the red team run on the reordering, and confirmed
-independently.
+independently. **Tracked as https://github.com/gomoni/snug/issues/13**, which
+carries the same measurements plus the three refuted candidates — read that
+before proposing a fourth.
 
 F2 always had two clauses: a killed snug *released the payload*, **and** it *left
 an orphaned sandbox*. The reordering closes the first. The second is untouched,
