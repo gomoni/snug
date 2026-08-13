@@ -1,0 +1,6 @@
+
+TOPOLOGY
+  processes       1 — bwrap only. No stage, no privileged ancestor namespace.
+  netns owner     sandbox
+  subuid          none (no delegated range; nothing needs one yet)
+  control         none (no socket, no listener, nothing to connect to)

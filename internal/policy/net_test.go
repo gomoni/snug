@@ -34,7 +34,7 @@ func TestPastaArgsAlwaysCloseHostLoopback(t *testing.T) {
 		{"anon", NetPolicy{Mode: NetEgress, Address: "10.13.13.2/24", Gateway: "10.13.13.1"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args := (&Policy{Net: tc.net}).PastaArgs(1234)
+			args := (&Policy{Net: tc.net}).PastaArgs(PastaTargetChild(1234))
 
 			for _, pair := range [][2]string{
 				{"--map-host-loopback", "none"},
@@ -67,7 +67,7 @@ func TestPublishIsScopedToLoopback(t *testing.T) {
 		{"named ports", NetPolicy{Mode: NetEgress, Publish: []int{8080, 3000}}, "127.0.0.1/3000,8080"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args := (&Policy{Net: tc.net}).PastaArgs(1)
+			args := (&Policy{Net: tc.net}).PastaArgs(PastaTargetChild(1))
 			i := slices.Index(args, "-t")
 			if i < 0 {
 				t.Fatal("-t missing")
@@ -85,8 +85,8 @@ func TestPublishIsScopedToLoopback(t *testing.T) {
 // Ports are sorted and deduplicated so the argv is a pure function of the
 // resolved policy, not of the order profiles happened to contribute them.
 func TestPublishPortsAreCanonical(t *testing.T) {
-	a := (&Policy{Net: NetPolicy{Mode: NetEgress, Publish: []int{8080, 3000, 8080}}}).PastaArgs(1)
-	b := (&Policy{Net: NetPolicy{Mode: NetEgress, Publish: []int{3000, 8080}}}).PastaArgs(1)
+	a := (&Policy{Net: NetPolicy{Mode: NetEgress, Publish: []int{8080, 3000, 8080}}}).PastaArgs(PastaTargetChild(1))
+	b := (&Policy{Net: NetPolicy{Mode: NetEgress, Publish: []int{3000, 8080}}}).PastaArgs(PastaTargetChild(1))
 	if strings.Join(a, " ") != strings.Join(b, " ") {
 		t.Error("publish port order or duplicates changed the pasta argv")
 	}
@@ -120,7 +120,7 @@ func TestSystemdResolvedHostFallsBackToInterception(t *testing.T) {
 	if !strings.Contains(string(n.ResolvConf()), dnsForwardAddr) {
 		t.Error("resolv.conf should name the link-local address pasta intercepts")
 	}
-	if !slices.Contains((&Policy{Net: n}).PastaArgs(1), "--dns-forward") {
+	if !slices.Contains((&Policy{Net: n}).PastaArgs(PastaTargetChild(1)), "--dns-forward") {
 		t.Error("--dns-forward missing; the sandbox would have no working resolver")
 	}
 }

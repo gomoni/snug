@@ -10,9 +10,9 @@ import (
 	"strings"
 	"syscall"
 
-	"golang.org/x/sys/unix"
-
+	"github.com/gomoni/snug/internal/fdseal"
 	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/stage"
 )
 
 // Options are the run-time choices a human makes at the CLI. Nothing here is
@@ -126,6 +126,10 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 		return 0, err
 	}
 
+	if p.Topology.NeedsStage() {
+		return runStaged(p, bwrap, argv, extra, stdin, stdout, stderr, statusR, statusW, blockR, blockW, opts)
+	}
+
 	cmd := exec.Command(bwrap, argv...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
 	cmd.ExtraFiles = extra
@@ -147,7 +151,7 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	// No Setpgid anywhere in this chain: the tree stays in the terminal's
 	// foreground process group so Ctrl-C reaches the payload and job control
 	// works for an interactive shell inside the sandbox.
-	if err := sealInheritedFDs(extra); err != nil {
+	if err := fdseal.SealFor(cmd); err != nil {
 		return 0, err
 	}
 	if err := cmd.Start(); err != nil {
@@ -164,25 +168,124 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 
 	childPID, err := readChildPID(statusR)
 	if err != nil {
+		// No pid, so there is nothing to kill by pid: fall back to reaping
+		// bwrap, which is all the information available at this point.
 		abort(cmd, 0)
 		return 0, err
 	}
 
-	helper, err := startPasta(p, childPID)
+	// From here until release there is a payload parked inside the sandbox and
+	// snug's own death would run it. One deferred guard covers every return
+	// path below, including the ones a later edit adds — see parked.go.
+	pk := park(childPID, func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+	defer pk.abort()
+
+	helper, err := startPasta(p, policy.PastaTargetChild(childPID), childPID)
 	if err != nil {
-		abort(cmd, childPID)
 		return 0, err
 	}
 	defer helper.stop()
 	helper.watch(opts.warn)
 
-	// Release the payload.
-	if _, err := blockW.Write([]byte{0}); err != nil {
-		return 0, fmt.Errorf("releasing the sandbox: %w", err)
+	if err := pk.release(blockW); err != nil {
+		return 0, err
 	}
-	blockW.Close()
 
 	return wait(cmd)
+}
+
+// runStaged is the NetnsStage arm: a stage (P1) creates the sandbox's network
+// namespace, pins it, leaves it, and forks bwrap back into it. Everything up
+// to and including the args memfd is identical to the non-stage path — flags,
+// extra, the "nothing may be appended after this point" comment, all of it.
+// What changes is who forks bwrap: internal/stage.Start's *Stage, not
+// exec.Command directly. See SUPERVISOR-PHASE1-SPEC.md §4 Step 5.
+//
+// statusR and blockW are the SAME kernel pipe objects the non-stage path uses
+// — their other ends (statusW, blockR) travel to the final bwrap invocation
+// inside `extra`/Config.Sandbox, threaded through P1 and __innetns unchanged.
+// A pipe does not care how many process generations separate its two ends, so
+// readChildPID and the block-release write below are BYTE FOR BYTE what the
+// non-stage path does; only the fork itself moved.
+//
+// statusW and blockR are P0's OWN copies of the ends it handed off — needed
+// here only so they can be closed the instant the hand-off is confirmed, the
+// same immediate (non-deferred) close the non-stage path does right after
+// cmd.Start(). Skipping that close is not cosmetic: readChildPID blocks on
+// Decode(), which needs either DATA or EOF, and if bwrap fails before writing
+// anything (the fake-binary case TestTheStageExitsWhenTheSandboxFailsToStart
+// exercises), EOF never arrives while P0's own unused copy of statusW is still
+// open — the read hangs forever instead of failing. Measured: this was a real
+// hang, not a hypothetical one.
+func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
+	stdin, stdout, stderr, statusR, statusW, blockR, blockW *os.File, opts Options) (int, error) {
+	st, err := stage.Start(stage.Config{
+		Netns:   p.Topology.Netns,
+		Sandbox: extra,
+		Stdin:   stdin, Stdout: stdout, Stderr: stderr,
+	})
+	if err != nil {
+		return 0, err
+	}
+	defer st.Close()
+
+	// needsNet is always true on this arm today — NeedsStage() is only ever
+	// true when Topology.Netns == NetnsStage, and deriveTopology only produces
+	// that from NetEgress, which is exactly the case that needs the
+	// status/block handshake. Asserting it explicitly here, rather than
+	// assuming it silently, is what keeps that coupling from drifting apart
+	// unnoticed if deriveTopology ever grows a second NetnsStage source.
+	if statusR == nil || statusW == nil || blockR == nil || blockW == nil {
+		return 0, fmt.Errorf("internal error: NetnsStage policy without a networking handshake")
+	}
+
+	if err := st.StartSandbox(bwrap, argv); err != nil {
+		return 0, err
+	}
+	// Our copies of the child's ends must be closed or the reads never EOF —
+	// see the doc comment above.
+	statusW.Close()
+	blockR.Close()
+
+	childPID, err := readChildPID(statusR)
+	if err != nil {
+		// No pid to kill by, so take the stage down instead: P1 exiting drops
+		// bwrap's parent, which is the only lever left. This is the same
+		// weaker position abort(cmd, 0) occupies on the single-process path,
+		// and for the same reason.
+		_ = st.Close()
+		return 0, err
+	}
+
+	// Same guard, same reason, same ordering as the single-process path — and
+	// the reason this is a shared type rather than a repeated idiom is that
+	// this arm is where the repetition was missed: one of its return paths
+	// released the payload on a run that had already failed. See parked.go.
+	pk := park(childPID, func() { _ = st.Close() })
+	defer pk.abort()
+
+	helper, err := startPasta(p, st.Target(), childPID)
+	if err != nil {
+		return 0, err
+	}
+	defer helper.stop()
+	helper.watch(opts.warn)
+
+	if err := pk.release(blockW); err != nil {
+		return 0, err
+	}
+
+	ws, err := st.Wait()
+	if err != nil {
+		return 0, err
+	}
+	if ws.Exited() {
+		return ws.ExitStatus(), nil
+	}
+	return -1, nil
 }
 
 // abort tears down a sandbox whose network never came up, WITHOUT letting the
@@ -206,6 +309,15 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 // release and the deferred close is inert.
 //
 // Found by the redteam agent as "the abort path is not fail-closed".
+//
+// This function is now the DEGRADED case only — the one where readChildPID
+// failed, so no pid exists to kill and reaping bwrap is all the information
+// there is. Every path that knows the pid goes through parked.abort instead,
+// which does the same thing in the same order but is registered as a defer the
+// instant the pid is read, so no future return path can skip it. That
+// distinction is the whole of what a red team found here a second time: the
+// discipline was correct and was written out by hand, and a new arm did not
+// repeat all of it.
 func abort(cmd *exec.Cmd, childPID int) {
 	if childPID > 0 {
 		_ = syscall.Kill(childPID, syscall.SIGKILL)
@@ -319,46 +431,7 @@ func safeStdio() (stdin, stdout, stderr *os.File, err error) {
 	return out[0], out[1], out[2], nil
 }
 
-// sealInheritedFDs marks every descriptor we did not deliberately open as
-// close-on-exec, so nothing our own parent left lying around is inherited into
-// the sandbox. bwrap does not close inherited fds, and an open fd on a host
-// directory is a complete bypass of the mount policy — the sandbox can walk it
-// with openat(2) regardless of what was mounted.
-//
-// It sets CLOEXEC rather than closing. Closing arbitrary descriptors in a Go
-// process is how you break the runtime's netpoller; setting the flag is
-// harmless on descriptors that already have it, which includes everything Go
-// itself opens.
-func sealInheritedFDs(keep []*os.File) error {
-	dir, err := os.Open("/proc/self/fd")
-	if err != nil {
-		return nil // not fatal: Go already marks its own fds CLOEXEC
-	}
-	defer dir.Close()
-
-	names, err := dir.Readdirnames(-1)
-	if err != nil {
-		return nil
-	}
-
-	spare := map[int]bool{int(dir.Fd()): true}
-	for _, f := range keep {
-		spare[int(f.Fd())] = true
-	}
-
-	for _, n := range names {
-		fd, err := strconv.Atoi(n)
-		if err != nil || fd <= 2 || spare[fd] {
-			continue
-		}
-		flags, _, errno := unix.Syscall(unix.SYS_FCNTL, uintptr(fd), unix.F_GETFD, 0)
-		if errno != 0 {
-			continue
-		}
-		if flags&unix.FD_CLOEXEC != 0 {
-			continue
-		}
-		unix.Syscall(unix.SYS_FCNTL, uintptr(fd), unix.F_SETFD, flags|unix.FD_CLOEXEC)
-	}
-	return nil
-}
+// sealInheritedFDs moved to internal/fdseal (SealFor) in Phase 1: the stage
+// (P1) is a long-lived process that forks more than once, and a keep-list
+// derived from the *exec.Cmd being forked is what stays correct as such a
+// process's descriptor table drifts — see that package's doc comment.

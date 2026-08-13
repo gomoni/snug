@@ -3,6 +3,7 @@
 --gid 1000
 --hostname snug
 --die-with-parent
+--cap-drop ALL
 --perms 0755
 --dir /etc
 --dev /dev

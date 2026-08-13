@@ -1,0 +1,83 @@
+package stage
+
+import (
+	"fmt"
+	"syscall"
+)
+
+// stageCloneflags is the exact clone(2) flag set Start passes when it forks
+// P1: a fresh user namespace (U, one uid mapped — SUPERVISOR-PHASE1-SPEC.md
+// §3.6), a fresh network namespace (N, pinned then left — §1), a private
+// mount namespace (§4 Step 4's `mount("", "/", "", MS_REC|MS_PRIVATE, "")`
+// happens inside it), and a fresh cgroup namespace. It is a named constant
+// rather than an inline expression in Start so that TestGoldenStageSpec
+// watches the SAME value Start uses instead of a re-typed copy of it — a
+// golden that could drift from the code it describes would not be a golden.
+const stageCloneflags = syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET |
+	syscall.CLONE_NEWNS | syscall.CLONE_NEWCGROUP
+
+// Fixed descriptor numbers, and they are constants with names — nothing
+// travels in the environment. /proc/self/environ is passively readable by
+// every process in the sandbox and inherited by every child; a number in an
+// env var is one --setenv away from being one, which is exactly the class of
+// leak CLAUDE.md's "generate, don't bind" rule exists to close one layer up.
+const (
+	// fdControl is P1's end of the inherited SOCK_SEQPACKET socketpair.
+	fdControl = 3
+	// fdLife is the read end of the lifeline pipe. P0 holds the write end and
+	// never writes to it; P1 sees EOF the instant P0 dies, however it dies —
+	// including SIGKILL, which does not give P0 a chance to signal anyone.
+	fdLife = 4
+
+	// 5 .. 5+K-1, K = len(Config.Sandbox): the sandbox's own descriptors (the
+	// generated-file memfds, the seccomp filter, the netns handshake pipes),
+	// passed straight through from P0 in the exact order it built them. P1
+	// never opens or reads any of them; it only forwards the *os.File values,
+	// so the fd numbers already baked into bwrap's own args memfd — which
+	// start at 3 in the FINAL bwrap child, not here — stay correct once
+	// __innetns re-numbers them on the last hop.
+	fdSandboxBase = 5
+
+	// fdNetnsN is the descriptor P1 pins on N before it leaves. Chosen high so
+	// it never collides with the pass-through block above, whose size is
+	// policy-dependent (as many data mounts as a resolved Policy has, plus one
+	// for the seccomp filter, plus two for the netns handshake pipes when
+	// networking is requested).
+	//
+	// "Chosen high so it never collides" is an assertion about a
+	// policy-dependent quantity, and checkFDBudget is what turns it from a
+	// comment into a check. Without one the symptom of a collision is not a
+	// crash: P1 would hand bwrap the PINNED NETNS DESCRIPTOR as though it were
+	// one of the sandbox's own, bwrap would read it as --args or --seccomp or
+	// --block-fd, and the run would fail as an unexplained parse error one
+	// process further in — which gets debugged in the wrong package.
+	fdNetnsN = 63
+)
+
+// maxPassthrough is how many descriptors the pass-through block can hold
+// before it reaches fdNetnsN. Derived, never written down twice: raising
+// fdNetnsN raises this with it.
+const maxPassthrough = fdNetnsN - fdSandboxBase
+
+// checkFDBudget refuses a pass-through block that would collide with the
+// pinned netns descriptor, LOUDLY and by name, at the two points where the
+// count is known: P0's stage.Start (where it comes from the resolved policy)
+// and P1's __stage2 (where it arrives over the control socket and is therefore
+// input rather than a local fact).
+func checkFDBudget(n int) error {
+	if n < 0 {
+		return fmt.Errorf("stage: negative pass-through descriptor count (%d)", n)
+	}
+	if n > maxPassthrough {
+		return fmt.Errorf("stage: this policy needs %d pass-through descriptors, so the block "+
+			"would run from fd %d to fd %d and swallow the pinned network namespace "+
+			"descriptor at fd %d (the budget is %d).\n"+
+			"      The fix is to RAISE fdNetnsN in internal/stage/fds.go above the block — it "+
+			"is a free choice, not a kernel constant, and the descriptor is dup3'd to it "+
+			"explicitly. Do not lower the descriptor count: it is what the resolved policy "+
+			"actually needs (one per generated file, one for the seccomp filter, two for the "+
+			"netns handshake, one for the args memfd)",
+			n, fdSandboxBase, fdSandboxBase+n-1, fdNetnsN, maxPassthrough)
+	}
+	return nil
+}

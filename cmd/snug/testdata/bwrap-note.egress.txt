@@ -1,0 +1,18 @@
+── bwrap ─────────────────────────────────────────────────────────────────
+INCOMPLETE ON ITS OWN — the network namespace is NOT in this argv.
+  The stage created it, pinned it, and a setns shim put bwrap inside it before
+  bwrap ran, so no --unshare-net appears below. Nothing could appear in its
+  place: bwrap takes --userns FD and --pidns FD, and has no --netns FD.
+  RUN AS PRINTED, this command lands in YOUR network namespace and starts no
+  pasta helper — host loopback and the host's abstract sockets (X11, D-Bus)
+  are both reachable, every line of the NETWORK block above is false of what
+  you ran, and what you measured is your own host network.
+bwrap
+  --ro-bind /usr /usr
+  -- /bin/sh
+(the argv ends here and the network namespace was never in it — see the note
+ above it. To check the netns by hand, compare inside against outside:
+     readlink /proc/self/ns/net                        # on the host
+     snug -p @net <dir> -- readlink /proc/self/ns/net  # inside
+ The two must DIFFER, and an empty answer from either side is a failed check
+ rather than a pass: an empty string is != any real namespace id.)

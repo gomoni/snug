@@ -11,6 +11,7 @@ import (
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/profile"
 	"github.com/gomoni/snug/internal/sandbox"
+	"github.com/gomoni/snug/internal/stage"
 )
 
 // Exit codes are sysexits-flavoured so snug's own failures stay distinguishable
@@ -37,7 +38,26 @@ type config struct {
 func main() {
 	argv := os.Args[1:]
 
-	// Subcommands first. They are reserved words; to sandbox a directory that
+	// Hidden verbs, dispatched before ANYTHING else — flag parsing, profile
+	// loading, none of it. They are not subcommands: they do not appear in
+	// --help, they are not profiles, and they are reachable only through the
+	// re-exec chain internal/stage builds (P0 -> __stage1 -> __stage2 ->
+	// __innetns -> bwrap). Each refuses immediately when the descriptors it
+	// requires are absent (SUPERVISOR-PHASE1-SPEC.md §4 Step 6), so invoking
+	// one directly from a shell fails loudly rather than doing something
+	// undefined with whatever fd 3 happens to be.
+	if len(argv) > 0 {
+		switch argv[0] {
+		case "__stage1":
+			exitOnStageError(stage.Main1())
+		case "__stage2":
+			exitOnStageError(stage.Main2())
+		case "__innetns":
+			exitOnStageError(stage.EnterNetns(argv[1:]))
+		}
+	}
+
+	// Subcommands next. They are reserved words; to sandbox a directory that
 	// happens to be named one of them, write it as a path: `snug ./config`.
 	if len(argv) > 0 && !strings.HasPrefix(argv[0], "-") {
 		switch argv[0] {
@@ -60,6 +80,19 @@ func main() {
 		os.Exit(exitUsage)
 	}
 	os.Exit(run(cfg))
+}
+
+// exitOnStageError is the hidden verbs' whole error handling: they are not
+// user-facing commands, so there is no usage text to print, only "it failed
+// and here is why". A nil err means the verb ran its one job to completion
+// (Main2 returning after "exited" is sent, or EnterNetns's own syscall.Exec
+// having failed to even reach a return); either way this call does not return.
+func exitOnStageError(err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(0)
 }
 
 func usage() {
