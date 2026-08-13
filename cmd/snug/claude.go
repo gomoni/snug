@@ -80,8 +80,9 @@ func claudeGuidance(pol *policy.Policy) []byte {
 
 	b.WriteString("## Filesystem\n\n")
 	fmt.Fprintf(&b, "Only `%s` is writable and persists. ", pol.Target)
-	b.WriteString("`$HOME`, `/tmp` and `~/.claude` are writable but **ephemeral — they are gone\n")
-	b.WriteString("when this session ends**. Put anything meant to survive in the project tree.\n\n")
+	b.WriteString("`$HOME` (with its XDG directories), `/tmp`, `~/.claude` and `/dev` are writable\n")
+	b.WriteString("but **ephemeral — they are gone when this session ends**. Put anything meant\n")
+	b.WriteString("to survive in the project tree.\n\n")
 	b.WriteString("Everything else is read-only or absent. Secrets (`~/.ssh`, `~/.gnupg`, cloud\n")
 	b.WriteString("credentials), personal data, and every other project on this machine are not\n")
 	b.WriteString("hidden — they were never mounted, and read as **absent**. Do not try to reach\n")
