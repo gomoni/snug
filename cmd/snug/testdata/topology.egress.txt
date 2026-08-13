@@ -1,18 +1,31 @@
 
 TOPOLOGY
-  processes       2 — snug, and a stage (P1) that creates the sandbox's
-                  network namespace, pins it, and forks bwrap back into it.
+  processes       4 — snug, a stage (P1) that creates the sandbox's network
+                  namespace, pasta attached to that namespace, and bwrap, which
+                  the stage forks back into it. (A fifth, __innetns, is the
+                  setns shim that becomes bwrap; it never coexists with it.)
   netns owner     stage
                   the sandbox's user namespace has a PRIVILEGED ANCESTOR: the
                   stage is root in its own user namespace (U) for the whole run,
                   holding CAP_SYS_ADMIN over the sandbox's network namespace (N)
                   and over the sandbox's own mounts.
   subuid          none (no delegated range; nothing needs one yet)
-  control         none (no socket, no listener, nothing to connect to)
+  control         an anonymous SOCK_SEQPACKET socketpair, inherited, between snug
+                  and the stage. UNREACHABLE from the sandbox: no pathname, no
+                  listener, and no descriptor for it in the payload's table. It
+                  carries exactly one request, once, and the stage then exits.
+  host-visible    the stage's namespaces are nameable from the host by a
+                  same-uid process, as /proc/<stage>/ns/user and its pinned
+                  /proc/<stage>/fd/<n> for N. Measured equivalent to what such a
+                  process can already reach without a stage, via NS_GET_USERNS on
+                  the sandbox's own namespace descriptors. Same-uid is outside
+                  the threat model either way; it is listed so it is not a
+                  surprise.
   lifetime        the stage exits when its one payload does, whatever the
-                  outcome, and dies with snug even if snug is SIGKILLed — an
-                  inherited pipe (the lifeline), not a signal, is what tears it
-                  down, because Pdeathsig does not survive its own re-exec.
+                  outcome, and dies with snug even if snug is SIGKILLed. Two
+                  mechanisms, covering different failures: an inherited pipe (the
+                  lifeline) for a stage that can still run code, and Pdeathsig
+                  for one that is stopped and cannot.
   abuse sentence  a hostile process inside the sandbox gains no new reach — the
                   stage is in neither its network namespace nor its pid
                   namespace, binds nothing it can name, and holds no descriptor

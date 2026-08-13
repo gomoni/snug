@@ -2,7 +2,7 @@
 // (P1) that creates the sandbox's network namespace, pins it, leaves it, and
 // forks bwrap back into it — so that a hostile process inside the sandbox
 // gains no new reach, while the sandbox's own user namespace gains a
-// privileged ancestor for the whole run. See SUPERVISOR-PHASE1-SPEC.md §2 for
+// privileged ancestor for the whole run. See SUPERVISOR-DESIGN.md §2 for
 // the topology diagram this package builds, and §1 for what was measured
 // before any of it was written.
 //
@@ -32,9 +32,15 @@ type Config struct {
 	Netns policy.NetnsOwner
 
 	// Sandbox are the descriptors bwrap needs, in the exact order P0 put them
-	// in ExtraFiles when it built the argv. The stage passes them through
-	// UNCHANGED; it never renumbers them, because the numbers are already
-	// baked into the args memfd.
+	// in ExtraFiles when it built the argv.
+	//
+	// What is unchanged is the numbering bwrap FINALLY sees — 3..3+K-1, the
+	// numbers already baked into the args memfd — not the numbering along the
+	// way. They do get renumbered: they arrive in P1 at fdSandboxBase+i and are
+	// installed in the bwrap child at 3+i. Go's fork/exec machinery does that
+	// with dup3 and, crucially, does not close the sources. That is the whole
+	// reason internal/fdseal exists; see its package comment before changing
+	// anything here.
 	Sandbox []*os.File
 
 	Stdin, Stdout, Stderr *os.File
@@ -67,7 +73,7 @@ type Stage struct {
 const readyTimeout = 5 * time.Second
 
 // Start creates P1: a socketpair for control, a pipe for the lifeline, and a
-// clone with a single-uid map (SUPERVISOR-PHASE1-SPEC.md §3.6 — Step 0
+// clone with a single-uid map (SUPERVISOR-DESIGN.md §3.6 — Step 0
 // measured this against snug's own BwrapFlags-produced argv and it held, so
 // there is no stage0 privileged re-exec and no newuidmap/newgidmap here).
 func Start(cfg Config) (*Stage, error) {
@@ -95,7 +101,7 @@ func Start(cfg Config) (*Stage, error) {
 		return nil, fmt.Errorf("stage: creating the lifeline pipe: %w", err)
 	}
 
-	cmd := exec.Command("/proc/self/exe", "__stage1")
+	cmd := exec.Command("/proc/self/exe", "__stage-setup")
 	cmd.Args[0] = "snug"
 	cmd.ExtraFiles = append([]*os.File{p1Control, lifeR}, cfg.Sandbox...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = cfg.Stdin, cfg.Stdout, cfg.Stderr
@@ -112,11 +118,22 @@ func Start(cfg Config) (*Stage, error) {
 		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostUID, Size: 1}},
 		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostGID, Size: 1}},
 		GidMappingsEnableSetgroups: false,
-		// Belt-and-braces only: measured (SUPERVISOR-PHASE1-SPEC.md §1) that
-		// Pdeathsig does not survive the stage1->stage2 re-exec, because that
-		// exec is a secureexec transition (capabilities widen). The lifeline
-		// pipe is the mechanism that actually holds; this cannot be relied on
-		// alone.
+		// LOAD-BEARING. Do not delete this line as redundant with the lifeline.
+		//
+		// An earlier comment here claimed Pdeathsig does not survive the
+		// setup->serve re-exec, because that exec is a secureexec transition
+		// where capabilities widen. MEASURED FALSE, round 3: capabilities do not
+		// widen at that exec — P1 already holds a full set in U from the moment
+		// it becomes the userns creator — so there is no secureexec and the
+		// signal is preserved.
+		//
+		// That matters because the two mechanisms cover DIFFERENT failures. The
+		// lifeline pipe needs P1 to run a goroutine to notice EOF. A stopped
+		// process runs no user code at all, so for a SIGSTOPped stage tree
+		// Pdeathsig is the ONLY thing that collapses it when P0 dies. Measured
+		// 3/3: freeze P1, both bwraps and pasta, SIGKILL P0, zero survivors and
+		// no leaked netns. Remove this and that case becomes an orphaned sandbox
+		// holding a netns with no parent left to tear it down.
 		Pdeathsig: syscall.SIGKILL,
 	}
 
@@ -132,8 +149,18 @@ func Start(cfg Config) (*Stage, error) {
 		p1Control.Close()
 		lifeR.Close()
 		lifeW.Close()
-		return nil, fmt.Errorf("stage: starting P1 (are unprivileged user namespaces enabled? "+
-			"see /proc/sys/kernel/unprivileged_userns_clone): %w", err)
+		// This clone can fail for four reasons and the message used to name one,
+		// which is CLAUDE.md's "errors name the fix" inverted into "errors name
+		// the wrong fix". snug doctor probes bwrap's namespaces, not this one,
+		// so on a host where the stage cannot start doctor is still green.
+		return nil, fmt.Errorf("stage: starting P1: %w\n"+
+			"  This clone asks for four namespaces at once (user, network, mount, cgroup).\n"+
+			"  Check, in this order:\n"+
+			"    unprivileged user namespaces  /proc/sys/kernel/unprivileged_userns_clone (and max_user_namespaces)\n"+
+			"    a nesting limit               you may already be at the maximum depth, e.g. inside a container\n"+
+			"    network namespaces            /proc/sys/user/max_net_namespaces\n"+
+			"    cgroup namespaces             a kernel built without CONFIG_CGROUPS reports EINVAL here\n"+
+			"  A quick check that reproduces all four: unshare --user --net --mount --cgroup -- true", err)
 	}
 	p1Control.Close()
 	lifeR.Close()
@@ -157,7 +184,7 @@ func Start(cfg Config) (*Stage, error) {
 	}
 	// An empty string is != every real namespace id, which is exactly how a
 	// stage that never started would read as PASS if this were skipped
-	// (SUPERVISOR-PHASE1-SPEC.md's review §3.2, restated in §6 item 9).
+	// (SUPERVISOR-DESIGN.md's review §3.2, restated in §6 item 9).
 	if ev.Netns == "" || ev.Userns == "" {
 		st.killAndClose()
 		return nil, fmt.Errorf("stage: \"ready\" event named an empty namespace (netns=%q userns=%q)",
@@ -184,7 +211,7 @@ func (s *Stage) killAndClose() {
 // Target is what pasta must be aimed at. NetnsPath names /proc/<P1>/fd/63 —
 // the descriptor P1 pinned BEFORE it moved — never /proc/<P1>/ns/net, which
 // after the move names P1's own empty namespace and which pasta accepts
-// SILENTLY (measured, SUPERVISOR-PHASE1-SPEC.md §1, --pasta-naive).
+// SILENTLY (measured, SUPERVISOR-DESIGN.md §1, --pasta-naive).
 func (s *Stage) Target() policy.PastaTarget {
 	return policy.PastaTargetStage(s.pid, s.netnsFD)
 }

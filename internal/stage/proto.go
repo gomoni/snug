@@ -8,7 +8,7 @@ import (
 
 // The control protocol travels over one inherited SOCK_SEQPACKET socketpair —
 // no pathname, no listener, nothing running as your uid can reach it, because
-// there is no name to reach it by (SUPERVISOR-PHASE1-SPEC.md §3.3). SEQPACKET
+// there is no name to reach it by (SUPERVISOR-DESIGN.md §3.3). SEQPACKET
 // preserves message boundaries, so one JSON document is one datagram; there is
 // no length prefix and no framing to get wrong.
 //

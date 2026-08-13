@@ -57,7 +57,7 @@ func cmdlineOf(pid int) []string {
 // /proc/self/exe, whose basename is "exe"), not from argv[0] — measured, ps
 // and /proc/<pid>/comm both show "exe" for the stage even though its own
 // Args[0] is set to "snug". cmdline reflects the argv array as given, which is
-// where "snug __stageN" actually shows up.
+// where "snug __stage-setup" / "snug __stage-serve" actually shows up.
 func isStageProcess(pid int) bool {
 	argv := cmdlineOf(pid)
 	if len(argv) < 2 {
@@ -129,7 +129,7 @@ func findDescendant(root int, match func(int) bool, timeout time.Duration) (int,
 // threadNetnsIDs returns the DISTINCT net namespace ids across every thread of
 // pid, read from /proc/<pid>/task/*/ns/net — never /proc/<pid>/ns/net, which
 // reports only the thread GROUP LEADER and, measured
-// (SUPERVISOR-PHASE1-SPEC.md §1), lies about a per-thread unshare/setns: it
+// (SUPERVISOR-DESIGN.md §1), lies about a per-thread unshare/setns: it
 // keeps reporting the OLD namespace while the calling thread has already moved.
 func threadNetnsIDs(pid int) map[string]int {
 	out := map[string]int{}
@@ -295,7 +295,7 @@ func TestOfflineStartsNoStage(t *testing.T) {
 // TestSandboxNetnsIsTheStagesPinnedNetns is exit criterion 2: the payload's
 // OWN network namespace must equal the id the stage reported at readiness, and
 // must differ from the top-level snug (P0) process's. Both sides are refused
-// if empty, per SUPERVISOR-PHASE1-SPEC.md's review §3.2 — an empty string is
+// if empty, per SUPERVISOR-DESIGN.md's review §3.2 — an empty string is
 // != every real namespace id, which is how a sandbox that never started would
 // otherwise read as PASS.
 //
@@ -303,7 +303,7 @@ func TestOfflineStartsNoStage(t *testing.T) {
 // the stage (P1) is found, its own thread sweep must show NO thread left in
 // the namespace it handed to the sandbox — reading /proc/<P1>/ns/net instead
 // would answer a different, misleading question (measured,
-// SUPERVISOR-PHASE1-SPEC.md §1: it reports the OLD namespace,
+// SUPERVISOR-DESIGN.md §1: it reports the OLD namespace,
 // scheduler-dependently).
 func TestSandboxNetnsIsTheStagesPinnedNetns(t *testing.T) {
 	budget(t, 15*time.Second)
@@ -779,15 +779,23 @@ func TestTheStageExitsWhenTheSandboxFailsToStart(t *testing.T) {
 		t.Fatal("PRECONDITION: snug reported success with a bwrap that always exits 7")
 	}
 
-	// Nothing new and still alive should be a 'snug' process: cli() already
-	// waited for the whole tree to exit (CombinedOutput blocks until the pipes
-	// close), so this is really asserting that wait actually reaped everything
-	// rather than leaving an orphaned stage behind it.
+	// Nothing new and still alive should be a stage: cli() already waited for
+	// the whole tree to exit (CombinedOutput blocks until the pipes close), so
+	// this is really asserting that wait actually reaped everything rather than
+	// leaving an orphaned stage behind it.
+	//
+	// isStageProcess, NOT commOf(pid) == "snug". This loop used to compare comm
+	// against the literal "snug" and could therefore never fire: the kernel sets
+	// comm from the basename of the file exec'd, which is always "exe" here
+	// because the stage is started as /proc/self/exe. Setting cmd.Args[0] moves
+	// cmdline, not comm. Measured on a live run: comm=exe cmdline="snug
+	// __stage-serve". The helper 700 lines above says exactly this and this loop
+	// did not use it — the pasta.avx2 shape, in a file that already knew.
 	for _, pid := range newPIDs(pidSet(before), pidSet(allPIDs())) {
-		if commOf(pid) == "snug" {
-			t.Errorf("pid %d is a leftover 'snug' process after a run whose bwrap always fails; "+
+		if isStageProcess(pid) {
+			t.Errorf("pid %d is a leftover stage (%v) after a run whose bwrap always fails; "+
 				"the stage is supposed to exit after exactly one start request, whatever the "+
-				"outcome", pid)
+				"outcome", pid, cmdlineOf(pid))
 		}
 	}
 }
@@ -832,16 +840,24 @@ func TestTheStageLeavesNoNamespaceObjectAfterSIGKILL(t *testing.T) {
 	if !ok {
 		t.Fatal("PRECONDITION: bwrap never appeared")
 	}
-	// Wait for the PAYLOAD, not just bwrap, before killing anything. bwrap
-	// arms its own --die-with-parent (PR_SET_PDEATHSIG on itself) as part of
-	// its startup sequence, AFTER it is first visible in /proc — killing the
-	// instant bwrap's pid appears (which findDescendant's poll can do within
-	// a millisecond of the fork) races that arming and, measured, reliably
-	// left an orphan reparented to this container's own init, indistinguishable
-	// from a genuine teardown failure. Waiting for "sleep" (the payload bwrap
-	// itself execs once its own setup is done) is the same readiness bar every
-	// other test in this suite uses via payloadMarker, applied here because
-	// this test cannot use run()/mustRun (it needs the raw pids mid-flight).
+	// Wait for the PAYLOAD, not just bwrap, before killing anything. Killing
+	// the instant bwrap's pid appears — which findDescendant's poll can do
+	// within a millisecond of the fork — reliably left an orphan reparented to
+	// this container's init, indistinguishable from a genuine teardown failure.
+	//
+	// The mechanism, stated correctly because the earlier version of this
+	// comment did not: it is NOT that bwrap arms its own --die-with-parent
+	// somewhere in its startup sequence and this races that arming. MEASURED
+	// with a matched pair: bwrap does not arm --die-with-parent on the sandbox's
+	// INIT until the --block-fd read returns, so the init is unprotected for the
+	// whole parked window. Waiting for the payload waits past the release, which
+	// is the point at which the protection actually exists. That is also why
+	// this bar cannot be widened to fix the underlying defect — see TODO.md.
+	//
+	// Waiting for "sleep" (the payload bwrap execs once its setup is done) is
+	// the same readiness bar every other test in this suite uses via
+	// payloadMarker, applied here because this test cannot use run()/mustRun
+	// (it needs the raw pids mid-flight).
 	if _, ok := findDescendant(cmd.Process.Pid, isComm("sleep"), 5*time.Second); !ok {
 		t.Fatal("PRECONDITION: the payload ('sleep') never appeared")
 	}
@@ -1247,5 +1263,198 @@ func TestTheCapabilityBoundingSetIsEmptyOnEveryTopology(t *testing.T) {
 				t.Errorf("NoNewPrivs is %q, not 1", seen["NoNewPrivs"])
 			}
 		})
+	}
+}
+
+// stateOf reads a process's scheduling state letter from /proc/<pid>/status —
+// 'T' for stopped, 'R'/'S'/'D' for variously running. Used to PROVE the
+// SIGSTOP below actually landed, because a test that freezes nothing and then
+// observes a clean teardown observes only that the ordinary path works.
+func stateOf(pid int) string {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/status")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if rest, ok := strings.CutPrefix(line, "State:"); ok {
+			f := strings.Fields(rest)
+			if len(f) > 0 {
+				return f[0]
+			}
+		}
+	}
+	return ""
+}
+
+// descendantsOf returns every readable pid whose ancestry reaches root within a
+// few hops, root excluded — the whole sandbox tree, including pasta, which is a
+// child of snug rather than of the stage.
+func descendantsOf(root int) []int {
+	var out []int
+	for _, pid := range allPIDs() {
+		if pid == root {
+			continue
+		}
+		p := pid
+		for hop := 0; hop < 8; hop++ {
+			parent, ok := ppidOf(p)
+			if !ok {
+				break
+			}
+			if parent == root {
+				out = append(out, pid)
+				break
+			}
+			p = parent
+		}
+	}
+	return out
+}
+
+// TestAFrozenStageTreeStillDiesWithSnug is the regression for a finding that
+// runs the opposite way to the usual one: the code was SAFER than its comments
+// claimed, and the comments invited the edit that would break it.
+//
+// Two mechanisms tear the stage down, and they cover different failures. The
+// lifeline pipe needs the stage to RUN A GOROUTINE to notice EOF. PR_SET_PDEATHSIG
+// needs nothing — the kernel delivers it. Two comments in internal/stage
+// asserted, as measured fact, that Pdeathsig does not survive the
+// __stage-setup → __stage-serve re-exec (a secureexec transition zeroing
+// pdeath_signal) and concluded that "the lifeline is the mechanism that
+// actually holds; this cannot be relied on alone". That was measured FALSE:
+// capabilities do not widen at that exec, because the stage already holds a
+// full set in U from the moment it creates the user namespace, so there is no
+// secureexec.
+//
+// The distinction is not academic. A process in state 'T' executes no user
+// code at all, so a SIGSTOPped stage can never see the lifeline's EOF. If
+// someone deletes the Pdeathsig line as the dead weight the old comment
+// described, this case becomes an orphaned sandbox holding a network namespace
+// with nothing left to tear it down.
+//
+// The positive control is the freeze itself: every member of the tree is
+// asserted to be in state 'T' BEFORE snug is killed. Without it a green result
+// would only prove that the lifeline works, which no longer answers anything.
+func TestAFrozenStageTreeStillDiesWithSnug(t *testing.T) {
+	budget(t, 30*time.Second)
+	requireSandbox(t)
+	requirePasta(t)
+	proj, _ := target(t)
+
+	cmd := exec.Command(snugBin, "-p", "@net", proj, "--", "/bin/sleep", "30")
+	cmd.Env = baseEnv()
+	cmd.WaitDelay = waitDelay
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	frozen := []int{}
+	killed := false
+	t.Cleanup(func() {
+		// Un-freeze before anything else, or a failed run leaves stopped
+		// processes on the host that nothing will ever reap.
+		for _, pid := range frozen {
+			_ = syscall.Kill(pid, syscall.SIGCONT)
+		}
+		if !killed {
+			cmd.Process.Kill()
+			cmd.Wait()
+		}
+	})
+
+	bwrapPID, ok := findDescendant(cmd.Process.Pid, isComm("bwrap"), 5*time.Second)
+	if !ok {
+		t.Fatal("PRECONDITION: bwrap never appeared")
+	}
+	if _, ok := findDescendant(cmd.Process.Pid, isComm("sleep"), 5*time.Second); !ok {
+		t.Fatal("PRECONDITION: the payload ('sleep') never appeared")
+	}
+	sandboxNet, err := os.Readlink("/proc/" + strconv.Itoa(bwrapPID) + "/ns/net")
+	if err != nil {
+		t.Fatalf("reading the sandbox's netns: %v", err)
+	}
+
+	tree := descendantsOf(cmd.Process.Pid)
+	if len(tree) < 3 {
+		t.Fatalf("PRECONDITION: expected at least a stage, a pasta and a bwrap below snug, got %v", tree)
+	}
+	sawStage := false
+	for _, pid := range tree {
+		if isStageProcess(pid) {
+			sawStage = true
+		}
+	}
+	if !sawStage {
+		t.Fatalf("PRECONDITION: no stage process in snug's tree %v; this test is not exercising "+
+			"the stage topology at all", tree)
+	}
+
+	// Freeze the whole tree. SIGSTOP is not deliverable to a process that has
+	// already exited, so ignore ESRCH and let the state check below decide.
+	for _, pid := range tree {
+		if err := syscall.Kill(pid, syscall.SIGSTOP); err == nil {
+			frozen = append(frozen, pid)
+		}
+	}
+
+	// POSITIVE CONTROL: every frozen member really is stopped. If this does not
+	// hold, a clean teardown below proves nothing, because the lifeline would
+	// have been free to do the work.
+	stoppedDeadline := time.Now().Add(3 * time.Second)
+	for {
+		var awake []int
+		for _, pid := range frozen {
+			if s := stateOf(pid); s != "" && s != "T" {
+				awake = append(awake, pid)
+			}
+		}
+		if len(awake) == 0 {
+			break
+		}
+		if time.Now().After(stoppedDeadline) {
+			t.Fatalf("PRECONDITION: pid(s) %v never reached state T; the freeze did not land, so "+
+				"this run cannot distinguish Pdeathsig from the lifeline", awake)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	beforeSet := pidSet(sweepNetnsAcrossAllProcesses()[sandboxNet])
+	if len(beforeSet) == 0 {
+		t.Fatal("PRECONDITION: the sandbox's namespace does not appear in the sweep before the kill")
+	}
+
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Wait()
+	killed = true
+
+	// No SIGCONT here on purpose: nothing in the tree is ever allowed to run
+	// again. Whatever tears it down has to be the kernel.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var survivors []int
+		for _, pid := range frozen {
+			// An exited-but-unreaped process still has a /proc entry; state 'Z'
+			// means it is gone in every sense that matters here.
+			if s := stateOf(pid); s != "" && s != "Z" {
+				survivors = append(survivors, pid)
+			}
+		}
+		var inNS []int
+		for _, pid := range sweepNetnsAcrossAllProcesses()[sandboxNet] {
+			if beforeSet[pid] {
+				inNS = append(inNS, pid)
+			}
+		}
+		if len(survivors) == 0 && len(inNS) == 0 && !mountinfoHasNsfsFor(sandboxNet) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("a FROZEN stage tree survived SIGKILL of snug: pid(s) %v still exist, %v still "+
+				"report namespace %s. The lifeline cannot fire in a stopped process, so this is "+
+				"what PR_SET_PDEATHSIG in internal/stage/stage.go is for — check it is still there",
+				survivors, inNS, sandboxNet)
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }

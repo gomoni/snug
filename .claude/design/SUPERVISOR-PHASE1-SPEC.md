@@ -1,7 +1,10 @@
 # Phase 1 — the stage. Implementation specification
 
-This is the buildable form of [SUPERVISOR-PLAN.md](SUPERVISOR-PLAN.md) §"Phase 1
-— the stage". It is written to be executed by someone who has read
+This is the buildable form of `SUPERVISOR-PLAN.md` §"Phase 1 — the stage". That
+plan is a working document held outside version control on purpose, so this is
+not a link and a fresh clone will not have the file; everything from it that a
+reader needs in order to build Phase 1 is restated below. It is written to be
+executed by someone who has read
 [CLAUDE.md](../../CLAUDE.md) and this file and nothing else: every file path,
 every signature and the order the work happens in are here.
 
@@ -39,7 +42,7 @@ Marked exactly as the evidence is:
 |---|---|
 | P1 can `setns` back into N after leaving it; children forked through a setns shim land in N | **MEASURED** (0b, `poc/nsd`, `./run-netns.sh` → pass=42 fail=0, three identical consecutive runs) |
 | `unshare(CLONE_NEWNET)` is **per-task**. One thread moves; `/proc/self/ns/net` reports the OLD namespace; which threads moved is scheduler-dependent | **MEASURED** (0b, isolated standalone program: 1 of 11 threads moved, leader reported the old namespace) |
-| The only join point at which a multithreaded Go process moves as a whole is `execve` immediately after the unshare, on a locked thread | **MEASURED** (0b: after the `__stage2` re-exec, 0 of 6 threads left in N) |
+| The only join point at which a multithreaded Go process moves as a whole is `execve` immediately after the unshare, on a locked thread | **MEASURED** (0b: after the `__stage-serve` re-exec, 0 of 6 threads left in N) |
 | The pinned descriptor on N must **not** be CLOEXEC at the moment of that exec; it is marked CLOEXEC afterwards | **MEASURED** (0b; the plan's step 2, taken literally, destroys the only reference to N) |
 | pasta **refuses** `--netns /proc/self/fd/3` — it drops privileges before opening the path | **MEASURED** (0b: `Couldn't open network namespace /proc/self/fd/3: Permission denied`) |
 | pasta aimed at `/proc/<P1>/fd/<n>` — the descriptor P1 pinned before it moved — works: egress 200 from N and from the sandbox, host loopback 000 | **MEASURED** (0b) |
@@ -51,7 +54,7 @@ Marked exactly as the evidence is:
 | pasta's `--netns` and `--userns` are independent options | **MEASURED** here (`pasta --help`, passt 20260612) |
 | A single-uid map in U (`0 <hostuid> 1`) is enough for `bwrap --uid 1000` to give the payload uid 1000 with host-uid-owned writes | **MEASURED, but not against snug's own `BwrapFlags`.** This is the one load-bearing measurement taken outside the real code path. §4 Step 0 re-measures it before anything depends on it. |
 | pasta's forwarding side is outside N | **INFERRED** from egress working at all. pasta sets itself non-dumpable, so `readlink /proc/<pasta>/ns/net` is EACCES and no test can sweep it. Any test claiming "only bwrap and the sandbox init are in N" must say this rather than imply coverage it does not have. |
-| The `stage1 → __stage2` re-exec does not clear `PR_SET_PDEATHSIG` | **INFERRED** (no privileged transition, so no `secureexec`). Do not depend on it: the lifeline pipe is the teardown mechanism either way. |
+| The `__stage-setup → __stage-serve` re-exec does not clear `PR_SET_PDEATHSIG` | **INFERRED** (no privileged transition, so no `secureexec`). Do not depend on it: the lifeline pipe is the teardown mechanism either way. |
 | `/proc/<bwrap-child>/net/dev` stays readable from P0 under the stage | **INFERRED.** Step 5 measures it and names the fallback. |
 | bwrap's `--unshare-all` uses the `-try` spellings for `user` and `cgroup` | **INFERRED** from bwrap's flag list. §3.1's chosen spelling makes it not matter for Phase 1; §9 records it as a TODO. |
 
@@ -69,10 +72,10 @@ P0  snug                          host userns, host netns, host mount tree
  │
  ├── pasta --netns /proc/<P1>/fd/<n> --userns /proc/<P1>/ns/user
  │
- └── P1  snug __stage1 → __stage2  THE NAMESPACE HOLDER
+ └── P1  snug __stage-setup → __stage-serve  THE NAMESPACE HOLDER
       │   U: user ns, ONE uid mapped (root inside)
       │   N: network ns, private — created by the clone, PINNED by a descriptor,
-      │      and then LEFT: after __stage2, P1 is in a fresh empty netns of its own
+      │      and then LEFT: after __stage-serve, P1 is in a fresh empty netns of its own
       │   + own mount ns (MS_REC|MS_PRIVATE) and cgroup ns
       │   NO control socket on any filesystem. NO listener.
       │
@@ -261,7 +264,7 @@ Except that a test does find it: `TestSandboxHasItsOwnWorkingLoopback`
 positive control for this fix.
 
 Implementation is `SIOCGIFFLAGS`/`SIOCSIFFLAGS` with `IFF_UP` on `lo`, on a plain
-`AF_INET` datagram socket, in P1 **while it is still in N** (i.e. in `__stage1`,
+`AF_INET` datagram socket, in P1 **while it is still in N** (i.e. in `__stage-setup`,
 before the move). Never by executing `ip(8)` — that would add a host binary
 dependency snug does not have. The kernel assigns `127.0.0.1/8` and `::1/128`
 itself once the interface is up, so no address code is needed.
@@ -544,7 +547,7 @@ func (s *Stage) Close() error
 
 1. `socketpair(AF_UNIX, SOCK_SEQPACKET|SOCK_CLOEXEC, 0)` and `os.Pipe()` for the
    lifeline.
-2. `exec.Cmd{Path: /proc/self/exe, Args: ["snug", "__stage1"]}` with
+2. `exec.Cmd{Path: /proc/self/exe, Args: ["snug", "__stage-setup"]}` with
    `ExtraFiles = [p1ControlEnd, lifelineRead] ++ cfg.Sandbox`,
    `Stdin/Stdout/Stderr = cfg.Stdin/…` (so bwrap inherits the payload's stdio),
    `Env = []string{}` (the `/proc/1/environ` lesson: P1 is not the sandbox's PID
@@ -560,11 +563,11 @@ func (s *Stage) Close() error
    `netns_fd != fdNetnsN`, if `netns` is empty, or if `netns == userns`'s owner
    in a way that says the move did not happen.
 
-**P1 side** (`stage1.go`, `stage2.go`), reached from `cmd/snug/main.go`'s hidden
+**P1 side** (`setup.go`, `serve.go`), reached from `cmd/snug/main.go`'s hidden
 verb dispatch (§4 Step 6). Both refuse immediately if the expected descriptors
 are not present and are not reachable as ordinary CLI.
 
-`__stage1`, in this order — and **the order is the specification**:
+`__stage-setup`, in this order — and **the order is the specification**:
 
 1. Assert `os.Getuid() == 0` (uid 0 in U) and that the capability set is
    non-empty. `/proc/<pid>/status` renders uids in the READER's user namespace,
@@ -583,12 +586,12 @@ are not present and are not reachable as ordinary CLI.
    reference to N.
 7. `unshare(CLONE_NEWNET)`, then re-read `/proc/thread-self/ns/net` and refuse if
    it is unchanged.
-8. `syscall.Exec("/proc/self/exe", []string{"snug", "__stage2"}, []string{})`
+8. `syscall.Exec("/proc/self/exe", []string{"snug", "__stage-serve"}, []string{})`
    with nothing in between. `/proc/self/exe`, never a path from the environment —
    the review found `$NSD_SELF` re-executed after the uid map is written to be a
    same-uid replacement window.
 
-`__stage2`:
+`__stage-serve`:
 
 1. Mark `fdNetnsN` CLOEXEC. This is the first moment CLOEXEC means what the plan
    intends: from here the only way that descriptor reaches a child is by being
@@ -629,7 +632,7 @@ netns, and the forker's own. A test asserts that count with a positive control
 that it held more before the fork.
 
 Sealing marks P1's own long-lived descriptors CLOEXEC, and that is safe for one
-structural reason worth stating: **P1 never execs again after `__stage2`.**
+structural reason worth stating: **P1 never execs again after `__stage-serve`.**
 
 `__innetns` (`innetns.go`) is the setns shim, and it must be annotated as hard as
 bwrap's `--` separator is:
@@ -716,8 +719,8 @@ so they get a `VERIFY.md` line (§7).
 
 ### Step 6 — `cmd/snug/main.go`: hidden verb dispatch (COMMIT B)
 
-Before flag parsing, before anything else: if `os.Args[1]` is `__stage1`,
-`__stage2` or `__innetns`, dispatch to `stage.Main1()`, `stage.Main2()` or
+Before flag parsing, before anything else: if `os.Args[1]` is `__stage-setup`,
+`__stage-serve` or `__innetns`, dispatch to `stage.MainSetup()`, `stage.MainServe()` or
 `stage.EnterNetns(os.Args[2:])` and never return. They do not appear in `--help`,
 they are not profiles, and each refuses immediately when the descriptors it
 requires are absent.
@@ -959,7 +962,7 @@ a severity. These are found-and-not-fixed-here:
 6. `--dry-run` prints the topology block, and it is honest in both commits.
 7. **`redteam` has run against the merged stage**, aimed at what this phase
    actually creates — not at the PoC, which is a different program: P1's
-   descriptor table at the moment of the fork; the `__stage1`/`__stage2`/
+   descriptor table at the moment of the fork; the `__stage-setup`/`__stage-serve`/
    `__innetns` re-exec path and whether anything reachable can influence what it
    execs; whether a sandboxed payload can name, reach or influence the socketpair;
    whether anything in the payload's reach can observe or enter N; and the

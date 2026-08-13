@@ -1,4 +1,4 @@
-CLONE FLAGS (P1, __stage1 — stageCloneflags)
+CLONE FLAGS (P1, __stage-setup — stageCloneflags)
   CLONE_NEWUSER
   CLONE_NEWNET
   CLONE_NEWNS
@@ -12,8 +12,8 @@ GID MAP
 DESCRIPTORS (fixed; nothing travels in the environment — fds.go)
   fd 3    control       SOCK_SEQPACKET socketpair, P1's end
   fd 4    lifeline      read end of an anonymous pipe; P0 holds the write end
-  fd 5   .. sandbox     K descriptors, K = len(Config.Sandbox), passed through unchanged
-  fd 63   netns-N       the descriptor P1 pins on N before it leaves (not CLOEXEC until __stage2)
+  fd 5   .. sandbox     K descriptors, dup3'd to 3..3+K-1 in the bwrap child
+  fd 63   netns-N       the descriptor P1 pins on N before it leaves (not CLOEXEC until __stage-serve)
   budget        K <= 58, checked on BOTH sides of the control socket (checkFDBudget)
 
 BWRAP UNSHARE SET under policy.NetnsStage (internal/policy/bwrap.go)

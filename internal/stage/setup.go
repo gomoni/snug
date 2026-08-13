@@ -8,13 +8,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Main1 is __stage1: P1's first instant of life after the clone that created
+// MainSetup is __stage-setup: P1's first instant of life after the clone that created
 // U (its own user namespace, ONE uid mapped) and N (the sandbox's private
 // network namespace). It refuses immediately if the descriptors it requires —
 // fdControl, fdLife — are not present, and is not reachable as ordinary CLI:
 // cmd/snug's hidden verb dispatch is the only caller.
 //
-// THE ORDER IS THE SPECIFICATION (SUPERVISOR-PHASE1-SPEC.md §4 Step 4):
+// THE ORDER IS THE SPECIFICATION (SUPERVISOR-DESIGN.md §4 Step 4):
 //
 //  1. uid 0 / full caps, or refuse.
 //  2. make / private.
@@ -24,13 +24,13 @@ import (
 //  6. dup3 it to fdNetnsN WITHOUT CLOEXEC — it must survive the exec that
 //     follows.
 //  7. unshare(CLONE_NEWNET); refuse if the calling thread did not move.
-//  8. exec __stage2 with NOTHING in between and an EMPTY environment.
-func Main1() error {
+//  8. exec __stage-serve with NOTHING in between and an EMPTY environment.
+func MainSetup() error {
 	if os.Getuid() != 0 {
-		return fmt.Errorf("__stage1: uid is %d, expected 0 — the single-uid map did not land", os.Getuid())
+		return fmt.Errorf("__stage-setup: uid is %d, expected 0 — the single-uid map did not land", os.Getuid())
 	}
 	if err := checkFullCaps(); err != nil {
-		return fmt.Errorf("__stage1: %w", err)
+		return fmt.Errorf("__stage-setup: %w", err)
 	}
 	requireFD(fdControl, "control")
 	requireFD(fdLife, "lifeline")
@@ -39,13 +39,13 @@ func Main1() error {
 	// to work in a shared mount tree, and a private tree is what stops the
 	// sandbox's own mount events propagating back to the host.
 	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
-		return fmt.Errorf("__stage1: making / private: %w", err)
+		return fmt.Errorf("__stage-setup: making / private: %w", err)
 	}
 
 	// lo comes up in N, while P1 is still in it. After the move this would
 	// configure the WRONG (empty) namespace — §3.5.
 	if err := bringLoopbackUp(); err != nil {
-		return fmt.Errorf("__stage1: %w", err)
+		return fmt.Errorf("__stage-setup: %w", err)
 	}
 
 	runtime.LockOSThread()
@@ -54,7 +54,7 @@ func Main1() error {
 	before := threadNS("net")
 	f, err := os.Open("/proc/thread-self/ns/net")
 	if err != nil {
-		return fmt.Errorf("__stage1: pinning N: %w", err)
+		return fmt.Errorf("__stage-setup: pinning N: %w", err)
 	}
 	// dup3 with flags 0: the new descriptor is deliberately NOT CLOEXEC. It has
 	// to survive the very execve that makes the move stick — marking it
@@ -62,32 +62,32 @@ func Main1() error {
 	// reference to N.
 	if err := unix.Dup3(int(f.Fd()), fdNetnsN, 0); err != nil {
 		f.Close()
-		return fmt.Errorf("__stage1: pinning N at fd %d: %w", fdNetnsN, err)
+		return fmt.Errorf("__stage-setup: pinning N at fd %d: %w", fdNetnsN, err)
 	}
 	f.Close()
 
 	if err := unix.Unshare(unix.CLONE_NEWNET); err != nil {
-		return fmt.Errorf("__stage1: unshare(CLONE_NEWNET): %w", err)
+		return fmt.Errorf("__stage-setup: unshare(CLONE_NEWNET): %w", err)
 	}
 	after := threadNS("net")
 	if before == after || after == "" {
-		return fmt.Errorf("__stage1: unshare(CLONE_NEWNET) reported success but the calling "+
+		return fmt.Errorf("__stage-setup: unshare(CLONE_NEWNET) reported success but the calling "+
 			"thread is still in %s", before)
 	}
 
 	// syscall.Exec, not os/exec: this must be THE SAME PROCESS IMAGE re-executing
 	// on the locked thread, with nothing in between — that collapse onto the
 	// calling thread is the only join point at which a multithreaded Go process
-	// moves as a whole (measured, SUPERVISOR-PHASE1-SPEC.md §1). /proc/self/exe,
+	// moves as a whole (measured, SUPERVISOR-DESIGN.md §1). /proc/self/exe,
 	// never a path from the environment: a path taken from the environment is a
 	// same-uid replacement window the previous generation's review found.
-	return execSelf("__stage2")
+	return execSelf("__stage-serve")
 }
 
 // requireFD refuses to continue if fd is not open — "refuses immediately when
-// the descriptors it requires are absent" (SUPERVISOR-PHASE1-SPEC.md §4 Step
+// the descriptors it requires are absent" (SUPERVISOR-DESIGN.md §4 Step
 // 4). It cannot return an error cleanly (this runs before any recover-and-log
-// path exists), so it fails loudly and immediately: __stage1/__stage2/__innetns
+// path exists), so it fails loudly and immediately: __stage-setup/__stage-serve/__innetns
 // are unreachable except through the fork that sets these fds up, and a missing
 // one means something is invoking them directly, which is not a supported entry
 // point.

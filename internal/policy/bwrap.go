@@ -48,7 +48,7 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 		// for every --unshare-<name> and fails if this set does not cover all
 		// of them except net, so a bwrap that grows a new namespace type goes
 		// RED here rather than silently keeping it. See
-		// SUPERVISOR-PHASE1-SPEC.md §3.1.
+		// SUPERVISOR-DESIGN.md §3.1.
 		//
 		// The -try spellings match what --unshare-all itself expands to, so
 		// this path introduces no new failure mode on a host where user or

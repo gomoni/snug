@@ -167,7 +167,7 @@ func RoutableNameservers(hostServers []string) []string {
 // descendant of U with no authority over it) — so the two paths are named
 // separately rather than derived from one pid.
 //
-// SUPERVISOR-PHASE1-SPEC.md §3.4 measured (0b) that a pid alone cannot express
+// SUPERVISOR-DESIGN.md §3.4 measured (0b) that a pid alone cannot express
 // the stage case: after P1 leaves N, /proc/<P1>/ns/net names P1's own empty
 // namespace, and pasta accepts that path SILENTLY and attaches to the wrong
 // one. Handing pasta the descriptor P1 pinned before it moved is refused

@@ -939,7 +939,7 @@ when snug is SIGKILLed and cannot clean up after itself.
 
 ## 12. The stage — a `@net` sandbox has a second process ahead of it
 
-Since Phase 1 (`.claude/design/SUPERVISOR-PHASE1-SPEC.md`), a `-p @net` run
+Since Phase 1 (`.claude/design/SUPERVISOR-DESIGN.md`), a `-p @net` run
 starts a second long-lived process (P1, "the stage") that creates the sandbox's
 network namespace, pins it, leaves it, and forks bwrap back into it. This is the
 by-hand form of that phase's exit criteria — `snug --dry-run` shows the same
@@ -950,16 +950,18 @@ not against snug's own claim about itself.
 ./bin/snug --dry-run -p @net $SC/proj/sub | sed -n '/^TOPOLOGY/,/^$/p'
 ```
 
-Expect `netns owner     stage`, `processes       2 — snug, and a stage (P1)…`,
-and `control         none (no socket, no listener, nothing to connect to)`.
-Compare against a run with no `@net`:
+Expect `netns owner     stage`, `processes       4 — snug, a stage (P1)…`, and a
+`control` block naming an anonymous `SOCK_SEQPACKET` socketpair and saying it is
+unreachable from the sandbox. The count includes snug itself and pasta: an
+earlier version counted differently in each arm and named neither. Compare
+against a run with no `@net`:
 
 ```bash
 ./bin/snug --dry-run $SC/proj/sub | sed -n '/^TOPOLOGY/,/^$/p'
 ```
 
-Expect `processes       1 — bwrap only. No stage, no privileged ancestor
-namespace.` — a bare `snug <dir>` starts no second process at all.
+Expect `processes       2 — snug and bwrap. No stage, no privileged ancestor
+namespace.` — a bare `snug <dir>` starts no stage at all.
 
 **The sandbox's netns is not P0's**, and neither side may be trusted if it
 reads empty:
@@ -996,7 +998,7 @@ made when it left N) — `N` must not appear in that list at all. (Development
 host: 6 threads, all reporting one namespace distinct from `N`.) The `exe`
 comm is not a typo: the kernel sets `/proc/<pid>/comm` from the file actually
 `execve`d — always `/proc/self/exe` in this chain — never from `argv[0]`, which
-is where `snug __stageN` shows up instead
+is where `snug __stage-setup` / `snug __stage-serve` shows up instead
 (`ps -o pid,args --ppid $SNUGPID` / `cat /proc/$STAGE/cmdline | tr '\0' ' '`).
 
 **Teardown — on the namespace object, not a process count.** A netns pinned only
@@ -1024,6 +1026,38 @@ Expect a positive count before the kill (the positive control — bwrap and the
 sandbox's own init are genuinely in `N`) and `0` after: SIGKILL on snug takes
 the whole tree with it, and the namespace itself — which nothing bind-mounts
 anywhere — goes with the last reference.
+
+**Teardown when the stage cannot run any code.** The check above proves the
+lifeline pipe works. The lifeline needs the stage to run a goroutine to notice
+EOF, so it says nothing about a stage that has been stopped — and a stopped
+process is not a dead one. `PR_SET_PDEATHSIG` is what covers that case, and a
+comment in the tree once asserted it does not survive the stage's own re-exec,
+which would have made this the one teardown path with no mechanism at all.
+Freeze the whole tree first, and never let it run again:
+
+```bash
+./bin/snug -p @net $SC/proj/sub -- /bin/sh -c 'sleep 30' &
+SNUGPID=$!
+sleep 1
+TREE=$(pgrep -P $SNUGPID; for c in $(pgrep -P $SNUGPID); do pgrep -P $c; done)
+BWRAP=$(ps -o pid,comm -p $TREE | awk '$2=="bwrap"{print $1; exit}')
+N=$(readlink /proc/$BWRAP/ns/net)
+kill -STOP $TREE
+ps -o pid,state,comm -p $TREE          # positive control: every state must be T
+
+kill -9 $SNUGPID; sleep 2
+
+ps -o pid,state,comm -p $TREE 2>/dev/null   # expect: nothing (or Z)
+find /proc -mindepth 5 -maxdepth 5 -path '*/task/*/ns/net' \
+  -exec readlink {} \; 2>/dev/null | grep -Fc "$N"   # expect: 0
+```
+
+Expect every member in state `T` before the kill — without that the run proves
+only that the lifeline works — and nothing alive afterwards. If processes
+survive, `Pdeathsig: syscall.SIGKILL` has gone missing from
+`internal/stage/stage.go`. `TestAFrozenStageTreeStillDiesWithSnug` is the
+automated form, and it was confirmed to go red when that line is removed:
+4 orphaned processes, 3 of them still in `N`.
 
 **The exit-status contract survives the extra process:**
 

@@ -55,7 +55,7 @@ func cmdUp(argv []string) error {
 	singleUidMap := fs.Bool("single-uid-map", false,
 		"write U's map as 0 <hostuid> 1 via SysProcAttr.UidMappings instead of "+
 			"newuidmap's full subuid delegation, and skip the __stage0 privileged "+
-			"re-exec entirely (SUPERVISOR-PHASE1-SPEC.md §4 Step 0 / §3.6)")
+			"re-exec entirely (SUPERVISOR-DESIGN.md §4 Step 0 / §3.6)")
 	_ = fs.Parse(argv)
 	if *runDir == "" {
 		return fmt.Errorf("--run is required")

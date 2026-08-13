@@ -12,7 +12,7 @@ import (
 // threadNS reads the namespace id of the CALLING THREAD, via
 // /proc/thread-self — never /proc/self, which is the thread GROUP LEADER and,
 // after a per-thread unshare(2) or setns(2), reports the namespace the calling
-// thread just LEFT. Measured (SUPERVISOR-PHASE1-SPEC.md §1): reading the wrong
+// thread just LEFT. Measured (SUPERVISOR-DESIGN.md §1): reading the wrong
 // one is how "the move worked" gets asserted about a process that never moved.
 func threadNS(kind string) string {
 	s, err := os.Readlink("/proc/thread-self/ns/" + kind)
@@ -22,7 +22,7 @@ func threadNS(kind string) string {
 	return s
 }
 
-// selfNS reads the namespace id of the process's OWN fd table entry, e.g. the
+// fdNS reads the namespace id of the process's OWN fd table entry, e.g. the
 // pinned descriptor at fdNetnsN via /proc/self/fd/<n> — a stable reference that
 // does not depend on which thread is asking, unlike threadNS.
 func fdNS(fd int) string {
@@ -66,10 +66,10 @@ func checkFullCaps() error {
 // threadsInNamespace sweeps /proc/self/task/*/ns/net (NEVER /proc/self/ns/net,
 // which reports only the thread group leader's namespace and, measured, lies
 // about a per-thread move) and returns the tids whose network namespace equals
-// pinned. An empty result is what stage2 requires before it will serve a
+// pinned. An empty result is what __stage-serve requires before it will serve a
 // request: it is the check that /proc/self/ns/net cannot make, because
 // unshare(CLONE_NEWNET) is per-task and which threads moved is
-// scheduler-dependent (SUPERVISOR-PHASE1-SPEC.md §1).
+// scheduler-dependent (SUPERVISOR-DESIGN.md §1).
 func threadsInNamespace(pinned string) ([]string, error) {
 	if pinned == "" {
 		return nil, fmt.Errorf("threadsInNamespace: pinned namespace id is empty")
@@ -101,14 +101,11 @@ func setCloexec(fd int) error {
 	return err
 }
 
-func clearCloexec(fd int) error {
-	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
-	if err != nil {
-		return err
-	}
-	_, err = unix.FcntlInt(uintptr(fd), unix.F_SETFD, flags&^unix.FD_CLOEXEC)
-	return err
-}
+// There is deliberately no clearCloexec here. One existed, unused, left over
+// from a privileged re-exec the spec removed. In a package whose whole job is
+// to make sure the payload inherits nothing, a ready-made helper for clearing
+// close-on-exec is the thing a later edit reaches for by autocomplete. If a
+// phase genuinely needs it, it can arrive with its call site.
 
 // validateNetnsFD refuses fd unless NS_GET_NSTYPE reports CLONE_NEWNET —
 // belt-and-braces against a descriptor that stopped meaning what its number

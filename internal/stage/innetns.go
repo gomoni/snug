@@ -2,7 +2,6 @@ package stage
 
 import (
 	"fmt"
-	"os"
 	"runtime"
 	"syscall"
 
@@ -78,5 +77,13 @@ func EnterNetns(argv []string) error {
 	// absolute path is what travels through the "start" request. __innetns does
 	// not re-resolve it — a relative name reaching this point is a bug in the
 	// caller, not something to paper over with a second LookPath.
-	return syscall.Exec(path, append([]string{path}, rest...), os.Environ())
+	//
+	// The environment is EMPTY, stated here rather than inherited. This exec
+	// becomes bwrap, which becomes PID 1 of the sandbox's pid namespace — the
+	// exact process whose /proc/1/environ once handed a payload 106 host
+	// variables. os.Environ() is empty at this point only because runOneSandbox
+	// set cmd.Env = []string{} two processes back, so passing it would make the
+	// guarantee transitive across three generations instead of local to the
+	// line that consumes it. Three independent reviews landed on this one word.
+	return syscall.Exec(path, append([]string{path}, rest...), []string{})
 }

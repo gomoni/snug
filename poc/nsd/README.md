@@ -1,7 +1,7 @@
 # nsd — proof of concept for the supervisor topology
 
 Throwaway code that exists to answer questions by execution. The design it
-supports is [.claude/design/SUPERVISOR.md](../../.claude/design/SUPERVISOR.md);
+supports is [.claude/design/SUPERVISOR-DESIGN.md](../../.claude/design/SUPERVISOR-DESIGN.md);
 read that first. Nothing here is meant to be merged into `snug` — it is in its
 own Go module so `./...` and `make gate` never see it.
 
@@ -19,7 +19,7 @@ the `pasta.avx2` test in CLAUDE.md, in the script whose header claimed the
 property. They are fixed, two positive controls were added, and the two rules
 that hold it up are at the top of `run.sh`. The count went up by two because
 nothing was actually broken; the point is that it could not have told us if it
-had been. See [SUPERVISOR-REVIEW.md](../../.claude/design/SUPERVISOR-REVIEW.md) §3.
+had been. See the review notes (working documents, not committed).
 
 ## What is here
 
@@ -32,7 +32,7 @@ had been. See [SUPERVISOR-REVIEW.md](../../.claude/design/SUPERVISOR-REVIEW.md) 
 | `join/nsowner.c` | prints which user namespace owns each of a pid’s namespaces |
 | `join/nsdmount.c` | builds a mount view derived from the sandbox’s, with one host path grafted in |
 | `run.sh` | every claim in the design doc, re-measured, each with a positive control |
-| `../../.claude/design/SUPERVISOR-REVIEW.md` | four agents trying to disprove all of it, and what they found |
+| `../../.claude/design/SUPERVISOR-DESIGN.md` | four agents trying to disprove all of it, and what they found |
 
 ## By hand
 

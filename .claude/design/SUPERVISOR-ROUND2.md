@@ -139,7 +139,7 @@ marker: False
 So there are two distinct failure modes in the pre-arm window, and they should
 not be collapsed: at ~40–110 ms the orphaned sandbox **runs the payload**; at
 ~20 ms the orphaned sandbox does not run the payload but **outlives snug
-indefinitely** (ppid 8553 is the subreaper — no snug, no `__stage2`, no pasta
+indefinitely** (ppid 8553 is the subreaper — no snug, no `__stage-serve`, no pasta
 remain). The second is invariant 4 broken on its own terms: the helper did not
 die with the sandbox; the sandbox outlived every snug process.
 
@@ -360,7 +360,7 @@ is.
 
 Measured by a red team at `ulimit -n` 64/40/20/12: every case fails **closed**,
 with no payload, which is the important half. But the three errors it produces
-(`creating the control socketpair: too many open files`; `__stage1: pinning N at
+(`creating the control socketpair: too many open files`; `__stage-setup: pinning N at
 fd 63: bad file descriptor`; `stage: bwrap did not start: fork/exec
 /proc/self/exe: bad file descriptor`) name neither the constant nor the fix. The
 one place in this phase that misses "errors name the fix".
@@ -519,7 +519,7 @@ a sandbox that never started:
 
 | SIGTERM to snug at | result |
 |---|---|
-| 20 ms | payload does NOT run, but an orphaned `bwrap` survives snug indefinitely (6 s and counting), reparented to the subreaper, with no snug, no `__stage2` and no pasta left — 3/4 |
+| 20 ms | payload does NOT run, but an orphaned `bwrap` survives snug indefinitely (6 s and counting), reparented to the subreaper, with no snug, no `__stage-serve` and no pasta left — 3/4 |
 | 40–110 ms | payload RUNS, writes the persistent target, and the orphaned sandbox keeps running unsupervised — 6/6 at 60 ms here, 10/10 and 7/10-under-concurrency in the red-team runs, on runs that reported `rc=-15` |
 
 The payload's confinement is NOT weakened in either case (measured `CapEff 0`,
@@ -632,7 +632,7 @@ MEASURED: two simultaneous `@net` sandboxes get distinct netns
 (`net:[4026533348]` vs `net:[4026533626]`); B cannot connect to a listener A
 binds on `127.0.0.1:9911` or on A's own `snug0` address (both
 `ConnectionRefusedError`, with A's listener reachable from within A as the
-positive control); each `snug __stage2` has its own pasta aimed at its own
+positive control); each `snug __stage-serve` has its own pasta aimed at its own
 `/proc/<its-P1>/fd/63`; the shared fixed fd numbers (3/4/63) live in separate
 process tables. `grep -niE 'two sandbox|concurrent|simultaneous|cross'` over
 `test/integration` returns nothing — every named stage test operates on a single
@@ -665,7 +665,7 @@ creates. **Regression test owed:** two concurrent `@net` sandboxes have distinct
 - **`fdNetnsN = 63` silently requires `RLIMIT_NOFILE > 63` on the stage path.**
   MEASURED at `ulimit -n` 64/40/20/12: every case fails CLOSED with no payload,
   which is the important half — but none of the three errors
-  (`creating the control socketpair: too many open files`; `__stage1: pinning N
+  (`creating the control socketpair: too many open files`; `__stage-setup: pinning N
   at fd 63: bad file descriptor`; `bwrap did not start: fork/exec /proc/self/exe:
   bad file descriptor`) names the constant or the fix. The one place in this phase
   that misses "errors name the fix".

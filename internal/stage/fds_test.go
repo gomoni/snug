@@ -49,7 +49,7 @@ func TestTheFDBudgetRefusesACollisionWithThePinnedNetns(t *testing.T) {
 
 // TestTheFDBudgetIsCheckedOnBothSidesOfTheControlSocket documents WHY the same
 // check exists twice: in P0's Start it is a fact about the resolved policy, and
-// in P1's __stage2 the same number arrives over the control socket, where it is
+// in P1's __stage-serve the same number arrives over the control socket, where it is
 // input. The two are different trust positions, so neither may be deleted as a
 // duplicate of the other.
 func TestTheFDBudgetIsCheckedOnBothSidesOfTheControlSocket(t *testing.T) {

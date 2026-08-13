@@ -35,7 +35,7 @@ type request struct {
 	// the PoC's own hand-maintained bwrapBaseArgs(). A sibling
 	// "<argvfile-dir>/manifest.json" names the --ro-bind-data/--file fds the argv
 	// references and the plain host file holding each one's content. See
-	// SUPERVISOR-PHASE1-SPEC.md §4 Step 0.
+	// SUPERVISOR-DESIGN.md §4 Step 0.
 	ArgvFile string `json:"argv_file,omitempty"`
 }
 
@@ -289,7 +289,7 @@ func (s *server) boxcmd(argv []string) response {
 // dumped NUL-separated to argvFile by cmd/snug's Step 0 measurement helper —
 // rather than the PoC's own hand-maintained bwrapBaseArgs(). This is the "have
 // the PoC start it as the sandbox child rather than a hand-built bwrap" half of
-// SUPERVISOR-PHASE1-SPEC.md §4 Step 0.
+// SUPERVISOR-DESIGN.md §4 Step 0.
 func (s *server) realbox(argvFile string) response {
 	if argvFile == "" {
 		return response{Err: "realbox: argv_file is required"}

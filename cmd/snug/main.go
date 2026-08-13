@@ -41,17 +41,17 @@ func main() {
 	// Hidden verbs, dispatched before ANYTHING else — flag parsing, profile
 	// loading, none of it. They are not subcommands: they do not appear in
 	// --help, they are not profiles, and they are reachable only through the
-	// re-exec chain internal/stage builds (P0 -> __stage1 -> __stage2 ->
+	// re-exec chain internal/stage builds (P0 -> __stage-setup -> __stage-serve ->
 	// __innetns -> bwrap). Each refuses immediately when the descriptors it
-	// requires are absent (SUPERVISOR-PHASE1-SPEC.md §4 Step 6), so invoking
+	// requires are absent (SUPERVISOR-DESIGN.md §4 Step 6), so invoking
 	// one directly from a shell fails loudly rather than doing something
 	// undefined with whatever fd 3 happens to be.
 	if len(argv) > 0 {
 		switch argv[0] {
-		case "__stage1":
-			exitOnStageError(stage.Main1())
-		case "__stage2":
-			exitOnStageError(stage.Main2())
+		case "__stage-setup":
+			exitOnStageError(stage.MainSetup())
+		case "__stage-serve":
+			exitOnStageError(stage.MainServe())
 		case "__innetns":
 			exitOnStageError(stage.EnterNetns(argv[1:]))
 		}
@@ -85,7 +85,7 @@ func main() {
 // exitOnStageError is the hidden verbs' whole error handling: they are not
 // user-facing commands, so there is no usage text to print, only "it failed
 // and here is why". A nil err means the verb ran its one job to completion
-// (Main2 returning after "exited" is sent, or EnterNetns's own syscall.Exec
+// (MainServe returning after "exited" is sent, or EnterNetns's own syscall.Exec
 // having failed to even reach a return); either way this call does not return.
 func exitOnStageError(err error) {
 	if err != nil {

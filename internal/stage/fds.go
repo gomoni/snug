@@ -6,7 +6,7 @@ import (
 )
 
 // stageCloneflags is the exact clone(2) flag set Start passes when it forks
-// P1: a fresh user namespace (U, one uid mapped — SUPERVISOR-PHASE1-SPEC.md
+// P1: a fresh user namespace (U, one uid mapped — SUPERVISOR-DESIGN.md
 // §3.6), a fresh network namespace (N, pinned then left — §1), a private
 // mount namespace (§4 Step 4's `mount("", "/", "", MS_REC|MS_PRIVATE, "")`
 // happens inside it), and a fresh cgroup namespace. It is a named constant
@@ -31,11 +31,15 @@ const (
 
 	// 5 .. 5+K-1, K = len(Config.Sandbox): the sandbox's own descriptors (the
 	// generated-file memfds, the seccomp filter, the netns handshake pipes),
-	// passed straight through from P0 in the exact order it built them. P1
-	// never opens or reads any of them; it only forwards the *os.File values,
-	// so the fd numbers already baked into bwrap's own args memfd — which
-	// start at 3 in the FINAL bwrap child, not here — stay correct once
-	// __innetns re-numbers them on the last hop.
+	// passed through from P0 in the exact order it built them. P1 never opens or
+	// reads any of them; it only forwards the *os.File values.
+	//
+	// Who moves the numbers, since an earlier version of this comment named the
+	// wrong party: Go's exec.Cmd machinery does, in runOneSandbox, by dup3'ing
+	// ExtraFiles onto 3..3+K-1 — the numbers already baked into bwrap's args
+	// memfd. __innetns renumbers NOTHING; it setns's, closes the netns fd, seals
+	// and execs the block untouched. dup3 also leaves the SOURCES open in the
+	// child, which is why the seal is not optional (see internal/fdseal).
 	fdSandboxBase = 5
 
 	// fdNetnsN is the descriptor P1 pins on N before it leaves. Chosen high so
@@ -62,7 +66,7 @@ const maxPassthrough = fdNetnsN - fdSandboxBase
 // checkFDBudget refuses a pass-through block that would collide with the
 // pinned netns descriptor, LOUDLY and by name, at the two points where the
 // count is known: P0's stage.Start (where it comes from the resolved policy)
-// and P1's __stage2 (where it arrives over the control socket and is therefore
+// and P1's __stage-serve (where it arrives over the control socket and is therefore
 // input rather than a local fact).
 func checkFDBudget(n int) error {
 	if n < 0 {

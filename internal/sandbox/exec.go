@@ -202,7 +202,7 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 // to and including the args memfd is identical to the non-stage path — flags,
 // extra, the "nothing may be appended after this point" comment, all of it.
 // What changes is who forks bwrap: internal/stage.Start's *Stage, not
-// exec.Command directly. See SUPERVISOR-PHASE1-SPEC.md §4 Step 5.
+// exec.Command directly. See SUPERVISOR-DESIGN.md §4 Step 5.
 //
 // statusR and blockW are the SAME kernel pipe objects the non-stage path uses
 // — their other ends (statusW, blockR) travel to the final bwrap invocation

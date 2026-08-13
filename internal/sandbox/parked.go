@@ -36,6 +36,7 @@ import (
 // # What this closes, and what it does not
 //
 //   - Every code path in snug, present and future, including a panic.
+//
 //   - The catchable termination signals. "The human kills the hung snug" means
 //     SIGINT or SIGTERM in practice, and both used to release the payload:
 //     snug died, its blockW closed, EOF released the parked child, and the
@@ -46,14 +47,24 @@ import (
 //     nothing is installed and Ctrl-C reaches an interactive payload exactly
 //     as before — which matters, because snug deliberately keeps the whole
 //     tree in the terminal's foreground process group.
-//   - SIGKILL of snug during the parked window is NOT closed, and cannot be
-//     from inside snug: bwrap's --die-with-parent has to travel two process
-//     hops (bwrap, then the sandbox's own init) while the EOF is immediate, so
-//     it loses the race. The window is now bounded by pasta's own startup
-//     rather than being indefinite, and closing it for real means starting
-//     pasta before any payload exists — which the stage topology makes
-//     possible and Phase 1 deliberately does not do. TODO.md carries it with
-//     its severity.
+//
+//   - The window is NOT closed, and the reason is not the one this comment
+//     used to give. It said --die-with-parent "has to travel two process hops
+//     … so it loses the race". MEASURED FALSE: bwrap does not arm the init's
+//     --die-with-parent until the --block-fd read RETURNS, so the init is
+//     unprotected for the whole parked window rather than for an instant at
+//     the start of it. And it is not only SIGKILL: SIGTERM during setup
+//     releases the payload too — 10/10, 6/6 and 3/3 in three independent
+//     runs — because this guard is registered only once readChildPID has
+//     returned, roughly 60ms after bwrap already forked and parked the child.
+//     The signals below are handled correctly; they are simply not yet being
+//     watched for when it matters.
+//
+//     The fix is to arm a pid-less guard immediately after the fork and fill
+//     the pid in later, and beyond that to start pasta before any payload
+//     exists — which the stage topology makes possible and Phase 1
+//     deliberately does not do. TODO.md carries it with its severity and with
+//     the corrected mechanism.
 type parked struct {
 	childPID int
 	teardown func()
@@ -100,18 +111,32 @@ func park(childPID int, teardown func()) *parked {
 // been ended by an abort — releasing a payload snug has decided to abandon is
 // the exact failure this type exists to make unreachable.
 func (p *parked) release(blockW *os.File) error {
+	// The lock is held ACROSS the write, and p.over is set only once the write
+	// has succeeded. The earlier version declared the window over first and
+	// wrote afterwards, which is fail-open in the one type written to be
+	// fail-closed: a failed write returned an error to a caller whose deferred
+	// abort was by then a no-op, so the child was never killed and Run's own
+	// `defer blockW.Close()` handed bwrap an EOF — and bwrap releases on EOF
+	// exactly as readily as on a byte. The payload then ran on a run snug had
+	// already reported as failed.
+	//
+	// Holding mu over the write also makes release and abort mutually
+	// exclusive rather than merely ordered. It cannot deadlock: one byte into a
+	// pipe with a live reader does not block, and if the reader is gone the
+	// write fails immediately with EPIPE.
 	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if p.over {
-		p.mu.Unlock()
 		return fmt.Errorf("refusing to release the payload: the run was already aborted")
+	}
+	if _, err := blockW.Write([]byte{0}); err != nil {
+		// Deliberately leaves the window OPEN: nothing was released, so the
+		// caller's deferred abort must still be able to kill the parked child.
+		return fmt.Errorf("releasing the sandbox: %w", err)
 	}
 	p.over = true
 	p.disarmLocked()
-	p.mu.Unlock()
-
-	if _, err := blockW.Write([]byte{0}); err != nil {
-		return fmt.Errorf("releasing the sandbox: %w", err)
-	}
 	// The close is deliberately not reported: once the byte is written the
 	// payload IS running, and failing the run after that point would report a
 	// failure snug did not have and did not act on. Run's own deferred close

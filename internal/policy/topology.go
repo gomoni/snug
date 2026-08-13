@@ -57,7 +57,7 @@ func (m SubuidMode) String() string {
 
 // AttachMode records whether a running sandbox can be joined from outside by a
 // second client. Phase 1 never raises it — there is no listener to attach
-// through (see SUPERVISOR-PHASE1-SPEC.md §3.3) — but the floor and the Join law
+// through (see SUPERVISOR-DESIGN.md §3.3) — but the floor and the Join law
 // land now so Phase 2 has to change a golden to raise it rather than invent the
 // lattice at the same time it uses it.
 type AttachMode uint8
@@ -108,7 +108,7 @@ func (t Topology) String() string {
 }
 
 // NeedsStage reports whether this policy requires a second long-lived process
-// (P1, the namespace holder — see SUPERVISOR-PHASE1-SPEC.md §2) ahead of bwrap.
+// (P1, the namespace holder — see SUPERVISOR-DESIGN.md §2) ahead of bwrap.
 //
 // It is deliberately NOT monotone over Netns: false at the floor (NetnsSandbox),
 // true in the middle (NetnsStage), false at the top (NetnsHost). Raising
@@ -128,7 +128,7 @@ func (t Topology) NeedsStage() bool { return t.Netns == NetnsStage }
 //
 // pm (PodmanMode) is taken and deliberately UNUSED here: Phase 1 delegates no
 // subuids even for PodmanBuild, because the engine still runs on the host and a
-// delegated range would be a capability with no consumer (SUPERVISOR-PHASE1-SPEC.md
+// delegated range would be a capability with no consumer (SUPERVISOR-DESIGN.md
 // §3.6). TestPhase1DelegatesNoSubuids pins that down as a decision, not an
 // oversight, so that Phase 3 raising Subuid for podman is a conscious edit
 // rather than a silent side effect of adding a case here.

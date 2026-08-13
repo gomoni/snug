@@ -85,18 +85,33 @@ func TestAddingAProfileNeverLowersATopologyField(t *testing.T) {
 
 // No Profile field, no TOML key and no CLI flag may produce a Topology — the
 // same device as TestPolicyHasNoRestrictionOperation: checkable by finding
-// none. Profile is the type every TOML key decodes into (internal/profile
-// mirrors its field names 1:1), so grepping its fields is the whole check.
+// none.
+//
+// The literal below is UNKEYED, and that is the entire mechanism. The first
+// version of this test used a keyed literal and claimed "if any of them were
+// named Topology this line would not compile" — false, because a keyed literal
+// compiles perfectly well with fields missing. It was verified fake by adding a
+// `Topology Topology` field to Profile and watching internal/policy,
+// internal/profile and cmd/snug all stay green. An unkeyed literal must supply
+// every field in order, so adding one anywhere breaks this build.
+//
+// Profile is only HALF the surface. TOML decodes into internal/profile's
+// rawProfile, not into Profile, and internal/policy cannot import
+// internal/profile without a cycle — so the other half of this check lives in
+// TestNoTOMLKeyProducesATopology over there. Neither may be deleted as a
+// duplicate of the other.
 func TestTopologyIsDerivedNotSettable(t *testing.T) {
-	// A Profile literal populated with every exported field it has. If any of
-	// them were named Topology (or embedded one), this line would not compile —
-	// which is a stronger guarantee than a string search, and belongs next to
-	// one anyway so the intent survives a refactor that renames the type.
 	_ = Profile{
-		Name: "x", Description: "", Include: nil, RO: nil, RW: nil, Tmpfs: nil, Symlink: nil,
-		Optional: nil, Network: "", DNS: false, Publish: nil,
-		Address: "", Gateway: "", MTU: 0, Podman: "", Identity: nil, Environ: EnvGrants{},
-		Source: "", Trusted: false,
+		"x", "", nil, // Name, Description, Include
+		nil, nil, nil, nil, // RO, RW, Tmpfs, Symlink
+		nil,       // Optional
+		"", false, // Network, DNS
+		nil,       // Publish
+		"", "", 0, // Address, Gateway, MTU
+		"",          // Podman
+		nil,         // Identity
+		EnvGrants{}, // Environ
+		"", false,   // Source, Trusted
 	}
 }
 
@@ -114,7 +129,7 @@ func TestValidateRefusesAnInconsistentTopology(t *testing.T) {
 
 // Phase 1 delegates no subuids, for ANY PodmanMode including PodmanBuild — the
 // engine still runs on the host, so a delegated range would be a capability
-// with no consumer (SUPERVISOR-PHASE1-SPEC.md §3.6). This is the device that
+// with no consumer (SUPERVISOR-DESIGN.md §3.6). This is the device that
 // makes Phase 3 raising it a conscious edit: change this test on purpose, or
 // the change was not conscious.
 func TestPhase1DelegatesNoSubuids(t *testing.T) {
@@ -137,7 +152,7 @@ func TestNeedsStageIsFalseForOfflineAndHost(t *testing.T) {
 	}
 	// NetEgress needs a stage as of Commit B (deriveTopology's doc comment):
 	// bwrap can no longer create N itself and stay the only process in the
-	// tree, because the netns move (SUPERVISOR-PHASE1-SPEC.md §1) has to
+	// tree, because the netns move (SUPERVISOR-DESIGN.md §1) has to
 	// happen in a process that outlives bwrap's own clone. Before Commit B
 	// this assertion read the opposite way — NetEgress NOT needing a stage —
 	// and existed precisely so that commit's diff to deriveTopology would show

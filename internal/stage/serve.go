@@ -11,7 +11,7 @@ import (
 	"github.com/gomoni/snug/internal/fdseal"
 )
 
-// Main2 is __stage2: P1 after the move — same pid, same mount/user/cgroup
+// MainServe is __stage-serve: P1 after the move — same pid, same mount/user/cgroup
 // namespaces, a fresh empty netns of its own, and ONE descriptor (fdNetnsN) on
 // N. THE ORDER IS THE SPECIFICATION:
 //
@@ -28,29 +28,29 @@ import (
 //  6. serve exactly one request, then exit — whatever that request's outcome.
 //     everRan does not exist as a concept: this function returns after one
 //     request, full stop.
-func Main2() error {
+func MainServe() error {
 	requireFD(fdControl, "control")
 	requireFD(fdLife, "lifeline")
 
 	if err := setCloexec(fdNetnsN); err != nil {
-		return fmt.Errorf("__stage2: marking fd %d CLOEXEC: %w", fdNetnsN, err)
+		return fmt.Errorf("__stage-serve: marking fd %d CLOEXEC: %w", fdNetnsN, err)
 	}
 
 	pinned := fdNS(fdNetnsN)
 	if pinned == "" {
-		return fmt.Errorf("__stage2: fd %d does not name a namespace", fdNetnsN)
+		return fmt.Errorf("__stage-serve: fd %d does not name a namespace", fdNetnsN)
 	}
 	if err := validateNetnsFD(fdNetnsN); err != nil {
-		return fmt.Errorf("__stage2: %w", err)
+		return fmt.Errorf("__stage-serve: %w", err)
 	}
 
 	stuck, err := threadsInNamespace(pinned)
 	if err != nil {
-		return fmt.Errorf("__stage2: %w", err)
+		return fmt.Errorf("__stage-serve: %w", err)
 	}
 	if len(stuck) > 0 {
-		return fmt.Errorf("__stage2: %d thread(s) are still in the pinned namespace %s "+
-			"(tids %v) — the move did not survive the exec into __stage2", len(stuck), pinned, stuck)
+		return fmt.Errorf("__stage-serve: %d thread(s) are still in the pinned namespace %s "+
+			"(tids %v) — the move did not survive the exec into __stage-serve", len(stuck), pinned, stuck)
 	}
 
 	control := os.NewFile(fdControl, "control")
@@ -59,12 +59,12 @@ func Main2() error {
 
 	userns := nsID("user")
 	if err := sendEvent(control, event{Op: "ready", Netns: pinned, Userns: userns, NetnsFD: fdNetnsN}); err != nil {
-		return fmt.Errorf("__stage2: reporting ready: %w", err)
+		return fmt.Errorf("__stage-serve: reporting ready: %w", err)
 	}
 
 	req, err := recvRequest(control)
 	if err != nil {
-		return fmt.Errorf("__stage2: reading control request: %w", err)
+		return fmt.Errorf("__stage-serve: reading control request: %w", err)
 	}
 	switch req.Op {
 	case "stop":
@@ -72,20 +72,26 @@ func Main2() error {
 	case "start":
 		return runOneSandbox(control, req)
 	default:
-		return fmt.Errorf("__stage2: unknown control op %q", req.Op)
+		return fmt.Errorf("__stage-serve: unknown control op %q", req.Op)
 	}
 }
 
-// watchLifeline is the teardown trigger. P0 holds the write end of the
-// lifeline pipe and never writes to it; the read end closing (EOF) is the
-// ONLY signal this depends on, because Pdeathsig does NOT survive the
-// stage1->stage2 re-exec (execve sets bprm->secureexec whenever the new
-// permitted capability set is not a subset of the old one, and secureexec
-// zeroes pdeath_signal) — measured, and it is the sharpest single finding in
-// the proof of concept this phase is built from. os.Exit terminates P1
+// watchLifeline is the teardown trigger for the case where P1 can still run
+// code. P0 holds the write end of the lifeline pipe and never writes to it, so
+// the read end closing (EOF) says P0 is gone however it went — including
+// SIGKILL, which gives it no chance to signal anyone. os.Exit terminates P1
 // immediately regardless of what the main goroutine is doing, which in turn
 // makes bwrap's OWN --die-with-parent fire: bwrap's real parent, across every
 // exec in this chain, is P1.
+//
+// This comment used to claim the lifeline is the ONLY signal, because
+// Pdeathsig does not survive the setup->serve re-exec (secureexec zeroing
+// pdeath_signal when the permitted set is not a subset of the old one).
+// MEASURED FALSE, round 3 — capabilities do not widen at that exec, so there is
+// no secureexec and Pdeathsig is preserved. Keep both mechanisms and keep them
+// distinct: this one covers a LIVE P1, and Pdeathsig covers a stopped one,
+// which cannot read anything and so can never see this EOF. See the comment on
+// Pdeathsig in stage.go.
 func watchLifeline(f *os.File) {
 	buf := make([]byte, 1)
 	for {
@@ -109,7 +115,7 @@ func runOneSandbox(control *os.File, req request) error {
 	defer runtime.UnlockOSThread()
 
 	if req.Bwrap == "" {
-		err := fmt.Errorf("__stage2: malformed start request: no bwrap path")
+		err := fmt.Errorf("__stage-serve: malformed start request: no bwrap path")
 		_ = sendEvent(control, event{Op: "started", Err: err.Error()})
 		return err
 	}
@@ -120,7 +126,7 @@ func runOneSandbox(control *os.File, req request) error {
 	// fd 63 and pass the pinned netns descriptor to bwrap as though it were one
 	// of the sandbox's own.
 	if err := checkFDBudget(req.Passthrough); err != nil {
-		err = fmt.Errorf("__stage2: %w", err)
+		err = fmt.Errorf("__stage-serve: %w", err)
 		_ = sendEvent(control, event{Op: "started", Err: err.Error()})
 		return err
 	}
@@ -142,8 +148,12 @@ func runOneSandbox(control *os.File, req request) error {
 	cmd.Env = []string{}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 
-	var pidfd int
-	cmd.SysProcAttr = &syscall.SysProcAttr{PidFD: &pidfd}
+	// No SysProcAttr{PidFD: ...} here. It used to request one into a local that
+	// went out of scope unread and unclosed, so P1 held two pidfds for its one
+	// child: Go's own (os.Process is pidfd-backed, and every kill and wait
+	// already goes through it) and a second with no consumer. Phase 2's pidfd
+	// table is the thing that would justify one; it can request it at the point
+	// it has something to do with it.
 
 	if err := fdseal.SealFor(cmd); err != nil {
 		_ = sendEvent(control, event{Op: "started", Err: err.Error()})
@@ -154,7 +164,7 @@ func runOneSandbox(control *os.File, req request) error {
 
 	// P1 closes its OWN copies of the sandbox's descriptors the instant the
 	// fork returns — whatever the outcome — leaving exactly four open: control,
-	// lifeline, netns, and the forker's own (the pidfd above).
+	// lifeline, netns, and the pidfd Go's own os.Process holds for the child.
 	// TestTheStageHoldsFourDescriptorsAtTheFork is the positive-controlled
 	// assertion of this line.
 	for _, f := range sandboxFDs {
@@ -166,7 +176,7 @@ func runOneSandbox(control *os.File, req request) error {
 		return startErr
 	}
 	if err := sendEvent(control, event{Op: "started"}); err != nil {
-		return fmt.Errorf("__stage2: reporting started: %w", err)
+		return fmt.Errorf("__stage-serve: reporting started: %w", err)
 	}
 
 	waitErr := cmd.Wait()

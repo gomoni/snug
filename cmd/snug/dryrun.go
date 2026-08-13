@@ -610,11 +610,18 @@ func describeNetwork(out *os.File, p *policy.Policy) {
 func describeTopology(out *os.File, p *policy.Policy) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "TOPOLOGY")
+	// One denominator, counted the same way in both arms: every long-lived
+	// process snug will run, snug itself included. The two arms used to count
+	// differently — "1 — bwrap only" excluded snug, "2 — snug, and a stage"
+	// excluded bwrap, and neither mentioned pasta — so the one line a human
+	// reads to answer "how many processes" was wrong under either reading.
 	if !p.Topology.NeedsStage() {
-		fmt.Fprintf(out, "  processes       1 — bwrap only. No stage, no privileged ancestor namespace.\n")
+		fmt.Fprintf(out, "  processes       2 — snug and bwrap. No stage, no privileged ancestor namespace.\n")
 	} else {
-		fmt.Fprintf(out, "  processes       2 — snug, and a stage (P1) that creates the sandbox's\n")
-		fmt.Fprintf(out, "                  network namespace, pins it, and forks bwrap back into it.\n")
+		fmt.Fprintf(out, "  processes       4 — snug, a stage (P1) that creates the sandbox's network\n")
+		fmt.Fprintf(out, "                  namespace, pasta attached to that namespace, and bwrap, which\n")
+		fmt.Fprintf(out, "                  the stage forks back into it. (A fifth, __innetns, is the\n")
+		fmt.Fprintf(out, "                  setns shim that becomes bwrap; it never coexists with it.)\n")
 	}
 	fmt.Fprintf(out, "  netns owner     %s\n", p.Topology.Netns)
 	if p.Topology.NeedsStage() {
@@ -629,12 +636,31 @@ func describeTopology(out *os.File, p *policy.Policy) {
 	} else {
 		fmt.Fprintln(out)
 	}
-	fmt.Fprintf(out, "  control         none (no socket, no listener, nothing to connect to)\n")
+	if !p.Topology.NeedsStage() {
+		fmt.Fprintf(out, "  control         none — there is no stage to control.\n")
+	} else {
+		// Not "none". There IS a channel, and it is the most authority-bearing
+		// object in the topology: one request on it makes the stage execve an
+		// arbitrary path as root-in-U inside N. Saying "no socket" was the half
+		// a reviewer would use to decide there was nothing here to audit.
+		fmt.Fprintf(out, "  control         an anonymous SOCK_SEQPACKET socketpair, inherited, between snug\n")
+		fmt.Fprintf(out, "                  and the stage. UNREACHABLE from the sandbox: no pathname, no\n")
+		fmt.Fprintf(out, "                  listener, and no descriptor for it in the payload's table. It\n")
+		fmt.Fprintf(out, "                  carries exactly one request, once, and the stage then exits.\n")
+	}
 	if p.Topology.NeedsStage() {
+		fmt.Fprintf(out, "  host-visible    the stage's namespaces are nameable from the host by a\n")
+		fmt.Fprintf(out, "                  same-uid process, as /proc/<stage>/ns/user and its pinned\n")
+		fmt.Fprintf(out, "                  /proc/<stage>/fd/<n> for N. Measured equivalent to what such a\n")
+		fmt.Fprintf(out, "                  process can already reach without a stage, via NS_GET_USERNS on\n")
+		fmt.Fprintf(out, "                  the sandbox's own namespace descriptors. Same-uid is outside\n")
+		fmt.Fprintf(out, "                  the threat model either way; it is listed so it is not a\n")
+		fmt.Fprintf(out, "                  surprise.\n")
 		fmt.Fprintf(out, "  lifetime        the stage exits when its one payload does, whatever the\n")
-		fmt.Fprintf(out, "                  outcome, and dies with snug even if snug is SIGKILLed — an\n")
-		fmt.Fprintf(out, "                  inherited pipe (the lifeline), not a signal, is what tears it\n")
-		fmt.Fprintf(out, "                  down, because Pdeathsig does not survive its own re-exec.\n")
+		fmt.Fprintf(out, "                  outcome, and dies with snug even if snug is SIGKILLed. Two\n")
+		fmt.Fprintf(out, "                  mechanisms, covering different failures: an inherited pipe (the\n")
+		fmt.Fprintf(out, "                  lifeline) for a stage that can still run code, and Pdeathsig\n")
+		fmt.Fprintf(out, "                  for one that is stopped and cannot.\n")
 		fmt.Fprintf(out, "  abuse sentence  a hostile process inside the sandbox gains no new reach — the\n")
 		fmt.Fprintf(out, "                  stage is in neither its network namespace nor its pid\n")
 		fmt.Fprintf(out, "                  namespace, binds nothing it can name, and holds no descriptor\n")

@@ -9,7 +9,7 @@ import (
 	"github.com/gomoni/snug/internal/profile"
 )
 
-// The review artifact for SUPERVISOR-PHASE1-SPEC.md's topology work: the
+// The review artifact for SUPERVISOR-DESIGN.md's topology work: the
 // TOPOLOGY block of --dry-run, resolved against profile.Builtins() (the REAL
 // profiles), in the shape of TestGoldenEnvironment above.
 //

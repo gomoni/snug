@@ -33,7 +33,7 @@ import (
 // uid mapped, which forecloses a subuid range later (podman) and puts a process
 // snug does not control at the root of the tree.
 //
-// NetnsStage (policy.NetnsStage, SUPERVISOR-PHASE1-SPEC.md §2): a second
+// NetnsStage (policy.NetnsStage, SUPERVISOR-DESIGN.md §2): a second
 // long-lived process, P1, creates the netns, pins it with a descriptor, LEAVES
 // it, and forks bwrap back into it through a setns shim. bwrap's own argv is
 // byte-identical to the NetnsSandbox case except for the enumerated

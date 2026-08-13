@@ -23,7 +23,9 @@ This was `DESIGN.md`, a single 1768-line document written **before most of the c
 | document | the question it answers |
 |---|---|
 | [`ENGINE-NETNS.md`](ENGINE-NETNS.md) | Why a container started through `@podman-socket` has the *engine's* network and not the sandbox's — and what moving the engine into the sandbox's netns costs. §0 is the canonical write-up of that finding; §5 is the plan. |
-| [`SUPERVISOR.md`](SUPERVISOR.md) | The fork-exec topology: one child holds the user and network namespaces, and the sandbox, the engine and any later payload hang off it as siblings. Answers ENGINE-NETNS's problem from the other side, adds `snug attach`, and measures how much of the container proxy it deletes. Proof of concept in `poc/nsd`. |
+| [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md) | The stage, as built: `@net` forks a second long-lived process that creates the sandbox's network namespace, pins it, leaves it, and forks bwrap back into it — so a later phase can put the container engine in the same namespace. What was measured first, what each decision overruled, and what the reviews found. Proof of concept in `poc/nsd`. |
+| [`NOCGO.md`](NOCGO.md) | Why snug builds with `CGO_ENABLED=0`, what that costs, and the measurements that made it affordable — including why `setns` into a user or mount namespace is closed to pure Go and why that turned out not to matter. |
+| [`PODMAN-STATIC.md`](PODMAN-STATIC.md) | A pinned, self-contained rootless engine, for hosts where `/usr/bin/podman` is a shim that escapes to the host. The fallback that unblocked the engine measurements. |
 | [`SECRETS.md`](SECRETS.md) | Which credentials reach a sandbox, why each is or is not allowed, the severity model, and brokering versus injection. |
 | [`CONTAINER-CLIENT.md`](CONTAINER-CLIENT.md) | Which container CLI actually works inside the sandbox, measured — and the `podman` stub that replaces a host-escape shim. |
 | [`ENVIRONMENT-VARIABLES.md`](ENVIRONMENT-VARIABLES.md) | The environment configuration format: five `environ` verbs, the variable type table, resolution order, and the measured evidence behind each rule. |

@@ -1,6 +1,6 @@
 
 TOPOLOGY
-  processes       1 — bwrap only. No stage, no privileged ancestor namespace.
+  processes       2 — snug and bwrap. No stage, no privileged ancestor namespace.
   netns owner     host
   subuid          none (no delegated range; nothing needs one yet)
-  control         none (no socket, no listener, nothing to connect to)
+  control         none — there is no stage to control.

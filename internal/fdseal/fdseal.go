@@ -3,7 +3,7 @@
 // was asked to install and nothing else.
 //
 // It exists as its own package, rather than staying the one function it used
-// to be in internal/sandbox, because SUPERVISOR-PHASE1-SPEC.md's stage (P1) is
+// to be in internal/sandbox, because SUPERVISOR-DESIGN.md's stage (P1) is
 // a LONG-LIVED process that forks more than once. internal/sandbox's snug is a
 // one-shot process: it opens exactly the descriptors one sandbox needs and
 // forks exactly once. A long-lived forker is a different animal — its own
@@ -95,16 +95,30 @@ func Seal() error { return sealExcept(nil) }
 // request rather than written down, in the same spirit as Seal's empty one.
 func SealExcept(keep ...int) error { return sealExcept(keep) }
 
+// sealExcept is FATAL on failure, and the reason is worth stating because the
+// first version of it was not.
+//
+// It used to return nil when /proc/self/fd could not be opened or read,
+// commented "not fatal: Go already marks its own fds CLOEXEC". That sentence is
+// true of Go's OWN descriptors and false of precisely the ones this function
+// exists to close: the descriptors Go was TOLD to install without
+// close-on-exec, which is the entire content of finding F1. A sweep that
+// reports success and seals nothing is invariant 5's silent downgrade inside
+// the one function the F1 fix rests on — and at SealExcept's caller, the raw
+// syscall.Exec in __innetns, there is no second line of defence, so the args
+// memfd reaches the payload read-write.
+//
+// Both call sites already propagate the error, so failing here fails the run.
 func sealExcept(keep []int) error {
 	dir, err := os.Open("/proc/self/fd")
 	if err != nil {
-		return nil // not fatal: Go already marks its own fds CLOEXEC
+		return fmt.Errorf("fdseal: opening /proc/self/fd to seal descriptors: %w", err)
 	}
 	defer dir.Close()
 
 	names, err := dir.Readdirnames(-1)
 	if err != nil {
-		return nil
+		return fmt.Errorf("fdseal: reading /proc/self/fd to seal descriptors: %w", err)
 	}
 
 	spare := map[int]bool{int(dir.Fd()): true}
@@ -119,7 +133,14 @@ func sealExcept(keep []int) error {
 		}
 		flags, _, errno := unix.Syscall(unix.SYS_FCNTL, uintptr(fd), unix.F_GETFD, 0)
 		if errno != 0 {
-			continue
+			// EBADF here means the descriptor was closed between Readdirnames
+			// and now — the listing is a snapshot — and a closed descriptor is
+			// not a leak. Any other errno is a descriptor this sweep could not
+			// account for, which is the thing it exists to prevent.
+			if errno == unix.EBADF {
+				continue
+			}
+			return fmt.Errorf("fdseal: reading flags of fd %d: %w", fd, errno)
 		}
 		if flags&unix.FD_CLOEXEC != 0 {
 			continue

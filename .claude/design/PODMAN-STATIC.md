@@ -6,7 +6,9 @@ Provisioning, 2026-08-12, by `host-bridge`. Every claim below is tagged
 
 ## 0. What this is and what it is not
 
-SUPERVISOR-PLAN §2 makes Phase 0a the kill gate on the engine leg, and 0a has
+The supervisor implementation plan — a working document held outside version
+control, so do not go looking for it in a clone — makes Phase 0a the kill gate
+on the engine leg, and 0a has
 never been run because `/usr/bin/podman` on this host is a distrobox shim. This
 document removes that excuse: **a real, local, rootless container engine now
 runs here, and one command line invokes it.**
