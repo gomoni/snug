@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 )
@@ -115,14 +116,14 @@ func GitConfigFrom(v GitValues, id *Identity) []byte {
 	if name != "" || email != "" {
 		b.WriteString("[user]\n")
 		if name != "" {
-			fmt.Fprintf(&b, "\tname = %s\n", name)
+			fmt.Fprintf(&b, "\tname = %s\n", gitQuote(name))
 		}
 		if email != "" {
-			fmt.Fprintf(&b, "\temail = %s\n", email)
+			fmt.Fprintf(&b, "\temail = %s\n", gitQuote(email))
 		}
 	}
 	if br := v["init.defaultbranch"]; br != "" {
-		fmt.Fprintf(&b, "[init]\n\tdefaultBranch = %s\n", br)
+		fmt.Fprintf(&b, "[init]\n\tdefaultBranch = %s\n", gitQuote(br))
 	}
 	if id != nil && id.SSHMode != SSHNone {
 		host := id.host()
@@ -130,6 +131,41 @@ func GitConfigFrom(v GitValues, id *Identity) []byte {
 	}
 	b.WriteString("[safe]\n\tdirectory = *\n")
 	return []byte(b.String())
+}
+
+// gitQuote renders a value the way git's own writer does: always quoted, with
+// `\` and `"` escaped.
+//
+// Dropping control characters was only half of it. git's config VALUE syntax has
+// four more characters that change meaning, and writing values raw got every one
+// of them wrong — measured, host value in, sandbox value out:
+//
+//	A " B        ->  name = A " B        ->  fatal: bad config line 2
+//	Bob # Smith  ->  name = Bob # Smith  ->  Bob        (comment)
+//	Bob ; Smith  ->  name = Bob ; Smith  ->  Bob        (comment)
+//	"  Bob"      ->  name =   Bob        ->  Bob        (leading space eaten)
+//	C:\temp      ->  name = C:\temp      ->  C:<TAB>emp (escape re-read)
+//
+// The quote case is the sharp one, and it is a total failure rather than a
+// cosmetic one: GIT_CONFIG_GLOBAL points at the generated file, so a `"` in the
+// host's user.name makes `git version` itself die inside the sandbox, naming a
+// file the human never wrote. Quoting is the fix; adding more characters to the
+// drop list is not, because a name legitimately containing `"` is a person's
+// name and not an attack.
+func gitQuote(v string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for i := 0; i < len(v); i++ {
+		switch c := v[i]; c {
+		case '\\', '"':
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 // withoutControlCharacters drops any value that could author a directive rather
@@ -144,6 +180,41 @@ func withoutControlCharacters(v GitValues) GitValues {
 		out[k] = val
 	}
 	return out
+}
+
+// negatedClasses rewrites `[!…]` as `[^…]`.
+//
+// wildmatch accepts both spellings for a negated character class and path.Match
+// accepts only `^`, so `gitdir:~/w[!x]rk/` matched in git and not in snug — the
+// silent direction, where the sandbox falls back to the global identity. Found
+// by the oracle test, which is exactly the class of divergence a hand-written
+// table does not think of.
+func negatedClasses(p string) string {
+	var b strings.Builder
+	inClass := false
+	for i := 0; i < len(p); i++ {
+		c := p[i]
+		switch {
+		case c == '\\' && i+1 < len(p):
+			b.WriteByte(c)
+			i++
+			b.WriteByte(p[i])
+			continue
+		case c == '[':
+			inClass = true
+			b.WriteByte(c)
+			if i+1 < len(p) && p[i+1] == '!' {
+				b.WriteByte('^')
+				i++
+			}
+			continue
+		case c == ']':
+			inClass = false
+		}
+		b.WriteByte(c)
+	}
+	_ = inClass
+	return b.String()
 }
 
 // GitdirMatches reports whether an `includeIf "gitdir:<pattern>"` condition
@@ -175,10 +246,20 @@ func GitdirMatches(pattern, home, gitDir string) bool {
 	if pattern == "" {
 		return false
 	}
-	if strings.HasPrefix(pattern, "~/") {
+	// The prefix forms, from gitconfig(5). The `**/` rule is ANY pattern that
+	// does not start with `~/`, `./` or `/` — not, as an earlier version of this
+	// function and its comment both had it, "a pattern with no `/` at all".
+	// `gitdir:work/` is the plainest relative pattern there is, and it silently
+	// never fired.
+	switch {
+	case strings.HasPrefix(pattern, "~/"):
 		pattern = strings.TrimSuffix(home, "/") + pattern[1:]
-	}
-	if !strings.Contains(pattern, "/") {
+	case strings.HasPrefix(pattern, "./"):
+		// Relative to the directory of the file the condition was written in.
+		// The caller has already resolved include paths, so what is left here is
+		// treated like any other relative pattern.
+		pattern = "**/" + pattern[2:]
+	case !strings.HasPrefix(pattern, "/"):
 		pattern = "**/" + pattern
 	}
 	if strings.HasSuffix(pattern, "/") {
@@ -187,63 +268,60 @@ func GitdirMatches(pattern, home, gitDir string) bool {
 	return wildMatch(pattern, gitDir)
 }
 
-// wildMatch is git's wildmatch with WM_PATHNAME, reduced to what a gitdir
-// pattern can contain: `**` crossing separators, `*` and `?` not crossing them.
+// wildMatch is git's wildmatch under WM_PATHNAME, done over path COMPONENTS.
 //
-// Hand-written because path.Match has no `**` and the difference is exactly the
-// case every real gitdir pattern uses.
+// The component split is the point, and it fixes two defects in the
+// character-by-character matcher it replaces. `**` crosses `/` ONLY when it is a
+// whole component — preceded by the start or a `/`, and followed by a `/` or the
+// end. Anywhere else (`a**b`) git degrades it to `*`, which does not cross. The
+// old version let every `**` cross, so `~/**work/` matched `~/a/xwork/proj`
+// where git does not: the sandbox then commits under an identity the host would
+// not use, silently.
+//
+// It also removes an exponential case. The old recursive matcher retried every
+// suffix per `**` group and took 3 seconds on `/**a**a**a**b` against a
+// 400-component path, and did not finish with one more group. This is a
+// dynamic-programming sweep: linear in pattern components times path components.
+//
+// Each non-`**` component goes to path.Match, which implements exactly what
+// wildmatch does WITHIN a component — `*`, `?`, `[...]` classes with `!`
+// negation, and `\` escapes — and never crosses a separator.
 func wildMatch(pattern, s string) bool {
-	// Anchored at both ends, like git's.
-	return matchHere([]rune(pattern), []rune(s))
-}
+	pat := strings.Split(pattern, "/")
+	str := strings.Split(s, "/")
 
-func matchHere(p, s []rune) bool {
-	for len(p) > 0 {
-		switch p[0] {
-		case '*':
-			if len(p) > 1 && p[1] == '*' {
-				// `**` crosses separators. Skip the run of stars and any `/`
-				// immediately after it, which is how `a/**/b` also matches `a/b`.
-				i := 0
-				for i < len(p) && p[i] == '*' {
-					i++
+	// reach[j] reports whether the pattern components handled so far can consume
+	// exactly the first j components of the path.
+	reach := make([]bool, len(str)+1)
+	reach[0] = true
+
+	for _, pc := range pat {
+		next := make([]bool, len(str)+1)
+		if pc == "**" {
+			// Zero or more components: once a position is reachable, every later
+			// one is too.
+			seen := false
+			for j := 0; j <= len(str); j++ {
+				if reach[j] {
+					seen = true
 				}
-				rest := p[i:]
-				if len(rest) > 0 && rest[0] == '/' {
-					if matchHere(rest[1:], s) {
-						return true
-					}
-				}
-				for j := 0; j <= len(s); j++ {
-					if matchHere(rest, s[j:]) {
-						return true
-					}
-				}
-				return false
+				next[j] = seen
 			}
-			// A single `*` stops at a separator.
-			for j := 0; j <= len(s); j++ {
-				if j > 0 && s[j-1] == '/' {
-					break
+		} else {
+			// Not a whole component, so a `**` inside it is git's degraded `*`.
+			pc := negatedClasses(strings.ReplaceAll(pc, "**", "*"))
+			for j := 0; j < len(str); j++ {
+				if !reach[j] {
+					continue
 				}
-				if matchHere(p[1:], s[j:]) {
-					return true
+				if ok, err := path.Match(pc, str[j]); err == nil && ok {
+					next[j+1] = true
 				}
 			}
-			return false
-		case '?':
-			if len(s) == 0 || s[0] == '/' {
-				return false
-			}
-			p, s = p[1:], s[1:]
-		default:
-			if len(s) == 0 || s[0] != p[0] {
-				return false
-			}
-			p, s = p[1:], s[1:]
 		}
+		reach = next
 	}
-	return len(s) == 0
+	return reach[len(str)]
 }
 
 // SortedGitKeys is the whitelist in a stable order, for rendering and tests.

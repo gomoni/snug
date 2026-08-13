@@ -46,7 +46,10 @@ func TestExtractGitConfigHonoursGitdirIncludes(t *testing.T) {
 	globalFile, work, other := writeGitFixture(t)
 	t.Setenv("GIT_CONFIG_GLOBAL", globalFile)
 
-	got := extractGitConfig("/home/u", work, false)
+	got, err := extractGitConfig("/home/u", work)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got["user.email"] != "included@example.invalid" {
 		t.Errorf("user.email = %q, want the included value: a gitdir condition that "+
 			"does not fire silently gives the sandbox the wrong identity", got["user.email"])
@@ -57,7 +60,10 @@ func TestExtractGitConfigHonoursGitdirIncludes(t *testing.T) {
 
 	// The control: a target outside the pattern keeps the global identity. A
 	// matcher that always fires would pass the assertion above.
-	got = extractGitConfig("/home/u", other, false)
+	got, err = extractGitConfig("/home/u", other)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got["user.email"] != "global@example.invalid" {
 		t.Errorf("user.email = %q for a target outside the gitdir pattern, want the "+
 			"global value", got["user.email"])
@@ -83,7 +89,10 @@ func TestExtractGitConfigDropsAValueThatWouldAuthorADirective(t *testing.T) {
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", global)
 
-	got := extractGitConfig("/home/u", filepath.Join(root, "proj"), false)
+	got, err := extractGitConfig("/home/u", filepath.Join(root, "proj"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, ok := got["user.name"]; ok {
 		t.Errorf("a multi-line user.name survived extraction: %q", got["user.name"])
 	}
@@ -99,7 +108,10 @@ func TestExtractGitConfigCarriesNoKeyThatNamesAProgram(t *testing.T) {
 	globalFile, work, _ := writeGitFixture(t)
 	t.Setenv("GIT_CONFIG_GLOBAL", globalFile)
 
-	got := extractGitConfig("/home/u", work, false)
+	got, err := extractGitConfig("/home/u", work)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) == 0 {
 		t.Fatal("nothing extracted, so this proves nothing")
 	}

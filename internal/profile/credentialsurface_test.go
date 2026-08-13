@@ -1,6 +1,8 @@
 package profile
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -75,9 +77,19 @@ func TestNoBuiltinGrantsACredentialOrCommandTablePath(t *testing.T) {
 // Matching is on the path's tail, after `{home}`/`~` expansion, so it catches
 // the same file wherever a profile spells it from.
 func sensitiveHostPath(p string) string {
+	// Normalise every spelling a profile can legally write, because the first
+	// version compared raw TOML text and an independent review walked straight
+	// through it: `{home}//.ssh`, `{home}/./.ssh`, `{home}/.config/../.ssh` and
+	// the absolute `/home/<user>/.ssh` all returned "ordinary".
+	if home, err := os.UserHomeDir(); err == nil && home != "/" {
+		p = strings.TrimPrefix(p, home)
+	}
 	p = strings.TrimPrefix(strings.TrimPrefix(p, "{home}"), "~")
+	p = filepath.Clean("/" + p)
 	p = strings.TrimPrefix(p, "/")
-	p = strings.TrimSuffix(p, "/")
+	if p == "." {
+		p = ""
+	}
 
 	for _, c := range []struct{ path, why string }{
 		// Key material and tokens.
@@ -115,8 +127,16 @@ func sensitiveHostPath(p string) string {
 		{".vimrc", "COMMAND TABLE: editor config executes on open"},
 		{".config/containers", "COMMAND TABLE: names the runtime binaries an engine executes"},
 	} {
-		if p == c.path || strings.HasPrefix(p, c.path+"/") {
+		switch {
+		// The grant IS the path, or is inside it.
+		case p == c.path, strings.HasPrefix(p, c.path+"/"):
 			return c.why
+		// The grant is an ANCESTOR of it, which is the direction the first
+		// version missed entirely: a builtin granting `{home}/.claude` passed a
+		// test whose `.claude/.credentials.json` entry exists precisely to stop
+		// that, and `{home}` itself passed everything.
+		case p == "" || strings.HasPrefix(c.path, p+"/"):
+			return c.why + " (reached through an ancestor grant)"
 		}
 	}
 	return ""
@@ -129,6 +149,12 @@ func TestTheCredentialCatalogueActuallyMatches(t *testing.T) {
 	for _, spelling := range []string{
 		"{home}/.ssh", "~/.ssh", "{home}/.ssh/id_ed25519", "{home}/.gitconfig",
 		"{home}/.config/gh", "{home}/.aws/credentials", "{home}/.local/share/keyrings",
+		// Spellings an independent review walked straight through. The first
+		// version compared raw TOML text, so every one of these read as ordinary.
+		"{home}//.ssh", "{home}/./.ssh", "{home}/.config/../.ssh", "{home}/.ssh/",
+		// And the ANCESTOR direction, which it missed entirely: granting the
+		// parent of a catalogued path hands over the path.
+		"{home}", "{home}/", "{home}/.config", "{home}/.cargo",
 	} {
 		if why := sensitiveHostPath(spelling); why == "" {
 			t.Errorf("the catalogue does not recognise %q; every grant would pass this "+
@@ -137,10 +163,18 @@ func TestTheCredentialCatalogueActuallyMatches(t *testing.T) {
 	}
 	// And it must not fire on the ordinary grants the builtins really make, or
 	// the next person deletes it instead of fixing what it caught.
+	//
+	// `{home}/.claude/settings.json` is deliberately NOT in this list any more.
+	// `@claude` binds it read-only, and it carries `hooks` (shell commands run on
+	// tool events) and `apiKeyHelper` (a program that prints a credential —
+	// `credential.helper`'s exact shape), so by this file's own definition it is
+	// a COMMAND TABLE. Asserting it is ordinary recorded a decision nobody made.
+	// It is not in the catalogue either, because adding it without also
+	// generating a filtered copy would just fail the build — it is written up in
+	// TODO.md as a confirmed open finding instead of blessed here.
 	for _, ordinary := range []string{
 		"/usr", "/etc/passwd", "{home}/.local/bin/claude", "{home}/.claude/skills",
-		"{home}/.claude/settings.json", "{home}/.local/share/claude", "{target}",
-		"/etc/containers",
+		"{home}/.local/share/claude", "{target}", "/etc/containers",
 	} {
 		if why := sensitiveHostPath(ordinary); why != "" {
 			t.Errorf("the catalogue fires on %q (%s), which is an ordinary grant", ordinary, why)

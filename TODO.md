@@ -777,6 +777,29 @@ to one of its two halves*. Regression tests at three levels: the renderer
 inside a real sandbox (`TestNoHostGitValueCanRunACommandInsideTheSandbox`, which
 asserts the artifact the injected command would have created does not exist).
 
+**An independent review then found eight more, all fixed in the same branch.**
+Worth reading as a set, because six of the eight are the same shape — snug now
+owns semantics that used to be git's, and owning them means owning every way
+they can drift:
+
+- values were written unquoted, so `#`, `;`, a leading space and `\` changed
+  meaning, and a `"` in the host's `user.name` made **`git version` itself fail**
+  inside the sandbox. Now re-quoted and escaped.
+- the `gitdir:` matcher disagreed with git in **seven** measured cases, in both
+  directions (relative patterns, `./`, character classes, escapes, `**` treated
+  as always crossing `/`, a symlinked target, and `gitdir/i` on a home path with
+  a capital). Rewritten component-wise, which also removed an exponential case,
+  and pinned by an ORACLE test that asks real git for the answer per case.
+- unconditional `[include] path = …` was not followed at all — the commonest way
+  people split a gitconfig.
+- `includeIf "onbranch:"` was ignored silently while `hasconfig:` was ignored
+  loudly; both are decided by the sandboxed material, so both are named now.
+- four silent-downgrade paths (no git on the host, a file git refuses to parse,
+  nothing extracted) now report, with the identity band's dry-run/real-run split.
+- `Git` was missing from `canon()`, so the commutativity and idempotence sweeps
+  did not cover the new scalar — the exact omission that function's own comment
+  warns about.
+
 Left open from that work:
 
 - **[gap] Signed commits still do not work inside.** The signing keys
@@ -791,10 +814,30 @@ Left open from that work:
   line sits, so a later key beats the included file; snug overlays matched
   includes after the whole global file. Only observable when the same whitelisted
   key appears both after an include and inside it. Written up in GIT-CONFIG.md §7.
+- **[🟡 confirmed] `@claude` binds `~/.claude/settings.json` read-only, and that
+  file is a command table.** It carries `hooks` — shell commands run on tool
+  events — and `apiKeyHelper`, a program that prints a credential, which is
+  `credential.helper`'s exact shape. Every word of the `@git-ro` argument applies
+  to it: read-only does not restrain those keys, it supplies them. Found by an
+  independent review, which also caught the catalogue test *asserting the path
+  was ordinary* — a decision nobody made, now removed.
+
+  Not fixed here because the fix is the same one git got and it is a piece of
+  work: stage a FILTERED copy (drop `hooks`, `apiKeyHelper`, `env`; keep the
+  rest) instead of binding the host's. Until then the path is deliberately absent
+  from the catalogue rather than blessed in it, and this entry is the record.
+  Note the threat is narrower than git's — the host file is the user's own and
+  the sandbox cannot write it — but "the user's own config runs commands inside
+  the sandbox" is exactly what `@git-ro` used to say too.
 - **[gap] The catalogue is a fixed list.** It knows the tools we thought of. A
   config file that becomes a command table when its upstream adds a hook key
   passes it silently — which is precisely what the red team's inventory sweep is
   for.
+- **[gap] The two-file global path has no test coverage.** `globalGitFiles`
+  returns `$XDG_CONFIG_HOME/git/config` then `~/.gitconfig`, matching git's merge
+  order so the later file wins — but every test sets `GIT_CONFIG_GLOBAL`, which
+  takes the single-file branch. The ordering is right by reading and untested by
+  execution.
 
 ### Identity: what the two-account work found, and what it left open
 

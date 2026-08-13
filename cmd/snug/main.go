@@ -243,6 +243,15 @@ func run(cfg config) int {
 		}
 	}
 
+	// Reading the host's git config can fail in ways that must not be silent —
+	// no git installed, a file git refuses to parse — so it happens here, where
+	// the error can still be reported, rather than inside the pure resolver.
+	hostGit, err := hostGitValues(reg, selected, home, abs, cfg.verbose, cfg.dryRun)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
+		return exitPolicy
+	}
+
 	ctx := policy.Context{
 		Target:          abs,
 		HostTmpDir:      hostTmp,
@@ -255,7 +264,7 @@ func run(cfg config) int {
 		LegacyTIOCSTI:   legacyTIOCSTI(),
 		HostNameservers: hostNameservers(),
 		KnownHosts:      knownHostsFor(identityHost(reg, selected)),
-		HostGit:         hostGitValues(reg, selected, home, abs, cfg.verbose),
+		HostGit:         hostGit,
 		HostShims:       detectHostShims(),
 	}
 

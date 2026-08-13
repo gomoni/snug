@@ -174,6 +174,40 @@ the renderer next.
 **The general shape, for the third time in this project: a rule written once and
 applied to one of its two halves.** Keys were bounded; values were not.
 
+## 5b. Owning the matcher means owning its divergences
+
+An independent review found **seven** cases where snug's `gitdir:` matcher
+disagreed with git, in both directions. Both directions are silent, and both are
+wrong in the same way — the sandbox commits under an identity the human did not
+choose:
+
+| what | direction |
+|---|---|
+| `gitdir:work/` and every other relative pattern | git fires, snug did not — the `**/` prefix rule is *any* pattern not starting with `~/`, `./` or `/`, not "a pattern with no `/`" |
+| `./rel/` | git fires, snug did not — the form was unimplemented |
+| `[wp]ork`, `w[!x]rk`, `wo\rk` | git fires, snug did not — classes and escapes are wildmatch features, not extras |
+| `~/**work/` against `~/a/xwork/proj` | snug fired, git does not — `**` crosses `/` **only as a whole component**; elsewhere it degrades to `*` |
+| a target reached through a symlink | snug fired, git does not — git matches the **real** path (`strbuf_realpath`) |
+| `gitdir/i:` on a host whose home has a capital | git fires, snug did not — the pattern and the gitdir were lowercased and `home` was not |
+
+The matcher is now component-wise: split both sides on `/`, `**` as a whole
+component consumes zero or more components, everything else goes to
+`path.Match`, which implements what wildmatch does *within* a component. That
+also removed an exponential case — the old character-wise version took 3 seconds
+on `/**a**a**a**b` against a 400-component path and did not finish with one more
+group.
+
+**The durable answer is the oracle**, not the fix:
+`TestGitdirMatcherAgreesWithRealGit` (cmd/snug) builds a real repository and a
+real config per case, asks *git* whether the include fired, and compares. A
+hand-written table only tests the cases someone thought of, and the seven above
+are the proof of it.
+
+Unconditional `[include] path = …` is followed too — the commonest way people
+split a gitconfig, and it was not read at all. `includeIf "onbranch:"` joins
+`hasconfig:` in being ignored-and-named: both are decided by the sandboxed
+material.
+
 ## 6. What a human sees
 
 ```
@@ -197,11 +231,15 @@ a pin.
 
 Stated because a divergence nobody wrote down is a bug report waiting to happen:
 
-- **Ordering.** git applies an include at the point the `includeIf` line appears,
-  so a key *after* the include wins over the included file. snug folds the global
-  file first and overlays matched includes, so an included value wins regardless
-  of line order. Only observable when the same whitelisted key appears both
-  after an include and inside it.
+- **Ordering matches git**, and an earlier draft of this document said it did
+  not. `git config --list` emits entries in file order and the recursion happens
+  at the include's position inside the same loop, so a whitelisted key written
+  after an include still overrides it, exactly as git does.
+- **Values are re-quoted.** snug writes `key = "value"` with `\` and `"`
+  escaped, because writing them raw made `#`, `;`, a leading space and `\` change
+  meaning, and a `"` in the host's `user.name` made `git version` itself fail
+  inside the sandbox. The value the sandbox sees is the value git reported, not
+  the bytes the host file used to spell it.
 - **Nesting.** Includes nest to depth 8 and then stop. A deeper chain is a
   configuration nobody has, and an unbounded one is a hang.
 - **`hasconfig:`** — §4, deliberate.

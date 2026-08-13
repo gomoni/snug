@@ -38,6 +38,7 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 	describeNetwork(out, p)
 	describeTopology(out, p)
 	describeContainers(out, p)
+	describeGit(out, p)
 	describeCommands(out, p)
 	if p.NewSession {
 		fmt.Fprintf(out, "TTY      --new-session (this kernel allows TIOCSTI, so the sandbox is kept\n")
@@ -489,6 +490,29 @@ func describeContainers(out *os.File, p *policy.Policy) {
 	fmt.Fprintf(out, "         Planned fix: engine inside the sandbox's netns, after which the\n")
 	fmt.Fprintf(out, "         '@net' include goes away and both lines above stop being true.\n")
 	fmt.Fprintf(out, "         Design and feasibility: .claude/design/ENGINE-NETNS.md\n")
+}
+
+// describeGit states that the sandbox's git config was RECONSTRUCTED, and from
+// what.
+//
+// A `data ~/.gitconfig` row on its own says a file was generated; it does not say
+// that the host's was read to build it, nor that most of the host's file was
+// deliberately left behind. Both are decisions a human is entitled to see before
+// they run something — the first is host IO, the second is why their aliases are
+// missing inside.
+//
+// It also gives Policy.Git a reader. A field that is written and never read is a
+// field nobody notices going wrong.
+func describeGit(out *os.File, p *policy.Policy) {
+	if p.Git != policy.GitExtract {
+		return
+	}
+	fmt.Fprintf(out, "GIT      config RECONSTRUCTED from the host's, never bound\n")
+	fmt.Fprintf(out, "         carried    %s\n", strings.Join(policy.SortedGitKeys(), " "))
+	fmt.Fprintf(out, "         left out   everything that names a program — credential.helper,\n")
+	fmt.Fprintf(out, "                    alias = !cmd, core.pager, core.sshCommand, textconv\n")
+	fmt.Fprintf(out, "         includeIf  \"gitdir:\" evaluated against this target; \"hasconfig:\"\n")
+	fmt.Fprintf(out, "                    and \"onbranch:\" ignored — the repository decides those\n")
 }
 
 // describeCommands names EVERY executable staged in policy.StagedBinDir, which

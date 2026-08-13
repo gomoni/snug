@@ -38,7 +38,7 @@ func TestGitdirMatches(t *testing.T) {
 		want    bool
 	}{
 		{"trailing slash matches everything below", "~/work/", "/home/u/work/proj/.git", true},
-		{"trailing slash does not match a sibling", "~/work/", "/home/u/personal/proj/.git", true == false},
+		{"trailing slash does not match a sibling", "~/work/", "/home/u/personal/proj/.git", false},
 		{"absolute pattern", "/srv/repos/", "/srv/repos/a/.git", true},
 		{"exact directory, no trailing slash", "~/work/proj/.git", "/home/u/work/proj/.git", true},
 		{"a bare name is prefixed with **/", "work", "/home/u/x/work", true},
