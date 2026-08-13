@@ -937,6 +937,127 @@ pgrep -a bwrap || echo "no leftovers: ok"
 Expect the bwrap process to be gone. `--die-with-parent` kills the payload even
 when snug is SIGKILLed and cannot clean up after itself.
 
+## 12. The stage — a `@net` sandbox has a second process ahead of it
+
+Since Phase 1 (`.claude/design/SUPERVISOR-PHASE1-SPEC.md`), a `-p @net` run
+starts a second long-lived process (P1, "the stage") that creates the sandbox's
+network namespace, pins it, leaves it, and forks bwrap back into it. This is the
+by-hand form of that phase's exit criteria — `snug --dry-run` shows the same
+facts under a `TOPOLOGY` block; this section confirms them against the kernel,
+not against snug's own claim about itself.
+
+```bash
+./bin/snug --dry-run -p @net $SC/proj/sub | sed -n '/^TOPOLOGY/,/^$/p'
+```
+
+Expect `netns owner     stage`, `processes       2 — snug, and a stage (P1)…`,
+and `control         none (no socket, no listener, nothing to connect to)`.
+Compare against a run with no `@net`:
+
+```bash
+./bin/snug --dry-run $SC/proj/sub | sed -n '/^TOPOLOGY/,/^$/p'
+```
+
+Expect `processes       1 — bwrap only. No stage, no privileged ancestor
+namespace.` — a bare `snug <dir>` starts no second process at all.
+
+**The sandbox's netns is not P0's**, and neither side may be trusted if it
+reads empty:
+
+```bash
+readlink /proc/self/ns/net
+./bin/snug -p @net $SC/proj/sub -- /bin/sh -c 'readlink /proc/self/ns/net'
+```
+
+Expect two different `net:[…]` ids. (Development host: `net:[4026531833]` vs
+`net:[4026532443]`.)
+
+**The thread sweep — this is the check `/proc/<pid>/ns/net` cannot make.**
+`unshare(CLONE_NEWNET)` is per-task (see CLAUDE.md), so the only trustworthy way
+to ask "did every thread of the stage leave the sandbox's namespace" is to sweep
+every thread individually — reading the stage's own `/proc/<pid>/ns/net` names
+only the thread group leader and, mid-move, would lie.
+
+```bash
+./bin/snug -p @net $SC/proj/sub -- /bin/sh -c 'sleep 30' &
+SNUGPID=$!
+sleep 1
+STAGE=$(ps -o pid,ppid,comm --ppid $SNUGPID | awk '$3=="exe"{print $1}')
+BWRAP=$(ps -o pid,ppid,comm --ppid $STAGE  | awk '$3=="bwrap"{print $1}')
+N=$(readlink /proc/$BWRAP/ns/net)
+echo "N (the sandbox's netns) = $N"
+find /proc/$STAGE -mindepth 4 -maxdepth 4 -path '*/task/*/ns/net' \
+  -exec readlink {} \; 2>/dev/null | sort | uniq -c
+kill -9 $SNUGPID; wait $SNUGPID 2>/dev/null
+```
+
+Expect the stage's own thread sweep to show only ITS namespace (a fresh one it
+made when it left N) — `N` must not appear in that list at all. (Development
+host: 6 threads, all reporting one namespace distinct from `N`.) The `exe`
+comm is not a typo: the kernel sets `/proc/<pid>/comm` from the file actually
+`execve`d — always `/proc/self/exe` in this chain — never from `argv[0]`, which
+is where `snug __stageN` shows up instead
+(`ps -o pid,args --ppid $SNUGPID` / `cat /proc/$STAGE/cmdline | tr '\0' ' '`).
+
+**Teardown — on the namespace object, not a process count.** A netns pinned only
+by a bind mount with no process attached would be invisible to a process
+sweep, so the check that matters is the same thread sweep, taken again after a
+SIGKILL, and expected to fall to zero:
+
+```bash
+./bin/snug -p @net $SC/proj/sub -- /bin/sh -c 'sleep 30' &
+SNUGPID=$!
+sleep 1
+STAGE=$(ps -o pid,ppid,comm --ppid $SNUGPID | awk '$3=="exe"{print $1}')
+BWRAP=$(ps -o pid,ppid,comm --ppid $STAGE  | awk '$3=="bwrap"{print $1}')
+N=$(readlink /proc/$BWRAP/ns/net)
+find /proc -mindepth 5 -maxdepth 5 -path '*/task/*/ns/net' \
+  -exec readlink {} \; 2>/dev/null | grep -Fc "$N"   # before: > 0
+
+kill -9 $SNUGPID; sleep 1
+
+find /proc -mindepth 5 -maxdepth 5 -path '*/task/*/ns/net' \
+  -exec readlink {} \; 2>/dev/null | grep -Fc "$N"   # after: 0
+```
+
+Expect a positive count before the kill (the positive control — bwrap and the
+sandbox's own init are genuinely in `N`) and `0` after: SIGKILL on snug takes
+the whole tree with it, and the namespace itself — which nothing bind-mounts
+anywhere — goes with the last reference.
+
+**The exit-status contract survives the extra process:**
+
+```bash
+./bin/snug $SC/proj/sub -- sh -c 'exit 42'; echo "exit: $?"          # 42
+./bin/snug $SC/proj/sub -- sh -c 'kill -TERM $$'; echo "exit: $?"    # 143 (128+15)
+timeout --signal=INT -k2 2 \
+  ./bin/snug -p @net $SC/proj/sub -- \
+    sh -c 'trap "echo caught-sigint; exit 7" INT; sleep 30'
+```
+
+Expect `42`, then `143`, then `caught-sigint` printed before `timeout` gives
+up — an interrupt delivered to snug's whole process group (which is exactly
+what a terminal's own Ctrl-C does; `timeout` without `--foreground` reproduces
+it without one) reaches the payload through P0, the stage, and bwrap, none of
+which call `setpgid`.
+
+**`lo` actually comes up inside the netns the STAGE created**, not bwrap — this
+is the one place Phase 1 changed a working guarantee's mechanism without
+changing its behaviour, and it is worth checking rather than trusting:
+
+```bash
+./bin/snug -p @net $SC/proj/sub -- /bin/sh -c '
+  (python3 -m http.server 8099 --bind 127.0.0.1 &>/dev/null &)
+  sleep 1
+  curl -s -o /dev/null -w "sandbox lo: %{http_code}\n" http://127.0.0.1:8099/'
+```
+
+Expect `sandbox lo: 200`. Before this phase, bwrap brought `lo` up itself
+because it created the netns it ran in; under the stage, bwrap does not create
+`N`, so nothing brings `lo` up unless the stage does it itself while it is
+still inside — losing this silently is exactly the kind of regression a user
+finds, not a golden diff.
+
 ---
 
 ## If a check fails

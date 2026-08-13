@@ -418,6 +418,24 @@ on any flag.
   is unnecessary here and snug omits it, which is why job control works inside
   an interactive sandbox shell. On a host where it is `1`, snug adds the flag
   and `--dry-run` says so. Never make this decision silently.
+- **`unshare(CLONE_NEWNET)` is PER-TASK, not per-process, and this cost the
+  supervisor work a scheduler-dependent false green before it was written
+  down.** A Go process that calls it does not move as a whole: one thread
+  (the one that made the call) leaves the old network namespace; every other
+  thread the runtime has already started stays in it. Measured on this host:
+  1 of 11 threads moved, and `/proc/self/ns/net` — which always names the
+  THREAD GROUP LEADER — kept reporting the OLD namespace, because the leader
+  itself never called `unshare`. Reading that path is how "the move worked"
+  gets asserted about a process that is still split across two network
+  namespaces. The only join point at which a multithreaded Go process moves
+  as a WHOLE is `execve` immediately afterwards, on a thread locked with
+  `runtime.LockOSThread()`: exec collapses the thread group onto the calling
+  thread, so the new process image starts single-threaded in the namespace
+  that thread was in, and every thread the runtime spawns from then on
+  inherits it correctly. `setns(CLONE_NEWNET)` is the identical shape (see
+  `internal/stage`'s `__innetns` shim). Any verification of "did this process
+  really move" must sweep `/proc/<pid>/task/*/ns/net` and check every thread —
+  never read `/proc/<pid>/ns/net` alone and call it proven.
 
 ## Development agents
 

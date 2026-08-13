@@ -1108,3 +1108,110 @@ All are documented where they bite; listed here so they are not forgotten.
   `internal/sandbox/seccomp.go`. (`clone3` and the x32 ABI WERE gaps and are now
   closed — clone3 is denied outright since classic BPF cannot read its flags,
   and x32 syscall numbers are rejected by their high bit.)
+
+## Supervisor Phase 1 — found-and-not-fixed-here
+
+Per `.claude/design/SUPERVISOR-PHASE1-SPEC.md` §9; each is either a pre-existing
+defect Phase 1 measured but had no mandate to fix (its contract is "adds and
+removes nothing"), or a gap Phase 1 deliberately leaves for Phase 2/3.
+
+- **`MS_REC|MS_PRIVATE` in P1 (`__stage1`) has no test of its own.** The
+  obvious assertion cannot be one: a mount namespace created in the SAME clone
+  as a user namespace already shows zero `shared:` peer groups on this kernel,
+  so the check would pass with the call deleted. Its only real test arrives
+  with a Phase 3 graft (the mechanism 0c measured RED, independent of this
+  phase). Severity: low here, high the moment a graft exists.
+- **`runtimeDir()` (`cmd/snug/identity.go:19`) has none of `prepareHostTmpDir`'s
+  guards** and falls back to a predictable `/tmp/snug/run-<pid>` when
+  `XDG_RUNTIME_DIR` is unset. MEASURED (pre-existing, not introduced by this
+  phase): `os.MkdirAll` follows a pre-planted symlink-to-directory and does not
+  chmod an existing one, so the ssh-agent proxy socket lands in the attacker's
+  directory with the attacker's mode. Severity: low (same host, pid guess,
+  sticky `/tmp`), but it is the directory Phase 2's control socket must **not**
+  live in when it grows a pathname.
+- **bwrap's `--unshare-all` uses the `-try` spellings for `user` and
+  `cgroup`**, so on a host with unprivileged user namespaces disabled the
+  sandbox silently gets none — on EITHER topology, since the stage's own
+  enumerated `--unshare-*` set (§3.1) deliberately matches those same `-try`
+  spellings rather than fix this inside a phase whose contract is "adds and
+  removes nothing". INFERRED from bwrap's flag list; measure before acting.
+  Severity: medium (invariant 5).
+- **`pidfd_getfd(2)` is absent from `deniedSyscalls`** and was measured
+  working inside a real sandbox (`.claude/design/NOCGO-RESEARCH.md`).
+  Independent of this phase; the fix is to deny `pidfd_getfd` only and leave
+  `pidfd_open` allowed (Phase 2's attach path is going to want the latter).
+- **A user profile with `tmpfs = ["/run"]` plus `@podman-socket` is ACCEPTED
+  by `Validate`** (found during Phase 0c, in shipped snug, not this branch):
+  the sandbox starts and the payload writes `/run/snug/bin/git` and runs it.
+  `snugsOwn` is keyed on the exact guest path, so a mount at an ANCESTOR of
+  `StagedBinDir` is not refused. Detected loudly by `--dry-run` via
+  `IsShadowSlot` ("IS WRITABLE from inside, which it must never be"), so it is
+  detected-but-not-refused rather than silent. Severity: medium. The fix —
+  extend the refusal from "a mount AT `StagedBinDir`" to "a mount covering
+  `StagedBinDir`" — is the same fix the Phase 3 graft work needs anyway.
+- **`P1` must stay dumpable** for pasta to open `/proc/<P1>/fd/<n>`, and
+  `hidepid=2` (or an explicit `PR_SET_DUMPABLE=0`) breaks it. That this must
+  land on the sandbox's own init in Phase 2 and **never** on P1 is a
+  constraint that exists only in this file and in the design doc today, not
+  enforced in code. The dependency is not new — today's `waitForNetDevice` and
+  pasta's `--userns` already need P0 to read P1's `/proc`, same reason — but a
+  future patch touching P1's own hardening must know about it.
+- **Golden argv is necessary and not sufficient for the netns posture.** The
+  bwrap argv is byte-identical between `NetnsSandbox` and `NetnsStage` except
+  for the enumerated `--unshare-*` set (§3.1) — which process called `fork` is
+  what actually determines the topology, not anything a diff of the argv can
+  show. `internal/policy/testdata/podman-socket.bwrap.txt` is the one golden
+  that DOES show the difference (its first line), but nothing forces a reviewer
+  to notice that a *different* golden case reading `NetEgress` unchanged is
+  hiding an identical process-topology change. No test asserts this is a
+  problem worth chasing further; recorded here as a reviewing hazard, not a
+  code defect.
+- **Deferred to Phase 2, not fixed here** (per SUPERVISOR-PHASE1-SPEC.md §8,
+  restated so it is findable from this file too): the control listener (a
+  pathname socket, an accept loop, the 108-byte `sockaddr_un` budget check —
+  Phase 1's protocol has no client but its own parent, so there is nothing to
+  listen for yet); the subuid delegation and `newuidmap`/`newgidmap` (no
+  consumer until an engine moves into the stage); `Topology.Attach` being
+  raised by anything (the floor and the `Join` law exist now; nothing sets it
+  above `AttachNone`); a pidfd table for more than the one bwrap fork Phase 1
+  has; a `--dry-run` `attach` block; the injected `~/.claude/CLAUDE.md`
+  mentioning the topology (the payload cannot observe the stage at all yet, so
+  there is nothing true to say); starting pasta before bwrap (Phase 3 wants
+  this for the engine; unmeasured whether a socket bound in N before P1 leaves
+  it stays usable, per §8 — do not design around it before measuring it).
+
+### The parked-payload window survives SIGKILL of snug, and cannot be closed from inside snug
+
+Severity: **low-medium**, and it is the residual of the second red team's F2
+after the fail-closed fix landed (`internal/sandbox/parked.go`).
+
+bwrap releases a payload parked on `--block-fd` on **EOF just as readily as on
+a byte**, and snug's own death closes the write end. So for the interval
+between bwrap forking the payload and pasta being confirmed up, *any* exit of
+snug releases the payload. What is now closed:
+
+- every code path, present and future, via one deferred guard registered the
+  instant the child pid is known — it SIGKILLs the parked child and then waits
+  for the sandbox's pid namespace to collapse before letting anything close;
+- SIGINT, SIGTERM, SIGHUP and SIGQUIT, which is what "the human kills a stuck
+  snug" means in practice. MEASURED before the fix at 4 runs in 5 releasing the
+  payload; MEASURED after at 0 in 10 for each of the three signals, with the
+  guard-disabled build as the positive control.
+
+What is **not** closed is SIGKILL of snug during that window. It cannot be
+caught, and bwrap's `--die-with-parent` has to travel two process hops (bwrap,
+then the sandbox's init) while the EOF is immediate, so it loses the race —
+MEASURED, and the same shape as the note in `abort`'s doc comment. The window
+is now bounded by pasta's own startup rather than being indefinite (the
+deadlock that made it indefinite is fixed), so a SIGKILL has to land inside a
+few tens of milliseconds to hit it.
+
+The real fix is topological rather than defensive: under `NetnsStage` the
+namespace exists **before bwrap does**, so pasta can be started before any
+payload is forked and there is nothing parked to release. SUPERVISOR-PHASE1-SPEC
+§4 Step 5 deliberately kept today's ordering as the minimum diff, and §8 defers
+the reordering to Phase 3 — it needs a way to confirm the interface is up
+without a process inside N to read `/proc/<pid>/net/dev`, which is a control
+protocol addition and must be designed rather than patched in.
+`TestKillingSnugWhileThePayloadIsParkedDoesNotRunIt` states the SIGKILL
+exclusion in its own doc comment rather than pretending to cover it.
