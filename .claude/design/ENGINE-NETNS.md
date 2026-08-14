@@ -55,7 +55,7 @@ you a stale answer in exactly those places.
 |---|---|
 | §0, the finding | **Live and canonical.** `@podman-socket` still implies the engine's network. Cited by `CLAUDE.md`, `base.toml`, `cmd/snug/dryrun.go`, `internal/profile/file_test.go`, `VERIFY.md`, `README.md` and `SECRETS.md` §1.3. Nothing has closed it. |
 | §1, you cannot join only the netns | **Live.** A kernel fact, unchanged. [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md) §0 accepts it and works around the *shape* it imposed, not the fact. |
-| §2, the inversion works | **Live, and since reproduced.** The numbers here were taken with plain `unshare`. [`PODMAN-STATIC.md`](PODMAN-STATIC.md) §7 reproduces the same baseline against a real pinned engine, and `poc/nsd/` measures it under the actual supervisor topology. |
+| §2, the inversion works | **Live, and since reproduced twice.** The numbers here were taken with plain `unshare`. [`PODMAN-STATIC.md`](PODMAN-STATIC.md) §7 reproduces the same baseline against a real pinned engine; and the supervisor proof of concept reproduced it under the actual stage topology — MEASURED 2026-08-13 on this host, 42 checks, `fail=0`, in three identical consecutive runs, each section run twice so the payoff was shown absent first. That proof of concept has been deleted ([#49](https://github.com/gomoni/snug/issues/49)); §5.1 below carries what it measured about the derived mount view, and [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md) §1 carries the rest. |
 | §3, where it does not work | **Live, with one blocker now answered.** The distrobox shim is no longer decisive — see the note in §3 itself. The subuid, cgroup, `$XDG_RUNTIME_DIR` and host-uid findings all still stand and are still preflight requirements. |
 | §4, two guarantees change shape | **Live.** Still the reason teardown needs asserting rather than assuming, and `PODMAN-STATIC.md` §4 measured `conmon` surviving a Pdeathsig teardown a second time. |
 | §5, the proposed shape | **Superseded — see §5.** M-a landed; M-b's topology is now [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md)'s, and the requirements list in §5 is what carried over. |
@@ -292,6 +292,16 @@ topology, so they survived the move intact:
    (`cmd/snug/testdata/topology.*.txt`).
 5. Teardown must be *asserted* rather than assumed, because §4 measured that it
    stopped being unconditional the moment N held the engine.
+6. **The engine's mount view must be DERIVED from the sandbox's, and the graft
+   that puts host storage into it must not land in the sandbox's own namespace.**
+   Measured, with the four-step sequence and the one ordering rule that makes it
+   safe, in §5.1.
+7. **A graft is not a `Mount`, so nothing that guards `Mount`s guards a graft.**
+   `Validate` and `IsShadowSlot` each refuse the equivalent shape one layer up,
+   and neither can see this one — measured against a real snug sandbox, §5.1.
+   Whatever implements grafts must route them through those checks or reproduce
+   them. It must not become a second, unguarded way to put a directory in front
+   of the payload.
 
 The current implementation status of all of the above lives in the GitHub
 issues and in the supervisor phase documents, not here. This section states what must be true;
@@ -315,3 +325,142 @@ reachable from the sandbox; (d) **adjacent, still closed** — the same publishe
 port is refused *from the host*; (e) `ss -xl` in the sandbox reports zero
 abstract sockets with the engine running. Plus a leak test that SIGKILLs snug
 and asserts N is gone, matching on the store path.
+
+## 5.1 The derived mount view, and what a graft costs
+
+Everything in this section was **MEASURED on 2026-08-13** on the development host
+(openSUSE Tumbleweed, `bwrap` 0.11.2, `pasta` 20260612, Go 1.26, inside a
+rootless-podman distrobox), by the supervisor proof of concept — which has since
+been deleted ([#49](https://github.com/gomoni/snug/issues/49)). The numbers are
+here rather than in a script because a citation that points at a script is worth
+nothing once the script is gone.
+
+Nothing in `internal/` or `cmd/` implements a graft today — measured, the word
+does not occur in either tree — so all of this is a constraint on Phase 2, not a
+description of shipped behaviour.
+
+### The view can be derived, and the order is the safety argument
+
+§1 established that the engine needs its own mount namespace and §3 that it
+cannot simply be the host's. It can be **derived from the sandbox's**, which is
+the shape invariant 6 wants: if the engine's view is the sandbox's view, then a
+container bind mount can only ever name a path the sandbox can already see, and
+the proxy's bind-mount rules stop being a parallel implementation of the policy.
+
+Four steps, and step 3 is load-bearing:
+
+1. `open_tree(AT_FDCWD, src, OPEN_TREE_CLONE|OPEN_TREE_CLOEXEC|AT_RECURSIVE)` on
+   the host path, **while the host tree is still visible**. The result is a
+   descriptor, and a descriptor does not care about mount namespaces — the same
+   property that makes a stray dirfd a complete sandbox bypass (`CLAUDE.md`),
+   used here deliberately, from outside, by the process that owns the policy.
+2. `setns(CLONE_NEWNS)` into the sandbox's mount namespace. **The user namespace
+   is deliberately NOT joined:** the capabilities that make steps 3 and 4 legal
+   are the ones the stage already holds in its own user namespace, which is an
+   ancestor of the one that owns those mounts.
+3. `unshare(CLONE_NEWNS)`, then `mount("", "/", "", MS_REC|MS_PRIVATE, NULL)`.
+   **Not optional.** Without it the graft in step 4 lands in the SANDBOX's own
+   mount namespace and snug hands the payload the container storage. Everything
+   after this point is invisible to the sandbox, and that is the entire safety
+   argument.
+4. `mkdir(dst)`, then
+   `move_mount(tree, "", AT_FDCWD, dst, MOVE_MOUNT_F_EMPTY_PATH)`.
+
+Measured by grafting the host's real container store
+(`~/.local/share/containers/storage`) into a view derived from a live sandbox.
+Six assertions, all green:
+
+| assertion | result |
+|---|---|
+| the host path is grafted into the derived view | `GRAFT=yes` |
+| the rest of the host tree is **not** there — this is the sandbox's view | `HOSTTREE=no` |
+| the sandbox's own grants **are** there | the file written on the bind read back |
+| `/proc` belongs to the sandbox's pid namespace, so the engine has none | `PROC=no` |
+| the graft does **not** propagate into the sandbox | 0 entries under `/storage` inside |
+| but the `mkdir` does | the mountpoint exists inside, empty |
+
+The last row is the one to remember: the mount namespace is private, the **tmpfs
+superblock is not**, so the destination directory appears inside the sandbox even
+though the mount does not.
+
+The negative control was measured in the same run: a child given the stage's own
+private copy of the **host** tree stays in the sandbox's netns and *does* see
+`~/.ssh` (`HOSTTREE=yes`). So "the engine cannot see the host tree" is a property
+of deriving the view, not an artefact of the harness.
+
+**It does not need to be C, and must not be.** The prototype was C only because
+`setns(CLONE_NEWNS)` is closed to a multithreaded Go process;
+[`NOCGO.md`](NOCGO.md) §3 then measured the way around that — a raw `fork` yields
+a child that is single-threaded and owns its own `fs_struct`, the two states the
+kernel checks — and `internal/stage` already does it. Phase 2 reimplements these
+four steps in Go, in the stage. `CGO_ENABLED=0` is not negotiable.
+
+### Against a REAL snug sandbox, three of the four grafts collide
+
+A second harness re-asked the same questions against `snug --profile @claude`
+rather than against a bare bwrap, because the difference is the whole point: the
+prototype's sandbox had a writable tmpfs root and nothing staged in it, while
+snug's has a **read-only** root, `/run/snug/bin` first on `PATH`, and grants
+under `/run`. Sixty checks. An earlier plan had called the grafts for
+`/etc/containers`, `/run` and `/var/tmp` "the same mechanism repeated". They are
+not.
+
+| graft | what happens |
+|---|---|
+| `/etc/containers` | **cannot even be created** — `mkdir` fails `Read-only file system`, because the destination does not exist in the sandbox and the root is read-only |
+| `/var/tmp` | identical, for the identical reason |
+| `/run` | **lands** (`mkdir` is `EEXIST`, `move_mount` OK) — and takes `/run/snug/bin` with it |
+| onto a writable grant | **lands**, and the `mkdir` persists **to the host**, because a writable grant is a bind of a host directory. The sandbox sees the empty directory but not the graft's contents |
+
+**The read-only root cannot be forced open.** Remounting the derived root
+writable is refused `Operation not permitted` — and that is not missing
+privilege: in the *same* invocation a `move_mount` at `/run` succeeded, which
+proves the process holds mount authority over that view. The root mount's
+read-only flag is **locked**, and a locked flag cannot be cleared in a derived
+namespace however much `CAP_SYS_ADMIN` the deriver holds.
+
+**The `/run` graft is the expensive one, twice over.** It lands on top of three
+grants, and:
+
+- `PATH` still leads with `/run/snug/bin`, but **nothing is staged there any
+  more** — the staged `claude` stops resolving, because the graft covered the
+  very directory `PATH`'s head names. A Phase 2 that grafts `/run` silently
+  removes every command snug staged.
+- It brings the host's `/run/user/<uid>` in with it. Measured present in the
+  derived view, each against a host control: the **ssh-agent socket**
+  (`$SSH_AUTH_SOCK`), the **session D-Bus socket**, the **Wayland socket** and
+  the host's **rootless podman socket**. `CLAUDE.md` puts Wayland and D-Bus out
+  of scope deliberately and notes the private netns excludes them by
+  construction — a `/run` graft is a *filesystem* route that walks straight past
+  that reasoning.
+
+### The shadow slot, one layer below `Validate`
+
+This is the finding to carry into Phase 2. It is pre-registered rather than live:
+nothing implements grafts yet.
+
+A **writable** graft at `/run` — or a fresh tmpfs there, which is the wording an
+earlier plan used — makes `PATH`'s head writable. Measured with capabilities
+dropped, which is the authority a payload has: a process in the derived view
+creates `/run/snug/bin`, writes a `claude` into it, and **that file is what
+runs**. The planted file persists on the host side of the graft. The sandbox's
+own `/run/snug/bin` is untouched, so this is the derived view only — but the
+derived view is exactly where Phase 2 puts the engine.
+
+`CLAUDE.md` states the rule this defeats: snug adds `/run/snug/bin` to `PATH`
+only when something is staged there, and the directory is in `snugsOwn` so that a
+profile cannot mount over it. Measured, that guard holds for a `Mount` and cannot
+see a graft:
+
+| shape | what snug does |
+|---|---|
+| a profile with `ro = ["/run"]` alongside `@claude` | **REFUSED** by `Validate`, naming the collision at `/run/snug/bin/claude` — a bind snug did not author |
+| the same with `@podman-socket` instead | **accepted**: every grant under `/run` there is snug-authored, so nothing is masked |
+| a profile with `tmpfs = ["/run"]` and `@podman-socket` | accepted by `Validate`, but `IsShadowSlot` catches it and `--dry-run` prints `/run/snug/bin IS WRITABLE from inside, which it must never be`. Measured exploitable: the payload wrote `/run/snug/bin/git` and shadowed the real one |
+| the same directory arriving as a **graft** | nothing refuses it, nothing warns, and `--dry-run` does not mention it |
+
+The difference is one line: `IsShadowSlot` asks `coveringMount`, and a graft is
+not in `p.Mounts`. `CLAUDE.md` already records that this rule was "defeated by
+the layer beneath the one it was written about" twice. A graft would be the
+third — and this time it is known in advance, which is what requirement 7 above
+is for.
