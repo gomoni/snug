@@ -524,3 +524,64 @@ func TestFilesystemBlockRendersTheStubAsExec(t *testing.T) {
 		t.Errorf("FILESYSTEM block still renders the stub as kind 'data'")
 	}
 }
+
+// TestDescribeSSHNamesTheReplacedPathAndItsCost is the review artifact for
+// issue #40's --dry-run disclosure (ISSUE-40-DESIGN.md §3, §9.1): the SSH
+// block must name the exact guest path that was replaced, the mechanism (one
+// uid mapped -> root-owned file reads as 65534 -> OpenSSH refuses it), and the
+// cost — RequiredRSASize dropping from the host crypto policy's value to
+// OpenSSH's compiled-in 1024, which is the one entry in the loss that has
+// security content (ISSUE-40-DESIGN.md §6).
+//
+// It builds its own host fixture rather than relying on this developer's real
+// /usr/etc/ssh or /etc/ssh — a golden-shaped test that only passes on
+// openSUSE would tell the next reader nothing about the mechanism, only about
+// this box. The fixture profile binds a throwaway directory at guest
+// /etc/ssh, a path @sys (loadTestRegistry's REAL registry) does not grant at
+// all, so there is no nesting conflict with any of @sys's fourteen /etc
+// entries.
+func TestDescribeSSHNamesTheReplacedPathAndItsCost(t *testing.T) {
+	reg := loadTestRegistry(t)
+	home, target := testTree(t)
+
+	sshHost := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sshHost, "ssh_config"), []byte("# host's, unreadable inside\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg["sshhost"] = &policy.Profile{Name: "sshhost", RO: []string{sshHost + ":/etc/ssh"}}
+
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	p, err := policy.Resolve(reg, []string{"@sys", "@home", "@cwd-rw", "sshhost"}, ctx, policy.OSEnviron{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	got := captureFile(t, func(f *os.File) { describeSSH(f, p) })
+	if !strings.Contains(got, "SSH") {
+		t.Fatalf("no SSH block: %q", got)
+	}
+	if !strings.Contains(got, "/etc/ssh/ssh_config") {
+		t.Errorf("SSH block does not name the replaced path: %q", got)
+	}
+	if !strings.Contains(got, "65534") {
+		t.Errorf("SSH block does not explain the mechanism (one mapped uid -> 65534): %q", got)
+	}
+	if !strings.Contains(got, "RequiredRSASize") {
+		t.Errorf("SSH block does not name the one lossy entry with security content: %q", got)
+	}
+
+	// CONTROL: a selection covering NEITHER SystemSSHConfigPaths entry must
+	// print nothing — a block that always prints proves nothing about the
+	// coverage condition. "runtime-only" supplies the OS-runtime grant Validate
+	// requires, deliberately bound at /bin from a fresh empty directory rather
+	// than from /usr, so it cannot coincidentally cover an ssh_config path the
+	// way selecting @sys would.
+	reg["runtime-only"] = &policy.Profile{Name: "runtime-only", RO: []string{home + ":/bin"}}
+	plain, err := policy.Resolve(reg, []string{"@cwd-rw", "runtime-only"}, ctx, policy.OSEnviron{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := captureFile(t, func(f *os.File) { describeSSH(f, plain) }); got != "" {
+		t.Errorf("SSH block printed with nothing covering either system ssh_config path: %q", got)
+	}
+}

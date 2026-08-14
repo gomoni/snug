@@ -94,11 +94,19 @@ func TestSystemSSHConfigIsNotInventedWhereTheHostHasNone(t *testing.T) {
 	}
 }
 
-func TestNoIdentityMeansNoSystemSSHConfigReplacement(t *testing.T) {
-	// The replacement rides on the identity, not on @sys: a sandbox that pins no
-	// account gets the host's system config exactly as the /usr bind delivers it.
-	// Broken for ssh on such a host, and deliberately so — snug does not rewrite
-	// a file for a tool the human never asked it to configure.
+// TestNoIdentityStillReplacesTheSystemSSHConfigWhereTheHostHasOne is the
+// INVERSE of what this test asserted before issue #40: it used to pin the bug
+// on purpose ("broken for ssh on such a host, and deliberately so"). That was
+// wrong — pinning an identity is about pushing as one account, and the
+// ownership refusal this replacement fixes has nothing to do with an account
+// at all. It is a base fact about the sandbox (one uid mapped, root-owned file
+// under a read-only bind reads as 65534, OpenSSH refuses it) that is exactly
+// as true with no [identity] selected as with one. Gating the fix on identity
+// left ssh — and git-over-ssh, scp, rsync -e ssh — broken in every unpinned
+// sandbox on such a host, which is issue #40. The replacement now rides on
+// COVERAGE (is the host's file actually visible inside?), computed in
+// replaceSystemSSHConfig, not on p.Identity.
+func TestNoIdentityStillReplacesTheSystemSSHConfigWhereTheHostHasOne(t *testing.T) {
 	env := newFakeEnv()
 	env.dirs["/usr/etc/ssh/ssh_config"] = true
 
@@ -106,12 +114,45 @@ func TestNoIdentityMeansNoSystemSSHConfigReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := systemSSHConfigMounts(p); len(got) != 0 {
-		t.Fatalf("a policy with no pinned identity replaced %q", got)
+	got := systemSSHConfigMounts(p)
+	want := []string{"/usr/etc/ssh/ssh_config"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("system ssh_config mounts = %q, want %q — a plain `snug <dir>` run "+
+			"with no identity must still get a working ssh", got, want)
+	}
+	m := p.Mounts["/usr/etc/ssh/ssh_config"]
+	if !m.Authored {
+		t.Error("the replacement mount is not marked Authored")
+	}
+	// Provenance must read (snug), never identity:<profile> — nobody asked for
+	// this by pinning an account, so nothing may say they did (ISSUE-40-DESIGN.md
+	// §2). And since @sys's /usr bind is the ancestor that actually supplies the
+	// file at this path (not an exact-guest-path match), the row must also carry
+	// replaces:@sys — the disclosure that a profile's content was displaced.
+	if !slices.Contains(m.From, "(snug)") {
+		t.Errorf("From = %q, want it to contain \"(snug)\"", m.From)
+	}
+	for _, f := range m.From {
+		if strings.HasPrefix(f, "identity:") {
+			t.Errorf("From = %q carries an identity provenance; nothing about "+
+				"these bytes names an account", m.From)
+		}
+	}
+	if !slices.ContainsFunc(m.From, func(s string) bool { return strings.HasPrefix(s, "replaces:") }) {
+		t.Errorf("From = %q does not disclose what it displaced (expected a replaces: entry "+
+			"naming @sys, whose /usr bind is what would otherwise deliver the host's file)", m.From)
 	}
 }
 
-func TestSystemSSHConfigIsNotProducedForSSHModeNone(t *testing.T) {
+// TestSystemSSHConfigIsProducedRegardlessOfSSHMode is the INVERSE of
+// TestSystemSSHConfigIsNotProducedForSSHModeNone: ssh_mode stopped being part
+// of the condition entirely, because the replacement fixes the CONFIG CHAIN
+// (a root-owned file OpenSSH refuses to read), not the credential. An identity
+// with ssh_mode = "none" still configures git; it grants no key and no agent
+// socket; but the system ssh_config would be exactly as unreadable to a bare
+// `ssh` invocation whether or not this identity — or any identity — is
+// selected, so the replacement fires all the same.
+func TestSystemSSHConfigIsProducedRegardlessOfSSHMode(t *testing.T) {
 	env := newFakeEnv()
 	env.dirs["/usr/etc/ssh/ssh_config"] = true
 
@@ -124,8 +165,73 @@ func TestSystemSSHConfigIsNotProducedForSSHModeNone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := systemSSHConfigMounts(p); len(got) != 0 {
-		t.Fatalf("ssh_mode = none still replaced %q; an identity that pins no key "+
-			"configures git and nothing else", got)
+	if got := systemSSHConfigMounts(p); len(got) != 1 {
+		t.Fatalf("ssh_mode = none dropped the system ssh_config replacement (got %q); "+
+			"the replacement fixes the config chain, not the credential, so it must not "+
+			"depend on ssh_mode at all", got)
 	}
+}
+
+// TestSystemSSHConfigNeedsACoveringBind is the discriminator the design calls
+// for: same fake host (the file genuinely exists at the /usr spelling), but a
+// selection with no @sys — nothing at all covers /usr/etc/ssh/ssh_config, so
+// there is no bind for the ownership refusal to ever occur through, and
+// nothing must be authored. This is what proves the predicate is COVERAGE, not
+// "the host has the file" — TestSystemSSHConfigIsNotInventedWhereTheHostHasNone
+// already covers the other half (host has no file, @sys selected).
+func TestSystemSSHConfigNeedsACoveringBind(t *testing.T) {
+	env := newFakeEnv()
+	env.dirs["/usr/etc/ssh/ssh_config"] = true
+
+	// Validate refuses a policy with no OS runtime at all (a mount at exactly
+	// /usr or /bin) before this predicate is ever reached, so the selection
+	// needs SOME runtime grant to be a legal policy — testRegistry's
+	// "runtime-bin" deliberately does NOT cover /usr, or the test would stop
+	// discriminating anything.
+	p, err := Resolve(testRegistry(), []string{"@home", "@cwd-rw", "@parent-ro", "runtime-bin"}, testCtx(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := systemSSHConfigMounts(p); len(got) != 0 {
+		t.Fatalf("replaced %q with no profile covering /usr at all — nothing granted "+
+			"the host's file, so nothing needed fixing", got)
+	}
+}
+
+// TestSystemSSHConfigFailsClosedOnATmpfsCoveringMount is the Kind fail-closed
+// arm ISSUE-40-DESIGN.md §1 requires: a tmpfs covering the path grants an
+// EMPTY directory, the same verdict keepHostElement gives a tmpfs elsewhere in
+// this package. No host file is visible through it, so there is no ownership
+// refusal to fix and nothing may be authored — only KindBind may trigger the
+// replacement.
+func TestSystemSSHConfigFailsClosedOnATmpfsCoveringMount(t *testing.T) {
+	env := newFakeEnv()
+	env.dirs["/usr/etc/ssh/ssh_config"] = true
+
+	reg := testRegistry()
+	// A profile granting a writable tmpfs at /usr instead of a bind — the same
+	// shape @home grants at {home}, aimed at the path this test needs covered.
+	reg["tmpfs-usr"] = &Profile{Name: "tmpfs-usr", Tmpfs: []string{"/usr"}}
+
+	p, err := Resolve(reg, []string{"@home", "@cwd-rw", "@parent-ro", "tmpfs-usr"}, testCtx(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := systemSSHConfigMounts(p); len(got) != 0 {
+		t.Fatalf("replaced %q under a tmpfs covering mount; a tmpfs has no host content "+
+			"to have an ownership problem with", got)
+	}
+}
+
+// sysSSHProbeEnv is the golden trap fix (ISSUE-40-DESIGN.md §8): newFakeEnv()
+// has no ssh path in dirs at all, so before this fixture existed EVERY
+// existing golden was byte-identical across this whole change, and an
+// implementer could have shipped it with zero golden diff — a security change
+// with no reviewable line. This is what gives the review artifact something
+// to show: a fake host whose /usr genuinely has a system-wide ssh_config,
+// mirroring the openSUSE shape that motivated the issue.
+func sysSSHProbeEnv() *fakeEnv {
+	env := newFakeEnv()
+	env.dirs["/usr/etc/ssh/ssh_config"] = true
+	return env
 }
