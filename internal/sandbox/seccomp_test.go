@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"encoding/binary"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -162,5 +163,127 @@ func TestAssemblerRejectsUndefinedLabel(t *testing.T) {
 	a.emit(bpfJeqK, "nowhere", "", 0)
 	if _, err := a.assemble(); err == nil {
 		t.Fatal("expected an undefined-label error")
+	}
+}
+
+// TestDeniedSyscallNamesMatchesDeniedSyscalls is the happy path for
+// DeniedSyscallNames (cmd/snug's --dry-run SECCOMP row is derived from it,
+// rather than a hand-typed second list — see its doc comment for the drift
+// that motivated deriving it): same length, same order, and every name
+// actually traces back to the syscall number at the same position via
+// deniedSyscallName, rather than the two lists merely happening to agree on
+// length.
+func TestDeniedSyscallNamesMatchesDeniedSyscalls(t *testing.T) {
+	names := DeniedSyscallNames()
+	if len(names) != len(deniedSyscalls) {
+		t.Fatalf("DeniedSyscallNames returned %d names for %d denied syscalls",
+			len(names), len(deniedSyscalls))
+	}
+	for i, nr := range deniedSyscalls {
+		want, ok := deniedSyscallName[nr]
+		if !ok {
+			t.Fatalf("PRECONDITION: syscall %d has no entry in deniedSyscallName — "+
+				"TestDeniedSyscallNamesPanicsOnAnUnnamedSyscall below is what should be "+
+				"catching this, not this test failing on the real list", nr)
+		}
+		if names[i] != want {
+			t.Errorf("names[%d] = %q, want %q (syscall %d)", i, names[i], want, nr)
+		}
+	}
+}
+
+// TestDeniedSyscallNamesPanicsOnAnUnnamedSyscall is the reachability check
+// for the panic DeniedSyscallNames' doc comment promises: "add one before
+// this ships, or the --dry-run SECCOMP row silently stops matching the
+// filter". A guard that has never fired is a guard nobody has verified
+// actually fires — CLAUDE.md's own warning about tests that cannot fail,
+// applied to a panic instead of an assertion. There is no public way to add
+// an unnamed entry (deniedSyscalls and deniedSyscallName are both unexported
+// package state), so this injects one directly and restores it afterward.
+func TestDeniedSyscallNamesPanicsOnAnUnnamedSyscall(t *testing.T) {
+	orig := deniedSyscalls
+	t.Cleanup(func() { deniedSyscalls = orig })
+
+	const unnamed = -999999 // not a real syscall number; guaranteed absent from deniedSyscallName
+	if _, ok := deniedSyscallName[unnamed]; ok {
+		t.Fatal("PRECONDITION: the sentinel syscall number collides with a real entry")
+	}
+	deniedSyscalls = append(append([]int{}, orig...), unnamed)
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("DeniedSyscallNames did not panic on a syscall number with no name — " +
+				"the --dry-run SECCOMP row could now silently render an incomplete list, " +
+				"exactly the drift this panic exists to make impossible")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "no name") {
+			t.Errorf("panic value is %v, want it to say the syscall has no name — a maintainer "+
+				"reading this panic needs to know what to fix", r)
+		}
+	}()
+	DeniedSyscallNames()
+}
+
+// TestBuildFilterReturnsAnErrorWhenTheJumpRangeOverflows is the fault
+// injection describeSeccomp's BROKEN row (cmd/snug/dryrun.go) depends on.
+// TestAssemblerRejectsUnreachableLabel above proves the underlying asm TYPE
+// rejects an out-of-range jump; it does not prove BuildFilter itself — the
+// function that actually assembles the shipped filter, and the one
+// cmd/snug's --dry-run and sandbox.Run both call — can ever be the thing
+// that trips it. asm.offset's doc comment says the failure is reachable "once
+// a future denial list makes the JEQ chain long enough": that is a claim
+// about what happens when deniedSyscalls grows, so the fault has to be
+// injected AT that list, in this same package, to mean anything. There is no
+// public knob for it (deniedSyscalls is unexported on purpose — nothing
+// outside this package should be able to change what is denied), so this
+// reaches into the package var directly and restores it unconditionally.
+//
+// A full describeSeccomp/--dry-run BROKEN-row golden is NOT attempted here:
+// it would need a seam in cmd/snug for swapping out sandbox.BuildFilter,
+// which is a production-code change outside what this test file should be
+// deciding on its own, and BROKEN's on-screen text is `err.Error()` rendered
+// verbatim with no branching of its own — this test is what proves that
+// string is meaningful ("out of range") rather than a placeholder.
+func TestBuildFilterReturnsAnErrorWhenTheJumpRangeOverflows(t *testing.T) {
+	if _, ok := nativeAuditArch(); !ok {
+		t.Skip("no syscall table for this GOARCH")
+	}
+
+	orig := deniedSyscalls
+	t.Cleanup(func() { deniedSyscalls = orig })
+
+	// Only the COUNT matters, not the values: each entry contributes one
+	// BPF_JMP|BPF_JEQ instruction between the architecture guard (near the
+	// start of the program) and the "deny" label (near the end), and the
+	// 8-bit forward-jump limit is 255 instructions. 300 fake, out-of-range
+	// syscall numbers is comfortably past that for the FIRST of them, which is
+	// the one whose jump distance is largest.
+	inflated := append([]int{}, orig...)
+	for i := range 300 {
+		inflated = append(inflated, 1_000_000+i)
+	}
+	deniedSyscalls = inflated
+
+	prog, ok, err := BuildFilter()
+	if err == nil {
+		t.Fatalf("BuildFilter did not fail with %d denied syscalls — either the jump-range "+
+			"limit moved, or this many entries no longer overflows it. Either way that is "+
+			"worth knowing about deliberately, rather than discovering it as a silent gap in "+
+			"describeSeccomp's BROKEN-branch reasoning", len(inflated))
+	}
+	if ok {
+		t.Error("BuildFilter reported ok=true alongside a non-nil error — describeSeccomp " +
+			"branches on err first specifically because ok=false,err=nil (unsupported GOARCH) " +
+			"and ok=false,err!=nil (assembly bug) are supposed to be mutually exclusive")
+	}
+	if prog != nil {
+		t.Error("BuildFilter returned a non-nil program alongside an error")
+	}
+	if !strings.Contains(err.Error(), "out of range") {
+		t.Errorf("BuildFilter's error is %q, want it to mention the jump being out of range — "+
+			"this string is what describeSeccomp's BROKEN row prints verbatim on the one "+
+			"screen a human has to trust snug from", err.Error())
 	}
 }

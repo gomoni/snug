@@ -76,6 +76,66 @@ func nativeAuditArch() (uint32, bool) {
 //	add_key/keyctl/request_key
 //	                 the kernel keyring, which is NOT namespaced by the user
 //	                 namespace and therefore reaches outside the sandbox
+//	pidfd_getfd      steals a DUPLICATE of another process's open file
+//	                 description by pidfd + index — not just a path reopen: it
+//	                 reaches connected sockets (a procfs reopen gets ENXIO),
+//	                 pipes, memfds, deleted and O_TMPFILE files, and fds whose
+//	                 inode DAC would refuse a fresh open. pidfd_open (a handle,
+//	                 no descriptors) stays allowed — Phase 2's attach path wants
+//	                 it, and the stage's control channel has an independent lock
+//	                 against it anyway (SUPERVISOR-DESIGN.md §3.3: the stage is
+//	                 not in the payload's pid namespace, so there is no pid to
+//	                 name). See issue #23: on this host (yama ptrace_scope=1) the
+//	                 syscall is ALREADY refused sibling-to-sibling by Yama, not
+//	                 by anything here — this filter is the lock for the hosts
+//	                 (containers, hardened-off Yama) where that sysctl is 0.
+//	                 THIS DOES NOT MAKE CO-RESIDENT PAYLOADS SAFE FROM EACH
+//	                 OTHER: /proc/<pid>/fd/N reopen (PTRACE_MODE_READ, which
+//	                 Yama does not gate) still lets a sibling read another
+//	                 payload's regular files today; that is issue #47, not
+//	                 something seccomp can reach. NOT REDUNDANT with that
+//	                 residual, though, and this is the sentence to keep if
+//	                 someone reads #47 and concludes this denial bought
+//	                 nothing: a socket cannot be reopened through
+//	                 /proc/<pid>/fd at all (ENXIO), and pipes, memfds, deleted
+//	                 and O_TMPFILE files have no path to reopen through
+//	                 /proc/<pid>/fd/N in the first place — pidfd_getfd is the
+//	                 only route to any of those, filter or no filter, and
+//	                 denying it closes that route specifically.
+//	process_vm_readv/process_vm_writev
+//	                 read and write another process's memory directly —
+//	                 ptrace's effect without calling ptrace(2). Measured
+//	                 exploitable sibling-to-sibling with Yama waived: one
+//	                 payload both read and overwrote another's memory with the
+//	                 filter otherwise on. ptrace itself is already denied above;
+//	                 this is its ptrace-free spelling and belongs in the same
+//	                 gate. DOES NOT CLOSE SIBLING MEMORY ACCESS, and the comment
+//	                 above this denial must never be read as though it does:
+//	                 /proc/<pid>/mem is the identical effect — full read AND
+//	                 write, i.e. code injection into a sibling — reached by
+//	                 open(2) + pread/pwrite(2), none of which this filter can
+//	                 single out (an fd, once open, is indistinguishable from any
+//	                 other fd to a classic BPF program keyed on syscall number).
+//	                 Red-teamed sibling-to-sibling with Yama's PR_SET_PTRACER_ANY
+//	                 waived (the same ptrace_scope=0 container model the
+//	                 process_vm_* finding used): PROCMEM_READ=OK,
+//	                 PROCMEM_WRITE=OK, victim overwritten. This denial is a
+//	                 syscall-level lock on a door that has a second, procfs-level
+//	                 lock (Yama) and no third; see issue #47 and CLAUDE.md's
+//	                 "Seccomp cannot be the whole answer" note. One more
+//	                 consequence, INTENTIONAL rather than overlooked: the denial
+//	                 is unconditional, so it also refuses a SELF-directed
+//	                 process_vm_readv — which task == current lets succeed on
+//	                 every host regardless of ptrace_scope, since
+//	                 ptrace_may_access is never consulted for self. No shipped
+//	                 tool was observed to need it, but a crash handler or
+//	                 sanitizer probing "is this address readable" with a self
+//	                 process_vm_readv would fail only inside snug. Accepted: a
+//	                 flag-based carve-out for self would need to inspect args[0]
+//	                 against getpid(), which classic BPF can do, but the callers
+//	                 that would benefit are not known to exist and the extra
+//	                 branch is one more thing to get right in a security filter
+//	                 for a benefit nobody has asked for.
 var deniedSyscalls = []int{
 	unix.SYS_PTRACE,
 	unix.SYS_BPF,
@@ -84,6 +144,53 @@ var deniedSyscalls = []int{
 	unix.SYS_ADD_KEY,
 	unix.SYS_KEYCTL,
 	unix.SYS_REQUEST_KEY,
+	unix.SYS_PIDFD_GETFD,
+	unix.SYS_PROCESS_VM_READV,
+	unix.SYS_PROCESS_VM_WRITEV,
+}
+
+// deniedSyscallName names every entry in deniedSyscalls, keyed on the same
+// constants — not a second list of numbers, so there is exactly one place
+// that says "these ints mean this". It exists for DeniedSyscallNames below,
+// which is how cmd/snug's --dry-run SECCOMP row gets its list: that row used
+// to type the names out a second time by hand, and it drifted the same
+// session it was written, silently disclosing one residual while omitting a
+// worse one two comments away. A hand-typed copy is the same hazard
+// CLAUDE.md already names for a count in prose; this is its list-of-names
+// shape.
+var deniedSyscallName = map[int]string{
+	unix.SYS_PTRACE:            "ptrace",
+	unix.SYS_BPF:               "bpf",
+	unix.SYS_USERFAULTFD:       "userfaultfd",
+	unix.SYS_PERF_EVENT_OPEN:   "perf_event_open",
+	unix.SYS_ADD_KEY:           "add_key",
+	unix.SYS_KEYCTL:            "keyctl",
+	unix.SYS_REQUEST_KEY:       "request_key",
+	unix.SYS_PIDFD_GETFD:       "pidfd_getfd",
+	unix.SYS_PROCESS_VM_READV:  "process_vm_readv",
+	unix.SYS_PROCESS_VM_WRITEV: "process_vm_writev",
+}
+
+// DeniedSyscallNames renders deniedSyscalls as names, in emission order, for
+// a caller outside this package (cmd/snug's --dry-run SECCOMP row). It PANICS
+// on an entry with no name in deniedSyscallName, rather than silently
+// rendering a bare number or dropping it: the whole point of deriving this
+// list instead of typing it twice is that a syscall added to deniedSyscalls
+// and forgotten here fails loudly — at test time, since any dry-run golden
+// test exercises this — instead of shipping a --dry-run screen that quietly
+// stopped matching the filter it describes.
+func DeniedSyscallNames() []string {
+	names := make([]string, len(deniedSyscalls))
+	for i, nr := range deniedSyscalls {
+		name, ok := deniedSyscallName[nr]
+		if !ok {
+			panic(fmt.Sprintf("sandbox: syscall number %d is in deniedSyscalls with no name in "+
+				"deniedSyscallName — add one before this ships, or the --dry-run SECCOMP row "+
+				"silently stops matching the filter", nr))
+		}
+		names[i] = name
+	}
+	return names
 }
 
 // clone3 is denied with ENOSYS, and the errno is the entire point.

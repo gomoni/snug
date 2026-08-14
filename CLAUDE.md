@@ -20,7 +20,14 @@ to learn.
 **M3 works: share nothing, hardened, networking, scoped identity.** `snug <dir>` runs a command in a
 sandbox where the target is the only writable thing that *persists*, the parent
 is readable, and nothing else exists. A seccomp filter denies ptrace, bpf,
-keyctl, perf_event_open, userfaultfd, TIOCSTI and nested user namespaces. The
+keyctl, perf_event_open, userfaultfd, TIOCSTI, nested user namespaces, and —
+ptrace's effect without calling ptrace — `pidfd_getfd`, `process_vm_readv` and
+`process_vm_writev`. That last group does **not** isolate co-resident payloads
+from each other: `/proc/<pid>/fd/N` reaches a sibling's files and
+`/proc/<pid>/mem` reaches its MEMORY, read and write, and neither is
+syscall-shaped so no filter can name them (issue #47). What denying
+`pidfd_getfd` does buy is the one thing procfs cannot reach — theft of a
+non-file open file description: a socket, a pipe, a memfd, a deleted file. The
 flag list travels through a memfd, and inherited descriptors are sealed CLOEXEC.
 Networking is a private netns per sandbox with a pasta helper: full egress, host
 loopback unreachable, abstract sockets (X11/D-Bus) unreachable.

@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/sandbox"
 )
 
 // dryRun is not a debugging convenience. It is the mechanism by which a human
@@ -47,6 +49,7 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 	} else {
 		fmt.Fprintf(out, "TTY      shared session — job control works (TIOCSTI is disabled kernel-wide)\n")
 	}
+	describeSeccomp(out, cfg)
 	fmt.Fprintln(out)
 
 	fmt.Fprintln(out, "FILESYSTEM  (deny-by-default; every line is a grant, there are no deny rules)")
@@ -126,6 +129,151 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 		fmt.Fprintln(out)
 		fmt.Fprintf(out, "REFUSED: %v\n", refusedBy)
 	}
+}
+
+// describeSeccomp is the review artifact for the filter internal/sandbox
+// installs — issue #23's fix. Before this, `snug --dry-run` contained zero
+// matches for seccomp|ptrace|filter, in EITHER mode: the flag is appended in
+// sandbox.Run after the argv this screen prints, so the bwrap block could not
+// show it either, and a run with the hardening deliberately switched off was
+// indistinguishable on screen from one with it on. That is invariant 5's
+// shape — a guarantee a human cannot check is not one they can trust.
+//
+// It must read DIFFERENTLY under --no-seccomp; that is the load-bearing half
+// of this line, not the summary of what is denied.
+//
+// What this line must NOT be read to say: that co-resident payloads inside one
+// sandbox are isolated from each other. They are not, and the "active" branch
+// names BOTH residuals rather than one — a red-team review found that naming
+// only the weaker one reads as a complete list and is worse than naming
+// neither:
+//
+//   - /proc/<pid>/fd/N reopen (PTRACE_MODE_READ, which Yama does not gate)
+//     lets a sibling read another payload's regular files.
+//   - /proc/<pid>/mem — open(2) + pread/pwrite(2) — is the SAME residual
+//     process_vm_readv/writev denies, reached without any denied syscall:
+//     full read AND write of a sibling's memory, i.e. code injection.
+//     Measured, with this filter active and Yama's PR_SET_PTRACER_ANY waived:
+//     PROCMEM_READ=OK, PROCMEM_WRITE=OK, victim overwritten. Strictly worse
+//     than the fd residual, and the one most worth saying out loud.
+//
+// Neither is a syscall snug can single out (see the deniedSyscalls doc comment
+// in internal/sandbox/seccomp.go, and issues #23 and #47).
+// This filter is defence in depth on top of the namespace boundary, scoped to
+// the bwrap payload tree; it says nothing about payload-vs-payload isolation.
+//
+// Three further review findings, each fixed here rather than only noted:
+//
+//  1. The syscall names below are DERIVED from internal/sandbox's
+//     deniedSyscalls (sandbox.DeniedSyscallNames), not typed out a second
+//     time. A hand-written copy is exactly the "count in prose is a copy of
+//     state held somewhere else" hazard, and it drifted within this same
+//     session — the row named one residual and silently omitted a worse one
+//     two comments away. Deriving it means the next syscall added to
+//     deniedSyscalls either appears here automatically or panics loudly in
+//     DeniedSyscallNames — never goes quietly stale.
+//  2. BuildFilter's error is no longer discarded. `ok == false` covers two
+//     different failures with different fixes: an unsupported GOARCH (err ==
+//     nil, nothing wrong, just no syscall table for this arch) and an
+//     ASSEMBLY failure (err != nil, asm.offset's jump-range check — a bug in
+//     snug's own filter construction). Collapsing both into "UNAVAILABLE for
+//     this architecture" would print that sentence on a fully supported
+//     amd64 host with a broken filter, naming the wrong fix on the one
+//     screen that exists so a human can trust what snug tells them.
+//  3. The "active" branch states a KNOWN GAP that BuildFilter's own doc
+//     comment already carries twelve lines up: on x86_64, a 32-bit (i386
+//     compat) payload runs under a different audit arch and this filter
+//     denies it NOTHING. Saying "active" with no qualifier on such a host is
+//     the unqualified-guarantee shape this whole block exists to avoid.
+func describeSeccomp(out *os.File, cfg config) {
+	// DeniedSyscallNames panics if internal/sandbox's own name table has
+	// fallen behind deniedSyscalls — see its doc comment. That is deliberate:
+	// failing this dry run loudly beats rendering a screen that no longer
+	// matches the filter.
+	names := sandbox.DeniedSyscallNames()
+	listLines := wrapList(names, 64)
+
+	if cfg.noSeccomp {
+		fmt.Fprintln(out, "SECCOMP  DISABLED (--no-seccomp) — every syscall below runs UNFILTERED:")
+		for _, l := range listLines {
+			fmt.Fprintf(out, "           %s\n", l)
+		}
+		fmt.Fprintln(out, "         — plus clone3 (ENOSYS), ioctl(_, TIOCSTI, _), and")
+		fmt.Fprintln(out, "         clone/unshare(CLONE_NEWUSER). The namespace boundary is")
+		fmt.Fprintln(out, "         unaffected; this is defence in depth, not the boundary.")
+		return
+	}
+
+	// BuildFilter is pure (no OS calls beyond reading runtime.GOARCH), so this
+	// is safe to call from a dry run that starts nothing. It is the same
+	// function sandbox.Run calls to build the real filter, so this line cannot
+	// disagree with what actually gets installed — no second copy of "which
+	// architectures are supported" to drift out of sync.
+	prog, ok, err := sandbox.BuildFilter()
+	if err != nil {
+		// An ASSEMBLY failure, not an unsupported architecture: BuildFilter
+		// returns (nil, false, err) only when asm.offset's jump-range check
+		// trips, on a host whose GOARCH is otherwise fully supported. This is
+		// the exact message sandbox.Run's warn would print at run time — show
+		// it here rather than the "no syscall table" sentence below, which
+		// would name the wrong fix (there is nothing to fix on this host; the
+		// bug is in snug's own filter construction).
+		fmt.Fprintf(out, "SECCOMP  BROKEN — %v\n", err)
+		fmt.Fprintln(out, "         This is a bug in snug's filter assembly, not a property of this")
+		fmt.Fprintln(out, "         host. sandbox.Run will warn and continue WITHOUT the filter. The")
+		fmt.Fprintln(out, "         namespace boundary is unaffected; this filter is defence in depth,")
+		fmt.Fprintln(out, "         not the boundary.")
+		return
+	}
+	if !ok {
+		fmt.Fprintf(out, "SECCOMP  UNAVAILABLE for GOARCH=%s (no syscall table) — sandbox.Run will\n", runtime.GOARCH)
+		fmt.Fprintln(out, "         warn and continue WITHOUT it. The namespace boundary is unaffected;")
+		fmt.Fprintln(out, "         this filter is defence in depth, not the boundary.")
+		return
+	}
+	_ = prog // only the length/validity matters here; the argv carries the bytes
+
+	fmt.Fprintln(out, "SECCOMP  active — denies (EPERM), derived from deniedSyscalls in")
+	fmt.Fprintln(out, "         internal/sandbox/seccomp.go:")
+	for _, l := range listLines {
+		fmt.Fprintf(out, "           %s\n", l)
+	}
+	fmt.Fprintln(out, "         — plus clone3 (ENOSYS), ioctl(_, TIOCSTI, _), and")
+	fmt.Fprintln(out, "         clone/unshare(CLONE_NEWUSER).")
+	if runtime.GOARCH == "amd64" {
+		fmt.Fprintln(out, "         KNOWN GAP on this architecture: a 32-bit (i386 compat) payload runs")
+		fmt.Fprintln(out, "         under a DIFFERENT audit arch, and this filter denies it NOTHING —")
+		fmt.Fprintln(out, "         see BuildFilter's doc comment in internal/sandbox/seccomp.go.")
+	}
+	fmt.Fprintln(out, "         Defence in depth on the payload tree, not a guarantee that")
+	fmt.Fprintln(out, "         co-resident payloads are isolated from each other: a sibling still")
+	fmt.Fprintln(out, "         reaches another payload's files through /proc/<pid>/fd/N, and —")
+	fmt.Fprintln(out, "         strictly worse — its MEMORY (read and write) through")
+	fmt.Fprintln(out, "         /proc/<pid>/mem. Neither is a syscall seccomp can single out.")
+}
+
+// wrapList joins items with ", " and wraps to width VISIBLE runes per line —
+// used because the syscall list is DERIVED (sandbox.DeniedSyscallNames) and
+// therefore variable-length: a hand-wrapped literal string cannot track a
+// list whose length changes when a future syscall is added or removed.
+func wrapList(items []string, width int) []string {
+	var lines []string
+	cur := ""
+	for _, it := range items {
+		switch {
+		case cur == "":
+			cur = it
+		case utf8.RuneCountInString(cur)+2+utf8.RuneCountInString(it) > width:
+			lines = append(lines, cur+",")
+			cur = it
+		default:
+			cur = cur + ", " + it
+		}
+	}
+	if cur != "" {
+		lines = append(lines, cur)
+	}
+	return lines
 }
 
 // describeEnvironment renders what the sandbox's environment will be. bwrap

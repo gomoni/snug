@@ -19,6 +19,17 @@ gate:
 	# harness could sit broken indefinitely and every gate would still be green.
 	# Type-checking it costs nothing and needs no privileges — unlike running it.
 	go vet -tags integration ./test/integration/...
+	# Named explicitly, not swept in by a `...` pattern: the go tool ignores any
+	# directory named testdata when EXPANDING a wildcard, which is what lets
+	# fixtures live there undisturbed, but the same rule means neither
+	# `go vet ./...` above nor `go vet -tags integration ./test/integration/...`
+	# ever looks inside test/integration/testdata/pidfdprobe — it is a real Go
+	# package (issue #23/#47's regression probe), built unconditionally by
+	# TestMain, and a compile error in it would pass gate green and then fail
+	# every test in the integration suite via TestMain's os.Exit(1), not just
+	# the pidfd ones. Naming the path directly (no "...") sidesteps the
+	# testdata exclusion, which only applies to wildcard expansion.
+	go vet ./test/integration/testdata/pidfdprobe
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This

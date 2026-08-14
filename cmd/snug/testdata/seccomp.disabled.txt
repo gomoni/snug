@@ -1,0 +1,6 @@
+SECCOMP  DISABLED (--no-seccomp) — every syscall below runs UNFILTERED:
+           ptrace, bpf, userfaultfd, perf_event_open, add_key, keyctl,
+           request_key, pidfd_getfd, process_vm_readv, process_vm_writev
+         — plus clone3 (ENOSYS), ioctl(_, TIOCSTI, _), and
+         clone/unshare(CLONE_NEWUSER). The namespace boundary is
+         unaffected; this is defence in depth, not the boundary.

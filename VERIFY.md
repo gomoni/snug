@@ -645,7 +645,9 @@ cat > $SC/proj/sub/probe.py <<'EOF'
 import ctypes, os
 libc = ctypes.CDLL("libc.so.6", use_errno=True)
 for name, nr in [("ptrace",101),("keyctl",250),("perf_event_open",298),
-                 ("add_key",248),("bpf",321),("userfaultfd",323)]:
+                 ("add_key",248),("bpf",321),("userfaultfd",323),
+                 ("pidfd_getfd",438),("process_vm_readv",310),
+                 ("process_vm_writev",311)]:
     ctypes.set_errno(0); libc.syscall(nr, 0,0,0,0,0); e = ctypes.get_errno()
     print("%-16s %s" % (name, os.strerror(e) if e else "ALLOWED"))
 EOF
@@ -656,7 +658,27 @@ EOF
 ```
 
 Syscall numbers above are x86_64. Note the cost, which is deliberate: with the
-filter on you cannot run snug inside snug, or rootless podman inside it.
+filter on you cannot run snug inside snug, or rootless podman inside it. The
+three added for issue #23 (`pidfd_getfd`, `process_vm_readv`,
+`process_vm_writev`) are refused with `nr=0` — a bogus first argument — which is
+enough to prove the filter denies the syscall itself rather than validating its
+arguments; do not read `ALLOWED` here as "the real call would have succeeded",
+only `Operation not permitted` here is meaningful.
+
+Then check `--dry-run` actually says so — the fix's other half, since the point
+of issue #23 was that nothing on screen distinguished a filtered run from an
+unfiltered one:
+
+```bash
+./bin/snug --dry-run $SC/proj/sub | grep -A3 '^SECCOMP'
+./bin/snug --dry-run --no-seccomp $SC/proj/sub | grep -A3 '^SECCOMP'
+```
+
+Expect the first to start `SECCOMP  active — denies (EPERM), derived from
+deniedSyscalls in`, listing `pidfd_getfd`, `process_vm_readv` and
+`process_vm_writev` among the names, and the second to start `SECCOMP
+DISABLED (--no-seccomp)`. The two must read differently — that difference is
+the whole point of the line.
 
 ## 7. The network namespace
 
