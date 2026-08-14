@@ -176,3 +176,25 @@ breaking — but the narrow denial perturbs nothing at all.
 `snug doctor` should then report `/proc/sys/kernel/yama/ptrace_scope`, because it
 is genuine defence in depth worth knowing about — but after the filter change no
 guarantee rests on it.
+
+**Status: fixed.** `pidfd_getfd` is denied (EPERM) in `deniedSyscalls`
+(`internal/sandbox/seccomp.go`) as of the commit closing issue #23, alongside
+`process_vm_readv`/`process_vm_writev` — a follow-up audit measured the same
+sibling-vs-sibling theft through that pair with Yama waived, `process_vm_writev`
+being the worse half: a sibling did not just read another payload's memory, it
+rewrote it. The same audit also found `/proc/<pid>/mem` delivers the identical
+read+write effect with none of the three denied syscalls (open procfs, not
+seccomp's to reach) — see issue #47.
+`pidfd_open` stays allowed. The paragraphs above are left as measured — they are
+the record of what was true before the fix and why EPERM was the right errno —
+but **do not read "the fix is in" as "co-resident payloads are isolated from
+each other."** They are not: the same audit measured that `/proc/<pid>/fd/N`
+reopen (a `PTRACE_MODE_READ` operation, which Yama does not gate) still lets a
+sibling read another payload's *regular files* today, with this filter active.
+Seccomp cannot reach that path — it is not a syscall snug can name — so that
+finding is tracked as https://github.com/gomoni/snug/issues/47, and real
+payload-vs-payload isolation remains a
+pid-namespace/uid question for the supervisor work, not something this filter
+closes. `snug doctor` reporting `ptrace_scope` is still open (not implemented by
+the issue #23 fix); it would report information, not a warning — a `0` inside a
+container is common and not itself a defect.

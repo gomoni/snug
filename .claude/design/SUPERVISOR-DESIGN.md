@@ -184,6 +184,16 @@ payload's pid namespace so there is no pid to name for `pidfd_open`; and the
 receive path uses `read`, never `recvmsg` with a control buffer, so the channel
 cannot deliver a descriptor even to a peer that sends `SCM_RIGHTS`.
 
+The third of those four — no pid to name — is a fact about pid-namespace
+visibility and holds regardless of the seccomp filter. Issue #23's fix (denying
+`pidfd_getfd`, `internal/sandbox/seccomp.go`) adds a second, independent lock on
+the same door for when Phase 2 actually opens a listener: even a payload that
+somehow *did* have a pid to name for `pidfd_open` (a same-pid-namespace
+listener, which nothing here is yet) could not then steal the accepted
+connection's descriptor out of another process's table. Two locks, two
+different reasons they hold — namespace invisibility today, a denied syscall
+whenever that stops being true — rather than one fact doing both jobs.
+
 *`--dry-run` says all of this.* It used to print `control none (no socket, no
 listener, nothing to connect to)`, which was true in its second half and false in
 its first — and "no socket" is the half a reviewer would use to decide there was

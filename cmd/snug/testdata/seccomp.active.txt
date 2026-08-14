@@ -1,0 +1,11 @@
+SECCOMP  active — denies (EPERM), derived from deniedSyscalls in
+         internal/sandbox/seccomp.go:
+           ptrace, bpf, userfaultfd, perf_event_open, add_key, keyctl,
+           request_key, pidfd_getfd, process_vm_readv, process_vm_writev
+         — plus clone3 (ENOSYS), ioctl(_, TIOCSTI, _), and
+         clone/unshare(CLONE_NEWUSER).
+         Defence in depth on the payload tree, not a guarantee that
+         co-resident payloads are isolated from each other: a sibling still
+         reaches another payload's files through /proc/<pid>/fd/N, and —
+         strictly worse — its MEMORY (read and write) through
+         /proc/<pid>/mem. Neither is a syscall seccomp can single out.

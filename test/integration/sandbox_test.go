@@ -91,6 +91,14 @@ var (
 	// emptyConfig is an empty $XDG_CONFIG_HOME handed to every snug invocation.
 	// See baseEnv.
 	emptyConfig string
+
+	// pidfdProbeBin is testdata/pidfdprobe, built once here for the same
+	// reason snugBin is: pidfd_getfd, process_vm_readv and process_vm_writev
+	// are not shell-reachable (no builtin or /bin/* utility calls them), so
+	// issue #23's regression tests (pidfd_test.go) need a compiled helper
+	// rather than a bash script. See that file's package doc for why the
+	// probe targets the calling process itself rather than a sibling.
+	pidfdProbeBin string
 )
 
 // cmdTimeout bounds every snug invocation. Nothing in this suite should take
@@ -207,6 +215,16 @@ func TestMain(m *testing.M) {
 	emptyConfig = filepath.Join(dir, "xdg-config")
 	if err := os.MkdirAll(emptyConfig, 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		os.RemoveAll(dir)
+		os.Exit(1)
+	}
+
+	pidfdProbeBin = filepath.Join(dir, "pidfdprobe")
+	buildPidfdProbe := exec.Command("go", "build", "-o", pidfdProbeBin, "./test/integration/testdata/pidfdprobe")
+	buildPidfdProbe.Dir = "../.."
+	buildPidfdProbe.Stderr = os.Stderr
+	if err := buildPidfdProbe.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "building pidfdprobe:", err)
 		os.RemoveAll(dir)
 		os.Exit(1)
 	}
