@@ -169,6 +169,86 @@ func TestGrantAtExactlyTmpStillYields(t *testing.T) {
 	}
 }
 
+// refusalGrantCoversStagedBinDir: issue #22. `snugsOwn` used to be keyed on
+// the EXACT guest path, so a grant AT StagedBinDir (/run/snug/bin) was
+// refused and a grant at an ANCESTOR of it — /run, /run/snug — was accepted.
+// Measured before the fix, with @podman-socket added so the directory landed
+// on PATH: `tmpfs = ["/run"]` resolved, the payload wrote
+// /run/snug/bin/git, and the shadowed git ran. Identical at
+// `tmpfs = ["/run/snug"]`, and at both bind spellings — the rw one is worse,
+// because it persists the shadowed command to the HOST directory rather than
+// to a tmpfs that dies with the sandbox.
+func refusalGrantCoversStagedBinDir(t testing.TB, kind, guest string) error {
+	reg := testRegistry()
+	p := &Profile{Name: "claim"}
+	switch kind {
+	case "tmpfs":
+		p.Tmpfs = []string{guest}
+	case "ro":
+		p.RO = []string{"/opt:" + guest}
+	case "rw":
+		p.RW = []string{"/opt:" + guest}
+	default:
+		t.Fatalf("unknown kind %q", kind)
+	}
+	reg["claim"] = p
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "claim"}, testCtx(), newFakeEnv())
+	return err
+}
+
+func TestGrantCoveringStagedBinDirIsFatal(t *testing.T) {
+	cases := []struct{ kind, guest string }{
+		{"tmpfs", "/run"},
+		{"tmpfs", "/run/snug"},
+		{"ro", "/run"},
+		{"rw", "/run"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.kind+"_"+tc.guest, func(t *testing.T) {
+			err := refusalGrantCoversStagedBinDir(t, tc.kind, tc.guest)
+			if err == nil {
+				t.Fatalf("a profile %s grant at %s was accepted; it CONTAINS %s, snug's own "+
+					"staged-bin directory, so a payload staged inside that mount gets a writable "+
+					"directory ahead of /usr/bin on PATH", tc.kind, tc.guest, StagedBinDir)
+			}
+			for _, want := range []string{"claim", tc.guest, StagedBinDir, "CONTAINS"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not contain %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// POSITIVE CONTROL: a grant strictly INSIDE StagedBinDir must stay legal —
+// this is the whole purpose of the directory, and it is how @claude
+// (`ro = ["{home}/.local/bin/claude:/run/snug/bin/claude"]`) and the podman
+// dispatcher work. If snugsOwnCovered ever starts refusing this, it has gone
+// from "ancestor-aware" to "over-broad", and the directory can no longer be
+// used for what it exists for.
+func TestGrantInsideStagedBinDirStillLegal(t *testing.T) {
+	reg := testRegistry()
+	reg["claim"] = &Profile{Name: "claim", RO: []string{"/opt:" + StagedBinDir + "/mytool"}}
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "claim"}, testCtx(), newFakeEnv())
+	if err != nil {
+		t.Fatalf("control: a grant strictly inside %s must stay legal: %v", StagedBinDir, err)
+	}
+}
+
+// POSITIVE CONTROL: a sibling that merely shares a string PREFIX with
+// StagedBinDir must not be refused. `covers` is a path-ancestor test, not
+// strings.HasPrefix — /run/snug/binaries is not an ancestor of
+// /run/snug/bin, and a prefix-based check would wrongly refuse it.
+func TestGrantAtStringPrefixSiblingOfStagedBinDirStillLegal(t *testing.T) {
+	reg := testRegistry()
+	reg["claim"] = &Profile{Name: "claim", Tmpfs: []string{StagedBinDir + "aries"}} // /run/snug/binaries
+	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "claim"}, testCtx(), newFakeEnv())
+	if err != nil {
+		t.Fatalf("control: %saries is a string-prefix sibling of %s, not an ancestor, and must "+
+			"stay legal: %v", StagedBinDir, StagedBinDir, err)
+	}
+}
+
 // refusalGrantAtRoot: a redteam finding. Only a BIND at / was refused,
 // so `tmpfs = ["/"]` resolved and ran. It was inert — but by ACCIDENT, not by
 // the check: nearestCovering stops before / and so can never return it, which
@@ -540,6 +620,24 @@ func TestGoldenRefusals(t *testing.T) {
 		{"grant_at_root_ro", func(t testing.TB) error { return refusalGrantAtRoot(t, "ro") }},
 		{"grant_at_exactly_proc", func(t testing.TB) error { return refusalGrantAtExactly(t, "/proc") }},
 		{"grant_at_exactly_dev", func(t testing.TB) error { return refusalGrantAtExactly(t, "/dev") }},
+		{"grant_covers_stagedbindir_tmpfs_run", func(t testing.TB) error { return refusalGrantCoversStagedBinDir(t, "tmpfs", "/run") }},
+		{"grant_covers_stagedbindir_tmpfs_run_snug", func(t testing.TB) error { return refusalGrantCoversStagedBinDir(t, "tmpfs", "/run/snug") }},
+		// Only ONE bind spelling is golded here, not two. describeNode does not
+		// render Access, so a `ro` and an `rw` bind at the same guest path produce
+		// byte-IDENTICAL refusal text ("profile claim puts a bind of /opt at
+		// /run..." names neither "(ro)" nor "(rw)" anywhere) - a review found the
+		// pair sitting in this table as two copies of one assertion: a change that
+		// only affected `rw` would leave both golden entries unchanged. `ro` stands
+		// as the representative of "a BIND, of either access, covering the
+		// directory is refused the same way a tmpfs is"; the behavioural assertion
+		// for BOTH spellings (does Resolve refuse it at all) still runs, un-golded,
+		// in TestGrantCoveringStagedBinDirIsFatal above. That `rw` is the WORSE
+		// variant - it would persist the shadowed command to the HOST rather than
+		// to a tmpfs that dies with the sandbox - is exercised where that
+		// difference is actually observable: test/integration/sandbox_test.go's
+		// TestAProfileCannotMountOverTheStagingDirectory, as its own subtest
+		// against the real bwrap argv.
+		{"grant_covers_stagedbindir_bind_run", func(t testing.TB) error { return refusalGrantCoversStagedBinDir(t, "ro", "/run") }},
 		{"grant_strictly_inside_proc", func(t testing.TB) error { return refusalGrantStrictlyInside(t, "/proc/sys") }},
 		{"grant_strictly_inside_dev", func(t testing.TB) error { return refusalGrantStrictlyInside(t, "/dev/null") }},
 		{"grant_strictly_inside_resolv_conf", refusalGrantStrictlyInsideResolvConf},

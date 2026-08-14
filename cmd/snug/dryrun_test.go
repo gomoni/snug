@@ -261,9 +261,17 @@ func TestGrantMarkStillUsesTheWiderPredicate(t *testing.T) {
 
 // The two marks answer two different questions and must never be confused for
 // each other: "not granted" means NOTHING IS THERE, "writable from inside" means
-// something is there AND the payload can add to it. They are also mutually
-// exclusive by construction — IsShadowSlot needs a covering mount, and
-// GrantsGuestPath returning false means there is none — and this pins that.
+// something is there AND the payload can add to it.
+//
+// THEY ARE NOT MUTUALLY EXCLUSIVE, and an earlier version of this comment said
+// they were "by construction" — true only while IsShadowSlot and
+// GrantsGuestPath both stopped AT a symlink. Now that both follow one, a
+// DANGLING link standing on writable ground is BOTH at once: GrantsGuestPath
+// is false (the chain resolves to nothing) and IsShadowSlot is true (the
+// payload can `rm` the link and `mkdir` its own directory at that name
+// regardless of where it pointed). See
+// TestGrantMarkPrecedesGrantedWhenBothConditionsHold below for that case and
+// the precedence grantMark now applies to it.
 //
 // The writable mark is PATH-only, and that scope is the substance rather than a
 // detail. PATH entries are searched for COMMANDS, so a writable one is a shadow
@@ -292,12 +300,15 @@ func TestWritableMarkIsPathOnlyAndDistinctFromNotGranted(t *testing.T) {
 			"the reader to ignore the mark where it matters", home, got)
 	}
 
-	// Not granted at all: nothing is there, so it is not a slot to fill.
+	// Not granted at all, and no symlink on the way either: nothing is there,
+	// so it is not a slot to fill. (This is the ORDINARY not-granted case, not
+	// the one where the two marks can coincide — see
+	// TestGrantMarkPrecedesGrantedWhenBothConditionsHold for that one.)
 	if got := grantMark(p, "PATH", "/nowhere/at/all"); !strings.Contains(got, "not granted") {
 		t.Errorf("grantMark(PATH, /nowhere/at/all) = %q, want the not-granted mark", got)
 	}
 	if strings.Contains(grantMark(p, "PATH", "/nowhere/at/all"), "writable") {
-		t.Error("an ungranted path was marked writable; the two marks must stay exclusive")
+		t.Error("an ungranted path with no symlink on the way was marked writable")
 	}
 
 	// snug's own staging directory must never be marked writable — the rule
@@ -332,6 +343,68 @@ func TestWritableMarkIsPathOnlyAndDistinctFromNotGranted(t *testing.T) {
 		t.Errorf("grantMark(PATH, %s) = %q with a tmpfs mounted there, want the writable mark. "+
 			"If this does not fire, the assertion above is vacuous and the shadow-slot rule is "+
 			"unguarded at the one path snug puts on PATH itself", policy.StagedBinDir, got)
+	}
+}
+
+// TestGrantMarkPrecedesGrantedWhenBothConditionsHold pins the precedence
+// grantMark's doc comment describes: the shadow test is hoisted ABOVE the
+// granted test, not merely added beside it, because the two questions used to
+// be assumed mutually exclusive and are not any more.
+//
+// THE CASE THIS CLOSES. GrantsGuestPath and IsShadowSlot both used to stop AT
+// a symlink, so "not granted" (the chain resolves to nothing) and "writable"
+// (a covering mount is a tmpfs or an rw bind) could never both be true of the
+// same path — one predicate needs a covering mount to say yes and the other
+// needs one to say no. Now that both FOLLOW a symlink through
+// resolveThroughLinks, a DANGLING link standing on writable ground breaks
+// that: the chain still resolves to nothing (GrantsGuestPath = false,
+// nothing is mounted at the far end) and the link is still on writable
+// ground (IsShadowSlot = true — the payload does not need the link to point
+// anywhere in order to `rm` it and `mkdir` its own directory at that name).
+// grantMark used to test "granted" first and nest the shadow test inside
+// that branch, so this combination rendered as a bare "not granted" with the
+// writable warning gone — the more dangerous of the two true facts silently
+// dropped from the one screen CLAUDE.md calls the mechanism by which a human
+// decides whether to trust snug.
+//
+// NOT REACHABLE THROUGH A PROFILE, which is why this is built at the policy
+// level rather than resolved. checkCoupled (envcoupling.go) refuses a PATH
+// value whose resolution the profile does not grant, so a profile pairing a
+// dangling symlink with a `merge PATH = [...]` naming it is refused before
+// Resolve ever runs (internal/policy's
+// TestACyclicSymlinkNamedOnPathIsRefusedByCouplingBeforeItCanResolve pins the
+// same refusal for a cyclic variant). So this is a LATENT inconsistency the
+// precedence fix closes, not a live screen bug reachable by a human's own
+// profile — hand-building the policy is the only way to construct it at all.
+func TestGrantMarkPrecedesGrantedWhenBothConditionsHold(t *testing.T) {
+	p := &policy.Policy{Mounts: map[string]policy.Mount{
+		"/data":     {Guest: "/data", Kind: policy.KindTmpfs},
+		"/data/bin": {Guest: "/data/bin", Kind: policy.KindSymlink, Host: "/nowhere/at/all"},
+	}}
+
+	// CONTROLS: the fixture only means something if BOTH conditions genuinely
+	// hold. Without these, the assertion below could pass on a fixture that is
+	// merely granted, or merely a shadow slot, and prove nothing about
+	// precedence.
+	if p.GrantsGuestPath("/data/bin") {
+		t.Fatal("control: /data/bin resolves after all (the dangling target turned out to be " +
+			"granted); the fixture does not exercise the not-granted side of this case")
+	}
+	if !p.IsShadowSlot("/data/bin") {
+		t.Fatal("control: /data/bin is not a shadow slot; the fixture does not stand the link " +
+			"on writable ground")
+	}
+
+	got := grantMark(p, "PATH", "/data/bin")
+	if !strings.Contains(got, "writable from inside") {
+		t.Errorf("grantMark(PATH, /data/bin) = %q, want the writable mark. GrantsGuestPath is "+
+			"false AND IsShadowSlot is true here, and the writable mark must win: 'you can be "+
+			"given a command you did not install' outranks 'this names nothing'", got)
+	}
+	if strings.Contains(got, "not granted") {
+		t.Errorf("grantMark(PATH, /data/bin) = %q, still carries the not-granted wording — the "+
+			"shadow test must be hoisted ABOVE the granted test in grantMark, not merely "+
+			"evaluated alongside it", got)
 	}
 }
 

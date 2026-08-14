@@ -339,8 +339,20 @@ func (p *Policy) sanitiseHostList(name string, t envType, from []string, env Env
 // grants (§4.2), and that mark MUST be computed by the same predicate the filter
 // above uses. Two implementations of "is this granted" would eventually disagree,
 // and the one on screen is the one a human trusts.
+//
+// IT FOLLOWS SYMLINKS, because the filter does. For one review round it did not,
+// and the sentence above stopped being true the moment keepHostElement started
+// resolving: with `symlink /other/l -> /nonexistent` this returned true (the
+// lexical walk stops AT the symlink mount) while the filter returned
+// (false, DropNoGrant) for the identical path, so the same spelling read as
+// "granted" when a profile wrote it and "nothing grants that path" when the host
+// did, four lines apart on one screen. Sharing resolveThroughLinks is what makes
+// the doc paragraph above a fact rather than an intention.
+//
+// "Verbatim" still holds and is a different axis: the caller's string is not
+// rewritten, and resolution decides only the verdict.
 func (p *Policy) GrantsGuestPath(guest string) bool {
-	_, ok := p.coveringMount(guest)
+	_, _, ok := p.resolveThroughLinks(guest)
 	return ok
 }
 
@@ -366,10 +378,110 @@ func (p *Policy) coveringMount(guest string) (Mount, bool) {
 	}
 }
 
+// maxGuestLinkHops bounds resolveThroughLinks. The only chain snug itself
+// builds is ONE hop (usr-merge: /bin -> usr/bin), so eight leaves room for a
+// hand-written profile that chains a few and is far below the kernel's
+// SYMLOOP_MAX of 40 — any chain that exhausts this budget is a cycle or a
+// construction nobody should be trusting a diagnostic about.
+//
+// A counter rather than a visited-set, deliberately: a visited-set terminates a
+// CYCLE exactly but still admits an arbitrarily long acyclic chain, and both
+// deserve the same answer ("I could not resolve this"). One bound covers both,
+// and cannot itself loop — which is the property --dry-run needs, since it
+// renders policies that Validate has already refused.
+const maxGuestLinkHops = 8
+
+// resolveThroughLinks walks a guest path through snug's OWN symlink grants and
+// returns the first non-symlink mount it lands on. It never returns a
+// KindSymlink: the walk is what removes that case from both callers' switches.
+//
+// It exists because the lexical walk in coveringMount stops AT a symlink while
+// the kernel walks THROUGH it — the same class of bug that made keepHostElement
+// keep /proc, restated one node kind over. Measured, before this: a profile with
+// `tmpfs = ["/data/real"]`, `symlink /data/bin -> /data/real` and
+// `merge = { PATH = ["/data/bin"] }` got NO writable-PATH mark on --dry-run,
+// while the identical policy naming /data/real directly got one; in a live
+// sandbox the payload wrote /data/bin/git and it ran.
+//
+// REPLACEABLE IS THE SECOND HALF, and it is not the same question as "where does
+// this land". A symlink is the one node kind snug emits that is NOT a mountpoint
+// — bwrap's --symlink writes a link into whatever filesystem the parent is — so
+// if the ground under the link is writable the payload can `rm` the link and
+// `mkdir` its own directory at that name, whatever the link used to point at.
+// Measured: `tmpfs = ["/data"]` + `symlink /data/bin -> /usr/bin` refuses a write
+// THROUGH the link with EROFS and then loses to `rm /data/bin && mkdir /data/bin`,
+// with the shadowed git running. The control is the same link on the root tmpfs
+// (`symlink /databin -> /usr/bin`), where `rm` fails EROFS and the real git runs
+// — so the discriminator really is the ground, not the link.
+//
+// Ground is nearestCovering, whose "stops before / and never returns it" is
+// exactly right here: no mount above means the link sits on the ROOT tmpfs,
+// which --remount-ro / covers. KindData is not treated as replaceable even
+// though it is also a non-mountpoint file, because a PATH element naming a
+// generated FILE is not a directory search path at all; if a KindData grant ever
+// becomes a directory, revisit this line rather than assuming it was considered.
+//
+// ok is false when the chain runs out (nothing granted at the end) or exhausts
+// the hop budget. The two are NOT distinguished in the return, because both
+// callers want the same thing from them and neither may pretend the walk
+// resolved: keepHostElement drops the element, IsShadowSlot reports not-a-slot.
+func (p *Policy) resolveThroughLinks(guest string) (final Mount, replaceable, ok bool) {
+	// CLEAN FIRST, EVERY HOP, and this line was missing for one review round.
+	// coveringMount matches on filepath.Clean(cur) while the remainder below was
+	// trimmed from the UNCLEANED cur, so the two disagreed for any non-canonical
+	// spelling: `//data/bin` through `symlink /data/bin -> /t` computed
+	// /t + "//data/bin" = /t/data/bin instead of /t. Measured as an outright
+	// verdict flip in the FAIL-OPEN direction — with /t a tmpfs and /t/data/bin a
+	// ro bind, `/data/bin` gave (drop, shadow) and `//data/bin` gave (keep, not a
+	// shadow), same path, opposite answers, and the keep shipped `//data/bin`
+	// into the --setenv PATH operand.
+	//
+	// This function's caller is contractually fed host PATH elements VERBATIM,
+	// so unclean spellings are its INPUT DOMAIN, not an edge case. Cleaning here
+	// decides the verdict only; what sanitiseHostList records is still the
+	// element as the host spelled it (DROP-NEVER-REWRITE).
+	cur := filepath.Clean(guest)
+	for hop := 0; hop <= maxGuestLinkHops; hop++ {
+		m, found := p.coveringMount(cur)
+		if !found {
+			return Mount{}, replaceable, false
+		}
+		if m.Kind != KindSymlink {
+			return m, replaceable, true
+		}
+		if ground, _, has := p.nearestCovering(m.Guest); has && mountIsWritable(ground) {
+			replaceable = true
+		}
+		target := m.Host
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(m.Guest), target)
+		}
+		// coveringMount matched on the cleaned cur and m.Guest is itself clean,
+		// so the remainder is either empty or starts at a / boundary.
+		cur = filepath.Join(target, strings.TrimPrefix(cur, m.Guest))
+	}
+	return Mount{}, replaceable, false
+}
+
+// mountIsWritable is the one place "can the payload write here" is decided, so
+// the walk above and IsShadowSlot below cannot drift apart. KindData is a
+// generated file, KindProc and KindDev are the kernel's and bwrap's, and a
+// future kind fails closed.
+func mountIsWritable(m Mount) bool {
+	switch m.Kind {
+	case KindTmpfs:
+		return true // an empty writable directory, by construction
+	case KindBind:
+		return m.Access == AccessRW
+	default:
+		return false
+	}
+}
+
 // keepHostElement decides whether one element of a sanitised host list
-// survives, and why not when it does not. It finds the DEEPEST covering mount
-// (coveringMount) and switches EXHAUSTIVELY on its Kind, fail-closed for any
-// kind the switch does not name.
+// survives, and why not when it does not. It resolves the path through snug's
+// own symlinks (resolveThroughLinks) and switches EXHAUSTIVELY on the Kind of
+// the mount it lands on, fail-closed for any kind the switch does not name.
 //
 // The verdict at every kind, and at nesting — verbatim from the sanitise-C
 // design, §2:
@@ -384,7 +496,9 @@ func (p *Policy) coveringMount(guest string) (Mount, bool) {
 //	{home}/.local/bin/claude (bind     that KindBind               KEEP            deepest wins; a bind under a tmpfs is still a bind
 //	  nested inside the {home} tmpfs)
 //	{home}/.gitconfig                  KindData                   KEEP            a real node with real content at exactly that path, put there deliberately
-//	/bin (usr-merged host)             KindSymlink (@sys)         KEEP            a node exists; what it resolves to is decided by the OTHER grants — following it here would be a second resolution rule, and keeping it is exactly today's behaviour
+//	/bin (usr-merged host)             KindSymlink -> ro /usr      KEEP            RESOLVED, then judged: the walk lands on @sys's ro bind, so the row's verdict is unchanged and its reason is now the bind's
+//	/data/bin -> tmpfs /data/real      KindSymlink -> KindTmpfs    DROP (Tmpfs)    CHANGED — see below; the tmpfs row's reason applies through a link
+//	/data/bin -> nothing granted       KindSymlink -> —            DROP (NoGrant)  CHANGED — a dangling link resolves nowhere, so the host's content is absent
 //	under /proc, /dev                  KindProc / KindDev         DROP (Pseudo)   see below — this arm was KEEP, and the red team walked through it
 //	a future Kind                      —                          DROP (NoGrant)  trailing default: a new kind fails closed until someone decides
 //	not absolute, e.g. "bin"           —                          DROP (NoGrant)  unchanged; coveringMount keeps the !filepath.IsAbs guard
@@ -405,27 +519,58 @@ func (p *Policy) coveringMount(guest string) (Mount, bool) {
 // occurs, then keeping it costs nothing and serves only an attacker's spelling.
 // The same holds for /proc. So both drop, and the cost is zero.
 //
-// KindSymlink stays KEEP, and the distinction is not arbitrary: a KindSymlink is
-// a link some GRANT authored, pointing where that grant says, and following it
-// here would be a second resolution rule with its own failure modes. /proc's
-// magic links are authored by the KERNEL, point at whatever the reading process
-// happens to have open, and are not a grant at all.
+// KINDSYMLINK IS NOW RESOLVED, AND THIS COMMENT USED TO ARGUE THE OPPOSITE.
+// The old text read: "a KindSymlink is a link some GRANT authored, pointing
+// where that grant says, and following it here would be a second resolution rule
+// with its own failure modes" — and it listed "NO SYMLINK RESOLUTION" as a
+// deliberate non-change. That is word for word the argument this same comment
+// records being reversed for /proc and /dev one paragraph up, and it fails the
+// same way: the mount the LEXICAL walk lands on is not the mount the KERNEL
+// resolves. A link to a tmpfs is an element whose host content is definitionally
+// absent, which is the tmpfs row's own reason, reached one node later.
+//
+// What the reversal costs, checked rather than assumed: nothing on the row the
+// old argument was written to protect. /bin on a usr-merged host resolves to
+// @sys's `ro /usr` and still KEEPs, and every ENV golden is byte-identical.
+// /proc's magic links remain a different thing entirely — authored by the
+// KERNEL, pointing at whatever the reading process has open, not a grant — and
+// are still refused at the KindProc arm rather than followed.
 //
 // Three deliberate non-changes, not to be "improved":
 //
 //   - VERBATIM, NEVER REWRITTEN. This decides only whether elem survives; the
-//     value written to Entries is elem itself, never the cleaned path — see
-//     sanitiseHostList's own DROP-NEVER-REWRITE contract.
-//   - NO SYMLINK RESOLUTION. What a KindSymlink resolves to is somebody else's
-//     grant to make truthful, not this function's to chase.
+//     value written to Entries is elem itself, never the cleaned path and never
+//     the RESOLVED path — see sanitiseHostList's own DROP-NEVER-REWRITE
+//     contract. Resolution decides the verdict; it must not touch the value.
 //   - NO stat, no mode bits. internal/policy stays pure.
+//
+// REPLACEABILITY DROPS, and the first version of this function discarded it with
+// a comment arguing that "can the payload OWN this path" was IsShadowSlot's
+// question and not this one. That reasoning was wrong on the fixture it was
+// written next to. With `tmpfs /data` + `symlink /data/bin -> /usr/bin` the two
+// questions have the SAME answer, because the link is the only thing making the
+// content reachable: measured, IsShadowSlot said true, this said keep, and
+// /data/bin therefore reached the --setenv PATH operand bwrap receives, where
+// `rm && mkdir && echo > .../git` gave the payload a command ahead of /usr/bin
+// on a PATH SNUG HANDED OVER. Marking the danger on one screen while shipping it
+// in the argv is the worse of the two failures, not a lesser one.
+//
+// It is checked BEFORE the Kind switch, because the switch judges the landing
+// mount and the landing mount is exactly what is honest here — /usr/bin really
+// is read-only and really is populated. The defect is one node earlier.
 func (p *Policy) keepHostElement(guest string) (bool, EnvDropReason) {
-	m, ok := p.coveringMount(guest)
+	m, replaceable, ok := p.resolveThroughLinks(guest)
+	if replaceable {
+		return false, DropReplaceable
+	}
 	if !ok {
+		// Nothing granted at the end of the chain, or the chain did not
+		// terminate. Either way the element resolves to nothing inside the
+		// sandbox, which is what DropNoGrant already means.
 		return false, DropNoGrant
 	}
 	switch m.Kind {
-	case KindBind, KindData, KindSymlink:
+	case KindBind, KindData:
 		return true, DropNoGrant
 	case KindTmpfs:
 		return false, DropTmpfsOnly
@@ -433,6 +578,7 @@ func (p *Policy) keepHostElement(guest string) (bool, EnvDropReason) {
 		return false, DropPseudoOnly
 	default:
 		// A future Kind fails closed until someone decides what it means here.
+		// KindSymlink cannot arrive: resolveThroughLinks never returns one.
 		return false, DropNoGrant
 	}
 }
@@ -441,10 +587,13 @@ func (p *Policy) keepHostElement(guest string) (bool, EnvDropReason) {
 // from inside the sandbox — a PATH entry the payload can drop a file into and so
 // choose what the next `git` or `sh` resolves to.
 //
-// It is the SAME predicate keepHostElement uses for its Tmpfs verdict, deliberately
-// sharing coveringMount and the deepest-mount rule rather than asking the question
-// a second way, because two implementations of "what is at this path" eventually
-// disagree and the reader only ever checks one.
+// It shares ONE walk with keepHostElement — resolveThroughLinks, and through it
+// coveringMount and the deepest-mount rule — rather than asking the question a
+// second way, because two implementations of "what is at this path" eventually
+// disagree and the reader only ever checks one. They then apply DIFFERENT
+// switches to the same landing mount, because they ask different things of it:
+// keepHostElement asks whether the host's content is present, this asks whether
+// the payload can write.
 //
 // It is NOT a refusal, and must not become one without a decision. A human's own
 // profile merging a writable directory onto PATH is their declaration, recorded as
@@ -455,19 +604,35 @@ func (p *Policy) keepHostElement(guest string) (bool, EnvDropReason) {
 // Writable rather than tmpfs: a `rw` bind of a host directory is a shadow slot
 // too, and a worse one, because what the payload writes there PERSISTS TO THE
 // HOST.
+//
+// TWO WAYS TO BE A SLOT, and only the first was checked until the red team found
+// the second's cousin. The path may RESOLVE to something writable, or a symlink
+// on the way may be REPLACEABLE — sitting on writable ground, so the payload
+// unlinks it and puts its own directory at that name regardless of where it
+// pointed. The second is checked FIRST because it wins outright: a link to a
+// read-only /usr/bin, standing on a tmpfs, is a live shadow slot whose landing
+// mount says read-only.
+//
+// UNRESOLVED IS false, AND THAT IS TRUTHFUL RATHER THAN OPTIMISTIC. A chain that
+// cycles or overruns the hop budget resolves to nothing inside the sandbox
+// (ELOOP, or ENOENT for a dangling link), so nothing can be written there and a
+// mark would be a lie on the one screen CLAUDE.md says a human trusts. It is not
+// a fail-open either, because the dangerous half of "unresolved" is already
+// caught by replaceable: a cycle sitting in a writable tmpfs is marked at the
+// first hop, before the budget ever runs out. Verified both ways.
 func (p *Policy) IsShadowSlot(guest string) bool {
-	m, ok := p.coveringMount(guest)
-	if !ok {
-		return false // nothing is there at all; a PATH entry naming it is inert
+	m, replaceable, ok := p.resolveThroughLinks(guest)
+	if replaceable {
+		return true
 	}
-	switch m.Kind {
-	case KindTmpfs:
-		return true // an empty writable directory, by construction
-	case KindBind:
-		return m.Access == AccessRW
-	default:
+	if !ok {
+		// Nothing is there at all, or the chain never landed; either way a PATH
+		// entry naming it is inert. Reached by its own branch rather than by
+		// falling through the switch, so "we could not resolve it" is never
+		// silently rendered as "we resolved it and it was fine".
 		return false
 	}
+	return mountIsWritable(m)
 }
 
 // dedupeEnvLists collapses a repeated element to its EARLIEST band.

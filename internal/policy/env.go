@@ -94,6 +94,21 @@ const (
 	// /proc/self/root/tmp is the writable tmpfs. The filter is lexical and does
 	// not follow them.
 	DropPseudoOnly
+	// DropReplaceable is an element reaching real content through a SYMLINK that
+	// stands on writable ground. It is a fourth reason rather than a spelling of
+	// the other three because everything they say is false here: the path IS
+	// granted, what it lands on IS populated, and it is NOT a tmpfs —
+	// `symlink /data/bin -> /usr/bin` with /data a tmpfs resolves to the distro's
+	// own bin directory, read-only and full of real commands.
+	//
+	// What makes it untruthful is the LINK, not the target. bwrap's --symlink
+	// writes a link into whatever filesystem the parent is, so alone among the
+	// nodes snug emits it is not a mountpoint and can simply be unlinked:
+	// measured, the payload runs `rm /data/bin && mkdir /data/bin && echo … >
+	// /data/bin/git` and owns the name whatever it used to point at. Keeping the
+	// element is snug writing a shadow slot into the PATH it hands over, which is
+	// the one thing the staging rule says it must never do.
+	DropReplaceable
 )
 
 func (r EnvDropReason) String() string {
@@ -102,6 +117,9 @@ func (r EnvDropReason) String() string {
 		return "only an empty writable tmpfs is mounted there"
 	case DropPseudoOnly:
 		return "only a kernel pseudo-filesystem is mounted there, and its magic symlinks leave it"
+	case DropReplaceable:
+		return "it reaches that content through a symlink the payload can delete and replace, " +
+			"because the directory holding the link is writable from inside"
 	default:
 		return "nothing grants that path"
 	}
