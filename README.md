@@ -186,7 +186,8 @@ include = ["@sys", "@home", "@cwd-rw", "@parent-ro", "@net"]
   *what* gets signed.
 - **git** — `~/.gitconfig` is generated, not bound, and `GIT_CONFIG_GLOBAL`
   points at it. The host's credential helpers and `insteadOf` rules do not come
-  along.
+  along — what the sandbox's own processes set for themselves is another
+  matter; see [GIT-CONFIG.md](.claude/design/GIT-CONFIG.md) §9.
 - **gh** — a private `hosts.yml` holding that account's token, with
   `GH_CONFIG_DIR` pointing at it. The env var carries a path, not a credential.
 - `~/.ssh/config` and a `known_hosts` filtered to that one host, both generated.

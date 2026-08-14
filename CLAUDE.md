@@ -296,6 +296,45 @@ on any flag.
   process in the sandbox and inherited by every child; a file has to be
   deliberately opened. `/etc/resolv.conf` is the same rule one layer down.
 
+  *The limit, which the rule cannot fix and must not pretend to.* Every tool
+  that reads a config file also reads **variables that outrank it**, and they
+  outrank it absolutely: measured, `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n` enter
+  git at the **command-line** scope, above the global file, above the
+  repository's own `.git/config`, and above any `include` the generated file
+  could carry. `GIT_CONFIG_PARAMETERS` is a second spelling; `CARGO_BUILD_*`
+  beats `.cargo/config.toml` (measured); `npm_config_*` and `PIP_*` are the same
+  shape by documentation. So a payload sets `GIT_CONFIG_KEY_0=core.sshCommand`
+  in its own environment and the next `git fetch` runs its command while
+  `GIT_CONFIG_GLOBAL` still points at a perfectly clean generated file. There is
+  no fix: the payload owns its own environment exactly as it owns its own
+  `PATH`, any wrapper that would scrub the environment is itself selected by the
+  environment, and a writable `$HOME` reaches the same hijack through
+  `~/.bashrc` regardless — an accepted residual under "the writable surface is
+  eight paths" below, not a tracked issue, and bounded: measured, it does not
+  survive into a later `snug` run, because `$HOME` is a fresh tmpfs every time.
+
+  **What snug owes is therefore the `sanitise` rule, one table over: the
+  environment snug ITSELF hands over must not ship the override
+  pre-installed.** Within a tool's variable surface, tell the two kinds apart
+  and never mix them up:
+
+  - a **pointer** — the value is a PATH to a file snug generated, and a human
+    can read that file: `GIT_CONFIG_GLOBAL`, `GH_CONFIG_DIR`,
+    `NPM_CONFIG_USERCONFIG`, `PIP_CONFIG_FILE`, `CARGO_HOME`, `DOCKER_CONFIG`.
+    Authoring one is the mechanism;
+  - an **inline setting** — the value IS the setting, reviewable nowhere:
+    `GIT_CONFIG_KEY_n`, `GIT_CONFIG_PARAMETERS`, `npm_config_*`, `PIP_*`,
+    `CARGO_BUILD_*`. snug authors none, and no shipped profile carries one.
+
+  Read-only does not demote the second into the first, for the same reason a
+  read-only bind does not demote a command table into data. And the parse-time
+  table is not the whole of it: `PIP_*` and `npm_config_*` are refused for
+  `inherit` only, so `set` reaches the resolved policy — the assertion belongs
+  at the **sink**, over the environment a resolved policy hands over
+  (`TestNoBuiltinHandsOverAnInlineConfigVariable`), not only at the source.
+  Adding a name to the pointer set is a policy change: ask what the name makes
+  the tool DO.
+
   *The cost, accepted.* Each adapter must track that tool's config format, and
   formats change under us (`gh` rewrites `hosts.yml` on first use — see below).
   There is no version of this that is free.

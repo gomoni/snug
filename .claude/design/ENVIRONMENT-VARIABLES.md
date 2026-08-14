@@ -217,24 +217,61 @@ rule, not a row.
 verb.** `set` carries a value from a reviewable file in the trusted profile
 layer; `inherit` carries whatever the host process had at launch, put there by
 whatever invoked snug. **`inherit` is a hole punched in `--clearenv`; `set` is
-not.** So one middle bucket — `BASH_ENV`, `ENV`, `PERL5OPT`, `NODE_OPTIONS`,
-`PYTHONSTARTUP`, `PYTHONBREAKPOINT`, `LESSOPEN`, `PYTHONPATH` — is **allowed for
-`set` and refused for `inherit`**: `BASH_ENV = "{home}/.snug-init"` with the file
-granted by the same profile is coherent and reviewable, while the same name
-inherited points at a host path. That composes §2.5's grant rule with the forbid
-list instead of maintaining two independent lists.
+not.** So one middle bucket — `BASH_ENV`, `ENV`, `PYTHONSTARTUP`,
+`PYTHONBREAKPOINT`, `LESSOPEN` — is **allowed for `set` and refused for
+`inherit`**: `BASH_ENV = "{home}/.snug-init"` with the file granted by the same
+profile is coherent and reviewable, while the same name inherited points at a
+host path. That composes §2.5's grant rule with the forbid list instead of
+maintaining two independent lists.
 
 **Refused for both verbs** are the names snug owns, the prefixes `LD_*`,
 `BASH_FUNC_*` and `GIT_CONFIG_*`, the ten glibc strips §4.4 takes from `ld.so(8)`,
 the git and ssh transport hooks (`GIT_SSH`, `GIT_SSH_COMMAND`,
 `GIT_PROXY_COMMAND`, `GIT_ASKPASS`, `SSH_ASKPASS`, `GIT_EXEC_PATH`,
-`GIT_EXTERNAL_DIFF`, `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`), the interpreter option
-channels (`JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`, `JDK_JAVA_OPTIONS`, `RUBYOPT`),
-and the prompt hooks other than `PS1` (`PS0`, `PS2`, `PS3`, `PS4`,
-`PROMPT_COMMAND`). **Refused for `inherit` only**, alongside the middle bucket
-above, are the prefixes `PIP_*` and `npm_config_*` — §4.5's finding that a tool's
-environment outranks the file snug generated for it. `internal/policy/envtypes.go`
-is the list; this paragraph is a summary of it and the code is what runs.
+`GIT_EXTERNAL_DIFF`, `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`), `GIT_PAGER`,
+`GIT_TEMPLATE_DIR`, `GIT_DIR` and `GIT_COMMON_DIR` (a directory whose hooks are
+code — `GIT_COMMON_DIR` was the sibling `GIT_DIR`/`GIT_TEMPLATE_DIR` missed the
+first time), `GIT_ALLOW_PROTOCOL`/`GIT_PROTOCOL_FROM_USER` (re-enabling the
+`ext::` transport is the transport), the interpreter option channels
+(`JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`, `JDK_JAVA_OPTIONS`, `RUBYOPT`), the
+prompt hooks other than `PS1` (`PS0`, `PS2`, `PS3`, `PS4`, `PROMPT_COMMAND`),
+the compiler/toolchain wrapper class found by a second red-team pass —
+`MAKEFLAGS`, `GOFLAGS`, `CC`, `TAR_OPTIONS`, `RSYNC_RSH`, `RUSTC`,
+`RUSTC_WRAPPER`, `RUSTC_WORKSPACE_WRAPPER` and the `CARGO_*` prefix (carved out
+at `CARGO_HOME`, the one pointer in that namespace) — and the interpreter-hook
+class **promoted out of the middle bucket** by the same pass: `PYTHONPATH`,
+`PYTHONUSERBASE`, `NODE_OPTIONS` and `PERL5OPT` all run unconditionally on
+interpreter start (`sitecustomize.py`/`usercustomize.py`, `--require`, `-M`),
+which is a stronger claim than "reviewable as set" survives — measured, not
+reasoned about, and the promotion is why they are no longer in the middle
+bucket above. `PYTHONPATH` is also a **list**, so `forbidBoth` refuses
+`environ.merge`/`environ.prepend` on it too, not only `set`/`inherit` — nothing
+shipped merges it, so this cost nothing today, but a profile wanting to add a
+python path will need a different mechanism if one is ever wanted.
+
+**Refused for `inherit` only** is the prefix `PIP_*` — §4.5's finding that a
+tool's environment outranks the file snug generated for it, and nothing under
+it has been measured to exec a program (unlike `npm_config_*`, below).
+`npm_config_*` started in this bucket and was **promoted to `forbidBoth`**,
+carved out at `NPM_CONFIG_USERCONFIG`, for the identical reason `CARGO_*` was:
+`npm_config_script_shell`/`npm_config_node_gyp` name a program npm executes,
+not merely a config value that outranks a file — measured in every case
+spelling npm's own case-insensitive lookup honours, which is also why a
+single shared table (`prefixCaseFold`) now decides case-folding for every
+prefix in both the forbidden-name table and the sink-sweep predicate that
+reads the same names (`policy.IsInlineConfigEnv`) — two tables each keeping
+an independent copy of "does this tool fold case" is how they drifted apart
+in the first place.
+
+**Not closed, and known to remain open: `EDITOR`/`VISUAL`.** `GIT_EDITOR` is
+`forbidBoth` above, and its own documented fallback chain is `GIT_EDITOR` →
+`core.editor` → `VISUAL` → `EDITOR` — the same sibling-miss shape as
+`GIT_COMMON_DIR` and the `RUSTC_*`/`CARGO_*` pair, found again while reviewing
+the change that closed those. It is **not** closed here: §3.2's row and the
+decision below it stand, because closing it costs more than a table row — see
+the note there and https://github.com/gomoni/snug/issues/35, still open.
+`internal/policy/envtypes.go` is the list; this paragraph is a summary of it
+and the code is what runs.
 
 The git group is where the split earns its keep, and it was not got right first
 time: the red team found `GIT_SSH` passing while `GIT_SSH_COMMAND` sat two
@@ -608,7 +645,7 @@ snug: profile broken sets XDG_DATA_HOME=/home/u/.local/share, which it does not
 SNUG_PROFILES = "@sys"
 PS1 = "$(id)"
 ```
-Refused. `SNUG_*` = what `--dry-run` and injected `~/.claude/CLAUDE.md` read against, so profile that can set it can lie to artifacts a human read to decide whether to trust sandbox. `PS1` executed by bash (§3.5). Refusal must cover **prefixes** — `BASH_FUNC_*`, `GIT_CONFIG_*`, `LD_*`, `npm_config_*`, `PIP_*` — which today's `map[string]bool` cannot express.
+Refused. `SNUG_*` = what `--dry-run` and injected `~/.claude/CLAUDE.md` read against, so profile that can set it can lie to artifacts a human read to decide whether to trust sandbox. `PS1` executed by bash (§3.5). Refusal must cover **prefixes** — `BASH_FUNC_*`, `GIT_CONFIG_*`, `LD_*`, `npm_config_*`, `PIP_*`, `CARGO_*` — which today's `map[string]bool` cannot express.
 
 ```toml
 # 6. A verb that does not exist.
@@ -744,6 +781,26 @@ where it can be argued with:
 > a composability defect — one profile weakening what another established —
 > rather than an escape. Carried as https://github.com/gomoni/snug/issues/35.
 
+**Reconsidered, not re-decided, during the pass that closed `GIT_COMMON_DIR`
+and the `RUSTC_*`/`CARGO_*` pair (issue #26 review).** Those two were the same
+sibling-miss shape — a specific spelling refused, a general one it falls back
+to left open — and the reviewer asked, correctly, why `EDITOR`/`VISUAL` were
+not fixed alongside `GIT_EDITOR` in the same change, offering an *unconditional*
+`forbidBoth` rather than the identity-conditional refusal rejected above (which
+sidesteps the invariant-1 objection, since it is no longer conditional on a
+neighbour). It was not implemented, and the reason is the other objection in
+this section, confirmed by measurement rather than argued afresh: `@claude`
+(`internal/profile/profiles/base.toml`, `[profile.claude.environ.inherit]`)
+inherits `EDITOR` and `VISUAL` today, and `forbidBoth` refuses `VerbInherit`
+unconditionally — so this specific fix does not add a table row, it breaks a
+shipped, tested builtin profile's `ValidateEnvGrants` outright. Closing it
+therefore still requires the withdrawal this section already named as the
+real cost, now concretely: either `@claude` stops inheriting `EDITOR`/`VISUAL`
+(a grant taken back from the one profile that uses it) or the gap stays. That
+is a decision about what `@claude` may inherit, not a missing denylist entry,
+and stays out of scope for a change whose remit was closing measured
+prefix/sibling gaps. Still open, still https://github.com/gomoni/snug/issues/35.
+
 **`TZ` is the sharpest scalar, and it is this document's own rule biting.** It is
 not a plain string: it is either a file reference resolved under `TZDIR`, or an
 inline POSIX rule. When the file is unreachable glibc does **not** fail — it
@@ -771,7 +828,7 @@ granting `/usr/share/zoneinfo` has made a guarantee it does not keep — invaria
 | `MANPATH` | `:` | **an OPERATOR** — leading = prepend system path, trailing = append, `::` = insert here | ⚠ | **✗** |
 | `CDPATH` | `:` | **→ CWD, positionally** | ✗ | ✗ |
 | `PKG_CONFIG_PATH` | `:` | **ignored** | ✓ | ✓ |
-| `PYTHONPATH` | `:` | **→ CWD** | ⚠ | ✗ |
+| `PYTHONPATH` | `:` | **→ CWD** | **✗** | ✗ |
 | `PERL5LIB` | `:` | **ignored** | ✓ | ✓ |
 | `NODE_PATH` | `:` | **ignored** | ✓ | ✓ |
 | `CLASSPATH` | `:` / `;` | unverified | ⚠ | ⚠ |
@@ -781,6 +838,12 @@ granting `/usr/share/zoneinfo` has made a guarantee it does not keep — invaria
 | `GOFLAGS` | **space** | n/a | ✗ | ✗ |
 
 **Discriminator for `sanitise` not the type — this column.** Safe where empty element *ignored*; hazardous where it mean *CWD*; illegal where it *operator*. Type carrying separator must also carry empty-element kind, or sanitiser written once and wrong for third of its inputs.
+
+`PYTHONPATH`'s `merge` column reads `✗` rather than the `⚠` an earlier draft of
+this table gave it: `sitecustomize.py` on any element runs at interpreter start
+(§2.1, §4.4), so it moved from the type table's "reviewably mergeable" list to
+`forbiddenEnv`'s `forbidBoth`, which refuses every verb — `merge`/`prepend`
+included, not only `set`/`inherit`. No shipped profile merges it today.
 
 `MANPATH` sharpest: empty element = instruction, so *removing* element can *add* directories. Measured — man-db announce the choice:
 
@@ -934,6 +997,18 @@ since been extended once more, by `68c6363`, after the red team demonstrated tha
 entries above it. As this section says, the list is to be **extended**, not
 retired.
 
+**Status of the "Missing, each measured to execute" list above, checked
+against `internal/policy/envtypes.go` during the issue #26 review round.**
+`GIT_EXEC_PATH`, `GIT_CONFIG_PARAMETERS` (via the `GIT_CONFIG_` prefix),
+`GIT_EXTERNAL_DIFF`, `GIT_EDITOR`, `LESSOPEN` and `BASH_FUNC_*` are all
+covered — `LESSOPEN` and `PYTHONBREAKPOINT` deliberately so, `forbidInheritOnly`
+in the middle bucket (§2.1) rather than `forbidBoth`, which was always the
+intended treatment for a value the tool merely *reads* rather than
+unconditionally executes. `EDITOR`/`VISUAL` are the one pair from this list
+still genuinely open — see §3.2's note and
+https://github.com/gomoni/snug/issues/35, reconsidered and left open again in
+the same round this paragraph was checked.
+
 ### 4.5 Out of scope but found here: the environment outranks the file
 
 CLAUDE.md's "generate, don't bind" rule pin a tool's config **file** and leave its **environment** — higher-precedence source:
@@ -951,7 +1026,17 @@ env -i GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
 
 *A hostile process inside the sandbox can set `GIT_CONFIG_KEY_0=core.sshCommand` and have the next `git fetch` — including one an unsuspecting user or agent runs — execute its command, with `GIT_CONFIG_GLOBAL` pointing at a perfectly clean generated file.* Not a break in sandbox boundary; payload already run code. Break in **identity pinning** — the guarantee `GIT_CONFIG_GLOBAL` exist to make. Same shape by documentation for npm (`npm_config_*` outrank `.npmrc`) and pip (`PIP_*` outrank the file).
 
-**Want own investigation and own fix.** Recorded here because found here.
+**Wanted its own investigation and its own fix — got both, as GitHub issue
+#26.** The verdict: no fix exists for the payload-authored route (the value
+enters git at the command-line scope, above every config file, and every
+mitigation tested lives in the same channel the attacker already owns); what
+snug owes and now asserts mechanically is that the environment snug ITSELF
+hands over never ships one of these inline-config names pre-installed
+(`policy.IsInlineConfigEnv`,
+`TestNoBuiltinHandsOverAnInlineConfigVariable`). See
+`.claude/design/GIT-CONFIG.md` §9 for the measurement and the threat model,
+and CLAUDE.md's "Generate, don't bind" bullet for the pointer-vs-inline-setting
+rule that came out of it.
 
 ---
 

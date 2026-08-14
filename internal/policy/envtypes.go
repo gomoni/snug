@@ -107,6 +107,14 @@ var envTypes = map[string]envType{
 	"DOCKER_CONFIG":         {path: true, noInherit: true},
 	"NPM_CONFIG_USERCONFIG": {path: true, noInherit: true},
 	"PIP_CONFIG_FILE":       {path: true, noInherit: true},
+	// PYTHONUSERBASE is refused outright now (forbiddenEnv, forbidBoth — the
+	// value's directory is where usercustomize.py runs from, measured), but it
+	// is still PATH-VALUED, and was absent from this table entirely — which
+	// meant writesAnyPath's grant-coupling sweep (envcoupling.go) skipped it
+	// even before the forbidBoth entry existed. noInherit is redundant with
+	// forbidBoth here; it is set anyway so this row reads the same as its
+	// siblings rather than as a special case someone has to explain.
+	"PYTHONUSERBASE": {path: true, noInherit: true},
 
 	// ── the XDG lists (§3.4) ─────────────────────────────────────────────────
 	//
@@ -253,8 +261,13 @@ var forbiddenEnv = map[string]forbidKind{
 	// afterwards (measured: post-checkout fired on the clone), and GIT_DIR points
 	// git at a repository whose hooks run on the next commit (measured). They
 	// belong here rather than in the path-coupling rule, because granting the
-	// path is not what makes them safe — nothing does.
+	// path is not what makes them safe — nothing does. GIT_COMMON_DIR is the
+	// identical shape, missed in the first pass and found by an independent
+	// review's sweep, not by reasoning: it points git's SHARED directory
+	// (where `hooks/` lives for a worktree) at an attacker-chosen path, and
+	// `hooks/pre-commit` there ran on the next commit — measured, git 2.55.
 	"GIT_PAGER": forbidBoth, "GIT_TEMPLATE_DIR": forbidBoth, "GIT_DIR": forbidBoth,
+	"GIT_COMMON_DIR": forbidBoth,
 	// A different shape again, and the reason the rule is "the value is code"
 	// rather than "the value is a command": these two carry no code at all. They
 	// switch OFF git's own refusal to use the ext:: transport, which runs an
@@ -269,16 +282,140 @@ var forbiddenEnv = map[string]forbidKind{
 	// before main(), and each can load code from a path.
 	"JAVA_TOOL_OPTIONS": forbidBoth, "_JAVA_OPTIONS": forbidBoth,
 	"JDK_JAVA_OPTIONS": forbidBoth, "RUBYOPT": forbidBoth,
+	// cargo executes an arbitrary program as its own compiler driver — measured
+	// (issue #26 red team): a profile with RUSTC_WRAPPER pointing at a script
+	// made `cargo build` run that script in place of rustc, as the sandbox's
+	// own uid, and this was reachable through both `environ.set` and
+	// `environ.inherit` before this entry existed. RUSTC_WORKSPACE_WRAPPER and
+	// RUSTC carry the identical capability — the same one CARGO_BUILD_RUSTC_WRAPPER
+	// already forbids via the CARGO_ prefix below — but none of the three
+	// starts with a listed prefix, so the prefix table alone missed them. This
+	// is the shape CLAUDE.md keeps recording: a rule applied to one of its two
+	// spellings.
+	"RUSTC_WRAPPER": forbidBoth, "RUSTC_WORKSPACE_WRAPPER": forbidBoth, "RUSTC": forbidBoth,
+	// The same class again, one indirection further out: a build tool's own
+	// "run this program instead" or "pass these extra flags" variable, each
+	// measured to run an attacker-chosen program as the sandbox's own uid —
+	// a second-pass review sweep, not a spelling anyone reasoned about ahead
+	// of time. This is why the table is enumerated rather than derived: the
+	// space of "an env var some tool turns into exec" is unbounded, and each
+	// of these was found only by trying it.
+	//
+	//   MAKEFLAGS="--eval=x:;$(shell ./evil.sh)"  make        -> evil.sh ran   (GNU make 4.x)
+	//   GOFLAGS="-toolexec=/…/toolexec.sh"         go build    -> ran per compile (go 1.26)
+	//   CC=./evil.sh                                make        -> ran as the compiler, via make's implicit rules
+	//   TAR_OPTIONS="--use-compress-program=/…/prog.sh"  tar   -> prog.sh ran   (GNU tar 1.35)
+	//   RSYNC_RSH=/…/prog.sh                        rsync       -> prog.sh ran   (rsync 3.4.3)
+	"MAKEFLAGS": forbidBoth, "GOFLAGS": forbidBoth, "CC": forbidBoth,
+	"TAR_OPTIONS": forbidBoth, "RSYNC_RSH": forbidBoth,
 	// bash performs command substitution on the prompt templates, before the
 	// user has typed anything (§3.5)
 	"PS0": forbidBoth, "PS2": forbidBoth, "PS3": forbidBoth, "PS4": forbidBoth,
 	"PROMPT_COMMAND": forbidBoth,
 
-	// reviewable as `set`, a hole in --clearenv as `inherit`
+	// An interpreter's own "run this file/module before anything else"
+	// variable — the same class as BASH_ENV/ENV below. PYTHONPATH,
+	// NODE_OPTIONS and PERL5OPT were PROMOTED here from forbidInheritOnly:
+	// "reviewable as set" was the call made for them, and it does not survive
+	// a measurement of the value running code. PYTHONUSERBASE was simply
+	// absent from this table until this measurement found it.
+	//
+	//   PYTHONUSERBASE=…  python3 -c 'import site'
+	//     -> …/site-packages/usercustomize.py ran on every python3   (CPython 3.13)
+	//   PYTHONPATH=…      python3 -c 'pass'
+	//     -> sitecustomize.py on that path ran at interpreter start   (CPython)
+	//   NODE_OPTIONS="--require /…/pre.js"  node ...
+	//     -> pre.js ran before the script, every invocation             (node 26)
+	//   PERL5OPT="-I/… -Mevil"  perl ...
+	//     -> evil.pm loaded on every perl invocation                    (perl 5)
+	//
+	// "Reviewable as set, from a profile that also grants the path" was the
+	// right call for a variable that carries a PATH a tool merely READS
+	// (BASH_ENV, ENV, LESSOPEN). It was the wrong call here: these four
+	// carry a path a tool EXECUTES, unconditionally, on every invocation —
+	// indistinguishable in shape from RUSTC_WRAPPER above, which is
+	// forbidBoth for the identical reason.
+	"PYTHONUSERBASE": forbidBoth, "PYTHONPATH": forbidBoth,
+	"NODE_OPTIONS": forbidBoth, "PERL5OPT": forbidBoth,
+
+	// reviewable as `set`, a hole in --clearenv as `inherit` — each of these
+	// carries a PATH the tool reads, not a path it unconditionally executes;
+	// see the block above for the class this is NOT.
 	"BASH_ENV": forbidInheritOnly, "ENV": forbidInheritOnly,
-	"PERL5OPT": forbidInheritOnly, "NODE_OPTIONS": forbidInheritOnly,
 	"PYTHONSTARTUP": forbidInheritOnly, "PYTHONBREAKPOINT": forbidInheritOnly,
-	"LESSOPEN": forbidInheritOnly, "PYTHONPATH": forbidInheritOnly,
+	"LESSOPEN": forbidInheritOnly,
+}
+
+// prefixCaseFold is the ONE place "does this tool's env lookup fold case"
+// lives. forbiddenEnvPrefixes (what a profile may write) and
+// inlineConfigPrefixes (what snug's sink sweep treats as inline config) both
+// match against this same table instead of each carrying its own bool, so a
+// re-measurement changes one line and both tables see it.
+//
+// That is not tidiness for its own sake: it is the fix for a defect measured
+// in review. A previous round gave inlineConfigPrefixes a case-insensitive
+// npm_config_ entry — correctly, npm 10.9.8 measured — but left
+// forbiddenEnvPrefixes' OWN npm_config_ entry case-sensitive, so
+// `environ.inherit NPM_CONFIG_SCRIPT_SHELL` (the idiomatic, upper-case
+// spelling a shell `export` produces) was ACCEPTED at parse time while the
+// predicate that exists to name it as inline config said `true`. Two tables
+// holding the same fact is how they end up disagreeing about it; one table
+// cannot.
+var prefixCaseFold = map[string]bool{
+	// Measured on this host, git 2.55.0: GIT_CONFIG_COUNT/KEY_0/VALUE_0 are
+	// read; git_config_count and Git_Config_Count are not (both fall through
+	// to the file value). getenv(3) is case-sensitive on Linux and git does
+	// no folding of its own — consistent across every GIT_CONFIG_* name.
+	"GIT_CONFIG_": false,
+	// Documented, not measured: pip is not installed on this host (§1.2 of
+	// the issue #26 design). pip's own source
+	// (Configuration.get_environ_vars in pip/_internal/configuration.py)
+	// does `key.startswith("PIP_")` against os.environ, which on Linux is a
+	// case-sensitive mapping — so only the exact-case PIP_* spelling should
+	// be recognised. Re-measure if pip becomes available here.
+	"PIP_": false,
+	// Measured: node 22 + a vendored npm-cli.js (npm 10.9.8), since
+	// /usr/bin/npm on this host is a broken libalternatives shim. All three
+	// spellings won: npm_config_script_shell, NPM_CONFIG_SCRIPT_SHELL and
+	// Npm_Config_Script_Shell all set `script-shell`. npm's own env-config
+	// loader lower-cases every name before matching, so the prefix must be
+	// matched case-insensitively or the idiomatic upper-case spelling — the
+	// one a human or a shell `export` is most likely to produce — sails
+	// past every check keyed on this table.
+	"npm_config_": true,
+	// Measured on this host, cargo 1.97.1: CARGO_BUILD_TARGET_DIR is read;
+	// cargo_build_target_dir and Cargo_Build_Target_Dir are not (both fall
+	// through to .cargo/config.toml). Same root cause as git: Rust's
+	// std::env::var is a case-sensitive lookup on Linux and cargo does not
+	// fold the name itself.
+	"CARGO_": false,
+}
+
+// matchesPrefix reports whether name is matched by prefix, honouring
+// prefixCaseFold for that prefix. Every prefix match in this file — the
+// forbidden table, the inline-config predicate, and any exemption from
+// either — goes through this one function, so "how is a prefix matched" has
+// one answer.
+func matchesPrefix(name, prefix string) bool {
+	if len(name) < len(prefix) {
+		return false
+	}
+	if prefixCaseFold[prefix] {
+		return strings.EqualFold(name[:len(prefix)], prefix)
+	}
+	return strings.HasPrefix(name, prefix)
+}
+
+// sameName reports whether name is the SAME NAME as other, honouring
+// prefixCaseFold for the prefix that governs it — the exemption from a
+// case-folding prefix must fold case too, or a case-insensitive prefix
+// match turns the exemption into a false positive instead of fixing the
+// false negative it exists to catch.
+func sameName(name, other, prefix string) bool {
+	if prefixCaseFold[prefix] {
+		return strings.EqualFold(name, other)
+	}
+	return name == other
 }
 
 // forbiddenEnvPrefixes is the half a map[string]bool could never express, and
@@ -290,24 +427,203 @@ var forbiddenEnv = map[string]forbidKind{
 var forbiddenEnvPrefixes = []struct {
 	prefix string
 	kind   forbidKind
+	// exempt names that match prefix but are POINTERS, not the capability the
+	// prefix exists to block — matched with prefix's own case rule via
+	// sameName, for the same reason inlineConfigPointers must be.
+	exempt []string
 }{
-	{"LD_", forbidBoth},
-	{"BASH_FUNC_", forbidBoth},
-	{"GIT_CONFIG_", forbidBoth},
-	// PIP_* and npm_config_* outrank the config FILE those tools read, so
-	// inheriting one defeats a pinned config; setting one in a reviewed profile
-	// that also grants the path is what "generate, don't bind" asks for.
-	{"PIP_", forbidInheritOnly},
-	{"npm_config_", forbidInheritOnly},
+	{"LD_", forbidBoth, nil},
+	{"BASH_FUNC_", forbidBoth, nil},
+	{"GIT_CONFIG_", forbidBoth, nil},
+	// PIP_* outranks the config FILE pip reads, so inheriting it defeats a
+	// pinned config; setting one in a reviewed profile that also grants the
+	// path is what "generate, don't bind" asks for. Nothing under PIP_ was
+	// measured to exec a program the way npm_config_ and CARGO_ below were —
+	// re-promote if that changes.
+	{"PIP_", forbidInheritOnly, nil},
+	// cargo executes an arbitrary program for CARGO_BUILD_RUSTC_WRAPPER,
+	// CARGO_BUILD_RUSTC and CARGO_TARGET_<TRIPLE>_RUNNER/_LINKER — the SAME
+	// capability as the un-prefixed RUSTC_WRAPPER/RUSTC/RUSTC_WORKSPACE_WRAPPER
+	// in forbiddenEnv above, reached through a different spelling. forbidBoth,
+	// not forbidInheritOnly: those three named entries are forbidBoth because
+	// the value IS code, and CARGO_BUILD_RUSTC_WRAPPER is that same code path,
+	// not merely config that outranks a file — treating the prefixed spelling
+	// more leniently than the bare name it is a synonym for would just move
+	// the hole rather than close it. Measured, issue #26 review: before this
+	// entry existed, `environ.set CARGO_BUILD_RUSTC_WRAPPER = ...` and
+	// `environ.inherit CARGO_BUILD_RUSTC_WRAPPER` were both accepted at parse
+	// time. CARGO_HOME is the one exemption: it is a POINTER (the mechanism a
+	// future cargo adapter would use, same shape as GIT_CONFIG_GLOBAL), not a
+	// code path.
+	{"CARGO_", forbidBoth, []string{"CARGO_HOME"}},
+	// npm_config_ promoted from forbidInheritOnly for the identical reason
+	// CARGO_ was above: `npm_config_script_shell` names the shell npm uses to
+	// run lifecycle and `run` scripts, and `npm_config_node_gyp` names the
+	// program npm invokes for native builds — both ARE that code path, not
+	// merely config that outranks a file, and both are npm's exact analog of
+	// CARGO_BUILD_RUSTC_WRAPPER. Measured, issue #26 review: before this
+	// promotion, `environ.set NPM_CONFIG_SCRIPT_SHELL = ...` and
+	// `environ.set NPM_CONFIG_NODE_GYP = ...` were both accepted, in every
+	// case spelling — see prefixCaseFold's npm_config_ entry above for why
+	// case matters here at all. NPM_CONFIG_USERCONFIG is the one exemption,
+	// for the same reason CARGO_HOME is: it is a POINTER, not a code path.
+	{"npm_config_", forbidBoth, []string{"NPM_CONFIG_USERCONFIG"}},
+}
+
+// inlineConfigPrefixes is the prefix half of IsInlineConfigEnv's table: every
+// name matching one of these is a config-surface variable whose VALUE IS THE
+// SETTING, unless it is named in inlineConfigPointers below. Case sensitivity
+// for each prefix comes from prefixCaseFold, the same table
+// forbiddenEnvPrefixes reads — see that table's comment for why sharing it
+// matters, not just naming the list here.
+var inlineConfigPrefixes = []string{
+	"GIT_CONFIG_",
+	"PIP_",
+	"npm_config_",
+	"CARGO_",
+}
+
+// inlineConfigPointer is one entry of inlineConfigPointers: a name that
+// matches a prefix above but whose value is a PATH to a file snug generated,
+// not the setting itself. prefix names which entry in prefixCaseFold governs
+// the case rule for this exemption — NPM_CONFIG_USERCONFIG is exempt in
+// every spelling npm itself honours, or a case-insensitive prefix match
+// would turn the exemption into a false positive instead of fixing the false
+// negative it replaced.
+type inlineConfigPointer struct {
+	name   string
+	prefix string
+}
+
+// inlineConfigPointers is the exemption set. Naming one here is a policy
+// change — ask what the name makes the tool DO, exactly as GIT-CONFIG.md §5
+// asks of the config-key whitelist.
+var inlineConfigPointers = []inlineConfigPointer{
+	{"GIT_CONFIG_GLOBAL", "GIT_CONFIG_"},
+	{"GIT_CONFIG_SYSTEM", "GIT_CONFIG_"},
+	{"NPM_CONFIG_USERCONFIG", "npm_config_"},
+	{"PIP_CONFIG_FILE", "PIP_"},
+	{"CARGO_HOME", "CARGO_"},
+}
+
+// inlineConfigNames is the named half the prefix table structurally cannot
+// express: a variable whose value is a setting (here, an arbitrary program
+// cargo executes as its compiler driver) but whose NAME does not start with
+// its tool's prefix. RUSTC_WRAPPER, RUSTC_WORKSPACE_WRAPPER and RUSTC carry
+// the identical capability CARGO_BUILD_RUSTC_WRAPPER carries under the
+// CARGO_ prefix in forbiddenEnvPrefixes — measured, issue #26 red team: a
+// profile setting RUSTC_WRAPPER to a script made `cargo build` run that
+// script in place of rustc. All six names (these three, plus the three
+// CARGO_BUILD_* / CARGO_TARGET_* spellings the prefix catches) are already
+// refused outright in forbiddenEnv/forbiddenEnvPrefixes (forbidBoth, for
+// every verb) — this map exists so IsInlineConfigEnv's own promise stays
+// true for the un-prefixed spelling too, not because anything downstream of
+// it is what stops a builtin from shipping one; see IsInlineConfigEnv's doc
+// comment for what actually enforces that.
+var inlineConfigNames = map[string]bool{
+	"RUSTC_WRAPPER":           true,
+	"RUSTC_WORKSPACE_WRAPPER": true,
+	"RUSTC":                   true,
+}
+
+// IsInlineConfigEnv reports whether NAME is a config-surface variable whose
+// VALUE IS THE SETTING, rather than a POINTER at a file snug generated.
+//
+// The distinction is the whole of "generate, don't bind" at the environment:
+// GIT_CONFIG_GLOBAL carries a PATH to a file snug authored and a human can
+// read; GIT_CONFIG_KEY_0 carries the setting itself, at a scope above every
+// file (measured: git reports it as `command line:`, above global and above
+// the repository's own .git/config — see .claude/design/GIT-CONFIG.md §9).
+// snug may author the first and must never author the second.
+//
+// GH_CONFIG_DIR and DOCKER_CONFIG match no prefix here and need no exemption
+// entry — they are listed in inlineConfigPointers's comment anyway, because
+// the REASON they are safe is the same reason as the exemptions that are
+// listed, and the next adapter should be written from that comment.
+//
+// What this predicate does NOT cover, stated because the name invites reading
+// it as the whole of the sink sweep and it is not: the command-hook-via-`set`
+// class in forbiddenEnv — BASH_ENV, ENV, PERL5OPT, NODE_OPTIONS,
+// PYTHONSTARTUP, LESSOPEN and the rest marked forbidInheritOnly — is
+// deliberately reviewable AS `set`, from a reviewed profile that also grants
+// the path (see forbidKind's doc comment). Those names return false here on
+// purpose; TestNoBuiltinHandsOverAnInlineConfigVariable is not their guard.
+//
+// What this predicate is NOT, stated because a doc comment nearby overclaimed
+// it once: it has no production caller. `forbiddenEnv`/`forbiddenEnvPrefixes`
+// via `ValidateEnvGrants` is what stops a PROFILE — builtin or user — from
+// ever authoring one of these names; that is the real, load-bearing gate.
+// IsInlineConfigEnv is read only by cmd/snug's builtin-only, TEST-TIME sweep
+// (TestNoBuiltinHandsOverAnInlineConfigVariable), which resolves
+// `profile.Builtins()` and nothing a user's own `~/.config/snug/profiles.d`
+// defines. If forbiddenEnv/forbiddenEnvPrefixes were ever narrowed, a USER
+// profile writing one of these names would reach the payload with nothing in
+// the way, and this sweep would stay green regardless — it never resolves a
+// user profile. Wiring this predicate into ValidateEnvGrants itself, so it
+// governs what ANY profile may author, is a policy decision and is
+// deliberately not made here.
+//
+// The pointer set is a SECURITY BOUNDARY, not a convenience list. Adding a
+// name to it says "snug hands this to the payload"; ask what the name makes
+// the tool DO, exactly as GIT-CONFIG.md §5 asks of the config-key whitelist.
+func IsInlineConfigEnv(name string) bool {
+	if inlineConfigNames[name] {
+		return true
+	}
+	for _, p := range inlineConfigPointers {
+		if sameName(name, p.name, p.prefix) {
+			return false
+		}
+	}
+	for _, p := range inlineConfigPrefixes {
+		if matchesPrefix(name, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // forbiddenFor reports whether a name is refused for this verb, and why.
+//
+// A prefix's exempt list applies to every verb EXCEPT VerbInherit, and that
+// asymmetry is deliberate rather than an oversight: an exempt name is a
+// POINTER (CARGO_HOME, NPM_CONFIG_USERCONFIG, …), and "generate, don't bind"
+// refuses to let a pointer be pulled from the HOST regardless — inheriting
+// would reintroduce exactly the file the rule exists to avoid. Most of the
+// time that refusal comes from the name's own noInherit entry in envTypes,
+// which is a case-SENSITIVE, exact-string lookup. That is exactly right for a
+// case-sensitive prefix (CARGO_), and exactly wrong for a case-INSENSITIVE
+// one: npm_config_'s exemption (NPM_CONFIG_USERCONFIG) matches every case
+// spelling via sameName/prefixCaseFold, but envTypes["npm_config_userconfig"]
+// does not exist, so the type-table refusal never fires for that spelling —
+// measured, before this rule existed: environ.inherit npm_config_userconfig
+// was ACCEPTED while environ.inherit NPM_CONFIG_USERCONFIG was refused, the
+// same "one table disagrees with itself across two case spellings" defect
+// this whole file exists to close, found one level deeper. Refusing to let
+// exempt+Inherit combine at all closes it structurally, for every existing
+// and future case-insensitive prefix, without needing envTypes to also
+// become case-fold aware.
 func forbiddenFor(name string, verb EnvVerb) (bool, string) {
 	if k, ok := forbiddenEnv[name]; ok && appliesTo(k, verb) {
 		return true, ""
 	}
 	for _, p := range forbiddenEnvPrefixes {
-		if strings.HasPrefix(name, p.prefix) && appliesTo(p.kind, verb) {
+		if !matchesPrefix(name, p.prefix) {
+			continue
+		}
+		if verb != VerbInherit {
+			exempt := false
+			for _, e := range p.exempt {
+				if sameName(name, e, p.prefix) {
+					exempt = true
+					break
+				}
+			}
+			if exempt {
+				continue
+			}
+		}
+		if appliesTo(p.kind, verb) {
 			return true, p.prefix
 		}
 	}

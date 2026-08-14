@@ -143,7 +143,7 @@ environ.sanitise on EDITOR, which is a scalar. sanitise filters the ELEMENTS of 
 environ.sanitise on MANPATH, where an empty element is an INSTRUCTION rather than a gap: a leading one prepends the system path, a trailing one appends it, and '::' inserts it in place. Removing an element there can ADD directories, which is the opposite of what a filter is for. Use environ.merge with the directories you mean
 
 == env_sanitise_on_an_unfilterable_list ==
-environ.sanitise on PYTHONPATH, which snug refuses to filter: an empty or dropped element changes the meaning of the value rather than shortening it — see .claude/design/ENVIRONMENT-VARIABLES.md §3.3. Use environ.merge with the directories you mean
+environ.sanitise names PYTHONPATH, which snug refuses for this verb: the value is code, executed by every process the sandbox launches. Remove the line
 
 == env_separator_in_a_merge_string ==
 environ.merge on PATH has the element "/usr/bin:/usr/sbin", which contains ":" — a separator PATH is read with. Write the elements:
