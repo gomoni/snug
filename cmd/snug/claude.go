@@ -36,6 +36,20 @@ func claudeFiles(pol *policy.Policy, home string) {
 		if err != nil {
 			return // absent on this host; nothing to stage
 		}
+		// Wrapped here rather than at the point it is stored into Mount: data is
+		// 508 bytes of accessToken/refreshToken/sk-ant key the instant ReadFile
+		// returns it, so the sooner it carries the guard the fewer lines can
+		// render it by accident.
+		//
+		// Be honest about what this does NOT achieve, because the sibling case
+		// does achieve it and the difference matters: ghToken's RETURN TYPE is
+		// policy.Secret, so no plaintext name for the gh token exists at all.
+		// Here os.ReadFile hands back a []byte and Go offers nowhere earlier to
+		// intervene, so `data` stays in scope for the rest of this closure as an
+		// unguarded alias. content is the second name, not the first. Anything
+		// added below must use content; a fmt of `data` still leaks and no test
+		// in the tree can see it.
+		content := policy.Secret(data)
 		guest := filepath.Join(home, rel)
 		// Policy.Replace, never a raw pol.Mounts[...] = assignment: it marks the
 		// mount Authored (which is what exempts it from the masking rule — it is
@@ -43,7 +57,7 @@ func claudeFiles(pol *policy.Policy, home string) {
 		// grant) and records anything it displaced, so --dry-run still says so.
 		pol.Replace(policy.Mount{
 			Guest: guest, Kind: policy.KindData, Access: policy.AccessRW,
-			Content: data, Perms: &perm, From: []string{"@claude"},
+			Content: content, Perms: &perm, From: []string{"@claude"},
 		})
 	}
 	stage(".claude/.credentials.json", 0o600)

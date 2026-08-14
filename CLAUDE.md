@@ -794,10 +794,26 @@ meant. It cannot prove the sandbox holds.
   human writes in their own profile.
 - **Claude Code's files**: binary, `settings.json`, skills and plugins read-only;
   `.credentials.json` and `~/.claude.json` staged as writable copies (Claude
-  re-onboards without the latter). Only the credentials file syncs back to the
-  host, and only after structural validation — `~/.claude.json` carries MCP
-  config, which is a natural target for injecting a tool that would run *outside*
-  the sandbox on the next host-side session.
+  re-onboards without the latter). **No staged credential is written back to the
+  host — that channel does not exist**, and the cost is that a token refreshed
+  inside is lost when the sandbox exits. Scope that sentence to credentials and
+  keep it there: the sandbox writes to the host through the target bind by
+  design, and through `@tmp-shared` when selected, so "nothing leaves the
+  sandbox" is false and an earlier draft of this bullet said it. This sentence
+  previously read "only the credentials file syncs back to the host, and only
+  after structural validation", describing a design that was never built
+  (`cmd/snug/claude.go` says so at the staging site, and a fixed-string sweep for
+  `syncBack`, `SyncBack` and `writeBack` finds nothing — note that
+  `grep -rn 'a|b'` without `-E` matches a literal pipe and so cannot fail, which
+  is how the first draft of this parenthesis "verified" it). It was found
+  by a red team sweeping what `@claude` hands over, not by review — and note the
+  direction it was wrong in: a doc that invents a host-write channel invites
+  someone to reason about a boundary that does not exist. The correction has to
+  avoid the mirror error, which is why it is credential-scoped rather than
+  absolute. If sync-back is ever built, the structural validation is
+  the load-bearing half: `~/.claude.json` carries MCP config, which is a natural
+  target for injecting a tool that would run *outside* the sandbox on the next
+  host-side session.
 - **Injected `~/.claude/CLAUDE.md`**: generated per-run from the *actual*
   resolved policy, so a run whose engine failed to start truthfully reads "no
   engine". Every sentence in it removes a class of wasted agent turns.

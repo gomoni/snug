@@ -157,7 +157,11 @@ func TestGitExtractGeneratesTheConfigAndSetsGitConfigGlobal(t *testing.T) {
 			"shape this profile exists to avoid", m.Kind)
 	}
 	if !strings.Contains(string(m.Content), "some@example.com") {
-		t.Errorf("the extracted email is not in the generated file:\n%s", m.Content)
+		// The explicit conversion is required and is the point: Mount.Content is
+		// a Secret, so "%s" of it prints "<redacted N bytes>". Spelling
+		// string(...) is the deliberate act that opts one diagnostic out, and
+		// this content is fabricated by the test's own ctx.HostGit.
+		t.Errorf("the extracted email is not in the generated file:\n%s", string(m.Content))
 	}
 	// Without GIT_CONFIG_GLOBAL git reads ~/.gitconfig AND
 	// $XDG_CONFIG_HOME/git/config; setting it is also what stops a conditional

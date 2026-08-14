@@ -66,10 +66,15 @@ func knownHostsFor(host string) []byte {
 // than parsing ~/.config/gh/hosts.yml: gh owns that format, it changes, and a
 // wrong parse here would either break auth or hand over the wrong account's
 // token. Absent gh, the sandbox simply has no token.
-func ghToken(host, user string) string {
+//
+// Returns policy.Secret rather than string: cmd.Output() is the acquisition
+// point for the OAuth token, and wrapping it there — rather than at whatever
+// later line happens to store it into a Mount — means there is no plain-string
+// hop in between for a future line to print by mistake.
+func ghToken(host, user string) policy.Secret {
 	gh, err := exec.LookPath("gh")
 	if err != nil {
-		return ""
+		return nil
 	}
 	if host == "" {
 		host = "github.com"
@@ -80,9 +85,9 @@ func ghToken(host, user string) string {
 	}
 	out, err := cmd.Output()
 	if err != nil {
-		return ""
+		return nil
 	}
-	return strings.TrimSpace(string(out))
+	return policy.Secret(bytes.TrimSpace(out))
 }
 
 // startIdentity brings up whatever the pinned identity needs, and returns the
@@ -251,7 +256,7 @@ func stageGhConfig(pol *policy.Policy, id *policy.Identity, dryRun bool) error {
 		return nil
 	}
 	tok := ghToken(host, id.GhUser)
-	if tok == "" {
+	if len(tok) == 0 {
 		// Invariant 5: no silent downgrade. gh_user is an explicit request for
 		// a capability, and the previous version of this function returned
 		// quietly — you got a sandbox with no gh credential, no GH_CONFIG_DIR
@@ -295,13 +300,18 @@ func stageGhConfig(pol *policy.Policy, id *policy.Identity, dryRun bool) error {
 	}
 
 	dir := pol.Home + "/.config/gh"
-	hosts := fmt.Sprintf("%s:\n    oauth_token: %s\n    user: %s\n    git_protocol: ssh\n",
-		host, tok, user)
+	// string(tok) is the one explicit escape this document needs: fmt.Sprintf's
+	// %s on a policy.Secret would render "<redacted N bytes>" into the file
+	// instead of the token, so the interpolation itself must convert — visibly,
+	// at this one point — rather than the whole document staying a plain
+	// string until it is stored.
+	hosts := policy.Secret(fmt.Sprintf("%s:\n    oauth_token: %s\n    user: %s\n    git_protocol: ssh\n",
+		host, string(tok), user))
 
 	perm := uint32(0o600)
 	pol.Replace(policy.Mount{
 		Guest: dir + "/hosts.yml", Kind: policy.KindData, Access: policy.AccessRW,
-		Content: []byte(hosts), Perms: &perm, From: []string{"(identity)"},
+		Content: hosts, Perms: &perm, From: []string{"(identity)"},
 	})
 	pol.AuthorEnv("GH_CONFIG_DIR", dir)
 	pol.AuthorEnv("GH_HOST", host)

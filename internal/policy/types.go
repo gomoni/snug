@@ -89,7 +89,13 @@ type Mount struct {
 	// Content is the file body for KindData. It is materialised into an
 	// anonymous memfd at exec time, so nothing lands on disk and there is no
 	// window for another process to read or swap it.
-	Content []byte
+	//
+	// Its type is Secret, not []byte, because these bytes are the host's Claude
+	// credentials under a builtin profile and the gh token under an identity
+	// one. Secret renders as "<redacted N bytes>" at every fmt, JSON and text
+	// sink; see secret.go for why the guard is on the type rather than on
+	// Mount, and why it redacts rather than erroring.
+	Content Secret
 
 	// From records which profiles contributed this grant. It is provenance for
 	// `snug explain` only and is deliberately NOT part of equality — otherwise
@@ -114,6 +120,18 @@ type Mount struct {
 	// once Resolve has returned. Nothing a profile can write reaches it.
 	Authored bool
 }
+
+// Mount deliberately has NO String or GoString method, and that is a decision
+// rather than an omission — `%+v` on a Mount is already safe, because the one
+// field that must not be printed carries its own guard (Content is a Secret).
+//
+// Writing one would make things worse in the direction this codebase keeps
+// getting caught by: a hand-written String() is a second copy of the field
+// list, and the next field added here would be silently missing from every
+// diagnostic that prints a Mount — including resolve_test.go's failure message,
+// which is read precisely when something unexpected is in a mount. The default
+// struct rendering enumerates; a method asserts. Prefer the one that cannot
+// drift.
 
 // Policy is the single computed, immutable object. It is the sole author of the
 // bwrap argv — and, once they exist, of the pasta argv and the container
