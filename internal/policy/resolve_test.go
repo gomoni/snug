@@ -223,6 +223,13 @@ func testRegistry() map[string]*Profile {
 		// {home}/.local/bin, is NOT granted — only the file below it is — which
 		// is exactly the shape TestSanitiseUsesTheDeepestCoveringMount needs.
 		"nested-bin": {Name: "nested-bin", RO: []string{"{home}/.local/bin/tool"}},
+		// A minimal OS-runtime grant that does NOT cover /usr — Validate refuses
+		// any policy with no mount at exactly /usr or /bin ("no OS runtime
+		// granted"), so a selection that deliberately excludes @sys (to test that
+		// something ELSE covering /usr, or nothing at all, changes the verdict)
+		// still needs SOME runtime grant to be legal. /opt exists in every
+		// fakeEnv and is not /usr, which is the point.
+		"runtime-bin": {Name: "runtime-bin", RO: []string{"/opt:/bin"}},
 	}
 }
 
