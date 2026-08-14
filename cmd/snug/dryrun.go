@@ -324,8 +324,13 @@ func describeEnvironment(out *os.File, p *policy.Policy) {
 		//
 		// Iterates a FIXED slice, never map order, so the rendering does not vary
 		// run to run for the identical policy.
+		// EVERY reason must be listed here. A drop whose reason is missing from
+		// this slice is removed from the value and rendered nowhere — a silent
+		// removal, which is the exact failure EnvDrop.Reason exists to prevent.
+		// Adding a reason to policy.EnvDropReason means adding it here.
 		for _, reason := range []policy.EnvDropReason{
 			policy.DropNoGrant, policy.DropTmpfsOnly, policy.DropPseudoOnly,
+			policy.DropReplaceable,
 		} {
 			var vals []string
 			for _, d := range v.Dropped {
@@ -478,16 +483,28 @@ func visibleValue(s string) string {
 // it is the point of those variables, and marking them would train the reader to
 // ignore the mark on the one line where it matters.
 //
-// It cannot collide with "not granted": IsShadowSlot needs a covering mount to
-// return true, and GrantsGuestPath returning false means there is none.
+// THE SHADOW MARK IS TESTED FIRST, and it used to be nested inside the "granted"
+// branch under the argument that the two "cannot collide: IsShadowSlot needs a
+// covering mount to return true, and GrantsGuestPath returning false means there
+// is none". That was true while both predicates stopped AT a symlink. They now
+// follow one, and the two answers came apart in the one direction that loses a
+// warning: a DANGLING link standing on writable ground is not granted (the chain
+// resolves to nothing) and IS a shadow slot (the payload unlinks it and mkdirs
+// its own directory at that name). Nested, that renders as a bare "not granted"
+// and the writable mark disappears — the screen omitting the more dangerous of
+// two true facts. Hoisted, the warning wins, which is the right precedence: "you
+// can be given a command you did not install" outranks "this names nothing".
+//
+// For every case reachable before the symlink work the two orderings agree, so
+// this is a reorder rather than a behaviour change wherever it can be compared.
 func grantMark(p *policy.Policy, name, value string) string {
 	if !strings.HasPrefix(value, "/") {
 		return ""
 	}
+	if name == "PATH" && p.IsShadowSlot(value) {
+		return "  ← writable from inside"
+	}
 	if p.GrantsGuestPath(value) {
-		if name == "PATH" && p.IsShadowSlot(value) {
-			return "  ← writable from inside"
-		}
 		return ""
 	}
 	inside := 0
@@ -769,9 +786,18 @@ func describeCommands(out *os.File, p *policy.Policy) {
 	// screen contradicted itself four lines apart: this paragraph said "NOT
 	// writable from inside" while the ENVIRONMENT block below rendered
 	// `PATH  /run/snug/bin  (snug) staged bin  ← writable from inside`. Validate
-	// now refuses that arrangement outright, so this branch should be
-	// unreachable — which is exactly why it is worth keeping. A refusal that is
-	// later relaxed must not silently restore a false sentence.
+	// refuses that arrangement outright — at the directory since the tmpfs-at-it
+	// finding, and at any ANCESTOR of it since issue #22.
+	//
+	// THIS BRANCH IS STILL REACHED, and an earlier version of this comment
+	// guessed otherwise ("should be unreachable"). Measured: under --dry-run,
+	// main.go renders the whole policy AND THEN prints the Validate error, so a
+	// refused `tmpfs = ["/run"]` + @podman-socket selection prints these three
+	// lines above its own refusal. That is the diagnostic doing its job — it is
+	// the picture behind the error, on the same screen. Do not delete it on a
+	// reachability argument, and do not weaken it on one either: it is also the
+	// backstop for an AUTHORED mount, which Validate's refusal exempts by design,
+	// and for any future renderer that shows a policy Validate never saw.
 	if p.IsShadowSlot(policy.StagedBinDir) {
 		fmt.Fprintf(out, "         %s IS WRITABLE from inside, which it must never be: it is first on\n", policy.StagedBinDir)
 		fmt.Fprintf(out, "         PATH, so anything running here can drop a file called 'git' or 'ssh'\n")

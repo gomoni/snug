@@ -149,21 +149,46 @@ func (p *Policy) Validate(env Environ) error {
 				"       at / — nothing above it can be judged. Grant the paths you meant instead.",
 				provenance(m), describeNode(m))
 		}
-		// RULE 4: /proc and /dev belong to snug, and a profile may not take them.
+		// RULE 4: /proc, /dev and the staging directory belong to snug, and a
+		// profile may not take them — nor anything CONTAINING them.
 		//
-		// snug authors both AFTER the profile fold and yields to whatever is
-		// already there (Resolve step 4), so a profile grant at either path
+		// snug authors /proc and /dev AFTER the profile fold and yields to whatever
+		// is already there (Resolve step 4), so a profile grant at either path
 		// silently DISPLACED snug's — `ro = ["/proc"]` handed the sandbox the
 		// host's procfs instead of one bound to its own pid namespace, and a bind
 		// at /dev would substitute the host's device tree for bwrap's synthetic
 		// minimal set. Neither is a hole a profile gets to open. The yield is what
 		// lets this refusal name the profile that did it; /tmp yields for real,
 		// because @tmp-shared replacing the private tmpfs is the intended use.
-		if why, ours := snugsOwn[g]; ours && !m.Authored {
-			return fmt.Errorf("profile %s puts %s at %s, but %s is snug's own: %s\n"+
-				"       Whatever a profile puts there displaces it, so this is a hole no profile may\n"+
-				"       open. Remove the grant at %s from profile %s.",
-				provenance(m), describeNode(m), g, g, why, g, provenance(m))
+		//
+		// COVERING, not just AT, and that distinction is the whole of issue #22.
+		// The check was an exact map lookup, so `tmpfs = ["/run/snug/bin"]` was
+		// refused and `tmpfs = ["/run"]` was accepted — the identical hole one
+		// directory up. Measured, with @podman-socket to put the directory on PATH:
+		// WROTE-OK /run/snug/bin/git, `command -v git` resolved to it, and the
+		// shadowed git RAN. Same at `tmpfs = ["/run/snug"]`. --remount-ro / does
+		// not reach either, because the profile's tmpfs is a separate mount and the
+		// staging directory is then created inside it.
+		//
+		// /proc and /dev did NOT have the same hole, and only by luck of depth:
+		// their one strict ancestor is /, which the check above refuses for every
+		// kind. Measured — `tmpfs = ["/"]` and `rw = ["/tmp:/"]` both refused. They
+		// go through the same predicate now so the property does not depend on a
+		// path happening to sit at depth 1.
+		if at, own, ours := snugsOwnCovered(g); ours && !m.Authored {
+			if at == g {
+				return fmt.Errorf("profile %s puts %s at %s, but %s is snug's own: %s\n"+
+					"       Whatever a profile puts there displaces it, so this is a hole no profile may\n"+
+					"       open.\n"+
+					"       %s",
+					provenance(m), describeNode(m), g, g, own.why, own.instead)
+			}
+			return fmt.Errorf("profile %s puts %s at %s, which CONTAINS %s — and %s is snug's own: %s\n"+
+				"       A grant at an ancestor takes the descendant with it: %s ends up inside that\n"+
+				"       mount instead of where snug put it, and the property snug relies on there\n"+
+				"       stops holding. Naming the parent is not a narrower grant than naming the child.\n"+
+				"       %s",
+				provenance(m), describeNode(m), g, at, at, own.why, at, own.instead)
 		}
 		// bwrap cannot create a mountpoint at a symlink destination. Catch the
 		// case where a grant's guest path traverses a symlink snug itself
@@ -181,14 +206,36 @@ func (p *Policy) Validate(env Environ) error {
 	return p.rejectMasking(env)
 }
 
-// snugsOwn are the paths only snug may put a node at, with the reason. /tmp is
-// deliberately NOT here: @tmp-shared replacing the private tmpfs with a host
-// directory is the intended use of the yield (Resolve step 4).
-var snugsOwn = map[string]string{
-	"/proc": "it must be a fresh procfs bound to the sandbox's OWN pid namespace, " +
-		"or the sandbox reads the host's process table.",
-	"/dev": "it must be bwrap's synthetic minimal device set, never a bind of the host's " +
-		"(which hands over every block device and every input device).",
+// ownedPath is one of the paths only snug may put a node at: why it is snug's,
+// and what a profile author who reached for it should write instead.
+//
+// The second field is not decoration. A profile that wrote `tmpfs = ["/run"]`
+// wrote it for a reason — something inside wanted a writable runtime directory
+// and the root tmpfs is read-only — and a refusal that names no alternative gets
+// answered by deleting the refusal, not the grant.
+type ownedPath struct {
+	why     string
+	instead string
+}
+
+// snugsOwn are the paths only snug may put a node at, with the reason. A grant
+// AT one of them is refused, and so is a grant at any ANCESTOR of one — see
+// snugsOwnCovered. /tmp is deliberately NOT here: @tmp-shared replacing the
+// private tmpfs with a host directory is the intended use of the yield (Resolve
+// step 4).
+var snugsOwn = map[string]ownedPath{
+	"/proc": {
+		why: "it must be a fresh procfs bound to the sandbox's OWN pid namespace, " +
+			"or the sandbox reads the host's process table.",
+		instead: "Remove the grant. snug mounts a procfs at /proc in every sandbox, so there\n" +
+			"       is nothing a profile needs to add there.",
+	},
+	"/dev": {
+		why: "it must be bwrap's synthetic minimal device set, never a bind of the host's " +
+			"(which hands over every block device and every input device).",
+		instead: "Remove the grant. snug mounts bwrap's device tree at /dev in every sandbox;\n" +
+			"       one more device node is a change to snug, not a grant a profile can make.",
+	},
 
 	// StagedBinDir is here for a different reason from the other two, and the
 	// difference is the point. /proc and /dev are refused because a profile grant
@@ -213,15 +260,71 @@ var snugsOwn = map[string]string{
 	// writable directory would go on PATH.
 	//
 	// Note what is NOT refused, and must not be: a grant at a path INSIDE the
-	// directory. snugsOwn is keyed on the exact guest path, so @claude's
+	// directory. The predicate is a path-ANCESTOR test, so @claude's
 	// `{home}/.local/bin/claude:/run/snug/bin/claude` is untouched — staging one
-	// executable is the whole purpose of the directory. Only the directory itself
-	// is snug's.
-	StagedBinDir: "it is a plain directory on the root tmpfs, which is what makes it " +
-		"unwritable once / is remounted read-only, and snug puts it FIRST on PATH. " +
-		"A mount there is not covered by that remount, so it would hand the payload a " +
-		"writable directory ahead of /usr/bin. Stage the file itself — " +
-		"`ro = [\"/host/path/tool:" + StagedBinDir + "/tool\"]` — never the directory.",
+	// executable is the whole purpose of the directory. Nor is a sibling that
+	// merely shares a string prefix: /run/snug/binaries is not an ancestor of
+	// /run/snug/bin and stays legal.
+	//
+	// What IS refused, since issue #22, is any ancestor: /run/snug, /run, /. The
+	// exact-key version of this rule shipped, and `tmpfs = ["/run"]` walked
+	// straight past it.
+	StagedBinDir: {
+		why: "it is a plain directory on the root tmpfs, which is what makes it " +
+			"unwritable once / is remounted read-only, and snug puts it FIRST on PATH. " +
+			"A mount at or above it is not covered by that remount, so it would hand the " +
+			"payload a writable directory ahead of /usr/bin.",
+		instead: "Stage the FILE, never the directory:\n" +
+			"         ro = [\"/host/path/tool:" + StagedBinDir + "/tool\"]\n" +
+			"       If you named an ancestor (`tmpfs = [\"/run\"]`) because something inside needs\n" +
+			"       a writable runtime directory, grant THAT directory — `tmpfs = [\"/run/myapp\"]`,\n" +
+			"       any path that neither is nor contains " + StagedBinDir + ".",
+	},
+}
+
+// covers reports whether a node at guest path outer contains inner: the same
+// path, or inner strictly beneath it. It is the same lexical relation
+// nearestCovering and coveringMount walk upwards to find, asked in the other
+// direction — those two search the resolved mount set for what supplies a path,
+// while this one asks whether one path swallows another, which is what a
+// per-grant check needs.
+//
+// Both arguments must be absolute and filepath.Clean. Validate has already
+// refused any grant that is not, and the profile layer cleans upstream anyway —
+// measured, `tmpfs = ["/run/"]` reaches Validate as /run. The TrimSuffix covers
+// the one clean path that ends in a slash, "/", where a naive outer+"/" would
+// build "//" and match nothing.
+//
+// It is a path-ancestor test and NOT a string-prefix test, in both directions:
+// /run/snug/binaries does not cover /run/snug/bin, and /run/snug/bin/claude does
+// not cover /run/snug/bin. The first is what a bare strings.HasPrefix gets
+// wrong; the second is the grant the staging directory EXISTS for, and refusing
+// it would break @claude on every run.
+func covers(outer, inner string) bool {
+	return outer == inner || strings.HasPrefix(inner, strings.TrimSuffix(outer, "/")+"/")
+}
+
+// snugsOwnCovered reports which of snug's own paths a grant at guest would take
+// over — that path itself, or any ancestor of it.
+//
+// The keys are sorted, so a grant covering more than one reports the same one on
+// every run. Nothing reachable covers two today (the only common ancestor of
+// /proc, /dev and /run/snug/bin is /, refused before this by its own rule), but
+// a security verdict that depends on Go's map iteration order is one that
+// changes between runs, and the model has been bitten by exactly that before —
+// see the note on resolveViaDeepest.
+func snugsOwnCovered(guest string) (at string, own ownedPath, ok bool) {
+	keys := make([]string, 0, len(snugsOwn))
+	for k := range snugsOwn {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if covers(guest, k) {
+			return k, snugsOwn[k], true
+		}
+	}
+	return "", ownedPath{}, false
 }
 
 // rejectMasking closes the ways the grant language could still express
@@ -332,7 +435,7 @@ func checkNesting(env Environ, outer Mount, at string, inner Mount) error {
 			"       That hides what %s already exposes there, and substitutes host content for kernel\n"+
 			"       content: %s\n"+
 			"       Remove the grant at %s.",
-			provenance(inner), describeNode(inner), inner.Guest, at, at, snugsOwn[at], inner.Guest)
+			provenance(inner), describeNode(inner), inner.Guest, at, at, snugsOwn[at].why, inner.Guest)
 
 	case KindData:
 		return fmt.Errorf("profile %s puts %s at %s, which is inside %s — a generated FILE (from %s).\n"+

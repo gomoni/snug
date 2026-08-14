@@ -32,12 +32,49 @@ profile takeroot puts a bind of /opt at /, but the sandbox root is snug's own:
 == grant_at_exactly_proc ==
 profile claim puts a bind of /opt at /proc, but /proc is snug's own: it must be a fresh procfs bound to the sandbox's OWN pid namespace, or the sandbox reads the host's process table.
        Whatever a profile puts there displaces it, so this is a hole no profile may
-       open. Remove the grant at /proc from profile claim.
+       open.
+       Remove the grant. snug mounts a procfs at /proc in every sandbox, so there
+       is nothing a profile needs to add there.
 
 == grant_at_exactly_dev ==
 profile claim puts a bind of /opt at /dev, but /dev is snug's own: it must be bwrap's synthetic minimal device set, never a bind of the host's (which hands over every block device and every input device).
        Whatever a profile puts there displaces it, so this is a hole no profile may
-       open. Remove the grant at /dev from profile claim.
+       open.
+       Remove the grant. snug mounts bwrap's device tree at /dev in every sandbox;
+       one more device node is a change to snug, not a grant a profile can make.
+
+== grant_covers_stagedbindir_tmpfs_run ==
+profile claim puts an empty tmpfs at /run, which CONTAINS /run/snug/bin — and /run/snug/bin is snug's own: it is a plain directory on the root tmpfs, which is what makes it unwritable once / is remounted read-only, and snug puts it FIRST on PATH. A mount at or above it is not covered by that remount, so it would hand the payload a writable directory ahead of /usr/bin.
+       A grant at an ancestor takes the descendant with it: /run/snug/bin ends up inside that
+       mount instead of where snug put it, and the property snug relies on there
+       stops holding. Naming the parent is not a narrower grant than naming the child.
+       Stage the FILE, never the directory:
+         ro = ["/host/path/tool:/run/snug/bin/tool"]
+       If you named an ancestor (`tmpfs = ["/run"]`) because something inside needs
+       a writable runtime directory, grant THAT directory — `tmpfs = ["/run/myapp"]`,
+       any path that neither is nor contains /run/snug/bin.
+
+== grant_covers_stagedbindir_tmpfs_run_snug ==
+profile claim puts an empty tmpfs at /run/snug, which CONTAINS /run/snug/bin — and /run/snug/bin is snug's own: it is a plain directory on the root tmpfs, which is what makes it unwritable once / is remounted read-only, and snug puts it FIRST on PATH. A mount at or above it is not covered by that remount, so it would hand the payload a writable directory ahead of /usr/bin.
+       A grant at an ancestor takes the descendant with it: /run/snug/bin ends up inside that
+       mount instead of where snug put it, and the property snug relies on there
+       stops holding. Naming the parent is not a narrower grant than naming the child.
+       Stage the FILE, never the directory:
+         ro = ["/host/path/tool:/run/snug/bin/tool"]
+       If you named an ancestor (`tmpfs = ["/run"]`) because something inside needs
+       a writable runtime directory, grant THAT directory — `tmpfs = ["/run/myapp"]`,
+       any path that neither is nor contains /run/snug/bin.
+
+== grant_covers_stagedbindir_bind_run ==
+profile claim puts a bind of /opt at /run, which CONTAINS /run/snug/bin — and /run/snug/bin is snug's own: it is a plain directory on the root tmpfs, which is what makes it unwritable once / is remounted read-only, and snug puts it FIRST on PATH. A mount at or above it is not covered by that remount, so it would hand the payload a writable directory ahead of /usr/bin.
+       A grant at an ancestor takes the descendant with it: /run/snug/bin ends up inside that
+       mount instead of where snug put it, and the property snug relies on there
+       stops holding. Naming the parent is not a narrower grant than naming the child.
+       Stage the FILE, never the directory:
+         ro = ["/host/path/tool:/run/snug/bin/tool"]
+       If you named an ancestor (`tmpfs = ["/run"]`) because something inside needs
+       a writable runtime directory, grant THAT directory — `tmpfs = ["/run/myapp"]`,
+       any path that neither is nor contains /run/snug/bin.
 
 == grant_strictly_inside_proc ==
 profile nest puts a bind of /opt at /proc/sys, which is inside /proc — a pseudo-filesystem the kernel and bwrap populate, not a grant any profile made.

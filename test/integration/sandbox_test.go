@@ -1444,30 +1444,74 @@ EDITOR = "vim\u0000--ro-bind\u0000SECRET\u0000SECRET"
 // makes it a separate mount, which that remount does not cover — and snug then
 // puts the now-writable directory FIRST on PATH itself, in its own provenance,
 // without the profile ever naming PATH.
+//
+// TestAProfileCannotMountOverTheStagingDirectory covers both shapes issue #22
+// distinguishes: a grant AT policy.StagedBinDir (/run/snug/bin) and a grant
+// COVERING it — a mount at an ANCESTOR, /run or /run/snug, which takes the
+// staging directory down with it. Before the #22 fix, `snugsOwn` was keyed on
+// the exact guest path, so the "at" cases here were refused and the
+// "covering" ones were silently ACCEPTED: the sandbox started, and a payload
+// could write /run/snug/bin/git and have the shadowed command win PATH.
+//
+// The refusal now happens in Validate, before bwrap ever runs, so the
+// assertion is "the sandbox did not start" rather than "the write failed" —
+// there is no live sandbox in which to attempt the write at all.
 func TestAProfileCannotMountOverTheStagingDirectory(t *testing.T) {
 	budget(t)
 	requireSandbox(t)
-	proj, _ := target(t)
 
-	const toml = `[profile.stagey]
+	cases := []struct {
+		name string
+		toml string
+	}{
+		{"tmpfs_at_the_directory", `[profile.stagey]
 description = "stage a tool, and quietly make the staging dir a tmpfs"
 tmpfs = ["/run/snug/bin"]
 ro    = ["/etc/hostname:/run/snug/bin/mytool"]
-`
-	env := envProfileLayer(t, "stagey.toml", toml, os.Getenv("PATH"))
+`},
+		{"tmpfs_covers_via_run", `[profile.stagey]
+description = "a tmpfs at an ANCESTOR of the staging dir"
+tmpfs = ["/run"]
+`},
+		{"tmpfs_covers_via_run_snug", `[profile.stagey]
+description = "a tmpfs one directory closer to the staging dir"
+tmpfs = ["/run/snug"]
+`},
+		{"ro_bind_covers_via_run", `[profile.stagey]
+description = "a read-only bind over an ANCESTOR of the staging dir"
+ro = ["/etc:/run"]
+`},
+		{"rw_bind_covers_via_run", `[profile.stagey]
+description = "a writable bind over an ANCESTOR of the staging dir — the worse variant: it persists the shadowed command to the HOST"
+rw = ["/tmp:/run"]
+`},
+	}
 
-	out, code := cli(t, env, "-p", "stagey", proj, "--", "/bin/sh", "-c", `
-		echo SNUG-PROBE-RAN
-		echo "#!/bin/sh" > /run/snug/bin/git && echo WROTE-A-COMMAND-INTO-PATH`)
-	if code == 0 && strings.Contains(out, "SNUG-PROBE-RAN") {
-		t.Errorf("the sandbox started with a profile grant at /run/snug/bin:\n%s", out)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			proj, _ := target(t)
+			env := envProfileLayer(t, "stagey.toml", tc.toml, os.Getenv("PATH"))
+
+			out, code := cli(t, env, "-p", "stagey", proj, "--", "/bin/sh", "-c", `
+				echo SNUG-PROBE-RAN
+				echo "#!/bin/sh" > /run/snug/bin/git && echo WROTE-A-COMMAND-INTO-PATH`)
+			if strings.Contains(out, "SNUG-PROBE-RAN") {
+				t.Errorf("the sandbox started with a profile grant that covers /run/snug/bin:\n%s", out)
+			}
+			if code == 0 {
+				t.Errorf("snug exited 0 on a profile grant that covers /run/snug/bin; the refusal "+
+					"must be fatal, not a warning:\n%s", out)
+			}
+			if strings.Contains(out, "WROTE-A-COMMAND-INTO-PATH") {
+				t.Error("the payload wrote an executable into the directory snug puts first on PATH")
+			}
+			if !strings.Contains(out, "/run/snug/bin") {
+				t.Errorf("snug refused, but the message does not name the staging directory:\n%s", out)
+			}
+		})
 	}
-	if strings.Contains(out, "WROTE-A-COMMAND-INTO-PATH") {
-		t.Error("the payload wrote an executable into the directory snug puts first on PATH")
-	}
-	if !strings.Contains(out, "/run/snug/bin") {
-		t.Errorf("snug refused, but the message does not name the directory:\n%s", out)
-	}
+
+	proj, _ := target(t)
 
 	// CONTROL: staging a file INSIDE the directory is the legitimate shape — it
 	// is what @claude does on every run — and it must still work, with the
@@ -1476,8 +1520,8 @@ ro    = ["/etc/hostname:/run/snug/bin/mytool"]
 description = "stage one tool, the right way"
 ro = ["/etc/hostname:/run/snug/bin/mytool"]
 `
-	env = envProfileLayer(t, "stagey.toml", ok, os.Getenv("PATH"))
-	out, code = cli(t, env, "-p", "stagey", proj, "--", "/bin/sh", "-c", `
+	env := envProfileLayer(t, "stagey.toml", ok, os.Getenv("PATH"))
+	out, code := cli(t, env, "-p", "stagey", proj, "--", "/bin/sh", "-c", `
 		echo SNUG-PROBE-RAN
 		[ -e /run/snug/bin/mytool ] && echo STAGED-TOOL-IS-THERE
 		echo "#!/bin/sh" > /run/snug/bin/git 2>/dev/null && echo WROTE-A-COMMAND-INTO-PATH
