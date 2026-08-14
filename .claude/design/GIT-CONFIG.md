@@ -253,3 +253,60 @@ It does not verify that the identity it extracted matches the account an
 `[identity]` block pins, or that either matches the ssh key. Nothing does — see
 https://github.com/gomoni/snug/issues/30. The three commands that answer the
 question are in the README, next to the profile that needs them.
+
+## 9. What a generated config does not do
+
+The generated file bounds what the *host's* config says inside the sandbox. It
+does not bound what the *sandbox's own processes* say to git, because git reads
+variables that outrank every config file, including the one snug just wrote.
+Measured, git 2.55.0:
+
+```
+$ git config --show-origin --show-scope --get-all user.name
+global   file:/home/u/.gitconfig   Pinned
+command  command line:             Injected
+```
+
+`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n` (and the single-variable spelling
+`GIT_CONFIG_PARAMETERS`) enter git at the **command-line** scope — above
+`global`, above the repository's own `.git/config`, above any `include` the
+generated file could carry. Tried and lost: an `[include] path = …` appended at
+the end of the generated file (the env still wins, because the env is not a
+file scope at all — probe F); a repository-local `.git/config` setting the same
+key (the env still wins even against the *highest* file scope — probe G);
+`GIT_CONFIG_NOSYSTEM=1` (it suppresses `/etc/gitconfig` only, one scope below
+`global`, and is irrelevant here — probe P). There is no git switch that makes a
+config file outrank the command line, because nothing outranks the command
+line.
+
+**Threat model, stated plainly.** A process cannot poison its parent's or a
+sibling's environment — `/proc/<pid>/environ` is readable same-uid and not
+writable, so a hostile injection only ever reaches a process the attacker
+itself forked. And an attacker that forks the victim also chooses the victim's
+`argv`, its `PATH`, and its binary — there is no configuration in which the
+victim's environment is attacker-controlled while its `PATH` and binary are
+not. So the intuitive case people reach for — a hostile `npm install`
+postinstall runs, then the human types `git push` in the same shell — does
+**not** work through the environment at all: the postinstall is a child and
+cannot write its parent's environ. (It *can* work through a writable `$HOME`
+and `~/.bashrc` — see CLAUDE.md's "writable surface is eight paths" bullet —
+and closing the environment does not close that one either. This is an
+**accepted residual**, not a tracked issue, and it is bounded: measured, the
+poisoned `~/.bashrc` does not survive into a later `snug` run, because `$HOME`
+is a fresh tmpfs every time and nothing writes it back to the host.)
+
+Every candidate mitigation was tested and lives in the attacker's own channel:
+a `git` wrapper on `PATH` that scrubs `GIT_CONFIG_*` is defeated by `PATH=` in
+front of it and, more completely, by an exported `BASH_FUNC_git%%` shell
+function, which precedes `PATH` lookup entirely; a classic-BPF seccomp filter
+cannot dereference `envp` to see the variable at all (the same wall `clone3`
+hit); `LD_PRELOAD` needs cgo, which `.claude/design/NOCGO.md` rules out, and is
+itself one of the names `forbiddenEnv` refuses snug from ever authoring. See
+issue #26 for the full measurement set.
+
+**What snug does own, and asserts mechanically:** the environment snug itself
+hands the payload never ships an inline-config override pre-installed —
+`policy.IsInlineConfigEnv` and `TestNoBuiltinHandsOverAnInlineConfigVariable`.
+That is not a fix for the payload route above and must never be read as one;
+see CLAUDE.md's "Generate, don't bind" bullet for the pointer-vs-inline-setting
+distinction it enforces.
