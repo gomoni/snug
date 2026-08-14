@@ -128,7 +128,15 @@ func TestPATHIsSharedButNotReplaceable(t *testing.T) {
 // punched in --clearenv; set is not (CALL 4, §2.1).
 func TestForbidListSplitsBySetAndInherit(t *testing.T) {
 	// The middle bucket: legal as set, refused as inherit.
-	for _, name := range []string{"BASH_ENV", "ENV", "PERL5OPT", "NODE_OPTIONS",
+	//
+	// PERL5OPT and NODE_OPTIONS used to be tested here and are NOT any more —
+	// second-pass review measured both promoted to forbidBoth (see the
+	// forbidBoth loop below): "reviewable as set, from a profile that also
+	// grants the path" was the right call for a variable a tool merely READS
+	// (BASH_ENV, ENV, LESSOPEN); it was the wrong call for one a tool
+	// EXECUTES unconditionally, which measurement — not reasoning about the
+	// name — is what PERL5OPT and NODE_OPTIONS turned out to be.
+	for _, name := range []string{"BASH_ENV", "ENV",
 		"PYTHONSTARTUP", "PYTHONBREAKPOINT", "LESSOPEN"} {
 		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{name: "{home}/x"}}); err != nil {
 			t.Errorf("environ.set %s should be legal — a reviewed profile naming a path it "+
@@ -161,7 +169,62 @@ func TestForbidListSplitsBySetAndInherit(t *testing.T) {
 		//   GIT_ALLOW_PROTOCOL — no code at all: it switches OFF git's refusal
 		//   GIT_PROTOCOL_FROM_USER  of ext::, which runs an arbitrary command
 		"GIT_PAGER", "GIT_TEMPLATE_DIR", "GIT_DIR",
-		"GIT_ALLOW_PROTOCOL", "GIT_PROTOCOL_FROM_USER"} {
+		"GIT_ALLOW_PROTOCOL", "GIT_PROTOCOL_FROM_USER",
+		// Confirmed end to end by redteam during the issue #26 follow-up:
+		// `RUSTC_WRAPPER=./wrap.sh cargo build` ran wrap.sh in place of rustc, as
+		// the sandbox's own uid, when a profile set RUSTC_WRAPPER through EITHER
+		// verb. RUSTC and RUSTC_WORKSPACE_WRAPPER carry the identical
+		// capability — cargo executes whatever program the variable names as
+		// its compiler driver — and it is the same one CARGO_BUILD_RUSTC_WRAPPER
+		// already forbids via the CARGO_ prefix, just spelled without that
+		// prefix, which is why the prefix table alone missed all three.
+		"RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTC",
+		// Deep review, same follow-up: these three are the CARGO_ prefix's
+		// OWN reach into the identical capability, measured accepted at BOTH
+		// verbs before the CARGO_ entry existed in forbiddenEnvPrefixes:
+		//
+		//	CARGO_BUILD_RUSTC_WRAPPER   set=<nil> inherit=<nil>
+		//	CARGO_BUILD_RUSTC           set=<nil> inherit=<nil>
+		//
+		// This is the SAME code path as the three bare RUSTC_* names above,
+		// reached through the CARGO_ prefix instead of a literal
+		// forbiddenEnv entry — a reader who "tidies" one family back to
+		// forbidInheritOnly (the PIP_ shape — the one remaining prefix at
+		// that kind, now that npm_config_ has been promoted below too)
+		// without moving the other reopens exactly this hole, just under the
+		// half of the pairing nobody touched. CARGO_TARGET_<TRIPLE>_RUNNER is
+		// the third shape cargo accepts for the same purpose (a program to
+		// exec for a specific target triple) and is included so the prefix
+		// is proven to cover the whole family, not just the two named
+		// CARGO_BUILD_* forms.
+		"CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_RUSTC",
+		"CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER",
+		// Second-pass red team review, not reasoning ahead of time — the space
+		// of "an env var some tool turns into exec" is unbounded and each of
+		// these was found only by trying it:
+		//
+		//   MAKEFLAGS="--eval=x:;$(shell ./evil.sh)"  make       -> evil.sh ran  (GNU make 4.x)
+		//   GOFLAGS="-toolexec=/…/toolexec.sh"        go build   -> ran per compile (go 1.26)
+		//   CC=./evil.sh                              make       -> ran as the compiler, via
+		//                                                           make's implicit rules
+		//   TAR_OPTIONS="--use-compress-program=/…/prog.sh" tar  -> prog.sh ran  (GNU tar 1.35)
+		//   RSYNC_RSH=/…/prog.sh                      rsync      -> prog.sh ran  (rsync 3.4.3)
+		//   GIT_COMMON_DIR=<attacker path>             git       -> hooks/pre-commit there ran
+		//                                                           on the next commit (git 2.55)
+		"MAKEFLAGS", "GOFLAGS", "CC", "TAR_OPTIONS", "RSYNC_RSH", "GIT_COMMON_DIR",
+		// PERL5OPT and NODE_OPTIONS, PROMOTED from the middle bucket above —
+		// see that loop's comment for why. PYTHONUSERBASE and PYTHONPATH join
+		// them, the same class one interpreter layer down:
+		//
+		//   PYTHONUSERBASE=…  python3 -c 'import site'
+		//     -> …/site-packages/usercustomize.py ran on every python3  (CPython 3.13)
+		//   PYTHONPATH=…      python3 -c 'pass'
+		//     -> sitecustomize.py on that path ran at interpreter start  (CPython)
+		//   NODE_OPTIONS="--require /…/pre.js"  node ...
+		//     -> pre.js ran before the script, every invocation            (node 26)
+		//   PERL5OPT="-I/… -Mevil"  perl ...
+		//     -> evil.pm loaded on every perl invocation                   (perl 5)
+		"PERL5OPT", "NODE_OPTIONS", "PYTHONUSERBASE", "PYTHONPATH"} {
 		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{name: "x"}}); err == nil {
 			t.Errorf("environ.set %s was accepted; the value is executed by every process "+
 				"the sandbox launches", name)
@@ -181,6 +244,169 @@ func TestForbidListSplitsBySetAndInherit(t *testing.T) {
 		t.Error("environ.inherit PIP_CONFIG_FILE was accepted; the host's value would " +
 			"outrank the file snug generates")
 	}
+
+	// CARGO_HOME is the CARGO_ prefix's own pointer exemption, the same shape
+	// as PIP_CONFIG_FILE above — and a carve-out's failure mode is becoming
+	// TOTAL, so both halves are asserted: still settable (the exemption must
+	// still work) and still NOT inheritable (the exemption must not have
+	// leaked into inherit too). Measured: environ.set CARGO_HOME is accepted
+	// and environ.inherit CARGO_HOME is refused via CARGO_HOME's own
+	// noInherit scalar-type entry — a SEPARATE mechanism from the CARGO_
+	// prefix's exempt list, so this also confirms the two do not disagree.
+	if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{"CARGO_HOME": "{home}/.cargo"}}); err != nil {
+		t.Errorf("environ.set CARGO_HOME was refused: %v — it is the pointer exemption from "+
+			"the CARGO_ prefix's forbidBoth, the mechanism a future cargo adapter would use, "+
+			"and a carve-out that stops working is as much a defect as one that never worked", err)
+	}
+	if err := ValidateEnvGrants(EnvGrants{Inherit: []string{"CARGO_HOME"}}); err == nil {
+		t.Error("environ.inherit CARGO_HOME was accepted; the exemption that lets a profile " +
+			"SET CARGO_HOME must not also let it be pulled from the HOST — that would let the " +
+			"host's cargo config direct where the sandbox writes")
+	}
+
+	// NPM_CONFIG_SCRIPT_SHELL, in every case a human or npm's own env-loader
+	// might spell it, exercised over the ACTUAL enforcement path
+	// (ValidateEnvGrants) rather than the IsInlineConfigEnv predicate alone.
+	//
+	// This used to assert "set legal, inherit refused" — npm_config_ was
+	// forbidInheritOnly and that was the gap the deep review found:
+	//
+	//	NPM_CONFIG_SCRIPT_SHELL     inherit=<nil>      # accepted, host value wins
+	//	npm_config_script_shell     inherit=refused    # only this spelling was caught
+	//
+	// The SECOND-pass review promoted npm_config_ to forbidBoth outright:
+	// NPM_CONFIG_SCRIPT_SHELL names the shell npm runs lifecycle/`run`
+	// scripts with and NPM_CONFIG_NODE_GYP names the program npm invokes for
+	// native builds — both ARE the code path, exactly like
+	// CARGO_BUILD_RUSTC_WRAPPER, not merely config that outranks a file — so
+	// `environ.set` is refused now too, in every case spelling. Kept as its
+	// own loop rather than folded into the forbidBoth list above because the
+	// THING under test here is that all three case spellings agree, which
+	// the generic loop does not exercise for any other entry.
+	for _, name := range []string{"npm_config_script_shell", "NPM_CONFIG_SCRIPT_SHELL", "Npm_Config_Script_Shell"} {
+		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{name: "/run/snug/bin/evil"}}); err == nil {
+			t.Errorf("environ.set %s was accepted; NPM_CONFIG_SCRIPT_SHELL names the shell "+
+				"npm runs lifecycle scripts with, the identical capability "+
+				"CARGO_BUILD_RUSTC_WRAPPER already forbids for cargo — measured, second-pass "+
+				"review", name)
+		}
+		if err := ValidateEnvGrants(EnvGrants{Inherit: []string{name}}); err == nil {
+			t.Errorf("environ.inherit %s was accepted; npm 10.9.8, measured, honours this "+
+				"spelling exactly like npm_config_script_shell, so the host's value would "+
+				"run as the sandbox's own uid", name)
+		}
+	}
+	// NPM_CONFIG_USERCONFIG is npm_config_'s pointer exemption and must stay
+	// exempt — meaning SETTABLE — in every spelling npm_config_'s own
+	// case-insensitive rule reaches, or the fix that closed the hole above
+	// becomes a refusal of the one name snug itself needs to author.
+	//
+	// inherit stays refused regardless, and this is its own regression, found
+	// by the implementer while making the promotion above: a case-insensitive
+	// prefix's exemption used to apply to EVERY verb, including inherit, and
+	// fell back to envTypes' noInherit flag to still catch inherit — an
+	// exact-case, case-SENSITIVE lookup. Measured, before the fix:
+	// environ.inherit NPM_CONFIG_USERCONFIG (canonical case) was refused via
+	// that fallback, but environ.inherit npm_config_userconfig (lower case)
+	// was ACCEPTED, because the case-folded exemption skipped the prefix's
+	// own inherit refusal and the fallback's exact-case lookup missed the
+	// lower-case spelling entirely. Now a prefix's exempt list is consulted
+	// for every verb EXCEPT VerbInherit, so the prefix's OWN forbidBoth
+	// refusal is what stops inherit, in every case, without depending on
+	// envTypes at all.
+	for _, name := range []string{"NPM_CONFIG_USERCONFIG", "npm_config_userconfig", "Npm_Config_Userconfig"} {
+		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{name: "{home}/.npmrc"}}); err != nil {
+			t.Errorf("environ.set %s was refused: %v — it is the npm_config_ pointer "+
+				"exemption in every case npm_config_'s own case-insensitive rule reaches, "+
+				"and must stay settable", name, err)
+		}
+		if err := ValidateEnvGrants(EnvGrants{Inherit: []string{name}}); err == nil {
+			t.Errorf("environ.inherit %s was accepted; a pointer must never be pulled from "+
+				"the host in ANY case spelling, only authored by a reviewed profile — "+
+				"measured regression: this exact spelling (lower-case) was the one that "+
+				"slipped through before exempt was restricted to non-inherit verbs", name)
+		}
+	}
+}
+
+// The property the whole class of defect in this test file collapses to:
+// whether ValidateEnvGrants refuses environ.inherit of a name and whether
+// IsInlineConfigEnv calls that name inline config must be the SAME QUESTION,
+// because both exist for the same reason — the host's value for a
+// config-surface variable outranks the file snug generates. Two tables each
+// holding an independent copy of "does this tool's lookup fold case" is
+// exactly how they drifted apart before this test existed: NPM_CONFIG_
+// SCRIPT_SHELL was accepted by environ.inherit while IsInlineConfigEnv
+// already called it true. Since forbiddenEnvPrefixes and inlineConfigPrefixes
+// both now read the single prefixCaseFold table, the two answers should be
+// identical BY CONSTRUCTION for every prefix and every case spelling — this
+// test is what notices if a future edit gives either table its own copy of
+// the case rule again, which is the only way they can disagree.
+//
+// It does not hard-code an expected true/false per spelling — that would pin
+// TODAY's case rule, which the case-rule tests in cmd/snug already do per
+// measurement. What this pins is AGREEMENT: whatever prefixCaseFold says for
+// a prefix, both consumers must land on the same verdict for every case
+// variant of a name under it.
+func TestForbiddenPrefixesAndInlineConfigAgreeOnCase(t *testing.T) {
+	forbidAppliesToInherit := make(map[string]bool, len(forbiddenEnvPrefixes))
+	for _, p := range forbiddenEnvPrefixes {
+		forbidAppliesToInherit[p.prefix] = appliesTo(p.kind, VerbInherit)
+	}
+
+	for _, prefix := range inlineConfigPrefixes {
+		appliesForInherit, ok := forbidAppliesToInherit[prefix]
+		if !ok {
+			t.Fatalf("inlineConfigPrefixes names %q, which forbiddenEnvPrefixes does not "+
+				"refuse at all — IsInlineConfigEnv would call a name inline config while "+
+				"environ.inherit can pull it straight from the host", prefix)
+		}
+		if !appliesForInherit {
+			t.Fatalf("forbiddenEnvPrefixes' %q entry does not apply to VerbInherit, but "+
+				"inlineConfigPrefixes lists %q as inline config — environ.inherit could "+
+				"still pull the host's value for a name under this prefix", prefix, prefix)
+		}
+
+		// Four spellings of the same probe name: canonical (the prefix as
+		// written in the table), all-lower, all-upper, and case-toggled. None
+		// of these strings collides with any pointer exemption (GIT_CONFIG_
+		// GLOBAL/SYSTEM, NPM_CONFIG_USERCONFIG, PIP_CONFIG_FILE, CARGO_HOME)
+		// or the CARGO_ prefix's own exempt list, so a disagreement below can
+		// only come from the two tables reading DIFFERENT case rules.
+		suffix := "ZZPROBE"
+		spellings := []string{
+			prefix + suffix,
+			strings.ToLower(prefix) + strings.ToLower(suffix),
+			strings.ToUpper(prefix) + strings.ToUpper(suffix),
+			toggleCase(prefix) + toggleCase(suffix),
+		}
+		for _, name := range spellings {
+			refused := ValidateEnvGrants(EnvGrants{Inherit: []string{name}}) != nil
+			inline := IsInlineConfigEnv(name)
+			if refused != inline {
+				t.Errorf("prefix %q, spelling %q: environ.inherit refused=%v, "+
+					"IsInlineConfigEnv=%v — these must agree, or a profile can pull from the "+
+					"host exactly the class of variable the predicate exists to name as "+
+					"inline config", prefix, name, refused, inline)
+			}
+		}
+	}
+}
+
+// toggleCase flips the case of every ASCII letter, so "npm_config_" becomes
+// "NPM_CONFIG_" and "GIT_CONFIG_" becomes "git_config_" — the two spellings
+// most likely to be missed by a rule written against only one direction.
+func toggleCase(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		switch {
+		case c >= 'a' && c <= 'z':
+			b[i] = c - ('a' - 'A')
+		case c >= 'A' && c <= 'Z':
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
 }
 
 // A NUL in an environ VALUE authored a mount. This is the regression test.

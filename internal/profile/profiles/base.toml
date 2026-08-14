@@ -201,6 +201,14 @@ rw = ["{host_tmpdir}:/tmp"]
 # Not in `defaults`: it reads a host file, and reading a host file is a thing a
 # human should ask for. Combine with an [identity] block and the block wins —
 # a pin that a host value could override would not be a pin.
+#
+# The generated file bounds what the HOST's config can say inside the sandbox.
+# It does not bound what the SANDBOX can say: GIT_CONFIG_COUNT/GIT_CONFIG_KEY_0
+# enter git above every file (measured — issue #26), so a process in here can
+# give itself core.sshCommand whatever this file holds. That costs an attacker
+# nothing it did not already have — it already runs code and already holds
+# SSH_AUTH_SOCK — but do not read the generated file as a restraint on the
+# sandbox. See .claude/design/GIT-CONFIG.md §9.
 [profile.git-ro]
 description = "Your git name and email, extracted from the host config. Generated, never bound."
 git = "extract"

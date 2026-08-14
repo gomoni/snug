@@ -1264,29 +1264,19 @@ the agent.
 ### 13b. ssh runs at all — the check that was missing
 
 `ssh` inside the sandbox is not a given, and on this host it was broken for
-every account and every profile until it was measured:
+every account and every profile — pinned identity or none at all — until it
+was measured:
 
 ```bash
 ./bin/snug $SC/proj/sub -- sh -c 'ssh -G github.com >/dev/null 2>&1 && echo SSH-OK || echo SSH-REFUSED'
 ```
 
-Without a pinned identity, expect `SSH-REFUSED` on a host whose system-wide
-`ssh_config` is root-owned — and the reason is worth reading, because it
-generalises past ssh:
-
-```bash
-./bin/snug $SC/proj/sub -- ssh -G github.com
-# Bad owner or permissions on /usr/etc/ssh/ssh_config.d/50-suse.conf
-./bin/snug $SC/proj/sub -- stat -c '%u %n' /usr/etc/ssh/ssh_config
-# 65534 /usr/etc/ssh/ssh_config
-```
-
-The sandbox maps one uid, so every root-owned file under the read-only `/usr`
-bind reads as **65534** inside it, and OpenSSH refuses a configuration file
-owned by neither root nor the caller. `git clone git@github.com:…` failed the
-same way, which made pinning an identity useless on such a host.
-
-With an identity pinned, snug replaces the system-wide file with one it authors:
+Expect `SSH-OK`, with **no profile and no pinned identity** — snug replaces
+the host's system-wide `ssh_config` on every run whose deepest covering grant
+supplies one, not only on an identity run. `--dry-run` shows why: an `SSH`
+block, and a `data /usr/etc/ssh/ssh_config … (snug)+replaces:@sys` row in
+FILESYSTEM (`@sys`'s `/usr` bind is what would otherwise deliver the host's
+root-owned copy).
 
 ```bash
 ./bin/snug -p acct-a $SC/proj/sub -- sh -c '
@@ -1294,12 +1284,41 @@ With an identity pinned, snug replaces the system-wide file with one it authors:
   stat -c "owner=%u" /usr/etc/ssh/ssh_config; id -u'
 ```
 
-Expect `SSH-OK` and `owner=1000` (your uid). `--dry-run` shows it as a `data`
-row with `identity:<profile>` provenance, next to the generated `~/.gitconfig`.
+Expect `SSH-OK` here too, and `owner=1000` (your uid) either way — the file's
+owner and content do not depend on whether an identity is pinned. `--dry-run`
+shows the SAME provenance, `(snug)+replaces:@sys`, on both runs; it never
+reads `identity:acct-a`, because nothing about the bytes names an account.
+
+The by-hand control that proves the refusal mechanism is still live — i.e.
+that snug is not merely getting lucky, ssh really does reject a root-owned
+config it did not author — is to point ssh at the drop-in snug's replacement
+skips:
+
+```bash
+./bin/snug $SC/proj/sub -- ssh -F /usr/etc/ssh/ssh_config.d/50-suse.conf -G github.com
+# Bad owner or permissions on <whichever root-owned file this drop-in Includes;
+# on openSUSE that is /etc/crypto-policies/back-ends/openssh.config, itself
+# root-owned and reachable through @sys's separate /etc/crypto-policies grant>
+```
+
+Still refused, and the exact path in the message is host-specific (whatever
+this drop-in's own `Include` chain names) — the point is that it is STILL a
+refusal. snug replaces the top-level `ssh_config`, not the whole `Include`d
+chain (deliberately: every file an `Include` would pull in is root-owned too,
+so no replacement of the drop-in is attempted; see
+`policy.SystemSSHConfig`'s doc comment). That refusal, still reachable on
+demand, is what shows `SSH-OK` above is the replacement working rather than
+the ownership check having quietly stopped applying.
 
 What it costs, and say it out loud: the host's system-wide ssh defaults — on
-this host openSUSE's crypto-policy include — do not apply inside. ssh's
-compiled-in defaults do.
+this host openSUSE's crypto-policy include — do not apply inside, on every
+run this fires on, not only identity runs. Concretely, `RequiredRSASize`
+drops from the host's `2048` to OpenSSH's compiled-in `1024`:
+
+```bash
+./bin/snug $SC/proj/sub -- ssh -G github.com | grep requiredrsasize
+# requiredrsasize 1024
+```
 
 ---
 

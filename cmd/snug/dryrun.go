@@ -41,6 +41,7 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 	describeTopology(out, p)
 	describeContainers(out, p)
 	describeGit(out, p)
+	describeSSH(out, p)
 	describeCommands(out, p)
 	if p.NewSession {
 		fmt.Fprintf(out, "TTY      --new-session (this kernel allows TIOCSTI, so the sandbox is kept\n")
@@ -661,6 +662,48 @@ func describeGit(out *os.File, p *policy.Policy) {
 	fmt.Fprintf(out, "                    alias = !cmd, core.pager, core.sshCommand, textconv\n")
 	fmt.Fprintf(out, "         includeIf  \"gitdir:\" evaluated against this target; \"hasconfig:\"\n")
 	fmt.Fprintf(out, "                    and \"onbranch:\" ignored — the repository decides those\n")
+}
+
+// describeSSH states that snug replaced this host's system-wide ssh_config,
+// and why — modelled directly on describeGit, because both are the same
+// disclosure ("we generated this file instead of trusting the host's") and
+// both need to say what triggered it and what it costs.
+//
+// It walks policy.SystemSSHConfigPaths and reads p.Mounts rather than
+// re-deriving the coverage predicate: the screen must describe what
+// Resolve actually decided, not recompute a second opinion that could
+// disagree with it. A host with neither spelling present gets nothing here,
+// silently and correctly — the same as a host with no [identity] getting
+// nothing from describeGit.
+//
+// The PATH line is per replaced mount — a host can have both spellings
+// covered at once (openSUSE's /usr/etc/ssh plus a human profile binding
+// /etc) and each is a distinct fact the reader needs. The mechanism and
+// cost paragraph is the same explanation regardless of which path it is, so
+// it is printed ONCE, after the loop, gated on whether anything matched —
+// not once per path, which would repeat six identical lines for a
+// coincidence of two paths sharing one cause.
+func describeSSH(out *os.File, p *policy.Policy) {
+	var replaced []string
+	for _, guest := range policy.SystemSSHConfigPaths {
+		m, ok := p.Mounts[guest]
+		if !ok || !m.Authored || m.Kind != policy.KindData {
+			continue
+		}
+		replaced = append(replaced, guest)
+	}
+	if len(replaced) == 0 {
+		return
+	}
+	for _, guest := range replaced {
+		fmt.Fprintf(out, "SSH      system-wide ssh_config REPLACED at %s\n", guest)
+	}
+	fmt.Fprintf(out, "         the host's is root-owned and reads as 65534 inside (one uid is\n")
+	fmt.Fprintf(out, "         mapped); OpenSSH refuses such a file, so ssh, git-over-ssh, scp\n")
+	fmt.Fprintf(out, "         and rsync -e ssh all die without this\n")
+	fmt.Fprintf(out, "         cost       the host's system-wide defaults do not apply — on a\n")
+	fmt.Fprintf(out, "                    crypto-policy distro that is the policy's algorithm\n")
+	fmt.Fprintf(out, "                    lists and RequiredRSASize (2048 -> OpenSSH's 1024)\n")
 }
 
 // describeCommands names EVERY executable staged in policy.StagedBinDir, which

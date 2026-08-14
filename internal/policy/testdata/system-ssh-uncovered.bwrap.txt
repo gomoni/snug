@@ -1,0 +1,40 @@
+--unshare-all
+--uid 1000
+--gid 1000
+--hostname snug
+--die-with-parent
+--cap-drop ALL
+--perms 0755
+--dir /etc
+--perms 0755
+--dir /home
+--ro-bind /opt /bin
+--dev /dev
+--proc /proc
+--tmpfs /tmp
+--ro-bind-data 10 /etc/resolv.conf
+--tmpfs /home/u
+--tmpfs /home/u/.cache
+--tmpfs /home/u/.config
+--ro-bind /home/u/proj /home/u/proj
+--tmpfs /home/u/.local/share
+--tmpfs /home/u/.local/state
+--bind /home/u/proj/sub /home/u/proj/sub
+--remount-ro /
+--clearenv
+--setenv HOME /home/u
+--setenv LOGNAME u
+--setenv PATH /usr/bin:/bin:/usr/sbin:/sbin
+--setenv PS1 🔒 snug:\w\$ 
+--setenv SHELL /bin/sh
+--setenv SNUG 1
+--setenv SNUG_PROFILES @cwd-rw,@home,@parent-ro,runtime-bin
+--setenv SNUG_TARGET /home/u/proj/sub
+--setenv TMPDIR /tmp
+--setenv USER u
+--setenv XDG_CACHE_HOME /home/u/.cache
+--setenv XDG_CONFIG_HOME /home/u/.config
+--setenv XDG_DATA_HOME /home/u/.local/share
+--setenv XDG_STATE_HOME /home/u/.local/state
+--chdir /home/u/proj/sub
+-- /bin/sh

@@ -444,22 +444,17 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 				Guest: home + "/.ssh/known_hosts", Kind: KindData, Access: AccessRO,
 				Content: ctx.KnownHosts, From: []string{"identity:" + identityOwner},
 			})
-			// The system-wide ssh_config is replaced wherever this host has one.
-			// Without this, ssh refuses to run at all inside the sandbox on a
-			// host whose system config is root-owned — see SystemSSHConfig.
-			if cfg := id.SystemSSHConfig(); len(cfg) > 0 {
-				for _, path := range SystemSSHConfigPaths {
-					if _, err := env.Stat(path); err != nil {
-						continue
-					}
-					p.Replace(Mount{
-						Guest: path, Kind: KindData, Access: AccessRO,
-						Content: cfg, From: []string{"identity:" + identityOwner},
-					})
-				}
-			}
 		}
 	}
+
+	// The system-wide ssh_config is replaced on EVERY run, identity pinned or
+	// not — wherever the deepest covering grant actually supplies the host's
+	// copy at that path. It is not gated on p.Identity: the ownership refusal
+	// it fixes (OpenSSH refuses a root-owned config once one uid is mapped) has
+	// nothing to do with pinning an account, and gating it on identity left ssh
+	// broken on every unpinned sandbox on such a host. See systemsshconfig.go
+	// and .claude/design/INDEX.md for the coverage rule this depends on.
+	replaceSystemSSHConfig(p, env)
 
 	// /etc/resolv.conf is GENERATED, never bound from the host. The host's may
 	// name 127.0.0.53 (systemd-resolved), which the sandbox must not be able to
