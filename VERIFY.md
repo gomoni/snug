@@ -626,6 +626,108 @@ distro prompt — which is expected. The lock prompt is set by snug itself so th
 neither a human nor an agent has to guess whether a shell is sandboxed. Type
 `exit` to leave.
 
+### 6m. `~/.claude.json` is generated, not copied
+
+```bash
+./bin/snug -p @claude $SC/proj/sub -- /bin/sh -c 'wc -c < ~/.claude.json; cat ~/.claude.json'
+```
+
+Expect a file of a few hundred bytes with **two** keys — `autoUpdates` and
+`hasCompletedOnboarding` — for a directory you have never opened Claude Code on,
+and a third, a `projects` object naming **only** that directory, when your host's
+own `~/.claude.json` already records it as trusted. On the box this was written
+on the host's own `~/.claude.json` is 62 274 bytes; the sandbox's was 284.
+
+Check both arms, because the difference is the whole of the trust decision. Pick
+a directory your host HAS trusted (any entry with `hasTrustDialogAccepted` in
+your own `~/.claude.json`) and one it has not:
+
+```bash
+./bin/snug -p @claude $SC/proj/sub -- /bin/sh -c 'cat ~/.claude.json'   # untrusted
+./bin/snug -p @claude <a-directory-you-have-trusted> -- /bin/sh -c 'cat ~/.claude.json'
+```
+
+Expect no `projects` key in the first and exactly one entry, that directory, in
+the second. `snug --dry-run -p @claude <dir>`'s `CLAUDE` block says which arm you
+are in, in words, before anything runs.
+
+Then check that none of the host's is in it. Skip this pair if you have never
+run Claude Code on this host:
+
+```bash
+python3 -c 'import json,os;d=json.load(open(os.path.expanduser("~/.claude.json")));print(d["machineID"])'
+./bin/snug -p @claude $SC/proj/sub -- /bin/sh -c 'grep -c "<the machineID printed above>" ~/.claude.json'
+```
+
+Expect `0`. The host's file is an inventory — every project path on the machine,
+`oauthAccount` (email, org name and UUID, account UUID), `machineID`, `userID`,
+`mcpServers`, and the per-project tool approvals you granted on the host. None of
+it is a credential, which is exactly why it was copied in verbatim for a
+milestone (issue #19) behind a comment that said Claude re-runs its first-run
+flow without it.
+
+**The measurement that decided the shape**, and the one worth doing by hand,
+because it is the half the issue got wrong. Pick a directory that **is** in your
+host's project list, i.e. one you have already answered the trust dialog for:
+
+```bash
+./bin/snug -p @claude -p @net <a-directory-you-have-trusted> -- claude
+```
+
+Expect Claude Code to open straight on its prompt: no seven-option theme picker,
+no "Quick safety check: Is this a project you created or one you trust?", and no
+`Auto-update failed` banner. The theme picker is gone because snug generated the
+key; the safety check is gone because **you** answered it, on the host, and snug
+carried that answer for this one path.
+
+**Now the same command on a directory you have never trusted**, which is the
+review workflow `@claude` exists for:
+
+```bash
+./bin/snug -p @claude -p @net $SC/proj/sub -- claude
+```
+
+Expect the theme picker still gone and the trust dialog **back**: "Quick safety
+check: Is this a project you created or one you trust?", blocking on a two-option
+picker. That is correct and must not be "fixed". Make the point concrete with a
+hostile fixture — a repository whose only content is a startup hook:
+
+```bash
+mkdir -p $SC/hostile/.claude
+cat > $SC/hostile/.claude/settings.json <<EOF
+{"hooks":{"SessionStart":[{"hooks":[{"type":"command",
+  "command":"touch $SC/hostile/HOOK-FIRED"}]}]}}
+EOF
+./bin/snug -p @claude $SC/hostile -- claude     # answer nothing; Ctrl-C out
+ls $SC/hostile/HOOK-FIRED
+```
+
+Expect the trust dialog, and `ls` to report **No such file**: the repository's own
+hook did not run. Measured on the build that wrote the trust key unconditionally,
+the same fixture opened on "Welcome back!" with no dialog and `HOOK-FIRED`
+present — the repo's code executing at startup, in a sandbox holding the staged
+Anthropic OAuth token. Delete the generated state and the theme picker comes back
+too on **every** run: `$HOME` is a fresh tmpfs each time, and the picker's answer
+is written to `~/.claude/settings.json`, which is a read-only bind if your host
+has that file:
+
+```bash
+./bin/snug -p @claude $SC/proj/sub -- /bin/sh -c 'echo x >> ~/.claude/settings.json'
+```
+
+Expect `Read-only file system` — **on a host that has run Claude Code**. That
+bind is `optional`: with no `~/.claude/settings.json` on the host there is
+nothing to bind, the path inside is an ordinary file on the `~/.claude` tmpfs,
+and the append SUCCEEDS. It still cannot persist (the tmpfs dies with the
+session), and `--dry-run`'s `CLAUDE` block says which of the two you have.
+
+What you should also expect, and it is not breakage: `/mcp` shows nothing from
+your host user config — a `.mcp.json` committed in the target is a different
+thing and is still read, because it lives in the project tree — and a tool
+you approved in a host session is asked again here. Both are consequences of not
+copying the host's file, and both are stated in the `~/.claude/CLAUDE.md` snug
+injects, so the agent does not spend turns diagnosing them.
+
 ## 6c. The seccomp filter is actually installed
 
 Requested is not the same as active. Check the kernel's view first:

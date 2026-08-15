@@ -1098,17 +1098,42 @@ Mitigations the design requires:
 
 ### 9.3 Claude Code's files
 
-Read-only, from the host: the CLI itself (`~/.local/bin/claude`, `~/.local/share/claude`), `~/.claude/settings.json`, and `~/.claude/skills` + `~/.claude/plugins` re-exposed on top of the `~/.claude` tmpfs so they load and run normally.
+Read-only, from the host: the CLI itself (`~/.local/bin/claude`, `~/.local/share/claude`), `~/.claude/settings.json`, and `~/.claude/skills` + `~/.claude/plugins` re-exposed on top of the `~/.claude` tmpfs so they load and run normally. **Every one of those binds is `optional`**, so on a host that has never run Claude Code the same paths are ordinary writable files on that tmpfs — "`~/.claude/settings.json` is read-only" is a claim about the resolved policy, not a constant, and the three places that stated it flatly are now gated on the mount (`describeClaude`, the injected guidance, `claudeStateJSON`'s doc comment). The conclusion survives either way: read-only when bound, ephemeral when not.
 
-Writable, **staged as copies**, never bound:
+Writable, **staged as a copy**, never bound — one file, and it is the only one that is load-bearing:
 
 ```
 ~/.claude/.credentials.json    mode 0600
-~/.claude.json                 account/onboarding state — WITHOUT it Claude re-onboards and
-                               shows the login prompt (a real finding from the prior project)
 ```
 
-Staging means the sandbox writes to a private copy on a tmpfs. **This has a real cost: a token refreshed inside the sandbox does not persist to the host.** `snug` handles it explicitly — at teardown it compares the staged copy to the host original and, if the sandbox wrote a *structurally valid* credentials file, copies it back atomically. Structural validation is the guard against a compromised agent writing arbitrary content into a host file. **`~/.claude.json` is never synced back**, because it carries MCP server configuration — a natural target for injecting a tool that runs *outside* the sandbox on your next host-side session.
+Writable, **generated**, never copied:
+
+```
+~/.claude.json                 mode 0600, at most three keys, no host bytes:
+                                 hasCompletedOnboarding = true
+                                 autoUpdates            = false
+                                 projects.<target>.hasTrustDialogAccepted = true
+                                   — ONLY when the host's ~/.claude.json already
+                                     records that exact path as trusted
+```
+
+**The trust key is carried, never asserted.** snug reads the host's file for that
+one boolean about the one directory named on the command line, and writes no
+`projects` key at all when the answer is no (host file absent, unparseable, or
+simply not naming the path — all the same answer, and none of them fails the
+run). Matching is exact against the canonicalised target, so a subdirectory of a
+trusted target still prompts and a trusted subdirectory does not trust its
+parent; both directions fail towards the prompt. Written unconditionally — as it
+was for one commit — it removes Claude Code's "Quick safety check" for a fresh
+clone of an unfamiliar repository, and measured A/B on a target whose only
+content is `.claude/settings.json` with a `SessionStart` hook, the hook then
+**fires** at startup with the staged Anthropic OAuth token in the same sandbox.
+`SECRETS.md` §3.5 carries the table. Both arms are in `--dry-run`'s `CLAUDE`
+block and both are goldened (`cmd/snug/testdata/claude-block*.txt`).
+
+The staging list said `~/.claude.json` too, for a milestone, on the justification that "without it Claude re-onboards and shows the login prompt". **Measured false** (claude 2.1.232, issue #19): with the file absent Claude Code connects and works, while removing `.credentials.json` gives "Not logged in · Please run /login" at once. What the file was actually buying is smaller and is not a credential — it suppresses the theme picker and the trust dialog, both of which block on **every** run because `$HOME` is a fresh tmpfs, and the theme picker's answer is written to the read-only `~/.claude/settings.json` so it could not persist even if answered. Three generated keys buy exactly that. What is no longer handed over is 62 KB of host inventory: every project path on the machine, `oauthAccount` (email, org name and UUID, account UUID), `machineID`, `userID`, `mcpServers`, and the host's per-project `allowedTools`. Two costs, both intended and both stated in the injected `CLAUDE.md`, in `base.toml`'s abuse block and in `--dry-run`'s `CLAUDE` block: MCP servers configured on the host are not configured inside, and a tool approved in a host session is asked again in the sandbox. The generated file is also **unconditional** — it reads nothing from the host, so the sandbox's Claude state no longer varies with the host's.
+
+Staging means the sandbox writes to a private copy on a tmpfs. **This has a real cost, and it is paid rather than mitigated: a token refreshed inside the sandbox does not persist to the host, and nothing copies it back.** There is no sync-back — verified by a fixed-string sweep of the tree for `syncBack`, `SyncBack`, `writeBack` and `WriteBack`, which finds nothing. This paragraph described one for a milestone ("at teardown it compares the staged copy to the host original and, if the sandbox wrote a structurally valid credentials file, copies it back atomically") and no such code was ever written; a design doc describing a mechanism that does not exist is worse than one that omits it, because the reader budgets for a risk nobody is running and stops looking for the one they are. If it is ever built, the structural-validation guard is the design and R4 is the row it belongs in. **`~/.claude.json` would still never be synced back**, and that is now trivially true rather than a rule to enforce: nothing host-derived goes in — one boolean comes *out* of the host's file and no bytes go the other way — so there is nothing to sync out. The reason it must stay that way is unchanged: the file's `mcpServers` slot names programs, and writing it from sandbox-authored bytes would inject a tool that runs *outside* the sandbox on your next host-side session.
 
 Everything else under `~/.claude` (history, projects, sessions, transcripts) stays ephemeral. [`SECRETS.md`](SECRETS.md) §1.1 places each of these on the severity model. The one that was not a file — `@claude` naming `ANTHROPIC_API_KEY` in its `env` list, putting an org key into `/proc/self/environ` — has since been removed; Claude authenticates from the staged credentials file instead.
 
@@ -1391,7 +1416,7 @@ The issues carry the *known gaps with severities*; this is the list of things th
 - **R1 — Kernel is the boundary, and it is a big boundary.** Every guarantee here rests on user namespaces, seccomp, and `bwrap`. A userns LPE ends the discussion. Stated in §1.2; restated here because it is the risk that matters most and the one most easily forgotten after reading several thousand words about mount ordering.
 - **R2 — Helper defaults change under us.** §4.2 is a lived example. Mitigation: pass every security-relevant flag explicitly, and assert *behaviour* in integration tests rather than reading man pages. Residual risk: a flag `snug` does not know about is added with an unsafe default.
 - **R3 — The proxy's strict decode is brittle by design.** A newer `docker` client sending a new benign field gets a 403. Deliberate (it is the drift guard), but it will generate confused bug reports. Mitigation: the rejection message names the unknown field and says "this is fail-closed".
-- **R4 — Credential sync-back (§9.3) writes to a host file from sandbox-authored bytes.** Structurally validated, but it is a real host-write channel from inside. Its scope is chosen so the sensitive-by-configuration file (`~/.claude.json`) is the one that never syncs.
+- **R4 — Credential sync-back does not exist, and this row described it as shipped for a milestone.** Swept for as fixed strings (`syncBack`, `SyncBack`, `writeBack`, `WriteBack`): no such code, in `cmd/snug` or anywhere else. So there is **no host-write channel from inside** today, and the residual is the opposite one: a token refreshed in the sandbox is silently lost when it exits. If sync-back is built, the scope is one file, `~/.claude/.credentials.json`, and structural validation is the guard that makes the risk arguable — at which point this row becomes true and the risk becomes real. The sensitive-by-configuration file, `~/.claude.json`, is not *staged* at all: it is generated (issue #19), reading exactly one boolean out of the host's copy and no bytes into the sandbox, so "it never syncs back" is a property rather than a rule to enforce.
 - **R5 — Ubuntu/AppArmor userns restrictions and Docker-based CI** will make `snug` unusable for some users out of the box. Mitigated by `doctor` naming the exact sysctl, not by working around it.
 - **R6 — The curated `/etc` list is a maintenance obligation** (§5.3). Two entries were found by breakage rather than by reading, and there will be more. The failure mode is legible but unhelpful (`MODULE_INITIALIZATION_ERROR`), which is why the test command is written next to the list.
 - **R7 — Moving the engine into the sandbox's netns requires subuid and cgroup delegation** that some corporate images and CI runners do not have, and is defeated outright by a host-escape `podman` shim. Measured in [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §3. `snug` must refuse rather than degrade, because the difference is invisible to the user.

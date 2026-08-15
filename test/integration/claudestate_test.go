@@ -1,0 +1,276 @@
+//go:build integration
+
+package integration
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+)
+
+// The end-to-end half of issue #19: what is actually AT ~/.claude.json inside a
+// running @claude sandbox.
+//
+// The unit tests in cmd/snug assert what claudeStateJSON produces and what
+// claudeFiles puts in the policy. Neither can see whether the KindData mount was
+// materialised, at what size, or with the host's file anywhere near it — a
+// generated Mount.Content and a copied one are the same shape in the policy, and
+// the whole finding was that the difference is 62 KB of host inventory.
+//
+// So this reads the file from inside the sandbox and compares it against the
+// REAL host file's most identifying values.
+func TestClaudeJSONInsideIsGeneratedAndSmall(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	const begin, end = "---BEGIN-CLAUDE-JSON---", "---END-CLAUDE-JSON---"
+	r := run(t, []string{"-p", "@claude"}, proj, `
+		echo `+begin+`
+		cat "$HOME/.claude.json"
+		echo
+		echo `+end+`
+	`).mustRun(t)
+
+	body := between(r.out, begin, end)
+	if strings.TrimSpace(body) == "" {
+		t.Fatalf("~/.claude.json is absent or empty inside the sandbox. It is GENERATED "+
+			"unconditionally (cmd/snug/claude.go, claudeStateJSON) precisely so it does not "+
+			"depend on the host having one; without it Claude Code blocks on the theme "+
+			"picker and the trust dialog on every run:\n%s", r.out)
+	}
+
+	// Small enough that a human can read it, which is the point of generating.
+	// The host's is 62 KB on the box this was measured on.
+	if len(body) > 1024 {
+		t.Errorf("~/.claude.json is %d bytes inside the sandbox; three keys cannot need "+
+			"that. Something host-derived has got in:\n%s", len(body), body)
+	}
+
+	var top map[string]any
+	if err := json.Unmarshal([]byte(body), &top); err != nil {
+		t.Fatalf("the file inside the sandbox is not valid JSON (%v); Claude Code parses "+
+			"it at startup:\n%s", err, body)
+	}
+	if v, ok := top["hasCompletedOnboarding"].(bool); !ok || !v {
+		t.Errorf("hasCompletedOnboarding = %v inside the sandbox, want true — this is the "+
+			"key that keeps Claude Code off the seven-option theme picker, and the picker's "+
+			"answer could not persist anyway (~/.claude/settings.json is a read-only bind "+
+			"when the host has that file, and a file on the ~/.claude tmpfs when it does not)",
+			top["hasCompletedOnboarding"])
+	}
+
+	// The target is a throwaway directory this test just created, so no host has
+	// ever accepted Claude Code's trust dialog for it and the generated file must
+	// carry no `projects` key. Asserting it HERE as well as in the dedicated test
+	// below costs one line and covers the default path every other integration
+	// test takes.
+	if _, ok := top["projects"]; ok {
+		t.Errorf("~/.claude.json inside carries a projects key for %q, a directory created "+
+			"seconds ago that no host has ever trusted. Writing "+
+			"projects.<target>.hasTrustDialogAccepted removes Claude Code's trust dialog, "+
+			"and the dialog is what stops a repository's own .claude/settings.json hooks "+
+			"running at startup:\n%s", proj, body)
+	}
+
+	// The disclosure assertion, against the REAL host file rather than a fixture:
+	// a fixture would prove the generator ignores a file it never reads, while
+	// this proves the sandbox does not carry THIS machine's inventory.
+	//
+	// Skipped, not failed, on a host with no ~/.claude.json — including under
+	// SNUG_REQUIRE_SANDBOX. "Does this host run sandboxes" and "has this human
+	// ever run Claude Code" are different questions, and the assertions above
+	// (which do not depend on the host at all) are the ones that must never skip.
+	host, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".claude.json"))
+	if err != nil {
+		t.Logf("no host ~/.claude.json (%v), so the leak comparison below is skipped; "+
+			"everything above still ran", err)
+		return
+	}
+	var hostTop struct {
+		MachineID    string `json:"machineID"`
+		UserID       string `json:"userID"`
+		OAuthAccount struct {
+			EmailAddress     string `json:"emailAddress"`
+			AccountUUID      string `json:"accountUuid"`
+			OrganizationUUID string `json:"organizationUuid"`
+		} `json:"oauthAccount"`
+	}
+	if err := json.Unmarshal(host, &hostTop); err != nil {
+		t.Logf("the host's ~/.claude.json did not parse (%v); leak comparison skipped", err)
+		return
+	}
+	leaks := map[string]string{
+		"machineID":                     hostTop.MachineID,
+		"userID":                        hostTop.UserID,
+		"oauthAccount.emailAddress":     hostTop.OAuthAccount.EmailAddress,
+		"oauthAccount.accountUuid":      hostTop.OAuthAccount.AccountUUID,
+		"oauthAccount.organizationUuid": hostTop.OAuthAccount.OrganizationUUID,
+	}
+	checked := 0
+	for name, value := range leaks {
+		// A short or empty value would match anything, or nothing, for reasons
+		// having nothing to do with the sandbox.
+		if len(value) < 8 {
+			continue
+		}
+		checked++
+		if strings.Contains(body, value) {
+			t.Errorf("the sandbox's ~/.claude.json carries this host's %s. The file must be "+
+				"generated, never copied: the host's is an inventory of every project path "+
+				"on this machine plus the account identifiers. See issue #19.", name)
+		}
+	}
+	if checked == 0 {
+		t.Logf("the host's ~/.claude.json carries none of the identifying values this " +
+			"compares against, so only the size and key assertions above ran")
+	}
+}
+
+// TestClaudeTrustEntryCarriesTheHostsDecision is the end-to-end half of F1: the
+// trust dialog snug removes, or does not, for a directory the human named.
+//
+// BOTH ARMS IN ONE TEST, and that is what makes either one mean anything. The
+// untrusted arm asserts an ABSENCE, and an absence passes on a build that can
+// never produce the key at all — a broken host reader, a fixture written to the
+// wrong home, a generator that dropped `projects` entirely. The trusted arm
+// runs the SAME binary against a host that records the SAME path and requires
+// the key to appear, so the absence in the other arm is a decision rather than
+// an incapacity.
+//
+// $HOME is redirected at snug rather than the host's real one being edited:
+// the host state under test is "has this human accepted the trust dialog for
+// this directory", and a test may not answer that question on their behalf on
+// their own machine. snug reads $HOME through os.UserHomeDir, so a fake home
+// with a crafted ~/.claude.json is exactly the host state, with nothing of the
+// real one touched.
+func TestClaudeTrustEntryCarriesTheHostsDecision(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	// The key snug looks up is the CANONICALISED target (policy.Resolve runs
+	// EvalSymlinks). Writing the raw path would test a key snug never asks for on
+	// any host whose temporary directory is reached through a symlink.
+	canonical, err := filepath.EvalSymlinks(proj)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const begin, end = "---BEGIN-CLAUDE-JSON---", "---END-CLAUDE-JSON---"
+	insideJSON := func(t *testing.T, home string) map[string]any {
+		t.Helper()
+		r := runEnv(t, baseEnv("HOME="+home), []string{"-p", "@claude"}, proj, `
+			echo `+begin+`
+			cat "$HOME/.claude.json"
+			echo
+			echo `+end+`
+		`).mustRun(t)
+		body := between(r.out, begin, end)
+		if strings.TrimSpace(body) == "" {
+			t.Fatalf("~/.claude.json is absent or empty inside the sandbox, so neither arm "+
+				"below measures anything:\n%s", r.out)
+		}
+		var top map[string]any
+		if err := json.Unmarshal([]byte(body), &top); err != nil {
+			t.Fatalf("the file inside the sandbox is not valid JSON (%v):\n%s", err, body)
+		}
+		// CONTROL, in both arms: this is really the generated file rather than
+		// some leftover, so "the projects key is absent" is a statement about
+		// snug's generator.
+		if v, ok := top["hasCompletedOnboarding"].(bool); !ok || !v {
+			t.Fatalf("the file inside is not the one snug generates (no "+
+				"hasCompletedOnboarding):\n%s", body)
+		}
+		return top
+	}
+
+	// hostHome builds a home whose ~/.claude.json trusts the paths given, and
+	// nothing else. It always names one OTHER trusted project, so the untrusted
+	// arm's file demonstrably contains a trust entry snug could have copied and
+	// did not.
+	hostHome := func(t *testing.T, trustTarget bool) string {
+		t.Helper()
+		h := t.TempDir()
+		projects := map[string]any{
+			"/nonexistent/some-other-project": map[string]any{"hasTrustDialogAccepted": true},
+		}
+		if trustTarget {
+			projects[canonical] = map[string]any{"hasTrustDialogAccepted": true}
+		}
+		body, err := json.Marshal(map[string]any{
+			"machineID": "integration-fixture", "projects": projects,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(h, ".claude.json"), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+
+	t.Run("host has NOT trusted this directory: no projects key", func(t *testing.T) {
+		top := insideJSON(t, hostHome(t, false))
+		if p, ok := top["projects"]; ok {
+			t.Errorf("the sandbox's ~/.claude.json carries projects = %v for a directory the "+
+				"host's file does not record as trusted. That key removes Claude Code's "+
+				"\"Quick safety check\", and the check is what stops a repository's own "+
+				"SessionStart hooks executing at startup — with the staged Anthropic OAuth "+
+				"token in the same sandbox, and @claude commonly combined with @net.", p)
+		}
+	})
+
+	t.Run("host HAS trusted this directory: the entry is carried", func(t *testing.T) {
+		top := insideJSON(t, hostHome(t, true))
+		projects, ok := top["projects"].(map[string]any)
+		if !ok {
+			t.Fatalf("the sandbox's ~/.claude.json has no projects object even though the "+
+				"host's file records %q as trusted. Without this arm the untrusted arm above "+
+				"proves nothing: an absence passes on a generator that can never emit the "+
+				"key.", canonical)
+		}
+		entry, ok := projects[canonical].(map[string]any)
+		if !ok {
+			t.Fatalf("projects inside names %v, want the target %q", keysOf(projects), canonical)
+		}
+		if v, ok := entry["hasTrustDialogAccepted"].(bool); !ok || !v {
+			t.Errorf("hasTrustDialogAccepted = %v, want true", entry["hasTrustDialogAccepted"])
+		}
+		if len(projects) != 1 {
+			t.Errorf("projects inside names %v, want ONLY the target. The other trusted "+
+				"project in the host fixture must not come across: snug carries one boolean "+
+				"about the directory the human named, not the host's project list.",
+				keysOf(projects))
+		}
+	})
+}
+
+func keysOf(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// between returns the text strictly between two markers, or "" if either is
+// missing. The markers are echoed by the payload rather than assumed, so a
+// sandbox that never started yields "" and the caller fails with that reason
+// rather than parsing snug's own diagnostics as a JSON file.
+func between(s, begin, end string) string {
+	i := strings.Index(s, begin)
+	if i < 0 {
+		return ""
+	}
+	rest := s[i+len(begin):]
+	j := strings.Index(rest, end)
+	if j < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:j])
+}
