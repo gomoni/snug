@@ -71,7 +71,7 @@ func reportBadFiles(bad []profile.BadFile) bool {
 // which is a lie — snug does not know whether it exists, and the difference
 // between "you typed it wrong" and "the file defining it is broken" is the whole
 // of what the user needs.
-func unknownProfile(reg profile.Registry, name string, bad []profile.BadFile) error {
+func unknownProfile(reg profile.Registry, name policy.ProfileName, bad []profile.BadFile) error {
 	err := policy.UnknownProfile(reg, name)
 	if len(bad) == 0 {
 		return err

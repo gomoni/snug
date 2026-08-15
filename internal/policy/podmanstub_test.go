@@ -14,7 +14,7 @@ const podmanStubGuest = StagedBinDir + "/podman"
 // the trigger CONTAINER-CLIENT.md §8 specifies: staging follows detection,
 // not mere selection of a podman profile.
 func TestPodmanStubStagedOnlyForADetectedShim(t *testing.T) {
-	sel := []string{"@sys", "@cwd-rw", "@podman-socket"}
+	sel := []ProfileName{"@sys", "@cwd-rw", "@podman-socket"}
 
 	withShim, err := Resolve(testRegistry(), sel, testCtxWithPodmanShim(), newFakeEnv())
 	if err != nil {
@@ -38,7 +38,7 @@ func TestPodmanStubStagedOnlyForADetectedShim(t *testing.T) {
 // p.Podman, not merely on what the host looks like, so a sandbox that never
 // asked for containers never sees a new executable on its PATH.
 func TestPodmanStubStagedOnlyWhenPodmanIsSelected(t *testing.T) {
-	p, err := Resolve(testRegistry(), []string{"@sys", "@cwd-rw"}, testCtxWithPodmanShim(), newFakeEnv())
+	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@cwd-rw"}, testCtxWithPodmanShim(), newFakeEnv())
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestPodmanStubBeatsUsrBinPodmanButLosesToProfilePath(t *testing.T) {
 	// "cwd-ro" carries a `path` entry in the fixture registry (see
 	// testRegistry's comment on it) — reused here rather than inventing a new
 	// fixture profile.
-	sel := []string{"@sys", "@cwd-rw", "@podman-socket", "cwd-ro"}
+	sel := []ProfileName{"@sys", "@cwd-rw", "@podman-socket", "cwd-ro"}
 	p, err := Resolve(testRegistry(), sel, testCtxWithPodmanShim(), newFakeEnv())
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -86,7 +86,7 @@ func TestPodmanStubBeatsUsrBinPodmanButLosesToProfilePath(t *testing.T) {
 // see bwrap.go), and Perms must carry an executable bit, or the sandbox
 // cannot run it at all.
 func TestPodmanStubIsReadOnlyAndExecutable(t *testing.T) {
-	p, err := Resolve(testRegistry(), []string{"@sys", "@cwd-rw", "@podman-socket"},
+	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@cwd-rw", "@podman-socket"},
 		testCtxWithPodmanShim(), newFakeEnv())
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)

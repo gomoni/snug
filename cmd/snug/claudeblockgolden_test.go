@@ -55,7 +55,7 @@ func TestGoldenClaudeBlock(t *testing.T) {
 			t.Fatal(err)
 		}
 		ctx := envGoldenCtx()
-		plain, err := policy.Resolve(map[string]*policy.Profile(reg), profile.BuiltinDefaults(), ctx, newEnvFakeEnv())
+		plain, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), profile.BuiltinDefaults(), ctx, newEnvFakeEnv())
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
 		}
@@ -72,7 +72,7 @@ func goldenClaudeBlock(t *testing.T, name string, hostTrusts, bindSettings bool)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sel := append(append([]string{}, profile.BuiltinDefaults()...), "@claude")
+	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "@claude")
 	ctx := envGoldenCtx()
 	fake := newEnvFakeEnv()
 	if bindSettings {
@@ -83,7 +83,7 @@ func goldenClaudeBlock(t *testing.T, name string, hostTrusts, bindSettings bool)
 		// touching.
 		fake.dirs["/home/u/.claude/settings.json"] = true
 	}
-	p, err := policy.Resolve(map[string]*policy.Profile(reg), sel, ctx, fake)
+	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, ctx, fake)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}

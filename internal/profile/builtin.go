@@ -3,8 +3,6 @@ package profile
 import (
 	"embed"
 	"fmt"
-
-	"github.com/gomoni/snug/internal/policy"
 )
 
 //go:embed profiles/*.toml
@@ -55,10 +53,10 @@ func mark(layer Registry) Registry {
 	out := make(Registry, len(layer))
 	for name, p := range layer {
 		q := *p
-		q.Name = policy.Sigil + name
+		q.Name = name.Marked()
 		q.Include = nil
 		for _, inc := range p.Include {
-			q.Include = append(q.Include, policy.Sigil+inc)
+			q.Include = append(q.Include, inc.Marked())
 		}
 		out[q.Name] = &q
 	}

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -91,57 +92,25 @@ type rawIdentity struct {
 	GhHost   string `toml:"gh_host"`
 }
 
-// nameFault reports the byte offset of the first character the profile-name
-// grammar refuses, or -1 when every character is legal.
+// nameFault and nameByteDesc are policy.NameFault and policy.NameByteDesc, and
+// the grammar they hold MOVED to internal/policy when policy.ProfileName was
+// introduced (issue #67). It had to: NewProfileName applies the grammar, and
+// this package imports policy rather than the other way round, so leaving the
+// grammar here would have meant writing it twice — the one thing nameFault's
+// own doc comment says must never happen.
 //
-//	first byte   [a-zA-Z0-9]
-//	rest         [a-zA-Z0-9-]
+// They are kept as one-line FORWARDERS rather than deleted so the four call
+// sites below and the tests beside them keep reading as they did — and as
+// funcs rather than `var nameFault = policy.NameFault`, because a package-level
+// var holding a func can be reassigned, and a reassignable grammar in the
+// package that decides what a profile file may define is not a thing worth
+// saving two lines for.
 //
-// THIS IS THE ONLY PLACE THE GRAMMAR IS WRITTEN. checkName and checkRef both
-// call it; neither re-implements it. A rule spelled out twice in this project
-// has twice been fixed in one of its two halves (CLAUDE.md: checkEnvName vs
-// checkEnvValue; visibleValue in one block and not the one four lines below).
-//
-// A BYTE loop, not `for _, r := range name`, and that is a decision rather than
-// a habit: ranging over invalid UTF-8 yields U+FFFD and loses the byte that is
-// actually in the file, so the error would describe a character nobody wrote.
-// Every legal byte is ASCII, so a byte loop refuses multi-byte UTF-8 at its
-// FIRST byte and can name that byte exactly.
-//
-// The EMPTY name faults at offset 0 — it is not legal, and a caller testing only
-// the sign cannot mistake it for legal. Any caller that renders name[offset]
-// must handle "" before calling.
-func nameFault(name string) int {
-	if name == "" {
-		return 0
-	}
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		alnum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-		switch {
-		case alnum:
-		case c == '-' && i > 0:
-		default:
-			return i
-		}
-	}
-	return -1
-}
-
-// nameByteDesc names one offending byte for an error message, and it must not
-// lie about what is in the file.
-//
-// string(byte(0xc3)) is "Ã" — the byte-to-string conversion goes through a rune
-// and MANGLES anything >= 0x80, so a UTF-8 name would be refused with a
-// character the author never typed (internal/policy/envtypes.go:681 has this
-// bug today; do not copy it). Printable ASCII is quoted, everything else is the
-// hex byte, which is what a hex editor would show.
-func nameByteDesc(c byte) string {
-	if c >= 0x20 && c <= 0x7e {
-		return fmt.Sprintf("%q", string(rune(c))) // exact: c < 0x80
-	}
-	return fmt.Sprintf(`the byte \x%02x`, c)
-}
+// Read policy.NameFault for what the grammar is and why each choice was made;
+// checkName and checkRef below turn its verdict into an error that names the
+// FILE, which is the half that belongs here.
+func nameFault(name string) int  { return policy.NameFault(name) }
+func nameByteDesc(c byte) string { return policy.NameByteDesc(c) }
 
 // checkName is an ALLOWLIST over a profile name, and the direction is the point.
 //
@@ -212,23 +181,15 @@ func checkName(name, source string) error {
 			"the front", source, name)
 	}
 	if i := nameFault(name); i >= 0 {
-		c := name[i]
-		hint := ""
-		switch {
-		case c == '_':
-			if alt := strings.ReplaceAll(name, "_", "-"); nameFault(alt) < 0 {
-				hint = fmt.Sprintf(" Underscore is not in the set and the hyphen is, which is "+
-					"the spelling snug's own names use (@cwd-rw, @parent-ro): %q", alt)
-			}
-		case c >= 0x80:
-			hint = " A profile name is ASCII; a non-ASCII character is several bytes in the " +
-				"file and the byte above is the first of them."
-		}
+		// The hint is policy.NameHint, shared with policy.NewProfileName's own
+		// refusal: the fix for an underscore is the same sentence whether the
+		// name came from a file or from `-p`, and a sentence written twice is a
+		// sentence that gets improved in one place only.
 		return fmt.Errorf("%s: profile %q contains %s at byte offset %d. A profile name is "+
 			"[a-zA-Z0-9] followed by [a-zA-Z0-9-] — an ALLOWLIST, so a character snug has "+
 			"not been taught about is refused rather than carried into $SNUG_PROFILES, "+
 			"--dry-run provenance and every message that renders a name. Rename the "+
-			"profile.%s", source, name, nameByteDesc(c), i, hint)
+			"profile.%s", source, name, nameByteDesc(name[i]), i, policy.NameHint(name, i))
 	}
 	return nil
 }
@@ -249,9 +210,16 @@ func checkName(name, source string) error {
 // `snug profile tree` rendered exactly that name RAW (printTree's unknown
 // branch), which is a forged row on the one screen that says which profiles
 // imply which.
-func checkRef(ref, from, source string) error {
+//
+// It RETURNS the constructed policy.ProfileName rather than only a verdict, so
+// that `include` is one door and not two: a caller cannot check the reference
+// here and then build the value some other way. Its grammar and
+// policy.NewProfileName's are the same by construction — both are
+// policy.NameFault behind an optional sigil — and what this adds is a message
+// naming the file and the including profile, which the constructor cannot know.
+func checkRef(ref, from, source string) (policy.ProfileName, error) {
 	if ref == "" {
-		return fmt.Errorf("%s: profile %q has an empty entry in `include`. An include names "+
+		return "", fmt.Errorf("%s: profile %q has an empty entry in `include`. An include names "+
 			"another profile; delete the entry", source, from)
 	}
 	bare := strings.TrimPrefix(ref, policy.Sigil)
@@ -264,18 +232,24 @@ func checkRef(ref, from, source string) error {
 		if bare != "" {
 			desc = nameByteDesc(bare[i])
 		}
-		return fmt.Errorf("%s: profile %q includes %q, which no profile file could define: a "+
+		return "", fmt.Errorf("%s: profile %q includes %q, which no profile file could define: a "+
 			"profile name is [a-zA-Z0-9] followed by [a-zA-Z0-9-], optionally behind the "+
 			"leading %s that marks one snug ships. %s is not in that set. An include that "+
 			"cannot name anything is a typo, and snug says so here rather than as an "+
 			"`unknown profile` from some later command that cannot name this file",
 			source, from, ref, policy.Sigil, desc)
 	}
-	return nil
+	return policy.NewProfileName(ref)
 }
 
 // Registry is the merged set of known profiles.
-type Registry map[string]*policy.Profile
+//
+// The key is a policy.ProfileName, not a string, and that is the point of issue
+// #67: a registry key IS a profile name, so the map cannot be indexed or
+// populated with a value that has not been through the grammar. `parse` below
+// is where a TOML table key becomes one, and policy.NewProfileName is the only
+// door it can come through.
+type Registry map[policy.ProfileName]*policy.Profile
 
 // parse decodes one TOML document into profiles.
 func parse(data []byte, source string, trusted bool) (Registry, error) {
@@ -292,18 +266,30 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 	}
 
 	reg := Registry{}
-	for name, r := range f.Profile {
-		if err := checkName(name, source); err != nil {
+	for rawName, r := range f.Profile {
+		if err := checkName(rawName, source); err != nil {
 			return nil, err
+		}
+		// THE DOOR. checkName has already applied the DEFINITION grammar, which
+		// is strictly narrower (it additionally refuses the sigil), so this
+		// cannot fail — but it is what turns the TOML table key into a
+		// policy.ProfileName, and the error is returned rather than dropped
+		// because "cannot fail" is a claim about today's checkName.
+		name, err := policy.NewProfileName(rawName)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", source, err)
 		}
 		// Every name a profile FILE contains obeys the grammar, references
 		// included — see checkRef.
+		var includes []policy.ProfileName
 		for _, inc := range r.Include {
-			if err := checkRef(inc, name, source); err != nil {
+			ref, err := checkRef(inc, rawName, source)
+			if err != nil {
 				return nil, err
 			}
+			includes = append(includes, ref)
 		}
-		environ, err := toEnvGrants(r, name, source)
+		environ, err := toEnvGrants(r, rawName, source)
 		if err != nil {
 			return nil, err
 		}
@@ -318,7 +304,7 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 		reg[name] = &policy.Profile{
 			Name:        name,
 			Description: r.Description,
-			Include:     r.Include,
+			Include:     includes,
 			RO:          r.RO,
 			RW:          r.RW,
 			Tmpfs:       r.Tmpfs,
@@ -556,11 +542,11 @@ func asStrict(err error, target **toml.StrictMissingError) bool {
 // /etc/snug/profiles.d against their own ~/.config — where a hard error naming
 // both files is still the right answer.
 func (r Registry) merge(other Registry) error {
-	names := make([]string, 0, len(other))
+	names := make([]policy.ProfileName, 0, len(other))
 	for n := range other {
 		names = append(names, n)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	for _, n := range names {
 		if existing, ok := r[n]; ok {
 			return fmt.Errorf("profile %q in %s redefines the one from %s; "+

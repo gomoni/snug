@@ -24,7 +24,12 @@ const (
 )
 
 type config struct {
-	profiles []string
+	// profiles holds what -p named, already through the grammar: parseArgs is
+	// one of snug's four doors into policy.ProfileName (the others are a TOML
+	// table key, an `include` entry and the `defaults` setting). A name that
+	// does not parse is a usage error here rather than an `unknown profile` from
+	// the resolver several hundred lines later.
+	profiles []policy.ProfileName
 	target   string
 	command  []string
 	dryRun   bool
@@ -142,9 +147,17 @@ func parseArgs(argv []string) (config, error) {
 				return cfg, fmt.Errorf("%s needs a profile name", a)
 			}
 			i++
-			cfg.profiles = append(cfg.profiles, argv[i])
+			name, err := policy.NewProfileName(argv[i])
+			if err != nil {
+				return cfg, err
+			}
+			cfg.profiles = append(cfg.profiles, name)
 		case strings.HasPrefix(a, "--profile="):
-			cfg.profiles = append(cfg.profiles, strings.TrimPrefix(a, "--profile="))
+			name, err := policy.NewProfileName(strings.TrimPrefix(a, "--profile="))
+			if err != nil {
+				return cfg, err
+			}
+			cfg.profiles = append(cfg.profiles, name)
 		case a == "--no-defaults":
 			cfg.noDefaults = true
 		case a == "-v" || a == "--verbose":

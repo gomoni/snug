@@ -17,8 +17,8 @@ import (
 // {host_tmpdir} variable. Looking for the variable rather than for the profile
 // named "tmp-shared" keeps the CLI from hard-coding a profile name: a
 // user-written profile that uses the variable works the same way.
-func needsHostTmpDir(reg profile.Registry, selected []string) (bool, error) {
-	set, err := policy.Expand(map[string]*policy.Profile(reg), selected)
+func needsHostTmpDir(reg profile.Registry, selected []policy.ProfileName) (bool, error) {
+	set, err := policy.Expand(map[policy.ProfileName]*policy.Profile(reg), selected)
 	if err != nil {
 		return false, err
 	}

@@ -33,10 +33,10 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "TARGET   %s  %s\n", p.Target, targetAnnotation(p))
 	fmt.Fprintf(out, "HOME     %s  %s\n", p.Home, homeAnnotation(p))
-	fmt.Fprintf(out, "PROFILES %s\n", visibleValue(strings.Join(p.Selected, " ")))
+	fmt.Fprintf(out, "PROFILES %s\n", visibleValue(policy.JoinNames(p.Selected, " ")))
 	if implied := p.Implied(); len(implied) > 0 {
 		fmt.Fprintf(out, "         + %s  (pulled in by include; see: snug profile tree)\n",
-			visibleValue(strings.Join(implied, " ")))
+			visibleValue(policy.JoinNames(implied, " ")))
 	}
 	describeNetwork(out, p)
 	describeTopology(out, p)

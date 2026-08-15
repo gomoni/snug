@@ -19,7 +19,7 @@ func TestCouplingAcceptsAPathCoveredByTheProfilesOwnGrant(t *testing.T) {
 	reg := testRegistry()
 	reg["deep"] = &Profile{Name: "deep", RO: []string{"/opt/tools/bin"}, Environ: EnvGrants{
 		Merge: map[string][]string{"PATH": {"/opt/tools/bin/inner/deeper"}}}}
-	if _, err := Resolve(reg, []string{"@sys", "@cwd-rw", "deep"}, testCtx(), newFakeEnv()); err != nil {
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "deep"}, testCtx(), newFakeEnv()); err != nil {
 		t.Fatalf("a path below the profile's own grant was refused: %v", err)
 	}
 }
@@ -31,9 +31,9 @@ func TestCouplingAcceptsAPathCoveredByTheProfilesOwnGrant(t *testing.T) {
 // line --dry-run renders.
 func TestCouplingCountsTheIncludeClosure(t *testing.T) {
 	reg := testRegistry()
-	reg["viainclude"] = &Profile{Name: "viainclude", Include: []string{"@home"}, Environ: EnvGrants{
+	reg["viainclude"] = &Profile{Name: "viainclude", Include: []ProfileName{"@home"}, Environ: EnvGrants{
 		Merge: map[string][]string{"PATH": {"{home}/.local/bin"}}}}
-	if _, err := Resolve(reg, []string{"@sys", "@cwd-rw", "viainclude"}, testCtx(), newFakeEnv()); err != nil {
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "viainclude"}, testCtx(), newFakeEnv()); err != nil {
 		t.Fatalf("a path covered by an INCLUDED profile's grant was refused: %v", err)
 	}
 }
@@ -52,11 +52,11 @@ func TestCouplingVerdictDoesNotDependOnTheSelectedSet(t *testing.T) {
 	// and selecting it must not launder `namer`'s claim.
 	reg["granter"] = &Profile{Name: "granter", RO: []string{"/opt/tools/bin"}}
 
-	_, err := Resolve(reg, []string{"@sys", "@cwd-rw", "namer"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "namer"}, testCtx(), newFakeEnv())
 	if err == nil {
 		t.Fatal("a profile naming a path it does not grant was accepted")
 	}
-	_, err2 := Resolve(reg, []string{"@sys", "@cwd-rw", "namer", "granter"}, testCtx(), newFakeEnv())
+	_, err2 := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "namer", "granter"}, testCtx(), newFakeEnv())
 	if err2 == nil {
 		t.Fatal("selecting another profile that grants the path made namer's claim legal — " +
 			"the verdict on a profile must be a property of that profile's own text, or " +
@@ -69,9 +69,9 @@ func TestCouplingVerdictDoesNotDependOnTheSelectedSet(t *testing.T) {
 	// POSITIVE CONTROL: the same grant reached through `include` IS enough, so
 	// the refusal above is about coupling and not about the path being
 	// unreachable in principle.
-	reg["namer-including"] = &Profile{Name: "namer-including", Include: []string{"granter"},
+	reg["namer-including"] = &Profile{Name: "namer-including", Include: []ProfileName{"granter"},
 		Environ: EnvGrants{Merge: map[string][]string{"PATH": {"/opt/tools/bin"}}}}
-	if _, err := Resolve(reg, []string{"@sys", "@cwd-rw", "namer-including"}, testCtx(), newFakeEnv()); err != nil {
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "namer-including"}, testCtx(), newFakeEnv()); err != nil {
 		t.Fatalf("control: an INCLUDED grant must satisfy the rule: %v", err)
 	}
 }
@@ -83,9 +83,9 @@ func TestCouplingVerdictDoesNotDependOnTheSelectedSet(t *testing.T) {
 func TestCouplingResolvesThroughTheProfilesOwnSymlinks(t *testing.T) {
 	reg := testRegistry()
 	// @sys grants /usr and creates /bin -> usr/bin.
-	reg["binny"] = &Profile{Name: "binny", Include: []string{"@sys"}, Environ: EnvGrants{
+	reg["binny"] = &Profile{Name: "binny", Include: []ProfileName{"@sys"}, Environ: EnvGrants{
 		Merge: map[string][]string{"PATH": {"/bin"}}}}
-	if _, err := Resolve(reg, []string{"@cwd-rw", "binny"}, testCtx(), newFakeEnv()); err != nil {
+	if _, err := Resolve(reg, []ProfileName{"@cwd-rw", "binny"}, testCtx(), newFakeEnv()); err != nil {
 		t.Fatalf("/bin was refused for a profile that grants /usr and creates the symlink: %v", err)
 	}
 
@@ -94,7 +94,7 @@ func TestCouplingResolvesThroughTheProfilesOwnSymlinks(t *testing.T) {
 	// pass on an implementation that accepts every path.
 	reg["binny-alone"] = &Profile{Name: "binny-alone", Environ: EnvGrants{
 		Merge: map[string][]string{"PATH": {"/bin"}}}}
-	if _, err := Resolve(reg, []string{"@sys", "@cwd-rw", "binny-alone"}, testCtx(), newFakeEnv()); err == nil {
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "binny-alone"}, testCtx(), newFakeEnv()); err == nil {
 		t.Fatal("control: a profile granting nothing had /bin accepted")
 	}
 }
@@ -106,7 +106,7 @@ func TestCouplingDoesNotApplyToInheritOrSanitise(t *testing.T) {
 	env := newFakeEnv()
 	env.env["PKG_CONFIG_PATH"] = "/srv/nothing-grants-this"
 	// `sanity` sanitises PKG_CONFIG_PATH and grants nothing at all.
-	p, err := Resolve(testRegistry(), []string{"@sys", "@cwd-rw", "sanity"}, testCtx(), env)
+	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@cwd-rw", "sanity"}, testCtx(), env)
 	if err != nil {
 		t.Fatalf("sanitise was subjected to the coupling rule: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestCouplingDoesNotApplyToInheritOrSanitise(t *testing.T) {
 func TestCouplingIgnoresANonPathScalar(t *testing.T) {
 	reg := testRegistry()
 	reg["ed"] = &Profile{Name: "ed", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "vim"}}}
-	if _, err := Resolve(reg, []string{"@sys", "@cwd-rw", "ed"}, testCtx(), newFakeEnv()); err != nil {
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "ed"}, testCtx(), newFakeEnv()); err != nil {
 		t.Fatalf("a non-path scalar was subjected to the coupling rule: %v", err)
 	}
 }

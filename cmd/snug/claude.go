@@ -102,7 +102,7 @@ func claudeFiles(pol *policy.Policy, home string) {
 	})
 }
 
-func hasProfile(pol *policy.Policy, name string) bool {
+func hasProfile(pol *policy.Policy, name policy.ProfileName) bool {
 	for _, n := range pol.Profiles {
 		if n == name {
 			return true

@@ -60,11 +60,11 @@ func TestTopologyJoinIsMonotoneAndCommutative(t *testing.T) {
 // in the fake registry that resolves at all, adding a profile must never LOWER
 // any of Topology's three fields relative to the base selection.
 func TestAddingAProfileNeverLowersATopologyField(t *testing.T) {
-	base := []string{"@sys", "@cwd-rw"}
+	base := []ProfileName{"@sys", "@cwd-rw"}
 	basePol := mustResolve(t, base...)
 
 	for name := range testRegistry() {
-		with, err := Resolve(testRegistry(), append(append([]string{}, base...), name), testCtx(), newFakeEnv())
+		with, err := Resolve(testRegistry(), append(append([]ProfileName{}, base...), name), testCtx(), newFakeEnv())
 		if err != nil {
 			continue // a conflict is a symmetric error, not a tightening
 		}

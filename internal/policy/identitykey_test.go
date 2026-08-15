@@ -24,7 +24,7 @@ import (
 // that keeps the fix honest: a rule that refuses everything under the target
 // would pass the first two and break the ordinary case.
 
-func identityRegistry(key string) map[string]*Profile {
+func identityRegistry(key string) map[ProfileName]*Profile {
 	reg := testRegistry()
 	reg["pinned"] = &Profile{
 		Name:     "pinned",
@@ -40,7 +40,7 @@ func TestIdentitySSHKeyUnderTargetCannotBeRedirectedBySymlink(t *testing.T) {
 	env.links["/home/u/proj/sub/deploy.pub"] = "/home/u/.ssh/id_ed25519.pub"
 
 	_, err := Resolve(identityRegistry("{target}/deploy.pub"),
-		append(append([]string{}, testDefaults...), "pinned"), testCtx(), env)
+		append(append([]ProfileName{}, testDefaults...), "pinned"), testCtx(), env)
 	if err == nil {
 		t.Fatal("ssh_key under the target resolved through a symlink out of it; " +
 			"the pinned identity is then whatever the sandbox last linked to")
@@ -61,7 +61,7 @@ func TestIdentitySSHKeyUnderTargetIsAcceptedWhenItIsLiteral(t *testing.T) {
 	env.links["/home/u/proj/sub/deploy.pub"] = "/home/u/proj/sub/deploy.pub"
 
 	p, err := Resolve(identityRegistry("{target}/deploy.pub"),
-		append(append([]string{}, testDefaults...), "pinned"), testCtx(), env)
+		append(append([]ProfileName{}, testDefaults...), "pinned"), testCtx(), env)
 	if err != nil {
 		t.Fatalf("a real file under the target is a legitimate ssh_key: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestIdentitySSHKeyOutsideTargetIsNotCanonicalised(t *testing.T) {
 	env := newFakeEnv()
 
 	p, err := Resolve(identityRegistry("~/.ssh/id_ed25519.pub"),
-		append(append([]string{}, testDefaults...), "pinned"), testCtx(), env)
+		append(append([]ProfileName{}, testDefaults...), "pinned"), testCtx(), env)
 	if err != nil {
 		t.Fatalf("an ssh_key outside the target must not be canonicalised: %v", err)
 	}

@@ -141,7 +141,7 @@ func TestGitExtractGeneratesTheConfigAndSetsGitConfigGlobal(t *testing.T) {
 	ctx := testCtx()
 	ctx.HostGit = GitValues{"user.name": "Some One", "user.email": "some@example.com"}
 
-	p, err := Resolve(reg, append(append([]string{}, testDefaults...), "gitex"), ctx, env)
+	p, err := Resolve(reg, append(append([]ProfileName{}, testDefaults...), "gitex"), ctx, env)
 	if err != nil {
 		t.Fatal(err)
 	}

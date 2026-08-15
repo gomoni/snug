@@ -1047,6 +1047,60 @@ Both lines are interim. When the engine moves into the sandbox's netns, the
 first command must stop showing `+ @net` — at which point this check inverts and
 `@podman-socket` alone must print `NETWORK  isolated`.
 
+## 9e. A profile name is refused as a NAME, not as a missing profile
+
+9b covers the `@` namespace; this covers the rest of the grammar, and it covers
+it at every place a *human* supplies a name. A profile name is
+`[a-zA-Z0-9]` followed by `[a-zA-Z0-9-]`, optionally behind the mark — an
+allowlist, so a character snug has not been taught about fails closed.
+
+The distinction being checked is between two different sentences. `unknown
+profile "foo"` means *snug looked and there is none*; the refusals below mean
+*that is not a name*, and they arrive before the registry is consulted, before
+`--dry-run` renders anything, and before a namespace exists. Since issue #67 a
+validated name is a TYPE (`policy.ProfileName`) whose only constructor applies
+the grammar, so these three sites are the three doors and there is no fourth
+inside snug's own code.
+
+```bash
+# the control FIRST: a legal name still works, or the refusals prove nothing
+./bin/snug --dry-run -p @git-ro $SC/proj/sub | head -4
+
+# door 1 and 2: -p and --profile=
+./bin/snug --dry-run -p 'a b'        $SC/proj/sub
+./bin/snug --dry-run --profile=a.b   $SC/proj/sub
+./bin/snug --dry-run -p my_profile   $SC/proj/sub
+./bin/snug --dry-run -p '@'          $SC/proj/sub
+
+# the ESC case issue #20 was opened for: the refusal must SHOW the byte, not
+# emit it. Pipe through cat -v — if the terminal eats a row, that is the bug.
+./bin/snug --dry-run -p "$(printf 'a\033[1A\rFORGED')" $SC/proj/sub 2>&1 | cat -v
+
+# door 3: the `defaults` setting. A refused name here must be FATAL — falling
+# back to the built-in four would widen the sandbox past what the file asked
+# for, which is invariant 5.
+X=$(mktemp -d); mkdir -p $X/snug
+printf 'defaults = ["@sys", "@cwd-rw"]\n' > $X/snug/config.toml
+XDG_CONFIG_HOME=$X ./bin/snug config | head -6            # control: accepted
+printf 'defaults = ["@sys", "a b"]\n'    > $X/snug/config.toml
+XDG_CONFIG_HOME=$X ./bin/snug config; echo "exit $?"
+rm -rf $X
+```
+
+Expect: the control prints a normal dry run naming `@git-ro`. Each refusal names
+the offending byte and its offset — `" "` at 1, `"."` at 1, `"_"` at 2 — and
+`my_profile` additionally suggests `"my-profile"`, because the hyphen is in the
+set and the underscore is not. `-p '@'` says the mark needs a name after it. The
+ESC case shows the literal four characters `\x1b` and no row is erased (`cat -v`
+also renders snug's em-dashes as `M-bM-^@M-^T`; that is `cat -v`, not snug).
+Each of these is a *usage* error, so the flag help follows it and the exit code
+is 64. None of them says `unknown profile`, and none reaches the FILESYSTEM
+block — the name never gets as far as the registry.
+
+The `defaults` control prints `"@sys" "@cwd-rw"` and the file's path; the second
+run exits **77** naming `entry 2` and the config file, rather than silently
+resolving the built-in list.
+
 ## 10. A repository cannot grant itself anything
 
 ```bash

@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -151,11 +152,11 @@ func TestResolvedPolicyAuthorsOnlyOwnedNames(t *testing.T) {
 	// only a policy carrying an Identity ever produces.
 	reg["ident"] = &policy.Profile{
 		Name:     "ident",
-		Include:  []string{"@sys", "@home", "@cwd-rw"},
+		Include:  []policy.ProfileName{"@sys", "@home", "@cwd-rw"},
 		Identity: &policy.Identity{GitName: "A", GitEmail: "a@example.com"},
 	}
 
-	var sel []string
+	var sel []policy.ProfileName
 	for name, p := range reg {
 		// @net-host wants the host network namespace and @tmp-shared wants a
 		// host directory the caller allocates; neither adds an env writer, and
@@ -165,11 +166,11 @@ func TestResolvedPolicyAuthorsOnlyOwnedNames(t *testing.T) {
 		}
 		sel = append(sel, name)
 	}
-	sort.Strings(sel)
+	slices.Sort(sel)
 
 	ctx := envGoldenCtx()
 	ctx.Term, ctx.Lang, ctx.TZ = "xterm", "C.UTF-8", "Europe/Prague"
-	p, err := policy.Resolve(map[string]*policy.Profile(reg), sel, ctx, newEnvFakeEnv())
+	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, ctx, newEnvFakeEnv())
 	if err != nil {
 		t.Fatalf("Resolve(%v): %v", sel, err)
 	}

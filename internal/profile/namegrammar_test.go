@@ -37,21 +37,21 @@ func TestEveryBuiltinNamePassesTheNameGrammar(t *testing.T) {
 	}
 
 	for key, p := range reg {
-		bare, ok := strings.CutPrefix(key, policy.Sigil)
+		bare, ok := key.CutMark()
 		if !ok {
 			t.Errorf("builtin key %q does not carry the sigil %q", key, policy.Sigil)
 			continue
 		}
-		if i := nameFault(bare); i >= 0 {
+		if i := nameFault(string(bare)); i >= 0 {
 			t.Errorf("builtin %q fails the name grammar at byte offset %d (%s)", key, i, nameByteDesc(bare[i]))
 		}
 		for _, inc := range p.Include {
-			incBare, ok := strings.CutPrefix(inc, policy.Sigil)
+			incBare, ok := inc.CutMark()
 			if !ok {
 				t.Errorf("builtin %q includes %q, which does not carry the sigil %q", key, inc, policy.Sigil)
 				continue
 			}
-			if i := nameFault(incBare); i >= 0 {
+			if i := nameFault(string(incBare)); i >= 0 {
 				t.Errorf("builtin %q includes %q, which fails the name grammar at byte offset %d (%s)",
 					key, inc, i, nameByteDesc(incBare[i]))
 			}
@@ -239,7 +239,7 @@ func TestMarkedNameIsNotAFileNameButIsALegalReference(t *testing.T) {
 		if err := checkName(n, "test.toml"); err == nil || !strings.Contains(err.Error(), "snug ships") {
 			t.Errorf(`checkName(%q) = %v, want a "snug ships" refusal`, n, err)
 		}
-		if err := checkRef(n, "user-profile", "test.toml"); err != nil {
+		if _, err := checkRef(n, "user-profile", "test.toml"); err != nil {
 			t.Errorf("checkRef(%q, ...) = %v, want nil — a reference may carry a mark a definition may not",
 				n, err)
 		}
@@ -253,7 +253,7 @@ func TestMarkedNameIsNotAFileNameButIsALegalReference(t *testing.T) {
 		t.Fatal("@sys is missing; the registry failed to load, so the sweep below proves nothing")
 	}
 	for key := range reg {
-		if nameFault(strings.TrimPrefix(key, policy.Sigil)) >= 0 {
+		if nameFault(string(key.Bare())) >= 0 {
 			t.Errorf("builtin key %q is not Sigil followed by a legal name", key)
 		}
 	}

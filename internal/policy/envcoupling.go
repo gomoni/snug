@@ -3,7 +3,7 @@ package policy
 import (
 	"fmt"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -44,7 +44,7 @@ import (
 // which is not a visibility break but is one edit away from being one. See
 // TestCouplingVerdictDoesNotDependOnTheSelectedSet, which exists because that
 // edit is easy to make and impossible to notice.
-func checkEnvCoupling(reg map[string]*Profile, name string, g EnvGrants, vars map[string]string) error {
+func checkEnvCoupling(reg map[ProfileName]*Profile, name ProfileName, g EnvGrants, vars map[string]string) error {
 	if !writesAnyPath(g) {
 		return nil
 	}
@@ -93,7 +93,7 @@ func writesAnyPath(g EnvGrants) bool {
 }
 
 // checkCoupled is the verdict on one written value.
-func checkCoupled(profile string, verb EnvVerb, name, raw string, vars map[string]string, guests []string, links map[string]string) error {
+func checkCoupled(profile ProfileName, verb EnvVerb, name, raw string, vars map[string]string, guests []string, links map[string]string) error {
 	if !typeOf(name).path {
 		return nil
 	}
@@ -160,8 +160,8 @@ func coversGuest(guests []string, path string) bool {
 // parsed again by the fold and refused there, with the right profile named.
 // Skipping makes this set SMALLER, so the coupling check gets stricter, never
 // laxer.
-func profileGuestGrants(reg map[string]*Profile, name string, vars map[string]string) ([]string, map[string]string, error) {
-	closure := map[string]*Profile{}
+func profileGuestGrants(reg map[ProfileName]*Profile, name ProfileName, vars map[string]string) ([]string, map[string]string, error) {
+	closure := map[ProfileName]*Profile{}
 	if err := expand(reg, name, closure, nil); err != nil {
 		return nil, nil, err
 	}
@@ -202,11 +202,15 @@ func profileGuestGrants(reg map[string]*Profile, name string, vars map[string]st
 	return guests, links, nil
 }
 
-func sortedProfileNames(m map[string]*Profile) []string {
-	out := make([]string, 0, len(m))
+// sortedProfileNames is slices.Sort rather than sort.Strings for the same
+// reason Resolve's fold is: ProfileName is a defined type over string, which
+// cmp.Ordered admits and []string does not. The ordering is byte-wise either
+// way, so nothing observable moves.
+func sortedProfileNames(m map[ProfileName]*Profile) []ProfileName {
+	out := make([]ProfileName, 0, len(m))
 	for k := range m {
 		out = append(out, k)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }

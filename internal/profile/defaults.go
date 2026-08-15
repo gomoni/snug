@@ -1,5 +1,7 @@
 package profile
 
+import "github.com/gomoni/snug/internal/policy"
+
 // BuiltinDefaults is the profile selection a bare `snug <dir>` starts from when
 // the user's config.toml does not say otherwise. It is a PREFERENCE, not a
 // policy object: it grants nothing itself, it names profiles that do. That is
@@ -39,6 +41,13 @@ package profile
 //     less than it.
 //
 // Returned by value so no caller can mutate the shipped defaults.
-func BuiltinDefaults() []string {
-	return []string{"@sys", "@home", "@cwd-rw", "@parent-ro"}
+//
+// The elements are policy.ProfileName. Note that this needs no call to
+// policy.NewProfileName and no conversion: they are untyped string CONSTANTS in
+// a []policy.ProfileName literal, which Go converts at compile time. That is
+// the safe case by construction — a constant cannot carry runtime data — and it
+// is why the conversion sweep in cmd/snug looks for ProfileName(x) rather than
+// for every place a name is written down.
+func BuiltinDefaults() []policy.ProfileName {
+	return []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro"}
 }

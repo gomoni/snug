@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // The store key is what teardown uses as identity, so two different sandboxes
@@ -16,15 +18,15 @@ func TestStoreKeyIdentifiesTheSandbox(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 
-	a, err := New([]string{"@sys", "@podman-socket"}, "/proj/one")
+	a, err := New([]policy.ProfileName{"@sys", "@podman-socket"}, "/proj/one")
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := New([]string{"@podman-socket", "@sys"}, "/proj/one")
+	b, err := New([]policy.ProfileName{"@podman-socket", "@sys"}, "/proj/one")
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := New([]string{"@sys", "@podman-socket"}, "/proj/two")
+	c, err := New([]policy.ProfileName{"@sys", "@podman-socket"}, "/proj/two")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +60,7 @@ func TestStoreKeyIdentifiesTheSandbox(t *testing.T) {
 func TestOwnedPIDsMatchesOnlyThisEnginesPaths(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	e, err := New([]string{"@podman-socket"}, "/proj")
+	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
 	if err != nil {
 		t.Fatal(err)
 	}

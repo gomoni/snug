@@ -1,7 +1,7 @@
 package main
 
 import (
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 
@@ -52,17 +52,17 @@ func TestNoBuiltinHandsOverAnInlineConfigVariable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	names := make([]string, 0, len(reg))
+	names := make([]policy.ProfileName, 0, len(reg))
 	for name := range reg {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 
 	checked := 0
 	sawNonEmptyEnv := 0
 	for _, name := range names {
-		sel := append(append([]string{}, profile.BuiltinDefaults()...), name)
-		p, err := policy.Resolve(map[string]*policy.Profile(reg), sel, envGoldenCtx(), newEnvFakeEnv())
+		sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), name)
+		p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), newEnvFakeEnv())
 		if err != nil {
 			// A selection this fake host cannot resolve says nothing either
 			// way, but it must be VISIBLE: a sweep that silently skipped every
@@ -157,14 +157,14 @@ func TestPositiveControlEnvironSetPipIndexUrlTripsInlineConfigSweep(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := map[string]*policy.Profile(reg)
+	m := map[policy.ProfileName]*policy.Profile(reg)
 	m["leaky"] = &policy.Profile{
 		Name:    "leaky",
-		Include: []string{"@sys", "@home"},
+		Include: []policy.ProfileName{"@sys", "@home"},
 		Environ: policy.EnvGrants{Set: map[string]string{name: "http://evil.example/simple"}},
 	}
 
-	p, err := policy.Resolve(m, append(append([]string{}, profile.BuiltinDefaults()...), "leaky"),
+	p, err := policy.Resolve(m, append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "leaky"),
 		envGoldenCtx(), newEnvFakeEnv())
 	if err != nil {
 		t.Fatalf("Resolve refused environ.set %s: %v — that would mean PIP_ has been "+
@@ -364,12 +364,12 @@ func TestPositiveControlEnvironSetRustcWrapperIsRefusedAtParseTime(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	m2 := map[string]*policy.Profile(reg2)
+	m2 := map[policy.ProfileName]*policy.Profile(reg2)
 	m2["control"] = &policy.Profile{
 		Name:    "control",
-		Include: []string{"@sys", "@home"},
+		Include: []policy.ProfileName{"@sys", "@home"},
 	}
-	if _, err := policy.Resolve(m2, append(append([]string{}, profile.BuiltinDefaults()...), "control"),
+	if _, err := policy.Resolve(m2, append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "control"),
 		envGoldenCtx(), newEnvFakeEnv()); err != nil {
 		t.Fatalf("the control fixture (identical shape, no environ.set at all) was refused: "+
 			"%v — that means the fixtures below would fail regardless of the RUSTC_WRAPPER "+
@@ -378,16 +378,16 @@ func TestPositiveControlEnvironSetRustcWrapperIsRefusedAtParseTime(t *testing.T)
 
 	for _, name := range []string{"RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTC"} {
 		t.Run(name, func(t *testing.T) {
-			m := map[string]*policy.Profile(reg)
+			m := map[policy.ProfileName]*policy.Profile(reg)
 			m["leaky"] = &policy.Profile{
 				Name:    "leaky",
-				Include: []string{"@sys", "@home"},
+				Include: []policy.ProfileName{"@sys", "@home"},
 				Environ: policy.EnvGrants{
 					Set: map[string]string{name: "/run/snug/bin/evil"},
 				},
 			}
 
-			_, err := policy.Resolve(m, append(append([]string{}, profile.BuiltinDefaults()...), "leaky"),
+			_, err := policy.Resolve(m, append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "leaky"),
 				envGoldenCtx(), newEnvFakeEnv())
 			if err == nil {
 				t.Fatalf("Resolve accepted environ.set %s. Confirmed by redteam (issue #26 "+

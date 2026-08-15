@@ -216,7 +216,7 @@ func identityProvenance(pol *policy.Policy) string {
 	if pol.IdentityOwner == "" {
 		return "(identity)"
 	}
-	return "identity:" + pol.IdentityOwner
+	return "identity:" + string(pol.IdentityOwner)
 }
 
 // stageGhConfig gives gh a private config directory instead of a token in the
@@ -322,8 +322,8 @@ func stageGhConfig(pol *policy.Policy, id *policy.Identity, dryRun bool) error {
 // caller can filter known_hosts before resolution needs it.
 type profileRegistry = profile.Registry
 
-func identityHost(reg profileRegistry, selected []string) string {
-	set, err := policy.Expand(map[string]*policy.Profile(reg), selected)
+func identityHost(reg profileRegistry, selected []policy.ProfileName) string {
+	set, err := policy.Expand(map[policy.ProfileName]*policy.Profile(reg), selected)
 	if err != nil {
 		return "github.com"
 	}

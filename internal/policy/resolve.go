@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -32,10 +33,10 @@ import (
 //
 // Callers must check err first and treat a non-nil err as "do not run this",
 // regardless of whether p is nil.
-func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Environ) (*Policy, error) {
+func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, env Environ) (*Policy, error) {
 	// 1. Expand includes transitively into a SET. Because the result is a set,
 	//    include is idempotent and diamond includes are harmless.
-	set := map[string]*Profile{}
+	set := map[ProfileName]*Profile{}
 	for _, name := range selected {
 		if err := expand(reg, name, set, nil); err != nil {
 			return nil, err
@@ -84,7 +85,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 		Command:    ctx.Command,
 		Mounts:     map[string]Mount{},
 		Env:        map[string]EnvVar{},
-		Selected:   append([]string(nil), selected...),
+		Selected:   append([]ProfileName(nil), selected...),
 		NewSession: ctx.LegacyTIOCSTI,
 	}
 
@@ -103,18 +104,26 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 	//    below is either a join or a symmetric error for exactly that reason.
 	//    (This comment previously claimed map iteration order was "a feature
 	//    here", three lines above the sort that removed it.)
-	names := make([]string, 0, len(set))
+	names := make([]ProfileName, 0, len(set))
 	for n := range set {
 		names = append(names, n)
 	}
-	sort.Strings(names)
+	// slices.Sort, not sort.Strings: ProfileName is a defined type over string,
+	// which cmp.Ordered admits and []string does not. The ordering is identical
+	// (byte-wise), which is why no golden moves.
+	slices.Sort(names)
 	p.Profiles = names
 
 	// Which profile last set each non-lattice scalar, so a conflict can name both
 	// sides rather than just reporting that there is one.
-	identityOwner := ""
-	gitOwner := ""
-	addressOwner, gatewayOwner, mtuOwner := "", "", ""
+	//
+	// Declared rather than initialised with ProfileName(""): the ZERO VALUE of a
+	// ProfileName is the invalid name, which is exactly what "no profile has
+	// claimed this yet" means, and writing the conversion here would be the one
+	// shape TestOnlyTheConstructorConvertsToAProfileName forbids — correctly, on
+	// the general rule, even though this particular operand is a constant.
+	var identityOwner, gitOwner ProfileName
+	var addressOwner, gatewayOwner, mtuOwner ProfileName
 	publish := map[int]bool{}
 	// Environment claims are ACCUMULATED here and resolved after the fold — see
 	// envresolve.go for why deciding during the fold cannot name every claimant.
@@ -141,7 +150,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 				Host:     host,
 				Access:   access,
 				Optional: optional[host] || optional[guest],
-				From:     []string{name},
+				From:     []string{string(name)},
 			}
 			if kind == KindBind {
 				// Canonicalise the host side now, while we still trust the
@@ -180,7 +189,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 			if err != nil {
 				return nil, fmt.Errorf("profile %q: %w", name, err)
 			}
-			if err := p.join(Mount{Guest: filepath.Clean(g), Kind: KindTmpfs, Access: AccessRW, From: []string{name}}); err != nil {
+			if err := p.join(Mount{Guest: filepath.Clean(g), Kind: KindTmpfs, Access: AccessRW, From: []string{string(name)}}); err != nil {
 				return nil, err
 			}
 		}
@@ -189,7 +198,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 			if err != nil {
 				return nil, fmt.Errorf("profile %q: %w", name, err)
 			}
-			if err := p.join(Mount{Guest: filepath.Clean(at), Kind: KindSymlink, Host: s.Target, Access: AccessRO, From: []string{name}}); err != nil {
+			if err := p.join(Mount{Guest: filepath.Clean(at), Kind: KindSymlink, Host: s.Target, Access: AccessRO, From: []string{string(name)}}); err != nil {
 				return nil, err
 			}
 		}
@@ -406,9 +415,9 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 		// Provenance names the stronger claimant: an [identity] block PINS this
 		// file, `git = "extract"` merely fills it in, and when both are present
 		// the pin is what a reader needs to see.
-		from := "git:" + gitOwner
+		from := "git:" + string(gitOwner)
 		if identityOwner != "" {
-			from = "identity:" + identityOwner
+			from = "identity:" + string(identityOwner)
 		}
 		if cfg := GitConfigFrom(ctx.HostGit, p.Identity); len(cfg) > 0 {
 			p.Replace(Mount{
@@ -435,14 +444,14 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 		if cfg := id.SSHConfig(home); len(cfg) > 0 {
 			p.Replace(Mount{
 				Guest: home + "/.ssh/config", Kind: KindData, Access: AccessRO,
-				Content: cfg, From: []string{"identity:" + identityOwner},
+				Content: cfg, From: []string{"identity:" + string(identityOwner)},
 			})
 			// The pinned PUBLIC key is staged by startIdentity, not here: it is
 			// read from id.SSHKey AFTER expansion, so `{home}/...` and `~/...`
 			// are one path rather than two spellings with different fates.
 			p.Replace(Mount{
 				Guest: home + "/.ssh/known_hosts", Kind: KindData, Access: AccessRO,
-				Content: ctx.KnownHosts, From: []string{"identity:" + identityOwner},
+				Content: ctx.KnownHosts, From: []string{"identity:" + string(identityOwner)},
 			})
 		}
 	}
@@ -513,7 +522,7 @@ func Resolve(reg map[string]*Profile, selected []string, ctx Context, env Enviro
 		p.AuthorEnv("TERM", ctx.Term)
 	}
 	p.AuthorEnv("SNUG", "1")
-	p.AuthorEnv("SNUG_PROFILES", strings.Join(names, ","))
+	p.AuthorEnv("SNUG_PROFILES", JoinNames(names, ","))
 	p.AuthorEnv("SNUG_TARGET", target)
 
 	// A prompt that says where you are. This matters more than cosmetics: snug
@@ -732,8 +741,8 @@ func union(a, b []string) []string {
 // in. Exported so a caller can inspect what it is about to run — the CLI uses
 // it to discover whether any selected profile needs a host resource prepared
 // before resolution can succeed.
-func Expand(reg map[string]*Profile, selected []string) (map[string]*Profile, error) {
-	out := map[string]*Profile{}
+func Expand(reg map[ProfileName]*Profile, selected []ProfileName) (map[ProfileName]*Profile, error) {
+	out := map[ProfileName]*Profile{}
 	for _, name := range selected {
 		if err := expand(reg, name, out, nil); err != nil {
 			return nil, err
@@ -748,7 +757,7 @@ func Expand(reg map[string]*Profile, selected []string) (map[string]*Profile, er
 // profile — so it gets a specific error rather than the generic "see: snug
 // profile list", the same shape TestRetiredPublishAutoIsAHardError already
 // uses for a retired TOML key.
-var retiredProfiles = map[string]string{
+var retiredProfiles = map[ProfileName]string{
 	"null": "there is no @null profile: a profile that grants nothing " +
 		"is a preference, not a grant. The lattice floor is what an empty " +
 		"selection already resolves to — use --no-defaults, not -p @null",
@@ -763,24 +772,24 @@ var retiredProfiles = map[string]string{
 // Every caller that looks a name up in a registry should route through here, so
 // `snug -p sys`, `snug profile show sys` and `include = ["sys"]` inside a
 // user's own file all say the same thing.
-func UnknownProfile(reg map[string]*Profile, name string) error {
+func UnknownProfile(reg map[ProfileName]*Profile, name ProfileName) error {
 	// The user's OWN profiles are checked before the retired table, not after.
 	// `null` is a perfectly legal name for a profile someone defines, and the
 	// table used to preempt it: `snug profile show @null` told that user their
 	// profile did not exist, pointing them at snug's reasoning about a builtin
 	// they had never heard of. A retired name is only retired when nothing on
 	// this host defines it.
-	bare := strings.TrimPrefix(name, Sigil)
+	bare := name.Bare()
 	_, mineBare := reg[bare]
 	_, mineMarked := reg[name]
 	if msg, retired := retiredProfiles[bare]; retired && !mineBare && !mineMarked {
 		return fmt.Errorf("%s", msg)
 	}
-	if _, ok := reg[Sigil+name]; ok {
+	if _, ok := reg[name.Marked()]; ok {
 		return fmt.Errorf("unknown profile %q; snug's own profiles carry a leading %s, "+
-			"so you probably meant %q (see: snug profile list)", name, Sigil, Sigil+name)
+			"so you probably meant %q (see: snug profile list)", name, Sigil, name.Marked())
 	}
-	if bare, marked := strings.CutPrefix(name, Sigil); marked {
+	if bare, marked := name.CutMark(); marked {
 		if p, ok := reg[bare]; ok {
 			return fmt.Errorf("unknown profile %q; %s marks a profile snug ships, and %q is "+
 				"one of yours (defined in %s)", name, Sigil, bare, p.Source)
@@ -791,10 +800,10 @@ func UnknownProfile(reg map[string]*Profile, name string) error {
 	return fmt.Errorf("unknown profile %q (see: snug profile list)", name)
 }
 
-func expand(reg map[string]*Profile, name string, out map[string]*Profile, stack []string) error {
+func expand(reg map[ProfileName]*Profile, name ProfileName, out map[ProfileName]*Profile, stack []ProfileName) error {
 	for _, s := range stack {
 		if s == name {
-			return fmt.Errorf("include cycle: %s -> %s", strings.Join(stack, " -> "), name)
+			return fmt.Errorf("include cycle: %s -> %s", JoinNames(stack, " -> "), name)
 		}
 	}
 	if _, done := out[name]; done {
@@ -819,7 +828,7 @@ var basePATH = []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"}
 // scalarConflict is the refusal for a key whose value domain is not a
 // semilattice. It names BOTH profiles and BOTH values, so "it broke" becomes "I
 // know which line to delete".
-func scalarConflict(key, ownerA string, a any, ownerB string, b any) error {
+func scalarConflict(key string, ownerA ProfileName, a any, ownerB ProfileName, b any) error {
 	return fmt.Errorf("profiles %q and %q set different %s (%v and %v); select only one.\n"+
 		"       This key has no permissive direction — there is no \"more open\" address — so snug\n"+
 		"       refuses rather than choosing. Picking one would make the answer depend on the order\n"+

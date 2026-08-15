@@ -164,7 +164,7 @@ type Policy struct {
 	// startIdentity read `(identity)` while its three siblings on the same
 	// --dry-run screen read `identity:acct-a` — one file attributed to nobody,
 	// in the block whose entire job is saying who asked for what.
-	IdentityOwner string
+	IdentityOwner ProfileName
 
 	// Topology is the process shape this policy requires — DERIVED by
 	// deriveTopology at the end of Resolve, never granted by a profile, a TOML
@@ -181,12 +181,12 @@ type Policy struct {
 	// a grant, including whatever `include` pulled in. Sorted because resolution
 	// is order-independent and the output should not imply an order that does
 	// not exist.
-	Profiles []string
+	Profiles []ProfileName
 
 	// Selected is what the human actually named. Kept only so output can
 	// distinguish "you asked for this" from "this came along via an include";
 	// it must never affect resolution, or order-independence is gone.
-	Selected []string
+	Selected []ProfileName
 }
 
 // SortedMounts returns the mounts in bwrap emission order: ancestors strictly
@@ -223,12 +223,12 @@ func depth(p string) int {
 
 // Implied returns the profiles that were pulled in by include rather than named
 // by the human — the answer to "why is this in my sandbox?".
-func (p *Policy) Implied() []string {
-	named := map[string]bool{}
+func (p *Policy) Implied() []ProfileName {
+	named := map[ProfileName]bool{}
 	for _, s := range p.Selected {
 		named[s] = true
 	}
-	var out []string
+	var out []ProfileName
 	for _, n := range p.Profiles {
 		if !named[n] {
 			out = append(out, n)

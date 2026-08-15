@@ -212,7 +212,7 @@ func claudeFixtureHome(t *testing.T, trustTarget bool) (*policy.Policy, string, 
 		hostClaudeJSON(t, home)
 	}
 	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
-	pol, err := policy.Resolve(reg, []string{"@sys", "@home", "@cwd-rw", "@claude"}, ctx, policy.OSEnviron{})
+	pol, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@claude"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}

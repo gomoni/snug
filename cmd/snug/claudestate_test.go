@@ -145,7 +145,7 @@ func stageClaude(t *testing.T, host hostClaude) (policy.Mount, string, string) {
 		hostClaudeJSONTrusting(t, home, key)
 	}
 	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
-	pol, err := policy.Resolve(reg, []string{"@sys", "@home", "@cwd-rw", "@claude"}, ctx, policy.OSEnviron{})
+	pol, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@claude"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -429,7 +429,7 @@ func TestClaudeDotJSONIsGeneratedWithNoHostFile(t *testing.T) {
 // agent's own $HOME. It is the one a reader cannot check against the code, so a
 // stale sentence there costs turns rather than review time.
 func TestClaudeGuidanceDoesNotClaimTheHostJSONIsStaged(t *testing.T) {
-	p := resolveFor(t, []string{"@sys", "@home", "@cwd-rw", "@claude"})
+	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@claude"})
 	got := string(claudeGuidance(p))
 
 	for _, dead := range []string{"re-" + "onboard", "IS staged"} {
@@ -473,7 +473,7 @@ func TestClaudeGuidanceDoesNotClaimTheHostJSONIsStaged(t *testing.T) {
 // (nothing you change here survives) holds in both arms for two different
 // reasons, and the guidance must give the reason that is true of THIS run.
 func TestClaudeGuidanceDoesNotAssertAReadOnlySettingsFileItDoesNotHave(t *testing.T) {
-	sel := []string{"@sys", "@home", "@cwd-rw", "@claude"}
+	sel := []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@claude"}
 
 	t.Run("host has no settings.json: no read-only claim", func(t *testing.T) {
 		p := resolveFor(t, sel)

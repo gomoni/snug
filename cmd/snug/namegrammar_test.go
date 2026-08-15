@@ -20,14 +20,21 @@ import (
 // all, so printTree recurses into the "(unknown)" branch — the site
 // TestNoSnugScreenEmitsARawControlCharacter's own sweep does not reach, since
 // that test drives dryRun/describeEnvironment rather than `snug profile tree`.
+//
+// Note the explicit policy.ProfileName conversions below. Since issue #67 a
+// name is a TYPE whose only constructor applies the grammar, so building a
+// hostile one is now something a test has to say out loud — and only a test
+// can: TestOnlyTheConstructorConvertsToAProfileName refuses the same line in
+// any production file. That is the property under test made visible in the
+// fixture, not an inconvenience to route around.
 func TestProfileTreeDoesNotRenderAnUnknownIncludeVerbatim(t *testing.T) {
 	const forged = "FORGED-BY-AN-INCLUDE"
 	reg := profile.Registry{
-		"root": &policy.Profile{Name: "root", Include: []string{"a\x1b[1A\r" + forged}},
+		"root": &policy.Profile{Name: "root", Include: []policy.ProfileName{"a\x1b[1A\r" + forged}},
 	}
 
 	got := captureStdout(t, func() {
-		printTree(reg, "root", "", "", map[string]bool{})
+		printTree(reg, "root", "", "", map[policy.ProfileName]bool{})
 	})
 
 	// The positive control: without it, a tree walk that silently dropped the
@@ -55,21 +62,24 @@ func TestProfileTreeDoesNotRenderAnUnknownIncludeVerbatim(t *testing.T) {
 func TestDryRunDoesNotRenderAProfileNameVerbatim(t *testing.T) {
 	const forgedSelected = "FORGED-SELECTED-PROFILE"
 	const forgedImplied = "FORGED-IMPLIED-PROFILE"
-	malSelected := "sel\x1b[1A\r" + forgedSelected
-	malImplied := "inc\x1b[1A\r" + forgedImplied
+	// policy.ProfileName, built by conversion rather than by NewProfileName,
+	// which would refuse both: see T8's note. A _test.go file is the only place
+	// in the module allowed to write this.
+	malSelected := policy.ProfileName("sel\x1b[1A\r" + forgedSelected)
+	malImplied := policy.ProfileName("inc\x1b[1A\r" + forgedImplied)
 
 	reg, err := profile.Builtins()
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := map[string]*policy.Profile(reg)
+	m := map[policy.ProfileName]*policy.Profile(reg)
 	// "carrier" pulls in malImplied by INCLUDE, so it is never in p.Selected —
 	// only in p.Implied(), which is the second site. malSelected is picked
 	// directly, hitting the PROFILES line, and it grants a tmpfs at an
 	// ANCESTOR of $HOME so that mountedAt's covering mount for HOME has
 	// Guest ("/home") != path ("/home/u"), which is pathAnnotation's "via ..."
 	// branch — the third site.
-	m["carrier"] = &policy.Profile{Name: "carrier", Include: []string{malImplied}}
+	m["carrier"] = &policy.Profile{Name: "carrier", Include: []policy.ProfileName{malImplied}}
 	m[malSelected] = &policy.Profile{Name: malSelected, Tmpfs: []string{"/home"}}
 	m[malImplied] = &policy.Profile{Name: malImplied}
 
@@ -81,7 +91,7 @@ func TestDryRunDoesNotRenderAProfileNameVerbatim(t *testing.T) {
 	// dryRun prints at the bottom of a REFUSED run — a fourth, real gap this
 	// fixture found by accident and which is reported separately rather than
 	// silently dodged.
-	sel := []string{"@sys", "@parent-ro", malSelected, "carrier"}
+	sel := []policy.ProfileName{"@sys", "@parent-ro", malSelected, "carrier"}
 	p, resolveErr := policy.Resolve(m, sel, envGoldenCtx(), newEnvFakeEnv())
 	if resolveErr != nil {
 		t.Fatalf("Resolve refused this selection: %v", resolveErr)
@@ -140,16 +150,16 @@ func TestDryRunDoesNotRenderAProfileNameVerbatim(t *testing.T) {
 // diamond branch.
 func TestProfileTreeEscapesADiamondInclude(t *testing.T) {
 	const forged = "FORGED-BY-A-DIAMOND"
-	dup := "d\x1b[1A\r" + forged
+	dup := policy.ProfileName("d\x1b[1A\r" + forged)
 	reg := profile.Registry{
-		"a": &policy.Profile{Name: "a", Include: []string{"b", "c"}},
-		"b": &policy.Profile{Name: "b", Include: []string{dup}},
-		"c": &policy.Profile{Name: "c", Include: []string{dup}},
+		"a": &policy.Profile{Name: "a", Include: []policy.ProfileName{"b", "c"}},
+		"b": &policy.Profile{Name: "b", Include: []policy.ProfileName{dup}},
+		"c": &policy.Profile{Name: "c", Include: []policy.ProfileName{dup}},
 		dup: &policy.Profile{Name: dup},
 	}
 
 	got := captureStdout(t, func() {
-		printTree(reg, "a", "", "", map[string]bool{})
+		printTree(reg, "a", "", "", map[policy.ProfileName]bool{})
 	})
 
 	// Two positive controls, because this test can pass vacuously in two
