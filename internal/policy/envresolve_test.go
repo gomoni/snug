@@ -1200,29 +1200,33 @@ func TestSetAndInheritOnOneScalarMustAgree(t *testing.T) {
 	}
 
 	// POSITIVE CONTROL: agreeing claims resolve, and BOTH profiles are credited
-	// — `setty` sets EDITOR=vim, `envy` inherits the fake host's EDITOR=vim.
+	// — `setty` sets NO_COLOR=1, `envy` inherits the fake host's NO_COLOR=1.
+	//
+	// NO_COLOR, not EDITOR: issue #45 withdrew `set` from EDITOR (envtypes.go's
+	// noSet), so testRegistry's `setty`/`envy` pair moved to a name both verbs
+	// still accept — see their comments in resolve_test.go.
 	p := mustResolve(t, "@sys", "@cwd-rw", "setty", "envy")
-	if v, _ := p.EnvValue("EDITOR"); v != "vim" {
-		t.Errorf("EDITOR = %q, want vim", v)
+	if v, _ := p.EnvValue("NO_COLOR"); v != "1" {
+		t.Errorf("NO_COLOR = %q, want 1", v)
 	}
-	if got := entryVerbs(p, "EDITOR"); strings.Join(got, " ") != "set inherit" {
-		t.Errorf("EDITOR entries = %v, want both claims recorded — a human reading "+
+	if got := entryVerbs(p, "NO_COLOR"); strings.Join(got, " ") != "set inherit" {
+		t.Errorf("NO_COLOR entries = %v, want both claims recorded — a human reading "+
 			"--dry-run should see that two profiles asked for this", got)
 	}
 
 	// And an inherit of a name the host does not have contributes nothing, so it
 	// can never take part in a conflict.
 	env := newFakeEnv()
-	delete(env.env, "EDITOR")
+	delete(env.env, "NO_COLOR")
 	reg := testRegistry()
-	reg["emacsy"] = &Profile{Name: "emacsy", Environ: EnvGrants{Set: map[string]string{"EDITOR": "emacs"}}}
+	reg["emacsy"] = &Profile{Name: "emacsy", Environ: EnvGrants{Set: map[string]string{"NO_COLOR": "0"}}}
 	q, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "emacsy", "envy"}, testCtx(), env)
 	if err != nil {
 		t.Fatalf("an inherit of a name the host does not have must contribute nothing, not "+
 			"conflict: %v", err)
 	}
-	if v, _ := q.EnvValue("EDITOR"); v != "emacs" {
-		t.Errorf("EDITOR = %q, want emacs", v)
+	if v, _ := q.EnvValue("NO_COLOR"); v != "0" {
+		t.Errorf("NO_COLOR = %q, want 0", v)
 	}
 }
 

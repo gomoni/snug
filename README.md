@@ -309,7 +309,7 @@ for, and carries no value.
 ro = ["/opt/tools/bin", "/opt/tools/override"]   # a profile grants what it names
 
 [profile.mytools.environ.set]
-EDITOR = "/usr/bin/vim"            # scalar. Two profiles disagreeing = error
+NO_COLOR = "1"                     # scalar. Two profiles disagreeing = error
 
 [profile.mytools.environ.merge]
 PATH = ["/opt/tools/bin"]          # list. Union, sorted, deduplicated

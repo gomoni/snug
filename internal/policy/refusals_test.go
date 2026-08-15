@@ -548,11 +548,16 @@ func refusalTwoSets(t testing.TB) error {
 
 // refusalSetVsInherit: CALL 2. `set` and `inherit` on one scalar are one slot.
 // "set beats inherit" would be a priority field wearing a verb's clothes.
+//
+// NO_COLOR, not EDITOR: issue #45 withdrew `set` from EDITOR, so a fixture
+// using it to disagree with `envy`'s `inherit` would now be refused for the
+// wrong reason (noSet) before ever reaching the disagreement this test is
+// about. `envy` inherits NO_COLOR (see testRegistry), and the fake host has
+// NO_COLOR=1.
 func refusalSetVsInherit(t testing.TB) error {
 	reg := testRegistry()
 	reg["emacsy"] = &Profile{Name: "emacsy", Environ: EnvGrants{
-		Set: map[string]string{"EDITOR": "emacs"}}}
-	// `envy` inherits EDITOR, and the fake host has EDITOR=vim.
+		Set: map[string]string{"NO_COLOR": "0"}}}
 	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "emacsy", "envy"}, testCtx(), newFakeEnv())
 	return err
 }
@@ -680,6 +685,16 @@ func TestGoldenRefusals(t *testing.T) {
 		{"env_sanitise_on_manpath", refusalEnv(EnvGrants{Sanitise: []string{"MANPATH"}})},
 		{"env_sanitise_on_an_unfilterable_list", refusalEnv(EnvGrants{Sanitise: []string{"PYTHONPATH"}})},
 
+		// issue #45: `set` withdrawn for EDITOR/VISUAL/PAGER, `inherit` kept. One
+		// representative of the three (they share the same message shape,
+		// parameterised only by the name) plus the hatch's own failure to recover
+		// it — see TestSetIsWithdrawnForEditorVisualPagerButInheritIsNot and
+		// TestDeclareCannotRecoverAWithdrawnVerb for the behavioural sweep over all
+		// three names; this pins the exact wording.
+		{"env_set_on_editor_is_refused", refusalEnv(EnvGrants{Set: map[string]string{"EDITOR": "vim"}})},
+		{"env_declare_does_not_recover_set_on_editor", refusalEnv(EnvGrants{
+			Declare: []string{"EDITOR"}, Set: map[string]string{"EDITOR": "vim"}})},
+
 		// the roster and its escape hatch (issue #44)
 		//
 		// These rows ARE the review artifact for the flip. The change is almost
@@ -698,8 +713,19 @@ func TestGoldenRefusals(t *testing.T) {
 		// The hatch's own three refusals: it cannot overrule the roster, it
 		// cannot be an unused name, and it buys nothing against ownership or the
 		// forbidden tables.
+		//
+		// NO_COLOR, not EDITOR: this case is about checkDeclarations's OWN
+		// refusal ("snug already has an entry for this name"), which only fires
+		// if the `set` above it in ValidateEnvGrants's loop succeeds first — see
+		// the identical reasoning at env_declare_snug_owned/
+		// env_declare_forbidden_prefix below. Since issue #45, `set` on EDITOR is
+		// refused by checkEnvVerbType's noSet BEFORE the declare loop ever runs,
+		// so an EDITOR fixture here would pin the noSet message instead and leave
+		// the declaration-specific refusal untested. NO_COLOR still accepts
+		// `set`, so it reaches checkDeclarations. The withdrawn-verb case has its
+		// own dedicated test (TestDeclareCannotRecoverAWithdrawnVerb).
 		{"env_declare_of_a_rostered_name", refusalEnv(EnvGrants{
-			Declare: []string{"EDITOR"}, Set: map[string]string{"EDITOR": "vim"}})},
+			Declare: []string{"NO_COLOR"}, Set: map[string]string{"NO_COLOR": "1"}})},
 		{"env_declare_unused", refusalEnv(EnvGrants{Declare: []string{"MY_TOOL_MODE"}})},
 		// These two carry NO accompanying `set`, deliberately: with one, the set
 		// is refused first and the golden row would show a `set` refusal under a

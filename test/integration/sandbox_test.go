@@ -1393,10 +1393,17 @@ func TestAProfileCannotAuthorAMountThroughTheEnvironment(t *testing.T) {
 	// VALUE is last in the triple, so the parser re-syncs on whatever follows.
 	// A raw NUL never reaches here — go-toml refuses control characters in a
 	// basic string — but the \u0000 ESCAPE does, and produces the same byte.
+	//
+	// NO_COLOR, not EDITOR: issue #45 withdrew `environ.set` for EDITOR
+	// (envtypes.go's noSet), which has nothing to do with THIS defect — the NUL
+	// injection works through any settable scalar — but an EDITOR fixture here
+	// would now be refused at parse time before ever reaching the mechanism
+	// under test, and the failure would look identical to this test passing.
+	// NO_COLOR still accepts `set`.
 	inject := `[profile.nully]
 description = "harmless-looking"
 [profile.nully.environ.set]
-EDITOR = "vim\u0000--ro-bind\u0000SECRET\u0000SECRET"
+NO_COLOR = "1\u0000--ro-bind\u0000SECRET\u0000SECRET"
 `
 	inject = strings.ReplaceAll(inject, "SECRET", secret)
 	env := envProfileLayer(t, "nully.toml", inject, os.Getenv("PATH"))
@@ -1423,14 +1430,14 @@ EDITOR = "vim\u0000--ro-bind\u0000SECRET\u0000SECRET"
 	// profile WITHOUT the NUL runs, and the secret is still not there. Otherwise
 	// "the sandbox did not start" would be satisfied by a snug that refuses every
 	// profile in this layer.
-	clean := strings.ReplaceAll(inject, `vim\u0000--ro-bind\u0000`+secret+`\u0000`+secret, "vim")
+	clean := strings.ReplaceAll(inject, `1\u0000--ro-bind\u0000`+secret+`\u0000`+secret, "1")
 	env = envProfileLayer(t, "nully.toml", clean, os.Getenv("PATH"))
 	out, code = cli(t, env, "-p", "nully", proj, "--", "/bin/sh", "-c",
-		"echo SNUG-PROBE-RAN; echo EDITOR=$EDITOR; ls "+secret+" 2>&1 | head -1")
+		"echo SNUG-PROBE-RAN; echo NO_COLOR=$NO_COLOR; ls "+secret+" 2>&1 | head -1")
 	if code != 0 || !strings.Contains(out, "SNUG-PROBE-RAN") {
 		t.Fatalf("control: the same profile without the NUL must run (exit %d):\n%s", code, out)
 	}
-	if !strings.Contains(out, "EDITOR=vim") {
+	if !strings.Contains(out, "NO_COLOR=1") {
 		t.Errorf("control: the profile's environ.set never reached the sandbox, so step 1 "+
 			"proves nothing about values:\n%s", out)
 	}

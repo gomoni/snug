@@ -182,6 +182,12 @@ environ.sanitise on MANPATH, where an empty element is an INSTRUCTION rather tha
 == env_sanitise_on_an_unfilterable_list ==
 environ.sanitise names PYTHONPATH, which snug refuses for this verb: the value is code, executed by every process the sandbox launches. Remove the line
 
+== env_set_on_editor_is_refused ==
+environ.set on EDITOR, whose value is a PROGRAM some tool will execute — an editor or a pager runs during an ordinary `git commit` or `git log`, in a sandbox where a different profile may have pinned the ssh identity the next push uses. A profile may not choose that program for someone else's sandbox. Use environ.inherit to carry the host user's own value, which snug still allows, or configure the tool through its own config file
+
+== env_declare_does_not_recover_set_on_editor ==
+environ.set on EDITOR, whose value is a PROGRAM some tool will execute — an editor or a pager runs during an ordinary `git commit` or `git log`, in a sandbox where a different profile may have pinned the ssh identity the next push uses. A profile may not choose that program for someone else's sandbox. Use environ.inherit to carry the host user's own value, which snug still allows, or configure the tool through its own config file
+
 == env_unrostered_set ==
 environ.set names MY_TOOL_MODE, which snug has no entry for.
        `set` and `inherit` are an ALLOWLIST: snug refuses a name it has not been
@@ -236,7 +242,7 @@ environ.merge on MY_TOOL_PATH, which snug has no entry for. A list verb needs th
        VALUE that only a roster row carries.
 
 == env_declare_of_a_rostered_name ==
-environ.declare names EDITOR, which snug already has an entry for.
+environ.declare names NO_COLOR, which snug already has an entry for.
        A declaration says snug knows nothing about a name; it is not a way to
        overrule what snug does know. Use the verb directly — and if that verb is
        refused for this name, the refusal IS the decision, argued in
@@ -321,9 +327,9 @@ profiles seta, setb and setc disagree about MY_EDITOR:
        such order. Select one of them, or make them agree.
 
 == env_set_disagrees_with_inherit ==
-profiles emacsy and envy disagree about EDITOR:
-         emacsy (environ.set) says "emacs"
-         envy (environ.inherit) says "vim"
+profiles emacsy and envy disagree about NO_COLOR:
+         emacsy (environ.set) says "0"
+         envy (environ.inherit) says "1"
        A scalar has one value and snug will not choose: picking one would make
        the answer depend on the order profiles were folded, and the model has no
        such order. Select one of them, or make them agree.

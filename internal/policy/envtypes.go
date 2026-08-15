@@ -88,6 +88,25 @@ type envType struct {
 	// directories that do not exist inside. inherit is the scalar form;
 	// sanitise is the list form.
 	noInherit bool
+
+	// noSet is noInherit's mirror, and the asymmetry between them is the whole
+	// argument for having both. `inherit` takes the HOST USER's own value, so
+	// reaching it means already being the host user. `set` lets the PROFILE
+	// AUTHOR choose the value outright, and for a name whose value is a program
+	// that is the author choosing what executes inside the sandbox — in a
+	// sandbox where a DIFFERENT profile may have pinned the ssh identity the
+	// next push will use.
+	//
+	// So a name can be safe to take from the host and unsafe to be handed by a
+	// file: EDITOR, VISUAL and PAGER are exactly that shape (issue #45), and
+	// forbidKind cannot express it — it has forbidBoth and forbidInheritOnly and
+	// no third constant, because a denylist entry is about a name being too
+	// dangerous to write at all. This is the roster saying which VERB a row
+	// grants, which is what a roster is for.
+	//
+	// Consulted for scalars only, like noInherit. A list has no `set` to
+	// withdraw: environ.set is refused for every list variable already.
+	noSet bool
 }
 
 // envTypes is snug's ROSTER, and it is §3.2, §3.3 and §3.4. A profile may `set`
@@ -154,17 +173,44 @@ var envTypes = map[string]envType{
 	// forbidBoth below; these three are not, so the forbid list closes the
 	// invisible half of that class and not the class.
 	//
-	// They are on the roster at both verbs because that is EXACTLY today's
-	// behaviour, and this change is a flip of the default, not a withdrawal of a
-	// grant: @claude inherits all three, so refusing them here would break a
-	// shipped, tested profile outright. Withdrawing them is
-	// https://github.com/gomoni/snug/issues/45 — a decision about what @claude
-	// may inherit, argued in §3.2 — and these three rows are the seam it will
-	// edit: delete them, or give envType a `noSet` flag beside noInherit if the
-	// answer is "settable but not inheritable".
-	"EDITOR": {},
-	"VISUAL": {},
-	"PAGER":  {},
+	// THE VERB IS THE WHOLE OF IT, and issue #45 is where that was settled. The
+	// two verbs are not equally dangerous for these three names, and the
+	// question the issue asks is "what does @claude give up", not "which row is
+	// missing":
+	//
+	//   inherit — takes the HOST USER's own EDITOR. To poison it you must
+	//     already be the host user, at which point you do not need a profile.
+	//     @claude inherits all three so that a human's editor and pager
+	//     preference survives into the sandbox, and dropping that would change
+	//     what `git log` does inside for no attacker removed.
+	//   set — lets the PROFILE AUTHOR name the program outright, in a file, with
+	//     no host involvement at all:
+	//
+	//       [profile.helper.environ.set]
+	//       EDITOR = "/run/snug/bin/evil"
+	//
+	//     and any `git commit` without -m inside that sandbox runs it. That is
+	//     the composability failure this whole table exists to prevent — a
+	//     profile granting no filesystem path at all, defeating a guarantee a
+	//     different profile established, exactly as the GIT_SSH red-team run
+	//     did. GIT_EDITOR and GIT_PAGER are forbidBoth below for this reason,
+	//     and leaving the generic spellings settable closed the invisible half
+	//     of the class and not the class.
+	//
+	// So: `inherit` granted, `set` withdrawn. What a profile author loses is the
+	// ability to choose an editor for someone else's sandbox, and the answer to
+	// wanting one is environ.inherit or the tool's own config file.
+	//
+	// Note what the roster makes free here, and it is the property that made
+	// this decision cheap: a withdrawn verb cannot be recovered through the
+	// hatch. `declare EDITOR` is refused because snug HAS a row for it
+	// (snugKnowsEnvName), so there is no spelling of `set EDITOR` left anywhere
+	// — for a user profile or a builtin. Before issue #44 this same withdrawal
+	// would have needed a forbiddenEnv entry, which would have refused the
+	// inherit too.
+	"EDITOR": {noSet: true},
+	"VISUAL": {noSet: true},
+	"PAGER":  {noSet: true},
 	// NO_COLOR is a FLAG, and for a flag EMPTY IS NOT UNSET — "set to any value,
 	// including empty" is its specification, which is why nothing in the
 	// resolver may collapse the two (§4.6a). At full abuse a profile that writes
@@ -410,23 +456,25 @@ const (
 // for either would let a name pass the ownership check and be caught by a weaker
 // mechanism instead.
 //
-// WHAT THIS LIST DOES NOT CLOSE, stated here because reading it as a class
-// closure is the mistake it invites. EDITOR, VISUAL and PAGER are legal at
-// `set` and at `inherit` by §3.2's decision, and @claude inherits all three. git
-// falls back GIT_EDITOR -> core.editor -> VISUAL -> EDITOR, and GIT_PAGER ->
-// core.pager -> PAGER, both measured. So the GIT_EDITOR and GIT_PAGER entries
-// below do not make git unhijackable by a profile — a profile that wanted to
-// would write the generic spelling.
+// WHAT THIS LIST USED NOT TO CLOSE, and no longer needs to for `set`. EDITOR,
+// VISUAL and PAGER are legal at `inherit` and @claude inherits all three; `set`
+// is withdrawn for them (envType's noSet field, issue #45) precisely because
+// git falls back GIT_EDITOR -> core.editor -> VISUAL -> EDITOR, and GIT_PAGER ->
+// core.pager -> PAGER, both measured — so the GIT_EDITOR and GIT_PAGER entries
+// below, by themselves, would not have made git unhijackable by a profile: a
+// profile that wanted to would have written the generic spelling instead. That
+// was issue https://github.com/gomoni/snug/issues/35's residual, and issue #45
+// is the §3.2 decision it asked for — a grant withdrawn from every profile that
+// SETS these three, not an addition to this table.
 //
-// They are still worth having, and the reason is not defence in depth, it is
-// that the two spellings differ in who they surprise. A profile setting EDITOR
-// is doing a legible thing to a variable a human recognises; the GIT_* names are
-// invisible in every screen a human reads and fire during operations nobody
-// thinks of as running a command. Refusing the invisible half is not the same as
-// closing the class, and the day someone decides the generic three must go too,
-// it is a §3.2 decision — a grant being withdrawn from every profile that
-// inherits them — not an addition to this table. Carried as
-// https://github.com/gomoni/snug/issues/35.
+// The GIT_* entries are still worth having on top of that, and the reason is
+// not defence in depth, it is that the two spellings differ in who they
+// surprise. A profile setting EDITOR — before #45 — was doing a legible thing
+// to a variable a human recognises; the GIT_* names are invisible in every
+// screen a human reads and fire during operations nobody thinks of as running
+// a command. Refusing the invisible half was never the same as closing the
+// class, which is why #45 had to close the class itself rather than leaning on
+// this list.
 var forbiddenEnv = map[string]forbidKind{
 	// the value is code, at any verb — §4.4 plus ld.so(8)'s own secure-execution
 	// list, which is the closest thing to an authoritative denylist that exists
@@ -967,6 +1015,15 @@ func checkEnvVerbType(name string, verb EnvVerb, declared bool) error {
 			return fmt.Errorf("environ.set on %s, which is a list — use environ.merge, or "+
 				"environ.prepend if the order matters. environ.set on a list would replace "+
 				"every other profile's entries, which snug does not allow", name)
+		}
+		if t.noSet {
+			return fmt.Errorf("environ.set on %s, whose value is a PROGRAM some tool will "+
+				"execute — an editor or a pager runs during an ordinary `git commit` or "+
+				"`git log`, in a sandbox where a different profile may have pinned the ssh "+
+				"identity the next push uses. A profile may not choose that program for "+
+				"someone else's sandbox. Use environ.inherit to carry the host user's own "+
+				"value, which snug still allows, or configure the tool through its own "+
+				"config file", name)
 		}
 	case VerbMerge, VerbPrepend:
 		if !t.list {

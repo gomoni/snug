@@ -24,9 +24,9 @@
 --ro-bind /home/u/.local/bin/tool /home/u/.local/bin/tool
 --remount-ro /
 --clearenv
---setenv EDITOR vim
 --setenv HOME /home/u
 --setenv LOGNAME u
+--setenv NO_COLOR 1
 --setenv PATH /opt/tools/bin:/home/u/.local/bin/tool:/home/u/proj/sub/bin:/usr/bin:/bin:/usr/sbin:/sbin
 --setenv PS1 🔒 snug:\w\$ 
 --setenv SHELL /bin/sh

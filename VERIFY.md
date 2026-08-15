@@ -411,7 +411,7 @@ what anyone re-testing needs.
 mkdir -p $SC/cfg/snug/profiles.d
 printf '%s\n' '[profile.nully]' 'description = "harmless-looking"' \
   '[profile.nully.environ.set]' \
-  'EDITOR = "vim\u0000--ro-bind\u0000'$HOME'/.ssh\u0000'$HOME'/.ssh"' \
+  'NO_COLOR = "1\u0000--ro-bind\u0000'$HOME'/.ssh\u0000'$HOME'/.ssh"' \
   > $SC/cfg/snug/profiles.d/nully.toml
 
 XDG_CONFIG_HOME=$SC/cfg ./bin/snug -p nully $SC/proj/sub -- ls $HOME/.ssh
@@ -427,7 +427,7 @@ with `--tmpfs` masked `@sys`'s `ro /usr` — a *profile* expressing subtraction,
 which invariant 1 calls structurally impossible.
 
 Then the control, which is what makes the above mean anything — the identical
-profile with `EDITOR = "vim"` must run, put `EDITOR=vim` in the sandbox, and
+profile with `NO_COLOR = "1"` must run, put `NO_COLOR=1` in the sandbox, and
 still not have `~/.ssh`.
 
 ### 6i. A profile cannot mount over the staging directory
@@ -468,7 +468,7 @@ description = "five verbs at once"
 ro = ["$SC/tools/bin", "$SC/tools/override"]
 
 [profile.mytools.environ.set]
-EDITOR = "/usr/bin/vim"
+NO_COLOR = "1"
 
 [profile.mytools.environ.merge]
 PATH = ["$SC/tools/bin"]
@@ -493,7 +493,7 @@ XDG_CONFIG_HOME=$SC/five ./bin/snug --dry-run -p mytools $SC/proj/sub \
 
 ```
   COLORTERM        truecolor                       inherit   mytools  ← unchecked (environ.declare; snug has no entry for this name)
-  EDITOR           /usr/bin/vim                    set       mytools
+  NO_COLOR         1                               set       mytools
   PATH             /tmp/tmp.XXXXXXXXXX/tools/override prepend   mytools
                    /tmp/tmp.XXXXXXXXXX/tools/bin   merge     mytools
                    /usr/bin /bin /usr/sbin /sbin   (snug)    base
@@ -606,11 +606,25 @@ Worth trying by hand, because these are the boundaries most likely to be wrong:
 - a lowercase name, a name with a hyphen, a name starting with a digit —
   refused by the grammar.
 
-What that list does **not** close is git's exec class as a whole: `PAGER`,
-`EDITOR` and `VISUAL` stay legal by ENVIRONMENT-VARIABLES §3.2 and git falls
-back to them, so `PAGER='sh -c …' git log` runs the command.
-https://github.com/gomoni/snug/issues/35 carries it, and a test pins it so withdrawing those three has to be a deliberate §3.2
-decision rather than a table edit.
+`PAGER`, `EDITOR` and `VISUAL` are the interesting half of that list, and issue
+#45 split them by VERB rather than closing or leaving the class:
+
+```bash
+printf '[profile.ed]\n\n[profile.ed.environ.set]\nPAGER = "sh -c id"\n' > $SC/cfg/snug/profiles.d/ed.toml
+XDG_CONFIG_HOME=$SC/cfg ./bin/snug --dry-run -p ed $SC/proj/sub; echo "exit=$?"
+
+printf '[profile.ed]\n\n[profile.ed.environ.inherit]\nPAGER = true\n' > $SC/cfg/snug/profiles.d/ed.toml
+PAGER=less XDG_CONFIG_HOME=$SC/cfg ./bin/snug --dry-run -p ed $SC/proj/sub | grep PAGER
+```
+
+Expect the first to be refused, naming `environ.inherit` as the fix, and the
+second to carry `less` through. git falls back `GIT_PAGER → core.pager → PAGER`
+and `GIT_EDITOR → core.editor → VISUAL → EDITOR`, both measured — so `set` let a
+profile author choose the program that runs during someone else's `git log`,
+while `inherit` only carries the value the host user already had. The first is
+closed; the second is the residual, and it is a residual about the host user's
+own environment rather than about a file. `declare PAGER` does not get the `set`
+back: snug has a roster row for the name, so the declaration is refused.
 
 ### 6b. …including via PID 1 (regression check)
 
@@ -868,17 +882,17 @@ Two profiles, one scalar, two values:
 
 ```bash
 mkdir -p $SC/ab/snug/profiles.d
-printf '[profile.a]\n\n[profile.a.environ.set]\nEDITOR = "/usr/bin/vim"\n'  > $SC/ab/snug/profiles.d/a.toml
-printf '[profile.b]\n\n[profile.b.environ.set]\nEDITOR = "/usr/bin/nano"\n' > $SC/ab/snug/profiles.d/b.toml
+printf '[profile.a]\n\n[profile.a.environ.set]\nNO_COLOR = "1"\n' > $SC/ab/snug/profiles.d/a.toml
+printf '[profile.b]\n\n[profile.b.environ.set]\nNO_COLOR = "0"\n' > $SC/ab/snug/profiles.d/b.toml
 
 XDG_CONFIG_HOME=$SC/ab ./bin/snug --dry-run -p a -p b $SC/proj/sub; echo "exit=$?"
 XDG_CONFIG_HOME=$SC/ab ./bin/snug --dry-run -p b -p a $SC/proj/sub; echo "exit=$?"
 ```
 
 ```
-snug: profiles a and b disagree about EDITOR:
-         b (environ.set) says "/usr/bin/nano"
-         a (environ.set) says "/usr/bin/vim"
+snug: profiles a and b disagree about NO_COLOR:
+         b (environ.set) says "0"
+         a (environ.set) says "1"
        A scalar has one value and snug will not choose: …
 exit=77
 ```

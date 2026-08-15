@@ -452,6 +452,14 @@ func TestEnvValueRefusesControlCharacters(t *testing.T) {
 	// because go-toml refuses control characters in a basic string. The \\u0000
 	// ESCAPE is accepted by the parser and produces the same byte, which is why
 	// the check lives here rather than being left to TOML.
+	//
+	// NO_COLOR, not EDITOR: this test's whole point is to isolate the
+	// control-character refusal from every OTHER reason a `set` can be refused.
+	// Since issue #45 withdrew `set` from EDITOR (envtypes.go's noSet), an
+	// EDITOR fixture here would be refused for every value in `bad` regardless
+	// of the control character — and would ALSO be refused for every value in
+	// the positive control below, which is exactly the "a check that cannot
+	// fail" shape CLAUDE.md warns about. NO_COLOR still accepts `set`.
 	bad := map[string]string{
 		"a NUL, which ends the flag and starts a new one": "vim\x00--ro-bind\x00/etc\x00/etc",
 		"a newline, which forges a row in --dry-run":      "vim\n  ro     /etc/shadow",
@@ -459,7 +467,7 @@ func TestEnvValueRefusesControlCharacters(t *testing.T) {
 		"a DEL":                                           "x\x7f",
 	}
 	for why, value := range bad {
-		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{"EDITOR": value}}); err == nil {
+		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{"NO_COLOR": value}}); err == nil {
 			t.Errorf("environ.set accepted a value containing %s", why)
 		}
 		if err := ValidateEnvGrants(EnvGrants{Merge: map[string][]string{"XDG_DATA_DIRS": {value}}}); err == nil {
@@ -474,8 +482,8 @@ func TestEnvValueRefusesControlCharacters(t *testing.T) {
 	// everything would pass every assertion above while making the format
 	// unusable. Ordinary values, including the ones the shipped profiles carry.
 	for _, value := range []string{"vim", "/usr/share", "en_US.UTF-8", "1", ""} {
-		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{"EDITOR": value}}); err != nil {
-			t.Errorf("environ.set EDITOR = %q was refused: %v", value, err)
+		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{"NO_COLOR": value}}); err != nil {
+			t.Errorf("environ.set NO_COLOR = %q was refused: %v", value, err)
 		}
 	}
 
@@ -484,40 +492,88 @@ func TestEnvValueRefusesControlCharacters(t *testing.T) {
 	// profile, and §2.3 puts every parse-time verdict on the profile TEXT. A NUL
 	// cannot reach them anyway — the environment execve hands over is itself a
 	// NUL-terminated list. Their rendering is visibleValue's job.
-	if err := ValidateEnvGrants(EnvGrants{Inherit: []string{"EDITOR"}}); err != nil {
-		t.Errorf("environ.inherit EDITOR was refused: %v", err)
+	if err := ValidateEnvGrants(EnvGrants{Inherit: []string{"NO_COLOR"}}); err != nil {
+		t.Errorf("environ.inherit NO_COLOR was refused: %v", err)
 	}
 }
 
-// The residual the list does NOT close, pinned as a test so it cannot become a
-// belief that it does.
+// Issue #45: `set` is withdrawn for EDITOR, VISUAL and PAGER; `inherit` stays.
 //
-// git falls back GIT_EDITOR -> core.editor -> VISUAL -> EDITOR, and GIT_PAGER ->
-// core.pager -> PAGER. Both fallbacks measured; `PAGER="sh -c '…'" git log` runs
-// the command. So a profile that wanted to hijack git would write the generic
-// spelling, which §3.2 deliberately allows and @claude inherits.
+// This test USED TO BE TestForbidListDoesNotCloseTheExecClassForGit, and it
+// asserted the opposite of what it asserts now — that `environ.set` on all
+// three was ACCEPTED, because the forbidden-name list (which covers GIT_EDITOR
+// and GIT_PAGER) does not by itself close the generic spellings. That was
+// true, and it was exactly the residual issue #45 closes: git falls back
+// GIT_EDITOR -> core.editor -> VISUAL -> EDITOR, and GIT_PAGER -> core.pager
+// -> PAGER (both fallbacks measured; `PAGER="sh -c '…'" git log` runs the
+// command), so a profile that wanted to hijack git could write the generic
+// spelling instead of the forbidden one.
 //
-// This test asserts the CURRENT DECISION, not a guarantee: the generic three are
-// accepted, the GIT_* spellings are refused. If someone later decides the
-// generic three must go, this test fails and points at §3.2 — which is right,
-// because that is a grant being withdrawn from every profile that inherits them
-// and belongs in the design document, not in a table edit.
-func TestForbidListDoesNotCloseTheExecClassForGit(t *testing.T) {
+// Per CLAUDE.md's working agreement — a fixture that was testing the
+// capability being withdrawn is inverted into a refusal test, not relocated —
+// this is that inversion: `set` is refused for the three names whose value is
+// a PROGRAM some tool executes, `inherit` remains legal (the host user's own
+// choice, which @claude still needs), and the GIT_* spellings stay refused at
+// both verbs exactly as before. See TestGoldenRefusals's
+// "env_set_on_editor_visual_pager_is_refused"-shaped rows in refusals.txt for
+// the exact wording a human reviews.
+func TestSetIsWithdrawnForEditorVisualPagerButInheritIsNot(t *testing.T) {
 	for _, name := range []string{"EDITOR", "VISUAL", "PAGER"} {
-		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{name: "sh -c x"}}); err != nil {
-			t.Errorf("environ.set %s was refused: %v.\nThat may well be the right call, but it "+
-				"is a §3.2 decision — those three are inherited by @claude — so make it there "+
-				"and update this test deliberately", name, err)
+		err := ValidateEnvGrants(EnvGrants{Set: map[string]string{name: "sh -c x"}})
+		if err == nil {
+			t.Errorf("environ.set %s was accepted; issue #45 withdrew `set` for the three names "+
+				"whose value is a PROGRAM some tool executes — a profile may not choose the "+
+				"editor or pager for someone else's sandbox", name)
+		} else if !strings.Contains(err.Error(), "environ.inherit") {
+			t.Errorf("the refusal for %s does not name environ.inherit as the fix "+
+				"(CLAUDE.md: errors name the fix): %v", name, err)
 		}
+		// `inherit` is the whole reason the withdrawal is affordable: it takes
+		// the HOST USER's own value, so reaching it means already being the host
+		// user. @claude still inherits all three.
 		if err := ValidateEnvGrants(EnvGrants{Inherit: []string{name}}); err != nil {
 			t.Errorf("environ.inherit %s was refused: %v. @claude inherits all three", name, err)
 		}
 	}
-	// …while the invisible half stays refused. Without this the test above would
-	// pass on a table with no git entries at all.
+	// …while the invisible half — the GIT_* spellings the fallback chain also
+	// reaches — stays refused at both verbs, unaffected by this change. Without
+	// this the test above would pass on a table with no git entries at all.
 	for _, name := range []string{"GIT_EDITOR", "GIT_PAGER"} {
 		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{name: "sh -c x"}}); err == nil {
 			t.Errorf("environ.set %s was accepted", name)
+		}
+		if err := ValidateEnvGrants(EnvGrants{Inherit: []string{name}}); err == nil {
+			t.Errorf("environ.inherit %s was accepted", name)
+		}
+	}
+
+	// POSITIVE CONTROL, distinguishing "the withdrawal works" from "everything
+	// is refused": an ordinary rostered scalar with no noSet row is still
+	// settable. Without this, a validator that refused every `set` outright
+	// would pass every assertion above.
+	for _, name := range []string{"NO_COLOR", "ANTHROPIC_BASE_URL"} {
+		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{name: "x"}}); err != nil {
+			t.Errorf("control: environ.set %s was refused: %v", name, err)
+		}
+	}
+}
+
+// The hatch cannot recover a withdrawn verb: `declare EDITOR` is refused
+// because snug HAS a row for EDITOR (snugKnowsEnvName), so there is no
+// spelling of `set EDITOR` left anywhere — not for a user profile, and not
+// through the one mechanism (issue #44's `environ.declare`) that exists
+// precisely to carry a name snug has NO opinion about. This is the property
+// that made issue #45 cheap, stated in envtypes.go's noSet doc comment, and
+// this test is what keeps it true.
+func TestDeclareCannotRecoverAWithdrawnVerb(t *testing.T) {
+	for _, name := range []string{"EDITOR", "VISUAL", "PAGER"} {
+		err := ValidateEnvGrants(EnvGrants{
+			Declare: []string{name},
+			Set:     map[string]string{name: "sh -c x"},
+		})
+		if err == nil {
+			t.Errorf("declare %s + set %s was accepted; the hatch recovered a verb the "+
+				"roster withdrew", name, name)
 		}
 	}
 }

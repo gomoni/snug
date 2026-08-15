@@ -58,12 +58,19 @@ func newFakeEnv() *fakeEnv {
 			"/home/u/.local/bin/tool": true,
 		},
 		links: map[string]string{},
-		// EDITOR is here so a fixture profile can actually re-admit something
+		// NO_COLOR is here so a fixture profile can actually re-admit something
 		// past --clearenv. Widening canon() to render the environment asserts
 		// nothing unless a fixture exercises it — the same trap the canon
 		// comment already records for the network scalars.
+		//
+		// It used to be EDITOR, and issue #45 is why it moved: EDITOR is still on
+		// the roster, but `set` is withdrawn for it (envtypes.go's noSet), so the
+		// two fixture profiles below that need to AGREE on a scalar — one via
+		// `set`, one via `inherit` — needed a name both verbs still accept.
+		// EDITOR stays in the host env below for the tests that still exercise
+		// `inherit` on it specifically.
 		env: map[string]string{
-			"USER": "u", "EDITOR": "vim",
+			"USER": "u", "EDITOR": "vim", "NO_COLOR": "1",
 			// One granted element and one that is not, so `sanitise` has
 			// something to keep AND something to drop. A filter fixture where
 			// everything survives tests only half the filter.
@@ -158,18 +165,22 @@ func testRegistry() map[ProfileName]*Profile {
 		// idempotence tests only cover them if a fixture uses them. Two profiles
 		// naming ONE variable and one directory is deliberate — that is the case
 		// where provenance could come out fold-order-dependent.
+		//
+		// NO_COLOR, not EDITOR: issue #45 withdrew `set` from EDITOR, and `setty`
+		// below needs to `set` the same name `envy` `inherit`s, so the pair now
+		// needs a name both verbs still accept.
 		"envy": {Name: "envy", RO: []string{"/opt/tools/bin"}, Environ: EnvGrants{
-			Inherit: []string{"EDITOR"},
+			Inherit: []string{"NO_COLOR"},
 			Merge:   map[string][]string{"PATH": {"/opt/tools/bin"}}}},
 		"envy-too": {Name: "envy-too", RO: []string{"/opt/tools/bin"}, Environ: EnvGrants{
-			Inherit: []string{"EDITOR"},
+			Inherit: []string{"NO_COLOR"},
 			Merge:   map[string][]string{"PATH": {"/opt/tools/bin"}}}},
 		// `set` agreeing with `envy`'s `inherit` of the same name: equal claims
 		// join rather than conflicting, and neither verb outranks the other
-		// (CALL 2). The fake host has EDITOR=vim, which is what makes this an
+		// (CALL 2). The fake host has NO_COLOR=1, which is what makes this an
 		// agreement rather than a refusal.
 		"setty": {Name: "setty", Environ: EnvGrants{
-			Set: map[string]string{"EDITOR": "vim"}}},
+			Set: map[string]string{"NO_COLOR": "1"}}},
 		// The front of PATH. Exactly ONE profile in the commutativity set may
 		// hold it — a second is a refusal, which is its own test.
 		"firsty": {Name: "firsty", RO: []string{"/opt/first/bin"}, Environ: EnvGrants{
