@@ -793,8 +793,15 @@ meant. It cannot prove the sandbox holds.
   vector in one. Only `~/.config/git` by default; anything else is a line the
   human writes in their own profile.
 - **Claude Code's files**: binary, `settings.json`, skills and plugins read-only;
-  `.credentials.json` and `~/.claude.json` staged as writable copies (Claude
-  re-onboards without the latter). **No staged credential is written back to the
+  `.credentials.json` staged as a writable copy. `~/.claude.json` is **generated,
+  not copied** — three keys, zero host bytes (issue #19). The host's is 62 KB and
+  carries every project path on the machine, org and account UUIDs, `machineID`,
+  `mcpServers` and per-project tool approvals; it was copied in verbatim for a
+  milestone on the justification "both files are needed", which was measured
+  false. Note what the measurement in that issue got wrong in turn: there is no
+  login prompt without the file, but there IS onboarding, and it blocks on every
+  run because `$HOME` is a fresh tmpfs — which is why the answer is generation
+  rather than removal. **No staged credential is written back to the
   host — that channel does not exist**, and the cost is that a token refreshed
   inside is lost when the sandbox exits. Scope that sentence to credentials and
   keep it there: the sandbox writes to the host through the target bind by

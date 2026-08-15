@@ -321,11 +321,37 @@ network = "host"
 # ── Claude Code ──────────────────────────────────────────────────────────────
 # ABUSE: the sandbox can spend your Anthropic credits and read your Claude
 # settings and personal skills. It CANNOT read your host session history, your
-# MCP server configuration, or any other project's transcripts.
+# MCP server configuration, the list of projects on this machine, or any other
+# project's transcripts. That last clause was written before it was true — the
+# staged ~/.claude.json carried mcpServers and all seven host project paths
+# until issue #19; grep for the property before you believe the sentence.
 #
-# Credentials are staged as a writable COPY, so a token refreshed inside does not
-# reach the host unless you ask for it. ~/.claude.json is needed as well as
-# .credentials.json — without it Claude re-onboards and shows a login prompt.
+# Credentials are staged as a writable COPY — ~/.claude/.credentials.json, and
+# nothing else — so a token refreshed inside does not reach the host.
+#
+# ~/.claude.json is NOT copied. It is GENERATED: at most three keys, no host
+# bytes (cmd/snug/claude.go, claudeStateJSON). Enough that Claude Code opens on
+# the prompt instead of the theme picker, and nothing more. MEASURED: Claude Code
+# connects and works with the host file absent; only .credentials.json is
+# load-bearing. The comment that used to sit here said the opposite and carried
+# that decision for a milestone (issue #19).
+#
+# THE TRUST DIALOG IS NOT SUPPRESSED, and this profile is where that matters
+# most. snug writes projects.<target>.hasTrustDialogAccepted only when the HOST's
+# ~/.claude.json already records that exact directory as trusted — it carries the
+# human's own answer and never invents one. Written unconditionally (it was, for
+# one commit) it removes Claude Code's "Quick safety check" for a fresh clone of
+# an unfamiliar repository, and MEASURED A/B on a fixture whose only content is
+# .claude/settings.json with a SessionStart hook: with the key, no dialog and the
+# repo's hook FIRES at startup; without it, the dialog blocks and the hook does
+# not run. `snug -p @claude <unfamiliar-repo> -- claude` is exactly the review
+# workflow this profile exists for, and the sandbox holds the staged OAuth token.
+#
+# Costs, all real and all intended: MCP servers configured on the host are not
+# configured here (a .mcp.json committed in the TARGET still is — it is in the
+# project tree, not the host's config); tool approvals given in a host session
+# are asked again inside; and a directory you have not trusted on the host is
+# asked about once per run.
 [profile.claude]
 description = "Claude Code: binary and skills read-only, credentials staged writable."
 include = ["sys", "home"]

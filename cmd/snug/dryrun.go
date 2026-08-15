@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,6 +44,7 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 	describeGit(out, p)
 	describeSSH(out, p)
 	describeCommands(out, p)
+	describeClaude(out, p)
 	if p.NewSession {
 		fmt.Fprintf(out, "TTY      --new-session (this kernel allows TIOCSTI, so the sandbox is kept\n")
 		fmt.Fprintf(out, "         out of your terminal — the cost is no job control inside)\n")
@@ -807,6 +809,154 @@ func describeCommands(out *os.File, p *policy.Policy) {
 	fmt.Fprintf(out, "         %s is snug's own and is NOT writable from inside, so nothing running\n", policy.StagedBinDir)
 	fmt.Fprintf(out, "         here can add a command to it — the directory ahead of /usr/bin on PATH is\n")
 	fmt.Fprintf(out, "         not a slot the payload can fill.\n")
+}
+
+// describeClaude states that ~/.claude.json was GENERATED rather than copied,
+// which of Claude Code's prompts snug therefore pre-answers, and what the host's
+// file carried that is now absent.
+//
+// It exists because the FILESYSTEM block cannot say any of it. That block prints
+//
+//	data   /home/u/.claude.json                  @claude
+//
+// for the 62 KB verbatim copy and for a three-key generated file alike, and
+// Mount.Content is a policy.Secret that renders as "<redacted N bytes>"
+// everywhere by design (internal/policy/secret.go argues why classifying per
+// instance is the judgement that was wrong about ~/.gitconfig — do not
+// special-case this one to print in the clear). So without this block a human
+// reading --dry-run cannot see WHETHER Claude Code's safety prompt was
+// pre-answered for this run, which is the residual of issue #19's fix and the
+// reason the block is mandatory rather than nice to have.
+//
+// The trust line has two arms and must keep both. snug writes the trust entry
+// only when the HOST's ~/.claude.json already records this exact path as
+// trusted (claudeStateJSON), so on an unfamiliar repository there is no entry
+// and Claude Code prompts — and a block that printed the pre-answered sentence
+// unconditionally would be describing a decision snug did not make. What must
+// NOT be written here is the retired reassurance that the entry is "strictly
+// narrower than the seven paths the copied file answered for": measured, the old
+// set was the host's seven paths and the new one is at most {target}, neither
+// contains the other, and the seven were inert inside the sandbox while {target}
+// is the one live entry. State the measurement; invariant 5 is what makes saying
+// it out loud the difference between a scoped decision and a silent downgrade.
+//
+// Modelled on describeGit and describeSSH, and gated the same way: on the
+// AUTHORED KindData mount actually being in the resolved policy, so the screen
+// describes what Resolve decided rather than recomputing a second opinion that
+// could disagree with it. The trust arm and the settings.json sentence are gated
+// the same way, off the staged CONTENT and off the resolved mounts respectively
+// — never off a re-read of the host.
+func describeClaude(out *os.File, p *policy.Policy) {
+	m, ok := claudeStateMount(p)
+	if !ok {
+		return
+	}
+	trusted := claudeTrustCarried(p, m)
+	keys := "two keys"
+	if trusted {
+		keys = "three keys"
+	}
+	fmt.Fprintf(out, "CLAUDE   ~/.claude.json is GENERATED, not copied — %s, no host bytes\n", keys)
+	fmt.Fprintf(out, "         hasCompletedOnboarding  skips the theme picker, whose answer could not\n")
+	// base.toml marks the settings.json bind `optional`, so this parenthesis is a
+	// claim about THIS policy. Printed flatly it was false on a host that has
+	// never run Claude Code — the path is then an ordinary file on @home's tmpfs
+	// and `echo x >>` succeeds — on the one screen whose entire value is being
+	// checkable. The conclusion holds in both arms, for two different reasons.
+	if claudeSettingsBound(p) {
+		fmt.Fprintf(out, "                    persist anyway (~/.claude/settings.json is a read-only\n")
+		fmt.Fprintf(out, "                    bind of the host's)\n")
+	} else {
+		fmt.Fprintf(out, "                    persist anyway (~/.claude/settings.json is not bound from\n")
+		fmt.Fprintf(out, "                    the host here — it is a file on the ~/.claude tmpfs, so it\n")
+		fmt.Fprintf(out, "                    is writable inside and dies with this session)\n")
+	}
+	fmt.Fprintf(out, "         autoUpdates=false       the binary is a read-only bind; a self-update\n")
+	fmt.Fprintf(out, "                    inside can only fail\n")
+	// %q rather than the bare path: it is the JSON key this file actually
+	// contains, and quoting escapes a control character in a directory name for
+	// free — a host path is not snug's to refuse (a real directory may legally be
+	// named with a newline), so every screen that renders one has to escape it
+	// (see visibleValue, and TestNoSnugScreenEmitsARawControlCharacter, which
+	// asserts the SET of sinks rather than any one of them).
+	if trusted {
+		fmt.Fprintf(out, "         trust      CARRIED from your host ~/.claude.json, which already\n")
+		fmt.Fprintf(out, "                    records this exact path as trusted:\n")
+		fmt.Fprintf(out, "                    projects.%q.hasTrustDialogAccepted = true\n", p.Target)
+		fmt.Fprintf(out, "                    One boolean about the ONE directory you named on the\n")
+		fmt.Fprintf(out, "                    command line; no other directory appears in the file, and\n")
+		fmt.Fprintf(out, "                    snug decides nothing here — it carries your answer\n")
+	} else {
+		fmt.Fprintf(out, "         trust      NOT pre-answered — your host ~/.claude.json does not\n")
+		fmt.Fprintf(out, "                    record this exact path as trusted:\n")
+		fmt.Fprintf(out, "                    projects.%q\n", p.Target)
+		fmt.Fprintf(out, "                    is absent, and so is the whole projects key, so Claude\n")
+		fmt.Fprintf(out, "                    Code asks \"Quick safety check\" for it once per run —\n")
+		fmt.Fprintf(out, "                    the prompt that stops a repository's own\n")
+		fmt.Fprintf(out, "                    .claude/settings.json hooks running at startup\n")
+	}
+	fmt.Fprintf(out, "         not here   the host file's 62 KB: every project path on this machine,\n")
+	fmt.Fprintf(out, "                    org, email, account UUIDs, machine ID, MCP servers, and the\n")
+	fmt.Fprintf(out, "                    host's per-project tool approvals — so tools you approved on\n")
+	fmt.Fprintf(out, "                    the host are asked again in here\n")
+}
+
+// claudeTrustCarried reports whether the GENERATED ~/.claude.json actually
+// carries the trust entry for this target.
+//
+// It reads the staged CONTENT rather than re-reading the host, for the reason
+// describeGit and describeSSH exist in their present shape: the screen must
+// describe what snug decided, not recompute a second opinion that could
+// disagree. Mount.Content is a policy.Secret and stays one — what leaves this
+// function is a bool, and the only thing the caller prints is p.Target, which is
+// already on the screen twice.
+//
+// Unparseable content is "not carried", which matches what Claude Code will do
+// with a file it cannot parse.
+func claudeTrustCarried(p *policy.Policy, m policy.Mount) bool {
+	var doc struct {
+		Projects map[string]struct {
+			HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal([]byte(m.Content), &doc); err != nil {
+		return false
+	}
+	return doc.Projects[p.Target].HasTrustDialogAccepted
+}
+
+// claudeStateMount returns the ~/.claude.json this block describes, if snug
+// authored one.
+//
+// It returns the MOUNT rather than a bool because the block now reads the staged
+// content to decide which trust arm to print, and a second lookup written next
+// to this one is a second answer to "which file are we describing" — the exact
+// shape that lets a screen describe one mount while a sibling function describes
+// another.
+//
+// The obvious spelling — p.Mounts[filepath.Join(p.Home, ".claude.json")] — is
+// the primary lookup and is not sufficient on its own. Resolve canonicalises
+// $HOME (EvalSymlinks), while claudeFiles is handed main.go's raw
+// os.UserHomeDir() value, so on a host whose home is a symlink the two paths
+// differ and the exact-match lookup misses. That mismatch is worth fixing where
+// it lives rather than here, but its failure mode HERE is the one this whole
+// block exists to prevent: the mount is still in the policy, snug still
+// pre-answers the trust prompt, and the only line on screen that says so
+// silently disappears. So the fallback names the file rather than the path.
+//
+// It cannot misfire on a profile's grant: Mount.Authored is set by
+// Policy.Replace and nothing else, i.e. only by snug's own post-resolution
+// writers.
+func claudeStateMount(p *policy.Policy) (policy.Mount, bool) {
+	if m, ok := p.Mounts[filepath.Join(p.Home, ".claude.json")]; ok {
+		return m, m.Authored && m.Kind == policy.KindData
+	}
+	for _, m := range p.Mounts {
+		if m.Authored && m.Kind == policy.KindData && filepath.Base(m.Guest) == ".claude.json" {
+			return m, true
+		}
+	}
+	return policy.Mount{}, false
 }
 
 // describeNetwork spells out what the sandbox can and cannot reach. The

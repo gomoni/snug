@@ -107,7 +107,7 @@ column that matters most is the last, and the earlier audit did not have it.
 |---|---|---|---|---|---|
 | 1a | Anthropic OAuth **access** token | `KindData` writable-tmpfs copy at `~/.claude/.credentials.json` (`cmd/snug/claude.go:49`) | every process in the sandbox | `user:inference`, `user:profile`, `user:file_upload`, `user:mcp_servers`, `user:sessions:claude_code` **[M]** | **yes, ~8 h** **[M]** |
 | 1b | Anthropic OAuth **refresh** token | *same file, same line* | same | mints new access tokens | **yes, ~20 days remaining of a rolling window** **[M]** |
-| 2 | `~/.claude.json`, 56 500 bytes verbatim | writable tmpfs (`claude.go:50`) | every process in the sandbox | not a credential — a host inventory | disclosure is permanent |
+| 2 | ~~`~/.claude.json`, 56 500 bytes verbatim~~ | **FIXED** (issue #19) — GENERATED, at most three keys, no host bytes (`claudeStateJSON`, `cmd/snug/claude.go`); measured 284 bytes inside, against 62 274 on this host. The third key is the host's own trust answer for the target, carried only when the host already gave it (§3.5) | — | — | — |
 | 3 | ~~`ANTHROPIC_API_KEY`~~ | **FIXED** — removed from `@claude`'s `env`; Claude now authenticates from the staged `.credentials.json` | — | — | — |
 | 4 | GitHub token from `gh auth token` | `oauth_token:` in a generated `hosts.yml` (`identity.go:192`) | every process in the sandbox | on this host: `admin:public_key`, `gist`, `read:org`, `repo` **[M]** | **yes, indefinitely** |
 | 5 | ssh private keys | **never** (`internal/sshproxy`) | nothing — no key material crosses | signing oracle, one pinned key | **no** — dies with the proxy |
@@ -146,6 +146,14 @@ column that matters most is the last, and the earlier audit did not have it.
   `settings.json` that `@claude` binds read-only, `env` and `apiKeyHelper`. "No
   token" is a property of *this host's data*, not of the format, so any
   statement about it must be conditional.
+
+  **Moot for this file since issue #19, and worth saying why rather than just
+  striking the row.** The conditional is what generation removes: a generated
+  file has no `mcpServers` key at all, so there is no slot for a token to be in
+  and no dependence on what this host happens to have put there. The sibling
+  `settings.json` keeps both slots and is still bound read-only — a read-only
+  bind of a file naming `apiKeyHelper` supplies the command rather than stopping
+  it, which is the `~/.gitconfig` shape, and it is not covered by this fix.
 
 **Not present, confirmed:** `.netrc`, git credential helpers, any bind of the
 host's `~/.config/gh`, any bind of `~/.ssh`. **[M, via `--dry-run` mount list]**
@@ -384,7 +392,7 @@ The last three break ties rather than deciding:
 | **Anthropic refresh token** | ~20 days | **yes, renews** | same scopes | same, for weeks, and it rotates | **materially worse than 1a and currently indistinguishable from it** |
 | **`ANTHROPIC_API_KEY`** | indefinite | no | often org-wide (A7) | quota, org-wide, rotating it is someone else's problem | never in the environment; §1.1 shows it also *wins* over the OAuth token |
 | **GitHub token, `admin:public_key`+`repo`** | indefinite | **yes, mints an SSH key** | broad, user-wide | **account takeover + code execution via CI** | **never inject.** Fails A1, A2 and A4 simultaneously |
-| **`~/.claude.json`** | permanent (disclosure) | n/a | n/a | host inventory: 7 project paths, org, email, account UUIDs, machine ID | not a credential; still should not be there (§3.5) |
+| **`~/.claude.json`** | ~~permanent (disclosure)~~ | n/a | n/a | ~~host inventory: 7 project paths, org, email, account UUIDs, machine ID~~ | **FIXED** (issue #19): generated, at most three keys, no host bytes — the third being the host's own trust answer for the target, carried and never invented (§3.5). §3.5 predicted this fix; it landed |
 
 ### 2.3 What falls out
 
@@ -1091,6 +1099,49 @@ Generalises to `~/.claude.json`: the earlier audit measured that it is not neede
 **[M-prior]**; if that survives re-measurement, the 56 KB host inventory should
 be *generated minimal*, not copied — the "generate, don't bind" rule the project
 already applies to `.gitconfig` and `hosts.yml`.
+
+**DONE, and the re-measurement corrected the premise on the way through** (issue
+#19, claude 2.1.232). "Not needed at all" is half right: with the file absent
+Claude Code connects and works — no login prompt, so nothing here was
+load-bearing for AUTH — but it does block on the theme picker and then the trust
+dialog, on every run, because `$HOME` is a fresh tmpfs. So stop-staging was the
+wrong shape (two interactive prompts per run, and Claude Code then writes its own
+35 KB file anyway), and *generated minimal* was the right one: two keys always —
+`hasCompletedOnboarding` and `autoUpdates=false` — plus a third,
+`projects.<target>.hasTrustDialogAccepted`, **iff the host's own
+`~/.claude.json` already records that exact path as trusted**. 284 bytes measured
+inside against 62 274 on this host.
+
+**The third key was written unconditionally first, and that was a security
+regression rather than a scoping decision.** Measured A/B on one hostile fixture
+— a target containing only `.claude/settings.json` with a `SessionStart` hook:
+
+| build | trust dialog | repo hook |
+|---|---|---|
+| host file copied (pre-#19) | "Quick safety check" blocks | not fired |
+| key written unconditionally | none, opens on "Welcome back!" | **fired** |
+| key carried from the host (now) | "Quick safety check" blocks | not fired |
+
+Deleting the `projects` key inside the sandbox and relaunching restores the
+dialog, so that key is precisely what enables repo-controlled config to execute
+at startup — with the staged Anthropic OAuth token in the same sandbox and
+`@claude` commonly combined with `@net`. Carrying the host's answer makes the
+sandbox's trust behaviour identical to the copied file's (which pre-accepted only
+what the human had already accepted) while keeping the disclosure fix.
+
+**What the residual actually is, stated as the measurement.** It is NOT "strictly
+narrower than the seven paths the copied file pre-accepted" — that sentence was
+written here and in two places in the code, and it is false in both directions.
+Measured: the old set was the host's SEVEN project paths, the new set is at most
+`{target}`, and neither contains the other. The old seven were also **inert** —
+all seven are absent inside a `@claude` sandbox, so no entry could open anything
+— while `{target}` is the one directory that IS mounted, writable and persistent,
+i.e. the only live entry either version ever had. The bytes got smaller and the
+one live entry stayed one live entry; what changed is who decides it, and that is
+the half the reassurance hid. It is the mirror of the bug issue #19 fixed: a
+comment understating what is handed over. Both arms are printed in `--dry-run`'s
+`CLAUDE` block (`cmd/snug/testdata/claude-block.txt` and
+`claude-block-trusted.txt`), so a scoped decision stays a visible one.
 
 ### 3.6 Staged injection under an explicitly-named profile
 
