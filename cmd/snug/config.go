@@ -376,7 +376,7 @@ func profileCmd(args []string) int {
 func printTree(reg profile.Registry, name, line, kids string, seen map[string]bool) {
 	p := reg[name]
 	if p == nil {
-		fmt.Printf("%s%s  (unknown)\n", line, name)
+		fmt.Printf("%s%s  (unknown)\n", line, visibleValue(name))
 		return
 	}
 
@@ -387,11 +387,21 @@ func printTree(reg profile.Registry, name, line, kids string, seen map[string]bo
 	if seen[name] {
 		// Not an error: include composes as a SET, so a diamond is harmless.
 		// Saying so beats printing the same subtree twice.
-		fmt.Printf("%s%s%s  (already included above)\n", line, name, suffix)
+		//
+		// visibleValue here for the same reason as the two branches around it,
+		// and it is the THIRD branch of this one function: the first pass of
+		// issue #20 guarded the (unknown) branch above and the normal branch
+		// below and left this one raw, which is CLAUDE.md's "the commit that
+		// added it fixed the ENVIRONMENT block and left the argv block four
+		// lines below it" happening inside a single `if`. A registry key
+		// cannot carry a control character now that checkName is an allowlist,
+		// so this is defence in depth rather than a live hole — which is
+		// exactly why it was easy to miss.
+		fmt.Printf("%s%s%s  (already included above)\n", line, visibleValue(name), suffix)
 		return
 	}
 	seen[name] = true
-	fmt.Printf("%s%s%s\n", line, name, suffix)
+	fmt.Printf("%s%s%s\n", line, visibleValue(name), suffix)
 
 	for i, inc := range p.Include {
 		branch, cont := "├── ", "│   "
