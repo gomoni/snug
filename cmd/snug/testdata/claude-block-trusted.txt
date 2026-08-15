@@ -18,6 +18,12 @@ CLAUDE   ~/.claude.json is GENERATED, not copied — three keys, no host bytes
          settings   ~/.claude/settings.json is GENERATED from an allowlist of
                     the host's — not bound, never read-only
                     carried: theme
+         unknown    someFuturePreference
+                    on NEITHER list above (not the allowlist, not
+                    ClaudeExecutingKeys) — not carried, and not otherwise
+                    classified; most likely an ordinary preference upstream
+                    added since this catalogue was written, but if one of
+                    these matters to you, it is a snug change to make
          never      hooks, apiKeyHelper, statusLine, env, mcpServers,
                     enabledPlugins, extraKnownMarketplaces, permissions — each
                     names a program, selects/fetches code, or sets env; see

@@ -910,6 +910,27 @@ func describeClaude(out *os.File, p *policy.Policy) {
 		} else {
 			fmt.Fprintf(out, "                    carried: (none of the allowlisted keys were present)\n")
 		}
+		// The unknown-key disclosure. UNCONDITIONAL — unlike the -v-gated stderr
+		// line in stageClaudeSettings — because this screen IS the trust
+		// artifact and has no volume problem a human can opt out of: "what did
+		// snug not carry" is exactly what --dry-run exists to answer, so it
+		// cannot be silent here even where it may be quiet on an ordinary run's
+		// stderr. p.ClaudeSettingsUnknown is set by stageClaudeSettings
+		// regardless of -v for exactly this reason (see its own doc comment).
+		//
+		// The names are HOST-CONTROLLED, so each goes through visibleValue —
+		// same reason every other value on this screen does (see visibleValue's
+		// doc comment): a key name from a crafted settings.json must not be
+		// able to forge a line on the one screen a human is meant to trust.
+		if len(p.ClaudeSettingsUnknown) > 0 {
+			fmt.Fprintf(out, "         unknown    %s\n",
+				visibleValue(strings.Join(p.ClaudeSettingsUnknown, " ")))
+			fmt.Fprintf(out, "                    on NEITHER list above (not the allowlist, not\n")
+			fmt.Fprintf(out, "                    ClaudeExecutingKeys) — not carried, and not otherwise\n")
+			fmt.Fprintf(out, "                    classified; most likely an ordinary preference upstream\n")
+			fmt.Fprintf(out, "                    added since this catalogue was written, but if one of\n")
+			fmt.Fprintf(out, "                    these matters to you, it is a snug change to make\n")
+		}
 		// A fixed, host-independent list rather than a per-run diff: which NAMES
 		// the host's file happened to use this run is not the disclosure that
 		// matters — what matters is which CLASSES of key never cross regardless

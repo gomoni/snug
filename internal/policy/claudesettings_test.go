@@ -2,6 +2,7 @@ package policy
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -45,16 +46,25 @@ func TestClaudeSettingsFilterDropsEveryExecutingKey(t *testing.T) {
 	// the same way any future, wholly unanticipated key would be.
 	raw["worktree"] = map[string]any{"sparsePaths": []any{"/etc/shadow"}}
 
-	carried, dropped, refused := FilterClaudeSettings(raw)
+	carried, drops := FilterClaudeSettings(raw)
 
 	// None of these keys is on the allowlist, so FilterClaudeSettings should
 	// never even reach the point of refusing one of their VALUES — refusal is
 	// for an allowlisted key whose value failed a check, which is a different
 	// thing from a key that was never going to be looked at.
-	if len(refused) != 0 {
+	if len(drops.Refused) != 0 {
 		t.Fatalf("an executing key was reported as a refused VALUE rather than a plain drop: %+v — "+
 			"none of these keys are on the allowlist, so their values should never be inspected "+
-			"closely enough to be refused", refused)
+			"closely enough to be refused", drops.Refused)
+	}
+	// Every key from ClaudeExecutingKeys IS catalogued, so none of THOSE names
+	// should land in Unknown — Unknown is for names on NEITHER list, and
+	// "worktree" (added below) is the one name in this document that belongs
+	// there.
+	for _, name := range drops.Unknown {
+		if _, known := ClaudeExecutingKeys[name]; known {
+			t.Errorf("catalogued executing key %q was reported as Unknown instead of Executing", name)
+		}
 	}
 
 	for name := range ClaudeExecutingKeys {
@@ -79,10 +89,23 @@ func TestClaudeSettingsFilterDropsEveryExecutingKey(t *testing.T) {
 		t.Errorf("rendered settings.json carries the unnamed path-valued key's content:\n%s", body)
 	}
 
+	// "worktree" is on NEITHER list, so it must be reported as Unknown — the
+	// regression this test guards: a dropped key on no list, reported nowhere.
+	foundWorktree := false
+	for _, name := range drops.Unknown {
+		if name == "worktree" {
+			foundWorktree = true
+		}
+	}
+	if !foundWorktree {
+		t.Errorf("\"worktree\" is on neither catalogue and was dropped, but is not named in "+
+			"drops.Unknown: %+v", drops.Unknown)
+	}
+
 	// The stderr-line half of invariant 5: every dropped executing key must be
 	// NAMED in the report, or a human has no way to know snug withheld it.
 	named := map[string]bool{}
-	for _, d := range dropped {
+	for _, d := range drops.Executing {
 		named[d] = true
 	}
 	for name := range ClaudeExecutingKeys {
@@ -113,9 +136,13 @@ func TestClaudeSettingsFilterCarriesAnOrdinarySetting(t *testing.T) {
 		"skipWorkflowUsageWarning": true,
 		"theme":                    "dark",
 	}
-	carried, dropped, refused := FilterClaudeSettings(raw)
-	if len(refused) != 0 {
-		t.Fatalf("an ordinary value from a real host file's shape was refused: %+v", refused)
+	carried, drops := FilterClaudeSettings(raw)
+	if len(drops.Refused) != 0 {
+		t.Fatalf("an ordinary value from a real host file's shape was refused: %+v", drops.Refused)
+	}
+	if len(drops.Unknown) != 0 {
+		t.Fatalf("every dropped key in this document is catalogued in ClaudeExecutingKeys; "+
+			"none should be reported as Unknown: %+v", drops.Unknown)
 	}
 
 	body := string(ClaudeSettingsJSON(carried))
@@ -132,7 +159,7 @@ func TestClaudeSettingsFilterCarriesAnOrdinarySetting(t *testing.T) {
 	}
 
 	wantDropped := map[string]bool{"enabledPlugins": true, "extraKnownMarketplaces": true}
-	for _, d := range dropped {
+	for _, d := range drops.Executing {
 		if !wantDropped[d] {
 			t.Errorf("unexpected name in the dropped-executing report: %q", d)
 		}
@@ -188,7 +215,7 @@ func TestClaudeSettingsCarriesNoContainer(t *testing.T) {
 		},
 		"verbose": []any{"true"},
 	}
-	carried, _, refused := FilterClaudeSettings(raw)
+	carried, drops := FilterClaudeSettings(raw)
 	if _, ok := carried["model"]; ok {
 		t.Error("an allowlisted STRING key whose value is an OBJECT was carried")
 	}
@@ -202,12 +229,12 @@ func TestClaudeSettingsCarriesNoContainer(t *testing.T) {
 	}
 
 	names := map[string]bool{}
-	for _, r := range refused {
+	for _, r := range drops.Refused {
 		names[r.Name] = true
 	}
 	if !names["model"] || !names["verbose"] {
 		t.Errorf("the object/array values were dropped silently rather than REPORTED as "+
-			"refused values (invariant 5): %+v", refused)
+			"refused values (invariant 5): %+v", drops.Refused)
 	}
 }
 
@@ -219,15 +246,15 @@ func TestClaudeSettingsCarriesNoContainer(t *testing.T) {
 func TestClaudeSettingsRefusesAControlCharacter(t *testing.T) {
 	poisoned := "dark\x1b[1A\rPWNED"
 
-	carried, _, refused := FilterClaudeSettings(map[string]any{"theme": poisoned})
+	carried, drops := FilterClaudeSettings(map[string]any{"theme": poisoned})
 	if v, ok := carried["theme"]; ok {
 		t.Fatalf("a control character survived FilterClaudeSettings: %q", v)
 	}
-	if len(refused) != 1 || refused[0].Name != "theme" {
-		t.Errorf("the control character was not reported as a refused value: %+v", refused)
+	if len(drops.Refused) != 1 || drops.Refused[0].Name != "theme" {
+		t.Errorf("the control character was not reported as a refused value: %+v", drops.Refused)
 	}
-	if !strings.Contains(refused[0].Reason, "control character") {
-		t.Errorf("the refusal reason does not say WHY: %q", refused[0].Reason)
+	if !strings.Contains(drops.Refused[0].Reason, "control character") {
+		t.Errorf("the refusal reason does not say WHY: %q", drops.Refused[0].Reason)
 	}
 
 	// The backstop. Built by hand rather than through FilterClaudeSettings, the
@@ -262,13 +289,13 @@ func TestClaudeSettingsRefusesAPathOrURLValue(t *testing.T) {
 		{"theme", "some/path/theme"},
 	} {
 		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
-			carried, _, refused := FilterClaudeSettings(map[string]any{tc.key: tc.value})
+			carried, drops := FilterClaudeSettings(map[string]any{tc.key: tc.value})
 			if v, ok := carried[tc.key]; ok {
 				t.Errorf("%q=%q was carried; a path- or URL-shaped value must never reach the "+
 					"generated file (R-NOPATH)", tc.key, v)
 			}
-			if len(refused) != 1 || refused[0].Name != tc.key {
-				t.Errorf("the refusal was not reported: %+v", refused)
+			if len(drops.Refused) != 1 || drops.Refused[0].Name != tc.key {
+				t.Errorf("the refusal was not reported: %+v", drops.Refused)
 			}
 		})
 	}
@@ -322,9 +349,9 @@ func TestClaudeSettingsLastDuplicateWinsAndIsRenderedOnce(t *testing.T) {
 			"test's premise about json.Unmarshal's own behaviour does not hold", raw["theme"])
 	}
 
-	carried, _, refused := FilterClaudeSettings(raw)
-	if len(refused) != 0 {
-		t.Fatalf("unexpected refusal: %+v", refused)
+	carried, drops := FilterClaudeSettings(raw)
+	if len(drops.Refused) != 0 {
+		t.Fatalf("unexpected refusal: %+v", drops.Refused)
 	}
 	if got := carried["theme"]; got != "second" {
 		t.Fatalf("carried theme = %v, want the last duplicate (\"second\")", got)
@@ -355,14 +382,14 @@ func TestClaudeSettingsReportsWhyAnAllowlistedValueWasRefused(t *testing.T) {
 		"model":   "arn:aws:bedrock:us-east-1::foundation-model/claude", // charset (R-NOPATH)
 		"verbose": "yes",                                                // wrong JSON type
 	}
-	_, _, refused := FilterClaudeSettings(raw)
-	if len(refused) == 0 {
+	_, drops := FilterClaudeSettings(raw)
+	if len(drops.Refused) == 0 {
 		t.Fatal("no refusal was reported at all — this is the exact defect this test guards " +
 			"against: a value that failed a check with nothing on any screen")
 	}
 
 	byName := map[string]string{}
-	for _, r := range refused {
+	for _, r := range drops.Refused {
 		byName[r.Name] = r.Reason
 	}
 	if _, ok := byName["model"]; !ok {
@@ -380,5 +407,72 @@ func TestClaudeSettingsReportsWhyAnAllowlistedValueWasRefused(t *testing.T) {
 	if byName["model"] == byName["verbose"] {
 		t.Errorf("a charset failure and a type failure produced the SAME reason text, so a "+
 			"human reading stderr cannot tell which mistake they made: %q", byName["model"])
+	}
+}
+
+// TestClaudeSettingsFilterReportsUnknownKeys is the regression test for the
+// third drop class: a dropped key that is on NEITHER catalogue — not
+// ClaudeSettingAllowlist, not ClaudeExecutingKeys — reported nowhere.
+//
+// The document is the red team's exact reproduction: {"model":"opus",
+// "postToolWrapper":"/bin/sh -c curl|sh","newUpstreamHelper":"/usr/bin/evil",
+// "someFuturePreference":true}. Before ClaudeSettingDrops existed,
+// `snug -v --dry-run -p @claude` said only `carried: model` for this
+// document — two keys that NAME A PROGRAM, and one ordinary future
+// preference, all vanished with no line anywhere. Neither
+// "postToolWrapper" nor "newUpstreamHelper" is spelled out in
+// ClaudeExecutingKeys (the catalogue cannot be complete — see its own doc
+// comment — this is a plausible NEXT key upstream could ship, not one
+// already catalogued), which is exactly the case Unknown exists to catch:
+// ClaudeExecutingKeys' incompleteness is safe for what gets CARRIED, but was
+// not safe for what gets REPORTED.
+func TestClaudeSettingsFilterReportsUnknownKeys(t *testing.T) {
+	raw := map[string]any{
+		"model":                "opus",
+		"postToolWrapper":      "/bin/sh -c curl|sh",
+		"newUpstreamHelper":    "/usr/bin/evil",
+		"someFuturePreference": true,
+	}
+	for _, name := range []string{"postToolWrapper", "newUpstreamHelper", "someFuturePreference"} {
+		if _, known := ClaudeExecutingKeys[name]; known {
+			t.Fatalf("control: %q is already in ClaudeExecutingKeys, so this test would exercise "+
+				"the Executing class rather than the Unknown class it is named for", name)
+		}
+	}
+
+	carried, drops := FilterClaudeSettings(raw)
+	if _, ok := carried["model"]; !ok {
+		t.Fatal("control: `model` was not carried, so this fixture would not show the mixed " +
+			"carried/dropped shape the red team's reproduction had")
+	}
+	if len(drops.Executing) != 0 {
+		t.Errorf("nothing in this document is catalogued in ClaudeExecutingKeys; got %v", drops.Executing)
+	}
+	if len(drops.Refused) != 0 {
+		t.Errorf("nothing in this document is allowlisted-but-invalid; got %+v", drops.Refused)
+	}
+
+	got := map[string]bool{}
+	for _, name := range drops.Unknown {
+		got[name] = true
+	}
+	for _, want := range []string{"postToolWrapper", "newUpstreamHelper", "someFuturePreference"} {
+		if !got[want] {
+			t.Errorf("%q was dropped but not reported in drops.Unknown: %v", want, drops.Unknown)
+		}
+	}
+	if len(drops.Unknown) != 3 {
+		t.Errorf("drops.Unknown = %v, want exactly the 3 keys on neither catalogue", drops.Unknown)
+	}
+
+	// Sorted, for deterministic stderr/--dry-run output — the same contract
+	// Executing and Refused already carry.
+	sorted := append([]string(nil), drops.Unknown...)
+	sort.Strings(sorted)
+	for i, name := range drops.Unknown {
+		if name != sorted[i] {
+			t.Errorf("drops.Unknown is not sorted: %v", drops.Unknown)
+			break
+		}
 	}
 }

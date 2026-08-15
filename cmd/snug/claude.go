@@ -3,10 +3,12 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/gomoni/snug/internal/policy"
 )
@@ -134,18 +136,46 @@ func claudeFiles(pol *policy.Policy, home string, verbose bool) {
 //     exists whether or not the host has ever run Claude Code, which is what
 //     lets --dry-run's CLAUDE block make one true claim about this path
 //     instead of branching on host state the way describeClaude used to.
+//
 //   - Writable, the `gh` precedent (identity.go: gh rewrites hosts.yml on
 //     first use, and a read-only copy failed with "failed to write config
 //     after migration"). Claude Code writes into settings files too — the
 //     binary carries `Failed to set JSONC property` and `Failed to insert
 //     item into user JSONC array` — for /theme, /config and user-scope
 //     permission grants. It is a private tmpfs copy, so the write goes
-//     nowhere the host can see and dies with the session; the security delta
-//     over `ro` is nil, because the payload already has arbitrary execution
-//     inside and nothing at this path reaches the host either way. No test
-//     and no document may claim CONTAINMENT from anything written into this
-//     file during the run — see policy.ClaudeSettingAllowlist's refusal of
-//     `disableAllHooks` for the sharpest instance of that rule.
+//     nowhere the host can see and dies with the session.
+//
+//     THE COST OF `rw`, AS AN ACCEPTED RESIDUAL RATHER THAN A NON-EVENT. An
+//     earlier draft of this comment said "the security delta over `ro` is
+//     nil, because the payload already has arbitrary execution inside and
+//     nothing at this path reaches the host either way". The red team
+//     measured that false on the arm that matters. It is true only on a host
+//     with NO settings file, where the path was already a writable tmpfs;
+//     on a host that HAS one — the common case for a profile whose whole
+//     purpose is running Claude Code — `main` refused the write with EROFS
+//     and this build allows it. A barrier that existed is gone, measured both
+//     ways.
+//
+//     What that buys an attacker is the in-sandbox analogue of the shadow
+//     slot CLAUDE.md states about `PATH`: one compromised step now controls
+//     every LATER `claude` in the same sandbox, including one a human starts
+//     at the sandbox shell. It writes `hooks` (which fire with no tool gate),
+//     `permissions.defaultMode = "bypassPermissions"` (which removes every
+//     approval prompt) or `apiKeyHelper` (which substitutes the credential),
+//     over snug's generated file, at the canonical path Claude Code reads on
+//     every start. Confirmed not to reach the host: the host's file is
+//     byte-identical afterwards.
+//
+//     It is accepted rather than fixed, because `ro` is not available — gh
+//     and Claude Code both genuinely rewrite their config, and a read-only
+//     copy breaks the tool (that is the `gh` measurement above, not a
+//     guess). It is written down because CLAUDE.md's rule is that "the
+//     payload can rewrite it anyway" is NOT the test; whether snug hands the
+//     slot over pre-installed is. Here snug does, knowingly.
+//
+//     No test and no document may claim CONTAINMENT from anything written
+//     into this file during the run — see policy.ClaudeSettingAllowlist's
+//     refusal of `disableAllHooks` for the sharpest instance of that rule.
 //
 // EVERY FAILURE DEGRADES TO "carry nothing" and none of them fails the run:
 // absent file, unreadable file, an oversized file, invalid or JSONC-flavoured
@@ -170,12 +200,12 @@ func stageClaudeSettings(pol *policy.Policy, home string, verbose bool) {
 		fmt.Fprintf(os.Stderr, "snug: %s\n", degraded)
 	}
 
-	carried, droppedExecuting, refused := policy.FilterClaudeSettings(raw)
-	if len(droppedExecuting) > 0 {
+	carried, drops := policy.FilterClaudeSettings(raw)
+	if len(drops.Executing) > 0 {
 		fmt.Fprintf(os.Stderr, "snug: ~/.claude/settings.json: dropped %s — each names a "+
 			"program, selects or fetches code, or sets a process environment variable; a "+
 			"read-only bind would have supplied it, so snug does not carry it into the "+
-			"generated file (see policy.ClaudeExecutingKeys)\n", strings.Join(droppedExecuting, ", "))
+			"generated file (see policy.ClaudeExecutingKeys)\n", strings.Join(drops.Executing, ", "))
 	}
 	// A refusal is a DIFFERENT kind of line from the one above, and the two must
 	// not be merged: dropping an executing key is snug refusing on purpose, with
@@ -185,9 +215,46 @@ func stageClaudeSettings(pol *policy.Policy, home string, verbose bool) {
 	// are entitled to be told which key and why, not left to notice their
 	// preference silently did not survive. See policy.FilterClaudeSettings' doc
 	// comment for the measurement that found this missing.
-	for _, r := range refused {
+	for _, r := range drops.Refused {
 		fmt.Fprintf(os.Stderr, "snug: ~/.claude/settings.json: dropping %q — %s\n", r.Name, r.Reason)
 	}
+	// drops.Unknown is a THIRD kind of line again: a key on neither catalogue,
+	// which is dropped by the allowlist exactly like a named one but was
+	// previously reported nowhere — see policy.ClaudeSettingDrops' doc comment
+	// for the measurement that found it. It is gated on -v rather than
+	// unconditional like the two lines above, because on a host with a rich
+	// settings file most of these names are ordinary future preferences, not
+	// something consequential — the executing-key line above stays
+	// unconditional precisely because IT is consequential, and repeating that
+	// weight here would train a human to stop reading stderr. --dry-run's
+	// CLAUDE block carries the same names UNCONDITIONALLY (see describeClaude):
+	// that screen is the trust artifact and has no volume problem a human can
+	// choose to skip, so "what did snug not carry" belongs there regardless of
+	// -v even though it is optional here.
+	//
+	// The names are HOST-CONTROLLED — unlike drops.Executing and drops.Refused,
+	// which only ever contain snug's own constant key names — so each goes
+	// through visibleValue before it reaches stderr: a newline or ESC inside a
+	// key name in a crafted settings.json must not be able to forge a line on
+	// this screen (see dryrun.go's visibleValue and
+	// TestNoSnugScreenEmitsARawControlCharacter).
+	if verbose && len(drops.Unknown) > 0 {
+		escaped := make([]string, len(drops.Unknown))
+		for i, name := range drops.Unknown {
+			escaped[i] = visibleValue(name)
+		}
+		fmt.Fprintf(os.Stderr, "snug: ~/.claude/settings.json: %d key(s) on neither catalogue, not "+
+			"carried and not individually classified — most likely ordinary preferences upstream "+
+			"added since this list was written, but if one of these matters it is a snug change: "+
+			"%s\n", len(drops.Unknown), strings.Join(escaped, ", "))
+	}
+	// Recorded on the policy REGARDLESS of -v, so --dry-run's CLAUDE block (the
+	// trust artifact) can always say what snug did not carry — see the comment
+	// above. policy.Policy.ClaudeSettingsUnknown's own doc comment explains why
+	// this lives on the Policy rather than being re-derived from the generated
+	// file's content: the generated file is the ALLOWLISTED subset, so the
+	// names of what did NOT make it are not present anywhere inside it.
+	pol.ClaudeSettingsUnknown = drops.Unknown
 	if verbose {
 		names := make([]string, 0, len(carried))
 		for k := range carried {
@@ -210,34 +277,77 @@ func stageClaudeSettings(pol *policy.Policy, home string, verbose bool) {
 // treat as fatal (§5.6's degradation rules: every failure here is "carry
 // nothing", none of them may fail the run).
 //
-// os.Stat first, deliberately, rather than os.ReadFile straight into the cap:
-// the cap exists so a multi-gigabyte file at this path (whatever put it there)
-// is never read into memory at all, not merely truncated after the fact.
+// OPEN FIRST, THEN STAT THE DESCRIPTOR, THEN READ THROUGH A LIMIT. All three
+// steps earned their place by a red-team finding against the first version,
+// which did `os.Stat` on the PATH and then `os.ReadFile`:
 //
-// os.ReadFile FOLLOWS SYMLINKS, so a `~/.claude/settings.json` that symlinks to
-// `~/.ssh/id_ed25519` is read here. It cannot leak: the content then fails the
-// JSON decode (an ssh key is not a JSON object), and even a file that somehow
+//   - `O_NONBLOCK` is what stops a FIFO at this path hanging the run FOREVER.
+//     Measured: `mkfifo ~/.claude/settings.json` made `os.ReadFile` block in
+//     `open(2)` waiting for a writer that never came — no sandbox, no exit
+//     code, no line on any screen. That is strictly worse than the fatal error
+//     the degradation rule forbids, and the doc comment three paragraphs up
+//     promised it could not happen.
+//   - `IsRegular` refuses the FIFO, the device and the directory outright, so
+//     the read below is only ever a read of a file.
+//   - `io.LimitReader` is where the CAP actually lives. Statting the path
+//     first only bounded what `st_size` CLAIMED. Measured: a symlink to
+//     `/dev/zero` stats as zero bytes, sailed past the size branch and took
+//     the process to 3.1 GB of resident memory in two seconds, still climbing;
+//     a symlink to `/proc/self/environ` likewise stats as zero and had its
+//     contents read in full (only the JSON decode stopped it). A regular file
+//     that grows between the stat and the read is the same bug without the
+//     symlink. The stat is now a cheap early exit for the honest case, never
+//     the bound.
+//
+// It reads maxBytes+1 so that "exactly at the cap" and "over the cap" are
+// distinguishable without a second syscall.
+//
+// The open FOLLOWS SYMLINKS, deliberately — a human may legitimately symlink
+// their settings file — so a `~/.claude/settings.json` pointing at
+// `~/.ssh/id_ed25519` is read here. It cannot leak: the content fails the JSON
+// decode (an ssh key is not a JSON object), and even a file that somehow
 // parsed could only contribute allowlisted, type-checked, charset-checked
 // scalars through FilterClaudeSettings. Contrast the bind this replaces, which
 // followed the identical symlink and mounted the target file WHOLE.
 func loadHostClaudeSettings(path string, maxBytes int64) (map[string]any, string) {
-	fi, err := os.Stat(path)
+	// O_NONBLOCK applies to the OPEN, and for a regular file it has no further
+	// effect on the reads below — it exists solely so that opening a FIFO
+	// returns instead of blocking.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		// Absent, or a stat-level permission error — either way there is
-		// nothing to carry and no host file the human is entitled to be told
-		// snug ignored. Matches claudeFiles' stage() closure for every other
-		// optional host path.
+		// Absent, or a permission error — either way there is nothing to carry
+		// and no host file the human is entitled to be told snug ignored.
+		// Matches claudeFiles' stage() closure for every other optional host
+		// path.
 		return nil, ""
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Sprintf("~/.claude/settings.json could not be inspected (%v); "+
+			"carrying nothing", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Sprintf("~/.claude/settings.json is not a regular file (mode %s); "+
+			"carrying nothing. snug reads that path as data and will not read a FIFO, a "+
+			"device or a directory there", fi.Mode())
 	}
 	if fi.Size() > maxBytes {
 		return nil, fmt.Sprintf("~/.claude/settings.json is %d bytes, over the %d-byte cap "+
 			"snug reads for it; carrying nothing rather than reading an arbitrarily large "+
 			"file into memory on every run", fi.Size(), maxBytes)
 	}
-	data, err := os.ReadFile(path)
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
 	if err != nil {
 		return nil, fmt.Sprintf("~/.claude/settings.json exists but could not be read (%v); "+
 			"carrying nothing", err)
+	}
+	// The real cap. A file whose st_size lied — /dev/zero through a symlink,
+	// anything under /proc, a file that grew since the stat — lands here.
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Sprintf("~/.claude/settings.json produced more than the %d-byte cap "+
+			"snug reads for it (its reported size was %d); carrying nothing", maxBytes, fi.Size())
 	}
 	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil {

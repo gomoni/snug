@@ -391,18 +391,44 @@ type ClaudeSettingRefusal struct {
 	Reason string
 }
 
+// ClaudeSettingDrops is everything FilterClaudeSettings did NOT carry from the
+// host's document, split by WHY — the three classes mean different things to
+// whoever reads them, and collapsing them loses that:
+//
+//   - Executing is a dropped key FilterClaudeSettings recognised, from
+//     ClaudeExecutingKeys: snug refusing on purpose, nothing for the human to
+//     act on beyond knowing it happened.
+//   - Refused is an ALLOWLISTED key that WAS present but whose VALUE failed a
+//     check: the human's own setting failing to carry, and the reason says
+//     why (wrong JSON type, a control character, too long, or the key's own
+//     charset).
+//   - Unknown is a dropped key on NEITHER list — named nowhere in this file.
+//     ClaudeExecutingKeys is, by its own doc comment, allowed to be
+//     incomplete: "nothing security-relevant depends on it being complete".
+//     That is true for what gets CARRIED (the allowlist alone decides that),
+//     but it made the incompleteness itself invisible — a host key on neither
+//     list vanished with no line anywhere, which is the identical defect
+//     Refused was added to close, just on the other side of the allowlist.
+//     Upstream Claude Code ships new keys with no stable schema and no
+//     announcement; an Unknown entry is the only signal a maintainer gets that
+//     one has appeared and wants a classification.
+//
+// All three slices are sorted, for deterministic stderr and --dry-run output.
+type ClaudeSettingDrops struct {
+	Executing []string
+	Unknown   []string
+	Refused   []ClaudeSettingRefusal
+}
+
 // FilterClaudeSettings builds the allowlisted subset of a decoded host
 // ~/.claude/settings.json.
 //
-// It returns three things, and the third exists to close a defect the first
-// version of this function had: the carried set; — sorted, for deterministic
-// stderr output — the names among the DROPPED keys that are in
-// ClaudeExecutingKeys, so the caller (cmd/snug/claude.go, which does the host
-// file IO this package must not) can name what it withheld rather than stay
-// silent about it; and — also sorted — every ALLOWLISTED key that was present
-// but whose VALUE was refused, with why.
+// It returns the carried set and a ClaudeSettingDrops naming everything else,
+// split by why — see that type's doc comment for what each class means and
+// why a fourth parallel return value (rather than one struct) would have been
+// the wrong fix once a third class needed reporting.
 //
-// THAT THIRD RETURN VALUE IS NOT COSMETIC. Before it existed, a `model` value
+// THE REFUSED CLASS IS NOT COSMETIC. Before it existed, a `model` value
 // that failed modelNamePattern's charset check (the §3.2 Bedrock/Vertex trap
 // this file's own comments argue for) was dropped with NOTHING on any
 // screen — measured: `{"model":"arn:aws:bedrock:…","theme":"dark"}` in produced
@@ -414,6 +440,18 @@ type ClaudeSettingRefusal struct {
 // are TOLD. Found by review, not by a test the author wrote, which is exactly
 // the shape CLAUDE.md's "Definition of done" table warns about: a check that
 // confirms the mechanism you had in mind, not the gap an outside reader finds.
+//
+// THE UNKNOWN CLASS IS THE SAME SCAR, ONE LEVEL UP. Measured against
+// `{"model":"opus","postToolWrapper":"/bin/sh -c curl|sh",
+// "newUpstreamHelper":"/usr/bin/evil","someFuturePreference":true}`:
+// `snug -v --dry-run -p @claude` said only `carried: model` — three keys the
+// human set, two of them naming a program, vanished with no line anywhere.
+// ClaudeExecutingKeys' own doc comment argues the catalogue's incompleteness
+// is safe because "an unnamed key is dropped by the allowlist exactly the
+// same as a named one" — true for what is carried, and beside the point for
+// what is REPORTED: a rule written once ("report what we withhold") and
+// applied to only one of its two halves (named-and-withheld, not
+// unnamed-and-withheld).
 //
 // TYPE MISMATCH IS A DROP, NEVER A COERCION. A `model` that decodes to a
 // number or an array is not "close enough" — coercing it would mean this
@@ -440,7 +478,7 @@ type ClaudeSettingRefusal struct {
 // explicitly trusted — silently overriding the one host decision
 // claudeStateJSON goes to lengths to carry — and it would make this fix
 // APPEAR to close a channel it does not close.
-func FilterClaudeSettings(raw map[string]any) (ClaudeSettings, []string, []ClaudeSettingRefusal) {
+func FilterClaudeSettings(raw map[string]any) (ClaudeSettings, ClaudeSettingDrops) {
 	out := ClaudeSettings{}
 	allowed := make(map[string]bool, len(ClaudeSettingAllowlist))
 	var refused []ClaudeSettingRefusal
@@ -485,18 +523,26 @@ func FilterClaudeSettings(raw map[string]any) (ClaudeSettings, []string, []Claud
 		}
 	}
 
-	var droppedExecuting []string
+	var droppedExecuting, unknown []string
 	for name := range raw {
 		if allowed[name] {
 			continue
 		}
 		if _, known := ClaudeExecutingKeys[name]; known {
 			droppedExecuting = append(droppedExecuting, name)
+			continue
 		}
+		// On neither list. Still dropped — the allowlist alone decides what is
+		// carried, so this changes nothing about the generated file — but
+		// unlike droppedExecuting above, nothing catalogued this name, and that
+		// absence is itself the fact worth reporting (see ClaudeSettingDrops'
+		// doc comment).
+		unknown = append(unknown, name)
 	}
 	sort.Strings(droppedExecuting)
+	sort.Strings(unknown)
 	sort.Slice(refused, func(i, j int) bool { return refused[i].Name < refused[j].Name })
-	return out, droppedExecuting, refused
+	return out, ClaudeSettingDrops{Executing: droppedExecuting, Unknown: unknown, Refused: refused}
 }
 
 // ClaudeSettings is the allowlisted subset, keyed by name. Values are always

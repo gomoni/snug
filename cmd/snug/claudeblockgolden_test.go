@@ -127,20 +127,35 @@ func goldenClaudeBlock(t *testing.T, name string, hostTrusts, exerciseSettingsFi
 		// policy.ClaudeSettingsJSON) against a document shaped like a host's, built
 		// in memory rather than written to ctx.Home (which does not exist on any
 		// machine, same reason the trust arm above uses a separate temp directory
-		// instead). One carried key, one dropped-and-catalogued key: enough to
-		// show both lines of the disclosure without turning the golden into a
-		// second copy of TestClaudeSettingsFilterDropsEveryExecutingKey.
-		raw := map[string]any{"theme": "dark", "apiKeyHelper": "/bin/cat /etc/passwd"}
-		carried, dropped, _ := policy.FilterClaudeSettings(raw)
+		// instead). One carried key, one dropped-and-catalogued key, one key on
+		// NEITHER catalogue: enough to show all three lines of the disclosure
+		// without turning the golden into a second copy of
+		// TestClaudeSettingsFilterDropsEveryExecutingKey. The third is the
+		// regression fixture for the defect this golden exists to pin: a
+		// dropped key on no list was previously reported nowhere.
+		raw := map[string]any{
+			"theme": "dark", "apiKeyHelper": "/bin/cat /etc/passwd",
+			"someFuturePreference": true,
+		}
+		carried, drops := policy.FilterClaudeSettings(raw)
 		if _, ok := carried["theme"]; !ok {
 			t.Fatal("control: the filter dropped `theme`, a positive control this fixture " +
 				"depends on to show a non-empty `carried:` line")
 		}
-		if len(dropped) == 0 {
+		if len(drops.Executing) == 0 {
 			t.Fatal("control: the filter did not report `apiKeyHelper` as a dropped executing " +
 				"key, so this arm would silently golden the same `carried: (none)` shape as " +
 				"the untrusted case above")
 		}
+		if len(drops.Unknown) == 0 {
+			t.Fatal("control: the filter did not report `someFuturePreference` as an unknown " +
+				"key, so this arm would not exercise the class this golden exists to pin")
+		}
+		// stageClaudeSettings sets this on the Policy REGARDLESS of -v (see its
+		// own comment); this fixture does the same rather than going through
+		// stageClaudeSettings itself, for the same reason the trust arm above
+		// builds its mount by hand instead of calling claudeFiles a second time.
+		p.ClaudeSettingsUnknown = drops.Unknown
 		perm := uint32(0o600)
 		p.Replace(policy.Mount{
 			Guest: filepath.Join(ctx.Home, ".claude", "settings.json"), Kind: policy.KindData,

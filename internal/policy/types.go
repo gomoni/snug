@@ -187,6 +187,40 @@ type Policy struct {
 	// distinguish "you asked for this" from "this came along via an include";
 	// it must never affect resolution, or order-independence is gone.
 	Selected []ProfileName
+
+	// ClaudeSettingsUnknown is every key stageClaudeSettings found in the
+	// host's ~/.claude/settings.json that FilterClaudeSettings reported as
+	// ClaudeSettingDrops.Unknown — on NEITHER catalogue, not
+	// ClaudeSettingAllowlist and not ClaudeExecutingKeys. Sorted.
+	//
+	// It exists purely so --dry-run can render the fact truthfully. The
+	// generated settings.json itself cannot carry it: that file IS the
+	// allowlisted subset, so the names of what did not make it appear nowhere
+	// inside it, and inventing a place for them there would mean writing a key
+	// Claude Code was never asked to read. So this is set directly on the
+	// Policy: a fact learned post-resolution that the dry-run screen still has
+	// to be able to show.
+	//
+	// IdentityOwner is the nearest relative and the DIFFERENCE is the part to
+	// keep in mind. That field also exists to serve a mount staged after
+	// Resolve returns — but it is itself assigned INSIDE Resolve
+	// (resolve.go, `p.IdentityOwner = name`), so it is resolver output like
+	// every other field here. This one is not: cmd/snug writes it after
+	// Resolve has returned, from host IO the resolver is forbidden to do.
+	//
+	// Two consequences follow, and neither is hypothetical. It is not covered
+	// by Resolve's own determinism — commutativity and idempotence are
+	// properties of what Resolve computes, and this is not that. And the
+	// resolver's purity argument does not extend to it: the value comes from
+	// reading a host file, which is exactly why the read lives in cmd/snug
+	// and only the resulting names land here. Anything added alongside it
+	// must be inert reporting data of the same kind. A field that CHANGED
+	// what the sandbox can reach must never be set this way, because nothing
+	// between here and bwrap re-derives it.
+	//
+	// nil when @claude was not selected, or when nothing on the host's file
+	// fell into this class.
+	ClaudeSettingsUnknown []string
 }
 
 // SortedMounts returns the mounts in bwrap emission order: ancestors strictly
