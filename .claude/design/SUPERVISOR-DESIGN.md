@@ -8,10 +8,32 @@ design described a system that was then built differently, and a design document
 that describes the intention rather than the artifact is how a reader ends up
 believing in a control socket that does not exist.
 
-Everything marked **MEASURED** was executed on this host. Everything else is
-reasoning and is marked as such. The proof of concept that took the original
-measurements is `poc/nsd/` — throwaway code, its own Go module, imported by
-nothing that ships.
+Everything marked **MEASURED** was executed on **2026-08-13**, on the development
+host — openSUSE Tumbleweed, `bwrap` 0.11.2, `pasta` 20260612, Go 1.26, inside a
+rootless-podman distrobox. Everything else is reasoning and is marked as such.
+
+The original measurements were taken by a throwaway proof of concept, `poc/nsd`:
+its own Go module plus four C helpers and three harnesses, imported by nothing
+that shipped. **It has been deleted**
+([#49](https://github.com/gomoni/snug/issues/49)), because what it prototyped
+shipped as `internal/stage`, and a second unbuilt copy of the same `setns` logic
+beside the real one is a divergence waiting to happen — one that `./...`,
+`go vet` and `make gate` could not see, because it was a separate module.
+
+Its results did not go with it. `run.sh` was 51 checks and last recorded
+`pass=51 fail=0`; `run-netns.sh` was 42 checks, green in three identical
+consecutive runs; both are distilled into §1 below. A third harness,
+`run-graft.sh`, measured the derived mount view against a **real** snug sandbox,
+and its sixty checks are carried in [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §5.1.
+
+*Read the counts carefully, because one of them moved.* `run.sh` read `pass=49`
+until a review found that four of those checks passed on a sandbox and an attach
+that **never happened** — the `pasta.avx2` shape from `CLAUDE.md`, in the script
+whose own header claimed the property. The count rose because nothing was
+actually broken; the point is that it could not have told us if it had been. Two
+rules came out of it and every measurement below obeys both: never assert an
+exit code as a negative — assert a MARKER the payload emitted — and never
+compare two namespace ids without refusing the empty case.
 
 **Why this exists at all** is [`ENGINE-NETNS.md`](ENGINE-NETNS.md): a container
 started through `@podman-socket` runs on the *engine's* network, not the
@@ -46,7 +68,7 @@ The distinction that matters is **who owns the process**, not how many there are
 
 | fact | status |
 |---|---|
-| A process can `setns` back into a netns it left; children forked through a setns shim land in it | **MEASURED** (`poc/nsd/run-netns.sh`, 42 checks, three identical consecutive runs) |
+| A process can `setns` back into a netns it left; children forked through a setns shim land in it | **MEASURED** 2026-08-13, this host: 42 checks, `fail=0`, in three identical consecutive runs. Every section ran twice — once with the move off, which is the pre-stage topology and the positive control, and once with it on — so each payoff was shown absent before it was shown present |
 | `unshare(CLONE_NEWNET)` is **per-task**, not per-process. One thread moves; the others stay; `/proc/self/ns/net` names the THREAD GROUP LEADER and so reports the OLD namespace | **MEASURED** — 1 of 11 threads moved. This is now a CLAUDE.md environment fact, because it is a scheduler-dependent false green waiting to happen |
 | The only join point at which a multithreaded Go process moves as a WHOLE is `execve` immediately afterwards, on a `runtime.LockOSThread()` thread | **MEASURED** — after the `__stage-serve` re-exec, 0 of 6 threads remained |
 | The pinned descriptor on N must **not** be CLOEXEC at the moment of that exec, and is marked CLOEXEC immediately after | **MEASURED** — doing it the obvious way destroys the only reference to N |

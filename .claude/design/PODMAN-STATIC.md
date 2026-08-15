@@ -16,12 +16,16 @@ runs here, and one command line invokes it.**
 It deliberately stops there. The three Phase 0a questions — engine in a mount
 view derived from the sandbox's, container gets N's network *under the stage's
 topology*, teardown with a real engine — are **not answered here**. They need
-`poc/nsd/stage.go`, which is being rewritten in parallel. What this document
+the supervisor stage, which when this was written existed only as a proof of
+concept being rewritten in parallel; that rewrite has since shipped as
+`internal/stage` ([`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md)), and the proof
+of concept has been deleted
+([#49](https://github.com/gomoni/snug/issues/49)). What this document
 provides is the *positive control* those questions need: a known-good reading
 from before the stage is involved, so that a red result in 0a proper can be told
 apart from "the engine never worked on this box".
 
-Nothing under `poc/`, `internal/` or `cmd/` was touched.
+Nothing under the proof of concept, `internal/` or `cmd/` was touched.
 
 ## 1. The artifact, pinned
 
@@ -585,9 +589,11 @@ when Phase 0a returns something confusing.
    consequence for netns placement is new.
 8. **The libpod database pins the runroot.** MEASURED, §5. Changing it between
    invocation modes is a hard error, so both wrappers must agree on it forever.
-9. **Not attempted, deliberately:** anything under `poc/nsd/`, the derived mount
+9. **Not attempted, deliberately:** the supervisor stage, the derived mount
    view, `snug`'s own integration with this engine, and all three Phase 0a
-   questions.
+   questions. The derived mount view was measured separately and is
+   [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §5.1 — but never against *this* engine,
+   which is what this line is about.
 
 ## 10. What this means for CI
 
@@ -627,8 +633,11 @@ INFERRED except where marked; nothing in this section was executed on a runner.
   ```
   and `~/.local/opt/podman-static/bin/snug-podman-ns` when a cgroup namespace is
   required (`podman info`, or a stage that owns its own netns).
-- **What blocks Phase 0a from being measured next?** Nothing on the engine side.
-  The remaining blocker is `poc/nsd/stage.go`, which is being rewritten in
-  parallel. Two things Phase 0a should carry in from here: pass
+- **What blocks Phase 0a from being measured next?** Nothing on the engine side,
+  and nothing on the stage side either. What this line called the remaining
+  blocker was the proof-of-concept `stage.go`, and the rewrite it was waiting on
+  shipped as `internal/stage`
+  ([`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md)). Two things Phase 0a should
+  carry in from here: pass
   `--cgroups=disabled` to `podman run` inside the stage (§9.2), and give the
   stage its own netns before starting the engine (§9.3).

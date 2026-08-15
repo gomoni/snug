@@ -20,3 +20,12 @@ bin/
 # construction — symlink one into $XDG_CONFIG_HOME/snug/profiles.d to use it.
 # Ignored rather than untracked for the reason above it.
 local-profiles/
+
+# Throwaway code that answers a question by execution. poc/nsd was committed and
+# then sat unbuilt for a milestone: its own Go module, so `./...`, `go vet` and
+# `make gate` never saw it — while one of its harnesses built ./cmd/snug and
+# grepped internal/policy for a literal sentence. Keep such a thing locally if it
+# is useful; the measurements belong in .claude/design/ and the code does not
+# belong in a clone. Ignored rather than merely untracked for the reason the
+# .claude/scratchpad/ entry above gives.
+poc/
