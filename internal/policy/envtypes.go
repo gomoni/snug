@@ -1079,6 +1079,28 @@ func checkUnrosteredName(name string, verb EnvVerb, declared bool) error {
 // snug genuinely has nothing to say, and it can never become the ordinary
 // spelling for PATH, EDITOR or XDG_CONFIG_HOME.
 //
+// WHAT THAT SENTENCE DOES NOT SAY, because the stronger reading is false and a
+// red-team run measured it. A declaration cannot route around a decision snug
+// made about a NAME. It CAN route around a decision snug made about a CLASS, by
+// naming the sibling: `snugKnowsEnvName` is a per-name predicate, and every
+// entry in forbiddenEnv is one spelling of a capability that has several.
+// `declare ZDOTDIR` + `inherit ZDOTDIR` is legal while `inherit BASH_ENV` is
+// refused, and zsh sources that directory's .zshrc exactly as bash sources
+// BASH_ENV; LESSCLOSE is legal beside LESSOPEN, MAKESHELL beside CC, CVS_RSH
+// beside GIT_SSH. About fifty such names were measured, and every one of them
+// was equally reachable BEFORE this flip with no declaration at all — so the
+// hatch bounds this rather than opening it, at the cost of four lines in the
+// profile and an unchecked mark on the screen.
+//
+// State it plainly, because the direction matters: against a hostile profile
+// author — and invariant 3 does not currently give us a trustworthy one, see
+// issue #27 — the hatch is NOT a barrier. It is a DISCLOSURE mechanism, and a
+// good one. Every property that earns it a place is a visibility property: the
+// greppable per-profile block, the mark at both sinks, the unused-name refusal,
+// builtins excluded. None of them is a refusal. Whether the forbid table should
+// grow those fifty names, or stop pretending to be complete and say what it is
+// FOR instead, is issue https://github.com/gomoni/snug/issues/77.
+//
 // WHY A LICENCE RATHER THAN A SIXTH VERB. A verb would have had to carry a
 // value, and then `inherit` of an unknown name — a user profile taking their own
 // tool's API token from the host — would have had no spelling at all except

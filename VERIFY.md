@@ -476,6 +476,9 @@ PATH = ["$SC/tools/bin"]
 [profile.mytools.environ.prepend]
 PATH = ["$SC/tools/override"]
 
+[profile.mytools.environ.declare]
+COLORTERM = true
+
 [profile.mytools.environ.inherit]
 COLORTERM = true
 
@@ -489,7 +492,7 @@ XDG_CONFIG_HOME=$SC/five ./bin/snug --dry-run -p mytools $SC/proj/sub \
 ```
 
 ```
-  COLORTERM        truecolor                       inherit   mytools
+  COLORTERM        truecolor                       inherit   mytools  ← unchecked (environ.declare; snug has no entry for this name)
   EDITOR           /usr/bin/vim                    set       mytools
   PATH             /tmp/tmp.XXXXXXXXXX/tools/override prepend   mytools
                    /tmp/tmp.XXXXXXXXXX/tools/bin   merge     mytools
@@ -500,6 +503,19 @@ XDG_CONFIG_HOME=$SC/five ./bin/snug --dry-run -p mytools $SC/proj/sub \
 
 Every line names its verb **and** its profile — no anonymous values — and
 `prepend` sits ahead of `merge`, both ahead of `base`.
+
+`COLORTERM` needs the `environ.declare` block, and the mark on its row is what
+that block buys. snug's roster (`internal/policy/envtypes.go`) has no entry for
+that name, and since issue #44 a name snug has not been taught about is refused
+rather than assumed inert — so the profile's author says, in the file, that they
+take responsibility for it. Delete the `declare` block and the whole profile is
+refused at parse time, naming the two ways forward. Declare a name
+snug DOES have an entry for (`EDITOR`, `PATH`) and that is refused too: a
+declaration is not a way to overrule what snug knows.
+
+The mark cannot be suppressed by omitting the declaration, because it is derived
+from the roster rather than from the profile's own `declare` block — an
+unrostered name reaching this screen by any route is marked.
 
 The screen agreeing with itself proves nothing. Put two different binaries of
 the same name in the two directories and see which one the sandbox runs:

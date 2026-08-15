@@ -381,18 +381,37 @@ func envLines(p *policy.Policy, v policy.EnvVar) []envLine {
 			from = e.Note
 		}
 		mark := grantMark(p, v.Name, e.Value)
-		// THE UNCHECKED MARK REPLACES THE GRANT MARK, rather than joining it,
-		// and the replacement is the honest rendering. `← not granted` is a
-		// statement about a PATH, and for a declared name snug does not know
-		// that the value is a path at all — the same reason the coupling rule
-		// leaves a declared value alone (envcoupling.go's isPathValued). Saying
-		// "unchecked" and then adding a verdict that presumes a type would be
-		// the screen claiming to have checked the one thing it just said it did
-		// not. The shadow-slot mark cannot be lost this way: it fires only for
-		// PATH, and PATH has a roster row, so this branch can never be taken for
-		// it.
+		// THE UNCHECKED MARK JOINS THE GRANT MARK; it does not replace it, and
+		// the first draft of this change had it the other way round.
+		//
+		// The argument for replacing was that `← not granted` is a claim about a
+		// PATH, and for a declared name snug does not know the value is one — the
+		// same reason the coupling rule leaves a declared value alone
+		// (envcoupling.go's isPathValued). Two independent reviews measured what
+		// that actually did, and it removed information the screen had on the
+		// base commit: the identical profile text rendered `← not granted`
+		// before the flip and only `← unchecked` after it, so a human reading
+		// --dry-run stopped being told that the path a profile just handed the
+		// sandbox does not exist inside it. It also inverted the pair — a
+		// ROSTERED code-carrying scalar (`set BASH_ENV = "/var/lib/x"`) kept the
+		// verdict while the UNROSTERED one lost it.
+		//
+		// The two marks are two different statements and both are true
+		// independently. `unchecked` is about the NAME: snug has no roster row,
+		// so nothing about this variable's meaning was checked. `not granted` is
+		// about this VALUE as a string: it is spelled like an absolute path and
+		// no mount covers it. grantMark presumes no type it did not already
+		// presume for every rostered scalar — its whole test is HasPrefix(value,
+		// "/") and a lookup in p.Mounts — and it is exactly as approximate for
+		// BASH_ENV, whose value is a path, as for LESSOPEN, whose value is a
+		// command line. Suppressing it for one of those and not the other was
+		// the difference this branch introduced, not a difference in what snug
+		// knows.
+		//
+		// Order matters: `unchecked` comes first because it is the stronger
+		// statement and the one that qualifies the other.
 		if policy.IsUncheckedEnv(v.Name, e.Verb) {
-			mark = "  ← unchecked (environ.declare; snug has no entry for this name)"
+			mark = "  ← unchecked (environ.declare; snug has no entry for this name)" + mark
 		}
 		if n := len(out); n > 0 && out[n-1].verb == verb && out[n-1].from == from && out[n-1].mark == mark {
 			out[n-1].values = append(out[n-1].values, elementValue(v.Name, e.Value))

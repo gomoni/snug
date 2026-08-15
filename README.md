@@ -301,6 +301,8 @@ ENVIRONMENT  (--clearenv, then:)
 Every line names its verb and the profile that wrote it. `(snug)` is snug's own.
 
 Profiles use five verbs under one `environ` section. Verb says how value merges:
+`declare` beside them is not a sixth — it names a variable snug has no entry
+for, and carries no value.
 
 ```toml
 [profile.mytools]
@@ -314,6 +316,12 @@ PATH = ["/opt/tools/bin"]          # list. Union, sorted, deduplicated
 
 [profile.mytools.environ.prepend]
 PATH = ["/opt/tools/override"]     # list, front. At most ONE profile per variable
+
+[profile.mytools.environ.declare]
+COLORTERM = true                   # snug has no roster entry for this name, and
+                                   # this profile's author takes it on. Renders
+                                   # as unchecked on --dry-run. Not needed for
+                                   # the names above: snug knows all of those
 
 [profile.mytools.environ.inherit]
 COLORTERM = true                   # copy the host's value, if set

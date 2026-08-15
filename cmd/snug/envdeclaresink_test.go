@@ -141,6 +141,139 @@ func TestDryRunMarksADeclaredNameAsUnchecked(t *testing.T) {
 	}
 }
 
+// ── the unchecked mark JOINS the grant mark, it does not replace it ─────────
+//
+// REGRESSION (redteam + independent review, 2026-08-15): dryrun.go's envLines
+// used to REPLACE grantMark's verdict with the unchecked mark for a declared
+// name. Measured on the base commit, the identical profile text rendered
+// `← not granted` before the roster flip and only `← unchecked` after it — the
+// screen LOST the statement that a declared name's value does not resolve to
+// anything inside the sandbox. It also inverted the pair between two kinds of
+// entry: a ROSTERED code-carrying scalar (`set BASH_ENV = "/var/lib/x"`) kept
+// its "not granted" verdict, while the UNROSTERED sibling lost its own. The fix
+// concatenates: the unchecked mark first, then whatever grantMark returns.
+//
+// markJoinRegistry builds one profile that exercises every combination this
+// test needs, so all of it is checked against a single --dry-run render:
+//   - MY_TOOL_UNGRANTED: declared, value is an absolute path nothing grants
+//   - MY_TOOL_GRANTED:   declared, value IS granted (the fixture $HOME, via @home)
+//   - MY_TOOL_MODE:      declared, value is not path-shaped at all ("fast")
+//   - BASH_ENV:          NOT declared (it has a roster row — forbidInheritOnly,
+//     set legal), same ungranted value as MY_TOOL_UNGRANTED. This is the
+//     POSITIVE CONTROL: it is what distinguishes "both marks fire correctly"
+//     from "the mark string happens to contain both substrings" — a rostered
+//     name must show `not granted` alone, with no `unchecked` anywhere on its
+//     line, on the SAME value that produces both marks for a declared name.
+//   - PATH:              merged with the fixture $HOME, a writable tmpfs, so the
+//     shadow-slot mark fires. PATH has a roster row, so IsUncheckedEnv can never
+//     be true for it, and this line asserts the writable mark is not doubled up
+//     with an unchecked mark it structurally cannot carry.
+func markJoinRegistry(t *testing.T) map[policy.ProfileName]*policy.Profile {
+	t.Helper()
+	reg, err := profile.Builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := map[policy.ProfileName]*policy.Profile(reg)
+	m["markjoin"] = &policy.Profile{
+		Name:    "markjoin",
+		Include: []policy.ProfileName{"@sys", "@home", "@cwd-rw"},
+		Environ: policy.EnvGrants{
+			Declare: []string{"MY_TOOL_UNGRANTED", "MY_TOOL_GRANTED", "MY_TOOL_MODE"},
+			Set: map[string]string{
+				"MY_TOOL_UNGRANTED": "/var/lib/nowhere",
+				"MY_TOOL_GRANTED":   "{home}",
+				"MY_TOOL_MODE":      "fast",
+				"BASH_ENV":          "/var/lib/nowhere",
+			},
+			Merge: map[string][]string{"PATH": {"{home}"}},
+		},
+	}
+	return m
+}
+
+// lineFor returns the single ENVIRONMENT-block line naming want, for a rendered
+// --dry-run text. Fails the test if it is not found exactly once, so a typo in
+// the fixture value fails loudly instead of silently comparing "" == "".
+func lineFor(t *testing.T, rendered, want string) string {
+	t.Helper()
+	var hit string
+	n := 0
+	for _, line := range strings.Split(rendered, "\n") {
+		if strings.Contains(line, want) {
+			hit = line
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("expected exactly one line containing %q, found %d:\n%s", want, n, rendered)
+	}
+	return hit
+}
+
+func TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark(t *testing.T) {
+	m := markJoinRegistry(t)
+	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "markjoin")
+	p, err := policy.Resolve(m, sel, envGoldenCtx(), newEnvFakeEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := captureFile(t, func(f *os.File) { describeEnvironment(f, p) })
+
+	// 1. Declared name, ungranted absolute-path value: BOTH marks, in order.
+	ungranted := lineFor(t, got, "MY_TOOL_UNGRANTED")
+	if !strings.Contains(ungranted, "unchecked") || !strings.Contains(ungranted, "not granted") {
+		t.Errorf("declared+ungranted line lost one of the two marks:\n%s", ungranted)
+	}
+	if i, j := strings.Index(ungranted, "unchecked"), strings.Index(ungranted, "not granted"); i < 0 || j < 0 || i > j {
+		t.Errorf("want `unchecked` before `not granted` on the declared+ungranted line, got:\n%s", ungranted)
+	}
+
+	// 2. Declared name, GRANTED value: unchecked, and no "not granted" — proves
+	// the join is a real concatenation of grantMark's actual verdict, not a
+	// constant string that happens to contain both substrings.
+	granted := lineFor(t, got, "MY_TOOL_GRANTED")
+	if !strings.Contains(granted, "unchecked") {
+		t.Errorf("declared+granted line lost the unchecked mark:\n%s", granted)
+	}
+	if strings.Contains(granted, "not granted") {
+		t.Errorf("declared+granted line wrongly claims not granted:\n%s", granted)
+	}
+
+	// 3. Declared name, non-path value: unchecked alone.
+	mode := lineFor(t, got, "MY_TOOL_MODE")
+	if !strings.Contains(mode, "unchecked") {
+		t.Errorf("declared+non-path line lost the unchecked mark:\n%s", mode)
+	}
+	if strings.Contains(mode, "not granted") || strings.Contains(mode, "writable") {
+		t.Errorf("declared+non-path line acquired a grant verdict it cannot have "+
+			"(grantMark never judges a value that is not spelled like an absolute path):\n%s", mode)
+	}
+
+	// 4. POSITIVE CONTROL: rostered scalar (BASH_ENV), same ungranted value as
+	// case 1. Must show `not granted` and NO `unchecked` — this is what proves
+	// cases 1-3 are not passing because the mark string is a constant that
+	// happens to contain "unchecked" and "not granted" together.
+	bashEnv := lineFor(t, got, "BASH_ENV")
+	if !strings.Contains(bashEnv, "not granted") {
+		t.Errorf("control: rostered BASH_ENV with an ungranted path must show not-granted:\n%s", bashEnv)
+	}
+	if strings.Contains(bashEnv, "unchecked") {
+		t.Errorf("control: rostered BASH_ENV must never carry the unchecked mark:\n%s", bashEnv)
+	}
+
+	// 5. PATH's shadow-slot mark still fires, and is not doubled with an
+	// unchecked mark it structurally cannot carry (PATH has a roster row).
+	pathLine := lineFor(t, got, "writable from inside")
+	if !strings.Contains(pathLine, "PATH") {
+		t.Fatalf("expected the writable-from-inside mark on the PATH line, got:\n%s", pathLine)
+	}
+	if strings.Contains(pathLine, "unchecked") {
+		t.Errorf("PATH is rostered, so IsUncheckedEnv can never fire for it; the writable mark "+
+			"must not be joined with one anyway:\n%s", pathLine)
+	}
+}
+
 // TestProfileShowMarksADeclaredNameAsUnchecked drives showEnviron directly —
 // the same entry point TestProfileShowRendersEveryEnvironVerb in
 // config_test.go uses — with a grant block carrying both a declared name and
