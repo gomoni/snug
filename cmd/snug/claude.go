@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/gomoni/snug/internal/policy"
@@ -12,10 +13,11 @@ import (
 
 // claudeFiles stages Claude Code's writable state and injects the guidance file.
 //
-// Read-only paths come from the `claude` profile. This handles the two things a
-// profile cannot express: files that must be WRITABLE COPIES, and a file whose
-// content depends on the resolved policy.
-func claudeFiles(pol *policy.Policy, home string) {
+// Read-only paths come from the `claude` profile. This handles the three things
+// a profile cannot express: files that must be WRITABLE COPIES, a file whose
+// content depends on the resolved policy, and a file that must be RECONSTRUCTED
+// from an allowlist of the host's rather than either bound or copied.
+func claudeFiles(pol *policy.Policy, home string, verbose bool) {
 	if !hasProfile(pol, "@claude") {
 		return
 	}
@@ -95,11 +97,159 @@ func claudeFiles(pol *policy.Policy, home string) {
 		})
 	}
 
+	stageClaudeSettings(pol, home, verbose)
+
 	guest := filepath.Join(home, ".claude", "CLAUDE.md")
 	pol.Replace(policy.Mount{
 		Guest: guest, Kind: policy.KindData, Access: policy.AccessRO,
 		Content: claudeGuidance(pol), From: []string{"@claude"},
 	})
+}
+
+// stageClaudeSettings generates the sandbox's ~/.claude/settings.json from an
+// ALLOWLIST of the host's, and is now the ONLY thing that ever writes a mount
+// at this guest path — base.toml no longer grants one (issue #17; see
+// .claude/design/CLAUDE-SETTINGS.md for the full argument this function is a
+// straight transcription of).
+//
+// WHY GENERATE RATHER THAN BIND, restated here because this is where the
+// decision becomes code. ~/.claude/settings.json is not a preferences file
+// that sometimes runs a command — it is a COMMAND TABLE: `hooks` runs shell
+// commands on ~34 tool/session lifecycle events, `apiKeyHelper` is a program
+// whose stdout IS an API key, and `statusLine`, `env`, `mcpServers`,
+// `enabledPlugins` and the marketplace keys each name a program to run, a
+// variable to set, or code to fetch. A read-only bind of the host's file (what
+// this profile did until now) stops the sandbox EDITING it and SUPPLIES every
+// one of those — the ~/.gitconfig argument (gitextract.go's doc comment), one
+// tool over. So this reads the host's file as DATA, keeps
+// policy.ClaudeSettingAllowlist's ten scalar keys, and writes the file the
+// sandbox actually sees. The filter itself lives in internal/policy, pure and
+// privilege-free; this function does the one thing that package must not: read
+// a host path.
+//
+// UNCONDITIONAL AND WRITABLE, unlike the read-only OPTIONAL bind it replaces,
+// and both are deliberate:
+//
+//   - Unconditional, like claudeStateJSON's ~/.claude.json: the mount now
+//     exists whether or not the host has ever run Claude Code, which is what
+//     lets --dry-run's CLAUDE block make one true claim about this path
+//     instead of branching on host state the way describeClaude used to.
+//   - Writable, the `gh` precedent (identity.go: gh rewrites hosts.yml on
+//     first use, and a read-only copy failed with "failed to write config
+//     after migration"). Claude Code writes into settings files too — the
+//     binary carries `Failed to set JSONC property` and `Failed to insert
+//     item into user JSONC array` — for /theme, /config and user-scope
+//     permission grants. It is a private tmpfs copy, so the write goes
+//     nowhere the host can see and dies with the session; the security delta
+//     over `ro` is nil, because the payload already has arbitrary execution
+//     inside and nothing at this path reaches the host either way. No test
+//     and no document may claim CONTAINMENT from anything written into this
+//     file during the run — see policy.ClaudeSettingAllowlist's refusal of
+//     `disableAllHooks` for the sharpest instance of that rule.
+//
+// EVERY FAILURE DEGRADES TO "carry nothing" and none of them fails the run:
+// absent file, unreadable file, an oversized file, invalid or JSONC-flavoured
+// JSON, a top-level value that is not an object. Each is named on stderr
+// (invariant 5) except an absent file, which needs no line — a host that has
+// never run Claude Code has nothing to say anything about, the same silence
+// claudeFiles' stage() closure already keeps for every other optional host
+// file.
+//
+// A HAND-EDITED JSONC FILE THEREFORE CARRIES NOTHING. encoding/json refuses
+// comments and trailing commas that Claude Code itself accepts, and that is a
+// deliberate, named divergence rather than an oversight: writing a JSONC
+// parser to track Claude Code's own is out of scope for what this profile
+// buys, and a human who hits it is told why on stderr instead of left to
+// wonder why their theme did not carry over.
+func stageClaudeSettings(pol *policy.Policy, home string, verbose bool) {
+	const readCap = 1 << 20 // 1 MiB — §5.6's read cap
+	path := filepath.Join(home, ".claude", "settings.json")
+
+	raw, degraded := loadHostClaudeSettings(path, readCap)
+	if degraded != "" {
+		fmt.Fprintf(os.Stderr, "snug: %s\n", degraded)
+	}
+
+	carried, droppedExecuting, refused := policy.FilterClaudeSettings(raw)
+	if len(droppedExecuting) > 0 {
+		fmt.Fprintf(os.Stderr, "snug: ~/.claude/settings.json: dropped %s — each names a "+
+			"program, selects or fetches code, or sets a process environment variable; a "+
+			"read-only bind would have supplied it, so snug does not carry it into the "+
+			"generated file (see policy.ClaudeExecutingKeys)\n", strings.Join(droppedExecuting, ", "))
+	}
+	// A refusal is a DIFFERENT kind of line from the one above, and the two must
+	// not be merged: dropping an executing key is snug refusing on purpose, with
+	// nothing for the human to act on; a refused VALUE is the human's OWN
+	// setting failing to carry — a `model` with a ':' in it, a `theme` that is
+	// not a string — and invariant 5 ("no silent downgrade, ever") means they
+	// are entitled to be told which key and why, not left to notice their
+	// preference silently did not survive. See policy.FilterClaudeSettings' doc
+	// comment for the measurement that found this missing.
+	for _, r := range refused {
+		fmt.Fprintf(os.Stderr, "snug: ~/.claude/settings.json: dropping %q — %s\n", r.Name, r.Reason)
+	}
+	if verbose {
+		names := make([]string, 0, len(carried))
+		for k := range carried {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		fmt.Fprintf(os.Stderr, "snug: ~/.claude/settings.json carried: %s\n", strings.Join(names, ", "))
+	}
+
+	body := policy.ClaudeSettingsJSON(carried)
+	perm := uint32(0o600)
+	pol.Replace(policy.Mount{
+		Guest: path, Kind: policy.KindData, Access: policy.AccessRW,
+		Content: policy.Secret(body), Perms: &perm, From: []string{"@claude"},
+	})
+}
+
+// loadHostClaudeSettings reads and decodes the host's ~/.claude/settings.json,
+// or reports why it could not — never both, and never an error the caller must
+// treat as fatal (§5.6's degradation rules: every failure here is "carry
+// nothing", none of them may fail the run).
+//
+// os.Stat first, deliberately, rather than os.ReadFile straight into the cap:
+// the cap exists so a multi-gigabyte file at this path (whatever put it there)
+// is never read into memory at all, not merely truncated after the fact.
+//
+// os.ReadFile FOLLOWS SYMLINKS, so a `~/.claude/settings.json` that symlinks to
+// `~/.ssh/id_ed25519` is read here. It cannot leak: the content then fails the
+// JSON decode (an ssh key is not a JSON object), and even a file that somehow
+// parsed could only contribute allowlisted, type-checked, charset-checked
+// scalars through FilterClaudeSettings. Contrast the bind this replaces, which
+// followed the identical symlink and mounted the target file WHOLE.
+func loadHostClaudeSettings(path string, maxBytes int64) (map[string]any, string) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		// Absent, or a stat-level permission error — either way there is
+		// nothing to carry and no host file the human is entitled to be told
+		// snug ignored. Matches claudeFiles' stage() closure for every other
+		// optional host path.
+		return nil, ""
+	}
+	if fi.Size() > maxBytes {
+		return nil, fmt.Sprintf("~/.claude/settings.json is %d bytes, over the %d-byte cap "+
+			"snug reads for it; carrying nothing rather than reading an arbitrarily large "+
+			"file into memory on every run", fi.Size(), maxBytes)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Sprintf("~/.claude/settings.json exists but could not be read (%v); "+
+			"carrying nothing", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		// Also catches "the top-level value is not an object": json.Unmarshal
+		// into map[string]any refuses an array or a bare scalar with the same
+		// error shape, so there is one branch for both degradations rather than
+		// two.
+		return nil, fmt.Sprintf("~/.claude/settings.json did not parse as strict JSON (%v) — "+
+			"Claude Code itself reads JSONC (comments, trailing commas) here and snug does "+
+			"not, so a hand-edited file in that dialect carries nothing into the sandbox", err)
+	}
+	return raw, ""
 }
 
 func hasProfile(pol *policy.Policy, name policy.ProfileName) bool {
@@ -128,12 +278,14 @@ func hasProfile(pol *policy.Policy, name policy.ProfileName) bool {
 //     picker. That is the half of issue #19's report that was wrong: there is no
 //     login prompt without ~/.claude.json, but there is onboarding. It blocks on
 //     EVERY run, not once ever, because $HOME is a fresh tmpfs each time, and the
-//     picker's answer is written to ~/.claude/settings.json, which cannot survive
-//     the run either way — @claude binds that path read-only when the host has it
-//     (MEASURED: EROFS) and the bind is `optional`, so on a host that has never
-//     run Claude Code the same path is an ordinary file on @home's tmpfs and dies
-//     with the session. Two different reasons, one outcome; do not state the bind
-//     as though it were unconditional (see describeClaude, which gates on it).
+//     picker's answer is written to ~/.claude/settings.json — which is itself
+//     GENERATED and writable now (stageClaudeSettings, issue #17), so the
+//     picker's answer cannot survive the run for the identical reason
+//     ~/.claude.json's own answer cannot: both live on a tmpfs that dies with
+//     the session, and neither is ever bound from the host any more. One
+//     outcome, one reason, on every host — this used to be two reasons because
+//     the settings.json bind was `optional`; it no longer is (see describeClaude,
+//     which used to gate a sentence on that and no longer needs to).
 //     A constant; it says nothing about this host.
 //
 //   - autoUpdates — the binary is a read-only bind at policy.StagedBinDir, so a
@@ -265,25 +417,21 @@ func hostTrustsTarget(home, target string) bool {
 	return doc.Projects[target].HasTrustDialogAccepted
 }
 
-// claudeSettingsBound reports whether ~/.claude/settings.json is really a
-// read-only bind of the host's file in THIS policy.
+// claudeAllowlistNames renders policy.ClaudeSettingAllowlist as a prose list,
+// so every sentence describing what the generated settings.json carries is
+// derived from the allowlist rather than copied out of it by hand.
 //
-// It exists because three separate sites said "~/.claude/settings.json is
-// read-only" flatly while base.toml lists that path under `optional`: a host
-// that has never run Claude Code has no such file, the bind is dropped, and the
-// path inside is an ordinary writable file on @home's tmpfs. The golden proved
-// it — TestGoldenClaudeBlock resolves against a fake home that does not exist,
-// so no bind is in that policy, and the block still claimed read-only.
-//
-// The lookup is exact and keyed on p.Home because the guest path comes from
-// base.toml's `{home}` expansion, which Resolve fills with the SAME canonicalised
-// home it puts in p.Home. If that ever stops being true the answer is false, and
-// false is the safe direction here: it under-claims (the caller then says only
-// that the tmpfs dies with the session, which is true of both arms) rather than
-// promising a read-only file that is writable.
-func claudeSettingsBound(p *policy.Policy) bool {
-	m, ok := p.Mounts[filepath.Join(p.Home, ".claude", "settings.json")]
-	return ok && m.Kind == policy.KindBind && m.Access == policy.AccessRO
+// The allowlist is already in a fixed, reviewed order (it is a slice, not a
+// map, for exactly that reason), so this preserves it rather than sorting:
+// `model` and `theme` lead because they are the two a human notices, and a
+// reader comparing this line against claudesettings.go should see the same
+// sequence in both places.
+func claudeAllowlistNames() string {
+	names := make([]string, 0, len(policy.ClaudeSettingAllowlist))
+	for _, k := range policy.ClaudeSettingAllowlist {
+		names = append(names, "`"+k.Name+"`")
+	}
+	return strings.Join(names, ", ")
 }
 
 // claudeGuidance is the ~/.claude/CLAUDE.md snug injects.
@@ -342,22 +490,32 @@ func claudeGuidance(pol *policy.Policy) []byte {
 	b.WriteString("approved in a host session were not carried in either, so you may be asked to\n")
 	b.WriteString("approve a tool the human already approved outside. None of this is a fault to\n")
 	b.WriteString("diagnose.\n\n")
-	// The read-only bind is OPTIONAL (base.toml), so this sentence is gated on the
-	// policy rather than asserted. On a host that has never run Claude Code there
-	// is no host file to bind and ~/.claude/settings.json is an ordinary file on
-	// @home's tmpfs: `echo x >>` SUCCEEDS there, so "it is read-only" would be
-	// false on the one artifact whose whole value is being checkable. The
-	// conclusion survives either way, for two different reasons.
-	if claudeSettingsBound(pol) {
-		b.WriteString("Settings you change here do not persist: `~/.claude/settings.json` is a\n")
-		b.WriteString("read-only bind of the host's file, and the rest of `~/.claude` is a tmpfs that\n")
-		b.WriteString("dies with this session, so `/theme`, `/model` and friends will not stick.\n\n")
-	} else {
-		b.WriteString("Settings you change here do not persist: `~/.claude/settings.json` is NOT bound\n")
-		b.WriteString("from the host (there was none to bind), so it is an ordinary file on the\n")
-		b.WriteString("`~/.claude` tmpfs — writable, and gone with this session along with the rest of\n")
-		b.WriteString("that directory, so `/theme`, `/model` and friends will not stick.\n\n")
-	}
+	// UNCONDITIONAL, unlike the two-arm text this replaces: ~/.claude/settings.json
+	// is no longer ever a bind of the host's (issue #17 removed the last profile
+	// grant at this path — base.toml's [profile.claude] `ro`/`optional` no longer
+	// name it), so there is exactly one true sentence about it on every host,
+	// not two gated on whether the host happened to have a file.
+	// ENUMERATED FROM THE ALLOWLIST, never counted by hand. An earlier draft of
+	// this paragraph said "ten scalar preferences (model, theme, editorMode and
+	// seven booleans)", which is a copy of state held in
+	// policy.ClaudeSettingAllowlist — and CLAUDE.md's "the writable surface is
+	// eight paths" bullet is the record of what happens to such a copy: the list
+	// grew, the prose did not, and no test could fail. This is the one copy that
+	// mattered most, because it is text an AGENT reads inside the sandbox and
+	// acts on. Now the sentence cannot drift: add a key to the allowlist and it
+	// appears here on the next run.
+	b.WriteString("`~/.claude/settings.json` is GENERATED by snug from an allowlist of your\n")
+	fmt.Fprintf(&b, "host's. Carried: %s. NOT carried:\n", claudeAllowlistNames())
+	b.WriteString("`hooks`, `apiKeyHelper`, `env`, `mcpServers`,\n")
+	b.WriteString("`enabledPlugins` and the marketplace keys, because each names a\n")
+	b.WriteString("program to run, a credential to print, or code to fetch. THIS DOES NOT CLOSE\n")
+	b.WriteString("THE PLUGIN CHANNEL: `~/.claude/plugins` is still bound read-only, and a\n")
+	b.WriteString("plugin's own manifest carries its own `hooks` block that Claude Code loads\n")
+	b.WriteString("automatically, independently of this file. See\n")
+	b.WriteString("https://github.com/gomoni/snug/issues/68 if that matters to what you are doing.\n")
+	b.WriteString("Settings you change here do not persist: it is a writable file on the\n")
+	b.WriteString("`~/.claude` tmpfs, and dies with this session along with the rest of that\n")
+	b.WriteString("directory, so `/theme`, `/model` and friends will not stick.\n\n")
 	// The exception, stated because "settings do not persist" is otherwise
 	// absolute and the target is writable AND persistent — which is exactly where
 	// Claude Code puts a project-scope permission grant.

@@ -708,18 +708,47 @@ the same fixture opened on "Welcome back!" with no dialog and `HOOK-FIRED`
 present — the repo's code executing at startup, in a sandbox holding the staged
 Anthropic OAuth token. Delete the generated state and the theme picker comes back
 too on **every** run: `$HOME` is a fresh tmpfs each time, and the picker's answer
-is written to `~/.claude/settings.json`, which is a read-only bind if your host
-has that file:
+is written to `~/.claude/settings.json`, which snug now GENERATES on every run
+rather than binding (issue #17) — the file is a command table (`hooks`,
+`apiKeyHelper`, `env`, `mcpServers`, `enabledPlugins` all name a program to run,
+a credential to print, or code to fetch), so a read-only bind of the host's
+would still hand every one of those over rather than stop them. See exactly
+what crosses:
 
 ```bash
-./bin/snug -p @claude $SC/proj/sub -- /bin/sh -c 'echo x >> ~/.claude/settings.json'
+./bin/snug -p @claude $SC/proj/sub -- cat ~/.claude/settings.json
 ```
 
-Expect `Read-only file system` — **on a host that has run Claude Code**. That
-bind is `optional`: with no `~/.claude/settings.json` on the host there is
-nothing to bind, the path inside is an ordinary file on the `~/.claude` tmpfs,
-and the append SUCCEEDS. It still cannot persist (the tmpfs dies with the
-session), and `--dry-run`'s `CLAUDE` block says which of the two you have.
+Expect a small JSON document containing your `model` and `theme` and nothing
+else you recognise from your host file — in particular no `hooks`,
+`apiKeyHelper`, `env`, `enabledPlugins` or `extraKnownMarketplaces`. Then:
+
+```bash
+diff <(./bin/snug -p @claude $SC/proj/sub -- cat ~/.claude/settings.json) ~/.claude/settings.json
+```
+
+Expect a difference on every executing key, and agreement on the carried ones.
+And the writability arm — it is a private tmpfs copy, so nothing here reaches
+the host:
+
+```bash
+./bin/snug -p @claude $SC/proj/sub -- /bin/sh -c 'echo "{}" > ~/.claude/settings.json; echo ok'
+md5sum ~/.claude/settings.json   # unchanged on the host
+```
+
+**And the measurement that stays open after this fix**, on a host with a
+hook-carrying plugin installed:
+
+```bash
+./bin/snug -p @claude <a-directory-you-have-trusted> -- claude
+```
+
+Watch for the plugin's `SessionStart` hook firing (a file it writes, or a
+status message it prints). `@claude` still binds `{home}/.claude/plugins`
+read-only, and a plugin manifest — plus `installed_plugins.json`, independently
+of `settings.json` — carries its own `hooks` block that Claude Code loads
+automatically. Filtering `settings.json` does not touch that channel. See
+https://github.com/gomoni/snug/issues/68.
 
 What you should also expect, and it is not breakage: `/mcp` shows nothing from
 your host user config — a `.mcp.json` committed in the target is a different

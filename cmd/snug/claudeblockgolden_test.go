@@ -27,22 +27,28 @@ import (
 // with no artifact to read. CLAUDE.md: a security change that produces no golden
 // diff is probably untested.
 //
-// TWO GOLDENS, because two lines of this block are conditional and each has two
-// arms. Between them the pair pins all four:
+// TWO GOLDENS. ~/.claude.json's trust line is still conditional (one line, two
+// arms — issue #19); ~/.claude/settings.json is UNCONDITIONAL now (issue #17:
+// it is generated on every host, never bound), so what varies about it between
+// the two goldens is no longer WHETHER it exists but WHAT IT CARRIED, and only
+// the second case bothers to exercise that — the first is the plain "host had
+// nothing to carry" shape stageClaudeSettings produces against a host with no
+// file at all.
 //
-//	claude-block.txt          host has NOT trusted the target, and
-//	                          ~/.claude/settings.json is not bound (no host file)
-//	claude-block-trusted.txt  host HAS trusted this exact path, and the
-//	                          settings.json bind is present
+//	claude-block.txt          host has NOT trusted the target; no settings
+//	                          were carried (nothing on the fake host to carry)
+//	claude-block-trusted.txt  host HAS trusted this exact path, AND its
+//	                          settings.json exercises the filter: some keys
+//	                          carried, some (consequential) keys dropped
 //
 // Pairing the arms this way rather than writing four goldens keeps the review
 // artifact to two files while leaving no rendered sentence unpinned; each arm's
 // condition is also asserted directly below, so a swap cannot pass by accident.
 func TestGoldenClaudeBlock(t *testing.T) {
-	t.Run("untrusted target, settings.json not bound", func(t *testing.T) {
+	t.Run("untrusted target, nothing carried into settings.json", func(t *testing.T) {
 		goldenClaudeBlock(t, "claude-block.txt", false, false)
 	})
-	t.Run("host-trusted target, settings.json bound read-only", func(t *testing.T) {
+	t.Run("host-trusted target, settings.json filter exercised", func(t *testing.T) {
 		goldenClaudeBlock(t, "claude-block-trusted.txt", true, true)
 	})
 
@@ -59,14 +65,14 @@ func TestGoldenClaudeBlock(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
 		}
-		claudeFiles(plain, ctx.Home)
+		claudeFiles(plain, ctx.Home, false)
 		if got := captureFile(t, func(f *os.File) { describeClaude(f, plain) }); got != "" {
 			t.Errorf("the CLAUDE block printed for a selection without @claude:\n%s", got)
 		}
 	})
 }
 
-func goldenClaudeBlock(t *testing.T, name string, hostTrusts, bindSettings bool) {
+func goldenClaudeBlock(t *testing.T, name string, hostTrusts, exerciseSettingsFilter bool) {
 	t.Helper()
 	reg, err := profile.Builtins()
 	if err != nil {
@@ -75,23 +81,22 @@ func goldenClaudeBlock(t *testing.T, name string, hostTrusts, bindSettings bool)
 	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "@claude")
 	ctx := envGoldenCtx()
 	fake := newEnvFakeEnv()
-	if bindSettings {
-		// @claude marks this bind `optional`, so it is in the policy only on a
-		// host that has the file. The fake host is mutated per call rather than in
-		// newEnvFakeEnv: every other golden in this package shares that fixture,
-		// and adding a path there would move goldens this change has no business
-		// touching.
-		fake.dirs["/home/u/.claude/settings.json"] = true
-	}
+	// No `fake.dirs["/home/u/.claude/settings.json"]` any more, and its absence is
+	// the point of issue #17 rather than a tidy-up: that line existed to make the
+	// `optional` BIND appear in the policy, and there is no bind to make appear.
+	// The mount is unconditional and authored, so the fake host needs to say
+	// nothing about the path at all.
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, ctx, fake)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	// The real staging code, against the fake host's home. /home/u does not
-	// exist, so the credentials copy is skipped and the generated file lands with
-	// no trust entry — which IS the untrusted arm, reached the way a real host
-	// reaches it rather than by poking the policy.
-	claudeFiles(p, ctx.Home)
+	// exist, so the credentials copy is skipped, the ~/.claude.json trust entry
+	// is absent, and stageClaudeSettings' own host read comes back "absent" too
+	// — settings.json is staged with an empty allowlisted set ("{}\n"). That IS
+	// the untrusted arm, reached the way a real host reaches it rather than by
+	// poking the policy.
+	claudeFiles(p, ctx.Home, false)
 
 	if hostTrusts {
 		// The trusted arm, produced by the REAL generator against a REAL host file
@@ -117,6 +122,33 @@ func goldenClaudeBlock(t *testing.T, name string, hostTrusts, bindSettings bool)
 		})
 	}
 
+	if exerciseSettingsFilter {
+		// The filter arm, produced by the REAL filter (policy.FilterClaudeSettings,
+		// policy.ClaudeSettingsJSON) against a document shaped like a host's, built
+		// in memory rather than written to ctx.Home (which does not exist on any
+		// machine, same reason the trust arm above uses a separate temp directory
+		// instead). One carried key, one dropped-and-catalogued key: enough to
+		// show both lines of the disclosure without turning the golden into a
+		// second copy of TestClaudeSettingsFilterDropsEveryExecutingKey.
+		raw := map[string]any{"theme": "dark", "apiKeyHelper": "/bin/cat /etc/passwd"}
+		carried, dropped, _ := policy.FilterClaudeSettings(raw)
+		if _, ok := carried["theme"]; !ok {
+			t.Fatal("control: the filter dropped `theme`, a positive control this fixture " +
+				"depends on to show a non-empty `carried:` line")
+		}
+		if len(dropped) == 0 {
+			t.Fatal("control: the filter did not report `apiKeyHelper` as a dropped executing " +
+				"key, so this arm would silently golden the same `carried: (none)` shape as " +
+				"the untrusted case above")
+		}
+		perm := uint32(0o600)
+		p.Replace(policy.Mount{
+			Guest: filepath.Join(ctx.Home, ".claude", "settings.json"), Kind: policy.KindData,
+			Access: policy.AccessRW, Content: policy.Secret(policy.ClaudeSettingsJSON(carried)),
+			Perms: &perm, From: []string{"@claude"},
+		})
+	}
+
 	// CONTROL: the block only means something if the mount it describes is
 	// really in the policy. Without this the golden could be pinning the empty
 	// string after a refactor silently stopped generating the file.
@@ -124,16 +156,17 @@ func goldenClaudeBlock(t *testing.T, name string, hostTrusts, bindSettings bool)
 	if !ok {
 		t.Fatal("control: nothing was staged at ~/.claude.json, so this golden pins nothing")
 	}
+	if _, ok := claudeSettingsMount(p); !ok {
+		t.Fatal("control: nothing was staged at ~/.claude/settings.json — it is UNCONDITIONAL " +
+			"now (issue #17), so its absence here means stageClaudeSettings silently stopped " +
+			"running rather than that this arm has nothing to say")
+	}
 	// CONTROL: each arm is in the state it says it is. Otherwise a bug that made
-	// claudeTrustCarried or claudeSettingsBound always answer the same way would
-	// leave two goldens quietly pinning one arm twice.
+	// claudeTrustCarried always answer the same way would leave two goldens
+	// quietly pinning one arm twice.
 	if got := claudeTrustCarried(p, m); got != hostTrusts {
 		t.Fatalf("control: claudeTrustCarried = %v, want %v — this golden is not pinning "+
 			"the arm it names", got, hostTrusts)
-	}
-	if got := claudeSettingsBound(p); got != bindSettings {
-		t.Fatalf("control: claudeSettingsBound = %v, want %v — this golden is not pinning "+
-			"the arm it names", got, bindSettings)
 	}
 
 	got := captureFile(t, func(f *os.File) { describeClaude(f, p) })
