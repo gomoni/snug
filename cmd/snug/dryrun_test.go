@@ -56,7 +56,7 @@ func testTree(t *testing.T) (home, target string) {
 	return home, target
 }
 
-func resolveFor(t *testing.T, sel []string) *policy.Policy {
+func resolveFor(t *testing.T, sel []policy.ProfileName) *policy.Policy {
 	t.Helper()
 	reg := loadTestRegistry(t)
 	home, target := testTree(t)
@@ -83,7 +83,7 @@ func TestDryRunAnnotationsAreTruthful(t *testing.T) {
 	// without this, the negative assertions below could be passing because
 	// resolveFor or the annotation helpers are broken, not because the claims
 	// are honest.
-	def := resolveFor(t, []string{"@sys", "@home", "@cwd-rw", "@parent-ro"})
+	def := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro"})
 	if got := targetAnnotation(def); !strings.Contains(got, "writable") {
 		t.Errorf("control: with @cwd-rw selected the target really is writable, got %q", got)
 	}
@@ -93,7 +93,7 @@ func TestDryRunAnnotationsAreTruthful(t *testing.T) {
 
 	// Without @cwd-rw or @home: @parent-ro covers the target read-only (via its
 	// parent), and $HOME is not mounted at all. Neither claim holds any more.
-	sparse := resolveFor(t, []string{"@sys", "@parent-ro"})
+	sparse := resolveFor(t, []policy.ProfileName{"@sys", "@parent-ro"})
 	if got := targetAnnotation(sparse); strings.Contains(got, "writable") {
 		t.Errorf("--no-defaults -p @sys -p @parent-ro must not claim the target is writable, got %q", got)
 	}
@@ -121,7 +121,7 @@ func TestDryRunAnnotationDoesNotUnderstateWriteAccess(t *testing.T) {
 	home, target := testTree(t)
 	reg["layered"] = &policy.Profile{
 		Name:    "layered",
-		Include: []string{"@sys"},
+		Include: []policy.ProfileName{"@sys"},
 		RO:      []string{"{target}"},
 		RW:      []string{"{target}/src"},
 	}
@@ -130,7 +130,7 @@ func TestDryRunAnnotationDoesNotUnderstateWriteAccess(t *testing.T) {
 	}
 
 	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
-	p, err := policy.Resolve(reg, []string{"layered"}, ctx, policy.OSEnviron{})
+	p, err := policy.Resolve(reg, []policy.ProfileName{"layered"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestDryRunAnnotationDoesNotUnderstateWriteAccess(t *testing.T) {
 
 	// And the noise control: an ephemeral tmpfs below an ephemeral tmpfs is not
 	// a surprise and must NOT be listed, or the line becomes one people skip.
-	def := resolveFor(t, []string{"@sys", "@home", "@cwd-rw", "@parent-ro"})
+	def := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro"})
 	if got := homeAnnotation(def); strings.Contains(got, ".cache") {
 		t.Errorf("HOME lists tmpfs children as if they were surprises: %q", got)
 	}
@@ -189,7 +189,7 @@ func TestDescribeCommandsNamesTheStagedStub(t *testing.T) {
 			{Name: "podman", Path: "/usr/bin/podman", Resolved: "/usr/bin/distrobox-host-exec"},
 		},
 	}
-	p, err := policy.Resolve(reg, []string{"@sys", "@home", "@cwd-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
+	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestDescribeCommandsNamesTheStagedStub(t *testing.T) {
 	// CONTROL: without a detected shim, no podman profile grants a stub, and
 	// the block must not print at all — a block that always prints proves
 	// nothing about the staging condition.
-	plain := resolveFor(t, []string{"@sys", "@home", "@cwd-rw"})
+	plain := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw"})
 	if got := captureFile(t, func(f *os.File) { describeCommands(f, plain) }); got != "" {
 		t.Errorf("COMMANDS block printed with no stub staged: %q", got)
 	}
@@ -235,7 +235,7 @@ func TestGrantMarkStillUsesTheWiderPredicate(t *testing.T) {
 	reg := loadTestRegistry(t)
 	home, target := testTree(t)
 	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
-	p, err := policy.Resolve(reg, []string{"@sys", "@home", "@cwd-rw", "@claude"}, ctx, policy.OSEnviron{})
+	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@claude"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestWritableMarkIsPathOnlyAndDistinctFromNotGranted(t *testing.T) {
 	reg := loadTestRegistry(t)
 	home, target := testTree(t)
 	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
-	p, err := policy.Resolve(reg, []string{"@sys", "@home", "@cwd-rw"}, ctx, policy.OSEnviron{})
+	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@cwd-rw"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -567,7 +567,7 @@ func TestFilesystemBlockRendersTheStubAsExec(t *testing.T) {
 			{Name: "podman", Path: "/usr/bin/podman", Resolved: "/usr/bin/distrobox-host-exec"},
 		},
 	}
-	p, err := policy.Resolve(reg, []string{"@sys", "@home", "@cwd-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
+	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -624,7 +624,7 @@ func TestDescribeSSHNamesTheReplacedPathAndItsCost(t *testing.T) {
 	reg["sshhost"] = &policy.Profile{Name: "sshhost", RO: []string{sshHost + ":/etc/ssh"}}
 
 	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
-	p, err := policy.Resolve(reg, []string{"@sys", "@home", "@cwd-rw", "sshhost"}, ctx, policy.OSEnviron{})
+	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "sshhost"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -650,7 +650,7 @@ func TestDescribeSSHNamesTheReplacedPathAndItsCost(t *testing.T) {
 	// than from /usr, so it cannot coincidentally cover an ssh_config path the
 	// way selecting @sys would.
 	reg["runtime-only"] = &policy.Profile{Name: "runtime-only", RO: []string{home + ":/bin"}}
-	plain, err := policy.Resolve(reg, []string{"@cwd-rw", "runtime-only"}, ctx, policy.OSEnviron{})
+	plain, err := policy.Resolve(reg, []policy.ProfileName{"@cwd-rw", "runtime-only"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}

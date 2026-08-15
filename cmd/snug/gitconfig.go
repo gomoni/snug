@@ -86,7 +86,7 @@ func extractGitConfig(home, target string) (policy.GitValues, error) {
 // dryRun follows the identity band exactly (stageGhConfig): a real run refuses,
 // a dry run warns and prints the policy anyway, because --dry-run is how a
 // profile gets inspected on a host that cannot satisfy it.
-func hostGitValues(reg profileRegistry, selected []string, home, target string, verbose, dryRun bool) (policy.GitValues, error) {
+func hostGitValues(reg profileRegistry, selected []policy.ProfileName, home, target string, verbose, dryRun bool) (policy.GitValues, error) {
 	if !gitExtractSelected(reg, selected) {
 		return nil, nil
 	}
@@ -114,8 +114,8 @@ func hostGitValues(reg profileRegistry, selected []string, home, target string, 
 // gitExtractSelected peeks at the selection so the caller only does the host IO
 // when something actually asked for it. Same shape as identityHost: resolution
 // stays pure, and a sandbox that never mentions git never reads your git config.
-func gitExtractSelected(reg profileRegistry, selected []string) bool {
-	set, err := policy.Expand(map[string]*policy.Profile(reg), selected)
+func gitExtractSelected(reg profileRegistry, selected []policy.ProfileName) bool {
+	set, err := policy.Expand(map[policy.ProfileName]*policy.Profile(reg), selected)
 	if err != nil {
 		return false
 	}

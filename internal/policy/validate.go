@@ -69,7 +69,7 @@ func (p *Policy) Validate(env Environ) error {
 			"       This is the empty sandbox — it is the correct floor of the model, but nothing can run in it.\n"+
 			"       Try:  snug %s          (uses the default profile selection)\n"+
 			"       See:  snug profile list",
-			strings.Join(p.Profiles, " "), p.Target)
+			JoinNames(p.Profiles, " "), p.Target)
 	case !hasRuntime:
 		return fmt.Errorf("no OS runtime granted: neither /usr nor /bin is readable, so nothing can execute " +
 			"(add the 'sys' profile)")

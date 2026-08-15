@@ -31,9 +31,15 @@ const Sigil = "@"
 // three legs monotonicity stands on. Adding such a field is not a feature, it
 // is a change of model.
 type Profile struct {
-	Name        string
+	// Name and Include are ProfileName, not string: both are profile names, and
+	// the type is what says they went through the grammar. Note the asymmetry
+	// with Mount.From, which stays a plain []string — that field is PROVENANCE
+	// and already carries non-profile values like "(snug)", "identity:<name>"
+	// and "replaces:<...>", so typing it would be claiming something untrue of
+	// most of what it holds.
+	Name        ProfileName
 	Description string
-	Include     []string
+	Include     []ProfileName
 
 	RO      []string // paths, or "host:guest" pairs; may contain {variables}
 	RW      []string

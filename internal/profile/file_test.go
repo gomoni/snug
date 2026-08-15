@@ -131,7 +131,7 @@ func TestBuiltinsLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"@sys", "@home", "@cwd-rw", "@parent-ro"} {
+	for _, want := range []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro"} {
 		if _, ok := reg[want]; !ok {
 			t.Errorf("builtin profile %q is missing", want)
 		}
@@ -234,11 +234,11 @@ func TestNoBuiltinSanitises(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	names := make([]string, 0, len(reg))
+	names := make([]policy.ProfileName, 0, len(reg))
 	for name := range reg {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	for _, name := range names {
 		if got := reg[name].Environ.Sanitise; len(got) > 0 {
 			t.Errorf("builtin profile %q sanitises %v.\n"+
@@ -274,7 +274,7 @@ func TestBuiltinDefaultsNameRealProfiles(t *testing.T) {
 	// principle, and offline-is-the-absence-of-a-profile is a property worth
 	// keeping: it cannot then be switched back on by accident.
 	for _, n := range names {
-		if strings.HasPrefix(n, policy.Sigil+"net") {
+		if strings.HasPrefix(string(n), policy.Sigil+"net") {
 			t.Errorf("built-in default %q opens the network; offline must stay the default", n)
 		}
 	}
@@ -353,7 +353,7 @@ func TestEveryBuiltinCarriesTheSigil(t *testing.T) {
 		t.Fatal("no builtins loaded, so this test cannot fail — the embed is broken")
 	}
 	for name, p := range reg {
-		if !strings.HasPrefix(name, policy.Sigil) {
+		if _, marked := name.CutMark(); !marked {
 			t.Errorf("builtin %q does not carry %q", name, policy.Sigil)
 		}
 		if p.Name != name {
@@ -362,7 +362,7 @@ func TestEveryBuiltinCarriesTheSigil(t *testing.T) {
 		// An include is rewritten with the rest, or a builtin resolves against
 		// whatever the user happens to have called `sys`.
 		for _, inc := range p.Include {
-			if !strings.HasPrefix(inc, policy.Sigil) {
+			if _, marked := inc.CutMark(); !marked {
 				t.Errorf("builtin %q includes %q, which is not a builtin name", name, inc)
 			}
 			if _, ok := reg[inc]; !ok {

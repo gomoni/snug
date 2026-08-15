@@ -122,7 +122,7 @@ func TestGoldenEnvironment(t *testing.T) {
 
 	cases := []struct {
 		name string
-		sel  []string
+		sel  []policy.ProfileName
 		ctx  policy.Context
 		// refused is true where Validate rejects the selection. Resolve's
 		// contract returns the policy ANYWAY in that case (see its doc comment),
@@ -138,22 +138,22 @@ func TestGoldenEnvironment(t *testing.T) {
 		// @claude names NO PATH directory of its own — the band is snug's, and
 		// that is the fix for the shadow slot the old `merge {home}/.local/bin`
 		// installed (TestNoBuiltinPutsAWritableDirectoryOnPATH).
-		{"claude", append(append([]string{}, profile.BuiltinDefaults()...), "@claude"), envGoldenCtx(), false},
+		{"claude", append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "@claude"), envGoldenCtx(), false},
 		// Containers, with a host whose podman is a distrobox shim — so the
 		// staged stub's directory appears on PATH and the golden shows where in
 		// the ordering it lands.
-		{"podman-socket", []string{"@sys", "@cwd-rw", "@podman-socket"}, envGoldenCtxWithShim(), false},
+		{"podman-socket", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, envGoldenCtxWithShim(), false},
 		// §4.2, the case the design measured and nothing rendered: snug authors
 		// HOME, SHELL and the four base PATH entries unconditionally, and with
 		// only @parent-ro selected NONE of those paths is granted. It must keep
 		// authoring them — §4.3 shows PATH and HOME have no safe absent state —
 		// so the repair is that this block SAYS SO.
-		{"parent-ro-marks", []string{"@parent-ro"}, envGoldenCtx(), true},
+		{"parent-ro-marks", []policy.ProfileName{"@parent-ro"}, envGoldenCtx(), true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p, err := policy.Resolve(map[string]*policy.Profile(reg), tc.sel, tc.ctx, newEnvFakeEnv())
+			p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), tc.sel, tc.ctx, newEnvFakeEnv())
 			switch {
 			case tc.refused && err == nil:
 				t.Fatalf("Resolve(%v) was expected to be refused; if this selection became "+

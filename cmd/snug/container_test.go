@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // TestContainerSocketNeverExposesEngineSocketDir is the red team's missing
@@ -24,7 +26,7 @@ func TestContainerSocketNeverExposesEngineSocketDir(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 
-	p := resolveFor(t, []string{"@sys", "@home", "@cwd-rw", "@podman-socket"})
+	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@podman-socket"})
 
 	// startContainers never actually starts podman: the engine is brought up
 	// lazily on the proxy's first HTTP request (container.go), and this test

@@ -69,7 +69,7 @@ type Identity struct {
 //
 // The verdict is a property of the profile text, so it is the same on every host
 // and belongs beside resolution rather than in a renderer.
-func (i *Identity) CheckText(profileName string) error {
+func (i *Identity) CheckText(profileName ProfileName) error {
 	if i == nil {
 		return nil
 	}

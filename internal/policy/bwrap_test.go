@@ -17,7 +17,7 @@ var update = flag.Bool("update", false, "rewrite golden files")
 func TestGoldenBwrapArgs(t *testing.T) {
 	cases := []struct {
 		name string
-		sel  []string
+		sel  []ProfileName
 		ctx  Context
 		// env supplies this case's fake host. nil means newFakeEnv() — every
 		// case but one shares the plain fixture, and PATH stays off it
@@ -25,20 +25,20 @@ func TestGoldenBwrapArgs(t *testing.T) {
 		// silently grow a host value every future case inherits.
 		env func() *fakeEnv
 	}{
-		{"sys", []string{"@sys", "@cwd-rw"}, testCtx(), nil},
+		{"sys", []ProfileName{"@sys", "@cwd-rw"}, testCtx(), nil},
 		// What a bare `snug <dir>` produces: the `defaults` setting. It is
 		// byte-identical to the parent-ro case today, because `home` arrives via
 		// `cwd-rw` anyway — but this is the file that changes if the shipped
 		// defaults ever do, which is the diff a human most needs to see.
 		{"defaults", testDefaults, testCtx(), nil},
-		{"parent-ro", []string{"@sys", "@cwd-rw", "@parent-ro"}, testCtx(), nil},
+		{"parent-ro", []ProfileName{"@sys", "@cwd-rw", "@parent-ro"}, testCtx(), nil},
 		// No prior golden selected a podman profile at all, so this is the
 		// review artifact for the whole podman-client change: the container
 		// proxy socket AND the staged dispatcher stub (this fixture's host
 		// detects podman as a distrobox shim — see testCtxWithPodmanShim),
 		// including its PATH placement ahead of the base but behind nothing
 		// else this selection grants.
-		{"podman-socket", []string{"@sys", "@cwd-rw", "@podman-socket"}, testCtxWithPodmanShim(), nil},
+		{"podman-socket", []ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, testCtxWithPodmanShim(), nil},
 		// The review artifact for the sanitise-C fix (envresolve.go's
 		// keepHostElement): no prior golden selected environ.sanitise at all, so
 		// the whole change to the filter's Kind-switch produced zero golden
@@ -64,7 +64,7 @@ func TestGoldenBwrapArgs(t *testing.T) {
 		// other case with the file present always has @sys too. "runtime-bin"
 		// supplies the OS-runtime grant Validate requires, deliberately at /bin
 		// rather than /usr, so it cannot accidentally cover the ssh path itself.
-		{"system-ssh-uncovered", []string{"@home", "@cwd-rw", "@parent-ro", "runtime-bin"}, testCtx(), sysSSHProbeEnv},
+		{"system-ssh-uncovered", []ProfileName{"@home", "@cwd-rw", "@parent-ro", "runtime-bin"}, testCtx(), sysSSHProbeEnv},
 	}
 
 	for _, tc := range cases {

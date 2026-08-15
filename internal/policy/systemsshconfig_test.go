@@ -39,7 +39,7 @@ func TestIdentityReplacesTheSystemSSHConfigWhereTheHostHasOne(t *testing.T) {
 	env.dirs["/usr/etc/ssh/ssh_config"] = true
 
 	p, err := Resolve(identityRegistry("~/.ssh/id_ed25519.pub"),
-		append(append([]string{}, testDefaults...), "pinned"), testCtx(), env)
+		append(append([]ProfileName{}, testDefaults...), "pinned"), testCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestSystemSSHConfigIsNotInventedWhereTheHostHasNone(t *testing.T) {
 	env := newFakeEnv()
 
 	p, err := Resolve(identityRegistry("~/.ssh/id_ed25519.pub"),
-		append(append([]string{}, testDefaults...), "pinned"), testCtx(), env)
+		append(append([]ProfileName{}, testDefaults...), "pinned"), testCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestSystemSSHConfigIsProducedRegardlessOfSSHMode(t *testing.T) {
 		Name:     "pinned",
 		Identity: &Identity{SSHMode: SSHNone, GitName: "u", GitEmail: "u@example.com"},
 	}
-	p, err := Resolve(reg, append(append([]string{}, testDefaults...), "pinned"), testCtx(), env)
+	p, err := Resolve(reg, append(append([]ProfileName{}, testDefaults...), "pinned"), testCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestSystemSSHConfigNeedsACoveringBind(t *testing.T) {
 	// needs SOME runtime grant to be a legal policy — testRegistry's
 	// "runtime-bin" deliberately does NOT cover /usr, or the test would stop
 	// discriminating anything.
-	p, err := Resolve(testRegistry(), []string{"@home", "@cwd-rw", "@parent-ro", "runtime-bin"}, testCtx(), env)
+	p, err := Resolve(testRegistry(), []ProfileName{"@home", "@cwd-rw", "@parent-ro", "runtime-bin"}, testCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestSystemSSHConfigFailsClosedOnATmpfsCoveringMount(t *testing.T) {
 	// shape @home grants at {home}, aimed at the path this test needs covered.
 	reg["tmpfs-usr"] = &Profile{Name: "tmpfs-usr", Tmpfs: []string{"/usr"}}
 
-	p, err := Resolve(reg, []string{"@home", "@cwd-rw", "@parent-ro", "tmpfs-usr"}, testCtx(), env)
+	p, err := Resolve(reg, []ProfileName{"@home", "@cwd-rw", "@parent-ro", "tmpfs-usr"}, testCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}

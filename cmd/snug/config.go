@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,6 +37,14 @@ type userConfig struct {
 	// from an unset one, since both decode to len 0 — that told a user's
 	// written `defaults = []` a lie by silently widening it back to the
 	// built-in four.
+	//
+	// []string and NOT []policy.ProfileName, deliberately, even though every
+	// element is a profile name: go-toml writes this field by REFLECTION, which
+	// would put a value into a ProfileName without ever calling
+	// NewProfileName — the one door the type cannot close on its own. It
+	// decodes as text and defaultProfiles converts, which is where a bad name
+	// gets an error naming the file. TestNoDecodedStructFieldIsAProfileName
+	// asserts no struct in this module takes the other route.
 	Defaults *[]string `toml:"defaults"`
 }
 
@@ -85,11 +94,22 @@ func loadUserConfig() userConfig {
 // from so `snug config` can say which one is in effect. There is no profile
 // called `default` any more: the built-in list is a preference (see
 // profile.BuiltinDefaults), and a config file replaces it wholesale.
-func defaultProfiles() (names []string, source string) {
-	if c := loadUserConfig(); c.Defaults != nil {
-		return *c.Defaults, configPath()
+// It is also the door through which the `defaults` setting becomes
+// policy.ProfileName. A name the grammar refuses is fatal here rather than
+// carried: `defaults` is read on the path that starts a sandbox, so continuing
+// with the built-in four instead would be a silent widening — invariant 5, and
+// the same reasoning that already makes an unreadable config.toml fatal above.
+func defaultProfiles() (names []policy.ProfileName, source string) {
+	c := loadUserConfig()
+	if c.Defaults == nil {
+		return profile.BuiltinDefaults(), "built-in"
 	}
-	return profile.BuiltinDefaults(), "built-in"
+	out, err := policy.NewProfileNames(*c.Defaults)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "snug: %s: defaults: %v\n", configPath(), err)
+		os.Exit(exitPolicy)
+	}
+	return out, configPath()
 }
 
 // configCmd prints the resolved configuration and where each part came from.
@@ -132,9 +152,15 @@ func configCmd(args []string) int {
 	// effect" command — showed neither the file nor reality. The run then failed
 	// with `unknown profile ""`. Quote each name so an empty or space-bearing
 	// one is visible rather than invisible.
+	//
+	// That exact spelling can no longer reach here — defaultProfiles refuses it,
+	// because "" fails the grammar and a ProfileName is the only thing it can
+	// return — but the reasoning survives it: this branch is about not deciding
+	// what to print from a string that has already lost the list's structure,
+	// and the next value that renders to nothing will meet it again.
 	quoted := make([]string, len(names))
 	for i, n := range names {
-		quoted[i] = strconv.Quote(n)
+		quoted[i] = strconv.Quote(string(n))
 	}
 	shown := strings.Join(quoted, " ")
 	if len(names) == 0 {
@@ -255,17 +281,17 @@ func profileCmd(args []string) int {
 	case "list":
 		names := sortedNames(reg)
 		sel, _ := defaultProfiles()
-		def := strings.Join(sel, " ")
+		def := policy.JoinNames(sel, " ")
 		for _, n := range names {
 			p := reg[n]
 			marker := " "
-			if strings.Contains(" "+def+" ", " "+n+" ") {
+			if strings.Contains(" "+def+" ", " "+string(n)+" ") {
 				marker = "*"
 			}
 			// One line per profile here, unlike `show`, so the whole description
 			// is escaped: a newline in it would produce a second row on the one
 			// screen whose job is to say what profiles exist.
-			fmt.Printf("%s %-16s %s\n", marker, visibleValue(n), visibleValue(p.Description))
+			fmt.Printf("%s %-16s %s\n", marker, visibleValue(string(n)), visibleValue(p.Description))
 		}
 		fmt.Println()
 		fmt.Printf("* = selected by a bare `snug <dir>`.  @ = shipped by snug, cannot be redefined.\n")
@@ -277,7 +303,11 @@ func profileCmd(args []string) int {
 			fmt.Fprintln(os.Stderr, "usage: snug profile show NAME")
 			return exitUsage
 		}
-		name := args[1]
+		name, err := policy.NewProfileName(args[1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "snug: %v\n", err)
+			return exitUsage
+		}
 		p, ok := reg[name]
 		if !ok {
 			// Same error the resolver gives, so `snug profile show sys` and
@@ -321,7 +351,7 @@ func profileCmd(args []string) int {
 				fmt.Printf("  %-16s %s\n", head, visibleValue(v))
 			}
 		}
-		show("includes", p.Include)
+		show("includes", policy.NameStrings(p.Include))
 		show("ro", p.RO)
 		show("rw", p.RW)
 		show("tmpfs", p.Tmpfs)
@@ -342,7 +372,11 @@ func profileCmd(args []string) int {
 		return code
 
 	case "tree":
-		roots := args[1:]
+		roots, err := policy.NewProfileNames(args[1:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "snug: %v\n", err)
+			return exitUsage
+		}
 		if len(roots) == 0 {
 			roots, _ = defaultProfiles()
 		}
@@ -351,12 +385,17 @@ func profileCmd(args []string) int {
 				fmt.Fprintf(os.Stderr, "snug: %v\n", unknownProfile(reg, r, bad))
 				return exitPolicy
 			}
-			printTree(reg, r, "", "", map[string]bool{})
+			printTree(reg, r, "", "", map[policy.ProfileName]bool{})
 		}
 		return code
 
 	case "dot":
-		if rc := profileDot(reg, args[1:]); rc != 0 {
+		roots, err := policy.NewProfileNames(args[1:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "snug: %v\n", err)
+			return exitUsage
+		}
+		if rc := profileDot(reg, roots); rc != 0 {
 			return rc
 		}
 		return code
@@ -373,10 +412,10 @@ func profileCmd(args []string) int {
 // line is the prefix for this profile's own line; kids is the prefix its
 // children's lines build on. Keeping them separate is what makes the box-drawing
 // line up more than one level deep.
-func printTree(reg profile.Registry, name, line, kids string, seen map[string]bool) {
+func printTree(reg profile.Registry, name policy.ProfileName, line, kids string, seen map[policy.ProfileName]bool) {
 	p := reg[name]
 	if p == nil {
-		fmt.Printf("%s%s  (unknown)\n", line, visibleValue(name))
+		fmt.Printf("%s%s  (unknown)\n", line, visibleValue(string(name)))
 		return
 	}
 
@@ -397,11 +436,11 @@ func printTree(reg profile.Registry, name, line, kids string, seen map[string]bo
 		// cannot carry a control character now that checkName is an allowlist,
 		// so this is defence in depth rather than a live hole — which is
 		// exactly why it was easy to miss.
-		fmt.Printf("%s%s%s  (already included above)\n", line, visibleValue(name), suffix)
+		fmt.Printf("%s%s%s  (already included above)\n", line, visibleValue(string(name)), suffix)
 		return
 	}
 	seen[name] = true
-	fmt.Printf("%s%s%s\n", line, visibleValue(name), suffix)
+	fmt.Printf("%s%s%s\n", line, visibleValue(string(name)), suffix)
 
 	for i, inc := range p.Include {
 		branch, cont := "├── ", "│   "
@@ -420,18 +459,18 @@ func plural(n int, word string) string {
 }
 
 // profileDot emits the include graph for `snug profile dot | dot -Tpng -o x.png`.
-func profileDot(reg profile.Registry, roots []string) int {
+func profileDot(reg profile.Registry, roots []policy.ProfileName) int {
 	fmt.Println("digraph snug_profiles {")
 	fmt.Println(`  rankdir=LR;`)
 	fmt.Println(`  node [shape=box, fontname="monospace"];`)
 
-	show := map[string]bool{}
+	show := map[policy.ProfileName]bool{}
 	if len(roots) == 0 {
 		for n := range reg {
 			show[n] = true
 		}
 	} else {
-		set, err := policy.Expand(map[string]*policy.Profile(reg), roots)
+		set, err := policy.Expand(map[policy.ProfileName]*policy.Profile(reg), roots)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 			return exitPolicy
@@ -467,11 +506,11 @@ func profileDot(reg profile.Registry, roots []string) int {
 	return 0
 }
 
-func sortedNames(reg profile.Registry) []string {
-	names := make([]string, 0, len(reg))
+func sortedNames(reg profile.Registry) []policy.ProfileName {
+	names := make([]policy.ProfileName, 0, len(reg))
 	for n := range reg {
 		names = append(names, n)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }

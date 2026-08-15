@@ -45,8 +45,8 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sel := append(append([]string{}, profile.BuiltinDefaults()...), "@claude")
-	p, err := policy.Resolve(map[string]*policy.Profile(reg), sel, envGoldenCtx(), env)
+	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "@claude")
+	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,12 +126,12 @@ func TestControlCharacterInAGuestPathIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := map[string]*policy.Profile(reg)
+	m := map[policy.ProfileName]*policy.Profile(reg)
 	m["forge"] = &policy.Profile{
 		Name:  "forge",
 		Tmpfs: []string{"/a\n  ro     /etc/shadow                      @sys"},
 	}
-	_, err = policy.Resolve(m, append(append([]string{}, profile.BuiltinDefaults()...), "forge"),
+	_, err = policy.Resolve(m, append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "forge"),
 		envGoldenCtx(), newEnvFakeEnv())
 	if err == nil {
 		t.Fatal("a guest path containing a newline was accepted; --dry-run prints one grant " +
@@ -146,7 +146,7 @@ func TestControlCharacterInAGuestPathIsRefused(t *testing.T) {
 	// accepted. Otherwise this test would pass on a resolver that refused every
 	// tmpfs.
 	m["forge"] = &policy.Profile{Name: "forge", Tmpfs: []string{"/a"}}
-	if _, err := policy.Resolve(m, append(append([]string{}, profile.BuiltinDefaults()...), "forge"),
+	if _, err := policy.Resolve(m, append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "forge"),
 		envGoldenCtx(), newEnvFakeEnv()); err != nil {
 		t.Errorf("the same grant without the control character was refused: %v", err)
 	}

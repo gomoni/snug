@@ -52,6 +52,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // idleTimeout is how long the engine outlives its last client. It replaces the
@@ -102,8 +104,18 @@ type Engine struct {
 // "whatever names the store" would reach into a sibling sandbox that is still
 // working. It also stops two concurrent sandboxes from fighting over one
 // socket path, which the fixed name used to guarantee.
-func New(profiles []string, target string) (*Engine, error) {
-	sorted := append([]string(nil), profiles...)
+//
+// The parameter is []policy.ProfileName and the key is a plain string, and that
+// boundary is deliberate (issue #67). What comes IN is a set of profile names,
+// so the type says they went through the grammar — which matters here more than
+// most places, because the key is built by JOINING them WITH COMMAS: a name
+// containing a comma would make two different profile sets hash to one store,
+// and "a more privileged profile set never inherits a store built under a less
+// privileged one" is this function's whole reason for existing. The allowlist
+// refuses a comma; the type is what says the allowlist ran. What goes OUT is a
+// hex digest — a string, with no profile name left in it.
+func New(profiles []policy.ProfileName, target string) (*Engine, error) {
+	sorted := policy.NameStrings(profiles)
 	sort.Strings(sorted)
 	sum := sha256.Sum256([]byte(strings.Join(sorted, ",") + "\x00" + target))
 	key := hex.EncodeToString(sum[:])[:16]

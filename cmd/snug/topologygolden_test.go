@@ -27,16 +27,16 @@ func TestGoldenTopology(t *testing.T) {
 
 	cases := []struct {
 		name string
-		sel  []string
+		sel  []policy.ProfileName
 	}{
-		{"isolated", []string{"@sys", "@cwd-rw"}},
-		{"egress", []string{"@sys", "@cwd-rw", "@net"}},
-		{"host", []string{"@sys", "@cwd-rw", "@net-host"}},
+		{"isolated", []policy.ProfileName{"@sys", "@cwd-rw"}},
+		{"egress", []policy.ProfileName{"@sys", "@cwd-rw", "@net"}},
+		{"host", []policy.ProfileName{"@sys", "@cwd-rw", "@net-host"}},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p, err := policy.Resolve(map[string]*policy.Profile(reg), tc.sel, envGoldenCtx(), newEnvFakeEnv())
+			p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), tc.sel, envGoldenCtx(), newEnvFakeEnv())
 			if err != nil {
 				t.Fatalf("Resolve(%v): %v", tc.sel, err)
 			}

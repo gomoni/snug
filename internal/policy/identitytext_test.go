@@ -31,7 +31,7 @@ func TestIdentityFieldsRefuseControlCharacters(t *testing.T) {
 			id := tc.id
 			reg["pinned"] = &Profile{Name: "pinned", Identity: &id}
 
-			_, err := Resolve(reg, append(append([]string{}, testDefaults...), "pinned"),
+			_, err := Resolve(reg, append(append([]ProfileName{}, testDefaults...), "pinned"),
 				testCtx(), newFakeEnv())
 			if err == nil {
 				t.Fatalf("identity.%s with a control character resolved; it would be written "+
@@ -61,7 +61,7 @@ func TestOrdinaryIdentityFieldsStillResolve(t *testing.T) {
 		GhUser:   "some-one",
 		GhHost:   "github.com",
 	}}
-	if _, err := Resolve(reg, append(append([]string{}, testDefaults...), "pinned"),
+	if _, err := Resolve(reg, append(append([]ProfileName{}, testDefaults...), "pinned"),
 		testCtx(), newFakeEnv()); err != nil {
 		t.Fatalf("an ordinary identity was refused: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestResolveRecordsWhichProfilePinnedTheIdentity(t *testing.T) {
 	// for one milestone, which put one of four sibling rows on the --dry-run
 	// screen down to nobody.
 	p, err := Resolve(identityRegistry("~/.ssh/id_ed25519.pub"),
-		append(append([]string{}, testDefaults...), "pinned"), testCtx(), newFakeEnv())
+		append(append([]ProfileName{}, testDefaults...), "pinned"), testCtx(), newFakeEnv())
 	if err != nil {
 		t.Fatal(err)
 	}

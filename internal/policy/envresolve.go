@@ -123,7 +123,12 @@ func (c *envClaims) names() []string {
 // profile's to expand in them — and an inherit of a name the host does not have
 // contributes nothing at all, which is why it can never take part in a conflict
 // (CALL 2).
-func collectEnv(c *envClaims, name string, g EnvGrants, vars map[string]string, env Environ) error {
+func collectEnv(c *envClaims, name ProfileName, g EnvGrants, vars map[string]string, env Environ) error {
+	// The claim set records PROVENANCE, which is a plain string for the same
+	// reason Mount.From is: the same field also carries "base" and "staged bin",
+	// values no profile ever named. So the type stops here, deliberately, and
+	// the conversion is written once instead of at every claim below.
+	from := string(name)
 	expand := func(s string) (string, error) {
 		e, err := expandVars(s, vars)
 		if err != nil {
@@ -137,7 +142,7 @@ func collectEnv(c *envClaims, name string, g EnvGrants, vars map[string]string, 
 		if err != nil {
 			return err
 		}
-		c.addScalar(k, envClaim{profile: name, verb: VerbSet, value: v})
+		c.addScalar(k, envClaim{profile: from, verb: VerbSet, value: v})
 	}
 
 	for _, k := range sortedListKeys(g.Merge) {
@@ -149,7 +154,7 @@ func collectEnv(c *envClaims, name string, g EnvGrants, vars map[string]string, 
 			if err := checkAbsoluteElement(name, k, VerbMerge, raw, v); err != nil {
 				return err
 			}
-			c.addMerge(k, v, name)
+			c.addMerge(k, v, from)
 		}
 	}
 
@@ -165,19 +170,19 @@ func collectEnv(c *envClaims, name string, g EnvGrants, vars map[string]string, 
 			}
 			seq = append(seq, v)
 		}
-		c.addPrepend(k, seq, name)
+		c.addPrepend(k, seq, from)
 	}
 
 	for _, k := range g.Inherit {
 		// PRESENCE, not non-emptiness: a variable the host set to the empty
 		// string is SET, and for a flag that is the whole meaning (§3.2).
 		if v, ok := env.LookupEnv(k); ok {
-			c.addScalar(k, envClaim{profile: name, verb: VerbInherit, value: v})
+			c.addScalar(k, envClaim{profile: from, verb: VerbInherit, value: v})
 		}
 	}
 
 	for _, k := range g.Sanitise {
-		c.addSanitise(k, name)
+		c.addSanitise(k, from)
 	}
 	return nil
 }
@@ -186,7 +191,7 @@ func collectEnv(c *envClaims, name string, g EnvGrants, vars map[string]string, 
 // relative entry is resolved against whatever the payload's cwd happens to be,
 // which is a different directory per invocation — and in a search path an
 // element resolved against cwd is the whole of §4.3's hazard.
-func checkAbsoluteElement(profile, name string, verb EnvVerb, raw, expanded string) error {
+func checkAbsoluteElement(profile ProfileName, name string, verb EnvVerb, raw, expanded string) error {
 	if !typeOf(name).path || filepath.IsAbs(expanded) {
 		return nil
 	}

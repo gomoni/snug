@@ -1,7 +1,7 @@
 package main
 
 import (
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 
@@ -41,16 +41,16 @@ func TestNoBuiltinPutsAWritableDirectoryOnPATH(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	names := make([]string, 0, len(reg))
+	names := make([]policy.ProfileName, 0, len(reg))
 	for name := range reg {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 
 	checked := 0
 	for _, name := range names {
-		sel := append(append([]string{}, profile.BuiltinDefaults()...), name)
-		p, err := policy.Resolve(map[string]*policy.Profile(reg), sel, envGoldenCtx(), newEnvFakeEnv())
+		sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), name)
+		p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), newEnvFakeEnv())
 		if err != nil {
 			// A selection this fake host cannot resolve says nothing either
 			// way, but it must be VISIBLE: a sweep that silently skipped every
@@ -90,13 +90,13 @@ func TestShadowSlotPredicateFiresOnAWritableHomeDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := map[string]*policy.Profile(reg)
+	m := map[policy.ProfileName]*policy.Profile(reg)
 
 	// @claude's old shape, spelled out: a read-only bind of one file, plus the
 	// directory it lives in merged onto PATH. That directory is @home's tmpfs.
 	m["shadow"] = &policy.Profile{
 		Name:     "shadow",
-		Include:  []string{"@sys", "@home"},
+		Include:  []policy.ProfileName{"@sys", "@home"},
 		RO:       []string{"/home/u/.local/bin/claude"},
 		Optional: []string{"/home/u/.local/bin/claude"},
 		Environ: policy.EnvGrants{
@@ -104,7 +104,7 @@ func TestShadowSlotPredicateFiresOnAWritableHomeDirectory(t *testing.T) {
 		},
 	}
 
-	p, err := policy.Resolve(m, append(append([]string{}, profile.BuiltinDefaults()...), "shadow"),
+	p, err := policy.Resolve(m, append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "shadow"),
 		envGoldenCtx(), newEnvFakeEnv())
 	if err != nil {
 		t.Fatal(err)
@@ -188,32 +188,32 @@ func TestProfileMayNotMountAtStagedBinDir(t *testing.T) {
 		want bool // want a refusal
 	}{
 		{"tmpfs at the directory", &policy.Profile{
-			Name: "p", Include: []string{"@sys", "@home"},
+			Name: "p", Include: []policy.ProfileName{"@sys", "@home"},
 			Tmpfs: []string{policy.StagedBinDir},
 			RO:    []string{"/etc/passwd:" + policy.StagedBinDir + "/tool"},
 		}, true},
 		{"rw bind of the directory", &policy.Profile{
-			Name: "p", Include: []string{"@sys", "@home"},
+			Name: "p", Include: []policy.ProfileName{"@sys", "@home"},
 			RW: []string{"/usr:" + policy.StagedBinDir},
 		}, true},
 		{"ro bind of the directory", &policy.Profile{
-			Name: "p", Include: []string{"@sys", "@home"},
+			Name: "p", Include: []policy.ProfileName{"@sys", "@home"},
 			RO: []string{"/usr:" + policy.StagedBinDir},
 		}, true},
 		// The positive control, and the reason the rule is keyed on the EXACT
 		// guest path: staging one executable INSIDE the directory is what the
 		// directory is for, and @claude does it on every run.
 		{"a file staged inside — the legitimate shape", &policy.Profile{
-			Name: "p", Include: []string{"@sys", "@home"},
+			Name: "p", Include: []policy.ProfileName{"@sys", "@home"},
 			RO: []string{"/etc/passwd:" + policy.StagedBinDir + "/tool"},
 		}, false},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m := map[string]*policy.Profile(reg)
+			m := map[policy.ProfileName]*policy.Profile(reg)
 			m["p"] = tc.prof
-			_, err := policy.Resolve(m, append(append([]string{}, profile.BuiltinDefaults()...), "p"),
+			_, err := policy.Resolve(m, append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "p"),
 				envGoldenCtx(), newEnvFakeEnv())
 			switch {
 			case tc.want && err == nil:
