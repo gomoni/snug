@@ -75,12 +75,19 @@ type rawProfile struct {
 // Inherit and Sanitise are map[string]bool because the TOML spelling is
 // `NAME = true`: the profile supplies a name, never a value. `= false` is
 // refused by name rather than stored, or it would be a negation key that parsed.
+//
+// Declare is map[string]bool for the same reason, and it is deliberately spelled
+// like the two NAME SETS rather than like `set`: a declaration carries no value.
+// It licenses `set` and `inherit` for a name snug's roster says nothing about —
+// see policy.checkDeclarations — and `= false` is refused by the same
+// toNameSet that refuses it for inherit.
 type rawEnviron struct {
 	Set      map[string]string `toml:"set"`
 	Merge    map[string]any    `toml:"merge"`
 	Prepend  map[string]any    `toml:"prepend"`
 	Inherit  map[string]bool   `toml:"inherit"`
 	Sanitise map[string]bool   `toml:"sanitise"`
+	Declare  map[string]bool   `toml:"declare"`
 }
 
 type rawIdentity struct {
@@ -346,6 +353,9 @@ func toEnvGrants(r rawProfile, name, source string) (policy.EnvGrants, error) {
 		if g.Sanitise, err = toNameSet(e.Sanitise, "sanitise", name, source); err != nil {
 			return g, err
 		}
+		if g.Declare, err = toNameSet(e.Declare, "declare", name, source); err != nil {
+			return g, err
+		}
 	}
 
 	if len(r.Env) > 0 {
@@ -458,18 +468,29 @@ func toElementLists(in map[string]any, verb, profile, source string) (map[string
 
 // toNameSet turns `NAME = true` into a sorted list of names, and refuses
 // `NAME = false` by name.
+//
+// The `why` clause differs by verb because the REASON differs. For inherit and
+// sanitise, `= false` reads as un-inheriting something — and nothing was
+// inherited to begin with, because the environment starts empty. For declare
+// there is nothing to undo either, but the sentence is about responsibility
+// rather than about a value: a name is declared or it is not.
 func toNameSet(in map[string]bool, verb, profile, source string) ([]string, error) {
 	if len(in) == 0 {
 		return nil, nil
+	}
+	why := fmt.Sprintf("there is no way to un-%s, because nothing was %sed to begin with — the "+
+		"environment starts empty and every variable in it was put there by name",
+		verb, verb)
+	if verb == "declare" {
+		why = "a name is declared or it is not, and `= false` would be a negation key that " +
+			"parsed — the one thing DisallowUnknownFields exists to keep out of a profile"
 	}
 	out := make([]string, 0, len(in))
 	for _, name := range sortedBoolKeys(in) {
 		if !in[name] {
 			return nil, fmt.Errorf("%s: profile %q: environ.%s %s = false. `%s` takes `true`; "+
-				"there is no way to un-%s, because nothing was %sed to begin with — the "+
-				"environment starts empty and every variable in it was put there by name. "+
-				"Remove the line",
-				source, profile, verb, name, verb, verb, verb)
+				"%s. Remove the line",
+				source, profile, verb, name, verb, why)
 		}
 		out = append(out, name)
 	}

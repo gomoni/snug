@@ -381,6 +381,19 @@ func envLines(p *policy.Policy, v policy.EnvVar) []envLine {
 			from = e.Note
 		}
 		mark := grantMark(p, v.Name, e.Value)
+		// THE UNCHECKED MARK REPLACES THE GRANT MARK, rather than joining it,
+		// and the replacement is the honest rendering. `← not granted` is a
+		// statement about a PATH, and for a declared name snug does not know
+		// that the value is a path at all — the same reason the coupling rule
+		// leaves a declared value alone (envcoupling.go's isPathValued). Saying
+		// "unchecked" and then adding a verdict that presumes a type would be
+		// the screen claiming to have checked the one thing it just said it did
+		// not. The shadow-slot mark cannot be lost this way: it fires only for
+		// PATH, and PATH has a roster row, so this branch can never be taken for
+		// it.
+		if policy.IsUncheckedEnv(v.Name, e.Verb) {
+			mark = "  ← unchecked (environ.declare; snug has no entry for this name)"
+		}
 		if n := len(out); n > 0 && out[n-1].verb == verb && out[n-1].from == from && out[n-1].mark == mark {
 			out[n-1].values = append(out[n-1].values, elementValue(v.Name, e.Value))
 			continue

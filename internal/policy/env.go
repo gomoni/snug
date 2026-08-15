@@ -34,12 +34,23 @@ const (
 	VerbPrepend
 	VerbInherit
 	VerbSanitise
+
+	// VerbDeclare NEVER APPEARS IN AN EnvEntry, and it is last so that nothing
+	// reading the ordering has to know that. A declaration carries no value: it
+	// licenses `set` and `inherit` for one name snug has no roster row for (see
+	// checkDeclarations). It exists as an EnvVerb only so that the refusals
+	// about a declaration render "environ.declare" through the same String()
+	// every other refusal uses, rather than through a literal somebody has to
+	// keep in step.
+	VerbDeclare
 )
 
 func (v EnvVerb) String() string {
 	switch v {
 	case VerbSet:
 		return "set"
+	case VerbDeclare:
+		return "declare"
 	case VerbMerge:
 		return "merge"
 	case VerbPrepend:

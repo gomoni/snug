@@ -3,6 +3,7 @@ package profile
 import (
 	"embed"
 	"fmt"
+	"strings"
 )
 
 //go:embed profiles/*.toml
@@ -31,7 +32,11 @@ func Builtins() (Registry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("builtin profile %s: %w", e.Name(), err)
 		}
-		if err := reg.merge(mark(layer)); err != nil {
+		marked, err := mark(layer)
+		if err != nil {
+			return nil, fmt.Errorf("builtin profile %s: %w", e.Name(), err)
+		}
+		if err := reg.merge(marked); err != nil {
 			return nil, err
 		}
 	}
@@ -49,9 +54,30 @@ func Builtins() (Registry, error) {
 // include can only mean another builtin: base.toml is compiled in, so it cannot
 // know a name from ~/.config, and the layers that could supply one are merged
 // afterwards. A builtin reaching for a user profile is not a thing to preserve.
-func mark(layer Registry) Registry {
+//
+// IT IS ALSO WHERE `environ.declare` IS REFUSED FOR A BUILTIN, and it is here
+// rather than in a test for the reason the sigil rule itself is here: this
+// function is the one door a profile passes through to become snug's, so
+// "@ means snug ships it" and "a profile snug ships writes no unrostered name"
+// are established by the same construction. A declaration says "snug's roster
+// has nothing to say about this name, and the profile's author takes
+// responsibility" — a sentence a human writes about their own file, and one
+// nobody is left to say for a profile compiled into the binary. Refusing it
+// here means a builtin cannot acquire the hatch by an edit to base.toml, only
+// by an edit to this function, and it fails at Builtins() — so every command
+// and every test stops, rather than one sweep going red.
+func mark(layer Registry) (Registry, error) {
 	out := make(Registry, len(layer))
 	for name, p := range layer {
+		if len(p.Environ.Declare) > 0 {
+			return nil, fmt.Errorf("profile %q declares %s, and a profile snug SHIPS may not "+
+				"declare anything: `environ.declare` is the escape hatch for a name snug's "+
+				"roster has no entry for, and it works by naming a human who takes "+
+				"responsibility for it. There is no such human here. Add the name to "+
+				"internal/policy/envtypes.go with the sentence saying what the verb lets the "+
+				"tool DO — a row there is a grant, and that is the review this profile owes",
+				name, strings.Join(p.Environ.Declare, ", "))
+		}
 		q := *p
 		q.Name = name.Marked()
 		q.Include = nil
@@ -60,5 +86,5 @@ func mark(layer Registry) Registry {
 		}
 		out[q.Name] = &q
 	}
-	return out
+	return out, nil
 }

@@ -119,7 +119,13 @@ func TestCouplingDoesNotApplyToInheritOrSanitise(t *testing.T) {
 // the filesystem and there is nothing to couple it to.
 func TestCouplingIgnoresANonPathScalar(t *testing.T) {
 	reg := testRegistry()
-	reg["ed"] = &Profile{Name: "ed", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "vim"}}}
+	// Declared, because MY_EDITOR is on no roster since issue #44 — and the
+	// declaration is also what this test is about one layer down: an unrostered
+	// name has no `path` fact either, so the coupling rule leaves it alone for
+	// the same reason it leaves EDITOR=vim alone (envcoupling.go's isPathValued).
+	reg["ed"] = &Profile{Name: "ed", Environ: EnvGrants{
+		Declare: []string{"MY_EDITOR"},
+		Set:     map[string]string{"MY_EDITOR": "vim"}}}
 	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "ed"}, testCtx(), newFakeEnv()); err != nil {
 		t.Fatalf("a non-path scalar was subjected to the coupling rule: %v", err)
 	}

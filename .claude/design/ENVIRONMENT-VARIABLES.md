@@ -21,6 +21,11 @@ owns the variable types; snug never splits a string on a separator.
 | `environ.inherit` | profile | any | copy host value verbatim |
 | `environ.sanitise` | profile | **lists** | copy host value, keep only elements policy grants |
 
+**And a sixth key that is not a verb: `environ.declare`** (issue #44). A NAME SET
+carrying no value, it licenses `set` and `inherit` for one name snug's roster has
+no row for, in the profile that wrote it and nowhere else. It grants nothing on
+its own and a profile snug SHIPS may not use it. See §2.1.
+
 **And a sixth thing that is not a verb: snug's own authorship.** **snug is not
 bound by the verbs' rules when writing its own variables.** The list is twenty
 keys, and it must be **derived from the code rather than retyped** — an earlier
@@ -203,8 +208,30 @@ environ.set   on PATH    →  PATH is a list — use environ.merge, or environ.p
                             does not allow.
 ```
 
-Unknown name default to **scalar** — conservative reading: a scalar merges with
-nothing, so it can only conflict, never silently combine.
+~~Unknown name default to **scalar** — conservative reading: a scalar merges with
+nothing, so it can only conflict, never silently combine.~~ **Reversed by issue
+#44: an unknown name is REFUSED, at every verb.** "Conservative" was the wrong
+word for it — the table was an allowlist of TYPES wrapped around a denylist of
+NAMES, and three red-team rounds found three sets of names it had not been
+taught about while the space it was chasing ("every variable some tool, in some
+version, turns into an exec") stayed unbounded. `envTypes` is now the roster: a
+profile may `set` or `inherit` a name only when snug has a row for it, which is
+invariant 2's corollary applied to the one verb built the other way round.
+
+The escape hatch is `[profile.NAME.environ.declare]`, a NAME SET beside the five
+verbs — a licence, not a sixth verb. It carries no value, produces no entry, and
+licenses `set` and `inherit` for one name IN THAT PROFILE. It is refused for any
+name snug already has an opinion about (so it can never become the ordinary
+spelling for `PATH` or `EDITOR`), refused when nothing uses it, and refused
+outright in a profile snug SHIPS — enforced in `internal/profile`'s `mark`, the
+one place the `@` mark is added, for the same reason the mark itself lives there.
+Everything else still applies to a declared name: the grammar,
+`checkEnvOwnership`, `forbiddenEnv` and its prefixes, and the control-character
+rule on the value. It renders as `← unchecked` in `--dry-run` and in `snug
+profile show`. The list verbs get NO hatch: they need the separator and the
+empty-element kind, which is exactly what a roster row carries and a profile
+cannot supply. See `internal/policy/envtypes.go` — the code is the list, and
+this paragraph is a summary of it.
 
 **`inherit` is refused for every list variable, without exception.** Copying a
 host search path wholesale imports directories that do not exist inside — what

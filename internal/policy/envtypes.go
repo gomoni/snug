@@ -46,6 +46,15 @@ const (
 )
 
 // envType is what snug knows about one variable name.
+//
+// THE ZERO VALUE IS A REAL ROW, NOT A MISS, and that distinction is what the
+// allowlist rests on (issue #44). `envType{}` means "a scalar both `set` and
+// `inherit` accept" — EDITOR is one — while a name that is not in envTypes at
+// all is refused for both verbs. The two are told apart by the map lookup's
+// second return and by nothing else, which is why typeOf returns it: a `known`
+// FIELD could be forgotten on a new row, and a forgotten field would read as a
+// row that grants nothing rather than as a row that grants a scalar. There is
+// no spelling of "on the roster" that a new entry can omit.
 type envType struct {
 	list   bool
 	sep    string
@@ -60,14 +69,16 @@ type envType struct {
 	// there is the current directory. A ✗ in either column is "refused at load
 	// time" (§3.1), not advice.
 	//
-	// They are consulted only for list variables, so their zero value never
-	// decides anything for an unknown name — an unknown name is a scalar (§2.1).
+	// They are consulted only for list variables.
 	mergeable   bool
 	sanitisable bool
 
-	// noInherit is §3.2's `inherit ✗` column for SCALARS, and it is a refusal
-	// flag rather than an allow flag so that an unknown name defaults to
-	// inheritable. Every name here is one where the HOST's value outranks the
+	// noInherit is §3.2's `inherit ✗` column for SCALARS. It is a refusal flag
+	// INSIDE the roster — the row grants `set`, and this withdraws `inherit`
+	// from it. It used to be a refusal flag for a second reason as well, "so
+	// that an unknown name defaults to inheritable", and that reason is gone:
+	// an unknown name defaults to nothing now. Every name here is one where the
+	// HOST's value outranks the
 	// file snug generates — "generate, don't bind" is defeated by the
 	// environment, not by the file (§4.5) — or one carrying obligations a bare
 	// string cannot satisfy (XDG_RUNTIME_DIR: mode 0700, owned by the user).
@@ -79,14 +90,127 @@ type envType struct {
 	noInherit bool
 }
 
-// envTypes is §3.2, §3.3 and §3.4. A name that is not here is a SCALAR — the
-// conservative reading, because a scalar merges with nothing, so it can only
-// ever conflict and never silently combine (§2.1).
+// envTypes is snug's ROSTER, and it is §3.2, §3.3 and §3.4. A profile may `set`
+// a name, or `inherit` it from the host, ONLY if that name has a row here and
+// the row admits that verb. A name that is not here is REFUSED — for `set`, for
+// `inherit`, and for the three list verbs, which never accepted an unknown name
+// anyway because an unknown name is not a list.
+//
+// IT USED TO SAY THE OPPOSITE: "a name that is not here is a SCALAR". That
+// reading made this the one place in snug built as a DENYLIST — every other
+// grant names what it admits, while `set`/`inherit` admitted every name except
+// the ones forbiddenEnv below had been taught about. Three red-team rounds
+// found three sets of names it had not been taught about, each round closing
+// its own names and none of them closing the space, because the space is "every
+// variable that some tool, in some version, turns into an exec" and it has no
+// edge: RUSTC_WRAPPER/RUSTC_WORKSPACE_WRAPPER/RUSTC; then
+// CARGO_BUILD_RUSTC_WRAPPER and NPM_CONFIG_SCRIPT_SHELL at a case the table did
+// not fold; then MAKEFLAGS, GOFLAGS, CC, TAR_OPTIONS, RSYNC_RSH,
+// GIT_COMMON_DIR, PYTHONUSERBASE, PYTHONPATH, NODE_OPTIONS and PERL5OPT. That
+// is CLAUDE.md invariant 2's corollary — wanting "everything except Y" means
+// the grant above it was too coarse — applied to the one verb that was written
+// the other way round, and the repair is the one @sys already uses when it
+// lists fourteen /etc entries instead of binding all 109 (issue #44).
+//
+// EVERY ROW IS A GRANT. Adding a name says "a profile may hand this to the
+// payload", so write the sentence saying what the verb lets the tool DO before
+// adding one — the discipline GIT-CONFIG.md §5 asks of the config-key
+// whitelist, for the same reason. Do not add a name to make a test pass.
+//
+// THE ESCAPE HATCH IS `environ.declare`, and it is not this table. A profile
+// that legitimately writes a name snug has never heard of declares it in its
+// own text; snug then carries the value while saying, on every screen, that it
+// checked nothing about it. See checkDeclarations. A BUILTIN may not use it —
+// enforced where the sigil is added (internal/profile's `mark`) — so every name
+// a shipped profile writes is on this roster by construction.
+//
+// forbiddenEnv and forbiddenEnvPrefixes below are now REDUNDANT for every name
+// that is not on this roster, and they stay. They are the backstop against a
+// row added carelessly HERE, later, by someone who read this table as a
+// catalogue of types rather than as a list of grants: the two rules are applied
+// independently — checkEnvName runs the forbid tables, checkEnvVerbType runs
+// this one — so a future roster row for a name the forbid list already covers
+// is refused anyway instead of quietly granted. They are also what still
+// governs the names `environ.declare` may reach, which are by definition the
+// names this table says nothing about. A backstop that never fires is worth
+// keeping precisely until the day it does.
 //
 // Names snug owns are deliberately ABSENT even where §3.2 lists them: ownership
 // refuses them for every verb, which is the stronger statement, and an entry
 // here would invite someone to read the row as permission.
 var envTypes = map[string]envType{
+	// ── scalars a profile may both set and inherit ───────────────────────────
+	//
+	// An all-false row is not an empty row: it says SCALAR, both verbs. See
+	// envType's doc comment for why that is expressed by the row EXISTING
+	// rather than by a field inside it.
+	//
+	// EDITOR, VISUAL and PAGER: the value IS a command some tool will execute.
+	// git falls back GIT_EDITOR -> core.editor -> VISUAL -> EDITOR, and
+	// GIT_PAGER -> core.pager -> PAGER, both measured — so a profile that writes
+	// one of these chooses the program that runs during an ordinary `git commit`
+	// or `git log`, in a sandbox where a DIFFERENT profile may have pinned the
+	// ssh identity that the next push will use. The GIT_* spellings are
+	// forbidBoth below; these three are not, so the forbid list closes the
+	// invisible half of that class and not the class.
+	//
+	// They are on the roster at both verbs because that is EXACTLY today's
+	// behaviour, and this change is a flip of the default, not a withdrawal of a
+	// grant: @claude inherits all three, so refusing them here would break a
+	// shipped, tested profile outright. Withdrawing them is
+	// https://github.com/gomoni/snug/issues/45 — a decision about what @claude
+	// may inherit, argued in §3.2 — and these three rows are the seam it will
+	// edit: delete them, or give envType a `noSet` flag beside noInherit if the
+	// answer is "settable but not inheritable".
+	"EDITOR": {},
+	"VISUAL": {},
+	"PAGER":  {},
+	// NO_COLOR is a FLAG, and for a flag EMPTY IS NOT UNSET — "set to any value,
+	// including empty" is its specification, which is why nothing in the
+	// resolver may collapse the two (§4.6a). At full abuse a profile that writes
+	// it makes every tool inside emit plain text: it names no program, and
+	// changes what a tool PRINTS rather than what it does. @claude inherits it
+	// so that a human who turned colour off on the host keeps it off inside.
+	"NO_COLOR": {},
+	// ANTHROPIC_BASE_URL is the endpoint the Claude Code client talks to, and
+	// @claude inherits it so a human behind a proxy or a gateway keeps working
+	// inside the sandbox. At full abuse, a profile that writes it points every
+	// request the agent makes — the conversation, and whatever file content the
+	// agent decided to send with it — at a host of that profile author's
+	// choosing. It names no program and nothing execs it; what it redirects is
+	// where the sandbox's own traffic goes, which is a grant worth seeing on a
+	// screen and is why it is a row rather than an assumption.
+	"ANTHROPIC_BASE_URL": {},
+
+	// ── the middle bucket: legal as `set`, refused as `inherit` (§2.1) ───────
+	//
+	// forbiddenEnv marks all five forbidInheritOnly, so `inherit` is closed
+	// there. The rows exist because after the flip a name with no row is refused
+	// at BOTH verbs, and §2.1's decision — "BASH_ENV = {home}/init with the file
+	// granted by the same profile is coherent and reviewable" — would otherwise
+	// have been withdrawn by a change that never mentioned it.
+	//
+	// What each lets a tool DO, which is why these are grants and not
+	// bookkeeping: BASH_ENV and ENV name a file every non-interactive bash and
+	// sh SOURCES at startup; PYTHONSTARTUP names a file the interactive
+	// interpreter executes; PYTHONBREAKPOINT names the callable breakpoint()
+	// invokes; LESSOPEN names a program less runs over every file it opens. A
+	// profile writing one is choosing code that runs inside — reviewable in the
+	// file, which is the whole of why `set` is allowed and `inherit` is not.
+	//
+	// `path` is false on all five, and that is a decision rather than an
+	// oversight. PYTHONBREAKPOINT is a module:callable and LESSOPEN is a command
+	// line beginning with '|', so marking them path-valued would make the
+	// coupling rule refuse a correct value. BASH_ENV and ENV genuinely are
+	// paths, and path:true there would make §2.1's "granted by the same profile"
+	// clause enforced rather than merely written down — a new refusal for user
+	// profiles, so it belongs in its own change and not smuggled into this one.
+	"BASH_ENV":         {},
+	"ENV":              {},
+	"PYTHONSTARTUP":    {},
+	"PYTHONBREAKPOINT": {},
+	"LESSOPEN":         {},
+
 	// ── scalars whose inherit is refused (§3.2) ──────────────────────────────
 	//
 	// The XDG four: snug's own @home creates these directories, so a profile
@@ -158,7 +282,6 @@ var envTypes = map[string]envType{
 	"GOFLAGS": {list: true, sep: " ", empty: emptyNA},
 }
 
-// typeOf returns what snug knows about a name. An unknown name is a scalar.
 // IsEnvList reports whether snug treats this name as a LIST — several elements
 // joined by a separator — rather than as one scalar value.
 //
@@ -171,13 +294,94 @@ var envTypes = map[string]envType{
 //
 // It answers from the same table typeOf reads, because a second opinion about
 // what a name IS is how the screen and the resolver come to disagree.
-func IsEnvList(name string) bool { return typeOf(name).list }
+func IsEnvList(name string) bool {
+	t, known := typeOf(name)
+	return known && t.list
+}
 
-func typeOf(name string) envType {
+// typeOf returns what snug knows about a name, and WHETHER IT KNOWS IT. The
+// second return is the roster membership test and there is deliberately no
+// other one: a caller that ignores it is reading a zero envType as fact, which
+// is what "unknown ⇒ scalar, allowed" was (issue #44).
+func typeOf(name string) (envType, bool) {
 	if t, ok := envTypes[name]; ok {
-		return t
+		return t, true
 	}
-	return envType{}
+	// A CONSUMER THAT FOLDS CASE MAKES TWO SPELLINGS ONE NAME, and the roster
+	// has to answer the same for both or the flip becomes a refusal of a
+	// spelling snug's own rules bless. npm's env loader lower-cases every name
+	// before matching (measured — see prefixCaseFold), so
+	// `npm_config_userconfig` IS `NPM_CONFIG_USERCONFIG`: the prefix table
+	// already exempts it as a pointer in every spelling, and an exact-string
+	// roster lookup would have exempted it from the forbidden prefix and then
+	// refused it here for having no row. That is the same "one fact, two tables,
+	// they drift" defect prefixCaseFold exists to prevent, met one table further
+	// on, so the answer is to read that same table rather than to duplicate a
+	// row per spelling.
+	//
+	// Scoped to prefixes that actually fold: nothing outside a folding family
+	// gets a case-insensitive roster lookup, so PATH is still PATH and `path` is
+	// still a name snug has never heard of.
+	for prefix, fold := range prefixCaseFold {
+		if !fold || !matchesPrefix(name, prefix) {
+			continue
+		}
+		for k, t := range envTypes {
+			if matchesPrefix(k, prefix) && sameName(name, k, prefix) {
+				return t, true
+			}
+		}
+	}
+	return envType{}, false
+}
+
+// snugKnowsEnvName reports whether snug has an OPINION about a name — a roster
+// row, or an exact entry in the forbidden table.
+//
+// The second half is redundant today and is kept on purpose. Every
+// forbidInheritOnly name now also has a roster row (the middle bucket), so
+// nothing reaches this function that only forbiddenEnv covers — but the day
+// someone adds a forbidInheritOnly entry without a roster row, this is what
+// stops that name being `environ.declare`d as though snug had never heard of
+// it. A declaration says "snug has no opinion about this name", and it must
+// never be usable to say that about a name snug refuses at a verb.
+//
+// The PREFIX table is deliberately NOT part of this. A prefix names an
+// unbounded family (PIP_*), and refusing to declare every name under one would
+// leave `set PIP_INDEX_URL` — legal today, forbidInheritOnly by prefix — with
+// nowhere to go. What governs a declared name under a prefix is the prefix rule
+// itself, applied at the verb that uses it, exactly as before.
+func snugKnowsEnvName(name string) bool {
+	if _, ok := typeOf(name); ok {
+		return true
+	}
+	_, ok := forbiddenEnv[name]
+	return ok
+}
+
+// IsUncheckedEnv reports whether one entry of the resolved environment is one a
+// PROFILE declared rather than one snug has a roster row for — the value snug
+// carried without knowing anything about the name.
+//
+// Exported because being unchecked has to be VISIBLE, and at every sink rather
+// than at the one somebody remembered: --dry-run's ENVIRONMENT block marks the
+// row, `snug profile show` renders the `environ.declare` block as unchecked,
+// and the refusal that sends an author to the hatch names it. The argv block is
+// the one sink with nothing to add — `--setenv NAME VALUE` has no provenance
+// column at all, and the value got there through checkEnvValue like every other
+// value a profile wrote.
+//
+// The verb is a parameter rather than a caller-side condition because snug's
+// OWN names are mostly absent from the roster too — ownership refuses them for
+// every verb, which is the stronger statement — so a name-only predicate would
+// mark HOME, PATH and SNUG_PROFILES as unchecked on the screen a human reads to
+// decide whether to trust the sandbox. VerbSnug is snug's authorship and is
+// never unchecked.
+func IsUncheckedEnv(name string, verb EnvVerb) bool {
+	if verb == VerbSnug {
+		return false
+	}
+	return !snugKnowsEnvName(name)
 }
 
 // forbidKind splits the forbidden list by VERB, because `set` and `inherit`
@@ -590,19 +794,27 @@ func IsInlineConfigEnv(name string) bool {
 // POINTER (CARGO_HOME, NPM_CONFIG_USERCONFIG, …), and "generate, don't bind"
 // refuses to let a pointer be pulled from the HOST regardless — inheriting
 // would reintroduce exactly the file the rule exists to avoid. Most of the
-// time that refusal comes from the name's own noInherit entry in envTypes,
-// which is a case-SENSITIVE, exact-string lookup. That is exactly right for a
-// case-sensitive prefix (CARGO_), and exactly wrong for a case-INSENSITIVE
-// one: npm_config_'s exemption (NPM_CONFIG_USERCONFIG) matches every case
-// spelling via sameName/prefixCaseFold, but envTypes["npm_config_userconfig"]
-// does not exist, so the type-table refusal never fires for that spelling —
-// measured, before this rule existed: environ.inherit npm_config_userconfig
-// was ACCEPTED while environ.inherit NPM_CONFIG_USERCONFIG was refused, the
-// same "one table disagrees with itself across two case spellings" defect
-// this whole file exists to close, found one level deeper. Refusing to let
-// exempt+Inherit combine at all closes it structurally, for every existing
-// and future case-insensitive prefix, without needing envTypes to also
-// become case-fold aware.
+// time that refusal ALSO comes from the name's own noInherit row in envTypes,
+// and the history is worth keeping because the fix is structural rather than
+// belt-and-braces: that lookup used to be a case-SENSITIVE, exact-string one.
+// Exactly right for a case-sensitive prefix (CARGO_), and exactly wrong for a
+// case-INSENSITIVE one — npm_config_'s exemption (NPM_CONFIG_USERCONFIG)
+// matches every case spelling via sameName/prefixCaseFold, while
+// envTypes["npm_config_userconfig"] did not exist, so the type-table refusal
+// never fired for that spelling. Measured, before this rule existed:
+// environ.inherit npm_config_userconfig was ACCEPTED while environ.inherit
+// NPM_CONFIG_USERCONFIG was refused, the same "one table disagrees with itself
+// across two case spellings" defect this whole file exists to close, found one
+// level deeper. Refusing to let exempt+Inherit combine at all closes it
+// structurally, for every existing and future case-insensitive prefix.
+//
+// typeOf HAS since become case-fold aware (issue #44 had to make it: after the
+// flip, an exact-string roster would have exempted npm_config_userconfig from
+// the prefix and then refused it for having no row). So the two mechanisms now
+// agree where they overlap. This rule is not thereby redundant, and must not be
+// deleted as such: it holds for a name with NO roster row at all, which after
+// the flip is every name a profile reached through environ.declare, and it does
+// not depend on anyone remembering to add a row.
 func forbiddenFor(name string, verb EnvVerb) (bool, string) {
 	if k, ok := forbiddenEnv[name]; ok && appliesTo(k, verb) {
 		return true, ""
@@ -719,7 +931,7 @@ func checkEnvName(name string, verb EnvVerb) error {
 // refused for it by the type rules instead, with a message naming the verb to
 // use — which is the message §2.1 asks for, and better than this one.
 func checkEnvOwnership(name string, verb EnvVerb) error {
-	if typeOf(name).list {
+	if t, known := typeOf(name); known && t.list {
 		return nil
 	}
 	for _, owned := range SnugOwnedEnv {
@@ -735,11 +947,20 @@ func checkEnvOwnership(name string, verb EnvVerb) error {
 	return nil
 }
 
-// checkEnvVerbType refuses a verb the variable's TYPE does not accept. The
-// error names the right verb, because "wrong verb" without "use this one"
-// leaves the author guessing (§2.1).
-func checkEnvVerbType(name string, verb EnvVerb) error {
-	t := typeOf(name)
+// checkEnvVerbType refuses a verb the variable's TYPE does not accept, and — as
+// of the flip — a name the roster does not carry at all. The error names the
+// right verb, because "wrong verb" without "use this one" leaves the author
+// guessing (§2.1).
+//
+// `declared` is whether the SAME PROFILE declared this name in its own
+// `environ.declare` block. It licenses the two scalar verbs and nothing else;
+// see checkDeclarations for what a declaration is and why it cannot come from
+// another profile.
+func checkEnvVerbType(name string, verb EnvVerb, declared bool) error {
+	t, known := typeOf(name)
+	if !known {
+		return checkUnrosteredName(name, verb, declared)
+	}
 	switch verb {
 	case VerbSet:
 		if t.list {
@@ -798,6 +1019,140 @@ func checkEnvVerbType(name string, verb EnvVerb) error {
 	return nil
 }
 
+// checkUnrosteredName is the flip itself: a name snug has no row for.
+//
+// Two different refusals, because there are two different fixes and they belong
+// to two different people. The scalar verbs have an escape hatch and the list
+// verbs structurally cannot: a list verb needs the SEPARATOR and the meaning of
+// an EMPTY ELEMENT, and neither is something a profile can hand over — inferring
+// them from the shape of a value is exactly what this file exists not to do
+// (see the header comment, and §3.3, where the same column decides that
+// MANPATH may not be sanitised at all).
+func checkUnrosteredName(name string, verb EnvVerb, declared bool) error {
+	if verb == VerbSet || verb == VerbInherit {
+		if declared {
+			return nil
+		}
+		return fmt.Errorf("environ.%s names %s, which snug has no entry for.\n"+
+			"       `set` and `inherit` are an ALLOWLIST: snug refuses a name it has not been\n"+
+			"       taught about rather than assuming it is an inert scalar. The space that\n"+
+			"       assumption left open — every variable some tool, in some version, turns into\n"+
+			"       an exec — has no edge, and three rounds of closing individual names never\n"+
+			"       caught up with it. Two ways forward, for two different people:\n"+
+			"         · a profile you own — declare the name in that same profile:\n"+
+			"             [profile.NAME.environ.declare]\n"+
+			"             %s = true\n"+
+			"           which says snug has no opinion about it. It is carried, and it renders\n"+
+			"           as unchecked in --dry-run and `snug profile show`. Every refusal snug\n"+
+			"           already makes still applies to it.\n"+
+			"         · a name snug should know — add a row to internal/policy/envtypes.go,\n"+
+			"           with the sentence saying what the verb lets the tool DO. A row there is\n"+
+			"           a grant, so that is a policy change and not a lookup-table edit.",
+			verb, name, name)
+	}
+	hatch := ""
+	if declared {
+		hatch = "\n       This profile declares %s, and a declaration does not help here: it says\n" +
+			"       snug has no opinion about the NAME, while environ.%s needs a fact about the\n" +
+			"       VALUE that only a roster row carries."
+		hatch = fmt.Sprintf(hatch, name, verb)
+	}
+	return fmt.Errorf("environ.%s on %s, which snug has no entry for. A list verb needs the\n"+
+		"       separator that variable is read with and what an EMPTY ELEMENT means to its\n"+
+		"       consumer — ignored, the current directory, or an instruction that ADDS\n"+
+		"       directories (§3.3) — and snug will not guess either from the shape of a value.\n"+
+		"       Use environ.set with the whole value, or add a row to\n"+
+		"       internal/policy/envtypes.go carrying the separator and the empty-element kind.%s",
+		verb, name, hatch)
+}
+
+// checkDeclarations is the escape hatch, and this comment is the argument for
+// its shape.
+//
+// WHAT IT IS. `[profile.x.environ.declare]` is a set of NAMES — the same
+// spelling as `inherit` and `sanitise`, `NAME = true` — and it carries no value
+// and produces no entry. It is a LICENCE, not a verb: it says "snug has no row
+// for this name, and I, the author of this profile, take that responsibility",
+// and it makes `set` and `inherit` legal for that name IN THAT PROFILE. That is
+// why it is not the denylist wearing a new name: a declaration and a roster row
+// are mutually exclusive (rule 2 below), so the hatch is reachable ONLY where
+// snug genuinely has nothing to say, and it can never become the ordinary
+// spelling for PATH, EDITOR or XDG_CONFIG_HOME.
+//
+// WHY A LICENCE RATHER THAN A SIXTH VERB. A verb would have had to carry a
+// value, and then `inherit` of an unknown name — a user profile taking their own
+// tool's API token from the host — would have had no spelling at all except
+// writing the secret into the profile file. Separating the licence from the use
+// keeps all five verbs meaning exactly what they meant, keeps the unchecked set
+// on one greppable line per profile, and makes the declaration itself grant
+// nothing.
+//
+// WHY IT IS NOT INHERITED THROUGH `include`. ValidateEnvGrants sees one
+// profile's own block, so a declaration cannot travel — and that is the point,
+// not a limitation: the responsibility is the author's, and a profile that uses
+// an unrostered name must say so in its own text where a reviewer reading that
+// file sees it. It is also what keeps the verdict a property of the profile
+// TEXT, decided at parse time, identical on every host.
+//
+// WHAT IT DOES NOT BUY. Every other refusal still applies, in the order
+// checkEnvEntry already runs them: the name grammar, the names snug owns
+// (checkEnvOwnership), forbiddenEnv and its prefixes, and the control-character
+// rule on the value. The hatch buys "snug has no opinion about this name",
+// never "snug's refusals do not apply".
+//
+// A BUILTIN MAY NOT USE IT, and that is structural rather than a convention
+// here: internal/profile's `mark` — the one place a profile is published into
+// the @-namespace — refuses to mark a profile that declares anything. So every
+// name a shipped profile writes has a roster row, which is the property this
+// whole change exists to establish.
+func checkDeclarations(g EnvGrants, declared map[string]bool) error {
+	used := func(name string) bool {
+		if _, ok := g.Set[name]; ok {
+			return true
+		}
+		for _, n := range g.Inherit {
+			if n == name {
+				return true
+			}
+		}
+		return false
+	}
+	for _, name := range sortedCopy(g.Declare) {
+		// The declaration is checked at `set` strength: the name grammar, and
+		// the forbidden tables at the weakest verb a declaration licenses.
+		// Inherit-strength is applied at the inherit USE, exactly as it is for a
+		// rostered name — checking it here instead would refuse `declare
+		// PIP_INDEX_URL` and leave `set PIP_INDEX_URL`, legal today, with
+		// nowhere to go.
+		if err := checkEnvName(name, VerbDeclare); err != nil {
+			return err
+		}
+		if err := checkEnvOwnership(name, VerbDeclare); err != nil {
+			return err
+		}
+		if snugKnowsEnvName(name) {
+			return fmt.Errorf("environ.declare names %s, which snug already has an entry for.\n"+
+				"       A declaration says snug knows nothing about a name; it is not a way to\n"+
+				"       overrule what snug does know. Use the verb directly — and if that verb is\n"+
+				"       refused for this name, the refusal IS the decision, argued in\n"+
+				"       internal/policy/envtypes.go and .claude/design/ENVIRONMENT-VARIABLES.md,\n"+
+				"       and changing it means changing that row rather than routing around it",
+				name)
+		}
+		if !used(name) {
+			return fmt.Errorf("environ.declare names %s, but no environ.set or environ.inherit "+
+				"in this profile uses it.\n"+
+				"       A declaration is a licence for this profile's own use of one name, and an\n"+
+				"       unused one is a name on the unchecked list that nothing needs — which is\n"+
+				"       how a hatch quietly turns back into a namespace. Delete the line, or add\n"+
+				"       the verb that was meant to go with it.\n"+
+				"       Note that a declaration does not travel through `include`: the profile\n"+
+				"       that writes the name is the profile that must declare it", name)
+		}
+	}
+	return nil
+}
+
 // checkEnvElement refuses a hand-written separator inside a value.
 //
 // CALL 1: both `merge` and `prepend` accept a string or an array, and a string
@@ -811,8 +1166,10 @@ func checkEnvVerbType(name string, verb EnvVerb) error {
 // element, and an empty element in PATH is the current working directory, which
 // inside snug is the target — the one writable thing a hostile payload controls.
 func checkEnvElement(name string, verb EnvVerb, value string) error {
-	t := typeOf(name)
-	if !t.list {
+	// An unrostered name has no separator to smuggle, and it never reaches a
+	// list verb anyway — checkUnrosteredName refuses those outright.
+	t, known := typeOf(name)
+	if !known || !t.list {
 		return nil
 	}
 	for _, sep := range []string{t.sep, t.altSep} {
@@ -914,8 +1271,18 @@ func quoteVisible(s string) string {
 //
 // Exported so internal/profile can call it while the type table stays snug's.
 func ValidateEnvGrants(g EnvGrants) error {
+	// The declarations are read FIRST and checked LAST. Read first because
+	// every verb below needs to know whether this profile licensed the name;
+	// checked last because a declaration's own faults (naming something snug
+	// knows, naming something nothing uses) are less useful to report than the
+	// verb that is actually wrong — a `merge` on a declared name should say why
+	// a list verb cannot be declared, not that the declaration went unused.
+	declared := make(map[string]bool, len(g.Declare))
+	for _, name := range g.Declare {
+		declared[name] = true
+	}
 	for _, name := range sortedMapKeys(g.Set) {
-		if err := checkEnvEntry(name, VerbSet); err != nil {
+		if err := checkEnvEntry(name, VerbSet, declared[name]); err != nil {
 			return err
 		}
 		if err := checkEnvValue(name, VerbSet, g.Set[name]); err != nil {
@@ -931,7 +1298,7 @@ func ValidateEnvGrants(g EnvGrants) error {
 			m = g.Prepend
 		}
 		for _, name := range sortedListKeys(m) {
-			if err := checkEnvEntry(name, verb); err != nil {
+			if err := checkEnvEntry(name, verb, declared[name]); err != nil {
 				return err
 			}
 			for _, v := range m[name] {
@@ -945,29 +1312,31 @@ func ValidateEnvGrants(g EnvGrants) error {
 		}
 	}
 	for _, name := range sortedCopy(g.Inherit) {
-		if err := checkEnvEntry(name, VerbInherit); err != nil {
+		if err := checkEnvEntry(name, VerbInherit, declared[name]); err != nil {
 			return err
 		}
 	}
 	for _, name := range sortedCopy(g.Sanitise) {
-		if err := checkEnvEntry(name, VerbSanitise); err != nil {
+		if err := checkEnvEntry(name, VerbSanitise, declared[name]); err != nil {
 			return err
 		}
 	}
-	return nil
+	return checkDeclarations(g, declared)
 }
 
 // checkEnvEntry is the whole parse-time verdict on one (name, verb) pair, in
 // the order that produces the most useful message: what the name IS, then who
-// owns it, then whether the verb fits its type.
-func checkEnvEntry(name string, verb EnvVerb) error {
+// owns it, then whether the verb fits its type — and, since the flip, whether
+// snug has an entry for it at all, which is the last question because it is the
+// one whose answer is "and here is the hatch".
+func checkEnvEntry(name string, verb EnvVerb, declared bool) error {
 	if err := checkEnvName(name, verb); err != nil {
 		return err
 	}
 	if err := checkEnvOwnership(name, verb); err != nil {
 		return err
 	}
-	return checkEnvVerbType(name, verb)
+	return checkEnvVerbType(name, verb, declared)
 }
 
 func sortedMapKeys(m map[string]string) []string {

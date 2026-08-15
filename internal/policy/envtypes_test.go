@@ -37,8 +37,14 @@ func TestValidEnvGrantsAreAccepted(t *testing.T) {
 		{"single-element merge", EnvGrants{Merge: map[string][]string{
 			"PKG_CONFIG_PATH": {"/opt/x/lib/pkgconfig"},
 		}}},
-		// §1.2's worked @claude.
-		{"inherit scalars", EnvGrants{Inherit: []string{"ANTHROPIC_API_KEY", "EDITOR", "NO_COLOR"}}},
+		// §1.2's worked @claude. ANTHROPIC_API_KEY has no roster row and is
+		// carried through the hatch — which is the case the hatch exists for:
+		// a profile inheriting its own tool's SECRET must not have to write the
+		// secret into the profile file, so the licence is a name set and the
+		// value still comes from the host.
+		{"inherit scalars", EnvGrants{
+			Declare: []string{"ANTHROPIC_API_KEY"},
+			Inherit: []string{"ANTHROPIC_API_KEY", "EDITOR", "NO_COLOR"}}},
 		// The list form of inherit, on a list whose empty element is ignored.
 		{"sanitise a filterable list", EnvGrants{Sanitise: []string{"PKG_CONFIG_PATH"}}},
 		// PATH's sanitise is "rebuild only" (§3.3) — allowed, because snug
@@ -50,10 +56,17 @@ func TestValidEnvGrantsAreAccepted(t *testing.T) {
 			Merge:    map[string][]string{"PKG_CONFIG_PATH": {"/opt/x/lib/pkgconfig"}},
 			Sanitise: []string{"PKG_CONFIG_PATH"},
 		}},
-		// An unknown name is a scalar, and a scalar merges with nothing — so it
-		// can only ever conflict, never silently combine (§2.1).
-		{"unknown name as a scalar", EnvGrants{Set: map[string]string{"MY_TOOL_MODE": "fast"}}},
-		{"leading underscore", EnvGrants{Set: map[string]string{"_PRIVATE": "x"}}},
+		// A name snug has no roster row for, carried through the hatch. It used
+		// to read `{Set: {"MY_TOOL_MODE": "fast"}}` with the comment "an unknown
+		// name is a scalar" — which is the sentence issue #44 deleted: an
+		// unknown name is now refused, and a declaration is what makes it a
+		// scalar again, in this profile, unchecked and said so on every screen.
+		{"declared name as a scalar", EnvGrants{
+			Declare: []string{"MY_TOOL_MODE"},
+			Set:     map[string]string{"MY_TOOL_MODE": "fast"}}},
+		{"leading underscore", EnvGrants{
+			Declare: []string{"_PRIVATE"},
+			Set:     map[string]string{"_PRIVATE": "x"}}},
 		// The empty grant block: nothing to check, and no error.
 		{"nothing at all", EnvGrants{}},
 	}
@@ -381,7 +394,15 @@ func TestForbiddenPrefixesAndInlineConfigAgreeOnCase(t *testing.T) {
 			toggleCase(prefix) + toggleCase(suffix),
 		}
 		for _, name := range spellings {
-			refused := ValidateEnvGrants(EnvGrants{Inherit: []string{name}}) != nil
+			// DECLARED, for the same reason the near-miss loop below declares:
+			// a probe name is on no roster, so without the declaration every
+			// spelling would be refused for that reason alone and the two
+			// verdicts would agree by accident on a table that had stopped
+			// agreeing. With it, the roster has nothing to say and the only
+			// thing that can refuse is the prefix rule this test is about.
+			refused := ValidateEnvGrants(EnvGrants{
+				Declare: []string{name},
+				Inherit: []string{name}}) != nil
 			inline := IsInlineConfigEnv(name)
 			if refused != inline {
 				t.Errorf("prefix %q, spelling %q: environ.inherit refused=%v, "+
@@ -513,8 +534,17 @@ func TestForbiddenPrefixesCoverExactlyTheirPrefix(t *testing.T) {
 	}
 	// Near misses: a name that merely starts with the same letters is a
 	// different variable and must be left alone.
+	//
+	// Each is DECLARED, and that is what keeps this test about the prefix rule.
+	// None of these five is on the roster, so since issue #44 a bare `set` of
+	// any of them is refused for having no entry — which would make this loop
+	// pass on a prefix rule that had grown to swallow LDFLAGS whole. The
+	// declaration removes the roster's answer from the question so that the only
+	// thing left that can refuse is the prefix.
 	for _, name := range []string{"LD", "LDFLAGS", "BASH_FUNCTION", "GIT_CONFIG", "GITCONFIG"} {
-		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{name: "x"}}); err != nil {
+		if err := ValidateEnvGrants(EnvGrants{
+			Declare: []string{name},
+			Set:     map[string]string{name: "x"}}); err != nil {
 			t.Errorf("environ.set %s was refused; %q is not one of the forbidden prefixes "+
 				"and a rule that catches it catches too much: %v", name, name, err)
 		}

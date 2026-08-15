@@ -79,22 +79,42 @@ func checkEnvCoupling(reg map[ProfileName]*Profile, name ProfileName, g EnvGrant
 func writesAnyPath(g EnvGrants) bool {
 	for _, m := range []map[string][]string{g.Merge, g.Prepend} {
 		for k := range m {
-			if typeOf(k).path {
+			if isPathValued(k) {
 				return true
 			}
 		}
 	}
 	for k := range g.Set {
-		if typeOf(k).path {
+		if isPathValued(k) {
 			return true
 		}
 	}
 	return false
 }
 
+// isPathValued is the coupling rule's scope, and an UNROSTERED name is outside
+// it — including one a profile declared.
+//
+// That is not an oversight and it is the honest answer rather than the
+// convenient one: `path` is a fact snug holds about a name, and for a declared
+// name snug holds no facts at all. The alternative is to decide a value is a
+// path because it starts with a '/', which is precisely the shape-sniffing this
+// file's header refuses ("the shape is the same for a search path, a URL, a
+// template language bash performs command substitution on, and a set of
+// delimiter characters"). So a declared value naming a path the profile does
+// not grant is NOT refused, where the same value under a rostered path-valued
+// name would be. What that costs is one profile-lying case going unreported;
+// what it would cost to close by guessing is a rule that refuses a correct
+// value for every name whose value merely looks like a path — LESSOPEN's does,
+// and it is a command line.
+func isPathValued(name string) bool {
+	t, known := typeOf(name)
+	return known && t.path
+}
+
 // checkCoupled is the verdict on one written value.
 func checkCoupled(profile ProfileName, verb EnvVerb, name, raw string, vars map[string]string, guests []string, links map[string]string) error {
-	if !typeOf(name).path {
+	if !isPathValued(name) {
 		return nil
 	}
 	value, err := expandVars(raw, vars)

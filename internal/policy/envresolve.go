@@ -192,7 +192,7 @@ func collectEnv(c *envClaims, name ProfileName, g EnvGrants, vars map[string]str
 // which is a different directory per invocation — and in a search path an
 // element resolved against cwd is the whole of §4.3's hazard.
 func checkAbsoluteElement(profile ProfileName, name string, verb EnvVerb, raw, expanded string) error {
-	if !typeOf(name).path || filepath.IsAbs(expanded) {
+	if !isPathValued(name) || filepath.IsAbs(expanded) {
 		return nil
 	}
 	return fmt.Errorf("profile %q: environ.%s %s entry %q must be an absolute path: a "+
@@ -217,9 +217,12 @@ func checkAbsoluteElement(profile ProfileName, name string, verb EnvVerb, raw, e
 // policy.
 func (p *Policy) applyEnvClaims(c *envClaims, env Environ) error {
 	for _, name := range c.names() {
-		t := typeOf(name)
+		// An unrostered name reached here through a profile's `environ.declare`,
+		// and a declaration licenses the SCALAR verbs only — so `known` being
+		// false and `t.list` being false are the same branch, not two.
+		t, known := typeOf(name)
 
-		if !t.list {
+		if !known || !t.list {
 			claims := c.scalar[name]
 			if err := checkScalarAgreement(name, claims); err != nil {
 				return err

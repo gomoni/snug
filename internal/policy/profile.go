@@ -114,6 +114,19 @@ type EnvGrants struct {
 	Prepend  map[string][]string
 	Inherit  []string
 	Sanitise []string
+
+	// Declare is the escape hatch, and it is NOT a sixth verb: it carries no
+	// value and produces no entry. It is the set of names this profile takes
+	// responsibility for — names snug's roster (internal/policy/envtypes.go)
+	// says nothing about — and it makes `set` and `inherit` legal for them in
+	// THIS profile and nowhere else. Read checkDeclarations for the argument;
+	// the two properties to keep in view here are that a declaration and a
+	// roster row are mutually exclusive, so the hatch cannot become the ordinary
+	// spelling for a name snug knows, and that a BUILTIN may not carry one
+	// (internal/profile's `mark` refuses to publish a profile that does).
+	//
+	// []string of NAMES for the same reason Inherit and Sanitise are.
+	Declare []string
 }
 
 // Symlink is a symlink snug creates inside the sandbox (usr-merge, mostly).

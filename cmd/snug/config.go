@@ -209,7 +209,7 @@ func configCmd(args []string) int {
 	return 0
 }
 
-// showEnviron renders all five environment verbs.
+// showEnviron renders the five environment verbs and the declaration block.
 //
 // It renders ALL of them for the same reason `snug profile show` exists at all:
 // this line used to read `show("env", p.Env)` and never rendered `path` either,
@@ -249,6 +249,22 @@ func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
 	// "merge" sit directly under "ro" and "tmpfs" on this screen, where they read
 	// as two more kinds of filesystem grant; the prefix is what says these are
 	// the environment, and it is also the string somebody will grep for.
+	//
+	// `declare` is FIRST and every name in it carries its own mark. First
+	// because it is the licence the `set` and `inherit` lines below rest on, and
+	// a reader who meets the use before the declaration has to hold the question
+	// in their head; per-name rather than once per block because the block is a
+	// list of names and the mark is a fact about each one — a single heading
+	// would be read as decoration by the time the eye reaches the third line.
+	// The wording is deliberately the same "unchecked" the --dry-run mark uses:
+	// two words for one property is how a reader concludes there are two
+	// properties.
+	declared := make([]string, 0, len(g.Declare))
+	for _, n := range g.Declare {
+		declared = append(declared, n+"  ← unchecked: snug has no entry for this name")
+	}
+	sort.Strings(declared)
+	show("environ.declare", declared)
 	pairs("environ.set", g.Set)
 	lists("environ.merge", g.Merge)
 	lists("environ.prepend", g.Prepend)

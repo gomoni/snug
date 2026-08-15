@@ -531,9 +531,17 @@ func refusalPrependOrder(t testing.TB) error {
 // profile and never mentioning the first.
 func refusalTwoSets(t testing.TB) error {
 	reg := testRegistry()
-	reg["seta"] = &Profile{Name: "seta", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "vim"}}}
-	reg["setb"] = &Profile{Name: "setb", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "emacs"}}}
-	reg["setc"] = &Profile{Name: "setc", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "vim"}}}
+	// MY_EDITOR is on no roster, so each profile declares it (issue #44). The
+	// fixture keeps an APPLICATION name rather than moving to EDITOR on purpose:
+	// what is under test is the disagreement rule, and pinning it to a roster
+	// row would make this fixture change meaning the day issue #45 withdraws
+	// `set` from EDITOR.
+	reg["seta"] = &Profile{Name: "seta", Environ: EnvGrants{
+		Declare: []string{"MY_EDITOR"}, Set: map[string]string{"MY_EDITOR": "vim"}}}
+	reg["setb"] = &Profile{Name: "setb", Environ: EnvGrants{
+		Declare: []string{"MY_EDITOR"}, Set: map[string]string{"MY_EDITOR": "emacs"}}}
+	reg["setc"] = &Profile{Name: "setc", Environ: EnvGrants{
+		Declare: []string{"MY_EDITOR"}, Set: map[string]string{"MY_EDITOR": "vim"}}}
 	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "seta", "setb", "setc"}, testCtx(), newFakeEnv())
 	return err
 }
@@ -671,6 +679,37 @@ func TestGoldenRefusals(t *testing.T) {
 		{"env_sanitise_on_a_scalar", refusalEnv(EnvGrants{Sanitise: []string{"EDITOR"}})},
 		{"env_sanitise_on_manpath", refusalEnv(EnvGrants{Sanitise: []string{"MANPATH"}})},
 		{"env_sanitise_on_an_unfilterable_list", refusalEnv(EnvGrants{Sanitise: []string{"PYTHONPATH"}})},
+
+		// the roster and its escape hatch (issue #44)
+		//
+		// These rows ARE the review artifact for the flip. The change is almost
+		// entirely refusals and produces no argv diff at all — every shipped
+		// profile resolves byte-identically, because every name a builtin writes
+		// now has a roster row — so what a human reads to approve it is the text
+		// below: what is refused, and what the refusal offers instead.
+		{"env_unrostered_set", refusalEnv(EnvGrants{Set: map[string]string{"MY_TOOL_MODE": "fast"}})},
+		{"env_unrostered_inherit", refusalEnv(EnvGrants{Inherit: []string{"MY_TOOL_TOKEN"}})},
+		// A list verb has no hatch, in both spellings: undeclared, and declared
+		// (where the declaration is legal and simply does not reach).
+		{"env_unrostered_merge", refusalEnv(EnvGrants{Merge: map[string][]string{"MY_TOOL_PATH": {"/opt/x"}}})},
+		{"env_unrostered_merge_declared", refusalEnv(EnvGrants{
+			Declare: []string{"MY_TOOL_PATH"},
+			Merge:   map[string][]string{"MY_TOOL_PATH": {"/opt/x"}}})},
+		// The hatch's own three refusals: it cannot overrule the roster, it
+		// cannot be an unused name, and it buys nothing against ownership or the
+		// forbidden tables.
+		{"env_declare_of_a_rostered_name", refusalEnv(EnvGrants{
+			Declare: []string{"EDITOR"}, Set: map[string]string{"EDITOR": "vim"}})},
+		{"env_declare_unused", refusalEnv(EnvGrants{Declare: []string{"MY_TOOL_MODE"}})},
+		// These two carry NO accompanying `set`, deliberately: with one, the set
+		// is refused first and the golden row would show a `set` refusal under a
+		// `declare` heading — true, but it would leave the declaration itself
+		// untested, which is the half that matters. The hatch buys "snug has no
+		// opinion about this name", never "snug's refusals do not apply", and
+		// these are the two families that prove it — a name snug WRITES, and a
+		// name a forbidden prefix covers.
+		{"env_declare_snug_owned", refusalEnv(EnvGrants{Declare: []string{"SNUG_PROFILES"}})},
+		{"env_declare_forbidden_prefix", refusalEnv(EnvGrants{Declare: []string{"BASH_FUNC_build"}})},
 
 		// hand-written separators (CALL 1 / §2.7 case 3)
 		{"env_separator_in_a_merge_string", refusalEnv(EnvGrants{Merge: map[string][]string{"PATH": {"/usr/bin:/usr/sbin"}}})},
