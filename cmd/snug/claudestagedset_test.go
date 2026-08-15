@@ -54,8 +54,17 @@ import (
 // is how issue #19 happened. Seeding them means the promise is measured on
 // every run of `make gate` instead of re-read by a human who trusts it.
 var claudeHostFixture = map[string]string{
-	".claude/.credentials.json":   `{"claudeAiOauth":{"accessToken":"CANARY-OAUTH-TOKEN"}}`,
-	".claude/settings.json":       `{"model":"CANARY-SETTINGS"}`,
+	".claude/.credentials.json": `{"claudeAiOauth":{"accessToken":"CANARY-OAUTH-TOKEN"}}`,
+	// The canary sits in a DROPPED key, deliberately, not in `model`. `model` is
+	// on policy.ClaudeSettingAllowlist, so a canary placed there would make a
+	// CORRECTLY carried value look like a copy — this fixture would then report
+	// "COPIED FROM HOST" on the one row the fix's whole point is to turn
+	// generated, and the table below would fail for the wrong reason. `model`
+	// gets a plausible value instead (the real host shape this filter was
+	// measured against, claude 2.1.232: `opus[1m]`), so it exercises
+	// modelNamePattern's bracket allowance while the canary lives somewhere the
+	// filter is required to drop.
+	".claude/settings.json":       `{"model":"opus[1m]","apiKeyHelper":"CANARY-SETTINGS-HELPER"}`,
 	".claude/CLAUDE.md":           "CANARY-HOST-GUIDANCE\n",
 	".claude/history.jsonl":       `{"display":"CANARY-HOST-HISTORY"}`,
 	".claude/projects/index.json": `{"cwd":"CANARY-HOST-TRANSCRIPT-PATH"}`,
@@ -216,7 +225,7 @@ func claudeFixtureHome(t *testing.T, trustTarget bool) (*policy.Policy, string, 
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	claudeFiles(pol, home)
+	claudeFiles(pol, home, false)
 	return pol, home, target
 }
 
@@ -248,6 +257,15 @@ func TestClaudeStagedSetIsExactlyThisTable(t *testing.T) {
 		// payload must not be able to rewrite the description of its own
 		// sandbox and then read it back as truth.
 		"~/.claude/CLAUDE.md": {"data", "ro", "-", "generated"},
+		// GENERATED, not bound, since issue #17: ~/.claude/settings.json is a
+		// COMMAND TABLE (hooks, apiKeyHelper, env, mcpServers, enabledPlugins all
+		// name a program or fetch code), so a read-only bind of the host's would
+		// have SUPPLIED every one of them. This row is why the fixture's canary
+		// lives in `apiKeyHelper` and not `model`: `model` is allowlisted and is
+		// correctly carried, so it must never read as a host copy. Writable for
+		// the same `gh` reason ~/.claude.json is: Claude Code rewrites settings
+		// files at runtime and the rewrite must go nowhere the host can see.
+		"~/.claude/settings.json": {"data", "rw", "0600", "generated"},
 
 		// ── bound: read-only grants written in base.toml [profile.claude] ────
 		//
@@ -256,11 +274,10 @@ func TestClaudeStagedSetIsExactlyThisTable(t *testing.T) {
 		// call does, and base.toml's abuse block makes promises about host
 		// session history and MCP configuration that only an enumeration can
 		// keep honest.
-		"/run/snug/bin/claude":    {"bind", "ro", "-", "bound from host ~/.local/bin/claude"},
-		"~/.claude/settings.json": {"bind", "ro", "-", "bound from host ~/.claude/settings.json"},
-		"~/.claude/skills":        {"bind", "ro", "-", "bound from host ~/.claude/skills"},
-		"~/.claude/plugins":       {"bind", "ro", "-", "bound from host ~/.claude/plugins"},
-		"~/.local/share/claude":   {"bind", "ro", "-", "bound from host ~/.local/share/claude"},
+		"/run/snug/bin/claude":  {"bind", "ro", "-", "bound from host ~/.local/bin/claude"},
+		"~/.claude/skills":      {"bind", "ro", "-", "bound from host ~/.claude/skills"},
+		"~/.claude/plugins":     {"bind", "ro", "-", "bound from host ~/.claude/plugins"},
+		"~/.local/share/claude": {"bind", "ro", "-", "bound from host ~/.local/share/claude"},
 	}
 
 	// CONTROLS, all three required before a clean diff below means anything.

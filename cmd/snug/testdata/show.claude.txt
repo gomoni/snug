@@ -1,12 +1,11 @@
 profile     @claude
-            Claude Code: binary and skills read-only, credentials staged writable.
+            Claude Code: binary and skills read-only, credentials and settings generated.
 defined in  builtin:base.toml
 
   includes         @sys
                    @home
   ro               {home}/.local/bin/claude:/run/snug/bin/claude
                    {home}/.local/share/claude
-                   {home}/.claude/settings.json
                    {home}/.claude/skills
                    {home}/.claude/plugins
   environ.inherit  ANTHROPIC_BASE_URL
@@ -14,7 +13,7 @@ defined in  builtin:base.toml
                    NO_COLOR
                    PAGER
                    VISUAL
-  optional         {home}/.local/bin/claude {home}/.local/share/claude {home}/.claude/settings.json {home}/.claude/skills {home}/.claude/plugins
+  optional         {home}/.local/bin/claude {home}/.local/share/claude {home}/.claude/skills {home}/.claude/plugins
 
 To see what this actually produces for a directory:
   snug --dry-run -p @claude <dir>

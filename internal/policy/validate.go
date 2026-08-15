@@ -366,12 +366,20 @@ func snugsOwnCovered(guest string) (at string, own ownedPath, ok bool) {
 //	KindData       NO  — a grant beneath a FILE is meaningless
 //	anything       YES if the inner is snug's own authored replacement (RULE 3)
 //
-// The KindTmpfs row is not a convenience. Every shipped profile that exposes a
-// host file into the ephemeral $HOME is a bind inside @home's tmpfs — @git-ro's
-// .gitconfig, @claude's settings.json, every generated identity file — so
-// treating a tmpfs as maskable would break three profiles on the first
-// invocation. The principled statement is the same one: masking requires the
-// outer mount to HAVE content at the inner path.
+// The KindTmpfs row is not a convenience. Everything snug puts into the
+// ephemeral $HOME sits inside @home's tmpfs — @claude's read-only binds of
+// {home}/.claude/skills and {home}/.claude/plugins, and every generated
+// KindData file (the identity files, {home}/.gitconfig,
+// {home}/.claude/settings.json) — so treating a tmpfs as maskable would break
+// those profiles on the first invocation. The principled statement is the same
+// one: masking requires the outer mount to HAVE content at the inner path.
+//
+// Two names left this sentence stale before anyone re-read it, which is worth
+// noting because the row itself is load-bearing: @git-ro's .gitconfig was cited
+// here as a BIND long after @git-ro stopped binding anything (it extracts and
+// generates — .claude/design/GIT-CONFIG.md), and @claude's settings.json went
+// the same way in issue #17. Both are still covered by this row; they are just
+// covered as generated content rather than as binds.
 func (p *Policy) rejectMasking(env Environ) error {
 	for _, m := range p.SortedMounts() {
 		// RULE 3 — authorship, as a field rather than a convention. These are

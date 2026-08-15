@@ -147,13 +147,26 @@ column that matters most is the last, and the earlier audit did not have it.
   token" is a property of *this host's data*, not of the format, so any
   statement about it must be conditional.
 
-  **Moot for this file since issue #19, and worth saying why rather than just
-  striking the row.** The conditional is what generation removes: a generated
-  file has no `mcpServers` key at all, so there is no slot for a token to be in
-  and no dependence on what this host happens to have put there. The sibling
-  `settings.json` keeps both slots and is still bound read-only — a read-only
-  bind of a file naming `apiKeyHelper` supplies the command rather than stopping
-  it, which is the `~/.gitconfig` shape, and it is not covered by this fix.
+  **Fixed by issue #17, and worth saying why rather than just striking the
+  row.** The conditional is what generation removes, on both files now: a
+  generated `~/.claude.json` has no `mcpServers` key at all (issue #19), and
+  the sibling `~/.claude/settings.json` — which used to be bound read-only,
+  supplying `apiKeyHelper` and `env` as a COMMAND rather than stopping them,
+  the `~/.gitconfig` shape — is now generated from a ten-key SCALAR allowlist
+  that contains neither slot (issue #17, `.claude/design/CLAUDE-SETTINGS.md`).
+
+  **What issue #17 does NOT close, and it is a separate, still-open finding.**
+  `@claude` still binds `{home}/.claude/plugins` read-only, and a plugin's own
+  manifest — plus `installed_plugins.json`, which records the installed
+  plugin set independently of `settings.json` and sits inside that same
+  bind — carries its own `hooks` block that Claude Code loads automatically.
+  Measured on the development host: both the `caveman@caveman` plugin's
+  manifest (a `SessionStart` hook) and the official `security-guidance`
+  plugin's (`SessionStart`, `UserPromptSubmit`, `PostToolUse` and `Stop`
+  hooks, each running a shell command). Dropping `enabledPlugins` from the
+  generated `settings.json` is not known to disable any of that — the bound
+  directory carries its own record of what is installed. See
+  https://github.com/gomoni/snug/issues/68.
 
 **Not present, confirmed:** `.netrc`, git credential helpers, any bind of the
 host's `~/.config/gh`, any bind of `~/.ssh`. **[M, via `--dry-run` mount list]**

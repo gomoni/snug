@@ -1,5 +1,8 @@
 # Git configuration in the sandbox
 
+**This is an instance of [GENERATED-CONFIG.md](GENERATED-CONFIG.md), which owns
+the rule; this document holds the git-specific measurements.**
+
 **Status: built.** `@git-ro` extracts and generates; it binds nothing. The
 measurements below were made on git 2.55 on the development host and are what
 the design rests on — re-run them before changing any of it.

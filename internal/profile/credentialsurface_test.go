@@ -110,6 +110,7 @@ func sensitiveHostPath(p string) string {
 		{".pypirc", "CREDENTIAL: registry token"},
 		{".claude/.credentials.json", "CREDENTIAL: API token"},
 		{".claude.json", "CREDENTIAL: carries MCP config and account state"},
+		{".claude/settings.json", "COMMAND TABLE: hooks, apiKeyHelper, statusLine, env, mcpServers, enabledPlugins — keys that name programs to run or code to load"},
 		{".local/share/keyrings", "CREDENTIAL: the desktop keyring"},
 		{".mozilla", "CREDENTIAL: saved passwords and cookies"},
 		{".config/chromium", "CREDENTIAL: saved passwords and cookies"},
@@ -149,6 +150,7 @@ func TestTheCredentialCatalogueActuallyMatches(t *testing.T) {
 	for _, spelling := range []string{
 		"{home}/.ssh", "~/.ssh", "{home}/.ssh/id_ed25519", "{home}/.gitconfig",
 		"{home}/.config/gh", "{home}/.aws/credentials", "{home}/.local/share/keyrings",
+		"{home}/.claude/settings.json",
 		// Spellings an independent review walked straight through. The first
 		// version compared raw TOML text, so every one of these read as ordinary.
 		"{home}//.ssh", "{home}/./.ssh", "{home}/.config/../.ssh", "{home}/.ssh/",
@@ -164,15 +166,24 @@ func TestTheCredentialCatalogueActuallyMatches(t *testing.T) {
 	// And it must not fire on the ordinary grants the builtins really make, or
 	// the next person deletes it instead of fixing what it caught.
 	//
-	// `{home}/.claude/settings.json` is deliberately NOT in this list any more.
-	// `@claude` binds it read-only, and it carries `hooks` (shell commands run on
-	// tool events) and `apiKeyHelper` (a program that prints a credential —
-	// `credential.helper`'s exact shape), so by this file's own definition it is
-	// a COMMAND TABLE. Asserting it is ordinary recorded a decision nobody made.
-	// It is not in the catalogue either, because adding it without also
-	// generating a filtered copy would just fail the build — it is written up in
-	// https://github.com/gomoni/snug/issues/17 as a confirmed open finding
-	// instead of blessed here.
+	// `{home}/.claude/settings.json` is now IN the catalogue above (issue #17):
+	// `@claude` no longer binds it at all — the file the sandbox sees is
+	// GENERATED from an allowlist of scalar preferences (policy.FilterClaudeSettings,
+	// cmd/snug/claude.go's stageClaudeSettings) — so the catalogue entry can never
+	// fire on a real builtin grant; it stands as a permanent regression test
+	// against the path ever being bound again.
+	//
+	// `{home}/.claude/plugins`, which `@claude` DOES still bind read-only, is
+	// deliberately in NEITHER list. It is not "ordinary" — a plugin manifest
+	// carries its own `hooks` block that Claude Code loads automatically
+	// (CLAUDE-SETTINGS.md §4.4, measured), which is a COMMAND TABLE by this
+	// file's own definition — but adding it to the catalogue above would fail
+	// the build immediately, since there is no generator for a plugin tree, the
+	// same situation the settings.json entry was in before this fix landed. The
+	// omission is a decision, not an oversight: see
+	// https://github.com/gomoni/snug/issues/68. `{home}/.claude/skills` stays
+	// asserted ordinary below — a skill is model-mediated and tool-gated, a
+	// plugin hook is not, and the two must not be conflated.
 	for _, ordinary := range []string{
 		"/usr", "/etc/passwd", "{home}/.local/bin/claude", "{home}/.claude/skills",
 		"{home}/.local/share/claude", "{target}", "/etc/containers",

@@ -968,12 +968,22 @@ func TestRetiredNullProfileNamesTheFix(t *testing.T) {
 // no host state and runs the same everywhere. See refusals_test.go for the
 // negative side of the same rules.
 
-// @git-ro and @claude both bind host FILES inside @home's writable tmpfs
-// ({home}/.gitconfig, {home}/.claude/settings.json, ...). RULE 2 must keep
-// allowing a bind nested inside a KindTmpfs mount, or every identity file and
-// every @claude grant breaks on the first invocation. An earlier draft of the
-// rule (R2 in the findings report) would have included KindTmpfs among the
-// masking outer kinds; this is the test that draft would have failed.
+// Things land inside @home's writable tmpfs two ways, and RULE 2 has to keep
+// allowing both: @claude BINDS host directories there ({home}/.claude/skills,
+// {home}/.claude/plugins), and snug WRITES generated KindData files there
+// (every identity file, {home}/.gitconfig, {home}/.claude/settings.json).
+// Without that, every identity file and every @claude grant breaks on the
+// first invocation. An earlier draft of the rule (R2 in the findings report)
+// would have included KindTmpfs among the masking outer kinds; this is the
+// test that draft would have failed.
+//
+// The example used to read "@git-ro and @claude both bind host FILES
+// ({home}/.gitconfig, ...)" and was wrong twice over by the time anyone
+// re-read it: @git-ro binds nothing at all any more (it extracts and
+// generates — .claude/design/GIT-CONFIG.md), and @claude's remaining grants
+// under $HOME are directories, not files. The fixture below still uses a
+// {home}/.gitconfig-shaped guest path because the SHAPE is what RULE 2 is
+// about; the comment just may not claim a profile ships it.
 func TestNestedBindInsideHomeTmpfsIsAllowed(t *testing.T) {
 	reg := testRegistry()
 	reg["id-file"] = &Profile{Name: "id-file", Include: []ProfileName{"@home"}, RO: []string{"/opt:{home}/.gitconfig"}}

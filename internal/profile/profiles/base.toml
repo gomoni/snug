@@ -352,8 +352,45 @@ network = "host"
 # project tree, not the host's config); tool approvals given in a host session
 # are asked again inside; and a directory you have not trusted on the host is
 # asked about once per run.
+#
+# ~/.claude/settings.json is GENERATED, never bound, because it is a COMMAND
+# TABLE. hooks (shell commands on ~34 tool events), apiKeyHelper (a program
+# whose stdout IS an API key), statusLine, mcpServers, the AWS/GCP/OTEL
+# credential helpers and processWrapper all name programs; enabledPlugins and
+# extraKnownMarketplaces select and fetch code; env sets variables for every
+# session. A read-only bind stops the sandbox EDITING that file and supplies
+# every one of them — the ~/.gitconfig argument, one tool over.
+#
+# ABUSE: a hostile process inside the sandbox can read this file and learn the
+# handful of scalar display preferences copied from your host settings — the
+# model alias, the theme, the editor mode and some booleans — and nothing else
+# about your host; it can rewrite it, because it is a private copy on a tmpfs
+# that dies with the session and never reaches the host. It cannot obtain a
+# command, a credential, a path, an environment variable or a plugin source
+# from it, because no key of that kind is copied.
+#
+# The exact list is policy.ClaudeSettingAllowlist, and this comment
+# deliberately does NOT restate it as a count. It said "ten … and seven
+# booleans" for one draft, which is a copy of state held in that slice —
+# CLAUDE.md's "the writable surface is eight paths" bullet records what
+# happens next: the list grows, the prose does not, and no test can fail. The
+# injected ~/.claude/CLAUDE.md enumerates the real names at runtime rather
+# than counting them (claudeAllowlistNames, cmd/snug/claude.go).
+#
+# WHAT THIS DOES NOT CLOSE, stated because the fix would otherwise read wider
+# than it is: `ro` below still binds {home}/.claude/plugins, and dropping
+# `enabledPlugins` from the generated file is NOT known to disable anything —
+# `~/.claude/plugins/installed_plugins.json` records the installed plugin set
+# and their install paths independently of settings.json, and it sits inside
+# that same read-only bind. A plugin's own manifest carries its own `hooks`
+# block that Claude Code loads automatically: MEASURED on the development
+# host, both `caveman@caveman`'s manifest (a SessionStart hook) and the
+# official `security-guidance` plugin's (SessionStart, UserPromptSubmit,
+# PostToolUse and Stop hooks, each running a shell command). This fix closes
+# the SETTINGS-FILE door only. See
+# https://github.com/gomoni/snug/issues/68.
 [profile.claude]
-description = "Claude Code: binary and skills read-only, credentials staged writable."
+description = "Claude Code: binary and skills read-only, credentials and settings generated."
 include = ["sys", "home"]
 #
 # The BINARY lands at /run/snug/bin/claude, not at its host path. snug stages
@@ -363,14 +400,12 @@ include = ["sys", "home"]
 ro = [
   "{home}/.local/bin/claude:/run/snug/bin/claude",
   "{home}/.local/share/claude",
-  "{home}/.claude/settings.json",
   "{home}/.claude/skills",
   "{home}/.claude/plugins",
 ]
 optional = [
   "{home}/.local/bin/claude",
   "{home}/.local/share/claude",
-  "{home}/.claude/settings.json",
   "{home}/.claude/skills",
   "{home}/.claude/plugins",
 ]

@@ -314,7 +314,7 @@ func run(cfg config) int {
 		return exitPolicy
 	}
 
-	claudeFiles(pol, home)
+	claudeFiles(pol, home, cfg.verbose)
 
 	idCleanup, err := startIdentity(pol, cfg.verbose, cfg.iKnow, cfg.dryRun)
 	if err != nil {
