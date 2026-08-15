@@ -33,10 +33,10 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "TARGET   %s  %s\n", p.Target, targetAnnotation(p))
 	fmt.Fprintf(out, "HOME     %s  %s\n", p.Home, homeAnnotation(p))
-	fmt.Fprintf(out, "PROFILES %s\n", strings.Join(p.Selected, " "))
+	fmt.Fprintf(out, "PROFILES %s\n", visibleValue(strings.Join(p.Selected, " ")))
 	if implied := p.Implied(); len(implied) > 0 {
 		fmt.Fprintf(out, "         + %s  (pulled in by include; see: snug profile tree)\n",
-			strings.Join(implied, " "))
+			visibleValue(strings.Join(implied, " ")))
 	}
 	describeNetwork(out, p)
 	describeTopology(out, p)
@@ -572,7 +572,7 @@ func pathAnnotation(p *policy.Policy, path string) string {
 	word := accessWord(m)
 	where := ""
 	if m.Guest != path {
-		where = fmt.Sprintf(", via %s covering %s", strings.Join(m.From, "+"), m.Guest)
+		where = fmt.Sprintf(", via %s covering %s", visibleValue(strings.Join(m.From, "+")), m.Guest)
 	}
 	return fmt.Sprintf("(%s%s%s)", word, where, writableBelow(p, path, m))
 }

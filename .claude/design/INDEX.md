@@ -368,14 +368,24 @@ Two things follow.
 - **Provenance is legible without a lookup.** Every place a profile name is rendered is a place where "is this snug's grant or one this host defined?" is the question being asked, and the bare name could not answer it.
 - **The two namespaces cannot collide,** which retires a rule rather than adding one. "A config file must not redefine a builtin" was previously enforced by the merge check; now a user file saying `[profile.sys]` defines a profile of *theirs*, and `@sys` is untouched. The merge check remains for collisions between the layers below (a site profile against a user one), where a hard error is still right. This matters most where §2.7's gate is weakest — `$XDG_CONFIG_HOME` is trusted unconditionally today, and a `profiles.d` loaded from the wrong place still cannot impersonate `@sys`.
 
-**The name charset — DECIDED, NOT BUILT ([#20](https://github.com/gomoni/snug/issues/20)).**
+**The name charset.**
 
 ```
 first character   [a-zA-Z0-9]
 rest              [a-zA-Z0-9-]
 ```
 
-The hyphen is in, decided by the owner; eight builtins depend on it (`cwd-rw`, `parent-ro`, `tmp-shared`, `git-ro`, `net-anon`, `net-host`, `podman-socket`, `podman-build`), so the naive "alphanumerics only" reading would outlaw snug's own names. Underscore stays out until asked for, on the grounds that adding a character later is additive and removing one is a breaking change. Refusing punctuation in the FIRST position is the point: every printable ASCII symbol then stays free to become a sigil later without breaking a name somebody already chose, and `@` is already one. `checkName` today is a **denylist** of five individually-broken characters, which is the wrong direction — what snug has not been taught about must fail closed.
+`checkName` (`internal/profile/file.go`) is an **allowlist**: a character outside that set is a fatal parse error naming the file, the name, the offending byte and its offset. It was a denylist of five individually-broken characters until [#20](https://github.com/gomoni/snug/issues/20), which is the wrong direction — what snug has not been taught about must fail closed — and the sixth character was already reachable: measured, `[profile."a\u001b[1A\rb"]` parsed cleanly and, once selected, that name reached the `PROFILES` line of `--dry-run` verbatim, where `ESC[1A CR` erases the row above it.
+
+The hyphen is in, decided by the owner; eight builtins depend on it (`cwd-rw`, `parent-ro`, `tmp-shared`, `git-ro`, `net-anon`, `net-host`, `podman-socket`, `podman-build`), so the naive "alphanumerics only" reading would outlaw snug's own names. Underscore stays out until asked for, on the grounds that adding a character later is additive and removing one is a breaking change. Refusing punctuation in the FIRST position is the point: every printable ASCII symbol then stays free to become a sigil later without breaking a name somebody already chose. `@` is already one, and `:` is the reserved next candidate ([`PARAMETERISED-PROFILES.md`](PARAMETERISED-PROFILES.md)).
+
+Three things follow.
+
+- **The grammar is enforced in exactly one function.** `nameFault` is the whole rule. The bespoke errors for a leading `-` (indistinguishable from a flag) and a leading `@` (the mark is snug's, and the fix is to drop one character) sit in *front* of it and only improve the message — both are refused by the rule as well, so deleting one costs a good error and cannot widen what parses. A rule written in two halves has been fixed in one of them twice in this project.
+- **Every name a profile FILE contains obeys it, `include` targets included** — those through `checkRef`, whose grammar is the same plus an optional leading `@`, because a user's own profile including `@net` is a supported spelling. Definition and reference differ by exactly that one character and are separate functions so the difference is written down rather than assumed.
+- **Rendering a profile name is now safe by construction rather than by escaping.** A name reaching `$SNUG_PROFILES`, the container store key (`engine.New` joins the set with commas too — a second consumer of the comma rule that nobody had written a rule for), `--dry-run` provenance, `snug profile show`'s header or `snug profile tree` is a registry key, and a registry key can no longer hold a control character, a space or a comma. The only place an ILLEGAL name is ever rendered is the refusal itself, which quotes it with `%q`; the renderers on those screens keep their `visibleValue` guard as a second line of defence.
+
+A name outside the set is a **loud fatal parse error naming the file**: an existing `my_profile` or `my.tool` stops loading and says so, with `my-profile` suggested for the first. snug is pre-1.0 and there is deliberately no escape hatch — a name that stops parsing is visible, and every alternative to a hard error is a name that quietly means something else.
 
 `include` inside a builtin is rewritten along with the names, so a builtin can only ever include another builtin. That is not a restriction being imposed — it is compiled in and cannot know a user's names — but it is a rule rather than an accident, and `profile.mark` says so.
 

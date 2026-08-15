@@ -91,59 +91,185 @@ type rawIdentity struct {
 	GhHost   string `toml:"gh_host"`
 }
 
-// checkName rejects a profile name that would break a mechanism.
+// nameFault reports the byte offset of the first character the profile-name
+// grammar refuses, or -1 when every character is legal.
 //
-// These are not style rules and this is not namespace policing — a user may
-// call a profile whatever they like, including uppercase or dotted. Each
-// character below breaks something concrete, and every one of them parsed
-// happily before this existed:
+//	first byte   [a-zA-Z0-9]
+//	rest         [a-zA-Z0-9-]
 //
-//	","  snug joins the resolved names with commas into SNUG_PROFILES, which is
-//	     the sandbox's own account of what was selected. A profile named "a,b"
-//	     corrupts it, and anything reading it back is silently misled.
-//	":"  reserved for a parked design where a profile takes arguments
-//	     (.claude/design/PARAMETERISED-PROFILES.md): "name:arg" must split unambiguously.
-//	"-"  leading, because `snug -p -v` would otherwise name a profile "-v"
-//	     rather than fail.
-//	"@"  leading, because that mark means "snug ships this" and is added by
-//	     Builtins() alone — see policy.Sigil. Note that this rule applies to
-//	     EVERY file, base.toml included: the builtins are written here under
-//	     bare names and marked on load, so no file anywhere may claim the mark
-//	     for itself.
-//	     whitespace/NUL, because every --dry-run line and every Validate error
-//	     renders provenance as a space-free token; a name with a space in it
-//	     turns those into nonsense.
-//	""   the empty name, which TOML accepts as [profile.""].
+// THIS IS THE ONLY PLACE THE GRAMMAR IS WRITTEN. checkName and checkRef both
+// call it; neither re-implements it. A rule spelled out twice in this project
+// has twice been fixed in one of its two halves (CLAUDE.md: checkEnvName vs
+// checkEnvValue; visibleValue in one block and not the one four lines below).
+//
+// A BYTE loop, not `for _, r := range name`, and that is a decision rather than
+// a habit: ranging over invalid UTF-8 yields U+FFFD and loses the byte that is
+// actually in the file, so the error would describe a character nobody wrote.
+// Every legal byte is ASCII, so a byte loop refuses multi-byte UTF-8 at its
+// FIRST byte and can name that byte exactly.
+//
+// The EMPTY name faults at offset 0 — it is not legal, and a caller testing only
+// the sign cannot mistake it for legal. Any caller that renders name[offset]
+// must handle "" before calling.
+func nameFault(name string) int {
+	if name == "" {
+		return 0
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		alnum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+		switch {
+		case alnum:
+		case c == '-' && i > 0:
+		default:
+			return i
+		}
+	}
+	return -1
+}
+
+// nameByteDesc names one offending byte for an error message, and it must not
+// lie about what is in the file.
+//
+// string(byte(0xc3)) is "Ã" — the byte-to-string conversion goes through a rune
+// and MANGLES anything >= 0x80, so a UTF-8 name would be refused with a
+// character the author never typed (internal/policy/envtypes.go:681 has this
+// bug today; do not copy it). Printable ASCII is quoted, everything else is the
+// hex byte, which is what a hex editor would show.
+func nameByteDesc(c byte) string {
+	if c >= 0x20 && c <= 0x7e {
+		return fmt.Sprintf("%q", string(rune(c))) // exact: c < 0x80
+	}
+	return fmt.Sprintf(`the byte \x%02x`, c)
+}
+
+// checkName is an ALLOWLIST over a profile name, and the direction is the point.
+//
+//	first byte   [a-zA-Z0-9]
+//	rest         [a-zA-Z0-9-]
+//
+// It was a DENYLIST of five individually-broken characters (comma, colon,
+// space, tab, NUL) plus a leading '-' and a leading '@'. Every one of those was
+// a real mechanism broken by a real character, and every one was found the hard
+// way — but a denylist can only refuse what snug has already been taught about,
+// and the sixth character was already reachable. Measured before this change:
+// [profile."a\u001b[1A\rb"] parsed cleanly, and once selected the name reached
+// the PROFILES line of --dry-run verbatim, where ESC[1A CR erases the row above
+// it. What snug has not been taught about must fail closed.
+//
+// The reasons behind the old denylist all survive, and are now covered without
+// naming a character:
+//
+//	","  snug joins the resolved names with commas into SNUG_PROFILES, and
+//	     engine.New joins them with commas into the container store key — two
+//	     consumers, and only one of them ever had a rule written for it.
+//	":"  reserved for the parked design where a profile takes arguments
+//	     (.claude/design/PARAMETERISED-PROFILES.md): "name:arg" must split
+//	     unambiguously.
+//	     whitespace and control characters, because every --dry-run line, every
+//	     Validate error and every provenance string renders a name as a
+//	     space-free token — a name with a space in it makes those nonsense, and
+//	     a name with an ESC in it forges or erases rows in them.
+//
+// And it buys what a denylist could not: refusing punctuation in the FIRST
+// position keeps every printable ASCII symbol free to become a sigil later
+// without breaking a name somebody already chose. '@' is already one.
+//
+// The hyphen is IN — decided by the owner, and eight builtins depend on it
+// (cwd-rw, parent-ro, tmp-shared, git-ro, net-anon, net-host, podman-socket,
+// podman-build), so "alphanumerics only" would outlaw snug's own names.
+// Underscore is OUT until someone asks: adding a character later is additive,
+// removing one is a breaking change.
+//
+// THE GRAMMAR LIVES IN nameFault. The two branches before the loop below are
+// message refinements, not rules — nameFault refuses a leading '-' and a
+// leading '@' on its own — so deleting one costs a good error and cannot widen
+// what parses.
 //
 // Checked in parse rather than merge: the FILE is what is wrong, and parse is
 // where the source path and the offending name are both in hand.
 func checkName(name, source string) error {
 	if name == "" {
-		return fmt.Errorf("%s: a profile with an empty name", source)
+		return fmt.Errorf("%s: a profile with an empty name ([profile.\"\"]). Every place snug "+
+			"renders a selection — $SNUG_PROFILES, --dry-run provenance, `snug profile list` "+
+			"— would show a blank where a name belongs. A profile name is [a-zA-Z0-9] "+
+			"followed by [a-zA-Z0-9-]", source)
+	}
+	if strings.HasPrefix(name, policy.Sigil) {
+		suffix := "."
+		if bare := strings.TrimPrefix(name, policy.Sigil); nameFault(bare) < 0 {
+			suffix = fmt.Sprintf(": %q.", bare)
+		}
+		return fmt.Errorf("%s: profile %q may not start with '%s'; that mark means "+
+			"\"snug ships this profile\" and snug adds it itself. Drop it and the "+
+			"profile is yours%s A profile name is [a-zA-Z0-9] followed by [a-zA-Z0-9-]",
+			source, name, policy.Sigil, suffix)
 	}
 	if strings.HasPrefix(name, "-") {
 		return fmt.Errorf("%s: profile %q may not start with '-'; it would be "+
-			"indistinguishable from a flag on the command line", source, name)
+			"indistinguishable from a flag on the command line. A profile name is "+
+			"[a-zA-Z0-9] followed by [a-zA-Z0-9-], so a hyphen is fine anywhere but "+
+			"the front", source, name)
 	}
-	if strings.HasPrefix(name, policy.Sigil) {
-		return fmt.Errorf("%s: profile %q may not start with '%s'; that mark means "+
-			"\"snug ships this profile\" and snug adds it itself. Drop it and the "+
-			"profile is yours: %q", source, name, policy.Sigil,
-			strings.TrimPrefix(name, policy.Sigil))
-	}
-	for _, bad := range []struct {
-		s    string
-		what string
-	}{
-		{",", "a comma (snug joins profile names with commas into SNUG_PROFILES)"},
-		{":", "a colon (reserved for profile arguments)"},
-		{" ", "a space"},
-		{"\t", "a tab"},
-		{"\x00", "a NUL"},
-	} {
-		if strings.Contains(name, bad.s) {
-			return fmt.Errorf("%s: profile %q contains %s", source, name, bad.what)
+	if i := nameFault(name); i >= 0 {
+		c := name[i]
+		hint := ""
+		switch {
+		case c == '_':
+			if alt := strings.ReplaceAll(name, "_", "-"); nameFault(alt) < 0 {
+				hint = fmt.Sprintf(" Underscore is not in the set and the hyphen is, which is "+
+					"the spelling snug's own names use (@cwd-rw, @parent-ro): %q", alt)
+			}
+		case c >= 0x80:
+			hint = " A profile name is ASCII; a non-ASCII character is several bytes in the " +
+				"file and the byte above is the first of them."
 		}
+		return fmt.Errorf("%s: profile %q contains %s at byte offset %d. A profile name is "+
+			"[a-zA-Z0-9] followed by [a-zA-Z0-9-] — an ALLOWLIST, so a character snug has "+
+			"not been taught about is refused rather than carried into $SNUG_PROFILES, "+
+			"--dry-run provenance and every message that renders a name. Rename the "+
+			"profile.%s", source, name, nameByteDesc(c), i, hint)
+	}
+	return nil
+}
+
+// checkRef validates a name a profile REFERS to rather than defines: today the
+// only one is an `include` target.
+//
+// The grammar is checkName's plus one character, and the difference is the
+// whole reason this is a separate function instead of a bool argument. A user's
+// profile including a builtin — include = ["@net"] — is a supported spelling,
+// exercised by base.toml's own comments and by TestRetiredPublishAutoIsAHardError,
+// so a reference may carry the leading mark that a DEFINITION may never carry.
+// One mark, not two: "@@net" is not a name anything can define.
+//
+// Refused here rather than left to resolve time because the FILE is what is
+// wrong. `unknown profile "x\x1b[1A\rb"` from some later command names neither
+// the file nor the profile that wrote the include — and until this existed,
+// `snug profile tree` rendered exactly that name RAW (printTree's unknown
+// branch), which is a forged row on the one screen that says which profiles
+// imply which.
+func checkRef(ref, from, source string) error {
+	if ref == "" {
+		return fmt.Errorf("%s: profile %q has an empty entry in `include`. An include names "+
+			"another profile; delete the entry", source, from)
+	}
+	bare := strings.TrimPrefix(ref, policy.Sigil)
+	if i := nameFault(bare); i >= 0 {
+		// bare[i] is only safe when bare is non-empty: nameFault("") returns 0,
+		// which equals len(bare) for the empty string, so an include of the bare
+		// sigil alone ("@") needs its own description rather than indexing past
+		// the end of an empty slice.
+		desc := "nothing after the sigil"
+		if bare != "" {
+			desc = nameByteDesc(bare[i])
+		}
+		return fmt.Errorf("%s: profile %q includes %q, which no profile file could define: a "+
+			"profile name is [a-zA-Z0-9] followed by [a-zA-Z0-9-], optionally behind the "+
+			"leading %s that marks one snug ships. %s is not in that set. An include that "+
+			"cannot name anything is a typo, and snug says so here rather than as an "+
+			"`unknown profile` from some later command that cannot name this file",
+			source, from, ref, policy.Sigil, desc)
 	}
 	return nil
 }
@@ -169,6 +295,13 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 	for name, r := range f.Profile {
 		if err := checkName(name, source); err != nil {
 			return nil, err
+		}
+		// Every name a profile FILE contains obeys the grammar, references
+		// included — see checkRef.
+		for _, inc := range r.Include {
+			if err := checkRef(inc, name, source); err != nil {
+				return nil, err
+			}
 		}
 		environ, err := toEnvGrants(r, name, source)
 		if err != nil {
