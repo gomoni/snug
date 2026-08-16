@@ -310,3 +310,143 @@ func TestEveryPointerRefusesARelativeValue(t *testing.T) {
 			"to rostered names only", err)
 	}
 }
+
+// ── F1 (redteam host round 3): every name snug ANNOTATES as path-valued ──────
+//
+// The round above closed the five pointers. It did not reach the names snug
+// annotates identically and rosters nowhere, and two of those were measured
+// INSIDE a running sandbox executing attacker code out of a relative value, at
+// 8d17f85:
+//
+//	GIT_TEMPLATE_DIR = "tpl"  ->  ACCEPTED; <target>/r/tpl/hooks/post-commit was
+//	                              copied into .git/hooks and FIRED, uid 1000
+//	GIT_EXEC_PATH    = "gx"   ->  ACCEPTED; `git probecmd` ran
+//	                              <target>/gx/git-probecmd, uid 1000
+//	GIT_DIR, GIT_COMMON_DIR   ->  ACCEPTED (hooks, one indirection out)
+//	GIT_CONFIG_SYSTEM         ->  REFUSED  (the previous round's fix)
+//
+// THIS TEST IS WRITTEN OVER THE TABLE, WHICH IS THE POINT. A test naming those
+// four would pass on the day a fifth annotated directory-valued name is added
+// without the refusal, and that is the failure this whole class keeps repeating.
+// It sweeps every envNotes row whose shape column says shapePath, so the
+// assertion is "every name snug annotates as path-valued refuses a relative
+// value" — and the shape column has no valid zero value
+// (TestEveryAnnotationSaysWhatItsValueIS), so a new row cannot dodge it by
+// staying silent.
+//
+// The four names are ALSO pinned by name at the end, as a positive control: a
+// sweep that stopped covering them — a shape edited to shapeOpaque, a row
+// deleted — would otherwise still pass with a healthy-looking count.
+func TestEveryAnnotatedPathRefusesARelativeValue(t *testing.T) {
+	// The fixture grants {target} ITSELF rather than including @cwd-rw, and
+	// @cwd-rw is not selected either — the sweep reaches the XDG four, and
+	// @cwd-rw's include closure carries @home, which sets all four. Selecting both
+	// is a scalar CONFLICT ("profiles @home and ap disagree about
+	// XDG_CONFIG_HOME"), which is a correct refusal about something else entirely
+	// and would have made the accepted-spelling control fail for the wrong reason.
+	// Its own `rw` satisfies the coupling rule for the names that are also
+	// rostered path-valued, which is what the include was for.
+	resolve := func(g EnvGrants) error {
+		reg := testRegistry()
+		reg["ap"] = &Profile{Name: "ap", RW: []string{"{target}"}, Environ: g}
+		_, err := Resolve(reg, []ProfileName{"@sys", "ap"}, testCtx(), newFakeEnv())
+		return err
+	}
+	// The verb a profile can actually WRITE this name with, which differs by type:
+	// a scalar takes `set`, a mergeable list takes `merge`, and LD_PRELOAD takes
+	// neither (it is a list that does not compose, so every write verb is refused
+	// on type grounds — counted below rather than skipped silently).
+	grants := func(name, value string) (EnvGrants, bool) {
+		for _, g := range []EnvGrants{
+			{Set: map[string]string{name: value}},
+			{Merge: map[string][]string{name: {value}}},
+		} {
+			if ValidateEnvGrants(g) == nil {
+				return g, true
+			}
+		}
+		return EnvGrants{}, false
+	}
+
+	checked := map[string]bool{}
+	unwritable := 0
+	for name, n := range envNotes {
+		if n.shape != shapePath {
+			continue
+		}
+		rel, ok := grants(name, "relative-value")
+		if !ok {
+			unwritable++
+			continue
+		}
+		checked[name] = true
+
+		err := resolve(rel)
+		if err == nil {
+			t.Errorf("a relative value for %s was accepted. snug's own annotation for this name "+
+				"says the value is a path — it is on --dry-run, in front of the human — and a "+
+				"relative one names whatever is in the directory the payload was last in, which "+
+				"inside snug is `--chdir <target>`. Measured: GIT_TEMPLATE_DIR spelled that way "+
+				"installed a hook into every repository git created afterwards", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), "absolute path") || !strings.Contains(err.Error(), name) {
+			t.Errorf("%s was refused, but not with the absolute-path message that explains "+
+				"itself: %v", name, err)
+		}
+		// THE ACCEPTED SPELLING. Without it this is a denial rather than a type
+		// verdict, and the difference is the test this codebase applies to every
+		// refusal it adds.
+		abs, _ := grants(name, "{target}/x")
+		if err := resolve(abs); err != nil {
+			t.Errorf("the absolute spelling of %s was refused: %v. A refusal with no accepted "+
+				"spelling of the same intent IS a denial, and snug does not have those over a "+
+				"human's own profile", name, err)
+		}
+	}
+
+	if len(checked) < 25 {
+		t.Fatalf("only %d path-valued annotations were exercised; this test is measuring almost "+
+			"nothing", len(checked))
+	}
+	if unwritable == 0 {
+		t.Errorf("every path-valued annotation was writable by some verb. That is not wrong in " +
+			"itself, but LD_PRELOAD and LD_LIBRARY_PATH are lists that do not compose and are " +
+			"refused at every write verb — if they became writable, the type rules changed")
+	}
+	// The four names round 3 measured, pinned by name. The sweep is the property;
+	// this is the guard against the sweep quietly stopping covering the case it
+	// was written for.
+	for _, name := range []string{"GIT_TEMPLATE_DIR", "GIT_EXEC_PATH", "GIT_DIR", "GIT_COMMON_DIR"} {
+		if !checked[name] {
+			t.Errorf("%s was not exercised. It is one of the four names measured running code "+
+				"out of `--chdir <target>` from a relative value; if its annotation no longer "+
+				"says shapePath, the refusal is gone with it", name)
+		}
+	}
+	// AND THE COUPLING RULE IS UNCHANGED, which is the same control the pointer
+	// sweep carries. These names have no roster row, so an ABSOLUTE value nothing
+	// grants stays accepted and marked `← not granted` on the screen. Turning that
+	// into a refusal would be a new denial smuggled in beside a fix.
+	if err := resolve(EnvGrants{Set: map[string]string{"GIT_TEMPLATE_DIR": "/var/lib/nowhere/tpl"}}); err != nil {
+		t.Errorf("an absolute, ungranted GIT_TEMPLATE_DIR was refused: %v", err)
+	}
+	// AND THE RULE DID NOT WIDEN TO EVERY ANNOTATED NAME. These are annotated,
+	// their values are code, and a relative one is CORRECT: a command line and a
+	// program name are looked up the way a shell looks them up, not against the
+	// cwd. Refusing them would refuse the only spelling anyone writes.
+	for name, value := range map[string]string{
+		"EDITOR":          "vim",
+		"GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
+		"CC":              "gcc",
+		"RUSTC_WRAPPER":   "sccache",
+		"MAKEFLAGS":       "-j4",
+		"NIS_PATH":        "org_dir.example.com.",
+	} {
+		if err := resolve(EnvGrants{Set: map[string]string{name: value}}); err != nil {
+			t.Errorf("environ.set %s = %q was refused: %v. Its value is not a filesystem path, "+
+				"and the absolute rule must not have been widened to every name whose value is "+
+				"code", name, value, err)
+		}
+	}
+}

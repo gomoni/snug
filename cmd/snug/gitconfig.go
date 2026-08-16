@@ -175,10 +175,18 @@ func readGitFile(git, file, home, gitDir string, out policy.GitValues, seen map[
 		// Silence here meant a single syntax error anywhere in the host's config
 		// produced a sandbox with no identity and nothing on screen — invariant
 		// 5, and the message git already wrote was being thrown away.
+		// BOTH interpolations are text snug did not write: `file` is a path
+		// reached through include.path VALUES in the host's own config, and the
+		// second is git's stderr verbatim. This error is PRINTED — by main, or by
+		// hostGitValues on a dry run — so it is a screen, and the screen sweep
+		// never covered it because it reaches stderr from a call main makes
+		// BEFORE dryRun exists.
 		return fmt.Errorf("git refused to parse %s: %s\n\n"+
 			"      snug reads that file to build the sandbox's git config. Fix it on the "+
 			"host (git config --file %s --list shows the same error), or deselect the "+
-			"profile that asks for it.", file, strings.TrimSpace(stderr.String()), file)
+			"profile that asks for it.",
+			policy.VisibleText(file), policy.VisibleText(strings.TrimSpace(stderr.String())),
+			policy.VisibleText(file))
 	}
 
 	for _, entry := range strings.Split(string(data), "\x00") {
@@ -212,16 +220,30 @@ func readGitFile(git, file, home, gitDir string, out policy.GitValues, seen map[
 			// this profile exists to strip — credential.helper, core.pager,
 			// core.sshCommand, alias = !cmd — came back through the value channel.
 			//
-			// This is the same shape as checkEnvValue, which has refused control
-			// characters in a profile-supplied env value since that hole was
-			// found: a rule written once and applied to one of its two halves.
+			// It is the same SHAPE as checkEnvValue — a rule written once and
+			// applied to one of its two halves — and deliberately NOT the same
+			// SET, which is what that sentence used to imply and no longer can,
+			// now that checkEnvValue refuses category-Cf runes as well.
+			//
+			// The question HERE is what can author a DIRECTIVE in the file snug
+			// generates, and git's parser ends a value at a newline and nothing
+			// else. The question THERE is what can author a LIE on a screen,
+			// which is a wider set and is answered by escaping at the sink
+			// rather than by dropping. policy.withoutControlCharacters carries
+			// the full argument, including why widening THIS filter would cost a
+			// working sandbox: the remedy here is a DROP, so a false positive is
+			// a `git commit` that fails for a name a human legitimately has.
+			//
 			// Dropped rather than escaped, and named on stderr — git's quoting
 			// rules are one more thing to get subtly wrong, and no name, email or
 			// branch needs a control character.
 			if i := strings.IndexFunc(value, func(r rune) bool { return r < 0x20 || r == 0x7f }); i >= 0 {
+				// `lower` is one of policy.GitKeyWhitelist — it got here by comparing
+				// equal to one — so it is snug's own text. `file` is not: an
+				// include.path VALUE in the host's own config chooses it.
 				fmt.Fprintf(os.Stderr, "snug: dropping git %s from %s: the value contains a "+
 					"control character, which would author directives in the config snug "+
-					"generates rather than being carried as a value\n", lower, file)
+					"generates rather than being carried as a value\n", lower, policy.VisibleText(file))
 				continue
 			}
 			out[lower] = value
@@ -272,9 +294,11 @@ func readGitFile(git, file, home, gitDir string, out policy.GitValues, seen map[
 			if strings.HasPrefix(lower, "includeif.onbranch:") {
 				cond = "onbranch:…"
 			}
+			// `cond` is one of the two constants above; `file` is host text.
 			fmt.Fprintf(os.Stderr, "snug: ignoring an `includeIf %q` in %s: that condition is "+
 				"decided by the repository being sandboxed, so honouring it would let the "+
-				"sandboxed material choose which of your files snug reads\n", cond, file)
+				"sandboxed material choose which of your files snug reads\n",
+				cond, policy.VisibleText(file))
 		}
 	}
 	return nil
@@ -293,7 +317,20 @@ func resolveIncludePath(p, home, including string) string {
 	}
 }
 
-// gitValuesLine renders the extraction for --dry-run and for the verbose log.
+// gitValuesLine renders the extraction for the verbose log.
+//
+// ITS DOC COMMENT SAID "for --dry-run and for the verbose log" AND THAT WAS HALF
+// WRONG, which is worth correcting rather than deleting: --dry-run has no caller
+// of this function (the generated file reaches that screen as a KindData mount),
+// and the ONE call site is hostGitValues' `-v` line, on STDERR. A reader who
+// believed the comment would look for this text in the dry-run sweep, find the
+// sweep green, and conclude the values were escaped. They were not.
+//
+// The KEYS are snug's own (policy.SortedGitKeys, the whitelist). The VALUES are
+// the host's gitconfig, which is exactly VisibleText's contract: text snug did
+// not write, at a screen, where refusing is not available — a name or an email
+// is the user's to choose, and the FILE filter that drops a value is a different
+// question with a different answer (see withoutControlCharacters).
 func gitValuesLine(v policy.GitValues) string {
 	if len(v) == 0 {
 		return "(nothing extracted)"
@@ -304,7 +341,7 @@ func gitValuesLine(v policy.GitValues) string {
 			if b.Len() > 0 {
 				b.WriteString(" ")
 			}
-			fmt.Fprintf(&b, "%s=%s", k, val)
+			fmt.Fprintf(&b, "%s=%s", k, policy.VisibleText(val))
 		}
 	}
 	return b.String()

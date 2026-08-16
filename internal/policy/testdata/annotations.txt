@@ -189,3 +189,96 @@ DOCKER_CONFIG            set       ← credsStore in this directory's config.jso
 DOCKER_CONFIG            inherit   ← taking the host's value points docker back at the host's config, credentials included; `set` it to a path a profile authored
 GH_CONFIG_DIR            set       (no profile may write this name — ownership, or its type)
 GH_CONFIG_DIR            inherit   (no profile may write this name — ownership, or its type)
+
+## what the VALUE is, and therefore whether a relative one is refused
+#
+# shape:    the annotation's own column (path / program / opaque), '-' for a
+#           name with no annotation.
+# roster:   what envTypes says, which is what the grant-COUPLING rule reads.
+# relative: valueIsAPath — REFUSED means `environ.set NAME = "x"` cannot be
+#           written, because a relative path means whatever is in the directory
+#           the payload was last in, which inside snug is --chdir <target>.
+
+ANTHROPIC_BASE_URL       opaque    -            accepted
+BASH_ENV                 path      pathNoGrant  REFUSED
+CARGO_HOME               path      path         REFUSED
+CC                       program   (no row)     accepted
+CDPATH                   -         path         REFUSED
+CLASSPATH                path      path         REFUSED
+DOCKER_CONFIG            path      path         REFUSED
+EDITOR                   program   -            accepted
+ENV                      path      pathNoGrant  REFUSED
+GCONV_PATH               path      (no row)     REFUSED
+GETCONF_DIR              path      (no row)     REFUSED
+GH_CONFIG_DIR            -         (no row)     REFUSED
+GIT_ALLOW_PROTOCOL       opaque    (no row)     accepted
+GIT_ASKPASS              program   (no row)     accepted
+GIT_COMMON_DIR           path      (no row)     REFUSED
+GIT_CONFIG_GLOBAL        -         (no row)     REFUSED
+GIT_CONFIG_SYSTEM        path      (no row)     REFUSED
+GIT_DIR                  path      (no row)     REFUSED
+GIT_EDITOR               program   (no row)     accepted
+GIT_EXEC_PATH            path      (no row)     REFUSED
+GIT_EXTERNAL_DIFF        program   (no row)     accepted
+GIT_PAGER                program   (no row)     accepted
+GIT_PROTOCOL_FROM_USER   opaque    (no row)     accepted
+GIT_PROXY_COMMAND        program   (no row)     accepted
+GIT_SEQUENCE_EDITOR      program   (no row)     accepted
+GIT_SSH                  program   (no row)     accepted
+GIT_SSH_COMMAND          program   (no row)     accepted
+GIT_TEMPLATE_DIR         path      (no row)     REFUSED
+GOFLAGS                  opaque    -            accepted
+GOPATH                   -         path         REFUSED
+HOSTALIASES              path      (no row)     REFUSED
+INFOPATH                 -         path         REFUSED
+JAVA_TOOL_OPTIONS        opaque    (no row)     accepted
+JDK_JAVA_OPTIONS         opaque    (no row)     accepted
+LD_AUDIT                 path      (no row)     REFUSED
+LD_LIBRARY_PATH          path      path         REFUSED
+LD_PRELOAD               path      path         REFUSED
+LESSOPEN                 program   -            accepted
+LOCPATH                  path      (no row)     REFUSED
+MAKEFLAGS                opaque    (no row)     accepted
+MALLOC_TRACE             path      (no row)     REFUSED
+MANPATH                  -         path         REFUSED
+NIS_PATH                 opaque    (no row)     accepted
+NLSPATH                  path      (no row)     REFUSED
+NODE_OPTIONS             opaque    (no row)     accepted
+NODE_PATH                path      path         REFUSED
+NO_COLOR                 -         -            accepted
+NPM_CONFIG_USERCONFIG    path      path         REFUSED
+PAGER                    program   -            accepted
+PATH                     -         path         REFUSED
+PERL5LIB                 path      path         REFUSED
+PERL5OPT                 opaque    (no row)     accepted
+PIP_CONFIG_FILE          path      path         REFUSED
+PKG_CONFIG_PATH          -         path         REFUSED
+PROMPT_COMMAND           program   (no row)     accepted
+PS0                      opaque    (no row)     accepted
+PS2                      opaque    (no row)     accepted
+PS3                      opaque    (no row)     accepted
+PS4                      opaque    (no row)     accepted
+PYTHONBREAKPOINT         opaque    -            accepted
+PYTHONPATH               path      path         REFUSED
+PYTHONSTARTUP            path      pathNoGrant  REFUSED
+PYTHONUSERBASE           path      path         REFUSED
+RESOLV_HOST_CONF         path      (no row)     REFUSED
+RES_OPTIONS              opaque    (no row)     accepted
+RSYNC_RSH                program   (no row)     accepted
+RUBYOPT                  opaque    (no row)     accepted
+RUSTC                    program   (no row)     accepted
+RUSTC_WORKSPACE_WRAPPER  program   (no row)     accepted
+RUSTC_WRAPPER            program   (no row)     accepted
+SSH_ASKPASS              program   (no row)     accepted
+TAR_OPTIONS              opaque    (no row)     accepted
+TERMINFO_DIRS            -         path         REFUSED
+TZDIR                    path      (no row)     REFUSED
+VISUAL                   program   -            accepted
+XDG_CACHE_HOME           path      path         REFUSED
+XDG_CONFIG_DIRS          -         path         REFUSED
+XDG_CONFIG_HOME          path      path         REFUSED
+XDG_DATA_DIRS            path      path         REFUSED
+XDG_DATA_HOME            path      path         REFUSED
+XDG_RUNTIME_DIR          path      path         REFUSED
+XDG_STATE_HOME           path      path         REFUSED
+_JAVA_OPTIONS            opaque    (no row)     accepted

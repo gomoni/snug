@@ -655,6 +655,30 @@ func refusalRelativePointer(t testing.TB) error {
 	return err
 }
 
+// refusalRelativeAnnotatedPath: the same refusal at a name that is in NEITHER
+// table the two rows above read — and which snug's own annotation, printed on
+// --dry-run in front of the human, calls a directory of hooks.
+//
+// REGRESSION (redteam host round 3, F1). The pointer fix closed the pointer set.
+// GIT_TEMPLATE_DIR, GIT_EXEC_PATH, GIT_DIR and GIT_COMMON_DIR have no roster row
+// (deliberately — a row opens the builtin gate) and are not pointers, so
+// valueIsAPath was false and a relative value went through. Two of the four were
+// measured executing attacker code out of `--chdir <target>`: the hook in
+// <target>/r/tpl fired on the next commit, and `git probecmd` ran
+// <target>/gx/git-probecmd. The fix reads the shape off the annotation that was
+// already saying it.
+//
+// ONE ROW, NOT FOUR, for the reason the two rows above give: the message differs
+// only in the variable name. The sweep over every path-shaped annotation, with
+// the accepted spelling as its control, is TestEveryAnnotatedPathRefusesARelativeValue.
+func refusalRelativeAnnotatedPath(t testing.TB) error {
+	reg := testRegistry()
+	reg["tpl"] = &Profile{Name: "tpl", Environ: EnvGrants{
+		Set: map[string]string{"GIT_TEMPLATE_DIR": "tpl"}}}
+	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "tpl"}, testCtx(), newFakeEnv())
+	return err
+}
+
 // ── the review artifact ──────────────────────────────────────────────────────
 
 // TestGoldenRefusals pins the EXACT text of every refusal above. This change
@@ -717,6 +741,15 @@ func TestGoldenRefusals(t *testing.T) {
 		// rather than print it — a refusal that renders the byte it is refusing
 		// hands the forgery the screen it was aiming for.
 		{"env_value_c1_csi", refusalEnv(EnvGrants{Set: map[string]string{"EDITOR": "vim\u009b1A\u009b1G"}})},
+		// The BIDI spelling, and it is here for the same reason the C1 one is: the
+		// fix that added C1 asserted "the property rather than a copy of a
+		// character list", and the property it asserted was unicode.IsControl —
+		// which is the control-character set, while U+202E is category Cf. It was
+		// accepted at 8d17f85 and rendered raw in the ENVIRONMENT block, on the
+		// --setenv argv line, and in `profile show`. The message must name a
+		// DIFFERENT damage than the control characters do: an override adds no row
+		// and erases none, it reverses the order the rest of the line reads in.
+		{"env_value_bidi_override", refusalEnv(EnvGrants{Set: map[string]string{"EDITOR": "/usr/bin/vim\u202eDEGROF"}})},
 		{"env_name_snug_owned_ps1", refusalEnv(EnvGrants{Inherit: []string{"PS1"}})},
 		// FIVE ENTRIES USED TO SIT HERE and they are gone rather than moved:
 		// GIT_SSH_COMMAND and BASH_FUNC_* and GIT_CONFIG_COUNT at `set`,
@@ -770,6 +803,7 @@ func TestGoldenRefusals(t *testing.T) {
 		{"env_relative_set", refusalRelativeSet},
 		{"env_relative_set_bash_env", refusalRelativeStartupFile},
 		{"env_relative_set_pointer", refusalRelativePointer},
+		{"env_relative_set_annotated_path", refusalRelativeAnnotatedPath},
 
 		{"env_two_prepends", refusalTwoPrepends},
 		{"env_prepend_order_disagreement", refusalPrependOrder},
@@ -808,5 +842,102 @@ func TestGoldenRefusals(t *testing.T) {
 	}
 	if got != string(want) {
 		t.Errorf("refusal text changed — this is a change to the security boundary.\n--- got\n%s\n--- want\n%s", got, want)
+	}
+}
+
+// A REFUSAL IS A SCREEN, and this is the sink the two rounds of the
+// control-character finding never reached.
+//
+// Both rounds swept what --dry-run, `snug profile show` and `snug profile list`
+// RENDER. Neither read what snug prints when it REFUSES — and a refusal is the
+// screen a human reads most carefully, because it is the one that stopped them.
+// Measured on this branch, with a host directory whose name carries U+202E:
+//
+//	FILESYSTEM block   ro /opt/x (from /tmp/host<RLO>OLR)     <- escaped
+//	--ro-bind line     /tmp/host<RLO>OLR /opt/x               <- escaped
+//	the masking refusal on the same run:
+//	  profile hostbidi puts a bind of /tmp/host<RLO>OLR at /opt/x...   <- RAW
+//
+// The host side cannot be refused for its characters — a file on this machine
+// may legally be named that way, and Validate refuses only the GUEST side — so
+// rendering is the only guard there is for it, which makes "every sink" include
+// the error path.
+//
+// It is written over the ERROR TEXT rather than over the call sites, for the
+// same reason TestNoSnugScreenEmitsARawControlCharacter drives the whole screen:
+// a per-site test passes on the site it was written for and says nothing about
+// the next one.
+func TestARefusalNeverRendersARawForgingRune(t *testing.T) {
+	// TWO ASSERTIONS PER MESSAGE, and the second is not redundant. The rune sweep
+	// has to exempt '\n', because a refusal is legitimately several lines — which
+	// means it structurally CANNOT see the newline probe, the very spelling the
+	// original forged-row finding was about. So each message is also checked for
+	// the probe string VERBATIM: if the host path went through VisibleText it is
+	// there in its escaped form and this substring is absent.
+	check := func(t *testing.T, what, message, host string) {
+		t.Helper()
+		if i := strings.IndexFunc(message, func(r rune) bool { return r != '\n' && IsForgingRune(r) }); i >= 0 {
+			t.Errorf("%s rendered a forging rune verbatim: %q", what, message)
+		}
+		if strings.Contains(message, host) {
+			t.Errorf("%s rendered the host path verbatim rather than escaped: %q", what, message)
+		}
+	}
+	// Three spellings, in the one piece of text a profile cannot be refused for: a
+	// HOST path. One forges a row, one reverses one, one is the C1 encoding of the
+	// first.
+	//
+	// THE DIRECTORY HAS TO EXIST IN THE FIXTURE, and the first draft of this test
+	// did not make it exist: Resolve refused earlier, with "grants %q which does
+	// not exist" — a message that escapes through %q — so every assertion below
+	// passed against a build with the fix REVERTED. Checked by reverting it. That
+	// is the "a test that cannot fail" shape, met while writing the test for a
+	// finding about tests that could not fail.
+	for _, probe := range []struct{ why, host string }{
+		{"a newline, which forges a row", "/srv/a\n  ro     /etc/shadow    @sys"},
+		{"a directional override, which reverses one", "/srv/a\u202eOLR-DEGROF"},
+		{"a C1 CSI", "/srv/a\u009b1A"},
+	} {
+		// The masking refusal: six messages are built from describeNode, and this
+		// is the one measured rendering raw.
+		env := newFakeEnv()
+		env.dirs[probe.host] = true
+		reg := testRegistry()
+		reg["mask"] = &Profile{Name: "mask", RO: []string{probe.host + ":/opt/x"}}
+		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "mask"}, testCtx(), env)
+		if err == nil || !strings.Contains(err.Error(), "which is inside /opt") {
+			t.Fatalf("fixture: the MASKING refusal did not fire for %s, so this case measures "+
+				"nothing: %v", probe.why, err)
+		}
+		check(t, "the masking refusal ("+probe.why+")", err.Error(), probe.host)
+
+		// And the join conflict, which renders TWO host paths from two profiles.
+		env2 := newFakeEnv()
+		env2.dirs[probe.host] = true
+		reg2 := testRegistry()
+		reg2["a"] = &Profile{Name: "a", RO: []string{"/srv/bin:/srv/x"}}
+		reg2["b"] = &Profile{Name: "b", RO: []string{probe.host + ":/srv/x"}}
+		_, err = Resolve(reg2, []ProfileName{"@sys", "@cwd-rw", "a", "b"}, testCtx(), env2)
+		if err == nil || !strings.Contains(err.Error(), "two host sources") {
+			t.Fatalf("fixture: the JOIN CONFLICT did not fire for %s: %v", probe.why, err)
+		}
+		check(t, "the join-conflict refusal ("+probe.why+")", err.Error(), probe.host)
+	}
+
+	// THE POSITIVE CONTROL. An ordinary host path renders unchanged, spaces and
+	// accents and all — otherwise a renderer that %q'd every message would pass
+	// every assertion above while making each refusal harder to read than the
+	// problem it describes.
+	env := newFakeEnv()
+	env.dirs["/srv/a b/caf\u00e9"] = true
+	reg := testRegistry()
+	reg["plain"] = &Profile{Name: "plain", RO: []string{"/srv/a b/caf\u00e9:/opt/x"}}
+	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "plain"}, testCtx(), env)
+	if err == nil {
+		t.Fatal("fixture: the control did not reach a refusal")
+	}
+	if !strings.Contains(err.Error(), "/srv/a b/caf\u00e9") {
+		t.Errorf("an ordinary host path was escaped in the refusal, which makes every message "+
+			"harder to read than the problem it names: %v", err)
 	}
 }

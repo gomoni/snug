@@ -101,9 +101,16 @@ func writesAnyPath(g EnvGrants) bool {
 // isPathValued is the coupling rule's scope, and an UNROSTERED name is outside
 // it.
 //
+// READ THE NEXT PARAGRAPH AS SCOPED TO THIS FUNCTION, WHICH IS WHERE IT WAS NOT
+// READ. It defends the COUPLING rule's scope and it was quoted, once, to defend
+// the ABSOLUTE-PATH rule's — for which it is false, because valueIsAPath now has
+// a third source and the annotation table does hold facts about unrostered
+// names. Coupling is a different question ("did the profile that names this path
+// grant it") and its answer for an unrostered name is unchanged.
+//
 // That is not an oversight and it is the honest answer rather than the
 // convenient one: `path` is a fact snug holds about a name, and for a name with
-// no roster row snug holds no facts at all. The alternative is to decide a value
+// no roster row snug holds no TYPE at all. The alternative is to decide a value
 // is a path because it starts with a '/', which is precisely the shape-sniffing
 // this file's header refuses ("the shape is the same for a search path, a URL, a
 // template language bash performs command substitution on, and a set of
@@ -187,8 +194,42 @@ func isPathValued(name string) bool {
 // absolute GIT_CONFIG_SYSTEM the profile does not grant is still accepted, still
 // marked `← not granted`, and still carries its own annotation. Only the
 // unrepresentable spelling is refused.
+//
+// IT READS THREE TABLES NOW, AND THE THIRD IS THE SAME LESSON A THIRD TIME
+// (redteam host round 3). Closing the pointer set closed the pointer set. It did
+// not reach the git names that carry the identical power and are in neither
+// table — measured, INSIDE a running sandbox, at 8d17f85:
+//
+//	GIT_CONFIG_SYSTEM = "sys.gitconfig"  -> REFUSED   (the fix above)
+//	GIT_TEMPLATE_DIR  = "tpl"            -> ACCEPTED, and the hook in <target>/r/tpl/
+//	                                        was copied into .git/hooks and FIRED
+//	                                        on the next commit, uid 1000
+//	GIT_EXEC_PATH     = "gx"             -> ACCEPTED, and `git probecmd` ran
+//	                                        <target>/gx/git-probecmd, uid 1000
+//	GIT_DIR, GIT_COMMON_DIR              -> ACCEPTED (hooks, one indirection out)
+//
+// isPathValued's comment below defends leaving unrostered names alone with "for
+// a name with no roster row snug holds no facts at all". That is true of a name
+// snug has never heard of and FALSE of these four: each carries an envNotes
+// sentence naming the code the directory runs, printed on --dry-run. snug held
+// the fact, showed it to the human, and then asked two other tables.
+//
+// So the third source is the annotation's own shape column (valueShape), read
+// through noteExact — the EXACT table only, never a prefix, because a family's
+// members do not share a shape. What that buys over a list of the four names is
+// the property the round asked for: the question "is this value a path" is now
+// asked of every annotation that is ever ADDED, since the column has no valid
+// zero value (TestEveryAnnotationSaysWhatItsValueIS).
+//
+// The pointer clause stays even though every writable pointer is also
+// shapePath — GIT_CONFIG_GLOBAL and GH_CONFIG_DIR are snug's own and carry no
+// annotation at all, and "a pointer is a path" should not become a fact that
+// only holds while somebody keeps writing the sentence.
 func valueIsAPath(name string) bool {
 	if namesAPointerFile(name) {
+		return true
+	}
+	if n, ok := noteExact(name); ok && n.shape == shapePath {
 		return true
 	}
 	t, known := typeOf(name)

@@ -69,6 +69,18 @@ type Identity struct {
 //
 // The verdict is a property of the profile text, so it is the same on every host
 // and belongs beside resolution rather than in a renderer.
+//
+// IT WAS A BYTE LOOP OVER `c < 0x20 || c == 0x7f`, AND THAT IS TWO SINKS SHORT.
+// The directive-authoring half above is genuinely ASCII — only a newline writes
+// a second git or YAML line — but these fields reach two artifacts a human READS
+// as well: the generated ~/.claude/CLAUDE.md interpolates gh_user into a
+// sentence with %s (cmd/snug/claude.go), and the no-token refusal renders
+// gh_user and gh_host to a terminal (that one quotes, so it was already safe).
+// A byte loop cannot see U+009B and no loop keyed on unicode.IsControl can see
+// U+202E, so the field that names the account the sandbox pushes as could be
+// spelled to render as a different account in the file the agent is handed. It
+// asks the one predicate now (IsForgingRune, forging.go), so this sink is
+// widened by whatever widens the others.
 func (i *Identity) CheckText(profileName ProfileName) error {
 	if i == nil {
 		return nil
@@ -81,14 +93,17 @@ func (i *Identity) CheckText(profileName ProfileName) error {
 		{"gh_user", i.GhUser},
 		{"gh_host", i.GhHost},
 	} {
-		for j := 0; j < len(f.val); j++ {
-			if c := f.val[j]; c < 0x20 || c == 0x7f {
-				return fmt.Errorf("profile %q: identity.%s contains %q. Every identity field is "+
-					"interpolated into a config file snug GENERATES — ~/.gitconfig, ~/.ssh/config, "+
-					"gh's hosts.yml — so a control character writes a directive snug did not "+
-					"author, and none of it is a Mount that Validate could refuse. Remove it",
-					profileName, f.key, string(c))
+		for _, r := range f.val {
+			if !IsForgingRune(r) {
+				continue
 			}
+			return fmt.Errorf("profile %q: identity.%s contains %q. Every identity field is "+
+				"interpolated into a config file snug GENERATES — ~/.gitconfig, ~/.ssh/config, "+
+				"gh's hosts.yml — where a NEWLINE writes a directive snug did not author, "+
+				"and none of it is a Mount that Validate could refuse. They are also "+
+				"rendered into the ~/.claude/CLAUDE.md the agent reads, and there "+
+				"%s. Remove it",
+				profileName, f.key, r, forgingRuneReason(r))
 		}
 	}
 	return nil

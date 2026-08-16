@@ -62,6 +62,15 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	// and U+0085 (NEL) is a line break a C1-mode terminal acts on.
 	// @claude inherits PAGER, so this arrives by exactly the route EDITOR does.
 	env.env["PAGER"] = "less\u009b1A\u0085  ro     /etc/shadow   " + forged + "-C1"
+	// AND THE BIDI SPELLING, in a third variable @claude inherits (redteam host
+	// round 3, F2). U+202E is category Cf, not Cc, so the widening that closed C1
+	// — unicode.IsControl — could not see it: at 8d17f85 this value reached the
+	// ENVIRONMENT block AND the --setenv argv line raw, measured through `cat -v`.
+	// It forges no row and erases none; it reverses the order the rest of the row
+	// READS in, which is the same lie in the same artifact by another mechanism.
+	// Note the marker is written backwards in the source: what a bidi-rendering
+	// terminal shows after the override is "FORGED-BY-A-VALUE-RLO".
+	env.env["VISUAL"] = "vi\u202eOLR-EULAV-A-YB-DEGROF"
 
 	reg, err := profile.Builtins()
 	if err != nil {
@@ -101,6 +110,16 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 			"block and the bwrap argv block both render this value, and the argv block is "+
 			"the one that was missed", n)
 	}
+	// The same assertion for the bidi spelling, and it is not implied by the
+	// isForgingRune sweep above: that sweep would also pass if the whole VISUAL
+	// row had silently vanished from the screen. Two occurrences, the same two
+	// blocks.
+	if n := strings.Count(got, `\u202e`); n < 2 {
+		t.Errorf("the escaped form of U+202E appears %d time(s), want at least 2 — the "+
+			"ENVIRONMENT block and the bwrap argv block both render this value. A "+
+			"directional override reverses how the rest of the row reads, on any terminal, "+
+			"pager, editor or review UI that implements the bidi algorithm", n)
+	}
 }
 
 // The same sweep for `snug profile show`, which is upstream of every --dry-run:
@@ -125,9 +144,15 @@ func TestProfileShowEscapesEveryValue(t *testing.T) {
 	// which %q left alone because nothing else in the value was a control
 	// character. checkEnvValue cannot reach either — neither is an environ value —
 	// so the renderer is the only guard there is.
+	// The third probe is the BIDI one, and it goes in a MOUNT PATH as well as in
+	// the description, because a path is the sink the ENVIRONMENT-value guard
+	// structurally cannot reach: checkEnvValue refuses a control character in an
+	// environ value at parse time, and neither a description nor a `ro` entry is
+	// one. Measured at 8d17f85: U+202E rendered raw here, in both.
 	body := "[profile.forge]\n" +
-		"description = \"harmless\\u009b1A\\u0085sneaky-" + forged + "-C1\"\n" +
-		"ro = [\"/etc/hostname\", \"/a\\u001b[1A\\r  rw     /home/u   " + forged + "\"]\n"
+		"description = \"harmless\\u009b1A\\u0085sneaky-" + forged + "-C1 \\u202eOLR-" + forged + "\"\n" +
+		"ro = [\"/etc/hostname\", \"/a\\u001b[1A\\r  rw     /home/u   " + forged + "\",\n" +
+		"      \"/opt/x\\u202eOLR-" + forged + "\"]\n"
 	if err := os.WriteFile(dir+"/snug/profiles.d/forge.toml", []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -144,6 +169,13 @@ func TestProfileShowEscapesEveryValue(t *testing.T) {
 	if !strings.Contains(got, forged+"-C1") {
 		t.Fatalf("the C1 description never reached the screen, so half of this test measures "+
 			"nothing:\n%s", got)
+	}
+	// The bidi probe, in both sinks: a description and a grant path. Escaped, so
+	// what appears on the screen is the \u202e ESCAPE rather than the character.
+	if n := strings.Count(got, `\u202e`); n < 2 {
+		t.Fatalf("the escaped form of U+202E appears %d time(s), want 2 — one in the "+
+			"description and one in the `ro` path. A directional override reverses how the "+
+			"rest of the row reads, so a grant can display as a path it is not:\n%s", n, got)
 	}
 	if i := strings.IndexFunc(got, func(r rune) bool { return r != '\n' && isForgingRune(r) }); i >= 0 {
 		t.Errorf("`profile show` emitted a raw control character (%q). Measured in a 110-column "+
@@ -183,6 +215,36 @@ func TestControlCharacterInAGuestPathIsRefused(t *testing.T) {
 			"the writer can see it, since the character is invisible in their editor: %v", err)
 	}
 
+	// THE BIDI SPELLING, AND THIS ONE HAD NOT BEEN WIDENED AT ALL. When U+0085 and
+	// U+009B were found reaching the screens, checkEnvValue and the renderer were
+	// widened to unicode.IsControl; this refusal — the same rule, guarding the
+	// same block of the same screen — kept its `r < 0x20 || r == 0x7f` trigger,
+	// because its own test asserted its own spelling and passed. So a guest path
+	// could carry a C1 character AND, one category out, a directional override
+	// that makes the rendered row read as a different path. Both sites ask
+	// policy.IsForgingRune now, which is why this loop can be written over the
+	// spellings rather than over the sites.
+	for _, probe := range []struct{ why, path string }{
+		{"a C1 CSI", "/a\u009b1A  ro     /etc/shadow"},
+		{"a directional override", "/opt/x\u202eOLR-DEGROF"},
+	} {
+		m["forge"] = &policy.Profile{Name: "forge", Tmpfs: []string{probe.path}}
+		_, err := policy.Resolve(m, append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "forge"),
+			envGoldenCtx(), newEnvFakeEnv())
+		if err == nil {
+			t.Errorf("a guest path containing %s was accepted", probe.why)
+			continue
+		}
+		// The message must name the DAMAGE, and the two damages are different: a
+		// control character forges or erases a row, an override reverses the one
+		// it is in. A refusal that describes the wrong one leaves the author
+		// looking for a character that is not there.
+		if !strings.Contains(err.Error(), "control character") &&
+			!strings.Contains(err.Error(), "directional formatting character") {
+			t.Errorf("%s was refused, but the message names neither damage: %v", probe.why, err)
+		}
+	}
+
 	// The positive control: the identical grant without the control character is
 	// accepted. Otherwise this test would pass on a resolver that refused every
 	// tmpfs.
@@ -193,20 +255,34 @@ func TestControlCharacterInAGuestPathIsRefused(t *testing.T) {
 	}
 }
 
-// captureStdout runs f with os.Stdout redirected to a temp file and returns what
-// it wrote. dryRun and profileCmd both write to os.Stdout directly rather than
-// taking a writer, and driving the REAL functions is the point — a test against
-// an extracted helper would pass while the command printed something else.
+// captureStdout runs f with BOTH standard streams redirected to a temp file and
+// returns what it wrote. dryRun and profileCmd both write to os.Stdout directly
+// rather than taking a writer, and driving the REAL functions is the point — a
+// test against an extracted helper would pass while the command printed
+// something else.
+//
+// IT CAPTURED ONE STREAM AND THE NAME OF THE TEST ABOVE CLAIMED ALL OF THEM.
+// "No snug screen emits a raw control character" was asserted by a helper that
+// redirected os.Stdout only, so every warning snug writes to stderr was outside
+// the sweep by construction — and that is where the next raw sink was found:
+// `snug: git config extracted: …` renders the host's gitconfig VALUES, from a
+// call main makes before dryRun exists. The same gap shape as the ENVIRONMENT
+// block being fixed while the argv block four lines below it was not, one stream
+// over instead of one block over.
+//
+// Both streams go to ONE file rather than to two, deliberately: the property is
+// about what a human sees in their terminal, where the two are interleaved, and
+// a test that returned them separately would invite a caller to check one.
 func captureStdout(t *testing.T, f func()) string {
 	t.Helper()
-	orig := os.Stdout
-	tmp, err := os.CreateTemp(t.TempDir(), "stdout-")
+	origOut, origErr := os.Stdout, os.Stderr
+	tmp, err := os.CreateTemp(t.TempDir(), "screen-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.Stdout = tmp
+	os.Stdout, os.Stderr = tmp, tmp
 	f()
-	os.Stdout = orig
+	os.Stdout, os.Stderr = origOut, origErr
 	tmp.Close()
 
 	b, err := os.ReadFile(tmp.Name())

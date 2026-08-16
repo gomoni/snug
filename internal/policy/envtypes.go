@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"unicode"
 )
 
 // The variable types, and the two checks that run over a profile's `environ`
@@ -528,12 +527,119 @@ type envNote struct {
 	// host is the sentence for a value taken from the invoking host:
 	// VerbInherit, VerbSanitise.
 	host string
+	// shape is the one MACHINE-READABLE fact this table carries, and it is here
+	// rather than in a table of its own for a measured reason — see valueShape.
+	//
+	// THE ZERO VALUE IS INVALID AND IS SWEPT. A row that forgets it fails
+	// TestEveryAnnotationSaysWhatItsValueIS, which is the whole mechanism: the
+	// question "what does a RELATIVE value mean here" is then asked of every
+	// annotation that is ever added, instead of being asked once about the names
+	// somebody happened to think of.
+	shape valueShape
+}
+
+// valueShape is what the VALUE of an annotated name IS, as opposed to what the
+// tool DOES with it — and it exists because snug held the first fact in prose,
+// stated it on --dry-run, and then decided the absolute-path refusal from two
+// other tables that had never heard of the name.
+//
+// MEASURED, redteam host round 3, on this branch. `GIT_TEMPLATE_DIR = "tpl"` and
+// `GIT_EXEC_PATH = "gx"` were both ACCEPTED and both ran attacker code out of
+// `--chdir <target>` — a post-commit hook copied into every new repository, and
+// a `git-probecmd` subcommand — while `GIT_CONFIG_SYSTEM = "sys.gitconfig"`, the
+// same shape, was refused. The refusal keyed on the roster and the pointer set;
+// these four names are in neither, and isPathValued's comment defended that with
+// "for a name with no roster row snug holds no facts at all", which is FALSE for
+// exactly these names: each carries an envNotes sentence saying what code the
+// DIRECTORY runs.
+//
+// WHY A COLUMN HERE AND NOT A THIRD TABLE. A third table keyed by name is the
+// failure this file has recorded three times over case rules and twice over
+// exact-versus-family: one fact, two tables, they drift. The annotation table is
+// already keyed by exactly the set of names snug holds a strong fact about, so
+// the fact goes in a column of it and cannot be added without the sentence, or
+// the sentence without the fact. The ROSTER would have been the natural home —
+// this is a type fact — and it cannot be, because a roster row is what opens the
+// builtin gate (IsUncheckedEnv -> checkBuiltinEnvRoster), and giving GIT_DIR a
+// row would make it a name a profile snug SHIPS may write. That gate is
+// deliberate and this fix must not touch it, which is the same reasoning
+// valueIsAPath already applies to the pointer table.
+//
+// WHAT THE COLUMN DECIDES: shapePath, and only shapePath, makes valueIsAPath
+// true, so a relative value is refused with the message the pointers get. It
+// does NOT touch the grant-coupling rule, whose scope is still the roster alone
+// (isPathValued) — a profile may still name an absolute path it does not grant,
+// and the screen still marks that row `← not granted`.
+//
+// WHAT IT DOES NOT DECIDE, said plainly because the sweep must not be read as
+// more than it is: nothing checks that a row's shape is TRUE of its name. A
+// directory-valued name written down as shapeOpaque is accepted, exactly as a
+// wrong sentence would be. What the sweep buys is that the question is ASKED at
+// every row and that the answer is rendered, per name, in
+// testdata/annotations.txt — so a mis-classification is a line in the review
+// artifact rather than an absence nobody can see.
+type valueShape uint8
+
+const (
+	// shapeUnset is the zero value and is not a classification. It exists only so
+	// that forgetting the column is a test failure rather than a silent "not a
+	// path".
+	shapeUnset valueShape = iota
+
+	// shapePath — the whole value is a filesystem path, so a RELATIVE one is
+	// resolved against the payload's cwd. Inside snug that is `--chdir <target>`,
+	// which the profile did not choose, cannot know, and which is the one
+	// directory a hostile payload writes. There is no string snug can put in
+	// --setenv that means what such an author meant, so it is refused.
+	shapePath
+
+	// shapeProgram — the value is a program name or a command LINE, which the
+	// consumer looks up the way a shell does. A bare `vim`, `ssh -i k` or `gcc`
+	// is a correct, host-independent thing to write: the lookup is on PATH, not
+	// against the cwd, so the absolute rule would refuse the only spelling anyone
+	// uses. That these are the names whose value is CODE is the annotation's
+	// business, not this column's — the two questions are orthogonal and mixing
+	// them is what made `path` answer two things at once (see envType.pathNoGrant).
+	shapeProgram
+
+	// shapeOpaque — not a filesystem path at all: flags a tool parses, a
+	// module:callable, a URL, a prompt template, a protocol list, a setting. A
+	// relative-looking value here means whatever the tool says it means and snug
+	// has no business demanding a leading '/'.
+	shapeOpaque
+
+	// shapeFamily is for envNotePrefixes ONLY: a sentence about an unbounded
+	// FAMILY of names (LD_*, GIT_CONFIG_*), where the shape differs name by name
+	// — GIT_CONFIG_GLOBAL is a path and GIT_CONFIG_KEY_0 is a setting — so the
+	// family cannot answer for them. valueIsAPath reads the EXACT table only
+	// (noteExact), never a prefix, for this reason.
+	shapeFamily
+)
+
+// String is what testdata/annotations.txt and the refusals print. It is one word
+// per shape and it lives here rather than at the golden, for the reason
+// UncheckedEnvNote gives at length: a second copy of the wording is how two
+// sinks come to disagree about a fact neither of them owns.
+func (s valueShape) String() string {
+	switch s {
+	case shapePath:
+		return "path"
+	case shapeProgram:
+		return "program"
+	case shapeOpaque:
+		return "opaque"
+	case shapeFamily:
+		return "family"
+	}
+	return "UNSET"
 }
 
 // both is an annotation whose sentence does not depend on where the value came
 // from — the value is code either way, so the reader needs the same fact at
-// every verb.
-func both(s string) envNote { return envNote{authored: s, host: s} }
+// every verb. The shape is not a per-verb fact and is passed once.
+func both(shape valueShape, s string) envNote {
+	return envNote{authored: s, host: s, shape: shape}
+}
 
 func (n envNote) forVerb(verb EnvVerb) string {
 	switch verb {
@@ -633,21 +739,21 @@ var envNotes = map[string]envNote{
 	//
 	//	LD_PRELOAD=$W/libpre.so /bin/echo hi  -> LD-PRELOAD-RAN, then hi
 	//	                        /bin/echo hi  -> hi              (control)
-	"LD_PRELOAD": both("every process in the sandbox loads this library before its own code " +
+	"LD_PRELOAD": both(shapePath, "every process in the sandbox loads this library before its own code "+
 		"(measured, glibc 2.43, with the control)"),
 	// Measured, glibc 2.43, with the control. An audit library needs only
 	// la_version(), and the loader calls it BEFORE the program's own constructors:
 	//
 	//	LD_AUDIT=$W/libaud.so /bin/echo hi  -> LD-AUDIT-RAN v=2, then hi
 	//	                      /bin/echo hi  -> hi                (control)
-	"LD_AUDIT": both("the loader runs this auditing library inside every process it starts " +
+	"LD_AUDIT": both(shapePath, "the loader runs this auditing library inside every process it starts "+
 		"(measured, glibc 2.43, with the control)"),
 	// Measured, glibc 2.43, with the control, against a binary that already names
 	// its own library directory — so this is precedence, not merely a fallback:
 	//
 	//	./prog                     -> LIB-FROM-A  (its own RUNPATH; control)
 	//	LD_LIBRARY_PATH=$W/b ./prog-> LIB-FROM-B
-	"LD_LIBRARY_PATH": both("every process resolves its shared libraries from here first, " +
+	"LD_LIBRARY_PATH": both(shapePath, "every process resolves its shared libraries from here first, "+
 		"ahead of the binary's own RUNPATH and the system directories (measured, glibc 2.43)"),
 	// Measured, glibc 2.43, with the control. A gconv module is dlopen'd, so a
 	// constructor in one runs — the object planted here was not even a valid
@@ -657,7 +763,7 @@ var envNotes = map[string]envNote{
 	//	  -> GCONV-MODULE-CODE-RAN, then a fatal glibc assertion
 	//	                   iconv -f FAKECHARSET -t UTF-8 in.txt
 	//	  -> conversion from `FAKECHARSET' is not supported   (control)
-	"GCONV_PATH": both("iconv loads a character-set conversion MODULE from here and a module is " +
+	"GCONV_PATH": both(shapePath, "iconv loads a character-set conversion MODULE from here and a module is "+
 		"code — a constructor in one ran on the first conversion (measured, glibc 2.43)"),
 	// Measured, glibc 2.43, with the control — AND THE PREVIOUS SENTENCE DID NOT
 	// SURVIVE IT. It said "a locale object is code"; it is not. glibc mmaps
@@ -674,9 +780,21 @@ var envNotes = map[string]envNote{
 	// finds it wrong cannot tell which of the others to trust. GCONV_PATH, two
 	// rows up, IS the code one — keeping them apart is the whole value of both
 	// rows. TestTheFalsifiedAnnotationsStayFalsified pins this one too.
-	"LOCPATH": both("glibc reads compiled locale DATA from here — collation, case folding, the " +
-		"decimal separator, the message translations — so a locale here changes what every " +
-		"process computes and prints; it is data, and nothing in the directory is loaded as " +
+	//
+	// IT IS shapePath AND IT IS DATA, AND THOSE ARE TWO ANSWERS TO TWO QUESTIONS.
+	// Round 3 listed LOCPATH's accepted relative value beside the four git ones
+	// and asked, fairly, whether it belongs in the same refusal given that snug's
+	// own corrected sentence calls it DATA and not code. It does, and the reason
+	// is that the shape column is not a hazard column: the absolute rule refuses a
+	// value snug CANNOT REPRESENT — a relative path means "wherever the payload
+	// last was", which no profile can have meant — and that is as true of a
+	// directory glibc reads collation tables out of as of one it runs hooks from.
+	// Deciding it on "is it code" is precisely how `path` came to answer two
+	// questions at once (envType.pathNoGrant). What DOES follow from data-not-code
+	// is the sentence, which stays as measured.
+	"LOCPATH": both(shapePath, "glibc reads compiled locale DATA from here — collation, case folding, the "+
+		"decimal separator, the message translations — so a locale here changes what every "+
+		"process computes and prints; it is data, and nothing in the directory is loaded as "+
 		"code (measured, glibc 2.43, with the control)"),
 	// Measured, glibc 2.43, with the control, through a C program calling
 	// catopen()/catgets() — the template is expanded per process, %N and %L
@@ -689,8 +807,8 @@ var envNotes = map[string]envNote{
 	// It is DATA, like LOCPATH and unlike GCONV_PATH: what it buys an attacker is
 	// every message a program prints, which is a lie told to whoever reads the
 	// output — not an exec.
-	"NLSPATH": both("message catalogues come from here, on a template glibc expands per process, " +
-		"so the messages a program prints are the catalogue author's (measured, glibc 2.43, " +
+	"NLSPATH": both(shapePath, "message catalogues come from here, on a template glibc expands per process, "+
+		"so the messages a program prints are the catalogue author's (measured, glibc 2.43, "+
 		"with the control)"),
 	// Measured, glibc 2.43, with the control — and the sentence this replaced
 	// ("every hostname lookup in the sandbox is rewritten through this file")
@@ -704,7 +822,7 @@ var envNotes = map[string]envNote{
 	// DOT-FREE names only, and the mapping is name -> NAME rather than name ->
 	// address (a file written with an address in the second column does nothing
 	// at all, which is how the limit was found).
-	"HOSTALIASES": both("glibc rewrites a DOT-FREE hostname to another NAME through this file " +
+	"HOSTALIASES": both(shapePath, "glibc rewrites a DOT-FREE hostname to another NAME through this file "+
 		"before it is resolved; a name with a dot in it is untouched (measured, glibc 2.43)"),
 	// Measured, glibc 2.43, with the control — the file is PARSED, and glibc names
 	// it and the line when it dislikes something:
@@ -720,8 +838,8 @@ var envNotes = map[string]envNote{
 	// say — claimed more than the file can deliver. Note also that the host's own
 	// /etc/host.conf does not exist on this box, so the variable is the only way
 	// any of it is read at all here.
-	"RESOLV_HOST_CONF": both("glibc parses this file in place of /etc/host.conf, so its multi/" +
-		"reorder/trim keywords decide what /etc/hosts lookups return (measured, glibc 2.43, " +
+	"RESOLV_HOST_CONF": both(shapePath, "glibc parses this file in place of /etc/host.conf, so its multi/"+
+		"reorder/trim keywords decide what /etc/hosts lookups return (measured, glibc 2.43, "+
 		"with the control)"),
 	// DOCUMENTED, NOT MEASURED ON THIS HOST. Tried: `RES_OPTIONS=debug getent
 	// hosts example.com` printed no debug output on glibc 2.43 (the resolver's
@@ -730,10 +848,10 @@ var envNotes = map[string]envNote{
 	// /etc/resolv.conf carries `search .`, so no name is ever qualified and the
 	// option cannot change an answer here. Re-measure on a host with a real search
 	// list, or against a resolver built with DEBUG.
-	"RES_OPTIONS": both("resolver options for every lookup the sandbox makes — ndots, timeout, " +
-		"attempts and the rest of resolv.conf's options line (documented, not measured on " +
+	"RES_OPTIONS": both(shapeOpaque, "resolver options for every lookup the sandbox makes — ndots, timeout, "+
+		"attempts and the rest of resolv.conf's options line (documented, not measured on "+
 		"this host)"),
-	"TZDIR": both("every timestamp in the sandbox is read from this directory; a value glibc cannot " +
+	"TZDIR": both(shapePath, "every timestamp in the sandbox is read from this directory; a value glibc cannot "+
 		"resolve is silently re-read as an inline rule instead of failing (measured, §3.2)"),
 	// Measured, glibc 2.43. The sentence this replaced ("created by every process
 	// that runs") was false twice over, and BOTH preconditions matter:
@@ -749,7 +867,7 @@ var envNotes = map[string]envNote{
 	// The implementation is not in libc.so.6 at all any more, and the program
 	// must call mtrace() itself. What remains true, and is all the row now
 	// claims, is that some processes CREATE and truncate the named file.
-	"MALLOC_TRACE": both("glibc writes an allocation trace here, but only for a process that calls " +
+	"MALLOC_TRACE": both(shapePath, "glibc writes an allocation trace here, but only for a process that calls "+
 		"mtrace() AND has libc_malloc_debug.so preloaded (measured, glibc 2.43)"),
 	// DOCUMENTED, NOT MEASURED ON THIS HOST, and the previous sentence
 	// ("getconf answers from this directory instead of the system's") asserted a
@@ -760,7 +878,7 @@ var envNotes = map[string]envNote{
 	// for three different SPECs; there is no getconf(1) man page inside this
 	// sandbox to cite either. Re-measure on a host that ships per-spec getconf
 	// binaries.
-	"GETCONF_DIR": both("getconf takes its specification directory from here, and for a spec it does " +
+	"GETCONF_DIR": both(shapePath, "getconf takes its specification directory from here, and for a spec it does "+
 		"not implement natively it EXECUTES a program from it (documented, not measured)"),
 	// DOCUMENTED, NOT MEASURED ON THIS HOST. Tried: there is no NIS here to
 	// measure against — no `ypcat`, no `ypwhich`, no /var/yp, and nsswitch.conf
@@ -768,7 +886,15 @@ var envNotes = map[string]envNote{
 	// backend. The row stays because the variable is read by glibc's NIS+ code
 	// whenever that backend IS configured, and a reader deciding whether to
 	// inherit it should be told what it steers rather than nothing.
-	"NIS_PATH": both("NIS+ lookups search this path, so it decides which server's tables the " +
+	//
+	// shapeOpaque DESPITE THE WORD "path" IN BOTH THE NAME AND THE SENTENCE, and
+	// it is the one row where that word means something else: the elements are
+	// NIS+ DIRECTORY NAMES in the NIS+ namespace (`org_dir.example.com.`), not
+	// filesystem paths, so demanding a leading '/' would refuse every correct
+	// value. Left unmeasured with the rest of the row — there is no NIS on this
+	// host — and flagged here because a future reader sweeping for path-shaped
+	// names will land on it.
+	"NIS_PATH": both(shapeOpaque, "NIS+ lookups search this path, so it decides which server's tables the "+
 		"sandbox believes (documented, not measured on this host)"),
 
 	// ── git and ssh: the value is a program ──────────────────────────────────
@@ -819,23 +945,23 @@ var envNotes = map[string]envNote{
 	//	     with what the script printed
 	//	                       SSH_ASKPASS_REQUIRE=force ssh-keygen -y -f k
 	//	  -> the system askpass ran; incorrect passphrase                (control)
-	"GIT_SSH_COMMAND": both("git runs this as the transport for every fetch and push, with whatever " +
+	"GIT_SSH_COMMAND": both(shapeProgram, "git runs this as the transport for every fetch and push, with whatever "+
 		"ssh identity this sandbox was given (measured, git 2.55.0)"),
-	"GIT_SSH": both("git runs this as the transport for every fetch and push — the older spelling of " +
+	"GIT_SSH": both(shapeProgram, "git runs this as the transport for every fetch and push — the older spelling of "+
 		"GIT_SSH_COMMAND, measured to hijack a real `git fetch`"),
-	"GIT_EXEC_PATH": both("git finds its own subcommands here, so `git anything` runs a program " +
+	"GIT_EXEC_PATH": both(shapePath, "git finds its own subcommands here, so `git anything` runs a program "+
 		"from this directory (measured, git 2.55.0, with the control)"),
-	"GIT_EXTERNAL_DIFF": both("git runs this program for every diff it produces (measured, " +
+	"GIT_EXTERNAL_DIFF": both(shapeProgram, "git runs this program for every diff it produces (measured, "+
 		"git 2.55.0, with the control)"),
-	"GIT_EDITOR": both("git runs this whenever a commit, tag or rebase opens an editor, and what " +
+	"GIT_EDITOR": both(shapeProgram, "git runs this whenever a commit, tag or rebase opens an editor, and what "+
 		"it writes becomes the commit message (measured, git 2.55.0)"),
-	"GIT_SEQUENCE_EDITOR": both("git runs this to edit the todo list of every interactive rebase, " +
+	"GIT_SEQUENCE_EDITOR": both(shapeProgram, "git runs this to edit the todo list of every interactive rebase, "+
 		"before any commit is replayed (measured, git 2.55.0)"),
-	"GIT_PROXY_COMMAND": both("git runs this as the transport proxy for git:// URLs (measured, " +
+	"GIT_PROXY_COMMAND": both(shapeProgram, "git runs this as the transport proxy for git:// URLs (measured, "+
 		"git 2.55.0)"),
-	"GIT_ASKPASS": both("git runs this to ask for a credential, so it is handed whatever it asks " +
+	"GIT_ASKPASS": both(shapeProgram, "git runs this to ask for a credential, so it is handed whatever it asks "+
 		"for and its answer is used (measured, git 2.55.0, with the control)"),
-	"SSH_ASKPASS": both("ssh runs this to ask for a passphrase, so it is handed whatever it asks " +
+	"SSH_ASKPASS": both(shapeProgram, "ssh runs this to ask for a passphrase, so it is handed whatever it asks "+
 		"for — measured decrypting a key with what the helper printed (with the control)"),
 	// Measured on git 2.55, with the command that showed it:
 	//   GIT_PAGER="sh -c 'echo HIJACK; cat >/dev/null'" git log   -> HIJACK
@@ -843,16 +969,25 @@ var envNotes = map[string]envNote{
 	// Re-measuring this one needs a PTY: git only starts a pager when stdout is a
 	// terminal, so the same command through a pipe runs nothing and reads as a
 	// refutation of a true sentence (confirmed again in redteam host round 2).
-	"GIT_PAGER": both("git runs this over the output of log, diff and show (measured, git 2.55)"),
+	"GIT_PAGER": both(shapeProgram, "git runs this over the output of log, diff and show (measured, git 2.55)"),
 	// GIT_TEMPLATE_DIR, GIT_DIR and GIT_COMMON_DIR are the same power one
 	// indirection out: the value is a DIRECTORY, and the hooks in it are code.
 	// Granting the path is not what makes them safe — nothing does, which is why
 	// these are not path-coupling rows. GIT_COMMON_DIR was missed in the first
 	// pass and found by an independent review's sweep, not by reasoning.
-	"GIT_TEMPLATE_DIR": both("the hooks in this directory are installed into every repository " +
+	//
+	// THE SENTENCE "the value is a DIRECTORY" IS NOW A FIELD as well as prose,
+	// and that is round 3's finding: these three and GIT_EXEC_PATH above said
+	// exactly this on --dry-run while a relative value was accepted, because the
+	// absolute-path rule read the roster and the pointer table and not the thing
+	// snug was printing. `GIT_TEMPLATE_DIR = "tpl"` and `GIT_EXEC_PATH = "gx"`
+	// were each measured executing attacker code out of `--chdir <target>`.
+	// shapePath refuses the relative spelling; it does NOT make them coupling
+	// rows, so the paragraph above stands unchanged.
+	"GIT_TEMPLATE_DIR": both(shapePath, "the hooks in this directory are installed into every repository "+
 		"`git clone` and `git init` create afterwards (measured: post-checkout fired on the clone)"),
-	"GIT_DIR": both("git works in this repository, and the hooks in it run on the next commit (measured)"),
-	"GIT_COMMON_DIR": both("git reads hooks/ from this directory, and a pre-commit there ran on the " +
+	"GIT_DIR": both(shapePath, "git works in this repository, and the hooks in it run on the next commit (measured)"),
+	"GIT_COMMON_DIR": both(shapePath, "git reads hooks/ from this directory, and a pre-commit there ran on the "+
 		"next commit (measured, git 2.55)"),
 	// A different shape again, and the reason the class is "the value is code"
 	// rather than "the value is a command": these two carry no code at all. They
@@ -863,9 +998,9 @@ var envNotes = map[string]envNote{
 	//                           git ls-remote "ext::sh -c '…'"   -> refused
 	//
 	// A name that re-enables an exec path is the exec path.
-	"GIT_ALLOW_PROTOCOL": both("re-enables git's ext:: transport, which runs an arbitrary command " +
+	"GIT_ALLOW_PROTOCOL": both(shapeOpaque, "re-enables git's ext:: transport, which runs an arbitrary command "+
 		"as the transport (measured, with the control)"),
-	"GIT_PROTOCOL_FROM_USER": both("re-enables the transports git refuses by default, ext:: among them " +
+	"GIT_PROTOCOL_FROM_USER": both(shapeOpaque, "re-enables the transports git refuses by default, ext:: among them "+
 		"(measured, with the control)"),
 
 	// ── a runtime's own flag channel, parsed before main() ───────────────────
@@ -885,12 +1020,12 @@ var envNotes = map[string]envNote{
 	// JVM. That asymmetry is what F4 of that round was about, and it is why the
 	// contract is now swept mechanically
 	// (TestEveryAnnotationSaysWhetherItWasMeasured).
-	"JAVA_TOOL_OPTIONS": both("every JVM in the sandbox parses these flags before main(), and they " +
-		"can load an agent from a path — measured, temurin 21, in a container: the agent's " +
+	"JAVA_TOOL_OPTIONS": both(shapeOpaque, "every JVM in the sandbox parses these flags before main(), and they "+
+		"can load an agent from a path — measured, temurin 21, in a container: the agent's "+
 		"premain ran before main"),
-	"_JAVA_OPTIONS": both("every JVM parses these flags before main() — the second spelling of the " +
+	"_JAVA_OPTIONS": both(shapeOpaque, "every JVM parses these flags before main() — the second spelling of the "+
 		"same channel (measured, temurin 21, in a container)"),
-	"JDK_JAVA_OPTIONS": both("the `java` launcher parses these flags before main(), agents included " +
+	"JDK_JAVA_OPTIONS": both(shapeOpaque, "the `java` launcher parses these flags before main(), agents included "+
 		"(measured, temurin 21, in a container)"),
 	// DOCUMENTED, NOT MEASURED ANYWHERE YET. Tried: there is no `ruby` and no
 	// `irb` on this host, and unlike the JVM nobody has yet run it in a container
@@ -899,7 +1034,7 @@ var envNotes = map[string]envNote{
 	// -r/-I/-e-adjacent switches the command line takes, which is where "require a
 	// file" comes from. Vendoring a ruby is the measurement; until someone does,
 	// the row says so.
-	"RUBYOPT": both("every ruby parses these flags before the script and can require a file from " +
+	"RUBYOPT": both(shapeOpaque, "every ruby parses these flags before the script and can require a file from "+
 		"them (documented, not measured on this host — no ruby here)"),
 
 	// cargo executes an arbitrary program as its own compiler driver — measured
@@ -911,9 +1046,9 @@ var envNotes = map[string]envNote{
 	// of the three starts with a listed prefix, which is why they are named here
 	// as well. That is the shape CLAUDE.md keeps recording: a rule applied to one
 	// of its two spellings.
-	"RUSTC_WRAPPER":           both("cargo runs this in place of rustc, as the sandbox's own uid (measured, issue #26)"),
-	"RUSTC_WORKSPACE_WRAPPER": both("cargo runs this in place of rustc for workspace crates (measured, issue #26)"),
-	"RUSTC":                   both("cargo runs this AS rustc (measured, issue #26)"),
+	"RUSTC_WRAPPER":           both(shapeProgram, "cargo runs this in place of rustc, as the sandbox's own uid (measured, issue #26)"),
+	"RUSTC_WORKSPACE_WRAPPER": both(shapeProgram, "cargo runs this in place of rustc for workspace crates (measured, issue #26)"),
+	"RUSTC":                   both(shapeProgram, "cargo runs this AS rustc (measured, issue #26)"),
 
 	// The same class one indirection further out: a build tool's own "run this
 	// program instead" or "pass these extra flags" variable, each measured to run
@@ -928,13 +1063,13 @@ var envNotes = map[string]envNote{
 	//   CC=./evil.sh                                make        -> ran as the compiler, via make's implicit rules
 	//   TAR_OPTIONS="--use-compress-program=/…/prog.sh"  tar   -> prog.sh ran   (GNU tar 1.35)
 	//   RSYNC_RSH=/…/prog.sh                        rsync       -> prog.sh ran   (rsync 3.4.3)
-	"MAKEFLAGS": both("make evaluates this before any rule, and `--eval=$(shell …)` runs a command " +
+	"MAKEFLAGS": both(shapeOpaque, "make evaluates this before any rule, and `--eval=$(shell …)` runs a command "+
 		"(measured, GNU make 4.x)"),
-	"GOFLAGS": both("go passes these to every compile, and -toolexec names a program it runs " +
+	"GOFLAGS": both(shapeOpaque, "go passes these to every compile, and -toolexec names a program it runs "+
 		"(measured, go 1.26)"),
-	"CC":          both("make's implicit rules run this as the compiler (measured)"),
-	"TAR_OPTIONS": both("tar reads these flags, and --use-compress-program names a program it runs (measured)"),
-	"RSYNC_RSH":   both("rsync runs this as its remote shell (measured, rsync 3.4.3)"),
+	"CC":          both(shapeProgram, "make's implicit rules run this as the compiler (measured)"),
+	"TAR_OPTIONS": both(shapeOpaque, "tar reads these flags, and --use-compress-program names a program it runs (measured)"),
+	"RSYNC_RSH":   both(shapeProgram, "rsync runs this as its remote shell (measured, rsync 3.4.3)"),
 
 	// bash performs command substitution on the prompt templates, before the user
 	// has typed anything (§3.5). PS1 is not here: it is snug's own.
@@ -956,18 +1091,18 @@ var envNotes = map[string]envNote{
 	//	  -> PS2-SUBST-RAN, then the continuation prompt "[]> "
 	//	PS4='[$(echo PS4-SUBST-RAN >&2)]' bash -c 'set -x; :'
 	//	  -> PS4-SUBST-RAN, then the trace line "[]:"
-	"PS0": both("bash performs command substitution on this before every command it runs " +
+	"PS0": both(shapeOpaque, "bash performs command substitution on this before every command it runs "+
 		"(measured, bash 5.3.15)"),
-	"PS2": both("bash performs command substitution on this prompt template, which a human sees " +
+	"PS2": both(shapeOpaque, "bash performs command substitution on this prompt template, which a human sees "+
 		"the moment a command spans two lines (measured, bash 5.3.15)"),
 	// PS3 is the one prompt bash does NOT run through decode_prompt_string, and
 	// this row claimed the opposite for a milestone. The row stays rather than
 	// being deleted: without it the next reader re-derives the false claim from
 	// PS0/PS2/PS4 by analogy, which is exactly how it was written the first time.
-	"PS3": both("bash prints this VERBATIM as the `select` prompt — no command substitution and " +
-		"no parameter expansion (measured, bash 5.3.15); what it buys is a prompt that lies " +
+	"PS3": both(shapeOpaque, "bash prints this VERBATIM as the `select` prompt — no command substitution and "+
+		"no parameter expansion (measured, bash 5.3.15); what it buys is a prompt that lies "+
 		"to whoever is at the shell"),
-	"PS4": both("bash performs command substitution on this trace prompt, before you type " +
+	"PS4": both(shapeOpaque, "bash performs command substitution on this trace prompt, before you type "+
 		"anything (measured, bash 5.3.15)"),
 	// Measured today, bash 5.3.15, with the control — and this row is the one that
 	// showed how a shared comment block can rubber-stamp a row it never covered:
@@ -977,7 +1112,7 @@ var envNotes = map[string]envNote{
 	//	printf 'exit\n' | PROMPT_COMMAND='echo PROMPT-COMMAND-RAN >&2' bash -i
 	//	  -> PROMPT-COMMAND-RAN, before the first prompt
 	//	printf 'exit\n' | bash -i                              -> nothing (control)
-	"PROMPT_COMMAND": both("bash runs this command before every prompt it draws, including the " +
+	"PROMPT_COMMAND": both(shapeProgram, "bash runs this command before every prompt it draws, including the "+
 		"first one (measured, bash 5.3.15, with the control)"),
 
 	// An interpreter's own "run this file/module before anything else" variable.
@@ -996,13 +1131,13 @@ var envNotes = map[string]envNote{
 	//     -> pre.js ran before the script, every invocation             (node 26)
 	//   PERL5OPT="-I/… -Mevil"  perl ...
 	//     -> evil.pm loaded on every perl invocation                    (perl 5)
-	"PYTHONUSERBASE": both("python runs usercustomize.py from under this path on every start " +
+	"PYTHONUSERBASE": both(shapePath, "python runs usercustomize.py from under this path on every start "+
 		"(measured, CPython 3.13)"),
-	"PYTHONPATH": both("python runs sitecustomize.py from any element of this at interpreter start " +
+	"PYTHONPATH": both(shapePath, "python runs sitecustomize.py from any element of this at interpreter start "+
 		"(measured, CPython)"),
-	"NODE_OPTIONS": both("node runs whatever --require names here, before the script, on every " +
+	"NODE_OPTIONS": both(shapeOpaque, "node runs whatever --require names here, before the script, on every "+
 		"invocation (measured, node 26)"),
-	"PERL5OPT": both("perl loads whatever -M names here, on every invocation (measured, perl 5)"),
+	"PERL5OPT": both(shapeOpaque, "perl loads whatever -M names here, on every invocation (measured, perl 5)"),
 
 	// ── search paths a consumer SOURCES or LOADS from ────────────────────────
 	//
@@ -1027,11 +1162,11 @@ var envNotes = map[string]envNote{
 	//     -> $D/evilmod/index.js top-level code ran, uid 1000 (node 26.4.0).
 	//        Control: MODULE_NOT_FOUND. Core modules ("util") are NOT shadowed,
 	//        which is why the sentence says so rather than overstating.
-	"XDG_DATA_DIRS": both("bash-completion SOURCES a file from <element>/bash-completion/completions " +
+	"XDG_DATA_DIRS": both(shapePath, "bash-completion SOURCES a file from <element>/bash-completion/completions "+
 		"on the next completion (measured, bash-completion 2.12.0, with the control)"),
-	"PERL5LIB": both("perl searches these BEFORE the system directories, so a module here replaces " +
+	"PERL5LIB": both(shapePath, "perl searches these BEFORE the system directories, so a module here replaces "+
 		"the real one and its top-level code runs (measured, perl 5.44)"),
-	"NODE_PATH": both("node resolves require() from here and runs the module's top-level code; " +
+	"NODE_PATH": both(shapePath, "node resolves require() from here and runs the module's top-level code; "+
 		"core modules are not shadowed (measured, node 26.4, with the control)"),
 	// MEASURED IN A CONTAINER, NOT ON THIS HOST — temurin 21 JDK (alpine), pulled
 	// and removed again; there is still no `java`, no `javac` and no /usr/lib*/jvm
@@ -1056,9 +1191,9 @@ var envNotes = map[string]envNote{
 	// So it holds for an APPLICATION class, only when the JVM is launched without
 	// -cp and without -jar, and never for a platform class. No CI can run a JVM,
 	// so testdata/annotations.txt IS the artifact for this wording.
-	"CLASSPATH": both("the JVM's application class loader searches these in order, so an " +
-		"application class here shadows one later on the path; platform/JDK classes are not " +
-		"shadowed, and `java -cp` and `java -jar` ignore this variable outright (measured, " +
+	"CLASSPATH": both(shapePath, "the JVM's application class loader searches these in order, so an "+
+		"application class here shadows one later on the path; platform/JDK classes are not "+
+		"shadowed, and `java -cp` and `java -jar` ignore this variable outright (measured, "+
 		"temurin 21, in a container — no JVM on this host)"),
 
 	// ── the startup files a tool READS: two sentences, and the difference is
@@ -1087,20 +1222,20 @@ var envNotes = map[string]envNote{
 	//	cd cwd2; BASH_ENV=.snug-init.sh bash -c 'echo body'  -> nothing (control)
 	//	cd cwd1; ENV=.shinit sh -i -c 'echo body'            -> sourced from cwd1
 	//	cd cwd1; PYTHONSTARTUP=pystart.py python3 -i         -> ran (CPython 3.13.14)
-	"BASH_ENV": {
+	"BASH_ENV": {shape: shapePath,
 		authored: "every non-interactive bash SOURCES this file at startup; the value must be an " +
 			"absolute path, and one this profile does not grant names a file the sandbox will not have",
 		host: "every non-interactive bash SOURCES this file at startup, and the file is chosen on the host, outside any profile",
 	},
 	// Measured with the cwd control, see the block comment above BASH_ENV.
-	"ENV": {
+	"ENV": {shape: shapePath,
 		authored: "every non-interactive sh SOURCES this file at startup; the value must be an " +
 			"absolute path, and one this profile does not grant names a file the sandbox will not have",
 		host: "every non-interactive sh SOURCES this file at startup, and the file is chosen on the host, outside any profile",
 	},
 	// Measured, CPython 3.13.14, with the cwd control — see the block comment
 	// above BASH_ENV.
-	"PYTHONSTARTUP": {
+	"PYTHONSTARTUP": {shape: shapePath,
 		authored: "the interactive python interpreter EXECUTES this file on start; the value must be " +
 			"an absolute path, and one this profile does not grant names a file the sandbox will not have",
 		host: "the interactive python interpreter EXECUTES this file on start, and the file is chosen on the host",
@@ -1115,7 +1250,7 @@ var envNotes = map[string]envNote{
 	//
 	// A PATH is refused by python itself. Requiring one here would refuse the
 	// only correct spelling.
-	"PYTHONBREAKPOINT": {
+	"PYTHONBREAKPOINT": {shape: shapeOpaque,
 		authored: "this names the callable breakpoint() invokes, so it is imported and run",
 		host:     "this names the callable breakpoint() invokes, chosen on the host, outside any profile",
 	},
@@ -1126,7 +1261,7 @@ var envNotes = map[string]envNote{
 	//
 	// The value is a command line whose leading '|' selects the pipe form, not a
 	// path — the other half of why these five names are not path-valued.
-	"LESSOPEN": {
+	"LESSOPEN": {shape: shapeProgram,
 		authored: "less runs this program over every file it opens; the value is a command line, " +
 			"not a path — the '|' form pipes the file through it (measured)",
 		host: "less runs this program over every file it opens, and it is chosen on the host",
@@ -1146,11 +1281,11 @@ var envNotes = map[string]envNote{
 	// @claude inherits all three, so this is the sentence a human sees on a
 	// perfectly ordinary run — issues #35 and #45, both of which were asking for
 	// the reader to be told rather than for the grant to be withdrawn.
-	"EDITOR": both("the value is a command; git runs it for a commit message via " +
+	"EDITOR": both(shapeProgram, "the value is a command; git runs it for a commit message via "+
 		"GIT_EDITOR -> core.editor -> VISUAL -> EDITOR (measured)"),
-	"VISUAL": both("the value is a command; git runs it for a commit message when GIT_EDITOR and " +
+	"VISUAL": both(shapeProgram, "the value is a command; git runs it for a commit message when GIT_EDITOR and "+
 		"core.editor are unset (measured)"),
-	"PAGER": both("the value is a command; git runs it over log, diff and show via " +
+	"PAGER": both(shapeProgram, "the value is a command; git runs it over log, diff and show via "+
 		"GIT_PAGER -> core.pager -> PAGER (measured)"),
 
 	// ── the endpoint @claude inherits ────────────────────────────────────────
@@ -1167,7 +1302,7 @@ var envNotes = map[string]envNote{
 	// happens. The row rests on the client's documented behaviour, and @claude
 	// inherits the name precisely so a human behind a gateway keeps working; if it
 	// is ever measured, it wants a throwaway credential and a local listener.
-	"ANTHROPIC_BASE_URL": both("every request the agent makes, conversation included, goes to this " +
+	"ANTHROPIC_BASE_URL": both(shapeOpaque, "every request the agent makes, conversation included, goes to this "+
 		"endpoint instead of Anthropic's (documented, not measured on this host)"),
 
 	// ── "generate, don't bind", the pointers ─────────────────────────────────
@@ -1230,7 +1365,7 @@ var envNotes = map[string]envNote{
 	// already shows, so the mark would attach to the wrong grant and fire on
 	// every default run. cmd/snug/testdata/env.defaults.txt staying unchanged is
 	// the review artifact for that decision.
-	"XDG_CONFIG_HOME": {host: "the host's value names a directory this sandbox does not have; " +
+	"XDG_CONFIG_HOME": {shape: shapePath, host: "the host's value names a directory this sandbox does not have; " +
 		"@home creates the one inside, so `set` it to a path the same profile grants"},
 	// These five say something about SNUG rather than about a tool, so what backs
 	// them is snug's own artifacts rather than a shell transcript — and that is
@@ -1241,28 +1376,28 @@ var envNotes = map[string]envNote{
 	// sets the four names to paths inside. If @home ever stops creating one, that
 	// golden moves and these sentences are wrong in the same commit.
 	// (measured against @home's grants and env.defaults.txt)
-	"XDG_CACHE_HOME": {host: "the host's value names a directory this sandbox does not have; " +
+	"XDG_CACHE_HOME": {shape: shapePath, host: "the host's value names a directory this sandbox does not have; " +
 		"@home creates the one inside, so `set` it to a path the same profile grants"},
 	// (measured the same way: @home's tmpfs list and env.defaults.txt)
-	"XDG_STATE_HOME": {host: "the host's value names a directory this sandbox does not have; " +
+	"XDG_STATE_HOME": {shape: shapePath, host: "the host's value names a directory this sandbox does not have; " +
 		"@home creates the one inside, so `set` it to a path the same profile grants"},
 	// (measured the same way: @home's tmpfs list and env.defaults.txt — and
 	// $XDG_DATA_HOME is the newest of the four, added so the name points at a
 	// directory that exists; the "writable surface is eight paths" bullet in
 	// CLAUDE.md is the count it moved)
-	"XDG_DATA_HOME": {host: "the host's value names a directory this sandbox does not have; " +
+	"XDG_DATA_HOME": {shape: shapePath, host: "the host's value names a directory this sandbox does not have; " +
 		"@home creates the one inside, so `set` it to a path the same profile grants"},
 	// XDG_RUNTIME_DIR is the one of the five @home does NOT create — measured, the
 	// same way: no [profile.home] tmpfs names it and env.defaults.txt renders no
 	// such row — which is why its sentence promises nothing about the inside and
 	// names the obligations instead (mode 0700, owner, session lifetime).
-	"XDG_RUNTIME_DIR": {host: "the host's value names a directory this sandbox does not have, and this " +
+	"XDG_RUNTIME_DIR": {shape: shapePath, host: "the host's value names a directory this sandbox does not have, and this " +
 		"variable carries obligations a string cannot satisfy — mode 0700, owned by the user, session lifetime"},
 	// Measured, cargo 1.97.1: $CARGO_HOME/config.toml carrying
 	//   [build] rustc-wrapper = "…/wrap.sh"
 	// ran wrap.sh in place of rustc on `cargo build --offline`, as uid 1000 —
 	// the same exec CARGO_BUILD_RUSTC_WRAPPER reaches, one indirection out.
-	"CARGO_HOME": {
+	"CARGO_HOME": {shape: shapePath,
 		authored: "the config.toml under this path names a program cargo runs — build.rustc-wrapper " +
 			"ran in place of rustc, as the sandbox's own uid (measured, cargo 1.97.1)",
 		host: "taking the host's value points cargo back at the host's config, which is the " +
@@ -1273,7 +1408,7 @@ var envNotes = map[string]envNote{
 	// — BEFORE the daemon socket was contacted, and there is no daemon on this
 	// host — and four times with `erase` on `docker logout`. The helper does not
 	// need a working engine.
-	"DOCKER_CONFIG": {
+	"DOCKER_CONFIG": {shape: shapePath,
 		authored: "credsStore in this directory's config.json is a program docker executes, and it " +
 			"runs before docker reaches a daemon (measured, docker 29.4)",
 		host: "taking the host's value points docker back at the host's config, credentials " +
@@ -1291,7 +1426,7 @@ var envNotes = map[string]envNote{
 	//
 	// Aimed inside `rw = ["{target}"]` — the one directory the payload writes —
 	// which is the case the `authored` sentence exists for.
-	"NPM_CONFIG_USERCONFIG": {
+	"NPM_CONFIG_USERCONFIG": {shape: shapePath,
 		authored: "the .npmrc this names carries script-shell, the shell npm runs every lifecycle " +
 			"and `run` script with (measured inside a sandbox, npm 12.0.2)",
 		host: "taking the host's value points npm back at the host's .npmrc, " +
@@ -1310,7 +1445,7 @@ var envNotes = map[string]envNote{
 	// setup.py, and running an attacker-chosen package to prove it is a
 	// measurement with a blast radius. Nothing under PIP_ execs directly; what
 	// this file decides is where packages come FROM.
-	"PIP_CONFIG_FILE": {
+	"PIP_CONFIG_FILE": {shape: shapePath,
 		authored: "index-url in this file decides where every `pip install` fetches from " +
 			"(measured inside a sandbox, pip 26.1.2), and installing a package runs code out " +
 			"of it (documented)",
@@ -1351,7 +1486,7 @@ var envNotes = map[string]envNote{
 	// sentence, which is a different claim about a different name. The defect was
 	// never the fall-through; it was one missing string.
 	// TestNoPointerEverRendersItsFamilysSentence is what keeps it filled in.
-	"GIT_CONFIG_SYSTEM": {
+	"GIT_CONFIG_SYSTEM": {shape: shapePath,
 		authored: "git reads a command table from this file: core.sshCommand, " +
 			"credential.helper and alias.x = !cmd all name programs it runs (measured, git 2.55.0)",
 		host: "taking the host's value points git's SYSTEM scope — the LOWEST, below the " +
@@ -1482,7 +1617,7 @@ var envNotePrefixes = []struct {
 	// unbounded remainder (LD_BIND_NOW, LD_DEBUG, LD_PROFILE, …), which is not
 	// measured name by name and does not need to be: the sentence claims only
 	// "the loader reads this before main()", which is what makes it a family.
-	{"LD_", both("the dynamic loader reads this before main() in every process (measured for " +
+	{"LD_", both(shapeFamily, "the dynamic loader reads this before main() in every process (measured for "+
 		"LD_PRELOAD, LD_AUDIT and LD_LIBRARY_PATH, glibc 2.43)"), nil},
 	// Measured today, bash 5.3.15, with both controls — and the second probe is
 	// the half worth keeping, because it is the sentence's real claim:
@@ -1493,9 +1628,9 @@ var envNotePrefixes = []struct {
 	//	  -> gitx: command not found                              (control)
 	//	env 'BASH_FUNC_git%%=() { echo FUNCTION-BEAT-PATH; }' bash -c 'git --version'
 	//	  -> FUNCTION-BEAT-PATH — the real /usr/bin/git never ran
-	{"BASH_FUNC_", both("an exported shell FUNCTION, and function lookup precedes PATH entirely — " +
+	{"BASH_FUNC_", both(shapeFamily, "an exported shell FUNCTION, and function lookup precedes PATH entirely — "+
 		"measured shadowing `git` itself, bash 5.3.15, with the control"), nil},
-	{"GIT_CONFIG_", both("git reads this at the command-line scope, above the global file, above the " +
+	{"GIT_CONFIG_", both(shapeFamily, "git reads this at the command-line scope, above the global file, above the "+
 		"repository's own .git/config, and above any include (measured, issue #26)"),
 		// GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM are POINTERS at a config FILE,
 		// which is the mechanism, not the hazard — the same carve-out CARGO_HOME
@@ -1525,6 +1660,7 @@ var envNotePrefixes = []struct {
 	// exempt lists of this table now name the same pointers inlineConfigPointers
 	// does. If you add a pointer to one, add it to the other.
 	{"PIP_", envNote{
+		shape:    shapeFamily,
 		authored: "outranks the config file pip reads, so it beats whatever a profile generated",
 		host:     "outranks the config file pip reads, and the value is chosen on the host, outside any profile",
 	}, []string{"PIP_CONFIG_FILE"}},
@@ -1535,7 +1671,7 @@ var envNotePrefixes = []struct {
 	// #26 review. CARGO_HOME is the one exemption: it is a POINTER (the mechanism
 	// a future cargo adapter would use, same shape as GIT_CONFIG_GLOBAL), not a
 	// code path, and it carries its own `inherit` sentence in the exact table.
-	{"CARGO_", both("outranks .cargo/config.toml, and the BUILD_RUSTC_WRAPPER/BUILD_RUSTC/" +
+	{"CARGO_", both(shapeFamily, "outranks .cargo/config.toml, and the BUILD_RUSTC_WRAPPER/BUILD_RUSTC/"+
 		"TARGET_*_RUNNER keys name a program cargo RUNS (measured, issue #26)"),
 		[]string{"CARGO_HOME"}},
 	// npm_config_ is the same shape again: `npm_config_script_shell` names the
@@ -1545,7 +1681,7 @@ var envNotePrefixes = []struct {
 	// case spelling; see prefixCaseFold's npm_config_ entry for why case matters
 	// here at all. NPM_CONFIG_USERCONFIG is the one exemption, for the same reason
 	// CARGO_HOME is.
-	{"npm_config_", both("outranks .npmrc, and the script_shell/node_gyp keys name a program npm " +
+	{"npm_config_", both(shapeFamily, "outranks .npmrc, and the script_shell/node_gyp keys name a program npm "+
 		"RUNS (measured, issue #26, in every case spelling)"),
 		[]string{"NPM_CONFIG_USERCONFIG"}},
 }
@@ -2133,24 +2269,32 @@ func checkEnvElement(name string, verb EnvVerb, value string) error {
 // execve hands over is a NUL-terminated list). Their rendering is the
 // renderer's problem.
 //
-// C1 IS IN THE SET NOW, and the ASCII-only version of this loop is the same
-// "one rule, one of its two halves" shape one layer down (redteam host round 2,
-// F6). `c >= 0x20 && c != 0x7f` walks BYTES, so it can never see U+0085 (NEL) or
-// U+009B (CSI — the single-character form of ESC-[): a profile writing
-// "1A" got a value that erases the line above it on a terminal in 8-bit C1
-// mode, and %q hid the gap in review, because mixing in ONE ASCII control makes
-// the escaper quote the C1 characters too. Ranging over RUNES with
-// unicode.IsControl covers C0, DEL and C1 with one predicate; U+2028/U+2029 are
-// named separately because they are Zl/Zp rather than Cc and are still LINE and
-// PARAGRAPH separators. The NUL arm is unchanged and is still the one that
-// authors a MOUNT rather than a lie.
+// THE SET IS NOT WRITTEN HERE ANY MORE, and that is the repair for the same
+// defect arriving twice. C1 was added to this loop and to the renderer's copy in
+// one commit (redteam host round 2, F6): `c >= 0x20 && c != 0x7f` walks BYTES,
+// so it could never see U+0085 (NEL) or U+009B (CSI, the single-character form
+// of ESC-[), and %q hid the gap in review because mixing in ONE ASCII control
+// makes the escaper quote the C1 characters too. Then round 3 walked U+202E past
+// BOTH widened copies, because the widening was to unicode.IsControl and a
+// directional override is category Cf — while `Validate`'s guest-path check and
+// `Identity.CheckText` had never been widened at all and were still ASCII-only.
+// Two copies of one question AGREEING is not the same as one question, and four
+// copies is how three of them stay behind.
 //
-// The renderer's isForgingRune (cmd/snug/dryrun.go) is the same set, and it
+// IsForgingRune (forging.go) owns the set now, every sink asks it, and the
+// argument for where its edge is — the nine UAX #9 directional formatting
+// characters IN, the invisible characters OUT — is written there, once.
+//
+// The NUL arm stays here and is unchanged: it is the one that authors a MOUNT
+// rather than a lie, and it is a fact about the flag list rather than about a
+// screen.
+//
+// The renderer (cmd/snug/dryrun.go's visibleValue) asks the same predicate and
 // carries one more case this function cannot: invalid UTF-8, which a TOML value
 // cannot be and a HOST value can.
 func checkEnvValue(name string, verb EnvVerb, value string) error {
 	for _, r := range value {
-		if !unicode.IsControl(r) && r != '\u2028' && r != '\u2029' {
+		if !IsForgingRune(r) {
 			continue
 		}
 		// %q of the RUNE, so a C1 character is NAMED in the message ("\u009b")
@@ -2165,9 +2309,8 @@ func checkEnvValue(name string, verb EnvVerb, value string) error {
 				"model never sees and --dry-run never prints. Remove it", verb, name)
 		}
 		return fmt.Errorf("environ.%s on %s has a value containing %s. Every screen a human "+
-			"reads to decide whether to trust a sandbox renders a value on one line; a "+
-			"control character forges rows in it or erases them from the terminal. "+
-			"Remove it", verb, name, what)
+			"reads to decide whether to trust a sandbox renders a value on one line; %s. "+
+			"Remove it", verb, name, what, forgingRuneReason(r))
 	}
 	return nil
 }

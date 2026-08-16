@@ -144,6 +144,67 @@ func TestGoldenEnvAnnotations(t *testing.T) {
 		}
 	}
 
+	// WHAT THE VALUE IS, for every name snug holds any fact about — the review
+	// artifact for round 3's finding, and the only defence against the one thing
+	// the shape sweep cannot check.
+	//
+	// TestEveryAnnotationSaysWhatItsValueIS makes a new row ANSWER the question;
+	// nothing can make it answer TRUTHFULLY. GIT_TEMPLATE_DIR written down as
+	// `opaque` would compile, pass every test, and hand over a relative value
+	// again. So the classification is rendered per name, beside the two tables it
+	// has to agree with, and a wrong one is a line in a diff a human reads rather
+	// than an absence nobody can see.
+	//
+	// Read the `relative` column as the security-relevant output: it is
+	// valueIsAPath, the predicate itself, not a restatement of the shape column —
+	// a name can reach REFUSED through the roster or through the pointer table
+	// with no annotation at all, and GIT_CONFIG_GLOBAL/GH_CONFIG_DIR do.
+	b.WriteString("\n## what the VALUE is, and therefore whether a relative one is refused\n")
+	b.WriteString("#\n")
+	b.WriteString("# shape:    the annotation's own column (path / program / opaque), '-' for a\n")
+	b.WriteString("#           name with no annotation.\n")
+	b.WriteString("# roster:   what envTypes says, which is what the grant-COUPLING rule reads.\n")
+	b.WriteString("# relative: valueIsAPath — REFUSED means `environ.set NAME = \"x\"` cannot be\n")
+	b.WriteString("#           written, because a relative path means whatever is in the directory\n")
+	b.WriteString("#           the payload was last in, which inside snug is --chdir <target>.\n\n")
+	facts := map[string]bool{}
+	for k := range envNotes {
+		facts[k] = true
+	}
+	for k := range envTypes {
+		facts[k] = true
+	}
+	for _, p := range inlineConfigPointers {
+		facts[p.name] = true
+	}
+	factNames := make([]string, 0, len(facts))
+	for k := range facts {
+		factNames = append(factNames, k)
+	}
+	sort.Strings(factNames)
+	for _, name := range factNames {
+		shape := "-"
+		if n, ok := noteExact(name); ok {
+			shape = n.shape.String()
+		}
+		roster := "(no row)"
+		if ty, ok := typeOf(name); ok {
+			switch {
+			case ty.path:
+				roster = "path"
+			case ty.pathNoGrant:
+				roster = "pathNoGrant"
+			default:
+				roster = "-"
+			}
+		}
+		rel := "accepted"
+		if valueIsAPath(name) {
+			rel = "REFUSED"
+		}
+		fmt.Fprintf(&b, "%-24s %-9s %-12s %s\n", name, shape, roster, rel)
+	}
+
 	got := b.String()
 	path := filepath.Join("testdata", "annotations.txt")
 	if *update {
@@ -183,6 +244,113 @@ func TestEveryAnnotatedNameSaysSomething(t *testing.T) {
 	for _, p := range envNotePrefixes {
 		if p.note.authored == "" && p.note.host == "" {
 			t.Errorf("envNotePrefixes %q carries no sentence at either verb class", p.prefix)
+		}
+	}
+}
+
+// EVERY ANNOTATION MUST SAY WHAT ITS VALUE IS, not only what the tool does with
+// it — and this test is the whole mechanism by which round 3's finding cannot
+// recur under a name nobody has thought of yet.
+//
+// The finding was not "four git names were missed". It was that snug HELD the
+// fact — "the hooks in this directory", "git finds its own subcommands here" —
+// printed it on --dry-run, and then decided the absolute-path refusal from two
+// tables that had never heard of those names. A fix that added the four names to
+// something would be the fifth table in a file whose recorded failure mode is
+// one fact in two tables drifting apart.
+//
+// So the fact went into a COLUMN of the table that already holds the sentence,
+// with no valid zero value. A new row cannot be written without answering "what
+// does a RELATIVE value mean here", because `envNote{authored: …, host: …}`
+// leaves shapeUnset and fails right here. That is the property the round asked
+// for: the test fails for a FUTURE annotated code-path name, not for today's
+// four.
+//
+// WHAT IT DOES NOT ASSERT, said so nobody reads it as more: nothing checks that
+// a row's shape is TRUE. GIT_DIR written down as shapeOpaque would pass. The
+// defence against that is the same one the sentences have — every classification
+// is rendered per name in testdata/annotations.txt, so a wrong one is a line in
+// the review artifact rather than an absence.
+func TestEveryAnnotationSaysWhatItsValueIS(t *testing.T) {
+	for name, n := range envNotes {
+		switch n.shape {
+		case shapePath, shapeProgram, shapeOpaque:
+		case shapeUnset:
+			t.Errorf("envNotes[%q] has no valueShape. snug is about to tell a human what a tool "+
+				"DOES with this value, so it must also say what the value IS: shapePath if a "+
+				"relative one would be resolved against the payload's cwd (and is therefore "+
+				"refused), shapeProgram if the consumer looks it up the way a shell does, "+
+				"shapeOpaque if it is not a path at all. GIT_TEMPLATE_DIR and GIT_EXEC_PATH "+
+				"were both measured running attacker code out of a relative value while this "+
+				"column did not exist", name)
+		case shapeFamily:
+			t.Errorf("envNotes[%q] is shapeFamily, which is envNotePrefixes' value: it means "+
+				"\"the shape differs name by name and this row cannot say\". An EXACT row is "+
+				"about one name and must answer for it", name)
+		}
+	}
+	// The prefix table answers the OTHER way, and must: GIT_CONFIG_GLOBAL is a
+	// path and GIT_CONFIG_KEY_0 is a setting, both under one prefix. A family that
+	// claimed a shape would be read by valueIsAPath as a fact about every name
+	// matching it — which is why valueIsAPath reads noteExact and never noteFor.
+	for _, p := range envNotePrefixes {
+		if p.note.shape != shapeFamily {
+			t.Errorf("envNotePrefixes[%q] claims a per-name shape. A prefix names an unbounded "+
+				"family whose members do not share one — say shapeFamily and let each name "+
+				"answer for itself", p.prefix)
+		}
+	}
+}
+
+// The roster and the annotation must not disagree about what a value IS.
+//
+// They are two tables holding one fact for the names that appear in both, which
+// is the shape this file has recorded three times over case rules. valueIsAPath
+// takes the UNION, so a disagreement does not open a hole — it produces
+// something worse to review: a row that says "opaque" in one table and is
+// refused as a path by the other, with no way to tell which one a reader should
+// believe.
+//
+// The direction that matters is `path`/`pathNoGrant` on the roster versus
+// shapePath here. A name the roster calls path-valued and the annotation calls
+// opaque is the drift; a name with no roster row is outside this test, because
+// the annotation is then the ONLY table that holds the fact — which is exactly
+// the case round 3 was about.
+func TestTheRosterAndTheAnnotationAgreeAboutTheValueShape(t *testing.T) {
+	both := 0
+	for name, n := range envNotes {
+		ty, rostered := typeOf(name)
+		if !rostered {
+			continue
+		}
+		both++
+		rosterSaysPath := ty.path || ty.pathNoGrant
+		if rosterSaysPath && n.shape != shapePath {
+			t.Errorf("%s: the roster calls it path-valued, the annotation calls it %v. One of "+
+				"the two is wrong and a reader cannot tell which", name, n.shape)
+		}
+		if !rosterSaysPath && n.shape == shapePath {
+			t.Errorf("%s: the annotation calls it shapePath, the roster does not. If the value "+
+				"really is a path, the roster row is the one to fix — it also switches on the "+
+				"grant-coupling rule, which shapePath deliberately does not", name)
+		}
+	}
+	if both < 20 {
+		t.Fatalf("only %d names are in both tables; this test is measuring almost nothing", both)
+	}
+
+	// A POINTER is a path by definition (inlineConfigPointer's own doc), so any
+	// pointer carrying an annotation must say so. The two that carry none are
+	// snug's own (SnugOwnedEnv), and valueIsAPath keeps its namesAPointerFile
+	// clause precisely so that fact does not depend on someone writing a sentence.
+	for _, p := range inlineConfigPointers {
+		n, ok := noteExact(p.name)
+		if !ok {
+			continue
+		}
+		if n.shape != shapePath {
+			t.Errorf("%s is in inlineConfigPointers — a POINTER is a path to a file snug or a "+
+				"profile generated — but its annotation calls it %v", p.name, n.shape)
 		}
 	}
 }

@@ -9,7 +9,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/gomoni/snug/internal/policy"
@@ -674,9 +673,14 @@ func elementValue(name, s string) string {
 // from UTF-8 (measured with `tmux capture-pane` — the bytes sit in the cell, no
 // line was overwritten). It becomes live on a terminal in 8-bit C1 mode.
 //
-// unicode.IsControl covers C0, DEL and C1 in one predicate. U+2028 and U+2029
-// are added by hand: they are Zl/Zp rather than Cc, they are LINE and PARAGRAPH
-// SEPARATOR, and this whole block is a table whose rows are one line each.
+// WHAT COUNTS AS FORGING IS NOT DECIDED HERE. It is policy.IsForgingRune, which
+// this file's isForgingRune wraps and does not extend: C0/DEL/C1 through
+// unicode.IsControl, U+2028/U+2029 by name, and the nine UAX #9 explicit
+// directional formatting characters — the last group added after a red team
+// rendered U+202E raw into this very block, the --setenv argv line, `profile
+// show` and `profile list`, in a value, a description and a mount path. The
+// argument for the edge of that set, including the characters deliberately left
+// out of it, is at the predicate.
 //
 // AND INVALID UTF-8 IS ESCAPED WHOLESALE, which is the live half of the same
 // finding. A raw 0x9b byte is not valid UTF-8, so it decodes to RuneError and no
@@ -684,24 +688,34 @@ func elementValue(name, s string) string {
 // introducer. The values that can carry one are the HOST's (`inherit`,
 // `sanitise`, a host path in a bind): checkEnvValue cannot reach those, and TOML
 // cannot produce them, so this is the only guard that can.
+// It is policy.VisibleText, not a copy of it, for the reason isForgingRune below
+// gives: this file held one of the copies that agreed with each other and not
+// with the two in internal/policy, and the sink that was still rendering raw was
+// a REFUSAL — the screen a human reads most carefully, since it is the one that
+// stopped them.
 func visibleValue(s string) string {
-	if utf8.ValidString(s) && !strings.ContainsFunc(s, isForgingRune) {
-		return s
-	}
-	return strings.Trim(fmt.Sprintf("%q", s), `"`)
+	return policy.VisibleText(s)
 }
 
 // isForgingRune is "this rune can author a line snug did not write", and it is
-// the same set policy.checkEnvValue refuses at parse time. Two copies of one
-// question is how the ASCII-only trigger survived in one of them for a
-// milestone; they are kept in step by TestNoSnugScreenEmitsARawControlCharacter,
-// which drives the whole screen rather than either predicate.
-// The two separators are written as ESCAPES rather than as themselves, for the
-// same reason the red team's report writes snug's own arrow that way: a literal
-// U+2028 in a source file is invisible in an editor and, in some of them, ends
-// the line.
+// now literally the same predicate policy.checkEnvValue refuses at parse time
+// rather than a second spelling of it.
+//
+// IT WAS A COPY, AND THE COPY IS WHAT LET U+202E THROUGH. The two spellings were
+// widened together when the ASCII-only trigger was found, which read as evidence
+// that "kept in step by TestNoSnugScreenEmitsARawControlCharacter" was working \u2014
+// and it was, for the two sites that test drives. It never covered
+// policy.Validate's guest-path check or Identity.CheckText, which stayed
+// ASCII-only through the whole of that round, and when round 3 arrived with a
+// category-Cf character it walked past all four at once. A test that keeps N
+// copies in step is worth less than not having N copies: the argument for the
+// SET, including which characters are deliberately not in it, lives at
+// policy.IsForgingRune (internal/policy/forging.go).
+//
+// This wrapper stays because visibleValue needs a func(rune) bool and because
+// the name is what the tests here read; it must never grow a case of its own.
 func isForgingRune(r rune) bool {
-	return unicode.IsControl(r) || r == '\u2028' || r == '\u2029'
+	return policy.IsForgingRune(r)
 }
 
 // grantMark is §4.2's repair, and it is a MARK rather than a refusal on purpose.

@@ -591,6 +591,28 @@ func TestEnvValueRefusesControlCharacters(t *testing.T) {
 		// rows are one line each.
 		"a LINE SEPARATOR":      "fast\u2028  ro   /etc/shadow",
 		"a PARAGRAPH SEPARATOR": "fast\u2029  ro   /etc/shadow",
+		// The BIDI half (redteam host round 3, F2), and the reason it is here is
+		// the previous fix's own claim rather than the character. C1 was closed by
+		// replacing the byte loop with unicode.IsControl, and the test that pinned
+		// it asserted "the property, rather than a copy of a character list that
+		// could drift" — but unicode.IsControl IS the control-character set, and
+		// U+202E is category Cf. Measured at 8d17f85: `EDITOR =
+		// "/usr/bin/vim\u202eFORGED"` was accepted and rendered raw in the
+		// ENVIRONMENT block AND on the --setenv argv line.
+		//
+		// What it buys an attacker is not a row, it is the ORDER of one: the
+		// characters after it render right-to-left, so a value or a grant path
+		// reads as content it does not contain on any bidi-rendering terminal,
+		// editor, pager or code-review UI a human reads --dry-run through.
+		"an RLO, which reverses the rest of the line":         "/usr/bin/vim\u202eDEGROF",
+		"an LRO, the other override":                          "/usr/bin/vim\u202dx",
+		"an LRE, the fifth of the U+202A-U+202E block":        "/usr/bin/vim\u202ax",
+		"an RLE, the embedding form":                          "/usr/bin/vim\u202bx",
+		"a PDF, which pops a scope the value never opened":    "/usr/bin/vim\u202cx",
+		"an RLI, the isolate form":                            "/usr/bin/vim\u2067x",
+		"a PDI, the isolate terminator":                       "/usr/bin/vim\u2069x",
+		"an LRI":                                              "/usr/bin/vim\u2066x",
+		"an FSI, which takes its direction from what follows": "/usr/bin/vim\u2068x",
 	}
 	for why, value := range bad {
 		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{"EDITOR": value}}); err == nil {

@@ -76,7 +76,11 @@ func loadUserConfig() userConfig {
 		// error was already fatal; a read error must be too, for the same reason
 		// (invariant 5: no silent downgrade).
 		if !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "snug: %s: %v\n", path, err)
+			// The PATH is $XDG_CONFIG_HOME's, and the error text is the
+			// operating system's report about it — neither is snug's, and this
+			// is a screen. Same rule as badfiles.go, one file over.
+			fmt.Fprintf(os.Stderr, "snug: %s: %v\n", policy.VisibleText(path),
+				policy.VisibleText(err.Error()))
 			os.Exit(exitPolicy)
 		}
 		return cfg
@@ -84,7 +88,12 @@ func loadUserConfig() userConfig {
 	dec := toml.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "snug: %s: %v\n", path, err)
+		// go-toml quotes the offending LINE of the file back at you, so this
+		// message carries config-file text verbatim. Whole-string rather than
+		// per-line here (unlike badfiles.go): a decode error from this path is
+		// one line, and there is no diagram to preserve.
+		fmt.Fprintf(os.Stderr, "snug: %s: %v\n", policy.VisibleText(path),
+			policy.VisibleText(err.Error()))
 		os.Exit(exitPolicy)
 	}
 	return cfg
@@ -106,7 +115,8 @@ func defaultProfiles() (names []policy.ProfileName, source string) {
 	}
 	out, err := policy.NewProfileNames(*c.Defaults)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "snug: %s: defaults: %v\n", configPath(), err)
+		fmt.Fprintf(os.Stderr, "snug: %s: defaults: %v\n", policy.VisibleText(configPath()),
+			policy.VisibleText(err.Error()))
 		os.Exit(exitPolicy)
 	}
 	return out, configPath()

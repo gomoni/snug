@@ -255,6 +255,16 @@ func stageClaudeSettings(pol *policy.Policy, home string, verbose bool) {
 	// file's content: the generated file is the ALLOWLISTED subset, so the
 	// names of what did NOT make it are not present anywhere inside it.
 	pol.ClaudeSettingsUnknown = drops.Unknown
+	// NO visibleValue HERE, AND THE REASON IS THE KEYS' PROVENANCE RATHER THAN
+	// THE SINK'S. This line renders the same class of thing the `Unknown` line
+	// above does — key names, on stderr, from a host file — and it is safe for
+	// one reason only: `carried` is keyed by ClaudeSettingAllowlist[i].Name
+	// (FilterClaudeSettings writes `out[k.Name]`, never `out[<a key from raw>]`),
+	// so every string here is one of snug's own constants and the host's file
+	// merely chose WHICH. Written down because the two lines look identical and
+	// the difference is three files away; if FilterClaudeSettings ever carries a
+	// key under the name the host spelled, this line needs the escape the one
+	// above has.
 	if verbose {
 		names := make([]string, 0, len(carried))
 		for k := range carried {
