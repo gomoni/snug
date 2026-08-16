@@ -700,6 +700,85 @@ func TestBothSpellingsOfGitsExecClassAreAnnotated(t *testing.T) {
 	}
 }
 
+// The four Claude Code surfaces, as one table, so that a fifth name added to
+// inlineConfigNames forces a decision rather than a silent extension of
+// whichever loop it lands closest to (issue #69).
+//
+// THIS TEST USED TO ASSERT A REFUSAL ASYMMETRY and now asserts a DISCLOSURE
+// asymmetry, which is the same distinction one layer over. It was written when
+// CLAUDE_CODE_PROCESS_WRAPPER was a forbiddenEnv row and the three credentials
+// were deliberately not, and the argument for the split — an argv prefix is
+// what runs INSTEAD of every process the tool spawns, while `inherit
+// ANTHROPIC_API_KEY` from a user's own profile is a real thing to want —
+// survives the table it was written for. What does not survive is the refusal:
+// a denylist here binds the human writing the profile, while the agent the
+// prefix applies to sets its own environment and always could.
+//
+// So all four are accepted at both verbs, all four are named by
+// IsInlineConfigEnv — which is what makes the SINK sweep over a resolved policy
+// (TestNoBuiltinHandsOverAnInlineConfigVariable) fail if a shipped profile ever
+// carries one — and all four say something. The asymmetry is now in WHAT they
+// say: the wrapper's sentence differs by verb, because who chose the program is
+// the whole of the hazard, while a credential leaks identically whoever wrote
+// it down.
+func TestTheClaudeAgentEnvSurfacesAreDisclosedNotRefused(t *testing.T) {
+	cases := []struct {
+		name string
+		// splitByVerb is true where the authored and host sentences must
+		// DIFFER, and it is not a style preference: for the wrapper, `set`
+		// means this profile chose what executes and `inherit` means the host
+		// user did, which is a different fact about a different party.
+		splitByVerb bool
+	}{
+		{"CLAUDE_CODE_PROCESS_WRAPPER", true},
+		{"CLAUDE_CODE_OAUTH_TOKEN", false},
+		{"ANTHROPIC_AUTH_TOKEN", false},
+		{"ANTHROPIC_API_KEY", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !IsInlineConfigEnv(tc.name) {
+				t.Errorf("IsInlineConfigEnv(%s) = false. The value IS the setting for this "+
+					"name, so the sink sweep over a resolved policy cannot see it and a "+
+					"builtin could ship it unnoticed", tc.name)
+			}
+
+			// Accepted at both verbs. A refusal here would be a denylist, and
+			// it would bind the profile author rather than the agent, which
+			// sets its own environment the moment it runs.
+			if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{tc.name: "x"}}); err != nil {
+				t.Errorf("set %s was refused: %v", tc.name, err)
+			}
+			if err := ValidateEnvGrants(EnvGrants{Inherit: []string{tc.name}}); err != nil {
+				t.Errorf("inherit %s was refused: %v", tc.name, err)
+			}
+
+			authored, host := EnvNote(tc.name, VerbSet), EnvNote(tc.name, VerbInherit)
+			if authored == "" || host == "" {
+				t.Fatalf("EnvNote(%s) is empty at set=%q inherit=%q. Accepting a name whose "+
+					"value is code or is a credential, and saying nothing about it, is the "+
+					"one outcome the annotation table exists to prevent", tc.name, authored, host)
+			}
+			if got := authored != host; got != tc.splitByVerb {
+				t.Errorf("EnvNote(%s): sentences differ by verb = %v, want %v\n  set:     %s\n  inherit: %s",
+					tc.name, got, tc.splitByVerb, authored, host)
+			}
+		})
+	}
+
+	// The near-miss control, and it is the reason this is a table rather than
+	// four asserts: ANTHROPIC_BASE_URL sits under the same prefix, is inherited
+	// by @claude, and is NOT an inline config variable — it names an endpoint,
+	// not a setting that outranks a file snug generated. A predicate that
+	// swallowed the prefix would pass every assertion above.
+	if IsInlineConfigEnv("ANTHROPIC_BASE_URL") {
+		t.Error("IsInlineConfigEnv(ANTHROPIC_BASE_URL) = true. CLAUDE_/ANTHROPIC_ is not a " +
+			"prefix in inlineConfigPrefixes and must not become one: most of that namespace " +
+			"is ordinary settings, and this one is annotated on its own terms")
+	}
+}
+
 // A prefix rule has to cover the prefix and NOT the near-miss, or it is either
 // a silent hole or a nuisance. Both directions, because a rule that covered LD_
 // by covering everything starting with L would pass every positive assertion

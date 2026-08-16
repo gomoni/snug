@@ -1305,6 +1305,77 @@ var envNotes = map[string]envNote{
 	"ANTHROPIC_BASE_URL": both(shapeOpaque, "every request the agent makes, conversation included, goes to this "+
 		"endpoint instead of Anthropic's (documented, not measured on this host)"),
 
+	// ── the three other Claude Code surfaces, and they are three DIFFERENT
+	//    hazards under one prefix ─────────────────────────────────────────────
+	//
+	// All four names here are in inlineConfigNames, which is a fact about the
+	// SINK sweep over a resolved policy. These sentences are the other half: what
+	// a human reads on the row when their own profile writes one.
+	//
+	// DOCUMENTED, NOT MEASURED ON THIS HOST, and the reason is the same one
+	// ANTHROPIC_BASE_URL gives — the only consumer is the Claude Code client and
+	// every run of this suite happens inside a live agent session. What IS
+	// measured is the quotation: verbatim from the installed claude 2.1.232
+	// binary's own settings-schema description of the `processWrapper` key,
+	// "Equivalent to the CLAUDE_CODE_PROCESS_WRAPPER environment variable, which
+	// takes precedence when set."
+	//
+	// The argv prefix is the sharpest spelling of "the value is code" in this
+	// table: it does not name a program the tool MIGHT run, it names what runs
+	// INSTEAD of every process the tool spawns. That is why it is not one
+	// sentence shared with the three credentials below it — those leak, this one
+	// executes, and a reader who is handed "this is sensitive" for both learns
+	// nothing about either.
+	"CLAUDE_CODE_PROCESS_WRAPPER": {shape: shapeProgram,
+		authored: "this profile chooses an argv PREFIX for the agent's supervisor and every session " +
+			"and worker it hosts, so the value runs in place of each process the agent spawns " +
+			"(documented, not measured on this host)",
+		host: "the agent's supervisor and every session and worker it hosts run behind this argv " +
+			"prefix, chosen on the host, outside any profile",
+	},
+	// The credential three. The value IS the secret, so unlike every pointer in
+	// this table there is no file for a human to read: /proc/self/environ is
+	// readable by every process in the sandbox and inherited by every child, and
+	// that is the sentence, not "this is secret".
+	//
+	// TWO CLAIMS, AND THEY HAVE DIFFERENT EVIDENCE, which is why this note is
+	// here rather than folded into the block above. That the client ACCEPTS each
+	// of these names as a credential is DOCUMENTED, NOT MEASURED ON THIS HOST,
+	// for the reason ANTHROPIC_BASE_URL gives — the measurement wants a throwaway
+	// credential and a live session, and every run of this suite happens inside
+	// one. ANTHROPIC_AUTH_TOKEN is named beside apiKeyHelper in the installed
+	// binary's own credential-selection strings, which is where the third name
+	// came from rather than from a list someone remembered.
+	//
+	// That every process in the sandbox can READ them is not a fact about the
+	// client at all — it is /proc, it is measured (VERIFY.md §6b reads
+	// /proc/1/environ), and it holds whatever the consumer does with the value.
+	// Keeping the two apart matters because the second is what makes the
+	// sentence actionable: the remedy is a credentials FILE, which is what
+	// @claude stages.
+	"CLAUDE_CODE_OAUTH_TOKEN": both(shapeOpaque,
+		"the value IS the agent's credential, and every process in the sandbox reads it out of "+
+			"/proc/self/environ; @claude stages a credentials FILE instead, for that reason"),
+	// The name came from the installed claude 2.1.232 binary's own
+	// credential-selection strings, where it sits beside apiKeyHelper — that
+	// much is measured, by reading the binary. What the client DOES with it is
+	// DOCUMENTED, NOT MEASURED ON THIS HOST, for the reason two rows up.
+	"ANTHROPIC_AUTH_TOKEN": both(shapeOpaque,
+		"the value IS an API credential — named beside apiKeyHelper in the client's own "+
+			"credential-selection strings — and every process in the sandbox reads it out of "+
+			"/proc/self/environ"),
+	// Already covered twice over — by the secrets sweep and by @claude's
+	// environ.inherit refusing it by name — and here anyway, because a name
+	// covered by one mechanism and not the other is how the two come to disagree
+	// about it. DOCUMENTED, NOT MEASURED ON THIS HOST. Tried: the consumer is the
+	// Claude Code client, and confirming which name it prefers means starting a
+	// session with a throwaway credential in each variable and watching which one
+	// authenticates — from inside a live agent session, which is where every run
+	// of this suite happens. It wants a scratch account and a host-side run.
+	"ANTHROPIC_API_KEY": both(shapeOpaque,
+		"the value IS an API credential, and every process in the sandbox reads it out of "+
+			"/proc/self/environ; @claude's environ.inherit refuses this name for the same reason"),
+
 	// ── "generate, don't bind", the pointers ─────────────────────────────────
 	//
 	// These carried `noInherit: true` in the roster, whose message was "snug
@@ -1786,10 +1857,50 @@ func namesAPointerFile(name string) bool {
 // keeps IsInlineConfigEnv's own promise true for the un-prefixed spelling, and
 // what stops a BUILTIN shipping one is the sweep named in IsInlineConfigEnv's
 // doc comment plus the roster rule; see there.
+//
+// THE CLAUDE_/ANTHROPIC_ ENTRIES BELOW ARE THE SAME SHAPE FOR A DIFFERENT TOOL,
+// and `CLAUDE_` is not a prefix in inlineConfigPrefixes — nor should it become
+// one, because most of that namespace is ordinary settings. Adding a name here
+// is a policy change, and the question is what the name makes the tool DO:
+//
+//	CLAUDE_CODE_PROCESS_WRAPPER — an argv PREFIX applied to the background-agent
+//	  supervisor, the sessions and workers it hosts, and the other covered
+//	  background processes. Measured, verbatim from the installed claude 2.1.232
+//	  binary's own settings-schema description of the `processWrapper` key:
+//	  "Equivalent to the CLAUDE_CODE_PROCESS_WRAPPER environment variable, which
+//	  takes precedence when set." Whoever sets it chooses what actually
+//	  executes — LD_PRELOAD's shape for this tool. Issue #17 drops the settings
+//	  KEY with an allowlist; the variable that outranks that key is this
+//	  surface, and it was a separate one with no check.
+//	CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY — the value
+//	  IS the credential, reviewable nowhere. ANTHROPIC_AUTH_TOKEN is named
+//	  beside apiKeyHelper in the binary's own credential-selection strings.
+//	  ANTHROPIC_API_KEY was already covered by the secrets test and by
+//	  @claude's environ.inherit refusing it by name, but it is an inline setting
+//	  too and belongs in the same sweep rather than being covered only by a
+//	  sibling mechanism — a name covered by one mechanism and not the other is
+//	  how the two come to disagree about it.
+//
+// ALL FOUR ARE ANNOTATION ONLY, and the first of them is where this changed
+// under review. It was written as a forbiddenEnv row, on the argument that an
+// argv prefix is the sharpest spelling of "the value is code" there is and that
+// no profile has a legitimate reason to choose the argv prefix for someone
+// else's agent. Both halves are still true and neither is a reason to refuse: a
+// refusal here binds the human writing the profile, while the agent the prefix
+// applies to sets its own environment and always could. What the entry buys is
+// that IsInlineConfigEnv names it, so the sink sweep over a resolved policy —
+// TestNoBuiltinHandsOverAnInlineConfigVariable — fails if a SHIPPED profile ever
+// carries one, and envNotes puts the sentence on the screen when a user's
+// profile does.
 var inlineConfigNames = map[string]bool{
 	"RUSTC_WRAPPER":           true,
 	"RUSTC_WORKSPACE_WRAPPER": true,
 	"RUSTC":                   true,
+
+	"CLAUDE_CODE_PROCESS_WRAPPER": true,
+	"CLAUDE_CODE_OAUTH_TOKEN":     true,
+	"ANTHROPIC_AUTH_TOKEN":        true,
+	"ANTHROPIC_API_KEY":           true,
 }
 
 // IsInlineConfigEnv reports whether NAME is a config-surface variable whose

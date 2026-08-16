@@ -446,3 +446,117 @@ func TestIsInlineConfigEnvCoversTheRustcWrapperFamily(t *testing.T) {
 		}
 	}
 }
+
+// ── CLAUDE_CODE_PROCESS_WRAPPER / CLAUDE_CODE_OAUTH_TOKEN /
+//
+//	ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY (issue #69) ────────────────────
+//
+// The same shape as the RUSTC_WRAPPER family above, for a different tool:
+// CLAUDE_CODE_PROCESS_WRAPPER is an argv PREFIX applied to Claude Code's
+// background-agent supervisor and everything it hosts (measured, verbatim
+// from the installed claude 2.1.232 binary's own settings-schema description
+// of the `processWrapper` key — see envtypes.go's inlineConfigNames comment),
+// and the other three carry a credential rather than a program. All four are
+// "the value IS the setting, reviewable nowhere" — IsInlineConfigEnv's whole
+// subject — so all four must trip it.
+//
+// The negative half matters at least as much: ANTHROPIC_BASE_URL is a
+// ROSTERED row (@claude inherits it, see envtypes.go's envTypes table) that
+// carries an ENDPOINT, not a setting a tool executes or a secret — making it
+// true would fail TestNoBuiltinHandsOverAnInlineConfigVariable's sweep the
+// moment @claude's own inherit ran, for a variable this predicate was never
+// meant to catch. And CLAUDE_ is deliberately NOT a prefix in
+// inlineConfigPrefixes: most of that namespace (CLAUDE_CODE_SOMETHING here,
+// standing in for the rest) is ordinary settings, and turning the whole
+// namespace inline would be exactly the "denylist wearing a new name" shape
+// CLAUDE.md's invariant 2 corollary warns about. A predicate that answers
+// true for everything under a tool's name passes half a test — hence both
+// halves are asserted here, not just the four positives.
+func TestIsInlineConfigEnvCoversTheClaudeAgentFamily(t *testing.T) {
+	for _, name := range []string{
+		"CLAUDE_CODE_PROCESS_WRAPPER",
+		"CLAUDE_CODE_OAUTH_TOKEN",
+		"ANTHROPIC_AUTH_TOKEN",
+		"ANTHROPIC_API_KEY",
+	} {
+		if !policy.IsInlineConfigEnv(name) {
+			t.Errorf("IsInlineConfigEnv(%q) = false, want true — its value is either an argv "+
+				"PREFIX the tool runs instead of every process it spawns "+
+				"(CLAUDE_CODE_PROCESS_WRAPPER) or a credential reviewable nowhere "+
+				"(the other three). See envtypes.go's inlineConfigNames comment for the "+
+				"measurement", name)
+		}
+	}
+
+	// The neighbours that must NOT be swept in.
+	for _, name := range []string{
+		"ANTHROPIC_BASE_URL",    // rostered, an endpoint, @claude inherits it
+		"CLAUDE_CODE_SOMETHING", // stands in for the rest of the CLAUDE_ namespace
+	} {
+		if policy.IsInlineConfigEnv(name) {
+			t.Errorf("IsInlineConfigEnv(%q) = true, want false — CLAUDE_ is deliberately not "+
+				"a prefix in inlineConfigPrefixes, because most of that namespace is ordinary "+
+				"settings; a predicate that swept it all in would also flag ANTHROPIC_BASE_URL, "+
+				"a rostered row @claude inherits and fails the builtin sweep on", name)
+		}
+	}
+}
+
+// The positive control for the sink sweep, over CLAUDE_CODE_PROCESS_WRAPPER.
+//
+// TestPositiveControlEnvironSetPipIndexUrlTripsInlineConfigSweep's shape does
+// not carry over unchanged: that control resolves a fixture profile through
+// policy.Resolve, because PIP_INDEX_URL is forbidInheritOnly and `environ.set`
+// reaches the resolved policy. CLAUDE_CODE_PROCESS_WRAPPER is forbidBoth (see
+// envtypes.go's forbiddenEnv table) precisely because it is the sharpest kind
+// of inline setting there is — an argv prefix — so `environ.declare` +
+// `environ.set` is refused at PARSE TIME (see
+// TestDeclareCannotRecoverClaudeCodeProcessWrapper in
+// internal/policy/envtypes_test.go). There is therefore no legal profile, and
+// no route through Resolve, that produces a resolved policy carrying this
+// name — building one would mean bypassing the very refusal the parse-time
+// test exists to confirm.
+//
+// So this control is WEAKER than its PIP_INDEX_URL sibling, and says so
+// rather than pretending otherwise: it constructs a policy.EnvVar by hand —
+// the shape Resolve would have produced had a profile been allowed to set the
+// name — and runs the identical sweep loop
+// TestNoBuiltinHandsOverAnInlineConfigVariable performs over p.Env. It proves
+// IsInlineConfigEnv fires on the RIGHT SHAPE of entry, which is what a sweep
+// over p.Env actually inspects; it does NOT prove a builtin (or a user
+// profile) can produce that shape, because none can — the parse-time refusal
+// is what rules that out, and is the stronger guarantee here, not this
+// control. What would restore the PIP_INDEX_URL-shaped control: narrowing
+// forbiddenEnv's CLAUDE_CODE_PROCESS_WRAPPER entry from forbidBoth to
+// forbidInheritOnly, which is exactly the change this whole family exists to
+// refuse — so the weaker control is the honest one to keep.
+func TestPositiveControlClaudeCodeProcessWrapperShapeTripsInlineConfigSweep(t *testing.T) {
+	const name = "CLAUDE_CODE_PROCESS_WRAPPER"
+
+	if !policy.IsInlineConfigEnv(name) {
+		t.Fatalf("policy.IsInlineConfigEnv(%q) = false — the predicate this whole family "+
+			"exists to trip does not recognise its own sharpest example", name)
+	}
+
+	// The shape Resolve emits for a set value: one EnvVar, one Entries slot,
+	// Present() true. Built by hand rather than through Resolve — see the
+	// header comment for why no legal route through Resolve produces this.
+	env := map[string]policy.EnvVar{
+		name: {
+			Name:    name,
+			Entries: []policy.EnvEntry{{Value: "/run/snug/bin/evil", Verb: policy.VerbSet}},
+		},
+	}
+
+	tripped := false
+	for envName, ev := range env {
+		if ev.Present() && policy.IsInlineConfigEnv(envName) {
+			tripped = true
+		}
+	}
+	if !tripped {
+		t.Fatalf("a walk of p.Env identical to TestNoBuiltinHandsOverAnInlineConfigVariable's "+
+			"sweep found nothing to flag for %s, even though IsInlineConfigEnv(%[1]q) = true — "+
+			"the sweep and the predicate have drifted apart", name)
+	}
+}
