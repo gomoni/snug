@@ -381,6 +381,16 @@ func refusalScalarConflict(t testing.TB, key string) error {
 		reg["addr-b"] = &Profile{Name: "addr-b", Network: "egress", Address: "10.0.0.3/24"}
 		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "addr-a", "addr-b"}, testCtx(), newFakeEnv())
 		return err
+	case "address-forging":
+		// The marker is written backwards: a bidi-rendering terminal shows
+		// "FORGED-BY-AN-ADDRESS" after the override. The second value carries
+		// the C1 spelling so the golden pins both halves of IsForgingRune.
+		reg["addr-a"] = &Profile{Name: "addr-a", Network: "egress",
+			Address: "10.0.0.2/24 ‮SSERDDA-NA-YB-DEGROF"}
+		reg["addr-b"] = &Profile{Name: "addr-b", Network: "egress",
+			Address: "10.0.0.3/24 1AFORGED-BY-A-C1"}
+		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "addr-a", "addr-b"}, testCtx(), newFakeEnv())
+		return err
 	case "gateway":
 		reg["gw-a"] = &Profile{Name: "gw-a", Network: "egress", Gateway: "10.0.0.1"}
 		reg["gw-b"] = &Profile{Name: "gw-b", Network: "egress", Gateway: "10.0.0.9"}
@@ -723,6 +733,16 @@ func TestGoldenRefusals(t *testing.T) {
 		{"scalar_conflict_address", func(t testing.TB) error { return refusalScalarConflict(t, "address") }},
 		{"scalar_conflict_gateway", func(t testing.TB) error { return refusalScalarConflict(t, "gateway") }},
 		{"scalar_conflict_mtu", func(t testing.TB) error { return refusalScalarConflict(t, "mtu") }},
+		// The VALUES in a scalar conflict are profile text snug did not write,
+		// and `address` is unvalidated for these runes at parse time (issue
+		// #62), so this message is the one place a forging rune reaches a screen
+		// through the network keys. The round-3 sweep escaped describeNode and
+		// the two join conflicts and did not reach scalarConflict, which issue
+		// #64 had named — this case is what makes that visible in a diff rather
+		// than in someone's memory.
+		{"scalar_conflict_address_forging", func(t testing.TB) error {
+			return refusalScalarConflict(t, "address-forging")
+		}},
 		{"poststaging_nested_grant_under_later_replace", refusalNestedGrantUnderLaterReplace},
 		{"forbidden_env_unset_on_host", refusalForbiddenEnvUnsetOnHost},
 
