@@ -48,6 +48,33 @@ whether it is safe. Required negative assertions include:
 Bind test listeners on an ephemeral port and clean them up; never assume a fixed
 port is free.
 
+### A test that cannot fail is worse than no test
+
+This is your first duty on every negative assertion, because a negative test that
+silently cannot fail passes cleanly for as long as it exists and reads as
+coverage in every review.
+
+- **Give every negative a positive control.** Assert the thing you are measuring
+  is actually present *before* asserting it did not grow or is not reachable. The
+  leak check that matched `/proc/<pid>/comm` against the literal `"pasta"` is the
+  worked example: passt ships CPU-dispatched binaries, so the real comm is
+  `pasta.avx2`, the count was always zero, and `after > before` could never be
+  true.
+- **Make every payload emit a marker**, so "the sandbox did not reach X" cannot
+  pass on a sandbox that never started.
+- **Verify a security feature is ACTIVE, not merely requested.** bwrap stops
+  parsing flags at `--`, so a flag appended to the full argv is handed to the
+  payload instead — `--seccomp` was once passed, accepted, and never installed,
+  with a zero exit code and no warning. `Seccomp: 0` in `/proc/self/status` was
+  the only evidence. Assert the effect, not the argv.
+- **A gate that is documented but not implemented is not a gate.**
+  `ssh_mode = "host-agent"` forwards the entire ssh-agent, and three separate
+  places — the profile, the mode's doc comment, and the code comment at the call
+  site — said it required `--i-know`. Nothing checked it, and the red team
+  enumerated every key in the agent and signed with one the profile had not
+  pinned. **When a comment says "requires X", grep for X before believing it,
+  then write the test that makes it true.**
+
 ### Regressions from the red team
 
 You own the committed suite; `redteam` owns exploration. Every escape it

@@ -975,7 +975,7 @@ carve-out invariant 1 says exists nowhere.
 
 - `Resolve` is one-way and has no inverse. The only per-grant record of origin is
   `Mount.From`, which `join` **unions** and which `internal/policy/types.go`
-  explicitly disqualifies as semantic ("provenance for `snug explain` only…
+  explicitly disqualifies as semantic ("provenance for `snug --dry-run` only…
   deliberately NOT part of equality"). A mount granted by two profiles carries
   both names, so "keep the grants from X" is undefined for exactly the mounts that
   matter.

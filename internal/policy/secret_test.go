@@ -521,7 +521,7 @@ func TestPositiveControlPreambleFieldTripsTheByteSliceSweep(t *testing.T) {
 // Why the exemption is not the start of an allowlist: Context is scoped OUT
 // by TYPE, not by field name. Context (environ.go) is the pre-resolution
 // INPUT to Resolve — host facts gathered by the caller before a Policy
-// exists — never the thing rendered by --dry-run, `snug explain`, or any of
+// exists — never the thing rendered by --dry-run or any of
 // the fmt/json sinks TestNoSerialisationOfMountContent closes; those sinks
 // all take a Mount or a Policy, never a Context. KnownHosts itself is host
 // fingerprints for the pinned host (see environ.go's doc comment), not a
