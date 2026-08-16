@@ -219,9 +219,13 @@ func TestPodmanSocketIncludesNetAsAnInterimHonestyFix(t *testing.T) {
 // wrote a profile saying so. What snug ships instead is the KNOWLEDGE, in two
 // tables that are both stronger than a profile could be —
 //
-//   - forbiddenEnv / forbiddenEnvPrefixes: the names whose value is code
-//     (ld.so(8)'s secure-execution list, GIT_SSH, BASH_FUNC_*, RUBYOPT, …),
-//     refused at EVERY verb, so no profile can bring them in at all;
+//   - policy.EnvNote's tables: the names whose value is code (ld.so(8)'s
+//     secure-execution list, GIT_SSH, BASH_FUNC_*, RUBYOPT, …). They are
+//     ANNOTATED rather than refused since the second pass over issue #44 — a
+//     profile's author is a human on the trusted side of the boundary — so what
+//     snug ships here is the SENTENCE, on --dry-run and on `snug profile show`.
+//     Read alongside the roster rule, which is what stops a profile snug SHIPS
+//     from writing one: none of those names has a roster row;
 //   - envTypes' `sanitisable` column: which lists may be filtered at all. PATH,
 //     GOPATH, CLASSPATH and friends yes; MANPATH illegal, because removing an
 //     element there can ADD directories; PYTHONPATH and CDPATH no, because an
@@ -431,7 +435,7 @@ func TestUserProfileMayReuseABuiltinsBareName(t *testing.T) {
 // The check is by NAME rather than by value, deliberately: an `env` entry is a
 // name and the value only exists on the invoking host, so a value-based check
 // would pass on any machine where the variable happened to be unset. That is
-// the same defect the conditional `forbiddenEnv` guard has (see
+// the same defect the old conditional forbidden-name guard had (see
 // .claude/design/BRAINSTORM.md §4.4) and it is worth not repeating here.
 //
 // Matching is substring-based on purpose, so a NEW credential variable nobody

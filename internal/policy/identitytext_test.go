@@ -25,6 +25,18 @@ func TestIdentityFieldsRefuseControlCharacters(t *testing.T) {
 		{"gh_user", Identity{SSHMode: SSHNone, GhUser: "nobody\x1b[1A\r  snug: FORGED"}},
 		{"ssh_key", Identity{SSHMode: SSHAgentProxy, SSHKey: "~/.ssh/id.pub\x00--ro-bind"}},
 		{"ssh_mode", Identity{SSHMode: SSHMode("none\n")}},
+		// C1 AND BIDI, AND THIS LOOP COULD NOT SEE EITHER UNTIL NOW. CheckText was
+		// a BYTE loop over `c < 0x20 || c == 0x7f`, so it missed U+009B and — one
+		// category out — U+202E, which reverses how the rest of a line reads. The
+		// directive half of this rule really is ASCII (only a newline writes a
+		// second git or YAML line), but these fields are ALSO interpolated into the
+		// ~/.claude/CLAUDE.md the agent reads, with %s: the row naming the account
+		// the sandbox pushes as could be spelled to render as a different account.
+		// Found by asking what the OTHER sinks do with the same string, which is
+		// the rule this project has now failed to apply three times.
+		{"gh_user", Identity{SSHMode: SSHNone, GhUser: "nobody\u009b1A\u009b1G"}},
+		{"gh_user", Identity{SSHMode: SSHNone, GhUser: "yranidro\u202eyxorp-tnega"}},
+		{"git_name", Identity{SSHMode: SSHNone, GitName: "Some One\u2028[core]"}},
 	} {
 		t.Run(tc.field, func(t *testing.T) {
 			reg := testRegistry()

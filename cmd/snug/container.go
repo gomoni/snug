@@ -14,6 +14,35 @@ import (
 // chooses, never one a profile names.
 const containerSocketGuest = "/run/snug/podman.sock"
 
+// containerAudit is the proxy's -v channel, and it is the ONE place text written
+// by the PAYLOAD becomes a line on the host user's terminal.
+//
+// Everything the proxy audits is derived from a request the sandbox made:
+// `container create: …`, `refused: …`, `build: <summary>`, and — the sharp one —
+// `mount source %s resolves to %s` (internal/dockerproxy/create.go), where the
+// source is a string the payload chose. Every other screen in snug renders HOST
+// text; this one renders the untrusted side's, so a payload that wants a human
+// to misread the audit line is the whole threat model rather than an edge case.
+//
+// THE ESCAPE IS AT THE SINK, NOT AT THE CALL SITES, and that is deliberate:
+// dockerproxy has a dozen audit calls today and will have more, they live in
+// another package, and a rule that has to be remembered at each of them is the
+// rule this project has now failed to apply four times in a row. Here it is one
+// function, so a message added upstream is escaped the day it is added — and
+// dockerproxy stays free to build whatever string it likes, because the boundary
+// where that string becomes a SCREEN is here.
+//
+// One line per call, so whole-string escaping (VisibleText) is right: an audit
+// message has no legitimate newline in it.
+func containerAudit(verbose bool) func(string) {
+	if !verbose {
+		return func(string) {}
+	}
+	return func(msg string) {
+		fmt.Fprintln(os.Stderr, "snug: containers: "+policy.VisibleText(msg))
+	}
+}
+
 // startContainers wires up a per-sandbox engine behind a filtering proxy.
 //
 // The engine is NOT started here — it starts lazily on the first request that
@@ -36,10 +65,7 @@ func startContainers(pol *policy.Policy, verbose bool) (cleanup func(), err erro
 	}
 	sock := filepath.Join(dir, "podman.sock")
 
-	audit := func(string) {}
-	if verbose {
-		audit = func(msg string) { fmt.Fprintln(os.Stderr, "snug: containers: "+msg) }
-	}
+	audit := containerAudit(verbose)
 
 	p, err := dockerproxy.New(pol, eng.Socket(), sock, eng.RunLabel(), audit, eng.Start)
 	if err != nil {

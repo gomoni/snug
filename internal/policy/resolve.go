@@ -603,10 +603,11 @@ func under(canonTarget, p string) (string, bool) {
 // p.Mounts[...] directly instead, bypassing both the provenance record and
 // Validate.
 
-// forbiddenEnv lives in envtypes.go now, split by verb: a value carried by a
-// reviewed profile file and a value inherited from whoever launched snug are
-// two different things, and one middle bucket is legal as the first and not the
-// second (CALL 4).
+// The forbidden-name table lives in envtypes.go and no longer forbids: it is
+// `envNotes`, an ANNOTATION rendered on --dry-run and on `snug profile show`.
+// The split by verb survived the change and is now the thing it says — a value
+// carried by a reviewed profile file and a value inherited from whoever launched
+// snug are two different things, so each gets its own sentence (CALL 4).
 
 // envOr keeps Getenv's "empty means absent" reading DELIBERATELY, and it is the
 // one place that is right. Its callers want a value snug can fall back on —
@@ -662,15 +663,18 @@ func (p *Policy) join(m Mount) error {
 			m.Guest, old.Kind, provenance(old), m.Kind, provenance(m))
 	}
 	if old.Host != m.Host {
+		// VisibleText on both host paths, for the reason describeNode gives at
+		// length: a refusal is a screen, the host side cannot be refused for its
+		// characters, and the guest side already is (Validate).
 		if m.Kind == KindSymlink {
 			return fmt.Errorf("conflict at %s: symlink to %s (from %s) and to %s (from %s).\n"+
 				"       A symlink has one target; profiles may only ever grant, so neither may\n"+
 				"       silently repoint the other's. Select one of the two.",
-				m.Guest, old.Host, provenance(old), m.Host, provenance(m))
+				m.Guest, VisibleText(old.Host), provenance(old), VisibleText(m.Host), provenance(m))
 		}
 		return fmt.Errorf("conflict at %s: bound from %s (by %s) and from %s (by %s).\n"+
 			"       One guest path, two host sources. Select one of the two profiles.",
-			m.Guest, old.Host, provenance(old), m.Host, provenance(m))
+			m.Guest, VisibleText(old.Host), provenance(old), VisibleText(m.Host), provenance(m))
 	}
 	if !samePerms(old.Perms, m.Perms) {
 		return fmt.Errorf("conflict at %s: mode %s (from %s) and %s (from %s)",

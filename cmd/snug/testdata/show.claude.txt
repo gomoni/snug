@@ -8,11 +8,11 @@ defined in  builtin:base.toml
                    {home}/.local/share/claude
                    {home}/.claude/skills
                    {home}/.claude/plugins
-  environ.inherit  ANTHROPIC_BASE_URL
-                   EDITOR
+  environ.inherit  ANTHROPIC_BASE_URL  ← every request the agent makes, conversation included, goes to this endpoint instead of Anthropic's (documented, not measured on this host)
+                   EDITOR  ← the value is a command; git runs it for a commit message via GIT_EDITOR -> core.editor -> VISUAL -> EDITOR (measured)
                    NO_COLOR
-                   PAGER
-                   VISUAL
+                   PAGER  ← the value is a command; git runs it over log, diff and show via GIT_PAGER -> core.pager -> PAGER (measured)
+                   VISUAL  ← the value is a command; git runs it for a commit message when GIT_EDITOR and core.editor are unset (measured)
   optional         {home}/.local/bin/claude {home}/.local/share/claude {home}/.claude/skills {home}/.claude/plugins
 
 To see what this actually produces for a directory:

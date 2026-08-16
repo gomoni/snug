@@ -76,7 +76,11 @@ func loadUserConfig() userConfig {
 		// error was already fatal; a read error must be too, for the same reason
 		// (invariant 5: no silent downgrade).
 		if !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "snug: %s: %v\n", path, err)
+			// The PATH is $XDG_CONFIG_HOME's, and the error text is the
+			// operating system's report about it — neither is snug's, and this
+			// is a screen. Same rule as badfiles.go, one file over.
+			fmt.Fprintf(os.Stderr, "snug: %s: %v\n", policy.VisibleText(path),
+				policy.VisibleText(err.Error()))
 			os.Exit(exitPolicy)
 		}
 		return cfg
@@ -84,7 +88,12 @@ func loadUserConfig() userConfig {
 	dec := toml.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "snug: %s: %v\n", path, err)
+		// go-toml quotes the offending LINE of the file back at you, so this
+		// message carries config-file text verbatim. Whole-string rather than
+		// per-line here (unlike badfiles.go): a decode error from this path is
+		// one line, and there is no diagram to preserve.
+		fmt.Fprintf(os.Stderr, "snug: %s: %v\n", policy.VisibleText(path),
+			policy.VisibleText(err.Error()))
 		os.Exit(exitPolicy)
 	}
 	return cfg
@@ -106,7 +115,8 @@ func defaultProfiles() (names []policy.ProfileName, source string) {
 	}
 	out, err := policy.NewProfileNames(*c.Defaults)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "snug: %s: defaults: %v\n", configPath(), err)
+		fmt.Fprintf(os.Stderr, "snug: %s: defaults: %v\n", policy.VisibleText(configPath()),
+			policy.VisibleText(err.Error()))
 		os.Exit(exitPolicy)
 	}
 	return out, configPath()
@@ -209,7 +219,39 @@ func configCmd(args []string) int {
 	return 0
 }
 
-// showEnviron renders all five environment verbs.
+// uncheckedMark is `snug profile show`'s half of the mark --dry-run's
+// ENVIRONMENT block draws on the same (name, verb) pair, and both the decision
+// and the WORDING come from internal/policy — because two screens deciding
+// separately what "snug knows this name" means is how one of them comes to lie,
+// and two screens spelling the same decision differently is how a reader learns
+// to distrust both. The string was held here once; see policy.UncheckedEnvNote.
+//
+// It is a fact about ONE name, so it goes on that name's own line rather than
+// once per block: a heading is read as decoration by the time the eye reaches
+// the third row, and a block can mix rostered and unrostered names freely.
+func uncheckedMark(name string, verb policy.EnvVerb) string {
+	return policy.UncheckedEnvNote(name, verb)
+}
+
+// envMarks is this screen's half of the JOIN --dry-run's ENVIRONMENT block makes
+// on the same (name, verb) pair: the unchecked mark, then whatever
+// policy.EnvNote has to say about what the tool DOES with the value.
+//
+// Two marks here rather than three — grantMark has no counterpart on this
+// screen, because `snug profile show` renders a profile with no target and so
+// has no mounts to judge a value against. The two that do apply keep --dry-run's
+// order, so a reader moving between the screens reads the same row the same way.
+//
+// It is a function rather than two concatenations at each of the three call
+// sites below for the reason this file already records: a mark added at one site
+// and forgotten at the other two is how a screen comes to say less than its
+// neighbour, and `snug profile show` is precisely where that happened last time
+// (the mark used to hang off a block that was removed).
+func envMarks(name string, verb policy.EnvVerb) string {
+	return uncheckedMark(name, verb) + policy.EnvNote(name, verb)
+}
+
+// showEnviron renders the five environment verbs.
 //
 // It renders ALL of them for the same reason `snug profile show` exists at all:
 // this line used to read `show("env", p.Env)` and never rendered `path` either,
@@ -221,7 +263,7 @@ func configCmd(args []string) int {
 // for `snug profile show` reporting a verdict with no target; showing what it
 // checked is the other half.
 func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
-	pairs := func(label string, m map[string]string) {
+	pairs := func(label string, verb policy.EnvVerb, m map[string]string) {
 		names := make([]string, 0, len(m))
 		for k := range m {
 			names = append(names, k)
@@ -229,11 +271,11 @@ func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
 		sort.Strings(names)
 		vals := make([]string, 0, len(names))
 		for _, n := range names {
-			vals = append(vals, n+" = "+m[n])
+			vals = append(vals, n+" = "+m[n]+envMarks(n, verb))
 		}
 		show(label, vals)
 	}
-	lists := func(label string, m map[string][]string) {
+	lists := func(label string, verb policy.EnvVerb, m map[string][]string) {
 		names := make([]string, 0, len(m))
 		for k := range m {
 			names = append(names, k)
@@ -241,7 +283,16 @@ func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
 		sort.Strings(names)
 		vals := make([]string, 0, len(names))
 		for _, n := range names {
-			vals = append(vals, n+" = "+strings.Join(m[n], " "))
+			vals = append(vals, n+" = "+strings.Join(m[n], " ")+envMarks(n, verb))
+		}
+		show(label, vals)
+	}
+	// The two NAME SETS. Same mark, same predicate; the value is the host's, so
+	// there is nothing else on the line for it to qualify.
+	names := func(label string, verb policy.EnvVerb, in []string) {
+		vals := make([]string, 0, len(in))
+		for _, n := range in {
+			vals = append(vals, n+envMarks(n, verb))
 		}
 		show(label, vals)
 	}
@@ -249,11 +300,15 @@ func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
 	// "merge" sit directly under "ro" and "tmpfs" on this screen, where they read
 	// as two more kinds of filesystem grant; the prefix is what says these are
 	// the environment, and it is also the string somebody will grep for.
-	pairs("environ.set", g.Set)
-	lists("environ.merge", g.Merge)
-	lists("environ.prepend", g.Prepend)
-	show("environ.inherit", g.Inherit)
-	show("environ.sanitise", g.Sanitise)
+	//
+	// The mark's wording is deliberately the same "unchecked" the --dry-run mark
+	// uses: two words for one property is how a reader concludes there are two
+	// properties.
+	pairs("environ.set", policy.VerbSet, g.Set)
+	lists("environ.merge", policy.VerbMerge, g.Merge)
+	lists("environ.prepend", policy.VerbPrepend, g.Prepend)
+	names("environ.inherit", policy.VerbInherit, g.Inherit)
+	names("environ.sanitise", policy.VerbSanitise, g.Sanitise)
 }
 
 func profileCmd(args []string) int {

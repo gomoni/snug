@@ -471,11 +471,19 @@ func TestPostStagingValidateCatchesNestedGrant(t *testing.T) {
 	}
 }
 
-// refusalForbiddenEnvUnsetOnHost: §4.4. A profile naming a code-injection
-// variable is refused whether or not the launching host has that variable set.
-// Before, the check sat inside the presence guard, so the verdict on a PROFILE
-// depended on the environment of whoever ran snug — accepted here, refused
-// there, with nothing in either message explaining the difference.
+// refusalForbiddenEnvUnsetOnHost: §4.4. The verdict on a profile does not depend
+// on whether the launching host has the variable set. Before, the check sat
+// inside the presence guard, so the verdict on a PROFILE depended on the
+// environment of whoever ran snug — accepted here, refused there, with nothing
+// in either message explaining the difference.
+//
+// WHAT REFUSES IT HAS CHANGED, and the golden text moves with it. The
+// forbidden-name table is an annotation now and refuses nothing; LD_PRELOAD is
+// still refused at `inherit` because it is a LIST, and inheriting a list is an
+// operation snug will not perform for anybody. So this case keeps measuring the
+// host-independence property — the message it pins is simply the type rule's
+// rather than the forbidden table's. Read the diff in refusals.txt as exactly
+// that: the same refusal, arrived at by the mechanism that was never a denylist.
 func refusalForbiddenEnvUnsetOnHost(t testing.TB) error {
 	reg := testRegistry()
 	reg["bad"] = &Profile{Name: "bad", Environ: EnvGrants{Inherit: []string{"LD_PRELOAD"}}}
@@ -531,6 +539,10 @@ func refusalPrependOrder(t testing.TB) error {
 // profile and never mentioning the first.
 func refusalTwoSets(t testing.TB) error {
 	reg := testRegistry()
+	// The fixture keeps an APPLICATION name rather than moving to EDITOR on
+	// purpose: what is under test is the disagreement rule, and pinning it to a
+	// roster row would make this fixture change meaning the day issue #45
+	// withdraws `set` from EDITOR.
 	reg["seta"] = &Profile{Name: "seta", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "vim"}}}
 	reg["setb"] = &Profile{Name: "setb", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "emacs"}}}
 	reg["setc"] = &Profile{Name: "setc", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "vim"}}}
@@ -600,6 +612,73 @@ func refusalRelativeSet(t testing.TB) error {
 	return err
 }
 
+// refusalRelativeStartupFile: the same refusal at a name the coupling rule does
+// NOT cover, which is the whole of F3. BASH_ENV, ENV and PYTHONSTARTUP are
+// `pathNoGrant`: their value is a path, so it must be absolute, but the profile
+// is not required to grant it. Before this row `set BASH_ENV = ".snug-init.sh"`
+// resolved clean while `set CARGO_HOME = "cargo"` — the identical shape — was
+// refused.
+//
+// ONE ROW, NOT THREE. The message differs from ENV's and PYTHONSTARTUP's only in
+// the variable name, and three copies of one assertion is not three assertions —
+// the same reasoning as the single golded bind spelling above. All three names,
+// plus the two controls that must stay accepted, are exercised in
+// TestARelativeStartupFileIsRefused.
+func refusalRelativeStartupFile(t testing.TB) error {
+	reg := testRegistry()
+	reg["startup"] = &Profile{Name: "startup", Environ: EnvGrants{
+		Set: map[string]string{"BASH_ENV": ".snug-init.sh"}}}
+	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "startup"}, testCtx(), newFakeEnv())
+	return err
+}
+
+// refusalRelativePointer: the same refusal at the fifth POINTER, which had
+// neither rule because it has no roster row.
+//
+// REGRESSION (redteam host round 2, F1). Four of the five writable pointers are
+// rostered `path: true`, so `set CARGO_HOME = "cargo"` was refused above and
+// three others with it; GIT_CONFIG_SYSTEM is not rostered — deliberately, since a
+// row would open the builtin gate — so it was ACCEPTED, resolved against
+// `--chdir <target>`, and MEASURED inside a running sandbox to execute both
+// `[alias] st = "!cmd"` and `core.sshCommand` out of a file the payload writes.
+// The fix reads the fact "snug's own tables call this a pointer at a FILE" from
+// the table that already holds it (valueIsAPath -> namesAPointerFile).
+//
+// ONE ROW, NOT FIVE, for the reason the startup-file row gives: the message
+// differs only in the variable name. The sweep over every pointer, with the
+// accepted spelling as its control, is TestEveryPointerRefusesARelativeValue.
+func refusalRelativePointer(t testing.TB) error {
+	reg := testRegistry()
+	reg["ptr"] = &Profile{Name: "ptr", Environ: EnvGrants{
+		Set: map[string]string{"GIT_CONFIG_SYSTEM": "sys.gitconfig"}}}
+	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "ptr"}, testCtx(), newFakeEnv())
+	return err
+}
+
+// refusalRelativeAnnotatedPath: the same refusal at a name that is in NEITHER
+// table the two rows above read — and which snug's own annotation, printed on
+// --dry-run in front of the human, calls a directory of hooks.
+//
+// REGRESSION (redteam host round 3, F1). The pointer fix closed the pointer set.
+// GIT_TEMPLATE_DIR, GIT_EXEC_PATH, GIT_DIR and GIT_COMMON_DIR have no roster row
+// (deliberately — a row opens the builtin gate) and are not pointers, so
+// valueIsAPath was false and a relative value went through. Two of the four were
+// measured executing attacker code out of `--chdir <target>`: the hook in
+// <target>/r/tpl fired on the next commit, and `git probecmd` ran
+// <target>/gx/git-probecmd. The fix reads the shape off the annotation that was
+// already saying it.
+//
+// ONE ROW, NOT FOUR, for the reason the two rows above give: the message differs
+// only in the variable name. The sweep over every path-shaped annotation, with
+// the accepted spelling as its control, is TestEveryAnnotatedPathRefusesARelativeValue.
+func refusalRelativeAnnotatedPath(t testing.TB) error {
+	reg := testRegistry()
+	reg["tpl"] = &Profile{Name: "tpl", Environ: EnvGrants{
+		Set: map[string]string{"GIT_TEMPLATE_DIR": "tpl"}}}
+	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "tpl"}, testCtx(), newFakeEnv())
+	return err
+}
+
 // ── the review artifact ──────────────────────────────────────────────────────
 
 // TestGoldenRefusals pins the EXACT text of every refusal above. This change
@@ -655,22 +734,61 @@ func TestGoldenRefusals(t *testing.T) {
 		{"env_name_leading_digit", refusalEnv(EnvGrants{Set: map[string]string{"1PATH": "x"}})},
 		{"env_name_bad_character", refusalEnv(EnvGrants{Set: map[string]string{"MY-VAR": "x"}})},
 		{"env_name_snug_owned", refusalEnv(EnvGrants{Set: map[string]string{"SNUG_PROFILES": "@sys"}})},
+		// The VALUE half of the same rule, and the C1 spelling specifically: the
+		// byte loop this replaced could not see U+009B (CSI, the single-character
+		// form of ESC-[), so it was accepted and reached every screen raw. The
+		// golden is worth a row because the message has to NAME the character
+		// rather than print it — a refusal that renders the byte it is refusing
+		// hands the forgery the screen it was aiming for.
+		{"env_value_c1_csi", refusalEnv(EnvGrants{Set: map[string]string{"EDITOR": "vim\u009b1A\u009b1G"}})},
+		// The BIDI spelling, and it is here for the same reason the C1 one is: the
+		// fix that added C1 asserted "the property rather than a copy of a
+		// character list", and the property it asserted was unicode.IsControl —
+		// which is the control-character set, while U+202E is category Cf. It was
+		// accepted at 8d17f85 and rendered raw in the ENVIRONMENT block, on the
+		// --setenv argv line, and in `profile show`. The message must name a
+		// DIFFERENT damage than the control characters do: an override adds no row
+		// and erases none, it reverses the order the rest of the line reads in.
+		{"env_value_bidi_override", refusalEnv(EnvGrants{Set: map[string]string{"EDITOR": "/usr/bin/vim\u202eDEGROF"}})},
 		{"env_name_snug_owned_ps1", refusalEnv(EnvGrants{Inherit: []string{"PS1"}})},
-		{"env_name_forbidden_both", refusalEnv(EnvGrants{Set: map[string]string{"GIT_SSH_COMMAND": "x"}})},
-		{"env_name_forbidden_prefix_both", refusalEnv(EnvGrants{Set: map[string]string{"BASH_FUNC_build": "x"}})},
-		{"env_name_forbidden_prefix_git_config", refusalEnv(EnvGrants{Set: map[string]string{"GIT_CONFIG_COUNT": "1"}})},
-		{"env_name_forbidden_prefix_inherit_only", refusalEnv(EnvGrants{Inherit: []string{"PIP_INDEX_URL"}})},
-		{"env_name_forbidden_inherit_only", refusalEnv(EnvGrants{Inherit: []string{"BASH_ENV"}})},
+		// FIVE ENTRIES USED TO SIT HERE and they are gone rather than moved:
+		// GIT_SSH_COMMAND and BASH_FUNC_* and GIT_CONFIG_COUNT at `set`,
+		// PIP_INDEX_URL and BASH_ENV at `inherit`. Every one of them is now
+		// ACCEPTED and ANNOTATED — snug has only allowlists, and a profile's
+		// author is a human on the trusted side of the boundary. Their
+		// replacement is not a refusal at all, which is why it could not stay in
+		// this file: it is testdata/annotations.txt, the golden of every sentence
+		// those names now render, and TestAnnotationSplitsBySetAndInherit, which
+		// asserts the acceptance and the sentence together. Deleting a row here
+		// without adding one there would have lost the assertion; that is the
+		// only reason this comment is longer than the rows it replaces.
 
 		// verb/type agreement (§2.1)
 		{"env_set_on_a_list", refusalEnv(EnvGrants{Set: map[string]string{"PATH": "/opt/bin"}})},
 		{"env_merge_on_a_scalar", refusalEnv(EnvGrants{Merge: map[string][]string{"EDITOR": {"vim"}}})},
 		{"env_merge_on_an_uncomposable_list", refusalEnv(EnvGrants{Merge: map[string][]string{"CDPATH": {"/opt"}}})},
 		{"env_inherit_on_a_list", refusalEnv(EnvGrants{Inherit: []string{"PKG_CONFIG_PATH"}})},
-		{"env_inherit_on_a_generated_config_path", refusalEnv(EnvGrants{Inherit: []string{"XDG_CONFIG_HOME"}})},
+		// `env_inherit_on_a_generated_config_path` (inherit XDG_CONFIG_HOME) was
+		// here and is gone for the same reason: it was the roster's `noInherit`
+		// bit, a permission verdict living inside a table of type facts. It is an
+		// annotation now — see annotations.txt, and the pointer loop in
+		// TestAnnotationSplitsBySetAndInherit, which asserts BOTH halves of what
+		// the bit used to mean: annotated at `inherit`, and silent at `set`,
+		// because authoring a pointer is the mechanism snug recommends.
 		{"env_sanitise_on_a_scalar", refusalEnv(EnvGrants{Sanitise: []string{"EDITOR"}})},
 		{"env_sanitise_on_manpath", refusalEnv(EnvGrants{Sanitise: []string{"MANPATH"}})},
 		{"env_sanitise_on_an_unfilterable_list", refusalEnv(EnvGrants{Sanitise: []string{"PYTHONPATH"}})},
+
+		// the roster, and the one verb family it is required to answer (issue #44)
+		//
+		// A name with no roster row is CARRIED at `set` and `inherit` — a profile
+		// with a name, a file and an author writing `set FOO = "x"` is already
+		// that author naming the hole, and every row it produces is marked
+		// `← unchecked` on both screens. What no profile can do is reach a LIST
+		// verb with it: a list verb needs the separator and the meaning of an
+		// empty element, and those are facts only a roster row carries. This row
+		// is the review artifact for that refusal.
+		{"env_unrostered_merge", refusalEnv(EnvGrants{Merge: map[string][]string{"MY_TOOL_PATH": {"/opt/x"}}})},
 
 		// hand-written separators (CALL 1 / §2.7 case 3)
 		{"env_separator_in_a_merge_string", refusalEnv(EnvGrants{Merge: map[string][]string{"PATH": {"/usr/bin:/usr/sbin"}}})},
@@ -683,6 +801,9 @@ func TestGoldenRefusals(t *testing.T) {
 		{"env_uncoupled_merge", refusalUncoupledMerge},
 		{"env_uncoupled_despite_another_profile_granting_it", refusalUncoupledDespiteAnotherProfile},
 		{"env_relative_set", refusalRelativeSet},
+		{"env_relative_set_bash_env", refusalRelativeStartupFile},
+		{"env_relative_set_pointer", refusalRelativePointer},
+		{"env_relative_set_annotated_path", refusalRelativeAnnotatedPath},
 
 		{"env_two_prepends", refusalTwoPrepends},
 		{"env_prepend_order_disagreement", refusalPrependOrder},
@@ -721,5 +842,102 @@ func TestGoldenRefusals(t *testing.T) {
 	}
 	if got != string(want) {
 		t.Errorf("refusal text changed — this is a change to the security boundary.\n--- got\n%s\n--- want\n%s", got, want)
+	}
+}
+
+// A REFUSAL IS A SCREEN, and this is the sink the two rounds of the
+// control-character finding never reached.
+//
+// Both rounds swept what --dry-run, `snug profile show` and `snug profile list`
+// RENDER. Neither read what snug prints when it REFUSES — and a refusal is the
+// screen a human reads most carefully, because it is the one that stopped them.
+// Measured on this branch, with a host directory whose name carries U+202E:
+//
+//	FILESYSTEM block   ro /opt/x (from /tmp/host<RLO>OLR)     <- escaped
+//	--ro-bind line     /tmp/host<RLO>OLR /opt/x               <- escaped
+//	the masking refusal on the same run:
+//	  profile hostbidi puts a bind of /tmp/host<RLO>OLR at /opt/x...   <- RAW
+//
+// The host side cannot be refused for its characters — a file on this machine
+// may legally be named that way, and Validate refuses only the GUEST side — so
+// rendering is the only guard there is for it, which makes "every sink" include
+// the error path.
+//
+// It is written over the ERROR TEXT rather than over the call sites, for the
+// same reason TestNoSnugScreenEmitsARawControlCharacter drives the whole screen:
+// a per-site test passes on the site it was written for and says nothing about
+// the next one.
+func TestARefusalNeverRendersARawForgingRune(t *testing.T) {
+	// TWO ASSERTIONS PER MESSAGE, and the second is not redundant. The rune sweep
+	// has to exempt '\n', because a refusal is legitimately several lines — which
+	// means it structurally CANNOT see the newline probe, the very spelling the
+	// original forged-row finding was about. So each message is also checked for
+	// the probe string VERBATIM: if the host path went through VisibleText it is
+	// there in its escaped form and this substring is absent.
+	check := func(t *testing.T, what, message, host string) {
+		t.Helper()
+		if i := strings.IndexFunc(message, func(r rune) bool { return r != '\n' && IsForgingRune(r) }); i >= 0 {
+			t.Errorf("%s rendered a forging rune verbatim: %q", what, message)
+		}
+		if strings.Contains(message, host) {
+			t.Errorf("%s rendered the host path verbatim rather than escaped: %q", what, message)
+		}
+	}
+	// Three spellings, in the one piece of text a profile cannot be refused for: a
+	// HOST path. One forges a row, one reverses one, one is the C1 encoding of the
+	// first.
+	//
+	// THE DIRECTORY HAS TO EXIST IN THE FIXTURE, and the first draft of this test
+	// did not make it exist: Resolve refused earlier, with "grants %q which does
+	// not exist" — a message that escapes through %q — so every assertion below
+	// passed against a build with the fix REVERTED. Checked by reverting it. That
+	// is the "a test that cannot fail" shape, met while writing the test for a
+	// finding about tests that could not fail.
+	for _, probe := range []struct{ why, host string }{
+		{"a newline, which forges a row", "/srv/a\n  ro     /etc/shadow    @sys"},
+		{"a directional override, which reverses one", "/srv/a\u202eOLR-DEGROF"},
+		{"a C1 CSI", "/srv/a\u009b1A"},
+	} {
+		// The masking refusal: six messages are built from describeNode, and this
+		// is the one measured rendering raw.
+		env := newFakeEnv()
+		env.dirs[probe.host] = true
+		reg := testRegistry()
+		reg["mask"] = &Profile{Name: "mask", RO: []string{probe.host + ":/opt/x"}}
+		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "mask"}, testCtx(), env)
+		if err == nil || !strings.Contains(err.Error(), "which is inside /opt") {
+			t.Fatalf("fixture: the MASKING refusal did not fire for %s, so this case measures "+
+				"nothing: %v", probe.why, err)
+		}
+		check(t, "the masking refusal ("+probe.why+")", err.Error(), probe.host)
+
+		// And the join conflict, which renders TWO host paths from two profiles.
+		env2 := newFakeEnv()
+		env2.dirs[probe.host] = true
+		reg2 := testRegistry()
+		reg2["a"] = &Profile{Name: "a", RO: []string{"/srv/bin:/srv/x"}}
+		reg2["b"] = &Profile{Name: "b", RO: []string{probe.host + ":/srv/x"}}
+		_, err = Resolve(reg2, []ProfileName{"@sys", "@cwd-rw", "a", "b"}, testCtx(), env2)
+		if err == nil || !strings.Contains(err.Error(), "two host sources") {
+			t.Fatalf("fixture: the JOIN CONFLICT did not fire for %s: %v", probe.why, err)
+		}
+		check(t, "the join-conflict refusal ("+probe.why+")", err.Error(), probe.host)
+	}
+
+	// THE POSITIVE CONTROL. An ordinary host path renders unchanged, spaces and
+	// accents and all — otherwise a renderer that %q'd every message would pass
+	// every assertion above while making each refusal harder to read than the
+	// problem it describes.
+	env := newFakeEnv()
+	env.dirs["/srv/a b/caf\u00e9"] = true
+	reg := testRegistry()
+	reg["plain"] = &Profile{Name: "plain", RO: []string{"/srv/a b/caf\u00e9:/opt/x"}}
+	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "plain"}, testCtx(), env)
+	if err == nil {
+		t.Fatal("fixture: the control did not reach a refusal")
+	}
+	if !strings.Contains(err.Error(), "/srv/a b/caf\u00e9") {
+		t.Errorf("an ordinary host path was escaped in the refusal, which makes every message "+
+			"harder to read than the problem it names: %v", err)
 	}
 }

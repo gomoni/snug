@@ -172,6 +172,30 @@ func gitQuote(v string) string {
 // withoutControlCharacters drops any value that could author a directive rather
 // than be one. A name, an email address and a branch name have no use for a
 // control character, so there is nothing to weigh: the value goes.
+//
+// THE ASCII SCOPE IS DELIBERATE AND IS NOT THE SCREEN'S SCOPE. This filter and
+// IsForgingRune answer two different questions, and a reader arriving from the
+// widened screen guard will want to widen this one out of symmetry. Do not.
+//
+//   - THIS one asks: can the rune author a DIRECTIVE in the file snug writes?
+//     git's config parser terminates a value at a NEWLINE and starts a section
+//     at a `[` in column one; nothing else in the grammar is a terminator.
+//     U+0085, U+2028 and U+202E are ordinary bytes to it — measured shape, and
+//     the same reason `gitQuote` handles `"`, `#`, `;` and `\` rather than this
+//     function. So C0 and DEL already cover every rune that can end a line, and
+//     the extra ones a wider predicate would add close nothing here.
+//   - THE SCREEN asks: can the rune make a rendered line read as something snug
+//     did not write? That is IsForgingRune, and it IS wider — but its remedy is
+//     to ESCAPE at the sink (policy.VisibleText, cmd/snug/gitconfig.go's
+//     gitValuesLine), not to drop the value.
+//
+// The difference matters because THIS function's remedy is a DROP, and a drop is
+// a downgrade: a user.name legitimately carrying a directional isolate — a
+// mixed-direction personal name is the normal case for one, not an attack — would
+// leave the sandbox with no git identity and `git commit` failing, which is the
+// same shape as the whitelist's deliberate omission of commit.gpgsign. Widening
+// a filter whose remedy is "the value goes" costs a working sandbox; widening a
+// guard whose remedy is "the value is escaped" costs nothing.
 func withoutControlCharacters(v GitValues) GitValues {
 	out := make(GitValues, len(v))
 	for k, val := range v {

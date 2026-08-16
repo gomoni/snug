@@ -1171,6 +1171,9 @@ func TestConflictingScalarSetsAreRefused(t *testing.T) {
 	// POSITIVE CONTROL: the same value from two profiles is fine.
 	// Independently-authored duplication is plausible and harmless.
 	reg := testRegistry()
+	// MY_MODE is on no roster, so both rows also carry the `← unchecked` mark on
+	// every screen — which is orthogonal to what is under test here and must not
+	// change the verdict.
 	reg["a"] = &Profile{Name: "a", Environ: EnvGrants{Set: map[string]string{"MY_MODE": "fast"}}}
 	reg["b"] = &Profile{Name: "b", Environ: EnvGrants{Set: map[string]string{"MY_MODE": "fast"}}}
 	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "a", "b"}, testCtx(), newFakeEnv()); err != nil {

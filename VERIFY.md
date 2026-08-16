@@ -6,6 +6,13 @@ on someone's word. This is the checklist for not doing that.
 Every command below was run on the development host and produced the output
 shown. If yours differs, that is a finding — see [If a check fails](#if-a-check-fails).
 
+What it checks is that **the sandbox holds**, which is not the same question as
+whether your profiles are safe. snug does not second-guess a profile: `rw
+["{home}"]` and `environ.set EDITOR = "/tmp/evil"` are holes you opened, they are
+on screen in `--dry-run`, and no check below will fail on them. See
+[`.claude/design/INDEX.md`](.claude/design/INDEX.md) §1.4 and the README's *What
+snug does not defends against*.
+
 Setup used throughout:
 
 ```bash
@@ -192,12 +199,19 @@ enumerates `/etc` instead of binding it wholesale — see INDEX §5.3.
 ./bin/snug --dry-run $SC/proj/sub -- true | sed -n '/^ENVIRONMENT/,/^$/p'
 ```
 
-Expect one line per variable, each carrying a **verb** and a **profile**:
+Expect one **row** per variable, each carrying a **verb** and a **profile**:
 `(snug)` for the ones snug authors, `set`/`merge`/`prepend`/`inherit`/`sanitise`
-plus the profile name for the ones a profile asked for. `PATH` is several lines,
+plus the profile name for the ones a profile asked for. `PATH` is several rows,
 one per band, reading top to bottom in resolution order — a profile's entries,
 then snug's stub directory if there is one, then the base. That ordering **is**
 the model's; if the screen and the resolver ever disagree, the screen is lying.
+
+A row is one line **plus** an indented line for each mark snug has to add to it
+(§6e, §6j2). On this default selection there are none, and that is worth
+noticing rather than skipping: nothing snug ships hands over a value it has a
+measurement about. The four `XDG_*` rows are the deliberate exception — see
+issue #84, and the comment on `cmd/snug/testdata/env.defaults.txt`, which is the
+artifact that decision is reviewed against.
 
 Where a `sanitise` dropped host elements, the line below names them — named, not
 counted. "2 of 3 kept" is not something anybody can check. Drops are grouped by
@@ -240,9 +254,28 @@ useless. §6f is that third reason at length.
   | sed -n '/^ENVIRONMENT/,/^$/p'
 ```
 
-Expect `HOME`, `SHELL` and the four `PATH` entries to carry `← not granted`.
+Expect `HOME`, `SHELL` and the four `PATH` entries to carry `← not granted`,
+each on its **own indented line under the row**:
+
+```
+  HOME             /home/u                         (snug)
+                     ← not granted
+  PATH             /usr/bin /bin /usr/sbin /sbin   (snug)    base
+                     ← not granted
+  SHELL            /usr/bin/bash                   (snug)
+                     ← not granted
+```
+
 This selection is refused (nothing can run in it), and `--dry-run` renders it
 anyway — which is the only way to see the mark.
+
+A row can carry three marks at once, and while they were concatenated onto the
+row the widest real ones measured 264, 272 and 277 columns — three or four
+unindented wrapped fragments inside an aligned table, with the verdict about
+*this* value at the end of the third. The indent is 21 rather than 19 for a
+reason worth knowing: 19 is where a continuation band and a drop line start, and
+a value may contain a `←`, so the two are told apart by column and not by the
+arrow. §6j2 exercises the three-mark case.
 
 snug authors `HOME`, `PATH` and `SHELL` in *every* sandbox and must keep doing
 so: unset `PATH` and bash substitutes a compiled-in default ending in `.`, which
@@ -278,13 +311,18 @@ rm -rf $X
 Expect:
 
 ```
-  PATH             /tmp/tmp.XXXXXXXX/tools         merge     both  ← writable from inside
+  PATH             /tmp/tmp.XXXXXXXX/tools         merge     both
+                     ← writable from inside
                    /usr/bin /bin                   sanitise  both
                    /usr/sbin /sbin                 (snug)    base
                    (1 host entry dropped — only an empty writable tmpfs is mounted there: /tmp/attacker/bin)
 ```
 
-Read those four lines together, because they are the point. Both marked paths
+Note the two indents, because this row is where they are easiest to confuse: the
+mark sits at 21 and belongs to the band above it; the second and third bands, and
+the drop line, sit at 19 and are `PATH`'s own further entries.
+
+Read those five lines together, because they are the point. Both marked paths
 are directories the payload can write to and that precede `/usr/bin`. One is
 dropped by the filter and one is kept — correctly, because `sanitise` judges
 only the *host's* value for an imported variable and never a profile's own
@@ -428,7 +466,18 @@ which invariant 1 calls structurally impossible.
 
 Then the control, which is what makes the above mean anything — the identical
 profile with `EDITOR = "vim"` must run, put `EDITOR=vim` in the sandbox, and
-still not have `~/.ssh`.
+still not have `~/.ssh`. Its `--dry-run` row now reads
+
+```
+  EDITOR           vim                             set       nully
+                     ← the value is a command; git runs it for a commit message
+                       via GIT_EDITOR -> core.editor -> VISUAL -> EDITOR
+                       (measured)
+```
+
+and that mark is not a refusal — see §6j. The refusal above is about the NUL,
+which breaks a MECHANISM (it authors a bwrap flag); the mark here is about what
+git does with a perfectly well-formed value.
 
 ### 6i. A profile cannot mount over the staging directory
 
@@ -490,7 +539,11 @@ XDG_CONFIG_HOME=$SC/five ./bin/snug --dry-run -p mytools $SC/proj/sub \
 
 ```
   COLORTERM        truecolor                       inherit   mytools
+                     ← unchecked: snug has no type for this name
   EDITOR           /usr/bin/vim                    set       mytools
+                     ← the value is a command; git runs it for a commit message
+                       via GIT_EDITOR -> core.editor -> VISUAL -> EDITOR
+                       (measured)
   PATH             /tmp/tmp.XXXXXXXXXX/tools/override prepend   mytools
                    /tmp/tmp.XXXXXXXXXX/tools/bin   merge     mytools
                    /usr/bin /bin /usr/sbin /sbin   (snug)    base
@@ -498,8 +551,38 @@ XDG_CONFIG_HOME=$SC/five ./bin/snug --dry-run -p mytools $SC/proj/sub \
                    (1 host entry dropped — only an empty writable tmpfs is mounted there: /tmp/nope/pc)
 ```
 
-Every line names its verb **and** its profile — no anonymous values — and
+Every row names its verb **and** its profile — no anonymous values — and
 `prepend` sits ahead of `merge`, both ahead of `base`.
+
+**Two different marks, and they are two different statements.** `COLORTERM`
+carries `← unchecked` and `EDITOR` does not: snug's roster
+(`internal/policy/envtypes.go`) has a TYPE for `EDITOR`, `PATH` and
+`PKG_CONFIG_PATH` and none for `COLORTERM`, so the screen says which values snug
+knows what to do with and which it merely carried. `EDITOR` carries the OTHER
+mark, the annotation, which says what a tool will DO with the value — here, that
+git will run it. Neither mark is a refusal, and a row can carry three at once:
+that is §6j2.
+
+`snug profile show mytools` renders the same two marks on the same names, from
+the same functions (`policy.IsUncheckedEnv`, `policy.EnvNote`) — the screens must
+not disagree, so neither computes anything of its own.
+
+Two things this does NOT mean. **A user profile is not refused anything here.**
+`set FOO = "x"` in a file with an author and a path is already that author naming
+the hole, and so is `set GIT_SSH = "/tmp/x"`: snug shares nothing by default and
+a profile is how a human opens a named hole in their own sandbox — there is no
+denylist anywhere in the model. What snug owes is that the screen says what the
+hole is. And **a profile snug SHIPS is still refused** a name with no roster row:
+try adding `COLORTERM = true` to a builtin's `environ.inherit` in
+`internal/profile/profiles/base.toml` and every snug command fails at
+`Builtins()`, naming the profile and the variable, because a roster row is where
+the sentence saying what the variable lets a tool DO gets reviewed and there is
+no human standing behind a profile compiled into the binary.
+
+`environ.declare` was a per-profile escape hatch that existed for one milestone
+and was removed before it shipped; a profile still carrying one is refused at
+parse time with an unknown-key error, which is `DisallowUnknownFields` working
+as designed.
 
 The screen agreeing with itself proves nothing. Put two different binaries of
 the same name in the two directories and see which one the sandbox runs:
@@ -515,6 +598,75 @@ COLORTERM=truecolor XDG_CONFIG_HOME=$SC/five ./bin/snug -p mytools $SC/proj/sub 
 Expect `FAKE-TOOL-FROM-OVERRIDE`. `prepend` won, and the name resolved against
 the sandbox's `PATH` rather than the host's — the property `snug . -- podman`
 depends on.
+
+### 6j2. A pointer says what the file it names IS, and a row can carry three marks
+
+The profile below is the one a red team wrote against snug's own advice: it
+aims four "generate, don't bind" pointers at paths *inside the target*, which
+`rw = ["{target}"]` duly grants — and the target is the one writable thing a
+hostile payload controls.
+
+```bash
+mkdir -p $SC/three/snug/profiles.d
+cat > $SC/three/snug/profiles.d/toolchain.toml <<EOF
+[profile.toolchain]
+description = "a toolchain profile"
+rw = ["$SC/proj/sub"]
+
+[profile.toolchain.environ.set]
+GIT_SSH           = "/var/lib/toolchain/ssh"
+CARGO_HOME        = "$SC/proj/sub/.toolchain/cargo"
+DOCKER_CONFIG     = "$SC/proj/sub/.toolchain/docker"
+GIT_CONFIG_SYSTEM = "$SC/proj/sub/.toolchain/gitsystem"
+EOF
+
+XDG_CONFIG_HOME=$SC/three ./bin/snug --dry-run -p toolchain $SC/proj/sub \
+  | sed -n '/^ENVIRONMENT/,/^  HOME/p'
+```
+
+Expect (paths abbreviated):
+
+```
+  CARGO_HOME       …/proj/sub/.toolchain/cargo     set       toolchain
+                     ← the config.toml under this path names a program cargo
+                       runs — build.rustc-wrapper ran in place of rustc, as the
+                       sandbox's own uid (measured, cargo 1.97.1)
+  DOCKER_CONFIG    …/proj/sub/.toolchain/docker    set       toolchain
+                     ← credsStore in this directory's config.json is a program
+                       docker executes, and it runs before docker reaches a
+                       daemon (measured, docker 29.4)
+  GIT_CONFIG_SYSTEM …/proj/sub/.toolchain/gitsystem set      toolchain
+                     ← unchecked: snug has no type for this name
+                     ← git reads a command table from this file:
+                       core.sshCommand, credential.helper and alias.x = !cmd all
+                       name programs it runs (measured, git 2.55.0)
+  GIT_SSH          /var/lib/toolchain/ssh          set       toolchain
+                     ← unchecked: snug has no type for this name
+                     ← git runs this as the transport for every fetch and push —
+                       the older spelling of GIT_SSH_COMMAND, measured to hijack
+                       a real `git fetch`
+                     ← not granted
+```
+
+Nothing here is refused, and nothing should be: a human's profile may aim a
+pointer wherever they like. **Three of those rows said NOTHING AT ALL for a
+milestone**, because a pointer was exempt from its family's annotation and the
+exemption was read as "no sentence" rather than "not the family's sentence". Each
+was one config file from exec as the sandbox's own uid, measured on this host:
+`build.rustc-wrapper` under `CARGO_HOME` ran in place of rustc; `credsStore`
+under `DOCKER_CONFIG` ran `docker-credential-<name>` on a plain `docker pull`,
+before the daemon socket; `alias.x = !cmd` and `core.sshCommand` in the file
+`GIT_CONFIG_SYSTEM` names both ran.
+
+The last row is the three-mark case: `unchecked` (about the NAME — no roster
+row), the annotation (what git DOES with the value), then `not granted` (about
+this VALUE as a path — nothing inside covers `/var/lib/toolchain`). Read top to
+bottom, widest claim first. Concatenated onto one row, as they used to be, that
+line was 264 columns.
+
+`snug profile show toolchain` renders the same sentences, inline, in its own
+prose block — same words, different geometry, and only one of those two is a
+property worth keeping.
 
 ### 6k. A host variable set to empty arrives set
 
@@ -564,37 +716,87 @@ PATH = ["/opt/nowhere/bin"]
 '
 ```
 
-The first two are file-load failures, so each is reported under
+**Only the first is a file-load failure now.** It is reported under
 `snug: 1 profile file(s) in the search path did not load:` with the file named
 and then the reason:
 
 ```
 profile "c": environ.set on PATH, which is a list — use environ.merge, or
   environ.prepend if the order matters. …
-profile "d": environ.set names GIT_SSH, which snug refuses for this verb: the
-  value is code, executed by every process the sandbox launches. Remove the line
 ```
+
+**The second one LOADS, and that is the point.** `GIT_SSH` names the program git
+runs as its transport, and a profile setting it is a human opening that hole in
+their own sandbox — snug has no denylist to refuse it with. What it gets is both
+marks, on both screens:
+
+```bash
+XDG_CONFIG_HOME=$D ./bin/snug --dry-run -p d $SC/proj/sub | grep GIT_SSH
+XDG_CONFIG_HOME=$D ./bin/snug profile show d
+```
+
+```
+  GIT_SSH          /tmp/x                          set       d
+                     ← unchecked: snug has no type for this name
+                     ← git runs this as the transport for every fetch and push —
+                       the older spelling of GIT_SSH_COMMAND, measured to hijack
+                       a real `git fetch`
+```
+
+Read the two marks apart: `unchecked` is about the NAME (snug has no type for
+it), and the sentence after it is about what the tool DOES with the value. Both
+are true, and they answer different questions. `internal/policy/testdata/
+annotations.txt` is the full table of the second kind.
 
 The third parses fine and fails at resolution, so it is snug's own error with no
 file preamble: `profile "e" merges PATH=/opt/nowhere/bin, which it does not
 grant.` That is the grant-coupling rule, and the mistake most people make first.
 
-Worth trying by hand, because these are the boundaries most likely to be wrong:
+Worth trying by hand, because these are the boundaries most likely to be wrong —
+and note how few of them are refusals of a NAME:
 
-- `TERM`, `HOME`, `SNUG_PROFILES` under `environ.set` — refused, snug owns them;
+- `TERM`, `HOME`, `SNUG_PROFILES` under `environ.set` — **refused**, snug owns
+  them. This is the one refusal of a name that survives, and it is about snug's
+  own authorship rather than about the author of the profile;
+- `LD_PRELOAD`, `LD_LIBRARY_PATH`, `CDPATH`, `GOFLAGS` at any verb — **refused**,
+  but for a completely different reason: they are LISTS whose elements do not
+  compose, so snug refuses the OPERATION, not the name. `environ.sanitise
+  MANPATH` is the sharpest example — removing an element there ADDS directories;
 - `GIT_SSH_COMMAND`, `GIT_ASKPASS`, `GIT_PAGER`, `GIT_DIR`, `GIT_TEMPLATE_DIR`,
-  `LD_PRELOAD`, `JAVA_TOOL_OPTIONS`, `RUBYOPT` — refused for the same reason;
-- `BASH_ENV` under `set` — **allowed** (a reviewable value in a trusted layer);
-  under `inherit` — refused. That split is deliberate, and is the one to decide
-  whether you agree with;
+  `JAVA_TOOL_OPTIONS`, `RUBYOPT`, `RUSTC_WRAPPER`, `MAKEFLAGS`, `BASH_FUNC_x`,
+  `GIT_CONFIG_KEY_0` — **allowed and annotated**, at `set` and at `inherit`. Read
+  the sentence each produces; that is the whole of what snug does about them;
+- `BASH_ENV` under `set` and under `inherit` — allowed at both, with a
+  **different** sentence at each, because the difference between them is where
+  the value comes from. That split is deliberate and is the one to decide whether
+  you agree with;
+- `BASH_ENV = "init.sh"` — **refused**, and it is a TYPE refusal rather than a
+  fourth kind. Inside snug the working directory is `--chdir <target>`, the one
+  writable thing the payload controls, so a relative value does not name a file
+  at all: it names whichever file of that name the payload was last standing
+  next to. `BASH_ENV = "{target}/init.sh"` is accepted and says exactly what the
+  author meant — **a refusal with an accepted spelling of the same intent is not
+  a denial**, which is the test to apply to every refusal on this list. `ENV` and
+  `PYTHONSTARTUP` behave identically; `PYTHONBREAKPOINT = "mod:fn"` and
+  `LESSOPEN = "|cmd %s"` stay accepted, because measured, their values are not
+  paths at all;
 - a lowercase name, a name with a hyphen, a name starting with a digit —
-  refused by the grammar.
+  refused by the grammar. A name or value with a control character in it —
+  refused too (§6h): those break a mechanism, which is a different thing again.
 
-What that list does **not** close is git's exec class as a whole: `PAGER`,
-`EDITOR` and `VISUAL` stay legal by ENVIRONMENT-VARIABLES §3.2 and git falls
-back to them, so `PAGER='sh -c …' git log` runs the command.
-https://github.com/gomoni/snug/issues/35 carries it, and a test pins it so withdrawing those three has to be a deliberate §3.2
-decision rather than a table edit.
+The three kinds are worth keeping apart when you read a refusal: **ownership**
+(snug writes this itself), **type** (snug cannot perform this verb on this
+variable correctly), and **transport** (the name or value would corrupt the
+environment or forge a line on a screen). There is no fourth kind, and there is
+no rule anywhere that says a human may not have something.
+
+Note what that costs, stated so you can disagree with it: `PAGER='sh -c …' git
+log` runs the command, and so does the `GIT_PAGER` spelling, and nothing stops a
+profile writing either. https://github.com/gomoni/snug/issues/35 and
+https://github.com/gomoni/snug/issues/45 are both about this, and both are
+answered by the annotation rather than by a withdrawal — because withdrawing
+`EDITOR`/`VISUAL`/`PAGER` means taking them off `@claude`, which is a grant a
+human asked for.
 
 ### 6b. …including via PID 1 (regression check)
 

@@ -119,6 +119,10 @@ func TestCouplingDoesNotApplyToInheritOrSanitise(t *testing.T) {
 // the filesystem and there is nothing to couple it to.
 func TestCouplingIgnoresANonPathScalar(t *testing.T) {
 	reg := testRegistry()
+	// MY_EDITOR is on no roster, which is the second half of what this test
+	// covers: an unrostered name has no `path` fact either, so the coupling rule
+	// leaves it alone for the same reason it leaves EDITOR=vim alone
+	// (envcoupling.go's isPathValued).
 	reg["ed"] = &Profile{Name: "ed", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "vim"}}}
 	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "ed"}, testCtx(), newFakeEnv()); err != nil {
 		t.Fatalf("a non-path scalar was subjected to the coupling rule: %v", err)
@@ -135,6 +139,314 @@ func TestCouplingRefusalNamesTheProfileAndTheValue(t *testing.T) {
 	for _, want := range []string{"broken", "XDG_DATA_HOME", "/home/u/.local/share", "ro/rw/tmpfs"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+}
+
+// ── F3: a relative startup file is refused, and why that is a TYPE refusal ───
+//
+// REGRESSION (redteam, issue #44 follow-up). checkCoupled refuses a relative
+// value and names the hazard precisely — "a relative one is resolved against
+// whatever directory the payload happens to be in, which is not something a
+// profile can know" — and it was reached ONLY through isPathValued, which is
+// false for BASH_ENV, ENV and PYTHONSTARTUP. That flag was set false
+// deliberately, to keep the grant-COUPLING clause unenforced, and it switched
+// off the absolute-path rule at the same time without anyone noticing. Measured
+// on the base commit: `set BASH_ENV = ".snug-init.sh"` resolved clean while
+// `set CARGO_HOME = "cargo"` was refused with a message naming exactly the
+// hazard the first one has. Inside snug the cwd is `--chdir <target>`, the one
+// writable thing the payload controls; measured on the host, with the control:
+//
+//	cd cwd1; BASH_ENV=.snug-init.sh bash -c 'echo body'  -> sourced from cwd1
+//	cd cwd2; BASH_ENV=.snug-init.sh bash -c 'echo body'  -> nothing
+//
+// The argument for this being a TYPE refusal rather than a permission one is at
+// valueIsAPath, where the next reader meets it. The short form: a relative value
+// is not something a profile can MEAN, and the same intent has an accepted
+// spelling — which is the test this codebase applies to any refusal.
+func TestARelativeStartupFileIsRefused(t *testing.T) {
+	resolve := func(g EnvGrants) error {
+		reg := testRegistry()
+		reg["startup"] = &Profile{Name: "startup", Environ: g}
+		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "startup"}, testCtx(), newFakeEnv())
+		return err
+	}
+
+	for _, name := range []string{"BASH_ENV", "ENV", "PYTHONSTARTUP"} {
+		err := resolve(EnvGrants{Set: map[string]string{name: ".snug-init.sh"}})
+		if err == nil {
+			t.Errorf("environ.set %s = \".snug-init.sh\" was accepted. The file it names is "+
+				"whichever one happens to be in the directory the payload was last in — inside "+
+				"snug, the target — so there is no value snug can hand over that means what the "+
+				"profile said. Thirteen other path-valued names already refuse this", name)
+			continue
+		}
+		for _, want := range []string{name, "absolute path"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal for %s does not name %q: %v", name, want, err)
+			}
+		}
+		// THE ACCEPTED SPELLING, which is what makes the refusal a type verdict
+		// rather than a denial: the author's intent is expressible.
+		if err := resolve(EnvGrants{Set: map[string]string{name: "{target}/init"}}); err != nil {
+			t.Errorf("environ.set %s = \"{target}/init\" was refused: %v. A refusal with no "+
+				"accepted spelling of the same intent IS a denial, and snug does not have "+
+				"those over a human's own profile", name, err)
+		}
+	}
+
+	// THE CONTROLS THAT STOP THE FIX OVER-REACHING, and they are measured rather
+	// than assumed. These two sat in the same bucket and are NOT paths:
+	//
+	//   PYTHONBREAKPOINT=bpmod.hook   python3 -c 'breakpoint()' -> the callable ran
+	//   PYTHONBREAKPOINT=/tmp/x.py    python3 -c 'breakpoint()'
+	//        -> RuntimeWarning: Ignoring unimportable $PYTHONBREAKPOINT
+	//   LESSOPEN="|$D/lo.sh %s" less -F f.txt                   -> lo.sh ran
+	//
+	// python REFUSES a path where PYTHONBREAKPOINT wants a module:callable, and
+	// LESSOPEN's value is a command line whose leading '|' selects the pipe form.
+	// A path rule for either would refuse the only correct spelling — which is
+	// the real reason all five carried `path: false`, and it applies to two of
+	// the five rather than to all of them.
+	for name, value := range map[string]string{
+		"PYTHONBREAKPOINT": "mod:fn",
+		"LESSOPEN":         "|/usr/bin/lesspipe %s",
+	} {
+		if err := resolve(EnvGrants{Set: map[string]string{name: value}}); err != nil {
+			t.Errorf("environ.set %s = %q was refused: %v. Its value is not a path, measured, and "+
+				"the absolute-path rule must not have been widened to every name that used to "+
+				"share a bucket with the startup files", name, value, err)
+		}
+	}
+}
+
+// ── F1 (redteam host round 2): every POINTER refuses a relative value ────────
+//
+// The rule the branch above added exists to stop snug handing over a value whose
+// meaning is decided by the payload's cwd — and it missed one of the five names
+// snug's OWN tables call a pointer at a config FILE. Four are rostered
+// `path: true`, so both the absolute rule and the coupling rule fired for them;
+// GIT_CONFIG_SYSTEM has no roster row, so NEITHER did. Measured INSIDE a running
+// sandbox, at 210c6bf:
+//
+//	[profile.gitsys.environ.set] GIT_CONFIG_SYSTEM = "sys.gitconfig"   -> ACCEPTED
+//	  --dry-run said nothing about the value either: grantMark returns "" for a
+//	  value that does not start with '/'
+//	snug … -p @cwd-rw -p gitsys <tgt> -- sh -c 'git st; git ls-remote git@github…'
+//	  CWD=<tgt>
+//	  RELATIVE-GIT-CONFIG-SYSTEM-ALIAS-RAN uid=1000
+//	  RELATIVE-GIT-CONFIG-SYSTEM-SSHCOMMAND-RAN args=git@github.com …
+//
+// This is written over the TABLE rather than over the five names, so a pointer
+// added later is swept the day it is added — which is the property the original
+// four had by accident (they happened to be rostered) rather than by rule.
+func TestEveryPointerRefusesARelativeValue(t *testing.T) {
+	// The fixture INCLUDES @cwd-rw rather than merely being selected alongside it,
+	// because the coupling rule is a property of a profile's own text plus its
+	// include closure and deliberately not of the selected set
+	// (TestCouplingVerdictDoesNotDependOnTheSelectedSet). Four of these five names
+	// are coupled, so without the include the accepted spelling below would be
+	// refused for a reason that has nothing to do with what this test measures.
+	resolve := func(name, value string) error {
+		reg := testRegistry()
+		reg["ptr"] = &Profile{Name: "ptr", Include: []ProfileName{"@cwd-rw"}, Environ: EnvGrants{
+			Set: map[string]string{name: value}}}
+		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "ptr"}, testCtx(), newFakeEnv())
+		return err
+	}
+
+	checked, owned := 0, 0
+	for _, p := range inlineConfigPointers {
+		// A pointer snug OWNS (GIT_CONFIG_GLOBAL, GH_CONFIG_DIR) is refused at
+		// every verb by ownership, which is the stronger statement — counted, not
+		// skipped silently, so that a pointer quietly becoming writable shows up.
+		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{p.name: "/opt/x"}}); err != nil {
+			owned++
+			continue
+		}
+		checked++
+
+		err := resolve(p.name, "relative.conf")
+		if err == nil {
+			t.Errorf("environ.set %s = \"relative.conf\" was accepted. snug's own table calls "+
+				"this name a POINTER at a config file, and a relative one names whatever file "+
+				"of that name is in the directory the payload was last in — inside snug, the "+
+				"target. Measured: GIT_CONFIG_SYSTEM spelled that way ran both an alias `!cmd` "+
+				"and core.sshCommand out of the payload's own directory", p.name)
+			continue
+		}
+		if !strings.Contains(err.Error(), "absolute path") || !strings.Contains(err.Error(), p.name) {
+			t.Errorf("%s was refused, but not with the absolute-path message that explains "+
+				"itself: %v", p.name, err)
+		}
+		// THE ACCEPTED SPELLING, which is what makes this a type verdict and not a
+		// denial: the author can say what they meant. {target} is granted by
+		// @cwd-rw, so the coupling rule (which applies to the four rostered names
+		// and not to the fifth) is satisfied too.
+		if err := resolve(p.name, "{target}/x"); err != nil {
+			t.Errorf("environ.set %s = \"{target}/x\" was refused: %v. A refusal with no "+
+				"accepted spelling of the same intent IS a denial", p.name, err)
+		}
+	}
+
+	// POSITIVE CONTROLS: the loop saw the whole table, and the two owned names are
+	// still exactly two (TestEveryPointerSaysWhatTheFileItNamesIs counts the same
+	// pair for the same reason).
+	if checked < 5 {
+		t.Fatalf("only %d writable pointers were checked; this test measures almost nothing", checked)
+	}
+	if owned != 2 {
+		t.Errorf("%d pointers are unwritable by any profile, want 2 (GIT_CONFIG_GLOBAL and "+
+			"GH_CONFIG_DIR, both in SnugOwnedEnv)", owned)
+	}
+	// AND THE RULE MUST NOT HAVE WIDENED INTO THE COUPLING RULE. An ABSOLUTE
+	// pointer value that nothing grants stays accepted for the unrostered name:
+	// the coupling rule's scope is the roster (isPathValued), the screen marks the
+	// row `← not granted`, and turning that mark into a refusal would be a new
+	// denial smuggled in beside a fix.
+	if err := resolve("GIT_CONFIG_SYSTEM", "/var/lib/nowhere/gitconfig"); err != nil {
+		t.Errorf("an absolute, ungranted GIT_CONFIG_SYSTEM was refused: %v. Only the "+
+			"unrepresentable spelling was supposed to change; the coupling rule still applies "+
+			"to rostered names only", err)
+	}
+}
+
+// ── F1 (redteam host round 3): every name snug ANNOTATES as path-valued ──────
+//
+// The round above closed the five pointers. It did not reach the names snug
+// annotates identically and rosters nowhere, and two of those were measured
+// INSIDE a running sandbox executing attacker code out of a relative value, at
+// 8d17f85:
+//
+//	GIT_TEMPLATE_DIR = "tpl"  ->  ACCEPTED; <target>/r/tpl/hooks/post-commit was
+//	                              copied into .git/hooks and FIRED, uid 1000
+//	GIT_EXEC_PATH    = "gx"   ->  ACCEPTED; `git probecmd` ran
+//	                              <target>/gx/git-probecmd, uid 1000
+//	GIT_DIR, GIT_COMMON_DIR   ->  ACCEPTED (hooks, one indirection out)
+//	GIT_CONFIG_SYSTEM         ->  REFUSED  (the previous round's fix)
+//
+// THIS TEST IS WRITTEN OVER THE TABLE, WHICH IS THE POINT. A test naming those
+// four would pass on the day a fifth annotated directory-valued name is added
+// without the refusal, and that is the failure this whole class keeps repeating.
+// It sweeps every envNotes row whose shape column says shapePath, so the
+// assertion is "every name snug annotates as path-valued refuses a relative
+// value" — and the shape column has no valid zero value
+// (TestEveryAnnotationSaysWhatItsValueIS), so a new row cannot dodge it by
+// staying silent.
+//
+// The four names are ALSO pinned by name at the end, as a positive control: a
+// sweep that stopped covering them — a shape edited to shapeOpaque, a row
+// deleted — would otherwise still pass with a healthy-looking count.
+func TestEveryAnnotatedPathRefusesARelativeValue(t *testing.T) {
+	// The fixture grants {target} ITSELF rather than including @cwd-rw, and
+	// @cwd-rw is not selected either — the sweep reaches the XDG four, and
+	// @cwd-rw's include closure carries @home, which sets all four. Selecting both
+	// is a scalar CONFLICT ("profiles @home and ap disagree about
+	// XDG_CONFIG_HOME"), which is a correct refusal about something else entirely
+	// and would have made the accepted-spelling control fail for the wrong reason.
+	// Its own `rw` satisfies the coupling rule for the names that are also
+	// rostered path-valued, which is what the include was for.
+	resolve := func(g EnvGrants) error {
+		reg := testRegistry()
+		reg["ap"] = &Profile{Name: "ap", RW: []string{"{target}"}, Environ: g}
+		_, err := Resolve(reg, []ProfileName{"@sys", "ap"}, testCtx(), newFakeEnv())
+		return err
+	}
+	// The verb a profile can actually WRITE this name with, which differs by type:
+	// a scalar takes `set`, a mergeable list takes `merge`, and LD_PRELOAD takes
+	// neither (it is a list that does not compose, so every write verb is refused
+	// on type grounds — counted below rather than skipped silently).
+	grants := func(name, value string) (EnvGrants, bool) {
+		for _, g := range []EnvGrants{
+			{Set: map[string]string{name: value}},
+			{Merge: map[string][]string{name: {value}}},
+		} {
+			if ValidateEnvGrants(g) == nil {
+				return g, true
+			}
+		}
+		return EnvGrants{}, false
+	}
+
+	checked := map[string]bool{}
+	unwritable := 0
+	for name, n := range envNotes {
+		if n.shape != shapePath {
+			continue
+		}
+		rel, ok := grants(name, "relative-value")
+		if !ok {
+			unwritable++
+			continue
+		}
+		checked[name] = true
+
+		err := resolve(rel)
+		if err == nil {
+			t.Errorf("a relative value for %s was accepted. snug's own annotation for this name "+
+				"says the value is a path — it is on --dry-run, in front of the human — and a "+
+				"relative one names whatever is in the directory the payload was last in, which "+
+				"inside snug is `--chdir <target>`. Measured: GIT_TEMPLATE_DIR spelled that way "+
+				"installed a hook into every repository git created afterwards", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), "absolute path") || !strings.Contains(err.Error(), name) {
+			t.Errorf("%s was refused, but not with the absolute-path message that explains "+
+				"itself: %v", name, err)
+		}
+		// THE ACCEPTED SPELLING. Without it this is a denial rather than a type
+		// verdict, and the difference is the test this codebase applies to every
+		// refusal it adds.
+		abs, _ := grants(name, "{target}/x")
+		if err := resolve(abs); err != nil {
+			t.Errorf("the absolute spelling of %s was refused: %v. A refusal with no accepted "+
+				"spelling of the same intent IS a denial, and snug does not have those over a "+
+				"human's own profile", name, err)
+		}
+	}
+
+	if len(checked) < 25 {
+		t.Fatalf("only %d path-valued annotations were exercised; this test is measuring almost "+
+			"nothing", len(checked))
+	}
+	if unwritable == 0 {
+		t.Errorf("every path-valued annotation was writable by some verb. That is not wrong in " +
+			"itself, but LD_PRELOAD and LD_LIBRARY_PATH are lists that do not compose and are " +
+			"refused at every write verb — if they became writable, the type rules changed")
+	}
+	// The four names round 3 measured, pinned by name. The sweep is the property;
+	// this is the guard against the sweep quietly stopping covering the case it
+	// was written for.
+	for _, name := range []string{"GIT_TEMPLATE_DIR", "GIT_EXEC_PATH", "GIT_DIR", "GIT_COMMON_DIR"} {
+		if !checked[name] {
+			t.Errorf("%s was not exercised. It is one of the four names measured running code "+
+				"out of `--chdir <target>` from a relative value; if its annotation no longer "+
+				"says shapePath, the refusal is gone with it", name)
+		}
+	}
+	// AND THE COUPLING RULE IS UNCHANGED, which is the same control the pointer
+	// sweep carries. These names have no roster row, so an ABSOLUTE value nothing
+	// grants stays accepted and marked `← not granted` on the screen. Turning that
+	// into a refusal would be a new denial smuggled in beside a fix.
+	if err := resolve(EnvGrants{Set: map[string]string{"GIT_TEMPLATE_DIR": "/var/lib/nowhere/tpl"}}); err != nil {
+		t.Errorf("an absolute, ungranted GIT_TEMPLATE_DIR was refused: %v", err)
+	}
+	// AND THE RULE DID NOT WIDEN TO EVERY ANNOTATED NAME. These are annotated,
+	// their values are code, and a relative one is CORRECT: a command line and a
+	// program name are looked up the way a shell looks them up, not against the
+	// cwd. Refusing them would refuse the only spelling anyone writes.
+	for name, value := range map[string]string{
+		"EDITOR":          "vim",
+		"GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
+		"CC":              "gcc",
+		"RUSTC_WRAPPER":   "sccache",
+		"MAKEFLAGS":       "-j4",
+		"NIS_PATH":        "org_dir.example.com.",
+	} {
+		if err := resolve(EnvGrants{Set: map[string]string{name: value}}); err != nil {
+			t.Errorf("environ.set %s = %q was refused: %v. Its value is not a filesystem path, "+
+				"and the absolute rule must not have been widened to every name whose value is "+
+				"code", name, value, err)
 		}
 	}
 }

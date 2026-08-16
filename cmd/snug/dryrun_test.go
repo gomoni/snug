@@ -30,18 +30,58 @@ func loadTestRegistry(t *testing.T) profile.Registry {
 // the fixture has to actually exist — a fake Environ would make this a
 // resolver test, not a --dry-run test.
 //
-// Deliberately NOT t.TempDir(): that resolves under os.TempDir(), which is
-// "/tmp" on every host this suite runs on, and snug authors its OWN "/tmp"
-// mount into every policy (resolve.go). A fixture home living under
-// "/tmp/..." would then be "covered" by that unrelated tmpfs grant purely by
-// path prefix, making the annotation genuinely (and correctly!) say "tmpfs" —
-// a fixture bug that would look exactly like the defect this test exists to
-// catch. Rooting the fixture beside the test source sidesteps the collision.
+// THE FIXTURE MUST NOT STAND ANYWHERE SNUG MOUNTS SOMETHING ITSELF, and both
+// obvious spellings of "a temporary directory" get that wrong, in opposite
+// directions:
+//
+//   - t.TempDir() resolves under os.TempDir() — "/tmp" on every host this suite
+//     runs on — and snug authors its OWN "/tmp" tmpfs into every policy. The
+//     fixture $HOME would then be covered by that unrelated grant purely by path
+//     prefix, and pathAnnotation would correctly report "tmpfs" for a reason the
+//     test is not about.
+//   - os.MkdirTemp(".", …), which this used to be, moves the fixture out of /tmp
+//     — unless the REPOSITORY is under /tmp, and then it is back. Measured on
+//     four combinations: a worktree at /tmp/rt-env FAILS
+//     TestDryRunAnnotationsAreTruthful on `main` and on this branch, and passes
+//     from $HOME on both. That is the worse of the two failures: it fires
+//     nowhere anybody looks (CI checks out under /home/runner/work) and reads,
+//     when it does fire, as a regression in whatever branch is under test — a
+//     red team lost twenty minutes to it before deciding the tree was innocent.
+//
+// So the root is one the test OWNS: $SNUG_TEST_FIXTURE_ROOT if the caller set
+// one, else $HOME, else the package directory as a last resort. And the property
+// the old comment stated in prose is now CHECKED rather than assumed, by the
+// only predicate that can be right about it — the floor policy's own mounts. A
+// selection of NO profiles still carries snug's own /tmp, /proc and /dev, so
+// "does anything cover this path with nothing selected" is exactly the question,
+// asked of the code that will answer it later.
 func testTree(t *testing.T) (home, target string) {
 	t.Helper()
-	root, err := os.MkdirTemp(".", "dryrun-test-")
-	if err != nil {
-		t.Fatal(err)
+
+	var roots []string
+	if r := os.Getenv("SNUG_TEST_FIXTURE_ROOT"); r != "" {
+		roots = append(roots, r)
+	}
+	if h, err := os.UserHomeDir(); err == nil && h != "" {
+		roots = append(roots, h)
+	}
+	roots = append(roots, ".")
+
+	var root string
+	var errs []string
+	for _, base := range roots {
+		r, err := os.MkdirTemp(base, "snug-dryrun-fixture-")
+		if err != nil {
+			errs = append(errs, err.Error())
+			continue
+		}
+		root = r
+		break
+	}
+	if root == "" {
+		t.Fatalf("no writable root for the fixture tree (%s). Set SNUG_TEST_FIXTURE_ROOT to a "+
+			"directory that is NOT under any path snug mounts itself — /tmp is not one",
+			strings.Join(errs, "; "))
 	}
 	t.Cleanup(func() { os.RemoveAll(root) })
 	abs, err := filepath.Abs(root)
@@ -53,7 +93,44 @@ func testTree(t *testing.T) (home, target string) {
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	assertFixtureIsOutsideSnugsOwnMounts(t, home)
 	return home, target
+}
+
+// assertFixtureIsOutsideSnugsOwnMounts fails the fixture, loudly and with the
+// fix in the message, rather than letting the test it feeds fail as though the
+// code were wrong.
+//
+// It resolves the FLOOR — no profiles at all — because that is precisely the set
+// of mounts snug authors regardless of what anyone selected, and asks
+// mountedAt(), the same helper pathAnnotation uses. Reimplementing the check
+// with a list of paths ("/tmp, /proc, /dev") would be a second copy of a fact
+// resolve.go already holds, and the copy is what drifts.
+func assertFixtureIsOutsideSnugsOwnMounts(t *testing.T, home string) {
+	t.Helper()
+	reg, err := profile.Builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The ERROR is expected and is deliberately ignored: Resolve REFUSES an empty
+	// selection ("nothing can run in it") and returns the policy anyway, which is
+	// the same contract --dry-run relies on to render a refused selection. The
+	// mounts in it are exactly snug's own, which is what this check needs.
+	floor, _ := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), nil,
+		policy.Context{Target: home, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}},
+		policy.OSEnviron{})
+	if floor == nil {
+		t.Fatal("Resolve returned no policy for the floor selection, so the fixture's location " +
+			"was not checked at all — see its doc comment for why it returns one with the error")
+	}
+	if m, ok := mountedAt(floor, home); ok {
+		t.Fatalf("the fixture home %s is under %s, which snug mounts ITSELF (%s) with no profile "+
+			"selected. Every annotation this suite checks would then describe that mount rather "+
+			"than the grant under test — a fixture bug wearing the exact costume of the defect "+
+			"these tests exist to catch. Set SNUG_TEST_FIXTURE_ROOT to a directory outside it, "+
+			"or move this checkout out of %s.",
+			home, m.Guest, strings.Join(m.From, "+"), m.Guest)
+	}
 }
 
 func resolveFor(t *testing.T, sel []policy.ProfileName) *policy.Policy {

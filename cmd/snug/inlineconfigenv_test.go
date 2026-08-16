@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -25,27 +26,28 @@ import (
 // inline spellings (GIT_CONFIG_KEY_0, the setting itself, reviewable nowhere).
 //
 // This sweeps the RESOLVED policy's p.Env, not the TOML source, because that is
-// where the class of bug actually lives. `forbiddenEnvPrefixes` marks PIP_ as
-// forbidInheritOnly, and appliesTo(forbidInheritOnly, VerbSet) is false — so
-// `environ.set PIP_INDEX_URL = "…"` passes parse-time validation TODAY (see
-// TestPositiveControlEnvironSetPipIndexUrlTripsInlineConfigSweep below). A
-// sweep over the TOML would inherit exactly that blind spot; a sweep over
-// p.Env does not, because p.Env is what actually reaches the payload
-// regardless of which verb put it there.
+// where the class of bug actually lives — and the reason is now much simpler
+// than it was. Parse-time validation refuses NO name: the forbidden-name and
+// forbidden-prefix tables became annotations (policy.EnvNote), because a
+// profile's author is a human on the trusted side of snug's boundary. So a
+// sweep over the TOML would be measuring a gate that is not there, while p.Env
+// is what actually reaches the payload regardless of which verb put it there.
 //
-// npm_config_ USED to be this section's example — it was forbidInheritOnly
-// when this test was written — but a second-pass review promoted it to
-// forbidBoth (npm_config_script_shell/npm_config_node_gyp measured to name a
-// program npm executes, the same shape as CARGO_BUILD_RUSTC_WRAPPER), so
-// `environ.set npm_config_script_shell` is refused at parse time now and can
-// no longer demonstrate this gap. PIP_ is the one prefix left at
-// forbidInheritOnly (checked, not assumed — see the control below); if it is
-// ever promoted too, NO prefix-covered name will remain able to reach this
-// sweep through `set`, and the sweep's remaining job would be the
-// inlineConfigNames "belt and braces" case (RUSTC_WRAPPER and friends,
-// already forbidBoth, covered by IsInlineConfigEnv purely so its own promise
-// holds — see that map's comment in envtypes.go) rather than a live parse-time
-// gap. That would be worth restating here, not silently losing.
+// WHAT THIS SWEEP IS AND IS NOT, restated because the previous version of this
+// comment was an argument about which prefix was `forbidInheritOnly` and that
+// vocabulary is gone. It is BUILTIN-ONLY. It asserts CLAUDE.md's rule — "the
+// environment snug ITSELF hands over must not ship the override pre-installed" —
+// over the profiles snug SHIPS. A user's own profile may hand over
+// GIT_CONFIG_KEY_0 or PIP_INDEX_URL and this sweep will never see it; what that
+// user gets is the annotation on --dry-run, which is the design and not a gap.
+//
+// What keeps a BUILTIN out of this class is two independent things, and both
+// have to hold: internal/profile's checkBuiltinEnvRoster (a shipped profile may
+// write only a name on the roster, and no inline-config name has a roster row)
+// and this sweep. The first is a rule about names; this is a rule about what
+// resolves. A route into p.Env that does not go through a profile's grant block
+// — a future adapter authoring a variable, say — would be invisible to the first
+// and caught here.
 func TestNoBuiltinHandsOverAnInlineConfigVariable(t *testing.T) {
 	reg, err := profile.Builtins()
 	if err != nil {
@@ -112,37 +114,33 @@ func TestNoBuiltinHandsOverAnInlineConfigVariable(t *testing.T) {
 }
 
 // The positive control for the test above: policy.IsInlineConfigEnv must
-// actually TRIP on a name that parse-time validation still accepts via
-// `environ.set` today, or "no builtin hands over an inline-config variable"
-// is a sentence about a predicate that always answers false — and about a
-// sweep that no legal profile could ever reach in the first place.
+// actually TRIP on a name a profile can hand over, or "no builtin hands over an
+// inline-config variable" is a sentence about a predicate that always answers
+// false — and about a sweep that no legal profile could ever reach in the first
+// place.
 //
-// This test was rewritten rather than edited. Its ENTIRE premise — three
-// case spellings of npm_config_script_shell, chosen because parse-time did
-// NOT catch `set` for that prefix — stopped being true when a second-pass
-// review promoted npm_config_ to forbidBoth (see the header comment above):
-// `environ.set npm_config_script_shell` is refused now, at every case
-// spelling, so a fixture using it would no longer resolve and could not
-// control anything. Patching the old spellings in place would have hidden
-// that the whole reason this test existed had disappeared.
+// THE PREMISE OF THIS CONTROL HAS BEEN REWRITTEN TWICE and it is worth knowing
+// why, because the second rewrite deleted the whole idea it was built on. It
+// once demonstrated a narrow parse-time gap: `set` reached the resolved policy
+// for a prefix marked forbidInheritOnly while `inherit` was refused, and the
+// interesting question was which prefix still had that property (npm_config_ did
+// until it was promoted; PIP_ was the last one left). There is no such gap any
+// more, because there is no parse-time refusal: EVERY name reaches the resolved
+// policy through a user profile now. So the control no longer demonstrates an
+// asymmetry — it demonstrates the ordinary case, and its job is narrower and
+// clearer: prove the sweep's predicate fires on something a resolved policy can
+// actually contain.
 //
-// So the first question this test answers, explicitly, is whether any name
-// with that property — genuinely forbidInheritOnly (not forbidBoth), so
-// `environ.set` reaches the resolved policy while `environ.inherit` is
-// refused — still exists. CHECKED, not assumed: PIP_ is the answer, and it is
-// the only one. GIT_CONFIG_, npm_config_ and CARGO_ are all forbidBoth now;
-// LD_ and BASH_FUNC_ always were. If a future promotion closes PIP_ too, this
-// test needs the same rewrite again, not a spelling change — and that would
-// be worth stating in CLAUDE.md as "every known prefix now refuses `set`",
-// because it changes what this control is even testing.
+// PIP_INDEX_URL is kept as the name, for continuity with the finding and because
+// it is a genuine inline setting under a prefix with a MEASURED case rule:
+// case-SENSITIVE (documented for pip's own get_environ_vars in prefixCaseFold's
+// comment — pip is not installed on this host to measure directly), so
+// pip_index_url must NOT trip, and that half is asserted below.
 //
-// PIP_INDEX_URL is the name: it matches the PIP_ prefix, it is not
-// PIP_CONFIG_FILE (the one pointer exemption), and PIP_'s case rule is
-// case-SENSITIVE (measured for pip's own get_environ_vars, documented in
-// prefixCaseFold's comment — pip is not installed on this host to measure
-// directly), so unlike the old npm control there is no second case spelling
-// to demonstrate here: PIP_INDEX_URL is the only spelling PIP_'s rule
-// recognises at all.
+// The fixture is a USER profile, and that is load-bearing rather than
+// incidental: PIP_INDEX_URL has no roster row, so a BUILTIN cannot write it at
+// all (internal/profile's `mark`). The sweep being builtin-only is exactly why
+// this control has to be a user profile.
 func TestPositiveControlEnvironSetPipIndexUrlTripsInlineConfigSweep(t *testing.T) {
 	const name = "PIP_INDEX_URL"
 
@@ -158,21 +156,23 @@ func TestPositiveControlEnvironSetPipIndexUrlTripsInlineConfigSweep(t *testing.T
 		t.Fatal(err)
 	}
 	m := map[policy.ProfileName]*policy.Profile(reg)
+	// A USER profile: see this test's header. A builtin cannot write this name;
+	// a user profile can, at every verb, and the sink sweep is builtin-only.
 	m["leaky"] = &policy.Profile{
 		Name:    "leaky",
 		Include: []policy.ProfileName{"@sys", "@home"},
-		Environ: policy.EnvGrants{Set: map[string]string{name: "http://evil.example/simple"}},
+		Environ: policy.EnvGrants{
+			Set: map[string]string{name: "http://evil.example/simple"},
+		},
 	}
 
 	p, err := policy.Resolve(m, append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "leaky"),
 		envGoldenCtx(), newEnvFakeEnv())
 	if err != nil {
-		t.Fatalf("Resolve refused environ.set %s: %v — that would mean PIP_ has been "+
-			"promoted to forbidBoth too, and per this test's own header comment, that means "+
-			"NO prefix-covered name can demonstrate \"parse-time misses set, only the sweep "+
-			"catches it\" any more. State that explicitly (this test's header comment, and "+
-			"CLAUDE.md's inline-config paragraph) rather than hunting for a replacement "+
-			"spelling — there may not be one", name, err)
+		t.Fatalf("Resolve refused environ.set %s: %v — a user profile writing a name in its "+
+			"own file is not something snug refuses. If a refusal has been reintroduced here, "+
+			"it is a policy change (see policy.EnvNote and ENVIRONMENT-VARIABLES.md §2.1) and "+
+			"this control needs a name that is still reachable", name, err)
 	}
 
 	v, ok := p.Env[name]
@@ -326,54 +326,48 @@ func TestIsInlineConfigEnvCaseRules(t *testing.T) {
 // table structurally could not have found it.
 //
 // The fix landed in two places, and both fail independently, so both get
-// their own test:
-//   - forbiddenEnv now marks all three forbidBoth, so environ.set AND
-//     environ.inherit are both refused at PARSE TIME. That half is pinned in
-//     internal/policy/envtypes_test.go's TestForbidListSplitsBySetAndInherit,
-//     extending the existing forbidBoth table rather than starting a second
-//     one.
+// their own test. Read both bullets against ENVIRONMENT-VARIABLES.md §2.9,
+// because the first one no longer refuses anything:
+//   - all three carry an ANNOTATION at every verb (policy.EnvNote), so a profile
+//     writing one says on screen that cargo will run it. That half is pinned in
+//     internal/policy/envtypes_test.go's TestAnnotationSplitsBySetAndInherit and
+//     in internal/policy/testdata/annotations.txt. It used to be a parse-time
+//     refusal; a human's own profile is not something snug refuses.
 //   - inlineConfigNames makes IsInlineConfigEnv true for all three, so the
-//     SINK sweep (TestNoBuiltinHandsOverAnInlineConfigVariable) would also
-//     catch them if the parse-time refusal above were ever weakened or
-//     bypassed by a route that does not go through ValidateEnvGrants.
+//     SINK sweep (TestNoBuiltinHandsOverAnInlineConfigVariable) catches a
+//     BUILTIN handing one over. With the parse-time refusal gone, this and the
+//     roster rule are the two things left, and they are builtin-only by design.
 
-// The asymmetry with the PIP_INDEX_URL positive control, stated rather than
-// papered over: PIP_INDEX_URL passes parse-time validation today (PIP_ is
-// only forbidInheritOnly — see that control's own header comment for why it
-// is the LAST prefix-covered name that still can), so a fixture profile
-// setting it resolves successfully and
-// TestPositiveControlEnvironSetPipIndexUrlTripsInlineConfigSweep can sweep
-// the RESULT. RUSTC_WRAPPER is forbidBoth, precisely because of the finding
-// this test is guarding — so the honest control here is the opposite shape:
-// assert Resolve REJECTS the fixture. Building a resolved policy that
-// contains RUSTC_WRAPPER to sweep would mean bypassing the very refusal this
-// test exists to confirm, which would make the control test nothing real.
-func TestPositiveControlEnvironSetRustcWrapperIsRefusedAtParseTime(t *testing.T) {
+// THE CONTROL IS THE OPPOSITE SHAPE NOW, and the inversion is the finding.
+//
+// This test used to assert that `policy.Resolve` REFUSED a profile carrying
+// `environ.set RUSTC_WRAPPER`, because forbiddenEnv marked it forbidBoth. That
+// refusal is gone: the table is an annotation table, snug has only allowlists,
+// and a profile's author is a human on the trusted side of the boundary. So the
+// fixture now RESOLVES, the variable reaches p.Env, and the two things left
+// standing are the two this test measures:
+//
+//   - the row is ANNOTATED, so a human reading --dry-run is told that cargo runs
+//     this in place of rustc;
+//   - IsInlineConfigEnv still names it, so the builtin-only sink sweep
+//     (TestNoBuiltinHandsOverAnInlineConfigVariable) would still catch a SHIPPED
+//     profile handing it over.
+//
+// Note what that second bullet does NOT say, because the old comment here said
+// the opposite and it was true when written: parse-time validation is no longer
+// "the real, load-bearing gate" for a USER profile. There is no gate for a user
+// profile, by decision. What stops a BUILTIN is checkBuiltinEnvRoster (no roster
+// row, so a shipped profile may not write the name) plus this sweep.
+//
+// It is also, incidentally, the same shape as the PIP_INDEX_URL control below —
+// which used to be the LAST name that could demonstrate "parse-time misses
+// `set`, only the sweep catches it". Every prefix-covered name can demonstrate
+// it now, so that control's uniqueness argument is retired with this comment
+// rather than left standing as a fact about a table that changed.
+func TestEnvironSetRustcWrapperIsCarriedAndAnnotated(t *testing.T) {
 	reg, err := profile.Builtins()
 	if err != nil {
 		t.Fatal(err)
-	}
-
-	// The control fixture: the identical selection and profile shape, minus
-	// the one environ.set line. If THIS resolves cleanly, a refusal on the
-	// fixture below can only be about the variable under test — not about
-	// @sys/@home's fake-host requirements, a Context field this test forgot,
-	// or anything else that would make "err != nil" pass for the wrong
-	// reason.
-	reg2, err := profile.Builtins()
-	if err != nil {
-		t.Fatal(err)
-	}
-	m2 := map[policy.ProfileName]*policy.Profile(reg2)
-	m2["control"] = &policy.Profile{
-		Name:    "control",
-		Include: []policy.ProfileName{"@sys", "@home"},
-	}
-	if _, err := policy.Resolve(m2, append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "control"),
-		envGoldenCtx(), newEnvFakeEnv()); err != nil {
-		t.Fatalf("the control fixture (identical shape, no environ.set at all) was refused: "+
-			"%v — that means the fixtures below would fail regardless of the RUSTC_WRAPPER "+
-			"family, and would prove nothing about them", err)
 	}
 
 	for _, name := range []string{"RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTC"} {
@@ -387,55 +381,68 @@ func TestPositiveControlEnvironSetRustcWrapperIsRefusedAtParseTime(t *testing.T)
 				},
 			}
 
-			_, err := policy.Resolve(m, append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "leaky"),
+			p, err := policy.Resolve(m, append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "leaky"),
 				envGoldenCtx(), newEnvFakeEnv())
-			if err == nil {
-				t.Fatalf("Resolve accepted environ.set %s. Confirmed by redteam (issue #26 "+
-					"follow-up): cargo executes whatever this variable names as its compiler "+
-					"driver, so accepting it here means a profile can run an arbitrary program "+
-					"as the sandbox's own uid the moment `cargo build` runs. It must be refused "+
-					"at parse time exactly like GIT_SSH_COMMAND and JAVA_TOOL_OPTIONS are", name)
+			if err != nil {
+				t.Fatalf("Resolve refused environ.set %s: %v.\nA human writing this in their own "+
+					"profile is opening a hole in their own sandbox, which snug does not refuse — "+
+					"see policy.EnvNote. If this refusal is deliberate, it is a policy change and "+
+					"belongs in ENVIRONMENT-VARIABLES.md, not in a table edit", name, err)
 			}
-			// Not just "an error", because the control fixture above already
-			// proves the shape resolves cleanly on its own — an unrelated
-			// future failure of this fixture (a changed @sys/@home include, a
-			// new required Context field) must NOT be mistaken for this
-			// refusal, and the only way to tell them apart is that THIS
-			// refusal names the variable.
-			if !strings.Contains(err.Error(), name) {
-				t.Errorf("Resolve refused environ.set %s, but the error does not name it: %v.\n"+
-					"A refusal that doesn't name the variable can't be told apart from an "+
-					"unrelated fixture failure (a changed @sys/@home include, a new required "+
-					"Context field) — the control fixture above rules that out for a passing "+
-					"run, but a future change to the ERROR text could still make this test "+
-					"pass for the wrong reason", name, err)
+			v, ok := p.Env[name]
+			if !ok || !v.Present() {
+				t.Fatalf("environ.set %s never reached p.Env; the fixture measures nothing", name)
+			}
+
+			// The annotation is the whole of what a human gets for this now.
+			note := policy.EnvNote(name, policy.VerbSet)
+			if note == "" {
+				t.Fatalf("%s reaches the payload with NOTHING said about it. Confirmed by redteam "+
+					"(issue #26 follow-up): cargo executes whatever this variable names as its "+
+					"compiler driver, so `cargo build` runs an arbitrary program as the sandbox's "+
+					"own uid. Silence here is strictly worse than the refusal this replaced", name)
+			}
+			if !strings.Contains(note, "cargo") {
+				t.Errorf("EnvNote(%s, set) = %q, which does not name the tool that runs it. The "+
+					"sentence exists so a reader can act on it", name, note)
+			}
+
+			// And it reaches the ENVIRONMENT block WITH the mark, because a
+			// sentence only a test can see is not a disclosure.
+			// The ROW, not the line: each mark is now its own indented line under
+			// the row (dryrun.go's markIndent), so the hand-rolled line search
+			// this used to do would find the data row — which carries no
+			// annotation — and report the table as not reaching the screen.
+			row := rowFor(t, captureFile(t, func(f *os.File) { describeEnvironment(f, p) }), name)
+			if !strings.Contains(row, "cargo runs this") {
+				t.Errorf("the --dry-run row for %s carries no annotation:\n%s\nThe table is only "+
+					"worth having if it reaches the screen a human reads", name, row)
 			}
 		})
 	}
 }
 
-// The second half, and it is not decoration: forbiddenEnv refusing the name
-// is what makes the fixture above unresolvable, but IsInlineConfigEnv is a
-// SEPARATE table (inlineConfigNames), read by TestNoBuiltinHandsOverAnInline-
-// ConfigVariable's sweep over the resolved p.Env of every builtin. If a future
-// edit narrowed forbiddenEnv's RUSTC_WRAPPER entry back to forbidInheritOnly
-// (the npm/pip shape) without updating inlineConfigNames, a builtin could then
-// ship `environ.set RUSTC_WRAPPER = …` and reach a resolved policy — and the
-// sink sweep is the only thing left standing between that policy and the
-// payload. This test cannot go through Resolve for the reason stated above
-// (parse-time refuses it today, correctly), so it asserts the predicate
-// directly — this IS the "belt and braces" defense-in-depth the comment above
-// inlineConfigNames describes, made concrete rather than left as prose.
+// The second half, and it is LESS decorative than it was: nothing refuses these
+// names at parse time any more, so IsInlineConfigEnv naming them is one of the
+// two things standing between a SHIPPED profile and the payload (the other is
+// checkBuiltinEnvRoster). It is a separate table from the annotation one
+// (inlineConfigNames), read by TestNoBuiltinHandsOverAnInlineConfigVariable's
+// sweep over the resolved p.Env of every builtin. If a future edit gave
+// RUSTC_WRAPPER a roster row — to make some list verb work, say — the roster
+// rule would stop covering it and this predicate would be the only thing left.
+// That is the residual worth watching, and it is why this assertion is direct
+// rather than routed through Resolve.
 func TestIsInlineConfigEnvCoversTheRustcWrapperFamily(t *testing.T) {
 	for _, name := range []string{"RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTC"} {
 		if !policy.IsInlineConfigEnv(name) {
 			t.Errorf("IsInlineConfigEnv(%q) = false. Confirmed by redteam (issue #26 "+
 				"follow-up): this name makes cargo execute an arbitrary program as its "+
 				"compiler driver, the identical capability CARGO_BUILD_RUSTC_WRAPPER already "+
-				"carries under the CARGO_ prefix. It must be in inlineConfigNames — this is "+
-				"the second, independent layer behind forbiddenEnv's parse-time refusal, and "+
-				"it is the only one left if that refusal is ever narrowed without this table "+
-				"being updated in step", name)
+				"carries under the CARGO_ prefix. It must be in inlineConfigNames — with no "+
+				"parse-time refusal left anywhere (ENVIRONMENT-VARIABLES.md §2.9), this and "+
+				"the roster rule are the only two things standing between a SHIPPED profile "+
+				"and the payload, and the roster rule stops covering this name the day anyone "+
+				"gives it a type row", name)
 		}
 	}
 }

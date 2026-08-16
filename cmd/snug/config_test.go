@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gomoni/snug/internal/policy"
@@ -157,6 +158,14 @@ func TestProfileShowRendersEveryEnvironVerb(t *testing.T) {
 		"environ.inherit":  "EDITOR",
 		"environ.sanitise": "PKG_CONFIG_PATH",
 	}
+	// PREFIX, not equality: a row may carry marks after the grant it renders —
+	// `← unchecked` for a name with no roster row, and since the annotation flip
+	// a sentence saying what the tool DOES with the value (EDITOR is inherited
+	// here and git runs whatever it names). What this test is about is that every
+	// verb renders its grant at all, so it asserts the grant is the START of the
+	// line and leaves the marks to the tests that own them
+	// (TestProfileShowMarksAnUnrosteredNameAsUnchecked,
+	// TestProfileShowRendersTheAnnotation).
 	for label, first := range want {
 		vals, ok := got[label]
 		if !ok {
@@ -164,8 +173,8 @@ func TestProfileShowRendersEveryEnvironVerb(t *testing.T) {
 				"screen, like a profile that granted nothing to the environment", label)
 			continue
 		}
-		if vals[0] != first {
-			t.Errorf("%s rendered %q, want %q", label, vals[0], first)
+		if !strings.HasPrefix(vals[0], first) {
+			t.Errorf("%s rendered %q, want it to start with %q", label, vals[0], first)
 		}
 	}
 

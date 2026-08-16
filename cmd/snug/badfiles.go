@@ -34,8 +34,8 @@ func refuseBadFiles(bad []profile.BadFile) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d profile file(s) in the search path did not load:\n", len(bad))
 	for _, f := range bad {
-		fmt.Fprintf(&b, "         %s\n", f.Path)
-		for _, line := range strings.Split(strings.TrimRight(f.Err.Error(), "\n"), "\n") {
+		fmt.Fprintf(&b, "         %s\n", policy.VisibleText(f.Path))
+		for _, line := range badFileErrorLines(f) {
 			fmt.Fprintf(&b, "           %s\n", line)
 		}
 	}
@@ -57,12 +57,42 @@ func reportBadFiles(bad []profile.BadFile) bool {
 	}
 	for _, f := range bad {
 		fmt.Fprintf(os.Stderr, "snug: %s did not load, and every profile it defines is missing "+
-			"from what follows:\n       %s\n", f.Path,
-			strings.ReplaceAll(strings.TrimRight(f.Err.Error(), "\n"), "\n", "\n       "))
+			"from what follows:\n       %s\n", policy.VisibleText(f.Path),
+			strings.Join(badFileErrorLines(f), "\n       "))
 	}
 	fmt.Fprintln(os.Stderr, "snug: continuing with the profiles that did load. A command that runs a "+
 		"sandbox will refuse until this is fixed.")
 	return true
+}
+
+// badFileErrorLines is a parser error, made safe to print, WITH ITS LINE
+// STRUCTURE INTACT.
+//
+// Both callers render this text and both render a PATH beside it, and neither is
+// snug's: the path comes from listing the profiles.d directory, and the error is
+// go-toml's, which quotes the offending line of the file back at you. So this is
+// the invariant-7 case — text a profile wrote arriving at a screen — at a sink
+// that predates the rule.
+//
+// PER LINE, NOT WHOLE-STRING, and the reason is the diagram. go-toml's error is
+// several lines with a caret under the offending column, and %q of the lot would
+// turn the single most useful diagnostic snug prints into one unreadable string.
+// Escaping each line keeps it.
+//
+// SAY WHAT THAT DOES NOT CLOSE, because it is the honest half: splitting on '\n'
+// LAUNDERS a newline the error text carries — an injected line comes out as its
+// own line rather than escaped. What contains that is the INDENTATION both
+// callers apply: every line of this text is printed 11 or 7 spaces in, and the
+// attacker does not choose the prefix, so a forged line cannot imitate one of
+// snug's own. That is a weaker guarantee than the environment values get and it
+// is the one available here; if it ever needs to be stronger, the answer is to
+// stop embedding a foreign multi-line string, not to escape it twice.
+func badFileErrorLines(f profile.BadFile) []string {
+	lines := strings.Split(strings.TrimRight(f.Err.Error(), "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = policy.VisibleText(l)
+	}
+	return lines
 }
 
 // unknownProfile is policy.UnknownProfile plus the skipped-file record, and

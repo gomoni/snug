@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -279,9 +280,53 @@ func wrapList(items []string, width int) []string {
 }
 
 // describeEnvironment renders what the sandbox's environment will be. bwrap
-// --clearenv discards the host's, so this block is the WHOLE of it — there is
-// nothing inherited that does not appear here (with the one caveat CLAUDE.md
-// records: a bound /etc means /etc/profile.d can still put variables back).
+// --clearenv discards the host's, so nothing of the HOST's environment appears
+// inside that is not on this block — with two caveats, and the second one used
+// to be missing, which is the reason this comment now enumerates rather than
+// asserts.
+//
+// CAVEAT 1, long recorded: a bound /etc means /etc/profile.d can still put
+// variables back (CLAUDE.md).
+//
+// CAVEAT 2, and it is the one that made this comment false: BWRAP AUTHORS `PWD`
+// ITSELF, from --chdir. This block used to say "this block is the WHOLE of it —
+// there is nothing inherited that does not appear here", and it was measured
+// wrong in a live sandbox (redteam host round 2, F5 — the measurements in this
+// paragraph are that round's; the bwrap-binary corroboration below is not).
+// Across five selections, the block's names, the argv's --setenv names
+// and `env` INSIDE agreed byte for byte except for exactly one name:
+//
+//	block 16 / argv 16 / inside 17   (@sys @home @cwd-rw @parent-ro)
+//	block 18 / argv 18 / inside 19   (@claude)
+//	…and PWD is the difference every time
+//
+// isolated with no shell anywhere — the payload was `env`, exec'd directly:
+//
+//	bwrap --ro-bind /usr /usr … --clearenv --chdir /usr /usr/bin/env
+//	  PWD=/usr
+//
+// Corroborated here against bwrap 0.11.2's own binary, and the way it was
+// corroborated is worth keeping: `strings /usr/bin/bwrap | grep -i pwd` finds
+// NOTHING and reads as a refutation, because strings(1) defaults to -n 4 and
+// "PWD" is three characters. `strings -n 3` finds it. A check that cannot
+// produce the answer it is looking for is this project's named failure mode, and
+// it nearly retracted a true finding here.
+//
+// AND THE EVIDENCE WAS ALREADY IN THE REPOSITORY, which is the part worth
+// keeping: ENVIRONMENT-VARIABLES.md §4.1 lists what `snug <dir> -- env` printed
+// — "HOME LANG LOGNAME PATH PS1 PWD SHELL SNUG …", PWD among them — measured, in
+// a document, while this comment two directories away said the block was the
+// whole of it. Nobody read the two together. A measurement filed under one
+// question does not answer another one on its own.
+//
+// So PWD is rendered as its own row, in bwrap's provenance rather than snug's.
+// The content is harmless — it is the target, already on this screen twice — and
+// that is exactly why it is worth a row: what invariant 5 forbids is an artifact
+// claiming a completeness it does not have. Note what this says about the check
+// that passed while the claim was false: round 1 compared "18 variables, byte for
+// byte" between the block and the argv, and BOTH are generated from p.Env. An
+// equivalence between two things snug generates cannot see a third party adding
+// to the result.
 //
 // It is a function of its own, rather than eight lines inside dryRun, because
 // it is the review artifact for the environment the same way the .bwrap.txt
@@ -310,8 +355,16 @@ func describeEnvironment(out *os.File, p *policy.Policy) {
 		}
 		for _, l := range lines {
 			fmt.Fprintln(out, strings.TrimRight("  "+pad(label, 16)+" "+
-				pad(strings.Join(l.values, " "), 31)+" "+pad(l.verb, 9)+" "+l.from+l.mark, " "))
+				pad(strings.Join(l.values, " "), 31)+" "+pad(l.verb, 9)+" "+l.from, " "))
 			label = ""
+			// EACH MARK ON ITS OWN INDENTED LINE, never appended to the row.
+			// See markIndent for why, and for why the indent is 21 rather than
+			// the 19 the drop lines below use.
+			for _, m := range l.marks {
+				for _, frag := range wrapMark(m) {
+					fmt.Fprintln(out, frag)
+				}
+			}
 		}
 		// Dropped elements are NAMED, not counted. "1 of 3 kept" does not let
 		// anyone check a filter, and a filter nobody can check is the exact shape
@@ -351,6 +404,33 @@ func describeEnvironment(out *os.File, p *policy.Policy) {
 				"", len(vals), word, reason.String(), strings.Join(vals, ", "))
 		}
 	}
+	describeBwrapAuthoredEnv(out, p)
+}
+
+// describeBwrapAuthoredEnv renders the one variable inside the sandbox that snug
+// does not write: PWD, which bwrap sets from --chdir. See describeEnvironment's
+// comment for the measurement.
+//
+// It is rendered AFTER the sorted rows rather than in its sorted place, and that
+// is the honest layout rather than the tidy one: the block above is snug's
+// resolved environment, in name order, and this row is not part of it. Its verb
+// column says `(bwrap)` — a provenance no policy can produce, since EnvVerb has
+// no such value — so the row cannot be mistaken for something a profile asked
+// for.
+func describeBwrapAuthoredEnv(out *os.File, p *policy.Policy) {
+	if p.Chdir == "" {
+		return
+	}
+	fmt.Fprintln(out, strings.TrimRight("  "+pad("PWD", 16)+" "+
+		pad(visibleValue(p.Chdir), 31)+" "+pad("(bwrap)", 9)+" --chdir", " "))
+	// ONE LINE, deliberately. This row is on every --dry-run, including the
+	// default one, and cmd/snug/testdata/env.defaults.txt staying quiet is the
+	// review artifact for issue #84's deferral — three lines of explanation about
+	// a harmless variable would be exactly the "teaches the reader to skip marks"
+	// noise that decision was avoiding.
+	for _, frag := range wrapMark("  ← bwrap sets this from --chdir; snug does not") {
+		fmt.Fprintln(out, frag)
+	}
 }
 
 // pad is %-Ns counted in RUNES rather than bytes. PS1 is snug's own and carries
@@ -363,14 +443,90 @@ func pad(s string, n int) string {
 	return s
 }
 
-// envLine is one rendered row: consecutive entries that agree on verb, note and
+// The geometry of a mark line, and both numbers are load-bearing.
+//
+// WIDTH. A row can carry three marks at once — `← unchecked` about the NAME, the
+// annotation about what the tool DOES, and `← not granted` about the VALUE — and
+// concatenating all three onto one line of a fixed-column table produced, measured
+// on this host before this change:
+//
+//	277  GIT_CONFIG_KEY_0 …  ← unchecked …  ← GIT_CONFIG_*: git reads this at the …
+//	272  NPM_CONFIG_SCRIPT_SHELL …
+//	264  GIT_SSH  /var/lib/toolchain/ssh  set  worst  ← unchecked …  ← git runs this …  ← not granted
+//
+// At 80 columns that is 3–4 UNINDENTED wrapped fragments in the middle of a
+// 20-row aligned table, with `← not granted` — the one verdict about that value —
+// landing at the end of the third fragment, typographically indistinguishable
+// from snug's prose. Every other --dry-run block already fits 80 (the seccomp
+// list wraps at 64, the bwrap notes reach 78, the topology block 81), so 80 is
+// the house width and this block was the outlier.
+//
+// INDENT, and this is a security property rather than taste. Column 19 is
+// TAKEN: a continuation BAND of a list variable renders pad("",16) — exactly 19
+// spaces — and so does a drop line. A mark starting there would be told apart
+// from a value only by the `←` glyph, and visibleValue does not escape that
+// glyph (it is not a control character), so a value could render a line that
+// reads as snug's own verdict. That is the §2.3 class — a profile's text
+// authoring a LIE on the screen a human trusts — one layer down from the
+// newline case. At 21 no data line can reach the column, and the rule
+// "a line indented 20 or more is snug's own mark" is structural.
+// TestNoEnvironmentLineCanBeMistakenForAMark asserts it.
+const (
+	markIndent  = 21
+	markWrapPad = 2 // hanging indent for the wrapped remainder of one mark
+	screenWidth = 80
+)
+
+// wrapMark renders one mark as its own indented line, or several if it does not
+// fit. It breaks on spaces ONLY and never splits a token: a path cut in half is
+// a lie about a path, and these lines carry paths. Widths are counted in RUNES
+// for the reason pad is — the block already carries an emoji and a `←` per mark.
+//
+// The caller hands over the mark exactly as internal/policy rendered it, leading
+// spaces and all: that "  ← " prefix is `snug profile show`'s business (it
+// concatenates), so this sink trims rather than asking policy for a second
+// spelling. One wording, two screens — see policy.UncheckedEnvNote.
+func wrapMark(mark string) []string {
+	s := strings.TrimLeft(mark, " ")
+	if s == "" {
+		return nil
+	}
+	head := strings.Repeat(" ", markIndent)
+	cont := strings.Repeat(" ", markIndent+markWrapPad)
+
+	var out []string
+	prefix, cur := head, ""
+	for _, word := range strings.Fields(s) {
+		switch {
+		case cur == "":
+			cur = word
+		case utf8.RuneCountInString(prefix)+utf8.RuneCountInString(cur)+1+
+			utf8.RuneCountInString(word) > screenWidth:
+			out = append(out, prefix+cur)
+			prefix, cur = cont, word
+		default:
+			cur += " " + word
+		}
+	}
+	if cur != "" {
+		out = append(out, prefix+cur)
+	}
+	return out
+}
+
+// envLine is one rendered row: consecutive entries that agree on verb, marks and
 // provenance are one line, which is what makes a band read as a band rather than
 // as four unrelated rows.
+//
+// marks is a SLICE and not a concatenated string, which is the whole of the
+// rendering fix: the three statements a row can carry are three statements, and
+// they render as three lines. The order is fixed by envLines and asserted by
+// TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark.
 type envLine struct {
 	values []string
 	verb   string
 	from   string
-	mark   string
+	marks  []string
 }
 
 func envLines(p *policy.Policy, v policy.EnvVar) []envLine {
@@ -380,12 +536,82 @@ func envLines(p *policy.Policy, v policy.EnvVar) []envLine {
 		if e.Verb == policy.VerbSnug {
 			from = e.Note
 		}
-		mark := grantMark(p, v.Name, e.Value)
-		if n := len(out); n > 0 && out[n-1].verb == verb && out[n-1].from == from && out[n-1].mark == mark {
+		var marks []string
+		add := func(s string) {
+			if s != "" {
+				marks = append(marks, s)
+			}
+		}
+		// THE UNCHECKED MARK JOINS THE GRANT MARK; it does not replace it, and
+		// the first draft of this change had it the other way round.
+		//
+		// The argument for replacing was that `← not granted` is a claim about a
+		// PATH, and for an unrostered name snug does not know the value is one —
+		// the same reason the coupling rule leaves such a value alone
+		// (envcoupling.go's isPathValued). Two independent reviews measured what
+		// that actually did, and it removed information the screen had on the
+		// base commit: the identical profile text rendered `← not granted`
+		// before the flip and only `← unchecked` after it, so a human reading
+		// --dry-run stopped being told that the path a profile just handed the
+		// sandbox does not exist inside it. It also inverted the pair — a
+		// ROSTERED code-carrying scalar (`set BASH_ENV = "/var/lib/x"`) kept the
+		// verdict while the UNROSTERED one lost it.
+		//
+		// The two marks are two different statements and both are true
+		// independently. `unchecked` is about the NAME: snug has no roster row,
+		// so nothing about this variable's meaning was checked. `not granted` is
+		// about this VALUE as a string: it is spelled like an absolute path and
+		// no mount covers it. grantMark presumes no type it did not already
+		// presume for every rostered scalar — its whole test is HasPrefix(value,
+		// "/") and a lookup in p.Mounts — and it is exactly as approximate for
+		// BASH_ENV, whose value is a path, as for LESSOPEN, whose value is a
+		// command line. Suppressing it for one of those and not the other was
+		// the difference this branch introduced, not a difference in what snug
+		// knows.
+		//
+		// THREE STATEMENTS, ONE ORDER, and none of them replaces another. The
+		// third arrived with the annotation table (issue #44's second pass), and
+		// it is inserted between the other two rather than beside them:
+		//
+		//   unchecked   about the NAME — snug has no roster row, so no type
+		//   EnvNote     about what the tool DOES with the value
+		//   grantMark   about the VALUE as a path — nothing inside covers it
+		//
+		// The order is narrowest-scope-last and is fixed by
+		// TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark. `unchecked` comes
+		// first because it qualifies everything after it. The note comes before
+		// grantMark because it is about the variable's MEANING, while grantMark
+		// is about this one string.
+		//
+		// They ARE THREE LINES rather than one, and that is the second half of the
+		// same argument: three statements concatenated onto one row of an aligned
+		// table produced a 277-column line whose last mark — the verdict about this
+		// very value — was unreadable (see markIndent). The ORDER is unchanged; only
+		// the geometry is.
+		//
+		// The two can co-occur, and that is not a contradiction: `set
+		// PIP_INDEX_URL` has no roster row (unchecked — snug has no type for it)
+		// and matches an annotated family (PIP_*: outranks the config file pip
+		// reads). Both sentences are true and they answer different questions.
+		//
+		// Both strings come from internal/policy, so `snug profile show` renders
+		// the identical text: one property, one wording, two screens. That was
+		// claimed here while this sink still held its own copy of the unchecked
+		// string and the other sink held a second — see policy.UncheckedEnvNote.
+		add(policy.UncheckedEnvNote(v.Name, e.Verb))
+		add(policy.EnvNote(v.Name, e.Verb))
+		add(grantMark(p, v.Name, e.Value))
+		// The collapse key is unchanged in MEANING — it was the concatenated mark
+		// string and is now the same statements compared elementwise. A band of
+		// several values that all carry the identical marks stays one row with one
+		// set of marks under it.
+		if n := len(out); n > 0 && out[n-1].verb == verb && out[n-1].from == from &&
+			slices.Equal(out[n-1].marks, marks) {
 			out[n-1].values = append(out[n-1].values, elementValue(v.Name, e.Value))
 			continue
 		}
-		out = append(out, envLine{values: []string{elementValue(v.Name, e.Value)}, verb: verb, from: from, mark: mark})
+		out = append(out, envLine{values: []string{elementValue(v.Name, e.Value)},
+			verb: verb, from: from, marks: marks})
 	}
 	return out
 }
@@ -427,11 +653,69 @@ func elementValue(name, s string) string {
 //
 // A value with no control characters renders unchanged, so the ordinary screen —
 // and every golden — is untouched.
+//
+// THE TRIGGER WAS ASCII-ONLY AND THAT LEFT THE C1 CONTROLS RAW (redteam host
+// round 2, F6). `r < 0x20 || r == 0x7f` misses U+0085 (NEL) and U+009B (CSI —
+// the single-character form of ESC-[), which are neither below 0x20 nor DEL, so
+// a profile description containing ONLY C1 characters reached every sink
+// verbatim:
+//
+//	$ snug profile list | grep c1 | cat -A
+//	  c1   harmlessM-BM-^[1AM-BM-^[1G@sys   shipped by snugM-BM-^Esneaky$
+//
+// Note the asymmetry that hid it, because it is the reusable half: mix ONE ASCII
+// control into the same value and %q escapes the C1 characters too — Go's
+// strconv quotes anything unicode.IsPrint rejects — so the guard LOOKS like it
+// covers them. Only a pure-C1 value shows that the TRIGGER, not the escaper, was
+// the narrow half.
+//
+// Latent rather than live on this box: tmux 3.7b does not interpret C1 decoded
+// from UTF-8 (measured with `tmux capture-pane` — the bytes sit in the cell, no
+// line was overwritten). It becomes live on a terminal in 8-bit C1 mode.
+//
+// WHAT COUNTS AS FORGING IS NOT DECIDED HERE. It is policy.IsForgingRune, which
+// this file's isForgingRune wraps and does not extend: C0/DEL/C1 through
+// unicode.IsControl, U+2028/U+2029 by name, and the nine UAX #9 explicit
+// directional formatting characters — the last group added after a red team
+// rendered U+202E raw into this very block, the --setenv argv line, `profile
+// show` and `profile list`, in a value, a description and a mount path. The
+// argument for the edge of that set, including the characters deliberately left
+// out of it, is at the predicate.
+//
+// AND INVALID UTF-8 IS ESCAPED WHOLESALE, which is the live half of the same
+// finding. A raw 0x9b byte is not valid UTF-8, so it decodes to RuneError and no
+// rune predicate can see it — while on a terminal in 8-bit mode it IS the CSI
+// introducer. The values that can carry one are the HOST's (`inherit`,
+// `sanitise`, a host path in a bind): checkEnvValue cannot reach those, and TOML
+// cannot produce them, so this is the only guard that can.
+// It is policy.VisibleText, not a copy of it, for the reason isForgingRune below
+// gives: this file held one of the copies that agreed with each other and not
+// with the two in internal/policy, and the sink that was still rendering raw was
+// a REFUSAL — the screen a human reads most carefully, since it is the one that
+// stopped them.
 func visibleValue(s string) string {
-	if !strings.ContainsFunc(s, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
-		return s
-	}
-	return strings.Trim(fmt.Sprintf("%q", s), `"`)
+	return policy.VisibleText(s)
+}
+
+// isForgingRune is "this rune can author a line snug did not write", and it is
+// now literally the same predicate policy.checkEnvValue refuses at parse time
+// rather than a second spelling of it.
+//
+// IT WAS A COPY, AND THE COPY IS WHAT LET U+202E THROUGH. The two spellings were
+// widened together when the ASCII-only trigger was found, which read as evidence
+// that "kept in step by TestNoSnugScreenEmitsARawControlCharacter" was working \u2014
+// and it was, for the two sites that test drives. It never covered
+// policy.Validate's guest-path check or Identity.CheckText, which stayed
+// ASCII-only through the whole of that round, and when round 3 arrived with a
+// category-Cf character it walked past all four at once. A test that keeps N
+// copies in step is worth less than not having N copies: the argument for the
+// SET, including which characters are deliberately not in it, lives at
+// policy.IsForgingRune (internal/policy/forging.go).
+//
+// This wrapper stays because visibleValue needs a func(rune) bool and because
+// the name is what the tests here read; it must never grow a case of its own.
+func isForgingRune(r rune) bool {
+	return policy.IsForgingRune(r)
 }
 
 // grantMark is §4.2's repair, and it is a MARK rather than a refusal on purpose.

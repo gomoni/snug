@@ -123,14 +123,24 @@ func (p *Policy) Validate(env Environ) error {
 		// may legally be named with a newline, and refusing to bind it would be
 		// snug inventing a rule about someone else's filesystem. The renderer
 		// handles that half.
-		if i := strings.IndexFunc(g, func(r rune) bool { return r < 0x20 || r == 0x7f }); i >= 0 {
-			return fmt.Errorf("grant %q (from %s) has a control character (%q) in its path INSIDE "+
-				"the sandbox.\n"+
+		//
+		// THIS TRIGGER WAS ASCII-ONLY FOR TWO ROUNDS OF THE SAME FINDING. When a
+		// red team put U+0085 and U+009B through snug's screens, checkEnvValue and
+		// the renderer were widened to unicode.IsControl and this site — the same
+		// rule, one table over, guarding the same block of the same screen — was
+		// not touched, because its own test asserted its own spelling and passed.
+		// It now asks the one predicate every sink asks (IsForgingRune), which is
+		// also what added the directional overrides here in the same line of code
+		// that added them to the environment values.
+		if i := strings.IndexFunc(g, IsForgingRune); i >= 0 {
+			r := []rune(g[i:])[0]
+			return fmt.Errorf("grant %q (from %s) has %q in its path INSIDE the sandbox, and "+
+				"%s.\n"+
 				"       Every line of `snug --dry-run` is one grant, so a path that spans two lines "+
 				"can forge\n"+
 				"       a row for a grant that does not exist. No mountpoint needs one; write the "+
 				"path you meant.",
-				g, provenance(m), string(g[i]))
+				g, provenance(m), r, forgingRuneReason(r))
 		}
 		// The root is snug's, whatever the kind. This used to refuse only a BIND
 		// at /, which left `tmpfs = ["/"]` accepted — and inert, but only by
@@ -460,14 +470,23 @@ func checkNesting(env Environ, outer Mount, at string, inner Mount) error {
 // describeNode names what a grant puts at its guest path, for a refusal.
 // The message used to read "an empty tmpfs" for every kind that was not a bind,
 // so a symlink conflict was reported as a tmpfs.
+//
+// THE HOST PATH GOES THROUGH VisibleText, because a refusal is a screen. Six
+// masking refusals are built from this one function, and every one of them was
+// rendering a host path verbatim — measured on this branch: a bind of a
+// directory whose name carries U+202E printed escaped in the FILESYSTEM block
+// and in the --ro-bind line, and RAW in the refusal that stopped the run. A host
+// path cannot be REFUSED for its characters (a file on this machine may legally
+// be named that way, and Validate says so), so rendering is the only guard there
+// is, and it has to be at every sink rather than at the two that were tested.
 func describeNode(m Mount) string {
 	switch m.Kind {
 	case KindBind:
-		return fmt.Sprintf("a bind of %s", m.Host)
+		return fmt.Sprintf("a bind of %s", VisibleText(m.Host))
 	case KindTmpfs:
 		return "an empty tmpfs"
 	case KindSymlink:
-		return fmt.Sprintf("a symlink to %s", m.Host)
+		return fmt.Sprintf("a symlink to %s", VisibleText(m.Host))
 	case KindData:
 		return "generated file content"
 	case KindProc:

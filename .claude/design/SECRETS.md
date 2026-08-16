@@ -286,9 +286,12 @@ processes pass. Three consequences, all load-bearing for §3:
 - **An execute-only binary with an embedded secret does not work.** It is the
   first idea anyone has on hearing "stub" and it is dead on arrival: the payload
   runs it, then reads its memory. It does not even need that — it can `export
-  LD_PRELOAD=...` for its own children, because `forbiddenEnv`
-  (`resolve.go:457`) constrains what a *profile* may grant, not what the payload
-  may set.
+  LD_PRELOAD=...` for its own children, because everything snug has to say about
+  that name (`policy.EnvNote`, `internal/policy/envtypes.go`) is about what a
+  *profile* writes, not about what the payload may set. Since
+  ENVIRONMENT-VARIABLES.md §2.9 it does not even constrain the profile: it
+  annotates it. Neither version reaches the payload's own environment, which is
+  the point being made here.
 - Any design whose safety depends on a secret held by a *process inside the
   sandbox* is unsound, whatever the mechanism.
 

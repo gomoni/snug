@@ -28,6 +28,55 @@ kernel 0-days, hardware side channels, a determined human attacker with local
 root. Do not spend effort on the out-of-scope items, and do not report them as
 findings — but do report if a change *lowers the bar* to one of them.
 
+**The profile author is not your adversary, and this is the boundary that
+decides half of what you should stop reporting.** snug's line runs between the
+sandbox and the host: inside it the payload is hostile by assumption, and that is
+what the empty root, the empty netns, the empty environment and the seccomp
+filter are for. On the other side of the line stands a human choosing profiles.
+A profile is a *named hole* that human opened deliberately, invariant 3 puts the
+trusted profile set outside the sandboxed material precisely so that it is their
+decision and not the payload's, and snug does not second-guess them anywhere
+else in the tool. **You get what you configure.** It is a unix tool and it hands
+you enough rope.
+
+So these are NOT findings, however alarming the reproduction looks:
+
+- A profile that grants too much. `rw = ["{home}"]` really does give the sandbox
+  the real `$HOME`; `@net-host` really does put it on the host's network. Both
+  say so, both are on screen, and neither is snug's to prevent.
+- A typo, a copy-paste, or a profile that is simply wrong. A misconfigured
+  profile is a real security hole and a **user-inflicted** one.
+- A profile setting a variable whose value is a program — `EDITOR`,
+  `GIT_SSH`, `MAKESHELL` — and that program then running. Since issue #44 that
+  is disclosure's job, not a refusal's: see below.
+- "A user *could* write a profile that does X", where X is what the profile
+  plainly says. Composition does not change this: `snug -p work -p helper`, where
+  `helper` hijacks the identity `work` pinned, is a hostile profile the human
+  selected, exactly like selecting one with `rw {home}`.
+
+What replaces that whole class, and it is the more interesting target: **the
+screen must not lie, and it must not imply safety it did not check.** snug's
+roster (`internal/policy/envtypes.go`) is what snug KNOWS, not what it permits,
+and every measurement it holds is owed to the human as an annotation on
+`--dry-run`. So these ARE findings:
+
+- A profile achieving an effect it did not NAME. A NUL in a value authoring a
+  bwrap flag, an overmount masking another profile's grant, a `tmpfs` at
+  `/run/snug/bin` turning snug's own PATH band into a shadow slot. The
+  distinguishing question is always: *did the profile say it, and does the screen
+  show it?* — not *is it dangerous?*
+- snug handing over something the screen does not show, or showing something
+  snug does not do.
+- **A hole that does not look like one.** `rw {home}` reads as dangerous on
+  sight; `EDITOR=…` does not. A name snug has a roster row for whose value is
+  executed, rendering with no annotation saying so, is a lie by omission and is
+  worth more than a refusal would have been. A name snug has NO row for must
+  render `← unchecked` — if an unrostered name reaches the payload with no mark,
+  that is a finding, because the absence of a mark reads as approval.
+- The annotation catalogue being wrong, as opposed to incomplete. Incomplete is
+  expected and is what the `unchecked` mark exists to make honest; *wrong* —
+  a row that says a value is inert when you measured it running — is a finding.
+
 ## Attack surface checklist
 
 Work through these, and prefer actually running the attack over reasoning about it:
@@ -95,6 +144,13 @@ Everything above asks *what can I break out of*. This asks a different question,
 and it is the one that has been missed: **working exactly as designed, what did
 we hand over?** A profile can be correct, documented, reviewed and still be the
 problem, so a sweep that finds "nothing is escapable" is not an answer to it.
+
+Note who the author is here, because it is what keeps this section consistent
+with the threat model above: the sweep runs over the profiles **snug ships**, and
+those are ours. "You get what you configure" is an answer available to the human
+who wrote a profile; it is not available to us about `@claude` or `@git-ro`.
+A shipped grant that hands over more than its abuse comment claims is a finding
+against snug, not a configuration choice.
 
 For the default selection, and then for each shipped profile in turn:
 
