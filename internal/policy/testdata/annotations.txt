@@ -16,6 +16,10 @@
 
 ## exact names
 
+ANTHROPIC_API_KEY        set       ← the value IS an API credential, and every process in the sandbox reads it out of /proc/self/environ; @claude's environ.inherit refuses this name for the same reason
+ANTHROPIC_API_KEY        inherit   ← the value IS an API credential, and every process in the sandbox reads it out of /proc/self/environ; @claude's environ.inherit refuses this name for the same reason
+ANTHROPIC_AUTH_TOKEN     set       ← the value IS an API credential — named beside apiKeyHelper in the client's own credential-selection strings — and every process in the sandbox reads it out of /proc/self/environ
+ANTHROPIC_AUTH_TOKEN     inherit   ← the value IS an API credential — named beside apiKeyHelper in the client's own credential-selection strings — and every process in the sandbox reads it out of /proc/self/environ
 ANTHROPIC_BASE_URL       set       ← every request the agent makes, conversation included, goes to this endpoint instead of Anthropic's (documented, not measured on this host)
 ANTHROPIC_BASE_URL       inherit   ← every request the agent makes, conversation included, goes to this endpoint instead of Anthropic's (documented, not measured on this host)
 BASH_ENV                 set       ← every non-interactive bash SOURCES this file at startup; the value must be an absolute path, and one this profile does not grant names a file the sandbox will not have
@@ -27,6 +31,10 @@ CC                       inherit   ← make's implicit rules run this as the com
 CLASSPATH                merge     ← the JVM's application class loader searches these in order, so an application class here shadows one later on the path; platform/JDK classes are not shadowed, and `java -cp` and `java -jar` ignore this variable outright (measured, temurin 21, in a container — no JVM on this host)
 CLASSPATH                prepend   ← the JVM's application class loader searches these in order, so an application class here shadows one later on the path; platform/JDK classes are not shadowed, and `java -cp` and `java -jar` ignore this variable outright (measured, temurin 21, in a container — no JVM on this host)
 CLASSPATH                sanitise  ← the JVM's application class loader searches these in order, so an application class here shadows one later on the path; platform/JDK classes are not shadowed, and `java -cp` and `java -jar` ignore this variable outright (measured, temurin 21, in a container — no JVM on this host)
+CLAUDE_CODE_OAUTH_TOKEN  set       ← the value IS the agent's credential, and every process in the sandbox reads it out of /proc/self/environ; @claude stages a credentials FILE instead, for that reason
+CLAUDE_CODE_OAUTH_TOKEN  inherit   ← the value IS the agent's credential, and every process in the sandbox reads it out of /proc/self/environ; @claude stages a credentials FILE instead, for that reason
+CLAUDE_CODE_PROCESS_WRAPPER set       ← this profile chooses an argv PREFIX for the agent's supervisor and every session and worker it hosts, so the value runs in place of each process the agent spawns (documented, not measured on this host)
+CLAUDE_CODE_PROCESS_WRAPPER inherit   ← the agent's supervisor and every session and worker it hosts run behind this argv prefix, chosen on the host, outside any profile
 DOCKER_CONFIG            set       ← credsStore in this directory's config.json is a program docker executes, and it runs before docker reaches a daemon (measured, docker 29.4)
 DOCKER_CONFIG            inherit   ← taking the host's value points docker back at the host's config, credentials included; `set` it to a path a profile authored
 EDITOR                   set       ← the value is a command; git runs it for a commit message via GIT_EDITOR -> core.editor -> VISUAL -> EDITOR (measured)
@@ -199,12 +207,16 @@ GH_CONFIG_DIR            inherit   (no profile may write this name — ownership
 #           written, because a relative path means whatever is in the directory
 #           the payload was last in, which inside snug is --chdir <target>.
 
+ANTHROPIC_API_KEY        opaque    (no row)     accepted
+ANTHROPIC_AUTH_TOKEN     opaque    (no row)     accepted
 ANTHROPIC_BASE_URL       opaque    -            accepted
 BASH_ENV                 path      pathNoGrant  REFUSED
 CARGO_HOME               path      path         REFUSED
 CC                       program   (no row)     accepted
 CDPATH                   -         path         REFUSED
 CLASSPATH                path      path         REFUSED
+CLAUDE_CODE_OAUTH_TOKEN  opaque    (no row)     accepted
+CLAUDE_CODE_PROCESS_WRAPPER program   (no row)     accepted
 DOCKER_CONFIG            path      path         REFUSED
 EDITOR                   program   -            accepted
 ENV                      path      pathNoGrant  REFUSED
