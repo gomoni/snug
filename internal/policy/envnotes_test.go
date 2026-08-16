@@ -308,6 +308,12 @@ func TestPointerExemptionsAgreeBetweenTheTwoTables(t *testing.T) {
 // FAMILY's wording at the verb that authors it is the PIP_ defect this branch
 // already fixed once. It is that "exempt" means "no family sentence" rather than
 // "no sentence".
+//
+// IT CHECKS ONE VERB, and that was itself a gap: `set` alone. A pointer with an
+// `authored` sentence and no `host` one passes here and renders its family's
+// sentence at `inherit` — which is what GIT_CONFIG_SYSTEM did, with a sentence
+// measured to be FALSE of it. The other verb is
+// TestNoPointerEverRendersItsFamilysSentence, below.
 func TestEveryPointerSaysWhatTheFileItNamesIs(t *testing.T) {
 	// The same predicate the golden above uses: a pair no profile can write can
 	// have nothing to say to anybody.
@@ -353,6 +359,68 @@ func TestEveryPointerSaysWhatTheFileItNamesIs(t *testing.T) {
 	// finding an empty list.
 	if checked < 5 {
 		t.Fatalf("only %d writable pointers were checked; this test measures almost nothing", checked)
+	}
+}
+
+// ── F2 (redteam host round 2): a pointer never renders its FAMILY's sentence ──
+//
+// TestEveryPointerSaysWhatTheFileItNamesIs checks ONE VERB and one half of the
+// property: that `set` says something, and that what it says is not the family's
+// wording. The other half was unchecked, and it was false. GIT_CONFIG_SYSTEM
+// carried an `authored` sentence and no `host` one, so at `inherit` noteFor fell
+// through to the GIT_CONFIG_ family sentence — "git reads this at the
+// command-line scope, above the global file, above the repository's own
+// .git/config, and above any include". Measured INSIDE a sandbox, that is FALSE
+// of this name: it renames git's SYSTEM file, the LOWEST scope, and .git/config
+// beat it in the same session while GIT_CONFIG_KEY_0 — the name the family
+// sentence WAS measured on — entered at `command line:` as the control.
+//
+// The mechanism generalises past this name, which is why the assertion is over
+// the table: an exact entry with one of its two fields empty does not render
+// nothing at that verb, it renders its FAMILY's sentence, and a family sentence
+// is by construction a claim about a different name. So a writable pointer needs
+// BOTH fields — and the `inherit` half is the one that matters most, because
+// taking the host's file is exactly what "generate, don't bind" exists to stop.
+func TestNoPointerEverRendersItsFamilysSentence(t *testing.T) {
+	verbs := []EnvVerb{VerbSet, VerbMerge, VerbPrepend, VerbInherit, VerbSanitise}
+
+	checked := 0
+	for _, p := range inlineConfigPointers {
+		// Ownership refuses the two snug writes itself at every verb, so no
+		// sentence about them can reach a screen. Same carve-out as the sibling
+		// test, which asserts that this arm holds exactly two names.
+		if ValidateEnvGrants(EnvGrants{Set: map[string]string{p.name: "/opt/x"}}) != nil {
+			continue
+		}
+		checked++
+
+		n, ok := noteExact(p.name)
+		if !ok || n.authored == "" || n.host == "" {
+			t.Errorf("%s is a writable pointer with authored=%q host=%q. A pointer needs BOTH: "+
+				"an empty field does not render silence at that verb, it falls through to the "+
+				"family table and renders a sentence about a DIFFERENT name. GIT_CONFIG_SYSTEM "+
+				"is the measured case — it was told it enters at git's command-line scope when "+
+				"it is git's system file, the lowest scope there is", p.name, n.authored, n.host)
+			continue
+		}
+		for _, verb := range verbs {
+			note := EnvNote(p.name, verb)
+			if p.prefix != "" && strings.Contains(note, p.prefix+"*:") {
+				t.Errorf("%s renders its family's sentence at %s: %q. That sentence is about the "+
+					"family's INLINE spelling (GIT_CONFIG_KEY_n, PIP_INDEX_URL, …); this name "+
+					"points at a FILE and needs its own", p.name, verb, note)
+			}
+		}
+	}
+	if checked < 5 {
+		t.Fatalf("only %d writable pointers were checked; this test measures almost nothing", checked)
+	}
+	// POSITIVE CONTROL for the detector: the family label really is what a
+	// non-exempt name under the same prefix renders, at the same verb. Without
+	// this, a change to noteFor's label would make the loop above vacuous.
+	if got := EnvNote("GIT_CONFIG_KEY_0", VerbInherit); !strings.Contains(got, "GIT_CONFIG_*:") {
+		t.Fatalf("GIT_CONFIG_KEY_0 no longer renders the family label at inherit (%q), so the "+
+			"assertion above is looking for a string nothing produces", got)
 	}
 }
 
@@ -437,5 +505,51 @@ func TestTheFalsifiedAnnotationsStayFalsified(t *testing.T) {
 		t.Errorf("HOSTALIASES = %q, which does not say the limit that was measured: glibc 2.43 "+
 			"rewrote `myhost` and left `example.invalid` alone, and the mapping is name -> "+
 			"NAME rather than name -> address", ha)
+	}
+
+	// LOCPATH, added by the F4 labelling pass — the fourth sentence not to survive
+	// being measured. It claimed "a locale object is code". Measured, glibc 2.43,
+	// with two controls: the locale DATA is honoured (/usr/bin/printf '%.2f' 1.5
+	// prints 1,50 with LOCPATH set and 1.50 without), and a shared object dropped
+	// into the same directory is never loaded — its constructor, which fires
+	// reliably under LD_PRELOAD, printed nothing. GCONV_PATH two rows up IS the
+	// code one, and keeping the two apart is the whole value of both rows.
+	lp := EnvNote("LOCPATH", VerbSet)
+	if strings.Contains(lp, "locale object is code") {
+		t.Errorf("LOCPATH claims a locale object is code again: %q. glibc mmaps compiled locale "+
+			"DATA; nothing in the directory is dlopen'd (measured, glibc 2.43, with the "+
+			"control). GCONV_PATH is the row where a module really is loaded", lp)
+	}
+	if !strings.Contains(lp, "data") {
+		t.Errorf("LOCPATH = %q, which no longer says the thing that was measured — that what "+
+			"comes out of this directory is data rather than code", lp)
+	}
+	// The CONTROL for that correction, and it is the row next door: GCONV_PATH
+	// must still say the opposite, because a search-and-replace over "is code" in
+	// this block would silently take the true claim with the false one.
+	if gc := EnvNote("GCONV_PATH", VerbSet); !strings.Contains(gc, "code") {
+		t.Errorf("GCONV_PATH = %q, and a module loaded from there IS code — measured, glibc "+
+			"2.43: a constructor in the module ran on the first conversion, with the control "+
+			"failing to convert at all", gc)
+	}
+
+	// CLASSPATH, the third correction of this pass. No CI can run a JVM, so the
+	// sentence itself is the artifact and this is the assertion that makes a
+	// revert to the overstated wording fail BY NAME rather than only as a golden
+	// diff. Measured in a container (temurin 21) with controls: -cp overrides
+	// $CLASSPATH entirely, -jar ignores it outright, and a JDK class is not
+	// shadowed (loader of Objects=null).
+	cp := EnvNote("CLASSPATH", VerbMerge)
+	for _, want := range []string{"-cp", "-jar", "not shadowed"} {
+		if !strings.Contains(cp, want) {
+			t.Errorf("CLASSPATH = %q, which does not carry the qualification %q. Without it the "+
+				"row says a class here replaces the real one — true only for an application "+
+				"class, only without -cp and without -jar, and never for a platform class. "+
+				"NODE_PATH's row already carries the equivalent limit", cp, want)
+		}
+	}
+	if np := EnvNote("NODE_PATH", VerbMerge); !strings.Contains(np, "not shadowed") {
+		t.Errorf("NODE_PATH = %q, and it is the row CLASSPATH was corrected to match — core "+
+			"modules are not shadowed, measured, node 26.4, with the control", np)
 	}
 }

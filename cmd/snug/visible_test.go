@@ -33,6 +33,22 @@ import (
 //
 // ESC and CR are the probes because legitimate output never contains either.
 // Newline is excluded for the obvious reason.
+//
+// THE PROBE SET IS NOW C1 AS WELL, and the reason is that the guard was ASCII-
+// only for a milestone while this test could not have noticed (redteam host
+// round 2, F6). `visibleValue` triggered on `r < 0x20 || r == 0x7f`, so U+0085
+// (NEL) and U+009B (CSI — the single-character form of ESC-[) passed every sink
+// raw. Note the asymmetry that hid it, because it is why the fixture below
+// carries a PURE-C1 value as well as a mixed one: mix one ASCII control into the
+// same string and %q escapes the C1 characters too, so a mixed probe passes on a
+// broken build. Latent rather than live here — tmux 3.7b does not interpret C1
+// decoded from UTF-8, measured with `tmux capture-pane` — and live on a terminal
+// in 8-bit C1 mode.
+//
+// The assertion is unicode.IsControl over the whole screen rather than a list of
+// characters, for the same reason the test drives every sink rather than one:
+// a set is checkable, an enumeration is a list someone has to remember to
+// extend.
 func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	const forged = "FORGED-BY-A-VALUE"
 
@@ -40,6 +56,12 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	// reaching the policy through the same shipped `inherit` the live case used.
 	env := newEnvFakeEnv()
 	env.env["EDITOR"] = "vim\x1b[1A\r  ro     /etc/shadow   " + forged
+	// PURE C1, in a second variable, so that no ASCII control in the same value
+	// can make %q escape these on snug's behalf. U+009B is CSI, so "\u009b1A"
+	// is the 8-bit spelling of the cursor-up the value above writes as ESC-[,
+	// and U+0085 (NEL) is a line break a C1-mode terminal acts on.
+	// @claude inherits PAGER, so this arrives by exactly the route EDITOR does.
+	env.env["PAGER"] = "less\u009b1A\u0085  ro     /etc/shadow   " + forged + "-C1"
 
 	reg, err := profile.Builtins()
 	if err != nil {
@@ -60,10 +82,17 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 		t.Fatalf("the fixture value never reached the screen, so this test is measuring "+
 			"nothing:\n%s", got)
 	}
-	if strings.ContainsAny(got, "\x1b\r") {
-		t.Errorf("--dry-run emitted a raw ESC or CR. Some sink on this screen renders text "+
-			"snug did not write, verbatim — find it and route it through visibleValue:\n%s",
-			strings.ReplaceAll(got, "\x1b", "<ESC>"))
+	if !strings.Contains(got, forged+"-C1") {
+		t.Fatalf("the pure-C1 fixture value never reached the screen, so the half of this test "+
+			"that is about C1 is measuring nothing:\n%s", got)
+	}
+	// isForgingRune is the RENDERER'S OWN predicate, so this asserts the property
+	// ("nothing on this screen can author a line") rather than a copy of a
+	// character list that could drift away from it.
+	if i := strings.IndexFunc(got, func(r rune) bool { return r != '\n' && isForgingRune(r) }); i >= 0 {
+		t.Errorf("--dry-run emitted a raw control character (%q at byte %d). Some sink on this "+
+			"screen renders text snug did not write, verbatim — find it and route it through "+
+			"visibleValue:\n%s", []rune(got[i:])[0], i, strings.ReplaceAll(got, "\x1b", "<ESC>"))
 	}
 	// …and it must be escaped in BOTH blocks, not just the one that had the
 	// guard first. Two occurrences: the ENVIRONMENT row and the --setenv flag.
@@ -90,8 +119,14 @@ func TestProfileShowEscapesEveryValue(t *testing.T) {
 	if err := os.MkdirAll(dir+"/snug/profiles.d", 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The DESCRIPTION carries the pure-C1 probe and the path carries the ASCII
+	// one, because that is exactly the shape the C1 gap was found in: `snug
+	// profile list` rendering a description of "harmless\u009b1A\u00851G@sys",
+	// which %q left alone because nothing else in the value was a control
+	// character. checkEnvValue cannot reach either — neither is an environ value —
+	// so the renderer is the only guard there is.
 	body := "[profile.forge]\n" +
-		"description = \"harmless\"\n" +
+		"description = \"harmless\\u009b1A\\u0085sneaky-" + forged + "-C1\"\n" +
 		"ro = [\"/etc/hostname\", \"/a\\u001b[1A\\r  rw     /home/u   " + forged + "\"]\n"
 	if err := os.WriteFile(dir+"/snug/profiles.d/forge.toml", []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -106,10 +141,16 @@ func TestProfileShowEscapesEveryValue(t *testing.T) {
 	if !strings.Contains(got, forged) {
 		t.Fatalf("the fixture grant never reached the screen:\n%s", got)
 	}
-	if strings.ContainsAny(got, "\x1b\r") {
-		t.Errorf("`profile show` emitted a raw ESC or CR. Measured in a 110-column tmux pane "+
-			"before this was fixed: the row above vanished from the terminal while `cat -v` "+
-			"showed it there all along:\n%s", strings.ReplaceAll(got, "\x1b", "<ESC>"))
+	if !strings.Contains(got, forged+"-C1") {
+		t.Fatalf("the C1 description never reached the screen, so half of this test measures "+
+			"nothing:\n%s", got)
+	}
+	if i := strings.IndexFunc(got, func(r rune) bool { return r != '\n' && isForgingRune(r) }); i >= 0 {
+		t.Errorf("`profile show` emitted a raw control character (%q). Measured in a 110-column "+
+			"tmux pane before this was fixed: the row above vanished from the terminal while "+
+			"`cat -v` showed it there all along. The C1 half is the same defect one encoding "+
+			"out — U+009B IS CSI, and it reached this screen raw for a milestone:\n%s",
+			[]rune(got[i:])[0], strings.ReplaceAll(got, "\x1b", "<ESC>"))
 	}
 }
 

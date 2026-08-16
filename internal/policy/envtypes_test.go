@@ -577,6 +577,20 @@ func TestEnvValueRefusesControlCharacters(t *testing.T) {
 		"a newline, which forges a row in --dry-run":      "vim\n  ro     /etc/shadow",
 		"an ESC, which rewrites the terminal":             "fast\x1b[1A\r  ro   /usr/share/doc",
 		"a DEL":                                           "x\x7f",
+		// C1, and PURE C1 on purpose (redteam host round 2, F6). This loop walked
+		// BYTES against `c >= 0x20 && c != 0x7f`, so U+009B — CSI, the
+		// single-character form of ESC-[ — and U+0085 (NEL) were accepted and
+		// reached every screen raw. The asymmetry that hid it: mix one ASCII
+		// control into the same value and %q escapes the C1 characters too, so a
+		// mixed probe passes on a broken build. This one has no ASCII control in
+		// it at all.
+		"a C1 CSI, the 8-bit spelling of ESC-[": "fast\u009b1A\u009b1G",
+		"a C1 NEL, which is a line break":       "fast\u0085  ro   /etc/shadow",
+		// Zl/Zp rather than Cc, so unicode.IsControl does not cover them and they
+		// are named in the predicate by hand — and this block is a table whose
+		// rows are one line each.
+		"a LINE SEPARATOR":      "fast\u2028  ro   /etc/shadow",
+		"a PARAGRAPH SEPARATOR": "fast\u2029  ro   /etc/shadow",
 	}
 	for why, value := range bad {
 		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{"EDITOR": value}}); err == nil {
@@ -593,7 +607,9 @@ func TestEnvValueRefusesControlCharacters(t *testing.T) {
 	// The positive control, and it is not decoration: a check that refused
 	// everything would pass every assertion above while making the format
 	// unusable. Ordinary values, including the ones the shipped profiles carry.
-	for _, value := range []string{"vim", "/usr/share", "en_US.UTF-8", "1", ""} {
+	// The é and the arrow are the control that stops unicode.IsControl being read
+	// as "anything non-ASCII": a value snug renders every day contains both.
+	for _, value := range []string{"vim", "/usr/share", "en_US.UTF-8", "1", "", "café", "a → b"} {
 		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{"EDITOR": value}}); err != nil {
 			t.Errorf("environ.set EDITOR = %q was refused: %v", value, err)
 		}
@@ -694,6 +710,82 @@ func TestPrefixAnnotationsCoverExactlyTheirPrefix(t *testing.T) {
 			t.Errorf("environ.set %s is annotated %q, but %q is not under any known prefix — a "+
 				"rule that catches it catches too much, and a sentence about the wrong family is "+
 				"worse than none because a reader will act on it", name, got, name)
+		}
+	}
+}
+
+// TestEveryMergeableListIsPathValued is the STRUCTURAL argument behind a
+// property cmd/snug asserts empirically, and it belongs here because this table
+// is where the property is actually decided.
+//
+// The rule on the screen (cmd/snug's TestNoEnvironmentLineCanBeMistakenForAMark)
+// is: a line indented 20 or more is snug's own mark, and no data line can reach
+// that column. A red team went looking for a way to forge one and found the mark
+// column UNREACHABLE rather than merely unreached, by this chain (host round 2,
+// §4.1):
+//
+//  1. a scalar always renders on the row that carries its NAME, at indent 2,
+//     with the verb and provenance columns still to its right — so profile text
+//     in a scalar cannot start a line at all;
+//  2. the only profile text that reaches a line of its own is a continuation
+//     BAND of a LIST, rendered at indent 19;
+//  3. a list verb needs a roster row (checkUnrosteredName), and `merge`/
+//     `prepend` additionally need `mergeable`;
+//  4. every mergeable list is `path: true` — THIS TEST — so checkAbsoluteElement
+//     refuses any element that does not begin with '/';
+//  5. therefore a continuation line always begins with a slash at column 20, and
+//     can never begin with whitespace or with '←'.
+//
+// A mechanical sweep of --dry-run with the arrow, U+2003, U+00A0 and U+009B
+// planted in a value, a description, a guest path, a host path and a merge
+// element found 12 lines at indent >= 20 and ZERO of them carrying any
+// attacker-supplied token.
+//
+// Step 4 is the only step that is a fact about a table rather than about code,
+// which makes it the one that can be broken by a one-line edit: adding a
+// mergeable list that is not path-valued (a list of FLAGS, say — GOFLAGS is
+// exactly that shape and is deliberately not mergeable) would put arbitrary
+// profile text at the continuation column, and every step above it would still
+// be true. So the screen's rule would fail in cmd/snug, far from the edit that
+// caused it, with nothing pointing back here. This test is that pointer.
+func TestEveryMergeableListIsPathValued(t *testing.T) {
+	mergeable := 0
+	for name, tp := range envTypes {
+		if !tp.mergeable {
+			continue
+		}
+		mergeable++
+		if !tp.path {
+			t.Errorf("%s is mergeable and NOT path-valued. A profile's `merge` elements are the "+
+				"only text that reaches the continuation column of --dry-run's ENVIRONMENT "+
+				"block, and what keeps them from starting a line that reads as snug's own mark "+
+				"is checkAbsoluteElement forcing a leading '/'. That check is keyed on "+
+				"valueIsAPath. Either this list carries paths and wants `path: true`, or it "+
+				"carries something else and must not be mergeable — see "+
+				"TestNoEnvironmentLineCanBeMistakenForAMark for what breaks", name)
+		}
+	}
+	// POSITIVE CONTROL: the roster really does contain mergeable lists, so this
+	// cannot pass over an empty loop.
+	if mergeable < 5 {
+		t.Fatalf("only %d mergeable lists in the roster; this test measured almost nothing", mergeable)
+	}
+	// THE BEHAVIOUR, not just the flag, because step 4 above is only worth
+	// anything if the refusal actually fires. One relative element per mergeable
+	// name, through the real resolver.
+	for name, tp := range envTypes {
+		if !tp.mergeable {
+			continue
+		}
+		reg := testRegistry()
+		reg["band"] = &Profile{Name: "band", Include: []ProfileName{"@cwd-rw"},
+			Environ: EnvGrants{Merge: map[string][]string{name: {" ← not granted"}}}}
+		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "band"}, testCtx(), newFakeEnv())
+		if err == nil {
+			t.Errorf("environ.merge %s accepted an element beginning with an em space and an "+
+				"arrow. Rendered, that is a continuation line whose visual indent reaches the "+
+				"mark column while its ASCII indent does not — a profile's text wearing snug's "+
+				"own verdict", name)
 		}
 	}
 }

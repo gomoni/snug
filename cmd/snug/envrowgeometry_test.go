@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/gomoni/snug/internal/policy"
@@ -206,6 +207,15 @@ func TestWrapMarkNeverSplitsAToken(t *testing.T) {
 //
 // Nothing renders at exactly 20. This is the rule the reader can rely on, and
 // the rule a forged mark would have to break.
+//
+// THE INDENT IS COUNTED WITH unicode.IsSpace, NOT WITH " ", and that changed
+// after a red team looked for the gap (host round 2, §4.1). Computing it as
+// `len(line) - len(TrimLeft(line, " "))` counts ASCII spaces only, so a value
+// beginning with U+00A0 or U+2003 would score an indent of 19 while PAINTING 21
+// blank columns — a line that reads as snug's own mark and is classified as a
+// data line. It is latent rather than live (see the sweep below for why nothing
+// can currently get such a value onto a continuation line at all), and a latent
+// hole in the test that is supposed to detect the hole is worth one line.
 func TestNoEnvironmentLineCanBeMistakenForAMark(t *testing.T) {
 	// The fixture has to contain all three shapes or the rule is asserted over
 	// whatever happens to be there. Counted, then required, below.
@@ -216,17 +226,17 @@ func TestNoEnvironmentLineCanBeMistakenForAMark(t *testing.T) {
 			if line == "" || !strings.HasPrefix(line, "  ") {
 				continue // the block heading
 			}
-			indent := len(line) - len(strings.TrimLeft(line, " "))
+			indent := visualIndent(line)
 			switch {
 			case indent == 2:
 				// a row with its name in the label column
 			case indent == 19:
-				if strings.HasPrefix(strings.TrimLeft(line, " "), "(") {
+				if strings.HasPrefix(trimIndent(line), "(") {
 					drops++
 				} else {
 					bands++
 				}
-				if strings.HasPrefix(strings.TrimLeft(line, " "), "←") {
+				if strings.HasPrefix(trimIndent(line), "←") {
 					t.Errorf("%s: a mark rendered at column 19, where a continuation band and a "+
 						"drop line also start:\n%s\nAt that column snug's own verdict and a "+
 						"profile's value are told apart only by the arrow — and a value may "+
@@ -282,12 +292,31 @@ func TestAValueCannotForgeAMarkLine(t *testing.T) {
 		if !strings.Contains(line, "←not-granted") {
 			continue
 		}
-		indent := len(line) - len(strings.TrimLeft(line, " "))
+		indent := visualIndent(line)
 		if indent >= markIndent {
 			t.Errorf("a profile's value rendered at the mark column:\n%q\nAt indent %d it is "+
 				"indistinguishable from a sentence snug wrote", line, indent)
 		}
 	}
+}
+
+// visualIndent and trimIndent count and strip EVERY kind of space, not only
+// U+0020.
+//
+// The rule this file enforces is about COLUMNS a reader sees, and U+00A0 (no-break
+// space) and U+2003 (em space) paint one each while `strings.TrimLeft(s, " ")`
+// leaves them in place. So a value beginning with one would be classified as a
+// data line at indent 19 while occupying the mark column — the forgery this test
+// exists to catch, wearing the one costume the test could not see. Found by a red
+// team as a latent hole in the TEST rather than in the renderer (host round 2,
+// §4.1), and it stays latent only because of the structural property asserted in
+// internal/policy's TestEveryMergeableListIsPathValued.
+func visualIndent(line string) int {
+	return len(line) - len(trimIndent(line))
+}
+
+func trimIndent(line string) string {
+	return strings.TrimLeftFunc(line, unicode.IsSpace)
 }
 
 // longestToken is the width of the longest space-delimited token on a line,

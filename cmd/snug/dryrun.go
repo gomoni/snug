@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/gomoni/snug/internal/policy"
@@ -280,9 +281,53 @@ func wrapList(items []string, width int) []string {
 }
 
 // describeEnvironment renders what the sandbox's environment will be. bwrap
-// --clearenv discards the host's, so this block is the WHOLE of it — there is
-// nothing inherited that does not appear here (with the one caveat CLAUDE.md
-// records: a bound /etc means /etc/profile.d can still put variables back).
+// --clearenv discards the host's, so nothing of the HOST's environment appears
+// inside that is not on this block — with two caveats, and the second one used
+// to be missing, which is the reason this comment now enumerates rather than
+// asserts.
+//
+// CAVEAT 1, long recorded: a bound /etc means /etc/profile.d can still put
+// variables back (CLAUDE.md).
+//
+// CAVEAT 2, and it is the one that made this comment false: BWRAP AUTHORS `PWD`
+// ITSELF, from --chdir. This block used to say "this block is the WHOLE of it —
+// there is nothing inherited that does not appear here", and it was measured
+// wrong in a live sandbox (redteam host round 2, F5 — the measurements in this
+// paragraph are that round's; the bwrap-binary corroboration below is not).
+// Across five selections, the block's names, the argv's --setenv names
+// and `env` INSIDE agreed byte for byte except for exactly one name:
+//
+//	block 16 / argv 16 / inside 17   (@sys @home @cwd-rw @parent-ro)
+//	block 18 / argv 18 / inside 19   (@claude)
+//	…and PWD is the difference every time
+//
+// isolated with no shell anywhere — the payload was `env`, exec'd directly:
+//
+//	bwrap --ro-bind /usr /usr … --clearenv --chdir /usr /usr/bin/env
+//	  PWD=/usr
+//
+// Corroborated here against bwrap 0.11.2's own binary, and the way it was
+// corroborated is worth keeping: `strings /usr/bin/bwrap | grep -i pwd` finds
+// NOTHING and reads as a refutation, because strings(1) defaults to -n 4 and
+// "PWD" is three characters. `strings -n 3` finds it. A check that cannot
+// produce the answer it is looking for is this project's named failure mode, and
+// it nearly retracted a true finding here.
+//
+// AND THE EVIDENCE WAS ALREADY IN THE REPOSITORY, which is the part worth
+// keeping: ENVIRONMENT-VARIABLES.md §4.1 lists what `snug <dir> -- env` printed
+// — "HOME LANG LOGNAME PATH PS1 PWD SHELL SNUG …", PWD among them — measured, in
+// a document, while this comment two directories away said the block was the
+// whole of it. Nobody read the two together. A measurement filed under one
+// question does not answer another one on its own.
+//
+// So PWD is rendered as its own row, in bwrap's provenance rather than snug's.
+// The content is harmless — it is the target, already on this screen twice — and
+// that is exactly why it is worth a row: what invariant 5 forbids is an artifact
+// claiming a completeness it does not have. Note what this says about the check
+// that passed while the claim was false: round 1 compared "18 variables, byte for
+// byte" between the block and the argv, and BOTH are generated from p.Env. An
+// equivalence between two things snug generates cannot see a third party adding
+// to the result.
 //
 // It is a function of its own, rather than eight lines inside dryRun, because
 // it is the review artifact for the environment the same way the .bwrap.txt
@@ -359,6 +404,33 @@ func describeEnvironment(out *os.File, p *policy.Policy) {
 			fmt.Fprintf(out, "  %-16s (%d host %s dropped — %s: %s)\n",
 				"", len(vals), word, reason.String(), strings.Join(vals, ", "))
 		}
+	}
+	describeBwrapAuthoredEnv(out, p)
+}
+
+// describeBwrapAuthoredEnv renders the one variable inside the sandbox that snug
+// does not write: PWD, which bwrap sets from --chdir. See describeEnvironment's
+// comment for the measurement.
+//
+// It is rendered AFTER the sorted rows rather than in its sorted place, and that
+// is the honest layout rather than the tidy one: the block above is snug's
+// resolved environment, in name order, and this row is not part of it. Its verb
+// column says `(bwrap)` — a provenance no policy can produce, since EnvVerb has
+// no such value — so the row cannot be mistaken for something a profile asked
+// for.
+func describeBwrapAuthoredEnv(out *os.File, p *policy.Policy) {
+	if p.Chdir == "" {
+		return
+	}
+	fmt.Fprintln(out, strings.TrimRight("  "+pad("PWD", 16)+" "+
+		pad(visibleValue(p.Chdir), 31)+" "+pad("(bwrap)", 9)+" --chdir", " "))
+	// ONE LINE, deliberately. This row is on every --dry-run, including the
+	// default one, and cmd/snug/testdata/env.defaults.txt staying quiet is the
+	// review artifact for issue #84's deferral — three lines of explanation about
+	// a harmless variable would be exactly the "teaches the reader to skip marks"
+	// noise that decision was avoiding.
+	for _, frag := range wrapMark("  ← bwrap sets this from --chdir; snug does not") {
+		fmt.Fprintln(out, frag)
 	}
 }
 
@@ -582,11 +654,54 @@ func elementValue(name, s string) string {
 //
 // A value with no control characters renders unchanged, so the ordinary screen —
 // and every golden — is untouched.
+//
+// THE TRIGGER WAS ASCII-ONLY AND THAT LEFT THE C1 CONTROLS RAW (redteam host
+// round 2, F6). `r < 0x20 || r == 0x7f` misses U+0085 (NEL) and U+009B (CSI —
+// the single-character form of ESC-[), which are neither below 0x20 nor DEL, so
+// a profile description containing ONLY C1 characters reached every sink
+// verbatim:
+//
+//	$ snug profile list | grep c1 | cat -A
+//	  c1   harmlessM-BM-^[1AM-BM-^[1G@sys   shipped by snugM-BM-^Esneaky$
+//
+// Note the asymmetry that hid it, because it is the reusable half: mix ONE ASCII
+// control into the same value and %q escapes the C1 characters too — Go's
+// strconv quotes anything unicode.IsPrint rejects — so the guard LOOKS like it
+// covers them. Only a pure-C1 value shows that the TRIGGER, not the escaper, was
+// the narrow half.
+//
+// Latent rather than live on this box: tmux 3.7b does not interpret C1 decoded
+// from UTF-8 (measured with `tmux capture-pane` — the bytes sit in the cell, no
+// line was overwritten). It becomes live on a terminal in 8-bit C1 mode.
+//
+// unicode.IsControl covers C0, DEL and C1 in one predicate. U+2028 and U+2029
+// are added by hand: they are Zl/Zp rather than Cc, they are LINE and PARAGRAPH
+// SEPARATOR, and this whole block is a table whose rows are one line each.
+//
+// AND INVALID UTF-8 IS ESCAPED WHOLESALE, which is the live half of the same
+// finding. A raw 0x9b byte is not valid UTF-8, so it decodes to RuneError and no
+// rune predicate can see it — while on a terminal in 8-bit mode it IS the CSI
+// introducer. The values that can carry one are the HOST's (`inherit`,
+// `sanitise`, a host path in a bind): checkEnvValue cannot reach those, and TOML
+// cannot produce them, so this is the only guard that can.
 func visibleValue(s string) string {
-	if !strings.ContainsFunc(s, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+	if utf8.ValidString(s) && !strings.ContainsFunc(s, isForgingRune) {
 		return s
 	}
 	return strings.Trim(fmt.Sprintf("%q", s), `"`)
+}
+
+// isForgingRune is "this rune can author a line snug did not write", and it is
+// the same set policy.checkEnvValue refuses at parse time. Two copies of one
+// question is how the ASCII-only trigger survived in one of them for a
+// milestone; they are kept in step by TestNoSnugScreenEmitsARawControlCharacter,
+// which drives the whole screen rather than either predicate.
+// The two separators are written as ESCAPES rather than as themselves, for the
+// same reason the red team's report writes snug's own arrow that way: a literal
+// U+2028 in a source file is invisible in an editor and, in some of them, ends
+// the line.
+func isForgingRune(r rune) bool {
+	return unicode.IsControl(r) || r == '\u2028' || r == '\u2029'
 }
 
 // grantMark is §4.2's repair, and it is a MARK rather than a refusal on purpose.

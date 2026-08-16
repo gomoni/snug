@@ -140,6 +140,9 @@ environ.set names "MY-VAR", which contains "-". A variable name is [A-Za-z_][A-Z
 == env_name_snug_owned ==
 environ.set names SNUG_PROFILES, which snug writes itself. No profile may write a name snug writes: HOME, PATH and SHELL have no safe absent state, PS1 is executed by bash, and SNUG* is what --dry-run is read against — a profile that could set one could lie to the artifact a human reads to decide whether to trust the sandbox. Remove the line
 
+== env_value_c1_csi ==
+environ.set on EDITOR has a value containing '\u009b'. Every screen a human reads to decide whether to trust a sandbox renders a value on one line; a control character forges rows in it or erases them from the terminal. Remove it
+
 == env_name_snug_owned_ps1 ==
 environ.inherit names PS1, which snug writes itself. No profile may write a name snug writes: HOME, PATH and SHELL have no safe absent state, PS1 is executed by bash, and SNUG* is what --dry-run is read against — a profile that could set one could lie to the artifact a human reads to decide whether to trust the sandbox. Remove the line
 
@@ -211,6 +214,9 @@ profile "rel": environ.set CARGO_HOME entry "cargo" must be an absolute path: a 
 
 == env_relative_set_bash_env ==
 profile "startup": environ.set BASH_ENV entry ".snug-init.sh" must be an absolute path: a relative one is resolved against whatever directory the payload happens to be in, which is not something a profile can know
+
+== env_relative_set_pointer ==
+profile "ptr": environ.set GIT_CONFIG_SYSTEM entry "sys.gitconfig" must be an absolute path: a relative one is resolved against whatever directory the payload happens to be in, which is not something a profile can know
 
 == env_two_prepends ==
 profiles mytools and othertools prepend to PATH, and they do not agree:

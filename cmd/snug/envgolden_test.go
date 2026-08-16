@@ -151,6 +151,15 @@ func TestGoldenEnvironment(t *testing.T) {
 		// FILESYSTEM block already shows, so it is #84 and it is deferred rather
 		// than half-done. If this golden ever grows an XDG mark, that decision has
 		// been reversed and owes an argument.
+		//
+		// READ THAT AS "AN XDG MARK", NOT AS "ANY LINE", because the file is no
+		// longer byte-identical to the one a red team last compared against main:
+		// it carries a two-line PWD row at the end, in bwrap's own provenance. That
+		// is the F5 fix — bwrap authors PWD from --chdir and this block used to
+		// claim it was the WHOLE environment — and it is snug disclosing something,
+		// which is the opposite of #84's question. The check to run against a
+		// future default golden is "does an XDG row carry a mark", not "did this
+		// file change".
 		{"defaults", profile.BuiltinDefaults(), envGoldenCtx(), false, nil},
 		// The one shipped profile that touches the environment today. What the
 		// golden shows: EDITOR and NO_COLOR arriving through `inherit`, and

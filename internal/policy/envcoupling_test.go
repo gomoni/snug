@@ -219,3 +219,94 @@ func TestARelativeStartupFileIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// ── F1 (redteam host round 2): every POINTER refuses a relative value ────────
+//
+// The rule the branch above added exists to stop snug handing over a value whose
+// meaning is decided by the payload's cwd — and it missed one of the five names
+// snug's OWN tables call a pointer at a config FILE. Four are rostered
+// `path: true`, so both the absolute rule and the coupling rule fired for them;
+// GIT_CONFIG_SYSTEM has no roster row, so NEITHER did. Measured INSIDE a running
+// sandbox, at 210c6bf:
+//
+//	[profile.gitsys.environ.set] GIT_CONFIG_SYSTEM = "sys.gitconfig"   -> ACCEPTED
+//	  --dry-run said nothing about the value either: grantMark returns "" for a
+//	  value that does not start with '/'
+//	snug … -p @cwd-rw -p gitsys <tgt> -- sh -c 'git st; git ls-remote git@github…'
+//	  CWD=<tgt>
+//	  RELATIVE-GIT-CONFIG-SYSTEM-ALIAS-RAN uid=1000
+//	  RELATIVE-GIT-CONFIG-SYSTEM-SSHCOMMAND-RAN args=git@github.com …
+//
+// This is written over the TABLE rather than over the five names, so a pointer
+// added later is swept the day it is added — which is the property the original
+// four had by accident (they happened to be rostered) rather than by rule.
+func TestEveryPointerRefusesARelativeValue(t *testing.T) {
+	// The fixture INCLUDES @cwd-rw rather than merely being selected alongside it,
+	// because the coupling rule is a property of a profile's own text plus its
+	// include closure and deliberately not of the selected set
+	// (TestCouplingVerdictDoesNotDependOnTheSelectedSet). Four of these five names
+	// are coupled, so without the include the accepted spelling below would be
+	// refused for a reason that has nothing to do with what this test measures.
+	resolve := func(name, value string) error {
+		reg := testRegistry()
+		reg["ptr"] = &Profile{Name: "ptr", Include: []ProfileName{"@cwd-rw"}, Environ: EnvGrants{
+			Set: map[string]string{name: value}}}
+		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "ptr"}, testCtx(), newFakeEnv())
+		return err
+	}
+
+	checked, owned := 0, 0
+	for _, p := range inlineConfigPointers {
+		// A pointer snug OWNS (GIT_CONFIG_GLOBAL, GH_CONFIG_DIR) is refused at
+		// every verb by ownership, which is the stronger statement — counted, not
+		// skipped silently, so that a pointer quietly becoming writable shows up.
+		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{p.name: "/opt/x"}}); err != nil {
+			owned++
+			continue
+		}
+		checked++
+
+		err := resolve(p.name, "relative.conf")
+		if err == nil {
+			t.Errorf("environ.set %s = \"relative.conf\" was accepted. snug's own table calls "+
+				"this name a POINTER at a config file, and a relative one names whatever file "+
+				"of that name is in the directory the payload was last in — inside snug, the "+
+				"target. Measured: GIT_CONFIG_SYSTEM spelled that way ran both an alias `!cmd` "+
+				"and core.sshCommand out of the payload's own directory", p.name)
+			continue
+		}
+		if !strings.Contains(err.Error(), "absolute path") || !strings.Contains(err.Error(), p.name) {
+			t.Errorf("%s was refused, but not with the absolute-path message that explains "+
+				"itself: %v", p.name, err)
+		}
+		// THE ACCEPTED SPELLING, which is what makes this a type verdict and not a
+		// denial: the author can say what they meant. {target} is granted by
+		// @cwd-rw, so the coupling rule (which applies to the four rostered names
+		// and not to the fifth) is satisfied too.
+		if err := resolve(p.name, "{target}/x"); err != nil {
+			t.Errorf("environ.set %s = \"{target}/x\" was refused: %v. A refusal with no "+
+				"accepted spelling of the same intent IS a denial", p.name, err)
+		}
+	}
+
+	// POSITIVE CONTROLS: the loop saw the whole table, and the two owned names are
+	// still exactly two (TestEveryPointerSaysWhatTheFileItNamesIs counts the same
+	// pair for the same reason).
+	if checked < 5 {
+		t.Fatalf("only %d writable pointers were checked; this test measures almost nothing", checked)
+	}
+	if owned != 2 {
+		t.Errorf("%d pointers are unwritable by any profile, want 2 (GIT_CONFIG_GLOBAL and "+
+			"GH_CONFIG_DIR, both in SnugOwnedEnv)", owned)
+	}
+	// AND THE RULE MUST NOT HAVE WIDENED INTO THE COUPLING RULE. An ABSOLUTE
+	// pointer value that nothing grants stays accepted for the unrostered name:
+	// the coupling rule's scope is the roster (isPathValued), the screen marks the
+	// row `← not granted`, and turning that mark into a refusal would be a new
+	// denial smuggled in beside a fix.
+	if err := resolve("GIT_CONFIG_SYSTEM", "/var/lib/nowhere/gitconfig"); err != nil {
+		t.Errorf("an absolute, ungranted GIT_CONFIG_SYSTEM was refused: %v. Only the "+
+			"unrepresentable spelling was supposed to change; the coupling rule still applies "+
+			"to rostered names only", err)
+	}
+}

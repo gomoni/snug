@@ -632,6 +632,29 @@ func refusalRelativeStartupFile(t testing.TB) error {
 	return err
 }
 
+// refusalRelativePointer: the same refusal at the fifth POINTER, which had
+// neither rule because it has no roster row.
+//
+// REGRESSION (redteam host round 2, F1). Four of the five writable pointers are
+// rostered `path: true`, so `set CARGO_HOME = "cargo"` was refused above and
+// three others with it; GIT_CONFIG_SYSTEM is not rostered — deliberately, since a
+// row would open the builtin gate — so it was ACCEPTED, resolved against
+// `--chdir <target>`, and MEASURED inside a running sandbox to execute both
+// `[alias] st = "!cmd"` and `core.sshCommand` out of a file the payload writes.
+// The fix reads the fact "snug's own tables call this a pointer at a FILE" from
+// the table that already holds it (valueIsAPath -> namesAPointerFile).
+//
+// ONE ROW, NOT FIVE, for the reason the startup-file row gives: the message
+// differs only in the variable name. The sweep over every pointer, with the
+// accepted spelling as its control, is TestEveryPointerRefusesARelativeValue.
+func refusalRelativePointer(t testing.TB) error {
+	reg := testRegistry()
+	reg["ptr"] = &Profile{Name: "ptr", Environ: EnvGrants{
+		Set: map[string]string{"GIT_CONFIG_SYSTEM": "sys.gitconfig"}}}
+	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "ptr"}, testCtx(), newFakeEnv())
+	return err
+}
+
 // ── the review artifact ──────────────────────────────────────────────────────
 
 // TestGoldenRefusals pins the EXACT text of every refusal above. This change
@@ -687,6 +710,13 @@ func TestGoldenRefusals(t *testing.T) {
 		{"env_name_leading_digit", refusalEnv(EnvGrants{Set: map[string]string{"1PATH": "x"}})},
 		{"env_name_bad_character", refusalEnv(EnvGrants{Set: map[string]string{"MY-VAR": "x"}})},
 		{"env_name_snug_owned", refusalEnv(EnvGrants{Set: map[string]string{"SNUG_PROFILES": "@sys"}})},
+		// The VALUE half of the same rule, and the C1 spelling specifically: the
+		// byte loop this replaced could not see U+009B (CSI, the single-character
+		// form of ESC-[), so it was accepted and reached every screen raw. The
+		// golden is worth a row because the message has to NAME the character
+		// rather than print it — a refusal that renders the byte it is refusing
+		// hands the forgery the screen it was aiming for.
+		{"env_value_c1_csi", refusalEnv(EnvGrants{Set: map[string]string{"EDITOR": "vim\u009b1A\u009b1G"}})},
 		{"env_name_snug_owned_ps1", refusalEnv(EnvGrants{Inherit: []string{"PS1"}})},
 		// FIVE ENTRIES USED TO SIT HERE and they are gone rather than moved:
 		// GIT_SSH_COMMAND and BASH_FUNC_* and GIT_CONFIG_COUNT at `set`,
@@ -739,6 +769,7 @@ func TestGoldenRefusals(t *testing.T) {
 		{"env_uncoupled_despite_another_profile_granting_it", refusalUncoupledDespiteAnotherProfile},
 		{"env_relative_set", refusalRelativeSet},
 		{"env_relative_set_bash_env", refusalRelativeStartupFile},
+		{"env_relative_set_pointer", refusalRelativePointer},
 
 		{"env_two_prepends", refusalTwoPrepends},
 		{"env_prepend_order_disagreement", refusalPrependOrder},

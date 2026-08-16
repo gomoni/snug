@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // The variable types, and the two checks that run over a profile's `environ`
@@ -554,6 +555,23 @@ func (n envNote) forVerb(verb EnvVerb) string {
 // TRIED. A new row must carry one or the other, and that is the whole of the
 // contract this header makes with its reader.
 //
+// IT IS SWEPT NOW, because for a milestone it was a promise and not a fact.
+// Measured over the rendered catalogue by a red team: 76 of 167 (name, verb)
+// pairs — 41 distinct names — carried neither "measured" nor "documented", and
+// the shape of the gap is the one CLAUDE.md records twice. CLASSPATH said
+// "(documented — no JVM on this host)" while JAVA_TOOL_OPTIONS, _JAVA_OPTIONS
+// and JDK_JAVA_OPTIONS sat four lines above it saying nothing, on the same
+// JVM-less host; RUBYOPT, NIS_PATH, RESOLV_HOST_CONF, RES_OPTIONS, LD_AUDIT,
+// GCONV_PATH, LOCPATH, NLSPATH and PROMPT_COMMAND were the rest. A contract in a
+// header comment that nothing checks is prose.
+// TestEveryAnnotationCarriesItsMeasurementOrSaysItHasNone parses THIS FILE and
+// fails a row that carries neither, and its own doc comment names the one thing
+// it cannot catch: a block comment carrying a measurement for the rows beneath
+// it that it does not actually cover, which is precisely how PROMPT_COMMAND came
+// to sit under "measured, bash 5.3.15, all four in one run" while being none of
+// the four. So a shared block still has to be READ, and a per-row line is worth
+// more than a heading.
+//
 // It used to promise more than it could keep — "every entry below was measured,
 // and the measurement is in the comment beside it" — while about forty rows
 // carried no measurement at all, and three carried sentences that did not
@@ -610,13 +628,70 @@ var envNotes = map[string]envNote{
 	// §4.4 plus ld.so(8)'s own secure-execution list, which is the closest thing
 	// to an authoritative denylist that exists — for glibc's own purposes, which
 	// is why snug reads it as a source of SENTENCES rather than as a gate.
-	"LD_PRELOAD": both("every process in the sandbox loads this library before its own code"),
-	"LD_AUDIT":   both("the loader runs this auditing library inside every process it starts"),
+	// Measured, glibc 2.43, with the control — a shared object whose only content
+	// is a constructor:
+	//
+	//	LD_PRELOAD=$W/libpre.so /bin/echo hi  -> LD-PRELOAD-RAN, then hi
+	//	                        /bin/echo hi  -> hi              (control)
+	"LD_PRELOAD": both("every process in the sandbox loads this library before its own code " +
+		"(measured, glibc 2.43, with the control)"),
+	// Measured, glibc 2.43, with the control. An audit library needs only
+	// la_version(), and the loader calls it BEFORE the program's own constructors:
+	//
+	//	LD_AUDIT=$W/libaud.so /bin/echo hi  -> LD-AUDIT-RAN v=2, then hi
+	//	                      /bin/echo hi  -> hi                (control)
+	"LD_AUDIT": both("the loader runs this auditing library inside every process it starts " +
+		"(measured, glibc 2.43, with the control)"),
+	// Measured, glibc 2.43, with the control, against a binary that already names
+	// its own library directory — so this is precedence, not merely a fallback:
+	//
+	//	./prog                     -> LIB-FROM-A  (its own RUNPATH; control)
+	//	LD_LIBRARY_PATH=$W/b ./prog-> LIB-FROM-B
 	"LD_LIBRARY_PATH": both("every process resolves its shared libraries from here first, " +
-		"ahead of the system directories"),
-	"GCONV_PATH": both("iconv loads a character-set conversion MODULE from here, and a module is code"),
-	"LOCPATH":    both("glibc loads compiled locale objects from here, and a locale object is code"),
-	"NLSPATH":    both("message catalogues come from here, on a template glibc expands per process"),
+		"ahead of the binary's own RUNPATH and the system directories (measured, glibc 2.43)"),
+	// Measured, glibc 2.43, with the control. A gconv module is dlopen'd, so a
+	// constructor in one runs — the object planted here was not even a valid
+	// converter and its code ran anyway, which is the point:
+	//
+	//	GCONV_PATH=$W/gc iconv -f FAKECHARSET -t UTF-8 in.txt
+	//	  -> GCONV-MODULE-CODE-RAN, then a fatal glibc assertion
+	//	                   iconv -f FAKECHARSET -t UTF-8 in.txt
+	//	  -> conversion from `FAKECHARSET' is not supported   (control)
+	"GCONV_PATH": both("iconv loads a character-set conversion MODULE from here and a module is " +
+		"code — a constructor in one ran on the first conversion (measured, glibc 2.43)"),
+	// Measured, glibc 2.43, with the control — AND THE PREVIOUS SENTENCE DID NOT
+	// SURVIVE IT. It said "a locale object is code"; it is not. glibc mmaps
+	// compiled locale DATA, and a shared object placed in the same directory is
+	// never loaded (the LD_PRELOAD probe above, dropped into the locale directory,
+	// printed nothing):
+	//
+	//	LOCPATH=$W/loc LC_ALL=probe.utf8 /usr/bin/printf '%.2f\n' 1.5  -> 1,50
+	//	               LC_ALL=probe.utf8 /usr/bin/printf '%.2f\n' 1.5  -> 1.50  (control)
+	//	               LC_ALL=C          /usr/bin/printf '%.2f\n' 1.5  -> 1.50  (control)
+	//
+	// That is the same overstatement class as PS3, MALLOC_TRACE and HOSTALIASES:
+	// nothing was reachable through it, and a reader who checks one sentence and
+	// finds it wrong cannot tell which of the others to trust. GCONV_PATH, two
+	// rows up, IS the code one — keeping them apart is the whole value of both
+	// rows. TestTheFalsifiedAnnotationsStayFalsified pins this one too.
+	"LOCPATH": both("glibc reads compiled locale DATA from here — collation, case folding, the " +
+		"decimal separator, the message translations — so a locale here changes what every " +
+		"process computes and prints; it is data, and nothing in the directory is loaded as " +
+		"code (measured, glibc 2.43, with the control)"),
+	// Measured, glibc 2.43, with the control, through a C program calling
+	// catopen()/catgets() — the template is expanded per process, %N and %L
+	// included:
+	//
+	//	NLSPATH=$W/nls/%N.cat     ./catprog -> CATALOGUE-FROM-NLSPATH
+	//	NLSPATH=$W/nls/%L/%N.cat  ./catprog -> CATALOGUE-FROM-NLSPATH (LC_MESSAGES=de_DE.UTF-8)
+	//	                          ./catprog -> DEFAULT-BUILTIN-STRING (control)
+	//
+	// It is DATA, like LOCPATH and unlike GCONV_PATH: what it buys an attacker is
+	// every message a program prints, which is a lie told to whoever reads the
+	// output — not an exec.
+	"NLSPATH": both("message catalogues come from here, on a template glibc expands per process, " +
+		"so the messages a program prints are the catalogue author's (measured, glibc 2.43, " +
+		"with the control)"),
 	// Measured, glibc 2.43, with the control — and the sentence this replaced
 	// ("every hostname lookup in the sandbox is rewritten through this file")
 	// was wrong in two ways at once, which is why the corrected one names both:
@@ -631,8 +706,33 @@ var envNotes = map[string]envNote{
 	// at all, which is how the limit was found).
 	"HOSTALIASES": both("glibc rewrites a DOT-FREE hostname to another NAME through this file " +
 		"before it is resolved; a name with a dot in it is untouched (measured, glibc 2.43)"),
-	"RESOLV_HOST_CONF": both("the resolver reads this in place of /etc/host.conf, so it steers name lookups"),
-	"RES_OPTIONS":      both("resolver options for every lookup the sandbox makes"),
+	// Measured, glibc 2.43, with the control — the file is PARSED, and glibc names
+	// it and the line when it dislikes something:
+	//
+	//	RESOLV_HOST_CONF=$W/hc.txt getent hosts localhost
+	//	  -> …/hc.txt: line 1: bad command `bogus-keyword yes'   then ::1 localhost
+	//	                           getent hosts localhost
+	//	  -> ::1 localhost, no such message                       (control)
+	//
+	// The sentence is narrowed to what host.conf still DOES on modern glibc: the
+	// keywords are `multi`, `reorder` and `trim`, and lookup ORDER moved to
+	// nsswitch.conf years ago, so "steers name lookups" — what this row used to
+	// say — claimed more than the file can deliver. Note also that the host's own
+	// /etc/host.conf does not exist on this box, so the variable is the only way
+	// any of it is read at all here.
+	"RESOLV_HOST_CONF": both("glibc parses this file in place of /etc/host.conf, so its multi/" +
+		"reorder/trim keywords decide what /etc/hosts lookups return (measured, glibc 2.43, " +
+		"with the control)"),
+	// DOCUMENTED, NOT MEASURED ON THIS HOST. Tried: `RES_OPTIONS=debug getent
+	// hosts example.com` printed no debug output on glibc 2.43 (the resolver's
+	// debug tracing is not compiled in), and the `ndots` behaviour that would
+	// otherwise be observable needs a search domain — the sandbox's generated
+	// /etc/resolv.conf carries `search .`, so no name is ever qualified and the
+	// option cannot change an answer here. Re-measure on a host with a real search
+	// list, or against a resolver built with DEBUG.
+	"RES_OPTIONS": both("resolver options for every lookup the sandbox makes — ndots, timeout, " +
+		"attempts and the rest of resolv.conf's options line (documented, not measured on " +
+		"this host)"),
 	"TZDIR": both("every timestamp in the sandbox is read from this directory; a value glibc cannot " +
 		"resolve is silently re-read as an inline rule instead of failing (measured, §3.2)"),
 	// Measured, glibc 2.43. The sentence this replaced ("created by every process
@@ -662,7 +762,14 @@ var envNotes = map[string]envNote{
 	// binaries.
 	"GETCONF_DIR": both("getconf takes its specification directory from here, and for a spec it does " +
 		"not implement natively it EXECUTES a program from it (documented, not measured)"),
-	"NIS_PATH": both("NIS lookups search this path"),
+	// DOCUMENTED, NOT MEASURED ON THIS HOST. Tried: there is no NIS here to
+	// measure against — no `ypcat`, no `ypwhich`, no /var/yp, and nsswitch.conf
+	// mentions `nis` only in its comment block, so no lookup ever reaches the NIS
+	// backend. The row stays because the variable is read by glibc's NIS+ code
+	// whenever that backend IS configured, and a reader deciding whether to
+	// inherit it should be told what it steers rather than nothing.
+	"NIS_PATH": both("NIS+ lookups search this path, so it decides which server's tables the " +
+		"sandbox believes (documented, not measured on this host)"),
 
 	// ── git and ssh: the value is a program ──────────────────────────────────
 	//
@@ -680,20 +787,62 @@ var envNotes = map[string]envNote{
 	// says so at every spelling. The rule was never "the newest spelling"; it is
 	// "the value is code", and forgetting one is indistinguishable from having
 	// nothing to say about it.
+	// Every row in this block now carries its own measurement, because the block
+	// heading above carried one sentence ("each measured on git 2.55") for eight
+	// rows and a reader cannot check a claim made on someone else's behalf. Run
+	// today, git 2.55.0 / OpenSSH, each with the control that fails without the
+	// variable:
+	//
+	//	GIT_SSH_COMMAND=/tmp/gs.sh git ls-remote git@example.com:x/y
+	//	  -> GIT-SSH-COMMAND-RAN args=git@example.com git-upload-pack 'x/y'
+	//	GIT_EXEC_PATH=/tmp/gx git probecmd
+	//	  -> GIT-EXEC-PATH-SUBCOMMAND-RAN uid=1000
+	//	                        git probecmd  -> 'probecmd' is not a git command (control)
+	//	GIT_EXTERNAL_DIFF=/tmp/xd.sh git diff -> GIT-EXTERNAL-DIFF-RAN path=f
+	//	                              git diff-> the real diff                    (control)
+	//	GIT_EDITOR=/tmp/ed.sh git commit      -> GIT-EDITOR-RAN args=.git/COMMIT_EDITMSG,
+	//	                                         and the commit message is the one the
+	//	                                         script wrote
+	//	GIT_SEQUENCE_EDITOR=/tmp/seq.sh git rebase -i --root
+	//	  -> GIT-SEQUENCE-EDITOR-RAN todo=.git/rebase-merge/git-rebase-todo, before
+	//	     any commit was replayed
+	//	GIT_PROXY_COMMAND=/tmp/px.sh git ls-remote git://example.com/x
+	//	  -> GIT-PROXY-COMMAND-RAN args=example.com 9418
+	//	GIT_ASKPASS=/tmp/ask.sh git ls-remote http://127.0.0.1:8731/x   (a 401 server)
+	//	  -> GIT-ASKPASS-RAN prompt=Username for 'http://127.0.0.1:8731'
+	//	     GIT-ASKPASS-RAN prompt=Password for 'http://secret@127.0.0.1:8731'
+	//	     — so it is handed the prompt AND its answer is used
+	//	                            git ls-remote http://127.0.0.1:8731/x
+	//	  -> could not read Username: terminal prompts disabled          (control)
+	//	SSH_ASKPASS=/tmp/sa.sh SSH_ASKPASS_REQUIRE=force ssh-keygen -y -f k
+	//	  -> SSH-ASKPASS-RAN prompt=Enter passphrase for "k", and the key DECRYPTED
+	//	     with what the script printed
+	//	                       SSH_ASKPASS_REQUIRE=force ssh-keygen -y -f k
+	//	  -> the system askpass ran; incorrect passphrase                (control)
 	"GIT_SSH_COMMAND": both("git runs this as the transport for every fetch and push, with whatever " +
-		"ssh identity this sandbox was given"),
+		"ssh identity this sandbox was given (measured, git 2.55.0)"),
 	"GIT_SSH": both("git runs this as the transport for every fetch and push — the older spelling of " +
 		"GIT_SSH_COMMAND, measured to hijack a real `git fetch`"),
-	"GIT_EXEC_PATH":     both("git finds its own subcommands here, so `git anything` runs a program from this directory"),
-	"GIT_EXTERNAL_DIFF": both("git runs this program for every diff it produces"),
-	"GIT_EDITOR":        both("git runs this whenever a commit, tag or rebase opens an editor"),
+	"GIT_EXEC_PATH": both("git finds its own subcommands here, so `git anything` runs a program " +
+		"from this directory (measured, git 2.55.0, with the control)"),
+	"GIT_EXTERNAL_DIFF": both("git runs this program for every diff it produces (measured, " +
+		"git 2.55.0, with the control)"),
+	"GIT_EDITOR": both("git runs this whenever a commit, tag or rebase opens an editor, and what " +
+		"it writes becomes the commit message (measured, git 2.55.0)"),
 	"GIT_SEQUENCE_EDITOR": both("git runs this to edit the todo list of every interactive rebase, " +
-		"before any commit is replayed"),
-	"GIT_PROXY_COMMAND": both("git runs this as the transport proxy for git:// URLs"),
-	"GIT_ASKPASS":       both("git runs this to ask for a credential, so it is handed whatever it asks for"),
-	"SSH_ASKPASS":       both("ssh runs this to ask for a passphrase, so it is handed whatever it asks for"),
+		"before any commit is replayed (measured, git 2.55.0)"),
+	"GIT_PROXY_COMMAND": both("git runs this as the transport proxy for git:// URLs (measured, " +
+		"git 2.55.0)"),
+	"GIT_ASKPASS": both("git runs this to ask for a credential, so it is handed whatever it asks " +
+		"for and its answer is used (measured, git 2.55.0, with the control)"),
+	"SSH_ASKPASS": both("ssh runs this to ask for a passphrase, so it is handed whatever it asks " +
+		"for — measured decrypting a key with what the helper printed (with the control)"),
 	// Measured on git 2.55, with the command that showed it:
 	//   GIT_PAGER="sh -c 'echo HIJACK; cat >/dev/null'" git log   -> HIJACK
+	//
+	// Re-measuring this one needs a PTY: git only starts a pager when stdout is a
+	// terminal, so the same command through a pipe runs nothing and reads as a
+	// refutation of a true sentence (confirmed again in redteam host round 2).
 	"GIT_PAGER": both("git runs this over the output of log, diff and show (measured, git 2.55)"),
 	// GIT_TEMPLATE_DIR, GIT_DIR and GIT_COMMON_DIR are the same power one
 	// indirection out: the value is a DIRECTORY, and the hooks in it are code.
@@ -720,11 +869,38 @@ var envNotes = map[string]envNote{
 		"(measured, with the control)"),
 
 	// ── a runtime's own flag channel, parsed before main() ───────────────────
-	"JAVA_TOOL_OPTIONS": both("every JVM in the sandbox parses these flags before main(), and they can " +
-		"load an agent from a path"),
-	"_JAVA_OPTIONS":    both("every JVM parses these flags before main() — the second spelling of the same channel"),
-	"JDK_JAVA_OPTIONS": both("the `java` launcher parses these flags before main(), agents included"),
-	"RUBYOPT":          both("every ruby parses these flags before the script and can require a file from them"),
+	//
+	// MEASURED IN A CONTAINER, NOT ON THIS HOST — temurin 21 JDK, pulled and
+	// removed again (redteam host round 2). All three channels applied before
+	// main(), announcing themselves, and the first one loaded an AGENT:
+	//
+	//	JAVA_TOOL_OPTIONS=…  -> "Picked up JAVA_TOOL_OPTIONS: …", flags applied
+	//	_JAVA_OPTIONS=…      -> "Picked up _JAVA_OPTIONS: …"
+	//	JDK_JAVA_OPTIONS=…   -> "NOTE: Picked up JDK_JAVA_OPTIONS: …"
+	//	JAVA_TOOL_OPTIONS="-javaagent:/w/ag.jar" java Main
+	//	  -> JAVA-AGENT-RAN-BEFORE-MAIN, then main
+	//
+	// These three carried NO marker at all for a milestone, four lines above a
+	// CLASSPATH row that did — on a host whose very next comment says it has no
+	// JVM. That asymmetry is what F4 of that round was about, and it is why the
+	// contract is now swept mechanically
+	// (TestEveryAnnotationSaysWhetherItWasMeasured).
+	"JAVA_TOOL_OPTIONS": both("every JVM in the sandbox parses these flags before main(), and they " +
+		"can load an agent from a path — measured, temurin 21, in a container: the agent's " +
+		"premain ran before main"),
+	"_JAVA_OPTIONS": both("every JVM parses these flags before main() — the second spelling of the " +
+		"same channel (measured, temurin 21, in a container)"),
+	"JDK_JAVA_OPTIONS": both("the `java` launcher parses these flags before main(), agents included " +
+		"(measured, temurin 21, in a container)"),
+	// DOCUMENTED, NOT MEASURED ANYWHERE YET. Tried: there is no `ruby` and no
+	// `irb` on this host, and unlike the JVM nobody has yet run it in a container
+	// either — so this row is the last one in the table whose sentence rests on
+	// documentation alone. ruby(1) documents RUBYOPT as accepting the same
+	// -r/-I/-e-adjacent switches the command line takes, which is where "require a
+	// file" comes from. Vendoring a ruby is the measurement; until someone does,
+	// the row says so.
+	"RUBYOPT": both("every ruby parses these flags before the script and can require a file from " +
+		"them (documented, not measured on this host — no ruby here)"),
 
 	// cargo executes an arbitrary program as its own compiler driver — measured
 	// (issue #26 red team): a profile with RUSTC_WRAPPER pointing at a script
@@ -772,8 +948,18 @@ var envNotes = map[string]envNote{
 	//   PS3='[$(echo PS3-SUBST-RAN >&2)] pick: ' select …
 	//        -> printed LITERALLY; the marker never ran
 	//   PS3='[HOME=$HOME] `echo bt` ${PWD} pick: '  -> printed LITERALLY, all three
-	"PS0": both("bash performs command substitution on this before every command it runs"),
-	"PS2": both("bash performs command substitution on this prompt template"),
+	// PS2 and PS4 were re-run today, bash 5.3.15, because the block heading's
+	// "all four in one run" was doing the work for four rows and only two of them
+	// said so on the screen:
+	//
+	//	printf 'echo "a\nb"\nexit\n' | PS2='[$(echo PS2-SUBST-RAN >&2)]> ' bash -i
+	//	  -> PS2-SUBST-RAN, then the continuation prompt "[]> "
+	//	PS4='[$(echo PS4-SUBST-RAN >&2)]' bash -c 'set -x; :'
+	//	  -> PS4-SUBST-RAN, then the trace line "[]:"
+	"PS0": both("bash performs command substitution on this before every command it runs " +
+		"(measured, bash 5.3.15)"),
+	"PS2": both("bash performs command substitution on this prompt template, which a human sees " +
+		"the moment a command spans two lines (measured, bash 5.3.15)"),
 	// PS3 is the one prompt bash does NOT run through decode_prompt_string, and
 	// this row claimed the opposite for a milestone. The row stays rather than
 	// being deleted: without it the next reader re-derives the false claim from
@@ -781,8 +967,18 @@ var envNotes = map[string]envNote{
 	"PS3": both("bash prints this VERBATIM as the `select` prompt — no command substitution and " +
 		"no parameter expansion (measured, bash 5.3.15); what it buys is a prompt that lies " +
 		"to whoever is at the shell"),
-	"PS4":            both("bash performs command substitution on this trace prompt, before you type anything"),
-	"PROMPT_COMMAND": both("bash runs this command before every prompt it draws"),
+	"PS4": both("bash performs command substitution on this trace prompt, before you type " +
+		"anything (measured, bash 5.3.15)"),
+	// Measured today, bash 5.3.15, with the control — and this row is the one that
+	// showed how a shared comment block can rubber-stamp a row it never covered:
+	// PROMPT_COMMAND sat under the PS block's "measured, all four in one run",
+	// which was about PS0/PS2/PS3/PS4 and never about this name.
+	//
+	//	printf 'exit\n' | PROMPT_COMMAND='echo PROMPT-COMMAND-RAN >&2' bash -i
+	//	  -> PROMPT-COMMAND-RAN, before the first prompt
+	//	printf 'exit\n' | bash -i                              -> nothing (control)
+	"PROMPT_COMMAND": both("bash runs this command before every prompt it draws, including the " +
+		"first one (measured, bash 5.3.15, with the control)"),
 
 	// An interpreter's own "run this file/module before anything else" variable.
 	// These four sat in the middle bucket ("reviewable as set") until a
@@ -837,13 +1033,33 @@ var envNotes = map[string]envNote{
 		"the real one and its top-level code runs (measured, perl 5.44)"),
 	"NODE_PATH": both("node resolves require() from here and runs the module's top-level code; " +
 		"core modules are not shadowed (measured, node 26.4, with the control)"),
-	// DOCUMENTED, NOT MEASURED ON THIS HOST. Tried: no JVM is installed here
-	// (neither `java` nor `javac`), so the class-shadowing claim could not be
-	// reproduced. It is listed anyway for the reason above — CLASSPATH is
-	// rostered, so a shipped profile may write it, and an unannotated rostered
-	// exec surface is the one thing this table must not have.
-	"CLASSPATH": both("the JVM loads classes from here, so a class on this path replaces the real " +
-		"one (documented — no JVM on this host)"),
+	// MEASURED IN A CONTAINER, NOT ON THIS HOST — temurin 21 JDK (alpine), pulled
+	// and removed again; there is still no `java`, no `javac` and no /usr/lib*/jvm
+	// here. Recorded that way on purpose: a measurement whose environment is not
+	// this host is worth more than "documented" and less than a bare measurement,
+	// and the sentence says which.
+	//
+	// The row it replaced said "a class on this path replaces the real one", which
+	// OVERSTATES in exactly the way NODE_PATH's row is careful not to. With the
+	// controls (redteam host round 2, F3):
+	//
+	//	CLASSPATH=capp:ca:cb java Main            -> LIB-FROM-A  (first entry wins)
+	//	CLASSPATH=capp:cb:ca java Main            -> LIB-FROM-B  (order decides)
+	//	CLASSPATH=capp:cb:ca java -cp capp:ca Main-> LIB-FROM-A  (-cp OVERRIDES it)
+	//	CLASSPATH=/w/ca java -jar mainonly.jar    -> NoClassDefFoundError (-jar IGNORES it)
+	//	control, same classpath without -jar      -> LIB-FROM-A
+	//	javac -d cboot boot/java/util/Objects.java-> error: package exists in
+	//	                                             another module: java.base
+	//	CLASSPATH=/w/cboot java JdkProbe          -> loader of Objects=null
+	//	                                             (a JDK class is NOT shadowed)
+	//
+	// So it holds for an APPLICATION class, only when the JVM is launched without
+	// -cp and without -jar, and never for a platform class. No CI can run a JVM,
+	// so testdata/annotations.txt IS the artifact for this wording.
+	"CLASSPATH": both("the JVM's application class loader searches these in order, so an " +
+		"application class here shadows one later on the path; platform/JDK classes are not " +
+		"shadowed, and `java -cp` and `java -jar` ignore this variable outright (measured, " +
+		"temurin 21, in a container — no JVM on this host)"),
 
 	// ── the startup files a tool READS: two sentences, and the difference is
 	// where the value came from ──────────────────────────────────────────────
@@ -862,16 +1078,28 @@ var envNotes = map[string]envNote{
 	// rule (pathNoGrant, envcoupling.go), so the sentences now state that and
 	// describe the ungranted case as the consequence it is — the row still
 	// renders `← not granted` for a path nothing covers.
+	//
+	// ALL THREE WERE MEASURED, with the cwd control, and the transcript is in
+	// envTypes' comment on the same three names rather than copied here (one
+	// measurement, one place):
+	//
+	//	cd cwd1; BASH_ENV=.snug-init.sh bash -c 'echo body'  -> sourced from cwd1
+	//	cd cwd2; BASH_ENV=.snug-init.sh bash -c 'echo body'  -> nothing (control)
+	//	cd cwd1; ENV=.shinit sh -i -c 'echo body'            -> sourced from cwd1
+	//	cd cwd1; PYTHONSTARTUP=pystart.py python3 -i         -> ran (CPython 3.13.14)
 	"BASH_ENV": {
 		authored: "every non-interactive bash SOURCES this file at startup; the value must be an " +
 			"absolute path, and one this profile does not grant names a file the sandbox will not have",
 		host: "every non-interactive bash SOURCES this file at startup, and the file is chosen on the host, outside any profile",
 	},
+	// Measured with the cwd control, see the block comment above BASH_ENV.
 	"ENV": {
 		authored: "every non-interactive sh SOURCES this file at startup; the value must be an " +
 			"absolute path, and one this profile does not grant names a file the sandbox will not have",
 		host: "every non-interactive sh SOURCES this file at startup, and the file is chosen on the host, outside any profile",
 	},
+	// Measured, CPython 3.13.14, with the cwd control — see the block comment
+	// above BASH_ENV.
 	"PYTHONSTARTUP": {
 		authored: "the interactive python interpreter EXECUTES this file on start; the value must be " +
 			"an absolute path, and one this profile does not grant names a file the sandbox will not have",
@@ -931,8 +1159,16 @@ var envNotes = map[string]envNote{
 	// what a value DOES rather than about a single hazard: nothing runs this, and
 	// a human still wants to know that a profile chose where the agent's traffic
 	// goes.
+	//
+	// DOCUMENTED, NOT MEASURED ON THIS HOST. Tried: the only consumer here is the
+	// Claude Code client, and the measurement — point a live agent session at a
+	// local endpoint and watch a conversation arrive — is one nobody should take
+	// from inside a live agent session, which is where every run of this suite
+	// happens. The row rests on the client's documented behaviour, and @claude
+	// inherits the name precisely so a human behind a gateway keeps working; if it
+	// is ever measured, it wants a throwaway credential and a local listener.
 	"ANTHROPIC_BASE_URL": both("every request the agent makes, conversation included, goes to this " +
-		"endpoint instead of Anthropic's"),
+		"endpoint instead of Anthropic's (documented, not measured on this host)"),
 
 	// ── "generate, don't bind", the pointers ─────────────────────────────────
 	//
@@ -996,12 +1232,30 @@ var envNotes = map[string]envNote{
 	// the review artifact for that decision.
 	"XDG_CONFIG_HOME": {host: "the host's value names a directory this sandbox does not have; " +
 		"@home creates the one inside, so `set` it to a path the same profile grants"},
+	// These five say something about SNUG rather than about a tool, so what backs
+	// them is snug's own artifacts rather than a shell transcript — and that is
+	// still a measurement, taken against files in this repository rather than
+	// against this developer's memory of them: internal/profile/profiles/base.toml
+	// ([profile.home]) is where the four directories are created, and
+	// cmd/snug/testdata/env.defaults.txt is the rendered proof that a default run
+	// sets the four names to paths inside. If @home ever stops creating one, that
+	// golden moves and these sentences are wrong in the same commit.
+	// (measured against @home's grants and env.defaults.txt)
 	"XDG_CACHE_HOME": {host: "the host's value names a directory this sandbox does not have; " +
 		"@home creates the one inside, so `set` it to a path the same profile grants"},
+	// (measured the same way: @home's tmpfs list and env.defaults.txt)
 	"XDG_STATE_HOME": {host: "the host's value names a directory this sandbox does not have; " +
 		"@home creates the one inside, so `set` it to a path the same profile grants"},
+	// (measured the same way: @home's tmpfs list and env.defaults.txt — and
+	// $XDG_DATA_HOME is the newest of the four, added so the name points at a
+	// directory that exists; the "writable surface is eight paths" bullet in
+	// CLAUDE.md is the count it moved)
 	"XDG_DATA_HOME": {host: "the host's value names a directory this sandbox does not have; " +
 		"@home creates the one inside, so `set` it to a path the same profile grants"},
+	// XDG_RUNTIME_DIR is the one of the five @home does NOT create — measured, the
+	// same way: no [profile.home] tmpfs names it and env.defaults.txt renders no
+	// such row — which is why its sentence promises nothing about the inside and
+	// names the obligations instead (mode 0700, owner, session lifetime).
 	"XDG_RUNTIME_DIR": {host: "the host's value names a directory this sandbox does not have, and this " +
 		"variable carries obligations a string cannot satisfy — mode 0700, owned by the user, session lifetime"},
 	// Measured, cargo 1.97.1: $CARGO_HOME/config.toml carrying
@@ -1025,26 +1279,41 @@ var envNotes = map[string]envNote{
 		host: "taking the host's value points docker back at the host's config, credentials " +
 			"included; `set` it to a path a profile authored",
 	},
-	// DOCUMENTED, NOT MEASURED ON THIS HOST. Tried: /usr/bin/npm is a broken
-	// libalternatives shim here ("npm-default: No such file or directory") and no
-	// npm-cli.js exists anywhere on the box, though node 26.4.0 is present. The
-	// capability itself WAS measured through the ENVIRONMENT spelling — see
-	// envNotePrefixes' npm_config_ entry, issue #26 — and `script-shell` is that
-	// same key reached through the file this variable names.
+	// MEASURED INSIDE A RUNNING SANDBOX — redteam host round 2, which is also the
+	// round that upgraded this row from "documented". /usr/bin/npm is still the
+	// broken libalternatives shim on this host ("npm-default: No such file or
+	// directory"), so the round vendored npm 12.0.2 from the registry tarball and
+	// ran it under node 26.4.0:
+	//
+	//	NPM_CONFIG_USERCONFIG={target}/.npmrc  with  script-shell=/…/hijack.sh
+	//	npm run probe
+	//	  -> NPM_SCRIPT_SHELL_HIJACK-RAN uid=1000 args=[-c echo REAL-SHELL-RAN]
+	//
+	// Aimed inside `rw = ["{target}"]` — the one directory the payload writes —
+	// which is the case the `authored` sentence exists for.
 	"NPM_CONFIG_USERCONFIG": {
 		authored: "the .npmrc this names carries script-shell, the shell npm runs every lifecycle " +
-			"and `run` script with (documented — npm is not installed on this host)",
+			"and `run` script with (measured inside a sandbox, npm 12.0.2)",
 		host: "taking the host's value points npm back at the host's .npmrc, " +
 			"auth tokens included; `set` it to a path a profile authored",
 	},
-	// DOCUMENTED, NOT MEASURED ON THIS HOST. Tried: neither `pip` nor
-	// `python3 -m pip` exists here (python 3.13.14 is present) — the same state
-	// prefixCaseFold's PIP_ entry records. Nothing under PIP_ was measured to
-	// exec directly; what this file decides is where packages come FROM, and
-	// installing one runs its own code.
+	// MEASURED INSIDE A RUNNING SANDBOX for the first half — redteam host round 2,
+	// pip 26.1.2 from `python3 -m venv`, since neither `pip` nor `python3 -m pip`
+	// exists on this host:
+	//
+	//	PIP_CONFIG_FILE={target}/piprc  with  [global] index-url = http://127.0.0.1:9/from-file/simple
+	//	pip install --dry-run …
+	//	  -> Looking in indexes: http://127.0.0.1:9/from-file/simple
+	//
+	// The second half — that installing a package runs code out of it — is
+	// DOCUMENTED and deliberately not measured: it is a build backend executing
+	// setup.py, and running an attacker-chosen package to prove it is a
+	// measurement with a blast radius. Nothing under PIP_ execs directly; what
+	// this file decides is where packages come FROM.
 	"PIP_CONFIG_FILE": {
-		authored: "index-url in this file decides where every `pip install` fetches from, and " +
-			"installing a package runs code out of it (documented — pip is not on this host)",
+		authored: "index-url in this file decides where every `pip install` fetches from " +
+			"(measured inside a sandbox, pip 26.1.2), and installing a package runs code out " +
+			"of it (documented)",
 		host: "taking the host's value points pip back at the host's config, index " +
 			"credentials included; `set` it to a path a profile authored",
 	},
@@ -1056,8 +1325,39 @@ var envNotes = map[string]envNote{
 	//   credential.helper = "!…" -> the same shape
 	// It has no roster row, so a row carrying this sentence also carries
 	// `← unchecked`: two true statements answering two questions.
-	"GIT_CONFIG_SYSTEM": {authored: "git reads a command table from this file: core.sshCommand, " +
-		"credential.helper and alias.x = !cmd all name programs it runs (measured, git 2.55.0)"},
+	//
+	// THE `host` SENTENCE IS NOT DECORATION AND IT IS NOT THE FAMILY'S. For one
+	// milestone this entry had `authored` only, and noteFor's fall-through then
+	// rendered GIT_CONFIG_*'s family sentence at `inherit` — "git reads this at
+	// the command-line scope, above the global file, above the repository's own
+	// .git/config". True of GIT_CONFIG_COUNT/KEY_n/VALUE_n/PARAMETERS, and
+	// MEASURABLY FALSE of this name, which renames git's SYSTEM file: the LOWEST
+	// scope there is. Measured INSIDE a sandbox (redteam host round 2, F2), with
+	// the control in the same session:
+	//
+	//	git config --show-origin --get-all user.email
+	//	  file:…/sys.gitconfig  SYSTEM-SCOPE@example.com
+	//	  file:.git/config      REPO-SCOPE@example.com     <- .git/config WINS
+	//	git config --show-origin --get user.email
+	//	  file:.git/config      REPO-SCOPE@example.com
+	//	control, GIT_CONFIG_KEY_0 — the name the family sentence WAS measured on:
+	//	  command line:         ENV-KEY-SCOPE@example.com
+	//
+	// The mechanism is the reusable half, and it is why every other pointer
+	// carries a `host` string: noteFor falls through to the FAMILY table when the
+	// exact entry says nothing at THIS verb, and the prefix exemption is
+	// deliberately not applied at `inherit`/`sanitise`. So an exact entry with one
+	// of its two fields empty does not render nothing — it renders its family's
+	// sentence, which is a different claim about a different name. The defect was
+	// never the fall-through; it was one missing string.
+	// TestNoPointerEverRendersItsFamilysSentence is what keeps it filled in.
+	"GIT_CONFIG_SYSTEM": {
+		authored: "git reads a command table from this file: core.sshCommand, " +
+			"credential.helper and alias.x = !cmd all name programs it runs (measured, git 2.55.0)",
+		host: "taking the host's value points git's SYSTEM scope — the LOWEST, below the " +
+			"global file and below the repository's own .git/config (measured) — at a command " +
+			"table chosen on the host; `set` it to a path a profile authored",
+	},
 }
 
 // prefixCaseFold is the ONE place "does this tool's env lookup fold case"
@@ -1082,12 +1382,20 @@ var prefixCaseFold = map[string]bool{
 	// to the file value). getenv(3) is case-sensitive on Linux and git does
 	// no folding of its own — consistent across every GIT_CONFIG_* name.
 	"GIT_CONFIG_": false,
-	// Documented, not measured: pip is not installed on this host (§1.2 of
-	// the issue #26 design). pip's own source
-	// (Configuration.get_environ_vars in pip/_internal/configuration.py)
-	// does `key.startswith("PIP_")` against os.environ, which on Linux is a
-	// case-sensitive mapping — so only the exact-case PIP_* spelling should
-	// be recognised. Re-measure if pip becomes available here.
+	// MEASURED, pip 26.1.2 — redteam host round 2, inside a sandbox, with pip
+	// from `python3 -m venv` because neither `pip` nor `python3 -m pip` exists
+	// on this host. Both directions, which is what makes it a case rule and
+	// not a guess:
+	//
+	//	PIP_INDEX_URL=…/from-env/  + a config file naming …/from-file/
+	//	  -> Looking in indexes: …/from-env/simple   (the variable beat the file)
+	//	pip_index_url=…/from-env/  + the same file
+	//	  -> Looking in indexes: …/from-file/simple  (the lower-case spelling
+	//	                                              was NOT read)
+	//
+	// which is what pip's own source says it should do:
+	// Configuration.get_environ_vars does `key.startswith("PIP_")` against
+	// os.environ, a case-sensitive mapping on Linux.
 	"PIP_": false,
 	// Measured: node 22 + a vendored npm-cli.js (npm 10.9.8), since
 	// /usr/bin/npm on this host is a broken libalternatives shim. All three
@@ -1168,8 +1476,25 @@ var envNotePrefixes = []struct {
 	// envNotes' pointer block).
 	exempt []string
 }{
-	{"LD_", both("the dynamic loader reads this before main() in every process"), nil},
-	{"BASH_FUNC_", both("an exported shell FUNCTION, and function lookup precedes PATH entirely"), nil},
+	// The FAMILY sentence rests on the three names in it that were measured on
+	// this host, glibc 2.43, each with its control — LD_PRELOAD, LD_AUDIT and
+	// LD_LIBRARY_PATH, transcripts in envNotes above. What the prefix adds is the
+	// unbounded remainder (LD_BIND_NOW, LD_DEBUG, LD_PROFILE, …), which is not
+	// measured name by name and does not need to be: the sentence claims only
+	// "the loader reads this before main()", which is what makes it a family.
+	{"LD_", both("the dynamic loader reads this before main() in every process (measured for " +
+		"LD_PRELOAD, LD_AUDIT and LD_LIBRARY_PATH, glibc 2.43)"), nil},
+	// Measured today, bash 5.3.15, with both controls — and the second probe is
+	// the half worth keeping, because it is the sentence's real claim:
+	//
+	//	env 'BASH_FUNC_gitx%%=() { echo BASH-FUNC-HIJACK-RAN; }' bash -c 'gitx'
+	//	  -> BASH-FUNC-HIJACK-RAN; `type gitx` says "gitx is a function"
+	//	                                            bash -c 'gitx'
+	//	  -> gitx: command not found                              (control)
+	//	env 'BASH_FUNC_git%%=() { echo FUNCTION-BEAT-PATH; }' bash -c 'git --version'
+	//	  -> FUNCTION-BEAT-PATH — the real /usr/bin/git never ran
+	{"BASH_FUNC_", both("an exported shell FUNCTION, and function lookup precedes PATH entirely — " +
+		"measured shadowing `git` itself, bash 5.3.15, with the control"), nil},
 	{"GIT_CONFIG_", both("git reads this at the command-line scope, above the global file, above the " +
 		"repository's own .git/config, and above any include (measured, issue #26)"),
 		// GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM are POINTERS at a config FILE,
@@ -1183,9 +1508,12 @@ var envNotePrefixes = []struct {
 		// The two tables' exemption sets are now identical, and that is asserted
 		// rather than asked for: TestPointerExemptionsAgreeBetweenTheTwoTables.
 		[]string{"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"}},
-	// PIP_* outranks the config FILE pip reads. Nothing under PIP_ was measured
-	// to exec a program the way npm_config_ and CARGO_ below were — say so, and
-	// re-measure if that changes.
+	// PIP_* outranks the config FILE pip reads — MEASURED, pip 26.1.2, inside a
+	// sandbox (redteam host round 2): PIP_INDEX_URL beat a PIP_CONFIG_FILE naming
+	// a different index, and the file won again when only the lower-case
+	// `pip_index_url` was set. Nothing under PIP_ was measured to exec a program
+	// the way npm_config_ and CARGO_ below were — say so, and re-measure if that
+	// changes.
 	//
 	// PIP_CONFIG_FILE is exempt, and it did NOT need to be while this was a
 	// refusal: PIP_ was forbidInheritOnly, so `set PIP_CONFIG_FILE` was legal
@@ -1284,6 +1612,30 @@ var inlineConfigPointers = []inlineConfigPointer{
 	{"GH_CONFIG_DIR", ""},
 }
 
+// namesAPointerFile reports whether name is one of the names snug's OWN tables
+// call a POINTER: a value that is a PATH to a config file or directory, rather
+// than the setting itself.
+//
+// It exists so that "this value is a filesystem path" has one answer for the
+// pointers, read off the table that defines them, instead of depending on
+// whether the name also happens to have a roster row. GIT_CONFIG_SYSTEM does
+// not, which is how a relative `set` reached a running sandbox and executed out
+// of the payload's own cwd — the reproduction is in valueIsAPath, which is this
+// predicate's one production caller (envcoupling.go).
+//
+// Case is folded exactly as IsInlineConfigEnv folds it, through sameName and the
+// pointer's own prefix, so `npm_config_userconfig` is the same name as
+// NPM_CONFIG_USERCONFIG here too. A second case rule in this file is how this
+// file has already drifted three times.
+func namesAPointerFile(name string) bool {
+	for _, p := range inlineConfigPointers {
+		if sameName(name, p.name, p.prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // inlineConfigNames is the named half the prefix table structurally cannot
 // express: a variable whose value is a setting (here, an arbitrary program
 // cargo executes as its compiler driver) but whose NAME does not start with
@@ -1354,10 +1706,8 @@ func IsInlineConfigEnv(name string) bool {
 	if inlineConfigNames[name] {
 		return true
 	}
-	for _, p := range inlineConfigPointers {
-		if sameName(name, p.name, p.prefix) {
-			return false
-		}
+	if namesAPointerFile(name) {
+		return false
 	}
 	for _, p := range inlineConfigPrefixes {
 		if matchesPrefix(name, p) {
@@ -1782,14 +2132,33 @@ func checkEnvElement(name string, verb EnvVerb, value string) error {
 // host-dependent, and by construction cannot contain a NUL (the environment
 // execve hands over is a NUL-terminated list). Their rendering is the
 // renderer's problem.
+//
+// C1 IS IN THE SET NOW, and the ASCII-only version of this loop is the same
+// "one rule, one of its two halves" shape one layer down (redteam host round 2,
+// F6). `c >= 0x20 && c != 0x7f` walks BYTES, so it can never see U+0085 (NEL) or
+// U+009B (CSI — the single-character form of ESC-[): a profile writing
+// "1A" got a value that erases the line above it on a terminal in 8-bit C1
+// mode, and %q hid the gap in review, because mixing in ONE ASCII control makes
+// the escaper quote the C1 characters too. Ranging over RUNES with
+// unicode.IsControl covers C0, DEL and C1 with one predicate; U+2028/U+2029 are
+// named separately because they are Zl/Zp rather than Cc and are still LINE and
+// PARAGRAPH separators. The NUL arm is unchanged and is still the one that
+// authors a MOUNT rather than a lie.
+//
+// The renderer's isForgingRune (cmd/snug/dryrun.go) is the same set, and it
+// carries one more case this function cannot: invalid UTF-8, which a TOML value
+// cannot be and a HOST value can.
 func checkEnvValue(name string, verb EnvVerb, value string) error {
-	for i := 0; i < len(value); i++ {
-		c := value[i]
-		if c >= 0x20 && c != 0x7f {
+	for _, r := range value {
+		if !unicode.IsControl(r) && r != '\u2028' && r != '\u2029' {
 			continue
 		}
-		what := fmt.Sprintf("%q", string(c))
-		if c == 0 {
+		// %q of the RUNE, so a C1 character is NAMED in the message ("\u009b")
+		// rather than printed into the very refusal that exists because printing
+		// it is unsafe. A byte loop could not do this: it would quote each half
+		// of the UTF-8 encoding separately, naming neither.
+		what := fmt.Sprintf("%q", r)
+		if r == 0 {
 			return fmt.Errorf("environ.%s on %s has a value containing a NUL byte. The whole "+
 				"bwrap flag list is NUL-separated, so a NUL inside a value ENDS the value "+
 				"and everything after it is read as further flags — a mount snug's policy "+

@@ -8,7 +8,7 @@ defined in  builtin:base.toml
                    {home}/.local/share/claude
                    {home}/.claude/skills
                    {home}/.claude/plugins
-  environ.inherit  ANTHROPIC_BASE_URL  ← every request the agent makes, conversation included, goes to this endpoint instead of Anthropic's
+  environ.inherit  ANTHROPIC_BASE_URL  ← every request the agent makes, conversation included, goes to this endpoint instead of Anthropic's (documented, not measured on this host)
                    EDITOR  ← the value is a command; git runs it for a commit message via GIT_EDITOR -> core.editor -> VISUAL -> EDITOR (measured)
                    NO_COLOR
                    PAGER  ← the value is a command; git runs it over log, diff and show via GIT_PAGER -> core.pager -> PAGER (measured)

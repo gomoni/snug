@@ -151,7 +151,46 @@ func isPathValued(name string) bool {
 // whenever it likes. What it stops is snug HANDING OVER a value whose meaning is
 // decided by the payload's cwd — the `sanitise` rule, one table over: the
 // environment snug itself hands over must not ship the ambiguity pre-installed.
+//
+// IT READS TWO TABLES, AND THE SECOND ONE IS THE FIX FOR A NAME THE FIRST ONE
+// COULD NEVER CARRY. A POINTER is, by inlineConfigPointers' own definition, "a
+// name whose value is a PATH to a file snug or a profile generated" — the whole
+// of "generate, don't bind" at the environment. Four of the five writable
+// pointers happen to have a roster row with `path: true`, so both rules fired for
+// them; GIT_CONFIG_SYSTEM has no roster row, so NEITHER did, and the argument in
+// the paragraph above applied to it word for word. Measured INSIDE a running
+// sandbox (redteam host round 2, F1), on this branch:
+//
+//	[profile.gitsys.environ.set]
+//	GIT_CONFIG_SYSTEM = "sys.gitconfig"        -> ACCEPTED, and --dry-run said
+//	                                              nothing about the value either
+//	  (grantMark returns "" for a value that does not start with '/')
+//	$ snug … -p @cwd-rw -p gitsys /tmp/rt2/tgt -- sh -c 'git st; git ls-remote …'
+//	  CWD=/tmp/rt2/tgt
+//	  RELATIVE-GIT-CONFIG-SYSTEM-ALIAS-RAN uid=1000        <- [alias] st = "!cmd"
+//	  RELATIVE-GIT-CONFIG-SYSTEM-SSHCOMMAND-RAN args=…     <- core.sshCommand
+//
+// The file it resolved against is `--chdir <target>`: the one writable thing a
+// hostile payload controls. The same four spellings that ARE rostered were
+// refused in the same run.
+//
+// WHY A PREDICATE AND NOT A ROSTER ROW. Adding `"GIT_CONFIG_SYSTEM": {path:
+// true}` to envTypes would fix the same two lines and would ALSO open the builtin
+// gate: internal/profile's checkBuiltinEnvRoster is written on IsUncheckedEnv,
+// which answers from the roster alone, so a row here makes the name one a profile
+// snug SHIPS may write. That gate is deliberate and this fix must not touch it —
+// so the fact "snug's own tables call this a pointer at a FILE" is read from the
+// table that already holds it. The pointer set is a security boundary
+// (IsInlineConfigEnv's doc comment); this is one more consequence of being in it.
+//
+// It stays OUT of isPathValued, so the coupling rule's scope is unchanged: an
+// absolute GIT_CONFIG_SYSTEM the profile does not grant is still accepted, still
+// marked `← not granted`, and still carries its own annotation. Only the
+// unrepresentable spelling is refused.
 func valueIsAPath(name string) bool {
+	if namesAPointerFile(name) {
+		return true
+	}
 	t, known := typeOf(name)
 	return known && (t.path || t.pathNoGrant)
 }
