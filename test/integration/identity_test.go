@@ -347,6 +347,7 @@ func TestAnIdentityWithNoGhAccountStagesNoToken(t *testing.T) {
 // are written into ONE profiles.d directory (writeProfiles) so neither
 // XDG_CONFIG_HOME clobbers the other.
 func TestSSHRunsInsideTheSandboxWhenAnIdentityIsPinned(t *testing.T) {
+	requireSandbox(t)
 	dir, sysconf := requireHostSystemSSHConfig(t)
 	pub, sock := sshAgentAndKey(t)
 	proj, _ := target(t)
@@ -423,6 +424,7 @@ fi`).mustRun(t)
 // every host — see requireHostSystemSSHConfig's doc comment for the full
 // reasoning and the by-hand verification.
 func TestSSHWorksInAPlainSandboxRun(t *testing.T) {
+	requireSandbox(t)
 	dir, _ := requireHostSystemSSHConfig(t)
 	proj, _ := target(t)
 	env := writeProfile(t, sshCoverageProfile(dir))
