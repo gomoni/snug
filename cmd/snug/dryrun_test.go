@@ -179,6 +179,62 @@ func TestDryRunAnnotationsAreTruthful(t *testing.T) {
 	}
 }
 
+// TestDryRunAnnotationsAreTruthfulFromACheckoutUnderTmp is the permanent
+// regression for issue #53 (redteam, found while measuring #51, outside that
+// diff): testTree used to build its fixture with os.MkdirTemp(".", …),
+// relative to the process's WORKING DIRECTORY. A checkout living under /tmp
+// therefore put the fabricated $HOME under snug's own /tmp tmpfs grant
+// (every profile selection carries one — see base.toml's [profile.home]),
+// and TestDryRunAnnotationsAreTruthful failed reporting a true fact about the
+// wrong path: "$HOME really is a tmpfs" was correct about where the fixture
+// accidentally stood, and said nothing about the policy under test. The
+// failure text pointed at dryrun.go, and the actual bug was the fixture's
+// address.
+//
+// Fixed (before this test existed) by testTree preferring
+// $SNUG_TEST_FIXTURE_ROOT, then $HOME, over anything checkout-relative — see
+// its doc comment — with assertFixtureIsOutsideSnugsOwnMounts as the positive
+// control that would catch a regression of the fix itself. What nothing
+// pinned by NAME until now is the specific scenario the issue reports: a
+// checkout whose WORKING DIRECTORY is under /tmp must not affect the
+// fixture's location at all. This test reproduces that condition directly —
+// os.Chdir into a fresh directory under os.TempDir(), which is "/tmp" on
+// every host this suite runs on — rather than by copying the checkout, and
+// then runs the exact assertions TestDryRunAnnotationsAreTruthful makes.
+func TestDryRunAnnotationsAreTruthfulFromACheckoutUnderTmp(t *testing.T) {
+	checkout, err := os.MkdirTemp(os.TempDir(), "snug-issue53-checkout-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(checkout) })
+
+	// POSITIVE CONTROL: the fixture only reproduces the reported failure if
+	// the working directory genuinely lands under /tmp — without this, the
+	// assertions below could be passing because os.TempDir() moved, not
+	// because testTree stopped depending on the working directory.
+	abs, err := filepath.Abs(checkout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(abs, "/tmp") {
+		t.Fatalf("control: %s is not under /tmp on this host, so os.Chdir into it below does not "+
+			"reproduce a checkout under /tmp — this test needs a different root here", abs)
+	}
+	t.Chdir(checkout)
+
+	def := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro"})
+	if got := homeAnnotation(def); !strings.Contains(got, "tmpfs") {
+		t.Errorf("control: with @home selected, $HOME really is a tmpfs, got %q", got)
+	}
+
+	sparse := resolveFor(t, []policy.ProfileName{"@sys", "@parent-ro"})
+	if got := homeAnnotation(sparse); strings.Contains(got, "tmpfs") {
+		t.Errorf("from a working directory under /tmp, --no-defaults -p @sys -p @parent-ro must not "+
+			"claim $HOME is a tmpfs, got %q — this is issue #53: the fixture must not be built "+
+			"relative to the checkout's working directory", got)
+	}
+}
+
 // REGRESSION (redteam): the annotation must not UNDERSTATE write access.
 //
 // TestDryRunAnnotationsAreTruthful above covers the safe direction — do not
