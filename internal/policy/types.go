@@ -98,7 +98,7 @@ type Mount struct {
 	Content Secret
 
 	// From records which profiles contributed this grant. It is provenance for
-	// `snug explain` only and is deliberately NOT part of equality — otherwise
+	// `snug --dry-run` only and is deliberately NOT part of equality — otherwise
 	// accumulating it would perturb the fixpoint and break idempotence.
 	From []string
 

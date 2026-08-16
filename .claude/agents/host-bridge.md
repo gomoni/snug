@@ -36,15 +36,91 @@ who says no when a proposed hole is wider than the need.
   by netns. That is what keeps X11 and D-Bus out for free. Treat this as a
   feature to preserve, and notice when a change would undo it.
 - Internet egress/ingress is unrestricted by default; offline is a profile.
-- `pasta` provides connectivity without root. Its defaults are NOT our defaults:
-  `--map-host-loopback` defaults to *the gateway address*, which re-opens the
-  host-loopback hole. snug must pass `--map-host-loopback none` explicitly.
-  Re-verify this against `pasta --help` whenever you touch the network code —
-  a default flipping upstream is a silent security regression, so it belongs in
-  a test, not a comment.
+- `pasta` provides connectivity without root, and **its defaults are unsafe for
+  us in two independent ways**. `--map-host-loopback` defaults to *the gateway
+  address*, and `-T`/`-U` (`--tcp-ns`/`--udp-ns`, namespace→host forwarding) both
+  default to **`auto`**. Either one alone re-opens host loopback. The full closing
+  set is:
+
+  ```
+  --map-host-loopback none -t none -u none -T none -U none
+  ```
+
+  The previous generation of this project passed the first three and not
+  `-T`/`-U`, so its "private" netns reached every host loopback service, and its
+  probe notes saw the symptom and dismissed it as an `ss`/procfs artifact. It was
+  a live TCP forward. See INDEX §4.2.
+- **Never trust a helper's default, in either direction.** Pass every
+  security-relevant flag explicitly even when it matches the current default, and
+  assert the *behaviour* in an integration test — a golden-argv test would have
+  passed on the buggy pasta configuration above. Re-verify against `pasta --help`
+  whenever you touch network code; a default flipping upstream is a silent
+  security regression.
 - Port forwarding host→sandbox is desirable, but consider *which* host address
   the forward binds; binding all interfaces publishes the agent's dev server to
   the LAN.
+
+## Where a helper binary may live
+
+You stage executables — the ssh-agent proxy, the podman socket proxy — so this
+rule is yours as much as `sandbox-policy`'s, and it has been broken once in
+shipped code.
+
+**Never put an executable anywhere the payload can write.** Everything snug
+stages goes in `policy.StagedBinDir` (`/run/snug/bin`), on the root tmpfs and so
+covered by `--remount-ro /`. `$HOME`, `/tmp`, `$HOME/.cache`, `$HOME/.config`,
+`$HOME/.local/state`, `$HOME/.local/share` and `/dev` are all writable, and a
+command staged in any of them is a **shadow slot**: the payload writes `git`
+there and the next `git` anything in the sandbox runs is that file. No profile
+names a PATH directory either — snug adds the staging directory itself, after
+every profile entry and before the base, iff something is staged there. Full rule
+and the two ways it has been defeated: `.claude/agents/sandbox-policy.md`,
+"snug never puts an executable anywhere the payload can write".
+
+## Kernel facts these holes are built on
+
+Measured on this host, not recalled. Each one has cost real debugging time.
+
+- **`unshare(CLONE_NEWNET)` is PER-TASK, not per-process.** A Go process that
+  calls it does not move as a whole: the calling thread leaves the old network
+  namespace, every other thread the runtime already started stays in it.
+  Measured, 1 of 11 threads moved — and `/proc/self/ns/net`, which always names
+  the THREAD GROUP LEADER, kept reporting the OLD namespace because the leader
+  never called `unshare`. **Any verification must sweep
+  `/proc/<pid>/task/*/ns/net` and check every thread**; reading
+  `/proc/<pid>/ns/net` alone is how a scheduler-dependent false green happens.
+  The only join point at which a multithreaded Go process moves as a WHOLE is
+  `execve` immediately afterwards on a `runtime.LockOSThread()`-locked thread.
+  `setns(CLONE_NEWNET)` is the identical shape (`internal/stage`'s `__innetns`
+  shim). Measurements: `.claude/design/SUPERVISOR-DESIGN.md` §1.
+- **`setns` into a user or mount namespace is closed to pure Go, and
+  `LockOSThread` is the red herring you will reach for first.**
+  `setns(CLONE_NEWUSER)` returns **EINVAL** on a multithreaded caller
+  (`userns_install` checks `!thread_group_empty(current)`), and
+  `setns(CLONE_NEWNS)` returns **EINVAL** unless `fs->users == 1` — Go creates
+  every thread with `CLONE_FS`, so `fs->users` *is* the thread count. Measured:
+  `runtime.LockOSThread` changes no row, and neither does `GOMAXPROCS=1` (5
+  threads at the first statement of `main`, 3 under `GOMAXPROCS=1`, never 1).
+  pid, ipc, uts, net and cgroup join fine. **Keep the two errnos apart**: EPERM
+  means the joiner lacks `CAP_SYS_ADMIN` in its own user namespace, EINVAL means
+  wrong thread or fs state. Confusing them costs an hour.
+  `.claude/design/NOCGO.md` §3 has the way around it.
+- **A denied syscall's ERRNO is part of the interface.** `clone3` is denied
+  because classic BPF cannot read its flags — but denying it with **EPERM broke
+  the world**, because glibc's `pthread_create` falls back to `clone()` only on
+  **ENOSYS**. Symptom: `curl https://example.com` returned 000 inside the sandbox
+  while `getent hosts example.com` resolved fine, because curl uses a threaded
+  resolver and the failure surfaced as a DNS timeout that looked exactly like a
+  networking bug. About an hour went into pasta before the cause turned out to be
+  seccomp. **When denying a syscall, return the errno callers already have a
+  tested fallback for.**
+- **An fd is a TOCTOU-free reference to an inode; a path is a lookup that can be
+  re-pointed between the check and the exec.** Measured both ways: replacing a
+  binary on disk while holding an fd and then `execveat`ing the fd ran the OLD
+  inode, while exec by path ran the new one. And `open("/proc/self/exe")` succeeds
+  **inside a mount namespace that does not contain the binary's path** — `stat`
+  returns ENOENT while the fd works, because it is a magic link to the inode
+  rather than a path resolution. Use the fd; `readlink` returns a stale string.
 
 ## Out of scope: GUI, audio, D-Bus
 
