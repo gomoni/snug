@@ -72,23 +72,43 @@ func TestUnrosteredNameIsRefusedAtEveryListVerb(t *testing.T) {
 
 // ── 2. the rules that are NOT the roster still apply to an unrostered name ──
 
-// TestUnrosteredNameStillMeetsTheForbiddenTables: having no roster row is not a
-// way past forbiddenEnv (the exact-name table) or forbiddenEnvPrefixes. The two
-// rules are applied independently — checkEnvName runs the forbid tables,
-// checkEnvVerbType runs the roster — and this is what asserts the first does not
-// quietly depend on the second.
-func TestUnrosteredNameStillMeetsTheForbiddenTables(t *testing.T) {
+// TestUnrosteredNameStillMeetsTheAnnotationTables: this asked, in the attacker's
+// direction, whether having no roster row was a way PAST the forbidden-name and
+// forbidden-prefix tables. It is the same question inverted now — those tables
+// refuse nothing, so the way past them is to be handed over with nothing said —
+// and the two rules are still applied independently: EnvNote reads the
+// annotation tables, checkEnvVerbType reads the roster. A name with no row in
+// either is carried and marked `unchecked`; a name with no ROSTER row but an
+// annotation is carried, marked unchecked, AND told about, which is two true
+// statements rather than a contradiction.
+//
+// The verdict a user profile gets is no longer a refusal, so what an attacker
+// would want is silence. That is what this measures.
+func TestUnrosteredNameStillMeetsTheAnnotationTables(t *testing.T) {
 	cases := []struct {
 		why  string
 		name string
 	}{
-		{"an exact forbidBoth entry", "GIT_SSH_COMMAND"},
+		{"an exact annotated name", "GIT_SSH_COMMAND"},
 		{"the LD_ prefix", "LD_ANYTHING"},
 		{"the BASH_FUNC_ prefix", "BASH_FUNC_x"},
 	}
 	for _, tc := range cases {
-		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{tc.name: "x"}}); err == nil {
-			t.Errorf("environ.set accepted %s (%s)", tc.name, tc.why)
+		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{tc.name: "x"}}); err != nil {
+			t.Errorf("environ.set refused %s (%s): %v — a human's own profile may open this "+
+				"hole; snug's job is to say what it is", tc.name, tc.why, err)
+		}
+		if EnvNote(tc.name, VerbSet) == "" {
+			t.Errorf("environ.set %s (%s) is handed over with NOTHING said about it. None of "+
+				"these three has a roster row, so the annotation is the only thing standing "+
+				"between this row and a human reading it as ordinary", tc.name, tc.why)
+		}
+		// …and the unchecked mark is still there too, from the roster, which is
+		// what the builtin gate is written on. Both marks, not one instead of the
+		// other.
+		if !IsUncheckedEnv(tc.name, VerbSet) {
+			t.Errorf("%s reads as CHECKED. An annotation is not a roster row: if it were, a "+
+				"profile snug SHIPS could write this name", tc.name)
 		}
 	}
 }
@@ -186,11 +206,22 @@ func TestCaseFoldedSpellingsOfARosteredNameAgree(t *testing.T) {
 			t.Errorf("environ.set %s was refused: %v — a case-folded spelling of a rostered "+
 				"pointer must resolve to the same row as the canonical spelling", name, err)
 		}
-		// inherit: refused in every spelling — a pointer must never be pulled
-		// from the host (noInherit), and the prefix rule refuses it too.
-		if err := ValidateEnvGrants(EnvGrants{Inherit: []string{name}}); err == nil {
-			t.Errorf("environ.inherit %s was accepted; every spelling of NPM_CONFIG_USERCONFIG "+
-				"must be refused at inherit", name)
+		// inherit: accepted in every spelling, and ANNOTATED in every spelling.
+		// This was a refusal (the roster's `noInherit` bit, plus the prefix rule)
+		// and is now the sentence saying what taking the host's value does —
+		// which is the half that has to fold case, because the exact-name table
+		// does not: npm_config_userconfig reaches its sentence through the
+		// npm_config_ prefix, NPM_CONFIG_USERCONFIG through its own row, and a
+		// reader must not be able to tell which by whether they were told
+		// anything.
+		if err := ValidateEnvGrants(EnvGrants{Inherit: []string{name}}); err != nil {
+			t.Errorf("environ.inherit %s was refused: %v", name, err)
+		}
+		if EnvNote(name, VerbInherit) == "" {
+			t.Errorf("environ.inherit %s carries no annotation; this spelling pulls the host's "+
+				".npmrc — auth tokens included — into the sandbox with nothing said about it, "+
+				"and the lower-case spelling is the exact one that slipped through the last "+
+				"time this rule was written for one of its two case halves", name)
 		}
 		// unchecked: false in every spelling. If the roster lookup ever
 		// regresses to an exact-string match, npm_config_userconfig and

@@ -107,3 +107,102 @@ func TestBuiltinsItselfWritesOnlyRosteredNames(t *testing.T) {
 		t.Fatalf("Builtins() failed: %v", err)
 	}
 }
+
+// ── the residual the roster rule leaves, pinned as an inventory ──────────────
+//
+// THE RESIDUAL, stated plainly. Since the second pass over issue #44, snug's
+// annotation table refuses nothing: `set GIT_SSH_COMMAND` in a HUMAN's profile
+// is legal and annotated. What still keeps that name out of a profile snug SHIPS
+// is checkBuiltinEnvRoster — and it holds only because GIT_SSH_COMMAND has no
+// ROSTER row, not because anyone decided a builtin may not write it. The day
+// someone adds a roster row to an annotated name (to give it a type so a list
+// verb works, which is the plausible reason), the builtin gate opens for that
+// name silently and the annotation stays exactly as it was.
+//
+// WHAT WAS CONSIDERED AND REJECTED: extending the rule to "nor a name snug would
+// annotate". CHECKED against the real profiles before rejecting it, which is why
+// it is rejected — @claude's `[profile.claude.environ.inherit]` carries EDITOR,
+// VISUAL, PAGER and ANTHROPIC_BASE_URL, all four of which ARE annotated now, so
+// a blanket refusal fails at Builtins() and takes every snug command down with
+// it. The annotation on those four is not a defect to close: it is the answer to
+// issues #35 and #45, and withdrawing @claude's inherit is the cost both of them
+// already priced and declined.
+//
+// WHAT IS DONE INSTEAD: this inventory. The (name, verb) pairs a shipped profile
+// writes that carry an annotation are enumerated here, by hand. Adding one moves
+// this list, which puts it in a diff a human reads — the project's stated review
+// mechanism for a change to the boundary, the same argument as the golden argv
+// files. It is not a gate and does not pretend to be; it is the thing that makes
+// opening the gate a conscious act rather than a side effect.
+//
+// If you are here because this test failed: a builtin now hands the payload a
+// variable snug has a warning about. Read the warning. Then either take the
+// grant back out of base.toml, or add the pair here with a sentence saying why a
+// shipped profile needs it.
+func TestAnnotatedEnvPairsAShippedProfileWritesArePinned(t *testing.T) {
+	// The inventory. Each entry says why snug ships it, because that is the
+	// review the pinning exists to force.
+	want := map[string]string{
+		// @claude, so that a human behind a gateway or a proxy keeps working
+		// inside the sandbox. Names no program; what it redirects is where the
+		// agent's own traffic goes.
+		"ANTHROPIC_BASE_URL (inherit)": "@claude",
+		// @claude, all three, so that `git commit` inside opens the editor the
+		// human already chose and `git log` pages the way they expect. These are
+		// the names issues #35 and #45 are about: the annotation is the decision,
+		// and withdrawing the inherit is the cost that was declined.
+		"EDITOR (inherit)": "@claude",
+		"VISUAL (inherit)": "@claude",
+		"PAGER (inherit)":  "@claude",
+	}
+
+	reg, err := Builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[string]bool{}
+	for name, p := range reg {
+		sweep := func(n string, verb policy.EnvVerb) {
+			if policy.EnvNote(n, verb) == "" {
+				return
+			}
+			key := n + " (" + verb.String() + ")"
+			got[key] = true
+			if _, ok := want[key]; !ok {
+				t.Errorf("builtin %s hands over %s, which snug ANNOTATES:\n    %s\n"+
+					"Nothing refuses it — the roster rule only refuses a name with no TYPE, and "+
+					"this one has a row. That is the residual this inventory exists to make "+
+					"visible: read the sentence, decide whether a profile snug SHIPS should carry "+
+					"it, and either remove the grant or add the pair to `want` above with the "+
+					"reason.", name, key, strings.TrimSpace(policy.EnvNote(n, verb)))
+			}
+		}
+		for n := range p.Environ.Set {
+			sweep(n, policy.VerbSet)
+		}
+		for n := range p.Environ.Merge {
+			sweep(n, policy.VerbMerge)
+		}
+		for n := range p.Environ.Prepend {
+			sweep(n, policy.VerbPrepend)
+		}
+		for _, n := range p.Environ.Inherit {
+			sweep(n, policy.VerbInherit)
+		}
+		for _, n := range p.Environ.Sanitise {
+			sweep(n, policy.VerbSanitise)
+		}
+	}
+
+	// The other direction, and it is the half that keeps the list honest: a pair
+	// listed here that no builtin writes any more is a stale entry, and a stale
+	// allowlist entry is a hole waiting for a name to be re-added under it
+	// without review.
+	for key, why := range want {
+		if !got[key] {
+			t.Errorf("%s is pinned here (%s) but no builtin writes it any more. Remove the entry: "+
+				"an inventory that lists more than reality pre-approves the next grant", key, why)
+		}
+	}
+}

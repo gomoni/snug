@@ -210,18 +210,35 @@ func configCmd(args []string) int {
 }
 
 // uncheckedMark is `snug profile show`'s half of the mark --dry-run's
-// ENVIRONMENT block draws on the same (name, verb) pair, and it comes from the
-// same predicate — policy.IsUncheckedEnv — because two screens deciding
-// separately what "snug knows this name" means is how one of them comes to lie.
+// ENVIRONMENT block draws on the same (name, verb) pair, and both the decision
+// and the WORDING come from internal/policy — because two screens deciding
+// separately what "snug knows this name" means is how one of them comes to lie,
+// and two screens spelling the same decision differently is how a reader learns
+// to distrust both. The string was held here once; see policy.UncheckedEnvNote.
 //
 // It is a fact about ONE name, so it goes on that name's own line rather than
 // once per block: a heading is read as decoration by the time the eye reaches
 // the third row, and a block can mix rostered and unrostered names freely.
 func uncheckedMark(name string, verb policy.EnvVerb) string {
-	if !policy.IsUncheckedEnv(name, verb) {
-		return ""
-	}
-	return "  ← unchecked: snug has no entry for this name"
+	return policy.UncheckedEnvNote(name, verb)
+}
+
+// envMarks is this screen's half of the JOIN --dry-run's ENVIRONMENT block makes
+// on the same (name, verb) pair: the unchecked mark, then whatever
+// policy.EnvNote has to say about what the tool DOES with the value.
+//
+// Two marks here rather than three — grantMark has no counterpart on this
+// screen, because `snug profile show` renders a profile with no target and so
+// has no mounts to judge a value against. The two that do apply keep --dry-run's
+// order, so a reader moving between the screens reads the same row the same way.
+//
+// It is a function rather than two concatenations at each of the three call
+// sites below for the reason this file already records: a mark added at one site
+// and forgotten at the other two is how a screen comes to say less than its
+// neighbour, and `snug profile show` is precisely where that happened last time
+// (the mark used to hang off a block that was removed).
+func envMarks(name string, verb policy.EnvVerb) string {
+	return uncheckedMark(name, verb) + policy.EnvNote(name, verb)
 }
 
 // showEnviron renders the five environment verbs.
@@ -244,7 +261,7 @@ func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
 		sort.Strings(names)
 		vals := make([]string, 0, len(names))
 		for _, n := range names {
-			vals = append(vals, n+" = "+m[n]+uncheckedMark(n, verb))
+			vals = append(vals, n+" = "+m[n]+envMarks(n, verb))
 		}
 		show(label, vals)
 	}
@@ -256,7 +273,7 @@ func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
 		sort.Strings(names)
 		vals := make([]string, 0, len(names))
 		for _, n := range names {
-			vals = append(vals, n+" = "+strings.Join(m[n], " ")+uncheckedMark(n, verb))
+			vals = append(vals, n+" = "+strings.Join(m[n], " ")+envMarks(n, verb))
 		}
 		show(label, vals)
 	}
@@ -265,7 +282,7 @@ func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
 	names := func(label string, verb policy.EnvVerb, in []string) {
 		vals := make([]string, 0, len(in))
 		for _, n := range in {
-			vals = append(vals, n+uncheckedMark(n, verb))
+			vals = append(vals, n+envMarks(n, verb))
 		}
 		show(label, vals)
 	}

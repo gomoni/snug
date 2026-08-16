@@ -307,7 +307,10 @@ Profiles use five verbs under one `environ` section. Verb says how value merges.
 ro = ["/opt/tools/bin", "/opt/tools/override"]   # a profile grants what it names
 
 [profile.mytools.environ.set]
-EDITOR = "/usr/bin/vim"            # scalar. Two profiles disagreeing = error
+EDITOR = "/usr/bin/vim"            # scalar. Two profiles disagreeing = error.
+                                   # git RUNS this, so the row carries a sentence
+                                   # saying so on --dry-run and on
+                                   # `snug profile show`
 
 [profile.mytools.environ.merge]
 PATH = ["/opt/tools/bin"]          # list. Union, sorted, deduplicated
@@ -333,6 +336,14 @@ path, which is who takes it on — and every row it produces says so on screen.
 A profile snug **ships** may not write one at all: the roster row is where the
 sentence saying what the variable lets a tool DO gets reviewed.
 
+The roster holds what snug KNOWS, never what it permits. Separately from it,
+snug carries a sentence for the variables whose value is a program some tool
+runs, or that outrank a config file — `GIT_SSH`, `RUSTC_WRAPPER`, `BASH_ENV`,
+`LD_*`, `GIT_CONFIG_*`, `EDITOR` among them. Those rows are marked, not refused:
+your profile is your declaration, and snug's job is to make sure the screen you
+approve it on says what you are approving. `internal/policy/testdata/
+annotations.txt` is the whole table.
+
 Profile order never matters. Two profiles setting the same scalar to different
 values = **fatal error naming both**, never a silent winner — same rule as two
 profiles fighting over a mount. Lists join, so cannot conflict. `prepend` is the
@@ -352,10 +363,12 @@ Four rules to know before writing a profile:
 - **Profile must grant what it names.** `merge PATH = ["/opt/tools/bin"]` without
   a grant for that path is refused at parse time. A search path pointing at
   nothing inside the sandbox is a lie the tool acts on.
-- **Some names refused outright, because the value is code.** `LD_PRELOAD`,
-  `GIT_SSH`, `GIT_CONFIG_*`, `BASH_FUNC_*`, `JAVA_TOOL_OPTIONS` and relatives.
-  Otherwise a profile granting no path at all hijacks the next `git fetch` a
-  human runs inside.
+- **Some names are annotated, because the value is code.** `LD_PRELOAD`,
+  `GIT_SSH`, `GIT_CONFIG_*`, `BASH_FUNC_*`, `JAVA_TOOL_OPTIONS` and relatives:
+  writing one is how a profile granting no path at all hijacks the next `git
+  fetch` a human runs inside, so the row says so. It is not refused — snug has
+  no deny rules anywhere, and a profile is a human opening a hole in their own
+  sandbox. A profile snug *ships* is the one that may not write these.
 - **Names snug writes itself cannot be replaced.** `HOME`, `SHELL`, `PS1`,
   `TERM`, `SNUG*` — a profile able to set `SNUG_PROFILES` could lie to the
   artifact you read to decide whether to trust the sandbox. `PATH` is owned the

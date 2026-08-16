@@ -408,15 +408,33 @@ func envLines(p *policy.Policy, v policy.EnvVar) []envLine {
 		// the difference this branch introduced, not a difference in what snug
 		// knows.
 		//
-		// Order matters: `unchecked` comes first because it is the stronger
-		// statement and the one that qualifies the other.
+		// THREE STATEMENTS, ONE ORDER, and none of them replaces another. The
+		// third arrived with the annotation table (issue #44's second pass), and
+		// it is inserted between the other two rather than beside them:
 		//
-		// The string is the one `snug profile show` uses (config.go's
-		// uncheckedMark), from the same predicate: one property, one wording, two
-		// screens.
-		if policy.IsUncheckedEnv(v.Name, e.Verb) {
-			mark = "  ← unchecked: snug has no entry for this name" + mark
+		//   unchecked   about the NAME — snug has no roster row, so no type
+		//   EnvNote     about what the tool DOES with the value
+		//   grantMark   about the VALUE as a path — nothing inside covers it
+		//
+		// The order is narrowest-scope-last and is fixed by
+		// TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark. `unchecked` comes
+		// first because it qualifies everything after it. The note comes before
+		// grantMark because it is about the variable's MEANING, while grantMark
+		// is about this one string.
+		//
+		// The two can co-occur, and that is not a contradiction: `set
+		// PIP_INDEX_URL` has no roster row (unchecked — snug has no type for it)
+		// and matches an annotated family (PIP_*: outranks the config file pip
+		// reads). Both sentences are true and they answer different questions.
+		//
+		// Both strings come from internal/policy, so `snug profile show` renders
+		// the identical text: one property, one wording, two screens. That was
+		// claimed here while this sink still held its own copy of the unchecked
+		// string and the other sink held a second — see policy.UncheckedEnvNote.
+		if s := policy.EnvNote(v.Name, e.Verb); s != "" {
+			mark = s + mark
 		}
+		mark = policy.UncheckedEnvNote(v.Name, e.Verb) + mark
 		if n := len(out); n > 0 && out[n-1].verb == verb && out[n-1].from == from && out[n-1].mark == mark {
 			out[n-1].values = append(out[n-1].values, elementValue(v.Name, e.Value))
 			continue

@@ -603,10 +603,11 @@ func under(canonTarget, p string) (string, bool) {
 // p.Mounts[...] directly instead, bypassing both the provenance record and
 // Validate.
 
-// forbiddenEnv lives in envtypes.go now, split by verb: a value carried by a
-// reviewed profile file and a value inherited from whoever launched snug are
-// two different things, and one middle bucket is legal as the first and not the
-// second (CALL 4).
+// The forbidden-name table lives in envtypes.go and no longer forbids: it is
+// `envNotes`, an ANNOTATION rendered on --dry-run and on `snug profile show`.
+// The split by verb survived the change and is now the thing it says — a value
+// carried by a reviewed profile file and a value inherited from whoever launched
+// snug are two different things, so each gets its own sentence (CALL 4).
 
 // envOr keeps Getenv's "empty means absent" reading DELIBERATELY, and it is the
 // one place that is right. Its callers want a value snug can fall back on —

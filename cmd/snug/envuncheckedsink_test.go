@@ -124,7 +124,7 @@ func TestDryRunMarksAnUnrosteredNameAsUnchecked(t *testing.T) {
 		t.Fatalf("MY_TOOL_MODE never reached the ENVIRONMENT block, so this test measures "+
 			"nothing:\n%s", got)
 	}
-	if !strings.Contains(got, "unchecked: snug has no entry for this name") {
+	if !strings.Contains(got, "unchecked: snug has no type for this name") {
 		t.Errorf("an unrostered name was not marked unchecked in --dry-run:\n%s", got)
 	}
 
@@ -161,12 +161,14 @@ func TestDryRunMarksAnUnrosteredNameAsUnchecked(t *testing.T) {
 //   - MY_TOOL_UNGRANTED: unrostered, value is an absolute path nothing grants
 //   - MY_TOOL_GRANTED:   unrostered, value IS granted (the fixture $HOME, via @home)
 //   - MY_TOOL_MODE:      unrostered, value is not path-shaped at all ("fast")
-//   - BASH_ENV:          ROSTERED (forbidInheritOnly, set legal), same ungranted
-//     value as MY_TOOL_UNGRANTED. This is the
+//   - BASH_ENV:          ROSTERED and ANNOTATED, same ungranted value as
+//     MY_TOOL_UNGRANTED. This is the
 //     POSITIVE CONTROL: it is what distinguishes "both marks fire correctly"
 //     from "the mark string happens to contain both substrings" — a rostered
-//     name must show `not granted` alone, with no `unchecked` anywhere on its
-//     line, on the SAME value that produces both marks for an unrostered name.
+//     name must show `not granted` with no `unchecked` anywhere on its line, on
+//     the SAME value that produces both marks for an unrostered name.
+//   - GIT_SSH_COMMAND:   UNROSTERED, ANNOTATED and ungranted: the only row that
+//     carries all THREE statements, which is what fixes their order.
 //   - PATH:              merged with the fixture $HOME, a writable tmpfs, so the
 //     shadow-slot mark fires. PATH has a roster row, so IsUncheckedEnv can never
 //     be true for it, and this line asserts the writable mark is not doubled up
@@ -187,6 +189,11 @@ func markJoinRegistry(t *testing.T) map[policy.ProfileName]*policy.Profile {
 				"MY_TOOL_GRANTED":   "{home}",
 				"MY_TOOL_MODE":      "fast",
 				"BASH_ENV":          "/var/lib/nowhere",
+				// UNROSTERED, ANNOTATED and UNGRANTED all at once — the only row
+				// that exercises all three marks together. It is legal for a
+				// user profile to write it (snug has only allowlists), which is
+				// precisely why the row has to say three things.
+				"GIT_SSH_COMMAND": "/var/lib/nowhere/ssh",
 			},
 			Merge: map[string][]string{"PATH": {"{home}"}},
 		},
@@ -263,6 +270,39 @@ func TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark(t *testing.T) {
 	if strings.Contains(bashEnv, "unchecked") {
 		t.Errorf("control: rostered BASH_ENV must never carry the unchecked mark:\n%s", bashEnv)
 	}
+	// …and it carries the THIRD statement, the annotation, beside the grant
+	// verdict rather than instead of it. BASH_ENV is the ideal witness: rostered
+	// (so no unchecked mark), annotated (bash sources the file), and pointed at a
+	// path nothing grants (so grantMark fires). Two marks on one line, and the
+	// annotation first.
+	if !strings.Contains(bashEnv, "SOURCES this file") {
+		t.Errorf("rostered+annotated BASH_ENV lost its annotation; the grant mark must not "+
+			"displace it:\n%s", bashEnv)
+	}
+	if i, j := strings.Index(bashEnv, "SOURCES this file"), strings.Index(bashEnv, "not granted"); i > j {
+		t.Errorf("want the annotation before the grant mark on the BASH_ENV line, got:\n%s", bashEnv)
+	}
+
+	// 6. ALL THREE AT ONCE, which is the case no single line above covers and the
+	// one the ordering rule exists for. GIT_SSH_COMMAND has no roster row
+	// (unchecked), has an annotation (git runs it as the transport), and its
+	// value is an absolute path nothing grants (not granted). The order is fixed:
+	// unchecked, then the annotation, then the grant verdict — widest claim
+	// first. Anything that REPLACES rather than appends loses one of the three,
+	// which is the defect two independent reviews already found once on this
+	// exact line of code.
+	three := lineFor(t, got, "GIT_SSH_COMMAND")
+	iU := strings.Index(three, "unchecked")
+	iN := strings.Index(three, "git runs this as the transport")
+	iG := strings.Index(three, "not granted")
+	if iU < 0 || iN < 0 || iG < 0 {
+		t.Fatalf("the three-statement row lost one of them (unchecked=%d note=%d grant=%d):\n%s",
+			iU, iN, iG, three)
+	}
+	if !(iU < iN && iN < iG) {
+		t.Errorf("want unchecked < annotation < grant mark on the three-statement row, got "+
+			"%d/%d/%d:\n%s", iU, iN, iG, three)
+	}
 
 	// 5. PATH's shadow-slot mark still fires, and is not doubled with an
 	// unchecked mark it structurally cannot carry (PATH has a roster row).
@@ -334,5 +374,129 @@ func TestProfileShowMarksAnUnrosteredNameAsUnchecked(t *testing.T) {
 	// The value survives the mark: the row still says what it grants.
 	if v := line("environ.set", "MY_TOOL_MODE"); !strings.Contains(v, "= fast") {
 		t.Errorf("environ.set lost the value while adding the mark: %q", v)
+	}
+}
+
+// TestBothScreensSpellTheUncheckedMarkIdentically compares the two sinks' output
+// against each other rather than against policy.UncheckedEnvNote, which would be
+// tautological now that both call it: what is being pinned is that neither sink
+// may go back to holding its own copy of the string.
+//
+// It is written because both DID hold one, and the comment at one of them
+// asserted the opposite — "both strings come from internal/policy, so `snug
+// profile show` renders the identical text" — which was true of the annotation
+// beside it and false of this mark. The wording then diverged from the code
+// comment describing it rather than from the other screen, so no comparison
+// between the screens could have failed either. The literal below is the third
+// party to that comparison and is what makes this a ratchet rather than a
+// consistency check between two copies of the same mistake.
+func TestBothScreensSpellTheUncheckedMarkIdentically(t *testing.T) {
+	const want = "  ← unchecked: snug has no type for this name"
+
+	// The wording is load-bearing and not free to churn: a row for an
+	// unrostered-but-annotated name carries this mark AND a sentence about what
+	// the tool does with the value, so this half must not read as a denial that
+	// the other half exists. "no entry for this name" did, and that is what it
+	// replaced. See policy.UncheckedEnvNote.
+	if got := policy.UncheckedEnvNote("MY_TOOL_MODE", policy.VerbSet); got != want {
+		t.Errorf("policy.UncheckedEnvNote = %q, want %q", got, want)
+	}
+
+	var showLine string
+	showEnviron(policy.EnvGrants{Set: map[string]string{"MY_TOOL_MODE": "fast"}},
+		func(label string, vals []string) {
+			for _, v := range vals {
+				if strings.HasPrefix(v, "MY_TOOL_MODE") {
+					showLine = v
+				}
+			}
+		})
+	if showLine == "" {
+		t.Fatal("`snug profile show` never rendered MY_TOOL_MODE, so this test measures nothing")
+	}
+	if !strings.Contains(showLine, want) {
+		t.Errorf("`snug profile show` rendered %q, which does not carry %q", showLine, want)
+	}
+
+	m := leakyEnvRegistry(t)
+	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "leaky")
+	p, err := policy.Resolve(m, sel, envGoldenCtx(), newEnvFakeEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dryLine string
+	for _, l := range strings.Split(captureFile(t, func(f *os.File) { describeEnvironment(f, p) }), "\n") {
+		if strings.Contains(l, "MY_TOOL_MODE") {
+			dryLine = l
+		}
+	}
+	if dryLine == "" {
+		t.Fatal("--dry-run never rendered MY_TOOL_MODE, so this test measures nothing")
+	}
+	if !strings.Contains(dryLine, want) {
+		t.Errorf("--dry-run rendered %q, which does not carry %q", dryLine, want)
+	}
+}
+
+// TestProfileShowRendersTheAnnotation is the SECOND sink for the annotation, and
+// it exists for the reason this file already records about the unchecked mark: a
+// mark added to --dry-run and forgotten on `snug profile show` leaves the two
+// screens saying different things about the identical profile text, and this
+// screen is the one read BEFORE selecting a profile — the earlier of the two
+// decisions.
+//
+// It also pins the per-verb split at this sink, which is where it is most
+// visible: the same name in `environ.set` and in `environ.inherit` must not
+// render the same sentence, because the difference between them is where the
+// value comes from.
+func TestProfileShowRendersTheAnnotation(t *testing.T) {
+	got := map[string][]string{}
+	showEnviron(policy.EnvGrants{
+		Set:     map[string]string{"BASH_ENV": "{home}/init", "XDG_DATA_HOME": "{home}/.local/share"},
+		Inherit: []string{"BASH_ENV", "NO_COLOR"},
+	}, func(label string, vals []string) {
+		if len(vals) > 0 {
+			got[label] = vals
+		}
+	})
+
+	find := func(label, name string) string {
+		t.Helper()
+		for _, v := range got[label] {
+			if strings.HasPrefix(v, name) {
+				return v
+			}
+		}
+		t.Fatalf("%s did not render %s at all; got %q", label, name, got[label])
+		return ""
+	}
+
+	set := find("environ.set", "BASH_ENV")
+	inherit := find("environ.inherit", "BASH_ENV")
+	if !strings.Contains(set, "SOURCES this file") || !strings.Contains(inherit, "SOURCES this file") {
+		t.Errorf("BASH_ENV is annotated on --dry-run and not here:\n  set:     %s\n  inherit: %s\n"+
+			"Two screens reading the same predicate is the whole point of policy.EnvNote", set, inherit)
+	}
+	if !strings.Contains(inherit, "chosen on the host") {
+		t.Errorf("environ.inherit BASH_ENV rendered %q, which does not say the file is chosen on "+
+			"the HOST. That is the one thing `inherit` adds over `set`, and it is the half the "+
+			"old forbidInheritOnly refusal used to carry for free", inherit)
+	}
+	if strings.Contains(set, "chosen on the host") {
+		t.Errorf("environ.set BASH_ENV rendered the inherit sentence (%q); a value written in the "+
+			"profile file is not chosen on the host, and a screen that says so is teaching the "+
+			"reader to ignore the mark", set)
+	}
+
+	// NEGATIVE CONTROLS, both directions. A rostered pointer authored by the
+	// profile carries nothing at `set` (authoring it is the recommended
+	// mechanism), and a flag that names no program carries nothing at all.
+	if v := find("environ.set", "XDG_DATA_HOME"); strings.Contains(v, "←") {
+		t.Errorf("environ.set XDG_DATA_HOME is annotated: %q. @home does exactly this on every "+
+			"run; a mark here fires on the ordinary case and stops meaning anything", v)
+	}
+	if v := find("environ.inherit", "NO_COLOR"); strings.Contains(v, "←") {
+		t.Errorf("environ.inherit NO_COLOR is annotated: %q. It changes what tools PRINT and "+
+			"names no program", v)
 	}
 }

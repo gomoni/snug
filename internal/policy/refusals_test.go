@@ -471,11 +471,19 @@ func TestPostStagingValidateCatchesNestedGrant(t *testing.T) {
 	}
 }
 
-// refusalForbiddenEnvUnsetOnHost: §4.4. A profile naming a code-injection
-// variable is refused whether or not the launching host has that variable set.
-// Before, the check sat inside the presence guard, so the verdict on a PROFILE
-// depended on the environment of whoever ran snug — accepted here, refused
-// there, with nothing in either message explaining the difference.
+// refusalForbiddenEnvUnsetOnHost: §4.4. The verdict on a profile does not depend
+// on whether the launching host has the variable set. Before, the check sat
+// inside the presence guard, so the verdict on a PROFILE depended on the
+// environment of whoever ran snug — accepted here, refused there, with nothing
+// in either message explaining the difference.
+//
+// WHAT REFUSES IT HAS CHANGED, and the golden text moves with it. The
+// forbidden-name table is an annotation now and refuses nothing; LD_PRELOAD is
+// still refused at `inherit` because it is a LIST, and inheriting a list is an
+// operation snug will not perform for anybody. So this case keeps measuring the
+// host-independence property — the message it pins is simply the type rule's
+// rather than the forbidden table's. Read the diff in refusals.txt as exactly
+// that: the same refusal, arrived at by the mechanism that was never a denylist.
 func refusalForbiddenEnvUnsetOnHost(t testing.TB) error {
 	reg := testRegistry()
 	reg["bad"] = &Profile{Name: "bad", Environ: EnvGrants{Inherit: []string{"LD_PRELOAD"}}}
@@ -660,18 +668,30 @@ func TestGoldenRefusals(t *testing.T) {
 		{"env_name_bad_character", refusalEnv(EnvGrants{Set: map[string]string{"MY-VAR": "x"}})},
 		{"env_name_snug_owned", refusalEnv(EnvGrants{Set: map[string]string{"SNUG_PROFILES": "@sys"}})},
 		{"env_name_snug_owned_ps1", refusalEnv(EnvGrants{Inherit: []string{"PS1"}})},
-		{"env_name_forbidden_both", refusalEnv(EnvGrants{Set: map[string]string{"GIT_SSH_COMMAND": "x"}})},
-		{"env_name_forbidden_prefix_both", refusalEnv(EnvGrants{Set: map[string]string{"BASH_FUNC_build": "x"}})},
-		{"env_name_forbidden_prefix_git_config", refusalEnv(EnvGrants{Set: map[string]string{"GIT_CONFIG_COUNT": "1"}})},
-		{"env_name_forbidden_prefix_inherit_only", refusalEnv(EnvGrants{Inherit: []string{"PIP_INDEX_URL"}})},
-		{"env_name_forbidden_inherit_only", refusalEnv(EnvGrants{Inherit: []string{"BASH_ENV"}})},
+		// FIVE ENTRIES USED TO SIT HERE and they are gone rather than moved:
+		// GIT_SSH_COMMAND and BASH_FUNC_* and GIT_CONFIG_COUNT at `set`,
+		// PIP_INDEX_URL and BASH_ENV at `inherit`. Every one of them is now
+		// ACCEPTED and ANNOTATED — snug has only allowlists, and a profile's
+		// author is a human on the trusted side of the boundary. Their
+		// replacement is not a refusal at all, which is why it could not stay in
+		// this file: it is testdata/annotations.txt, the golden of every sentence
+		// those names now render, and TestAnnotationSplitsBySetAndInherit, which
+		// asserts the acceptance and the sentence together. Deleting a row here
+		// without adding one there would have lost the assertion; that is the
+		// only reason this comment is longer than the rows it replaces.
 
 		// verb/type agreement (§2.1)
 		{"env_set_on_a_list", refusalEnv(EnvGrants{Set: map[string]string{"PATH": "/opt/bin"}})},
 		{"env_merge_on_a_scalar", refusalEnv(EnvGrants{Merge: map[string][]string{"EDITOR": {"vim"}}})},
 		{"env_merge_on_an_uncomposable_list", refusalEnv(EnvGrants{Merge: map[string][]string{"CDPATH": {"/opt"}}})},
 		{"env_inherit_on_a_list", refusalEnv(EnvGrants{Inherit: []string{"PKG_CONFIG_PATH"}})},
-		{"env_inherit_on_a_generated_config_path", refusalEnv(EnvGrants{Inherit: []string{"XDG_CONFIG_HOME"}})},
+		// `env_inherit_on_a_generated_config_path` (inherit XDG_CONFIG_HOME) was
+		// here and is gone for the same reason: it was the roster's `noInherit`
+		// bit, a permission verdict living inside a table of type facts. It is an
+		// annotation now — see annotations.txt, and the pointer loop in
+		// TestAnnotationSplitsBySetAndInherit, which asserts BOTH halves of what
+		// the bit used to mean: annotated at `inherit`, and silent at `set`,
+		// because authoring a pointer is the mechanism snug recommends.
 		{"env_sanitise_on_a_scalar", refusalEnv(EnvGrants{Sanitise: []string{"EDITOR"}})},
 		{"env_sanitise_on_manpath", refusalEnv(EnvGrants{Sanitise: []string{"MANPATH"}})},
 		{"env_sanitise_on_an_unfilterable_list", refusalEnv(EnvGrants{Sanitise: []string{"PYTHONPATH"}})},

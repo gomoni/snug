@@ -117,7 +117,7 @@ profile hostile puts a bind of /opt at /home/u/.claude.json/evil, which is insid
        Remove the grant at /home/u/.claude.json/evil.
 
 == forbidden_env_unset_on_host ==
-profile "bad": environ.inherit names LD_PRELOAD, which snug refuses for this verb: the value is code, executed by every process the sandbox launches. Remove the line
+profile "bad": environ.inherit on LD_PRELOAD, which is a list. Inheriting a host search path wholesale imports directories the sandbox does not have — use environ.sanitise, which copies the host value and keeps only the elements policy grants
 
 == env_name_empty ==
 environ.set has an entry with an empty name. A variable with no name cannot be set; delete the line
@@ -143,21 +143,6 @@ environ.set names SNUG_PROFILES, which snug writes itself. No profile may write 
 == env_name_snug_owned_ps1 ==
 environ.inherit names PS1, which snug writes itself. No profile may write a name snug writes: HOME, PATH and SHELL have no safe absent state, PS1 is executed by bash, and SNUG* is what --dry-run is read against — a profile that could set one could lie to the artifact a human reads to decide whether to trust the sandbox. Remove the line
 
-== env_name_forbidden_both ==
-environ.set names GIT_SSH_COMMAND, which snug refuses for this verb: the value is code, executed by every process the sandbox launches. Remove the line
-
-== env_name_forbidden_prefix_both ==
-environ.set names BASH_FUNC_build, and snug refuses the whole BASH_FUNC_* prefix for this verb: the value is executed, or it outranks the config file snug generates. Remove the line
-
-== env_name_forbidden_prefix_git_config ==
-environ.set names GIT_CONFIG_COUNT, and snug refuses the whole GIT_CONFIG_* prefix for this verb: the value is executed, or it outranks the config file snug generates. Remove the line
-
-== env_name_forbidden_prefix_inherit_only ==
-environ.inherit names PIP_INDEX_URL, and snug refuses the whole PIP_* prefix for this verb: the value is executed, or it outranks the config file snug generates. Remove the line
-
-== env_name_forbidden_inherit_only ==
-environ.inherit names BASH_ENV, which snug refuses for this verb: the value is code, executed by every process the sandbox launches. Remove the line
-
 == env_set_on_a_list ==
 environ.set on PATH, which is a list — use environ.merge, or environ.prepend if the order matters. environ.set on a list would replace every other profile's entries, which snug does not allow
 
@@ -170,9 +155,6 @@ environ.merge on CDPATH, which snug does not compose. Its elements are not indep
 == env_inherit_on_a_list ==
 environ.inherit on PKG_CONFIG_PATH, which is a list. Inheriting a host search path wholesale imports directories the sandbox does not have — use environ.sanitise, which copies the host value and keeps only the elements policy grants
 
-== env_inherit_on_a_generated_config_path ==
-environ.inherit on XDG_CONFIG_HOME, which snug refuses to take from the host: the host's value names a path this sandbox does not have, and for a config-file variable it would outrank the file snug generates. Use environ.set with a path the same profile grants
-
 == env_sanitise_on_a_scalar ==
 environ.sanitise on EDITOR, which is a scalar. sanitise filters the ELEMENTS of a host list; for a scalar there is nothing to filter — use environ.inherit to take the host's value, or environ.set to write one
 
@@ -180,7 +162,7 @@ environ.sanitise on EDITOR, which is a scalar. sanitise filters the ELEMENTS of 
 environ.sanitise on MANPATH, where an empty element is an INSTRUCTION rather than a gap: a leading one prepends the system path, a trailing one appends it, and '::' inserts it in place. Removing an element there can ADD directories, which is the opposite of what a filter is for. Use environ.merge with the directories you mean
 
 == env_sanitise_on_an_unfilterable_list ==
-environ.sanitise names PYTHONPATH, which snug refuses for this verb: the value is code, executed by every process the sandbox launches. Remove the line
+environ.sanitise on PYTHONPATH, which snug refuses to filter: an empty or dropped element changes the meaning of the value rather than shortening it — see .claude/design/ENVIRONMENT-VARIABLES.md §3.3. Use environ.merge with the directories you mean
 
 == env_unrostered_merge ==
 environ.merge on MY_TOOL_PATH, which snug has no entry for. A list verb needs the

@@ -1,0 +1,169 @@
+# Environment annotations — every (name, verb) pair snug has something to say
+# about, and the exact text it says. Regenerate with:
+#   go test ./internal/policy -update
+#
+# NONE OF THESE IS A REFUSAL. Every pair below is ACCEPTED — a profile's author
+# is a human on the trusted side of snug's boundary, and snug has only
+# allowlists. What the table buys is that the row says what the tool will DO,
+# on --dry-run and on `snug profile show`. A name missing from this file hands
+# over its value with nothing said about it.
+#
+# Only pairs a profile can actually WRITE are listed: a verb the variable's
+# TYPE refuses (environ.merge on a scalar, environ.sanitise on MANPATH) can
+# never reach a screen, and a type refusal is snug declining an operation
+# rather than denying anyone anything. See internal/policy/testdata/
+# refusals.txt for those.
+
+## exact names
+
+ANTHROPIC_BASE_URL       set       ← every request the agent makes, conversation included, goes to this endpoint instead of Anthropic's
+ANTHROPIC_BASE_URL       inherit   ← every request the agent makes, conversation included, goes to this endpoint instead of Anthropic's
+BASH_ENV                 set       ← every non-interactive bash SOURCES this file at startup; grant the path in the same profile
+BASH_ENV                 inherit   ← every non-interactive bash SOURCES this file at startup, and the file is chosen on the host, outside any profile
+CARGO_HOME               inherit   ← taking the host's value points cargo back at the host's config, which is the file "generate, don't bind" exists to avoid; `set` it to a path a profile authored
+CC                       set       ← make's implicit rules run this as the compiler (measured)
+CC                       inherit   ← make's implicit rules run this as the compiler (measured)
+DOCKER_CONFIG            inherit   ← taking the host's value points docker back at the host's config, credentials included; `set` it to a path a profile authored
+EDITOR                   set       ← the value is a command; git runs it for a commit message via GIT_EDITOR -> core.editor -> VISUAL -> EDITOR (measured)
+EDITOR                   inherit   ← the value is a command; git runs it for a commit message via GIT_EDITOR -> core.editor -> VISUAL -> EDITOR (measured)
+ENV                      set       ← every non-interactive sh SOURCES this file at startup; grant the path in the same profile
+ENV                      inherit   ← every non-interactive sh SOURCES this file at startup, and the file is chosen on the host, outside any profile
+GCONV_PATH               set       ← iconv loads a character-set conversion MODULE from here, and a module is code
+GCONV_PATH               inherit   ← iconv loads a character-set conversion MODULE from here, and a module is code
+GETCONF_DIR              set       ← getconf answers from this directory instead of the system's
+GETCONF_DIR              inherit   ← getconf answers from this directory instead of the system's
+GIT_ALLOW_PROTOCOL       set       ← re-enables git's ext:: transport, which runs an arbitrary command as the transport (measured, with the control)
+GIT_ALLOW_PROTOCOL       inherit   ← re-enables git's ext:: transport, which runs an arbitrary command as the transport (measured, with the control)
+GIT_ASKPASS              set       ← git runs this to ask for a credential, so it is handed whatever it asks for
+GIT_ASKPASS              inherit   ← git runs this to ask for a credential, so it is handed whatever it asks for
+GIT_COMMON_DIR           set       ← git reads hooks/ from this directory, and a pre-commit there ran on the next commit (measured, git 2.55)
+GIT_COMMON_DIR           inherit   ← git reads hooks/ from this directory, and a pre-commit there ran on the next commit (measured, git 2.55)
+GIT_DIR                  set       ← git works in this repository, and the hooks in it run on the next commit (measured)
+GIT_DIR                  inherit   ← git works in this repository, and the hooks in it run on the next commit (measured)
+GIT_EDITOR               set       ← git runs this whenever a commit, tag or rebase opens an editor
+GIT_EDITOR               inherit   ← git runs this whenever a commit, tag or rebase opens an editor
+GIT_EXEC_PATH            set       ← git finds its own subcommands here, so `git anything` runs a program from this directory
+GIT_EXEC_PATH            inherit   ← git finds its own subcommands here, so `git anything` runs a program from this directory
+GIT_EXTERNAL_DIFF        set       ← git runs this program for every diff it produces
+GIT_EXTERNAL_DIFF        inherit   ← git runs this program for every diff it produces
+GIT_PAGER                set       ← git runs this over the output of log, diff and show (measured, git 2.55)
+GIT_PAGER                inherit   ← git runs this over the output of log, diff and show (measured, git 2.55)
+GIT_PROTOCOL_FROM_USER   set       ← re-enables the transports git refuses by default, ext:: among them (measured, with the control)
+GIT_PROTOCOL_FROM_USER   inherit   ← re-enables the transports git refuses by default, ext:: among them (measured, with the control)
+GIT_PROXY_COMMAND        set       ← git runs this as the transport proxy for git:// URLs
+GIT_PROXY_COMMAND        inherit   ← git runs this as the transport proxy for git:// URLs
+GIT_SEQUENCE_EDITOR      set       ← git runs this to edit the todo list of every interactive rebase, before any commit is replayed
+GIT_SEQUENCE_EDITOR      inherit   ← git runs this to edit the todo list of every interactive rebase, before any commit is replayed
+GIT_SSH                  set       ← git runs this as the transport for every fetch and push — the older spelling of GIT_SSH_COMMAND, measured to hijack a real `git fetch`
+GIT_SSH                  inherit   ← git runs this as the transport for every fetch and push — the older spelling of GIT_SSH_COMMAND, measured to hijack a real `git fetch`
+GIT_SSH_COMMAND          set       ← git runs this as the transport for every fetch and push, with whatever ssh identity this sandbox was given
+GIT_SSH_COMMAND          inherit   ← git runs this as the transport for every fetch and push, with whatever ssh identity this sandbox was given
+GIT_TEMPLATE_DIR         set       ← the hooks in this directory are installed into every repository `git clone` and `git init` create afterwards (measured: post-checkout fired on the clone)
+GIT_TEMPLATE_DIR         inherit   ← the hooks in this directory are installed into every repository `git clone` and `git init` create afterwards (measured: post-checkout fired on the clone)
+HOSTALIASES              set       ← every hostname lookup in the sandbox is rewritten through this file
+HOSTALIASES              inherit   ← every hostname lookup in the sandbox is rewritten through this file
+JAVA_TOOL_OPTIONS        set       ← every JVM in the sandbox parses these flags before main(), and they can load an agent from a path
+JAVA_TOOL_OPTIONS        inherit   ← every JVM in the sandbox parses these flags before main(), and they can load an agent from a path
+JDK_JAVA_OPTIONS         set       ← the `java` launcher parses these flags before main(), agents included
+JDK_JAVA_OPTIONS         inherit   ← the `java` launcher parses these flags before main(), agents included
+LD_AUDIT                 set       ← the loader runs this auditing library inside every process it starts
+LD_AUDIT                 inherit   ← the loader runs this auditing library inside every process it starts
+LESSOPEN                 set       ← less runs this program over every file it opens; grant the path in the same profile
+LESSOPEN                 inherit   ← less runs this program over every file it opens, and it is chosen on the host
+LOCPATH                  set       ← glibc loads compiled locale objects from here, and a locale object is code
+LOCPATH                  inherit   ← glibc loads compiled locale objects from here, and a locale object is code
+MAKEFLAGS                set       ← make evaluates this before any rule, and `--eval=$(shell …)` runs a command (measured, GNU make 4.x)
+MAKEFLAGS                inherit   ← make evaluates this before any rule, and `--eval=$(shell …)` runs a command (measured, GNU make 4.x)
+MALLOC_TRACE             set       ← glibc writes an allocation trace to this file, created by every process that runs
+MALLOC_TRACE             inherit   ← glibc writes an allocation trace to this file, created by every process that runs
+NIS_PATH                 set       ← NIS lookups search this path
+NIS_PATH                 inherit   ← NIS lookups search this path
+NLSPATH                  set       ← message catalogues come from here, on a template glibc expands per process
+NLSPATH                  inherit   ← message catalogues come from here, on a template glibc expands per process
+NODE_OPTIONS             set       ← node runs whatever --require names here, before the script, on every invocation (measured, node 26)
+NODE_OPTIONS             inherit   ← node runs whatever --require names here, before the script, on every invocation (measured, node 26)
+NPM_CONFIG_USERCONFIG    inherit   ← taking the host's value points npm back at the host's .npmrc, auth tokens included; `set` it to a path a profile authored
+PAGER                    set       ← the value is a command; git runs it over log, diff and show via GIT_PAGER -> core.pager -> PAGER (measured)
+PAGER                    inherit   ← the value is a command; git runs it over log, diff and show via GIT_PAGER -> core.pager -> PAGER (measured)
+PERL5OPT                 set       ← perl loads whatever -M names here, on every invocation (measured, perl 5)
+PERL5OPT                 inherit   ← perl loads whatever -M names here, on every invocation (measured, perl 5)
+PIP_CONFIG_FILE          inherit   ← taking the host's value points pip back at the host's config, index credentials included; `set` it to a path a profile authored
+PROMPT_COMMAND           set       ← bash runs this command before every prompt it draws
+PROMPT_COMMAND           inherit   ← bash runs this command before every prompt it draws
+PS0                      set       ← bash performs command substitution on this before every command it runs
+PS0                      inherit   ← bash performs command substitution on this before every command it runs
+PS2                      set       ← bash performs command substitution on this prompt template
+PS2                      inherit   ← bash performs command substitution on this prompt template
+PS3                      set       ← bash performs command substitution on this prompt template
+PS3                      inherit   ← bash performs command substitution on this prompt template
+PS4                      set       ← bash performs command substitution on this trace prompt, before you type anything
+PS4                      inherit   ← bash performs command substitution on this trace prompt, before you type anything
+PYTHONBREAKPOINT         set       ← this names the callable breakpoint() invokes, so it is imported and run
+PYTHONBREAKPOINT         inherit   ← this names the callable breakpoint() invokes, chosen on the host, outside any profile
+PYTHONPATH               merge     ← python runs sitecustomize.py from any element of this at interpreter start (measured, CPython)
+PYTHONPATH               prepend   ← python runs sitecustomize.py from any element of this at interpreter start (measured, CPython)
+PYTHONSTARTUP            set       ← the interactive python interpreter EXECUTES this file on start; grant the path in the same profile
+PYTHONSTARTUP            inherit   ← the interactive python interpreter EXECUTES this file on start, and the file is chosen on the host
+PYTHONUSERBASE           set       ← python runs usercustomize.py from under this path on every start (measured, CPython 3.13)
+PYTHONUSERBASE           inherit   ← python runs usercustomize.py from under this path on every start (measured, CPython 3.13)
+RESOLV_HOST_CONF         set       ← the resolver reads this in place of /etc/host.conf, so it steers name lookups
+RESOLV_HOST_CONF         inherit   ← the resolver reads this in place of /etc/host.conf, so it steers name lookups
+RES_OPTIONS              set       ← resolver options for every lookup the sandbox makes
+RES_OPTIONS              inherit   ← resolver options for every lookup the sandbox makes
+RSYNC_RSH                set       ← rsync runs this as its remote shell (measured, rsync 3.4.3)
+RSYNC_RSH                inherit   ← rsync runs this as its remote shell (measured, rsync 3.4.3)
+RUBYOPT                  set       ← every ruby parses these flags before the script and can require a file from them
+RUBYOPT                  inherit   ← every ruby parses these flags before the script and can require a file from them
+RUSTC                    set       ← cargo runs this AS rustc (measured, issue #26)
+RUSTC                    inherit   ← cargo runs this AS rustc (measured, issue #26)
+RUSTC_WORKSPACE_WRAPPER  set       ← cargo runs this in place of rustc for workspace crates (measured, issue #26)
+RUSTC_WORKSPACE_WRAPPER  inherit   ← cargo runs this in place of rustc for workspace crates (measured, issue #26)
+RUSTC_WRAPPER            set       ← cargo runs this in place of rustc, as the sandbox's own uid (measured, issue #26)
+RUSTC_WRAPPER            inherit   ← cargo runs this in place of rustc, as the sandbox's own uid (measured, issue #26)
+SSH_ASKPASS              set       ← ssh runs this to ask for a passphrase, so it is handed whatever it asks for
+SSH_ASKPASS              inherit   ← ssh runs this to ask for a passphrase, so it is handed whatever it asks for
+TAR_OPTIONS              set       ← tar reads these flags, and --use-compress-program names a program it runs (measured)
+TAR_OPTIONS              inherit   ← tar reads these flags, and --use-compress-program names a program it runs (measured)
+TZDIR                    set       ← every timestamp in the sandbox is read from this directory; a value glibc cannot resolve is silently re-read as an inline rule instead of failing (measured, §3.2)
+TZDIR                    inherit   ← every timestamp in the sandbox is read from this directory; a value glibc cannot resolve is silently re-read as an inline rule instead of failing (measured, §3.2)
+VISUAL                   set       ← the value is a command; git runs it for a commit message when GIT_EDITOR and core.editor are unset (measured)
+VISUAL                   inherit   ← the value is a command; git runs it for a commit message when GIT_EDITOR and core.editor are unset (measured)
+XDG_CACHE_HOME           inherit   ← the host's value names a directory this sandbox does not have; @home creates the one inside, so `set` it to a path the same profile grants
+XDG_CONFIG_HOME          inherit   ← the host's value names a directory this sandbox does not have; @home creates the one inside, so `set` it to a path the same profile grants
+XDG_DATA_HOME            inherit   ← the host's value names a directory this sandbox does not have; @home creates the one inside, so `set` it to a path the same profile grants
+XDG_RUNTIME_DIR          inherit   ← the host's value names a directory this sandbox does not have, and this variable carries obligations a string cannot satisfy — mode 0700, owned by the user, session lifetime
+XDG_STATE_HOME           inherit   ← the host's value names a directory this sandbox does not have; @home creates the one inside, so `set` it to a path the same profile grants
+_JAVA_OPTIONS            set       ← every JVM parses these flags before main() — the second spelling of the same channel
+_JAVA_OPTIONS            inherit   ← every JVM parses these flags before main() — the second spelling of the same channel
+
+## prefixes, rendered for one name under each
+
+LD_TRACE_LOADED_OBJECTS      set       ← LD_*: the dynamic loader reads this before main() in every process
+LD_TRACE_LOADED_OBJECTS      inherit   ← LD_*: the dynamic loader reads this before main() in every process
+BASH_FUNC_build              set       ← BASH_FUNC_*: an exported shell FUNCTION, and function lookup precedes PATH entirely
+BASH_FUNC_build              inherit   ← BASH_FUNC_*: an exported shell FUNCTION, and function lookup precedes PATH entirely
+GIT_CONFIG_KEY_0             set       ← GIT_CONFIG_*: git reads this at the command-line scope, above the global file, above the repository's own .git/config, and above any include (measured, issue #26)
+GIT_CONFIG_KEY_0             inherit   ← GIT_CONFIG_*: git reads this at the command-line scope, above the global file, above the repository's own .git/config, and above any include (measured, issue #26)
+PIP_INDEX_URL                set       ← PIP_*: outranks the config file pip reads, so it beats whatever a profile generated
+PIP_INDEX_URL                inherit   ← PIP_*: outranks the config file pip reads, and the value is chosen on the host, outside any profile
+CARGO_BUILD_RUSTC_WRAPPER    set       ← CARGO_*: outranks .cargo/config.toml, and the BUILD_RUSTC_WRAPPER/BUILD_RUSTC/TARGET_*_RUNNER keys name a program cargo RUNS (measured, issue #26)
+CARGO_BUILD_RUSTC_WRAPPER    inherit   ← CARGO_*: outranks .cargo/config.toml, and the BUILD_RUSTC_WRAPPER/BUILD_RUSTC/TARGET_*_RUNNER keys name a program cargo RUNS (measured, issue #26)
+npm_config_script_shell      set       ← npm_config_*: outranks .npmrc, and the script_shell/node_gyp keys name a program npm RUNS (measured, issue #26, in every case spelling)
+npm_config_script_shell      inherit   ← npm_config_*: outranks .npmrc, and the script_shell/node_gyp keys name a program npm RUNS (measured, issue #26, in every case spelling)
+NPM_CONFIG_SCRIPT_SHELL      set       ← npm_config_*: outranks .npmrc, and the script_shell/node_gyp keys name a program npm RUNS (measured, issue #26, in every case spelling)
+NPM_CONFIG_SCRIPT_SHELL      inherit   ← npm_config_*: outranks .npmrc, and the script_shell/node_gyp keys name a program npm RUNS (measured, issue #26, in every case spelling)
+Npm_Config_Script_Shell      set       ← npm_config_*: outranks .npmrc, and the script_shell/node_gyp keys name a program npm RUNS (measured, issue #26, in every case spelling)
+Npm_Config_Script_Shell      inherit   ← npm_config_*: outranks .npmrc, and the script_shell/node_gyp keys name a program npm RUNS (measured, issue #26, in every case spelling)
+
+## pointers: no annotation at the verbs that AUTHOR them
+
+GIT_CONFIG_GLOBAL        set       (no profile may write this name — ownership, or its type)
+GIT_CONFIG_GLOBAL        inherit   (no profile may write this name — ownership, or its type)
+GIT_CONFIG_SYSTEM        set       (nothing)
+GIT_CONFIG_SYSTEM        inherit   ← GIT_CONFIG_*: git reads this at the command-line scope, above the global file, above the repository's own .git/config, and above any include (measured, issue #26)
+NPM_CONFIG_USERCONFIG    set       (nothing)
+NPM_CONFIG_USERCONFIG    inherit   ← taking the host's value points npm back at the host's .npmrc, auth tokens included; `set` it to a path a profile authored
+PIP_CONFIG_FILE          set       (nothing)
+PIP_CONFIG_FILE          inherit   ← taking the host's value points pip back at the host's config, index credentials included; `set` it to a path a profile authored
+CARGO_HOME               set       (nothing)
+CARGO_HOME               inherit   ← taking the host's value points cargo back at the host's config, which is the file "generate, don't bind" exists to avoid; `set` it to a path a profile authored

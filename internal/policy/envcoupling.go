@@ -31,8 +31,8 @@ import (
 // that is deliberate. @claude marks every one of its `ro` entries optional, so
 // an absent grant produces no mount at all — checking mounts would make a
 // profile's LEGALITY depend on the host reading it, which is precisely the
-// defect §4.4 records for the old forbiddenEnv check, adopted there by accident
-// and refused here on purpose.
+// defect §4.4 records for the old forbidden-name check, adopted there by
+// accident and refused here on purpose.
 
 // checkEnvCoupling refuses a profile whose environment names a path it does not
 // grant.

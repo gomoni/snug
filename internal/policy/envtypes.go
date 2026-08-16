@@ -45,16 +45,36 @@ const (
 	emptySystem
 )
 
-// envType is what snug knows about one variable name.
+// envType is what snug knows about one variable name, and it holds TYPE FACTS
+// ONLY — scalar or list, the separator, what an empty element means, whether the
+// value is a path, whether the elements compose. There is no permission bit in
+// this struct and there must never be one again.
+//
+// It carried one, `noInherit`, and the reason it is gone is the reason the whole
+// table changed shape (issue #44). Its message read "snug refuses to take this
+// from the host", which is a VERDICT about what a human's profile may do — and
+// snug has only allowlists. A profile author is a human on the far side of the
+// line the sandbox draws: snug constrains the payload, never the author. So
+// every such verdict became an ANNOTATION (envNotes below, rendered by EnvNote),
+// and the rule is now readable off the struct rather than off a doc comment: if
+// a field you are about to add answers "may a profile do this", it belongs in
+// envNotes; if it answers "what IS this variable", it belongs here.
+//
+// What a type fact still does is decline an OPERATION snug cannot carry out
+// correctly — `merge` on a scalar, `sanitise` on MANPATH, where removing an
+// element ADDS directories. That is snug saying "I cannot do this verb", not
+// "you may not have this", and checkEnvVerbType is where the difference is
+// spelled out.
 //
 // THE ZERO VALUE IS A REAL ROW, NOT A MISS, and that distinction is what the
-// allowlist rests on (issue #44). `envType{}` means "a scalar both `set` and
-// `inherit` accept" — EDITOR is one — while a name that is not in envTypes at
-// all is refused for both verbs. The two are told apart by the map lookup's
-// second return and by nothing else, which is why typeOf returns it: a `known`
-// FIELD could be forgotten on a new row, and a forgotten field would read as a
-// row that grants nothing rather than as a row that grants a scalar. There is
-// no spelling of "on the roster" that a new entry can omit.
+// roster rests on. `envType{}` means "a scalar, both `set` and `inherit`" —
+// EDITOR is one — while a name that is not in envTypes at all has no type at
+// all, which is what the three LIST verbs need and what a builtin may not write.
+// The two are told apart by the map lookup's second return and by nothing else,
+// which is why typeOf returns it: a `known` FIELD could be forgotten on a new
+// row, and a forgotten field would read as a row that grants nothing rather than
+// as a row that grants a scalar. There is no spelling of "on the roster" that a
+// new entry can omit.
 type envType struct {
 	list   bool
 	sep    string
@@ -72,52 +92,43 @@ type envType struct {
 	// They are consulted only for list variables.
 	mergeable   bool
 	sanitisable bool
-
-	// noInherit is §3.2's `inherit ✗` column for SCALARS. It is a refusal flag
-	// INSIDE the roster — the row grants `set`, and this withdraws `inherit`
-	// from it. It used to be a refusal flag for a second reason as well, "so
-	// that an unknown name defaults to inheritable", and that reason is gone:
-	// an unknown name defaults to nothing now. Every name here is one where the
-	// HOST's value outranks the
-	// file snug generates — "generate, don't bind" is defeated by the
-	// environment, not by the file (§4.5) — or one carrying obligations a bare
-	// string cannot satisfy (XDG_RUNTIME_DIR: mode 0700, owned by the user).
-	//
-	// Lists need no flag: `inherit` is refused for EVERY list variable without
-	// exception (§2.1), because copying a host search path wholesale imports
-	// directories that do not exist inside. inherit is the scalar form;
-	// sanitise is the list form.
-	noInherit bool
 }
 
-// envTypes is snug's ROSTER, and it is §3.2, §3.3 and §3.4. It answers two
-// different questions for two different kinds of profile, and the split is the
-// whole of issue #44's resolution:
+// envTypes is snug's ROSTER: what snug has been TAUGHT about a variable, and
+// NOTHING ABOUT WHAT ANYONE MAY DO WITH IT. It is §3.2, §3.3 and §3.4.
 //
-//   - A profile snug SHIPS may write ONLY a name that has a row here, and the
-//     row must admit the verb. That is an allowlist, and it is enforced
-//     structurally in internal/profile's `mark` — the one door a profile passes
-//     through to become snug's — expressed with the same IsUncheckedEnv
-//     predicate the screen draws its mark from. So "a builtin may not write a
-//     name snug has no row for" and "no builtin row renders as unchecked" are
-//     one sentence, not two rules that can drift apart.
-//   - A profile a HUMAN wrote may write a name with no row here, at `set` and
-//     `inherit`. The name is not on the roster, so it is carried and every entry
-//     it produces is marked `← unchecked` on both screens (IsUncheckedEnv
-//     again).
+// THE ROSTER IS WHAT SNUG KNOWS, NOT WHAT SNUG PERMITS. Every verdict of the
+// form "a profile may not do this with this name" was moved out of here and into
+// envNotes, where it is rendered on --dry-run and on `snug profile show` instead
+// of being refused. snug has only allowlists: the sandbox starts with an empty
+// environment and a profile opens a named hole in it. The author of that profile
+// is a human on the trusted side of the boundary — snug constrains the payload,
+// not the person configuring it — so a table here saying "you may not have
+// EDITOR" was snug refusing its own user, which is not a boundary at all
+// (measured, one commit ago: 628 refused pairs, all 628 restored by four lines
+// of TOML). You get what you configure, and the screen says what you got.
 //
-// The three LIST verbs take no name that is not here, from anybody: a list verb
-// needs the separator and the empty-element kind, and neither is something a
-// profile can supply without snug sniffing the shape of a value.
+// What the roster still decides, and both are about snug's own competence rather
+// than about anyone's permission:
 //
-// WHY THE TWO HALVES DIFFER. A row is written once, is reviewable, and is read
-// by whoever approves the change — so requiring one is a REVIEW requirement, and
-// a review requirement is something snug can impose on its own profiles and
-// cannot impose on a file someone else wrote. Measured on the user half, a
-// refusal was a speed bump rather than a boundary: 628 (name, verb) pairs
-// refused, all 628 restored by four lines of TOML. So that half is answered by
-// the MARK, which is what issue #44 closes with — what makes the next round of
-// holes findable by something other than a red-team sweep.
+//   - A profile snug SHIPS may write ONLY a name that has a row here. That is
+//     enforced structurally in internal/profile's `mark` — the one door a
+//     profile passes through to become snug's — expressed with the same
+//     IsUncheckedEnv predicate the screen draws its mark from. So "a builtin may
+//     not write a name snug has no row for" and "no builtin row renders as
+//     unchecked" are one sentence, not two rules that can drift apart. This is a
+//     REVIEW requirement, and a review requirement is something snug can impose
+//     on its own material and cannot impose on a file someone else wrote: there
+//     is no human standing behind a profile compiled into the binary.
+//   - The three LIST verbs take no name that is not here, from anybody: a list
+//     verb needs the separator and the empty-element kind, and neither is
+//     something a profile can supply without snug sniffing the shape of a value.
+//     That is snug declining an operation it cannot perform correctly.
+//
+// A profile a HUMAN wrote may write a name with no row here at `set` and
+// `inherit`. It is carried, and every entry it produces is marked `← unchecked`
+// on both screens (IsUncheckedEnv) — plus whatever envNotes has to say about it,
+// which is a second and independent statement.
 //
 // IT USED TO SAY: "a name that is not here is a SCALAR". The table then reported
 // a TYPE for a name it had never been taught, and three red-team rounds found
@@ -131,10 +142,15 @@ type envType struct {
 // SHIPS, where the fix is the one @sys already uses when it lists fourteen /etc
 // entries instead of binding all 109: name what you admit (issue #44).
 //
-// EVERY ROW IS A GRANT. Adding a name says "a profile may hand this to the
-// payload", so write the sentence saying what the verb lets the tool DO before
-// adding one — the discipline GIT-CONFIG.md §5 asks of the config-key
-// whitelist, for the same reason. Do not add a name to make a test pass.
+// A ROW IS STILL A REVIEW, and now for one specific reason: a row is what makes
+// a name writable by a profile snug SHIPS. Write the sentence saying what the
+// verb lets the tool DO before adding one — the discipline GIT-CONFIG.md §5 asks
+// of the config-key whitelist, for the same reason. Do not add a name to make a
+// test pass, and READ envNotes before adding a row for a name that has an
+// annotation: a row does not silence the annotation, but it does open the
+// builtin gate for that name, which is the residual
+// TestAnnotatedEnvPairsAShippedProfileWritesArePinned (internal/profile) exists
+// to make visible.
 //
 // THERE IS NO ESCAPE HATCH AND THERE MUST NOT BE ONE. `environ.declare` existed
 // for one milestone — a per-profile name set licensing `set` and `inherit` for a
@@ -151,11 +167,12 @@ type envType struct {
 // of its own — snug adding a roster row later would break every profile that had
 // declared that name.
 //
-// forbiddenEnv and forbiddenEnvPrefixes below are a SEPARATE rule and are
-// applied independently of this one: checkEnvName runs the forbid tables,
-// checkEnvVerbType runs this table. Neither is written in terms of the other, so
-// a name may be refused by either, and a roster row for a name the forbid list
-// already covers is refused anyway rather than quietly granted.
+// envNotes and envNotePrefixes below are a SEPARATE table and are read
+// independently of this one: EnvNote reads those, checkEnvVerbType reads this.
+// Neither is written in terms of the other, so a name may be rostered and
+// annotated (BASH_ENV, EDITOR, CARGO_HOME all are), annotated and unrostered
+// (GIT_SSH_COMMAND is), or rostered and silent (NO_COLOR is). The screen renders
+// both statements when both apply; see EnvNote.
 //
 // Names snug owns are deliberately ABSENT even where §3.2 lists them: ownership
 // refuses them for every verb, which is the stronger statement, and an entry
@@ -168,22 +185,16 @@ var envTypes = map[string]envType{
 	// rather than by a field inside it.
 	//
 	// EDITOR, VISUAL and PAGER: the value IS a command some tool will execute.
-	// git falls back GIT_EDITOR -> core.editor -> VISUAL -> EDITOR, and
-	// GIT_PAGER -> core.pager -> PAGER, both measured — so a profile that writes
-	// one of these chooses the program that runs during an ordinary `git commit`
-	// or `git log`, in a sandbox where a DIFFERENT profile may have pinned the
-	// ssh identity that the next push will use. The GIT_* spellings are
-	// forbidBoth below; these three are not, so the forbid list closes the
-	// invisible half of that class and not the class.
+	// The sentence saying so lives in envNotes now, at both verbs, and it is on
+	// the screen for every profile that writes one — including @claude, which
+	// inherits all three.
 	//
-	// They are on the roster at both verbs because that is EXACTLY today's
-	// behaviour, and this change is a flip of the default, not a withdrawal of a
-	// grant: @claude inherits all three, so refusing them here would break a
-	// shipped, tested profile outright. Withdrawing them is
-	// https://github.com/gomoni/snug/issues/45 — a decision about what @claude
-	// may inherit, argued in §3.2 — and these three rows are the seam it will
-	// edit: delete them, or give envType a `noSet` flag beside noInherit if the
-	// answer is "settable but not inheritable".
+	// Issue #45 asked whether `set` should be withdrawn from these (the mirror of
+	// the `noInherit` bit `inherit` used to carry). It is ANSWERED, not deferred,
+	// and the answer is no: withdrawing a verb from a human's own profile is the
+	// denylist shape this file stopped having. What #45 was really asking for was
+	// that a human reading --dry-run be told what these three DO, and that is
+	// what the annotation is. The rows stay type facts: three scalars.
 	"EDITOR": {},
 	"VISUAL": {},
 	"PAGER":  {},
@@ -204,21 +215,17 @@ var envTypes = map[string]envType{
 	// screen and is why it is a row rather than an assumption.
 	"ANTHROPIC_BASE_URL": {},
 
-	// ── the middle bucket: legal as `set`, refused as `inherit` (§2.1) ───────
+	// ── the old middle bucket: startup files a tool reads (§2.1) ─────────────
 	//
-	// forbiddenEnv marks all five forbidInheritOnly, so `inherit` is closed
-	// there. The rows exist because after the flip a name with no row is refused
-	// at BOTH verbs, and §2.1's decision — "BASH_ENV = {home}/init with the file
-	// granted by the same profile is coherent and reviewable" — would otherwise
-	// have been withdrawn by a change that never mentioned it.
+	// These five used to be "legal as `set`, refused as `inherit`". The refusal
+	// is gone and the DISTINCTION is not: envNotes carries a different sentence
+	// at each verb, because the two differ in where the value comes from — a
+	// reviewable line in a profile file, or whatever the process that launched
+	// snug happened to have. That is the same split forbidKind used to express by
+	// refusing one half of it, said on the screen instead.
 	//
-	// What each lets a tool DO, which is why these are grants and not
-	// bookkeeping: BASH_ENV and ENV name a file every non-interactive bash and
-	// sh SOURCES at startup; PYTHONSTARTUP names a file the interactive
-	// interpreter executes; PYTHONBREAKPOINT names the callable breakpoint()
-	// invokes; LESSOPEN names a program less runs over every file it opens. A
-	// profile writing one is choosing code that runs inside — reviewable in the
-	// file, which is the whole of why `set` is allowed and `inherit` is not.
+	// What each lets a tool DO is in envNotes and is not restated here, so there
+	// is one copy of it.
 	//
 	// `path` is false on all five, and that is a decision rather than an
 	// oversight. PYTHONBREAKPOINT is a module:callable and LESSOPEN is a command
@@ -233,34 +240,37 @@ var envTypes = map[string]envType{
 	"PYTHONBREAKPOINT": {},
 	"LESSOPEN":         {},
 
-	// ── scalars whose inherit is refused (§3.2) ──────────────────────────────
+	// ── path-valued scalars whose inherit carries an annotation (§3.2) ───────
+	//
+	// Every row here used to carry `noInherit: true`, a refusal INSIDE the
+	// roster. The bit is gone; the sentence it stood for is in envNotes, at
+	// `inherit` only, because that is the verb it was ever about. `path: true` is
+	// a type fact and stays: it is what makes envcoupling.go's grant-coupling
+	// sweep look at the value at all.
 	//
 	// The XDG four: snug's own @home creates these directories, so a profile
 	// SETTING one to a path it grants is coherent. Inheriting the host's points
-	// the sandbox at a directory it does not have.
-	"XDG_CONFIG_HOME": {path: true, noInherit: true},
-	"XDG_CACHE_HOME":  {path: true, noInherit: true},
-	"XDG_STATE_HOME":  {path: true, noInherit: true},
-	"XDG_DATA_HOME":   {path: true, noInherit: true},
+	// the sandbox at a directory it does not have — annotated, not refused.
+	"XDG_CONFIG_HOME": {path: true},
+	"XDG_CACHE_HOME":  {path: true},
+	"XDG_STATE_HOME":  {path: true},
+	"XDG_DATA_HOME":   {path: true},
 	// XDG_RUNTIME_DIR carries obligations rather than just a value — mode 0700,
 	// owned by the user, session lifetime — so authoring it IS a grant, and it
 	// belongs to whichever profile creates a directory meeting them (§3.4).
-	"XDG_RUNTIME_DIR": {path: true, noInherit: true},
+	"XDG_RUNTIME_DIR": {path: true},
 	// "generate, don't bind": the value is a path to a config snug or a profile
-	// produced, never a credential. Inheriting the host's would reintroduce
-	// exactly the file the rule exists to avoid.
-	"CARGO_HOME":            {path: true, noInherit: true},
-	"DOCKER_CONFIG":         {path: true, noInherit: true},
-	"NPM_CONFIG_USERCONFIG": {path: true, noInherit: true},
-	"PIP_CONFIG_FILE":       {path: true, noInherit: true},
-	// PYTHONUSERBASE is refused outright now (forbiddenEnv, forbidBoth — the
-	// value's directory is where usercustomize.py runs from, measured), but it
-	// is still PATH-VALUED, and was absent from this table entirely — which
-	// meant writesAnyPath's grant-coupling sweep (envcoupling.go) skipped it
-	// even before the forbidBoth entry existed. noInherit is redundant with
-	// forbidBoth here; it is set anyway so this row reads the same as its
-	// siblings rather than as a special case someone has to explain.
-	"PYTHONUSERBASE": {path: true, noInherit: true},
+	// produced, never a credential.
+	"CARGO_HOME":            {path: true},
+	"DOCKER_CONFIG":         {path: true},
+	"NPM_CONFIG_USERCONFIG": {path: true},
+	"PIP_CONFIG_FILE":       {path: true},
+	// PYTHONUSERBASE is PATH-VALUED and was absent from this table entirely for a
+	// milestone — which meant writesAnyPath's grant-coupling sweep
+	// (envcoupling.go) skipped it. The row is here for the coupling rule, and the
+	// measurement that made it interesting (the value's directory is where
+	// usercustomize.py runs from) is the annotation in envNotes.
+	"PYTHONUSERBASE": {path: true},
 
 	// ── the XDG lists (§3.4) ─────────────────────────────────────────────────
 	//
@@ -273,9 +283,12 @@ var envTypes = map[string]envType{
 	"PATH": {list: true, sep: ":", path: true, empty: emptyCWD, mergeable: true, sanitisable: true},
 	// ld.so(8) gives these two TWO separator sets each, neither escapable, which
 	// is the reason a separator lives in the type at all rather than in the
-	// parser. Both are forbidden outright as well (see forbiddenEnv) — the
-	// entries exist so the separator-in-a-value check can still see that ';' and
-	// ' ' are separators for some consumer.
+	// parser. Both are annotated as well (see envNotes) — and note what refuses
+	// them at every verb now that nothing denies a name: they are LISTS that are
+	// neither mergeable nor sanitisable, so `set` and `inherit` are refused for
+	// being list verbs on a list, and `merge`/`prepend`/`sanitise` are refused
+	// because the elements do not compose. That is a type verdict end to end,
+	// which is why it survived the flip untouched.
 	"LD_LIBRARY_PATH": {list: true, sep: ":", altSep: ";", path: true, empty: emptyCWD},
 	"LD_PRELOAD":      {list: true, sep: ":", altSep: " ", path: true, empty: emptyNA},
 	// MANPATH: sanitise is ILLEGAL, not merely risky. Removing an element can
@@ -357,33 +370,42 @@ func typeOf(name string) (envType, bool) {
 	return envType{}, false
 }
 
-// snugKnowsEnvName reports whether snug has an OPINION about a name — a roster
-// row, or an exact entry in the forbidden table.
+// snugKnowsEnvName reports whether snug has a TYPE for a name — a roster row,
+// and nothing else.
 //
-// Its one caller is IsUncheckedEnv, and the second half is what keeps that
-// predicate from marking a name snug REFUSES as one it knows nothing about.
-// Every forbidInheritOnly name also has a roster row today (the middle bucket),
-// so the second half never fires — but the day someone adds a forbidden entry
-// without a roster row, a `set` of that name at the verb the table still allows
-// would otherwise render as "snug has no entry for this name", which is false:
-// snug has an entry, and it is a refusal at the other verb.
+// IT READ THE ANNOTATION TABLE TOO, AND THAT HAD TO CHANGE WITH IT. While that
+// table was `forbiddenEnv`, an entry in it was an opinion about the name
+// ("refused at this verb") and folding it in here kept IsUncheckedEnv from
+// reporting a REFUSED name as one snug knew nothing about — defensive only,
+// since a refused pair never reached a screen. Once the same table stopped
+// refusing, keeping it here would have quietly widened something else entirely:
+// internal/profile's checkBuiltinEnvRoster is written on IsUncheckedEnv, so
+// every annotated name — GIT_SSH_COMMAND, RUSTC_WRAPPER, PS4, sixty of them —
+// would have become a name a profile snug SHIPS may write, in the same commit
+// that stopped refusing them for everybody else. Annotation must not become
+// grant. Measured: with the annotation table folded in, `mark` accepts a builtin
+// carrying `environ.set GIT_SSH_COMMAND`; without it, it refuses.
 //
-// The PREFIX table is deliberately NOT part of this. A prefix names an
+// So the two tables answer two questions and this predicate asks only one. A
+// name may be annotated and still unchecked, and a row that renders both marks
+// is saying two true things: snug has no type for this name, and here is what
+// the tool does with the value.
+//
+// The PREFIX table was never part of this and still is not. A prefix names an
 // unbounded family (PIP_*), and a name matching one is not thereby a name snug
-// has a TYPE for — `set PIP_INDEX_URL` is legal (PIP_ is forbidInheritOnly) and
-// snug knows nothing about that variable's meaning, so the mark on its row is
-// the truthful rendering.
+// has a TYPE for.
 func snugKnowsEnvName(name string) bool {
-	if _, ok := typeOf(name); ok {
-		return true
-	}
-	_, ok := forbiddenEnv[name]
+	_, ok := typeOf(name)
 	return ok
 }
 
 // IsUncheckedEnv reports whether one (name, verb) pair is one snug carried
-// without knowing anything about the name — no roster row, no entry in the
-// forbidden table.
+// without knowing what the variable IS — no roster row, so no type.
+//
+// It is not "snug has nothing to say about this name": envNotes may still have a
+// sentence for it, and the two marks are rendered together. See
+// snugKnowsEnvName for why folding the annotation table into this predicate
+// would have turned an annotation into a builtin's grant.
 //
 // IT HAS THREE CONSUMERS AND THAT IS THE DESIGN, not an accident of reuse:
 //
@@ -395,7 +417,7 @@ func snugKnowsEnvName(name string) bool {
 // name the screen would mark unchecked" rather than as a second roster-membership
 // test beside this one. One predicate cannot disagree with itself; two would,
 // eventually, and this file already records that failure twice over case-folded
-// spellings (prefixCaseFold, forbiddenFor).
+// spellings (prefixCaseFold, noteFor).
 //
 // The argv block is the one sink with nothing to add — `--setenv NAME VALUE` has
 // no provenance column at all, and the value got there through checkEnvValue
@@ -414,61 +436,138 @@ func IsUncheckedEnv(name string, verb EnvVerb) bool {
 	return !snugKnowsEnvName(name)
 }
 
-// forbidKind splits the forbidden list by VERB, because `set` and `inherit`
-// carry values from two different places.
+// UncheckedEnvNote renders IsUncheckedEnv for a screen, or "" when the pair is
+// one snug has a type for. It is EnvNote's shape on purpose: both marks are
+// prepended to a row by both screens, so both are one function returning either
+// the rendered text or nothing.
 //
-// A `set` carries a value from a reviewable file in the trusted profile layer.
-// An `inherit` carries whatever the process that launched snug happened to have.
-// So inherit is a hole punched in --clearenv and set is not, and one middle
-// bucket is legal as `set` and refused as `inherit`: BASH_ENV = "{home}/init"
-// with the file granted by the same profile is coherent and reviewable, while
-// the same name inherited points at a host path (§2.1, CALL 4).
-type forbidKind uint8
+// IT LIVES HERE RATHER THAN AT EITHER SINK BECAUSE THE WORDING DRIFTED THE
+// MOMENT IT WAS WRITTEN TWICE. --dry-run and `snug profile show` each held their
+// own copy of the string, with a comment at one of them claiming "both strings
+// come from internal/policy, so `snug profile show` renders the identical text"
+// — true of EnvNote, and false of this one, in the same commit. That is this
+// project's most-repeated defect (one guard, N sinks; visibleValue; prefixCaseFold)
+// and the fix is always the same: the property owns the wording, not the caller.
+//
+// The wording says TYPE, and the earlier "snug has no entry for this name" is
+// what it replaced. Once the annotation table stopped refusing, the common case
+// became a row carrying BOTH marks — sixty annotated names have no roster row —
+// and "snug has no entry for this name" immediately followed by a detailed
+// sentence about that very name reads to a human as snug contradicting itself
+// within one line. Measured on `environ.set GIT_SSH`. The two marks answer two
+// questions and the words now say which: this one is about the variable's TYPE
+// (scalar or list, the separator, what an empty element means), which is what
+// the type refusals in this file are already worded against, and EnvNote's is
+// about what the tool DOES with the value.
+func UncheckedEnvNote(name string, verb EnvVerb) string {
+	if !IsUncheckedEnv(name, verb) {
+		return ""
+	}
+	return "  ← unchecked: snug has no type for this name"
+}
 
-const (
-	forbidBoth forbidKind = iota
-	forbidInheritOnly
-)
+// envNote is snug's ANNOTATION for one variable name: what a tool DOES with the
+// value, in one sentence, rendered on --dry-run and on `snug profile show`
+// beside the row that hands it over.
+//
+// TWO SENTENCES, NOT ONE, and the split is the same one forbidKind used to make
+// — it is just no longer a difference between "refused" and "allowed", which is
+// why it now has to be SAID. `set`, `merge` and `prepend` carry a value from a
+// reviewable file in the trusted profile layer, written by the person selecting
+// the profile. `inherit` and `sanitise` carry whatever the process that launched
+// snug happened to have, chosen on the host, outside any profile — a hole
+// punched in --clearenv. For a name where that difference matters, the two
+// fields differ; where it does not, both carry the same sentence (see `both`).
+//
+// Flattening this to one string per name would lose exactly what forbidKind
+// carried, which was never a severity: it was a statement about WHICH VERB.
+type envNote struct {
+	// authored is the sentence for a value written in the profile file:
+	// VerbSet, VerbMerge, VerbPrepend.
+	authored string
+	// host is the sentence for a value taken from the invoking host:
+	// VerbInherit, VerbSanitise.
+	host string
+}
 
-// forbiddenEnv are names whose VALUE IS CODE, orthogonal to the type table: the
-// type table says what may be merged, this says what may never be inherited at
-// all. Both are applied; neither replaces the other. §4.4 is a list to be
-// EXTENDED, not retired.
+// both is an annotation whose sentence does not depend on where the value came
+// from — the value is code either way, so the reader needs the same fact at
+// every verb.
+func both(s string) envNote { return envNote{authored: s, host: s} }
+
+func (n envNote) forVerb(verb EnvVerb) string {
+	switch verb {
+	case VerbSet, VerbMerge, VerbPrepend:
+		return n.authored
+	case VerbInherit, VerbSanitise:
+		return n.host
+	}
+	return ""
+}
+
+// envNotes are names whose VALUE IS CODE, or whose value silently outranks a
+// file snug generated. It is orthogonal to the roster: the roster says what a
+// variable IS, this says what a tool DOES with it. §4.4 is a list to be
+// EXTENDED, not retired — every entry below was measured, and the measurement is
+// in the comment beside it.
+//
+// THIS TABLE REFUSES NOTHING. It used to (as `forbiddenEnv`, with a `forbidKind`
+// per entry), and the reason it stopped is the guiding principle read in the
+// right direction: snug shares nothing and a profile opens a named hole, so
+// there is no state a profile can be denied its way back to — the thing a
+// denylist would deny was never there. The author of a profile is a human on the
+// trusted side of the boundary; snug constrains the payload, not the person
+// configuring it. So `set GIT_SSH_COMMAND` is legal now, and what a human gets
+// for it is this sentence, on the screen they read to decide whether to trust
+// the sandbox. You get what you configure.
+//
+// What that DOES leave standing, so this is not read as "anything goes":
+//
+//   - a profile snug SHIPS may still write only a rostered name
+//     (internal/profile's checkBuiltinEnvRoster), and none of these names has a
+//     roster row unless it is listed in envTypes above;
+//   - checkEnvOwnership still refuses snug's own scalars to everybody;
+//   - the type rules still refuse an operation snug cannot perform correctly.
 //
 // PS1 is deliberately absent, and so is SNUG*: they are snug's own (§1.1) and
-// refused by ownership, which is the stronger statement. Adding a prefix rule
-// for either would let a name pass the ownership check and be caught by a weaker
-// mechanism instead.
+// refused by ownership, which is the stronger statement and the only remaining
+// refusal of a NAME. An annotation for either would invite someone to read the
+// row as permission.
 //
-// WHAT THIS LIST DOES NOT CLOSE, stated here because reading it as a class
-// closure is the mistake it invites. EDITOR, VISUAL and PAGER are legal at
-// `set` and at `inherit` by §3.2's decision, and @claude inherits all three. git
-// falls back GIT_EDITOR -> core.editor -> VISUAL -> EDITOR, and GIT_PAGER ->
-// core.pager -> PAGER, both measured. So the GIT_EDITOR and GIT_PAGER entries
-// below do not make git unhijackable by a profile — a profile that wanted to
-// would write the generic spelling.
-//
-// They are still worth having, and the reason is not defence in depth, it is
-// that the two spellings differ in who they surprise. A profile setting EDITOR
-// is doing a legible thing to a variable a human recognises; the GIT_* names are
-// invisible in every screen a human reads and fire during operations nobody
-// thinks of as running a command. Refusing the invisible half is not the same as
-// closing the class, and the day someone decides the generic three must go too,
-// it is a §3.2 decision — a grant being withdrawn from every profile that
-// inherits them — not an addition to this table. Carried as
-// https://github.com/gomoni/snug/issues/35.
-var forbiddenEnv = map[string]forbidKind{
-	// the value is code, at any verb — §4.4 plus ld.so(8)'s own secure-execution
-	// list, which is the closest thing to an authoritative denylist that exists
-	"LD_PRELOAD": forbidBoth, "LD_AUDIT": forbidBoth, "LD_LIBRARY_PATH": forbidBoth,
-	"GCONV_PATH": forbidBoth, "LOCPATH": forbidBoth, "NLSPATH": forbidBoth,
-	"HOSTALIASES": forbidBoth, "RESOLV_HOST_CONF": forbidBoth, "RES_OPTIONS": forbidBoth,
-	"TZDIR": forbidBoth, "MALLOC_TRACE": forbidBoth, "GETCONF_DIR": forbidBoth,
-	"NIS_PATH": forbidBoth,
-	// git executes each of these, measured
-	"GIT_SSH_COMMAND": forbidBoth, "GIT_EXEC_PATH": forbidBoth,
-	"GIT_EXTERNAL_DIFF": forbidBoth, "GIT_EDITOR": forbidBoth,
-	// The same power under older or adjacent spellings. A redteam run reached
+// WHAT THIS TABLE DOES NOT COVER, stated because reading it as a class closure
+// is the mistake it invites. It never closed the exec class for git and it does
+// not now: git falls back GIT_EDITOR -> core.editor -> VISUAL -> EDITOR and
+// GIT_PAGER -> core.pager -> PAGER, both measured, so the generic three reach
+// the same programs the GIT_* names do. All six are annotated now, which is the
+// only sense in which the class is "covered" — the reader is told, at both
+// spellings. https://github.com/gomoni/snug/issues/35 and
+// https://github.com/gomoni/snug/issues/45 were both asking for that and are
+// answered by it.
+var envNotes = map[string]envNote{
+	// ── the loader and the C library ─────────────────────────────────────────
+	//
+	// §4.4 plus ld.so(8)'s own secure-execution list, which is the closest thing
+	// to an authoritative denylist that exists — for glibc's own purposes, which
+	// is why snug reads it as a source of SENTENCES rather than as a gate.
+	"LD_PRELOAD": both("every process in the sandbox loads this library before its own code"),
+	"LD_AUDIT":   both("the loader runs this auditing library inside every process it starts"),
+	"LD_LIBRARY_PATH": both("every process resolves its shared libraries from here first, " +
+		"ahead of the system directories"),
+	"GCONV_PATH":       both("iconv loads a character-set conversion MODULE from here, and a module is code"),
+	"LOCPATH":          both("glibc loads compiled locale objects from here, and a locale object is code"),
+	"NLSPATH":          both("message catalogues come from here, on a template glibc expands per process"),
+	"HOSTALIASES":      both("every hostname lookup in the sandbox is rewritten through this file"),
+	"RESOLV_HOST_CONF": both("the resolver reads this in place of /etc/host.conf, so it steers name lookups"),
+	"RES_OPTIONS":      both("resolver options for every lookup the sandbox makes"),
+	"TZDIR": both("every timestamp in the sandbox is read from this directory; a value glibc cannot " +
+		"resolve is silently re-read as an inline rule instead of failing (measured, §3.2)"),
+	"MALLOC_TRACE": both("glibc writes an allocation trace to this file, created by every process that runs"),
+	"GETCONF_DIR":  both("getconf answers from this directory instead of the system's"),
+	"NIS_PATH":     both("NIS lookups search this path"),
+
+	// ── git and ssh: the value is a program ──────────────────────────────────
+	//
+	// Each measured on git 2.55 rather than reasoned about. A redteam run reached
 	// git's transport through GIT_SSH while GIT_SSH_COMMAND — its exact
 	// equivalent — was refused two lines up, and hijacked a `git fetch` in a
 	// sandbox that had been given a PINNED ssh identity by a DIFFERENT profile:
@@ -476,33 +575,38 @@ var forbiddenEnv = map[string]forbidKind{
 	//   snug -p work -p helper <tgt> -- git fetch origin
 	//     HIJACKED-GIT-TRANSPORT host=git@github.com … SSH_AUTH_SOCK=/run/snug/ssh-agent.sock
 	//
-	// `helper` granted no filesystem path at all. That is one profile defeating
-	// a guarantee another profile established, which is the composability case
-	// this whole table exists to prevent — so the rule was never "the newest
-	// spelling"; it is "the value is code". Anything git or ssh execs belongs
-	// here, and forgetting one is indistinguishable from allowing it.
-	"GIT_SSH": forbidBoth, "GIT_PROXY_COMMAND": forbidBoth,
-	"GIT_ASKPASS": forbidBoth, "SSH_ASKPASS": forbidBoth,
-	"GIT_SEQUENCE_EDITOR": forbidBoth,
-	// Found missing by an independent review, and each measured on git 2.55
-	// before being added here rather than reasoned about:
-	//
+	// `helper` granted no filesystem path at all. That finding is why the
+	// sentences below say what the program is USED FOR: one profile can weaken
+	// what another established, and the composition is only visible if the screen
+	// says so at every spelling. The rule was never "the newest spelling"; it is
+	// "the value is code", and forgetting one is indistinguishable from having
+	// nothing to say about it.
+	"GIT_SSH_COMMAND": both("git runs this as the transport for every fetch and push, with whatever " +
+		"ssh identity this sandbox was given"),
+	"GIT_SSH": both("git runs this as the transport for every fetch and push — the older spelling of " +
+		"GIT_SSH_COMMAND, measured to hijack a real `git fetch`"),
+	"GIT_EXEC_PATH":     both("git finds its own subcommands here, so `git anything` runs a program from this directory"),
+	"GIT_EXTERNAL_DIFF": both("git runs this program for every diff it produces"),
+	"GIT_EDITOR":        both("git runs this whenever a commit, tag or rebase opens an editor"),
+	"GIT_SEQUENCE_EDITOR": both("git runs this to edit the todo list of every interactive rebase, " +
+		"before any commit is replayed"),
+	"GIT_PROXY_COMMAND": both("git runs this as the transport proxy for git:// URLs"),
+	"GIT_ASKPASS":       both("git runs this to ask for a credential, so it is handed whatever it asks for"),
+	"SSH_ASKPASS":       both("ssh runs this to ask for a passphrase, so it is handed whatever it asks for"),
+	// Measured on git 2.55, with the command that showed it:
 	//   GIT_PAGER="sh -c 'echo HIJACK; cat >/dev/null'" git log   -> HIJACK
-	//
-	// GIT_TEMPLATE_DIR and GIT_DIR are the same power one indirection out: the
-	// value is a DIRECTORY, and the hooks in it are code. A template dir installs
-	// its hooks into every repository `git clone` and `git init` create
-	// afterwards (measured: post-checkout fired on the clone), and GIT_DIR points
-	// git at a repository whose hooks run on the next commit (measured). They
-	// belong here rather than in the path-coupling rule, because granting the
-	// path is not what makes them safe — nothing does. GIT_COMMON_DIR is the
-	// identical shape, missed in the first pass and found by an independent
-	// review's sweep, not by reasoning: it points git's SHARED directory
-	// (where `hooks/` lives for a worktree) at an attacker-chosen path, and
-	// `hooks/pre-commit` there ran on the next commit — measured, git 2.55.
-	"GIT_PAGER": forbidBoth, "GIT_TEMPLATE_DIR": forbidBoth, "GIT_DIR": forbidBoth,
-	"GIT_COMMON_DIR": forbidBoth,
-	// A different shape again, and the reason the rule is "the value is code"
+	"GIT_PAGER": both("git runs this over the output of log, diff and show (measured, git 2.55)"),
+	// GIT_TEMPLATE_DIR, GIT_DIR and GIT_COMMON_DIR are the same power one
+	// indirection out: the value is a DIRECTORY, and the hooks in it are code.
+	// Granting the path is not what makes them safe — nothing does, which is why
+	// these are not path-coupling rows. GIT_COMMON_DIR was missed in the first
+	// pass and found by an independent review's sweep, not by reasoning.
+	"GIT_TEMPLATE_DIR": both("the hooks in this directory are installed into every repository " +
+		"`git clone` and `git init` create afterwards (measured: post-checkout fired on the clone)"),
+	"GIT_DIR": both("git works in this repository, and the hooks in it run on the next commit (measured)"),
+	"GIT_COMMON_DIR": both("git reads hooks/ from this directory, and a pre-commit there ran on the " +
+		"next commit (measured, git 2.55)"),
+	// A different shape again, and the reason the class is "the value is code"
 	// rather than "the value is a command": these two carry no code at all. They
 	// switch OFF git's own refusal to use the ext:: transport, which runs an
 	// arbitrary command as the transport. Measured, with the control:
@@ -511,48 +615,67 @@ var forbiddenEnv = map[string]forbidKind{
 	//                           git ls-remote "ext::sh -c '…'"   -> refused
 	//
 	// A name that re-enables an exec path is the exec path.
-	"GIT_ALLOW_PROTOCOL": forbidBoth, "GIT_PROTOCOL_FROM_USER": forbidBoth,
-	// Same class, different runtime: each is a flag string the runtime parses
-	// before main(), and each can load code from a path.
-	"JAVA_TOOL_OPTIONS": forbidBoth, "_JAVA_OPTIONS": forbidBoth,
-	"JDK_JAVA_OPTIONS": forbidBoth, "RUBYOPT": forbidBoth,
+	"GIT_ALLOW_PROTOCOL": both("re-enables git's ext:: transport, which runs an arbitrary command " +
+		"as the transport (measured, with the control)"),
+	"GIT_PROTOCOL_FROM_USER": both("re-enables the transports git refuses by default, ext:: among them " +
+		"(measured, with the control)"),
+
+	// ── a runtime's own flag channel, parsed before main() ───────────────────
+	"JAVA_TOOL_OPTIONS": both("every JVM in the sandbox parses these flags before main(), and they can " +
+		"load an agent from a path"),
+	"_JAVA_OPTIONS":    both("every JVM parses these flags before main() — the second spelling of the same channel"),
+	"JDK_JAVA_OPTIONS": both("the `java` launcher parses these flags before main(), agents included"),
+	"RUBYOPT":          both("every ruby parses these flags before the script and can require a file from them"),
+
 	// cargo executes an arbitrary program as its own compiler driver — measured
 	// (issue #26 red team): a profile with RUSTC_WRAPPER pointing at a script
-	// made `cargo build` run that script in place of rustc, as the sandbox's
-	// own uid, and this was reachable through both `environ.set` and
-	// `environ.inherit` before this entry existed. RUSTC_WORKSPACE_WRAPPER and
-	// RUSTC carry the identical capability — the same one CARGO_BUILD_RUSTC_WRAPPER
-	// already forbids via the CARGO_ prefix below — but none of the three
-	// starts with a listed prefix, so the prefix table alone missed them. This
-	// is the shape CLAUDE.md keeps recording: a rule applied to one of its two
-	// spellings.
-	"RUSTC_WRAPPER": forbidBoth, "RUSTC_WORKSPACE_WRAPPER": forbidBoth, "RUSTC": forbidBoth,
-	// The same class again, one indirection further out: a build tool's own
-	// "run this program instead" or "pass these extra flags" variable, each
-	// measured to run an attacker-chosen program as the sandbox's own uid —
-	// a second-pass review sweep, not a spelling anyone reasoned about ahead
-	// of time. This is why the table is enumerated rather than derived: the
-	// space of "an env var some tool turns into exec" is unbounded, and each
-	// of these was found only by trying it.
+	// made `cargo build` run that script in place of rustc, as the sandbox's own
+	// uid, through both `environ.set` and `environ.inherit`. RUSTC_WORKSPACE_WRAPPER
+	// and RUSTC carry the identical capability — the same one
+	// CARGO_BUILD_RUSTC_WRAPPER carries under the CARGO_ prefix below — but none
+	// of the three starts with a listed prefix, which is why they are named here
+	// as well. That is the shape CLAUDE.md keeps recording: a rule applied to one
+	// of its two spellings.
+	"RUSTC_WRAPPER":           both("cargo runs this in place of rustc, as the sandbox's own uid (measured, issue #26)"),
+	"RUSTC_WORKSPACE_WRAPPER": both("cargo runs this in place of rustc for workspace crates (measured, issue #26)"),
+	"RUSTC":                   both("cargo runs this AS rustc (measured, issue #26)"),
+
+	// The same class one indirection further out: a build tool's own "run this
+	// program instead" or "pass these extra flags" variable, each measured to run
+	// an attacker-chosen program as the sandbox's own uid — a second-pass review
+	// sweep, not a spelling anyone reasoned about ahead of time. This is why the
+	// table is enumerated rather than derived: the space of "an env var some tool
+	// turns into exec" is unbounded, and each of these was found only by trying
+	// it.
 	//
 	//   MAKEFLAGS="--eval=x:;$(shell ./evil.sh)"  make        -> evil.sh ran   (GNU make 4.x)
 	//   GOFLAGS="-toolexec=/…/toolexec.sh"         go build    -> ran per compile (go 1.26)
 	//   CC=./evil.sh                                make        -> ran as the compiler, via make's implicit rules
 	//   TAR_OPTIONS="--use-compress-program=/…/prog.sh"  tar   -> prog.sh ran   (GNU tar 1.35)
 	//   RSYNC_RSH=/…/prog.sh                        rsync       -> prog.sh ran   (rsync 3.4.3)
-	"MAKEFLAGS": forbidBoth, "GOFLAGS": forbidBoth, "CC": forbidBoth,
-	"TAR_OPTIONS": forbidBoth, "RSYNC_RSH": forbidBoth,
-	// bash performs command substitution on the prompt templates, before the
-	// user has typed anything (§3.5)
-	"PS0": forbidBoth, "PS2": forbidBoth, "PS3": forbidBoth, "PS4": forbidBoth,
-	"PROMPT_COMMAND": forbidBoth,
+	"MAKEFLAGS": both("make evaluates this before any rule, and `--eval=$(shell …)` runs a command " +
+		"(measured, GNU make 4.x)"),
+	"GOFLAGS": both("go passes these to every compile, and -toolexec names a program it runs " +
+		"(measured, go 1.26)"),
+	"CC":          both("make's implicit rules run this as the compiler (measured)"),
+	"TAR_OPTIONS": both("tar reads these flags, and --use-compress-program names a program it runs (measured)"),
+	"RSYNC_RSH":   both("rsync runs this as its remote shell (measured, rsync 3.4.3)"),
 
-	// An interpreter's own "run this file/module before anything else"
-	// variable — the same class as BASH_ENV/ENV below. PYTHONPATH,
-	// NODE_OPTIONS and PERL5OPT were PROMOTED here from forbidInheritOnly:
-	// "reviewable as set" was the call made for them, and it does not survive
-	// a measurement of the value running code. PYTHONUSERBASE was simply
-	// absent from this table until this measurement found it.
+	// bash performs command substitution on the prompt templates, before the user
+	// has typed anything (§3.5). PS1 is not here: it is snug's own.
+	"PS0":            both("bash performs command substitution on this before every command it runs"),
+	"PS2":            both("bash performs command substitution on this prompt template"),
+	"PS3":            both("bash performs command substitution on this prompt template"),
+	"PS4":            both("bash performs command substitution on this trace prompt, before you type anything"),
+	"PROMPT_COMMAND": both("bash runs this command before every prompt it draws"),
+
+	// An interpreter's own "run this file/module before anything else" variable.
+	// These four sat in the middle bucket ("reviewable as set") until a
+	// measurement moved them: that call is right for a variable carrying a path a
+	// tool merely READS (BASH_ENV, ENV, LESSOPEN below) and wrong for one
+	// carrying a path a tool EXECUTES unconditionally on every invocation, which
+	// is what these turned out to be — indistinguishable in shape from
+	// RUSTC_WRAPPER.
 	//
 	//   PYTHONUSERBASE=…  python3 -c 'import site'
 	//     -> …/site-packages/usercustomize.py ran on every python3   (CPython 3.13)
@@ -562,26 +685,109 @@ var forbiddenEnv = map[string]forbidKind{
 	//     -> pre.js ran before the script, every invocation             (node 26)
 	//   PERL5OPT="-I/… -Mevil"  perl ...
 	//     -> evil.pm loaded on every perl invocation                    (perl 5)
-	//
-	// "Reviewable as set, from a profile that also grants the path" was the
-	// right call for a variable that carries a PATH a tool merely READS
-	// (BASH_ENV, ENV, LESSOPEN). It was the wrong call here: these four
-	// carry a path a tool EXECUTES, unconditionally, on every invocation —
-	// indistinguishable in shape from RUSTC_WRAPPER above, which is
-	// forbidBoth for the identical reason.
-	"PYTHONUSERBASE": forbidBoth, "PYTHONPATH": forbidBoth,
-	"NODE_OPTIONS": forbidBoth, "PERL5OPT": forbidBoth,
+	"PYTHONUSERBASE": both("python runs usercustomize.py from under this path on every start " +
+		"(measured, CPython 3.13)"),
+	"PYTHONPATH": both("python runs sitecustomize.py from any element of this at interpreter start " +
+		"(measured, CPython)"),
+	"NODE_OPTIONS": both("node runs whatever --require names here, before the script, on every " +
+		"invocation (measured, node 26)"),
+	"PERL5OPT": both("perl loads whatever -M names here, on every invocation (measured, perl 5)"),
 
-	// reviewable as `set`, a hole in --clearenv as `inherit` — each of these
-	// carries a PATH the tool reads, not a path it unconditionally executes;
-	// see the block above for the class this is NOT.
-	"BASH_ENV": forbidInheritOnly, "ENV": forbidInheritOnly,
-	"PYTHONSTARTUP": forbidInheritOnly, "PYTHONBREAKPOINT": forbidInheritOnly,
-	"LESSOPEN": forbidInheritOnly,
+	// ── the startup files a tool READS: two sentences, and the difference is
+	// where the value came from ──────────────────────────────────────────────
+	//
+	// This is the old forbidInheritOnly bucket, and it is where the authored/host
+	// split earns its keep: `BASH_ENV = "{home}/init"` in a profile that also
+	// grants the path is a coherent, reviewable thing to write, while the same
+	// name inherited names a file chosen on the host by whatever launched snug.
+	// The refusal that used to express that difference is gone; the difference is
+	// not, so it is said twice.
+	"BASH_ENV": {
+		authored: "every non-interactive bash SOURCES this file at startup; grant the path in the same profile",
+		host:     "every non-interactive bash SOURCES this file at startup, and the file is chosen on the host, outside any profile",
+	},
+	"ENV": {
+		authored: "every non-interactive sh SOURCES this file at startup; grant the path in the same profile",
+		host:     "every non-interactive sh SOURCES this file at startup, and the file is chosen on the host, outside any profile",
+	},
+	"PYTHONSTARTUP": {
+		authored: "the interactive python interpreter EXECUTES this file on start; grant the path in the same profile",
+		host:     "the interactive python interpreter EXECUTES this file on start, and the file is chosen on the host",
+	},
+	"PYTHONBREAKPOINT": {
+		authored: "this names the callable breakpoint() invokes, so it is imported and run",
+		host:     "this names the callable breakpoint() invokes, chosen on the host, outside any profile",
+	},
+	"LESSOPEN": {
+		authored: "less runs this program over every file it opens; grant the path in the same profile",
+		host:     "less runs this program over every file it opens, and it is chosen on the host",
+	},
+
+	// ── the generic three, which the git entries above do NOT close ──────────
+	//
+	// Measured: git falls back GIT_EDITOR -> core.editor -> VISUAL -> EDITOR and
+	// GIT_PAGER -> core.pager -> PAGER, and `PAGER="sh -c '…'" git log` runs the
+	// command. So refusing the GIT_* spellings never closed the class — it closed
+	// the invisible half of it, and the two halves differ in who they surprise: a
+	// profile setting EDITOR is doing a legible thing to a variable a human
+	// recognises, while the GIT_* names fire during operations nobody thinks of as
+	// running a command.
+	//
+	// That asymmetry is exactly what an annotation fixes and a refusal could not.
+	// @claude inherits all three, so this is the sentence a human sees on a
+	// perfectly ordinary run — issues #35 and #45, both of which were asking for
+	// the reader to be told rather than for the grant to be withdrawn.
+	"EDITOR": both("the value is a command; git runs it for a commit message via " +
+		"GIT_EDITOR -> core.editor -> VISUAL -> EDITOR (measured)"),
+	"VISUAL": both("the value is a command; git runs it for a commit message when GIT_EDITOR and " +
+		"core.editor are unset (measured)"),
+	"PAGER": both("the value is a command; git runs it over log, diff and show via " +
+		"GIT_PAGER -> core.pager -> PAGER (measured)"),
+
+	// ── the endpoint @claude inherits ────────────────────────────────────────
+	//
+	// Not an exec vector at all, and it is here to show that the table is about
+	// what a value DOES rather than about a single hazard: nothing runs this, and
+	// a human still wants to know that a profile chose where the agent's traffic
+	// goes.
+	"ANTHROPIC_BASE_URL": both("every request the agent makes, conversation included, goes to this " +
+		"endpoint instead of Anthropic's"),
+
+	// ── "generate, don't bind", the pointers ─────────────────────────────────
+	//
+	// These carried `noInherit: true` in the roster, whose message was "snug
+	// refuses to take this from the host": a verdict about the author, inside a
+	// table of type facts. Only the `host` sentence is set, because the pointers
+	// are exactly what a profile SHOULD author — `set CARGO_HOME` is the
+	// mechanism a future cargo adapter uses, and annotating that would be noise.
+	//
+	// The XDG four and XDG_RUNTIME_DIR are the same shape one layer down: @home
+	// creates those directories, so setting one to a path the same profile grants
+	// is the intended use, and taking the host's names a directory the sandbox
+	// does not have. XDG_RUNTIME_DIR additionally carries obligations a bare
+	// string cannot satisfy — mode 0700, owned by the user, session lifetime.
+	"XDG_CONFIG_HOME": {host: "the host's value names a directory this sandbox does not have; " +
+		"@home creates the one inside, so `set` it to a path the same profile grants"},
+	"XDG_CACHE_HOME": {host: "the host's value names a directory this sandbox does not have; " +
+		"@home creates the one inside, so `set` it to a path the same profile grants"},
+	"XDG_STATE_HOME": {host: "the host's value names a directory this sandbox does not have; " +
+		"@home creates the one inside, so `set` it to a path the same profile grants"},
+	"XDG_DATA_HOME": {host: "the host's value names a directory this sandbox does not have; " +
+		"@home creates the one inside, so `set` it to a path the same profile grants"},
+	"XDG_RUNTIME_DIR": {host: "the host's value names a directory this sandbox does not have, and this " +
+		"variable carries obligations a string cannot satisfy — mode 0700, owned by the user, session lifetime"},
+	"CARGO_HOME": {host: "taking the host's value points cargo back at the host's config, which is the " +
+		"file \"generate, don't bind\" exists to avoid; `set` it to a path a profile authored"},
+	"DOCKER_CONFIG": {host: "taking the host's value points docker back at the host's config, credentials " +
+		"included; `set` it to a path a profile authored"},
+	"NPM_CONFIG_USERCONFIG": {host: "taking the host's value points npm back at the host's .npmrc, " +
+		"auth tokens included; `set` it to a path a profile authored"},
+	"PIP_CONFIG_FILE": {host: "taking the host's value points pip back at the host's config, index " +
+		"credentials included; `set` it to a path a profile authored"},
 }
 
 // prefixCaseFold is the ONE place "does this tool's env lookup fold case"
-// lives. forbiddenEnvPrefixes (what a profile may write) and
+// lives. envNotePrefixes (what a profile is told about a family it writes) and
 // inlineConfigPrefixes (what snug's sink sweep treats as inline config) both
 // match against this same table instead of each carrying its own bool, so a
 // re-measurement changes one line and both tables see it.
@@ -589,12 +795,13 @@ var forbiddenEnv = map[string]forbidKind{
 // That is not tidiness for its own sake: it is the fix for a defect measured
 // in review. A previous round gave inlineConfigPrefixes a case-insensitive
 // npm_config_ entry — correctly, npm 10.9.8 measured — but left
-// forbiddenEnvPrefixes' OWN npm_config_ entry case-sensitive, so
+// the forbidden-prefix table's OWN npm_config_ entry case-sensitive, so
 // `environ.inherit NPM_CONFIG_SCRIPT_SHELL` (the idiomatic, upper-case
 // spelling a shell `export` produces) was ACCEPTED at parse time while the
 // predicate that exists to name it as inline config said `true`. Two tables
 // holding the same fact is how they end up disagreeing about it; one table
-// cannot.
+// cannot. The refusal is an annotation now, and the defect survives the change
+// intact: the folded spelling would simply render no sentence.
 var prefixCaseFold = map[string]bool{
 	// Measured on this host, git 2.55.0: GIT_CONFIG_COUNT/KEY_0/VALUE_0 are
 	// read; git_config_count and Git_Config_Count are not (both fall through
@@ -627,7 +834,7 @@ var prefixCaseFold = map[string]bool{
 
 // matchesPrefix reports whether name is matched by prefix, honouring
 // prefixCaseFold for that prefix. Every prefix match in this file — the
-// forbidden table, the inline-config predicate, and any exemption from
+// annotation table, the inline-config predicate, and any exemption from
 // either — goes through this one function, so "how is a prefix matched" has
 // one answer.
 func matchesPrefix(name, prefix string) bool {
@@ -652,63 +859,94 @@ func sameName(name, other, prefix string) bool {
 	return name == other
 }
 
-// forbiddenEnvPrefixes is the half a map[string]bool could never express, and
-// four of §4.4's findings are exactly this shape.
+// envNotePrefixes is the half a map could never express, and four of §4.4's
+// findings are exactly this shape: an unbounded FAMILY of names, where the fact
+// worth telling a reader is about the family rather than about the spelling in
+// front of them.
+//
+// The shape is kept from `forbiddenEnvPrefixes`, `kind` swapped for `note`, so
+// that matchesPrefix, sameName and prefixCaseFold keep their single caller set.
+// That is load-bearing rather than tidy: a second table holding the same case
+// fact has drifted twice in this file's history, and a note table keyed its own
+// way would be the third instance.
+//
+// The prefix is rendered INTO the sentence by noteFor, in the canonical spelling
+// written here, so a reader can tell whether snug measured THIS name or its
+// family — and so that the canonical spelling of a case-folding prefix
+// (npm_config_) lives in exactly one place.
 //
 // BASH_FUNC_* is not a variable but a NAME PATTERN carrying exported shell
 // functions — and function lookup precedes PATH entirely, so it defeats every
 // ordering question in this file.
-var forbiddenEnvPrefixes = []struct {
+var envNotePrefixes = []struct {
 	prefix string
-	kind   forbidKind
+	note   envNote
 	// exempt names that match prefix but are POINTERS, not the capability the
-	// prefix exists to block — matched with prefix's own case rule via
-	// sameName, for the same reason inlineConfigPointers must be.
+	// prefix's sentence is about — matched with prefix's own case rule via
+	// sameName, for the same reason inlineConfigPointers must be. An exempt name
+	// gets no FAMILY note; several have an exact note of their own (CARGO_HOME,
+	// NPM_CONFIG_USERCONFIG), which the exact table above answers first.
 	exempt []string
 }{
-	{"LD_", forbidBoth, nil},
-	{"BASH_FUNC_", forbidBoth, nil},
-	{"GIT_CONFIG_", forbidBoth, nil},
-	// PIP_* outranks the config FILE pip reads, so inheriting it defeats a
-	// pinned config; setting one in a reviewed profile that also grants the
-	// path is what "generate, don't bind" asks for. Nothing under PIP_ was
-	// measured to exec a program the way npm_config_ and CARGO_ below were —
-	// re-promote if that changes.
-	{"PIP_", forbidInheritOnly, nil},
+	{"LD_", both("the dynamic loader reads this before main() in every process"), nil},
+	{"BASH_FUNC_", both("an exported shell FUNCTION, and function lookup precedes PATH entirely"), nil},
+	{"GIT_CONFIG_", both("git reads this at the command-line scope, above the global file, above the " +
+		"repository's own .git/config, and above any include (measured, issue #26)"),
+		// GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM are POINTERS at a config FILE,
+		// which is the mechanism, not the hazard — the same carve-out CARGO_HOME
+		// and NPM_CONFIG_USERCONFIG have, and the same one inlineConfigPointers
+		// makes for these two names. GIT_CONFIG_GLOBAL is also in SnugOwnedEnv, so
+		// no profile reaches it at any verb; GIT_CONFIG_SYSTEM is not, and a
+		// profile pointing git's system scope at a file it authored is doing the
+		// thing "generate, don't bind" asks for.
+		//
+		// The two tables' exemption sets are now identical, and that is asserted
+		// rather than asked for: TestPointerExemptionsAgreeBetweenTheTwoTables.
+		[]string{"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"}},
+	// PIP_* outranks the config FILE pip reads. Nothing under PIP_ was measured
+	// to exec a program the way npm_config_ and CARGO_ below were — say so, and
+	// re-measure if that changes.
+	//
+	// PIP_CONFIG_FILE is exempt, and it did NOT need to be while this was a
+	// refusal: PIP_ was forbidInheritOnly, so `set PIP_CONFIG_FILE` was legal
+	// through the KIND rather than through an exemption, and the pointer carve-out
+	// was carried in inlineConfigPointers alone. As an annotation the kind no
+	// longer helps — the family sentence renders at `set` — and a pointer warned
+	// about at the verb that authors it is snug arguing with its own "generate,
+	// don't bind" rule. So the exemption has to be written here too, and the
+	// exempt lists of this table now name the same pointers inlineConfigPointers
+	// does. If you add a pointer to one, add it to the other.
+	{"PIP_", envNote{
+		authored: "outranks the config file pip reads, so it beats whatever a profile generated",
+		host:     "outranks the config file pip reads, and the value is chosen on the host, outside any profile",
+	}, []string{"PIP_CONFIG_FILE"}},
 	// cargo executes an arbitrary program for CARGO_BUILD_RUSTC_WRAPPER,
 	// CARGO_BUILD_RUSTC and CARGO_TARGET_<TRIPLE>_RUNNER/_LINKER — the SAME
 	// capability as the un-prefixed RUSTC_WRAPPER/RUSTC/RUSTC_WORKSPACE_WRAPPER
-	// in forbiddenEnv above, reached through a different spelling. forbidBoth,
-	// not forbidInheritOnly: those three named entries are forbidBoth because
-	// the value IS code, and CARGO_BUILD_RUSTC_WRAPPER is that same code path,
-	// not merely config that outranks a file — treating the prefixed spelling
-	// more leniently than the bare name it is a synonym for would just move
-	// the hole rather than close it. Measured, issue #26 review: before this
-	// entry existed, `environ.set CARGO_BUILD_RUSTC_WRAPPER = ...` and
-	// `environ.inherit CARGO_BUILD_RUSTC_WRAPPER` were both accepted at parse
-	// time. CARGO_HOME is the one exemption: it is a POINTER (the mechanism a
-	// future cargo adapter would use, same shape as GIT_CONFIG_GLOBAL), not a
-	// code path.
-	{"CARGO_", forbidBoth, []string{"CARGO_HOME"}},
-	// npm_config_ promoted from forbidInheritOnly for the identical reason
-	// CARGO_ was above: `npm_config_script_shell` names the shell npm uses to
-	// run lifecycle and `run` scripts, and `npm_config_node_gyp` names the
-	// program npm invokes for native builds — both ARE that code path, not
-	// merely config that outranks a file, and both are npm's exact analog of
-	// CARGO_BUILD_RUSTC_WRAPPER. Measured, issue #26 review: before this
-	// promotion, `environ.set NPM_CONFIG_SCRIPT_SHELL = ...` and
-	// `environ.set NPM_CONFIG_NODE_GYP = ...` were both accepted, in every
-	// case spelling — see prefixCaseFold's npm_config_ entry above for why
-	// case matters here at all. NPM_CONFIG_USERCONFIG is the one exemption,
-	// for the same reason CARGO_HOME is: it is a POINTER, not a code path.
-	{"npm_config_", forbidBoth, []string{"NPM_CONFIG_USERCONFIG"}},
+	// in envNotes above, reached through a different spelling. Measured, issue
+	// #26 review. CARGO_HOME is the one exemption: it is a POINTER (the mechanism
+	// a future cargo adapter would use, same shape as GIT_CONFIG_GLOBAL), not a
+	// code path, and it carries its own `inherit` sentence in the exact table.
+	{"CARGO_", both("outranks .cargo/config.toml, and the BUILD_RUSTC_WRAPPER/BUILD_RUSTC/" +
+		"TARGET_*_RUNNER keys name a program cargo RUNS (measured, issue #26)"),
+		[]string{"CARGO_HOME"}},
+	// npm_config_ is the same shape again: `npm_config_script_shell` names the
+	// shell npm uses to run lifecycle and `run` scripts, and `npm_config_node_gyp`
+	// names the program npm invokes for native builds — both ARE that code path,
+	// not merely config that outranks a file. Measured, issue #26 review, in every
+	// case spelling; see prefixCaseFold's npm_config_ entry for why case matters
+	// here at all. NPM_CONFIG_USERCONFIG is the one exemption, for the same reason
+	// CARGO_HOME is.
+	{"npm_config_", both("outranks .npmrc, and the script_shell/node_gyp keys name a program npm " +
+		"RUNS (measured, issue #26, in every case spelling)"),
+		[]string{"NPM_CONFIG_USERCONFIG"}},
 }
 
 // inlineConfigPrefixes is the prefix half of IsInlineConfigEnv's table: every
 // name matching one of these is a config-surface variable whose VALUE IS THE
 // SETTING, unless it is named in inlineConfigPointers below. Case sensitivity
 // for each prefix comes from prefixCaseFold, the same table
-// forbiddenEnvPrefixes reads — see that table's comment for why sharing it
+// envNotePrefixes reads — see that table's comment for why sharing it
 // matters, not just naming the list here.
 var inlineConfigPrefixes = []string{
 	"GIT_CONFIG_",
@@ -745,15 +983,15 @@ var inlineConfigPointers = []inlineConfigPointer{
 // cargo executes as its compiler driver) but whose NAME does not start with
 // its tool's prefix. RUSTC_WRAPPER, RUSTC_WORKSPACE_WRAPPER and RUSTC carry
 // the identical capability CARGO_BUILD_RUSTC_WRAPPER carries under the
-// CARGO_ prefix in forbiddenEnvPrefixes — measured, issue #26 red team: a
+// CARGO_ prefix in envNotePrefixes — measured, issue #26 red team: a
 // profile setting RUSTC_WRAPPER to a script made `cargo build` run that
 // script in place of rustc. All six names (these three, plus the three
-// CARGO_BUILD_* / CARGO_TARGET_* spellings the prefix catches) are already
-// refused outright in forbiddenEnv/forbiddenEnvPrefixes (forbidBoth, for
-// every verb) — this map exists so IsInlineConfigEnv's own promise stays
-// true for the un-prefixed spelling too, not because anything downstream of
-// it is what stops a builtin from shipping one; see IsInlineConfigEnv's doc
-// comment for what actually enforces that.
+// CARGO_BUILD_* / CARGO_TARGET_* spellings the prefix catches) are annotated
+// there at every verb — and annotation is all they are, since the second pass
+// over issue #44: a USER profile may now author any of them. This map is what
+// keeps IsInlineConfigEnv's own promise true for the un-prefixed spelling, and
+// what stops a BUILTIN shipping one is the sweep named in IsInlineConfigEnv's
+// doc comment plus the roster rule; see there.
 var inlineConfigNames = map[string]bool{
 	"RUSTC_WRAPPER":           true,
 	"RUSTC_WORKSPACE_WRAPPER": true,
@@ -776,26 +1014,32 @@ var inlineConfigNames = map[string]bool{
 // listed, and the next adapter should be written from that comment.
 //
 // What this predicate does NOT cover, stated because the name invites reading
-// it as the whole of the sink sweep and it is not: the command-hook-via-`set`
-// class in forbiddenEnv — BASH_ENV, ENV, PERL5OPT, NODE_OPTIONS,
-// PYTHONSTARTUP, LESSOPEN and the rest marked forbidInheritOnly — is
-// deliberately reviewable AS `set`, from a reviewed profile that also grants
-// the path (see forbidKind's doc comment). Those names return false here on
-// purpose; TestNoBuiltinHandsOverAnInlineConfigVariable is not their guard.
+// it as the whole of the sink sweep and it is not: the command-hook class —
+// BASH_ENV, ENV, PERL5OPT, NODE_OPTIONS, PYTHONSTARTUP, LESSOPEN and the rest
+// of envNotes — returns false here on purpose. Those are annotated, not
+// classified as inline config, and TestNoBuiltinHandsOverAnInlineConfigVariable
+// is not their guard; the roster rule (a builtin may write only a rostered
+// name) is.
 //
-// What this predicate is NOT, stated because a doc comment nearby overclaimed
-// it once: it has no production caller. `forbiddenEnv`/`forbiddenEnvPrefixes`
-// via `ValidateEnvGrants` is what stops a PROFILE — builtin or user — from
-// ever authoring one of these names; that is the real, load-bearing gate.
-// IsInlineConfigEnv is read only by cmd/snug's builtin-only, TEST-TIME sweep
-// (TestNoBuiltinHandsOverAnInlineConfigVariable), which resolves
+// WHAT THIS PREDICATE IS NOT, and the answer CHANGED with the second pass over
+// issue #44, so read this rather than the version you remember. It still has no
+// production caller. It used to be able to say that `forbiddenEnv` /
+// `forbiddenEnvPrefixes` via `ValidateEnvGrants` stopped ANY profile — builtin
+// or user — from authoring one of these names, and that this predicate was
+// merely the second layer. That gate is GONE: those tables are annotations now
+// (envNotes/envNotePrefixes), so a USER profile may author GIT_CONFIG_KEY_0,
+// PIP_INDEX_URL or RUSTC_WRAPPER, and what it gets is a sentence on --dry-run.
+// That is deliberate — a profile's author is a human on the trusted side of the
+// boundary — and it makes the scope of this predicate exactly what CLAUDE.md
+// says the rule is: THE ENVIRONMENT SNUG ITSELF HANDS OVER must not ship the
+// override pre-installed. What holds that up is two things, both builtin-only:
+// internal/profile's checkBuiltinEnvRoster (a shipped profile may write only a
+// rostered name, and no inline-config name has a roster row) and cmd/snug's
+// TEST-TIME sweep TestNoBuiltinHandsOverAnInlineConfigVariable, which resolves
 // `profile.Builtins()` and nothing a user's own `~/.config/snug/profiles.d`
-// defines. If forbiddenEnv/forbiddenEnvPrefixes were ever narrowed, a USER
-// profile writing one of these names would reach the payload with nothing in
-// the way, and this sweep would stay green regardless — it never resolves a
-// user profile. Wiring this predicate into ValidateEnvGrants itself, so it
-// governs what ANY profile may author, is a policy decision and is
-// deliberately not made here.
+// defines. Wiring this predicate into ValidateEnvGrants, so that it governs what
+// ANY profile may author, would be re-introducing a denylist over a human's own
+// file and is deliberately not done.
 //
 // The pointer set is a SECURITY BOUNDARY, not a convenience list. Adding a
 // name to it says "snug hands this to the payload"; ask what the name makes
@@ -817,42 +1061,45 @@ func IsInlineConfigEnv(name string) bool {
 	return false
 }
 
-// forbiddenFor reports whether a name is refused for this verb, and why.
+// noteFor returns snug's annotation for one (name, verb) pair, already carrying
+// the prefix label where the annotation is about a family.
 //
-// A prefix's exempt list applies to every verb EXCEPT VerbInherit, and that
-// asymmetry is deliberate rather than an oversight: an exempt name is a
-// POINTER (CARGO_HOME, NPM_CONFIG_USERCONFIG, …), and "generate, don't bind"
-// refuses to let a pointer be pulled from the HOST regardless — inheriting
-// would reintroduce exactly the file the rule exists to avoid. Most of the
-// time that refusal ALSO comes from the name's own noInherit row in envTypes,
-// and the history is worth keeping because the fix is structural rather than
-// belt-and-braces: that lookup used to be a case-SENSITIVE, exact-string one.
-// Exactly right for a case-sensitive prefix (CARGO_), and exactly wrong for a
-// case-INSENSITIVE one — npm_config_'s exemption (NPM_CONFIG_USERCONFIG)
-// matches every case spelling via sameName/prefixCaseFold, while
-// envTypes["npm_config_userconfig"] did not exist, so the type-table refusal
-// never fired for that spelling. Measured, before this rule existed:
-// environ.inherit npm_config_userconfig was ACCEPTED while environ.inherit
-// NPM_CONFIG_USERCONFIG was refused, the same "one table disagrees with itself
-// across two case spellings" defect this whole file exists to close, found one
-// level deeper. Refusing to let exempt+Inherit combine at all closes it
-// structurally, for every existing and future case-insensitive prefix.
+// The exact table answers FIRST and, if it has a sentence for this verb, alone:
+// one row on the screen carries one annotation, because a row carrying two would
+// be read as one long one. A name with an exact entry that says nothing at THIS
+// verb (CARGO_HOME at `set` — the pointers annotate `inherit` only) falls
+// through to the prefix table, which is how the two tables composed when they
+// were refusals and is what keeps CARGO_HOME's exemption meaningful.
 //
-// typeOf HAS since become case-fold aware (issue #44 had to make it: an
-// exact-string roster would have exempted npm_config_userconfig from the prefix
-// and then reported it as a name snug has never heard of). So the two mechanisms
-// now agree where they overlap. This rule is not thereby redundant, and must not
-// be deleted as such: it holds for a name with NO roster row at all, and it does
-// not depend on anyone remembering to add a row.
-func forbiddenFor(name string, verb EnvVerb) (bool, string) {
-	if k, ok := forbiddenEnv[name]; ok && appliesTo(k, verb) {
-		return true, ""
+// A prefix's exempt list applies to every verb EXCEPT VerbInherit and
+// VerbSanitise, and that asymmetry is deliberate rather than an oversight: an
+// exempt name is a POINTER (CARGO_HOME, NPM_CONFIG_USERCONFIG, …), and authoring
+// one is the mechanism "generate, don't bind" asks for, while taking one from
+// the HOST reintroduces exactly the file the rule exists to avoid — so at those
+// two verbs the family's sentence is the right thing to say about it.
+//
+// The history is worth keeping, because it is why the exemption is matched with
+// sameName rather than with `==`. That lookup used to be a case-SENSITIVE,
+// exact-string one: exactly right for a case-sensitive prefix (CARGO_), exactly
+// wrong for a case-INSENSITIVE one — npm_config_'s exemption matches every case
+// spelling, while envTypes["npm_config_userconfig"] did not exist, so the type
+// table's own refusal never fired for that spelling. Measured, before the rule
+// existed: environ.inherit npm_config_userconfig was ACCEPTED while
+// environ.inherit NPM_CONFIG_USERCONFIG was refused. Nothing is refused here any
+// more, so the same defect would now show as a MISSING annotation on the folded
+// spelling — the same drift wearing different clothes, which is why the rule is
+// kept rather than simplified away.
+func noteFor(name string, verb EnvVerb) string {
+	if n, ok := envNotes[name]; ok {
+		if s := n.forVerb(verb); s != "" {
+			return s
+		}
 	}
-	for _, p := range forbiddenEnvPrefixes {
+	for _, p := range envNotePrefixes {
 		if !matchesPrefix(name, p.prefix) {
 			continue
 		}
-		if verb != VerbInherit {
+		if verb != VerbInherit && verb != VerbSanitise {
 			exempt := false
 			for _, e := range p.exempt {
 				if sameName(name, e, p.prefix) {
@@ -864,15 +1111,56 @@ func forbiddenFor(name string, verb EnvVerb) (bool, string) {
 				continue
 			}
 		}
-		if appliesTo(p.kind, verb) {
-			return true, p.prefix
+		if s := p.note.forVerb(verb); s != "" {
+			// The prefix is named in its CANONICAL spelling, from the table, even
+			// where the match folded case: a reader has to be able to tell whether
+			// snug measured THIS name or its family, and that answer must not
+			// depend on how the profile happened to spell it. This is also the
+			// only place the canonical spelling reaches a screen, so the
+			// annotation text does not become a third copy of a case fact.
+			return p.prefix + "*: " + s
 		}
 	}
-	return false, ""
+	return ""
 }
 
-func appliesTo(k forbidKind, verb EnvVerb) bool {
-	return k == forbidBoth || verb == VerbInherit
+// EnvNote is snug's annotation for one (name, verb) pair, ready to append to a
+// rendered row, or "" where snug has nothing to say about it.
+//
+// IT IS A STATEMENT, NOT A VERDICT. Nothing downstream of this function refuses
+// anything; every caller is a screen. That is the whole of what the second pass
+// over issue #44 changed — the tables behind it used to refuse, and refusing the
+// author of a profile was snug denying its own user a hole in a sandbox that
+// shares nothing to begin with. A human's profile may now `set EDITOR`, `inherit
+// CARGO_HOME`, `set BASH_ENV` and `set RUSTC_WRAPPER`; what they get for it is
+// this sentence, on --dry-run and on `snug profile show`. That is the point, not
+// a regression.
+//
+// ONE FUNCTION, N CONSUMERS, for the same reason IsUncheckedEnv is one predicate
+// with three: two screens deciding separately what snug has to say about a name
+// is how one of them comes to say nothing. Today the consumers are --dry-run's
+// ENVIRONMENT block (cmd/snug/dryrun.go's envLines) and `snug profile show`
+// (cmd/snug/config.go's showEnviron). The argv block is again the sink with
+// nothing to add: `--setenv NAME VALUE` has no provenance column at all.
+//
+// The mark JOINS the others rather than replacing them, and a row can carry
+// three statements at once — envLines fixes the order:
+//
+//	unchecked   about the NAME:  snug has no roster row for it
+//	this note   about what the tool DOES with the value
+//	grantMark   about the VALUE as a path: nothing inside covers it
+//
+// VerbSnug returns "" because snug's own authorship is not something to warn a
+// reader about — the same carve-out IsUncheckedEnv makes, for the same reason.
+func EnvNote(name string, verb EnvVerb) string {
+	if verb == VerbSnug {
+		return ""
+	}
+	s := noteFor(name, verb)
+	if s == "" {
+		return ""
+	}
+	return "  ← " + s
 }
 
 // checkEnvName refuses a variable name that would break a mechanism, in the
@@ -922,23 +1210,26 @@ func checkEnvName(name string, verb EnvVerb) error {
 				"assume. Rename it", v, quoteVisible(name), string(name[i]))
 		}
 	}
-	if yes, prefix := forbiddenFor(name, verb); yes {
-		if prefix != "" {
-			return fmt.Errorf("environ.%s names %s, and snug refuses the whole %s* prefix "+
-				"for this verb: the value is executed, or it outranks the config file "+
-				"snug generates. Remove the line", v, name, prefix)
-		}
-		return fmt.Errorf("environ.%s names %s, which snug refuses for this verb: the value "+
-			"is code, executed by every process the sandbox launches. Remove the line", v, name)
-	}
+	// WHAT IS NOT HERE, because it was and its absence is the change: the
+	// forbidden-name and forbidden-prefix tables used to be consulted at this
+	// point and to refuse GIT_SSH_COMMAND, LD_*, RUSTC_WRAPPER and fifty others.
+	// They are envNotes/envNotePrefixes now and they refuse nothing — a profile's
+	// author is a human on the trusted side of the boundary, and every one of
+	// those names is annotated on the two screens instead (EnvNote). Everything
+	// left in this function is mechanism: a name that cannot be TRANSPORTED,
+	// because the environment is a NUL-terminated list of NAME=VALUE and a screen
+	// is one line per row.
 	return nil
 }
 
 // checkEnvOwnership refuses a name snug writes itself (§1.1).
 //
-// It does NOT fire for a list snug owns, and PATH is the only one — read that
-// carefully, because it is the one place ownership is narrower than "no profile
-// may write a name snug writes".
+// SAY IT PRECISELY: this rule is "snug's SCALARS are untouchable", not "snug's
+// NAMES are". It does NOT fire for a list snug owns, and PATH is the only one —
+// read that carefully, because it is the one place ownership is narrower than
+// "no profile may write a name snug writes", and because since the annotation
+// change (ENVIRONMENT-VARIABLES.md §2.9) this is the ONLY refusal of a name left
+// anywhere in the model. Everything else that refuses is refusing an OPERATION.
 //
 // A SCALAR has a single value, so any verb a profile could use on one REPLACES
 // what snug wrote. HOME is where the identity generator puts ~/.gitconfig,
@@ -1014,12 +1305,14 @@ func checkEnvVerbType(name string, verb EnvVerb) error {
 				"environ.sanitise, which copies the host value and keeps only the elements "+
 				"policy grants", name)
 		}
-		if t.noInherit {
-			return fmt.Errorf("environ.inherit on %s, which snug refuses to take from the "+
-				"host: the host's value names a path this sandbox does not have, and for a "+
-				"config-file variable it would outrank the file snug generates. Use "+
-				"environ.set with a path the same profile grants", name)
-		}
+		// The `noInherit` arm that stood here is gone. It refused
+		// XDG_CONFIG_HOME, CARGO_HOME and friends with "snug refuses to take this
+		// from the host", which is a verdict on the profile's AUTHOR rather than a
+		// statement about the type — the one permission bit the roster carried,
+		// and it is an annotation now (envNotes, `host` sentence). The arm above
+		// stays because it is the opposite kind of thing: `inherit` on a list is
+		// an operation snug will not perform, and the message names the verb that
+		// does perform it.
 	case VerbSanitise:
 		if !t.list {
 			return fmt.Errorf("environ.sanitise on %s, which is a scalar. sanitise filters "+
@@ -1086,8 +1379,13 @@ func checkUnrosteredName(name string, verb EnvVerb) error {
 // element, and an empty element in PATH is the current working directory, which
 // inside snug is the target — the one writable thing a hostile payload controls.
 func checkEnvElement(name string, verb EnvVerb, value string) error {
-	// An unrostered name has no separator to smuggle, and it never reaches a
-	// list verb anyway — checkUnrosteredName refuses those outright.
+	// SCOPE, SAID OUT LOUD RATHER THAN LEFT TO BE DISCOVERED: this check protects
+	// ROSTERED NAMES ONLY, and it must, because the separator it looks for is a
+	// fact only a roster row carries. For a name snug has no row for there is no
+	// separator to smuggle and no list verb to smuggle it into —
+	// checkUnrosteredName refuses all three outright, which is the same fact
+	// arriving from the other direction. If a list verb ever becomes reachable
+	// for an unrostered name, this function goes blind in the same commit.
 	t, known := typeOf(name)
 	if !known || !t.list {
 		return nil
