@@ -1598,6 +1598,10 @@ func TestHostLoopbackIsUnreachable(t *testing.T) {
 	requireSandbox(t)
 	requirePasta(t)
 	requirePython(t)
+	// Needed for the egress positive control below (a public resolver on
+	// tcp/53): without it a sandbox with NO working network at all would pass
+	// every refusal in this test for the wrong reason.
+	requireInternet(t)
 	proj, _ := target(t)
 
 	// Both families, as INDEX §12.4 spells out: v4 and v6 loopback are closed
@@ -1616,7 +1620,7 @@ func TestHostLoopbackIsUnreachable(t *testing.T) {
 	serveBanner(t, ln4)
 	tcpPort := ln4.Addr().(*net.TCPAddr).Port
 
-	udpPort := serveUDPBanner(t)
+	udpPort := serveUDPBanner(t, "127.0.0.1")
 
 	haveV6 := true
 	v6Port := 0
@@ -1626,6 +1630,42 @@ func TestHostLoopbackIsUnreachable(t *testing.T) {
 	} else {
 		serveBanner(t, ln6)
 		v6Port = ln6.Addr().(*net.TCPAddr).Port
+	}
+
+	// THE INTERESTING CASE (issue #86): the host's own real LAN address, not
+	// loopback and not the gateway. pasta's default (flat, no-NAT) topology
+	// copies the host's own outbound-facing address onto the sandbox's guest
+	// interface verbatim — measured on this developer's box: the identical IP
+	// appears on the host's real NIC and on the sandbox's snug0, with an `ip
+	// route get` for it inside the sandbox resolving `local ... dev lo`. So the
+	// refusal below is not pasta actively blocking a route to the host; it is
+	// that address being in the SANDBOX's own local routing table, and the
+	// packet never leaves the netns to ask pasta anything. That is worth
+	// stating plainly rather than letting a reader credit pasta for it — and it
+	// is still a property worth a regression test, because it depends on pasta
+	// continuing to assign the sandbox the SAME address rather than something
+	// else in the same subnet. A future change to that assignment could make
+	// this address stop being locally owned, at which point the connection
+	// would actually travel out to pasta — and reach the real host listener
+	// below, if nothing else changed. Discovered at runtime by asking the
+	// kernel what source address it would use to reach the public internet
+	// (a connected UDP socket sends nothing on the wire); never hardcoded,
+	// because the round's own 192.168.1.120 is this network, not every
+	// network.
+	lanAddr, lanErr := hostOutboundAddr()
+	haveLAN := lanErr == nil
+	var lanTCPPort, lanUDPPort int
+	if !haveLAN {
+		t.Logf("could not discover this host's own outbound-facing address, "+
+			"skipping the LAN-address half of this test: %v", lanErr)
+	} else if lnLAN, err := net.Listen("tcp4", lanAddr+":0"); err != nil {
+		t.Logf("could not bind a listener on %s (this host's own outbound address), "+
+			"skipping the LAN-address half of this test: %v", lanAddr, err)
+		haveLAN = false
+	} else {
+		serveBanner(t, lnLAN)
+		lanTCPPort = lnLAN.Addr().(*net.TCPAddr).Port
+		lanUDPPort = serveUDPBanner(t, lanAddr)
 	}
 
 	// PRECONDITIONS. Every one of them is "the measurement works", and without
@@ -1643,9 +1683,21 @@ func TestHostLoopbackIsUnreachable(t *testing.T) {
 		}
 		c.Close()
 	}
-	if got := dialUDPBanner(t, udpPort); got != hostBanner {
+	if got := dialUDPBanner(t, "127.0.0.1", udpPort); got != hostBanner {
 		t.Fatalf("precondition: the host cannot reach its own UDP listener (got %q), "+
 			"so the UDP half below would pass on a probe that never works", got)
+	}
+	if haveLAN {
+		c, err := net.DialTimeout("tcp4", fmt.Sprintf("%s:%d", lanAddr, lanTCPPort), 5*time.Second)
+		if err != nil {
+			t.Fatalf("precondition: the host cannot reach its own listener on its own "+
+				"LAN address %s: %v", lanAddr, err)
+		}
+		c.Close()
+		if got := dialUDPBanner(t, lanAddr, lanUDPPort); got != hostBanner {
+			t.Fatalf("precondition: the host cannot reach its own UDP listener on %s "+
+				"(got %q)", lanAddr, got)
+		}
 	}
 
 	// The probe runs inside the sandbox and prints one RESULT line per address,
@@ -1667,14 +1719,40 @@ def gateway():
                 return socket.inet_ntoa(struct.pack("<L", int(fs[2], 16)))
     return None
 
+# The v6 counterpart of gateway() above, read from /proc/net/ipv6_route rather
+# than "ip -6 route" for the same reason: no dependency on iproute2 being
+# present. A default route is destination all-zero with a zero prefix length;
+# its "nexthop" field is the gateway. Real-world IPv6 default gateways are
+# link-local (fe80::/10, advertised by the router itself), which is not
+# connectable without a scope/zone id — so this also returns the outgoing
+# interface, needed to resolve that scope.
+def gateway6():
+    try:
+        with open("/proc/net/ipv6_route") as f:
+            for line in f.read().splitlines():
+                fs = line.split()
+                if len(fs) < 10:
+                    continue
+                dest, destplen, nexthop, dev = fs[0], fs[1], fs[4], fs[-1]
+                if dest == "0" * 32 and destplen == "00" and nexthop != "0" * 32:
+                    return ":".join(nexthop[i:i+4] for i in range(0, 32, 4)), dev
+    except FileNotFoundError:
+        pass
+    return None, None
+
 gw = gateway()
 print("GATEWAY", gw or "NONE")
+gw6, gw6dev = gateway6()
+print("GATEWAY6", gw6 or "NONE", gw6dev or "")
 
-def probe(label, family, kind, host, port, timeout):
+def probe(label, family, kind, host, port, timeout, scope=0):
     s = socket.socket(family, kind)
     s.settimeout(timeout)
     try:
-        s.connect((host, port))
+        if family == socket.AF_INET6:
+            s.connect((host, port, 0, scope))
+        else:
+            s.connect((host, port))
         if kind == socket.SOCK_DGRAM:
             s.send(b"probe")
         print("RESULT", label, "REACHED", s.recv(64).decode(errors="replace").strip())
@@ -1687,6 +1765,19 @@ def probe(label, family, kind, host, port, timeout):
     finally:
         s.close()
 
+# EGRESS POSITIVE CONTROL, run FIRST. Without it, every REFUSED/TIMEDOUT
+# verdict below is equally what a sandbox with NO working network at all would
+# produce, and every negative in this file would be the "test that cannot
+# fail" shape. 8.8.8.8 rather than the gateway: a home router answering on
+# tcp/53 is common but not guaranteed, while a public resolver on tcp/53 is a
+# dependable, non-host-specific target reachable only through a WORKING
+# egress path. (Not 1.1.1.1: repeated runs from the same source address
+# during development got silently rate-limited by Cloudflare's resolver —
+# bimodal instant-success-or-full-timeout, nothing to do with the sandbox —
+# which is exactly the kind of third-party flakiness a positive control must
+# not import.)
+probe("egress-tcp", socket.AF_INET, socket.SOCK_STREAM, "8.8.8.8", 53, 5)
+
 probe("v4-tcp", socket.AF_INET, socket.SOCK_STREAM, "127.0.0.1", %[1]d, 2)
 probe("v4-udp", socket.AF_INET, socket.SOCK_DGRAM, "127.0.0.1", %[2]d, 0.5)
 if %[4]s:
@@ -1694,8 +1785,17 @@ if %[4]s:
 if gw:
     probe("gw-tcp", socket.AF_INET, socket.SOCK_STREAM, gw, %[1]d, 2)
     probe("gw-udp", socket.AF_INET, socket.SOCK_DGRAM, gw, %[2]d, 0.5)
+if gw6:
+    scope = socket.if_nametoindex(gw6dev)
+    probe("gw6-tcp", socket.AF_INET6, socket.SOCK_STREAM, gw6, %[1]d, 2, scope)
+    probe("gw6-udp", socket.AF_INET6, socket.SOCK_DGRAM, gw6, %[2]d, 0.5, scope)
+if %[5]s:
+    probe("lan-tcp", socket.AF_INET, socket.SOCK_STREAM, %[6]q, %[7]d, 2)
+    probe("lan-udp", socket.AF_INET, socket.SOCK_DGRAM, %[6]q, %[8]d, 0.5)
+
 print("PROBE-COMPLETE")
-`, tcpPort, udpPort, v6Port, map[bool]string{true: "True", false: "False"}[haveV6])
+`, tcpPort, udpPort, v6Port, map[bool]string{true: "True", false: "False"}[haveV6],
+		map[bool]string{true: "True", false: "False"}[haveLAN], lanAddr, lanTCPPort, lanUDPPort)
 
 	if err := os.WriteFile(filepath.Join(proj, "loopback.py"), []byte(probe), 0o644); err != nil {
 		t.Fatal(err)
@@ -1719,6 +1819,15 @@ print("PROBE-COMPLETE")
 			"--map-host-loopback actually controls — was never probed:\n%s", r.out)
 	}
 
+	// Unlike the v4 default route, an IPv6 one is not guaranteed on every host
+	// this suite runs on, so its absence is a partial skip rather than a fatal
+	// — exactly the haveV6 treatment above, applied to routing instead of
+	// loopback.
+	haveGW6 := !strings.Contains(r.out, "GATEWAY6 NONE")
+	if !haveGW6 {
+		t.Logf("the sandbox has no IPv6 default route, skipping the v6-gateway half:\n%s", r.out)
+	}
+
 	verdicts := map[string]string{}
 	for _, line := range strings.Split(r.out, "\n") {
 		if f := strings.Fields(line); len(f) >= 3 && f[0] == "RESULT" {
@@ -1736,13 +1845,20 @@ print("PROBE-COMPLETE")
 	if haveV6 {
 		wantRefused = append(wantRefused, "v6-tcp")
 	}
+	// The LAN address belongs in this group, not the gateway's: the measurement
+	// above (see the comment where lanAddr is discovered) is that the address is
+	// in the SANDBOX's own local routing table, so its kernel answers exactly as
+	// certainly and as fast as it does for its own loopback.
+	if haveLAN {
+		wantRefused = append(wantRefused, "lan-tcp")
+	}
 	for _, label := range wantRefused {
 		switch verdicts[label] {
 		case "REFUSED":
 		case "":
 			t.Errorf("the %s probe produced no verdict at all:\n%s", label, r.out)
 		case "REACHED":
-			t.Errorf("the sandbox REACHED a service on the host's loopback via %s:\n%s", label, r.out)
+			t.Errorf("the sandbox REACHED a host service via %s:\n%s", label, r.out)
 		default:
 			t.Errorf("the %s probe was %s, neither refused nor reached. That is a weaker "+
 				"result than this test claims to establish:\n%s", label, verdicts[label], r.out)
@@ -1771,10 +1887,33 @@ print("PROBE-COMPLETE")
 			"result:\n%s", verdicts["gw-tcp"], r.out)
 	}
 
+	// THE V6 GATEWAY, same reasoning as the v4 one above: a drop is an
+	// acceptable negative, a REACHED is not.
+	if haveGW6 {
+		switch verdicts["gw6-tcp"] {
+		case "REFUSED", "TIMEDOUT":
+		case "":
+			t.Errorf("the gw6-tcp probe produced no verdict at all:\n%s", r.out)
+		case "REACHED":
+			t.Errorf("the sandbox REACHED a service on the host's loopback via the IPv6 "+
+				"gateway address:\n%s", r.out)
+		default:
+			t.Errorf("the gw6-tcp probe ended as %s; only a refusal or a drop is a negative "+
+				"result:\n%s", verdicts["gw6-tcp"], r.out)
+		}
+	}
+
 	// UDP: a refusal needs an ICMP port-unreachable getting back, which pasta is
 	// under no obligation to relay, so a timeout is an acceptable negative here.
 	// REACHED is not, and neither is a missing verdict.
-	for _, label := range []string{"v4-udp", "gw-udp"} {
+	udpLabels := []string{"v4-udp", "gw-udp"}
+	if haveLAN {
+		udpLabels = append(udpLabels, "lan-udp")
+	}
+	if haveGW6 {
+		udpLabels = append(udpLabels, "gw6-udp")
+	}
+	for _, label := range udpLabels {
 		switch verdicts[label] {
 		case "REFUSED", "TIMEDOUT":
 		case "":
@@ -1784,6 +1923,21 @@ print("PROBE-COMPLETE")
 				label, verdicts[label], r.out)
 		}
 	}
+
+	// EGRESS POSITIVE CONTROL: the sandbox's network must actually work, or
+	// every refusal above is equally what a sandbox with no network at all
+	// would produce. See the comment beside the probe for why a public
+	// resolver and not the gateway.
+	switch verdicts["egress-tcp"] {
+	case "REACHED":
+	case "":
+		t.Errorf("the egress-tcp probe produced no verdict at all, so this test cannot "+
+			"tell a properly-refused sandbox from one with no network:\n%s", r.out)
+	default:
+		t.Errorf("egress does not work inside this sandbox (egress-tcp: %s), so none of "+
+			"the refusals above prove anything — the same result is what a sandbox with "+
+			"no network at all would produce:\n%s", verdicts["egress-tcp"], r.out)
+	}
 }
 
 // hostBanner is what every host-side probe listener answers with. Seeing it
@@ -1791,11 +1945,35 @@ print("PROBE-COMPLETE")
 // completed handshake.
 const hostBanner = "SECRET-SERVICE-BANNER"
 
+// hostOutboundAddr discovers the address the kernel would use to source a
+// packet leaving for the public internet — never hardcoded, because the
+// address on any given machine is that network, not every network. Dialing a
+// connected UDP socket does not put anything on the wire (no handshake, no
+// DNS), it only asks the routing table which local address and interface
+// would carry the traffic, so this needs no actual connectivity — only a
+// route. Returns an error naming what could not be found, for a caller to
+// turn into a skip reason.
+func hostOutboundAddr() (string, error) {
+	c, err := net.Dial("udp4", "1.1.1.1:53")
+	if err != nil {
+		return "", fmt.Errorf("no route to a public address: %w", err)
+	}
+	defer c.Close()
+	ip := c.LocalAddr().(*net.UDPAddr).IP
+	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+		return "", fmt.Errorf("the outbound-facing address resolved to %v, "+
+			"which is not a real host address", ip)
+	}
+	return ip.String(), nil
+}
+
 // serveUDPBanner answers every datagram with the banner and shuts down when the
-// test ends. Returns the port.
-func serveUDPBanner(t *testing.T) int {
+// test ends. Returns the port. addr is the bind address, e.g. "127.0.0.1" —
+// parameterised so the same helper can stand up a listener on the host's own
+// LAN-facing address, not only on loopback.
+func serveUDPBanner(t *testing.T, addr string) int {
 	t.Helper()
-	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	pc, err := net.ListenPacket("udp4", addr+":0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1817,9 +1995,9 @@ func serveUDPBanner(t *testing.T) int {
 }
 
 // dialUDPBanner is the host-side positive control for the UDP half.
-func dialUDPBanner(t *testing.T, port int) string {
+func dialUDPBanner(t *testing.T, host string, port int) string {
 	t.Helper()
-	c, err := net.DialTimeout("udp4", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
+	c, err := net.DialTimeout("udp4", fmt.Sprintf("%s:%d", host, port), time.Second)
 	if err != nil {
 		t.Fatalf("precondition: %v", err)
 	}
