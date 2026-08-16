@@ -148,12 +148,14 @@ Measured, not recalled. Each one changed a design decision.
   (`GIT_CONFIG_KEY_n`, `GIT_CONFIG_PARAMETERS`, `npm_config_*`, `PIP_*`,
   `CARGO_BUILD_*`) and snug authors none. Assert it at the **sink**, over the
   environment a resolved policy hands over
-  (`TestNoBuiltinHandsOverAnInlineConfigVariable`), not only at the parse-time
-  table — `PIP_*` is refused for `inherit` only (the one prefix left at that
-  kind; `npm_config_` and `CARGO_` were promoted to `forbidBoth` because
-  `npm_config_script_shell` and friends name programs), so `set` reaches the
-  resolved policy. Adding a name to the pointer set is a policy change: ask
-  what it makes the tool DO.
+  (`TestNoBuiltinHandsOverAnInlineConfigVariable`), and note that the sink is now
+  the ONLY place it is asserted: since #75 there is no parse-time refusal of an
+  inline setting at all. `npm_config_*`, `PIP_*` and `CARGO_BUILD_*` are
+  **annotated**, not forbidden, so a user's profile may write any of them and
+  reads a sentence saying what the tool does with it. A refusal there would have
+  bound the profile author, while the payload sets its own environment regardless
+  — which is the whole argument of #75. Adding a name to the pointer set is a
+  policy change: ask what it makes the tool DO.
 
   Two halves of this rule are load-bearing and easy to drop. **The secret goes in
   a file, not the environment**, because `/proc/self/environ` is passively
