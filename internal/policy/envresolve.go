@@ -217,9 +217,10 @@ func checkAbsoluteElement(profile ProfileName, name string, verb EnvVerb, raw, e
 // policy.
 func (p *Policy) applyEnvClaims(c *envClaims, env Environ) error {
 	for _, name := range c.names() {
-		// An unrostered name reached here through a profile's `environ.declare`,
-		// and a declaration licenses the SCALAR verbs only — so `known` being
-		// false and `t.list` being false are the same branch, not two.
+		// An unrostered name can only have reached here through `set` or
+		// `inherit` — the list verbs refuse a name with no roster row, for
+		// everybody — so `known` being false and `t.list` being false are the
+		// same branch, not two.
 		t, known := typeOf(name)
 
 		if !known || !t.list {

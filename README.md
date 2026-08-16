@@ -300,9 +300,7 @@ ENVIRONMENT  (--clearenv, then:)
 
 Every line names its verb and the profile that wrote it. `(snug)` is snug's own.
 
-Profiles use five verbs under one `environ` section. Verb says how value merges:
-`declare` beside them is not a sixth — it names a variable snug has no entry
-for, and carries no value.
+Profiles use five verbs under one `environ` section. Verb says how value merges.
 
 ```toml
 [profile.mytools]
@@ -317,18 +315,23 @@ PATH = ["/opt/tools/bin"]          # list. Union, sorted, deduplicated
 [profile.mytools.environ.prepend]
 PATH = ["/opt/tools/override"]     # list, front. At most ONE profile per variable
 
-[profile.mytools.environ.declare]
-COLORTERM = true                   # snug has no roster entry for this name, and
-                                   # this profile's author takes it on. Renders
-                                   # as unchecked on --dry-run. Not needed for
-                                   # the names above: snug knows all of those
-
 [profile.mytools.environ.inherit]
-COLORTERM = true                   # copy the host's value, if set
+COLORTERM = true                   # copy the host's value, if set. snug has no
+                                   # roster entry for this name, so its row is
+                                   # marked ← unchecked on --dry-run and on
+                                   # `snug profile show`
 
 [profile.mytools.environ.sanitise]
 PKG_CONFIG_PATH = true             # copy the host's list, drop what is not granted
 ```
+
+A name snug has an entry for (`internal/policy/envtypes.go`) carries a type: a
+list verb can only be used on one, because merging needs the separator and the
+meaning of an empty element. A name snug has no entry for is still a hole a
+profile may name at `set` and `inherit` — the profile has an author and a file
+path, which is who takes it on — and every row it produces says so on screen.
+A profile snug **ships** may not write one at all: the roster row is where the
+sentence saying what the variable lets a tool DO gets reviewed.
 
 Profile order never matters. Two profiles setting the same scalar to different
 values = **fatal error naming both**, never a silent winner — same rule as two

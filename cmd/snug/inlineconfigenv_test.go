@@ -158,23 +158,18 @@ func TestPositiveControlEnvironSetPipIndexUrlTripsInlineConfigSweep(t *testing.T
 		t.Fatal(err)
 	}
 	m := map[policy.ProfileName]*policy.Profile(reg)
-	// The fixture DECLARES the name, and that is now load-bearing rather than
-	// cosmetic. Since issue #44 a name with no roster row is refused at `set`,
-	// so a bare fixture would be refused at parse time and this control would
-	// stop controlling anything — which is precisely the failure the header
-	// comment above describes for the old npm spelling. What it demonstrates is
-	// unchanged and, if anything, sharper: a USER profile can still author an
-	// inline-config name, through the hatch, reviewable in its own file, and
-	// the parse-time tables do not stop it. The sink sweep is what does — and
-	// that sweep is builtin-only, which is exactly why this control has to be a
-	// user profile. A BUILTIN cannot reach here at all: it may not declare
-	// (internal/profile's `mark`), and PIP_INDEX_URL has no roster row.
+	// A USER profile, and since issue #44 that is load-bearing rather than
+	// incidental. PIP_INDEX_URL has no roster row, so a BUILTIN cannot write it
+	// at all — internal/profile's `mark` refuses a shipped profile that hands
+	// over a name the screen would mark `← unchecked`. A user profile may, and
+	// the parse-time tables do not stop it (PIP_ is forbidInheritOnly, so `set`
+	// is legal). The sink sweep is what names it — and that sweep is
+	// builtin-only, which is exactly why this control has to be a user profile.
 	m["leaky"] = &policy.Profile{
 		Name:    "leaky",
 		Include: []policy.ProfileName{"@sys", "@home"},
 		Environ: policy.EnvGrants{
-			Declare: []string{name},
-			Set:     map[string]string{name: "http://evil.example/simple"},
+			Set: map[string]string{name: "http://evil.example/simple"},
 		},
 	}
 

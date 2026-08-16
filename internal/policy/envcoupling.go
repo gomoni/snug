@@ -93,20 +93,22 @@ func writesAnyPath(g EnvGrants) bool {
 }
 
 // isPathValued is the coupling rule's scope, and an UNROSTERED name is outside
-// it — including one a profile declared.
+// it.
 //
 // That is not an oversight and it is the honest answer rather than the
-// convenient one: `path` is a fact snug holds about a name, and for a declared
-// name snug holds no facts at all. The alternative is to decide a value is a
-// path because it starts with a '/', which is precisely the shape-sniffing this
-// file's header refuses ("the shape is the same for a search path, a URL, a
+// convenient one: `path` is a fact snug holds about a name, and for a name with
+// no roster row snug holds no facts at all. The alternative is to decide a value
+// is a path because it starts with a '/', which is precisely the shape-sniffing
+// this file's header refuses ("the shape is the same for a search path, a URL, a
 // template language bash performs command substitution on, and a set of
-// delimiter characters"). So a declared value naming a path the profile does
+// delimiter characters"). So an unrostered value naming a path the profile does
 // not grant is NOT refused, where the same value under a rostered path-valued
-// name would be. What that costs is one profile-lying case going unreported;
-// what it would cost to close by guessing is a rule that refuses a correct
-// value for every name whose value merely looks like a path — LESSOPEN's does,
-// and it is a command line.
+// name would be. What that costs is one profile-lying case going unreported —
+// and --dry-run still marks that row `← unchecked`, and grantMark still says
+// `← not granted` where the value is spelled like an absolute path nothing
+// covers. What it would cost to close by guessing is a rule that refuses a
+// correct value for every name whose value merely looks like a path —
+// LESSOPEN's does, and it is a command line.
 func isPathValued(name string) bool {
 	t, known := typeOf(name)
 	return known && t.path

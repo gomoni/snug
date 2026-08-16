@@ -1171,14 +1171,11 @@ func TestConflictingScalarSetsAreRefused(t *testing.T) {
 	// POSITIVE CONTROL: the same value from two profiles is fine.
 	// Independently-authored duplication is plausible and harmless.
 	reg := testRegistry()
-	// Each profile DECLARES the name it writes: a declaration is a licence for
-	// one profile's own use, and it deliberately does not travel — so "both
-	// profiles say the same thing" here means both of them, separately, took
-	// responsibility for an unrostered name and then agreed about its value.
-	reg["a"] = &Profile{Name: "a", Environ: EnvGrants{
-		Declare: []string{"MY_MODE"}, Set: map[string]string{"MY_MODE": "fast"}}}
-	reg["b"] = &Profile{Name: "b", Environ: EnvGrants{
-		Declare: []string{"MY_MODE"}, Set: map[string]string{"MY_MODE": "fast"}}}
+	// MY_MODE is on no roster, so both rows also carry the `← unchecked` mark on
+	// every screen — which is orthogonal to what is under test here and must not
+	// change the verdict.
+	reg["a"] = &Profile{Name: "a", Environ: EnvGrants{Set: map[string]string{"MY_MODE": "fast"}}}
+	reg["b"] = &Profile{Name: "b", Environ: EnvGrants{Set: map[string]string{"MY_MODE": "fast"}}}
 	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "a", "b"}, testCtx(), newFakeEnv()); err != nil {
 		t.Fatalf("control: two profiles agreeing on a scalar must join, not conflict: %v", err)
 	}

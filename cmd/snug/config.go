@@ -209,7 +209,22 @@ func configCmd(args []string) int {
 	return 0
 }
 
-// showEnviron renders the five environment verbs and the declaration block.
+// uncheckedMark is `snug profile show`'s half of the mark --dry-run's
+// ENVIRONMENT block draws on the same (name, verb) pair, and it comes from the
+// same predicate — policy.IsUncheckedEnv — because two screens deciding
+// separately what "snug knows this name" means is how one of them comes to lie.
+//
+// It is a fact about ONE name, so it goes on that name's own line rather than
+// once per block: a heading is read as decoration by the time the eye reaches
+// the third row, and a block can mix rostered and unrostered names freely.
+func uncheckedMark(name string, verb policy.EnvVerb) string {
+	if !policy.IsUncheckedEnv(name, verb) {
+		return ""
+	}
+	return "  ← unchecked: snug has no entry for this name"
+}
+
+// showEnviron renders the five environment verbs.
 //
 // It renders ALL of them for the same reason `snug profile show` exists at all:
 // this line used to read `show("env", p.Env)` and never rendered `path` either,
@@ -221,7 +236,7 @@ func configCmd(args []string) int {
 // for `snug profile show` reporting a verdict with no target; showing what it
 // checked is the other half.
 func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
-	pairs := func(label string, m map[string]string) {
+	pairs := func(label string, verb policy.EnvVerb, m map[string]string) {
 		names := make([]string, 0, len(m))
 		for k := range m {
 			names = append(names, k)
@@ -229,11 +244,11 @@ func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
 		sort.Strings(names)
 		vals := make([]string, 0, len(names))
 		for _, n := range names {
-			vals = append(vals, n+" = "+m[n])
+			vals = append(vals, n+" = "+m[n]+uncheckedMark(n, verb))
 		}
 		show(label, vals)
 	}
-	lists := func(label string, m map[string][]string) {
+	lists := func(label string, verb policy.EnvVerb, m map[string][]string) {
 		names := make([]string, 0, len(m))
 		for k := range m {
 			names = append(names, k)
@@ -241,7 +256,16 @@ func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
 		sort.Strings(names)
 		vals := make([]string, 0, len(names))
 		for _, n := range names {
-			vals = append(vals, n+" = "+strings.Join(m[n], " "))
+			vals = append(vals, n+" = "+strings.Join(m[n], " ")+uncheckedMark(n, verb))
+		}
+		show(label, vals)
+	}
+	// The two NAME SETS. Same mark, same predicate; the value is the host's, so
+	// there is nothing else on the line for it to qualify.
+	names := func(label string, verb policy.EnvVerb, in []string) {
+		vals := make([]string, 0, len(in))
+		for _, n := range in {
+			vals = append(vals, n+uncheckedMark(n, verb))
 		}
 		show(label, vals)
 	}
@@ -250,26 +274,14 @@ func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
 	// as two more kinds of filesystem grant; the prefix is what says these are
 	// the environment, and it is also the string somebody will grep for.
 	//
-	// `declare` is FIRST and every name in it carries its own mark. First
-	// because it is the licence the `set` and `inherit` lines below rest on, and
-	// a reader who meets the use before the declaration has to hold the question
-	// in their head; per-name rather than once per block because the block is a
-	// list of names and the mark is a fact about each one — a single heading
-	// would be read as decoration by the time the eye reaches the third line.
-	// The wording is deliberately the same "unchecked" the --dry-run mark uses:
-	// two words for one property is how a reader concludes there are two
+	// The mark's wording is deliberately the same "unchecked" the --dry-run mark
+	// uses: two words for one property is how a reader concludes there are two
 	// properties.
-	declared := make([]string, 0, len(g.Declare))
-	for _, n := range g.Declare {
-		declared = append(declared, n+"  ← unchecked: snug has no entry for this name")
-	}
-	sort.Strings(declared)
-	show("environ.declare", declared)
-	pairs("environ.set", g.Set)
-	lists("environ.merge", g.Merge)
-	lists("environ.prepend", g.Prepend)
-	show("environ.inherit", g.Inherit)
-	show("environ.sanitise", g.Sanitise)
+	pairs("environ.set", policy.VerbSet, g.Set)
+	lists("environ.merge", policy.VerbMerge, g.Merge)
+	lists("environ.prepend", policy.VerbPrepend, g.Prepend)
+	names("environ.inherit", policy.VerbInherit, g.Inherit)
+	names("environ.sanitise", policy.VerbSanitise, g.Sanitise)
 }
 
 func profileCmd(args []string) int {

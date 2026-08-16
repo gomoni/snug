@@ -385,8 +385,8 @@ func envLines(p *policy.Policy, v policy.EnvVar) []envLine {
 		// the first draft of this change had it the other way round.
 		//
 		// The argument for replacing was that `← not granted` is a claim about a
-		// PATH, and for a declared name snug does not know the value is one — the
-		// same reason the coupling rule leaves a declared value alone
+		// PATH, and for an unrostered name snug does not know the value is one —
+		// the same reason the coupling rule leaves such a value alone
 		// (envcoupling.go's isPathValued). Two independent reviews measured what
 		// that actually did, and it removed information the screen had on the
 		// base commit: the identical profile text rendered `← not granted`
@@ -410,8 +410,12 @@ func envLines(p *policy.Policy, v policy.EnvVar) []envLine {
 		//
 		// Order matters: `unchecked` comes first because it is the stronger
 		// statement and the one that qualifies the other.
+		//
+		// The string is the one `snug profile show` uses (config.go's
+		// uncheckedMark), from the same predicate: one property, one wording, two
+		// screens.
 		if policy.IsUncheckedEnv(v.Name, e.Verb) {
-			mark = "  ← unchecked (environ.declare; snug has no entry for this name)" + mark
+			mark = "  ← unchecked: snug has no entry for this name" + mark
 		}
 		if n := len(out); n > 0 && out[n-1].verb == verb && out[n-1].from == from && out[n-1].mark == mark {
 			out[n-1].values = append(out[n-1].values, elementValue(v.Name, e.Value))

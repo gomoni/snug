@@ -476,9 +476,6 @@ PATH = ["$SC/tools/bin"]
 [profile.mytools.environ.prepend]
 PATH = ["$SC/tools/override"]
 
-[profile.mytools.environ.declare]
-COLORTERM = true
-
 [profile.mytools.environ.inherit]
 COLORTERM = true
 
@@ -492,7 +489,7 @@ XDG_CONFIG_HOME=$SC/five ./bin/snug --dry-run -p mytools $SC/proj/sub \
 ```
 
 ```
-  COLORTERM        truecolor                       inherit   mytools  ← unchecked (environ.declare; snug has no entry for this name)
+  COLORTERM        truecolor                       inherit   mytools  ← unchecked: snug has no entry for this name
   EDITOR           /usr/bin/vim                    set       mytools
   PATH             /tmp/tmp.XXXXXXXXXX/tools/override prepend   mytools
                    /tmp/tmp.XXXXXXXXXX/tools/bin   merge     mytools
@@ -504,18 +501,27 @@ XDG_CONFIG_HOME=$SC/five ./bin/snug --dry-run -p mytools $SC/proj/sub \
 Every line names its verb **and** its profile — no anonymous values — and
 `prepend` sits ahead of `merge`, both ahead of `base`.
 
-`COLORTERM` needs the `environ.declare` block, and the mark on its row is what
-that block buys. snug's roster (`internal/policy/envtypes.go`) has no entry for
-that name, and since issue #44 a name snug has not been taught about is refused
-rather than assumed inert — so the profile's author says, in the file, that they
-take responsibility for it. Delete the `declare` block and the whole profile is
-refused at parse time, naming the two ways forward. Declare a name
-snug DOES have an entry for (`EDITOR`, `PATH`) and that is refused too: a
-declaration is not a way to overrule what snug knows.
+`COLORTERM` carries the `← unchecked` mark and `EDITOR` does not. snug's roster
+(`internal/policy/envtypes.go`) has an entry for `EDITOR`, `PATH` and
+`PKG_CONFIG_PATH` and none for `COLORTERM`, so the screen says which values snug
+knows something about and which it merely carried. The mark is derived from the
+roster and from nothing else, so there is no way for a profile to write an
+unrostered name without it: an unrostered name reaching this screen by any route
+is marked. `snug profile show mytools` marks the same name in the
+`environ.inherit` block, from the same predicate.
 
-The mark cannot be suppressed by omitting the declaration, because it is derived
-from the roster rather than from the profile's own `declare` block — an
-unrostered name reaching this screen by any route is marked.
+Two things this does NOT mean. A user profile is not refused for writing a name
+snug has never heard of — `set FOO = "x"` in a file with an author and a path is
+already that author naming the hole, and the mark is what makes it findable. A
+profile snug SHIPS is refused: try adding `COLORTERM = true` to a builtin's
+`environ.inherit` in `internal/profile/profiles/base.toml` and every snug command
+fails at `Builtins()`, naming the profile and the variable, because a roster row
+is where the sentence saying what the variable lets a tool DO gets reviewed.
+
+`environ.declare` was a per-profile escape hatch that existed for one milestone
+and was removed before it shipped; a profile still carrying one is refused at
+parse time with an unknown-key error, which is `DisallowUnknownFields` working
+as designed.
 
 The screen agreeing with itself proves nothing. Put two different binaries of
 the same name in the two directories and see which one the sandbox runs:

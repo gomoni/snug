@@ -21,10 +21,12 @@ owns the variable types; snug never splits a string on a separator.
 | `environ.inherit` | profile | any | copy host value verbatim |
 | `environ.sanitise` | profile | **lists** | copy host value, keep only elements policy grants |
 
-**And a sixth key that is not a verb: `environ.declare`** (issue #44). A NAME SET
-carrying no value, it licenses `set` and `inherit` for one name snug's roster has
-no row for, in the profile that wrote it and nowhere else. It grants nothing on
-its own and a profile snug SHIPS may not use it. See §2.1.
+There is no sixth key. `environ.declare` — a NAME SET licensing `set` and
+`inherit` for a name snug's roster has no row for — was designed, built and
+removed before it shipped: `environ.set MY_VAR = "x"` in a profile with a name, a
+file path and an author already IS that author declaring the name, `EnvEntry.From`
+records it and `--dry-run` renders it, so the hatch made them sign twice. See
+§2.1 for what governs an unrostered name instead.
 
 **And a sixth thing that is not a verb: snug's own authorship.** **snug is not
 bound by the verbs' rules when writing its own variables.** The list is twenty
@@ -209,29 +211,33 @@ environ.set   on PATH    →  PATH is a list — use environ.merge, or environ.p
 ```
 
 ~~Unknown name default to **scalar** — conservative reading: a scalar merges with
-nothing, so it can only conflict, never silently combine.~~ **Reversed by issue
-#44: an unknown name is REFUSED, at every verb.** "Conservative" was the wrong
-word for it — the table was an allowlist of TYPES wrapped around a denylist of
-NAMES, and three red-team rounds found three sets of names it had not been
-taught about while the space it was chasing ("every variable some tool, in some
-version, turns into an exec") stayed unbounded. `envTypes` is now the roster: a
-profile may `set` or `inherit` a name only when snug has a row for it, which is
-invariant 2's corollary applied to the one verb built the other way round.
+nothing, so it can only conflict, never silently combine.~~ **Amended by issue
+#44.** "Conservative" was the wrong word: the table reported a TYPE for a name it
+had never been taught, and three red-team rounds found three sets of names it had
+not been taught about while the space it was chasing ("every variable some tool,
+in some version, turns into an exec") stayed unbounded. `envTypes` is now the
+ROSTER, and it answers two questions:
 
-The escape hatch is `[profile.NAME.environ.declare]`, a NAME SET beside the five
-verbs — a licence, not a sixth verb. It carries no value, produces no entry, and
-licenses `set` and `inherit` for one name IN THAT PROFILE. It is refused for any
-name snug already has an opinion about (so it can never become the ordinary
-spelling for `PATH` or `EDITOR`), refused when nothing uses it, and refused
-outright in a profile snug SHIPS — enforced in `internal/profile`'s `mark`, the
-one place the `@` mark is added, for the same reason the mark itself lives there.
-Everything else still applies to a declared name: the grammar,
-`checkEnvOwnership`, `forbiddenEnv` and its prefixes, and the control-character
-rule on the value. It renders as `← unchecked` in `--dry-run` and in `snug
-profile show`. The list verbs get NO hatch: they need the separator and the
-empty-element kind, which is exactly what a roster row carries and a profile
-cannot supply. See `internal/policy/envtypes.go` — the code is the list, and
-this paragraph is a summary of it.
+- **A profile snug SHIPS may write only a name with a row.** Enforced in
+  `internal/profile`'s `mark` — the one place the `@` mark is added, for the same
+  reason the mark itself lives there — and expressed with
+  `policy.IsUncheckedEnv`, the predicate the screens draw their mark from, so the
+  rule reads *a profile snug ships may not hand over a name the screen would mark
+  unchecked*. A roster row is where the sentence saying what the variable lets a
+  tool DO gets reviewed, and a shipped profile owes that review.
+- **A profile a HUMAN wrote may write a name with no row**, at `set` and
+  `inherit`. It is carried, and every entry it produces renders `← unchecked` in
+  `--dry-run` and in `snug profile show`, from the same predicate. Nothing about
+  the name is claimed, and the screens say so.
+
+The three LIST verbs take no name with no row, from anybody: `merge`, `prepend`
+and `sanitise` need the separator and the meaning of an empty element, which is
+exactly what a roster row carries and a profile cannot supply — inferring them
+from the shape of a value is what §3 exists not to do. Everything else applies to
+an unrostered name unchanged: the grammar, `checkEnvOwnership`, `forbiddenEnv`
+and its prefixes, and the control-character rule on the value. See
+`internal/policy/envtypes.go` — the code is the list, and this paragraph is a
+summary of it.
 
 **`inherit` is refused for every list variable, without exception.** Copying a
 host search path wholesale imports directories that do not exist inside — what

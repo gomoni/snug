@@ -182,40 +182,6 @@ environ.sanitise on MANPATH, where an empty element is an INSTRUCTION rather tha
 == env_sanitise_on_an_unfilterable_list ==
 environ.sanitise names PYTHONPATH, which snug refuses for this verb: the value is code, executed by every process the sandbox launches. Remove the line
 
-== env_unrostered_set ==
-environ.set names MY_TOOL_MODE, which snug has no entry for.
-       `set` and `inherit` are an ALLOWLIST: snug refuses a name it has not been
-       taught about rather than assuming it is an inert scalar. The space that
-       assumption left open — every variable some tool, in some version, turns into
-       an exec — has no edge, and three rounds of closing individual names never
-       caught up with it. Two ways forward, for two different people:
-         · a profile you own — declare the name in that same profile:
-             [profile.NAME.environ.declare]
-             MY_TOOL_MODE = true
-           which says snug has no opinion about it. It is carried, and it renders
-           as unchecked in --dry-run and `snug profile show`. Every refusal snug
-           already makes still applies to it.
-         · a name snug should know — add a row to internal/policy/envtypes.go,
-           with the sentence saying what the verb lets the tool DO. A row there is
-           a grant, so that is a policy change and not a lookup-table edit.
-
-== env_unrostered_inherit ==
-environ.inherit names MY_TOOL_TOKEN, which snug has no entry for.
-       `set` and `inherit` are an ALLOWLIST: snug refuses a name it has not been
-       taught about rather than assuming it is an inert scalar. The space that
-       assumption left open — every variable some tool, in some version, turns into
-       an exec — has no edge, and three rounds of closing individual names never
-       caught up with it. Two ways forward, for two different people:
-         · a profile you own — declare the name in that same profile:
-             [profile.NAME.environ.declare]
-             MY_TOOL_TOKEN = true
-           which says snug has no opinion about it. It is carried, and it renders
-           as unchecked in --dry-run and `snug profile show`. Every refusal snug
-           already makes still applies to it.
-         · a name snug should know — add a row to internal/policy/envtypes.go,
-           with the sentence saying what the verb lets the tool DO. A row there is
-           a grant, so that is a policy change and not a lookup-table edit.
-
 == env_unrostered_merge ==
 environ.merge on MY_TOOL_PATH, which snug has no entry for. A list verb needs the
        separator that variable is read with and what an EMPTY ELEMENT means to its
@@ -223,40 +189,6 @@ environ.merge on MY_TOOL_PATH, which snug has no entry for. A list verb needs th
        directories (§3.3) — and snug will not guess either from the shape of a value.
        Use environ.set with the whole value, or add a row to
        internal/policy/envtypes.go carrying the separator and the empty-element kind.
-
-== env_unrostered_merge_declared ==
-environ.merge on MY_TOOL_PATH, which snug has no entry for. A list verb needs the
-       separator that variable is read with and what an EMPTY ELEMENT means to its
-       consumer — ignored, the current directory, or an instruction that ADDS
-       directories (§3.3) — and snug will not guess either from the shape of a value.
-       Use environ.set with the whole value, or add a row to
-       internal/policy/envtypes.go carrying the separator and the empty-element kind.
-       This profile declares MY_TOOL_PATH, and a declaration does not help here: it says
-       snug has no opinion about the NAME, while environ.merge needs a fact about the
-       VALUE that only a roster row carries.
-
-== env_declare_of_a_rostered_name ==
-environ.declare names EDITOR, which snug already has an entry for.
-       A declaration says snug knows nothing about a name; it is not a way to
-       overrule what snug does know. Use the verb directly — and if that verb is
-       refused for this name, the refusal IS the decision, argued in
-       internal/policy/envtypes.go and .claude/design/ENVIRONMENT-VARIABLES.md,
-       and changing it means changing that row rather than routing around it
-
-== env_declare_unused ==
-environ.declare names MY_TOOL_MODE, but no environ.set or environ.inherit in this profile uses it.
-       A declaration is a licence for this profile's own use of one name, and an
-       unused one is a name on the unchecked list that nothing needs — which is
-       how a hatch quietly turns back into a namespace. Delete the line, or add
-       the verb that was meant to go with it.
-       Note that a declaration does not travel through `include`: the profile
-       that writes the name is the profile that must declare it
-
-== env_declare_snug_owned ==
-environ.declare names SNUG_PROFILES, which snug writes itself. No profile may write a name snug writes: HOME, PATH and SHELL have no safe absent state, PS1 is executed by bash, and SNUG* is what --dry-run is read against — a profile that could set one could lie to the artifact a human reads to decide whether to trust the sandbox. Remove the line
-
-== env_declare_forbidden_prefix ==
-environ.declare names BASH_FUNC_build, and snug refuses the whole BASH_FUNC_* prefix for this verb: the value is executed, or it outranks the config file snug generates. Remove the line
 
 == env_separator_in_a_merge_string ==
 environ.merge on PATH has the element "/usr/bin:/usr/sbin", which contains ":" — a separator PATH is read with. Write the elements:
