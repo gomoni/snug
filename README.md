@@ -307,10 +307,7 @@ Profiles use five verbs under one `environ` section. Verb says how value merges.
 ro = ["/opt/tools/bin", "/opt/tools/override"]   # a profile grants what it names
 
 [profile.mytools.environ.set]
-EDITOR = "/usr/bin/vim"            # scalar. Two profiles disagreeing = error.
-                                   # git RUNS this, so the row carries a sentence
-                                   # saying so on --dry-run and on
-                                   # `snug profile show`
+EDITOR = "/usr/bin/vim"            # scalar. Two profiles disagreeing = error
 
 [profile.mytools.environ.merge]
 PATH = ["/opt/tools/bin"]          # list. Union, sorted, deduplicated
@@ -319,30 +316,31 @@ PATH = ["/opt/tools/bin"]          # list. Union, sorted, deduplicated
 PATH = ["/opt/tools/override"]     # list, front. At most ONE profile per variable
 
 [profile.mytools.environ.inherit]
-COLORTERM = true                   # copy the host's value, if set. snug has no
-                                   # roster entry for this name, so its row is
-                                   # marked ← unchecked on --dry-run and on
-                                   # `snug profile show`
+COLORTERM = true                   # copy the host's value, if set
 
 [profile.mytools.environ.sanitise]
 PKG_CONFIG_PATH = true             # copy the host's list, drop what is not granted
 ```
 
-A name snug has an entry for (`internal/policy/envtypes.go`) carries a type: a
-list verb can only be used on one, because merging needs the separator and the
-meaning of an empty element. A name snug has no entry for is still a hole a
-profile may name at `set` and `inherit` — the profile has an author and a file
-path, which is who takes it on — and every row it produces says so on screen.
-A profile snug **ships** may not write one at all: the roster row is where the
-sentence saying what the variable lets a tool DO gets reviewed.
+Names snug knows carry a type (`internal/policy/envtypes.go`). List verbs need
+one — merging needs the separator, and what an empty element means to whoever
+reads the variable. `set` and `inherit` take any name: your profile has an author
+and a file path, and that is who takes it on.
 
-The roster holds what snug KNOWS, never what it permits. Separately from it,
-snug carries a sentence for the variables whose value is a program some tool
-runs, or that outrank a config file — `GIT_SSH`, `RUSTC_WRAPPER`, `BASH_ENV`,
-`LD_*`, `GIT_CONFIG_*`, `EDITOR` among them. Those rows are marked, not refused:
-your profile is your declaration, and snug's job is to make sure the screen you
-approve it on says what you are approving. `internal/policy/testdata/
-annotations.txt` is the whole table.
+Whatever snug does know, it says on the row that grants it:
+
+```console
+$ snug profile show mytools
+  environ.set      GIT_SSH = /opt/tools/bin/ssh  ← unchecked: snug has no type for this name  ← git runs this as the transport for every fetch and push
+  environ.inherit  COLORTERM  ← unchecked: snug has no type for this name
+```
+
+Two separate statements, neither a refusal. `unchecked` means no type, so snug
+checked nothing about the value. The sentence after it means snug measured what
+some tool does with that value — `internal/policy/testdata/annotations.txt` is
+the whole table, `GIT_SSH`, `RUSTC_WRAPPER`, `BASH_ENV`, `LD_*` and `GIT_CONFIG_*`
+among them. A profile snug **ships** is held tighter: it may not write an
+untyped name at all.
 
 Profile order never matters. Two profiles setting the same scalar to different
 values = **fatal error naming both**, never a silent winner — same rule as two
@@ -363,14 +361,11 @@ Four rules to know before writing a profile:
 - **Profile must grant what it names.** `merge PATH = ["/opt/tools/bin"]` without
   a grant for that path is refused at parse time. A search path pointing at
   nothing inside the sandbox is a lie the tool acts on.
-- **Some names are annotated, because the value is code.** `LD_PRELOAD`,
-  `GIT_SSH`, `GIT_CONFIG_*`, `BASH_FUNC_*`, `JAVA_TOOL_OPTIONS` and relatives:
-  writing one is how a profile granting no path at all hijacks the next `git
-  fetch` a human runs inside, so the row says so. It is not refused — snug has
-  no deny rules anywhere, and a profile is a human opening a hole in their own
-  sandbox. What a profile snug *ships* may not write is a name with no roster
-  row: an annotation is a sentence owed to you, while a roster row is a grant
-  that had to be reviewed, and the two must not be confused.
+- **Some names are annotated, not refused.** `LD_PRELOAD`, `GIT_SSH`,
+  `GIT_CONFIG_*`, `BASH_FUNC_*`, `JAVA_TOOL_OPTIONS` and relatives: the value is
+  code, so a profile granting no path at all still hijacks the next `git fetch`
+  a human runs inside. Your profile, your call — the row just says so. snug has
+  no deny rules anywhere.
 - **Names snug writes itself cannot be replaced.** `HOME`, `SHELL`, `PS1`,
   `TERM`, `SNUG*` — a profile able to set `SNUG_PROFILES` could lie to the
   artifact you read to decide whether to trust the sandbox. `PATH` is owned the
@@ -490,37 +485,32 @@ systemd, PulseAudio, X11 or any other sockets, which can be used for a sandbox e
 Kernel zero days - the security perimeter is a Linux itself, so escape by
 exploit is possible. Run the VM if expects more strict isolation though.
 
-**Your own profiles.** A profile is a hole you opened deliberately. snug's line
-runs between the sandbox and the host: inside it the payload is hostile by
-assumption, and the empty root, the empty netns, the empty environment and the
-seccomp filter are what that assumption buys you. On the other side of the line
-stands you, choosing profiles, and snug does not second-guess that choice.
+Your own profiles. snug's line runs between the sandbox and the host: inside is
+hostile by assumption, outside stands you, picking profiles. It does not
+second-guess you.
 
-`rw = ["{home}"]` really does hand the sandbox your real `$HOME`. `@net-host`
-really does put it on the host's network. `environ.set EDITOR =
+`rw = ["{home}"]` really does hand over your real `$HOME`. `@net-host` really
+does put the sandbox on the host's network. `environ.set EDITOR =
 "/tmp/upload-everything"` really does give the next `git commit` a program you
-chose. Each is a security hole, each is on screen in `--dry-run`, and each is
-**user-inflicted**. This is a unix tool and it hands you enough rope.
+chose. All holes, all on screen in `--dry-run`, all yours. Unix tool, enough
+rope.
 
-What snug owes you instead is that **the screen does not lie**. Every grant
-traces to exactly one profile that named it; nothing is visible that no profile
-granted; where snug has been taught what a variable makes a tool DO, it says so
-on the row that grants it; and where it has been taught nothing, it says that
-too — `← unchecked` is snug declining to imply a safety it did not check. So
-read `snug --dry-run` rather than trusting the profile's name.
+What snug owes you is that the screen does not lie. Every grant traces to one
+profile that named it, nothing is visible that no profile granted, and a row
+says what snug knows about the value — including when it knows nothing
+(`← unchecked`). So read `--dry-run`, not the profile's name.
 
-The three things snug does refuse are not vetoes over what you may want. A
-**mechanism** it cannot carry honestly (a NUL in a value authors a bwrap flag; a
-newline forges a row on this very screen). A name snug **owns** (`HOME`, `PATH`,
-`SNUG*` — a profile able to set `SNUG_PROFILES` could lie to the artifact you
-read to decide whether to trust the sandbox). And an operation whose **type** is
-wrong (`environ.sanitise MANPATH` would ADD directories, because an empty
-element there is an instruction rather than a gap). There is no refusal of the
-form *this grant is dangerous, so you may not have it*.
+snug refuses three things, and none of them is "too dangerous for you":
 
-`snug doctor` may grow louder about profiles that are dangerous but correct
-(issue #80). It will not refuse to run one — that would be snug deciding which
-holes you are allowed to want.
+- **mechanism** — a NUL in a value writes a bwrap flag of its own, a newline
+  forges a row on that very screen;
+- **names snug owns** — `HOME`, `PATH`, `SNUG*`. A profile that could set
+  `SNUG_PROFILES` could lie to the artifact you check;
+- **wrong operation for the type** — `sanitise MANPATH` would ADD directories,
+  because an empty element there is an instruction, not a gap.
+
+`snug doctor` may get louder about profiles that are dangerous but correct
+(issue #80). It will not refuse to run one.
 
 ## Verifying the sandbox
 
