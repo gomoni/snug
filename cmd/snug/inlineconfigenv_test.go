@@ -409,20 +409,14 @@ func TestEnvironSetRustcWrapperIsCarriedAndAnnotated(t *testing.T) {
 
 			// And it reaches the ENVIRONMENT block WITH the mark, because a
 			// sentence only a test can see is not a disclosure.
-			got := captureFile(t, func(f *os.File) { describeEnvironment(f, p) })
-			var line string
-			for _, l := range strings.Split(got, "\n") {
-				if strings.Contains(l, name+" ") || strings.HasPrefix(strings.TrimSpace(l), name) {
-					line = l
-					break
-				}
-			}
-			if line == "" {
-				t.Fatalf("%s does not appear in the ENVIRONMENT block at all:\n%s", name, got)
-			}
-			if !strings.Contains(line, "cargo runs this") {
+			// The ROW, not the line: each mark is now its own indented line under
+			// the row (dryrun.go's markIndent), so the hand-rolled line search
+			// this used to do would find the data row — which carries no
+			// annotation — and report the table as not reaching the screen.
+			row := rowFor(t, captureFile(t, func(f *os.File) { describeEnvironment(f, p) }), name)
+			if !strings.Contains(row, "cargo runs this") {
 				t.Errorf("the --dry-run row for %s carries no annotation:\n%s\nThe table is only "+
-					"worth having if it reaches the screen a human reads", name, line)
+					"worth having if it reaches the screen a human reads", name, row)
 			}
 		})
 	}

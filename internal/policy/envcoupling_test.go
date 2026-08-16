@@ -142,3 +142,80 @@ func TestCouplingRefusalNamesTheProfileAndTheValue(t *testing.T) {
 		}
 	}
 }
+
+// ── F3: a relative startup file is refused, and why that is a TYPE refusal ───
+//
+// REGRESSION (redteam, issue #44 follow-up). checkCoupled refuses a relative
+// value and names the hazard precisely — "a relative one is resolved against
+// whatever directory the payload happens to be in, which is not something a
+// profile can know" — and it was reached ONLY through isPathValued, which is
+// false for BASH_ENV, ENV and PYTHONSTARTUP. That flag was set false
+// deliberately, to keep the grant-COUPLING clause unenforced, and it switched
+// off the absolute-path rule at the same time without anyone noticing. Measured
+// on the base commit: `set BASH_ENV = ".snug-init.sh"` resolved clean while
+// `set CARGO_HOME = "cargo"` was refused with a message naming exactly the
+// hazard the first one has. Inside snug the cwd is `--chdir <target>`, the one
+// writable thing the payload controls; measured on the host, with the control:
+//
+//	cd cwd1; BASH_ENV=.snug-init.sh bash -c 'echo body'  -> sourced from cwd1
+//	cd cwd2; BASH_ENV=.snug-init.sh bash -c 'echo body'  -> nothing
+//
+// The argument for this being a TYPE refusal rather than a permission one is at
+// valueIsAPath, where the next reader meets it. The short form: a relative value
+// is not something a profile can MEAN, and the same intent has an accepted
+// spelling — which is the test this codebase applies to any refusal.
+func TestARelativeStartupFileIsRefused(t *testing.T) {
+	resolve := func(g EnvGrants) error {
+		reg := testRegistry()
+		reg["startup"] = &Profile{Name: "startup", Environ: g}
+		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "startup"}, testCtx(), newFakeEnv())
+		return err
+	}
+
+	for _, name := range []string{"BASH_ENV", "ENV", "PYTHONSTARTUP"} {
+		err := resolve(EnvGrants{Set: map[string]string{name: ".snug-init.sh"}})
+		if err == nil {
+			t.Errorf("environ.set %s = \".snug-init.sh\" was accepted. The file it names is "+
+				"whichever one happens to be in the directory the payload was last in — inside "+
+				"snug, the target — so there is no value snug can hand over that means what the "+
+				"profile said. Thirteen other path-valued names already refuse this", name)
+			continue
+		}
+		for _, want := range []string{name, "absolute path"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal for %s does not name %q: %v", name, want, err)
+			}
+		}
+		// THE ACCEPTED SPELLING, which is what makes the refusal a type verdict
+		// rather than a denial: the author's intent is expressible.
+		if err := resolve(EnvGrants{Set: map[string]string{name: "{target}/init"}}); err != nil {
+			t.Errorf("environ.set %s = \"{target}/init\" was refused: %v. A refusal with no "+
+				"accepted spelling of the same intent IS a denial, and snug does not have "+
+				"those over a human's own profile", name, err)
+		}
+	}
+
+	// THE CONTROLS THAT STOP THE FIX OVER-REACHING, and they are measured rather
+	// than assumed. These two sat in the same bucket and are NOT paths:
+	//
+	//   PYTHONBREAKPOINT=bpmod.hook   python3 -c 'breakpoint()' -> the callable ran
+	//   PYTHONBREAKPOINT=/tmp/x.py    python3 -c 'breakpoint()'
+	//        -> RuntimeWarning: Ignoring unimportable $PYTHONBREAKPOINT
+	//   LESSOPEN="|$D/lo.sh %s" less -F f.txt                   -> lo.sh ran
+	//
+	// python REFUSES a path where PYTHONBREAKPOINT wants a module:callable, and
+	// LESSOPEN's value is a command line whose leading '|' selects the pipe form.
+	// A path rule for either would refuse the only correct spelling — which is
+	// the real reason all five carried `path: false`, and it applies to two of
+	// the five rather than to all of them.
+	for name, value := range map[string]string{
+		"PYTHONBREAKPOINT": "mod:fn",
+		"LESSOPEN":         "|/usr/bin/lesspipe %s",
+	} {
+		if err := resolve(EnvGrants{Set: map[string]string{name: value}}); err != nil {
+			t.Errorf("environ.set %s = %q was refused: %v. Its value is not a path, measured, and "+
+				"the absolute-path rule must not have been widened to every name that used to "+
+				"share a bucket with the startup files", name, value, err)
+		}
+	}
+}

@@ -82,6 +82,32 @@ type envType struct {
 	path   bool   // path-valued, so §2.5's grant-coupling rule applies
 	empty  emptyKind
 
+	// pathNoGrant marks a value that IS a filesystem path but which the
+	// grant-coupling rule deliberately does not reach.
+	//
+	// It exists because `path` answered two questions at once and one of them was
+	// answered wrongly by saying no to the other. Setting `path: true` on a name
+	// turns on BOTH the coupling rule (the profile must grant what it names) and
+	// the absolute-path rule (a relative value is refused); BASH_ENV, ENV and
+	// PYTHONSTARTUP were given `path: false` so that the coupling clause stayed
+	// unenforced — a deliberate, documented decision — and that silently took the
+	// absolute rule with it. Measured: `set BASH_ENV = ".snug-init.sh"` resolved
+	// clean, while `set CARGO_HOME = "cargo"` was refused with a message naming
+	// exactly the hazard the first one has.
+	//
+	// Flipping one of these rows to `path: true` is the change that closes the
+	// coupling half. It is one line and one golden row, and it is a NEW refusal
+	// for user profiles, so it belongs in its own change rather than smuggled
+	// into this one.
+	//
+	// It applies to THREE of the five startup-file names, not five, and the other
+	// two are measured rather than assumed: PYTHONBREAKPOINT takes a
+	// module:callable and python REFUSES a path there ("Ignoring unimportable
+	// $PYTHONBREAKPOINT", CPython 3.13.14), and LESSOPEN's value is a command
+	// line beginning with '|' (measured, less). A path rule for either would
+	// refuse the only correct spelling.
+	pathNoGrant bool
+
 	// mergeable and sanitisable are §3.3's two columns of marks, kept as two
 	// fields because they are two different questions and the table answers them
 	// differently for the same name: PYTHONPATH may be merged by a profile that
@@ -227,16 +253,29 @@ var envTypes = map[string]envType{
 	// What each lets a tool DO is in envNotes and is not restated here, so there
 	// is one copy of it.
 	//
-	// `path` is false on all five, and that is a decision rather than an
-	// oversight. PYTHONBREAKPOINT is a module:callable and LESSOPEN is a command
-	// line beginning with '|', so marking them path-valued would make the
-	// coupling rule refuse a correct value. BASH_ENV and ENV genuinely are
-	// paths, and path:true there would make §2.1's "granted by the same profile"
-	// clause enforced rather than merely written down — a new refusal for user
-	// profiles, so it belongs in its own change and not smuggled into this one.
-	"BASH_ENV":         {},
-	"ENV":              {},
-	"PYTHONSTARTUP":    {},
+	// `path` is false on all five and `pathNoGrant` is true on three, and the
+	// split is the fix for a defect the previous version of this comment walked
+	// straight past. It reasoned only about the COUPLING clause — correctly: a
+	// grant requirement here would be a new refusal for user profiles, and it
+	// still is, see pathNoGrant — and did not notice that the same flag also
+	// switched off the ABSOLUTE-PATH rule, which is not a permission at all.
+	//
+	// BASH_ENV, ENV and PYTHONSTARTUP genuinely are paths, and a relative one is
+	// resolved against the payload's cwd — which inside snug is `--chdir
+	// <target>`, the one writable thing a hostile payload controls. Measured, all
+	// three, with the cwd control:
+	//
+	//   cd cwd1; BASH_ENV=.snug-init.sh bash -c 'echo body'  -> sourced from cwd1
+	//   cd cwd2; BASH_ENV=.snug-init.sh bash -c 'echo body'  -> nothing (control)
+	//   cd cwd1; ENV=.shinit sh -i -c 'echo body'            -> sourced from cwd1
+	//   cd cwd1; PYTHONSTARTUP=pystart.py python3 -i         -> ran (CPython 3.13.14)
+	//
+	// PYTHONBREAKPOINT is a module:callable and LESSOPEN is a command line
+	// beginning with '|', both measured (see their envNotes entries), so neither
+	// carries either flag: marking them path-valued would refuse a correct value.
+	"BASH_ENV":         {pathNoGrant: true},
+	"ENV":              {pathNoGrant: true},
+	"PYTHONSTARTUP":    {pathNoGrant: true},
 	"PYTHONBREAKPOINT": {},
 	"LESSOPEN":         {},
 
@@ -508,8 +547,30 @@ func (n envNote) forVerb(verb EnvVerb) string {
 // envNotes are names whose VALUE IS CODE, or whose value silently outranks a
 // file snug generated. It is orthogonal to the roster: the roster says what a
 // variable IS, this says what a tool DOES with it. §4.4 is a list to be
-// EXTENDED, not retired — every entry below was measured, and the measurement is
-// in the comment beside it.
+// EXTENDED, not retired.
+//
+// EVERY ENTRY CARRIES, IN THE COMMENT BESIDE IT, EITHER THE MEASUREMENT IT WAS
+// WRITTEN FROM OR THE WORDS "DOCUMENTED, NOT MEASURED ON THIS HOST" AND WHAT WAS
+// TRIED. A new row must carry one or the other, and that is the whole of the
+// contract this header makes with its reader.
+//
+// It used to promise more than it could keep — "every entry below was measured,
+// and the measurement is in the comment beside it" — while about forty rows
+// carried no measurement at all, and three carried sentences that did not
+// survive one:
+//
+//	PS3          claimed command substitution; bash 5.3.15 prints it VERBATIM
+//	             (PS0 and PS2 substituted in the same run — the controls)
+//	MALLOC_TRACE claimed "created by every process that runs"; on glibc 2.43 the
+//	             implementation is not in libc.so.6 at all and the program must
+//	             call mtrace()
+//	HOSTALIASES  claimed "every hostname lookup"; DOT-FREE names only
+//
+// All three OVERSTATED, so nothing was reachable through them — and that is
+// precisely why they mattered. A reader who checks one sentence in a table of
+// 148 and finds it wrong has no way to tell which of the other 147 to trust,
+// and this table's only job is to be trusted on a screen someone is using to
+// decide whether to run a sandbox.
 //
 // THIS TABLE REFUSES NOTHING. It used to (as `forbiddenEnv`, with a `forbidKind`
 // per entry), and the reason it stopped is the guiding principle read in the
@@ -553,17 +614,55 @@ var envNotes = map[string]envNote{
 	"LD_AUDIT":   both("the loader runs this auditing library inside every process it starts"),
 	"LD_LIBRARY_PATH": both("every process resolves its shared libraries from here first, " +
 		"ahead of the system directories"),
-	"GCONV_PATH":       both("iconv loads a character-set conversion MODULE from here, and a module is code"),
-	"LOCPATH":          both("glibc loads compiled locale objects from here, and a locale object is code"),
-	"NLSPATH":          both("message catalogues come from here, on a template glibc expands per process"),
-	"HOSTALIASES":      both("every hostname lookup in the sandbox is rewritten through this file"),
+	"GCONV_PATH": both("iconv loads a character-set conversion MODULE from here, and a module is code"),
+	"LOCPATH":    both("glibc loads compiled locale objects from here, and a locale object is code"),
+	"NLSPATH":    both("message catalogues come from here, on a template glibc expands per process"),
+	// Measured, glibc 2.43, with the control — and the sentence this replaced
+	// ("every hostname lookup in the sandbox is rewritten through this file")
+	// was wrong in two ways at once, which is why the corrected one names both:
+	//
+	//   $ cat aliases;  myhost localhost
+	//   $ HOSTALIASES=aliases ./gethostbyname myhost           -> localhost -> 127.0.0.1
+	//   $ HOSTALIASES=aliases ./gethostbyname example.invalid  -> NULL
+	//   $ ./gethostbyname myhost                               -> NULL   (control)
+	//
+	// DOT-FREE names only, and the mapping is name -> NAME rather than name ->
+	// address (a file written with an address in the second column does nothing
+	// at all, which is how the limit was found).
+	"HOSTALIASES": both("glibc rewrites a DOT-FREE hostname to another NAME through this file " +
+		"before it is resolved; a name with a dot in it is untouched (measured, glibc 2.43)"),
 	"RESOLV_HOST_CONF": both("the resolver reads this in place of /etc/host.conf, so it steers name lookups"),
 	"RES_OPTIONS":      both("resolver options for every lookup the sandbox makes"),
 	"TZDIR": both("every timestamp in the sandbox is read from this directory; a value glibc cannot " +
 		"resolve is silently re-read as an inline rule instead of failing (measured, §3.2)"),
-	"MALLOC_TRACE": both("glibc writes an allocation trace to this file, created by every process that runs"),
-	"GETCONF_DIR":  both("getconf answers from this directory instead of the system's"),
-	"NIS_PATH":     both("NIS lookups search this path"),
+	// Measured, glibc 2.43. The sentence this replaced ("created by every process
+	// that runs") was false twice over, and BOTH preconditions matter:
+	//
+	//   $ strings /lib64/libc.so.6              | grep -c MALLOC_TRACE   -> 0
+	//   $ strings /lib64/libc_malloc_debug.so.0 | grep -c MALLOC_TRACE   -> 1
+	//   $ MALLOC_TRACE=f /bin/echo hi                                    -> no file
+	//   $ LD_PRELOAD=…/libc_malloc_debug.so.0 MALLOC_TRACE=f /bin/echo hi-> no file
+	//   $ MALLOC_TRACE=f ./calls-mtrace                                  -> no file
+	//   $ LD_PRELOAD=…/libc_malloc_debug.so.0 MALLOC_TRACE=f ./calls-mtrace
+	//                                                                    -> 79-byte trace
+	//
+	// The implementation is not in libc.so.6 at all any more, and the program
+	// must call mtrace() itself. What remains true, and is all the row now
+	// claims, is that some processes CREATE and truncate the named file.
+	"MALLOC_TRACE": both("glibc writes an allocation trace here, but only for a process that calls " +
+		"mtrace() AND has libc_malloc_debug.so preloaded (measured, glibc 2.43)"),
+	// DOCUMENTED, NOT MEASURED ON THIS HOST, and the previous sentence
+	// ("getconf answers from this directory instead of the system's") asserted a
+	// behaviour nothing here could produce. Tried: GETCONF_DIR appears in
+	// libc.so.6 (1 hit) and NOT in /usr/bin/getconf; /usr/lib64/getconf and
+	// /usr/libexec/getconf do not exist; `getconf -v SPEC PATH` with an
+	// executable planted at $GETCONF_DIR/SPEC changed no answer and ran nothing,
+	// for three different SPECs; there is no getconf(1) man page inside this
+	// sandbox to cite either. Re-measure on a host that ships per-spec getconf
+	// binaries.
+	"GETCONF_DIR": both("getconf takes its specification directory from here, and for a spec it does " +
+		"not implement natively it EXECUTES a program from it (documented, not measured)"),
+	"NIS_PATH": both("NIS lookups search this path"),
 
 	// ── git and ssh: the value is a program ──────────────────────────────────
 	//
@@ -663,9 +762,25 @@ var envNotes = map[string]envNote{
 
 	// bash performs command substitution on the prompt templates, before the user
 	// has typed anything (§3.5). PS1 is not here: it is snug's own.
-	"PS0":            both("bash performs command substitution on this before every command it runs"),
-	"PS2":            both("bash performs command substitution on this prompt template"),
-	"PS3":            both("bash performs command substitution on this prompt template"),
+	//
+	// Measured, bash 5.3.15, all four in one run — and PS3 is the exception this
+	// block used to state as the rule:
+	//
+	//   PS0='[$(echo PS0-SUBST-RAN >&2)]'  ...      -> PS0-SUBST-RAN   (substituted)
+	//   PS2='[$(echo PS2-SUBST-RAN >&2)]'  ...      -> PS2-SUBST-RAN   (substituted)
+	//   PS4='[$(echo PS4-SUBST-RAN >&2)]' set -x    -> PS4-SUBST-RAN   (substituted)
+	//   PS3='[$(echo PS3-SUBST-RAN >&2)] pick: ' select …
+	//        -> printed LITERALLY; the marker never ran
+	//   PS3='[HOME=$HOME] `echo bt` ${PWD} pick: '  -> printed LITERALLY, all three
+	"PS0": both("bash performs command substitution on this before every command it runs"),
+	"PS2": both("bash performs command substitution on this prompt template"),
+	// PS3 is the one prompt bash does NOT run through decode_prompt_string, and
+	// this row claimed the opposite for a milestone. The row stays rather than
+	// being deleted: without it the next reader re-derives the false claim from
+	// PS0/PS2/PS4 by analogy, which is exactly how it was written the first time.
+	"PS3": both("bash prints this VERBATIM as the `select` prompt — no command substitution and " +
+		"no parameter expansion (measured, bash 5.3.15); what it buys is a prompt that lies " +
+		"to whoever is at the shell"),
 	"PS4":            both("bash performs command substitution on this trace prompt, before you type anything"),
 	"PROMPT_COMMAND": both("bash runs this command before every prompt it draws"),
 
@@ -693,6 +808,43 @@ var envNotes = map[string]envNote{
 		"invocation (measured, node 26)"),
 	"PERL5OPT": both("perl loads whatever -M names here, on every invocation (measured, perl 5)"),
 
+	// ── search paths a consumer SOURCES or LOADS from ────────────────────────
+	//
+	// The same class as PYTHONPATH above and found the same way — by trying it,
+	// not by reasoning. Every one of these is a ROSTERED list, which means a
+	// profile snug SHIPS may write it (checkBuiltinEnvRoster), and until this
+	// pass all four handed over an exec surface with nothing said about it while
+	// their measured sibling PYTHONPATH carried a sentence.
+	//
+	//   XDG_DATA_DIRS=$D bash -c 'source /usr/share/bash-completion/bash_completion
+	//                             _comp_load frobnicate'
+	//     -> $D/bash-completion/completions/frobnicate SOURCED, uid 1000
+	//        (bash-completion 2.12.0). Control with the variable unset: nothing.
+	//        /usr/share/bash-completion/bash_completion:3262 splits it; :3235 does
+	//        the same for XDG_DATA_HOME, which is issue #84 and is discussed at
+	//        @home rather than here.
+	//   PERL5LIB=$D perl -MText::Abbrev -e 1
+	//     -> $D/Text/Abbrev.pm loaded INSTEAD of the system module (perl 5.44.0).
+	//        Control: the real one loads. The shadowing is the point — the element
+	//        is searched ahead of the system directories.
+	//   NODE_PATH=$D node -e 'require("evilmod")'
+	//     -> $D/evilmod/index.js top-level code ran, uid 1000 (node 26.4.0).
+	//        Control: MODULE_NOT_FOUND. Core modules ("util") are NOT shadowed,
+	//        which is why the sentence says so rather than overstating.
+	"XDG_DATA_DIRS": both("bash-completion SOURCES a file from <element>/bash-completion/completions " +
+		"on the next completion (measured, bash-completion 2.12.0, with the control)"),
+	"PERL5LIB": both("perl searches these BEFORE the system directories, so a module here replaces " +
+		"the real one and its top-level code runs (measured, perl 5.44)"),
+	"NODE_PATH": both("node resolves require() from here and runs the module's top-level code; " +
+		"core modules are not shadowed (measured, node 26.4, with the control)"),
+	// DOCUMENTED, NOT MEASURED ON THIS HOST. Tried: no JVM is installed here
+	// (neither `java` nor `javac`), so the class-shadowing claim could not be
+	// reproduced. It is listed anyway for the reason above — CLASSPATH is
+	// rostered, so a shipped profile may write it, and an unannotated rostered
+	// exec surface is the one thing this table must not have.
+	"CLASSPATH": both("the JVM loads classes from here, so a class on this path replaces the real " +
+		"one (documented — no JVM on this host)"),
+
 	// ── the startup files a tool READS: two sentences, and the difference is
 	// where the value came from ──────────────────────────────────────────────
 	//
@@ -702,25 +854,54 @@ var envNotes = map[string]envNote{
 	// name inherited names a file chosen on the host by whatever launched snug.
 	// The refusal that used to express that difference is gone; the difference is
 	// not, so it is said twice.
+	// "grant the path in the same profile" USED TO STAND HERE and it was an
+	// instruction snug did not carry out: these names are `path: false` for the
+	// coupling rule, so nothing checked the grant, and a sentence that reads as a
+	// rule while nothing enforces it is the "a gate that is documented but not
+	// implemented is not a gate" shape. What IS enforced is the absolute-path
+	// rule (pathNoGrant, envcoupling.go), so the sentences now state that and
+	// describe the ungranted case as the consequence it is — the row still
+	// renders `← not granted` for a path nothing covers.
 	"BASH_ENV": {
-		authored: "every non-interactive bash SOURCES this file at startup; grant the path in the same profile",
-		host:     "every non-interactive bash SOURCES this file at startup, and the file is chosen on the host, outside any profile",
+		authored: "every non-interactive bash SOURCES this file at startup; the value must be an " +
+			"absolute path, and one this profile does not grant names a file the sandbox will not have",
+		host: "every non-interactive bash SOURCES this file at startup, and the file is chosen on the host, outside any profile",
 	},
 	"ENV": {
-		authored: "every non-interactive sh SOURCES this file at startup; grant the path in the same profile",
-		host:     "every non-interactive sh SOURCES this file at startup, and the file is chosen on the host, outside any profile",
+		authored: "every non-interactive sh SOURCES this file at startup; the value must be an " +
+			"absolute path, and one this profile does not grant names a file the sandbox will not have",
+		host: "every non-interactive sh SOURCES this file at startup, and the file is chosen on the host, outside any profile",
 	},
 	"PYTHONSTARTUP": {
-		authored: "the interactive python interpreter EXECUTES this file on start; grant the path in the same profile",
-		host:     "the interactive python interpreter EXECUTES this file on start, and the file is chosen on the host",
+		authored: "the interactive python interpreter EXECUTES this file on start; the value must be " +
+			"an absolute path, and one this profile does not grant names a file the sandbox will not have",
+		host: "the interactive python interpreter EXECUTES this file on start, and the file is chosen on the host",
 	},
+	// Measured, CPython 3.13.14, and this is why PYTHONBREAKPOINT is NOT
+	// path-valued in any sense the coupling or absolute rules should touch:
+	//
+	//   PYTHONPATH=$D PYTHONBREAKPOINT=bpmod.hook python3 -c 'breakpoint()'
+	//     -> the callable ran
+	//   PYTHONBREAKPOINT=/tmp/nonexistent.py     python3 -c 'breakpoint()'
+	//     -> RuntimeWarning: Ignoring unimportable $PYTHONBREAKPOINT
+	//
+	// A PATH is refused by python itself. Requiring one here would refuse the
+	// only correct spelling.
 	"PYTHONBREAKPOINT": {
 		authored: "this names the callable breakpoint() invokes, so it is imported and run",
 		host:     "this names the callable breakpoint() invokes, chosen on the host, outside any profile",
 	},
+	// LESSOPEN carried "grant the path in the same profile" too, and there it was
+	// wrong twice: unenforced, AND about the wrong kind of value. Measured:
+	//
+	//   LESSOPEN="|$D/lo.sh %s" less -F f.txt   -> lo.sh ran on the file
+	//
+	// The value is a command line whose leading '|' selects the pipe form, not a
+	// path — the other half of why these five names are not path-valued.
 	"LESSOPEN": {
-		authored: "less runs this program over every file it opens; grant the path in the same profile",
-		host:     "less runs this program over every file it opens, and it is chosen on the host",
+		authored: "less runs this program over every file it opens; the value is a command line, " +
+			"not a path — the '|' form pipes the file through it (measured)",
+		host: "less runs this program over every file it opens, and it is chosen on the host",
 	},
 
 	// ── the generic three, which the git entries above do NOT close ──────────
@@ -757,15 +938,62 @@ var envNotes = map[string]envNote{
 	//
 	// These carried `noInherit: true` in the roster, whose message was "snug
 	// refuses to take this from the host": a verdict about the author, inside a
-	// table of type facts. Only the `host` sentence is set, because the pointers
-	// are exactly what a profile SHOULD author — `set CARGO_HOME` is the
-	// mechanism a future cargo adapter uses, and annotating that would be noise.
+	// table of type facts. The `host` sentence is what that became.
 	//
-	// The XDG four and XDG_RUNTIME_DIR are the same shape one layer down: @home
-	// creates those directories, so setting one to a path the same profile grants
-	// is the intended use, and taking the host's names a directory the sandbox
-	// does not have. XDG_RUNTIME_DIR additionally carries obligations a bare
-	// string cannot satisfy — mode 0700, owned by the user, session lifetime.
+	// THE `authored` SENTENCE SAYS WHAT THE FILE IS, and for a milestone there
+	// was none — on the argument that a pointer "is the mechanism, not the
+	// hazard", which is true of the MECHANISM and says nothing about where the
+	// pointer is aimed. Nothing enforces "at a file the profile authored": the
+	// coupling rule asks only that the path be GRANTED, and `rw = ["{target}"]`
+	// is a grant. Measured (issue #44 redteam, reproduced here): one profile
+	// aimed all five inside the target — the one directory a hostile payload
+	// writes — and the screen said NOTHING on four of five rows. Each was one
+	// config file from exec as the sandbox's own uid:
+	//
+	//	CARGO_HOME/config.toml   [build] rustc-wrapper  -> ran, cargo 1.97.1, uid 1000
+	//	DOCKER_CONFIG/config.json {"credsStore":"evil"} -> docker-credential-evil ran
+	//	                                                   on `docker pull`, before the
+	//	                                                   daemon socket (docker 29.4)
+	//	GIT_CONFIG_SYSTEM        [alias] st = "!echo"   -> ran, git 2.55.0
+	//	                         core.sshCommand        -> EXECUTED as the transport
+	//
+	// So the exemption in envNotePrefixes means "no FAMILY sentence", not "no
+	// sentence": warning about a pointer with its family's wording at the verb
+	// that AUTHORS it would be snug arguing with its own "generate, don't bind"
+	// rule (that was the PIP_ defect), while saying what the file IS is the
+	// disclosure a reader needs in order to aim it somewhere the payload cannot
+	// write. Aim it at a directory the profile authored.
+	//
+	// GIT_CONFIG_GLOBAL and GH_CONFIG_DIR are pointers too and are deliberately
+	// ABSENT: they are in SnugOwnedEnv, so no profile reaches them at any verb,
+	// and this table's rule is that snug's own names stay out of it — a row here
+	// invites someone to read it as permission. testdata/annotations.txt renders
+	// them as "(no profile may write this name)" so the artifact still accounts
+	// for every pointer.
+	//
+	// The XDG four and XDG_RUNTIME_DIR carry NO `authored` sentence, and that is
+	// a decision with a measurement behind it rather than an omission — issue
+	// #84. They are the same shape one layer down: @home creates those
+	// directories, so setting one to a path the same profile grants is the
+	// intended use, and taking the host's names a directory the sandbox does not
+	// have. XDG_RUNTIME_DIR additionally carries obligations a bare string cannot
+	// satisfy — mode 0700, owned by the user, session lifetime.
+	//
+	// What #84 records, measured on this host: git reads a COMMAND TABLE from
+	// $XDG_CONFIG_HOME/git/config (alias `!cmd` ran as uid 1000, core.sshCommand
+	// was executed as the transport — git 2.55.0, with ~/.gitconfig present, and
+	// note that GIT_CONFIG_GLOBAL being set suppresses it, which is how the first
+	// attempt at this measurement produced a false negative), and bash-completion
+	// SOURCES $XDG_DATA_HOME/bash-completion/completions/<cmd> (bash-completion
+	// 2.12.0, with the control). Both directories are @home's writable tmpfs.
+	// It is deferred for three reasons: two of the four names have no measured
+	// exec surface at all, so a uniform XDG annotation would be half unmeasured;
+	// the advice a pointer sentence carries — aim it where the payload cannot
+	// write — is unfollowable by @home, because an XDG base directory must be
+	// writable; and the hazard is the writable TMPFS, which the FILESYSTEM block
+	// already shows, so the mark would attach to the wrong grant and fire on
+	// every default run. cmd/snug/testdata/env.defaults.txt staying unchanged is
+	// the review artifact for that decision.
 	"XDG_CONFIG_HOME": {host: "the host's value names a directory this sandbox does not have; " +
 		"@home creates the one inside, so `set` it to a path the same profile grants"},
 	"XDG_CACHE_HOME": {host: "the host's value names a directory this sandbox does not have; " +
@@ -776,14 +1004,60 @@ var envNotes = map[string]envNote{
 		"@home creates the one inside, so `set` it to a path the same profile grants"},
 	"XDG_RUNTIME_DIR": {host: "the host's value names a directory this sandbox does not have, and this " +
 		"variable carries obligations a string cannot satisfy — mode 0700, owned by the user, session lifetime"},
-	"CARGO_HOME": {host: "taking the host's value points cargo back at the host's config, which is the " +
-		"file \"generate, don't bind\" exists to avoid; `set` it to a path a profile authored"},
-	"DOCKER_CONFIG": {host: "taking the host's value points docker back at the host's config, credentials " +
-		"included; `set` it to a path a profile authored"},
-	"NPM_CONFIG_USERCONFIG": {host: "taking the host's value points npm back at the host's .npmrc, " +
-		"auth tokens included; `set` it to a path a profile authored"},
-	"PIP_CONFIG_FILE": {host: "taking the host's value points pip back at the host's config, index " +
-		"credentials included; `set` it to a path a profile authored"},
+	// Measured, cargo 1.97.1: $CARGO_HOME/config.toml carrying
+	//   [build] rustc-wrapper = "…/wrap.sh"
+	// ran wrap.sh in place of rustc on `cargo build --offline`, as uid 1000 —
+	// the same exec CARGO_BUILD_RUSTC_WRAPPER reaches, one indirection out.
+	"CARGO_HOME": {
+		authored: "the config.toml under this path names a program cargo runs — build.rustc-wrapper " +
+			"ran in place of rustc, as the sandbox's own uid (measured, cargo 1.97.1)",
+		host: "taking the host's value points cargo back at the host's config, which is the " +
+			"file \"generate, don't bind\" exists to avoid; `set` it to a path a profile authored",
+	},
+	// Measured, docker 29.4.0-ce: {"credsStore":"evil"} in this directory's
+	// config.json ran docker-credential-evil with `get` on a plain `docker pull`
+	// — BEFORE the daemon socket was contacted, and there is no daemon on this
+	// host — and four times with `erase` on `docker logout`. The helper does not
+	// need a working engine.
+	"DOCKER_CONFIG": {
+		authored: "credsStore in this directory's config.json is a program docker executes, and it " +
+			"runs before docker reaches a daemon (measured, docker 29.4)",
+		host: "taking the host's value points docker back at the host's config, credentials " +
+			"included; `set` it to a path a profile authored",
+	},
+	// DOCUMENTED, NOT MEASURED ON THIS HOST. Tried: /usr/bin/npm is a broken
+	// libalternatives shim here ("npm-default: No such file or directory") and no
+	// npm-cli.js exists anywhere on the box, though node 26.4.0 is present. The
+	// capability itself WAS measured through the ENVIRONMENT spelling — see
+	// envNotePrefixes' npm_config_ entry, issue #26 — and `script-shell` is that
+	// same key reached through the file this variable names.
+	"NPM_CONFIG_USERCONFIG": {
+		authored: "the .npmrc this names carries script-shell, the shell npm runs every lifecycle " +
+			"and `run` script with (documented — npm is not installed on this host)",
+		host: "taking the host's value points npm back at the host's .npmrc, " +
+			"auth tokens included; `set` it to a path a profile authored",
+	},
+	// DOCUMENTED, NOT MEASURED ON THIS HOST. Tried: neither `pip` nor
+	// `python3 -m pip` exists here (python 3.13.14 is present) — the same state
+	// prefixCaseFold's PIP_ entry records. Nothing under PIP_ was measured to
+	// exec directly; what this file decides is where packages come FROM, and
+	// installing one runs its own code.
+	"PIP_CONFIG_FILE": {
+		authored: "index-url in this file decides where every `pip install` fetches from, and " +
+			"installing a package runs code out of it (documented — pip is not on this host)",
+		host: "taking the host's value points pip back at the host's config, index " +
+			"credentials included; `set` it to a path a profile authored",
+	},
+	// Measured, git 2.55.0, all three out of one file named by this variable:
+	//   [alias] st = "!echo …"   -> ran, uid 1000
+	//   core.sshCommand          -> `git config --show-origin` reported
+	//                               file:…/sys.gitconfig, and `git ls-remote`
+	//                               EXECUTED it as the transport
+	//   credential.helper = "!…" -> the same shape
+	// It has no roster row, so a row carrying this sentence also carries
+	// `← unchecked`: two true statements answering two questions.
+	"GIT_CONFIG_SYSTEM": {authored: "git reads a command table from this file: core.sshCommand, " +
+		"credential.helper and alias.x = !cmd all name programs it runs (measured, git 2.55.0)"},
 }
 
 // prefixCaseFold is the ONE place "does this tool's env lookup fold case"
@@ -883,9 +1157,15 @@ var envNotePrefixes = []struct {
 	note   envNote
 	// exempt names that match prefix but are POINTERS, not the capability the
 	// prefix's sentence is about — matched with prefix's own case rule via
-	// sameName, for the same reason inlineConfigPointers must be. An exempt name
-	// gets no FAMILY note; several have an exact note of their own (CARGO_HOME,
-	// NPM_CONFIG_USERCONFIG), which the exact table above answers first.
+	// sameName, for the same reason inlineConfigPointers must be.
+	//
+	// AN EXEMPT NAME GETS NO *FAMILY* NOTE. It is not silent: every pointer a
+	// profile can write carries an exact `authored` sentence of its own saying
+	// what the file it names IS, which the exact table above answers first. The
+	// distinction is the whole of the F1 fix — for a milestone "exempt" meant
+	// "nothing at all", so a profile could aim a pointer inside the one directory
+	// the payload writes and four of five rows said nothing (measured; see
+	// envNotes' pointer block).
 	exempt []string
 }{
 	{"LD_", both("the dynamic loader reads this before main() in every process"), nil},
@@ -955,27 +1235,53 @@ var inlineConfigPrefixes = []string{
 	"CARGO_",
 }
 
-// inlineConfigPointer is one entry of inlineConfigPointers: a name that
-// matches a prefix above but whose value is a PATH to a file snug generated,
-// not the setting itself. prefix names which entry in prefixCaseFold governs
-// the case rule for this exemption — NPM_CONFIG_USERCONFIG is exempt in
-// every spelling npm itself honours, or a case-insensitive prefix match
-// would turn the exemption into a false positive instead of fixing the false
-// negative it replaced.
+// inlineConfigPointer is one entry of inlineConfigPointers: a name whose value
+// is a PATH to a file snug or a profile generated, not the setting itself.
+//
+// prefix names which entry in prefixCaseFold governs the case rule for this
+// name — NPM_CONFIG_USERCONFIG is a pointer in every spelling npm itself
+// honours, or a case-insensitive prefix match would turn the exemption into a
+// false positive instead of fixing the false negative it replaced. It is ""
+// for a pointer that belongs to no annotated family, and sameName then falls
+// through to an exact comparison (prefixCaseFold[""] is false).
 type inlineConfigPointer struct {
 	name   string
 	prefix string
 }
 
-// inlineConfigPointers is the exemption set. Naming one here is a policy
-// change — ask what the name makes the tool DO, exactly as GIT-CONFIG.md §5
-// asks of the config-key whitelist.
+// inlineConfigPointers is EVERY NAME SNUG CALLS A POINTER, and it is one list
+// rather than two because the two questions it answers are asked by different
+// code and were already answered differently.
+//
+// The prefixed entries are also the exemption set for envNotePrefixes'
+// family sentences (TestPointerExemptionsAgreeBetweenTheTwoTables). The
+// prefix-less entries need no exemption — they match no prefix, so
+// IsInlineConfigEnv answers false for them either way — and they are here
+// because a sweep over "the pointers" that read only the prefixed ones would
+// silently skip DOCKER_CONFIG, which is a pointer at a directory whose
+// config.json names a program docker EXECUTES. That is the shape this file
+// keeps recording: one fact, two tables, they drift.
+//
+// Naming one here is a policy change — ask what the name makes the tool DO,
+// exactly as GIT-CONFIG.md §5 asks of the config-key whitelist — and a pointer
+// a profile can write must carry an `authored` sentence in envNotes saying what
+// the file it names IS (TestEveryPointerSaysWhatTheFileItNamesIs).
 var inlineConfigPointers = []inlineConfigPointer{
 	{"GIT_CONFIG_GLOBAL", "GIT_CONFIG_"},
 	{"GIT_CONFIG_SYSTEM", "GIT_CONFIG_"},
 	{"NPM_CONFIG_USERCONFIG", "npm_config_"},
 	{"PIP_CONFIG_FILE", "PIP_"},
 	{"CARGO_HOME", "CARGO_"},
+	// No family — and the two differ in a way worth reading, because assuming
+	// they were the same is how DOCKER_CONFIG would have been skipped again.
+	// GH_CONFIG_DIR is in SnugOwnedEnv, so no profile reaches it at any verb and
+	// it carries no annotation (snug's own names stay out of that table).
+	// DOCKER_CONFIG is NOT owned: it has a roster row, any profile may `set` it,
+	// and it names a directory whose config.json `credsStore` is a program
+	// docker executes — so it carries an `authored` sentence like every other
+	// writable pointer.
+	{"DOCKER_CONFIG", ""},
+	{"GH_CONFIG_DIR", ""},
 }
 
 // inlineConfigNames is the named half the prefix table structurally cannot
@@ -1061,6 +1367,40 @@ func IsInlineConfigEnv(name string) bool {
 	return false
 }
 
+// noteExact is the EXACT-name lookup in envNotes, honouring the case rule of
+// whichever prefix family governs the name — the same shape typeOf uses for the
+// roster, and here for the same measured reason.
+//
+// A CONSUMER THAT FOLDS CASE MAKES TWO SPELLINGS ONE NAME. npm's env loader
+// lower-cases every name before matching (prefixCaseFold), so
+// `npm_config_userconfig` IS `NPM_CONFIG_USERCONFIG`. The prefix table's
+// exemption already folds case; a plain map lookup here does not — so the moment
+// the pointers gained an exact `authored` sentence, the canonical spelling said
+// what the file was and the folded one said NOTHING, because it missed the exact
+// row and was then exempted from its family's. Caught by the case-spelling loop
+// in TestAnnotationSplitsBySetAndInherit, which existed because this table has
+// now drifted over a case rule three times: once in the forbidden-prefix table,
+// once in the roster, and once here.
+//
+// Scoped to prefixes that actually fold, exactly as typeOf is: PATH is still
+// PATH, and `Editor` is still a name with no annotation.
+func noteExact(name string) (envNote, bool) {
+	if n, ok := envNotes[name]; ok {
+		return n, true
+	}
+	for prefix, fold := range prefixCaseFold {
+		if !fold || !matchesPrefix(name, prefix) {
+			continue
+		}
+		for k, n := range envNotes {
+			if matchesPrefix(k, prefix) && sameName(name, k, prefix) {
+				return n, true
+			}
+		}
+	}
+	return envNote{}, false
+}
+
 // noteFor returns snug's annotation for one (name, verb) pair, already carrying
 // the prefix label where the annotation is about a family.
 //
@@ -1090,7 +1430,7 @@ func IsInlineConfigEnv(name string) bool {
 // spelling — the same drift wearing different clothes, which is why the rule is
 // kept rather than simplified away.
 func noteFor(name string, verb EnvVerb) string {
-	if n, ok := envNotes[name]; ok {
+	if n, ok := noteExact(name); ok {
 		if s := n.forVerb(verb); s != "" {
 			return s
 		}

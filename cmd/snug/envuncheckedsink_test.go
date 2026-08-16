@@ -129,18 +129,26 @@ func TestDryRunMarksAnUnrosteredNameAsUnchecked(t *testing.T) {
 	}
 
 	// NEGATIVE CONTROL: EDITOR is a roster row (@claude inherits it, and the
-	// fake host supplies a value for it), so its line must NOT carry the
+	// fake host supplies a value for it), so its row must NOT carry the
 	// mark. A version of the mark that fired for every user-writable name —
 	// rather than only for a genuinely unrostered one — would pass the
 	// positive assertion above too.
-	editorMarked := false
-	for _, line := range strings.Split(got, "\n") {
-		if strings.Contains(line, "EDITOR") && strings.Contains(line, "unchecked") {
-			editorMarked = true
-		}
+	//
+	// THIS CONTROL WAS ONE COMMIT FROM BEING UNFAILABLE. It used to scan for a
+	// LINE containing both "EDITOR" and "unchecked", which was the right
+	// question while every mark was concatenated onto its row. Once each mark
+	// became its own indented line (dryrun.go's markIndent) no line can contain
+	// both, so the loop would have reported "not marked" for every possible
+	// build — including one that marked every name in the table. rowFor is what
+	// keeps the question askable: the row plus everything indented under it.
+	// See rowFor's comment; this is the case it was written for.
+	editor := rowFor(t, got, "EDITOR")
+	if !strings.Contains(editor, "the value is a command") {
+		t.Fatalf("EDITOR's row carries no annotation at all, so the negative control below "+
+			"cannot distinguish a working mark from a missing one:\n%s", editor)
 	}
-	if editorMarked {
-		t.Errorf("EDITOR, a rostered name, was marked unchecked:\n%s", got)
+	if strings.Contains(editor, "unchecked") {
+		t.Errorf("EDITOR, a rostered name, was marked unchecked:\n%s", editor)
 	}
 }
 
@@ -194,6 +202,15 @@ func markJoinRegistry(t *testing.T) map[policy.ProfileName]*policy.Profile {
 				// user profile to write it (snug has only allowlists), which is
 				// precisely why the row has to say three things.
 				"GIT_SSH_COMMAND": "/var/lib/nowhere/ssh",
+				// A POINTER, aimed at a path this profile's includes grant, so
+				// grantMark is silent and the row carries exactly one mark: the
+				// `authored` sentence saying what the file it names IS. That is
+				// the F1 case — before it, all five pointers rendered NOTHING at
+				// the verb that aims them, including when aimed inside the one
+				// directory a hostile payload can write. The row must NOT carry
+				// the CARGO_* family sentence: authoring a pointer is still the
+				// mechanism "generate, don't bind" asks for.
+				"CARGO_HOME": "{home}/.cargo",
 			},
 			Merge: map[string][]string{"PATH": {"{home}"}},
 		},
@@ -201,23 +218,48 @@ func markJoinRegistry(t *testing.T) map[policy.ProfileName]*policy.Profile {
 	return m
 }
 
-// lineFor returns the single ENVIRONMENT-block line naming want, for a rendered
-// --dry-run text. Fails the test if it is not found exactly once, so a typo in
-// the fixture value fails loudly instead of silently comparing "" == "".
-func lineFor(t *testing.T, rendered, want string) string {
+// rowFor returns the whole ENVIRONMENT-block ROW naming want: the data line
+// plus every continuation line under it — the marks, their wrapped remainder,
+// and any drop lines. Fails the test if the data line is not found exactly once,
+// so a typo in the fixture value fails loudly instead of silently comparing
+// "" == "".
+//
+// IT REPLACED lineFor, AND THAT IS NOT A REFACTOR — IT IS THE POINT. While every
+// mark was concatenated onto the row, "the line naming X" and "everything snug
+// says about X" were the same string. Now that each mark is its own indented
+// line (see dryrun.go's markIndent), a line-based helper reads the data line
+// alone, and every assertion of the form "this row carries mark M" would have
+// gone one of two ways: fail, or — far worse — become UNFAILABLE. The negative
+// controls are the unfailable half: `no line contains both "EDITOR" and
+// "unchecked"` is trivially true once the two are never on one line, so the
+// assertion that EDITOR is NOT marked would have passed on a build that marked
+// every name in the table. A test that cannot fail is worse than no test.
+//
+// A continuation line is any line indented at least 19 columns (a mark sits at
+// 21, a drop line and a continuation BAND at 19); the next row starts at column
+// 3 with its own name.
+func rowFor(t *testing.T, rendered, want string) string {
 	t.Helper()
-	var hit string
-	n := 0
-	for _, line := range strings.Split(rendered, "\n") {
-		if strings.Contains(line, want) {
-			hit = line
-			n++
+	lines := strings.Split(rendered, "\n")
+	var rows []string
+	for i, line := range lines {
+		if !strings.Contains(line, want) || strings.HasPrefix(line, strings.Repeat(" ", 19)) {
+			continue
 		}
+		row := []string{line}
+		for _, next := range lines[i+1:] {
+			if !strings.HasPrefix(next, strings.Repeat(" ", 19)) {
+				break
+			}
+			row = append(row, next)
+		}
+		rows = append(rows, strings.Join(row, "\n"))
 	}
-	if n != 1 {
-		t.Fatalf("expected exactly one line containing %q, found %d:\n%s", want, n, rendered)
+	if len(rows) != 1 {
+		t.Fatalf("expected exactly one ENVIRONMENT row naming %q, found %d:\n%s",
+			want, len(rows), rendered)
 	}
-	return hit
+	return rows[0]
 }
 
 func TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark(t *testing.T) {
@@ -230,27 +272,30 @@ func TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark(t *testing.T) {
 	got := captureFile(t, func(f *os.File) { describeEnvironment(f, p) })
 
 	// 1. Unrostered name, ungranted absolute-path value: BOTH marks, in order.
-	ungranted := lineFor(t, got, "MY_TOOL_UNGRANTED")
+	// The order is now LINE order — the marks are separate lines under the row
+	// (dryrun.go's markIndent) — and strings.Index over the joined row reads it
+	// the same way a human does, top to bottom.
+	ungranted := rowFor(t, got, "MY_TOOL_UNGRANTED")
 	if !strings.Contains(ungranted, "unchecked") || !strings.Contains(ungranted, "not granted") {
-		t.Errorf("unrostered+ungranted line lost one of the two marks:\n%s", ungranted)
+		t.Errorf("unrostered+ungranted row lost one of the two marks:\n%s", ungranted)
 	}
 	if i, j := strings.Index(ungranted, "unchecked"), strings.Index(ungranted, "not granted"); i < 0 || j < 0 || i > j {
-		t.Errorf("want `unchecked` before `not granted` on the unrostered+ungranted line, got:\n%s", ungranted)
+		t.Errorf("want `unchecked` before `not granted` on the unrostered+ungranted row, got:\n%s", ungranted)
 	}
 
 	// 2. Unrostered name, GRANTED value: unchecked, and no "not granted" — proves
-	// the join is a real concatenation of grantMark's actual verdict, not a
-	// constant string that happens to contain both substrings.
-	granted := lineFor(t, got, "MY_TOOL_GRANTED")
+	// the join is a real rendering of grantMark's actual verdict, not a constant
+	// pair of marks that happens to contain both substrings.
+	granted := rowFor(t, got, "MY_TOOL_GRANTED")
 	if !strings.Contains(granted, "unchecked") {
-		t.Errorf("unrostered+granted line lost the unchecked mark:\n%s", granted)
+		t.Errorf("unrostered+granted row lost the unchecked mark:\n%s", granted)
 	}
 	if strings.Contains(granted, "not granted") {
-		t.Errorf("unrostered+granted line wrongly claims not granted:\n%s", granted)
+		t.Errorf("unrostered+granted row wrongly claims not granted:\n%s", granted)
 	}
 
 	// 3. Unrostered name, non-path value: unchecked alone.
-	mode := lineFor(t, got, "MY_TOOL_MODE")
+	mode := rowFor(t, got, "MY_TOOL_MODE")
 	if !strings.Contains(mode, "unchecked") {
 		t.Errorf("unrostered+non-path line lost the unchecked mark:\n%s", mode)
 	}
@@ -263,7 +308,7 @@ func TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark(t *testing.T) {
 	// case 1. Must show `not granted` and NO `unchecked` — this is what proves
 	// cases 1-3 are not passing because the mark string is a constant that
 	// happens to contain "unchecked" and "not granted" together.
-	bashEnv := lineFor(t, got, "BASH_ENV")
+	bashEnv := rowFor(t, got, "BASH_ENV")
 	if !strings.Contains(bashEnv, "not granted") {
 		t.Errorf("control: rostered BASH_ENV with an ungranted path must show not-granted:\n%s", bashEnv)
 	}
@@ -291,7 +336,7 @@ func TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark(t *testing.T) {
 	// first. Anything that REPLACES rather than appends loses one of the three,
 	// which is the defect two independent reviews already found once on this
 	// exact line of code.
-	three := lineFor(t, got, "GIT_SSH_COMMAND")
+	three := rowFor(t, got, "GIT_SSH_COMMAND")
 	iU := strings.Index(three, "unchecked")
 	iN := strings.Index(three, "git runs this as the transport")
 	iG := strings.Index(three, "not granted")
@@ -306,13 +351,20 @@ func TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark(t *testing.T) {
 
 	// 5. PATH's shadow-slot mark still fires, and is not doubled with an
 	// unchecked mark it structurally cannot carry (PATH has a roster row).
-	pathLine := lineFor(t, got, "writable from inside")
-	if !strings.Contains(pathLine, "PATH") {
-		t.Fatalf("expected the writable-from-inside mark on the PATH line, got:\n%s", pathLine)
+	//
+	// Anchored on the NAME, not on the mark text. It used to be the other way
+	// round — `lineFor(t, got, "writable from inside")` — which was fine while a
+	// mark lived on the row it belonged to and is now a lookup that would find a
+	// continuation line with no name on it at all. Anchoring on the mark also
+	// could not tell WHICH variable carried it, which is the one thing this case
+	// is about.
+	pathRow := rowFor(t, got, "PATH")
+	if !strings.Contains(pathRow, "writable from inside") {
+		t.Fatalf("expected the writable-from-inside mark under the PATH row, got:\n%s", pathRow)
 	}
-	if strings.Contains(pathLine, "unchecked") {
+	if strings.Contains(pathRow, "unchecked") {
 		t.Errorf("PATH is rostered, so IsUncheckedEnv can never fire for it; the writable mark "+
-			"must not be joined with one anyway:\n%s", pathLine)
+			"must not be joined with one anyway:\n%s", pathRow)
 	}
 }
 
@@ -424,17 +476,15 @@ func TestBothScreensSpellTheUncheckedMarkIdentically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var dryLine string
-	for _, l := range strings.Split(captureFile(t, func(f *os.File) { describeEnvironment(f, p) }), "\n") {
-		if strings.Contains(l, "MY_TOOL_MODE") {
-			dryLine = l
-		}
-	}
-	if dryLine == "" {
-		t.Fatal("--dry-run never rendered MY_TOOL_MODE, so this test measures nothing")
-	}
-	if !strings.Contains(dryLine, want) {
-		t.Errorf("--dry-run rendered %q, which does not carry %q", dryLine, want)
+	// The whole ROW, not the line naming the variable: --dry-run puts each mark
+	// on its own indented line, so a line-based lookup here would compare the
+	// data row — which carries no mark at all — against `want` and fail for a
+	// reason that has nothing to do with the two screens agreeing. The two
+	// screens still agree on the TEXT, which is what this test is about; the
+	// geometry differs because one is an aligned table and the other is prose.
+	dryRow := rowFor(t, captureFile(t, func(f *os.File) { describeEnvironment(f, p) }), "MY_TOOL_MODE")
+	if !strings.Contains(dryRow, want) {
+		t.Errorf("--dry-run rendered %q, which does not carry %q", dryRow, want)
 	}
 }
 

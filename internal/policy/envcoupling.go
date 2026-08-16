@@ -76,16 +76,22 @@ func checkEnvCoupling(reg map[ProfileName]*Profile, name ProfileName, g EnvGrant
 
 // writesAnyPath is the cheap gate, so a profile with no path-valued write never
 // pays for the closure walk.
+//
+// It asks the WIDER question (valueIsAPath), because a profile whose only
+// path-valued write is `set BASH_ENV` still has to reach checkCoupled — for the
+// absolute-path verdict, not for a coverage check it is exempt from. Asking the
+// narrow one here would have made the fix below unreachable for exactly the
+// names it is about.
 func writesAnyPath(g EnvGrants) bool {
 	for _, m := range []map[string][]string{g.Merge, g.Prepend} {
 		for k := range m {
-			if isPathValued(k) {
+			if valueIsAPath(k) {
 				return true
 			}
 		}
 	}
 	for k := range g.Set {
-		if isPathValued(k) {
+		if valueIsAPath(k) {
 			return true
 		}
 	}
@@ -114,9 +120,50 @@ func isPathValued(name string) bool {
 	return known && t.path
 }
 
+// valueIsAPath answers a WIDER question than isPathValued: not "does the
+// grant-coupling rule apply to this name" but "is this value a filesystem path
+// at all". The two were one flag, and that is the defect: turning coupling off
+// for the startup files turned the absolute-path rule off with them.
+//
+// WHY REFUSING A RELATIVE VALUE IS A TYPE REFUSAL AND NOT A PERMISSION ONE,
+// written here because this is where the next reader meets it, and because
+// §1.4 says snug refuses in three shapes and "this grant is dangerous" is not
+// one of them.
+//
+// A profile is static text with a host-independent meaning. The sandbox's
+// working directory is `--chdir <target>`, which the profile did not choose,
+// cannot know, and which is the one directory a hostile payload can write. So
+// `BASH_ENV = ".snug-init.sh"` does not name a file: it names whatever file of
+// that name happens to be in the directory the payload was last in. There is no
+// string snug can put in `--setenv` that means what the author meant, because
+// the author cannot have meant anything definite. Refusing is snug declining to
+// carry a value it cannot represent honestly — the same shape as declining
+// `sanitise` on MANPATH.
+//
+// THE TEST THAT TELLS THE TWO APART, AND IT IS THE ONE TO APPLY TO ANY FUTURE
+// REFUSAL IN THIS FILE: a refusal with an accepted spelling of the same intent
+// is not a denial. `BASH_ENV = "{target}/.snug-init.sh"` is accepted and says
+// precisely what the author meant. The identical refusal already applied,
+// unremarked, to thirteen other names and to every element of every path-valued
+// list; what changed here is the INCONSISTENCY, not the policy.
+//
+// And what it does NOT close: nothing. The payload sets BASH_ENV for itself
+// whenever it likes. What it stops is snug HANDING OVER a value whose meaning is
+// decided by the payload's cwd — the `sanitise` rule, one table over: the
+// environment snug itself hands over must not ship the ambiguity pre-installed.
+func valueIsAPath(name string) bool {
+	t, known := typeOf(name)
+	return known && (t.path || t.pathNoGrant)
+}
+
 // checkCoupled is the verdict on one written value.
 func checkCoupled(profile ProfileName, verb EnvVerb, name, raw string, vars map[string]string, guests []string, links map[string]string) error {
-	if !isPathValued(name) {
+	// TWO QUESTIONS, ASKED SEPARATELY. Coupling applies to the names the roster
+	// marks `path`; the absolute-path rule applies to every name whose value IS a
+	// path, which is a wider set (valueIsAPath). A name in the wider set only
+	// gets the second verdict and returns before the coverage walk below.
+	coupled := isPathValued(name)
+	if !coupled && !valueIsAPath(name) {
 		return nil
 	}
 	value, err := expandVars(raw, vars)
@@ -130,6 +177,13 @@ func checkCoupled(profile ProfileName, verb EnvVerb, name, raw string, vars map[
 	// checkAbsoluteElement is called from the list verbs alone.
 	if !filepath.IsAbs(value) {
 		return checkAbsoluteElement(profile, name, verb, raw, value)
+	}
+	if !coupled {
+		// Absolute is the whole of what snug checks for BASH_ENV, ENV and
+		// PYTHONSTARTUP. The grant is not checked, and the annotation says so
+		// rather than instructing — see their envNotes entries, which used to
+		// read "grant the path in the same profile" while nothing did.
+		return nil
 	}
 	// Symlinks are RESOLVED FIRST and are never a grant themselves. On a
 	// usr-merged host /bin is a symlink snug creates, so a profile granting /usr

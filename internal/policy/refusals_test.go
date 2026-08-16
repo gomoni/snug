@@ -612,6 +612,26 @@ func refusalRelativeSet(t testing.TB) error {
 	return err
 }
 
+// refusalRelativeStartupFile: the same refusal at a name the coupling rule does
+// NOT cover, which is the whole of F3. BASH_ENV, ENV and PYTHONSTARTUP are
+// `pathNoGrant`: their value is a path, so it must be absolute, but the profile
+// is not required to grant it. Before this row `set BASH_ENV = ".snug-init.sh"`
+// resolved clean while `set CARGO_HOME = "cargo"` — the identical shape — was
+// refused.
+//
+// ONE ROW, NOT THREE. The message differs from ENV's and PYTHONSTARTUP's only in
+// the variable name, and three copies of one assertion is not three assertions —
+// the same reasoning as the single golded bind spelling above. All three names,
+// plus the two controls that must stay accepted, are exercised in
+// TestARelativeStartupFileIsRefused.
+func refusalRelativeStartupFile(t testing.TB) error {
+	reg := testRegistry()
+	reg["startup"] = &Profile{Name: "startup", Environ: EnvGrants{
+		Set: map[string]string{"BASH_ENV": ".snug-init.sh"}}}
+	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "startup"}, testCtx(), newFakeEnv())
+	return err
+}
+
 // ── the review artifact ──────────────────────────────────────────────────────
 
 // TestGoldenRefusals pins the EXACT text of every refusal above. This change
@@ -718,6 +738,7 @@ func TestGoldenRefusals(t *testing.T) {
 		{"env_uncoupled_merge", refusalUncoupledMerge},
 		{"env_uncoupled_despite_another_profile_granting_it", refusalUncoupledDespiteAnotherProfile},
 		{"env_relative_set", refusalRelativeSet},
+		{"env_relative_set_bash_env", refusalRelativeStartupFile},
 
 		{"env_two_prepends", refusalTwoPrepends},
 		{"env_prepend_order_disagreement", refusalPrependOrder},

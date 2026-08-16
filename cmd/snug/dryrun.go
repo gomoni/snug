@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -310,8 +311,16 @@ func describeEnvironment(out *os.File, p *policy.Policy) {
 		}
 		for _, l := range lines {
 			fmt.Fprintln(out, strings.TrimRight("  "+pad(label, 16)+" "+
-				pad(strings.Join(l.values, " "), 31)+" "+pad(l.verb, 9)+" "+l.from+l.mark, " "))
+				pad(strings.Join(l.values, " "), 31)+" "+pad(l.verb, 9)+" "+l.from, " "))
 			label = ""
+			// EACH MARK ON ITS OWN INDENTED LINE, never appended to the row.
+			// See markIndent for why, and for why the indent is 21 rather than
+			// the 19 the drop lines below use.
+			for _, m := range l.marks {
+				for _, frag := range wrapMark(m) {
+					fmt.Fprintln(out, frag)
+				}
+			}
 		}
 		// Dropped elements are NAMED, not counted. "1 of 3 kept" does not let
 		// anyone check a filter, and a filter nobody can check is the exact shape
@@ -363,14 +372,90 @@ func pad(s string, n int) string {
 	return s
 }
 
-// envLine is one rendered row: consecutive entries that agree on verb, note and
+// The geometry of a mark line, and both numbers are load-bearing.
+//
+// WIDTH. A row can carry three marks at once — `← unchecked` about the NAME, the
+// annotation about what the tool DOES, and `← not granted` about the VALUE — and
+// concatenating all three onto one line of a fixed-column table produced, measured
+// on this host before this change:
+//
+//	277  GIT_CONFIG_KEY_0 …  ← unchecked …  ← GIT_CONFIG_*: git reads this at the …
+//	272  NPM_CONFIG_SCRIPT_SHELL …
+//	264  GIT_SSH  /var/lib/toolchain/ssh  set  worst  ← unchecked …  ← git runs this …  ← not granted
+//
+// At 80 columns that is 3–4 UNINDENTED wrapped fragments in the middle of a
+// 20-row aligned table, with `← not granted` — the one verdict about that value —
+// landing at the end of the third fragment, typographically indistinguishable
+// from snug's prose. Every other --dry-run block already fits 80 (the seccomp
+// list wraps at 64, the bwrap notes reach 78, the topology block 81), so 80 is
+// the house width and this block was the outlier.
+//
+// INDENT, and this is a security property rather than taste. Column 19 is
+// TAKEN: a continuation BAND of a list variable renders pad("",16) — exactly 19
+// spaces — and so does a drop line. A mark starting there would be told apart
+// from a value only by the `←` glyph, and visibleValue does not escape that
+// glyph (it is not a control character), so a value could render a line that
+// reads as snug's own verdict. That is the §2.3 class — a profile's text
+// authoring a LIE on the screen a human trusts — one layer down from the
+// newline case. At 21 no data line can reach the column, and the rule
+// "a line indented 20 or more is snug's own mark" is structural.
+// TestNoEnvironmentLineCanBeMistakenForAMark asserts it.
+const (
+	markIndent  = 21
+	markWrapPad = 2 // hanging indent for the wrapped remainder of one mark
+	screenWidth = 80
+)
+
+// wrapMark renders one mark as its own indented line, or several if it does not
+// fit. It breaks on spaces ONLY and never splits a token: a path cut in half is
+// a lie about a path, and these lines carry paths. Widths are counted in RUNES
+// for the reason pad is — the block already carries an emoji and a `←` per mark.
+//
+// The caller hands over the mark exactly as internal/policy rendered it, leading
+// spaces and all: that "  ← " prefix is `snug profile show`'s business (it
+// concatenates), so this sink trims rather than asking policy for a second
+// spelling. One wording, two screens — see policy.UncheckedEnvNote.
+func wrapMark(mark string) []string {
+	s := strings.TrimLeft(mark, " ")
+	if s == "" {
+		return nil
+	}
+	head := strings.Repeat(" ", markIndent)
+	cont := strings.Repeat(" ", markIndent+markWrapPad)
+
+	var out []string
+	prefix, cur := head, ""
+	for _, word := range strings.Fields(s) {
+		switch {
+		case cur == "":
+			cur = word
+		case utf8.RuneCountInString(prefix)+utf8.RuneCountInString(cur)+1+
+			utf8.RuneCountInString(word) > screenWidth:
+			out = append(out, prefix+cur)
+			prefix, cur = cont, word
+		default:
+			cur += " " + word
+		}
+	}
+	if cur != "" {
+		out = append(out, prefix+cur)
+	}
+	return out
+}
+
+// envLine is one rendered row: consecutive entries that agree on verb, marks and
 // provenance are one line, which is what makes a band read as a band rather than
 // as four unrelated rows.
+//
+// marks is a SLICE and not a concatenated string, which is the whole of the
+// rendering fix: the three statements a row can carry are three statements, and
+// they render as three lines. The order is fixed by envLines and asserted by
+// TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark.
 type envLine struct {
 	values []string
 	verb   string
 	from   string
-	mark   string
+	marks  []string
 }
 
 func envLines(p *policy.Policy, v policy.EnvVar) []envLine {
@@ -380,7 +465,12 @@ func envLines(p *policy.Policy, v policy.EnvVar) []envLine {
 		if e.Verb == policy.VerbSnug {
 			from = e.Note
 		}
-		mark := grantMark(p, v.Name, e.Value)
+		var marks []string
+		add := func(s string) {
+			if s != "" {
+				marks = append(marks, s)
+			}
+		}
 		// THE UNCHECKED MARK JOINS THE GRANT MARK; it does not replace it, and
 		// the first draft of this change had it the other way round.
 		//
@@ -422,6 +512,12 @@ func envLines(p *policy.Policy, v policy.EnvVar) []envLine {
 		// grantMark because it is about the variable's MEANING, while grantMark
 		// is about this one string.
 		//
+		// They ARE THREE LINES rather than one, and that is the second half of the
+		// same argument: three statements concatenated onto one row of an aligned
+		// table produced a 277-column line whose last mark — the verdict about this
+		// very value — was unreadable (see markIndent). The ORDER is unchanged; only
+		// the geometry is.
+		//
 		// The two can co-occur, and that is not a contradiction: `set
 		// PIP_INDEX_URL` has no roster row (unchecked — snug has no type for it)
 		// and matches an annotated family (PIP_*: outranks the config file pip
@@ -431,15 +527,20 @@ func envLines(p *policy.Policy, v policy.EnvVar) []envLine {
 		// the identical text: one property, one wording, two screens. That was
 		// claimed here while this sink still held its own copy of the unchecked
 		// string and the other sink held a second — see policy.UncheckedEnvNote.
-		if s := policy.EnvNote(v.Name, e.Verb); s != "" {
-			mark = s + mark
-		}
-		mark = policy.UncheckedEnvNote(v.Name, e.Verb) + mark
-		if n := len(out); n > 0 && out[n-1].verb == verb && out[n-1].from == from && out[n-1].mark == mark {
+		add(policy.UncheckedEnvNote(v.Name, e.Verb))
+		add(policy.EnvNote(v.Name, e.Verb))
+		add(grantMark(p, v.Name, e.Value))
+		// The collapse key is unchanged in MEANING — it was the concatenated mark
+		// string and is now the same statements compared elementwise. A band of
+		// several values that all carry the identical marks stays one row with one
+		// set of marks under it.
+		if n := len(out); n > 0 && out[n-1].verb == verb && out[n-1].from == from &&
+			slices.Equal(out[n-1].marks, marks) {
 			out[n-1].values = append(out[n-1].values, elementValue(v.Name, e.Value))
 			continue
 		}
-		out = append(out, envLine{values: []string{elementValue(v.Name, e.Value)}, verb: verb, from: from, mark: mark})
+		out = append(out, envLine{values: []string{elementValue(v.Name, e.Value)},
+			verb: verb, from: from, marks: marks})
 	}
 	return out
 }

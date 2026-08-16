@@ -191,8 +191,15 @@ func collectEnv(c *envClaims, name ProfileName, g EnvGrants, vars map[string]str
 // relative entry is resolved against whatever the payload's cwd happens to be,
 // which is a different directory per invocation — and in a search path an
 // element resolved against cwd is the whole of §4.3's hazard.
+//
+// It guards on valueIsAPath rather than isPathValued, so it also covers the
+// scalars whose value is a path but which the coupling rule exempts (BASH_ENV,
+// ENV, PYTHONSTARTUP). The argument for that being a TYPE refusal rather than a
+// permission is at valueIsAPath, in envcoupling.go. Widening it here is harmless
+// for the list verbs this is also called from: all three of those names are
+// scalars, so merge and prepend on them are refused on type grounds first.
 func checkAbsoluteElement(profile ProfileName, name string, verb EnvVerb, raw, expanded string) error {
-	if !isPathValued(name) || filepath.IsAbs(expanded) {
+	if !valueIsAPath(name) || filepath.IsAbs(expanded) {
 		return nil
 	}
 	return fmt.Errorf("profile %q: environ.%s %s entry %q must be an absolute path: a "+

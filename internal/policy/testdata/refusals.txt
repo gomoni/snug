@@ -209,6 +209,9 @@ profile "namer" merges PATH=/opt/tools/bin, which it does not grant.
 == env_relative_set ==
 profile "rel": environ.set CARGO_HOME entry "cargo" must be an absolute path: a relative one is resolved against whatever directory the payload happens to be in, which is not something a profile can know
 
+== env_relative_set_bash_env ==
+profile "startup": environ.set BASH_ENV entry ".snug-init.sh" must be an absolute path: a relative one is resolved against whatever directory the payload happens to be in, which is not something a profile can know
+
 == env_two_prepends ==
 profiles mytools and othertools prepend to PATH, and they do not agree:
          mytools wants ["/opt/bin"]

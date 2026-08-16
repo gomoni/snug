@@ -286,18 +286,40 @@ func TestAnnotationSplitsBySetAndInherit(t *testing.T) {
 
 	// PIP_* and npm_config_* are the prefix half of the same split: the host's
 	// environment outranks the config FILE those tools read (§4.5), which is an
-	// argument about inherit, not about set. A POINTER is the opposite shape —
-	// authoring it is the mechanism "generate, don't bind" asks for — so it must
-	// carry NO annotation at `set` and one at `inherit`. A pointer annotated at
-	// `set` would be snug warning about the thing it recommends.
+	// argument about inherit, not about set. A POINTER is the opposite shape at
+	// that verb — authoring it is the mechanism "generate, don't bind" asks for —
+	// so it carries no FAMILY sentence at `set`.
+	//
+	// IT USED TO CARRY NOTHING AT ALL AT `set`, AND THIS LOOP ASSERTED THAT.
+	// The argument was that a pointer "is the mechanism, not the hazard", which
+	// is true of the mechanism and says nothing about where the pointer is
+	// AIMED — and nothing enforces "at a file the profile authored": the coupling
+	// rule asks only that the path be granted, and `rw = ["{target}"]` is a
+	// grant. Measured, one profile, all five names inside the target:
+	//
+	//	CARGO_HOME/config.toml   build.rustc-wrapper    -> ran, cargo 1.97.1, uid 1000
+	//	DOCKER_CONFIG/config.json {"credsStore":"evil"} -> helper ran on `docker pull`
+	//	GIT_CONFIG_SYSTEM        alias/core.sshCommand  -> ran, git 2.55.0
+	//
+	// So the test changed with the model rather than the other way round: a
+	// pointer must SAY WHAT ITS FILE IS at the authored verb, and must not say it
+	// in the family's words.
 	for _, name := range []string{"PIP_CONFIG_FILE", "CARGO_HOME", "NPM_CONFIG_USERCONFIG",
-		"DOCKER_CONFIG", "XDG_DATA_HOME"} {
+		"DOCKER_CONFIG", "GIT_CONFIG_SYSTEM"} {
 		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{name: "{home}/x"}}); err != nil {
 			t.Errorf("environ.set %s is \"generate, don't bind\" written down: %v", name, err)
 		}
-		if got := EnvNote(name, VerbSet); got != "" {
-			t.Errorf("environ.set %s is annotated %q. Authoring a pointer is the RECOMMENDED "+
-				"mechanism; annotating it makes the mark mean nothing", name, got)
+		got := EnvNote(name, VerbSet)
+		if got == "" {
+			t.Errorf("environ.set %s carries no annotation. A pointer aimed at ground the payload "+
+				"can write is one config file from exec as the sandbox's own uid, measured — and "+
+				"the exemption it inherits from its prefix is an exemption from the FAMILY "+
+				"sentence, not a licence to say nothing", name)
+		}
+		if strings.Contains(got, "*:") {
+			t.Errorf("environ.set %s renders the FAMILY sentence %q. Authoring a pointer is the "+
+				"RECOMMENDED mechanism; warning about it in the words written for its "+
+				"setting-valued siblings is snug arguing with its own rule", name, got)
 		}
 		if err := ValidateEnvGrants(EnvGrants{Inherit: []string{name}}); err != nil {
 			t.Errorf("environ.inherit %s was refused: %v — this was `noInherit`, a permission bit "+
@@ -308,6 +330,45 @@ func TestAnnotationSplitsBySetAndInherit(t *testing.T) {
 				"back at the host's own config — the exact file \"generate, don't bind\" exists "+
 				"to avoid — and the sentence saying so was the `noInherit` refusal's whole "+
 				"content. It must not have evaporated with the bit", name)
+		}
+	}
+
+	// THE XDG BASE DIRECTORIES ARE SILENT AT `set`, AND THAT IS A DECISION WITH A
+	// MEASUREMENT BEHIND IT — issue #84, deferred deliberately rather than
+	// forgotten. They are pointers in the same sense, and two of them are
+	// measured exec surfaces: git reads a command table from
+	// $XDG_CONFIG_HOME/git/config (alias `!cmd` ran as uid 1000, core.sshCommand
+	// was EXECUTED as the transport — git 2.55.0, with ~/.gitconfig present, and
+	// with GIT_CONFIG_GLOBAL unset, which suppresses it and produced a false
+	// negative on the first attempt), and bash-completion SOURCES
+	// $XDG_DATA_HOME/bash-completion/completions/<cmd> (bash-completion 2.12.0,
+	// with the control).
+	//
+	// They are still silent because @home `set`s all four on every default run,
+	// to its own writable tmpfs, and it has no alternative: an XDG base directory
+	// must be writable, so the advice a pointer sentence carries — aim it where
+	// the payload cannot write — is one @home structurally cannot take. The
+	// hazard is the writable tmpfs, which the FILESYSTEM block already shows, so
+	// the mark would attach to the wrong grant and fire on the most ordinary run
+	// there is. Two of the four have no measured exec surface at all, so a
+	// uniform XDG annotation would additionally be half unmeasured, in the table
+	// F4 is about.
+	//
+	// cmd/snug/testdata/env.defaults.txt staying unchanged is the review artifact
+	// for that decision. If it ever grows an XDG mark, this loop is the other
+	// thing that has to change, and the argument above is what has to be answered.
+	for _, name := range []string{"XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+		"XDG_DATA_HOME", "XDG_RUNTIME_DIR"} {
+		if got := EnvNote(name, VerbSet); got != "" {
+			t.Errorf("environ.set %s is annotated %q. That is issue #84 and it is deferred: "+
+				"@home sets all four on every default run and cannot aim them anywhere "+
+				"unwritable, so this fires on the most ordinary screen snug draws. If the "+
+				"decision has been reversed, say so in #84 and in env.defaults.txt's comment "+
+				"rather than here", name, got)
+		}
+		if EnvNote(name, VerbInherit) == "" {
+			t.Errorf("environ.inherit %s carries no annotation; the host's value names a "+
+				"directory this sandbox does not have", name)
 		}
 	}
 
@@ -325,29 +386,46 @@ func TestAnnotationSplitsBySetAndInherit(t *testing.T) {
 			}
 		}
 	}
-	// NPM_CONFIG_USERCONFIG is npm_config_'s pointer exemption and must stay
-	// exempt from the FAMILY sentence in every spelling npm's own
-	// case-insensitive rule reaches — at the authored verbs, where authoring it
-	// is the point. At `inherit` the exemption deliberately does not apply, which
-	// is its own regression: a case-insensitive prefix's exemption used to apply
-	// to EVERY verb and fell back to envTypes' noInherit flag (an exact-case
-	// lookup) to still catch inherit, so `environ.inherit npm_config_userconfig`
-	// slipped through while the canonical spelling did not. Measured. The
-	// fallback is gone with the bit, so this is now the only thing standing.
+	// NPM_CONFIG_USERCONFIG is npm_config_'s pointer, and EVERY SPELLING npm's own
+	// case-insensitive rule reaches must say the same thing at every verb. At
+	// `set` that is the exact `authored` sentence about the file it names, never
+	// the FAMILY sentence — authoring a pointer is the point. At `inherit` the
+	// exemption deliberately does not apply.
+	//
+	// THIS LOOP HAS NOW CAUGHT THE SAME DEFECT TWICE, in opposite directions.
+	// First: a case-insensitive prefix's exemption applied to EVERY verb and fell
+	// back to envTypes' noInherit flag (an exact-case lookup) to still catch
+	// inherit, so `environ.inherit npm_config_userconfig` slipped through while
+	// the canonical spelling did not. Then, in the commit that gave the pointers
+	// their `authored` sentence: envNotes is an exact map, so the canonical
+	// spelling said what the file was and the folded one — exempted from its
+	// family, missing from the exact table — said nothing at all. noteExact is
+	// the fix, and it is the roster's own fold rule applied one table over.
+	want := map[EnvVerb]string{
+		VerbSet:     EnvNote("NPM_CONFIG_USERCONFIG", VerbSet),
+		VerbInherit: EnvNote("NPM_CONFIG_USERCONFIG", VerbInherit),
+	}
+	for verb, s := range want {
+		if s == "" {
+			t.Fatalf("fixture: NPM_CONFIG_USERCONFIG says nothing at %s, so the spellings below "+
+				"would be compared against nothing", verb)
+		}
+	}
 	for _, name := range []string{"NPM_CONFIG_USERCONFIG", "npm_config_userconfig", "Npm_Config_Userconfig"} {
 		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{name: "{home}/.npmrc"}}); err != nil {
 			t.Errorf("environ.set %s was refused: %v", name, err)
 		}
-		if got := EnvNote(name, VerbSet); got != "" {
-			t.Errorf("environ.set %s is annotated %q — the pointer exemption must hold in every "+
-				"case spelling npm itself honours, or the fix for the false negative becomes a "+
-				"warning against the one name snug needs to author", name, got)
+		for verb, s := range want {
+			if got := EnvNote(name, verb); got != s {
+				t.Errorf("EnvNote(%s, %s) = %q, want the canonical spelling's %q. npm honours all "+
+					"three spellings identically, so a reader who writes one of them and a "+
+					"reader who writes another must be told the same thing", name, verb, got, s)
+			}
 		}
-		if EnvNote(name, VerbInherit) == "" {
-			t.Errorf("environ.inherit %s carries no annotation; a pointer taken from the HOST "+
-				"points npm back at the host's .npmrc, auth tokens included, and this exact "+
-				"spelling is the one that slipped through before exempt was restricted to the "+
-				"authored verbs", name)
+		if strings.Contains(EnvNote(name, VerbSet), "*:") {
+			t.Errorf("environ.set %s renders the FAMILY sentence — the pointer exemption must "+
+				"hold in every case spelling npm itself honours, or the fix for the false "+
+				"negative becomes a warning against the one name snug needs to author", name)
 		}
 	}
 }
