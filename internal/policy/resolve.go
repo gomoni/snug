@@ -832,12 +832,20 @@ var basePATH = []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"}
 // scalarConflict is the refusal for a key whose value domain is not a
 // semilattice. It names BOTH profiles and BOTH values, so "it broke" becomes "I
 // know which line to delete".
+//
+// BOTH VALUES GO THROUGH VisibleText, for the reason describeNode gives: a
+// refusal is a screen, and these two values are profile text snug did not write
+// — a `net.address`, a `home`, whatever scalar key arrives next. They are
+// rendered through fmt.Sprint first rather than escaped as strings, because the
+// parameters are `any` and the next scalar key to gain a conflict will not
+// necessarily be one (issue #64 named this function and the sweep that fixed
+// describeNode did not reach it).
 func scalarConflict(key string, ownerA ProfileName, a any, ownerB ProfileName, b any) error {
-	return fmt.Errorf("profiles %q and %q set different %s (%v and %v); select only one.\n"+
+	return fmt.Errorf("profiles %q and %q set different %s (%s and %s); select only one.\n"+
 		"       This key has no permissive direction — there is no \"more open\" address — so snug\n"+
 		"       refuses rather than choosing. Picking one would make the answer depend on the order\n"+
 		"       profiles are folded, and the model has no such order.",
-		ownerA, ownerB, key, a, b)
+		ownerA, ownerB, key, VisibleText(fmt.Sprint(a)), VisibleText(fmt.Sprint(b)))
 }
 
 func sortedInts(m map[int]bool) []int {

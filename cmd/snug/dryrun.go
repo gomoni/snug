@@ -32,8 +32,15 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 		fmt.Fprintln(out, "snug — dry run, nothing was started")
 	}
 	fmt.Fprintln(out)
-	fmt.Fprintf(out, "TARGET   %s  %s\n", p.Target, targetAnnotation(p))
-	fmt.Fprintf(out, "HOME     %s  %s\n", p.Home, homeAnnotation(p))
+	// TARGET and HOME are HOST paths, and a host path is not snug's to refuse —
+	// the attacker controls only a directory name, and `mkdir` is not a grant.
+	// So rendering is the only guard these two have, exactly as it is for the
+	// host path in a masking refusal (policy's describeNode). These two rows sat
+	// four lines above a block that had been escaping since the value class was
+	// found, which is the shape CLAUDE.md records: a guard added to one block
+	// and not the one above it (issue #65).
+	fmt.Fprintf(out, "TARGET   %s  %s\n", visibleValue(p.Target), targetAnnotation(p))
+	fmt.Fprintf(out, "HOME     %s  %s\n", visibleValue(p.Home), homeAnnotation(p))
 	fmt.Fprintf(out, "PROFILES %s\n", visibleValue(policy.JoinNames(p.Selected, " ")))
 	if implied := p.Implied(); len(implied) > 0 {
 		fmt.Fprintf(out, "         + %s  (pulled in by include; see: snug profile tree)\n",

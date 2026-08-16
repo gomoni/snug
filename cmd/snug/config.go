@@ -384,7 +384,11 @@ func profileCmd(args []string) int {
 			}
 			fmt.Printf("            %s\n", strings.Join(lines, "\n            "))
 		}
-		fmt.Printf("defined in  %s\n", p.Source)
+		// The file this profile came from — a path snug listed out of
+		// profiles.d rather than one it chose, so it is host text on a screen
+		// and gets the same treatment as the description four lines up, which
+		// was already escaped when this was not (issue #65).
+		fmt.Printf("defined in  %s\n", visibleValue(p.Source))
 		fmt.Println()
 		// visibleValue on every value, in the closure rather than at each call
 		// site, so `includes`, `ro`, `rw`, `tmpfs`, `optional` and all five
