@@ -101,6 +101,79 @@ This has three consequences that shape the whole system:
 
 **What `snug` does not defend:** everything in §1.2. Additionally: the project directory is writable by definition, so an agent can always poison the code it is working on — review your diffs.
 
+### 1.4 Two boundaries, and only one of them is snug's
+
+There are two places an attacker could stand, and conflating them has already
+cost review rounds.
+
+**Inside the sandbox.** T1–T4 above. Hostile by assumption. Everything in snug is
+aimed here: the empty tmpfs root, the private netns with host loopback closed,
+`--clearenv` plus `cmd.Env = []string{}`, the seccomp filter, `sealInheritedFDs`,
+`safeStdio`, `rejectMasking`, the `/run/snug/bin` staging rule. A defect on this
+side is a snug bug and gets a `sev:` label.
+
+**Outside it, writing profiles.** A human. Invariant 3 exists to put the trusted
+profile set *outside the sandboxed material* precisely so that this human, and
+not the payload, decides what is granted. snug has no opinion about what they
+decide.
+
+So a profile that grants too much is not a snug defect, and neither is a typo, a
+copy-paste, or a profile that is simply wrong. `rw = ["{home}"]` really does hand
+over the real `$HOME`; `environ.set EDITOR = "/tmp/upload-everything"` really does
+give the next `git commit` a program the author chose. Both are security holes and
+both are **user-inflicted**. The composed case is the same: `snug -p work -p
+helper`, where `helper` hijacks the identity `work` pinned, is a hostile profile
+the human selected — no different from selecting one with `rw {home}`.
+
+**Why this is not a cop-out.** snug already refuses in three shapes, and none of
+them is a veto over what a human may want:
+
+- **Mechanism.** The thing cannot be represented or transported. A NUL in an
+  `environ.set` value authors a bwrap flag (§2.6); a newline forges a row on a
+  screen a human trusts; a hand-written separator inside a list value smuggles an
+  empty element. Refusing here is not policy — it is snug declining to lie about
+  what it did.
+- **Ownership.** snug writes `HOME`, `PATH`, `PS1`, `SNUG_PROFILES` itself. A
+  profile that could write them could unmake snug's own guarantees, `--dry-run`
+  included, so no profile may.
+- **Type.** `environ.sanitise` on `MANPATH` would ADD directories, because an
+  empty element there is an operator (ENVIRONMENT-VARIABLES.md §3.3). Refusing is
+  snug declining to perform an operation it knows does the opposite of what it
+  claims. The alternative is not freedom, it is a wrong answer.
+
+What is NOT in that list is any refusal of the form *"this grant is dangerous, so
+you may not have it"*. Issue #44 removed the one place snug had drifted into
+saying it: three environment denylists, converted to annotations.
+
+**What replaces the refusal is disclosure.** The roster
+(`internal/policy/envtypes.go`) is **what snug KNOWS, not what it permits**, and
+every measurement it holds is owed to the human as an annotation on `--dry-run`
+and `snug profile show`. The two failure modes are asymmetric and must stay so:
+
+- **Incomplete is expected and honest.** A name snug has never been taught about
+  renders `← unchecked`. The absence of a mark must never read as approval, which
+  is why the mark exists at all.
+- **Wrong is a defect.** A row saying a value is inert when it is executed is a
+  lie in the one artifact a human uses to decide whether to run the sandbox.
+
+The general shape, which outlives the environment work: **a hole that does not
+look like one is worth more to an attacker than a hole that does.** `rw {home}`
+reads as dangerous on sight and needs no annotation. `EDITOR=…` does not, and that
+is exactly why it gets one. `snug doctor` may grow louder about profiles that are
+dangerous but correct (issue #80); it will not refuse to run one.
+
+**Two limits worth stating so nobody reasons past them.** The payload owns its own
+environment: a profile handing over a clean `GIT_CONFIG_GLOBAL` does not stop the
+payload setting `GIT_CONFIG_KEY_0` for itself, and a writable `$HOME` reaches the
+same hijack through `~/.bashrc`. What snug owes is narrower and is the `sanitise`
+rule — *the environment snug ITSELF hands over must not ship the override
+pre-installed* — bounded by measurement, since none of it survives into a later
+`snug` run. And **"you get what you configure" is not available to us about our
+own profiles**: `@claude`, `@git-ro` and `@podman-socket` are snug's material, so
+a shipped grant that hands over more than its abuse comment claims is a finding
+against snug. That is what `redteam`'s standing inventory sweep is for, and why
+`checkBuiltinEnvRoster` holds a builtin to a stricter rule than a human's profile.
+
 ---
 
 ## 2. The policy model

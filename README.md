@@ -368,7 +368,9 @@ Four rules to know before writing a profile:
   writing one is how a profile granting no path at all hijacks the next `git
   fetch` a human runs inside, so the row says so. It is not refused — snug has
   no deny rules anywhere, and a profile is a human opening a hole in their own
-  sandbox. A profile snug *ships* is the one that may not write these.
+  sandbox. What a profile snug *ships* may not write is a name with no roster
+  row: an annotation is a sentence owed to you, while a roster row is a grant
+  that had to be reviewed, and the two must not be confused.
 - **Names snug writes itself cannot be replaced.** `HOME`, `SHELL`, `PS1`,
   `TERM`, `SNUG*` — a profile able to set `SNUG_PROFILES` could lie to the
   artifact you read to decide whether to trust the sandbox. `PATH` is owned the
@@ -488,11 +490,37 @@ systemd, PulseAudio, X11 or any other sockets, which can be used for a sandbox e
 Kernel zero days - the security perimeter is a Linux itself, so escape by
 exploit is possible. Run the VM if expects more strict isolation though.
 
-Misconfiguration. Every grant is a line somebody wrote, and snug will not
-second-guess it: a profile granting `/` grants `/`, and an identity pinning one
-account's key next to another account's token pins both. `snug --dry-run` prints
-the resolved policy in full precisely so the configuration is reviewable before
-it runs — read it rather than trusting the profile's name.
+**Your own profiles.** A profile is a hole you opened deliberately. snug's line
+runs between the sandbox and the host: inside it the payload is hostile by
+assumption, and the empty root, the empty netns, the empty environment and the
+seccomp filter are what that assumption buys you. On the other side of the line
+stands you, choosing profiles, and snug does not second-guess that choice.
+
+`rw = ["{home}"]` really does hand the sandbox your real `$HOME`. `@net-host`
+really does put it on the host's network. `environ.set EDITOR =
+"/tmp/upload-everything"` really does give the next `git commit` a program you
+chose. Each is a security hole, each is on screen in `--dry-run`, and each is
+**user-inflicted**. This is a unix tool and it hands you enough rope.
+
+What snug owes you instead is that **the screen does not lie**. Every grant
+traces to exactly one profile that named it; nothing is visible that no profile
+granted; where snug has been taught what a variable makes a tool DO, it says so
+on the row that grants it; and where it has been taught nothing, it says that
+too — `← unchecked` is snug declining to imply a safety it did not check. So
+read `snug --dry-run` rather than trusting the profile's name.
+
+The three things snug does refuse are not vetoes over what you may want. A
+**mechanism** it cannot carry honestly (a NUL in a value authors a bwrap flag; a
+newline forges a row on this very screen). A name snug **owns** (`HOME`, `PATH`,
+`SNUG*` — a profile able to set `SNUG_PROFILES` could lie to the artifact you
+read to decide whether to trust the sandbox). And an operation whose **type** is
+wrong (`environ.sanitise MANPATH` would ADD directories, because an empty
+element there is an instruction rather than a gap). There is no refusal of the
+form *this grant is dangerous, so you may not have it*.
+
+`snug doctor` may grow louder about profiles that are dangerous but correct
+(issue #80). It will not refuse to run one — that would be snug deciding which
+holes you are allowed to want.
 
 ## Verifying the sandbox
 

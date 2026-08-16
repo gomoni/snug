@@ -6,6 +6,13 @@ on someone's word. This is the checklist for not doing that.
 Every command below was run on the development host and produced the output
 shown. If yours differs, that is a finding — see [If a check fails](#if-a-check-fails).
 
+What it checks is that **the sandbox holds**, which is not the same question as
+whether your profiles are safe. snug does not second-guess a profile: `rw
+["{home}"]` and `environ.set EDITOR = "/tmp/evil"` are holes you opened, they are
+on screen in `--dry-run`, and no check below will fail on them. See
+[`.claude/design/INDEX.md`](.claude/design/INDEX.md) §1.4 and the README's *What
+snug does not defends against*.
+
 Setup used throughout:
 
 ```bash
