@@ -21,7 +21,8 @@ import (
 // network namespace itself, pasta joins it directly.
 //
 //	snug                                     (host userns/netns/mountns)
-//	├── bwrap --unshare-all --die-with-parent
+//	├── bwrap --unshare-user --unshare-ipc --unshare-pid --unshare-uts
+//	│         --unshare-cgroup-try --unshare-net --die-with-parent
 //	│         --json-status-fd J --block-fd B ... -- <agent>
 //	│      └── the sandbox: own userns, netns, pidns, ipcns, utsns, mountns
 //	└── pasta --netns /proc/<child>/ns/net --userns /proc/<child>/ns/user

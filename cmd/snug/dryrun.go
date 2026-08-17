@@ -1526,7 +1526,7 @@ func describeBwrap(out *os.File, p *policy.Policy, args []string, refusedBy erro
 		fmt.Fprintln(out, " network namespace of whatever starts bwrap, and snug starts it directly, so")
 		fmt.Fprintln(out, " running it by hand reproduces the HOST networking described above.)")
 	default:
-		fmt.Fprintln(out, "(this argv determines the network posture on its own: --unshare-all creates")
+		fmt.Fprintln(out, "(this argv determines the network posture on its own: --unshare-net creates")
 		fmt.Fprintln(out, " the sandbox's own empty network namespace, so running it by hand reproduces")
 		fmt.Fprintln(out, " it.)")
 	}

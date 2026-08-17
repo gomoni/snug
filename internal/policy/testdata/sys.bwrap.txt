@@ -1,4 +1,9 @@
---unshare-all
+--unshare-user
+--unshare-ipc
+--unshare-pid
+--unshare-uts
+--unshare-cgroup-try
+--unshare-net
 --uid 1000
 --gid 1000
 --hostname snug

@@ -126,13 +126,15 @@ func TestTheStagedArgvIsNotPrintedAsSelfContained(t *testing.T) {
 	// assertions below could be describing a defect that no longer exists.
 	//
 	// Asked of the argv SLICE, never of the rendered text — the note itself says
-	// the words "--unshare-net" and "--unshare-all", so a substring search over
-	// the screen answers a question about the prose instead of about the command.
+	// the word "--unshare-net" on both branches (present in the isolated argv's
+	// prose, absent from the staged argv's own flag list), so a substring
+	// search over the screen answers a question about the prose instead of
+	// about the command.
 	if has(stagedArgv, "--unshare-net") {
 		t.Fatal("the staged argv now carries --unshare-net, so the note below describes " +
 			"a boundary that has moved — re-read describeBwrap before touching this test")
 	}
-	if !has(isolatedArgv, "--unshare-all") {
+	if !has(isolatedArgv, "--unshare-net") {
 		t.Fatal("control: the isolated argv does not create its own netns either, so " +
 			"'self-contained' means nothing here")
 	}
