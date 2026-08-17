@@ -32,8 +32,10 @@ import (
 //   - It sweeps the kill OFFSET rather than picking one. The window is a race
 //     against bwrap arming PR_SET_PDEATHSIG on its own init, so a single offset
 //     measures one point on a curve whose shape differs per topology — measured
-//     at HEAD, offline orphans at 0-60ms and the stage at 20-100ms, so either
-//     one alone would have called the other topology clean.
+//     against the unfixed code, offline orphans at 20 and 50ms while the stage
+//     orphans at 50 and 100ms, so an offset chosen for one topology can be
+//     clean on the other. Which offsets, and why only four, is in
+//     orphanSweepOffsets.
 //   - It does NOT gate on the payload having appeared. Requiring bwrap or the
 //     payload to exist before signalling is exactly the precondition that makes
 //     the older test green; an offset that lands before the payload exists is a
@@ -44,15 +46,46 @@ import (
 //     subreaper, not onto snug — so any ancestry-based sweep would report a
 //     clean tree for the one process it was written to find.
 
-const (
-	// orphanSweepEnd and orphanSweepStep are the window from issue #13's own
-	// measurements with an order of magnitude of headroom: bwrap's init arms
-	// its pdeathsig at roughly 40ms, both topologies were measured clean from
-	// 200ms, and the sweep runs to 300ms so a regression that merely MOVES the
-	// window later still lands inside it.
-	orphanSweepEnd  = 300 * time.Millisecond
-	orphanSweepStep = 20 * time.Millisecond
+// orphanSweepOffsets is where the signal lands, measured from the fork.
+//
+// Issue #13 asks for a uniform 20ms step across 0-300ms. That is sixteen
+// offsets, and once signals and topologies are counted, 96 real sandbox
+// launches for a suite whose speed is a feature. Each of these four was kept
+// because it CATCHES something, measured against the unfixed code — not
+// because it tiles a range:
+//
+//	 20ms  offline orphans; stage has not forked bwrap yet
+//	 50ms  BOTH topologies orphan — the one offset that would do on its own
+//	100ms  stage orphans; offline is already clean
+//	250ms  catches nothing today, and is the only one kept on an argument
+//	       rather than a measurement — see below
+//
+// So each topology is hit TWICE by the first three, which is the margin worth
+// paying for on a race: a single point can be missed by a host that is faster
+// or slower than this one, two adjacent points cannot be missed by a small
+// shift in either direction.
+//
+// Dropped, with reasons, because "it might catch something" is how a 96-launch
+// test happens: 0ms signals before either topology has forked anything, so
+// there is nothing to orphan and it asserts only that snug dies, which every
+// other test already does; 200ms and 300ms are past both windows, where the
+// sandbox is fully up and its teardown is the ordinary path other tests cover.
+//
+// 250ms is the exception and is deliberate. The windows do not start at zero —
+// the stage's opens at 40ms rather than 0ms purely because the stage and pasta
+// have to run first — so a change that makes startup SLOWER moves the window
+// right rather than widening it, and the first three offsets would then all
+// land before it. One late offset is the tripwire for that, and it is cheap.
+//
+// The signal that this sampling has gone stale is a failure at one offset with
+// its neighbours green: that means the window has narrowed, and the offsets
+// have to follow it.
+var orphanSweepOffsets = []time.Duration{
+	20 * time.Millisecond, 50 * time.Millisecond,
+	100 * time.Millisecond, 250 * time.Millisecond,
+}
 
+const (
 	// orphanMarkerPeriod is how often the payload REWRITES its marker. The
 	// evidence is the marker's mtime, never its existence — see orphanRun.
 	orphanMarkerPeriod = 100 * time.Millisecond
@@ -74,12 +107,14 @@ const (
 // here. TestKillingSnugDuringStartupNeverRunsThePayload still asserts SIGKILL
 // for the property that IS closed — that no payload exists to be released.
 //
-// Cost: it starts a real sandbox once per offset per signal per topology, which
-// is why its budget is minutes rather than seconds. The alternative — one
-// offset, or one signal, or one topology — is what let this defect through
-// twice.
+// Cost: one real sandbox per offset per signal per topology — 24 launches,
+// which is why the budget is more than the suite's default ten seconds.
+// Dropping a DIMENSION is not where to save that time: one offset, or one
+// signal, or one topology is exactly what let this defect through twice.
+// Sampling within the offset dimension is where it was saved, on measurements
+// rather than on taste; see orphanSweepOffsets.
 func TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox(t *testing.T) {
-	budget(t, 5*time.Minute)
+	budget(t, 90*time.Second)
 	requireSandbox(t)
 	requirePasta(t)
 
@@ -102,7 +137,7 @@ func TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox(t *testing.T) {
 				syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP,
 			} {
 				t.Run(sig.String(), func(t *testing.T) {
-					for off := time.Duration(0); off <= orphanSweepEnd; off += orphanSweepStep {
+					for _, off := range orphanSweepOffsets {
 						t.Run(fmt.Sprintf("%dms", off.Milliseconds()), func(t *testing.T) {
 							orphanRun(t, topo.args, sig, off)
 						})
