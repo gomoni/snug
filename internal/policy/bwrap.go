@@ -50,23 +50,46 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 		// RED here rather than silently keeping it. See
 		// SUPERVISOR-DESIGN.md §3.1.
 		//
-		// The -try spellings match what --unshare-all itself expands to, so
-		// this path introduces no new failure mode on a host where user or
-		// cgroup namespaces are unavailable — the strict spellings would be
-		// better (a host with unprivileged userns disabled currently gets no
-		// user namespace and no error, on EITHER path) but fixing that inside a
-		// phase whose contract is "adds and removes nothing" would smuggle in a
-		// user-visible change; see
-		// https://github.com/gomoni/snug/issues/24.
+		// user is the STRICT spelling, not -try. Measured (issue #24): for
+		// every unprivileged, non-root caller, bwrap's own DWIM
+		// (bubblewrap.c:2997, `if (!is_privileged && getuid() != 0 &&
+		// opt_userns_fd == -1) opt_unshare_user = true;`) already forces this
+		// on before the -try heuristic runs, so strict costs that population
+		// nothing. What -try silently swallows is narrower and worse: a REAL
+		// uid-0 caller whose own namespace's max_user_namespaces reads "0" gets
+		// no user namespace and no error — and the stage's own topology (P1
+		// runs bwrap as uid 0 in its own user namespace) puts every @net run's
+		// bwrap in exactly that bucket, regardless of the human's uid. Strict
+		// makes that failure fatal, per invariant 5, with bwrap's own message
+		// naming the sysctl (kernel.unprivileged_userns_clone / max_user_namespaces).
+		//
+		// cgroup stays -try, deliberately, and the asymmetry is not an
+		// oversight: cgroup's -try is only a stat("/proc/self/ns/cgroup")
+		// kernel-support check, not a resource check, and any resource failure
+		// already takes the WHOLE clone() down loudly regardless of -try. Going
+		// strict here would trade a risk that measurement found to be
+		// non-existent for a real one — refusing a host built without
+		// CONFIG_CGROUPS. See the issue #24 comment for the measurement.
 		a = append(a,
-			"--unshare-user-try", "--unshare-ipc", "--unshare-pid",
+			"--unshare-user", "--unshare-ipc", "--unshare-pid",
 			"--unshare-uts", "--unshare-cgroup-try")
 	} else {
-		// Unshare everything bwrap supports, rather than listing namespaces to
-		// keep. A selective list is a denylist, and this design does not do
-		// denylists. Networking is therefore a private netns with only lo —
-		// offline, which is the correct floor until a net profile exists.
-		a = append(a, "--unshare-all")
+		// Unshare everything bwrap supports — still every namespace, not a
+		// selective list of ones to keep, so this remains the "share nothing"
+		// floor and not a denylist. Emitted as bwrap 0.11.2's own literal
+		// expansion of --unshare-all (bubblewrap.c:1894-1903) rather than that
+		// one flag, so that (a) user can be the strict spelling below, which
+		// --unshare-all itself cannot be told to use, and (b) the set is
+		// reviewable in a golden file instead of hidden behind a single flag
+		// name. net MUST stay in this list: dropping it would silently restore
+		// host networking, the worst possible outcome of this change — verified
+		// by execution, not just by reading this comment, and pinned by
+		// TestOfflineHasOnlyLoopback (test/integration/sandbox_test.go), which
+		// already covers exactly this claim. --share-net below still re-opens
+		// it for NetHost, same as it always did.
+		a = append(a,
+			"--unshare-user", "--unshare-ipc", "--unshare-pid",
+			"--unshare-uts", "--unshare-cgroup-try", "--unshare-net")
 	}
 
 	a = append(a,
@@ -120,9 +143,10 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 	)
 
 	// In host-network mode the sandbox INHERITS the host netns rather than
-	// getting its own. --share-net is the single documented exception to
-	// --unshare-all, and it means every host loopback service and every abstract
-	// AF_UNIX socket (X11, D-Bus) is reachable. The CLI demands --i-know.
+	// getting its own. --share-net negates the --unshare-net emitted above (in
+	// the offline branch's explicit expansion of --unshare-all), and it means
+	// every host loopback service and every abstract AF_UNIX socket (X11,
+	// D-Bus) is reachable. The CLI demands --i-know.
 	if p.Net.Mode == NetHost {
 		a = append(a, "--share-net")
 	}
