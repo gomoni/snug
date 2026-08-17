@@ -92,7 +92,7 @@ func TestStageStartRefusesASandboxLargeEnoughToReachThePinnedNetns(t *testing.T)
 		oversized[i] = devNull
 	}
 
-	_, err = Start(Config{Netns: policy.NetnsStage, Sandbox: oversized})
+	_, err = Start(Config{Topology: policy.Topology{Netns: policy.NetnsStage}, Sandbox: oversized})
 	if err == nil {
 		t.Fatal("Start accepted a Config whose Sandbox slice reaches the pinned netns descriptor")
 	}
