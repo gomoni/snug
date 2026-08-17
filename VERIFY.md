@@ -1380,6 +1380,57 @@ pgrep -a bwrap || echo "no leftovers: ok"
 Expect the bwrap process to be gone. `--die-with-parent` kills the payload even
 when snug is SIGKILLed and cannot clean up after itself.
 
+### 11b. …including when the signal lands during startup
+
+Section 11 kills a sandbox that has been up for two seconds, which is the easy
+case: bwrap has long since armed `--die-with-parent` on its own init. Issue #13
+is the other one. bwrap arms that late — roughly 40 ms in — and before then,
+killing the process snug forked does **not** take the init with it. Measured at
+the time: the init survived, reparented to the surrounding container's
+subreaper, holding the payload and the network namespace, still writing to the
+target *after* snug was gone.
+
+Run it on both topologies. `$TOK` is what makes the survivor findable: an
+orphan has been reparented out of snug's tree, so `pgrep -P` cannot see it.
+
+The other half of the evidence is a **write dated after snug's death**, not a
+write. The payload rewrites its marker in a loop and the check compares the
+marker against a stamp file touched the instant snug is gone. The distinction
+is not pedantry: the first version of the automated equivalent asserted the
+marker was merely absent, and CI failed it at 280 ms and 300 ms because by then
+the payload had legitimately written it *before* the signal landed — a correct
+teardown looking exactly like a leak.
+
+```bash
+for args in "" "-p @net"; do
+  for off in 0.02 0.05 0.10 0.30; do
+    T=$(mktemp -d); TOK=snug13$RANDOM
+    ./bin/snug $args "$T" -- /bin/sh -c \
+      "while :; do echo x > \"\$SNUG_TARGET/m-$TOK\"; sleep 0.1; done" >/dev/null 2>&1 &
+    SNUG=$!
+    sleep $off; kill -TERM $SNUG; wait $SNUG 2>/dev/null
+    touch "$T/.died"
+    sleep 1
+    SURV=$(grep -lZ "$TOK" /proc/[0-9]*/cmdline 2>/dev/null | tr -d '\0' | tr '\n' ' ')
+    echo "args='$args' off=${off}s wrote-after-death=$([ "$T/m-$TOK" -nt "$T/.died" ] && echo YES || echo no) survivors=[$SURV]"
+    for f in $SURV; do p=${f#/proc/}; kill -9 "${p%/cmdline}" 2>/dev/null; done
+    rm -rf "$T"
+  done
+done
+```
+
+Expect `wrote-after-death=no survivors=[]` on every line. Anything else is
+issue #13 back: a `YES` means something wrote to the target after snug exited,
+and a non-empty `survivors` names the process still holding the sandbox. Kill
+only those pids — never `pkill bwrap`, which on a host with Flatpak matches
+processes snug never started.
+
+`SIGKILL` is **not** in this check and will not pass it. It never reaches
+userspace, so snug gets no chance to confirm the teardown; that residual is
+recorded on the issue rather than hidden here. The automated equivalent is
+`TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox`, which sweeps the same
+offsets from 0–300 ms in 20 ms steps for `TERM`, `INT` and `HUP`.
+
 ## 12. The stage — a `@net` sandbox has a second process ahead of it
 
 Since Phase 1 (`.claude/design/SUPERVISOR-DESIGN.md`), a `-p @net` run

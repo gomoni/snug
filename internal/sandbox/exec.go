@@ -141,6 +141,13 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	if err := fdseal.SealFor(cmd); err != nil {
 		return 0, err
 	}
+
+	// Armed immediately before the fork, never after it: a TERM/INT/HUP landing
+	// between a live bwrap and an uninstalled handler is issue #13's window,
+	// and the only way to close it is not to have it. See teardown.go.
+	guard := armTeardown(opts)
+	defer guard.stop()
+
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
@@ -149,7 +156,13 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	// is already running. Every networked run goes through runStaged above —
 	// NetEgress is the only mode deriveTopology maps to NetnsStage, and the only
 	// mode that ever needed a helper.
-	return wait(cmd)
+	//
+	// guard.wait, not a bare wait(cmd): a TERM/INT/HUP arriving in the ~40ms
+	// before bwrap's own init arms its pdeathsig used to leave that init
+	// running, reparented, holding the payload — issue #13. See teardown.go.
+	return guard.wait(cmd.Process.Pid, func() (int, error) {
+		return wait(cmd)
+	})
 }
 
 // runStaged is the NetnsStage arm, and its ORDER is the security property.
@@ -172,14 +185,20 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 // type are gone with it.
 //
 // BUT ONLY THE RELEASE HALF. F2 had two clauses — a killed snug released the
-// payload AND left an orphaned sandbox — and this closes the first. The second
-// is open on both topologies and predates this change: between bwrap forking
-// the sandbox init and bwrap arming --die-with-parent on it, nothing in snug
-// guarantees the sandbox dies, so a signal to snug in that interval leaves an
-// init reparented to the subreaper, holding the payload and the netns, with
-// write access to the target. Measured 3/3, all four signals. Tracked as
-// https://github.com/gomoni/snug/issues/13, which carries the measurements and
-// the three refuted candidates. Do not read the deletions above as covering it.
+// payload AND left an orphaned sandbox — and the reordering closes the first.
+// The second was open on both topologies and predates it: between bwrap
+// forking the sandbox init and bwrap arming --die-with-parent on it, nothing
+// in snug guaranteed the sandbox died, so a signal to snug in that interval
+// left an init reparented to the nearest subreaper, holding the payload and
+// the netns, with write access to the target. Measured 3/3, all four signals,
+// on both topologies. Do not read the deletions above as covering it: what
+// covers it is teardown.go's guard, armed around each fork, and issue #13
+// carries the measurements and the three refuted candidates.
+//
+// SIGKILL remains open and cannot be closed here: it never reaches userspace,
+// so no handler in snug gets to run. That residual is stated on the issue
+// rather than papered over, and TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox
+// asserts the three catchable signals only, deliberately.
 //
 // What made the reorder possible, having previously been recorded as a blocker:
 // confirming the interface is up needed a process inside N to read
@@ -229,18 +248,35 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 		return 0, fmt.Errorf("pasta exited before the network came up: %s", helper.failure())
 	}
 
+	// Armed before StartSandbox, and here that is the fork of a GRANDchild:
+	// bwrap is forked by the stage, so P0 never learns its pid and st.Pid() is
+	// the only lever it has. Everything above this line — the stage, pasta,
+	// the up-to-netReadyTimeout wait for the interface — is deliberately
+	// outside the guard: nothing there can be orphaned (the stage carries its
+	// own PR_SET_PDEATHSIG and no payload exists yet), and a guard held across
+	// that wait would swallow a Ctrl-C for as long as fifteen seconds.
+	guard := armTeardown(opts)
+	defer guard.stop()
+
 	if err := st.StartSandbox(bwrap, argv); err != nil {
 		return 0, err
 	}
 
-	ws, err := st.Wait()
-	if err != nil {
-		return 0, err
-	}
-	if ws.Exited() {
-		return ws.ExitStatus(), nil
-	}
-	return -1, nil
+	// From here on a payload exists, forked by the STAGE, not by this process.
+	// guard.wait is what closes issue #13's window on this topology: the
+	// stage's own child (bwrap) can be orphaned exactly as the offline
+	// topology's bwrap can, by the same ~40ms pdeathsig-arming gap, and
+	// confirmTeardown's sweep is what reaches it once the stage is dead.
+	return guard.wait(st.Pid(), func() (int, error) {
+		ws, err := st.Wait()
+		if err != nil {
+			return 0, err
+		}
+		if ws.Exited() {
+			return ws.ExitStatus(), nil
+		}
+		return -1, nil
+	})
 }
 
 // netReadyTimeout is P0's patience with the STAGE, not with pasta: the stage
