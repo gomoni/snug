@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -142,6 +143,77 @@ func sshAgentAndKey(t *testing.T) (pub, sock string) {
 		t.Fatalf("ssh-add: %v\n%s", err, out)
 	}
 	return key + ".pub", sock
+}
+
+// sshKeyComment is the comment sshAgentWithNKeys gives its i'th generated key,
+// exported as a function (rather than just inlined) so the test asserting
+// enumeration and the helper that generated the keys cannot drift apart.
+func sshKeyComment(i int) string {
+	return fmt.Sprintf("snug-integration-key-%d@example.invalid", i)
+}
+
+// sshAgentWithNKeys starts a throwaway agent — never the developer's own, and
+// never touching ~/.ssh — and loads it with n keys, each generated into a
+// fresh temp dir with a distinct comment (sshKeyComment). It returns the n
+// public key paths in generation order plus SSH_AUTH_SOCK, so a caller can pin
+// any one of them and know exactly which comment identifies it on screen.
+//
+// This is what makes TestSSHAgentEnumerationIsBoundToOnePinnedKeyAmongMany an
+// end-to-end measurement rather than a guess about whatever agent the machine
+// running the suite happens to have: N is a number this function controls.
+func sshAgentWithNKeys(t *testing.T, n int) (pubs []string, sock string) {
+	t.Helper()
+	for _, bin := range []string{"ssh-keygen", "ssh-agent", "ssh-add"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("%s is not installed; nothing to measure", bin)
+		}
+	}
+	dir := t.TempDir()
+	sock = filepath.Join(dir, "agent.sock")
+	agent := exec.Command("ssh-agent", "-D", "-a", sock)
+	if err := agent.Start(); err != nil {
+		t.Fatalf("ssh-agent: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = agent.Process.Kill()
+		_, _ = agent.Process.Wait()
+	})
+	waitForSocket(t, sock)
+
+	for i := 0; i < n; i++ {
+		key := filepath.Join(dir, fmt.Sprintf("id_ed25519_%d", i))
+		if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C",
+			sshKeyComment(i), "-f", key).CombinedOutput(); err != nil {
+			t.Fatalf("ssh-keygen %d: %v\n%s", i, err, out)
+		}
+		add := exec.Command("ssh-add", key)
+		add.Env = append(os.Environ(), "SSH_AUTH_SOCK="+sock)
+		if out, err := add.CombinedOutput(); err != nil {
+			t.Fatalf("ssh-add %d: %v\n%s", i, err, out)
+		}
+		pubs = append(pubs, key+".pub")
+	}
+	return pubs, sock
+}
+
+// hostAgentKeyCount asks the real agent directly, bypassing snug and the
+// sandbox entirely — the host-side measurement every host/inside comparison
+// in this file needs as its other half.
+func hostAgentKeyCount(t *testing.T, sock string) int {
+	t.Helper()
+	list := exec.Command("ssh-add", "-l")
+	list.Env = append(os.Environ(), "SSH_AUTH_SOCK="+sock)
+	out, err := list.CombinedOutput()
+	if err != nil {
+		t.Fatalf("ssh-add -l against the throwaway agent: %v\n%s", err, out)
+	}
+	n := 0
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	return n
 }
 
 func writeProfile(t *testing.T, toml string, extraEnv ...string) []string {
@@ -534,4 +606,214 @@ func TestDryRunOfADefaultSelectionNamesRequiredRSASize(t *testing.T) {
 			"feature accepts must stay on screen, or invariant 5 (no silent downgrade) "+
 			"is reopened for this feature:\n%s", out)
 	}
+}
+
+// TestSSHAgentEnumerationIsBoundToOnePinnedKeyAmongMany is issue #86 item 2.
+//
+// internal/sshproxy has unit tests for the FILTER itself, and
+// TestThePinnedPublicKeyIsStagedInEverySSHMode above covers staging. Neither
+// measures the property the whole ssh_mode = "agent-proxy" decision rests on:
+// a host agent holding many keys, and the sandbox enumerating exactly one —
+// the pinned one. The filter can stay correct in unit tests while what
+// actually reaches it, end to end through a real proxy and a real sandbox,
+// silently changes; this is the test that would catch that.
+//
+// The throwaway agent is this test's own (sshAgentWithNKeys), never the
+// developer's ~/.ssh or whatever SSH_AUTH_SOCK happens to be set on the
+// machine running the suite — otherwise "exactly one enumerable" would be a
+// property of that machine's agent on the day, not of snug.
+func TestSSHAgentEnumerationIsBoundToOnePinnedKeyAmongMany(t *testing.T) {
+	budget(t, 20*time.Second)
+	requireSandbox(t)
+	const n = 6
+	pubs, sock := sshAgentWithNKeys(t, n)
+	proj, _ := target(t)
+
+	// CONTROL: measured from the HOST side, against the real agent, before any
+	// sandbox is involved. Without this, "exactly one enumerable inside" would
+	// be equally true of an agent that only ever held one key.
+	if got := hostAgentKeyCount(t, sock); got != n {
+		t.Fatalf("precondition: the throwaway agent holds %d keys, not %d — this test "+
+			"would prove nothing", got, n)
+	}
+
+	// An arbitrary key in the middle, not the first or last generated — rules
+	// out an off-by-one on either end of the identity list as a way to pass by
+	// accident.
+	const pinIndex = 2
+	pin := pubs[pinIndex]
+
+	// A key that was never loaded into the agent at all, staged into the
+	// target (writable, visible inside) so the sandbox can try to hand it to
+	// ssh-add without needing ssh-keygen to work inside the sandbox too.
+	newKey := filepath.Join(proj, "newkey_probe")
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C",
+		"not-loaded@example.invalid", "-f", newKey).CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen: %v\n%s", err, out)
+	}
+
+	env := writeProfile(t, "[profile.pinned]\n"+
+		"description = \"one key pinned out of many in the agent, for the enumeration bound\"\n"+
+		"[profile.pinned.identity]\n"+
+		"ssh_mode = \"agent-proxy\"\n"+
+		"ssh_key = \""+pin+"\"\n", "SSH_AUTH_SOCK="+sock)
+
+	// -v is required: the two refusals below are audited to snug's own stderr
+	// (cmd/snug/identity.go), not to the sandboxed payload's own output, and
+	// without it there would be nothing here to assert against beyond the
+	// enumeration count.
+	r := runEnv(t, env, []string{"-p", "pinned", "-v"}, proj,
+		`raw=$(ssh-add -l 2>&1)
+echo "RAW: $raw"
+echo "count=$(printf '%s\n' "$raw" | grep -c .)"
+ssh-add newkey_probe 2>&1
+ssh-add -D 2>&1`).mustRun(t)
+
+	// Positive control: the pinned key IS enumerable, by its comment.
+	if !strings.Contains(r.out, sshKeyComment(pinIndex)) {
+		t.Fatalf("the pinned key's comment does not appear in ssh-add -l inside the "+
+			"sandbox, so the count assertion below would prove nothing:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "count=1") {
+		t.Errorf("the sandbox enumerated other than exactly one key out of %d in the "+
+			"host agent:\n%s", n, r.out)
+	}
+	for i := range pubs {
+		if i == pinIndex {
+			continue
+		}
+		if strings.Contains(r.out, sshKeyComment(i)) {
+			t.Errorf("key %d, which was not pinned, is enumerable inside the sandbox:\n%s", i, r.out)
+		}
+	}
+
+	if !strings.Contains(r.out, "sandbox tried to add a key to the host agent") {
+		t.Errorf("adding a new key inside the sandbox was not refused with the audit "+
+			"message the proxy is documented to emit:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "sandbox tried to remove keys from the host agent") {
+		t.Errorf("ssh-add -D inside the sandbox was not refused with the audit message "+
+			"the proxy is documented to emit:\n%s", r.out)
+	}
+
+	// Positive control that the refusals actually refused, not merely printed a
+	// message while doing the thing anyway: the real agent, checked directly
+	// from the host, still holds all n keys.
+	if got := hostAgentKeyCount(t, sock); got != n {
+		t.Errorf("the host agent holds %d keys after the sandboxed ssh-add/-D attempts, "+
+			"not the original %d — a refusal that only logs and does not refuse is not "+
+			"a refusal:\n%s", got, n, r.out)
+	}
+}
+
+// TestPinnedIdentityIgnoresAPayloadAuthoredXDGGitConfig is issue #86 item 3,
+// and the regression test issue #84 says keeps its residual a residual: "the
+// payload can plant a git command table but it cannot beat a pinned identity"
+// is a sentence without this check.
+//
+// resolve.go sets GIT_CONFIG_GLOBAL to the generated ~/.gitconfig whenever
+// git = "extract" or an [identity] block is present — REPLACING, not merging
+// with, ~/.gitconfig and $XDG_CONFIG_HOME/git/config (both read by git when
+// GIT_CONFIG_GLOBAL is unset). $XDG_CONFIG_HOME is `{home}/.config`, one of
+// the eight writable tmpfs paths that die with the sandbox (base.toml,
+// [profile.home]) — so a payload running earlier in the SAME sandbox can
+// always write $XDG_CONFIG_HOME/git/config. The question this test answers is
+// whether git still obeys it once an identity is pinned.
+//
+// Issue #84's own investigation produced a false negative twice from the same
+// mistake: running the check under `env -u GIT_CONFIG_GLOBAL` first, which
+// unsets the very variable the defence depends on before ever exercising it —
+// proving nothing about whether snug's own GIT_CONFIG_GLOBAL wins. This test
+// does not do that anywhere. Its positive control (below) is a SEPARATE
+// sandbox invocation with no identity and no git profile at all — the actual
+// unprotected baseline, where snug never authors GIT_CONFIG_GLOBAL in the
+// first place, matching issue #84's own reproduction of the residual — rather
+// than a doctored version of the protected run.
+func TestPinnedIdentityIgnoresAPayloadAuthoredXDGGitConfig(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+
+	payload := func(marker string) string {
+		return `mkdir -p "$XDG_CONFIG_HOME/git"
+cat > "$XDG_CONFIG_HOME/git/config" <<'PAYLOAD'
+[user]
+	name = payloadname
+[alias]
+	pwn = !touch ` + marker + `
+PAYLOAD
+echo "global=[$GIT_CONFIG_GLOBAL]"
+echo "name=[$(git config --get user.name)]"
+echo "email=[$(git config --get user.email)]"
+git pwn 2>&1 | head -1
+echo "pwned=[$(test -f ` + marker + ` && echo yes || echo no)]"
+`
+	}
+
+	// ARM A — the unprotected baseline, and the positive control for the
+	// mechanism under test. No identity, no git profile, nothing else on the
+	// command line beyond the defaults: GIT_CONFIG_GLOBAL is never authored,
+	// so plain git behaviour applies and $XDG_CONFIG_HOME/git/config is read.
+	// If this arm did NOT show the payload's identity taking effect, ARM B's
+	// refusal below would prove nothing — it could just as well mean git never
+	// reads XDG config on this host for an unrelated reason.
+	t.Run("baseline_no_identity_is_actually_exploitable", func(t *testing.T) {
+		projA, _ := target(t)
+		a := run(t, nil, projA, payload("PWNED_A")).mustRun(t)
+
+		if strings.Contains(a.out, "global=[") && !strings.Contains(a.out, "global=[]") {
+			t.Errorf("no identity and no git profile were selected, yet GIT_CONFIG_GLOBAL "+
+				"is set — this arm is not the unprotected baseline it claims to be:\n%s", a.out)
+		}
+		if !strings.Contains(a.out, "name=[payloadname]") {
+			t.Fatalf("the payload-authored XDG git config was not honoured with no identity "+
+				"pinned; the mechanism this test relies on to make ARM B meaningful is not "+
+				"present on this host:\n%s", a.out)
+		}
+		if !strings.Contains(a.out, "pwned=[yes]") {
+			t.Fatalf("the payload's alias did not run in the unprotected baseline; ARM B's "+
+				"absence of PWNED_B below would prove nothing:\n%s", a.out)
+		}
+	})
+
+	// ARM B — an identity pinned (ssh_mode = "none": this is the git half, not
+	// the ssh one). The SAME payload as ARM A must be ignored.
+	t.Run("pinned_identity_refuses_it", func(t *testing.T) {
+		projB, _ := target(t)
+		env := writeProfile(t, "[profile.pinned]\n"+
+			"description = \"git identity pin for the XDG_CONFIG_HOME bound (issue #86 item 3)\"\n"+
+			"[profile.pinned.identity]\n"+
+			"ssh_mode = \"none\"\n"+
+			"git_name = \"Pinned Name\"\n"+
+			"git_email = \"pinned@example.invalid\"\n")
+
+		b := runEnv(t, env, []string{"-p", "pinned"}, projB, payload("PWNED_B")).mustRun(t)
+
+		// Verify the defence is ACTIVE, not merely requested: GIT_CONFIG_GLOBAL
+		// really is set inside this run, pointing at snug's generated file.
+		if !strings.Contains(b.out, "global=[") || strings.Contains(b.out, "global=[]") {
+			t.Fatalf("GIT_CONFIG_GLOBAL is not set with an identity pinned; the mechanism "+
+				"this test is meant to verify never engaged:\n%s", b.out)
+		}
+		if !strings.Contains(b.out, ".gitconfig") {
+			t.Errorf("GIT_CONFIG_GLOBAL is set but does not name the generated ~/.gitconfig:\n%s", b.out)
+		}
+		if !strings.Contains(b.out, "name=[Pinned Name]") {
+			t.Errorf("the payload-authored XDG git config overrode the pinned identity's "+
+				"name — the residual issue #84 accepted has widened into a real defeat:\n%s", b.out)
+		}
+		if !strings.Contains(b.out, "email=[pinned@example.invalid]") {
+			t.Errorf("the pinned email did not win over the payload-authored XDG git config:\n%s", b.out)
+		}
+		if !strings.Contains(b.out, "pwned=[no]") {
+			t.Errorf("the payload's alias, planted only through $XDG_CONFIG_HOME/git/config, "+
+				"ran anyway with an identity pinned:\n%s", b.out)
+		}
+		if !strings.Contains(b.out, "not a git command") {
+			t.Errorf("git did not report alias.pwn as unrecognised, which is the shape a "+
+				"correctly-ignored XDG config takes:\n%s", b.out)
+		}
+	})
 }
