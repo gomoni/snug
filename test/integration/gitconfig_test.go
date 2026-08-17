@@ -74,6 +74,7 @@ func gitExtractEnv(t *testing.T, globalFile string) []string {
 }
 
 func TestGitExtractHonoursAConditionalIncludeForTheTargetOnly(t *testing.T) {
+	requireSandbox(t)
 	globalFile, matching, other := gitFixture(t)
 	env := gitExtractEnv(t, globalFile)
 
@@ -101,6 +102,7 @@ echo "branch=$(git config --get init.defaultBranch)"`
 }
 
 func TestGitExtractCarriesNothingThatNamesAProgram(t *testing.T) {
+	requireSandbox(t)
 	globalFile, matching, _ := gitFixture(t)
 	env := gitExtractEnv(t, globalFile)
 
@@ -139,6 +141,7 @@ grep -c . "$HOME/.gitconfig"`).mustRun(t)
 // The assertion is deliberately behavioural rather than textual: the artifact is
 // created or it is not.
 func TestNoHostGitValueCanRunACommandInsideTheSandbox(t *testing.T) {
+	requireSandbox(t)
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
 	}
