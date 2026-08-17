@@ -15,20 +15,10 @@ import (
 	"github.com/gomoni/snug/internal/sshproxy"
 )
 
-// runtimeDir is a private per-run directory for sockets. Under
-// $XDG_RUNTIME_DIR, which is a tmpfs owned by us with mode 0700, so a stale
-// socket cannot survive a reboot and nobody else can connect to one.
-func runtimeDir() (string, error) {
-	base := os.Getenv("XDG_RUNTIME_DIR")
-	if base == "" {
-		base = os.TempDir()
-	}
-	dir := filepath.Join(base, "snug", fmt.Sprintf("run-%d", os.Getpid()))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	return dir, nil
-}
+// runtimeDir moved to runtimedir.go, with the guards issue #61 part (c) and
+// #85 needed: openat2(RESOLVE_NO_SYMLINKS) on every directory it creates or
+// reuses, an ownership/mode check on anything it did not just create, and a
+// sweep of run-* directories a SIGKILLed run left behind.
 
 // knownHostsFor extracts the entries for one host from the host's known_hosts.
 //
