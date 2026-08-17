@@ -330,7 +330,7 @@ network = "host"
 # nothing else — so a token refreshed inside does not reach the host.
 #
 # ~/.claude.json is NOT copied. It is GENERATED: at most three keys, no host
-# bytes (cmd/snug/claude.go, claudeStateJSON). Enough that Claude Code opens on
+# bytes (internal/cli/claude.go, claudeStateJSON). Enough that Claude Code opens on
 # the prompt instead of the theme picker, and nothing more. MEASURED: Claude Code
 # connects and works with the host file absent; only .credentials.json is
 # load-bearing. The comment that used to sit here said the opposite and carried
@@ -375,7 +375,7 @@ network = "host"
 # CLAUDE.md's "the writable surface is eight paths" bullet records what
 # happens next: the list grows, the prose does not, and no test can fail. The
 # injected ~/.claude/CLAUDE.md enumerates the real names at runtime rather
-# than counting them (claudeAllowlistNames, cmd/snug/claude.go).
+# than counting them (claudeAllowlistNames, internal/cli/claude.go).
 #
 # WHAT THIS DOES NOT CLOSE, stated because the fix would otherwise read wider
 # than it is: `ro` below still binds {home}/.claude/plugins, and dropping
@@ -425,7 +425,7 @@ optional = [
 # environment". Claude Code also PREFERS the key over the OAuth token when both
 # are present, so passing it made the sandbox use the more dangerous of the two
 # credentials it had. Without it Claude authenticates from the staged, writable
-# copy of ~/.claude/.credentials.json (cmd/snug/claude.go), which is a file the
+# copy of ~/.claude/.credentials.json (internal/cli/claude.go), which is a file the
 # payload has to open on purpose and which never syncs a modified token back
 # without structural validation.
 #

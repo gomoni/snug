@@ -924,7 +924,7 @@ func mountGuests(p *Policy) []string {
 //
 // Both routes that used to reach @null go through UnknownProfile: -p @null via
 // Resolve -> expand, and `snug profile show @null` via a direct registry miss
-// (cmd/snug/config.go). Exercising UnknownProfile itself, rather than only
+// (internal/cli/config.go). Exercising UnknownProfile itself, rather than only
 // Resolve, is what actually pins the second route — see
 // TestRetiredNullProfileIsANamedError in test/integration for the CLI-level
 // (exit code) half of this.

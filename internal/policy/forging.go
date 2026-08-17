@@ -15,7 +15,7 @@ import (
 // wrote" was asked in four places, each with its own spelling:
 //
 //	checkEnvValue (envtypes.go)   unicode.IsControl + U+2028/U+2029
-//	isForgingRune (cmd/snug)      unicode.IsControl + U+2028/U+2029
+//	isForgingRune (internal/cli)      unicode.IsControl + U+2028/U+2029
 //	Validate      (validate.go)   r < 0x20 || r == 0x7f      <- still ASCII-only
 //	Identity.CheckText            c < 0x20 || c == 0x7f      <- a BYTE loop
 //
@@ -145,7 +145,7 @@ func forgingRuneReason(r rune) string {
 // sink a value reaches rather than to fix the one it was found at. A refusal is
 // the sink a human reads most carefully, since it is the one that stopped them.
 //
-// Invalid UTF-8 is escaped wholesale for the reason cmd/snug's visibleValue
+// Invalid UTF-8 is escaped wholesale for the reason internal/cli's visibleValue
 // gives: a raw 0x9b byte decodes to RuneError, so no rune predicate can see it,
 // while on a terminal in 8-bit mode it IS the CSI introducer. Text with nothing
 // to escape is returned unchanged, so ordinary output and every golden are

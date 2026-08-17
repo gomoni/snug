@@ -202,7 +202,7 @@ on `/**a**a**a**b` against a 400-component path and did not finish with one more
 group.
 
 **The durable answer is the oracle**, not the fix:
-`TestGitdirMatcherAgreesWithRealGit` (cmd/snug) builds a real repository and a
+`TestGitdirMatcherAgreesWithRealGit` (internal/cli) builds a real repository and a
 real config per case, asks *git* whether the include fired, and compares. A
 hand-written table only tests the cases someone thought of, and the seven above
 are the proof of it.

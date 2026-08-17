@@ -92,7 +92,7 @@ func TestAddingAProfileNeverLowersATopologyField(t *testing.T) {
 // named Topology this line would not compile" — false, because a keyed literal
 // compiles perfectly well with fields missing. It was verified fake by adding a
 // `Topology Topology` field to Profile and watching internal/policy,
-// internal/profile and cmd/snug all stay green. An unkeyed literal must supply
+// internal/profile and internal/cli all stay green. An unkeyed literal must supply
 // every field in order, so adding one anywhere breaks this build.
 //
 // Profile is only HALF the surface. TOML decodes into internal/profile's

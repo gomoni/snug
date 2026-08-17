@@ -29,7 +29,7 @@ import "github.com/gomoni/snug/internal/policy"
 // The names carry the @ mark because these ARE the builtins (policy.Sigil). A
 // user replacing this list in config.toml writes their own names without one.
 //
-// Precedence, implemented in cmd/snug/config.go:
+// Precedence, implemented in internal/cli/config.go:
 //
 //  1. this list;
 //  2. REPLACED wholesale by `defaults = [...]` in ~/.config/snug/config.toml —
@@ -46,7 +46,7 @@ import "github.com/gomoni/snug/internal/policy"
 // policy.NewProfileName and no conversion: they are untyped string CONSTANTS in
 // a []policy.ProfileName literal, which Go converts at compile time. That is
 // the safe case by construction — a constant cannot carry runtime data — and it
-// is why the conversion sweep in cmd/snug looks for ProfileName(x) rather than
+// is why the conversion sweep in internal/cli looks for ProfileName(x) rather than
 // for every place a name is written down.
 func BuiltinDefaults() []policy.ProfileName {
 	return []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro"}

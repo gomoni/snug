@@ -79,7 +79,7 @@ type ProfileName string
 //
 // A caller outside this file may not write ProfileName(s): the conversion
 // exists in exactly one file, and TestOnlyTheConstructorConvertsToAProfileName
-// in cmd/snug asserts it stays there.
+// in internal/cli asserts it stays there.
 func NewProfileName(s string) (ProfileName, error) {
 	bare := strings.TrimPrefix(s, Sigil)
 	i := NameFault(bare)

@@ -65,7 +65,7 @@ import (
 // exists to protect (README's five-verb block, VERIFY §6j) are both
 // heredoc/fenced-block spelled, not printf-spelled.
 //
-// Lives in internal/profile, not cmd/snug or internal/policy: `parse` (below)
+// Lives in internal/profile, not internal/cli or internal/policy: `parse` (below)
 // is what already runs a profile file through BOTH the profile grammar and
 // policy.ValidateEnvGrants (file.go's parse calls it directly) — one call is
 // the real path a file on disk goes through, not a reimplementation of it.

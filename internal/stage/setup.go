@@ -12,7 +12,7 @@ import (
 // U (its own user namespace, ONE uid mapped) and N (the sandbox's private
 // network namespace). It refuses immediately if the descriptors it requires —
 // fdControl, fdLife — are not present, and is not reachable as ordinary CLI:
-// cmd/snug's hidden verb dispatch is the only caller.
+// internal/cli's hidden verb dispatch is the only caller.
 //
 // THE ORDER IS THE SPECIFICATION (SUPERVISOR-DESIGN.md §4 Step 4):
 //

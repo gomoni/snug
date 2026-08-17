@@ -135,7 +135,7 @@ Measured, not recalled. Each one changed a design decision.
   number: CLAUDE.md has its own differently-ordered list): it is additive,
   and bwrap cannot create a mountpoint at a symlink destination anyway
   (INDEX §3.3). The live case is `/usr/bin/podman` being a distrobox shim that
-  cannot work from inside (`cmd/snug/podmanshim.go`). **The boundary: reach for
+  cannot work from inside (`internal/cli/podmanshim.go`). **The boundary: reach for
   an overmount only when the consumer reads an absolute path it will not let you
   configure.**
 - **Generate, don't bind — and tell a pointer from an inline setting.** Where the

@@ -599,7 +599,7 @@ func under(canonTarget, p string) (string, bool) {
 
 // The unexported `replace` that used to live here is now Policy.Replace
 // (types.go), exported and marking Mount.Authored — because the same operation
-// is needed by cmd/snug's staging layer, and three sites there were assigning
+// is needed by internal/cli's staging layer, and three sites there were assigning
 // p.Mounts[...] directly instead, bypassing both the provenance record and
 // Validate.
 

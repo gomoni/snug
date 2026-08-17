@@ -443,15 +443,15 @@ func TestConflictingMTUsAreFatal(t *testing.T) {
 	}
 }
 
-// refusalNestedGrantUnderLaterReplace: item 7. cmd/snug's staging layer
+// refusalNestedGrantUnderLaterReplace: item 7. internal/cli's staging layer
 // (claudeFiles, stageGhConfig, BindSocket) adds mounts via Policy.Replace
 // AFTER Resolve — and after Resolve's own Validate call already ran. This
 // simulates that shape purely within the policy package: a profile grant
 // lands INSIDE a path that only becomes a KindData mount later. The first
 // Validate cannot see it (nothing occupies that path yet); only a SECOND
 // Validate call, run after the Replace, catches it — which is exactly what
-// cmd/snug/main.go now does after claudeFiles/startIdentity/startContainers.
-// See TestPostStagingValidateCatchesNestedGrant in cmd/snug for the same
+// internal/cli/main.go now does after claudeFiles/startIdentity/startContainers.
+// See TestPostStagingValidateCatchesNestedGrant in internal/cli for the same
 // regression exercised through the real staging code.
 func refusalNestedGrantUnderLaterReplace(t testing.TB) error {
 	reg := testRegistry()
