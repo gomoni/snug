@@ -122,8 +122,15 @@ func becomeSubreaper() error {
 // would make it notice directChild's death, so killing directChild alone
 // leaves it running, indefinitely, with no further signal ever arriving.
 // warn is called at most once, only if something outlived the whole budget.
-func confirmTeardown(directChild int, warn func(string)) {
-	_ = syscall.Kill(directChild, syscall.SIGKILL)
+//
+// directChild is passed as a PIDFD, not as a pid, and the sweep signals through
+// a pidfd too. See killPinned: this code chooses what to SIGKILL by parsing
+// /proc, and "the pid you read is the pid you kill" stops being true the moment
+// the process behind it is reaped.
+func confirmTeardown(directChild *os.File, warn func(string)) {
+	if directChild != nil {
+		_ = unix.PidfdSendSignal(int(directChild.Fd()), unix.SIGKILL, nil, 0)
+	}
 
 	root := os.Getpid()
 	deadline := time.Now().Add(teardownPollBudget)
@@ -133,7 +140,7 @@ func confirmTeardown(directChild int, warn func(string)) {
 			return
 		}
 		for _, pid := range pids {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+			killPinned(pid, root)
 		}
 		if time.Now().After(deadline) {
 			warn(fmt.Sprintf("snug was signalled and killed the sandbox, but %d process(es) "+
@@ -213,6 +220,21 @@ func (g *teardownGuard) stop() { signal.Stop(g.sig) }
 // itself (offline) or the stage (staged) — which is what confirmTeardown kills
 // first.
 func (g *teardownGuard) wait(rootChildPid int, wait func() (int, error)) (int, error) {
+	// Pinned HERE, before the goroutine below can reap it. A pid is only a
+	// stable name for a process until something wait()s on it, and the
+	// goroutine below is exactly that something; pinning first means the
+	// descriptor cannot come to name some other process that inherited the
+	// number. See killPinned for the same argument applied to the sweep.
+	//
+	// A failure is not fatal: on a kernel without pidfd_open the sweep still
+	// reaches this process, because it is a descendant of snug like everything
+	// else it forked.
+	var pinned *os.File
+	if fd, err := unix.PidfdOpen(rootChildPid, 0); err == nil {
+		pinned = os.NewFile(uintptr(fd), "pidfd-sandbox")
+		defer pinned.Close()
+	}
+
 	type result struct {
 		code int
 		err  error
@@ -227,7 +249,7 @@ func (g *teardownGuard) wait(rootChildPid int, wait func() (int, error)) (int, e
 	case r := <-done:
 		return r.code, r.err
 	case sig := <-g.sig:
-		confirmTeardown(rootChildPid, g.opts.warn)
+		confirmTeardown(pinned, g.opts.warn)
 		// The kill inside confirmTeardown makes wait's own goroutine return
 		// promptly — it is blocked on reaping rootChildPid (or being told
 		// about it), and that process is now dead. Drain rather than race it:
@@ -236,6 +258,43 @@ func (g *teardownGuard) wait(rootChildPid int, wait func() (int, error)) (int, e
 		<-done
 		return 128 + int(sig.(syscall.Signal)), nil
 	}
+}
+
+// killPinned SIGKILLs pid, having first PINNED it with a pidfd and then
+// re-confirmed — through that pin — that it is still a descendant of root.
+//
+// The order is the point, and the hazard is pid reuse. This code chooses what
+// to kill by parsing /proc, and between reading a pid and signalling it the
+// process behind it can be reaped and the number handed to something else
+// entirely. The sequence here cannot kill a stranger:
+//
+//	pidfd_open(pid)      pins whatever process holds pid RIGHT NOW
+//	re-read ancestry     names the process the pidfd pinned, because a live
+//	                     (or zombie) process still holds its own pid
+//	pidfd_send_signal    signals the pinned process, never the number
+//
+// If the original process died and the number was recycled, the pin names the
+// NEW occupant and the ancestry re-read describes it too — so an unrelated
+// process is skipped rather than killed, and the dead one needs no signal.
+//
+// The fallback is a plain kill(2), which is what this whole function is
+// avoiding, and it is reached only where pidfd_open does not exist at all
+// (before Linux 5.3). Racy there, and it was the only option snug had.
+func killPinned(pid, root int) {
+	fd, err := unix.PidfdOpen(pid, 0)
+	if err != nil {
+		if err == unix.ENOSYS {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+		// Anything else — ESRCH above all — means it is already gone.
+		return
+	}
+	defer unix.Close(fd)
+
+	if !isDescendantOf(pid, root) {
+		return
+	}
+	_ = unix.PidfdSendSignal(fd, unix.SIGKILL, nil, 0)
 }
 
 // ── /proc process-tree walking ───────────────────────────────────────────
@@ -276,6 +335,26 @@ func descendantsOf(root int) []int {
 		}
 	}
 	return out
+}
+
+// isDescendantOf walks PPid upward from pid, one /proc read per hop, and
+// reports whether it reaches root. Separate from descendantsOf because it
+// answers about ONE pid with FRESH reads: descendantsOf's snapshot is what
+// chooses candidates, and this is what re-confirms a candidate after
+// killPinned has pinned it.
+func isDescendantOf(pid, root int) bool {
+	p := pid
+	for hop := 0; hop < descendantHopLimit; hop++ {
+		parent, _, ok := readStatus(p)
+		if !ok || parent == p || parent <= 1 {
+			return false
+		}
+		if parent == root {
+			return true
+		}
+		p = parent
+	}
+	return false
 }
 
 // allPPIDs builds a pid->ppid map for every process on the host owned by this

@@ -53,16 +53,15 @@ const (
 	orphanSweepEnd  = 300 * time.Millisecond
 	orphanSweepStep = 20 * time.Millisecond
 
-	// orphanMarkerDelay is how long the payload waits before writing to the
-	// target. It must outlast snug's own death, or a marker written before the
-	// signal would be indistinguishable from one written by an orphan.
-	orphanMarkerDelay = 250 * time.Millisecond
+	// orphanMarkerPeriod is how often the payload REWRITES its marker. The
+	// evidence is the marker's mtime, never its existence — see orphanRun.
+	orphanMarkerPeriod = 100 * time.Millisecond
 
 	// orphanSettle is how long to wait after snug has exited before deciding
-	// nothing survived it. Comfortably longer than orphanMarkerDelay: a check
-	// made too early would pass because the orphan had not got round to writing
-	// yet, which is the "test that cannot fail" shape this suite exists to
-	// avoid.
+	// nothing survived it. Several marker periods, so a live orphan has had
+	// many chances to touch the file: a check made too early would pass
+	// because the orphan had not got round to writing yet, which is the "test
+	// that cannot fail" shape this suite exists to avoid.
 	orphanSettle = 700 * time.Millisecond
 )
 
@@ -136,6 +135,10 @@ func orphanRun(t *testing.T, args []string, sig syscall.Signal, off time.Duratio
 		t.Fatalf("could not signal snug: %v\n%s", err, orphanLog(t, cmd))
 	}
 	_ = cmd.Wait()
+	// Taken AFTER Wait returns, so it is genuinely "snug is gone". Everything
+	// below compares against this instant rather than against the existence of
+	// a file.
+	died := time.Now()
 
 	time.Sleep(orphanSettle)
 
@@ -149,11 +152,19 @@ func orphanRun(t *testing.T, args []string, sig syscall.Signal, off time.Duratio
 			"namespaces.\n%s",
 			sig, off.Milliseconds(), len(survivors), describePIDs(survivors), orphanLog(t, cmd))
 	}
-	if _, err := os.Stat(marker); err == nil {
+	// The marker's MTIME, not its existence. An earlier version of this test
+	// asserted the file was absent and CI was right to fail it: at 280ms and
+	// 300ms the payload had already run and written it BEFORE the signal
+	// landed, so a correct teardown looked like a leak. What no correct
+	// teardown can produce is a write dated after snug's own death — which is
+	// why the payload rewrites the marker every orphanMarkerPeriod for as long
+	// as it lives, and why this compares against `died`.
+	if fi, err := os.Stat(marker); err == nil && fi.ModTime().After(died) {
 		t.Errorf("%s to snug %dms into startup left something that WROTE to the target "+
-			"directory %s after snug was gone. An orphaned sandbox keeps the write access "+
-			"it was granted, which is the half of issue #13 that outlives the process "+
-			"tree.\n%s", sig, off.Milliseconds(), marker, orphanLog(t, cmd))
+			"directory %s %s AFTER snug was gone. An orphaned sandbox keeps the write "+
+			"access it was granted, which is the half of issue #13 that outlives the "+
+			"process tree.\n%s", sig, off.Milliseconds(), marker,
+			fi.ModTime().Sub(died).Round(time.Millisecond), orphanLog(t, cmd))
 	}
 }
 
@@ -182,19 +193,29 @@ func orphanPositiveControl(t *testing.T, args []string) {
 			killAll(pidsWithToken(tok, snug))
 		})
 
+		// `since` is what makes this a control for the REAL assertion. The
+		// negative arm does not ask whether the marker exists, it asks whether
+		// it was written after a given instant — so this must prove exactly
+		// that detector fires on a sandbox that is genuinely alive, not merely
+		// that a file appeared.
+		since := time.Now()
+
 		var seen []int
+		var fresh bool
 		deadline := time.Now().Add(20 * time.Second)
 		for {
 			seen = pidsWithToken(tok, snug)
-			_, statErr := os.Stat(marker)
-			if len(seen) > 0 && statErr == nil {
+			fi, statErr := os.Stat(marker)
+			fresh = statErr == nil && fi.ModTime().After(since)
+			if len(seen) > 0 && fresh {
 				return
 			}
 			if time.Now().After(deadline) {
 				t.Fatalf("PRECONDITION: an UNSIGNALLED run never produced both detectors — "+
-					"sweep found %d process(es) %s, marker %s exists: %v. Every negative "+
-					"assertion in this test is vacuous until this passes.\n%s",
-					len(seen), describePIDs(seen), marker, statErr == nil, orphanLog(t, cmd))
+					"sweep found %d process(es) %s; marker %s written after the run started: "+
+					"%v. Every negative assertion in this test is vacuous until this "+
+					"passes.\n%s", len(seen), describePIDs(seen), marker, fresh,
+					orphanLog(t, cmd))
 			}
 			time.Sleep(25 * time.Millisecond)
 		}
@@ -208,8 +229,14 @@ func orphanPositiveControl(t *testing.T, args []string) {
 // its argv, and once as a file written to the target AFTER snug's death.
 func orphanCmd(t *testing.T, args []string, proj, tok string) *exec.Cmd {
 	t.Helper()
-	payload := fmt.Sprintf(`sleep %.2f; echo %s > "$SNUG_TARGET/m-%s"; sleep 30`,
-		orphanMarkerDelay.Seconds(), payloadMarker, tok)
+	// A LOOP, not a single delayed write. A one-shot marker makes the evidence
+	// "does this file exist", which is true for any run whose payload got far
+	// enough — including a run torn down perfectly. Rewriting it makes the
+	// evidence "is this file still being written", which only a live process
+	// can produce.
+	payload := fmt.Sprintf(
+		`while :; do echo %s > "$SNUG_TARGET/m-%s"; sleep %.2f; done`,
+		payloadMarker, tok, orphanMarkerPeriod.Seconds())
 
 	argv := append(append([]string{}, args...), proj, "--", "/bin/sh", "-c", payload)
 	cmd := exec.Command(snugBin, argv...)

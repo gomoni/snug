@@ -1391,30 +1391,38 @@ subreaper, holding the payload and the network namespace, still writing to the
 target *after* snug was gone.
 
 Run it on both topologies. `$TOK` is what makes the survivor findable: an
-orphan has been reparented out of snug's tree, so `pgrep -P` cannot see it, and
-a marker written *after* snug died is the other half of the evidence.
+orphan has been reparented out of snug's tree, so `pgrep -P` cannot see it.
+
+The other half of the evidence is a **write dated after snug's death**, not a
+write. The payload rewrites its marker in a loop and the check compares the
+marker against a stamp file touched the instant snug is gone. The distinction
+is not pedantry: the first version of the automated equivalent asserted the
+marker was merely absent, and CI failed it at 280 ms and 300 ms because by then
+the payload had legitimately written it *before* the signal landed — a correct
+teardown looking exactly like a leak.
 
 ```bash
 for args in "" "-p @net"; do
-  for off in 0.02 0.05 0.10; do
+  for off in 0.02 0.05 0.10 0.30; do
     T=$(mktemp -d); TOK=snug13$RANDOM
     ./bin/snug $args "$T" -- /bin/sh -c \
-      "sleep 0.25; echo x > \"\$SNUG_TARGET/m-$TOK\"; sleep 30" >/dev/null 2>&1 &
+      "while :; do echo x > \"\$SNUG_TARGET/m-$TOK\"; sleep 0.1; done" >/dev/null 2>&1 &
     SNUG=$!
     sleep $off; kill -TERM $SNUG; wait $SNUG 2>/dev/null
+    touch "$T/.died"
     sleep 1
     SURV=$(grep -lZ "$TOK" /proc/[0-9]*/cmdline 2>/dev/null | tr -d '\0' | tr '\n' ' ')
-    echo "args='$args' off=${off}s marker=$([ -f "$T/m-$TOK" ] && echo YES || echo no) survivors=[$SURV]"
+    echo "args='$args' off=${off}s wrote-after-death=$([ "$T/m-$TOK" -nt "$T/.died" ] && echo YES || echo no) survivors=[$SURV]"
     for f in $SURV; do p=${f#/proc/}; kill -9 "${p%/cmdline}" 2>/dev/null; done
     rm -rf "$T"
   done
 done
 ```
 
-Expect `marker=no survivors=[]` on every line. Anything else is issue #13 back:
-a `marker=YES` means something wrote to the target after snug exited, and a
-non-empty `survivors` names the process still holding the sandbox. Kill only
-those pids — never `pkill bwrap`, which on a host with Flatpak matches
+Expect `wrote-after-death=no survivors=[]` on every line. Anything else is
+issue #13 back: a `YES` means something wrote to the target after snug exited,
+and a non-empty `survivors` names the process still holding the sandbox. Kill
+only those pids — never `pkill bwrap`, which on a host with Flatpak matches
 processes snug never started.
 
 `SIGKILL` is **not** in this check and will not pass it. It never reaches

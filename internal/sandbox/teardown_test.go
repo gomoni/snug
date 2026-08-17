@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // alive reports whether pid is a live, running process — NOT merely present
@@ -182,6 +184,65 @@ func indexesOf(s, sub string) []int {
 	}
 }
 
+// pinPID is the test's own copy of what guard.wait does before it can be
+// signalled: turn a pid into a descriptor that names a process rather than a
+// number.
+func pinPID(pid int) (*os.File, error) {
+	fd, err := unix.PidfdOpen(pid, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), "pidfd-test"), nil
+}
+
+// TestKillPinnedOnlySignalsARealDescendant is the negative half of the pid
+// reuse defence: killPinned re-confirms ancestry AFTER pinning, so a pid that
+// does not belong to the tree being torn down is left alone.
+//
+// The stand-in for "the number was recycled to a stranger" is a root that the
+// live process is genuinely not a descendant of. That is the same code path a
+// recycled pid takes — pin, re-read ancestry, decline — without this test
+// having to win a race against the kernel's pid allocator to prove it.
+//
+// The positive control is the same process and the same call with the real
+// root: without it, a killPinned that had simply stopped signalling anything
+// would pass the negative half perfectly.
+func TestKillPinnedOnlySignalsARealDescendant(t *testing.T) {
+	if err := becomeSubreaper(); err != nil {
+		t.Skipf("PR_SET_CHILD_SUBREAPER unavailable on this host: %v", err)
+	}
+	victim := exec.Command("sleep", "30")
+	if err := victim.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := victim.Process.Pid
+	t.Cleanup(func() {
+		_ = victim.Process.Kill()
+		_, _ = victim.Process.Wait()
+	})
+	if !alive(pid) {
+		t.Fatal("PRECONDITION: the child is not alive")
+	}
+
+	// A root nothing on this host descends from. strangerRoot is not a live
+	// pid, so the ancestry walk cannot reach it from anywhere.
+	const strangerRoot = 0x7fffffff
+	killPinned(pid, strangerRoot)
+	time.Sleep(50 * time.Millisecond)
+	if !alive(pid) {
+		t.Fatalf("killPinned SIGKILLed pid %d even though it is not a descendant of the "+
+			"root it was given. A sweep that kills what it has not confirmed is one "+
+			"recycled pid away from killing a stranger", pid)
+	}
+
+	killPinned(pid, os.Getpid())
+	if !waitUntil(t, 2*time.Second, func() bool { return !alive(pid) }) {
+		t.Fatal("PRECONDITION: killPinned did NOT kill a genuine descendant, so the check " +
+			"above passed for the wrong reason — it proves nothing about ancestry if this " +
+			"function never signals anything")
+	}
+}
+
 func commOf(pid int) string {
 	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/comm")
 	if err != nil {
@@ -235,8 +296,14 @@ func TestConfirmTeardownKillsTheWholeTree(t *testing.T) {
 		t.Fatal("PRECONDITION: the tree to be torn down is not fully alive yet")
 	}
 
+	pinned, err := pinPID(directChild.Process.Pid)
+	if err != nil {
+		t.Fatalf("PRECONDITION: cannot pin a live child with pidfd_open: %v", err)
+	}
+	defer pinned.Close()
+
 	warned := []string{}
-	confirmTeardown(directChild.Process.Pid, func(msg string) { warned = append(warned, msg) })
+	confirmTeardown(pinned, func(msg string) { warned = append(warned, msg) })
 
 	if alive(directChild.Process.Pid) {
 		t.Errorf("the direct child (pid %d) survived confirmTeardown", directChild.Process.Pid)
