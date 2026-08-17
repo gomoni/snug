@@ -162,7 +162,7 @@ diagnosis, not behaviour** — see §6.
 
 ## 5. A stale comment to delete
 
-`cmd/snug/podmanshim.go` point 2 argues against staging a working client:
+`internal/cli/podmanshim.go` point 2 argues against staging a working client:
 
 > It would not even fix `podman run` here … The docker CLI always sends
 > HostConfig.LogConfig, and the proxy refuses that field.
@@ -301,7 +301,7 @@ Two constraints follow and both are load-bearing:
 **Mechanism.** `/run/snug/bin/podman`, `KindData`, `AccessRO`, `Perms 0755`,
 `From ["(snug)"]`, installed via `Policy.Replace` (sets `Authored`, so
 `rejectMasking` skips it — no new exemption). Detection is impure and lives in
-`cmd/snug/podmanshim.go`, returning a value type carried into `policy.Context` as
+`internal/cli/podmanshim.go`, returning a value type carried into `policy.Context` as
 `HostShims`, exactly as `LegacyTIOCSTI` is — so `Resolve` stays pure and the
 goldens stay deterministic.
 

@@ -85,7 +85,7 @@ type Context struct {
 
 	// HostShims records commands snug looked up on PATH that resolve to a
 	// host-escape helper (distrobox-host-exec, host-spawn, flatpak-spawn)
-	// rather than the genuine binary — detected by cmd/snug via
+	// rather than the genuine binary — detected by internal/cli via
 	// exec.LookPath + filepath.EvalSymlinks. When podman is one of these AND
 	// a podman profile is selected, Resolve stages a dispatcher stub ahead of
 	// it on PATH (see podmanstub.go and CONTAINER-CLIENT.md §8) rather than
@@ -105,7 +105,7 @@ type Context struct {
 // helper cannot work from inside a sandbox at all (it forwards to a socket
 // or bus the sandbox correctly cannot see).
 //
-// Detection is impure and lives in cmd/snug (exec.LookPath +
+// Detection is impure and lives in internal/cli (exec.LookPath +
 // filepath.EvalSymlinks); this is the value it carries into Context so
 // Resolve can stay pure. See CONTAINER-CLIENT.md §8.
 type HostShim struct {

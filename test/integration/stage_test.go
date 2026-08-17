@@ -192,28 +192,15 @@ func netnsIDFromReadlink(s string) string { return strings.TrimSpace(s) }
 
 // ── the tests ────────────────────────────────────────────────────────────
 
-// TestBwrapUnshareSetIsExhaustive is the guard that makes §3.1's enumerated
-// --unshare-* set (used under the stage, instead of --unshare-all) an
-// acceptable exception to "no selective lists" (CLAUDE.md invariant 2): it
-// parses `bwrap --help` for every --unshare-<name> this bwrap supports and
-// fails if the stage's own set does not cover all of them except net. A build
-// against a bwrap that grows a new namespace type goes red here rather than
-// silently keeping the sandbox in it.
-func TestBwrapUnshareSetIsExhaustive(t *testing.T) {
-	budget(t)
-	requireSandbox(t)
-
+// unshareNamesFromHelp parses `bwrap --help` for every --unshare-<name> flag
+// this bwrap build supports, normalising away the -try suffix (name alone,
+// not name+try, is what both branches in internal/policy/bwrap.go decide
+// coverage by) and the --unshare-all umbrella flag itself.
+func unshareNamesFromHelp(t *testing.T) map[string]bool {
+	t.Helper()
 	help, err := exec.Command("bwrap", "--help").CombinedOutput()
 	if err != nil {
 		t.Fatalf("bwrap --help: %v", err)
-	}
-	// The set internal/policy/bwrap.go emits under Topology.Netns == NetnsStage.
-	// Kept here as a literal, not imported, because this package deliberately
-	// drives the built binary rather than linking against internal/policy (see
-	// the package doc in sandbox_test.go) — a change to the set is a change
-	// this test must be edited to see, which is the point.
-	stageSet := map[string]bool{
-		"user": true, "ipc": true, "pid": true, "uts": true, "cgroup": true,
 	}
 	found := map[string]bool{}
 	for _, line := range strings.Split(string(help), "\n") {
@@ -232,6 +219,29 @@ func TestBwrapUnshareSetIsExhaustive(t *testing.T) {
 	if len(found) == 0 {
 		t.Fatal("parsed zero --unshare-<name> flags out of bwrap --help; the parser is broken")
 	}
+	return found
+}
+
+// TestBwrapUnshareSetIsExhaustive is the guard that makes §3.1's enumerated
+// --unshare-* set (used under the stage, instead of --unshare-all) an
+// acceptable exception to "no selective lists" (CLAUDE.md invariant 2): it
+// parses `bwrap --help` for every --unshare-<name> this bwrap supports and
+// fails if the stage's own set does not cover all of them except net. A build
+// against a bwrap that grows a new namespace type goes red here rather than
+// silently keeping the sandbox in it.
+func TestBwrapUnshareSetIsExhaustive(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+
+	found := unshareNamesFromHelp(t)
+	// The set internal/policy/bwrap.go emits under Topology.Netns == NetnsStage.
+	// Kept here as a literal, not imported, because this package deliberately
+	// drives the built binary rather than linking against internal/policy (see
+	// the package doc in sandbox_test.go) — a change to the set is a change
+	// this test must be edited to see, which is the point.
+	stageSet := map[string]bool{
+		"user": true, "ipc": true, "pid": true, "uts": true, "cgroup": true,
+	}
 	for name := range found {
 		if name == "net" {
 			continue // the one namespace the stage topology must NOT unshare
@@ -248,6 +258,133 @@ func TestBwrapUnshareSetIsExhaustive(t *testing.T) {
 			t.Errorf("the stage's enumerated set names --unshare-%s, which this bwrap's "+
 				"--help does not advertise at all", name)
 		}
+	}
+}
+
+// TestBwrapOfflineUnshareSetIsExhaustive is TestBwrapUnshareSetIsExhaustive's
+// sibling for the offline topology (issue #24): since that branch converted
+// from the single --unshare-all flag to an explicit list (internal/policy/
+// bwrap.go, the `else` branch), it needs the same coverage guard the stage
+// branch already had, or the two could silently drift apart the same way a
+// hand-rolled --unshare-all could silently drop a namespace bwrap grows in a
+// future release. Unlike the stage set, net belongs HERE — the offline
+// sandbox creates and keeps its own empty network namespace — so every name
+// bwrap advertises must be covered, with none excluded.
+func TestBwrapOfflineUnshareSetIsExhaustive(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+
+	found := unshareNamesFromHelp(t)
+	// The set internal/policy/bwrap.go emits under the `else` (non-stage)
+	// branch — the explicit expansion of --unshare-all, literal here for the
+	// same reason as stageSet above.
+	offlineSet := map[string]bool{
+		"user": true, "ipc": true, "pid": true, "uts": true, "cgroup": true, "net": true,
+	}
+	for name := range found {
+		if !offlineSet[name] {
+			t.Errorf("bwrap --help advertises --unshare-%s, which the offline topology's "+
+				"enumerated set (internal/policy/bwrap.go) does not cover — an offline "+
+				"sandbox would silently inherit this namespace from whatever started snug", name)
+		}
+	}
+	for name := range offlineSet {
+		if !found[name] {
+			t.Errorf("the offline topology's enumerated set names --unshare-%s, which this "+
+				"bwrap's --help does not advertise at all", name)
+		}
+	}
+}
+
+// requireNestedUserNamespace gates on this host permitting a user namespace to
+// be created FROM INSIDE another one it created itself — administering a
+// namespace you already own, which is what "unprivileged user namespaces
+// work" means and needs no elevated privilege beyond what requireSandbox
+// already demanded. A positive control, not an assumption: the exhaustion
+// test below constructs its "unavailable" case by writing to a sysctl inside a
+// self-owned nested namespace, and that construction is worthless if nesting
+// itself does not work here, so it is verified with the exact same shape
+// (one level of unshare --user --map-root-user, unmodified) before the
+// modified case runs.
+func requireNestedUserNamespace(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("unshare"); err != nil {
+		skipOrFail(t, "unshare (util-linux) is not installed")
+	}
+	probe := exec.Command("unshare", "--user", "--map-root-user", "--",
+		"unshare", "--user", "--map-root-user", "--", "/bin/true")
+	if out, err := probe.CombinedOutput(); err != nil {
+		skipOrFail(t, "cannot nest a second user namespace inside a self-created one "+
+			"here: %s", strings.TrimSpace(string(out)))
+	}
+}
+
+// TestStrictUnshareUserFailsLoudlyWhenNamespacesAreExhausted pins issue #24's
+// fix: internal/policy/bwrap.go now emits strict --unshare-user rather than
+// --unshare-user-try, on both topologies. This is the exact scenario
+// the issue's measurement identified as the silent-downgrade case — a REAL
+// uid-0 caller (which is what the stage's P1-runs-bwrap-as-uid-0 shape makes
+// every `@net` bwrap invocation, regardless of the human's uid) whose own
+// user namespace's max_user_namespaces reads "0" — reconstructed here without
+// any genuine host privilege: administering a user namespace this test
+// created itself, via `unshare --user --map-root-user`, is what "unprivileged
+// user namespaces work" means, so requireSandbox (transitively, through
+// requireNestedUserNamespace) is the only gate this needs.
+//
+// The bwrap flags below are the STAGE topology's literal set, post-fix,
+// copied rather than derived from internal/policy the same way stageSet is in
+// TestBwrapUnshareSetIsExhaustive: a change to what bwrap.go emits is a
+// change this test must be edited to see.
+//
+// The UNCAPPED run is the positive control this test ships in the same
+// function, per the project's "a test that cannot fail is worse than no
+// test" rule: without it, a nested-namespace harness that is broken for some
+// unrelated reason (bwrap missing inside the nest, a mount failure, anything)
+// would make the capped run fail for the WRONG reason and this test would
+// still go green on a check that proves nothing.
+func TestStrictUnshareUserFailsLoudlyWhenNamespacesAreExhausted(t *testing.T) {
+	budget(t, 15*time.Second)
+	requireSandbox(t)
+	requireNestedUserNamespace(t)
+
+	// internal/policy/bwrap.go, Topology.Netns == NetnsStage, after issue #24.
+	stageFlags := "--unshare-user --unshare-ipc --unshare-pid --unshare-uts --unshare-cgroup-try"
+	mountFlags := "--ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib " +
+		"--symlink usr/lib64 /lib64 --proc /proc --dev /dev --die-with-parent"
+
+	// POSITIVE CONTROL: the identical bwrap invocation, run inside the same
+	// kind of self-created nested namespace, with max_user_namespaces left at
+	// its default (uncapped). Must succeed, or the capped case below proves
+	// nothing about the sysctl.
+	okCmd := exec.Command("unshare", "--user", "--map-root-user", "--",
+		"sh", "-c", "exec bwrap "+stageFlags+" "+mountFlags+" -- /bin/true")
+	if out, err := okCmd.CombinedOutput(); err != nil {
+		t.Fatalf("control: strict --unshare-user bwrap failed in an UNCAPPED nested "+
+			"namespace, which should succeed — the harness itself is broken, not the "+
+			"sysctl this test means to exercise: %v\n%s", err, out)
+	}
+
+	// THE CASE: same invocation, same kind of namespace, but this run first
+	// writes "0" to max_user_namespaces INSIDE that namespace — exactly the
+	// construction the issue #24 measurement used, mirroring a host with
+	// unprivileged user namespaces exhausted or disabled at the level bwrap's
+	// clone() actually observes. Before the fix (--unshare-user-try) this
+	// exited 0 with no user namespace created at all (verified by hand:
+	// /proc/self/uid_map inside came back byte-identical to the caller's).
+	// Strict must make it fail, non-zero, with bwrap's own message naming the
+	// sysctl — invariant 5, "no silent downgrade, ever".
+	capScript := "echo 0 > /proc/sys/user/max_user_namespaces && exec bwrap " +
+		stageFlags + " " + mountFlags + " -- /bin/true"
+	capCmd := exec.Command("unshare", "--user", "--map-root-user", "--", "sh", "-c", capScript)
+	out, err := capCmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("strict --unshare-user silently succeeded with max_user_namespaces=0 "+
+			"in bwrap's own namespace — invariant 5 violated, exactly the case issue #24 "+
+			"measured as a silent downgrade under -try. Output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "max_") || !strings.Contains(string(out), "namespaces") {
+		t.Errorf("strict --unshare-user failed (good, exit=%v) but the message does not "+
+			"name the sysctl the way \"errors name the fix\" requires:\n%s", err, out)
 	}
 }
 

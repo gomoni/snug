@@ -555,7 +555,7 @@ type ClaudeSettings map[string]any
 //
 // R-VALUE is enforced AGAIN here, not only in FilterClaudeSettings, for the
 // same reason GitConfigFrom re-checks control characters even though the
-// extractor already dropped them (gitextract.go, cmd/snug/gitconfig.go): the
+// extractor already dropped them (gitextract.go, internal/cli/gitconfig.go): the
 // renderer is the LAST place a bad value can be caught, and the next caller of
 // this package — a test fixture building a ClaudeSettings by hand, an adapter
 // not written yet — has not gone through FilterClaudeSettings and cannot be

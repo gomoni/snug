@@ -125,7 +125,7 @@ func TestDryRunEnvironmentBlockAccountsForEveryNameInside(t *testing.T) {
 // environmentBlockNames parses the names out of --dry-run's ENVIRONMENT block:
 // the lines indented exactly 2, which is the block's own geometry rule (a
 // continuation band is at 19, a drop line at 19, a mark at 21 —
-// cmd/snug's TestNoEnvironmentLineCanBeMistakenForAMark). Parsing by that rule
+// internal/cli's TestNoEnvironmentLineCanBeMistakenForAMark). Parsing by that rule
 // rather than by "any line with an =" is what keeps this test measuring the
 // screen a human reads.
 func environmentBlockNames(t *testing.T, screen string) map[string]bool {

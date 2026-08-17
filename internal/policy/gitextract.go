@@ -91,7 +91,7 @@ func GitConfigFrom(v GitValues, id *Identity) []byte {
 		return nil
 	}
 	// Second guard, deliberately not the only one. The extractor already drops a
-	// value carrying a control character (cmd/snug/gitconfig.go), and this is the
+	// value carrying a control character (internal/cli/gitconfig.go), and this is the
 	// backstop for whatever calls the renderer next — because the failure it
 	// prevents is not cosmetic: a newline inside `user.name` closes the
 	// `name = …` line and opens a real `[alias] x = !cmd` section in the file the
@@ -186,7 +186,7 @@ func gitQuote(v string) string {
 //     the extra ones a wider predicate would add close nothing here.
 //   - THE SCREEN asks: can the rune make a rendered line read as something snug
 //     did not write? That is IsForgingRune, and it IS wider — but its remedy is
-//     to ESCAPE at the sink (policy.VisibleText, cmd/snug/gitconfig.go's
+//     to ESCAPE at the sink (policy.VisibleText, internal/cli/gitconfig.go's
 //     gitValuesLine), not to drop the value.
 //
 // The difference matters because THIS function's remedy is a DROP, and a drop is

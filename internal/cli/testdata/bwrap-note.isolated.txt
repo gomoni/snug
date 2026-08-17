@@ -1,0 +1,7 @@
+── bwrap ─────────────────────────────────────────────────────────────────
+(this argv determines the network posture on its own: --unshare-net creates
+ the sandbox's own empty network namespace, so running it by hand reproduces
+ it.)
+bwrap
+  --ro-bind /usr /usr
+  -- /bin/sh

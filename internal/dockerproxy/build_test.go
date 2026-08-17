@@ -256,7 +256,7 @@ func TestBothBuildPathsAreFiltered(t *testing.T) {
 
 // `version` selects the BUILDER, not a capability — the classic one (1, or
 // unsent) is what `docker build` uses once DOCKER_BUILDKIT=0 forces the
-// legacy path (cmd/snug/container.go), and it is the endpoint this filter
+// legacy path (internal/cli/container.go), and it is the endpoint this filter
 // actually reads. `2` selects BuildKit, whose options are a different set
 // from the ones buildParams enumerates, so it is refused by name rather than
 // silently accepted — accepting it would make this whole allowlist not the

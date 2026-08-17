@@ -17,7 +17,7 @@ DESCRIPTORS (fixed; nothing travels in the environment — fds.go)
   budget        K <= 57, checked on BOTH sides of the control socket (checkFDBudget)
 
 BWRAP UNSHARE SET under policy.NetnsStage (internal/policy/bwrap.go)
-  --unshare-user-try
+  --unshare-user
   --unshare-ipc
   --unshare-pid
   --unshare-uts

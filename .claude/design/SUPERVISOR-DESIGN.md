@@ -330,7 +330,7 @@ The order is part of the design, because one step was a gate.
   arm takes a `*Stage`, a type only `stage.Start` can produce, so "bwrap forked
   into a topology that says `NetnsStage`" does not compile without going through
   it.
-- **Step 6 — `cmd/snug/main.go`: hidden verb dispatch.** Before flag parsing:
+- **Step 6 — `internal/cli/main.go`: hidden verb dispatch.** Before flag parsing:
   `__stage-setup`, `__stage-serve`, `__innetns`. Each refuses immediately when
   invoked outside the fork chain.
 

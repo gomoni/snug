@@ -1434,7 +1434,7 @@ var envNotes = map[string]envNote{
 	// write — is unfollowable by @home, because an XDG base directory must be
 	// writable; and the hazard is the writable TMPFS, which the FILESYSTEM block
 	// already shows, so the mark would attach to the wrong grant and fire on
-	// every default run. cmd/snug/testdata/env.defaults.txt staying unchanged is
+	// every default run. internal/cli/testdata/env.defaults.txt staying unchanged is
 	// the review artifact for that decision.
 	"XDG_CONFIG_HOME": {shape: shapePath, host: "the host's value names a directory this sandbox does not have; " +
 		"@home creates the one inside, so `set` it to a path the same profile grants"},
@@ -1443,7 +1443,7 @@ var envNotes = map[string]envNote{
 	// still a measurement, taken against files in this repository rather than
 	// against this developer's memory of them: internal/profile/profiles/base.toml
 	// ([profile.home]) is where the four directories are created, and
-	// cmd/snug/testdata/env.defaults.txt is the rendered proof that a default run
+	// internal/cli/testdata/env.defaults.txt is the rendered proof that a default run
 	// sets the four names to paths inside. If @home ever stops creating one, that
 	// golden moves and these sentences are wrong in the same commit.
 	// (measured against @home's grants and env.defaults.txt)
@@ -1939,7 +1939,7 @@ var inlineConfigNames = map[string]bool{
 // says the rule is: THE ENVIRONMENT SNUG ITSELF HANDS OVER must not ship the
 // override pre-installed. What holds that up is two things, both builtin-only:
 // internal/profile's checkBuiltinEnvRoster (a shipped profile may write only a
-// rostered name, and no inline-config name has a roster row) and cmd/snug's
+// rostered name, and no inline-config name has a roster row) and internal/cli's
 // TEST-TIME sweep TestNoBuiltinHandsOverAnInlineConfigVariable, which resolves
 // `profile.Builtins()` and nothing a user's own `~/.config/snug/profiles.d`
 // defines. Wiring this predicate into ValidateEnvGrants, so that it governs what
@@ -2076,8 +2076,8 @@ func noteFor(name string, verb EnvVerb) string {
 // ONE FUNCTION, N CONSUMERS, for the same reason IsUncheckedEnv is one predicate
 // with three: two screens deciding separately what snug has to say about a name
 // is how one of them comes to say nothing. Today the consumers are --dry-run's
-// ENVIRONMENT block (cmd/snug/dryrun.go's envLines) and `snug profile show`
-// (cmd/snug/config.go's showEnviron). The argv block is again the sink with
+// ENVIRONMENT block (internal/cli/dryrun.go's envLines) and `snug profile show`
+// (internal/cli/config.go's showEnviron). The argv block is again the sink with
 // nothing to add: `--setenv NAME VALUE` has no provenance column at all.
 //
 // The mark JOINS the others rather than replacing them, and a row can carry
@@ -2400,7 +2400,7 @@ func checkEnvElement(name string, verb EnvVerb, value string) error {
 // rather than a lie, and it is a fact about the flag list rather than about a
 // screen.
 //
-// The renderer (cmd/snug/dryrun.go's visibleValue) asks the same predicate and
+// The renderer (internal/cli/dryrun.go's visibleValue) asks the same predicate and
 // carries one more case this function cannot: invalid UTF-8, which a TOML value
 // cannot be and a HOST value can.
 func checkEnvValue(name string, verb EnvVerb, value string) error {

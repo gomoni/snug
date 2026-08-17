@@ -167,7 +167,7 @@ func TestAssemblerRejectsUndefinedLabel(t *testing.T) {
 }
 
 // TestDeniedSyscallNamesMatchesDeniedSyscalls is the happy path for
-// DeniedSyscallNames (cmd/snug's --dry-run SECCOMP row is derived from it,
+// DeniedSyscallNames (internal/cli's --dry-run SECCOMP row is derived from it,
 // rather than a hand-typed second list — see its doc comment for the drift
 // that motivated deriving it): same length, same order, and every name
 // actually traces back to the syscall number at the same position via
@@ -227,11 +227,11 @@ func TestDeniedSyscallNamesPanicsOnAnUnnamedSyscall(t *testing.T) {
 }
 
 // TestBuildFilterReturnsAnErrorWhenTheJumpRangeOverflows is the fault
-// injection describeSeccomp's BROKEN row (cmd/snug/dryrun.go) depends on.
+// injection describeSeccomp's BROKEN row (internal/cli/dryrun.go) depends on.
 // TestAssemblerRejectsUnreachableLabel above proves the underlying asm TYPE
 // rejects an out-of-range jump; it does not prove BuildFilter itself — the
 // function that actually assembles the shipped filter, and the one
-// cmd/snug's --dry-run and sandbox.Run both call — can ever be the thing
+// internal/cli's --dry-run and sandbox.Run both call — can ever be the thing
 // that trips it. asm.offset's doc comment says the failure is reachable "once
 // a future denial list makes the JEQ chain long enough": that is a claim
 // about what happens when deniedSyscalls grows, so the fault has to be
@@ -241,7 +241,7 @@ func TestDeniedSyscallNamesPanicsOnAnUnnamedSyscall(t *testing.T) {
 // reaches into the package var directly and restores it unconditionally.
 //
 // A full describeSeccomp/--dry-run BROKEN-row golden is NOT attempted here:
-// it would need a seam in cmd/snug for swapping out sandbox.BuildFilter,
+// it would need a seam in internal/cli for swapping out sandbox.BuildFilter,
 // which is a production-code change outside what this test file should be
 // deciding on its own, and BROKEN's on-screen text is `err.Error()` rendered
 // verbatim with no branching of its own — this test is what proves that

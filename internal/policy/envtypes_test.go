@@ -354,7 +354,7 @@ func TestAnnotationSplitsBySetAndInherit(t *testing.T) {
 	// uniform XDG annotation would additionally be half unmeasured, in the table
 	// F4 is about.
 	//
-	// cmd/snug/testdata/env.defaults.txt staying unchanged is the review artifact
+	// internal/cli/testdata/env.defaults.txt staying unchanged is the review artifact
 	// for that decision. If it ever grows an XDG mark, this loop is the other
 	// thing that has to change, and the argument above is what has to be answered.
 	for _, name := range []string{"XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
@@ -450,7 +450,7 @@ func TestAnnotationSplitsBySetAndInherit(t *testing.T) {
 // exists at every verb where a refusal only ever existed at one.
 //
 // It does not hard-code an expected true/false per spelling — that would pin
-// TODAY's case rule, which the case-rule tests in cmd/snug already do per
+// TODAY's case rule, which the case-rule tests in internal/cli already do per
 // measurement. What this pins is AGREEMENT: whatever prefixCaseFold says for
 // a prefix, both consumers must land on the same verdict for every case
 // variant of a name under it.
@@ -816,10 +816,10 @@ func TestPrefixAnnotationsCoverExactlyTheirPrefix(t *testing.T) {
 }
 
 // TestEveryMergeableListIsPathValued is the STRUCTURAL argument behind a
-// property cmd/snug asserts empirically, and it belongs here because this table
+// property internal/cli asserts empirically, and it belongs here because this table
 // is where the property is actually decided.
 //
-// The rule on the screen (cmd/snug's TestNoEnvironmentLineCanBeMistakenForAMark)
+// The rule on the screen (internal/cli's TestNoEnvironmentLineCanBeMistakenForAMark)
 // is: a line indented 20 or more is snug's own mark, and no data line can reach
 // that column. A red team went looking for a way to forge one and found the mark
 // column UNREACHABLE rather than merely unreached, by this chain (host round 2,
@@ -847,7 +847,7 @@ func TestPrefixAnnotationsCoverExactlyTheirPrefix(t *testing.T) {
 // mergeable list that is not path-valued (a list of FLAGS, say — GOFLAGS is
 // exactly that shape and is deliberately not mergeable) would put arbitrary
 // profile text at the continuation column, and every step above it would still
-// be true. So the screen's rule would fail in cmd/snug, far from the edit that
+// be true. So the screen's rule would fail in internal/cli, far from the edit that
 // caused it, with nothing pointing back here. This test is that pointer.
 func TestEveryMergeableListIsPathValued(t *testing.T) {
 	mergeable := 0

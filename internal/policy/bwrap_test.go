@@ -112,7 +112,7 @@ func TestGoldenBwrapArgs(t *testing.T) {
 // its table, because the floor is REFUSED (Validate: "no profile selected") —
 // Resolve's other return contract applies: a non-nil policy alongside a
 // non-nil error. BwrapArgs is still a pure function of that policy, but the
-// argv it produces must never reach sandbox.Run (see cmd/snug/main.go and
+// argv it produces must never reach sandbox.Run (see internal/cli/main.go and
 // TestRefusedPolicyIsNeverExecuted in test/integration).
 func TestGoldenBwrapArgsFloor(t *testing.T) {
 	p, err := Resolve(testRegistry(), nil, testCtx(), newFakeEnv())
@@ -282,12 +282,17 @@ func TestBwrapArgsEndsWithSeparatorThenCommand(t *testing.T) {
 }
 
 // The sandbox is offline in M0, and that must be visible in the argv rather
-// than assumed: --unshare-all with no --share-net means a netns with only lo.
+// than assumed: the offline topology's explicit expansion of --unshare-all
+// (issue #24) with no --share-net means a netns with only lo. --unshare-all
+// itself is no longer emitted on this path — see bwrap.go's offline branch —
+// so this checks for --unshare-net, the one flag in that expansion that
+// actually decides networking, rather than the flag name that used to stand
+// in for the whole set.
 func TestSandboxIsOffline(t *testing.T) {
 	args := mustResolveDefaults(t).BwrapArgs(1000, 1000)
 	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "--unshare-all") {
-		t.Error("--unshare-all missing: the sandbox would share the host's namespaces")
+	if !strings.Contains(joined, "--unshare-net") {
+		t.Error("--unshare-net missing: the sandbox would share the host's network namespace")
 	}
 	if strings.Contains(joined, "--share-net") {
 		t.Error("--share-net present: the sandbox would reach the host's loopback")

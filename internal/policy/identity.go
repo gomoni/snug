@@ -74,7 +74,7 @@ type Identity struct {
 // The directive-authoring half above is genuinely ASCII — only a newline writes
 // a second git or YAML line — but these fields reach two artifacts a human READS
 // as well: the generated ~/.claude/CLAUDE.md interpolates gh_user into a
-// sentence with %s (cmd/snug/claude.go), and the no-token refusal renders
+// sentence with %s (internal/cli/claude.go), and the no-token refusal renders
 // gh_user and gh_host to a terminal (that one quotes, so it was already safe).
 // A byte loop cannot see U+009B and no loop keyed on unicode.IsControl can see
 // U+202E, so the field that names the account the sandbox pushes as could be

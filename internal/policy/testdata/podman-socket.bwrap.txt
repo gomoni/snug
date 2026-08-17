@@ -1,4 +1,4 @@
---unshare-user-try
+--unshare-user
 --unshare-ipc
 --unshare-pid
 --unshare-uts

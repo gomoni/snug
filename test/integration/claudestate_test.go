@@ -14,7 +14,7 @@ import (
 // The end-to-end half of issue #19: what is actually AT ~/.claude.json inside a
 // running @claude sandbox.
 //
-// The unit tests in cmd/snug assert what claudeStateJSON produces and what
+// The unit tests in internal/cli assert what claudeStateJSON produces and what
 // claudeFiles puts in the policy. Neither can see whether the KindData mount was
 // materialised, at what size, or with the host's file anywhere near it — a
 // generated Mount.Content and a copied one are the same shape in the policy, and
@@ -38,7 +38,7 @@ func TestClaudeJSONInsideIsGeneratedAndSmall(t *testing.T) {
 	body := between(r.out, begin, end)
 	if strings.TrimSpace(body) == "" {
 		t.Fatalf("~/.claude.json is absent or empty inside the sandbox. It is GENERATED "+
-			"unconditionally (cmd/snug/claude.go, claudeStateJSON) precisely so it does not "+
+			"unconditionally (internal/cli/claude.go, claudeStateJSON) precisely so it does not "+
 			"depend on the host having one; without it Claude Code blocks on the theme "+
 			"picker and the trust dialog on every run:\n%s", r.out)
 	}

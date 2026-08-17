@@ -169,7 +169,7 @@ func TestTheCredentialCatalogueActuallyMatches(t *testing.T) {
 	// `{home}/.claude/settings.json` is now IN the catalogue above (issue #17):
 	// `@claude` no longer binds it at all — the file the sandbox sees is
 	// GENERATED from an allowlist of scalar preferences (policy.FilterClaudeSettings,
-	// cmd/snug/claude.go's stageClaudeSettings) — so the catalogue entry can never
+	// internal/cli/claude.go's stageClaudeSettings) — so the catalogue entry can never
 	// fire on a real builtin grant; it stands as a permanent regression test
 	// against the path ever being bound again.
 	//

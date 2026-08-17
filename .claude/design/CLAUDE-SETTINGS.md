@@ -11,7 +11,7 @@ data and generates the one the sandbox sees. The filter is
 `policy.FilterClaudeSettings` / `policy.ClaudeSettingsJSON`
 (`internal/policy/claudesettings.go`, pure — no filesystem, no `exec`); the host
 read and the stderr lines are `stageClaudeSettings` and
-`loadHostClaudeSettings` (`cmd/snug/claude.go`).
+`loadHostClaudeSettings` (`internal/cli/claude.go`).
 
 **Measured against claude 2.1.232**
 (`/home/michal/.local/share/claude/versions/2.1.232`), on the development host,
@@ -162,7 +162,7 @@ Two sources remain outside this fix, and both are stated rather than implied:
   filter them and must not — the target is the material being sandboxed, it is
   writable by design, and the thing that gates it is Claude Code's trust dialog,
   which `claudeStateJSON` deliberately preserves (INDEX §9.3, and the A/B
-  measurement in `cmd/snug/claude.go`). Nothing in this change altered that
+  measurement in `internal/cli/claude.go`). Nothing in this change altered that
   balance.
 - **`policySettings` (`/etc/claude-code/managed-settings.json`) is not visible
   inside** — §10.3, issue #70.
@@ -538,7 +538,7 @@ key is dropped rather than validated.
 ### 4.2 `hooks` re-opened, from the host side, the startup-execution path the trust dialog closes
 
 `claudeStateJSON` writes `hasTrustDialogAccepted` only when the host already
-trusted that exact directory, and the A/B measurement in `cmd/snug/claude.go`
+trusted that exact directory, and the A/B measurement in `internal/cli/claude.go`
 shows why: with the key written unconditionally, a target whose only content was
 `.claude/settings.json` with a `SessionStart` hook **fired that hook at startup,
 in a sandbox holding the staged Anthropic OAuth token**.
@@ -701,7 +701,7 @@ entries snug put there.
 
 ### 5.6 Parse failure, JSONC, size, symlinks — the degradation rules, as built
 
-`loadHostClaudeSettings` (`cmd/snug/claude.go`):
+`loadHostClaudeSettings` (`internal/cli/claude.go`):
 
 - **Read cap.** `os.Stat` first, then `os.ReadFile`, up to **1 MiB**. The stat
   comes first deliberately: the cap exists so a multi-gigabyte file at this path
@@ -918,7 +918,7 @@ profile-influenced string on a snug screen (invariant 7).
 The `never` line is a **fixed, host-independent list** rather than a per-run
 diff of what this host's file happened to contain. Which names the host used is
 not the disclosure that matters; which *classes* never cross, regardless of the
-host, is. Both goldens (`cmd/snug/testdata/claude-block.txt` and
+host, is. Both goldens (`internal/cli/testdata/claude-block.txt` and
 `claude-block-trusted.txt`) pin the block, the second with a host file that
 exercises the filter so the pair shows both the trust arm and the filter arm.
 

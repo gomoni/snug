@@ -105,9 +105,9 @@ column that matters most is the last, and the earlier audit did not have it.
 
 | # | secret | where it lands | who can read it | authority | outlives sandbox? |
 |---|---|---|---|---|---|
-| 1a | Anthropic OAuth **access** token | `KindData` writable-tmpfs copy at `~/.claude/.credentials.json` (`cmd/snug/claude.go:49`) | every process in the sandbox | `user:inference`, `user:profile`, `user:file_upload`, `user:mcp_servers`, `user:sessions:claude_code` **[M]** | **yes, ~8 h** **[M]** |
+| 1a | Anthropic OAuth **access** token | `KindData` writable-tmpfs copy at `~/.claude/.credentials.json` (`internal/cli/claude.go:49`) | every process in the sandbox | `user:inference`, `user:profile`, `user:file_upload`, `user:mcp_servers`, `user:sessions:claude_code` **[M]** | **yes, ~8 h** **[M]** |
 | 1b | Anthropic OAuth **refresh** token | *same file, same line* | same | mints new access tokens | **yes, ~20 days remaining of a rolling window** **[M]** |
-| 2 | ~~`~/.claude.json`, 56 500 bytes verbatim~~ | **FIXED** (issue #19) — GENERATED, at most three keys, no host bytes (`claudeStateJSON`, `cmd/snug/claude.go`); measured 284 bytes inside, against 62 274 on this host. The third key is the host's own trust answer for the target, carried only when the host already gave it (§3.5) | — | — | — |
+| 2 | ~~`~/.claude.json`, 56 500 bytes verbatim~~ | **FIXED** (issue #19) — GENERATED, at most three keys, no host bytes (`claudeStateJSON`, `internal/cli/claude.go`); measured 284 bytes inside, against 62 274 on this host. The third key is the host's own trust answer for the target, carried only when the host already gave it (§3.5) | — | — | — |
 | 3 | ~~`ANTHROPIC_API_KEY`~~ | **FIXED** — removed from `@claude`'s `env`; Claude now authenticates from the staged `.credentials.json` | — | — | — |
 | 4 | GitHub token from `gh auth token` | `oauth_token:` in a generated `hosts.yml` (`identity.go:192`) | every process in the sandbox | on this host: `admin:public_key`, `gist`, `read:org`, `repo` **[M]** | **yes, indefinitely** |
 | 5 | ssh private keys | **never** (`internal/sshproxy`) | nothing — no key material crosses | signing oracle, one pinned key | **no** — dies with the proxy |
@@ -175,7 +175,7 @@ host's `~/.config/gh`, any bind of `~/.ssh`. **[M, via `--dry-run` mount list]**
 
 Three of these are new defects.
 
-**(a) `--dry-run` is not a dry run. [M]** `cmd/snug/main.go:254-291` calls
+**(a) `--dry-run` is not a dry run. [M]** `internal/cli/main.go:254-291` calls
 `claudeFiles`, `startIdentity` and `startContainers` *before* the `cfg.dryRun`
 branch. Measured with a `gh` shim first on `PATH`, which logged `auth token
 --hostname github.com --user personal-account`. So `snug --dry-run` — whose first line
@@ -206,7 +206,7 @@ prints `data /home/u/.config/gh/hosts.yml (identity)` and, eleven lines
 below, lists `~/.ssh ~/.gnupg ~/.aws ~/.config/gh ~/.kube …` under *"NOT GRANTED
 (never mounted — these read as absent, they are not hidden)"* — reporting as
 absent the very directory it has just staged an `admin:public_key` token into.
-Cause is the earlier audit's: `covered()` (`cmd/snug/dryrun.go:315`) only considers
+Cause is the earlier audit's: `covered()` (`internal/cli/dryrun.go:315`) only considers
 `KindBind`.
 
 **(c) `--dry-run` prints secret values in cleartext, twice. [M]** Once in
@@ -222,7 +222,7 @@ finding was that `BindSocket` was a *third* path writing straight into
 
 **Commit `af5f550` (the profile-model hardening) closed both halves, and the current shape is stronger
 than the fix this document was going to ask for.** Provenance is now a parameter
-(`internal/policy/types.go:243`), and `cmd/snug/container.go:55` passes
+(`internal/policy/types.go:243`), and `internal/cli/container.go:55` passes
 `"(containers)"`; measured, `--dry-run -p @podman-socket` prints `rw
 /run/snug/podman.sock (from …) (containers)`. More importantly there is now
 **exactly one** post-resolution writer, `Policy.Replace` (`types.go:221`):
@@ -230,7 +230,7 @@ than the fix this document was going to ask for.** Provenance is now a parameter
 block all route through it, it appends `"replaces:"+…` so displacement is no
 longer silent, `rejectMasking` exempts on the `Authored` **field** rather than a
 `Kind == KindData` heuristic (`internal/policy/validate.go:211`), and
-`cmd/snug/main.go:278` re-runs `Validate` after staging so the post-resolution
+`internal/cli/main.go:278` re-runs `Validate` after staging so the post-resolution
 writes are checked rather than asserted.
 
 Kept rather than deleted because the *lesson* outlives the defect: a carve-out
@@ -518,7 +518,7 @@ and dismissed it. **That dismissal does not apply as written.** The earlier audi
 a *user-supplied script* deciding on sandbox-controlled input; a snug-authored
 stub with a snug-authored filter is the same authorship as `dockerproxy`, which
 the project already accepts. And the staging mechanism already exists and was
-chosen deliberately: `cmd/snug/podmanshim.go` plus CLAUDE.md's *"PATH precedence,
+chosen deliberately: `internal/cli/podmanshim.go` plus CLAUDE.md's *"PATH precedence,
 not overmounting"* — stage the replacement in `policy.StagedBinDir`
 (`/run/snug/bin`), the one directory snug owns, which snug puts on `PATH` in its
 own band iff something is actually staged there (`policy.HasStagedBin`).
@@ -1156,7 +1156,7 @@ i.e. the only live entry either version ever had. The bytes got smaller and the
 one live entry stayed one live entry; what changed is who decides it, and that is
 the half the reassurance hid. It is the mirror of the bug issue #19 fixed: a
 comment understating what is handed over. Both arms are printed in `--dry-run`'s
-`CLAUDE` block (`cmd/snug/testdata/claude-block.txt` and
+`CLAUDE` block (`internal/cli/testdata/claude-block.txt` and
 `claude-block-trusted.txt`), so a scoped decision stays a visible one.
 
 ### 3.6 Staged injection under an explicitly-named profile
@@ -1248,7 +1248,7 @@ answering it: what can read snug's memory?
 inside can `ptrace` it or read its memory. *Not* "nothing inside can name it" —
 **[M]** `/proc/self/mountinfo` inside a sandbox prints the **host** source path of
 every bind, including the run directory `run-<pid>`, which is named from snug's
-own pid (`cmd/snug/identity.go`); the same read leaked the container-storage
+own pid (`internal/cli/identity.go`); the same read leaked the container-storage
 overlay chain and a btrfs subvolume path. Bind mounts publish host paths. Under D
 that gets worse: a control socket bind-mounted at a pathname publishes it to every
 process in the sandbox, forever. **Prefer an inherited descriptor over a pathname
@@ -1663,7 +1663,7 @@ should be checked first.
   first **declarative** profile key whose value *references a secret* — **not the
   first, as this bullet claimed until 2026-08-13**: `identity.gh_user`/`gh_host`
   already select which host account's OAuth token is minted and staged inside
-  (`cmd/snug/identity.go`), and `identity.ssh_key` already selects which of the
+  (`internal/cli/identity.go`), and `identity.ssh_key` already selects which of the
   host agent's keys becomes the sandbox's signing oracle. The mechanism has
   shipped for a milestone; only the declaration is new. That reference must
   resolve only on the host and never be expandable from `{…}` variables the
@@ -1901,13 +1901,13 @@ means for their own case — the same pressure that would put `@net` in
 > enumerate what else exists nor request it: the ssh-agent proxy answers
 > `REQUEST_IDENTITIES` with the pinned key alone and never forwards the question
 > (`internal/sshproxy/proxy.go:139`); `gh`'s `hosts.yml` is generated with one
-> account rather than bound (`cmd/snug/identity.go:192`). Where snug cannot
+> account rather than bound (`internal/cli/identity.go:192`). Where snug cannot
 > broker and must place a secret inside, it places the smallest form that works,
 > and the profile states what that form still grants.
 
 The last paragraph is a **requirement on brokers, not a description of snug
 today**: `@claude` currently copies `.credentials.json` whole
-(`cmd/snug/claude.go:49`) and so fails its final clause until D2 lands. It earns
+(`internal/cli/claude.go:49`) and so fails its final clause until D2 lands. It earns
 its place by being the sentence a future adapter fails — "forward the request and
 filter the reply" is the design that always looks equivalent and never is; one
 missed message type and the filter is a sieve.
@@ -1962,7 +1962,7 @@ is holding. Same shape as `@net` / `@net-host`.
 
 Bounding facts, verified while deciding this:
 
-- **There is no sync-back** (`cmd/snug/claude.go:31`) — the staged copies are
+- **There is no sync-back** (`internal/cli/claude.go:31`) — the staged copies are
   tmpfs and die with the run, deliberately, because writing a host file from
   sandbox-authored bytes is a channel out. So a token refreshed or re-acquired
   inside never reaches the host. (The repo's own CLAUDE.md claims the opposite;

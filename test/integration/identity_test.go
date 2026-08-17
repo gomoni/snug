@@ -566,7 +566,7 @@ func TestSSHReachParityBetweenAPlainRunAndNet(t *testing.T) {
 }
 
 // TestDryRunOfADefaultSelectionNamesRequiredRSASize is the red team's second
-// mechanised negative. cmd/snug/dryrun_test.go's
+// mechanised negative. internal/cli/dryrun_test.go's
 // TestDescribeSSHNamesTheReplacedPathAndItsCost already asserts describeSSH
 // names RequiredRSASize, but against a SYNTHETIC profile selection built to
 // avoid host dependence ([]string{"@sys", "@home", "@cwd-rw", "sshhost"}) —
@@ -659,7 +659,7 @@ func TestSSHAgentEnumerationIsBoundToOnePinnedKeyAmongMany(t *testing.T) {
 		"ssh_key = \""+pin+"\"\n", "SSH_AUTH_SOCK="+sock)
 
 	// -v is required: the two refusals below are audited to snug's own stderr
-	// (cmd/snug/identity.go), not to the sandboxed payload's own output, and
+	// (internal/cli/identity.go), not to the sandboxed payload's own output, and
 	// without it there would be nothing here to assert against beyond the
 	// enumeration count.
 	r := runEnv(t, env, []string{"-p", "pinned", "-v"}, proj,

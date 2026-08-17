@@ -11,8 +11,8 @@ import (
 //
 // These tests exercise the pure filter only (no filesystem, no exec — see
 // CLAUDE.md's "Keep internal/policy pure"). The impure half (reading the
-// host's real file, printing the stderr lines) lives in cmd/snug/claude.go and
-// is covered by cmd/snug/claudestagedset_test.go and the integration suite.
+// host's real file, printing the stderr lines) lives in internal/cli/claude.go and
+// is covered by internal/cli/claudestagedset_test.go and the integration suite.
 
 // TestClaudeSettingsFilterDropsEveryExecutingKey feeds a document containing
 // EVERY key in ClaudeExecutingKeys, named explicitly (the issue's DoD requires

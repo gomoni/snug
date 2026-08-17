@@ -6,7 +6,7 @@ command was **executed**; everything else is marked as reasoning.
 ## 0. Why this exists
 
 **This section is the canonical write-up of the finding.** Code and prose across
-the repo cite it — `CLAUDE.md`, `base.toml`, `cmd/snug/dryrun.go`,
+the repo cite it — `CLAUDE.md`, `base.toml`, `internal/cli/dryrun.go`,
 `internal/profile/file_test.go`, `VERIFY.md`, `.claude/design/SECRETS.md` §1.3.
 If you arrived from one of those, this is the whole story; §5 is what is left to
 do.
@@ -53,7 +53,7 @@ you a stale answer in exactly those places.
 
 | section | status |
 |---|---|
-| §0, the finding | **Live and canonical.** `@podman-socket` still implies the engine's network. Cited by `CLAUDE.md`, `base.toml`, `cmd/snug/dryrun.go`, `internal/profile/file_test.go`, `VERIFY.md`, `README.md` and `SECRETS.md` §1.3. Nothing has closed it. |
+| §0, the finding | **Live and canonical.** `@podman-socket` still implies the engine's network. Cited by `CLAUDE.md`, `base.toml`, `internal/cli/dryrun.go`, `internal/profile/file_test.go`, `VERIFY.md`, `README.md` and `SECRETS.md` §1.3. Nothing has closed it. |
 | §1, you cannot join only the netns | **Live.** A kernel fact, unchanged. [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md) §0 accepts it and works around the *shape* it imposed, not the fact. |
 | §2, the inversion works | **Live, and since reproduced twice.** The numbers here were taken with plain `unshare`. [`PODMAN-STATIC.md`](PODMAN-STATIC.md) §7 reproduces the same baseline against a real pinned engine; and the supervisor proof of concept reproduced it under the actual stage topology — MEASURED 2026-08-13 on this host, 42 checks, `fail=0`, in three identical consecutive runs, each section run twice so the payoff was shown absent first. That proof of concept has been deleted ([#49](https://github.com/gomoni/snug/issues/49)); §5.1 below carries what it measured about the derived mount view, and [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md) §1 carries the rest. |
 | §3, where it does not work | **Live, with one blocker now answered.** The distrobox shim is no longer decisive — see the note in §3 itself. The subuid, cgroup, `$XDG_RUNTIME_DIR` and host-uid findings all still stand and are still preflight requirements. |
@@ -166,7 +166,7 @@ engine-hostname=laptop store=/home/u/.local/share/containers/storage
 From a netns with no route, the shim reached the **host's** engine. So on a
 host so configured, topology A puts a *shim* in N, the engine stays on the host, and
 the guarantee evaporates while everything looks like it worked. `podmanClientUsable()`
-in `cmd/snug/podmanshim.go` already performs exactly this detection and is
+in `internal/cli/podmanshim.go` already performs exactly this detection and is
 currently used only for a cosmetic warning. It must become a **hard refusal**,
 with a test — per the standing rule that a documented-but-unchecked gate is not
 a gate.
@@ -289,7 +289,7 @@ topology, so they survived the move intact:
    becomes root-shaped (§3).
 4. `--dry-run` must render the topology: which process owns the netns, and that
    containers share it. Phase 1 has landed a first version of this
-   (`cmd/snug/testdata/topology.*.txt`).
+   (`internal/cli/testdata/topology.*.txt`).
 5. Teardown must be *asserted* rather than assumed, because §4 measured that it
    stopped being unconditional the moment N held the engine.
 6. **The engine's mount view must be DERIVED from the sandbox's, and the graft

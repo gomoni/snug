@@ -119,7 +119,7 @@ func TestProfileNameAllowlist(t *testing.T) {
 }
 
 // T3. This is table-driven for the same reason
-// TestNoSnugScreenEmitsARawControlCharacter (cmd/snug) sweeps a SET of sinks
+// TestNoSnugScreenEmitsARawControlCharacter (internal/cli) sweeps a SET of sinks
 // rather than asserting one: a guard applied at one call site (or to one
 // rejected spelling) looks identical to a guard applied everywhere, right up
 // until the spelling that was missed reaches production. checkName has three
