@@ -1707,6 +1707,69 @@ drops from the host's `2048` to OpenSSH's compiled-in `1024`:
 # requiredrsasize 1024
 ```
 
+### 13c. The runtime directory: a planted symlink is refused, and a stale one is swept
+
+The ssh-agent proxy's socket (and the podman proxy's) lives under
+`$XDG_RUNTIME_DIR/snug/run-<pid>/`, and issue #61 part (c) is about what
+protects that path before snug ever gets there: something that got to
+`$XDG_RUNTIME_DIR` first could plant a symlink at the `snug` name and
+redirect every socket into a directory it controls. Needs a pinned identity
+to exercise (a plain default run never calls `runtimeDir`), so this reuses
+the throwaway agent from §13's own key.
+
+```bash
+export XDG_RUNTIME_DIR=$(mktemp -d)
+ln -s /tmp "$XDG_RUNTIME_DIR/snug"          # the attack: plant it first
+./bin/snug -p acct-a $SC/proj/sub -- echo MARKER
+```
+
+Expect a refusal naming the symlink, exit non-zero, and no `MARKER` on
+screen — the guard fires before the sandbox exists, not after:
+
+```
+snug: runtime directory: refusing …/snug: it is a symlink — something on
+this host planted it before snug got here; remove it by hand and re-run snug
+```
+
+Remove the trap and the identical command must now succeed:
+
+```bash
+rm "$XDG_RUNTIME_DIR/snug"
+./bin/snug -p acct-a $SC/proj/sub -- echo MARKER
+# MARKER
+```
+
+Issue #85 is what happens on the way OUT, or rather does not: `SIGKILL`
+cannot be caught, so a killed run's `run-<pid>` directory survives, and the
+next unrelated run sweeps it on its way in.
+
+```bash
+export XDG_RUNTIME_DIR=$(mktemp -d)
+./bin/snug -p acct-a $SC/proj/sub -- sleep 30 &
+sleep 1
+dead=$(ls "$XDG_RUNTIME_DIR"/snug)
+kill -9 %1; wait
+ls "$XDG_RUNTIME_DIR/snug/$dead"            # still there: SIGKILL cannot clean up
+./bin/snug -p acct-a $SC/proj/sub -- true    # an unrelated later run
+ls "$XDG_RUNTIME_DIR/snug" | grep -q "$dead" && echo "STILL THERE: bug" || echo "swept: ok"
+```
+
+Expect `swept: ok`. A concurrently live run's directory must NOT be swept —
+without checking that half, "the stale one is gone" also passes on a sweep
+that deletes everything it finds:
+
+```bash
+export XDG_RUNTIME_DIR=$(mktemp -d)
+./bin/snug -p acct-a $SC/proj/sub -- sleep 30 &
+sleep 1
+live=$(ls "$XDG_RUNTIME_DIR"/snug)
+./bin/snug -p acct-a $SC/proj/sub -- true    # a second run, sweeps nothing here
+ls "$XDG_RUNTIME_DIR/snug" | grep -q "$live" && echo "still alive: ok" || echo "REMOVED A LIVE RUN: bug"
+kill -9 %1; wait
+```
+
+Expect `still alive: ok`.
+
 ---
 
 ## If a check fails

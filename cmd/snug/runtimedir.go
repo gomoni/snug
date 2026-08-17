@@ -145,6 +145,11 @@ var (
 // runLock takes the per-run flock exactly once per path per process. On a
 // second call for the same path (this process's own idempotent re-entry) it
 // is a cache hit and touches nothing.
+//
+// It retries once on errLockFileSwept — see lockRunDir for what that means
+// and why one retry is enough in practice — and refuses outright rather than
+// retrying forever, because a caller asking "where do my sockets go" needs an
+// answer, not a loop.
 func runLock(runPath string, snugRoot *os.Root, snugPath, runName string) error {
 	runLocksMu.Lock()
 	defer runLocksMu.Unlock()
@@ -153,28 +158,87 @@ func runLock(runPath string, snugRoot *os.Root, snugPath, runName string) error 
 		return nil
 	}
 
-	runRoot, _, err := secureSubroot(snugRoot, snugPath, runName)
-	if err != nil {
-		return fmt.Errorf("runtime directory: %w", err)
+	lock, err := lockRunDir(snugRoot, snugPath, runName)
+	if errors.Is(err, errLockFileSwept) {
+		lock, err = lockRunDir(snugRoot, snugPath, runName)
 	}
-	defer runRoot.Close()
-
-	// Taken before this directory is used for anything else — the lock file
-	// is the very first thing written into it, before a single socket is
-	// bound.
-	lock, err := runRoot.OpenFile("lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return fmt.Errorf("runtime directory: opening %s/lock: %w", runPath, err)
-	}
-	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		lock.Close()
-		return fmt.Errorf("runtime directory: locking %s/lock: %w — a directory named "+
-			"after this process's own pid is already locked by something else, which should be "+
-			"impossible on a live system (pids are unique); refusing rather than reusing it", runPath, err)
+		if errors.Is(err, errLockFileSwept) {
+			return fmt.Errorf("runtime directory: %s: a concurrent sweep removed this run's "+
+				"own directory twice in a row while this process was trying to lock it — "+
+				"refusing rather than returning a path that may no longer exist", runPath)
+		}
+		return err
 	}
 
 	runLocks[runPath] = lock
 	return nil
+}
+
+// errLockFileSwept means the lock file this call just locked had already
+// been unlinked by the time it checked — see lockRunDir. It is internal:
+// runLock retries on it once and never lets it escape as a final answer,
+// because a path to a directory that no longer exists is not a runtime
+// directory.
+var errLockFileSwept = errors.New("lock file was removed by a concurrent sweep before this process finished locking it")
+
+// lockRunDir creates (or reuses) this run's own directory, and takes the
+// flock on the lock file inside it — before that directory is used for
+// anything else, which is the whole point: the lock file is the very first
+// thing written into it, before a single socket is bound.
+//
+// Between opening the lock file and taking the flock on it there is a window
+// this process does not control: a DIFFERENT, concurrently starting snug
+// process running sweepStaleRunDirs over the same shared "snug" directory
+// can open that SAME lock file, find it present but not yet held — which is
+// indistinguishable, from the sweep's side, from "the owner died holding
+// it" — and RemoveAll the whole run directory out from under us. flock on an
+// already-unlinked descriptor still succeeds, so the lock alone cannot tell
+// this apart from an ordinary success. What can: the descriptor's link
+// count. Zero means nothing points to this file any more, which can only
+// happen here if the directory it lived in was removed while we were mid-
+// creation of it.
+func lockRunDir(snugRoot *os.Root, snugPath, runName string) (*os.File, error) {
+	runPath := filepath.Join(snugPath, runName)
+
+	runRoot, _, err := secureSubroot(snugRoot, snugPath, runName)
+	if err != nil {
+		return nil, fmt.Errorf("runtime directory: %w", err)
+	}
+	defer runRoot.Close()
+
+	lock, err := runRoot.OpenFile("lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("runtime directory: opening %s/lock: %w", runPath, err)
+	}
+	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		lock.Close()
+		return nil, fmt.Errorf("runtime directory: locking %s/lock: %w — a directory named "+
+			"after this process's own pid is already locked by something else, which should be "+
+			"impossible on a live system (pids are unique); refusing rather than reusing it", runPath, err)
+	}
+
+	if linked, lerr := stillLinked(lock); lerr != nil {
+		lock.Close()
+		return nil, fmt.Errorf("runtime directory: checking whether %s/lock is still linked: %w", runPath, lerr)
+	} else if !linked {
+		lock.Close()
+		return nil, errLockFileSwept
+	}
+
+	return lock, nil
+}
+
+// stillLinked reports whether the open file f still has a name in the
+// filesystem — Nlink > 0. An flock succeeds identically on a file that still
+// exists and on one that has been unlinked out from under the descriptor
+// holding it, so this is the only reliable way to tell those two apart.
+func stillLinked(f *os.File) (bool, error) {
+	var st unix.Stat_t
+	if err := unix.Fstat(int(f.Fd()), &st); err != nil {
+		return false, err
+	}
+	return st.Nlink > 0, nil
 }
 
 // sweepStaleRunDirs removes run-* directories whose owning process is gone —
@@ -197,9 +261,24 @@ func runLock(runPath string, snugRoot *os.Root, snugPath, runName string) error 
 //     the lock a moment ago.
 //   - Lock refused (EWOULDBLOCK) means a live run; leave it alone.
 //   - No lock file at all means the directory may be mid-creation by a run
-//     that has not reached runLock yet — left alone rather than guessed at.
-//     Being conservative here costs one stale directory; being wrong costs a
-//     live run its sockets.
+//     that has not reached lockRunDir yet — left alone rather than guessed
+//     at. Being conservative here costs one stale directory; being wrong
+//     costs a live run its sockets.
+//
+// Those three are correct FROM THIS FUNCTION'S SIDE, and they are also not
+// the whole story: "lock file present, owner alive, lock not yet taken" is a
+// real fourth state — this function's own OpenFile+Flock lands in the same
+// window a concurrent lockRunDir is trying to get through — and from here it
+// is indistinguishable from "owner died holding it", which is exactly the
+// case this function exists to act on. That is not a bug in the three-way
+// read above; it means the fourth case cannot be resolved on the SWEEPING
+// side at all, because nothing here can see whether a lock is merely
+// "not yet taken" versus "never going to be taken again". It is resolved on
+// the CREATING side instead: lockRunDir checks, after it takes its own
+// flock, that the file it locked is still linked, and treats "no longer
+// linked" — meaning a sweep did land in that window and removed the
+// directory — as a reason to retry rather than hand back a path to a
+// directory that no longer exists.
 //
 // This reads snugPath by NAME (through snugRoot, not a cached fd from a
 // previous check) — by this point the "snug" directory's existence and

@@ -315,3 +315,51 @@ func TestRuntimeDirSweepsOnStartup(t *testing.T) {
 		t.Errorf("a stale run-* directory from an earlier, dead invocation survived a later runtimeDir() call: %v", err)
 	}
 }
+
+// TestStillLinkedDetectsAConcurrentSweepUnlinkingOurLockFile is
+// lockRunDir's guard against the race a maintainer review of this file
+// found: a DIFFERENT snug process's sweepStaleRunDirs can land between this
+// process's OpenFile and Flock of its own run's lock file, see it present
+// but not yet held — indistinguishable, from the sweep's side, from "the
+// owner died holding it" — and RemoveAll the whole run directory. flock on
+// an already-unlinked descriptor still succeeds, so the lock alone cannot
+// tell the two apart; stillLinked (Nlink on the open descriptor) is what
+// can, and this test proves it does rather than hitting the race, which is
+// not deterministic: create the file, open it, remove the directory holding
+// it, and check the helper reports it gone.
+//
+// CONTROL: the same descriptor while the directory is still in place must
+// report present — without this half, a stillLinked that always returned
+// false (or always true) would also make the assertion below pass.
+func TestStillLinkedDetectsAConcurrentSweepUnlinkingOurLockFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "lock")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	// CONTROL: still in place.
+	if linked, err := stillLinked(f); err != nil {
+		t.Fatalf("stillLinked (control): %v", err)
+	} else if !linked {
+		t.Fatal("control: stillLinked reported an in-place file as gone")
+	}
+
+	// The shape a concurrent sweep's RemoveAll produces: the whole directory
+	// this descriptor's file lived in is removed while the descriptor stays
+	// open.
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	if linked, err := stillLinked(f); err != nil {
+		t.Fatalf("stillLinked (after removal): %v", err)
+	} else if linked {
+		t.Fatal("stillLinked reported a removed file as still present")
+	}
+}
