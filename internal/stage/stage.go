@@ -219,6 +219,14 @@ func (s *Stage) Target() policy.PastaTarget {
 // every namespace assertion compares against.
 func (s *Stage) PinnedNetns() string { return s.netns }
 
+// Pid is P1's own pid — the process P0 directly forked for this run. It is
+// what a caller signals to kill the stage, and what issue #13's teardown
+// confirmation (internal/sandbox.confirmTeardown) treats as the "outer"
+// process for the @net topology: bwrap itself is forked BY P1, not by P0, so
+// P0 never learns bwrap's pid directly and has nothing else of its own to
+// kill.
+func (s *Stage) Pid() int { return s.pid }
+
 // WaitNetReady blocks until the network helper's interface is up INSIDE the
 // sandbox's network namespace, and is the reason bwrap no longer has to be
 // started before the network exists.
