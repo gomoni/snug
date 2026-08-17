@@ -1380,6 +1380,49 @@ pgrep -a bwrap || echo "no leftovers: ok"
 Expect the bwrap process to be gone. `--die-with-parent` kills the payload even
 when snug is SIGKILLed and cannot clean up after itself.
 
+### 11b. …including when the signal lands during startup
+
+Section 11 kills a sandbox that has been up for two seconds, which is the easy
+case: bwrap has long since armed `--die-with-parent` on its own init. Issue #13
+is the other one. bwrap arms that late — roughly 40 ms in — and before then,
+killing the process snug forked does **not** take the init with it. Measured at
+the time: the init survived, reparented to the surrounding container's
+subreaper, holding the payload and the network namespace, still writing to the
+target *after* snug was gone.
+
+Run it on both topologies. `$TOK` is what makes the survivor findable: an
+orphan has been reparented out of snug's tree, so `pgrep -P` cannot see it, and
+a marker written *after* snug died is the other half of the evidence.
+
+```bash
+for args in "" "-p @net"; do
+  for off in 0.02 0.05 0.10; do
+    T=$(mktemp -d); TOK=snug13$RANDOM
+    ./bin/snug $args "$T" -- /bin/sh -c \
+      "sleep 0.25; echo x > \"\$SNUG_TARGET/m-$TOK\"; sleep 30" >/dev/null 2>&1 &
+    SNUG=$!
+    sleep $off; kill -TERM $SNUG; wait $SNUG 2>/dev/null
+    sleep 1
+    SURV=$(grep -lZ "$TOK" /proc/[0-9]*/cmdline 2>/dev/null | tr -d '\0' | tr '\n' ' ')
+    echo "args='$args' off=${off}s marker=$([ -f "$T/m-$TOK" ] && echo YES || echo no) survivors=[$SURV]"
+    for f in $SURV; do p=${f#/proc/}; kill -9 "${p%/cmdline}" 2>/dev/null; done
+    rm -rf "$T"
+  done
+done
+```
+
+Expect `marker=no survivors=[]` on every line. Anything else is issue #13 back:
+a `marker=YES` means something wrote to the target after snug exited, and a
+non-empty `survivors` names the process still holding the sandbox. Kill only
+those pids — never `pkill bwrap`, which on a host with Flatpak matches
+processes snug never started.
+
+`SIGKILL` is **not** in this check and will not pass it. It never reaches
+userspace, so snug gets no chance to confirm the teardown; that residual is
+recorded on the issue rather than hidden here. The automated equivalent is
+`TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox`, which sweeps the same
+offsets from 0–300 ms in 20 ms steps for `TERM`, `INT` and `HUP`.
+
 ## 12. The stage — a `@net` sandbox has a second process ahead of it
 
 Since Phase 1 (`.claude/design/SUPERVISOR-DESIGN.md`), a `-p @net` run
