@@ -3,10 +3,11 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
+	"sync"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -22,17 +23,27 @@ import (
 // attach`):
 //
 //   - Every directory this function creates or reuses — the shared "snug"
-//     directory and this run's own subdirectory — is opened with
-//     openat2(RESOLVE_NO_SYMLINKS), which refuses a symlink ANYWHERE in the
-//     resolution rather than checking the final component and racing the
-//     kernel to it. os.MkdirAll, what this function used to call, has
-//     neither property: it follows a pre-planted symlink-to-directory and
-//     never inspects an existing directory's owner or mode at all.
+//     directory and this run's own subdirectory — is opened through
+//     *os.Root, which refuses to resolve ANY name outside the tree it was
+//     opened on, structurally rather than by convention. os.MkdirAll, what
+//     this function used to call, has no such property: it follows a
+//     pre-planted symlink-to-directory and never inspects an existing
+//     directory's owner or mode at all.
+//   - os.Root's own documented contract is weaker at exactly one point: its
+//     methods "follow symbolic links, but symbolic links may not reference a
+//     location outside the root" — so an in-root symlink planted at one of
+//     the two names snug itself creates ("snug"/"snug-<uid>", and the
+//     per-run directory) would still be followed. secureSubroot narrows that
+//     at exactly those two names with an Lstat-based refusal before opening
+//     either one; it is not a distrust of os.Root generally, only of what
+//     it explicitly leaves following.
 //   - Every directory this function touches — even one it just created,
-//     because a hostile umask can weaken the mode Mkdirat asked for — has
-//     its owner and mode checked afterwards, and a mismatch is refused
-//     rather than repaired. Invariant 5: a chmod here would be a silent
-//     downgrade of whatever guarantee the wrong mode already broke.
+//     because a hostile umask can weaken the mode Mkdir asked for — has its
+//     owner and mode checked afterwards, on the open *os.Root itself
+//     (Root.Stat(".")) rather than by path, so what is checked is the thing
+//     that was actually opened. A mismatch is refused rather than repaired.
+//     Invariant 5: a chmod here would be a silent downgrade of whatever
+//     guarantee the wrong mode already broke.
 //
 // The fallback when $XDG_RUNTIME_DIR is unset changes shape along with this
 // fix: it used to be the fixed name "snug" directly under os.TempDir(),
@@ -43,14 +54,63 @@ import (
 // even if they win the race to create it first.
 //
 // On its way in, runtimeDir also sweeps run-* directories left behind by a
-// run that ended abnormally (issue #85): SIGKILL cannot be caught, so
-// nothing this process does on the way OUT can remove its own directory,
-// and self-healing on the way IN is the only shape that reaches that case.
-// See sweepStaleRunDirs for how a directory is told apart from a live run
-// rather than merely an old one.
+// run that ended abnormally (issue #85). See sweepStaleRunDirs for how a
+// directory no longer relies on /proc/<pid>/stat to tell a live run from a
+// dead one.
+//
+// runtimeDir is idempotent within a process (both the ssh-agent proxy and
+// the container proxy call it independently) and memoized by the resolved
+// path rather than a single cached value: the lock this function takes below
+// is an flock, which is scoped to the OPEN FILE DESCRIPTION rather than the
+// process, so a second unguarded open+flock from this same process would
+// contend with its own first one. Keying the cache by path — rather than
+// caching "have we ever succeeded" — is also what keeps this function's
+// tests independent of each other: each test points $XDG_RUNTIME_DIR at its
+// own temp directory, so each gets its own cache entry and its own fresh run
+// through every check.
 func runtimeDir() (string, error) {
-	base := os.Getenv("XDG_RUNTIME_DIR")
-	snugName := "snug"
+	base, snugName := runtimeBase()
+
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return "", fmt.Errorf("runtime directory: opening %s: %w", base, err)
+	}
+	defer root.Close()
+
+	snugRoot, created, err := secureSubroot(root, base, snugName)
+	if err != nil {
+		return "", fmt.Errorf("runtime directory: %w", err)
+	}
+	defer snugRoot.Close()
+	snugPath := filepath.Join(base, snugName)
+
+	if !created {
+		// A freshly-created directory has nothing in it; sweeping one is a
+		// correct no-op, so this is an optimisation, not a correctness call.
+		sweepStaleRunDirs(snugRoot, snugPath)
+	}
+
+	// The name is a human-readable label ONLY — nothing parses it back out.
+	// The lock taken below is what tells a live run's directory apart from a
+	// dead one; the pid in the name is not load-bearing the way it used to
+	// be when a stale directory was identified by parsing this string.
+	runName := fmt.Sprintf("run-%d", os.Getpid())
+	runPath := filepath.Join(snugPath, runName)
+
+	if err := runLock(runPath, snugRoot, snugPath, runName); err != nil {
+		return "", err
+	}
+
+	return runPath, nil
+}
+
+// runtimeBase computes $XDG_RUNTIME_DIR (or the uid-scoped fallback under
+// os.TempDir()) and the name of the directory snug owns directly under it.
+// Pure string computation — no I/O — so runtimeDir can compute the same
+// candidate path twice without touching the filesystem twice.
+func runtimeBase() (base, snugName string) {
+	base = os.Getenv("XDG_RUNTIME_DIR")
+	snugName = "snug"
 	if base == "" {
 		// os.TempDir() is frequently mode 1777 (world-writable, sticky)
 		// rather than private to us, and it is provided by the OS the same
@@ -61,79 +121,60 @@ func runtimeDir() (string, error) {
 		base = os.TempDir()
 		snugName = fmt.Sprintf("snug-%d", os.Getuid())
 	}
-
-	// The base directory itself ($XDG_RUNTIME_DIR or os.TempDir()) is not
-	// ours to own or to police the mode of — it is handed to every process
-	// on the host the same way. It still gets the symlink refusal: a
-	// symlinked XDG_RUNTIME_DIR would be bizarre, but refusing to resolve
-	// through it costs nothing and openat2 is already in hand.
-	rootFd, err := openNoFollow(unix.AT_FDCWD, base)
-	if err != nil {
-		return "", fmt.Errorf("runtime directory: opening %s: %w", base, describeOpenErr(err, base))
-	}
-	defer unix.Close(rootFd)
-
-	snugFd, created, err := secureSubdir(rootFd, base, snugName)
-	if err != nil {
-		return "", fmt.Errorf("runtime directory: %w", err)
-	}
-	defer unix.Close(snugFd)
-	snugPath := filepath.Join(base, snugName)
-
-	if !created {
-		// A freshly-created directory has nothing in it; sweeping one is a
-		// correct no-op, so this is an optimisation, not a correctness call.
-		sweepStaleRunDirs(snugPath)
-	}
-
-	pid := os.Getpid()
-	start, err := pidStartTime(pid)
-	if err != nil {
-		return "", fmt.Errorf("runtime directory: reading this process's own start time "+
-			"out of /proc/%d/stat: %w (this is how a stale run-* directory left by an "+
-			"earlier process that reused this pid gets told apart from this run)", pid, err)
-	}
-	runName := runDirName(pid, start)
-
-	runFd, _, err := secureSubdir(snugFd, snugPath, runName)
-	if err != nil {
-		return "", fmt.Errorf("runtime directory: %w", err)
-	}
-	unix.Close(runFd)
-
-	return filepath.Join(snugPath, runName), nil
+	return base, snugName
 }
 
-// runDirName encodes both the pid and its start time, not the pid alone. A
-// pid is reused across the lifetime of a long-running host, and the sweep in
-// sweepStaleRunDirs needs to tell "this pid is still the same process" apart
-// from "this pid was recycled by something else" — which a bare run-<pid>
-// name cannot express. Field 22 of /proc/<pid>/stat (start time in clock
-// ticks since boot) is what the kernel itself effectively uses for exactly
-// this distinction.
-func runDirName(pid int, startTime uint64) string {
-	return fmt.Sprintf("run-%d-%d", pid, startTime)
-}
+// runLocks holds the flock this process took on each run directory it has
+// claimed, keyed by the resolved path. The descriptor is never closed and
+// never unlocked for the lifetime of this process: closing it is what tells
+// a later sweep (in a different, later process) that the owner is gone, so
+// closing it early would be indistinguishable from this run having crashed.
+//
+// It must never be handed to the sandboxed payload. It already is not: every
+// os.File this package opens gets O_CLOEXEC from the os package by default,
+// and internal/fdseal.Seal marks every remaining non-stdio descriptor
+// close-on-exec again immediately before bwrap is forked, belt and braces —
+// so the fd this map holds is closed automatically the moment bwrap execs,
+// without ever being enumerated in cmd.ExtraFiles or otherwise offered to
+// it.
+var (
+	runLocksMu sync.Mutex
+	runLocks   = map[string]*os.File{}
+)
 
-// parseRunDirName is runDirName's inverse, used only by the sweep.
-func parseRunDirName(name string) (pid int, startTime uint64, ok bool) {
-	rest, ok := strings.CutPrefix(name, "run-")
-	if !ok {
-		return 0, 0, false
+// runLock takes the per-run flock exactly once per path per process. On a
+// second call for the same path (this process's own idempotent re-entry) it
+// is a cache hit and touches nothing.
+func runLock(runPath string, snugRoot *os.Root, snugPath, runName string) error {
+	runLocksMu.Lock()
+	defer runLocksMu.Unlock()
+
+	if _, ok := runLocks[runPath]; ok {
+		return nil
 	}
-	parts := strings.SplitN(rest, "-", 2)
-	if len(parts) != 2 {
-		return 0, 0, false
-	}
-	p, err := strconv.Atoi(parts[0])
-	if err != nil || p <= 0 {
-		return 0, 0, false
-	}
-	s, err := strconv.ParseUint(parts[1], 10, 64)
+
+	runRoot, _, err := secureSubroot(snugRoot, snugPath, runName)
 	if err != nil {
-		return 0, 0, false
+		return fmt.Errorf("runtime directory: %w", err)
 	}
-	return p, s, true
+	defer runRoot.Close()
+
+	// Taken before this directory is used for anything else — the lock file
+	// is the very first thing written into it, before a single socket is
+	// bound.
+	lock, err := runRoot.OpenFile("lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("runtime directory: opening %s/lock: %w", runPath, err)
+	}
+	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		lock.Close()
+		return fmt.Errorf("runtime directory: locking %s/lock: %w — a directory named "+
+			"after this process's own pid is already locked by something else, which should be "+
+			"impossible on a live system (pids are unique); refusing rather than reusing it", runPath, err)
+	}
+
+	runLocks[runPath] = lock
+	return nil
 }
 
 // sweepStaleRunDirs removes run-* directories whose owning process is gone —
@@ -142,28 +183,32 @@ func parseRunDirName(name string) (pid int, startTime uint64, ok bool) {
 // process does on its way out can run, so the only place left to remove its
 // directory is the next run's way in (issue #85).
 //
-// A directory is swept only when /proc/<pid> either does not exist, or
-// exists but belongs to a DIFFERENT process than the one that made the
-// directory — the pid was reused, field 22 of /proc/<pid>/stat has
-// therefore changed, and the entry names a process that is not the one
-// running now. An mtime check cannot make this distinction (an old but
-// genuinely still-running sandbox is legitimate and must not be swept),
-// which is why the directory name carries the start time instead of relying
-// on age.
+// This used to tell a live run apart from a dead one by reading
+// /proc/<pid>/stat and comparing start times, to survive pid reuse. That is
+// gone: an flock on a lock file inside the run's own directory is a
+// liveness test the kernel already performs correctly, including on the
+// exact case #85 is about — SIGKILL releases an flock along with everything
+// else the dying process held, no signal handler required, no /proc parsing
+// required, and no pid-reuse reasoning required either, because the lock
+// says nothing about identity, only about whether anyone still holds it.
 //
-// This reads snugPath by NAME rather than through the fd runtimeDir already
-// holds open. That is a narrower guarantee than the fd-based creation path
-// above: by this point the "snug" directory's existence and ownership have
-// already been verified, its identity cannot be redirected by anything other
-// than the same uid this process runs as, and same-uid tampering is outside
-// what this guard — or #61's threat notes — cover.
+//   - Lock acquired means the owner is gone: this function is now the only
+//     thing holding the file open, so nothing else can have been holding
+//     the lock a moment ago.
+//   - Lock refused (EWOULDBLOCK) means a live run; leave it alone.
+//   - No lock file at all means the directory may be mid-creation by a run
+//     that has not reached runLock yet — left alone rather than guessed at.
+//     Being conservative here costs one stale directory; being wrong costs a
+//     live run its sockets.
 //
-// Errors reading an individual entry are not fatal to the run — a directory
-// this function cannot classify is left alone rather than guessed at, since
-// leaving one extra stale directory costs nothing and removing a live one
-// would not.
-func sweepStaleRunDirs(snugPath string) {
-	entries, err := os.ReadDir(snugPath)
+// This reads snugPath by NAME (through snugRoot, not a cached fd from a
+// previous check) — by this point the "snug" directory's existence and
+// ownership have already been verified by the caller, its identity cannot
+// be redirected by anything other than the same uid this process runs as,
+// and same-uid tampering is outside what this guard — or #61's threat notes
+// — cover.
+func sweepStaleRunDirs(snugRoot *os.Root, snugPath string) {
+	entries, err := fs.ReadDir(snugRoot.FS(), ".")
 	if err != nil {
 		return
 	}
@@ -171,108 +216,96 @@ func sweepStaleRunDirs(snugPath string) {
 		if !e.IsDir() {
 			continue
 		}
-		pid, start, ok := parseRunDirName(e.Name())
-		if !ok {
+		name := e.Name()
+		full := filepath.Join(snugPath, name)
+
+		lock, err := snugRoot.OpenFile(name+"/lock", os.O_RDWR, 0)
+		if err != nil {
+			// No lock file (or something else unreadable about this entry):
+			// leave it alone. Could be mid-creation by a run that has not
+			// reached runLock yet.
 			continue
 		}
-		if pid == os.Getpid() {
-			// Can never be stale: it would name the process running this
-			// sweep, which by definition still exists.
+		flockErr := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if flockErr != nil {
+			lock.Close() // a live run; not this function's business
 			continue
 		}
-		if live, err := pidStartTime(pid); err == nil && live == start {
-			continue // a genuinely still-running sandbox; not this function's business
-		}
-		full := filepath.Join(snugPath, e.Name())
-		if rmErr := os.RemoveAll(full); rmErr != nil {
+		lock.Close() // releases the flock we just proved nobody else needed
+
+		if rmErr := snugRoot.RemoveAll(name); rmErr != nil {
 			fmt.Fprintf(os.Stderr, "snug: could not remove stale run directory %s: %v\n", full, rmErr)
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "snug: removed stale run directory %s (pid %d is gone; "+
-			"left behind by a run that did not exit cleanly)\n", full, pid)
+		fmt.Fprintf(os.Stderr, "snug: removed stale run directory %s (its owning process is gone; "+
+			"left behind by a run that did not exit cleanly)\n", full)
 	}
 }
 
-// pidStartTime returns field 22 of /proc/<pid>/stat, in clock ticks since
-// boot. comm (field 2) is parenthesized and may itself contain spaces and
-// close-parens, so fields are only reliably counted starting after its own
-// closing paren — the same hazard test/integration/stage_test.go documents
-// for the same file.
-func pidStartTime(pid int) (uint64, error) {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return 0, err
-	}
-	i := strings.LastIndexByte(string(data), ')')
-	if i < 0 || i+2 > len(data) {
-		return 0, fmt.Errorf("unexpected /proc/%d/stat contents", pid)
-	}
-	fields := strings.Fields(string(data[i+2:]))
-	// state is field 3, so the first entry above is field 3, and starttime
-	// (field 22) is nineteen further along.
-	const starttimeOffset = 22 - 3
-	if len(fields) <= starttimeOffset {
-		return 0, fmt.Errorf("unexpected /proc/%d/stat contents: too few fields after comm", pid)
-	}
-	return strconv.ParseUint(fields[starttimeOffset], 10, 64)
-}
-
-// openNoFollow opens an existing directory, refusing to resolve through a
-// symlink anywhere along the way.
+// secureSubroot opens (creating it if absent) a directory named `name`
+// inside the already-verified root `parent`, and returns it as its own
+// *os.Root so nothing opened through it can walk back out or past it.
 //
-// RESOLVE_NO_SYMLINKS covers the trailing component as well as every
-// intermediate one, so O_NOFOLLOW would be redundant — and worse than
-// redundant: O_NOFOLLOW combined with O_DIRECTORY reports a symlink as
-// ENOTDIR rather than ELOOP, which is the same refusal wearing an error
-// that says "not a directory" instead of "somebody planted a symlink
-// here". The guard held either way; the message did not, and the message is
-// the half a human acts on. Measured — the two symlink tests failed on the
-// errno alone, with the directory correctly refused in both.
-func openNoFollow(dirFd int, path string) (int, error) {
-	how := unix.OpenHow{
-		Flags:   unix.O_DIRECTORY | unix.O_CLOEXEC,
-		Resolve: unix.RESOLVE_NO_SYMLINKS,
-	}
-	return unix.Openat2(dirFd, path, &how)
-}
-
-// secureSubdir opens (creating it if absent) a directory named `name` inside
-// the already-verified directory `parentFd`. It never trusts an existing
-// entry: found means checked, and — per invariant 5 — a check that fails is
-// refused rather than repaired.
+// It never trusts an existing entry: found means checked, and — per
+// invariant 5 — a check that fails is refused rather than repaired.
 //
-// parentDesc is the human-readable path to parentFd, used only in messages —
-// secureSubdir itself never resolves a path STRING for anything but display,
-// precisely so nothing it does can be redirected by a symlink planted after
-// parentFd was opened.
-func secureSubdir(parentFd int, parentDesc, name string) (fd int, created bool, err error) {
-	mkErr := unix.Mkdirat(parentFd, name, 0o700)
+// The Lstat immediately below is the deliberate narrowing described on
+// runtimeDir: os.Root's documented behaviour is to follow an in-root
+// symlink, and this is one of the two names ("snug"/"snug-<uid>", and the
+// per-run directory) where that is one degree more permissive than this
+// function wants. It runs AFTER Mkdir, not before: Mkdir is the atomic
+// step — either it creates a fresh directory (nothing could have raced a
+// symlink into that exact name in between, because the parent directory
+// this create just happened in has already passed the ownership+mode 0700
+// check below, and 0700 owned by this uid is the only thing that can write
+// there), or it reports EEXIST, in which case the Lstat is what tells apart
+// "a directory left by an earlier run" from "a symlink something planted
+// before snug got here".
+func secureSubroot(parent *os.Root, parentDesc, name string) (child *os.Root, created bool, err error) {
+	mkErr := parent.Mkdir(name, 0o700)
 	created = mkErr == nil
-	if mkErr != nil && !errors.Is(mkErr, unix.EEXIST) {
-		return -1, false, fmt.Errorf("creating %s: %w", filepath.Join(parentDesc, name), mkErr)
+	if mkErr != nil && !errors.Is(mkErr, fs.ErrExist) {
+		return nil, false, fmt.Errorf("creating %s: %w", filepath.Join(parentDesc, name), mkErr)
 	}
 
 	full := filepath.Join(parentDesc, name)
-	fd, err = openNoFollow(parentFd, name)
-	if err != nil {
-		return -1, false, fmt.Errorf("opening %s: %w", full, describeOpenErr(err, full))
+
+	if fi, lerr := parent.Lstat(name); lerr != nil {
+		return nil, false, fmt.Errorf("checking %s: %w", full, lerr)
+	} else if fi.Mode()&os.ModeSymlink != 0 {
+		return nil, false, fmt.Errorf("refusing %s: it is a symlink — something on this host "+
+			"planted it before snug got here; remove it by hand and re-run snug", full)
 	}
 
-	if verr := verifyOwnedAndPrivate(fd, full); verr != nil {
-		unix.Close(fd)
-		return -1, false, verr
+	child, err = parent.OpenRoot(name)
+	if err != nil {
+		return nil, false, fmt.Errorf("opening %s: %w", full, err)
 	}
-	return fd, created, nil
+
+	if verr := verifyOwnedAndPrivate(child, full); verr != nil {
+		child.Close()
+		return nil, false, verr
+	}
+	return child, created, nil
 }
 
 // verifyOwnedAndPrivate refuses a directory that is not ours, or that is
 // readable, writable or searchable by anyone else — the two properties that
 // make it safe to place a unix socket inside without asking who else could
 // already be watching that path.
-func verifyOwnedAndPrivate(fd int, desc string) error {
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
+//
+// It checks the open HANDLE (root.Stat(".")), not a path string, so what
+// gets checked is exactly the directory that was just opened — os.Root
+// prevents this handle from having been redirected out of the tree it was
+// opened on, but says nothing on its own about who owns what is inside it.
+func verifyOwnedAndPrivate(root *os.Root, desc string) error {
+	fi, err := root.Stat(".")
+	if err != nil {
 		return fmt.Errorf("checking %s: %w", desc, err)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("checking %s: could not read its owner on this platform", desc)
 	}
 	if uid := int(st.Uid); uid != os.Getuid() {
 		return fmt.Errorf("refusing %s: owned by uid %d, not you (uid %d) — "+
@@ -280,35 +313,10 @@ func verifyOwnedAndPrivate(fd int, desc string) error {
 			"it is not in use — snug will not use a directory it does not own for sockets",
 			desc, uid, os.Getuid())
 	}
-	if mode := st.Mode & 0o777; mode != 0o700 {
+	if mode := fi.Mode().Perm(); mode != 0o700 {
 		return fmt.Errorf("refusing %s: mode is %#o, must be exactly 0700 — "+
 			"check the umask that created it and fix the permissions by hand; "+
 			"snug will not repair it silently", desc, mode)
 	}
 	return nil
-}
-
-// describeOpenErr turns ENOSYS and ELOOP from openNoFollow into a message
-// that names the fix rather than the errno. ENOSYS means the kernel predates
-// openat2 (Linux 5.6); there is no fallback, because the fallback IS the bug
-// this function exists to close — a path lookup with no defence against a
-// symlink planted in the middle of it. ELOOP means openat2 refused exactly
-// that: a symlink somewhere in the resolution.
-func describeOpenErr(err error, path string) error {
-	switch {
-	case errors.Is(err, unix.ENOSYS):
-		return fmt.Errorf("this kernel has no openat2(2), which needs Linux 5.6 or newer. "+
-			"snug refuses to fall back to an unguarded path lookup for a directory that will "+
-			"hold live sockets — upgrade the kernel, or point XDG_RUNTIME_DIR at a host that "+
-			"can run this (original error: %w)", err)
-	case errors.Is(err, unix.ELOOP):
-		return fmt.Errorf("%s is a symlink, or resolves through one somewhere along its "+
-			"path — refusing to follow it. Something on this host planted it before snug "+
-			"got here; remove it by hand and re-run snug", path)
-	case errors.Is(err, unix.ENOTDIR):
-		return fmt.Errorf("%s exists but is not a directory — refusing to use it. Remove "+
-			"it by hand and re-run snug", path)
-	default:
-		return err
-	}
 }

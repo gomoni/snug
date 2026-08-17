@@ -15,11 +15,6 @@ import (
 	"github.com/gomoni/snug/internal/sshproxy"
 )
 
-// runtimeDir moved to runtimedir.go, with the guards issue #61 part (c) and
-// #85 needed: openat2(RESOLVE_NO_SYMLINKS) on every directory it creates or
-// reuses, an ownership/mode check on anything it did not just create, and a
-// sweep of run-* directories a SIGKILLed run left behind.
-
 // knownHostsFor extracts the entries for one host from the host's known_hosts.
 //
 // Binding the whole file would tell the sandbox every machine you have ever

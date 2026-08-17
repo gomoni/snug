@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // TestRuntimeDirRefusesAPreplantedSymlinkOnTheSharedDirectory is the guard
@@ -53,10 +55,12 @@ func TestRuntimeDirRefusesAPreplantedSymlinkOnTheSharedDirectory(t *testing.T) {
 
 // TestRuntimeDirRefusesAPreplantedSymlinkOnTheRunSubdirectory is the same
 // attack one level deeper: the shared "snug" directory is legitimate, but the
-// entry this specific run would use — run-<pid>-<starttime> — is itself a
-// symlink, planted by anything else running as this uid before this process
-// got there. runDirName/pidStartTime are used here (not a guess at the name)
-// so this test plants the EXACT entry runtimeDir is about to look for.
+// entry this specific run would use — run-<pid> — is itself a symlink,
+// planted by anything else running as this uid before this process got
+// there. The run-<pid> name is a human-readable label, not a computed
+// identity (see runtimeDir's doc comment on why it no longer needs to be
+// anything more), so this test can just build it directly rather than
+// calling back into production code to derive it.
 func TestRuntimeDirRefusesAPreplantedSymlinkOnTheRunSubdirectory(t *testing.T) {
 	base := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", base)
@@ -66,11 +70,7 @@ func TestRuntimeDirRefusesAPreplantedSymlinkOnTheRunSubdirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	start, err := pidStartTime(os.Getpid())
-	if err != nil {
-		t.Fatalf("pidStartTime(self): %v", err)
-	}
-	runName := runDirName(os.Getpid(), start)
+	runName := fmt.Sprintf("run-%d", os.Getpid())
 
 	trap := filepath.Join(base, "attacker-owned-run")
 	if err := os.MkdirAll(trap, 0o700); err != nil {
@@ -125,7 +125,11 @@ func TestRuntimeDirRefusesAWronglyPermissionedSharedDirectory(t *testing.T) {
 // TestRuntimeDirIsIdempotentWithinARun pins the property both call sites
 // depend on (identity.go's ssh-agent proxy and container.go's engine proxy
 // both call runtimeDir independently): two calls from the same process must
-// land on the exact same directory, not two.
+// land on the exact same directory, not two. It is also what proves the
+// second call does NOT attempt to re-flock the lock file: flock is scoped to
+// the open file description, not the process, so an unguarded second
+// open+flock from this same process would contend with its own first one and
+// this test would fail with an error instead of a mismatched path.
 func TestRuntimeDirIsIdempotentWithinARun(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 
@@ -142,74 +146,164 @@ func TestRuntimeDirIsIdempotentWithinARun(t *testing.T) {
 	}
 }
 
-// TestSweepStaleRunDirsDistinguishesDeadFromReusedFromLive is #85's
-// regression test at the unit level: a stale run-* directory must go, a
-// directory naming a pid that is technically alive again — because pids get
-// reused — must ALSO go if it is not the same PROCESS, and a directory
-// naming a genuinely live process must survive. An mtime-based sweep cannot
-// make the middle distinction; this test is what proves the implementation
-// does not fall back to one.
-//
-// The positive control is the live case: without it, "the stale ones are
-// gone" would pass just as well on a sweep that deletes everything.
-func TestSweepStaleRunDirsDistinguishesDeadFromReusedFromLive(t *testing.T) {
-	snugDir := t.TempDir()
+// TestRuntimeDirHoldsItsLockForTheLifeOfTheProcess is the fd-lifetime
+// property #85's fix depends on: runtimeDir must keep the descriptor for its
+// own run's lock file open (and locked) for as long as this process runs,
+// because closing it early is indistinguishable, to a later sweep, from this
+// run having crashed. A second, independent attempt to lock the same file
+// must fail while this process is still alive.
+func TestRuntimeDirHoldsItsLockForTheLifeOfTheProcess(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 
-	// A real, still-running process this test started itself (never killed
-	// by name — this exact pid only, in t.Cleanup).
-	cmd := exec.Command("sleep", "30")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("starting the positive control process: %v", err)
-	}
-	t.Cleanup(func() {
-		cmd.Process.Kill()
-		cmd.Wait()
-	})
-	livePid := cmd.Process.Pid
-	liveStart, err := pidStartTime(livePid)
+	dir, err := runtimeDir()
 	if err != nil {
-		t.Fatalf("pidStartTime(live control): %v", err)
+		t.Fatal(err)
 	}
 
-	live := runDirName(livePid, liveStart)
-	reused := runDirName(livePid, liveStart+1) // same pid, wrong start time: "pid was reused" case
-	dead := runDirName(1_999_999_999, 12345)   // a pid that (almost certainly) does not exist at all
-
-	for _, name := range []string{live, reused, dead} {
-		if err := os.MkdirAll(filepath.Join(snugDir, name), 0o700); err != nil {
-			t.Fatal(err)
-		}
+	lockPath := filepath.Join(dir, "lock")
+	f, err := os.OpenFile(lockPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("opening the lock file runtimeDir must have created: %v", err)
 	}
-
-	sweepStaleRunDirs(snugDir)
-
-	if _, err := os.Stat(filepath.Join(snugDir, live)); err != nil {
-		t.Errorf("the LIVE process's directory was removed (it must survive): %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(snugDir, reused)); !os.IsNotExist(err) {
-		t.Errorf("a directory naming a REUSED pid (same pid, wrong start time) survived the sweep: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(snugDir, dead)); !os.IsNotExist(err) {
-		t.Errorf("a directory naming a dead pid survived the sweep: %v", err)
+	defer f.Close()
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err == nil {
+		unix.Flock(int(f.Fd()), unix.LOCK_UN)
+		t.Fatal("a second, independent flock on runtimeDir's own lock file succeeded — " +
+			"runtimeDir released or never took its own lock")
 	}
 }
 
-// TestRuntimeDirSweepsOnStartupAcrossFallbackAndXDGBases pins #85's fix at
-// the level runtimeDir itself is called: a stale directory left by an
-// earlier, now-dead invocation is gone after the very next call, with no
-// separate janitor command to remember to run.
+// TestSweepStaleRunDirsDistinguishesDeadFromMidCreationFromLive is #85's
+// regression test at the unit level, rebuilt around the lock mechanism: a
+// directory whose lock nobody holds must go, a directory with NO lock file
+// at all must be left alone (it may be mid-creation), and a directory whose
+// lock is held by a genuinely live process must survive.
+//
+// There used to be a fourth case here — a directory naming a pid that has
+// been recycled by an unrelated process — because the previous
+// implementation told a live run apart from a dead one by parsing
+// /proc/<pid>/stat and comparing start times. flock replaces that reasoning
+// rather than adding to it: the lock says nothing about WHICH process holds
+// it, only whether one still does, so pid reuse is no longer a case this
+// function has to reason about at all.
+//
+// The live case is the positive control: without it, "the stale ones are
+// gone" would pass just as well on a sweep that deletes everything. It is
+// built the same way #85's original test built a real live process, except
+// the flock is taken in this test process and handed to the child through
+// cmd.ExtraFiles — an flock belongs to the open file description, not the
+// process that created it, so the child holding the inherited descriptor
+// open is what keeps the lock alive, exactly as a real snug process holding
+// its own lock open would.
+func TestSweepStaleRunDirsDistinguishesDeadFromMidCreationFromLive(t *testing.T) {
+	snugDir := t.TempDir()
+
+	// DEAD: a lock file nobody holds — the shape a SIGKILLed run leaves
+	// behind. The process that took this lock is gone, and the kernel
+	// released the flock along with everything else it held.
+	dead := "run-dead"
+	if err := os.MkdirAll(filepath.Join(snugDir, dead), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(snugDir, dead, "lock"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// MID-CREATION: a directory with no lock file at all. Must be left
+	// alone: it may be a run that has not reached the point of taking its
+	// lock yet, and being conservative here costs one stale directory
+	// rather than a live run's sockets.
+	midCreation := "run-mid-creation"
+	if err := os.MkdirAll(filepath.Join(snugDir, midCreation), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// LIVE: a lock file held by a real, still-running process — the
+	// positive control.
+	live := "run-live"
+	if err := os.MkdirAll(filepath.Join(snugDir, live), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lockFile, err := os.OpenFile(filepath.Join(snugDir, live, "lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Flock(int(lockFile.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		t.Fatalf("locking the control lock file: %v", err)
+	}
+	// Never killed by name: this exact pid only, in a cleanup this test
+	// arms below.
+	cmd := exec.Command("sleep", "30")
+	cmd.ExtraFiles = []*os.File{lockFile}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting the positive control process: %v", err)
+	}
+	lockFile.Close() // the child's inherited copy is what must keep it locked now
+
+	killed := false
+	killAndWait := func() {
+		if killed {
+			return
+		}
+		killed = true
+		cmd.Process.Kill()
+		cmd.Wait()
+	}
+	t.Cleanup(killAndWait)
+
+	root, err := os.OpenRoot(snugDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	sweepStaleRunDirs(root, snugDir)
+
+	if _, err := os.Stat(filepath.Join(snugDir, dead)); !os.IsNotExist(err) {
+		t.Errorf("a directory whose lock nobody held (dead) survived the sweep: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(snugDir, midCreation)); err != nil {
+		t.Errorf("a directory with NO lock file (mid-creation) was swept; it should have been left alone: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(snugDir, live)); err != nil {
+		t.Errorf("the LIVE process's directory was removed (it must survive): %v", err)
+	}
+
+	// Kill the control process and sweep again: the live directory must now
+	// go too, which is what proves its earlier survival was really about the
+	// lock and not some unrelated reason sweepStaleRunDirs happened to skip
+	// it.
+	killAndWait()
+	sweepStaleRunDirs(root, snugDir)
+	if _, err := os.Stat(filepath.Join(snugDir, live)); !os.IsNotExist(err) {
+		t.Errorf("the now-dead control process's directory survived a second sweep: %v", err)
+	}
+}
+
+// TestRuntimeDirSweepsOnStartup pins #85's fix at the level runtimeDir
+// itself is called: a stale directory left by an earlier, now-dead
+// invocation — a lock file nobody holds, alongside a dead socket — is gone
+// after the very next call, with no separate janitor command to remember to
+// run.
 func TestRuntimeDirSweepsOnStartup(t *testing.T) {
 	base := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", base)
 
 	snugDir := filepath.Join(base, "snug")
-	stale := runDirName(1_999_999_998, 1)
-	if err := os.MkdirAll(filepath.Join(snugDir, stale), 0o700); err != nil {
+	stale := "run-1999999998"
+	staleDir := filepath.Join(snugDir, stale)
+	if err := os.MkdirAll(staleDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The lock file left behind by a run that never got the chance to
+	// release it cleanly — nobody holds it, which is exactly what tells the
+	// sweep it is safe to remove.
+	if err := os.WriteFile(filepath.Join(staleDir, "lock"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// A dead ssh-agent.sock in it, the shape #85 measured: an inode with no
 	// listener behind it, not merely an empty directory.
-	if err := os.WriteFile(filepath.Join(snugDir, stale, "ssh-agent.sock"), nil, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(staleDir, "ssh-agent.sock"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -217,7 +311,7 @@ func TestRuntimeDirSweepsOnStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := os.Stat(filepath.Join(snugDir, stale)); !os.IsNotExist(err) {
+	if _, err := os.Stat(staleDir); !os.IsNotExist(err) {
 		t.Errorf("a stale run-* directory from an earlier, dead invocation survived a later runtimeDir() call: %v", err)
 	}
 }
