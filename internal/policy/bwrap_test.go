@@ -112,7 +112,7 @@ func TestGoldenBwrapArgs(t *testing.T) {
 // its table, because the floor is REFUSED (Validate: "no profile selected") —
 // Resolve's other return contract applies: a non-nil policy alongside a
 // non-nil error. BwrapArgs is still a pure function of that policy, but the
-// argv it produces must never reach sandbox.Run (see cmd/snug/main.go and
+// argv it produces must never reach sandbox.Run (see internal/cli/main.go and
 // TestRefusedPolicyIsNeverExecuted in test/integration).
 func TestGoldenBwrapArgsFloor(t *testing.T) {
 	p, err := Resolve(testRegistry(), nil, testCtx(), newFakeEnv())

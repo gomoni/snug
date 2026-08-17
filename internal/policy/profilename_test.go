@@ -166,7 +166,7 @@ func TestNewProfileNamesNamesTheOffendingEntry(t *testing.T) {
 	}
 
 	// nil in, nil out: an absent list and an empty one must stay distinguishable
-	// at the CALLER (cmd/snug's `defaults = []` depends on it), so the
+	// at the CALLER (internal/cli's `defaults = []` depends on it), so the
 	// constructor must not invent a slice.
 	if out, err := NewProfileNames(nil); err != nil || out != nil {
 		t.Errorf("NewProfileNames(nil) = %v, %v; want nil, nil", out, err)

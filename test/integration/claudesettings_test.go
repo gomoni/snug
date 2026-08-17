@@ -13,7 +13,7 @@ import (
 // TestClaudeSettingsAreGeneratedNotBound is the end-to-end half of issue #17.
 //
 // The unit tests in internal/policy (claudesettings_test.go) assert the pure
-// filter in isolation; cmd/snug/claudestagedset_test.go asserts what mount
+// filter in isolation; internal/cli/claudestagedset_test.go asserts what mount
 // claudeFiles puts in the policy. Neither can see whether the generated file
 // actually lands at ~/.claude/settings.json inside a RUNNING sandbox, or —
 // the part that matters most — whether the executing keys a hostile or merely

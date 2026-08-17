@@ -180,7 +180,7 @@ func (v EnvVar) Present() bool { return len(v.Entries) > 0 }
 //
 // It exists as DATA, not as a derivation, because the check that uses it runs at
 // parse time and parse time cannot run a resolve. What keeps it honest is
-// cmd/snug/ownedenv_test.go: a static pass over every AuthorEnv/AuthorEnvList
+// internal/cli/ownedenv_test.go: a static pass over every AuthorEnv/AuthorEnvList
 // call in the tree, asserting that set equals this one exactly. Do not maintain
 // this list by hand-counting the writers — an earlier draft of the design did,
 // and missed the six that run AFTER Resolve, which are the dangerous half
@@ -306,7 +306,7 @@ func (p *Policy) EnvPairs() [][2]string {
 }
 
 // AuthoredEnvNames is every name snug wrote itself, sorted. It is the runtime
-// counterpart of SnugOwnedEnv — see cmd/snug/ownedenv_test.go for why both a
+// counterpart of SnugOwnedEnv — see internal/cli/ownedenv_test.go for why both a
 // static and an executed check exist, and why neither alone is enough.
 func (p *Policy) AuthoredEnvNames() []string {
 	var out []string

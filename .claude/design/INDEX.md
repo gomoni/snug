@@ -606,7 +606,7 @@ Before emitting anything, `Validate()` checks:
 - **RULE 4** — nothing but `snug` may put a node at `/proc` or `/dev` (below).
 - **RULE 2** — nesting, judged on the outer mount (below).
 
-`Validate` is the *only* refuser, which is what lets `--dry-run` render a policy it would not run (`Resolve` returns `(p, err)` for a validation failure and `(nil, err)` for everything else). It is also run **a second time**, in `cmd/snug`, after the staging layer has added the mounts that had to be created on the host first: the staged Claude credentials, the generated `gh` `hosts.yml`, the ssh-agent and container proxy sockets. Those are added after `Resolve` returned, so without the second pass they were never validated at all.
+`Validate` is the *only* refuser, which is what lets `--dry-run` render a policy it would not run (`Resolve` returns `(p, err)` for a validation failure and `(nil, err)` for everything else). It is also run **a second time**, in `internal/cli`, after the staging layer has added the mounts that had to be created on the host first: the staged Claude credentials, the generated `gh` `hosts.yml`, the ssh-agent and container proxy sockets. Those are added after `Resolve` returned, so without the second pass they were never validated at all.
 
 #### RULE 4 — `/proc` and `/dev` are `snug`'s, and a profile may not take them
 
@@ -1229,7 +1229,7 @@ clone of an unfamiliar repository, and measured A/B on a target whose only
 content is `.claude/settings.json` with a `SessionStart` hook, the hook then
 **fires** at startup with the staged Anthropic OAuth token in the same sandbox.
 `SECRETS.md` §3.5 carries the table. Both arms are in `--dry-run`'s `CLAUDE`
-block and both are goldened (`cmd/snug/testdata/claude-block*.txt`).
+block and both are goldened (`internal/cli/testdata/claude-block*.txt`).
 
 The staging list said `~/.claude.json` too, for a milestone, on the justification that "without it Claude re-onboards and shows the login prompt". **Measured false** (claude 2.1.232, issue #19): with the file absent Claude Code connects and works, while removing `.credentials.json` gives "Not logged in · Please run /login" at once. What the file was actually buying is smaller and is not a credential — it suppresses the theme picker and the trust dialog, both of which block on **every** run because `$HOME` is a fresh tmpfs, and the theme picker's answer is written to `~/.claude/settings.json` — itself GENERATED and writable now (issue #17) — so it could not persist across runs either way, for the identical reason `~/.claude.json`'s own answer cannot. Three generated keys buy exactly that. What is no longer handed over is 62 KB of host inventory: every project path on the machine, `oauthAccount` (email, org name and UUID, account UUID), `machineID`, `userID`, `mcpServers`, and the host's per-project `allowedTools`. Two costs, both intended and both stated in the injected `CLAUDE.md`, in `base.toml`'s abuse block and in `--dry-run`'s `CLAUDE` block: MCP servers configured on the host are not configured inside, and a tool approved in a host session is asked again in the sandbox. The generated file is also **unconditional** — it reads nothing from the host, so the sandbox's Claude state no longer varies with the host's.
 
@@ -1301,6 +1301,9 @@ snug/
 ├── .claude/design/INDEX.md         this document
 │
 ├── cmd/snug/
+│   └── main.go                     thin binary entry point; calls cli.Main() and nothing else
+│
+├── internal/cli/                   everything main.go used to be, importable and testable
 │   ├── main.go                     signal trap, run orchestration, os.Exit(code)
 │   ├── config.go                   `snug profile list|show|tree|dot`, `snug config`
 │   ├── doctor.go                   `snug doctor` host capability report (§4.9)
@@ -1516,7 +1519,7 @@ The issues carry the *known gaps with severities*; this is the list of things th
 - **R1 — Kernel is the boundary, and it is a big boundary.** Every guarantee here rests on user namespaces, seccomp, and `bwrap`. A userns LPE ends the discussion. Stated in §1.2; restated here because it is the risk that matters most and the one most easily forgotten after reading several thousand words about mount ordering.
 - **R2 — Helper defaults change under us.** §4.2 is a lived example. Mitigation: pass every security-relevant flag explicitly, and assert *behaviour* in integration tests rather than reading man pages. Residual risk: a flag `snug` does not know about is added with an unsafe default.
 - **R3 — The proxy's strict decode is brittle by design.** A newer `docker` client sending a new benign field gets a 403. Deliberate (it is the drift guard), but it will generate confused bug reports. Mitigation: the rejection message names the unknown field and says "this is fail-closed".
-- **R4 — Credential sync-back does not exist, and this row described it as shipped for a milestone.** Swept for as fixed strings (`syncBack`, `SyncBack`, `writeBack`, `WriteBack`): no such code, in `cmd/snug` or anywhere else. So there is **no host-write channel from inside** today, and the residual is the opposite one: a token refreshed in the sandbox is silently lost when it exits. If sync-back is built, the scope is one file, `~/.claude/.credentials.json`, and structural validation is the guard that makes the risk arguable — at which point this row becomes true and the risk becomes real. The sensitive-by-configuration file, `~/.claude.json`, is not *staged* at all: it is generated (issue #19), reading exactly one boolean out of the host's copy and no bytes into the sandbox, so "it never syncs back" is a property rather than a rule to enforce.
+- **R4 — Credential sync-back does not exist, and this row described it as shipped for a milestone.** Swept for as fixed strings (`syncBack`, `SyncBack`, `writeBack`, `WriteBack`): no such code, in `internal/cli` or anywhere else. So there is **no host-write channel from inside** today, and the residual is the opposite one: a token refreshed in the sandbox is silently lost when it exits. If sync-back is built, the scope is one file, `~/.claude/.credentials.json`, and structural validation is the guard that makes the risk arguable — at which point this row becomes true and the risk becomes real. The sensitive-by-configuration file, `~/.claude.json`, is not *staged* at all: it is generated (issue #19), reading exactly one boolean out of the host's copy and no bytes into the sandbox, so "it never syncs back" is a property rather than a rule to enforce.
 - **R5 — Ubuntu/AppArmor userns restrictions and Docker-based CI** will make `snug` unusable for some users out of the box. Mitigated by `doctor` naming the exact sysctl, not by working around it.
 - **R6 — The curated `/etc` list is a maintenance obligation** (§5.3). Two entries were found by breakage rather than by reading, and there will be more. The failure mode is legible but unhelpful (`MODULE_INITIALIZATION_ERROR`), which is why the test command is written next to the list.
 - **R7 — Moving the engine into the sandbox's netns requires subuid and cgroup delegation** that some corporate images and CI runners do not have, and is defeated outright by a host-escape `podman` shim. Measured in [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §3. `snug` must refuse rather than degrade, because the difference is invisible to the user.

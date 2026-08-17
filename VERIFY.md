@@ -210,7 +210,7 @@ A row is one line **plus** an indented line for each mark snug has to add to it
 (§6e, §6j2). On this default selection there are none, and that is worth
 noticing rather than skipping: nothing snug ships hands over a value it has a
 measurement about. The four `XDG_*` rows are the deliberate exception — see
-issue #84, and the comment on `cmd/snug/testdata/env.defaults.txt`, which is the
+issue #84, and the comment on `internal/cli/testdata/env.defaults.txt`, which is the
 artifact that decision is reviewed against.
 
 Where a `sanitise` dropped host elements, the line below names them — named, not

@@ -113,12 +113,12 @@ var (
 // every other invocation observed locally.
 const cmdTimeout = 30 * time.Second
 
-// exitPolicyCode mirrors cmd/snug's unexported exitPolicy (main.go). Repeated
+// exitPolicyCode mirrors internal/cli's unexported exitPolicy (main.go). Repeated
 // here rather than imported: this package cannot see it (it is unexported in
 // package main, and this suite deliberately drives the built binary rather
 // than linking against it — see the package doc above), so a change to the
 // exit-code scheme in main.go and a change to the number below are two
-// separate edits. If cmd/snug ever changes what exitPolicy means, the tests
+// separate edits. If internal/cli ever changes what exitPolicy means, the tests
 // that use this constant are exactly what should go red.
 const exitPolicyCode = 77
 
@@ -2956,7 +2956,7 @@ func TestRetiredNullProfileIsANamedError(t *testing.T) {
 // The structural guard for Resolve's riskiest change (see its doc comment):
 // on a Validate failure it now returns the refused policy ALONGSIDE the error,
 // precisely so --dry-run can show what would have run. The one non-test
-// caller (cmd/snug/main.go) must never let that non-nil policy reach
+// caller (internal/cli/main.go) must never let that non-nil policy reach
 // sandbox.Run regardless. If it ever did, this is the test that would catch
 // it — not by inspecting the code, but by trying to make the refused policy
 // actually do something and checking that it did not.

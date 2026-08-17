@@ -103,7 +103,7 @@ kernel bug — correct today) vs *snug-level* (a leak snug could close).
 | P12 | /proc | `/proc/1/environ` is 0 bytes (the 106-var fix holds). But PID 1 is bwrap at the same uid and `ptrace_scope=1` restricts ATTACH not READ, so `/proc/1/fd` is enumerable. Equals the known stdio hazard by a second route; `safeStdio` mitigates | Low |
 | D1 | /dev | `/dev/console` is a bind of the operator's real host pty and `/dev/tty` is the inherited controlling terminal (`--new-session` deliberately omitted on this kernel). TIOCSTI is dead twice over, but **no rule inspects bytes written to a tty** — OSC 52 clipboard, title query, CSI reports all reach the emulator and the reply lands on a descriptor the sandbox can read | Medium |
 | D5 | /dev | `/dev` and `/dev/shm` are unbounded tmpfs (= host RAM, no `size=`), and `/dev` is writable. Host RAM exhaustion. The engine's own containers get `size=64000k` | Low (DoS only) |
-| Y5 | /sys | `cmd/snug/dryrun.go:162` appends the literal `/sys /tmp/.X11-unix …` to the NOT-GRANTED block **without consulting the policy** — so with `/sys` granted, `--dry-run` prints `ro /sys` *and* "never mounted" on one screen | Low sev, **high leverage** (the trust artifact) |
+| Y5 | /sys | `internal/cli/dryrun.go:162` appends the literal `/sys /tmp/.X11-unix …` to the NOT-GRANTED block **without consulting the policy** — so with `/sys` granted, `--dry-run` prints `ro /sys` *and* "never mounted" on one screen | Low sev, **high leverage** (the trust artifact) |
 
 ### Reachable today, but only with `@podman-socket` selected
 

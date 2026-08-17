@@ -14,7 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// cmd/snug/runtimedir_test.go proves the guard and the sweep in-process,
+// internal/cli/runtimedir_test.go proves the guard and the sweep in-process,
 // against secureSubroot/lockRunDir/sweepStaleRunDirs directly. Nothing in
 // this suite had run the real binary against either claim (issue #61 part
 // (c), issue #85) before these two tests — grep this package for "#85" or
@@ -40,7 +40,7 @@ func waitForLockFile(t *testing.T, runDir string) {
 // end to end: a run's own runtime directory survives only abnormal
 // termination (a clean exit already removes its own), and SIGKILL cannot be
 // caught, so nothing on the way OUT can help — the sweep has to run on the
-// way IN of a LATER, unrelated snug process. cmd/snug/runtimedir_test.go
+// way IN of a LATER, unrelated snug process. internal/cli/runtimedir_test.go
 // proves the same claim by calling sweepStaleRunDirs directly; this is the
 // version that never imports package main and drives three real snug
 // processes instead.
@@ -135,7 +135,7 @@ func TestStaleRuntimeDirectoryIsSweptOnTheNextRun(t *testing.T) {
 
 // TestSymlinkAtTheSharedRuntimeDirectoryIsRefusedEndToEnd is issue #61 part
 // (c)'s guard, run against the real binary rather than
-// secureSubroot/verifyOwnedAndPrivate directly (cmd/snug/runtimedir_test.go
+// secureSubroot/verifyOwnedAndPrivate directly (internal/cli/runtimedir_test.go
 // covers those). Something on the host got to $XDG_RUNTIME_DIR first and
 // planted a symlink at the "snug" name; snug must refuse with the guard's
 // own message and must never start the payload.

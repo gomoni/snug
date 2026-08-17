@@ -98,7 +98,7 @@ var buildParams = map[string]buildParamCheck{
 	// checked selector and not a bare `nil`. `1` is the classic builder, which
 	// POSTs the tar to THIS endpoint and is the one snug's filter reads;
 	// `docker build` sends it on every request once DOCKER_BUILDKIT=0 forces
-	// the classic path (see cmd/snug/container.go). `2` selects a BuildKit
+	// the classic path (see internal/cli/container.go). `2` selects a BuildKit
 	// backend whose option surface is a different set from the one enumerated
 	// here and is refused by name rather than silently accepted.
 	"version": checkBuilderVersion,

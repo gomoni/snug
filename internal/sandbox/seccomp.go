@@ -152,7 +152,7 @@ var deniedSyscalls = []int{
 // deniedSyscallName names every entry in deniedSyscalls, keyed on the same
 // constants — not a second list of numbers, so there is exactly one place
 // that says "these ints mean this". It exists for DeniedSyscallNames below,
-// which is how cmd/snug's --dry-run SECCOMP row gets its list: that row used
+// which is how internal/cli's --dry-run SECCOMP row gets its list: that row used
 // to type the names out a second time by hand, and it drifted the same
 // session it was written, silently disclosing one residual while omitting a
 // worse one two comments away. A hand-typed copy is the same hazard
@@ -172,7 +172,7 @@ var deniedSyscallName = map[int]string{
 }
 
 // DeniedSyscallNames renders deniedSyscalls as names, in emission order, for
-// a caller outside this package (cmd/snug's --dry-run SECCOMP row). It PANICS
+// a caller outside this package (internal/cli's --dry-run SECCOMP row). It PANICS
 // on an entry with no name in deniedSyscallName, rather than silently
 // rendering a bare number or dropping it: the whole point of deriving this
 // list instead of typing it twice is that a syscall added to deniedSyscalls

@@ -205,14 +205,14 @@ type Policy struct {
 	// keep in mind. That field also exists to serve a mount staged after
 	// Resolve returns — but it is itself assigned INSIDE Resolve
 	// (resolve.go, `p.IdentityOwner = name`), so it is resolver output like
-	// every other field here. This one is not: cmd/snug writes it after
+	// every other field here. This one is not: internal/cli writes it after
 	// Resolve has returned, from host IO the resolver is forbidden to do.
 	//
 	// Two consequences follow, and neither is hypothetical. It is not covered
 	// by Resolve's own determinism — commutativity and idempotence are
 	// properties of what Resolve computes, and this is not that. And the
 	// resolver's purity argument does not extend to it: the value comes from
-	// reading a host file, which is exactly why the read lives in cmd/snug
+	// reading a host file, which is exactly why the read lives in internal/cli
 	// and only the resulting names land here. Anything added alongside it
 	// must be inert reporting data of the same kind. A field that CHANGED
 	// what the sandbox can reach must never be set this way, because nothing
@@ -274,7 +274,7 @@ func (p *Policy) Implied() []ProfileName {
 // Replace installs one of snug's OWN mounts, marking it Authored and recording
 // what it displaced. It is the ONLY way to write p.Mounts once Resolve has
 // assembled them — inside Resolve for the generated identity files and
-// /etc/resolv.conf, and in cmd/snug for the things that must be created on the
+// /etc/resolv.conf, and in internal/cli for the things that must be created on the
 // host before they can be granted (proxy sockets, staged credentials).
 //
 // These writes deliberately bypass `join`: a generated file must win over a
@@ -289,7 +289,7 @@ func (p *Policy) Implied() []ProfileName {
 // different content — but a human reading --dry-run deserves to see that their
 // grant was superseded rather than quietly ignored.
 //
-// Every caller that used to assign p.Mounts[g] directly (cmd/snug's claude and
+// Every caller that used to assign p.Mounts[g] directly (internal/cli's claude and
 // gh staging, BindSocket) now routes through here, which is what makes
 // Mount.Authored true of exactly the things snug wrote.
 func (p *Policy) Replace(m Mount) {

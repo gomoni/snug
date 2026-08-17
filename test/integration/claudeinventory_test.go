@@ -14,7 +14,7 @@ import (
 
 // The harm in issue #19, measured where it actually lands.
 //
-// The unit tests in cmd/snug assert what the policy says and what the generator
+// The unit tests in internal/cli assert what the policy says and what the generator
 // produces. Neither can see the thing the issue is about, which is not a field
 // value but a BOUNDARY CROSSING: the absolute path of every project on this
 // machine arriving inside a sandbox whose whole filesystem story is that a
@@ -85,7 +85,7 @@ func TestClaudeJSONInsideCarriesNoHostProjectInventory(t *testing.T) {
 		if strings.Contains(body, p) {
 			t.Errorf("the sandbox's ~/.claude.json names the host path %q, which the same "+
 				"run just measured as ABSENT inside. ~/.claude.json must be GENERATED "+
-				"(cmd/snug/claude.go, claudeStateJSON), never copied: the host's is an "+
+				"(internal/cli/claude.go, claudeStateJSON), never copied: the host's is an "+
 				"inventory of every project on this machine, and @parent-ro deliberately "+
 				"does not grant so much as a sibling directory. See issue #19.", p)
 		}
