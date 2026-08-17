@@ -12,13 +12,6 @@ const (
 	NetnsHost                      // the host's own. --share-net, --i-know.
 )
 
-func (o NetnsOwner) Join(b NetnsOwner) NetnsOwner {
-	if b > o {
-		return b
-	}
-	return o
-}
-
 func (o NetnsOwner) String() string {
 	switch o {
 	case NetnsStage:
@@ -40,13 +33,6 @@ const (
 	SubuidNone SubuidMode = iota
 	SubuidFull
 )
-
-func (m SubuidMode) Join(o SubuidMode) SubuidMode {
-	if o > m {
-		return o
-	}
-	return m
-}
 
 func (m SubuidMode) String() string {
 	if m == SubuidFull {
@@ -88,15 +74,28 @@ type Topology struct {
 	Subuid SubuidMode
 }
 
-// Join is the lattice join of both fields, field by field — the same
-// pattern as Access.Join and NetMode.Join, so a Topology composes exactly the
-// way every other resolved scalar in this package does.
-func (t Topology) Join(o Topology) Topology {
-	return Topology{
-		Netns:  t.Netns.Join(o.Netns),
-		Subuid: t.Subuid.Join(o.Subuid),
-	}
-}
+// There is deliberately NO Topology.Join, and no Join on NetnsOwner or
+// SubuidMode either.
+//
+// All three existed, mirroring Access.Join and NetMode.Join, and all three were
+// dead: `Topology.Join` had no caller outside its own law test, and it was the
+// only caller of the other two. Composition of what a topology is DERIVED from
+// happens upstream and is very much alive — `resolve.go` folds `Net.Mode`,
+// `Git` and `Podman` with their own Joins — and `deriveTopology` then runs once,
+// at the end, over the already-joined result.
+//
+// Deleting them is not only YAGNI. A `Join` here is the one operation that
+// would let something compose a Topology directly instead of deriving one, so
+// its absence makes "derived, never granted" structural rather than
+// conventional — the same device as TestPolicyHasNoRestrictionOperation, which
+// checks an invariant by finding no code for the thing it forbids. The ORDER is
+// untouched: the iota constants above still say which value is more, and
+// TestAddingAProfileNeverLowersATopologyField compares them with `<`.
+//
+// That test is now the ONLY monotonicity check for Topology, which is why it
+// grew a second base selection and a coverage assertion when these were
+// removed. A lattice law about code nothing calls proves less than one walk of
+// the real resolution path.
 
 func (t Topology) String() string {
 	return fmt.Sprintf("netns=%s subuid=%s", t.Netns, t.Subuid)
