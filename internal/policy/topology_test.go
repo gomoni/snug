@@ -5,66 +5,65 @@ import (
 	"testing"
 )
 
-// The lattice laws, per field, in the shape of TestNetModeJoinsPermissiveWard —
-// Topology.Join must be commutative, associative and idempotent, because
-// resolution folds profiles in sorted order and must not depend on that order.
-func TestTopologyJoinIsMonotoneAndCommutative(t *testing.T) {
-	netnsVals := []NetnsOwner{NetnsSandbox, NetnsStage, NetnsHost}
-	subuidVals := []SubuidMode{SubuidNone, SubuidFull}
-
-	for _, a := range netnsVals {
-		for _, b := range netnsVals {
-			if got, want := a.Join(b), b.Join(a); got != want {
-				t.Errorf("NetnsOwner.Join not commutative: %s.Join(%s)=%s, %s.Join(%s)=%s",
-					a, b, got, b, a, want)
-			}
-			if got := a.Join(b); got < a || got < b {
-				t.Errorf("NetnsOwner.Join(%s,%s)=%s is not >= both operands", a, b, got)
-			}
-		}
-	}
-	for _, a := range subuidVals {
-		for _, b := range subuidVals {
-			if got, want := a.Join(b), b.Join(a); got != want {
-				t.Errorf("SubuidMode.Join not commutative: %s.Join(%s)=%s, %s.Join(%s)=%s",
-					a, b, got, b, a, want)
-			}
-		}
-	}
-	// Topology.Join itself, field by field, and idempotent (resolve([a,a]) ==
-	// resolve([a]) depends on this at the whole-Policy level; this is the
-	// narrower claim about the field alone).
-	x := Topology{Netns: NetnsStage, Subuid: SubuidFull}
-	y := Topology{Netns: NetnsSandbox, Subuid: SubuidNone}
-	if got, want := x.Join(y), y.Join(x); got != want {
-		t.Errorf("Topology.Join not commutative: %v vs %v", got, want)
-	}
-	if got := x.Join(x); got != x {
-		t.Errorf("Topology.Join not idempotent: %v.Join(itself) = %v", x, got)
-	}
-}
-
 // TestResolveIsMonotone compares Access per EXISTING Guest key and will not
 // catch a Topology regression — Topology is a scalar on Policy, not a Mount.
 // This is the field's own monotonicity test: over every single-profile addition
 // in the fake registry that resolves at all, adding a profile must never LOWER
 // either of Topology's fields relative to the base selection.
+//
+// It is now the ONLY monotonicity check for Topology. The lattice-law test that
+// used to sit above it went with Topology.Join, NetnsOwner.Join and
+// SubuidMode.Join, none of which had a caller outside that test — a law about
+// dead code, proved while the live path went partly unwalked.
+//
+// Two BASES, and that is the half the deletion made load-bearing. With only an
+// isolated base, every addition that raises the netns owner raises it from
+// NetnsSandbox, so the NetnsStage -> NetnsHost edge was never taken: the
+// registry had no `network = "host"` fixture either, so nothing in this package
+// had ever resolved one. `netty-host` and the egress base are what walk it.
 func TestAddingAProfileNeverLowersATopologyField(t *testing.T) {
-	base := []ProfileName{"@sys", "@cwd-rw"}
-	basePol := mustResolve(t, base...)
+	bases := map[string][]ProfileName{
+		"isolated": {"@sys", "@cwd-rw"},
+		// Starts at NetnsStage, so adding a host-network profile takes the
+		// stage -> host edge, and adding an isolated one must not walk back
+		// down it.
+		"egress": {"@sys", "@cwd-rw", "netty"},
+	}
 
-	for name := range testRegistry() {
-		with, err := Resolve(testRegistry(), append(append([]ProfileName{}, base...), name), testCtx(), newFakeEnv())
-		if err != nil {
-			continue // a conflict is a symmetric error, not a tightening
+	// Coverage, asserted rather than assumed: a base that stopped resolving to
+	// NetnsStage, or a fixture that stopped granting host network, would leave
+	// this test passing over a strictly smaller set of edges and say nothing.
+	// This is the same shape as a positive control — the test must prove it
+	// went where it claims to go.
+	seen := map[string]bool{}
+
+	for baseName, base := range bases {
+		basePol := mustResolve(t, base...)
+		for name := range testRegistry() {
+			with, err := Resolve(testRegistry(), append(append([]ProfileName{}, base...), name), testCtx(), newFakeEnv())
+			if err != nil {
+				continue // a conflict is a symmetric error, not a tightening
+			}
+			if with.Topology.Netns < basePol.Topology.Netns {
+				t.Errorf("on the %s base, adding %q LOWERED Topology.Netns from %s to %s",
+					baseName, name, basePol.Topology.Netns, with.Topology.Netns)
+			}
+			if with.Topology.Subuid < basePol.Topology.Subuid {
+				t.Errorf("on the %s base, adding %q LOWERED Topology.Subuid from %s to %s",
+					baseName, name, basePol.Topology.Subuid, with.Topology.Subuid)
+			}
+			if basePol.Topology.Netns != with.Topology.Netns {
+				seen[basePol.Topology.Netns.String()+"->"+with.Topology.Netns.String()] = true
+			}
 		}
-		if with.Topology.Netns < basePol.Topology.Netns {
-			t.Errorf("adding %q LOWERED Topology.Netns from %s to %s",
-				name, basePol.Topology.Netns, with.Topology.Netns)
-		}
-		if with.Topology.Subuid < basePol.Topology.Subuid {
-			t.Errorf("adding %q LOWERED Topology.Subuid from %s to %s",
-				name, basePol.Topology.Subuid, with.Topology.Subuid)
+	}
+
+	for _, edge := range []string{"sandbox->stage", "sandbox->host", "stage->host"} {
+		if !seen[edge] {
+			t.Errorf("PRECONDITION: no profile addition took the %s edge, so this test did "+
+				"not exercise it. Edges walked: %v. Either a base no longer resolves where "+
+				"this test expects, or the fixture that grants that network mode is gone",
+				edge, sortedKeys(seen))
 		}
 	}
 }
