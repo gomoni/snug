@@ -11,7 +11,6 @@ import (
 func TestTopologyJoinIsMonotoneAndCommutative(t *testing.T) {
 	netnsVals := []NetnsOwner{NetnsSandbox, NetnsStage, NetnsHost}
 	subuidVals := []SubuidMode{SubuidNone, SubuidFull}
-	attachVals := []AttachMode{AttachNone, AttachPayloads}
 
 	for _, a := range netnsVals {
 		for _, b := range netnsVals {
@@ -32,20 +31,11 @@ func TestTopologyJoinIsMonotoneAndCommutative(t *testing.T) {
 			}
 		}
 	}
-	for _, a := range attachVals {
-		for _, b := range attachVals {
-			if got, want := a.Join(b), b.Join(a); got != want {
-				t.Errorf("AttachMode.Join not commutative: %s.Join(%s)=%s, %s.Join(%s)=%s",
-					a, b, got, b, a, want)
-			}
-		}
-	}
-
 	// Topology.Join itself, field by field, and idempotent (resolve([a,a]) ==
 	// resolve([a]) depends on this at the whole-Policy level; this is the
 	// narrower claim about the field alone).
-	x := Topology{Netns: NetnsStage, Subuid: SubuidFull, Attach: AttachPayloads}
-	y := Topology{Netns: NetnsSandbox, Subuid: SubuidNone, Attach: AttachNone}
+	x := Topology{Netns: NetnsStage, Subuid: SubuidFull}
+	y := Topology{Netns: NetnsSandbox, Subuid: SubuidNone}
 	if got, want := x.Join(y), y.Join(x); got != want {
 		t.Errorf("Topology.Join not commutative: %v vs %v", got, want)
 	}
@@ -58,7 +48,7 @@ func TestTopologyJoinIsMonotoneAndCommutative(t *testing.T) {
 // catch a Topology regression — Topology is a scalar on Policy, not a Mount.
 // This is the field's own monotonicity test: over every single-profile addition
 // in the fake registry that resolves at all, adding a profile must never LOWER
-// any of Topology's three fields relative to the base selection.
+// either of Topology's fields relative to the base selection.
 func TestAddingAProfileNeverLowersATopologyField(t *testing.T) {
 	base := []ProfileName{"@sys", "@cwd-rw"}
 	basePol := mustResolve(t, base...)
@@ -75,10 +65,6 @@ func TestAddingAProfileNeverLowersATopologyField(t *testing.T) {
 		if with.Topology.Subuid < basePol.Topology.Subuid {
 			t.Errorf("adding %q LOWERED Topology.Subuid from %s to %s",
 				name, basePol.Topology.Subuid, with.Topology.Subuid)
-		}
-		if with.Topology.Attach < basePol.Topology.Attach {
-			t.Errorf("adding %q LOWERED Topology.Attach from %s to %s",
-				name, basePol.Topology.Attach, with.Topology.Attach)
 		}
 	}
 }

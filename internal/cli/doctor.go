@@ -106,7 +106,7 @@ func doctor() int {
 	// the real one — the clone, the uid map, bringing lo up inside N, pinning
 	// N, leaving it, and the re-exec that has to survive all of that — and then
 	// tears it straight down again. No sandbox is started.
-	if st, err := stage.Start(stage.Config{Netns: policy.NetnsStage}); err != nil {
+	if st, err := stage.Start(stage.Config{Topology: policy.Topology{Netns: policy.NetnsStage}}); err != nil {
 		fmt.Println("  ❌ cannot create the stage that `-p @net` needs")
 		fmt.Printf("     💬 %v\n", err)
 		ok = false

@@ -27,9 +27,23 @@ import (
 
 // Config is what Start needs to create the stage.
 type Config struct {
-	// Netns must be policy.NetnsStage. Anything else is a programming error
-	// and Start refuses rather than guessing.
-	Netns policy.NetnsOwner
+	// Topology is the RESOLVED policy's own, passed whole rather than picked
+	// apart by the caller, and that is invariant 6 applied to this package: one
+	// Policy, one author. Start refuses every field it does not implement, so
+	// what --dry-run prints about the process shape and what the stage actually
+	// builds cannot drift apart silently.
+	//
+	// Before this, Config carried Netns alone and the stage hardcoded the
+	// single-uid map independently. `subuid none` on screen was then true by
+	// COINCIDENCE: nothing connected the rendering to the code, so a
+	// deriveTopology that started returning SubuidFull would have changed the
+	// screen and nothing else, leaving --dry-run — the one artifact by which a
+	// human can trust snug at all — making a claim no code keeps. Issue #25.
+	//
+	// Netns must be policy.NetnsStage and Subuid must be policy.SubuidNone.
+	// Anything else is a programming error and Start refuses rather than
+	// guessing.
+	Topology policy.Topology
 
 	// Sandbox are the descriptors bwrap needs, in the exact order P0 put them
 	// in ExtraFiles when it built the argv.
@@ -77,8 +91,23 @@ const readyTimeout = 5 * time.Second
 // measured this against snug's own BwrapFlags-produced argv and it held, so
 // there is no stage0 privileged re-exec and no newuidmap/newgidmap here).
 func Start(cfg Config) (*Stage, error) {
-	if cfg.Netns != policy.NetnsStage {
-		return nil, fmt.Errorf("stage.Start: Config.Netns must be policy.NetnsStage, got %s", cfg.Netns)
+	if cfg.Topology.Netns != policy.NetnsStage {
+		return nil, fmt.Errorf("stage.Start: Config.Topology.Netns must be policy.NetnsStage, got %s",
+			cfg.Topology.Netns)
+	}
+	// Refusing, not ignoring, and this is invariant 5 rather than defensive
+	// programming. The clone below installs a SINGLE-uid map and nothing here
+	// reads /etc/subuid or calls newuidmap; a policy that asked for a delegated
+	// range and silently got one uid would be a user believing a guarantee that
+	// no longer holds. Phase 3 is where this stops being an error — and it will
+	// be a deliberate edit here, made by whoever teaches the stage to delegate,
+	// rather than a screen that quietly disagreed with the process it describes.
+	if cfg.Topology.Subuid != policy.SubuidNone {
+		return nil, fmt.Errorf("stage.Start: Config.Topology.Subuid is %s, but the stage "+
+			"delegates no subuid range — it maps exactly one uid (see the clone below and "+
+			"SUPERVISOR-DESIGN.md §3.6). Teach Start to delegate before deriveTopology "+
+			"returns %s, or --dry-run will describe a range that does not exist",
+			cfg.Topology.Subuid, cfg.Topology.Subuid)
 	}
 	// Before anything is created: a policy whose descriptor block would reach
 	// fdNetnsN must fail here, where the message can name the fix, rather than

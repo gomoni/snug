@@ -18,7 +18,7 @@ func (p *Policy) Validate(env Environ) error {
 	// disagrees with what its own Net/Podman would produce did not come through
 	// Resolve. This closes the zero-value hazard on hand-built policies: several
 	// unit tests construct &Policy{...} directly, and a zero Topology silently
-	// read as NetnsSandbox/SubuidNone/AttachNone even for a policy whose Net.Mode
+	// read as NetnsSandbox/SubuidNone even for a policy whose Net.Mode
 	// is NetHost.
 	if want := deriveTopology(p.Net.Mode, p.Podman); p.Topology != want {
 		return fmt.Errorf("policy.Topology (%s) does not match what Net.Mode=%s and Podman=%s derive "+

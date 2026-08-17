@@ -55,31 +55,28 @@ func (m SubuidMode) String() string {
 	return "none"
 }
 
-// AttachMode records whether a running sandbox can be joined from outside by a
-// second client. Phase 1 never raises it — there is no listener to attach
-// through (see SUPERVISOR-DESIGN.md §3.3) — but the floor and the Join law
-// land now so Phase 2 has to change a golden to raise it rather than invent the
-// lattice at the same time it uses it.
-type AttachMode uint8
-
-const (
-	AttachNone AttachMode = iota
-	AttachPayloads
-)
-
-func (m AttachMode) Join(o AttachMode) AttachMode {
-	if o > m {
-		return o
-	}
-	return m
-}
-
-func (m AttachMode) String() string {
-	if m == AttachPayloads {
-		return "payloads"
-	}
-	return "none"
-}
+// There is deliberately no AttachMode here any more.
+//
+// One shipped, on the argument that landing the floor and the Join law early
+// would force Phase 2 to change a golden rather than invent the lattice at the
+// same time it used it. Phase 2's review reversed the premise: attach is not a
+// topology. A topology is the process shape THIS run requires — what snug
+// builds before the sandbox exists and what authority the host process tree
+// carries as a result. A second client joining a namespace afterwards changes
+// none of that; it is a property of the client, decided by the client, at a
+// time when the shape is already fixed.
+//
+// The listener it was reserved for is cut with it (SUPERVISOR-DESIGN.md §3.3,
+// and the settlement comment on #61). Measured: a same-uid host process joins
+// a running sandbox's namespaces by descriptor, on both topologies, with no
+// listener and nothing for snug to grant — so a mode recording "can this be
+// attached to" would have been a field that never described anything snug
+// controls.
+//
+// Nothing consumed it. Not resolution, not the stage, not --dry-run, which
+// renders subuid and never rendered this. It was a lattice with no reader, and
+// the cost of keeping it was that Topology.String() and every Join law test
+// asserted a claim about the model that the model did not make.
 
 // Topology is the process shape a resolved Policy requires — how many
 // long-lived processes snug runs, what namespaces it must build ahead of the
@@ -89,22 +86,20 @@ func (m AttachMode) String() string {
 type Topology struct {
 	Netns  NetnsOwner
 	Subuid SubuidMode
-	Attach AttachMode
 }
 
-// Join is the lattice join of all three fields, field by field — the same
+// Join is the lattice join of both fields, field by field — the same
 // pattern as Access.Join and NetMode.Join, so a Topology composes exactly the
 // way every other resolved scalar in this package does.
 func (t Topology) Join(o Topology) Topology {
 	return Topology{
 		Netns:  t.Netns.Join(o.Netns),
 		Subuid: t.Subuid.Join(o.Subuid),
-		Attach: t.Attach.Join(o.Attach),
 	}
 }
 
 func (t Topology) String() string {
-	return fmt.Sprintf("netns=%s subuid=%s attach=%s", t.Netns, t.Subuid, t.Attach)
+	return fmt.Sprintf("netns=%s subuid=%s", t.Netns, t.Subuid)
 }
 
 // NeedsStage reports whether this policy requires a second long-lived process
@@ -134,7 +129,7 @@ func (t Topology) NeedsStage() bool { return t.Netns == NetnsStage }
 // rather than a silent side effect of adding a case here.
 func deriveTopology(n NetMode, pm PodmanMode) Topology {
 	_ = pm // Phase 3 raises Subuid for PodmanBuild; see TestPhase1DelegatesNoSubuids.
-	t := Topology{Subuid: SubuidNone, Attach: AttachNone}
+	t := Topology{Subuid: SubuidNone}
 	switch n {
 	case NetHost:
 		t.Netns = NetnsHost

@@ -191,9 +191,9 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 	stdin, stdout, stderr *os.File, opts Options) (int, error) {
 	st, err := stage.Start(stage.Config{
-		Netns:   p.Topology.Netns,
-		Sandbox: extra,
-		Stdin:   stdin, Stdout: stdout, Stderr: stderr,
+		Topology: p.Topology,
+		Sandbox:  extra,
+		Stdin:    stdin, Stdout: stdout, Stderr: stderr,
 	})
 	if err != nil {
 		return 0, err
