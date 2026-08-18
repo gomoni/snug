@@ -1926,6 +1926,63 @@ two live runs on the *same* directory are reported as an ambiguity it cannot yet
 resolve; whether a second run on one directory should be refused at launch instead
 is an open decision, not a check to write against today's behaviour.
 
+### 14h. Interactive attach gives a working job-control shell
+
+Every check above drives attach non-interactively (`/bin/sh -c '...'`, stdin
+redirected) — none of them exercise the pty/job-control path at all. This one
+does, from a real terminal:
+
+```bash
+T=$(mktemp -d)
+./bin/snug "$T" -- /bin/sh -c 'while :; do sleep 1; done' &
+SNUG=$!
+sleep 1
+./bin/snug attach "$T"
+```
+
+Expect an interactive shell prompt with **no** `cannot set terminal process
+group (-1): Inappropriate ioctl for device` or `no job control in this shell`
+message on entry, and ordinary job control working: `sleep 100 &`, `fg`,
+`Ctrl-Z`, `bg`, `jobs`. This is the by-hand equivalent of
+`TestAttachPTYGivesJobControl`: the pty allocated for the session becomes its
+controlling terminal (`setsid()` + `ioctl(TIOCSCTTY)` in
+`internal/attach/child.go`), which is what job control needs. Exit the shell,
+then:
+
+```bash
+kill -9 $SNUG; rm -rf "$T"
+```
+
+**Known limitation — a SIGKILLed attach client leaves your terminal raw.**
+`restoreTerminal` (`internal/cli/attachstdio.go`) is `defer`red immediately
+after the pty is set up, so it runs on every *catchable* exit from `snug
+attach` — a normal return, the attached command dying, an early error — and
+puts the client's terminal termios back exactly as it found it. `SIGKILL` is
+not catchable, so the one path that cannot run it is `snug attach` itself
+being killed with `-9` mid-session:
+
+```bash
+T=$(mktemp -d)
+./bin/snug "$T" -- /bin/sh -c 'while :; do sleep 1; done' &
+SNUG=$!
+sleep 1
+./bin/snug attach "$T" &
+ATTACH=$!
+sleep 1
+kill -9 $ATTACH
+```
+
+Expect the shell you ran this from to now echo nothing you type and show no
+line editing — it is stuck in raw mode. This is a terminal-ergonomics gap,
+not a confinement one: the sandbox and its payload are entirely unaffected
+(they are torn down by the run's own `PR_SET_PDEATHSIG` machinery, not by
+this). Recover with:
+
+```bash
+reset            # or: stty sane
+kill -9 $SNUG; rm -rf "$T"
+```
+
 
 ## If a check fails
 
