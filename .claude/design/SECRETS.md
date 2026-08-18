@@ -350,6 +350,23 @@ measured above still happens; what changed is that snug stopped denying it. The
 channel closes only when the engine moves into the sandbox's netns
 (`ENGINE-NETNS.md` §5), at which point the `net` include is removed again.
 
+**Status, 2026-08-18 — the `net` include is removed (issue #63, Tier B); the
+channel is not YET measured closed, because the engine is not yet running at
+all.** `@podman-socket` no longer includes `net`; `--dry-run` describes the
+target state (a container confined to the sandbox's own netns, no
+`CAP_NET_ADMIN`, no port publishing) and the stage layer beneath it is real
+and tested (`internal/stage/subuid.go`, `capdrop.go`). But
+`internal/engine.Engine.Start` still execs podman as a plain host process —
+the same shape this section measured — and `internal/cli` currently REFUSES
+to start a container engine on a real run rather than let that mismatch
+reach a live sandbox (invariant 5; see `internal/cli/container.go`). So the
+egress-without-`@net` channel this section measured cannot currently be
+exercised at all, but for the wrong reason (nothing starts), not the right
+one (netns confinement) — do not read this refusal as the channel being
+closed by the fix this section calls for. Re-run this section's three `[M]`
+measurements once the engine is actually forked through the stage into N,
+and update this status to reflect the real result rather than the refusal.
+
 This remains a redteam finding rather than a secrets finding, and it is here
 because it invalidates the broker plan's most attractive property — *"a brokered
 Claude needs no `@net`, so exfiltration is closed by construction"* (that audit). That

@@ -55,10 +55,19 @@ func TestAddingAProfileNeverLowersATopologyField(t *testing.T) {
 			if basePol.Topology.Netns != with.Topology.Netns {
 				seen[basePol.Topology.Netns.String()+"->"+with.Topology.Netns.String()] = true
 			}
+			// Subuid edge, tracked the same way — issue #63, Tier B added the
+			// SubuidNone->SubuidFull rise (a container engine needs the full
+			// delegated range even offline). Without this, a bug that stopped
+			// @podman-socket raising Subuid could pass silently: the LOWERED
+			// check above only fires on a DECREASE, and nothing else in this
+			// test asserted the rise ever happens at all.
+			if basePol.Topology.Subuid != with.Topology.Subuid {
+				seen["subuid:"+basePol.Topology.Subuid.String()+"->"+with.Topology.Subuid.String()] = true
+			}
 		}
 	}
 
-	for _, edge := range []string{"sandbox->stage", "sandbox->host", "stage->host"} {
+	for _, edge := range []string{"sandbox->stage", "sandbox->host", "stage->host", "subuid:none->full"} {
 		if !seen[edge] {
 			t.Errorf("PRECONDITION: no profile addition took the %s edge, so this test did "+
 				"not exercise it. Edges walked: %v. Either a base no longer resolves where "+
@@ -113,18 +122,27 @@ func TestValidateRefusesAnInconsistentTopology(t *testing.T) {
 	}
 }
 
-// Phase 1 delegates no subuids, for ANY PodmanMode including PodmanBuild — the
-// engine still runs on the host, so a delegated range would be a capability
-// with no consumer (SUPERVISOR-DESIGN.md §3.6). This is the device that
-// makes Phase 3 raising it a conscious edit: change this test on purpose, or
-// the change was not conscious.
-func TestPhase1DelegatesNoSubuids(t *testing.T) {
-	for _, pm := range []PodmanMode{PodmanOff, PodmanSocket, PodmanBuild} {
+// TestPodmanDelegatesFullSubuid replaces TestPhase1DelegatesNoSubuids, which
+// asserted the OPPOSITE — SubuidNone for every PodmanMode — specifically so
+// that raising it would be a conscious edit forced by a failing test, not a
+// silent side effect of adding a case to deriveTopology (its own message said
+// so). Issue #63, Tier B is that conscious edit: a container engine's storage
+// needs the full delegated subuid range to chown across without ever
+// touching a host uid it was not given, whether or not the run has egress.
+func TestPodmanDelegatesFullSubuid(t *testing.T) {
+	for _, pm := range []PodmanMode{PodmanSocket, PodmanBuild} {
 		for _, n := range []NetMode{NetIsolated, NetEgress, NetHost} {
-			if got := deriveTopology(n, pm).Subuid; got != SubuidNone {
-				t.Errorf("deriveTopology(%s, %s).Subuid = %s, want none — "+
-					"Phase 1 has no subuid consumer yet", n, pm, got)
+			if got := deriveTopology(n, pm).Subuid; got != SubuidFull {
+				t.Errorf("deriveTopology(%s, %s).Subuid = %s, want full — "+
+					"a container engine always needs the full delegated range", n, pm, got)
 			}
+		}
+	}
+	// Positive control: PodmanOff must NOT raise Subuid, on any NetMode — so
+	// this test can distinguish "podman raises it" from "everything raises it".
+	for _, n := range []NetMode{NetIsolated, NetEgress, NetHost} {
+		if got := deriveTopology(n, PodmanOff).Subuid; got != SubuidNone {
+			t.Errorf("deriveTopology(%s, PodmanOff).Subuid = %s, want none", n, got)
 		}
 	}
 }
@@ -146,6 +164,53 @@ func TestNeedsStageIsFalseForOfflineAndHost(t *testing.T) {
 	// change, made deliberately.
 	if !deriveTopology(NetEgress, PodmanOff).NeedsStage() {
 		t.Error("NetEgress should need a stage now that deriveTopology has Commit B's shape")
+	}
+	// An OFFLINE container run also needs a stage now (issue #63, Tier B): the
+	// engine needs a stage to own its U even when Net.Mode never leaves
+	// NetnsSandbox on its own — deriveTopology raises Netns to NetnsStage
+	// itself once pm != PodmanOff. This is the assertion that would have
+	// caught a NeedsStage that checked only Netns and not Subuid.
+	if !deriveTopology(NetIsolated, PodmanSocket).NeedsStage() {
+		t.Error("an offline container run should still need a stage — the engine needs U+N")
+	}
+}
+
+// TestPodmanSelectsAStage pins deriveTopology's podman branch directly:
+// selecting a container engine raises BOTH Netns (to at least NetnsStage) and
+// Subuid (to SubuidFull), even with no egress. Positive control in the same
+// test: PodmanOff must leave an offline topology completely unchanged, so a
+// bug that made deriveTopology raise everything regardless of pm cannot pass.
+func TestPodmanSelectsAStage(t *testing.T) {
+	for _, pm := range []PodmanMode{PodmanSocket, PodmanBuild} {
+		got := deriveTopology(NetIsolated, pm)
+		if got.Netns != NetnsStage {
+			t.Errorf("deriveTopology(NetIsolated, %s).Netns = %s, want stage", pm, got.Netns)
+		}
+		if got.Subuid != SubuidFull {
+			t.Errorf("deriveTopology(NetIsolated, %s).Subuid = %s, want full", pm, got.Subuid)
+		}
+		if !got.NeedsStage() {
+			t.Errorf("deriveTopology(NetIsolated, %s).NeedsStage() = false, want true", pm)
+		}
+	}
+
+	// Positive control: an offline non-podman selection is untouched.
+	off := deriveTopology(NetIsolated, PodmanOff)
+	if off.Netns != NetnsSandbox || off.Subuid != SubuidNone || off.NeedsStage() {
+		t.Errorf("deriveTopology(NetIsolated, PodmanOff) = %+v, want the unraised floor — "+
+			"the podman branch must not fire for PodmanOff", off)
+	}
+
+	// The --i-know @net-host + podman edge: NetnsHost is preserved (the engine
+	// inherits the host netns there), but Subuid still rises to SubuidFull and
+	// NeedsStage is still true, because the stage owns U regardless of which
+	// netns the engine joins.
+	hostPodman := deriveTopology(NetHost, PodmanSocket)
+	if hostPodman.Netns != NetnsHost {
+		t.Errorf("deriveTopology(NetHost, PodmanSocket).Netns = %s, want host (preserved, not lowered)", hostPodman.Netns)
+	}
+	if hostPodman.Subuid != SubuidFull || !hostPodman.NeedsStage() {
+		t.Errorf("deriveTopology(NetHost, PodmanSocket) = %+v, want Subuid=full and NeedsStage=true", hostPodman)
 	}
 }
 

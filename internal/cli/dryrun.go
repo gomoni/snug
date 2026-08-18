@@ -946,32 +946,34 @@ func accessWord(m policy.Mount) string {
 	return "read-only"
 }
 
-// describeContainers states where a container's network comes from, because
-// today it is NOT the sandbox's and the NETWORK block immediately above is
-// therefore not the whole story.
+// describeContainers states where a container's network and mounts come
+// from, because it is worth restating even once it agrees with the NETWORK
+// block above: a reader should not have to infer it from the topology block.
 //
-// This exists because of the engine-netns finding
-// (.claude/design/ENGINE-NETNS.md §0): `@podman-socket` granted full egress through a
-// container while `--dry-run` printed "No egress. No host loopback." The
-// profile now includes `net`, so the NETWORK block is no longer false — but a
-// reader still has to be told that the container and the sandbox get their
-// network from two different places, or they will read the pasta guarantees
-// above as covering containers. They do not.
+// Issue #63, Tier B closed the engine-netns finding
+// (.claude/design/ENGINE-NETNS.md §0, now marked CLOSED): a container used to
+// run in the ENGINE's netns and therefore always had the engine's own
+// network, while `--dry-run` printed "No egress. No host loopback." The
+// engine now runs in THIS sandbox's own network namespace (see the TOPOLOGY
+// block's engine line for the capability set it runs with), so the pasta
+// guarantees above cover containers too, and `@podman-socket` alone really is
+// offline.
 func describeContainers(out *os.File, p *policy.Policy) {
 	if p.Podman == policy.PodmanOff {
 		return
 	}
 	fmt.Fprintf(out, "CONTAINERS  a per-sandbox engine behind a filtering proxy at %s\n",
 		containerSocketGuest)
-	fmt.Fprintf(out, "         INTERIM: a container runs in the ENGINE's netns, not this sandbox's,\n")
-	fmt.Fprintf(out, "         so it has the engine's network — which is why this profile includes\n")
-	fmt.Fprintf(out, "         '@net' rather than pretending to be offline. The pasta\n")
-	fmt.Fprintf(out, "         guarantees above cover the SANDBOX; they do not cover containers.\n")
-	fmt.Fprintf(out, "         Consequence: '@podman-socket' cannot currently be offline, and\n")
-	fmt.Fprintf(out, "         'podman run -p N:80' is not reachable from the sandbox.\n")
-	fmt.Fprintf(out, "         Planned fix: engine inside the sandbox's netns, after which the\n")
-	fmt.Fprintf(out, "         '@net' include goes away and both lines above stop being true.\n")
-	fmt.Fprintf(out, "         Design and feasibility: .claude/design/ENGINE-NETNS.md\n")
+	fmt.Fprintf(out, "         Containers run in THIS sandbox's own network namespace: with no\n")
+	fmt.Fprintf(out, "         '@net', a container has no egress either; with '@net', full egress\n")
+	fmt.Fprintf(out, "         via the sandbox's pasta, exactly as the NETWORK block above states.\n")
+	fmt.Fprintf(out, "         A container has the sandbox's own network with NO port mapping:\n")
+	fmt.Fprintf(out, "         'podman run -p N:80' is not supported — the engine holds no\n")
+	fmt.Fprintf(out, "         CAP_NET_ADMIN, so it cannot reconfigure this namespace to publish one.\n")
+	fmt.Fprintf(out, "         A container may mount only a path the sandbox can already see,\n")
+	fmt.Fprintf(out, "         enforced by the proxy's bind filter, which reads this same resolved\n")
+	fmt.Fprintf(out, "         policy (the mount view itself is still a private copy of the host\n")
+	fmt.Fprintf(out, "         tree, not a derived one — see the TOPOLOGY block).\n")
 }
 
 // describeGit states that the sandbox's git config was RECONSTRUCTED, and from
@@ -1433,6 +1435,26 @@ func describeTopology(out *os.File, p *policy.Policy) {
 		fmt.Fprintf(out, " (no delegated range; nothing needs one yet)\n")
 	} else {
 		fmt.Fprintln(out)
+	}
+	if p.Podman != policy.PodmanOff {
+		// The engine (issue #63, Tier B): a second process the stage forks
+		// into its OWN user + network namespace, as a sibling of bwrap, so a
+		// container it starts shares exactly the sandbox's own N. Its mount
+		// namespace is a private COPY of the host tree, not bwrap's view and
+		// not derived from this policy — what stops it seeing an ungranted
+		// path is the proxy's bind filter, which reads this same resolved
+		// policy (a named, tested deferral; Tier C is what makes the VIEW
+		// itself structural instead of enforced). Widening the capability set
+		// below is necessarily a diff to this line, which is the point of
+		// keeping it a policy-owned constant rather than a per-profile field.
+		fmt.Fprintf(out, "  engine          joins THIS sandbox's own network namespace (N) — a container has\n")
+		fmt.Fprintf(out, "                  exactly the sandbox's own network, nothing more.\n")
+		fmt.Fprintf(out, "                  mount namespace: a private COPY of the host tree, not the\n")
+		fmt.Fprintf(out, "                  sandbox's view. A container may bind only what this policy\n")
+		fmt.Fprintf(out, "                  already exposes — enforced by the proxy's bind filter (Tier C\n")
+		fmt.Fprintf(out, "                  makes this structural instead of enforced).\n")
+		fmt.Fprintf(out, "                  capability bounding set (%d): %s\n",
+			len(policy.EngineCapBounding), strings.Join(policy.EngineCapBounding, " "))
 	}
 	if !p.Topology.NeedsStage() {
 		fmt.Fprintf(out, "  control         none — there is no stage to control.\n")

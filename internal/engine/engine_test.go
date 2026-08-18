@@ -16,7 +16,6 @@ import (
 // must never share one, and the same sandbox must get the same one twice.
 func TestStoreKeyIdentifiesTheSandbox(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 
 	a, err := New([]policy.ProfileName{"@sys", "@podman-socket"}, "/proj/one")
 	if err != nil {
@@ -36,8 +35,16 @@ func TestStoreKeyIdentifiesTheSandbox(t *testing.T) {
 	if a.store == c.store {
 		t.Errorf("two targets share a store: %s", a.store)
 	}
-	if !strings.Contains(a.store, "/snug/engines/") || !strings.Contains(a.runroot, "/snug/engines/") {
-		t.Errorf("store %q / runroot %q are not under snug's own engine directory", a.store, a.runroot)
+	if !strings.Contains(a.store, "/snug/engines/") {
+		t.Errorf("store %q is not under snug's own engine directory", a.store)
+	}
+
+	// The socket and runroot (issue #63, Tier B) live under this RUN's own
+	// /tmp directory — never under $XDG_DATA_HOME's store tree, which is
+	// shared across runs on purpose, and never under $XDG_RUNTIME_DIR, which
+	// a root-in-userns podman masks with its own tmpfs on /run.
+	if strings.Contains(a.sock, "/snug/engines/") || strings.Contains(a.runroot, "/snug/engines/") {
+		t.Errorf("socket %q / runroot %q must NOT be under the shared store tree", a.sock, a.runroot)
 	}
 
 	// The socket is the teardown identity and must name THIS run, not the
@@ -49,8 +56,51 @@ func TestStoreKeyIdentifiesTheSandbox(t *testing.T) {
 	if !strings.Contains(a.sock, "podman-"+strconv.Itoa(os.Getpid())+".sock") {
 		t.Errorf("socket %q does not identify this run", a.sock)
 	}
-	if filepath.Dir(a.sock) != filepath.Dir(a.runroot) {
-		t.Errorf("socket %q is not in this engine's own runtime directory", a.sock)
+	// The socket lives in THIS run's own hardened directory (createRunDir),
+	// unique per pid. The runroot, MEASURED, deliberately does NOT: podman's
+	// own libpod database (inside the persisted store) records the runroot a
+	// run used and refuses a LATER run against the same store with a
+	// different one, so runroot is keyed by the same profiles+target key the
+	// store already is, shared across runs the way the store is (Spec's own
+	// doc comment). The two are therefore in DIFFERENT directories now,
+	// which is the corrected shape, not a regression of the earlier "both in
+	// one run directory" assertion this replaces.
+	if filepath.Dir(a.sock) == filepath.Dir(a.runroot) {
+		t.Errorf("socket %q and runroot %q are in the same directory; the runroot must be keyed "+
+			"by the store's own key so it stays stable across runs sharing that store, not by "+
+			"this run's own pid", a.sock, a.runroot)
+	}
+	if !strings.Contains(a.runroot, "snug-engines-") {
+		t.Errorf("runroot %q is not under the shared, store-keyed engines directory", a.runroot)
+	}
+}
+
+// The engine's run directory is hardened, not a blind MkdirAll into
+// world-writable /tmp: it must be owned by this uid and mode exactly 0700,
+// and a second claim of the identical name (this test's own re-derivation of
+// runDirName with the SAME sequence number New already consumed) must be
+// refused rather than silently reused.
+func TestEngineRunDirIsHardenedAndNotReused(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fi, err := os.Stat(e.runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fi.IsDir() {
+		t.Fatalf("%s is not a directory", e.runDir)
+	}
+	if mode := fi.Mode().Perm(); mode != 0o700 {
+		t.Errorf("run directory mode is %#o, want 0700", mode)
+	}
+
+	if err := createRunDir(e.runDir); err == nil {
+		t.Fatal("createRunDir silently reused an existing directory; it must refuse")
 	}
 }
 

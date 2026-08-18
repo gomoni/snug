@@ -159,23 +159,17 @@ func TestBuiltinsLoad(t *testing.T) {
 	}
 }
 
-// The engine-netns finding (.claude/design/ENGINE-NETNS.md §0), pinned so its
-// removal is deliberate rather than incidental.
-//
-// `@podman-socket` grants egress, because a container runs in the ENGINE's
-// network namespace and therefore has the engine's network — measured, with the
-// response read back out of `containers/{id}/logs`, while `--dry-run` printed
-// "No egress. No host loopback." Including `net` does not narrow that hole; it
-// stops snug asserting a guarantee it was not delivering (invariant 5).
-//
-// This test exists to make the eventual REMOVAL a conscious act. When the engine
-// moves into the sandbox's netns (.claude/design/ENGINE-NETNS.md §5), container
-// network becomes sandbox network, `@podman-socket` without `@net` is genuinely
-// offline, and this include becomes actively wrong — because offline goes back
-// to being the ABSENCE of a profile, which is the property that stops it being
-// switched on by accident. Deleting this test is then part of the milestone, and
-// the failure message is where the next person finds out why.
-func TestPodmanSocketIncludesNetAsAnInterimHonestyFix(t *testing.T) {
+// TestPodmanSocketDoesNotIncludeNet is the inverse of the deleted
+// TestPodmanSocketIncludesNetAsAnInterimHonestyFix — that test's own failure
+// message said deleting it was part of the milestone (issue #63, Tier B): the
+// engine now runs in the SANDBOX's own network namespace, so `@podman-socket`
+// no longer needs to include `@net` to tell the truth about egress.
+// `@podman-socket` alone must resolve OFFLINE; the behavioural half of this
+// claim (a container really has no egress) is
+// TestPodmanSocketDoesNotImplyEgress in internal/cli, which resolves the real
+// builtins through policy.Resolve rather than just inspecting the Include
+// list.
+func TestPodmanSocketDoesNotIncludeNet(t *testing.T) {
 	reg, err := Builtins()
 	if err != nil {
 		t.Fatal(err)
@@ -184,22 +178,13 @@ func TestPodmanSocketIncludesNetAsAnInterimHonestyFix(t *testing.T) {
 	if !ok {
 		t.Fatal("@podman-socket is missing")
 	}
-	found := false
 	for _, inc := range p.Include {
 		if inc == "@net" {
-			found = true
+			t.Errorf("@podman-socket still includes @net (includes: %v) — the engine now runs "+
+				"in the sandbox's own netns (issue #63, Tier B), so offline must once again be "+
+				"the ABSENCE of a profile rather than something @podman-socket switches back on",
+				p.Include)
 		}
-	}
-	if !found {
-		t.Errorf("@podman-socket no longer includes @net (includes: %v).\n"+
-			"If the engine now runs in the SANDBOX's netns, this is correct and this test "+
-			"should be deleted along with the interim comment in base.toml — check that "+
-			"`@podman-socket` without `@net` really is offline first, with a container "+
-			"probe that has a positive control.\n"+
-			"If the engine still runs on the host's network, this reopens the engine-netns "+
-			"finding (.claude/design/ENGINE-NETNS.md §0): the "+
-			"sandbox has egress through a container while --dry-run says it does not.",
-			p.Include)
 	}
 }
 

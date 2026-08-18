@@ -95,19 +95,13 @@ func Start(cfg Config) (*Stage, error) {
 		return nil, fmt.Errorf("stage.Start: Config.Topology.Netns must be policy.NetnsStage, got %s",
 			cfg.Topology.Netns)
 	}
-	// Refusing, not ignoring, and this is invariant 5 rather than defensive
-	// programming. The clone below installs a SINGLE-uid map and nothing here
-	// reads /etc/subuid or calls newuidmap; a policy that asked for a delegated
-	// range and silently got one uid would be a user believing a guarantee that
-	// no longer holds. Phase 3 is where this stops being an error — and it will
-	// be a deliberate edit here, made by whoever teaches the stage to delegate,
-	// rather than a screen that quietly disagreed with the process it describes.
-	if cfg.Topology.Subuid != policy.SubuidNone {
-		return nil, fmt.Errorf("stage.Start: Config.Topology.Subuid is %s, but the stage "+
-			"delegates no subuid range — it maps exactly one uid (see the clone below and "+
-			"SUPERVISOR-DESIGN.md §3.6). Teach Start to delegate before deriveTopology "+
-			"returns %s, or --dry-run will describe a range that does not exist",
-			cfg.Topology.Subuid, cfg.Topology.Subuid)
+	// Refusing anything this package does not implement, rather than guessing —
+	// invariant 5, same as the removed single-value check this replaces. Two
+	// values now: SubuidNone (the original single-uid map) and SubuidFull (the
+	// two-range delegated map a container engine needs, issue #63 Tier B).
+	if cfg.Topology.Subuid != policy.SubuidNone && cfg.Topology.Subuid != policy.SubuidFull {
+		return nil, fmt.Errorf("stage.Start: Config.Topology.Subuid is %s, which this package "+
+			"does not implement", cfg.Topology.Subuid)
 	}
 	// Before anything is created: a policy whose descriptor block would reach
 	// fdNetnsN must fail here, where the message can name the fix, rather than
@@ -144,8 +138,6 @@ func Start(cfg Config) (*Stage, error) {
 	hostUID, hostGID := os.Getuid(), os.Getgid()
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags:                 stageCloneflags,
-		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostUID, Size: 1}},
-		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostGID, Size: 1}},
 		GidMappingsEnableSetgroups: false,
 		// LOAD-BEARING. Do not delete this line as redundant with the lifeline.
 		//
@@ -164,6 +156,34 @@ func Start(cfg Config) (*Stage, error) {
 		// no leaked netns. Remove this and that case becomes an orphaned sandbox
 		// holding a netns with no parent left to tear it down.
 		Pdeathsig: syscall.SIGKILL,
+	}
+
+	// The uid/gid map. Two shapes, chosen by cfg.Topology.Subuid:
+	//
+	//   - SubuidNone (the original, still the default for every non-podman
+	//     run): a single line mapping namespace id 0 to this process's own
+	//     real id. Go writes it ITSELF, unprivileged, using the one
+	//     self-mapping the kernel allows a non-CAP_SETUID writer to make —
+	//     the same shape `unshare --map-root-user` produces. No external tool,
+	//     no /etc/subuid read, exactly as SUPERVISOR-DESIGN.md §3.6 measured.
+	//
+	//   - SubuidFull (issue #63, Tier B — a container engine is selected):
+	//     UidMappings/GidMappings are left NIL here on purpose. A two-range
+	//     map (namespace 0 -> this process's real id, PLUS namespace
+	//     1..size -> the delegated /etc/subuid range) is NOT the
+	//     single-self-map special case, so an unprivileged Go write of it
+	//     would fail with EPERM — this is exactly why newuidmap/newgidmap
+	//     exist. __stage-setup (setup.go) notices its uid is still the
+	//     overflow id after the clone, asks P0 for the map over the control
+	//     socket, and blocks until it arrives; P0 answers below, after
+	//     cmd.Start() returns, by calling delegateSubuid (subuid.go), which
+	//     execs newuidmap/newgidmap against this pid. The map can be written
+	//     only ONCE per user namespace, ever — there is no "self-map now,
+	//     widen later" — which is why the whole delegated range has to be
+	//     requested at clone time rather than added after the fact.
+	if cfg.Topology.Subuid == policy.SubuidNone {
+		cmd.SysProcAttr.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostUID, Size: 1}}
+		cmd.SysProcAttr.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostGID, Size: 1}}
 	}
 
 	if err := fdseal.SealFor(cmd); err != nil {
@@ -201,6 +221,19 @@ func Start(cfg Config) (*Stage, error) {
 		sandboxSize: len(cfg.Sandbox),
 	}
 
+	// The delegated-map handshake (issue #63, Tier B): one extra request/event
+	// round trip BEFORE the "ready" one below, present only when
+	// UidMappings/GidMappings were deliberately left nil above. __stage-setup
+	// blocks on this — its own uid is still the overflow id until the map
+	// lands — so this MUST complete before "ready" can ever arrive; there is
+	// no risk of racing the recvEventTimeout call below against it.
+	if cfg.Topology.Subuid == policy.SubuidFull {
+		if err := satisfyDelegatedMapRequest(p0Control, cmd.Process.Pid, hostUID, hostGID); err != nil {
+			st.killAndClose()
+			return nil, err
+		}
+	}
+
 	ev, err := recvEventTimeout(p0Control, readyTimeout)
 	if err != nil {
 		st.killAndClose()
@@ -225,6 +258,29 @@ func Start(cfg Config) (*Stage, error) {
 
 	st.netns, st.userns, st.netnsFD = ev.Netns, ev.Userns, ev.NetnsFD
 	return st, nil
+}
+
+// satisfyDelegatedMapRequest waits for __stage-setup's "needmap" event, calls
+// newuidmap/newgidmap against pid (subuid.go), and answers "mapped" so
+// __stage-setup can proceed. Fatal and unwound entirely on any failure —
+// invariant 5: a policy that asked for a delegated range and could not get
+// one must not fall back to the single-uid map it did not ask for, so the
+// caller kills the child rather than let it continue half-mapped.
+func satisfyDelegatedMapRequest(control *os.File, pid, hostUID, hostGID int) error {
+	ev, err := recvEventTimeout(control, readyTimeout)
+	if err != nil {
+		return fmt.Errorf("stage: waiting for the stage to ask for its delegated subuid map: %w", err)
+	}
+	if ev.Op != "needmap" {
+		return fmt.Errorf("stage: expected a \"needmap\" event, got %q", ev.Op)
+	}
+	if err := delegateSubuid(pid, hostUID, hostGID); err != nil {
+		return err
+	}
+	if err := sendRequest(control, request{Op: "mapped"}); err != nil {
+		return fmt.Errorf("stage: telling the stage its delegated subuid map is ready: %w", err)
+	}
+	return nil
 }
 
 func (s *Stage) killAndClose() {
@@ -274,8 +330,15 @@ func (s *Stage) Pid() int { return s.pid }
 // The timeout here is P0's patience with the STAGE; the stage applies its own,
 // shorter, bound to the interface itself, so a hang here means the stage is
 // wedged rather than the network being slow.
-func (s *Stage) WaitNetReady(timeout time.Duration) error {
-	if err := sendRequest(s.control, request{Op: "netready"}); err != nil {
+//
+// iface names which interface's UP+RUNNING state answers the question
+// (issue #63, Tier B): NetIfaceName ("snug0", pasta's own) for a run with
+// pasta attached, or "lo" for a stage that owns no pasta at all — an
+// offline @podman-socket run, which still needs a stage for the container
+// engine's own U even though N carries no egress. The caller picks it from
+// the resolved policy's Net.Mode; this package never guesses.
+func (s *Stage) WaitNetReady(timeout time.Duration, iface string) error {
+	if err := sendRequest(s.control, request{Op: "netready", NetIface: iface}); err != nil {
 		return fmt.Errorf("stage: asking whether the sandbox's network is up: %w", err)
 	}
 	ev, err := recvEventTimeout(s.control, timeout)
@@ -310,6 +373,85 @@ func (s *Stage) StartSandbox(bwrapPath string, argv []string) error {
 	}
 	if ev.Err != "" {
 		return fmt.Errorf("stage: bwrap did not start: %s", ev.Err)
+	}
+	return nil
+}
+
+// engineStartTimeout bounds P0's patience for the WHOLE startengine round
+// trip: the fork, setns+mount+capdrop+exec inside __inengine, and the bounded
+// wait (engineSocketWaitTimeout, enginefork.go) for podman's own socket to
+// appear. Comfortably above that inner bound so a real timeout is reported by
+// the stage, with its own more specific message, rather than by this one.
+const engineStartTimeout = 40 * time.Second
+
+// EngineSpec is what StartEngine asks the stage to fork podman with — every
+// field chosen by P0 (preflight P1-P6, the hardened /tmp paths engine.New
+// computed, the explicit minimal environment), none of it inherited or
+// guessed by the stage itself (issue #63, Tier B; ENGINE-WIRING.md §2.6).
+type EngineSpec struct {
+	// Podman is the resolved, preflight-checked path to a REAL podman binary
+	// — never a host-escape shim (P0's own preflight already refused that).
+	Podman string
+	// Argv is exactly what follows Podman on the command line — e.g.
+	// "--root", store, "--runroot", runroot, "system", "service", "--time",
+	// idle, "unix://"+sock.
+	Argv []string
+	// Env is the explicit, minimal environment for the exec'd podman (PATH,
+	// HOME, XDG_RUNTIME_DIR, CONTAINERS_*), chosen entirely by P0 — never the
+	// stage's own os.Environ(), which is empty, and never the host's.
+	Env []string
+	// Sock is the pathname socket podman is expected to bind. StartEngine
+	// polls for it (via the stage, whose mount namespace is a private COPY of
+	// the host tree and therefore sees the identical /tmp superblock) rather
+	// than trusting the fork alone: "the process started" and "podman
+	// finished getting to a listening socket" are different facts.
+	Sock string
+	// ResolvConfPath is a HOST path (under this run's own hardened /tmp
+	// directory, engine.New) holding the SAME generated /etc/resolv.conf
+	// content the sandbox payload itself gets (policy.NetPolicy.ResolvConf) —
+	// never the host's real /etc/resolv.conf, which EnterEngine's private
+	// tree copy would otherwise still carry (issue #126: a container's
+	// resolv.conf, generated by podman from whatever the engine's OWN
+	// /etc/resolv.conf says, was leaking host LAN nameservers and search
+	// domain to an offline sandbox's container). EnterEngine bind-mounts this
+	// path over /etc/resolv.conf inside the engine's own private mount
+	// namespace, so it never touches the host's file. A path, not the
+	// content itself — the same pointer-not-inline shape CONTAINERS_CONF
+	// already uses for the cgroups-disabled config.
+	ResolvConfPath string
+}
+
+// StartEngine forks the container engine into THIS sandbox's own N, EAGERLY —
+// after WaitNetReady, before StartSandbox — as a second long-lived child of
+// P1, alongside bwrap (issue #63, Tier B; ENGINE-WIRING.md §1). See
+// EnterEngine (__inengine) for the fork+setns+confine sequence, and
+// policy.EngineCapBounding for the capability set the engine is reduced to.
+//
+// Blocks until the stage reports the engine's socket exists, or an error.
+// The caller MUST treat any error here as fatal to the whole run and must
+// not go on to StartSandbox — invariant 5: a container engine this run
+// cannot confine to N is refused, never silently run on some other network.
+func (s *Stage) StartEngine(spec EngineSpec) error {
+	req := request{
+		Op:               "startengine",
+		EnginePodman:     spec.Podman,
+		EngineArgv:       spec.Argv,
+		EngineEnv:        spec.Env,
+		EngineSock:       spec.Sock,
+		EngineResolvConf: spec.ResolvConfPath,
+	}
+	if err := sendRequest(s.control, req); err != nil {
+		return fmt.Errorf("stage: sending the start-engine request: %w", err)
+	}
+	ev, err := recvEventTimeout(s.control, engineStartTimeout)
+	if err != nil {
+		return fmt.Errorf("stage: waiting for the container engine to start: %w", err)
+	}
+	if ev.Op != "enginestarted" {
+		return fmt.Errorf("stage: expected an \"enginestarted\" event, got %q", ev.Op)
+	}
+	if ev.Err != "" {
+		return fmt.Errorf("stage: %s", ev.Err)
 	}
 	return nil
 }

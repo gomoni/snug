@@ -1,0 +1,42 @@
+
+TOPOLOGY
+  processes       4 — snug, a stage (P1) that creates the sandbox's network
+                  namespace, pasta attached to that namespace, and bwrap, which
+                  the stage forks back into it. (A fifth, __innetns, is the
+                  setns shim that becomes bwrap; it never coexists with it.)
+  netns owner     stage
+                  the sandbox's user namespace has a PRIVILEGED ANCESTOR: the
+                  stage is root in its own user namespace (U) for the whole run,
+                  holding CAP_SYS_ADMIN over the sandbox's network namespace (N)
+                  and over the sandbox's own mounts.
+  subuid          full
+  engine          joins THIS sandbox's own network namespace (N) — a container has
+                  exactly the sandbox's own network, nothing more.
+                  mount namespace: a private COPY of the host tree, not the
+                  sandbox's view. A container may bind only what this policy
+                  already exposes — enforced by the proxy's bind filter (Tier C
+                  makes this structural instead of enforced).
+                  capability bounding set (12): CAP_SYS_ADMIN CAP_SYS_CHROOT CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_FSETID CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_SETFCAP CAP_KILL CAP_NET_BIND_SERVICE
+  control         an anonymous SOCK_SEQPACKET socketpair, inherited, between snug
+                  and the stage. UNREACHABLE from the sandbox: no pathname, no
+                  listener, and no descriptor for it in the payload's table. It
+                  carries at most two requests — is the network up, then start
+                  the sandbox — and the stage exits after the second.
+  host-visible    the stage's namespaces are nameable from the host by a
+                  same-uid process, as /proc/<stage>/ns/user and its pinned
+                  /proc/<stage>/fd/<n> for N. Measured equivalent to what such a
+                  process can already reach without a stage, via NS_GET_USERNS on
+                  the sandbox's own namespace descriptors. Same-uid is outside
+                  the threat model either way; it is listed so it is not a
+                  surprise.
+  lifetime        the stage exits when its one payload does, whatever the
+                  outcome, and dies with snug even if snug is SIGKILLed. Two
+                  mechanisms, covering different failures: an inherited pipe (the
+                  lifeline) for a stage that can still run code, and Pdeathsig
+                  for one that is stopped and cannot.
+  abuse sentence  a hostile process inside the sandbox gains no new reach — the
+                  stage is in neither its network namespace nor its pid
+                  namespace, binds nothing it can name, and holds no descriptor
+                  it can open — but its user namespace now has a privileged
+                  ancestor that lives for the whole run, so a userns-escape bug
+                  is worth more here than it was.

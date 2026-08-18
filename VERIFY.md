@@ -1253,30 +1253,47 @@ spellings of `--network=host`, and for an option snug does not know.
 which is the same shape as the pasta flags in check 7. Both are refused, and the
 suite pins each to its own message so neither can cover for the other.
 
-## 9d. `@podman-socket` admits that it grants the network
+## 9d. `@podman-socket` without `@net` is offline, containers included
 
-Needs no engine — this is a `--dry-run` check, and `--dry-run` is the artifact
-the guarantee is read off, which is exactly where it was wrong
-(`.claude/design/ENGINE-NETNS.md` §0).
+This is the inversion the previous version of this check predicted (issue
+#63, Tier B): the engine now runs in the sandbox's OWN network namespace, so
+`@podman-socket` alone no longer pulls in `@net`, and offline is once again
+the ABSENCE of a profile rather than something the profile switches back on.
+Needs no engine — this is a `--dry-run` check, and `--dry-run` is the
+artifact the guarantee is read off, which is exactly where it was wrong
+before (`.claude/design/ENGINE-NETNS.md` §0).
 
 ```bash
-./bin/snug --dry-run -p @podman-socket $SC/proj/sub | grep -E '^ *\+|^NETWORK|^CONTAINERS'
-./bin/snug --dry-run $SC/proj/sub                   | grep -E '^NETWORK|^CONTAINERS'
+./bin/snug --dry-run -p @podman-socket $SC/proj/sub | grep -E '^ *\+|^NETWORK|^CONTAINERS|^  engine'
+./bin/snug --dry-run -p @podman-socket -p @net $SC/proj/sub | grep -E '^NETWORK|^CONTAINERS'
 ```
 
-Expect from the first: `+ @net  (pulled in by include; …)`, then the **egress**
-NETWORK block, then a `CONTAINERS` block saying the container runs in the
-engine's netns and that the pasta guarantees above it do not cover containers.
+Expect from the first: **no** `+ @net` line, the **isolated** NETWORK block
+("No egress. No host loopback." — and now true for containers too), a
+`CONTAINERS` block saying a container has no egress either, and a TOPOLOGY
+`engine` line naming the sandbox's own netns and the 12-entry capability
+bounding set — the real cost of selecting a container engine, on screen even
+offline.
 
-Expect from the second — this is the positive control, and it is the half that
-matters: a bare `snug <dir>` still prints `NETWORK  isolated` and **no**
-`CONTAINERS` block at all. `@net` reaching `defaults` would be the real
-regression here, and a check that only looked at the first command could not
-tell the difference.
+Expect from the second — the positive control: the **egress** NETWORK block,
+and a `CONTAINERS` block whose egress clause now agrees with it.
 
-Both lines are interim. When the engine moves into the sandbox's netns, the
-first command must stop showing `+ @net` — at which point this check inverts and
-`@podman-socket` alone must print `NETWORK  isolated`.
+Both directions matter: a check that only ran the first command could not
+tell "offline" apart from "the profile stopped resolving containers at all".
+
+**With a real engine** (podman installed and not a host-escape shim — see
+`snug doctor`), the same property holds for a REAL run, not just the screen:
+
+```bash
+snug -p @podman-socket $SC/proj/sub -- \
+  sh -c 'curl --unix-socket ${DOCKER_HOST#unix://} -sX POST "http://x/v1.41/images/create?fromImage=alpine&tag=3.20"'
+```
+
+Expect a network error from the PULL itself ("network is unreachable" or a
+DNS failure) — the engine's own process is in N, so it has no egress before a
+container is even created. Add `-p @net` and expect the pull to succeed.
+Positive control: `curl --unix-socket ... http://x/v1.41/version` succeeds
+either way — the engine exists and answers locally; only egress differs.
 
 ## 9e. A profile name is refused as a NAME, not as a missing profile
 
@@ -1331,6 +1348,45 @@ block — the name never gets as far as the registry.
 The `defaults` control prints `"@sys" "@cwd-rw"` and the file's path; the second
 run exits **77** naming `entry 2` and the config file, rather than silently
 resolving the built-in list.
+
+## 9f. A container never sees the HOST's real /etc/resolv.conf (issue #126)
+
+`EnterEngine` mounts a private COPY of the whole host tree before it execs
+podman, and up through issue #126 nothing touched that copy's own
+`/etc/resolv.conf` — so it was still the HOST's real one (LAN nameservers, the
+search domain), and podman generated every container's own resolv.conf FROM
+it. An offline sandbox's own `/etc/resolv.conf` is correctly empty of
+nameservers; a container it started got the host's anyway, through a channel
+`internal/dockerproxy`'s bind filter never sees because it is not a
+client-requested mount. The fix bind-mounts snug's own GENERATED
+`/etc/resolv.conf` — the identical content the sandbox payload gets — over the
+engine's private copy before exec, so podman has nothing but that to generate
+a container's own file from.
+
+**Needs a real engine** (podman installed and not a host-escape shim — see
+`snug doctor`; `$SNUG_PODMAN` to pin one explicitly).
+
+```bash
+snug -p @podman-socket $SC/proj/sub -- sh -c '
+  echo "SANDBOX:"; cat /etc/resolv.conf
+'
+```
+
+Expect the sandbox's own `/etc/resolv.conf` to carry no nameserver offline
+("DNS is intentionally unavailable"). Then, in the same sandbox, build and run
+a `FROM scratch` container whose only job is to `cat /etc/resolv.conf` (the
+committed regression, `test/integration/testdata/resolvprobe`, does exactly
+this over the compat API — see
+`TestContainerGetsGeneratedResolvConfNotTheHosts` for the scripted version of
+this check with a from-scratch image, since the docker/podman CLI itself does
+not run inside the sandbox — `warnAboutPodmanClient` explains why). Expect the
+container's own `/etc/resolv.conf` to name **no** address this host's real
+`/etc/resolv.conf` (run `cat /etc/resolv.conf` on the HOST, outside the
+sandbox, for comparison) names as a nameserver — the leak issue #126 fixed.
+Add `-p @net` and expect the container's resolv.conf to now agree with the
+SANDBOX's own (pasta's resolver, or the host's routable nameservers relayed
+through egress) — expected once egress is granted, and a different fact from
+the host-LAN-topology leak offline.
 
 ## 10. A repository cannot grant itself anything
 

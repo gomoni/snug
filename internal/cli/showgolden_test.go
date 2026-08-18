@@ -75,11 +75,13 @@ func TestGoldenProfileShow(t *testing.T) {
 		// `environ.inherit` and `optional`. This is the case that changed
 		// silently and is the reason the file exists.
 		{"@claude", "host:guest relocation, includes, environ.inherit, optional"},
-		// `include` of another builtin, and the interim @net include that
-		// TestPodmanSocketIncludesNetAsAnInterimHonestyFix guards. When the
-		// engine moves into the sandbox's netns that include goes away, and this
-		// golden is a second place the removal has to be conscious.
-		{"@podman-socket", "include closure, and the interim @net include"},
+		// `include` of another builtin. Used to also carry an interim @net
+		// include (guarded by the now-deleted
+		// TestPodmanSocketIncludesNetAsAnInterimHonestyFix); issue #63, Tier B
+		// removed it, since the engine now runs in the sandbox's own netns and
+		// no longer needs @net to be honest about egress. This golden is where
+		// that removal shows up as a diff.
+		{"@podman-socket", "include closure, now WITHOUT the removed interim @net include"},
 	}
 
 	for _, tc := range cases {

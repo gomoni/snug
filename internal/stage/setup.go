@@ -9,13 +9,32 @@ import (
 )
 
 // MainSetup is __stage-setup: P1's first instant of life after the clone that created
-// U (its own user namespace, ONE uid mapped) and N (the sandbox's private
+// U (its own user namespace) and N (the sandbox's private
 // network namespace). It refuses immediately if the descriptors it requires —
 // fdControl, fdLife — are not present, and is not reachable as ordinary CLI:
 // internal/cli's hidden verb dispatch is the only caller.
 //
-// THE ORDER IS THE SPECIFICATION (SUPERVISOR-DESIGN.md §4 Step 4):
+// THE ORDER IS THE SPECIFICATION (SUPERVISOR-DESIGN.md §4 Step 4, extended
+// by issue #63 Tier B's step 0):
 //
+//  0. IF the uid/gid map was left for P0 to write (Config.Topology.Subuid ==
+//     SubuidFull — see stage.go's own comment on why), ask for it over the
+//     control socket, block until it lands, and RE-EXEC __stage-setup itself
+//     before doing anything else. The re-exec is not optional and not
+//     cosmetic: capabilities are only ever recalculated AT execve, never as a
+//     side effect of uid_map being written, so the FIRST execve into
+//     __stage-setup (which necessarily happens before the map exists) computes
+//     an ordinary, unprivileged, empty-permitted set — the kernel's usual
+//     "transitioning TO uid 0" bypass that gives a newly-root process the full
+//     bounding set as its effective set never fires, because at that moment
+//     the process is not yet uid 0 in its own namespace. MEASURED: after the
+//     map lands, CapBnd already reads full and Uid already reads 0, but
+//     CapEff/CapPrm read all-zero regardless — until a SECOND execve, which
+//     this time computes capabilities with uid 0 already in effect and the
+//     bypass fires for real. Skipped entirely, with zero behaviour change,
+//     when U already carries the single-uid map Go wrote itself during the
+//     clone (SubuidNone, still the default) — that map exists before the
+//     first and only execve, so the bypass already fires there.
 //  1. uid 0 / full caps, or refuse.
 //  2. make / private.
 //  3. open a socket IN N and bring lo up through it, then park that socket at
@@ -29,14 +48,46 @@ import (
 //  7. unshare(CLONE_NEWNET); refuse if the calling thread did not move.
 //  8. exec __stage-serve with NOTHING in between and an EMPTY environment.
 func MainSetup() error {
+	requireFD(fdControl, "control")
+	requireFD(fdLife, "lifeline")
+
 	if os.Getuid() != 0 {
-		return fmt.Errorf("__stage-setup: uid is %d, expected 0 — the single-uid map did not land", os.Getuid())
+		// The map was deliberately left unwritten by Start (SubuidFull): this
+		// process is the overflow uid until P0 delegates the full range via
+		// newuidmap/newgidmap. Ask, and block — there is nothing useful this
+		// process can do before its own identity exists. The control socket
+		// itself needs no uid mapping to work; sockets do not care about
+		// uid_map.
+		control := os.NewFile(fdControl, "control") // never Closed: see below
+		if err := sendEvent(control, event{Op: "needmap"}); err != nil {
+			return fmt.Errorf("__stage-setup: asking for the delegated subuid map: %w", err)
+		}
+		req, err := recvRequest(control)
+		if err != nil {
+			return fmt.Errorf("__stage-setup: waiting for the delegated subuid map: %w", err)
+		}
+		if req.Op != "mapped" {
+			return fmt.Errorf("__stage-setup: expected a \"mapped\" request, got %q", req.Op)
+		}
+		if os.Getuid() != 0 {
+			return fmt.Errorf("__stage-setup: uid is still %d after the delegated map arrived", os.Getuid())
+		}
+		// control is intentionally not Closed here: doing so would close the
+		// underlying fd (3) out from under the re-exec below, which reopens
+		// it (as the SAME descriptor, since it is not CLOEXEC) the instant
+		// this process image is replaced — long before Go's GC could ever
+		// run this *os.File's finalizer, so leaving it unclosed leaks
+		// nothing.
+		//
+		// See the function doc comment for WHY this re-exec exists: nothing
+		// below this line has run yet with real capabilities, because the
+		// FIRST execve into __stage-setup happened before the map did.
+		return execSelf("__stage-setup")
 	}
+
 	if err := checkFullCaps(); err != nil {
 		return fmt.Errorf("__stage-setup: %w", err)
 	}
-	requireFD(fdControl, "control")
-	requireFD(fdLife, "lifeline")
 
 	// Two reasons, both load-bearing: overlayfs (a future engine stage) refuses
 	// to work in a shared mount tree, and a private tree is what stops the

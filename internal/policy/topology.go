@@ -111,7 +111,20 @@ func (t Topology) String() string {
 // and the stage is a construction detail for one point on that lattice, not a
 // grant in its own right. NetHost inherits the host's own netns directly; there
 // is nothing for a stage to hold.
-func (t Topology) NeedsStage() bool { return t.Netns == NetnsStage }
+//
+// Subuid==SubuidFull is ALSO a trigger (issue #63, Tier B): a container engine
+// needs a stage to own its U — the full delegated subuid range and the private
+// mount namespace the engine forks into — independently of which netns it
+// joins. That keeps a stage for the `@net-host + @podman-socket` --i-know edge,
+// where Netns stays NetnsHost (the engine inherits the host netns there) but
+// Subuid is still SubuidFull. Because deriveTopology only ever sets
+// SubuidFull from the podman branch below, "SubuidFull implies podman implies
+// stage" — so this disjunct never changes NeedsStage for a non-podman
+// selection; TestPodmanSelectsAStage and TestNeedsStageIsFalseForOfflineAndHost
+// pin both halves.
+func (t Topology) NeedsStage() bool {
+	return t.Netns == NetnsStage || t.Subuid == SubuidFull
+}
 
 // deriveTopology is the ONLY producer of a Topology, called once at the end of
 // Resolve. No Profile field, no TOML key, no CLI flag reaches it — a field set
@@ -119,15 +132,7 @@ func (t Topology) NeedsStage() bool { return t.Netns == NetnsStage }
 // re-create default_profile, which "Decisions made" in CLAUDE.md already
 // reversed once. TestTopologyIsDerivedNotSettable checks this the same way
 // TestPolicyHasNoRestrictionOperation checks invariant 1: by finding none.
-//
-// pm (PodmanMode) is taken and deliberately UNUSED here: Phase 1 delegates no
-// subuids even for PodmanBuild, because the engine still runs on the host and a
-// delegated range would be a capability with no consumer (SUPERVISOR-DESIGN.md
-// §3.6). TestPhase1DelegatesNoSubuids pins that down as a decision, not an
-// oversight, so that Phase 3 raising Subuid for podman is a conscious edit
-// rather than a silent side effect of adding a case here.
 func deriveTopology(n NetMode, pm PodmanMode) Topology {
-	_ = pm // Phase 3 raises Subuid for PodmanBuild; see TestPhase1DelegatesNoSubuids.
 	t := Topology{Subuid: SubuidNone}
 	switch n {
 	case NetHost:
@@ -136,6 +141,21 @@ func deriveTopology(n NetMode, pm PodmanMode) Topology {
 		t.Netns = NetnsStage
 	default:
 		t.Netns = NetnsSandbox
+	}
+	// A container engine (issue #63, Tier B) runs in the sandbox's OWN network
+	// namespace, so it must be created and pinned by the stage exactly as @net's
+	// is — even offline, where N holds only loopback. Its storage needs the full
+	// delegated subuid range to chown across without ever touching a host uid it
+	// was not given. Both are RAISED here, never granted: `pm` is the only input
+	// this reads, it comes from the join-by-max of the resolved profile set, and
+	// this is the single place it is consumed. Raising is monotone (a lattice
+	// field only moves up); the `<` guard preserves NetnsHost for the --i-know
+	// @net-host+podman edge, where the engine inherits the host netns.
+	if pm != PodmanOff {
+		if t.Netns < NetnsStage {
+			t.Netns = NetnsStage
+		}
+		t.Subuid = SubuidFull
 	}
 	return t
 }

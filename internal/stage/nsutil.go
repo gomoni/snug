@@ -125,3 +125,29 @@ func atoiOrZero(s string) int {
 	n, _ := strconv.Atoi(s)
 	return n
 }
+
+// isUnprivilegedUsernsRefusal reports whether err looks like the HOST
+// refusing an unprivileged user namespace outright — not a bug in the
+// caller, and not a subuid/capability/logic problem this package's own code
+// could be responsible for. Ubuntu 24.04's default
+// kernel.apparmor_restrict_unprivileged_userns=1 is the live case (this
+// repo's own ci.yml comment names it), and it surfaces two different ways
+// depending on which syscall in the chain hits it first: a raw clone(2)
+// returns EPERM ("operation not permitted"), while Go's os/exec reports a
+// failed fork/exec as "permission denied". Matched on TEXT, not on an errno
+// comparison, because both shapes travel through fmt.Errorf wrapping by the
+// time a caller sees them and the underlying syscall.Errno is not reliably
+// preserved through os/exec's own error construction.
+//
+// Used ONLY by this package's tests, to turn "this host cannot do the thing
+// at all" into a skip rather than a failure — the same discipline the
+// project applies to the real sandbox (test/integration's skipOrFail) and to
+// this file's own subuid/capability preconditions, which already skip for
+// the same class of reason.
+func isUnprivilegedUsernsRefusal(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "permission denied") || strings.Contains(s, "operation not permitted")
+}

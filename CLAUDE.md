@@ -63,9 +63,9 @@ Three properties are not derivable from a command, and are the ones to carry:
   keep, not a gap to close. Do not add a profile for them without a decision to
   reopen this.
 
-Offline, `@podman-socket`'s interim exception, `@default`'s absence and what
-`@claude` stages are all under "Decisions made"; `redteam` runs on every
-milestone without exception, under "Definition of done".
+Offline, how `@podman-socket` handles the network (its own netns, since Tier B),
+`@default`'s absence and what `@claude` stages are all under "Decisions made";
+`redteam` runs on every milestone without exception, under "Definition of done".
 
 ## Key features
 
@@ -509,18 +509,19 @@ meant. It cannot prove the sandbox holds.
   closed. Offline is the *absence* of the `@net` profile, not a setting — so it
   cannot be accidentally re-enabled.
 
-  *One qualification, and it is live today.* `@podman-socket` includes
-  `net`, so selecting containers selects egress. That is not a weakening of the
-  rule — it is the rule finally being told the truth: a container runs in the
-  ENGINE's netns and therefore always had the engine's network, measured, while
-  `--dry-run` printed "No egress". The include makes the grant match the
-  behaviour rather than narrowing the behaviour to match the grant, which is why
-  it is **interim**. When the engine moves into the sandbox's netns
-  (`.claude/design/ENGINE-NETNS.md` §2 — feasibility measured on this host, §3
-  is where it does not work; §5 is marked superseded), container network becomes sandbox network, the
-  include goes away, and the sentence above regains its unqualified form.
-  `TestPodmanSocketIncludesNetAsAnInterimHonestyFix` is what makes that removal
-  a conscious act. Host→sandbox port publishing is off by
+  *Containers included, now that Tier B has landed (issue #63).* A container
+  runs in the sandbox's own network namespace, so `@podman-socket` without
+  `@net` is genuinely offline and `--dry-run` says so truthfully. Selecting a
+  container engine starts a stage and delegates the full subuid range even
+  offline — a real cost the TOPOLOGY block states — and a container's egress
+  follows the sandbox's exactly: with `@net` the whole internet, without it
+  nothing; it publishes no port onto any loopback the sandbox does not already
+  own, because the engine holds no `CAP_NET_ADMIN`. The engine is forked into
+  that netns by the stage (`internal/stage`'s `startengine`/`__inengine`), its
+  own capabilities dropped to `policy.EngineCapBounding`.
+  `TestPodmanSocketDoesNotImplyEgress` and `TestPodmanSelectsAStage` are what
+  keep this true; the mount view is still a private copy enforced by the proxy
+  bind filter, which Tier C (#125) makes structural. Host→sandbox port publishing is off by
   default and scoped to `127.0.0.1` when enabled: with `-t auto` the *agent*
   would choose which host loopback ports appear, which inverts the guiding
   principle. See INDEX §4.6 — this is the decision most likely to be revisited.

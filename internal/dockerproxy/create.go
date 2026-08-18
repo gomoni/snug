@@ -81,12 +81,30 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. Namespace modes must not join the host's or another container's.
+	//
+	// NetworkMode="host" is the ONE exception, and it inverts what it meant
+	// before issue #63 Tier B: the container engine itself now runs INSIDE
+	// this sandbox's own network namespace N (setns'd there by the stage,
+	// internal/stage's EnterEngine) rather than on the real host's — so
+	// "join the engine's current netns", which is exactly what podman's
+	// `--network=host` / HostConfig.NetworkMode="host" means, now joins N,
+	// not the host's. That is the "share N host-mode" design the maintainer
+	// settled (TIER-B-POLICY.md, the NET_ADMIN decision): no per-container
+	// bridge, no `-p` publishing (the engine holds no CAP_NET_ADMIN to set
+	// one up even if asked), a container reaches exactly what the sandbox
+	// reaches. Every OTHER namespace mode stays refused unconditionally,
+	// PidMode="host" above all: __inengine does NOT unshare pid, so the
+	// engine's own pid namespace IS the real host's, and letting a container
+	// join it would be a genuine escape that Tier B does nothing to close.
 	for _, k := range namespaceModeKeys {
 		var mode string
 		if v, ok := hc[k]; ok {
 			_ = json.Unmarshal(v, &mode)
 		}
 		if mode == "" {
+			continue
+		}
+		if k == "NetworkMode" && mode == "host" {
 			continue
 		}
 		if mode == "host" || strings.HasPrefix(mode, "container:") || strings.HasPrefix(mode, "ns:") {

@@ -39,6 +39,35 @@ type Options struct {
 	// never reached is a run `snug attach` will not find; it is not a run
 	// that failed to start.
 	OnInfo func(RunInfo)
+
+	// EngineSpec, when non-nil, tells runStaged to fork a container engine
+	// into this sandbox's own N — EAGERLY, after the network is confirmed and
+	// before the payload exists, as a second long-lived child of the stage
+	// alongside bwrap (issue #63, Tier B; ENGINE-WIRING.md §1). nil means no
+	// engine at all: an ordinary @net (or offline) run with no container
+	// profile selected. Only meaningful when p.Topology.NeedsStage() is true;
+	// internal/cli/container.go is the only caller that sets it, having
+	// already run the P1-P6 preflight this package does not repeat.
+	EngineSpec *stage.EngineSpec
+
+	// OnEngineReady, if non-nil, runs right after StartEngine has confirmed
+	// the engine's socket exists — before StartSandbox, so a failure here
+	// (dialling the lifeline that ties the engine's lifetime to this
+	// sandbox, arming teardown) refuses the WHOLE run rather than letting a
+	// payload start behind a container engine this process cannot guarantee
+	// to reap. Only ever called when EngineSpec is non-nil.
+	OnEngineReady func() error
+
+	// OnPayloadExit, if non-nil, runs after the staged payload has been
+	// reaped (st.Wait() returned) and BEFORE the deferred st.Close() collapses
+	// the stage. It is the seam for stopping THIS run's containers, by label,
+	// while the engine's socket is still reachable — internal/sandbox must
+	// not import internal/engine (layering: this package is lower-level), so
+	// the actual "stop --filter label=..." call is supplied by the caller as
+	// a closure. Never called on the offline/host-network arm of Run, which
+	// has no stage and therefore no engine to have started in the first
+	// place.
+	OnPayloadExit func()
 }
 
 // RunInfo is what a running sandbox reports about itself, once, at startup:
@@ -304,42 +333,77 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 	}
 	defer st.Close()
 
-	// pasta attaches to a namespace with NO process in it. Measured: it starts,
-	// stays up, and its interface is waiting when bwrap arrives.
-	helper, err := startPasta(p, st.Target())
-	if err != nil {
-		return 0, err
-	}
-	defer helper.stop()
-	helper.watch(opts.warn)
+	// Two shapes now share this arm (issue #63, Tier B). A NetEgress run
+	// attaches pasta to a namespace with NO process in it — measured: it
+	// starts, stays up, and its interface is waiting when bwrap arrives — and
+	// waits for pasta's own "snug0" interface. A run that needs a stage ONLY
+	// because a container profile is selected (offline @podman-socket: the
+	// engine needs a stage for its own U even though N carries no egress)
+	// starts no pasta at all and waits for "lo" instead, which setup.go
+	// already brought up while it was still inside N. Either way, no payload
+	// — and, from here on, no engine — exists before this returns: invariant
+	// 5 at the exact point it used to be enforced by parking a process that
+	// already existed.
+	var helper *netHelper
+	netIface := "lo"
+	if p.Net.Mode == policy.NetEgress {
+		netIface = stage.NetIfaceName
 
-	// Fail here rather than run a payload that was promised a network it does not
-	// have. This is invariant 5 at the exact point it used to be enforced by
-	// parking a process that already existed.
-	//
-	// Raced against pasta dying, because the two failures need different
-	// messages and very different latencies. A pasta that exits at once — the
-	// crashing or OOM-killed shape — would otherwise be reported only when the
-	// stage's interface timeout expired, turning a 300ms error into a ten-second
-	// one that a human interrupts before reading.
-	ready := make(chan error, 1)
-	go func() { ready <- st.WaitNetReady(netReadyTimeout) }()
-	select {
-	case err := <-ready:
+		helper, err = startPasta(p, st.Target())
 		if err != nil {
 			return 0, err
 		}
-	case <-helper.died():
-		return 0, fmt.Errorf("pasta exited before the network came up: %s", helper.failure())
+		defer helper.stop()
+		helper.watch(opts.warn)
+	}
+
+	// Raced against pasta dying (when there is a pasta to race), because the
+	// two failures need different messages and very different latencies. A
+	// pasta that exits at once — the crashing or OOM-killed shape — would
+	// otherwise be reported only when the stage's interface timeout expired,
+	// turning a 300ms error into a ten-second one that a human interrupts
+	// before reading. An offline podman run has no pasta to race against, so
+	// it simply waits.
+	ready := make(chan error, 1)
+	go func() { ready <- st.WaitNetReady(netReadyTimeout, netIface) }()
+	if helper != nil {
+		select {
+		case err := <-ready:
+			if err != nil {
+				return 0, err
+			}
+		case <-helper.died():
+			return 0, fmt.Errorf("pasta exited before the network came up: %s", helper.failure())
+		}
+	} else if err := <-ready; err != nil {
+		return 0, err
+	}
+
+	// EAGER, between netready and StartSandbox — a fixed step of the stage's
+	// own startup, never lazy (ENGINE-WIRING.md §1): the engine's successful
+	// confinement to N is a precondition of the payload existing at all, the
+	// same shape WaitNetReady already enforces one level up. A failure here
+	// is fatal to the whole run — invariant 5 — and StartSandbox below is
+	// never reached on that path.
+	if opts.EngineSpec != nil {
+		if err := st.StartEngine(*opts.EngineSpec); err != nil {
+			return 0, err
+		}
+		if opts.OnEngineReady != nil {
+			if err := opts.OnEngineReady(); err != nil {
+				return 0, err
+			}
+		}
 	}
 
 	// Armed before StartSandbox, and here that is the fork of a GRANDchild:
 	// bwrap is forked by the stage, so P0 never learns its pid and st.Pid() is
 	// the only lever it has. Everything above this line — the stage, pasta,
-	// the up-to-netReadyTimeout wait for the interface — is deliberately
-	// outside the guard: nothing there can be orphaned (the stage carries its
-	// own PR_SET_PDEATHSIG and no payload exists yet), and a guard held across
-	// that wait would swallow a Ctrl-C for as long as fifteen seconds.
+	// the engine, the up-to-netReadyTimeout wait for the interface — is
+	// deliberately outside the guard: nothing there can be orphaned (the
+	// stage and the engine both carry their own PR_SET_PDEATHSIG and no
+	// payload exists yet), and a guard held across that wait would swallow a
+	// Ctrl-C for as long as fifteen seconds.
 	guard := armTeardown(opts)
 	defer guard.stop()
 
@@ -355,6 +419,16 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 	// confirmTeardown's sweep is what reaches it once the stage is dead.
 	return guard.wait(st.Pid(), func() (int, error) {
 		ws, err := st.Wait()
+		// Run BEFORE the deferred st.Close() above collapses the stage — and
+		// therefore the engine, via its own Pdeathsig cascading from P1 —
+		// while the engine's socket is still reachable, so containers can be
+		// stopped by label instead of merely killed alongside it. Called
+		// whatever the payload's own outcome, because "did this run have
+		// containers to stop" is a question about opts.EngineSpec, not about
+		// how the payload exited.
+		if opts.OnPayloadExit != nil {
+			opts.OnPayloadExit()
+		}
 		if err != nil {
 			return 0, err
 		}
