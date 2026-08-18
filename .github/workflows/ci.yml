@@ -8,6 +8,22 @@ on:
 permissions:
   contents: read
 
+# Third-party actions are pinned to a COMMIT SHA, never to a tag, and the tag is
+# written beside it as a comment so a human can read what the SHA is meant to be.
+#
+# A tag is a mutable pointer in somebody else's repository. `@v5` re-resolves on
+# every run, so the code that executes in this job — with the checkout, the Go
+# toolchain and the repository token in reach — is whatever that pointer names
+# today. That is the supply-chain shape snug refuses everywhere else: no silent
+# change to what runs. A SHA cannot be repointed, so an upgrade becomes a diff a
+# reviewer sees, which is the same argument as the golden argv files.
+#
+# The comment is NOT the pin and does not have to be believed. Verify one with:
+#
+#   gh api repos/actions/checkout/git/ref/tags/v7.0.1 -q .object.sha
+#
+# Upgrading means re-running that command and replacing both halves together. A
+# SHA whose comment has drifted from it is worse than no comment.
 jobs:
   # Tier 1 and 2: the resolver's algebraic invariants and the golden argv files.
   # These need no privileges and no namespaces — that is the payoff for keeping
@@ -18,8 +34,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing in this workflow pushes, tags or calls the API, so the
+          # token has no reason to outlive the checkout step. Left at the
+          # default it is written into .git/config and every later step —
+          # including `make gate`, which runs this repository's own code — can
+          # read it. Deny by default, the same way a profile is a named hole.
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.26'
           check-latest: true
@@ -61,8 +84,12 @@ jobs:
     # which was long enough for a hung job to look like a slow one.
     timeout-minutes: 8
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # See the gate job: this one has more reason still, since it launches
+          # real sandboxes running real payloads.
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.26'
           check-latest: true
