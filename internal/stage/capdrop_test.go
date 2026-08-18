@@ -1,6 +1,7 @@
 package stage
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
@@ -74,7 +75,8 @@ func TestDropCapsToExactlyProducesTheEngineCapabilitySet(t *testing.T) {
 		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostGID, Size: 1}},
 		GidMappingsEnableSetgroups: false,
 	}
-	cmd.Stderr = os.Stderr
+	var errBuf strings.Builder
+	cmd.Stderr = &errBuf
 	statusPath := os.TempDir() + "/snug-test-dropcaps-status-" + strconv.Itoa(os.Getpid())
 	defer os.Remove(statusPath)
 	cmd.Env = []string{"SNUG_TEST_DROPCAPS_STATUS_PATH=" + statusPath}
@@ -84,7 +86,18 @@ func TestDropCapsToExactlyProducesTheEngineCapabilitySet(t *testing.T) {
 	w.Write([]byte("x")) // release the child immediately; nothing to synchronise here
 	w.Close()
 	if err := cmd.Wait(); err != nil {
-		t.Fatalf("child exited with an error: %v", err)
+		msg := strings.TrimSpace(errBuf.String())
+		if isUnprivilegedUsernsRefusal(fmt.Errorf("%s", msg)) {
+			// Same class as isUnprivilegedUsernsRefusal's own doc comment:
+			// the fork itself can succeed on a host whose AppArmor policy
+			// still refuses the FOLLOW-ON syscalls a fresh user namespace
+			// needs (PR_CAPBSET_DROP here) — CI's plain `gate` lane is
+			// exactly this shape (see ci.yml). Skip, do not fail: this test
+			// exists to check the MECHANISM works where the host allows it,
+			// not to assert every CI runner allows it.
+			t.Skipf("this host refuses the capability drop: %s", msg)
+		}
+		t.Fatalf("child exited with an error: %v (stderr: %s)", err, msg)
 	}
 
 	data, err := os.ReadFile(statusPath)

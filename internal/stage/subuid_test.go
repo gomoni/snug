@@ -203,8 +203,19 @@ func TestStartDelegatesTheFullSubuidRange(t *testing.T) {
 		Stdin:    devNullFile(t), Stdout: devNullFile(t), Stderr: devNullFile(t),
 	})
 	if err != nil {
-		t.Fatalf("Start: %v (this host may not support unprivileged user+net namespaces — "+
-			"see the message for the fix)", err)
+		if isUnprivilegedUsernsRefusal(err) {
+			// The plain `gate` CI lane runs on Ubuntu 24.04's default
+			// kernel.apparmor_restrict_unprivileged_userns=1, which refuses
+			// the clone outright — only the `integration` lane's workflow
+			// step relaxes that sysctl. Skipping here, not failing, matches
+			// this file's OWN precondition skips above and the project-wide
+			// convention (ci.yml's own comment: "the harness SKIPS where the
+			// host cannot create namespaces"). A host that genuinely cannot
+			// create user namespaces at all was never going to be able to
+			// run snug regardless of this change.
+			t.Skipf("this host refuses unprivileged user namespaces: %v", err)
+		}
+		t.Fatalf("Start: %v", err)
 	}
 	defer st.Close()
 
