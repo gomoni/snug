@@ -3,6 +3,24 @@
 Investigation, 2026-08-08, by `host-bridge`. Everything below marked with a
 command was **executed**; everything else is marked as reasoning.
 
+> **§0's finding: CLOSED at the policy layer, 2026-08-18 (issue #63, Tier
+> B).** `@podman-socket` no longer includes `net`; `--dry-run -p
+> @podman-socket` (no `@net`) now prints an isolated NETWORK block, a
+> `TOPOLOGY` engine line naming the sandbox's own netns, and
+> `policy.EngineCapBounding`'s 12-cap set — and the stage now really does
+> delegate the full subuid range and drop the engine's capabilities to that
+> set on a real kernel (`internal/stage/subuid.go`, `capdrop.go`, both with
+> real-execution tests). **Still open: the engine itself is not yet forked
+> into that namespace** — `internal/engine.Engine.Start` still execs podman
+> as a plain host process, unrelated to the stage, so `internal/cli`
+> currently REFUSES to start a container engine at all on a real (non-dry-run)
+> run rather than let that mismatch reach a running sandbox (see
+> `internal/cli/container.go`). §2's per-container-bridge / `podman run -p`
+> measurement below is **superseded** by the maintainer's settled NET_ADMIN
+> decision: containers share the sandbox's netns HOST-MODE, no per-container
+> bridge, no port publishing (the engine holds no `CAP_NET_ADMIN`) — read §2
+> as the feasibility proof it always was, not as the shipped shape.
+
 ## 0. Why this exists
 
 **This section is the canonical write-up of the finding.** Code and prose across
