@@ -10,21 +10,22 @@ package cli
 // still read and write the stream it was handed, only not the host inode
 // behind a redirected one.
 //
-// What this file does NOT (yet) do: forward SIGWINCH/window-size changes
-// into the pty, or restore terminal state on exit. Those are real
-// interactive-UX gaps, being closed incrementally — the security property
-// (host inode never reaches the sandbox) holds regardless of any of them.
-// Job control (the attached shell getting the pty as its controlling
-// terminal, via setsid()+TIOCSCTTY in internal/attach/child.go on the pty
-// path) is now done; see attach.Config.PTY, set from this file's own pty
-// flag below. So is putting the CLIENT's own terminal into raw mode
-// (clientRawMode) — restoring it on exit is not yet wired in, so until that
-// lands an attach session that used a pty leaves the client's real terminal
-// raw after it ends.
+// What this file does NOT (yet) do: restore terminal state on exit. That is
+// a real interactive-UX gap, being closed incrementally — the security
+// property (host inode never reaches the sandbox) holds regardless. Job
+// control (the attached shell getting the pty as its controlling terminal,
+// via setsid()+TIOCSCTTY in internal/attach/child.go on the pty path) is
+// now done; see attach.Config.PTY, set from this file's own pty flag below.
+// So is putting the CLIENT's own terminal into raw mode (clientRawMode) and
+// forwarding its window size into the pty, both initially and on every
+// SIGWINCH (watchWinsize) — but restoring the client's termios on exit is
+// not yet wired in, so until that lands an attach session that used a pty
+// leaves the client's real terminal raw after it ends.
 
 import (
 	"io"
 	"os"
+	"os/signal"
 	"strconv"
 	"sync"
 
@@ -47,6 +48,14 @@ type stdioRelay struct {
 	// value a later restore step puts back on exit. Nil on the pipe path,
 	// where there is no terminal to touch.
 	origTermios *unix.Termios
+
+	// sigwinch and sigwinchDone belong to watchWinsize's background
+	// goroutine: sigwinch is the channel signal.Notify delivers SIGWINCH on,
+	// sigwinchDone stops the goroutine (closed by a later restore step, so
+	// the goroutine and the signal registration do not outlive the
+	// session). Both nil on the pipe path.
+	sigwinch     chan os.Signal
+	sigwinchDone chan struct{}
 
 	closeOnce sync.Once
 	childEnds []*os.File // deduplicated; closed once, right after Start()
@@ -90,6 +99,11 @@ func newStdioRelay() (*stdioRelay, error) {
 		r.childEnds = []*os.File{slave}
 
 		if err := r.clientRawMode(); err != nil {
+			master.Close()
+			slave.Close()
+			return nil, err
+		}
+		if err := r.watchWinsize(master); err != nil {
 			master.Close()
 			slave.Close()
 			return nil, err
@@ -256,6 +270,50 @@ func (r *stdioRelay) clientRawMode() error {
 	raw := *orig
 	cfmakeraw(&raw)
 	return unix.IoctlSetTermios(fd, unix.TCSETS, &raw)
+}
+
+// syncWinsize copies the CLIENT terminal's (clientFd, the attaching human's
+// real tty) current window size onto master (the fresh pty the attached
+// process's stdio lives on) — the same direction ssh and docker exec -t
+// copy in, since master/slave share one size and setting it on either end
+// updates what the other side's TIOCGWINSZ reads back.
+func syncWinsize(clientFd int, master *os.File) error {
+	ws, err := unix.IoctlGetWinsize(clientFd, unix.TIOCGWINSZ)
+	if err != nil {
+		return err
+	}
+	return unix.IoctlSetWinsize(int(master.Fd()), unix.TIOCSWINSZ, ws)
+}
+
+// watchWinsize does the initial sync (so the attached process's very first
+// TIOCGWINSZ — a shell drawing its prompt, `stty size`, an editor sizing
+// its window — already sees the client's real size rather than whatever
+// /dev/ptmx defaulted to) and then installs a SIGWINCH handler that repeats
+// it for the rest of the session, so a client terminal resized mid-session
+// propagates too. The background goroutine it starts is stopped by closing
+// r.sigwinchDone, which a later restore-on-exit step owns; started
+// goroutines that never see that channel closed exit only when this
+// process does, holding nothing that needs closing.
+func (r *stdioRelay) watchWinsize(master *os.File) error {
+	fd := int(os.Stdin.Fd())
+	if err := syncWinsize(fd, master); err != nil {
+		return err
+	}
+
+	r.sigwinch = make(chan os.Signal, 1)
+	signal.Notify(r.sigwinch, unix.SIGWINCH)
+	r.sigwinchDone = make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-r.sigwinch:
+				syncWinsize(fd, master)
+			case <-r.sigwinchDone:
+				return
+			}
+		}
+	}()
+	return nil
 }
 
 // cfmakeraw is termios(3)'s cfmakeraw — golang.org/x/sys/unix wraps the

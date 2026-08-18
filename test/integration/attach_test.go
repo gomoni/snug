@@ -1635,3 +1635,70 @@ func TestAttachPipeStdinGetsNoControllingTTY(t *testing.T) {
 			"it:\n%s", session, pid, statLine)
 	}
 }
+
+// TestAttachForwardsInitialWinsize is the third of the four interactive-pty
+// gaps: newStdioRelay's watchWinsize copies the CLIENT terminal's window
+// size onto the fresh pty it allocates for A, once at the start of the
+// session (and on every SIGWINCH thereafter, not exercised by this test —
+// there is no portable way to deliver SIGWINCH to a process this test does
+// not control the pid namespace view of). This test sets a deliberately
+// unusual size (so it can never be confused with whatever default
+// /dev/ptmx happened to pick) on the CLIENT pty before attach ever starts,
+// then has the attached process read its own window size back with `stty
+// size`, which reads TIOCGWINSZ on its own fd 0 — the attached pty, not the
+// client one — so a match proves the forwarding, not a coincidence of both
+// ptys defaulting the same way.
+func TestAttachForwardsInitialWinsize(t *testing.T) {
+	budget(t, 40*time.Second)
+	requireSandbox(t)
+	env, xdg := attachEnv(t)
+	proj, _ := target(t)
+
+	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t, xdg)
+
+	master, slave := openTestPTY(t)
+	defer master.Close()
+
+	const wantRows, wantCols = 53, 171 // deliberately unlikely defaults
+	if err := unix.IoctlSetWinsize(int(slave.Fd()), unix.TIOCSWINSZ,
+		&unix.Winsize{Row: wantRows, Col: wantCols}); err != nil {
+		t.Fatalf("setting the client pty's own winsize: %v", err)
+	}
+
+	cmd := exec.Command(snugBin, "attach", proj, "--", "/bin/stty", "size")
+	cmd.Env = env
+	cmd.Stdin = slave
+	cmd.Stdout = slave
+	cmd.Stderr = slave
+
+	p := startBgProc(t, cmd)
+	slave.Close()
+
+	select {
+	case <-waitDone(p):
+	case <-time.After(15 * time.Second):
+		t.Fatal("snug attach (pty stdin, winsize test) did not return within 15s")
+	}
+
+	var out bytes.Buffer
+	buf := make([]byte, 4096)
+	master.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		n, err := master.Read(buf)
+		if n > 0 {
+			out.Write(buf[:n])
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	want := fmt.Sprintf("%d %d", wantRows, wantCols)
+	if !strings.Contains(out.String(), want) {
+		t.Errorf("the attached process's own `stty size` never reported %q — the client's "+
+			"initial window size was not forwarded onto the pty allocated for it:\n%s",
+			want, out.String())
+	}
+}
