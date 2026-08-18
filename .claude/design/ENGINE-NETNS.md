@@ -3,23 +3,35 @@
 Investigation, 2026-08-08, by `host-bridge`. Everything below marked with a
 command was **executed**; everything else is marked as reasoning.
 
-> **§0's finding: CLOSED at the policy layer, 2026-08-18 (issue #63, Tier
-> B).** `@podman-socket` no longer includes `net`; `--dry-run -p
-> @podman-socket` (no `@net`) now prints an isolated NETWORK block, a
-> `TOPOLOGY` engine line naming the sandbox's own netns, and
-> `policy.EngineCapBounding`'s 12-cap set — and the stage now really does
-> delegate the full subuid range and drop the engine's capabilities to that
-> set on a real kernel (`internal/stage/subuid.go`, `capdrop.go`, both with
-> real-execution tests). **Still open: the engine itself is not yet forked
-> into that namespace** — `internal/engine.Engine.Start` still execs podman
-> as a plain host process, unrelated to the stage, so `internal/cli`
-> currently REFUSES to start a container engine at all on a real (non-dry-run)
-> run rather than let that mismatch reach a running sandbox (see
-> `internal/cli/container.go`). §2's per-container-bridge / `podman run -p`
-> measurement below is **superseded** by the maintainer's settled NET_ADMIN
-> decision: containers share the sandbox's netns HOST-MODE, no per-container
-> bridge, no port publishing (the engine holds no `CAP_NET_ADMIN`) — read §2
-> as the feasibility proof it always was, not as the shipped shape.
+> **§0's finding: CLOSED, 2026-08-18 (issue #63, Tier B) — engine wiring
+> landed, MEASURED against a real engine.** `@podman-socket` no longer
+> includes `net`; `--dry-run -p @podman-socket` (no `@net`) prints an isolated
+> NETWORK block, a `TOPOLOGY` engine line naming the sandbox's own netns, and
+> `policy.EngineCapBounding`'s 12-cap set. The engine is now actually FORKED
+> there: `internal/stage`'s `startengine`/`__inengine` (`EnterEngine`) join it
+> to the sandbox's own N by `setns`, drop its capabilities to that set, and
+> `internal/cli/container.go` no longer refuses a real (non-dry-run) run.
+> Measured end to end with the pinned static podman bundle: `@podman-socket`
+> alone, a pull fails with "network is unreachable"; `@podman-socket -p @net`,
+> the same pull succeeds and a container's `wget` reaches the internet; a
+> `version`/`info` call (no network needed) succeeds in BOTH cases — the
+> engine exists and answers either way, only egress differs. Two corrections
+> the wiring pass found that this document's own reasoning did not predict,
+> recorded so `internal/stage/inengine.go`'s comments are not the only place
+> they live: (1) §7's "no /run graft… podman's own forced tmpfs on /run"
+> holds for a rootless (single-uid) podman, not for this root-in-U,
+> full-subuid shape — podman does not self-mount, so `__inengine` mounts a
+> bare tmpfs on `/run` itself; (2) `CLONE_NEWCGROUP` at clone time changes
+> what `/proc/self/cgroup` REPORTS but not what the inherited `/sys/fs/cgroup`
+> mount's content is rooted at — `__inengine` mounts a fresh `cgroup2` over it
+> (with an unmount-then-retry fallback measured necessary on a
+> triply-nested-container development host) to actually get the confinement
+> the namespace was supposed to buy. §2's per-container-bridge / `podman run
+> -p` measurement below is **superseded** by the maintainer's settled
+> NET_ADMIN decision: containers share the sandbox's netns HOST-MODE, no
+> per-container bridge, no port publishing (the engine holds no
+> `CAP_NET_ADMIN`) — read §2 as the feasibility proof it always was, not as
+> the shipped shape.
 
 ## 0. Why this exists
 

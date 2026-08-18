@@ -1281,11 +1281,19 @@ and a `CONTAINERS` block whose egress clause now agrees with it.
 Both directions matter: a check that only ran the first command could not
 tell "offline" apart from "the profile stopped resolving containers at all".
 
-**Caveat, current build:** the engine itself is not yet wired to actually
-start inside that namespace (see `internal/cli/container.go`), so an actual
-`snug -p @podman-socket <dir> -- podman run …` (no `--dry-run`) refuses
-outright rather than running — this check is `--dry-run`-only until that
-lands.
+**With a real engine** (podman installed and not a host-escape shim — see
+`snug doctor`), the same property holds for a REAL run, not just the screen:
+
+```bash
+snug -p @podman-socket $SC/proj/sub -- \
+  sh -c 'curl --unix-socket ${DOCKER_HOST#unix://} -sX POST "http://x/v1.41/images/create?fromImage=alpine&tag=3.20"'
+```
+
+Expect a network error from the PULL itself ("network is unreachable" or a
+DNS failure) — the engine's own process is in N, so it has no egress before a
+container is even created. Add `-p @net` and expect the pull to succeed.
+Positive control: `curl --unix-socket ... http://x/v1.41/version` succeeds
+either way — the engine exists and answers locally; only egress differs.
 
 ## 9e. A profile name is refused as a NAME, not as a missing profile
 
