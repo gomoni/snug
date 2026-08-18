@@ -348,21 +348,46 @@ func attachSeccompProgram(st runState) ([]byte, error) {
 // is the user's own words (§4.3's exec, "by path, of a path that came from
 // the user's own command line"); with none, it is SHELL from the run's
 // recorded environment — the one bounded exception named in §8.4.
+//
+// A bare (non-absolute) command name is not something a raw execve(2) can
+// resolve — that is execvp's job, and it is bwrap's own execvp, running
+// AFTER bwrap has entered the sandbox's mount namespace, that does this for
+// an ordinary `snug -- bash` (internal/sandbox hands bwrap the argv verbatim
+// and lets IT search $PATH from inside). attach has no bwrap in its chain,
+// and resolving a bare name against THIS process's own (HOST) filesystem
+// would be answering the wrong question — the sandbox's view of /usr/bin is
+// not guaranteed to be this process's. So a bare name is handed to the run's
+// own recorded SHELL as `sh -c 'exec "$0" "$@"' name args...`, which performs
+// exactly the same $PATH search a user typing the same words at the attached
+// shell would get, done by a program already running INSIDE the sandbox
+// rather than guessed at from outside it. This is plumbing, not a new
+// executable-path channel: SHELL is already §8.4's one bounded exception,
+// and reusing it here rather than adding a second one is deliberate.
 func attachCommand(st runState, command []string) (argv0 string, argv []string, err error) {
-	if len(command) > 0 {
-		if !filepath.IsAbs(command[0]) {
-			// Resolve through PATH the same way a shell would, since a bare
-			// exec(2) never does — this stays symmetrical with what a
-			// user typing the same command inside the sandbox shell gets.
-			resolved, lerr := lookPathIn(attachPathEnv(st), command[0])
-			if lerr != nil {
-				return "", nil, fmt.Errorf("%q: %w", command[0], lerr)
-			}
-			return resolved, command, nil
+	shell, serr := attachRecordedShell(st)
+
+	if len(command) == 0 {
+		if serr != nil {
+			return "", nil, serr
 		}
-		return command[0], command, nil
+		return shell, []string{shell}, nil
 	}
 
+	if filepath.IsAbs(command[0]) {
+		return command[0], command, nil
+	}
+	if serr != nil {
+		return "", nil, fmt.Errorf("%q is not an absolute path, and it cannot be resolved without "+
+			"this run's SHELL: %w", command[0], serr)
+	}
+	argv = append([]string{shell, "-c", `exec "$0" "$@"`}, command...)
+	return shell, argv, nil
+}
+
+// attachRecordedShell reads and validates SHELL from the run's recorded
+// environment — §8.4's one bounded exception, and the only executable path
+// this feature takes from a file rather than the user's own words.
+func attachRecordedShell(st runState) (string, error) {
 	shell := ""
 	for _, kv := range st.Env {
 		if kv[0] == "SHELL" {
@@ -370,41 +395,18 @@ func attachCommand(st runState, command []string) (argv0 string, argv []string, 
 		}
 	}
 	if shell == "" {
-		return "", nil, fmt.Errorf("this run's recorded environment has no SHELL — nothing to run " +
-			"with no explicit command")
+		return "", fmt.Errorf("this run's recorded environment has no SHELL")
 	}
 	if !filepath.IsAbs(shell) {
-		return "", nil, fmt.Errorf("this run's recorded SHELL (%q) is not an absolute path — refusing "+
+		return "", fmt.Errorf("this run's recorded SHELL (%q) is not an absolute path — refusing "+
 			"to execute it", shell)
 	}
 	for _, r := range shell {
 		if policy.IsForgingRune(r) {
-			return "", nil, fmt.Errorf("this run's recorded SHELL contains a control character — refusing")
+			return "", fmt.Errorf("this run's recorded SHELL contains a control character — refusing")
 		}
 	}
-	return shell, []string{shell}, nil
-}
-
-func attachPathEnv(st runState) string {
-	for _, kv := range st.Env {
-		if kv[0] == "PATH" {
-			return kv[1]
-		}
-	}
-	return ""
-}
-
-func lookPathIn(pathEnv, name string) (string, error) {
-	for _, dir := range strings.Split(pathEnv, ":") {
-		if dir == "" {
-			continue
-		}
-		cand := filepath.Join(dir, name)
-		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
-			return cand, nil
-		}
-	}
-	return "", fmt.Errorf("not found in this run's PATH")
+	return shell, nil
 }
 
 // attachEnviron is §5.3: the recorded environment verbatim, with ONE
