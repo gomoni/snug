@@ -1486,3 +1486,152 @@ func TestAttachPTYReturnsPromptlyWhenThePTYIsNeverClosed(t *testing.T) {
 			"#120's pty-path shape:\n%s", elapsed, out.String())
 	}
 }
+
+// selfStatSessionAndTTY parses field 6 (session) and field 7 (tty_nr) out of
+// a `cat /proc/self/stat` line, the same LAST-')' technique procStartTime
+// (internal/cli/runstate.go) uses for field 22 — the comm field (field 2)
+// is parenthesised and may itself contain spaces, so splitting on
+// whitespace naively is never correct for this file. field 1 (the reader's
+// own pid) is returned too: a process that called setsid() has session ==
+// its own pid, which is what the job-control tests below check instead of
+// decoding tty_nr's device-number encoding.
+func selfStatPidSessionTTY(t *testing.T, line string) (pid, session, ttyNr string) {
+	t.Helper()
+	i := strings.LastIndexByte(line, ')')
+	if i < 0 || i+2 > len(line) {
+		t.Fatalf("unrecognised /proc/self/stat line: %q", line)
+	}
+	fields := strings.Fields(line[i+2:])
+	// After the comm field, field 3 (state) is fields[0]; field 6 (session)
+	// is fields[6-3]=fields[3], field 7 (tty_nr) is fields[7-3]=fields[4].
+	if len(fields) < 5 {
+		t.Fatalf("/proc/self/stat has %d fields after comm, need at least 5: %q", len(fields), line)
+	}
+	pidField := strings.Fields(line[:i])
+	if len(pidField) < 1 {
+		t.Fatalf("/proc/self/stat has no pid field: %q", line)
+	}
+	return pidField[0], fields[3], fields[4]
+}
+
+// TestAttachPTYGivesJobControl is the fix for the visible symptom the four
+// gaps this test file covers were named for: an interactive bash attached
+// through a pty printed "cannot set terminal process group (-1):
+// Inappropriate ioctl for device" and "no job control in this shell",
+// because A (internal/attach/child.go) never made the pty its controlling
+// terminal. setsid()+ioctl(0, TIOCSCTTY) fixes that, and this test checks
+// the fix at the syscall level rather than scraping bash's stderr text (bash
+// versions differ in exactly when they attempt job control and what they
+// print) — /proc/self/stat's own session and tty_nr fields are what
+// setsid()+TIOCSCTTY actually change, and cat is the only tool this needs.
+//
+// Before the fix (setsid/TIOCSCTTY reverted): A inherits its session
+// unchanged from B/C, so session != A's own pid and tty_nr stays "0" (no
+// controlling terminal) even though fd 0 is a real pty device — exactly the
+// state that makes bash's tcsetpgrp fail.
+func TestAttachPTYGivesJobControl(t *testing.T) {
+	budget(t, 40*time.Second)
+	requireSandbox(t)
+	env, xdg := attachEnv(t)
+	proj, _ := target(t)
+
+	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t, xdg)
+
+	master, slave := openTestPTY(t)
+	defer master.Close()
+
+	cmd := exec.Command(snugBin, "attach", proj, "--", "/bin/cat", "/proc/self/stat")
+	cmd.Env = env
+	cmd.Stdin = slave
+	cmd.Stdout = slave
+	cmd.Stderr = slave
+
+	p := startBgProc(t, cmd)
+	slave.Close()
+
+	select {
+	case <-waitDone(p):
+	case <-time.After(15 * time.Second):
+		t.Fatal("snug attach (pty stdin, job control test) did not return within 15s")
+	}
+
+	var out bytes.Buffer
+	buf := make([]byte, 4096)
+	master.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		n, err := master.Read(buf)
+		if n > 0 {
+			out.Write(buf[:n])
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	var statLine string
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.Contains(line, "(cat)") {
+			statLine = strings.TrimRight(line, "\r")
+			break
+		}
+	}
+	if statLine == "" {
+		t.Fatalf("cat's own /proc/self/stat line never appeared through the pty, so this "+
+			"test proves nothing:\n%s", out.String())
+	}
+
+	pid, session, ttyNr := selfStatPidSessionTTY(t, statLine)
+	if session != pid {
+		t.Errorf("attached cat's session (%s) is not its own pid (%s) — setsid() was not "+
+			"called before execve, so job control is exactly as broken as before this fix:\n%s",
+			session, pid, statLine)
+	}
+	if ttyNr == "0" {
+		t.Errorf("attached cat's tty_nr is 0 — it has no controlling terminal even though its "+
+			"fd 0 is a real pty, so TIOCSCTTY was not applied (or setsid() was skipped, which "+
+			"TIOCSCTTY also requires):\n%s", statLine)
+	}
+}
+
+// TestAttachPipeStdinGetsNoControllingTTY is the negative control for
+// TestAttachPTYGivesJobControl: child.go guards setsid()+TIOCSCTTY on the
+// pty path only (attach.Config.PTY, set from newStdioRelay's own pty flag),
+// so a redirected (non-terminal) attach must see its session UNCHANGED —
+// never becoming its own pid — exactly as before this fix. This is what
+// makes the pty test's assertion specific to the pty path rather than an
+// accidental property of every attach.
+func TestAttachPipeStdinGetsNoControllingTTY(t *testing.T) {
+	budget(t, 40*time.Second)
+	requireSandbox(t)
+	env, xdg := attachEnv(t)
+	proj, _ := target(t)
+
+	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t, xdg)
+
+	out, code := cli(t, env, "attach", proj, "--", "/bin/cat", "/proc/self/stat")
+	if code != 0 {
+		t.Fatalf("snug attach (pipe stdin) exited %d:\n%s", code, out)
+	}
+
+	var statLine string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "(cat)") {
+			statLine = strings.TrimRight(line, "\r")
+			break
+		}
+	}
+	if statLine == "" {
+		t.Fatalf("cat's own /proc/self/stat line never appeared, so this test proves nothing:\n%s", out)
+	}
+
+	pid, session, _ := selfStatPidSessionTTY(t, statLine)
+	if session == pid {
+		t.Errorf("attached cat's session (%s) equals its own pid (%s) on the PIPE path — "+
+			"setsid() ran where it must not: only the pty path (attach.Config.PTY) may call "+
+			"it:\n%s", session, pid, statLine)
+	}
+}

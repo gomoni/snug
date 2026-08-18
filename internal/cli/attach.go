@@ -327,6 +327,7 @@ func runAttach(st runState, command []string) (int, error) {
 		ReportW:     int(reportW.Fd()),
 		GateR:       int(gateR.Fd()),
 		SignalMask:  mask,
+		PTY:         relay.pty,
 	}
 
 	// Every descriptor this process holds — the pidfd, the state-file and

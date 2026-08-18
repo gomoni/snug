@@ -10,11 +10,14 @@ package cli
 // still read and write the stream it was handed, only not the host inode
 // behind a redirected one.
 //
-// What this file does NOT do: put the client's own terminal into raw mode,
-// forward SIGWINCH/window-size changes into the pty, or restore terminal
-// state on exit. Those are real interactive-UX gaps, left for a follow-up —
-// the security property (host inode never reaches the sandbox) holds
-// without them.
+// What this file does NOT (yet) do: put the client's own terminal into raw
+// mode, forward SIGWINCH/window-size changes into the pty, or restore
+// terminal state on exit. Those are real interactive-UX gaps, being closed
+// incrementally — the security property (host inode never reaches the
+// sandbox) holds regardless of any of them. Job control (the attached shell
+// getting the pty as its controlling terminal, via setsid()+TIOCSCTTY in
+// internal/attach/child.go on the pty path) is now done; see
+// attach.Config.PTY, set from this file's own pty flag below.
 
 import (
 	"io"
@@ -30,6 +33,11 @@ import (
 // life of the attached session.
 type stdioRelay struct {
 	childStdin, childStdout, childStderr *os.File
+
+	// pty is true exactly when the interactive branch below was taken —
+	// runAttach reads it to set attach.Config.PTY, which is what gates
+	// child.go's setsid()+TIOCSCTTY to the pty path only.
+	pty bool
 
 	closeOnce sync.Once
 	childEnds []*os.File // deduplicated; closed once, right after Start()
@@ -68,6 +76,7 @@ func newStdioRelay() (*stdioRelay, error) {
 		if err != nil {
 			return nil, err
 		}
+		r.pty = true
 		r.childStdin, r.childStdout, r.childStderr = slave, slave, slave
 		r.childEnds = []*os.File{slave}
 
