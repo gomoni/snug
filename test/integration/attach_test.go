@@ -581,11 +581,30 @@ func TestAttachRefusesAfterPidReuse(t *testing.T) {
 // whole point of attach's pid namespace membership is that the two numbering
 // spaces disagree). It is found by scanning /proc for a cmdline containing a
 // marker unique to this test's own attach invocation.
+//
+// THE QUINE TRAP, found running this exact test: bwrap re-execs itself as
+// pid 1 with the payload's own COMMAND LINE appended verbatim after `--`
+// (measured: /proc/1/cmdline literally reads "bwrap --args N -- /bin/bash -c
+// <the whole payload script source>"). So if the SEARCH script's own source
+// contains the marker as a contiguous literal (because it greps for it),
+// that source text — reflected whole into pid 1's own cmdline — matches
+// ITSELF, and the scan finds pid 1 before it ever finds the real target. The
+// fix is the same one every quine-avoidance trick uses: the marker is
+// assembled at RUN TIME from two halves that never appear concatenated
+// anywhere in this script's own source, so grepping for the whole string can
+// never match the string that greps for it. Excluding pid 1 outright is a
+// second, independent guard for the same hazard — bwrap's own argv
+// reflection is not limited to this one shape and pid 1 is never a
+// legitimate answer regardless.
 func attachFindMarkerScript(marker string) string {
+	half := len(marker) / 2
 	return fmt.Sprintf(`
+M1=%q
+M2=%q
 for i in $(seq 1 500); do
   for p in /proc/[0-9]*; do
-    if tr '\0' '\n' < "$p/cmdline" 2>/dev/null | grep -qF %q; then
+    [ "$p" = /proc/1 ] && continue
+    if tr '\0' '\n' < "$p/cmdline" 2>/dev/null | grep -qF "$M1$M2"; then
       APID=$(basename "$p")
       break 2
     fi
@@ -593,7 +612,7 @@ for i in $(seq 1 500); do
   sleep 0.02
 done
 echo "APID=$APID"
-`, marker)
+`, marker[:half], marker[half:])
 }
 
 // TestKnownOpenResidualPayloadReachesAnAttachedProcessDescriptor is design
@@ -637,7 +656,7 @@ sleep 60
 	defer outLog.Close()
 
 	attachCmd := exec.Command(snugBin, "attach", proj, "--", "/bin/sh", "-c",
-		fmt.Sprintf("echo %s; sleep 60", marker))
+		fmt.Sprintf("echo %s; while :; do sleep 1; done", marker))
 	attachCmd.Env = env
 	attachCmd.Stdin = devNull
 	attachCmd.Stdout, attachCmd.Stderr = outLog, outLog
@@ -745,8 +764,15 @@ func TestRelayedStdioKeepsTheHostInodeOutOfTheSandbox(t *testing.T) {
 	proj, _ := target(t)
 	marker := "snugattach22b" + strconv.Itoa(os.Getpid()) + strconv.FormatInt(time.Now().UnixNano(), 36)
 
+	// timeout, not a bare cat: reopening a pipe's WRITE end for reading
+	// SUCCEEDS (M24 — "pipe: OK, both ends"), so this does not fail with
+	// EBADF. It blocks waiting for data/EOF that will never come, because
+	// the pipe's write end (A's own fd 1, and the relay's copy of it) stays
+	// open for the whole session. A bounded timeout is what turns "blocks
+	// forever" into a verdict; a timeout with NO output is itself part of
+	// the finding (there is nothing here to read AT ALL), not a test bug.
 	bg := startAttachSandbox(t, env, nil, proj, attachFindMarkerScript(marker)+`
-READBACK=$(cat /proc/$APID/fd/1 2>&1)
+READBACK=$(timeout 2 cat /proc/$APID/fd/1 2>&1)
 echo "READBACK=[$READBACK]"
 sleep 60
 `)
@@ -765,7 +791,7 @@ sleep 60
 	defer af.Close()
 
 	attachCmd := exec.Command(snugBin, "attach", proj, "--", "/bin/sh", "-c",
-		fmt.Sprintf("echo %s; sleep 60", marker))
+		fmt.Sprintf("echo %s; while :; do sleep 1; done", marker))
 	attachCmd.Env = env
 	devNull, err := os.Open(os.DevNull)
 	if err != nil {
@@ -1077,8 +1103,30 @@ func TestBwrapFlagsCarryInfoFdBeforeTheSeparator(t *testing.T) {
 	}
 	shimDir := t.TempDir()
 	logPath := filepath.Join(t.TempDir(), "bwrap-argv.log")
+	// The OUTER argv this shim receives is just "--args N --" plus the
+	// payload command (internal/sandbox/exec.go's own comment: "the whole
+	// flag list travels through a memfd rather than real argv"). The flags
+	// this test actually cares about — --info-fd among them — are NUL-joined
+	// bytes bwrap itself reads from fd N via --args, per bwrap's own
+	// documented behaviour of inserting that fd's content in place of
+	// "--args N". So the shim expands it: everything read from
+	// /proc/self/fd/$argsfd (a FRESH, independent open of a real memfd — not
+	// a dup of fd $argsfd itself, so it does not disturb the seek position
+	// bwrap will read from moments later) counts as flags BEFORE the literal
+	// "--" that follows "--args N" in the outer argv.
 	script := "#!/bin/sh\n" +
-		"for a in \"$@\"; do printf '%s\\n' \"$a\" >> " + shQuote(logPath) + ".tmp; done\n" +
+		"argsfd=\"\"\nprev=\"\"\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$prev\" = \"--args\" ]; then argsfd=\"$a\"; fi\n" +
+		"  prev=\"$a\"\n" +
+		"done\n" +
+		": > " + shQuote(logPath) + ".tmp\n" +
+		"if [ -n \"$argsfd\" ]; then tr '\\0' '\\n' < \"/proc/self/fd/$argsfd\" >> " + shQuote(logPath) + ".tmp; fi\n" +
+		"skip=1\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$a\" = \"--\" ]; then skip=0; fi\n" +
+		"  if [ \"$skip\" = 0 ]; then printf '%s\\n' \"$a\" >> " + shQuote(logPath) + ".tmp; fi\n" +
+		"done\n" +
 		"printf -- '---FDS---\\n' >> " + shQuote(logPath) + ".tmp\n" +
 		"for fd in /proc/self/fd/*; do\n" +
 		"  n=$(basename \"$fd\")\n" +
