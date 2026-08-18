@@ -26,10 +26,12 @@ import (
 //  4. start the lifeline watcher.
 //  5. send "ready" on the control socket, carrying the pinned netns id, the
 //     userns id and the fd number.
-//  6. serve AT MOST TWO requests, then exit: one "netready" (optional to send,
-//     mandatory to have succeeded before "start" is accepted) and one "start",
-//     after which this function returns whatever the outcome. everRan does not
-//     exist as a concept — there is no third request and no way back.
+//  6. serve AT MOST THREE requests, then exit: one "netready" (optional to
+//     send, mandatory to have succeeded before "startengine" or "start" is
+//     accepted), one "startengine" (issue #63, Tier B — optional, and does
+//     NOT end the loop), and one "start", after which this function returns
+//     whatever the outcome. everRan does not exist as a concept — there is no
+//     fourth request and no way back.
 func MainServe() error {
 	requireFD(fdControl, "control")
 	requireFD(fdLife, "lifeline")
@@ -67,22 +69,38 @@ func MainServe() error {
 	life := os.NewFile(fdLife, "lifeline")
 	go watchLifeline(life)
 
+	// Hoisted here, once, rather than created fresh per fork: issue #63, Tier B
+	// adds a SECOND fork to this process's life (the engine, before the
+	// sandbox), and both need fd 63 to still be a live, open descriptor when
+	// their own turn comes. os.NewFile sets a runtime finalizer that closes
+	// the underlying fd when the *os.File is garbage collected; a short-lived
+	// local recreated per fork (the pre-Tier-B shape) would risk that
+	// finalizer firing on the FIRST one before the SECOND fork ever reads it.
+	// Keeping the single value alive in this function's own frame for the
+	// whole loop below is what rules that out.
+	netnsN := os.NewFile(uintptr(fdNetnsN), "netns-N")
+
 	userns := nsID("user")
 	if err := sendEvent(control, event{Op: "ready", Netns: pinned, Userns: userns, NetnsFD: fdNetnsN}); err != nil {
 		return fmt.Errorf("__stage-serve: reporting ready: %w", err)
 	}
 
-	// At most two requests, and the shape is a small state machine rather than a
-	// loop ON PURPOSE. "start" is still strictly one-shot — it runs the sandbox
-	// and this function returns, whatever the outcome, exactly as before.
-	// "netready" is the one thing that may legitimately precede it, and it may
-	// be asked ONCE.
+	// At most three requests, and the shape is a small state machine rather
+	// than a loop ON PURPOSE. "start" is still strictly one-shot — it runs the
+	// sandbox and this function returns, whatever the outcome, exactly as
+	// before. "netready" is the one thing that may legitimately precede it,
+	// and it may be asked ONCE. "startengine" (issue #63, Tier B) may also be
+	// asked once, strictly after "netready" and strictly before "start" — and,
+	// unlike both of those, answering it does NOT end this function: the
+	// engine is a second long-lived child of P1, alongside bwrap, not this
+	// stage's one payload.
 	//
 	// A loop would have been shorter and would have quietly turned a one-shot
 	// stage into a server. The channel has no name and no listener, so nothing
 	// could reach it to abuse that today — which is precisely the argument that
 	// would let it rot into Phase 2, when there IS a second client.
 	netReadyAsked, netReadyOK := false, false
+	engineAsked := false
 	for {
 		req, err := recvRequest(control)
 		if err != nil {
@@ -96,8 +114,12 @@ func MainServe() error {
 				return fmt.Errorf("__stage-serve: \"netready\" asked twice; this stage answers it once")
 			}
 			netReadyAsked = true
+			iface := req.NetIface
+			if iface == "" {
+				iface = NetIfaceName
+			}
 			ev := event{Op: "netready"}
-			if err := waitForIface(fdNetSock, netIfaceName, netReadyTimeout); err != nil {
+			if err := waitForIface(fdNetSock, iface, netReadyTimeout); err != nil {
 				ev.Err = err.Error()
 			}
 			if err := sendEvent(control, ev); err != nil {
@@ -110,6 +132,26 @@ func MainServe() error {
 				return fmt.Errorf("__stage-serve: %s", ev.Err)
 			}
 			netReadyOK = true
+		case "startengine":
+			// Same enforcement, same reasoning, as "start" below: the engine
+			// shares N, so it must not exist before N is confirmed either
+			// (issue #63, Tier B; ENGINE-WIRING.md §1 item 2 — invariant 5
+			// lands the refusal before any payload, or engine, exists).
+			if !netReadyOK {
+				err := fmt.Errorf("__stage-serve: refusing \"startengine\" before a successful " +
+					"\"netready\": the engine must not join a network that is not confirmed up")
+				_ = sendEvent(control, event{Op: "enginestarted", Err: err.Error()})
+				return err
+			}
+			if engineAsked {
+				err := fmt.Errorf("__stage-serve: \"startengine\" asked twice; this stage answers it once")
+				_ = sendEvent(control, event{Op: "enginestarted", Err: err.Error()})
+				return err
+			}
+			engineAsked = true
+			if err := startEngine(control, netnsN, req); err != nil {
+				return err
+			}
 		case "start":
 			// The property this whole ordering exists to establish — no payload
 			// exists before its network is confirmed — must be enforced HERE and
@@ -127,19 +169,23 @@ func MainServe() error {
 				_ = sendEvent(control, event{Op: "started", Err: err.Error()})
 				return err
 			}
-			return runOneSandbox(control, req)
+			return runOneSandbox(control, netnsN, req)
 		default:
 			return fmt.Errorf("__stage-serve: unknown control op %q", req.Op)
 		}
 	}
 }
 
-// netIfaceName is the interface pasta creates inside N. It is not a guess: snug
+// NetIfaceName is the interface pasta creates inside N. It is not a guess: snug
 // passes `--ns-ifname snug0` itself (internal/policy/net.go), so the name is
 // snug's own and the readiness check can be an exact lookup rather than an
 // enumeration. If that flag ever changes, this must change with it —
 // TestStageWaitsForTheInterfaceSnugItselfNames is what makes that fail loudly.
-const netIfaceName = "snug0"
+//
+// Exported (issue #63, Tier B): internal/sandbox's runStaged is what now
+// decides, from the resolved policy's Net.Mode, whether "netready" should
+// wait for THIS interface or for "lo" — see WaitNetReady's own doc comment.
+const NetIfaceName = "snug0"
 
 // netReadyTimeout bounds how long the stage waits for pasta to configure its
 // interface. Generous against a loaded host, and it is an upper bound rather
@@ -176,11 +222,12 @@ func watchLifeline(f *os.File) {
 
 // runOneSandbox is the fork: __innetns is the ONLY way a child of P1 gets back
 // into N, and it runs on a locked OS thread so the fork and the seal that
-// precedes it are atomic with no lock discipline to remember — Phase 1 has
-// exactly one fork, so a dedicated persistent forker goroutine buys nothing
-// today; Phase 2 adding more forks is why the discipline is established now
-// rather than later.
-func runOneSandbox(control *os.File, req request) error {
+// precedes it are atomic with no lock discipline to remember. netnsN is the
+// single *os.File MainServe keeps alive at fd 63 for this process's whole
+// life (issue #63, Tier B added a SECOND fork, the engine's, ahead of this
+// one, and both need the same live descriptor — see MainServe's own comment
+// on why it is hoisted rather than created fresh here).
+func runOneSandbox(control, netnsN *os.File, req request) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
@@ -205,7 +252,6 @@ func runOneSandbox(control *os.File, req request) error {
 	for i := range sandboxFDs {
 		sandboxFDs[i] = os.NewFile(uintptr(fdSandboxBase+i), fmt.Sprintf("sandbox-fd-%d", i))
 	}
-	netnsN := os.NewFile(uintptr(fdNetnsN), "netns-N")
 
 	// ExtraFiles puts the sandbox's descriptors at 3..3+K-1 in the FINAL bwrap
 	// child — exactly the numbers P0 baked into the args memfd — and the netns

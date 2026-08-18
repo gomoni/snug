@@ -10,6 +10,32 @@ import (
 	"strings"
 )
 
+// CheckSubuidDelegation reports whether /etc/subuid and /etc/subgid each
+// carry a range for the calling process's own uid/gid, and whether
+// newuidmap/newgidmap can be found on PATH — everything Start's own
+// SubuidFull path (delegateSubuid, below) will need, checked EARLY so a
+// caller can refuse before creating anything (issue #63, Tier B preflight
+// P2/P3; ENGINE-WIRING.md §4). It does not check newuidmap/newgidmap's
+// AUTHORITY to actually write a multi-range map (file capabilities or
+// setuid) — that surfaces, already named clearly, from the tool's own stderr
+// the one time delegateSubuid actually runs it.
+func CheckSubuidDelegation() error {
+	hostUID, hostGID := os.Getuid(), os.Getgid()
+	if _, err := lookupIDRange("/etc/subuid", hostUID); err != nil {
+		return err
+	}
+	if _, err := lookupIDRange("/etc/subgid", hostGID); err != nil {
+		return err
+	}
+	if _, err := findIDMapTool("newuidmap"); err != nil {
+		return err
+	}
+	if _, err := findIDMapTool("newgidmap"); err != nil {
+		return err
+	}
+	return nil
+}
+
 // idRange is one line of /etc/subuid or /etc/subgid: SIZE ids starting at
 // BASE, delegated to the host user this process runs as.
 type idRange struct {

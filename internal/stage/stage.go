@@ -330,8 +330,15 @@ func (s *Stage) Pid() int { return s.pid }
 // The timeout here is P0's patience with the STAGE; the stage applies its own,
 // shorter, bound to the interface itself, so a hang here means the stage is
 // wedged rather than the network being slow.
-func (s *Stage) WaitNetReady(timeout time.Duration) error {
-	if err := sendRequest(s.control, request{Op: "netready"}); err != nil {
+//
+// iface names which interface's UP+RUNNING state answers the question
+// (issue #63, Tier B): NetIfaceName ("snug0", pasta's own) for a run with
+// pasta attached, or "lo" for a stage that owns no pasta at all — an
+// offline @podman-socket run, which still needs a stage for the container
+// engine's own U even though N carries no egress. The caller picks it from
+// the resolved policy's Net.Mode; this package never guesses.
+func (s *Stage) WaitNetReady(timeout time.Duration, iface string) error {
+	if err := sendRequest(s.control, request{Op: "netready", NetIface: iface}); err != nil {
 		return fmt.Errorf("stage: asking whether the sandbox's network is up: %w", err)
 	}
 	ev, err := recvEventTimeout(s.control, timeout)
@@ -366,6 +373,71 @@ func (s *Stage) StartSandbox(bwrapPath string, argv []string) error {
 	}
 	if ev.Err != "" {
 		return fmt.Errorf("stage: bwrap did not start: %s", ev.Err)
+	}
+	return nil
+}
+
+// engineStartTimeout bounds P0's patience for the WHOLE startengine round
+// trip: the fork, setns+mount+capdrop+exec inside __inengine, and the bounded
+// wait (engineSocketWaitTimeout, enginefork.go) for podman's own socket to
+// appear. Comfortably above that inner bound so a real timeout is reported by
+// the stage, with its own more specific message, rather than by this one.
+const engineStartTimeout = 40 * time.Second
+
+// EngineSpec is what StartEngine asks the stage to fork podman with — every
+// field chosen by P0 (preflight P1-P6, the hardened /tmp paths engine.New
+// computed, the explicit minimal environment), none of it inherited or
+// guessed by the stage itself (issue #63, Tier B; ENGINE-WIRING.md §2.6).
+type EngineSpec struct {
+	// Podman is the resolved, preflight-checked path to a REAL podman binary
+	// — never a host-escape shim (P0's own preflight already refused that).
+	Podman string
+	// Argv is exactly what follows Podman on the command line — e.g.
+	// "--root", store, "--runroot", runroot, "system", "service", "--time",
+	// idle, "unix://"+sock.
+	Argv []string
+	// Env is the explicit, minimal environment for the exec'd podman (PATH,
+	// HOME, XDG_RUNTIME_DIR, CONTAINERS_*), chosen entirely by P0 — never the
+	// stage's own os.Environ(), which is empty, and never the host's.
+	Env []string
+	// Sock is the pathname socket podman is expected to bind. StartEngine
+	// polls for it (via the stage, whose mount namespace is a private COPY of
+	// the host tree and therefore sees the identical /tmp superblock) rather
+	// than trusting the fork alone: "the process started" and "podman
+	// finished getting to a listening socket" are different facts.
+	Sock string
+}
+
+// StartEngine forks the container engine into THIS sandbox's own N, EAGERLY —
+// after WaitNetReady, before StartSandbox — as a second long-lived child of
+// P1, alongside bwrap (issue #63, Tier B; ENGINE-WIRING.md §1). See
+// EnterEngine (__inengine) for the fork+setns+confine sequence, and
+// policy.EngineCapBounding for the capability set the engine is reduced to.
+//
+// Blocks until the stage reports the engine's socket exists, or an error.
+// The caller MUST treat any error here as fatal to the whole run and must
+// not go on to StartSandbox — invariant 5: a container engine this run
+// cannot confine to N is refused, never silently run on some other network.
+func (s *Stage) StartEngine(spec EngineSpec) error {
+	req := request{
+		Op:           "startengine",
+		EnginePodman: spec.Podman,
+		EngineArgv:   spec.Argv,
+		EngineEnv:    spec.Env,
+		EngineSock:   spec.Sock,
+	}
+	if err := sendRequest(s.control, req); err != nil {
+		return fmt.Errorf("stage: sending the start-engine request: %w", err)
+	}
+	ev, err := recvEventTimeout(s.control, engineStartTimeout)
+	if err != nil {
+		return fmt.Errorf("stage: waiting for the container engine to start: %w", err)
+	}
+	if ev.Op != "enginestarted" {
+		return fmt.Errorf("stage: expected an \"enginestarted\" event, got %q", ev.Op)
+	}
+	if ev.Err != "" {
+		return fmt.Errorf("stage: %s", ev.Err)
 	}
 	return nil
 }

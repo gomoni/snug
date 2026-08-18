@@ -24,9 +24,15 @@ import (
 // consumer" argument this package already applies to subuid delegation, and it
 // was being applied to one of its two halves.
 //
-// The phase that puts an engine in N adds it back, as a conscious edit with a
-// consumer to point at and a golden line to review. TestGoldenStageSpec is what
-// makes that edit visible rather than incidental.
+// The phase that puts an engine in N (issue #63, Tier B) does not add it back
+// HERE after all, and that is worth stating precisely: it belongs to the
+// ENGINE's own fork, not P1's. P1 forks bwrap directly into ITS OWN mount
+// view (so bwrap can still build the sandbox's tree); the engine instead gets
+// a SEPARATE, later fork, with its own Cloneflags carrying CLONE_NEWNS AND
+// CLONE_NEWCGROUP at that fork's own clone(2) — see enginefork.go's
+// startEngine, which is the "conscious edit with a consumer to point at" this
+// comment used to promise landing here. Nothing about P1's OWN namespace set
+// changes: it still clones exactly these three, engine or no engine.
 const stageCloneflags = syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET |
 	syscall.CLONE_NEWNS
 
