@@ -29,6 +29,17 @@ func TestMain(m *testing.M) {
 			exitOnStageErrorForTest(MainServe())
 		case "__innetns":
 			exitOnStageErrorForTest(EnterNetns(os.Args[2:]))
+		case "__debug-dropcaps":
+			// Test-only, for TestDropCapsToExactlyProducesTheEngineCapabilitySet:
+			// wait for the parent's release byte on fd 3, drop to
+			// policy.EngineCapBounding, and report /proc/self/status back over
+			// a path named in the environment (the CHILD's environment here is
+			// a test fixture, not a sandbox — CLAUDE.md's "generate, don't
+			// bind" rule is about what a PROFILE hands the payload, not this
+			// harness's own plumbing).
+			buf := make([]byte, 1)
+			os.NewFile(3, "release").Read(buf)
+			exitOnStageErrorForTest(runDebugDropCaps())
 		}
 	}
 	os.Exit(m.Run())
