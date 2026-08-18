@@ -1296,6 +1296,94 @@ func TestAttachReturnsPromptlyWhenStdinNeverReachesEOF(t *testing.T) {
 	}
 }
 
+// ── issue #119/#121: attach resolves by realpath, the same way the lock does ──
+
+// TestAttachFindsTheRunByASymlinkToItsTarget is the #119/#121 coherence fix:
+// `snug <dir>` records state.Target as env.EvalSymlinks(dir) — the
+// REALPATH (internal/policy/resolve.go) — and the per-target lock keys its
+// lock name on the identical realpath (targetlock.go's targetLockName). If
+// `snug attach` matches against a bare filepath.Abs instead, `snug attach
+// <symlink-to-target>` can never find the run its own lock just refused a
+// second copy of, even though CLAUDE.md's "One live sandbox per target
+// directory" says plainly: "Same directory is realpath". This test drives
+// attach through a symlink that is NOT the target's own literal spelling.
+//
+// Proof of landing in the SAME sandbox, not merely "a" sandbox, is VERIFY
+// §14a's own technique: a marker written into the run's private tmpfs
+// $HOME (which has no host-filesystem counterpart at all) and read back
+// through the attach session.
+//
+// DISTINGUISHER, run first: a symlink to a DIFFERENT, unrelated directory
+// must still report "no live run" — proving the positive case below is
+// attributable to matching THIS run's realpath specifically, not to attach
+// matching whatever symlink it is handed.
+func TestAttachFindsTheRunByASymlinkToItsTarget(t *testing.T) {
+	budget(t, 30*time.Second)
+	requireSandbox(t)
+	env, xdg := attachEnv(t)
+	proj, _ := target(t)
+
+	otherDir := t.TempDir()
+
+	linkDir := t.TempDir()
+	symlinkToProj := filepath.Join(linkDir, "proj-link")
+	if err := os.Symlink(proj, symlinkToProj); err != nil {
+		t.Fatal(err)
+	}
+	symlinkToOther := filepath.Join(linkDir, "other-link")
+	if err := os.Symlink(otherDir, symlinkToOther); err != nil {
+		t.Fatal(err)
+	}
+
+	bg := startAttachSandbox(t, env, nil, proj,
+		`echo IN-SANDBOX-TMPFS-SYMLINK-PROOF > "$HOME/attach-symlink-proof"; sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t, xdg)
+
+	// DISTINGUISHER: a symlink to an unrelated directory finds no live run.
+	outOther, codeOther := cli(t, env, "attach", symlinkToOther, "--", "/bin/true")
+	if codeOther == 0 {
+		t.Fatalf("attach through a symlink to an UNRELATED directory should have found no live "+
+			"run, but succeeded:\n%s", outOther)
+	}
+	if !strings.Contains(outOther, "no live snug run found") {
+		t.Errorf("attach through a symlink to an unrelated directory was refused, but not with "+
+			"the expected message:\n%s", outOther)
+	}
+
+	// THE CASE: attach through a symlink to the run's own target finds it,
+	// and lands in the SAME sandbox as proven by the private-tmpfs marker.
+	r := attachScript(t, env, symlinkToProj, `cat "$HOME/attach-symlink-proof" 2>&1`).mustRun(t)
+	if !strings.Contains(r.out, "IN-SANDBOX-TMPFS-SYMLINK-PROOF") {
+		t.Errorf("attach through a symlink to the run's own target did not land in the SAME "+
+			"sandbox (the private tmpfs marker is missing):\n%s", r.out)
+	}
+}
+
+// TestAttachOnANonexistentTargetReportsNoLiveRunCleanly is the nonexistent-
+// target half of the #119/#121 coherence fix: filepath.EvalSymlinks fails
+// on a path that does not exist, and that failure must never reach the user
+// as a raw stdlib error (or a panic) — a directory that does not exist
+// cannot have a live run, so attach reports exactly that.
+func TestAttachOnANonexistentTargetReportsNoLiveRunCleanly(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	env := baseEnv("XDG_RUNTIME_DIR=" + t.TempDir())
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	out, code := cli(t, env, "attach", missing, "--", "/bin/true")
+	if code == 0 {
+		t.Fatalf("attach on a nonexistent target should have been refused:\n%s", out)
+	}
+	if !strings.Contains(out, "no live snug run found") {
+		t.Errorf("attach on a nonexistent target did not report the clean \"no live run\" "+
+			"refusal (got a raw EvalSymlinks-shaped error instead?):\n%s", out)
+	}
+	if strings.Contains(out, "panic") {
+		t.Fatalf("attach on a nonexistent target panicked:\n%s", out)
+	}
+}
+
 // openTestPTY duplicates newStdioRelay's own openPTY (internal/cli/attachstdio.go)
 // rather than importing it — this package's own rule (its doc comment, and
 // selfNamespaceInodes/selfStartTime above): drive the built binary, never
