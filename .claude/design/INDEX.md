@@ -34,6 +34,7 @@ This was `DESIGN.md`, a single 1768-line document written **before most of the c
 | [`ENVIRONMENT-VARIABLES.md`](ENVIRONMENT-VARIABLES.md) | The environment configuration format: five `environ` verbs, the variable type table, resolution order, and the measured evidence behind each rule. |
 | [`PSEUDOFS-AUDIT.md`](PSEUDOFS-AUDIT.md) | What `/proc`, `/sys` and `/dev` expose, measured against a real host. |
 | [`PARAMETERISED-PROFILES.md`](PARAMETERISED-PROFILES.md) | Profiles that take arguments — postponed by decision, with the reasoning kept so it is not re-derived. |
+| [`ONE-SANDBOX-PER-DIR.md`](ONE-SANDBOX-PER-DIR.md) | Why a run is tied to its target directory and `snug <dir>` refuses a second live sandbox on it, naming `snug attach <dir>` as the fix: the per-target `flock` keyed on `sha256(realpath)`, resolved from the uid alone (never `$XDG_RUNTIME_DIR` — that split was the #122 fail-open), and why removing a run-selector is a simplification a security tool wants. |
 
 Outside this directory: [`../../CLAUDE.md`](../../CLAUDE.md) is the working agreement and the list of expensive environment facts, [`../../VERIFY.md`](../../VERIFY.md) is the executable by-hand checklist, and the [GitHub issues](https://github.com/gomoni/snug/issues) are the live list of known gaps and deferred work — each carries a severity label and the measurement that confirmed it.
 
