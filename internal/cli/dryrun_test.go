@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -789,5 +790,41 @@ func TestDescribeSSHNamesTheReplacedPathAndItsCost(t *testing.T) {
 	}
 	if got := captureFile(t, func(f *os.File) { describeSSH(f, plain) }); got != "" {
 		t.Errorf("SSH block printed with nothing covering either system ssh_config path: %q", got)
+	}
+}
+
+// TestDryRunAttachBlockNamesThePathPatternAndSaysItGatesNothing is §13.7 test
+// 28: the ATTACH block's honesty requirements are load-bearing (describeAttach's
+// own doc comment), so this pins them directly rather than trusting review.
+func TestDryRunAttachBlockNamesThePathPatternAndSaysItGatesNothing(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", "/fake-runtime-dir-for-this-test")
+
+	got := captureFile(t, describeAttach)
+
+	if !strings.Contains(got, "run-<pid>") {
+		t.Errorf("ATTACH block does not name the run-<pid> PATTERN:\n%s", got)
+	}
+	// The pattern, never a fabricated pid: --dry-run's own pid is not the
+	// pid a real run would use, and printing one would be exactly the "small
+	// lie" CLAUDE.md says makes the artifact untrustworthy.
+	myPid := strconv.Itoa(os.Getpid())
+	if strings.Contains(got, "run-"+myPid+string(filepath.Separator)) ||
+		strings.Contains(got, "run-"+myPid+"/") {
+		t.Errorf("ATTACH block printed THIS process's own pid instead of the pattern:\n%s", got)
+	}
+	if !strings.Contains(got, "/fake-runtime-dir-for-this-test") {
+		t.Errorf("ATTACH block did not render the actual runtime base directory:\n%s", got)
+	}
+	if !strings.Contains(got, "0600") || !strings.Contains(got, "0700") {
+		t.Errorf("ATTACH block does not state the file/directory modes:\n%s", got)
+	}
+	if !strings.Contains(got, "no command, no argv") {
+		t.Errorf("ATTACH block does not say state.json carries no command/argv:\n%s", got)
+	}
+	if !strings.Contains(got, "NOT a permission") {
+		t.Errorf("ATTACH block does not say attach gates nothing:\n%s", got)
+	}
+	if !strings.Contains(got, "seccomp") || !strings.Contains(got, "capability") {
+		t.Errorf("ATTACH block does not name what attach DOES add (filter, capability set):\n%s", got)
 	}
 }

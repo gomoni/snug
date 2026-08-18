@@ -3,9 +3,13 @@ package cli
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/sandbox"
 )
 
 // openTestRoot and writeTestFile are the minimal *os.Root plumbing
@@ -178,6 +182,135 @@ func TestFilterDigestConsistent(t *testing.T) {
 		if filterDigestConsistent(bad) {
 			t.Fatalf("expected %q to be rejected", bad)
 		}
+	}
+}
+
+// TestAttachRefusesAStateFileInADirectoryItDoesNotOwn is §13.1 test 2.
+// openExistingSubroot is the exact check `snug attach`'s own discovery path
+// (discoverLiveRuns -> readLiveRunState) uses to open a run directory it did
+// not itself create THIS call — the uid half of "does not own" cannot be
+// forced without root (there is no other uid this test can create a
+// directory as), so this exercises the mode half, on the same
+// verifyOwnedAndPrivate check TestRuntimeDirRefusesAWronglyPermissionedSharedDirectory
+// already relies on for the shared "snug" directory one level up.
+func TestAttachRefusesAStateFileInADirectoryItDoesNotOwn(t *testing.T) {
+	base := t.TempDir()
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	bad := "run-bad"
+	if err := os.MkdirAll(filepath.Join(base, bad), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openExistingSubroot(root, base, bad); err == nil {
+		t.Fatal("expected a refusal for a group/other-readable run directory")
+	}
+
+	// CONTROL: the identical shape, correctly permissioned, is accepted — so
+	// the refusal above is attributable to the mode and not to some other
+	// mistake in this test's setup.
+	good := "run-good"
+	if err := os.MkdirAll(filepath.Join(base, good), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openExistingSubroot(root, base, good); err != nil {
+		t.Fatalf("control: a correctly permissioned run directory should be accepted: %v", err)
+	}
+}
+
+// TestAttachRefusesWhenTheRunLockIsNotHeld is §13.1 test 3: runDirIsLive is
+// the liveness probe both discoverLiveRuns and attach's own selection path
+// use to tell a live run's directory from a corpse the next run's sweep will
+// remove (§6.3's own table: "the run's lock is not held" -> "this is a
+// corpse"). LOCK_SH|LOCK_NB succeeding means nobody holds the exclusive lock;
+// EWOULDBLOCK means a live owner does.
+func TestAttachRefusesWhenTheRunLockIsNotHeld(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	// No lock file at all: not live.
+	if runDirIsLive(root) {
+		t.Fatal("a directory with no lock file at all read as live")
+	}
+
+	lockPath := filepath.Join(dir, "lock")
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A lock file that exists but that nothing holds: a corpse, per §6.3.
+	if runDirIsLive(root) {
+		t.Fatal("an unheld lock file read as live")
+	}
+
+	// CONTROL: with the lock genuinely HELD (a separate open file description
+	// on the same file — flock is scoped to the OFD, not the process, exactly
+	// as runLock's own doc comment relies on), the same probe must report
+	// live. Without this control, "not live" above is equally true of a probe
+	// that can never observe liveness at all.
+	holder, err := os.OpenFile(lockPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	if err := unix.Flock(int(holder.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	if !runDirIsLive(root) {
+		t.Fatal("control: a genuinely held lock did not read as live")
+	}
+}
+
+// TestStateFileIsWrittenSixOhOhInASevenHundredDirectory is §13.1 test 6:
+// pins §6.3's mode table end to end, through the real runtimeDir()/
+// writeRunState() path rather than by asserting a literal 0o600/0o700
+// somewhere in the source — a test that reads the mode off the filesystem
+// is the one thing a refactor of HOW the file is opened cannot quietly break
+// without also breaking real attach.
+func TestStateFileIsWrittenSixOhOhInASevenHundredDirectory(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	runPath, err := runtimeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(runPath)
+
+	if fi, err := os.Stat(runPath); err != nil {
+		t.Fatal(err)
+	} else if fi.Mode().Perm() != 0o700 {
+		t.Errorf("run directory mode is %#o, want 0700", fi.Mode().Perm())
+	}
+
+	pol := &policy.Policy{
+		Target: "/x",
+		Chdir:  "/x",
+		Env:    map[string]policy.EnvVar{},
+	}
+	pol.AuthorEnv("HOME", "/home/u")
+
+	info := sandbox.RunInfo{
+		InitPID: os.Getpid(), // a pid guaranteed to exist for procStartTime
+		Namespaces: map[string]uint64{
+			"mnt": 1, "pid": 2, "net": 3, "ipc": 4, "uts": 5, "cgroup": 6,
+		},
+	}
+	if err := writeRunState(runPath, pol, info); err != nil {
+		t.Fatal(err)
+	}
+
+	fi, err := os.Stat(filepath.Join(runPath, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("state.json mode is %#o, want 0600", fi.Mode().Perm())
 	}
 }
 

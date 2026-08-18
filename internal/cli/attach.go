@@ -219,7 +219,7 @@ func runAttach(st runState, command []string) (int, error) {
 			"this message exists so that error is never what you see.)", st.Sandbox.InitPID)
 	}
 
-	seccompProg, err := attachSeccompProgram(st)
+	seccompProg, err := attachSeccompProgram(st, sandbox.BuildFilter)
 	if err != nil {
 		return 0, err
 	}
@@ -319,13 +319,19 @@ func runAttach(st runState, command []string) (int, error) {
 // attachSeccompProgram implements §5.1's table. Rebuild, never carry: see
 // sandbox.FilterDigest's own doc comment for why a file is never trusted for
 // the program bytes themselves.
-func attachSeccompProgram(st runState) ([]byte, error) {
+//
+// buildFilter is sandbox.BuildFilter in production, injected here so a test
+// can force the "cannot build a filter this run had" branch (§13.2 test 8)
+// without needing an unsupported GOARCH to actually exist on the machine
+// running the test — the same injected-dependency shape CLAUDE.md's working
+// agreement already asks for host lookups in internal/policy.
+func attachSeccompProgram(st runState, buildFilter func() ([]byte, bool, error)) ([]byte, error) {
 	if st.Seccomp.State != "active" {
 		fmt.Fprintln(os.Stderr, "snug: this run was started with --no-seccomp; the attached process "+
 			"is unfiltered too.")
 		return nil, nil
 	}
-	prog, ok, err := sandbox.BuildFilter()
+	prog, ok, err := buildFilter()
 	if err != nil || !ok {
 		return nil, fmt.Errorf("refusing to attach: this binary cannot build the seccomp filter this "+
 			"run recorded as active (%v) — attaching less filtered than the payload is the exact hole "+
@@ -443,8 +449,20 @@ func attachPS1(base string) string {
 	return prefix + base
 }
 
+// capLastCapPath is a var, not a literal inline in readCapLastCap, purely so
+// a test can point it at a fake file (t.Setenv has no equivalent for a bare
+// path) and prove the capability-bounding loop's upper bound really is READ
+// at run time rather than a number someone typed in — see
+// TestAttachCapBoundingLoopUsesCapLastCapFromProc. Never assigned anywhere
+// outside a test.
+var capLastCapPath = "/proc/sys/kernel/cap_last_cap"
+
 func readCapLastCap() (int, error) {
-	data, err := os.ReadFile("/proc/sys/kernel/cap_last_cap")
+	return readCapLastCapFrom(capLastCapPath)
+}
+
+func readCapLastCapFrom(path string) (int, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0, err
 	}
