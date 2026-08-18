@@ -34,7 +34,24 @@ type stdioRelay struct {
 	closeOnce sync.Once
 	childEnds []*os.File // deduplicated; closed once, right after Start()
 
-	wg sync.WaitGroup
+	// outWG tracks only the OUTBOUND copy goroutines (A's stdout/stderr, or
+	// the pty master read side, draining into this process's own stdout and
+	// stderr). These terminate on their own once A exits and every write end
+	// they read from is closed, which is exactly the point at which the last
+	// of A's output has been drained — so wait() below can safely block on
+	// this group without dropping trailing output.
+	//
+	// The INBOUND copy goroutine (this process's stdin into A) is
+	// deliberately NOT tracked here. It has no termination path of its own:
+	// os.Stdin only closes when whatever feeds it (a pipe, a redirected
+	// file) reaches EOF, which is a fact about the caller's stdin, not about
+	// A's lifetime. A caller piping from a long-lived or never-closing
+	// source (`sleep 30 | snug attach dir -- echo hi`) would otherwise wait
+	// on that goroutine forever even though A exited immediately (#120). The
+	// goroutine is left to be reclaimed when this process exits; it blocks
+	// on nothing that outlives the process and holds no resource that needs
+	// closing on this side.
+	outWG sync.WaitGroup
 }
 
 // newStdioRelay decides pty-or-pipes ONCE, from whether this process's OWN
@@ -54,13 +71,13 @@ func newStdioRelay() (*stdioRelay, error) {
 		r.childStdin, r.childStdout, r.childStderr = slave, slave, slave
 		r.childEnds = []*os.File{slave}
 
-		r.wg.Add(2)
+		// Inbound (stdin -> master): not tracked in outWG — see its comment.
 		go func() {
-			defer r.wg.Done()
 			io.Copy(master, os.Stdin)
 		}()
+		r.outWG.Add(1)
 		go func() {
-			defer r.wg.Done()
+			defer r.outWG.Done()
 			io.Copy(os.Stdout, master)
 			master.Close()
 		}()
@@ -91,15 +108,15 @@ func newStdioRelay() (*stdioRelay, error) {
 
 // relayIn is one direction of the pipe relay: A reads from the pipe's read
 // end (handed to the child), this process copies FROM its own stdin INTO
-// the write end it keeps.
+// the write end it keeps. Deliberately not tracked in outWG: see its
+// comment on the struct — this copy has no termination path tied to A's
+// lifetime, only to when the caller's own stdin reaches EOF.
 func (r *stdioRelay) relayIn(src *os.File) (childEnd *os.File, err error) {
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
-	r.wg.Add(1)
 	go func() {
-		defer r.wg.Done()
 		io.Copy(pw, src)
 		pw.Close()
 	}()
@@ -108,15 +125,17 @@ func (r *stdioRelay) relayIn(src *os.File) (childEnd *os.File, err error) {
 
 // relayOut is the other direction: A writes into the pipe's write end
 // (handed to the child), this process copies FROM the read end it keeps
-// INTO dst (this process's own stdout or stderr).
+// INTO dst (this process's own stdout or stderr). Tracked in outWG: this
+// copy DOES terminate on its own, once A exits and A's own copy of the
+// write end closes.
 func (r *stdioRelay) relayOut(dst *os.File) (childEnd *os.File, err error) {
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
-	r.wg.Add(1)
+	r.outWG.Add(1)
 	go func() {
-		defer r.wg.Done()
+		defer r.outWG.Done()
 		io.Copy(dst, pr)
 		pr.Close()
 	}()
@@ -142,10 +161,14 @@ func (r *stdioRelay) closeChildEnds() {
 	})
 }
 
-// wait blocks until every copy goroutine has seen EOF — call after the
-// attached process has exited, so trailing output is not dropped on a fast
-// exit.
-func (r *stdioRelay) wait() { r.wg.Wait() }
+// wait blocks until every OUTBOUND copy goroutine has seen EOF — call after
+// the attached process has exited, so trailing output is not dropped on a
+// fast exit. It deliberately does NOT wait on the inbound (stdin) copy: that
+// goroutine has no EOF to wait for unless the caller's own stdin happens to
+// close, and blocking on it here is issue #120 — attach hanging until a
+// pipe upstream of it closes, long after the attached command has exited
+// and its exit status has already been read.
+func (r *stdioRelay) wait() { r.outWG.Wait() }
 
 // isTerminal reports whether fd refers to a terminal, via TCGETS: it
 // succeeds only on a tty-like device, so its error/success split IS the

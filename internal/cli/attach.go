@@ -512,7 +512,11 @@ func releaseGate(bpid int, st runState, reportR, gateW *os.File, relay *stdioRel
 	}
 	// The relay's copy goroutines have been running since newStdioRelay
 	// created them — there is nothing to start here, only to wait for once
-	// A has exited, so trailing output is not dropped.
+	// A has exited, so trailing output is not dropped. relay.wait() blocks
+	// only on the OUTBOUND (stdout/stderr) copies, which do terminate once A
+	// exits; it does not wait on the inbound stdin copy, which has no EOF of
+	// its own to reach when this process's stdin is a pipe/fd that outlives
+	// A (#120) — see stdioRelay.wait's comment.
 
 	var ws unix.WaitStatus
 	if _, err := unix.Wait4(bpid, &ws, 0, nil); err != nil {

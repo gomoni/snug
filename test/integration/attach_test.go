@@ -15,6 +15,7 @@ package integration
 // detector genuinely CAN see X when X is really there.
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -1189,5 +1190,211 @@ func TestBwrapFlagsCarryInfoFdBeforeTheSeparator(t *testing.T) {
 	if !strings.Contains(fdsPart, fmt.Sprintf("OPENFD:%d\n", fdNum)) {
 		t.Errorf("fd %d (named by --info-fd) was NOT among the open descriptors at the moment "+
 			"bwrap was about to be exec'd:\n%s", fdNum, fdsPart)
+	}
+}
+
+// ── §13.8: liveness — attach must not outlive the attached command ────────
+
+// attachWithStdin runs `snug attach proj -- /bin/echo marker` with stdin set
+// to the given file, and reports how long the attach CLIENT process itself
+// took to return and what it printed. reusing startBgProc/waitDone (as
+// TestAttachedProcessDiesWithASIGKILLedSnug and its sibling already do) gets
+// the kill-in-cleanup/no-double-Wait handling for free, and bounds the wait
+// with the same select-on-timeout idiom.
+func attachWithStdin(t *testing.T, env []string, proj string, stdin *os.File, marker string) (elapsed time.Duration, out string) {
+	t.Helper()
+	cmd := exec.Command(snugBin, "attach", proj, "--", "/bin/echo", marker)
+	cmd.Env = env
+	cmd.Stdin = stdin
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+
+	start := time.Now()
+	p := startBgProc(t, cmd)
+
+	select {
+	case <-waitDone(p):
+	case <-time.After(15 * time.Second):
+		t.Fatalf("snug attach did not return within 15s of being started (a hang here is "+
+			"the finding this test exists to catch):\n%s", buf.String())
+	}
+	return time.Since(start), buf.String()
+}
+
+// TestAttachReturnsPromptlyWhenStdinNeverReachesEOF is issue #120: a
+// liveness bug in `snug attach` ITSELF (not the attached command, and not
+// the sandbox) — the attach CLIENT process failed to return once A had
+// already exited and its exit status had been read, whenever the client's
+// OWN stdin was a pipe or fd that never reaches EOF. The reported shape is
+//
+//	( sleep 30 ) | ./bin/snug attach dir -- /bin/echo attached-ran
+//
+// "attached-ran" prints immediately and A and the bridge are already
+// reaped, but the `snug attach` process itself blocked for the full 30s —
+// the automation/pipe use case attach's headline claim rests on.
+//
+// Root cause: relayIn's inbound stdin-copy goroutine has no termination path
+// of its own (os.Stdin only closes when whatever feeds it does, a fact
+// about the CALLER's stdin, not about A's lifetime), and releaseGate's
+// relay.wait() barrier used to wait on it as well as the output-drain
+// goroutines that DO terminate on their own once A exits.
+//
+// POSITIVE CONTROL, run first: the identical attach with stdin already
+// closed (/dev/null, which EOFs immediately) must ALSO return promptly.
+// Without it, a bound "returns within 5s" on the pathological case below
+// could be satisfied by attach being fast for reasons that have nothing to
+// do with the fix — the control is what makes the comparison meaningful.
+func TestAttachReturnsPromptlyWhenStdinNeverReachesEOF(t *testing.T) {
+	budget(t, 40*time.Second)
+	requireSandbox(t)
+	env, xdg := attachEnv(t)
+	proj, _ := target(t)
+
+	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t, xdg)
+
+	// ── CONTROL: closed stdin already returns promptly ──────────────────
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devNull.Close()
+	controlMarker := "snugattach120ctl" + strconv.Itoa(os.Getpid()) + strconv.FormatInt(time.Now().UnixNano(), 36)
+	controlElapsed, controlOut := attachWithStdin(t, env, proj, devNull, controlMarker)
+	if !strings.Contains(controlOut, controlMarker) {
+		t.Fatalf("control: the attached command's own output never appeared, so this test "+
+			"proves nothing:\n%s", controlOut)
+	}
+	if controlElapsed > 5*time.Second {
+		t.Fatalf("control: attach with already-closed stdin took %s to return — too slow "+
+			"for the bound on the case below to mean anything:\n%s", controlElapsed, controlOut)
+	}
+
+	// ── THE CASE: a pipe this test keeps the write end of open for the
+	// whole test, so attach's own stdin never reaches EOF on its own — the
+	// `( sleep 30 ) | snug attach ...` shape, without needing a real shell
+	// pipeline to reproduce it. ──────────────────────────────────────────
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pw.Close()
+	marker := "snugattach120" + strconv.Itoa(os.Getpid()) + strconv.FormatInt(time.Now().UnixNano(), 36)
+	elapsed, out := attachWithStdin(t, env, proj, pr, marker)
+	pr.Close()
+
+	if !strings.Contains(out, marker) {
+		t.Fatalf("the attached command's own output never appeared, so this test proves "+
+			"nothing:\n%s", out)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("snug attach took %s to return after the attached command had already "+
+			"exited, with its own stdin a pipe that never reaches EOF — this is issue #120 "+
+			"(the closed-stdin control above returned in %s):\n%s", elapsed, controlElapsed, out)
+	}
+}
+
+// openTestPTY duplicates newStdioRelay's own openPTY (internal/cli/attachstdio.go)
+// rather than importing it — this package's own rule (its doc comment, and
+// selfNamespaceInodes/selfStartTime above): drive the built binary, never
+// link against it.
+func openTestPTY(t *testing.T) (master, slave *os.File) {
+	t.Helper()
+	m, err := os.OpenFile("/dev/ptmx", os.O_RDWR|unix.O_NOCTTY, 0)
+	if err != nil {
+		t.Fatalf("opening /dev/ptmx: %v", err)
+	}
+	if err := unix.IoctlSetPointerInt(int(m.Fd()), unix.TIOCSPTLCK, 0); err != nil {
+		m.Close()
+		t.Fatalf("TIOCSPTLCK: %v", err)
+	}
+	n, err := unix.IoctlGetInt(int(m.Fd()), unix.TIOCGPTN)
+	if err != nil {
+		m.Close()
+		t.Fatalf("TIOCGPTN: %v", err)
+	}
+	s, err := os.OpenFile(fmt.Sprintf("/dev/pts/%d", n), os.O_RDWR|unix.O_NOCTTY, 0)
+	if err != nil {
+		m.Close()
+		t.Fatalf("opening the pty slave: %v", err)
+	}
+	return m, s
+}
+
+// TestAttachPTYReturnsPromptlyWhenThePTYIsNeverClosed is the pty half of
+// issue #120. newStdioRelay's interactive branch has the identical shape as
+// the pipe branch — an inbound (stdin -> master) copy goroutine with no
+// termination path of its own — so a client attached through a real pty
+// that stays open (nothing ever closes or hangs up the far end, the same as
+// an interactive terminal session left open, or a pty multiplexer that
+// never exits) must return just as promptly once A has exited.
+//
+// This drives snug attach with a REAL pty as its stdin (isTerminal's TCGETS
+// probe only needs a valid tty device on fd 0, not a full controlling-
+// terminal/session dance), so newStdioRelay genuinely takes the pty branch
+// rather than the already-covered pipe branch.
+func TestAttachPTYReturnsPromptlyWhenThePTYIsNeverClosed(t *testing.T) {
+	budget(t, 40*time.Second)
+	requireSandbox(t)
+	env, xdg := attachEnv(t)
+	proj, _ := target(t)
+
+	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t, xdg)
+
+	master, slave := openTestPTY(t)
+	defer master.Close()
+	// This test never closes master or hangs up the pty for the whole
+	// run, deliberately — that is the "never reaches EOF" condition on the
+	// interactive side, the mirror of the pipe case's held-open write end.
+
+	marker := "snugattach120pty" + strconv.Itoa(os.Getpid()) + strconv.FormatInt(time.Now().UnixNano(), 36)
+	cmd := exec.Command(snugBin, "attach", proj, "--", "/bin/echo", marker)
+	cmd.Env = env
+	cmd.Stdin = slave
+	cmd.Stdout = slave
+	cmd.Stderr = slave
+
+	start := time.Now()
+	p := startBgProc(t, cmd)
+	slave.Close() // this process's own copy; the child has its own via fork+exec
+
+	select {
+	case <-waitDone(p):
+	case <-time.After(15 * time.Second):
+		t.Fatalf("snug attach (pty stdin) did not return within 15s of being started — the " +
+			"pty half of issue #120, the inbound stdin->master copy goroutine with no " +
+			"termination of its own blocking releaseGate's wait forever")
+	}
+	elapsed := time.Since(start)
+
+	// Drain whatever attach wrote through the pty (A's own output plus
+	// anything the shared pty's own line-discipline echoed) with a short,
+	// bounded read — the master is never closed, so a plain io.ReadAll
+	// would block on EOF that never comes.
+	var out bytes.Buffer
+	buf := make([]byte, 4096)
+	master.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		n, err := master.Read(buf)
+		if n > 0 {
+			out.Write(buf[:n])
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	if !strings.Contains(out.String(), marker) {
+		t.Fatalf("the attached command's own output never appeared through the pty, so this "+
+			"test proves nothing:\n%s", out.String())
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("snug attach (pty stdin) took %s to return after the attached command had "+
+			"already exited, with the pty on the other end never closed — this is issue "+
+			"#120's pty-path shape:\n%s", elapsed, out.String())
 	}
 }
