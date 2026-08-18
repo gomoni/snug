@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -20,7 +21,46 @@ import (
 type Options struct {
 	NoSeccomp bool
 	Warn      func(string) // where degradation notices go; never silently dropped
+
+	// OnInfo, if non-nil, is called exactly once, from a background
+	// goroutine, as soon as bwrap has reported its own info-fd JSON — before
+	// the payload's own program has been exec'd inside the sandbox, but
+	// never blocking bwrap's own startup (see the comment above runStaged
+	// for why nothing in this package parks a payload on a handshake any
+	// more). It is the hook `snug attach`'s run-state file is written
+	// through.
+	//
+	// If bwrap never answers — an old bwrap, a failed start, a topology this
+	// package could not wire the descriptor through for — OnInfo is simply
+	// never called, and this package warns instead (same rule as every other
+	// place this file degrades: named, not silent). A run whose OnInfo is
+	// never reached is a run `snug attach` will not find; it is not a run
+	// that failed to start.
+	OnInfo func(RunInfo)
 }
+
+// RunInfo is what a running sandbox reports about itself, once, at startup:
+// bwrap's own --info-fd answer plus whether — and with what identity — a
+// seccomp filter actually got installed. "Actually got installed" matters
+// more than "was requested": a filter this package could not build (an
+// unsupported GOARCH, an assembly failure) degrades to no filter with a
+// warning, per invariant 5, and RunInfo reflects what is REALLY running, not
+// what the caller asked for.
+type RunInfo struct {
+	InitPID    int
+	Namespaces map[string]uint64 // "mnt", "pid", "net", "ipc", "uts", "cgroup"
+
+	SeccompActive bool
+	// SeccompDigest is FilterDigest(prog) over the bytes actually installed.
+	// Empty when SeccompActive is false.
+	SeccompDigest string
+}
+
+// infoFDTimeout bounds how long Run waits for bwrap's --info-fd answer
+// before giving up and warning that this run will not be attachable. bwrap
+// writes it before exec'ing the payload (measured), so this is generous
+// against a slow host rather than against anything the payload could do.
+const infoFDTimeout = 10 * time.Second
 
 // Run executes the policy and returns the payload's exit code verbatim, so
 // `snug ... -- make test` is usable in a pipeline.
@@ -57,19 +97,60 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 
 	flags := p.BwrapFlags(uid, gid, func(guest string) int { return dataFDs[guest] })
 
+	var runInfo RunInfo
 	if !opts.NoSeccomp {
-		f, err := FilterFD()
-		if err != nil {
+		// Built here rather than through FilterFD so the exact bytes that get
+		// installed are also the bytes RunInfo.SeccompDigest is computed
+		// over — the identity `snug attach` will later rebuild and compare
+		// (FilterDigest's doc comment). Two callers hashing two different
+		// copies of "the filter" is exactly the kind of drift that would
+		// make attach's digest check meaningless.
+		prog, ok, ferr := BuildFilter()
+		switch {
+		case ferr != nil || !ok:
 			// The only subsystem permitted to degrade. Loudly: a user who
 			// believes a guarantee that no longer holds is worse off than one
-			// who got an error.
-			opts.warn(fmt.Sprintf("seccomp filter unavailable (%v); continuing WITHOUT it.\n"+
-				"      The namespace boundary is unaffected; ptrace/keyctl/TIOCSTI hardening is not active.", err))
-		} else {
+			// who got an error. RunInfo.SeccompActive stays false, which is
+			// what makes the run-state file honest about a filter this
+			// process could not actually install, as opposed to one a human
+			// asked to skip (--no-seccomp).
+			msg := "seccomp filter unavailable"
+			if ferr != nil {
+				msg = fmt.Sprintf("seccomp filter unavailable (%v)", ferr)
+			} else {
+				msg = "no seccomp syscall table for this architecture"
+			}
+			opts.warn(msg + "; continuing WITHOUT it.\n" +
+				"      The namespace boundary is unaffected; ptrace/keyctl/TIOCSTI hardening is not active.")
+		default:
+			f, ferr := memfd("snug-seccomp", prog)
+			if ferr != nil {
+				return 0, ferr
+			}
 			flags = append(flags, "--seccomp", strconv.Itoa(nextFD()))
 			extra = append(extra, f)
+			runInfo.SeccompActive = true
+			runInfo.SeccompDigest = FilterDigest(prog)
 		}
 	}
+
+	// bwrap's --info-fd answer (§7 of the attach design): one JSON object,
+	// written before the payload is exec'd, carrying bwrap's own child pid
+	// and six namespace inodes. This is how `snug attach` learns what to
+	// join — no procfs scanning, no PPid walking, no race. The descriptor
+	// travels exactly like the --seccomp memfd above: through `extra`, via
+	// nextFD(), added to `flags` before the args-memfd snapshot below.
+	//
+	// On the staged (@net) topology this needs NO protocol change: the
+	// descriptor rides the same Config.Sandbox pass-through every other
+	// entry in `extra` already does, renumbered to the same 3+i bwrap
+	// expects either way.
+	infoR, infoW, err := os.Pipe()
+	if err != nil {
+		return 0, err
+	}
+	extra = append(extra, infoW)
+	flags = append(flags, "--info-fd", strconv.Itoa(nextFD()))
 
 	// Networking needs NO handshake with bwrap any more, and the absence is the
 	// point.
@@ -114,7 +195,7 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	}
 
 	if p.Topology.NeedsStage() {
-		return runStaged(p, bwrap, argv, extra, stdin, stdout, stderr, opts)
+		return runStaged(p, bwrap, argv, extra, stdin, stdout, stderr, opts, infoR, runInfo)
 	}
 
 	cmd := exec.Command(bwrap, argv...)
@@ -151,6 +232,8 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
+	reportInfo(infoR, runInfo, opts)
+
 	// This arm is the OFFLINE and host-network one: bwrap made its own namespace
 	// (or was given the host's) and there is no helper to attach, so the payload
 	// is already running. Every networked run goes through runStaged above —
@@ -208,7 +291,7 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 // after the stage has left, and the stage answers the question over the control
 // socket. Both halves measured; see stage.WaitNetReady.
 func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
-	stdin, stdout, stderr *os.File, opts Options) (int, error) {
+	stdin, stdout, stderr *os.File, opts Options, infoR *os.File, runInfo RunInfo) (int, error) {
 	st, err := stage.Start(stage.Config{
 		Topology: p.Topology,
 		Sandbox:  extra,
@@ -261,6 +344,7 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 	if err := st.StartSandbox(bwrap, argv); err != nil {
 		return 0, err
 	}
+	reportInfo(infoR, runInfo, opts)
 
 	// From here on a payload exists, forked by the STAGE, not by this process.
 	// guard.wait is what closes issue #13's window on this topology: the
@@ -277,6 +361,76 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 		}
 		return -1, nil
 	})
+}
+
+// reportInfo reads bwrap's --info-fd answer in the background and calls
+// opts.OnInfo once it has one — NEVER blocking the caller, which by the time
+// this is called already has a running (or about-to-run) payload on both
+// topologies. base carries the seccomp fields Run already computed, since
+// bwrap's own JSON says nothing about the filter.
+//
+// infoR is closed here, once, regardless of outcome: this is its only
+// reader and its only closer.
+func reportInfo(infoR *os.File, base RunInfo, opts Options) {
+	go func() {
+		defer infoR.Close()
+		info, err := readRunInfo(infoR, infoFDTimeout)
+		if err != nil {
+			opts.warn(fmt.Sprintf("this run will not be attachable (%v)", err))
+			return
+		}
+		info.SeccompActive, info.SeccompDigest = base.SeccompActive, base.SeccompDigest
+		if opts.OnInfo != nil {
+			opts.OnInfo(info)
+		}
+	}()
+}
+
+// readRunInfo decodes bwrap's --info-fd JSON, bounded by timeout.
+//
+// json.Decoder.Decode, not ReadAll: Decode stops at one complete JSON value
+// rather than waiting for EOF, and this process keeps its OWN copy of the
+// write end open (in `extra`, for the whole life of the run) — waiting for
+// EOF here would then wait forever.
+//
+// The goroutine+select shape, rather than SetReadDeadline, matches the one
+// already used for WaitNetReady above: it is bounded by C's patience with
+// bwrap, not by anything the pipe itself can express, and a timeout leaves
+// the inner goroutine to exit on its own once infoR is closed by the caller.
+func readRunInfo(infoR *os.File, timeout time.Duration) (RunInfo, error) {
+	type result struct {
+		info RunInfo
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		var raw struct {
+			ChildPID int    `json:"child-pid"`
+			Mnt      uint64 `json:"mnt-namespace"`
+			Pid      uint64 `json:"pid-namespace"`
+			Net      uint64 `json:"net-namespace"`
+			Ipc      uint64 `json:"ipc-namespace"`
+			Uts      uint64 `json:"uts-namespace"`
+			Cgroup   uint64 `json:"cgroup-namespace"`
+		}
+		if err := json.NewDecoder(infoR).Decode(&raw); err != nil {
+			ch <- result{err: fmt.Errorf("reading bwrap's --info-fd: %w", err)}
+			return
+		}
+		ch <- result{info: RunInfo{
+			InitPID: raw.ChildPID,
+			Namespaces: map[string]uint64{
+				"mnt": raw.Mnt, "pid": raw.Pid, "net": raw.Net,
+				"ipc": raw.Ipc, "uts": raw.Uts, "cgroup": raw.Cgroup,
+			},
+		}}
+	}()
+	select {
+	case res := <-ch:
+		return res.info, res.err
+	case <-time.After(timeout):
+		return RunInfo{}, fmt.Errorf("bwrap did not answer on --info-fd within %s", timeout)
+	}
 }
 
 // netReadyTimeout is P0's patience with the STAGE, not with pasta: the stage
