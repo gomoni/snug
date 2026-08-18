@@ -7,9 +7,10 @@
 
 ## What is it
 
-A sandbox for running an **untrusted code** on modern Linux machines. As
+A sandbox for running an **untrusted code** on modern Linux machines. Provides as
 seamless experience as possible. It works without `root`, without any daemon,
-without an installation. Static linked binary written in Go, which
+without an installation. Assumes that processes inside sandbox are hostile and disallow
+even a read access to the most of the system. Static linked binary written in Go, which
 
 1. reads the policy - aka _profiles_
 2. builds a cli arguments for `bwrap`, which confines the access to the
