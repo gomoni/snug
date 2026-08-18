@@ -68,8 +68,8 @@ func TestContainerSocketNeverExposesEngineSocketDir(t *testing.T) {
 // TestStartContainersRefusesUntilTheEngineIsWiredIntoTheStage is invariant 5
 // applied to issue #63, Tier B's incomplete state: the resolved Policy now
 // correctly demands the engine run inside the sandbox's own network
-// namespace (deriveTopology), but nothing yet makes that true, so
-// startContainers must refuse rather than silently hand back an engine
+// namespace (deriveTopology), but nothing yet makes that true, so a REAL run
+// (dryRun=false) must refuse rather than silently hand back an engine
 // running on the host's network while --dry-run claims otherwise.
 //
 // Positive control: PodmanOff still returns a no-op cleanup with no error —
@@ -80,15 +80,47 @@ func TestStartContainersRefusesUntilTheEngineIsWiredIntoTheStage(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 
 	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@podman-socket"})
-	if _, err := startContainers(p, false); err == nil {
+	if _, err := startContainers(p, false, false); err == nil {
 		t.Fatal("startContainers succeeded for a podman-selected policy; it must refuse until " +
 			"the engine actually runs inside the stage's netns (issue #63, Tier B)")
 	}
 
 	off := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw"})
-	cleanup, err := startContainers(off, false)
+	cleanup, err := startContainers(off, false, false)
 	if err != nil {
 		t.Fatalf("startContainers refused a policy with no container profile: %v", err)
 	}
 	cleanup()
+}
+
+// TestStartContainersDryRunIsExemptFromTheRefusal is the OTHER half: the
+// refusal above must NOT reach --dry-run, whose entire promise is "having
+// started nothing" (CLAUDE.md) — describing a policy is not the same act as
+// running the engine it describes, and calling startContainers with
+// dryRun=true starts nothing eagerly either way (the engine is lazy). Without
+// this, --dry-run -p @podman-socket would abort before it ever reached
+// describeTopology/describeContainers, which is exactly the regression this
+// test exists to catch: it was found by actually running the binary, not by
+// reading the diff.
+func TestStartContainersDryRunIsExemptFromTheRefusal(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+
+	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@podman-socket"})
+	cleanup, err := startContainers(p, false, true)
+	if err != nil {
+		t.Fatalf("startContainers(dryRun=true) refused a podman-selected policy: %v", err)
+	}
+	cleanup()
+
+	foundProxySocket := false
+	for _, m := range p.Mounts {
+		if m.Guest == containerSocketGuest {
+			foundProxySocket = true
+		}
+	}
+	if !foundProxySocket {
+		t.Error("startContainers(dryRun=true) did not bind the proxy socket into the policy, " +
+			"so --dry-run's MOUNTS section would not show it")
+	}
 }

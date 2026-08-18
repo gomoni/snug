@@ -422,6 +422,16 @@ that did exactly that used to ship, and it never forwarded a single port — see
 > documentation. The measured version is
 > [`.claude/design/CONTAINER-CLIENT.md`](.claude/design/CONTAINER-CLIENT.md).
 
+> **Currently unavailable.** Issue #63 (Tier B) moves the container engine
+> into the sandbox's own network namespace, so `@podman-socket` is offline
+> unless `@net` is also selected, exactly like every other profile. The
+> policy layer — the stage, the delegated subuid range, the engine's own
+> capability bounding set — is real and tested; the engine is not yet
+> actually FORKED into that namespace, so snug currently refuses to start one
+> at all rather than silently run it on the host's network while claiming
+> otherwise. See `.claude/design/ENGINE-NETNS.md` §0 for the finding this
+> closes and what is still open.
+
 The engine behind `@podman-socket` is podman, rootless, one per sandbox. What
 snug *filters* is the **docker-compatible** schema — which podman itself serves —
 so the client you run inside can be anything that speaks it. `CONTAINER_HOST` and
@@ -466,8 +476,13 @@ is selected — a default `snug <dir>` has no stub and an unchanged `PATH`.
   stub.
 - `docker build` needs the classic builder; snug sets `DOCKER_BUILDKIT=0` for
   you, because BuildKit bypasses the filter entirely rather than being filtered.
-- `docker run -p` is refused: published ports land on the engine's side of the
-  boundary today. [ENGINE-NETNS.md](.claude/design/ENGINE-NETNS.md) is the fix.
+- `docker run -p` is refused, and stays refused once the engine moves into the
+  sandbox's netns (issue #63, Tier B — not a temporary limitation): the engine
+  holds no `CAP_NET_ADMIN`, so it cannot reconfigure the sandbox's network
+  namespace to publish a port. Containers share the sandbox's own network
+  instead — with `@net`, full egress; without it, none — which is the
+  security property [ENGINE-NETNS.md](.claude/design/ENGINE-NETNS.md) exists
+  to close.
 - `docker cp` is refused, deliberately — the engine resolves that path outside
   the sandbox as your user. Use `docker exec C tar -cf - …` instead.
 - On an SELinux host, `-v` needs `:z` (`docker run -v "$PWD:/w:z" …`). That is

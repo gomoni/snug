@@ -1253,30 +1253,39 @@ spellings of `--network=host`, and for an option snug does not know.
 which is the same shape as the pasta flags in check 7. Both are refused, and the
 suite pins each to its own message so neither can cover for the other.
 
-## 9d. `@podman-socket` admits that it grants the network
+## 9d. `@podman-socket` without `@net` is offline, containers included
 
-Needs no engine — this is a `--dry-run` check, and `--dry-run` is the artifact
-the guarantee is read off, which is exactly where it was wrong
-(`.claude/design/ENGINE-NETNS.md` §0).
+This is the inversion the previous version of this check predicted (issue
+#63, Tier B): the engine now runs in the sandbox's OWN network namespace, so
+`@podman-socket` alone no longer pulls in `@net`, and offline is once again
+the ABSENCE of a profile rather than something the profile switches back on.
+Needs no engine — this is a `--dry-run` check, and `--dry-run` is the
+artifact the guarantee is read off, which is exactly where it was wrong
+before (`.claude/design/ENGINE-NETNS.md` §0).
 
 ```bash
-./bin/snug --dry-run -p @podman-socket $SC/proj/sub | grep -E '^ *\+|^NETWORK|^CONTAINERS'
-./bin/snug --dry-run $SC/proj/sub                   | grep -E '^NETWORK|^CONTAINERS'
+./bin/snug --dry-run -p @podman-socket $SC/proj/sub | grep -E '^ *\+|^NETWORK|^CONTAINERS|^  engine'
+./bin/snug --dry-run -p @podman-socket -p @net $SC/proj/sub | grep -E '^NETWORK|^CONTAINERS'
 ```
 
-Expect from the first: `+ @net  (pulled in by include; …)`, then the **egress**
-NETWORK block, then a `CONTAINERS` block saying the container runs in the
-engine's netns and that the pasta guarantees above it do not cover containers.
+Expect from the first: **no** `+ @net` line, the **isolated** NETWORK block
+("No egress. No host loopback." — and now true for containers too), a
+`CONTAINERS` block saying a container has no egress either, and a TOPOLOGY
+`engine` line naming the sandbox's own netns and the 12-entry capability
+bounding set — the real cost of selecting a container engine, on screen even
+offline.
 
-Expect from the second — this is the positive control, and it is the half that
-matters: a bare `snug <dir>` still prints `NETWORK  isolated` and **no**
-`CONTAINERS` block at all. `@net` reaching `defaults` would be the real
-regression here, and a check that only looked at the first command could not
-tell the difference.
+Expect from the second — the positive control: the **egress** NETWORK block,
+and a `CONTAINERS` block whose egress clause now agrees with it.
 
-Both lines are interim. When the engine moves into the sandbox's netns, the
-first command must stop showing `+ @net` — at which point this check inverts and
-`@podman-socket` alone must print `NETWORK  isolated`.
+Both directions matter: a check that only ran the first command could not
+tell "offline" apart from "the profile stopped resolving containers at all".
+
+**Caveat, current build:** the engine itself is not yet wired to actually
+start inside that namespace (see `internal/cli/container.go`), so an actual
+`snug -p @podman-socket <dir> -- podman run …` (no `--dry-run`) refuses
+outright rather than running — this check is `--dry-run`-only until that
+lands.
 
 ## 9e. A profile name is refused as a NAME, not as a missing profile
 
