@@ -228,8 +228,10 @@ func TestEscapeFieldsAreRefused(t *testing.T) {
 			"HostConfig.Devices is not permitted"},
 		{"an alternate runtime", `{"HostConfig":{"Runtime":"/tmp/evil"}}`,
 			"HostConfig.Runtime is not permitted"},
-		{"host networking", `{"HostConfig":{"NetworkMode":"host"}}`,
-			"would join a namespace outside this sandbox"},
+		// NetworkMode="host" is NOT in this table any more (issue #63, Tier
+		// B): the container engine now runs INSIDE this sandbox's own
+		// network namespace N, so "join the engine's current netns" joins
+		// N, not the real host's — see TestNetworkModeHostIsAllowedButOtherHostModesAreNot.
 		{"another container's netns", `{"HostConfig":{"NetworkMode":"container:abc"}}`,
 			"would join a namespace outside this sandbox"},
 		{"host pid namespace", `{"HostConfig":{"PidMode":"host"}}`,
@@ -694,13 +696,54 @@ func TestEveryRefusedHostConfigKeyIsCaseProof(t *testing.T) {
 }
 
 // The namespace-mode checks are a separate loop and were separately exposed.
+//
+// NetworkMode uses a value that stays refused regardless of issue #63 Tier
+// B's own NetworkMode="host" exception (container:x joins ANOTHER
+// container's netns, not the engine's own N) — every other key still uses
+// "host", which stays refused for all of them.
 func TestNamespaceModesAreCaseProof(t *testing.T) {
 	for _, k := range namespaceModeKeys {
+		value := "host"
+		if k == "NetworkMode" {
+			value = "container:x"
+		}
 		t.Run(k, func(t *testing.T) {
 			sock, eng, _ := startProxy(t)
 			refuse(t, sock, eng, "/v1.41/containers/create",
-				`{"HostConfig":{"`+strings.ToLower(k)+`":"host"}}`,
+				`{"HostConfig":{"`+strings.ToLower(k)+`":"`+value+`"}}`,
 				"HostConfig."+k)
+		})
+	}
+}
+
+// TestNetworkModeHostIsAllowedButOtherHostModesAreNot is the settled Tier B
+// inversion (TIER-B-POLICY.md, the NET_ADMIN decision; internal/dockerproxy/
+// create.go's own comment on namespaceModeKeys): the container engine now
+// runs INSIDE this sandbox's own network namespace N (setns'd there by the
+// stage), so HostConfig.NetworkMode="host" joins N — exactly the "share N
+// host-mode" design — not the real host's. Every OTHER "host" namespace mode
+// stays refused: PidMode="host" above all, because __inengine does NOT
+// unshare pid, so the engine's own pid namespace genuinely IS the host's.
+//
+// Positive control is the loop itself: if NetworkMode ever stopped being the
+// one exception, this test would catch it turning into a refusal; if a
+// DIFFERENT key ever started being silently allowed, the loop's own refusal
+// assertion catches that too.
+func TestNetworkModeHostIsAllowedButOtherHostModesAreNot(t *testing.T) {
+	sock, eng, _ := startProxy(t)
+	code, body := post(t, sock, "/v1.41/containers/create", `{"HostConfig":{"NetworkMode":"host"}}`)
+	if code != 200 {
+		t.Fatalf("NetworkMode=host: status %d, want 200: %s", code, body)
+	}
+	if eng.reached.Load() == 0 {
+		t.Fatal("NetworkMode=host never reached the engine")
+	}
+
+	for _, k := range []string{"PidMode", "IpcMode", "UTSMode", "UsernsMode", "CgroupnsMode"} {
+		t.Run(k, func(t *testing.T) {
+			sock, eng, _ := startProxy(t)
+			refuse(t, sock, eng, "/v1.41/containers/create",
+				`{"HostConfig":{"`+k+`":"host"}}`, "HostConfig."+k)
 		})
 	}
 }
