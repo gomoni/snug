@@ -10,14 +10,17 @@ package cli
 // still read and write the stream it was handed, only not the host inode
 // behind a redirected one.
 //
-// What this file does NOT (yet) do: put the client's own terminal into raw
-// mode, forward SIGWINCH/window-size changes into the pty, or restore
-// terminal state on exit. Those are real interactive-UX gaps, being closed
-// incrementally — the security property (host inode never reaches the
-// sandbox) holds regardless of any of them. Job control (the attached shell
-// getting the pty as its controlling terminal, via setsid()+TIOCSCTTY in
-// internal/attach/child.go on the pty path) is now done; see
-// attach.Config.PTY, set from this file's own pty flag below.
+// What this file does NOT (yet) do: forward SIGWINCH/window-size changes
+// into the pty, or restore terminal state on exit. Those are real
+// interactive-UX gaps, being closed incrementally — the security property
+// (host inode never reaches the sandbox) holds regardless of any of them.
+// Job control (the attached shell getting the pty as its controlling
+// terminal, via setsid()+TIOCSCTTY in internal/attach/child.go on the pty
+// path) is now done; see attach.Config.PTY, set from this file's own pty
+// flag below. So is putting the CLIENT's own terminal into raw mode
+// (clientRawMode) — restoring it on exit is not yet wired in, so until that
+// lands an attach session that used a pty leaves the client's real terminal
+// raw after it ends.
 
 import (
 	"io"
@@ -38,6 +41,12 @@ type stdioRelay struct {
 	// runAttach reads it to set attach.Config.PTY, which is what gates
 	// child.go's setsid()+TIOCSCTTY to the pty path only.
 	pty bool
+
+	// origTermios is THIS PROCESS's own terminal's (os.Stdin's) termios
+	// exactly as clientRawMode found it, before putting it in raw mode — the
+	// value a later restore step puts back on exit. Nil on the pipe path,
+	// where there is no terminal to touch.
+	origTermios *unix.Termios
 
 	closeOnce sync.Once
 	childEnds []*os.File // deduplicated; closed once, right after Start()
@@ -79,6 +88,12 @@ func newStdioRelay() (*stdioRelay, error) {
 		r.pty = true
 		r.childStdin, r.childStdout, r.childStderr = slave, slave, slave
 		r.childEnds = []*os.File{slave}
+
+		if err := r.clientRawMode(); err != nil {
+			master.Close()
+			slave.Close()
+			return nil, err
+		}
 
 		// Inbound (stdin -> master): not tracked in outWG — see its comment.
 		go func() {
@@ -216,4 +231,48 @@ func openPTY() (master, slave *os.File, err error) {
 
 func ptsPath(n int) string {
 	return "/dev/pts/" + strconv.Itoa(n)
+}
+
+// clientRawMode puts THIS PROCESS's own terminal (os.Stdin, fd 0 — the real
+// tty the attaching human is typing at, NOT the fresh pty the relay just
+// allocated) into raw mode for the life of the session, saving the original
+// termios in r.origTermios first so it can be put back later. Without this
+// the client's real terminal stays in cooked/line mode: input would only
+// reach the attached shell a whole line at a time, on Enter, doubly echoed
+// (once by the client tty's own line discipline, once by the remote shell
+// echoing over the pty) — and job control keystrokes like ^C, ^Z, ^\ would
+// be intercepted and turned into signals HERE rather than reaching the
+// attached shell as the bytes 0x03/0x1a/0x1c that its own (now-controlling,
+// per internal/attach/child.go's TIOCSCTTY) pty is what should interpret
+// them.
+func (r *stdioRelay) clientRawMode() error {
+	fd := int(os.Stdin.Fd())
+	orig, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	if err != nil {
+		return err
+	}
+	r.origTermios = orig
+
+	raw := *orig
+	cfmakeraw(&raw)
+	return unix.IoctlSetTermios(fd, unix.TCSETS, &raw)
+}
+
+// cfmakeraw is termios(3)'s cfmakeraw — golang.org/x/sys/unix wraps the
+// ioctl but not this convenience function, so it is reproduced here from
+// the same flag list every termios(3) manual page documents: input is
+// unprocessed and unbuffered (no signal generation, no canonical/line mode,
+// no local echo, no special handling of BREAK/parity/CR/NL/flow-control
+// bytes), output is unprocessed, 8-bit characters, and a read returns as
+// soon as at least one byte (VMIN=1) is available with no inter-byte
+// timeout (VTIME=0).
+func cfmakeraw(t *unix.Termios) {
+	t.Iflag &^= unix.IGNBRK | unix.BRKINT | unix.PARMRK | unix.ISTRIP |
+		unix.INLCR | unix.IGNCR | unix.ICRNL | unix.IXON
+	t.Oflag &^= unix.OPOST
+	t.Lflag &^= unix.ECHO | unix.ECHONL | unix.ICANON | unix.ISIG | unix.IEXTEN
+	t.Cflag &^= unix.CSIZE | unix.PARENB
+	t.Cflag |= unix.CS8
+	t.Cc[unix.VMIN] = 1
+	t.Cc[unix.VTIME] = 0
 }
