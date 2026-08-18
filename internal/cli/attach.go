@@ -91,7 +91,32 @@ func attachCmd(argv []string) int {
 		return exitUsage
 	}
 
-	st, err := selectLiveRun(abs)
+	// state.Target is the REALPATH: policy.Resolve canonicalises the target
+	// with EvalSymlinks (internal/policy/resolve.go), and the per-target lock
+	// issue #119 added keys its lock name on the same realpath
+	// (targetlock.go's targetLockName). Matching against abs alone — a bare
+	// filepath.Abs, never resolved through a symlink — meant `snug attach` on
+	// a symlink to the target, a trailing slash, or any other non-canonical
+	// spelling could never find the run its own lock had just refused a
+	// second copy of. See CLAUDE.md's "One live sandbox per target
+	// directory": "Same directory is realpath".
+	real, exists, err := canonicalAttachTarget(abs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "snug: resolving %s: %v\n", abs, err)
+		return exitUsage
+	}
+	if !exists {
+		// A target that does not exist cannot have a live run — report the
+		// same "no live run" refusal selectLiveRun uses for zero matches,
+		// rather than surfacing a raw EvalSymlinks error (which would read
+		// as a filesystem problem, not "there is nothing to attach to") or
+		// falling through to match a non-canonical path.
+		fmt.Fprintf(os.Stderr, "snug: no live snug run found for %s — nothing is currently sandboxing "+
+			"this directory (it does not exist)\n", abs)
+		return exitPolicy
+	}
+
+	st, err := selectLiveRun(real)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 		return exitPolicy
@@ -132,14 +157,20 @@ func parseAttachArgs(argv []string) (target string, command []string, err error)
 // held, read and validate state.json. Zero matches and more than one match
 // are both errors, and both enumerate what WAS found inline — there is no
 // `snug attach --list` in this build to point at instead (§17).
-func selectLiveRun(abs string) (runState, error) {
+//
+// real must already be canonicalised (filepath.EvalSymlinks, via
+// canonicalAttachTarget) — state.Target is the realpath policy.Resolve
+// recorded, and matching against anything else is the bug issue #119's
+// coherence fix closed: a symlink to the target, or any other
+// non-canonical spelling, would silently never match.
+func selectLiveRun(real string) (runState, error) {
 	runs, err := discoverLiveRuns()
 	if err != nil {
 		return runState{}, err
 	}
 	var matched []liveRun
 	for _, r := range runs {
-		if r.State.Target == abs {
+		if r.State.Target == real {
 			matched = append(matched, r)
 		}
 	}
@@ -147,14 +178,14 @@ func selectLiveRun(abs string) (runState, error) {
 	case 0:
 		if len(runs) == 0 {
 			return runState{}, fmt.Errorf("no live snug run found for %s — nothing is currently sandboxing "+
-				"this directory", abs)
+				"this directory", real)
 		}
 		var lines []string
 		for _, r := range runs {
 			lines = append(lines, fmt.Sprintf("%s (%s)", r.Name, r.State.Target))
 		}
 		return runState{}, fmt.Errorf("no live snug run found for %s — live runs: %s",
-			abs, strings.Join(lines, ", "))
+			real, strings.Join(lines, ", "))
 	case 1:
 		return matched[0].State, nil
 	default:
@@ -163,8 +194,29 @@ func selectLiveRun(abs string) (runState, error) {
 			lines = append(lines, r.Name)
 		}
 		return runState{}, fmt.Errorf("more than one live run matches %s: %s — this build has no "+
-			"way to disambiguate yet", abs, strings.Join(lines, ", "))
+			"way to disambiguate yet", real, strings.Join(lines, ", "))
 	}
+}
+
+// canonicalAttachTarget resolves abs (already filepath.Abs'd) to the same
+// realpath policy.Resolve and the target lock both use — see the comment
+// above selectLiveRun. exists is false when abs, or a symlink it passes
+// through, does not exist on disk: a directory with no on-disk presence
+// cannot have a live run, so the caller reports that as "no live run"
+// rather than surfacing a raw EvalSymlinks error. Any OTHER failure
+// (permission denied on an intermediate component, a loop, ...) is
+// returned as err with exists=false, and the caller must not treat that as
+// "no live run" either — it is a different refusal with a different
+// message.
+func canonicalAttachTarget(abs string) (real string, exists bool, err error) {
+	real, err = filepath.EvalSymlinks(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return real, true, nil
 }
 
 // runAttach is §4.1 steps 2-10, the gate (§4.2a), and the wait. st has
@@ -240,6 +292,11 @@ func runAttach(st runState, command []string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// Restores the client's own terminal (raw-mode termios, SIGWINCH
+	// watcher) on every path out of this function from here on — normal
+	// return, the attached command dying, or any of the error returns
+	// below. A no-op on the pipe path, where there was nothing to touch.
+	defer relay.restoreTerminal()
 
 	reportR, reportW, err := os.Pipe()
 	if err != nil {
@@ -275,6 +332,7 @@ func runAttach(st runState, command []string) (int, error) {
 		ReportW:     int(reportW.Fd()),
 		GateR:       int(gateR.Fd()),
 		SignalMask:  mask,
+		PTY:         relay.pty,
 	}
 
 	// Every descriptor this process holds — the pidfd, the state-file and

@@ -527,3 +527,28 @@ meant. It cannot prove the sandbox holds.
 - **D-Bus**: no profile ships. A filtering bus proxy that is 95% correct is a
   sandbox that is 0% sound.
 
+- **One live sandbox per target directory.** `snug <dir>` refuses to start a
+  second sandbox while one is already live for the same target, and the refusal
+  names the fix: `snug attach <dir>`. The guard is a per-target advisory `flock`
+  named `target-<sha256(realpath)>.lock` in snug's per-uid runtime directory,
+  resolved from the uid alone — canonical `/run/user/<uid>`, else
+  `/tmp/snug-<uid>` — **never** from `$XDG_RUNTIME_DIR`/`$TMPDIR`, because two runs
+  that disagreed on those env vars once flock'd two different inodes and both
+  acquired, letting a second sandbox onto the target the lock exists to forbid
+  (issue #122). It is taken in the run path before anything is created (no stage,
+  no netns, no bwrap, no proxy), released by the kernel on exit — SIGKILL
+  included, so a dead holder never wedges a directory — and deliberately never
+  unlinked, which is what keeps the reclaim free of a sweep-vs-acquire race. It
+  reuses `runtimeDir`'s `*os.Root`+`flock` machinery and fails **closed**: if the
+  per-uid directory cannot be established the run refuses rather than falling back
+  to a per-env path. "Same directory" is realpath, so a symlink to the target is
+  the same target. The lock path is derived from the target the host user named,
+  on a host path never bound into the sandbox: a hostile payload can neither reach
+  the file nor steer its name, so it can neither release the lock to smuggle in a
+  racing second sandbox nor point snug at the wrong path. This makes `snug
+  attach`'s address-by-directory total — at most one live run per directory, so
+  its multi-match branch is a defensive guard, not a user-facing dead end. A
+  second sandbox on one directory is not a relaxation of this refusal but a
+  different feature with a different name; it is a run-path guard, not a grant,
+  and lives in `internal/cli`, never in the pure `internal/policy`.
+

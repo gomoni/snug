@@ -106,6 +106,17 @@ type Config struct {
 	Argv  []string
 	Envp  []string
 
+	// PTY is true exactly when Stdin/Stdout/Stderr below are the same fresh
+	// pty slave (internal/cli/attachstdio.go's interactive branch), never for
+	// the pipe-relay branch. It gates ONE thing in child(): immediately
+	// before A's execve, on the pty path only, A calls setsid() then
+	// ioctl(0, TIOCSCTTY) — becomes a session leader and makes the pty its
+	// controlling terminal, which is what an interactive shell needs for job
+	// control (fg/bg/^Z) to work at all. False on the pipe path: a pipe has
+	// no controlling-terminal concept, and calling TIOCSCTTY on fd 0 there
+	// would be a syscall on a descriptor that was never a tty.
+	PTY bool
+
 	// Stdin, Stdout, Stderr are the fds A ends up with as 0/1/2, dup3'd into
 	// place immediately before its execve. They may already BE 0/1/2 (a
 	// terminal pass-through) or any other descriptor this process holds — the
@@ -197,6 +208,7 @@ type marshalled struct {
 	reportW    int
 	gateR      int
 	signalMask [sigsetSize]byte
+	pty        bool
 }
 
 func marshal(cfg *Config) (*marshalled, error) {
@@ -215,6 +227,7 @@ func marshal(cfg *Config) (*marshalled, error) {
 		reportW:    cfg.ReportW,
 		gateR:      cfg.GateR,
 		signalMask: cfg.SignalMask,
+		pty:        cfg.PTY,
 	}
 
 	if len(cfg.SeccompProg) > 0 {

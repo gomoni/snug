@@ -111,6 +111,13 @@ The profiles themselves are supposed to be easy
 6. They're restricted to ascii alphanumeric characters, hyphen (-) and those starting
    with `@` are `snug`'s own builtin.
 
+**One live sandbox per directory.** A `snug <dir>` run is tied to its target.
+While one is live, a second `snug <dir>` on the same directory is refused — two
+independent sandboxes racing writes to the one writable thing that persists is a
+footgun, not a feature. To open another shell in the sandbox that is already
+running, use `snug attach <dir>`. "Same directory" is resolved by realpath, so a
+symlink to the target counts as the same target.
+
 ## Profiles
 
 ```console

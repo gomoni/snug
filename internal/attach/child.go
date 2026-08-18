@@ -9,14 +9,20 @@ import (
 // child is the WHOLE of B's job, and then A's: block signals, PDEATHSIG,
 // NNP, seccomp, the one setns, drop the capability bounding set, capset
 // zeroed, report and wait for the release gate, chdir, fork A, and (in A)
-// dup the stdio into place, restore the signal mask and execve — while B
-// waits for A and exits with its status.
+// dup the stdio into place, claim the pty as A's controlling terminal on
+// the pty path, restore the signal mask and execve — while B waits for A
+// and exits with its status.
 //
 // EVERY step below is a raw syscall. See the package comment for why: this
 // function runs in a process that exists ONLY because it skipped the Go
 // scheduler at fork(2), and it stays that way exactly until it calls
 // execve or exit_group — nothing here may allocate, lock, defer, print, or
 // otherwise ask the Go runtime for anything.
+//
+// On the pty path (m.pty), A also calls setsid() and ioctl(0, TIOCSCTTY)
+// immediately before its execve — see the field comment on Config.PTY. Both
+// are raw syscalls issued the same way as everything else here, and are
+// skipped entirely on the pipe path, where fd 0 was never a tty.
 //
 // There is deliberately no error return and no panic recovery: a failure at
 // any step means confinement was NOT fully applied, and the one correct
@@ -133,6 +139,22 @@ func child(m *marshalled) {
 		dup3Raw(m.stdin, 0)
 		dup3Raw(m.stdout, 1)
 		dup3Raw(m.stderr, 2)
+		if m.pty {
+			// Job control (issue: attach's pty gave no controlling
+			// terminal, so an interactive shell printed "cannot set
+			// terminal process group" and "no job control in this
+			// shell"). setsid() first: it makes A the leader of a brand
+			// new session with no controlling terminal of its own, which
+			// is the precondition ioctl(TIOCSCTTY) needs to succeed. Only
+			// then does TIOCSCTTY on fd 0 — the pty slave just dup3'd
+			// above — make that pty A's controlling terminal. Best-effort,
+			// like dup3Raw above: this is interactive UX, not confinement
+			// (that was already fully applied and released before A was
+			// forked), so a failure here falls through to execve rather
+			// than aborting the session.
+			setsidRaw()
+			ioctlSetCttyRaw(0)
+		}
 		rtSigprocmaskRaw(sigSetmask, &m.signalMask, nil)
 		prctlRaw(unix.PR_SET_PDEATHSIG, uintptr(unix.SIGKILL), 0, 0, 0)
 		unix.RawSyscall(unix.SYS_EXECVE,
@@ -181,6 +203,23 @@ func dup3Raw(oldfd, newfd int) {
 		return
 	}
 	unix.RawSyscall(unix.SYS_DUP3, uintptr(oldfd), uintptr(newfd), 0)
+}
+
+// setsidRaw makes the caller the leader of a new session with no
+// controlling terminal — setsid(2)'s only two possible outcomes are success
+// or EPERM (the caller is already a process group leader), and there is
+// nothing this doomed-to-never-schedule-again child could do about the
+// latter beyond falling through, exactly as dup3Raw does above.
+func setsidRaw() {
+	unix.RawSyscall(unix.SYS_SETSID, 0, 0, 0)
+}
+
+// ioctlSetCttyRaw is ioctl(fd, TIOCSCTTY, 0): if fd refers to a tty and the
+// caller has no controlling terminal, that tty becomes it. The third
+// argument (0) is TIOCSCTTY's "arg" — nonzero would force the steal of a
+// terminal already controlling another session, which A never wants.
+func ioctlSetCttyRaw(fd int) {
+	unix.RawSyscall(unix.SYS_IOCTL, uintptr(fd), uintptr(unix.TIOCSCTTY), 0)
 }
 
 func writeRaw(fd int, b []byte) {

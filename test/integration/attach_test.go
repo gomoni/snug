@@ -1296,6 +1296,94 @@ func TestAttachReturnsPromptlyWhenStdinNeverReachesEOF(t *testing.T) {
 	}
 }
 
+// ── issue #119/#121: attach resolves by realpath, the same way the lock does ──
+
+// TestAttachFindsTheRunByASymlinkToItsTarget is the #119/#121 coherence fix:
+// `snug <dir>` records state.Target as env.EvalSymlinks(dir) — the
+// REALPATH (internal/policy/resolve.go) — and the per-target lock keys its
+// lock name on the identical realpath (targetlock.go's targetLockName). If
+// `snug attach` matches against a bare filepath.Abs instead, `snug attach
+// <symlink-to-target>` can never find the run its own lock just refused a
+// second copy of, even though CLAUDE.md's "One live sandbox per target
+// directory" says plainly: "Same directory is realpath". This test drives
+// attach through a symlink that is NOT the target's own literal spelling.
+//
+// Proof of landing in the SAME sandbox, not merely "a" sandbox, is VERIFY
+// §14a's own technique: a marker written into the run's private tmpfs
+// $HOME (which has no host-filesystem counterpart at all) and read back
+// through the attach session.
+//
+// DISTINGUISHER, run first: a symlink to a DIFFERENT, unrelated directory
+// must still report "no live run" — proving the positive case below is
+// attributable to matching THIS run's realpath specifically, not to attach
+// matching whatever symlink it is handed.
+func TestAttachFindsTheRunByASymlinkToItsTarget(t *testing.T) {
+	budget(t, 30*time.Second)
+	requireSandbox(t)
+	env, xdg := attachEnv(t)
+	proj, _ := target(t)
+
+	otherDir := t.TempDir()
+
+	linkDir := t.TempDir()
+	symlinkToProj := filepath.Join(linkDir, "proj-link")
+	if err := os.Symlink(proj, symlinkToProj); err != nil {
+		t.Fatal(err)
+	}
+	symlinkToOther := filepath.Join(linkDir, "other-link")
+	if err := os.Symlink(otherDir, symlinkToOther); err != nil {
+		t.Fatal(err)
+	}
+
+	bg := startAttachSandbox(t, env, nil, proj,
+		`echo IN-SANDBOX-TMPFS-SYMLINK-PROOF > "$HOME/attach-symlink-proof"; sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t, xdg)
+
+	// DISTINGUISHER: a symlink to an unrelated directory finds no live run.
+	outOther, codeOther := cli(t, env, "attach", symlinkToOther, "--", "/bin/true")
+	if codeOther == 0 {
+		t.Fatalf("attach through a symlink to an UNRELATED directory should have found no live "+
+			"run, but succeeded:\n%s", outOther)
+	}
+	if !strings.Contains(outOther, "no live snug run found") {
+		t.Errorf("attach through a symlink to an unrelated directory was refused, but not with "+
+			"the expected message:\n%s", outOther)
+	}
+
+	// THE CASE: attach through a symlink to the run's own target finds it,
+	// and lands in the SAME sandbox as proven by the private-tmpfs marker.
+	r := attachScript(t, env, symlinkToProj, `cat "$HOME/attach-symlink-proof" 2>&1`).mustRun(t)
+	if !strings.Contains(r.out, "IN-SANDBOX-TMPFS-SYMLINK-PROOF") {
+		t.Errorf("attach through a symlink to the run's own target did not land in the SAME "+
+			"sandbox (the private tmpfs marker is missing):\n%s", r.out)
+	}
+}
+
+// TestAttachOnANonexistentTargetReportsNoLiveRunCleanly is the nonexistent-
+// target half of the #119/#121 coherence fix: filepath.EvalSymlinks fails
+// on a path that does not exist, and that failure must never reach the user
+// as a raw stdlib error (or a panic) — a directory that does not exist
+// cannot have a live run, so attach reports exactly that.
+func TestAttachOnANonexistentTargetReportsNoLiveRunCleanly(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	env := baseEnv("XDG_RUNTIME_DIR=" + t.TempDir())
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	out, code := cli(t, env, "attach", missing, "--", "/bin/true")
+	if code == 0 {
+		t.Fatalf("attach on a nonexistent target should have been refused:\n%s", out)
+	}
+	if !strings.Contains(out, "no live snug run found") {
+		t.Errorf("attach on a nonexistent target did not report the clean \"no live run\" "+
+			"refusal (got a raw EvalSymlinks-shaped error instead?):\n%s", out)
+	}
+	if strings.Contains(out, "panic") {
+		t.Fatalf("attach on a nonexistent target panicked:\n%s", out)
+	}
+}
+
 // openTestPTY duplicates newStdioRelay's own openPTY (internal/cli/attachstdio.go)
 // rather than importing it — this package's own rule (its doc comment, and
 // selfNamespaceInodes/selfStartTime above): drive the built binary, never
@@ -1396,5 +1484,739 @@ func TestAttachPTYReturnsPromptlyWhenThePTYIsNeverClosed(t *testing.T) {
 		t.Errorf("snug attach (pty stdin) took %s to return after the attached command had "+
 			"already exited, with the pty on the other end never closed — this is issue "+
 			"#120's pty-path shape:\n%s", elapsed, out.String())
+	}
+}
+
+// selfStatSessionAndTTY parses field 6 (session) and field 7 (tty_nr) out of
+// a `cat /proc/self/stat` line, the same LAST-')' technique procStartTime
+// (internal/cli/runstate.go) uses for field 22 — the comm field (field 2)
+// is parenthesised and may itself contain spaces, so splitting on
+// whitespace naively is never correct for this file. field 1 (the reader's
+// own pid) is returned too: a process that called setsid() has session ==
+// its own pid, which is what the job-control tests below check instead of
+// decoding tty_nr's device-number encoding.
+func selfStatPidSessionTTY(t *testing.T, line string) (pid, session, ttyNr string) {
+	t.Helper()
+	i := strings.LastIndexByte(line, ')')
+	if i < 0 || i+2 > len(line) {
+		t.Fatalf("unrecognised /proc/self/stat line: %q", line)
+	}
+	fields := strings.Fields(line[i+2:])
+	// After the comm field, field 3 (state) is fields[0]; field 6 (session)
+	// is fields[6-3]=fields[3], field 7 (tty_nr) is fields[7-3]=fields[4].
+	if len(fields) < 5 {
+		t.Fatalf("/proc/self/stat has %d fields after comm, need at least 5: %q", len(fields), line)
+	}
+	pidField := strings.Fields(line[:i])
+	if len(pidField) < 1 {
+		t.Fatalf("/proc/self/stat has no pid field: %q", line)
+	}
+	return pidField[0], fields[3], fields[4]
+}
+
+// TestAttachPTYGivesJobControl is the fix for the visible symptom the four
+// gaps this test file covers were named for: an interactive bash attached
+// through a pty printed "cannot set terminal process group (-1):
+// Inappropriate ioctl for device" and "no job control in this shell",
+// because A (internal/attach/child.go) never made the pty its controlling
+// terminal. setsid()+ioctl(0, TIOCSCTTY) fixes that, and this test checks
+// the fix at the syscall level rather than scraping bash's stderr text (bash
+// versions differ in exactly when they attempt job control and what they
+// print) — /proc/self/stat's own session and tty_nr fields are what
+// setsid()+TIOCSCTTY actually change, and cat is the only tool this needs.
+//
+// Before the fix (setsid/TIOCSCTTY reverted): A inherits its session
+// unchanged from B/C, so session != A's own pid and tty_nr stays "0" (no
+// controlling terminal) even though fd 0 is a real pty device — exactly the
+// state that makes bash's tcsetpgrp fail.
+func TestAttachPTYGivesJobControl(t *testing.T) {
+	budget(t, 40*time.Second)
+	requireSandbox(t)
+	env, xdg := attachEnv(t)
+	proj, _ := target(t)
+
+	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t, xdg)
+
+	master, slave := openTestPTY(t)
+	defer master.Close()
+
+	cmd := exec.Command(snugBin, "attach", proj, "--", "/bin/cat", "/proc/self/stat")
+	cmd.Env = env
+	cmd.Stdin = slave
+	cmd.Stdout = slave
+	cmd.Stderr = slave
+
+	p := startBgProc(t, cmd)
+	slave.Close()
+
+	select {
+	case <-waitDone(p):
+	case <-time.After(15 * time.Second):
+		t.Fatal("snug attach (pty stdin, job control test) did not return within 15s")
+	}
+
+	var out bytes.Buffer
+	buf := make([]byte, 4096)
+	master.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		n, err := master.Read(buf)
+		if n > 0 {
+			out.Write(buf[:n])
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	var statLine string
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.Contains(line, "(cat)") {
+			statLine = strings.TrimRight(line, "\r")
+			break
+		}
+	}
+	if statLine == "" {
+		t.Fatalf("cat's own /proc/self/stat line never appeared through the pty, so this "+
+			"test proves nothing:\n%s", out.String())
+	}
+
+	pid, session, ttyNr := selfStatPidSessionTTY(t, statLine)
+	if session != pid {
+		t.Errorf("attached cat's session (%s) is not its own pid (%s) — setsid() was not "+
+			"called before execve, so job control is exactly as broken as before this fix:\n%s",
+			session, pid, statLine)
+	}
+	if ttyNr == "0" {
+		t.Errorf("attached cat's tty_nr is 0 — it has no controlling terminal even though its "+
+			"fd 0 is a real pty, so TIOCSCTTY was not applied (or setsid() was skipped, which "+
+			"TIOCSCTTY also requires):\n%s", statLine)
+	}
+}
+
+// TestAttachPipeStdinGetsNoControllingTTY is the negative control for
+// TestAttachPTYGivesJobControl: child.go guards setsid()+TIOCSCTTY on the
+// pty path only (attach.Config.PTY, set from newStdioRelay's own pty flag),
+// so a redirected (non-terminal) attach must see its session UNCHANGED —
+// never becoming its own pid — exactly as before this fix. This is what
+// makes the pty test's assertion specific to the pty path rather than an
+// accidental property of every attach.
+func TestAttachPipeStdinGetsNoControllingTTY(t *testing.T) {
+	budget(t, 40*time.Second)
+	requireSandbox(t)
+	env, xdg := attachEnv(t)
+	proj, _ := target(t)
+
+	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t, xdg)
+
+	out, code := cli(t, env, "attach", proj, "--", "/bin/cat", "/proc/self/stat")
+	if code != 0 {
+		t.Fatalf("snug attach (pipe stdin) exited %d:\n%s", code, out)
+	}
+
+	var statLine string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "(cat)") {
+			statLine = strings.TrimRight(line, "\r")
+			break
+		}
+	}
+	if statLine == "" {
+		t.Fatalf("cat's own /proc/self/stat line never appeared, so this test proves nothing:\n%s", out)
+	}
+
+	pid, session, _ := selfStatPidSessionTTY(t, statLine)
+	if session == pid {
+		t.Errorf("attached cat's session (%s) equals its own pid (%s) on the PIPE path — "+
+			"setsid() ran where it must not: only the pty path (attach.Config.PTY) may call "+
+			"it:\n%s", session, pid, statLine)
+	}
+}
+
+// TestAttachForwardsInitialWinsize is the third of the four interactive-pty
+// gaps: newStdioRelay's watchWinsize copies the CLIENT terminal's window
+// size onto the fresh pty it allocates for A, once at the start of the
+// session (and on every SIGWINCH thereafter, not exercised by this test —
+// there is no portable way to deliver SIGWINCH to a process this test does
+// not control the pid namespace view of). This test sets a deliberately
+// unusual size (so it can never be confused with whatever default
+// /dev/ptmx happened to pick) on the CLIENT pty before attach ever starts,
+// then has the attached process read its own window size back with `stty
+// size`, which reads TIOCGWINSZ on its own fd 0 — the attached pty, not the
+// client one — so a match proves the forwarding, not a coincidence of both
+// ptys defaulting the same way.
+func TestAttachForwardsInitialWinsize(t *testing.T) {
+	budget(t, 40*time.Second)
+	requireSandbox(t)
+	env, xdg := attachEnv(t)
+	proj, _ := target(t)
+
+	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t, xdg)
+
+	master, slave := openTestPTY(t)
+	defer master.Close()
+
+	const wantRows, wantCols = 53, 171 // deliberately unlikely defaults
+	if err := unix.IoctlSetWinsize(int(slave.Fd()), unix.TIOCSWINSZ,
+		&unix.Winsize{Row: wantRows, Col: wantCols}); err != nil {
+		t.Fatalf("setting the client pty's own winsize: %v", err)
+	}
+
+	cmd := exec.Command(snugBin, "attach", proj, "--", "/bin/stty", "size")
+	cmd.Env = env
+	cmd.Stdin = slave
+	cmd.Stdout = slave
+	cmd.Stderr = slave
+
+	p := startBgProc(t, cmd)
+	slave.Close()
+
+	select {
+	case <-waitDone(p):
+	case <-time.After(15 * time.Second):
+		t.Fatal("snug attach (pty stdin, winsize test) did not return within 15s")
+	}
+
+	var out bytes.Buffer
+	buf := make([]byte, 4096)
+	master.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		n, err := master.Read(buf)
+		if n > 0 {
+			out.Write(buf[:n])
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	want := fmt.Sprintf("%d %d", wantRows, wantCols)
+	if !strings.Contains(out.String(), want) {
+		t.Errorf("the attached process's own `stty size` never reported %q — the client's "+
+			"initial window size was not forwarded onto the pty allocated for it:\n%s",
+			want, out.String())
+	}
+}
+
+// isRawTermios reports whether t has the flags clientRawMode's cfmakeraw
+// sets — ICANON and ECHO off is enough to distinguish "raw" from "cooked"
+// without duplicating cfmakeraw's whole flag list here.
+func isRawTermios(t *unix.Termios) bool {
+	return t.Lflag&unix.ICANON == 0 && t.Lflag&unix.ECHO == 0
+}
+
+// TestAttachRestoresClientTerminalOnExit is the fourth interactive-pty gap,
+// and the one with a real regression cost if it is ever lost: without it,
+// every `snug attach` from a real terminal leaves that terminal raw
+// afterward — invisible input, no line editing, until the user runs `reset`
+// or `stty sane` by hand.
+//
+// This reads the CLIENT pty's own termios (via the master end this test
+// keeps open, mirroring the slave attach's own stdin actually is) at three
+// points: before attach starts (the baseline to restore to), partway
+// through a deliberately slow attached command (the positive control —
+// proving the session really WAS raw, not that termios was simply never
+// touched), and after attach has returned (the restore this test exists to
+// check). Without restoreTerminal, the "after" read stays raw instead of
+// reverting to the baseline.
+func TestAttachRestoresClientTerminalOnExit(t *testing.T) {
+	budget(t, 40*time.Second)
+	requireSandbox(t)
+	env, xdg := attachEnv(t)
+	proj, _ := target(t)
+
+	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t, xdg)
+
+	master, slave := openTestPTY(t)
+	defer master.Close()
+
+	before, err := unix.IoctlGetTermios(int(master.Fd()), unix.TCGETS)
+	if err != nil {
+		t.Fatalf("reading the client pty's own termios before attach: %v", err)
+	}
+	if isRawTermios(before) {
+		t.Fatalf("the client pty was already raw before attach even started — this test's "+
+			"baseline is not a cooked-mode one, so it cannot prove restore: %+v", before)
+	}
+
+	cmd := exec.Command(snugBin, "attach", proj, "--", "/bin/sleep", "2")
+	cmd.Env = env
+	cmd.Stdin = slave
+	cmd.Stdout = slave
+	cmd.Stderr = slave
+
+	p := startBgProc(t, cmd)
+	slave.Close()
+
+	deadline := time.Now().Add(10 * time.Second)
+	var mid *unix.Termios
+	for time.Now().Before(deadline) {
+		mid, err = unix.IoctlGetTermios(int(master.Fd()), unix.TCGETS)
+		if err != nil {
+			t.Fatalf("reading the client pty's own termios mid-session: %v", err)
+		}
+		if isRawTermios(mid) {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if mid == nil || !isRawTermios(mid) {
+		t.Fatalf("the client pty never went raw during the attached session (waited 10s) — "+
+			"clientRawMode did not run, so this test cannot tell restore apart from "+
+			"'nothing ever touched it': %+v", mid)
+	}
+
+	select {
+	case <-waitDone(p):
+	case <-time.After(15 * time.Second):
+		t.Fatal("snug attach (pty stdin, restore test) did not return within 15s")
+	}
+
+	after, err := unix.IoctlGetTermios(int(master.Fd()), unix.TCGETS)
+	if err != nil {
+		t.Fatalf("reading the client pty's own termios after attach returned: %v", err)
+	}
+	if isRawTermios(after) {
+		t.Errorf("the client pty is STILL raw after attach returned — restoreTerminal did not "+
+			"put the original termios back: %+v", after)
+	}
+	if *after != *before {
+		t.Errorf("the client pty's termios after attach (%+v) does not match the pre-attach "+
+			"baseline (%+v) — restore put back something other than exactly what was there "+
+			"before", after, before)
+	}
+}
+
+// ── redteam scoped pass on PR #121 (interactive attach): three negatives ──
+// verified by hand, made permanent here. No new escape was found; these pin
+// the M18 boundary and the seccomp/tty properties on the PTY PATH
+// specifically, which none of the tests above (positive job-control, winsize,
+// termios restore) actually assert.
+
+// drainPTY reads whatever is currently buffered on master with a short,
+// bounded deadline — the same technique TestAttachPTYGivesJobControl and its
+// siblings already use: master is never closed by these tests (it stands in
+// for a real, still-open client terminal), so a plain io.ReadAll would block
+// on an EOF that never comes.
+func drainPTY(t *testing.T, master *os.File) string {
+	t.Helper()
+	var out bytes.Buffer
+	buf := make([]byte, 4096)
+	master.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		n, err := master.Read(buf)
+		if n > 0 {
+			out.Write(buf[:n])
+		}
+		if err != nil {
+			break
+		}
+	}
+	return out.String()
+}
+
+// runAttachOverPTY runs `snug attach proj -- /bin/bash -c script` with a real
+// pty (from openTestPTY) as its stdin/stdout/stderr — the same driving shape
+// TestAttachPTYGivesJobControl uses — waits for it to return (bounded), and
+// returns whatever appeared on the master side.
+func runAttachOverPTY(t *testing.T, env []string, proj, script string, master, slave *os.File) string {
+	t.Helper()
+	cmd := exec.Command(snugBin, "attach", proj, "--", "/bin/bash", "-c", script)
+	cmd.Env = env
+	cmd.Stdin = slave
+	cmd.Stdout = slave
+	cmd.Stderr = slave
+
+	p := startBgProc(t, cmd)
+	slave.Close()
+
+	select {
+	case <-waitDone(p):
+	case <-time.After(15 * time.Second):
+		t.Fatal("snug attach (pty stdin) did not return within 15s")
+	}
+	return drainPTY(t, master)
+}
+
+// TestAttachPTYNeverExposesTheMasterToTheAttachedProcess is the redteam's
+// first verified negative: the fresh pty PAIR newStdioRelay allocates for an
+// interactive session (internal/cli/attachstdio.go's openPTY) keeps its
+// MASTER half in the attach CLIENT process only — childStdin/childStdout/
+// childStderr are all set to the SLAVE, never the master, and the master is
+// never among the fds internal/attach.Config carries across the raw fork
+// into B/A. Nothing in this package explicitly CLOEXECs it either: the
+// property rests entirely on Go's os.OpenFile setting O_CLOEXEC by default
+// (openPTY's os.OpenFile("/dev/ptmx", ...)) and dup3 never being called on
+// it (dup3Raw is only ever invoked on Stdin/Stdout/Stderr, i.e. the slave) —
+// so the master fd, inherited unchanged across both raw clone(2)s (fork does
+// NOT honour CLOEXEC, only execve does), is closed automatically at A's own
+// execve. This test asserts that outcome from INSIDE A rather than trusting
+// the reasoning above holds.
+//
+// DETECTION TECHNIQUE, and why readlink is NOT it: /proc/<pid>/fd/N's
+// symlink target is rendered relative to the READER's own mount namespace,
+// and A — unlike this test — has setns'd into the sandbox's. MEASURED (not
+// assumed): a real pty master's fd, read from a process that switched into
+// a DIFFERENT mount namespace than the one that opened it, renders as
+// "/dev/pts/N" — indistinguishable by TEXT from a genuine slave — not the
+// "/dev/ptmx" this test's own (same-namespace) process sees. So the
+// technique here is TIOCGPTN instead: a kernel-semantic ioctl that
+// succeeds ONLY on a pty master and fails ENOTTY on a slave, regardless of
+// which mount namespace names it or whether it can be named at all.
+//
+// DETECTOR CONTROL, run first, in THIS process: TIOCGPTN really does
+// succeed on a KNOWN master and really does fail on a KNOWN slave —
+// otherwise "no master found" below could pass by the detection technique
+// being unable to recognise one even when handed one.
+//
+// Reverted by hand (not committed) to confirm this goes red: temporarily
+// making newStdioRelay also assign the master to childStderr reproduces
+// exactly the "imagine the master were passed" case the working agreement
+// asks for, and the run below then reports MASTERS=2.
+func TestAttachPTYNeverExposesTheMasterToTheAttachedProcess(t *testing.T) {
+	budget(t, 40*time.Second)
+	requireSandbox(t)
+	requirePython(t)
+	env, xdg := attachEnv(t)
+	proj, _ := target(t)
+
+	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t, xdg)
+
+	master, slave := openTestPTY(t)
+	defer master.Close()
+
+	if _, err := unix.IoctlGetInt(int(master.Fd()), unix.TIOCGPTN); err != nil {
+		t.Fatalf("control: TIOCGPTN failed on a KNOWN pty master (%v) — the detection "+
+			"technique below cannot recognise one, so this test would prove nothing", err)
+	}
+	if n, err := unix.IoctlGetInt(int(slave.Fd()), unix.TIOCGPTN); err == nil {
+		t.Fatalf("control: TIOCGPTN unexpectedly SUCCEEDED (n=%d) on a KNOWN pty SLAVE — the "+
+			"detection technique cannot distinguish master from slave, so this test would "+
+			"prove nothing", n)
+	}
+
+	probe := `import ctypes, os
+libc = ctypes.CDLL("libc.so.6", use_errno=True)
+TIOCGPTN = 0x80045430
+open_fds = []
+masters = []
+for fd in range(0, 256):
+    try:
+        os.fstat(fd)
+    except OSError:
+        continue
+    open_fds.append(fd)
+    buf = ctypes.c_uint(0)
+    ctypes.set_errno(0)
+    r = libc.ioctl(fd, TIOCGPTN, ctypes.byref(buf))
+    if r == 0:
+        masters.append(fd)
+print("OPEN=%s" % ",".join(map(str, open_fds)))
+print("MASTERS=%s" % ",".join(map(str, masters)))
+`
+	if err := os.WriteFile(filepath.Join(proj, "masterprobe.py"), []byte(probe), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := runAttachOverPTY(t, env, proj, "python3 masterprobe.py\necho ---END---\n", master, slave)
+
+	if !strings.Contains(got, "---END---") {
+		t.Fatalf("the attached process's fd probe never completed, so this test proves "+
+			"nothing:\n%s", got)
+	}
+
+	// POSITIVE CONTROL: fd 0/1/2 really are open — the sweep can see real,
+	// present descriptors, not merely reporting "nothing" on a session that
+	// never started.
+	openIdx := strings.Index(got, "OPEN=")
+	if openIdx < 0 {
+		t.Fatalf("no OPEN= line in the probe's own output:\n%s", got)
+	}
+	openLine, _, _ := strings.Cut(got[openIdx+len("OPEN="):], "\n")
+	for _, want := range []string{"0", "1", "2"} {
+		found := false
+		for _, f := range strings.Split(strings.TrimSpace(openLine), ",") {
+			if f == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("fd %s is not open inside the attached process (OPEN=%s) — this test "+
+				"proves nothing:\n%s", want, openLine, got)
+		}
+	}
+
+	// THE ASSERTION: no open fd anywhere in the attached process answers
+	// TIOCGPTN — no pty master, on any fd number, reachable from inside A.
+	mastersIdx := strings.Index(got, "MASTERS=")
+	if mastersIdx < 0 {
+		t.Fatalf("no MASTERS= line in the probe's own output:\n%s", got)
+	}
+	mastersLine, _, _ := strings.Cut(got[mastersIdx+len("MASTERS="):], "\n")
+	if strings.TrimSpace(mastersLine) != "" {
+		t.Errorf("the attached process has an open fd (%s) that answers TIOCGPTN — a pty "+
+			"MASTER, reachable from inside the attached process. The master must never "+
+			"cross into A (internal/cli/attachstdio.go's newStdioRelay keeps it in the "+
+			"client only):\n%s", strings.TrimSpace(mastersLine), got)
+	}
+}
+
+// TestAttachPTYDeniesTIOCSTIWithEPERM is the redteam's second verified
+// negative: ioctl(fd, TIOCSTI, ...) — pushing characters into a terminal's
+// input queue, i.e. injecting keystrokes into whatever session owns that
+// tty — must be refused with EPERM specifically, the seccomp deny signature
+// (internal/sandbox/seccomp.go's tiocsti branch returns retEPERM), on the
+// controlling-tty path B/A takes via setsid()+TIOCSCTTY, exactly as it
+// already is on the non-interactive path. This probes BOTH fd 0 (the pty
+// slave, now the session's controlling terminal) and a fresh open of
+// /dev/tty, since the filter matches on the ioctl request argument alone
+// and does not care which fd carries it — but the two are opened
+// differently (one is dup3'd in before exec, the other freshly opened
+// inside A), so both are worth measuring rather than assuming they behave
+// identically.
+//
+// legacy_tiocsti=0 on this kernel (CLAUDE.md), so a "succeeds on the host"
+// positive control does not exist — the kernel already refuses TIOCSTI for
+// everyone, filter or not. Measured directly (see this package's
+// development notes): with NO seccomp filter at all, the same ioctl fails
+// with EIO (errno 5), not EPERM. That is exactly the built-in control this
+// test relies on instead: attach a SECOND background sandbox started with
+// --no-seccomp (attach rebuilds no filter for a run that had none) and
+// show the SAME probe reports a DIFFERENT, non-EPERM errno there — proof
+// that the EPERM measured on the filtered session is attributable to the
+// seccomp filter specifically, not to the kernel already blocking TIOCSTI
+// on its own account (which would make EPERM true regardless of the
+// filter, and this test would be measuring nothing).
+func TestAttachPTYDeniesTIOCSTIWithEPERM(t *testing.T) {
+	budget(t, 40*time.Second)
+	requireSandbox(t)
+	requirePython(t)
+	env, xdg := attachEnv(t)
+	proj, _ := target(t)
+
+	// python3 -c, deliberately NOT a heredoc (<<'PYEOF'): a heredoc
+	// redirects the COMMAND's own fd 0 to the heredoc's content, so
+	// probe("fd0", 0) would be probing the heredoc pipe rather than this
+	// session's real fd 0 (the pty slave, its controlling terminal). -c
+	// leaves fd 0/1/2 exactly what the surrounding script's are.
+	probe := `python3 -c '
+import ctypes, os
+libc = ctypes.CDLL("libc.so.6", use_errno=True)
+TIOCSTI = 0x5412
+def probe(label, fd):
+    ctypes.set_errno(0)
+    libc.ioctl(ctypes.c_int(fd), ctypes.c_ulong(TIOCSTI), ctypes.c_char_p(b"x"))
+    e = ctypes.get_errno()
+    print("%s=%d" % (label, e))
+probe("fd0", 0)
+fd = os.open("/dev/tty", os.O_RDWR)
+probe("devtty", fd)
+'
+echo ---END---
+`
+
+	// ── THE CASE: the run's own (default, filtered) seccomp profile ─────
+	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t, xdg)
+
+	master, slave := openTestPTY(t)
+	defer master.Close()
+	got := runAttachOverPTY(t, env, proj, probe, master, slave)
+
+	if !strings.Contains(got, "---END---") {
+		t.Fatalf("the TIOCSTI probe never completed, so this test proves nothing:\n%s", got)
+	}
+	for _, label := range []string{"fd0", "devtty"} {
+		errno := tiocstiErrno(t, got, label)
+		if errno != int(unix.EPERM) {
+			t.Errorf("TIOCSTI on %s returned errno %d, want %d (EPERM, the seccomp deny "+
+				"signature):\n%s", label, errno, unix.EPERM, got)
+		}
+	}
+
+	// ── CONTROL: an otherwise identical session with NO seccomp filter ──
+	envCtl, xdgCtl := attachEnv(t)
+	projCtl, _ := target(t)
+	bgCtl := startAttachSandbox(t, envCtl, []string{"--no-seccomp"}, projCtl, `sleep 300`)
+	bgCtl.ready(t)
+	bgCtl.waitForState(t, xdgCtl)
+
+	masterCtl, slaveCtl := openTestPTY(t)
+	defer masterCtl.Close()
+	gotCtl := runAttachOverPTY(t, envCtl, projCtl, probe, masterCtl, slaveCtl)
+
+	if !strings.Contains(gotCtl, "---END---") {
+		t.Fatalf("control: the TIOCSTI probe never completed, so this test proves "+
+			"nothing:\n%s", gotCtl)
+	}
+	for _, label := range []string{"fd0", "devtty"} {
+		errno := tiocstiErrno(t, gotCtl, label)
+		if errno == int(unix.EPERM) {
+			t.Errorf("control: TIOCSTI on %s STILL returned EPERM with the seccomp filter "+
+				"off (--no-seccomp) — the EPERM measured on the filtered session above is "+
+				"then NOT attributable to the filter, and this test proves nothing:\n%s",
+				label, gotCtl)
+		}
+	}
+}
+
+// tiocstiErrno pulls "label=N" out of TestAttachPTYDeniesTIOCSTIWithEPERM's
+// probe output.
+func tiocstiErrno(t *testing.T, out, label string) int {
+	t.Helper()
+	want := label + "="
+	idx := strings.Index(out, want)
+	if idx < 0 {
+		t.Fatalf("no %q line in the probe's own output:\n%s", want, out)
+	}
+	line, _, _ := strings.Cut(out[idx+len(want):], "\n")
+	n, err := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil {
+		t.Fatalf("could not parse the errno after %q (%q): %v", want, line, err)
+	}
+	return n
+}
+
+// TestAttachPTYDevTTYIsTheAllocatedPTYNotTheHostTerminal is the redteam's
+// third verified negative: /dev/tty inside an interactive attach must
+// resolve to the session's own controlling terminal — the pty slave A
+// claimed via setsid()+TIOCSCTTY (internal/attach/child.go) — never to
+// anything the HOST's real terminal reaches. There is no path bound into
+// the sandbox that could even name a host tty (no /dev/tty passthrough,
+// no host /dev at all), so the only way to test the positive half of this
+// is to show /dev/tty resolves to something LIVE, and that it is the SAME
+// device as fd 0: a write through it reaches the relay (this test's own
+// pty master, standing in for the client's real terminal), and the
+// CONTROLLING terminal's device number — /proc/self/stat's own tty_nr
+// field, the kernel's own record of current->signal->tty, queried
+// independently of any particular open() — matches fd 0's.
+//
+// fstat(open("/dev/tty")).st_rdev is DELIBERATELY not used for that
+// comparison: measured directly (not by assumption) that it always reports
+// /dev/tty's OWN device number (5,0, TTYAUX_MAJOR) regardless of which real
+// terminal the open redirects to — the kernel's tty_open() swaps struct
+// file's f_op/private_data but never the dentry/inode the fd's fstat looks
+// at, so that comparison is always false and proves nothing. tty_nr is
+// decoded per proc(5)'s own documented bit layout (major: bits 15-8; minor:
+// bits 7-0 and 31-20), the same encoding TestAttachPTYGivesJobControl
+// already relies on for the "has a controlling terminal at all" half of
+// this property — this test is its "and it's the RIGHT one" companion.
+//
+// Reverted by hand (not committed) to confirm this goes red: commenting out
+// child.go's ioctlSetCttyRaw(0) call (leaving setsid() in place) reproduces
+// "imagine TIOCSCTTY never ran" — A then has no controlling terminal at
+// all, so opening /dev/tty fails with ENXIO ("No such device or address")
+// and the marker below never reaches the relay.
+func TestAttachPTYDevTTYIsTheAllocatedPTYNotTheHostTerminal(t *testing.T) {
+	budget(t, 40*time.Second)
+	requireSandbox(t)
+	requirePython(t)
+	env, xdg := attachEnv(t)
+	proj, _ := target(t)
+
+	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t, xdg)
+
+	master, slave := openTestPTY(t)
+	defer master.Close()
+
+	marker := "snugattachdevtty" + strconv.Itoa(os.Getpid()) + strconv.FormatInt(time.Now().UnixNano(), 36)
+	// python3 -c, deliberately NOT a heredoc: a heredoc redirects python's
+	// own fd 0 to the heredoc's content, so os.fstat(0) would report the
+	// heredoc pipe rather than this session's real fd 0 (the pty slave) —
+	// exactly the fd-0-identity mistake noted on the TIOCSTI probe above.
+	script := fmt.Sprintf(`
+echo %s > /dev/tty 2>&1
+python3 -c '
+import os
+fd0major, fd0minor = os.major(os.fstat(0).st_rdev), os.minor(os.fstat(0).st_rdev)
+with open("/proc/self/stat") as f:
+    line = f.read()
+fields = line[line.rfind(")")+2:].split()
+tty_nr = int(fields[7-3])
+ttymajor = (tty_nr >> 8) & 0xFFF
+ttyminor = (tty_nr & 0xFF) | ((tty_nr >> 20) & 0xFFF00)
+print("TTY-NR-MATCH=%%s" %% ((fd0major, fd0minor) == (ttymajor, ttyminor)))
+'
+echo ---END---
+`, marker)
+
+	got := runAttachOverPTY(t, env, proj, script, master, slave)
+
+	if !strings.Contains(got, "---END---") {
+		t.Fatalf("the /dev/tty probe never completed, so this test proves nothing:\n%s", got)
+	}
+
+	// POSITIVE: a write through /dev/tty really reached the relay stream —
+	// proof /dev/tty resolved to something live and connected, not merely
+	// present-but-inert (or absent, with the write silently swallowed).
+	if !strings.Contains(got, marker) {
+		t.Fatalf("a write to /dev/tty inside the attached session never appeared on the "+
+			"relay stream — either /dev/tty did not resolve to a live terminal at all, or "+
+			"this test proves nothing:\n%s", got)
+	}
+	if !strings.Contains(got, "TTY-NR-MATCH=True") {
+		t.Errorf("the session's controlling-terminal device number (/proc/self/stat's "+
+			"tty_nr) does not match fd 0's (the pty slave allocated for this session) — "+
+			"the controlling terminal is not the session's own allocated pty:\n%s", got)
+	}
+}
+
+// TestAttachPTYOutputIsCookedForARawModeClient pins a property measured
+// directly while chasing a red herring during this pass, worth keeping
+// permanently regardless: the freshly allocated pty SLAVE (A's own stdio,
+// internal/cli/attachstdio.go's openPTY) keeps its DEFAULT, cooked termios
+// — OPOST+ONLCR in particular, neither of which anything in this codebase
+// sets explicitly, they are simply never turned off — so a bare '\n' the
+// attached program writes arrives on the relay as '\r\n'.
+//
+// This matters because clientRawMode puts the CLIENT's own real terminal
+// into RAW mode for the session, which disables that terminal's OWN local
+// newline translation: the cooked bytes above are the ONLY place '\r' can
+// come from. If A's own pty slave were ever put in raw mode too — or any
+// other bug fed the client anything other than correctly cooked bytes — a
+// real terminal renders every line one column further right than the
+// last: a staircase. (One did appear, live, on this pass — traced to an
+// uncommitted local debugging artifact of this test's own development that
+// briefly misrouted the pty master into the attached process's stderr; not
+// a defect in the code this test exercises, but the exact FAILURE SHAPE
+// this test would need to catch, which is why it is worth keeping.)
+func TestAttachPTYOutputIsCookedForARawModeClient(t *testing.T) {
+	budget(t, 40*time.Second)
+	requireSandbox(t)
+	env, xdg := attachEnv(t)
+	proj, _ := target(t)
+
+	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t, xdg)
+
+	master, slave := openTestPTY(t)
+	defer master.Close()
+
+	marker := "snugattachcooked" + strconv.Itoa(os.Getpid()) + strconv.FormatInt(time.Now().UnixNano(), 36)
+	got := runAttachOverPTY(t, env, proj, fmt.Sprintf("printf '%%s\\n' %s\n", marker), master, slave)
+
+	idx := strings.Index(got, marker)
+	if idx < 0 {
+		t.Fatalf("the marker never appeared on the relay stream, so this test proves "+
+			"nothing:\n%q", got)
+	}
+	after := got[idx+len(marker):]
+	if !strings.HasPrefix(after, "\r\n") {
+		t.Errorf("the byte(s) immediately after the marker are %q, want \"\\r\\n\" — the "+
+			"attached pty's own line ending was not translated for the raw-mode client, "+
+			"which is the STAIRCASE symptom (every line drifting one column right than the "+
+			"last):\n%q", after, got)
 	}
 }

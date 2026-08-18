@@ -48,6 +48,12 @@ func TestStaleRuntimeDirectoryIsSweptOnTheNextRun(t *testing.T) {
 	budget(t, 20*time.Second)
 	requireSandbox(t)
 	proj, _ := target(t)
+	// Distinct targets for the three runs: issue #119 forbids two LIVE
+	// sandboxes on the same directory, and this test needs two live at once
+	// (a genuine positive control alongside the corpse). The sweep is keyed on
+	// liveness, not on the target, so distinct targets exercise it faithfully.
+	projDying := t.TempDir()
+	projSweep := t.TempDir()
 	pub, sock := sshAgentAndKey(t)
 
 	runtimeScratch := t.TempDir()
@@ -59,9 +65,9 @@ func TestStaleRuntimeDirectoryIsSweptOnTheNextRun(t *testing.T) {
 		"ssh_key = \""+pub+"\"\n",
 		"SSH_AUTH_SOCK="+sock, "XDG_RUNTIME_DIR="+runtimeScratch)
 
-	start := func() *exec.Cmd {
+	start := func(tgt string) *exec.Cmd {
 		t.Helper()
-		cmd := exec.Command(snugBin, "-p", "pinned", proj, "--", "/bin/sleep", "30")
+		cmd := exec.Command(snugBin, "-p", "pinned", tgt, "--", "/bin/sleep", "30")
 		cmd.Env = env
 		cmd.WaitDelay = waitDelay
 		if err := cmd.Start(); err != nil {
@@ -74,7 +80,7 @@ func TestStaleRuntimeDirectoryIsSweptOnTheNextRun(t *testing.T) {
 	// without a genuinely live run sitting in the same shared "snug"
 	// directory, "the stale one is gone" below would pass just as well on a
 	// sweep that removes everything it sees.
-	live := start()
+	live := start(proj)
 	liveKilled := false
 	t.Cleanup(func() {
 		if !liveKilled {
@@ -86,7 +92,7 @@ func TestStaleRuntimeDirectoryIsSweptOnTheNextRun(t *testing.T) {
 	waitForLockFile(t, liveDir)
 
 	// The run that is about to be killed for real.
-	dying := start()
+	dying := start(projDying)
 	dyingDir := filepath.Join(snugDir, fmt.Sprintf("run-%d", dying.Process.Pid))
 	waitForLockFile(t, dyingDir)
 
@@ -119,7 +125,7 @@ func TestStaleRuntimeDirectoryIsSweptOnTheNextRun(t *testing.T) {
 
 	// A fresh, THIRD snug process under the same $XDG_RUNTIME_DIR is what
 	// sweeps it — "on the way in", per the claim above.
-	runEnv(t, env, []string{"-p", "pinned"}, proj, "true").mustRun(t)
+	runEnv(t, env, []string{"-p", "pinned"}, projSweep, "true").mustRun(t)
 
 	if _, err := os.Stat(dyingDir); !os.IsNotExist(err) {
 		t.Errorf("the stale directory left by the SIGKILLed run survived a later, unrelated run: %v", err)

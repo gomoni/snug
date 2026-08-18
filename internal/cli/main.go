@@ -8,6 +8,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -231,6 +232,33 @@ func run(cfg config) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 		return exitUsage
+	}
+
+	// One live sandbox per target directory (issue #119). This is the earliest
+	// point at which the target is knowable, and the refusal must start NOTHING
+	// — no host tmp dir, no staged credentials, no ssh-agent or container proxy,
+	// no stage, no netns, no bwrap — so the lock is taken here, before any of
+	// that. A dry run creates nothing and must never be refused, so it takes no
+	// lock. Invariant 5: the refusal is fatal and there is no fallback to a
+	// second run.
+	if !cfg.dryRun {
+		unlock, err := lockTarget(abs)
+		if err != nil {
+			var busy *targetBusyError
+			if errors.As(err, &busy) {
+				// The named-fix refusal: another live run holds this target.
+				fmt.Fprint(os.Stderr, busy.message(target))
+				return exitUnavail
+			}
+			// A hard error (a runtime directory that fails the ownership,
+			// mode or symlink guards secureSubroot enforces) is the same
+			// refusal the per-run lock produces from startIdentity /
+			// startContainers, and takes the same exit code — this path
+			// simply reaches those guards earlier.
+			fmt.Fprintf(os.Stderr, "snug: %v\n", err)
+			return exitPolicy
+		}
+		defer unlock()
 	}
 
 	env := policy.OSEnviron{}
