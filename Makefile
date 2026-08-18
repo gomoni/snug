@@ -30,6 +30,13 @@ gate:
 	# the pidfd ones. Naming the path directly (no "...") sidesteps the
 	# testdata exclusion, which only applies to wildcard expansion.
 	go vet ./test/integration/testdata/pidfdprobe
+	# testdata/netprobe (issue #63, Tier B) is a real Go package too — the
+	# static `FROM scratch` container entrypoint the engine-in-N tests build
+	# on demand (containerengine_test.go's netprobeBin) — built lazily rather
+	# than unconditionally by TestMain, so a break in it would otherwise sit
+	# undetected until a host with a real engine bundle happened to run those
+	# specific tests. Same fix, same reasoning as pidfdprobe above.
+	go vet ./test/integration/testdata/netprobe
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This

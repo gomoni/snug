@@ -3055,6 +3055,18 @@ func TestPodmanBuildIsFilteredEndToEnd(t *testing.T) {
 	requireEngine(t)
 	requirePython(t)
 	requireInternet(t) // the build pulls alpine
+	// requireRealEngine (containerengine_test.go) is the fix for this test
+	// FAILING outright on a CI runner instead of skipping: requireEngine
+	// above only proves a `podman` binary is on PATH, and a GitHub-hosted
+	// ubuntu-latest runner has a real, non-shim one — so this test used to
+	// run there, get a 200 from the build, and then find its RUN step never
+	// actually executed (the runner's cgroup delegation does not survive
+	// __inengine's own private cgroup namespace). requireRealEngine proves
+	// the SAME thing this test is about to assert (an ordinary build that
+	// really runs) FIRST, against baseEnv() — i.e. whatever `podman` this
+	// host's own PATH resolves to, exactly as this test always used — and
+	// skips cleanly, with the real reason, if it does not hold.
+	requireRealEngine(t, baseEnv())
 
 	proj, _ := target(t)
 
@@ -3112,7 +3124,22 @@ sock = os.environ["CONTAINER_HOST"].replace("unix://", "")
 
 buf = io.BytesIO()
 with tarfile.open(fileobj=buf, mode="w") as tf:
-    data = b"FROM alpine\nRUN echo BUILT-INSIDE-SNUG\n"
+    # A FULLY QUALIFIED reference, not the bare "alpine" this used to say.
+    # MEASURED (issue #63, Tier B, sandbox-tester): with a short name,
+    # containers/image resolves it through registries.conf's short-name-alias
+    # cache, and — because __inengine's own process reports euid 0
+    # (root-in-U, not "really" root on this host) — that code picks the
+    # SYSTEM cache path (/var/cache/containers) over the user one, which the
+    # real host uid cannot write to: "creating build container: mkdir
+    # /var/cache/containers: permission denied". The build itself still
+    # returns 200 (STEP 1/2 succeeded before the failure), so this is exactly
+    # the "200 but BUILT-INSIDE-SNUG never appears" shape probeRealEngine's
+    # own doc comment (containerengine_test.go) attributed to cgroup
+    # delegation — that diagnosis was WRONG; the private-cgroup-namespace
+    # remount warning is a harmless red herring that happens to appear right
+    # next to the real failure. A fully qualified name skips short-name
+    # resolution entirely, so this never runs regardless of euid.
+    data = b"FROM docker.io/library/alpine:3.20\nRUN echo BUILT-INSIDE-SNUG\n"
     ti = tarfile.TarInfo("Dockerfile")
     ti.size = len(data)
     tf.addfile(ti, io.BytesIO(data))

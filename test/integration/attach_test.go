@@ -1551,10 +1551,20 @@ func TestAttachPTYGivesJobControl(t *testing.T) {
 	p := startBgProc(t, cmd)
 	slave.Close()
 
+	// cmdTimeout (30s), not the 15s every other attach test in this file
+	// uses: this one measurably passed in 0.17s on every run tried locally,
+	// so a CI failure at "did not return within 15s" is a loaded-runner
+	// timing flake, not a hang — but 15s left too little headroom against
+	// that load for THIS test specifically (setsid()+TIOCSCTTY adds a
+	// syscall a plain pipe-stdin attach does not pay). Still comfortably
+	// inside this test's own 40s budget() above, which is the real hang
+	// detector (it panics at 80s) — this bound only needs to be generous
+	// enough that a loaded runner does not trip it before the process
+	// actually returns.
 	select {
 	case <-waitDone(p):
-	case <-time.After(15 * time.Second):
-		t.Fatal("snug attach (pty stdin, job control test) did not return within 15s")
+	case <-time.After(cmdTimeout):
+		t.Fatalf("snug attach (pty stdin, job control test) did not return within %s", cmdTimeout)
 	}
 
 	var out bytes.Buffer
