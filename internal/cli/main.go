@@ -243,11 +243,17 @@ func run(cfg config) int {
 		if err != nil {
 			var busy *targetBusyError
 			if errors.As(err, &busy) {
+				// The named-fix refusal: another live run holds this target.
 				fmt.Fprint(os.Stderr, busy.message(target))
-			} else {
-				fmt.Fprintf(os.Stderr, "snug: %v\n", err)
+				return exitUnavail
 			}
-			return exitUnavail
+			// A hard error (a runtime directory that fails the ownership,
+			// mode or symlink guards secureSubroot enforces) is the same
+			// refusal the per-run lock produces from startIdentity /
+			// startContainers, and takes the same exit code — this path
+			// simply reaches those guards earlier.
+			fmt.Fprintf(os.Stderr, "snug: %v\n", err)
+			return exitPolicy
 		}
 		defer unlock()
 	}
