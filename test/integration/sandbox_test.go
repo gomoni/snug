@@ -3056,18 +3056,6 @@ func TestPodmanBuildIsFilteredEndToEnd(t *testing.T) {
 	requirePython(t)
 	requireInternet(t) // the build pulls alpine
 
-	// TEMPORARY, issue #63 Tier B: internal/cli/container.go now refuses to
-	// start a container engine at all on any real run, because the policy
-	// layer correctly demands the engine run inside the sandbox's own
-	// network namespace and nothing yet makes that true (see that file's own
-	// comment). This is a plain t.Skip, not skipOrFail — like requireEngine
-	// just above, this is "the feature is not available on this build", not
-	// "this host cannot sandbox at all", so SNUG_REQUIRE_SANDBOX must not
-	// turn it into a failure. Remove this skip in the same change that
-	// removes container.go's refusal.
-	t.Skip("SKIP: container engine support is incomplete on this build (issue #63, Tier B) — " +
-		"see internal/cli/container.go")
-
 	proj, _ := target(t)
 
 	if err := os.WriteFile(filepath.Join(proj, "probe.py"), []byte(buildProbe), 0o644); err != nil {
