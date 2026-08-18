@@ -52,6 +52,55 @@ func startContainers(pol *policy.Policy, verbose bool) (cleanup func(), err erro
 		return func() {}, nil
 	}
 
+	// TEMPORARY, issue #63 Tier B: deriveTopology now correctly DEMANDS a stage
+	// with the full delegated subuid range and the engine's own capability
+	// bounding set (policy.EngineCapBounding) whenever a container profile is
+	// selected — internal/stage/stage.go's Start CAN satisfy that demand today.
+	// What it does NOT yet do is actually FORK PODMAN INTO THAT STAGE'S
+	// namespaces: internal/engine.Engine.Start below still execs podman as a
+	// PLAIN HOST PROCESS, on the host's own network namespace, unrelated to the
+	// stage entirely.
+	//
+	// That gap is invisible everywhere except here: --dry-run's TOPOLOGY and
+	// CONTAINERS blocks (internal/cli/dryrun.go) and @podman-socket's own
+	// description now both say "offline unless @net is selected" and describe
+	// an engine confined to the sandbox's own netns with a 12-cap bounding set
+	// — none of which the RUNNING engine below actually delivers yet. Silently
+	// proceeding here would be exactly the finding this ticket exists to close
+	// (ENGINE-NETNS.md §0), now wearing more confident language on the trust
+	// screen. Invariant 5 — no silent downgrade — is the reason for this
+	// refusal rather than a warning: a user who believes "offline" because the
+	// screen says so is worse off than one who is told plainly that this build
+	// cannot deliver it yet.
+	//
+	// Closing this requires a host-bridge decision this ticket's implementation
+	// pass did not settle: how a long-lived engine child is launched through
+	// the stage's existing one-shot, single-request control protocol
+	// (internal/stage/serve.go) without either serialising it behind bwrap's
+	// own lifecycle or opening the concurrent-request redesign that decision
+	// needs. Remove this refusal only once internal/engine (or its
+	// replacement) actually forks podman through the stage, into N, with its
+	// mount namespace and policy.EngineCapBounding applied — and drop this
+	// comment along with it. (pol.Podman != policy.PodmanOff is guaranteed at
+	// this point by the early return above.)
+	return nil, fmt.Errorf("container engine support is incomplete on this build (issue #63, " +
+		"Tier B): the policy layer now correctly demands the container engine run inside this " +
+		"sandbox's own network namespace, but the engine is not yet wired to actually start " +
+		"there — it would still run on the HOST's network, silently contradicting what " +
+		"--dry-run says about egress. Refusing rather than handing the sandbox an engine " +
+		"whose guarantee this build cannot keep. See internal/cli/container.go for what is " +
+		"missing")
+}
+
+// startContainersHostNetwork is the pre-Tier-B implementation, kept intact
+// and UNREACHABLE (called from nowhere) rather than deleted: it is exactly
+// what startContainers should resume doing, minus the host-network engine
+// launch, once internal/engine forks podman through the stage instead of
+// exec'ing it as a plain host process. Deleting it would make the follow-up
+// a rewrite from scratch instead of a diff against a known-working shape.
+//
+//lint:ignore U1000 intentionally unreferenced — see the comment above
+func startContainersHostNetwork(pol *policy.Policy, verbose bool) (cleanup func(), err error) {
 	warnAboutPodmanClient()
 
 	eng, err := engine.New(pol.Profiles, pol.Target)
