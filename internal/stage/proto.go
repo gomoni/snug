@@ -25,11 +25,15 @@ import (
 // pid it is asked to trust).
 const maxMessage = 64 * 1024
 
-// request is a P0 -> P1 message. Three ops, and the stage answers at most one
+// request is a P0 -> P1 message. Four ops, and the stage answers at most one
 // "netready" and exactly one "start" before it exits; "stop" tears it down and
-// is sent by Close rather than StartSandbox.
+// is sent by Close rather than StartSandbox. "mapped" is new with issue #63,
+// Tier B and — unlike the other three — is sent UNSOLICITED-BY-CALLER-CODE:
+// Start sends it only in reply to a "needmap" event, never on its own
+// initiative, so it cannot arrive before __stage-setup is actually blocked
+// waiting for it.
 type request struct {
-	Op string `json:"op"` // "netready" | "start" | "stop"
+	Op string `json:"op"` // "netready" | "start" | "stop" | "mapped"
 
 	// "start" only.
 	Bwrap string   `json:"bwrap,omitempty"`
@@ -41,13 +45,16 @@ type request struct {
 	Passthrough int `json:"passthrough,omitempty"`
 }
 
-// event is a P1 -> P0 message. Three shapes: "ready", sent once at startup with
-// the namespace ids and the pinned netns fd; "netready", the answer to a
-// "netready" request, carrying Err when the interface never came up; "exited",
-// sent once after P1 has reaped the one payload this stage will ever run,
-// whatever the outcome.
+// event is a P1 -> P0 message. Four shapes: "needmap", sent at most once,
+// before "ready", ONLY when __stage-setup's own uid is still the overflow id
+// after the clone (issue #63, Tier B — cfg.Topology.Subuid == SubuidFull left
+// the map for P0 to write via newuidmap/newgidmap instead of writing it
+// itself); "ready", sent once at startup with the namespace ids and the
+// pinned netns fd; "netready", the answer to a "netready" request, carrying
+// Err when the interface never came up; "exited", sent once after P1 has
+// reaped the one payload this stage will ever run, whatever the outcome.
 type event struct {
-	Op string `json:"op"` // "ready" | "netready" | "exited"
+	Op string `json:"op"` // "needmap" | "ready" | "netready" | "exited"
 
 	// "ready" only.
 	Netns   string `json:"netns,omitempty"`

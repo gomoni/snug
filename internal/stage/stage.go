@@ -95,19 +95,13 @@ func Start(cfg Config) (*Stage, error) {
 		return nil, fmt.Errorf("stage.Start: Config.Topology.Netns must be policy.NetnsStage, got %s",
 			cfg.Topology.Netns)
 	}
-	// Refusing, not ignoring, and this is invariant 5 rather than defensive
-	// programming. The clone below installs a SINGLE-uid map and nothing here
-	// reads /etc/subuid or calls newuidmap; a policy that asked for a delegated
-	// range and silently got one uid would be a user believing a guarantee that
-	// no longer holds. Phase 3 is where this stops being an error — and it will
-	// be a deliberate edit here, made by whoever teaches the stage to delegate,
-	// rather than a screen that quietly disagreed with the process it describes.
-	if cfg.Topology.Subuid != policy.SubuidNone {
-		return nil, fmt.Errorf("stage.Start: Config.Topology.Subuid is %s, but the stage "+
-			"delegates no subuid range — it maps exactly one uid (see the clone below and "+
-			"SUPERVISOR-DESIGN.md §3.6). Teach Start to delegate before deriveTopology "+
-			"returns %s, or --dry-run will describe a range that does not exist",
-			cfg.Topology.Subuid, cfg.Topology.Subuid)
+	// Refusing anything this package does not implement, rather than guessing —
+	// invariant 5, same as the removed single-value check this replaces. Two
+	// values now: SubuidNone (the original single-uid map) and SubuidFull (the
+	// two-range delegated map a container engine needs, issue #63 Tier B).
+	if cfg.Topology.Subuid != policy.SubuidNone && cfg.Topology.Subuid != policy.SubuidFull {
+		return nil, fmt.Errorf("stage.Start: Config.Topology.Subuid is %s, which this package "+
+			"does not implement", cfg.Topology.Subuid)
 	}
 	// Before anything is created: a policy whose descriptor block would reach
 	// fdNetnsN must fail here, where the message can name the fix, rather than
@@ -144,8 +138,6 @@ func Start(cfg Config) (*Stage, error) {
 	hostUID, hostGID := os.Getuid(), os.Getgid()
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags:                 stageCloneflags,
-		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostUID, Size: 1}},
-		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostGID, Size: 1}},
 		GidMappingsEnableSetgroups: false,
 		// LOAD-BEARING. Do not delete this line as redundant with the lifeline.
 		//
@@ -164,6 +156,34 @@ func Start(cfg Config) (*Stage, error) {
 		// no leaked netns. Remove this and that case becomes an orphaned sandbox
 		// holding a netns with no parent left to tear it down.
 		Pdeathsig: syscall.SIGKILL,
+	}
+
+	// The uid/gid map. Two shapes, chosen by cfg.Topology.Subuid:
+	//
+	//   - SubuidNone (the original, still the default for every non-podman
+	//     run): a single line mapping namespace id 0 to this process's own
+	//     real id. Go writes it ITSELF, unprivileged, using the one
+	//     self-mapping the kernel allows a non-CAP_SETUID writer to make —
+	//     the same shape `unshare --map-root-user` produces. No external tool,
+	//     no /etc/subuid read, exactly as SUPERVISOR-DESIGN.md §3.6 measured.
+	//
+	//   - SubuidFull (issue #63, Tier B — a container engine is selected):
+	//     UidMappings/GidMappings are left NIL here on purpose. A two-range
+	//     map (namespace 0 -> this process's real id, PLUS namespace
+	//     1..size -> the delegated /etc/subuid range) is NOT the
+	//     single-self-map special case, so an unprivileged Go write of it
+	//     would fail with EPERM — this is exactly why newuidmap/newgidmap
+	//     exist. __stage-setup (setup.go) notices its uid is still the
+	//     overflow id after the clone, asks P0 for the map over the control
+	//     socket, and blocks until it arrives; P0 answers below, after
+	//     cmd.Start() returns, by calling delegateSubuid (subuid.go), which
+	//     execs newuidmap/newgidmap against this pid. The map can be written
+	//     only ONCE per user namespace, ever — there is no "self-map now,
+	//     widen later" — which is why the whole delegated range has to be
+	//     requested at clone time rather than added after the fact.
+	if cfg.Topology.Subuid == policy.SubuidNone {
+		cmd.SysProcAttr.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostUID, Size: 1}}
+		cmd.SysProcAttr.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostGID, Size: 1}}
 	}
 
 	if err := fdseal.SealFor(cmd); err != nil {
@@ -201,6 +221,19 @@ func Start(cfg Config) (*Stage, error) {
 		sandboxSize: len(cfg.Sandbox),
 	}
 
+	// The delegated-map handshake (issue #63, Tier B): one extra request/event
+	// round trip BEFORE the "ready" one below, present only when
+	// UidMappings/GidMappings were deliberately left nil above. __stage-setup
+	// blocks on this — its own uid is still the overflow id until the map
+	// lands — so this MUST complete before "ready" can ever arrive; there is
+	// no risk of racing the recvEventTimeout call below against it.
+	if cfg.Topology.Subuid == policy.SubuidFull {
+		if err := satisfyDelegatedMapRequest(p0Control, cmd.Process.Pid, hostUID, hostGID); err != nil {
+			st.killAndClose()
+			return nil, err
+		}
+	}
+
 	ev, err := recvEventTimeout(p0Control, readyTimeout)
 	if err != nil {
 		st.killAndClose()
@@ -225,6 +258,29 @@ func Start(cfg Config) (*Stage, error) {
 
 	st.netns, st.userns, st.netnsFD = ev.Netns, ev.Userns, ev.NetnsFD
 	return st, nil
+}
+
+// satisfyDelegatedMapRequest waits for __stage-setup's "needmap" event, calls
+// newuidmap/newgidmap against pid (subuid.go), and answers "mapped" so
+// __stage-setup can proceed. Fatal and unwound entirely on any failure —
+// invariant 5: a policy that asked for a delegated range and could not get
+// one must not fall back to the single-uid map it did not ask for, so the
+// caller kills the child rather than let it continue half-mapped.
+func satisfyDelegatedMapRequest(control *os.File, pid, hostUID, hostGID int) error {
+	ev, err := recvEventTimeout(control, readyTimeout)
+	if err != nil {
+		return fmt.Errorf("stage: waiting for the stage to ask for its delegated subuid map: %w", err)
+	}
+	if ev.Op != "needmap" {
+		return fmt.Errorf("stage: expected a \"needmap\" event, got %q", ev.Op)
+	}
+	if err := delegateSubuid(pid, hostUID, hostGID); err != nil {
+		return err
+	}
+	if err := sendRequest(control, request{Op: "mapped"}); err != nil {
+		return fmt.Errorf("stage: telling the stage its delegated subuid map is ready: %w", err)
+	}
+	return nil
 }
 
 func (s *Stage) killAndClose() {
