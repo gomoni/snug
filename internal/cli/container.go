@@ -44,6 +44,28 @@ func containerAudit(verbose bool) func(string) {
 	}
 }
 
+// containerRun is everything startContainers hands back: the cleanup its
+// caller must defer, plus what sandbox.Run needs to know about this run's
+// engine.
+//
+// A struct rather than a longer return list. Five positional values was
+// already at the limit of what a caller can read without counting commas, and
+// the sixth (excludeFromTeardown, issue #113) is the kind of thing that gets
+// wired to the wrong slot exactly once and then silently protects nothing.
+// Every field is optional: the zero value is a run with no containers, which
+// is why the error paths return it directly.
+type containerRun struct {
+	cleanup       func()
+	spec          *stage.EngineSpec
+	onEngineReady func() error
+	onPayloadExit func()
+
+	// excludeFromTeardown is the container reaper's host pid — see
+	// sandbox.Options.ExcludeFromTeardown and issue #113. Empty on every path
+	// that did not arm a reaper.
+	excludeFromTeardown []int
+}
+
 // startContainers wires up a per-sandbox engine behind a filtering proxy.
 //
 // The engine is now EAGER (issue #63, Tier B — ENGINE-WIRING.md §1): it is
@@ -66,11 +88,9 @@ func containerAudit(verbose bool) func(string) {
 // file's own doc comment for why, and what covers it instead (__inengine's
 // own mount call, which still refuses loudly, just one step later than the
 // design's own probe would).
-func startContainers(pol *policy.Policy, verbose, dryRun bool) (
-	cleanup func(), engineSpec *stage.EngineSpec, onEngineReady func() error, onPayloadExit func(), err error) {
-	noop := func() {}
+func startContainers(pol *policy.Policy, verbose, dryRun bool) (containerRun, error) {
 	if pol.Podman == policy.PodmanOff {
-		return noop, nil, nil, nil, nil
+		return containerRun{cleanup: func() {}}, nil
 	}
 
 	// @net-host + a container profile (ENGINE-WIRING.md §4's flagged edge,
@@ -90,7 +110,7 @@ func startContainers(pol *policy.Policy, verbose, dryRun bool) (
 	// sandbox's own N is a different, and incompatible, contract: there is
 	// no sandbox network namespace for it to join.
 	if pol.Net.Mode == policy.NetHost {
-		return nil, nil, nil, nil, fmt.Errorf("@net-host and a container profile " +
+		return containerRun{}, fmt.Errorf("@net-host and a container profile " +
 			"(@podman-socket/@podman-build) cannot be combined: the container engine (issue #63, " +
 			"Tier B) must be confined to THIS SANDBOX's own network namespace, and @net-host shares " +
 			"the HOST's instead — there is no sandbox network namespace for the engine to join.\n" +
@@ -114,14 +134,14 @@ func startContainers(pol *policy.Policy, verbose, dryRun bool) (
 
 	pf, err := runContainerPreflight()
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return containerRun{}, err
 	}
 
 	warnAboutPodmanClient()
 
 	eng, err := engine.New(pol.Profiles, pol.Target)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return containerRun{}, err
 	}
 
 	// pol.Net.ResolvConf() — the SAME generation the sandbox payload's own
@@ -133,7 +153,7 @@ func startContainers(pol *policy.Policy, verbose, dryRun bool) (
 		"HOME=" + os.Getenv("HOME"),
 	}, pf.CgroupsDisabled, pol.Net.ResolvConf())
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return containerRun{}, err
 	}
 
 	// Armed NOW, before sandbox.Run has even created the stage — this is
@@ -143,12 +163,12 @@ func startContainers(pol *policy.Policy, verbose, dryRun bool) (
 	// already fixed by Spec above; it does not need the engine's socket to
 	// exist yet.
 	if err := eng.ArmReaper(); err != nil {
-		return nil, nil, nil, nil, err
+		return containerRun{}, err
 	}
 
 	dir, err := runtimeDir()
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return containerRun{}, err
 	}
 	sock := filepath.Join(dir, "podman.sock")
 
@@ -161,7 +181,7 @@ func startContainers(pol *policy.Policy, verbose, dryRun bool) (
 	// ensure.
 	p, err := dockerproxy.New(pol, eng.Socket(), sock, eng.RunLabel(), audit, nil)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return containerRun{}, err
 	}
 	go p.Serve()
 
@@ -172,36 +192,41 @@ func startContainers(pol *policy.Policy, verbose, dryRun bool) (
 	pol.BindSocket(sock, containerSocketGuest, "(containers)")
 	containerEnv(pol)
 
-	return func() { p.Close(); eng.Stop() },
-		&spec,
-		eng.DialLifeline,
-		eng.Stop,
-		nil
+	return containerRun{
+		cleanup:       func() { p.Close(); eng.Stop() },
+		spec:          &spec,
+		onEngineReady: eng.DialLifeline,
+		onPayloadExit: eng.Stop,
+		// The reaper is the one helper snug starts that is MEANT to outlive
+		// it, so it is the one thing the signalled-teardown sweep must not
+		// SIGKILL (issue #113). Its pid is already fixed: ArmReaper ran above,
+		// before sandbox.Run has created anything at all.
+		excludeFromTeardown: eng.ReaperPIDs(),
+	}, nil
 }
 
 // startContainersScreen is the --dry-run path: it binds the proxy's real
 // listening socket (so --dry-run's MOUNTS section shows the real bound
 // path, exactly as before Tier B) and stops there. No engine, no preflight,
 // no store directory — nothing sandbox.Run will ever be asked to fork.
-func startContainersScreen(pol *policy.Policy, verbose bool) (
-	cleanup func(), engineSpec *stage.EngineSpec, onEngineReady func() error, onPayloadExit func(), err error) {
+func startContainersScreen(pol *policy.Policy, verbose bool) (containerRun, error) {
 	dir, err := runtimeDir()
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return containerRun{}, err
 	}
 	sock := filepath.Join(dir, "podman.sock")
 	audit := containerAudit(verbose)
 
 	p, err := dockerproxy.New(pol, "", sock, "", audit, nil)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return containerRun{}, err
 	}
 	go p.Serve()
 
 	pol.BindSocket(sock, containerSocketGuest, "(containers)")
 	containerEnv(pol)
 
-	return func() { p.Close() }, nil, nil, nil, nil
+	return containerRun{cleanup: func() { p.Close() }}, nil
 }
 
 // containerEnv points the client at the proxy. A function of its own so it can

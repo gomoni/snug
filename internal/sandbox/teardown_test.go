@@ -3,6 +3,7 @@ package sandbox
 import (
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
@@ -71,7 +72,7 @@ func TestBecomeSubreaperMakesAReparentedOrphanVisible(t *testing.T) {
 	root := os.Getpid()
 	var orphan int
 	found := waitUntil(t, 2*time.Second, func() bool {
-		for _, pid := range descendantsOf(root) {
+		for _, pid := range descendantsOf(root, nil) {
 			if commOf(pid) == "sleep" {
 				orphan = pid
 				return true
@@ -227,7 +228,7 @@ func TestKillPinnedOnlySignalsARealDescendant(t *testing.T) {
 	// A root nothing on this host descends from. strangerRoot is not a live
 	// pid, so the ancestry walk cannot reach it from anywhere.
 	const strangerRoot = 0x7fffffff
-	killPinned(pid, strangerRoot)
+	killPinned(pid, strangerRoot, nil)
 	time.Sleep(50 * time.Millisecond)
 	if !alive(pid) {
 		t.Fatalf("killPinned SIGKILLed pid %d even though it is not a descendant of the "+
@@ -235,7 +236,7 @@ func TestKillPinnedOnlySignalsARealDescendant(t *testing.T) {
 			"recycled pid away from killing a stranger", pid)
 	}
 
-	killPinned(pid, os.Getpid())
+	killPinned(pid, os.Getpid(), nil)
 	if !waitUntil(t, 2*time.Second, func() bool { return !alive(pid) }) {
 		t.Fatal("PRECONDITION: killPinned did NOT kill a genuine descendant, so the check " +
 			"above passed for the wrong reason — it proves nothing about ancestry if this " +
@@ -281,7 +282,7 @@ func TestConfirmTeardownKillsTheWholeTree(t *testing.T) {
 	// tear anything down, or a pass below proves nothing.
 	var grandchild int
 	ok := waitUntil(t, 2*time.Second, func() bool {
-		for _, pid := range descendantsOf(root) {
+		for _, pid := range descendantsOf(root, nil) {
 			if pid != directChild.Process.Pid && commOf(pid) == "sleep" {
 				grandchild = pid
 				return true
@@ -303,7 +304,7 @@ func TestConfirmTeardownKillsTheWholeTree(t *testing.T) {
 	defer pinned.Close()
 
 	warned := []string{}
-	confirmTeardown(pinned, func(msg string) { warned = append(warned, msg) })
+	confirmTeardown(pinned, nil, func(msg string) { warned = append(warned, msg) })
 
 	if alive(directChild.Process.Pid) {
 		t.Errorf("the direct child (pid %d) survived confirmTeardown", directChild.Process.Pid)
@@ -313,12 +314,340 @@ func TestConfirmTeardownKillsTheWholeTree(t *testing.T) {
 			"shape of issue #13: a descendant that outlives the process P0 knows how to kill "+
 			"directly", grandchild)
 	}
-	if remaining := descendantsOf(root); len(remaining) != 0 {
-		t.Errorf("descendantsOf(root) still reports %v after confirmTeardown returned", remaining)
+	if remaining := descendantsOf(root, nil); len(remaining) != 0 {
+		t.Errorf("descendantsOf(root, nil) still reports %v after confirmTeardown returned", remaining)
 	}
 	if len(warned) != 0 {
 		t.Errorf("confirmTeardown warned even though the tree it was given converges well "+
 			"within budget: %v", warned)
 	}
 	_, _ = directChild.Process.Wait()
+}
+
+// ── issue #111: which signals the guard actually registers ────────────────
+
+// orphaningSignals is the measured answer to "what kills P0 without running a
+// handler, and therefore reproduces issue #13", plus the three the guard has
+// always carried.
+//
+// The first three are the original set. The rest are issue #111's measurement:
+// signalled one at a time, 50ms into startup, snug orphaned its sandbox on
+// every one of them (all rc=2, the Go runtime's fatal-throw path) and did NOT
+// orphan on USR1, USR2, PWR, XCPU, XFSZ or PIPE, which have harmless default
+// dispositions or none at all.
+//
+// This table is deliberately written out here rather than derived from
+// teardownSignals: a test that reads its expectations from the code it is
+// testing cannot fail. Deleting a signal from teardownSignals must break
+// something, and this is the something.
+var orphaningSignals = []struct {
+	name string
+	sig  syscall.Signal
+}{
+	{"TERM", syscall.SIGTERM},
+	{"INT", syscall.SIGINT},
+	{"HUP", syscall.SIGHUP},
+	{"QUIT", syscall.SIGQUIT},
+	{"ABRT", syscall.SIGABRT},
+	{"TRAP", syscall.SIGTRAP},
+	{"SYS", syscall.SIGSYS},
+	{"SEGV", syscall.SIGSEGV},
+	{"BUS", syscall.SIGBUS},
+	{"FPE", syscall.SIGFPE},
+	{"ILL", syscall.SIGILL},
+	{"STKFLT", syscall.SIGSTKFLT},
+}
+
+// TestTeardownSignalsCoversEveryMeasuredOrphaningSignal is the list half: a
+// membership check against a table written independently of the production
+// variable.
+//
+// It is the cheap guard, and it is not the real one. A signal can be present
+// in teardownSignals and still not be delivered — os/signal is not obliged to
+// notify for every number a caller passes — which is exactly the "documented
+// but not implemented" shape CLAUDE.md warns about, and why
+// TestTheTeardownGuardCatchesEverySignalItRegisters exists next to it.
+func TestTeardownSignalsCoversEveryMeasuredOrphaningSignal(t *testing.T) {
+	have := map[syscall.Signal]bool{}
+	for _, s := range teardownSignals {
+		sig, ok := s.(syscall.Signal)
+		if !ok {
+			t.Fatalf("teardownSignals contains %v, which is not a syscall.Signal — signal.Notify "+
+				"would accept it and nothing would ever match it", s)
+		}
+		have[sig] = true
+	}
+	for _, want := range orphaningSignals {
+		if !have[want.sig] {
+			t.Errorf("SIG%s is not in teardownSignals. It was MEASURED to leave an orphaned "+
+				"sandbox behind when sent to snug during startup (issue #111), and it is "+
+				"catchable, so its absence reopens issue #13 for that signal — silently, with "+
+				"every other test still green", want.name)
+		}
+	}
+}
+
+const (
+	teardownHelperSig = "SNUG_TEST_TEARDOWN_HELPER_SIG"
+	teardownHelperSet = "SNUG_TEST_TEARDOWN_HELPER_SET"
+)
+
+// TestTeardownSignalHelperProcess is not a test. It is the subprocess half of
+// TestTheTeardownGuardCatchesEverySignalItRegisters, and it does nothing at
+// all unless the parent asked for it through the environment.
+//
+// A subprocess, because the property under test is a PROCESS-WIDE signal
+// disposition and the failure mode is "the process dies". Asserting it in the
+// test binary itself would take the whole package's run down with it, and —
+// worse — an unregistered SIGSEGV would look like a crashed test suite rather
+// than like the specific thing that is wrong.
+func TestTeardownSignalHelperProcess(t *testing.T) {
+	name := os.Getenv(teardownHelperSig)
+	if name == "" {
+		return
+	}
+	var sig syscall.Signal
+	for _, s := range orphaningSignals {
+		if s.name == name {
+			sig = s.sig
+		}
+	}
+	if sig == 0 {
+		os.Stdout.WriteString("BADSIGNAL\n")
+		os.Exit(4)
+	}
+
+	ch := make(chan os.Signal, 1)
+	switch os.Getenv(teardownHelperSet) {
+	case "production":
+		signal.Notify(ch, teardownSignals...)
+	case "termonly":
+		// The positive control's set: deliberately WRONG, and wrong in exactly
+		// the way the code was before issue #111 — a short hand-written list.
+		signal.Notify(ch, syscall.SIGTERM)
+	default:
+		os.Stdout.WriteString("BADSET\n")
+		os.Exit(4)
+	}
+
+	if err := syscall.Kill(os.Getpid(), sig); err != nil {
+		os.Stdout.WriteString("KILLFAILED\n")
+		os.Exit(4)
+	}
+	select {
+	case got := <-ch:
+		os.Stdout.WriteString("CAUGHT " + got.String() + "\n")
+		os.Exit(0)
+	case <-time.After(5 * time.Second):
+		// Registered, accepted, and inert: the signal was delivered somewhere
+		// else, or nowhere. Distinct from dying, and worth its own code.
+		os.Stdout.WriteString("NOTDELIVERED\n")
+		os.Exit(5)
+	}
+}
+
+// runTeardownHelper starts the subprocess above and reports what happened to
+// it: its first line of output and its exit code (-1 when a signal killed it,
+// which is the whole point of the exercise).
+func runTeardownHelper(t *testing.T, sigName, set string) (string, int) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=TestTeardownSignalHelperProcess", "-test.timeout=60s")
+	cmd.Env = append(os.Environ(), teardownHelperSig+"="+sigName, teardownHelperSet+"="+set)
+	out, _ := cmd.CombinedOutput()
+
+	first := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "CAUGHT") || strings.HasPrefix(line, "NOTDELIVERED") ||
+			strings.HasPrefix(line, "BADSIGNAL") || strings.HasPrefix(line, "BADSET") ||
+			strings.HasPrefix(line, "KILLFAILED") {
+			first = line
+			break
+		}
+	}
+
+	code := 0
+	if cmd.ProcessState != nil {
+		code = cmd.ProcessState.ExitCode()
+	}
+	return first, code
+}
+
+// TestTheTeardownGuardCatchesEverySignalItRegisters is the behavioural half,
+// and it is the one that would have caught issue #111.
+//
+// For every signal measured to orphan a sandbox, a subprocess registers the
+// production teardownSignals set and then sends that signal to itself. If the
+// handler runs, the guard's `select` in wait() would have run too, and
+// confirmTeardown with it. If it does not, the process dies exactly as snug
+// did — leaving the sandbox behind.
+//
+// The POSITIVE CONTROL is the second subtest and it is not optional: the same
+// helper, same signal, registering only SIGTERM — the shape of the code before
+// this fix — must die. Without it, a helper that always printed CAUGHT (or a
+// harness that never actually delivered anything) would make every assertion
+// above pass for the wrong reason.
+func TestTheTeardownGuardCatchesEverySignalItRegisters(t *testing.T) {
+	for _, s := range orphaningSignals {
+		t.Run(s.name, func(t *testing.T) {
+			line, code := runTeardownHelper(t, s.name, "production")
+			if !strings.HasPrefix(line, "CAUGHT") || code != 0 {
+				t.Errorf("a process registering teardownSignals did not survive SIG%s: got %q, "+
+					"exit code %d. signal.Notify accepted the signal and it still did not reach "+
+					"a handler, so snug would die here without tearing its sandbox down — issue "+
+					"#13, through the door issue #111 found", s.name, line, code)
+			}
+		})
+	}
+
+	t.Run("positive-control/only-SIGTERM-registered", func(t *testing.T) {
+		line, code := runTeardownHelper(t, "QUIT", "termonly")
+		if strings.HasPrefix(line, "CAUGHT") {
+			t.Fatalf("PRECONDITION: a process that registered ONLY SIGTERM reported catching "+
+				"SIGQUIT (%q). Something other than signal.Notify is handling it, so the "+
+				"subtests above prove nothing about the registered set", line)
+		}
+		if code == 0 {
+			t.Fatalf("PRECONDITION: a process that registered ONLY SIGTERM exited 0 after "+
+				"sending itself SIGQUIT. The harness cannot tell a caught signal from an "+
+				"uncaught one, so every assertion above is vacuous (got %q)", line)
+		}
+	})
+}
+
+// ── issue #113: what the sweep must NOT kill ──────────────────────────────
+
+// spawnTwoLevelTree starts `sh -c 'sleep 30 & exec sleep 30'` — a process that
+// forks a child and then becomes a long-lived process itself, which is the
+// shape both the sandbox (bwrap over its init) and the container reaper (a
+// shell over the `podman stop` it forks on EOF) actually have.
+//
+// Returns the direct child and its own child. Both are alive on return.
+func spawnTwoLevelTree(t *testing.T, others map[int]bool) (*exec.Cmd, int) {
+	t.Helper()
+	cmd := exec.Command("sh", "-c", "sleep 30 & exec sleep 30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+
+	var child int
+	ok := waitUntil(t, 2*time.Second, func() bool {
+		for _, pid := range descendantsOf(os.Getpid(), nil) {
+			if pid == cmd.Process.Pid || others[pid] {
+				continue
+			}
+			if ppid, _, ok := readStatus(pid); ok && ppid == cmd.Process.Pid {
+				child = pid
+				return true
+			}
+		}
+		return false
+	})
+	if !ok {
+		t.Fatal("PRECONDITION: the background child of the spawned tree never appeared")
+	}
+	if !alive(cmd.Process.Pid) || !alive(child) {
+		t.Fatal("PRECONDITION: the spawned tree is not fully alive")
+	}
+	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
+	return cmd, child
+}
+
+// TestConfirmTeardownSparesAnExcludedSubtree is issue #113's ratchet.
+//
+// The container reaper is the one helper snug starts that is MEANT to outlive
+// it: no Pdeathsig, its own process group, and one job — stop this run's
+// containers if snug died without cleaning up. It is also a direct child of
+// snug, so the signalled-teardown sweep found it and SIGKILLed it. That was
+// harmless only because internal/cli's `defer ctrCleanup()` still ran and did
+// the teardown itself; an os.Exit anywhere on the signal path would have
+// turned it into "a signalled @podman-socket run leaks its containers".
+//
+// Two properties, and the second is what makes the first mean anything:
+//
+//  1. an excluded pid AND ITS OWN CHILDREN survive a sweep that kills
+//     everything else — the subtree, not the process, because a reaper spared
+//     while its `podman stop` is killed has been spared uselessly;
+//  2. the positive control: the identical tree, with a nil exclusion, is
+//     killed. Without it, a confirmTeardown that had simply stopped reaching
+//     that tree at all would pass part 1.
+func TestConfirmTeardownSparesAnExcludedSubtree(t *testing.T) {
+	if err := becomeSubreaper(); err != nil {
+		t.Skipf("PR_SET_CHILD_SUBREAPER unavailable on this host: %v", err)
+	}
+
+	keeper, keeperChild := spawnTwoLevelTree(t, nil)
+	victim, victimChild := spawnTwoLevelTree(t, map[int]bool{keeper.Process.Pid: true, keeperChild: true})
+
+	pinned, err := pinPID(victim.Process.Pid)
+	if err != nil {
+		t.Fatalf("PRECONDITION: cannot pin a live child with pidfd_open: %v", err)
+	}
+	defer pinned.Close()
+
+	var warned []string
+	exclude := map[int]bool{keeper.Process.Pid: true}
+	confirmTeardown(pinned, exclude, func(msg string) { warned = append(warned, msg) })
+
+	if alive(victim.Process.Pid) || alive(victimChild) {
+		t.Errorf("the un-excluded tree survived confirmTeardown (direct %d alive=%v, child %d "+
+			"alive=%v) — the sweep is not doing its job at all",
+			victim.Process.Pid, alive(victim.Process.Pid), victimChild, alive(victimChild))
+	}
+	if !alive(keeper.Process.Pid) {
+		t.Errorf("the EXCLUDED pid %d was killed anyway. That pid is the container reaper in "+
+			"production: the one process whose job is to outlive snug and clean up after it "+
+			"(issue #113)", keeper.Process.Pid)
+	}
+	if !alive(keeperChild) {
+		t.Errorf("pid %d, a CHILD of the excluded pid %d, was killed. The exclusion must cover "+
+			"the subtree: the reaper forks `podman stop` when its pipe reports EOF, and sparing "+
+			"the shell while killing the stop spares nothing that matters",
+			keeperChild, keeper.Process.Pid)
+	}
+	if len(warned) != 0 {
+		t.Errorf("confirmTeardown warned about processes it was told to spare: %v. An excluded "+
+			"subtree is not an unconverged teardown, and reporting it as one would make every "+
+			"signalled @podman-socket run print a false leak warning", warned)
+	}
+
+	// POSITIVE CONTROL. Everything above is consistent with a confirmTeardown
+	// that had simply stopped finding this tree — a descendantsOf returning
+	// nothing passes all four checks. So sweep the same tree again with no
+	// exclusion at all and require that it dies.
+	pinnedKeeper, err := pinPID(keeper.Process.Pid)
+	if err != nil {
+		t.Fatalf("PRECONDITION: cannot pin the keeper: %v", err)
+	}
+	defer pinnedKeeper.Close()
+	confirmTeardown(pinnedKeeper, nil, func(string) {})
+
+	if alive(keeper.Process.Pid) || alive(keeperChild) {
+		t.Fatalf("PRECONDITION: with NO exclusion, the same tree (direct %d, child %d) still "+
+			"survived confirmTeardown. The sweep cannot see it, so the exclusion above proved "+
+			"nothing — it was spared by an absence, not by the exclusion",
+			keeper.Process.Pid, keeperChild)
+	}
+	_, _ = keeper.Process.Wait()
+	_, _ = victim.Process.Wait()
+}
+
+// TestExcludeSetDropsPidsThatCouldNotNameAProcess guards the conversion, not
+// the sweep. A 0 or negative pid reaching kill(2) means the process GROUP, or
+// every process the caller may signal — so an exclusion list that quietly
+// carried one would be the opposite of a safety measure if anything downstream
+// ever signalled through it instead of comparing against it.
+func TestExcludeSetDropsPidsThatCouldNotNameAProcess(t *testing.T) {
+	got := (Options{ExcludeFromTeardown: []int{0, -1, 1, 4242}}).excludeSet()
+	if len(got) != 1 || !got[4242] {
+		t.Errorf("excludeSet kept something it should have dropped: %v. Only genuine pids "+
+			"(>1) may survive; 0 and negatives name process groups, and 1 is init", got)
+	}
+	if (Options{}).excludeSet() != nil {
+		t.Error("excludeSet on an empty Options must be nil — the ordinary run has nothing to " +
+			"spare, and an empty non-nil map is a different thing to read at the call site")
+	}
 }

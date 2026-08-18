@@ -47,14 +47,47 @@ import (
 // up as one more ordinary host pid with an ordinary host PPid, well inside
 // descendantHopLimit.
 //
-// SIGKILL is NOT handled here and cannot be: it never reaches userspace, so no
-// handler in P0 — however careful — gets a chance to run. The window this
-// closes for TERM/INT/HUP remains open for a SIGKILLed snug. That is a
-// measured, accepted residual, not an oversight — see the issue for the
-// alternative that was rejected (making the STAGE's own Pdeathsig catchable,
-// which only ever covered the @net topology and would have weakened an
-// unconditional teardown guarantee — TestAFrozenStageTreeStillDiesWithSnug —
-// to close a window that exists identically with no stage at all).
+// THE RESIDUAL, stated as a rule rather than as a list of names. What is left
+// open is every termination that does not run a Go signal handler:
+//
+//   - SIGKILL. It never reaches userspace, so no handler in P0 — however
+//     careful — gets a chance to run. Measured, accepted, not an oversight;
+//     see the issue for the alternative that was rejected (making the STAGE's
+//     own Pdeathsig catchable, which only ever covered the @net topology and
+//     would have weakened an unconditional teardown guarantee —
+//     TestAFrozenStageTreeStillDiesWithSnug — to close a window that exists
+//     identically with no stage at all).
+//   - A genuine panic or runtime throw inside P0 itself. The Go runtime dies
+//     on its own crash path, which no handler intercepts. Measured: with
+//     signal.Notify registered for SIGSEGV, a nil dereference still printed
+//     "panic: runtime error: invalid memory address ... [signal SIGSEGV ...
+//     code=0x1]" and exited rc=2, and the notified channel never fired —
+//     the runtime splits on si_code, so a FAULT crashes while a signal SENT
+//     with kill(2) is delivered to the handler.
+//
+// Nothing else. Issue #111 is why this paragraph is a rule: the previous
+// version named SIGKILL alone, three times, in three files, while the code
+// registered exactly TERM/INT/HUP — so `kill -QUIT`, the standard gesture for
+// dumping a Go program's goroutines and an ordinary thing for a supervisor to
+// send, reproduced issue #13 bit-for-bit in the same startup window. Measured
+// one signal at a time: snug orphaned on QUIT ABRT TRAP SEGV BUS FPE ILL SYS
+// STKFLT (all the runtime's fatal-throw path, rc=2) and did not on USR1 USR2
+// PWR XCPU XFSZ PIPE. teardownSignals now carries every one of those that a
+// handler can reach, which — measured, not assumed — is all of them.
+//
+// One deliberate cost, because it is a behaviour change and not a free win:
+// `kill -QUIT snug` no longer dumps snug's own goroutine stacks, since the
+// handler consumes the signal that used to produce them. Tearing the sandbox
+// down beats debuggability of the wrapper — a hung snug leaves a sandbox
+// holding the target either way, and the guard is the only thing that can end
+// it. The dump is not lost, only moved: it is what SIGKILL still cannot give
+// and what a debugger, or a snug run outside a sandbox's lifetime, still can.
+//
+// The handler must also stay on the path that RETURNS through the caller, not
+// one that exits directly. internal/cli's `defer ctrCleanup()` runs after
+// sandbox.Run returns and is what stops a signalled run's containers; an
+// os.Exit here would skip it. See confirmTeardown's exclusion list and issue
+// #113 — the same dependency, seen from the sweep's side.
 
 // teardownPollBudget bounds how long P0 spends confirming a signalled sandbox
 // is actually gone before giving up and exiting anyway with a diagnostic.
@@ -70,6 +103,40 @@ const (
 	teardownPollBudget   = 250 * time.Millisecond
 	teardownPollInterval = 5 * time.Millisecond
 )
+
+// teardownSignals is every termination the guard converts from "die now, leave
+// the sandbox behind" into "tear the sandbox down first, then report the
+// conventional 128+signal exit code".
+//
+// The membership rule, and it is the whole point of the list existing as a
+// named variable rather than as arguments at the call site: a signal belongs
+// here if it can arrive from OUTSIDE this process and would otherwise kill P0
+// without running a handler. Not "the signals a supervisor is likely to send"
+// — that reasoning is what shipped TERM/INT/HUP alone and left issue #111's
+// SIGQUIT hole, and "likely" is not a property an attacker respects.
+//
+// The last five are the ones that look wrong and are not. SEGV, BUS, FPE, ILL
+// and STKFLT name faults, but a fault is not how they get here: the Go runtime
+// checks si_code, so a genuine nil dereference still panics and crashes with
+// its own traceback (measured — see the residual paragraph at the top of this
+// file), while the same signal number SENT with kill(2) is delivered to this
+// handler like any other. Registering them therefore costs nothing in crash
+// reporting and closes the last externally-reachable members of the orphaning
+// class. Issue #111 proposed leaving them out on the grounds that catching
+// them would suppress the runtime's crash reporting; that was measured false
+// before this list was written.
+//
+// Adding to this list is cheap and safe. REMOVING from it reopens issue #13
+// for whatever is removed, silently — which is why two tests guard it rather
+// than one: TestTeardownSignalsCoversEveryMeasuredOrphaningSignal checks
+// membership against a table written independently of this variable, and
+// TestTheTeardownGuardCatchesEverySignalItRegisters checks, in a subprocess,
+// that each one is really delivered to a handler.
+var teardownSignals = []os.Signal{
+	syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP,
+	syscall.SIGQUIT, syscall.SIGABRT, syscall.SIGTRAP, syscall.SIGSYS,
+	syscall.SIGSEGV, syscall.SIGBUS, syscall.SIGFPE, syscall.SIGILL, syscall.SIGSTKFLT,
+}
 
 var (
 	subreaperOnce sync.Once
@@ -127,7 +194,26 @@ func becomeSubreaper() error {
 // a pidfd too. See killPinned: this code chooses what to SIGKILL by parsing
 // /proc, and "the pid you read is the pid you kill" stops being true the moment
 // the process behind it is reaped.
-func confirmTeardown(directChild *os.File, warn func(string)) {
+//
+// exclude names host pids this sweep must NOT kill, and it covers their whole
+// subtrees (see descendantsOf). Today it holds exactly one thing: the container
+// reaper (internal/engine/reaper.go), whose entire job is to outlive snug and
+// stop this run's containers if snug died without cleaning up — which is why it
+// is the one helper snug starts with no Pdeathsig and its own process group.
+// Sweeping it up is a contradiction: the guard would kill the process that
+// exists because the guard might not get to run.
+//
+// It has been harmless up to now for a reason that is one edit away from
+// stopping being true (issue #113): internal/cli's `defer ctrCleanup()` runs
+// after sandbox.Run returns and does the container teardown itself, so a
+// reaper killed here was never needed. An early os.Exit anywhere on the signal
+// path — and #111's fix reshapes exactly that path — turns "the sweep kills
+// the reaper" into "a signalled @podman-socket run leaks its containers". The
+// exclusion removes the dependency rather than documenting it.
+//
+// A nil or empty exclude is the ordinary case: no container profile selected,
+// no reaper, nothing to spare.
+func confirmTeardown(directChild *os.File, exclude map[int]bool, warn func(string)) {
 	if directChild != nil {
 		_ = unix.PidfdSendSignal(int(directChild.Fd()), unix.SIGKILL, nil, 0)
 	}
@@ -135,12 +221,12 @@ func confirmTeardown(directChild *os.File, warn func(string)) {
 	root := os.Getpid()
 	deadline := time.Now().Add(teardownPollBudget)
 	for {
-		pids := descendantsOf(root)
+		pids := descendantsOf(root, exclude)
 		if len(pids) == 0 {
 			return
 		}
 		for _, pid := range pids {
-			killPinned(pid, root)
+			killPinned(pid, root, exclude)
 		}
 		if time.Now().After(deadline) {
 			warn(fmt.Sprintf("snug was signalled and killed the sandbox, but %d process(es) "+
@@ -154,8 +240,8 @@ func confirmTeardown(directChild *os.File, warn func(string)) {
 	}
 }
 
-// teardownGuard is P0's promise that a TERM, INT or HUP will not return until
-// the sandbox it is responsible for is confirmed gone.
+// teardownGuard is P0's promise that no signal in teardownSignals will return
+// until the sandbox it is responsible for is confirmed gone.
 //
 // It is armed and disarmed around ONE fork, and the placement is the whole
 // design:
@@ -196,7 +282,7 @@ func armTeardown(opts Options) *teardownGuard {
 	}
 
 	g := &teardownGuard{sig: make(chan os.Signal, 1), opts: opts}
-	signal.Notify(g.sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	signal.Notify(g.sig, teardownSignals...)
 	return g
 }
 
@@ -249,7 +335,7 @@ func (g *teardownGuard) wait(rootChildPid int, wait func() (int, error)) (int, e
 	case r := <-done:
 		return r.code, r.err
 	case sig := <-g.sig:
-		confirmTeardown(pinned, g.opts.warn)
+		confirmTeardown(pinned, g.opts.excludeSet(), g.opts.warn)
 		// The kill inside confirmTeardown makes wait's own goroutine return
 		// promptly — it is blocked on reaping rootChildPid (or being told
 		// about it), and that process is now dead. Drain rather than race it:
@@ -280,7 +366,10 @@ func (g *teardownGuard) wait(rootChildPid int, wait func() (int, error)) (int, e
 // The fallback is a plain kill(2), which is what this whole function is
 // avoiding, and it is reached only where pidfd_open does not exist at all
 // (before Linux 5.3). Racy there, and it was the only option snug had.
-func killPinned(pid, root int) {
+func killPinned(pid, root int, exclude map[int]bool) {
+	if exclude[pid] {
+		return
+	}
 	fd, err := unix.PidfdOpen(pid, 0)
 	if err != nil {
 		if err == unix.ENOSYS {
@@ -291,7 +380,13 @@ func killPinned(pid, root int) {
 	}
 	defer unix.Close(fd)
 
-	if !isDescendantOf(pid, root) {
+	// The re-read is what makes the pin safe against pid reuse, and it is also
+	// where the exclusion is re-applied: descendantsOf's snapshot chose this
+	// candidate, and between then and now the process could have been reparented
+	// UNDER an excluded pid (the reaper forking its podman on EOF is exactly
+	// that shape). Deciding twice, from fresh reads, is cheaper than being wrong
+	// once.
+	if !isDescendantOf(pid, root, exclude) {
 		return
 	}
 	_ = unix.PidfdSendSignal(fd, unix.SIGKILL, nil, 0)
@@ -311,17 +406,27 @@ const descendantHopLimit = 32
 // descendantsOf returns every pid, owned by this uid, whose ancestry (walking
 // PPid upward) reaches root within descendantHopLimit hops. root itself is
 // never included.
-func descendantsOf(root int) []int {
+//
+// A pid named in exclude is omitted, and so is anything whose walk to root
+// passes THROUGH an excluded pid — the exclusion is a subtree, not a single
+// process. That is the useful shape rather than the tidy one: the container
+// reaper is a shell that forks `podman stop` when its pipe reports EOF, so an
+// exclusion covering only the shell would spare the reaper and kill the
+// cleanup it exists to perform.
+func descendantsOf(root int, exclude map[int]bool) []int {
 	ppids := allPPIDs()
 	var out []int
 	for pid := range ppids {
-		if pid == root {
+		if pid == root || exclude[pid] {
 			continue
 		}
 		p := pid
 		for hop := 0; hop < descendantHopLimit; hop++ {
 			parent, ok := ppids[p]
 			if !ok || parent == p {
+				break
+			}
+			if exclude[parent] {
 				break
 			}
 			if parent == root {
@@ -342,11 +447,14 @@ func descendantsOf(root int) []int {
 // answers about ONE pid with FRESH reads: descendantsOf's snapshot is what
 // chooses candidates, and this is what re-confirms a candidate after
 // killPinned has pinned it.
-func isDescendantOf(pid, root int) bool {
+func isDescendantOf(pid, root int, exclude map[int]bool) bool {
+	if exclude[pid] {
+		return false
+	}
 	p := pid
 	for hop := 0; hop < descendantHopLimit; hop++ {
 		parent, _, ok := readStatus(p)
-		if !ok || parent == p || parent <= 1 {
+		if !ok || parent == p || parent <= 1 || exclude[parent] {
 			return false
 		}
 		if parent == root {

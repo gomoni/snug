@@ -68,6 +68,19 @@ type Options struct {
 	// has no stage and therefore no engine to have started in the first
 	// place.
 	OnPayloadExit func()
+
+	// ExcludeFromTeardown names host pids that the signalled-teardown sweep
+	// must not kill, together with anything reparented under them. It exists
+	// for exactly one caller and one process: internal/engine's container
+	// reaper, whose job is to OUTLIVE snug and stop this run's containers if
+	// snug died without cleaning up (issue #113). Every other helper snug
+	// starts is meant to die with the sandbox and belongs in the sweep.
+	//
+	// A pid, not a handle, because internal/sandbox must not import
+	// internal/engine (layering, the same reason OnPayloadExit is a closure).
+	// Snapshotted by the caller before sandbox.Run: the reaper is armed before
+	// the stage exists, so its pid is already fixed by then.
+	ExcludeFromTeardown []int
 }
 
 // RunInfo is what a running sandbox reports about itself, once, at startup:
@@ -254,7 +267,7 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 		return 0, err
 	}
 
-	// Armed immediately before the fork, never after it: a TERM/INT/HUP landing
+	// Armed immediately before the fork, never after it: a signal landing
 	// between a live bwrap and an uninstalled handler is issue #13's window,
 	// and the only way to close it is not to have it. See teardown.go.
 	guard := armTeardown(opts)
@@ -309,10 +322,15 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 // covers it is teardown.go's guard, armed around each fork, and issue #13
 // carries the measurements and the three refuted candidates.
 //
-// SIGKILL remains open and cannot be closed here: it never reaches userspace,
-// so no handler in snug gets to run. That residual is stated on the issue
-// rather than papered over, and TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox
-// asserts the three catchable signals only, deliberately.
+// What remains open is stated as a rule, not as a list of signal names, and
+// teardown.go's residual paragraph is where it lives: every termination that
+// does not run a Go signal handler — SIGKILL, which never reaches userspace,
+// and a genuine panic or runtime throw in P0, which dies on the runtime's own
+// crash path. Nothing else; teardownSignals carries every orphaning signal a
+// handler can reach. This comment named SIGKILL alone for a milestone while
+// the code registered TERM/INT/HUP, which is issue #111 — a `kill -QUIT`
+// reproduced issue #13 exactly, in the same window, against three documents
+// all saying it could not.
 //
 // What made the reorder possible, having previously been recorded as a blocker:
 // confirming the interface is up needed a process inside N to read
@@ -567,6 +585,24 @@ func wait(cmd *exec.Cmd) (int, error) {
 		return ee.ExitCode(), nil
 	}
 	return 0, err
+}
+
+// excludeSet renders ExcludeFromTeardown in the form the sweep wants. nil when
+// there is nothing to spare, which is the ordinary run.
+func (o Options) excludeSet() map[int]bool {
+	if len(o.ExcludeFromTeardown) == 0 {
+		return nil
+	}
+	m := make(map[int]bool, len(o.ExcludeFromTeardown))
+	for _, pid := range o.ExcludeFromTeardown {
+		// A zero or negative pid would be a caller bug, and passing it through
+		// is how "exclude nothing" becomes "exclude the process group" in
+		// whatever reads this next. Dropped rather than trusted.
+		if pid > 1 {
+			m[pid] = true
+		}
+	}
+	return m
 }
 
 func (o Options) warn(msg string) {

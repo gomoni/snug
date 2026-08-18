@@ -42,6 +42,11 @@ gate:
 	# /etc/hosts, built lazily by containerengine_test.go's resolvprobeBin.
 	# Same fix, same reasoning as pidfdprobe and netprobe above.
 	go vet ./test/integration/testdata/resolvprobe
+	# testdata/holder (issue #113) is the fourth: a `FROM scratch` entrypoint
+	# that stays RUNNING, so a test can signal snug while a container of its
+	# own is still up. Built lazily by containerengine_test.go's holderBin.
+	# Same fix, same reasoning as the three above.
+	go vet ./test/integration/testdata/holder
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This
