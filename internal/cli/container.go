@@ -8,6 +8,7 @@ import (
 	"github.com/gomoni/snug/internal/dockerproxy"
 	"github.com/gomoni/snug/internal/engine"
 	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/stage"
 )
 
 // containerSocketGuest is where the sandbox sees the proxy. A fixed path snug
@@ -45,107 +46,158 @@ func containerAudit(verbose bool) func(string) {
 
 // startContainers wires up a per-sandbox engine behind a filtering proxy.
 //
-// The engine is NOT started here — it starts lazily on the first request that
-// reaches the proxy, so selecting the profile and never using it costs
-// nothing (and is exactly why dryRun is allowed past the refusal below: no
-// request ever reaches the proxy during --dry-run, so nothing the refusal
-// exists to prevent can happen).
-func startContainers(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), err error) {
+// The engine is now EAGER (issue #63, Tier B — ENGINE-WIRING.md §1): it is
+// forked by the stage, in this sandbox's OWN network namespace, before the
+// payload exists, not lazily on the proxy's first request. This function
+// itself starts nothing beyond the proxy's listening socket; the fork
+// happens inside sandbox.Run, driven by the engineSpec/onEngineReady/
+// onPayloadExit values this function returns, wired into sandbox.Options by
+// the caller (internal/cli/main.go). That split is what keeps
+// internal/sandbox from importing internal/engine (layering: sandbox is
+// lower-level) — the ONE seam issue #63 needed and TIER-B-POLICY.md/
+// ENGINE-WIRING.md both flagged and settled: a hook, not a proxy-routed
+// `podman stop`.
+//
+// Preflight (P1, P2, P3, P5, P6 — see containerpreflight.go) runs here,
+// BEFORE anything is created, and refuses cleanly rather than letting a
+// real run reach stage.Start or __inengine with a host this tier cannot
+// deliver on. P4 (a throwaway overlay+MS_PRIVATE probe under a fresh
+// userns) is NOT implemented as a separate host-side probe — see that
+// file's own doc comment for why, and what covers it instead (__inengine's
+// own mount call, which still refuses loudly, just one step later than the
+// design's own probe would).
+func startContainers(pol *policy.Policy, verbose, dryRun bool) (
+	cleanup func(), engineSpec *stage.EngineSpec, onEngineReady func() error, onPayloadExit func(), err error) {
+	noop := func() {}
 	if pol.Podman == policy.PodmanOff {
-		return func() {}, nil
+		return noop, nil, nil, nil, nil
 	}
 
-	// TEMPORARY, issue #63 Tier B: deriveTopology now correctly DEMANDS a stage
-	// with the full delegated subuid range and the engine's own capability
-	// bounding set (policy.EngineCapBounding) whenever a container profile is
-	// selected — internal/stage/stage.go's Start CAN satisfy that demand today.
-	// What it does NOT yet do is actually FORK PODMAN INTO THAT STAGE'S
-	// namespaces: internal/engine.Engine.Start below still execs podman as a
-	// PLAIN HOST PROCESS, on the host's own network namespace, unrelated to the
-	// stage entirely.
+	// @net-host + a container profile (ENGINE-WIRING.md §4's flagged edge,
+	// settled by the maintainer: REFUSE, do not build a second, host-netns
+	// engine shape). deriveTopology keeps Netns=NetnsHost for @net-host (the
+	// `<` guard preserves it) while still raising Subuid to SubuidFull, so
+	// NeedsStage() is true — but stage.Start refuses any Netns != NetnsStage
+	// outright, and there is no N descriptor for a host-netns engine to
+	// setns into in the first place. Left unhandled, this combination would
+	// reach stage.Start as a crash rather than a clean refusal; caught here,
+	// before a single namespace exists.
 	//
-	// That gap is invisible everywhere except here: --dry-run's TOPOLOGY and
-	// CONTAINERS blocks (internal/cli/dryrun.go) and @podman-socket's own
-	// description now both say "offline unless @net is selected" and describe
-	// an engine confined to the sandbox's own netns with a 12-cap bounding set
-	// — none of which the RUNNING engine below actually delivers yet. Silently
-	// proceeding on a REAL run would be exactly the finding this ticket exists
-	// to close (ENGINE-NETNS.md §0), now wearing more confident language on the
-	// trust screen. Invariant 5 — no silent downgrade — is the reason for this
-	// refusal rather than a warning: a user who believes "offline" because the
-	// screen says so is worse off than one who is told plainly that this build
-	// cannot deliver it yet.
-	//
-	// --dry-run itself is EXEMPT, deliberately: "having started nothing" is
-	// dry-run's own promise (CLAUDE.md), and this refusal exists to stop the
-	// engine actually reaching the network, not to stop the SCREEN describing
-	// the policy that would apply once it does. Falling through to
-	// startContainersHostNetwork here starts nothing eagerly either (the
-	// engine is lazy, per this function's own doc comment) — it only computes
-	// paths and binds the proxy socket into pol.Mounts, which is what lets
-	// --dry-run's MOUNTS section show it.
-	//
-	// Closing the refusal itself requires a host-bridge decision this ticket's
-	// implementation pass did not settle: how a long-lived engine child is
-	// launched through the stage's existing one-shot, single-request control
-	// protocol (internal/stage/serve.go) without either serialising it behind
-	// bwrap's own lifecycle or opening the concurrent-request redesign that
-	// decision needs. Remove it only once internal/engine (or its replacement)
-	// actually forks podman through the stage, into N, with its mount
-	// namespace and policy.EngineCapBounding applied — and drop this comment
-	// along with it. (pol.Podman != policy.PodmanOff is guaranteed at this
-	// point by the early return above.)
-	if !dryRun {
-		return nil, fmt.Errorf("container engine support is incomplete on this build (issue #63, " +
-			"Tier B): the policy layer now correctly demands the container engine run inside this " +
-			"sandbox's own network namespace, but the engine is not yet wired to actually start " +
-			"there — it would still run on the HOST's network, silently contradicting what " +
-			"--dry-run says about egress. Refusing rather than handing the sandbox an engine " +
-			"whose guarantee this build cannot keep. See internal/cli/container.go for what is " +
-			"missing")
+	// @net-host is already the --i-know escape hatch for "a process with a
+	// different filesystem view, sharing the host's own network" (CLAUDE.md,
+	// invariant 5's "no silent downgrade" is what makes that an explicit
+	// flag rather than a default). A container engine confined to THIS
+	// sandbox's own N is a different, and incompatible, contract: there is
+	// no sandbox network namespace for it to join.
+	if pol.Net.Mode == policy.NetHost {
+		return nil, nil, nil, nil, fmt.Errorf("@net-host and a container profile " +
+			"(@podman-socket/@podman-build) cannot be combined: the container engine (issue #63, " +
+			"Tier B) must be confined to THIS SANDBOX's own network namespace, and @net-host shares " +
+			"the HOST's instead — there is no sandbox network namespace for the engine to join.\n" +
+			"      Fix: drop @net-host (use '@net' if the sandbox itself needs egress), or drop " +
+			"the container profile.")
 	}
-	return startContainersHostNetwork(pol, verbose)
-}
 
-// startContainersHostNetwork is the pre-Tier-B implementation. Two callers
-// now: startContainers's own --dry-run path above (which starts nothing
-// eagerly — the engine is lazy — so it is safe to run even though its
-// non-dry-run caller is refused), and it is what startContainers should
-// resume calling unconditionally once internal/engine forks podman through
-// the stage instead of exec'ing it as a plain host process. Kept intact
-// rather than deleted so that follow-up is a diff against a known-working
-// shape instead of a rewrite from scratch.
-func startContainersHostNetwork(pol *policy.Policy, verbose bool) (cleanup func(), err error) {
+	if dryRun {
+		// --dry-run's own promise is "having started nothing" (CLAUDE.md).
+		// Binding the proxy's LISTENING socket is not starting the engine —
+		// no upstream connection is ever dialled, no request is ever
+		// forwarded, and sandbox.Run (where the eager fork lives) is never
+		// called on this path — so it is safe here exactly as it always
+		// was, and it is what lets --dry-run's MOUNTS section show the real
+		// bound path. Preflight itself is NOT run for --dry-run: none of its
+		// probes are needed to render a resolved policy, and running them
+		// (a real /etc/subuid read, a real cgroup write probe) would be
+		// host I/O a debugging command has no business doing.
+		return startContainersScreen(pol, verbose)
+	}
+
+	pf, err := runContainerPreflight()
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+
 	warnAboutPodmanClient()
 
 	eng, err := engine.New(pol.Profiles, pol.Target)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, nil, err
+	}
+
+	spec, err := eng.Spec(pf.Podman, []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+	}, pf.CgroupsDisabled)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	// Armed NOW, before sandbox.Run has even created the stage — this is
+	// what covers a snug killed during the stage's own startup window
+	// (creating U+N, waiting for the network), before the engine has been
+	// forked at all. It needs only paths and the podman binary, both
+	// already fixed by Spec above; it does not need the engine's socket to
+	// exist yet.
+	if err := eng.ArmReaper(); err != nil {
+		return nil, nil, nil, nil, err
 	}
 
 	dir, err := runtimeDir()
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, nil, err
 	}
 	sock := filepath.Join(dir, "podman.sock")
 
 	audit := containerAudit(verbose)
 
-	p, err := dockerproxy.New(pol, eng.Socket(), sock, eng.RunLabel(), audit, eng.Start)
+	// ensureEngine is nil: the engine is EAGER now, forked and confirmed
+	// (its socket exists) well before StartSandbox ever forks the payload —
+	// by construction, no request can reach this proxy before that has
+	// already succeeded, so there is nothing left for the proxy itself to
+	// ensure.
+	p, err := dockerproxy.New(pol, eng.Socket(), sock, eng.RunLabel(), audit, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, nil, err
 	}
 	go p.Serve()
 
-	// Provenance is "(containers)", not "(identity)". BindSocket used to hard-code
-	// the latter, so the container socket — a completely different hole, opened by
-	// @podman-socket — read in --dry-run as though the ssh identity machinery had
-	// granted it. A trust artifact that misattributes a grant is worse than one
-	// that omits it.
+	// Provenance is "(containers)", not "(identity)". BindSocket used to
+	// hard-code the latter, so the container socket — a completely
+	// different hole, opened by @podman-socket — read in --dry-run as
+	// though the ssh identity machinery had granted it.
 	pol.BindSocket(sock, containerSocketGuest, "(containers)")
 	containerEnv(pol)
 
-	return func() { p.Close(); eng.Stop() }, nil
+	return func() { p.Close(); eng.Stop() },
+		&spec,
+		eng.DialLifeline,
+		eng.Stop,
+		nil
+}
+
+// startContainersScreen is the --dry-run path: it binds the proxy's real
+// listening socket (so --dry-run's MOUNTS section shows the real bound
+// path, exactly as before Tier B) and stops there. No engine, no preflight,
+// no store directory — nothing sandbox.Run will ever be asked to fork.
+func startContainersScreen(pol *policy.Policy, verbose bool) (
+	cleanup func(), engineSpec *stage.EngineSpec, onEngineReady func() error, onPayloadExit func(), err error) {
+	dir, err := runtimeDir()
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	sock := filepath.Join(dir, "podman.sock")
+	audit := containerAudit(verbose)
+
+	p, err := dockerproxy.New(pol, "", sock, "", audit, nil)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	go p.Serve()
+
+	pol.BindSocket(sock, containerSocketGuest, "(containers)")
+	containerEnv(pol)
+
+	return func() { p.Close() }, nil, nil, nil, nil
 }
 
 // containerEnv points the client at the proxy. A function of its own so it can

@@ -57,10 +57,11 @@ func Main() {
 	// loading, none of it. They are not subcommands: they do not appear in
 	// --help, they are not profiles, and they are reachable only through the
 	// re-exec chain internal/stage builds (P0 -> __stage-setup -> __stage-serve ->
-	// __innetns -> bwrap). Each refuses immediately when the descriptors it
-	// requires are absent (SUPERVISOR-DESIGN.md §4 Step 6), so invoking
-	// one directly from a shell fails loudly rather than doing something
-	// undefined with whatever fd 3 happens to be.
+	// __innetns -> bwrap, and, for a container profile, __stage-serve ->
+	// __inengine -> podman, issue #63 Tier B). Each refuses immediately when
+	// the descriptors it requires are absent (SUPERVISOR-DESIGN.md §4 Step 6),
+	// so invoking one directly from a shell fails loudly rather than doing
+	// something undefined with whatever fd 3 happens to be.
 	if len(argv) > 0 {
 		switch argv[0] {
 		case "__stage-setup":
@@ -69,6 +70,8 @@ func Main() {
 			exitOnStageError(stage.MainServe())
 		case "__innetns":
 			exitOnStageError(stage.EnterNetns(argv[1:]))
+		case "__inengine":
+			exitOnStageError(stage.EnterEngine(argv[1:]))
 		}
 	}
 
@@ -398,7 +401,7 @@ func run(cfg config) int {
 	}
 	defer idCleanup()
 
-	ctrCleanup, err := startContainers(pol, cfg.verbose, cfg.dryRun)
+	ctrCleanup, engineSpec, onEngineReady, onPayloadExit, err := startContainers(pol, cfg.verbose, cfg.dryRun)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 		return exitPolicy
@@ -442,6 +445,19 @@ func run(cfg config) int {
 				fmt.Fprintf(os.Stderr, "snug: this run will not be attachable (%v)\n", werr)
 			}
 		},
+		// The three container-engine hooks (issue #63, Tier B): nil unless
+		// startContainers above actually built an EngineSpec (a container
+		// profile is selected and this is a real, non-dry-run, run).
+		// EngineSpec is what tells runStaged to fork the engine at all;
+		// OnEngineReady dials the lifeline once its socket exists, UNLIKE
+		// OnInfo above a FAILURE here refuses the whole run (invariant 5 —
+		// an engine snug cannot guarantee to reap is not handed to the
+		// sandbox); OnPayloadExit stops this run's containers by label
+		// while the engine's socket is still reachable, before the stage
+		// collapses.
+		EngineSpec:    engineSpec,
+		OnEngineReady: onEngineReady,
+		OnPayloadExit: onPayloadExit,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
