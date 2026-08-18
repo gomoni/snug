@@ -486,44 +486,28 @@ NO_COLOR = true
 # made it safe is the grant, not the merge.
 
 # ── containers ───────────────────────────────────────────────────────────────
-# ABUSE: the sandbox can run containers, pull arbitrary images, and execute
-# whatever is in them. Every request goes through a filtering proxy over an
-# engine that is PRIVATE to this sandbox, so the host's images, containers and
-# volumes are untouched and unreachable. A container may bind only what the
-# sandbox itself can see; --privileged, host networking, device passthrough and
-# published ports are all refused.
+# ABUSE: the sandbox can run arbitrary code in a container that shares the
+# sandbox's OWN network namespace — so it reaches exactly what the sandbox
+# reaches and no more: with @net, the whole internet, as the sandbox already
+# could; WITHOUT @net, nothing. It cannot reconfigure that namespace (the
+# engine holds no CAP_NET_ADMIN) and it cannot publish a port — `podman run -p
+# N:80` is NOT supported, a decline rather than a regression: the engine
+# shares the sandbox's netns host-mode, with no per-container bridge to
+# publish onto. It can bind into a container only a path the sandbox can
+# already see — enforced by the proxy's bind filter, which reads this same
+# resolved policy (Tier B; Tier C makes it structural via a derived mount
+# view instead of a private copy of the host tree).
 #
-# LIMITATION, stated because it will otherwise look like a bug: containers run
-# in the ENGINE's network namespace, not the sandbox's. `podman run -p 8080:80`
-# followed by `curl localhost:8080` from the sandbox will NOT work. Use
-# container-to-container networking. Making published ports reachable needs the
-# engine inside the sandbox's netns, which is a further milestone.
-#
-# THAT SAME SENTENCE IS A HOLE IN THE NETWORK BOUNDARY, which is why `net` is
-# included below. Read it the other way round: if a container runs in the
-# ENGINE's netns, it has the ENGINE's network — so a sandbox with only
-# `@podman-socket` could `wget` any URL from inside a container and read the
-# response back out through `containers/{id}/logs`. Measured, not inferred
-# (.claude/design/ENGINE-NETNS.md §0). Meanwhile `--dry-run` printed
-# "No egress. No host loopback."
-#
-# `include = ["net"]` makes the profile tell the truth: selecting it grants
-# egress, and `--dry-run` now says so. It does NOT narrow the hole — it stops
-# snug asserting a guarantee it was not delivering, which is invariant 5. The
-# cost is real and is accepted deliberately: you cannot have containers AND
-# offline, and the sandbox itself gets network it did not separately ask for.
-#
-# THIS LINE IS INTERIM AND MUST BE REMOVED. The fix is topology A — the engine
-# inside the SANDBOX's netns — after which container network == sandbox network,
-# `@podman-socket` without `@net` is genuinely offline, published ports start
-# working from the sandbox, and `include = ["net"]` becomes actively wrong
-# because offline goes back to being the ABSENCE of a profile. That work is
-# designed and its feasibility is measured, on this host, in
-# .claude/design/ENGINE-NETNS.md — §5 is the implementation shape, §3 is where
-# it does not work (distrobox, no subuid delegation, cgroup delegation).
+# The engine runs in the SANDBOX's netns now (issue #63, Tier B), so
+# `@podman-socket` without `@net` is genuinely offline, containers included.
+# That is why `net` is NO LONGER included below: offline is once again the
+# ABSENCE of a profile, which is what stops it being switched on by accident.
+# Selecting a container engine starts a stage (a privileged-ancestor U) and
+# delegates the full subuid range even offline — a real cost that
+# `--dry-run`'s TOPOLOGY block states plainly.
 [profile.podman-socket]
-description = "Containers via a filtering proxy over a per-sandbox podman engine. Includes @net (interim: containers run on the engine's network — see .claude/design/ENGINE-NETNS.md)."
-include = ["sys", "home", "net"]
+description = "Containers via a filtering proxy over a per-sandbox podman engine, offline unless @net is also selected."
+include = ["sys", "home"]
 podman = "socket"
 # podman reads its registries, signature policy and defaults from here. Without
 # it the client fails with an error that names none of that.
