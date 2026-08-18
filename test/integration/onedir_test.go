@@ -130,6 +130,78 @@ func TestOneLiveSandboxPerDirectory(t *testing.T) {
 	}
 }
 
+// TestOneLiveSandboxPerDirectoryHoldsAcrossXDGRuntimeDir is issue #122 measured
+// end-to-end: the per-target lock must serialise two runs that see DIFFERENT
+// $XDG_RUNTIME_DIR — an interactive shell (variable set) and a cron/systemd/ssh
+// session (variable absent). The pre-fix code took the lock under
+// runtimeBase() = $XDG_RUNTIME_DIR/$TMPDIR, so the two runs flock'd two inodes
+// and BOTH acquired — two live sandboxes on one writable target, a fail-OPEN
+// that needs no attacker. The fix resolves the lock's directory from the uid
+// alone, so both runs land on the same inode and the contender is refused.
+//
+// POSITIVE CONTROL: the holder writes a readiness file before the contender is
+// attempted, so the refusal is a live holder and not an empty directory.
+// DISTINGUISHING CONTROL over TestOneLiveSandboxPerDirectory (which runs both
+// under one $XDG_RUNTIME_DIR): here the two runs see DIFFERENT env, so a bare
+// "refused" is specifically "refused despite the env split #122 exploited".
+func TestOneLiveSandboxPerDirectoryHoldsAcrossXDGRuntimeDir(t *testing.T) {
+	budget(t, 60*time.Second)
+	requireSandbox(t)
+
+	dir := t.TempDir()
+
+	// Holder: $XDG_RUNTIME_DIR SET (interactive-shell shape).
+	holderEnv := baseEnv("XDG_RUNTIME_DIR=" + t.TempDir())
+	// Contender: $XDG_RUNTIME_DIR ABSENT (cron/ssh shape). baseEnv carries the
+	// developer's real value via os.Environ(); strip it so the two runs genuinely
+	// disagree on the mutable base the bug depended on.
+	contenderEnv := withoutEnv(baseEnv(), "XDG_RUNTIME_DIR")
+
+	ready := filepath.Join(dir, "READY")
+	holder := startBackgroundSnug(t, holderEnv, dir,
+		"touch "+shQuote(ready)+"; while true; do sleep 1; done")
+	if err := waitForFile(ready, 30*time.Second); err != nil {
+		t.Fatalf("the live holder never signalled readiness (%v); its output so far:\n%s", err, holder.output())
+	}
+
+	marker := filepath.Join(dir, "CONTENDER_RAN")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	contender := exec.CommandContext(ctx, snugBin, dir, "--", "/bin/bash", "-c", "touch "+shQuote(marker))
+	contender.Env = contenderEnv
+	out, err := contender.CombinedOutput()
+
+	if err == nil {
+		t.Fatalf("a contender with $XDG_RUNTIME_DIR unset was NOT refused while a holder with it "+
+			"SET was live — the target lock split across two inodes (issue #122 fail-OPEN):\n%s", out)
+	}
+	if code := contender.ProcessState.ExitCode(); code != 69 {
+		t.Errorf("contender exit code = %d, want 69 (EX_UNAVAILABLE):\n%s", code, out)
+	}
+	if !strings.Contains(string(out), "snug attach") {
+		t.Errorf("refusal does not name `snug attach`:\n%s", out)
+	}
+	if _, statErr := os.Stat(marker); statErr == nil {
+		t.Errorf("the refused contender's payload ran — CONTENDER_RAN exists — so the refusal did not start nothing")
+	}
+}
+
+// withoutEnv returns env with every assignment of key removed. os/exec keeps
+// the LAST duplicate, so appending an override cannot UNSET a variable — only
+// dropping every occurrence can produce the variable-absent shape a cron or
+// non-login ssh session actually has.
+func withoutEnv(env []string, key string) []string {
+	prefix := key + "="
+	out := env[:0:0]
+	for _, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // backgroundSnug is a snug started with Start() (not Run()) so the test can
 // carry on while it holds its per-target lock, and kill it by its exact pid.
 type backgroundSnug struct {

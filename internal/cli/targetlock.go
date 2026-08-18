@@ -9,12 +9,22 @@ package cli
 // bare path lookup is exactly the shape issue #61(c)/#85 closed.
 //
 // The abuse sentence: a hostile process inside the sandbox can use this to
-// ___ — nothing. The lock file lives on a host path ($XDG_RUNTIME_DIR/snug/…)
-// that is never bound into the sandbox, and its name is the SHA-256 of the
-// realpath the host user named, computed on the host before the sandbox
-// exists. The payload can neither reach the file nor influence which file
-// snug locks, so it can neither release the lock to race a second sandbox
-// onto the same target nor steer snug to lock an unrelated path.
+// ___ — nothing. The lock file lives on a host path (/run/user/<uid>/snug/…,
+// or /tmp/snug-<uid>/… where that does not exist) that is never bound into the
+// sandbox, and its name is the SHA-256 of the realpath the host user named,
+// computed on the host before the sandbox exists. The payload can neither reach
+// the file nor influence which file snug locks, so it can neither release the
+// lock to race a second sandbox onto the same target nor steer snug to lock an
+// unrelated path.
+//
+// Its DIRECTORY is resolved from the uid alone (targetLockBase), NOT from
+// $XDG_RUNTIME_DIR/$TMPDIR the way the per-run socket directory (runtimedir.go)
+// is. That difference is issue #122: the target lock's whole purpose is
+// cross-run agreement, and a run in an interactive shell ($XDG_RUNTIME_DIR set)
+// and a run under cron/systemd/ssh-non-login (unset) must land on the SAME lock
+// inode or two live sandboxes acquire on one target — a fail-OPEN that needs no
+// attacker. runtimedir.go's per-run lock never needs cross-run agreement, so it
+// keeps the env-derived base; the target lock cannot.
 
 import (
 	"crypto/sha256"
@@ -28,6 +38,60 @@ import (
 
 	"golang.org/x/sys/unix"
 )
+
+// canonicalRuntimeDir and fallbackTmpRoot are the two env-independent roots the
+// per-target lock may live under, indirected through package variables so the
+// tests can point them at a scratch directory instead of writing into the
+// host's real /run/user/<uid>. Production never reassigns them.
+//
+//   - canonicalRuntimeDir(uid) is /run/user/<uid>, which is exactly what
+//     $XDG_RUNTIME_DIR normally IS — so preferring it by uid makes a run with
+//     the variable set and a run with it unset resolve the identical inode.
+//   - fallbackTmpRoot is the literal "/tmp", NOT os.TempDir(): os.TempDir()
+//     honours $TMPDIR, and a differing $TMPDIR is the same split by another
+//     name (issue #122's reproduction hits it too).
+var (
+	canonicalRuntimeDir = func(uid int) string { return fmt.Sprintf("/run/user/%d", uid) }
+	fallbackTmpRoot     = "/tmp"
+)
+
+// targetLockBase resolves, FROM THE UID ALONE, the directory the per-target
+// lock lives in and the name of the snug-owned subdirectory under it. It reads
+// no environment variable: $XDG_RUNTIME_DIR and $TMPDIR differ between an
+// interactive shell and cron/systemd/ssh-non-login, and the target lock exists
+// precisely to agree across those runs (issue #122).
+//
+// Preference order, both uid-scoped and deterministic:
+//
+//  1. /run/user/<uid> when it exists and is a directory — the canonical
+//     per-user runtime dir, session-scoped, mode 0700 owned by the user.
+//  2. otherwise /tmp/snug-<uid> — a uid-scoped name a squatter cannot pass the
+//     later ownership check on, mirroring the fallback shape runtimeBase uses.
+//
+// Fail CLOSED (invariant 5): if neither root exists, it returns an error and
+// lockTarget propagates it, so run() refuses the run. It never falls back to a
+// per-env path, because doing so is exactly the split it removes. The snug
+// subdirectory's owner and mode are still verified downstream by secureSubroot
+// / verifyOwnedAndPrivate, so a canonical root that is not ours is refused
+// there rather than trusted here.
+func targetLockBase() (base, snugName string, err error) {
+	uid := os.Getuid()
+
+	canonical := canonicalRuntimeDir(uid)
+	if fi, statErr := os.Stat(canonical); statErr == nil && fi.IsDir() {
+		return canonical, "snug", nil
+	}
+
+	if fi, statErr := os.Stat(fallbackTmpRoot); statErr == nil && fi.IsDir() {
+		return fallbackTmpRoot, fmt.Sprintf("snug-%d", uid), nil
+	}
+
+	return "", "", fmt.Errorf("target lock: no per-user runtime directory: neither %s nor %s "+
+		"exists, so there is no env-independent place to serialise runs on this target — "+
+		"refusing rather than using a $XDG_RUNTIME_DIR/$TMPDIR path that differs between an "+
+		"interactive shell and cron/systemd and would let two sandboxes race one target (issue #122)",
+		canonical, fallbackTmpRoot)
+}
 
 // targetBusyError is returned by lockTarget when another live run already
 // holds the per-target lock. run() turns it into the invariant-5 refusal;
@@ -106,7 +170,10 @@ func lockTarget(abs string) (unlock func(), err error) {
 		return noop, nil
 	}
 
-	base, snugName := runtimeBase()
+	base, snugName, err := targetLockBase()
+	if err != nil {
+		return noop, err
+	}
 	root, err := os.OpenRoot(base)
 	if err != nil {
 		return noop, fmt.Errorf("target lock: opening %s: %w", base, err)
