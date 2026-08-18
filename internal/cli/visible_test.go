@@ -186,6 +186,38 @@ func TestProfileShowEscapesEveryValue(t *testing.T) {
 	}
 }
 
+// TestAttachScreensAreCoveredByTheControlCharacterSweep is §13.7 test 29:
+// "the existing TestNoSnugScreenEmitsARawControlCharacter must cover the new
+// block and the new help text — check that it does, rather than assuming."
+//
+// dryRun already calls describeAttach unconditionally (dryrun.go), so the
+// whole-screen sweep above already exercises it — this test exists so that
+// fact is CHECKED, not assumed, and so a future describeAttach that starts
+// interpolating something (a target path, say) is caught by the same
+// isForgingRune sweep rather than silently exempted because nobody re-ran the
+// coverage question. attachUsage's help text is static (no value is
+// interpolated into it at all today), so there is nothing FOR the sweep to
+// catch there yet — this test pins that fact directly rather than leaving it
+// implicit, so it fails the moment the help text stops being static.
+func TestAttachScreensAreCoveredByTheControlCharacterSweep(t *testing.T) {
+	attachOut := captureFile(t, describeAttach)
+	if attachOut == "" {
+		t.Fatal("describeAttach produced no output at all, so the sweep in " +
+			"TestNoSnugScreenEmitsARawControlCharacter cannot be said to cover it")
+	}
+	if i := strings.IndexFunc(attachOut, func(r rune) bool { return r != '\n' && isForgingRune(r) }); i >= 0 {
+		t.Errorf("describeAttach emitted a raw control character (%q)", []rune(attachOut[i:])[0])
+	}
+
+	helpOut := captureStdout(t, attachUsage)
+	if helpOut == "" {
+		t.Fatal("attachUsage produced no output at all")
+	}
+	if i := strings.IndexFunc(helpOut, func(r rune) bool { return r != '\n' && isForgingRune(r) }); i >= 0 {
+		t.Errorf("attach's help text emitted a raw control character (%q)", []rune(helpOut[i:])[0])
+	}
+}
+
 // A control character in a GUEST path is refused outright, which is the other
 // half of the FILESYSTEM finding: the renderer stops the row being forged, and
 // this stops it being written.
