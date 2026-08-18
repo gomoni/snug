@@ -81,6 +81,8 @@ func Main() {
 			os.Exit(profileCmd(argv[1:]))
 		case "config":
 			os.Exit(configCmd(argv[1:]))
+		case "attach":
+			os.Exit(attachCmd(argv[1:]))
 		case "help":
 			usage()
 			os.Exit(0)
@@ -120,6 +122,7 @@ usage:
   snug profile dot [NAME...]              the same as a graphviz graph
   snug config                             show the resolved configuration
   snug doctor                             check whether this host can run snug
+  snug attach [dir]                       join a sandbox that is already running
 
 flags:
   -p, --profile NAME   add a profile (repeatable; order is irrelevant)

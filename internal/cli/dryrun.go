@@ -60,6 +60,7 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 		fmt.Fprintf(out, "TTY      shared session — job control works (TIOCSTI is disabled kernel-wide)\n")
 	}
 	describeSeccomp(out, cfg)
+	describeAttach(out)
 	fmt.Fprintln(out)
 
 	fmt.Fprintln(out, "FILESYSTEM  (deny-by-default; every line is a grant, there are no deny rules)")
@@ -195,6 +196,28 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 //     compat) payload runs under a different audit arch and this filter
 //     denies it NOTHING. Saying "active" with no qualifier on such a host is
 //     the unqualified-guarantee shape this whole block exists to avoid.
+//
+// describeAttach is §9 of the attach design, rendered rather than paraphrased
+// because the honesty requirements are load-bearing: --dry-run starts
+// nothing, so it must not create the run directory, and the path it prints
+// is the PATTERN (run-<pid>), never a fabricated pid — this run's own pid is
+// not the pid a real run would use for its directory name (the pid in the
+// name is a human-readable label only; nothing parses it back out), and
+// inventing one would be the kind of small lie CLAUDE.md says makes the
+// whole artifact untrustworthy.
+func describeAttach(out *os.File) {
+	base, snugName := runtimeBase()
+	pattern := filepath.Join(base, snugName, "run-<pid>", "state.json")
+	fmt.Fprintf(out, "ATTACH   this run publishes %s (0600,\n", pattern)
+	fmt.Fprintln(out, "         in a 0700 directory snug owns), so `snug attach <dir>` can join it.")
+	fmt.Fprintln(out, "         The file names the sandbox's init pid, its start time and its six")
+	fmt.Fprintln(out, "         namespace ids. It carries no command, no argv and no secret.")
+	fmt.Fprintln(out, "         Attach is NOT a permission: any process with your uid can join these")
+	fmt.Fprintln(out, "         namespaces without snug. What attach adds is the run's own seccomp")
+	fmt.Fprintln(out, "         filter, an empty capability set and this policy's environment — a")
+	fmt.Fprintln(out, "         plain nsenter has none of the three.")
+}
+
 func describeSeccomp(out *os.File, cfg config) {
 	// DeniedSyscallNames panics if internal/sandbox's own name table has
 	// fallen behind deniedSyscalls — see its doc comment. That is deliberate:

@@ -149,8 +149,8 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	extra = append(extra, infoW)
 	flags = append(flags, "--info-fd", strconv.Itoa(nextFD()))
+	extra = append(extra, infoW)
 
 	// Networking needs NO handshake with bwrap any more, and the absence is the
 	// point.
