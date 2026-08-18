@@ -1,0 +1,11 @@
+CONTAINERS  a per-sandbox engine behind a filtering proxy at /run/snug/podman.sock
+         Containers run in THIS sandbox's own network namespace: with no
+         '@net', a container has no egress either; with '@net', full egress
+         via the sandbox's pasta, exactly as the NETWORK block above states.
+         A container has the sandbox's own network with NO port mapping:
+         'podman run -p N:80' is not supported — the engine holds no
+         CAP_NET_ADMIN, so it cannot reconfigure this namespace to publish one.
+         A container may mount only a path the sandbox can already see,
+         enforced by the proxy's bind filter, which reads this same resolved
+         policy (the mount view itself is still a private copy of the host
+         tree, not a derived one — see the TOPOLOGY block).
