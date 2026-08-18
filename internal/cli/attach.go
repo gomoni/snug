@@ -292,6 +292,11 @@ func runAttach(st runState, command []string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// Restores the client's own terminal (raw-mode termios, SIGWINCH
+	// watcher) on every path out of this function from here on — normal
+	// return, the attached command dying, or any of the error returns
+	// below. A no-op on the pipe path, where there was nothing to touch.
+	defer relay.restoreTerminal()
 
 	reportR, reportW, err := os.Pipe()
 	if err != nil {

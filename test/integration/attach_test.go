@@ -1702,3 +1702,94 @@ func TestAttachForwardsInitialWinsize(t *testing.T) {
 			want, out.String())
 	}
 }
+
+// isRawTermios reports whether t has the flags clientRawMode's cfmakeraw
+// sets — ICANON and ECHO off is enough to distinguish "raw" from "cooked"
+// without duplicating cfmakeraw's whole flag list here.
+func isRawTermios(t *unix.Termios) bool {
+	return t.Lflag&unix.ICANON == 0 && t.Lflag&unix.ECHO == 0
+}
+
+// TestAttachRestoresClientTerminalOnExit is the fourth interactive-pty gap,
+// and the one with a real regression cost if it is ever lost: without it,
+// every `snug attach` from a real terminal leaves that terminal raw
+// afterward — invisible input, no line editing, until the user runs `reset`
+// or `stty sane` by hand.
+//
+// This reads the CLIENT pty's own termios (via the master end this test
+// keeps open, mirroring the slave attach's own stdin actually is) at three
+// points: before attach starts (the baseline to restore to), partway
+// through a deliberately slow attached command (the positive control —
+// proving the session really WAS raw, not that termios was simply never
+// touched), and after attach has returned (the restore this test exists to
+// check). Without restoreTerminal, the "after" read stays raw instead of
+// reverting to the baseline.
+func TestAttachRestoresClientTerminalOnExit(t *testing.T) {
+	budget(t, 40*time.Second)
+	requireSandbox(t)
+	env, xdg := attachEnv(t)
+	proj, _ := target(t)
+
+	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t, xdg)
+
+	master, slave := openTestPTY(t)
+	defer master.Close()
+
+	before, err := unix.IoctlGetTermios(int(master.Fd()), unix.TCGETS)
+	if err != nil {
+		t.Fatalf("reading the client pty's own termios before attach: %v", err)
+	}
+	if isRawTermios(before) {
+		t.Fatalf("the client pty was already raw before attach even started — this test's "+
+			"baseline is not a cooked-mode one, so it cannot prove restore: %+v", before)
+	}
+
+	cmd := exec.Command(snugBin, "attach", proj, "--", "/bin/sleep", "2")
+	cmd.Env = env
+	cmd.Stdin = slave
+	cmd.Stdout = slave
+	cmd.Stderr = slave
+
+	p := startBgProc(t, cmd)
+	slave.Close()
+
+	deadline := time.Now().Add(10 * time.Second)
+	var mid *unix.Termios
+	for time.Now().Before(deadline) {
+		mid, err = unix.IoctlGetTermios(int(master.Fd()), unix.TCGETS)
+		if err != nil {
+			t.Fatalf("reading the client pty's own termios mid-session: %v", err)
+		}
+		if isRawTermios(mid) {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if mid == nil || !isRawTermios(mid) {
+		t.Fatalf("the client pty never went raw during the attached session (waited 10s) — "+
+			"clientRawMode did not run, so this test cannot tell restore apart from "+
+			"'nothing ever touched it': %+v", mid)
+	}
+
+	select {
+	case <-waitDone(p):
+	case <-time.After(15 * time.Second):
+		t.Fatal("snug attach (pty stdin, restore test) did not return within 15s")
+	}
+
+	after, err := unix.IoctlGetTermios(int(master.Fd()), unix.TCGETS)
+	if err != nil {
+		t.Fatalf("reading the client pty's own termios after attach returned: %v", err)
+	}
+	if isRawTermios(after) {
+		t.Errorf("the client pty is STILL raw after attach returned — restoreTerminal did not "+
+			"put the original termios back: %+v", after)
+	}
+	if *after != *before {
+		t.Errorf("the client pty's termios after attach (%+v) does not match the pre-attach "+
+			"baseline (%+v) — restore put back something other than exactly what was there "+
+			"before", after, before)
+	}
+}

@@ -10,17 +10,19 @@ package cli
 // still read and write the stream it was handed, only not the host inode
 // behind a redirected one.
 //
-// What this file does NOT (yet) do: restore terminal state on exit. That is
-// a real interactive-UX gap, being closed incrementally — the security
-// property (host inode never reaches the sandbox) holds regardless. Job
-// control (the attached shell getting the pty as its controlling terminal,
-// via setsid()+TIOCSCTTY in internal/attach/child.go on the pty path) is
-// now done; see attach.Config.PTY, set from this file's own pty flag below.
-// So is putting the CLIENT's own terminal into raw mode (clientRawMode) and
-// forwarding its window size into the pty, both initially and on every
-// SIGWINCH (watchWinsize) — but restoring the client's termios on exit is
-// not yet wired in, so until that lands an attach session that used a pty
-// leaves the client's real terminal raw after it ends.
+// Four interactive-UX gaps a fresh pty needs to actually behave like a
+// terminal are closed here and in internal/attach/child.go, all four
+// unrelated to the security property above (host inode never reaches the
+// sandbox), which holds regardless: job control (the attached shell getting
+// the pty as its controlling terminal, via setsid()+TIOCSCTTY in
+// internal/attach/child.go on the pty path — see attach.Config.PTY, set
+// from this file's own pty flag below), putting the CLIENT's own terminal
+// into raw mode (clientRawMode), forwarding its window size into the pty
+// both initially and on every SIGWINCH (watchWinsize), and restoring the
+// client's termios and stopping the SIGWINCH watcher when the session ends
+// (restoreTerminal) — deferred by runAttach right after newStdioRelay
+// returns, so it runs on every exit path: normal return, the attached
+// command dying, or an early error return.
 
 import (
 	"io"
@@ -56,6 +58,11 @@ type stdioRelay struct {
 	// session). Both nil on the pipe path.
 	sigwinch     chan os.Signal
 	sigwinchDone chan struct{}
+
+	// restoreOnce guards restoreTerminal against running twice — the caller
+	// defers it once, but the same relay may also reach an error path that
+	// wants to restore before returning.
+	restoreOnce sync.Once
 
 	closeOnce sync.Once
 	childEnds []*os.File // deduplicated; closed once, right after Start()
@@ -99,11 +106,18 @@ func newStdioRelay() (*stdioRelay, error) {
 		r.childEnds = []*os.File{slave}
 
 		if err := r.clientRawMode(); err != nil {
+			r.restoreTerminal()
 			master.Close()
 			slave.Close()
 			return nil, err
 		}
 		if err := r.watchWinsize(master); err != nil {
+			// clientRawMode above already succeeded — the client's terminal
+			// IS raw at this point — so this path must restore it before
+			// giving up, or a caller who only ever sees a non-nil relay
+			// (and so only ever defers restoreTerminal on THAT) would leave
+			// the real terminal raw on this specific failure.
+			r.restoreTerminal()
 			master.Close()
 			slave.Close()
 			return nil, err
@@ -314,6 +328,34 @@ func (r *stdioRelay) watchWinsize(master *os.File) error {
 		}
 	}()
 	return nil
+}
+
+// restoreTerminal undoes everything the pty branch of newStdioRelay changed
+// on THIS PROCESS's own terminal: stops watchWinsize's SIGWINCH watcher
+// (signal.Stop, then close its done channel so the goroutine exits) and
+// puts back the termios clientRawMode saved before it put the terminal in
+// raw mode. Idempotent via restoreOnce — safe to call more than once (an
+// error path inside newStdioRelay calls it directly; the caller separately
+// defers it once newStdioRelay returns) — and safe to call on a relay that
+// never touched the terminal at all (the pipe path, or a pty attempt that
+// failed before clientRawMode ran): both sigwinchDone and origTermios stay
+// nil in that case, and this is then a no-op.
+//
+// The caller (runAttach) defers this immediately after newStdioRelay
+// returns, so it runs on every exit path out of that function — normal
+// return, the attached command dying (including by a signal — releaseGate
+// still returns normally in that case, see ws.Signaled()), or an early
+// error return — never only some of them.
+func (r *stdioRelay) restoreTerminal() {
+	r.restoreOnce.Do(func() {
+		if r.sigwinchDone != nil {
+			signal.Stop(r.sigwinch)
+			close(r.sigwinchDone)
+		}
+		if r.origTermios != nil {
+			unix.IoctlSetTermios(int(os.Stdin.Fd()), unix.TCSETS, r.origTermios)
+		}
+	})
 }
 
 // cfmakeraw is termios(3)'s cfmakeraw — golang.org/x/sys/unix wraps the
