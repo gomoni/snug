@@ -44,14 +44,25 @@ func startEngine(control, netnsN *os.File, req request) error {
 		_ = sendEvent(control, event{Op: "enginestarted", Err: err.Error()})
 		return err
 	}
+	if req.EngineResolvConf == "" {
+		// Fatal, not a silent fallback (invariant 5): without this path
+		// EnterEngine has nothing to bind over /etc/resolv.conf, and the
+		// engine's private tree copy would carry the HOST's real one straight
+		// through to every container it starts (issue #126).
+		err := fmt.Errorf("__stage-serve: malformed startengine request: no resolv.conf path to bind over " +
+			"the engine's own /etc/resolv.conf")
+		_ = sendEvent(control, event{Op: "enginestarted", Err: err.Error()})
+		return err
+	}
 
 	// Everything __inengine needs travels on ITS OWN argv, never in an
 	// environment variable — the same discipline fds.go states for descriptor
 	// numbers ("nothing travels in the environment") applied to the engine's
-	// env too: fd 3 (the netns descriptor), then the env count and the env
-	// pairs themselves, then the podman path, then podman's own argv. See
+	// env too: the resolv.conf path to bind over /etc/resolv.conf, then fd 3
+	// (the netns descriptor), then the env count and the env pairs
+	// themselves, then the podman path, then podman's own argv. See
 	// EnterEngine for the matching decode.
-	argv := []string{"__inengine", "3", strconv.Itoa(len(req.EngineEnv))}
+	argv := []string{"__inengine", req.EngineResolvConf, "3", strconv.Itoa(len(req.EngineEnv))}
 	argv = append(argv, req.EngineEnv...)
 	argv = append(argv, req.EnginePodman)
 	argv = append(argv, req.EngineArgv...)

@@ -50,6 +50,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // podmanStaticRootRel is where host-bridge's provisioning left the pinned
@@ -1136,4 +1138,264 @@ func parseCapStatus(t *testing.T, status string) (eff, bnd uint64) {
 		}
 	}
 	return eff, bnd
+}
+
+// ── 8. a container's /etc/resolv.conf is snug's generated one, never the ─────
+//      HOST's real one (issue #126)
+
+// resolvprobeBinOnce/resolvprobeBinPath/resolvprobeBinErr mirror
+// netprobeBinOnce/netprobeBinPath/netprobeBinErr above — same lazy,
+// per-calling-test build, same reasoning.
+var (
+	resolvprobeBinOnce sync.Once
+	resolvprobeBinPath string
+	resolvprobeBinErr  error
+)
+
+func resolvprobeBin(t *testing.T) string {
+	t.Helper()
+	resolvprobeBinOnce.Do(func() {
+		dir := t.TempDir()
+		bin := filepath.Join(dir, "resolvprobe")
+		cmd := exec.Command("go", "build", "-o", bin, "./testdata/resolvprobe")
+		cmd.Dir = "."
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+		var out strings.Builder
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Run(); err != nil {
+			resolvprobeBinErr = fmt.Errorf("building test/integration/testdata/resolvprobe: %w: %s", err, out.String())
+			return
+		}
+		resolvprobeBinPath = bin
+	})
+	if resolvprobeBinErr != nil {
+		t.Fatal(resolvprobeBinErr)
+	}
+	return resolvprobeBinPath
+}
+
+// buildScratchResolvProbeImage is buildScratchProbeImage's own shape, copying
+// resolvprobe instead of netprobe — a `FROM scratch` image needs no base
+// layer and therefore no registry pull, so this builds with the sandbox's
+// egress CLOSED, exactly what the offline half of
+// TestContainerGetsGeneratedResolvConfNotTheHosts needs.
+func buildScratchResolvProbeImage(tag string) string {
+	return pyPreamble + fmt.Sprintf(`
+import tarfile, io, urllib.parse
+
+def build_scratch_probe():
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        dockerfile = b"FROM scratch\nCOPY resolvprobe /resolvprobe\nENTRYPOINT [\"/resolvprobe\"]\n"
+        ti = tarfile.TarInfo("Dockerfile"); ti.size = len(dockerfile)
+        tf.addfile(ti, io.BytesIO(dockerfile))
+        with open("resolvprobe", "rb") as f:
+            data = f.read()
+        ti2 = tarfile.TarInfo("resolvprobe"); ti2.size = len(data); ti2.mode = 0o755
+        tf.addfile(ti2, io.BytesIO(data))
+    ctx = buf.getvalue()
+    q = {"dockerfile": '["Dockerfile"]', "t": %[1]q, "output": %[1]q,
+         "networkmode": "0", "nsoptions": '[{"Name":"user","Host":true,"Path":""}]',
+         "isolation": "0", "rm": "1", "layers": "1", "pullpolicy": "missing",
+         "seccomp": "/usr/share/containers/seccomp.json", "shmsize": "67108864",
+         "nocache": "1"}
+    status, body = req("POST", "/v5.0.0/libpod/build?" + urllib.parse.urlencode(q), ctx,
+                        {"Content-Type": "application/x-tar"})
+    print("BUILD %%s: %%d" %% (%[1]q, status), flush=True)
+    if status != 200:
+        print("BUILD-BODY-TAIL: %%s" %% body[-500:].decode(errors="replace"), flush=True)
+    return status == 200
+`, tag)
+}
+
+// section extracts the text strictly between a "LABEL-BEGIN" and "LABEL-END"
+// marker LINE pair, as resolvprobe (testdata/resolvprobe/main.go) prints
+// them. Line-anchored — matching a whole line, not a bare substring — on
+// purpose: "RESOLV-BEGIN" is a SUFFIX of "PAYLOAD-RESOLV-BEGIN" (this file's
+// own marker for the sandbox payload's own /etc/resolv.conf, printed earlier
+// in the same script's output), so a plain strings.Index(out, "RESOLV-BEGIN")
+// finds that unrelated line first and silently extracts the wrong section —
+// measured, the first version of this helper did exactly that. Returns
+// ("", false) if either marker is missing, so a caller can distinguish "empty
+// content" from "the probe never even produced this section" — the same
+// distinction CLAUDE.md's own "a test that cannot fail" rule cares about
+// elsewhere in this file.
+func section(out, label string) (string, bool) {
+	// TrimRight "\r": run_and_collect's own container is created with
+	// Tty=true (runContainerAndCollectFn's doc comment — "so the compat
+	// logs endpoint needs no stream-framing decode"), and a tty gives every
+	// line a trailing \r before the \n. An exact-line match against
+	// "RESOLV-END" would otherwise never fire, and did not the first time
+	// this was measured: every line here carried it.
+	lines := strings.Split(out, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], "\r")
+	}
+	begin, end := -1, -1
+	for i, ln := range lines {
+		if ln == label+"-BEGIN" {
+			begin = i
+			break
+		}
+	}
+	if begin < 0 {
+		return "", false
+	}
+	for i := begin + 1; i < len(lines); i++ {
+		if lines[i] == label+"-END" {
+			end = i
+			break
+		}
+	}
+	if end < 0 {
+		return "", false
+	}
+	return strings.Join(lines[begin+1:end], "\n"), true
+}
+
+// hostRealResolvConf reads THIS TEST PROCESS's own (host, unsandboxed)
+// /etc/resolv.conf and returns the "nameserver X" addresses it names — the
+// exact strings issue #126 measured leaking into a container verbatim
+// (`nameserver 192.168.1.1`, a ULA `nameserver fdde:...`). A real value on
+// the CI/dev host running this test, not a literal pinned here, so the
+// assertion holds on any host's own LAN shape rather than only the one this
+// fix was found on.
+func hostRealResolvConfNameservers(t *testing.T) []string {
+	t.Helper()
+	data, err := os.ReadFile("/etc/resolv.conf")
+	if err != nil {
+		t.Skip("SKIP: cannot read this host's own /etc/resolv.conf to know what a leak would look " +
+			"like: " + err.Error())
+	}
+	var servers []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "nameserver "); ok {
+			servers = append(servers, strings.TrimSpace(v))
+		}
+	}
+	return servers
+}
+
+// TestContainerGetsGeneratedResolvConfNotTheHosts is the regression test for
+// issue #126: EnterEngine used to mount a private COPY of the host's own
+// mount tree (internal/stage/inengine.go step 4) with nothing done to
+// /etc/resolv.conf in it, so podman generated every container's own
+// /etc/resolv.conf FROM the HOST's real one — an offline sandbox's container
+// learned the host LAN's nameservers, a channel the proxy's bind filter
+// (internal/dockerproxy/create.go) never sees because it is not a
+// client-requested mount.
+//
+// Two assertions, per the fix's own spec:
+//
+//  1. THE FIX ITSELF: an offline (@podman-build, no @net) container's
+//     /etc/resolv.conf does not contain any address this test's own host
+//     /etc/resolv.conf names as a nameserver — the literal leak measured in
+//     issue #126, expressed host-agnostically so it holds on whatever LAN
+//     shape the machine running this test has, not just the one the bug was
+//     found on.
+//  2. THE POSITIVE CONTROL: the sandbox PAYLOAD's own /etc/resolv.conf
+//     — read directly, inside the very same python process the probe
+//     container was built from — equals policy.NetPolicy{Mode:
+//     policy.NetIsolated}.ResolvConf() byte for byte. This is what proves
+//     the fix's mechanism is live at all: EnterEngine now bind-mounts the
+//     SAME generated content (threaded through engine.Engine.Spec as a host
+//     path, stage.EngineSpec.ResolvConfPath) over the engine's own
+//     /etc/resolv.conf, so if this control fails the assertion above would
+//     be proving nothing about the fix specifically.
+//
+// What this test does NOT do, and why: re-run the identical scenario against
+// a build that lacks the fix, to assert the negative directly. There is no
+// clean way to flip that mechanism off from inside a single committed test
+// binary without reintroducing the very code path issue #126 removed. The
+// negative WAS measured by hand, on this branch, before and after the fix
+// (commit history + PR #117's own description carry the numbers): the
+// offline container's /etc/resolv.conf held this host's real `nameserver
+// 192.168.1.1` / `nameserver fdde:...` lines verbatim before the fix, and
+// carried none of them (podman's own resolv.conf generation found no
+// `nameserver` line to parse in snug's comment-only offline file, and
+// produced an empty one) after it.
+//
+// /etc/hosts was flagged by the same red-team pass as worth the identical
+// look and is NOT part of this test: measured (both before and after this
+// fix, by hand), a container's /etc/hosts carries only
+// `127.0.0.1 localhost`, `::1 localhost` and, with @net, podman's own
+// synthesized `host.containers.internal`/`host.docker.internal` entries at
+// the gateway address — never a line copied from the HOST's actual
+// /etc/hosts. podman synthesizes it independently of whatever the engine's
+// own /etc/hosts says, so there is nothing here for EnterEngine to shadow.
+func TestContainerGetsGeneratedResolvConfNotTheHosts(t *testing.T) {
+	budget(t, 120*time.Second)
+	env, _ := containerEngineEnv(t)
+	requireRealEngine(t, env)
+	hostNameservers := hostRealResolvConfNameservers(t)
+
+	proj, _ := target(t)
+	if err := os.WriteFile(filepath.Join(proj, "resolvprobe"), mustRead(t, resolvprobeBin(t)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tag := "snugtest-resolvconf-offline:1"
+	script := buildScratchResolvProbeImage(tag) + runContainerAndCollectFn + fmt.Sprintf(`
+payload_resolv = open("/etc/resolv.conf").read()
+print("PAYLOAD-RESOLV-BEGIN", flush=True)
+print(payload_resolv, flush=True)
+print("PAYLOAD-RESOLV-END", flush=True)
+if build_scratch_probe():
+    run_and_collect(%q, [], "host")
+print("PROBE-COMPLETE", flush=True)
+`, tag)
+	if err := os.WriteFile(filepath.Join(proj, "resolvconf.py"), []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// @podman-build, not @podman-socket alone, for the same reason
+	// TestHostLoopbackClosedFromContainer's own probeOnce gives: this test
+	// builds an image, which needs policy.PodmanBuild. No @net: this is the
+	// offline case issue #126 was found on.
+	r := runEnv(t, env, []string{"-p", "@podman-build"}, proj, `python3 resolvconf.py`).mustRun(t)
+	if !strings.Contains(r.out, "PROBE-COMPLETE") {
+		t.Fatalf("the resolv.conf probe did not run to the end:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, fmt.Sprintf("BUILD %s: 200", tag)) {
+		t.Fatalf("the from-scratch probe image did not build — this test proves nothing about a "+
+			"container it never ran:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "LOGS-BEGIN") {
+		t.Fatalf("the container never produced logs — it did not actually run:\n%s", r.out)
+	}
+
+	// CONTROL 2 first: the generation path itself, proven independently of
+	// the container.
+	payloadResolv, ok := section(r.out, "PAYLOAD-RESOLV")
+	if !ok {
+		t.Fatalf("the payload never printed its own /etc/resolv.conf:\n%s", r.out)
+	}
+	wantPayload := string(policy.NetPolicy{Mode: policy.NetIsolated}.ResolvConf())
+	if strings.TrimRight(payloadResolv, "\n") != strings.TrimRight(wantPayload, "\n") {
+		t.Fatalf("control: the sandbox PAYLOAD's own /etc/resolv.conf is not the offline-generated "+
+			"content this test compares the container against — got %q, want %q", payloadResolv, wantPayload)
+	}
+
+	// CONTROL 1: the probe container actually produced a RESOLV section at
+	// all, so an absent leak below is a proven negative rather than a probe
+	// that silently did not run.
+	containerResolv, ok := section(r.out, "RESOLV")
+	if !ok {
+		t.Fatalf("the container never printed a RESOLV section — it did not actually run "+
+			"resolvprobe:\n%s", r.out)
+	}
+
+	// THE ASSERTION: no address this test's own host names as a nameserver
+	// appears in the offline container's /etc/resolv.conf.
+	for _, ns := range hostNameservers {
+		if strings.Contains(containerResolv, ns) {
+			t.Errorf("an OFFLINE container's /etc/resolv.conf contains this host's real nameserver "+
+				"%q — the host LAN topology leak issue #126 fixed:\n%s", ns, r.out)
+		}
+	}
+	if strings.TrimSpace(containerResolv) != "" {
+		t.Logf("offline container /etc/resolv.conf was non-empty but held no host nameserver "+
+			"(podman regenerates it from what it can parse out of the bind-mounted file, and snug's "+
+			"offline one is comment-only): %q", containerResolv)
+	}
 }

@@ -1349,6 +1349,45 @@ The `defaults` control prints `"@sys" "@cwd-rw"` and the file's path; the second
 run exits **77** naming `entry 2` and the config file, rather than silently
 resolving the built-in list.
 
+## 9f. A container never sees the HOST's real /etc/resolv.conf (issue #126)
+
+`EnterEngine` mounts a private COPY of the whole host tree before it execs
+podman, and up through issue #126 nothing touched that copy's own
+`/etc/resolv.conf` — so it was still the HOST's real one (LAN nameservers, the
+search domain), and podman generated every container's own resolv.conf FROM
+it. An offline sandbox's own `/etc/resolv.conf` is correctly empty of
+nameservers; a container it started got the host's anyway, through a channel
+`internal/dockerproxy`'s bind filter never sees because it is not a
+client-requested mount. The fix bind-mounts snug's own GENERATED
+`/etc/resolv.conf` — the identical content the sandbox payload gets — over the
+engine's private copy before exec, so podman has nothing but that to generate
+a container's own file from.
+
+**Needs a real engine** (podman installed and not a host-escape shim — see
+`snug doctor`; `$SNUG_PODMAN` to pin one explicitly).
+
+```bash
+snug -p @podman-socket $SC/proj/sub -- sh -c '
+  echo "SANDBOX:"; cat /etc/resolv.conf
+'
+```
+
+Expect the sandbox's own `/etc/resolv.conf` to carry no nameserver offline
+("DNS is intentionally unavailable"). Then, in the same sandbox, build and run
+a `FROM scratch` container whose only job is to `cat /etc/resolv.conf` (the
+committed regression, `test/integration/testdata/resolvprobe`, does exactly
+this over the compat API — see
+`TestContainerGetsGeneratedResolvConfNotTheHosts` for the scripted version of
+this check with a from-scratch image, since the docker/podman CLI itself does
+not run inside the sandbox — `warnAboutPodmanClient` explains why). Expect the
+container's own `/etc/resolv.conf` to name **no** address this host's real
+`/etc/resolv.conf` (run `cat /etc/resolv.conf` on the HOST, outside the
+sandbox, for comparison) names as a nameserver — the leak issue #126 fixed.
+Add `-p @net` and expect the container's resolv.conf to now agree with the
+SANDBOX's own (pasta's resolver, or the host's routable nameservers relayed
+through egress) — expected once egress is granted, and a different fact from
+the host-LAN-topology leak offline.
+
 ## 10. A repository cannot grant itself anything
 
 ```bash

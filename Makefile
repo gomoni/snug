@@ -37,6 +37,11 @@ gate:
 	# undetected until a host with a real engine bundle happened to run those
 	# specific tests. Same fix, same reasoning as pidfdprobe above.
 	go vet ./test/integration/testdata/netprobe
+	# testdata/resolvprobe (issue #126) is the third of these: a `FROM
+	# scratch` container entrypoint that dumps /etc/resolv.conf and
+	# /etc/hosts, built lazily by containerengine_test.go's resolvprobeBin.
+	# Same fix, same reasoning as pidfdprobe and netprobe above.
+	go vet ./test/integration/testdata/resolvprobe
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This

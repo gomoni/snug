@@ -211,7 +211,15 @@ func (e *Engine) RunLabel() string { return e.runLabel }
 // Spec also remembers podman and the final env on the Engine itself, so
 // Stop's own host-side `podman stop` (reap.go) uses the IDENTICAL values
 // rather than a second, potentially-diverging computation.
-func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool) (stage.EngineSpec, error) {
+//
+// resolvConf is the generated /etc/resolv.conf content the caller's resolved
+// Policy already produced for the sandbox payload (policy.NetPolicy.ResolvConf)
+// — the SAME bytes, not a second computation of them. Spec writes it to a
+// file under this run's own hardened /tmp directory and returns its path in
+// EngineSpec.ResolvConfPath; EnterEngine bind-mounts that path over the
+// engine's own /etc/resolv.conf so a container never learns the host's real
+// DNS config (issue #126).
+func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool, resolvConf []byte) (stage.EngineSpec, error) {
 	finalEnv := append([]string{}, baseEnv...)
 	finalEnv = append(finalEnv, "XDG_RUNTIME_DIR="+e.runroot)
 	if cgroupsDisabled {
@@ -220,6 +228,11 @@ func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool) (st
 			return stage.EngineSpec{}, err
 		}
 		finalEnv = append(finalEnv, "CONTAINERS_CONF="+confPath)
+	}
+
+	resolvConfPath, err := e.writeResolvConf(resolvConf)
+	if err != nil {
+		return stage.EngineSpec{}, err
 	}
 
 	e.podman = podman
@@ -235,7 +248,9 @@ func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool) (st
 		"unix://" + e.sock,
 	}
 
-	return stage.EngineSpec{Podman: podman, Argv: argv, Env: finalEnv, Sock: e.sock}, nil
+	return stage.EngineSpec{
+		Podman: podman, Argv: argv, Env: finalEnv, Sock: e.sock, ResolvConfPath: resolvConfPath,
+	}, nil
 }
 
 // writeCgroupsDisabledConf generates a minimal containers.conf under this
@@ -250,6 +265,19 @@ func (e *Engine) writeCgroupsDisabledConf() (string, error) {
 		"[containers]\n" +
 		"cgroups = \"disabled\"\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return "", fmt.Errorf("writing %s: %w", path, err)
+	}
+	return path, nil
+}
+
+// writeResolvConf writes resolvConf (the caller's already-resolved
+// policy.NetPolicy.ResolvConf() bytes) to this run's own hardened /tmp
+// directory, so EnterEngine can bind-mount it over the engine's own
+// /etc/resolv.conf (issue #126) — a pointer, never the content itself,
+// crossing the same startengine request the cgroups-disabled config does.
+func (e *Engine) writeResolvConf(resolvConf []byte) (string, error) {
+	path := filepath.Join(e.runDir, "resolv.conf")
+	if err := os.WriteFile(path, resolvConf, 0o600); err != nil {
 		return "", fmt.Errorf("writing %s: %w", path, err)
 	}
 	return path, nil

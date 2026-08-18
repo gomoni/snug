@@ -124,10 +124,14 @@ func startContainers(pol *policy.Policy, verbose, dryRun bool) (
 		return nil, nil, nil, nil, err
 	}
 
+	// pol.Net.ResolvConf() — the SAME generation the sandbox payload's own
+	// /etc/resolv.conf mount uses (internal/policy/resolve.go) — not a second
+	// computation of it, so the engine can never diverge from what the
+	// sandbox itself was told (issue #126).
 	spec, err := eng.Spec(pf.Podman, []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
-	}, pf.CgroupsDisabled)
+	}, pf.CgroupsDisabled, pol.Net.ResolvConf())
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}

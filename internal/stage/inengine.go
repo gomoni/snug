@@ -64,24 +64,29 @@ import (
 // socket + runroot live on /tmp precisely to sit outside that masking
 // (ENGINE-WIRING.md §3.1).
 //
-// argv is [fd, nEnv, env0..envN-1, podman, podmanArgs...] — fd and the env
-// count arrive as strings for the same reason __innetns's own fd argument
-// does: syscall.Exec has no fd or env machinery of its own, so everything a
-// raw exec needs has to be named on the command line of the shim that
-// performs it.
+// argv is [resolvConfPath, fd, nEnv, env0..envN-1, podman, podmanArgs...] —
+// fd and the env count arrive as strings for the same reason __innetns's own
+// fd argument does: syscall.Exec has no fd or env machinery of its own, so
+// everything a raw exec needs has to be named on the command line of the shim
+// that performs it. resolvConfPath is a HOST path, never the content itself
+// (issue #126) — see the bind-mount step below.
 func EnterEngine(argv []string) error {
-	if len(argv) < 3 {
-		return fmt.Errorf("__inengine: usage: __inengine FD NENV [ENV...] PODMAN [ARGS...]")
+	if len(argv) < 4 {
+		return fmt.Errorf("__inengine: usage: __inengine RESOLVCONF FD NENV [ENV...] PODMAN [ARGS...]")
 	}
-	fd := atoiOrZero(argv[0])
+	resolvConfPath := argv[0]
+	if resolvConfPath == "" {
+		return fmt.Errorf("__inengine: empty resolv.conf path")
+	}
+	fd := atoiOrZero(argv[1])
 	if fd <= 0 {
-		return fmt.Errorf("__inengine: bad fd %q", argv[0])
+		return fmt.Errorf("__inengine: bad fd %q", argv[1])
 	}
-	nEnv, err := strconv.Atoi(argv[1])
+	nEnv, err := strconv.Atoi(argv[2])
 	if err != nil || nEnv < 0 {
-		return fmt.Errorf("__inengine: bad env count %q", argv[1])
+		return fmt.Errorf("__inengine: bad env count %q", argv[2])
 	}
-	rest := argv[2:]
+	rest := argv[3:]
 	if len(rest) < nEnv+1 {
 		return fmt.Errorf("__inengine: argv too short for %d env pair(s) and a podman path", nEnv)
 	}
@@ -111,6 +116,29 @@ func EnterEngine(argv []string) error {
 	// exists to avoid a different flavour of.
 	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
 		return fmt.Errorf("__inengine: making / private: %w", err)
+	}
+
+	// Bind-mount snug's own generated /etc/resolv.conf (the SAME content the
+	// sandbox payload gets, policy.NetPolicy.ResolvConf, threaded here as a
+	// host path — never re-read from the host, never regenerated) OVER the
+	// private tree's own /etc/resolv.conf, which up to this point is still
+	// the HOST's real one (issue #126). Without this, podman generates every
+	// container's /etc/resolv.conf FROM the engine's own — so an offline
+	// sandbox's container would learn the host LAN's nameservers, the IPv6
+	// ULA prefix and the search domain, a channel the proxy's bind filter
+	// (internal/dockerproxy/create.go) never sees because it is not a
+	// client-requested mount. MS_PRIVATE above is what makes this bind safe
+	// to do at all: it is invisible to the host and to every other process —
+	// the private tree copy is the only thing shadowed.
+	//
+	// A bind, not an overwrite of the file's own content: the target inode is
+	// still the host's real /etc/resolv.conf (or, on a systemd-resolved host,
+	// whatever it symlinks to) as far as the REST of the host mount tree
+	// knows — MS_BIND only shadows the mountpoint inside THIS process's own
+	// private namespace, so the host's file is never opened for writing here
+	// at all.
+	if err := unix.Mount(resolvConfPath, "/etc/resolv.conf", "", unix.MS_BIND, ""); err != nil {
+		return fmt.Errorf("__inengine: binding the generated resolv.conf over /etc/resolv.conf: %w", err)
 	}
 
 	// A bare tmpfs on /run, MEASURED necessary and NOT what ENGINE-WIRING.md
