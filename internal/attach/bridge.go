@@ -182,21 +182,21 @@ func Start(cfg *Config) (int, error) {
 // byte layouts execve(2), chdir(2) and seccomp(2) want. Built once, in the
 // parent, before the fork — see the package comment.
 type marshalled struct {
-	pidfd       int
-	capLastCap  int
-	sockFprog   unix.SockFprog // zero Len/nil Filter means "no filter"
-	chdirC      []byte         // NUL-terminated
-	argv0C      []byte         // NUL-terminated
-	argvPtrs    []uintptr      // NUL-terminated array of pointers into argvC entries
-	argvC       [][]byte       // keeps every argv element's backing array alive
-	envpPtrs    []uintptr
-	envpC       [][]byte
-	stdin       int
-	stdout      int
-	stderr      int
-	reportW     int
-	gateR       int
-	signalMask  [sigsetSize]byte
+	pidfd      int
+	capLastCap int
+	sockFprog  unix.SockFprog // zero Len/nil Filter means "no filter"
+	chdirC     []byte         // NUL-terminated
+	argv0C     []byte         // NUL-terminated
+	argvPtrs   []uintptr      // NUL-terminated array of pointers into argvC entries
+	argvC      [][]byte       // keeps every argv element's backing array alive
+	envpPtrs   []uintptr
+	envpC      [][]byte
+	stdin      int
+	stdout     int
+	stderr     int
+	reportW    int
+	gateR      int
+	signalMask [sigsetSize]byte
 }
 
 func marshal(cfg *Config) (*marshalled, error) {
