@@ -100,6 +100,20 @@ func writeRunState(runPath string, pol *policy.Policy, info sandbox.RunInfo) err
 		if !ok {
 			return fmt.Errorf("run state: bwrap's --info-fd answer did not carry a %q namespace id", k)
 		}
+		if v == 0 {
+			// 0 is never a real namespace inode on any Linux kernel. bwrap
+			// omits a "<kind>-namespace" key ENTIRELY for a namespace it did
+			// not itself unshare (internal/sandbox/exec.go's
+			// fillMissingNamespaceIDs is the fallback for that, reading
+			// /proc/<pid>/ns/<kind> directly) — if this is still 0 here, that
+			// fallback itself failed, most likely because the pid was
+			// already gone. Refusing to publish is invariant 5: a state file
+			// `snug attach` would refuse anyway (its own live check treats
+			// any recorded 0 as a guaranteed mismatch) is worse than no
+			// state file, because "unattachable" should say so at the
+			// source rather than as a confusing refusal minutes later.
+			return fmt.Errorf("run state: could not determine the %q namespace id (got 0)", k)
+		}
 		namespaces[k] = v
 	}
 

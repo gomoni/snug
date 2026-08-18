@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/gomoni/snug/internal/fdseal"
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/stage"
@@ -417,12 +419,14 @@ func readRunInfo(infoR *os.File, timeout time.Duration) (RunInfo, error) {
 			ch <- result{err: fmt.Errorf("reading bwrap's --info-fd: %w", err)}
 			return
 		}
+		namespaces := map[string]uint64{
+			"mnt": raw.Mnt, "pid": raw.Pid, "net": raw.Net,
+			"ipc": raw.Ipc, "uts": raw.Uts, "cgroup": raw.Cgroup,
+		}
+		fillMissingNamespaceIDs(raw.ChildPID, namespaces)
 		ch <- result{info: RunInfo{
-			InitPID: raw.ChildPID,
-			Namespaces: map[string]uint64{
-				"mnt": raw.Mnt, "pid": raw.Pid, "net": raw.Net,
-				"ipc": raw.Ipc, "uts": raw.Uts, "cgroup": raw.Cgroup,
-			},
+			InitPID:    raw.ChildPID,
+			Namespaces: namespaces,
 		}}
 	}()
 	select {
@@ -430,6 +434,47 @@ func readRunInfo(infoR *os.File, timeout time.Duration) (RunInfo, error) {
 		return res.info, res.err
 	case <-time.After(timeout):
 		return RunInfo{}, fmt.Errorf("bwrap did not answer on --info-fd within %s", timeout)
+	}
+}
+
+// fillMissingNamespaceIDs is the fix for a gap the attach design's own §7
+// assumed away: bwrap's --info-fd JSON omits a "<kind>-namespace" key
+// ENTIRELY for any namespace bwrap did not itself create with its own
+// --unshare-* flag — it says nothing about a namespace the process merely
+// INHERITED. Measured directly against this host's bwrap: with
+// --unshare-net passed, "net-namespace" is present and correct; without it
+// (the process already sitting in a private netns handed to it, exactly
+// runStaged's own shape — the stage creates the netns and bwrap is forked
+// already inside it, never unsharing net itself) the key is absent
+// entirely, which json.Decoder silently zero-values. Zero is not a real
+// namespace inode on any Linux kernel, so every recorded "net" entry for an
+// @net (staged) run was 0 — and since `snug attach`'s own live check reads
+// the REAL inode from /proc and refuses on ANY mismatch (§4.1 step 4), this
+// silently made every @net sandbox permanently unattachable.
+//
+// The fix reads whatever bwrap's report left at 0 directly from
+// /proc/<pid>/ns/<kind> — fstat on an opened descriptor, never readlink (the
+// same reasoning internal/cli/attach.go's own procNamespaceInodes gives: not
+// trusting the kernel to have rendered a string consistently with what a
+// later setns will actually join). It runs for every kind, not only "net",
+// on the same "do not special-case one topology's shape" reasoning the rest
+// of this file already follows — if a future bwrap release omits a
+// DIFFERENT key for some other reason, this closes that too rather than
+// needing a second patch.
+func fillMissingNamespaceIDs(pid int, namespaces map[string]uint64) {
+	for kind, id := range namespaces {
+		if id != 0 {
+			continue
+		}
+		var st unix.Stat_t
+		if err := unix.Stat(fmt.Sprintf("/proc/%d/ns/%s", pid, kind), &st); err != nil {
+			// Leave it at 0 — the caller (writeRunState) already refuses to
+			// publish state without every one of the six ids present and
+			// non-zero elsewhere; nothing here should paper over a pid that
+			// is already gone by guessing.
+			continue
+		}
+		namespaces[kind] = st.Ino
 	}
 }
 
