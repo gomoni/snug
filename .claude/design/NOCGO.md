@@ -115,6 +115,33 @@ counts, all measured:
 Keep the measured joiner as a fallback for the case where something must be
 injected into a sandbox that has no snug init. Do not build the attach path on it.
 
+**Superseded, 2026-08-18: attach IS the joiner, and it shipped.** A later
+settlement (issue #61 part (e)) measured that fork-off-the-stage produces a
+*second* sandbox rather than entry into the first — the stage holds the
+capability-carrying user and network namespaces, bwrap holds the mount and pid
+namespaces the payload actually runs in, and there is no single process a
+fork-from-init design could inject into that owns all seven. That also removed
+the control listener this section's "fallback" reading assumed: attach joins
+by descriptor, from the host, as a client, with no accept loop and no
+`start`-request authentication to attach a listener onto in the first place.
+
+`internal/attach` is the measured joiner from §3 above, unchanged in its
+kernel-level shape (raw `clone(SIGCHLD)`, raw syscalls only, one combined
+`setns` over all seven namespaces by pidfd, then a second raw fork before the
+final `execve`) and carrying the cost this section named as the reason to
+prefer fork-from-init: the interval between the `setns` and the capability
+bounding-set drop is a real window in which the raw-fork child (B) holds a
+full capability set in the *sandboxed* user namespace (never the mount-owning
+one — see the attach design's own §3.1 for why that distinction is the whole
+point). It is a handful of raw syscalls long, contains no exec and no
+further fork, and reproduces (rather than inherits) the payload's seccomp
+filter, capability bounding set, `NO_NEW_PRIVS` and environment — verified,
+not merely asserted, by a release gate that reads the raw-fork child's own
+`/proc/<pid>/status` before letting it proceed. Read together with §2's
+review of the pure-Go joiner: cgo bought nothing here either way, and the
+question this document settles is a threading one, not a capability-safety
+one — that trade is the attach design's to make, and it did.
+
 ## 5. What survived from the `/proc/self/exe` idea
 
 The intuition was aimed at locating a helper. There is no helper now, but the

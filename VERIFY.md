@@ -1823,6 +1823,110 @@ Expect `still alive: ok`.
 
 ---
 
+## 14. `snug attach` — a second shell in the *same* sandbox, equally confined
+
+`snug attach [dir]` joins a live run by its **target directory** (bare `attach`
+uses the current directory). It **gates nothing**: any same-uid host process can
+join these namespaces anyway, measured five ways on both topologies, and the help
+text says so. Its value is therefore not a permission but that it enters
+*confined* — the run's own seccomp filter, an empty capability set, the run's
+environment — where a naive `nsenter` enters with none of them. These checks prove
+attach lands in the right sandbox **and** arrives confined.
+
+The sub-checks run in order and share `$T` (the target) and `$SNUG` (the run's
+pid) from 14a. Start there.
+
+### 14a. It lands in the SAME sandbox — the decisive check, the private tmpfs
+
+```bash
+T=$(mktemp -d)
+./bin/snug "$T" -- /bin/sh -c 'echo proof-$$ > /tmp/attach-proof; while :; do sleep 1; done' &
+SNUG=$!
+sleep 2
+./bin/snug attach "$T" -- /bin/sh -c 'cat /tmp/attach-proof'      # prints proof-<pid>
+```
+
+Expect the same bytes the run wrote. `/tmp` is the sandbox's **private tmpfs**; a
+marker written *after* it started can only be read by a process in its mount
+namespace. A fresh, unrelated `snug` has an empty `/tmp` — so this is what
+distinguishes "the same sandbox" from "a sandbox that looks like it".
+
+### 14b. The namespaces are literally the same
+
+```bash
+echo "run:";    ./bin/snug attach "$T" -- /bin/sh -c 'readlink /proc/1/ns/{mnt,net,pid,user,ipc,uts}'
+echo "attach:"; ./bin/snug attach "$T" -- /bin/sh -c 'readlink /proc/self/ns/{mnt,net,pid,user,ipc,uts}'
+```
+
+The inode numbers match. attach joins by these exact inodes and **refuses on any
+mismatch**, so equality is enforced by construction — this is how you see it for
+yourself. (`/proc/1` inside is bwrap's own init; the attached process shares its
+pid namespace, so `pid` matches too.)
+
+### 14c. The attached process is confined exactly as the payload
+
+```bash
+./bin/snug attach "$T" -- /bin/sh -c 'grep -E "NoNewPrivs|Seccomp:|CapEff|CapBnd" /proc/self/status'
+```
+
+Expect `NoNewPrivs: 1`, `Seccomp: 2`, `CapEff: 0000000000000000`,
+`CapBnd: 0000000000000000` — identical to the payload's own four lines. A naive
+`nsenter` would show `Seccomp: 0` and a full `CapBnd` (`000001ffffffffff`). That
+difference is the entire feature.
+
+### 14d. The installed filter is real — behaviour, not a flag
+
+```bash
+./bin/snug attach "$T" -- /bin/sh -c 'unshare -U true 2>&1 || echo "userns refused: ok"'
+```
+
+Expect the refusal. `--seccomp` has been "passed, accepted, and never installed"
+before (bwrap stops parsing at `--`), so this asserts the filter *does something*,
+not that a flag was present.
+
+### 14e. The environment is the run's, not the host's
+
+```bash
+SECRET=leak-me ./bin/snug attach "$T" -- /bin/sh -c 'echo "SECRET=${SECRET:-not-present}"'
+```
+
+Expect `SECRET=not-present`. A host variable in attach's *own* environment must
+not reach `/proc/<pid>/environ` inside the sandbox's pid namespace — the same PID-1
+leak that once handed a payload 106 host variables, asked here of the attach path.
+
+### 14f. Teardown — the pid namespace is the leash
+
+```bash
+./bin/snug attach "$T" -- /bin/sh -c 'while :; do sleep 1; done' &
+ATT=$!
+sleep 1
+kill -9 $SNUG                                    # kill the ORIGINAL run
+sleep 1
+kill -0 $ATT 2>/dev/null && echo "BUG: attach outlived the sandbox" || echo "attach died with the sandbox: ok"
+rm -rf "$T"
+```
+
+Expect `attach died with the sandbox: ok`. Killing the run collapses the pid
+namespace, which SIGKILLs the payload and the attached command; the attach client
+then has nothing left to relay and exits. Nothing is left behind — attach adds no
+new orphan class. (Conversely, SIGKILLing the *attach client* leaves the run
+untouched; the client's bridge child carries `PR_SET_PDEATHSIG`.)
+
+### 14g. The refusals
+
+```bash
+./bin/snug attach /tmp/no-run-here 2>&1 || echo "refused: ok"
+```
+
+Expect `no live snug run found for /tmp/no-run-here — nothing is currently
+sandboxing this directory`. A stale `state.json` whose owning process is gone is
+not a match: the run directory's advisory lock must be *held* for the run to be
+attachable. Note the current build addresses runs **only** by target directory —
+two live runs on the *same* directory are reported as an ambiguity it cannot yet
+resolve; whether a second run on one directory should be refused at launch instead
+is an open decision, not a check to write against today's behaviour.
+
+
 ## If a check fails
 
 1. Re-run it with `--dry-run` and compare what snug *claimed* against what you

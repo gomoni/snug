@@ -81,6 +81,8 @@ func Main() {
 			os.Exit(profileCmd(argv[1:]))
 		case "config":
 			os.Exit(configCmd(argv[1:]))
+		case "attach":
+			os.Exit(attachCmd(argv[1:]))
 		case "help":
 			usage()
 			os.Exit(0)
@@ -120,6 +122,7 @@ usage:
   snug profile dot [NAME...]              the same as a graphviz graph
   snug config                             show the resolved configuration
   snug doctor                             check whether this host can run snug
+  snug attach [dir]                       join a sandbox that is already running
 
 flags:
   -p, --profile NAME   add a profile (repeatable; order is irrelevant)
@@ -323,6 +326,41 @@ func run(cfg config) int {
 		return exitPolicy
 	}
 
+	// The run's own private directory, published for the whole run so `snug
+	// attach` can find it — created on EVERY real run now, not only when
+	// identity or containers need it (issue #61 part (c)/(e)). --dry-run
+	// starts nothing, so it must not create one either (dryrun.go's ATTACH
+	// block names the PATTERN it would use, never a directory that exists).
+	//
+	// This is a runtimeDir()-shaped refusal, and it is FATAL rather than a
+	// warning: the alternative reading — "a debugging convenience must not
+	// stop a sandbox from starting" — does not survive contact with
+	// runtimeDir's own refusals, which are all "a directory snug owns is
+	// wrong" (an ownership mismatch, a planted symlink, a mode a hostile
+	// umask weakened), and invariant 5 says continuing past one of those is
+	// exactly the shape "no silent downgrade" forbids.
+	//
+	// Registered here, BEFORE startIdentity/startContainers's own cleanups,
+	// so LIFO defer ordering removes THIS directory LAST — after the
+	// ssh-agent and container proxy sockets it holds have already been
+	// closed by their own cleanups, not out from under a live listener.
+	var runDir string
+	if !cfg.dryRun {
+		d, rerr := runtimeDir()
+		if rerr != nil {
+			fmt.Fprintf(os.Stderr, "snug: %v\n\n"+
+				"      This run cannot publish its state, so `snug attach` could never find it —\n"+
+				"      refusing to start rather than running a sandbox nothing else can reach.\n", rerr)
+			return exitPolicy
+		}
+		runDir = d
+	}
+	defer func() {
+		if runDir != "" {
+			os.RemoveAll(runDir)
+		}
+	}()
+
 	claudeFiles(pol, home, cfg.verbose)
 
 	idCleanup, err := startIdentity(pol, cfg.verbose, cfg.iKnow, cfg.dryRun)
@@ -364,6 +402,18 @@ func run(cfg config) int {
 
 	code, err := sandbox.Run(pol, env.Uid(), env.Gid(), sandbox.Options{
 		NoSeccomp: cfg.noSeccomp,
+		// OnInfo publishes state.json once bwrap has reported its own
+		// --info-fd answer. A failure here is warn-only, deliberately unlike
+		// the runtimeDir() refusal above: by the time this callback runs, a
+		// payload already exists (or is about to, on the staged topology),
+		// and there is no clean way left in this architecture to un-start
+		// one without reintroducing the parked-payload window this file's
+		// own history (runStaged's doc comment) already removed on purpose.
+		OnInfo: func(info sandbox.RunInfo) {
+			if werr := writeRunState(runDir, pol, info); werr != nil {
+				fmt.Fprintf(os.Stderr, "snug: this run will not be attachable (%v)\n", werr)
+			}
+		},
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)

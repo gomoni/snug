@@ -124,22 +124,34 @@ func runtimeBase() (base, snugName string) {
 	return base, snugName
 }
 
-// runLocks holds the flock this process took on each run directory it has
-// claimed, keyed by the resolved path. The descriptor is never closed and
-// never unlocked for the lifetime of this process: closing it is what tells
-// a later sweep (in a different, later process) that the owner is gone, so
-// closing it early would be indistinguishable from this run having crashed.
+// runHandle is what this process holds open for one run directory it has
+// claimed: the flock (see runLocks' own doc below) and the run directory's
+// own *os.Root, kept open for the life of the process so a later write —
+// `snug attach`'s state.json, written once bwrap has reported its info-fd —
+// can go through the SAME already-verified Root rather than re-deriving and
+// re-checking a path a second time.
+type runHandle struct {
+	lock *os.File
+	root *os.Root
+}
+
+// runLocks holds the flock (and run-directory Root) this process took on
+// each run directory it has claimed, keyed by the resolved path. The lock
+// descriptor is never closed and never unlocked for the lifetime of this
+// process: closing it is what tells a later sweep (in a different, later
+// process) that the owner is gone, so closing it early would be
+// indistinguishable from this run having crashed.
 //
-// It must never be handed to the sandboxed payload. It already is not: every
-// os.File this package opens gets O_CLOEXEC from the os package by default,
-// and internal/fdseal.Seal marks every remaining non-stdio descriptor
-// close-on-exec again immediately before bwrap is forked, belt and braces —
-// so the fd this map holds is closed automatically the moment bwrap execs,
-// without ever being enumerated in cmd.ExtraFiles or otherwise offered to
-// it.
+// Neither descriptor is ever handed to the sandboxed payload. They already
+// are not: every os.File and os.Root this package opens gets O_CLOEXEC from
+// the os package by default, and internal/fdseal.Seal marks every remaining
+// non-stdio descriptor close-on-exec again immediately before bwrap is
+// forked, belt and braces — so both are closed automatically the moment
+// bwrap execs, without ever being enumerated in cmd.ExtraFiles or otherwise
+// offered to it.
 var (
 	runLocksMu sync.Mutex
-	runLocks   = map[string]*os.File{}
+	runLocks   = map[string]*runHandle{}
 )
 
 // runLock takes the per-run flock exactly once per path per process. On a
@@ -158,9 +170,9 @@ func runLock(runPath string, snugRoot *os.Root, snugPath, runName string) error 
 		return nil
 	}
 
-	lock, err := lockRunDir(snugRoot, snugPath, runName)
+	lock, root, err := lockRunDir(snugRoot, snugPath, runName)
 	if errors.Is(err, errLockFileSwept) {
-		lock, err = lockRunDir(snugRoot, snugPath, runName)
+		lock, root, err = lockRunDir(snugRoot, snugPath, runName)
 	}
 	if err != nil {
 		if errors.Is(err, errLockFileSwept) {
@@ -171,8 +183,23 @@ func runLock(runPath string, snugRoot *os.Root, snugPath, runName string) error 
 		return err
 	}
 
-	runLocks[runPath] = lock
+	runLocks[runPath] = &runHandle{lock: lock, root: root}
 	return nil
+}
+
+// runStateRoot returns the already-open, already-ownership-verified *os.Root
+// for this run's own directory — the same one runLock claimed above — so a
+// later write (snug attach's state.json) never re-derives or re-checks the
+// path. It is an error to call this for a path runtimeDir has not already
+// succeeded for in THIS process; there is nothing for it to return.
+func runStateRoot(runPath string) (*os.Root, error) {
+	runLocksMu.Lock()
+	defer runLocksMu.Unlock()
+	h, ok := runLocks[runPath]
+	if !ok {
+		return nil, fmt.Errorf("runtime directory: %s was never claimed by runtimeDir in this process", runPath)
+	}
+	return h.root, nil
 }
 
 // errLockFileSwept means the lock file this call just locked had already
@@ -198,35 +225,43 @@ var errLockFileSwept = errors.New("lock file was removed by a concurrent sweep b
 // count. Zero means nothing points to this file any more, which can only
 // happen here if the directory it lived in was removed while we were mid-
 // creation of it.
-func lockRunDir(snugRoot *os.Root, snugPath, runName string) (*os.File, error) {
+func lockRunDir(snugRoot *os.Root, snugPath, runName string) (*os.File, *os.Root, error) {
 	runPath := filepath.Join(snugPath, runName)
 
 	runRoot, _, err := secureSubroot(snugRoot, snugPath, runName)
 	if err != nil {
-		return nil, fmt.Errorf("runtime directory: %w", err)
+		return nil, nil, fmt.Errorf("runtime directory: %w", err)
 	}
-	defer runRoot.Close()
 
 	lock, err := runRoot.OpenFile("lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("runtime directory: opening %s/lock: %w", runPath, err)
+		runRoot.Close()
+		return nil, nil, fmt.Errorf("runtime directory: opening %s/lock: %w", runPath, err)
 	}
 	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		lock.Close()
-		return nil, fmt.Errorf("runtime directory: locking %s/lock: %w — a directory named "+
+		runRoot.Close()
+		return nil, nil, fmt.Errorf("runtime directory: locking %s/lock: %w — a directory named "+
 			"after this process's own pid is already locked by something else, which should be "+
 			"impossible on a live system (pids are unique); refusing rather than reusing it", runPath, err)
 	}
 
 	if linked, lerr := stillLinked(lock); lerr != nil {
 		lock.Close()
-		return nil, fmt.Errorf("runtime directory: checking whether %s/lock is still linked: %w", runPath, lerr)
+		runRoot.Close()
+		return nil, nil, fmt.Errorf("runtime directory: checking whether %s/lock is still linked: %w", runPath, lerr)
 	} else if !linked {
 		lock.Close()
-		return nil, errLockFileSwept
+		runRoot.Close()
+		return nil, nil, errLockFileSwept
 	}
 
-	return lock, nil
+	// runRoot is kept OPEN and returned rather than closed here (the
+	// original version of this function did `defer runRoot.Close()`): a
+	// later write into this exact directory — `snug attach`'s state.json —
+	// goes through this SAME already-verified Root (see runStateRoot below)
+	// rather than re-deriving and re-checking the path a second time.
+	return lock, runRoot, nil
 }
 
 // stillLinked reports whether the open file f still has a name in the
@@ -366,6 +401,33 @@ func secureSubroot(parent *os.Root, parentDesc, name string) (child *os.Root, cr
 		return nil, false, verr
 	}
 	return child, created, nil
+}
+
+// openExistingSubroot is secureSubroot without the Mkdir: it opens a
+// directory that is expected to already exist (another run's directory,
+// being read rather than claimed) and refuses it exactly as hard —
+// ownership, mode, and no symlink at this name — without creating anything
+// if it is absent. Used by `snug attach`'s run discovery, which must never
+// bring a directory into existence just by looking for one.
+func openExistingSubroot(parent *os.Root, parentDesc, name string) (*os.Root, error) {
+	full := filepath.Join(parentDesc, name)
+
+	if fi, lerr := parent.Lstat(name); lerr != nil {
+		return nil, fmt.Errorf("checking %s: %w", full, lerr)
+	} else if fi.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing %s: it is a symlink — something on this host "+
+			"planted it before snug got here; remove it by hand and re-run snug", full)
+	}
+
+	child, err := parent.OpenRoot(name)
+	if err != nil {
+		return nil, fmt.Errorf("opening %s: %w", full, err)
+	}
+	if verr := verifyOwnedAndPrivate(child, full); verr != nil {
+		child.Close()
+		return nil, verr
+	}
+	return child, nil
 }
 
 // verifyOwnedAndPrivate refuses a directory that is not ours, or that is
