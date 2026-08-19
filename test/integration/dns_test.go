@@ -178,27 +178,19 @@ func TestAddingAnAnonymisingProfileDoesNotBreakDNSInHostMode(t *testing.T) {
 	// neither can the sandbox and a failure here would say nothing about snug.
 	requireInternet(t)
 
-	// AND THE HOST MUST HAVE A ROUTABLE RESOLVER, which is not fussiness — it
-	// is the difference between this test measuring its own property and
-	// measuring issue #164. On a systemd-resolved host every host resolver is
-	// loopback, so RoutableNameservers returns nothing, `@net-host` has no
-	// working DNS *before* @net-anon is added, and "adding a profile broke
-	// DNS" is not observable because it was already broken. Found the hard
-	// way: the first version of this test had no such guard and hung on a
-	// GitHub runner — `getent` sat out the resolver's own timeout, which is
-	// long enough to trip the per-test watchdog, so the symptom was a panic
-	// rather than a failed assertion.
-	if len(hostRoutableNameservers(t)) == 0 {
-		t.Skip("this host has no routable nameserver (systemd-resolved?), so @net-host has " +
-			"no working DNS to begin with (issue #164) and adding @net-anon to it cannot be " +
-			"observed to break anything")
-	}
+	// This test once skipped on a host whose resolvers are all loopback,
+	// because @net-host had no working DNS there to begin with — issue #164,
+	// now fixed in this same milestone: host mode names the host's own
+	// resolvers, loopback included, since the netns IS the host's. The skip
+	// is therefore gone, and deliberately: a guard whose stated reason has
+	// stopped being true is how folklore starts.
+	//
+	// What survives from that episode is the `timeout` below. A resolver
+	// pointed at an address nothing answers BLOCKS, and a hung payload trips
+	// the per-test watchdog with a panic that names no assertion — which is
+	// exactly what this test did on a GitHub runner before the guard existed.
 	proj, _ := target(t)
 
-	// `timeout` around the lookup for the same reason: a resolver pointed at
-	// an address nothing answers BLOCKS, and a hung payload is a watchdog
-	// panic that names no assertion. Bounded, the same state reads as
-	// RESOLVE-FAILED and the error below says which property broke.
 	r := run(t, []string{"-p", "@net-host", "-p", "@net-anon", "--i-know"}, proj,
 		`grep ^nameserver /etc/resolv.conf
 timeout 5 getent hosts example.com >/dev/null && echo RESOLVED || echo RESOLVE-FAILED`).mustRun(t)
@@ -211,5 +203,67 @@ timeout 5 getent hosts example.com >/dev/null && echo RESOLVED || echo RESOLVE-F
 	if !strings.Contains(r.out, "RESOLVED") {
 		t.Errorf("adding @net-anon to a working @net-host selection broke DNS — adding a "+
 			"profile took a capability away:\n%s", r.out)
+	}
+}
+
+// TestNetHostResolvesThroughTheHostsOwnResolvers is issue #164's regression
+// test.
+//
+// @net-host shares the host's network namespace and runs no pasta, and it was
+// handed `nameserver 169.254.1.1` anyway — the address pasta intercepts, with
+// no pasta behind it — so DNS did not work at all inside the one profile whose
+// purpose is reaching host services. Nothing on screen said so either: the
+// NetHost arm of the NETWORK block printed no dns line.
+//
+// The fix names the host's own resolvers there, loopback ones included,
+// because the filter that drops them exists to keep a PRIVATE netns off host
+// loopback and this namespace is the host's. So the assertion is deliberately
+// not "no loopback address appears" — in this mode a loopback resolver is the
+// correct answer.
+func TestNetHostResolvesThroughTheHostsOwnResolvers(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	// @net-host shares the host's namespace, so if the host cannot resolve
+	// then neither can the sandbox and a failure here would be about the
+	// runner rather than about snug.
+	requireInternet(t)
+	proj, _ := target(t)
+
+	r := run(t, []string{"-p", "@net-host", "--i-know"}, proj,
+		`grep ^nameserver /etc/resolv.conf
+timeout 5 getent hosts example.com >/dev/null && echo RESOLVED || echo RESOLVE-FAILED`).mustRun(t)
+
+	if strings.Contains(r.out, "169.254.1.1") {
+		t.Errorf("a sandbox sharing the HOST's network namespace is told to use pasta's "+
+			"interception address, and no pasta runs in this mode, so every lookup waits "+
+			"out a timeout:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "RESOLVED") {
+		t.Errorf("@net-host cannot resolve, so the profile whose whole purpose is reaching "+
+			"host services cannot name one:\n%s", r.out)
+	}
+
+	// The screen must say it too — the half of #164 that kept it invisible.
+	screen, code := cli(t, nil, "--dry-run", "-p", "@net-host", "--i-know", proj, "--", "true")
+	if code != 0 {
+		t.Fatalf("--dry-run -p @net-host exited %d:\n%s", code, screen)
+	}
+	var dns string
+	for _, line := range strings.Split(screen, "\n") {
+		if f := strings.Fields(line); len(f) >= 2 && f[0] == "dns" {
+			dns = strings.Join(f[1:], " ")
+			break
+		}
+	}
+	if dns == "" {
+		t.Fatalf("the NETWORK block prints no dns line for @net-host, which is how #164 "+
+			"stayed invisible: the sandbox had a resolver and the screen never mentioned "+
+			"one:\n%s", screen)
+	}
+	for _, line := range strings.Split(r.out, "\n") {
+		if f := strings.Fields(line); len(f) == 2 && f[0] == "nameserver" && !strings.Contains(dns, f[1]) {
+			t.Errorf("--dry-run's dns line says %q but the sandbox is told to use %s:\n%s",
+				dns, f[1], r.out)
+		}
 	}
 }
