@@ -1457,20 +1457,40 @@ marker was merely absent, and CI failed it at 280 ms and 300 ms because by then
 the payload had legitimately written it *before* the signal landed — a correct
 teardown looking exactly like a leak.
 
+**`SIGQUIT` is in the loop, and it is the one to watch.** The guard used to
+register `TERM`, `INT` and `HUP` — "what a supervisor sends" — and issue #111
+measured what that reasoning cost: `kill -QUIT`, the standard gesture for
+dumping a Go program's goroutines, reproduced this bug bit-for-bit in the same
+window, on both topologies, while three separate documents said `SIGKILL` was
+the only residual. Every catchable signal that could orphan a sandbox is now
+caught.
+
+**Do not detect survivors with `grep "$TOK" /proc/*/cmdline`.** The token is in
+grep's own argv and the shell expands the glob in the process that becomes
+grep, so grep finds itself and every line reports a phantom survivor — a
+by-hand check that always looks half-failed is one nobody runs twice
+(issue #114). Search in the shell instead, as below.
+
 ```bash
 for args in "" "-p @net"; do
-  for off in 0.02 0.05 0.10 0.30; do
-    T=$(mktemp -d); TOK=snug13$RANDOM
-    ./bin/snug $args "$T" -- /bin/sh -c \
-      "while :; do echo x > \"\$SNUG_TARGET/m-$TOK\"; sleep 0.1; done" >/dev/null 2>&1 &
-    SNUG=$!
-    sleep $off; kill -TERM $SNUG; wait $SNUG 2>/dev/null
-    touch "$T/.died"
-    sleep 1
-    SURV=$(grep -lZ "$TOK" /proc/[0-9]*/cmdline 2>/dev/null | tr -d '\0' | tr '\n' ' ')
-    echo "args='$args' off=${off}s wrote-after-death=$([ "$T/m-$TOK" -nt "$T/.died" ] && echo YES || echo no) survivors=[$SURV]"
-    for f in $SURV; do p=${f#/proc/}; kill -9 "${p%/cmdline}" 2>/dev/null; done
-    rm -rf "$T"
+  for sig in TERM INT HUP QUIT; do
+    for off in 0.02 0.05 0.10 0.30; do
+      T=$(mktemp -d); TOK=snug13$RANDOM
+      ./bin/snug $args "$T" -- /bin/sh -c \
+        "while :; do echo x > \"\$SNUG_TARGET/m-$TOK\"; sleep 0.1; done" >/dev/null 2>&1 &
+      SNUG=$!
+      sleep $off; kill -$sig $SNUG; wait $SNUG 2>/dev/null
+      touch "$T/.died"
+      sleep 1
+      SURV=""
+      for f in /proc/[0-9]*/cmdline; do
+        c=$(tr '\0' ' ' < "$f" 2>/dev/null) || continue
+        case "$c" in *"$TOK"*) p=${f#/proc/}; SURV="$SURV ${p%/cmdline}";; esac
+      done
+      echo "args='$args' sig=$sig off=${off}s wrote-after-death=$([ "$T/m-$TOK" -nt "$T/.died" ] && echo YES || echo no) survivors=[$SURV]"
+      for p in $SURV; do kill -9 "$p" 2>/dev/null; done
+      rm -rf "$T"
+    done
   done
 done
 ```
@@ -1481,11 +1501,21 @@ and a non-empty `survivors` names the process still holding the sandbox. Kill
 only those pids — never `pkill bwrap`, which on a host with Flatpak matches
 processes snug never started.
 
-`SIGKILL` is **not** in this check and will not pass it. It never reaches
-userspace, so snug gets no chance to confirm the teardown; that residual is
-recorded on the issue rather than hidden here. The automated equivalent is
-`TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox`, which sweeps the same
-offsets from 0–300 ms in 20 ms steps for `TERM`, `INT` and `HUP`.
+What is **not** in this check, and will not pass it, is stated as a rule rather
+than as a list of signal names: every termination that does not run a Go signal
+handler. That is `SIGKILL`, which never reaches userspace, and a genuine panic
+or runtime throw inside snug itself, which dies on the Go runtime's own crash
+path. Nothing else — the handler set covers every orphaning signal that can be
+delivered to it, including the fault-named ones (`SEGV`, `BUS`, `FPE`, `ILL`,
+`STKFLT`), which are catchable when SENT with `kill(2)` and still crash
+normally when they arise from a real fault.
+
+The automated equivalent is `TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox`.
+It sweeps **four** measured offsets rather than a fixed step (see
+`orphanSweepOffsets` for why those four), across twelve signals and both
+topologies, sampling the offset dimension for the nine signals whose delivery
+is already asserted per-signal by
+`TestTheTeardownGuardCatchesEverySignalItRegisters` in `internal/sandbox`.
 
 ## 12. The stage — a `@net` sandbox has a second process ahead of it
 

@@ -304,6 +304,28 @@ func (e *Engine) ArmReaper() error {
 	return nil
 }
 
+// ReaperPIDs names the reaper process, if one is armed, for the ONE caller
+// entitled to know: whatever is about to hand sandbox.Options a list of pids
+// the signalled-teardown sweep must not kill (issue #113).
+//
+// A slice rather than an int because the answer is genuinely "zero or one" and
+// a zero pid is a dangerous thing to pass to something that signals — see
+// sandbox.Options.excludeSet, which drops it again as a second defence.
+//
+// The reaper is the only process snug starts that the sweep must spare, and
+// the reason is the same one reaper.go gives for its missing Pdeathsig: its
+// whole job is to outlive snug and stop this run's containers when snug did
+// not get to. A guard that killed it would be killing the thing that exists
+// because the guard might not run.
+func (e *Engine) ReaperPIDs() []int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.reap == nil || e.reap.cmd == nil || e.reap.cmd.Process == nil {
+		return nil
+	}
+	return []int{e.reap.cmd.Process.Pid}
+}
+
 // DialLifeline opens the keepalive stream (lifeline.go) that ties the
 // engine's lifetime to this sandbox. Unlike ArmReaper, this NEEDS the
 // engine's socket to already exist, so the caller runs it from

@@ -85,6 +85,49 @@ var orphanSweepOffsets = []time.Duration{
 	100 * time.Millisecond, 250 * time.Millisecond,
 }
 
+// orphanConfirmedOffsets is the reduced sweep, and the reduction is measured
+// rather than chosen: 50ms is the one offset at which issue #111 reproduced an
+// orphan on BOTH topologies, and 100ms is where the staged one still did. A
+// signal that leaks at any offset leaks at these two.
+var orphanConfirmedOffsets = []time.Duration{
+	50 * time.Millisecond, 100 * time.Millisecond,
+}
+
+// orphanSignals is every signal measured to leave an orphaned sandbox behind,
+// with how much of the offset window each is swept across.
+//
+// fullSweep is the four-offset sweep, and it is spent where the offset
+// dimension can still teach us something: the three signals the guard has
+// always carried, plus SIGQUIT, which is issue #111's own reproduction and the
+// one a human is most likely to send by hand.
+//
+// The rest get orphanConfirmedOffsets. That is a real reduction in coverage
+// and it is stated rather than hidden: after signal.Notify accepts them, all
+// twelve travel one code path (teardownGuard.wait's select), so the offset
+// dimension is measuring the WINDOW, which is a property of the topology and
+// not of the signal number. What is signal-specific — whether os/signal
+// delivers this number to a handler at all, rather than letting the runtime
+// die on it — is asserted per signal, exhaustively, and much more cheaply, by
+// TestTheTeardownGuardCatchesEverySignalItRegisters in internal/sandbox.
+var orphanSignals = []struct {
+	sig       syscall.Signal
+	fullSweep bool
+}{
+	{syscall.SIGTERM, true},
+	{syscall.SIGINT, true},
+	{syscall.SIGHUP, true},
+	{syscall.SIGQUIT, true},
+
+	{syscall.SIGABRT, false},
+	{syscall.SIGTRAP, false},
+	{syscall.SIGSYS, false},
+	{syscall.SIGSEGV, false},
+	{syscall.SIGBUS, false},
+	{syscall.SIGFPE, false},
+	{syscall.SIGILL, false},
+	{syscall.SIGSTKFLT, false},
+}
+
 const (
 	// orphanMarkerPeriod is how often the payload REWRITES its marker. The
 	// evidence is the marker's mtime, never its existence — see orphanRun.
@@ -99,7 +142,7 @@ const (
 )
 
 // TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox is the regression for
-// issue #13.
+// issue #13, and — since the signal set below grew — for issue #111.
 //
 // SIGKILL is deliberately NOT in the signal set. It never reaches userspace, so
 // no handler in snug gets a chance to run and no fix expressible in snug can
@@ -107,14 +150,25 @@ const (
 // here. TestKillingSnugDuringStartupNeverRunsThePayload still asserts SIGKILL
 // for the property that IS closed — that no payload exists to be released.
 //
-// Cost: one real sandbox per offset per signal per topology — 24 launches,
-// which is why the budget is more than the suite's default ten seconds.
-// Dropping a DIMENSION is not where to save that time: one offset, or one
-// signal, or one topology is exactly what let this defect through twice.
-// Sampling within the offset dimension is where it was saved, on measurements
-// rather than on taste; see orphanSweepOffsets.
+// Everything else that can orphan a sandbox IS here. The set used to be
+// TERM/INT/HUP, chosen as "what a supervisor sends", and issue #111 measured
+// the cost of that reasoning: `kill -QUIT` — the standard gesture for dumping
+// a Go program's goroutines — reproduced issue #13 bit-for-bit, in the same
+// startup window, on both topologies, while three separate documents said
+// SIGKILL was the only residual. The nine added here are every signal measured
+// to kill snug through the Go runtime's fatal-throw path. Written out rather
+// than imported from internal/sandbox on purpose: a test that reads its
+// expectations from the code under test cannot fail.
+//
+// Cost: one real sandbox per offset per signal per topology. 24 launches took
+// 21s measured; the full 12x4x2 does not fit in the suite's outermost 4m, so
+// the offset dimension is sampled per signal — see orphanSignals. Dropping a
+// DIMENSION is not where to save that time: one offset, or one signal, or one
+// topology is exactly what let this defect through twice. Sampling within the
+// offset dimension is where it was saved, on measurements rather than on
+// taste; see orphanSweepOffsets.
 func TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox(t *testing.T) {
-	budget(t, 90*time.Second)
+	budget(t, 150*time.Second)
 	requireSandbox(t)
 	requirePasta(t)
 
@@ -133,13 +187,15 @@ func TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox(t *testing.T) {
 			// returned nothing would otherwise make every assertion below pass.
 			orphanPositiveControl(t, topo.args)
 
-			for _, sig := range []syscall.Signal{
-				syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP,
-			} {
-				t.Run(sig.String(), func(t *testing.T) {
-					for _, off := range orphanSweepOffsets {
+			for _, s := range orphanSignals {
+				t.Run(s.sig.String(), func(t *testing.T) {
+					offsets := orphanSweepOffsets
+					if !s.fullSweep {
+						offsets = orphanConfirmedOffsets
+					}
+					for _, off := range offsets {
 						t.Run(fmt.Sprintf("%dms", off.Milliseconds()), func(t *testing.T) {
-							orphanRun(t, topo.args, sig, off)
+							orphanRun(t, topo.args, s.sig, off)
 						})
 					}
 				})

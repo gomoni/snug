@@ -35,6 +35,22 @@ import (
 //   - No Pdeathsig, deliberately, which is the exact opposite of every other
 //     helper snug starts.
 //
+// Those two are not the whole of it, and the third is easy to lose because it
+// lives in another package. snug's signalled-teardown guard sweeps its OWN
+// descendant tree and SIGKILLs everything in it
+// (internal/sandbox/teardown.go's confirmTeardown), and this process is a
+// direct child of snug — so without an explicit exemption the guard kills the
+// helper that exists precisely because the guard might not get to run. It is
+// exempted by pid, through Engine.ReaperPIDs and
+// sandbox.Options.ExcludeFromTeardown, and the exemption covers this process's
+// own children too: on EOF it forks `podman stop`, and sparing the shell while
+// killing the stop is worse than sparing neither.
+//
+// Issue #113 is the history. Before that exemption existed the sweep did kill
+// this process, and it was harmless for a reason nothing in this file could
+// see: internal/cli's `defer ctrCleanup()` runs after sandbox.Run returns and
+// performed the teardown itself. Two facts one edit apart from disagreeing.
+//
 // The paths travel in the ENVIRONMENT, not in argv, so the reaper's own command
 // line does not name the socket the sweep in reap.go matches on — otherwise
 // teardown would find the reaper and count snug's own cleanup as a leak.

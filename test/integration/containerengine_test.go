@@ -1399,3 +1399,165 @@ print("PROBE-COMPLETE", flush=True)
 			"offline one is comment-only): %q", containerResolv)
 	}
 }
+
+// ── 6. a SIGNALLED run leaves no container of its own running (issue #113) ──
+
+// holderBin builds testdata/holder for the host architecture, the same way
+// netprobeBin builds netprobe and for the same reasons — it is the entrypoint
+// of a `FROM scratch` image, so it must be static and it must be built here.
+func holderBin(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "holder")
+	cmd := exec.Command("go", "build", "-o", bin, "./testdata/holder")
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	var out strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("building test/integration/testdata/holder: %v: %s", err, out.String())
+	}
+	return bin
+}
+
+// buildAndStartHolder is buildScratchProbeImage's create/start half without
+// the wait: it starts a container and LEAVES it running, which is what a test
+// about teardown needs and what run_and_collect deliberately does not do.
+func buildAndStartHolder(tag, token string) string {
+	return buildScratchProbeImage(tag) + fmt.Sprintf(`
+def start_holder(tag, token):
+    body = json.dumps({"Image": "localhost/" + tag, "Cmd": ["/netprobe", token],
+                        "Tty": True, "HostConfig": {"NetworkMode": "host"}}).encode()
+    status, resp = req("POST", "/v1.41/containers/create", body, {"Content-Type": "application/json"})
+    print("CREATE: %%d %%s" %% (status, resp.decode(errors="replace")[:300]), flush=True)
+    if status != 201:
+        return
+    cid = json.loads(resp)["Id"]
+    status, _ = req("POST", "/v1.41/containers/%%s/start" %% cid)
+    print("START: %%d %%s" %% (status, cid[:12]), flush=True)
+
+if build_scratch_probe():
+    start_holder(%[1]q, %[2]q)
+print("HOLDER-LAUNCHED", flush=True)
+import time
+time.sleep(300)
+`, tag, token)
+}
+
+// TestASignalledContainerRunLeavesNothingRunning is issue #113's ratchet, and
+// it is a ratchet rather than a fix: it passed before the exclusion list
+// existed and it passes after, which is exactly its job.
+//
+// The shape it locks. snug's signalled-teardown sweep (confirmTeardown) kills
+// every descendant it finds, and the container reaper — the one helper
+// deliberately built to OUTLIVE snug — is a direct child of snug. Before the
+// exclusion list the sweep killed it, and that was harmless for a reason
+// living in a different file: internal/cli's `defer ctrCleanup()` runs after
+// sandbox.Run returns and did the container teardown itself. Two facts one
+// edit apart from disagreeing — an early os.Exit on the signal path, and a
+// signalled @podman-socket run leaks its containers.
+//
+// So this asserts the OUTCOME, from the host, with no knowledge of which of
+// the two mechanisms delivered it: after a SIGTERM, nothing of this run's
+// container is still running. TestConfirmTeardownSparesAnExcludedSubtree in
+// internal/sandbox is the other half — it asserts the exclusion mechanism
+// itself, which this test cannot see.
+//
+// The positive control is load-bearing and it is not a formality: the token
+// MUST be observed alive on the host before the signal. Without that, a run
+// whose container never started at all — a build failure, an engine that
+// never came up, a proxy that refused — passes every assertion below, and
+// "nothing survived" would be measuring nothing.
+func TestASignalledContainerRunLeavesNothingRunning(t *testing.T) {
+	budget(t, 180*time.Second)
+	env, xdg := containerEngineEnv(t)
+	requireRealEngine(t, env)
+	proj, _ := target(t)
+
+	// The holder is copied in as "netprobe" because buildScratchProbeImage's
+	// Dockerfile names that path; the image is this test's own tag, so nothing
+	// else can pick it up.
+	if err := os.WriteFile(filepath.Join(proj, "netprobe"), mustRead(t, holderBin(t)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	token := "snug113-" + orphanToken()
+	script := buildAndStartHolder("snugtest-holder:1", token)
+	if err := os.WriteFile(filepath.Join(proj, "holder.py"), []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// @podman-build, not @podman-socket alone: this builds an image, and
+	// /build is gated on policy.PodmanBuild — see
+	// TestHostLoopbackClosedFromContainer's own note on what @podman-socket
+	// alone does to a client mid-upload.
+	bg := startAttachSandbox(t, env, []string{"-p", "@podman-build"}, proj, `python3 holder.py`)
+	bg.ready(t)
+	bg.waitForState(t, xdg)
+
+	// POSITIVE CONTROL: the container is genuinely RUNNING on this host, found
+	// the same way teardown itself finds things — by cmdline substring, never
+	// by comm.
+	deadline := time.Now().Add(120 * time.Second)
+	var before []int
+	for {
+		before = pidsNamingCmdlineSubstring(token)
+		if len(before) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no process ever carried this run's container token %q: the container "+
+				"never started, so a later 'nothing survived the signal' would be measuring "+
+				"an absence that was already there.\n%s", token, bg.log())
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	sock := engineSocketPath(os.Getuid(), bg.pid())
+	if len(pidsNamingCmdlineSubstring(sock)) == 0 {
+		t.Fatalf("PRECONDITION: no process names this run's engine socket %s while its "+
+			"container is running", sock)
+	}
+
+	if err := syscall.Kill(bg.pid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("SIGTERM snug (pid %d): %v", bg.pid(), err)
+	}
+	waitErr := bg.proc.wait()
+	code := 0
+	var ee *exec.ExitError
+	if errors.As(waitErr, &ee) {
+		code = ee.ExitCode()
+	} else if waitErr != nil {
+		t.Fatalf("waiting for the signalled snug: %v\n%s", waitErr, bg.log())
+	}
+	if code != 128+int(syscall.SIGTERM) {
+		t.Errorf("a SIGTERMed snug exited %d, not %d (128+SIGTERM). The teardown guard reports "+
+			"the conventional signal-death code so scripts see no change; a different code "+
+			"means it exited down some other path — and issue #113 is about exactly which "+
+			"path the exit takes, because `defer ctrCleanup()` only runs on this one.\n%s",
+			code, 128+int(syscall.SIGTERM), bg.log())
+	}
+
+	deadline = time.Now().Add(30 * time.Second)
+	var left []int
+	for {
+		left = pidsNamingCmdlineSubstring(token)
+		if len(left) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if len(left) > 0 {
+		t.Errorf("after SIGTERM, %d process(es) of this run's CONTAINER are still running "+
+			"(token %q, pids %v). A signalled run must not leak the containers it started — "+
+			"either the reaper was killed by the teardown sweep AND ctrCleanup did not run, "+
+			"or neither of them stopped this container (issue #113).\n%s",
+			len(left), token, left, bg.log())
+	}
+	if still := pidsNamingCmdlineSubstring(sock); len(still) > 0 {
+		t.Errorf("after SIGTERM, %d process(es) still name this run's engine socket %s: %v",
+			len(still), sock, still)
+	}
+}

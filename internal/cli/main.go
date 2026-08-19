@@ -401,12 +401,17 @@ func run(cfg config) int {
 	}
 	defer idCleanup()
 
-	ctrCleanup, engineSpec, onEngineReady, onPayloadExit, err := startContainers(pol, cfg.verbose, cfg.dryRun)
+	ctr, err := startContainers(pol, cfg.verbose, cfg.dryRun)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 		return exitPolicy
 	}
-	defer ctrCleanup()
+	// Load-bearing on the SIGNAL path as well as the ordinary one: this defer
+	// is what stops a signalled run's containers, because the teardown guard
+	// returns 128+signal through this function rather than exiting from the
+	// handler (internal/sandbox/teardown.go). Issue #113 is the note on what
+	// breaks if that ever stops being true.
+	defer ctr.cleanup()
 
 	// Re-validate. Everything above this line ADDS mounts to a policy Resolve
 	// already validated — the staged Claude credentials, the generated gh
@@ -455,9 +460,13 @@ func run(cfg config) int {
 		// sandbox); OnPayloadExit stops this run's containers by label
 		// while the engine's socket is still reachable, before the stage
 		// collapses.
-		EngineSpec:    engineSpec,
-		OnEngineReady: onEngineReady,
-		OnPayloadExit: onPayloadExit,
+		EngineSpec:    ctr.spec,
+		OnEngineReady: ctr.onEngineReady,
+		OnPayloadExit: ctr.onPayloadExit,
+		// The container reaper is deliberately NOT swept up by the
+		// signalled-teardown guard: it is the one helper meant to outlive
+		// snug (issue #113).
+		ExcludeFromTeardown: ctr.excludeFromTeardown,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)

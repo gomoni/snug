@@ -90,7 +90,7 @@ func TestStartContainersRefusesNetHostPlusPodman(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 
 	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@net-host", "@podman-socket"})
-	_, _, _, _, err := startContainers(p, false, false)
+	_, err := startContainers(p, false, false)
 	if err == nil {
 		t.Fatal("startContainers accepted @net-host + @podman-socket; the container engine has " +
 			"no sandbox network namespace to join under @net-host")
@@ -108,14 +108,18 @@ func TestStartContainersOffPodmanIsANoop(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 
 	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw"})
-	cleanup, spec, ready, exit, err := startContainers(p, false, false)
+	ctr, err := startContainers(p, false, false)
 	if err != nil {
 		t.Fatalf("startContainers refused a policy with no container profile: %v", err)
 	}
-	if spec != nil || ready != nil || exit != nil {
+	if ctr.spec != nil || ctr.onEngineReady != nil || ctr.onPayloadExit != nil {
 		t.Error("a policy with no container profile must not produce an EngineSpec or its hooks")
 	}
-	cleanup()
+	if len(ctr.excludeFromTeardown) != 0 {
+		t.Errorf("a policy with no container profile armed no reaper, so nothing may be "+
+			"exempted from the teardown sweep; got %v", ctr.excludeFromTeardown)
+	}
+	ctr.cleanup()
 }
 
 // TestStartContainersDryRunNeedsNoHostCapability is the other half of the
@@ -131,15 +135,19 @@ func TestStartContainersDryRunNeedsNoHostCapability(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 
 	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@podman-socket"})
-	cleanup, spec, ready, exit, err := startContainers(p, false, true)
+	ctr, err := startContainers(p, false, true)
 	if err != nil {
 		t.Fatalf("startContainers(dryRun=true) refused a podman-selected policy: %v", err)
 	}
-	if spec != nil || ready != nil || exit != nil {
+	if ctr.spec != nil || ctr.onEngineReady != nil || ctr.onPayloadExit != nil {
 		t.Error("startContainers(dryRun=true) must not build an EngineSpec or its hooks: " +
 			"sandbox.Run is never called on the --dry-run path, so nothing would ever consume them")
 	}
-	cleanup()
+	if len(ctr.excludeFromTeardown) != 0 {
+		t.Errorf("startContainers(dryRun=true) armed no reaper — --dry-run starts nothing — so "+
+			"nothing may be exempted from the teardown sweep; got %v", ctr.excludeFromTeardown)
+	}
+	ctr.cleanup()
 
 	foundProxySocket := false
 	for _, m := range p.Mounts {
