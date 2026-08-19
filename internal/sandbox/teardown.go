@@ -213,6 +213,23 @@ func becomeSubreaper() error {
 //
 // A nil or empty exclude is the ordinary case: no container profile selected,
 // no reaper, nothing to spare.
+//
+// The exclusion is by PID, and killPinned three functions below exists because
+// a pid is not a stable name for a process — "the pid you read is the pid you
+// kill" stops being true the moment something is reaped. An exclusion is that
+// same claim facing the other way ("the pid you spare"), so it deserves the
+// same scepticism, and a red-team pass gave it one. It is sound today for a
+// structural reason rather than a lucky one: the reaper blocks reading a pipe
+// whose write end snug holds until ctr.cleanup(), which runs AFTER sandbox.Run
+// returns — that is, after this function has finished — so the reaper cannot
+// exit, be reaped, and have its number recycled DURING the sweep. Nothing
+// inside the sandbox can signal it either; it is a host process in a different
+// pid namespace.
+//
+// The residual, stated rather than fixed: if that ordering ever changes, this
+// becomes a real pid-reuse hole. The fix then is the one killPinned already
+// models — hold a pidfd for the excluded process and honour the exclusion only
+// while /proc/self/fdinfo/<fd>'s Pid: still names it.
 func confirmTeardown(directChild *os.File, exclude map[int]bool, warn func(string)) {
 	if directChild != nil {
 		_ = unix.PidfdSendSignal(int(directChild.Fd()), unix.SIGKILL, nil, 0)
@@ -469,6 +486,30 @@ func isDescendantOf(pid, root int, exclude map[int]bool) bool {
 // uid. Restricted by uid for the same reason the integration suite's own
 // allPIDs is: this process has no business signalling anything it does not
 // own, and a shared host may have plenty of unrelated processes to skip past.
+//
+// The uid filter is the natural place to worry that snug is filtering away
+// something it needs to kill, because a MISSING INTERMEDIATE is worse than a
+// missing leaf: descendantsOf walks UP through this map, so a node absent from
+// it dead-ends the walk and hides everything below it too. A red-team pass
+// raised exactly that, on two grounds. Both were measured and neither holds,
+// and the measurements are recorded here so the next reader does not have to
+// repeat them:
+//
+//   - PR_SET_DUMPABLE=0 does NOT hide a process from this map. It reassigns
+//     the FILES under /proc/<pid> to uid 0 — `stat` reports `status` and
+//     `cmdline` as uid=0 — while /proc/<pid> itself, the DIRECTORY, keeps the
+//     real uid. os.ReadDir plus Info() stats the directory entry, so a
+//     non-dumpable child stays in the map and in descendantsOf's output.
+//     Measured directly against these two functions.
+//   - The stage is not uid-0 on the HOST. It is root inside its own user
+//     namespace, which maps 0 to this uid, so its /proc directory reads 1000
+//     like everything else. Measured across a whole `-p @net` run: the stage,
+//     the /proc/self/exe setns shim, both bwraps, pasta and the payload all
+//     read uid 1000.
+//
+// So the filter drops other users' processes and nothing of snug's own. If a
+// future topology ever does put a genuinely differently-owned process INSIDE
+// the chain, this comment is the thing that is now wrong.
 func allPPIDs() map[int]int {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
