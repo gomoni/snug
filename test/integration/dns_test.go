@@ -177,11 +177,31 @@ func TestAddingAnAnonymisingProfileDoesNotBreakDNSInHostMode(t *testing.T) {
 	// shares the host's network namespace, so if the host cannot resolve then
 	// neither can the sandbox and a failure here would say nothing about snug.
 	requireInternet(t)
+
+	// AND THE HOST MUST HAVE A ROUTABLE RESOLVER, which is not fussiness — it
+	// is the difference between this test measuring its own property and
+	// measuring issue #164. On a systemd-resolved host every host resolver is
+	// loopback, so RoutableNameservers returns nothing, `@net-host` has no
+	// working DNS *before* @net-anon is added, and "adding a profile broke
+	// DNS" is not observable because it was already broken. Found the hard
+	// way: the first version of this test had no such guard and hung on a
+	// GitHub runner — `getent` sat out the resolver's own timeout, which is
+	// long enough to trip the per-test watchdog, so the symptom was a panic
+	// rather than a failed assertion.
+	if len(hostRoutableNameservers(t)) == 0 {
+		t.Skip("this host has no routable nameserver (systemd-resolved?), so @net-host has " +
+			"no working DNS to begin with (issue #164) and adding @net-anon to it cannot be " +
+			"observed to break anything")
+	}
 	proj, _ := target(t)
 
+	// `timeout` around the lookup for the same reason: a resolver pointed at
+	// an address nothing answers BLOCKS, and a hung payload is a watchdog
+	// panic that names no assertion. Bounded, the same state reads as
+	// RESOLVE-FAILED and the error below says which property broke.
 	r := run(t, []string{"-p", "@net-host", "-p", "@net-anon", "--i-know"}, proj,
 		`grep ^nameserver /etc/resolv.conf
-getent hosts example.com >/dev/null && echo RESOLVED || echo RESOLVE-FAILED`).mustRun(t)
+timeout 5 getent hosts example.com >/dev/null && echo RESOLVED || echo RESOLVE-FAILED`).mustRun(t)
 
 	if strings.Contains(r.out, "169.254.1.1") {
 		t.Errorf("a sandbox sharing the HOST's network namespace is told to use pasta's "+
