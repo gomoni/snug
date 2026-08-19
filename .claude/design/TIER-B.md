@@ -84,6 +84,17 @@ the port-publishing assumption forward:
   now N, not the real host's. Every other `host`/`container:`/`ns:` mode stays
   refused, `PidMode` above all, because `__inengine` does not unshare pid and
   the engine's own pid namespace genuinely **is** the host's.
+
+  > **Superseded by issue #125's C0, which is where this document stops being
+  > current on this one point.** C0 put `CLONE_NEWPID` on the engine's own
+  > clone and mounts a fresh procfs in `__inengine`, so the engine's pid
+  > namespace is its own and `PidMode = "host"` would join *that*, not the
+  > host's (measured A/B against C0's parent commit; the numbers are in
+  > `internal/engine`'s package comment). **The refusal is unchanged** — it is
+  > now conservative rather than the whole boundary, since the namespace it
+  > declines still holds podman as pid 1 and every other container's conmon.
+  > Whether to relax it is issue #145's. Tier B's own sentence above is left
+  > as written because it was true of Tier B.
 - **`podman run -p N:80` is not supported, and that is a decline, not a
   regression** — no in-sandbox-netns publishing shipped before Tier B either.
   The proxy refuses `PortBindings`/`PublishAllPorts` and says why: a container

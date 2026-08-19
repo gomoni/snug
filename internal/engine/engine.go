@@ -39,15 +39,72 @@
 //     that preflight P1 refuses a wrapper outright and the engine is always a
 //     real stage child.
 //  2. reaper.go — a pipe-triggered helper stops this run's CONTAINERS (never
-//     the engine process) when snug dies without cleaning up. Containers are
-//     not the engine's children — conmon double-forks and its grandchild
-//     reparents in the HOST pid namespace, because the engine does not
-//     unshare pid — so they outlive the engine and need an explicit stop
-//     regardless of how confined the engine itself is.
+//     the engine process) when snug dies without cleaning up. Read the note
+//     below on what issue #125's C0 did to the fact this helper was built
+//     for: it is now REDUNDANT on every measured path, and it stays.
 //  3. reap.go — Stop's own ordinary-path teardown: stop containers by label
-//     while the engine's socket is still live, THEN verify by sweeping for
-//     processes that still name this run's socket path. "The kill returned
-//     no error" is not evidence anything died; the sweep is.
+//     while the engine is still live, THEN verify by sweeping for processes
+//     that still name this run's socket path. "The kill returned no error" is
+//     not evidence anything died; the sweep is.
+//
+// # Where containers live now, and what that did to the reaper (issue #125, C0)
+//
+// This package's teardown was designed around one sentence, and C0 falsified
+// it: "containers are not the engine's children — conmon double-forks and its
+// grandchild reparents in the HOST pid namespace, because the engine does not
+// unshare pid — so they outlive the engine". C0 gave the engine CLONE_NEWPID
+// at its own clone (internal/stage/enginefork.go) and a fresh procfs
+// (internal/stage/inengine.go), which changed all three clauses. MEASURED on
+// this host, A/B against C0's own parent commit, with a real pinned podman
+// bundle and a long-running container (test/integration/testdata/holder):
+//
+//	                         pre-C0 (HEAD)              with C0
+//	engine /proc/<p>/ns/pid  the HOST's own inode       its own, distinct
+//	conmon's PPid (host      an ancestor init in the    the ENGINE itself,
+//	  procfs)                  HOST pid namespace         which is pid 1 there
+//	container init           a descendant pidns of      a descendant pidns of
+//	                           the HOST's                 the ENGINE's
+//	SIGKILL the engine,      container STILL RUNNING    container gone within
+//	  nothing else             10s later                  one 250ms poll tick
+//	recorded conmon.pid /    host pids, matching        SMALL numbers, valid
+//	  pidfile in the runroot   /proc exactly              only inside the engine
+//
+// conmon still double-forks; what changed is which init adopts the orphan.
+// Pid 1 of the engine's pid namespace is podman itself (execve does not change
+// pid), so the orphan reparents ONTO THE ENGINE, and the kernel's rule that
+// destroying a pid namespace SIGKILLs every member and every member of its
+// descendant namespaces now covers the containers too.
+//
+// Consequences, in the order they matter:
+//
+//   - The reaper is REDUNDANT on every path measured, not wrong. The engine is
+//     Pdeathsig'd to P1 and P1 to P0, so any death of snug — SIGKILL included —
+//     fells the engine, and the namespace collapse takes the containers with
+//     it. Measured end to end: SIGKILL snug, and the engine, the container and
+//     the socket-path sweep were all clean inside 70ms — far faster than the
+//     reaper could fork a `podman stop` even if it were the mechanism. It is
+//     LEFT IN PLACE deliberately: removing a teardown mechanism is a
+//     maintainer's call, not a side effect of correcting a comment, and this
+//     one costs nothing on the clean path (Stop tells it to stand down).
+//   - reap.go's host-/proc sweep is UNAFFECTED and still correct. A nested pid
+//     namespace does not hide its members from an ancestor's procfs: every
+//     process in the engine's namespace is still enumerable under
+//     /proc/<host-pid>/ with a readable cmdline, which is all the sweep needs.
+//     Measured: one process named this run's socket path while the engine was
+//     live, zero after it died.
+//   - The ORDERING in Stop is still right, for a NEW reason. Containers no
+//     longer outlive the engine, so stopping them first is no longer about
+//     reaching something that would otherwise be orphaned — it is the
+//     difference between a graceful `podman stop` and the kernel SIGKILLing
+//     them when the namespace collapses.
+//   - NOT fixed here, and a finding rather than a comment: the runroot's
+//     recorded conmon.pid and pidfile are now pids in the ENGINE's pid
+//     namespace. Measured on the same container in both eras — pre-C0 they
+//     read 1954739/1954741 and matched /proc exactly; with C0 they read
+//     168/170 while the host pids were seven digits. So the HOST-side `podman
+//     stop` in stopLocked below, and the identical command in reaperScript,
+//     are reading pid numbers that mean nothing in their own numbering. See
+//     stopLocked's own comment on step 1.
 package engine
 
 import (
@@ -730,8 +787,25 @@ func (e *Engine) stopLocked() {
 		exclude[e.reap.cmd.Process.Pid] = true
 	}
 
-	// 1. Containers. Not the engine's children, and they outlive it, so this
-	//    has to happen before the engine's socket goes away.
+	// 1. Containers, FIRST — and the reason changed under issue #125's C0
+	//    without the ordering changing. It used to read "not the engine's
+	//    children, and they outlive it": true pre-C0, false now (see the
+	//    package comment's measurement). Containers are inside the engine's
+	//    own pid namespace since C0, so the engine's death already fells
+	//    them. What this step still buys is that they get a GRACEFUL stop
+	//    while the engine is live, instead of the kernel's SIGKILL when that
+	//    pid namespace collapses — so it still has to run before anything
+	//    touches the engine.
+	//
+	//    KNOWN GAP, tracked as a finding rather than fixed here: the runroot's
+	//    recorded conmon.pid/pidfile are pids in the ENGINE's pid namespace
+	//    now, not host pids, so this HOST-side invocation is reading numbers
+	//    that mean nothing in its own numbering. On this development host it
+	//    never got that far in either era — it exits 125 with "creating events
+	//    dirs: mkdir /run/libpod: permission denied", measured identically
+	//    pre- and post-C0, so that failure is environmental and not C0's. The
+	//    outcome the run promises is unaffected: step 3's sweep is what
+	//    verifies, and the namespace collapse is what actually delivers.
 	if e.podman != "" {
 		// --filter, not just --all: the store is shared with any concurrent
 		// sandbox that resolved to the same key, and stopping ITS containers

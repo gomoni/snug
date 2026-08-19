@@ -8,14 +8,40 @@ import (
 	"time"
 )
 
-// The reaper closes the one gap nothing else can: snug is SIGKILLed, so no
-// deferred cleanup and no signal handler ever runs.
+// The reaper was built to close the one gap nothing else could: snug is
+// SIGKILLed, so no deferred cleanup and no signal handler ever runs.
 //
-// The engine itself is covered without help — see lifeline.go, its idle timeout
-// fires when snug's socket dies. CONTAINERS are not: conmon is nobody's child,
-// it is reparented to init, and it keeps the payload running whether the engine
-// is up or not. That is true with a real podman too, so it is not a
-// wrapper-specific problem and Pdeathsig never solved it.
+// # Read this first: the gap it was built for is closed by something else now
+//
+// The premise, stated here for two milestones, was: "the engine itself is
+// covered without help — lifeline.go's idle timeout fires when snug's socket
+// dies. CONTAINERS are not: conmon is nobody's child, it is reparented to
+// init, and it keeps the payload running whether the engine is up or not."
+// The second half was measured true pre-C0 and is measured FALSE now. Issue
+// #125's C0 gave the engine its own pid namespace, conmon's double-forked
+// grandchild reparents onto podman (pid 1 of that namespace) rather than onto
+// a host init, and killing the engine collapses the namespace and everything
+// in it. The A/B numbers are in the package comment in engine.go; the short
+// version is that the same isolated "SIGKILL the engine and touch nothing
+// else" left the container running past a 10s deadline before C0 and killed
+// it inside one 250ms poll tick after.
+//
+// Combined with the Pdeathsig chain (engine to P1, P1 to P0), that means every
+// way snug can die already fells this run's containers, measured at under 70ms
+// end to end from a SIGKILL of snug — faster than this helper can fork a
+// `podman stop`. So on the paths measured, THIS FILE NO LONGER DELIVERS THE
+// OUTCOME; the kernel does.
+//
+// It stays anyway, and that is a decision rather than an oversight. Removing a
+// teardown mechanism is a maintainer's call and wants its own change with its
+// own red-team pass — this correction only establishes that the mechanism is
+// redundant, not that it should go. It is free on the clean path (Stop tells it
+// to stand down before snug returns), and it is the only leg of teardown that
+// does not depend on the kernel having torn the pid namespace down the way the
+// measurement says it does. Note the one thing it can no longer do reliably,
+// though: the `podman stop` below runs on the HOST against a store whose
+// recorded container pids are now in the ENGINE's pid namespace — see
+// engine.go's stopLocked step 1 for the measurement and the finding.
 //
 // So snug arms one helper BEFORE it starts the engine: a shell that blocks
 // reading a pipe snug holds the write end of, and stops this engine's

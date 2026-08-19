@@ -1596,12 +1596,19 @@ func describeTopology(out *os.File, p *policy.Policy) {
 		// itself structural instead of enforced). Widening the capability set
 		// below is necessarily a diff to this line, which is the point of
 		// keeping it a policy-owned constant rather than a per-profile field.
+		// Its pid namespace, unlike its mount namespace, IS its own from the
+		// moment it exists (issue #125's C0): CLONE_NEWPID at the engine's
+		// clone time plus a fresh procfs mount (internal/stage/inengine.go),
+		// landing under Tier B's existing mount-namespace shape, not Tier C's
+		// derived view.
 		fmt.Fprintf(out, "  engine          joins THIS sandbox's own network namespace (N) — a container has\n")
 		fmt.Fprintf(out, "                  exactly the sandbox's own network, nothing more.\n")
 		fmt.Fprintf(out, "                  mount namespace: a private COPY of the host tree, not the\n")
 		fmt.Fprintf(out, "                  sandbox's view. A container may bind only what this policy\n")
 		fmt.Fprintf(out, "                  already exposes — enforced by the proxy's bind filter (Tier C\n")
 		fmt.Fprintf(out, "                  makes this structural instead of enforced).\n")
+		fmt.Fprintf(out, "                  pid namespace: its own, so the engine cannot see the host's\n")
+		fmt.Fprintf(out, "                  process table and the sandbox cannot see the engine's.\n")
 		fmt.Fprintf(out, "                  capability bounding set (%d): %s\n",
 			len(policy.EngineCapBounding), strings.Join(policy.EngineCapBounding, " "))
 	}

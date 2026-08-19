@@ -80,8 +80,8 @@ func startEngine(control, netnsN *os.File, req request) error {
 	cmd.Stdout = nil
 	cmd.Stderr = os.Stderr
 
-	// A fresh mount+cgroup namespace at CLONE TIME, not via unshare(2) inside
-	// EnterEngine: unshare(CLONE_NEWNS) from a multithreaded Go process
+	// A fresh mount+cgroup+pid namespace at CLONE TIME, not via unshare(2)
+	// inside EnterEngine: unshare(CLONE_NEWNS) from a multithreaded Go process
 	// returns EINVAL (fs->users != 1, CLAUDE.md's own measured fact), and Go's
 	// fork/exec does the clone in the child BEFORE the runtime starts its
 	// threads there — exactly how stageCloneflags already gets CLONE_NEWNS for
@@ -91,8 +91,24 @@ func startEngine(control, netnsN *os.File, req request) error {
 	// setns with. CLONE_NEWNET is deliberately ABSENT too: N is joined by
 	// setns in EnterEngine, per-task and multithread-safe, never at clone
 	// time.
+	//
+	// CLONE_NEWPID (issue #125's "C0" piece): the engine becomes pid 1 of a
+	// FRESH pid namespace, owned by U because this clone carries no
+	// CLONE_NEWUSER of its own — exactly the ownership a procfs mount inside
+	// it needs (MEASURED: mount(2) of "proc" fails EPERM in a pid namespace
+	// with no owning userns of its own; succeeds in one, like this one, that
+	// has one). Without this the engine's /proc stays the STAGE's own private
+	// COPY of the host's — a live, readable view of every host pid — which is
+	// both useless to podman (measured: it reports no processes at all
+	// against a foreign pid namespace's numbering) and the precondition
+	// issue #55 acceptance item 2 names for reaching a co-resident process's
+	// descriptors through /proc/<pid>/fd/N. This is the pid-namespace
+	// MECHANISM only: no derived mount VIEW, no grafts — those are issue
+	// #125's later pieces, tracked on the issue itself. The stage's own P1
+	// keeps the sandbox's pid namespace unaffected; this flag applies only to
+	// the engine's own clone, here.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWNS | syscall.CLONE_NEWCGROUP,
+		Cloneflags: syscall.CLONE_NEWNS | syscall.CLONE_NEWCGROUP | syscall.CLONE_NEWPID,
 		// Cascades the engine's death to whenever P1 dies, however it dies —
 		// exit, panic, SIGKILL — exactly as P1's OWN Pdeathsig cascades from
 		// P0 (stage.go). Survives the execve into podman below because that

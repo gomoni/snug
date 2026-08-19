@@ -14,12 +14,14 @@ import (
 )
 
 // EnterEngine is __inengine: the setns+confine shim that turns a freshly
-// cloned child of the stage (CLONE_NEWNS|CLONE_NEWCGROUP already applied by
-// Cloneflags at fork time — see startEngine) into the per-sandbox container
-// engine, running in THIS sandbox's own N and bounded to
-// policy.EngineCapBounding, and nothing else (issue #63, Tier B).
+// cloned child of the stage (CLONE_NEWNS|CLONE_NEWCGROUP|CLONE_NEWPID already
+// applied by Cloneflags at fork time — see startEngine) into the per-sandbox
+// container engine, running in THIS sandbox's own N, its OWN pid namespace,
+// and bounded to policy.EngineCapBounding, and nothing else (issue #63, Tier
+// B; the pid namespace and its procfs are issue #125's "C0" piece, tracked on
+// the issue itself).
 //
-// THE ORDER IS THE SPECIFICATION (ENGINE-WIRING.md §2.4):
+// THE ORDER IS THE SPECIFICATION (ENGINE-WIRING.md §2.4, extended by C0):
 //
 //  1. lock the OS thread — setns(CLONE_NEWNET) is per-task, exactly like
 //     __innetns's own setns.
@@ -34,35 +36,83 @@ import (
 //     without it, and it keeps podman's per-container nsfs binds out of the
 //     host mount tree. This is a plain private COPY of the host tree,
 //     deliberately NOT derived from the resolved Policy — that is Tier C's
-//     job (TIER-B.md §4: "if you find yourself writing open_tree,
+//     later pieces (TIER-B.md §4: "if you find yourself writing open_tree,
 //     move_mount, a graft… you have crossed into Tier C — stop"). What stops
 //     the engine acting on an ungranted path is the proxy's bind filter,
 //     which reads the SAME resolved Policy a container may not bypass
 //     (TestContainerBindFilterMatchesPolicyVisibility is the standing gate);
 //     this mount step is not that enforcement and must never be read as one.
-//  5. dropCapsToExactly(policy.EngineCapBounding) — runs AFTER the mount that
-//     needs the full set and IMMEDIATELY BEFORE the exec, per capdrop.go's
+//  5. mount("proc", "/proc", "proc") — a FRESH procfs bound to THIS process's
+//     own pid namespace (C0), replacing whatever /proc this process inherited
+//     from the stage's private host-tree copy (step 4's mount, still the
+//     HOST's real /proc up to this point). This process is already pid 1 of a
+//     pid namespace created at clone time (CLONE_NEWPID, owned by U because
+//     that clone carried no CLONE_NEWUSER of its own) — MEASURED that mounting
+//     "proc" needs exactly that ownership: it returns EPERM with no owning
+//     userns of the caller's own, and succeeds here. FATAL on failure
+//     (invariant 5): no fallback to the inherited /proc, which would leave the
+//     engine reading every host pid's cmdline, exe symlink and fd table while
+//     TOPOLOGY on screen claimed it could not.
+//  6. dropCapsToExactly(policy.EngineCapBounding) — runs AFTER the mounts that
+//     need the full set and IMMEDIATELY BEFORE the exec, per capdrop.go's
 //     own documented contract. No uid-map re-exec here, unlike
 //     __stage-setup: this process forks from a P1 already uid-0-in-U with a
 //     FULL effective set (it created no nested userns), so it inherits full
 //     caps immediately and this single drop is enough — TIER-B.md §3 names
 //     this distinction explicitly so nobody adds a spurious re-exec.
-//  6. fdseal.SealExcept() with an EMPTY keep list — this is the last exec
+//  7. fdseal.SealExcept() with an EMPTY keep list — this is the last exec
 //     before podman, and the whole point is that the engine talks to snug
 //     ONLY through its own /tmp socket. The control socket and lifeline pipe
 //     are never in this reach: cmd.Env is set to []string{} and no fd beyond
 //     the netns descriptor (already closed at step 3) was ever added to this
 //     process's ExtraFiles when it was forked.
-//  7. execve podman with an EXPLICIT, MINIMAL argv AND env, both chosen
+//  8. execve podman with an EXPLICIT, MINIMAL argv AND env, both chosen
 //     entirely by P0 and carried on THIS function's own argv — never
 //     os.Environ() (the /proc/1/environ lesson, restated for a process whose
 //     own /proc/<pid>/ is now worth asking about the moment it joins a
-//     sandbox's namespaces).
+//     sandbox's namespaces). podman itself becomes pid 1 of the fresh
+//     namespace by this exec (execve does not change pid); see the pid-1
+//     note below.
 //
 // No /run graft (TIER-B.md §4's boundary table): podman's own forced tmpfs on /run gives
 // the engine a working /run in its private mount-namespace copy, and the
 // socket + runroot live on /tmp precisely to sit outside that masking
 // (ENGINE-WIRING.md §3.1).
+//
+// # podman as pid 1
+//
+// The fresh pid namespace's init is whichever process holds pid 1 inside it —
+// this process, from the CLONE_NEWPID clone onward, and podman itself from
+// step 8's exec onward, since execve never changes pid. Two consequences,
+// both read from user_namespaces(7)/pid_namespaces(7) rather than assumed:
+// pid 1 gets the kernel's special signal disposition (a signal with no
+// explicit handler is IGNORED, not defaulted — SIGKILL and SIGSTOP are the
+// only exceptions), and when pid 1 exits or is killed the kernel tears the
+// WHOLE namespace down, SIGKILLing everything still in it. The teardown path
+// this project already runs (engine.Stop's clean-path `podman stop --filter
+// label=...`, before the engine is killed — ENGINE-WIRING.md §6) still
+// applies unchanged: it targets containers by socket/label while the socket
+// is live, ahead of anything that would fell the namespace. What changes is
+// only the WORST case — a killed engine with no clean stop — which used to
+// leave conmon's double-forked grandchild reparented to the HOST's pid 1,
+// outliving the engine entirely (ENGINE-WIRING.md §6's "containers outlive
+// the engine and need an explicit stop"). Now that grandchild's own pid
+// namespace is podman's, so podman's own death collapses it too — a stronger
+// guarantee than before, not a weaker one. Since MEASURED, A/B against this
+// change's own parent commit: the same isolated "SIGKILL the engine and touch
+// nothing else" left the container running past a 10s deadline pre-C0 and
+// killed it inside one 250ms poll tick after; the numbers are in
+// internal/engine's package comment. Orthogonal to
+// internal/engine/reap.go's host-pid sweep: that code runs OUTSIDE the
+// engine's pid namespace (in P0, on the real host), and a pid namespace being
+// a child of the host's does not hide its members from an ancestor's /proc —
+// they are still enumerable there under their host-visible pids, so the sweep
+// is unaffected by C0. Not separately reasoned about here: whether podman
+// itself correctly reaps a reparented orphan before ITS OWN exit (a resource
+// question, zombies under a live podman, not a confinement one) is unmeasured
+// and out of C0's scope; the containment claim above holds regardless of
+// whether podman reaps promptly, because it holds at podman's OWN exit, not
+// before it.
 //
 // argv is [resolvConfPath, fd, nEnv, env0..envN-1, podman, podmanArgs...] —
 // fd and the env count arrive as strings for the same reason __innetns's own
@@ -116,6 +166,27 @@ func EnterEngine(argv []string) error {
 	// exists to avoid a different flavour of.
 	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
 		return fmt.Errorf("__inengine: making / private: %w", err)
+	}
+
+	// A FRESH procfs, bound to THIS process's own pid namespace (issue #125's
+	// "C0" piece: "the engine must hold its own pid namespace for the
+	// derived-mount-view work to be buildable at all"). Mounted directly over
+	// whatever /proc this process inherited from the stage's private
+	// host-tree copy — which up to this line is still the HOST's real /proc,
+	// exactly like /etc/resolv.conf below before its own bind. This process
+	// is pid 1 of a pid namespace created at CLONE_NEWPID clone time
+	// (startEngine), owned by U because that clone carried no CLONE_NEWUSER
+	// of its own, and a procfs mount needs precisely that ownership —
+	// MEASURED: mount(2) of "proc" in a pid namespace with no owning userns of
+	// the caller's own returns EPERM; one created together with, or owned by,
+	// the caller's own userns succeeds.
+	//
+	// FATAL on failure, no fallback (invariant 5): the alternative is the
+	// engine silently keeping the host's whole process table — every host
+	// pid's cmdline, exe symlink, environ and fd table — while snug's own
+	// TOPOLOGY block on screen claims a pid namespace it does not have.
+	if err := unix.Mount("proc", "/proc", "proc", 0, ""); err != nil {
+		return fmt.Errorf("__inengine: mounting a fresh /proc for this engine's own pid namespace: %w", err)
 	}
 
 	// Bind-mount snug's own generated /etc/resolv.conf (the SAME content the
