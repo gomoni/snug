@@ -229,16 +229,29 @@ func unshareNamesFromHelp(t *testing.T) map[string]bool {
 // fails if the stage's own set does not cover all of them except net. A build
 // against a bwrap that grows a new namespace type goes red here rather than
 // silently keeping the sandbox in it.
+//
+// What it guards is now policy.Topology.UnshareFlags, the single authority
+// every consumer reads (issue #159) — so this one guard covers BwrapFlags,
+// internal/stage's golden and internal/cli/doctor's probe, where it used to
+// cover one branch of an if.
+//
+// requireBwrapBinary, not requireSandbox: this test parses --help and creates
+// no namespace, and gating it on namespace creation meant it silently did not
+// run on the hosts least able to notice a namespace being inherited (#159).
 func TestBwrapUnshareSetIsExhaustive(t *testing.T) {
 	budget(t)
-	requireSandbox(t)
+	requireBwrapBinary(t)
 
 	found := unshareNamesFromHelp(t)
-	// The set internal/policy/bwrap.go emits under Topology.Netns == NetnsStage.
+	// The set policy.Topology.UnshareFlags returns for Netns == NetnsStage.
 	// Kept here as a literal, not imported, because this package deliberately
 	// drives the built binary rather than linking against internal/policy (see
 	// the package doc in sandbox_test.go) — a change to the set is a change
-	// this test must be edited to see, which is the point.
+	// this test must be edited to see, which is the point. After #159 this is
+	// the ONLY copy of the set not derived from the authority, which is what
+	// makes it a guard rather than a duplicate: it is checked against an
+	// independent oracle (`bwrap --help`) that internal/policy cannot consult,
+	// because it may not exec.
 	stageSet := map[string]bool{
 		"user": true, "ipc": true, "pid": true, "uts": true, "cgroup": true,
 	}
@@ -272,12 +285,14 @@ func TestBwrapUnshareSetIsExhaustive(t *testing.T) {
 // bwrap advertises must be covered, with none excluded.
 func TestBwrapOfflineUnshareSetIsExhaustive(t *testing.T) {
 	budget(t)
-	requireSandbox(t)
+	requireBwrapBinary(t)
 
 	found := unshareNamesFromHelp(t)
-	// The set internal/policy/bwrap.go emits under the `else` (non-stage)
-	// branch — the explicit expansion of --unshare-all, literal here for the
-	// same reason as stageSet above.
+	// The set policy.Topology.UnshareFlags returns for every non-stage
+	// topology — the explicit expansion of --unshare-all, literal here for the
+	// same reason as stageSet above. There is no `else` branch any more: net's
+	// presence follows from NetnsOwner, which records who CREATED the
+	// namespace (#159).
 	offlineSet := map[string]bool{
 		"user": true, "ipc": true, "pid": true, "uts": true, "cgroup": true, "net": true,
 	}

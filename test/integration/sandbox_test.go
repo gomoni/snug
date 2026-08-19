@@ -269,6 +269,30 @@ func requireSandbox(t *testing.T) {
 	}
 }
 
+// requireBwrapBinary gates on bwrap being INSTALLED and nothing else.
+//
+// It exists because two tests were gated on requireSandbox while using no
+// sandbox at all (issue #159). TestBwrapUnshareSetIsExhaustive and its offline
+// sibling parse `bwrap --help` and compare the names against the set
+// policy.Topology.UnshareFlags emits; they create no namespace, so a runner
+// that cannot create one has no bearing on whether they can run. Gating them on
+// requireSandbox meant the one guard against a silently-inherited namespace
+// silently did not run on exactly the hosts least able to notice.
+//
+// skipOrFail, not t.Skip, so SNUG_REQUIRE_SANDBOX=1 still turns a missing bwrap
+// into a failure — a green CI run that quietly checked nothing is the shape
+// this suite exists to refuse.
+//
+// Use it ONLY for tests that read bwrap's own metadata. Anything that starts a
+// sandbox wants requireSandbox, which additionally proves a namespace can be
+// created here.
+func requireBwrapBinary(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		skipOrFail(t, "bubblewrap is not installed")
+	}
+}
+
 // requirePasta gates on pasta being installed AND new enough to understand the
 // flags snug's whole network posture rests on.
 //

@@ -31,66 +31,84 @@ func (p *Policy) BwrapArgs(uid, gid int) []string {
 // profiles were named. Emission order comes from SortedMounts
 // (depth-ascending), so `snug -p a -p b` and `snug -p b -p a` produce
 // byte-identical output. The golden tests assert exactly that.
+// UnshareFlags is the ONE enumeration of bwrap's namespace flags in this
+// module. Everything that needs to know which namespaces snug creates —
+// BwrapFlags below, internal/stage's golden, internal/cli/doctor's probe —
+// reads it from here rather than re-typing it.
+//
+// It is a function, not an exported var: internal/policy holds no globals, and
+// an exported []string is writable shared state a caller can append into.
+//
+// Issue #159 is why it exists at all. doctor's probe carried its own
+// hand-typed copy, checked against nothing, forty lines below a comment in the
+// same file saying a probe must call the real code path rather than re-type it
+// — so an edit here would have reached the sandbox and silently not reached
+// the diagnostic that claims the sandbox will work. That is issue #98
+// re-opened through the screen instead of through the boundary.
+//
+// A selective list is normally a denylist, and this design does not do
+// denylists — but TestBwrapUnshareSetIsExhaustive parses `bwrap --help` for
+// every --unshare-<name> and fails if this set does not cover all of them
+// except net, so a bwrap that grows a new namespace type goes RED rather than
+// silently keeping the sandbox in it. That guard now covers every consumer
+// instead of one branch. See SUPERVISOR-DESIGN.md §3.1.
+//
+// net is not "excluded from a list" under the stage. Its presence is decided by
+// NetnsOwner — who CREATED the namespace — which is a first-class field of the
+// resolved policy rather than a carve-out written here. Under the stage, N
+// already exists: the stage (P1) created it, pinned it, and a setns shim put
+// bwrap back into it before bwrap ever runs, so bwrap must NOT make its own.
+// --unshare-all would silently discard N and replace it with a second,
+// unpinned netns pasta was never aimed at — measured, and exactly what left
+// pasta unable to bring up an interface before this was fixed. For
+// NetnsSandbox and NetnsHost, bwrap makes it, and net MUST stay in the list:
+// dropping it would silently restore host networking, the worst possible
+// outcome — verified by execution and pinned by TestOfflineHasOnlyLoopback
+// (test/integration/sandbox_test.go). NetHost's --share-net re-opens it
+// afterwards and stays in BwrapFlags, because relaxing a namespace snug
+// created is a different decision from creating it.
+//
+// user is the STRICT spelling, not -try. Measured (issue #24): for every
+// unprivileged, non-root caller, bwrap's own DWIM (bubblewrap.c:2997, `if
+// (!is_privileged && getuid() != 0 && opt_userns_fd == -1) opt_unshare_user =
+// true;`) already forces this on before the -try heuristic runs, so strict
+// costs that population nothing. What -try silently swallows is narrower and
+// worse: a REAL uid-0 caller whose own namespace's max_user_namespaces reads
+// "0" gets no user namespace and no error — and the stage's own topology (P1
+// runs bwrap as uid 0 in its own user namespace) puts every @net run's bwrap
+// in exactly that bucket, regardless of the human's uid. Strict makes that
+// failure fatal, per invariant 5, with bwrap's own message naming the sysctl
+// (kernel.unprivileged_userns_clone / max_user_namespaces).
+//
+// cgroup stays -try, deliberately, and the asymmetry is not an oversight:
+// cgroup's -try is only a stat("/proc/self/ns/cgroup") kernel-support check,
+// not a resource check, and any resource failure already takes the WHOLE
+// clone() down loudly regardless of -try. Going strict here would trade a risk
+// that measurement found to be non-existent for a real one — refusing a host
+// built without CONFIG_CGROUPS. See the issue #24 comment for the measurement.
+//
+// Order is load-bearing only in that the golden argv files pin it: net last.
+// A reordering is a golden diff, which is the review artifact.
+func (t Topology) UnshareFlags() []string {
+	f := []string{
+		"--unshare-user",
+		"--unshare-ipc",
+		"--unshare-pid",
+		"--unshare-uts",
+		"--unshare-cgroup-try",
+	}
+	if t.Netns != NetnsStage {
+		f = append(f, "--unshare-net")
+	}
+	return f
+}
+
 func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []string {
 	a := []string{}
 
-	if p.Topology.Netns == NetnsStage {
-		// Enumerate every namespace EXCEPT net, rather than --unshare-all. Under
-		// the stage, N already exists — the stage (P1) created it, pinned it,
-		// and a setns shim put bwrap back into it before bwrap ever runs — so
-		// bwrap must NOT make its own: --unshare-all would silently discard N
-		// and replace it with a second, unpinned netns pasta was never aimed
-		// at (measured: this is exactly what left pasta unable to bring up an
-		// interface before this branch existed).
-		//
-		// A selective list is normally a denylist, and this design does not do
-		// denylists — but TestBwrapUnshareSetIsExhaustive parses `bwrap --help`
-		// for every --unshare-<name> and fails if this set does not cover all
-		// of them except net, so a bwrap that grows a new namespace type goes
-		// RED here rather than silently keeping it. See
-		// SUPERVISOR-DESIGN.md §3.1.
-		//
-		// user is the STRICT spelling, not -try. Measured (issue #24): for
-		// every unprivileged, non-root caller, bwrap's own DWIM
-		// (bubblewrap.c:2997, `if (!is_privileged && getuid() != 0 &&
-		// opt_userns_fd == -1) opt_unshare_user = true;`) already forces this
-		// on before the -try heuristic runs, so strict costs that population
-		// nothing. What -try silently swallows is narrower and worse: a REAL
-		// uid-0 caller whose own namespace's max_user_namespaces reads "0" gets
-		// no user namespace and no error — and the stage's own topology (P1
-		// runs bwrap as uid 0 in its own user namespace) puts every @net run's
-		// bwrap in exactly that bucket, regardless of the human's uid. Strict
-		// makes that failure fatal, per invariant 5, with bwrap's own message
-		// naming the sysctl (kernel.unprivileged_userns_clone / max_user_namespaces).
-		//
-		// cgroup stays -try, deliberately, and the asymmetry is not an
-		// oversight: cgroup's -try is only a stat("/proc/self/ns/cgroup")
-		// kernel-support check, not a resource check, and any resource failure
-		// already takes the WHOLE clone() down loudly regardless of -try. Going
-		// strict here would trade a risk that measurement found to be
-		// non-existent for a real one — refusing a host built without
-		// CONFIG_CGROUPS. See the issue #24 comment for the measurement.
-		a = append(a,
-			"--unshare-user", "--unshare-ipc", "--unshare-pid",
-			"--unshare-uts", "--unshare-cgroup-try")
-	} else {
-		// Unshare everything bwrap supports — still every namespace, not a
-		// selective list of ones to keep, so this remains the "share nothing"
-		// floor and not a denylist. Emitted as bwrap 0.11.2's own literal
-		// expansion of --unshare-all (bubblewrap.c:1894-1903) rather than that
-		// one flag, so that (a) user can be the strict spelling below, which
-		// --unshare-all itself cannot be told to use, and (b) the set is
-		// reviewable in a golden file instead of hidden behind a single flag
-		// name. net MUST stay in this list: dropping it would silently restore
-		// host networking, the worst possible outcome of this change — verified
-		// by execution, not just by reading this comment, and pinned by
-		// TestOfflineHasOnlyLoopback (test/integration/sandbox_test.go), which
-		// already covers exactly this claim. --share-net below still re-opens
-		// it for NetHost, same as it always did.
-		a = append(a,
-			"--unshare-user", "--unshare-ipc", "--unshare-pid",
-			"--unshare-uts", "--unshare-cgroup-try", "--unshare-net")
-	}
+	// append, not `a := p.Topology.UnshareFlags()`, so the freshness of the
+	// returned slice is not load-bearing at this call site.
+	a = append(a, p.Topology.UnshareFlags()...)
 
 	a = append(a,
 		// Same uid inside and outside. Mapping to 0 is tempting (chown works)

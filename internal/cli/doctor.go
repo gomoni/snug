@@ -114,11 +114,20 @@ func doctor() int {
 	}
 
 	// The stage is a SECOND set of namespaces, created by snug itself with its
-	// own clone(2) rather than by bwrap, so nothing above covers it: the probe
-	// two blocks up asks bwrap to make a user namespace, and bwrap's own
-	// spelling is --unshare-user-TRY, which succeeds on a host where the stage's
-	// strict clone fails. A host where doctor was entirely green and every
-	// `-p @net` run died was constructible until this block existed.
+	// own clone(2) rather than by bwrap, so nothing above covers it — and the
+	// reason has changed, so read this one rather than the version you may
+	// remember. It used to say the probe above asks for --unshare-user-TRY,
+	// which succeeds where the stage's strict clone fails; that stopped being
+	// true when issue #98 made the probe strict, and the sentence survived its
+	// own fix for one commit (issue #159).
+	//
+	// What still makes this block necessary: bwrap's userns creation and snug's
+	// own clone(CLONE_NEWUSER|CLONE_NEWNET) from a MULTITHREADED Go process are
+	// different code paths with different failure modes, and the stage does
+	// four more things bwrap never attempts — writes the uid map, brings lo up
+	// from inside N, pins N with a descriptor and then LEAVES it, and survives
+	// a re-exec across all of that. A host where doctor was entirely green and
+	// every `-p @net` run died was constructible until this block existed.
 	//
 	// It calls stage.Start rather than re-typing the clone flags, for the same
 	// reason the golden spec test reads the real constant: a probe that
@@ -302,23 +311,29 @@ func classifyUserns(inside, mine string) (usernsVerdict, string) {
 // with a misleading "No such file or directory" that looks like a namespace
 // problem. That misdiagnosis is exactly what doctor exists to prevent.
 func probeBase() []string {
-	return []string{
-		// The SAME enumeration internal/policy/bwrap.go emits for an offline
-		// run, not `--unshare-all`, and the difference is the point of issue
-		// #98's second half. `--unshare-all` decodes to bwrap's own `-try`
-		// spellings (bubblewrap.c:1894-1903), so it skips a namespace it
-		// cannot create and exits 0 — while the real sandbox has asked for the
-		// strict `--unshare-user` since issue #24 and would have failed. A
-		// probe weaker than the thing it probes reports a host as usable when
-		// the run that follows dies, which is the same defect doctor's own
-		// stage-probe comment already names: a probe that approximates the
-		// code path can pass while the code path fails.
-		//
-		// probeUserns compares namespace ids on top of this rather than trusting
-		// it, because "strict flag" and "namespace actually created" are the two
-		// things the --seccomp bug taught this project not to conflate.
-		"--unshare-user", "--unshare-ipc", "--unshare-pid",
-		"--unshare-uts", "--unshare-cgroup-try", "--unshare-net",
+	// The namespaces the real sandbox creates, READ FROM THE POLICY rather than
+	// re-typed here (issue #159). This probe's output is a claim that snug will
+	// run on this host, so a probe demanding less of the kernel than the run
+	// demands produces a false green — invariant 5's silent downgrade arriving
+	// through a diagnostic instead of through the sandbox, which is issue #98.
+	// It got that way by passing `--unshare-all`, which decodes to bwrap's own
+	// `-try` spellings (bubblewrap.c:1894-1903) and skips a namespace it cannot
+	// create while exiting 0. The first fix re-typed the strict list here; a
+	// hand-typed copy checked by nothing is one edit from the same false green,
+	// which is what the call below removes.
+	//
+	// NetnsSandbox is named explicitly rather than taken as the zero value,
+	// because it is the topology that demands the MOST of the kernel: the stage
+	// topology asks bwrap for fewer namespaces (the stage already made the
+	// netns) and NetnsHost asks for the same set and then relaxes it with
+	// --share-net. A host that passes this probe satisfies all three.
+	//
+	// probeUserns compares namespace ids on top of this rather than trusting it,
+	// because "strict flag" and "namespace actually created" are the two things
+	// the --seccomp bug taught this project not to conflate.
+	flags := policy.Topology{Netns: policy.NetnsSandbox}.UnshareFlags()
+
+	return append(flags,
 		"--ro-bind", "/usr", "/usr",
 		"--symlink", "usr/bin", "/bin",
 		"--symlink", "usr/lib", "/lib",
@@ -326,7 +341,7 @@ func probeBase() []string {
 		"--proc", "/proc",
 		"--dev", "/dev",
 		"--die-with-parent",
-	}
+	)
 }
 
 func capture(name string, args ...string) string {
