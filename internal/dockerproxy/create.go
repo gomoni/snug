@@ -94,32 +94,38 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 	// one up even if asked), a container reaches exactly what the sandbox
 	// reaches. Every OTHER namespace mode stays refused unconditionally.
 	//
-	// PidMode="host" above all — but read what that phrase means NOW, not
-	// what it meant when this refusal was written. Issue #125's C0 gave the
-	// engine its OWN pid namespace (CLONE_NEWPID at the engine's clone,
-	// internal/stage/enginefork.go, plus the fresh procfs __inengine mounts
-	// over it), so PidMode="host" — which means "join the engine's current
-	// pid namespace", exactly as NetworkMode="host" means "join the engine's
-	// current netns" — no longer names the REAL host's. MEASURED, A/B on
-	// this host against C0's own parent commit: pre-C0 the engine's ns/pid
-	// was the host's own inode; with C0 it is a distinct one, and conmon's
-	// PPid read from the HOST's procfs is the engine itself rather than
-	// host pid 1.
-	//
-	// The refusal stays, and the reason for it changed rather than
-	// evaporated: it is now conservative instead of load-bearing-alone. What
-	// it still declines to hand over is the ENGINE's pid namespace, whose
-	// pid 1 is podman — root-in-U, holding policy.EngineCapBounding — and
-	// whose members include every OTHER container's conmon. A container
-	// placed inside it would reach /proc/1/fd and /proc/1/mem of the engine
-	// and of its co-resident siblings, reach that is not syscall-shaped and
-	// so cannot be named by any seccomp filter (issue #47). That is a
-	// container-to-engine and container-to-container break; it is no longer
-	// a direct escape into the host's own pid namespace.
-	//
-	// Whether the mode should therefore be ALLOWED now is issue #145's
-	// decision and deliberately not taken here. This comment states what is
-	// measured; the filter below is unchanged.
+	// The RULE that inversion follows, stated once here because it decides
+	// every mode below rather than just NetworkMode (issue #145): an
+	// inversion is safe only when the namespace's membership set is a SUBSET
+	// of what the sandbox already has. N contains the sandbox's own network
+	// and nothing else, so "join the engine's netns" is idempotent with
+	// respect to authority. A pid namespace fails that test even after issue
+	// #125's C0 gave the engine one of its own (CLONE_NEWPID at
+	// internal/stage/enginefork.go's clone, plus a fresh procfs): pid
+	// namespace membership is not "seeing more pids", it is the only kind of
+	// membership that is a HANDLE to every other namespace a member holds.
+	// procfs dereferences a name into the member's mount namespace
+	// (/proc/<pid>/root, /proc/<pid>/cwd), its open file descriptions
+	// (/proc/<pid>/fd/N, including a detached open_tree mount fd — issue #55,
+	// read AND write), its setns handles (/proc/<pid>/ns/*), and its
+	// environment and command line — none of it syscall-shaped, so no
+	// seccomp filter can name it (issue #47). The engine's pid namespace
+	// contains the engine itself — pid 1, root-in-U, policy.EngineCapBounding,
+	// the full delegated subuid range, and a mount namespace that is a
+	// private COPY of the entire host tree — so joining it is not a subset of
+	// the sandbox's authority, it is a superset: PidMode="host" would mean a
+	// container reading and writing that copy through /proc/1/root/..., at
+	// the host user's uid, with CAP_DAC_OVERRIDE in U, bypassing the proxy's
+	// bind filter entirely — the exact thing the bind filter exists to stop,
+	// reached by a different noun. MEASURED (issue #145): a container placed
+	// in a sibling container's pid namespace read the sibling's whole
+	// filesystem through /proc/<pid>/root and listed its open file
+	// descriptions through /proc/<pid>/fd, at plain uid, no capability and no
+	// ptrace — exactly the shape PidMode="host" would reproduce against the
+	// engine. This refusal does not lapse as the engine's own namespaces grow
+	// more isolated; it gets stronger, because the thing behind pid 1 keeps
+	// being something with more to lose. See namespaceModeReason below for
+	// the reason handed to each key.
 	for _, k := range namespaceModeKeys {
 		var mode string
 		if v, ok := hc[k]; ok {
@@ -132,7 +138,7 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if mode == "host" || strings.HasPrefix(mode, "container:") || strings.HasPrefix(mode, "ns:") {
-			p.deny(w, "HostConfig.%s = %q would join a namespace outside this sandbox", k, mode)
+			p.deny(w, "HostConfig.%s = %q: %s", k, mode, namespaceModeReason[k])
 			return
 		}
 	}
@@ -215,6 +221,52 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 // this sandbox. Named rather than inline so canonicalKey covers them too.
 var namespaceModeKeys = []string{
 	"NetworkMode", "PidMode", "IpcMode", "UTSMode", "UsernsMode", "CgroupnsMode",
+}
+
+// namespaceModeReason is why each key in namespaceModeKeys is refused when it
+// names "host", a sibling container, or a raw ns:<path> — one entry per key,
+// mirroring refusalReason. Written per key rather than as one generic
+// sentence because the six keys are not refused for the same reason: pid and
+// cgroup name the ENGINE's own namespaces (issue #125's C0), ipc and uts
+// still name the MACHINE's (the engine unshares neither — issue #182), userns
+// names U, and network is the one key that is not always refused at all.
+//
+// PidMode is worth reading in full: joining a pid namespace is not "seeing
+// more pids", it is acquiring procfs's naming rights into everything every
+// member holds, and the engine is what sits behind pid 1 there.
+var namespaceModeReason = map[string]string{
+	"NetworkMode": `"host" is allowed here and means THIS sandbox's own network ` +
+		`namespace N (issue #63, Tier B). What is refused is naming a namespace ` +
+		`snug did not author — another container's, or a raw ns:<path>`,
+	"PidMode": `inside this sandbox "host" is not the machine. The engine has had a ` +
+		`pid namespace of its own since issue #125's C0, so this asks to join THE ` +
+		`ENGINE'S — and pid visibility is not merely visibility: /proc/<pid>/root ` +
+		`and /proc/<pid>/cwd walk into a namespace member's own MOUNT namespace, ` +
+		`and /proc/<pid>/fd/N reopens its open descriptors, both at plain uid with ` +
+		`no capability at all (measured). Pid 1 there is the engine, whose mount ` +
+		`namespace is a private copy of the whole host tree, so this would be a ` +
+		`filesystem escape by another route — the one the -v filter exists to ` +
+		`stop, spelled differently. There is no flag that enables it and no ` +
+		`narrower spelling: PidMode=container:<id> reaches a sibling container ` +
+		`the same way`,
+	"IpcMode": `the engine does not unshare IPC, so "host" here really is the ` +
+		`machine's: it reaches the System V shared memory, semaphores and message ` +
+		`queues of every host process running as your uid, which the sandbox has ` +
+		`no other route to`,
+	"UTSMode": `the engine does not unshare UTS, so "host" here really is the ` +
+		`machine's: it discloses the real hostname and domainname, which the ` +
+		`sandbox is otherwise never told (bwrap gives the payload --unshare-uts ` +
+		`and a hostname snug chooses)`,
+	"UsernsMode": `the only user namespace on offer is U, the engine's own — ` +
+		`root-in-U with the full delegated subuid range and ` +
+		`policy.EngineCapBounding. snug decides a container's user namespace; a ` +
+		`request that names one is refused whether or not it would have changed ` +
+		`anything`,
+	"CgroupnsMode": `"host" names the ENGINE's cgroup namespace, which it clones for ` +
+		`itself (CLONE_NEWCGROUP): joining it discloses the engine's own cgroup ` +
+		`path and the placement of every other container this sandbox started. ` +
+		`snug authors that placement, which is why HostConfig.CgroupParent is ` +
+		`refused too`,
 }
 
 var refusedHostConfig = []string{
