@@ -273,6 +273,29 @@ dns = true
 # has full egress, so a payload that wants to know where it is can ask any
 # server it can reach, and DNS answers still tell it what the host's resolver
 # would have told it. This bounds passive disclosure, not an active question.
+#
+# ABUSE (dns): a hostile process inside drives the HOST's resolver with
+# arbitrary queries — any name, any type, UDP and TCP — from the host's network
+# position. On a host with a routable resolver that is no new reach: it could
+# query 192.168.1.1 directly over the egress @net already grants. On a
+# systemd-resolved host it IS new reach, and this is the sentence to carry:
+# 127.0.0.53 is a resolver process the sandbox can reach no other way, and it
+# holds a cache of what the host user has been resolving plus any split-DNS
+# domains a VPN put on that link — so `search .` withholds the internal domain
+# NAMES while this resolves them anyway.
+#
+# What it does NOT get at that address, measured inside a live sandbox rather
+# than reasoned about: 169.254.1.1 answers on port 53 over UDP and TCP and
+# refuses 631, 853 and 3100; 169.254.1.2:53 is refused, so the forwarder
+# answers on exactly one address. That measurement is what earns the phrase
+# "not a hole" above; without it the phrase is an assertion.
+#
+# NOT HIDDEN, and the profile's own description overstates this: `address` is a
+# single IPv4 value, so pasta's IPv6 default still applies and the sandbox
+# keeps the HOST'S OWN GLOBAL v6 ADDRESSES verbatim. Measured on this host —
+# the v4 address hidden is RFC1918, the v6 addresses disclosed are globally
+# routable, geolocatable and ISP-attributable, so the withholding is currently
+# the weaker half of the pair. Issue #165 carries the fix and the measurement.
 [profile.net-anon]
 description = "As net, but the sandbox gets a synthetic address instead of the host's."
 include = ["net"]

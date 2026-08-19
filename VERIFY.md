@@ -1268,6 +1268,24 @@ The cross-check is the point of running both commands rather than either one.
 A screen that agrees with a file is worth more than either alone: issue #28 was
 exactly a screen that described an interception the sandbox was not doing.
 
+**Two more lines in the same block, and the second is a disclosure this
+checklist should not let you miss.** Under `@net-anon` the `address` line reads
+`10.13.13.2/24 (synthetic; the host's IPv4 address is hidden)` followed by a
+note that IPv6 is *not* anonymised. Check that against the interface:
+
+```bash
+ip -br addr show scope global
+./bin/snug -p @net-anon $SC/proj/sub -- /bin/sh -c 'ip -br addr show dev snug0'
+```
+
+Expect the sandbox's `snug0` to carry `10.13.13.2/24` — not the host's v4
+address — **and, on a dual-stack host, the host's own global IPv6 addresses
+verbatim**. That is issue #165 and it is currently true: `address` is a single
+IPv4 value, so pasta's IPv6 default (copy the addresses from the interface with
+the default route) still applies. The screen says so; the leak is not fixed.
+If the screen ever stops saying so while the addresses are still there, that is
+the regression this line exists to catch.
+
 ## 8. Profile order is irrelevant
 
 ```bash

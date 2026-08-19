@@ -154,3 +154,42 @@ func TestTheDNSLineOnScreenMatchesTheFileInsideTheSandbox(t *testing.T) {
 		})
 	}
 }
+
+// ADDING A PROFILE MUST NOT TAKE A CAPABILITY AWAY. This is the live half of a
+// regression the anonymising branch caused and a review caught before it
+// landed: `-p @net-host -p @net-anon --i-know` resolved on main and stopped
+// resolving with the branch ungated, because Mode joins permissive-ward to
+// host, DNS ORs true, Address is set — and pasta, the thing that implements
+// the interception the generated file then demanded, runs only in egress mode.
+//
+// Measured on both binaries at the time: RESOLVED before, RESOLVE-FAILED
+// after. Composition going backwards is the property profiles are sold on, so
+// this gets a named test rather than a comment.
+//
+// Note what this test does NOT assert: that `@net-host` alone resolves. It
+// does not, on main or here — that is issue #164, a different and older defect
+// (the profile sets no `dns`, so it is handed the interception address with no
+// pasta behind it), deliberately not repaired in this change.
+func TestAddingAnAnonymisingProfileDoesNotBreakDNSInHostMode(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	// The positive control this test rests on: the HOST can resolve. @net-host
+	// shares the host's network namespace, so if the host cannot resolve then
+	// neither can the sandbox and a failure here would say nothing about snug.
+	requireInternet(t)
+	proj, _ := target(t)
+
+	r := run(t, []string{"-p", "@net-host", "-p", "@net-anon", "--i-know"}, proj,
+		`grep ^nameserver /etc/resolv.conf
+getent hosts example.com >/dev/null && echo RESOLVED || echo RESOLVE-FAILED`).mustRun(t)
+
+	if strings.Contains(r.out, "169.254.1.1") {
+		t.Errorf("a sandbox sharing the HOST's network namespace is told to use pasta's "+
+			"interception address, and no pasta runs in host mode, so every lookup inside "+
+			"waits out a timeout:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "RESOLVED") {
+		t.Errorf("adding @net-anon to a working @net-host selection broke DNS — adding a "+
+			"profile took a capability away:\n%s", r.out)
+	}
+}

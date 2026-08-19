@@ -126,11 +126,11 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 		// doc comment), so pasta is aimed at a DESCRIPTOR the stage pinned,
 		// named from outside as /proc/<stage>/fd/<n>.
 		if p.Topology.Netns == policy.NetnsStage {
-			fmt.Fprintln(out, "pasta "+strings.Join(p.PastaArgs(policy.PastaTargetStage(0, 63)), " "))
+			fmt.Fprintln(out, "pasta "+visibleArgs(p.PastaArgs(policy.PastaTargetStage(0, 63))))
 			fmt.Fprintln(out, "  (/proc/0/fd/63 is a placeholder; the real pid is the stage's, "+
 				"and 63 is fdNetnsN)")
 		} else {
-			fmt.Fprintln(out, "pasta "+strings.Join(p.PastaArgs(policy.PastaTargetChild(0)), " "))
+			fmt.Fprintln(out, "pasta "+visibleArgs(p.PastaArgs(policy.PastaTargetChild(0))))
 			fmt.Fprintln(out, "  (/proc/0/... is a placeholder; the real pid is bwrap's child)")
 		}
 	}
@@ -725,6 +725,25 @@ func elementValue(name, s string) string {
 // with the two in internal/policy, and the sink that was still rendering raw was
 // a REFUSAL — the screen a human reads most carefully, since it is the one that
 // stopped them.
+// visibleArgs escapes EVERY element of a rendered command line, not the joined
+// string, and the difference is the defect it was written for.
+//
+// The bwrap argv four lines above this went through formatArgs/visibleValue
+// from the beginning; the pasta argv did not, and a red team round put an ESC
+// payload through a profile's `address` key straight onto the screen — the
+// "fixed one block, left the block below it broken" shape this file's own
+// comments warn about. Escaping per element rather than after the join is what
+// keeps the separator snug's: an element cannot contribute a space that reads
+// as an argument boundary, and cannot contribute a newline that reads as the
+// end of the command.
+func visibleArgs(args []string) string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		out[i] = visibleValue(a)
+	}
+	return strings.Join(out, " ")
+}
+
 func visibleValue(s string) string {
 	return policy.VisibleText(s)
 }
@@ -1480,8 +1499,8 @@ func describeNetwork(out *os.File, p *policy.Policy) {
 			if servers := p.Net.Resolver().Servers; p.Net.NeedsDNSForward() {
 				fmt.Fprintf(out, "         dns             %s -> pasta -> host resolver\n",
 					strings.Join(servers, " "))
-				fmt.Fprintf(out, "                         (a link-local address that does not exist; no host\n")
-				fmt.Fprintf(out, "                         resolver address is named inside the sandbox)\n")
+				fmt.Fprintf(out, "                         (pasta answers here from the host side; no host resolver\n")
+				fmt.Fprintf(out, "                         address is named inside the sandbox)\n")
 			} else {
 				fmt.Fprintf(out, "         dns             %s\n", strings.Join(servers, " "))
 				fmt.Fprintf(out, "                         (the HOST's own resolvers, named inside the sandbox and\n")
@@ -1495,7 +1514,30 @@ func describeNetwork(out *os.File, p *policy.Policy) {
 			fmt.Fprintf(out, "         host -> sandbox CLOSED (publish = [3000] in a profile opens one)\n")
 		}
 		if p.Net.Address != "" {
-			fmt.Fprintf(out, "         address         %s (synthetic; the host's LAN address is hidden)\n", p.Net.Address)
+			// THIS LINE USED TO SAY "the host's LAN address is hidden", full
+			// stop, and that is false on any dual-stack host. `address` is a
+			// single IPv4 value and PastaArgs renders it as `-a <v4> -n
+			// <prefix> -g <gw>`, so pasta's IPv6 default — copy the addresses
+			// from the interface with the default route — still applies.
+			// Measured on this host: snug0 inside @net-anon carries the
+			// host's two GLOBAL v6 addresses verbatim, which are geolocatable
+			// and ISP-attributable, while the v4 address it hides is RFC1918.
+			// The claim was wrong in the more damaging direction.
+			//
+			// Stated from the flags snug passes rather than from host state,
+			// which is why it needs no probe: a run on a v4-only host is
+			// fully anonymised and this line still says where the boundary
+			// is, which is the honest thing a reader can act on.
+			// visibleValue as well as Validate's refusal, and deliberately
+			// both: Validate says what a profile may CONTAIN, this says what
+			// this screen may SHOW. A Policy can be hand-built in a test or by
+			// a future caller without passing through Validate, and the rule
+			// this file follows is that no screen renders unescaped text it
+			// did not author.
+			fmt.Fprintf(out, "         address         %s (synthetic; the host's IPv4 address is hidden)\n",
+				visibleValue(p.Net.Address))
+			fmt.Fprintf(out, "                         IPv6 is NOT anonymised — no v6 address is passed, so the\n")
+			fmt.Fprintf(out, "                         sandbox keeps the host's own v6 addresses (issue #165)\n")
 		} else {
 			fmt.Fprintf(out, "         address         copied from the host — add '@net-anon' to hide it\n")
 		}
