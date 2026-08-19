@@ -37,15 +37,35 @@ func doctor() int {
 	// userns limits all fail in different places.
 	usernsWorks := false
 	if ok {
-		cmd := exec.Command(bwrap, append(probeBase(), "--", "/bin/true")...)
-		if out, err := cmd.CombinedOutput(); err != nil {
+		verdict, detail := probeUserns(bwrap)
+		switch verdict {
+		case usernsFailed:
 			fmt.Println("  ❌ cannot create a user namespace here")
-			fmt.Printf("     💬 bwrap said: %s\n", strings.TrimSpace(string(out)))
+			fmt.Printf("     💬 bwrap said: %s\n", detail)
 			fmt.Println("     🔧 sysctl kernel.unprivileged_userns_clone           must be 1")
 			fmt.Println("     🔧 sysctl user.max_user_namespaces                   must be > 0")
 			fmt.Println("     🔧 Ubuntu 24.04+: kernel.apparmor_restrict_unprivileged_userns=0")
 			ok = false
-		} else {
+		case usernsSilentlySkipped:
+			// The reason this probe reads a namespace id at all (issue #98).
+			// bwrap exited 0 having created NO user namespace, so the old
+			// exit-code check printed a green tick for a host where the
+			// sandbox has none.
+			fmt.Println("  ❌ bwrap reported success but created NO user namespace")
+			fmt.Printf("     💬 inside the probe, /proc/self/ns/user is %s — the same one this\n", detail)
+			fmt.Println("        process is already in, so nothing was unshared")
+			fmt.Println("     🔧 sysctl user.max_user_namespaces                   must be > 0")
+			fmt.Println("        (this is what an exhausted ucount looks like: --unshare-all decodes")
+			fmt.Println("         to bwrap's own -try spellings, which skip silently and exit 0)")
+			ok = false
+		case usernsInconclusive:
+			// NOT fatal, and NOT a tick. A host where the probe cannot read a
+			// namespace id still runs snug; what it must not do is produce the
+			// affirmative answer this command exists to give.
+			fmt.Println("  ⚠️  could not verify the user namespace — probe inconclusive")
+			fmt.Printf("     💬 %s\n", detail)
+			usernsWorks = true
+		default:
 			fmt.Println("  ✅ unprivileged user namespaces work")
 			usernsWorks = true
 		}
@@ -175,13 +195,130 @@ func doctor() int {
 	return 0
 }
 
+// The four outcomes of the user-namespace probe. Three of them are not "it
+// worked", and the whole point of issue #98 is that the previous version could
+// only tell one of them apart.
+type usernsVerdict int
+
+const (
+	usernsCreated         usernsVerdict = iota
+	usernsFailed                        // bwrap could not start at all
+	usernsSilentlySkipped               // bwrap exited 0 and unshared nothing
+	usernsInconclusive                  // the probe could not measure; do NOT claim success
+)
+
+// String exists so a failing test names the verdict instead of printing an
+// integer — three of the four values are ways of NOT succeeding, and telling
+// them apart is the whole point of issue #98.
+func (v usernsVerdict) String() string {
+	switch v {
+	case usernsFailed:
+		return "failed"
+	case usernsSilentlySkipped:
+		return "silently-skipped"
+	case usernsInconclusive:
+		return "inconclusive"
+	default:
+		return "created"
+	}
+}
+
+// probeUserns answers "does a sandbox on this host get its own user namespace"
+// by MEASURING it, not by reading bwrap's exit status.
+//
+// Issue #98: `probeBase()` passes `--unshare-all`, which bwrap decodes to its
+// own `-try` spellings, so an exhausted `user.max_user_namespaces` makes bwrap
+// skip the unshare and exit **0**. The old check was `cmd.CombinedOutput()`
+// plus `err != nil`, which cannot tell "created a namespace" from "silently did
+// not", and printed `✅ unprivileged user namespaces work` for the second.
+// Measured, reproducing the issue on this host: inside `unshare --user
+// --map-root-user` with `max_user_namespaces` set to 0, a plain `unshare --user
+// --map-root-user -- /bin/true` fails ENOSPC (the positive control) while the
+// probe above exits 0 and reports the CALLER'S OWN namespace id.
+//
+// So the id is what gets compared. A namespace id is a global inode number, so
+// reading it from inside a different pid namespace is still meaningful — the
+// same value means the same namespace, whatever /proc it was read through.
+//
+// Not bwrap's --info-fd, and that is measured too rather than assumed: its JSON
+// carries child-pid and the cgroup/ipc/mnt/net/pid/uts namespaces and **no user
+// namespace at all**, so the one namespace this probe is about is the one it
+// cannot report.
+//
+// Not /proc/self/uid_map either. In the silent-skip case the map inside is
+// byte-identical to the caller's, so it answers the wrong question.
+//
+// This is the general rule the project already writes down — verify a security
+// feature is ACTIVE, not merely requested — which bit `--seccomp` in exactly
+// this shape: a flag that was passed, accepted, and never installed, with a
+// zero exit code and no warning.
+func probeUserns(bwrap string) (usernsVerdict, string) {
+	// /bin/readlink, not a shell: probeBase binds /usr and symlinks /bin to
+	// usr/bin, and the netns probe below already depends on /bin/cat being
+	// reachable the same way. Every extra tool is one more way for a probe to
+	// be wrong about the thing it measures, so this uses exactly one.
+	cmd := exec.Command(bwrap, append(probeBase(), "--", "/bin/readlink", "/proc/self/ns/user")...)
+	out, err := cmd.CombinedOutput()
+	got := strings.TrimSpace(string(out))
+	if err != nil {
+		// Ambiguous on its own: bwrap failing to create the namespace and
+		// /bin/readlink being absent both land here. Re-ask with the original
+		// /bin/true payload, which needs no tool beyond the loader — if THAT
+		// starts, the namespace is fine and it was the probe tool that was
+		// missing.
+		if plain := exec.Command(bwrap, append(probeBase(), "--", "/bin/true")...); plain.Run() == nil {
+			return usernsInconclusive, "/bin/readlink is not usable inside the probe sandbox"
+		}
+		return usernsFailed, firstLine(got)
+	}
+
+	mine, rerr := os.Readlink("/proc/self/ns/user")
+	if rerr != nil {
+		return usernsInconclusive, fmt.Sprintf("cannot read this process's own namespace id (%v)", rerr)
+	}
+	return classifyUserns(got, mine)
+}
+
+// classifyUserns is the decision, separated from the two syscalls that feed it
+// so it can be tested on any host — including one where the failure it exists
+// to catch cannot be constructed. The rule is one line, and stating it as data
+// rather than as control flow inside probeUserns is what lets a test assert the
+// SET of outcomes rather than the one that happens to be reachable in CI.
+func classifyUserns(inside, mine string) (usernsVerdict, string) {
+	switch {
+	case inside == "" || !strings.HasPrefix(inside, "user:["):
+		return usernsInconclusive, fmt.Sprintf("the probe returned %q, which is not a namespace id", inside)
+	case !strings.HasPrefix(mine, "user:["):
+		return usernsInconclusive, fmt.Sprintf("this process's own namespace id reads %q", mine)
+	case inside == mine:
+		return usernsSilentlySkipped, inside
+	default:
+		return usernsCreated, inside
+	}
+}
+
 // probeBase is a minimal runnable sandbox. The lib/lib64 symlinks are not
 // optional garnish: without them the dynamic loader is absent and execvp fails
 // with a misleading "No such file or directory" that looks like a namespace
 // problem. That misdiagnosis is exactly what doctor exists to prevent.
 func probeBase() []string {
 	return []string{
-		"--unshare-all",
+		// The SAME enumeration internal/policy/bwrap.go emits for an offline
+		// run, not `--unshare-all`, and the difference is the point of issue
+		// #98's second half. `--unshare-all` decodes to bwrap's own `-try`
+		// spellings (bubblewrap.c:1894-1903), so it skips a namespace it
+		// cannot create and exits 0 — while the real sandbox has asked for the
+		// strict `--unshare-user` since issue #24 and would have failed. A
+		// probe weaker than the thing it probes reports a host as usable when
+		// the run that follows dies, which is the same defect doctor's own
+		// stage-probe comment already names: a probe that approximates the
+		// code path can pass while the code path fails.
+		//
+		// probeUserns compares namespace ids on top of this rather than trusting
+		// it, because "strict flag" and "namespace actually created" are the two
+		// things the --seccomp bug taught this project not to conflate.
+		"--unshare-user", "--unshare-ipc", "--unshare-pid",
+		"--unshare-uts", "--unshare-cgroup-try", "--unshare-net",
 		"--ro-bind", "/usr", "/usr",
 		"--symlink", "usr/bin", "/bin",
 		"--symlink", "usr/lib", "/lib",
