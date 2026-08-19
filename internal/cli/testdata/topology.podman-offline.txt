@@ -1,9 +1,12 @@
 
 TOPOLOGY
-  processes       4 — snug, a stage (P1) that creates the sandbox's network
-                  namespace, pasta attached to that namespace, and bwrap, which
-                  the stage forks back into it. (A fifth, __innetns, is the
-                  setns shim that becomes bwrap; it never coexists with it.)
+  processes       4 — every long-lived process this run starts, snug included:
+                    snug        this process — resolves the policy and supervises
+                    stage (P1)  creates the sandbox's network namespace, pins it, leaves it
+                    engine      the container engine, forked into the same namespace
+                    bwrap       the sandbox itself, and the payload inside it
+                  (__innetns is a setns shim that BECOMES bwrap rather than
+                  running beside it, so it is not one of the 4.)
   netns owner     stage
                   the sandbox's user namespace has a PRIVILEGED ANCESTOR: the
                   stage is root in its own user namespace (U) for the whole run,

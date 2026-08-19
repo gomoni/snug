@@ -89,7 +89,7 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 	// "join the engine's current netns", which is exactly what podman's
 	// `--network=host` / HostConfig.NetworkMode="host" means, now joins N,
 	// not the host's. That is the "share N host-mode" design the maintainer
-	// settled (TIER-B-POLICY.md, the NET_ADMIN decision): no per-container
+	// settled (TIER-B.md, the NET_ADMIN decision): no per-container
 	// bridge, no `-p` publishing (the engine holds no CAP_NET_ADMIN to set
 	// one up even if asked), a container reaches exactly what the sandbox
 	// reaches. Every OTHER namespace mode stays refused unconditionally,
@@ -220,16 +220,33 @@ var refusalReason = map[string]string{
 	"MaskedPaths":       "it edits the container's own /proc protections",
 	"ReadonlyPaths":     "it edits the container's own /proc protections",
 	"Annotations":       "podman honours run.oci.* annotations, which reach the runtime",
-	"PortBindings": "published ports land on the engine's side of the world, where " +
-		"the sandbox cannot reach them, and create a host-visible surface nobody asked for",
-	"PublishAllPorts": "published ports land where the sandbox cannot reach them",
+	// Both of these described the PRE-TIER-B world until issue #154 §B:
+	// "published ports land on the engine's side of the world, where the
+	// sandbox cannot reach them". The engine is IN the sandbox's netns now, so
+	// its side of the world is the sandbox's, and the old sentence sent a
+	// reader looking for a host-visible surface to close or a flag to turn
+	// publishing on. There is neither. The comment above checkCreate's
+	// namespace loop already carried the correct reason; only the string the
+	// user actually sees was stale.
+	"PortBindings": "there is nothing to publish TO — the container already shares this " +
+		"sandbox's network namespace, so it is reachable from inside at the port it binds. " +
+		"Publishing would also need the engine to reconfigure that namespace, and it holds " +
+		"no CAP_NET_ADMIN",
+	"PublishAllPorts": "the container already shares this sandbox's network namespace, so " +
+		"every port it binds is reachable from inside without publishing anything",
 	"LogConfig": "podman's k8s-file/json-file drivers honour a `path` option, and conmon " +
 		"then writes that file ON THE HOST as your uid — an arbitrary host-file write, " +
 		"needing no privileges. The redteam agent used it to create a file in a $HOME " +
 		"the sandbox sees only as an empty tmpfs",
-	"StorageOpt":   "storage driver options reach the host's storage layer",
-	"CgroupParent": "it places the container in a cgroup outside this sandbox's own",
-	"Isolation":    "an isolation mode is a runtime selector by another name",
+	"StorageOpt": "storage driver options reach the host's storage layer",
+	// Not "outside this sandbox's own" any more, which is what this said
+	// before issue #154 §B. __inengine clones with CLONE_NEWCGROUP and mounts
+	// a fresh cgroup2 over /sys/fs/cgroup, so a client-supplied path is
+	// interpreted relative to the engine's own cgroup root rather than the
+	// host's. The refusal stands on the narrower, still-true ground.
+	"CgroupParent": "snug authors the container's cgroup placement; a client-named parent " +
+		"is a path snug did not choose, resolved inside the engine's own cgroup namespace",
+	"Isolation": "an isolation mode is a runtime selector by another name",
 }
 
 // checkedMounts validates every mount the client asked for against what the
