@@ -2267,6 +2267,59 @@ func TestKillingOnlyTheEngineFellsItsContainers(t *testing.T) {
 	}
 }
 
+// TestContainersDieWithTheEngineWithoutAGracefulStop is issue #167's
+// regression test: SIGKILLing snug itself (not the engine alone, unlike the
+// test above) must still fell this run's containers, WITHOUT a host-side
+// `podman stop` ever being attempted — engine.go's stopLocked no longer
+// makes that call at all (the pids it would have read are numbered in the
+// ENGINE's own pid namespace since #125's C0, meaningless on the host), and
+// reaper.go's pipe-triggered helper no longer forks podman either.
+//
+// SIGKILL of the WHOLE process tree is the important case here, not a signal
+// snug can catch: it skips stopLocked entirely (no Go code runs at all on
+// this path), so what fells the container is purely the Pdeathsig chain
+// (engine ⊂ P1 ⊂ P0) collapsing the engine's pid namespace — exactly the
+// mechanism TestKillingOnlyTheEngineFellsItsContainers measures for an
+// engine-only kill, now asserted for the path a hard-killed snug actually
+// takes.
+func TestContainersDieWithTheEngineWithoutAGracefulStop(t *testing.T) {
+	budget(t, 180*time.Second)
+	env, _ := containerEngineEnv(t)
+	requireRealEngine(t, env)
+	proj, _ := target(t)
+
+	bg, token := startEngineHeldContainer(t, env, proj, "nostop")
+
+	// POSITIVE CONTROL: the container is genuinely running on the host BEFORE
+	// the kill — without this, "gone after the kill" is equally true of a
+	// container that never started.
+	before := waitForToken(t, token, 120*time.Second, bg.log)
+	t.Logf("control: container token %q alive at pids %v before SIGKILL", token, before)
+
+	if err := syscall.Kill(bg.pid(), syscall.SIGKILL); err != nil {
+		t.Fatalf("SIGKILL snug (pid %d): %v", bg.pid(), err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	var left []int
+	for {
+		left = pidsNamingCmdlineSubstring(token)
+		if len(left) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if len(left) > 0 {
+		t.Errorf("after SIGKILLing snug (pid %d), %d process(es) of this run's container are "+
+			"still running (token %q, pids %v) within 10s, with no host-side graceful stop "+
+			"ever attempted — the namespace collapse alone must fell them",
+			bg.pid(), len(left), token, left)
+	}
+}
+
 // TestConmonPPidIsTheEngine is the structural fact underneath the other two
 // tests in this section, read from the HOST's own procfs — the same view a
 // future --pid=host decision (issue #145) would have to re-check, per this

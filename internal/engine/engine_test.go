@@ -222,18 +222,26 @@ func marker(t *testing.T, arg string) *exec.Cmd {
 // The reaper is the only thing that runs after snug is SIGKILLed, and it is
 // triggered by EOF on a pipe. Assert both edges: it fires on EOF, and it does
 // nothing when snug cleaned up and said so.
-func TestReaperFiresOnEOFAndStandsDown(t *testing.T) {
+//
+// REWRITTEN for issue #167: the reaper no longer forks `podman stop` at all
+// (stopLocked's own doc comment says why — the recorded pids are numbered in
+// the ENGINE's pid namespace, meaningless on the host, and by the time this
+// helper's EOF fires the namespace has already collapsed and taken the
+// containers with it). What is left to observe is the one thing nothing else
+// removes on the SIGKILL path: this run's stale socket FILE. A pre-#167
+// version of this test asserted a fake podman binary got exec'd with the
+// stop argv; that assertion is retired along with the mechanism it watched,
+// not narrowed — a passing "podman was invoked" test on THIS script would be
+// proof of the exact regression #167 exists to prevent.
+func TestReaperFiresOnEOFAndRemovesTheStaleSocketAndStandsDownWithoutTouchingIt(t *testing.T) {
 	run := func(t *testing.T, standDown bool) bool {
 		dir := t.TempDir()
-		marker := filepath.Join(dir, "reaped")
-		fake := filepath.Join(dir, "podman")
-		script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + marker + "\n"
-		if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		sock := filepath.Join(dir, "podman-1.sock")
+		if err := os.WriteFile(sock, nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
 
-		sock := filepath.Join(dir, "podman-1.sock")
-		r, err := startReaper(fake, filepath.Join(dir, "storage"), filepath.Join(dir, "rr"), sock, RunLabelKey+"=test")
+		r, err := startReaper(sock)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -252,7 +260,7 @@ func TestReaperFiresOnEOFAndStandsDown(t *testing.T) {
 		}
 
 		for i := 0; i < 200; i++ {
-			if _, err := os.Stat(marker); err == nil {
+			if _, err := os.Stat(sock); os.IsNotExist(err) {
 				return true
 			}
 			time.Sleep(10 * time.Millisecond)
@@ -260,11 +268,14 @@ func TestReaperFiresOnEOFAndStandsDown(t *testing.T) {
 		return false
 	}
 
+	// POSITIVE CONTROL for the "stand down" arm below: without first proving
+	// EOF removes the socket, "it wasn't removed" on stand-down could equally
+	// mean the reaper never removes anything at all.
 	if !run(t, false) {
-		t.Error("snug died and the reaper did not stop the sandbox's containers")
+		t.Error("snug died (EOF on the pipe) and the reaper did not remove this run's stale socket file")
 	}
 	if run(t, true) {
-		t.Error("snug cleaned up and told the reaper to stand down, but it ran anyway")
+		t.Error("snug cleaned up and told the reaper to stand down, but the socket was removed anyway")
 	}
 }
 
@@ -476,5 +487,67 @@ func TestCgroupsDisabledStillReachesTheEngine(t *testing.T) {
 	without, _ := specConf(t, net, false)
 	if strings.Contains(without, `cgroups = "disabled"`) {
 		t.Errorf("cgroups was disabled without P5 selecting it:\n%s", without)
+	}
+}
+
+// TestNoHostSidePodmanReadsARecordedPid is issue #167's regression: neither
+// engine.go's stopLocked nor reaper.go's reaperScript may invoke the podman
+// CLI to `stop` a container, because the pids libpod records in the runroot
+// are numbered in the ENGINE's pid namespace (issue #125, C0) and a HOST-side
+// reader is reading numbers meaningless in its own numbering.
+//
+// A source-level sweep rather than a behavioural one: the failure mode this
+// guards is a REINTRODUCTION of the exact invocation that was deleted, which
+// is easiest to catch by name before it ever runs.
+//
+// Guarded against CLAUDE.md's own named trap ("a grep that cannot fail is
+// worse than no test"): the sweep is run FIRST against a fixture holding the
+// pre-#167 text, and must fail there, before it is trusted to pass against
+// the real source.
+func TestNoHostSidePodmanReadsARecordedPid(t *testing.T) {
+	needles := []string{
+		`"stop", "--all"`,             // engine.go's old stopLocked invocation
+		"SNUG_REAP_PODMAN",            // reaper.go's env var carrying the binary path
+		`stop --all --filter "label=`, // reaperScript's old shell line
+		"e.podman",                    // the field that carried it, now removed
+	}
+
+	preChangeFixture := `
+		if e.podman != "" {
+			stop := exec.Command(e.podman, "--root", e.store, "--runroot", e.runroot,
+				"stop", "--all", "--filter", "label="+e.runLabel, "--time", "5")
+			stop.Env = e.env
+			_ = stop.Run()
+		}
+	` + `"$SNUG_REAP_PODMAN" --root "$SNUG_REAP_STORE" --runroot "$SNUG_REAP_RUNROOT" ` +
+		`stop --all --filter "label=$SNUG_REAP_LABEL" --time 5`
+
+	sweep := func(src string) []string {
+		var found []string
+		for _, n := range needles {
+			if strings.Contains(src, n) {
+				found = append(found, n)
+			}
+		}
+		return found
+	}
+
+	// The sweep-can-fail control: every needle must be found in the OLD text,
+	// or the sweep itself is written wrong and "clean" proves nothing.
+	if got := sweep(preChangeFixture); len(got) != len(needles) {
+		t.Fatalf("PRECONDITION: the sweep did not match its own pre-#167 fixture (found %v, "+
+			"want all %d needles) — the sweep below cannot be trusted to catch a real "+
+			"regression if it cannot catch a synthetic one", got, len(needles))
+	}
+
+	for _, f := range []string{"engine.go", "reaper.go"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("reading %s: %v", f, err)
+		}
+		if got := sweep(string(b)); len(got) > 0 {
+			t.Errorf("%s still contains %v: a host-side podman stop reads a pid recorded in "+
+				"the engine's OWN pid namespace, meaningless in the host's (issue #167)", f, got)
+		}
 	}
 }

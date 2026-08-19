@@ -28,25 +28,37 @@ import (
 //
 // Combined with the Pdeathsig chain (engine to P1, P1 to P0), that means every
 // way snug can die already fells this run's containers, measured at under 70ms
-// end to end from a SIGKILL of snug — faster than this helper can fork a
-// `podman stop`. So on the paths measured, THIS FILE NO LONGER DELIVERS THE
-// OUTCOME; the kernel does.
+// end to end from a SIGKILL of snug — faster than this helper could ever have
+// forked a `podman stop`. So on the paths measured, THIS FILE NO LONGER
+// DELIVERS THE OUTCOME; the kernel does.
 //
-// It stays anyway, and that is a decision rather than an oversight. Removing a
-// teardown mechanism is a maintainer's call and wants its own change with its
-// own red-team pass — this correction only establishes that the mechanism is
-// redundant, not that it should go. It is free on the clean path (Stop tells it
-// to stand down before snug returns), and it is the only leg of teardown that
-// does not depend on the kernel having torn the pid namespace down the way the
-// measurement says it does. Note the one thing it can no longer do reliably,
-// though: the `podman stop` below runs on the HOST against a store whose
-// recorded container pids are now in the ENGINE's pid namespace — see
-// engine.go's stopLocked step 1 for the measurement and the finding.
+// It stays anyway, and that is a decision rather than an oversight. Removing
+// the PROCESS is a maintainer's call and wants its own change with its own
+// red-team pass — this correction only establishes that the mechanism is
+// redundant, not that it should go. It is free on the clean path (Stop tells
+// it to stand down before snug returns).
+//
+// What did NOT survive that decision (issue #167) is the `podman stop` this
+// process used to fork on EOF. It is DELETED, not kept as a best-effort
+// fallback, and that changes what the sentence above means: this is no
+// longer "the one leg of teardown that does not depend on the kernel having
+// torn the pid namespace down the way the measurement says it does" — with a
+// renumbered pid namespace it depends on the collapse NOT having happened
+// (impossible on the path that triggers this helper at all: EOF on the pipe
+// IS snug dying, which is exactly what fells the engine and collapses the
+// namespace) AND on pids it cannot read (the runroot's recorded conmon.pid
+// and pidfile are numbered in the ENGINE's pid namespace since C0, meaningless
+// on the host — see engine.go's stopLocked step 1). Its only remaining
+// possible effect was signalling a live HOST process that happened to own a
+// small pid number, on a host sharing the boot pid namespace or a container
+// with its own. Removing it closes that stray-signal path; it does not retire
+// a mechanism, because the mechanism stopped delivering its outcome on this
+// path when C0 landed.
 //
 // So snug arms one helper BEFORE it starts the engine: a shell that blocks
-// reading a pipe snug holds the write end of, and stops this engine's
-// containers when that pipe reports EOF. Every way snug can die closes the
-// pipe, SIGKILL included, because the kernel does it.
+// reading a pipe snug holds the write end of, and on EOF removes this run's
+// stale socket file — the one thing nothing else removes on the SIGKILL path,
+// since the kernel's namespace collapse deletes processes, not files.
 //
 // It is not a daemon. It has no state, no socket and one job, it outlives snug
 // by exactly the time that job takes, and on a clean exit snug does the
@@ -69,29 +81,23 @@ import (
 // helper that exists precisely because the guard might not get to run. It is
 // exempted by pid, through Engine.ReaperPIDs and
 // sandbox.Options.ExcludeFromTeardown, and the exemption covers this process's
-// own children too: on EOF it forks `podman stop`, and sparing the shell while
-// killing the stop is worse than sparing neither.
+// own children too: on EOF it still forks `rm` (below) to remove the stale
+// socket, and sparing the shell while killing that is worse than sparing
+// neither.
 //
 // Issue #113 is the history. Before that exemption existed the sweep did kill
 // this process, and it was harmless for a reason nothing in this file could
 // see: internal/cli's `defer ctrCleanup()` runs after sandbox.Run returns and
 // performed the teardown itself. Two facts one edit apart from disagreeing.
 //
-// The paths travel in the ENVIRONMENT, not in argv, so the reaper's own command
-// line does not name the socket the sweep in reap.go matches on — otherwise
-// teardown would find the reaper and count snug's own cleanup as a leak.
-//
-// The stop is FILTERED to this run's label, not `--all`. The store is shared by
-// every sandbox with the same profiles on the same target — that sharing is what
-// makes a warm start warm — so an unfiltered stop reached a concurrent sibling's
-// containers as collateral. The proxy stamps engine.RunLabelKey on everything it
-// creates, and both this and Engine.stopLocked filter on it.
+// The path travels in the ENVIRONMENT, not in argv, so the reaper's own
+// command line does not name the socket the sweep in reap.go matches on —
+// otherwise teardown would find the reaper and count snug's own cleanup as a
+// leak.
 const reaperScript = `
 read -r tok
 [ "$tok" = ok ] && exit 0
-echo "snug: the sandbox died without cleaning up; stopping its containers" >&2
-"$SNUG_REAP_PODMAN" --root "$SNUG_REAP_STORE" --runroot "$SNUG_REAP_RUNROOT" \
-	stop --all --filter "label=$SNUG_REAP_LABEL" --time 5 >/dev/null 2>&1
+echo "snug: the sandbox died without cleaning up" >&2
 rm -f "$SNUG_REAP_SOCK"
 `
 
@@ -102,7 +108,10 @@ type reaper struct {
 
 // startReaper arms the helper. Called before the engine is started, so that a
 // snug killed during startup is still covered.
-func startReaper(podman, store, runroot, sock, runLabel string) (*reaper, error) {
+//
+// Only sock, now (issue #167): podman/store/runroot/runLabel existed solely
+// to feed the `podman stop` invocation this script no longer makes.
+func startReaper(sock string) (*reaper, error) {
 	r, w, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -114,11 +123,7 @@ func startReaper(podman, store, runroot, sock, runLabel string) (*reaper, error)
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
-		"SNUG_REAP_PODMAN=" + podman,
-		"SNUG_REAP_STORE=" + store,
-		"SNUG_REAP_RUNROOT=" + runroot,
 		"SNUG_REAP_SOCK=" + sock,
-		"SNUG_REAP_LABEL=" + runLabel,
 	}
 	// Own process group, and NO Pdeathsig. See the comment above.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
