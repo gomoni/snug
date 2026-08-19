@@ -9,7 +9,7 @@ package cli
 //
 // Nothing here resolves a profile, reads TOML, or makes a policy decision —
 // it renders a policy that has ALREADY been resolved (writeRunState) or reads
-// back what a run already published (readRunStateFrom, discoverLiveRuns). The
+// back what a run already published (readRunStateFrom, decodeRunState). The
 // abuse sentence for the file itself: a hostile process with the same uid as
 // the run's owner can read state.json and learn a sandbox's init pid, its
 // namespace ids and its seccomp digest — none of which grants it anything it
@@ -23,20 +23,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io/fs"
+	"io"
 	"os"
-	"path/filepath"
 	"runtime/debug"
-	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/sandbox"
-
-	"golang.org/x/sys/unix"
 )
 
 // runStateSchema is the only version this binary understands. A mismatch is
@@ -80,9 +75,9 @@ type runStateSeccomp struct {
 var runStateNamespaceKinds = []string{"mnt", "pid", "net", "ipc", "uts", "cgroup"}
 
 // writeRunState renders pol and info into this run's own state.json, through
-// the run directory's already-claimed *os.Root (runStateRoot), exactly once,
-// O_EXCL — there is nothing to update, so a rewrite would need a rename
-// dance for atomicity this file has no use for.
+// targetstate.go's writeTargetState — the TARGET-keyed path, so a run and
+// the `snug attach` that must find it agree on where the file is whatever
+// $XDG_RUNTIME_DIR each was launched with (issue #123).
 //
 // Called from a background goroutine (sandbox.Options.OnInfo), once bwrap
 // has answered on --info-fd — see internal/sandbox/exec.go's reportInfo.
@@ -143,22 +138,15 @@ func writeRunState(runPath string, pol *policy.Policy, info sandbox.RunInfo) err
 		Revision: buildRevision(),
 	}
 
-	data, err := json.Marshal(st)
-	if err != nil {
-		return fmt.Errorf("run state: marshalling: %w", err)
-	}
-
-	root, err := runStateRoot(runPath)
-	if err != nil {
-		return fmt.Errorf("run state: %w", err)
-	}
-	f, err := root.OpenFile("state.json", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return fmt.Errorf("run state: creating %s/state.json: %w", runPath, err)
-	}
-	defer f.Close()
-	if _, err := f.Write(data); err != nil {
-		return fmt.Errorf("run state: writing %s/state.json: %w", runPath, err)
+	// Published to the TARGET-keyed path (targetstate.go), not into this
+	// run's own directory: a run and the `snug attach` that must find it have
+	// to agree on where the file is, and runPath is derived from
+	// $XDG_RUNTIME_DIR/$TMPDIR, which they need not agree on (issue #123).
+	// runPath stays a parameter because it still names the directory this
+	// run's sockets live in and because callers pass it; nothing here writes
+	// to it any more.
+	if err := writeTargetState(pol.Target, st); err != nil {
+		return err
 	}
 	return nil
 }
@@ -232,119 +220,6 @@ func buildRevision() string {
 	return ""
 }
 
-// liveRun is one entry discoverLiveRuns found: enough to both select a run
-// by target (internal/cli/attach.go) and render it inline in an error
-// message ("more than one live run matches; live runs: run-123 (/a),
-// run-456 (/a)") without pointing at a --list this ticket does not add.
-type liveRun struct {
-	Name  string // "run-<pid>" — the directory name, not parsed for meaning
-	State runState
-}
-
-// discoverLiveRuns reads every run-* directory under the shared "snug"
-// runtime directory, keeps the ones whose lock is currently HELD (a live
-// owner — see runtimeDir's own doc on why the flock, not the directory's
-// mere presence, is what tells a live run from a corpse the next run's sweep
-// will remove), and returns the ones whose state.json parses and verifies.
-//
-// A run directory that fails to parse or verify is skipped rather than
-// aborting discovery — a stale or half-written OTHER run must not stop
-// `snug attach` from finding the one the human actually asked for.
-func discoverLiveRuns() ([]liveRun, error) {
-	base, snugName := runtimeBase()
-
-	root, err := os.OpenRoot(base)
-	if err != nil {
-		return nil, fmt.Errorf("runtime directory: opening %s: %w", base, err)
-	}
-	defer root.Close()
-
-	snugRoot, err := openExistingSubroot(root, base, snugName)
-	if err != nil {
-		// errors.Is, NOT os.IsNotExist — issue #124, and the distinction is
-		// invisible here without saying it. openExistingSubroot returns
-		// fmt.Errorf("checking %s: %w", ...), and os.IsNotExist is the
-		// pre-errors API: it inspects the concrete value and does not unwrap,
-		// so it answered false for an ordinary wrapped ENOENT and a host where
-		// snug had simply never run got a raw path error instead of "no live
-		// run found". Nothing has ever run here is the ZERO CASE, not a
-		// failure.
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("runtime directory: %w", err)
-	}
-	defer snugRoot.Close()
-	snugPath := filepath.Join(base, snugName)
-
-	entries, err := fs.ReadDir(snugRoot.FS(), ".")
-	if err != nil {
-		return nil, fmt.Errorf("runtime directory: reading %s: %w", snugPath, err)
-	}
-
-	var out []liveRun
-	for _, e := range entries {
-		if !e.IsDir() || !strings.HasPrefix(e.Name(), "run-") {
-			continue
-		}
-		st, ok := readLiveRunState(snugRoot, snugPath, e.Name())
-		if !ok {
-			continue
-		}
-		out = append(out, liveRun{Name: e.Name(), State: st})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out, nil
-}
-
-// readLiveRunState is discoverLiveRuns' per-entry worker: refuse a directory
-// that is not ours (openExistingSubroot), refuse one whose lock is not held
-// (not live — a corpse the NEXT run's sweep will remove, per runtimeDir's own
-// doc; this function never removes anything itself), then parse and validate
-// state.json. Any failure returns ok=false — see discoverLiveRuns' doc for
-// why that is a skip, not an abort.
-func readLiveRunState(snugRoot *os.Root, snugPath, runName string) (runState, bool) {
-	runRoot, err := openExistingSubroot(snugRoot, snugPath, runName)
-	if err != nil {
-		return runState{}, false
-	}
-	defer runRoot.Close()
-
-	if !runDirIsLive(runRoot) {
-		return runState{}, false
-	}
-
-	st, err := readRunStateFrom(runRoot)
-	if err != nil {
-		return runState{}, false
-	}
-	return st, true
-}
-
-// runDirIsLive is the liveness probe attach.go's own §4.1 step 1 also uses:
-// LOCK_SH|LOCK_NB on the run's lock file, released immediately.
-// EWOULDBLOCK means a live exclusive holder (the owning snug); success means
-// nobody holds it, i.e. a corpse. Never removes anything — sweeping is
-// runtimeDir's job on the way IN to a NEW run, and a second remover here
-// would race it.
-func runDirIsLive(runRoot *os.Root) bool {
-	lock, err := runRoot.OpenFile("lock", os.O_RDONLY, 0)
-	if err != nil {
-		return false
-	}
-	defer lock.Close()
-	if err := unix.Flock(int(lock.Fd()), unix.LOCK_SH|unix.LOCK_NB); err != nil {
-		// EWOULDBLOCK (or anything else stopping the shared lock): a live
-		// exclusive holder.
-		return true
-	}
-	// We just took the shared lock ourselves; release it immediately (it
-	// existing only in OUR fd table, unlocked on close, is enough) — the
-	// point was the probe, not holding anything.
-	unix.Flock(int(lock.Fd()), unix.LOCK_UN)
-	return false
-}
-
 // readRunStateFrom parses and validates state.json from an already-opened,
 // already-ownership-verified run directory. This is the full §6.3 refusal
 // list EXCEPT the two checks that need live process state (init_starttime
@@ -364,8 +239,16 @@ func readRunStateFrom(runRoot *os.Root) (runState, error) {
 	}
 	defer f.Close()
 
+	return decodeRunState(f)
+}
+
+// decodeRunState is the parse-and-validate half of reading a state file,
+// split out from readRunStateFrom so the target-keyed layout (targetstate.go,
+// issue #123) validates through exactly the same code rather than a second
+// copy that could accept a file the other rejects.
+func decodeRunState(r io.Reader) (runState, error) {
 	var st runState
-	if err := json.NewDecoder(f).Decode(&st); err != nil {
+	if err := json.NewDecoder(r).Decode(&st); err != nil {
 		return runState{}, fmt.Errorf("parsing state.json: %w", err)
 	}
 	if st.Schema != runStateSchema {

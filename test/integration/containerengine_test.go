@@ -591,13 +591,13 @@ func mustRead(t *testing.T, path string) []byte {
 // namespace.
 func TestNoAbstractSocketsWithEngineInN(t *testing.T) {
 	budget(t, 60*time.Second)
-	env, xdg := containerEngineEnv(t)
+	env, _ := containerEngineEnv(t)
 	requireRealEngine(t, env)
 	proj, _ := target(t)
 
 	bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
 
@@ -744,13 +744,13 @@ func pidsNamingCmdlineSubstring(substr string) []int {
 // see internal/engine/reap.go's own "accident sentence").
 func TestEngineNetnsReapedOnSIGKILL(t *testing.T) {
 	budget(t, 60*time.Second)
-	env, xdg := containerEngineEnv(t)
+	env, _ := containerEngineEnv(t)
 	requireRealEngine(t, env)
 	proj, _ := target(t)
 
 	bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	sock := engineSocketPath(os.Getuid(), bg.pid())
 
@@ -863,14 +863,14 @@ func readDirNamesOrEmpty(dir string) []string {
 // pull).
 func TestPreflightRefusesUnconfinableEngine(t *testing.T) {
 	budget(t, 60*time.Second)
-	env, xdg := containerEngineEnv(t)
+	env, _ := containerEngineEnv(t)
 	requireSandbox(t)
 
 	t.Run("control: engine starts when nothing is faked", func(t *testing.T) {
 		proj, _ := target(t)
 		bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 5`)
 		bg.ready(t)
-		bg.waitForState(t, xdg)
+		bg.waitForState(t)
 		// bg's own t.Cleanup kills it; reaching here means the payload started,
 		// which (per Engine.DialLifeline's own doc) only happens after the
 		// engine reported ready.
@@ -1027,13 +1027,13 @@ func runUnderMaskedSubuid(t *testing.T, env []string, args ...string) (string, i
 // this is the documented fallback the task's own spec names.
 func TestEngineCapBoundingInU(t *testing.T) {
 	budget(t, 60*time.Second)
-	env, xdg := containerEngineEnv(t)
+	env, _ := containerEngineEnv(t)
 	requireRealEngine(t, env)
 	proj, _ := target(t)
 
 	bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
 
@@ -1470,7 +1470,7 @@ time.sleep(300)
 // "nothing survived" would be measuring nothing.
 func TestASignalledContainerRunLeavesNothingRunning(t *testing.T) {
 	budget(t, 180*time.Second)
-	env, xdg := containerEngineEnv(t)
+	env, _ := containerEngineEnv(t)
 	requireRealEngine(t, env)
 	proj, _ := target(t)
 
@@ -1492,7 +1492,7 @@ func TestASignalledContainerRunLeavesNothingRunning(t *testing.T) {
 	// alone does to a client mid-upload.
 	bg := startAttachSandbox(t, env, []string{"-p", "@podman-build"}, proj, `python3 holder.py`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	// POSITIVE CONTROL: the container is genuinely RUNNING on this host, found
 	// the same way teardown itself finds things — by cmdline substring, never

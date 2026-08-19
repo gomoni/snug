@@ -137,8 +137,17 @@ func (e *targetBusyError) message(display string) string {
 // Exported to the package's tests, which must compute the identical name to
 // seed a held lock from a helper process.
 func targetLockName(realpath string) string {
+	return targetKeyPrefix(realpath) + ".lock"
+}
+
+// targetKeyPrefix is the shared stem of every per-target file: the lock and,
+// since issue #123, the run-state JSON beside it. One function so the two can
+// never drift onto different hashes of the same path — a drift that would not
+// fail loudly, it would simply mean `snug attach` looked up a state file no
+// run had written.
+func targetKeyPrefix(realpath string) string {
 	sum := sha256.Sum256([]byte(realpath))
-	return "target-" + hex.EncodeToString(sum[:]) + ".lock"
+	return "target-" + hex.EncodeToString(sum[:])
 }
 
 // lockTarget takes the per-target advisory lock for abs, an already-absolute

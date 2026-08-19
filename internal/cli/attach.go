@@ -154,49 +154,40 @@ func parseAttachArgs(argv []string) (target string, command []string, err error)
 	return target, command, nil
 }
 
-// selectLiveRun is §4.1 step 1: find the run directory, verify its lock is
-// held, read and validate state.json. Zero matches and more than one match
-// are both errors, and both enumerate what WAS found inline — there is no
-// `snug attach --list` in this build to point at instead (§17).
+// selectLiveRun is §4.1 step 1: find the run published for this target,
+// confirm its lock is held, and validate what it published.
+//
+// Since issue #123 this is a LOOKUP, not a search. The state file is named
+// from sha256(realpath) in the same uid-derived directory as the target lock
+// (targetstate.go), so there is exactly one candidate and no listing to walk.
+// Three things that used to be here went with the scan and are worth naming,
+// because their absence is the point rather than an omission:
+//
+//   - the "more than one live run matches" branch. #119 made at most one run
+//     live per directory, and the target-keyed name makes that structural: two
+//     runs on one target cannot produce two state files, because they cannot
+//     produce two names.
+//   - the "live runs: ..." enumeration in the zero case. It listed other
+//     people's targets to a user who asked about one directory, which was the
+//     scan leaking into the message.
+//   - a second liveness mechanism. Liveness is now the target lock — the same
+//     fact `snug <dir>` consults when it refuses a second sandbox — rather
+//     than a parallel per-run flock that could in principle disagree with it.
 //
 // real must already be canonicalised (filepath.EvalSymlinks, via
-// canonicalAttachTarget) — state.Target is the realpath policy.Resolve
-// recorded, and matching against anything else is the bug issue #119's
-// coherence fix closed: a symlink to the target, or any other
-// non-canonical spelling, would silently never match.
+// canonicalAttachTarget), because the file name is a hash OF that canonical
+// form: a symlink to the target, or any other spelling, hashes elsewhere and
+// finds nothing. That is the same coherence issue #119 fixed for the lock.
 func selectLiveRun(real string) (runState, error) {
-	runs, err := discoverLiveRuns()
+	st, live, err := readTargetState(real)
 	if err != nil {
 		return runState{}, err
 	}
-	var matched []liveRun
-	for _, r := range runs {
-		if r.State.Target == real {
-			matched = append(matched, r)
-		}
+	if !live {
+		return runState{}, fmt.Errorf("no live snug run found for %s — nothing is currently sandboxing "+
+			"this directory", real)
 	}
-	switch len(matched) {
-	case 0:
-		if len(runs) == 0 {
-			return runState{}, fmt.Errorf("no live snug run found for %s — nothing is currently sandboxing "+
-				"this directory", real)
-		}
-		var lines []string
-		for _, r := range runs {
-			lines = append(lines, fmt.Sprintf("%s (%s)", r.Name, r.State.Target))
-		}
-		return runState{}, fmt.Errorf("no live snug run found for %s — live runs: %s",
-			real, strings.Join(lines, ", "))
-	case 1:
-		return matched[0].State, nil
-	default:
-		var lines []string
-		for _, r := range matched {
-			lines = append(lines, r.Name)
-		}
-		return runState{}, fmt.Errorf("more than one live run matches %s: %s — this build has no "+
-			"way to disambiguate yet", real, strings.Join(lines, ", "))
-	}
+	return st, nil
 }
 
 // canonicalAttachTarget resolves abs (already filepath.Abs'd) to the same
