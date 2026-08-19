@@ -49,6 +49,24 @@ Expect ✅ on bubblewrap, user namespaces, and a private network namespace. A �
 names the exact sysctl or package to fix. Running inside distrobox/podman is
 reported and supported.
 
+**The user-namespace line is measured, not inferred from an exit code**
+(issue #98). To see it answer a host it cannot serve — and to check that the
+line can say no at all, which is the half a green tick never proves:
+
+```bash
+unshare --user --map-root-user -- sh -c '
+  echo 0 > /proc/sys/user/max_user_namespaces
+  unshare --user --map-root-user -- /bin/true      # positive control
+  ./bin/snug doctor; echo "exit=$?"'
+```
+
+Expect the control to fail with `unshare failed: No space left on device` — the
+proof that namespace creation really is blocked — and then `snug doctor` to
+print `❌ cannot create a user namespace here`, quoting bwrap's own ENOSPC, and
+exit 69. It must **never** print `✅ unprivileged user namespaces work` there.
+It did until #98: the probe passed `--unshare-all`, whose `-try` spellings skip
+silently and exit 0, and the check read the exit code alone.
+
 ## 2. Read before you run
 
 ```bash
