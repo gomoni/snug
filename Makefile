@@ -47,6 +47,12 @@ gate:
 	# own is still up. Built lazily by containerengine_test.go's holderBin.
 	# Same fix, same reasoning as the three above.
 	go vet ./test/integration/testdata/holder
+	# testdata/fakepodman (issue #125, C2-gate) is the fifth: a stand-in
+	# `podman system service` gate_test.go's own tests use to control WHEN
+	# the engine's socket appears and what its first response is, built
+	# lazily by gate_test.go's fakePodmanBin. Same fix, same reasoning as
+	# the four above.
+	go vet ./test/integration/testdata/fakepodman
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This

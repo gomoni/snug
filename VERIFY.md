@@ -2239,6 +2239,126 @@ because it created the netns it ran in; under the stage, bwrap does not create
 still inside — losing this silently is exactly the kind of regression a user
 finds, not a golden diff.
 
+### 12b. The C2 gate — a killed snug cannot release a parked container payload (issue #125)
+
+A container run (`-p @podman-socket`/`-p @podman-build`) cannot start the
+engine before bwrap has built the sandbox's mount tree, so the payload is
+PARKED (`--block-fd`) until the engine is confirmed up, and P0 alone holds
+the byte that releases it (`--sync-fd` on the same pipe). Both checks below
+use `$SNUG_PODMAN` (trusted outright, never re-resolved through PATH) pointed
+at a throwaway stand-in that creates a real listening `unix://` socket at the
+path snug's own argv names.
+
+**The delay and the first-response status must be BAKED INTO the script
+file, not read from the environment.** `$SNUG_PODMAN` is exec'd with the
+EXPLICIT, minimal environment `internal/engine.Engine.Spec` built (PATH,
+HOME, XDG_RUNTIME_DIR, `CONTAINERS_*`) — never this shell's own — so a
+wrapper that reads `$FAKE_DELAY` at run time silently sees nothing and
+behaves as though it were never set. Write a fresh script per scenario
+instead. **It must also refuse to run when no `unix://` argument is
+present**, rather than binding an empty path: `internal/engine`'s own
+teardown (`engine.go`'s `stopLocked`) invokes this SAME binary a second time
+with a plain `stop --all --filter …` argv that names no socket at all, and
+`socket.bind('')` in Python silently succeeds as an ABSTRACT-namespace
+autobind socket — `accept()` on it then blocks forever, and `stopLocked`'s
+own `stop.Run()` has no timeout, so a wrapper without this guard hangs the
+whole check. This is an artifact of a hand-rolled stand-in speaking a wider
+protocol than it means to, not a snug defect — the committed Go binary
+(`test/integration/testdata/fakepodman`) refuses the same way, cleanly:
+`net.Listen("unix", "")` returns an error rather than an abstract socket.
+
+```bash
+fakepodman() {  # fakepodman DELAY STATUS -> writes $1's own wrapper script
+  local dir=$1 delay=$2 status=$3
+  cat > $dir/podman <<EOF
+#!/bin/sh
+SOCK=""
+for a in "\$@"; do case "\$a" in unix://*) SOCK=\${a#unix://};; esac; done
+if [ -z "\$SOCK" ]; then echo "fakepodman: no unix:// argument" >&2; exit 2; fi
+sleep $delay
+mkdir -p "\$(dirname "\$SOCK")"
+exec python3 -c "
+import socket
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind('\$SOCK'); s.listen(5)
+while True:
+    c, _ = s.accept()
+    c.recv(4096)  # read BEFORE writing/closing — see the note above the RST it avoids
+    c.sendall(b'HTTP/1.1 $status X\r\n\r\n')
+    if '$status' != '200': c.close()
+"
+EOF
+  chmod +x $dir/podman
+}
+```
+
+**1. SIGKILL of snug while the payload is parked must never run it** —
+`TestAKilledSnugCannotReleaseTheParkedPayload`'s own headline, with the fake
+engine delayed long enough to guarantee snug dies while still parked:
+
+```bash
+FAKE=$(mktemp -d); fakepodman $FAKE 3 200
+rm -f $SC/proj/sub/PWNED
+SNUG_PODMAN=$FAKE/podman ./bin/snug -p @podman-socket $SC/proj/sub -- \
+  /bin/sh -c 'echo pwned > "$SNUG_TARGET/PWNED"' &
+SNUGPID=$!
+sleep 0.8
+STAGE=$(ps -o pid,ppid,comm --ppid $SNUGPID | awk '$3=="exe"{print $1}')
+ps -o pid,ppid,comm --ppid $STAGE           # expect a bwrap below the stage: PRECONDITION
+kill -9 $SNUGPID; sleep 2
+ls $SC/proj/sub/PWNED                       # expect: No such file or directory
+```
+
+Expect the marker absent. Run it several times — this is a race, and the
+committed test runs it five times per CLAUDE.md's own discipline for exactly
+that reason. The POSITIVE CONTROL and the ADJACENT NEGATIVE (an ordinary,
+released run's payload holds no descriptor beyond stdio — the leak an
+arbitrary extra fd would have caused instead of `--sync-fd`) are not
+practical to reproduce by hand with the same rigor as the committed test's
+own `ls -l /proc/self/fd/` check; read that test rather than re-deriving it.
+
+**2. The one-shot property** — the stage answers at most one `netready` and
+one `start`, and a second request sent after `start` is never consumed, not
+even ignored-and-answered. There is no pathname socket to reach the control
+channel from outside snug's own process, so this one is not meaningfully
+hand-checkable; `TestTheStageReadsNoRequestAfterStart`
+(`internal/stage/onerequest_test.go`) drives it directly against the
+unexported control socket from within the package.
+
+**3. An abort while parked must kill bwrap AND the init** — while parked,
+bwrap has not yet armed `--die-with-parent` on its own init (measured), so an
+abort that kills only the outer bwrap and trusts the kernel's own cascade
+leaves the init alive, still parked, still releasable. Point the fake engine
+at an immediate non-200 response, which fails `OnEngineReady` (the lifeline
+dial) right after the payload is confirmed parked. Backgrounded with a
+timeout, per the pattern above and section 12's own checks — the container
+engine's own teardown (`eng.Stop()`) runs `podman stop` against this same
+stand-in on the ordinary path too, so this waits it out rather than assuming
+a bare foreground call returns promptly:
+
+```bash
+FAKE=$(mktemp -d); fakepodman $FAKE 0 503
+rm -f $SC/proj/sub/PWNED
+SNUG_PODMAN=$FAKE/podman ./bin/snug -p @podman-socket $SC/proj/sub -- \
+  /bin/sh -c 'echo pwned > "$SNUG_TARGET/PWNED"' > /tmp/gate3.log 2>&1 &
+SNUGPID=$!
+for i in $(seq 1 100); do kill -0 $SNUGPID 2>/dev/null || break; sleep 0.1; done
+kill -0 $SNUGPID 2>/dev/null && { echo "STILL RUNNING after 10s"; kill -9 $SNUGPID; }
+wait $SNUGPID 2>/dev/null; echo "exit: $?"
+ls $SC/proj/sub/PWNED                       # expect: No such file or directory
+pgrep -a bwrap                              # expect: nothing of this run
+tail -3 /tmp/gate3.log
+```
+
+Expect a nonzero exit, the tail saying the engine "would not accept the
+keepalive" stream, no
+marker, and no surviving `bwrap` process. `TestKillingOnlyBwrapLeavesAReleasableInit`
+is the automated form, and it is confirmed to catch the regression: with the
+explicit pidfd kill removed from `internal/stage/gate.go`'s `parked.kill()`,
+the outer bwrap dies (from the ordinary abort path) but its own forked init
+is left running, still parked — the exact shape the fix in `gate.go` exists
+to close.
+
 ---
 
 ## 13. Two accounts on one host — an identity is a pin, not a preference
