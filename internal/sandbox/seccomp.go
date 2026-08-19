@@ -80,9 +80,11 @@ func nativeAuditArch() (uint32, bool) {
 //	                 namespace and therefore reaches outside the sandbox
 //	pidfd_getfd      steals a DUPLICATE of another process's open file
 //	                 description by pidfd + index — not just a path reopen: it
-//	                 reaches connected sockets (a procfs reopen gets ENXIO),
-//	                 pipes, memfds, deleted and O_TMPFILE files, and fds whose
-//	                 inode DAC would refuse a fresh open. pidfd_open (a handle,
+//	                 reaches connected sockets, pipes, memfds, deleted and
+//	                 O_TMPFILE files, and fds whose inode DAC would refuse a
+//	                 fresh open. Read that as what pidfd_getfd REACHES, not as
+//	                 what only it reaches — procfs reopens most of that list
+//	                 too; see the residual paragraph below. pidfd_open (a handle,
 //	                 no descriptors) stays allowed — Phase 2's attach path wants
 //	                 it, and the stage's control channel has an independent lock
 //	                 against it anyway (SUPERVISOR-DESIGN.md §3.3: the stage is
@@ -96,14 +98,25 @@ func nativeAuditArch() (uint32, bool) {
 //	                 Yama does not gate) still lets a sibling read another
 //	                 payload's regular files today; that is issue #47, not
 //	                 something seccomp can reach. NOT REDUNDANT with that
-//	                 residual, though, and this is the sentence to keep if
-//	                 someone reads #47 and concludes this denial bought
-//	                 nothing: a socket cannot be reopened through
-//	                 /proc/<pid>/fd at all (ENXIO), and pipes, memfds, deleted
-//	                 and O_TMPFILE files have no path to reopen through
-//	                 /proc/<pid>/fd/N in the first place — pidfd_getfd is the
-//	                 only route to any of those, filter or no filter, and
-//	                 denying it closes that route specifically.
+//	                 residual, but the residual is ONE object, not four
+//	                 (issue #115): this comment used to name "a socket, a
+//	                 pipe, a memfd, a deleted file" as things procfs cannot
+//	                 reopen, and three of the four were wrong. Measured
+//	                 sibling-to-sibling, same uid, ptrace_scope=1: a memfd, a
+//	                 pipe, a deleted file and an O_TMPFILE file all reopen
+//	                 through /proc/<pid>/fd/N with their contents intact,
+//	                 because each has a backing inode and open(2) on the magic
+//	                 link re-derives a working descriptor once
+//	                 ptrace_may_access(PTRACE_MODE_READ_FSCREDS) passes —
+//	                 which same-uid does, and which Yama does not gate at any
+//	                 ptrace_scope, since it checks PTRACE_MODE_ATTACH only.
+//	                 What survives is the CONNECTED SOCKET: sockfs has no open
+//	                 method (sock_no_open), so the reopen is ENXIO for every
+//	                 caller, root included, and pidfd_getfd is the only route
+//	                 to it. That one object is what this denial buys, and it
+//	                 is not nothing — SUPERVISOR-DESIGN.md's control-channel
+//	                 argument rests on exactly it. Pinned by
+//	                 TestKnownOpenResidualSiblingReopensAnythingButASocket.
 //	process_vm_readv/process_vm_writev
 //	                 read and write another process's memory directly —
 //	                 ptrace's effect without calling ptrace(2). Measured

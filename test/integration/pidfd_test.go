@@ -506,3 +506,136 @@ func runProcMemProbe(t *testing.T, ptracerAny bool) pidfdProbeRun {
 	r := run(t, nil, proj, fmt.Sprintf(procMemScript, arg)).mustRun(t)
 	return pidfdProbeRun{sandboxRun: r, fields: parseProbeFields(r.out)}
 }
+
+// ── issue #115: the pidfd_getfd denial buys the SOCKET, not four objects ────
+//
+// This test, like the /proc/<pid>/mem one above, is not a regression test for
+// a fix. It pins a MEASUREMENT that a comment had got wrong in the reassuring
+// direction. seccomp.go used to justify denying pidfd_getfd by saying procfs
+// could not reopen "a socket, a pipe, a memfd, a deleted file" — so the
+// denial was the only route to any of them. Three of the four are false:
+// /proc/<pid>/fd/N reopens a sibling's memfd, pipe, deleted file and
+// O_TMPFILE file, contents included, through nothing but openat(2) and
+// read(2).
+//
+// The socket is the one that holds, and it holds for a structural reason
+// rather than a permission check: sockfs installs sock_no_open, so open(2) on
+// the magic link returns ENXIO for every caller, root included. That single
+// object is the whole residual value of the denial, and it is what
+// SUPERVISOR-DESIGN.md's control-channel argument rests on — which is why the
+// assertion below is exact (ENXIO, not "some error"): if a future kernel ever
+// gives sockfs an open method, that argument loses its footing and this test
+// is where the news should arrive.
+//
+// Direction of each assertion, since they do not all run the same way:
+//
+//   - control (a plain, still-linked regular file) MUST reopen. Without it,
+//     every refusal below could be a broken thief rather than a closed door.
+//   - memfd, pipe, deleted, tmpfile MUST reopen, with their own marker bytes.
+//     These are expected successes — issue #47's reach made concrete. A day
+//     when they start failing is a day the kernel changed, and the right
+//     response is to re-read #47 and #115, not to "fix" this test.
+//   - socket MUST fail, with ENXIO exactly.
+//
+// No Yama branch, unlike TestKnownOpenResidualSiblingReadWritesProcPidMem:
+// opening /proc/<pid>/fd/N needs ptrace_may_access(PTRACE_MODE_READ_FSCREDS)
+// and yama_ptrace_access_check gates PTRACE_MODE_ATTACH only, so
+// ptrace_scope does not apply at any value. That asymmetry is the point of
+// the finding: this reach survives on exactly the hardened hosts where the
+// syscall-shaped descriptor theft does not.
+func TestKnownOpenResidualSiblingReopensAnythingButASocket(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+
+	r := runFdReopenProbe(t)
+
+	// POSITIVE CONTROL first: if this one is not reopenable the thief never
+	// worked, and the socket's refusal below would be indistinguishable from
+	// a typo in a path.
+	if got := requireProbeField(t, r, "REOPEN_control_OPEN"); got != "OK" {
+		t.Fatalf("REOPEN_control_OPEN=%s, want OK — a plain, still-linked regular file "+
+			"held by a sibling must be reopenable through /proc/<pid>/fd/N. It is not, so "+
+			"the thief is broken and nothing else this test reports means anything:\n%s",
+			got, r.out)
+	}
+	if got := requireProbeField(t, r, "REOPEN_control_READ"); !strings.Contains(got, "REOPEN-MARKER-115-control") {
+		t.Fatalf("REOPEN_control_READ=%s, want the control's own marker bytes:\n%s", got, r.out)
+	}
+
+	// THE FINDING. Each of these was named in the old comment as something
+	// only pidfd_getfd could reach.
+	for _, kind := range []string{"memfd", "pipe", "deleted", "tmpfile"} {
+		// O_TMPFILE needs filesystem support; the holder says so explicitly
+		// rather than reporting a refusal it never measured.
+		if kind == "tmpfile" && strings.Contains(r.out, "HOLDER-SKIPPED=tmpfile") {
+			t.Logf("tmpfile not measured on this filesystem (holder said so); "+
+				"the other three carry the finding:\n%s", r.out)
+			continue
+		}
+		if got := requireProbeField(t, r, "REOPEN_"+kind+"_OPEN"); got != "OK" {
+			t.Errorf("REOPEN_%s_OPEN=%s, want OK. This test asserts a KNOWN OPEN reach "+
+				"(issues #47, #115), not a closed one: a %s held by a sibling IS "+
+				"reopenable through /proc/<pid>/fd/N on the kernels measured. If this "+
+				"now refuses, the kernel changed — go and correct seccomp.go, "+
+				"CLAUDE.md and INDEX.md, which all currently say it does:\n%s",
+				kind, got, kind, r.out)
+			continue
+		}
+		want := "REOPEN-MARKER-115-" + kind
+		if got := requireProbeField(t, r, "REOPEN_"+kind+"_READ"); !strings.Contains(got, want) {
+			t.Errorf("REOPEN_%s_READ=%s, want it to contain %q — the open succeeded, so a "+
+				"missing or wrong marker means the reopened descriptor is not the object "+
+				"the holder published, and this probe is measuring the wrong thing:\n%s",
+				kind, got, want, r.out)
+		}
+	}
+
+	// THE RESIDUAL, and the only part of the old four-object claim that
+	// survived. Exact errno: ENXIO is sockfs having no open method, not a
+	// permission decision, and the distinction is what makes it durable.
+	if got := requireProbeField(t, r, "REOPEN_socket_OPEN"); got != "no such device or address" {
+		t.Errorf("REOPEN_socket_OPEN=%s, want \"no such device or address\" (ENXIO). The "+
+			"socket is the ENTIRE residual value of denying pidfd_getfd, and "+
+			"SUPERVISOR-DESIGN.md's control-channel argument rests on it. If this is now "+
+			"OK, a sibling can reopen a connected socket through procfs and that argument "+
+			"needs rewriting, not this assertion:\n%s", got, r.out)
+	}
+	// The link still RESOLVES even though the open refuses — enumeration was
+	// never gated, only the reopen. Asserted so nobody reads the ENXIO above
+	// as "procfs hides sockets from a sibling", which it does not.
+	if got := requireProbeField(t, r, "REOPEN_socket_LINK"); !strings.HasPrefix(got, "OK") {
+		t.Errorf("REOPEN_socket_LINK=%s, want OK: /proc/<pid>/fd LISTS and readlinks a "+
+			"sibling's socket fine — it is only open(2) that refuses. A failure here "+
+			"means something gated the enumeration too, which would be a different "+
+			"(and better) world than the one #47 describes:\n%s", got, r.out)
+	}
+}
+
+// fdReopenScript is the in-sandbox choreography for the fdholder/fdthief
+// pair. Same shape as procMemScript: start the holder, poll until it says it
+// is ready, build the thief's argument list out of the holder's own published
+// "HOLDER-FD-<kind>=<n>" lines rather than assuming fd numbers, run the
+// thief, release the holder, print both sides.
+const fdReopenScript = `
+./pidfdprobe fdholder > holder.out 2>&1 &
+HPID=$!
+for i in $(seq 1 250); do grep -q '^HOLDER-READY=' holder.out 2>/dev/null && break; sleep 0.02; done
+PID=$(grep '^HOLDER-PID=' holder.out | cut -d= -f2)
+SPECS=$(sed -n 's/^HOLDER-FD-\([a-z]*\)=\([0-9]*\)$/\1=\2/p' holder.out | tr '\n' ' ')
+./pidfdprobe fdthief "$PID" $SPECS
+touch fdholder-done
+wait "$HPID"
+cat holder.out
+`
+
+// runFdReopenProbe runs the fdholder/fdthief pair inside one sandbox and
+// returns both sides' combined output, parsed the same way runProcMemProbe's
+// is.
+func runFdReopenProbe(t *testing.T) pidfdProbeRun {
+	t.Helper()
+	proj, _ := target(t)
+	stagePidfdProbe(t, proj)
+
+	r := run(t, nil, proj, fdReopenScript).mustRun(t)
+	return pidfdProbeRun{sandboxRun: r, fields: parseProbeFields(r.out)}
+}
