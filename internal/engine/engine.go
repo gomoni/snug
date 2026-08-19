@@ -293,12 +293,31 @@ func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool, net
 //
 //  3. The keys a host containers.conf would otherwise have supplied (issue
 //     #132) — mounts/volumes inject host PATHS, devices injects a host device
-//     NODE, env_host passes the engine's whole environment, all of them on
-//     EVERY container and none of them client-requested. CONTAINERS_CONF
-//     already stops those files being read at all; naming the keys anyway is
-//     CLAUDE.md's "never trust a helper's default, in either direction",
-//     and it is what still holds if a future podman changes CONTAINERS_CONF
-//     from "replaces" to "merges".
+//     NODE, env injects variables and env_host passes the engine's whole
+//     environment, hooks_dir names PROGRAMS run on every container's
+//     lifecycle. All of them on EVERY container and none of them
+//     client-requested. CONTAINERS_CONF already stops those files being read
+//     at all; naming the keys anyway is CLAUDE.md's "never trust a helper's
+//     default, in either direction".
+//
+//     BE PRECISE ABOUT WHAT THAT SECOND LINE OF DEFENCE COVERS, because the
+//     first version of this comment claimed more than the code delivered and
+//     a red-team pass measured the gap. The enumeration is NOT the complete
+//     set of containers.conf keys that reach a container. It is the set that
+//     can be closed WITHOUT choosing a value on podman's behalf.
+//     default_capabilities, default_sysctls, default_ulimits, seccomp_profile
+//     and userns are deliberately absent: emptying or pinning any of them
+//     overrides podman's own default for every container, which is a policy
+//     decision this file must not make silently. For those keys the guarantee
+//     is CONTAINERS_CONF's replacement and nothing else — issue #136 carries
+//     the residual and the measurement.
+//
+//     What the enumeration IS worth was measured, against a hostile
+//     containers.conf on CONTAINERS_CONF and this file on
+//     CONTAINERS_CONF_OVERRIDE: `env = ["INJECTED_BY_CONF=leaked"]` reaches a
+//     container when nothing closes it, and does not when `env = []` is
+//     written here. That is the merge-future this list exists for, and it is
+//     also the shape the test wrapper already produces today (issue #133).
 //
 // res is policy.NetPolicy.Resolver() — the SAME derivation the sandbox
 // payload's own /etc/resolv.conf comes from, taken as VALUES rather than by
@@ -345,13 +364,18 @@ func (e *Engine) writeContainersConf(cgroupsDisabled bool, res policy.ResolverCo
 		"# podman copies it into every container by default (issue #126).\n" +
 		"base_hosts_file = \"none\"\n")
 
-	b.WriteString("\n# Nothing is mounted, and no device or host environment is passed, except\n" +
-		"# what a client asks for and the proxy's own filter then allows (issue #132).\n" +
+	b.WriteString("\n# Nothing is mounted, no device is passed, no environment is inherited or\n" +
+		"# injected, and no lifecycle hook runs, except what a client asks for and the\n" +
+		"# proxy's own filter then allows (issue #132).\n" +
 		"mounts = []\n" +
 		"volumes = []\n" +
 		"devices = []\n" +
+		"env = []\n" +
 		"env_host = false\n" +
-		"http_proxy = false\n")
+		"http_proxy = false\n" +
+		"hooks_dir = []\n" +
+		"annotations = []\n" +
+		"privileged = false\n")
 
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		return "", fmt.Errorf("writing %s: %w", path, err)

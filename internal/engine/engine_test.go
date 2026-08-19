@@ -345,10 +345,48 @@ func TestGeneratedContainersConfClosesTheHostInjectionKeys(t *testing.T) {
 		"mounts = []",
 		"volumes = []",
 		"devices = []",
+		"env = []",
 		"env_host = false",
+		"http_proxy = false",
+		"hooks_dir = []",
+		"annotations = []",
+		"privileged = false",
 	} {
 		if !strings.Contains(conf, want) {
 			t.Errorf("generated containers.conf does not close %q:\n%s", want, conf)
+		}
+	}
+}
+
+// TestTheInjectionKeyListSaysWhatItDoesNotClose is the honesty half, and it
+// exists because the first version of this list was PRESENTED as complete and
+// was not — a red-team pass measured a bare `env` key injecting into every
+// container while the doc comment said the keys a host config "would otherwise
+// have supplied" were closed.
+//
+// default_capabilities, default_sysctls, default_ulimits, seccomp_profile and
+// userns are deliberately NOT closed: emptying or pinning any of them
+// overrides podman's own default for every container, a policy decision
+// writeContainersConf must not make silently. For those the guarantee is
+// CONTAINERS_CONF's replacement alone (issue #136).
+//
+// This test fails if one of them is added WITHOUT the comment being updated,
+// which is the drift it exists to catch — a list whose prose and content
+// disagree is how the finding happened in the first place.
+func TestTheInjectionKeyListSaysWhatItDoesNotClose(t *testing.T) {
+	conf, _ := specConf(t, policy.NetPolicy{Mode: policy.NetEgress, Nameservers: []string{"192.0.2.53"}}, false)
+	for _, notClosed := range []string{
+		"default_capabilities",
+		"default_sysctls",
+		"default_ulimits",
+		"seccomp_profile",
+		"userns",
+	} {
+		if strings.Contains(conf, notClosed) {
+			t.Errorf("generated containers.conf now names %q, which writeContainersConf's own "+
+				"comment lists as deliberately NOT closed. Either the comment and issue #136 "+
+				"are stale, or a value was chosen on podman's behalf without deciding to:\n%s",
+				notClosed, conf)
 		}
 	}
 }
