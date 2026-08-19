@@ -7,35 +7,27 @@ import (
 	"testing"
 )
 
-// EVERY AGENT THAT CAN RUN A COMMAND MUST CARRY THE HOST-SHELL RULE, AND ALL
-// COPIES MUST BE THE SAME BYTES.
+// THE SANDBOX-RUN RULE BELONGS TO redteam AND TO NO OTHER AGENT.
 //
-// The rule itself is in .claude/agents/*.md: your Bash tool is a host shell, a
-// destructive command that runs inside must be guarded in the SAME invocation,
-// and PS1 is not evidence. Issue #185.
+// It was first written into every agent file whose tools include Bash — five of
+// them — on the reasoning that they all run on the host and should all be warned
+// about it. That was wrong twice over:
 //
-// This test exists because the rule is COPIED into four files and nothing else
-// checks them. That is the shape issue #159 is about — a list written five times
-// with one copy nobody re-reads — and it has two failure modes, both silent:
+//   - Working on the host is the ORDINARY and correct mode for sandbox-tester,
+//     host-bridge, go-implementer and sandbox-policy. They edit files, run
+//     `go test`, drive git. A block telling them their normal mode is a hazard
+//     teaches them to distrust the thing they are supposed to be doing, and
+//     spends their attention where nothing is at stake.
+//   - redteam is the only agent that runs snug FOR REAL, with profiles it wrote,
+//     to see what escapes. It is the only one whose ordinary work can hand a
+//     payload the host's key material, and the only one for which "pin HOME to a
+//     scratch directory" is a rule rather than a curiosity.
 //
-//   - one copy is edited and the others are not, so which agent you happen to
-//     dispatch decides which rule applies;
-//   - a NEW agent file is added with Bash in its tools and no rule at all, which
-//     is the more likely of the two and the one no amount of care prevents.
-//
-// So the check is mechanical and has no allowlist: the set of files is derived
-// from the `tools:` line, not from a list maintained beside it. Adding an agent
-// that can run commands and forgetting the rule fails here.
-//
-// Markdown has no include, and the harness reads these files verbatim, so
-// copying is the only way to say it four times. Then the copies have to be
-// asserted equal, or "we said it everywhere" is a belief rather than a fact.
-const hostShellHeading = "## Your Bash tool is a HOST shell. Always."
-
-// The block ends at the last bullet. Anchored on its final sentence rather than
-// on a blank line, so reformatting the block does not silently shorten what this
-// test compares.
-const hostShellLastLine = "re-read it rather than rephrasing it."
+// So the assertion is exact rather than universal: redteam carries it, nobody
+// else does. Both halves matter — the second is what stops the block being
+// pasted back across the tree the next time someone reads the incident report
+// and reaches for breadth.
+const sandboxRunHeading = "## Before any run that creates a real sandbox"
 
 func agentFiles(t *testing.T) map[string]string {
 	t.Helper()
@@ -61,78 +53,42 @@ func agentFiles(t *testing.T) map[string]string {
 	return out
 }
 
-// carriesBash reads the frontmatter `tools:` line. An agent with no Bash cannot
-// run a command at all, so the rule would be noise in its file.
-func carriesBash(body string) bool {
-	// Frontmatter only: the fenced block between the first two `---` lines. An
-	// earlier version scanned the whole file for a line starting with `tools:`
-	// and gave up at the first `---`, which matched nothing at all — every file
-	// read as "no Bash", the test found zero agents, and only the guard against
-	// a vacuous comparison stopped it passing on an empty set.
-	lines := strings.Split(body, "\n")
-	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
-		return false
-	}
-	for _, line := range lines[1:] {
-		if strings.TrimSpace(line) == "---" {
-			return false
-		}
-		if strings.HasPrefix(line, "tools:") {
-			return strings.Contains(line, "Bash")
-		}
-	}
-	return false
-}
+func TestOnlyRedteamCarriesTheSandboxRunRule(t *testing.T) {
+	files := agentFiles(t)
 
-func hostShellBlock(body string) (string, bool) {
-	start := strings.Index(body, hostShellHeading)
-	if start == -1 {
-		return "", false
+	redteam, ok := files["redteam.md"]
+	if !ok {
+		t.Fatal("no .claude/agents/redteam.md; the agent that runs real sandboxes is the one " +
+			"this rule exists for")
 	}
-	end := strings.Index(body[start:], hostShellLastLine)
-	if end == -1 {
-		return "", false
+	if !strings.Contains(redteam, sandboxRunHeading) {
+		t.Errorf("redteam.md does not carry %q. It is the only agent that runs snug for real "+
+			"with profiles it wrote, and the section is what tells it to pin HOME to a scratch "+
+			"directory and to guard payloads with bin/blast-radius (issues #185, #186)",
+			sandboxRunHeading)
 	}
-	return body[start : start+end+len(hostShellLastLine)], true
-}
+	// The three claims the section must actually make. Asserted as content
+	// rather than as a heading, because a heading with the body rewritten under
+	// it is exactly what a well-meaning edit produces.
+	for _, want := range []struct{ text, why string }{
+		{"Pin `HOME` to a scratch directory", "the mechanism that bounds every failure at once"},
+		{"blast-radius", "the check, and it must be named so it can be found"},
+		{"is NOT a safety property", "the lesson the previous guard was deleted for"},
+	} {
+		if !strings.Contains(redteam, want.text) {
+			t.Errorf("redteam.md's sandbox-run section no longer says %q — %s", want.text, want.why)
+		}
+	}
 
-func TestEveryAgentWithBashCarriesTheHostShellRule(t *testing.T) {
-	var blocks []struct{ file, block string }
-	for name, body := range agentFiles(t) {
-		if !carriesBash(body) {
-			if _, ok := hostShellBlock(body); ok {
-				t.Errorf("%s carries the host-shell rule but has no Bash tool. Harmless, and "+
-					"worth removing: a rule in a file it cannot apply to is how a rule stops "+
-					"being read where it does apply", name)
-			}
+	for name, body := range files {
+		if name == "redteam.md" {
 			continue
 		}
-		block, ok := hostShellBlock(body)
-		if !ok {
-			t.Errorf("%s can run commands and does not carry the host-shell rule (%q).\n"+
-				"That agent's Bash tool is a HOST shell like every other one, and nothing in "+
-				"its file says so. Copy the block from .claude/agents/redteam.md verbatim — "+
-				"this test asserts the copies are identical.", name, hostShellHeading)
-			continue
-		}
-		blocks = append(blocks, struct{ file, block string }{name, block})
-	}
-	if len(blocks) < 2 {
-		t.Fatalf("found %d agent files carrying the rule; with fewer than two there is nothing "+
-			"to compare and the drift half of this test is vacuous", len(blocks))
-	}
-
-	// All copies must be the same bytes. Not "equivalent", not "say the same
-	// thing" — the same bytes, because that is the only version of the claim a
-	// test can hold.
-	want := blocks[0]
-	for _, got := range blocks[1:] {
-		if got.block != want.block {
-			t.Errorf("the host-shell rule in %s differs from the one in %s.\n"+
-				"Four copies with no check is how one gets edited and three do not, and then "+
-				"which agent you dispatch decides which rule applies.\n\n%s:\n%s\n\n%s:\n%s",
-				got.file, want.file, want.file, want.block, got.file, got.block)
+		if strings.Contains(body, sandboxRunHeading) {
+			t.Errorf("%s carries the sandbox-run rule, which belongs to redteam alone. Running "+
+				"on the host is this agent's ordinary and correct mode; a block warning it "+
+				"about that spends attention where nothing is at stake, and teaches it to "+
+				"distrust its own normal way of working", name)
 		}
 	}
-	t.Logf("%d agent files carry the rule, byte-identical", len(blocks))
 }

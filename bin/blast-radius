@@ -1,0 +1,153 @@
+#!/bin/sh
+# blast-radius — exit 0 ONLY when nothing worth losing is reachable from here.
+#
+# THE QUESTION THIS ASKS, AND WHY IT IS NOT THE OBVIOUS ONE.
+#
+# The obvious guard asks "am I inside a snug sandbox?". It was built, and it was
+# wrong, and the measurement that killed it is worth keeping:
+#
+#     guard says: exit=0                      <- true: this really is a snug sandbox
+#     inside now sees: PWNED-FROM-INSIDE
+#     AFTER, on the HOST: PWNED-FROM-INSIDE   <- the host's private key, one command later
+#
+# A sandbox whose policy grants `rw` on {home}/.ssh is INSIDE and lethal. So the
+# verdict was true and useless: **"inside" is not a safety property; the mount
+# policy is.** Asking where you are standing answers nothing about what you can
+# destroy from there.
+#
+# So this asks the other question — CAN I REACH ANYTHING I WOULD REGRET? — and it
+# is a better question on every axis that failed:
+#
+#   * It fires on the case that actually caused damage: a sandbox with a writable
+#     grant over a host credential directory. The old guard passed that case.
+#   * It consults NOTHING snug produces. No SNUG_* variables, no bwrap, no
+#     procfs shape. That matters because this repository is where snug is being
+#     built and attacked: a check that reads snug's own signals is only as
+#     truthful as the branch you are standing on, and the red team's entire job
+#     is to make those signals lie.
+#   * It is confinement-agnostic. Same answer inside snug, inside a container, or
+#     in a plain host shell whose HOME points at a scratch directory — which is
+#     the ordinary way to work here, not an exotic case.
+#
+# THE STRUCTURAL VERSION IS BETTER THAN THIS CHECK. A run that never has the real
+# $HOME in reach cannot damage it, whatever else goes wrong — wrong grant, snug
+# bug, wrong shell. Pin HOME to a scratch directory; this script is the
+# confirmation, not the mechanism.
+#
+# FAIL CLOSED. Anything unreadable, unstattable or unexpected is a refusal.
+# "I could not tell" and "the keys are right there" give the same exit status.
+
+set -u
+
+verbose=0
+canary="${SNUG_HOST_CANARY:-${HOME:-}/.snug-host-canary}"
+
+usage() {
+	cat <<'USAGE'
+usage: blast-radius [-v]
+       blast-radius --install-canary
+
+  (no args)         exit 0 only if no host asset is reachable from here
+  -v                list what was checked
+  --install-canary  mark THIS $HOME as the real one (run on the host, once)
+USAGE
+}
+
+case "${1:-}" in
+-v) verbose=1 ;;
+--install-canary)
+	# The canary marks the real home as the real home. It is the one piece of
+	# evidence nothing in the sandbox can manufacture and snug does not
+	# produce: inside, $HOME is a fresh tmpfs, so the file is simply not
+	# there. Note what does NOT work as a marker — $HOME/.ssh looks obvious
+	# and the identity machinery GENERATES ~/.ssh/config inside, so its
+	# presence proves nothing.
+	if [ -z "${HOME:-}" ]; then
+		echo "blast-radius: HOME is unset; refusing to guess where the canary goes" >&2
+		exit 1
+	fi
+	printf '%s\n' "This marks the real host home. bin/blast-radius refuses when it can see it." \
+		>"$canary" || exit 1
+	echo "blast-radius: canary written to $canary"
+	exit 0
+	;;
+-h | --help)
+	usage
+	exit 0
+	;;
+"") ;;
+*)
+	usage >&2
+	exit 2
+	;;
+esac
+
+refuse() {
+	printf 'blast-radius: REACHABLE FROM HERE — %s\n' "$1" >&2
+	printf 'blast-radius: refusing. Point HOME at a scratch directory, or fix the policy that\n' >&2
+	printf '              made this path visible. What you can read here, you can lose here.\n' >&2
+	exit 1
+}
+
+note() {
+	[ "$verbose" -eq 1 ] && printf 'blast-radius: ok — %s\n' "$1" >&2
+	return 0
+}
+
+[ -n "${HOME:-}" ] || refuse "HOME is unset, so nothing below can even be checked"
+
+# 1. THE REAL HOME, marked as such by a file only the host has.
+[ ! -e "$canary" ] || refuse "$canary — this IS the real host home"
+note "the host canary is not visible"
+
+# 2. THE ASSETS. Each is either absent, or it is in reach and this run can lose
+#    it. Readability alone is a refusal: a red-team payload that can read a key
+#    can copy it, and the difference between read and write is not the difference
+#    between safe and unsafe.
+#
+#    ~/.ssh/config and ~/.ssh/known_hosts are deliberately NOT here — snug
+#    GENERATES both inside, so their presence is normal and proves nothing. Key
+#    material is what matters, and it is never generated.
+for asset in \
+	"$HOME/.ssh/id_rsa" \
+	"$HOME/.ssh/id_ecdsa" \
+	"$HOME/.ssh/id_ed25519" \
+	"$HOME/.gnupg" \
+	"$HOME/.aws/credentials" \
+	"$HOME/.config/gh/hosts.yml" \
+	"$HOME/.netrc" \
+	"$HOME/.git-credentials"; do
+	if [ -e "$asset" ]; then
+		if [ -w "$asset" ]; then
+			refuse "$asset (WRITABLE — this run can destroy it)"
+		fi
+		refuse "$asset (readable — a payload that can read a key can copy it)"
+	fi
+done
+note "no key material, cloud credential or token store is visible"
+
+# 3. THE CLAUDE CREDENTIAL, which needs a content test rather than a path test.
+#    snug stages a copy INSIDE at the same path, minus the refreshToken — so the
+#    file existing is normal and the file carrying a refresh token is the host's.
+#    Measured: the staged copy drops that key by design (issue #58).
+creds="$HOME/.claude/.credentials.json"
+if [ -e "$creds" ]; then
+	if grep -q refreshToken "$creds" 2>/dev/null; then
+		refuse "$creds carries a refreshToken, which the staged copy never does — this is the host's"
+	fi
+	[ ! -w "$creds" ] || refuse "$creds is writable, and a write here lands on whatever it resolves to"
+fi
+note "no host Claude credential is visible"
+
+# 4. THE TRANSCRIPT ARCHIVE and the settings that name programs. These are not
+#    credentials, and they were the expensive loss in the incident that produced
+#    this script: the recovery ran on transcripts, and one hook script survived
+#    only because nothing referenced it any more.
+for asset in "$HOME/.claude/projects" "$HOME/.claude/hooks" "$HOME/.claude/settings.json"; do
+	if [ -e "$asset" ] && [ -w "$asset" ]; then
+		refuse "$asset is WRITABLE — the transcript archive and hook scripts are what a recovery runs on"
+	fi
+done
+note "the transcript archive and hook scripts are not writable from here"
+
+exit 0

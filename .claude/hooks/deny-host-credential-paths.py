@@ -2,14 +2,18 @@
 """PreToolUse hook: refuse destructive Bash aimed at the HOST's credential and
 configuration paths.
 
-WHY THIS EXISTS (issue #185). An agent working on snug runs on the host. Its
-Bash tool is a host shell, always; reaching into a sandbox means passing a
-command STRING to snug. An agent that loses track of that for one command does
-host-side damage while believing it is attacking a sandbox.
+WHY THIS EXISTS (issues #185, #186). Agents working on snug run on the host, and
+for almost all of them that is the ordinary and correct mode — they edit files,
+run `go test`, drive git. Nothing here treats a host shell as a mistake.
 
-bin/inside-snug is the check an agent can RUN. This is the layer that does not
-depend on an agent choosing to run it, or on it believing anything — which is
-the whole point, because the incident is precisely an agent not choosing to.
+What no task in this repository requires is DESTROYING the host's credential and
+configuration paths. That is the whole rule: not "be careful where you are", but
+"these paths are not yours to overwrite, wherever you think you are".
+
+bin/blast-radius is the check an agent can RUN before a destructive payload, and
+it answers a different question — is anything worth losing reachable from here.
+This layer does not depend on an agent choosing to run anything, which is the
+point: the incident is precisely a run nobody stopped to check.
 
 DESIGN NOTES, each one a decision rather than an accident:
 
@@ -118,14 +122,14 @@ def mentions(command, path, whole_tree):
 # The ONE exemption, and it is the form the agent files mandate: the guard and
 # the destructive command in a single invocation, guard first.
 #
-#     snug <dir> -- sh -c 'bin/inside-snug && rm -rf "$HOME/.config"'
+#     snug <dir> -- sh -c 'blast-radius && rm -rf "$HOME/.config"'
 #
 # Exempting it is not a loophole, it is the point — the hook has to leave the
 # sanctioned pattern usable or the instruction and the enforcement contradict
-# each other. Note it does NOT exempt a bare `snug … -- sh -c 'rm -rf …'`: an
-# unguarded payload string is precisely the mistake, and inside a sandbox the
-# guard costs one command substitution.
-GUARDED = re.compile(r"inside-snug[^\n]{0,40}?&&")
+# each other. Note it does NOT exempt a bare `snug … -- sh -c 'rm -rf …'`: being
+# inside a sandbox says nothing about what that sandbox's policy hands over, and
+# a run whose grants reach the host's ~/.ssh is inside and lethal.
+GUARDED = re.compile(r"blast-radius[^\n]{0,40}?&&")
 
 
 def verdict(command):
@@ -145,19 +149,22 @@ def verdict(command):
 
 def deny(path, command):
     reason = (
-        f"Refused: this is a HOST shell, and the command destroys or overwrites {path}.\n"
+        f"Refused: this command destroys or overwrites {path}, which belongs to the host.\n"
         "\n"
-        "Your Bash tool always runs on the host. Reaching into a sandbox means passing a\n"
-        "command string to snug — `snug <dir> -- sh -c '<payload>'` — and only that string\n"
-        "runs inside; your own shell never moves. Issue #185 is what happens when that\n"
-        "distinction slips for one command.\n"
+        "Working on the host is normal here and is not the problem. Overwriting the host's\n"
+        "credentials, its shell and tool configuration, or its transcript archive is — no task\n"
+        "in this repository requires it, and the recovery from the last one ran on exactly\n"
+        "those files (issues #185, #186).\n"
         "\n"
-        "If the command was meant to run INSIDE a sandbox, guard it in the SAME invocation:\n"
-        "    snug <dir> -- sh -c 'bin/inside-snug && <the destructive command>'\n"
-        "never as two steps — a check that ran earlier proves nothing about this shell.\n"
+        "If this was meant to run INSIDE a sandbox: pin HOME to a scratch directory first,\n"
+        "and guard the payload in the SAME invocation —\n"
+        "    snug <dir> -- sh -c 'blast-radius && <the destructive command>'\n"
+        "never as two steps. Note that being inside a sandbox is not the safety property:\n"
+        "a sandbox whose policy grants rw over ~/.ssh is inside and lethal, which is why the\n"
+        "guard asks what is REACHABLE rather than where you are standing.\n"
         "\n"
-        "If it really was meant to run on the host, a human has to do it. This hook does not\n"
-        "have an override, on purpose: an override is a thing an agent talks itself into.\n"
+        "If it really was meant to run on the host, a human has to do it. This hook has no\n"
+        "override, on purpose: an override is a thing an agent talks itself into.\n"
         f"\ncommand: {command.strip()[:400]}"
     )
     print(

@@ -2662,45 +2662,65 @@ What to check:
 4. Drop `-p sshrw` and the same command runs, generating `~/.ssh/config` and
    `known_hosts` **inside**, with the host's copies still untouched.
 
-## 16. "Am I inside?" — the check an agent can run
+## 16. What can this run destroy? — the check before a red-team payload
 
-Issue #185. An agent working on snug runs on the HOST; reaching into a sandbox
-means passing a command STRING to snug, and only that string runs inside. The
-prompt is not enough to tell the difference — bash unsets `PS1` when it is not
-interactive, so inside `sh -c` there is no prompt to read at all.
+Issues #185 and #186. The obvious form of this check asks *am I inside a
+sandbox?*. It was built, and deleted, because the measurement killed it:
 
 ```console
-$ bin/inside-snug; echo $?          # on the host
-inside-snug: NOT inside a snug sandbox (SNUG_PROFILES is unset or empty)
-1
+$ snug "$t" -p sshrw -- sh -c './inside-snug; echo "guard says: exit=$?"
+    echo PWNED-FROM-INSIDE > "$HOME/.ssh/id_ed25519"'
+guard says: exit=0                      <- true: a real snug sandbox
+$ cat "$FAKE/.ssh/id_ed25519"
+PWNED-FROM-INSIDE                       <- the host's private key, one command later
+```
 
-$ SNUG=1 SNUG_PROFILES=@sys bin/inside-snug; echo $?   # forged environment
-inside-snug: NOT inside a snug sandbox (/ is overlayfs, and a sandbox root is a tmpfs)
-1
+The verdict was true and useless. **"Inside" is not a safety property; the mount
+policy is.** A sandbox granting `rw` on `{home}/.ssh` is inside and lethal.
 
-$ snug . -- sh -c './bin/inside-snug -v; echo exit=$?'
-inside-snug: ok — A: snug authored the environment (SNUG_PROFILES=@cwd-rw,@home,@parent-ro,@sys)
-inside-snug: ok — B: / and /home/you are tmpfs, and the host canary is not visible
-inside-snug: ok — C: PID 1 is bwrap and its environ is empty
+`bin/blast-radius` asks the other question — *is anything worth losing reachable
+from here* — and reads nothing snug produces, so it holds when snug is broken,
+half-built, or being actively attacked.
+
+```console
+$ bin/blast-radius                       # on the host, where the assets are
+blast-radius: REACHABLE FROM HERE — /home/you/.gnupg (WRITABLE — this run can destroy it)
+[exit 1]
+
+$ HOME=$(mktemp -d) bin/blast-radius -v  # the sanctioned way to work
+blast-radius: ok — the host canary is not visible
+blast-radius: ok — no key material, cloud credential or token store is visible
+blast-radius: ok — no host Claude credential is visible
+blast-radius: ok — the transcript archive and hook scripts are not writable from here
+[exit 0]
+
+$ snug . -- sh -c 'blast-radius; echo exit=$?'          # an ordinary sandbox
 exit=0
+
+$ snug "$t" -p sshrw -- sh -c 'blast-radius; echo exit=$?'   # the lethal policy
+blast-radius: REACHABLE FROM HERE — .../.ssh/id_ed25519 (WRITABLE — this run can destroy it)
+exit=1
 ```
 
 What to check:
 
-1. It exits **non-zero on the host**, including with the environment forged —
-   family A is necessary and never sufficient.
-2. It exits **0 inside**, and names all three families. A guard that always
-   refuses passes every host-side test and quietly turns
-   `inside-snug && <command>` into a no-op, which reads as safety and is not.
-3. `bin/inside-snug --install-canary` writes `~/.snug-host-canary` on the host.
-   Touch that filename inside a sandbox and the guard flips to refusing — the
-   one piece of evidence snug does not produce.
-4. Use it in the SAME invocation as the thing it guards:
-   `snug <dir> -- sh -c 'bin/inside-snug && rm -rf …'`, never as two steps.
+1. It **refuses on the host** and **passes with a scratch `HOME`** — the second
+   is the workflow `redteam` is required to use, so a guard that refused there
+   would be one somebody deletes.
+2. It **refuses inside a real sandbox whose policy reaches a host asset**. That
+   is the case its predecessor passed, and the reason this file's §16 was
+   rewritten.
+3. It passes inside an ordinary sandbox, where `$HOME` is a fresh tmpfs.
+4. Use it in the same invocation as the payload:
+   `snug <dir> -- sh -c 'blast-radius && <the destructive thing>'`.
 
-Seccomp is deliberately not an evidence family: invariant 5's one exception is
-that snug warns and continues when the filter cannot be installed, so requiring
-`Seccomp: 2` would refuse inside a legitimately degraded sandbox.
+The structural version beats the check: **pin `HOME` to a scratch directory for
+any run that creates a sandbox**, and a wrong grant, a snug bug and a wrong shell
+all land in a throwaway directory. `bin/blast-radius --install-canary` marks the
+real home so the guard can recognise it.
+
+Only `redteam` carries this rule. Every other agent works on the host as its
+ordinary mode and is right to.
 
 ## If a check fails
 

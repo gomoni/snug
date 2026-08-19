@@ -5,11 +5,11 @@
 bin/*
 # …except the sandbox guard, which is SOURCE that happens to live in bin/.
 # bin/ is ignored because it is where build output lands, and that rule silently
-# swallowed bin/inside-snug on the commit that introduced it: `git add -A` skipped
+# swallowed bin/blast-radius on the commit that introduced it: `git add -A` skipped
 # it, `git status` stayed clean, and CI was the first thing to notice the file
 # every agent instruction points at did not exist in the repo. TestTheGuardIsTracked
 # is what makes that unrepeatable.
-!bin/inside-snug
+!bin/blast-radius
 
 # Working documents: implementation plans, review write-ups, red-team round
 # reports, buildable specs. One committed design document per subject lives in

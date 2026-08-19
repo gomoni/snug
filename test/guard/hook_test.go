@@ -95,7 +95,7 @@ func TestTheHookRefusesDestructiveCommandsAimedAtHostCredentialPaths(t *testing.
 			continue
 		}
 		// The refusal has to teach, or the next agent works around it.
-		for _, want := range []string{"HOST shell", "inside-snug &&", "#185"} {
+		for _, want := range []string{"belongs to the host", "blast-radius &&", "#185"} {
 			if !strings.Contains(reason, want) {
 				t.Errorf("the refusal for %q does not mention %q, so it denies without saying "+
 					"what to do instead:\n%s", command, want, reason)
@@ -119,10 +119,10 @@ func TestTheHookLeavesOrdinaryWorkAlone(t *testing.T) {
 		// Reading a protected path is not destroying it.
 		"cat ~/.claude/settings.json",
 		"grep -r hooks ~/.claude/settings.json",
-		// THE SANCTIONED FORM. The hook must leave it usable, or the
-		// instruction in the agent files and the enforcement here contradict
-		// each other — and the instruction is what loses.
-		`snug /tmp/t -- sh -c 'bin/inside-snug && rm -rf "$HOME/.config"'`,
+		// THE SANCTIONED FORM (redteam.md). The hook must leave it usable, or
+		// the instruction and the enforcement contradict each other — and the
+		// instruction is what loses.
+		`snug /tmp/t -- sh -c 'blast-radius && rm -rf "$HOME/.config"'`,
 	} {
 		if denied, reason := ask(t, command); denied {
 			t.Errorf("REFUSED ordinary work: %q\nA hook that gets in the way of the work is a "+
