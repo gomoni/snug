@@ -239,6 +239,45 @@ func TestTheDNSForwarderMatchesTheFamilyOfTheHostsResolvers(t *testing.T) {
 	}
 }
 
+// A 4-IN-6 MAPPED HOST RESOLVER GETS A FAMILY-MATCHED FORWARDER, NOT A
+// MISMATCHED PAIR (red team F3). A resolver spelled as ::ffff:8.8.8.8
+// classifies as Is4()||Is4In6() everywhere this file picks a family from it
+// (forwardAddr, DNSHost) — that half was already right — but before this
+// fix the RENDERED value stayed in its v6-mapped spelling, so an
+// anonymising policy on such a host emitted `--dns-forward 169.254.1.1
+// --dns-host ::ffff:8.8.8.8`: a v4 forwarder paired with a v6-spelled
+// --dns-host, which pasta cannot answer (this file's own measured rule:
+// pasta never crosses families when forwarding). parsedNameservers now
+// Unmap()s, so the rendered value agrees with the family the classifier
+// already chose.
+func TestMappedHostResolverGetsAFamilyMatchedDNSHost(t *testing.T) {
+	n := NetPolicy{Mode: NetEgress, DNS: true, Nameservers: []string{"::ffff:8.8.8.8"}, Address: netip.MustParsePrefix("10.13.13.2/24")}
+
+	if got := n.DNSHost(); got != "8.8.8.8" {
+		t.Errorf("DNSHost() = %q, want the UNmapped bare literal \"8.8.8.8\" — a v4 forwarder "+
+			"paired with a v6-spelled --dns-host cannot be answered (pasta never crosses "+
+			"families when forwarding)", got)
+	}
+	args := (&Policy{Net: n}).PastaArgs(PastaTargetChild(1))
+	if i := slices.Index(args, "--dns-forward"); i < 0 || args[i+1] != dnsForwardAddr {
+		t.Fatalf("fixture: --dns-forward is not the v4 constant: %v", args)
+	}
+	if i := slices.Index(args, "--dns-host"); i < 0 || args[i+1] != "8.8.8.8" {
+		t.Errorf("--dns-host = %v, want the v4 forwarder paired with the UNmapped v4 literal: %v", args, args)
+	}
+	if strings.Contains(strings.Join(args, " "), "::ffff") {
+		t.Errorf("the pasta argv still carries a v6-mapped spelling: %v", args)
+	}
+
+	// CONTROL: an ordinary (non-mapped) v4 resolver behaves identically —
+	// Unmap() is a no-op on a value that was never mapped, so this is not a
+	// behaviour change for the common case.
+	plain := NetPolicy{Mode: NetEgress, DNS: true, Nameservers: []string{"8.8.8.8"}, Address: netip.MustParsePrefix("10.13.13.2/24")}
+	if got := plain.DNSHost(); got != "8.8.8.8" {
+		t.Errorf("control: an ordinary v4 resolver changed under Unmap(): %q", got)
+	}
+}
+
 // NO USABLE RESOLVER IS NAMED WHEN NOTHING CAN ANSWER IT (issue #162's
 // remnant). The behavioural 40s-vs-2ms measurement is an integration
 // concern (test/integration); this is the unit-level shape: DNS was asked
@@ -341,14 +380,50 @@ func TestAZonedAddressIsRefusedEverywhereItCanBeBuilt(t *testing.T) {
 		return netip.PrefixFrom(zoned, 64)
 	}
 
+	// This subtest used to claim to exercise checkAddressPair's ADDRESS-role
+	// zone check via Validate, and it PASSED — but for the wrong reason
+	// (red team F2). buildZonedPrefix's own construction, netip.PrefixFrom,
+	// STRIPS the zone (measured below), so p.Net.Address6 held an ordinary
+	// unzoned fe80::1/64, Address/Gateway were never set, and the refusal
+	// this subtest observed was V6 (half-set pair) — its message reads
+	// "sets address6, gateway6 but not address, gateway", naming nothing
+	// about a zone. That is exactly CLAUDE.md's "a test that cannot fail"
+	// shape, in the file added to prove the zone rule.
+	//
+	// Made honest rather than deleted: every public netip construction path
+	// strips a Prefix's zone (PrefixFrom, Addr.Prefix(), and
+	// ParsePrefix/UnmarshalText refuse a zoned literal outright, measured
+	// here and in net.go's checkAddressPair comment), so there is currently
+	// no way to build the case this subtest's name claims to test. The
+	// PRECONDITION below asserts that measurement explicitly and SKIPS
+	// rather than silently passing on a different rule — and Address/
+	// Gateway ARE set here (unlike the original), so that if a future
+	// netip version stops stripping the zone, V6 cannot be what fires and
+	// this subtest starts exercising the real branch automatically instead
+	// of needing to be rediscovered.
 	t.Run("Validate refuses a zoned ADDRESS (hand-built Prefix)", func(t *testing.T) {
+		built := buildZonedPrefix()
+		if built.Addr().Zone() == "" {
+			t.Skip("PRECONDITION: netip's Prefix construction (PrefixFrom, Addr.Prefix()) " +
+				"strips the zone before this test ever sees it, so there is no public API " +
+				"that builds a Prefix carrying one — the ADDRESS-role branch in " +
+				"checkAddressPair is unreachable today and this subtest cannot exercise it. " +
+				"It stays here, skipping rather than passing on a different rule, so a future " +
+				"netip change that stops stripping the zone re-enables this test rather than " +
+				"leaving the branch untested silently.")
+		}
 		p := resolveDefaults(t)
 		p.Net.Mode = NetEgress
 		p.Topology = deriveTopology(p.Net.Mode, p.Podman)
-		p.Net.Address6 = buildZonedPrefix()
+		p.Net.Address = netip.MustParsePrefix("10.13.13.2/24")
+		p.Net.Gateway = netip.MustParseAddr("10.13.13.1")
+		p.Net.Address6 = built
 		p.Net.Gateway6 = netip.MustParseAddr("fe80::2")
 		if err := p.Validate(newFakeEnv()); err == nil {
 			t.Fatal("a hand-built Prefix carrying a zoned Addr was accepted by Validate")
+		} else if !strings.Contains(err.Error(), "zone") {
+			t.Errorf("Validate refused, but not for the zone — V6 or another rule may have "+
+				"fired instead, which is the exact failure mode this subtest exists to catch: %v", err)
 		}
 	})
 	t.Run("Validate refuses a zoned GATEWAY", func(t *testing.T) {
@@ -399,6 +474,17 @@ func TestNetworkAddressKeysRefuseUnusableValues(t *testing.T) {
 		{"V3 gateway outside prefix", &Profile{Name: "v3", Network: "egress", Address: "10.13.13.2/24", Gateway: "10.14.14.1"}, "gateway"},
 		{"V4 gateway equals address", &Profile{Name: "v4", Network: "egress", Address: "10.13.13.2/24", Gateway: "10.13.13.2"}, "gateway"},
 		{"V6 half-set", &Profile{Name: "v6", Network: "egress", Address: "10.13.13.2/24", Gateway: "10.13.13.1"}, "address6"},
+		// Red team F1: a 4-in-6 mapped literal (::ffff:a.b.c.d) satisfies
+		// Is4()||Is4In6() as though it were an ordinary v4 value — the
+		// shortcut this file used to take — but pasta does not agree with
+		// itself about it: it reads a mapped ADDRESS as IPv4 (so this used
+		// to be ACCEPTED) and silently DISCARDS a mapped GATEWAY, falling
+		// back to its own default (the host's real router). Refused in
+		// every key now, both families, both roles.
+		{"F1 4-in-6 mapped address (v4 key)", &Profile{Name: "f1a", Network: "egress", Address: "::ffff:10.13.13.2/120", Gateway: "10.13.13.1"}, "address"},
+		{"F1 4-in-6 mapped gateway (v4 key)", &Profile{Name: "f1g", Network: "egress", Address: "10.13.13.2/24", Gateway: "::ffff:10.13.13.1"}, "gateway"},
+		{"F1 4-in-6 mapped address6 (v6 key)", &Profile{Name: "f1a6", Network: "egress", Address6: "::ffff:10.13.13.2/120", Gateway6: "fd00:5e79:1::1"}, "address6"},
+		{"F1 4-in-6 mapped gateway6 (v6 key)", &Profile{Name: "f1g6", Network: "egress", Address6: "fd00:5e79:1::/64", Gateway6: "::ffff:10.13.13.1"}, "gateway6"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reg := testRegistry()
@@ -411,5 +497,51 @@ func TestNetworkAddressKeysRefuseUnusableValues(t *testing.T) {
 				t.Errorf("%s: refusal does not name %q: %v", tc.name, tc.key, err)
 			}
 		})
+	}
+}
+
+// TestFourInSixMappedAddressIsRefusedNotAcceptedAsHalfAnonymised is issue
+// #165's red team finding F1, reproduced exactly: a profile spelling its v4
+// pair as 4-in-6 mapped literals used to be ACCEPTED — Is4()||Is4In6()
+// treats ::ffff:10.13.13.2/120 as an ordinary v4 address — and reached
+// pasta as `-a ::ffff:10.13.13.2/120 -g ::ffff:10.13.13.1`. Measured at the
+// helper level: pasta reads the mapped ADDRESS as IPv4 (so the sandbox got
+// 10.13.13.2/24 as intended) but silently DISCARDS the mapped GATEWAY,
+// falling back to its OWN default — the host's real router — so
+// `default via 192.168.1.1` and the host's `/24` appeared inside, exit 0,
+// no warning: precisely the half-anonymised state V6 exists to forbid,
+// reached without ever tripping it.
+//
+// The message must name the REAL problem (the mapped spelling), not just
+// "wrong family" — a user told to move the value to address6 would still
+// not have a real v6 literal there.
+func TestFourInSixMappedAddressIsRefusedNotAcceptedAsHalfAnonymised(t *testing.T) {
+	reg := testRegistry()
+	reg["f1"] = &Profile{Name: "f1", Network: "egress",
+		Address: "::ffff:10.13.13.2/120", Gateway: "::ffff:10.13.13.1",
+		Address6: "fd00:5e79:1::2/64", Gateway6: "fd00:5e79:1::1"}
+
+	_, err := Resolve(reg, append(append([]ProfileName{}, testDefaults...), "f1"), testCtx(), newFakeEnv())
+	if err == nil {
+		t.Fatal("a 4-in-6 mapped address/gateway pair was accepted — this is exactly the " +
+			"half-anonymised state V6 exists to forbid, reached without tripping it")
+	}
+	for _, want := range []string{"address", "4-in-6", "mapped"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not mention %q, so it may be naming the wrong problem "+
+				"(e.g. \"wrong family, use address6\" — which is not a fix, since a mapped "+
+				"value is not a real v6 literal either): %v", want, err)
+		}
+	}
+
+	// CONTROL: the same profile with a bare v4 literal instead is accepted —
+	// the refusal above is about the MAPPED SPELLING specifically, not about
+	// something else in the fixture.
+	regOK := testRegistry()
+	regOK["f1ok"] = &Profile{Name: "f1ok", Network: "egress",
+		Address: "10.13.13.2/24", Gateway: "10.13.13.1",
+		Address6: "fd00:5e79:1::2/64", Gateway6: "fd00:5e79:1::1"}
+	if _, err := Resolve(regOK, append(append([]ProfileName{}, testDefaults...), "f1ok"), testCtx(), newFakeEnv()); err != nil {
+		t.Errorf("control: the bare-literal equivalent was refused too: %v", err)
 	}
 }

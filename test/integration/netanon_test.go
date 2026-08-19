@@ -337,3 +337,78 @@ func shellArgs(tcpPort, v6Port int, haveV6 bool) string {
 	}
 	return strconv.Itoa(tcpPort) + " " + strconv.Itoa(v6Port)
 }
+
+// TestFourInSixMappedAddressRefusedEndToEndAndTheShippedProfileRoutesRight
+// is issue #165's red team finding F1, at the CLI/integration layer rather
+// than the internal/policy unit level. A profile spelling its v4 pair as
+// 4-in-6 mapped literals (::ffff:a.b.c.d) used to be ACCEPTED by
+// Resolve — Is4()||Is4In6() reads it as an ordinary v4 value — and reached
+// pasta as `-a ::ffff:10.13.13.2/120 -g ::ffff:10.13.13.1`. Measured at the
+// helper level (host-bridge): pasta reads the mapped ADDRESS as IPv4 but
+// silently DISCARDS the mapped GATEWAY, falling back to its OWN default —
+// the host's real router — so the sandbox's route table named the host's
+// gateway and LAN prefix, `--dry-run` described it as an ordinary synthetic
+// address, and nothing refused it: precisely the half-anonymised state V6
+// exists to forbid, reached without tripping it.
+//
+// The fix refuses the profile before any sandbox starts. The CONTROL is the
+// shipped @net-anon profile actually run: its `ip -4 route` must show
+// `default via 10.13.13.1` (the synthetic gateway) and never the host's own
+// default gateway — proving the property this fix protects is real and
+// observable, not just that a malformed profile is rejected.
+func TestFourInSixMappedAddressRefusedEndToEndAndTheShippedProfileRoutesRight(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	requirePasta(t)
+	proj, _ := target(t)
+
+	cfg := t.TempDir()
+	dir := filepath.Join(cfg, "snug", "profiles.d")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "f1-mapped.toml"), []byte(
+		"[profile.f1-mapped]\n"+
+			"description = \"issue #165 red team F1 reproduction\"\n"+
+			"network = \"egress\"\n"+
+			"address  = \"::ffff:10.13.13.2/120\"\n"+
+			"gateway  = \"::ffff:10.13.13.1\"\n"+
+			"address6 = \"fd00:5e79:1::2/64\"\n"+
+			"gateway6 = \"fd00:5e79:1::1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := baseEnv("XDG_CONFIG_HOME=" + cfg)
+
+	out, code := cli(t, env, "-p", "f1-mapped", proj, "--", "true")
+	if code == 0 {
+		t.Fatalf("snug accepted a 4-in-6 mapped address/gateway pair — this is exactly the "+
+			"half-anonymised state V6 exists to forbid, reached without tripping it:\n%s", out)
+	}
+	for _, want := range []string{"address", "mapped"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the refusal does not mention %q, so it may be naming the wrong "+
+				"problem:\n%s", want, out)
+		}
+	}
+
+	// CONTROL: the shipped, unmodified @net-anon profile actually routes
+	// through the SYNTHETIC gateway, never the host's real one.
+	r := run(t, []string{"-p", "@net-anon"}, proj, `command -v ip >/dev/null && ip -4 route || echo NO-IP`).mustRun(t)
+	if strings.Contains(r.out, "NO-IP") {
+		t.Skip("iproute2 is not available inside the sandbox; this test needs `ip`")
+	}
+	if !strings.Contains(r.out, "default via 10.13.13.1") {
+		t.Errorf("control: @net-anon's route table does not show the synthetic default "+
+			"gateway 10.13.13.1:\n%s", r.out)
+	}
+	// EXACTLY ONE default route, and it is the synthetic one — the shape
+	// F1's exploit produced was a SECOND, host-derived default route
+	// (`default via <host router>`) alongside (or instead of) the synthetic
+	// one, so counting occurrences catches that even without knowing the
+	// host's actual gateway address in advance.
+	if n := strings.Count(r.out, "default via"); n != 1 {
+		t.Errorf("control: @net-anon's route table has %d default routes, want exactly 1 "+
+			"(the synthetic one) — an extra one is how the host's real gateway leaked in "+
+			"the F1 reproduction:\n%s", n, r.out)
+	}
+}

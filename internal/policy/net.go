@@ -385,6 +385,20 @@ func (n NetPolicy) Resolver() ResolverConfig {
 // netip.ParseAddr("fe80::1%<anything>") succeeds and String() re-emits the
 // zone verbatim, so parsing alone is not escaping, and a link-local resolver
 // is unusable inside the sandbox regardless of the zone's contents.
+//
+// Unmap()'d before it is kept (red team F3): a host naming a 4-in-6 mapped
+// resolver (`::ffff:8.8.8.8`) classifies as Is4()||Is4In6() everywhere this
+// file picks a family from it (forwardAddr, DNSHost), but String() on the
+// UNmapped value still renders the v6-mapped spelling — so an anonymising
+// policy on such a host emitted `--dns-forward 169.254.1.1 --dns-host
+// ::ffff:8.8.8.8`: a v4 forwarder paired with a v6-spelled --dns-host, which
+// pasta cannot answer (this file's own measured rule: pasta never crosses
+// families when forwarding). Unmapping here makes the RENDERED value agree
+// with the family the classifier already chose. Host text, not profile
+// text, so it is fixed by coping (Unmap) rather than refused — the opposite
+// of parseNetPrefix/parseNetGateway's treatment of the same shape in a
+// profile's own address/gateway keys, where a wrong rendering is not the
+// risk; a wrong ACCEPTANCE is (see their doc comments).
 func (n NetPolicy) parsedNameservers() []netip.Addr {
 	var out []netip.Addr
 	for _, s := range n.Nameservers {
@@ -392,7 +406,7 @@ func (n NetPolicy) parsedNameservers() []netip.Addr {
 		if err != nil || a.Zone() != "" {
 			continue
 		}
-		out = append(out, a)
+		out = append(out, a.Unmap())
 	}
 	return out
 }
@@ -566,12 +580,41 @@ func checkAddrIsUsable(a netip.Addr) string {
 	return ""
 }
 
+// mappedV4Error is part of V2, split out because it is checked identically
+// in all four keys and its message must name the real problem rather than
+// "wrong family" (red team F1). A 4-in-6 mapped literal (::ffff:a.b.c.d)
+// satisfies Is4()||Is4In6() as though it were an ordinary v4 value — which
+// is exactly the shortcut this file used to take — but pasta does not agree
+// with itself about it: measured, `-a ::ffff:10.13.13.2/120` is read as an
+// IPv4 address (so V2's old check saw a match and let it through), while `-g
+// ::ffff:10.13.13.1` is silently DISCARDED, and pasta falls back to its OWN
+// default gateway — the host's real router. The result was accepted by V2,
+// left V3/V4/V6 nothing to object to (the pair "matched"), and reached
+// `--dry-run` as an ordinary synthetic address: `default via 192.168.1.1`
+// appeared inside, no warning, exit 0 — precisely the half-anonymised state
+// V6 exists to forbid, produced without tripping it.
+//
+// Refused in EITHER family's keys, unconditionally: it is never the
+// spelling a profile author meant, in address/gateway (where it silently
+// re-admits the host's router) or in address6/gateway6 (where it is not a
+// real v6 address either). suggestion is the bare literal to write instead.
+func mappedV4Error(name ProfileName, key, raw, suggestion string) error {
+	return fmt.Errorf("profile %q: network %s %s is a 4-in-6 mapped address (::ffff:a.b.c.d). "+
+		"pasta treats a mapped ADDRESS as IPv4 but silently DISCARDS a mapped GATEWAY, falling "+
+		"back to its own default — the host's real router — which is exactly the "+
+		"half-anonymised state this profile's own address key exists to forbid (measured: "+
+		"`default via <host router>` appeared inside, exit 0, no warning). "+
+		"Write the bare literal instead: %s",
+		name, key, VisibleText(raw), suggestion)
+}
+
 // parseNetPrefix parses a profile's address/address6 value: V1 (parses as a
 // netip.Prefix — ParsePrefix refuses a v6 ZONE outright, measured, and
 // refuses trailing junk after the prefix, which is why the pre-netip forging
 // refusal in validate.go could be retired for this half of the pair at all —
 // see checkAddressPair for the half it could NOT retire), V2 (the value's
-// family must match the key it was written under), and V5.
+// family must match the key it was written under, and must not be a 4-in-6
+// mapped spelling of either family — mappedV4Error), and V5.
 //
 // err's own text is escaped too (VisibleText, not %v) even though it is
 // SAFE today — measured: netip.ParsePrefix/ParseAddr already quote the raw
@@ -586,7 +629,19 @@ func parseNetPrefix(name ProfileName, key, raw string, want4 bool) (netip.Prefix
 			"address/prefix (e.g. \"10.13.13.2/24\"): %s", name, key, VisibleText(raw), VisibleText(err.Error()))
 	}
 	a := pfx.Addr()
-	if is4 := a.Is4() || a.Is4In6(); is4 != want4 {
+	// Checked BEFORE the family-mismatch message below, on purpose: a mapped
+	// value satisfies want4's check today, and moving straight to "wrong
+	// family, use %s instead" would send the author to address6/gateway6
+	// with a value that is not a real v6 literal there either.
+	if a.Is4In6() {
+		bits := pfx.Bits() - 96
+		suggestion := a.Unmap().String()
+		if bits >= 0 {
+			suggestion = fmt.Sprintf("%s/%d", a.Unmap(), bits)
+		}
+		return netip.Prefix{}, mappedV4Error(name, key, raw, suggestion)
+	}
+	if is4 := a.Is4(); is4 != want4 {
 		return netip.Prefix{}, fmt.Errorf("profile %q: network %s is %s (%s), which is an %s "+
 			"value; write it as %s instead", name, key, VisibleText(raw), a, familyWord(is4), siblingNetKey(key))
 	}
@@ -598,19 +653,24 @@ func parseNetPrefix(name ProfileName, key, raw string, want4 bool) (netip.Prefix
 	return pfx, nil
 }
 
-// parseNetGateway parses a profile's gateway/gateway6 value: V1, V2, V5 as
-// parseNetPrefix, plus V7 — no ZONE. Unlike a Prefix, ParseAddr does NOT
-// refuse a zoned literal, and Addr.String() re-emits the zone verbatim
-// wherever this value is later shown, which is the corrected half of the
-// netip claim (a zoned link-local gateway is the shape of a real v6 default
-// route, not a contrived one).
+// parseNetGateway parses a profile's gateway/gateway6 value: V1, V2 (family
+// match, and no 4-in-6 mapped spelling — mappedV4Error, same reasoning as
+// parseNetPrefix and the more dangerous half of the pair: pasta silently
+// DISCARDS a mapped gateway rather than merely mis-filing it), V5, and V7 —
+// no ZONE. Unlike a Prefix, ParseAddr does NOT refuse a zoned literal, and
+// Addr.String() re-emits the zone verbatim wherever this value is later
+// shown, which is the corrected half of the netip claim (a zoned link-local
+// gateway is the shape of a real v6 default route, not a contrived one).
 func parseNetGateway(name ProfileName, key, raw string, want4 bool) (netip.Addr, error) {
 	a, err := netip.ParseAddr(raw)
 	if err != nil {
 		return netip.Addr{}, fmt.Errorf("profile %q: network %s %s does not parse as an "+
 			"address: %s", name, key, VisibleText(raw), VisibleText(err.Error()))
 	}
-	if is4 := a.Is4() || a.Is4In6(); is4 != want4 {
+	if a.Is4In6() {
+		return netip.Addr{}, mappedV4Error(name, key, raw, a.Unmap().String())
+	}
+	if is4 := a.Is4(); is4 != want4 {
 		return netip.Addr{}, fmt.Errorf("profile %q: network %s is %s, which is an %s value; "+
 			"write it as %s instead", name, key, VisibleText(raw), familyWord(is4), siblingNetKey(key))
 	}
@@ -656,10 +716,22 @@ func (n NetPolicy) checkAddressPair(owners map[string]ProfileName) error {
 		} else {
 			missing = append(missing, pr.keyGW)
 		}
-		// V7. A Prefix built by ParsePrefix cannot carry a zone (measured),
-		// but a hand-built one via netip.PrefixFrom(zonedAddr, bits) can —
-		// the parse above never ran for it — so the ADDRESS role gets the
-		// same check as the GATEWAY role here, not just the latter.
+		// V7, ADDRESS role. A Prefix built by ParsePrefix cannot carry a
+		// zone (measured). This branch's own doc comment used to claim a
+		// hand-built netip.PrefixFrom(zonedAddr, bits) could smuggle one in
+		// — MEASURED FALSE, and it is worth naming the error rather than
+		// quietly fixing it (red team F2): PrefixFrom(zonedAddr, bits)
+		// STRIPS the zone (`PrefixFrom(fe80::1%eth0, 64) -> addrZone=""`),
+		// so this branch is UNREACHABLE today — every zoned Prefix a Go
+		// program can construct through the stdlib loses the zone before it
+		// ever reaches here. It stays anyway, as belt-and-braces against a
+		// future netip release changing that behaviour, and because a
+		// Prefix built through some OTHER means (a third-party library, an
+		// unsafe cast) is not something this package can rule out by
+		// reading net/netip's current source. See
+		// TestAZonedAddressIsRefusedEverywhereItCanBeBuilt for why its own
+		// "ADDRESS role" subtest could not actually exercise this branch
+		// either, and what asserting that honestly requires.
 		if pr.addr.IsValid() && pr.addr.Addr().Zone() != "" {
 			return fmt.Errorf("network %s %s carries a zone (%s): a zoned address re-emits the "+
 				"zone verbatim wherever this value is later shown — in `snug --dry-run` and in "+
