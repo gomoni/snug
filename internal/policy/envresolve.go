@@ -347,6 +347,68 @@ func (p *Policy) sanitiseHostList(name string, t envType, from []string, env Env
 	}
 }
 
+// View is a mount set in ONE mount namespace. There are exactly two, and
+// naming them is the whole of issue #55: every predicate below silently meant
+// "the sandbox's" while a graft lived in the other one. Before this type
+// existed, a graft entered into p.Mounts directly would have made
+// hostPathVisible, BwrapFlags, the FILESYSTEM block and Validate's hasRuntime
+// all read it as something the PAYLOAD can see, which it is not — see issue
+// #55's table of the four breakages. Lifting the walk onto a named view is
+// what makes "which namespace is this a fact about" a type, not a convention a
+// reader has to remember.
+type View struct {
+	// Mounts is EXPORTED, unlike the underlying field on a lesser type would
+	// be, and that is a deliberate departure from "keep View's insides
+	// private": policy.Mount can carry a Secret (staged credential content),
+	// and fmt only calls Secret's own redacting Format method when the value
+	// is reached through an EXPORTED field — reflect.Value.CanInterface() is
+	// false the moment the walk crosses one unexported field, so an
+	// unexported map here would print raw credential bytes on the first
+	// %+v of a View instead of "<redacted N bytes>"
+	// (TestNoUnexportedByValueFieldReachesASecret; measured at
+	// internal/policy/secret_test.go's TestFmtLeaksASecretBehindAnUnexportedFieldKnownLimit).
+	// It carries no new capability: a caller holding *Policy already has
+	// p.Mounts exported and mutable, and SandboxView shares that very map
+	// rather than copying it, so this is the same aliasing that already
+	// existed, given a second name.
+	Mounts map[string]Mount
+	name   string // "sandbox" or "engine", used only in diagnostics
+}
+
+// SandboxView is the payload's own mount namespace — p.Mounts, unchanged. It
+// is what IsShadowSlot and GrantsGuestPath answered before this type existed,
+// and every existing caller of those two still gets exactly this view via the
+// Policy-level wrappers.
+func (p *Policy) SandboxView() View {
+	return View{Mounts: p.Mounts, name: "sandbox"}
+}
+
+// EngineView returns the engine's derived view: the sandbox's mounts with
+// every graft applied on top, keyed by Guest — a graft's Guest can only ever
+// coincide with an existing sandbox mount's Guest (G3's first disjunct), never
+// with another graft's (G2), so overlaying is a plain per-key replacement with
+// no ordering to get wrong.
+//
+// ok is false when there are no grafts — which is every topology that ships
+// today, where the engine's mount namespace is a private COPY of the host tree
+// and this Policy does not model it at all (internal/stage/inengine.go's own
+// doc comment). Deriving nothing and calling it a view would put a fiction on
+// the --dry-run screen: len(p.Grafts) == 0 must render as "there is no engine
+// view to show", not as "the engine view happens to equal the sandbox's".
+func (p *Policy) EngineView() (View, bool) {
+	if len(p.Grafts) == 0 {
+		return View{}, false
+	}
+	mounts := make(map[string]Mount, len(p.Mounts)+len(p.Grafts))
+	for k, m := range p.Mounts {
+		mounts[k] = m
+	}
+	for k, g := range p.Grafts {
+		mounts[k] = g.Mount
+	}
+	return View{Mounts: mounts, name: "engine"}, true
+}
+
 // GrantsGuestPath reports whether some grant covers a path, read verbatim as a
 // guest path. Coverage is downward with no depth limit, on `/` boundaries — the
 // same lexical containment the mount rules use.
@@ -367,31 +429,75 @@ func (p *Policy) sanitiseHostList(name string, t envType, from []string, env Env
 //
 // "Verbatim" still holds and is a different axis: the caller's string is not
 // rewritten, and resolution decides only the verdict.
-func (p *Policy) GrantsGuestPath(guest string) bool {
-	_, _, ok := p.resolveThroughLinks(guest)
+func (v View) GrantsGuestPath(guest string) bool {
+	_, _, ok := v.resolveThroughLinks(guest)
 	return ok
+}
+
+// (*Policy).GrantsGuestPath is a one-line wrapper over SandboxView so no
+// existing caller or test moves (issue #55): dryrun.go, envresolve.go's own
+// sanitiseHostList path and every TestIsShadowSlot* case in envresolve_test.go
+// keep asking the Policy the question they always asked, and keep getting the
+// sandbox's own answer.
+func (p *Policy) GrantsGuestPath(guest string) bool {
+	return p.SandboxView().GrantsGuestPath(guest)
+}
+
+// (*Policy).coveringMount and (*Policy).resolveThroughLinks are the same kind
+// of one-line wrapper over SandboxView, kept for the package-internal callers
+// that ask the walk directly rather than through IsShadowSlot/GrantsGuestPath
+// — existsInSandbox (graft.go, G3) and the pre-issue-#55 test suite in
+// envresolve_test.go, which built fixtures as bare *Policy values and calls
+// these by name. Nothing here changes the walk; it is still SandboxView's.
+func (p *Policy) coveringMount(guest string) (Mount, bool) {
+	return p.SandboxView().coveringMount(guest)
+}
+
+func (p *Policy) resolveThroughLinks(guest string) (final Mount, replaceable, ok bool) {
+	return p.SandboxView().resolveThroughLinks(guest)
 }
 
 // coveringMount finds the DEEPEST mount whose Guest path lexically contains
 // guest: the walk starts at filepath.Clean(guest) and shortens one component
-// per iteration, so the first p.Mounts[d] hit is the longest covering
+// per iteration, so the first v.Mounts[d] hit is the longest covering
 // prefix, not merely some covering mount — the same "effective access is the
 // deepest mount covering it" rule CLAUDE.md states for join. That stopped
 // being incidental the moment keepHostElement started reading the mount's
 // Kind: which mount answers now decides the verdict, not just whether one
 // exists.
-func (p *Policy) coveringMount(guest string) (Mount, bool) {
+func (v View) coveringMount(guest string) (Mount, bool) {
 	if !filepath.IsAbs(guest) {
 		return Mount{}, false
 	}
 	for d := filepath.Clean(guest); ; d = filepath.Dir(d) {
-		if m, ok := p.Mounts[d]; ok {
+		if m, ok := v.Mounts[d]; ok {
 			return m, true
 		}
 		if d == "/" || d == "." {
 			return Mount{}, false
 		}
 	}
+}
+
+// nearestCovering returns the deepest mount in this view that STRICTLY
+// contains guest (guest itself excluded), for resolveThroughLinks's
+// replaceability check: "is the ground under a symlink writable". It is the
+// same lexical operation validate.go's Policy.nearestCovering performs for the
+// masking rule, deliberately re-implemented here rather than shared, because
+// the two ask different questions of different scopes. validate.go's version
+// answers "does the SANDBOX's mount set have a masking problem" and is
+// explicitly NOT extended to grafts (issue #55 §3) — reaching across
+// namespaces to decide masking would assert a containment relation no kernel
+// computes. This one never crosses a namespace either: it is handed a single,
+// self-consistent View — the sandbox's own, or the engine's fully-derived one
+// — and stays inside it for the whole walk.
+func (v View) nearestCovering(guest string) (Mount, string, bool) {
+	for d := filepath.Dir(guest); d != "/" && d != "."; d = filepath.Dir(d) {
+		if m, ok := v.Mounts[d]; ok {
+			return m, d, true
+		}
+	}
+	return Mount{}, "", false
 }
 
 // maxGuestLinkHops bounds resolveThroughLinks. The only chain snug itself
@@ -441,7 +547,12 @@ const maxGuestLinkHops = 8
 // the hop budget. The two are NOT distinguished in the return, because both
 // callers want the same thing from them and neither may pretend the walk
 // resolved: keepHostElement drops the element, IsShadowSlot reports not-a-slot.
-func (p *Policy) resolveThroughLinks(guest string) (final Mount, replaceable, ok bool) {
+//
+// Lifted onto View rather than Policy (issue #55) so the identical walk can be
+// asked of the ENGINE's derived view, not only the sandbox's — a graft is a
+// Mount like any other once it is sitting in v.Mounts, so nothing about the
+// walk itself changes; only which map it reads does.
+func (v View) resolveThroughLinks(guest string) (final Mount, replaceable, ok bool) {
 	// CLEAN FIRST, EVERY HOP, and this line was missing for one review round.
 	// coveringMount matches on filepath.Clean(cur) while the remainder below was
 	// trimmed from the UNCLEANED cur, so the two disagreed for any non-canonical
@@ -458,14 +569,14 @@ func (p *Policy) resolveThroughLinks(guest string) (final Mount, replaceable, ok
 	// element as the host spelled it (DROP-NEVER-REWRITE).
 	cur := filepath.Clean(guest)
 	for hop := 0; hop <= maxGuestLinkHops; hop++ {
-		m, found := p.coveringMount(cur)
+		m, found := v.coveringMount(cur)
 		if !found {
 			return Mount{}, replaceable, false
 		}
 		if m.Kind != KindSymlink {
 			return m, replaceable, true
 		}
-		if ground, _, has := p.nearestCovering(m.Guest); has && mountIsWritable(ground) {
+		if ground, _, has := v.nearestCovering(m.Guest); has && mountIsWritable(ground) {
 			replaceable = true
 		}
 		target := m.Host
@@ -479,15 +590,25 @@ func (p *Policy) resolveThroughLinks(guest string) (final Mount, replaceable, ok
 	return Mount{}, replaceable, false
 }
 
-// mountIsWritable is the one place "can the payload write here" is decided, so
-// the walk above and IsShadowSlot below cannot drift apart. KindData is a
-// generated file, KindProc and KindDev are the kernel's and bwrap's, and a
-// future kind fails closed.
+// mountIsWritable is the one place "can whoever holds this VIEW write here" is
+// decided, so the walk above and IsShadowSlot below cannot drift apart.
+// KindData is a generated file, KindProc and KindDev are the kernel's and
+// bwrap's, and a future kind fails closed.
+//
+// KindGraft joins KindBind rather than getting its own branch, and that is the
+// one place a graft is NOT treated identically to every other Mount by
+// accident — it is the type's own contract (Graft's doc comment: "Access — a
+// REQUIREMENT on the resulting tree, not a description of it"), so the rule is
+// literally the same rule KindBind already has, asked of a different Kind
+// value. This is also what makes the positive control in issue #55 §4 possible
+// at all: without it, EngineView().IsShadowSlot at a graft's own Guest could
+// never return true, and the lifted check would be unfalsifiable in the one
+// direction that matters.
 func mountIsWritable(m Mount) bool {
 	switch m.Kind {
 	case KindTmpfs:
 		return true // an empty writable directory, by construction
-	case KindBind:
+	case KindBind, KindGraft:
 		return m.Access == AccessRW
 	default:
 		return false
@@ -575,7 +696,10 @@ func mountIsWritable(m Mount) bool {
 // mount and the landing mount is exactly what is honest here — /usr/bin really
 // is read-only and really is populated. The defect is one node earlier.
 func (p *Policy) keepHostElement(guest string) (bool, EnvDropReason) {
-	m, replaceable, ok := p.resolveThroughLinks(guest)
+	// Always the SANDBOX's own view: this filters what the PAYLOAD's PATH (and
+	// every other sanitised host list) may keep, and a graft never reaches the
+	// payload's namespace at all (issue #55).
+	m, replaceable, ok := p.SandboxView().resolveThroughLinks(guest)
 	if replaceable {
 		return false, DropReplaceable
 	}
@@ -599,9 +723,10 @@ func (p *Policy) keepHostElement(guest string) (bool, EnvDropReason) {
 	}
 }
 
-// IsShadowSlot reports whether a directory named in the environment is writable
-// from inside the sandbox — a PATH entry the payload can drop a file into and so
-// choose what the next `git` or `sh` resolves to.
+// IsShadowSlot reports whether a directory named in the environment is
+// writable from inside THIS VIEW — a PATH entry the payload (sandbox view) or
+// the engine (engine view) can drop a file into and so choose what the next
+// `git` or `sh` resolves to.
 //
 // It shares ONE walk with keepHostElement — resolveThroughLinks, and through it
 // coveringMount and the deepest-mount rule — rather than asking the question a
@@ -636,8 +761,8 @@ func (p *Policy) keepHostElement(guest string) (bool, EnvDropReason) {
 // a fail-open either, because the dangerous half of "unresolved" is already
 // caught by replaceable: a cycle sitting in a writable tmpfs is marked at the
 // first hop, before the budget ever runs out. Verified both ways.
-func (p *Policy) IsShadowSlot(guest string) bool {
-	m, replaceable, ok := p.resolveThroughLinks(guest)
+func (v View) IsShadowSlot(guest string) bool {
+	m, replaceable, ok := v.resolveThroughLinks(guest)
 	if replaceable {
 		return true
 	}
@@ -649,6 +774,21 @@ func (p *Policy) IsShadowSlot(guest string) bool {
 		return false
 	}
 	return mountIsWritable(m)
+}
+
+// (*Policy).IsShadowSlot is a one-line wrapper over SandboxView so no existing
+// caller or test moves (issue #55): internal/cli/shadowslot_test.go,
+// dryrun_test.go and the eight TestIsShadowSlot* cases in
+// envresolve_test.go all keep asking the Policy the question they always
+// asked, and keep getting the sandbox's own answer.
+//
+// The control the issue demands is the OTHER half — EngineView().IsShadowSlot
+// seeing a graft the sandbox's own view cannot — and that is asked directly
+// against a View, never through a Policy-level wrapper, because there is no
+// single Policy-level answer to give: which view is in question is exactly
+// the fact issue #55 is about.
+func (p *Policy) IsShadowSlot(guest string) bool {
+	return p.SandboxView().IsShadowSlot(guest)
 }
 
 // dedupeEnvLists collapses a repeated element to its EARLIEST band.

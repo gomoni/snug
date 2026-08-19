@@ -82,7 +82,47 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// AND THE ENGINE VIEW BLOCK (issue #55, §7 item 12): a graft carries FOUR
+	// renderable fields — Guest, Host, Why, From — and describeGrafts's own doc
+	// comment says all four go through visibleValue, so this sweep must cover
+	// them the same way it covers everything else, "asserting a set, not a
+	// site." Installed by a RAW map assignment rather than through
+	// Policy.Graft: Guest and Host are refused by Policy.Graft's own hygiene
+	// check for exactly this class of rune (checkPathHygiene, graft.go — a
+	// graft's Guest and Host get the SAME refusal a Mount's Guest does), so
+	// this fixture is not a reachable production path today. It is still
+	// worth asserting: TestOnlyGraftWritesGrafts pins Policy.Graft as the
+	// ONLY writer of p.Grafts today, but the renderer must not depend on that
+	// staying true forever — the same defence in depth every other block on
+	// this screen gets, and the reason visibleValue exists at all rather than
+	// "just don't let bad values in".
+	p.Grafts = map[string]policy.Graft{
+		"/mnt/probe": {
+			Mount: policy.Mount{
+				Guest: "/mnt/probe\x1b[1A\r  graft-rw  /etc/shadow    " + forged + "-GRAFT-GUEST",
+				Host:  "/srv/host\u009b1A\u0085  graft-rw  /etc/shadow    " + forged + "-GRAFT-HOST-C1",
+				Kind:  policy.KindGraft, Access: policy.AccessRW,
+				From: []string{"(snug)\u202eOLR-" + forged + "-GRAFT-FROM"},
+			},
+			Why: "abuse\u202eOLR-" + forged + "-GRAFT-WHY",
+		},
+	}
+
 	got := captureStdout(t, func() { dryRun(p, p.BwrapArgs(0, 0), config{}, nil) })
+
+	// POSITIVE CONTROLS for the graft fixture specifically: each of the four
+	// fields actually reached the screen, in its escaped or unescaped form —
+	// checked in full below by the whole-screen sweep, but named here so a
+	// failure says WHICH field stopped reaching the block rather than just
+	// "something is missing".
+	for _, want := range []string{
+		forged + "-GRAFT-GUEST", forged + "-GRAFT-HOST-C1", forged + "-GRAFT-FROM", forged + "-GRAFT-WHY",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the graft fixture's %q never reached the screen, so the ENGINE VIEW half of "+
+				"this test measures nothing:\n%s", want, got)
+		}
+	}
 
 	// The positive control, and it is load-bearing twice over: without it, a
 	// dry-run that failed to render the value at all — or a fixture whose value

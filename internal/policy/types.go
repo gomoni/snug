@@ -55,6 +55,16 @@ const (
 	KindProc                // procfs
 	KindDev                 // bwrap's synthetic minimal /dev
 	KindData                // generated file content, delivered via memfd
+
+	// KindGraft is a subtree of the host attached with open_tree(2) +
+	// move_mount(2) into the ENGINE's derived mount namespace — never into the
+	// payload's. It is a distinct Kind rather than a KindBind in a different
+	// map for two reasons, both fail-closed: BwrapFlags's switch must be able
+	// to refuse it by name (a graft in the bwrap argv is the leak
+	// ENGINE-NETNS.md §5.1 step 3 exists to prevent), and --dry-run must print
+	// a different word, so a human never has to know which block a row came
+	// from to know which namespace it is in.
+	KindGraft
 )
 
 func (k Kind) String() string {
@@ -69,6 +79,8 @@ func (k Kind) String() string {
 		return "dev"
 	case KindData:
 		return "data"
+	case KindGraft:
+		return "graft"
 	default:
 		return "bind"
 	}
@@ -133,6 +145,46 @@ type Mount struct {
 // struct rendering enumerates; a method asserts. Prefer the one that cannot
 // drift.
 
+// Graft is one mount snug makes in the ENGINE's derived mount namespace
+// (ENGINE-NETNS.md §5.1). It embeds Mount so that every predicate written for
+// the sandbox's mounts — covers, snugsOwnCovered, coveringMount,
+// resolveThroughLinks, IsShadowSlot, mountIsWritable — applies to a graft
+// unchanged. That embedding IS the fix for issue #55: there is one vocabulary,
+// so a check cannot be written for one and forgotten for the other.
+//
+// Field meanings, which differ from a bind in exactly one place:
+//
+//	Guest    — the destination path in the DERIVED view. Primary key.
+//	Host     — the host path passed to open_tree(2), read while the host tree
+//	           is still visible (§5.1 step 1).
+//	Access   — a REQUIREMENT on the resulting tree, not a description of it.
+//	           A graft's writability is the SOURCE's by default: OPEN_TREE_CLONE
+//	           clones the mount's attributes and the stage holds CAP_SYS_ADMIN
+//	           in U, so AccessRW is what you get for free. AccessRO therefore
+//	           MUST be implemented — mount_setattr(fd, "", AT_EMPTY_PATH|
+//	           AT_RECURSIVE, {attr_set: MOUNT_ATTR_RDONLY}) on the open_tree
+//	           descriptor BEFORE move_mount — and must not be emitted until
+//	           TestGraftAccessROIsEnforcedInTheDerivedView passes. A field that
+//	           renders "ro" on screen while the tree is writable is the
+//	           --seccomp-after-`--` shape restated one namespace over.
+//	From     — provenance. Always snug's own; Validate refuses a From naming
+//	           any resolved profile, because no profile may author a graft.
+//	Authored — always true. Set by Policy.Graft, the only writer.
+//	Optional — FORBIDDEN on a graft (Validate refuses it). -try semantics mean
+//	           "silently do less"; under Tier C the derived view IS the
+//	           enforcement boundary, so a graft that silently did not happen is
+//	           a different confinement from the one --dry-run described.
+//	           Invariant 5.
+type Graft struct {
+	Mount
+	// Why is the abuse sentence — "a hostile process inside the sandbox can use
+	// this to ___" — printed verbatim by --dry-run. Validate refuses an empty
+	// one. It is a FIELD rather than a TOML comment because no profile authors a
+	// graft, so there is no TOML file for the sentence to live in; this is the
+	// working agreement's rule carried into the one place a profile cannot reach.
+	Why string
+}
+
 // Policy is the single computed, immutable object. It is the sole author of the
 // bwrap argv — and, once they exist, of the pasta argv and the container
 // proxy's decisions too. One author means those cannot drift apart.
@@ -144,6 +196,32 @@ type Policy struct {
 	Command  []string
 
 	Mounts map[string]Mount
+
+	// Grafts is the ENGINE's derived-view mounts, keyed by Guest. Empty on every
+	// topology that ships today: Tier B's engine gets a private COPY of the host
+	// tree and makes no graft (internal/stage/inengine.go's own doc comment).
+	// Non-empty only under Tier C (#125).
+	//
+	// It is a SEPARATE map from Mounts and must stay one. See issue #55 and the
+	// four callers listed in its specification: dockerproxy.hostPathVisible,
+	// BwrapFlags, the FILESYSTEM block and Validate's hasRuntime — each of which
+	// reads p.Mounts as "what the payload can see", which a graft is not.
+	Grafts map[string]Graft
+
+	// EngineOwnedHostPaths is the enumerated set of host paths snug itself
+	// created for THIS run — the container store, the runroot, a socket
+	// directory — recorded by the same code that creates them. It is the second
+	// half of G4 (issue #55): a graft's Host must be something the sandbox's own
+	// policy already exposes (HostPathVisible), OR a path from this set. Never a
+	// pattern, never a prefix match — an exact-membership set, because a prefix
+	// rule here would grow the very hole G4 exists to close without anyone
+	// writing a line that says so.
+	//
+	// Always empty on every topology that ships today: nothing populates it
+	// until Tier C (#125) creates host artefacts for an engine to graft. A G4
+	// check against a nil map is simply always false on this half, which is the
+	// correct, honest answer for a run that grafts nothing.
+	EngineOwnedHostPaths map[string]bool
 
 	// Env is keyed by EnvVar.Name. It carries structure rather than strings
 	// because provenance per entry is a product requirement, not a debugging

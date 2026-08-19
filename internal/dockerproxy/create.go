@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/gomoni/snug/internal/policy"
 )
 
 // maxBody bounds a request body read from the sandbox. Unbounded, it is a
@@ -626,19 +624,13 @@ func resolveExisting(p string) (string, error) {
 // given access — the rule the package comment states. Kept here (unused by the
 // current replace-everything strategy) because any future opt-in submount mode
 // must use exactly this and nothing else.
+//
+// A one-line call to policy.HostPathVisible rather than its own walk (issue
+// #55): that predicate is now also G4's graft-source check, and invariant 6
+// says one author of "can the sandbox see this host path", not two
+// implementations that eventually disagree.
+// TestContainerBindFilterMatchesPolicyVisibility exercises it through here
+// unchanged.
 func (p *Proxy) hostPathVisible(host string, needWrite bool) bool {
-	host = filepath.Clean(host)
-	for _, m := range p.pol.Mounts {
-		if m.Kind != policy.KindBind {
-			continue
-		}
-		if host != m.Host && !strings.HasPrefix(host, m.Host+"/") {
-			continue
-		}
-		if needWrite && m.Access != policy.AccessRW {
-			continue
-		}
-		return true
-	}
-	return false
+	return p.pol.HostPathVisible(host, needWrite)
 }

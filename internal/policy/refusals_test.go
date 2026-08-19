@@ -746,6 +746,32 @@ func TestGoldenRefusals(t *testing.T) {
 		{"poststaging_nested_grant_under_later_replace", refusalNestedGrantUnderLaterReplace},
 		{"forbidden_env_unset_on_host", refusalForbiddenEnvUnsetOnHost},
 
+		// ── issue #55: a graft is a Mount, in its own namespace, with its own
+		// checks (graft_test.go). Three representative G1 rows (ancestor at
+		// /run, ancestor at /run/snug, exact at StagedBinDir) rather than all
+		// six the behavioural TestGraftCoveringStagedBinDirIsRefused covers —
+		// the same "one representative, not every spelling" choice this file
+		// already makes for grant_covers_stagedbindir above.
+		{"graft_covers_stagedbindir_ancestor_run", func(t testing.TB) error {
+			return refusalGraftCoversStagedBinDir(t, "/run")
+		}},
+		{"graft_covers_stagedbindir_ancestor_run_snug", func(t testing.TB) error {
+			return refusalGraftCoversStagedBinDir(t, "/run/snug")
+		}},
+		{"graft_covers_stagedbindir_exact", func(t testing.TB) error {
+			return refusalGraftCoversStagedBinDir(t, StagedBinDir)
+		}},
+		{"graft_destination_does_not_exist_etc_containers", func(t testing.TB) error {
+			return refusalGraftDestinationDoesNotExist(t, "/etc/containers")
+		}},
+		{"graft_destination_does_not_exist_var_tmp", func(t testing.TB) error {
+			return refusalGraftDestinationDoesNotExist(t, "/var/tmp")
+		}},
+		{"graft_source_not_visible_xdg_runtime_dir", refusalGraftSourceNotVisible},
+		{"graft_covers_graft", refusalGraftCoversGraft},
+		{"graft_optional_forbidden", refusalGraftOptional},
+		{"graft_empty_why", refusalGraftEmptyWhy},
+
 		// the name grammar (§2.3): name ::= [A-Za-z_][A-Za-z0-9_]*
 		{"env_name_empty", refusalEnv(EnvGrants{Set: map[string]string{"": "x"}})},
 		{"env_name_equals", refusalEnv(EnvGrants{Set: map[string]string{"PATH=/evil:": "x"}})},

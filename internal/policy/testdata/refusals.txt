@@ -125,6 +125,72 @@ profile hostile puts a bind of /opt at /home/u/.claude.json/evil, which is insid
 == forbidden_env_unset_on_host ==
 profile "bad": environ.inherit on LD_PRELOAD, which is a list. Inheriting a host search path wholesale imports directories the sandbox does not have — use environ.sanitise, which copies the host value and keeps only the elements policy grants
 
+== graft_covers_stagedbindir_ancestor_run ==
+cannot graft /run into the engine's view: it CONTAINS /run/snug/bin, and /run/snug/bin is snug's
+       own: it is a plain directory on the root tmpfs, which is what makes it unwritable once / is remounted read-only, and snug puts it FIRST on PATH. A mount at or above it is not covered by that remount, so it would hand the payload a writable directory ahead of /usr/bin.
+       A graft at an ancestor takes the descendant with it in the engine's mount
+       namespace, exactly as it would in the sandbox's — naming the parent is not a
+       narrower graft than naming the child. Graft a destination that is neither /run/snug/bin
+       nor an ancestor of it.
+
+== graft_covers_stagedbindir_ancestor_run_snug ==
+cannot graft /run/snug into the engine's view: it CONTAINS /run/snug/bin, and /run/snug/bin is snug's
+       own: it is a plain directory on the root tmpfs, which is what makes it unwritable once / is remounted read-only, and snug puts it FIRST on PATH. A mount at or above it is not covered by that remount, so it would hand the payload a writable directory ahead of /usr/bin.
+       A graft at an ancestor takes the descendant with it in the engine's mount
+       namespace, exactly as it would in the sandbox's — naming the parent is not a
+       narrower graft than naming the child. Graft a destination that is neither /run/snug/bin
+       nor an ancestor of it.
+
+== graft_covers_stagedbindir_exact ==
+cannot graft /run/snug/bin into the engine's view: /run/snug/bin is snug's own: it is a plain directory on the root tmpfs, which is what makes it unwritable once / is remounted read-only, and snug puts it FIRST on PATH. A mount at or above it is not covered by that remount, so it would hand the payload a writable directory ahead of /usr/bin.
+       A graft at that path would displace it in the ENGINE's mount namespace
+       exactly as a profile's grant would displace it in the sandbox's — this is a
+       hole no graft may open, snug's own code included. Graft a destination that
+       is neither /run/snug/bin nor an ancestor of it.
+
+== graft_destination_does_not_exist_etc_containers ==
+snug cannot graft /etc/containers into the engine's view: nothing in this policy
+       creates that directory inside the sandbox, and the sandbox root is read-only, so
+       the mkdir that a graft needs fails with EROFS (measured, ENGINE-NETNS.md §5.1).
+       Graft a destination that already exists — a path some grant mounts, an ancestor
+       of one, or a path inside a writable grant.
+
+== graft_destination_does_not_exist_var_tmp ==
+snug cannot graft /var/tmp into the engine's view: nothing in this policy
+       creates that directory inside the sandbox, and the sandbox root is read-only, so
+       the mkdir that a graft needs fails with EROFS (measured, ENGINE-NETNS.md §5.1).
+       Graft a destination that already exists — a path some grant mounts, an ancestor
+       of one, or a path inside a writable grant.
+
+== graft_source_not_visible_xdg_runtime_dir ==
+cannot graft /home/u/proj/sub/xdg (host /run/user/1000) into the engine's view: the sandbox's own
+       policy does not expose this host path, and snug did not create it for this run.
+       A graft may only reach a host path the sandbox's OWN grants already expose — the
+       engine's view is DERIVED from the sandbox's, never a second, wider window onto
+       the host — or a path snug itself created (the container store, the runroot, a
+       socket directory). Grant it to the sandbox first, or graft a path snug owns.
+
+== graft_covers_graft ==
+cannot graft /home/u/proj/sub/nest into the engine's view: it would CONTAIN the graft
+       already at /home/u/proj/sub/nest/child (from (snug)).
+       A graft at an ancestor takes the descendant's destination with it in the
+       engine's mount namespace — the same containment rule the sandbox's own
+       grants follow. Graft a destination that neither is nor contains /home/u/proj/sub/nest/child.
+
+== graft_optional_forbidden ==
+cannot graft /home/u/proj/sub/optional-probe: Optional is not permitted on a graft.
+       -try semantics mean "silently do less", and under Tier C the derived view IS
+       the enforcement boundary — a graft that silently did not happen would leave the
+       engine with a different confinement from the one --dry-run described
+       (invariant 5). Make the host path exist, or do not graft it.
+
+== graft_empty_why ==
+cannot graft /home/u/proj/sub/why-probe: Why is empty.
+       Every graft carries the abuse sentence — "a hostile process inside the sandbox
+       can use this to ___" — because a graft is the one grant a profile can never
+       write, so a Graft literal is the only place left for a human to read it. Set Why
+       before calling Policy.Graft.
+
 == env_name_empty ==
 environ.set has an entry with an empty name. A variable with no name cannot be set; delete the line
 

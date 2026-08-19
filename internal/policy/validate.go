@@ -99,48 +99,28 @@ func (p *Policy) Validate(env Environ) error {
 
 	for _, g := range guests {
 		m := p.Mounts[g]
-		if !filepath.IsAbs(g) || filepath.Clean(g) != g {
-			return fmt.Errorf("grant %q (from %s) is not an absolute clean path", g, provenance(m))
+		// KindGraft belongs ONLY in p.Grafts, installed by Policy.Graft — never
+		// in p.Mounts, which is the PAYLOAD's mount set. There is no legitimate
+		// way for one to arrive here (no TOML key produces a Graft, and
+		// Policy.Graft never writes p.Mounts), so this refuses a bug rather than
+		// a real configuration. It exists because bwrap.go's switch has no
+		// case for KindGraft and never will (a graft is unreachable from the
+		// bwrap argv by design — bwrap 0.11.2 has no flag that can express one):
+		// without this check, a KindGraft here would either vanish from the
+		// argv silently (the --seccomp-after-`--` shape) or, if BwrapFlags were
+		// ever changed to fall through on an unrecognised Kind, would emit a
+		// real --bind into the PAYLOAD's namespace of a subtree meant for the
+		// engine alone — exactly the leak ENGINE-NETNS.md §5.1 step 3 exists to
+		// prevent.
+		if m.Kind == KindGraft {
+			return fmt.Errorf("mount %q (from %s) is a KindGraft in p.Mounts: a graft belongs only in\n"+
+				"       p.Grafts, installed by Policy.Graft — it must never reach the payload's own\n"+
+				"       mount set. Remove it from p.Mounts; if the intent was to expose this path to\n"+
+				"       the ENGINE's derived view, call Policy.Graft after Resolve instead.",
+				g, provenance(m))
 		}
-		// A control character in a GUEST path is refused next to the clean-path
-		// check, because it is the same kind of rule — a property of the text —
-		// and because filepath.Clean does not touch one.
-		//
-		// The reason is the screen, not the kernel. --dry-run renders one grant
-		// per line in fixed columns, so a newline inside a guest path prints as
-		// TWO rows, and the second can be spelled to look like a grant nobody
-		// wrote:
-		//
-		//	tmpfs = ["/a\n  ro     /etc/shadow                          @sys"]
-		//
-		// The sandbox in that case really has one directory whose name contains a
-		// newline, and /etc/shadow is not mounted at all — the line is a lie about
-		// a policy, in the artifact CLAUDE.md calls the mechanism by which a human
-		// can trust snug. The renderer escapes these too; this refusal is what
-		// keeps a profile from putting one there in the first place.
-		//
-		// GUEST only. A HOST path is not snug's to refuse: a file on this machine
-		// may legally be named with a newline, and refusing to bind it would be
-		// snug inventing a rule about someone else's filesystem. The renderer
-		// handles that half.
-		//
-		// THIS TRIGGER WAS ASCII-ONLY FOR TWO ROUNDS OF THE SAME FINDING. When a
-		// red team put U+0085 and U+009B through snug's screens, checkEnvValue and
-		// the renderer were widened to unicode.IsControl and this site — the same
-		// rule, one table over, guarding the same block of the same screen — was
-		// not touched, because its own test asserted its own spelling and passed.
-		// It now asks the one predicate every sink asks (IsForgingRune), which is
-		// also what added the directional overrides here in the same line of code
-		// that added them to the environment values.
-		if i := strings.IndexFunc(g, IsForgingRune); i >= 0 {
-			r := []rune(g[i:])[0]
-			return fmt.Errorf("grant %q (from %s) has %q in its path INSIDE the sandbox, and "+
-				"%s.\n"+
-				"       Every line of `snug --dry-run` is one grant, so a path that spans two lines "+
-				"can forge\n"+
-				"       a row for a grant that does not exist. No mountpoint needs one; write the "+
-				"path you meant.",
-				g, provenance(m), r, forgingRuneReason(r))
+		if err := checkPathHygiene("grant", g, provenance(m), "INSIDE the sandbox"); err != nil {
+			return err
 		}
 		// The root is snug's, whatever the kind. This used to refuse only a BIND
 		// at /, which left `tmpfs = ["/"]` accepted — and inert, but only by
@@ -213,7 +193,72 @@ func (p *Policy) Validate(env Environ) error {
 		}
 	}
 
+	// Grafts are p.Grafts, not p.Mounts, so the loop above never sees one — but
+	// Policy.Graft is the only writer in the shipped code path, and a hand-built
+	// Policy (a test, or a future caller) can write directly into p.Grafts and
+	// skip its checks entirely (issue #55). Re-run G1-G5 here so that door is
+	// closed structurally rather than by convention: nothing that reaches
+	// bwrap.go or --dry-run can have skipped them, whichever path it came in by.
+	//
+	// This is the one re-check in this whole function. Every other grant is
+	// checked exactly once, at fold time, because p.Mounts has one writer
+	// sequence (Resolve, then Replace) that Validate always runs after. Grafts
+	// are the same shape in the shipped path (Policy.Graft) but nothing forces a
+	// hand-built Policy through it, so Validate is the backstop.
+	grafts := make([]string, 0, len(p.Grafts))
+	for g := range p.Grafts {
+		grafts = append(grafts, g)
+	}
+	sort.Strings(grafts)
+	for _, g := range grafts {
+		if err := p.checkGraft(p.Grafts[g]); err != nil {
+			return err
+		}
+	}
+
 	return p.rejectMasking(env)
+}
+
+// checkPathHygiene applies the two checks every path snug accepts into the
+// model must pass — absolute and clean, and free of a rune that could forge a
+// second line on the screen that renders it — factored out of Validate's own
+// per-grant loop so a graft's Guest AND Host can run the identical checks
+// (issue #55, G5) rather than a fourth hand-rolled copy. "Assert the set, not
+// the site."
+//
+// noun names what kind of path this is for the message ("grant" for a mount's
+// Guest, "graft destination" / "graft source" for a Graft's two paths); who is
+// the provenance to blame; where names the screen a forged line would land on,
+// since a mount's Guest lands on the FILESYSTEM block and a graft's two paths
+// land on the ENGINE VIEW block, in two different namespaces.
+//
+// A control character is refused, not merely escaped, next to the clean-path
+// check, because it is the same kind of rule — a property of the text — and
+// because filepath.Clean does not touch one. The reason is the screen, not the
+// kernel: --dry-run renders one row per line in fixed columns, so a newline
+// inside a path prints as TWO rows, and the second can be spelled to look like
+// a row nobody wrote — a lie in the artifact CLAUDE.md calls the mechanism by
+// which a human can trust snug. The renderer (visibleValue/VisibleText)
+// escapes these too; this refusal is what keeps a caller from putting one
+// there in the first place. It asks the one predicate every sink asks
+// (IsForgingRune), which is what keeps this in step with checkEnvValue and the
+// renderer rather than becoming a third copy that drifts (the fate the guest-
+// path check itself once had against the ASCII-only version of this rule).
+func checkPathHygiene(noun, path, who, where string) error {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return fmt.Errorf("%s %q (from %s) is not an absolute clean path", noun, path, who)
+	}
+	if i := strings.IndexFunc(path, IsForgingRune); i >= 0 {
+		r := []rune(path[i:])[0]
+		return fmt.Errorf("%s %q (from %s) has %q in its path %s, and "+
+			"%s.\n"+
+			"       Every line of `snug --dry-run` is one row, so a path that spans two lines "+
+			"can forge\n"+
+			"       a row that does not otherwise exist. No mountpoint needs one; write the "+
+			"path you meant.",
+			noun, path, who, r, where, forgingRuneReason(r))
+	}
+	return nil
 }
 
 // ownedPath is one of the paths only snug may put a node at: why it is snug's,
