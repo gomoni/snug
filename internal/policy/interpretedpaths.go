@@ -169,11 +169,14 @@ func buildInterpretedPaths() []InterpretedPath {
 			Path:  "/etc/claude-code/managed-settings.json",
 			Class: ClassCommandTable,
 			Tool:  "claude",
-			Reads: "managed (enterprise) settings, the highest-precedence scope, read with no flag",
+			Reads: "managed (enterprise) settings, read with no flag",
 			Keys:  "policyHelper, hooks, mcpServers, apiKeyHelper, env",
 			Evidence: "measured: 2.1.235 bundle, getManagedFilePath + " +
 				"/etc/claude-code; literal x34. Full key list includes processWrapper too, " +
-				"dropped from Keys here to fit the mark's 60-char budget.",
+				"dropped from Keys here to fit the mark's 60-char budget. Reads text also " +
+				"trimmed to fit the mark's 3-line budget; full text was \"managed (enterprise) " +
+				"settings, the highest-precedence scope, read with no flag\" — the dropped " +
+				"clause said it cannot be overridden by any other settings scope.",
 		},
 		{
 			Path:  "/etc/claude-code/managed-settings.d",
@@ -196,21 +199,65 @@ func buildInterpretedPaths() []InterpretedPath {
 			Path:  "/etc/claude-code/CLAUDE.md",
 			Class: ClassCommandTable,
 			Tool:  "claude",
-			Reads: "a managed instruction file prepended to the system prompt",
+			Reads: "a managed instruction file prepended to the prompt",
 			Keys:  "prose the MODEL executes: injection into a tool-using agent",
 			Evidence: "documented, not measured as a path. Full phrasing this Keys text " +
 				"was trimmed from: \"prose the MODEL executes - instruction injection into " +
-				"a tool-enabled agent\"",
+				"a tool-enabled agent\". Reads text also trimmed to fit the mark's 3-line " +
+				"budget; full text was \"a managed instruction file prepended to the system " +
+				"prompt\".",
 		},
 		{
 			Path:  "/etc/claude-code/.claude/rules",
 			Class: ClassCommandTable,
 			Tool:  "claude",
-			Reads: "managed rule files loaded into the agent's instructions",
+			Reads: "managed rule files loaded into the instructions",
 			Keys:  "prose the MODEL executes: injection into a tool-using agent",
 			Evidence: "documented, not measured - MEASURE OR KEEP THE MARKER. Full phrasing " +
 				"this Keys text was trimmed from: \"prose the MODEL executes - instruction " +
-				"injection into a tool-enabled agent\"",
+				"injection into a tool-enabled agent\". Reads text also trimmed to fit the " +
+				"mark's 3-line budget; full text was \"managed rule files loaded into the " +
+				"agent's instructions\".",
+		},
+		// Ported from upstream PR #181's systemCommandTables (refs #170), whose
+		// reasoning is kept below: the whole managed customization tree, broader
+		// than the .claude/rules row above it (that row's own text stays for an
+		// exact grant of just the rules directory — deepestInterpretedHits picks
+		// whichever of the two a given grant actually names).
+		{
+			Path:  "/etc/claude-code/.claude",
+			Class: ClassCommandTable,
+			Tool:  "claude",
+			Reads: "the managed customization tree",
+			Keys:  "rules, skills, agents, commands - loaded automatically",
+			Evidence: "upstream PR #181 claims this was measured against the 2.1.235 bundle " +
+				"(\"rules and skills are both joined onto it\"); not independently re-measured " +
+				"here — carries the same MEASURE OR KEEP THE MARKER uncertainty as the " +
+				".claude/rules row above it, which this codebase already declined to mark " +
+				"measured on the same evidence. Ported reasoning, verbatim: \"the managed " +
+				"customization tree - rules, skills, agents and commands are all joined onto " +
+				"this directory\". Reads text trimmed to fit the mark's 3-line budget; full text " +
+				"was \"the managed customization tree, joined onto the managed root\".",
+		},
+		// The managed-scope ROOT — upstream PR #181's reasoning, cited verbatim
+		// in Evidence: a grant of the directory is a grant of every managed file
+		// written into it later (issue #140). Ordered last of the claude-code
+		// group so the specific rows above it are what a human reads first; the
+		// catch-all's own mark only wins when a grant names nothing more
+		// specific (deepestInterpretedHits).
+		{
+			Path:  "/etc/claude-code",
+			Class: ClassCommandTable,
+			Tool:  "claude",
+			Reads: "the managed-scope root",
+			Keys:  "hooks, mcpServers, policyHelper - everything written below",
+			Evidence: "measured: this is the same /etc/claude-code literal the managed-settings.json " +
+				"row above already measured (getManagedFilePath, x34; getDropInDir, x16), just as " +
+				"the root rather than a specific file under it. Ported reasoning from upstream PR " +
+				"#181's systemCommandTables (refs #170), verbatim: \"the managed-scope root; a " +
+				"grant of the directory is a grant of every managed file written into it later " +
+				"(issue #140)\". Reads text trimmed to fit the mark's 3-line budget; full text was " +
+				"\"the managed-scope root; every managed file lives beneath it\".",
 		},
 		{
 			Path:  "/etc/npmrc",
@@ -231,14 +278,104 @@ func buildInterpretedPaths() []InterpretedPath {
 		Path:  "/usr/etc/npmrc",
 		Class: ClassCommandTable,
 		Tool:  "npm",
-		Reads: "its GLOBAL config ($prefix/etc/npmrc), read with no flag",
+		Reads: "its GLOBAL config, read with no flag",
 		Keys:  "_auth/_authToken, script-shell, node-options, ignore-scripts",
 		Evidence: "measured: `npm config get globalconfig`, prefix /usr; /etc/npmrc does not " +
 			"exist here. Full key list also includes =false on ignore-scripts, dropped from " +
-			"Keys here to fit the mark's 60-char budget.",
+			"Keys here to fit the mark's 60-char budget. Reads text also trimmed to fit the " +
+			"mark's 3-line budget; full text was \"its GLOBAL config ($prefix/etc/npmrc), " +
+			"read with no flag\".",
 	})
+	rows = append(rows, shellStartupRows()...)
 	rows = append(rows, homeInterpretedPaths()...)
 	return rows
+}
+
+// shellStartupRows: the seven system shell-startup files, ported from
+// upstream PR #181's systemCommandTables (refs #170) — we had none of these,
+// and CLAUDE.md's own "Facts about this environment" section already
+// documents the live consequence: `@sys` binds /etc, so every one of these
+// runs inside the sandbox with whatever the host's package manager put in it.
+// The spelling varies by distribution, and every row is carried regardless of
+// whether it exists on this host, the same reasoning @sys already applies to
+// its own /etc entries — an entry for a path this host lacks costs nothing
+// and fires on the host that has it.
+//
+// None of these is under a path @sys enumerates (verified by running
+// TestNoBuiltinGrantsACredentialOrCommandTablePath, not merely inferred from
+// the enumerated list), so adding them does not fail the builtin sweep.
+func shellStartupRows() []InterpretedPath {
+	const inherited = "documented, not measured on this host. Ported from upstream PR #181's " +
+		"systemCommandTables (refs #170)"
+	return []InterpretedPath{
+		{
+			Path:  "/etc/profile",
+			Class: ClassCommandTable,
+			Tool:  "sh (and bash, as a login shell)",
+			Reads: "its login-shell startup script",
+			Keys:  "arbitrary shell commands, every login shell",
+			Evidence: inherited + ": \"runs in every login shell in the sandbox\". Reads and Keys " +
+				"trimmed to fit the mark's 3-line budget (this row's Tool text is itself long); full " +
+				"text was \"the system-wide login-shell startup script, read before ~/.profile\" and " +
+				"\"arbitrary shell commands, run on every login shell\".",
+		},
+		{
+			Path:  "/etc/profile.d",
+			Class: ClassCommandTable,
+			Tool:  "sh (and bash, as a login shell)",
+			Reads: "a drop-in directory /etc/profile sources",
+			Keys:  "arbitrary shell commands, every login shell",
+			Evidence: inherited + ": \"every script in it runs in every login shell\". Also the " +
+				"live case CLAUDE.md documents: on this box distrobox_profile.sh re-derives " +
+				"XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS from here after --clearenv. Reads and " +
+				"Keys trimmed to fit the mark's 3-line budget; full text was \"a drop-in directory " +
+				"whose scripts /etc/profile sources\" and \"arbitrary shell commands, run on every " +
+				"login shell\".",
+		},
+		{
+			Path:     "/etc/bash.bashrc",
+			Class:    ClassCommandTable,
+			Tool:     "bash",
+			Reads:    "the system-wide bashrc (the Debian and SUSE spelling)",
+			Keys:     "arbitrary shell commands, run in every bash shell",
+			Evidence: inherited + ": \"runs in every bash shell (the Debian and SUSE spelling)\".",
+		},
+		{
+			Path:     "/etc/bashrc",
+			Class:    ClassCommandTable,
+			Tool:     "bash",
+			Reads:    "the system-wide bashrc (the Fedora and RHEL spelling)",
+			Keys:     "arbitrary shell commands, run in every bash shell",
+			Evidence: inherited + ": \"runs in every bash shell (the Fedora and RHEL spelling)\".",
+		},
+		{
+			Path:  "/etc/zsh",
+			Class: ClassCommandTable,
+			Tool:  "zsh",
+			Reads: "zsh's system config directory: zshenv, zshrc and zprofile",
+			Keys:  "arbitrary shell commands, run in every zsh shell",
+			Evidence: inherited + ": \"zsh's system config DIRECTORY - zshenv, zshrc and zprofile " +
+				"all live in it on Debian and Arch\".",
+		},
+		{
+			Path:  "/etc/zshrc",
+			Class: ClassCommandTable,
+			Tool:  "zsh",
+			Reads: "the system zshrc (flat spelling)",
+			Keys:  "arbitrary shell commands, run in every zsh shell",
+			Evidence: inherited + ": \"runs in every interactive zsh (the flat spelling)\". Reads " +
+				"trimmed to fit the mark's 3-line budget; full text was \"the system-wide zshrc " +
+				"(the flat spelling), every interactive shell\".",
+		},
+		{
+			Path:     "/etc/zshenv",
+			Class:    ClassCommandTable,
+			Tool:     "zsh",
+			Reads:    "the system-wide zshenv, every zsh shell, login or not",
+			Keys:     "arbitrary shell commands, run in every zsh shell",
+			Evidence: inherited + ": \"runs in every zsh, login or not\".",
+		},
+	}
 }
 
 // sshConfigRows derives the two ssh_config rows from SystemSSHConfigPaths
@@ -247,15 +384,19 @@ func buildInterpretedPaths() []InterpretedPath {
 func sshConfigRows() []InterpretedPath {
 	meta := []struct{ tool, reads, evidence string }{
 		{
-			tool:     "ssh (and git over ssh)",
-			reads:    "the system-wide client config, read with no flag, applying to every host",
-			evidence: "measured: already policy.SystemSSHConfigPaths[0]",
+			tool:  "ssh (and git over ssh)",
+			reads: "the system client config, no flag, every host",
+			evidence: "measured: already policy.SystemSSHConfigPaths[0]. Reads text trimmed " +
+				"to fit the mark's 3-line budget; full text was \"the system-wide client " +
+				"config, read with no flag, applying to every host\".",
 		},
 		{
-			tool: "ssh",
-			reads: "the system-wide client config, read with no flag, applying to every host, " +
-				"where vendor config moved out of /etc",
-			evidence: "measured: exists here, 3148 bytes; snug replaced it in a dry run",
+			tool:  "ssh",
+			reads: "the system client config for every host, no flag, moved from /etc",
+			evidence: "measured: exists here, 3148 bytes; snug replaced it in a dry run. " +
+				"Reads text trimmed to fit the mark's 3-line budget; full text was \"the " +
+				"system-wide client config, read with no flag, applying to every host, " +
+				"where vendor config moved out of /etc\".",
 		},
 	}
 	out := make([]InterpretedPath, 0, len(SystemSSHConfigPaths))
@@ -265,12 +406,18 @@ func sshConfigRows() []InterpretedPath {
 			m = meta[i]
 		}
 		out = append(out, InterpretedPath{
-			Path:     path,
-			Class:    ClassCommandTable,
-			Tool:     m.tool,
-			Reads:    m.reads,
-			Keys:     "ProxyCommand, LocalCommand, Match exec, IdentityAgent",
-			Evidence: m.evidence,
+			Path:  path,
+			Class: ClassCommandTable,
+			Tool:  m.tool,
+			Reads: m.reads,
+			// IdentityAgent dropped from the on-screen Keys list to fit the
+			// mark's 3-line budget (m.tool "ssh (and git over ssh)" already
+			// spends 22 of it); it redirects agent-forwarding, not itself an
+			// RCE the way ProxyCommand/LocalCommand/Match exec are — see
+			// Evidence for the full list.
+			Keys: "ProxyCommand, LocalCommand, Match exec",
+			Evidence: m.evidence + " Keys also dropped IdentityAgent to fit the mark's " +
+				"60-char/3-line budget; ssh still honours it from this file.",
 		})
 	}
 	return out
@@ -461,7 +608,49 @@ func ClassifyInterpretedPath(p, home string) []InterpretedHit {
 		}
 		hits = append(hits, InterpretedHit{Row: row, Match: match})
 	}
-	return hits
+	return deepestInterpretedHits(hits)
+}
+
+// deepestInterpretedHits collapses several rows that all matched the SAME
+// candidate down to the deepest one, mirroring the policy model's own rule
+// that effective access at a path is that of the deepest mount covering it
+// (invariant 1's one non-monotone exception). Without this, a grant of
+// /etc/claude-code/managed-settings.json matches both that row (MatchExact)
+// and the /etc/claude-code root row (MatchInside, since the root is a strict
+// prefix) — two marks on one FILESYSTEM line, when the deeper row's Reads and
+// Keys are already the more accurate of the two.
+//
+// Only MatchExact/MatchInside hits collapse this way. MatchAncestor hits are
+// left alone — a different question (one grant sitting ABOVE many rows at
+// once), and renderInterpretedAncestors already collapses those into a single
+// template-D line.
+//
+// Every MatchExact/MatchInside hit reaching this point matched the SAME
+// candidate string via matchInterpretedCandidate, whose two rules
+// (candidate == row.Path, or strings.HasPrefix(candidate, row.Path+"/")) both
+// require row.Path to be a PREFIX of candidate — so any two such rows are
+// themselves nested, never merely overlapping, and "longest Path wins" is
+// exactly "deepest wins". At most one row can be an exact match (Path is
+// unique per TestEveryInterpretedRowIsWellFormed), so ties do not arise.
+func deepestInterpretedHits(hits []InterpretedHit) []InterpretedHit {
+	var ancestors, direct []InterpretedHit
+	for _, h := range hits {
+		if h.Match == MatchAncestor {
+			ancestors = append(ancestors, h)
+			continue
+		}
+		direct = append(direct, h)
+	}
+	if len(direct) > 1 {
+		deepest := direct[0]
+		for _, h := range direct[1:] {
+			if len(h.Row.Path) > len(deepest.Row.Path) {
+				deepest = h
+			}
+		}
+		direct = []InterpretedHit{deepest}
+	}
+	return append(direct, ancestors...)
 }
 
 func tagInterpretedSide(hits []InterpretedHit, side InterpretedSide) []InterpretedHit {
@@ -626,8 +815,10 @@ func InterpretedMarks(hits []InterpretedHit) []string {
 func renderInterpretedHit(h InterpretedHit) string {
 	row := h.Row
 	if h.Side == SideHost {
-		return fmt.Sprintf("  ← the host's %s is exposed inside - %s: %s. "+
-			"Its contents are readable from the sandbox.",
+		// "exposed inside" is itself the disclosure claim — the guest sentence
+		// below is about a tool RUNNING what it reads; this one never runs
+		// anything, it just makes the host file's bytes visible to the sandbox.
+		return fmt.Sprintf("  ← the host's %s is exposed inside - %s: %s.",
 			displayInterpretedPath(row), row.Class.String(), row.Keys)
 	}
 	switch row.Class {
@@ -640,18 +831,26 @@ func renderInterpretedHit(h InterpretedHit) string {
 			"whatever is here is what it authenticates with.", row.Tool, row.Reads)
 	default: // ClassCommandTable
 		if row.Reads == "" {
-			return fmt.Sprintf("  ← COMMAND TABLE: %s reads this; "+
-				"read-only does not stop that, it SUPPLIES %s.", row.Tool, row.Keys)
+			return fmt.Sprintf("  ← COMMAND TABLE: %s reads this. Read-only SUPPLIES %s.",
+				row.Tool, row.Keys)
 		}
-		return fmt.Sprintf("  ← COMMAND TABLE: %s reads this as %s; "+
-			"read-only does not stop that, it SUPPLIES %s.", row.Tool, row.Reads, row.Keys)
+		return fmt.Sprintf("  ← COMMAND TABLE: %s reads this as %s. Read-only SUPPLIES %s.",
+			row.Tool, row.Reads, row.Keys)
 	}
 }
 
 // renderInterpretedAncestors is template D: every ancestor hit under ONE
-// grant collapses into a single line — "ro /etc is an ancestor of eight rows;
-// eight marks x3 lines is the noise failure" — naming at most three row paths
-// and the remainder as a count.
+// grant collapses into a single line — "ro /etc is an ancestor of many rows;
+// one mark per row x3 lines is the noise failure" — naming at most three row
+// paths and the remainder as a count.
+//
+// "SUPPLIED" carries no trailing "here" — dropped when the shell-startup and
+// claude-code-root rows (issues #169/#170, upstream PR #181) pushed /etc's own
+// ancestor count from 8 to 17: the two extra digits in "17 paths ... (17
+// command tables" ate the one word of slack this line had, tipping it from 3
+// wrapped lines to 4 at TestEveryInterpretedMarkFitsTheScreen's /etc case. The
+// shown paths themselves cannot shrink (they are snug's own literals) and the
+// budget forbids showing fewer than three, so the boilerplate is what gave.
 func renderInterpretedAncestors(hits []InterpretedHit) string {
 	tables, creds := 0, 0
 	paths := make([]string, 0, len(hits))
@@ -672,8 +871,7 @@ func renderInterpretedAncestors(hits []InterpretedHit) string {
 	if more > 0 {
 		list += fmt.Sprintf(", +%d more", more)
 	}
-	return fmt.Sprintf("  ← this tree contains %d interpreted paths snug catalogues "+
-		"(%s, %s): %s. A grant of a directory supplies every one of them.",
+	return fmt.Sprintf("  ← %d paths SUPPLIED (%s, %s): %s.",
 		len(hits), interpretedCount(tables, "command table", "command tables"),
 		interpretedCount(creds, "credential", "credentials"), list)
 }
