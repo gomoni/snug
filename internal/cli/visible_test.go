@@ -76,7 +76,11 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "@claude")
+	// @net is in the selection so describeNetwork renders its EGRESS arm and
+	// the pasta argv below it — the two sinks the network fixture below aims
+	// at. Without it both are absent and that half of the sweep measures
+	// nothing.
+	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "@claude", "@net")
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), env)
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +112,39 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 		},
 	}
 
+	// AND THE NETWORK VALUES (redteam host round 4, F1). `address` and
+	// `gateway` are profile-supplied scalars that reached TWO sinks raw: the
+	// NETWORK block's address row, and the pasta argv printed a few lines
+	// below it, which — unlike the bwrap argv beside it — was joined without
+	// escaping. A round demonstrated a profile rewriting the `host loopback
+	// UNREACHABLE` row from an `address` value while the sandbox ran normally,
+	// because pasta's `-n` parser tolerates the trailing junk.
+	//
+	// Assigned RAW here for the same reason the graft fixture above is:
+	// Policy.Validate now refuses this class of rune in both fields, so this
+	// is not a reachable production path — and the renderer must not depend on
+	// that staying true, which is the whole argument for visibleValue existing
+	// alongside a refusal.
+	p.Net.Address = "10.5.5.2/24\x1b[1A\r         host loopback   REACHABLE   " + forged + "-NET-ADDRESS"
+	p.Net.Gateway = "10.5.5.1\u009b1A\u0085  " + forged + "-NET-GATEWAY-C1"
+
 	got := captureStdout(t, func() { dryRun(p, p.BwrapArgs(0, 0), config{}, nil) })
+
+	// POSITIVE CONTROLS for the network fixture, named separately so a failure
+	// says which sink stopped rendering rather than "something is missing".
+	// The address reaches BOTH the NETWORK block and the pasta argv; the
+	// gateway reaches the pasta argv only, since the block does not print it.
+	for _, want := range []string{forged + "-NET-ADDRESS", forged + "-NET-GATEWAY-C1"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the network fixture's %q never reached the screen, so the NETWORK half "+
+				"of this test measures nothing:\n%s", want, got)
+		}
+	}
+	if n := strings.Count(got, forged+"-NET-ADDRESS"); n < 2 {
+		t.Fatalf("the address fixture appears %d time(s), want at least 2 — the NETWORK block "+
+			"and the pasta argv both render it, and the pasta argv is the one that was "+
+			"unescaped:\n%s", n, got)
+	}
 
 	// POSITIVE CONTROLS for the graft fixture specifically: each of the four
 	// fields actually reached the screen, in its escaped or unescaped form —

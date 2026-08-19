@@ -205,6 +205,43 @@ func (p *Policy) Validate(env Environ) error {
 	// sequence (Resolve, then Replace) that Validate always runs after. Grafts
 	// are the same shape in the shipped path (Policy.Graft) but nothing forces a
 	// hand-built Policy through it, so Validate is the backstop.
+	// THE NETWORK VALUES ARE PROFILE TEXT AND THEY REACH TWO SCREENS.
+	//
+	// `address` and `gateway` are the only profile-supplied scalars that were
+	// never asked this question. Both are rendered raw into --dry-run — the
+	// NETWORK block's address row, and the pasta argv four lines below it — so
+	// an ESC/CR payload in either rewrites rows a human reads to decide whether
+	// a sandbox leaks its network position, including the `host loopback
+	// UNREACHABLE` row directly above. A red team round demonstrated exactly
+	// that, and the run stayed HEALTHY while the screen lied: pasta's `-n`
+	// parser tolerates the trailing junk, so the forged profile launches and
+	// works, which removes the one signal that would otherwise give it away.
+	//
+	// The refusal goes here rather than at the render site because every other
+	// sink in this file is closed the same way — one predicate, asked at parse
+	// time, so a rune added to IsForgingRune is added everywhere at once. The
+	// renderers escape as well (visibleValue), and that belt-and-braces is the
+	// same pairing checkEnvValue and VisibleText already have: refusing what a
+	// profile may CONTAIN and escaping what a screen may SHOW are two
+	// guarantees, not one done twice.
+	for _, v := range []struct{ name, value string }{
+		{"address", p.Net.Address},
+		{"gateway", p.Net.Gateway},
+	} {
+		if i := strings.IndexFunc(v.value, IsForgingRune); i >= 0 {
+			r := []rune(v.value[i:])[0]
+			return fmt.Errorf("network %s %q has %q in it, and %s.\n"+
+				"       The NETWORK block of `snug --dry-run` is one row per fact, and the "+
+				"pasta\n"+
+				"       command is printed below it — a value that spans two lines can forge "+
+				"a row\n"+
+				"       that does not otherwise exist, including the one saying host loopback "+
+				"is\n"+
+				"       unreachable. Write the address you meant.",
+				v.name, v.value, r, forgingRuneReason(r))
+		}
+	}
+
 	grafts := make([]string, 0, len(p.Grafts))
 	for g := range p.Grafts {
 		grafts = append(grafts, g)

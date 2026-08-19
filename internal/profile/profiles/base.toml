@@ -256,6 +256,46 @@ dns = true
 
 # The sandbox does not learn your LAN address. pasta copies the host's addresses
 # into the namespace by default, which is a small information disclosure.
+#
+# Setting an address also switches DNS onto pasta's interception path, and that
+# is not a second feature — it is the same one. This profile used to hide the
+# host's address and then name the host's LAN resolver in the sandbox's
+# /etc/resolv.conf, which gives the hidden network straight back: a LAN resolver
+# is normally the router, so 192.168.1.1 discloses the /24 the host sits in, and
+# an IPv6 ULA resolver discloses a randomly-generated, stable per-site prefix.
+# The search domain was anonymised here from the beginning and the nameserver
+# was not — one rule applied to one of its two halves (issue #162). The sandbox
+# is now told `nameserver 169.254.1.1`, an address that does not exist, and
+# pasta re-issues the query from the host side.
+#
+# ABUSE: unchanged from @net — the whole internet, in and out. What this profile
+# adds is a WITHHOLDING, not a hole. What it still does not hide: the sandbox
+# has full egress, so a payload that wants to know where it is can ask any
+# server it can reach, and DNS answers still tell it what the host's resolver
+# would have told it. This bounds passive disclosure, not an active question.
+#
+# ABUSE (dns): a hostile process inside drives the HOST's resolver with
+# arbitrary queries — any name, any type, UDP and TCP — from the host's network
+# position. On a host with a routable resolver that is no new reach: it could
+# query 192.168.1.1 directly over the egress @net already grants. On a
+# systemd-resolved host it IS new reach, and this is the sentence to carry:
+# 127.0.0.53 is a resolver process the sandbox can reach no other way, and it
+# holds a cache of what the host user has been resolving plus any split-DNS
+# domains a VPN put on that link — so `search .` withholds the internal domain
+# NAMES while this resolves them anyway.
+#
+# What it does NOT get at that address, measured inside a live sandbox rather
+# than reasoned about: 169.254.1.1 answers on port 53 over UDP and TCP and
+# refuses 631, 853 and 3100; 169.254.1.2:53 is refused, so the forwarder
+# answers on exactly one address. That measurement is what earns the phrase
+# "not a hole" above; without it the phrase is an assertion.
+#
+# NOT HIDDEN, and the profile's own description overstates this: `address` is a
+# single IPv4 value, so pasta's IPv6 default still applies and the sandbox
+# keeps the HOST'S OWN GLOBAL v6 ADDRESSES verbatim. Measured on this host —
+# the v4 address hidden is RFC1918, the v6 addresses disclosed are globally
+# routable, geolocatable and ISP-attributable, so the withholding is currently
+# the weaker half of the pair. Issue #165 carries the fix and the measurement.
 [profile.net-anon]
 description = "As net, but the sandbox gets a synthetic address instead of the host's."
 include = ["net"]
