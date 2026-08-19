@@ -65,6 +65,24 @@ const (
 	// a different word, so a human never has to know which block a row came
 	// from to know which namespace it is in.
 	KindGraft
+
+	// KindCgroup2 is the engine's own cgroup2 mount at /sys/fs/cgroup, in the
+	// ENGINE's derived mount namespace — one of the "two engine-view mounts
+	// that are not grafts of a host path" (issue #125's design pass): the
+	// stage mounts a fresh cgroup2, `mount("cgroup2", "/sys/fs/cgroup",
+	// "cgroup2", 0, "")`, not open_tree(2) of anything on the host, so it has
+	// no Host the way a KindGraft does. It is a Graft (lives only in
+	// p.Grafts, keyed the same way) rather than a KindBind because the same
+	// two fail-closed reasons KindGraft was split out for apply here too:
+	// BwrapFlags must refuse it by name, and --dry-run must print a word that
+	// says which namespace it is in.
+	//
+	// KindProc plays the same "no Host" role for the engine's OWN /proc, but
+	// does NOT get a new Kind — the sandbox's own /proc already IS KindProc,
+	// so reusing it is what lets G1's one hard-coded admission read as "the
+	// engine's view legitimately replaces the same kind of node snug's own
+	// procfs is", rather than inventing a second name for one idea.
+	KindCgroup2
 )
 
 func (k Kind) String() string {
@@ -81,6 +99,8 @@ func (k Kind) String() string {
 		return "data"
 	case KindGraft:
 		return "graft"
+	case KindCgroup2:
+		return "cgroup2"
 	default:
 		return "bind"
 	}
@@ -154,6 +174,13 @@ type Mount struct {
 //
 // Field meanings, which differ from a bind in exactly one place:
 //
+//	Kind     — KindGraft for the four host-tree grafts (§1's store, runroot,
+//	           sock dir, conf dir); KindProc or KindCgroup2 for the two
+//	           engine-view mounts that are NOT a clone of a host path (the
+//	           engine's own procfs and cgroup2, issue #125's design pass §1).
+//	           graftKindRules (graft.go) is the one place that says which
+//	           rules a Kind without a Host is exempt from — see its own doc
+//	           comment before adding a fourth Kind here.
 //	Guest    — the destination path in the DERIVED view. Primary key.
 //	Host     — the host path passed to open_tree(2), read while the host tree
 //	           is still visible (§5.1 step 1).
