@@ -103,6 +103,13 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 			detail = fmt.Sprintf("%s (from %s)", visibleValue(m.Guest), visibleValue(m.Host))
 		}
 		fmt.Fprintf(out, "  %-6s %-46s %s%s\n", kind, detail, visibleValue(strings.Join(m.From, "+")), opt)
+		// EACH MARK ON ITS OWN INDENTED LINE, the same idiom describeEnvironment
+		// uses for l.marks — never appended to the row above.
+		for _, mark := range policy.PolicyInterpretedMarks(p, m) {
+			for _, frag := range wrapMark(mark) {
+				fmt.Fprintln(out, frag)
+			}
+		}
 	}
 	fmt.Fprintf(out, "  %-6s %s\n", "ro-/", "everything else is a read-only skeleton (--remount-ro /)")
 
