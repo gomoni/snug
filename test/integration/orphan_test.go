@@ -414,3 +414,134 @@ func killAll(pids []int) {
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
 }
+
+// ── issue #112: a caught signal must not report a degradation ──────────────
+
+// pastaPIDOf returns the pid of the pasta process belonging to snugPID's run,
+// found by CMDLINE and never by `comm`.
+//
+// `comm` is the wrong key here and this repo has the scar: the binary that
+// actually runs on this host reports `pasta.avx2`, because pasta dispatches to
+// a microarchitecture-specific build. A test matching "pasta" exactly finds
+// nothing and reports a clean run.
+func pastaPIDOf(snugPID int) int {
+	for _, pid := range descendantsOf(snugPID) {
+		raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+		if err != nil {
+			continue
+		}
+		if strings.Contains(strings.ReplaceAll(string(raw), "\x00", " "), "pasta") {
+			return pid
+		}
+	}
+	return 0
+}
+
+// degradationNotices are the substrings netns.go's watch() prints when pasta
+// dies without anything having claimed responsibility for killing it.
+var degradationNotices = []string{"loopback only", "network helper exited"}
+
+// TestASignalledNetSandboxReportsNoFalseDegradation is the regression for
+// issue #112.
+//
+// Ctrl-C on a `-p @net` run printed "the network helper exited (signal:
+// killed); the sandbox now has loopback only" — on EVERY signalled run, not
+// only racy ones. confirmTeardown SIGKILLs every descendant, pasta included,
+// while `defer helper.stop()` (the thing that sets `stopping`) has not been
+// reached yet, so watch() saw a pasta that died with nobody owning it.
+//
+// Two things made it worth fixing rather than tolerating. It lands on the
+// trust artifact — a user who reads snug's stderr for what the sandbox can
+// reach was told, falsely, that it had been degraded. And it MASKS the real
+// thing: once the notice prints on every ordinary teardown, nobody reads it on
+// the teardown where pasta genuinely failed.
+//
+// Which is why the positive control below is not optional and is not a
+// formality. "snug printed no degradation notice" is equally true of a snug
+// that cannot print one at all — a deleted warn, a watch() goroutine that
+// never starts, a helper that was never watched. The control kills pasta out
+// from under a LIVE run and requires the notice to appear.
+func TestASignalledNetSandboxReportsNoFalseDegradation(t *testing.T) {
+	budget(t, 60*time.Second)
+	requireSandbox(t)
+	requirePasta(t)
+
+	t.Run("signalled-teardown-is-silent", func(t *testing.T) {
+		proj, _ := target(t)
+		tok := orphanToken()
+		cmd := orphanCmd(t, []string{"-p", "@net"}, proj, tok)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		// Well past the ~40ms startup window this file's other tests aim at:
+		// issue #112 fires on the ORDINARY path, so the offset must be one
+		// where everything has certainly come up.
+		time.Sleep(time.Second)
+
+		// PRECONDITION: pasta is really running under this snug. Without it a
+		// silent teardown proves nothing — a run whose pasta never started
+		// has no watcher to print anything.
+		if pid := pastaPIDOf(cmd.Process.Pid); pid == 0 {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			t.Fatalf("PRECONDITION: no pasta process under snug (pid %d) after a second of a "+
+				"-p @net run\n%s", cmd.Process.Pid, orphanLog(t, cmd))
+		}
+
+		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			t.Fatalf("could not signal snug: %v", err)
+		}
+		_ = cmd.Wait()
+		killAll(pidsWithToken(tok, cmd.Process.Pid))
+
+		out := orphanLog(t, cmd)
+		for _, notice := range degradationNotices {
+			if strings.Contains(out, notice) {
+				t.Errorf("a SIGTERMed -p @net run reported %q. Nothing was degraded: snug's own "+
+					"teardown killed pasta, one line before it was going to be asked to stop "+
+					"anyway. A false degradation notice on the trust artifact is issue #112, and "+
+					"its real cost is that it masks the teardown where pasta DID fail.\n%s",
+					notice, out)
+			}
+		}
+	})
+
+	// POSITIVE CONTROL, and the subtest above is meaningless without it.
+	t.Run("positive-control/pasta-killed-mid-run-is-reported", func(t *testing.T) {
+		proj, _ := target(t)
+		tok := orphanToken()
+		cmd := orphanCmd(t, []string{"-p", "@net"}, proj, tok)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			killAll(pidsWithToken(tok, cmd.Process.Pid))
+		}()
+		time.Sleep(time.Second)
+
+		pasta := pastaPIDOf(cmd.Process.Pid)
+		if pasta == 0 {
+			t.Fatalf("PRECONDITION: no pasta process to kill under snug (pid %d)\n%s",
+				cmd.Process.Pid, orphanLog(t, cmd))
+		}
+		if err := syscall.Kill(pasta, syscall.SIGTERM); err != nil {
+			t.Fatalf("could not signal pasta (pid %d): %v", pasta, err)
+		}
+
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			out := orphanLog(t, cmd)
+			if strings.Contains(out, degradationNotices[0]) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("pasta was killed out from under a LIVE sandbox and snug never said the "+
+					"network had degraded. The subtest above therefore proves nothing: it cannot "+
+					"tell 'no false notice' from 'no notice is possible at all'.\n%s", out)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
+}

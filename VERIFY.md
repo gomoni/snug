@@ -1517,6 +1517,57 @@ topologies, sampling the offset dimension for the nine signals whose delivery
 is already asserted per-signal by
 `TestTheTeardownGuardCatchesEverySignalItRegisters` in `internal/sandbox`.
 
+### 11c. …and a clean teardown says nothing
+
+A `-p @net` sandbox stopped with Ctrl-C printed *"the network helper exited
+(signal: killed); the sandbox now has loopback only"* on **every** run
+(issue #112). Nothing had degraded: snug's own teardown sweep killed pasta one
+line before it was going to be asked to stop anyway, and the watcher that
+reports a pasta crash could not tell the difference. The cost is not the noise
+— it is that a notice printed on every ordinary exit is a notice nobody reads
+on the exit where pasta really did fail.
+
+```bash
+T=$(mktemp -d)
+./bin/snug -p @net "$T" -- /bin/sh -c 'echo INSIDE; sleep 60' >o.txt 2>e.txt & S=$!
+sleep 1; kill -TERM $S; wait $S; echo "rc=$?"
+echo "stdout: $(cat o.txt)"; echo "stderr: [$(cat e.txt)]"
+```
+
+Expect `rc=143`, `stdout: INSIDE`, and **`stderr: []`** — empty.
+
+Now the control, because "snug printed nothing" is equally true of a snug that
+*cannot* print it. Kill pasta out from under a live run and the notice must
+appear.
+
+**Scope the search to snug's own children, and do not skip that.** Two ways a
+looser search goes wrong here, both measured on this host. This box runs its
+own `/usr/bin/pasta` for the distrobox — signalling that one takes the
+machine's networking down and has nothing to do with snug. And a shell loop
+matching `*pasta*` across all of `/proc` matches **its own command line**,
+which is the self-match that made §11b's old survivor detector useless. snug's
+pasta is a direct child of snug, so `PPid == $S` is both the correct filter and
+the safe one. Match on `cmdline`, never on `comm`: the binary that runs here
+reports `pasta.avx2`.
+
+```bash
+T=$(mktemp -d)
+./bin/snug -p @net "$T" -- /bin/sh -c 'echo INSIDE; sleep 30' >o.txt 2>e.txt & S=$!
+sleep 2
+for f in /proc/[0-9]*/cmdline; do
+  p=${f#/proc/}; p=${p%/cmdline}
+  [ "$(awk '/^PPid:/{print $2}' "/proc/$p/status" 2>/dev/null)" = "$S" ] || continue
+  case "$(tr '\0' ' ' < "$f" 2>/dev/null)" in *pasta*) echo "killing snug's pasta: $p"; kill -TERM "$p";; esac
+done
+sleep 2; cat e.txt
+kill -TERM $S 2>/dev/null; wait $S 2>/dev/null
+```
+
+Expect one `killing snug's pasta: <pid>` line and then `the network helper
+exited … loopback only`. If the first check is silent and this one is too, the
+notice has been lost rather than fixed. The automated pair is
+`TestASignalledNetSandboxReportsNoFalseDegradation`.
+
 ## 12. The stage — a `@net` sandbox has a second process ahead of it
 
 Since Phase 1 (`.claude/design/SUPERVISOR-DESIGN.md`), a `-p @net` run
