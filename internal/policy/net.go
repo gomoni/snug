@@ -123,20 +123,62 @@ const dnsForwardAddr = "169.254.1.1"
 // learn your internal domain names and a bare hostname cannot accidentally
 // resolve against a corporate suffix.
 func (n NetPolicy) ResolvConf() []byte {
-	if n.Mode == NetIsolated {
+	r := n.Resolver()
+	if len(r.Servers) == 0 {
 		return []byte("# snug: no network profile selected; DNS is intentionally unavailable.\n" +
 			"# Resolver libraries will fail immediately rather than hang.\n")
 	}
-	servers := n.Nameservers
-	if len(servers) == 0 {
-		servers = []string{dnsForwardAddr}
-	}
 	var b strings.Builder
-	for _, s := range servers {
+	for _, s := range r.Servers {
 		fmt.Fprintf(&b, "nameserver %s\n", s)
 	}
-	b.WriteString("search .\noptions edns0\n")
+	fmt.Fprintf(&b, "search %s\n", strings.Join(r.Searches, " "))
+	fmt.Fprintf(&b, "options %s\n", strings.Join(r.Options, " "))
 	return []byte(b.String())
+}
+
+// ResolverConfig is the DNS decision above expressed as VALUES rather than as
+// /etc/resolv.conf syntax, so a second consumer can render it into its own
+// format without re-deriving — or, worse, re-parsing — the decision.
+//
+// The second consumer is the container engine (issue #126). podman generates
+// every container's /etc/resolv.conf from the ENGINE's own unless its
+// containers.conf names DNS explicitly, and containers.conf spells the same
+// three facts as three TOML lists rather than as resolver directives. Feeding
+// that from ResolvConf's rendered bytes would mean parsing them back — which
+// makes the rendered file a second author of a fact the policy already owns,
+// against invariant 6 ("one Policy, one author"). Both renderers now read this
+// one struct instead.
+//
+// Servers is empty exactly when the sandbox is offline. That is a real state
+// with no /etc/resolv.conf spelling other than "name no nameserver", and each
+// renderer says it in its own way — see ResolvConf above, and the engine's
+// generated containers.conf.
+type ResolverConfig struct {
+	Servers  []string
+	Searches []string
+	Options  []string
+}
+
+// Resolver is the single derivation of what the sandbox is told about DNS.
+// See ResolvConf for why the nameserver choice is what it is, and
+// ResolverConfig for why the values are exposed separately from the file.
+func (n NetPolicy) Resolver() ResolverConfig {
+	r := ResolverConfig{
+		// `search .` rather than the host's search domains, and `options
+		// edns0`; both are part of the policy, not of the file format, so
+		// they live here rather than in either renderer.
+		Searches: []string{"."},
+		Options:  []string{"edns0"},
+	}
+	if n.Mode == NetIsolated {
+		return r
+	}
+	r.Servers = n.Nameservers
+	if len(r.Servers) == 0 {
+		r.Servers = []string{dnsForwardAddr}
+	}
+	return r
 }
 
 // NeedsDNSForward reports whether pasta must intercept DNS, which is only true

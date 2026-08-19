@@ -1,12 +1,16 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/gomoni/snug/internal/stage"
 )
@@ -24,6 +28,7 @@ import (
 //	P2  /etc/subuid + /etc/subgid have a range for this user
 //	P3  newuidmap/newgidmap on PATH
 //	P5  cgroup write probe — SELECTS cgroups=disabled, never fatal on its own
+//	P7  bind over /etc/resolv.conf in a throwaway userns+mountns — WARNS
 //
 // P4 (overlay + MS_REC|MS_PRIVATE in a fresh userns) is NOT implemented as a
 // separate throwaway probe here — see the doc comment on containerPreflight
@@ -35,6 +40,11 @@ import (
 type containerPreflight struct {
 	Podman          string
 	CgroupsDisabled bool
+
+	// ResolvConfBind is P7's answer: nil when snug's generated resolv.conf can
+	// be bound over the engine's own, non-nil (naming why) when it cannot.
+	// Not fatal — see preflightResolvConfBind.
+	ResolvConfBind error
 }
 
 func runContainerPreflight() (containerPreflight, error) {
@@ -50,7 +60,87 @@ func runContainerPreflight() (containerPreflight, error) {
 			"subgid range and could not get one: %w", err)
 	}
 	cgroupsDisabled := preflightCgroupsWritable()
-	return containerPreflight{Podman: podman, CgroupsDisabled: cgroupsDisabled}, nil
+	return containerPreflight{
+		Podman:          podman,
+		CgroupsDisabled: cgroupsDisabled,
+		ResolvConfBind:  preflightResolvConfBind(),
+	}, nil
+}
+
+// preflightResolvConfBind is P7: can a file be bind-mounted over
+// /etc/resolv.conf at all on this host? __inengine does exactly that, to give
+// the engine snug's generated resolver configuration instead of the host's
+// (issue #126), and issue #128 measured a perfectly ordinary host where it
+// cannot: this distrobox's /etc/resolv.conf is itself a bind mount over a
+// DELETED inode, so reading it works and mounting ONTO it returns ENOENT.
+//
+// WARNS, never refuses, and the difference matters. Since #126's second half
+// a container's DNS comes from the generated containers.conf, which needs no
+// mount — so this bind failing costs the ENGINE fast offline failure, and
+// costs a container nothing. Refusing to start would be refusing over a
+// degradation that leaks nothing.
+//
+// The probe is a throwaway user + mount namespace and NOTHING else: no netns,
+// no engine, no podman, no cgroup, and it touches no path except a temporary
+// file of its own and the mountpoint it tests. It is an approximation of
+// __inengine's real situation in the same way P5 is — __inengine binds inside
+// the sandbox's user namespace U with the full delegated subuid range, this
+// probe inside a single-uid throwaway one — and the backstop for the two
+// disagreeing is __inengine's own warning on the same mount.
+//
+// It reports by NAME, not by errno: the caller's message says what stopped
+// working, because "operation not permitted" from a preflight probe costs an
+// hour (CLAUDE.md, "errors name the fix").
+func preflightResolvConfBind() error {
+	f, err := os.CreateTemp("", "snug-resolvbind-probe-")
+	if err != nil {
+		return fmt.Errorf("could not create the probe file: %w", err)
+	}
+	defer os.Remove(f.Name())
+	f.Close()
+
+	// A CHILD, because a multithreaded Go process cannot unshare a user
+	// namespace itself; /proc/self/exe, never a path from argv or the
+	// environment, for the reason stage.execSelf states. The environment is
+	// empty for the reason CLAUDE.md's "/proc/1/environ leaked everything"
+	// states.
+	cmd := exec.Command("/proc/self/exe", "__probebind", f.Name())
+	cmd.Env = []string{}
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
+		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+		// Denied before the mappings are written; without it the child cannot
+		// map its own gid and the probe fails for a reason that is not the
+		// one it is asking about.
+		GidMappingsEnableSetgroups: false,
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(string(out))
+		if detail == "" {
+			detail = err.Error()
+		}
+		return errors.New(detail)
+	}
+	return nil
+}
+
+// probeBindResolvConf is the hidden `__probebind` verb's whole body, run in
+// the throwaway namespaces preflightResolvConfBind created. It makes its own
+// tree private first — so nothing it does can propagate to the host — and then
+// performs the ONE mount P7 exists to ask about.
+func probeBindResolvConf(argv []string) error {
+	if len(argv) != 1 || argv[0] == "" {
+		return errors.New("__probebind: usage: __probebind FILE")
+	}
+	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
+		return fmt.Errorf("making / private: %w", err)
+	}
+	if err := unix.Mount(argv[0], "/etc/resolv.conf", "", unix.MS_BIND, ""); err != nil {
+		return fmt.Errorf("mounting a file over /etc/resolv.conf: %w", err)
+	}
+	return nil
 }
 
 // preflightPtraceScope is P6. The whole argument that dropping CAP_SYS_PTRACE

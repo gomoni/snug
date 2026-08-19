@@ -267,3 +267,170 @@ func TestReaperFiresOnEOFAndStandsDown(t *testing.T) {
 		t.Error("snug cleaned up and told the reaper to stand down, but it ran anyway")
 	}
 }
+
+// specConf runs Spec against a throwaway Engine and returns the generated
+// containers.conf's content together with the environment the engine will be
+// started with. It is the shared setup for every #126/#132 assertion below.
+func specConf(t *testing.T, net policy.NetPolicy, cgroupsDisabled bool) (conf string, env []string) {
+	t.Helper()
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := e.Spec("/usr/bin/podman", []string{"PATH=/usr/bin"}, cgroupsDisabled, net)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var path string
+	for _, kv := range spec.Env {
+		if rest, ok := strings.CutPrefix(kv, "CONTAINERS_CONF="); ok {
+			path = rest
+		}
+	}
+	if path == "" {
+		t.Fatal("Spec set no CONTAINERS_CONF at all — the engine reads the HOST's containers.conf")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data), spec.Env
+}
+
+// TestTheEngineReadsOnlySnugsOwnContainersConf is issue #132's structural half.
+// Both variables must name snug's generated file: CONTAINERS_CONF is what
+// REPLACES the host's /etc/containers/containers.conf and
+// ~/.config/containers/containers.conf, and CONTAINERS_CONF_OVERRIDE is what
+// still wins if something between here and the engine exports CONTAINERS_CONF
+// of its own (issue #133 is exactly that, in the test wrapper).
+//
+// CONTROL: the file the variables name must EXIST and be non-empty — otherwise
+// this test passes on a Spec that names a path it never wrote.
+func TestTheEngineReadsOnlySnugsOwnContainersConf(t *testing.T) {
+	conf, env := specConf(t, policy.NetPolicy{Mode: policy.NetEgress, Nameservers: []string{"192.0.2.53"}}, false)
+	if strings.TrimSpace(conf) == "" {
+		t.Fatal("CONTAINERS_CONF names an empty file")
+	}
+
+	var confPath, overridePath string
+	for _, kv := range env {
+		if rest, ok := strings.CutPrefix(kv, "CONTAINERS_CONF="); ok {
+			confPath = rest
+		}
+		if rest, ok := strings.CutPrefix(kv, "CONTAINERS_CONF_OVERRIDE="); ok {
+			overridePath = rest
+		}
+	}
+	if overridePath == "" {
+		t.Error("Spec set no CONTAINERS_CONF_OVERRIDE: an export of CONTAINERS_CONF anywhere " +
+			"between here and the engine silently restores the host's configuration (issue #133)")
+	}
+	if confPath != overridePath {
+		t.Errorf("the two variables name different files (%q vs %q): the engine's configuration "+
+			"then depends on which one podman happens to load", confPath, overridePath)
+	}
+}
+
+// TestGeneratedContainersConfClosesTheHostInjectionKeys is issue #132's
+// enumerated half — the keys a host containers.conf would otherwise have
+// supplied on EVERY container, none of them client-requested and none of them
+// visible to the proxy's bind filter or to --dry-run. CONTAINERS_CONF already
+// stops those files being read; naming the keys is "never trust a helper's
+// default, in either direction", and it is what still holds if a future podman
+// changes CONTAINERS_CONF from "replaces" to "merges".
+func TestGeneratedContainersConfClosesTheHostInjectionKeys(t *testing.T) {
+	conf, _ := specConf(t, policy.NetPolicy{Mode: policy.NetEgress, Nameservers: []string{"192.0.2.53"}}, false)
+	for _, want := range []string{
+		"mounts = []",
+		"volumes = []",
+		"devices = []",
+		"env_host = false",
+	} {
+		if !strings.Contains(conf, want) {
+			t.Errorf("generated containers.conf does not close %q:\n%s", want, conf)
+		}
+	}
+}
+
+// TestGeneratedContainersConfTakesDNSFromTheResolvedPolicy is issue #126's
+// container half: podman generates every container's /etc/resolv.conf from the
+// ENGINE's own unless containers.conf names DNS, and its /etc/hosts from the
+// host's unless base_hosts_file says otherwise.
+//
+// The assertion is that the file carries the POLICY's nameserver, not the
+// host's — with a nameserver no host has, so a pass cannot be an accident of
+// this machine's own resolver configuration.
+func TestGeneratedContainersConfTakesDNSFromTheResolvedPolicy(t *testing.T) {
+	net := policy.NetPolicy{Mode: policy.NetEgress, Nameservers: []string{"192.0.2.53"}}
+	conf, _ := specConf(t, net, false)
+
+	for _, want := range []string{
+		`dns_servers = ["192.0.2.53"]`,
+		`dns_searches = ["."]`, // dns_servers ALONE still leaked the host's search domain
+		`dns_options = ["edns0"]`,
+		`base_hosts_file = "none"`,
+	} {
+		if !strings.Contains(conf, want) {
+			t.Errorf("generated containers.conf is missing %s:\n%s", want, conf)
+		}
+	}
+}
+
+// TestGeneratedContainersConfNeverLeavesDNSUNSETOffline is the sharp edge of
+// the above: podman reads dns_servers = [] as "not configured" and falls back
+// to the engine's own /etc/resolv.conf — so an EMPTY list would reopen exactly
+// the leak this closes, on the one configuration (offline) where it matters
+// most. Offline must therefore name a server that resolves nothing rather than
+// naming none.
+//
+// CONTROL: the egress case above proves a real nameserver does reach the file,
+// so "non-empty offline" is not passing because the key is hardcoded.
+func TestGeneratedContainersConfNeverLeavesDNSUnsetOffline(t *testing.T) {
+	conf, _ := specConf(t, policy.NetPolicy{Mode: policy.NetIsolated}, false)
+	if strings.Contains(conf, "dns_servers = []") {
+		t.Errorf("offline containers.conf leaves dns_servers EMPTY, which podman reads as "+
+			"'not configured' and answers from the engine's own /etc/resolv.conf:\n%s", conf)
+	}
+	if !strings.Contains(conf, "dns_servers = [") {
+		t.Errorf("offline containers.conf names no dns_servers at all:\n%s", conf)
+	}
+	if !strings.Contains(conf, `base_hosts_file = "none"`) {
+		t.Errorf("offline containers.conf still copies the host's /etc/hosts:\n%s", conf)
+	}
+}
+
+// TestTheEnginesTwoDNSRenderingsCannotDiverge is invariant 6 ("one Policy, one
+// author") applied to the one fact that now has two renderings: the engine's
+// /etc/resolv.conf and the containers.conf keys. Both must come from the SAME
+// policy.NetPolicy — this test fails if a future change re-derives either one.
+func TestTheEnginesTwoDNSRenderingsCannotDiverge(t *testing.T) {
+	net := policy.NetPolicy{Mode: policy.NetEgress, Nameservers: []string{"198.51.100.7"}}
+	conf, _ := specConf(t, net, false)
+	resolv := string(net.ResolvConf())
+
+	if !strings.Contains(resolv, "nameserver 198.51.100.7") {
+		t.Fatalf("control: the policy's own resolv.conf does not name the policy's nameserver:\n%s", resolv)
+	}
+	if !strings.Contains(conf, `"198.51.100.7"`) {
+		t.Errorf("containers.conf and /etc/resolv.conf disagree about the nameserver:\n%s\n%s", conf, resolv)
+	}
+}
+
+// TestCgroupsDisabledStillReachesTheEngine guards the job this file had BEFORE
+// #126 gave it two more: preflight P5's selection is a containers.conf setting,
+// and it must survive the file gaining other content.
+//
+// CONTROL: the same Spec with cgroupsDisabled=false must NOT carry it, so this
+// is not asserting a constant.
+func TestCgroupsDisabledStillReachesTheEngine(t *testing.T) {
+	net := policy.NetPolicy{Mode: policy.NetEgress, Nameservers: []string{"192.0.2.53"}}
+	with, _ := specConf(t, net, true)
+	if !strings.Contains(with, `cgroups = "disabled"`) {
+		t.Errorf("preflight P5's selection did not reach the engine:\n%s", with)
+	}
+	without, _ := specConf(t, net, false)
+	if strings.Contains(without, `cgroups = "disabled"`) {
+		t.Errorf("cgroups was disabled without P5 selecting it:\n%s", without)
+	}
+}

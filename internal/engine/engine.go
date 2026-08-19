@@ -219,18 +219,30 @@ func (e *Engine) RunLabel() string { return e.runLabel }
 // EngineSpec.ResolvConfPath; EnterEngine bind-mounts that path over the
 // engine's own /etc/resolv.conf so a container never learns the host's real
 // DNS config (issue #126).
-func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool, resolvConf []byte) (stage.EngineSpec, error) {
+func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool, net policy.NetPolicy) (stage.EngineSpec, error) {
 	finalEnv := append([]string{}, baseEnv...)
 	finalEnv = append(finalEnv, "XDG_RUNTIME_DIR="+e.runroot)
-	if cgroupsDisabled {
-		confPath, err := e.writeCgroupsDisabledConf()
-		if err != nil {
-			return stage.EngineSpec{}, err
-		}
-		finalEnv = append(finalEnv, "CONTAINERS_CONF="+confPath)
-	}
 
-	resolvConfPath, err := e.writeResolvConf(resolvConf)
+	confPath, err := e.writeContainersConf(cgroupsDisabled, net.Resolver())
+	if err != nil {
+		return stage.EngineSpec{}, err
+	}
+	// BOTH variables, and they are not redundant. CONTAINERS_CONF REPLACES
+	// the host's /etc/containers/containers.conf and
+	// $HOME/.config/containers/containers.conf, which is the structural half:
+	// keys snug never thought to name cannot reach the engine at all.
+	// CONTAINERS_CONF_OVERRIDE is loaded LAST, after everything else, which is
+	// the half that survives a later export of CONTAINERS_CONF by something
+	// between here and the engine (issue #133 is exactly that, in the test
+	// wrapper). Setting only the first is defeated by such an export; setting
+	// only the second leaves the host's files loaded underneath and reduces
+	// the guarantee to "every key snug remembered to enumerate".
+	finalEnv = append(finalEnv,
+		"CONTAINERS_CONF="+confPath,
+		"CONTAINERS_CONF_OVERRIDE="+confPath,
+	)
+
+	resolvConfPath, err := e.writeResolvConf(net.ResolvConf())
 	if err != nil {
 		return stage.EngineSpec{}, err
 	}
@@ -253,21 +265,120 @@ func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool, res
 	}, nil
 }
 
-// writeCgroupsDisabledConf generates a minimal containers.conf under this
-// run's own (already hardened, 0700, host-uid-owned) /tmp directory, read
-// only because Spec points CONTAINERS_CONF at it — never merged with, or
-// replacing, any host containers.conf, because the engine's env carries
-// nothing else that would make podman look at one.
-func (e *Engine) writeCgroupsDisabledConf() (string, error) {
+// writeContainersConf generates THE containers.conf this run's engine reads —
+// the only one, because Spec points both CONTAINERS_CONF and
+// CONTAINERS_CONF_OVERRIDE at it. It lives under this run's own (already
+// hardened, 0700, host-uid-owned) /tmp directory, and it is a POINTER handed
+// over as an environment variable, never an inline value: the same rule
+// CLAUDE.md states for GIT_CONFIG_GLOBAL, PIP_CONFIG_FILE and friends.
+//
+// Three separate jobs, in one file because podman gives us one file:
+//
+//  1. cgroupsDisabled — preflight P5's measured selection (ENGINE-WIRING.md
+//     §4). A containers.conf setting, not an argv flag on `system service`,
+//     which is why this file existed before the other two jobs did.
+//
+//  2. DNS and hosts (issue #126). podman generates every container's
+//     /etc/resolv.conf FROM the engine's own unless containers.conf names DNS
+//     explicitly, and its /etc/hosts from the host's /etc/hosts unless
+//     base_hosts_file says otherwise — so without these keys an OFFLINE
+//     sandbox's container still learned the host LAN's nameservers, search
+//     domain and hostname table. Neither is a client-requested mount, so the
+//     proxy's bind filter (internal/dockerproxy/create.go) never sees them
+//     and --dry-run never mentions them. Configuration rather than the
+//     resolv.conf bind alone because the bind is best-effort: it needs a
+//     mount over the engine's /etc/resolv.conf to succeed, which issue #128
+//     measured can fail on a perfectly ordinary host, and a container must
+//     not learn host DNS just because a mount did not take.
+//
+//  3. The keys a host containers.conf would otherwise have supplied (issue
+//     #132) — mounts/volumes inject host PATHS, devices injects a host device
+//     NODE, env_host passes the engine's whole environment, all of them on
+//     EVERY container and none of them client-requested. CONTAINERS_CONF
+//     already stops those files being read at all; naming the keys anyway is
+//     CLAUDE.md's "never trust a helper's default, in either direction",
+//     and it is what still holds if a future podman changes CONTAINERS_CONF
+//     from "replaces" to "merges".
+//
+// res is policy.NetPolicy.Resolver() — the SAME derivation the sandbox
+// payload's own /etc/resolv.conf comes from, taken as VALUES rather than by
+// parsing the rendered file back, so the two cannot diverge (invariant 6).
+func (e *Engine) writeContainersConf(cgroupsDisabled bool, res policy.ResolverConfig) (string, error) {
 	path := filepath.Join(e.runDir, "containers.conf")
-	content := "# snug: generated because preflight P5 measured that this host's cgroup\n" +
-		"# delegation does not survive even the engine's own private cgroup namespace.\n" +
-		"[containers]\n" +
-		"cgroups = \"disabled\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+
+	var b strings.Builder
+	b.WriteString("# snug: generated for this run. Pointed at by both CONTAINERS_CONF and\n" +
+		"# CONTAINERS_CONF_OVERRIDE, so this is the ONLY containers.conf the engine reads:\n" +
+		"# the host's /etc/containers/containers.conf and ~/.config/containers/containers.conf\n" +
+		"# are not merged in (issue #132).\n" +
+		"[containers]\n")
+
+	if cgroupsDisabled {
+		b.WriteString("\n# preflight P5 measured that this host's cgroup delegation does not survive\n" +
+			"# even the engine's own private cgroup namespace.\n" +
+			"cgroups = \"disabled\"\n")
+	}
+
+	// dns_servers is never written EMPTY: podman reads an empty list as "not
+	// configured" and falls back to the engine's own /etc/resolv.conf, which
+	// is precisely the leak this closes. Offline therefore names a server
+	// that cannot resolve anything instead of naming none — measured against
+	// podman 5.8.4, which writes it through literally, so the container's
+	// resolver has an unusable nameserver and fails fast rather than
+	// inheriting the host's. Assert the EFFECT (no host resolver reaches a
+	// container) rather than this file's bytes: a podman that starts treating
+	// "none" as "no nameservers at all" satisfies the same requirement.
+	servers := res.Servers
+	if len(servers) == 0 {
+		servers = []string{"none"}
+	}
+	b.WriteString("\n# DNS, from the resolved policy (issue #126) — the same derivation the\n" +
+		"# sandbox payload's own /etc/resolv.conf comes from.\n")
+	fmt.Fprintf(&b, "dns_servers = %s\n", tomlStringList(servers))
+	// All three keys, as a set. dns_servers alone still leaked the host's
+	// search domain, measured: podman copies `search` from the engine's own
+	// resolv.conf when dns_searches does not name one.
+	fmt.Fprintf(&b, "dns_searches = %s\n", tomlStringList(res.Searches))
+	fmt.Fprintf(&b, "dns_options = %s\n", tomlStringList(res.Options))
+
+	b.WriteString("\n# The host's /etc/hosts is a hostname table for the host's networks, and\n" +
+		"# podman copies it into every container by default (issue #126).\n" +
+		"base_hosts_file = \"none\"\n")
+
+	b.WriteString("\n# Nothing is mounted, and no device or host environment is passed, except\n" +
+		"# what a client asks for and the proxy's own filter then allows (issue #132).\n" +
+		"mounts = []\n" +
+		"volumes = []\n" +
+		"devices = []\n" +
+		"env_host = false\n" +
+		"http_proxy = false\n")
+
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		return "", fmt.Errorf("writing %s: %w", path, err)
 	}
 	return path, nil
+}
+
+// tomlStringList renders a TOML array of basic strings. The values it is given
+// are addresses, `.` and resolver options that policy.NetPolicy produced, none
+// of which can contain a quote or a backslash; it refuses rather than escaping
+// so that a future caller with untrusted values does not get a silently
+// mangled config file.
+func tomlStringList(vs []string) string {
+	var b strings.Builder
+	b.WriteByte('[')
+	for i, v := range vs {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		if strings.ContainsAny(v, "\"\\\n\r\x00") {
+			// Unreachable from policy.NetPolicy today; see the doc comment.
+			v = "snug-refused-unquotable-value"
+		}
+		fmt.Fprintf(&b, "%q", v)
+	}
+	b.WriteByte(']')
+	return b.String()
 }
 
 // writeResolvConf writes resolvConf (the caller's already-resolved
