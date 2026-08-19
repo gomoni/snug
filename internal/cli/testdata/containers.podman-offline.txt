@@ -9,3 +9,16 @@ CONTAINERS  a per-sandbox engine behind a filtering proxy at /run/snug/podman.so
          enforced by the proxy's bind filter, which reads this same resolved
          policy (the mount view itself is still a private copy of the host
          tree, not a derived one — see the TOPOLOGY block).
+IMAGES   provenance is snug's, not this host's (issue #137)
+         search      docker.io and nothing else — no mirror, no rewrite, no
+                     insecure registry. A generated registries.conf, pointed
+                     at by CONTAINERS_REGISTRIES_CONF
+         signatures  NOT verified: snug generates the engine's policy.json
+                     (accept anything), so the host's own cannot decide it.
+                     A host policy stricter than that is named on stderr
+                     before the run starts
+         logins      NONE. REGISTRY_AUTH_FILE points at an empty file, so the
+                     host's ~/.docker/config.json and auth.json are not read,
+                     and no private image can be pulled (issue #142)
+         home        the engine gets a HOME of its own for the same reason —
+                     everything podman reads out of one is snug's or absent

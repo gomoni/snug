@@ -975,6 +975,39 @@ func describeContainers(out *os.File, p *policy.Policy) {
 	fmt.Fprintf(out, "         enforced by the proxy's bind filter, which reads this same resolved\n")
 	fmt.Fprintf(out, "         policy (the mount view itself is still a private copy of the host\n")
 	fmt.Fprintf(out, "         tree, not a derived one — see the TOPOLOGY block).\n")
+	describeImageProvenance(out)
+}
+
+// describeImageProvenance states who decides which bytes become an image, for
+// the same reason describeGit states who wrote the sandbox's git config: the
+// answer used to be "a file on this host that snug does not control", and a
+// screen that says nothing about it reads as though the resolved policy
+// covered it (issue #137).
+//
+// It is unconditional within the CONTAINERS block — no `if` on anything —
+// because every one of these files is written for every run that has an
+// engine. There is no host-dependent branch to render, and a line that
+// appears only sometimes would invite the reader to conclude something from
+// its absence.
+//
+// The credential line is the one worth reading twice: it is a CAPABILITY the
+// sandbox does not have (issue #142), stated plainly rather than apologised
+// for, and it is what makes "a private image cannot be pulled from inside"
+// a documented property rather than a bug report.
+func describeImageProvenance(out *os.File) {
+	fmt.Fprintf(out, "IMAGES   provenance is snug's, not this host's (issue #137)\n")
+	fmt.Fprintf(out, "         search      docker.io and nothing else — no mirror, no rewrite, no\n")
+	fmt.Fprintf(out, "                     insecure registry. A generated registries.conf, pointed\n")
+	fmt.Fprintf(out, "                     at by CONTAINERS_REGISTRIES_CONF\n")
+	fmt.Fprintf(out, "         signatures  NOT verified: snug generates the engine's policy.json\n")
+	fmt.Fprintf(out, "                     (accept anything), so the host's own cannot decide it.\n")
+	fmt.Fprintf(out, "                     A host policy stricter than that is named on stderr\n")
+	fmt.Fprintf(out, "                     before the run starts\n")
+	fmt.Fprintf(out, "         logins      NONE. REGISTRY_AUTH_FILE points at an empty file, so the\n")
+	fmt.Fprintf(out, "                     host's ~/.docker/config.json and auth.json are not read,\n")
+	fmt.Fprintf(out, "                     and no private image can be pulled (issue #142)\n")
+	fmt.Fprintf(out, "         home        the engine gets a HOME of its own for the same reason —\n")
+	fmt.Fprintf(out, "                     everything podman reads out of one is snug's or absent\n")
 }
 
 // describeGit states that the sandbox's git config was RECONSTRUCTED, and from
