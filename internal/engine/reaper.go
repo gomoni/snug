@@ -117,7 +117,10 @@ const reaperScript = `
 read -r tok
 [ "$tok" = ok ] && exit 0
 echo "snug: the sandbox died without cleaning up" >&2
-rm -rf "$(dirname "$SNUG_REAP_SOCK")"
+case "$SNUG_REAP_DIR" in
+/*/snug-[0-9]*) rm -rf "$SNUG_REAP_DIR" ;;
+*) echo "snug: refusing to remove unexpected run directory" >&2 ;;
+esac
 `
 
 type reaper struct {
@@ -128,9 +131,22 @@ type reaper struct {
 // startReaper arms the helper. Called before the engine is started, so that a
 // snug killed during startup is still covered.
 //
-// Only sock, now (issue #167): podman/store/runroot/runLabel existed solely
-// to feed the `podman stop` invocation this script no longer makes.
-func startReaper(sock string) (*reaper, error) {
+// Only sock and runDir, now (issue #167): podman/store/runroot/runLabel
+// existed solely to feed the `podman stop` invocation this script no longer
+// makes.
+//
+// runDir is passed EXPLICITLY rather than derived in the shell, and that is a
+// safety property, not a tidiness one. The first version of this removal ran
+// `rm -rf "$(dirname "$SNUG_REAP_SOCK")"`, which is a different command from
+// the `rm -f "$SNUG_REAP_SOCK"` it replaced in one way that matters: `rm -f`
+// on an empty variable is a harmless no-op, while `dirname ""` is `.` and
+// this process sets no Dir, so it inherits snug's cwd — the user's project
+// directory, usually. An empty value would therefore have deleted the
+// directory the user was working in, at the exact moment snug is dead and
+// cannot supervise. e.sock is non-empty on every path New can return, so it
+// was not reachable; it was one refactor away from being so, and the whole
+// blast radius sat behind a variable being non-empty.
+func startReaper(sock, runDir string) (*reaper, error) {
 	r, w, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -143,6 +159,7 @@ func startReaper(sock string) (*reaper, error) {
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
 		"SNUG_REAP_SOCK=" + sock,
+		"SNUG_REAP_DIR=" + runDir,
 	}
 	// Own process group, and NO Pdeathsig. See the comment above.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

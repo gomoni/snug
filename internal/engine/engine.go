@@ -719,7 +719,7 @@ func (e *Engine) writeResolvConf(resolvConf []byte) (string, error) {
 func (e *Engine) ArmReaper() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	r, err := startReaper(e.sock)
+	r, err := startReaper(e.sock, e.runDir)
 	if err != nil {
 		return err
 	}

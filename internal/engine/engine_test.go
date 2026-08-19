@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -248,7 +249,15 @@ func marker(t *testing.T, arg string) *exec.Cmd {
 // glob would still be caught.
 func TestReaperFiresOnEOFAndRemovesTheWholeRunDirectoryAndStandsDownWithoutTouchingIt(t *testing.T) {
 	run := func(t *testing.T, standDown bool) (dirGone bool) {
-		dir := t.TempDir()
+		// The real shape runDirName authors, not a bare t.TempDir(): the
+		// reaper refuses to remove anything that does not look like this
+		// run's own directory (see reaperScript), so a test using an
+		// arbitrary temp path would exercise the refusal branch and prove
+		// nothing about the removal.
+		dir := filepath.Join(t.TempDir(), fmt.Sprintf("snug-%d-%d", os.Getuid(), os.Getpid()))
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
 		sock := filepath.Join(dir, "podman-1.sock")
 		if err := os.WriteFile(sock, nil, 0o600); err != nil {
 			t.Fatal(err)
@@ -269,7 +278,7 @@ func TestReaperFiresOnEOFAndRemovesTheWholeRunDirectoryAndStandsDownWithoutTouch
 			t.Fatal(err)
 		}
 
-		r, err := startReaper(sock)
+		r, err := startReaper(sock, dir)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -307,6 +316,72 @@ func TestReaperFiresOnEOFAndRemovesTheWholeRunDirectoryAndStandsDownWithoutTouch
 	if run(t, true) {
 		t.Error("snug cleaned up and told the reaper to stand down, but the run directory " +
 			"was removed anyway")
+	}
+}
+
+// The reaper's removal is an `rm -rf` running as the host user, in a process
+// that by design outlives snug and therefore has nobody left to supervise it.
+// Its target must be STATED, never DERIVED.
+//
+// The first cut of issue #167's run-directory removal derived it —
+// `rm -rf "$(dirname "$SNUG_REAP_SOCK")"` — which is one property weaker than
+// it looks: `rm -f` on an empty value is a harmless no-op, but `dirname`
+// follows the socket wherever a later refactor puts it. Measured: point the
+// socket at some other directory (a plausible move, since snug's other
+// runtime state lives under $XDG_RUNTIME_DIR) and the reaper silently removes
+// THAT directory instead, unrelated contents included — `rm` does not refuse
+// it, the way it happens to refuse ".".
+//
+// So the script pins the target to the shape runDirName authors. This test
+// owns that pin. Every case is a path an `rm -rf` must never be handed, plus
+// the positive control that the pin has not simply disabled the removal.
+func TestTheReaperRefusesToRemoveAnythingButItsOwnRunDirectory(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh")
+	}
+	victim := t.TempDir()
+	canary := filepath.Join(victim, "canary.txt")
+	if err := os.WriteFile(canary, []byte("must survive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Everything the reaper must refuse. The empty value is what an
+	// unset/zeroed field yields; the rest are what a relocation or a
+	// mis-joined path yields.
+	for _, dir := range []string{"", ".", "..", "/", "/home", victim, filepath.Base(victim), "relative/snug-1-1"} {
+		cmd := exec.Command("/bin/sh", "-c", reaperScript)
+		cmd.Dir = victim // the reaper sets no Dir either: it inherits snug's cwd
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "SNUG_REAP_DIR=" + dir}
+		cmd.Stdin = strings.NewReader("die\n")
+		out, _ := cmd.CombinedOutput()
+		if !strings.Contains(string(out), "refusing to remove") {
+			t.Errorf("SNUG_REAP_DIR=%q: the reaper did not refuse it; output was %q", dir, out)
+		}
+		if _, err := os.Stat(canary); err != nil {
+			t.Fatalf("SNUG_REAP_DIR=%q: the reaper removed a directory that is not a run "+
+				"directory (the canary is gone): %v", dir, err)
+		}
+	}
+
+	// POSITIVE CONTROL. Without this, every assertion above passes on a
+	// script that removes nothing at all.
+	own := filepath.Join(victim, fmt.Sprintf("snug-%d-%d", os.Getuid(), os.Getpid()))
+	if err := os.MkdirAll(filepath.Join(own, "home"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", "-c", reaperScript)
+	cmd.Dir = victim
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "SNUG_REAP_DIR=" + own}
+	cmd.Stdin = strings.NewReader("die\n")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("control: %v: %s", err, out)
+	}
+	if _, err := os.Stat(own); !os.IsNotExist(err) {
+		t.Errorf("control: the reaper did not remove its OWN run directory %q, so the "+
+			"refusals above prove nothing", own)
+	}
+	if _, err := os.Stat(canary); err != nil {
+		t.Errorf("control: removing the run directory took the canary with it: %v", err)
 	}
 }
 
