@@ -94,6 +94,12 @@ func main() {
 		case "attacker":
 			attacker(os.Args[2:])
 			return
+		case "fdholder":
+			fdholder()
+			return
+		case "fdthief":
+			fdthief(os.Args[2:])
+			return
 		}
 	}
 	selfProbe()
@@ -219,6 +225,221 @@ func attacker(args []string) {
 	remoteWrite := []unix.RemoteIovec{{Base: uintptr(addr), Len: len(secretText)}}
 	_, err = unix.ProcessVMWritev(pid, localWrite, remoteWrite, 0)
 	report("VMWRITE_SIBLING", err)
+}
+
+// ── issue #115: what /proc/<pid>/fd/N actually reopens ──────────────────────
+//
+// fdholder/fdthief are the second sibling pair in this binary, and they exist
+// to pin a CLAIM rather than a fix. seccomp.go's justification for denying
+// pidfd_getfd once said the denial's residual value was theft of "a socket, a
+// pipe, a memfd, a deleted file" — four objects procfs supposedly cannot
+// reopen. Measured, three of the four are wrong: a sibling reopens a memfd, a
+// pipe, a deleted file and an O_TMPFILE file through /proc/<pid>/fd/N and
+// reads the contents back. Only the socket refuses, with ENXIO, because
+// sockfs has no open method (sock_no_open) — not because anything checked a
+// permission.
+//
+// So the residual is one object, not four, and this pair is what stops the
+// larger claim growing back into a comment. Note which direction each
+// assertion runs in: the four reopens are expected to SUCCEED (they are
+// issue #47's reach, made concrete), and only the socket's ENXIO is a
+// property snug's story depends on.
+//
+// No Yama branch here, unlike the /proc/<pid>/mem pair above: opening
+// /proc/<pid>/fd/N takes ptrace_may_access(PTRACE_MODE_READ_FSCREDS), and
+// yama_ptrace_access_check gates PTRACE_MODE_ATTACH only. ptrace_scope
+// therefore does not enter into it at any value, which is precisely why this
+// reach survives on the hardened hosts where the descriptor-theft SYSCALL
+// does not.
+
+// fdKinds are the open file descriptions fdholder publishes, in the order it
+// creates them. The marker text is per-kind so fdthief's output shows WHICH
+// object it read rather than merely that a read succeeded — a reopen that
+// returned the wrong object's bytes would otherwise pass.
+var fdKinds = []string{"control", "memfd", "pipe", "deleted", "tmpfile", "socket"}
+
+// fdmarker is the payload written into each holder object.
+func fdmarker(kind string) string { return "REOPEN-MARKER-115-" + kind }
+
+// fdholder creates one open file description of each kind in fdKinds, prints
+// "HOLDER-PID=" and one "HOLDER-FD-<kind>=<n>" line per kind, then waits for
+// a "fdholder-done" file the way victim waits for "victim-done".
+//
+// "control" is the POSITIVE CONTROL and is not optional: a plain, still-linked
+// regular file. If a sibling cannot reopen THAT through /proc/<pid>/fd/N, the
+// thief is broken and every refusal it reports below is worthless.
+func fdholder() {
+	fmt.Printf("HOLDER-PID=%d\n", os.Getpid())
+
+	publish := func(kind string, fd int) {
+		fmt.Printf("HOLDER-FD-%s=%d\n", kind, fd)
+	}
+
+	// control: an ordinary file in the (writable) target directory.
+	ctl, err := os.CreateTemp(".", "reopen-control-")
+	if err != nil {
+		fmt.Println("HOLDER-FAILED=control:" + err.Error())
+		return
+	}
+	defer ctl.Close()
+	if _, err := ctl.WriteString(fdmarker("control")); err != nil {
+		fmt.Println("HOLDER-FAILED=control-write:" + err.Error())
+		return
+	}
+	publish("control", int(ctl.Fd()))
+
+	// memfd: anonymous, never had a name, no directory entry anywhere.
+	memfd, err := unix.MemfdCreate("reopen-secret", 0)
+	if err != nil {
+		fmt.Println("HOLDER-FAILED=memfd:" + err.Error())
+		return
+	}
+	defer unix.Close(memfd)
+	if _, err := unix.Write(memfd, []byte(fdmarker("memfd"))); err != nil {
+		fmt.Println("HOLDER-FAILED=memfd-write:" + err.Error())
+		return
+	}
+	publish("memfd", memfd)
+
+	// pipe: the READ end is published, with data already in the buffer, so a
+	// successful reopen is demonstrated by the thief draining bytes the
+	// holder never sent it.
+	var pipefds [2]int
+	if err := unix.Pipe(pipefds[:]); err != nil {
+		fmt.Println("HOLDER-FAILED=pipe:" + err.Error())
+		return
+	}
+	defer unix.Close(pipefds[0])
+	defer unix.Close(pipefds[1])
+	if _, err := unix.Write(pipefds[1], []byte(fdmarker("pipe"))); err != nil {
+		fmt.Println("HOLDER-FAILED=pipe-write:" + err.Error())
+		return
+	}
+	publish("pipe", pipefds[0])
+
+	// deleted: a regular file unlinked while still open. /proc/<pid>/fd/N
+	// renders it as "<path> (deleted)" and the path itself no longer
+	// resolves, which is exactly the property the old claim rested on.
+	del, err := os.CreateTemp(".", "reopen-deleted-")
+	if err != nil {
+		fmt.Println("HOLDER-FAILED=deleted:" + err.Error())
+		return
+	}
+	defer del.Close()
+	if _, err := del.WriteString(fdmarker("deleted")); err != nil {
+		fmt.Println("HOLDER-FAILED=deleted-write:" + err.Error())
+		return
+	}
+	if err := os.Remove(del.Name()); err != nil {
+		fmt.Println("HOLDER-FAILED=deleted-unlink:" + err.Error())
+		return
+	}
+	publish("deleted", int(del.Fd()))
+
+	// tmpfile: O_TMPFILE, which never had a directory entry to unlink.
+	tmpfd, err := unix.Open(".", unix.O_TMPFILE|unix.O_RDWR, 0o600)
+	if err != nil {
+		// Not fatal: O_TMPFILE needs filesystem support, and the target bind
+		// is whatever the host offers. The test treats a missing line as
+		// "not measured here" rather than as a refusal, which is why this
+		// prints its own name instead of falling through to publish().
+		fmt.Println("HOLDER-SKIPPED=tmpfile:" + err.Error())
+	} else {
+		defer unix.Close(tmpfd)
+		if _, err := unix.Write(tmpfd, []byte(fdmarker("tmpfile"))); err != nil {
+			fmt.Println("HOLDER-FAILED=tmpfile-write:" + err.Error())
+			return
+		}
+		publish("tmpfile", tmpfd)
+	}
+
+	// socket: a CONNECTED AF_UNIX socket, the one object in this list that a
+	// procfs reopen cannot produce. AF_UNIX rather than TCP on purpose — it
+	// needs no address family the sandbox's empty netns might not carry, and
+	// it is the shape SUPERVISOR-DESIGN.md's control channel would have.
+	sp, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
+	if err != nil {
+		fmt.Println("HOLDER-FAILED=socket:" + err.Error())
+		return
+	}
+	defer unix.Close(sp[0])
+	defer unix.Close(sp[1])
+	if _, err := unix.Write(sp[1], []byte(fdmarker("socket"))); err != nil {
+		fmt.Println("HOLDER-FAILED=socket-write:" + err.Error())
+		return
+	}
+	publish("socket", sp[0])
+
+	fmt.Println("HOLDER-READY=1")
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat("fdholder-done"); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	fmt.Println("HOLDER-EXIT=1")
+}
+
+// fdthief takes the holder's pid and its published "<kind>=<fd>" pairs and,
+// for each, does the whole of the attack: readlink the magic symlink, open it,
+// and read from the reopened descriptor. It reports three fields per kind —
+// REOPEN_<kind>_LINK, REOPEN_<kind>_OPEN and REOPEN_<kind>_READ — because the
+// three fail for different reasons and collapsing them would hide which check
+// the kernel actually applied.
+//
+// Nothing here is a denied syscall: openat(2) and read(2) are as ordinary as
+// syscalls get, which is the finding. No filter that can only see a syscall
+// number has anything to say about this path.
+func fdthief(args []string) {
+	if len(args) < 2 {
+		fmt.Println("THIEF-USAGE=fdthief <pid> <kind>=<fd> ...")
+		return
+	}
+	pid, err := strconv.Atoi(args[0])
+	if err != nil {
+		fmt.Println("THIEF-BAD-PID")
+		return
+	}
+
+	for _, spec := range args[1:] {
+		kind, num, ok := strings.Cut(spec, "=")
+		if !ok {
+			fmt.Println("THIEF-BAD-SPEC=" + spec)
+			continue
+		}
+		fd, err := strconv.Atoi(num)
+		if err != nil {
+			fmt.Println("THIEF-BAD-FD=" + spec)
+			continue
+		}
+		path := fmt.Sprintf("/proc/%d/fd/%d", pid, fd)
+
+		if target, err := os.Readlink(path); err != nil {
+			report("REOPEN_"+kind+"_LINK", err)
+		} else {
+			fmt.Printf("REOPEN_%s_LINK=OK target=%q\n", kind, target)
+		}
+
+		f, openErr := os.OpenFile(path, os.O_RDONLY, 0)
+		report("REOPEN_"+kind+"_OPEN", openErr)
+		if openErr != nil {
+			continue
+		}
+
+		// Read, not ReadAt: a pipe is not seekable, and the point is the
+		// bytes, not the offset. The holder wrote its marker before
+		// publishing, so anything already in the buffer is readable now.
+		buf := make([]byte, 128)
+		n, err := f.Read(buf)
+		if err != nil {
+			report("REOPEN_"+kind+"_READ", err)
+		} else {
+			fmt.Printf("REOPEN_%s_READ=OK content=%q\n", kind, string(buf[:n]))
+		}
+		f.Close()
+	}
 }
 
 // selfProbe is the original issue #23 regression probe: every syscall below

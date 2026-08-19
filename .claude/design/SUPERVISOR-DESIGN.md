@@ -201,7 +201,11 @@ What the channel *would* grant a holder, which is why its unreachability is the
 load-bearing property: one `start` request makes the stage `execve` an arbitrary
 path as **uid 0 with a full capability set in U**, inside N. Verified unreachable
 four ways — the payload's fd table is exactly `0,1,2`; a socket cannot be
-reopened through `/proc/<pid>/fd` at all (`ENXIO`); the stage is not in the
+reopened through `/proc/<pid>/fd` at all (`ENXIO` — and note that after issue
+#115 this is the *only* surviving example of that: a memfd, a pipe, a deleted
+file and an `O_TMPFILE` file all DO reopen through procfs, measured, so the
+argument here works because the channel is a socket specifically, not because it
+is "not a regular file"); the stage is not in the
 payload's pid namespace so there is no pid to name for `pidfd_open`; and the
 receive path uses `read`, never `recvmsg` with a control buffer, so the channel
 cannot deliver a descriptor even to a peer that sends `SCM_RIGHTS`.

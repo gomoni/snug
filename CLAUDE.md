@@ -39,8 +39,11 @@ Three properties are not derivable from a command, and are the ones to carry:
   from each other: `/proc/<pid>/fd/N` reaches a sibling's files and
   `/proc/<pid>/mem` reaches its MEMORY, read and write, and neither is
   syscall-shaped, so no filter can name them (issue #47). What denying
-  `pidfd_getfd` does buy is the one thing procfs cannot reach — theft of a
-  non-file open file description: a socket, a pipe, a memfd, a deleted file.
+  `pidfd_getfd` buys is narrow: procfs already reopens a sibling's pipe, memfd,
+  deleted or `O_TMPFILE` file through `/proc/<pid>/fd/N` with contents intact
+  (measured, issue #115), so the denial's residual value is the **socket**,
+  which procfs cannot reopen (`ENXIO`, because sockfs has no open method) — one
+  object, not the four this line used to name.
 - **`@net` runs a second long-lived process, the stage, and that is a cost.** It
   creates the netns, pins it, *leaves* it, and forks bwrap back in through a
   `setns` shim, so a later phase can put a container engine in the same

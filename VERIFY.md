@@ -1120,6 +1120,66 @@ deniedSyscalls in`, listing `pidfd_getfd`, `process_vm_readv` and
 DISABLED (--no-seccomp)`. The two must read differently — that difference is
 the whole point of the line.
 
+### What denying `pidfd_getfd` actually buys (issue #115)
+
+The filter's own comment used to say the denial was the only route to "a
+socket, a pipe, a memfd, a deleted file", because procfs could reopen none of
+the four. Three of the four were wrong, and this is how you see it: two
+**sibling** processes inside one sandbox, no ptrace, no denied syscall — just
+`open(2)` on `/proc/<pid>/fd/N`.
+
+```bash
+cat > $SC/proj/sub/reopen.py <<'PY'
+import os, socket, sys, time
+if sys.argv[1] == "holder":
+    fds = {}
+    f = open("ctl", "w+"); f.write("M-control"); f.flush(); fds["control"] = f.fileno()
+    m = os.memfd_create("s", 0); os.write(m, b"M-memfd"); fds["memfd"] = m
+    r, w = os.pipe(); os.write(w, b"M-pipe"); fds["pipe"] = r
+    d = os.open("del", os.O_RDWR | os.O_CREAT, 0o600); os.write(d, b"M-deleted"); os.unlink("del"); fds["deleted"] = d
+    a, b = socket.socketpair(); b.send(b"M-socket"); fds["socket"] = a.fileno()
+    print(os.getpid(), " ".join("%s=%d" % kv for kv in fds.items()), flush=True)
+    time.sleep(10)
+else:
+    for spec in sys.argv[3:]:
+        k, n = spec.split("=")
+        p = "/proc/%s/fd/%s" % (sys.argv[2], n)
+        try:
+            fd = os.open(p, os.O_RDONLY); print(k, "REOPENED", os.read(fd, 64)); os.close(fd)
+        except OSError as e:
+            print(k, "REFUSED", e.strerror)
+PY
+
+./bin/snug $SC/proj/sub -- /bin/sh -c '
+  python3 reopen.py holder > h.out 2>&1 &
+  while ! [ -s h.out ]; do sleep 0.05; done
+  python3 reopen.py thief $(cat h.out)'
+```
+
+Expect exactly:
+
+```
+control REOPENED b'M-control'
+memfd REOPENED b'M-memfd'
+pipe REOPENED b'M-pipe'
+deleted REOPENED b'M-deleted'
+socket REFUSED No such device or address
+```
+
+Read the five lines in three groups. `control` is the **positive control** — a
+plain, still-linked file, reopened by a sibling that never had the descriptor;
+if it does not say `REOPENED`, the probe is broken and the last line proves
+nothing. `memfd`/`pipe`/`deleted` are the **finding**: each was named in
+`seccomp.go` as unreachable through procfs, and each hands over its bytes.
+`socket` is the **whole residual** the denial buys, and the errno matters —
+`ENXIO`, because sockfs has no open method, not `EACCES` from some permission
+check. That is why it holds for root too, and why SUPERVISOR-DESIGN.md's
+control-channel argument still stands.
+
+The automated equivalent is
+`TestKnownOpenResidualSiblingReopensAnythingButASocket`; both are deliberately
+asserting that a reach is **open** (issue #47), except for the last line.
+
 ## 7. The network namespace
 
 ```bash
