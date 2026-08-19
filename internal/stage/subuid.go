@@ -107,7 +107,7 @@ func lookupIDRange(path string, id int) (idRange, error) {
 // wider needs a program that reads subuid(5)/subgid(5) on the caller's
 // behalf. Accepting a setuid or file-capability host tool here is the
 // explicit call ("no root, no setuid" is about snug's OWN staged binaries,
-// not a host tool it merely invokes — TIER-B-SHAPE.md Q3).
+// not a host tool it merely invokes — TIER-B.md §1, Q3).
 func findIDMapTool(name string) (string, error) {
 	path, err := exec.LookPath(name)
 	if err != nil {

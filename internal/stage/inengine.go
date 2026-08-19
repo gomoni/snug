@@ -34,7 +34,7 @@ import (
 //     without it, and it keeps podman's per-container nsfs binds out of the
 //     host mount tree. This is a plain private COPY of the host tree,
 //     deliberately NOT derived from the resolved Policy — that is Tier C's
-//     job (TIER-B-SHAPE.md §4: "if you find yourself writing open_tree,
+//     job (TIER-B.md §4: "if you find yourself writing open_tree,
 //     move_mount, a graft… you have crossed into Tier C — stop"). What stops
 //     the engine acting on an ungranted path is the proxy's bind filter,
 //     which reads the SAME resolved Policy a container may not bypass
@@ -45,8 +45,8 @@ import (
 //     own documented contract. No uid-map re-exec here, unlike
 //     __stage-setup: this process forks from a P1 already uid-0-in-U with a
 //     FULL effective set (it created no nested userns), so it inherits full
-//     caps immediately and this single drop is enough — TIER-B-SHAPE.md §2.5
-//     names this distinction explicitly so nobody adds a spurious re-exec.
+//     caps immediately and this single drop is enough — TIER-B.md §3 names
+//     this distinction explicitly so nobody adds a spurious re-exec.
 //  6. fdseal.SealExcept() with an EMPTY keep list — this is the last exec
 //     before podman, and the whole point is that the engine talks to snug
 //     ONLY through its own /tmp socket. The control socket and lifeline pipe
@@ -59,7 +59,7 @@ import (
 //     own /proc/<pid>/ is now worth asking about the moment it joins a
 //     sandbox's namespaces).
 //
-// No /run graft (TIER-B-SHAPE.md §7): podman's own forced tmpfs on /run gives
+// No /run graft (TIER-B.md §4's boundary table): podman's own forced tmpfs on /run gives
 // the engine a working /run in its private mount-namespace copy, and the
 // socket + runroot live on /tmp precisely to sit outside that masking
 // (ENGINE-WIRING.md §3.1).
@@ -173,7 +173,7 @@ func EnterEngine(argv []string) error {
 	// snug-podman-ns wrapper already had to work around by hand. This is a
 	// PLAIN tmpfs mount of a fresh, empty filesystem — not a graft in the
 	// Tier C sense (no open_tree, no move_mount, nothing of the host tree
-	// grafted in): TIER-B-SHAPE.md §7's "no /run graft" still holds for what
+	// grafted in): TIER-B.md §4's "no grafts" still holds for what
 	// it actually meant (no piece of the HOST's /run is exposed here), the
 	// mechanism underneath it was simply wrong about needing no mount at
 	// all. XDG_RUNTIME_DIR is recreated empty on it for the same reason

@@ -7,7 +7,7 @@ import (
 )
 
 // TestContainerBindFilterMatchesPolicyVisibility is the invariant-6 gate for
-// issue #63, Tier B (TIER-B-POLICY.md §4). Tier B gives the engine its own
+// issue #63, Tier B (TIER-B.md §4). Tier B gives the engine its own
 // private COPY of the whole host tree — structurally two mount authors — so
 // what stops a container mounting a path the sandbox cannot see is THIS
 // filter, hostPathVisible, and it must be provably the same predicate as the
