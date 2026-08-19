@@ -859,11 +859,17 @@ The sandbox's `/etc/resolv.conf` is a **generated file delivered from an anonymo
 
 **This section described a single sandbox-side configuration for two milestones after that stopped being true, and it is worth naming the drift rather than editing it away.** It said the file contains *exactly* `nameserver 169.254.1.1`, always. A later change made snug prefer the host's own nameservers wherever the sandbox can reach them directly, so on an ordinary LAN host the file names `192.168.1.1` and no interception happens — while this section, and a hardcoded line in `--dry-run`, both went on describing an interception (issue #28). There are now **three** arms, and which one applies is decided in `NetPolicy.Resolver`:
 
-| Host / profile | The sandbox is told | Who answers |
+| Mode / host / profile | The sandbox is told | Who answers |
 |---|---|---|
-| Routable host resolvers (a LAN router, a public resolver) | those addresses, verbatim | the resolver itself, reached over ordinary egress |
-| All host resolvers on loopback (`systemd-resolved` on `127.0.0.53`) | `nameserver 169.254.1.1` | `pasta`, re-issuing from the host side |
-| **Any profile that sets an address (`@net-anon`)** | `nameserver 169.254.1.1` | `pasta`, re-issuing from the host side |
+| Offline, or a profile that never asked for DNS | nothing — the file says so and lookups fail fast | nobody |
+| **`@net-host`** — the netns IS the host's | the host's own resolvers, **loopback included** | the resolver itself; there is no `pasta` here to intercept |
+| Egress, routable host resolvers (a LAN router, a public resolver) | those addresses, verbatim | the resolver itself, reached over ordinary egress |
+| Egress, all host resolvers on loopback (`systemd-resolved` on `127.0.0.53`) | `nameserver 169.254.1.1` | `pasta`, re-issuing from the host side to `--dns-host` |
+| Egress, **any profile that sets an address (`@net-anon`)** | `nameserver 169.254.1.1` | `pasta`, re-issuing from the host side to `--dns-host` |
+
+`NetPolicy.Resolver` branches on the MODE first and the profile second, and that order is the fix for issue #164 rather than a tidy-up. `RoutableNameservers` drops loopback resolvers because a **private** netns cannot reach host loopback; under `@net-host` that premise is exactly false, and applying the filter there left the profile whose whole purpose is reaching host services unable to resolve anything, pointed at an interception address with no `pasta` behind it. The filter now lives in the egress arm, where its premise holds, and `NetPolicy.Nameservers` carries the host's raw list.
+
+**Where an intercepted query goes is snug's choice, not `pasta`'s** (issue #166). `--dns-host` is passed explicitly, set to the host's first nameserver, loopback included — `pasta` runs on the host, so the sandbox-side filter must not apply to it. Left to its default, `pasta` re-read the host's `/etc/resolv.conf` with its own rule ("first nameserver"), which disagrees with snug's on a host listing a local resolver first and a router second: two authors for one fact, and `--dry-run` could not name the destination because snug did not know it. It now prints `169.254.1.1 -> pasta -> <addr>`.
 
 The third arm is issue #162 and is a **disclosure** decision rather than a reachability one. `@net-anon` exists so the sandbox does not learn where the host sits; naming the host's LAN resolver on the next line of the same generated file gives it straight back, because a LAN resolver is normally the router and so discloses the prefix the synthetic address was hiding (and an IPv6 ULA resolver discloses a randomly-generated, stable per-site prefix). The condition is keyed on `Address` being set, never on the profile's name, so a future anonymising profile inherits it.
 

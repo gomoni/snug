@@ -77,10 +77,28 @@ func TestTheDNSLineRendersTheResolvedPolicy(t *testing.T) {
 		if !strings.Contains(got, "169.254.1.1") {
 			t.Errorf("the dns line does not name the interception address:\n%s", got)
 		}
+
+		// WHAT THE SANDBOX IS TOLD, versus what the SCREEN says — and the
+		// distinction is the whole of issue #162 against issue #166.
+		//
+		// Since #166 the line reads `169.254.1.1 -> pasta -> 192.168.1.1`:
+		// the destination is named because snug now chooses it (--dns-host)
+		// rather than leaving it to pasta's default, and a reader deciding
+		// whether to trust this sandbox needs to know where its queries end
+		// up. That is not a disclosure — --dry-run runs on the host and is
+		// read by the person whose resolver it is.
+		//
+		// What must never name a host resolver is the file the PAYLOAD reads,
+		// and TestNoAnonymisingProfileNamesAHostResolver asserts exactly that
+		// on the generated mount. So this checks the half of the line that
+		// describes the sandbox's own configuration — everything before the
+		// first arrow — rather than the whole string, which would forbid the
+		// destination #166 exists to print.
+		inside, _, _ := strings.Cut(got[strings.Index(got, "dns "):], "->")
 		for _, ns := range testHostNameservers {
-			if strings.Contains(got, ns) {
-				t.Errorf("the dns line names the host resolver %s for a run that does not "+
-					"use it:\n%s", ns, got)
+			if strings.Contains(inside, ns) {
+				t.Errorf("the dns line says the sandbox itself is configured with the host "+
+					"resolver %s, for a run that intercepts:\n%s", ns, got)
 			}
 		}
 	})
@@ -91,6 +109,54 @@ func TestTheDNSLineRendersTheResolvedPolicy(t *testing.T) {
 		got := networkBlock(t, dnsPolicy(t))
 		if strings.Contains(got, "dns  ") {
 			t.Errorf("an offline sandbox has a dns line:\n%s", got)
+		}
+	})
+
+	// EGRESS WITHOUT DNS: the screen must SAY there is no resolver, rather
+	// than printing nothing (issue #166's second half). The line used to be
+	// gated on p.Net.DNS while the generated file consulted no such field, so
+	// this selection produced a NETWORK block silent about DNS beside a
+	// sandbox that had a resolv.conf — and a block that is silent about DNS is
+	// not the same as a sandbox that has no DNS.
+	//
+	// No shipped profile has this shape; a human writing `network = "egress"`
+	// with no `dns = true` in profiles.d does, which is why the fixture builds
+	// one rather than selecting a builtin.
+	t.Run("egress without dns says so rather than saying nothing", func(t *testing.T) {
+		reg := loadTestRegistry(t)
+		reg["egressnodns"] = &policy.Profile{Name: "egressnodns", Network: "egress"}
+		home, target := testTree(t)
+		p, err := policy.Resolve(reg,
+			[]policy.ProfileName{"@sys", "@home", "@cwd-rw", "egressnodns"},
+			policy.Context{
+				Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"},
+				HostNameservers: testHostNameservers,
+			}, policy.OSEnviron{})
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		if p.Net.DNS {
+			t.Fatalf("fixture: the profile asked for DNS after all, so this is not the arm " +
+				"it claims to be")
+		}
+		if p.Net.Mode != policy.NetEgress {
+			t.Fatalf("fixture: the profile did not resolve to egress mode")
+		}
+
+		got := networkBlock(t, p)
+		if !strings.Contains(got, "dns ") {
+			t.Errorf("a sandbox with egress and no DNS prints no dns line at all, so the "+
+				"screen is silent about a fact the generated resolv.conf has an answer "+
+				"for:\n%s", got)
+		}
+		if !strings.Contains(got, "NONE") {
+			t.Errorf("the dns line does not say plainly that no resolver is named inside:\n%s", got)
+		}
+		for _, ns := range testHostNameservers {
+			if strings.Contains(got, ns) {
+				t.Errorf("the dns line names host resolver %s for a run that was never given "+
+					"any:\n%s", ns, got)
+			}
 		}
 	})
 }
