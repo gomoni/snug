@@ -1209,11 +1209,17 @@ The store is keyed by **profile set + target**, so: the same project with the sa
 
 ### 8.2 Lifecycle
 
-The engine is started **lazily**, on the first request that reaches the proxy socket, so a run that never uses containers pays nothing. It runs in its own process group (`Setpgid`) so teardown's group-kill reaps only this engine's tree and never the host's other rootless containers. Teardown: `podman --root … stop`, then group-`SIGTERM`, grace, group-`SIGKILL`, then unlink the sockets. `internal/engine/{lifeline,reaper,reap}.go` own this, and they exist because `conmon` double-forks out of snug's process tree by design.
+**This section described the pre-Tier-B, pre-C0, pre-#167 engine for a while after all three had landed — every claim below was checked against current code (redteam F7) and four were false.** Naming the drift rather than silently correcting it, since a reader who trusted the old text would reintroduce exactly what these changes removed.
+
+The engine is started **EAGERLY**, forked by the stage before the payload exists (issue #63, Tier B) — not lazily on the first request that reaches the proxy socket. A run that never uses containers still pays the fork; `--dry-run` states this cost on screen (§4.3/§4.4), rather than it being invisible the way "lazy" implied.
+
+It does **not** run in its own process group with teardown relying on a group-kill. Since issue #125's C0 the engine has its **own PID namespace** (`CLONE_NEWPID` at its own clone, `internal/stage/enginefork.go`), so `conmon`'s double-forked orphan reparents onto the engine (pid 1 of that namespace) rather than escaping it — killing the engine namespace-collapses everything inside, containers included, which is what actually fells them now, not a `Setpgid` group signal.
+
+Teardown no longer runs a **host-side `podman stop`** at all, on either path (issue #167). It used to: `podman --root … stop`, then group-`SIGTERM`, grace, group-`SIGKILL`. Deleted, not replaced, because C0's own pid namespace renumbers the conmon.pid/pidfile libpod records in the runroot — a host-side reader is reading numbers meaningless in its own numbering, whether the engine happens to still be alive (the clean path) or already collapsed (the SIGKILL path). What teardown does instead: on the clean path, `Engine.Stop` drops the keepalive and verifies by a **socket-path sweep** (never `comm`, never the shared store path); on the SIGKILL path, the pipe-triggered reaper (`internal/engine/reaper.go`) removes the run directory (the socket, `containers.conf`, `registries.conf`, `auth.json`, `resolv.conf`, the generated `home/`) — nothing left to stop, because the namespace collapse that killed snug already killed the engine and everything in it. `internal/engine/{lifeline,reaper,reap}.go` own this, and `reaper.go`/`ENGINE-WIRING.md` §6 carry the full argument for why translating the renumbered pids was rejected rather than attempted.
 
 The store persists on disk. **There is no `snug prune`** — it is described in §11 as a design item and has not been built; stale stores are removed by hand today.
 
-The `runroot` is under `$XDG_RUNTIME_DIR`, i.e. `tmpfs`, so a hard-killed `snug` leaves no stale lock surviving a reboot.
+The `runroot` — and the run directory holding the socket — are under `os.TempDir()` (`/tmp`), **not** `$XDG_RUNTIME_DIR`: a root-in-userns podman masks `$XDG_RUNTIME_DIR` with its own tmpfs on `/run` ([`ENGINE-NETNS.md`](ENGINE-NETNS.md) §3, and engine.go's own doc comment on `New`), so the runroot cannot live there. A hard-killed `snug` does not rely on `/tmp` unmounting to clean up: the reaper removes the run directory explicitly (above), which is what makes that cleanup happen rather than a filesystem property of the path it lives under.
 
 ### 8.3 SELinux and runtime
 

@@ -737,9 +737,13 @@ func (e *Engine) ArmReaper() error {
 //
 // The reaper is the only process snug starts that the sweep must spare, and
 // the reason is the same one reaper.go gives for its missing Pdeathsig: its
-// whole job is to outlive snug and stop this run's containers when snug did
-// not get to. A guard that killed it would be killing the thing that exists
-// because the guard might not run.
+// whole job is to outlive snug and clean up this run's stale state (the run
+// directory — socket, containers.conf, registries.conf, auth.json,
+// resolv.conf, generated home/) when snug did not get to. It no longer stops
+// any container itself (issue #167 deleted the host-side `podman stop` that
+// used to be its job; the kernel's own namespace collapse fells containers
+// by the time the reaper's cleanup runs). A guard that killed it would be
+// killing the thing that exists because the guard might not run.
 func (e *Engine) ReaperPIDs() []int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -817,25 +821,43 @@ func (e *Engine) stopLocked() {
 	//
 	//    Translating those numbers through the engine's namespace before use
 	//    was the alternative and was rejected: it is new teardown machinery
-	//    built to make a mechanism work that, post-collapse, cannot deliver
-	//    anything ON THIS PATH AT ALL — by the time stopLocked runs the
-	//    engine is already Pdeathsig'd dead (engine ⊂ P1 ⊂ P0) and the
-	//    namespace collapse has already fired, so there is nothing left to
-	//    stop and the only remaining possible effect of a stray HOST-side
-	//    "stop" naming a small pid number is signalling a live host process
-	//    that happens to own it (checked pids on this host: they did not
-	//    exist, so nothing was signalled here — but a container distrobox or
-	//    CI runner with its own pid namespace hands low pids to the invoking
-	//    uid). That is closing a stray-signal path, not retiring a mechanism:
-	//    the OUTCOME this step existed for — containers gone when the run
-	//    ends — is unaffected, because the kernel's SIGKILL at namespace
-	//    collapse now delivers it faster than this step ever could (measured
-	//    under 70ms end to end). What is knowingly given up is a best-effort
-	//    graceful SIGTERM on the clean path, for workloads that handle one —
-	//    restorable later, if wanted, by issuing the stop through the
-	//    engine's OWN socket, where the recorded pids are numbered in the
-	//    namespace doing the killing, never by reading a host-side CLI
-	//    against host-numbered pids again.
+	//    built to make a mechanism land on numbers meaningful only inside
+	//    the namespace doing the killing, for an outcome the kernel's own
+	//    SIGKILL-at-collapse already delivers faster (measured under 70ms
+	//    end to end from a SIGKILL of snug).
+	//
+	//    THE RENUMBERING ARGUMENT IS WHAT CARRIES THIS DELETION — not "the
+	//    engine is already dead", which is not true of stopLocked's own
+	//    call sites (a correction from a previous version of this comment,
+	//    red team F5). stopLocked runs from live Go code inside snug's own
+	//    process: on the clean path via sandbox.Options.OnPayloadExit,
+	//    BEFORE the deferred st.Close() that starts the Pdeathsig cascade
+	//    (internal/sandbox/exec.go's own comment says so explicitly — "while
+	//    the engine's socket is still reachable"), so the engine is ALIVE
+	//    here. "Already dead, nothing left to stop" describes the SEPARATE
+	//    reaper PROCESS (reaper.go), which fires only on pipe EOF — i.e.
+	//    only once snug's own process has actually died, which is what
+	//    collapses the engine's pid namespace in the first place. The two
+	//    call sites of "no host-side podman stop" are both right to delete
+	//    the call, for the SAME renumbering reason, but for that one reason
+	//    only: on this (stopLocked's) path a host-side stop would be racing
+	//    a live engine and reading its numbers wrong; on the reaper's path
+	//    there is additionally nothing left to reach at all. Do not conflate
+	//    the two arguments onto one call site again.
+	//
+	//    The residual risk this deletion accepts is a stray signal, not a
+	//    missed teardown: reading a small pid as a HOST pid and asking
+	//    podman to stop it could hit an unrelated live process on a host
+	//    sharing the boot pid namespace, or a container/CI runner handing
+	//    low pids to the invoking uid (checked on this development host:
+	//    the specific pids read here did not exist, so nothing was
+	//    signalled — that is this host's absence of the risk, not a general
+	//    proof it cannot happen). What is knowingly given up is a
+	//    best-effort graceful SIGTERM on the clean path, for workloads that
+	//    handle one — restorable later, if wanted, by issuing a stop
+	//    through the engine's OWN socket, where the recorded pids are
+	//    numbered in the namespace doing the killing, never by reading a
+	//    host-side CLI against host-numbered pids again.
 
 	// 2. Drop the keepalive. From here the engine is on its own idle timeout
 	//    even if it somehow outlives the stage.

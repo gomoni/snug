@@ -445,11 +445,23 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 		ws, err := st.Wait()
 		// Run BEFORE the deferred st.Close() above collapses the stage — and
 		// therefore the engine, via its own Pdeathsig cascading from P1 —
-		// while the engine's socket is still reachable, so containers can be
-		// stopped by label instead of merely killed alongside it. Called
-		// whatever the payload's own outcome, because "did this run have
-		// containers to stop" is a question about opts.EngineSpec, not about
-		// how the payload exited.
+		// while the engine's socket is still reachable. That reachability
+		// used to be the whole point of this position: it let a filtered
+		// `podman stop` run against a still-live engine, before the collapse.
+		// Issue #167 deleted that call (the pids it would stop are numbered
+		// in the engine's own pid namespace, meaningless to a host-side
+		// invocation whether the engine happens to be alive here or already
+		// dead on the SIGKILL path — internal/engine's package comment and
+		// ENGINE-WIRING.md §6/§12 item 1 carry the argument), so THIS SEAM
+		// NOW EXISTS FOR NOTHING SPECIFIC TO ITS POSITION: opts.OnPayloadExit
+		// (Engine.Stop) still drops the keepalive, verifies by the socket-
+		// path sweep and tears down the reaper, and none of those three
+		// needs the engine reachable rather than already collapsed. Left
+		// here rather than moved after st.Close(): moving it is a separate
+		// decision, and leaving it costs nothing observable. Called whatever
+		// the payload's own outcome, because "did this run have containers
+		// to stop" is a question about opts.EngineSpec, not about how the
+		// payload exited.
 		if opts.OnPayloadExit != nil {
 			opts.OnPayloadExit()
 		}

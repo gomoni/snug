@@ -57,8 +57,27 @@ import (
 //
 // So snug arms one helper BEFORE it starts the engine: a shell that blocks
 // reading a pipe snug holds the write end of, and on EOF removes this run's
-// stale socket file — the one thing nothing else removes on the SIGKILL path,
-// since the kernel's namespace collapse deletes processes, not files.
+// ENTIRE run directory (containers.conf, registries.conf, auth.json,
+// resolv.conf, the generated home/, and the socket itself) — the one thing
+// nothing else removes on the SIGKILL path, since the kernel's namespace
+// collapse deletes processes, not files.
+//
+// The directory, not just the socket (red team F4). stopLocked's own step 4
+// (`os.RemoveAll(e.runDir)`) does not run on SIGKILL — no Go code runs at
+// all on that path — and a leftover empty (or non-empty) directory at
+// e.runDir permanently poisons that pid number: engine.New's own existence
+// check refuses with "file exists" the next time this uid+pid combination is
+// reused for a run, which is not an abstract risk on a host that recycles
+// pids quickly. `rm -rf`, not `rmdir` after individually removing each
+// generated file: the latter would duplicate, in this three-line shell
+// script, Go-side knowledge of exactly what Spec() writes into the
+// directory (engine.go's writeContainersConf/writeRegistriesConf/
+// writeAuthFile/writeResolvConf/writeEngineHome), and drift the moment that
+// list changes. `rm -rf` needs no such list, and it is safe to be this
+// blunt specifically BECAUSE the directory is snug's own and nothing else's:
+// createRunDir makes it 0700 and uid-checked at creation, under an
+// unpredictable pid-derived name, so recursively removing it cannot delete
+// anything this run did not itself put there.
 //
 // It is not a daemon. It has no state, no socket and one job, it outlives snug
 // by exactly the time that job takes, and on a clean exit snug does the
@@ -81,8 +100,8 @@ import (
 // helper that exists precisely because the guard might not get to run. It is
 // exempted by pid, through Engine.ReaperPIDs and
 // sandbox.Options.ExcludeFromTeardown, and the exemption covers this process's
-// own children too: on EOF it still forks `rm` (below) to remove the stale
-// socket, and sparing the shell while killing that is worse than sparing
+// own children too: on EOF it still forks `rm` (below) to remove the run
+// directory, and sparing the shell while killing that is worse than sparing
 // neither.
 //
 // Issue #113 is the history. Before that exemption existed the sweep did kill
@@ -98,7 +117,7 @@ const reaperScript = `
 read -r tok
 [ "$tok" = ok ] && exit 0
 echo "snug: the sandbox died without cleaning up" >&2
-rm -f "$SNUG_REAP_SOCK"
+rm -rf "$(dirname "$SNUG_REAP_SOCK")"
 `
 
 type reaper struct {

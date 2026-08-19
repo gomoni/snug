@@ -233,11 +233,39 @@ func marker(t *testing.T, arg string) *exec.Cmd {
 // stop argv; that assertion is retired along with the mechanism it watched,
 // not narrowed — a passing "podman was invoked" test on THIS script would be
 // proof of the exact regression #167 exists to prevent.
-func TestReaperFiresOnEOFAndRemovesTheStaleSocketAndStandsDownWithoutTouchingIt(t *testing.T) {
-	run := func(t *testing.T, standDown bool) bool {
+// TestReaperFiresOnEOFAndRemovesTheWholeRunDirectoryAndStandsDownWithoutTouchingIt
+// is issue #167's own reaper test, extended for red team F4: the reaper used
+// to remove only the socket FILE (`rm -f "$SNUG_REAP_SOCK"`), leaving the
+// rest of the run directory — containers.conf, registries.conf, auth.json,
+// resolv.conf, the generated home/ — behind on the SIGKILL path, because
+// stopLocked's own `os.RemoveAll(e.runDir)` (step 4) does not run when no Go
+// code runs at all. Measured consequence: a leftover entry at that path
+// (empty or not) permanently poisons the pid it is named after —
+// `engine.New`'s own existence check refuses with "file exists" the next
+// time this uid+pid combination is reused. The fixture below populates the
+// directory the way a real run does (several files AND a subdirectory), not
+// just the one file the old test checked, so a fix that only widened the
+// glob would still be caught.
+func TestReaperFiresOnEOFAndRemovesTheWholeRunDirectoryAndStandsDownWithoutTouchingIt(t *testing.T) {
+	run := func(t *testing.T, standDown bool) (dirGone bool) {
 		dir := t.TempDir()
 		sock := filepath.Join(dir, "podman-1.sock")
 		if err := os.WriteFile(sock, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// The rest of the run directory's real shape (engine.go's Spec):
+		// containers.conf, registries.conf, auth.json, resolv.conf, and a
+		// generated home/ subdirectory with content of its own — `rmdir`
+		// would refuse a directory this populated; only `rm -rf` clears it.
+		for _, f := range []string{"containers.conf", "registries.conf", "auth.json", "resolv.conf"} {
+			if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.MkdirAll(filepath.Join(dir, "home", ".config"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "home", ".config", "x"), []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 
@@ -260,7 +288,7 @@ func TestReaperFiresOnEOFAndRemovesTheStaleSocketAndStandsDownWithoutTouchingIt(
 		}
 
 		for i := 0; i < 200; i++ {
-			if _, err := os.Stat(sock); os.IsNotExist(err) {
+			if _, err := os.Stat(dir); os.IsNotExist(err) {
 				return true
 			}
 			time.Sleep(10 * time.Millisecond)
@@ -269,13 +297,16 @@ func TestReaperFiresOnEOFAndRemovesTheStaleSocketAndStandsDownWithoutTouchingIt(
 	}
 
 	// POSITIVE CONTROL for the "stand down" arm below: without first proving
-	// EOF removes the socket, "it wasn't removed" on stand-down could equally
-	// mean the reaper never removes anything at all.
+	// EOF removes the whole directory, "it wasn't removed" on stand-down
+	// could equally mean the reaper never removes anything at all.
 	if !run(t, false) {
-		t.Error("snug died (EOF on the pipe) and the reaper did not remove this run's stale socket file")
+		t.Error("snug died (EOF on the pipe) and the reaper did not remove this run's " +
+			"whole run directory — a leftover entry there poisons this pid for the next " +
+			"run at the same path (issue #167, red team F4)")
 	}
 	if run(t, true) {
-		t.Error("snug cleaned up and told the reaper to stand down, but the socket was removed anyway")
+		t.Error("snug cleaned up and told the reaper to stand down, but the run directory " +
+			"was removed anyway")
 	}
 }
 
@@ -540,7 +571,19 @@ func TestNoHostSidePodmanReadsARecordedPid(t *testing.T) {
 			"regression if it cannot catch a synthetic one", got, len(needles))
 	}
 
-	for _, f := range []string{"engine.go", "reaper.go"} {
+	// The design docs are swept too (red team F7): INDEX.md §8.2 and
+	// ENGINE-WIRING.md §6 both described the pre-#167 teardown in the
+	// PRESENT tense for a while after the code stopped matching, and a
+	// future implementer reading either would reintroduce exactly what
+	// #167 removed with nothing here to notice. Both now describe the old
+	// mechanism only in the past tense, without ever spelling the literal
+	// env var, Go snippet or shell line the needles look for — verified by
+	// this sweep passing on the corrected text, not merely asserted.
+	for _, f := range []string{
+		"engine.go", "reaper.go",
+		"../../.claude/design/INDEX.md",
+		"../../.claude/design/ENGINE-WIRING.md",
+	} {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatalf("reading %s: %v", f, err)

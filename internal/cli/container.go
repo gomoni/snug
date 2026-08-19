@@ -196,9 +196,10 @@ func startContainers(pol *policy.Policy, verbose, dryRun bool) (containerRun, er
 	// Armed NOW, before sandbox.Run has even created the stage — this is
 	// what covers a snug killed during the stage's own startup window
 	// (creating U+N, waiting for the network), before the engine has been
-	// forked at all. It needs only paths and the podman binary, both
-	// already fixed by Spec above; it does not need the engine's socket to
-	// exist yet.
+	// forked at all. It needs only this run's socket path, already fixed on
+	// the Engine by New; it does not need the engine's socket to exist yet,
+	// still less the podman binary (issue #167 removed the reaper's own
+	// host-side `podman stop`, so it no longer needs one at all).
 	if err := eng.ArmReaper(); err != nil {
 		return containerRun{}, err
 	}
