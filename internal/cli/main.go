@@ -178,6 +178,10 @@ func parseArgs(argv []string) (config, error) {
 			cfg.noDefaults = true
 		case a == "-v" || a == "--verbose":
 			cfg.verbose = true
+			// Housekeeping notices are reached from runtimeDir, which several
+			// subsystems call independently, so the preference is set here
+			// once rather than threaded through them (issue #118).
+			setHousekeepingVerbose(true)
 		case a == "--i-know":
 			cfg.iKnow = true
 		case a == "--no-seccomp":
