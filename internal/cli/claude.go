@@ -773,6 +773,24 @@ func claudeGuidance(pol *policy.Policy) []byte {
 	b.WriteString("A token you refresh here does not reach the host; it is lost when this session\n")
 	b.WriteString("ends.\n\n")
 
+	// Containers, and only the two facts an agent would otherwise burn turns
+	// on. Both are consequences of snug authoring image provenance rather than
+	// the host (issues #137, #142), and both produce errors that look exactly
+	// like something to "fix": a short name that does not resolve, and a
+	// registry that refuses to authenticate. The agent must know they are the
+	// design, or it will try to log in.
+	if pol.Podman != policy.PodmanOff {
+		b.WriteString("## Containers\n\n")
+		b.WriteString("An image name is resolved through `docker.io` and nothing else — no mirror\n")
+		b.WriteString("and no other search registry — because snug generates the engine's\n")
+		b.WriteString("`registries.conf` rather than reading the host's. Fully-qualified names from\n")
+		b.WriteString("other registries still work.\n")
+		b.WriteString("There are **no registry credentials** here: the host's are not carried in, so\n")
+		b.WriteString("a private image cannot be pulled and `podman login` has nothing to persist\n")
+		b.WriteString("to. An auth failure against a private registry is the sandbox working, not a\n")
+		b.WriteString("misconfiguration to repair.\n\n")
+	}
+
 	if id := pol.Identity; id != nil && id.SSHMode != policy.SSHNone {
 		b.WriteString("## Identity\n\n")
 		if id.GhUser != "" {

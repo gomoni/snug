@@ -145,11 +145,6 @@ func provisionEngineWrapperWithHome(t *testing.T, homeOverride string) string {
 		t.Fatal(err)
 	}
 
-	engineHome := filepath.Join(root, "home")
-	if homeOverride != "" {
-		engineHome = homeOverride
-	}
-
 	// NOT `export CONTAINERS_CONF` (issue #133). It used to, and that had two
 	// costs, both measured rather than reasoned about:
 	//
@@ -168,14 +163,29 @@ func provisionEngineWrapperWithHome(t *testing.T, homeOverride string) string {
 	// cgroups-forced; it is simply not pointed at any more, so the file the
 	// engine reads is the one snug generates. Storage and registries keep
 	// their own variables, which name different files and are not part of this.
+	// NOT `export CONTAINERS_REGISTRIES_CONF` either, and for issue #133's
+	// reason applied to issue #137's file: snug now generates a registries.conf
+	// and points that variable at it, so a wrapper exporting its own would be
+	// the harness deciding image provenance on snug's behalf and the
+	// regression test would pass with snug's variable deleted.
+	//
+	// HOME is exported ONLY when a caller planted one. snug now sets HOME
+	// itself (to a run-private home carrying the generated policy.json), which
+	// is what the default case must exercise. The override case keeps the
+	// export deliberately: it stands in for the HOST USER's own home — which a
+	// test cannot plant into — so that what is under test there stays
+	// CONTAINERS_CONF closing the channel, rather than snug's HOME making the
+	// planted file unreachable.
+	homeLine := ""
+	if homeOverride != "" {
+		homeLine = fmt.Sprintf("export HOME=%s\n", homeOverride)
+	}
 	wrapper := filepath.Join(dir, "snug-test-podman")
 	script := fmt.Sprintf("#!/bin/sh\n"+
 		"export CONTAINERS_STORAGE_CONF=%s\n"+
-		"export CONTAINERS_REGISTRIES_CONF=%s\n"+
-		"export HOME=%s\n"+
+		"%s"+
 		"exec %s \"$@\"\n",
-		filepath.Join(dir, "storage.conf"),
-		filepath.Join(root, "etc", "snug", "registries.conf"), engineHome, podmanBin)
+		filepath.Join(dir, "storage.conf"), homeLine, podmanBin)
 	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

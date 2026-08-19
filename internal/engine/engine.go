@@ -195,10 +195,20 @@ func (e *Engine) RunLabel() string { return e.runLabel }
 // Spec builds the stage.EngineSpec that Stage.StartEngine consumes: exactly
 // what this run's engine execs into, chosen entirely by P0. podman is the
 // preflight-checked path to a real binary; baseEnv is the explicit, minimal
-// environment the caller built (PATH, HOME, and anything a pinned podman
-// bundle needs, e.g. CONTAINERS_STORAGE_CONF/CONTAINERS_REGISTRIES_CONF) —
-// XDG_RUNTIME_DIR is added here, pointing at this run's own runroot, so the
-// caller never has to know that path. cgroupsDisabled is preflight P5's own
+// environment the caller built (PATH, and anything a pinned podman bundle
+// needs, e.g. CONTAINERS_STORAGE_CONF) — XDG_RUNTIME_DIR is added here,
+// pointing at this run's own runroot, so the caller never has to know that
+// path.
+//
+// HOME is Spec's, not the caller's, and so are CONTAINERS_REGISTRIES_CONF and
+// REGISTRY_AUTH_FILE: everything podman reads out of a home directory is a
+// second author of what a container IS or what it may authenticate as
+// (issues #137, #142), and the files those variables point at are generated
+// here beside the containers.conf below. Every one of them is SET rather than
+// appended (see setEnv), because a duplicate loses to the caller's entry and
+// the only symptom would be the feature not being there.
+//
+// cgroupsDisabled is preflight P5's own
 // measured selection (ENGINE-WIRING.md §4): when this host's cgroup
 // delegation does not survive even the private cgroup namespace __inengine's
 // own fork creates, podman needs `cgroups = "disabled"` as its DEFAULT for
@@ -220,8 +230,32 @@ func (e *Engine) RunLabel() string { return e.runLabel }
 // engine's own /etc/resolv.conf so a container never learns the host's real
 // DNS config (issue #126).
 func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool, net policy.NetPolicy) (stage.EngineSpec, error) {
-	finalEnv := append([]string{}, baseEnv...)
-	finalEnv = append(finalEnv, "XDG_RUNTIME_DIR="+e.runroot)
+	finalEnv := setEnv(append([]string{}, baseEnv...), "XDG_RUNTIME_DIR", e.runroot)
+
+	// HOME is snug's, not the host user's (issues #137, #142). Everything
+	// podman reads out of a home directory — registries.conf, policy.json,
+	// storage.conf, auth.json — is then a file this run authored or a file
+	// that does not exist. The two channels that have an environment
+	// variable of their own are ALSO pointed at explicitly below, because
+	// which home a rootless podman believes in is a version-dependent
+	// question (see writeEngineHome) and an environment variable is not.
+	engineHome, err := e.writeEngineHome()
+	if err != nil {
+		return stage.EngineSpec{}, err
+	}
+	finalEnv = setEnv(finalEnv, "HOME", engineHome)
+
+	registriesPath, err := e.writeRegistriesConf()
+	if err != nil {
+		return stage.EngineSpec{}, err
+	}
+	finalEnv = setEnv(finalEnv, "CONTAINERS_REGISTRIES_CONF", registriesPath)
+
+	authPath, err := e.writeAuthFile()
+	if err != nil {
+		return stage.EngineSpec{}, err
+	}
+	finalEnv = setEnv(finalEnv, "REGISTRY_AUTH_FILE", authPath)
 
 	confPath, err := e.writeContainersConf(cgroupsDisabled, net.Resolver())
 	if err != nil {
@@ -237,10 +271,8 @@ func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool, net
 	// wrapper). Setting only the first is defeated by such an export; setting
 	// only the second leaves the host's files loaded underneath and reduces
 	// the guarantee to "every key snug remembered to enumerate".
-	finalEnv = append(finalEnv,
-		"CONTAINERS_CONF="+confPath,
-		"CONTAINERS_CONF_OVERRIDE="+confPath,
-	)
+	finalEnv = setEnv(finalEnv, "CONTAINERS_CONF", confPath)
+	finalEnv = setEnv(finalEnv, "CONTAINERS_CONF_OVERRIDE", confPath)
 
 	resolvConfPath, err := e.writeResolvConf(net.ResolvConf())
 	if err != nil {
@@ -414,6 +446,183 @@ func tomlStringList(vs []string) string {
 	}
 	b.WriteByte(']')
 	return b.String()
+}
+
+// setEnv sets one variable in a `KEY=VALUE` environment, REPLACING an
+// existing entry rather than appending a second one.
+//
+// Appending is what this used to do, and it is wrong for a variable a caller
+// might also have set: execve preserves duplicates in order and glibc's
+// getenv returns the FIRST match, so an appended override is silently the
+// loser. The failure mode is the one CLAUDE.md warns about — the flag is
+// present in the argv (here: the variable is present in the environment) and
+// the feature is not there.
+func setEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	for i, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			env[i] = prefix + value
+			return env
+		}
+	}
+	return append(env, prefix+value)
+}
+
+// writeEngineHome creates the home directory this run's engine is given
+// INSTEAD of the host user's, and returns its path.
+//
+// The host's home is a second author of what a container IS (issue #137).
+// CONTAINERS_CONF closed containers.conf outright, but podman reads more than
+// one file out of a home directory and the rest have no such variable:
+//
+//   - $HOME/.config/containers/policy.json — the signature policy. It decides
+//     whether an image may be used at all, it is REQUIRED (podman refuses to
+//     pull without one), and it is the one file here with NO environment
+//     variable and no flag: podman 5.8.4 has no --signature-policy at all,
+//     and a per-command flag would not reach an API-driven pull anyway. A
+//     home of our own is the only lever, which is the same conclusion
+//     PODMAN-STATIC.md §5 reached for the research bundle.
+//   - $HOME/.config/containers/registries.conf — where an image comes from.
+//     Also closed by CONTAINERS_REGISTRIES_CONF below; both, for the reason
+//     the next paragraph gives.
+//   - $HOME/.config/containers/auth.json and $HOME/.docker/config.json — the
+//     host user's REGISTRY CREDENTIALS (issue #142). Also closed by
+//     REGISTRY_AUTH_FILE below.
+//   - $HOME/.config/containers/storage.conf — where the store is. Already
+//     overridden by the explicit --root/--runroot in the argv.
+//
+// BE PRECISE ABOUT WHAT THIS LEVER IS WORTH, because it is the weakest of the
+// three used here. MEASURED against podman 5.8.4 (the pinned bundle this
+// host gives snug through $SNUG_PODMAN): with the host's HOME the engine
+// resolved a live credential out of ~/.docker/config.json, and with a home of
+// its own it resolved none. But a rootless podman is free to derive "the
+// user's home" from the passwd entry rather than from $HOME, in which case
+// this closes nothing on that version — which is exactly why policy.json's
+// two neighbours are ALSO pointed at by their own environment variables. The
+// residual, stated plainly: on such a podman the host's policy.json is still
+// read, so signature policy stays host-authored. Nothing else does.
+func (e *Engine) writeEngineHome() (string, error) {
+	home := filepath.Join(e.runDir, "home")
+	confDir := filepath.Join(home, ".config", "containers")
+	if err := os.MkdirAll(confDir, 0o700); err != nil {
+		return "", fmt.Errorf("creating %s: %w", confDir, err)
+	}
+	path := filepath.Join(confDir, "policy.json")
+	if err := os.WriteFile(path, []byte(SignaturePolicyJSON), 0o600); err != nil {
+		return "", fmt.Errorf("writing %s: %w", path, err)
+	}
+	return home, nil
+}
+
+// SignaturePolicyJSON is the signature policy this run's engine reads.
+//
+// Exported for ONE reader: containerpreflight.go's P8, which compares the
+// host's own policy against it. A second copy of "what snug considers
+// permissive" living in the preflight would be a fact stored twice, and the
+// half that drifts would be the one that decides whether a downgrade is
+// announced.
+//
+// It is podman's own shipped default, verbatim in meaning: accept any image,
+// verify no signature. Choosing it is not a hardening decision and must not
+// be read as one — a stricter policy (requiring a signature) would refuse
+// every image on Docker Hub and make the container profiles unusable, and
+// snug has no vocabulary in which a user could say which keys they trust.
+// What this file buys is that the ANSWER IS SNUG'S: today the answer is
+// whatever the host happens to have, or on a host with no policy.json at all
+// (measured: openSUSE ships only /usr/share/containers/policy.json, which
+// podman 5.8.4 does not look at) the answer is "no pull works", which is a
+// host-dependent failure a sandbox should not inherit.
+//
+// The downgrade case — a host that configured a STRICTER policy than this —
+// is not silently accepted: containerpreflight.go's P8 reads the host's own
+// policy.json and says so before the run (CLAUDE.md invariant 5).
+const SignaturePolicyJSON = `{
+    "default": [
+        {
+            "type": "insecureAcceptAnything"
+        }
+    ]
+}
+`
+
+// writeRegistriesConf generates the registries.conf this run's engine reads,
+// and returns its path for CONTAINERS_REGISTRIES_CONF.
+//
+// What a host registries.conf authors is IMAGE PROVENANCE, which is a
+// different question from every other key snug has taken over so far:
+// `unqualified-search-registries` decides what a bare `alpine:3.20` resolves
+// to, and `[[registry]]` + `[[registry.mirror]]` redirect a FULLY QUALIFIED
+// pull somewhere else entirely. So a file snug did not write decided which
+// bytes became the image a container ran, and neither --dry-run nor the
+// proxy's bind filter said a word about it (issue #137).
+//
+// The value is podman's own upstream default and nothing else. That is a
+// deliberate choice between two defensible ones:
+//
+//   - EMPTY (no search registry) is the deny-by-default reading: a bare name
+//     resolves to nothing, every image must be named in full. It is more in
+//     keeping with the guiding principle, and it breaks `FROM alpine` in
+//     every Dockerfile the sandbox builds.
+//   - docker.io, written here, reproduces what a stock podman on a stock host
+//     does. It is not a widening of anything: the alternative to snug naming
+//     docker.io is the HOST file naming docker.io, which is what happens
+//     today.
+//
+// The second was chosen because the security difference between them is
+// small — either way the answer is deterministic and no longer the host's —
+// while the ergonomic difference is not. It is one line to change, and
+// --dry-run states the value, so nobody has to read this file to find out
+// what a short name means inside.
+//
+// No [[registry]] block is written at all, so no mirror, no rewrite and no
+// insecure (non-TLS) registry can be reached through configuration this run
+// authored.
+func (e *Engine) writeRegistriesConf() (string, error) {
+	path := filepath.Join(e.runDir, "registries.conf")
+	const content = `# snug: generated for this run. Pointed at by CONTAINERS_REGISTRIES_CONF, so
+# the host's /etc/containers/registries.conf and
+# ~/.config/containers/registries.conf are not read (issue #137).
+#
+# podman's own default, chosen so that a short image name means the same thing
+# inside the sandbox as it does on a stock host — with snug as the author of
+# that fact rather than a file snug does not control. No [[registry]] block:
+# no mirror, no rewrite, no insecure registry.
+unqualified-search-registries = ["docker.io"]
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return "", fmt.Errorf("writing %s: %w", path, err)
+	}
+	return path, nil
+}
+
+// writeAuthFile generates the EMPTY registry authentication file this run's
+// engine reads, and returns its path for REGISTRY_AUTH_FILE.
+//
+// Without it, containers/image walks its ordinary search order and lands on
+// the host user's own credentials — $XDG_RUNTIME_DIR/containers/auth.json is
+// absent by construction (snug points XDG_RUNTIME_DIR at this run's runroot),
+// so the fall-through reaches $HOME/.config/containers/auth.json and then
+// $HOME/.docker/config.json. MEASURED on this host: a live credential for a
+// private registry resolved out of the latter (issue #142).
+//
+// That is not a configuration leak, it is a CREDENTIAL one, and it is
+// payload-reachable: the proxy allows the images tree, so a payload with
+// @net can make the engine pull — and PUSH — as the host user. It cannot read
+// the credential's bytes, which is why #142 is medium rather than high; what
+// it gets is use of the host user's identity against a system outside the
+// sandbox.
+//
+// Empty rather than projected, deliberately. A subset would need a rule for
+// WHICH registries a sandbox may authenticate to, and snug has no vocabulary
+// for that; inventing one in order to hand over a credential is the wrong
+// direction. The cost is stated plainly instead: no registry login is
+// possible from inside, so a private image cannot be pulled.
+func (e *Engine) writeAuthFile() (string, error) {
+	path := filepath.Join(e.runDir, "auth.json")
+	if err := os.WriteFile(path, []byte("{\n    \"auths\": {}\n}\n"), 0o600); err != nil {
+		return "", fmt.Errorf("writing %s: %w", path, err)
+	}
+	return path, nil
 }
 
 // writeResolvConf writes resolvConf (the caller's already-resolved
