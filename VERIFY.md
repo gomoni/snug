@@ -1221,6 +1221,53 @@ A sandbox with no `@net` is offline by design — there is no egress either. Tha
 is not a bug; it is the floor, and egress arrives only by naming `@net` (§9d is
 the one interim exception, and it says so on the screen).
 
+## 7b. What the sandbox is told about DNS, and whether the screen agrees (issues #28, #162)
+
+Two questions on one screen, and until issue #28 they were answered by a
+hardcoded line rather than by the policy: *which resolver does the sandbox
+actually get*, and *does `--dry-run` describe that run*. `@net-anon` makes the
+second question load-bearing, because it is the profile whose whole purpose is
+that the sandbox does not learn where the host sits.
+
+```bash
+echo "HOST:"; grep ^nameserver /etc/resolv.conf
+
+for p in @net @net-anon; do
+  echo "== $p =="
+  ./bin/snug --dry-run -p $p $SC/proj/sub -- true | grep -A3 '^ *dns '
+  ./bin/snug -p $p $SC/proj/sub -- /bin/sh -c 'grep ^nameserver /etc/resolv.conf'
+done
+
+./bin/snug -p @net-anon $SC/proj/sub -- /bin/sh -c \
+  'getent hosts example.com >/dev/null && echo RESOLVED || echo RESOLVE-FAILED'
+```
+
+Expect, on a host whose own resolvers are routable (an ordinary LAN router, the
+common case):
+
+- `@net` names **the host's own resolvers** in both places — on the screen and
+  in the file — with the screen saying plainly that a LAN resolver address
+  discloses the network the host sits on. That is a disclosure matching a grant:
+  `@net` copies the host's address by design and says so on the next line.
+- `@net-anon` names **`169.254.1.1` in both places**, and **neither** of the
+  host's resolver addresses anywhere. This is the fix for issue #162: the
+  profile used to hide the host's LAN address and then hand back the host's LAN
+  resolver, which discloses the same prefix — the router is normally the
+  resolver.
+- `RESOLVED`. The property is withholding the *host's* resolver, not withholding
+  DNS; pasta re-issues the query from the host side. If this prints
+  `RESOLVE-FAILED`, the disclosure was traded for a broken sandbox and that is a
+  regression, not a tightening.
+
+On a `systemd-resolved` host (every resolver on `127.0.0.53`) both profiles show
+`169.254.1.1`, because interception is the only arm available — the comparison
+above distinguishes nothing there, which is why the automated version of this
+check skips such a host rather than passing on it.
+
+The cross-check is the point of running both commands rather than either one.
+A screen that agrees with a file is worth more than either alone: issue #28 was
+exactly a screen that described an interception the sandbox was not doing.
+
 ## 8. Profile order is irrelevant
 
 ```bash

@@ -847,7 +847,7 @@ Deliberately **not** passed:
 | *(none)* | `bwrap --unshare-all`, no `pasta`. Netns with `lo` only. | No network at all. This is the floor and requires no helper binary — *provided no container profile is selected*: one of those raises the topology to `NetnsStage` and starts a stage even offline (§4.4). |
 | `@net` | topology (b) + the argv in §4.5 | Full internet in/out. Host loopback unreachable. Host cannot reach sandbox ports. |
 | `publish = [3000, 8080]` in a profile | `@net`, `-t 127.0.0.1/3000,8080` | Those ports, bound inside the sandbox, become reachable on the **host's** `127.0.0.1` — and only there. **VERIFIED**: a listener answered `200` from the host at `127.0.0.1:18099` and was **refused** at `192.168.1.120:18099`. The LAN never sees it. |
-| `@net-anon` | `@net` + `-a/-n/-g` from a private range | Sandbox does not learn the host's LAN address. |
+| `@net-anon` | `@net` + `-a/-n/-g` from a private range, **and DNS forced onto interception** | Sandbox does not learn the host's LAN address — nor, since issue #162, the host's LAN *resolver*, which discloses the same prefix (§4.7). |
 | `@podman-socket` / `@podman-build` | topology (b) via the **stage**, engine forked into N, no `pasta` of its own | No egress on its own. Selects a stage and the full subuid range; a container gets exactly the sandbox's network, whatever that is (§4.4). |
 | `@net-host` | `bwrap --unshare-all --share-net`, **no `pasta`** | **Everything.** Host loopback, every abstract AF_UNIX socket (X11, D-Bus), the LAN as the host. Requires `--i-know` on the command line *and* prints a warning. Exists so that "I need to debug a host service" does not become "so I stopped using snug". |
 
@@ -855,19 +855,25 @@ Deliberately **not** passed:
 
 ### 4.7 DNS, on both kinds of host
 
-The sandbox's `/etc/resolv.conf` is a **generated file delivered from an anonymous memfd via `--ro-bind-data`**. Not a bind of the host's file (which may name an unreachable address), not a tmpfs the agent can rewrite, and not a host temporary file (which would be a real file on disk with a race). It contains exactly:
+The sandbox's `/etc/resolv.conf` is a **generated file delivered from an anonymous memfd via `--ro-bind-data`**. Not a bind of the host's file (which may name an unreachable address), not a tmpfs the agent can rewrite, and not a host temporary file (which would be a real file on disk with a race).
 
-```
-nameserver 169.254.1.1
-search .
-options edns0
-```
+**This section described a single sandbox-side configuration for two milestones after that stopped being true, and it is worth naming the drift rather than editing it away.** It said the file contains *exactly* `nameserver 169.254.1.1`, always. A later change made snug prefer the host's own nameservers wherever the sandbox can reach them directly, so on an ordinary LAN host the file names `192.168.1.1` and no interception happens — while this section, and a hardcoded line in `--dry-run`, both went on describing an interception (issue #28). There are now **three** arms, and which one applies is decided in `NetPolicy.Resolver`:
 
-**VERIFIED** inside a full sandbox: `cat /etc/resolv.conf` shows exactly this, and `curl https://example.com` returns `200`.
+| Host / profile | The sandbox is told | Who answers |
+|---|---|---|
+| Routable host resolvers (a LAN router, a public resolver) | those addresses, verbatim | the resolver itself, reached over ordinary egress |
+| All host resolvers on loopback (`systemd-resolved` on `127.0.0.53`) | `nameserver 169.254.1.1` | `pasta`, re-issuing from the host side |
+| **Any profile that sets an address (`@net-anon`)** | `nameserver 169.254.1.1` | `pasta`, re-issuing from the host side |
+
+The third arm is issue #162 and is a **disclosure** decision rather than a reachability one. `@net-anon` exists so the sandbox does not learn where the host sits; naming the host's LAN resolver on the next line of the same generated file gives it straight back, because a LAN resolver is normally the router and so discloses the prefix the synthetic address was hiding (and an IPv6 ULA resolver discloses a randomly-generated, stable per-site prefix). The condition is keyed on `Address` being set, never on the profile's name, so a future anonymising profile inherits it.
+
+**VERIFIED** on this host, `@net-anon`, after the change: `cat /etc/resolv.conf` names `169.254.1.1` and neither `192.168.1.1` nor the host's ULA resolver; `getent hosts example.com` resolves; `curl -w %{http_code} https://example.com` returns `200`, three runs of three.
+
+`search .` and `options edns0` are the same in every arm.
 
 `169.254.1.1` is a link-local address that `pasta` intercepts with `--dns-forward`. `pasta` sits in the **host** network namespace on its socket side (that is what gives the sandbox egress at all), so it re-issues the query from the host, to whatever the host's real resolver is. This makes both host configurations work with **one identical sandbox-side configuration**:
 
-- **Plain `resolv.conf` (this host, `nameserver 192.168.1.1`).** `pasta`'s `--dns-host` defaults to the first nameserver in the host's `/etc/resolv.conf`, read at startup from `snug`'s (i.e. the host's) mount namespace. Queries go to `192.168.1.1` from the host netns. **VERIFIED** by a raw DNS query from inside the namespace: `DNS RESPONSE bytes=61 ancount=2`.
+- **Plain `resolv.conf` (this host, `nameserver 192.168.1.1`), when interception is in use at all — i.e. under `@net-anon`.** `pasta`'s `--dns-host` defaults to the first nameserver in the host's `/etc/resolv.conf`, read at startup from `snug`'s (i.e. the host's) mount namespace. Queries go to `192.168.1.1` from the host netns. **VERIFIED** by a raw DNS query from inside the namespace: `DNS RESPONSE bytes=61 ancount=2`.
 - **`systemd-resolved` (`nameserver 127.0.0.53`).** `127.0.0.53` is unreachable *from the sandbox* — which is exactly the property we spent §4.2 establishing, and we must not undo it. But `pasta` is not in the sandbox. `pasta`'s socket side is in the host netns, where `127.0.0.53` is perfectly reachable. `--dns-forward 169.254.1.1` therefore works unchanged: the sandbox talks to a link-local address that does not exist, `pasta` catches it and talks to `systemd-resolved` on the host's behalf. **No host-loopback hole is opened**, because the sandbox never gets a route to `127.0.0.53`; it only gets an answer.
 
 **Offline.** With no `@net` profile there is no `pasta` and no DNS. `/etc/resolv.conf` is still generated, so resolver libraries fail immediately and legibly instead of hanging on a 5-second timeout.

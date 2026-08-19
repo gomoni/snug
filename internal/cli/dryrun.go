@@ -1463,7 +1463,31 @@ func describeNetwork(out *os.File, p *policy.Policy) {
 		fmt.Fprintf(out, "         abstract unix   UNREACHABLE (netns-scoped: X11, D-Bus)\n")
 		fmt.Fprintf(out, "         egress          full, IPv4 + IPv6\n")
 		if p.Net.DNS {
-			fmt.Fprintf(out, "         dns             169.254.1.1 -> pasta -> host resolver\n")
+			// RENDERED FROM THE RESOLVED POLICY, never from a literal (issue
+			// #28). This line was a hardcoded string printed whenever DNS was
+			// on, so on an ordinary LAN host it claimed pasta intercepted
+			// while the sandbox was actually handed `nameserver 192.168.1.1`
+			// — a false fact about DNS on the screen whose entire job is
+			// letting a human decide whether a sandbox leaks its network
+			// position, four lines above an offer of '@net-anon' because "the
+			// host's LAN address is hidden".
+			//
+			// Both arms name the addresses the sandbox will really read out
+			// of /etc/resolv.conf, and both say who answers, because "which
+			// address" and "which party" are two different questions and the
+			// old line answered the second one wrongly while looking like it
+			// answered both.
+			if servers := p.Net.Resolver().Servers; p.Net.NeedsDNSForward() {
+				fmt.Fprintf(out, "         dns             %s -> pasta -> host resolver\n",
+					strings.Join(servers, " "))
+				fmt.Fprintf(out, "                         (a link-local address that does not exist; no host\n")
+				fmt.Fprintf(out, "                         resolver address is named inside the sandbox)\n")
+			} else {
+				fmt.Fprintf(out, "         dns             %s\n", strings.Join(servers, " "))
+				fmt.Fprintf(out, "                         (the HOST's own resolvers, named inside the sandbox and\n")
+				fmt.Fprintf(out, "                         reached through ordinary egress — a LAN resolver address\n")
+				fmt.Fprintf(out, "                         discloses the network the host sits on)\n")
+			}
 		}
 		if len(p.Net.Publish) > 0 {
 			fmt.Fprintf(out, "         host -> sandbox ports %v, on the host's 127.0.0.1 only\n", p.Net.Publish)

@@ -256,6 +256,23 @@ dns = true
 
 # The sandbox does not learn your LAN address. pasta copies the host's addresses
 # into the namespace by default, which is a small information disclosure.
+#
+# Setting an address also switches DNS onto pasta's interception path, and that
+# is not a second feature — it is the same one. This profile used to hide the
+# host's address and then name the host's LAN resolver in the sandbox's
+# /etc/resolv.conf, which gives the hidden network straight back: a LAN resolver
+# is normally the router, so 192.168.1.1 discloses the /24 the host sits in, and
+# an IPv6 ULA resolver discloses a randomly-generated, stable per-site prefix.
+# The search domain was anonymised here from the beginning and the nameserver
+# was not — one rule applied to one of its two halves (issue #162). The sandbox
+# is now told `nameserver 169.254.1.1`, an address that does not exist, and
+# pasta re-issues the query from the host side.
+#
+# ABUSE: unchanged from @net — the whole internet, in and out. What this profile
+# adds is a WITHHOLDING, not a hole. What it still does not hide: the sandbox
+# has full egress, so a payload that wants to know where it is can ask any
+# server it can reach, and DNS answers still tell it what the host's resolver
+# would have told it. This bounds passive disclosure, not an active question.
 [profile.net-anon]
 description = "As net, but the sandbox gets a synthetic address instead of the host's."
 include = ["net"]

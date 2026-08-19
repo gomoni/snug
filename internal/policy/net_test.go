@@ -170,3 +170,95 @@ func TestShareNetOnlyForHostMode(t *testing.T) {
 		}
 	}
 }
+
+// AN ANONYMISING PROFILE MUST NOT NAME A HOST RESOLVER. @net-anon exists for
+// one reason — the sandbox does not learn where the host sits — and it used to
+// hide the host's address and then hand back the host's LAN resolver on the
+// next line of the same generated file (issue #162). A LAN resolver is
+// normally the router, so its address discloses the prefix the hidden host
+// address sits in; an IPv6 ULA resolver discloses a stable per-site prefix.
+//
+// The condition is Address, never the profile NAME, so a future anonymising
+// profile inherits this instead of re-opening the hole under a new name.
+func TestAnAnonymisedSandboxNamesNoHostResolver(t *testing.T) {
+	const hostNS = "192.168.1.1"
+	const hostNS6 = "fdde:4e97:189::1"
+	servers := RoutableNameservers([]string{hostNS, hostNS6})
+
+	anon := NetPolicy{
+		Mode: NetEgress, DNS: true, Nameservers: servers,
+		Address: "10.13.13.2/24", Gateway: "10.13.13.1",
+	}
+
+	// CONTROL, and it is the whole test: the SAME policy without Address does
+	// name both host resolvers. Without this, "no host resolver appears"
+	// passes equally on a fixture that never had one — and on a ResolvConf
+	// that stopped naming any resolver at all, which would be a broken
+	// sandbox rather than a private one.
+	plain := anon
+	plain.Address, plain.Gateway = "", ""
+	control := string(plain.ResolvConf())
+	for _, ns := range []string{hostNS, hostNS6} {
+		if !strings.Contains(control, ns) {
+			t.Fatalf("control: a non-anonymised sandbox does not name the host resolver %s "+
+				"either, so the assertion below distinguishes nothing:\n%s", ns, control)
+		}
+	}
+
+	rc := string(anon.ResolvConf())
+	for _, ns := range []string{hostNS, hostNS6} {
+		if strings.Contains(rc, ns) {
+			t.Errorf("an anonymised sandbox is told to use the host's own resolver %s, which "+
+				"discloses the network the synthetic address exists to hide:\n%s", ns, rc)
+		}
+	}
+	if !strings.Contains(rc, dnsForwardAddr) {
+		t.Errorf("an anonymised sandbox names no interception address, so it has no resolver "+
+			"at all — the fix must withhold the host's resolver, not DNS:\n%s", rc)
+	}
+	if !slices.Contains((&Policy{Net: anon}).PastaArgs(PastaTargetChild(1)), "--dns-forward") {
+		t.Error("--dns-forward missing for an anonymised sandbox, so it is pointed at a " +
+			"link-local address with nothing behind it")
+	}
+}
+
+// THE TWO HALVES OF THE DNS DECISION CANNOT DISAGREE. NeedsDNSForward decides
+// whether pasta is given --dns-forward; Resolver decides what the sandbox is
+// told to use. They used to test different conditions over the same fields,
+// and issue #28 is what that looks like from outside: the screen described an
+// interception the sandbox was not doing.
+//
+// Asserted as an identity over every combination rather than at either site,
+// because the failure mode is not a wrong answer at one site — it is the two
+// sites answering differently.
+func TestDNSForwardingAgreesWithTheGeneratedResolvConf(t *testing.T) {
+	routable := []string{"192.168.1.1"}
+	for _, tc := range []struct {
+		name string
+		net  NetPolicy
+	}{
+		{"routable host resolver", NetPolicy{Mode: NetEgress, DNS: true, Nameservers: routable}},
+		{"systemd-resolved host", NetPolicy{Mode: NetEgress, DNS: true}},
+		{"anonymised, routable host resolver", NetPolicy{Mode: NetEgress, DNS: true, Nameservers: routable, Address: "10.13.13.2/24"}},
+		{"anonymised, systemd-resolved host", NetPolicy{Mode: NetEgress, DNS: true, Address: "10.13.13.2/24"}},
+		{"offline", NetPolicy{Mode: NetIsolated}},
+		{"egress without dns", NetPolicy{Mode: NetEgress, Nameservers: routable}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			intercepting := strings.Contains(string(tc.net.ResolvConf()), dnsForwardAddr)
+			forwarding := slices.Contains((&Policy{Net: tc.net}).PastaArgs(PastaTargetChild(1)), "--dns-forward")
+
+			if tc.net.DNS && intercepting != forwarding {
+				t.Errorf("the sandbox is told %s but pasta --dns-forward is %v: one half of the "+
+					"DNS decision changed and the other did not",
+					map[bool]string{true: "to use the interception address", false: "to use a real resolver"}[intercepting],
+					forwarding)
+			}
+			if tc.net.NeedsDNSForward() != forwarding {
+				t.Errorf("NeedsDNSForward() = %v but the pasta argv %s --dns-forward",
+					tc.net.NeedsDNSForward(),
+					map[bool]string{true: "carries", false: "does not carry"}[forwarding])
+			}
+		})
+	}
+}
