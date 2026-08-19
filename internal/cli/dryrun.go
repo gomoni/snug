@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/gomoni/snug/internal/policy"
@@ -1212,6 +1213,54 @@ func describeClaude(out *os.File, p *policy.Policy) {
 	fmt.Fprintf(out, "                    host's per-project tool approvals — so tools you approved on\n")
 	fmt.Fprintf(out, "                    the host are asked again in here\n")
 
+	// The credentials disclosure (issue #58), and it belongs on this screen
+	// more than anything else here: --dry-run is the artifact a human uses to
+	// decide whether to trust snug, and "which of my credentials does the
+	// sandbox get" is the sharpest form of that question. The names are
+	// snug's own fixed lists, not host-controlled, so they need no
+	// visibleValue — and unlike the settings block there is no per-run
+	// variation to render, because the allowlist IS the answer.
+	if m, ok := claudeCredentialsMount(p); ok {
+		fmt.Fprintf(out, "         creds      ~/.claude/.credentials.json is PROJECTED from the host's —\n")
+		fmt.Fprintf(out, "                    a generated file, not a copy\n")
+		fmt.Fprintf(out, "                    carried: %s\n", strings.Join(claudeCredentialNames(), " "))
+		fmt.Fprintf(out, "                    NOT carried: refreshToken refreshTokenExpiresAt\n")
+		// THE NUMBER, not just the adjective. The whole security argument of
+		// issue #58 is a TIME BOUND, snug already has the value in hand
+		// (ProjectClaudeCredentials returns it), and an earlier version of this
+		// block stated the bound only qualitatively — "dies with the access
+		// token" — which asks the reader to take the bound on trust on the one
+		// screen whose job is to replace trust with measurement.
+		if when, ok := claudeCredentialExpiry(m, screenNow()); ok {
+			fmt.Fprintf(out, "                    expires:  %s\n", when)
+		}
+		// Deliberately NOT "dies with the access token instead of outliving
+		// it". A red-team pass pushed back on that sentence and was right: it
+		// invites the reading "does not outlive the sandbox", which is false.
+		// Expiry is a TIMER, not a kill switch — there is no revocation faster
+		// than it — so a stolen token still buys its remaining life, which is
+		// hours against a sandbox that often lives for minutes. What is true is
+		// the comparison with what shipped before, and that is what this says.
+		fmt.Fprintf(out, "                    Nothing in here can mint a NEW token, so a stolen copy is\n")
+		fmt.Fprintf(out, "                    bounded by the expiry above — hours — rather than by the\n")
+		fmt.Fprintf(out, "                    refresh token's, which is weeks. It is a timer, not a\n")
+		fmt.Fprintf(out, "                    kill switch: it can still outlive this sandbox\n")
+	} else {
+		// "snug staged nothing at this path", NOT "Claude Code will start
+		// LOGGED OUT". The second is a claim about the SANDBOX where this code
+		// only checked snug's OWN staging: a user profile binding the host's
+		// file at this guest path is a named hole the human selected, and on
+		// the projection-failure arm that bind survives — so the sandbox would
+		// read the host's full file, refresh token included, under a line
+		// claiming it was logged out. The FILESYSTEM block above shows the
+		// bind; this line no longer contradicts it.
+		fmt.Fprintf(out, "         creds      snug staged NOTHING at ~/.claude/.credentials.json — this\n")
+		fmt.Fprintf(out, "                    host has no such file, or it could not be projected. snug\n")
+		fmt.Fprintf(out, "                    does not fall back to copying a file it could not read.\n")
+		fmt.Fprintf(out, "                    Unless a profile above binds one, Claude Code starts\n")
+		fmt.Fprintf(out, "                    LOGGED OUT in here\n")
+	}
+
 	// The settings.json disclosure. Mount.Content is redacted (policy.Secret)
 	// everywhere else on this screen by design (see the doc comment above and
 	// secret.go's "why every value" section) — printing the CARRIED key names
@@ -1710,3 +1759,90 @@ func formatArgs(args []string) string {
 	}
 	return b.String()
 }
+
+// claudeCredentialsMount finds the staged ~/.claude/.credentials.json, which
+// stageClaudeCredentials writes only when the host's file both exists and
+// projects. Its ABSENCE is a fact --dry-run states rather than omits: "no
+// credential is staged" and "a credential is staged" are different runs, and a
+// human reading this screen is entitled to know which one they are about to
+// start.
+// The lookup is claudeSettingsMount's, verbatim in shape, and it was NOT that
+// on first writing — the first version keyed on `m.Guest == want && m.Kind ==
+// KindData` with neither an Authored check nor a fallback, four hundred lines
+// below the sibling whose own comment states the measured hazard. A red-team
+// pass found it, and the failure is the worst direction a trust screen can
+// fail in: on a host whose $HOME is a symlink (the default on Silverblue- and
+// MicroOS-shaped systems, /home -> /var/home), the screen printed "creds NOT
+// staged ... Claude Code will start LOGGED OUT" while the SAME screen's mount
+// table and bwrap argv showed the access token being handed over.
+//
+// Both guards therefore matter here, for the reasons their originals give:
+// Resolve canonicalises $HOME while claudeFiles is handed main.go's raw
+// os.UserHomeDir() value, so the exact-match key can miss; and `Authored`
+// rather than `Kind == KindData` alone, because authored()'s own comment
+// records that the KindData spelling is a PROXY for "snug wrote this" that has
+// already drifted once.
+func claudeCredentialsMount(p *policy.Policy) (policy.Mount, bool) {
+	if m, ok := p.Mounts[filepath.Join(p.Home, ".claude", ".credentials.json")]; ok {
+		return m, m.Authored && m.Kind == policy.KindData
+	}
+	for _, m := range p.Mounts {
+		if m.Authored && m.Kind == policy.KindData &&
+			filepath.Base(m.Guest) == ".credentials.json" &&
+			filepath.Base(filepath.Dir(m.Guest)) == ".claude" {
+			return m, true
+		}
+	}
+	return policy.Mount{}, false
+}
+
+// claudeCredentialNames renders policy.ClaudeCredentialAllowlist for the
+// screen. Derived from the allowlist rather than written out beside it, so a
+// field added there cannot fail to appear here — the copy-of-state-held-
+// elsewhere problem CLAUDE.md names about counts in prose.
+func claudeCredentialNames() []string {
+	names := make([]string, 0, len(policy.ClaudeCredentialAllowlist))
+	for _, k := range policy.ClaudeCredentialAllowlist {
+		names = append(names, k.Name)
+	}
+	return names
+}
+
+// claudeCredentialExpiry reads the expiry back out of the content snug already
+// STAGED, never from a second read of the host — the same rule
+// claudeSettingsCarriedNames follows: this screen describes what was decided,
+// and a second opinion computed here could disagree with the file the sandbox
+// gets.
+//
+// It renders the host's own value and computes no policy from it. An absent or
+// unparseable expiry prints no line rather than a wrong one.
+func claudeCredentialExpiry(m policy.Mount, now time.Time) (string, bool) {
+	var envelope struct {
+		OAuth struct {
+			ExpiresAt int64 `json:"expiresAt"`
+		} `json:"claudeAiOauth"`
+	}
+	if err := json.Unmarshal([]byte(m.Content), &envelope); err != nil {
+		return "", false
+	}
+	ms := envelope.OAuth.ExpiresAt
+	if ms <= 0 {
+		return "", false
+	}
+	at := time.UnixMilli(ms).UTC()
+	left := at.Sub(now).Round(time.Minute)
+	if left <= 0 {
+		return at.Format(time.RFC3339) + " (ALREADY EXPIRED — run `claude` on the host)", true
+	}
+	return fmt.Sprintf("%s (in %dh%02dm)", at.Format(time.RFC3339),
+		int(left.Hours()), int(left.Minutes())%60), true
+}
+
+// screenNow is the clock --dry-run reads, and it is a variable for ONE reason:
+// the CLAUDE block now renders a duration, and a golden file containing "in
+// 4h36m" would differ on every run. The golden test pins it; nothing else may.
+//
+// Deliberately not threaded through describeClaude's signature: the seam exists
+// for a test, and widening a rendering function's parameters to advertise that
+// would put the test's needs in the screen's API.
+var screenNow = func() time.Time { return time.Now() }

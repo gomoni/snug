@@ -15,6 +15,15 @@ CLAUDE   ~/.claude.json is GENERATED, not copied — three keys, no host bytes
                     org, email, account UUIDs, machine ID, MCP servers, and the
                     host's per-project tool approvals — so tools you approved on
                     the host are asked again in here
+         creds      ~/.claude/.credentials.json is PROJECTED from the host's —
+                    a generated file, not a copy
+                    carried: accessToken expiresAt scopes subscriptionType rateLimitTier
+                    NOT carried: refreshToken refreshTokenExpiresAt
+                    expires:  2026-01-01T05:00:00Z (in 5h00m)
+                    Nothing in here can mint a NEW token, so a stolen copy is
+                    bounded by the expiry above — hours — rather than by the
+                    refresh token's, which is weeks. It is a timer, not a
+                    kill switch: it can still outlive this sandbox
          settings   ~/.claude/settings.json is GENERATED from an allowlist of
                     the host's — not bound, never read-only
                     carried: theme

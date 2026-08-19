@@ -1,5 +1,5 @@
 profile     @claude
-            Claude Code: binary and skills read-only, credentials and settings generated.
+            Claude Code: binary and skills read-only, credentials projected and settings generated.
 defined in  builtin:base.toml
 
   includes         @sys

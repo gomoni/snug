@@ -54,7 +54,13 @@ import (
 // is how issue #19 happened. Seeding them means the promise is measured on
 // every run of `make gate` instead of re-read by a human who trusts it.
 var claudeHostFixture = map[string]string{
-	".claude/.credentials.json": `{"claudeAiOauth":{"accessToken":"CANARY-OAUTH-TOKEN"}}`,
+	// TWO canaries in this one file, and the pair is the measurement issue #58
+	// added. The access token LEGITIMATELY crosses — that is the credential
+	// Claude Code authenticates with — while the refresh token must not, so a
+	// single canary could no longer tell "projected" from "copied". Which of
+	// the two appears in the staged mount is exactly the difference.
+	".claude/.credentials.json": `{"claudeAiOauth":{"accessToken":"CANARY-OAUTH-ACCESS",` +
+		`"refreshToken":"CANARY-OAUTH-REFRESH"}}`,
 	// The canary sits in a DROPPED key, deliberately, not in `model`. `model` is
 	// on policy.ClaudeSettingAllowlist, so a canary placed there would make a
 	// CORRECTLY carried value look like a copy — this fixture would then report
@@ -97,6 +103,19 @@ func originOf(m policy.Mount, home string) string {
 		}
 		return "bound from host " + m.Host
 	}
+	// The credentials file first, because it is the one file whose staged form
+	// is neither a copy nor free of host bytes (issue #58): it is a PROJECTION,
+	// and the two canaries above are what distinguish the three outcomes.
+	// Checked before the generic loop, whose whole-file match this file can no
+	// longer produce — the projection re-encodes, so the host's byte sequence
+	// is gone even though one of its VALUES legitimately crossed.
+	if bytes.Contains([]byte(m.Content), []byte("CANARY-OAUTH-REFRESH")) {
+		return "COPIED FROM HOST ~/.claude/.credentials.json"
+	}
+	if bytes.Contains([]byte(m.Content), []byte("CANARY-OAUTH-ACCESS")) {
+		return "PROJECTED FROM HOST ~/.claude/.credentials.json"
+	}
+
 	rels := make([]string, 0, len(claudeHostFixture))
 	for rel := range claudeHostFixture {
 		rels = append(rels, rel)
@@ -232,12 +251,18 @@ func claudeFixtureHome(t *testing.T, trustTarget bool) (*policy.Policy, string, 
 // TestClaudeStagedSetIsExactlyThisTable is the permanent regression test for
 // issue #19.
 //
-// ORIGIN is the column the issue turns on. Exactly ONE row may read "COPIED
-// FROM HOST", and it is .credentials.json: MEASURED (claude 2.1.232), deleting
-// it inside a sandbox gives "Not logged in · Please run /login" at once, while
-// deleting ~/.claude.json costs the theme picker and the trust dialog and
-// nothing else. It is a credential, it is 508 bytes, and it carries no
-// inventory of the host.
+// ORIGIN is the column the issue turns on, and since issue #58 **no row reads
+// "COPIED FROM HOST" at all**. The last one that did was .credentials.json —
+// MEASURED (claude 2.1.232), deleting it inside a sandbox gives "Not logged in
+// · Please run /login" at once, while deleting ~/.claude.json costs the theme
+// picker and the trust dialog and nothing else — and it is now a PROJECTION:
+// the access token crosses, the refresh token does not.
+//
+// "PROJECTED FROM HOST" is a third origin, not a softer spelling of the second,
+// and the fixture is built so the table cannot blur them: the credentials file
+// carries two canaries, one in the field that legitimately crosses and one in
+// the field that must never. A regression to a verbatim copy puts the refresh
+// canary in the mount and this row reads "COPIED FROM HOST" again.
 func TestClaudeStagedSetIsExactlyThisTable(t *testing.T) {
 	pol, home, target := claudeFixtureHome(t, false)
 	got := claudeMountSet(pol, home)
@@ -250,9 +275,12 @@ func TestClaudeStagedSetIsExactlyThisTable(t *testing.T) {
 		// at runtime and the point of a private tmpfs copy is that the rewrite
 		// goes nowhere.
 		"~/.claude.json": {"data", "rw", "0600", "generated"},
-		// The ONE host copy, and the only load-bearing file: MEASURED, without
-		// it Claude Code says "Not logged in · Please run /login".
-		"~/.claude/.credentials.json": {"data", "rw", "0600", "COPIED FROM HOST ~/.claude/.credentials.json"},
+		// The only load-bearing file: MEASURED, without it Claude Code says
+		// "Not logged in · Please run /login". It was the ONE row reading
+		// "COPIED FROM HOST"; since issue #58 it is a PROJECTION — the access
+		// token crosses, the refresh token does not, and NO row on this table
+		// reads "COPIED FROM HOST" any more.
+		"~/.claude/.credentials.json": {"data", "rw", "0600", "PROJECTED FROM HOST ~/.claude/.credentials.json"},
 		// snug's guidance, generated per-run from the resolved policy. RO: the
 		// payload must not be able to rewrite the description of its own
 		// sandbox and then read it back as truth.

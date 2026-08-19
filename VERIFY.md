@@ -959,6 +959,113 @@ you approved in a host session is asked again here. Both are consequences of not
 copying the host's file, and both are stated in the `~/.claude/CLAUDE.md` snug
 injects, so the agent does not spend turns diagnosing them.
 
+### 6n. The staged credential carries no refresh token (issue #58)
+
+`~/.claude/.credentials.json` is the one file `@claude` stages that is a
+CREDENTIAL rather than a configuration, and it used to be copied verbatim —
+access token and refresh token both. The difference is the blast radius of a
+credential stolen from inside: an access token expires in hours, a refresh
+token mints new ones for as long as it lives. On the host this was measured on,
+5h 20m against 26 days.
+
+```bash
+./bin/snug -p @claude $SC/proj/sub -- python3 -c \
+  'import json,os;print(sorted(json.load(open(os.path.expanduser("~/.claude/.credentials.json")))["claudeAiOauth"]))'
+```
+
+Expect exactly:
+
+```
+['accessToken', 'expiresAt', 'rateLimitTier', 'scopes', 'subscriptionType']
+```
+
+`refreshToken` and `refreshTokenExpiresAt` must not be there. Compare with the
+host's own file — same command without snug — which has all seven. **Assert the
+SET, not the absence of one name:** a field added upstream tomorrow is dropped
+rather than carried, and noticing that is the point of a projection.
+
+Then the half that matters more than the field list — that it still WORKS:
+
+```bash
+./bin/snug -p @claude -p @net $SC/proj/sub -- claude -p 'Reply with exactly: PROJECTED-CREDENTIAL-WORKS'
+```
+
+Expect `PROJECTED-CREDENTIAL-WORKS`. This is a live authenticated turn on the
+staged token, and it is the measurement the whole change rests on.
+
+`snug --dry-run -p @claude <dir>`'s `CLAUDE` block states the same thing in
+words, under `creds`, before anything runs — including the arm where nothing was
+staged at all, and **including the number**:
+
+```
+         creds      ~/.claude/.credentials.json is PROJECTED from the host's —
+                    a generated file, not a copy
+                    carried: accessToken expiresAt scopes subscriptionType rateLimitTier
+                    NOT carried: refreshToken refreshTokenExpiresAt
+                    expires:  2026-08-19T15:56:00+02:00 (in 5h00m)
+                    Nothing in here can mint a NEW token, so a stolen copy is
+                    bounded by the expiry above — hours — rather than by the
+                    refresh token's, which is weeks. It is a timer, not a
+                    kill switch: it can still outlive this sandbox
+```
+
+Read that last sentence as written. The bound is a **timer, not a kill switch**:
+there is no revocation faster than expiry, so a stolen token still buys its
+remaining life — hours, against a sandbox that often lives for minutes. What
+changed is the *scale*: hours instead of the refresh token's weeks.
+
+**Check it on a host whose `$HOME` is a symlink**, if you have one (`/home ->
+/var/home` is the default on Silverblue- and MicroOS-shaped systems). The
+`creds` line must still read `PROJECTED`. It once read `staged NOTHING …` there
+while the same screen's `FILESYSTEM` block and bwrap argv showed the token being
+handed over — a trust screen denying a credential that is present.
+
+**And check the three files snug must refuse to read**, all at
+`~/.claude/.credentials.json` in a throwaway `$HOME`: a FIFO (`mkfifo`), a
+symlink to `/dev/zero`, and a file over 64 KiB. Each must print a `snug: not
+staging …` line naming the reason and return. The FIFO is the one that matters:
+unguarded, it blocks in `open(2)` forever — no sandbox, no exit code, nothing on
+any screen.
+
+**The cost, and check you can live with it.** With `@net` and a host token close
+to expiry this is now a hard failure where the refresh used to recover quietly.
+Expect a `snug:` line naming the fix before the run starts:
+
+```
+snug: the staged Anthropic access token expired 2026-08-19T15:27:00+02:00.
+      snug stages the access token only, not the refresh token, so nothing inside
+      the sandbox can renew it (issue #58).
+      Fix: run `claude` on the host to refresh it, then start snug again.
+```
+
+**And the failure that must NOT be silent.** Corrupt a copy of the host file and
+point snug at it (never edit your real one):
+
+```bash
+H=$(mktemp -d); mkdir -p $H/.claude; echo 'not json' > $H/.claude/.credentials.json
+HOME=$H ./bin/snug -p @claude $SC/proj/sub -- /bin/sh -c 'ls -a $HOME/.claude/'
+```
+
+Note `$HOME` inside single quotes, so it expands **inside** the sandbox rather
+than on your host. Expect a `snug: not staging …` line, and no
+`.credentials.json` in the listing:
+
+```
+. .. CLAUDE.md settings.json
+```
+
+Then the control, without the fake home — otherwise "the file is absent" would
+pass just as well on a run where staging stopped working altogether:
+
+```bash
+./bin/snug -p @claude $SC/proj/sub -- /bin/sh -c 'ls -a $HOME/.claude/'
+. .. CLAUDE.md .credentials.json plugins settings.json
+```
+
+A build that stages the host bytes in the first case has fallen back to the old
+behaviour, which is the one regression that would undo this change with nothing
+on screen to say so.
+
 ## 6c. The seccomp filter is actually installed
 
 Requested is not the same as active. Check the kernel's view first:

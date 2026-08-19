@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/profile"
@@ -46,10 +47,10 @@ import (
 // condition is also asserted directly below, so a swap cannot pass by accident.
 func TestGoldenClaudeBlock(t *testing.T) {
 	t.Run("untrusted target, nothing carried into settings.json", func(t *testing.T) {
-		goldenClaudeBlock(t, "claude-block.txt", false, false)
+		goldenClaudeBlock(t, "claude-block.txt", false, false, false)
 	})
 	t.Run("host-trusted target, settings.json filter exercised", func(t *testing.T) {
-		goldenClaudeBlock(t, "claude-block-trusted.txt", true, true)
+		goldenClaudeBlock(t, "claude-block-trusted.txt", true, true, true)
 	})
 
 	t.Run("no @claude, no block", func(t *testing.T) {
@@ -72,7 +73,7 @@ func TestGoldenClaudeBlock(t *testing.T) {
 	})
 }
 
-func goldenClaudeBlock(t *testing.T, name string, hostTrusts, exerciseSettingsFilter bool) {
+func goldenClaudeBlock(t *testing.T, name string, hostTrusts, exerciseSettingsFilter, stageCredentials bool) {
 	t.Helper()
 	reg, err := profile.Builtins()
 	if err != nil {
@@ -164,6 +165,50 @@ func goldenClaudeBlock(t *testing.T, name string, hostTrusts, exerciseSettingsFi
 		})
 	}
 
+	if stageCredentials {
+		// The credentials arm, produced by the REAL projection
+		// (policy.ProjectClaudeCredentials) against a file shaped like a host's.
+		// It has to be an arm rather than the default because /home/u does not
+		// exist, so claudeFiles above reached the "absent on this host" path —
+		// which is the OTHER golden's creds line, and both need pinning.
+		//
+		// The token here is a literal fixture, not a host read: no golden may
+		// depend on the developer's own credentials, and nothing about a real
+		// token is needed to render this block, which names FIELDS and never a
+		// value.
+		host := []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-oat-FIXTURE",` +
+			`"refreshToken":"sk-ant-ort-FIXTURE","expiresAt":1767243600000,` +
+			`"refreshTokenExpiresAt":1767225600000,"scopes":["user:inference"],` +
+			`"subscriptionType":"max","rateLimitTier":"default"}}`)
+		projected, _, err := policy.ProjectClaudeCredentials(host)
+		if err != nil {
+			t.Fatalf("control: the real projection refused a host-shaped credentials file, "+
+				"so this arm would golden the NOT-staged text instead: %v", err)
+		}
+		// CONTROL: the projection actually dropped the refresh token. Without
+		// this the golden could pin the carried text while the projection had
+		// silently gone back to copying — which is the one regression issue #58
+		// exists to prevent, and the block's own wording would then be a lie.
+		if strings.Contains(string(projected), "refreshToken") {
+			t.Fatalf("control: the projected credential still carries a refreshToken, so this "+
+				"block's `NOT carried` line would be false:\n%s", projected)
+		}
+		perm := uint32(0o600)
+		p.Replace(policy.Mount{
+			Guest: filepath.Join(ctx.Home, ".claude", ".credentials.json"), Kind: policy.KindData,
+			Access: policy.AccessRW, Content: projected, Perms: &perm, From: []string{"@claude"},
+		})
+	}
+
+	// CONTROL: each arm is in the state its name claims for the credentials
+	// line too — otherwise a bug in claudeCredentialsMount would leave both
+	// goldens pinning one arm twice, which is exactly what the trust control
+	// below guards against for the other conditional line.
+	if _, ok := claudeCredentialsMount(p); ok != stageCredentials {
+		t.Fatalf("control: claudeCredentialsMount = %v, want %v — this golden is not pinning "+
+			"the credentials arm it names", ok, stageCredentials)
+	}
+
 	// CONTROL: the block only means something if the mount it describes is
 	// really in the policy. Without this the golden could be pinning the empty
 	// string after a refactor silently stopped generating the file.
@@ -183,6 +228,15 @@ func goldenClaudeBlock(t *testing.T, name string, hostTrusts, exerciseSettingsFi
 		t.Fatalf("control: claudeTrustCarried = %v, want %v — this golden is not pinning "+
 			"the arm it names", got, hostTrusts)
 	}
+
+	// The CLAUDE block renders how long the staged token has left, so the
+	// clock has to be pinned or this golden differs on every run. The instant
+	// is arbitrary; what matters is that it is FIXED and that the fixture's
+	// own expiresAt is relative to it, so the rendered duration is a property
+	// of this test rather than of the minute it ran in.
+	prev := screenNow
+	screenNow = func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
+	t.Cleanup(func() { screenNow = prev })
 
 	got := captureFile(t, func(f *os.File) { describeClaude(f, p) })
 	if !strings.Contains(got, ctx.Target) {
