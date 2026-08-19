@@ -160,6 +160,14 @@ func startContainers(pol *policy.Policy, verbose, dryRun bool) (containerRun, er
 			"(issue #128); restarting the container or VM snug runs in repairs it.\n", err)
 	}
 
+	// P8: snug now authors the signature policy the engine reads, and on a
+	// host that had configured a stricter one that is a DOWNGRADE. Invariant
+	// 5 forbids doing it silently, so it is said here, before anything
+	// starts, and it names the file it is talking about.
+	if n := pf.SignaturePolicy; n != nil {
+		fmt.Fprint(os.Stderr, n.String())
+	}
+
 	eng, err := engine.New(pol.Profiles, pol.Target)
 	if err != nil {
 		return containerRun{}, err
@@ -173,9 +181,12 @@ func startContainers(pol *policy.Policy, verbose, dryRun bool) (containerRun, er
 	// second renderer to parse them back, making a generated file the author
 	// of a fact the policy owns — invariant 6, "one Policy, one author"
 	// (issues #126, #132).
+	// HOME is deliberately NOT passed. The engine gets a home of its own,
+	// written by Spec: the host user's carries podman's registries.conf and
+	// policy.json (issue #137) and the host's own registry credentials
+	// (issue #142), none of which the resolved Policy authored.
 	spec, err := eng.Spec(pf.Podman, []string{
 		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + os.Getenv("HOME"),
 	}, pf.CgroupsDisabled, pol.Net)
 	if err != nil {
 		return containerRun{}, err

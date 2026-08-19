@@ -1580,9 +1580,11 @@ enumerated (issue #136), so it is stopped only by replacement — if
 again. `TestHostContainersConfAuthorsNothingInAContainer` is the scripted
 version, with the same discriminator.
 
-**Two files `CONTAINERS_CONF` does NOT cover**, both measured and both filed:
-`registries.conf` (steers where an image comes from) and `policy.json` (decides
-whether an image may be used at all). Confirm with an invalid one:
+**Two files `CONTAINERS_CONF` does NOT cover** — `registries.conf` (steers
+where an image comes from) and `policy.json` (decides whether an image may be
+used at all). Both were measured live, filed as #137, and closed the same way:
+see §9i. The channel itself is still worth seeing, because it is what §9i
+proves is shut:
 
 ```bash
 echo 'THIS IS NOT VALID TOML {{{' > $D/.config/containers/registries.conf
@@ -1590,6 +1592,53 @@ env -u CONTAINERS_REGISTRIES_CONF -u XDG_CONFIG_HOME HOME=$D   ~/.local/opt/podm
 ```
 
 Expect a parse error naming that path — which is the proof it was read.
+
+### 9i. Image provenance is snug's, not this host's (issues #137, #142)
+
+`CONTAINERS_CONF` closed `containers.conf`. Three more channels reach the
+engine through a home directory, and each has its own lever: `registries.conf`
+(where an image comes from), `policy.json` (whether it may be used at all), and
+the registry CREDENTIALS the engine authenticates with. `--dry-run` states all
+of it in the `IMAGES` block:
+
+```bash
+./bin/snug --dry-run -p @podman-socket $SC/proj | sed -n '/^IMAGES/,/^[A-Z][A-Z]/p'
+```
+
+Expect `docker.io and nothing else`, `signatures  NOT verified`, and
+`logins      NONE`.
+
+**The credential is the sharp one.** A developer host has
+`~/.docker/config.json`, and podman falls through to it because
+`$XDG_RUNTIME_DIR/containers/auth.json` is absent by construction on a snug run.
+Prove the channel, then prove it is shut, with a name you are already logged in
+to:
+
+```bash
+P=~/.local/opt/podman-static
+E="CONTAINERS_STORAGE_CONF=$P/etc/snug/storage.conf PATH=/usr/bin"
+
+# the channel: the host's own home resolves the host's own credential
+env -i $E HOME=$HOME       $P/usr/local/bin/podman login --get-login <a registry you use>
+# what snug does instead
+env -i $E HOME=$HOME REGISTRY_AUTH_FILE=/dev/null $P/usr/local/bin/podman login --get-login <the same registry>
+```
+
+Expect your username, then `Error: not logged into ...`. `REGISTRY_AUTH_FILE`
+is the lever snug sets (at an empty file of its own, not `/dev/null`), and it
+works regardless of how a given podman decides what "the user's home" is —
+which the `HOME` override alone does not: it was measured on podman 5.8.4 only.
+
+`TestTheEngineResolvesNoHostRegistryCredential`,
+`TestAHostRegistriesConfDoesNotSteerTheEnginesPull` and
+`TestTheEngineCarriesItsOwnSignaturePolicy` are the scripted versions. Each
+runs its CONTROL first — the same podman, the same planted file, snug's
+variable removed — and skips loudly rather than passing when the control does
+not fire.
+
+**The cost, stated because it is a capability the sandbox does not have:** no
+private image can be pulled from inside, and `podman login` has nothing to
+persist to.
 
 ## 10. A repository cannot grant itself anything
 
