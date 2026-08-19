@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -358,4 +359,68 @@ func TestSnugAuthoredEnvPairsExcludesAProfilePassedVariable(t *testing.T) {
 	if !foundHome {
 		t.Fatal("expected the snug-authored HOME entry to be present")
 	}
+}
+
+// TestDiscoverLiveRunsTreatsAMissingRuntimeDirAsZeroRuns is the regression for
+// issue #124.
+//
+// `snug attach <dir>` on a host where snug has never run surfaced a raw
+// stdlib path error —
+//
+//	snug: runtime directory: checking /run/user/1000/snug: no such file or directory
+//
+// — where the intended answer is the clean "no live snug run found for <dir>".
+// "Nothing has ever run here" is the zero case, not a failure.
+//
+// The mechanism is worth naming because it is invisible at the call site and
+// it is a whole CLASS of mistake, not one typo. discoverLiveRuns asked
+// `os.IsNotExist(err)`, and openExistingSubroot returns
+// `fmt.Errorf("checking %s: %w", full, lerr)`. os.IsNotExist is the pre-errors
+// API: it inspects the concrete error value and does NOT unwrap, so it answers
+// false for a perfectly ordinary wrapped ENOENT. errors.Is does unwrap. Every
+// `%w` between a syscall and a predicate is a place this can happen, and it
+// gives no compile error and no test failure — only a wrong answer.
+//
+// The positive control is the second half and it is not optional: "returns no
+// error" is also what a discoverLiveRuns that had stopped checking anything at
+// all would do. So the same call, against a snug directory that EXISTS with
+// the wrong mode, must still refuse.
+func TestDiscoverLiveRunsTreatsAMissingRuntimeDirAsZeroRuns(t *testing.T) {
+	t.Run("missing-snug-dir-is-zero-runs", func(t *testing.T) {
+		base := t.TempDir()
+		t.Setenv("XDG_RUNTIME_DIR", base)
+		// Deliberately do NOT create base/snug: this is the never-run-here host.
+
+		runs, err := discoverLiveRuns()
+		if err != nil {
+			t.Errorf("discoverLiveRuns on a host where snug has never run returned an error "+
+				"instead of zero runs: %v\nThat error reaches the user as a raw path error where "+
+				"`snug attach` should have said no live run was found (issue #124).", err)
+		}
+		if len(runs) != 0 {
+			t.Errorf("discoverLiveRuns invented %d run(s) under a directory that does not exist: %v",
+				len(runs), runs)
+		}
+	})
+
+	t.Run("positive-control/wrong-mode-still-refused", func(t *testing.T) {
+		base := t.TempDir()
+		t.Setenv("XDG_RUNTIME_DIR", base)
+		// It EXISTS, and it is world-readable — the thing snug refuses to put
+		// sockets and run state into.
+		if err := os.Mkdir(filepath.Join(base, "snug"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := discoverLiveRuns()
+		if err == nil {
+			t.Fatal("PRECONDITION: discoverLiveRuns accepted a snug runtime directory with mode " +
+				"0755. The ownership/mode guard is what makes the zero-run case above safe to " +
+				"report as empty rather than as an error — if nothing is refused any more, that " +
+				"subtest passes for the wrong reason.")
+		}
+		if !strings.Contains(err.Error(), "0700") {
+			t.Errorf("the refusal does not name the mode it wants, so it does not name the fix: %v", err)
+		}
+	})
 }

@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -75,7 +77,11 @@ func loadUserConfig() userConfig {
 		// file saying `defaults = []` produced a full default sandbox. A parse
 		// error was already fatal; a read error must be too, for the same reason
 		// (invariant 5: no silent downgrade).
-		if !os.IsNotExist(err) {
+		// errors.Is, not os.IsNotExist — see internal/cli/runstate.go and
+		// issue #124: the old predicate does not unwrap, so it silently
+		// answers false for a wrapped ENOENT. Here that would turn "there is
+		// no config file" into a fatal read error.
+		if !errors.Is(err, fs.ErrNotExist) {
 			// The PATH is $XDG_CONFIG_HOME's, and the error text is the
 			// operating system's report about it — neither is snug's, and this
 			// is a screen. Same rule as badfiles.go, one file over.

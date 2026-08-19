@@ -2,8 +2,9 @@ package policy
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
-	"os"
+	"io/fs"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -158,10 +159,21 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 				// retroactively widen a grant resolved here.
 				real, err := env.EvalSymlinks(host)
 				if err != nil {
-					if m.Optional || os.IsNotExist(err) && m.Optional {
+					// errors.Is, not os.IsNotExist (issue #124): env.EvalSymlinks is
+					// INJECTED, so whether its error arrives wrapped is not this
+					// package's decision to make — which is exactly when a
+					// non-unwrapping predicate goes quietly wrong.
+					//
+					// The condition is left structurally as it was, deliberately: its
+					// second disjunct is redundant (`A || (B && A)` is `A`), so this
+					// reads as though non-existence mattered when only Optional does.
+					// Simplifying it is a behaviour-preserving change to a
+					// security-critical resolver and belongs in its own diff, not
+					// smuggled into an error-predicate sweep.
+					if m.Optional || errors.Is(err, fs.ErrNotExist) && m.Optional {
 						return nil
 					}
-					if os.IsNotExist(err) {
+					if errors.Is(err, fs.ErrNotExist) {
 						return fmt.Errorf("profile %q grants %q which does not exist (mark it optional if that is expected)", name, host)
 					}
 					return fmt.Errorf("profile %q: %s: %w", name, host, err)

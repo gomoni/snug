@@ -23,6 +23,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -260,7 +261,15 @@ func discoverLiveRuns() ([]liveRun, error) {
 
 	snugRoot, err := openExistingSubroot(root, base, snugName)
 	if err != nil {
-		if os.IsNotExist(err) {
+		// errors.Is, NOT os.IsNotExist — issue #124, and the distinction is
+		// invisible here without saying it. openExistingSubroot returns
+		// fmt.Errorf("checking %s: %w", ...), and os.IsNotExist is the
+		// pre-errors API: it inspects the concrete value and does not unwrap,
+		// so it answered false for an ordinary wrapped ENOENT and a host where
+		// snug had simply never run got a raw path error instead of "no live
+		// run found". Nothing has ever run here is the ZERO CASE, not a
+		// failure.
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("runtime directory: %w", err)

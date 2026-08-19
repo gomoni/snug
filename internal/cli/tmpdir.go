@@ -3,7 +3,9 @@ package cli
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,7 +62,9 @@ func prepareHostTmpDir(target string) (string, error) {
 
 	fi, err := os.Lstat(path)
 	switch {
-	case os.IsNotExist(err):
+	// errors.Is, not os.IsNotExist: see issue #124 — the old predicate does
+	// not unwrap a %w-wrapped ENOENT.
+	case errors.Is(err, fs.ErrNotExist):
 		if err := os.Mkdir(path, 0o700); err != nil {
 			return "", fmt.Errorf("shared tmp: %w", err)
 		}

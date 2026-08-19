@@ -23,6 +23,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -211,7 +212,9 @@ func selectLiveRun(real string) (runState, error) {
 func canonicalAttachTarget(abs string) (real string, exists bool, err error) {
 	real, err = filepath.EvalSymlinks(abs)
 	if err != nil {
-		if os.IsNotExist(err) {
+		// errors.Is, not os.IsNotExist: the predicate must survive a %w wrap,
+		// and the one place it did not was issue #124.
+		if errors.Is(err, fs.ErrNotExist) {
 			return "", false, nil
 		}
 		return "", false, err
