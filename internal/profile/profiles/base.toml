@@ -290,17 +290,41 @@ dns = true
 # answers on exactly one address. That measurement is what earns the phrase
 # "not a hole" above; without it the phrase is an assertion.
 #
-# NOT HIDDEN, and the profile's own description overstates this: `address` is a
-# single IPv4 value, so pasta's IPv6 default still applies and the sandbox
-# keeps the HOST'S OWN GLOBAL v6 ADDRESSES verbatim. Measured on this host —
-# the v4 address hidden is RFC1918, the v6 addresses disclosed are globally
-# routable, geolocatable and ISP-attributable, so the withholding is currently
-# the weaker half of the pair. Issue #165 carries the fix and the measurement.
+# BOTH FAMILIES, and the v6 half is the one that mattered. `address` alone was a
+# single IPv4 value, so pasta's IPv6 default -- copy the addresses from the
+# interface holding the default route -- still applied, and the sandbox kept the
+# host's own GLOBAL v6 addresses verbatim, the privacy-extension temporary one
+# included, plus a v6 default route through the router's link-local address,
+# which carries the router's MAC. The withheld half was RFC1918 and says almost
+# nothing; the disclosed half is globally routable, geolocatable and
+# ISP-attributable (issue #165). MEASURED closed: snug0 now carries only
+# 10.13.13.2/24, fd00:5e79:1::2/64 and a link-local whose EUI-64 comes from a
+# per-run random tap MAC, never the host's NIC.
+#
+# ABUSE: a hostile process inside can reach any service the HOST has bound on
+# its own address -- including one bound to 0.0.0.0 or :: -- and the host's
+# listener sees the connection as coming from the host itself, so an ACL that
+# trusts "local" is satisfied. That is not new with the v6 pair and it is not a
+# consequence of anonymising v6 in particular: it is what anonymising ANY family
+# does, because the host's address stops being the sandbox's own address and the
+# packet therefore leaves the netns instead of being refused by the sandbox's own
+# stack. MEASURED, with plain @net as the control: under @net a listener on the
+# host's LAN address and on 0.0.0.0 is refused from inside; under @net-anon the
+# v4 ones are REACHED; with the v6 pair the v6 ones are too. HOST LOOPBACK STAYS
+# CLOSED in all three -- 127.0.0.1 and ::1 are refused every time, and that is
+# the property this project promises. Bind your host services to loopback.
+# (issues #165, #176.)
+#
+# ABUSE (dns): unchanged in kind. Where the host's only resolver is IPv6, the
+# forwarder is fd00:5e79:1::53 rather than 169.254.1.1 -- same interception, same
+# sentence, one family over.
 [profile.net-anon]
-description = "As net, but the sandbox gets a synthetic address instead of the host's."
+description = "As net, but the sandbox gets a synthetic address in BOTH families instead of the host's."
 include = ["net"]
-address = "10.13.13.2/24"
-gateway = "10.13.13.1"
+address  = "10.13.13.2/24"
+gateway  = "10.13.13.1"
+address6 = "fd00:5e79:1::2/64"
+gateway6 = "fd00:5e79:1::1"
 
 # ABUSE: EVERYTHING. The host's loopback (every service you run locally), every
 # abstract AF_UNIX socket including X11 — which means keylogging and screenshots

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -186,7 +187,7 @@ func TestNoAnonymisingProfileNamesAHostResolver(t *testing.T) {
 	for _, name := range anonymising {
 		t.Run(string(name), func(t *testing.T) {
 			p := dnsPolicy(t, name)
-			if p.Net.Address == "" {
+			if !p.Net.Address.IsValid() {
 				t.Fatalf("fixture: %s resolved to no synthetic address, so this is not an "+
 					"anonymised sandbox", name)
 			}
@@ -219,5 +220,55 @@ func TestNoAnonymisingProfileNamesAHostResolver(t *testing.T) {
 				"fixture's nameservers never reached the generated file and the sweep "+
 				"above distinguishes nothing:\n%s", ns, rc)
 		}
+	}
+}
+
+// EXACTLY TWO -a AND TWO -g, ONE PER FAMILY, FOR EVERY BUILTIN THAT
+// ANONYMISES (issue #165). Registry sweep over the REAL shipped builtins, not
+// this package's own resolve fixtures — internal/policy's fake registry pairs
+// profiles that only add up to a full set when combined (netty/netty-too), so
+// the same sweep there would refuse a fixture never meant to resolve alone.
+// A future anonymising profile inherits this property instead of re-opening
+// the hole under a new name, exactly as
+// TestNoAnonymisingProfileNamesAHostResolver above does for the resolver
+// half of the same disclosure.
+func TestAnonymisingPassesAnAddressInBothFamilies(t *testing.T) {
+	reg := loadTestRegistry(t)
+	var anonymising []policy.ProfileName
+	for name, prof := range reg {
+		if prof.Address != "" {
+			anonymising = append(anonymising, policy.ProfileName(name))
+		}
+	}
+	if len(anonymising) == 0 {
+		t.Fatal("no builtin profile sets an address, so this sweep covers nothing")
+	}
+
+	for _, name := range anonymising {
+		t.Run(string(name), func(t *testing.T) {
+			p := dnsPolicy(t, name)
+			args := p.PastaArgs(policy.PastaTargetChild(1))
+			aCount, gCount := 0, 0
+			for i, a := range args {
+				if a == "-a" {
+					aCount++
+					if i+1 >= len(args) || !strings.Contains(args[i+1], "/") {
+						t.Errorf("-a value carries no inline prefix: %v", args)
+					}
+				}
+				if a == "-g" {
+					gCount++
+				}
+			}
+			if aCount != 2 || gCount != 2 {
+				t.Errorf("got %d -a and %d -g, want 2 and 2 (one pair per family): %v", aCount, gCount, args)
+			}
+		})
+	}
+
+	// CONTROL: @net (no synthetic address) carries neither.
+	net := dnsPolicy(t, "@net")
+	if slices.Contains(net.PastaArgs(policy.PastaTargetChild(1)), "-a") {
+		t.Error("control: a non-anonymising profile's argv carries -a")
 	}
 }

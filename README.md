@@ -136,7 +136,7 @@ $ snug profile dot | dot -Tpng -o profiles.png
 | `@git-ro` | Your git name and email, extracted from the host config and regenerated. Never bound. |
 | `@tmp-shared` | A per-project host directory as `/tmp`. Survives the sandbox. |
 | `@net` | Internet access. Host loopback unreachable. |
-| `@net-anon` | As `@net`, but the sandbox does not learn your LAN address. |
+| `@net-anon` | As `@net`, but the sandbox gets a synthetic address in both families instead of your host's. |
 | `@net-host` | **Dangerous.** Shares the host network namespace. Needs `--i-know`. |
 | `@claude` | Claude Code: binary and skills read-only, credentials staged as writable copies. |
 | `@podman-socket` | Run containers, via a filtering proxy over a per-sandbox engine. |

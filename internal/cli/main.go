@@ -371,6 +371,31 @@ func run(cfg config) int {
 		return exitPolicy
 	}
 
+	// WARN, do not exit — the rule that unifies this with the refusal above
+	// (invariant 5's two shapes, issue #162's remnant): warn when the missing
+	// thing makes the sandbox do LESS, refuse when it makes the sandbox LEAK
+	// MORE. A missing resolver is not a guarantee that no longer holds — the
+	// sandbox is unchanged, a payload with no DNS is strictly less capable,
+	// and the absence is loudly visible from inside within milliseconds
+	// rather than the 40-second stall naming a forwarder with nothing behind
+	// it used to cost. Suppressed under --dry-run because the NETWORK block
+	// already says it (dryrun.go's "dns NONE" arm).
+	//
+	// A profile asking for DNS (pol.Net.DNS) on a mode that actually runs
+	// pasta or shares the host's own resolvers (pol.Net.Mode != NetIsolated)
+	// and still ending up with no server at all means every nameserver this
+	// host names was either absent or failed to parse (net.go's
+	// parsedNameservers) — the same fate Resolver() gives an anonymising
+	// profile with no usable resolver of either family.
+	if pol.Net.DNS && pol.Net.Mode != policy.NetIsolated && len(pol.Net.Resolver().Servers) == 0 && !cfg.dryRun {
+		fmt.Fprintln(os.Stderr, `snug: this host names no nameserver in /etc/resolv.conf, so the sandbox gets NO
+      resolver — a profile asked for DNS (dns = true) and snug has nothing to
+      forward to. Lookups inside will fail immediately (2 ms) rather than stall.
+      Naming pasta's interception address with no resolver behind it costs 40
+      seconds per lookup, measured, which is why snug names none.
+      Fix: give this host a resolver, or pin one in your own profile.`)
+	}
+
 	// The run's own private directory, published for the whole run so `snug
 	// attach` can find it — created on EVERY real run now, not only when
 	// identity or containers need it (issue #61 part (c)/(e)). --dry-run

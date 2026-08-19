@@ -1533,38 +1533,80 @@ func describeNetwork(out *os.File, p *policy.Policy) {
 		} else {
 			fmt.Fprintf(out, "         host -> sandbox CLOSED (publish = [3000] in a profile opens one)\n")
 		}
-		if p.Net.Address != "" {
-			// THIS LINE USED TO SAY "the host's LAN address is hidden", full
-			// stop, and that is false on any dual-stack host. `address` is a
-			// single IPv4 value and PastaArgs renders it as `-a <v4> -n
-			// <prefix> -g <gw>`, so pasta's IPv6 default — copy the addresses
-			// from the interface with the default route — still applies.
-			// Measured on this host: snug0 inside @net-anon carries the
-			// host's two GLOBAL v6 addresses verbatim, which are geolocatable
-			// and ISP-attributable, while the v4 address it hides is RFC1918.
-			// The claim was wrong in the more damaging direction.
-			//
-			// Stated from the flags snug passes rather than from host state,
-			// which is why it needs no probe: a run on a v4-only host is
-			// fully anonymised and this line still says where the boundary
-			// is, which is the honest thing a reader can act on.
-			// visibleValue as well as Validate's refusal, and deliberately
-			// both: Validate says what a profile may CONTAIN, this says what
-			// this screen may SHOW. A Policy can be hand-built in a test or by
-			// a future caller without passing through Validate, and the rule
-			// this file follows is that no screen renders unescaped text it
-			// did not author.
-			fmt.Fprintf(out, "         address         %s (synthetic; the host's IPv4 address is hidden)\n",
-				visibleValue(p.Net.Address))
-			fmt.Fprintf(out, "                         IPv6 is NOT anonymised — no v6 address is passed, so the\n")
-			fmt.Fprintf(out, "                         sandbox keeps the host's own v6 addresses (issue #165)\n")
+		// THIS BLOCK USED TO SAY "the host's LAN address is hidden", full
+		// stop, and that was false on any dual-stack host: `address` named
+		// only an IPv4 value, and pasta's IPv6 default — copy the addresses
+		// from the interface with the default route — still applied.
+		// Measured on this host: snug0 inside @net-anon carried the host's
+		// two GLOBAL v6 addresses verbatim, geolocatable and
+		// ISP-attributable, while the v4 address it hid was RFC1918 (issue
+		// #165). Fixed by naming BOTH families — see net.go's checkAddressPair
+		// (V6: all four keys, or none) — so this block now renders whichever
+		// of the two is set rather than assuming v4 alone.
+		//
+		// Anonymised(), not p.Net.Address.IsValid() alone: a hand-built Policy
+		// (a test, or a future caller) that skipped Resolve's V6 refusal can
+		// carry Address6 without Address, and this renderer must not lie about
+		// it just because the ordinary case pairs them.
+		//
+		// Both address rows go through visibleValue as well as Validate's
+		// refusal, and deliberately both: Validate says what a profile may
+		// CONTAIN, this says what this screen may SHOW. A Policy can be
+		// hand-built in a test or by a future caller without passing through
+		// Validate, and the rule this file follows is that no screen renders
+		// unescaped text it did not author. netip.Prefix.String() is snug's
+		// own rendering already for the PREFIX half — it cannot carry a
+		// forging rune, ParsePrefix refuses one — but visibleValue costs
+		// nothing here and is the one place this belt-and-braces rule is
+		// written down; the next author who adds a GATEWAY row will copy this
+		// one.
+		if p.Net.Anonymised() {
+			if p.Net.Address.IsValid() {
+				fmt.Fprintf(out, "         address v4      %s (synthetic; the host's IPv4 address is hidden)\n",
+					visibleValue(p.Net.Address.String()))
+			}
+			if p.Net.Address6.IsValid() {
+				fmt.Fprintf(out, "         address v6      %s (synthetic; the host's own IPv6 addresses are\n",
+					visibleValue(p.Net.Address6.String()))
+				fmt.Fprintf(out, "                         hidden -- those are globally routable and\n")
+				fmt.Fprintf(out, "                         ISP-attributable, unlike the RFC1918 v4 one)\n")
+			} else {
+				fmt.Fprintf(out, "         address v6      NOT anonymised — the sandbox keeps the host's own v6\n")
+				fmt.Fprintf(out, "                         addresses, which are globally routable and\n")
+				fmt.Fprintf(out, "                         ISP-attributable (half-anonymised policy; issue #165)\n")
+			}
+			fmt.Fprintf(out, "         routes          synthetic (default via the gateway above). Under '@net' the\n")
+			fmt.Fprintf(out, "                         sandbox inherits the host's default route, whose IPv6 form\n")
+			fmt.Fprintf(out, "                         is the router's link-local address and carries its MAC.\n")
+			fmt.Fprintf(out, "         host's own IPs  REACHABLE. A service the host binds on its OWN address,\n")
+			fmt.Fprintf(out, "                         or on 0.0.0.0 / ::, is reachable from here, because that\n")
+			fmt.Fprintf(out, "                         address is no longer the sandbox's own. Host LOOPBACK is\n")
+			fmt.Fprintf(out, "                         not (row above). Under '@net' neither is (issue #176).\n")
 		} else {
 			fmt.Fprintf(out, "         address         copied from the host — add '@net-anon' to hide it\n")
+			fmt.Fprintf(out, "         host's own IPs  unreachable, incidentally rather than by design: they are\n")
+			fmt.Fprintf(out, "                         on the sandbox's own interface, so a connection to one\n")
+			fmt.Fprintf(out, "                         never leaves the netns. '@net-anon' removes that.\n")
 		}
 	case policy.NetHost:
 		fmt.Fprintf(out, "NETWORK  HOST — the sandbox SHARES your network namespace.\n")
 		fmt.Fprintf(out, "         Every 127.0.0.1 service, every abstract socket (X11 keylogging and\n")
 		fmt.Fprintf(out, "         screenshots included), and the LAN as you. Requires --i-know.\n")
+		// ONE LINE, and it must stay one line — this block is edited by the
+		// #162/#165 work too. `-p @net-host -p @net-anon --i-know` resolves
+		// happily (net.go's Anonymised()/Resolver() already know Address has
+		// no effect here — no pasta runs to apply it), and nothing on any
+		// screen said so until issue #178: a human who deliberately selected
+		// the anonymising profile was not told it was ignored, and read as
+		// "host network, but hide my address" — which is not a thing snug can
+		// do under NetHost. Disclosure only, not a refusal: --i-know already
+		// gates this mode, and refusing a selection the human explicitly
+		// asked for is a different decision.
+		if p.Net.Anonymised() {
+			fmt.Fprintf(out, "         address         IGNORED — an anonymising profile's synthetic address has no\n")
+			fmt.Fprintf(out, "                         effect here: this IS the host's namespace, so the sandbox has\n")
+			fmt.Fprintf(out, "                         the host's own addresses regardless (issue #178)\n")
+		}
 		// This arm printed NOTHING about DNS, which is how issue #164 stayed
 		// invisible for as long as it did: the sandbox was handed pasta's
 		// interception address while no pasta runs, and the one screen that

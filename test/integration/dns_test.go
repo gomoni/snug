@@ -3,9 +3,14 @@
 package integration
 
 import (
+	"context"
+	"errors"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gomoni/snug/internal/policy"
 )
@@ -265,5 +270,190 @@ timeout 5 getent hosts example.com >/dev/null && echo RESOLVED || echo RESOLVE-F
 			t.Errorf("--dry-run's dns line says %q but the sandbox is told to use %s:\n%s",
 				dns, f[1], r.out)
 		}
+	}
+}
+
+// runWithFakeHostResolvConf runs a scripted sandbox payload with snug ITSELF
+// wrapped in an outer bwrap that overlays a FIXTURE /etc/resolv.conf — the
+// only way to make hostNameservers() (internal/cli/main.go) read something
+// other than this real machine's file, since it reads the fixed path
+// directly rather than through an injected Environ.
+//
+// --dev-bind / / keeps everything else exactly as the real host is;
+// --share-net is what lets the sandbox snug creates INSIDE this wrapper still
+// reach the real network for pasta's egress — the outer bwrap must not put
+// itself in a netns of its own, or every DNS/egress assertion downstream
+// would be testing the wrapper instead of snug.
+func fakeResolvConfFixture(t *testing.T, content string) string {
+	t.Helper()
+	fixturePath := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(fixturePath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return fixturePath
+}
+
+// cliWithFakeHostResolvConf is cli() (internal/cli's entry point, invoked
+// directly), wrapped in the SAME outer-bwrap resolv.conf overlay
+// runWithFakeHostResolvConf uses — needed so --dry-run's own hostNameservers()
+// read sees the fixture too, not the real host's file.
+func cliWithFakeHostResolvConf(t *testing.T, fixturePath string, args ...string) (string, int) {
+	t.Helper()
+	bwrapArgs := append([]string{
+		"--dev-bind", "/", "/",
+		"--ro-bind", fixturePath, "/etc/resolv.conf",
+		"--share-net",
+		"--", snugBin,
+	}, args...)
+
+	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bwrap", bwrapArgs...)
+	cmd.Env = baseEnv()
+	cmd.WaitDelay = waitDelay
+	out, err := cmd.CombinedOutput()
+
+	if errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("the outer bwrap exited but something it started still holds its output "+
+			"pipe after %s:\n%s", waitDelay, out)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("the outer bwrap did not finish within %s (a hang is a finding):\n%s", cmdTimeout, out)
+	}
+	code := 0
+	if err != nil {
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) {
+			t.Fatalf("running the outer bwrap: %v\n%s", err, out)
+		}
+		code = ee.ExitCode()
+	}
+	return string(out), code
+}
+
+// runWithFakeHostResolvConf runs a scripted sandbox payload with snug ITSELF
+// wrapped in an outer bwrap that overlays a FIXTURE /etc/resolv.conf — the
+// only way to make hostNameservers() (internal/cli/main.go) read something
+// other than this real machine's file, since it reads the fixed path
+// directly rather than through an injected Environ.
+//
+// --dev-bind / / keeps everything else exactly as the real host is;
+// --share-net is what lets the sandbox snug creates INSIDE this wrapper still
+// reach the real network for pasta's egress — the outer bwrap must not put
+// itself in a netns of its own, or every DNS/egress assertion downstream
+// would be testing the wrapper instead of snug.
+func runWithFakeHostResolvConf(t *testing.T, fixture string, args []string, dir, script string) sandboxRun {
+	t.Helper()
+	fixturePath := fakeResolvConfFixture(t, fixture)
+
+	full := append(append([]string{}, args...), dir, "--", "/bin/bash", "-c",
+		"printf '%s\\n' "+payloadMarker+"\n"+script)
+	out, code := cliWithFakeHostResolvConf(t, fixturePath, full...)
+
+	ran := false
+	var kept []string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == payloadMarker {
+			ran = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return sandboxRun{out: strings.Join(kept, "\n"), ran: ran, code: code}
+}
+
+// TestAnonymisedSandboxResolvesOnAnIPv6OnlyResolverHost is issue #162's
+// remnant: DNSHost()/forwardAddr() must pick the resolver's FAMILY, not
+// always v4, or an anonymising profile on a v6-only-resolver host is handed
+// `--dns-forward 169.254.1.1 --dns-host <v6 address>` — pasta never crosses
+// families when forwarding, so that combination times out for both A and
+// AAAA regardless of whether the v6 resolver behind --dns-host is live.
+//
+// Control: the same setup with a v4 fixture, so a build that regressed to
+// "always v4" would still pass here by accident if this test had no control.
+func TestAnonymisedSandboxResolvesOnAnIPv6OnlyResolverHost(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	requirePasta(t)
+	requireInternet(t)
+	proj, _ := target(t)
+
+	v6Fixture := "nameserver 2606:4700:4700::1111\n" // a live public v6 resolver (Cloudflare)
+	r := runWithFakeHostResolvConf(t, v6Fixture, []string{"-p", "@net-anon"}, proj,
+		`grep ^nameserver /etc/resolv.conf
+timeout 5 getent hosts example.com >/dev/null && echo RESOLVED || echo RESOLVE-FAILED`).mustRun(t)
+	if !strings.Contains(r.out, "fd00:5e79:1::53") {
+		t.Errorf("the sandbox is not told to use the v6 interception address on a v6-only-"+
+			"resolver host:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "RESOLVED") {
+		t.Errorf("an anonymised sandbox cannot resolve at all on a v6-only-resolver host — "+
+			"the forwarder and its destination disagreed on family:\n%s", r.out)
+	}
+
+	// CONTROL: the v4 fixture resolves too, through the v4 forwarder.
+	v4Fixture := "nameserver 192.168.1.1\n"
+	c := runWithFakeHostResolvConf(t, v4Fixture, []string{"-p", "@net-anon"}, proj,
+		`timeout 5 getent hosts example.com >/dev/null && echo RESOLVED || echo RESOLVE-FAILED`).mustRun(t)
+	if !strings.Contains(c.out, "RESOLVED") {
+		t.Errorf("control: the v4 fixture failed to resolve, so this test's harness "+
+			"(not the v6 case) is broken:\n%s", c.out)
+	}
+}
+
+// TestNoResolverHostFailsFastAndSaysSo is issue #162's remnant: a host that
+// names no nameserver at all used to be handed `nameserver 169.254.1.1`
+// regardless, with nothing behind it — every lookup inside waited out a
+// multi-second stall. Fixed by naming NONE, which fails in milliseconds
+// rather than seconds, and the host side warns why.
+func TestNoResolverHostFailsFastAndSaysSo(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	requirePasta(t)
+	proj, _ := target(t)
+
+	start := time.Now()
+	r := runWithFakeHostResolvConf(t, "", []string{"-p", "@net"}, proj,
+		`cat /etc/resolv.conf; getent hosts example.com; echo "exit=$?"`).mustRun(t)
+	elapsed := time.Since(start)
+
+	// A 5s bound cannot pass on the old 40s-per-lookup behaviour, and is
+	// generous next to the 2ms this fix measures — this is a smoke bound
+	// against a regression to the old stall, not a tight timing assertion.
+	if elapsed > 5*time.Second {
+		t.Errorf("the sandbox took %s to fail a lookup with no resolver at all — the old "+
+			"behaviour (naming the interception address with nothing behind it) stalled "+
+			"~40s per lookup; this should fail in milliseconds:\n%s", elapsed, r.out)
+	}
+	// A real `nameserver <addr>` DIRECTIVE line, not a bare substring match —
+	// the warning this same run prints, and ResolvConf()'s own comment, both
+	// legitimately say the word "nameserver" in PROSE, so a raw
+	// strings.Contains would fail on the fix's own honest message.
+	for _, line := range strings.Split(r.out, "\n") {
+		if f := strings.Fields(line); len(f) == 2 && f[0] == "nameserver" {
+			t.Errorf("a host naming no resolver at all still produced a nameserver directive "+
+				"inside (%q):\n%s", line, r.out)
+		}
+	}
+	if strings.Contains(r.out, "exit=0") {
+		t.Errorf("getent succeeded with no resolver configured, which should be impossible:\n%s", r.out)
+	}
+
+	screen, code := cliWithFakeHostResolvConf(t, fakeResolvConfFixture(t, ""),
+		"--dry-run", "-p", "@net", proj, "--", "true")
+	if code != 0 {
+		t.Fatalf("--dry-run -p @net exited %d:\n%s", code, screen)
+	}
+	if !strings.Contains(screen, "NONE") {
+		t.Errorf("--dry-run does not print the 'dns NONE' arm for a host with no resolver at all:\n%s", screen)
+	}
+
+	// The host-side warning (internal/cli/main.go), on the real run rather
+	// than --dry-run — the message says it is suppressed there because the
+	// NETWORK block already carries the fact.
+	warn := runWithFakeHostResolvConf(t, "", []string{"-p", "@net"}, proj, `true`).mustRun(t)
+	if !strings.Contains(warn.out, "this host names no nameserver") {
+		t.Errorf("no warning was printed for a host naming no resolver at all while a "+
+			"profile asked for DNS:\n%s", warn.out)
 	}
 }

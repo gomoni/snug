@@ -55,7 +55,18 @@ type rawProfile struct {
 	Publish []int  `toml:"publish"`
 	Address string `toml:"address"`
 	Gateway string `toml:"gateway"`
-	MTU     int    `toml:"mtu"`
+	// Address6/Gateway6 are the IPv6 half of an anonymising profile's
+	// synthetic address pair (issue #165). Two scalars, not a list: a list
+	// re-imports arity and order into the profile language (pasta itself does
+	// not enforce arity — `-a` twice in one family exits 0 silently, measured
+	// — so with per-family keys "which family" is answered by the key's NAME,
+	// never by inspecting the value), and every list-valued key in this model
+	// is UNIONED across profiles while an address is not unionable — giving it
+	// list syntax would invite a future Resolve to union two profiles' v6
+	// addresses into a two-`-a` argv pasta accepts silently.
+	Address6 string `toml:"address6"`
+	Gateway6 string `toml:"gateway6"`
+	MTU      int    `toml:"mtu"`
 
 	Podman   string       `toml:"podman"`
 	Git      string       `toml:"git"`
@@ -316,6 +327,8 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 			Publish:     r.Publish,
 			Address:     r.Address,
 			Gateway:     r.Gateway,
+			Address6:    r.Address6,
+			Gateway6:    r.Gateway6,
 			MTU:         r.MTU,
 			Podman:      r.Podman,
 			Git:         r.Git,

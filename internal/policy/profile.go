@@ -61,9 +61,22 @@ type Profile struct {
 	// everything the sandbox binds" — see NetPolicy.Publish.
 	Publish []int
 
-	Address string
-	Gateway string
-	MTU     int
+	// Address/Gateway and Address6/Gateway6 are raw profile TEXT, deliberately
+	// NOT typed here: this struct must not depend on internal/policy's own
+	// netip typing (it lives in the SAME package, but a *rawProfile in
+	// internal/profile copies these fields verbatim without importing
+	// net/netip), DisallowUnknownFields makes a typo in either key a fatal
+	// parse error regardless, and dnsscreen_test.go's registry sweep keys on
+	// `prof.Address != ""` and must keep working unmodified. Resolve is the
+	// ONLY place that parses these into netip.Prefix/netip.Addr (net.go's
+	// addrPairs). V6 requires all four or none — see net.go's
+	// checkAddressPair — so a profile naming Address without Address6 is not
+	// wrong to represent here; it is refused at Resolve time.
+	Address  string
+	Gateway  string
+	Address6 string
+	Gateway6 string
+	MTU      int
 
 	// Podman is "off" | "socket", joined by max like every other scalar.
 	Podman string
