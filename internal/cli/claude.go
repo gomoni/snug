@@ -95,8 +95,33 @@ func claudeFiles(pol *policy.Policy, home string, verbose bool) {
 // and stage nothing.
 func stageClaudeCredentials(pol *policy.Policy, home string) {
 	path := filepath.Join(home, ".claude", ".credentials.json")
-	raw, err := os.ReadFile(path)
-	if err != nil {
+
+	// BOUNDED AND REGULAR, not os.ReadFile. That is what this was, and a
+	// red-team pass measured all three failures the settings loader had already
+	// been taught about 260 lines below — the rule written once and applied to
+	// one of its two halves, again:
+	//
+	//	mkfifo   ~/.claude/.credentials.json  -> hung in open(2) forever. No
+	//	                                        sandbox, no exit code, no line
+	//	                                        on any screen.
+	//	ln -s /dev/zero ...                   -> 8.4 GB resident in six seconds
+	//	                                        and still climbing.
+	//	a 1 GiB regular file                  -> 4.2 GB resident, 30s, exit 0.
+	//
+	// None of it is payload-reachable — it is the host user's own file — but
+	// the FIFO case produces no output and never returns, which is worse than
+	// the loud failure the degradation rule demands.
+	//
+	// The cap is small on purpose: the real file is 508 bytes.
+	raw, note := readHostFileBounded(path, maxCredentialsBytes)
+	if note != "" {
+		fmt.Fprintf(os.Stderr, "snug: not staging ~/.claude/.credentials.json: %s\n"+
+			"      The sandbox will start LOGGED OUT rather than receive a credential file snug\n"+
+			"      could not read — copying it verbatim would hand the sandbox a refresh token\n"+
+			"      that outlives it (issue #58).\n", note)
+		return
+	}
+	if raw == nil {
 		return // absent on this host; nothing to stage
 	}
 
@@ -107,12 +132,28 @@ func stageClaudeCredentials(pol *policy.Policy, home string) {
 	// below uses `projected`, whose type is policy.Secret.
 	projected, expiresAt, err := policy.ProjectClaudeCredentials(raw)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "snug: not staging %s: %v\n"+
+		// visibleValue, because ProjectClaudeCredentials' "no envelope" error
+		// renders the host file's top-level KEY NAMES and this goes straight to
+		// a terminal. A red-team pass planted a key name carrying ESC[2A and a
+		// carriage return and watched the real refusal line be erased and
+		// replaced with a fabricated "credentials projected normally;
+		// refreshToken dropped" — the same forgery the settings block guards
+		// against 170 lines below, on a sink that guard did not cover.
+		//
+		// It is not payload-reachable (the host's own file), which is why this
+		// is screen integrity rather than an escape. It is fixed anyway because
+		// the rule is "name every sink that value can reach and assert the SET
+		// rather than the site", and this commit added a sink outside the set.
+		// Note the sweep that would have caught it, TestNoSnugScreenEmitsARaw
+		// ControlCharacter, drives dryRun's STDOUT — this message is stderr,
+		// written before dry-run renders anything, so it was structurally
+		// invisible to it.
+		fmt.Fprintf(os.Stderr, "snug: not staging %s: %s\n"+
 			"      The sandbox will start LOGGED OUT rather than receive a credential file snug\n"+
 			"      could not read — copying it verbatim would hand the sandbox a refresh token\n"+
 			"      that outlives it (issue #58).\n"+
 			"      Fix: run `claude` on the host to re-authenticate, then start snug again.\n",
-			path, err)
+			path, visibleValue(err.Error()))
 		return
 	}
 
@@ -139,6 +180,58 @@ func stageClaudeCredentials(pol *policy.Policy, home string) {
 		Guest: path, Kind: policy.KindData, Access: policy.AccessRW,
 		Content: projected, Perms: &perm, From: []string{"@claude"},
 	})
+}
+
+// maxCredentialsBytes caps the host credential read. The real file is 508
+// bytes; 64 KiB is room for a format that grows without being a size a
+// pathological file can hide behind.
+const maxCredentialsBytes = 64 << 10
+
+// readHostFileBounded opens path without blocking on a FIFO, refuses anything
+// that is not a regular file, and reads at most maxBytes.
+//
+// Three returns rather than two, and the distinction is the one
+// stageClaudeCredentials' doc comment turns on: (nil, "") means ABSENT, which
+// is an ordinary state and says nothing; (nil, note) means PRESENT AND
+// UNREADABLE, which must be said out loud; (data, "") is the file.
+//
+// This is loadHostClaudeSettings' body, generalised. It was not generalised
+// when that function earned its guards, and this path was written without
+// them — so the second caller is what turns a lesson into a shared mechanism
+// rather than a comment somebody has to remember to copy.
+func readHostFileBounded(path string, maxBytes int64) ([]byte, string) {
+	// O_NONBLOCK applies to the OPEN; for a regular file it has no further
+	// effect on the read below. It exists solely so opening a FIFO returns
+	// instead of blocking forever.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, "" // absent, or unreadable by permission: nothing to stage
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Sprintf("it could not be inspected (%v)", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Sprintf("it is not a regular file (mode %s). snug reads that path as "+
+			"data and will not read a FIFO, a device or a directory there", fi.Mode())
+	}
+	if fi.Size() > maxBytes {
+		return nil, fmt.Sprintf("it is %d bytes, over the %d-byte cap snug reads for it",
+			fi.Size(), maxBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return nil, fmt.Sprintf("it could not be read (%v)", err)
+	}
+	// The real cap. A file whose st_size lied — /dev/zero through a symlink,
+	// anything under /proc, a file that grew since the stat — lands here.
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Sprintf("it produced more than the %d-byte cap snug reads for it "+
+			"(its reported size was %d)", maxBytes, fi.Size())
+	}
+	return data, ""
 }
 
 // stageClaudeSettings generates the sandbox's ~/.claude/settings.json from an

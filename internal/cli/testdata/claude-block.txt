@@ -16,10 +16,11 @@ CLAUDE   ~/.claude.json is GENERATED, not copied — two keys, no host bytes
                     org, email, account UUIDs, machine ID, MCP servers, and the
                     host's per-project tool approvals — so tools you approved on
                     the host are asked again in here
-         creds      NOT staged — this host has no ~/.claude/.credentials.json,
-                    or it could not be projected. Claude Code will start
-                    LOGGED OUT in here; snug does not fall back to copying a
-                    file it could not read
+         creds      snug staged NOTHING at ~/.claude/.credentials.json — this
+                    host has no such file, or it could not be projected. snug
+                    does not fall back to copying a file it could not read.
+                    Unless a profile above binds one, Claude Code starts
+                    LOGGED OUT in here
          settings   ~/.claude/settings.json is GENERATED from an allowlist of
                     the host's — not bound, never read-only
                     carried: (none of the allowlisted keys were present)

@@ -19,9 +19,11 @@ CLAUDE   ~/.claude.json is GENERATED, not copied — three keys, no host bytes
                     a generated file, not a copy
                     carried: accessToken expiresAt scopes subscriptionType rateLimitTier
                     NOT carried: refreshToken refreshTokenExpiresAt
-                    Nothing in here can mint a new access token, so a
-                    credential stolen from inside this sandbox dies with the
-                    access token instead of outliving it
+                    expires:  2026-01-01T05:00:00Z (in 5h00m)
+                    Nothing in here can mint a NEW token, so a stolen copy is
+                    bounded by the expiry above — hours — rather than by the
+                    refresh token's, which is weeks. It is a timer, not a
+                    kill switch: it can still outlive this sandbox
          settings   ~/.claude/settings.json is GENERATED from an allowlist of
                     the host's — not bound, never read-only
                     carried: theme

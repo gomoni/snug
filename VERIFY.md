@@ -995,7 +995,37 @@ staged token, and it is the measurement the whole change rests on.
 
 `snug --dry-run -p @claude <dir>`'s `CLAUDE` block states the same thing in
 words, under `creds`, before anything runs — including the arm where nothing was
-staged at all.
+staged at all, and **including the number**:
+
+```
+         creds      ~/.claude/.credentials.json is PROJECTED from the host's —
+                    a generated file, not a copy
+                    carried: accessToken expiresAt scopes subscriptionType rateLimitTier
+                    NOT carried: refreshToken refreshTokenExpiresAt
+                    expires:  2026-08-19T15:56:00+02:00 (in 5h00m)
+                    Nothing in here can mint a NEW token, so a stolen copy is
+                    bounded by the expiry above — hours — rather than by the
+                    refresh token's, which is weeks. It is a timer, not a
+                    kill switch: it can still outlive this sandbox
+```
+
+Read that last sentence as written. The bound is a **timer, not a kill switch**:
+there is no revocation faster than expiry, so a stolen token still buys its
+remaining life — hours, against a sandbox that often lives for minutes. What
+changed is the *scale*: hours instead of the refresh token's weeks.
+
+**Check it on a host whose `$HOME` is a symlink**, if you have one (`/home ->
+/var/home` is the default on Silverblue- and MicroOS-shaped systems). The
+`creds` line must still read `PROJECTED`. It once read `staged NOTHING …` there
+while the same screen's `FILESYSTEM` block and bwrap argv showed the token being
+handed over — a trust screen denying a credential that is present.
+
+**And check the three files snug must refuse to read**, all at
+`~/.claude/.credentials.json` in a throwaway `$HOME`: a FIFO (`mkfifo`), a
+symlink to `/dev/zero`, and a file over 64 KiB. Each must print a `snug: not
+staging …` line naming the reason and return. The FIFO is the one that matters:
+unguarded, it blocks in `open(2)` forever — no sandbox, no exit code, nothing on
+any screen.
 
 **The cost, and check you can live with it.** With `@net` and a host token close
 to expiry this is now a hard failure where the refresh used to recover quietly.

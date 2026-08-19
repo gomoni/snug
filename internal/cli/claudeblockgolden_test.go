@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/profile"
@@ -176,8 +177,8 @@ func goldenClaudeBlock(t *testing.T, name string, hostTrusts, exerciseSettingsFi
 		// token is needed to render this block, which names FIELDS and never a
 		// value.
 		host := []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-oat-FIXTURE",` +
-			`"refreshToken":"sk-ant-ort-FIXTURE","expiresAt":4102444800000,` +
-			`"refreshTokenExpiresAt":4102444800000,"scopes":["user:inference"],` +
+			`"refreshToken":"sk-ant-ort-FIXTURE","expiresAt":1767243600000,` +
+			`"refreshTokenExpiresAt":1767225600000,"scopes":["user:inference"],` +
 			`"subscriptionType":"max","rateLimitTier":"default"}}`)
 		projected, _, err := policy.ProjectClaudeCredentials(host)
 		if err != nil {
@@ -227,6 +228,15 @@ func goldenClaudeBlock(t *testing.T, name string, hostTrusts, exerciseSettingsFi
 		t.Fatalf("control: claudeTrustCarried = %v, want %v — this golden is not pinning "+
 			"the arm it names", got, hostTrusts)
 	}
+
+	// The CLAUDE block renders how long the staged token has left, so the
+	// clock has to be pinned or this golden differs on every run. The instant
+	// is arbitrary; what matters is that it is FIXED and that the fixture's
+	// own expiresAt is relative to it, so the rendered duration is a property
+	// of this test rather than of the minute it ran in.
+	prev := screenNow
+	screenNow = func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
+	t.Cleanup(func() { screenNow = prev })
 
 	got := captureFile(t, func(f *os.File) { describeClaude(f, p) })
 	if !strings.Contains(got, ctx.Target) {
