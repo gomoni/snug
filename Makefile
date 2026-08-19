@@ -47,6 +47,13 @@ gate:
 	# own is still up. Built lazily by containerengine_test.go's holderBin.
 	# Same fix, same reasoning as the three above.
 	go vet ./test/integration/testdata/holder
+	# testdata/pidnsprobe (issue #145) is the fifth: a `FROM scratch`
+	# entrypoint that starts a child of itself and reads back /proc/1/root
+	# and its own pid listing, for TestContainerCannotJoinTheEnginesPidNamespace
+	# and TestContainerSeesOnlyItsOwnPids. Built lazily by
+	# containerengine_test.go's pidnsprobeBin. Same fix, same reasoning as
+	# the four above.
+	go vet ./test/integration/testdata/pidnsprobe
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This

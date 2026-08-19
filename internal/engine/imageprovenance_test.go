@@ -190,3 +190,78 @@ func TestTheGeneratedSignaturePolicyIsPodmansOwnDefault(t *testing.T) {
 			"insecureAcceptAnything", doc.Default)
 	}
 }
+
+// ── issue #125, Tier C piece C2-path ─────────────────────────────────────────
+
+// TestSpecPinsTheEnginesPATH is the assertion that stops the pin being removed
+// with the suite green.
+//
+// The engine used to be handed "PATH=" + os.Getenv("PATH") — the HOST's. On the
+// development host that value leads with /home/<u>/bin and contains
+// .local/bin, .cargo/bin, go/bin and an EMPTY element, which means the engine's
+// cwd. Every /home/<u>/* element is inside {home}, which @home mounts as a
+// WRITABLE TMPFS.
+//
+// Under Tier B those directories do not exist in the engine's private copy of
+// the host tree in any payload-writable form, so the exposure is latent. Under
+// Tier C's DERIVED view they become the payload's own tmpfs, at the head of the
+// PATH of a process running as root-in-U with CAP_SYS_ADMIN and the full
+// delegated subuid range — a shadow slot in front of crun. That is why this
+// landed BEFORE the derived view rather than with it: Tier C creates the
+// escape, it does not fix it.
+//
+// Every directory below is read-only in the sandbox's view under @sys's /usr
+// bind (/bin and /sbin are @sys's own symlinks into /usr), which is what makes
+// C2-view's sweep — for every element of the engine's PATH,
+// EngineView().IsShadowSlot(elem) must be false — pass rather than be a comment.
+func TestSpecPinsTheEnginesPATH(t *testing.T) {
+	env := specEnv(t, nil)
+
+	path, n := envValue(env, "PATH")
+	if n != 1 {
+		t.Fatalf("PATH appears %d times in the engine's environment, want exactly 1", n)
+	}
+	if want := "/usr/bin:/usr/sbin:/bin:/sbin"; path != want {
+		t.Fatalf("the engine's PATH is %q, want %q — anything else is a directory snug did "+
+			"not choose in front of the binaries podman executes", path, want)
+	}
+	// The empty element is called out separately because it is the one a reader
+	// skims past: "" means the engine's cwd, which is not a fixed directory at
+	// all, and it appeared in the host value this replaced.
+	for _, elem := range strings.Split(path, ":") {
+		if elem == "" {
+			t.Error("the engine's PATH contains an EMPTY element, which means its cwd — not a " +
+				"directory snug chose, and not one any sweep can check")
+		}
+		if !filepath.IsAbs(elem) {
+			t.Errorf("the engine's PATH element %q is not absolute", elem)
+		}
+	}
+}
+
+// TestSpecReplacesACallerSuppliedPATH is setEnv's positive control for the pin,
+// and it is the same shape as TestSpecReplacesACallerSuppliedHome: execve keeps
+// duplicates in order and getenv returns the FIRST, so appending rather than
+// replacing would leave the caller's PATH live while the environment read as
+// though snug's had won — the flag is present and the feature is not there.
+//
+// internal/cli's container.go no longer passes a PATH at all. This test passes
+// one deliberately, and passes the HOST's own, because the guard has to survive
+// a caller that starts doing it again.
+func TestSpecReplacesACallerSuppliedPATH(t *testing.T) {
+	hostPATH := os.Getenv("PATH")
+	if hostPATH == "" {
+		t.Skip("no PATH in this test process's environment, so there is nothing to try to smuggle")
+	}
+	env := specEnv(t, []string{"PATH=" + hostPATH})
+
+	path, n := envValue(env, "PATH")
+	if n != 1 {
+		t.Fatalf("PATH appears %d times in the engine's environment, want exactly 1: a duplicate "+
+			"means getenv returns the caller's and snug's is decoration", n)
+	}
+	if path == hostPATH {
+		t.Fatalf("a caller-supplied PATH won: the engine would resolve crun, conmon and "+
+			"newuidmap through %q, which contains directories the payload can write", path)
+	}
+}
