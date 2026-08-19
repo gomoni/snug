@@ -2,7 +2,7 @@
 
 package integration
 
-// attach_test.go is .claude/scratchpad/ATTACH-SHAPE.md §13.3-§13.6 (and the
+// attach_test.go is ATTACH.md §13.3-§13.6 (and the
 // bwrap-argv half of §13.7): `snug attach` against a REALLY running sandbox.
 // §13.1/§13.2's pure tests (the state file, the confinement plan) live in
 // internal/cli and internal/attach — this file is everything that needs a

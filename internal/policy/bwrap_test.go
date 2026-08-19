@@ -49,7 +49,7 @@ func TestGoldenBwrapArgs(t *testing.T) {
 		// survivor to the earliest band. Supplies its own env (sanitiseProbeEnv)
 		// so the shared newFakeEnv() fixture stays free of a PATH value.
 		{"sanitise", sanitiseProbeSelection(), testCtx(), sanitiseProbeEnv},
-		// The review artifact for issue #40 (ISSUE-40-DESIGN.md §8): without this
+		// The review artifact for issue #40: without this
 		// case, EVERY prior golden stays byte-identical after the fix, because
 		// newFakeEnv() names no ssh path at all — a security change with zero
 		// golden diff. sysSSHProbeEnv adds a host /usr/etc/ssh/ssh_config, and

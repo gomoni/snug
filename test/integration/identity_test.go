@@ -52,7 +52,7 @@ import (
 // ubuntu-latest, .github/workflows/ci.yml) asserts "this host can create
 // namespaces, so the suite must not silently check nothing" — it does NOT
 // assert "this host has openSUSE's file layout", and @sys deliberately does
-// not grant /etc/ssh at all (ISSUE-40-DESIGN.md §0), so gating on that layout
+// not grant /etc/ssh at all (issue #40), so gating on that layout
 // makes CI fail a job for a condition that was never wrong. Downgrading to a
 // plain t.Skip instead would satisfy CI and lose the coverage on every CI run
 // forever — the exact trade CLAUDE.md refuses.
@@ -383,14 +383,14 @@ func TestAnIdentityWithNoGhAccountStagesNoToken(t *testing.T) {
 // machinery was doing the work.
 //
 // Issue #40 makes the replacement fire on EVERY run, identity pinned or not
-// (ISSUE-40-DESIGN.md §1) — which is the fix, and is deliberate — but it also
+// (issue #40) — which is the fix, and is deliberate — but it also
 // makes the unpinned run say SSH-OK too, so "the unpinned run refuses" is no
 // longer true on ANY host and the control had silently degraded to a t.Logf
 // that could never fire. Exactly CLAUDE.md's "a test that cannot fail" shape:
 // a control that needs a broken configuration to exist stops working the
 // moment you fix it.
 //
-// Rebased per ISSUE-40-DESIGN.md §8 onto two things that stay true after the
+// Rebased per issue #40 onto two things that stay true after the
 // fix:
 //
 //   - stat -c %u on the replaced path returns the SANDBOX's uid, proving the
@@ -572,7 +572,7 @@ func TestSSHReachParityBetweenAPlainRunAndNet(t *testing.T) {
 // avoid host dependence ([]string{"@sys", "@home", "@cwd-rw", "sshhost"}) —
 // not the actual `defaults` setting a bare `snug <dir>` resolves to. That is
 // not a duplicate of what is being asked here: the downgrade this feature
-// accepts (ISSUE-40-DESIGN.md §6) has to stay on screen for the EXACT command
+// accepts (issue #40) has to stay on screen for the EXACT command
 // most users run, not only for a selection a test constructed to exercise the
 // renderer. A regression that only broke under the real defaults — say, a
 // profile ordering bug that made describeSSH see a stale mount set — would

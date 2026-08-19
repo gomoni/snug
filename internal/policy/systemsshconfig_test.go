@@ -125,8 +125,8 @@ func TestNoIdentityStillReplacesTheSystemSSHConfigWhereTheHostHasOne(t *testing.
 		t.Error("the replacement mount is not marked Authored")
 	}
 	// Provenance must read (snug), never identity:<profile> — nobody asked for
-	// this by pinning an account, so nothing may say they did (ISSUE-40-DESIGN.md
-	// §2). And since @sys's /usr bind is the ancestor that actually supplies the
+	// this by pinning an account, so nothing may say they did (issue #40).
+	// And since @sys's /usr bind is the ancestor that actually supplies the
 	// file at this path (not an exact-guest-path match), the row must also carry
 	// replaces:@sys — the disclosure that a profile's content was displaced.
 	if !slices.Contains(m.From, "(snug)") {
@@ -199,7 +199,7 @@ func TestSystemSSHConfigNeedsACoveringBind(t *testing.T) {
 }
 
 // TestSystemSSHConfigFailsClosedOnATmpfsCoveringMount is the Kind fail-closed
-// arm ISSUE-40-DESIGN.md §1 requires: a tmpfs covering the path grants an
+// arm issue #40 requires: a tmpfs covering the path grants an
 // EMPTY directory, the same verdict keepHostElement gives a tmpfs elsewhere in
 // this package. No host file is visible through it, so there is no ownership
 // refusal to fix and nothing may be authored — only KindBind may trigger the
@@ -223,7 +223,7 @@ func TestSystemSSHConfigFailsClosedOnATmpfsCoveringMount(t *testing.T) {
 	}
 }
 
-// sysSSHProbeEnv is the golden trap fix (ISSUE-40-DESIGN.md §8): newFakeEnv()
+// sysSSHProbeEnv is the golden trap fix (issue #40): newFakeEnv()
 // has no ssh path in dirs at all, so before this fixture existed EVERY
 // existing golden was byte-identical across this whole change, and an
 // implementer could have shipped it with zero golden diff — a security change

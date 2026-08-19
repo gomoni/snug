@@ -733,12 +733,12 @@ func TestFilesystemBlockRendersTheStubAsExec(t *testing.T) {
 }
 
 // TestDescribeSSHNamesTheReplacedPathAndItsCost is the review artifact for
-// issue #40's --dry-run disclosure (ISSUE-40-DESIGN.md §3, §9.1): the SSH
+// issue #40's --dry-run disclosure: the SSH
 // block must name the exact guest path that was replaced, the mechanism (one
 // uid mapped -> root-owned file reads as 65534 -> OpenSSH refuses it), and the
 // cost — RequiredRSASize dropping from the host crypto policy's value to
 // OpenSSH's compiled-in 1024, which is the one entry in the loss that has
-// security content (ISSUE-40-DESIGN.md §6).
+// security content (issue #40).
 //
 // It builds its own host fixture rather than relying on this developer's real
 // /usr/etc/ssh or /etc/ssh — a golden-shaped test that only passes on
