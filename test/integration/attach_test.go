@@ -16,6 +16,8 @@ package integration
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -136,15 +138,42 @@ func (s *attachSandbox) ready(t *testing.T) {
 	}
 }
 
-// statePath is where THIS run's state.json lives, given the xdgRuntime this
-// test isolated it under.
-func (s *attachSandbox) statePath(xdgRuntime string) string {
-	return filepath.Join(xdgRuntime, "snug", fmt.Sprintf("run-%d", s.pid()), "state.json")
+// uidRuntimeSnugDir mirrors internal/cli's targetLockBase: the directory the
+// per-target lock and, since issue #123, the per-target state file live in,
+// resolved FROM THE UID ALONE.
+//
+// Recomputed here rather than imported, deliberately, and the reason is the
+// bug itself: these tests launch the real binary, so a helper that read
+// $XDG_RUNTIME_DIR would be making exactly the assumption #123 removed. A run
+// and its `snug attach` must land on this directory whatever environment each
+// was started with, and that is what these tests are checking.
+func uidRuntimeSnugDir(t *testing.T) string {
+	t.Helper()
+	uid := os.Getuid()
+	canonical := fmt.Sprintf("/run/user/%d", uid)
+	if fi, err := os.Stat(canonical); err == nil && fi.IsDir() {
+		return filepath.Join(canonical, "snug")
+	}
+	return filepath.Join("/tmp", fmt.Sprintf("snug-%d", uid), "snug")
 }
 
-func (s *attachSandbox) waitForState(t *testing.T, xdgRuntime string) {
+// statePath is where THIS run's state file lives: named from the sha256 of the
+// TARGET's realpath, beside the target lock of the same name (issue #123).
+// Note what it no longer takes — the test's $XDG_RUNTIME_DIR — because the
+// answer no longer depends on it.
+func (s *attachSandbox) statePath(t *testing.T) string {
 	t.Helper()
-	p := s.statePath(xdgRuntime)
+	real, err := filepath.EvalSymlinks(s.proj)
+	if err != nil {
+		t.Fatalf("resolving the target %s: %v", s.proj, err)
+	}
+	sum := sha256.Sum256([]byte(real))
+	return filepath.Join(uidRuntimeSnugDir(t), "target-"+hex.EncodeToString(sum[:])+".json")
+}
+
+func (s *attachSandbox) waitForState(t *testing.T) {
+	t.Helper()
+	p := s.statePath(t)
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		if fi, err := os.Stat(p); err == nil && fi.Size() > 0 {
@@ -157,9 +186,12 @@ func (s *attachSandbox) waitForState(t *testing.T, xdgRuntime string) {
 	}
 }
 
-// runDir is this run's own runtime directory (the parent of state.json).
+// runDir is this run's own runtime directory: its sockets and its run lock.
+// It is still $XDG_RUNTIME_DIR-derived and still per-run — only the STATE file
+// moved out of it (issue #123), because only the state file has to be found by
+// a second process that may not share this one's environment.
 func (s *attachSandbox) runDir(xdgRuntime string) string {
-	return filepath.Dir(s.statePath(xdgRuntime))
+	return filepath.Join(xdgRuntime, "snug", fmt.Sprintf("run-%d", s.pid()))
 }
 
 // attachScript runs `snug attach proj -- bash -c script` and returns it in
@@ -196,13 +228,13 @@ func TestAttachRunsInsideTheRunningSandbox(t *testing.T) {
 			if topo.name == "net" {
 				requirePasta(t)
 			}
-			env, xdg := attachEnv(t)
+			env, _ := attachEnv(t)
 			proj, secret := target(t)
 
 			bg := startAttachSandbox(t, env, topo.args, proj,
 				`echo IN-SANDBOX-TMPFS-HOME > "$HOME/home-marker"; sleep 300`)
 			bg.ready(t)
-			bg.waitForState(t, xdg)
+			bg.waitForState(t)
 
 			// CONTROL for test 12: the marker lives ONLY in the sandbox's own
 			// tmpfs $HOME, which has no host-filesystem counterpart at all —
@@ -278,12 +310,12 @@ touch ./attach-write-ok 2>&1 && echo TARGET-WRITABLE
 func TestAttachedProcessCarriesNoHostEnvironmentVariable(t *testing.T) {
 	budget(t, 20*time.Second)
 	requireSandbox(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 
 	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	clientEnv := append(append([]string{}, env...), "SNUG_ATTACH_HOST_CANARY=leak-canary-value")
 	// PRECONDITION: the canary really is in the client's own environment,
@@ -312,12 +344,12 @@ func TestAttachedProcessCarriesNoHostEnvironmentVariable(t *testing.T) {
 func TestAttachedProcessHasTheRunsSeccompFilterInstalled(t *testing.T) {
 	budget(t, 20*time.Second)
 	requireSandbox(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 
 	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	r := attachScript(t, env, proj, `
 grep '^Seccomp:' /proc/self/status
@@ -344,12 +376,12 @@ command -v unshare >/dev/null && (unshare -U /bin/true && echo NESTED-USERNS-CRE
 func TestAttachedProcessHasAnEmptyCapabilityBoundingSet(t *testing.T) {
 	budget(t, 20*time.Second)
 	requireSandbox(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 
 	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	// CONTROL: this test PROCESS's own (unconfined, host) CapBnd. An ordinary
 	// process keeps a FULL bounding set even unprivileged — dropping bits
@@ -385,7 +417,7 @@ func TestAttachedProcessCannotReachHostLoopback(t *testing.T) {
 	budget(t, 20*time.Second)
 	requireSandbox(t)
 	requirePasta(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
@@ -404,7 +436,7 @@ func TestAttachedProcessCannotReachHostLoopback(t *testing.T) {
 
 	bg := startAttachSandbox(t, env, []string{"-p", "@net"}, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	r := attachScript(t, env, proj, fmt.Sprintf(
 		`timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/%d' 2>&1 && echo REACHED || echo REFUSED-OR-TIMEDOUT`,
@@ -463,15 +495,30 @@ func selfStartTime(t *testing.T) uint64 {
 // state.json) and only fail — or not — at the LIVE-process checks §4.1
 // makes, which is exactly the seam tests 19 and 20 need to isolate. The lock
 // is held for the life of the test via t.Cleanup.
-func plantForgedRunState(t *testing.T, xdgRuntime, target string, initPID int, initStarttime uint64,
+func plantForgedRunState(t *testing.T, target string, initPID int, initStarttime uint64,
 	namespaces map[string]uint64) {
 	t.Helper()
 
-	dir := filepath.Join(xdgRuntime, "snug", fmt.Sprintf("run-%d", initPID))
+	// The TARGET-keyed layout (issue #123): the state file and the lock that
+	// makes it count as live are siblings named from sha256(realpath), in the
+	// uid-derived directory. Realpath, not the raw path, for the same reason
+	// production does it — the name is a hash OF the canonical form.
+	real, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(real))
+	stem := "target-" + hex.EncodeToString(sum[:])
+
+	dir := uidRuntimeSnugDir(t)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	lock, err := os.OpenFile(filepath.Join(dir, "lock"), os.O_CREATE|os.O_RDWR, 0o600)
+
+	// Liveness is the TARGET lock now, held for the life of the test. Held
+	// from this process, which is also what makes tests 19 and 20 work: the
+	// forged state points at a pid whose namespaces are this process's own.
+	lock, err := os.OpenFile(filepath.Join(dir, stem+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,8 +532,8 @@ func plantForgedRunState(t *testing.T, xdgRuntime, target string, initPID int, i
 
 	state := map[string]any{
 		"schema": 1,
-		"target": target,
-		"chdir":  target,
+		"target": real,
+		"chdir":  real,
 		"sandbox": map[string]any{
 			"init_pid":       initPID,
 			"init_starttime": initStarttime,
@@ -499,9 +546,13 @@ func plantForgedRunState(t *testing.T, xdgRuntime, target string, initPID int, i
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "state.json"), data, 0o600); err != nil {
+	statePath := filepath.Join(dir, stem+".json")
+	if err := os.WriteFile(statePath, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Forged state for a target that has no real run: remove it so it cannot
+	// be mistaken for one by a later test or a later `snug attach` by hand.
+	t.Cleanup(func() { os.Remove(statePath) })
 }
 
 // TestAttachRefusesAPidWhoseUserNamespaceIsOurOwn is design test 19. Points
@@ -514,10 +565,10 @@ func plantForgedRunState(t *testing.T, xdgRuntime, target string, initPID int, i
 func TestAttachRefusesAPidWhoseUserNamespaceIsOurOwn(t *testing.T) {
 	budget(t)
 	requireSandbox(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	target := t.TempDir()
 
-	plantForgedRunState(t, xdg, target, os.Getpid(), selfStartTime(t), selfNamespaceInodes(t))
+	plantForgedRunState(t, target, os.Getpid(), selfStartTime(t), selfNamespaceInodes(t))
 
 	out, code := cli(t, env, "attach", target)
 	if code == 0 {
@@ -541,13 +592,13 @@ func TestAttachRefusesAPidWhoseUserNamespaceIsOurOwn(t *testing.T) {
 func TestAttachRefusesAfterPidReuse(t *testing.T) {
 	budget(t)
 	requireSandbox(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	target := t.TempDir()
 
 	realStart := selfStartTime(t)
 	ns := selfNamespaceInodes(t)
 
-	plantForgedRunState(t, xdg, target, os.Getpid(), realStart+123456, ns)
+	plantForgedRunState(t, target, os.Getpid(), realStart+123456, ns)
 	out, code := cli(t, env, "attach", target)
 	if code == 0 {
 		t.Fatalf("attach should have refused a start-time mismatch:\n%s", out)
@@ -561,10 +612,16 @@ func TestAttachRefusesAfterPidReuse(t *testing.T) {
 	// measures directly. Without this, "refused, and says reused" above could
 	// be satisfied by a build that refuses EVERY attach for the same reason
 	// regardless of the recorded start time.
-	xdg2 := t.TempDir()
-	env2 := baseEnv("XDG_RUNTIME_DIR=" + xdg2)
-	plantForgedRunState(t, xdg2, target, os.Getpid(), realStart, ns)
-	out2, code2 := cli(t, env2, "attach", target)
+	//
+	// A DIFFERENT target directory, and that is not incidental: since issue
+	// #123 the forged state and its lock are named from sha256(the target's
+	// realpath), so two plants on one target are two writers of one file and
+	// one lock. Under the old per-run layout the control isolated itself with
+	// a second $XDG_RUNTIME_DIR; the target IS the key now, so the control
+	// isolates itself with a second target.
+	target2 := t.TempDir()
+	plantForgedRunState(t, target2, os.Getpid(), realStart, ns)
+	out2, code2 := cli(t, env, "attach", target2)
 	if code2 == 0 {
 		t.Fatalf("control: expected SOME refusal (this pid is not inside a real sandbox):\n%s", out2)
 	}
@@ -625,7 +682,7 @@ echo "APID=$APID"
 func TestKnownOpenResidualPayloadReachesAnAttachedProcessDescriptor(t *testing.T) {
 	budget(t, 30*time.Second)
 	requireSandbox(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 
 	marker := "snugattachmarker" + strconv.Itoa(os.Getpid()) + strconv.FormatInt(time.Now().UnixNano(), 36)
@@ -639,7 +696,7 @@ echo REOPENED-VIA-PROC-FD1 > /proc/$APID/fd/1 2>&1 && echo REOPEN-WRITE-OK || ec
 sleep 60
 `)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	// Non-terminal stdio on the attach client, deterministically, so the pipe
 	// relay path is used regardless of how this test binary itself was
@@ -761,7 +818,7 @@ func TestRelayedStdioKeepsTheHostInodeOutOfTheSandbox(t *testing.T) {
 	}
 
 	// ── SANDBOX CASE ──────────────────────────────────────────────────────
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 	marker := "snugattach22b" + strconv.Itoa(os.Getpid()) + strconv.FormatInt(time.Now().UnixNano(), 36)
 
@@ -778,7 +835,7 @@ echo "READBACK=[$READBACK]"
 sleep 60
 `)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	attachFile := filepath.Join(t.TempDir(), "attach-marker-file")
 	const attachMarker = "SANDBOX-MUST-NOT-SEE-THIS-HOST-CONTENT"
@@ -839,12 +896,12 @@ func findAttachedByComm(clientPID int, comm string, timeout time.Duration) (int,
 func TestAttachedProcessDiesWithASIGKILLedSnug(t *testing.T) {
 	budget(t, 30*time.Second)
 	requireSandbox(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 
 	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	devNull, err := os.Open(os.DevNull)
 	if err != nil {
@@ -897,7 +954,7 @@ func waitDone(p *bgProc) <-chan struct{} {
 func TestAttachedProcessDiesWithASIGKILLedAttachClient(t *testing.T) {
 	budget(t, 30*time.Second)
 	requireSandbox(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 
 	// A payload that keeps proving liveness AFTER the kill, the same
@@ -907,7 +964,7 @@ func TestAttachedProcessDiesWithASIGKILLedAttachClient(t *testing.T) {
 	bg := startAttachSandbox(t, env, nil, proj,
 		`while :; do date +%s%N > "$SNUG_TARGET/heartbeat"; sleep 0.1; done`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	heartbeat := filepath.Join(proj, "heartbeat")
 	deadline := time.Now().Add(10 * time.Second)
@@ -988,7 +1045,7 @@ func TestAttachLeavesNoProcessAndNoFileBehind(t *testing.T) {
 
 	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	before, err := os.ReadDir(bg.runDir(xdg))
 	if err != nil {
@@ -1038,12 +1095,12 @@ func TestAttachLeavesNoProcessAndNoFileBehind(t *testing.T) {
 func TestAttachSurvivesGoRuntimeThreadChurn(t *testing.T) {
 	budget(t, 60*time.Second)
 	requireSandbox(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 
 	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	const n = 12
 	const sleepSecs = 3
@@ -1248,12 +1305,12 @@ func attachWithStdin(t *testing.T, env []string, proj string, stdin *os.File, ma
 func TestAttachReturnsPromptlyWhenStdinNeverReachesEOF(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 
 	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	// ── CONTROL: closed stdin already returns promptly ──────────────────
 	devNull, err := os.Open(os.DevNull)
@@ -1320,7 +1377,7 @@ func TestAttachReturnsPromptlyWhenStdinNeverReachesEOF(t *testing.T) {
 func TestAttachFindsTheRunByASymlinkToItsTarget(t *testing.T) {
 	budget(t, 30*time.Second)
 	requireSandbox(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 
 	otherDir := t.TempDir()
@@ -1338,7 +1395,7 @@ func TestAttachFindsTheRunByASymlinkToItsTarget(t *testing.T) {
 	bg := startAttachSandbox(t, env, nil, proj,
 		`echo IN-SANDBOX-TMPFS-SYMLINK-PROOF > "$HOME/attach-symlink-proof"; sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	// DISTINGUISHER: a symlink to an unrelated directory finds no live run.
 	outOther, codeOther := cli(t, env, "attach", symlinkToOther, "--", "/bin/true")
@@ -1426,12 +1483,12 @@ func openTestPTY(t *testing.T) (master, slave *os.File) {
 func TestAttachPTYReturnsPromptlyWhenThePTYIsNeverClosed(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 
 	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	master, slave := openTestPTY(t)
 	defer master.Close()
@@ -1532,12 +1589,12 @@ func selfStatPidSessionTTY(t *testing.T, line string) (pid, session, ttyNr strin
 func TestAttachPTYGivesJobControl(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 
 	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	master, slave := openTestPTY(t)
 	defer master.Close()
@@ -1615,12 +1672,12 @@ func TestAttachPTYGivesJobControl(t *testing.T) {
 func TestAttachPipeStdinGetsNoControllingTTY(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 
 	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	out, code := cli(t, env, "attach", proj, "--", "/bin/cat", "/proc/self/stat")
 	if code != 0 {
@@ -1661,12 +1718,12 @@ func TestAttachPipeStdinGetsNoControllingTTY(t *testing.T) {
 func TestAttachForwardsInitialWinsize(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 
 	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	master, slave := openTestPTY(t)
 	defer master.Close()
@@ -1737,12 +1794,12 @@ func isRawTermios(t *unix.Termios) bool {
 func TestAttachRestoresClientTerminalOnExit(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 
 	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	master, slave := openTestPTY(t)
 	defer master.Close()
@@ -1894,12 +1951,12 @@ func TestAttachPTYNeverExposesTheMasterToTheAttachedProcess(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
 	requirePython(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 
 	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	master, slave := openTestPTY(t)
 	defer master.Close()
@@ -2009,7 +2066,7 @@ func TestAttachPTYDeniesTIOCSTIWithEPERM(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
 	requirePython(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 
 	// python3 -c, deliberately NOT a heredoc (<<'PYEOF'): a heredoc
@@ -2036,7 +2093,7 @@ echo ---END---
 	// ── THE CASE: the run's own (default, filtered) seccomp profile ─────
 	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	master, slave := openTestPTY(t)
 	defer master.Close()
@@ -2054,11 +2111,11 @@ echo ---END---
 	}
 
 	// ── CONTROL: an otherwise identical session with NO seccomp filter ──
-	envCtl, xdgCtl := attachEnv(t)
+	envCtl, _ := attachEnv(t)
 	projCtl, _ := target(t)
 	bgCtl := startAttachSandbox(t, envCtl, []string{"--no-seccomp"}, projCtl, `sleep 300`)
 	bgCtl.ready(t)
-	bgCtl.waitForState(t, xdgCtl)
+	bgCtl.waitForState(t)
 
 	masterCtl, slaveCtl := openTestPTY(t)
 	defer masterCtl.Close()
@@ -2130,12 +2187,12 @@ func TestAttachPTYDevTTYIsTheAllocatedPTYNotTheHostTerminal(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
 	requirePython(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 
 	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	master, slave := openTestPTY(t)
 	defer master.Close()
@@ -2204,12 +2261,12 @@ echo ---END---
 func TestAttachPTYOutputIsCookedForARawModeClient(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
-	env, xdg := attachEnv(t)
+	env, _ := attachEnv(t)
 	proj, _ := target(t)
 
 	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
-	bg.waitForState(t, xdg)
+	bg.waitForState(t)
 
 	master, slave := openTestPTY(t)
 	defer master.Close()
@@ -2228,5 +2285,65 @@ func TestAttachPTYOutputIsCookedForARawModeClient(t *testing.T) {
 			"attached pty's own line ending was not translated for the raw-mode client, "+
 			"which is the STAIRCASE symptom (every line drifting one column right than the "+
 			"last):\n%q", after, got)
+	}
+}
+
+// TestAttachFindsARunStartedUnderADifferentEnvironment is the regression for
+// issue #123, and it is the whole point of moving the state file.
+//
+// The run and the `snug attach` that must find it are routinely launched
+// under different environments: an interactive shell has $XDG_RUNTIME_DIR, a
+// cron job, a systemd unit and an ssh non-login shell do not. The state file
+// used to live under runtimeBase(), which reads $XDG_RUNTIME_DIR and then
+// $TMPDIR — so a run published its state in a directory the attach would
+// never look in, and `snug attach` silently could not find its own live run.
+// Same root cause as #122, which was fixed for the target LOCK only; this is
+// the other direction.
+//
+// The holder gets both variables set, to directories that have nothing to do
+// with where the state must land. The attach gets neither — removed, not
+// merely changed, because "unset" is the shape that bit.
+//
+// Two controls, and neither is decoration. The FIRST is that the attach
+// actually entered the sandbox: it reads a marker the payload wrote into the
+// sandbox's own tmpfs $HOME, which has no host counterpart at all, so an
+// attach that had somehow run outside could not print it. The SECOND is that
+// the lookup still discriminates: an unrelated directory, under the identical
+// environment, must still report no live run — otherwise "found it" would be
+// equally true of an attach that matched anything.
+func TestAttachFindsARunStartedUnderADifferentEnvironment(t *testing.T) {
+	budget(t, 40*time.Second)
+	requireSandbox(t)
+
+	proj, _ := target(t)
+
+	// HOLDER: the interactive-shell shape.
+	holderEnv := baseEnv("XDG_RUNTIME_DIR="+t.TempDir(), "TMPDIR="+t.TempDir())
+	bg := startAttachSandbox(t, holderEnv, nil, proj,
+		`echo IN-SANDBOX-TMPFS-HOME > "$HOME/home-marker"; sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t)
+
+	// ATTACHER: the cron/systemd/ssh shape — neither variable present.
+	attachEnvNoXDG := withoutEnv(withoutEnv(baseEnv(), "XDG_RUNTIME_DIR"), "TMPDIR")
+
+	r := attachScript(t, attachEnvNoXDG, proj, `cat "$HOME/home-marker"`).mustRun(t)
+	if !strings.Contains(r.out, "IN-SANDBOX-TMPFS-HOME") {
+		t.Fatalf("`snug attach` with $XDG_RUNTIME_DIR and $TMPDIR unset did not join the run "+
+			"that was started WITH them set. That is issue #123: the run published its state "+
+			"under an env-derived path the attach never looked at, so attach cannot find its "+
+			"own live run.\n%s", r.out)
+	}
+
+	// CONTROL: the same attach, same environment, against a directory that has
+	// no run of its own, must refuse.
+	other, _ := target(t)
+	out, code := cli(t, attachEnvNoXDG, "attach", other)
+	if code == 0 {
+		t.Errorf("`snug attach` succeeded on a directory with no live run (exit 0) — the lookup "+
+			"is not discriminating, so the assertion above proves nothing:\n%s", out)
+	}
+	if !strings.Contains(out, "no live snug run found") {
+		t.Errorf("attaching to a directory with no live run did not say so:\n%s", out)
 	}
 }
