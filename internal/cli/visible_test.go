@@ -76,11 +76,31 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// AND THE INTERPRETED-PATH MARK (issues #169/#170, internal/policy's
+	// PolicyInterpretedMarks). No BUILTIN grants a catalogued path
+	// (TestNoBuiltinGrantsACredentialOrCommandTablePath, internal/profile), so
+	// this sink is otherwise ABSENT from every fixture this sweep already
+	// drives — and a sink nothing exercises is a sink this test cannot be said
+	// to cover, the same gap TestAttachScreensAreCoveredByTheControlCharacterSweep
+	// exists to close for describeAttach. A synthetic profile grants a real
+	// catalogued row (/etc/gitconfig) so the mark actually renders.
+	//
+	// TestInterpretedMarksNeverInterpolateProfileText (internal/policy) already
+	// proves the templates interpolate NO profile text at all, so nothing here
+	// is expected to newly trip the sweep below — this fixture exists so that
+	// claim is exercised on the REAL screen rather than only in isolation, and
+	// so a future template change that DID start interpolating something would
+	// be caught here rather than only in a dry run nobody wrote a test for.
+	env.dirs["/host/gitconfig-src"] = true
+	reg["forge-interpreted"] = &policy.Profile{
+		Name: "forge-interpreted",
+		RO:   []string{"/host/gitconfig-src:/etc/gitconfig"},
+	}
 	// @net is in the selection so describeNetwork renders its EGRESS arm and
 	// the pasta argv below it — the two sinks the network fixture below aims
 	// at. Without it both are absent and that half of the sweep measures
 	// nothing.
-	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "@claude", "@net")
+	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "@claude", "@net", "forge-interpreted")
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), env)
 	if err != nil {
 		t.Fatal(err)
@@ -129,6 +149,15 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	p.Net.Gateway = "10.5.5.1\u009b1A\u0085  " + forged + "-NET-GATEWAY-C1"
 
 	got := captureStdout(t, func() { dryRun(p, p.BwrapArgs(0, 0), config{}, nil) })
+
+	// POSITIVE CONTROL for the interpreted-path fixture: without this, the
+	// grant above could have failed to resolve, or the mark could have failed
+	// to fire, and the isForgingRune sweep below would still pass — on a
+	// screen that never actually reached the sink it is meant to cover.
+	if !strings.Contains(got, "COMMAND TABLE: git reads this") {
+		t.Fatalf("the interpreted-path mark never reached the screen at all, so this half of the "+
+			"sweep measures nothing:\n%s", got)
+	}
 
 	// POSITIVE CONTROLS for the network fixture, named separately so a failure
 	// says which sink stopped rendering rather than "something is missing".
