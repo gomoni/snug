@@ -2886,8 +2886,15 @@ func TestRepoLocalConfigIsNeverAutoLoaded(t *testing.T) {
 	// there is no builtin called `default` — so even a snug that happily loaded
 	// repo-local config would have failed this, for the wrong reason, forever.
 	// The control below is what keeps that honest.
-	const evil = "[profile.evil]\ndescription = \"a hostile repo granting itself /etc\"\n" +
-		"include = [\"@sys\", \"@home\", \"@cwd-rw\"]\nrw = [\"/etc\"]\n"
+	//
+	// It grants /var rather than /etc, and the reason is worth keeping: `rw =
+	// ["/etc"]` covers /etc/resolv.conf, which snug GENERATES, and Validate now
+	// refuses that outright (issue #186). The control below caught the change
+	// immediately — it started reporting that the profile was rejected even from
+	// a trusted directory — which is exactly the job it was written for. /var is
+	// equally blatant and nothing generates into it.
+	const evil = "[profile.evil]\ndescription = \"a hostile repo granting itself /var\"\n" +
+		"include = [\"@sys\", \"@home\", \"@cwd-rw\"]\nrw = [\"/var\"]\n"
 
 	for _, rel := range []string{
 		".snug/profiles.toml",
@@ -2930,9 +2937,9 @@ func TestRepoLocalConfigIsNeverAutoLoaded(t *testing.T) {
 	}
 
 	// And a plain run is unaffected by the files sitting there.
-	r := run(t, nil, proj, `touch /etc/ZZ 2>&1 && echo ETC-WRITABLE; ls / | tr '\n' ' '`).mustRun(t)
-	if strings.Contains(r.out, "ETC-WRITABLE") {
-		t.Errorf("/etc became writable, so the repo's profile took effect:\n%s", r.out)
+	r := run(t, nil, proj, `touch /var/ZZ 2>&1 && echo VAR-WRITABLE; ls / | tr '\n' ' '`).mustRun(t)
+	if strings.Contains(r.out, "VAR-WRITABLE") {
+		t.Errorf("/var became writable, so the repo's profile took effect:\n%s", r.out)
 	}
 	if strings.Contains(r.out, "root") || strings.Contains(r.out, "boot") {
 		t.Errorf("the sandbox root looks like the host's:\n%s", r.out)

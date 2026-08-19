@@ -2612,6 +2612,96 @@ kill -9 $SNUG; rm -rf "$T"
 ```
 
 
+## 15. snug never writes its generated files onto the host
+
+Issue #186. A writable grant covering a path snug GENERATES into used to turn
+snug's own setup into a host overwrite: bwrap's `--file` copies onto its
+destination, so `settings.json`, the staged `.credentials.json` and the injected
+`CLAUDE.md` landed on the host's copies and destroyed them. No payload acted and
+no grant was exceeded — snug did the writing, on the way in.
+
+Use a throwaway `HOME`. That is not politeness; the run this check reproduces
+happened against a real one.
+
+```console
+$ h=$(mktemp -d)/u && mkdir -p "$h/.ssh"
+$ echo "HOST-ORIGINAL" > "$h/.ssh/known_hosts"
+$ cfg=$(mktemp -d) && mkdir -p "$cfg/snug/profiles.d"
+$ cat > "$cfg/snug/profiles.d/sshrw.toml" <<'EOF'
+[profile.sshrw]
+description = "rw over the directory snug generates into"
+rw = ["{home}/.ssh"]
+EOF
+$ cat > "$cfg/snug/profiles.d/pinned.toml" <<'EOF'
+[profile.pinned]
+description = "an identity, so the ssh files are generated"
+[profile.pinned.identity]
+ssh_mode = "agent-proxy"
+ssh_key = "/path/to/some/id_ed25519.pub"
+EOF
+$ HOME=$h XDG_CONFIG_HOME=$cfg snug -p pinned -p sshrw /tmp/some-target -- true
+snug: profile sshrw grants rw on .../.ssh (the host's .../.ssh), and snug generates
+      .../.ssh/known_hosts inside it.
+       snug writes generated content with bwrap's --file, which COPIES onto its destination,
+       so this policy would overwrite .../.ssh/known_hosts on the HOST — outside the sandbox,
+       with no undo.
+       ...
+       Fix: drop the rw grant on .../.ssh, or deselect pinned, which generates at ...
+$ cat "$h/.ssh/known_hosts"
+HOST-ORIGINAL
+```
+
+What to check:
+
+1. The run is **refused**, exit non-zero, before anything starts.
+2. The host's file is **byte-identical** afterwards.
+3. The refusal names **both** grants — the `rw` one and the profile that
+   generates there — because snug cannot know which one you meant. It is a
+   refusal rather than a demotion: silently downgrading the grant to `ro` would
+   be a restriction operation, and invariant 1 does not have one.
+4. Drop `-p sshrw` and the same command runs, generating `~/.ssh/config` and
+   `known_hosts` **inside**, with the host's copies still untouched.
+
+## 16. "Am I inside?" — the check an agent can run
+
+Issue #185. An agent working on snug runs on the HOST; reaching into a sandbox
+means passing a command STRING to snug, and only that string runs inside. The
+prompt is not enough to tell the difference — bash unsets `PS1` when it is not
+interactive, so inside `sh -c` there is no prompt to read at all.
+
+```console
+$ bin/inside-snug; echo $?          # on the host
+inside-snug: NOT inside a snug sandbox (SNUG_PROFILES is unset or empty)
+1
+
+$ SNUG=1 SNUG_PROFILES=@sys bin/inside-snug; echo $?   # forged environment
+inside-snug: NOT inside a snug sandbox (/ is overlayfs, and a sandbox root is a tmpfs)
+1
+
+$ snug . -- sh -c './bin/inside-snug -v; echo exit=$?'
+inside-snug: ok — A: snug authored the environment (SNUG_PROFILES=@cwd-rw,@home,@parent-ro,@sys)
+inside-snug: ok — B: / and /home/you are tmpfs, and the host canary is not visible
+inside-snug: ok — C: PID 1 is bwrap and its environ is empty
+exit=0
+```
+
+What to check:
+
+1. It exits **non-zero on the host**, including with the environment forged —
+   family A is necessary and never sufficient.
+2. It exits **0 inside**, and names all three families. A guard that always
+   refuses passes every host-side test and quietly turns
+   `inside-snug && <command>` into a no-op, which reads as safety and is not.
+3. `bin/inside-snug --install-canary` writes `~/.snug-host-canary` on the host.
+   Touch that filename inside a sandbox and the guard flips to refusing — the
+   one piece of evidence snug does not produce.
+4. Use it in the SAME invocation as the thing it guards:
+   `snug <dir> -- sh -c 'bin/inside-snug && rm -rf …'`, never as two steps.
+
+Seccomp is deliberately not an evidence family: invariant 5's one exception is
+that snug warns and continues when the filter cannot be installed, so requiring
+`Seccomp: 2` would refuse inside a legitimately degraded sandbox.
+
 ## If a check fails
 
 1. Re-run it with `--dry-run` and compare what snug *claimed* against what you
