@@ -38,6 +38,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -95,6 +96,29 @@ func containerEngineEnv(t *testing.T) (env []string, xdgRuntime string) {
 // gives.
 func provisionEngineWrapper(t *testing.T) string {
 	t.Helper()
+	return provisionEngineWrapperWithHome(t, "")
+}
+
+// provisionEngineWrapperWithHome is provisionEngineWrapper with the engine's
+// $HOME under the caller's control. It exists for issue #132's regression
+// test and for nothing else, so read the reason rather than the signature:
+//
+// podman reads a USER containers.conf from $XDG_CONFIG_HOME/containers/ and,
+// when that variable is unset, from $HOME/.config/containers/. The engine's
+// environment is built by engine.Engine.Spec from PATH, HOME and
+// XDG_RUNTIME_DIR alone — no XDG_CONFIG_HOME — so on a real run the file
+// podman reads is the HOST USER's own, under their real home. Measured, and
+// it is the whole channel:
+//
+//	$ env -u CONTAINERS_CONF -u XDG_CONFIG_HOME HOME=$D podman run --rm alpine:3.20 cat /leak/token
+//	HOST-SECRET-MARKER
+//
+// A test cannot plant a hostile config in the developer's own
+// ~/.config/containers, so it points the engine's HOME at a temporary one
+// instead. homeOverride == "" keeps the bundle's own home, which is what
+// every other test wants.
+func provisionEngineWrapperWithHome(t *testing.T, homeOverride string) string {
+	t.Helper()
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("SKIP: cannot determine $HOME to look for a static podman bundle: " + err.Error())
@@ -121,15 +145,37 @@ func provisionEngineWrapper(t *testing.T) string {
 		t.Fatal(err)
 	}
 
+	engineHome := filepath.Join(root, "home")
+	if homeOverride != "" {
+		engineHome = homeOverride
+	}
+
+	// NOT `export CONTAINERS_CONF` (issue #133). It used to, and that had two
+	// costs, both measured rather than reasoned about:
+	//
+	//  1. snug's own generated containers.conf was never the file under test.
+	//     Only CONTAINERS_CONF_OVERRIDE reached the engine, so preflight P5's
+	//     cgroups remedy — the reason that file first existed — was verified
+	//     by a suite in which it was not loaded.
+	//  2. It MASKED the channel issue #132 is about. podman ignores the system
+	//     and user containers.conf whenever CONTAINERS_CONF is set, by
+	//     ANYONE — so the wrapper was suppressing the host's files itself, and
+	//     TestHostContainersConfAuthorsNothingInAContainer passed identically
+	//     with snug's own CONTAINERS_CONF deleted. A regression test the
+	//     harness satisfies on snug's behalf proves nothing about snug.
+	//
+	// The copied containers.conf is still written above and still stripped and
+	// cgroups-forced; it is simply not pointed at any more, so the file the
+	// engine reads is the one snug generates. Storage and registries keep
+	// their own variables, which name different files and are not part of this.
 	wrapper := filepath.Join(dir, "snug-test-podman")
 	script := fmt.Sprintf("#!/bin/sh\n"+
 		"export CONTAINERS_STORAGE_CONF=%s\n"+
-		"export CONTAINERS_CONF=%s\n"+
 		"export CONTAINERS_REGISTRIES_CONF=%s\n"+
 		"export HOME=%s\n"+
 		"exec %s \"$@\"\n",
-		filepath.Join(dir, "storage.conf"), filepath.Join(dir, "containers.conf"),
-		filepath.Join(root, "etc", "snug", "registries.conf"), filepath.Join(root, "home"), podmanBin)
+		filepath.Join(dir, "storage.conf"),
+		filepath.Join(root, "etc", "snug", "registries.conf"), engineHome, podmanBin)
 	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -422,32 +468,7 @@ func netprobeBin(t *testing.T) string {
 // TestContainerEgressFollowsNetProfile's offline half, reused here for
 // TestHostLoopbackClosedFromContainer's offline half).
 func buildScratchProbeImage(tag string) string {
-	return pyPreamble + fmt.Sprintf(`
-import tarfile, io, urllib.parse
-
-def build_scratch_probe():
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w") as tf:
-        dockerfile = b"FROM scratch\nCOPY netprobe /netprobe\nENTRYPOINT [\"/netprobe\"]\n"
-        ti = tarfile.TarInfo("Dockerfile"); ti.size = len(dockerfile)
-        tf.addfile(ti, io.BytesIO(dockerfile))
-        with open("netprobe", "rb") as f:
-            data = f.read()
-        ti2 = tarfile.TarInfo("netprobe"); ti2.size = len(data); ti2.mode = 0o755
-        tf.addfile(ti2, io.BytesIO(data))
-    ctx = buf.getvalue()
-    q = {"dockerfile": '["Dockerfile"]', "t": %[1]q, "output": %[1]q,
-         "networkmode": "0", "nsoptions": '[{"Name":"user","Host":true,"Path":""}]',
-         "isolation": "0", "rm": "1", "layers": "1", "pullpolicy": "missing",
-         "seccomp": "/usr/share/containers/seccomp.json", "shmsize": "67108864",
-         "nocache": "1"}
-    status, body = req("POST", "/v5.0.0/libpod/build?" + urllib.parse.urlencode(q), ctx,
-                        {"Content-Type": "application/x-tar"})
-    print("BUILD %%s: %%d" %% (%[1]q, status), flush=True)
-    if status != 200:
-        print("BUILD-BODY-TAIL: %%s" %% body[-500:].decode(errors="replace"), flush=True)
-    return status == 200
-`, tag)
+	return buildScratchProbeImageFor(tag, "netprobe")
 }
 
 // runContainerAndCollect creates, starts, waits for and removes a container
@@ -1181,18 +1202,26 @@ func resolvprobeBin(t *testing.T) string {
 // egress CLOSED, exactly what the offline half of
 // TestContainerGetsGeneratedResolvConfNotTheHosts needs.
 func buildScratchResolvProbeImage(tag string) string {
+	return buildScratchProbeImageFor(tag, "resolvprobe")
+}
+
+// buildScratchProbeImage is the same thing for any probe binary the payload
+// has already written into its target directory — resolvprobe for issue #126,
+// confprobe for issue #132. The image is `FROM scratch` with nothing but the
+// binary, so it builds with the sandbox's egress CLOSED and needs no registry.
+func buildScratchProbeImageFor(tag, bin string) string {
 	return pyPreamble + fmt.Sprintf(`
 import tarfile, io, urllib.parse
 
 def build_scratch_probe():
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tf:
-        dockerfile = b"FROM scratch\nCOPY resolvprobe /resolvprobe\nENTRYPOINT [\"/resolvprobe\"]\n"
+        dockerfile = ("FROM scratch\nCOPY %[2]s /%[2]s\nENTRYPOINT [\"/%[2]s\"]\n").encode()
         ti = tarfile.TarInfo("Dockerfile"); ti.size = len(dockerfile)
         tf.addfile(ti, io.BytesIO(dockerfile))
-        with open("resolvprobe", "rb") as f:
+        with open(%[2]q, "rb") as f:
             data = f.read()
-        ti2 = tarfile.TarInfo("resolvprobe"); ti2.size = len(data); ti2.mode = 0o755
+        ti2 = tarfile.TarInfo(%[2]q); ti2.size = len(data); ti2.mode = 0o755
         tf.addfile(ti2, io.BytesIO(data))
     ctx = buf.getvalue()
     q = {"dockerfile": '["Dockerfile"]', "t": %[1]q, "output": %[1]q,
@@ -1206,7 +1235,7 @@ def build_scratch_probe():
     if status != 200:
         print("BUILD-BODY-TAIL: %%s" %% body[-500:].decode(errors="replace"), flush=True)
     return status == 200
-`, tag)
+`, tag, bin)
 }
 
 // section extracts the text strictly between a "LABEL-BEGIN" and "LABEL-END"
@@ -1678,4 +1707,327 @@ func isHex(s string) bool {
 		}
 	}
 	return true
+}
+
+// ── issue #132: the host's containers.conf authors nothing in a container ──
+
+// confprobeBin builds testdata/confprobe for the HOST architecture, the same
+// way netprobeBin and resolvprobeBin do and for the same reason: it has to run
+// as the entrypoint of a container built and started through the very engine
+// under test.
+var (
+	confprobeBinOnce sync.Once
+	confprobeBinPath string
+	confprobeBinErr  error
+)
+
+func confprobeBin(t *testing.T) string {
+	t.Helper()
+	confprobeBinOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "snug-confprobe-")
+		if err != nil {
+			confprobeBinErr = err
+			return
+		}
+		bin := filepath.Join(dir, "confprobe")
+		cmd := exec.Command("go", "build", "-o", bin, "./testdata/confprobe")
+		cmd.Dir = "."
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+		var out strings.Builder
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Run(); err != nil {
+			confprobeBinErr = fmt.Errorf("building test/integration/testdata/confprobe: %w: %s", err, out.String())
+			return
+		}
+		confprobeBinPath = bin
+	})
+	if confprobeBinErr != nil {
+		t.Fatal(confprobeBinErr)
+	}
+	return confprobeBinPath
+}
+
+// hostileContainersConfHome plants a user containers.conf that authors, for
+// EVERY container the engine creates, four things nobody asked for: a host
+// bind, a host volume, a host device node, and an environment variable. It
+// returns the home to point the engine at and the marker string that must not
+// appear inside a container.
+//
+// Each key is one row of issue #132's own measurement table, kept in the same
+// spellings, because those are the ones that were confirmed to work rather
+// than the ones that look like they should.
+func hostileContainersConfHome(t *testing.T) (home, marker string) {
+	t.Helper()
+	home = t.TempDir()
+	secret := t.TempDir()
+	marker = "HOST-CONTAINERS-CONF-MARKER"
+
+	// Seed the bundle's own home first. It carries
+	// .config/containers/policy.json, which podman needs to decide whether an
+	// image may be used at all — without it requireRealEngine reports "a build
+	// succeeded but its RUN step never actually executed a container", which
+	// looks like a broken host rather than a missing file. Measured, not
+	// guessed: the skip appeared the moment $HOME moved and went away when
+	// this copy was added.
+	copyTree(t, filepath.Join(bundleRoot(t), "home"), home)
+
+	if err := os.WriteFile(filepath.Join(secret, "token"), []byte(marker+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	conf := filepath.Join(home, ".config", "containers")
+	if err := os.MkdirAll(conf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`[containers]
+mounts = ["type=bind,source=%[1]s,destination=/leak,ro=true"]
+volumes = ["%[1]s:/leak2:ro"]
+devices = ["/dev/fuse:/dev/fuse:rwm"]
+env = ["SNUG_HOST_CONF_MARKER=%[2]s"]
+env_host = true
+default_ulimits = ["nofile=%[3]s:%[3]s"]
+`, secret, marker, ulimitMarker)
+	if err := os.WriteFile(filepath.Join(conf, "containers.conf"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return home, marker
+}
+
+// TestHostContainersConfAuthorsNothingInAContainer is issue #132's regression,
+// and it asserts the SET rather than the site, which is what that issue asked
+// for: a user containers.conf planted with `mounts`, `volumes`, `devices`,
+// `env` and `env_host` must author NOTHING in a container created through
+// snug's proxy.
+//
+// The channel is real and is not client-requested, which is why no existing
+// test could see it: the engine adds these mounts itself, AFTER the request,
+// so internal/dockerproxy's bind filter — which validates what a client asks
+// for — never sees them, and --dry-run renders the resolved Policy and so
+// shows them either. Invariant 2's corollary ("every visible path traces to
+// exactly one explicit grant") did not hold inside a container.
+//
+// What closes it is engine.writeContainersConf pointing CONTAINERS_CONF at
+// snug's own generated file, which makes podman ignore the system and user
+// files entirely. The enumerated keys in that file are the second line, for a
+// podman that ever merges instead of replacing (issue #136 carries what that
+// enumeration does NOT cover).
+//
+// CONTROL, and this test is worthless without it: the same planted config,
+// read by the same podman binary with CONTAINERS_CONF unset, must actually
+// inject. Otherwise "no marker in the container" passes on a plant that was
+// never read — the exact shape of a test that cannot fail. The control runs
+// host-side against a throwaway store and builds its own `FROM scratch`
+// image, so it needs no registry and no cached image.
+func TestHostContainersConfAuthorsNothingInAContainer(t *testing.T) {
+	budget(t, 180*time.Second)
+
+	home, marker := hostileContainersConfHome(t)
+	wrapper := provisionEngineWrapperWithHome(t, home)
+	base, _ := attachEnv(t)
+	env := append(base, "SNUG_PODMAN="+wrapper)
+	requireRealEngine(t, env)
+
+	probe := confprobeBin(t)
+
+	// ── CONTROL: the plant is live on this host and this podman ──────────
+	assertHostileConfInjectsWithoutSnug(t, home, probe, marker)
+
+	// ── THE ASSERTION: through snug's proxy, it authors nothing ──────────
+	proj, _ := target(t)
+	if err := os.WriteFile(filepath.Join(proj, "confprobe"), mustRead(t, probe), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tag := "snugtest-hostconf:1"
+	script := buildScratchProbeImageFor(tag, "confprobe") + runContainerAndCollectFn + fmt.Sprintf(`
+if build_scratch_probe():
+    run_and_collect(%q, [], "host")
+print("PROBE-COMPLETE-OUTER", flush=True)
+`, tag)
+	if err := os.WriteFile(filepath.Join(proj, "hostconf.py"), []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := runEnv(t, env, []string{"-p", "@podman-build"}, proj, `python3 hostconf.py`).mustRun(t)
+	if !strings.Contains(r.out, "PROBE-COMPLETE-OUTER") {
+		t.Fatalf("the probe script did not run to the end:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, fmt.Sprintf("BUILD %s: 200", tag)) {
+		t.Fatalf("the from-scratch probe image did not build — this test proves nothing about a "+
+			"container it never ran:\n%s", r.out)
+	}
+
+	// CONTROL 2: the container really produced every section, so an absent
+	// marker below is a proven negative rather than a probe that did not run.
+	for _, label := range []string{"ROOT", "LEAK", "ENV", "DEV", "LIMITS"} {
+		if _, ok := section(r.out, label); !ok {
+			t.Fatalf("the container never printed a %s section — it did not actually run "+
+				"confprobe:\n%s", label, r.out)
+		}
+	}
+
+	if strings.Contains(r.out, marker) {
+		t.Errorf("the HOST's containers.conf authored something in a container created through "+
+			"snug's proxy — the marker %q reached it (issue #132):\n%s", marker, r.out)
+	}
+	root, _ := section(r.out, "ROOT")
+	for _, unwanted := range []string{"leak", "leak2"} {
+		if slices.Contains(strings.Fields(root), unwanted) {
+			t.Errorf("the host containers.conf's %q mount destination exists in the container "+
+				"(issue #132):\n%s", "/"+unwanted, root)
+		}
+	}
+	dev, _ := section(r.out, "DEV")
+	if slices.Contains(strings.Fields(dev), "fuse") {
+		t.Errorf("the host containers.conf's `devices` key put /dev/fuse in the container "+
+			"(issue #132):\n%s", dev)
+	}
+
+	// THE DISCRIMINATOR. Everything above is also closed by the ENUMERATED
+	// keys in snug's generated file, so those assertions cannot tell
+	// "CONTAINERS_CONF replaced the host's file" from "our file merely won on
+	// the keys we thought to name". default_ulimits is deliberately not
+	// enumerated (issue #136), so it survives the enumeration and is stopped
+	// only by suppression: if this fires, CONTAINERS_CONF is no longer
+	// replacing the host and user files, and every key nobody has enumerated
+	// is live again.
+	limits, _ := section(r.out, "LIMITS")
+	if strings.Contains(limits, ulimitMarker) {
+		t.Errorf("the host containers.conf's `default_ulimits` reached the container: snug's "+
+			"CONTAINERS_CONF is no longer REPLACING the host and user config files, so every "+
+			"containers.conf key that is not explicitly enumerated is authored by the host "+
+			"again (issues #132, #136):\n%s", limits)
+	}
+}
+
+// ulimitMarker is an implausible nofile limit — implausible on purpose, so
+// that seeing it inside a container cannot be a coincidence of the host's own
+// defaults. It is the value hostileContainersConfHome plants in
+// default_ulimits and the string
+// TestHostContainersConfAuthorsNothingInAContainer looks for.
+const ulimitMarker = "13571"
+
+// assertHostileConfInjectsWithoutSnug is the positive control for the test
+// above, and it is the whole reason that test means anything: it runs the
+// SAME podman binary against the SAME planted config with CONTAINERS_CONF
+// unset, and requires the marker to appear. If it does not, the plant is not
+// being read — a wrong path, a podman that stopped honouring the key, a
+// spelling that no longer works — and "no marker through snug" would be
+// proving nothing at all.
+//
+// It builds its own `FROM scratch` image in a throwaway store rather than
+// pulling one, so it needs no registry and no cached image, and it never
+// touches the developer's own podman storage.
+func assertHostileConfInjectsWithoutSnug(t *testing.T, home, probe, marker string) {
+	t.Helper()
+
+	podman := podmanBundleBinary(t)
+	ctx := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ctx, "confprobe"), mustRead(t, probe), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ctx, "Containerfile"),
+		[]byte("FROM scratch\nCOPY confprobe /confprobe\nENTRYPOINT [\"/confprobe\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, runroot := t.TempDir(), t.TempDir()
+	// XDG_CONFIG_HOME is REMOVED, not merely left alone: it takes precedence
+	// over $HOME/.config, so a developer's own value would silently redirect
+	// podman away from the planted file and quietly disarm this control.
+	// CONTAINERS_CONF is removed for the obvious reason — its presence is the
+	// very thing under test.
+	run := func(args ...string) (string, error) {
+		cmd := exec.Command(podman, append([]string{"--root", store, "--runroot", runroot}, args...)...)
+		cmd.Env = append(dropEnv(dropEnv(os.Environ(), "CONTAINERS_CONF"), "XDG_CONFIG_HOME"),
+			"HOME="+home)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	t.Cleanup(func() { run("system", "reset", "--force") })
+
+	tag := "snugtest-hostconf-control:1"
+	if out, err := run("build", "-t", tag, ctx); err != nil {
+		t.Skipf("SKIP: the control could not build its own from-scratch image with this "+
+			"bundle's podman, so issue #132's plant cannot be shown live here: %v: %s", err, out)
+	}
+	out, err := run("run", "--rm", tag)
+	if err != nil {
+		t.Fatalf("control: the planted-config container did not run: %v: %s", err, out)
+	}
+	if !strings.Contains(out, ulimitMarker) {
+		t.Fatalf("CONTROL FAILED: the planted default_ulimits (%s) did not reach a container "+
+			"even with CONTAINERS_CONF unset. That key is the discriminator for CONTAINERS_CONF's "+
+			"SUPPRESSION (issue #136 says why it is not enumerated), so without it the caller's "+
+			"assertions only prove the enumeration works:\n%s", ulimitMarker, out)
+	}
+	if !strings.Contains(out, marker) {
+		t.Fatalf("CONTROL FAILED: a user containers.conf planted with mounts/volumes/env "+
+			"injected NOTHING into a container even with CONTAINERS_CONF unset. The plant is not "+
+			"being read, so the assertion in the caller would pass for the wrong reason "+
+			"(issue #132's channel may have moved, or the key spellings changed):\n%s", out)
+	}
+	t.Logf("control: the planted host containers.conf DOES inject without snug (marker %q seen)", marker)
+}
+
+// podmanBundleBinary returns the pinned static podman the whole real-engine
+// suite runs on, skipping cleanly if the bundle is absent — the same rule
+// provisionEngineWrapper follows, and for the same reason: this suite never
+// points anything at whatever the host's own `podman` resolves to.
+func podmanBundleBinary(t *testing.T) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("SKIP: cannot determine $HOME to look for a static podman bundle: " + err.Error())
+	}
+	bin := filepath.Join(home, podmanStaticRootRel, "usr", "local", "bin", "podman")
+	if fi, statErr := os.Stat(bin); statErr != nil || fi.IsDir() {
+		t.Skip("SKIP: no static podman bundle at " + bin + " (.claude/design/PODMAN-STATIC.md)")
+	}
+	return bin
+}
+
+// bundleRoot is the pinned static podman bundle's own root, skipping cleanly
+// when it is absent — the same rule the rest of the real-engine suite follows.
+func bundleRoot(t *testing.T) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("SKIP: cannot determine $HOME to look for a static podman bundle: " + err.Error())
+	}
+	root := filepath.Join(home, podmanStaticRootRel)
+	if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
+		t.Skip("SKIP: no static podman bundle at " + root + " (.claude/design/PODMAN-STATIC.md)")
+	}
+	return root
+}
+
+// copyTree copies src's contents into dst, files and directories only. Small
+// and deliberately unclever: the one tree it is used on holds a single
+// policy.json.
+func copyTree(t *testing.T, src, dst string) {
+	t.Helper()
+	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0o644)
+	})
+	if err != nil {
+		t.Fatalf("seeding the engine home from the bundle's own: %v", err)
+	}
 }

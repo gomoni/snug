@@ -1435,6 +1435,55 @@ says `making / private`, the probe never reached its question either — that is
 the probe's machinery failing, not the host's answer, and it would warn on
 every host.
 
+### 9h. The HOST's containers.conf authors nothing in a container (issue #132)
+
+podman reads a user `containers.conf` from `$XDG_CONFIG_HOME/containers/` or,
+when that is unset — which is the engine's situation, since snug hands it only
+`PATH`, `HOME` and `XDG_RUNTIME_DIR` — from `$HOME/.config/containers/`. Keys
+there author binds, volumes, device nodes and environment for **every**
+container, none of it client-requested, so the proxy's bind filter never sees
+it and `--dry-run` never mentions it.
+
+snug points `CONTAINERS_CONF` at its own generated file, which makes podman
+ignore the system and user files entirely. To see the channel this closes, plant
+one and watch it work **without** snug:
+
+```bash
+D=$(mktemp -d); S=$(mktemp -d); echo HOST-SECRET-MARKER > $S/token
+mkdir -p $D/.config/containers
+cp ~/.local/opt/podman-static/home/.config/containers/policy.json $D/.config/containers/
+cat > $D/.config/containers/containers.conf <<EOF
+[containers]
+mounts = ["type=bind,source=$S,destination=/leak,ro=true"]
+default_ulimits = ["nofile=13571:13571"]
+EOF
+env -u CONTAINERS_CONF -u XDG_CONFIG_HOME HOME=$D   ~/.local/opt/podman-static/usr/local/bin/podman run --rm alpine:3.20 cat /leak/token
+```
+
+Expect `HOST-SECRET-MARKER`. Then set `CONTAINERS_CONF` at a file containing
+`[containers]` and `mounts = []` and expect the same command to fail with
+`can't open '/leak/token'`.
+
+**Read `default_ulimits` as the sharper half.** `mounts` is also closed by
+snug's own enumeration, so its absence cannot tell "the host's file was
+replaced" from "our value won". `default_ulimits` is deliberately **not**
+enumerated (issue #136), so it is stopped only by replacement — if
+`Max open files 13571` ever appears in `/proc/self/limits` inside a container,
+`CONTAINERS_CONF` has stopped suppressing and every unenumerated key is live
+again. `TestHostContainersConfAuthorsNothingInAContainer` is the scripted
+version, with the same discriminator.
+
+**Two files `CONTAINERS_CONF` does NOT cover**, both measured and both filed:
+`registries.conf` (steers where an image comes from) and `policy.json` (decides
+whether an image may be used at all). Confirm with an invalid one:
+
+```bash
+echo 'THIS IS NOT VALID TOML {{{' > $D/.config/containers/registries.conf
+env -u CONTAINERS_REGISTRIES_CONF -u XDG_CONFIG_HOME HOME=$D   ~/.local/opt/podman-static/usr/local/bin/podman pull alpine:3.20
+```
+
+Expect a parse error naming that path — which is the proof it was read.
+
 ## 10. A repository cannot grant itself anything
 
 ```bash

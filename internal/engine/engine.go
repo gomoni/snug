@@ -373,9 +373,20 @@ func (e *Engine) writeContainersConf(cgroupsDisabled bool, res policy.ResolverCo
 		"env = []\n" +
 		"env_host = false\n" +
 		"http_proxy = false\n" +
-		"hooks_dir = []\n" +
 		"annotations = []\n" +
 		"privileged = false\n")
+
+	// hooks_dir is an [engine] key, NOT a [containers] one, and it spent one
+	// commit in the wrong table where podman silently ignored it — an unknown
+	// key in containers.conf is not an error, so the only symptom of writing
+	// it in the wrong place is the feature not being there. It names
+	// DIRECTORIES OF PROGRAMS the OCI runtime executes for every container,
+	// which is a command table rather than data, so it is the one key in this
+	// file whose misplacement would have mattered most.
+	b.WriteString("\n[engine]\n" +
+		"# Directories of programs run for every container. A command table,\n" +
+		"# not data (issue #132).\n" +
+		"hooks_dir = []\n")
 
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		return "", fmt.Errorf("writing %s: %w", path, err)
