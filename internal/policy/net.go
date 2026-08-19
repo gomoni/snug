@@ -70,8 +70,17 @@ type NetPolicy struct {
 	// the host has no nameserver the sandbox could reach directly.
 	DNS bool
 
-	// Nameservers are the host's resolvers that are actually routable from the
-	// sandbox. Empty means "none usable" and forces the interception path.
+	// Nameservers is the host's resolver list, RAW and unfiltered — every
+	// address its /etc/resolv.conf names, loopback included.
+	//
+	// It used to arrive already filtered by RoutableNameservers, and that was
+	// the loopback rule being decided in Resolve while the interception rule
+	// was decided in Resolver: two authors for one question (invariant 6), and
+	// the reason @net-host was handed an address nothing answers (issue #164).
+	// The filter's premise is that the sandbox has a netns of its OWN, where
+	// host loopback is unreachable by design — true for egress, false when the
+	// netns IS the host's — so it belongs where the mode is known. Resolver
+	// applies it, per arm.
 	Nameservers []string
 
 	// Address, when set, gives the sandbox a synthetic address instead of
@@ -160,8 +169,14 @@ const dnsForwardAddr = "169.254.1.1"
 func (n NetPolicy) ResolvConf() []byte {
 	r := n.Resolver()
 	if len(r.Servers) == 0 {
-		return []byte("# snug: no network profile selected; DNS is intentionally unavailable.\n" +
-			"# Resolver libraries will fail immediately rather than hang.\n")
+		// Two states reach here and the text must fit both: no network
+		// profile at all, and a profile granting egress that never asked for
+		// DNS (`network = "egress"` with no `dns = true`). The old wording
+		// named only the first, so the second read as a lie in the one file
+		// whose whole job is to make a lookup fail fast.
+		return []byte("# snug: this sandbox has no resolver; DNS is intentionally unavailable.\n" +
+			"# Either no network profile was selected, or the one that was did not ask\n" +
+			"# for DNS. Resolver libraries will fail immediately rather than hang.\n")
 	}
 	var b strings.Builder
 	for _, s := range r.Servers {
@@ -206,11 +221,43 @@ func (n NetPolicy) Resolver() ResolverConfig {
 		Searches: []string{"."},
 		Options:  []string{"edns0"},
 	}
-	if n.Mode == NetIsolated {
+	// NAME NO RESOLVER AT ALL, and these are one state rather than two: "there
+	// is no network" and "snug was not asked to configure DNS" both mean snug
+	// has no resolver to name. Naming the interception address in either is
+	// what issue #164 looked like from inside — a sandbox pointed at an
+	// address with no forwarder behind it, so every lookup waits out a
+	// five-second timeout instead of failing immediately, which is the exact
+	// failure the offline file was written to avoid.
+	//
+	// !n.DNS is the half that used not to be here. A profile writing
+	// `network = "egress"` without `dns = true` produced a resolv.conf naming
+	// the interception address and a pasta argv with no --dns-forward — and
+	// --dry-run printed no dns line at all, because the SCREEN consulted DNS
+	// and this function did not.
+	if n.Mode == NetIsolated || !n.DNS {
 		return r
 	}
-	r.Servers = n.Nameservers
-	if n.Mode == NetEgress && n.Anonymised() {
+
+	// THE NETNS IS THE HOST'S (@net-host). No pasta runs, so interception is
+	// not available and must never be named; and the loopback filter's premise
+	// does not hold — 127.0.0.53 is reachable here for the same reason every
+	// other host service is, which is this profile's whole abuse sentence.
+	// Naming it grants nothing the profile has not already handed over, and
+	// withholding it just leaves the sandbox unable to resolve (issue #164).
+	//
+	// Searches stay anonymised even here. @net-host discloses the network; the
+	// host's internal domain NAMES are a separate disclosure and nothing in
+	// this mode needs them.
+	if n.Mode == NetHost {
+		r.Servers = n.Nameservers
+		return r
+	}
+
+	// EGRESS. The sandbox has a netns of its own, so a host resolver is usable
+	// only if it is routable from there — this is where the filter belongs,
+	// because this is the arm whose premise it encodes.
+	r.Servers = RoutableNameservers(n.Nameservers)
+	if n.Anonymised() {
 		// AN ANONYMISING PROFILE, and the reason this branch exists at all
 		// (issue #162). Address is set only by a profile whose whole purpose
 		// is that the sandbox does not learn where the host sits — @net-anon
@@ -234,31 +281,45 @@ func (n NetPolicy) Resolver() ResolverConfig {
 		// ~/.config/snug/profiles.d — inherits the property instead of
 		// re-opening the hole under a different name.
 		//
-		// AND GATED ON NetEgress, which is not belt-and-braces — it is a
-		// regression this branch caused and a review caught. pasta runs only
-		// in egress mode, so under `-p @net-host -p @net-anon --i-know` there
-		// is nothing to intercept: Mode joins permissive-ward to host, DNS
-		// ORs true, Address is set, and the sandbox was handed a link-local
-		// address with no forwarder behind it. Measured on this host, both
-		// binaries, same command: before the branch `getent hosts
-		// example.com` RESOLVED, after it RESOLVE-FAILED. "Adding a profile
-		// made a capability stop working" is the shape invariant 1 exists to
-		// keep out of the model, and an anonymising profile cannot anonymise
-		// a sandbox that is sharing the host's namespace anyway — Address has
-		// no effect at all in host mode.
-		//
-		// What this gate does NOT fix is @net-host on its own, which names
-		// the same dead address for a different reason (it sets no `dns`, so
-		// Nameservers is empty and the fallback below fires). That is issue
-		// #164, it predates this change, and it is deliberately not repaired
-		// here: the fix needs RoutableNameservers' loopback filter to become
-		// mode-dependent, which is a decision of its own.
+		// It is reached only from this arm, and that is a fix rather than a
+		// tidy-up: gating it on the mode was once missing, and `-p @net-host
+		// -p @net-anon --i-know` then resolved on main and stopped resolving
+		// here. Address has no effect in host mode anyway — no pasta applies
+		// it — so anonymising DNS there withheld a working resolver and
+		// substituted nothing.
 		r.Servers = nil
 	}
 	if len(r.Servers) == 0 {
 		r.Servers = []string{dnsForwardAddr}
 	}
 	return r
+}
+
+// DNSHost is the host-side resolver pasta is told to send intercepted queries
+// to: the host's FIRST nameserver, loopback included.
+//
+// Passed explicitly rather than left to pasta's default, which is documented
+// as "first nameserver from host's /etc/resolv.conf" and would therefore READ
+// THE SAME FILE A SECOND TIME with a second selection rule (issue #166). The
+// two disagree on a host listing a local resolver first and a router second:
+// snug's own filter drops the loopback entry, pasta's default takes it. Same
+// two-authors defect as #28 and #164, one layer out — and CLAUDE.md's standing
+// rule is to pass every security-relevant flag explicitly even when it matches
+// the current default, because a default that changes upstream is a silent
+// regression.
+//
+// Loopback INCLUDED is the deliberate half. pasta runs on the HOST, where
+// 127.0.0.53 is reachable; RoutableNameservers exists to keep the SANDBOX off
+// host loopback and its premise does not apply to the forwarder. Filtering
+// here would break the systemd-resolved host that interception exists for.
+//
+// Empty when the host names no resolver, in which case nothing is passed and
+// pasta's own default applies to an equally empty file.
+func (n NetPolicy) DNSHost() string {
+	if len(n.Nameservers) == 0 {
+		return ""
+	}
+	return n.Nameservers[0]
 }
 
 // Anonymised reports whether this sandbox withholds the HOST's network position
@@ -405,6 +466,12 @@ func (p *Policy) PastaArgs(t PastaTarget) []string {
 
 	if n.NeedsDNSForward() {
 		a = append(a, "--dns-forward", dnsForwardAddr)
+		// And WHERE those queries go, named rather than defaulted — see
+		// DNSHost for why leaving it to pasta means the host's resolv.conf is
+		// read twice with two different rules (issue #166).
+		if h := n.DNSHost(); h != "" {
+			a = append(a, "--dns-host", h)
+		}
 	}
 	if n.Address != "" {
 		addr, prefix, _ := strings.Cut(n.Address, "/")

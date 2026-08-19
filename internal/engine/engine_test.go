@@ -308,7 +308,7 @@ func specConf(t *testing.T, net policy.NetPolicy, cgroupsDisabled bool) (conf st
 // CONTROL: the file the variables name must EXIST and be non-empty — otherwise
 // this test passes on a Spec that names a path it never wrote.
 func TestTheEngineReadsOnlySnugsOwnContainersConf(t *testing.T) {
-	conf, env := specConf(t, policy.NetPolicy{Mode: policy.NetEgress, Nameservers: []string{"192.0.2.53"}}, false)
+	conf, env := specConf(t, policy.NetPolicy{Mode: policy.NetEgress, DNS: true, Nameservers: []string{"192.0.2.53"}}, false)
 	if strings.TrimSpace(conf) == "" {
 		t.Fatal("CONTAINERS_CONF names an empty file")
 	}
@@ -340,7 +340,7 @@ func TestTheEngineReadsOnlySnugsOwnContainersConf(t *testing.T) {
 // default, in either direction", and it is what still holds if a future podman
 // changes CONTAINERS_CONF from "replaces" to "merges".
 func TestGeneratedContainersConfClosesTheHostInjectionKeys(t *testing.T) {
-	conf, _ := specConf(t, policy.NetPolicy{Mode: policy.NetEgress, Nameservers: []string{"192.0.2.53"}}, false)
+	conf, _ := specConf(t, policy.NetPolicy{Mode: policy.NetEgress, DNS: true, Nameservers: []string{"192.0.2.53"}}, false)
 	for _, want := range []string{
 		"mounts = []",
 		"volumes = []",
@@ -374,7 +374,7 @@ func TestGeneratedContainersConfClosesTheHostInjectionKeys(t *testing.T) {
 // which is the drift it exists to catch — a list whose prose and content
 // disagree is how the finding happened in the first place.
 func TestTheInjectionKeyListSaysWhatItDoesNotClose(t *testing.T) {
-	conf, _ := specConf(t, policy.NetPolicy{Mode: policy.NetEgress, Nameservers: []string{"192.0.2.53"}}, false)
+	conf, _ := specConf(t, policy.NetPolicy{Mode: policy.NetEgress, DNS: true, Nameservers: []string{"192.0.2.53"}}, false)
 	for _, notClosed := range []string{
 		"default_capabilities",
 		"default_sysctls",
@@ -400,7 +400,13 @@ func TestTheInjectionKeyListSaysWhatItDoesNotClose(t *testing.T) {
 // host's — with a nameserver no host has, so a pass cannot be an accident of
 // this machine's own resolver configuration.
 func TestGeneratedContainersConfTakesDNSFromTheResolvedPolicy(t *testing.T) {
-	net := policy.NetPolicy{Mode: policy.NetEgress, Nameservers: []string{"192.0.2.53"}}
+	// DNS: true is not decoration. Resolve populates Nameservers only when a
+	// profile asked for DNS, so a fixture with Nameservers and no DNS is a
+	// state no run can produce — and since Resolver became mode-and-DNS-aware
+	// (issue #164) it correctly yields no resolver at all, which made this
+	// test fail against a policy that was never valid rather than against a
+	// defect.
+	net := policy.NetPolicy{Mode: policy.NetEgress, DNS: true, Nameservers: []string{"192.0.2.53"}}
 	conf, _ := specConf(t, net, false)
 
 	for _, want := range []string{
@@ -443,7 +449,7 @@ func TestGeneratedContainersConfNeverLeavesDNSUnsetOffline(t *testing.T) {
 // /etc/resolv.conf and the containers.conf keys. Both must come from the SAME
 // policy.NetPolicy — this test fails if a future change re-derives either one.
 func TestTheEnginesTwoDNSRenderingsCannotDiverge(t *testing.T) {
-	net := policy.NetPolicy{Mode: policy.NetEgress, Nameservers: []string{"198.51.100.7"}}
+	net := policy.NetPolicy{Mode: policy.NetEgress, DNS: true, Nameservers: []string{"198.51.100.7"}}
 	conf, _ := specConf(t, net, false)
 	resolv := string(net.ResolvConf())
 
@@ -462,7 +468,7 @@ func TestTheEnginesTwoDNSRenderingsCannotDiverge(t *testing.T) {
 // CONTROL: the same Spec with cgroupsDisabled=false must NOT carry it, so this
 // is not asserting a constant.
 func TestCgroupsDisabledStillReachesTheEngine(t *testing.T) {
-	net := policy.NetPolicy{Mode: policy.NetEgress, Nameservers: []string{"192.0.2.53"}}
+	net := policy.NetPolicy{Mode: policy.NetEgress, DNS: true, Nameservers: []string{"192.0.2.53"}}
 	with, _ := specConf(t, net, true)
 	if !strings.Contains(with, `cgroups = "disabled"`) {
 		t.Errorf("preflight P5's selection did not reach the engine:\n%s", with)

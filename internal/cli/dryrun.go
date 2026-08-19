@@ -1481,32 +1481,41 @@ func describeNetwork(out *os.File, p *policy.Policy) {
 		fmt.Fprintf(out, "         host loopback   UNREACHABLE (--map-host-loopback none, -T none, -U none)\n")
 		fmt.Fprintf(out, "         abstract unix   UNREACHABLE (netns-scoped: X11, D-Bus)\n")
 		fmt.Fprintf(out, "         egress          full, IPv4 + IPv6\n")
-		if p.Net.DNS {
-			// RENDERED FROM THE RESOLVED POLICY, never from a literal (issue
-			// #28). This line was a hardcoded string printed whenever DNS was
-			// on, so on an ordinary LAN host it claimed pasta intercepted
-			// while the sandbox was actually handed `nameserver 192.168.1.1`
-			// — a false fact about DNS on the screen whose entire job is
-			// letting a human decide whether a sandbox leaks its network
-			// position, four lines above an offer of '@net-anon' because "the
-			// host's LAN address is hidden".
-			//
-			// Both arms name the addresses the sandbox will really read out
-			// of /etc/resolv.conf, and both say who answers, because "which
-			// address" and "which party" are two different questions and the
-			// old line answered the second one wrongly while looking like it
-			// answered both.
-			if servers := p.Net.Resolver().Servers; p.Net.NeedsDNSForward() {
-				fmt.Fprintf(out, "         dns             %s -> pasta -> host resolver\n",
-					strings.Join(servers, " "))
-				fmt.Fprintf(out, "                         (pasta answers here from the host side; no host resolver\n")
-				fmt.Fprintf(out, "                         address is named inside the sandbox)\n")
-			} else {
-				fmt.Fprintf(out, "         dns             %s\n", strings.Join(servers, " "))
-				fmt.Fprintf(out, "                         (the HOST's own resolvers, named inside the sandbox and\n")
-				fmt.Fprintf(out, "                         reached through ordinary egress — a LAN resolver address\n")
-				fmt.Fprintf(out, "                         discloses the network the host sits on)\n")
-			}
+		// RENDERED FROM THE RESOLVED POLICY, never from a literal (issue
+		// #28), and printed UNCONDITIONALLY in this arm rather than gated on
+		// p.Net.DNS (issue #166). This line was a hardcoded string printed
+		// whenever DNS was on, so on an ordinary LAN host it claimed pasta
+		// intercepted while the sandbox was actually handed `nameserver
+		// 192.168.1.1` — a false fact about DNS on the screen whose entire job
+		// is letting a human decide whether a sandbox leaks its network
+		// position, four lines above an offer of '@net-anon' because "the
+		// host's LAN address is hidden".
+		//
+		// The gate went for the same reason the literal did: it made the SCREEN
+		// consult a field the file's own author does not, so a profile writing
+		// `network = "egress"` with no `dns = true` printed nothing here while
+		// the sandbox still got a resolv.conf. A block that is SILENT about DNS
+		// is not the same as a sandbox that HAS no DNS, and only one of those
+		// was ever true at a time.
+		//
+		// Every arm names the addresses the sandbox will really read out of
+		// /etc/resolv.conf and says WHO answers, because "which address" and
+		// "which party" are two different questions and the old line answered
+		// the second one wrongly while looking like it answered both.
+		switch servers := p.Net.Resolver().Servers; {
+		case len(servers) == 0:
+			fmt.Fprintf(out, "         dns             NONE — no resolver is named inside; lookups fail fast\n")
+			fmt.Fprintf(out, "                         (this profile grants egress but never asked for DNS)\n")
+		case p.Net.NeedsDNSForward():
+			fmt.Fprintf(out, "         dns             %s -> pasta -> %s\n",
+				strings.Join(servers, " "), dnsHostLabel(p))
+			fmt.Fprintf(out, "                         (pasta answers here from the host side; no host resolver\n")
+			fmt.Fprintf(out, "                         address is named inside the sandbox)\n")
+		default:
+			fmt.Fprintf(out, "         dns             %s\n", strings.Join(servers, " "))
+			fmt.Fprintf(out, "                         (the HOST's own resolvers, named inside the sandbox and\n")
+			fmt.Fprintf(out, "                         reached through ordinary egress — a LAN resolver address\n")
+			fmt.Fprintf(out, "                         discloses the network the host sits on)\n")
 		}
 		if len(p.Net.Publish) > 0 {
 			fmt.Fprintf(out, "         host -> sandbox ports %v, on the host's 127.0.0.1 only\n", p.Net.Publish)
@@ -1545,7 +1554,32 @@ func describeNetwork(out *os.File, p *policy.Policy) {
 		fmt.Fprintf(out, "NETWORK  HOST — the sandbox SHARES your network namespace.\n")
 		fmt.Fprintf(out, "         Every 127.0.0.1 service, every abstract socket (X11 keylogging and\n")
 		fmt.Fprintf(out, "         screenshots included), and the LAN as you. Requires --i-know.\n")
+		// This arm printed NOTHING about DNS, which is how issue #164 stayed
+		// invisible for as long as it did: the sandbox was handed pasta's
+		// interception address while no pasta runs, and the one screen that
+		// would have said so did not mention DNS in any form. The same defect
+		// #28 was, in the mode that had no line at all.
+		if servers := p.Net.Resolver().Servers; len(servers) > 0 {
+			fmt.Fprintf(out, "         dns             %s\n", strings.Join(servers, " "))
+			fmt.Fprintf(out, "                         (the host's own resolvers, loopback ones included — they\n")
+			fmt.Fprintf(out, "                         are reachable because this IS the host's namespace)\n")
+		} else {
+			fmt.Fprintf(out, "         dns             NONE — no resolver is named inside; lookups fail fast\n")
+		}
 	}
+}
+
+// dnsHostLabel names WHERE pasta sends an intercepted query, for the dns line.
+//
+// The screen used to end that sentence at "host resolver", which is the one
+// part of it a reader cannot check — and until issue #166 snug did not know
+// either, because the address was pasta's own default rather than a value the
+// policy chose. Now it is chosen, so it can be said.
+func dnsHostLabel(p *policy.Policy) string {
+	if h := p.Net.DNSHost(); h != "" {
+		return h
+	}
+	return "host resolver (pasta's default; this host names none)"
 }
 
 // describeTopology is not a debugging convenience either — it is the one place

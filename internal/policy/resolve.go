@@ -413,7 +413,15 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	p.yieldTo(Mount{Guest: "/tmp", Kind: KindTmpfs, Access: AccessRW, From: []string{"(snug)"}})
 
 	if p.Net.DNS {
-		p.Net.Nameservers = RoutableNameservers(ctx.HostNameservers)
+		// RAW, unfiltered. Which of these the sandbox may be told about is a
+		// MODE-dependent question — a private netns cannot reach a loopback
+		// resolver, a shared one can — so RoutableNameservers is applied in
+		// NetPolicy.Resolver's egress arm, where the mode is known, and
+		// NetPolicy.DNSHost deliberately does not apply it at all because
+		// pasta runs on the host. Filtering here decided half of that question
+		// in a place that could not see the other half, which is how
+		// @net-host ended up pointed at an address nothing answers (#164).
+		p.Net.Nameservers = ctx.HostNameservers
 	}
 
 	// The git config is GENERATED whenever anything asks for one — an identity

@@ -311,6 +311,13 @@ gateway = "10.13.13.1"
 [profile.net-host]
 description = "DANGEROUS. Shares the HOST network namespace. Requires --i-know."
 network = "host"
+# DNS is named here so the sandbox is told the host's OWN resolvers, 127.0.0.53
+# included. They are reachable because the netns IS the host's, and learning
+# their addresses discloses strictly less than the namespace this profile has
+# already handed over. Without this key the sandbox was told to use pasta's
+# interception address while no pasta runs, so DNS simply did not work inside
+# the one profile whose purpose is reaching host services (issue #164).
+dns = true
 
 # ── what a bare `snug <dir>` selects ─────────────────────────────────────────
 # There is deliberately NO [profile.default] here. What a bare `snug <dir>`

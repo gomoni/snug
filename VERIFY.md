@@ -1268,6 +1268,37 @@ The cross-check is the point of running both commands rather than either one.
 A screen that agrees with a file is worth more than either alone: issue #28 was
 exactly a screen that described an interception the sandbox was not doing.
 
+**`@net-host` has a dns line now, and that is the point of issue #164.** It
+shares the host's network namespace and runs no pasta, so it used to be handed
+the interception address with nothing behind it — DNS simply did not work — and
+the NETWORK block printed no dns line at all, so nothing said so:
+
+```bash
+./bin/snug --dry-run -p @net-host --i-know $SC/proj/sub -- true | grep -A2 '^ *dns '
+./bin/snug -p @net-host --i-know $SC/proj/sub -- /bin/sh -c \
+  'grep ^nameserver /etc/resolv.conf; timeout 5 getent hosts example.com >/dev/null \
+     && echo RESOLVED || echo RESOLVE-FAILED'
+```
+
+Expect the screen and the file to name **the host's own resolvers**, and
+`RESOLVED`. On a `systemd-resolved` host that means `127.0.0.53` appears inside,
+and that is correct rather than a leak: the netns *is* the host's, so that
+address is reachable, and naming it discloses strictly less than the namespace
+this profile has already handed over. `169.254.1.1` must not appear — no pasta
+runs here to intercept it.
+
+**And the forwarder's destination is named.** Under `@net-anon` the dns line
+reads `169.254.1.1 -> pasta -> <addr>`, where `<addr>` is the host's first
+nameserver, pinned by snug with `--dns-host` rather than left to pasta's own
+default (issue #166). Check it against the argv:
+
+```bash
+./bin/snug --dry-run -p @net-anon $SC/proj/sub -- true | grep -E '^ *dns |--dns-host'
+```
+
+Both must name the same address. They are two authors of one fact and this is
+the line where they are made to agree.
+
 **Two more lines in the same block, and the second is a disclosure this
 checklist should not let you miss.** Under `@net-anon` the `address` line reads
 `10.13.13.2/24 (synthetic; the host's IPv4 address is hidden)` followed by a

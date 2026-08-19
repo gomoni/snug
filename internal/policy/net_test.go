@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"net"
 	"slices"
 	"strings"
 	"testing"
@@ -94,7 +95,13 @@ func TestPublishPortsAreCanonical(t *testing.T) {
 
 // A loopback nameserver is exactly what the sandbox must not be able to reach,
 // so it can never appear in the generated resolv.conf.
-func TestLoopbackNameserversAreNeverUsed(t *testing.T) {
+// Renamed when Resolver became mode-aware (issue #164). The body is unchanged
+// and still true; the NAME was the part that stopped being true, because a
+// sandbox sharing the HOST's netns is now told the host's loopback resolvers
+// deliberately — they are reachable there, which is that profile's whole abuse
+// sentence. The claim this test makes is about a PRIVATE netns, and saying so
+// is what stops the next reader believing the sweep covers every mode.
+func TestLoopbackNameserversAreNeverUsedInAPrivateNetns(t *testing.T) {
 	got := RoutableNameservers([]string{"127.0.0.53", "::1", "192.168.1.1", "0.0.0.0"})
 	if len(got) != 1 || got[0] != "192.168.1.1" {
 		t.Fatalf("routable nameservers = %v, want only 192.168.1.1", got)
@@ -378,5 +385,125 @@ func TestNetworkAddressAndGatewayRefuseAForgingRune(t *testing.T) {
 	if err := p.Validate(newFakeEnv()); err != nil {
 		t.Fatalf("control: a clean synthetic address is refused, so the checks above prove "+
 			"nothing about forging runes specifically: %v", err)
+	}
+}
+
+// A SANDBOX SHARING THE HOST'S NETNS IS TOLD THE HOST'S OWN RESOLVERS,
+// LOOPBACK INCLUDED. Issue #164: @net-host runs no pasta, so interception is
+// not available to it, and RoutableNameservers' premise — the sandbox cannot
+// reach host loopback — is exactly false in the one mode where the netns IS
+// the host's. Filtering there left the profile whose purpose is reaching host
+// services unable to resolve anything at all.
+//
+// Naming 127.0.0.53 here discloses strictly less than the namespace this
+// profile has already handed over, which is the argument for doing it.
+func TestHostNetnsUsesTheHostsResolversIncludingLoopback(t *testing.T) {
+	n := NetPolicy{Mode: NetHost, DNS: true, Nameservers: []string{"127.0.0.53", "192.168.1.1"}}
+
+	rc := string(n.ResolvConf())
+	if !strings.Contains(rc, "127.0.0.53") {
+		t.Errorf("a host-netns sandbox is not told the loopback resolver it can actually "+
+			"reach, so DNS does not work in the profile whose point is reaching host "+
+			"services:\n%s", rc)
+	}
+	if strings.Contains(rc, dnsForwardAddr) {
+		t.Errorf("a host-netns sandbox is told to use pasta's interception address, and no "+
+			"pasta runs in this mode:\n%s", rc)
+	}
+	if n.NeedsDNSForward() {
+		t.Error("NeedsDNSForward() is true in host mode, where there is no pasta to give " +
+			"the flag to")
+	}
+
+	// CONTROL: the same host list in EGRESS mode still drops the loopback
+	// entry. Without it this test passes equally on a build where the filter
+	// was deleted rather than scoped — which would put a private-netns sandbox
+	// on an address it cannot reach, the defect the filter exists for.
+	e := n
+	e.Mode = NetEgress
+	erc := string(e.ResolvConf())
+	if strings.Contains(erc, "127.0.0.53") {
+		t.Errorf("control: a PRIVATE-netns sandbox is told to use a loopback resolver, so the "+
+			"filter was removed rather than moved:\n%s", erc)
+	}
+	if !strings.Contains(erc, "192.168.1.1") {
+		t.Errorf("control: the routable resolver did not survive into an egress sandbox:\n%s", erc)
+	}
+}
+
+// NO SANDBOX WITH A PRIVATE NETNS MAY BE TOLD A LOOPBACK RESOLVER. The sweep
+// the renamed test above no longer makes on its own: asserted over the whole
+// state space rather than at one fixture, so the claim covers every mode
+// instead of the one that was written down.
+func TestNoPrivateNetnsPolicyNamesALoopbackResolver(t *testing.T) {
+	hosts := [][]string{
+		nil,
+		{"127.0.0.53"},
+		{"127.0.0.53", "192.168.1.1"},
+		{"192.168.1.1"},
+		{"::1", "fdde:4e97:189::1"},
+	}
+	for _, mode := range []NetMode{NetIsolated, NetEgress} {
+		for _, dns := range []bool{false, true} {
+			for _, ns := range hosts {
+				for _, addr := range []string{"", "10.13.13.2/24"} {
+					n := NetPolicy{Mode: mode, DNS: dns, Nameservers: ns, Address: addr}
+					for _, s := range n.Resolver().Servers {
+						if ip := net.ParseIP(s); ip != nil && ip.IsLoopback() {
+							t.Errorf("mode=%v dns=%v nameservers=%v address=%q names loopback "+
+								"resolver %s, which a private netns cannot reach",
+								mode, dns, ns, addr, s)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// THE FORWARDER'S DESTINATION IS CHOSEN BY THE POLICY, NOT BY PASTA (issue
+// #166). pasta's --dns-host default is "first nameserver from host's
+// /etc/resolv.conf", which is the same file snug already read with a different
+// rule — two authors for one fact, and they disagree on a host that lists a
+// local resolver first and a router second.
+//
+// Loopback is INCLUDED here on purpose, and that is the assertion with
+// content: pasta runs on the HOST, where 127.0.0.53 is reachable, so applying
+// the sandbox-side filter to the forwarder's destination would break the very
+// host configuration interception exists for.
+func TestTheDNSForwardDestinationIsNamedAndIncludesLoopback(t *testing.T) {
+	// AN ANONYMISED sandbox on a MIXED host, which is the case where the two
+	// selection rules actually disagree: snug's filter would pick
+	// 192.168.1.1, pasta's default picks the first line whatever it is. A
+	// loopback-only host also intercepts, but there the two rules cannot
+	// differ because only one address exists. Getting this fixture wrong once
+	// produced a "should intercept" failure against a policy that correctly
+	// did not — a routable resolver survived the filter and was named
+	// directly.
+	n := NetPolicy{
+		Mode: NetEgress, DNS: true,
+		Nameservers: []string{"127.0.0.53", "192.168.1.1"},
+		Address:     "10.13.13.2/24",
+	}
+	if !n.NeedsDNSForward() {
+		t.Fatalf("fixture: an anonymised sandbox must intercept; resolv.conf is\n%s",
+			n.ResolvConf())
+	}
+	if got := n.DNSHost(); got != "127.0.0.53" {
+		t.Errorf("DNSHost() = %q, want the host's first nameserver 127.0.0.53 — pasta runs on "+
+			"the host, where a loopback resolver is exactly what it must be able to use", got)
+	}
+
+	args := (&Policy{Net: n}).PastaArgs(PastaTargetChild(1))
+	if i := slices.Index(args, "--dns-host"); i < 0 || i+1 >= len(args) || args[i+1] != "127.0.0.53" {
+		t.Errorf("the pasta argv does not pin --dns-host, so the destination is pasta's own "+
+			"default and snug's screen cannot name it: %v", args)
+	}
+
+	// CONTROL: no interception, no --dns-host. A flag passed on an arm that
+	// does not forward would be describing a path that does not exist.
+	c := NetPolicy{Mode: NetEgress, DNS: true, Nameservers: []string{"192.168.1.1"}}
+	if slices.Contains((&Policy{Net: c}).PastaArgs(PastaTargetChild(1)), "--dns-host") {
+		t.Error("control: --dns-host is passed on a run that does not intercept DNS")
 	}
 }
