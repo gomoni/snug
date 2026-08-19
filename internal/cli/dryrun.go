@@ -1212,6 +1212,28 @@ func describeClaude(out *os.File, p *policy.Policy) {
 	fmt.Fprintf(out, "                    host's per-project tool approvals — so tools you approved on\n")
 	fmt.Fprintf(out, "                    the host are asked again in here\n")
 
+	// The credentials disclosure (issue #58), and it belongs on this screen
+	// more than anything else here: --dry-run is the artifact a human uses to
+	// decide whether to trust snug, and "which of my credentials does the
+	// sandbox get" is the sharpest form of that question. The names are
+	// snug's own fixed lists, not host-controlled, so they need no
+	// visibleValue — and unlike the settings block there is no per-run
+	// variation to render, because the allowlist IS the answer.
+	if _, ok := claudeCredentialsMount(p); ok {
+		fmt.Fprintf(out, "         creds      ~/.claude/.credentials.json is PROJECTED from the host's —\n")
+		fmt.Fprintf(out, "                    a generated file, not a copy\n")
+		fmt.Fprintf(out, "                    carried: %s\n", strings.Join(claudeCredentialNames(), " "))
+		fmt.Fprintf(out, "                    NOT carried: refreshToken refreshTokenExpiresAt\n")
+		fmt.Fprintf(out, "                    Nothing in here can mint a new access token, so a\n")
+		fmt.Fprintf(out, "                    credential stolen from inside this sandbox dies with the\n")
+		fmt.Fprintf(out, "                    access token instead of outliving it\n")
+	} else {
+		fmt.Fprintf(out, "         creds      NOT staged — this host has no ~/.claude/.credentials.json,\n")
+		fmt.Fprintf(out, "                    or it could not be projected. Claude Code will start\n")
+		fmt.Fprintf(out, "                    LOGGED OUT in here; snug does not fall back to copying a\n")
+		fmt.Fprintf(out, "                    file it could not read\n")
+	}
+
 	// The settings.json disclosure. Mount.Content is redacted (policy.Secret)
 	// everywhere else on this screen by design (see the doc comment above and
 	// secret.go's "why every value" section) — printing the CARRIED key names
@@ -1709,4 +1731,32 @@ func formatArgs(args []string) string {
 		b.WriteString(visibleValue(a))
 	}
 	return b.String()
+}
+
+// claudeCredentialsMount finds the staged ~/.claude/.credentials.json, which
+// stageClaudeCredentials writes only when the host's file both exists and
+// projects. Its ABSENCE is a fact --dry-run states rather than omits: "no
+// credential is staged" and "a credential is staged" are different runs, and a
+// human reading this screen is entitled to know which one they are about to
+// start.
+func claudeCredentialsMount(p *policy.Policy) (policy.Mount, bool) {
+	want := filepath.Join(p.Home, ".claude", ".credentials.json")
+	for _, m := range p.Mounts {
+		if m.Guest == want && m.Kind == policy.KindData {
+			return m, true
+		}
+	}
+	return policy.Mount{}, false
+}
+
+// claudeCredentialNames renders policy.ClaudeCredentialAllowlist for the
+// screen. Derived from the allowlist rather than written out beside it, so a
+// field added there cannot fail to appear here — the copy-of-state-held-
+// elsewhere problem CLAUDE.md names about counts in prose.
+func claudeCredentialNames() []string {
+	names := make([]string, 0, len(policy.ClaudeCredentialAllowlist))
+	for _, k := range policy.ClaudeCredentialAllowlist {
+		names = append(names, k.Name)
+	}
+	return names
 }

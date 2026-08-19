@@ -326,8 +326,23 @@ network = "host"
 # staged ~/.claude.json carried mcpServers and all seven host project paths
 # until issue #19; grep for the property before you believe the sentence.
 #
-# Credentials are staged as a writable COPY — ~/.claude/.credentials.json, and
-# nothing else — so a token refreshed inside does not reach the host.
+# Credentials are staged as a writable PROJECTION — ~/.claude/.credentials.json,
+# and nothing else — so a token refreshed inside does not reach the host, and
+# the file the sandbox gets is generated rather than copied.
+#
+# THE ACCESS TOKEN CROSSES; THE REFRESH TOKEN DOES NOT (issue #58). The
+# difference is the blast radius of a credential stolen from inside: measured on
+# one host, the access token had 5h 20m left and the refresh token 26 days, and
+# a refresh token mints new access tokens for as long as it lives. So a stolen
+# credential used to outlive the sandbox without any bound the sandbox could
+# set. It now expires with the access token.
+#
+# The cost, stated here rather than left to a bug report: with @net and a host
+# token close to expiry this is a HARD failure where the refresh used to recover
+# quietly. snug says so on the host before the run and names the fix (run
+# `claude` on the host, then start snug again). MEASURED (claude 2.1.232) that
+# the projection is enough: a session authenticates and completes a turn with
+# refreshToken absent.
 #
 # ~/.claude.json is NOT copied. It is GENERATED: at most three keys, no host
 # bytes (internal/cli/claude.go, claudeStateJSON). Enough that Claude Code opens on
@@ -390,7 +405,7 @@ network = "host"
 # the SETTINGS-FILE door only. See
 # https://github.com/gomoni/snug/issues/68.
 [profile.claude]
-description = "Claude Code: binary and skills read-only, credentials and settings generated."
+description = "Claude Code: binary and skills read-only, credentials projected and settings generated."
 include = ["sys", "home"]
 #
 # The BINARY lands at /run/snug/bin/claude, not at its host path. snug stages
@@ -425,9 +440,15 @@ optional = [
 # environment". Claude Code also PREFERS the key over the OAuth token when both
 # are present, so passing it made the sandbox use the more dangerous of the two
 # credentials it had. Without it Claude authenticates from the staged, writable
-# copy of ~/.claude/.credentials.json (internal/cli/claude.go), which is a file the
-# payload has to open on purpose and which never syncs a modified token back
-# without structural validation.
+# PROJECTION of ~/.claude/.credentials.json (internal/cli/claude.go), which is a
+# file the payload has to open on purpose, which carries no refresh token
+# (issue #58), and which never syncs back to the host at all.
+#
+# That last clause used to read "never syncs a modified token back without
+# structural validation", describing a design that was never built — the same
+# defect CLAUDE.md records about this file elsewhere. There is no sync-back
+# channel. Do not write a sentence here that invites a reader to reason about a
+# boundary that does not exist.
 #
 # ANTHROPIC_BASE_URL stays: it names an endpoint, not a credential, and users
 # behind a gateway need it. If you need the key inside, that is a decision to

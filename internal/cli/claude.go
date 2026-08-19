@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/gomoni/snug/internal/policy"
 )
@@ -24,56 +25,7 @@ func claudeFiles(pol *policy.Policy, home string, verbose bool) {
 		return
 	}
 
-	// Staged as a copy, never bound. The sandbox writes to a private tmpfs, so a
-	// token it refreshes does not reach the host and a compromised agent cannot
-	// rewrite your host credentials.
-	//
-	// ONE file is copied, and it is the only one that is load-bearing. MEASURED
-	// (claude 2.1.232): delete ~/.claude/.credentials.json inside a sandbox and
-	// Claude Code says "Not logged in · Please run /login" at once; delete
-	// ~/.claude.json and it connects and works. This comment used to read "both
-	// files are needed" and carried that decision for a milestone (issue #19)
-	// while 62 KB of the host's ~/.claude.json was copied in verbatim: every
-	// project path on this machine, org, email, account and user UUIDs, machine
-	// ID, MCP servers, and the host's per-project tool approvals — a
-	// host-filesystem inventory @parent-ro deliberately does not grant. What
-	// replaces it is claudeStateJSON below: generated, at most three keys, no
-	// host bytes.
-	//
-	// Cost, stated plainly: a token refreshed inside the sandbox is lost when it
-	// exits. Sync-back would mean writing a host file from sandbox-authored
-	// bytes, which is a real channel out of the sandbox; it is deliberately not
-	// implemented.
-	stage := func(rel string, perm uint32) {
-		data, err := os.ReadFile(filepath.Join(home, rel))
-		if err != nil {
-			return // absent on this host; nothing to stage
-		}
-		// Wrapped here rather than at the point it is stored into Mount: data is
-		// 508 bytes of accessToken/refreshToken/sk-ant key the instant ReadFile
-		// returns it, so the sooner it carries the guard the fewer lines can
-		// render it by accident.
-		//
-		// Be honest about what this does NOT achieve, because the sibling case
-		// does achieve it and the difference matters: ghToken's RETURN TYPE is
-		// policy.Secret, so no plaintext name for the gh token exists at all.
-		// Here os.ReadFile hands back a []byte and Go offers nowhere earlier to
-		// intervene, so `data` stays in scope for the rest of this closure as an
-		// unguarded alias. content is the second name, not the first. Anything
-		// added below must use content; a fmt of `data` still leaks and no test
-		// in the tree can see it.
-		content := policy.Secret(data)
-		guest := filepath.Join(home, rel)
-		// Policy.Replace, never a raw pol.Mounts[...] = assignment: it marks the
-		// mount Authored (which is what exempts it from the masking rule — it is
-		// snug's own content, not a profile mounting over another profile's
-		// grant) and records anything it displaced, so --dry-run still says so.
-		pol.Replace(policy.Mount{
-			Guest: guest, Kind: policy.KindData, Access: policy.AccessRW,
-			Content: content, Perms: &perm, From: []string{"@claude"},
-		})
-	}
-	stage(".claude/.credentials.json", 0o600)
+	stageClaudeCredentials(pol, home)
 
 	// The MOUNT is unconditional, unlike stage() above: a host that has never run
 	// Claude Code still gets a file here, so the sandbox never opens on the theme
@@ -105,6 +57,87 @@ func claudeFiles(pol *policy.Policy, home string, verbose bool) {
 	pol.Replace(policy.Mount{
 		Guest: guest, Kind: policy.KindData, Access: policy.AccessRO,
 		Content: claudeGuidance(pol), From: []string{"@claude"},
+	})
+}
+
+// stageClaudeCredentials writes the sandbox's ~/.claude/.credentials.json from
+// a PROJECTION of the host's, never a copy of it (issue #58).
+//
+// Staged rather than bound, as it always was: the sandbox writes to a private
+// tmpfs, so a token it refreshes does not reach the host and a compromised
+// agent cannot rewrite your host credentials. What changed is WHICH BYTES get
+// staged. The file used to be copied verbatim — 508 bytes carrying an
+// accessToken and a refreshToken — and the payload can read it, which is by
+// design because Claude Code has to authenticate. The blast radius was not:
+// measured on this host, the accessToken had 5h 20m left and the refreshToken
+// 26 days, so a credential stolen from inside outlived the sandbox by a factor
+// of a hundred and no bound the sandbox could set applied to it.
+// policy.ProjectClaudeCredentials carries the whole argument and the allowlist.
+//
+// Cost, stated plainly and unchanged: a token refreshed inside the sandbox is
+// lost when it exits. Sync-back would mean writing a host file from
+// sandbox-authored bytes, which is a real channel out of the sandbox; it is
+// deliberately not implemented.
+//
+// THE NEW COST, which belongs here rather than in a user's bug report:
+// @claude + @net + a host token close to expiry is now a HARD failure where
+// the refresh used to recover quietly. That is why the expiry check below
+// exists at all — the failure has to be legible before the run, not an auth
+// error discovered from inside a sandbox.
+//
+// A SILENT SKIP IS FORBIDDEN on a parse failure, and this is the load-bearing
+// design point. Returning quietly is right for "the host has no credentials
+// file" — there is nothing to stage, and Claude Code says "Not logged in" —
+// but it is wrong for "the file is there and did not project", because the
+// quiet path in that case used to be a fallback to injecting the WHOLE file.
+// That fallback is the exact thing this change removes, and restoring it by
+// accident would undo the change with nothing on screen to say so. So: warn,
+// and stage nothing.
+func stageClaudeCredentials(pol *policy.Policy, home string) {
+	path := filepath.Join(home, ".claude", ".credentials.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return // absent on this host; nothing to stage
+	}
+
+	// `raw` is an accessToken the instant ReadFile returns, and Go offers
+	// nowhere earlier to intervene — the same honest caveat the verbatim copy
+	// carried: it stays in scope here as an unguarded []byte alias, and a fmt
+	// of it would leak with no test in the tree able to see it. Everything
+	// below uses `projected`, whose type is policy.Secret.
+	projected, expiresAt, err := policy.ProjectClaudeCredentials(raw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "snug: not staging %s: %v\n"+
+			"      The sandbox will start LOGGED OUT rather than receive a credential file snug\n"+
+			"      could not read — copying it verbatim would hand the sandbox a refresh token\n"+
+			"      that outlives it (issue #58).\n"+
+			"      Fix: run `claude` on the host to re-authenticate, then start snug again.\n",
+			path, err)
+		return
+	}
+
+	// Read, never computed. MEASURED (claude 2.1.232): an already-expired
+	// token served a full session offline and expiry passing mid-run did
+	// nothing, so this is not a gate — nothing is withheld on the strength of
+	// it. It exists because an expired token DOES fail once the sandbox has
+	// egress, and "errors name the fix" is worth more before the run than a
+	// 401 from inside one.
+	if expiresAt > 0 && time.UnixMilli(expiresAt).Before(time.Now()) {
+		fmt.Fprintf(os.Stderr, "snug: the staged Anthropic access token expired %s.\n"+
+			"      snug stages the access token only, not the refresh token, so nothing inside\n"+
+			"      the sandbox can renew it (issue #58).\n"+
+			"      Fix: run `claude` on the host to refresh it, then start snug again.\n",
+			time.UnixMilli(expiresAt).Format(time.RFC3339))
+	}
+
+	perm := uint32(0o600)
+	// Policy.Replace, never a raw pol.Mounts[...] = assignment: it marks the
+	// mount Authored (which is what exempts it from the masking rule — it is
+	// snug's own content, not a profile mounting over another profile's
+	// grant) and records anything it displaced, so --dry-run still says so.
+	pol.Replace(policy.Mount{
+		Guest: path, Kind: policy.KindData, Access: policy.AccessRW,
+		Content: projected, Perms: &perm, From: []string{"@claude"},
 	})
 }
 
