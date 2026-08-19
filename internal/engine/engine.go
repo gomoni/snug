@@ -252,8 +252,9 @@ func (e *Engine) RunLabel() string { return e.runLabel }
 // Spec builds the stage.EngineSpec that Stage.StartEngine consumes: exactly
 // what this run's engine execs into, chosen entirely by P0. podman is the
 // preflight-checked path to a real binary; baseEnv is the explicit, minimal
-// environment the caller built (PATH, and anything a pinned podman bundle
-// needs, e.g. CONTAINERS_STORAGE_CONF) — XDG_RUNTIME_DIR is added here,
+// environment the caller built (anything a pinned podman bundle needs, e.g.
+// CONTAINERS_STORAGE_CONF — NOT PATH, which Spec pins itself below and a
+// caller-supplied entry cannot override) — XDG_RUNTIME_DIR is added here,
 // pointing at this run's own runroot, so the caller never has to know that
 // path.
 //
@@ -288,6 +289,19 @@ func (e *Engine) RunLabel() string { return e.runLabel }
 // DNS config (issue #126).
 func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool, net policy.NetPolicy) (stage.EngineSpec, error) {
 	finalEnv := setEnv(append([]string{}, baseEnv...), "XDG_RUNTIME_DIR", e.runroot)
+
+	// The engine's PATH is snug's, never the host's (issue #125). Under a
+	// DERIVED mount view the host's PATH elements under $HOME are the
+	// payload's own writable tmpfs (@home), so handing a caller-supplied PATH
+	// to a process that is root-in-U with CAP_SYS_ADMIN and the full
+	// delegated subuid range is handing the payload a shadow slot in front of
+	// crun. Measured on the development host, os.Getenv("PATH") led with
+	// /home/<user>/bin and contained .local/bin, .cargo/bin, go/bin and an
+	// EMPTY element (= cwd) — every one of them writable by the payload.
+	// /bin and /sbin are @sys's own symlinks into /usr, so all four elements
+	// below resolve inside the same read-only bind. setEnv REPLACES rather
+	// than appends, so a caller-supplied PATH in baseEnv cannot win.
+	finalEnv = setEnv(finalEnv, "PATH", "/usr/bin:/usr/sbin:/bin:/sbin")
 
 	// HOME is snug's, not the host user's (issues #137, #142). Everything
 	// podman reads out of a home directory — registries.conf, policy.json,
@@ -475,7 +489,12 @@ func (e *Engine) writeContainersConf(cgroupsDisabled bool, res policy.ResolverCo
 	b.WriteString("\n[engine]\n" +
 		"# Directories of programs run for every container. A command table,\n" +
 		"# not data (issue #132).\n" +
-		"hooks_dir = []\n")
+		"hooks_dir = []\n" +
+		"\n" +
+		"# Belt and braces on top of Spec's pinned PATH (issue #125): PATH is not\n" +
+		"# podman's only lookup for conmon/crun/newuidmap and friends, so name the\n" +
+		"# search list explicitly rather than let it fall back to inheritance.\n" +
+		"helper_binaries_dir = [\"/usr/libexec/podman\", \"/usr/lib/podman\", \"/usr/bin\"]\n")
 
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		return "", fmt.Errorf("writing %s: %w", path, err)
