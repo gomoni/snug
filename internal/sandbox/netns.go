@@ -17,15 +17,23 @@ import (
 // and startPasta's target (a policy.PastaTarget) is built accordingly by the
 // caller.
 //
-// NetnsSandbox (today's shape, policy.NetnsOwner floor): bwrap creates the
-// network namespace itself, pasta joins it directly.
+// NetnsSandbox (policy.NetnsOwner floor): bwrap creates the network namespace
+// itself and NOTHING joins it. This is the offline shape — no @net, no
+// container profile — so startPasta is never called for it; a run that reaches
+// this file has already been routed through runStaged.
 //
 //	snug                                     (host userns/netns/mountns)
-//	├── bwrap --unshare-user --unshare-ipc --unshare-pid --unshare-uts
-//	│         --unshare-cgroup-try --unshare-net --die-with-parent
-//	│         --json-status-fd J --block-fd B ... -- <agent>
-//	│      └── the sandbox: own userns, netns, pidns, ipcns, utsns, mountns
-//	└── pasta --netns /proc/<child>/ns/net --userns /proc/<child>/ns/user
+//	└── bwrap --unshare-user --unshare-ipc --unshare-pid --unshare-uts
+//	          --unshare-cgroup-try --unshare-net --die-with-parent
+//	          ... -- <agent>
+//	       └── the sandbox: own userns, netns, pidns, ipcns, utsns, mountns
+//
+// It used to be pasta's target too, joined directly at /proc/<child>/ns/net
+// once bwrap had reported the pid over --json-status-fd and parked its payload
+// on --block-fd. That handshake is gone — the netns now exists before bwrap
+// does, so there is nothing to park — and with it went both flags, both pipes,
+// readChildPID and the whole parked type. INDEX.md §4.3 records it as
+// superseded; do not re-derive the ordering from this diagram.
 //
 // The alternative — pasta creating the netns and spawning bwrap inside it — was
 // rejected because pasta's command mode builds a user namespace with exactly one

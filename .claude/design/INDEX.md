@@ -700,52 +700,88 @@ Isolating the cause:
 
 ### 4.3 Process topology, ordering, and lifetime
 
-Two candidate topologies:
+Two candidate topologies for creating the network namespace:
 
 **(a) `pasta` creates the netns and spawns `bwrap` inside it.** `pasta [OPTS] -- bwrap --unshare-all --share-net ...`.
 **VERIFIED** that `pasta`'s command mode creates user + mount + ipc + pid + uts + net namespaces and maps your uid to 0 (`uid_map: 0 1000 1`). That is the problem: `pasta` has already built a user namespace with exactly **one** uid mapped, so `bwrap`'s nested `--unshare-user` inside it can only map that one uid, and any later need for a subuid range (podman) is dead on arrival. It also puts a process `snug` does not control at the root of the tree, and `pasta` is not designed to be an init.
 
-**(b) `bwrap` creates the netns; `pasta` joins it. ← the topology snug uses, for every run.**
-
-```
-snug                                        (host userns, host netns, host mount ns)
-├── bwrap --unshare-all --die-with-parent \
-│         --json-status-fd J --block-fd B ... -- <agent>
-│      └── the sandbox: own userns, netns, pidns, ipcns, utsns, mountns
-└── pasta --netns /proc/<child-pid>/ns/net --userns /proc/<child-pid>/ns/user \
-           --config-net ...                 (host netns on the socket side; tap side in N)
-```
-
-**VERIFIED end to end**, inside a distrobox container: `bwrap --json-status-fd 9` emits a single-line JSON document `{ "child-pid": 59817, ... }`; `pasta --netns /proc/59817/ns/net --userns /proc/59817/ns/user --config-net ...` attaches with rc=0; the sandbox then has a configured interface, working DNS, `curl https://example.com → 200`, and `127.0.0.1:631` / `127.0.0.1:3100` / `[::1]:3100` all refused.
+**(b) `snug`'s own tree creates the netns; `pasta` joins it. ← what snug does.**
 
 **Why (b):**
 
-- `bwrap` owns the namespace set. One tool, one mental model, one set of flags to audit. `snug` does not need `unshare(1)` on `PATH` at all.
-- No subuid delegation required. `bwrap`'s single-uid map is all this path needs, which matters for distrobox, CI, and locked-down hosts where `/etc/subuid` is not delegated.
+- The namespace set is created by a process `snug` wrote or forked, never by a helper. `snug` does not need `unshare(1)` on `PATH` at all.
 - `pasta` is a *leaf* of the process tree, not its root. It can die, be restarted, or be absent without restructuring anything.
-- The netns is referenced only as `/proc/<pid>/ns/net` — never bind-mounted to a filesystem path. When the last process in it exits, the kernel destroys it. **Orphan netns leaks are impossible by construction**, because no persistent reference is ever created. (This is the difference from `ip netns add`, which bind-mounts under `/run/netns` and leaks exactly this way.) *That "by construction" is conditional on the netns holding nothing but the sandbox — [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §4 measures how it changes shape if the container engine ever moves in.*
+- The netns is referenced only as `/proc/<pid>/ns/net` or a pinned descriptor — never bind-mounted to a filesystem path. When the last reference goes away, the kernel destroys it. **Orphan netns leaks are impossible by construction**, because no persistent reference is ever created. (This is the difference from `ip netns add`, which bind-mounts under `/run/netns` and leaks exactly this way.) *That "by construction" is conditional on the netns holding nothing but the sandbox — [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §4 measures how it changes shape when the container engine moves in.*
 
-**The ordering handshake.** `bwrap` must create the netns before `pasta` can join, but the payload must not run before `pasta` has attached — otherwise the agent's first `curl` races the tap device. `bwrap` provides both halves:
+#### Who actually creates it — three shapes, derived, never selected
 
-1. `snug` creates two pipes and starts `bwrap` with `--json-status-fd J --block-fd B`.
-2. `bwrap` sets up namespaces, writes `{"child-pid": N, ...}` to `J`, and then **blocks on `B`** before executing the payload.
-3. `snug` reads `N`, starts `pasta` with `--netns /proc/N/ns/net --userns /proc/N/ns/user`, and polls `/proc/N/net/dev` until a device other than `lo` appears (readable across the netns boundary from `snug`, same uid, same owning userns).
-4. `snug` writes one byte to `B`. The payload runs, with the network already up.
+`policy.NetnsOwner` (`internal/policy/topology.go`) is a three-point lattice and `deriveTopology` is its only producer: no TOML key, no CLI flag and no `Profile` field reaches it. Which shape a run gets follows from the resolved profile set, and `--dry-run`'s TOPOLOGY block prints it.
 
-Failure at any step before (4) means `snug` closes `B` unwritten and kills `bwrap`. The payload **never executes** (`TestAbortedNetworkNeverRunsThePayload`). There is no window in which the agent runs with a half-configured network, and no possibility of running with the host netns.
+**`NetnsSandbox` — the floor. `bwrap` creates the netns and nothing joins it.** Offline runs: no `@net`, no container profile. One process, `--unshare-net`, no helper and no stage. That is deny-by-default applied to snug's own process tree.
 
-**Teardown and lifetime chain.**
+```
+snug                                      (host userns, host netns, host mount ns)
+└── bwrap --args A -- <payload>           A is a memfd carrying the whole flag list:
+     │                                    --unshare-{user,ipc,pid,uts,net}, --die-with-parent,
+     │                                    --seccomp S, --info-fd I, and every mount
+     └── the sandbox: own userns, netns, pidns, ipcns, utsns, mountns
+```
+
+**`NetnsStage` — a second long-lived process, P1, creates the netns, pins it with a descriptor, LEAVES it, and forks `bwrap` back into it through a `setns` shim.** Selected by `@net` (`NetEgress`) and — since Tier B, issue [#63](https://github.com/gomoni/snug/issues/63) — by any container profile, *including offline*, because the engine needs a stage to own its user namespace and the sandbox's own N. **[`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md) is the truth on this shape**; §2 has the full tree and §3 each decision it overruled. The short form:
+
+```
+P0  snug                                    (host userns, host netns, host mount ns)
+ ├── pasta --netns /proc/<P1>/fd/<n> --userns /proc/<P1>/ns/user --config-net ...
+ │        started SECOND, while N still has no process in it at all
+ └── P1  snug __stage-setup → __stage-serve  THE NAMESPACE HOLDER
+      │   U (one uid mapped) + N (created by the clone, PINNED by a descriptor,
+      │   then LEFT) + its own mount ns. No listener, no socket on any path.
+      └── snug __innetns <fd> bwrap ...      a setns shim, one execve deep
+           └── bwrap (in N)                  the sandbox, unchanged in every respect
+                └── payload
+```
+
+`bwrap`'s argv is byte-identical to the `NetnsSandbox` case except for the enumerated `--unshare-*` set (`internal/policy/bwrap.go`, `Topology.Netns == NetnsStage`): **which process called `fork` is what determines the topology, not the argv.** `pasta` is aimed at the descriptor P1 pinned before it moved, *never* at `/proc/<P1>/ns/net` — after the move that path names P1's own empty namespace, and `pasta` attaches to it silently (SUPERVISOR-DESIGN §3.4).
+
+**`NetnsHost` — the host's own netns, `--share-net`, behind `--i-know`.** No stage for the network's sake; `@net-host` together with a container profile still gets one, for the subuid range alone.
+
+#### The ordering — and the handshake that used to provide it
+
+The startup order **is** the security property, and it is enforced by construction rather than by a protocol:
+
+```
+stage.Start   -> N exists, pinned by a descriptor, with nobody in it
+startPasta    -> pasta attaches to that EMPTY N and configures snug0
+WaitNetReady  -> the stage confirms snug0 is UP and RUNNING, from inside N
+StartSandbox  -> only NOW does a payload exist
+```
+
+`bwrap` is forked with **no `--block-fd` and no `--json-status-fd`**. A failure at any step before `StartSandbox` aborts the run with no payload having been forked at all, so there is no window in which the payload runs with a half-configured network, and none in which it runs with the host's netns (`TestAbortedNetworkNeverRunsThePayload`).
+
+What made this order possible had been recorded as a blocker: confirming the interface is up needs a process *inside* N to read `/proc/<pid>/net/dev`, and before `bwrap` there is none. But **a socket's network namespace is fixed when the socket is created and does not follow the process** — measured, with both controls — so the socket the stage opens in N still answers for N after the stage has left, and `stage.WaitNetReady` asks over the control socket (SUPERVISOR-DESIGN §7).
+
+> **SUPERSEDED — the `--json-status-fd` / `--block-fd` handshake.** Until the stage landed, `bwrap` was started **first** and told to park its payload until `pasta` had attached, because `pasta` needs a netns and only `bwrap` could make one: `snug` created two pipes and passed `--json-status-fd J --block-fd B`, read `{"child-pid": N, ...}` off `J`, started `pasta` against `/proc/N/ns/net`, polled `/proc/N/net/dev` until a device other than `lo` appeared, then wrote one byte to `B`.
+>
+> **VERIFIED end to end at the time**, inside a distrobox container: `bwrap --json-status-fd 9` emitted `{ "child-pid": 59817, ... }`; `pasta --netns /proc/59817/ns/net --userns /proc/59817/ns/user --config-net ...` attached with rc=0; the sandbox then had a configured interface, working DNS, `curl https://example.com → 200`, and `127.0.0.1:631` / `127.0.0.1:3100` / `[::1]:3100` all refused. That measurement was correct when it was taken and is kept here only so a reader who meets the flags in an old comment can place them. **Nothing in `snug` emits either flag today** — `internal/sandbox/parked.go`, `readChildPID` and `waitForNetDevice` are gone with them.
+>
+> **Why it went, rather than being tightened.** The parked interval was a real defect, not merely an extra moving part: `bwrap` releases a parked payload on EOF exactly as readily as on a byte, and `snug`'s own death closes the write end — so a `SIGKILL` of `snug` inside the window ran the payload with no network *and* left an orphaned sandbox. Measured 5/5. Reordering does not narrow that window; it removes the thing that had one. **A payload that has not been forked cannot be released early.**
+>
+> Read the deletion as covering exactly that half. The *other* clause of the same finding — a signalled `snug` leaving `bwrap`'s init reparented and holding the payload, during the ~40 ms before `bwrap` arms `--die-with-parent` on it — was open on **both** topologies and predates the stage. What covers it is `internal/sandbox/teardown.go`'s guard, armed around each fork; issue [#13](https://github.com/gomoni/snug/issues/13) carries the measurements, and issue [#111](https://github.com/gomoni/snug/issues/111) the correction that `kill -QUIT` reproduced it while three documents said only `SIGKILL` could.
+
+**Teardown and lifetime chain.** "The tree" below is the stage, `pasta`, the engine and `bwrap` — whichever of them a given run has.
 
 | Event | What happens |
 |---|---|
-| Agent exits normally | `bwrap` exits → `snug`'s `Wait` returns → `snug` `SIGTERM`s `pasta` (2s grace, then `SIGKILL`) → netns refcount hits zero → kernel reaps it. |
-| Agent segfaults / is killed | Identical. `bwrap`'s reaper collects the payload, exits with the signal-derived code, `snug` propagates it. |
-| `snug` receives `SIGINT`/`SIGTERM` | `signal.NotifyContext` → context cancel → ordered teardown: release/kill `bwrap`, stop `pasta`, stop proxies, unlink sockets. |
-| **`snug` is `SIGKILL`ed** | `bwrap --die-with-parent` `SIGKILL`s the payload (`PR_SET_PDEATHSIG` on `bwrap`'s child, armed by `bwrap` itself). `pasta` is started with `SysProcAttr{Pdeathsig: SIGKILL}`, so the kernel kills it too. Netns reaped. **Nothing survives, with no cooperation from `snug`.** (`TestNoLeakedHelpersAfterSIGKILL`.) |
-| `pasta` dies mid-run | The tap device vanishes; the sandbox is left with `lo` only. This is the **fail-safe direction** — the sandbox loses connectivity, it never gains reachability. `snug` watches `pasta`'s `Wait()`, logs an error with `pasta`'s captured stderr, and warns. It does **not** silently restart (a restart would race a new port set) and it does **not** kill the agent (which may be mid-edit). |
+| Payload exits normally | `bwrap` exits → `snug`'s `Wait` returns → `snug` `SIGTERM`s `pasta` (2 s grace, then `SIGKILL`) and collapses the stage → netns refcount hits zero → kernel reaps it. |
+| Payload segfaults / is killed | Identical. `bwrap`'s reaper collects the payload, exits with the signal-derived code, `snug` propagates it. |
+| `snug` gets a catchable signal that would otherwise be fatal | `armTeardown`'s handler — installed **immediately before each fork**, never after it — kills the process `snug` itself forked (`bwrap` on the floor, the stage under `NetnsStage`) and then **sweeps the host's own `/proc` for anything still alive underneath it**, rather than trusting the kernel's cascade to have armed in time. `teardownSignals` carries every signal a Go handler can reach, measured one at a time rather than assumed: `TERM INT HUP QUIT ABRT TRAP SYS SEGV BUS FPE ILL STKFLT`. |
+| **`snug` is `SIGKILL`ed** | Two independent mechanisms, because they cover different failures. The **lifeline** is an anonymous pipe `snug` holds the write end of and never writes to: the stage sees EOF the instant `snug` dies and exits, which makes `bwrap`'s own `--die-with-parent` fire (the stage is `bwrap`'s real parent across every exec in the chain). **`PR_SET_PDEATHSIG`** is the second, and load-bearing rather than decorative: the lifeline needs the stage to *run a goroutine* to notice EOF, and a **stopped** process runs no user code at all. Measured 3/3 — `SIGSTOP` the whole tree, then `SIGKILL` `snug`, and everything is gone with no leaked netns (`TestAFrozenStageTreeStillDiesWithSnug`, `TestNoLeakedHelpersAfterSIGKILL`). `pasta` carries `SysProcAttr{Pdeathsig: SIGKILL}` of its own. |
+| `pasta` dies mid-run | The tap device vanishes; the sandbox is left with `lo` only. This is the **fail-safe direction** — the sandbox loses connectivity, it never gains reachability. `snug` watches `pasta`'s `Wait()`, logs an error with `pasta`'s captured stderr, and warns. It does **not** silently restart (a restart would race a new port set) and it does **not** kill the payload (which may be mid-edit). On a *signalled* teardown the guard claims the death first, so a `Ctrl-C`'d run does not print a false degradation notice on the way out (issue [#112](https://github.com/gomoni/snug/issues/112)). |
 | `pasta` outlives the netns | **VERIFIED**: `pasta` self-reaps within a few seconds of the netns emptying, even with no signal from `snug`. `snug` still signals it explicitly rather than relying on this. |
 
-`snug` never uses `Setpgid` anywhere in this tree: the whole tree must stay in the terminal's foreground process group so `Ctrl-C` reaches every stage and job control works for an interactive shell inside the sandbox. (Lesson carried from `agent-sandbox`.)
+**The residual is stated as a rule, not as a list of signal names** — naming them is exactly what went wrong last time. What stays open is every termination that runs no Go signal handler: `SIGKILL`, which never reaches userspace, and a genuine panic or runtime throw inside `snug` itself, which dies on the Go runtime's own crash path. Nothing else. `internal/sandbox/teardown.go` is where that paragraph lives in the code.
+
+`snug` uses no `Setpgid` anywhere in the sandbox chain: the tree must stay in the terminal's foreground process group so `Ctrl-C` reaches every stage and job control works for an interactive shell inside the sandbox. (Lesson carried from `agent-sandbox`.) There is exactly one deliberate exception and it is not in that chain — the container reaper (`internal/engine/reaper.go`) takes its own process group and no `Pdeathsig`, precisely because its job is to **outlive** a `snug` that died without stopping its containers, which is also why it is exempted from the teardown sweep by pid (issue [#113](https://github.com/gomoni/snug/issues/113)).
 
 ### 4.4 Topology A — the engine inside the sandbox's netns
 
@@ -944,14 +980,15 @@ Inherited gap, documented and **not** silently "fixed": non-native architectures
 
 ### 5.5 The fd model
 
-`bwrap`'s `--file FD`, `--ro-bind-data FD`, `--seccomp FD`, `--args FD`, `--block-fd FD`, `--json-status-fd FD` all read fds `bwrap` inherits, and **`bwrap` does not close inherited fds**. In Go, `exec.Cmd.ExtraFiles[i]` becomes child fd `3+i`. `snug` therefore:
+`bwrap`'s `--file FD`, `--ro-bind-data FD`, `--seccomp FD`, `--args FD`, `--info-fd FD` all read or write fds `bwrap` inherits, and **`bwrap` does not close inherited fds**. In Go, `exec.Cmd.ExtraFiles[i]` becomes child fd `3+i`. (`--block-fd` and `--json-status-fd` belonged on this list until the stage landed; §4.3 records what replaced them. `snug` emits neither now.) `snug` therefore:
 
 1. Walks `/proc/self/fd` and marks every fd `> 2` CLOEXEC that it did not deliberately open, so no non-`CLOEXEC` fd from a grandparent leaks into the sandbox. **An open directory descriptor ignores the mount namespace entirely** — `openat(2)` walks from the descriptor's own vfsmount — so a leaked dirfd is a complete bypass of every grant.
 2. Substitutes `/dev/null` for any of fds 0/1/2 that is a **directory**. Those three must pass through for stdio, and that exemption was itself the hole: the red team read `~/.aws` and wrote into an ungranted directory through `/proc/self/fd/0`. (`TestDirectoryOnStdinCannotEscape`.)
 3. Allocates `ExtraFiles` in deterministic append order and emits the matching numbers.
-4. Passes **the entire flag list via `--args FD`** (NUL-separated, from a memfd) rather than as real argv. Three reasons: it sidesteps `ARG_MAX` for large policies; the sandbox's own `/proc/<pid>/cmdline` does not display the full policy to the agent; and it removes every shell-quoting concern from `snug --dry-run`'s round-trip. **Nothing may be appended to the flag slice after the memfd snapshot** — a comment marks the point, because that bug has bitten twice.
-5. Passes `cmd.Env = []string{}` to `bwrap` itself. `--clearenv` covers the payload, not bwrap's own process, and bwrap becomes PID 1 of the sandbox's pidns: with a nil `Env`, Go passes `os.Environ()` and the payload reads the entire host environment out of `/proc/1/environ`. (`TestNoHostEnvironmentViaPid1`.)
-6. Runs `bwrap` to completion rather than `exec`-replacing, so deferred teardown runs and the exit code can be propagated.
+4. Hands `bwrap` the **write** end of a pipe as `--info-fd FD`, keeps the read end, and decodes `bwrap`'s one-line JSON answer off it in the background: `child-pid` plus six namespace inodes, written before the payload is exec'd. That is how `snug attach` learns what to join — no procfs scanning, no `PPid` walking, no race — and it needs no protocol change under the stage, because the descriptor rides the same pass-through as every other entry in `ExtraFiles`. A `bwrap` that never answers leaves the run unattachable and **warns**; it does not fail the run.
+5. Passes **the entire flag list via `--args FD`** (NUL-separated, from a memfd) rather than as real argv. Three reasons: it sidesteps `ARG_MAX` for large policies; the sandbox's own `/proc/<pid>/cmdline` does not display the full policy to the agent; and it removes every shell-quoting concern from `snug --dry-run`'s round-trip. **Nothing may be appended to the flag slice after the memfd snapshot** — a comment marks the point, because that bug has bitten twice.
+6. Passes `cmd.Env = []string{}` to `bwrap` itself. `--clearenv` covers the payload, not bwrap's own process, and bwrap becomes PID 1 of the sandbox's pidns: with a nil `Env`, Go passes `os.Environ()` and the payload reads the entire host environment out of `/proc/1/environ`. (`TestNoHostEnvironmentViaPid1`.)
+7. Runs `bwrap` to completion rather than `exec`-replacing, so deferred teardown runs and the exit code can be propagated.
 
 ---
 
@@ -1492,7 +1529,7 @@ The live equivalents, in order of authority:
 2. `internal/policy/testdata/*.bwrap.txt` — the reviewed goldens, byte-stable against a fake host.
 3. `VERIFY.md` — every line a command with its expected output, including the observations the old §13 step 5 listed (siblings absent, `touch` refused on the parent and on `/`, host loopback refused, `/sys` ENOENT).
 
-The *mechanism* the example illustrated — the `--json-status-fd` / `--block-fd` handshake and its teardown chain — is §4.3, which is where it belongs.
+The *mechanism* the example illustrated — how the netns gets created and configured before a payload exists, and the teardown chain that ends it — is §4.3, which is where it belongs. (The example predates the stage and showed the `--json-status-fd` / `--block-fd` handshake; §4.3 records that as superseded.)
 
 ---
 
