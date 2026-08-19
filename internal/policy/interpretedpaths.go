@@ -91,16 +91,24 @@ type InterpretedHit struct {
 	Match InterpretedMatch
 }
 
-// BroadHostTrees suppresses the ancestor direction. Root-owned distribution
-// package content: a different trust class, the same one
-// nestedcommandtable_test.go excludes, and the trees @sys grants on EVERY
+// BroadHostTrees suppresses the ancestor direction, for /usr and /opt only.
+// Root-owned distribution package content: a different trust class, the same
+// one nestedcommandtable_test.go excludes, and the trees @sys grants on EVERY
 // default run. Marking them puts a COMMAND TABLE line on `ro /usr` forever,
 // which is how a reader learns to skip marks.
 //
-// /etc is deliberately NOT here: no builtin grants it (@sys enumerates fourteen
-// entries instead of binding all 109, invariant 2), and a profile granting all
-// of /etc really does supply /etc/gitconfig.
-var BroadHostTrees = []string{"/", "/usr", "/opt"}
+// / and /etc are deliberately NOT here, for the same reason as each other: no
+// builtin grants either (@sys enumerates fourteen /etc entries instead of
+// binding all 109, invariant 2, and grants no path wider than that), so
+// neither buys any noise reduction on a default run — the sole justification
+// above is void for both. A profile that DOES grant one is a strict superset
+// of the /etc case this file already argues for marking ("a profile granting
+// all of /etc really does supply /etc/gitconfig"), more so for /: found by
+// redteam as F4 — / had been in this list, silencing every catalogued row
+// (all 52 of them, home rows included, since / is an ancestor of $HOME too)
+// for a host-side grant of the entire filesystem, on no justification this
+// comment could actually support.
+var BroadHostTrees = []string{"/usr", "/opt"}
 
 // InterpretedPaths is a NAMED CATALOGUE of paths whose content a tool
 // INTERPRETS: either the file IS a secret (ClassCredential) or some key in it
@@ -733,18 +741,28 @@ func interpretedRowGuestPath(row InterpretedPath, home string) string {
 //   - Kind gating (mountInterpretedHits) needs nothing beyond m, but lives
 //     next to the thing that does need p so the two halves of "what marks does
 //     m earn" stay in one function rather than split across packages.
-//   - Replacement suppression (issues #169/#170) drops an ancestor hit when
-//     snug itself already replaced the row's exact guest path with generated
-//     content elsewhere in this same resolved set — the measured case is
-//     `data /usr/etc/ssh/ssh_config (snug)+replaces:@sys`, where @sys's `ro
-//     /usr` is an ancestor of the row but the one file underneath it that
-//     mattered was already replaced. It does not read Mount.From — the
-//     signal is a KindData mount's presence at the row's exact guest path,
-//     not its provenance string, for the same reason replaceSystemSSHConfig
-//     itself does not gate on ownership: refusing must not depend on the
-//     host, but marking must, and reading a "replaces:" string back out of
-//     prose is a second, weaker copy of a fact the mount set already states
-//     structurally.
+//
+//   - Replacement suppression (issues #169/#170) drops a GUEST-side ancestor
+//     hit when snug itself already replaced the row's exact guest path with
+//     generated content elsewhere in this same resolved set — the measured
+//     case is `data /usr/etc/ssh/ssh_config (snug)+replaces:@sys`, where
+//     @sys's `ro /usr` is an ancestor of the row but the one file underneath
+//     it that mattered was already replaced. It does not read Mount.From —
+//     the signal is a KindData mount's presence at the row's exact guest
+//     path, not its provenance string, for the same reason
+//     replaceSystemSSHConfig itself does not gate on ownership: refusing
+//     must not depend on the host, but marking must, and reading a
+//     "replaces:" string back out of prose is a second, weaker copy of a
+//     fact the mount set already states structurally.
+//
+//     Gated on h.Side == SideGuest — found by redteam before this landed.
+//     A SideHost hit's Row.Path is a HOST path exposed inside at some OTHER
+//     guest location (`ro {home}:/mnt/hosthome` exposes ~/.gitconfig at
+//     /mnt/hosthome/.gitconfig, not at $HOME/.gitconfig); a KindData mount
+//     sitting at the row's canonical guest path — generated identity content
+//     at $HOME/.gitconfig — says nothing about a copy of the real file
+//     exposed somewhere else entirely, and suppressing on it there silenced
+//     a mark for a file that was genuinely readable.
 //
 // It does not read m.From: only m.Kind, m.Guest and m.Host feed the hit
 // computation, and only p.Mounts (keyed by Guest, never by provenance) feeds
@@ -758,7 +776,7 @@ func PolicyInterpretedMarks(p *Policy, m Mount) []string {
 	}
 	kept := make([]InterpretedHit, 0, len(hits))
 	for _, h := range hits {
-		if h.Match == MatchAncestor {
+		if h.Match == MatchAncestor && h.Side == SideGuest {
 			if repl, ok := p.Mounts[interpretedRowGuestPath(h.Row, home)]; ok && repl.Kind == KindData {
 				continue
 			}

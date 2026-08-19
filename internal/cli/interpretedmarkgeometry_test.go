@@ -53,24 +53,27 @@ func TestEveryInterpretedMarkFitsTheScreen(t *testing.T) {
 
 	// Template D, the ancestor collapse, is dynamic — its length depends on
 	// how many rows fold together — so it cannot be checked per row the way
-	// A/B/C are above. Covered directly with the widest real case there is:
-	// /etc, which collapses all 8 system rows nested under it into one line
-	// naming up to 3 paths and a "+N more" tail.
-	ancestorMarks := policy.InterpretedMarks(policy.ClassifyInterpretedPath("/etc", "/home/u"))
-	if len(ancestorMarks) == 0 {
-		t.Fatal("control: /etc produced no ancestor mark at all, so the D-template check below " +
-			"measures nothing")
-	}
-	for _, mark := range ancestorMarks {
-		lines := wrapMark(mark)
-		if len(lines) > 3 {
-			t.Errorf("the /etc ancestor collapse wraps to %d lines, over the 3-line budget: %q",
-				len(lines), mark)
+	// A/B/C are above. Covered against every ancestor grant wide enough to
+	// matter: /etc (17 rows) and, since redteam finding F4 removed "/" from
+	// BroadHostTrees, "/" itself — now the widest real case there is,
+	// collapsing all 52 catalogued rows (system AND home) into one line.
+	for _, grant := range []string{"/etc", "/"} {
+		ancestorMarks := policy.InterpretedMarks(policy.ClassifyInterpretedPath(grant, "/home/u"))
+		if len(ancestorMarks) == 0 {
+			t.Fatalf("control: %q produced no ancestor mark at all, so the D-template check below "+
+				"measures nothing", grant)
 		}
-		for _, l := range lines {
-			if n := utf8.RuneCountInString(l); n > screenWidth {
-				t.Errorf("the /etc ancestor collapse produced a line %d runes wide (screenWidth=%d): %q",
-					n, screenWidth, l)
+		for _, mark := range ancestorMarks {
+			lines := wrapMark(mark)
+			if len(lines) > 3 {
+				t.Errorf("the %q ancestor collapse wraps to %d lines, over the 3-line budget: %q",
+					grant, len(lines), mark)
+			}
+			for _, l := range lines {
+				if n := utf8.RuneCountInString(l); n > screenWidth {
+					t.Errorf("the %q ancestor collapse produced a line %d runes wide (screenWidth=%d): %q",
+						grant, n, screenWidth, l)
+				}
 			}
 		}
 	}

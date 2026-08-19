@@ -187,13 +187,18 @@ func TestInterpretedMarksNeverInterpolateProfileText(t *testing.T) {
 	}
 }
 
-// TestBroadHostTreesIsExactly pins the suppression set by name: "/", "/usr"
-// and "/opt", and explicitly NOT "/etc" — @sys enumerates fourteen /etc
-// entries instead of binding all of it (invariant 2), so a profile that DOES
-// grant the whole of /etc really does supply /etc/gitconfig and must still be
-// marked.
+// TestBroadHostTreesIsExactly pins the suppression set by name: exactly
+// "/opt" and "/usr", and explicitly NOT "/" or "/etc" — no builtin grants
+// either the whole filesystem or the whole of /etc (@sys enumerates fourteen
+// /etc entries instead of binding all of it, invariant 2, and grants nothing
+// wider), so a profile that DOES grant one of them really does supply
+// /etc/gitconfig (and, for "/", every home-relative row too, since / is an
+// ancestor of $HOME) and must still be marked. "/" was in this set until
+// redteam found it silenced the whole catalogue for a host-side grant of the
+// entire filesystem (F4) — regression covered by
+// TestAncestorMatchCollapsesToOneMark's "/" case below.
 func TestBroadHostTreesIsExactly(t *testing.T) {
-	want := []string{"/", "/opt", "/usr"}
+	want := []string{"/opt", "/usr"}
 	got := append([]string{}, BroadHostTrees...)
 	slices.Sort(got)
 	if !slices.Equal(got, want) {
@@ -205,6 +210,12 @@ func TestBroadHostTreesIsExactly(t *testing.T) {
 		t.Error("/etc must not be in BroadHostTrees: @sys enumerates fourteen /etc entries instead " +
 			"of binding all of it (invariant 2), and a profile that DOES grant the whole of /etc " +
 			"really does supply /etc/gitconfig — that grant must still be marked")
+	}
+	if slices.Contains(BroadHostTrees, "/") {
+		t.Error("/ must not be in BroadHostTrees: no builtin grants the whole filesystem, so " +
+			"suppressing it buys zero noise reduction, and a profile that DOES grant / really does " +
+			"supply every catalogued path — system rows under /etc and /usr, and every home row too, " +
+			"since / is an ancestor of $HOME — and that grant must still be marked (redteam F4)")
 	}
 }
 
@@ -218,6 +229,14 @@ func TestBroadHostTreesIsExactly(t *testing.T) {
 // is the negative: BroadHostTrees suppresses the ancestor direction there
 // entirely, so it must render zero marks despite two catalogued rows (npmrc,
 // ssh_config) sitting under /usr/etc.
+//
+// "/" is the redteam F4 regression: it used to sit in BroadHostTrees
+// alongside /usr and /opt, on no justification that survives the fact that
+// no builtin grants it — so a host-side bind of the entire filesystem
+// (`ro /:/mnt/hostroot`) rendered nothing at all, while a strictly narrower
+// grant of /etc rendered 17. It must render exactly one collapsed mark,
+// covering every row in the catalogue (system AND home — / is an ancestor of
+// $HOME too), not zero.
 func TestAncestorMatchCollapsesToOneMark(t *testing.T) {
 	const home = "/home/u"
 
@@ -238,6 +257,16 @@ func TestAncestorMatchCollapsesToOneMark(t *testing.T) {
 		t.Errorf("ro /usr produced %d marks, want zero — BroadHostTrees suppresses the ancestor "+
 			"direction there even though /usr/etc/npmrc and /usr/etc/ssh/ssh_config are both "+
 			"catalogued underneath it: %v", len(usrMarks), usrMarks)
+	}
+
+	rootMarks := InterpretedMarks(ClassifyInterpretedPath("/", home))
+	if len(rootMarks) != 1 {
+		t.Fatalf("ro / produced %d marks, want exactly one collapsed line (redteam F4 regression — "+
+			"this used to render ZERO because / sat in BroadHostTrees): %v", len(rootMarks), rootMarks)
+	}
+	if !strings.Contains(rootMarks[0], "52 paths") {
+		t.Errorf("the collapsed mark for / does not name all 52 catalogued rows (19 system + 33 "+
+			"home — / is an ancestor of $HOME as well as /etc and /usr): %q", rootMarks[0])
 	}
 }
 
@@ -449,6 +478,11 @@ func TestTheInterpretedCatalogueActuallyMatches(t *testing.T) {
 		"/usr/etc/npmrc",
 		"/etc/npmrc",
 		"/etc", // ancestor of seventeen rows
+		// Redteam F4: / is NOT in BroadHostTrees (unlike /usr and /opt below) —
+		// it is an ancestor of every catalogued row, system AND home, and no
+		// builtin grants it, so a profile that does must be marked, not waved
+		// through the way it silently was when / sat in the suppression list.
+		"/",
 	}
 	for _, spelling := range matches {
 		if hits := ClassifyInterpretedPath(spelling, home); len(hits) == 0 {
@@ -458,7 +492,7 @@ func TestTheInterpretedCatalogueActuallyMatches(t *testing.T) {
 	}
 
 	zero := []string{
-		"/usr", "/opt", "/", "/usr/share", "/etc/passwd", "/etc/containers",
+		"/usr", "/opt", "/usr/share", "/etc/passwd", "/etc/containers",
 		"{home}/.claude/skills", "{home}/.claude/plugins", "{home}/.local/bin/claude", "{target}",
 	}
 	for _, ordinary := range zero {
@@ -467,18 +501,31 @@ func TestTheInterpretedCatalogueActuallyMatches(t *testing.T) {
 		}
 	}
 
-	// /usr and / must be quiet BECAUSE OF BroadHostTrees, not because nothing
-	// is catalogued underneath them — proved by emptying the suppression list
-	// and watching the same candidates immediately produce hits.
+	// /usr must be quiet BECAUSE OF BroadHostTrees, not because nothing is
+	// catalogued underneath it — proved by emptying the suppression list and
+	// watching the same candidate immediately produce hits. / is deliberately
+	// NOT part of this control any more (redteam F4): it must produce hits
+	// with BroadHostTrees exactly as shipped, not only once emptied.
 	orig := append([]string{}, BroadHostTrees...)
 	BroadHostTrees = nil
-	for _, p := range []string{"/usr", "/"} {
-		if hits := ClassifyInterpretedPath(p, home); len(hits) == 0 {
-			t.Errorf("control: with BroadHostTrees emptied, %q still produces no hits — the "+
-				"zero-hit assertion above would pass whether or not suppression does anything", p)
-		}
+	if hits := ClassifyInterpretedPath("/usr", home); len(hits) == 0 {
+		t.Error("control: with BroadHostTrees emptied, \"/usr\" still produces no hits — the " +
+			"zero-hit assertion above would pass whether or not suppression does anything")
 	}
 	BroadHostTrees = orig
+
+	// And / must not be in that set at all: it produces real ancestor hits
+	// (all 52 rows, home included) with BroadHostTrees exactly as shipped —
+	// the redteam F4 regression. A profile granting the whole filesystem is a
+	// strict superset of granting /etc, and must be marked at least as loudly.
+	if slices.Contains(BroadHostTrees, "/") {
+		t.Fatal("/ has been added back to BroadHostTrees; see TestBroadHostTreesIsExactly and " +
+			"redteam finding F4")
+	}
+	if hits := ClassifyInterpretedPath("/", home); len(hits) == 0 {
+		t.Error("/ produced no hits even though it is not in BroadHostTrees and every catalogued " +
+			"row sits under it")
+	}
 
 	// And /etc must not be in that set: it produces real ancestor hits with
 	// BroadHostTrees exactly as shipped, because @sys enumerates its /etc

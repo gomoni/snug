@@ -420,6 +420,114 @@ func TestMarkDoesNotFireOnASnugReplacedPath(t *testing.T) {
 	})
 }
 
+// TestReplacementSuppressionDoesNotFireOnAHostSideHit is the regression for
+// redteam finding F2 (sev:medium, found before this branch landed): a row
+// covered by a KindData mount at its own guest path must suppress ONLY a
+// GUEST-side ancestor hit, never a HOST-side one — the two mean different
+// things. `data $HOME/.gitconfig (identity:...)` truthfully says "the
+// sandbox's own $HOME/.gitconfig is snug's generated file, not the host's" —
+// but it says nothing about a SEPARATE bind exposing the real $HOME (and
+// therefore the real ~/.gitconfig) at some other guest path entirely, e.g.
+// `ro {home}:/mnt/hosthome`. Before the fix, PolicyInterpretedMarks matched
+// the host-side ancestor hit's Row.Path against p.Mounts keyed by the row's
+// CANONICAL guest path ($HOME/.gitconfig) regardless of which side produced
+// the hit, found the generated KindData mount sitting there, and silently
+// dropped the mark — even though /mnt/hosthome/.gitconfig on the sandbox's
+// own filesystem was the host's real, 795-byte command table.
+//
+// Measured live (redteam, this branch): with @sys, @parent-ro and a
+// synthetic `ro {home}:/mnt/hosthome` grant, the ancestor mark named 33
+// paths; adding @git-ro and @claude to the SAME selection — which do nothing
+// but generate KindData mounts at $HOME/.gitconfig, $HOME/.claude.json,
+// $HOME/.claude/settings.json and $HOME/.claude/.credentials.json — dropped
+// it to 29, with no change to what /mnt/hosthome actually exposes. This test
+// reproduces that exact drop (33 -> 29 pre-fix) and asserts it does not
+// happen (33 both times, post-fix).
+func TestReplacementSuppressionDoesNotFireOnAHostSideHit(t *testing.T) {
+	reg := loadTestRegistry(t)
+	home, target := testTree(t)
+
+	// A real, readable credentials file, so stageClaudeCredentials actually
+	// stages the fourth KindData mount (~/.claude/.credentials.json) — without
+	// it the file is merely absent and that row is never a candidate for
+	// suppression in either direction, which would make this test measure a
+	// smaller (but still real) regression than the one redteam found.
+	credPath := filepath.Join(home, ".claude", ".credentials.json")
+	if err := os.MkdirAll(filepath.Dir(credPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(credPath, []byte(`{"claudeAiOauth":{"accessToken":"X"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reg["hosthome"] = &policy.Profile{
+		Name: "hosthome",
+		RO:   []string{home + ":/mnt/hosthome"},
+	}
+
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	// git = "extract" (part of @git-ro) only generates a KindData mount when
+	// there is something to extract — HostGit is normally read from the real
+	// host's git config by main.go, and this test sets it directly instead of
+	// depending on the developer's own ~/.gitconfig existing.
+	ctx.HostGit = policy.GitValues{"user.name": "Test User", "user.email": "test@example.com"}
+
+	// POSITIVE CONTROL: the plain grant, no @git-ro/@claude at all, so nothing
+	// generates a KindData mount anywhere under $HOME — the ancestor mark
+	// must name all 33 home rows.
+	control, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@parent-ro", "hosthome"}, ctx, policy.OSEnviron{})
+	if control == nil {
+		t.Fatalf("Resolve returned no policy at all: %v", err)
+	}
+	controlMarks := policy.PolicyInterpretedMarks(control, control.Mounts["/mnt/hosthome"])
+	if len(controlMarks) != 1 || !strings.Contains(controlMarks[0], "33 paths") {
+		t.Fatalf("control: {home}:/mnt/hosthome alone should mark all 33 home rows, got: %v", controlMarks)
+	}
+
+	// The actual case: @git-ro and @claude added to the SAME grant. Neither
+	// touches /mnt/hosthome or what it exposes — they only generate KindData
+	// mounts elsewhere in $HOME — so the mark on /mnt/hosthome must be
+	// UNCHANGED: still all 33 rows, not 29.
+	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@parent-ro", "@git-ro", "@claude", "hosthome"}, ctx, policy.OSEnviron{})
+	if p == nil {
+		t.Fatalf("Resolve returned no policy at all: %v", err)
+	}
+	claudeFiles(p, p.Home, false)
+
+	// POSITIVE CONTROL: the four KindData mounts this test depends on to
+	// reproduce the exact 33 -> 29 drop actually exist, so a passing
+	// assertion below is not vacuous.
+	for _, guest := range []string{
+		filepath.Join(home, ".gitconfig"),
+		filepath.Join(home, ".claude.json"),
+		filepath.Join(home, ".claude", "settings.json"),
+		filepath.Join(home, ".claude", ".credentials.json"),
+	} {
+		m, ok := p.Mounts[guest]
+		if !ok || m.Kind != policy.KindData {
+			t.Fatalf("control: expected a KindData mount at %s, found none — this test is not "+
+				"exercising the replacement suppression it means to", guest)
+		}
+	}
+
+	marks := policy.PolicyInterpretedMarks(p, p.Mounts["/mnt/hosthome"])
+	if len(marks) != 1 {
+		t.Fatalf("/mnt/hosthome produced %d marks, want exactly 1 collapsed ancestor line: %v",
+			len(marks), marks)
+	}
+	if !strings.Contains(marks[0], "33 paths") {
+		t.Errorf("adding @git-ro and @claude changed the /mnt/hosthome ancestor mark from 33 paths "+
+			"to something else, even though neither profile touches /mnt/hosthome or what it "+
+			"exposes — replacement suppression is firing on a HOST-side hit, which it must never "+
+			"do (redteam F2): %q", marks[0])
+	}
+	if strings.Contains(marks[0], "29 paths") {
+		t.Fatalf("exactly reproduced the pre-fix bug: /mnt/hosthome dropped to 29 paths — "+
+			"PolicyInterpretedMarks suppressed a HOST-side ancestor hit using a KindData mount "+
+			"that only speaks for the GUEST side: %q", marks[0])
+	}
+}
+
 // TestNoFilesystemLineCanBeMistakenForAMark is §9 test 17: no ordinary
 // FILESYSTEM or NOT-GRANTED data line may reach markIndent (21) — the
 // structural property that makes "a line indented 20 or more is snug's own
