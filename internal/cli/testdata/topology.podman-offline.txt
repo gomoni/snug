@@ -20,7 +20,15 @@ TOPOLOGY
                   already exposes — enforced by the proxy's bind filter (Tier C
                   makes this structural instead of enforced).
                   pid namespace: its own, so the engine cannot see the host's
-                  process table and the sandbox cannot see the engine's.
+                  process table and the sandbox cannot see the engine's. Each
+                  container gets its own too, and may not ask for anyone else's:
+                  '--pid=host' is REFUSED, because in a shared pid namespace
+                  /proc/<pid>/root reaches that process's whole mount namespace,
+                  and pid 1 here is the engine — whose mount namespace is the
+                  private copy of the host tree named above.
+                  ipc + uts namespaces: the HOST's. The engine unshares neither,
+                  which is why a container may not ask for either; the payload
+                  does have its own (bwrap --unshare-ipc --unshare-uts).
                   capability bounding set (12): CAP_SYS_ADMIN CAP_SYS_CHROOT CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_FSETID CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_SETFCAP CAP_KILL CAP_NET_BIND_SERVICE
   control         an anonymous SOCK_SEQPACKET socketpair, inherited, between snug
                   and the stage. UNREACHABLE from the sandbox: no pathname, no

@@ -233,13 +233,13 @@ func TestEscapeFieldsAreRefused(t *testing.T) {
 		// network namespace N, so "join the engine's current netns" joins
 		// N, not the real host's — see TestNetworkModeHostIsAllowedButOtherHostModesAreNot.
 		{"another container's netns", `{"HostConfig":{"NetworkMode":"container:abc"}}`,
-			"would join a namespace outside this sandbox"},
+			"naming a namespace snug did not author"},
 		{"host pid namespace", `{"HostConfig":{"PidMode":"host"}}`,
-			"would join a namespace outside this sandbox"},
+			"There is no flag that enables it"},
 		{"a raw netns path", `{"HostConfig":{"NetworkMode":"ns:/proc/1/ns/net"}}`,
-			"would join a namespace outside this sandbox"},
+			"naming a namespace snug did not author"},
 		{"the host user namespace", `{"HostConfig":{"UsernsMode":"host"}}`,
-			"would join a namespace outside this sandbox"},
+			"snug decides a container's user namespace"},
 		{"published ports", `{"HostConfig":{"PortBindings":{"80/tcp":[{"HostPort":"8080"}]}}}`,
 			"HostConfig.PortBindings is not permitted"},
 		{"mounts inherited from another container", `{"HostConfig":{"VolumesFrom":["other"]}}`,
@@ -763,44 +763,68 @@ func TestNetworkModeHostIsAllowedButOtherHostModesAreNot(t *testing.T) {
 // This is the one place all of it is asserted together, with the live
 // inversion in place.
 //
-// Why this is load-bearing rather than tidy, restated for what is true after
-// issue #125's C0 — because the reason first written here is now FALSE, and a
-// stale security claim is wrong in whichever direction the next reader takes
-// it.
+// This doc comment used to carry a SEVERITY claim: "PidMode="host" being
+// refused is the ONLY thing standing between a container and a full
+// host-pidns escape; there is no second mechanism behind it the way there is
+// for network." Severity claims decay when the mechanism moves, and issue
+// #125's C0 moved it — it gave the engine its own pid namespace
+// (CLONE_NEWPID, internal/stage/enginefork.go) and a fresh procfs
+// (internal/stage/inengine.go), so "the ONLY thing standing between" stopped
+// being true the moment C0 landed, silently, because nothing here re-read it.
 //
-// It used to read: `__inengine` does not unshare pid, so the engine's pid
-// namespace genuinely IS the host's; `PidMode="host"` being refused is the
-// ONLY thing standing between a container and a full host-pidns escape; there
-// is no second mechanism behind it the way there is for network. The first
-// clause stopped being true when C0 gave the engine CLONE_NEWPID
-// (internal/stage/enginefork.go) and a fresh procfs
-// (internal/stage/inengine.go). MEASURED, A/B against C0's own parent commit:
-// pre-C0 the engine's /proc/<pid>/ns/pid was the host's own inode; with C0 it
-// is a distinct one, and conmon — read from the HOST's procfs — has the
-// engine as its PPid instead of host pid 1.
+// Replaced with a RULE claim (issue #145's decision), which does not decay
+// the same way, because it names the test that has to fail before the row
+// could ever be safely relaxed:
 //
-// So a second mechanism DOES exist now, and naming it is the point of this
-// rewrite: the namespace `PidMode="host"` would join is the ENGINE's own, not
-// the host's. This refusal is no longer the whole boundary between a
-// container and the host's process table.
+//   - An inversion — turning a refused "host" mode into an allowed one, the
+//     way NetworkMode="host" was turned into "joins N" — is safe only when the
+//     namespace's MEMBERSHIP SET is a SUBSET of what the sandbox already has.
+//     N contains the sandbox's own network and nothing else, which is why the
+//     network row alone could invert. A pid namespace fails that test even
+//     with an engine-owned one on offer: pid namespace membership is not
+//     "seeing more pids", it is the only kind of membership that is a HANDLE
+//     to every other namespace a member holds — /proc/<pid>/root and
+//     /proc/<pid>/cwd dereference into the member's own MOUNT namespace,
+//     /proc/<pid>/fd/N reopens its open descriptors — and the engine's pid
+//     namespace contains THE ENGINE: pid 1, root-in-U,
+//     policy.EngineCapBounding, the full delegated subuid range, and a mount
+//     namespace that is a private COPY of the entire host tree. Joining it is
+//     a superset of the sandbox's authority, not a subset, so PidMode="host"
+//     stays refused PERMANENTLY, not provisionally — and Tier C (issue #125)
+//     makes the row MORE load-bearing, not less, because the graft
+//     descriptors the derived view is built from now pass through the engine
+//     child too. MEASURED (issue #145, podman 6.0.2, yama ptrace_scope=1): a
+//     container placed in a sibling container's pid namespace read the
+//     sibling's whole filesystem through /proc/<pid>/root and listed its open
+//     file descriptions through /proc/<pid>/fd, at plain uid, no capability
+//     and no ptrace — exactly the shape PidMode="host" would reproduce
+//     against the engine.
+//   - CgroupnsMode="host" fails the same subset test the same way: it names
+//     the engine's own cgroup namespace (CLONE_NEWCGROUP), disclosing the
+//     engine's cgroup path and the placement of every other container this
+//     sandbox started — placement snug authors, not the client.
+//   - IpcMode="host" and UTSMode="host" still name the MACHINE's namespaces,
+//     because neither the stage (internal/stage/fds.go's stageCloneflags) nor
+//     the engine fork (internal/stage/enginefork.go's Cloneflags) unshares
+//     IPC or UTS — so for these two keys "host" is not even an inversion
+//     candidate yet, it is the pre-Tier-B case, unchanged. If that ever
+//     changes (issue #182 proposes exactly this), these two rows — and their
+//     refusal reasons — change with it; TestIpcAndUtsReasonsMatchTheEnginesActualCloneflags
+//     (refusalreason_test.go) is the tripwire that keeps that true rather than
+//     assumed.
+//   - UsernsMode="host" names U, the engine's own user namespace, and is
+//     refused on a narrower ground than the subset test: snug decides a
+//     container's user namespace, full stop, whether or not naming U would
+//     have changed anything.
+//   - The `container:<id>` and `ns:<path>` spellings of every key above are
+//     the same rule applied sibling-to-sibling rather than sibling-to-engine:
+//     a sibling container's namespace is exactly as much a superset of this
+//     sandbox's authority as "host" is, so there is no narrower spelling that
+//     gets around any of this.
 //
-// What the assertion is still worth, and why it is not relaxed to match:
-//
-//   - The engine's pid namespace is not nothing to hand over. podman is pid 1
-//     in it, root-in-U holding policy.EngineCapBounding, and every OTHER
-//     container's conmon is a member. /proc/<pid>/fd and /proc/<pid>/mem
-//     inside it are not syscall-shaped, so no seccomp filter can name them
-//     (issue #47). Refusing the mode is a container-to-engine and
-//     container-to-container boundary even where it is no longer a host one.
-//   - The pid namespace is a MECHANISM; this is the POLICY. A filter narrowed
-//     to whatever the mechanism happens to make harmless this week is exactly
-//     the shape this repo keeps filing issues about.
-//   - Every other row below — IpcMode, UTSMode, CgroupnsMode, UsernsMode, and
-//     the `container:<id>` and `ns:<path>` spellings — has no second mechanism
-//     at all, so the loop as a whole is as load-bearing as it ever was.
-//
-// Whether PidMode should be relaxed now that the mechanism exists is issue
-// #145's decision. A change here is a change to that issue, not a tidy-up.
+// No row here is relaxed by this rewrite. It is a comment change and a
+// severity-to-rule change only; every case in the table below refuses exactly
+// what it refused before.
 //
 // Positive control: NetworkMode="host" is accepted (reaches the fake engine)
 // in the SAME test, so a refusal-shaped bug that accidentally caught
