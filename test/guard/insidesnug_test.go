@@ -16,6 +16,31 @@ import (
 	"testing"
 )
 
+// The guard has to be IN the repository, not merely on the machine that wrote
+// it. bin/ is gitignored — it is where build output lands — and that rule
+// swallowed bin/inside-snug on the commit that introduced it: `git add -A`
+// skipped the file, `git status` stayed clean, every test here passed locally,
+// and CI was the first thing to observe that the file every agent instruction
+// points at was not in the repository at all.
+//
+// Existence is not the same question as trackedness, and only the second one
+// survives a clone.
+func TestTheGuardIsTracked(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("SKIP: no git to ask")
+	}
+	cmd := exec.Command(git, "ls-files", "--error-unmatch", "bin/inside-snug")
+	cmd.Dir = filepath.Join("..", "..")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("bin/inside-snug is not tracked by git (%v: %s).\nIt is the file every agent "+
+			"file tells an agent to guard destructive commands with, and a clone of this "+
+			"repository would not have it — so `bin/inside-snug && rm -rf …` would fail at the "+
+			"shell, or worse, be edited out as broken. bin/ is gitignored; the .gitignore "+
+			"carries an explicit negation for this path.", err, out)
+	}
+}
+
 func script(t *testing.T) string {
 	t.Helper()
 	p, err := filepath.Abs(filepath.Join("..", "..", "bin", "inside-snug"))

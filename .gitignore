@@ -1,4 +1,15 @@
-bin/
+# `bin/*` rather than `bin/`: git cannot re-include a file whose PARENT
+# DIRECTORY is excluded, so the negation below is silently inert under the
+# directory form — which is how the first attempt at this fix still left the
+# guard untracked.
+bin/*
+# …except the sandbox guard, which is SOURCE that happens to live in bin/.
+# bin/ is ignored because it is where build output lands, and that rule silently
+# swallowed bin/inside-snug on the commit that introduced it: `git add -A` skipped
+# it, `git status` stayed clean, and CI was the first thing to notice the file
+# every agent instruction points at did not exist in the repo. TestTheGuardIsTracked
+# is what makes that unrepeatable.
+!bin/inside-snug
 
 # Working documents: implementation plans, review write-ups, red-team round
 # reports, buildable specs. One committed design document per subject lives in
