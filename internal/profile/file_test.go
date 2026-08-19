@@ -420,8 +420,8 @@ func TestUserProfileMayReuseABuiltinsBareName(t *testing.T) {
 // The check is by NAME rather than by value, deliberately: an `env` entry is a
 // name and the value only exists on the invoking host, so a value-based check
 // would pass on any machine where the variable happened to be unset. That is
-// the same defect the old conditional forbidden-name guard had (see
-// .claude/design/BRAINSTORM.md §4.4) and it is worth not repeating here.
+// the same defect the old conditional forbidden-name guard had, and it is
+// worth not repeating here.
 //
 // Matching is substring-based on purpose, so a NEW credential variable nobody
 // has thought of yet — FOO_API_KEY, BAR_TOKEN — is caught the day it is added

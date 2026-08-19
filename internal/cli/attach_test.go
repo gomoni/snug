@@ -1,6 +1,6 @@
 package cli
 
-// attach_test.go is §13.2 of .claude/scratchpad/ATTACH-SHAPE.md: the
+// attach_test.go is §13.2 of ATTACH.md: the
 // confinement PLAN's unit tests — everything that can be checked without
 // forking or joining a real sandbox's namespaces. Tests 12-29 (the parts that
 // need a real running sandbox) live in test/integration.
@@ -99,7 +99,7 @@ func TestAttachRefusesWhenItCannotBuildAFilterTheRunHad(t *testing.T) {
 // bounding set on a kernel with more of them than this binary knows about.
 //
 // A hardcoded 40 (this host's own value, per .claude/scratchpad/
-// ATTACH-SHAPE.md's measurements) would NOT be caught by comparing against
+// ATTACH.md's measurements) would NOT be caught by comparing against
 // the real /proc file on THIS host, so this test instead points
 // capLastCapPath at a FAKE file whose value is deliberately not 40 — a
 // hardcoded 40 fails this test on every host, including this one.

@@ -27,8 +27,8 @@ import (
 // `A2 = true` row in .claude/design/SECRETS.md.
 //
 // What makes projecting viable rather than merely desirable, MEASURED (claude
-// 2.1.232, .claude/scratchpad/RESEARCH-18-BROKER.md and confirmed
-// independently): Claude Code works with `refreshToken` ABSENT. Also measured,
+// 2.1.232, for issue #18's broker research, and confirmed independently):
+// Claude Code works with `refreshToken` ABSENT. Also measured,
 // and it kills a plausible worry: an already-EXPIRED placeholder served a full
 // session offline, and expiry passing mid-run did nothing — so there is no
 // expiresAt snug has to compute or get right. It carries the host's value

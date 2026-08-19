@@ -30,27 +30,26 @@ var notADesignDoc = map[string]string{
 
 // uncommittedDesignDocs is DEBT, recorded rather than tolerated silently.
 //
-// Each of these is named by a Go comment and is not in the tree: it lived in
-// .claude/scratchpad/ — which is in .gitignore — and was never promoted by the
-// deliberate `git mv` CLAUDE.md describes. A reader following one of these
-// citations gets nothing, which is issue #154 §C, found when TIER-B-POLICY.md
-// turned out never to have been committed at all (`git log --diff-filter=A`
-// finds no commit that added it). TIER-B.md is the one that pass promoted; the
-// rest are still owed.
+// An entry is a document named by a Go comment that is not in the tree: it
+// lived in .claude/scratchpad/ — which is in .gitignore — and was never
+// promoted by the deliberate `git mv` CLAUDE.md describes. A reader following
+// such a citation gets nothing, which is issue #154 §C, found when
+// TIER-B-POLICY.md turned out never to have been committed at all.
 //
-// THE POINT OF THIS MAP IS THAT IT ONLY SHRINKS. A new citation of an
-// uncommitted document fails this test; removing an entry when the document
-// lands is the whole workflow. It is not an allowlist for convenience —
-// CLAUDE.md's own warning about the command-table check is that an allowlist
-// is where a rule goes to die — so an entry may be removed and may never be
-// added without the same promotion the entry exists to demand.
-var uncommittedDesignDocs = map[string]string{
-	"ATTACH-SHAPE.md":       "the `snug attach` shape doc",
-	"BRAINSTORM.md":         "an early brainstorming record",
-	"ENGINE-WIRING.md":      "Tier B's engine-wiring pass",
-	"ISSUE-40-DESIGN.md":    "issue #40's design",
-	"RESEARCH-18-BROKER.md": "issue #18's broker research",
-}
+// IT IS EMPTY, and that is the state to keep it in. The five entries it
+// shipped with — 42 citations across 19 files — were resolved by issue #156:
+// ENGINE-WIRING.md and ATTACH.md were promoted into .claude/design/, and the
+// three whose sources no longer existed anywhere (ISSUE-40-DESIGN.md,
+// BRAINSTORM.md, RESEARCH-18-BROKER.md) had their citations repointed at the
+// GitHub issues that carry the same subject — a citation a reader can follow
+// beats one they cannot.
+//
+// THE MAP MAY ONLY SHRINK. It exists so that a promotion pass too large for
+// one change can record what it did not reach, not as an allowlist for
+// convenience — CLAUDE.md's warning about the command-table check is that an
+// allowlist is where a rule goes to die. Adding an entry means writing down,
+// in public, that you are citing something a reader cannot open.
+var uncommittedDesignDocs = map[string]string{}
 
 // TestEveryDesignDocACommentCitesExists is the regression for issue #154 §C.
 //
