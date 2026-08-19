@@ -36,8 +36,9 @@ var update = flag.Bool("update", false, "rewrite golden files")
 // whose host path is missing is skipped, which is the arrangement most hosts
 // are actually in for at least one of them.
 type envFakeEnv struct {
-	dirs map[string]bool
-	env  map[string]string
+	dirs  map[string]bool
+	links map[string]string
+	env   map[string]string
 }
 
 func newEnvFakeEnv() *envFakeEnv {
@@ -58,6 +59,11 @@ func newEnvFakeEnv() *envFakeEnv {
 			// staged) and would silently stop testing that staging reaches PATH.
 			"/home/u/.local/bin/claude": true,
 		},
+		// Empty, not nil. issue #55's F6 tests plant a link per fixture, mirroring
+		// internal/policy's fakeEnv (resolve_test.go), checked FIRST, then dirs
+		// — the same order fakeEnv.EvalSymlinks uses, so a link can repoint a
+		// path that is also a real directory in dirs.
+		links: map[string]string{},
 		// EDITOR is set because @claude re-admits it past --clearenv. It is the
 		// POSITIVE CONTROL for that whole mechanism: without one variable the
 		// host actually has, the @claude golden would be identical to the
@@ -71,6 +77,9 @@ func newEnvFakeEnv() *envFakeEnv {
 }
 
 func (f *envFakeEnv) EvalSymlinks(p string) (string, error) {
+	if t, ok := f.links[p]; ok {
+		return t, nil
+	}
 	if f.dirs[p] {
 		return p, nil
 	}

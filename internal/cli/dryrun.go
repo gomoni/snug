@@ -49,6 +49,7 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 	}
 	describeNetwork(out, p)
 	describeTopology(out, p)
+	describeGrafts(out, p)
 	describeContainers(out, p)
 	describeGit(out, p)
 	describeSSH(out, p)
@@ -1636,6 +1637,216 @@ func describeTopology(out *os.File, p *policy.Policy) {
 		fmt.Fprintf(out, "                  it can open — but its user namespace now has a privileged\n")
 		fmt.Fprintf(out, "                  ancestor that lives for the whole run, so a userns-escape bug\n")
 		fmt.Fprintf(out, "                  is worth more here than it was.\n")
+	}
+}
+
+// graftIndent is the column every wrapped graft field ("from", "abuse:")
+// re-starts at, matching the "  graft-rw  " kind+path prefix's own width so
+// the block reads as a paragraph per field rather than a hanging indent
+// nobody asked for.
+const graftIndent = 12
+
+// wrapGraftField wraps one graft field's text to screenWidth, label first
+// ("abuse: ", "note: ") on the opening line, every continuation line
+// re-indented to graftIndent with no label repeated. It breaks on spaces
+// only, the same rule wrapMark uses and for the same reason: these lines
+// carry prose, and splitting a token mid-word is a lie about what it named.
+//
+// NEVER call this on a Guest or a Host. strings.Fields below collapses runs
+// of whitespace and trims the ends — harmless for prose, but a host path may
+// legally contain two spaces (nothing refuses U+0020 in a path, nor should
+// it: a real file can be named that way), and this function silently
+// rewrote it to one, a small lie in the one block whose entire job is not
+// lying about what a graft names (issue #55, finding F9). Guest is already
+// printed verbatim on the kind-column row; Host is printed verbatim on its
+// own line by describeGrafts, through visibleValue only — never through
+// this function.
+func wrapGraftField(label, text string) []string {
+	indent := strings.Repeat(" ", graftIndent)
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return []string{indent + strings.TrimRight(label, " ")}
+	}
+	var out []string
+	cur := label + words[0]
+	for _, w := range words[1:] {
+		candidate := cur + " " + w
+		if utf8.RuneCountInString(indent)+utf8.RuneCountInString(candidate) > screenWidth {
+			out = append(out, indent+cur)
+			cur = w
+			continue
+		}
+		cur = candidate
+	}
+	out = append(out, indent+cur)
+	return out
+}
+
+// describeGrafts renders p.Grafts — mounts in the ENGINE's derived mount
+// namespace, never the payload's (issue #55). It is its own block rather than
+// rows in FILESYSTEM, because that block's header says "every line is a
+// grant" of the PAYLOAD's view, and a graft row there would claim the payload
+// can see the host's container store — the same class of lie, facing the
+// other way, that ENGINE-NETNS.md §5.1's /run finding is about.
+//
+// Placed right after TOPOLOGY and before FILESYSTEM: a graft is a property of
+// the engine TOPOLOGY already describes, not of the sandbox's own filesystem.
+//
+// Prints ONLY when len(p.Grafts) > 0. Every topology that ships today has
+// none — Tier B's engine gets a private COPY of the host tree and makes no
+// graft — so this is silent on every shipping run today, and
+// topology.podman-*.txt do not move because of it.
+//
+// KIND-COLUMN DISTINCTION IS REQUIRED, NOT DECORATIVE: "graft-ro"/"graft-rw",
+// never bare "ro"/"rw" — a reader must never have to know which block a row
+// came from to know which mount namespace it is in, the exact confusion
+// keeping this out of FILESYSTEM exists to prevent. Provenance renders
+// whatever the graft's own From carries, which G5 requires be exactly
+// "(snug)" — the same word /proc and /dev already carry on the FILESYSTEM
+// block.
+//
+// THE DESTINATION NOTE IS PER-GRAFT, decided from the SANDBOX's own view
+// (graftDestinationNote), not one fixed sentence printed once. The fixed
+// sentence — "created on the sandbox's own root tmpfs … empty … unwritable
+// once / is remounted read-only" — is true only for a destination G3 accepted
+// through its FIRST/SECOND disjunct (no covering mount at all: an
+// auto-created directory on bare tmpfs). It is false for the shape G3's
+// THIRD disjunct accepts — a destination inside a writable grant, which is
+// exactly what this file's own golden fixture uses — where the destination is
+// the payload's own writable tree, not an empty tmpfs, and a write through it
+// can reach the HOST. Printing the fixed sentence unconditionally was a
+// screen lie pinned by the golden that exercises precisely the shape it was
+// wrong about (issue #55, finding F4). Do not go back to one sentence for
+// every graft; ask p.SandboxView().CoveringMount(gr.Guest) each time.
+//
+// A ROW ALSO SAYS WHEN ITS SOURCE CAME FROM EngineOwnedHostPaths RATHER THAN
+// FROM HostPathVisible: G4 has two disjuncts and they answer different
+// questions (see checkGraft's own comment) — a graft whose Host the sandbox's
+// OWN grants do not expose is legal only because snug declared that host path
+// its own for this run, and a human reading this screen is owed exactly which
+// case they are looking at, not a single unqualified "from" line (finding
+// F2). The full EngineOwnedHostPaths set — not just the paths a graft
+// currently uses — is listed too, because it is a host path snug declares its
+// own by fiat and had, before this fix, no line on --dry-run at all.
+//
+// Every string here — Guest, Host, HostAsked, Why, From, and every
+// EngineOwnedHostPaths entry — goes through visibleValue, the same guard
+// every other screen uses; this block is in
+// TestNoSnugScreenEmitsARawControlCharacter's sink set for exactly that
+// reason. Guest, Host and HostAsked print VERBATIM (never through
+// wrapGraftField, see its own comment, finding F9); only prose (Why, the
+// destination note, the "resolved:" line) is wrapped.
+func describeGrafts(out *os.File, p *policy.Policy) {
+	if len(p.Grafts) == 0 {
+		return
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "ENGINE VIEW  (grafts — mounts in the ENGINE's derived mount namespace, NOT the")
+	fmt.Fprintln(out, "  payload's. The payload cannot see any of these; no profile can ask for one.)")
+
+	guests := make([]string, 0, len(p.Grafts))
+	for g := range p.Grafts {
+		guests = append(guests, g)
+	}
+	sort.Strings(guests)
+
+	indent := strings.Repeat(" ", graftIndent)
+	for _, guest := range guests {
+		gr := p.Grafts[guest]
+		kind := "graft-ro"
+		if gr.Access == policy.AccessRW {
+			kind = "graft-rw"
+		}
+		fmt.Fprintf(out, "  %-8s  %-44s  %s\n",
+			kind, visibleValue(gr.Guest), visibleValue(strings.Join(gr.From, "+")))
+		// Verbatim: Host may legally contain runs of whitespace, and
+		// wrapGraftField's strings.Fields would collapse them (F9).
+		fmt.Fprintf(out, "%sfrom %s\n", indent, visibleValue(gr.Host))
+		if gr.HostAsked != "" {
+			// Verbatim, for F9's reason: a host path may legally contain runs
+			// of whitespace and wrapGraftField's strings.Fields collapses them.
+			fmt.Fprintf(out, "%sasked %s\n", indent, visibleValue(gr.HostAsked))
+			for _, line := range wrapGraftField("resolved: ",
+				"the path snug's own code named is a SYMLINK on the host; snug resolved it "+
+					"before judging G4 and grafts the resolved path above. A source under any "+
+					"path the payload can write is a path the payload chooses, so this is the "+
+					"row to read twice") {
+				fmt.Fprintln(out, line)
+			}
+		}
+		if !p.HostPathVisible(gr.Host, gr.Access == policy.AccessRW) {
+			for _, line := range wrapGraftField("owned: ",
+				"the sandbox's own grants do not expose this host path — it passed G4 only "+
+					"because snug declared it its own for this run (EngineOwnedHostPaths)") {
+				fmt.Fprintln(out, line)
+			}
+		}
+		for _, line := range wrapGraftField("abuse: ", visibleValue(gr.Why)) {
+			fmt.Fprintln(out, line)
+		}
+		for _, line := range wrapGraftField("note: ", graftDestinationNote(p, gr)) {
+			fmt.Fprintln(out, line)
+		}
+	}
+
+	if len(p.EngineOwnedHostPaths) > 0 {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "  engine-owned host paths  snug created these for this run; a graft's Host may")
+		fmt.Fprintln(out, "                           name one under G4 even though no sandbox grant")
+		fmt.Fprintln(out, "                           exposes it (OwnEngineHostPath, the only writer):")
+		paths := make([]string, 0, len(p.EngineOwnedHostPaths))
+		for k := range p.EngineOwnedHostPaths {
+			paths = append(paths, k)
+		}
+		sort.Strings(paths)
+		for _, k := range paths {
+			fmt.Fprintf(out, "    %s\n", visibleValue(k))
+		}
+	}
+}
+
+// graftDestinationNote decides, from the SANDBOX's own view, what is
+// actually true about a graft's destination directory — see describeGrafts's
+// own comment for why this must be per-graft rather than one fixed sentence
+// (issue #55, finding F4).
+//
+// p.SandboxView().CoveringMount(gr.Guest) answers exactly the question G3
+// itself asked when the graft was accepted:
+//
+//   - ok == false: nothing in the sandbox's own mount set covers this path at
+//     all — G3's first/second disjunct, an auto-created directory sitting on
+//     the bare root tmpfs. The original fixed sentence is true here.
+//   - a writable BIND covers it: G3's third disjunct on a bind — the
+//     destination is inside a host directory the payload can already write,
+//     and any write through it reaches the HOST.
+//   - a writable TMPFS covers it: G3's third disjunct on tmpfs (e.g. $HOME,
+//     /tmp) — the payload can write there, but nothing written survives the
+//     sandbox.
+//   - a read-only grant covers it (G3's first disjunct at an exact,
+//     read-only mountpoint): the payload can already read what is there and
+//     cannot write to it.
+func graftDestinationNote(p *policy.Policy, gr policy.Graft) string {
+	m, ok := p.SandboxView().CoveringMount(gr.Guest)
+	if !ok {
+		return "this graft's destination is created on the sandbox's own root tmpfs and IS " +
+			"visible to the payload — empty, and unwritable once / is remounted read-only. The " +
+			"mount namespace is private; the tmpfs superblock is not (ENGINE-NETNS.md §5.1)."
+	}
+	switch {
+	case m.Access == policy.AccessRW && m.Kind == policy.KindBind:
+		return fmt.Sprintf("this graft's destination is inside a writable bind of a host directory "+
+			"(%s) — the payload can create and write there directly, and any write on this path "+
+			"reaches the HOST and persists after the sandbox exits.", visibleValue(m.Host))
+	case m.Access == policy.AccessRW && m.Kind == policy.KindTmpfs:
+		return "this graft's destination is inside a writable tmpfs grant — the payload can create " +
+			"and write there, but nothing written survives: the tmpfs dies with the sandbox."
+	case m.Access == policy.AccessRO:
+		return fmt.Sprintf("this graft's destination coincides with a read-only %s grant already in "+
+			"the sandbox's own view — the payload can already read whatever that grant exposes "+
+			"there, and cannot write to it.", m.Kind)
+	default:
+		return fmt.Sprintf("this graft's destination coincides with an existing %s grant (access %s) "+
+			"in the sandbox's own view.", m.Kind, m.Access)
 	}
 }
 

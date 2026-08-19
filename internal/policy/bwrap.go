@@ -218,6 +218,18 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 			} else {
 				a = append(a, "--ro-bind-data", strconv.Itoa(dataFD(m.Guest)), m.Guest)
 			}
+		default:
+			// Unreachable given Validate's rule that a KindGraft in p.Mounts is
+			// refused (internal/policy/validate.go), and every other Kind above
+			// is named explicitly — so the only way here is a NEW Kind added to
+			// the enum without a case in this switch. That is precisely the
+			// "--seccomp after bwrap's --" shape CLAUDE.md warns about: the flag
+			// (here, the mount) is silently OMITTED from the argv, with no error
+			// and no --dry-run line to notice it by. Panicking is what turns a
+			// missing capability into a build-time-adjacent failure instead of a
+			// silently weaker sandbox.
+			panic(fmt.Sprintf("unhandled Kind — a Kind added without a case here is silently "+
+				"omitted from the argv (Kind=%s, guest=%s)", m.Kind, m.Guest))
 		}
 	}
 

@@ -617,45 +617,32 @@ func isEmptyJSON(raw json.RawMessage) bool {
 // resolveExisting canonicalises as much of a path as exists, then rejoins the
 // remainder lexically.
 //
-// Plain EvalSymlinks fails outright on a path that is not there yet, and
-// `-v ./build:/out` where ./build does not exist is an ordinary thing to write —
-// the engine creates it. Resolving the longest existing prefix keeps that
-// working while still defeating a symlink planted anywhere along the part that
-// DOES exist, which is the whole point.
+// A one-line call to policy.ResolveExistingHostPath rather than its own walk
+// (issue #55, F6): that function is now the second half of "can the sandbox
+// see this host path" (the first half is policy.HostPathVisible, already
+// shared the same way), and invariant 6 says one author, not two
+// implementations that eventually drift. OSEnviron{}.EvalSymlinks IS
+// filepath.EvalSymlinks, so this is behaviour-identical to the walk it
+// replaces. TestResolveExistingHasOneAuthor pins that no EvalSymlinks loop
+// survives in this package.
 func resolveExisting(p string) (string, error) {
-	p = filepath.Clean(p)
-	rest := ""
-	for cur := p; ; {
-		real, err := filepath.EvalSymlinks(cur)
-		if err == nil {
-			return filepath.Join(real, rest), nil
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			return "", fmt.Errorf("no existing ancestor")
-		}
-		rest = filepath.Join(filepath.Base(cur), rest)
-		cur = parent
-	}
+	return policy.ResolveExistingHostPath(policy.OSEnviron{}, p)
 }
 
 // hostPathVisible reports whether the sandbox can itself see a host path at the
-// given access — the rule the package comment states. Kept here (unused by the
-// current replace-everything strategy) because any future opt-in submount mode
-// must use exactly this and nothing else.
+// given access — the rule the package comment states. This is a LIVE, shared
+// boundary, not dead code kept for a future mode: checkOne calls it for every
+// `-v` bind request (the proxy's own filter), and checkSeccompProfile calls it
+// twice more for a seccomp profile path. A future opt-in submount mode must
+// use exactly this and nothing else, same as the callers above already do.
+//
+// A one-line call to policy.HostPathVisible rather than its own walk (issue
+// #55): that predicate is now also G4's graft-source check, and invariant 6
+// says one author of "can the sandbox see this host path", not two
+// implementations that eventually disagree — so a future weakening of
+// policy.HostPathVisible weakens this filter too, not a copy of it.
+// TestContainerBindFilterMatchesPolicyVisibility exercises it through here
+// unchanged.
 func (p *Proxy) hostPathVisible(host string, needWrite bool) bool {
-	host = filepath.Clean(host)
-	for _, m := range p.pol.Mounts {
-		if m.Kind != policy.KindBind {
-			continue
-		}
-		if host != m.Host && !strings.HasPrefix(host, m.Host+"/") {
-			continue
-		}
-		if needWrite && m.Access != policy.AccessRW {
-			continue
-		}
-		return true
-	}
-	return false
+	return p.pol.HostPathVisible(host, needWrite)
 }

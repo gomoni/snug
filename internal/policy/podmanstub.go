@@ -32,6 +32,13 @@ const StagedBinDir = "/run/snug/bin"
 // Strictly UNDER the directory, never the directory itself: a mount AT
 // StagedBinDir would be a grant of the whole directory rather than of one
 // executable in it, which is the shape this rule exists to refuse.
+//
+// Stays on p.Mounts and is NOT lifted onto a View (issue #55). It decides
+// whether StagedBinDir joins the PAYLOAD's PATH, and a graft cannot affect
+// that — the payload's mount namespace never sees a graft at all, and G1
+// refuses any graft that covers StagedBinDir in the engine's namespace either.
+// Do not "fix" this to consult p.Grafts or EngineView(); there is no question
+// here for the engine's view to answer.
 func (p *Policy) HasStagedBin() bool {
 	for guest := range p.Mounts {
 		if strings.HasPrefix(guest, StagedBinDir+"/") {

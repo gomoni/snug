@@ -140,7 +140,10 @@ func SystemSSHConfig() []byte {
 func replaceSystemSSHConfig(p *Policy, env Environ) {
 	cfg := SystemSSHConfig()
 	for _, guest := range SystemSSHConfigPaths {
-		cov, ok := p.coveringMount(guest)
+		// Runs before any graft can exist (Resolve, never Tier C's post-Resolve
+		// Policy.Graft), and this is a question about the PAYLOAD's own view
+		// either way — the sandbox's, explicitly.
+		cov, ok := p.SandboxView().coveringMount(guest)
 		if !ok || cov.Kind != KindBind {
 			continue
 		}
