@@ -185,9 +185,10 @@ func startContainers(pol *policy.Policy, verbose, dryRun bool) (containerRun, er
 	// written by Spec: the host user's carries podman's registries.conf and
 	// policy.json (issue #137) and the host's own registry credentials
 	// (issue #142), none of which the resolved Policy authored.
-	spec, err := eng.Spec(pf.Podman, []string{
-		"PATH=" + os.Getenv("PATH"),
-	}, pf.CgroupsDisabled, pol.Net)
+	// baseEnv carries nothing of the host's own environment, PATH included
+	// (issue #125): Spec pins PATH itself, and see its doc comment for why
+	// os.Getenv("PATH") is not a value this call site is trusted to supply.
+	spec, err := eng.Spec(pf.Podman, nil, pf.CgroupsDisabled, pol.Net)
 	if err != nil {
 		return containerRun{}, err
 	}
