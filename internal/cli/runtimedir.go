@@ -348,11 +348,23 @@ func sweepStaleRunDirs(snugRoot *os.Root, snugPath string) {
 		lock.Close() // releases the flock we just proved nobody else needed
 
 		if rmErr := snugRoot.RemoveAll(name); rmErr != nil {
+			// UNCONDITIONAL, unlike the success line below, and the split is
+			// the point of issue #118 rather than an inconsistency: this one
+			// names something the user may have to remove by hand, and a
+			// directory snug could not clean up is state that survives them
+			// (invariant 4's neighbourhood). Silence here would be snug
+			// failing quietly at housekeeping it promised to do.
 			fmt.Fprintf(os.Stderr, "snug: could not remove stale run directory %s: %v\n", full, rmErr)
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "snug: removed stale run directory %s (its owning process is gone; "+
-			"left behind by a run that did not exit cleanly)\n", full)
+		// Behind --verbose. It reports work that SUCCEEDED, that the user did
+		// not ask for and cannot act on, about a directory they never knew
+		// existed — and it fires on the everyday path, after any abnormal
+		// termination left something behind. Correct information in the wrong
+		// register: it reads like a warning for something that is in fact snug
+		// working as designed.
+		verboseHousekeeping(fmt.Sprintf("removed stale run directory %s (its owning process is "+
+			"gone; left behind by a run that did not exit cleanly)", full))
 	}
 }
 
@@ -460,4 +472,43 @@ func verifyOwnedAndPrivate(root *os.Root, desc string) error {
 			"snug will not repair it silently", desc, mode)
 	}
 	return nil
+}
+
+// ── housekeeping notices (issue #118) ─────────────────────────────────────
+
+// housekeepingVerbose is whether notices about work the user did not ask for
+// — and that SUCCEEDED — reach stderr. Off until main's flag parsing turns it
+// on, so a snug used as a library or a test that never parses flags is quiet
+// by construction.
+//
+// A package variable rather than a parameter, deliberately, and the reason is
+// where the notice comes from: sweepStaleRunDirs is reached from runtimeDir,
+// which is memoized and called independently by the ssh-agent proxy, the
+// container proxy and the run path itself. Threading a DISPLAY preference
+// through three call chains whose signatures are otherwise about paths and
+// ownership would put an ergonomics flag into functions that have no other
+// business knowing about the terminal — and would have to be re-threaded
+// every time a fourth subsystem needs a runtime directory.
+//
+// It is written exactly once, from main, before any of those subsystems
+// start, and read from there on. That ordering is what makes a plain bool
+// enough: there is no second writer to race, and the notices themselves are
+// already serialised by the run's own startup.
+var housekeepingVerbose bool
+
+// setHousekeepingVerbose is main's one call. Separate from the variable so
+// the assignment has a name in a stack trace and a single place to grep for.
+func setHousekeepingVerbose(v bool) { housekeepingVerbose = v }
+
+// verboseHousekeeping prints a notice about routine work that succeeded, and
+// only when the human asked to see it.
+//
+// The line it does NOT cover is the failure case beside it in
+// sweepStaleRunDirs: a stale directory snug could not remove is state that
+// outlives the user, and that stays unconditional.
+func verboseHousekeeping(msg string) {
+	if !housekeepingVerbose {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "snug: "+msg)
 }
