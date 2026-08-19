@@ -107,13 +107,42 @@ jobs:
       # is down", not as a sandbox regression.
       - name: Install bubblewrap
         run: |
-          sudo sed -i 's|://azure.archive.ubuntu.com/ubuntu|://archive.ubuntu.com/ubuntu|g' \
-            /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
-          sudo apt-get update \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=20 \
-            -o Acquire::https::Timeout=20
-          sudo apt-get install -y bubblewrap
+          # Rewrite EVERY regional Ubuntu mirror to the canonical one, in both
+          # sources formats the runner images use (one-line `deb ` and deb822
+          # `URIs:`). The previous version of this only rewrote
+          # azure.archive.ubuntu.com and only over its own scheme, and the
+          # azure entries survived — visible in the job log as `Ign:` lines
+          # against a host the fix claimed to have removed. A rewrite that
+          # silently matches nothing is the same shape as a guard that is never
+          # read.
+          sudo sed -i -E 's#https?://[a-z0-9.-]*archive\.ubuntu\.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' \
+            /etc/apt/sources.list /etc/apt/sources.list.d/*.list \
+            /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+
+          # BOUNDED, and this is the part that matters. `apt-get update` with
+          # Acquire timeouts alone still sat for the WHOLE 8-minute job budget
+          # twice, cancelled with no test having run — the per-connection
+          # timeouts did not cover whatever it was doing. `timeout` does, so a
+          # mirror that is not answering costs 90s and three tries, and then
+          # fails AS AN APT FAILURE with a message naming the cause, instead of
+          # eating the job and looking like a sandbox regression.
+          ok=
+          for attempt in 1 2 3; do
+            if sudo timeout 90 apt-get update \
+                 -o Acquire::Retries=2 \
+                 -o Acquire::http::Timeout=15 \
+                 -o Acquire::https::Timeout=15; then
+              ok=yes
+              break
+            fi
+            echo "apt-get update attempt $attempt failed or timed out; retrying"
+          done
+          if [ -z "$ok" ]; then
+            echo "::error::apt-get update did not complete in 3 bounded attempts."
+            echo "::error::This is the Ubuntu mirror, not snug. Re-run the job."
+            exit 1
+          fi
+          sudo timeout 120 apt-get install -y bubblewrap
 
       # pasta comes from UPSTREAM, not from apt, and that is not a preference.
       #
