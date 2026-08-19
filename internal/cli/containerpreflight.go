@@ -116,15 +116,44 @@ func preflightResolvConfBind() error {
 		GidMappingsEnableSetgroups: false,
 	}
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		detail := strings.TrimSpace(string(out))
-		if detail == "" {
-			detail = err.Error()
-		}
-		return errors.New(detail)
+	if err == nil {
+		return nil
 	}
-	return nil
+
+	// THREE outcomes, not two, and conflating the third with the second was
+	// measured wrong in CI: a host that cannot create the throwaway user
+	// namespace at all fails here with "fork/exec /proc/self/exe: permission
+	// denied", which is the probe being UNABLE TO ASK — not the host
+	// answering no. Reporting that as an answer would tell the user their
+	// /etc/resolv.conf cannot be replaced when nothing of the sort was
+	// measured.
+	//
+	// The discriminator is an ExitError: the child ran, reached the question
+	// and exited 1 with its reason on stderr. Anything else — clone refused,
+	// exec refused — never got that far.
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		return &probeUnavailableError{err: err}
+	}
+	detail := strings.TrimSpace(string(out))
+	if detail == "" {
+		detail = err.Error()
+	}
+	return errors.New(detail)
 }
+
+// probeUnavailableError says the P7 probe could not be RUN on this host, as
+// distinct from the host answering that the bind fails. The caller stays
+// silent on it: a bind that was never attempted is not a degradation to
+// announce, and __inengine's own warning still fires loudly if the real bind
+// then fails. Not a silent downgrade — nothing was downgraded, and nothing was
+// measured either.
+type probeUnavailableError struct{ err error }
+
+func (e *probeUnavailableError) Error() string {
+	return "preflight P7 could not run its probe: " + e.err.Error()
+}
+func (e *probeUnavailableError) Unwrap() error { return e.err }
 
 // probeBindResolvConf is the hidden `__probebind` verb's whole body, run in
 // the throwaway namespaces preflightResolvConfBind created. It makes its own

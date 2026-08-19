@@ -1427,8 +1427,11 @@ go test ./internal/cli/ -run AsksTheHost -v 2>&1 | grep 'P7:'
 ```
 
 Expect one line, either `P7: this host CAN bind over /etc/resolv.conf` or
-`P7: this host CANNOT ... : mounting a file over /etc/resolv.conf: ...`. If it
-ever says `making / private`, the probe never reached its question — that is
+`P7: this host CANNOT ... : mounting a file over /etc/resolv.conf: ...`, or a
+SKIP saying the probe cannot run here at all — a host that cannot create the
+throwaway user namespace (CI's unit-test container is one) has not answered the
+question, and snug stays silent rather than reporting "cannot bind". If it ever
+says `making / private`, the probe never reached its question either — that is
 the probe's machinery failing, not the host's answer, and it would warn on
 every host.
 

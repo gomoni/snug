@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -146,7 +147,8 @@ func startContainers(pol *policy.Policy, verbose, dryRun bool) (containerRun, er
 	// generated containers.conf decides without needing any mount at all
 	// (issue #126). Not a refusal: nothing leaks, so refusing would be
 	// refusing over lost ergonomics.
-	if err := pf.ResolvConfBind; err != nil {
+	var probeUnavailable *probeUnavailableError
+	if err := pf.ResolvConfBind; err != nil && !errors.As(err, &probeUnavailable) {
 		fmt.Fprintf(os.Stderr, "snug: this host cannot bind a file over /etc/resolv.conf, so the "+
 			"container engine will keep the host's own resolver configuration.\n"+
 			"      Containers are NOT affected: their DNS comes from snug's generated "+

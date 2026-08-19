@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -48,6 +49,19 @@ func TestPreflightResolvConfBindAsksTheHostAndAnswersByName(t *testing.T) {
 		t.Log("P7: this host CAN bind over /etc/resolv.conf")
 		return
 	}
+
+	// THE THIRD OUTCOME, and it is not a failure of either the host or the
+	// probe: some hosts cannot create the throwaway user namespace at all —
+	// CI's unit-test container is one, where the child never starts and the
+	// error is "fork/exec /proc/self/exe: permission denied". The probe did
+	// not ASK, so there is no answer to grade. What IS graded is that snug
+	// classified it that way rather than reporting it as the host's answer,
+	// which is what the caller keys on to stay silent.
+	var unavailable *probeUnavailableError
+	if errors.As(err, &unavailable) {
+		t.Skipf("SKIP: P7 cannot run its probe on this host (no throwaway user namespace): %v", err)
+	}
+
 	msg := err.Error()
 	t.Logf("P7: this host CANNOT bind over /etc/resolv.conf: %s", msg)
 
