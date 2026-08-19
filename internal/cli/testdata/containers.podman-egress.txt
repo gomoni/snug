@@ -5,6 +5,10 @@ CONTAINERS  a per-sandbox engine behind a filtering proxy at /run/snug/podman.so
          A container has the sandbox's own network with NO port mapping:
          'podman run -p N:80' is not supported — the engine holds no
          CAP_NET_ADMIN, so it cannot reconfigure this namespace to publish one.
+         A container gets its own pid namespace and may not join another:
+         'podman run --pid=host' is refused. Inside the sandbox 'host' would
+         mean the ENGINE, and /proc/<pid>/root in a shared pid namespace
+         reaches that process's entire filesystem view.
          A container may mount only a path the sandbox can already see,
          enforced by the proxy's bind filter, which reads this same resolved
          policy (the mount view itself is still a private copy of the host

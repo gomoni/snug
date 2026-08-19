@@ -1,0 +1,23 @@
+FILESYSTEM  (deny-by-default; every line is a grant, there are no deny rules)
+  link   /bin -> usr/bin                                @sys
+  dev    /dev                                           (snug)
+  link   /lib -> usr/lib                                @sys
+  link   /lib64 -> usr/lib64                            @sys
+  proc   /proc                                          (snug)
+  link   /sbin -> usr/sbin                              @sys
+  tmpfs  /tmp                                           (snug)
+  ro     /usr                                           @sys
+  ro     /etc/group                                     @sys
+  ro     /etc/ld.so.cache                               @sys
+  ro     /etc/ld.so.conf                                @sys
+  ro     /etc/nsswitch.conf                             @sys
+  ro     /etc/passwd                                    @sys
+  data   /etc/resolv.conf                               (snug)
+  tmpfs  /home/u                                        @home
+  tmpfs  /home/u/.cache                                 @home
+  tmpfs  /home/u/.config                                @home
+  ro     /home/u/proj                                   @parent-ro
+  tmpfs  /home/u/.local/share                           @home
+  tmpfs  /home/u/.local/state                           @home
+  rw     /home/u/proj/sub                               @cwd-rw
+  ro-/   everything else is a read-only skeleton (--remount-ro /)

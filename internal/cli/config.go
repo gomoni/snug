@@ -257,6 +257,32 @@ func envMarks(name string, verb policy.EnvVerb) string {
 	return uncheckedMark(name, verb) + policy.EnvNote(name, verb)
 }
 
+// markInterpretedGrants is `ro`/`rw`'s half of the same JOIN --dry-run's
+// FILESYSTEM block makes against the resolved mounts (interpretedFilesystemMarks
+// in dryrun.go) — the disclosure issues #169/#170 describe, on the
+// screen a human reads BEFORE selecting an unfamiliar profile, upstream of
+// every --dry-run.
+//
+// Concatenated onto the value exactly the way envMarks already is: each mark
+// policy.GrantInterpretedMarks returns already carries its own "  ← " prefix,
+// so joining with "" reproduces the same two-notes-on-one-line shape envMarks
+// uses for the unchecked mark and policy.EnvNote.
+//
+// There is no replacement-suppression pass here, deliberately: this screen
+// has no resolved mounts to check a KindData replacement against (§3's last
+// subsection — "the sweep runs on unresolved profile text, the mark on
+// resolved mounts, so replacement suppression exists only on the mark side").
+func markInterpretedGrants(vals []string, home string) []string {
+	if len(vals) == 0 {
+		return vals
+	}
+	out := make([]string, len(vals))
+	for i, v := range vals {
+		out[i] = v + strings.Join(policy.GrantInterpretedMarks(v, home), "")
+	}
+	return out
+}
+
 // showEnviron renders the five environment verbs.
 //
 // It renders ALL of them for the same reason `snug profile show` exists at all:
@@ -416,9 +442,20 @@ func profileCmd(args []string) int {
 				fmt.Printf("  %-16s %s\n", head, visibleValue(v))
 			}
 		}
+		// home for the interpreted-path marks below: this screen has no target
+		// and therefore no resolved Mounts to judge a grant against (unlike
+		// --dry-run's FILESYSTEM block), but it can and does classify the grant
+		// TEXT itself against policy.InterpretedPaths. os.UserHomeDir belongs
+		// here rather than in internal/policy, same as it already does in
+		// internal/profile/credentialsurface_test.go's sensitiveHostPath — the
+		// package that must stay pure takes home as a parameter instead.
+		home, _ := os.UserHomeDir()
 		show("includes", policy.NameStrings(p.Include))
-		show("ro", p.RO)
-		show("rw", p.RW)
+		show("ro", markInterpretedGrants(p.RO, home))
+		show("rw", markInterpretedGrants(p.RW, home))
+		// tmpfs is never marked — it supplies and discloses nothing, the same
+		// Kind gating issues #169/#170 give KindTmpfs on --dry-run's
+		// FILESYSTEM block.
 		show("tmpfs", p.Tmpfs)
 		showEnviron(p.Environ, show)
 		for i, s := range p.Symlink {
@@ -426,7 +463,11 @@ func profileCmd(args []string) int {
 			if i == 0 {
 				head = "symlink"
 			}
-			fmt.Printf("  %-16s %s -> %s\n", head, visibleValue(s.At), visibleValue(s.Target))
+			// s.At is the guest side only, same as MountInterpretedMarks gates
+			// KindSymlink: s.Target is a link TARGET, not a host path, and must
+			// never be classified as if it were one.
+			mark := strings.Join(policy.GrantInterpretedMarks(s.At, home), "")
+			fmt.Printf("  %-16s %s -> %s%s\n", head, visibleValue(s.At), visibleValue(s.Target), mark)
 		}
 		if len(p.Optional) > 0 {
 			fmt.Printf("  %-16s %s\n", "optional", visibleValue(strings.Join(p.Optional, " ")))

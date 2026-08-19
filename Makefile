@@ -47,11 +47,18 @@ gate:
 	# own is still up. Built lazily by containerengine_test.go's holderBin.
 	# Same fix, same reasoning as the three above.
 	go vet ./test/integration/testdata/holder
-	# testdata/fakepodman (issue #125, C2-gate) is the fifth: a stand-in
+	# testdata/pidnsprobe (issue #145) is the fifth: a `FROM scratch`
+	# entrypoint that starts a child of itself and reads back /proc/1/root
+	# and its own pid listing, for TestContainerCannotJoinTheEnginesPidNamespace
+	# and TestContainerSeesOnlyItsOwnPids. Built lazily by
+	# containerengine_test.go's pidnsprobeBin. Same fix, same reasoning as
+	# the four above.
+	go vet ./test/integration/testdata/pidnsprobe
+	# testdata/fakepodman (issue #125, C2-gate) is the sixth: a stand-in
 	# `podman system service` gate_test.go's own tests use to control WHEN
 	# the engine's socket appears and what its first response is, built
 	# lazily by gate_test.go's fakePodmanBin. Same fix, same reasoning as
-	# the four above.
+	# the five above.
 	go vet ./test/integration/testdata/fakepodman
 	go test ./...
 

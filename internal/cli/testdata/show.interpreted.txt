@@ -1,0 +1,16 @@
+profile     marks
+            fixture for issues #169/#170
+defined in  <profiles.d>/marks.toml
+
+  ro               /host/etc-ancestor:/etc  ← 17 paths SUPPLIED (17 command tables, 0 credentials): /etc/gitconfig, /etc/claude-code/managed-settings.json, /etc/claude-code/managed-settings.d, +14 more.
+                   /host/gitconfig-src:/etc/gitconfig  ← COMMAND TABLE: git reads this as its system config, read with no flag. Read-only SUPPLIES credential.helper, alias = !cmd, core.pager, core.sshCommand.
+                   /host/managed-settings-src:/etc/claude-code/managed-settings.json  ← COMMAND TABLE: claude reads this as managed (enterprise) settings, read with no flag. Read-only SUPPLIES policyHelper, hooks, mcpServers, apiKeyHelper, env.
+                   {home}/.npmrc  ← COMMAND TABLE: npm reads this. Read-only SUPPLIES registry auth tokens, and script hooks.
+                   {home}/.netrc  ← CREDENTIAL PATH: curl (and anything else honouring .netrc) reads this; whatever is here is what it authenticates with.
+                   {home}/.ssh:/opt/keys  ← the host's ~/.ssh is exposed inside - CREDENTIAL: private keys.
+                   /host/usr-src:/usr
+                   /host/usr-share-src:/usr/share
+  symlink          {home}/.bashrc -> /wherever  ← COMMAND TABLE: bash reads this. Read-only SUPPLIES runs on every shell.
+
+To see what this actually produces for a directory:
+  snug --dry-run -p marks <dir>

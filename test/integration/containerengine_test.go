@@ -2334,3 +2334,315 @@ func TestConmonPPidIsTheEngine(t *testing.T) {
 			containerPIDs[0], engineNS)
 	}
 }
+
+// ── issue #145: PidMode="host" stays refused ────────────────────────────────
+//
+// TestConmonPPidIsTheEngine's own doc comment named this the "future --pid=host
+// decision (issue #145)" this file would have to re-check once the engine had
+// a pid namespace of its own. The decision (issue #145) is: it
+// stays refused, permanently, because the inversion that turned
+// NetworkMode="host" into "joins N" does not transfer to a pid namespace — N
+// is a subset of the sandbox's own authority, the engine's pid namespace is a
+// superset of it. Three tests, each measuring a different half of that:
+//
+//   - TestContainerCannotJoinTheEnginesPidNamespace: the refusal itself, with
+//     the identical run minus PidMode="host" as its positive control.
+//   - TestContainerSeesOnlyItsOwnPids: the negative the refusal preserves —
+//     an ORDINARY container's own /proc/1/root and /proc pid listing are its
+//     own, never the engine's or the host's.
+//   - TestEngineProcfsIsNotBindMountable: the SECOND route to the same
+//     reach (`-v /proc:/hostproc`), which issue #145's decision flags as
+//     "read from code, not executed" — HostPathVisible matches KindBind
+//     only (pinned at the unit level by
+//     policy.TestHostPathVisibleRefusesPseudoFilesystems) — so this is what
+//     turns that into a measurement.
+//
+// All three build a `FROM scratch` image around testdata/pidnsprobe, which
+// needs no registry pull, so they build and run with the sandbox's own
+// egress CLOSED — the same reasoning netprobe/resolvprobe's own doc comments
+// give.
+
+// pidnsprobeBin is holderBin's own shape, not netprobeBin's
+// sync.Once-memoized one, and deliberately so: THREE tests in this section
+// call it (unlike netprobeBin/resolvprobeBin, each called from exactly one),
+// and a package-level sync.Once caches the path from a t.TempDir() that
+// belongs to whichever test happened to build it FIRST — that directory is
+// removed by THAT test's own Cleanup, so the second and third callers would
+// get a cached path to a file that no longer exists. Measured: exactly this
+// "open .../pidnsprobe: no such file or directory" on the second caller
+// before this function took holderBin's shape instead. The build is a few
+// hundred milliseconds; paying it three times is cheaper than a shared cache
+// with a lifetime bug.
+func pidnsprobeBin(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "pidnsprobe")
+	cmd := exec.Command("go", "build", "-o", bin, "./testdata/pidnsprobe")
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	var out strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("building test/integration/testdata/pidnsprobe: %v: %s", err, out.String())
+	}
+	return bin
+}
+
+// TestContainerCannotJoinTheEnginesPidNamespace is the refusal itself,
+// measured end to end against a real engine: `podman run --pid=host` (i.e. a
+// create body carrying HostConfig.PidMode="host") is refused, naming
+// HostConfig.PidMode.
+//
+// POSITIVE CONTROL, in the SAME test, per CLAUDE.md's rule that a negative
+// without one proves nothing: the byte-identical container, minus
+// PidMode="host", is actually built and run through the identical real
+// engine, and its own stdout is checked for the marker its entrypoint prints
+// on completion — so a refusal-shaped bug that accidentally caught every
+// create (an engine that never came up, a proxy that denies everything)
+// would show up here as the control failing, not as a false pass on the
+// refusal alone.
+func TestContainerCannotJoinTheEnginesPidNamespace(t *testing.T) {
+	budget(t, 120*time.Second)
+	env, _ := containerEngineEnv(t)
+	requireRealEngine(t, env)
+	proj, _ := target(t)
+
+	probeBin := pidnsprobeBin(t)
+	if err := os.WriteFile(filepath.Join(proj, "pidnsprobe"), mustRead(t, probeBin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tag := "snugtest-pidmode-refusal:1"
+	script := buildScratchProbeImageFor(tag, "pidnsprobe") + runContainerAndCollectFn + fmt.Sprintf(`
+if build_scratch_probe():
+    # POSITIVE CONTROL: the identical container, WITHOUT PidMode, actually
+    # runs through the real engine.
+    run_and_collect(%q, ["/pidnsprobe"], "host")
+
+    # The refusal under test: the same create, PLUS PidMode="host".
+    body = json.dumps({"Image": "localhost/%s", "Cmd": ["/pidnsprobe"], "Tty": True,
+                        "HostConfig": {"NetworkMode": "host", "PidMode": "host"}}).encode()
+    status, resp = req("POST", "/v1.41/containers/create", body, {"Content-Type": "application/json"})
+    print("PIDHOST-CREATE: %%d %%s" %% (status, resp.decode(errors="replace")[:400]), flush=True)
+print("PROBE-COMPLETE", flush=True)
+`, tag, tag)
+	if err := os.WriteFile(filepath.Join(proj, "pidmode.py"), []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := runEnv(t, env, []string{"-p", "@podman-build"}, proj, `python3 pidmode.py`).mustRun(t)
+	if !strings.Contains(r.out, "PROBE-COMPLETE") {
+		t.Fatalf("the probe did not run to the end:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, fmt.Sprintf("BUILD %s: 200", tag)) {
+		t.Fatalf("the from-scratch image did not even build — this test proves nothing about "+
+			"either the control or the refusal:\n%s", r.out)
+	}
+
+	// POSITIVE CONTROL assertion: the plain run (no PidMode) actually reached
+	// a real, running container.
+	_, logs, _ := cutTwice(r.out, "LOGS-BEGIN", "LOGS-END")
+	if !strings.Contains(logs, "PROBE-COMPLETE") {
+		t.Fatalf("control: the container WITHOUT PidMode=host never produced its own "+
+			"PROBE-COMPLETE marker — it did not actually run, so the refusal checked below "+
+			"proves nothing about a REAL engine:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "CREATE: 201") {
+		t.Fatalf("control: the plain create (no PidMode) was not even accepted (want 201):\n%s", r.out)
+	}
+
+	// The refusal itself.
+	if !strings.Contains(r.out, "PIDHOST-CREATE: 403") {
+		t.Errorf("HostConfig.PidMode=\"host\" was not refused with 403:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "HostConfig.PidMode") {
+		t.Errorf("the refusal does not name HostConfig.PidMode:\n%s", r.out)
+	}
+}
+
+// TestContainerSeesOnlyItsOwnPids is the negative TestContainerCannotJoinTheEnginesPidNamespace's
+// refusal exists to preserve: an ORDINARY container (no PidMode at all, so
+// podman's own default — a fresh pid namespace per container) sees only
+// itself.
+//
+// Two assertions, both read from the CONTAINER's own stdout (never the
+// host's), so what is checked is the view from inside:
+//
+//   - /proc/1/root lists a tiny, from-scratch root — the pidnsprobe binary
+//     plus whatever podman itself bind-mounts (/etc, /dev, /proc) — and
+//     specifically none of the ordinary host/sandbox FHS directories
+//     (usr, home, root, var) that would appear if /proc/1/root somehow
+//     dereferenced into the engine's own private copy of the host tree
+//     instead of the container's own.
+//   - /proc lists at least two pids — POSITIVE CONTROL: the entrypoint
+//     starts a second, short-lived child of itself before listing /proc
+//     (testdata/pidnsprobe/main.go), and that child's own "CHILD-MARKER-READY"
+//     line must appear in the SAME container's logs, or "only its own pids"
+//     would be checked against a /proc listing known to contain just one
+//     entry regardless of whether the isolation holds.
+func TestContainerSeesOnlyItsOwnPids(t *testing.T) {
+	budget(t, 120*time.Second)
+	env, _ := containerEngineEnv(t)
+	requireRealEngine(t, env)
+	proj, _ := target(t)
+
+	probeBin := pidnsprobeBin(t)
+	if err := os.WriteFile(filepath.Join(proj, "pidnsprobe"), mustRead(t, probeBin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tag := "snugtest-ownpids:1"
+	script := buildScratchProbeImageFor(tag, "pidnsprobe") + runContainerAndCollectFn + fmt.Sprintf(`
+if build_scratch_probe():
+    run_and_collect(%q, ["/pidnsprobe"], "host")
+print("PROBE-COMPLETE", flush=True)
+`, tag)
+	if err := os.WriteFile(filepath.Join(proj, "ownpids.py"), []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := runEnv(t, env, []string{"-p", "@podman-build"}, proj, `python3 ownpids.py`).mustRun(t)
+	if !strings.Contains(r.out, "PROBE-COMPLETE") {
+		t.Fatalf("the probe did not run to the end:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, fmt.Sprintf("BUILD %s: 200", tag)) {
+		t.Fatalf("the from-scratch image did not build:\n%s", r.out)
+	}
+
+	_, logs, _ := cutTwice(r.out, "LOGS-BEGIN", "LOGS-END")
+	if strings.TrimSpace(logs) == "" {
+		t.Fatalf("the container produced no logs at all — this test proves nothing:\n%s", r.out)
+	}
+
+	// POSITIVE CONTROL: the child process actually started and printed its
+	// own marker, so the pid count checked below is known to be at least two.
+	if !strings.Contains(logs, "CHILD-STARTED") || !strings.Contains(logs, "CHILD-MARKER-READY") {
+		t.Fatalf("control: the container's own child process never started or never printed its "+
+			"marker — the pid listing below proves nothing about isolation:\n%s", logs)
+	}
+
+	rootEntries := lineField(logs, "ROOT-ENTRIES")
+	if rootEntries == "" {
+		t.Fatalf("no ROOT-ENTRIES line in the container's own log:\n%s", logs)
+	}
+	names := strings.Split(rootEntries, ",")
+	nameSet := map[string]bool{}
+	for _, n := range names {
+		nameSet[strings.TrimSpace(n)] = true
+	}
+	if !nameSet["pidnsprobe"] {
+		t.Errorf("the container's own /proc/1/root does not even list its own entrypoint binary "+
+			"(pidnsprobe) — this reading is not of the container's own root at all: %q", rootEntries)
+	}
+	for _, hostOnly := range []string{"usr", "home", "root", "var"} {
+		if nameSet[hostOnly] {
+			t.Errorf("the container's own /proc/1/root lists %q — that is an ordinary host/sandbox "+
+				"FHS directory a `FROM scratch` container's own root never has; /proc/1/root has "+
+				"dereferenced into something OTHER than this container's own rootfs: %q",
+				hostOnly, rootEntries)
+		}
+	}
+
+	pidsLine := lineField(logs, "PIDS")
+	pids := strings.FieldsFunc(pidsLine, func(r rune) bool { return r == ',' })
+	if len(pids) < 2 {
+		t.Errorf("the container's own /proc lists %d pid(s) (%q), want at least 2 (the entrypoint "+
+			"plus the child process it started) — either the child never actually ran (control "+
+			"already checked above) or /proc itself is reading something other than this "+
+			"container's own pid namespace", len(pids), pidsLine)
+	}
+}
+
+// lineField returns the text after "LABEL " on the first line of logs that
+// starts with LABEL, trimmed of the trailing \r a Tty=true container log
+// carries (section's own doc comment gives the same reasoning). Returns ""
+// if no such line exists.
+func lineField(logs, label string) string {
+	prefix := label + " "
+	for _, line := range strings.Split(logs, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimPrefix(line, prefix)
+		}
+	}
+	return ""
+}
+
+// TestEngineProcfsIsNotBindMountable is the SECOND route to the reach
+// PidMode="host" is refused for for: `-v /proc:/hostproc` reaches the
+// engine's (or, given a different pid, any co-resident process's)
+// /proc/<pid>/root the same way, through an entirely different HostConfig
+// field. Issue #145's decision names this "read from code, not executed" —
+// policy.HostPathVisible matches KindBind mounts only, and /proc is mounted
+// as KindProc, so it can never be visible to the bind filter — and this test
+// is what turns that into a measurement against a real engine and a real
+// container-create request, rather than trusting the code reading alone.
+//
+// POSITIVE CONTROL, against the SAME real engine: a bind of the sandbox's
+// own target directory (which the default profile set already grants
+// read-write) is accepted — so the /proc refusal below is a decision about
+// /proc specifically, not evidence that every bind request fails, or that
+// the engine never came up at all.
+func TestEngineProcfsIsNotBindMountable(t *testing.T) {
+	budget(t, 120*time.Second)
+	env, _ := containerEngineEnv(t)
+	requireRealEngine(t, env)
+	proj, _ := target(t)
+
+	probeBin := pidnsprobeBin(t)
+	if err := os.WriteFile(filepath.Join(proj, "pidnsprobe"), mustRead(t, probeBin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tag := "snugtest-procbind:1"
+	script := buildScratchProbeImageFor(tag, "pidnsprobe") + fmt.Sprintf(`
+if build_scratch_probe():
+    # The refusal under test.
+    body = json.dumps({"Image": "localhost/%s",
+                        "HostConfig": {"NetworkMode": "host",
+                                       "Mounts": [{"Type": "bind", "Source": "/proc",
+                                                    "Target": "/hostproc"}]}}).encode()
+    status, resp = req("POST", "/v1.41/containers/create", body, {"Content-Type": "application/json"})
+    print("PROCBIND-CREATE: %%d %%s" %% (status, resp.decode(errors="replace")[:400]), flush=True)
+
+    # POSITIVE CONTROL: an ORDINARY bind, of a path the sandbox itself already
+    # has read-write, is accepted by the same filter against the same engine.
+    body2 = json.dumps({"Image": "localhost/%s",
+                         "HostConfig": {"NetworkMode": "host",
+                                        "Mounts": [{"Type": "bind", "Source": os.getcwd(),
+                                                     "Target": "/hostproj"}]}}).encode()
+    status2, resp2 = req("POST", "/v1.41/containers/create", body2, {"Content-Type": "application/json"})
+    print("PROJBIND-CREATE: %%d %%s" %% (status2, resp2.decode(errors="replace")[:400]), flush=True)
+    if status2 == 201:
+        cid = json.loads(resp2)["Id"]
+        req("DELETE", "/v1.41/containers/%%s?force=1" %% cid)
+print("PROBE-COMPLETE", flush=True)
+`, tag, tag)
+	if err := os.WriteFile(filepath.Join(proj, "procbind.py"), []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := runEnv(t, env, []string{"-p", "@podman-build"}, proj, `python3 procbind.py`).mustRun(t)
+	if !strings.Contains(r.out, "PROBE-COMPLETE") {
+		t.Fatalf("the probe did not run to the end:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, fmt.Sprintf("BUILD %s: 200", tag)) {
+		t.Fatalf("the from-scratch image did not even build — this test proves nothing:\n%s", r.out)
+	}
+
+	// POSITIVE CONTROL: an ordinary bind against the same real engine and the
+	// same filter is accepted.
+	if !strings.Contains(r.out, "PROJBIND-CREATE: 201") {
+		t.Fatalf("control: an ordinary bind of the sandbox's own read-write target was NOT "+
+			"accepted (want 201) — this test's /proc refusal below proves nothing about a "+
+			"working bind filter:\n%s", r.out)
+	}
+
+	// The refusal itself.
+	if !strings.Contains(r.out, "PROCBIND-CREATE: 403") {
+		t.Errorf("`-v /proc:/hostproc` was not refused with 403:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "cannot see /proc") {
+		t.Errorf("the refusal does not say the sandbox cannot see /proc, the actual mechanism:\n%s", r.out)
+	}
+}
