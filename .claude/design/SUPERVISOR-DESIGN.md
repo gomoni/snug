@@ -115,10 +115,18 @@ throughout. `__innetns` is a third exec image but in a child. An earlier
 spelling numbered the images `__stage1`/`__stage2`, which read as P1 and P2 and
 meant neither.
 
-**A bare `snug <dir>` starts no stage.** The stage exists only where the netns
-must be created by something other than bwrap, which today means `NetEgress`
-alone. Offline runs and `--i-know` host-network runs take the previous code path
-byte for byte. That is deny-by-default applied to snug's own process tree.
+**A bare `snug <dir>` starts no stage.** The stage exists only where something
+other than bwrap must own the sandbox's namespaces. Ordinary offline runs and
+`--i-know` host-network runs take the previous code path byte for byte. That is
+deny-by-default applied to snug's own process tree.
+
+*When this shipped that meant `NetEgress` alone.* **Tier B**
+([#63](https://github.com/gomoni/snug/issues/63)) added the second trigger:
+selecting a container engine also needs a stage — for the full delegated subuid
+range and the private mount namespace the engine forks into — so an **offline**
+`@podman-socket` run starts one too, with no pasta and an N holding only
+loopback. `Topology.NeedsStage()` is the live answer; §3.2 and §3.6 below record
+the phase-1 reasoning, not today's trigger set.
 
 *The abuse sentence for the whole topology, and it is on screen in `--dry-run`:*
 
@@ -167,8 +175,9 @@ https://github.com/gomoni/snug/issues/24.
 
 ### 3.2 The stage runs only when it is needed
 
-`Topology.NeedsStage()` is derived, true exactly when
-`Topology.Netns == NetnsStage`. The rejected alternative started a stage for
+`Topology.NeedsStage()` is derived. When this shipped it was true exactly when
+`Topology.Netns == NetnsStage`; Tier B added `Subuid == SubuidFull` as a second
+disjunct (§2's note). The rejected alternative started a stage for
 every run — cloning without `CLONE_NEWNET` for host mode — so that there would be
 one process shape to reason about. It loses because an unconditional stage hands
 every default `snug <dir>` a privileged ancestor user namespace in exchange for

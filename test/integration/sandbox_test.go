@@ -2485,11 +2485,17 @@ func TestNetHostIsRefusedWithoutIKnow(t *testing.T) {
 }
 
 // REGRESSION (redteam, M2): when the network could not be brought up, snug
-// reported failure with exit 69 — and ran the payload anyway. The payload is
+// reported failure with exit 69 — and ran the payload anyway. The payload WAS
 // parked on bwrap's --block-fd, which releases on EOF as readily as on a byte,
 // so the deferred close during teardown released a child that killing bwrap had
 // not reliably taken down. One abort in fifteen executed the payload and wrote
 // to the target.
+//
+// The mechanism is gone rather than fixed: under the stage the netns exists
+// before bwrap does, so pasta attaches first and there is no parked payload to
+// release — see INDEX.md §4.3. The test stays, and asserts something stronger
+// than it used to, because the guarantee is the same one either way: an aborted
+// network means the payload never ran.
 //
 // Twenty iterations because the original failure was a race, not a certainty.
 func TestAbortedNetworkNeverRunsThePayload(t *testing.T) {
@@ -2497,9 +2503,9 @@ func TestAbortedNetworkNeverRunsThePayload(t *testing.T) {
 	requireSandbox(t)
 	proj, _ := target(t)
 
-	// A PATH with the essentials but no pasta, so the network setup fails at the
-	// point where bwrap is already running and the payload is already parked —
-	// which is the path that was not fail-closed.
+	// A PATH with the essentials but no pasta, so the network setup fails on the
+	// path that was not fail-closed — which is now the startPasta step, before
+	// stage.StartSandbox has forked anything at all.
 	fakeBin := t.TempDir()
 	for _, b := range []string{"bwrap", "sh", "bash", "cat", "echo", "sleep", "touch"} {
 		p, err := exec.LookPath(b)

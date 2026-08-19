@@ -221,9 +221,13 @@ type PastaTarget struct {
 	UsernsPath string // what pasta opens for --userns
 }
 
-// PastaTargetChild is today's shape: bwrap's own child owns both N (which
+// PastaTargetChild is the pre-stage shape: bwrap's own child owns both N (which
 // bwrap's --unshare-net created) and the userns that owns it, so one pid names
 // both paths.
+//
+// No run reaches it today — deriveTopology maps NetEgress, the only mode that
+// starts pasta at all, to NetnsStage — so its only live caller is dryrun.go's
+// else branch, which keeps the screen honest if that ever stops being true.
 func PastaTargetChild(childPID int) PastaTarget {
 	return PastaTarget{
 		NetnsPath:  fmt.Sprintf("/proc/%d/ns/net", childPID),
