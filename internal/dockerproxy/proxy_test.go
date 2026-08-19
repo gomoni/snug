@@ -722,8 +722,13 @@ func TestNamespaceModesAreCaseProof(t *testing.T) {
 // runs INSIDE this sandbox's own network namespace N (setns'd there by the
 // stage), so HostConfig.NetworkMode="host" joins N — exactly the "share N
 // host-mode" design — not the real host's. Every OTHER "host" namespace mode
-// stays refused: PidMode="host" above all, because __inengine does NOT
-// unshare pid, so the engine's own pid namespace genuinely IS the host's.
+// stays refused: PidMode="host" above all. Since issue #125's C0 that refusal
+// is CONSERVATIVE rather than the whole boundary — the engine holds its own
+// pid namespace now, so PidMode="host" would join the ENGINE's, not the real
+// host's — and create.go's own comment on namespaceModeKeys carries the
+// measurement and names issue #145 as where the policy question belongs. What
+// this test asserts is unchanged either way: the set of modes that reach the
+// engine is exactly {NetworkMode=host}.
 //
 // Positive control is the loop itself: if NetworkMode ever stopped being the
 // one exception, this test would catch it turning into a refusal; if a
@@ -758,13 +763,44 @@ func TestNetworkModeHostIsAllowedButOtherHostModesAreNot(t *testing.T) {
 // This is the one place all of it is asserted together, with the live
 // inversion in place.
 //
-// Why this is load-bearing rather than tidy: __inengine does NOT unshare pid
-// (internal/stage/inengine.go's EnterEngine, own doc comment — the engine's
-// pid namespace genuinely IS the host's, unlike its network namespace, which
-// setns's into N). `PidMode="host"` being refused is the ONLY thing standing between a
-// container and a full host-pidns escape; there is no second mechanism
-// behind it the way there is for network. A filter regression here is not a
-// containment weakening, it is the whole boundary for that one namespace.
+// Why this is load-bearing rather than tidy, restated for what is true after
+// issue #125's C0 — because the reason first written here is now FALSE, and a
+// stale security claim is wrong in whichever direction the next reader takes
+// it.
+//
+// It used to read: `__inengine` does not unshare pid, so the engine's pid
+// namespace genuinely IS the host's; `PidMode="host"` being refused is the
+// ONLY thing standing between a container and a full host-pidns escape; there
+// is no second mechanism behind it the way there is for network. The first
+// clause stopped being true when C0 gave the engine CLONE_NEWPID
+// (internal/stage/enginefork.go) and a fresh procfs
+// (internal/stage/inengine.go). MEASURED, A/B against C0's own parent commit:
+// pre-C0 the engine's /proc/<pid>/ns/pid was the host's own inode; with C0 it
+// is a distinct one, and conmon — read from the HOST's procfs — has the
+// engine as its PPid instead of host pid 1.
+//
+// So a second mechanism DOES exist now, and naming it is the point of this
+// rewrite: the namespace `PidMode="host"` would join is the ENGINE's own, not
+// the host's. This refusal is no longer the whole boundary between a
+// container and the host's process table.
+//
+// What the assertion is still worth, and why it is not relaxed to match:
+//
+//   - The engine's pid namespace is not nothing to hand over. podman is pid 1
+//     in it, root-in-U holding policy.EngineCapBounding, and every OTHER
+//     container's conmon is a member. /proc/<pid>/fd and /proc/<pid>/mem
+//     inside it are not syscall-shaped, so no seccomp filter can name them
+//     (issue #47). Refusing the mode is a container-to-engine and
+//     container-to-container boundary even where it is no longer a host one.
+//   - The pid namespace is a MECHANISM; this is the POLICY. A filter narrowed
+//     to whatever the mechanism happens to make harmless this week is exactly
+//     the shape this repo keeps filing issues about.
+//   - Every other row below — IpcMode, UTSMode, CgroupnsMode, UsernsMode, and
+//     the `container:<id>` and `ns:<path>` spellings — has no second mechanism
+//     at all, so the loop as a whole is as load-bearing as it ever was.
+//
+// Whether PidMode should be relaxed now that the mechanism exists is issue
+// #145's decision. A change here is a change to that issue, not a tidy-up.
 //
 // Positive control: NetworkMode="host" is accepted (reaches the fake engine)
 // in the SAME test, so a refusal-shaped bug that accidentally caught

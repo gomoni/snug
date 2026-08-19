@@ -386,6 +386,22 @@ double-forks and its grandchild reparents in the **host** pid ns (the engine
 does not unshare pid), so containers outlive the engine and need an explicit
 stop. Two mechanisms, unchanged in spirit from the current engine package:
 
+> **Superseded by issue #125's C0 on the parenthetical, and therefore on the
+> conclusion.** The engine now unshares pid (`CLONE_NEWPID` on its own clone,
+> `internal/stage/enginefork.go`, plus a fresh procfs in `__inengine`). conmon
+> still double-forks; the init that adopts the orphan is now **podman**, pid 1
+> of the engine's own pid namespace, so containers **no longer outlive the
+> engine** — killing it collapses the namespace and everything in it. Measured
+> A/B against C0's parent commit: the same isolated "SIGKILL the engine and
+> touch nothing else" left the container running past a 10s deadline before,
+> and killed it inside one 250 ms poll tick after; a SIGKILL of snug reached a
+> clean state in under 70 ms end to end. **Both mechanisms below stay** — the
+> clean path still buys a *graceful* stop instead of the kernel's SIGKILL, and
+> the reaper is redundant rather than wrong. Full measurement and the residual
+> finding (the runroot's recorded pids are now engine-pid-namespace pids, which
+> a host-side `podman stop` cannot use) are in `internal/engine`'s package
+> comment and `stopLocked`'s step 1.
+
 - **Clean path:** containers are stopped **before** the engine is killed, while
   the engine socket is still live — `podman stop --filter label=<runLabel>`
   (`engine.RunLabelKey`=`snug.run`=`<pid>`, filtered so a concurrent sibling

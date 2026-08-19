@@ -92,10 +92,34 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 	// settled (TIER-B.md, the NET_ADMIN decision): no per-container
 	// bridge, no `-p` publishing (the engine holds no CAP_NET_ADMIN to set
 	// one up even if asked), a container reaches exactly what the sandbox
-	// reaches. Every OTHER namespace mode stays refused unconditionally,
-	// PidMode="host" above all: __inengine does NOT unshare pid, so the
-	// engine's own pid namespace IS the real host's, and letting a container
-	// join it would be a genuine escape that Tier B does nothing to close.
+	// reaches. Every OTHER namespace mode stays refused unconditionally.
+	//
+	// PidMode="host" above all — but read what that phrase means NOW, not
+	// what it meant when this refusal was written. Issue #125's C0 gave the
+	// engine its OWN pid namespace (CLONE_NEWPID at the engine's clone,
+	// internal/stage/enginefork.go, plus the fresh procfs __inengine mounts
+	// over it), so PidMode="host" — which means "join the engine's current
+	// pid namespace", exactly as NetworkMode="host" means "join the engine's
+	// current netns" — no longer names the REAL host's. MEASURED, A/B on
+	// this host against C0's own parent commit: pre-C0 the engine's ns/pid
+	// was the host's own inode; with C0 it is a distinct one, and conmon's
+	// PPid read from the HOST's procfs is the engine itself rather than
+	// host pid 1.
+	//
+	// The refusal stays, and the reason for it changed rather than
+	// evaporated: it is now conservative instead of load-bearing-alone. What
+	// it still declines to hand over is the ENGINE's pid namespace, whose
+	// pid 1 is podman — root-in-U, holding policy.EngineCapBounding — and
+	// whose members include every OTHER container's conmon. A container
+	// placed inside it would reach /proc/1/fd and /proc/1/mem of the engine
+	// and of its co-resident siblings, reach that is not syscall-shaped and
+	// so cannot be named by any seccomp filter (issue #47). That is a
+	// container-to-engine and container-to-container break; it is no longer
+	// a direct escape into the host's own pid namespace.
+	//
+	// Whether the mode should therefore be ALLOWED now is issue #145's
+	// decision and deliberately not taken here. This comment states what is
+	// measured; the filter below is unchanged.
 	for _, k := range namespaceModeKeys {
 		var mode string
 		if v, ok := hc[k]; ok {

@@ -618,9 +618,18 @@ func mustRead(t *testing.T, path string) []byte {
 // TestNoAbstractSocketsWithEngineInN checks the ordinary sandboxed PAYLOAD's
 // own view (not a container's) while a real engine is running: `ss -xl`
 // inside the sandbox must report zero abstract sockets, and the engine's own
-// (real, host-visible — the stage does not use CLONE_NEWPID, so nothing
-// under it does either) pid must not appear in the sandbox's private pid
-// namespace.
+// host-visible pid must not appear in the sandbox's private pid namespace.
+//
+// The parenthetical here used to justify "host-visible" with "the stage does
+// not use CLONE_NEWPID, so nothing under it does either". The stage still does
+// not, but issue #125's C0 put CLONE_NEWPID on the ENGINE's own clone
+// (internal/stage/enginefork.go), so the second half is false. The pid this
+// test hands the payload is host-visible for a different and stronger reason:
+// a nested pid namespace does not hide its members from an ANCESTOR's procfs,
+// so the engine is still enumerable under its host pid — which is also why
+// internal/engine/reap.go's socket-path sweep is unaffected by C0. What the
+// assertion means is unchanged: that host pid must not resolve inside the
+// SANDBOX's own pid namespace, which is a sibling of neither.
 func TestNoAbstractSocketsWithEngineInN(t *testing.T) {
 	budget(t, 60*time.Second)
 	env, _ := containerEngineEnv(t)
@@ -679,9 +688,9 @@ echo DONE
 	}
 
 	if !strings.Contains(procSection, "No such file or directory") {
-		t.Errorf("the engine's own pid (%d, host-visible: the stage does not use CLONE_NEWPID) "+
-			"IS visible in the sandbox's own /proc — the sandbox's pid namespace does not actually "+
-			"exclude it:\n%s", enginePID, r.out)
+		t.Errorf("the engine's own pid (%d, host-visible: a nested pid namespace does not hide "+
+			"its members from an ancestor's procfs) IS visible in the sandbox's own /proc — the "+
+			"sandbox's pid namespace does not actually exclude it:\n%s", enginePID, r.out)
 	}
 }
 
@@ -2039,5 +2048,289 @@ func copyTree(t *testing.T, src, dst string) {
 	})
 	if err != nil {
 		t.Fatalf("seeding the engine home from the bundle's own: %v", err)
+	}
+}
+
+// ── issue #125, C0: the engine holds its own pid namespace ─────────────────
+//
+// internal/stage/enginefork.go now clones the engine with CLONE_NEWPID and
+// internal/stage/inengine.go mounts a fresh procfs bound to it — the
+// PREREQUISITE for the rest of issue #125's Tier C: a fresh procfs cannot be
+// mounted at all without a pid namespace the caller's own userns owns, and
+// the sandbox's own /proc is useless to the engine — it reports no processes
+// against a foreign pid namespace's numbering. Three tests, each checking a
+// different consequence directly rather than assuming the flag took:
+//
+//   - TestEngineHasItsOwnPidNamespace: the namespace identity itself.
+//   - TestKillingOnlyTheEngineFellsItsContainers: the behavioural payoff,
+//     and the exact A/B that flipped under this change — pre-C0 a killed
+//     engine left its container running for 10+ seconds; with C0 the
+//     namespace collapse takes it down inside one poll tick.
+//   - TestConmonPPidIsTheEngine: the structural fact underneath both,
+//     read from the HOST's own procfs.
+//
+// All three reuse holderBin/buildAndStartHolder from
+// TestASignalledContainerRunLeavesNothingRunning (issue #113) — a
+// `FROM scratch` image whose entrypoint is testdata/holder, built lazily and
+// started detached so it stays running past the payload's own control flow,
+// which is exactly the shape a teardown test needs.
+
+// findConmonPID polls the host's own procfs for a process named "conmon" —
+// comm, not cmdline: conmon does not rewrite argv[0], and "conmon" is short
+// enough that /proc/<pid>/comm's 15-byte truncation never bites — whose
+// ancestry (by PPid, walking up, findDescendant's own bounded hop count)
+// reaches root. Built on findDescendant/isComm/allPIDs/ppidOf, all shared
+// with stage_test.go and reimplemented nowhere.
+func findConmonPID(t *testing.T, root int, timeout time.Duration) int {
+	t.Helper()
+	pid, ok := findDescendant(root, isComm("conmon"), timeout)
+	if !ok {
+		t.Fatalf("no conmon process appeared as a descendant of pid %d within %s — control "+
+			"failed: a running container should always have one", root, timeout)
+	}
+	return pid
+}
+
+// startEngineHeldContainer is the shared setup TestKillingOnlyTheEngineFellsItsContainers
+// and TestConmonPPidIsTheEngine both need: a real engine, a target directory,
+// and a container started via python3 holder.py and left running (never
+// waited on), with a unique per-run token in its argv. Returns the live
+// background sandbox and the token; the caller still owns the POSITIVE
+// CONTROL of confirming the token is actually alive on the host — this
+// helper only starts things, per CLAUDE.md's rule that a positive control has
+// to sit next to the assertion it backs, not be buried in shared setup.
+func startEngineHeldContainer(t *testing.T, env []string, proj, tagSuffix string) (bg *attachSandbox, token string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(proj, "netprobe"), mustRead(t, holderBin(t)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	token = "snug125c0" + tagSuffix + orphanToken()
+	script := buildAndStartHolder("snugtest-holder-c0"+tagSuffix+":1", token)
+	if err := os.WriteFile(filepath.Join(proj, "holder.py"), []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bg = startAttachSandbox(t, env, []string{"-p", "@podman-build"}, proj, `python3 holder.py`)
+	bg.ready(t)
+	bg.waitForState(t)
+	return bg, token
+}
+
+// waitForToken polls the host for a process naming tok in its cmdline —
+// pidsNamingCmdlineSubstring, the same identify-by-cmdline discipline
+// internal/engine/reap.go uses for teardown — and fails loudly if none
+// appears, per CLAUDE.md's "a test that cannot fail is worse than no test":
+// a container that never started must not let a later "nothing survived"
+// pass on an absence that was already there.
+func waitForToken(t *testing.T, tok string, timeout time.Duration, logf func() string) []int {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		pids := pidsNamingCmdlineSubstring(tok)
+		if len(pids) > 0 {
+			return pids
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no process ever carried this run's container token %q within %s: the "+
+				"container never started, so an assertion built on top of it would be "+
+				"measuring an absence that was already there.\n%s", tok, timeout, logf())
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// TestEngineHasItsOwnPidNamespace is C0's own claim, checked directly:
+// /proc/<enginePID>/ns/pid must differ from this TEST PROCESS's own
+// (host-side) pid namespace. MEASURED (host-bridge, this fixture):
+//
+//	pre-C0 : engine /proc/<p>/ns/pid = pid:[4026531836]   (the host's)
+//	with C0: engine /proc/<p>/ns/pid = pid:[4026534989]   (its own)
+//
+// The adjacent negative — that the engine's host-visible pid still does NOT
+// resolve inside the SANDBOX's own pid namespace — is
+// TestNoAbstractSocketsWithEngineInN's job and is not repeated here; the two
+// tests together are "the engine has a pid namespace, and it isn't shared
+// with either side it sits between".
+func TestEngineHasItsOwnPidNamespace(t *testing.T) {
+	budget(t, 60*time.Second)
+	env, _ := containerEngineEnv(t)
+	requireRealEngine(t, env)
+	proj, _ := target(t)
+
+	bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t)
+
+	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
+
+	// CONTROL: the engine really is running and answering /version, not a
+	// stale pid some unrelated process reused.
+	r := attachScript(t, env, proj, `
+python3 - <<'EOF'
+import http.client, socket, os
+class UnixHTTP(http.client.HTTPConnection):
+    def __init__(self, path):
+        super().__init__("localhost"); self.path = path
+    def connect(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(self.path); self.sock = s
+sock = os.environ["CONTAINER_HOST"].replace("unix://", "")
+c = UnixHTTP(sock); c.request("GET", "/v1.41/version"); r = c.getresponse(); r.read()
+print("version: %d" % r.status)
+EOF
+`)
+	if !strings.Contains(r.out, "version: 200") {
+		t.Fatalf("control: the engine at pid %d does not answer /version:\n%s", enginePID, r.out)
+	}
+
+	engineNS, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/pid", enginePID))
+	if err != nil {
+		t.Fatalf("reading /proc/%d/ns/pid: %v", enginePID, err)
+	}
+	selfNS, err := os.Readlink("/proc/self/ns/pid")
+	if err != nil {
+		t.Fatalf("reading /proc/self/ns/pid: %v", err)
+	}
+	if engineNS == selfNS {
+		t.Errorf("the engine (pid %d) shares THIS test process's own pid namespace (%s) — "+
+			"CLONE_NEWPID either was not applied to its clone or was applied and then undone "+
+			"before the exec into podman (internal/stage/enginefork.go, internal/stage/inengine.go)",
+			enginePID, engineNS)
+	}
+}
+
+// TestKillingOnlyTheEngineFellsItsContainers is C0's central behavioural
+// claim and the exact A/B host-bridge measured flipping:
+//
+//	pre-C0 : container token pids STILL ALIVE 10s after the engine SIGKILL
+//	with C0: all container token pids gone 250 ms after the engine SIGKILL
+//
+// Isolated from TestASignalledContainerRunLeavesNothingRunning (issue #113)
+// deliberately: that test signals SNUG itself, so it cannot tell C0's
+// namespace-collapse mechanism apart from internal/engine/reaper.go's own
+// pipe-triggered cleanup or internal/cli's `defer ctrCleanup()` — both of
+// which are armed by snug's own death. This test kills ONLY the engine
+// process, by its host-visible pid, and leaves snug running throughout, so
+// neither of those fires: the reaper's pipe write happens in snug's own exit
+// path and lifeline.go's `hold` loop (which notices the engine died) takes
+// no action of its own ("restarting it is not this goroutine's decision" —
+// internal/engine/lifeline.go). The POSITIVE CONTROL that makes the
+// isolation itself trustworthy is the assertion at the end: snug must still
+// be alive and non-zombie after the engine-only kill, or this test has
+// silently become a second copy of the #113 one and proves nothing about C0
+// specifically.
+func TestKillingOnlyTheEngineFellsItsContainers(t *testing.T) {
+	budget(t, 180*time.Second)
+	env, _ := containerEngineEnv(t)
+	requireRealEngine(t, env)
+	proj, _ := target(t)
+
+	bg, token := startEngineHeldContainer(t, env, proj, "kill")
+
+	// POSITIVE CONTROL: the container is genuinely running on the host BEFORE
+	// the kill.
+	before := waitForToken(t, token, 120*time.Second, bg.log)
+	t.Logf("control: container token %q alive at pids %v before the engine kill", token, before)
+
+	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
+
+	if err := syscall.Kill(enginePID, syscall.SIGKILL); err != nil {
+		t.Fatalf("SIGKILL the engine alone (pid %d): %v", enginePID, err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	var left []int
+	for {
+		left = pidsNamingCmdlineSubstring(token)
+		if len(left) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if len(left) > 0 {
+		t.Errorf("after SIGKILLing the ENGINE alone (pid %d), %d process(es) of this run's "+
+			"container are still running (token %q, pids %v) within 10s — the engine's own pid "+
+			"namespace did not collapse and take them with it (issue #125, C0)",
+			enginePID, len(left), token, left)
+	}
+
+	// The isolation control: snug itself must still be alive and not a
+	// zombie. If it is not, neither this test's "kill the engine ALONE"
+	// premise nor its distinction from the #113 SIGTERM-snug test holds, and
+	// whatever felled the container might have been snug's own teardown path
+	// rather than C0's namespace collapse.
+	if state := stateOf(bg.pid()); state == "" || state == "Z" {
+		t.Errorf("snug (pid %d, state %q) is gone or zombie after the engine ALONE was "+
+			"killed — this test no longer isolates C0's mechanism from snug's own teardown "+
+			"path (internal/engine/reaper.go, internal/cli's ctrCleanup)", bg.pid(), state)
+	}
+}
+
+// TestConmonPPidIsTheEngine is the structural fact underneath the other two
+// tests in this section, read from the HOST's own procfs — the same view a
+// future --pid=host decision (issue #145) would have to re-check, per this
+// task's own note. MEASURED (host-bridge, this fixture; pids and paths
+// abbreviated):
+//
+//	pid=1898978 ppid=1898951 pid:[4026534989] .../podman ... system service ...
+//	pid=1899295 ppid=1898978 pid:[4026534989] /usr/bin/conmon --api-version 1 -c 0fd4a62e...
+//	pid=1899298 ppid=1899295 pid:[4026535001] /netprobe /netprobe c0probe-...
+//
+// conmon still double-forks (unchanged by C0); what changed is which
+// process its own grandchild reparents onto, because pid 1 of the engine's
+// own pid namespace is now the engine itself. This test checks the direct
+// relationship (conmon's PPid, not just "some ancestor") and, as
+// corroboration, that conmon shares the engine's own pid namespace while the
+// container's own process — one hop further down, inside crun's nested
+// namespace — does not.
+func TestConmonPPidIsTheEngine(t *testing.T) {
+	budget(t, 180*time.Second)
+	env, _ := containerEngineEnv(t)
+	requireRealEngine(t, env)
+	proj, _ := target(t)
+
+	bg, token := startEngineHeldContainer(t, env, proj, "conmon")
+
+	// POSITIVE CONTROL: the container is genuinely running, so a conmon for
+	// it genuinely exists to find.
+	containerPIDs := waitForToken(t, token, 120*time.Second, bg.log)
+
+	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
+	conmonPID := findConmonPID(t, enginePID, 30*time.Second)
+
+	ppid, ok := ppidOf(conmonPID)
+	if !ok {
+		t.Fatalf("could not read /proc/%d/status for conmon's own PPid", conmonPID)
+	}
+	if ppid != enginePID {
+		t.Errorf("conmon (pid %d) has PPid %d, not the engine (%d) — issue #125's C0 claims "+
+			"conmon reparents onto the engine now that the engine is pid 1 of its own pid "+
+			"namespace; this is a HOST-procfs read, not a namespace-relative one", conmonPID,
+			ppid, enginePID)
+	}
+
+	engineNS, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/pid", enginePID))
+	if err != nil {
+		t.Fatalf("reading /proc/%d/ns/pid: %v", enginePID, err)
+	}
+	conmonNS, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/pid", conmonPID))
+	if err != nil {
+		t.Fatalf("reading /proc/%d/ns/pid: %v", conmonPID, err)
+	}
+	if conmonNS != engineNS {
+		t.Errorf("conmon (pid %d, ns %s) is not in the engine's own pid namespace (pid %d, "+
+			"ns %s) — conmon is an ordinary fork with no CLONE_NEWPID of its own, so it should "+
+			"inherit the engine's", conmonPID, conmonNS, enginePID, engineNS)
+	}
+
+	containerNS, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/pid", containerPIDs[0]))
+	if err != nil {
+		t.Fatalf("reading /proc/%d/ns/pid: %v", containerPIDs[0], err)
+	}
+	if containerNS == engineNS {
+		t.Errorf("the container's own process (pid %d) shares the ENGINE's pid namespace "+
+			"(%s) — crun should have given it a nested namespace of its own, one level deeper",
+			containerPIDs[0], engineNS)
 	}
 }

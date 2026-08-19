@@ -1814,6 +1814,71 @@ not fire.
 private image can be pulled from inside, and `podman login` has nothing to
 persist to.
 
+### 9j. The container engine holds its own pid namespace (issue #125, C0)
+
+`enginefork.go` clones the engine with `CLONE_NEWPID` and `EnterEngine` mounts
+a fresh procfs bound to it — the prerequisite the rest of Tier C's derived
+mount view needs (a fresh procfs cannot be mounted at all without a pid
+namespace the caller's own userns owns). Three things follow, and each is
+worth seeing by hand.
+
+**Needs a real engine** (podman installed and not a host-escape shim — see
+`snug doctor`; `$SNUG_PODMAN` to pin one explicitly).
+
+**1. The engine's own pid namespace differs from the host's.**
+
+```bash
+snug -p @podman-socket $SC/proj/sub -- sleep 300 &
+sleep 2
+ENGINE_PID=$(pgrep -f 'podman-[0-9]+\.sock' | head -1)
+readlink /proc/$ENGINE_PID/ns/pid
+readlink /proc/self/ns/pid
+kill %1
+```
+
+Expect the two `pid:[...]` inodes to differ. Pre-C0 they were identical (the
+engine shared the host's bootstrap namespace); the adjacent negative — that
+this same host-visible engine pid still does not resolve inside the
+**sandbox's own** pid namespace — is `TestNoAbstractSocketsWithEngineInN`.
+
+**2. Killing the engine ALONE fells its containers.** This is the property
+that actually depends on `CLONE_NEWPID` rather than merely asserting it took:
+pid 1 of a pid namespace dying collapses the whole namespace, SIGKILLing every
+member — which now includes conmon's double-forked grandchild, the
+container's own init.
+
+```bash
+snug -p @podman-build $SC/proj/sub -- sh -c '
+  echo "FROM scratch" > Containerfile
+  echo "ENTRYPOINT [\"/bin/sleep\"]" >> Containerfile   # any static sleep works
+' # build a throwaway long-running container the way testdata/holder does,
+  # or just run TestKillingOnlyTheEngineFellsItsContainers -v for the scripted
+  # version — it is easier to get right than a one-off shell snippet, and it
+  # is the committed positive control.
+go test -tags integration -run TestKillingOnlyTheEngineFellsItsContainers -v ./test/integration/
+```
+
+Expect PASS, with the logged control line showing the container's token pids
+alive on the host **before** the kill. Read the test's own doc comment for the
+measured A/B: pre-C0 the container was still running 10+ seconds after the
+engine's SIGKILL; with C0 it is gone within one 250ms poll tick. The test also
+asserts snug **itself** stays alive throughout, which is what isolates this
+mechanism from `internal/engine/reaper.go`'s own (now redundant, but not
+removed) pipe-triggered cleanup — that helper only arms when snug dies, and
+this test never kills snug.
+
+**3. conmon's own parent, read from the HOST's procfs, is the engine.**
+
+```bash
+go test -tags integration -run TestConmonPPidIsTheEngine -v ./test/integration/
+```
+
+Expect PASS. This is the structural fact under both properties above: conmon
+(an ordinary fork, no `CLONE_NEWPID` of its own) shares the engine's pid
+namespace and is a direct child of it, while the container's own process — one
+hop further down, inside crun's nested namespace — is in neither. A future
+`--pid=host` decision (issue #145) would need to re-check this exact relation.
+
 ## 10. A repository cannot grant itself anything
 
 ```bash
