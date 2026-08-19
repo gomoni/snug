@@ -94,8 +94,26 @@ jobs:
           go-version: '1.26'
           check-latest: true
 
+      # `apt-get update` with no timeouts hung this job twice in a row: both
+      # runs sat fetching from azure.archive.ubuntu.com until the 8-minute job
+      # budget ran out, without a single test having started, and a re-run
+      # landed on a runner behaving the same way. A mirror that is not
+      # answering must cost seconds and say so, not eat the whole job — so the
+      # regional mirror is dropped for the canonical one, and the fetch is
+      # given bounded retries and a per-connection timeout.
+      #
+      # This is a RUNNER fix, not a test fix: nothing here changes what the
+      # suite asserts. If this step ever fails, read it as "the Ubuntu mirror
+      # is down", not as a sandbox regression.
       - name: Install bubblewrap
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+        run: |
+          sudo sed -i 's|://azure.archive.ubuntu.com/ubuntu|://archive.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
+          sudo apt-get update \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=20 \
+            -o Acquire::https::Timeout=20
+          sudo apt-get install -y bubblewrap
 
       # pasta comes from UPSTREAM, not from apt, and that is not a preference.
       #
