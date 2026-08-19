@@ -57,6 +57,31 @@ func (p *Policy) Graft(g Graft) error {
 	return nil
 }
 
+// OwnEngineHostPath records one host path snug itself created for THIS run —
+// the container store, the runroot, a socket directory — as visible to a
+// graft under G4's second disjunct, without requiring the SANDBOX's own
+// grants to expose it. It is the ONLY writer of p.EngineOwnedHostPaths, the
+// same device Policy.Graft is for p.Grafts (TestOnlyOneWriterOfEngineOwnedHostPaths).
+//
+// Before this existed the map had no writer at all: a caller could set
+// p.EngineOwnedHostPaths directly, with no hygiene check, and any string
+// placed in it passed G4 unconditionally — the "a rule written once and
+// applied to one of its two halves" shape (CLAUDE.md), on G4's own two
+// disjuncts, found by the redteam (issue #55, finding F2). checkPathHygiene
+// is the same check Policy.Graft runs on a graft's own Guest and Host; this
+// is what brings the wider, unbounded-by-any-grant half of G4 up to the
+// standard the narrower half (HostPathVisible) already met.
+func (p *Policy) OwnEngineHostPath(path string) error {
+	if err := checkPathHygiene("engine-owned host path", path, "(snug)", "the ENGINE VIEW block"); err != nil {
+		return err
+	}
+	if p.EngineOwnedHostPaths == nil {
+		p.EngineOwnedHostPaths = map[string]bool{}
+	}
+	p.EngineOwnedHostPaths[path] = true
+	return nil
+}
+
 // checkGraft runs G1-G5 over one graft WITHOUT installing it, so Policy.Graft
 // and Validate's re-check (issue #55) share exactly one implementation of the
 // rules rather than the two that would otherwise drift.
@@ -96,17 +121,27 @@ func (p *Policy) checkGraft(g Graft) error {
 			"       write, so a Graft literal is the only place left for a human to read it. Set Why\n"+
 			"       before calling Policy.Graft.", g.Guest)
 	}
-	for _, from := range g.From {
-		for _, prof := range p.Profiles {
-			if from == string(prof) {
-				return fmt.Errorf("cannot graft %s: From names profile %s.\n"+
-					"       No profile may author a graft — there is no TOML key that produces one,\n"+
-					"       and Policy.Graft is the only writer of p.Grafts — so a From naming a\n"+
-					"       resolved profile means the caller copied provenance from a Mount instead\n"+
-					"       of writing the graft's own. Set From to snug's own provenance, e.g.\n"+
-					"       []string{\"(snug)\"}.", g.Guest, from)
-			}
-		}
+	// G5 also requires From to be EXACTLY snug's own provenance — not merely
+	// "not one of this run's resolved profiles". Comparing only against
+	// p.Profiles let From: []string{"@podman-socket"} through on any
+	// selection that did not happen to include @podman-socket: Validate
+	// returned nil and the ENGINE VIEW block rendered the @ sigil next to a
+	// row the block's own header says no profile could have authored — the
+	// one guarantee the sigil exists to make (CLAUDE.md, "@ marks a profile
+	// snug ships, and the mark is derived, not written"), forged by a Graft
+	// literal (issue #55, finding F8). No profile — selected or not, builtin
+	// or user-defined — may ever author a graft, so the only From this
+	// accepts is the literal sentinel every other snug-generated mount
+	// already uses for the same fact ("(snug)": /proc, /dev, /tmp, the
+	// identity KindData mounts).
+	if len(g.From) != 1 || g.From[0] != "(snug)" {
+		return fmt.Errorf("cannot graft %s: From is %q, and a graft's From must be exactly\n"+
+			"       []string{\"(snug)\"}.\n"+
+			"       No profile may author a graft — there is no TOML key that produces one, and\n"+
+			"       Policy.Graft is the only writer of p.Grafts — so any other From, including the\n"+
+			"       name of a builtin this run never selected, means the caller copied provenance\n"+
+			"       from somewhere else instead of writing the graft's own. Set From to\n"+
+			"       []string{\"(snug)\"}.", g.Guest, g.From)
 	}
 
 	// Guest and Host go through the SAME two checks a mount's Guest already
@@ -192,11 +227,25 @@ func (p *Policy) checkGraft(g Graft) error {
 			"       of one, or a path inside a writable grant.", g.Guest)
 	}
 
-	// G4 — the source must be something the sandbox can ALREADY see, or a host
-	// path snug itself created for this run. This is invariant 6 expressed as a
-	// predicate: the engine's view is DERIVED from the sandbox's, never a
-	// second, wider window onto the host. No denylist — no grant exposes
-	// /run/user/<uid>, so no graft may name it, without naming it anywhere.
+	// G4 — the source must be something the sandbox can ALREADY see
+	// (HostPathVisible), OR a host path snug itself created for this run
+	// (EngineOwnedHostPaths, written only by OwnEngineHostPath). This is
+	// invariant 6 expressed as a predicate: the engine's view is DERIVED from
+	// the sandbox's, never a second, wider window onto the host.
+	//
+	// The two disjuncts are asking DIFFERENT questions and neither one alone
+	// is "G4". HostPathVisible refuses /run/user/<uid> — the host's
+	// ssh-agent, session D-Bus, Wayland and rootless podman socket — because
+	// no grant exposes it: that is a fact about the FIRST disjunct only. It
+	// is not a fact about EngineOwnedHostPaths, which is bounded by nothing
+	// the sandbox's own policy granted — its only defence is that
+	// OwnEngineHostPath is its one writer, called exclusively by snug's own
+	// Tier C code for artefacts snug itself created (the container store,
+	// the runroot, a socket directory), never by anything a profile or the
+	// payload can reach. A doc comment claiming "/run/user/<uid> is refused
+	// by G4, full stop" is true of HostPathVisible and silent about this
+	// disjunct beside it — do not write that sentence again without naming
+	// both halves (issue #55, finding F2).
 	if !p.HostPathVisible(g.Host, g.Access == AccessRW) && !p.EngineOwnedHostPaths[g.Host] {
 		needWrite := ""
 		if g.Access == AccessRW {

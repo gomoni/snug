@@ -6,12 +6,16 @@ ENGINE VIEW  (grafts — mounts in the ENGINE's derived mount namespace, NOT the
             abuse: a container given a read-only bind of this can still
             enumerate everything under the host tree it names, even though it
             cannot write to it
+            note: this graft's destination is inside a writable bind of a host
+            directory (/home/u/proj/sub) — the payload can create and write
+            there directly, and any write on this path reaches the HOST and
+            persists after the sandbox exits.
   graft-rw  /home/u/proj/sub/rw-graft                     (snug)
             from /home/u/proj/sub/rw-src
             abuse: a container that is given a bind of this writes to the host
             tree directly, so a file it creates is visible to every later
             process that reads the same host path
-  note      each graft's DESTINATION directory is created on the sandbox's own
-            root tmpfs and IS visible to the payload — empty, and unwritable
-            once / is remounted read-only. The mount namespace is private; the
-            tmpfs superblock is not (ENGINE-NETNS.md §5.1).
+            note: this graft's destination is inside a writable bind of a host
+            directory (/home/u/proj/sub) — the payload can create and write
+            there directly, and any write on this path reaches the HOST and
+            persists after the sandbox exits.

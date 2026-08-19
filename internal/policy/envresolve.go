@@ -384,10 +384,27 @@ func (p *Policy) SandboxView() View {
 }
 
 // EngineView returns the engine's derived view: the sandbox's mounts with
-// every graft applied on top, keyed by Guest — a graft's Guest can only ever
-// coincide with an existing sandbox mount's Guest (G3's first disjunct), never
-// with another graft's (G2), so overlaying is a plain per-key replacement with
-// no ordering to get wrong.
+// every graft applied on top.
+//
+// The overlay is DEPTH-AWARE, not merely key-aware, because move_mount(2) is.
+// G3's second disjunct explicitly accepts a graft whose Guest is a strict
+// ANCESTOR of an existing sandbox mount (a directory bwrap auto-created via
+// --dir), and move_mount onto a directory takes everything mounted beneath it
+// with it — the kernel does not leave the deeper mounts poking through. So
+// installing a graft at G must drop every v.Mounts[k] with covers(G, k) and
+// k != G, not just overwrite the key at G itself.
+//
+// This replaces an earlier version of this comment that argued the opposite:
+// "a graft's Guest can only ever coincide with an existing sandbox mount's
+// Guest, never be its strict ancestor, so overlaying is a plain per-key
+// replacement with no ordering to get wrong." That premise was false — G3's
+// own second disjunct contradicts it in the very same file — and the
+// per-key overlay it justified left every mount BENEATH a graft still
+// visible in EngineView: a graft-rw at /etc left
+// EngineView().IsShadowSlot("/etc/resolv.conf") false, and a graft-rw at /opt
+// over a read-only /opt/tools/bin left IsShadowSlot("/opt/tools/bin") false —
+// exactly the shape the #125 PATH sweep exists to catch (issue #55, finding
+// F1). Do not restore the false premise; the loop below is the fix.
 //
 // ok is false when there are no grafts — which is every topology that ships
 // today, where the engine's mount namespace is a private COPY of the host tree
@@ -403,8 +420,16 @@ func (p *Policy) EngineView() (View, bool) {
 	for k, m := range p.Mounts {
 		mounts[k] = m
 	}
-	for k, g := range p.Grafts {
-		mounts[k] = g.Mount
+	for guest, g := range p.Grafts {
+		// move_mount(2) onto guest takes every mount beneath it with it, so
+		// every key it covers other than itself is shadowed, not merely the
+		// key at guest.
+		for k := range mounts {
+			if k != guest && covers(guest, k) {
+				delete(mounts, k)
+			}
+		}
+		mounts[guest] = g.Mount
 	}
 	return View{Mounts: mounts, name: "engine"}, true
 }
@@ -477,6 +502,18 @@ func (v View) coveringMount(guest string) (Mount, bool) {
 			return Mount{}, false
 		}
 	}
+}
+
+// CoveringMount is the exported form of coveringMount, for a caller outside
+// internal/policy that needs the same "what does this view already have at
+// this path" walk without re-implementing it. --dry-run's ENGINE VIEW block
+// (issue #55, finding F4) is the reason it exists: rendering an accurate note
+// about a graft's destination means asking the SANDBOX's view what already
+// covers that path — a bare root tmpfs (ok == false), a writable grant the
+// payload can already write through, or a read-only one — rather than
+// printing one fixed claim regardless of the answer.
+func (v View) CoveringMount(guest string) (Mount, bool) {
+	return v.coveringMount(guest)
 }
 
 // nearestCovering returns the deepest mount in this view that STRICTLY

@@ -638,14 +638,17 @@ func resolveExisting(p string) (string, error) {
 }
 
 // hostPathVisible reports whether the sandbox can itself see a host path at the
-// given access — the rule the package comment states. Kept here (unused by the
-// current replace-everything strategy) because any future opt-in submount mode
-// must use exactly this and nothing else.
+// given access — the rule the package comment states. This is a LIVE, shared
+// boundary, not dead code kept for a future mode: checkOne calls it for every
+// `-v` bind request (the proxy's own filter), and checkSeccompProfile calls it
+// twice more for a seccomp profile path. A future opt-in submount mode must
+// use exactly this and nothing else, same as the callers above already do.
 //
 // A one-line call to policy.HostPathVisible rather than its own walk (issue
 // #55): that predicate is now also G4's graft-source check, and invariant 6
 // says one author of "can the sandbox see this host path", not two
-// implementations that eventually disagree.
+// implementations that eventually disagree — so a future weakening of
+// policy.HostPathVisible weakens this filter too, not a copy of it.
 // TestContainerBindFilterMatchesPolicyVisibility exercises it through here
 // unchanged.
 func (p *Proxy) hostPathVisible(host string, needWrite bool) bool {

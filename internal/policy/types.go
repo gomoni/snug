@@ -167,8 +167,14 @@ type Mount struct {
 //	           TestGraftAccessROIsEnforcedInTheDerivedView passes. A field that
 //	           renders "ro" on screen while the tree is writable is the
 //	           --seccomp-after-`--` shape restated one namespace over.
-//	From     — provenance. Always snug's own; Validate refuses a From naming
-//	           any resolved profile, because no profile may author a graft.
+//	From     — provenance. MUST be exactly []string{"(snug)"} — Validate
+//	           refuses anything else, including the name of a builtin this
+//	           run never selected, because no profile may EVER author a
+//	           graft and the @ sigil on screen is supposed to be a guarantee
+//	           a name came from snug's own resolved profile set (issue #55,
+//	           finding F8: comparing only against the resolved selection let
+//	           From: []string{"@podman-socket"} through whenever that
+//	           profile was not selected).
 //	Authored — always true. Set by Policy.Graft, the only writer.
 //	Optional — FORBIDDEN on a graft (Validate refuses it). -try semantics mean
 //	           "silently do less"; under Tier C the derived view IS the
@@ -210,12 +216,25 @@ type Policy struct {
 
 	// EngineOwnedHostPaths is the enumerated set of host paths snug itself
 	// created for THIS run — the container store, the runroot, a socket
-	// directory — recorded by the same code that creates them. It is the second
-	// half of G4 (issue #55): a graft's Host must be something the sandbox's own
-	// policy already exposes (HostPathVisible), OR a path from this set. Never a
-	// pattern, never a prefix match — an exact-membership set, because a prefix
-	// rule here would grow the very hole G4 exists to close without anyone
-	// writing a line that says so.
+	// directory. It is the second half of G4 (issue #55): a graft's Host must
+	// be something the sandbox's own policy already exposes (HostPathVisible),
+	// OR a path from this set. Never a pattern, never a prefix match — an
+	// exact-membership set, because a prefix rule here would grow the very
+	// hole G4 exists to close without anyone writing a line that says so.
+	//
+	// OwnEngineHostPath (graft.go) is the ONLY writer
+	// (TestOnlyOneWriterOfEngineOwnedHostPaths), and runs checkPathHygiene on
+	// every path before recording it — mirroring Policy.Graft's own writer
+	// discipline for p.Grafts. Do not assign into this map directly: before
+	// OwnEngineHostPath existed the map had a doc comment and a reader but no
+	// writer, no hygiene check and no line on --dry-run, so setting it by hand
+	// was an unconditional bypass of G4's first disjunct with nothing to catch
+	// it (issue #55, finding F2).
+	//
+	// A host path visible only through this set — not through HostPathVisible
+	// — renders that provenance explicitly on the ENGINE VIEW block
+	// (describeGrafts), because a host path snug declares its own by fiat is
+	// exactly the kind of thing a human is owed on --dry-run.
 	//
 	// Always empty on every topology that ships today: nothing populates it
 	// until Tier C (#125) creates host artefacts for an engine to graft. A G4
