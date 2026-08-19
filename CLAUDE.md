@@ -528,8 +528,10 @@ meant. It cannot prove the sandbox holds.
   follows the sandbox's exactly: with `@net` the whole internet, without it
   nothing; it publishes no port onto any loopback the sandbox does not already
   own, because the engine holds no `CAP_NET_ADMIN`. The engine is forked into
-  that netns by the stage (`internal/stage`'s `startengine`/`__inengine`), its
-  own capabilities dropped to `policy.EngineCapBounding`.
+  that netns by the stage (`internal/stage`'s `start` request and `__inengine`),
+  its own capabilities dropped to `policy.EngineCapBounding`. There is no
+  `startengine` request: it was folded into `start` so that `start` stays
+  terminal and the stage is never handed a pid it must trust (issue #125).
   `TestPodmanSocketDoesNotImplyEgress` and `TestPodmanSelectsAStage` are what
   keep this true; the mount view is still a private copy enforced by the proxy
   bind filter, which Tier C (#125) makes structural. Host→sandbox port publishing is off by

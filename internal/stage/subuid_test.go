@@ -200,7 +200,11 @@ func TestStartDelegatesTheFullSubuidRange(t *testing.T) {
 
 	st, err := Start(Config{
 		Topology: policy.Topology{Netns: policy.NetnsStage, Subuid: policy.SubuidFull},
-		Stdin:    devNullFile(t), Stdout: devNullFile(t), Stderr: devNullFile(t),
+		// Required since issue #125's gate: the stage reads bwrap's --info-fd
+		// answer itself. This test never gets as far as a "start" request, so
+		// any open descriptor satisfies it.
+		BwrapInfo: devNullFile(t),
+		Stdin:     devNullFile(t), Stdout: devNullFile(t), Stderr: devNullFile(t),
 	})
 	if err != nil {
 		if isUnprivilegedUsernsRefusal(err) {
