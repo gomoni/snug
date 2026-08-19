@@ -72,6 +72,16 @@ func Main() {
 			exitOnStageError(stage.EnterNetns(argv[1:]))
 		case "__inengine":
 			exitOnStageError(stage.EnterEngine(argv[1:]))
+		case "__probebind":
+			// Preflight P7's child (containerpreflight.go). Unlike the verbs
+			// above it joins nothing: its user and mount namespaces were
+			// created by the clone that started it, and it exits as soon as
+			// it has answered one question.
+			if err := probeBindResolvConf(argv[1:]); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			os.Exit(0)
 		}
 	}
 

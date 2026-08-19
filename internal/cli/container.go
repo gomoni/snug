@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -139,19 +140,43 @@ func startContainers(pol *policy.Policy, verbose, dryRun bool) (containerRun, er
 
 	warnAboutPodmanClient()
 
+	// P7 said the engine's own /etc/resolv.conf cannot be replaced on this
+	// host. Said HERE, before anything starts, rather than left to
+	// __inengine's own backstop warning several seconds later — and said
+	// precisely: this is the engine's resolver, not a container's, which the
+	// generated containers.conf decides without needing any mount at all
+	// (issue #126). Not a refusal: nothing leaks, so refusing would be
+	// refusing over lost ergonomics.
+	var probeUnavailable *probeUnavailableError
+	if err := pf.ResolvConfBind; err != nil && !errors.As(err, &probeUnavailable) {
+		fmt.Fprintf(os.Stderr, "snug: this host cannot bind a file over /etc/resolv.conf, so the "+
+			"container engine will keep the host's own resolver configuration.\n"+
+			"      Containers are NOT affected: their DNS comes from snug's generated "+
+			"containers.conf.\n"+
+			"      What is affected is the ENGINE's own name resolution: offline, it will try "+
+			"the host's resolvers and time out slowly instead of failing fast.\n"+
+			"      Probe said: %v\n"+
+			"      Common cause: /etc/resolv.conf is itself a bind mount over a deleted inode "+
+			"(issue #128); restarting the container or VM snug runs in repairs it.\n", err)
+	}
+
 	eng, err := engine.New(pol.Profiles, pol.Target)
 	if err != nil {
 		return containerRun{}, err
 	}
 
-	// pol.Net.ResolvConf() — the SAME generation the sandbox payload's own
-	// /etc/resolv.conf mount uses (internal/policy/resolve.go) — not a second
-	// computation of it, so the engine can never diverge from what the
-	// sandbox itself was told (issue #126).
+	// pol.Net, the resolved network policy itself — not a rendering of it.
+	// The engine needs the same DNS decision twice over, once as an
+	// /etc/resolv.conf and once as three containers.conf keys, and handing it
+	// the policy lets each renderer read the values directly. Handing it the
+	// rendered resolv.conf bytes instead (which is what this did) forced the
+	// second renderer to parse them back, making a generated file the author
+	// of a fact the policy owns — invariant 6, "one Policy, one author"
+	// (issues #126, #132).
 	spec, err := eng.Spec(pf.Podman, []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
-	}, pf.CgroupsDisabled, pol.Net.ResolvConf())
+	}, pf.CgroupsDisabled, pol.Net)
 	if err != nil {
 		return containerRun{}, err
 	}

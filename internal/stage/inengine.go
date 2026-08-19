@@ -137,8 +137,26 @@ func EnterEngine(argv []string) error {
 	// knows — MS_BIND only shadows the mountpoint inside THIS process's own
 	// private namespace, so the host's file is never opened for writing here
 	// at all.
+	//
+	// BEST-EFFORT, and deliberately so since issue #126's second half. This
+	// mount is the ENGINE's own resolver configuration; what a CONTAINER gets
+	// is now decided by the generated containers.conf (engine.writeContainersConf),
+	// which needs no mount to take effect. So a host where this bind cannot
+	// succeed — issue #128 measured one where /etc/resolv.conf is a bind over
+	// a DELETED inode, on which mounting returns ENOENT while reading works
+	// perfectly — costs the engine fast offline failure, not a container's DNS
+	// isolation. Failing the whole run here would refuse to start an engine
+	// that is not actually leaking anything. Preflight P7 says this on the
+	// host before the run starts (internal/cli/containerpreflight.go); this
+	// line is the backstop for a host where P7 and reality disagree, and it is
+	// loud either way — never silent.
 	if err := unix.Mount(resolvConfPath, "/etc/resolv.conf", "", unix.MS_BIND, ""); err != nil {
-		return fmt.Errorf("__inengine: binding the generated resolv.conf over /etc/resolv.conf: %w", err)
+		// Terse on purpose: preflight P7 has already said this in full on the
+		// host, before the run started. This line exists for the case where
+		// P7 and reality disagree, so it must still be printed — but printing
+		// the whole explanation twice is noise a reader learns to skip.
+		fmt.Fprintf(os.Stderr, "snug: the container engine kept the host's /etc/resolv.conf "+
+			"(%v) — containers are unaffected; see preflight P7's note above.\n", err)
 	}
 
 	// A bare tmpfs on /run, MEASURED necessary and NOT what ENGINE-WIRING.md

@@ -1358,10 +1358,22 @@ search domain), and podman generated every container's own resolv.conf FROM
 it. An offline sandbox's own `/etc/resolv.conf` is correctly empty of
 nameservers; a container it started got the host's anyway, through a channel
 `internal/dockerproxy`'s bind filter never sees because it is not a
-client-requested mount. The fix bind-mounts snug's own GENERATED
-`/etc/resolv.conf` — the identical content the sandbox payload gets — over the
-engine's private copy before exec, so podman has nothing but that to generate
-a container's own file from.
+client-requested mount. The first half of the fix bind-mounts snug's own
+GENERATED `/etc/resolv.conf` — the identical content the sandbox payload gets
+— over the engine's private copy before exec.
+
+**The bind is no longer what decides a CONTAINER's DNS, and that matters when
+you read the result.** It is best-effort: issue #128 measured an ordinary host
+where `/etc/resolv.conf` is itself a bind over a deleted inode, so mounting
+onto it returns ENOENT and every container run failed. What now decides a
+container's DNS is snug's GENERATED `containers.conf` —
+`dns_servers`/`dns_searches`/`dns_options`/`base_hosts_file`, written from the
+same resolved `policy.NetPolicy`, pointed at by both `CONTAINERS_CONF` and
+`CONTAINERS_CONF_OVERRIDE` — which needs no mount at all. The bind now decides
+only the ENGINE's own lookups: without it, an offline engine tries the host's
+resolvers and times out slowly instead of failing fast. Preflight **P7** says
+so before the run starts, and the message says exactly that — if it ever says
+"containers may see host DNS", the message is wrong.
 
 **Needs a real engine** (podman installed and not a host-escape shim — see
 `snug doctor`; `$SNUG_PODMAN` to pin one explicitly).
@@ -1387,6 +1399,41 @@ Add `-p @net` and expect the container's resolv.conf to now agree with the
 SANDBOX's own (pasta's resolver, or the host's routable nameservers relayed
 through egress) — expected once egress is granted, and a different fact from
 the host-LAN-topology leak offline.
+
+Also `cat /etc/hosts` in the container. Expect `localhost` entries and, with
+`-p @net`, podman's own `host.containers.internal`/`host.docker.internal` —
+and **no** name out of the HOST's `/etc/hosts`. Compare against `cat
+/etc/hosts` on the host. Read that result honestly: on the compat API path
+podman synthesizes this file rather than copying it, so it was already clean
+before `base_hosts_file = "none"` was set; the key is what makes it clean
+STRUCTURALLY, on any path and any podman version, rather than by accident of
+the schema the proxy happens to allow. The copy WAS measured on podman's CLI
+path, which nothing inside a snug sandbox can reach today.
+
+### 9g. Preflight P7 — can this host replace the engine's own resolv.conf?
+
+```bash
+snug -p @podman-socket $SC/proj/sub -- true
+```
+
+On a healthy host: no P7 message at all. On a host with issue #128's broken
+mount: a `snug:` warning naming `/etc/resolv.conf`, saying **containers are
+not affected** and that the ENGINE will time out slowly offline, and the run
+CONTINUES. A refusal here would be refusing over a degradation that leaks
+nothing. To see the probe's own answer directly:
+
+```bash
+go test ./internal/cli/ -run AsksTheHost -v 2>&1 | grep 'P7:'
+```
+
+Expect one line, either `P7: this host CAN bind over /etc/resolv.conf` or
+`P7: this host CANNOT ... : mounting a file over /etc/resolv.conf: ...`, or a
+SKIP saying the probe cannot run here at all — a host that cannot create the
+throwaway user namespace (CI's unit-test container is one) has not answered the
+question, and snug stays silent rather than reporting "cannot bind". If it ever
+says `making / private`, the probe never reached its question either — that is
+the probe's machinery failing, not the host's answer, and it would warn on
+every host.
 
 ## 10. A repository cannot grant itself anything
 

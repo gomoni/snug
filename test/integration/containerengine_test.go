@@ -42,6 +42,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1296,12 +1297,22 @@ func hostRealResolvConfNameservers(t *testing.T) []string {
 //  2. THE POSITIVE CONTROL: the sandbox PAYLOAD's own /etc/resolv.conf
 //     — read directly, inside the very same python process the probe
 //     container was built from — equals policy.NetPolicy{Mode:
-//     policy.NetIsolated}.ResolvConf() byte for byte. This is what proves
-//     the fix's mechanism is live at all: EnterEngine now bind-mounts the
-//     SAME generated content (threaded through engine.Engine.Spec as a host
-//     path, stage.EngineSpec.ResolvConfPath) over the engine's own
-//     /etc/resolv.conf, so if this control fails the assertion above would
-//     be proving nothing about the fix specifically.
+//     policy.NetIsolated}.ResolvConf() byte for byte. That is what proves
+//     the sandbox really is offline and that the generation path ran at all;
+//     without it the assertion above could pass on a run that never got as
+//     far as producing a policy.
+//
+// WHICH mechanism the first assertion is testing changed, and the note here
+// used to name the wrong one. It said "EnterEngine now bind-mounts the SAME
+// generated content over the engine's own /etc/resolv.conf". That bind still
+// happens and is still worth having — but it is BEST-EFFORT since #126's
+// second half, and on this development host it FAILS outright (issue #128:
+// /etc/resolv.conf is itself a bind over a deleted inode, so mounting onto it
+// returns ENOENT) while this test passes. What actually keeps the host's
+// nameservers out of a container is snug's generated containers.conf —
+// `dns_servers`/`dns_searches`/`dns_options`, written from the same resolved
+// policy.NetPolicy — which needs no mount to take effect. A container's DNS
+// is decided by configuration; the engine's own is decided by the bind.
 //
 // What this test does NOT do, and why: re-run the identical scenario against
 // a build that lacks the fix, to assert the negative directly. There is no
@@ -1311,18 +1322,40 @@ func hostRealResolvConfNameservers(t *testing.T) []string {
 // (commit history + PR #117's own description carry the numbers): the
 // offline container's /etc/resolv.conf held this host's real `nameserver
 // 192.168.1.1` / `nameserver fdde:...` lines verbatim before the fix, and
-// carried none of them (podman's own resolv.conf generation found no
-// `nameserver` line to parse in snug's comment-only offline file, and
-// produced an empty one) after it.
+// carried none of them after it.
 //
-// /etc/hosts was flagged by the same red-team pass as worth the identical
-// look and is NOT part of this test: measured (both before and after this
-// fix, by hand), a container's /etc/hosts carries only
-// `127.0.0.1 localhost`, `::1 localhost` and, with @net, podman's own
-// synthesized `host.containers.internal`/`host.docker.internal` entries at
-// the gateway address — never a line copied from the HOST's actual
-// /etc/hosts. podman synthesizes it independently of whatever the engine's
-// own /etc/hosts says, so there is nothing here for EnterEngine to shadow.
+// /etc/hosts IS part of this test now, and the reason it once was not has
+// been measured wrong. The earlier note here read "podman synthesizes it
+// independently of whatever the engine's own /etc/hosts says, so there is
+// nothing for EnterEngine to shadow". True of the docker-compat API path this
+// test drives — and false of the CLI path, where a planted host entry
+// (`10.1.2.3 secret-internal.corp`) reached the container verbatim. So the
+// no-leak state this test observed was an accident of which schema the proxy
+// happens to allow, not a property snug asserted, and one schema change away
+// from silently becoming a leak.
+//
+// `base_hosts_file = "none"` in snug's generated containers.conf makes it
+// structural on both paths, and the assertion below is written to notice a
+// leak from EITHER: rather than hunting for one planted string (which needs a
+// root-writable /etc/hosts no committed test may assume), it asserts the SET —
+// every hostname in the container's /etc/hosts must be one podman itself
+// synthesizes. Anything else came from outside.
+//
+// State plainly what this second assertion can and cannot catch, because it
+// looks stronger than it is. MEASURED, by deleting `base_hosts_file` from the
+// generated config and re-running: this test still PASSES. Two reasons, and
+// neither is that the key does nothing. First, the path this test drives is
+// the docker-compat API — the only one the proxy allows — and on that path
+// podman synthesizes /etc/hosts rather than copying; the copy was measured on
+// the CLI path, which nothing inside a snug sandbox can reach today. Second,
+// this development host's own /etc/hosts names nothing but standard localhost
+// and ipv6-* entries, so even a copy would carry little to recognise.
+//
+// So: the key's PRESENCE is held by TestGeneratedContainersConfTakesDNSFromThe
+// ResolvedPolicy, a unit test that fails the moment it goes. What this
+// assertion adds is the thing no unit test can see — a future schema, proxy
+// rule or podman version that reopens a copying path gets caught here, on any
+// host whose /etc/hosts names something of its own.
 func TestContainerGetsGeneratedResolvConfNotTheHosts(t *testing.T) {
 	budget(t, 120*time.Second)
 	env, _ := containerEngineEnv(t)
@@ -1395,8 +1428,40 @@ print("PROBE-COMPLETE", flush=True)
 	}
 	if strings.TrimSpace(containerResolv) != "" {
 		t.Logf("offline container /etc/resolv.conf was non-empty but held no host nameserver "+
-			"(podman regenerates it from what it can parse out of the bind-mounted file, and snug's "+
-			"offline one is comment-only): %q", containerResolv)
+			"(podman writes what snug's generated containers.conf names in dns_servers, which "+
+			"offline is a server that resolves nothing): %q", containerResolv)
+	}
+
+	// THE SECOND ASSERTION (issue #126's other half): the container's
+	// /etc/hosts names nothing the host's own /etc/hosts could have supplied.
+	//
+	// CONTROL: resolvprobe prints a HOSTS section unconditionally, so an
+	// absent section is a probe that did not run rather than a clean result —
+	// checked first, exactly as the RESOLV control above is.
+	containerHosts, ok := section(r.out, "HOSTS")
+	if !ok {
+		t.Fatalf("the container never printed a HOSTS section — it did not actually run "+
+			"resolvprobe:\n%s", r.out)
+	}
+	// CONTROL: the file must NAME something, and hostnamesIn must be able to
+	// read it. An empty result would make the loop below vacuous — a test that
+	// passes because it examined nothing. Measured: `127.0.0.1 localhost` and
+	// `::1 localhost`, so `localhost` is the name that must be there.
+	names := hostnamesIn(containerHosts)
+	if len(names) == 0 {
+		t.Fatalf("control: no hostname was read out of the container's /etc/hosts, so the "+
+			"assertion below examined nothing:\n%q", containerHosts)
+	}
+	if !slices.Contains(names, "localhost") {
+		t.Errorf("control: the container's /etc/hosts does not even name localhost, which podman "+
+			"always writes — hostnamesIn is probably not parsing this file: %q", names)
+	}
+	for _, name := range names {
+		if podmanSynthesizedHostname(name) {
+			continue
+		}
+		t.Errorf("an OFFLINE container's /etc/hosts names %q, which podman does not synthesize — "+
+			"it came from the HOST's own hosts table (issue #126):\n%s", name, containerHosts)
 	}
 }
 
@@ -1560,4 +1625,57 @@ func TestASignalledContainerRunLeavesNothingRunning(t *testing.T) {
 		t.Errorf("after SIGTERM, %d process(es) still name this run's engine socket %s: %v",
 			len(still), sock, still)
 	}
+}
+
+// hostnamesIn returns every hostname a hosts(5) file names — the second and
+// later fields of each non-comment line. The address itself is deliberately
+// not returned: a container legitimately names its own address, and it is the
+// NAMES that carry a host's internal topology.
+func hostnamesIn(hosts string) []string {
+	var names []string
+	for _, line := range strings.Split(hosts, "\n") {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		names = append(names, fields[1:]...)
+	}
+	return names
+}
+
+// podmanSynthesizedHostname says whether podman itself writes this name into
+// a container's /etc/hosts. Everything else in that file came from outside the
+// container, which on a host whose /etc/hosts was copied in is the leak issue
+// #126 closes.
+//
+// The container's own hostname is included because podman names it: with no
+// --hostname, that is the container's short id, which is hex. Kept as a shape
+// check rather than a lookup of the id, because the test does not know it —
+// and a hex-shaped name cannot carry a host's internal topology anyway, which
+// is what this assertion is about.
+func podmanSynthesizedHostname(name string) bool {
+	switch name {
+	case "localhost", "localhost.localdomain", "localhost4", "localhost6",
+		"localhost4.localdomain4", "localhost6.localdomain6",
+		"ip6-localhost", "ip6-loopback", "ip6-localnet", "ip6-mcastprefix",
+		"ip6-allnodes", "ip6-allrouters",
+		"host.containers.internal", "host.docker.internal":
+		return true
+	}
+	return isHex(name)
+}
+
+func isHex(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", c) {
+			return false
+		}
+	}
+	return true
 }
