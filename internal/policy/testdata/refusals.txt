@@ -191,6 +191,35 @@ cannot graft /home/u/proj/sub/why-probe: Why is empty.
        write, so a Graft literal is the only place left for a human to read it. Set Why
        before calling Policy.Graft.
 
+== graft_source_symlink_escapes_the_sandbox ==
+cannot graft /home/u/proj/sub/resolve-probe (host /home/u/secrets) into the engine's view: the sandbox's own
+       policy does not expose this host path, and snug did not create it for this run.
+       A graft may only reach a host path the sandbox's OWN grants already expose — the
+       engine's view is DERIVED from the sandbox's, never a second, wider window onto
+       the host — or a path snug itself created (the container store, the runroot, a
+       socket directory). Grant it to the sandbox first, or graft a path snug owns.
+       The source was named as /home/u/proj/sub/link, which is a SYMLINK on the host;
+       snug judges what it resolves to, because open_tree(2) follows it (measured, issue #55).
+
+== graft_guest_control_character ==
+graft destination "/home/u/proj/sub/guest-forge-probe\u202eDEGROF" (from (snug)) has '\u202e' in its path the ENGINE VIEW block, and a directional formatting character reverses the rest of the line, so it renders as content it does not contain.
+       Every line of `snug --dry-run` is one row, so a path that spans two lines can forge
+       a row that does not otherwise exist. No mountpoint needs one; write the path you meant.
+
+== graft_source_control_character ==
+graft source "/home/u/proj/sub/source-forge-probe\u202eDEGROF" (from (snug)) has '\u202e' in its path the ENGINE VIEW block, and a directional formatting character reverses the rest of the line, so it renders as content it does not contain.
+       Every line of `snug --dry-run` is one row, so a path that spans two lines can forge
+       a row that does not otherwise exist. No mountpoint needs one; write the path you meant.
+
+== graft_from_wears_the_sigil ==
+cannot graft /home/u/proj/sub/sigil-probe: From is ["@podman-socket"], and a graft's From must be exactly
+       []string{"(snug)"}.
+       No profile may author a graft — there is no TOML key that produces one, and
+       Policy.Graft is the only writer of p.Grafts — so any other From, including the
+       name of a builtin this run never selected, means the caller copied provenance
+       from somewhere else instead of writing the graft's own. Set From to
+       []string{"(snug)"}.
+
 == env_name_empty ==
 environ.set has an entry with an empty name. A variable with no name cannot be set; delete the line
 

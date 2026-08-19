@@ -1,6 +1,20 @@
 
 ENGINE VIEW  (grafts — mounts in the ENGINE's derived mount namespace, NOT the
   payload's. The payload cannot see any of these; no profile can ask for one.)
+  graft-ro  /home/u/proj/sub/elsewhere-graft              (snug)
+            from /usr
+            asked /home/u/proj/sub/elsewhere-link
+            resolved: the path snug's own code named is a SYMLINK on the host;
+            snug resolved it before judging G4 and grafts the resolved path
+            above. A source under any path the payload can write is a path the
+            payload chooses, so this is the row to read twice
+            abuse: a container given this graft reads the host tree a symlink
+            the payload planted resolves to, not the literal path snug's own
+            code named
+            note: this graft's destination is inside a writable bind of a host
+            directory (/home/u/proj/sub) — the payload can create and write
+            there directly, and any write on this path reaches the HOST and
+            persists after the sandbox exits.
   graft-ro  /home/u/proj/sub/ro-graft                     (snug)
             from /home/u/proj/sub/ro-src
             abuse: a container given a read-only bind of this can still

@@ -461,8 +461,9 @@ func existsInSandbox(p *Policy, guest string) bool {
 // Every caller therefore owes it a path already put through
 // ResolveExistingHostPath, and must USE the resolved path afterwards rather than
 // the one it asked about — resolving and then passing the literal onward moves
-// the hole instead of closing it. There are exactly two non-test callers and
-// both discharge this immediately before calling:
+// the hole instead of closing it. There are exactly THREE non-test callers,
+// and every one either discharges the obligation immediately before calling,
+// or is reading a value some OTHER caller already discharged it for:
 //
 //   - dockerproxy.(*Proxy).checkOne — resolves, audits a divergence, and
 //     forwards the RESOLVED Source to the engine (create.go).
@@ -470,9 +471,19 @@ func existsInSandbox(p *Policy, guest string) bool {
 //     already rewritten, and which checkGraft additionally requires to be a
 //     fixed point of the same resolution, so a hand-built Policy cannot install
 //     an unresolved one either.
+//   - internal/cli's describeGrafts (dryrun.go) — NOT a decision, a RENDER.
+//     It asks only whether an already-installed graft's stored Host is
+//     visible through the sandbox's own grants, so it can print the "owned:"
+//     provenance line when the answer is no (issue #55, finding F2). The
+//     Host it asks about was already resolved by Policy.Graft before this
+//     ever runs — the obligation was discharged at write time, not here — so
+//     this caller owes nothing further; it would be wrong for it to resolve
+//     a SECOND time and risk printing a provenance line about a different
+//     sample of the host than the one that was actually judged.
 //
-// TestHostPathVisibleCallersAreInventoried fails when a third caller appears.
-// Adding one means writing its resolution obligation into this list: a tripwire
+// TestHostPathVisibleCallersAreInventoried fails when a FOURTH caller
+// appears. Adding one means writing its resolution obligation (or its reason
+// for owing none, as describeGrafts's entry does) into this list: a tripwire
 // on the SET is the only enforceable form of an obligation that cannot be
 // checked at the call itself.
 //

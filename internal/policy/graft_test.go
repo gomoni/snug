@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -60,19 +61,53 @@ func typeMentionsGraft(t reflect.Type) bool {
 
 // ── §7 item 2 ─────────────────────────────────────────────────────────────────
 
-// graftWriteRE matches an ASSIGNMENT into a Grafts map — `X.Grafts[k] = v` —
-// and not a read: `p.Grafts[k]` alone (no trailing `=`), a range over the map,
-// or a comparison (`==`, excluded by the trailing `[^=]`).
+// graftWriteRE matches an ASSIGNMENT into a Grafts map — both the bracketed
+// single-key form (`X.Grafts[k] = v`) and the WHOLE-MAP form (`X.Grafts =
+// ...`) — and not a read: `p.Grafts[k]` alone (no trailing `=`), a range over
+// the map, or a comparison (`==`, excluded by the trailing `[^=]`).
+//
+// WIDENED past the bracket-only form (issue #55, finding F3b), which the
+// redteam measured missing three real evasions: `p.Grafts = map[string]Graft{
+// "/run": g}` (the whole-map form — not hypothetical, graft.go's OWN
+// Policy.Graft contains one two lines above its bracketed write, so a SECOND
+// whole-map write anywhere else in the tree would not have stood out in
+// review, and would not have been caught by the old pattern either),
+// `maps.Copy(p.Grafts, other)` (no `=` anywhere in the call — graftMapsCopyRE
+// below), and `m := p.Grafts; m["/run"] = g` (an alias — graftAliasRE below,
+// which cannot see the SUBSEQUENT write through the alias and so flags the
+// alias itself as the thing a human must look at).
 //
 // This is Go's regexp package (RE2), not a shell invocation of grep(1) — the
 // `|` inside a pattern here is never the "grep 'a|b' without -E matches a
 // literal pipe" trap CLAUDE.md warns about, because that trap is specific to
-// the grep BINARY's basic-regex mode. This pattern has no `|` at all, but the
-// positive control below still proves it can see a violation, for the same
-// reason every sweep in this codebase carries one: a pattern that matched
-// nothing would pass by finding exactly the one real hit and look identical to
-// "the sweep works".
-var graftWriteRE = regexp.MustCompile(`\.Grafts\[[^]]*\]\s*=[^=]`)
+// the grep BINARY's basic-regex mode. The positive controls below still prove
+// each pattern can see a violation, for the same reason every sweep in this
+// codebase carries one: a pattern that matched nothing would pass by finding
+// exactly the one real hit and look identical to "the sweep works".
+var graftWriteRE = regexp.MustCompile(`\.Grafts\s*(\[[^]]*\])?\s*=[^=]`)
+
+// graftMapsCopyRE catches maps.Copy(p.Grafts, src) — Grafts as the
+// DESTINATION (maps.Copy's first argument) is a write graftWriteRE cannot see
+// at all, because there is no `=` anywhere in the call. Deliberately matches
+// only when .Grafts appears as the FIRST argument (immediately after the open
+// paren, give or take whitespace): maps.Copy(dst, p.Grafts) uses Grafts as
+// the SOURCE, which is a read, and must not match.
+var graftMapsCopyRE = regexp.MustCompile(`maps\.Copy\(\s*[A-Za-z_][A-Za-z0-9_.]*\.Grafts\b`)
+
+// graftAliasRE flags `x := (something).Grafts` — an alias of the WHOLE MAP
+// that lets a later `x[k] = v` write through a name this sweep no longer
+// recognises as p.Grafts at all. It cannot see the subsequent write through
+// the alias (that is the whole point of aliasing defeating a textual sweep);
+// what it flags is the alias assignment itself, so a human looks at it.
+//
+// Two things it must NOT match, both legitimate reads: `for _, g := range
+// p.Grafts` (anchored out by requiring `:=` immediately before the map
+// expression — "range" sits between them there), and `gr := p.Grafts[guest]`
+// (a single-entry COPY via indexing, not a map alias — excluded by requiring
+// the character right after `.Grafts` to be anything other than `[`, or end
+// of input; RE2 has no lookahead, so this is spelled as a consumed
+// not-`[` alternative rather than a zero-width assertion).
+var graftAliasRE = regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*\s*:=\s*[A-Za-z_][A-Za-z0-9_.]*\.Grafts([^\[]|$)`)
 
 // TestOnlyGraftWritesGrafts is the same device as TestPolicyHasNoRestrictionOperation
 // (resolve_test.go) and TestTopologyIsDerivedNotSettable (topology_test.go): an
@@ -84,57 +119,120 @@ var graftWriteRE = regexp.MustCompile(`\.Grafts\[[^]]*\]\s*=[^=]`)
 // package-tree-wide, not just within internal/policy: p.Grafts is an exported
 // field, and a future Tier C (#125) writer could just as easily land in
 // internal/cli or internal/stage.
+//
+// The count assertion changed from "exactly 1" to "every hit traces to
+// policy/graft.go" (issue #55, F3b): the widened graftWriteRE now ALSO
+// matches the legitimate nil-init whole-map assignment inside Policy.Graft
+// (`p.Grafts = map[string]Graft{}`), two lines above the bracketed write it
+// already matched — so the one correct writer now trips the sweep twice, and
+// an exact-1 assertion would itself have to be re-loosened the moment the
+// widening this test exists to force actually happened.
 func TestOnlyGraftWritesGrafts(t *testing.T) {
 	root := filepath.Join("..", "..", "internal")
 	var hits []string
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	sweep := func(re *regexp.Regexp) {
+		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			src, rerr := os.ReadFile(path)
+			if rerr != nil {
+				return rerr
+			}
+			text := string(src)
+			for _, loc := range re.FindAllStringIndex(text, -1) {
+				line := 1 + strings.Count(text[:loc[0]], "\n")
+				rel, _ := filepath.Rel(root, path)
+				hits = append(hits, fmt.Sprintf("%s:%d", filepath.ToSlash(rel), line))
+			}
+			return nil
+		})
 		if err != nil {
-			return err
+			t.Fatal(err)
 		}
-		if d.IsDir() {
-			return nil
+	}
+	sweep(graftWriteRE)
+	sweep(graftMapsCopyRE)
+	sweep(graftAliasRE)
+
+	if len(hits) == 0 {
+		t.Fatal("found ZERO writes into p.Grafts across internal/ — Policy.Graft itself must trip " +
+			"this sweep, or it is not testing anything")
+	}
+	for _, h := range hits {
+		if !strings.HasPrefix(h, "policy/graft.go:") {
+			t.Errorf("found a write into p.Grafts outside policy/graft.go, at %s — Policy.Graft is "+
+				"meant to be the only writer of p.Grafts, and that is where it must live", h)
 		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		src, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return rerr
-		}
-		text := string(src)
-		for _, loc := range graftWriteRE.FindAllStringIndex(text, -1) {
-			line := 1 + strings.Count(text[:loc[0]], "\n")
-			rel, _ := filepath.Rel(root, path)
-			hits = append(hits, fmt.Sprintf("%s:%d", filepath.ToSlash(rel), line))
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 
-	if len(hits) != 1 {
-		t.Fatalf("found %d assignment(s) into a .Grafts map under internal/, want exactly 1 "+
-			"(policy/graft.go's Policy.Graft): %v", len(hits), hits)
-	}
-	if !strings.HasPrefix(hits[0], "policy/graft.go:") {
-		t.Errorf("the one writer is at %s, not policy/graft.go — Policy.Graft is meant to be the "+
-			"only writer of p.Grafts, and that is where it lives", hits[0])
-	}
-
-	// POSITIVE CONTROL: the pattern can actually tell a write from a read and
-	// from a comparison. Exercised on an in-memory fixture rather than by
+	// POSITIVE CONTROLS. Exercised on in-memory fixtures rather than by
 	// planting a second writer in the tree, because a check that can only be
 	// proven by temporarily breaking the invariant it guards is not one this
 	// suite should run by default.
+
+	// 1. The ORIGINAL bracket-write control: the pattern can tell a write from
+	// a read and from a comparison.
 	fixture := "func evil(p *Policy) { p.Grafts[\"x\"] = Graft{} }\n" +
 		"// a read: _ = p.Grafts[\"y\"]\n" +
 		"// a comparison: ok := a == p.Grafts[\"z\"]\n" +
 		"for _, g := range p.Grafts { _ = g }\n"
 	if got := graftWriteRE.FindAllString(fixture, -1); len(got) != 1 {
-		t.Fatalf("control: the pattern found %d writes in a fixture with exactly one real "+
-			"assignment, one read, one comparison and one range — it is not discriminating a "+
-			"write from the rest: %v", len(got), got)
+		t.Fatalf("control: graftWriteRE found %d writes in a fixture with exactly one real "+
+			"bracketed assignment, one read, one comparison and one range: %v", len(got), got)
+	}
+
+	// 2. The WHOLE-MAP form, which the pre-F3b spelling of graftWriteRE could
+	// not see at all — the redteam's own measured evasion.
+	if got := graftWriteRE.FindAllString(
+		"func evil(p *Policy) { p.Grafts = map[string]Graft{\"/run\": g} }\n", -1); len(got) != 1 {
+		t.Fatalf("control: graftWriteRE does not see the WHOLE-MAP assignment shape: %v", got)
+	}
+	// A whole-map READ (a comparison, or the nil check Policy.Graft itself
+	// contains) must NOT match.
+	if got := graftWriteRE.FindAllString("if p.Grafts == nil {\n", -1); len(got) != 0 {
+		t.Fatalf("control: graftWriteRE matched a whole-map COMPARISON (p.Grafts == nil), which "+
+			"is not a write: %v", got)
+	}
+
+	// 3. maps.Copy(p.Grafts, other) — Grafts as the destination.
+	if got := graftMapsCopyRE.FindAllString("maps.Copy(p.Grafts, other)\n", -1); len(got) != 1 {
+		t.Fatalf("control: graftMapsCopyRE does not see maps.Copy with p.Grafts as the "+
+			"destination: %v", got)
+	}
+	// maps.Copy(dst, p.Grafts) — Grafts as the SOURCE — is a READ and must not
+	// match.
+	if got := graftMapsCopyRE.FindAllString("maps.Copy(dst, p.Grafts)\n", -1); len(got) != 0 {
+		t.Fatalf("control: graftMapsCopyRE matched p.Grafts used as maps.Copy's SOURCE argument, "+
+			"which is a read: %v", got)
+	}
+
+	// 4. `m := p.Grafts` — an alias through which a later write is invisible
+	// to every pattern above.
+	if got := graftAliasRE.FindAllString("m := p.Grafts\nm[\"/run\"] = g\n", -1); len(got) != 1 {
+		t.Fatalf("control: graftAliasRE does not see the alias assignment `m := p.Grafts`: %v", got)
+	}
+	// `for _, g := range p.Grafts` is an ordinary read and must not match —
+	// this is the exact shape a naive `:=.*\.Grafts` pattern would confuse
+	// with an alias.
+	if got := graftAliasRE.FindAllString("for _, g := range p.Grafts {\n\t_ = g\n}\n", -1); len(got) != 0 {
+		t.Fatalf("control: graftAliasRE matched an ordinary `range p.Grafts` loop, which is a "+
+			"read, not an alias: %v", got)
+	}
+	// `gr := p.Grafts[guest]` — a single-entry COPY via indexing (this is
+	// describeGrafts's own real shape, internal/cli/dryrun.go) — is a read of
+	// ONE Graft, not an alias of the whole map, and must not match either.
+	// This is the false positive graftAliasRE's first draft actually produced
+	// against the real tree before this exclusion was added.
+	if got := graftAliasRE.FindAllString("gr := p.Grafts[guest]\n", -1); len(got) != 0 {
+		t.Fatalf("control: graftAliasRE matched an indexed single-entry read (p.Grafts[guest]), "+
+			"which is not a whole-map alias: %v", got)
 	}
 }
 
@@ -365,6 +463,130 @@ func TestEngineViewIsShadowSlotSeesAGraft(t *testing.T) {
 		t.Fatal("the SANDBOX's own view answered true once a graft existed — a graft must never " +
 			"reach the payload's mount namespace, in the model or at runtime")
 	}
+}
+
+// ── issue #55, finding F1 (redteam round against the graft model) ───────────
+
+// TestEngineViewGraftShadowsDeeperMounts is the regression test for finding
+// F1. EngineView's overlay USED TO BE per-key, on the premise (its own former
+// comment, quoted in the fix) that "a graft's Guest can only ever coincide
+// with an existing sandbox mount's Guest, never with another graft's, so
+// overlaying is a plain per-key replacement with no ordering to get wrong".
+// That premise is FALSE: G3's own second disjunct explicitly accepts a graft
+// whose Guest is a strict ANCESTOR of an existing mount (an auto-created
+// directory), and move_mount(2) onto that directory takes everything mounted
+// beneath it WITH it — the kernel does not leave a deeper mount poking
+// through. A per-key overlay left every mount BENEATH a graft fully visible
+// in EngineView, which defeats the exact sweep #125 is specified to run: "for
+// every element of the engine's PATH, EngineView().IsShadowSlot(elem) must be
+// false".
+//
+// Two shapes, both measured by the red team against the pre-fix code:
+//   - a graft-rw at /etc must shadow snug's own generated /etc/resolv.conf
+//     (KindData) sitting beneath it.
+//   - a graft-rw at /opt, over an existing read-only PATH element at
+//     /opt/tools/bin, must shadow it too — the #125 PATH sweep's own
+//     acceptance criterion, and the shape the old per-key overlay could not
+//     see at all: IsShadowSlot("/opt/tools/bin") would answer false ON A PATH
+//     ELEMENT THE ENGINE COULD ACTUALLY WRITE.
+//
+// Every subtest carries its own positive control: the identical query on a
+// View with NO graft installed must be false, and the SANDBOX's own view of
+// the same Policy must stay false even once the graft exists — a graft must
+// never reach the payload's own mount namespace.
+func TestEngineViewGraftShadowsDeeperMounts(t *testing.T) {
+	t.Run("etc_resolv_conf", func(t *testing.T) {
+		p := mustResolveDefaults(t)
+		if _, ok := p.Mounts["/etc/resolv.conf"]; !ok {
+			t.Fatal("fixture: the default policy has no /etc/resolv.conf mount — nothing is keyed " +
+				"deeper than /etc, so this case could not observe a shadow at all")
+		}
+		// POSITIVE CONTROL, before any graft exists.
+		if p.SandboxView().IsShadowSlot("/etc/resolv.conf") {
+			t.Fatal("control: the payload's own view must not call /etc/resolv.conf a shadow slot " +
+				"before any graft exists")
+		}
+		if ev, ok := (&Policy{Mounts: p.Mounts}).EngineView(); ok {
+			_ = ev
+			t.Fatal("control: EngineView() ok=true with NO graft installed at all")
+		}
+
+		target := p.Mounts[p.Target]
+		g := Graft{
+			Mount: Mount{Guest: "/etc", Host: target.Host, Kind: KindGraft, Access: AccessRW,
+				From: []string{"(snug)"}},
+			Why: "a hostile process inside the engine can use a writable /etc to replace snug's " +
+				"generated resolv.conf, or anything else under /etc, with its own content",
+		}
+		if err := p.Graft(newFakeEnv(), g); err != nil {
+			t.Fatalf("fixture: graft-rw at /etc (G3's FIRST disjunct: /etc is itself an existing "+
+				"mountpoint, @sys's own ro bind) was refused: %v", err)
+		}
+
+		ev, ok := p.EngineView()
+		if !ok {
+			t.Fatal("EngineView() ok=false with a graft installed")
+		}
+		if !ev.IsShadowSlot("/etc/resolv.conf") {
+			t.Fatal("EngineView().IsShadowSlot(/etc/resolv.conf) = false with a graft-rw at /etc — " +
+				"a per-key overlay leaves the deeper KindData mount visible THROUGH the graft " +
+				"(issue #55, finding F1); move_mount(2) onto /etc takes everything beneath it with it")
+		}
+		// POSITIVE CONTROL: the SANDBOX's own view of the identical Policy must
+		// still say no.
+		if p.SandboxView().IsShadowSlot("/etc/resolv.conf") {
+			t.Fatal("the SANDBOX's own view answered true once the graft existed — a graft must " +
+				"never reach the payload's namespace")
+		}
+	})
+
+	t.Run("opt_tools_bin_the_path_shape", func(t *testing.T) {
+		// Hand-built, mirroring TestEngineViewIsShadowSlotSeesAGraft's own
+		// style and the red team's exact reproduction: this is #125's PATH
+		// sweep's own acceptance criterion, so it is written against that
+		// literal shape rather than against whatever Policy.Graft's G3/G4
+		// happen to accept for /opt today.
+		mounts := map[string]Mount{
+			"/opt/tools/bin": {Guest: "/opt/tools/bin", Kind: KindBind, Access: AccessRO,
+				From: []string{"toolprof"}},
+		}
+		p := &Policy{Mounts: mounts}
+
+		// POSITIVE CONTROL, before any graft exists.
+		if (View{Mounts: mounts}).IsShadowSlot("/opt/tools/bin") {
+			t.Fatal("control: a read-only PATH element must not be a shadow slot before any graft exists")
+		}
+		if p.SandboxView().IsShadowSlot("/opt/tools/bin") {
+			t.Fatal("control: the sandbox's own view must not see a shadow slot either, before any graft exists")
+		}
+
+		p.Grafts = map[string]Graft{
+			"/opt": {
+				Mount: Mount{Guest: "/opt", Kind: KindGraft, Access: AccessRW, From: []string{"(snug)"}},
+				Why:   "test abuse sentence: a hostile process inside the engine can write anywhere " + "under /opt, including ahead of a read-only PATH element the sandbox itself granted",
+			},
+		}
+
+		ev, ok := p.EngineView()
+		if !ok {
+			t.Fatal("EngineView() ok=false with a graft present")
+		}
+		if !ev.IsShadowSlot("/opt") {
+			t.Fatal("EngineView().IsShadowSlot(/opt) = false with an AccessRW graft installed exactly there")
+		}
+		if !ev.IsShadowSlot("/opt/tools/bin") {
+			t.Fatal("EngineView().IsShadowSlot(/opt/tools/bin) = false with a graft-rw at /opt, its " +
+				"ancestor — this is #125's own PATH-sweep acceptance criterion (\"for every element " +
+				"of the engine's PATH, IsShadowSlot(elem) must be false\"), and the exact case a " +
+				"per-key overlay could not see (issue #55, finding F1): the sweep would otherwise " +
+				"pass on a PATH element the engine can actually write")
+		}
+		// POSITIVE CONTROL: the SANDBOX's own view of the identical Policy must
+		// still say no — a graft never reaches the payload's namespace.
+		if p.SandboxView().IsShadowSlot("/opt/tools/bin") {
+			t.Fatal("the SANDBOX's own view answered true once the graft existed")
+		}
+	})
 }
 
 // ── §7 item 6 ─────────────────────────────────────────────────────────────────
@@ -687,6 +909,68 @@ func TestGraftMayNotBeOptional(t *testing.T) {
 	}
 }
 
+// ── issue #55, finding F7 ─────────────────────────────────────────────────────
+//
+// checkGraft runs checkPathHygiene on a graft's Guest AND Host, the same two
+// checks a mount's own Guest already gets — refusing a control character or a
+// directional-override rune, because the ENGINE VIEW block renders one row
+// per line in fixed columns and such a rune can forge a second row that looks
+// like it came from somewhere else. Both calls were unasserted: deleting
+// EITHER one left the whole suite green.
+
+// refusalGraftGuestControlCharacter is also used as a TestGoldenRefusals row.
+func refusalGraftGuestControlCharacter(t testing.TB) error {
+	p := resolveDefaults(t)
+	g := validGraft(p, "guest-forge-probe")
+	g.Guest += "\u202eDEGROF" // a directional override in the DESTINATION path
+	return p.Graft(newFakeEnv(), g)
+}
+
+// TestGraftGuestRefusesAForgingRune is the regression test for the FIRST of
+// F7's two unasserted checkPathHygiene calls: deleting the one on g.Guest in
+// graft.go leaves the entire suite green without this test.
+func TestGraftGuestRefusesAForgingRune(t *testing.T) {
+	err := refusalGraftGuestControlCharacter(t)
+	if err == nil {
+		t.Fatal("a graft whose Guest contains a directional-override rune (U+202E) was accepted; " +
+			"the ENGINE VIEW block renders one row per line, and such a rune can forge a row that " +
+			"looks like it came from somewhere else")
+	}
+	if !strings.Contains(err.Error(), "graft destination") {
+		t.Errorf("error %q does not say this is about the graft DESTINATION (Guest)", err)
+	}
+}
+
+// refusalGraftSourceControlCharacter is also used as a TestGoldenRefusals row.
+func refusalGraftSourceControlCharacter(t testing.TB) error {
+	p := resolveDefaults(t)
+	g := validGraft(p, "source-forge-probe")
+	g.Host += "\u202eDEGROF" // a directional override in the SOURCE path
+	return p.Graft(newFakeEnv(), g)
+}
+
+// TestGraftSourceRefusesAForgingRune is the regression test for the SECOND of
+// F7's two unasserted checkPathHygiene calls: deleting the one on g.Host in
+// graft.go leaves the entire suite green without this test.
+func TestGraftSourceRefusesAForgingRune(t *testing.T) {
+	err := refusalGraftSourceControlCharacter(t)
+	if err == nil {
+		t.Fatal("a graft whose Host contains a directional-override rune (U+202E) was accepted; " +
+			"the ENGINE VIEW block renders one row per line, and such a rune can forge a row that " +
+			"looks like it came from somewhere else")
+	}
+	if !strings.Contains(err.Error(), "graft source") {
+		t.Errorf("error %q does not say this is about the graft SOURCE (Host)", err)
+	}
+
+	// POSITIVE CONTROL, shared by both subtests above: the identical shape
+	// with no forging rune is accepted.
+	p := mustResolveDefaults(t)
+	if err := p.Graft(newFakeEnv(), validGraft(p, "forge-control")); err != nil {
+		t.Fatalf("control: a graft with no forging rune anywhere must be accepted: %v", err)
+	}
+}
+
 func TestGraftFromNamesNoProfile(t *testing.T) {
 	p := mustResolveDefaults(t)
 	g := validGraft(p, "from-probe")
@@ -752,5 +1036,413 @@ func TestGraftMayNotCoverAnotherGraft(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "CONTAINS") {
 		t.Errorf("error %q does not say CONTAINS", err)
+	}
+}
+
+// ── issue #55, finding F2 ─────────────────────────────────────────────────────
+
+// engineOwnedWriteRE matches an assignment into p.EngineOwnedHostPaths, in
+// both its shapes — OwnEngineHostPath contains one of EACH, two lines apart
+// (`p.EngineOwnedHostPaths = map[string]bool{}` when nil, then
+// `p.EngineOwnedHostPaths[path] = true`) — the same reason graftWriteRE
+// widened past the bracket-only form for p.Grafts (F3b): a second WHOLE-MAP
+// write anywhere else in the tree would not stand out in review next to the
+// legitimate one already there, and a bracket-only regex could not see it.
+var engineOwnedWriteRE = regexp.MustCompile(`\.EngineOwnedHostPaths\s*(\[[^]]*\])?\s*=[^=]`)
+
+// TestOnlyOneWriterOfEngineOwnedHostPaths is TestOnlyGraftWritesGrafts's twin
+// for the OTHER half of G4. Before OwnEngineHostPath existed,
+// EngineOwnedHostPaths had a doc comment and a reader (checkGraft's second
+// disjunct) but NO writer, no hygiene check and no sweep: any string placed
+// in the map — by a hand-built Policy, or a future Tier C caller reaching for
+// the field directly — passed G4 unconditionally, with nothing bounding it to
+// a grant the sandbox's own policy made (issue #55, finding F2). This is what
+// makes OwnEngineHostPath's writer discipline checkable rather than merely
+// documented.
+func TestOnlyOneWriterOfEngineOwnedHostPaths(t *testing.T) {
+	root := filepath.Join("..", "..", "internal")
+	var hits []string
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		src, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		text := string(src)
+		for _, loc := range engineOwnedWriteRE.FindAllStringIndex(text, -1) {
+			line := 1 + strings.Count(text[:loc[0]], "\n")
+			rel, _ := filepath.Rel(root, path)
+			hits = append(hits, fmt.Sprintf("%s:%d", filepath.ToSlash(rel), line))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Two hits are EXPECTED from the one legitimate writer — the nil-init
+	// whole-map assignment and the bracketed one, both inside
+	// OwnEngineHostPath — so the assertion is "every hit traces to
+	// policy/graft.go", not "exactly one", which the widened pattern can no
+	// longer promise even for the correct code.
+	if len(hits) == 0 {
+		t.Fatal("found ZERO assignments into a .EngineOwnedHostPaths map under internal/ — " +
+			"OwnEngineHostPath itself must trip this sweep, or it is not testing anything")
+	}
+	for _, h := range hits {
+		if !strings.HasPrefix(h, "policy/graft.go:") {
+			t.Errorf("found an assignment into p.EngineOwnedHostPaths outside policy/graft.go, at "+
+				"%s — OwnEngineHostPath is meant to be the only writer", h)
+		}
+	}
+
+	// POSITIVE CONTROL: the pattern can tell a write from a read and from a
+	// comparison.
+	fixture := "func evil(p *Policy) { p.EngineOwnedHostPaths[\"x\"] = true }\n" +
+		"// a read: _ = p.EngineOwnedHostPaths[\"y\"]\n" +
+		"// a comparison: ok := a == p.EngineOwnedHostPaths[\"z\"]\n" +
+		"for k := range p.EngineOwnedHostPaths { _ = k }\n"
+	if got := engineOwnedWriteRE.FindAllString(fixture, -1); len(got) != 1 {
+		t.Fatalf("control: the pattern found %d writes in a fixture with exactly one real "+
+			"assignment, one read, one comparison and one range: %v", len(got), got)
+	}
+	// SECOND POSITIVE CONTROL: the WHOLE-MAP form, which the pre-F3b spelling
+	// of graftWriteRE could not see for p.Grafts and which this field carries
+	// too (OwnEngineHostPath's own nil-init line).
+	if got := engineOwnedWriteRE.FindAllString(
+		"p.EngineOwnedHostPaths = map[string]bool{}\n", -1); len(got) != 1 {
+		t.Fatalf("control: the pattern does not see the WHOLE-MAP assignment shape: %v", got)
+	}
+}
+
+// TestOwnEngineHostPathIsTheOnlyWayIn is the behavioural half of F2: a graft
+// whose Host the sandbox's own grants do NOT expose is refused unless
+// OwnEngineHostPath declared it first — asserted directly, rather than only
+// inferred from the sweep above finding one writer.
+func TestOwnEngineHostPathIsTheOnlyWayIn(t *testing.T) {
+	p := mustResolveDefaults(t)
+	env := newFakeEnv()
+
+	unowned := validGraft(p, "unowned")
+	unowned.Host = "/home/u/secrets" // resolvable, but no grant in the default selection exposes it
+	if err := p.Graft(env, unowned); err == nil {
+		t.Fatal("a graft sourced from an UNOWNED, ungranted host path was accepted")
+	}
+
+	if err := p.OwnEngineHostPath(env, "/home/u/secrets"); err != nil {
+		t.Fatalf("fixture: OwnEngineHostPath refused a hygienic absolute path: %v", err)
+	}
+	owned := validGraft(p, "owned")
+	owned.Host = "/home/u/secrets"
+	if err := p.Graft(env, owned); err != nil {
+		t.Fatalf("a graft sourced from a path OwnEngineHostPath declared its own was refused: %v", err)
+	}
+}
+
+// ── issue #55, finding F3a ────────────────────────────────────────────────────
+
+// TestValidateRefusesAHandBuiltGraft is the regression test for F3a. Deleting
+// Validate's graft re-check loop (validate.go) leaves the ENTIRE test suite
+// green, because nothing installs an unchecked graft through any path this
+// suite exercised — Policy.Graft is the only SHIPPED writer, and it runs
+// checkGraft itself. This test writes DIRECTLY into p.Grafts, bypassing
+// Policy.Graft (and every one of G1-G5) entirely, the same shape a hand-built
+// Policy or a future careless Tier C writer could produce, and requires
+// Validate to catch each one on its own.
+func TestValidateRefusesAHandBuiltGraft(t *testing.T) {
+	env := newFakeEnv()
+	cases := []struct {
+		name   string
+		mutate func(g *Graft)
+	}{
+		// G1: a graft covering one of snug's own paths.
+		{"covers_run", func(g *Graft) { g.Guest = "/run" }},
+		// G5: the abuse sentence, the one thing a Graft literal is required to
+		// carry since no profile can write one.
+		{"empty_why", func(g *Graft) { g.Why = "" }},
+		// G4: a source no grant exposes and snug never declared its own —
+		// the host's ssh-agent, session D-Bus, Wayland, rootless podman socket.
+		{"run_user_source", func(g *Graft) { g.Host = "/run/user/1000" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := mustResolveDefaults(t)
+			g := validGraft(p, "handbuilt-"+tc.name)
+			tc.mutate(&g)
+			g.Authored = true
+			p.Grafts = map[string]Graft{g.Guest: g} // RAW assignment — Policy.Graft never runs
+			if err := p.Validate(env); err == nil {
+				t.Fatalf("Validate accepted a hand-built graft that bypassed Policy.Graft and every "+
+					"one of G1-G5 (%s) — the re-check loop is the only thing standing between a "+
+					"careless writer and an unchecked graft reaching bwrap.go/--dry-run (issue #55, "+
+					"finding F3a)", tc.name)
+			}
+		})
+	}
+
+	// POSITIVE CONTROL: a hand-built graft that IS otherwise valid must still
+	// be accepted — proving Validate is re-running G1-G5, not refusing every
+	// hand-built graft unconditionally regardless of content.
+	p := mustResolveDefaults(t)
+	g := validGraft(p, "handbuilt-valid")
+	g.Authored = true
+	p.Grafts = map[string]Graft{g.Guest: g}
+	if err := p.Validate(env); err != nil {
+		t.Fatalf("control: a hand-built but otherwise VALID graft must still be accepted: %v", err)
+	}
+}
+
+// ── issue #55, finding F6 (redteam round 2) ──────────────────────────────────
+//
+// G4 used to be purely lexical: checkGraft asked HostPathVisible about the
+// literal string in g.Host, but open_tree(2) FOLLOWS a final symlink
+// (measured) and the sandbox's writable target is attacker-controlled, so
+// `ln -s ~/.ssh $TARGET/link` produced a Host that passed G4 on the NAME
+// while the kernel would have opened whatever the link pointed at — the
+// identical hole a previous redteam round found and fixed in the container
+// proxy's own bind filter. The fix resolves BEFORE any rule looks at Host,
+// inside Policy.Graft, and stores the RESOLVED path; checkGraft additionally
+// requires an installed graft's Host to already be a fixed point of that same
+// resolution, closing F3a's door for exactly this field.
+
+// refusalGraftSourceSymlinkEscapesTheSandbox is also used as a
+// TestGoldenRefusals row (graft_source_symlink_escapes_the_sandbox, the F6
+// decision's §6 golden row): the existing G4 message with the appended
+// "named as …, which is a SYMLINK on the host" sentence.
+func refusalGraftSourceSymlinkEscapesTheSandbox(t testing.TB) error {
+	p := resolveDefaults(t)
+	target := p.Target
+	env := newFakeEnv()
+	env.links[target+"/link"] = "/home/u/secrets" // planted by the payload; no grant exposes this
+	g := validGraft(p, "resolve-probe")
+	g.Host = target + "/link"
+	return p.Graft(env, g)
+}
+
+// TestGraftSourceIsResolvedBeforeItIsJudged: a graft whose Host is a symlink
+// the payload planted (inside the writable target) resolving to a host path
+// no grant exposes is refused, and the refusal NAMES the resolved
+// destination — not the literal string that was asked about, which is the
+// one a human could otherwise mistake for something harmless.
+func TestGraftSourceIsResolvedBeforeItIsJudged(t *testing.T) {
+	err := refusalGraftSourceSymlinkEscapesTheSandbox(t)
+	if err == nil {
+		t.Fatal("a graft whose Host is a SYMLINK the payload can plant, resolving to " +
+			"/home/u/secrets (a path no grant exposes), was accepted — open_tree(2) follows a " +
+			"final symlink (measured, issue #55, finding F6), so the literal string judged is not " +
+			"the tree the kernel would open")
+	}
+	if !strings.Contains(err.Error(), "/home/u/secrets") {
+		t.Errorf("error %q does not name the RESOLVED destination /home/u/secrets — it must judge "+
+			"(and report) what the link resolves to, not the name that was asked about", err)
+	}
+	// The refusal must be G4's ORDINARY visibility disjunct, with the
+	// symlink sentence appended — not checkGraft's separate "source is not a
+	// fixed point" refusal, which fires only for a graft that bypassed
+	// Policy.Graft's own resolution (F3a's family, TestValidateRefusesAGraftWhoseSourceIsUnresolved).
+	// A Policy.Graft call that skipped normalising Host would still trip
+	// THAT check from inside checkGraft and so still produce a non-nil
+	// error naming /home/u/secrets — asserting the SPECIFIC message this
+	// caller is meant to reach is what keeps this test pinned to
+	// Policy.Graft's own normalisation step rather than passing for a
+	// different reason.
+	for _, want := range []string{"does not expose this host path", "which is a SYMLINK on the host"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q — this must be G4's ordinary visibility "+
+				"refusal (with the symlink sentence appended), not some other rule firing instead", err, want)
+		}
+	}
+
+	// POSITIVE CONTROL: the identical shape of graft, with a Host that is NOT
+	// a symlink at all (still strictly inside the writable target), is
+	// accepted — the refusal above is about what the link resolves TO, not
+	// about grafting out of the target in general.
+	p2 := mustResolveDefaults(t)
+	if err := p2.Graft(newFakeEnv(), validGraft(p2, "resolve-control")); err != nil {
+		t.Fatalf("control: a graft whose Host is not a symlink must be accepted: %v", err)
+	}
+}
+
+// TestGraftSourceIsStoredResolved: a graft whose Host resolves to a VISIBLE
+// host path is accepted, and — this is the field this fix exists to set
+// correctly — the value STORED in p.Grafts is the RESOLVED path, not the
+// literal one, with HostAsked carrying what was actually named. Storing the
+// literal would leave the stage calling open_tree(2) on the attacker's link
+// even though checkGraft judged the safe destination — validating without
+// normalising is unsound here no matter where the validation sits (F6
+// decision §0).
+func TestGraftSourceIsStoredResolved(t *testing.T) {
+	p := mustResolveDefaults(t)
+	target := p.Target
+
+	env := newFakeEnv()
+	env.links[target+"/link"] = "/usr/share" // visible: @sys grants ro /usr
+
+	g := validGraft(p, "stored-probe")
+	g.Host = target + "/link"
+	if err := p.Graft(env, g); err != nil {
+		t.Fatalf("fixture: a graft whose source resolves to a VISIBLE host path (/usr/share, "+
+			"under @sys's ro /usr) was refused: %v", err)
+	}
+	stored := p.Grafts[g.Guest]
+	if stored.Host != "/usr/share" {
+		t.Errorf("p.Grafts[%s].Host = %q, want the RESOLVED path /usr/share — a graft installed "+
+			"with an unresolved source is the exact hole issue #55 F6 is about: open_tree(2) opens "+
+			"whatever the link points at, not the string checkGraft judged", g.Guest, stored.Host)
+	}
+	if stored.HostAsked != target+"/link" {
+		t.Errorf("p.Grafts[%s].HostAsked = %q, want %q — the path snug's own code named, kept only "+
+			"so --dry-run can show it differs from the path it will open", g.Guest, stored.HostAsked, target+"/link")
+	}
+
+	// POSITIVE CONTROL: a non-symlink source is stored UNCHANGED, and
+	// HostAsked stays empty — catches "validated but not selectively
+	// rewritten", i.e. a fix that stamps HostAsked (or mutates Host) on every
+	// graft regardless of whether resolution actually changed anything.
+	p2 := mustResolveDefaults(t)
+	g2 := validGraft(p2, "stored-control")
+	if err := p2.Graft(env, g2); err != nil {
+		t.Fatalf("control: %v", err)
+	}
+	stored2 := p2.Grafts[g2.Guest]
+	if stored2.Host != g2.Host {
+		t.Errorf("control: a non-symlink source's Host changed from %q to %q", g2.Host, stored2.Host)
+	}
+	if stored2.HostAsked != "" {
+		t.Errorf("control: HostAsked = %q for a non-symlink source, want empty", stored2.HostAsked)
+	}
+}
+
+// TestValidateRefusesAGraftWhoseSourceIsUnresolved is F3a's family, specific
+// to F6's own fixed-point clause: a hand-built Policy that writes an
+// UNRESOLVED symlink literal straight into p.Grafts — bypassing
+// Policy.Graft's own resolution entirely — must be refused by Validate's
+// re-check. Without this, "Policy.Graft always resolves" is a fact about one
+// function, not about every graft that can reach bwrap.go or --dry-run.
+func TestValidateRefusesAGraftWhoseSourceIsUnresolved(t *testing.T) {
+	p := mustResolveDefaults(t)
+	target := p.Target
+
+	env := newFakeEnv()
+	env.links[target+"/link"] = "/usr/share"
+
+	g := validGraft(p, "unresolved-probe")
+	g.Host = target + "/link" // UNRESOLVED — the literal, not what it resolves to
+	g.Authored = true
+	p.Grafts = map[string]Graft{g.Guest: g}
+	if err := p.Validate(env); err == nil {
+		t.Fatal("Validate accepted a hand-built graft whose stored Host is an UNRESOLVED symlink — " +
+			"the fixed-point check exists exactly to close this door (issue #55, finding F6)")
+	}
+
+	// POSITIVE CONTROL: the same graft, with Host already the RESOLVED path,
+	// is accepted — this is the only thing that makes the fixed-point clause
+	// falsifiable, rather than a check that refuses every hand-built graft
+	// regardless of content.
+	p2 := mustResolveDefaults(t)
+	g2 := validGraft(p2, "unresolved-control")
+	g2.Host = "/usr/share"
+	g2.Authored = true
+	p2.Grafts = map[string]Graft{g2.Guest: g2}
+	if err := p2.Validate(env); err != nil {
+		t.Fatalf("control: a hand-built graft whose Host is ALREADY resolved must be accepted: %v", err)
+	}
+}
+
+// TestGraftSourceThatCannotBeResolvedIsJudgedLexically: a Host that
+// ResolveExistingHostPath cannot resolve at all (nothing on the fake host
+// exists anywhere along its ancestry) must still produce G4's ordinary
+// visibility refusal, never a resolution error of its own — "a resolution
+// FAILURE is not a refusal and must not become one" (F6 decision §2c),
+// because making existence a policy input would let a payload flip which
+// refusal a human sees by creating or deleting a directory.
+func TestGraftSourceThatCannotBeResolvedIsJudgedLexically(t *testing.T) {
+	p := mustResolveDefaults(t)
+	env := newFakeEnv() // "/run/user/1000" is absent from fakeEnv entirely, all the way up to "/"
+
+	unresolved := validGraft(p, "cannot-resolve")
+	unresolved.Host = "/run/user/1000"
+	err := p.Graft(env, unresolved)
+	if err == nil {
+		t.Fatal("a graft sourced from /run/user/1000 (unresolvable on the fake host, and no grant " +
+			"exposes it) was accepted")
+	}
+	if !strings.Contains(err.Error(), "does not expose this host path") {
+		t.Errorf("error %q is not G4's ordinary visibility refusal — an unresolvable source must "+
+			"fall back to the LEXICAL form and let G4 speak, not surface a resolution failure of "+
+			"its own", err)
+	}
+
+	// POSITIVE CONTROL: a RESOLVABLE but equally invisible source (a real
+	// directory on the fake host, granted to nobody) must produce the
+	// IDENTICAL class of refusal — the two arms (resolution succeeds and
+	// finds nothing granted; resolution fails outright) must not print
+	// different messages for the same underlying fact.
+	p2 := mustResolveDefaults(t)
+	resolvable := validGraft(p2, "resolvable-invisible")
+	resolvable.Host = "/home/u/secrets" // exists in fakeEnv.dirs, granted to no profile
+	err2 := p2.Graft(env, resolvable)
+	if err2 == nil {
+		t.Fatal("control: a graft sourced from /home/u/secrets (resolvable, granted to nobody) was accepted")
+	}
+	if !strings.Contains(err2.Error(), "does not expose this host path") {
+		t.Errorf("control: error %q is not G4's visibility refusal either", err2)
+	}
+}
+
+// ── issue #55, finding F8 ─────────────────────────────────────────────────────
+
+// refusalGraftFromWearsTheSigil is also used as a TestGoldenRefusals row.
+// @podman-socket is a real, sigil-marked builtin name in this package's
+// registry, and — the point — it is NOT in testDefaults, so a
+// From-against-p.Profiles check alone would have let this straight through,
+// exactly as F8 measured.
+func refusalGraftFromWearsTheSigil(t testing.TB) error {
+	p := resolveDefaults(t)
+	if slices.Contains(p.Profiles, ProfileName("@podman-socket")) {
+		t.Fatal("fixture: @podman-socket is in THIS run's resolved profiles — the point of this " +
+			"case is a sigil name that was never selected at all")
+	}
+	g := validGraft(p, "sigil-probe")
+	g.From = []string{"@podman-socket"}
+	return p.Graft(newFakeEnv(), g)
+}
+
+// TestGraftFromMayNotWearTheSigil is the regression test for F8: checkGraft
+// used to compare From only against p.Profiles, THIS RUN's resolved
+// selection — so From: []string{"@podman-socket"} passed on any selection
+// that did not happen to include @podman-socket, forging the one guarantee
+// the @ sigil on --dry-run exists to make ("a name marked @ came from snug's
+// own resolved profile set"). The fix requires From to be EXACTLY
+// []string{"(snug)"}, which refuses a sigil-marked name whether or not it was
+// selected — this test's whole point is the UNSELECTED case, since the
+// selected one (TestGraftFromNamesNoProfile) could pass on a narrower,
+// selection-only check that F8 already defeated once.
+func TestGraftFromMayNotWearTheSigil(t *testing.T) {
+	err := refusalGraftFromWearsTheSigil(t)
+	if err == nil {
+		t.Fatal("a graft whose From is [\"@podman-socket\"] — a real @-marked builtin name, not even " +
+			"selected by this run — was accepted; the @ sigil on --dry-run is supposed to be a " +
+			"guarantee that a name came from snug's own resolved profile set, and here it would be " +
+			"settable by a Graft literal (issue #55, finding F8)")
+	}
+	for _, want := range []string{"@podman-socket", "From is"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+
+	// POSITIVE CONTROL: the only From this ever accepts.
+	p2 := mustResolveDefaults(t)
+	if err := p2.Graft(newFakeEnv(), validGraft(p2, "sigil-control")); err != nil {
+		t.Fatalf("control: From=[\"(snug)\"] must be accepted: %v", err)
 	}
 }

@@ -771,6 +771,21 @@ func TestGoldenRefusals(t *testing.T) {
 		{"graft_covers_graft", refusalGraftCoversGraft},
 		{"graft_optional_forbidden", refusalGraftOptional},
 		{"graft_empty_why", refusalGraftEmptyWhy},
+		// issue #55, finding F6 (redteam round 2): G4 used to be purely
+		// lexical, so a symlink planted inside the writable target passed the
+		// visibility check on its NAME while open_tree(2) would have opened
+		// whatever it resolved to. The fixed-point resolution in
+		// Policy.Graft/checkGraft is what makes this a refusal at all.
+		{"graft_source_symlink_escapes_the_sandbox", refusalGraftSourceSymlinkEscapesTheSandbox},
+		// issue #55, finding F7: checkPathHygiene on a graft's Guest and Host
+		// were each unasserted — deleting either call left the whole suite
+		// green.
+		{"graft_guest_control_character", refusalGraftGuestControlCharacter},
+		{"graft_source_control_character", refusalGraftSourceControlCharacter},
+		// issue #55, finding F8: From used to be checked only against THIS
+		// run's resolved profiles, so a sigil-marked name that was never
+		// selected forged the @ sigil's own guarantee on --dry-run.
+		{"graft_from_wears_the_sigil", refusalGraftFromWearsTheSigil},
 
 		// the name grammar (§2.3): name ::= [A-Za-z_][A-Za-z0-9_]*
 		{"env_name_empty", refusalEnv(EnvGrants{Set: map[string]string{"": "x"}})},
