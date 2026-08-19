@@ -1729,12 +1729,13 @@ func wrapGraftField(label, text string) []string {
 // currently uses — is listed too, because it is a host path snug declares its
 // own by fiat and had, before this fix, no line on --dry-run at all.
 //
-// Every string here — Guest, Host, Why, From, and every EngineOwnedHostPaths
-// entry — goes through visibleValue, the same guard every other screen uses;
-// this block is in TestNoSnugScreenEmitsARawControlCharacter's sink set for
-// exactly that reason. Guest and Host print VERBATIM (never through
+// Every string here — Guest, Host, HostAsked, Why, From, and every
+// EngineOwnedHostPaths entry — goes through visibleValue, the same guard
+// every other screen uses; this block is in
+// TestNoSnugScreenEmitsARawControlCharacter's sink set for exactly that
+// reason. Guest, Host and HostAsked print VERBATIM (never through
 // wrapGraftField, see its own comment, finding F9); only prose (Why, the
-// destination note) is wrapped.
+// destination note, the "resolved:" line) is wrapped.
 func describeGrafts(out *os.File, p *policy.Policy) {
 	if len(p.Grafts) == 0 {
 		return
@@ -1761,6 +1762,18 @@ func describeGrafts(out *os.File, p *policy.Policy) {
 		// Verbatim: Host may legally contain runs of whitespace, and
 		// wrapGraftField's strings.Fields would collapse them (F9).
 		fmt.Fprintf(out, "%sfrom %s\n", indent, visibleValue(gr.Host))
+		if gr.HostAsked != "" {
+			// Verbatim, for F9's reason: a host path may legally contain runs
+			// of whitespace and wrapGraftField's strings.Fields collapses them.
+			fmt.Fprintf(out, "%sasked %s\n", indent, visibleValue(gr.HostAsked))
+			for _, line := range wrapGraftField("resolved: ",
+				"the path snug's own code named is a SYMLINK on the host; snug resolved it "+
+					"before judging G4 and grafts the resolved path above. A source under any "+
+					"path the payload can write is a path the payload chooses, so this is the "+
+					"row to read twice") {
+				fmt.Fprintln(out, line)
+			}
+		}
 		if !p.HostPathVisible(gr.Host, gr.Access == policy.AccessRW) {
 			for _, line := range wrapGraftField("owned: ",
 				"the sandbox's own grants do not expose this host path — it passed G4 only "+

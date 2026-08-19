@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // maxBody bounds a request body read from the sandbox. Unbounded, it is a
@@ -615,26 +617,16 @@ func isEmptyJSON(raw json.RawMessage) bool {
 // resolveExisting canonicalises as much of a path as exists, then rejoins the
 // remainder lexically.
 //
-// Plain EvalSymlinks fails outright on a path that is not there yet, and
-// `-v ./build:/out` where ./build does not exist is an ordinary thing to write —
-// the engine creates it. Resolving the longest existing prefix keeps that
-// working while still defeating a symlink planted anywhere along the part that
-// DOES exist, which is the whole point.
+// A one-line call to policy.ResolveExistingHostPath rather than its own walk
+// (issue #55, F6): that function is now the second half of "can the sandbox
+// see this host path" (the first half is policy.HostPathVisible, already
+// shared the same way), and invariant 6 says one author, not two
+// implementations that eventually drift. OSEnviron{}.EvalSymlinks IS
+// filepath.EvalSymlinks, so this is behaviour-identical to the walk it
+// replaces. TestResolveExistingHasOneAuthor pins that no EvalSymlinks loop
+// survives in this package.
 func resolveExisting(p string) (string, error) {
-	p = filepath.Clean(p)
-	rest := ""
-	for cur := p; ; {
-		real, err := filepath.EvalSymlinks(cur)
-		if err == nil {
-			return filepath.Join(real, rest), nil
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			return "", fmt.Errorf("no existing ancestor")
-		}
-		rest = filepath.Join(filepath.Base(cur), rest)
-		cur = parent
-	}
+	return policy.ResolveExistingHostPath(policy.OSEnviron{}, p)
 }
 
 // hostPathVisible reports whether the sandbox can itself see a host path at the

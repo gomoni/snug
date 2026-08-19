@@ -72,7 +72,7 @@ func twoValidGrafts(t *testing.T, p *policy.Policy) []policy.Graft {
 			},
 			Why: "test abuse sentence for " + suffix,
 		}
-		if err := p.Graft(g); err != nil {
+		if err := p.Graft(newEnvFakeEnv(), g); err != nil {
 			t.Fatalf("fixture: a valid graft (%s) was rejected: %v", suffix, err)
 		}
 		out = append(out, g)
@@ -174,7 +174,7 @@ func TestGoldenEngineView(t *testing.T) {
 
 	target := p.Mounts[p.Target]
 	// One RO, one RW, so the golden pins both kind-column spellings.
-	if err := p.Graft(policy.Graft{
+	if err := p.Graft(newEnvFakeEnv(), policy.Graft{
 		Mount: policy.Mount{
 			Guest: p.Target + "/ro-graft", Host: target.Host + "/ro-src",
 			Kind: policy.KindGraft, Access: policy.AccessRO,
@@ -185,7 +185,7 @@ func TestGoldenEngineView(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("fixture: RO graft rejected: %v", err)
 	}
-	if err := p.Graft(policy.Graft{
+	if err := p.Graft(newEnvFakeEnv(), policy.Graft{
 		Mount: policy.Mount{
 			Guest: p.Target + "/rw-graft", Host: target.Host + "/rw-src",
 			Kind: policy.KindGraft, Access: policy.AccessRW,

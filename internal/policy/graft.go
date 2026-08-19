@@ -36,7 +36,7 @@ import (
 // rules (G1-G5) inline and returns the error, so a graft can never be installed
 // unvalidated — this mirrors nothing existing on purpose: Replace is
 // unvalidated today, and issue #55 is a report about an unchecked writer.
-func (p *Policy) Graft(g Graft) error {
+func (p *Policy) Graft(env Environ, g Graft) error {
 	if _, exists := p.Grafts[g.Guest]; exists {
 		return fmt.Errorf("cannot graft %s: already grafted (from %s).\n"+
 			"       Policy.Graft is the only writer of p.Grafts, so two attempts at the same\n"+
@@ -46,7 +46,30 @@ func (p *Policy) Graft(g Graft) error {
 	}
 
 	g.Authored = true
-	if err := p.checkGraft(g); err != nil {
+
+	// Resolve BEFORE any rule looks at Host, and store the resolved path,
+	// because the stage passes g.Host to open_tree(2) and open_tree FOLLOWS a
+	// final symlink (measured, issue #55 F6). Checking the literal and storing
+	// the literal would leave `ln -s ~/.ssh $TARGET/link` passing G4 lexically
+	// while the kernel opened ~/.ssh — the identical hole a previous redteam
+	// round found in the container bind filter (dockerproxy/create.go:319).
+	//
+	// A resolution FAILURE is not a refusal and must not become one. Nothing
+	// exists at a path that does not exist, so there is no symlink to defeat;
+	// and making existence a policy input would let a payload flip which
+	// refusal a human sees by creating or deleting a directory. Fall back to
+	// the lexical form and let G4 — a rule over the grant set, which the
+	// payload cannot touch — be the one that speaks.
+	if real, err := ResolveExistingHostPath(env, g.Host); err == nil {
+		if real != filepath.Clean(g.Host) {
+			g.HostAsked = g.Host
+		}
+		g.Host = real
+	} else {
+		g.Host = filepath.Clean(g.Host)
+	}
+
+	if err := p.checkGraft(env, g); err != nil {
 		return err
 	}
 
@@ -71,7 +94,21 @@ func (p *Policy) Graft(g Graft) error {
 // is the same check Policy.Graft runs on a graft's own Guest and Host; this
 // is what brings the wider, unbounded-by-any-grant half of G4 up to the
 // standard the narrower half (HostPathVisible) already met.
-func (p *Policy) OwnEngineHostPath(path string) error {
+//
+// The argument goes through ResolveExistingHostPath with the same
+// fallback-to-lexical Policy.Graft uses, for the same reason F6 fixed the
+// OTHER half of G4's `if`: G4's second disjunct is EXACT membership
+// (types.go, "never a pattern, never a prefix match"), so if a graft's Host
+// is normalised and this set is not, a legitimate Tier C graft fails
+// membership for a reason nobody wrote down (issue #55, F6 §2d — the same
+// "rule applied to one of its two halves" shape, on the two halves of one
+// if).
+func (p *Policy) OwnEngineHostPath(env Environ, path string) error {
+	if real, err := ResolveExistingHostPath(env, path); err == nil {
+		path = real
+	} else {
+		path = filepath.Clean(path)
+	}
 	if err := checkPathHygiene("engine-owned host path", path, "(snug)", "the ENGINE VIEW block"); err != nil {
 		return err
 	}
@@ -80,6 +117,42 @@ func (p *Policy) OwnEngineHostPath(path string) error {
 	}
 	p.EngineOwnedHostPaths[path] = true
 	return nil
+}
+
+// ResolveExistingHostPath canonicalises as much of a host path as exists, then
+// rejoins the remainder lexically.
+//
+// Plain EvalSymlinks fails outright on a path that is not there yet, and both
+// callers legitimately name one: `-v ./build:/out` where ./build does not exist
+// is ordinary (the engine creates it), and Tier C may record a host artefact's
+// path before creating it. Resolving the longest existing prefix keeps that
+// working while still defeating a symlink planted anywhere along the part that
+// DOES exist — which is the whole point, because a symlink an attacker planted
+// must EXIST to be followed, so it is always inside the prefix this resolves.
+//
+// This is the SECOND half of "can the sandbox see this host path", and it moved
+// here for the same reason HostPathVisible did (invariant 6, issue #55 finding
+// F6): the first half moved and this one did not, leaving one author of half a
+// rule. dockerproxy.resolveExisting is now a one-line call to this.
+//
+// It takes an Environ rather than calling filepath.EvalSymlinks so that
+// internal/policy stays pure and the graft tests can plant a symlink in a fake
+// host layout with no privileges.
+func ResolveExistingHostPath(env Environ, path string) (string, error) {
+	path = filepath.Clean(path)
+	rest := ""
+	for cur := path; ; {
+		real, err := env.EvalSymlinks(cur)
+		if err == nil {
+			return filepath.Join(real, rest), nil
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return "", fmt.Errorf("no existing ancestor")
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
+	}
 }
 
 // checkGraft runs G1-G5 over one graft WITHOUT installing it, so Policy.Graft
@@ -94,7 +167,7 @@ func (p *Policy) OwnEngineHostPath(path string) error {
 // checks instead is a DIFFERENT graft covering or covered by this one, which a
 // hand-built Policy can still produce and which the map's own uniqueness
 // cannot catch.
-func (p *Policy) checkGraft(g Graft) error {
+func (p *Policy) checkGraft(env Environ, g Graft) error {
 	// G5, structural half — a bug in the caller, not a configuration choice, so
 	// checked first and unconditionally.
 	if g.Kind != KindGraft {
@@ -145,12 +218,38 @@ func (p *Policy) checkGraft(g Graft) error {
 	}
 
 	// Guest and Host go through the SAME two checks a mount's Guest already
-	// does (validate.go), rather than a fourth hand-rolled copy.
+	// does (validate.go), rather than a fourth hand-rolled copy. HostAsked runs
+	// through the same check when set — it reaches --dry-run too (issue #55,
+	// F6 §2c) — and this order matters: hygiene on Guest and Host first, so a
+	// forging rune never reaches a screen.
 	if err := checkPathHygiene("graft destination", g.Guest, strings.Join(g.From, "+"), "the ENGINE VIEW block"); err != nil {
 		return err
 	}
 	if err := checkPathHygiene("graft source", g.Host, strings.Join(g.From, "+"), "the ENGINE VIEW block"); err != nil {
 		return err
+	}
+	if g.HostAsked != "" {
+		if err := checkPathHygiene("graft source (asked)", g.HostAsked, strings.Join(g.From, "+"), "the ENGINE VIEW block"); err != nil {
+			return err
+		}
+	}
+
+	// G4, resolution half. Host is a FIXED POINT of ResolveExistingHostPath by
+	// the time it is stored, because Policy.Graft normalises it. Validate
+	// re-runs this over an already-installed graft, so a hand-built Policy that
+	// wrote straight into p.Grafts with an unresolved Host is refused here —
+	// the same door the rest of this function is the backstop for (issue #55
+	// F3a). It also re-samples the host, so a link created between Policy.Graft
+	// and Validate is caught; a link created AFTER Validate is not, and cannot
+	// be (the TOCTOU paragraph in the G4 comment below).
+	if real, err := ResolveExistingHostPath(env, g.Host); err == nil && real != g.Host {
+		return fmt.Errorf("cannot graft %s: its source %s is not the path it resolves to (%s).\n"+
+			"       open_tree(2) FOLLOWS a symlink, so a graft installed with an unresolved source\n"+
+			"       opens whatever the link points at — and the sandbox's writable target is\n"+
+			"       attacker-controlled, so that is a choice the payload gets to make. Policy.Graft\n"+
+			"       resolves before it checks; a graft whose stored source is unresolved did not go\n"+
+			"       through it. Install grafts with Policy.Graft.",
+			g.Guest, g.Host, real)
 	}
 
 	// G1 — a graft may not cover one of snug's own paths, in EITHER namespace.
@@ -246,18 +345,51 @@ func (p *Policy) checkGraft(g Graft) error {
 	// by G4, full stop" is true of HostPathVisible and silent about this
 	// disjunct beside it — do not write that sentence again without naming
 	// both halves (issue #55, finding F2).
+	//
+	// TOCTOU — what the resolution above (both here and in Policy.Graft)
+	// closes and what it does not (issue #55, F6 §4). Closed: G4 now judges,
+	// and the stage will open, the SAME tree — $TARGET/link -> ~/.ssh is
+	// refused because ~/.ssh is exposed by no grant. That is the whole of
+	// F6's defect. NOT closed, and not closable in this layer: Policy.Graft
+	// resolves at policy-construction time, Validate re-samples in the same
+	// phase, and the stage calls open_tree at engine-start time — any
+	// component of the resolved path can be replaced with a symlink in
+	// between, and open_tree follows an intermediate symlink unconditionally
+	// (AT_SYMLINK_NOFOLLOW governs only the final component). The window is
+	// not small under today's schedule: ensureEngine starts the engine
+	// LAZILY, on first proxy use, i.e. after the payload has been running and
+	// has already been able to write to the target — so under Tier C the
+	// payload can trigger the graft itself and swap the link in a loop. Do
+	// not read this as "residual TOCTOU, narrow"; it is a live race under the
+	// current design. The fix belongs in #125, not here: the graft must be
+	// performed from a DESCRIPTOR, not a re-walked path —
+	// openat2(AT_FDCWD, g.Host, {flags: O_PATH|O_DIRECTORY, resolve:
+	// RESOLVE_NO_SYMLINKS}), which fails ELOOP if any component is a
+	// symlink, in one syscall with no window, followed by open_tree(fd, "",
+	// AT_EMPTY_PATH|OPEN_TREE_CLONE|AT_RECURSIVE) — and the AT_EMPTY_PATH
+	// form is UNMEASURED; #125 must not claim the fd construction works
+	// until it is.
 	if !p.HostPathVisible(g.Host, g.Access == AccessRW) && !p.EngineOwnedHostPaths[g.Host] {
 		needWrite := ""
 		if g.Access == AccessRW {
 			needWrite = ", writable"
 		}
-		return fmt.Errorf("cannot graft %s (host %s%s) into the engine's view: the sandbox's own\n"+
+		msg := fmt.Sprintf("cannot graft %s (host %s%s) into the engine's view: the sandbox's own\n"+
 			"       policy does not expose this host path, and snug did not create it for this run.\n"+
 			"       A graft may only reach a host path the sandbox's OWN grants already expose — the\n"+
 			"       engine's view is DERIVED from the sandbox's, never a second, wider window onto\n"+
 			"       the host — or a path snug itself created (the container store, the runroot, a\n"+
 			"       socket directory). Grant it to the sandbox first, or graft a path snug owns.",
 			g.Guest, g.Host, needWrite)
+		// Appended ONLY when HostAsked is set — i.e. only when resolution
+		// actually changed the source — so the ordinary (non-symlink) refusal
+		// stays byte-identical to what it read before this fix (issue #55, F6).
+		if g.HostAsked != "" {
+			msg += fmt.Sprintf("\n       The source was named as %s, which is a SYMLINK on the host;\n"+
+				"       snug judges what it resolves to, because open_tree(2) follows it (measured, issue #55).",
+				g.HostAsked)
+		}
+		return fmt.Errorf("%s", msg)
 	}
 
 	return nil
@@ -313,13 +445,36 @@ func existsInSandbox(p *Policy, guest string) bool {
 }
 
 // HostPathVisible reports whether the SANDBOX can itself see a host path at the
-// given access — G4's first disjunct, and the same rule
+// given access. It is G4's first disjunct and the same rule
 // internal/dockerproxy's bind filter enforces for a container's own `-v`
-// requests (invariant 6: one author of "can the sandbox see this host path",
-// not two implementations that eventually disagree). Moved here from
-// dockerproxy.hostPathVisible (issue #55) so a graft's source check and the
-// proxy's bind filter share it rather than each carrying its own copy;
-// dockerproxy.hostPathVisible is now a one-line call to this.
+// requests — invariant 6: one author of "can the sandbox see this host path",
+// not two implementations that eventually disagree.
+//
+// IT IS PURELY LEXICAL, AND THAT IS A CONTRACT ON ITS CALLERS RATHER THAN AN
+// OVERSIGHT. It compares strings against p.Mounts; it touches no filesystem and
+// takes no Environ, so it cannot tell a directory from a symlink pointing out of
+// every grant this policy makes. Measured (issue #55, F6): open_tree(2) FOLLOWS
+// a final symlink, and podman resolves a `-v` source on the host. A caller that
+// asks this about a literal string the payload can influence is asking about a
+// NAME, not about a TREE, and `ln -s ~/.ssh $TARGET/link` then passes.
+//
+// Every caller therefore owes it a path already put through
+// ResolveExistingHostPath, and must USE the resolved path afterwards rather than
+// the one it asked about — resolving and then passing the literal onward moves
+// the hole instead of closing it. There are exactly two non-test callers and
+// both discharge this immediately before calling:
+//
+//   - dockerproxy.(*Proxy).checkOne — resolves, audits a divergence, and
+//     forwards the RESOLVED Source to the engine (create.go).
+//   - policy.(*Policy).checkGraft — G4, over a Graft whose Host Policy.Graft has
+//     already rewritten, and which checkGraft additionally requires to be a
+//     fixed point of the same resolution, so a hand-built Policy cannot install
+//     an unresolved one either.
+//
+// TestHostPathVisibleCallersAreInventoried fails when a third caller appears.
+// Adding one means writing its resolution obligation into this list: a tripwire
+// on the SET is the only enforceable form of an obligation that cannot be
+// checked at the call itself.
 //
 // It walks only KindBind mounts, matching a host path against a mount's Host
 // by exact match or path-ancestor — never a string prefix — and, for a

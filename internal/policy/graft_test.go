@@ -199,7 +199,7 @@ func validGraft(p *Policy, suffix string) Graft {
 // TestValidGraftFixtureIsAccepted is the shared positive control named above.
 func TestValidGraftFixtureIsAccepted(t *testing.T) {
 	p := mustResolveDefaults(t)
-	if err := p.Graft(validGraft(p, "control")); err != nil {
+	if err := p.Graft(newFakeEnv(), validGraft(p, "control")); err != nil {
 		t.Fatalf("control: the shared valid-graft fixture was refused, so every refusal test built "+
 			"from it by changing one field cannot be trusted to be refusing for the reason it "+
 			"claims: %v", err)
@@ -218,7 +218,7 @@ func TestValidGraftFixtureIsAccepted(t *testing.T) {
 // exemption to carry over — checkGraft's G1 deliberately does not have one.
 func refusalGraftCoversStagedBinDir(t testing.TB, guest string) error {
 	p := resolveDefaults(t)
-	return p.Graft(rawGraft(guest))
+	return p.Graft(newFakeEnv(), rawGraft(guest))
 }
 
 // TestGraftCoveringStagedBinDirIsRefused is the test the trap above exists
@@ -297,7 +297,7 @@ func TestGraftInsideStagedBinDirStillLegal(t *testing.T) {
 		},
 		Why: "test abuse sentence",
 	}
-	if err := p.Graft(g); err != nil {
+	if err := p.Graft(newFakeEnv(), g); err != nil {
 		t.Fatalf("control: a graft strictly inside %s must stay legal: %v", StagedBinDir, err)
 	}
 }
@@ -380,7 +380,7 @@ func refusalGraftSourceNotVisible(t testing.TB) error {
 	p := resolveDefaults(t)
 	bad := validGraft(p, "xdg")
 	bad.Host = "/run/user/1000"
-	return p.Graft(bad)
+	return p.Graft(newFakeEnv(), bad)
 }
 
 func TestGraftSourceMustBeVisibleToTheSandbox(t *testing.T) {
@@ -401,7 +401,7 @@ func TestGraftSourceMustBeVisibleToTheSandbox(t *testing.T) {
 	// POSITIVE CONTROL, same Policy: TestValidGraftFixtureIsAccepted already
 	// proves this shape is accepted; repeated here as g4's own control so this
 	// file's G4 test does not depend on reading another one to mean anything.
-	if err := p.Graft(validGraft(p, "inside-target")); err != nil {
+	if err := p.Graft(newFakeEnv(), validGraft(p, "inside-target")); err != nil {
 		t.Fatalf("control: a graft whose Host sits inside an AccessRW grant must be accepted: %v", err)
 	}
 }
@@ -416,7 +416,7 @@ func TestGraftSourceMustBeVisibleToTheSandbox(t *testing.T) {
 // never /etc itself).
 func refusalGraftDestinationDoesNotExist(t testing.TB, guest string) error {
 	p := resolveDefaults(t)
-	return p.Graft(rawGraft(guest))
+	return p.Graft(newFakeEnv(), rawGraft(guest))
 }
 
 func TestGraftDestinationMustExist(t *testing.T) {
@@ -438,7 +438,7 @@ func TestGraftDestinationMustExist(t *testing.T) {
 
 	// POSITIVE CONTROL: a destination inside a writable grant passes G3.
 	p := mustResolveDefaults(t)
-	if err := p.Graft(validGraft(p, "inside")); err != nil {
+	if err := p.Graft(newFakeEnv(), validGraft(p, "inside")); err != nil {
 		t.Fatalf("control: a graft destination inside a writable grant must pass G3: %v", err)
 	}
 }
@@ -464,7 +464,7 @@ func TestGraftNeverReachesBwrapArgs(t *testing.T) {
 	}
 
 	g := validGraft(&p, "argv-probe")
-	if err := p.Graft(g); err != nil {
+	if err := p.Graft(newFakeEnv(), g); err != nil {
 		t.Fatalf("fixture: a valid graft was rejected: %v", err)
 	}
 
@@ -534,7 +534,7 @@ func refusalGraftEmptyWhy(t testing.TB) error {
 	p := resolveDefaults(t)
 	g := validGraft(p, "why-probe")
 	g.Why = ""
-	return p.Graft(g)
+	return p.Graft(newFakeEnv(), g)
 }
 
 func TestGraftCarriesAnAbuseSentence(t *testing.T) {
@@ -655,7 +655,7 @@ func TestGraftAccessIsROorRW(t *testing.T) {
 	p := mustResolveDefaults(t)
 	g := validGraft(p, "access-probe")
 	g.Access = AccessNone
-	err := p.Graft(g)
+	err := p.Graft(newFakeEnv(), g)
 	if err == nil {
 		t.Fatal("a graft with Access=none (neither ro nor rw) was accepted; Access is a " +
 			"REQUIREMENT enforced by mount_setattr before move_mount, and \"none\" describes " +
@@ -671,7 +671,7 @@ func refusalGraftOptional(t testing.TB) error {
 	p := resolveDefaults(t)
 	g := validGraft(p, "optional-probe")
 	g.Optional = true
-	return p.Graft(g)
+	return p.Graft(newFakeEnv(), g)
 }
 
 func TestGraftMayNotBeOptional(t *testing.T) {
@@ -691,7 +691,7 @@ func TestGraftFromNamesNoProfile(t *testing.T) {
 	p := mustResolveDefaults(t)
 	g := validGraft(p, "from-probe")
 	g.From = []string{"@sys"}
-	err := p.Graft(g)
+	err := p.Graft(newFakeEnv(), g)
 	if err == nil {
 		t.Fatal("a graft whose From names @sys (a resolved profile) was accepted; no profile may " +
 			"ever author a graft, and a From naming one means the caller copied provenance from a " +
@@ -715,10 +715,10 @@ func TestGraftFromNamesNoProfile(t *testing.T) {
 func refusalGraftCoversGraft(t testing.TB) error {
 	p := resolveDefaults(t)
 	inner := validGraft(p, "nest/child")
-	if err := p.Graft(inner); err != nil {
+	if err := p.Graft(newFakeEnv(), inner); err != nil {
 		t.Fatalf("fixture: the inner graft was refused: %v", err)
 	}
-	return p.Graft(validGraft(p, "nest"))
+	return p.Graft(newFakeEnv(), validGraft(p, "nest"))
 }
 
 func TestGraftMayNotCoverAnotherGraft(t *testing.T) {
@@ -726,10 +726,10 @@ func TestGraftMayNotCoverAnotherGraft(t *testing.T) {
 	inner := validGraft(p, "nest/child")
 	outer := validGraft(p, "nest")
 
-	if err := p.Graft(inner); err != nil {
+	if err := p.Graft(newFakeEnv(), inner); err != nil {
 		t.Fatalf("fixture: the inner graft was refused: %v", err)
 	}
-	err := p.Graft(outer)
+	err := p.Graft(newFakeEnv(), outer)
 	if err == nil {
 		t.Fatal("a graft at an ancestor of an existing graft was accepted; it would take the " +
 			"descendant's destination with it in the engine's mount namespace")
@@ -743,10 +743,10 @@ func TestGraftMayNotCoverAnotherGraft(t *testing.T) {
 	// The reverse order: outer first, then inner — the OTHER branch of G2's
 	// loop.
 	q := mustResolveDefaults(t)
-	if err := q.Graft(validGraft(q, "nest2")); err != nil {
+	if err := q.Graft(newFakeEnv(), validGraft(q, "nest2")); err != nil {
 		t.Fatalf("fixture: the outer graft was refused: %v", err)
 	}
-	err = q.Graft(validGraft(q, "nest2/child"))
+	err = q.Graft(newFakeEnv(), validGraft(q, "nest2/child"))
 	if err == nil {
 		t.Fatal("a graft at a descendant of an existing graft was accepted")
 	}

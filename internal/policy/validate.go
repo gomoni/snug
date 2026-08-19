@@ -211,7 +211,7 @@ func (p *Policy) Validate(env Environ) error {
 	}
 	sort.Strings(grafts)
 	for _, g := range grafts {
-		if err := p.checkGraft(p.Grafts[g]); err != nil {
+		if err := p.checkGraft(env, p.Grafts[g]); err != nil {
 			return err
 		}
 	}

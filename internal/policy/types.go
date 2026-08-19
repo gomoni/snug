@@ -189,6 +189,16 @@ type Graft struct {
 	// graft, so there is no TOML file for the sentence to live in; this is the
 	// working agreement's rule carried into the one place a profile cannot reach.
 	Why string
+
+	// HostAsked is the path the caller named BEFORE symlink resolution, and is
+	// EMPTY unless resolution changed it. Policy.Graft resolves Host (issue #55,
+	// F6: open_tree(2) follows a final symlink — measured — so judging the
+	// literal string judges a name, not a tree) and keeps the asked-for path
+	// only so --dry-run can show that the path snug's own code named is not the
+	// path it will open. It is not an input: nothing reads it to decide
+	// anything, and checkGraft puts it through the same hygiene checks as Host
+	// because it reaches the screen.
+	HostAsked string
 }
 
 // Policy is the single computed, immutable object. It is the sole author of the
