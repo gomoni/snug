@@ -1489,21 +1489,87 @@ func describeNetwork(out *os.File, p *policy.Policy) {
 // the one-process case, where saying so plainly is the point (Phase 1 adds no
 // user-visible capability, and this block is how that claim stays checkable
 // rather than merely asserted).
+// longLivedProcess is one entry in the TOPOLOGY block's process list: what it
+// is called and what it is for. Both are shown, because a count on its own
+// answers "how many" and a reader's actual question is "which".
+type longLivedProcess struct {
+	name string
+	role string
+}
+
+// longLivedProcesses derives the list from the SAME predicates
+// internal/sandbox/exec.go's Run and runStaged branch on, in the order those
+// processes come into existence:
+//
+//	snug     always — this process
+//	stage    Topology.NeedsStage()          (exec.go: Run's runStaged arm)
+//	pasta    Net.Mode == NetEgress          (runStaged: `if p.Net.Mode == policy.NetEgress`)
+//	engine   Podman != PodmanOff            (runStaged: `if opts.EngineSpec != nil`)
+//	bwrap    always — the sandbox itself
+//
+// The engine's own predicate is spelled from the POLICY (p.Podman) rather than
+// from Options.EngineSpec, because --dry-run has no Options: internal/cli's
+// startContainers sets EngineSpec exactly when p.Podman != PodmanOff, so the
+// two agree by construction. If that ever stops being true, this comment is
+// the thing to fix, not the count.
+//
+// bwrap is listed LAST on the staged arm on purpose: it is the last thing
+// created, after the network is confirmed up, which is the ordering property
+// INDEX §4.3 exists to state. __innetns is deliberately absent — it execve's
+// into bwrap rather than running beside it, so counting it would inflate the
+// number a human uses to check `ps`.
+func longLivedProcesses(p *policy.Policy) []longLivedProcess {
+	procs := []longLivedProcess{{"snug", "this process — resolves the policy and supervises"}}
+	if p.Topology.NeedsStage() {
+		role := "creates the sandbox's network namespace, pins it, leaves it"
+		if p.Topology.Netns != policy.NetnsStage {
+			// Unreachable today: startContainers refuses @net-host with a
+			// container profile before any namespace exists, and that is the
+			// only way NeedsStage() is true without NetnsStage. Rendered
+			// honestly rather than asserted, so a future third way of needing
+			// a stage cannot make this line claim a namespace it did not make.
+			role = "holds the delegated subuid range"
+		}
+		procs = append(procs, longLivedProcess{"stage (P1)", role})
+	}
+	if p.Net.Mode == policy.NetEgress {
+		procs = append(procs, longLivedProcess{"pasta", "attached to that namespace — the only egress path"})
+	}
+	if p.Podman != policy.PodmanOff {
+		procs = append(procs, longLivedProcess{"engine", "the container engine, forked into the same namespace"})
+	}
+	return append(procs, longLivedProcess{"bwrap", "the sandbox itself, and the payload inside it"})
+}
+
 func describeTopology(out *os.File, p *policy.Policy) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "TOPOLOGY")
-	// One denominator, counted the same way in both arms: every long-lived
-	// process snug will run, snug itself included. The two arms used to count
-	// differently — "1 — bwrap only" excluded snug, "2 — snug, and a stage"
-	// excluded bwrap, and neither mentioned pasta — so the one line a human
-	// reads to answer "how many processes" was wrong under either reading.
+	// One denominator, counted the same way in every arm: every long-lived
+	// process snug will run, snug itself included.
+	//
+	// DERIVED, not written out, and that is the point of longLivedProcesses.
+	// This line has now been wrong twice for the same reason. First the two
+	// arms counted differently — "1 — bwrap only" excluded snug, "2 — snug,
+	// and a stage" excluded bwrap, and neither mentioned pasta. The fix for
+	// that was a second hand-written sentence, which Tier B (issue #63) then
+	// falsified: it named pasta on an offline @podman-socket run that starts
+	// none, omitted the container engine that run does start, and printed 4
+	// for a `@net -p @podman-socket` run that starts five. A count in prose is
+	// a copy of state held somewhere else — internal/sandbox/exec.go's
+	// runStaged, here — so it is read off the same predicates runStaged
+	// branches on rather than restated beside them. Adding a long-lived helper
+	// without touching this block is now a golden diff rather than a silent
+	// lie (TestGoldenTopology, TestTopologyProcessesMatchRunStagedsPredicates).
+	procs := longLivedProcesses(p)
+	fmt.Fprintf(out, "  processes       %d — every long-lived process this run starts, snug included:\n", len(procs))
+	for _, pr := range procs {
+		fmt.Fprintf(out, "                    %-11s %s\n", pr.name, pr.role)
+	}
 	if !p.Topology.NeedsStage() {
-		fmt.Fprintf(out, "  processes       2 — snug and bwrap. No stage, no privileged ancestor namespace.\n")
+		fmt.Fprintf(out, "                  No stage, no privileged ancestor namespace.\n")
 	} else {
-		fmt.Fprintf(out, "  processes       4 — snug, a stage (P1) that creates the sandbox's network\n")
-		fmt.Fprintf(out, "                  namespace, pasta attached to that namespace, and bwrap, which\n")
-		fmt.Fprintf(out, "                  the stage forks back into it. (A fifth, __innetns, is the\n")
-		fmt.Fprintf(out, "                  setns shim that becomes bwrap; it never coexists with it.)\n")
+		fmt.Fprintf(out, "                  (__innetns is a setns shim that BECOMES bwrap rather than\n")
+		fmt.Fprintf(out, "                  running beside it, so it is not one of the %d.)\n", len(procs))
 	}
 	fmt.Fprintf(out, "  netns owner     %s\n", p.Topology.Netns)
 	if p.Topology.NeedsStage() {
