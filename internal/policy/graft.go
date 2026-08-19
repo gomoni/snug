@@ -60,13 +60,24 @@ func (p *Policy) Graft(env Environ, g Graft) error {
 	// refusal a human sees by creating or deleting a directory. Fall back to
 	// the lexical form and let G4 — a rule over the grant set, which the
 	// payload cannot touch — be the one that speaks.
-	if real, err := ResolveExistingHostPath(env, g.Host); err == nil {
-		if real != filepath.Clean(g.Host) {
-			g.HostAsked = g.Host
+	//
+	// Skipped entirely for a Kind the stage MOUNTS rather than clones. Both
+	// arms below end in filepath.Clean, and Clean("") is ".", so normalising a
+	// kind that has no Host manufactures one: checkGraft's refusal then reads
+	// `Host is "."` and the ENGINE VIEW block would render `from .` for a fresh
+	// procfs. The normalisation is only meaningful for the path open_tree(2)
+	// will be handed, so it runs only for the kinds that have one — and
+	// checkGraft refuses a non-empty Host on the others, so "no Host" is
+	// enforced rather than assumed (issue #125).
+	if graftKindRules[g.Kind].hasHost {
+		if real, err := ResolveExistingHostPath(env, g.Host); err == nil {
+			if real != filepath.Clean(g.Host) {
+				g.HostAsked = g.Host
+			}
+			g.Host = real
+		} else {
+			g.Host = filepath.Clean(g.Host)
 		}
-		g.Host = real
-	} else {
-		g.Host = filepath.Clean(g.Host)
 	}
 
 	if err := p.checkGraft(env, g); err != nil {
@@ -155,6 +166,54 @@ func ResolveExistingHostPath(env Environ, path string) (string, error) {
 	}
 }
 
+// graftKindRule is one row of graftKindRules: everything checkGraft needs to
+// know about a Kind to decide which of its Host-shaped rules make sense.
+type graftKindRule struct {
+	// hasHost is false for a graft the STAGE builds itself — a fresh procfs,
+	// a fresh cgroup2 mount — rather than one it clones from an existing host
+	// path with open_tree(2). There is no Host to resolve, no Host to visit,
+	// and no "is this visible to the sandbox" question to ask about it.
+	hasHost bool
+}
+
+// graftKindRules is the allowlist for Graft.Kind, written as a TABLE rather
+// than a scattered `if g.Kind == ...` for the reason CLAUDE.md names
+// directly: "a rule written once and applied to one of its two halves is the
+// shape to watch for" — checkEnvName's NUL check, refused on the name and
+// forgotten on the value, is the worked example. G4 and the two Host hygiene
+// checks below are ONE RULE ("a graft's source must be a real, visible host
+// path") that has a Host half and a no-Host half, and every Kind has to say
+// which half applies to it rather than the code silently having an `if` that
+// covers only the Kind whoever wrote it was thinking about.
+//
+//	Kind         hasHost  what it skips, and why
+//	KindGraft    true     nothing — an open_tree(2) clone of a HOST directory
+//	                      (issue #125's four grafts: the container store, the
+//	                      runroot, the socket directory, the config
+//	                      directory). Every rule below runs.
+//	KindProc     false    the two Host hygiene checks (checkPathHygiene on
+//	                      Host and HostAsked) and G4 (the source-visibility
+//	                      rule) — there is no source: the stage MOUNTS a
+//	                      fresh procfs owned by the engine's own pid
+//	                      namespace (`mount("proc", "/proc", "proc", 0,
+//	                      "")`), the same way the sandbox's own /proc is a
+//	                      fresh procfs and not a bind of anything.
+//	KindCgroup2  false    identical reasoning to KindProc: the stage MOUNTS a
+//	                      fresh cgroup2 (`mount("cgroup2", "/sys/fs/cgroup",
+//	                      "cgroup2", 0, "")`), never open_tree(2) of a host
+//	                      path.
+//
+// Every OTHER rule — G1 (no graft may cover snug's own paths), G2 (no graft
+// may cover or be covered by another graft), G3 (the destination must exist
+// in the sandbox's own view), and G5's remaining checks (Access, Optional,
+// Why, From, and Guest's own hygiene) — runs for every Kind unconditionally.
+// None of those ask about Host.
+var graftKindRules = map[Kind]graftKindRule{
+	KindGraft:   {hasHost: true},
+	KindProc:    {hasHost: false},
+	KindCgroup2: {hasHost: false},
+}
+
 // checkGraft runs G1-G5 over one graft WITHOUT installing it, so Policy.Graft
 // and Validate's re-check (issue #55) share exactly one implementation of the
 // rules rather than the two that would otherwise drift.
@@ -169,11 +228,19 @@ func ResolveExistingHostPath(env Environ, path string) (string, error) {
 // cannot catch.
 func (p *Policy) checkGraft(env Environ, g Graft) error {
 	// G5, structural half — a bug in the caller, not a configuration choice, so
-	// checked first and unconditionally.
-	if g.Kind != KindGraft {
-		return fmt.Errorf("cannot graft %s: Kind is %q, not graft — Policy.Graft only ever installs\n"+
-			"       a KindGraft mount. A caller building a Graft with any other Kind is a bug in\n"+
-			"       that caller, not a policy this can accept.", g.Guest, g.Kind)
+	// checked first and unconditionally. The allowlist is graftKindRules, not
+	// a flat `!= KindGraft`: a graft may also be the engine's own procfs or
+	// cgroup2 mount (issue #125's design pass §1), and both of those still
+	// have to be REFUSED as a payload-namespace Kind exactly as a stray
+	// KindGraft is (see BwrapFlags's default panic arm and Validate's
+	// KindGraft-in-p.Mounts check, which now also names KindCgroup2).
+	rules, allowed := graftKindRules[g.Kind]
+	if !allowed {
+		return fmt.Errorf("cannot graft %s: Kind is %q, and a graft's Kind must be one the engine's\n"+
+			"       derived view actually builds — KindGraft (an open_tree(2) clone of a host path),\n"+
+			"       KindProc or KindCgroup2 (a fresh mount the stage makes itself). A caller building\n"+
+			"       a Graft with any other Kind is a bug in that caller, not a policy this can accept.",
+			g.Guest, g.Kind)
 	}
 	if g.Access != AccessRO && g.Access != AccessRW {
 		return fmt.Errorf("cannot graft %s: Access is %q, and a graft must be ro or rw — Access is a\n"+
@@ -217,20 +284,51 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 			"       []string{\"(snug)\"}.", g.Guest, g.From)
 	}
 
-	// Guest and Host go through the SAME two checks a mount's Guest already
-	// does (validate.go), rather than a fourth hand-rolled copy. HostAsked runs
-	// through the same check when set — it reaches --dry-run too (issue #55,
-	// F6 §2c) — and this order matters: hygiene on Guest and Host first, so a
-	// forging rune never reaches a screen.
+	// Guest goes through the SAME check a mount's Guest already does
+	// (validate.go), rather than a fourth hand-rolled copy — unconditionally,
+	// for every Kind: the destination is always a real path in the derived
+	// view and always reaches the ENGINE VIEW block, whether or not this Kind
+	// has a Host.
 	if err := checkPathHygiene("graft destination", g.Guest, strings.Join(g.From, "+"), "the ENGINE VIEW block"); err != nil {
 		return err
 	}
-	if err := checkPathHygiene("graft source", g.Host, strings.Join(g.From, "+"), "the ENGINE VIEW block"); err != nil {
-		return err
+	// A kind with hasHost=false must not merely SKIP the Host rules — it must
+	// have no Host to skip them for. Gating alone was the first shape of this
+	// code and it is the wrong one: a KindProc graft carrying
+	// Host: "/home/u/.ssh" passed every check (they are all gated), was stored
+	// verbatim, and describeGrafts printed `from /home/u/.ssh` under a row the
+	// stage builds from a fresh mount and never opens that path for. Nothing
+	// was reachable — the stage ignores Host for KindProc — but --dry-run is
+	// the mechanism by which a human trusts snug at all, and a line there that
+	// names a host path nothing reads is a lie in the one artifact that may not
+	// contain one. Refuse the field instead of ignoring it, so the skip in
+	// graftKindRules means "this kind has no source", not "this kind's source
+	// goes unchecked".
+	if !rules.hasHost && (g.Host != "" || g.HostAsked != "") {
+		return fmt.Errorf("cannot graft %s: Kind is %q, which the stage builds as a FRESH mount,\n"+
+			"       but Host is %q — a path nothing will ever open.\n"+
+			"       A fresh procfs or cgroup2 has no source: the stage mounts it, it does not clone\n"+
+			"       a host subtree with open_tree(2). Leaving the field set would put `from %s` on\n"+
+			"       the ENGINE VIEW block for a mount that reads nothing there. Clear Host (and\n"+
+			"       HostAsked), or use KindGraft if you meant to clone that path.",
+			g.Guest, g.Kind, g.Host, g.Host)
 	}
-	if g.HostAsked != "" {
-		if err := checkPathHygiene("graft source (asked)", g.HostAsked, strings.Join(g.From, "+"), "the ENGINE VIEW block"); err != nil {
+	// Host and HostAsked are the two checks graftKindRules.hasHost gates —
+	// there is nothing here to sanitise for KindProc/KindCgroup2, because
+	// there is no Host (see graftKindRules's own doc comment, and the refusal
+	// directly above, which is what makes "there is no Host" true rather than
+	// merely assumed). HostAsked runs through the same check when set — it
+	// reaches --dry-run too (issue #55, F6 §2c) — and this order matters:
+	// hygiene on Guest and Host first, so a forging rune never reaches a
+	// screen.
+	if rules.hasHost {
+		if err := checkPathHygiene("graft source", g.Host, strings.Join(g.From, "+"), "the ENGINE VIEW block"); err != nil {
 			return err
+		}
+		if g.HostAsked != "" {
+			if err := checkPathHygiene("graft source (asked)", g.HostAsked, strings.Join(g.From, "+"), "the ENGINE VIEW block"); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -242,14 +340,20 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 	// F3a). It also re-samples the host, so a link created between Policy.Graft
 	// and Validate is caught; a link created AFTER Validate is not, and cannot
 	// be (the TOCTOU paragraph in the G4 comment below).
-	if real, err := ResolveExistingHostPath(env, g.Host); err == nil && real != g.Host {
-		return fmt.Errorf("cannot graft %s: its source %s is not the path it resolves to (%s).\n"+
-			"       open_tree(2) FOLLOWS a symlink, so a graft installed with an unresolved source\n"+
-			"       opens whatever the link points at — and the sandbox's writable target is\n"+
-			"       attacker-controlled, so that is a choice the payload gets to make. Policy.Graft\n"+
-			"       resolves before it checks; a graft whose stored source is unresolved did not go\n"+
-			"       through it. Install grafts with Policy.Graft.",
-			g.Guest, g.Host, real)
+	//
+	// Gated by rules.hasHost for the same reason the two hygiene checks above
+	// are: there is no Host to be a fixed point of anything for KindProc or
+	// KindCgroup2.
+	if rules.hasHost {
+		if real, err := ResolveExistingHostPath(env, g.Host); err == nil && real != g.Host {
+			return fmt.Errorf("cannot graft %s: its source %s is not the path it resolves to (%s).\n"+
+				"       open_tree(2) FOLLOWS a symlink, so a graft installed with an unresolved source\n"+
+				"       opens whatever the link points at — and the sandbox's writable target is\n"+
+				"       attacker-controlled, so that is a choice the payload gets to make. Policy.Graft\n"+
+				"       resolves before it checks; a graft whose stored source is unresolved did not go\n"+
+				"       through it. Install grafts with Policy.Graft.",
+				g.Guest, g.Host, real)
+		}
 	}
 
 	// G1 — a graft may not cover one of snug's own paths, in EITHER namespace.
@@ -270,7 +374,26 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 	// path a mount-level grant would be asked of. It is not extended across
 	// namespaces to do this: this is one graft's own Guest, judged on its own,
 	// never compared against another namespace's containment.
-	if at, own, ours := snugsOwnCovered(g.Guest); ours {
+	//
+	// ONE hard-coded admission: (/proc, KindProc). /proc is in snugsOwn
+	// because a profile grant there would displace the sandbox's OWN procfs
+	// with the host's — but this graft, when its Kind is KindProc, IS the
+	// engine's own procfs, replacing snug's placeholder /proc entry in the
+	// ENGINE's derived view exactly as legitimately as the sandbox's own
+	// procfs replaces it in the payload's (validate.go's mount-level check,
+	// `ours && !m.Authored`). Written as an EXACT (Guest, Kind) match, not as
+	// an `Authored` predicate: the doc comment on this function's own trap,
+	// three paragraphs up, says copying `!m.Authored` here makes G1 a
+	// PERMANENT NO-OP, because Policy.Graft sets Authored on every graft
+	// unconditionally — that trap applies word for word to a predicate
+	// spelled any other way that is also true of every graft. Nothing else
+	// gets this admission: a KindGraft (a host-tree clone) at /proc is still
+	// refused below, unchanged — it would hand the engine /proc/<pid>/root
+	// and /proc/<pid>/cwd for every host process, the exact complete
+	// filesystem bypass G1 exists to prevent (issue #125's design pass §1).
+	if g.Guest == "/proc" && g.Kind == KindProc {
+		// admitted — fall through to G2/G3 below, which still apply.
+	} else if at, own, ours := snugsOwnCovered(g.Guest); ours {
 		if at == g.Guest {
 			return fmt.Errorf("cannot graft %s into the engine's view: %s is snug's own: %s\n"+
 				"       A graft at that path would displace it in the ENGINE's mount namespace\n"+
@@ -332,6 +455,11 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 	// invariant 6 expressed as a predicate: the engine's view is DERIVED from
 	// the sandbox's, never a second, wider window onto the host.
 	//
+	// Gated by rules.hasHost, same as the two checks above: there is no
+	// source to ask this about for KindProc or KindCgroup2 — the stage MOUNTS
+	// those itself, it does not open_tree(2) anything the sandbox would have
+	// to have already exposed.
+	//
 	// The two disjuncts are asking DIFFERENT questions and neither one alone
 	// is "G4". HostPathVisible refuses /run/user/<uid> — the host's
 	// ssh-agent, session D-Bus, Wayland and rootless podman socket — because
@@ -347,53 +475,115 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 	// both halves (issue #55, finding F2).
 	//
 	// TOCTOU — what the resolution above (both here and in Policy.Graft)
-	// closes and what it does not (issue #55, F6 §4). Closed: G4 now judges,
-	// and the stage will open, the SAME tree — $TARGET/link -> ~/.ssh is
-	// refused because ~/.ssh is exposed by no grant. That is the whole of
-	// F6's defect. NOT closed, and not closable in this layer: Policy.Graft
-	// resolves at policy-construction time, Validate re-samples in the same
-	// phase, and the stage calls open_tree at engine-start time — any
-	// component of the resolved path can be replaced with a symlink in
-	// between, and open_tree follows an intermediate symlink unconditionally
-	// (AT_SYMLINK_NOFOLLOW governs only the final component). The window is
-	// not small under today's schedule: ensureEngine starts the engine
-	// LAZILY, on first proxy use, i.e. after the payload has been running and
-	// has already been able to write to the target — so under Tier C the
-	// payload can trigger the graft itself and swap the link in a loop. Do
-	// not read this as "residual TOCTOU, narrow"; it is a live race under the
-	// current design. The fix belongs in #125, not here: the graft must be
-	// performed from a DESCRIPTOR, not a re-walked path —
-	// openat2(AT_FDCWD, g.Host, {flags: O_PATH|O_DIRECTORY, resolve:
-	// RESOLVE_NO_SYMLINKS}), which fails ELOOP if any component is a
-	// symlink, in one syscall with no window, followed by open_tree(fd, "",
-	// AT_EMPTY_PATH|OPEN_TREE_CLONE|AT_RECURSIVE) — and the AT_EMPTY_PATH
-	// form is UNMEASURED; #125 must not claim the fd construction works
-	// until it is.
-	if !p.HostPathVisible(g.Host, g.Access == AccessRW) && !p.EngineOwnedHostPaths[g.Host] {
-		needWrite := ""
-		if g.Access == AccessRW {
-			needWrite = ", writable"
+	// closes and what it does not (issue #55, F6 §4; refined by issue #125's
+	// design pass §5, which is what corrects the paragraph this replaces).
+	//
+	// STALE CLAIM CORRECTED. This paragraph used to say the window was wide
+	// because "ensureEngine starts the engine LAZILY, on first proxy use,
+	// i.e. after the payload has been running and has already been able to
+	// write to the target" — that was already false when it was written
+	// (issue #125's design pass, §0(a)): since Tier B, internal/cli/container.go
+	// passes nil for ensureEngine ("the engine is EAGER now, forked and
+	// confirmed well before StartSandbox ever forks the payload"), and
+	// internal/sandbox/exec.go runs StartEngine + OnEngineReady strictly
+	// BEFORE StartSandbox. THIS run's payload has never executed when
+	// Policy.Graft or Validate run, full stop — there is no "payload has
+	// already been able to write to the target" window today, and there
+	// never was under the code that actually shipped.
+	//
+	// Closed: G4 now judges, and the stage will open, the SAME tree —
+	// $TARGET/link -> ~/.ssh is refused because ~/.ssh is exposed by no
+	// grant. That is the whole of F6's defect.
+	//
+	// NOT closed, and the residual is stated precisely rather than loosely
+	// (issue #125's design pass §5): *the descriptor is the object the graft
+	// is built from, so nothing observed between the openat2 and the graft
+	// can redirect IT* — not "the graft cannot be redirected" in general. The
+	// remaining window is the instructions between ResolveExistingHostPath
+	// (above, in Policy.Graft) and the openat2(AT_FDCWD, g.Host,
+	// {O_PATH|O_DIRECTORY|O_CLOEXEC, RESOLVE_NO_SYMLINKS}) call that reads the
+	// SAME resolved Host a few lines later, in the SAME function, in P0 — one
+	// process, no process boundary, and *before the stage, the netns, bwrap or
+	// the payload exist*. The fd that call returns travels P0 -> P1 -> the
+	// engine child by ExtraFiles; open_tree(2) clones from the fd, never a
+	// re-walked path, so nothing after the openat2 can be raced.
+	//
+	// The residual actors, because THIS run's payload cannot be one of them,
+	// are (a) a PREVIOUS run's payload — the container store persists across
+	// runs of the same profiles+target, and so does /tmp under @tmp-shared, so
+	// a symlink an earlier sandbox planted is still there to win the race —
+	// and (b) another same-uid HOST process, which is OUTSIDE snug's threat
+	// model: it already has, without any of this, every capability U-namespace
+	// confinement does not remove.
+	//
+	// Two decisions this closing carries, made by #125's design pass and not
+	// to be re-derived differently when the openat2 call itself lands (issue
+	// #125, C2):
+	//   - ELOOP from the openat2 is FATAL, with NO fallback to the path form.
+	//     A component becoming a symlink between ResolveExistingHostPath and
+	//     the openat2 a few instructions later IS the attack this closing
+	//     exists to catch, not a host layout snug should route around —
+	//     falling back to open_tree(2) on the path would silently reopen
+	//     exactly the F6 hole this paragraph says is closed.
+	//   - RESOLVE_NO_XDEV is deliberately NOT set. All four host grafts (the
+	//     container store, the runroot, the socket directory, the config
+	//     directory) plausibly cross a mount boundary on an ordinary host —
+	//     $HOME on its own filesystem, /tmp as tmpfs, the store on a separate
+	//     subvolume — so RESOLVE_NO_XDEV would fail EXDEV on an unremarkable
+	//     layout, not on an attack. open_tree(2)'s AT_RECURSIVE cloning the
+	//     crossed submounts is the INTENT here, not a hazard to fence off.
+	if rules.hasHost {
+		if !p.HostPathVisible(g.Host, g.Access == AccessRW) && !p.EngineOwnedHostPaths[g.Host] {
+			needWrite := ""
+			if g.Access == AccessRW {
+				needWrite = ", writable"
+			}
+			msg := fmt.Sprintf("cannot graft %s (host %s%s) into the engine's view: the sandbox's own\n"+
+				"       policy does not expose this host path, and snug did not create it for this run.\n"+
+				"       A graft may only reach a host path the sandbox's OWN grants already expose — the\n"+
+				"       engine's view is DERIVED from the sandbox's, never a second, wider window onto\n"+
+				"       the host — or a path snug itself created (the container store, the runroot, a\n"+
+				"       socket directory). Grant it to the sandbox first, or graft a path snug owns.",
+				g.Guest, g.Host, needWrite)
+			// Appended ONLY when HostAsked is set — i.e. only when resolution
+			// actually changed the source — so the ordinary (non-symlink) refusal
+			// stays byte-identical to what it read before this fix (issue #55, F6).
+			if g.HostAsked != "" {
+				msg += fmt.Sprintf("\n       The source was named as %s, which is a SYMLINK on the host;\n"+
+					"       snug judges what it resolves to, because open_tree(2) follows it (measured, issue #55).",
+					g.HostAsked)
+			}
+			return fmt.Errorf("%s", msg)
 		}
-		msg := fmt.Sprintf("cannot graft %s (host %s%s) into the engine's view: the sandbox's own\n"+
-			"       policy does not expose this host path, and snug did not create it for this run.\n"+
-			"       A graft may only reach a host path the sandbox's OWN grants already expose — the\n"+
-			"       engine's view is DERIVED from the sandbox's, never a second, wider window onto\n"+
-			"       the host — or a path snug itself created (the container store, the runroot, a\n"+
-			"       socket directory). Grant it to the sandbox first, or graft a path snug owns.",
-			g.Guest, g.Host, needWrite)
-		// Appended ONLY when HostAsked is set — i.e. only when resolution
-		// actually changed the source — so the ordinary (non-symlink) refusal
-		// stays byte-identical to what it read before this fix (issue #55, F6).
-		if g.HostAsked != "" {
-			msg += fmt.Sprintf("\n       The source was named as %s, which is a SYMLINK on the host;\n"+
-				"       snug judges what it resolves to, because open_tree(2) follows it (measured, issue #55).",
-				g.HostAsked)
-		}
-		return fmt.Errorf("%s", msg)
 	}
 
 	return nil
 }
+
+// EngineMountpoints are the guest paths BwrapFlags pre-creates (`--perms
+// 0755 --dir`) so a container graft has somewhere to land, when
+// p.Podman != PodmanOff (issue #125's design pass §1, "two engine-view
+// mounts that are not grafts of a host path").
+//
+// /proc is deliberately NOT here. Every resolved policy already mounts a
+// procfs at /proc — p.Mounts["/proc"] exists on every Policy Resolve
+// produces — so a graft at /proc (Kind KindProc, the engine's own procfs)
+// already passes existsInSandbox's FIRST disjunct with nothing extra to add.
+// This list exists only for the paths nothing else in a resolved policy ever
+// creates: no builtin profile grants /sys (@sys binds fourteen individual
+// /etc entries and the OS runtime, never /sys), so without pre-creating it
+// there is nowhere for the engine's cgroup2 mount (Guest /sys/fs/cgroup,
+// Kind KindCgroup2) to land.
+//
+// All THREE of /sys, /sys/fs and /sys/fs/cgroup are listed, not just the
+// leaf: bwrap's --dir does not create ancestors implicitly the way a bind's
+// auto-created mountpoint parents do (skeletonDirs, bwrap.go), and the
+// sandbox root is read-only after --remount-ro / — the LAST filesystem
+// operation BwrapFlags performs — so nothing later in the run can create
+// what was not pre-created here. Order matters for the same reason
+// skeletonDirs is depth-ascending: /sys/fs/cgroup needs /sys/fs to already
+// be a directory, which needs /sys.
+var EngineMountpoints = []string{"/sys", "/sys/fs", "/sys/fs/cgroup"}
 
 // existsInSandbox is G3: a graft's destination must already be a directory
 // inside the SANDBOX's own mount namespace before move_mount(2) can land
@@ -401,7 +591,7 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 // the read-only root tmpfs, and succeeding (EEXIST) wherever the directory
 // already existed — so the discriminator is the directory, not the mount.
 //
-// Three ways a destination can already exist, only the THIRD of which is a
+// Four ways a destination can already exist, only the THIRD of which is a
 // guess:
 //
 //   - it is itself a mountpoint (a Guest key in p.Mounts);
@@ -409,7 +599,12 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 //     directories (--dir), so the directory is there even though nothing is
 //     mounted AT it;
 //   - it sits inside a writable grant (KindBind rw, or KindTmpfs) — the STAGE
-//     can mkdir it there before move_mount runs.
+//     can mkdir it there before move_mount runs;
+//   - it is one of EngineMountpoints, AND this run selects a container
+//     engine (p.Podman != PodmanOff) — BwrapFlags pre-creates exactly this
+//     list, under exactly this condition, so the fourth disjunct has to
+//     match the same condition or it would accept a graft destination
+//     nothing in THIS run's argv actually creates.
 //
 // THE THIRD DISJUNCT IS A SOUNDNESS APPROXIMATION, NOT A FACT, and must be
 // read as one: "the stage can create this" is not the same claim as "this
@@ -419,7 +614,10 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 // a directory still fails at runtime — which is exactly why §6 makes the
 // runtime open_tree/mount_setattr/mkdir/move_mount failure FATAL rather than
 // treating this check as the last word. The two are not redundant: this is
-// where an approximation that guessed wrong surfaces.
+// where an approximation that guessed wrong surfaces. The FOURTH disjunct is
+// not this kind of approximation — EngineMountpoints and BwrapFlags's
+// emission of it are the SAME list, so this is a fact about the argv this
+// run will actually produce, not a guess about the filesystem.
 //
 // Checked against ENGINE-NETNS.md §5.1's four measured rows: /etc/containers
 // and /var/tmp match none of the three (@sys binds fourteen individual /etc
@@ -439,6 +637,13 @@ func existsInSandbox(p *Policy, guest string) bool {
 	if m, ok := p.SandboxView().coveringMount(guest); ok {
 		if (m.Kind == KindBind || m.Kind == KindTmpfs) && m.Access == AccessRW {
 			return true
+		}
+	}
+	if p.Podman != PodmanOff {
+		for _, mp := range EngineMountpoints {
+			if mp == guest {
+				return true
+			}
 		}
 	}
 	return false

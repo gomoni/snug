@@ -16,6 +16,12 @@
 --dir /run/snug
 --perms 0755
 --dir /run/snug/bin
+--perms 0755
+--dir /sys
+--perms 0755
+--dir /sys/fs
+--perms 0755
+--dir /sys/fs/cgroup
 --symlink usr/bin /bin
 --dev /dev
 --ro-bind /etc /etc

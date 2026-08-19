@@ -183,6 +183,28 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 		a = append(a, "--perms", "0755", "--dir", d)
 	}
 
+	// EngineMountpoints — /sys, /sys/fs, /sys/fs/cgroup — ONLY when this run
+	// selects a container engine. These are not grants: no profile exposes
+	// /sys, and nothing here makes it visible to the PAYLOAD either (the
+	// payload's own view is unaffected — these directories sit empty and
+	// unremarked on the sandbox's root tmpfs, same as any other skeleton dir,
+	// until --remount-ro / makes them permanently so). They exist so the
+	// STAGE has somewhere to move_mount(2) the engine's own cgroup2 mount in
+	// the DERIVED view (issue #125's design pass §1) — the sandbox's root is
+	// read-only by the time the engine forks, so a destination not created
+	// here never exists at all. existsInSandbox's fourth disjunct
+	// (graft.go) is what makes G3 accept a graft at one of these paths, and
+	// it is gated on the SAME p.Podman condition this is, on purpose: a
+	// container-less run must not carry these directories in its argv (they
+	// would be unexplained, ungranted paths on --dry-run's FILESYSTEM
+	// picture) and a container run must not have G3 accept a destination
+	// this loop did not actually create.
+	if p.Podman != PodmanOff {
+		for _, d := range EngineMountpoints {
+			a = append(a, "--perms", "0755", "--dir", d)
+		}
+	}
+
 	for _, m := range p.SortedMounts() {
 		switch m.Kind {
 		case KindBind:
@@ -219,15 +241,20 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 				a = append(a, "--ro-bind-data", strconv.Itoa(dataFD(m.Guest)), m.Guest)
 			}
 		default:
-			// Unreachable given Validate's rule that a KindGraft in p.Mounts is
-			// refused (internal/policy/validate.go), and every other Kind above
-			// is named explicitly — so the only way here is a NEW Kind added to
-			// the enum without a case in this switch. That is precisely the
-			// "--seccomp after bwrap's --" shape CLAUDE.md warns about: the flag
-			// (here, the mount) is silently OMITTED from the argv, with no error
-			// and no --dry-run line to notice it by. Panicking is what turns a
-			// missing capability into a build-time-adjacent failure instead of a
-			// silently weaker sandbox.
+			// Unreachable given Validate's rule that a KindGraft OR KindCgroup2
+			// in p.Mounts is refused (internal/policy/validate.go) — neither
+			// belongs in the PAYLOAD's mount set; both live only in p.Grafts,
+			// installed by Policy.Graft — and every other Kind above is named
+			// explicitly. So the only way here is a NEW Kind added to the enum
+			// without a case in this switch. That is precisely the "--seccomp
+			// after bwrap's --" shape CLAUDE.md warns about: the flag (here, the
+			// mount) is silently OMITTED from the argv, with no error and no
+			// --dry-run line to notice it by. Panicking is what turns a missing
+			// capability into a build-time-adjacent failure instead of a
+			// silently weaker sandbox. (KindProc is not in this list: it
+			// legitimately appears in p.Mounts already, for the sandbox's own
+			// /proc, and has its own case above — reusing it for the engine's
+			// procfs graft does not change that.)
 			panic(fmt.Sprintf("unhandled Kind — a Kind added without a case here is silently "+
 				"omitted from the argv (Kind=%s, guest=%s)", m.Kind, m.Guest))
 		}

@@ -99,25 +99,32 @@ func (p *Policy) Validate(env Environ) error {
 
 	for _, g := range guests {
 		m := p.Mounts[g]
-		// KindGraft belongs ONLY in p.Grafts, installed by Policy.Graft — never
-		// in p.Mounts, which is the PAYLOAD's mount set. There is no legitimate
-		// way for one to arrive here (no TOML key produces a Graft, and
-		// Policy.Graft never writes p.Mounts), so this refuses a bug rather than
-		// a real configuration. It exists because bwrap.go's switch has no
-		// case for KindGraft and never will (a graft is unreachable from the
-		// bwrap argv by design — bwrap 0.11.2 has no flag that can express one):
-		// without this check, a KindGraft here would either vanish from the
-		// argv silently (the --seccomp-after-`--` shape) or, if BwrapFlags were
-		// ever changed to fall through on an unrecognised Kind, would emit a
-		// real --bind into the PAYLOAD's namespace of a subtree meant for the
-		// engine alone — exactly the leak ENGINE-NETNS.md §5.1 step 3 exists to
-		// prevent.
-		if m.Kind == KindGraft {
-			return fmt.Errorf("mount %q (from %s) is a KindGraft in p.Mounts: a graft belongs only in\n"+
+		// KindGraft and KindCgroup2 belong ONLY in p.Grafts, installed by
+		// Policy.Graft — never in p.Mounts, which is the PAYLOAD's mount set.
+		// There is no legitimate way for either to arrive here (no TOML key
+		// produces a Graft, and Policy.Graft never writes p.Mounts), so this
+		// refuses a bug rather than a real configuration. It exists because
+		// bwrap.go's switch has no case for either Kind and never will (a
+		// graft, or the engine's own cgroup2 mount, is unreachable from the
+		// bwrap argv by design — bwrap 0.11.2 has no flag that can express
+		// either): without this check, one landing in p.Mounts would either
+		// vanish from the argv silently (the --seccomp-after-`--` shape) or, if
+		// BwrapFlags were ever changed to fall through on an unrecognised Kind,
+		// would emit a real mount into the PAYLOAD's namespace of a subtree
+		// meant for the engine alone — exactly the leak ENGINE-NETNS.md §5.1
+		// step 3 exists to prevent. (KindProc is deliberately not in this list:
+		// it legitimately appears in p.Mounts already, for the sandbox's own
+		// /proc — see bwrap.go's default arm.)
+		if m.Kind == KindGraft || m.Kind == KindCgroup2 {
+			name := "KindGraft"
+			if m.Kind == KindCgroup2 {
+				name = "KindCgroup2"
+			}
+			return fmt.Errorf("mount %q (from %s) is a %s in p.Mounts: a %s mount belongs only in\n"+
 				"       p.Grafts, installed by Policy.Graft — it must never reach the payload's own\n"+
 				"       mount set. Remove it from p.Mounts; if the intent was to expose this path to\n"+
 				"       the ENGINE's derived view, call Policy.Graft after Resolve instead.",
-				g, provenance(m))
+				g, provenance(m), name, m.Kind)
 		}
 		if err := checkPathHygiene("grant", g, provenance(m), "INSIDE the sandbox"); err != nil {
 			return err

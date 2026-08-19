@@ -787,6 +787,14 @@ func TestGoldenRefusals(t *testing.T) {
 		// selected forged the @ sigil's own guarantee on --dry-run.
 		{"graft_from_wears_the_sigil", refusalGraftFromWearsTheSigil},
 
+		// issue #125, Tier C piece C1: Graft.Kind became an allowlist, because
+		// the engine's derived view needs two mounts the stage MAKES (a fresh
+		// procfs, cgroup2) as well as the open_tree(2) clones it copies. These
+		// three are what stop the allowlist becoming a set of skips.
+		{"graft_kind_not_in_the_table", refusalGraftKindNotInTheTable},
+		{"graft_fresh_mount_carries_a_host", refusalGraftFreshMountCarriesAHost},
+		{"graft_kindproc_at_the_wrong_path", refusalGraftKindProcAtTheWrongPath},
+
 		// the name grammar (§2.3): name ::= [A-Za-z_][A-Za-z0-9_]*
 		{"env_name_empty", refusalEnv(EnvGrants{Set: map[string]string{"": "x"}})},
 		{"env_name_equals", refusalEnv(EnvGrants{Set: map[string]string{"PATH=/evil:": "x"}})},
