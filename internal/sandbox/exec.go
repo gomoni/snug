@@ -424,6 +424,12 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 	// Ctrl-C for as long as fifteen seconds.
 	guard := armTeardown(opts)
 	defer guard.stop()
+	// pasta is a descendant, so confirmTeardown's sweep kills it — and
+	// helper.watch is sitting on exactly that death, ready to report the
+	// sandbox as degraded. runStaged's `defer helper.stop()` is what normally
+	// claims the death, and on the signal path it has not run yet. Claim it
+	// here instead, before the first kill (issue #112).
+	guard.onSignal(helper.markStopping)
 
 	if err := st.StartSandbox(bwrap, argv); err != nil {
 		return 0, err

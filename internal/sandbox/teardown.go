@@ -283,6 +283,27 @@ func confirmTeardown(directChild *os.File, exclude map[int]bool, warn func(strin
 type teardownGuard struct {
 	sig  chan os.Signal
 	opts Options
+
+	// beforeSweep runs on a caught signal, before confirmTeardown kills
+	// anything, and never on the ordinary path. It is for state that says
+	// "this death was ours" to something watching a helper — the sweep kills
+	// helpers that have watchers, and a watcher cannot tell an orderly
+	// teardown from a helper crashing unless somebody tells it first.
+	//
+	// Registered rather than fixed, because the offline topology has no
+	// helpers at all and must stay a pass-through. Ordered, and run to
+	// completion before the first kill: a claim made after the kill is a
+	// claim made too late, which is issue #112 exactly.
+	beforeSweep []func()
+}
+
+// onSignal registers a function to run on a caught signal, before the sweep.
+// See teardownGuard.beforeSweep. Must be called before the fork it protects,
+// like everything else about the guard.
+func (g *teardownGuard) onSignal(fn func()) {
+	if fn != nil {
+		g.beforeSweep = append(g.beforeSweep, fn)
+	}
 }
 
 // armTeardown installs the guard. It must be called immediately before the
@@ -352,6 +373,13 @@ func (g *teardownGuard) wait(rootChildPid int, wait func() (int, error)) (int, e
 	case r := <-done:
 		return r.code, r.err
 	case sig := <-g.sig:
+		// BEFORE the sweep, not after: the sweep is what kills the helpers
+		// these callbacks are claiming responsibility for, and a claim made
+		// afterwards has already lost the race with the watcher goroutine
+		// that fires on the helper's death (issue #112).
+		for _, fn := range g.beforeSweep {
+			fn()
+		}
 		confirmTeardown(pinned, g.opts.excludeSet(), g.opts.warn)
 		// The kill inside confirmTeardown makes wait's own goroutine return
 		// promptly — it is blocked on reaping rootChildPid (or being told

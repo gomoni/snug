@@ -159,6 +159,28 @@ func (h *netHelper) failure() string {
 	return msg
 }
 
+// markStopping says "this teardown is ours" without doing any of it.
+//
+// stop() below sets the same flag, but stop() also SIGTERMs pasta and waits for
+// it, and there is one path where that is far too late: a caught signal.
+// confirmTeardown SIGKILLs every descendant, pasta among them, and it runs
+// from the teardown guard — while runStaged's `defer helper.stop()` has not
+// been reached yet. watch() then sees a pasta that died with nobody claiming
+// responsibility and prints "the sandbox now has loopback only" on the way out
+// of every Ctrl-C'd @net run (issue #112). The notice is false, it lands on
+// the trust artifact, and it would mask a real pasta failure at teardown.
+//
+// So the guard claims the death first and lets the sweep do the killing. It is
+// deliberately NOT the other obvious fix — excluding pasta's pid from the sweep
+// — because the sweep exists precisely so that nothing has to trust orderly
+// teardown, and an exclusion is a promise that something else will do the job.
+func (h *netHelper) markStopping() {
+	if h == nil {
+		return
+	}
+	h.stopping.Store(true)
+}
+
 // stop tears pasta down. Called on every exit path, including the failure ones.
 func (h *netHelper) stop() {
 	if h == nil || h.cmd == nil || h.cmd.Process == nil {
