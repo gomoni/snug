@@ -296,6 +296,9 @@ func TestDiscoveredSSHConfigPathsAreFiltered(t *testing.T) {
 	}{
 		{"the user's own config", "/home/u/.ssh/config",
 			"~/.ssh/config is the human's own file; snug authors that one only when an identity is pinned"},
+		{"a home path spelled like a system one", "/home/u/etc/ssh/ssh_config",
+			"the basename filter passes this one, so the home filter is the only thing that stops it — " +
+				"a chain entry under $HOME is the user's own file whatever it is called"},
 		{"an Include'd fragment", "/usr/etc/ssh/ssh_config.d/50-suse.conf",
 			"the replacement carries no Include line, so nothing under the top-level file is ever read"},
 		{"a crypto-policy fragment", "/etc/crypto-policies/back-ends/openssh.config",
@@ -328,31 +331,27 @@ func TestDiscoveredSSHConfigPathsAreFiltered(t *testing.T) {
 	}
 }
 
-// TestDiscoveredSSHConfigPathIsNotDuplicated pins the measured shape rather
-// than a hypothetical one: `ssh -G -v` prints the whole chain TWICE per
+// TestSystemSSHConfigCandidatesDeduplicates tests the candidate list DIRECTLY
+// rather than through Resolve, and the reason is a mutation check: deleting
+// the dedup and running the resolve-level test left it passing. Replace's own
+// coverage condition makes a repeated candidate a no-op — the second time
+// round, the covering mount at that guest path is the KindData file snug just
+// authored, not a bind — so a resolve-level assertion cannot tell a working
+// dedup from a missing one, and a test that cannot fail is worse than no test.
+//
+// The shapes are both measured: `ssh -G -v` prints the whole chain TWICE per
 // invocation (it parses again after resolving the host name), and a discovered
-// path may equally be one the fixed list already names. Neither may produce two
-// candidates, because the record --dry-run reads would then say the same thing
-// twice.
-func TestDiscoveredSSHConfigPathIsNotDuplicated(t *testing.T) {
-	env := newFakeEnv()
-	env.dirs["/usr/etc/ssh/ssh_config"] = true
-	env.dirs["/usr/local/etc/ssh/ssh_config"] = true
-
+// path may equally be one the fixed list already names.
+func TestSystemSSHConfigCandidatesDeduplicates(t *testing.T) {
 	ctx := testCtx()
 	ctx.HostSSHConfigs = []string{
 		"/usr/local/etc/ssh/ssh_config", "/usr/etc/ssh/ssh_config",
 		"/usr/local/etc/ssh/ssh_config", "/usr/etc/ssh/ssh_config",
 	}
-
-	p, err := Resolve(testRegistry(), testDefaults, ctx, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"/usr/etc/ssh/ssh_config", "/usr/local/etc/ssh/ssh_config"}
-	got := slices.Clone(p.SystemSSHConfigs)
-	slices.Sort(got)
+	got := systemSSHConfigCandidates(ctx)
+	want := append(slices.Clone(SystemSSHConfigPaths), "/usr/local/etc/ssh/ssh_config")
 	if !slices.Equal(got, want) {
-		t.Fatalf("p.SystemSSHConfigs = %q, want %q", got, want)
+		t.Fatalf("systemSSHConfigCandidates = %q, want %q — the fixed floor in order, then\n"+
+			"each discovered path once", got, want)
 	}
 }
