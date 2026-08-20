@@ -1465,8 +1465,21 @@ There is no flag that grants less. A read-only project means not selecting `@cwd
 | `snug profile tree [NAME…]` / `dot` | Which profiles imply which; the same as a graphviz graph. |
 | `snug config` | The effective configuration and where each part came from. |
 | `snug doctor` | Host capability report and the fallback matrix as it applies here (§4.9). |
+| `snug attach <dir>` | Join the live sandbox on that directory ([`ATTACH.md`](ATTACH.md)). Addressed **by directory rather than by run id**, which is total only because of the guard below. |
 
 **Designed, not built:** `--config PATH` (§2.7), `--publish PORT`, `--keep-tmp` (§7.3), `--net-strict`, `snug prune` (§8.2), a `--dry-run --json` machine format, and shell completion. Do not cite any of them as existing.
+
+**At most one live sandbox per target directory.** `snug <dir>` refuses to start
+a second run while one is already live on the same target, and the refusal names
+`snug attach <dir>` as the fix. That is what makes addressing a run *by
+directory* total rather than ambiguous — `attach`'s multi-match branch is a
+defensive guard, not a user-facing case. The guard is a per-target advisory
+`flock` keyed on `sha256(realpath)` in snug's per-uid runtime directory,
+resolved **from the uid alone** and never from `$XDG_RUNTIME_DIR` — two runs
+disagreeing on that env var once locked two different inodes and both acquired,
+which is the #122 fail-open. It is a run-path guard in `internal/cli`, not a
+grant, so it never enters the pure `internal/policy`.
+[`ONE-SANDBOX-PER-DIR.md`](ONE-SANDBOX-PER-DIR.md) owns the subject.
 
 ### 11.1 Exit codes
 

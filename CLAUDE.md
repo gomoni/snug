@@ -167,14 +167,25 @@ first, or delegate to the agent that owns it.
   two independent defaults each re-open host loopback and a golden-argv test
   would have passed on the buggy configuration (INDEX §4.2, and host-bridge for
   the closing set).
-- **`--clearenv` is not the last word on the environment.** `@sys` binds `/etc`,
-  so `/etc/profile.d/*` runs inside the sandbox and can put variables back. On
-  this box `distrobox_profile.sh` sees the empty environment, *re-derives*
-  `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` from the uid, and calls
-  `host-spawn`, which then fails to reach a bus the sandbox correctly cannot
-  see. The noise is isolation working, but the point stands: the environment
-  inside is what snug sets *plus whatever the bound `/etc` adds*. The designed
-  fix is a `sys-min` profile (curated `/etc`), not a hack.
+- **`--clearenv` is not the last word on the environment — a bound `/etc` can
+  put variables back.** `/etc/profile.d/*` and `/etc/bash.bashrc` are EXECUTED by
+  every shell, so a profile granting them hands the sandbox arbitrary startup
+  code, not data. Observed before the fix: `distrobox_profile.sh` saw the empty
+  environment, *re-derived* `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` from
+  the uid, and called `host-spawn`.
+
+  **`@sys` is already the curated answer** — it lists fourteen `/etc` entries
+  (linker, TLS trust, `nsswitch`/`passwd`/`group`, locale, `os-release`) and
+  grants **neither** `/etc/profile.d` nor `/etc/bash.bashrc`; nothing in
+  `base.toml` binds `/etc` wholesale. There is no `sys-min` to build: this entry
+  described a `sys-min` as the "designed fix" for a milestone after `@sys` became
+  it. Check `internal/profile/profiles/base.toml` — **a profile's contents in
+  prose is a copy of state held there**, and this line and invariant 2 disagreed
+  about the same profile in the same file.
+
+  The rule survives its own example, which is why the entry stays: **the
+  environment inside is what snug sets plus whatever a bound `/etc` adds**, so a
+  human profile granting `/etc` re-opens it in one line.
 - **`--clearenv` does not cover bwrap's own process, and that leaked everything.**
   `exec.Cmd` with a nil `Env` passes `os.Environ()`. bwrap then becomes PID 1 of
   the sandbox's PID namespace, running as the same uid, so the payload could read
