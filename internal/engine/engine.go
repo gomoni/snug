@@ -705,7 +705,7 @@ func (e *Engine) writeAuthFile() (string, error) {
 // policy.NetPolicy.ResolvConf() bytes) to this run's own hardened /tmp
 // directory, so EnterEngine can bind-mount it over the engine's own
 // /etc/resolv.conf (issue #126) — a pointer, never the content itself,
-// crossing the same startengine request the cgroups-disabled config does.
+// crossing the same "start" request the cgroups-disabled config does.
 func (e *Engine) writeResolvConf(resolvConf []byte) (string, error) {
 	path := filepath.Join(e.runDir, "resolv.conf")
 	if err := os.WriteFile(path, resolvConf, 0o600); err != nil {

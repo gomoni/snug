@@ -65,6 +65,43 @@ import (
 //     the runtime splits on si_code, so a FAULT crashes while a signal SENT
 //     with kill(2) is delivered to the handler.
 //
+// WHAT THOSE TWO LEAVE BEHIND CHANGED SHAPE WITH ISSUE #125's GATE, on
+// container runs only, and it is written down here rather than discovered
+// later. During the parked window — bwrap has built the sandbox and its init is
+// blocked on --block-fd while the container engine starts, 1-2s typically and
+// up to engineSocketWaitTimeout — a SIGKILL of P0 plays out like this,
+// MEASURED end to end, 20 runs, with a fake engine that never binds its socket
+// so the window is the full 30s:
+//
+//	P0            dies; its copy of the block pipe's write end closes. NO EOF:
+//	              the sandbox's own pid 1 holds another, as --sync-fd.
+//	parked init   stays blocked in read(). THE PAYLOAD IS NEVER FORKED — 20/20,
+//	              and that clause of the old defect is closed outright.
+//	P1            RACES its own death. do_exit closes P0's descriptors
+//	              (exit_files) BEFORE it delivers P1's Pdeathsig (exit_notify) —
+//	              the very ordering that makes --block-fd-alone unsafe — so P1's
+//	              lifeline watcher wakes on the EOF first and kills the parked
+//	              init explicitly. Measured 20/20 on this host: zero processes
+//	              left, checked 200ms and 1.5s after the kill.
+//	              POSITIVE CONTROL, because "nothing was left" is exactly the
+//	              assertion that passes when nothing ever started: with that one
+//	              kill removed from watchLifeline, exactly one process survives,
+//	              5/5 — the parked init.
+//	engine        Pdeathsig from P1's death.
+//	bwrap (outer) --die-with-parent on P1's death, which does NOT reach the
+//	              parked init: bwrap has not armed it on that init yet (measured
+//	              — kill the outer bwrap while parked and the init stays alive
+//	              AND still releasable).
+//
+// So the residual is narrower than "a killed snug leaks a sandbox", and it is
+// this: a parked init is orphaned whenever P1 cannot run code at all — a
+// SIGSTOPped stage tree, where Pdeathsig is the only thing left and Pdeathsig
+// kills P1 without running its watcher, or a lost race on a host that schedules
+// differently from this one. What is left then holds N and the whole mount tree
+// with a payload that does not exist and now never will. Strictly better than
+// the orphan this file's own history is about — that one holds a RUNNING
+// payload with write access to the target — and still a leak.
+//
 // Nothing else. Issue #111 is why this paragraph is a rule: the previous
 // version named SIGKILL alone, three times, in three files, while the code
 // registered exactly TERM/INT/HUP — so `kill -QUIT`, the standard gesture for

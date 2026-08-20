@@ -1730,6 +1730,23 @@ func describeTopology(out *os.File, p *policy.Policy) {
 		fmt.Fprintf(out, "                  does have its own (bwrap --unshare-ipc --unshare-uts).\n")
 		fmt.Fprintf(out, "                  capability bounding set (%d): %s\n",
 			len(policy.EngineCapBounding), strings.Join(policy.EngineCapBounding, " "))
+		// The gate (issue #125), printed for exactly the selections that get
+		// it. It changes the process shape of the run — there is an interval
+		// with a fully built sandbox and no payload in it — and --dry-run is
+		// where a human is entitled to learn that rather than from a comment
+		// in exec.go. The residual is on screen for the same reason: a cost
+		// that only appears in a design document is a cost nobody priced.
+		fmt.Fprintf(out, "  payload gate    the payload is PARKED (bwrap --block-fd) from the moment its\n")
+		fmt.Fprintf(out, "                  mount tree is built until this engine's socket answers, so a\n")
+		fmt.Fprintf(out, "                  run whose engine never came up is a run whose payload never\n")
+		fmt.Fprintf(out, "                  existed. The same pipe's write end is passed as --sync-fd and\n")
+		fmt.Fprintf(out, "                  held by the sandbox's own pid 1, so snug being KILLED cannot\n")
+		fmt.Fprintf(out, "                  release it either — only snug writing the byte can.\n")
+		fmt.Fprintf(out, "                  Residual: a snug SIGKILLed inside that window is measured to\n")
+		fmt.Fprintf(out, "                  leave nothing behind — the stage sees the lifeline close and\n")
+		fmt.Fprintf(out, "                  kills the parked init first — but a stage that cannot run code\n")
+		fmt.Fprintf(out, "                  at all (a SIGSTOPped tree) orphans that init, holding N and the\n")
+		fmt.Fprintf(out, "                  mount tree with a payload that does not exist and never will.\n")
 	}
 	if !p.Topology.NeedsStage() {
 		fmt.Fprintf(out, "  control         none — there is no stage to control.\n")

@@ -135,7 +135,32 @@ func doctor() int {
 	// the real one — the clone, the uid map, bringing lo up inside N, pinning
 	// N, leaving it, and the re-exec that has to survive all of that — and then
 	// tears it straight down again. No sandbox is started.
-	if st, err := stage.Start(stage.Config{Topology: policy.Topology{Netns: policy.NetnsStage}}); err != nil {
+	// The info pipe is real, and dangling on purpose. Since issue #125's C2-gate
+	// the stage requires it at Start — its child asserts fd 5 exists before it
+	// will serve anything (serve.go's requireFD) — and it is only ever READ on
+	// a `start` request, which this probe never sends. So a pipe whose write end
+	// nothing holds is exactly right here: it exercises the descriptor plumbing
+	// the real path uses without pretending a sandbox exists.
+	//
+	// Supplying it, rather than relaxing stage.Start's check for callers who say
+	// they will not start a sandbox, is deliberate. This block's whole argument
+	// is that a probe approximating the code path can pass while the code path
+	// fails — an exemption for doctor would be exactly that approximation, and
+	// it is how this probe came to be missing a required field in the first
+	// place (caught by CI running `snug doctor`, which the integration suite
+	// does not).
+	infoR, infoW, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		fmt.Println("  ❌ cannot create the stage that `-p @net` needs")
+		fmt.Printf("     💬 creating the bwrap info pipe for the probe: %v\n", pipeErr)
+		return exitUnavail
+	}
+	defer infoR.Close()
+	defer infoW.Close()
+	if st, err := stage.Start(stage.Config{
+		Topology:  policy.Topology{Netns: policy.NetnsStage},
+		BwrapInfo: infoR,
+	}); err != nil {
 		fmt.Println("  ❌ cannot create the stage that `-p @net` needs")
 		fmt.Printf("     💬 %v\n", err)
 		ok = false

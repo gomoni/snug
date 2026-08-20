@@ -2,7 +2,6 @@ package sandbox
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +12,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/gomoni/snug/internal/bwrapinfo"
 	"github.com/gomoni/snug/internal/fdseal"
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/stage"
@@ -24,13 +24,19 @@ type Options struct {
 	NoSeccomp bool
 	Warn      func(string) // where degradation notices go; never silently dropped
 
-	// OnInfo, if non-nil, is called exactly once, from a background
-	// goroutine, as soon as bwrap has reported its own info-fd JSON — before
-	// the payload's own program has been exec'd inside the sandbox, but
-	// never blocking bwrap's own startup (see the comment above runStaged
-	// for why nothing in this package parks a payload on a handshake any
-	// more). It is the hook `snug attach`'s run-state file is written
-	// through.
+	// OnInfo, if non-nil, is called exactly once, as soon as bwrap has
+	// reported its own info-fd JSON. It is the hook `snug attach`'s run-state
+	// file is written through, which is why WHEN it runs is a security
+	// question and not a convenience:
+	//
+	//   offline / host-network — from a background goroutine, before the
+	//     payload's own program has been exec'd, never blocking bwrap's
+	//     startup.
+	//   staged — from the calling goroutine, and on a container run strictly
+	//     AFTER the parked payload has been released (issue #125). Publishing
+	//     it earlier would make the sandbox attachable while its payload is
+	//     still parked, and `snug attach` would then put a process inside a
+	//     sandbox the gate exists to keep empty.
 	//
 	// If bwrap never answers — an old bwrap, a failed start, a topology this
 	// package could not wire the descriptor through for — OnInfo is simply
@@ -42,20 +48,23 @@ type Options struct {
 
 	// EngineSpec, when non-nil, tells runStaged to fork a container engine
 	// into this sandbox's own N — EAGERLY, after the network is confirmed and
-	// before the payload exists, as a second long-lived child of the stage
-	// alongside bwrap (issue #63, Tier B; ENGINE-WIRING.md §1). nil means no
+	// while bwrap's payload is parked on the gate, as a second long-lived child
+	// of the stage alongside bwrap (issue #63, Tier B; ENGINE-WIRING.md §1;
+	// issue #125 for the gate). It is ALSO what makes this run a gated one:
+	// Run emits --block-fd/--sync-fd if and only if this is non-nil. nil means no
 	// engine at all: an ordinary @net (or offline) run with no container
 	// profile selected. Only meaningful when p.Topology.NeedsStage() is true;
 	// internal/cli/container.go is the only caller that sets it, having
 	// already run the P1-P6 preflight this package does not repeat.
 	EngineSpec *stage.EngineSpec
 
-	// OnEngineReady, if non-nil, runs right after StartEngine has confirmed
-	// the engine's socket exists — before StartSandbox, so a failure here
-	// (dialling the lifeline that ties the engine's lifetime to this
-	// sandbox, arming teardown) refuses the WHOLE run rather than letting a
-	// payload start behind a container engine this process cannot guarantee
-	// to reap. Only ever called when EngineSpec is non-nil.
+	// OnEngineReady, if non-nil, runs once the stage has confirmed the
+	// engine's socket exists and BEFORE the payload is released from its gate
+	// (issue #125) — so a failure here (dialling the lifeline that ties the
+	// engine's lifetime to this sandbox, arming teardown) refuses the WHOLE run
+	// rather than letting a payload start behind a container engine this
+	// process cannot guarantee to reap. Only ever called when EngineSpec is
+	// non-nil, and nothing is running inside the sandbox while it runs.
 	OnEngineReady func() error
 
 	// OnPayloadExit, if non-nil, runs after the staged payload has been
@@ -196,21 +205,70 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	flags = append(flags, "--info-fd", strconv.Itoa(nextFD()))
 	extra = append(extra, infoW)
 
-	// Networking needs NO handshake with bwrap any more, and the absence is the
-	// point.
+	// NETWORKING needs no handshake with bwrap, and that has not changed.
 	//
 	// bwrap used to be started first and told to park its payload on --block-fd
 	// until pasta had attached, because pasta needs a netns and only bwrap could
 	// make one. Under the stage the netns exists BEFORE bwrap does, so pasta
-	// attaches first and there is nothing to park. That deletes --block-fd,
-	// --json-status-fd, the two pipes, readChildPID and the whole `parked` type
-	// along with the SIGKILL window they carried: a payload that has not been
-	// forked cannot be released early.
+	// attaches first and there is nothing to park for the NETWORK's sake. That
+	// reason for parking is gone and stays gone; --json-status-fd, readChildPID
+	// and the whole `parked` type went with it and are not coming back.
 	//
-	// Nothing here is conditional on networking any more, which is why this block
-	// is gone rather than shortened. Note for anyone adding a flag near here: the
-	// args memfd below is a SNAPSHOT of `flags`, so anything appended after it is
-	// silently dropped — the same shape as the --seccomp-after-`--` bug.
+	// --block-fd IS back, for a different reason, on container runs only (issue
+	// #125). A container engine has to be confirmed up before the payload
+	// exists, and unlike pasta it cannot be started before bwrap: the whole
+	// point of Tier C is that the engine's mount view is DERIVED from the
+	// sandbox's, which bwrap has to have built first. So the payload is parked
+	// again — but the window is bounded by the engine's cold start (1-2s
+	// typical, engineSocketWaitTimeout 30s), which is far wider than pasta's
+	// ~100ms ever was, and the old defect scales with it.
+	//
+	// THE OLD DEFECT, re-measured on this host before writing this: bwrap
+	// releases a parked payload on EOF exactly as readily as on a byte, and
+	// do_exit runs exit_files (closing the pipe) BEFORE exit_notify (delivering
+	// PR_SET_PDEATHSIG), so the release always wins that race. SIGKILL the
+	// process holding the write end while the payload is parked and it runs:
+	// PAYLOAD_RAN 5/5.
+	//
+	// THE FIX, and the reason these two flags are inseparable: the SAME pipe's
+	// write end is handed to bwrap as --sync-fd. bwrap keeps that descriptor
+	// open in the sandbox's own pid 1 for the life of the run, so the parked
+	// read can never see EOF however violently anything outside dies —
+	// measured, same harness, same host: payload_never_ran 0/5, with
+	// release-by-byte still running the payload as the positive control.
+	//
+	// Do not "simplify" this to any other inherited descriptor. An arbitrary
+	// extra fd passed to bwrap keeps the pipe open just as well (0/5), and
+	// LEAKS INTO THE PAYLOAD: measured, the payload's fd table came out
+	// 0,1,2,4,5 with two such descriptors, against exactly 0,1,2 with --sync-fd.
+	// bwrap closes the descriptors it was TOLD about and passes through the ones
+	// it was not — its behaviour, not ours, so it is asserted in an integration
+	// test rather than trusted.
+	//
+	// Note for anyone adding a flag near here: the args memfd below is a
+	// SNAPSHOT of `flags`, so anything appended after it is silently dropped —
+	// the same shape as the --seccomp-after-`--` bug.
+	var release *os.File // P0's copy of the block pipe's write end; nil ⇒ this run is not gated
+	if opts.EngineSpec != nil {
+		if !p.Topology.NeedsStage() {
+			// Not reachable from internal/cli — every container selection
+			// resolves to a stage — and refused rather than assumed, because
+			// the failure mode is a payload parked with nothing that will ever
+			// release it.
+			return 0, fmt.Errorf("refusing to run: a container engine was requested on a topology "+
+				"with no stage (%s), so bwrap's payload would be parked with nothing to start "+
+				"the engine that releases it", p.Topology.Netns)
+		}
+		blockR, blockW, perr := os.Pipe()
+		if perr != nil {
+			return 0, perr
+		}
+		flags = append(flags, "--block-fd", strconv.Itoa(nextFD()))
+		extra = append(extra, blockR)
+		flags = append(flags, "--sync-fd", strconv.Itoa(nextFD()))
+		extra = append(extra, blockW)
+		release = blockW
+	}
 
 	// The whole flag list travels through a memfd rather than real argv:
 	//   - it sidesteps ARG_MAX for large policies
@@ -239,7 +297,7 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	}
 
 	if p.Topology.NeedsStage() {
-		return runStaged(p, bwrap, argv, extra, stdin, stdout, stderr, opts, infoR, runInfo)
+		return runStaged(p, bwrap, argv, extra, stdin, stdout, stderr, opts, infoR, release, runInfo)
 	}
 
 	cmd := exec.Command(bwrap, argv...)
@@ -297,19 +355,23 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 //	stage.Start   -> N exists, pinned by a descriptor, with nobody in it
 //	startPasta    -> pasta attaches to that empty N and configures snug0
 //	WaitNetReady  -> the stage confirms snug0 is UP and RUNNING, from inside N
-//	StartSandbox  -> only NOW does a payload exist
+//	StartSandbox  -> bwrap builds the sandbox; on a container run its payload
+//	                 PARKS here and the engine starts behind the gate
+//	release       -> only NOW does a payload exist
 //
-// The previous order was the reverse — bwrap first, its payload parked on
-// --block-fd, released once pasta was up — because pasta needs a netns and
-// only bwrap could create one. That parked interval was a real defect: bwrap
-// releases a parked payload on EOF exactly as readily as on a byte, and snug's
-// own death closes the write end, so a SIGKILL of snug inside the window ran
-// the payload with no network and left an orphaned sandbox. Measured 5/5.
+// The NETWORK's own ordering problem is gone and stays gone: pasta needs a
+// netns, the stage makes one before bwrap exists, so nothing is ever parked
+// waiting for the network. --json-status-fd, readChildPID and the entire parked
+// type went with that and are not coming back.
 //
-// Reordering does not narrow that window, it removes the thing that had a
-// window: there is no payload to release, so there is nothing for a dying snug
-// to release. --block-fd, --json-status-fd, readChildPID and the entire parked
-// type are gone with it.
+// The GATE is a different thing wearing the same flag (issue #125). A container
+// engine cannot be started before bwrap — Tier C derives its mount view from
+// the sandbox's — so on a container run the payload is parked on --block-fd
+// until the engine is confirmed. What makes that safe, and what made the
+// original parked window a defect, is stated at the flag's own emission point
+// in Run: --block-fd is passed ONLY together with --sync-fd on the same pipe,
+// so a killed snug cannot release the payload by dying (measured 5/5 -> 0/5).
+// A run with no container engine passes neither flag and is not parked at all.
 //
 // BUT ONLY THE RELEASE HALF. F2 had two clauses — a killed snug released the
 // payload AND left an orphaned sandbox — and the reordering closes the first.
@@ -340,11 +402,17 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 // after the stage has left, and the stage answers the question over the control
 // socket. Both halves measured; see stage.WaitNetReady.
 func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
-	stdin, stdout, stderr *os.File, opts Options, infoR *os.File, runInfo RunInfo) (int, error) {
+	stdin, stdout, stderr *os.File, opts Options, infoR, release *os.File, runInfo RunInfo) (int, error) {
+	// The read end of bwrap's --info-fd pipe belongs to the STAGE on this arm,
+	// not to this process (issue #125): P1 forks bwrap, so P1 is the process
+	// that must be able to kill bwrap's parked init, and it cannot kill a pid it
+	// was never told. P0 gets the parsed answer back in the "start" event.
+	defer infoR.Close()
 	st, err := stage.Start(stage.Config{
-		Topology: p.Topology,
-		Sandbox:  extra,
-		Stdin:    stdin, Stdout: stdout, Stderr: stderr,
+		Topology:  p.Topology,
+		Sandbox:   extra,
+		BwrapInfo: infoR,
+		Stdin:     stdin, Stdout: stdout, Stderr: stderr,
 	})
 	if err != nil {
 		return 0, err
@@ -397,23 +465,6 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 		return 0, err
 	}
 
-	// EAGER, between netready and StartSandbox — a fixed step of the stage's
-	// own startup, never lazy (ENGINE-WIRING.md §1): the engine's successful
-	// confinement to N is a precondition of the payload existing at all, the
-	// same shape WaitNetReady already enforces one level up. A failure here
-	// is fatal to the whole run — invariant 5 — and StartSandbox below is
-	// never reached on that path.
-	if opts.EngineSpec != nil {
-		if err := st.StartEngine(*opts.EngineSpec); err != nil {
-			return 0, err
-		}
-		if opts.OnEngineReady != nil {
-			if err := opts.OnEngineReady(); err != nil {
-				return 0, err
-			}
-		}
-	}
-
 	// Armed before StartSandbox, and here that is the fork of a GRANDchild:
 	// bwrap is forked by the stage, so P0 never learns its pid and st.Pid() is
 	// the only lever it has. Everything above this line — the stage, pasta,
@@ -431,10 +482,47 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 	// here instead, before the first kill (issue #112).
 	guard.onSignal(helper.markStopping)
 
-	if err := st.StartSandbox(bwrap, argv); err != nil {
+	// ONE request, and on a container run the payload is PARKED when it returns
+	// (issue #125). Everything that has to be true before a payload exists is
+	// true here and nowhere else: bwrap has built the sandbox, the engine is
+	// forked into N and its socket answers. A failure means the stage has
+	// already killed bwrap and its init — invariant 5, with the payload never
+	// having existed rather than existing briefly on a doomed run.
+	info, err := st.StartSandbox(bwrap, argv, opts.EngineSpec, release != nil)
+	if err != nil {
 		return 0, err
 	}
-	reportInfo(infoR, runInfo, opts)
+
+	// Between the engine and the payload, and this is the reason the stage
+	// reports twice for one request: the container reaper is armed HERE, while
+	// nothing inside the sandbox is running. A failure refuses the run
+	// (invariant 5 — an engine snug cannot guarantee to reap is not handed to a
+	// payload), and the parked payload dies with it: this function returns, the
+	// deferred st.Close() drops the lifeline, and the stage kills bwrap AND its
+	// parked init on the way out (internal/stage's watchLifeline).
+	if opts.EngineSpec != nil && opts.OnEngineReady != nil {
+		if err := opts.OnEngineReady(); err != nil {
+			return 0, err
+		}
+	}
+
+	// THE RELEASE. One byte, and the payload exists from this line on. Written
+	// by P0 rather than by the stage on purpose: P0 is the only process that
+	// knows every precondition above actually held, and the write end it uses
+	// is its own copy — the sandbox's pid 1 holds another, which is what stops
+	// P0's death from doing the same job (see the flag's emission point in Run).
+	if release != nil {
+		if _, werr := release.Write([]byte{0}); werr != nil {
+			return 0, fmt.Errorf("releasing the sandbox's parked payload: %w", werr)
+		}
+	}
+
+	// AFTER the release, never before, and on both shapes. OnInfo publishes the
+	// run-state file that makes a run attachable, and attaching to a sandbox
+	// whose payload is still parked would put a process inside it before the
+	// gate opened — precisely what the gate exists to prevent. On an ungated run
+	// this ordering costs nothing: the payload is already running.
+	publishInfo(info, runInfo, opts)
 
 	// From here on a payload exists, forked by the STAGE, not by this process.
 	// guard.wait is what closes issue #13's window on this topology: the
@@ -465,73 +553,56 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 
 // reportInfo reads bwrap's --info-fd answer in the background and calls
 // opts.OnInfo once it has one — NEVER blocking the caller, which by the time
-// this is called already has a running (or about-to-run) payload on both
-// topologies. base carries the seccomp fields Run already computed, since
-// bwrap's own JSON says nothing about the filter.
+// this is called already has a running payload. base carries the seccomp
+// fields Run already computed, since bwrap's own JSON says nothing about the
+// filter.
+//
+// THE OFFLINE / HOST-NETWORK ARM ONLY. On the staged arm the read end lives in
+// the stage (issue #125), which parses it and forwards the answer in the
+// "start" event; runStaged calls publishInfo below instead. The split is not
+// cosmetic: on that arm the answer must be IN HAND before the payload is
+// released, so it cannot be read in the background.
 //
 // infoR is closed here, once, regardless of outcome: this is its only
 // reader and its only closer.
 func reportInfo(infoR *os.File, base RunInfo, opts Options) {
 	go func() {
 		defer infoR.Close()
-		info, err := readRunInfo(infoR, infoFDTimeout)
+		info, err := bwrapinfo.Read(infoR, infoFDTimeout)
 		if err != nil {
 			opts.warn(fmt.Sprintf("this run will not be attachable (%v)", err))
 			return
 		}
-		info.SeccompActive, info.SeccompDigest = base.SeccompActive, base.SeccompDigest
-		if opts.OnInfo != nil {
-			opts.OnInfo(info)
-		}
+		publishInfo(info, base, opts)
 	}()
 }
 
-// readRunInfo decodes bwrap's --info-fd JSON, bounded by timeout.
+// publishInfo turns bwrap's answer — however it arrived — into a RunInfo and
+// hands it to opts.OnInfo. One place, so that a run's attachability record is
+// built identically whichever process read the descriptor.
 //
-// json.Decoder.Decode, not ReadAll: Decode stops at one complete JSON value
-// rather than waiting for EOF, and this process keeps its OWN copy of the
-// write end open (in `extra`, for the whole life of the run) — waiting for
-// EOF here would then wait forever.
-//
-// The goroutine+select shape, rather than SetReadDeadline, matches the one
-// already used for WaitNetReady above: it is bounded by C's patience with
-// bwrap, not by anything the pipe itself can express, and a timeout leaves
-// the inner goroutine to exit on its own once infoR is closed by the caller.
-func readRunInfo(infoR *os.File, timeout time.Duration) (RunInfo, error) {
-	type result struct {
-		info RunInfo
-		err  error
+// An InitPID of 0 means bwrap never answered. That is warn-only, and it stays
+// warn-only: the run is simply not attachable. On a GATED run it cannot get
+// this far — the stage refuses to leave a parked payload it cannot name (see
+// internal/stage's runOneSandbox), so the run has already failed by here.
+func publishInfo(info bwrapinfo.Info, base RunInfo, opts Options) {
+	if info.InitPID <= 0 {
+		opts.warn("this run will not be attachable (bwrap did not report its --info-fd answer)")
+		return
 	}
-	ch := make(chan result, 1)
-	go func() {
-		var raw struct {
-			ChildPID int    `json:"child-pid"`
-			Mnt      uint64 `json:"mnt-namespace"`
-			Pid      uint64 `json:"pid-namespace"`
-			Net      uint64 `json:"net-namespace"`
-			Ipc      uint64 `json:"ipc-namespace"`
-			Uts      uint64 `json:"uts-namespace"`
-			Cgroup   uint64 `json:"cgroup-namespace"`
-		}
-		if err := json.NewDecoder(infoR).Decode(&raw); err != nil {
-			ch <- result{err: fmt.Errorf("reading bwrap's --info-fd: %w", err)}
-			return
-		}
-		namespaces := map[string]uint64{
-			"mnt": raw.Mnt, "pid": raw.Pid, "net": raw.Net,
-			"ipc": raw.Ipc, "uts": raw.Uts, "cgroup": raw.Cgroup,
-		}
-		fillMissingNamespaceIDs(raw.ChildPID, namespaces)
-		ch <- result{info: RunInfo{
-			InitPID:    raw.ChildPID,
-			Namespaces: namespaces,
-		}}
-	}()
-	select {
-	case res := <-ch:
-		return res.info, res.err
-	case <-time.After(timeout):
-		return RunInfo{}, fmt.Errorf("bwrap did not answer on --info-fd within %s", timeout)
+	// bwrap OMITS a namespace it did not itself unshare, so the staged arm's
+	// "net" arrives as 0 and is recovered from /proc here rather than in the
+	// stage: it is a read of the host's own procfs about a host pid, which P0
+	// can do as well as P1, and keeping it here keeps the recovery rule in one
+	// place next to the writeRunState that depends on it.
+	fillMissingNamespaceIDs(info.InitPID, info.Namespaces)
+	if opts.OnInfo != nil {
+		opts.OnInfo(RunInfo{
+			InitPID:       info.InitPID,
+			Namespaces:    info.Namespaces,
+			SeccompActive: base.SeccompActive,
+			SeccompDigest: base.SeccompDigest,
+		})
 	}
 }
 

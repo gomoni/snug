@@ -54,6 +54,12 @@ gate:
 	# containerengine_test.go's pidnsprobeBin. Same fix, same reasoning as
 	# the four above.
 	go vet ./test/integration/testdata/pidnsprobe
+	# testdata/fakepodman (issue #125, C2-gate) is the sixth: a stand-in
+	# `podman system service` gate_test.go's own tests use to control WHEN
+	# the engine's socket appears and what its first response is, built
+	# lazily by gate_test.go's fakePodmanBin. Same fix, same reasoning as
+	# the five above.
+	go vet ./test/integration/testdata/fakepodman
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This

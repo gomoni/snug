@@ -21,6 +21,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/gomoni/snug/internal/bwrapinfo"
 	"github.com/gomoni/snug/internal/fdseal"
 	"github.com/gomoni/snug/internal/policy"
 )
@@ -56,6 +57,18 @@ type Config struct {
 	// reason internal/fdseal exists; see its package comment before changing
 	// anything here.
 	Sandbox []*os.File
+
+	// BwrapInfo is the READ end of bwrap's --info-fd pipe. Its write end is one
+	// of the descriptors in Sandbox above, exactly as it always was; what moved
+	// into the stage is the READING of it (issue #125's C2 gate, and fds.go's
+	// fdBwrapInfo for why).
+	//
+	// Required, and required on EVERY staged run rather than only on a gated
+	// one: it lands at a FIXED descriptor number ahead of the Sandbox block, so
+	// making it optional would make every later number depend on the policy —
+	// the exact class of drift checkFDBudget exists to refuse. On a run with no
+	// engine the stage reads it, forwards what bwrap said, and nothing is gated.
+	BwrapInfo *os.File
 
 	Stdin, Stdout, Stderr *os.File
 }
@@ -109,6 +122,11 @@ func Start(cfg Config) (*Stage, error) {
 	if err := checkFDBudget(len(cfg.Sandbox)); err != nil {
 		return nil, err
 	}
+	if cfg.BwrapInfo == nil {
+		return nil, fmt.Errorf("stage.Start: Config.BwrapInfo is nil — the stage reads bwrap's " +
+			"--info-fd answer itself, and without it a gated run has no way to learn which " +
+			"process to release or kill")
+	}
 
 	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
@@ -126,7 +144,9 @@ func Start(cfg Config) (*Stage, error) {
 
 	cmd := exec.Command("/proc/self/exe", "__stage-setup")
 	cmd.Args[0] = "snug"
-	cmd.ExtraFiles = append([]*os.File{p1Control, lifeR}, cfg.Sandbox...)
+	// The fixed block first, in fds.go's order (fdControl, fdLife,
+	// fdBwrapInfo), then the policy-dependent pass-through block.
+	cmd.ExtraFiles = append([]*os.File{p1Control, lifeR, cfg.BwrapInfo}, cfg.Sandbox...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = cfg.Stdin, cfg.Stdout, cfg.Stderr
 
 	// bwrap runs with an empty environment already (internal/sandbox.Run's
@@ -355,36 +375,71 @@ func (s *Stage) WaitNetReady(timeout time.Duration, iface string) error {
 	return nil
 }
 
-// StartSandbox sends the one request this phase's protocol has, and blocks
-// until P1 reports the fork happened. The stage will not serve a second one —
-// this is a ONE-SHOT design; everRan does not exist as a concept here, unlike
-// the proof of concept it replaces.
-func (s *Stage) StartSandbox(bwrapPath string, argv []string) error {
-	req := request{Op: "start", Bwrap: bwrapPath, Argv: argv, Passthrough: s.sandboxSize}
+// startRoundTripTimeout bounds P0's patience for the WHOLE "start" round trip:
+// bwrap's fork, its --info-fd answer, and — when an engine is selected — the
+// fork, setns+mount+capdrop+exec inside __inengine and the bounded wait for
+// podman's own socket to appear.
+//
+// DERIVED from the two bounds the stage applies internally, never written down
+// as a number: the whole point of P0's bound is to sit ABOVE the stage's, so
+// that a real timeout is reported by the stage with its own specific message
+// ("the container engine did not create its socket at …") rather than by this
+// one, which can only say the stage went quiet. Issue #125 folded the engine's
+// start into this request and so ADDED bwrapInfoTimeout to what P0 waits for;
+// a hand-typed 40s that used to have ten seconds of headroom silently had
+// none.
+const startRoundTripTimeout = bwrapInfoTimeout + engineSocketWaitTimeout + 10*time.Second
+
+// StartSandbox sends the ONE request this protocol has, and blocks until P1
+// reports that everything which happens before a payload exists has happened:
+// bwrap forked, bwrap's own --info-fd answer parsed, and — when spec is
+// non-nil — the container engine forked into this sandbox's N with its socket
+// confirmed. The stage will not serve a second request; this is a ONE-SHOT
+// design, and everRan does not exist as a concept here.
+//
+// On a GATED run (gated true, meaning P0 put --block-fd and --sync-fd in the
+// argv) the payload is still PARKED when this returns, and the caller owns two
+// obligations, in this order:
+//
+//	OnEngineReady()   — arm whatever must exist before a payload does
+//	release the gate  — one byte on the write end P0 kept for itself
+//
+// with any error between them abandoning the run rather than releasing it. A
+// returned error means P1 has ALREADY killed bwrap and its parked init: the
+// payload never existed.
+//
+// The engine's spec travels in this request rather than in one of its own
+// (issue #125's C2 gate). A second request would mean "start" was no longer the
+// request after which MainServe returns — and it would have to carry bwrap's
+// child pid from P0 to P1, which is the one thing proto.go's schema refuses.
+// Under one request the pid comes back the other way, in the event.
+func (s *Stage) StartSandbox(bwrapPath string, argv []string, spec *EngineSpec, gated bool) (bwrapinfo.Info, error) {
+	req := request{Op: "start", Bwrap: bwrapPath, Argv: argv, Passthrough: s.sandboxSize, Gated: gated}
+	if spec != nil {
+		req.EnginePodman = spec.Podman
+		req.EngineArgv = spec.Argv
+		req.EngineEnv = spec.Env
+		req.EngineSock = spec.Sock
+		req.EngineResolvConf = spec.ResolvConfPath
+	}
 	if err := sendRequest(s.control, req); err != nil {
-		return fmt.Errorf("stage: sending the start request: %w", err)
+		return bwrapinfo.Info{}, fmt.Errorf("stage: sending the start request: %w", err)
 	}
-	ev, err := recvEvent(s.control)
+	ev, err := recvEventTimeout(s.control, startRoundTripTimeout)
 	if err != nil {
-		return fmt.Errorf("stage: waiting for the fork to be reported: %w", err)
+		return bwrapinfo.Info{}, fmt.Errorf("stage: waiting for the sandbox to reach the starting line: %w", err)
 	}
-	if ev.Op != "started" {
-		return fmt.Errorf("stage: expected a \"started\" event, got %q", ev.Op)
+	if ev.Op != "enginestarted" {
+		return bwrapinfo.Info{}, fmt.Errorf("stage: expected an \"enginestarted\" event, got %q", ev.Op)
 	}
 	if ev.Err != "" {
-		return fmt.Errorf("stage: bwrap did not start: %s", ev.Err)
+		return bwrapinfo.Info{}, fmt.Errorf("stage: %s", ev.Err)
 	}
-	return nil
+	return bwrapinfo.Info{InitPID: ev.InitPID, Namespaces: ev.Namespaces}, nil
 }
 
-// engineStartTimeout bounds P0's patience for the WHOLE startengine round
-// trip: the fork, setns+mount+capdrop+exec inside __inengine, and the bounded
-// wait (engineSocketWaitTimeout, enginefork.go) for podman's own socket to
-// appear. Comfortably above that inner bound so a real timeout is reported by
-// the stage, with its own more specific message, rather than by this one.
-const engineStartTimeout = 40 * time.Second
-
-// EngineSpec is what StartEngine asks the stage to fork podman with — every
+// EngineSpec is what the "start" request asks the stage to fork podman with —
+// every
 // field chosen by P0 (preflight P1-P6, the hardened /tmp paths engine.New
 // computed, the explicit minimal environment), none of it inherited or
 // guessed by the stage itself (issue #63, Tier B; ENGINE-WIRING.md §2.6).
@@ -400,8 +455,8 @@ type EngineSpec struct {
 	// HOME, XDG_RUNTIME_DIR, CONTAINERS_*), chosen entirely by P0 — never the
 	// stage's own os.Environ(), which is empty, and never the host's.
 	Env []string
-	// Sock is the pathname socket podman is expected to bind. StartEngine
-	// polls for it (via the stage, whose mount namespace is a private COPY of
+	// Sock is the pathname socket podman is expected to bind. The stage polls
+	// for it (its own mount namespace is a private COPY of
 	// the host tree and therefore sees the identical /tmp superblock) rather
 	// than trusting the fork alone: "the process started" and "podman
 	// finished getting to a listening socket" are different facts.
@@ -419,41 +474,6 @@ type EngineSpec struct {
 	// content itself — the same pointer-not-inline shape CONTAINERS_CONF
 	// already uses for the cgroups-disabled config.
 	ResolvConfPath string
-}
-
-// StartEngine forks the container engine into THIS sandbox's own N, EAGERLY —
-// after WaitNetReady, before StartSandbox — as a second long-lived child of
-// P1, alongside bwrap (issue #63, Tier B; ENGINE-WIRING.md §1). See
-// EnterEngine (__inengine) for the fork+setns+confine sequence, and
-// policy.EngineCapBounding for the capability set the engine is reduced to.
-//
-// Blocks until the stage reports the engine's socket exists, or an error.
-// The caller MUST treat any error here as fatal to the whole run and must
-// not go on to StartSandbox — invariant 5: a container engine this run
-// cannot confine to N is refused, never silently run on some other network.
-func (s *Stage) StartEngine(spec EngineSpec) error {
-	req := request{
-		Op:               "startengine",
-		EnginePodman:     spec.Podman,
-		EngineArgv:       spec.Argv,
-		EngineEnv:        spec.Env,
-		EngineSock:       spec.Sock,
-		EngineResolvConf: spec.ResolvConfPath,
-	}
-	if err := sendRequest(s.control, req); err != nil {
-		return fmt.Errorf("stage: sending the start-engine request: %w", err)
-	}
-	ev, err := recvEventTimeout(s.control, engineStartTimeout)
-	if err != nil {
-		return fmt.Errorf("stage: waiting for the container engine to start: %w", err)
-	}
-	if ev.Op != "enginestarted" {
-		return fmt.Errorf("stage: expected an \"enginestarted\" event, got %q", ev.Op)
-	}
-	if ev.Err != "" {
-		return fmt.Errorf("stage: %s", ev.Err)
-	}
-	return nil
 }
 
 // Wait blocks until the payload exits and returns its raw wait status, so

@@ -49,7 +49,23 @@ const (
 	// including SIGKILL, which does not give P0 a chance to signal anyone.
 	fdLife = 4
 
-	// 5 .. 5+K-1, K = len(Config.Sandbox): the sandbox's own descriptors (the
+	// fdBwrapInfo is the READ end of bwrap's --info-fd pipe (issue #125, the C2
+	// gate). The write end travels in the block below, as one of the sandbox's
+	// own descriptors, exactly as it always did; what moved out of P0 is the
+	// reading of it.
+	//
+	// It moved because P1 is the process that must be able to KILL bwrap's init
+	// — measured: while the payload is parked on --block-fd, bwrap has NOT yet
+	// armed --die-with-parent on that init, so killing the outer bwrap leaves it
+	// alive and still releasable. P1 is bwrap's parent and the only process in
+	// the chain that can own that kill, and it cannot kill a pid it was never
+	// told. Learning the pid from bwrap's OWN answer, on a descriptor P1 holds,
+	// about a process P1 is the grandparent of, is also what keeps the control
+	// protocol free of a client-supplied pid the stage would have to trust
+	// (proto.go's header).
+	fdBwrapInfo = 5
+
+	// 6 .. 6+K-1, K = len(Config.Sandbox): the sandbox's own descriptors (the
 	// generated-file memfds, the seccomp filter, the netns handshake pipes),
 	// passed through from P0 in the exact order it built them. P1 never opens or
 	// reads any of them; it only forwards the *os.File values.
@@ -60,7 +76,7 @@ const (
 	// memfd. __innetns renumbers NOTHING; it setns's, closes the netns fd, seals
 	// and execs the block untouched. dup3 also leaves the SOURCES open in the
 	// child, which is why the seal is not optional (see internal/fdseal).
-	fdSandboxBase = 5
+	fdSandboxBase = 6
 
 	// fdNetSock is an AF_INET datagram socket CREATED INSIDE N, kept for the
 	// whole run so the stage can answer "is pasta's interface up in N?" after it
@@ -118,8 +134,9 @@ func checkFDBudget(n int) error {
 			"      The fix is to RAISE fdNetnsN in internal/stage/fds.go above the block — it "+
 			"is a free choice, not a kernel constant, and the descriptor is dup3'd to it "+
 			"explicitly. Do not lower the descriptor count: it is what the resolved policy "+
-			"actually needs (one per generated file, one for the seccomp filter, two for the "+
-			"netns handshake, one for the args memfd)",
+			"actually needs (one per generated file, one for the seccomp filter, one for "+
+			"bwrap's --info-fd, two more for the --block-fd/--sync-fd gate on a container "+
+			"run, and one for the args memfd)",
 			n, fdSandboxBase, fdSandboxBase+n-1, fdNetnsN, maxPassthrough)
 	}
 	return nil

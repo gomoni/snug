@@ -18,11 +18,18 @@ import (
 const engineSocketWaitTimeout = 30 * time.Second
 
 // startEngine forks the container engine (podman `system service`) as a
-// SECOND long-lived child of P1, alongside bwrap — EAGERLY, between
-// "netready" and "start" (see serve.go's state machine), issue #63 Tier B.
-// See EnterEngine (__inengine, inengine.go) for the fork+setns+confine
-// sequence this triggers, and policy.EngineCapBounding for the capability set
-// the engine is reduced to.
+// SECOND long-lived child of P1, alongside bwrap — EAGERLY, inside the one
+// "start" request and while the sandbox's payload is still parked on
+// --block-fd (see serve.go's runOneSandbox, issue #125's C2 gate; issue #63
+// Tier B is where it came from). See EnterEngine (__inengine, inengine.go) for
+// the fork+setns+confine sequence this triggers, and policy.EngineCapBounding
+// for the capability set the engine is reduced to.
+//
+// It reports NOTHING on the control socket. Its caller composes the single
+// "enginestarted" event out of this outcome and bwrap's --info-fd answer, and
+// — this is the part that must not be moved back in here — kills bwrap and its
+// parked init before reporting a failure. A function that answered P0 itself
+// would answer before that kill had happened.
 //
 // It does NOT wait for the engine to EXIT — that would block the state
 // machine from ever reaching "start" — only for its socket to appear on
@@ -33,26 +40,17 @@ const engineSocketWaitTimeout = 30 * time.Second
 // background goroutine so it never sits as a zombie under P1 for the
 // (possibly long) remainder of this run; teardown's own verification is by
 // socket path (internal/engine/reap.go), not by this reap.
-func startEngine(control, netnsN *os.File, req request) error {
-	if req.EnginePodman == "" {
-		err := fmt.Errorf("__stage-serve: malformed startengine request: no podman path")
-		_ = sendEvent(control, event{Op: "enginestarted", Err: err.Error()})
-		return err
-	}
+func startEngine(netnsN *os.File, req request) error {
 	if req.EngineSock == "" {
-		err := fmt.Errorf("__stage-serve: malformed startengine request: no socket path to wait for")
-		_ = sendEvent(control, event{Op: "enginestarted", Err: err.Error()})
-		return err
+		return fmt.Errorf("__stage-serve: malformed start request: an engine with no socket path to wait for")
 	}
 	if req.EngineResolvConf == "" {
 		// Fatal, not a silent fallback (invariant 5): without this path
 		// EnterEngine has nothing to bind over /etc/resolv.conf, and the
 		// engine's private tree copy would carry the HOST's real one straight
 		// through to every container it starts (issue #126).
-		err := fmt.Errorf("__stage-serve: malformed startengine request: no resolv.conf path to bind over " +
-			"the engine's own /etc/resolv.conf")
-		_ = sendEvent(control, event{Op: "enginestarted", Err: err.Error()})
-		return err
+		return fmt.Errorf("__stage-serve: malformed start request: an engine with no resolv.conf path " +
+			"to bind over its own /etc/resolv.conf")
 	}
 
 	// Everything __inengine needs travels on ITS OWN argv, never in an
@@ -120,12 +118,10 @@ func startEngine(control, netnsN *os.File, req request) error {
 	}
 
 	if err := fdseal.SealFor(cmd); err != nil {
-		_ = sendEvent(control, event{Op: "enginestarted", Err: err.Error()})
 		return err
 	}
 
 	if err := cmd.Start(); err != nil {
-		_ = sendEvent(control, event{Op: "enginestarted", Err: err.Error()})
 		return err
 	}
 
@@ -136,18 +132,13 @@ func startEngine(control, netnsN *os.File, req request) error {
 	// zombie under P1 for the rest of what may be a long-lived run.
 	go func() { _ = cmd.Wait() }()
 
-	if err := waitForSocket(req.EngineSock, engineSocketWaitTimeout); err != nil {
-		_ = sendEvent(control, event{Op: "enginestarted", Err: err.Error()})
-		return err
-	}
-
-	return sendEvent(control, event{Op: "enginestarted"})
+	return waitForSocket(req.EngineSock, engineSocketWaitTimeout)
 }
 
 // waitForSocket polls for a UNIX socket to appear at path, or the deadline to
 // pass. "the process started" and "podman finished getting to a listening
-// socket" are different facts — startengine's own success/failure has to
-// mean the second one, or a run could proceed to StartSandbox believing an
+// socket" are different facts — the engine leg of "start" has to
+// mean the second one, or a run could release its parked payload believing an
 // engine exists that never actually came up.
 func waitForSocket(path string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
