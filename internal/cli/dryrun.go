@@ -1121,9 +1121,11 @@ func describeSSH(out *os.File, p *policy.Policy) {
 	fmt.Fprintf(out, "         left out   everything that names a program, a file or a socket —\n")
 	fmt.Fprintf(out, "                    ProxyCommand, Match exec, KnownHostsCommand, PKCS11Provider,\n")
 	fmt.Fprintf(out, "                    IdentityFile, IdentityAgent, ControlPath\n")
-	fmt.Fprintf(out, "         cost       anything else the host's file said is gone, and an\n")
-	fmt.Fprintf(out, "                    algorithm name this sandbox's ssh does not know is a loud\n")
-	fmt.Fprintf(out, "                    failure (`Bad SSH2 cipher spec`), never a silent one\n")
+	fmt.Fprintf(out, "         cost       anything else the host's file said is gone, and a key not\n")
+	fmt.Fprintf(out, "                    named above — RequiredRSASize included, when it is absent —\n")
+	fmt.Fprintf(out, "                    falls back to OpenSSH's compiled-in value (1024 for that\n")
+	fmt.Fprintf(out, "                    one). An algorithm name this sandbox's ssh does not know is\n")
+	fmt.Fprintf(out, "                    a loud failure (`Bad SSH2 cipher spec`), never a silent one\n")
 }
 
 // describeCommands names EVERY executable staged in policy.StagedBinDir, which

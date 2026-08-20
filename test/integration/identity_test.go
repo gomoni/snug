@@ -817,3 +817,74 @@ echo "pwned=[$(test -f ` + marker + ` && echo yes || echo no)]"
 		}
 	})
 }
+
+// sshGValues runs `ssh -G` for the probe host name and returns the
+// whitelisted keys it prints. The PROBE host name, not github.com, and
+// deliberately: a `Host github.com` block in whoever's ~/.ssh/config is
+// running the suite would make the host side of the comparison below a
+// property of that file rather than of snug.
+func sshGValues(t *testing.T, out string) map[string]string {
+	t.Helper()
+	v := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if !ok {
+			continue
+		}
+		for _, w := range policy.SSHKeyWhitelist {
+			if strings.EqualFold(key, w) {
+				v[w] = value
+			}
+		}
+	}
+	return v
+}
+
+// TestTheSandboxSSHResolvesTheHostsAlgorithmPolicy is issue #43's end-to-end
+// measurement, and it is the one that would have caught the cost issue #40
+// accepted: the replacement file made ssh RUN inside the sandbox, and every
+// test written for it asserted exactly that — nothing asserted what ssh then
+// NEGOTIATED. On a crypto-policy host the sandbox silently dropped to
+// OpenSSH's compiled-in values, RequiredRSASize 2048 -> 1024 among them, so
+// the sandbox's ssh would accept a 1024-bit RSA host or user key the host's
+// ssh refuses.
+//
+// It compares the host and the sandbox on the SAME question — `ssh -G
+// snug-probe.invalid`, the probe name snug itself uses, so no Host block in
+// anyone's config can make the two sides ask different things — and requires
+// every whitelisted key to agree. That holds on a host with a crypto policy
+// (the values were carried) and on one without (both sides reach OpenSSH's
+// compiled-in defaults), so it needs no host-shaped skip.
+func TestTheSandboxSSHResolvesTheHostsAlgorithmPolicy(t *testing.T) {
+	requireSandbox(t)
+	dir, _ := requireHostSystemSSHConfig(t)
+	proj, _ := target(t)
+	env := writeProfile(t, sshCoverageProfile(dir))
+
+	hostOut, err := exec.Command("ssh", "-G", "-o", "BatchMode=yes", "snug-probe.invalid").Output()
+	if err != nil {
+		t.Fatalf("ssh -G on the host: %v", err)
+	}
+	host := sshGValues(t, string(hostOut))
+	if len(host) == 0 {
+		t.Fatal("ssh -G printed none of the whitelisted keys on the host; the comparison " +
+			"below would then assert nothing at all")
+	}
+
+	r := runEnv(t, env, []string{"-p", "sshcover"}, proj,
+		`ssh -G -o BatchMode=yes snug-probe.invalid`).mustRun(t)
+	inside := sshGValues(t, r.out)
+	if len(inside) == 0 {
+		t.Fatalf("ssh -G printed nothing inside the sandbox:\n%s", r.out)
+	}
+
+	for _, k := range policy.SSHKeyWhitelist {
+		if host[k] != inside[k] {
+			t.Errorf("%s differs between the host and the sandbox:\n  host:   %s\n  inside: %s\n"+
+				"snug replaces the system-wide ssh_config, so whatever it does not carry over is "+
+				"silently OpenSSH's compiled-in value inside — for RequiredRSASize that is 1024 "+
+				"against the host's 2048, and the sandbox then accepts an RSA key the host refuses",
+				k, host[k], inside[k])
+		}
+	}
+}
