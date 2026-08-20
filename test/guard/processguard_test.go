@@ -81,6 +81,7 @@ func TestTheHookRefusesCommandsThatPickTheirTargetByMatching(t *testing.T) {
 		{`sh -c "pkill -x bwrap"`, "a payload string is where the verb usually sits"},
 		{"env -- pkill x", "the end-of-options marker is not a command"},
 		{"sudo pkill -x bwrap", "a transparent wrapper changes nothing about the selector"},
+		{"cd /tmp && pkill -x bwrap", "the selector is not always the first command in the line"},
 
 		{"podman rm --all", "reaches containers this session never created"},
 		{"podman stop -a", "the short spelling of the same thing"},

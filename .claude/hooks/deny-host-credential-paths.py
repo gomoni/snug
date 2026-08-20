@@ -15,6 +15,24 @@ it answers a different question — is anything worth losing reachable from here
 This layer does not depend on an agent choosing to run anything, which is the
 point: the incident is precisely a run nobody stopped to check.
 
+WHAT THIS MATCHES, AND WHY IT CHANGED (issue #199). The first version required a
+destructive-looking token and a protected path to appear *anywhere in the same
+string*, with no requirement that they belonged to each other. That refused five
+pieces of harmless work in one morning across two sessions — a commit message, an
+issue body, an issue comment and two edits to a gitignored plan file — while zero
+destructive commands were attempted in that window. Every one of them was text
+*about* destruction: this repository writes about destroying things constantly,
+because that is what the incidents were.
+
+So it now matches only where a command can actually appear. A destructive token
+inside a CARRIED ARGUMENT — a `--comment` body, a `-m` message, an `echo` string,
+a here-document — was never a command and is not graded. `sh -c '…'` IS a command
+position and is descended into, which is the half that must not regress: the
+spelling that started #185 was a payload string.
+
+That distinction is the whole fix. It does not answer the larger question #199
+raises, and must not be read as having answered it — see below.
+
 DESIGN NOTES, each one a decision rather than an accident:
 
 * A DENY LIST OF PATHS, not a ban on `rm`. Ordinary work in this repo deletes
@@ -26,10 +44,14 @@ DESIGN NOTES, each one a decision rather than an accident:
   must not depend on a check that can itself fail open. It refuses the same way
   whether or not a sandbox is running.
 
-* IT MATCHES TEXT, NOT INTENT, AND SAYS SO. A determined command can evade it
-  (a variable holding the path, base64, a here-doc). That is acceptable: this
-  guards against a MISTAKE, not against a hostile agent — a hostile agent has a
-  shell either way, and the answer to that is not to run one.
+* IT MATCHES TEXT, NOT INTENT, AND SAYS SO — AND IT IS NARROWER THAN ITS OWN
+  REFUSAL READS. A command assembled from a variable, a file or an interpreter's
+  stdin never reaches the argv this hook grades, and neither does the same
+  operation performed through a non-Bash tool, because the hook is registered for
+  Bash alone. `--body-file` is the everyday example. Whether that makes this a
+  SPEED BUMP against the literal mistake or a BOUNDARY that belongs somewhere
+  else entirely is an open maintainer decision recorded on #199. It is not
+  settled here, and narrowing the false positives did not settle it.
 
 * IT ERRS TOWARDS ALLOWING ON ITS OWN FAILURE, with one exception. A hook that
   crashes and blocks every Bash call makes the session unusable, which gets it
@@ -41,6 +63,17 @@ import json
 import os
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from shellcmd import (  # noqa: E402
+    nested_payloads,
+    redirect_targets,
+    split_top_level,
+    strip_heredoc_bodies,
+    strip_wrappers,
+    words,
+)
 
 # The paths worth an interruption. Everything here is either a credential store
 # or a command table that runs on the HOST, outside anything snug confines.
@@ -55,17 +88,11 @@ PROTECTED_RELATIVE = [
 
 # Verbs that destroy or replace. `mv` is here because moving a directory away is
 # indistinguishable from deleting it from the caller's point of view.
-DESTRUCTIVE = re.compile(
-    # The boundary class carries the quote characters deliberately. Without them
-    # `sh -c "rm -rf ~/.claude"` did not match at all — the verb sits directly
-    # behind a double quote, which is the ordinary spelling of a payload string
-    # and therefore exactly the shape this hook exists for.
-    r"""(^|[|;&("']|\s)(rm|rmdir|shred|srm|unlink|truncate|dd|mv|mkfs\.\w+)\s""",
-    re.IGNORECASE,
-)
-# Redirections that clobber, and the sweeps that delete without naming a verb
-# first. `>` is one character and carries the same consequence as `rm`.
-CLOBBER = re.compile(r"(>{1,2}\s*\S)|(--delete\b)|(-delete\b)|(-exec\s+rm\b)")
+DESTRUCTIVE = {"rm", "rmdir", "shred", "srm", "unlink", "truncate", "dd", "mv"}
+MKFS = re.compile(r"^mkfs\.\w+$")
+
+# `find` destroys without naming a verb in command position.
+FIND_DESTROYS = ("-delete", "-exec", "-execdir")
 
 
 def home():
@@ -100,23 +127,57 @@ def normalise(command):
     return re.sub(r"/{2,}", "/", out)
 
 
-def mentions(command, path, whole_tree):
-    """True when command names path — or, for a whole_tree path, anything inside
-    it. The boundary check stops /home/u/.config matching a mention of
-    /home/u/.configured."""
-    ends = ("", " ", '"', "'", ";", "&", "|", ")", "\n", "\t", "*")
-    idx = 0
-    while True:
-        idx = command.find(path, idx)
-        if idx == -1:
-            return False
-        after = command[idx + len(path): idx + len(path) + 1]
-        if after in ends or (whole_tree and after == "/"):
-            return True
-        # A trailing slash on an exact target is still that target: `rm -rf ~/`.
-        if not whole_tree and after == "/" and command[idx + len(path) + 1: idx + len(path) + 2] in ends:
-            return True
-        idx += 1
+def path_hit(token):
+    """The protected path this ARGUMENT names, or None.
+
+    Graded per token rather than by searching the line, which is the whole of
+    #199: `/home/u/.claude` as an operand of `rm` is a target; the same text
+    inside a commit message is a citation.
+    """
+    t = token
+    m = re.match(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$", t)  # dd of=…, and friends
+    if m:
+        t = m.group(1)
+    t = t.rstrip("/") or "/"
+    for path, whole_tree in protected_paths():
+        if t == path:
+            return path
+        if whole_tree and t.startswith(path + "/"):
+            return path
+    return None
+
+
+def grade(argv):
+    """The protected path this one command destroys, or None."""
+    argv, _ = strip_wrappers(argv)
+    if not argv:
+        return None
+
+    # A clobbering redirect is the one way a path dies with no destructive verb
+    # anywhere in the command. `echo x > ~/.config/f` must stay refused; a `>`
+    # inside a quoted message must not be read as one, which is what tokenising
+    # first buys.
+    for target in redirect_targets(argv):
+        hit = path_hit(target)
+        if hit:
+            return hit
+
+    base = os.path.basename(argv[0])
+    operands = argv[1:]
+
+    if base in DESTRUCTIVE or MKFS.match(base):
+        for operand in operands:
+            hit = path_hit(operand)
+            if hit:
+                return hit
+
+    if base == "find" and any(flag in operands for flag in FIND_DESTROYS):
+        for operand in operands:
+            hit = path_hit(operand)
+            if hit:
+                return hit
+
+    return None
 
 
 # The ONE exemption, and it is the form the agent files mandate: the guard and
@@ -128,23 +189,34 @@ def mentions(command, path, whole_tree):
 # sanctioned pattern usable or the instruction and the enforcement contradict
 # each other. Note it does NOT exempt a bare `snug … -- sh -c 'rm -rf …'`: being
 # inside a sandbox says nothing about what that sandbox's policy hands over, and
-# a run whose grants reach the host's ~/.ssh is inside and lethal.
+# a run whose grants reach the host's key material is inside and lethal.
 GUARDED = re.compile(r"blast-radius[^\n]{0,40}?&&")
+
+
+def scan(text):
+    """Walk every command position in text and return the first refusal."""
+    guard = GUARDED.search(text)
+    guard_end = guard.end() if guard else None
+
+    for offset, segment in split_top_level(text):
+        if guard_end is not None and offset >= guard_end:
+            # Everything after `blast-radius &&` in this string is the guarded
+            # payload, which is the sanctioned form.
+            continue
+        argv = words(segment)
+        hit = grade(argv)
+        if hit:
+            return hit
+        for payload in nested_payloads(argv):
+            hit = scan(payload)
+            if hit:
+                return hit
+    return None
 
 
 def verdict(command):
     """Return a refusal reason, or None to allow."""
-    text = normalise(command)
-    hit = DESTRUCTIVE.search(text) or CLOBBER.search(text)
-    if not hit:
-        return None
-    guard = GUARDED.search(text)
-    if guard and guard.start() < hit.start():
-        return None
-    for path, whole_tree in protected_paths():
-        if mentions(text, path, whole_tree):
-            return path
-    return None
+    return scan(normalise(strip_heredoc_bodies(command)))
 
 
 def deny(path, command):
@@ -160,11 +232,17 @@ def deny(path, command):
         "and guard the payload in the SAME invocation —\n"
         "    snug <dir> -- sh -c 'blast-radius && <the destructive command>'\n"
         "never as two steps. Note that being inside a sandbox is not the safety property:\n"
-        "a sandbox whose policy grants rw over ~/.ssh is inside and lethal, which is why the\n"
-        "guard asks what is REACHABLE rather than where you are standing.\n"
+        "a sandbox whose policy grants write access over the host's key material is inside\n"
+        "and lethal, which is why the guard asks what is REACHABLE rather than where you are\n"
+        "standing.\n"
         "\n"
         "If it really was meant to run on the host, a human has to do it. This hook has no\n"
         "override, on purpose: an override is a thing an agent talks itself into.\n"
+        "\n"
+        "If you were WRITING ABOUT a destructive command rather than running one, that is\n"
+        "not supposed to be refused any more (issue #199). Report it rather than rewording\n"
+        "until the matcher stops seeing it — normalising that workaround is what makes the\n"
+        "guard worthless.\n"
         f"\ncommand: {command.strip()[:400]}"
     )
     print(
@@ -189,9 +267,9 @@ def main():
     except Exception:
         # Fall back to the crude read rather than blocking the session on a
         # shape this hook did not expect.
-        for path, _ in protected_paths():
-            if path in raw and (DESTRUCTIVE.search(raw) or CLOBBER.search(raw)):
-                deny(path, raw)
+        hit = verdict(raw)
+        if hit:
+            deny(hit, raw)
         sys.exit(0)
 
     if not isinstance(command, str) or not command:

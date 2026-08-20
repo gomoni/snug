@@ -86,6 +86,16 @@ func TestTheHookRefusesDestructiveCommandsAimedAtHostCredentialPaths(t *testing.
 		"echo broken > $HOME/.config/snug/config.toml",
 		"find $HOME/.claude -name '*.json' -delete",
 		"rm -rf ~",
+		// The destructive command is not the FIRST command in the line. Added
+		// by mutation: disabling `&&`/`||` splitting in the shared splitter
+		// changed no test, because every case above put the verb first — so the
+		// segmenting the #199 fix now depends on was untested.
+		"cd /tmp && rm -rf ~/.claude",
+		"test -d ~/.ssh || rm -rf $HOME/.ssh",
+		// The heredoc BODY is data and is stripped, but the line that opened it
+		// is still a command and its redirect target is still a target. The
+		// stripping must not become a way to smuggle the target past the check.
+		"cat > ~/.ssh/config <<'EOF'\nharmless text\nEOF",
 	} {
 		denied, reason := ask(t, command)
 		if !denied {
@@ -123,6 +133,37 @@ func TestTheHookLeavesOrdinaryWorkAlone(t *testing.T) {
 		// the instruction and the enforcement contradict each other — and the
 		// instruction is what loses.
 		`snug /tmp/t -- sh -c 'blast-radius && rm -rf "$HOME/.config"'`,
+
+		// ISSUE #199 — WRITING ABOUT DESTRUCTION IS NOT DESTRUCTION.
+		//
+		// Six refusals of harmless work across two sessions, zero destructive
+		// commands attempted in that window. Every one was text ABOUT a
+		// destructive command: this repository writes about destroying things
+		// constantly, because that is what the incidents were. These are the
+		// measured cases, not invented ones.
+		//
+		// The scratchpad path is spelled without an extension here only because
+		// the design-citation sweep reads a bare `*.md` in a comment as a
+		// citation it must be able to follow. The measured file was a gitignored
+		// plan document; what the hook grades is unaffected by the name.
+		//
+		// The rule they encode: a destructive token inside a CARRIED ARGUMENT
+		// was never a command. `sh -c` is a command position and is graded
+		// above; a `-m` message, a `--comment` body, an `echo` string and a
+		// here-document body are not.
+		`git commit -m "the hook denied rm -rf ~/.claude and that was wrong"`,
+		`gh issue close 185 --comment 'the report quoted rm -rf $HOME/.ssh'`,
+		// The heredoc body has to be a line that WOULD be graded as a command
+		// if it were one — added by mutation, because with a body starting
+		// "this body quotes…" the stripping was never load-bearing and could be
+		// deleted with no test noticing.
+		"cat > notes.md <<'EOF'\nrm -rf ~/.claude is the command that started #185\nEOF",
+		"cat > issue.md <<'EOF'\nthis body quotes rm -rf ~/.claude while documenting it\nEOF",
+		"python3 - <<'PY'\nopen('.claude/scratchpad/notes','w').write('PR 200 refused rm -rf ~/.claude')\nPY",
+		`echo "never run rm -rf ~/.claude" >> .claude/scratchpad/notes`,
+		// The sixth: the shell function written to PROBE the hook was refused
+		// by the hook, while carrying its own fixtures as arguments.
+		`probe() { echo "$1"; }; probe 'rm -rf ~/.claude'`,
 	} {
 		if denied, reason := ask(t, command); denied {
 			t.Errorf("REFUSED ordinary work: %q\nA hook that gets in the way of the work is a "+
