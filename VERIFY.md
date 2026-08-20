@@ -1603,6 +1603,44 @@ nor exempted with a reason. The nine missing rows were not the defect — **noth
 noticing** was, and a hand-written renderer falls one behind the struct once per
 feature.
 
+## 9a. NOT GRANTED is not wrong in the reassuring direction (issue #59)
+
+`--dry-run` is the mechanism by which a human can trust snug at all, so a row
+there that overstates what is denied is the worst kind of wrong. `covered()`
+walked **upward** only, so a bind *beneath* a candidate never marked that
+candidate covered:
+
+```console
+$ ./bin/snug --dry-run -p @sys -p @home -p @claude . | sed -n '/NOT GRANTED/,/^$/p'
+  NOT GRANTED (never mounted — these read as absent, they are not hidden;
+  where it says "host's", snug generates its own file at that path instead):
+    ~/.ssh  ~/.gnupg  ~/.aws  ~/.config/gh  ~/.kube  ~/.docker  ~/.netrc  ~/.mozilla  ~/.local/share/keyrings
+    ~/.claude  PARTIAL — 1 host path beneath it is bound (see FILESYSTEM)
+      the rest of it is not granted, and snug generates its own content here
+    /sys  /tmp/.X11-unix  the Wayland socket  the session D-Bus socket
+```
+
+Before the fix, `~/.claude` sat in the bare run at the top — reading as "none of
+this is here" — while the FILESYSTEM block above bound `~/.claude/plugins`
+read-only. Measured content under there: 406 KB of plugin catalogue plus a
+third-party git repository whose `.git/config` is a command table.
+
+What to check:
+
+1. `~/.claude` is on its **own** line and says `PARTIAL`, not in the bare run.
+2. It names both halves — what **is** bound, and that the rest is not. "Granted"
+   alone would be a lie in the other direction.
+3. `~/.ssh` and the rest are still bare names. A fix that marked everything
+   PARTIAL would satisfy check 1 and destroy the block's meaning.
+4. Cross-check the count against FILESYSTEM: the number in the row is the number
+   of `bind` rows whose host path is strictly beneath `~/.claude`. Generated
+   (`data`) rows are not binds and are deliberately not counted — that is what
+   the "snug generates its own content here" clause is for.
+
+The sibling counter uses the same walk and got the same fix: a sibling with
+something bound beneath it is reported separately rather than counted as an
+entry that reads as absent.
+
 ## 9b. The `@` namespace belongs to snug
 
 `@` marks a profile snug ships. Nothing else may wear it, so a name in
