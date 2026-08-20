@@ -63,6 +63,39 @@ type Context struct {
 	// `git = "extract"`.
 	HostGit GitValues
 
+	// HostSSHConfigs are the system-wide ssh_config paths this host's ssh
+	// actually reads, discovered by the caller by asking ssh itself
+	// (`ssh -G -v`, whose debug output names every file in the chain) rather
+	// than by snug guessing spellings. It is ADDITIVE to
+	// SystemSSHConfigPaths, never a replacement for it: a host with no ssh
+	// binary, a probe that times out, or output in a shape the parser does
+	// not recognise all leave this empty and the fixed list is what remains
+	// (issue #42).
+	//
+	// Reading it is impure — it runs a host binary — so it lives here for the
+	// same reason HostGit and HostShims do, and Resolve stays a pure function
+	// of its inputs.
+	//
+	// Every entry is re-checked by systemSSHConfigCandidates before it can
+	// author anything: absolute, clean, named ssh_config, and not under Home.
+	// The caller filters too. That is deliberate belt-and-braces, exactly as
+	// GitConfigFrom re-drops control characters the extractor already dropped
+	// — this is the last place a path from a host file can be stopped before
+	// it becomes a mount.
+	HostSSHConfigs []string
+
+	// HostSSHConfig is the whitelisted subset of this host's RESOLVED
+	// system-wide ssh configuration — algorithm lists and RequiredRSASize,
+	// nothing that names a program, a file or a socket — extracted by the
+	// caller with `ssh -G` because running a host binary is not the
+	// resolver's job. Only keys in SSHKeyWhitelist ever appear here, and only
+	// where the host's value DIFFERS from OpenSSH's compiled-in default.
+	//
+	// Empty is the ordinary case and costs nothing: the generated file then
+	// carries no directives and the sandbox's ssh uses the same compiled-in
+	// defaults the host's does (issue #43).
+	HostSSHConfig SSHValues
+
 	// KnownHosts is the subset of the host's known_hosts for the pinned host,
 	// filtered by the caller. Binding the whole file would tell the sandbox
 	// every host you have ever connected to.

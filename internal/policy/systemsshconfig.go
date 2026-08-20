@@ -1,115 +1,119 @@
 package policy
 
-import "strings"
+import (
+	"path/filepath"
+	"slices"
+	"strings"
+)
 
-// SystemSSHConfigPaths are the system-wide ssh_config locations snug may
-// replace. Both spellings ship in the wild: the traditional /etc/ssh, and
-// /usr/etc/ssh on distributions that moved the vendor copy out of /etc
-// (openSUSE). A third spelling exists in the wild too
-// (/usr/local/etc/ssh/ssh_config) and is deliberately NOT added here — see
-// an unmeasured path in a security-relevant list is a claim with no
-// evidence behind it (issue #40).
+// SystemSSHConfigPaths is the FLOOR of system-wide ssh_config locations snug
+// may replace, not the whole set. Both spellings here ship in the wild: the
+// traditional /etc/ssh, and /usr/etc/ssh on distributions that moved the
+// vendor copy out of /etc (openSUSE).
+//
+// A third, fourth and fifth spelling exist too — /usr/local/etc/ssh on
+// FreeBSD and under a Homebrew-shaped prefix, a /nix/store/… path — and they
+// are still deliberately NOT written down here. A list of platform spellings
+// is a rule written somewhere it can be forgotten, and an entry nobody has a
+// host to measure on is a claim with no evidence behind it (issue #40). What
+// closed issue #42 instead is Context.HostSSHConfigs: the caller ASKS this
+// host's ssh which files it reads, and whatever it names joins this list for
+// the run.
+//
+// So this list is what remains when the question cannot be asked — no ssh on
+// the host, a probe that times out, output the parser does not recognise —
+// and a host in that state is exactly as well off as it was before #42, which
+// is the fail-closed direction. See systemSSHConfigCandidates.
 var SystemSSHConfigPaths = []string{
 	"/etc/ssh/ssh_config",
 	"/usr/etc/ssh/ssh_config",
 }
 
-// SystemSSHConfig is the generated replacement for the system-wide
-// ssh_config. It is authored by snug in EVERY sandbox whose deepest covering
-// grant actually supplies a host file at the path — see
-// replaceSystemSSHConfig for the coverage rule that decides WHEN. This has
-// NOTHING to do with a pinned identity: the failure it fixes is a
-// configuration-chain problem, not a credential one, and it fires (or does
-// not) the same way whether or not [identity] is set.
+// systemSSHConfigCandidates is every guest path this run may replace: the
+// fixed floor, then whatever the host's own ssh named, in chain order.
 //
-// WHY THIS EXISTS, measured rather than reasoned: the sandbox maps exactly
-// one uid, so every root-owned file under a read-only bind reads as 65534
-// inside it. OpenSSH refuses to use a configuration file owned by neither
-// root nor the invoking user, and the refusal is fatal rather than a
-// warning:
+// The filter on a discovered path is the load-bearing half, because these
+// strings come from a HOST FILE the user's own ~/.ssh/config can Include, and
+// they end up authoring a mount. Four conditions, each closing a measured
+// shape rather than a hypothetical one:
 //
-//	$ git clone git@github.com:owner/repo.git
-//	Bad owner or permissions on /usr/etc/ssh/ssh_config.d/50-suse.conf
+//   - ABSOLUTE and CLEAN. A relative or unnormalised path cannot be reasoned
+//     about against a mount's Guest, and Validate would refuse it later; being
+//     refused here means a weird chain entry never becomes a policy at all.
+//   - BASENAME ssh_config. `ssh -G -v` names every file in the chain,
+//     INCLUDING the ones an Include pulls in
+//     (/usr/etc/ssh/ssh_config.d/50-suse.conf,
+//     /etc/crypto-policies/back-ends/openssh.config — both measured on this
+//     host). Replacing an included file is pointless: snug replaces the
+//     TOP-LEVEL file and the replacement carries no Include line, so nothing
+//     under it is ever read. It is also how a chain entry chosen by a human's
+//     own `Include /tmp/whatever.conf` stops being able to steer where snug
+//     authors bytes.
+//   - NOT UNDER Home. The user's own ~/.ssh/config is in the chain and is not
+//     a system file: snug generates that one only when an identity is pinned
+//     (identity.go), and replacing it here would silently displace a file the
+//     human wrote for themselves.
+//   - NO CONTROL CHARACTER. Same rule as every other host string that reaches
+//     a mount or a screen; Validate refuses one in a guest path anyway, and
+//     this keeps it from getting that far.
 //
-// So ssh — and therefore git-over-ssh, scp, and rsync -e ssh — did not run
-// inside snug at all on such a host, for every profile, identity pinned or
-// not. `ssh -F <file>` always worked, because -F makes ssh skip the
-// system-wide file entirely; this replacement is that same escape, applied
-// once by snug instead of relying on every caller to remember a flag. git
-// hits the identical root cause on a different file and takes the same
-// SHAPE of fix (`safe.directory = *`) — the next tool with an ownership
-// check on a root-owned file will need its own answer, but this is the
-// pattern to look for.
-//
-// This is a REPLACEMENT, not masking: snug authors it, the sandbox still
-// sees a file at that path, and no profile's grant is silently subtracted
-// (CLAUDE.md, "PATH precedence, not overmounting"). It appears in --dry-run
-// as a `data` row with `(snug)` provenance, plus a `replaces:<profile>`
-// suffix when it displaced content a profile's bind supplied at that path —
-// see Policy.Replace and replaceSystemSSHConfig.
-//
-// replaceSystemSSHConfig does not check who owns the host file it replaces —
-// owner-gating was considered and rejected (issue #40:
-// it makes emission depend on a mode bit and --dry-run host-state-dependent
-// in a way a reader cannot check). So a human profile binding its OWN config
-// at one of these paths is replaced too, disclosed by `replaces:` like any
-// other displacement; their answer is `~/.ssh/config`, which snug does not
-// author unless an identity is pinned.
-//
-// A second, independent reason to replace it: ssh_config is a COMMAND TABLE
-// (ProxyCommand, LocalCommand, Match exec, KnownHostsCommand,
-// PermitLocalCommand, PKCS11Provider, SecurityKeyProvider all name programs
-// to run), and @sys's /usr bind supplies the host's copy of one
-// unavoidably — /usr cannot be enumerated finely enough to leave it out.
-// Replacing it means the sandbox's ssh obeys only bytes snug authored. Do
-// NOT oversell this: the file is the host admin's, the payload cannot write
-// it (a read-only data mount inside a read-only bind, under
-// --remount-ro /), and anything it named would run inside the sandbox with
-// the sandbox's own authority — no escalation is being closed here, this is
-// legibility and robustness.
-//
-// ABUSE: a hostile process inside the sandbox can use this to run `ssh` —
-// and therefore `git` over ssh, `scp` and `rsync -e ssh` — where it
-// previously died parsing the host's root-owned config; it gains no
-// credential by it, because without a pinned identity there is no key, no
-// agent socket and no known_hosts inside, so it can only reach hosts that
-// would accept it with no secret of yours, over egress @net already granted
-// and with the same reach a plain TCP client already had. It cannot modify
-// the file. What snug gives up on its behalf is the host's system-wide ssh
-// defaults: the sandbox's ssh negotiates OpenSSH's compiled-in algorithm
-// lists and RequiredRSASize 1024 instead of the host crypto policy's 2048,
-// so a hostile remote can offer a weaker host key than the host's own ssh
-// would have accepted.
-//
-// What it costs, stated plainly: the host's system-wide ssh defaults do not
-// apply inside the sandbox — on a crypto-policy distro that is the policy's
-// algorithm lists and RequiredRSASize (2048 -> OpenSSH's compiled-in 1024).
-// Restoring that properly is extracting and generating the non-executable
-// keys from the host's file, not implemented here (issue #40).
-func SystemSSHConfig() []byte {
-	return []byte("# Generated by snug, replacing this host's system-wide ssh_config.\n" +
-		"#\n" +
-		"# The sandbox maps exactly one uid, so a root-owned file under a\n" +
-		"# read-only bind reads as 65534 inside it. OpenSSH refuses a\n" +
-		"# configuration file owned by neither root nor the caller — fatally,\n" +
-		"# not as a warning — so ssh, and therefore git-over-ssh, scp and\n" +
-		"# rsync -e ssh, did not run inside the sandbox at all on a host whose\n" +
-		"# system-wide ssh_config lives under a granted tree. This has nothing\n" +
-		"# to do with pinning an identity; git hits the same root cause on a\n" +
-		"# different file and takes the same shape of fix (safe.directory = *).\n" +
-		"#\n" +
-		"# It has no Include line for the same reason: every file it would pull\n" +
-		"# in is root-owned too.\n" +
-		"#\n" +
-		"# If snug pinned an identity it also generated ~/.ssh/config; otherwise\n" +
-		"# ssh's compiled-in defaults are all that apply.\n" +
-		"#\n" +
-		"# Cost: the host's system-wide ssh defaults do not apply inside — on a\n" +
-		"# crypto-policy distro that includes RequiredRSASize (commonly 2048),\n" +
-		"# which falls back to OpenSSH's compiled-in 1024 here.\n")
+// Duplicates are dropped so a chain that names the same file twice — the
+// measured shape, ssh parses the whole chain twice per invocation — cannot
+// produce two mounts at one guest path.
+func systemSSHConfigCandidates(ctx Context) []string {
+	out := slices.Clone(SystemSSHConfigPaths)
+	for _, p := range ctx.HostSSHConfigs {
+		if !filepath.IsAbs(p) || filepath.Clean(p) != p {
+			continue
+		}
+		if filepath.Base(p) != "ssh_config" {
+			continue
+		}
+		if ctx.Home != "" && underPath(ctx.Home, p) {
+			continue
+		}
+		// NOR ANYWHERE INSIDE THE TARGET. Found by attacking this change rather
+		// than by writing it: the chain is host text, but a human's own
+		// `Include <some repo>/ssh_config` line puts a path from the SANDBOXED
+		// TREE into it, and a KindData mount is assigned straight into p.Mounts
+		// — rejectMasking exempts KindData by kind, so it would displace the
+		// repository's own file at that path with bytes snug wrote, read-only,
+		// inside the one tree the run exists to let the payload write. Not an
+		// escalation (the content is snug's own comment block), but it is snug
+		// taking a file away from the thing it is supposed to be working on.
+		if ctx.Target != "" && underPath(ctx.Target, p) {
+			continue
+		}
+		// NOR ANYWHERE INSIDE THE TARGET. Found by attacking this change rather
+		// than by writing it: the chain is host text, but a human's own
+		// `Include <some repo>/ssh_config` line puts a path from the SANDBOXED
+		// TREE into it, and a KindData mount is assigned straight into p.Mounts
+		// — rejectMasking exempts KindData by kind, so it would displace the
+		// repository's own file at that path with bytes snug wrote, read-only,
+		// inside the one tree the run exists to let the payload write. Not an
+		// escalation (the content is snug's own comment block), but it is snug
+		// taking a file away from the thing it is supposed to be working on,
+		// and the guest path is the target's.
+		if strings.IndexFunc(p, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+			continue
+		}
+		if slices.Contains(out, p) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
-// replaceSystemSSHConfig emits SystemSSHConfig() at each guest path in
+// underPath reports whether p is dir itself or anything beneath it. Written
+// out rather than a strings.HasPrefix, which answers a different question:
+// /home/us is not under /home/u.
+func underPath(dir, p string) bool {
+	dir = strings.TrimSuffix(filepath.Clean(dir), "/")
+	return p == dir || strings.HasPrefix(p, dir+"/")
+}
+
+// replaceSystemSSHConfig emits SystemSSHConfigFrom(ctx.HostSSHConfig) at each guest path in
 // SystemSSHConfigPaths whose deepest covering mount is a KindBind AND whose
 // host side actually has a file there. See SystemSSHConfig for the WHY; this
 // is the WHEN — decided in issue #40, restated here in full because the
@@ -137,9 +141,9 @@ func SystemSSHConfig() []byte {
 //
 // Runs AFTER every profile mount is folded (so coverage sees the final set)
 // and BEFORE applyEnvClaims (so sanitise sees the final mount set).
-func replaceSystemSSHConfig(p *Policy, env Environ) {
-	cfg := SystemSSHConfig()
-	for _, guest := range SystemSSHConfigPaths {
+func replaceSystemSSHConfig(p *Policy, ctx Context, env Environ) {
+	cfg := SystemSSHConfigFrom(ctx.HostSSHConfig)
+	for _, guest := range systemSSHConfigCandidates(ctx) {
 		// Runs before any graft can exist (Resolve, never Tier C's post-Resolve
 		// Policy.Graft), and this is a question about the PAYLOAD's own view
 		// either way — the sandbox's, explicitly.
@@ -171,5 +175,12 @@ func replaceSystemSSHConfig(p *Policy, env Environ) {
 			Content: cfg,
 			From:    from,
 		})
+		// Recorded rather than re-derived. --dry-run's SSH block used to walk
+		// SystemSSHConfigPaths itself, which stopped being the whole set the
+		// moment discovery landed: a run that replaced a discovered path would
+		// have shown the reader nothing at all. The screen reads what Resolve
+		// DECIDED (issue #42).
+		p.SystemSSHConfigs = append(p.SystemSSHConfigs, guest)
+		p.SystemSSHCarried = carriedSSHKeys(ctx.HostSSHConfig)
 	}
 }
