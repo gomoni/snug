@@ -229,9 +229,20 @@ func TestTheGeneratedStorageConfIsSnugsOwn(t *testing.T) {
 // the negative arm this passes on an implementation that hardcodes a path.
 func TestTheGeneratedStorageConfNamesAMountProgramOnlyWhenThereIsOne(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		helper bool
-	}{{"helper beside the engine", true}, {"no helper beside the engine", false}} {
+		name string
+		mode os.FileMode // 0 = do not create the file at all
+		want bool
+	}{
+		{"executable helper beside the engine", 0o755, true},
+		{"no helper beside the engine", 0, false},
+		// The third arm is the one the first two cannot see. A file of the
+		// right name that CANNOT RUN — a tarball unpacked under a restrictive
+		// umask, a stray artifact — was named as mount_program and produced
+		// exactly the "can't stat program" failure this derivation exists to
+		// prevent. Checking IsRegular alone tested that something is there,
+		// not that it can run.
+		{"non-executable file of the right name", 0o644, false},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("XDG_DATA_HOME", t.TempDir())
 			dir := t.TempDir()
@@ -240,8 +251,8 @@ func TestTheGeneratedStorageConfNamesAMountProgramOnlyWhenThereIsOne(t *testing.
 				t.Fatal(err)
 			}
 			helper := filepath.Join(dir, "fuse-overlayfs")
-			if tc.helper {
-				if err := os.WriteFile(helper, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			if tc.mode != 0 {
+				if err := os.WriteFile(helper, []byte("#!/bin/sh\n"), tc.mode); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -254,7 +265,6 @@ func TestTheGeneratedStorageConfNamesAMountProgramOnlyWhenThereIsOne(t *testing.
 				t.Fatal(err)
 			}
 			path, _ := envValue(spec.Env, "CONTAINERS_STORAGE_CONF")
-			_ = helper
 			raw, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
@@ -262,13 +272,13 @@ func TestTheGeneratedStorageConfNamesAMountProgramOnlyWhenThereIsOne(t *testing.
 			body := string(raw)
 			named := strings.Contains(body, "mount_program = "+strconv.Quote(helper))
 			switch {
-			case tc.helper && !named:
-				t.Errorf("a fuse-overlayfs sits beside the engine and the generated storage.conf "+
-					"does not name it, so a host whose overlay needs it loses it:\n%s", body)
-			case !tc.helper && strings.Contains(body, "mount_program"):
-				t.Errorf("no fuse-overlayfs sits beside the engine and the generated storage.conf "+
-					"names a mount_program anyway — podman refuses with \"can't stat program\" "+
-					"before it does any work:\n%s", body)
+			case tc.want && !named:
+				t.Errorf("an executable fuse-overlayfs sits beside the engine and the generated "+
+					"storage.conf does not name it, so a host whose overlay needs it loses it:\n%s", body)
+			case !tc.want && strings.Contains(body, "mount_program"):
+				t.Errorf("no RUNNABLE fuse-overlayfs sits beside the engine and the generated "+
+					"storage.conf names a mount_program anyway — podman refuses with \"can't stat "+
+					"program\" before it does any work:\n%s", body)
 			}
 		})
 	}
@@ -298,7 +308,8 @@ func TestEveryPathAGeneratedConfigNamesIsOneSnugOwns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec, err := e.Spec("/usr/bin/podman", []string{"PATH=/usr/bin"}, true,
+	const enginePath = "/usr/bin/podman"
+	spec, err := e.Spec(enginePath, []string{"PATH=/usr/bin"}, true,
 		policy.NetPolicy{})
 	if err != nil {
 		t.Fatal(err)
@@ -317,6 +328,24 @@ func TestEveryPathAGeneratedConfigNamesIsOneSnugOwns(t *testing.T) {
 	if len(files) < 4 {
 		t.Fatalf("only %d of the four generated files are named in the engine's environment; "+
 			"this test would then be checking whichever ones happen to remain", len(files))
+	}
+
+	// The one path outside snug's own directories that a generated config may
+	// name, derived the same way writeStorageConf derives it.
+	// Stated here rather than obtained from helperBesideEngine, and the
+	// difference is not style. Deriving the exemption from the function under
+	// test moves BOTH when that function changes: a mutation pointing
+	// mount_program at /usr/bin/env passed, because the test then exempted
+	// /usr/bin/env too. An exemption has to be an independent restatement of
+	// where the helper is allowed to be, or it exempts whatever the code did.
+	helperPath := filepath.Join(filepath.Dir(enginePath), "fuse-overlayfs")
+	// The directories containers.conf names for podman's own helper lookup.
+	// Exempt as EXACT values, so a fourth entry — or any other path on such a
+	// line — is caught rather than waved through by a prefix.
+	helperDirs := map[string]bool{
+		"/usr/libexec/podman": true,
+		"/usr/lib/podman":     true,
+		"/usr/bin":            true,
 	}
 
 	owned := func(p string) bool {
@@ -343,10 +372,23 @@ func TestEveryPathAGeneratedConfigNamesIsOneSnugOwns(t *testing.T) {
 			}
 			for _, m := range quoted.FindAllStringSubmatch(line, -1) {
 				p := m[1]
-				// The engine binary's own directory is not snug's, and is the
-				// subject of Tier C's open toolchain question rather than of
-				// this test.
-				if strings.Contains(line, "mount_program") || strings.Contains(line, "helper_binaries_dir") {
+				// ONE exemption, and it is a VALUE rather than a line match.
+				//
+				// It used to skip any line mentioning mount_program or
+				// helper_binaries_dir, which meant a second path smuggled onto
+				// such a line was skipped with it — and mount_program is the one
+				// non-snug path this file introduces, so the exemption covered
+				// exactly the thing most worth checking. Now the helper's own
+				// derived path is allowed and nothing else is: a mount_program
+				// pointing anywhere but beside the resolved engine fails here.
+				//
+				// helper_binaries_dir's three entries are exempt BY VALUE too,
+				// not by a /usr/ prefix. A prefix would let a mount_program at
+				// /usr/bin/anything through, and mount_program is precisely the
+				// key this check exists for — measured: with the prefix form, a
+				// mutation pointing mount_program at an existing /usr binary
+				// passed.
+				if p == helperPath || helperDirs[p] {
 					continue
 				}
 				if !owned(p) {
@@ -357,6 +399,76 @@ func TestEveryPathAGeneratedConfigNamesIsOneSnugOwns(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestARelativeEngineRefusesRatherThanWritingARelativeMountProgram is the other
+// half of helperBesideEngine's absoluteness check.
+//
+// preflightPodmanBinary trusts $SNUG_PODMAN outright — os.Stat and !IsDir — so
+// a relative value reaches Spec. filepath.Dir is then ".", the candidate is the
+// bare name, it is stat'd against SNUG's working directory, and it would be
+// written verbatim into storage.conf as a RELATIVE mount_program that the
+// ENGINE resolves against its OWN. One string, two processes, two meanings.
+func TestARelativeEngineRefusesRatherThanWritingARelativeMountProgram(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "podman"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "fuse-overlayfs"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.Spec("./podman", []string{"PATH=/usr/bin"}, false, policy.NetPolicy{})
+	if err == nil {
+		t.Fatal("Spec accepted a relative engine path; the generated storage.conf would then " +
+			"carry a relative mount_program, which the engine resolves against its own working " +
+			"directory rather than snug's")
+	}
+	if !strings.Contains(err.Error(), "absolute") {
+		t.Errorf("the refusal does not say what is wrong with the path: %v", err)
+	}
+}
+
+// TestAnUnquotablePathIsRefusedRatherThanSubstituted is invariant 5 applied to
+// the one function that used to break it.
+//
+// tomlString's doc said it "REFUSES rather than escapes" while doing neither:
+// it returned `"snug-refused-unquotable-value"` — a perfectly valid TOML
+// string — and writeStorageConf ignored the error return it already had. The
+// values are reachable: e.runroot comes from os.TempDir(), e.store from
+// $XDG_DATA_HOME. Measured before the fix, with a quote in $TMPDIR: the argv
+// carried the real runroot while storage.conf carried the placeholder, with no
+// error anywhere.
+func TestAnUnquotablePathIsRefusedRatherThanSubstituted(t *testing.T) {
+	// A quote is the hazard that matters: it closes the string early and the
+	// rest of the line is read as TOML.
+	odd := filepath.Join(t.TempDir(), `a"b`)
+	if err := os.MkdirAll(odd, 0o700); err != nil {
+		t.Skipf("this filesystem will not hold a directory with a quote in its name: %v", err)
+	}
+	t.Setenv("XDG_DATA_HOME", odd)
+
+	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.Spec("/usr/bin/podman", []string{"PATH=/usr/bin"}, false, policy.NetPolicy{})
+	if err == nil {
+		t.Fatal("Spec accepted a store path containing a quote; storage.conf would then carry a " +
+			"placeholder while podman's own --root carried the real path, and nothing would say so")
+	}
+	if !strings.Contains(err.Error(), "graphroot") {
+		t.Errorf("the refusal does not name which setting could not be rendered: %v", err)
+	}
+	if strings.Contains(err.Error(), "snug-refused-unquotable-value") {
+		t.Errorf("the placeholder reached the caller instead of an error: %v", err)
 	}
 }
 

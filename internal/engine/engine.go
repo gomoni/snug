@@ -278,11 +278,17 @@ func (e *Engine) RunLabel() string { return e.runLabel }
 // Spec builds the stage.EngineSpec that Stage.StartEngine consumes: exactly
 // what this run's engine execs into, chosen entirely by P0. podman is the
 // preflight-checked path to a real binary; baseEnv is the explicit, minimal
-// environment the caller built (anything a pinned podman bundle needs, e.g.
-// CONTAINERS_STORAGE_CONF — NOT PATH, which Spec pins itself below and a
-// caller-supplied entry cannot override) — XDG_RUNTIME_DIR is added here,
-// pointing at this run's own runroot, so the caller never has to know that
-// path.
+// environment the caller built — XDG_RUNTIME_DIR is added here, pointing at
+// this run's own runroot, so the caller never has to know that path.
+//
+// baseEnv can no longer carry the engine's configuration. This comment used to
+// name CONTAINERS_STORAGE_CONF as an example of "anything a pinned podman
+// bundle needs", and that sentence WAS the defect issue #125 closed: it left the
+// storage configuration to whatever the caller or the host supplied, so on a
+// host with a pinned bundle the file in play was the bundle's. Spec now writes
+// and points at that file itself, and every one of these variables is SET rather
+// than appended (see setEnv), so a caller still passing one loses. PATH was
+// already in that position for the same reason (issue #125's C2-path).
 //
 // HOME is Spec's, not the caller's, and so are CONTAINERS_REGISTRIES_CONF and
 // REGISTRY_AUTH_FILE: everything podman reads out of a home directory is a
@@ -540,21 +546,33 @@ func (e *Engine) writeContainersConf(cgroupsDisabled bool, res policy.ResolverCo
 	return path, nil
 }
 
-// tomlString renders one TOML basic string, and REFUSES rather than escapes,
-// for tomlStringList's own reason applied to a single value.
+// tomlString renders one TOML basic string, and RETURNS AN ERROR rather than
+// substituting a placeholder.
 //
-// The values reaching it are host paths snug itself computed — the store, the
-// runroot, the engine's own directory — so none of them can contain a quote,
-// a backslash or a newline today. That is a property of today's callers and
-// not of the type, which is exactly why it is checked here: a path that could
-// carry a quote would otherwise close the string early and the rest of the line
-// would be read as TOML, silently authoring settings nobody wrote.
-func tomlString(v string) string {
+// It said "REFUSES rather than escapes" while doing neither: it returned
+// `"snug-refused-unquotable-value"`, a perfectly valid TOML string, and its
+// caller had an error return it did not use. That is invariant 5's silent
+// downgrade, and the values are NOT unreachable — e.runroot and e.sock come
+// from os.TempDir() ($TMPDIR), e.store from $XDG_DATA_HOME or $HOME, and
+// mount_program from the resolved engine path. Measured with a quote in
+// $TMPDIR: the argv carried the real runroot while storage.conf carried the
+// placeholder, with no error, which is exactly the config-versus-argv
+// divergence writeStorageConf's own comment calls not cosmetic. For
+// mount_program, which has no argv duplicate, the engine would exec a relative
+// name and die with the "can't stat program" failure the derivation exists to
+// prevent.
+//
+// A quote is the hazard that matters: it closes the string early and the rest
+// of the line is read as TOML, silently authoring settings nobody wrote.
+func tomlString(v string) (string, error) {
 	if strings.ContainsAny(v, "\"\\\n\r\x00") {
-		// Unreachable from the paths snug computes today; see the doc comment.
-		return "\"snug-refused-unquotable-value\""
+		return "", fmt.Errorf("cannot render %q as a TOML string: it contains a quote, a "+
+			"backslash or a control character, which would close the string early and let the "+
+			"rest of the line be read as configuration.\n"+
+			"       This path comes from the environment snug was started with ($TMPDIR, "+
+			"$XDG_DATA_HOME or $SNUG_PODMAN); use one without those characters.", v)
 	}
-	return fmt.Sprintf("%q", v)
+	return fmt.Sprintf("%q", v), nil
 }
 
 // tomlStringList renders a TOML array of basic strings. The values it is given
@@ -765,14 +783,43 @@ func (e *Engine) writeStorageConf(podman string) (string, error) {
 	b.WriteString("# snug: generated for this run. Pointed at by CONTAINERS_STORAGE_CONF, so\n" +
 		"# the host's /etc/containers/storage.conf, ~/.config/containers/storage.conf\n" +
 		"# and any file a pinned engine bundle ships are not read (issue #125).\n" +
-		"[storage]\n" +
-		"driver = \"overlay\"\n")
-	b.WriteString("graphroot = " + tomlString(e.store) + "\n")
-	b.WriteString("runroot = " + tomlString(e.runroot) + "\n")
+		"#\n" +
+		"# NO `driver` KEY, deliberately. snug pins WHERE containers live because that\n" +
+		"# is a boundary; it has no basis to choose HOW they are stored, which is a\n" +
+		"# compatibility question about this host's kernel and filesystem that\n" +
+		"# containers/storage answers better than snug can. Naming a driver here would\n" +
+		"# also remove its fallback, so a host that cannot do rootless native overlay\n" +
+		"# would fail at store init rather than degrade — and snug would have made that\n" +
+		"# choice silently, on a screen that says nothing about storage drivers.\n" +
+		"#\n" +
+		"# THE COST, stated rather than hidden: a host that deliberately configured a\n" +
+		"# driver in /etc/containers/storage.conf loses that choice, because this file\n" +
+		"# replaces it. That is inherent to snug authoring the file at all and is the\n" +
+		"# same trade issues #133 and #137 already made for containers.conf and\n" +
+		"# registries.conf.\n" +
+		"[storage]\n")
+	for _, kv := range []struct{ key, path string }{
+		{"graphroot", e.store},
+		{"runroot", e.runroot},
+	} {
+		v, err := tomlString(kv.path)
+		if err != nil {
+			return "", fmt.Errorf("storage.conf %s: %w", kv.key, err)
+		}
+		b.WriteString(kv.key + " = " + v + "\n")
+	}
 
-	if mp := helperBesideEngine(podman, "fuse-overlayfs"); mp != "" {
+	mp, err := helperBesideEngine(podman, "fuse-overlayfs")
+	if err != nil {
+		return "", err
+	}
+	if mp != "" {
+		v, err := tomlString(mp)
+		if err != nil {
+			return "", fmt.Errorf("storage.conf mount_program: %w", err)
+		}
 		b.WriteString("\n[storage.options.overlay]\n")
-		b.WriteString("mount_program = " + tomlString(mp) + "\n")
+		b.WriteString("mount_program = " + v + "\n")
 	}
 
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
@@ -789,18 +836,48 @@ func (e *Engine) writeStorageConf(podman string) (string, error) {
 // are on the PATH Spec pins, where podman finds them without being told. It
 // deliberately does NOT search, because a search is a rule about which of
 // several candidates wins, and snug has no way to say why one would.
-func helperBesideEngine(podman, name string) string {
+//
+// THREE CHECKS, and each is a way the earlier version was wrong.
+//
+// ABSOLUTE, and an error rather than a skip when it is not. preflightPodmanBinary
+// trusts $SNUG_PODMAN outright with os.Stat and !IsDir, so `SNUG_PODMAN=./podman`
+// reaches here as a relative path; filepath.Dir is then "." and the candidate is
+// the bare string "fuse-overlayfs", stat'd against SNUG's working directory and
+// written verbatim into storage.conf as a RELATIVE mount_program that the ENGINE
+// resolves against its OWN. Two different processes, two different meanings for
+// one string. Refusing is right rather than skipping: a relative $SNUG_PODMAN is
+// a mistake worth naming, not a host shape to accommodate.
+//
+// EXECUTABLE, not merely regular. A non-executable file of the right name — a
+// tarball unpacked under a restrictive umask, a stray artifact — was named as
+// mount_program and produced exactly the "can't stat program" failure this
+// derivation exists to prevent. Checking IsRegular alone tested that something
+// is there, not that it can run.
+//
+// The mode check is a HINT and is documented as one: it asks whether any
+// execute bit is set, not whether THIS uid may execute it. A file that passes
+// here and still cannot be run fails later in podman, which is the honest place
+// for it — snug is choosing what to name, not promising it will work.
+func helperBesideEngine(podman, name string) (string, error) {
 	if podman == "" {
-		return ""
+		return "", nil
+	}
+	if !filepath.IsAbs(podman) {
+		return "", fmt.Errorf("the container engine %q is not an absolute path, so a helper "+
+			"beside it cannot be named absolutely either — snug would write a RELATIVE path "+
+			"into the engine's storage.conf, which the engine resolves against its own working "+
+			"directory rather than snug's.\n"+
+			"       Set $SNUG_PODMAN to an absolute path.", podman)
 	}
 	cand := filepath.Join(filepath.Dir(podman), name)
-	if fi, err := os.Stat(cand); err == nil && fi.Mode().IsRegular() {
-		return cand
+	fi, err := os.Stat(cand)
+	if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {
+		return "", nil
 	}
-	return ""
+	return cand, nil
 }
 
-// writeAuthFile generates the EMPTY registry authentication file this run's
+// writeAuthFile generates the EMPTY registry authentication file// writeAuthFile generates the EMPTY registry authentication file this run's
 // engine reads, and returns its path for REGISTRY_AUTH_FILE.
 //
 // Without it, containers/image walks its ordinary search order and lands on
