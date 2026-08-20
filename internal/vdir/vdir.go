@@ -90,7 +90,31 @@ func SecureSubdir(parent *os.Root, parentDesc, name string) (child *os.Root, cre
 	return child, created, nil
 }
 
-// openExistingSubroot is SecureSubdir without the Mkdir: it opens a
+// MustCreateSubdir is SecureSubdir with reuse REFUSED rather than reported:
+// the caller's name is unique per run, so an entry already at it is
+// suspicious by construction — a leftover from a run whose pid was reused, or
+// something planted there before snug arrived. internal/engine's run
+// directory lives under /tmp, commonly world-writable, which is exactly where
+// a same-uid process on a shared host can get there first.
+//
+// Whether reuse is legitimate is the caller's question, not this package's:
+// internal/cli's runtime directory reuses the shared "snug" directory between
+// runs by design, so it calls SecureSubdir and reads the created flag.
+func MustCreateSubdir(parent *os.Root, parentDesc, name string) (*os.Root, error) {
+	child, created, err := SecureSubdir(parent, parentDesc, name)
+	if err != nil {
+		return nil, err
+	}
+	if !created {
+		child.Close()
+		return nil, fmt.Errorf("refusing %s: it already exists — this name is unique to this "+
+			"run, so nothing should have been at it; remove it by hand if you are sure "+
+			"nothing is using it, and re-run snug", filepath.Join(parentDesc, name))
+	}
+	return child, nil
+}
+
+// OpenExistingSubdir is SecureSubdir without the Mkdir: it opens a
 // directory that is expected to already exist (another run's directory,
 // being read rather than claimed) and refuses it exactly as hard —
 // ownership, mode, and no symlink at this name — without creating anything
