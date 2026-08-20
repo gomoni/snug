@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -274,20 +275,56 @@ timeout 5 getent hosts example.com >/dev/null && echo RESOLVED || echo RESOLVE-F
 	}
 }
 
-// fakeHostEtc builds a copy of this host's /etc with `content` substituted for
-// resolv.conf and returns its path, for an outer bwrap to bind over /etc.
+// resolvConfOverlay returns the bwrap arguments that put `content` at
+// /etc/resolv.conf inside the outer wrapper, choosing between two shapes
+// because the cheap one does not work everywhere.
 //
-// It replaces the WHOLE directory rather than the single file it wants to
-// change, and that is not gold-plating. On a host where /etc/resolv.conf is
-// itself a bind mount whose source inode has since been deleted — a distrobox
-// whose NetworkManager rewrote the file by rename, which is this project's
-// development environment — mounting anything onto that dentry is ENOENT:
+// PREFERRED — bind the one file. One 4-byte fixture, no copying.
+//
+// FALLBACK — bind a whole synthetic /etc. Needed where /etc/resolv.conf is
+// ITSELF a bind mount whose source inode has since been deleted (a distrobox
+// holding the inode NetworkManager replaced by rename, which is this project's
+// development environment): nothing mounts onto a deleted dentry, and both
+// tests in this file failed there with
 //
 //	bwrap: Can't bind mount /oldroot/.../resolv.conf on /newroot/etc/resolv.conf:
 //	Unable to mount source on destination: No such file or directory
 //
-// Both tests in this file failed that way, for a reason with nothing to do
-// with DNS. Binding a fresh directory over /etc has no such dependency.
+// — a message with nothing to do with DNS.
+//
+// The choice is MEASURED once per process rather than reasoned about from the
+// host's shape, because the condition is a property of a mount and not of a
+// distribution. Fallback-always was tried and rejected: copying /etc cost 19s
+// on a GitHub runner, which is most of a test's whole time budget.
+func resolvConfOverlay(t *testing.T, content string) []string {
+	t.Helper()
+	if singleFileResolvConfBind() {
+		path := filepath.Join(t.TempDir(), "resolv.conf")
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return []string{"--ro-bind", path, "/etc/resolv.conf"}
+	}
+	return []string{"--ro-bind", fakeHostEtc(t, content), "/etc"}
+}
+
+// singleFileResolvConfBind reports whether an outer bwrap on THIS host can
+// mount anything onto /etc/resolv.conf at all. The probe is raw bwrap and a
+// throwaway file, deliberately not snug, for requireSandbox's own reason: a
+// bug in snug must not be able to choose the harness.
+var singleFileResolvConfBind = sync.OnceValue(func() bool {
+	f, err := os.CreateTemp("", "snug-resolvconf-probe")
+	if err != nil {
+		return false
+	}
+	defer os.Remove(f.Name())
+	f.Close()
+	return exec.Command("bwrap", "--dev-bind", "/", "/",
+		"--ro-bind", f.Name(), "/etc/resolv.conf", "--", "true").Run() == nil
+})
+
+// fakeHostEtc builds a copy of this host's /etc with `content` substituted for
+// resolv.conf and returns its path, for resolvConfOverlay's fallback shape.
 //
 // The copy is made as the test user, so files it cannot read are dropped.
 // That is faithful rather than lossy: bwrap runs the sandbox as that same uid,
@@ -310,6 +347,15 @@ func fakeHostEtc(t *testing.T, content string) string {
 				"test: %v\ncp said:\n%s", must, err, out)
 		}
 	}
+	// REMOVE before writing, never write through. `cp -a` preserves symlinks,
+	// and on a systemd-resolved distribution /etc/resolv.conf IS one —
+	// ../run/systemd/resolve/stub-resolv.conf on a GitHub runner. Writing to
+	// the copy would follow it into a path that does not exist under the copy
+	// and fail with a bare "no such file or directory" naming a file that is
+	// plainly there.
+	if err := os.Remove(filepath.Join(dir, "resolv.conf")); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "resolv.conf"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -322,12 +368,8 @@ func fakeHostEtc(t *testing.T, content string) string {
 // read sees the fixture too, not the real host's file.
 func cliWithFakeHostResolvConf(t *testing.T, resolvConf string, args ...string) (string, int) {
 	t.Helper()
-	bwrapArgs := append([]string{
-		"--dev-bind", "/", "/",
-		"--ro-bind", fakeHostEtc(t, resolvConf), "/etc",
-		"--share-net",
-		"--", snugBin,
-	}, args...)
+	bwrapArgs := append([]string{"--dev-bind", "/", "/"}, resolvConfOverlay(t, resolvConf)...)
+	bwrapArgs = append(append(bwrapArgs, "--share-net", "--", snugBin), args...)
 
 	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
 	defer cancel()
