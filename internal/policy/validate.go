@@ -335,7 +335,27 @@ func (p *Policy) Validate(env Environ) error {
 		return err
 	}
 
+	if err := p.rejectTargetInAnEphemeralDirectory(); err != nil {
+		return err
+	}
+
 	return p.rejectMasking(env)
+}
+
+// sortedGuests returns the guest paths in a stable order.
+//
+// Extracted when a second refusal needed it (issues #220, #179), and it is not
+// tidiness: a refusal that walks a Go map reports a DIFFERENT one of several
+// eligible mounts between runs, so the same policy fails with two different
+// messages. That is the shape the note on snugsOwnCovered records the model
+// being bitten by before.
+func sortedGuests(mounts map[string]Mount) []string {
+	out := make([]string, 0, len(mounts))
+	for g := range mounts {
+		out = append(out, g)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // rejectHostHomeBind refuses a policy in which a bind covers the host's $HOME.
@@ -384,16 +404,7 @@ func (p *Policy) rejectHostHomeBind() error {
 	if p.Home == "" {
 		return nil
 	}
-	// Sorted, so a policy binding more than one covering path names the same one
-	// on every run. A security verdict that depends on Go's map iteration order
-	// changes between runs, and this model has been bitten by exactly that —
-	// see the note on snugsOwnCovered.
-	guests := make([]string, 0, len(p.Mounts))
-	for g := range p.Mounts {
-		guests = append(guests, g)
-	}
-	sort.Strings(guests)
-	for _, g := range guests {
+	for _, g := range sortedGuests(p.Mounts) {
 		m := p.Mounts[g]
 		if m.Kind != KindBind {
 			continue
@@ -917,4 +928,101 @@ func resolveLinkForEnv(links map[string]string, g string) string {
 		resolved = filepath.Join(target, strings.TrimPrefix(g, link+"/"))
 	}
 	return resolved
+}
+
+// rejectTargetInAnEphemeralDirectory refuses a target that sits directly in — or
+// IS — a directory some profile provides as an ephemeral tmpfs rooted at $HOME.
+//
+// THE CASE (issue #179). `mkdir ~/proj && snug ~/proj` was refused by the default
+// selection with a conflict: @home wants a tmpfs at {home}, @parent-ro wants a
+// read-only bind of the target's parent, and for a home-child target that parent
+// IS $HOME. The refusal was correct — there is no join between a tmpfs and a
+// bind, and inventing one is what invariant 1 forbids — but it named no working
+// command, and ~/myproject is an extremely common layout.
+//
+// WHY THIS REFUSES RATHER THAN SUGGESTING. A selection without @parent-ro does
+// resolve, and it is a perfectly good sandbox. The maintainer's call is that a
+// project directly in the home directory is the wrong thing to sandbox in the
+// first place, so snug refuses it outright and says to move the project — one
+// answer rather than a fork, and nobody can reach for the other branch by
+// mistake. The other branch used to be lethal; #220 closed it, so this is now a
+// usability rule rather than a security one, and the message says so plainly
+// instead of implying no working selection exists.
+//
+// NOT KEYED ON $HOME, and that is the part measured before it was written.
+// @home provides FIVE tmpfs paths — {home} and the four XDG directories — so
+// `~/.cache/build` and `~/.config/nvim` produce the identical conflict at a
+// different path. A rule written against `p.Home` would have been wrong on day
+// one. It walks the resolved mounts instead, so it covers whatever the selected
+// profiles actually made ephemeral.
+//
+// AND NOT ANY TMPFS: only one rooted at $HOME. snug's own /tmp is a tmpfs too,
+// and `snug /tmp/proj` is ordinary — `mktemp -d` targets are how VERIFY.md and
+// the whole integration suite build theirs. Refusing those would break snug's own
+// workflow, and what happens there instead is issue #223's annotation.
+//
+// TWO SHAPES, and they need different sentences, because one of them has no
+// working answer at all:
+//
+//   - the target sits IN an ephemeral directory (`~/proj`). Moving it one level
+//     down works.
+//   - the target IS one (`snug ~`, `snug ~/.config`). Measured: no builtin
+//     selection sandboxes those at all — @cwd-rw includes @home, so the bind and
+//     the tmpfs collide however you select. "Move it" is the only answer, and
+//     saying "select differently" there would be advice that cannot be followed.
+func (p *Policy) rejectTargetInAnEphemeralDirectory() error {
+	if p.Home == "" || p.Target == "" {
+		return nil
+	}
+	parent := filepath.Dir(p.Target)
+	for _, g := range sortedGuests(p.Mounts) {
+		m := p.Mounts[g]
+		if m.Kind != KindTmpfs {
+			continue
+		}
+		// Only ephemeral directories rooted at the home. snug's own /tmp is a
+		// tmpfs and a /tmp target must keep working.
+		if !covers(p.Home, m.Guest) {
+			continue
+		}
+		if p.Target == m.Guest || parent == m.Guest {
+			return ephemeralTargetError(p.Target, parent, m.Guest, p.Home, provenance(m))
+		}
+	}
+	return nil
+}
+
+// ephemeralTargetError is the one author of issue #179's refusal, shared by the
+// pre-fold check in Resolve and the post-fold one in Validate. Two authors for
+// one message is how the two halves of a rule drift apart — the shape CLAUDE.md
+// names — so there is one.
+//
+// TWO SHAPES, because one of them has no working answer at all:
+//
+//   - the target sits IN an ephemeral directory (`~/proj`). Moving it one level
+//     down works, and the message says exactly which command.
+//   - the target IS one (`snug ~`, `snug ~/.config`). MEASURED: no builtin
+//     selection sandboxes those — @cwd-rw includes @home, so a bind of the target
+//     and the tmpfs collide however you select. Telling that user to "select
+//     differently" would be advice that cannot be followed.
+func ephemeralTargetError(target, parent, ephemeral, home, from string) error {
+	if target == ephemeral {
+		return fmt.Errorf("refusing to sandbox %s: it IS a directory %s provides as an empty, "+
+			"ephemeral tmpfs.\n"+
+			"       No selection sandboxes this path — a profile must bind the target to make it\n"+
+			"       visible, and that collides with the tmpfs however you choose. Sandbox a\n"+
+			"       project directory instead:\n"+
+			"           mkdir -p %s/src/myproject && snug %s/src/myproject",
+			VisibleText(target), from, VisibleText(home), VisibleText(home))
+	}
+	return fmt.Errorf("refusing to sandbox %s: it sits directly in %s, which %s provides as an "+
+		"empty, ephemeral tmpfs.\n"+
+		"       So the parent snug would grant IS that directory, and a read-only bind of it\n"+
+		"       cannot coexist with the tmpfs. Move the project one level down:\n"+
+		"           mv %s %s/src/ && snug %s/src/%s\n"+
+		"       A selection without @parent-ro does resolve; snug does not offer it here. A\n"+
+		"       project sitting directly in an ephemeral directory is the wrong thing to\n"+
+		"       sandbox, and one answer beats a fork somebody guesses at.",
+		VisibleText(target), VisibleText(ephemeral), from,
+		VisibleText(target), VisibleText(home), VisibleText(home), filepath.Base(target))
 }
