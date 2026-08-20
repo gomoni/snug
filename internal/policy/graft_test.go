@@ -319,6 +319,105 @@ func refusalGraftCoversStagedBinDir(t testing.TB, guest string) error {
 	return p.Graft(newFakeEnv(), rawGraft(guest))
 }
 
+// graftInsideSnugDir builds the shape that was ACCEPTED before G1b existed: a
+// writable graft, with a source G4's second disjunct admits (a host path snug
+// created for the run), aimed at a path inside snug's own namespace.
+//
+// @podman-socket is selected and the proxy socket is bound, because that is
+// what made the hole reachable: G3 asks whether the destination exists in the
+// sandbox, and the socket IS a mount, so nothing downstream refused it.
+func graftInsideSnugDir(t testing.TB, guest string) error {
+	t.Helper()
+	sel := append(append([]ProfileName{}, testDefaults...), "@podman-socket")
+	p, err := Resolve(testRegistry(), sel, testCtx(), newFakeEnv())
+	if err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	p.BindSocket("/host/podman.sock", ContainerSocketGuest, "(containers)")
+	if err := p.OwnEngineHostPath(newFakeEnv(), "/opt"); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	g := rawGraft(guest)
+	g.Access = AccessRW
+	return p.Graft(newFakeEnv(), g)
+}
+
+// TestGraftInsideSnugDirIsRefusedExceptUnderTheEngineSubtree is G1b, and it is
+// a regression test for a hole an independent review found in the change that
+// introduced the namespace.
+//
+// Rule 4b (validate.go) made SnugDir total for the PAYLOAD's mounts. G1 covers
+// grafts through snugsOwn, which is a LIST, and that list held SnugDir and
+// StagedBinDir but not the two proxy socket paths — so the namespace was total
+// on one side and partial on the other, which is CLAUDE.md's "a rule written
+// once and applied to one of its two halves", committed in the change that
+// quotes it.
+//
+// MEASURED before the fix: a writable graft at ContainerSocketGuest was
+// ACCEPTED, putting an arbitrary host tree where the engine expects the
+// container proxy's socket.
+func TestGraftInsideSnugDirIsRefusedExceptUnderTheEngineSubtree(t *testing.T) {
+	for _, guest := range []string{
+		ContainerSocketGuest,
+		AgentSocketGuest,
+		SnugDir + "/engine",   // the engine directory ITSELF, not a leaf inside it
+		SnugDir + "/whatever", // a path snug has not placed anything at yet
+	} {
+		t.Run(guest, func(t *testing.T) {
+			err := graftInsideSnugDir(t, guest)
+			if err == nil {
+				t.Fatalf("a writable graft at %s was accepted; it is inside %s, so it replaces "+
+					"whatever snug put there with this graft's source in the ENGINE's view",
+					guest, SnugDir)
+			}
+			// The refusal must name the namespace AND the one subtree that is
+			// allowed, or it is a dead end rather than a correction.
+			for _, want := range []string{SnugDir, EngineDir} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal does not name %s: %v", want, err)
+				}
+			}
+		})
+	}
+}
+
+// TestGraftUnderTheEngineSubtreeIsNotRefusedByTheNamespaceRule is G1b's
+// POSITIVE CONTROL, and without it the rule above passes on an implementation
+// that refuses every graft inside SnugDir — which would make Tier C
+// unimplementable while looking correct.
+//
+// It asserts what G1b does NOT do rather than that the graft succeeds: the
+// destination does not exist in the sandbox yet, so G3 refuses it, and that is
+// the honest state of the tree today. What must not appear is G1b's own
+// message.
+func TestGraftUnderTheEngineSubtreeIsNotRefusedByTheNamespaceRule(t *testing.T) {
+	err := graftInsideSnugDir(t, EngineDir+"/store")
+	if err == nil {
+		return // Tier C has landed and created the directory; nothing to check.
+	}
+	if strings.Contains(err.Error(), "the only part of it a graft may land in") {
+		t.Fatalf("G1b refused the engine's own subtree, which is the one place inside %s a graft "+
+			"is FOR — Tier C cannot place its destinations anywhere else: %v", SnugDir, err)
+	}
+}
+
+// TestGraftAtTheLegacySnugDirIsRefused is G1c: the pre-#206 tombstone applies
+// to grafts as well as to profile grants. A tombstone honoured on one side only
+// is the same half-applied shape G1b exists to close.
+func TestGraftAtTheLegacySnugDirIsRefused(t *testing.T) {
+	for _, guest := range []string{legacySnugDir, legacySnugDir + "/bin", legacySnugDir + "/bin/tool"} {
+		t.Run(guest, func(t *testing.T) {
+			err := graftInsideSnugDir(t, guest)
+			if err == nil {
+				t.Fatalf("a graft at the pre-#206 path %s was accepted", guest)
+			}
+			if !strings.Contains(err.Error(), EngineDir) {
+				t.Errorf("the refusal does not name where the engine's destinations now live: %v", err)
+			}
+		})
+	}
+}
+
 // TestGraftCoveringStagedBinDirIsRefused is the test the trap above exists
 // for. If `&& !g.Authored` (or any spelling of it) is ever added to G1 in
 // graft.go, every one of these subtests goes from refusing to accepting,
@@ -353,7 +452,7 @@ func TestGraftCoveringStagedBinDirIsRefused(t *testing.T) {
 			// creates /snug/bin either), producing a non-nil error that
 			// also names the guest — a false pass, caught only by requiring
 			// G1's own wording. Measured by reverting this exact clause into
-			// graft.go and re-running this test: five of six subtests failed
+			// graft.go and re-running this test: every subtest but one failed
 			// outright, and the sixth (StagedBinDir exact) passed for the
 			// wrong reason until this line was added.
 			for _, want := range []string{guest, at, "cannot graft", "is snug's"} {
@@ -367,23 +466,39 @@ func TestGraftCoveringStagedBinDirIsRefused(t *testing.T) {
 
 // ── §7 item 4 ─────────────────────────────────────────────────────────────────
 
-// TestGraftInsideStagedBinDirStillLegal mirrors
-// TestGrantInsideStagedBinDirStillLegal (refusals_test.go): G1's predicate is
-// a path-ANCESTOR test, so a graft strictly INSIDE StagedBinDir — landing on
-// the very same Guest an existing staged bind already occupies, the shape a
-// Tier C graft "onto a writable grant" would actually take — must stay legal.
-// If snugsOwnCovered ever starts refusing this, G1 has gone from
-// ancestor-aware to over-broad.
-func TestGraftInsideStagedBinDirStillLegal(t *testing.T) {
+// TestGraftInsideStagedBinDirIsRefusedByTheNamespaceRule replaces a test whose
+// PREMISE expired, and the change of subject is the point rather than a
+// mechanical fixup.
+//
+// It used to assert that a graft strictly INSIDE StagedBinDir stays legal, on
+// the stated grounds that this is "the shape a Tier C graft onto a writable
+// grant would actually take". That was written while Tier C's destinations were
+// still an open question; they were then settled as EngineDir/*, so no graft
+// lands in the staging directory any more and the old assertion was protecting
+// a shape nothing produces.
+//
+// What it asserted underneath — that G1's snugsOwnCovered is an ANCESTOR test
+// and not a prefix test — is still true and still checked, by
+// TestGraftUnderTheEngineSubtreeIsNotRefusedByTheNamespaceRule (a path strictly
+// inside SnugDir that G1b does allow) and by covers()'s own unit tests. What
+// changed is only that StagedBinDir is no longer the place to observe it, since
+// G1b now refuses everything inside SnugDir outside the engine's subtree.
+//
+// Keeping the old test would have meant keeping a hole open to satisfy a
+// control: a graft at StagedBinDir/mytool replaces a staged executable in the
+// ENGINE's view with an arbitrary source, and while the engine's own PATH does
+// not include that directory (issue #125's C2-path pinned it to /usr/bin and
+// friends), "it is not reachable through the one path we thought of" is the
+// argument this project's red-team table is a list of.
+func TestGraftInsideStagedBinDirIsRefusedByTheNamespaceRule(t *testing.T) {
 	base := mustResolveDefaults(t)
 	p := *base
 	p.Mounts = make(map[string]Mount, len(base.Mounts)+1)
 	for k, v := range base.Mounts {
 		p.Mounts[k] = v
 	}
-	// The existing bind this graft lands "onto" — G3's disjunct 1 (it is
-	// itself a mountpoint), and its Host doubles as G4's positive case (the
-	// graft's own Host matches this bind's Host exactly).
+	// The existing staged bind this graft would land onto — so G3 is satisfied
+	// and the refusal below can only be G1b's.
 	p.Mounts[StagedBinDir+"/mytool"] = Mount{
 		Guest: StagedBinDir + "/mytool", Host: "/opt/mytool", Kind: KindBind, Access: AccessRO,
 	}
@@ -395,8 +510,19 @@ func TestGraftInsideStagedBinDirStillLegal(t *testing.T) {
 		},
 		Why: "test abuse sentence",
 	}
-	if err := p.Graft(newFakeEnv(), g); err != nil {
-		t.Fatalf("control: a graft strictly inside %s must stay legal: %v", StagedBinDir, err)
+	err := p.Graft(newFakeEnv(), g)
+	if err == nil {
+		t.Fatalf("a graft at %s/mytool was accepted; it replaces a staged executable in the "+
+			"ENGINE's view with this graft's source", StagedBinDir)
+	}
+	// It must be G1b that refuses, naming the namespace and the one subtree a
+	// graft may use. If some other rule happens to refuse it today, this test
+	// would pass while G1b was broken.
+	for _, want := range []string{SnugDir, EngineDir} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not name %s, so it is not the namespace rule that "+
+				"refused: %v", want, err)
+		}
 	}
 }
 

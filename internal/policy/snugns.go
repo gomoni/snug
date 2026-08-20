@@ -68,6 +68,42 @@ const (
 	AgentSocketGuest     = SnugDir + "/ssh-agent.sock"
 )
 
+// EngineDir is the ONE place inside SnugDir a GRAFT may land: the engine's own
+// derived-view mountpoints (issue #125's store, runroot, socket and config
+// directories).
+//
+// Everything else snug puts under SnugDir belongs to the PAYLOAD — the staging
+// directory, the container proxy socket, the ssh-agent proxy socket — and a
+// graft landing on one of those replaces it in the engine's view with whatever
+// the graft's source is. Measured before this rule existed: an AccessRW graft
+// at /snug/podman.sock, with a source G4 admits, was ACCEPTED, which puts an
+// arbitrary writable host tree where the engine expects the container proxy's
+// socket.
+//
+// A graft AT EngineDir itself is refused along with the rest, for the reason a
+// mount at StagedBinDir is: a grant of the whole directory rather than of one
+// thing in it.
+const EngineDir = SnugDir + "/engine"
+
+// graftAllowedInSnugDir reports whether a graft may land at this guest path,
+// for the half of the namespace rule that applies to p.Grafts.
+//
+// WHY THIS EXISTS AS A RULE AND NOT AS MORE snugsOwn ENTRIES. Validate's rule 4b
+// covers the payload's mount set; G1 covers grafts through snugsOwn, which is a
+// LIST. Before this, that list held SnugDir and StagedBinDir and not the two
+// socket paths, so the namespace was total for mounts and partial for grafts —
+// CLAUDE.md's "a rule written once and applied to one of its two halves",
+// committed in the change that quotes it. Adding the sockets to the list would
+// have closed today's hole and left the shape: the next path snug puts under
+// SnugDir would need remembering again.
+//
+// Stated this way it does not grow. Anything snug adds under SnugDir is
+// protected from a graft the day it is named, and the engine's own subtree is
+// the single exception, which is what Tier C actually needs.
+func graftAllowedInSnugDir(guest string) bool {
+	return strings.HasPrefix(guest, EngineDir+"/")
+}
+
 // legacySnugDir is where all of the above lived before issue #206.
 //
 // It is kept for ONE purpose: a profile on this host that still names it gets a
@@ -120,12 +156,17 @@ func namesLegacySnugDir(guest string) bool {
 //   - AccessRW anywhere inside is the same hole one path deeper;
 //   - a KindTmpfs is the same hole with no host path at all.
 //
-// What it does NOT try to decide is whether the host side is a file or a
-// directory. internal/policy is pure — no filesystem — so it cannot know, and a
-// read-only bind of a directory here is a narrower thing than the writable
-// cases above: it adds names to the staging directory but no writable slot. If
-// that ever needs refusing too, it needs a host lookup and belongs in the layer
-// that has one.
+// What it does NOT decide is whether the host side is a file or a directory.
+// internal/policy is pure — no filesystem — so it cannot know.
+//
+// AND READ-ONLY HERE IS NOT THE SAME AS IMMUTABLE, which an earlier version of
+// this comment got wrong by calling it "no writable slot". A read-only bind is
+// read-only THROUGH THIS MOUNT; if the same host path is also reachable through
+// a writable grant — `ro = ["{target}/tool:/snug/bin/tool"]`, with the target
+// writable, which is the ordinary case — the payload rewrites the inode through
+// the other path and the rewritten file is first on PATH. That is pre-existing
+// and not something this rule introduced, but it must not be described as safe.
+// Closing it needs a host lookup and belongs in the layer that has one.
 func stagedFileUnderSnugDir(guest string, m Mount) bool {
 	return strings.HasPrefix(guest, StagedBinDir+"/") &&
 		m.Kind == KindBind && m.Access == AccessRO

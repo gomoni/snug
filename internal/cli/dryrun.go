@@ -1168,8 +1168,11 @@ func describeCommands(out *os.File, p *policy.Policy) {
 	// THIS BRANCH IS STILL REACHED, and an earlier version of this comment
 	// guessed otherwise ("should be unreachable"). Measured: under --dry-run,
 	// main.go renders the whole policy AND THEN prints the Validate error, so a
-	// refused `tmpfs = ["/run"]` + @podman-socket selection prints these three
-	// lines above its own refusal. That is the diagnostic doing its job — it is
+	// refused `tmpfs = ["/snug"]` + @podman-socket selection prints these three
+	// lines above its own refusal. (It said `/run` until issue #206 moved
+	// snug's paths into their own namespace; `/run` is now an ordinary path
+	// that nothing refuses, so the example no longer produced a refusal at
+	// all.) That is the diagnostic doing its job — it is
 	// the picture behind the error, on the same screen. Do not delete it on a
 	// reachability argument, and do not weaken it on one either: it is also the
 	// backstop for an AUTHORED mount, which Validate's refusal exempts by design,

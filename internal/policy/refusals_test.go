@@ -287,8 +287,15 @@ func TestGrantAnywhereInsideSnugDirIsFatal(t *testing.T) {
 					"profile's tmpfs there escapes --remount-ro / exactly as one at %s would",
 					guest, SnugDir, StagedBinDir)
 			}
-			if !strings.Contains(err.Error(), SnugDir) {
-				t.Errorf("the refusal does not name %s: %v", SnugDir, err)
+			// NOT `Contains(err, SnugDir)`. Every guest path in this table
+			// starts with /snug, and the refusal echoes the guest path, so
+			// that assertion is satisfied by ANY rule firing for ANY reason —
+			// a test that cannot fail on the half it is checking. StagedBinDir
+			// is a string the guest paths do not contain, and rule 4b's
+			// message is the only one here that names it.
+			if !strings.Contains(err.Error(), StagedBinDir) {
+				t.Errorf("the refusal does not name %s, so it is not the namespace rule that "+
+					"refused and this case is not testing it: %v", StagedBinDir, err)
 			}
 		})
 	}
@@ -877,6 +884,18 @@ func TestGoldenRefusals(t *testing.T) {
 		// already makes for grant_covers_stagedbindir above.
 		{"graft_covers_stagedbindir_ancestor_snugdir", func(t testing.TB) error {
 			return refusalGraftCoversStagedBinDir(t, SnugDir)
+		}},
+		// G1b and G1c, the graft half of the namespace rule. The socket row is
+		// the one that was ACCEPTED before this rule existed, so it is the
+		// golden that would have shown the hole.
+		{"graft_inside_snugdir_socket", func(t testing.TB) error {
+			return graftInsideSnugDir(t, ContainerSocketGuest)
+		}},
+		{"graft_inside_snugdir_unplaced_path", func(t testing.TB) error {
+			return graftInsideSnugDir(t, SnugDir+"/whatever")
+		}},
+		{"graft_at_legacy_snugdir", func(t testing.TB) error {
+			return graftInsideSnugDir(t, legacySnugDir+"/bin")
 		}},
 		{"graft_covers_stagedbindir_exact", func(t testing.TB) error {
 			return refusalGraftCoversStagedBinDir(t, StagedBinDir)
