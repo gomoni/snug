@@ -356,6 +356,19 @@ func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool, net
 	}
 	finalEnv = setEnv(finalEnv, "REGISTRY_AUTH_FILE", authPath)
 
+	// SET, not left to the caller, and that is the change (issue #125). This
+	// variable used to be one of the "anything a pinned engine bundle needs"
+	// entries a caller supplied, so on a host with a bundle the storage
+	// configuration in play was the BUNDLE's — naming its own graphroot,
+	// runroot and mount_program. setEnv replaces rather than appends, so a
+	// caller that still passes one loses to this, which is the direction that
+	// makes the guarantee hold rather than the one that makes it polite.
+	storagePath, err := e.writeStorageConf(podman)
+	if err != nil {
+		return stage.EngineSpec{}, err
+	}
+	finalEnv = setEnv(finalEnv, "CONTAINERS_STORAGE_CONF", storagePath)
+
 	confPath, err := e.writeContainersConf(cgroupsDisabled, net.Resolver())
 	if err != nil {
 		return stage.EngineSpec{}, err
@@ -527,6 +540,23 @@ func (e *Engine) writeContainersConf(cgroupsDisabled bool, res policy.ResolverCo
 	return path, nil
 }
 
+// tomlString renders one TOML basic string, and REFUSES rather than escapes,
+// for tomlStringList's own reason applied to a single value.
+//
+// The values reaching it are host paths snug itself computed — the store, the
+// runroot, the engine's own directory — so none of them can contain a quote,
+// a backslash or a newline today. That is a property of today's callers and
+// not of the type, which is exactly why it is checked here: a path that could
+// carry a quote would otherwise close the string early and the rest of the line
+// would be read as TOML, silently authoring settings nobody wrote.
+func tomlString(v string) string {
+	if strings.ContainsAny(v, "\"\\\n\r\x00") {
+		// Unreachable from the paths snug computes today; see the doc comment.
+		return "\"snug-refused-unquotable-value\""
+	}
+	return fmt.Sprintf("%q", v)
+}
+
 // tomlStringList renders a TOML array of basic strings. The values it is given
 // are addresses, `.` and resolver options that policy.NetPolicy produced, none
 // of which can contain a quote or a backslash; it refuses rather than escaping
@@ -694,6 +724,80 @@ unqualified-search-registries = ["docker.io"]
 		return "", fmt.Errorf("writing %s: %w", path, err)
 	}
 	return path, nil
+}
+
+// writeStorageConf generates the container STORAGE configuration this run's
+// engine reads, and returns its path for CONTAINERS_STORAGE_CONF.
+//
+// It is the third file to move from "whatever the host or the bundle happens
+// to have" to "a file this run authored", after containers.conf (issue #133)
+// and registries.conf (issue #137), and the argument is the same one a third
+// time: a config file snug merely POINTS AT is someone else deciding on snug's
+// behalf. What makes it load-bearing rather than tidy is Tier C (issue #125):
+// under a derived mount view every path a config names has to be a path that
+// still exists in that view, and snug cannot move a path it does not author.
+//
+// Until now CONTAINERS_STORAGE_CONF was caller-supplied — Spec's own doc
+// comment says so ("anything a pinned podman bundle needs, e.g.
+// CONTAINERS_STORAGE_CONF") — so on a host with a pinned bundle the file in
+// play was the BUNDLE's, naming the bundle's own graphroot, runroot and
+// mount_program. Every one of those is a fact about where containers live, and
+// two of them are paths.
+//
+// graphroot and runroot are named here even though podman also gets --root and
+// --runroot on its argv, and that duplication is deliberate: CLAUDE.md's
+// standing rule is to pass every security-relevant setting explicitly even when
+// it matches what something else already supplies, because the failure mode of
+// relying on the other one is silence.
+//
+// mount_program is DERIVED FROM THE ENGINE rather than hardcoded or omitted,
+// and it is the one line here that needs care. A pinned static bundle ships its
+// own fuse-overlayfs and its storage.conf names it; a distribution podman
+// expects the one on PATH. Naming a path that does not exist breaks every run
+// ("can't stat program"), and omitting it on a host that needs it breaks
+// rootless overlay instead — so it is named when it is found beside the engine
+// binary and left out when it is not, which is the only choice that is right on
+// both host shapes.
+func (e *Engine) writeStorageConf(podman string) (string, error) {
+	path := filepath.Join(e.confDir, "storage.conf")
+
+	var b strings.Builder
+	b.WriteString("# snug: generated for this run. Pointed at by CONTAINERS_STORAGE_CONF, so\n" +
+		"# the host's /etc/containers/storage.conf, ~/.config/containers/storage.conf\n" +
+		"# and any file a pinned engine bundle ships are not read (issue #125).\n" +
+		"[storage]\n" +
+		"driver = \"overlay\"\n")
+	b.WriteString("graphroot = " + tomlString(e.store) + "\n")
+	b.WriteString("runroot = " + tomlString(e.runroot) + "\n")
+
+	if mp := helperBesideEngine(podman, "fuse-overlayfs"); mp != "" {
+		b.WriteString("\n[storage.options.overlay]\n")
+		b.WriteString("mount_program = " + tomlString(mp) + "\n")
+	}
+
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		return "", fmt.Errorf("writing %s: %w", path, err)
+	}
+	return path, nil
+}
+
+// helperBesideEngine returns the path of a helper binary sitting next to the
+// engine binary, or "" when there is none there.
+//
+// The engine's own directory is the right place to look and the only one: a
+// pinned bundle keeps its helpers there, and a distribution podman's helpers
+// are on the PATH Spec pins, where podman finds them without being told. It
+// deliberately does NOT search, because a search is a rule about which of
+// several candidates wins, and snug has no way to say why one would.
+func helperBesideEngine(podman, name string) string {
+	if podman == "" {
+		return ""
+	}
+	cand := filepath.Join(filepath.Dir(podman), name)
+	if fi, err := os.Stat(cand); err == nil && fi.Mode().IsRegular() {
+		return cand
+	}
+	return ""
 }
 
 // writeAuthFile generates the EMPTY registry authentication file this run's
