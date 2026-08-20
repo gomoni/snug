@@ -260,7 +260,92 @@ func (p *Policy) Validate(env Environ) error {
 		}
 	}
 
+	if err := p.rejectGeneratedOntoHost(); err != nil {
+		return err
+	}
+
 	return p.rejectMasking(env)
+}
+
+// rejectGeneratedOntoHost refuses a policy in which snug's own generated content
+// would be written onto the HOST instead of into the sandbox.
+//
+// THE PROPERTY: for every resolved policy, no KindData mount's guest path
+// resolves through a writable host bind.
+//
+// Why it is a refusal and not a mark. bwrap renders a writable KindData mount as
+// `--file FD DEST`, and `--file` COPIES the descriptor onto DEST — creat(DEST,
+// 0666) plus copy_file_data, a real write to whatever DEST resolves to. DEST
+// normally lands in @home's tmpfs, where the write is harmless and dies with the
+// run. A profile granting rw on a host path that COVERS DEST makes DEST resolve
+// through that bind, and snug's own setup then overwrites the host's file. That
+// is issue #186, and it destroyed a real ~/.claude: settings.json replaced by the
+// allowlist output, .credentials.json replaced by the staged copy with the
+// refreshToken gone, and CLAUDE.md created on the host at 0 bytes.
+//
+// Nothing escaped and no grant was exceeded — the profile asked for rw on that
+// tree and got it. The writer is snug, on the way in, before the payload exists.
+// Which is why no mitigation aimed at the sandboxed process reaches it, and why
+// the answer is to refuse the policy rather than to warn about it: no profile
+// author means "overwrite my host credentials", so there is nothing to disclose
+// and nothing to negotiate. Demoting the grant to ro instead would be a
+// restriction operation, which invariant 1 does not have.
+//
+// It is NOT @claude-shaped, and the test set says so: KindData also carries
+// /etc/resolv.conf and the identity files ({home}/.gitconfig, {home}/.ssh/config,
+// {home}/.ssh/known_hosts), so a profile granting rw over {home}/.ssh plus an
+// identity is the same defect writing snug's generated config onto the host's.
+//
+// Two neighbouring cases, deliberately not refused here:
+//
+//   - A READ-ONLY bind covering a generated path. bwrap fails loudly and by
+//     itself: `Can't create file …: Read-only file system`, which is the error
+//     that identified this mechanism in the first place. Loud is correct, and a
+//     second refusal here would be a rule with no failure left to prevent.
+//   - A tmpfs covering a generated path. That is the normal case and the whole
+//     point: everything snug generates into the ephemeral $HOME sits inside
+//     @home's tmpfs.
+//
+// This is the corner invariant 1 already names as monotonicity's thin spot,
+// approached from the direction its comment does not cover. rejectMasking exempts
+// snug's own authored mounts by Mount.Authored, justified — correctly — by the
+// fact that nothing a profile writes can reach Policy.Replace. That still holds:
+// the profile here never PRODUCES a KindData grant, it only makes one LAND on a
+// writable host path. An exemption's own reach is the thing to re-read whenever a
+// grant can steer where the exempted mount goes.
+func (p *Policy) rejectGeneratedOntoHost() error {
+	for _, m := range p.SortedMounts() {
+		if m.Kind != KindData {
+			continue
+		}
+		// The DEEPEST mount containing the generated path is the one that
+		// supplies it, the same "effective access is the deepest mount covering
+		// it" rule join is keyed on. A tmpfs nested inside a writable bind
+		// therefore protects the file, and correctly reports no finding.
+		outer, at, ok := p.nearestCovering(m.Guest)
+		if !ok || outer.Kind != KindBind || outer.Access != AccessRW {
+			continue
+		}
+		// A bind with no host source is not a shape any profile produces, and
+		// the check refuses it rather than waving it through: "I cannot tell
+		// where this resolves" and "it resolves onto the host" have to give the
+		// same answer, or the guard fails open on exactly the input nobody
+		// anticipated. An earlier version skipped it, and the only thing that
+		// exposed the branch was that no mutation of it could be made to fail.
+		host := outer.Host
+		if host == "" {
+			host = at
+		}
+		return fmt.Errorf("profile %s grants rw on %s (the host's %s), and snug generates %s inside it.\n"+
+			"       snug writes generated content with bwrap's --file, which COPIES onto its destination,\n"+
+			"       so this policy would overwrite %s on the HOST — outside the sandbox, with no undo.\n"+
+			"       A generated file is meant to land on the sandbox's own tmpfs and die with the run.\n"+
+			"       Fix: drop the rw grant on %s, or deselect %s, which generates at %s.",
+			provenance(outer), at, VisibleText(host), m.Guest,
+			VisibleText(filepath.Join(host, strings.TrimPrefix(m.Guest, at))),
+			at, provenance(m), m.Guest)
+	}
+	return nil
 }
 
 // checkPathHygiene applies the two checks every path snug accepts into the
