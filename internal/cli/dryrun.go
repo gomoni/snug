@@ -103,6 +103,9 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 			detail = fmt.Sprintf("%s (from %s)", visibleValue(m.Guest), visibleValue(m.Host))
 		}
 		fmt.Fprintf(out, "  %-6s %-46s %s%s\n", kind, detail, visibleValue(strings.Join(m.From, "+")), opt)
+		for _, frag := range wrapMark(yieldedMark(p, m)) {
+			fmt.Fprintln(out, frag)
+		}
 	}
 	fmt.Fprintf(out, "  %-6s %s\n", "ro-/", "everything else is a read-only skeleton (--remount-ro /)")
 
@@ -2417,4 +2420,48 @@ func partialLines(name string, beneath int, generated bool) []string {
 	// columns — where a terminal breaks it mid-clause, in the middle of the
 	// sentence that says what is NOT granted.
 	return []string{head, "  " + tail}
+}
+
+// yieldedMark says when a profile has taken over one of the three paths snug
+// would otherwise author itself — /proc, /dev and /tmp — and returns "" for
+// every other row.
+//
+// WHY (issue #223). yieldTo() installs snug's own mount only if nothing already
+// claims that guest path, and that is deliberate: it is how @tmp-shared works.
+// What is NOT deliberate is @parent-ro reaching /tmp by accident of where the
+// target sits. `snug /tmp/proj` makes the target's parent /tmp, so the private
+// tmpfs never lands and the sandbox runs with the HOST's /tmp read-only, with
+// TMPDIR pointing into it — no refusal, and nothing on screen saying so.
+//
+// Two things stop being true for that run, and the first is a documented count:
+// CLAUDE.md says the writable surface is EIGHT paths with /tmp among them, and
+// here it is seven. A user believing a guarantee that no longer holds is
+// invariant 5's whole subject, and the guarantee changed silently.
+//
+// This says it rather than refusing it, which was a deliberate call: `snug
+// /tmp/x` is ordinary — `mktemp -d` targets are how VERIFY.md and the whole
+// integration suite build theirs — so a refusal would break snug's own workflow
+// unless it could distinguish "the yield was asked for" from "the yield happened
+// by accident", and this layer cannot. --dry-run being honest is the mechanism
+// the project already relies on.
+//
+// Mount.Authored is what makes this cheap: yieldTo() sets it on snug's own
+// mounts, so a row at one of these paths WITHOUT it is a profile that took over.
+func yieldedMark(p *policy.Policy, m policy.Mount) string {
+	if m.Authored {
+		return ""
+	}
+	switch m.Guest {
+	case "/tmp":
+		note := "  ← this is the HOST's /tmp, not snug's private one — a profile claimed the " +
+			"path, so the tmpfs snug would have put here never landed. $TMPDIR points inside it"
+		if m.Access != policy.AccessRW {
+			note += ", READ-ONLY, which most tooling breaks on"
+		}
+		return note
+	case "/proc", "/dev":
+		return fmt.Sprintf("  ← a profile claimed %s, so snug's own %s was not installed here",
+			m.Guest, m.Guest)
+	}
+	return ""
 }
