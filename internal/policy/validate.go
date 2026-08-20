@@ -331,7 +331,96 @@ func (p *Policy) Validate(env Environ) error {
 		return err
 	}
 
+	if err := p.rejectHostHomeBind(); err != nil {
+		return err
+	}
+
 	return p.rejectMasking(env)
+}
+
+// rejectHostHomeBind refuses a policy in which a bind covers the host's $HOME.
+//
+// WHY THIS IS A REFUSAL AND NOT A WARNING (issue #220). snug is deliberately
+// permissive about foot-guns — it will not stop you writing a typo in a profile
+// variable name, and that is right for a tool whose whole model is "you name the
+// holes". A bind of the home directory is a different kind of thing: it is the
+// single largest grant snug can emit, and it is reachable with builtins alone.
+//
+//	snug --no-defaults -p @sys -p @parent-ro ~/myproject
+//
+// `@parent-ro` grants {target_parent}; for a target sitting directly in the home
+// directory that parent IS $HOME. That started fine before this check, and
+// --dry-run rendered it as one unremarkable line, visually identical to
+// `ro /etc/passwd`.
+//
+// MEASURED through it, against a scratch home: an ssh private key read, .netrc
+// read, .aws read, a git alias from the host's ~/.gitconfig EXECUTED, ~/.bashrc
+// executed by an interactive shell, and — issue #219 — a host ssh-agent
+// enumerated and used for a signature through the socket in ~/.ssh, which is the
+// whole @ssh-agent filtering-proxy design defeated by a mount.
+//
+// Three rules this project already holds fail at once here: the command-table
+// rule (read-only SUPPLIES every program the file names), the socket rule
+// (#219), and @ssh-agent's one-pinned-key design. The working agreement's own
+// test settles it — write the abuse sentence: "a hostile process inside the
+// sandbox can use this to read every credential you own, execute your shell rc
+// files, and sign with your ssh agent." If you cannot write it, the grant is not
+// ready; this one writes itself and the answer is no.
+//
+// NO OVERRIDE FLAG, deliberately, on #191's reasoning in the hook's own words:
+// an override is a thing an agent talks itself into.
+//
+// SCOPE, kept narrow on purpose. Only KindBind, and only at $HOME or an ancestor
+// of it:
+//
+//   - a TMPFS at {home} is @home working correctly, and is in fact what makes a
+//     bind there unrepresentable in the default selection;
+//   - generated KindData under the home is snug's own writing;
+//   - `ro {home}/src` is a perfectly good grant and stays legal — enumerating is
+//     invariant 2's sanctioned answer to "X but not Y".
+//
+// An ancestor counts because `ro /home` exposes this home and everyone else's.
+func (p *Policy) rejectHostHomeBind() error {
+	if p.Home == "" {
+		return nil
+	}
+	// Sorted, so a policy binding more than one covering path names the same one
+	// on every run. A security verdict that depends on Go's map iteration order
+	// changes between runs, and this model has been bitten by exactly that —
+	// see the note on snugsOwnCovered.
+	guests := make([]string, 0, len(p.Mounts))
+	for g := range p.Mounts {
+		guests = append(guests, g)
+	}
+	sort.Strings(guests)
+	for _, g := range guests {
+		m := p.Mounts[g]
+		if m.Kind != KindBind {
+			continue
+		}
+		// covers(), not a hand-rolled HasPrefix: the root is the case a
+		// hand-rolled one gets wrong, because m.Guest+"/" is "//" and no path
+		// starts with that. Found by the /-bind fixture in the test beside this.
+		if !covers(m.Guest, p.Home) {
+			continue
+		}
+		what := "your home directory"
+		if m.Guest != p.Home {
+			what = "an ancestor of your home directory"
+		}
+		return fmt.Errorf("profile %s binds %s, which is %s (%s).\n"+
+			"       That is the largest grant snug can emit: every credential under it is\n"+
+			"       readable by the sandbox, ~/.bashrc and ~/.gitconfig are COMMAND TABLES a\n"+
+			"       read-only bind SUPPLIES rather than restrains, and any agent socket in it\n"+
+			"       can be used unfiltered — which is the @ssh-agent proxy's one-pinned-key\n"+
+			"       design defeated by a mount.\n"+
+			"       There is no flag to allow it. Grant the part you meant instead, e.g.\n"+
+			"       ro = [\"{home}/src\"] in your own profile. If the target sits directly in\n"+
+			"       your home directory, @parent-ro's \"the target's parent\" IS $HOME — move\n"+
+			"       the project one level down (~/src/myproject) or select without it.",
+			provenance(m), VisibleText(m.Guest), what, m.Access)
+	}
+	return nil
 }
 
 // rejectGeneratedOntoHost refuses a policy in which snug's own generated content
