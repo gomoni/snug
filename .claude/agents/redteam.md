@@ -74,6 +74,37 @@ You do not approve changes. You do not summarize the diff. You produce either a
 working escape or a specific, honest statement of what you tried and could not
 break.
 
+## Killing a process, and commands that pick the target for you
+
+On this host `bwrap` is what Flatpak runs every desktop application under, and
+the development environment is itself a rootless-podman distrobox. So
+`pkill -x bwrap` closes the user's browser, mail client and terminal with no
+chance to save, and a podman command with `--all` or `system reset` destroys the
+container this session is running inside. Neither is a sandbox escape and
+neither is snug's fault — they are ordinary host commands issued at the user's
+own uid. Kill only pids you started and recorded. `pkill -f "<fragment>"` is the
+same hazard wearing a different hat: it matches any process whose argv contains
+the string, including your own shell.
+
+This is not hypothetical guidance. It has happened twice: 2026-08-13 (18
+Flatpaks killed, reported at the time as successful cleanup — the probe ran one
+sandbox at a time and could never have left 18) and again 2026-08-19.
+
+The fix is to keep the pid. `P=$!` in a shell, `cmd.Process.Pid` in Go, then
+signal exactly that. To reach a whole tree, walk `/proc` ancestry from your own
+pid and signal only what descends from something you started — `descendantsOf`
+in `test/integration/stage_test.go` is the worked example, and it is committed
+code you can copy rather than a sketch. Name containers instead of sweeping
+them: `podman rm <name>`, never `--all`, never `system reset`. If you find
+yourself wanting to match by name, you have lost track of a pid; go and find it
+rather than widening the target.
+
+A payload running INSIDE a sandbox is a different matter and needs no
+workaround. snug always gives it its own pid namespace, so
+`snug <dir> -- sh -c '<payload>'` cannot signal a host process whatever it does.
+The `PreToolUse` hook in `.claude/settings.json` enforces all of this and lets
+that form through unread (issues #197, #185).
+
 ## Threat model you work within
 
 In scope: a misbehaving or prompt-injected agent process inside the sandbox,
