@@ -222,18 +222,22 @@ func TestEngineMountpointsTrackTheArgvThatCreatesThem(t *testing.T) {
 			withEngine := mustResolve(t, append(slices.Clone(testDefaults), "@podman-socket")...)
 			withoutEngine := mustResolveDefaults(t)
 
-			// The policy half.
-			g := freshMountGraft(KindCgroup2)
-			g.Guest = mp
-			if err := withEngine.Graft(newFakeEnv(), g); err != nil {
-				t.Fatalf("with a container engine, a graft at %s was refused, but BwrapFlags "+
-					"creates that directory: %v", mp, err)
+			// The policy half, asked of G3 ITSELF rather than of a whole
+			// graft. This used to install a real graft and require it to be
+			// accepted, which conflated two different questions the day
+			// EngineMountpoints gained /snug and /snug/engine (issue #125's
+			// derived-view destinations): those two are ANCESTORS that exist
+			// so the destinations under them can, and G1b refuses a graft AT
+			// them on purpose — snug's namespace rule, not G3. Existence and
+			// permission are different rules, and a test that reads one
+			// through the other reports the wrong one as broken.
+			if !existsInSandbox(withEngine, mp) {
+				t.Fatalf("with a container engine, G3 says %s does not exist in the sandbox's "+
+					"view, but BwrapFlags creates that directory", mp)
 			}
-			g2 := freshMountGraft(KindCgroup2)
-			g2.Guest = mp
-			if err := withoutEngine.Graft(newFakeEnv(), g2); err == nil {
-				t.Fatalf("with NO container engine, a graft at %s was accepted — but nothing in "+
-					"that policy creates the directory and the sandbox root is read-only, so the "+
+			if existsInSandbox(withoutEngine, mp) {
+				t.Fatalf("with NO container engine, G3 says %s exists — but nothing in that "+
+					"policy creates the directory and the sandbox root is read-only, so the "+
 					"stage's move_mount would fail EROFS at runtime (ENGINE-NETNS.md §5.1)", mp)
 			}
 

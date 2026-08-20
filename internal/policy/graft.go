@@ -703,6 +703,20 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 // there is nowhere for the engine's cgroup2 mount (Guest /sys/fs/cgroup,
 // Kind KindCgroup2) to land.
 //
+// The five under /snug/engine are Tier C's own destinations, and /snug and
+// /snug/engine are listed above them for the same depth-ascending reason the
+// /sys chain is: --dir creates no ancestors, and the root is read-only by the
+// time anything else could. Listing /snug is not a second author of that
+// directory — skeletonDirs already creates it whenever a profile stages a
+// binary — it is what makes the destinations reachable on a container run that
+// stages nothing, where nothing else would have created it.
+//
+// MEASURED, and it is why G3 insists the destination exist rather than trying
+// to create it: mkdir on the sandbox's read-only root fails EROFS, while
+// move_mount ONTO a directory that is already there succeeds — a mountpoint
+// needs no write access to the filesystem beneath it (issue #125, the
+// derived-view measurement).
+//
 // /run is here for the same reason and a different mount: the engine needs a
 // WRITABLE /run of its own — podman, seeing itself as root-like with the full
 // delegated subuid range, does not self-mount one and fails outright on `mkdir
@@ -725,7 +739,12 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 // what was not pre-created here. Order matters for the same reason
 // skeletonDirs is depth-ascending: /sys/fs/cgroup needs /sys/fs to already
 // be a directory, which needs /sys.
-var EngineMountpoints = []string{"/run", "/sys", "/sys/fs", "/sys/fs/cgroup"}
+var EngineMountpoints = []string{
+	"/run",
+	"/snug", "/snug/engine",
+	EngineStoreGuest, EngineRunrootGuest, EngineSockGuest, EngineConfGuest, EngineToolchainGuest,
+	"/sys", "/sys/fs", "/sys/fs/cgroup",
+}
 
 // existsInSandbox is G3: a graft's destination must already be a directory
 // inside the SANDBOX's own mount namespace before move_mount(2) can land

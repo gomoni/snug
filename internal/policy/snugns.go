@@ -85,6 +85,26 @@ const (
 // thing in it.
 const EngineDir = SnugDir + "/engine"
 
+// The four destinations under EngineDir, and the toolchain's, named here
+// rather than built by string concatenation at their call sites — the same
+// reason ContainerSocketGuest and AgentSocketGuest are here: every guest path
+// snug owns is declared in one file, because the property SnugDir exists to
+// make checkable is easier to keep when the set is visible.
+//
+// These are what the ENGINE sees. The host paths behind them belong to
+// internal/engine (the store, the runroot, the run directory's sock/ and
+// conf/ halves) and to the host user (the toolchain), and the mapping between
+// the two is the graft. The engine is handed ONLY these: a host path in the
+// engine's argv or environment is a path it cannot see once its view is
+// derived from the sandbox's.
+const (
+	EngineStoreGuest     = EngineDir + "/store"
+	EngineRunrootGuest   = EngineDir + "/runroot"
+	EngineSockGuest      = EngineDir + "/sock"
+	EngineConfGuest      = EngineDir + "/conf"
+	EngineToolchainGuest = EngineDir + "/toolchain"
+)
+
 // graftAllowedInSnugDir reports whether a graft may land at this guest path,
 // for the half of the namespace rule that applies to p.Grafts.
 //
