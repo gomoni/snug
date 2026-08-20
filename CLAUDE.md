@@ -121,6 +121,20 @@ Break any of these and the project has lost its point.
    guards a profile reaching this path but does not cover the displacement. If a
    TOML key ever does produce `KindData`, both holes open at once.
 
+   *And the exception is about the KIND, not about who chose the PATH — measured,
+   issue #42.* Discovery reads the system ssh_config's location out of `ssh -G
+   -v`, which is host text; but a human's own `Include <some repo>/ssh_config`
+   line puts a path from the **sandboxed tree** into that chain, and every
+   candidate becomes a `KindData` mount. So snug would have written its own
+   read-only file over the repository's own file, inside the one tree the run
+   exists to let the payload write — no escalation, the content is snug's, but
+   `rejectMasking` would not have stopped it and `--dry-run` would have shown a
+   `data` row where a human expected their file. `systemSSHConfigCandidates`
+   refuses a candidate under `{target}` (and under `{home}`) for that reason.
+   **Whenever something outside snug influences the GUEST PATH of a generated
+   mount, the exemption stops being about snug's own files and starts being a
+   write primitive with someone else's aim.**
+
    *Effective write access at a strict subpath is NOT monotone, by design.*
    `join` is keyed by `Mount.Guest`, so it applies at identical paths only.
    Grants at different depths become two mounts, and effective access at a path

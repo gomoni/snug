@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/gomoni/snug/internal/dockerproxy"
 	"github.com/gomoni/snug/internal/engine"
@@ -219,11 +218,14 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		return containerRun{}, err
 	}
 
-	dir, err := runtimeDir()
+	rt, err := openRuntimeDir()
 	if err != nil {
 		return containerRun{}, err
 	}
-	sock := filepath.Join(dir, "podman.sock")
+	sock, err := rt.Socket("podman.sock")
+	if err != nil {
+		return containerRun{}, err
+	}
 
 	audit := containerAudit(verbose)
 
@@ -263,11 +265,14 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 // path, exactly as before Tier B) and stops there. No engine, no preflight,
 // no store directory — nothing sandbox.Run will ever be asked to fork.
 func startContainersScreen(pol *policy.Policy, verbose bool) (containerRun, error) {
-	dir, err := runtimeDir()
+	rt, err := openRuntimeDir()
 	if err != nil {
 		return containerRun{}, err
 	}
-	sock := filepath.Join(dir, "podman.sock")
+	sock, err := rt.Socket("podman.sock")
+	if err != nil {
+		return containerRun{}, err
+	}
 	audit := containerAudit(verbose)
 
 	p, err := dockerproxy.New(pol, "", sock, "", audit, nil)

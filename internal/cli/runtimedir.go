@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -58,9 +59,9 @@ import (
 // directory no longer relies on /proc/<pid>/stat to tell a live run from a
 // dead one.
 //
-// runtimeDir is idempotent within a process (both the ssh-agent proxy and
-// the container proxy call it independently) and memoized by the resolved
-// path rather than a single cached value: the lock this function takes below
+// openRuntimeDir is idempotent within a process (both the ssh-agent proxy
+// and the container proxy call it independently) and memoized by the
+// resolved path rather than a single cached value: the lock it takes below
 // is an flock, which is scoped to the OPEN FILE DESCRIPTION rather than the
 // process, so a second unguarded open+flock from this same process would
 // contend with its own first one. Keying the cache by path — rather than
@@ -68,22 +69,34 @@ import (
 // tests independent of each other: each test points $XDG_RUNTIME_DIR at its
 // own temp directory, so each gets its own cache entry and its own fresh run
 // through every check.
-func runtimeDir() (string, error) {
+//
+// It returns a *runtimeDir rather than a string, and that is issue #103's
+// whole point: at the return statement of the old `runtimeDir() (string,
+// error)` every guarantee above was gone. What came back was, to the
+// compiler and to a reader, indistinguishable from any other string — so
+// `filepath.Join(dir, "podman.sock")` at each call site re-derived a path by
+// NAME from a directory that had been verified once, at a moment now past,
+// and nothing stopped some other string being passed where this one was
+// meant. The checks were real; nothing carried them forward. A type does.
+func openRuntimeDir() (*runtimeDir, error) {
 	base, snugName := runtimeBase()
 
 	root, err := os.OpenRoot(base)
 	if err != nil {
-		return "", fmt.Errorf("runtime directory: opening %s: %w - snug keeps its per-run state "+
+		return nil, fmt.Errorf("runtime directory: opening %s: %w - snug keeps its per-run state "+
 			"there; check that it is a directory you own with mode 0700", base, err)
 	}
 	defer root.Close()
 
 	snugRoot, created, err := secureSubroot(root, base, snugName)
 	if err != nil {
-		return "", fmt.Errorf("runtime directory: %w - snug refuses to keep run state anywhere "+
+		return nil, fmt.Errorf("runtime directory: %w - snug refuses to keep run state anywhere "+
 			"it cannot verify it owns", err)
 	}
-	defer snugRoot.Close()
+	// NOT closed here any more: the returned value keeps it, because removing
+	// this run's directory at the end of the run goes back through this
+	// verified parent descriptor rather than re-walking the path by name (see
+	// runtimeDir.Remove).
 	snugPath := filepath.Join(base, snugName)
 
 	if !created {
@@ -99,11 +112,87 @@ func runtimeDir() (string, error) {
 	runName := fmt.Sprintf("run-%d", os.Getpid())
 	runPath := filepath.Join(snugPath, runName)
 
-	if err := runLock(runPath, snugRoot, snugPath, runName); err != nil {
-		return "", err
+	d, err := claimRunDir(runPath, snugRoot, snugPath, runName)
+	if err != nil {
+		snugRoot.Close()
+		return nil, err
 	}
+	return d, nil
+}
 
-	return runPath, nil
+// runtimeDir is one run's own directory, already verified and already
+// locked: the value form of what the checks above establish.
+//
+// It holds the verified PARENT descriptor (snugRoot) plus this run's name
+// rather than only a path, so the one operation that outlives the checks —
+// removing the directory when the run ends — goes through that descriptor
+// instead of handing a path string back to os.RemoveAll to walk again.
+//
+// THE SOCKET IS THE HONEST LIMIT, and it was measured rather than assumed
+// (issue #103 asks for exactly that). bind(2) has no *at variant, so the
+// last step of both call sites is net.Listen("unix", <path string>) and a
+// path string has to exist somewhere. The candidate answer — hand out
+// /proc/self/fd/<fd>/<name>, so the bind resolves through the already-open
+// descriptor — WORKS: measured here, net.Listen on such a path succeeds, the
+// socket appears at the real path, a peer dialling the real path connects,
+// and the name is 22 bytes rather than a long absolute path, which matters
+// against sun_path's 108-byte limit.
+//
+// It is deliberately NOT adopted yet, for two measured reasons rather than
+// caution. First, bwrap needs the REAL host path anyway (policy.BindSocket
+// mounts it), so the /proc path would have to travel next to the real one
+// through both proxies — two paths for one socket, which is how the wrong
+// one gets used. Second, the listener then reports that path as its own
+// address: measured, both ln.Addr() and the peer's RemoteAddr() read
+// /proc/self/fd/4/x.sock, a string meaningless outside this process and
+// wrong in any message that prints it. Both proxies own their own
+// net.Listen today (dockerproxy.New, sshproxy.New take a path), so adopting
+// it means changing their signatures to take a listener — the next site,
+// with its own test diff, which is how issue #103 says to do this.
+type runtimeDir struct {
+	path     string
+	snugRoot *os.Root
+	runName  string
+	lock     *os.File
+}
+
+// Path is the real host path of this run's directory — for a message, and
+// for the one caller that still needs a string. Prefer Socket for anything
+// under it.
+func (d *runtimeDir) Path() string { return d.path }
+
+// Socket is the host path a proxy binds for name, and it is the reason the
+// call sites no longer say filepath.Join: "what may be created in here" is
+// now a method on the value that owns the directory rather than a string
+// operation anyone can perform on any string.
+//
+// The name is checked rather than trusted. Nothing in snug passes a
+// non-literal today, so this is not defending against a caller that exists;
+// it is what keeps the guarantee the type carries from being lost the first
+// time someone joins a variable onto it.
+func (d *runtimeDir) Socket(name string) (string, error) {
+	if name == "" || name == "." || name == ".." ||
+		strings.ContainsRune(name, filepath.Separator) || strings.Contains(name, "\x00") {
+		return "", fmt.Errorf("runtime directory: %q is not a name this run's directory may "+
+			"create - snug's sockets are single path elements inside it, never a path", name)
+	}
+	return filepath.Join(d.path, name), nil
+}
+
+// Remove deletes this run's directory, through the verified parent
+// descriptor. main.go used to call os.RemoveAll on the returned string,
+// which walks the whole path by name again at the end of a run — the exact
+// re-derivation the checks on the way in exist to make unnecessary.
+//
+// Errors are returned rather than swallowed; the caller decides, and today
+// it warns, because a directory snug could not remove is state that survives
+// the user (invariant 4's neighbourhood) and saying nothing is how it goes
+// unnoticed.
+func (d *runtimeDir) Remove() error {
+	if d == nil {
+		return nil
+	}
+	return d.snugRoot.RemoveAll(d.runName)
 }
 
 // runtimeBase computes $XDG_RUNTIME_DIR (or the uid-scoped fallback under
@@ -126,84 +215,62 @@ func runtimeBase() (base, snugName string) {
 	return base, snugName
 }
 
-// runHandle is what this process holds open for one run directory it has
-// claimed: the flock (see runLocks' own doc below) and the run directory's
-// own *os.Root, kept open for the life of the process so a later write —
-// `snug attach`'s state.json, written once bwrap has reported its info-fd —
-// can go through the SAME already-verified Root rather than re-deriving and
-// re-checking a path a second time.
-type runHandle struct {
-	lock *os.File
-	root *os.Root
-}
-
-// runLocks holds the flock (and run-directory Root) this process took on
-// each run directory it has claimed, keyed by the resolved path. The lock
-// descriptor is never closed and never unlocked for the lifetime of this
-// process: closing it is what tells a later sweep (in a different, later
-// process) that the owner is gone, so closing it early would be
-// indistinguishable from this run having crashed.
+// runtimeDirs holds the *runtimeDir this process has claimed for each run
+// directory, keyed by the resolved path. The flock inside it is never
+// released and the descriptor never closed for the lifetime of this process:
+// closing it is what tells a later sweep (in a different, later process)
+// that the owner is gone, so closing it early would be indistinguishable
+// from this run having crashed.
 //
-// Neither descriptor is ever handed to the sandboxed payload. They already
-// are not: every os.File and os.Root this package opens gets O_CLOEXEC from
-// the os package by default, and internal/fdseal.Seal marks every remaining
-// non-stdio descriptor close-on-exec again immediately before bwrap is
-// forked, belt and braces — so both are closed automatically the moment
-// bwrap execs, without ever being enumerated in cmd.ExtraFiles or otherwise
-// offered to it.
+// This replaces a map of runHandle{lock, root} plus a free function
+// (runStateRoot) that looked entries up by path. The lock's lifetime now
+// belongs to the value that owns the directory, which is issue #103's second
+// stated measure.
+//
+// Nothing in here is ever handed to the sandboxed payload. Every os.File and
+// os.Root this package opens gets O_CLOEXEC from the os package by default,
+// and internal/fdseal.Seal marks every remaining non-stdio descriptor
+// close-on-exec again immediately before bwrap is forked, belt and braces —
+// so they are closed automatically the moment bwrap execs, without ever
+// being enumerated in cmd.ExtraFiles or otherwise offered to it.
 var (
-	runLocksMu sync.Mutex
-	runLocks   = map[string]*runHandle{}
+	runtimeDirsMu sync.Mutex
+	runtimeDirs   = map[string]*runtimeDir{}
 )
 
-// runLock takes the per-run flock exactly once per path per process. On a
-// second call for the same path (this process's own idempotent re-entry) it
-// is a cache hit and touches nothing.
+// claimRunDir takes the per-run flock exactly once per path per process. On
+// a second call for the same path (this process's own idempotent re-entry)
+// it is a cache hit and touches nothing — the caller's freshly opened
+// snugRoot is surplus and is closed by openRuntimeDir.
 //
 // It retries once on errLockFileSwept — see lockRunDir for what that means
 // and why one retry is enough in practice — and refuses outright rather than
 // retrying forever, because a caller asking "where do my sockets go" needs an
 // answer, not a loop.
-func runLock(runPath string, snugRoot *os.Root, snugPath, runName string) error {
-	runLocksMu.Lock()
-	defer runLocksMu.Unlock()
+func claimRunDir(runPath string, snugRoot *os.Root, snugPath, runName string) (*runtimeDir, error) {
+	runtimeDirsMu.Lock()
+	defer runtimeDirsMu.Unlock()
 
-	if _, ok := runLocks[runPath]; ok {
-		return nil
+	if d, ok := runtimeDirs[runPath]; ok {
+		return d, nil
 	}
 
-	lock, root, err := lockRunDir(snugRoot, snugPath, runName)
+	lock, err := lockRunDir(snugRoot, snugPath, runName)
 	if errors.Is(err, errLockFileSwept) {
-		lock, root, err = lockRunDir(snugRoot, snugPath, runName)
+		lock, err = lockRunDir(snugRoot, snugPath, runName)
 	}
 	if err != nil {
 		if errors.Is(err, errLockFileSwept) {
-			return fmt.Errorf("runtime directory: %s: a concurrent sweep removed this run's "+
+			return nil, fmt.Errorf("runtime directory: %s: a concurrent sweep removed this run's "+
 				"own directory twice in a row while this process was trying to lock it — "+
 				"refusing rather than returning a path that may no longer exist", runPath)
 		}
-		return err
+		return nil, err
 	}
 
-	runLocks[runPath] = &runHandle{lock: lock, root: root}
-	return nil
-}
-
-// runStateRoot returns the already-open, already-ownership-verified *os.Root
-// for this run's own directory — the same one runLock claimed above — so a
-// later write (snug attach's state.json) never re-derives or re-checks the
-// path. It is an error to call this for a path runtimeDir has not already
-// succeeded for in THIS process; there is nothing for it to return.
-func runStateRoot(runPath string) (*os.Root, error) {
-	runLocksMu.Lock()
-	defer runLocksMu.Unlock()
-	h, ok := runLocks[runPath]
-	if !ok {
-		return nil, fmt.Errorf("runtime directory: %s was never claimed by runtimeDir in this process - this "+
-			"is a bug in snug rather than something to fix from outside it; please report it with "+
-			"the command you ran", runPath)
-	}
-	return h.root, nil
+	d := &runtimeDir{path: runPath, snugRoot: snugRoot, runName: runName, lock: lock}
+	runtimeDirs[runPath] = d
+	return d, nil
 }
 
 // errLockFileSwept means the lock file this call just locked had already
@@ -229,47 +296,45 @@ var errLockFileSwept = errors.New("lock file was removed by a concurrent sweep b
 // count. Zero means nothing points to this file any more, which can only
 // happen here if the directory it lived in was removed while we were mid-
 // creation of it.
-func lockRunDir(snugRoot *os.Root, snugPath, runName string) (*os.File, *os.Root, error) {
+func lockRunDir(snugRoot *os.Root, snugPath, runName string) (*os.File, error) {
 	runPath := filepath.Join(snugPath, runName)
 
 	runRoot, _, err := secureSubroot(snugRoot, snugPath, runName)
 	if err != nil {
-		return nil, nil, fmt.Errorf("runtime directory: %w - this is the run's own subdirectory, "+
+		return nil, fmt.Errorf("runtime directory: %w - this is the run's own subdirectory, "+
 			"and snug refuses to use one whose owner and mode it cannot verify", err)
 	}
+	// Closed once the lock inside it is held. It was kept open for a reader
+	// that no longer exists: issue #123 moved `snug attach`'s state.json to
+	// the TARGET-keyed path, so nothing writes into this directory through a
+	// Root any more, and runStateRoot — the function that handed it out — had
+	// no callers left at all. A descriptor held open for a dead reader is not
+	// defence in depth, it is a fact nobody is checking.
+	defer runRoot.Close()
 
 	lock, err := runRoot.OpenFile("lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		runRoot.Close()
-		return nil, nil, fmt.Errorf("runtime directory: creating %s/lock: %w - check free space and inodes on "+
+		return nil, fmt.Errorf("runtime directory: creating %s/lock: %w - check free space and inodes on "+
 			"that filesystem", runPath, err)
 	}
 	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		lock.Close()
-		runRoot.Close()
-		return nil, nil, fmt.Errorf("runtime directory: locking %s/lock: %w — a directory named "+
+		return nil, fmt.Errorf("runtime directory: locking %s/lock: %w — a directory named "+
 			"after this process's own pid is already locked by something else, which should be "+
 			"impossible on a live system (pids are unique); refusing rather than reusing it", runPath, err)
 	}
 
 	if linked, lerr := stillLinked(lock); lerr != nil {
 		lock.Close()
-		runRoot.Close()
-		return nil, nil, fmt.Errorf("runtime directory: checking whether %s/lock is still linked: %w - snug needs "+
+		return nil, fmt.Errorf("runtime directory: checking whether %s/lock is still linked: %w - snug needs "+
 			"to know whether a concurrent sweep removed it, and refuses rather than returning a "+
 			"path that may already be gone", runPath, lerr)
 	} else if !linked {
 		lock.Close()
-		runRoot.Close()
-		return nil, nil, errLockFileSwept
+		return nil, errLockFileSwept
 	}
 
-	// runRoot is kept OPEN and returned rather than closed here (the
-	// original version of this function did `defer runRoot.Close()`): a
-	// later write into this exact directory — `snug attach`'s state.json —
-	// goes through this SAME already-verified Root (see runStateRoot below)
-	// rather than re-deriving and re-checking the path a second time.
-	return lock, runRoot, nil
+	return lock, nil
 }
 
 // stillLinked reports whether the open file f still has a name in the

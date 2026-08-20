@@ -63,6 +63,57 @@ are the last line on both.
   `PIP_CONFIG_FILE`, `CARGO_HOME`, `DOCKER_CONFIG` are pointers to a file a human
   can read. snug authors only the second kind. Same file, "Generate, don't bind".
 
+## A verified path is a type, not a string
+
+Prefer **`*os.Root`** over a path string, and a **named type** over a bare
+`*os.Root`, wherever snug verifies a directory and then uses it. This is a
+house rule now, not a preference (#103, and #233 for what is still unconverted).
+
+The failure it prevents is not hypothetical and has no runtime symptom, which
+is why it needs a rule. `runtimeDir()` opened the base, checked ownership and
+mode, refused a symlink at each name it owns, opened an `*os.Root`, took a
+lock — and returned a `string`. **At that return statement every guarantee was
+gone**: the value was indistinguishable, to the compiler and to a reader, from
+any other string, each call site re-derived paths from it with
+`filepath.Join`, and nothing stopped an unverified string being passed where a
+verified one was meant. The checks were real; nothing carried them forward.
+
+What that means when you are typing:
+
+- **A function that needs a verified directory says so in its signature.** If
+  it takes a `string`, it is asking for a path anyone can construct. This cuts
+  both ways: `writeRunState` took a `runPath` it had stopped using two releases
+  earlier, and nobody noticed, because a string parameter says nothing.
+- **`*os.Root` over a path, for the operation as well as the open.** Removal,
+  creation and stat go through the descriptor — `root.RemoveAll(name)`, not
+  `os.RemoveAll(path)`. A descriptor names an inode; a path names a route that
+  can change under you, and `os.RemoveAll` on a route that no longer exists
+  reports **success having removed nothing**.
+- **A distinct named type over a bare `*os.Root`**, when there is an invariant
+  worth carrying: any `*os.Root` satisfies any function that wants one, so
+  nothing stops the engine's root being passed where the runtime directory was
+  meant. Give the type methods for what may be created in it, and check what
+  they are handed — a name, not a path.
+- **Know what `os.Root` does not do.** It follows symlinks that stay INSIDE the
+  root; that is its documented contract. At a name snug creates itself, that is
+  one degree too permissive, and the answer is an `Lstat` refusal at exactly
+  that name (`secureSubroot` in `internal/cli/runtimedir.go` is the worked
+  example). Ask the question per site; do not assume the answer.
+- **`bind(2)` has no `*at` variant** — a unix socket path has to exist as a
+  string somewhere. Binding through `/proc/self/fd/<fd>/<name>` works
+  (measured, test in `internal/cli/runtimedir_test.go`), at the cost of the
+  listener reporting that path as its own address. State the limit rather than
+  pretending the type covers it.
+
+You do not need a decision from anyone to write it this way. Converting an
+existing site is ordinary work; do it **one site at a time, each with its own
+test diff**, and make the test able to tell the two implementations apart — the
+one that renames the parent directory before removing through the descriptor is
+the pattern, because both implementations pass on an undisturbed filesystem.
+
+`internal/policy` is exempt and stays exempt: pure by rule, no filesystem, which
+is what lets the security-critical tests run in CI with no privileges.
+
 ## Definition of done
 
 Compiles, `go vet` clean, tests written for the pure parts, and the behaviour is

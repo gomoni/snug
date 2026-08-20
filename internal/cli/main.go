@@ -421,9 +421,9 @@ func run(cfg config) int {
 	// so LIFO defer ordering removes THIS directory LAST — after the
 	// ssh-agent and container proxy sockets it holds have already been
 	// closed by their own cleanups, not out from under a live listener.
-	var runDir string
+	var runDir *runtimeDir
 	if !cfg.dryRun {
-		d, rerr := runtimeDir()
+		d, rerr := openRuntimeDir()
 		if rerr != nil {
 			fmt.Fprintf(os.Stderr, "snug: %v\n\n"+
 				"      This run cannot publish its state, so `snug attach` could never find it —\n"+
@@ -433,8 +433,15 @@ func run(cfg config) int {
 		runDir = d
 	}
 	defer func() {
-		if runDir != "" {
-			os.RemoveAll(runDir)
+		if runDir == nil {
+			return
+		}
+		// Through the verified parent descriptor, not os.RemoveAll on a path
+		// string: the directory was checked on the way in, and re-walking its
+		// name at the end of the run is the re-derivation issue #103 is about.
+		if rerr := runDir.Remove(); rerr != nil {
+			fmt.Fprintf(os.Stderr, "snug: could not remove this run's directory %s: %v\n",
+				runDir.Path(), rerr)
 		}
 	}()
 
@@ -492,7 +499,7 @@ func run(cfg config) int {
 		// one without reintroducing the parked-payload window this file's
 		// own history (runStaged's doc comment) already removed on purpose.
 		OnInfo: func(info sandbox.RunInfo) {
-			if werr := writeRunState(runDir, pol, info); werr != nil {
+			if werr := writeRunState(pol, info); werr != nil {
 				fmt.Fprintf(os.Stderr, "snug: this run will not be attachable (%v)\n", werr)
 			}
 		},

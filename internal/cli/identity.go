@@ -94,7 +94,7 @@ func startIdentity(pol *policy.Policy, verbose, iKnow, dryRun bool) (cleanup fun
 		return func() {}, nil
 	}
 
-	dir, err := runtimeDir()
+	rt, err := openRuntimeDir()
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +107,10 @@ func startIdentity(pol *policy.Policy, verbose, iKnow, dryRun bool) (cleanup fun
 	// no reason to build a second copy of that race inside one.
 	cleanup = func() {}
 
-	sock := filepath.Join(dir, "ssh-agent.sock")
+	sock, err := rt.Socket("ssh-agent.sock")
+	if err != nil {
+		return nil, err
+	}
 	upstream := os.Getenv("SSH_AUTH_SOCK")
 
 	switch id.SSHMode {

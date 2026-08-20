@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,10 +33,10 @@ func TestRuntimeDirRefusesAPreplantedSymlinkOnTheSharedDirectory(t *testing.T) {
 	}
 	t.Setenv("XDG_RUNTIME_DIR", base)
 
-	if _, err := runtimeDir(); err == nil {
-		t.Fatal("runtimeDir followed a pre-planted symlink instead of refusing it")
+	if _, err := openRuntimeDir(); err == nil {
+		t.Fatal("openRuntimeDir followed a pre-planted symlink instead of refusing it")
 	} else if !strings.Contains(err.Error(), "symlink") {
-		t.Errorf("runtimeDir refused for the wrong reason: %v", err)
+		t.Errorf("openRuntimeDir refused for the wrong reason: %v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(trap, fmt.Sprintf("run-%d", os.Getpid()))); err == nil {
 		t.Fatal("a run directory was created INSIDE the attacker's directory through the symlink")
@@ -44,12 +45,13 @@ func TestRuntimeDirRefusesAPreplantedSymlinkOnTheSharedDirectory(t *testing.T) {
 	// CONTROL: an unplanted base must succeed.
 	clean := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", clean)
-	dir, err := runtimeDir()
+	rt, err := openRuntimeDir()
 	if err != nil {
-		t.Fatalf("control: runtimeDir failed on a clean base: %v", err)
+		t.Fatalf("control: openRuntimeDir failed on a clean base: %v", err)
 	}
+	dir := rt.Path()
 	if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() {
-		t.Fatalf("control: runtimeDir did not create a usable directory: %s (%v)", dir, err)
+		t.Fatalf("control: openRuntimeDir did not create a usable directory: %s (%v)", dir, err)
 	}
 }
 
@@ -80,22 +82,23 @@ func TestRuntimeDirRefusesAPreplantedSymlinkOnTheRunSubdirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := runtimeDir(); err == nil {
-		t.Fatal("runtimeDir followed a pre-planted symlink at the run-* name instead of refusing it")
+	if _, err := openRuntimeDir(); err == nil {
+		t.Fatal("openRuntimeDir followed a pre-planted symlink at the run-* name instead of refusing it")
 	} else if !strings.Contains(err.Error(), "symlink") {
-		t.Errorf("runtimeDir refused for the wrong reason: %v", err)
+		t.Errorf("openRuntimeDir refused for the wrong reason: %v", err)
 	}
 
 	// CONTROL: remove the trap and the exact same base must now succeed.
 	if err := os.Remove(filepath.Join(snugDir, runName)); err != nil {
 		t.Fatal(err)
 	}
-	dir, err := runtimeDir()
+	rt, err := openRuntimeDir()
 	if err != nil {
-		t.Fatalf("control: runtimeDir failed once the symlink was gone: %v", err)
+		t.Fatalf("control: openRuntimeDir failed once the symlink was gone: %v", err)
 	}
+	dir := rt.Path()
 	if filepath.Base(dir) != runName {
-		t.Errorf("runtimeDir returned %s, want a directory named %s", dir, runName)
+		t.Errorf("openRuntimeDir returned %s, want a directory named %s", dir, runName)
 	}
 }
 
@@ -113,12 +116,12 @@ func TestRuntimeDirRefusesAWronglyPermissionedSharedDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := runtimeDir()
+	_, err := openRuntimeDir()
 	if err == nil {
-		t.Fatal("runtimeDir accepted a group/other-readable shared directory")
+		t.Fatal("openRuntimeDir accepted a group/other-readable shared directory")
 	}
 	if !strings.Contains(err.Error(), "mode") {
-		t.Errorf("runtimeDir refused for the wrong reason: %v", err)
+		t.Errorf("openRuntimeDir refused for the wrong reason: %v", err)
 	}
 }
 
@@ -133,16 +136,24 @@ func TestRuntimeDirRefusesAWronglyPermissionedSharedDirectory(t *testing.T) {
 func TestRuntimeDirIsIdempotentWithinARun(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 
-	first, err := runtimeDir()
+	first, err := openRuntimeDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := runtimeDir()
+	second, err := openRuntimeDir()
 	if err != nil {
 		t.Fatal(err)
 	}
+	if first.Path() != second.Path() {
+		t.Errorf("openRuntimeDir returned two different directories in one run: %s then %s",
+			first.Path(), second.Path())
+	}
+	// The memo hands back the SAME value, not an equal one: the flock and the
+	// verified parent descriptor belong to that value, and a second
+	// independent value holding a second descriptor for the same directory is
+	// exactly what the memo exists to prevent (issue #103).
 	if first != second {
-		t.Errorf("runtimeDir returned two different directories in one run: %s then %s", first, second)
+		t.Errorf("openRuntimeDir returned two distinct values for one directory")
 	}
 }
 
@@ -155,21 +166,21 @@ func TestRuntimeDirIsIdempotentWithinARun(t *testing.T) {
 func TestRuntimeDirHoldsItsLockForTheLifeOfTheProcess(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 
-	dir, err := runtimeDir()
+	rt, err := openRuntimeDir()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	lockPath := filepath.Join(dir, "lock")
+	lockPath := filepath.Join(rt.Path(), "lock")
 	f, err := os.OpenFile(lockPath, os.O_RDWR, 0)
 	if err != nil {
-		t.Fatalf("opening the lock file runtimeDir must have created: %v", err)
+		t.Fatalf("opening the lock file openRuntimeDir must have created: %v", err)
 	}
 	defer f.Close()
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err == nil {
 		unix.Flock(int(f.Fd()), unix.LOCK_UN)
 		t.Fatal("a second, independent flock on runtimeDir's own lock file succeeded — " +
-			"runtimeDir released or never took its own lock")
+			"openRuntimeDir released or never took its own lock")
 	}
 }
 
@@ -307,7 +318,7 @@ func TestRuntimeDirSweepsOnStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := runtimeDir(); err != nil {
+	if _, err := openRuntimeDir(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -361,5 +372,158 @@ func TestStillLinkedDetectsAConcurrentSweepUnlinkingOurLockFile(t *testing.T) {
 		t.Fatalf("stillLinked (after removal): %v", err)
 	} else if linked {
 		t.Fatal("stillLinked reported a removed file as still present")
+	}
+}
+
+// TestRuntimeDirSocketRefusesAnythingThatIsNotASingleName pins the guard the
+// TYPE carries and a string could not (issue #103): the old call sites said
+// filepath.Join(dir, "podman.sock"), which is an operation anyone can perform
+// on any string, with any second argument. "What may be created in here" is
+// now a method on the value that owns the directory, and it answers for what
+// it is given.
+func TestRuntimeDirSocketRefusesAnythingThatIsNotASingleName(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	rt, err := openRuntimeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"", ".", "..", "../escape.sock", "sub/dir.sock", "/abs.sock"} {
+		if got, err := rt.Socket(name); err == nil {
+			t.Errorf("Socket(%q) returned %q instead of refusing", name, got)
+		}
+	}
+	// POSITIVE CONTROL: the ordinary case still works, and lands INSIDE this
+	// run's own directory rather than anywhere else.
+	got, err := rt.Socket("podman.sock")
+	if err != nil {
+		t.Fatalf("Socket refused an ordinary socket name: %v", err)
+	}
+	if want := filepath.Join(rt.Path(), "podman.sock"); got != want {
+		t.Errorf("Socket = %q, want %q", got, want)
+	}
+}
+
+// TestRuntimeDirRemoveTakesTheDirectoryAway is the other end of the value's
+// life. main.go used to call os.RemoveAll on the returned string, which walks
+// the whole path by name again at the end of the run; Remove goes through the
+// parent descriptor this value has held open since the checks passed.
+func TestRuntimeDirRemoveTakesTheDirectoryAway(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	rt, err := openRuntimeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(rt.Path()); err != nil {
+		t.Fatalf("PRECONDITION: the run directory was not created: %v", err)
+	}
+	if err := rt.Remove(); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Stat(rt.Path()); !os.IsNotExist(err) {
+		t.Errorf("the run directory survived Remove (err=%v)", err)
+	}
+}
+
+// TestRuntimeDirRemoveGoesThroughTheDescriptorNotThePath is the test that can
+// tell the two implementations apart, which the one above cannot: both
+// os.RemoveAll(d.path) and snugRoot.RemoveAll(runName) leave the directory
+// gone on an undisturbed filesystem.
+//
+// Renaming the PARENT after the value was opened separates them. A descriptor
+// names an inode, so removal through it still finds this run's directory; a
+// path string names a route that no longer exists, and os.RemoveAll would
+// report success having removed NOTHING (RemoveAll treats a missing path as
+// success), leaving the run's directory behind with its sockets in it. That
+// is the re-derivation issue #103 is about, in the one place it survived
+// after the checks passed.
+func TestRuntimeDirRemoveGoesThroughTheDescriptorNotThePath(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", base)
+
+	rt, err := openRuntimeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(base, "snug-moved")
+	if err := os.Rename(filepath.Join(base, "snug"), moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.Remove(); err != nil {
+		t.Fatalf("Remove after the parent was renamed: %v — removal is re-walking the path "+
+			"instead of using the descriptor the checks left open", err)
+	}
+	if _, err := os.Stat(filepath.Join(moved, filepath.Base(rt.Path()))); !os.IsNotExist(err) {
+		t.Errorf("the run directory survived Remove at its new location (err=%v); a path-based "+
+			"removal would report success having removed nothing", err)
+	}
+}
+
+// TestASocketBindsThroughAVerifiedDescriptor is the measurement issue #103
+// asks for by name, and it is here rather than in a comment because a
+// measurement quoted in prose is a claim nothing checks.
+//
+// The hypothesis: bind(2) has no *at variant, so the last step of both socket
+// call sites is net.Listen("unix", <path string>) — but a path of the form
+// /proc/self/fd/<fd>/<name> resolves through an ALREADY-OPEN descriptor
+// rather than re-walking the name, which is the one thing the runtimeDir type
+// cannot otherwise carry to the bind. It holds: the listener binds, the socket
+// appears at the real path, and a peer dialling the real path connects.
+//
+// What it also shows is why it is not adopted yet: the listener reports the
+// /proc path as its own address, a string meaningless outside this process.
+// Both proxies take a path and Listen themselves today, so adopting this
+// means changing their signatures to take a net.Listener — the next site.
+func TestASocketBindsThroughAVerifiedDescriptor(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	viaFD := fmt.Sprintf("/proc/self/fd/%d/x.sock", root.Fd())
+	ln, err := net.Listen("unix", viaFD)
+	if err != nil {
+		t.Fatalf("net.Listen through /proc/self/fd: %v — the hypothesis in runtimeDir's doc "+
+			"comment does not hold on this kernel and that comment must be corrected", err)
+	}
+	defer ln.Close()
+
+	real := filepath.Join(dir, "x.sock")
+	fi, err := os.Stat(real)
+	if err != nil {
+		t.Fatalf("the socket did not appear at the real path %s: %v", real, err)
+	}
+	if fi.Mode()&os.ModeSocket == 0 {
+		t.Errorf("%s is not a socket: %v", real, fi.Mode())
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c, err := ln.Accept()
+		if err == nil {
+			c.Write([]byte("ok"))
+			c.Close()
+		}
+	}()
+	c, err := net.Dial("unix", real)
+	if err != nil {
+		t.Fatalf("dialling the real path: %v", err)
+	}
+	defer c.Close()
+	b := make([]byte, 2)
+	if _, err := c.Read(b); err != nil || string(b) != "ok" {
+		t.Errorf("read %q, %v; want \"ok\"", b, err)
+	}
+	<-done
+
+	// The caveat, asserted rather than described: the listener's address is
+	// the /proc path, not the real one.
+	if addr := ln.Addr().String(); addr != viaFD {
+		t.Logf("listener address is %q, not the /proc path — the caveat in runtimeDir's "+
+			"doc comment may no longer apply", addr)
 	}
 }
