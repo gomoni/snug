@@ -120,8 +120,11 @@ integration:
 # takes 0.00s: that is the one that catches the everyday regression (a pragma
 # dropped, a splittable call added), and it runs in `make gate` like everything
 # else.
+# -v deliberately: the control arm's own line ("a splittable fork child wedged
+# on round N — the pressure is real") is the evidence that this run provoked the
+# condition at all, and a green tick without it says nothing.
 forkstress:
-	go test -tags forkstress -count=1 -timeout 5m -run TestForkChild ./internal/attach/
+	go test -tags forkstress -count=1 -timeout 5m -v -run TestForkChild ./internal/attach/
 
 # Regenerate the golden argv files, then READ THE DIFF. A change to a golden
 # file is a change to the sandbox boundary.
