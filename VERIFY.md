@@ -557,9 +557,17 @@ Expect a refusal that **names `/snug/bin`** — the replacement, not just the
 problem. A rename whose old name merely stops working is a trap; the refusal is
 what makes it a rename.
 
-Also worth seeing once, on any run: `--dry-run` shows `--dir /snug` and
-`--dir /snug/bin` and **no `--dir /run` at all**. `/run` existed in a default
-sandbox only because snug's own paths lived under it.
+Also worth seeing once, and note WHICH run: the skeleton directories are derived
+from the mounts a run actually has, so a **default** sandbox has no `--dir /snug`
+either — nothing is staged there. Select something that stages a binary, and the
+directories appear while `--dir /run` does not:
+
+```bash
+./bin/snug --dry-run -p @podman-socket $SC/proj/sub | grep -E '^  --dir'
+```
+
+Expect `--dir /snug` and `--dir /snug/bin` and **no `--dir /run` at all**. `/run`
+existed only because snug's own paths lived under it.
 
 ### 6j. All five verbs at once, and the payload agrees with the screen
 
@@ -2048,8 +2056,8 @@ stat -c '%a %U %n' /tmp/snug-$(id -u)-*/conf /tmp/snug-$(id -u)-*/sock
 Expect exactly `conf` and `sock` at the top and **nothing else** — a generated
 file in neither is one the split does not classify, and under Tier C it would be
 silently writable inside the engine. `conf/` holds `containers.conf`,
-`registries.conf`, `auth.json`, `resolv.conf` and `home/`; `sock/` holds only
-`podman-<pid>.sock`. Both are `700` and owned by you: they go through
+`registries.conf`, `storage.conf`, `auth.json`, `resolv.conf` and `home/`;
+`sock/` holds only `podman-<pid>.sock`. Both are `700` and owned by you: they go through
 `createRunDir`, not `MkdirAll`, so each gets the same refuse-to-reuse and
 ownership checks the parent got — `/tmp` is commonly world-writable and that
 reasoning does not weaken one directory down.
