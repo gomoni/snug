@@ -1641,6 +1641,81 @@ The sibling counter uses the same walk and got the same fix: a sibling with
 something bound beneath it is reported separately rather than counted as an
 entry that reads as absent.
 
+## 9. A project directly in an ephemeral directory is refused (issue #179)
+
+`~/myproject` is an extremely common layout and snug will not sandbox it. The old
+refusal was a raw kind conflict that named two profiles and no working command:
+
+```console
+$ mkdir ~/proj && ./bin/snug --dry-run ~/proj
+snug: refusing to sandbox /home/michal/proj: it sits directly in /home/michal, which @home provides as an empty, ephemeral tmpfs.
+       So the parent snug would grant IS that directory, and a read-only bind of it
+       cannot coexist with the tmpfs. Move the project one level down:
+           mv /home/michal/proj /home/michal/src/ && snug /home/michal/src/proj
+       A selection without @parent-ro does resolve; snug does not offer it here. A
+       project sitting directly in an ephemeral directory is the wrong thing to
+       sandbox, and one answer beats a fork somebody guesses at.
+```
+
+The target being one of those directories is a different sentence, because there
+is genuinely nothing to select:
+
+```console
+$ ./bin/snug --dry-run ~
+snug: refusing to sandbox /home/michal: it IS a directory @home provides as an empty, ephemeral tmpfs.
+       No selection sandboxes this path — a profile must bind the target to make it
+       visible, and that collides with the tmpfs however you choose. Sandbox a
+       project directory instead:
+           mkdir -p /home/michal/src/myproject && snug /home/michal/src/myproject
+```
+
+What to check:
+
+1. **It is not keyed on `$HOME`.** `@home` provides five ephemeral directories,
+   so `~/.cache/build` and `~/.config/nvim` refuse identically, naming the
+   directory that is actually ephemeral:
+
+```console
+$ mkdir -p ~/.cache/build && ./bin/snug --dry-run ~/.cache/build | head -1
+snug: refusing to sandbox /home/michal/.cache/build: it sits directly in /home/michal/.cache, which @home provides ...
+```
+
+2. **The refusal survives an explicit selection.** This resolves cleanly and is
+   still refused, which is the ruling:
+
+```console
+$ ./bin/snug --dry-run --no-defaults -p @sys -p @home -p @cwd-rw ~/proj | head -1
+snug: refusing to sandbox /home/michal/proj: ...
+```
+
+   The message says a selection without `@parent-ro` *does* resolve, rather than
+   implying none exists. Hiding a true option would be worse than the message it
+   replaced.
+
+3. **`/tmp` targets still work**, and this is the check that matters most because
+   it is how this file and the whole integration suite build targets. snug's own
+   `/tmp` is a tmpfs too; only `$HOME`-rooted ones refuse:
+
+```console
+$ ./bin/snug --dry-run "$(mktemp -d)" >/dev/null && echo OK
+OK
+```
+
+4. So does an ordinary project one level down — the layout the message points at:
+
+```console
+$ ./bin/snug --dry-run ~/src/anything >/dev/null && echo OK
+OK
+```
+
+**Why the rule lives in two places.** `join` reports a kind conflict during the
+fold, so a check that ran afterwards would never speak for the default selection
+— the exact case #179 is about. The rule therefore runs before the fold over the
+tmpfs *grants*, and `Validate` carries the same rule over the resolved *mounts*
+for a policy built without going through `Resolve`. Two halves of one rule is the
+shape this project has a standing complaint about, so
+`TestBothHalvesOfTheEphemeralRuleAgree` asserts they never disagree.
+
 ## 9a. A profile that takes over snug's own /tmp says so (issue #223)
 
 `yieldTo` installs snug's own `/proc`, `/dev` and `/tmp` **only if nothing else
