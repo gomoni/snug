@@ -40,3 +40,6 @@ local-profiles/
 # belong in a clone. Ignored rather than merely untracked for the reason the
 # .claude/scratchpad/ entry above gives.
 poc/
+
+# Bytecode from the PreToolUse hooks, which import a shared module beside them.
+.claude/hooks/__pycache__/

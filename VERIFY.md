@@ -2956,6 +2956,75 @@ is the enforcement and covers every agent and the main thread without being read
 so a second copy of the prose adds no protection and spends attention in every
 invocation. `go test ./test/guard/ -run KillRule` grades both halves.
 
+### 17a. Writing about destruction is not destruction (issue #199)
+
+The sibling hook, `deny-host-credential-paths.py`, first required a destructive
+token and a protected path to appear *anywhere in the same string*, with nothing
+requiring them to belong to each other. It refused six pieces of harmless work in
+one morning across two sessions — a commit message, an issue body, an issue
+comment, two edits to a gitignored plan file, and the shell function written to
+probe the hook — while zero destructive commands were attempted in that window.
+This repository writes *about* destroying things constantly, because that is what
+the incidents were.
+
+It now matches only where a command can appear. Reuse §17's `ask` helper against
+the other hook:
+
+```console
+$ ask2() { python3 -c 'import json,sys;print(json.dumps({"tool_input":{"command":sys.argv[1]}}))' "$1" \
+    | .claude/hooks/deny-host-credential-paths.py \
+    | python3 -c 'import sys;print("DENY" if sys.stdin.read().strip() else "ALLOW")'; }
+
+$ ask2 'rm -rf ~/.claude'                                   # a command
+DENY
+$ ask2 'cd /tmp && rm -rf ~/.claude'                        # not the first command
+DENY
+$ ask2 'sh -c "rm -rf ~/.claude"'                           # sh -c IS a command position
+DENY
+$ ask2 'echo broken > $HOME/.config/snug/config.toml'       # a clobbering redirect
+DENY
+
+$ ask2 'git commit -m "the hook denied rm -rf ~/.claude"'   # a carried argument
+ALLOW
+$ ask2 'gh issue close 185 --comment "quoting rm -rf ~/.ssh"'
+ALLOW
+```
+
+A here-document body is carried data, so it is stripped before matching, while
+the line that *opened* it — and any redirect target on it — is still graded. Both
+halves are committed fixtures rather than shell you retype, because a heredoc
+nested inside a probe command is unreadable and gets typed wrong:
+
+```console
+$ go test ./test/guard/ -run Hook -v 2>&1 | grep -E 'PASS|FAIL'
+--- PASS: TestTheHookRefusesDestructiveCommandsAimedAtHostCredentialPaths
+--- PASS: TestTheHookLeavesOrdinaryWorkAlone
+--- PASS: TestTheHookIsWiredIntoSettings
+```
+
+The two heredoc cases in there are `cat > notes.md <<'EOF'` with a destructive
+line in the body (ALLOW — the body is data) and `cat > ~/.ssh/config <<'EOF'`
+with a harmless body (DENY — the redirect target is a protected path).
+
+What to check:
+
+1. Every DENY line refuses and every ALLOW line passes. The ALLOW half is the
+   point of the change and carries the same weight: a guard whose only observed
+   firings are false positives gets routed around, and the routes are trivial.
+2. `sh -c '…'` still refuses. That is the spelling that started #185, and it is
+   the half most at risk from a fix aimed at false positives.
+3. Break the heredoc stripping in `.claude/hooks/shellcmd.py` and re-run
+   `go test ./test/guard/`. The ALLOW test must fail.
+
+**What this does NOT fix, and must not be read as fixing.** The hook grades the
+argv it is handed. Text moved off the argv is invisible to it whether it is a
+citation or a real command — `--body-file`, a variable, an interpreter's stdin —
+and the hook is registered for `Bash` alone, so the same operation through a
+file-editing tool is not graded at all. Whether this layer is a **speed bump**
+against the literal mistake or a **boundary** that belongs somewhere else is an
+open maintainer decision recorded on #199. Narrowing the false positives did not
+answer it.
+
 ## If a check fails
 
 1. Re-run it with `--dry-run` and compare what snug *claimed* against what you

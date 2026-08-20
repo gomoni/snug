@@ -57,8 +57,16 @@ DESIGN NOTES, each one a decision rather than an accident:
 import json
 import os
 import re
-import shlex
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from shellcmd import (  # noqa: E402
+    nested_payloads,
+    split_top_level,
+    strip_wrappers,
+    words,
+)
 
 # Verbs that pick their victims by name or pattern. There is no flag that makes
 # any of these scoped: `pkill -x` is exact-name-matching, which is precisely the
@@ -74,74 +82,8 @@ PID_FINDERS = re.compile(r"\b(pgrep|pidof|ps)\b")
 # deliberately absent: `-a` on a read means "show me everything".
 CONTAINER_DESTRUCTIVE = {"kill", "stop", "rm", "rmi", "restart", "pause", "unpause"}
 
-# Wrappers that stand in front of the real command without changing what it does.
-TRANSPARENT = {"sudo", "doas", "nohup", "nice", "ionice", "stdbuf", "command", "exec", "time", "env"}
-
 # The flags that mean "everything you can find", in the spellings a shell accepts.
 ALL_FLAG = re.compile(r"^(--all(=true)?|-[a-zA-Z]*a[a-zA-Z]*)$")
-
-
-def split_top_level(text):
-    """Split on shell operators, respecting quotes, `$(…)` and backticks.
-
-    Not a shell parser and not trying to be. It exists so that
-    `snug /tmp/t -- sh -c 'pkill x'; pkill -x bwrap` is two segments — the
-    exemption must cover the payload and must NOT cover what follows it.
-    """
-    out, cur = [], []
-    quote = None
-    depth = 0
-    i = 0
-    while i < len(text):
-        c = text[i]
-        if quote:
-            cur.append(c)
-            if c == quote:
-                quote = None
-            i += 1
-            continue
-        if c == "\\" and i + 1 < len(text):
-            cur.append(c)
-            cur.append(text[i + 1])
-            i += 2
-            continue
-        if c in "'\"`":
-            quote = c
-            cur.append(c)
-            i += 1
-            continue
-        if text[i:i + 2] == "$(":
-            depth += 1
-            cur.append("$(")
-            i += 2
-            continue
-        if c == ")" and depth > 0:
-            depth -= 1
-            cur.append(c)
-            i += 1
-            continue
-        if depth == 0:
-            if text[i:i + 2] in ("&&", "||"):
-                out.append("".join(cur))
-                cur = []
-                i += 2
-                continue
-            if c in ";|&\n":
-                out.append("".join(cur))
-                cur = []
-                i += 1
-                continue
-        cur.append(c)
-        i += 1
-    out.append("".join(cur))
-    return [s.strip() for s in out if s.strip()]
-
-
-def words(segment):
-    try:
-        return shlex.split(segment, comments=False, posix=True)
-    except ValueError:
-        return segment.split()
 
 
 def is_snug_invocation(argv):
@@ -187,59 +129,6 @@ def is_snug_invocation(argv):
         return True
     # `go run ./cmd/snug <dir> -- <payload>` is the same thing spelled longer.
     return any(w.rstrip("/").endswith("cmd/snug") for w in head)
-
-
-def strip_wrappers(argv):
-    """Peel env assignments and transparent wrappers off the front.
-
-    Returns (argv, via_xargs). `xargs` is called out rather than merely peeled:
-    a kill reached through xargs took its pids from a stream, which is a
-    selector by construction however the stream was produced.
-    """
-    via_xargs = False
-    i = 0
-    while i < len(argv):
-        w = argv[i]
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w):
-            i += 1
-            continue
-        if w == "--":
-            # `env -- pkill x` and `sudo -- pkill x`. The end-of-options marker
-            # is not a command, and leaving it in place made argv[0] `--`, which
-            # matched no rule at all.
-            i += 1
-            continue
-        base = os.path.basename(w)
-        if base in TRANSPARENT:
-            i += 1
-            continue
-        if base == "timeout":
-            i += 1
-            while i < len(argv) and argv[i].startswith("-"):
-                i += 1
-            i += 1  # the duration
-            continue
-        if base == "xargs":
-            via_xargs = True
-            i += 1
-            while i < len(argv) and argv[i].startswith("-"):
-                # -n, -P, -I, -d and -a take a value; the rest are switches.
-                takes_value = argv[i] in ("-n", "-P", "-I", "-d", "-a", "-s", "-L", "-E")
-                i += 1
-                if takes_value and i < len(argv):
-                    i += 1
-            continue
-        break
-    return argv[i:], via_xargs
-
-
-def nested(argv):
-    """The command strings a shell wrapper is asked to run: `sh -c '<here>'`."""
-    out = []
-    for i, w in enumerate(argv):
-        if re.match(r"^-[a-z]*c$", w) and i + 1 < len(argv):
-            out.append(argv[i + 1])
-    return out
 
 
 def subcommands(argv):
@@ -313,15 +202,15 @@ def check(segment):
 
 
 def verdict(command):
-    for segment in split_top_level(command):
+    for _, segment in split_top_level(command):
         argv = words(segment)
         if is_snug_invocation(argv):
             continue
         found = check(segment)
         if found:
             return found
-        for inner in nested(argv):
-            for sub in split_top_level(inner):
+        for inner in nested_payloads(argv):
+            for _, sub in split_top_level(inner):
                 found = check(sub)
                 if found:
                     return found
