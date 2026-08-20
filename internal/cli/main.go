@@ -322,6 +322,8 @@ func run(cfg config) int {
 		return exitPolicy
 	}
 
+	sshConfigs, sshValues := probeSSHConfig(home, cfg.verbose)
+
 	ctx := policy.Context{
 		Target:          abs,
 		HostTmpDir:      hostTmp,
@@ -335,7 +337,12 @@ func run(cfg config) int {
 		HostNameservers: hostNameservers(),
 		KnownHosts:      knownHostsFor(identityHost(reg, selected)),
 		HostGit:         hostGit,
-		HostShims:       detectHostShims(),
+		// Asked once per run, before Resolve, because a pure resolver may not
+		// run a host binary. See probeSSHConfig for what the probe costs and
+		// why the fixed list is still the floor (issues #42, #43).
+		HostSSHConfigs: sshConfigs,
+		HostSSHConfig:  sshValues,
+		HostShims:      detectHostShims(),
 	}
 
 	pol, err := policy.Resolve(reg, selected, ctx, env)

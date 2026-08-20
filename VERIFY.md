@@ -2801,15 +2801,71 @@ so no replacement of the drop-in is attempted; see
 demand, is what shows `SSH-OK` above is the replacement working rather than
 the ownership check having quietly stopped applying.
 
-What it costs, and say it out loud: the host's system-wide ssh defaults — on
-this host openSUSE's crypto-policy include — do not apply inside, on every
-run this fires on, not only identity runs. Concretely, `RequiredRSASize`
-drops from the host's `2048` to OpenSSH's compiled-in `1024`:
+What it costs, and say it out loud: everything the host's file said that
+names a program, a file or a socket is gone inside — `ProxyCommand`,
+`Match exec`, `KnownHostsCommand`, `PKCS11Provider`, `IdentityFile`,
+`IdentityAgent`, `ControlPath`. That is the point of generating the file
+rather than binding it, not a regrettable side effect: `ssh_config` is a
+command table, and read-only does not demote one into data.
+
+What it no longer costs is the host's ALGORITHM policy (issue #43). The
+non-executable half — the crypto policy's `Ciphers`, `MACs`,
+`KexAlgorithms`, `PubkeyAcceptedAlgorithms`, `CASignatureAlgorithms`,
+`HostbasedAcceptedAlgorithms`, `GSSAPIKexAlgorithms` and `RequiredRSASize` —
+is read from the host with `ssh -G` and written into the file snug
+generates. The one with security content is `RequiredRSASize`, and the two
+sides must now agree:
 
 ```bash
-./bin/snug $SC/proj/sub -- ssh -G github.com | grep requiredrsasize
-# requiredrsasize 1024
+ssh -G -o BatchMode=yes snug-probe.invalid | grep requiredrsasize
+# requiredrsasize 2048              (this host, openSUSE's crypto policy)
+./bin/snug $SC/proj/sub -- ssh -G -o BatchMode=yes snug-probe.invalid | grep requiredrsasize
+# requiredrsasize 2048              (inside; it read 1024 before issue #43)
 ```
+
+Only values that DIFFER from OpenSSH's compiled-in defaults are carried, so
+on a host that customises nothing both lines read `1024` and the generated
+file has no directives at all. `--dry-run` names exactly what was carried:
+
+```bash
+./bin/snug --dry-run $SC/proj/sub | sed -n '/^SSH/,/^TTY/p'
+# SSH      system-wide ssh_config REPLACED at /usr/etc/ssh/ssh_config
+#          …
+#          carried    CASignatureAlgorithms, Ciphers, GSSAPIKexAlgorithms,
+#                     HostbasedAcceptedAlgorithms, KexAlgorithms, MACs,
+#                     PubkeyAcceptedAlgorithms, RequiredRSASize
+#          left out   everything that names a program, a file or a socket — …
+```
+
+### 13b-2. The replaced path is the one ssh really reads, not a guess
+
+snug knows two spellings of the system-wide `ssh_config` by heart
+(`/etc/ssh`, `/usr/etc/ssh`). A host that spells it a third way —
+FreeBSD's or a Homebrew prefix's `/usr/local/etc/ssh`, a Nix store path —
+used to get issue #40's failure back with nothing on screen. snug now ASKS
+this host's ssh, once per run, and the two answers must match:
+
+```bash
+ssh -G -v -o BatchMode=yes snug-probe.invalid 2>&1 | grep 'Reading configuration data'
+# debug1: Reading configuration data /home/you/.ssh/config
+# debug1: Reading configuration data /usr/etc/ssh/ssh_config          <- the system one
+# debug1: Reading configuration data /usr/etc/ssh/ssh_config.d/50-suse.conf
+./bin/snug --dry-run $SC/proj/sub | grep 'ssh_config REPLACED'
+# SSH      system-wide ssh_config REPLACED at /usr/etc/ssh/ssh_config
+```
+
+Only the TOP-LEVEL file is replaced: the generated file carries no `Include`
+line, so nothing under it is ever read inside. Your own `~/.ssh/config` is in
+that chain too and is never replaced — snug authors that one only when an
+identity is pinned.
+
+Know what the probe costs before you run snug on a machine where it matters:
+`ssh -G` parses your own `~/.ssh/config`, so a `Match exec "…"` in it RUNS,
+on the host, once per `snug` invocation. There is no flag that skips your file
+but keeps the system one (`-F` replaces the whole chain, and ssh takes your
+home directory from `getpwuid`, so `HOME=` changes nothing — both measured).
+Sandboxed material cannot reach that file: no shipped profile grants
+`~/.ssh`, and `Validate` refuses any bind covering `$HOME`.
 
 ### 13c. The runtime directory: a planted symlink is refused, and a stale one is swept
 

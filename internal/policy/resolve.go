@@ -554,7 +554,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// nothing to do with pinning an account, and gating it on identity left ssh
 	// broken on every unpinned sandbox on such a host. See systemsshconfig.go
 	// and .claude/design/INDEX.md for the coverage rule this depends on.
-	replaceSystemSSHConfig(p, env)
+	replaceSystemSSHConfig(p, ctx, env)
 
 	// /etc/resolv.conf is GENERATED, never bound from the host. The host's may
 	// name 127.0.0.53 (systemd-resolved), which the sandbox must not be able to
