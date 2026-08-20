@@ -485,14 +485,34 @@ func TestSandboxNetnsIsTheStagesPinnedNetns(t *testing.T) {
 	}
 	// Positive control for the thread-count claim below: a freshly started Go
 	// program has more than one OS thread to be wrong about.
-	before := threadNetnsIDs(stagePID)
+	//
+	// POLLED, not sampled once, and that is a real bug this test had rather
+	// than defensive padding: "a Go program has several threads" is only
+	// EVENTUALLY true — the runtime starts them as it needs them — and
+	// findDescendant returns the instant the stage appears in /proc, which can
+	// be microseconds after its exec. Whether this precondition held was
+	// therefore decided by how long P0 took to get to the fork relative to the
+	// poll loop above, and anything that changes snug's startup cost by a few
+	// tens of milliseconds flips it. Measured: adding the `ssh -G` probe
+	// (issue #42, ~70ms before the stage is forked) made this fail every time
+	// on this host, in isolation, while main passed every time — a false
+	// failure about thread counts, in a test about namespaces.
+	var before map[string]int
 	total := 0
-	for _, n := range before {
-		total += n
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		before = threadNetnsIDs(stagePID)
+		total = 0
+		for _, n := range before {
+			total += n
+		}
+		if total > 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if total <= 1 {
-		t.Fatalf("PRECONDITION: the stage (pid %d) reports only %d thread(s); this test needs "+
-			"more than one to be a meaningful sweep", stagePID, total)
+		t.Fatalf("PRECONDITION: the stage (pid %d) still reports only %d thread(s) after two "+
+			"seconds; this test needs more than one to be a meaningful sweep", stagePID, total)
 	}
 
 	// The stage's OWN netns (a fresh one it left N for) must be present among

@@ -175,8 +175,17 @@ func (p *Policy) Validate(env Environ) error {
 		// path happening to sit at depth 1.
 		if at, own, ours := snugsOwnCovered(g); ours && !m.Authored {
 			if at == g {
+				// "displaces it" was the whole sentence here, and it was written
+				// for /proc and /dev, where snug really does author a node a
+				// profile would replace. It is inaccurate for SnugDir and
+				// StagedBinDir, where snug mounts NOTHING and the hazard is the
+				// opposite shape: a profile's mount is a separate mount that
+				// `--remount-ro /` does not reach inside, so the directory that
+				// was unwritable becomes writable.
 				return fmt.Errorf("profile %s puts %s at %s, but %s is snug's own: %s\n"+
-					"       Whatever a profile puts there displaces it, so this is a hole no profile may\n"+
+					"       Whatever a profile puts there takes it over — by displacing the node snug\n"+
+					"       authors, or, where snug mounts nothing at all, by being a separate mount that\n"+
+					"       --remount-ro / does not reach inside. Either way it is a hole no profile may\n"+
 					"       open.\n"+
 					"       %s",
 					provenance(m), describeNode(m), g, g, own.why, own.instead)
@@ -322,7 +331,107 @@ func (p *Policy) Validate(env Environ) error {
 		return err
 	}
 
+	if err := p.rejectHostHomeBind(); err != nil {
+		return err
+	}
+
+	if err := p.rejectTargetInAnEphemeralDirectory(); err != nil {
+		return err
+	}
+
 	return p.rejectMasking(env)
+}
+
+// sortedGuests returns the guest paths in a stable order.
+//
+// Extracted when a second refusal needed it (issues #220, #179), and it is not
+// tidiness: a refusal that walks a Go map reports a DIFFERENT one of several
+// eligible mounts between runs, so the same policy fails with two different
+// messages. That is the shape the note on snugsOwnCovered records the model
+// being bitten by before.
+func sortedGuests(mounts map[string]Mount) []string {
+	out := make([]string, 0, len(mounts))
+	for g := range mounts {
+		out = append(out, g)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// rejectHostHomeBind refuses a policy in which a bind covers the host's $HOME.
+//
+// WHY THIS IS A REFUSAL AND NOT A WARNING (issue #220). snug is deliberately
+// permissive about foot-guns — it will not stop you writing a typo in a profile
+// variable name, and that is right for a tool whose whole model is "you name the
+// holes". A bind of the home directory is a different kind of thing: it is the
+// single largest grant snug can emit, and it is reachable with builtins alone.
+//
+//	snug --no-defaults -p @sys -p @parent-ro ~/myproject
+//
+// `@parent-ro` grants {target_parent}; for a target sitting directly in the home
+// directory that parent IS $HOME. That started fine before this check, and
+// --dry-run rendered it as one unremarkable line, visually identical to
+// `ro /etc/passwd`.
+//
+// MEASURED through it, against a scratch home: an ssh private key read, .netrc
+// read, .aws read, a git alias from the host's ~/.gitconfig EXECUTED, ~/.bashrc
+// executed by an interactive shell, and — issue #219 — a host ssh-agent
+// enumerated and used for a signature through the socket in ~/.ssh, which is the
+// whole @ssh-agent filtering-proxy design defeated by a mount.
+//
+// Three rules this project already holds fail at once here: the command-table
+// rule (read-only SUPPLIES every program the file names), the socket rule
+// (#219), and @ssh-agent's one-pinned-key design. The working agreement's own
+// test settles it — write the abuse sentence: "a hostile process inside the
+// sandbox can use this to read every credential you own, execute your shell rc
+// files, and sign with your ssh agent." If you cannot write it, the grant is not
+// ready; this one writes itself and the answer is no.
+//
+// NO OVERRIDE FLAG, deliberately, on #191's reasoning in the hook's own words:
+// an override is a thing an agent talks itself into.
+//
+// SCOPE, kept narrow on purpose. Only KindBind, and only at $HOME or an ancestor
+// of it:
+//
+//   - a TMPFS at {home} is @home working correctly, and is in fact what makes a
+//     bind there unrepresentable in the default selection;
+//   - generated KindData under the home is snug's own writing;
+//   - `ro {home}/src` is a perfectly good grant and stays legal — enumerating is
+//     invariant 2's sanctioned answer to "X but not Y".
+//
+// An ancestor counts because `ro /home` exposes this home and everyone else's.
+func (p *Policy) rejectHostHomeBind() error {
+	if p.Home == "" {
+		return nil
+	}
+	for _, g := range sortedGuests(p.Mounts) {
+		m := p.Mounts[g]
+		if m.Kind != KindBind {
+			continue
+		}
+		// covers(), not a hand-rolled HasPrefix: the root is the case a
+		// hand-rolled one gets wrong, because m.Guest+"/" is "//" and no path
+		// starts with that. Found by the /-bind fixture in the test beside this.
+		if !covers(m.Guest, p.Home) {
+			continue
+		}
+		what := "your home directory"
+		if m.Guest != p.Home {
+			what = "an ancestor of your home directory"
+		}
+		return fmt.Errorf("profile %s binds %s, which is %s (%s).\n"+
+			"       That is the largest grant snug can emit: every credential under it is\n"+
+			"       readable by the sandbox, ~/.bashrc and ~/.gitconfig are COMMAND TABLES a\n"+
+			"       read-only bind SUPPLIES rather than restrains, and any agent socket in it\n"+
+			"       can be used unfiltered — which is the @ssh-agent proxy's one-pinned-key\n"+
+			"       design defeated by a mount.\n"+
+			"       There is no flag to allow it. Grant the part you meant instead, e.g.\n"+
+			"       ro = [\"{home}/src\"] in your own profile. If the target sits directly in\n"+
+			"       your home directory, @parent-ro's \"the target's parent\" IS $HOME — move\n"+
+			"       the project one level down (~/src/myproject) or select without it.",
+			provenance(m), VisibleText(m.Guest), what, m.Access)
+	}
+	return nil
 }
 
 // rejectGeneratedOntoHost refuses a policy in which snug's own generated content
@@ -819,4 +928,101 @@ func resolveLinkForEnv(links map[string]string, g string) string {
 		resolved = filepath.Join(target, strings.TrimPrefix(g, link+"/"))
 	}
 	return resolved
+}
+
+// rejectTargetInAnEphemeralDirectory refuses a target that sits directly in — or
+// IS — a directory some profile provides as an ephemeral tmpfs rooted at $HOME.
+//
+// THE CASE (issue #179). `mkdir ~/proj && snug ~/proj` was refused by the default
+// selection with a conflict: @home wants a tmpfs at {home}, @parent-ro wants a
+// read-only bind of the target's parent, and for a home-child target that parent
+// IS $HOME. The refusal was correct — there is no join between a tmpfs and a
+// bind, and inventing one is what invariant 1 forbids — but it named no working
+// command, and ~/myproject is an extremely common layout.
+//
+// WHY THIS REFUSES RATHER THAN SUGGESTING. A selection without @parent-ro does
+// resolve, and it is a perfectly good sandbox. The maintainer's call is that a
+// project directly in the home directory is the wrong thing to sandbox in the
+// first place, so snug refuses it outright and says to move the project — one
+// answer rather than a fork, and nobody can reach for the other branch by
+// mistake. The other branch used to be lethal; #220 closed it, so this is now a
+// usability rule rather than a security one, and the message says so plainly
+// instead of implying no working selection exists.
+//
+// NOT KEYED ON $HOME, and that is the part measured before it was written.
+// @home provides FIVE tmpfs paths — {home} and the four XDG directories — so
+// `~/.cache/build` and `~/.config/nvim` produce the identical conflict at a
+// different path. A rule written against `p.Home` would have been wrong on day
+// one. It walks the resolved mounts instead, so it covers whatever the selected
+// profiles actually made ephemeral.
+//
+// AND NOT ANY TMPFS: only one rooted at $HOME. snug's own /tmp is a tmpfs too,
+// and `snug /tmp/proj` is ordinary — `mktemp -d` targets are how VERIFY.md and
+// the whole integration suite build theirs. Refusing those would break snug's own
+// workflow, and what happens there instead is issue #223's annotation.
+//
+// TWO SHAPES, and they need different sentences, because one of them has no
+// working answer at all:
+//
+//   - the target sits IN an ephemeral directory (`~/proj`). Moving it one level
+//     down works.
+//   - the target IS one (`snug ~`, `snug ~/.config`). Measured: no builtin
+//     selection sandboxes those at all — @cwd-rw includes @home, so the bind and
+//     the tmpfs collide however you select. "Move it" is the only answer, and
+//     saying "select differently" there would be advice that cannot be followed.
+func (p *Policy) rejectTargetInAnEphemeralDirectory() error {
+	if p.Home == "" || p.Target == "" {
+		return nil
+	}
+	parent := filepath.Dir(p.Target)
+	for _, g := range sortedGuests(p.Mounts) {
+		m := p.Mounts[g]
+		if m.Kind != KindTmpfs {
+			continue
+		}
+		// Only ephemeral directories rooted at the home. snug's own /tmp is a
+		// tmpfs and a /tmp target must keep working.
+		if !covers(p.Home, m.Guest) {
+			continue
+		}
+		if p.Target == m.Guest || parent == m.Guest {
+			return ephemeralTargetError(p.Target, parent, m.Guest, p.Home, provenance(m))
+		}
+	}
+	return nil
+}
+
+// ephemeralTargetError is the one author of issue #179's refusal, shared by the
+// pre-fold check in Resolve and the post-fold one in Validate. Two authors for
+// one message is how the two halves of a rule drift apart — the shape CLAUDE.md
+// names — so there is one.
+//
+// TWO SHAPES, because one of them has no working answer at all:
+//
+//   - the target sits IN an ephemeral directory (`~/proj`). Moving it one level
+//     down works, and the message says exactly which command.
+//   - the target IS one (`snug ~`, `snug ~/.config`). MEASURED: no builtin
+//     selection sandboxes those — @cwd-rw includes @home, so a bind of the target
+//     and the tmpfs collide however you select. Telling that user to "select
+//     differently" would be advice that cannot be followed.
+func ephemeralTargetError(target, parent, ephemeral, home, from string) error {
+	if target == ephemeral {
+		return fmt.Errorf("refusing to sandbox %s: it IS a directory %s provides as an empty, "+
+			"ephemeral tmpfs.\n"+
+			"       No selection sandboxes this path — a profile must bind the target to make it\n"+
+			"       visible, and that collides with the tmpfs however you choose. Sandbox a\n"+
+			"       project directory instead:\n"+
+			"           mkdir -p %s/src/myproject && snug %s/src/myproject",
+			VisibleText(target), from, VisibleText(home), VisibleText(home))
+	}
+	return fmt.Errorf("refusing to sandbox %s: it sits directly in %s, which %s provides as an "+
+		"empty, ephemeral tmpfs.\n"+
+		"       So the parent snug would grant IS that directory, and a read-only bind of it\n"+
+		"       cannot coexist with the tmpfs. Move the project one level down:\n"+
+		"           mv %s %s/src/ && snug %s/src/%s\n"+
+		"       A selection without @parent-ro does resolve; snug does not offer it here. A\n"+
+		"       project sitting directly in an ephemeral directory is the wrong thing to\n"+
+		"       sandbox, and one answer beats a fork somebody guesses at.",
+		VisibleText(target), VisibleText(ephemeral), from,
+		VisibleText(target), VisibleText(home), VisibleText(home), filepath.Base(target))
 }

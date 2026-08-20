@@ -135,6 +135,35 @@ tmpfs = [
 # profile creates, and a variable grants nothing on its own: it only tells a tool
 # where to look.
 #
+# For two of these, WHERE TO LOOK INCLUDES A FILE THE TOOL WILL EXECUTE FROM, and
+# that is the half "only tells a tool where to look" reads past. Measured on this
+# host, both against directories that are the writable tmpfs above (issue #84):
+#
+#   XDG_CONFIG_HOME  git reads a COMMAND TABLE from $XDG_CONFIG_HOME/git/config —
+#                    aliases, core.sshCommand, core.pager. git 2.55.0, and it
+#                    fires WITH ~/.gitconfig present. It does NOT fire when
+#                    GIT_CONFIG_GLOBAL is set, so the live case is a run where
+#                    snug generates no gitconfig — i.e. the DEFAULT selection.
+#                    Anyone re-measuring must `env -u GIT_CONFIG_GLOBAL`, or the
+#                    measurement returns a false negative (it did once, because
+#                    the measuring session was itself under snug).
+#   XDG_DATA_HOME    bash-completion sources a file from it. 2.12.0,
+#                    /usr/share/bash-completion/bash_completion:3235.
+#
+# XDG_CACHE_HOME and XDG_STATE_HOME reach nothing measured either way.
+#
+# This does NOT widen what the payload can do — it already runs code, and a
+# writable $HOME reaches the same hijack through ~/.bashrc regardless. What it
+# makes concrete is the tmpfs abuse sentence above: "a place to stage files for
+# the rest of THIS run" includes staging a file another process in the same
+# sandbox will EXECUTE, not merely read.
+#
+# It is recorded here rather than as a --dry-run annotation on the variable, on
+# purpose. The hazard belongs to the TMPFS grant, which the FILESYSTEM block
+# already renders `rw`; an XDG base directory must be writable, so a mark on the
+# variable would fire on every default run and name no action the reader could
+# take. See issue #84 for the full argument.
+#
 # They are `set` and not `inherit` deliberately. The host's XDG_CONFIG_HOME names
 # a real directory full of real credentials, and admitting it past --clearenv
 # would point every tool in the sandbox at a path the sandbox does not have —
@@ -155,6 +184,20 @@ description = "The target directory is writable and persists."
 include = ["home"]
 rw = ["{target}"]
 
+# ABUSE: a hostile process inside the sandbox can read every file under the
+# target's parent — every sibling project, their .git/config, their .env files,
+# any credential anyone left in one, and any SOCKET sitting in the tree.
+#
+# WHAT THAT MEANS DEPENDS ON WHERE THE TARGET SITS, and that is the sentence to
+# read twice, because it is the only abuse sentence in this file whose blast
+# radius is not fixed by the grant. For ~/src/proj the parent is ~/src. For a
+# project directly in your home directory the parent IS $HOME — every key, every
+# dotfile, every agent socket. snug refuses that outright (issue #220): Validate
+# rejects any bind covering $HOME, so this profile cannot be used to reach it.
+# The refusal is doing real work rather than being fussy — it was measured
+# handing over 14 private keys, .netrc, .aws, an EXECUTED ~/.gitconfig alias, an
+# EXECUTED ~/.bashrc, and a signature from the host's ssh-agent.
+#
 # The target's parent is readable. Everything under higher ancestors stays
 # invisible — not hidden, never granted. This is one line because the model has
 # no hiding operation to get wrong.

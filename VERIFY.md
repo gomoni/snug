@@ -1603,6 +1603,161 @@ nor exempted with a reason. The nine missing rows were not the defect — **noth
 noticing** was, and a hand-written renderer falls one behind the struct once per
 feature.
 
+## 9a. NOT GRANTED is not wrong in the reassuring direction (issue #59)
+
+`--dry-run` is the mechanism by which a human can trust snug at all, so a row
+there that overstates what is denied is the worst kind of wrong. `covered()`
+walked **upward** only, so a bind *beneath* a candidate never marked that
+candidate covered:
+
+```console
+$ ./bin/snug --dry-run -p @sys -p @home -p @claude . | sed -n '/NOT GRANTED/,/^$/p'
+  NOT GRANTED (never mounted — these read as absent, they are not hidden;
+  where it says "host's", snug generates its own file at that path instead):
+    ~/.ssh  ~/.gnupg  ~/.aws  ~/.config/gh  ~/.kube  ~/.docker  ~/.netrc  ~/.mozilla  ~/.local/share/keyrings
+    ~/.claude  PARTIAL — 1 host path beneath it is bound (see FILESYSTEM)
+      the rest of it is not granted, and snug generates its own content here
+    /sys  /tmp/.X11-unix  the Wayland socket  the session D-Bus socket
+```
+
+Before the fix, `~/.claude` sat in the bare run at the top — reading as "none of
+this is here" — while the FILESYSTEM block above bound `~/.claude/plugins`
+read-only. Measured content under there: 406 KB of plugin catalogue plus a
+third-party git repository whose `.git/config` is a command table.
+
+What to check:
+
+1. `~/.claude` is on its **own** line and says `PARTIAL`, not in the bare run.
+2. It names both halves — what **is** bound, and that the rest is not. "Granted"
+   alone would be a lie in the other direction.
+3. `~/.ssh` and the rest are still bare names. A fix that marked everything
+   PARTIAL would satisfy check 1 and destroy the block's meaning.
+4. Cross-check the count against FILESYSTEM: the number in the row is the number
+   of `bind` rows whose host path is strictly beneath `~/.claude`. Generated
+   (`data`) rows are not binds and are deliberately not counted — that is what
+   the "snug generates its own content here" clause is for.
+
+The sibling counter uses the same walk and got the same fix: a sibling with
+something bound beneath it is reported separately rather than counted as an
+entry that reads as absent.
+
+## 9. A project directly in an ephemeral directory is refused (issue #179)
+
+`~/myproject` is an extremely common layout and snug will not sandbox it. The old
+refusal was a raw kind conflict that named two profiles and no working command:
+
+```console
+$ mkdir ~/proj && ./bin/snug --dry-run ~/proj
+snug: refusing to sandbox /home/michal/proj: it sits directly in /home/michal, which @home provides as an empty, ephemeral tmpfs.
+       So the parent snug would grant IS that directory, and a read-only bind of it
+       cannot coexist with the tmpfs. Move the project one level down:
+           mv /home/michal/proj /home/michal/src/ && snug /home/michal/src/proj
+       A selection without @parent-ro does resolve; snug does not offer it here. A
+       project sitting directly in an ephemeral directory is the wrong thing to
+       sandbox, and one answer beats a fork somebody guesses at.
+```
+
+The target being one of those directories is a different sentence, because there
+is genuinely nothing to select:
+
+```console
+$ ./bin/snug --dry-run ~
+snug: refusing to sandbox /home/michal: it IS a directory @home provides as an empty, ephemeral tmpfs.
+       No selection sandboxes this path — a profile must bind the target to make it
+       visible, and that collides with the tmpfs however you choose. Sandbox a
+       project directory instead:
+           mkdir -p /home/michal/src/myproject && snug /home/michal/src/myproject
+```
+
+What to check:
+
+1. **It is not keyed on `$HOME`.** `@home` provides five ephemeral directories,
+   so `~/.cache/build` and `~/.config/nvim` refuse identically, naming the
+   directory that is actually ephemeral:
+
+```console
+$ mkdir -p ~/.cache/build && ./bin/snug --dry-run ~/.cache/build | head -1
+snug: refusing to sandbox /home/michal/.cache/build: it sits directly in /home/michal/.cache, which @home provides ...
+```
+
+2. **The refusal survives an explicit selection.** This resolves cleanly and is
+   still refused, which is the ruling:
+
+```console
+$ ./bin/snug --dry-run --no-defaults -p @sys -p @home -p @cwd-rw ~/proj | head -1
+snug: refusing to sandbox /home/michal/proj: ...
+```
+
+   The message says a selection without `@parent-ro` *does* resolve, rather than
+   implying none exists. Hiding a true option would be worse than the message it
+   replaced.
+
+3. **`/tmp` targets still work**, and this is the check that matters most because
+   it is how this file and the whole integration suite build targets. snug's own
+   `/tmp` is a tmpfs too; only `$HOME`-rooted ones refuse:
+
+```console
+$ ./bin/snug --dry-run "$(mktemp -d)" >/dev/null && echo OK
+OK
+```
+
+4. So does an ordinary project one level down — the layout the message points at:
+
+```console
+$ ./bin/snug --dry-run ~/src/anything >/dev/null && echo OK
+OK
+```
+
+**Why the rule lives in two places.** `join` reports a kind conflict during the
+fold, so a check that ran afterwards would never speak for the default selection
+— the exact case #179 is about. The rule therefore runs before the fold over the
+tmpfs *grants*, and `Validate` carries the same rule over the resolved *mounts*
+for a policy built without going through `Resolve`. Two halves of one rule is the
+shape this project has a standing complaint about, so
+`TestBothHalvesOfTheEphemeralRuleAgree` asserts they never disagree.
+
+## 9a. A profile that takes over snug's own /tmp says so (issue #223)
+
+`yieldTo` installs snug's own `/proc`, `/dev` and `/tmp` **only if nothing else
+claims that path**. That is how `@tmp-shared` works. What is not intended is
+`@parent-ro` reaching `/tmp` by accident of where the target sits:
+
+```console
+$ ./bin/snug --dry-run "$(mktemp -d)" | sed -n '/^  ro     \/tmp /,/^  ro     \/usr/p'
+  ro     /tmp                                           @parent-ro
+                     ← this is the HOST's /tmp, not snug's private one — a
+                       profile claimed the path, so the tmpfs snug would have
+                       put here never landed. $TMPDIR points inside it,
+                       READ-ONLY, which most tooling breaks on
+```
+
+A `mktemp -d` target has `/tmp` as its parent, so this is the ordinary shape, not
+an exotic one — it is how `VERIFY.md` and the integration suite build targets.
+
+What to check:
+
+1. The row is marked. Before #223 it rendered as a bare `ro /tmp @parent-ro`,
+   indistinguishable from any other read-only bind.
+2. **The writable surface is seven for this run, not the eight this file and
+   CLAUDE.md quote.** `/tmp` is the host's and read-only. That is the whole point
+   of the mark: a guarantee that quietly stopped holding.
+3. An ordinary target gets **no** mark:
+
+```console
+$ ./bin/snug --dry-run ~/src/anything | grep -A1 'tmpfs  /tmp'
+  tmpfs  /tmp                                           (snug)
+  ro     /usr                                           @sys
+```
+
+   A warning on every run is a warning nobody reads.
+4. `@tmp-shared`'s writable takeover keeps the "this is the host's" note and
+   loses the READ-ONLY clause, because that clause would be false.
+
+**Said rather than refused, deliberately.** `snug /tmp/x` is ordinary, so a
+refusal would break snug's own test workflow unless it could distinguish "the
+yield was asked for" from "the yield happened by accident" — and this layer
+cannot. `--dry-run` being honest is the mechanism the project already relies on.
+
 ## 9b. The `@` namespace belongs to snug
 
 `@` marks a profile snug ships. Nothing else may wear it, so a name in
@@ -2646,15 +2801,71 @@ so no replacement of the drop-in is attempted; see
 demand, is what shows `SSH-OK` above is the replacement working rather than
 the ownership check having quietly stopped applying.
 
-What it costs, and say it out loud: the host's system-wide ssh defaults — on
-this host openSUSE's crypto-policy include — do not apply inside, on every
-run this fires on, not only identity runs. Concretely, `RequiredRSASize`
-drops from the host's `2048` to OpenSSH's compiled-in `1024`:
+What it costs, and say it out loud: everything the host's file said that
+names a program, a file or a socket is gone inside — `ProxyCommand`,
+`Match exec`, `KnownHostsCommand`, `PKCS11Provider`, `IdentityFile`,
+`IdentityAgent`, `ControlPath`. That is the point of generating the file
+rather than binding it, not a regrettable side effect: `ssh_config` is a
+command table, and read-only does not demote one into data.
+
+What it no longer costs is the host's ALGORITHM policy (issue #43). The
+non-executable half — the crypto policy's `Ciphers`, `MACs`,
+`KexAlgorithms`, `PubkeyAcceptedAlgorithms`, `CASignatureAlgorithms`,
+`HostbasedAcceptedAlgorithms`, `GSSAPIKexAlgorithms` and `RequiredRSASize` —
+is read from the host with `ssh -G` and written into the file snug
+generates. The one with security content is `RequiredRSASize`, and the two
+sides must now agree:
 
 ```bash
-./bin/snug $SC/proj/sub -- ssh -G github.com | grep requiredrsasize
-# requiredrsasize 1024
+ssh -G -o BatchMode=yes snug-probe.invalid | grep requiredrsasize
+# requiredrsasize 2048              (this host, openSUSE's crypto policy)
+./bin/snug $SC/proj/sub -- ssh -G -o BatchMode=yes snug-probe.invalid | grep requiredrsasize
+# requiredrsasize 2048              (inside; it read 1024 before issue #43)
 ```
+
+Only values that DIFFER from OpenSSH's compiled-in defaults are carried, so
+on a host that customises nothing both lines read `1024` and the generated
+file has no directives at all. `--dry-run` names exactly what was carried:
+
+```bash
+./bin/snug --dry-run $SC/proj/sub | sed -n '/^SSH/,/^TTY/p'
+# SSH      system-wide ssh_config REPLACED at /usr/etc/ssh/ssh_config
+#          …
+#          carried    CASignatureAlgorithms, Ciphers, GSSAPIKexAlgorithms,
+#                     HostbasedAcceptedAlgorithms, KexAlgorithms, MACs,
+#                     PubkeyAcceptedAlgorithms, RequiredRSASize
+#          left out   everything that names a program, a file or a socket — …
+```
+
+### 13b-2. The replaced path is the one ssh really reads, not a guess
+
+snug knows two spellings of the system-wide `ssh_config` by heart
+(`/etc/ssh`, `/usr/etc/ssh`). A host that spells it a third way —
+FreeBSD's or a Homebrew prefix's `/usr/local/etc/ssh`, a Nix store path —
+used to get issue #40's failure back with nothing on screen. snug now ASKS
+this host's ssh, once per run, and the two answers must match:
+
+```bash
+ssh -G -v -o BatchMode=yes snug-probe.invalid 2>&1 | grep 'Reading configuration data'
+# debug1: Reading configuration data /home/you/.ssh/config
+# debug1: Reading configuration data /usr/etc/ssh/ssh_config          <- the system one
+# debug1: Reading configuration data /usr/etc/ssh/ssh_config.d/50-suse.conf
+./bin/snug --dry-run $SC/proj/sub | grep 'ssh_config REPLACED'
+# SSH      system-wide ssh_config REPLACED at /usr/etc/ssh/ssh_config
+```
+
+Only the TOP-LEVEL file is replaced: the generated file carries no `Include`
+line, so nothing under it is ever read inside. Your own `~/.ssh/config` is in
+that chain too and is never replaced — snug authors that one only when an
+identity is pinned.
+
+Know what the probe costs before you run snug on a machine where it matters:
+`ssh -G` parses your own `~/.ssh/config`, so a `Match exec "…"` in it RUNS,
+on the host, once per `snug` invocation. There is no flag that skips your file
+but keeps the system one (`-F` replaces the whole chain, and ssh takes your
+home directory from `getpwuid`, so `HOME=` changes nothing — both measured).
+Sandboxed material cannot reach that file: no shipped profile grants
+`~/.ssh`, and `Validate` refuses any bind covering `$HOME`.
 
 ### 13c. The runtime directory: a planted symlink is refused, and a stale one is swept
 

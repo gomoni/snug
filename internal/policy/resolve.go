@@ -123,6 +123,21 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// claimed this yet" means, and writing the conversion here would be the one
 	// shape TestOnlyTheConstructorConvertsToAProfileName forbids — correctly, on
 	// the general rule, even though this particular operand is a constant.
+	// THE TARGET'S POSITION IS DECIDED BEFORE THE FOLD, and it has to be
+	// (issue #179). The refusal below is about WHERE the target sits, not about
+	// two grants colliding — but the collision is what a home-child target hits
+	// first, and `join` reports it during the fold, several profiles in. That
+	// message names two profiles and no working command, which is the complaint
+	// #179 was filed about; a check that runs after the fold never gets to speak.
+	//
+	// Scanning the tmpfs GRANTS rather than the resolved mounts is what makes it
+	// possible this early, and it costs nothing in accuracy: a tmpfs grant is the
+	// only thing that makes a directory ephemeral, and expandVars has already run
+	// on `vars` above.
+	if err := refuseTargetInEphemeralGrant(set, names, vars, target, home); err != nil {
+		return nil, err
+	}
+
 	var identityOwner, gitOwner ProfileName
 	var addressOwner, gatewayOwner, address6Owner, gateway6Owner, mtuOwner ProfileName
 	publish := map[int]bool{}
@@ -539,7 +554,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// nothing to do with pinning an account, and gating it on identity left ssh
 	// broken on every unpinned sandbox on such a host. See systemsshconfig.go
 	// and .claude/design/INDEX.md for the coverage rule this depends on.
-	replaceSystemSSHConfig(p, env)
+	replaceSystemSSHConfig(p, ctx, env)
 
 	// /etc/resolv.conf is GENERATED, never bound from the host. The host's may
 	// name 127.0.0.53 (systemd-resolved), which the sandbox must not be able to
@@ -1010,4 +1025,37 @@ func expandVars(s string, vars map[string]string) (string, error) {
 		b.WriteString(val)
 		s = s[i+j+1:]
 	}
+}
+
+// refuseTargetInEphemeralGrant is issue #179's rule, applied to the profile
+// grants before the fold begins. Validate carries the same rule over the
+// resolved mounts (rejectTargetInAnEphemeralDirectory) for policies that were
+// built without going through here; the two must agree, and
+// TestBothHalvesOfTheEphemeralRuleAgree asserts they do.
+//
+// The reasoning, the measurements and the two message shapes are all documented
+// on the Validate half. This one exists only because `join` would otherwise
+// report a kind conflict first and drown it.
+func refuseTargetInEphemeralGrant(set map[ProfileName]*Profile, names []ProfileName, vars map[string]string, target, home string) error {
+	if home == "" || target == "" {
+		return nil
+	}
+	parent := filepath.Dir(target)
+	for _, name := range names {
+		prof := set[name]
+		for _, raw := range prof.Tmpfs {
+			g, err := expandVars(raw, vars)
+			if err != nil {
+				continue // the fold reports this properly a moment later
+			}
+			g = filepath.Clean(g)
+			if !covers(home, g) {
+				continue
+			}
+			if target == g || parent == g {
+				return ephemeralTargetError(target, parent, g, home, string(name))
+			}
+		}
+	}
+	return nil
 }

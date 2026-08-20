@@ -31,28 +31,36 @@ profile takeroot puts a bind of /opt at /, but the sandbox root is snug's own:
 
 == grant_at_exactly_proc ==
 profile claim puts a bind of /opt at /proc, but /proc is snug's own: it must be a fresh procfs bound to the sandbox's OWN pid namespace, or the sandbox reads the host's process table.
-       Whatever a profile puts there displaces it, so this is a hole no profile may
+       Whatever a profile puts there takes it over — by displacing the node snug
+       authors, or, where snug mounts nothing at all, by being a separate mount that
+       --remount-ro / does not reach inside. Either way it is a hole no profile may
        open.
        Remove the grant. snug mounts a procfs at /proc in every sandbox, so there
        is nothing a profile needs to add there.
 
 == grant_at_exactly_dev ==
 profile claim puts a bind of /opt at /dev, but /dev is snug's own: it must be bwrap's synthetic minimal device set, never a bind of the host's (which hands over every block device and every input device).
-       Whatever a profile puts there displaces it, so this is a hole no profile may
+       Whatever a profile puts there takes it over — by displacing the node snug
+       authors, or, where snug mounts nothing at all, by being a separate mount that
+       --remount-ro / does not reach inside. Either way it is a hole no profile may
        open.
        Remove the grant. snug mounts bwrap's device tree at /dev in every sandbox;
        one more device node is a change to snug, not a grant a profile can make.
 
 == grant_at_snugdir_tmpfs ==
 profile claim puts an empty tmpfs at /snug, but /snug is snug's own: it is the namespace snug reserves for everything it needs a path for inside a sandbox — /snug/bin among them — and those paths are unwritable only because they are plain directories on the root tmpfs that --remount-ro / covers. A mount here takes /snug/bin with it, and snug puts that directory FIRST on PATH.
-       Whatever a profile puts there displaces it, so this is a hole no profile may
+       Whatever a profile puts there takes it over — by displacing the node snug
+       authors, or, where snug mounts nothing at all, by being a separate mount that
+       --remount-ro / does not reach inside. Either way it is a hole no profile may
        open.
        Grant the path you actually meant — any path that neither is nor contains
        /snug. Nothing a profile needs lives there; it is snug's own.
 
 == grant_at_stagedbindir_tmpfs ==
 profile claim puts an empty tmpfs at /snug/bin, but /snug/bin is snug's own: it is a plain directory on the root tmpfs, which is what makes it unwritable once / is remounted read-only, and snug puts it FIRST on PATH. A mount at or above it is not covered by that remount, so it would hand the payload a writable directory ahead of /usr/bin.
-       Whatever a profile puts there displaces it, so this is a hole no profile may
+       Whatever a profile puts there takes it over — by displacing the node snug
+       authors, or, where snug mounts nothing at all, by being a separate mount that
+       --remount-ro / does not reach inside. Either way it is a hole no profile may
        open.
        Stage the FILE, never the directory:
          ro = ["/host/path/tool:/snug/bin/tool"]
@@ -82,7 +90,9 @@ profile claim puts a bind of /opt at /run/snug/bin/tool, but snug's own paths mo
 
 == grant_at_snugdir_bind ==
 profile claim puts a bind of /opt at /snug, but /snug is snug's own: it is the namespace snug reserves for everything it needs a path for inside a sandbox — /snug/bin among them — and those paths are unwritable only because they are plain directories on the root tmpfs that --remount-ro / covers. A mount here takes /snug/bin with it, and snug puts that directory FIRST on PATH.
-       Whatever a profile puts there displaces it, so this is a hole no profile may
+       Whatever a profile puts there takes it over — by displacing the node snug
+       authors, or, where snug mounts nothing at all, by being a separate mount that
+       --remount-ro / does not reach inside. Either way it is a hole no profile may
        open.
        Grant the path you actually meant — any path that neither is nor contains
        /snug. Nothing a profile needs lives there; it is snug's own.
@@ -139,6 +149,27 @@ cannot graft /snug into the engine's view: /snug is snug's own: it is the namesp
        exactly as a profile's grant would displace it in the sandbox's — this is a
        hole no graft may open, snug's own code included. Graft a destination that
        is neither /snug nor an ancestor of it.
+
+== graft_inside_snugdir_socket ==
+cannot graft /snug/podman.sock into the engine's view: it is inside snug's own
+       namespace /snug, and the only part of it a graft may land in is the engine's own
+       subtree under /snug/engine/.
+       Everything else there belongs to the PAYLOAD — the staging directory and the
+       proxy sockets — and a graft at one of those replaces it in the engine's mount
+       namespace with whatever this graft's source is.
+
+== graft_inside_snugdir_unplaced_path ==
+cannot graft /snug/whatever into the engine's view: it is inside snug's own
+       namespace /snug, and the only part of it a graft may land in is the engine's own
+       subtree under /snug/engine/.
+       Everything else there belongs to the PAYLOAD — the staging directory and the
+       proxy sockets — and a graft at one of those replaces it in the engine's mount
+       namespace with whatever this graft's source is.
+
+== graft_at_legacy_snugdir ==
+cannot graft /run/snug/bin into the engine's view: snug's own paths moved from
+       /run/snug to /snug (issue #206), and the old location is kept refused so that nothing
+       names it by habit. The engine's own destinations are under /snug/engine/.
 
 == graft_covers_stagedbindir_exact ==
 cannot graft /snug/bin into the engine's view: /snug/bin is snug's own: it is a plain directory on the root tmpfs, which is what makes it unwritable once / is remounted read-only, and snug puts it FIRST on PATH. A mount at or above it is not covered by that remount, so it would hand the payload a writable directory ahead of /usr/bin.

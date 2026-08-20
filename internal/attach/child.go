@@ -29,6 +29,24 @@ import (
 // response is to exit immediately without ever reaching the release gate or
 // the exec, so the caller's gate (§4.2a) sees B either report success or die
 // — never a B that is running unconfined.
+//
+// # Why every function here carries //go:nosplit
+//
+// "Nothing here may ask the Go runtime for anything" is not something a
+// reader can uphold by inspection alone: an ORDINARY function's PROLOGUE
+// asks, before its first statement runs, by comparing SP against a
+// stackguard0 the runtime poisons whenever it wants this goroutine
+// preempted. That is issue #221 — measured as a fork child wedged in
+// futex_do_wait forever, having executed not one instruction of step 1.
+// //go:nosplit removes the prologue; //go:norace and //go:nocheckptr remove
+// the instrumentation a -race build would otherwise inject into the same
+// path. Every one of these is load-bearing on EVERY function reachable from
+// child, which is why the list is asserted mechanically
+// (TestEveryFunctionOnTheChildPathIsNosplit) rather than left to review.
+//
+//go:nosplit
+//go:norace
+//go:nocheckptr
 func child(m *marshalled) {
 	// 1. Block every signal for the whole of B's raw-syscall sequence. A
 	// signal delivered here would run whatever handler this process image
@@ -36,6 +54,13 @@ func child(m *marshalled) {
 	// handlers reach into scheduler state that does not exist correctly in a
 	// process that will never be scheduled by the Go runtime again. A
 	// restores cfg.SignalMask immediately before its own execve (step 10).
+	//
+	// The mask is ALREADY blocked when control arrives here: Start blocks it
+	// on the forking thread before the clone, because everything this
+	// paragraph describes is equally true of the window BETWEEN the clone
+	// and this line, which no statement inside child() can ever cover. This
+	// line is therefore belt-and-braces, and stays because it is where a
+	// reader of B's sequence looks for the property.
 	var full [sigsetSize]byte
 	for i := range full {
 		full[i] = 0xff
@@ -91,13 +116,15 @@ func child(m *marshalled) {
 		}
 	}
 
-	// 7. capset is already RawSyscall-backed in golang.org/x/sys/unix
-	// (verified against v0.47.0) — no hand-rolling needed. Effective,
-	// permitted and inheritable all zeroed; ambient empties itself once
-	// permitted does.
+	// 7. Effective, permitted and inheritable all zeroed; ambient empties
+	// itself once permitted does. Issued raw rather than through
+	// unix.Capset, which is RawSyscall-backed but is itself an ordinary
+	// (splittable) Go function — and a splittable call anywhere on this path
+	// is issue #221's hang, see Start's comment at the fork.
 	hdr := unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}
 	var data [2]unix.CapUserData
-	if err := unix.Capset(&hdr, &data[0]); err != nil {
+	if _, _, errno := unix.RawSyscall(unix.SYS_CAPSET,
+		uintptr(unsafe.Pointer(&hdr)), uintptr(unsafe.Pointer(&data[0])), 0); errno != 0 {
 		exitGroupRaw(5)
 	}
 
@@ -180,6 +207,10 @@ func child(m *marshalled) {
 // exit code in the next byte up; otherwise signalled, 128+signal) is the
 // same convention every shell and every other wait4 caller in this tree
 // already relies on.
+//
+//go:nosplit
+//go:norace
+//go:nocheckptr
 func waitStatusToExitCode(status uint32) uint32 {
 	if status&0x7f == 0 {
 		return (status >> 8) & 0xff
@@ -193,11 +224,17 @@ func waitStatusToExitCode(status uint32) uint32 {
 // all for seccomp(2). Every one of these takes only scalars and pointers
 // into memory the caller already owns — none of them allocates.
 
+//go:nosplit
+//go:norace
+//go:nocheckptr
 func prctlRaw(option uintptr, a2, a3, a4, a5 uintptr) (uintptr, unix.Errno) {
 	r, _, errno := unix.RawSyscall6(unix.SYS_PRCTL, option, a2, a3, a4, a5, 0)
 	return r, errno
 }
 
+//go:nosplit
+//go:norace
+//go:nocheckptr
 func dup3Raw(oldfd, newfd int) {
 	if oldfd == newfd {
 		return
@@ -210,6 +247,10 @@ func dup3Raw(oldfd, newfd int) {
 // or EPERM (the caller is already a process group leader), and there is
 // nothing this doomed-to-never-schedule-again child could do about the
 // latter beyond falling through, exactly as dup3Raw does above.
+//
+//go:nosplit
+//go:norace
+//go:nocheckptr
 func setsidRaw() {
 	unix.RawSyscall(unix.SYS_SETSID, 0, 0, 0)
 }
@@ -218,10 +259,17 @@ func setsidRaw() {
 // caller has no controlling terminal, that tty becomes it. The third
 // argument (0) is TIOCSCTTY's "arg" — nonzero would force the steal of a
 // terminal already controlling another session, which A never wants.
+//
+//go:nosplit
+//go:norace
+//go:nocheckptr
 func ioctlSetCttyRaw(fd int) {
 	unix.RawSyscall(unix.SYS_IOCTL, uintptr(fd), uintptr(unix.TIOCSCTTY), 0)
 }
 
+//go:nosplit
+//go:norace
+//go:nocheckptr
 func writeRaw(fd int, b []byte) {
 	if len(b) == 0 {
 		return
@@ -229,6 +277,9 @@ func writeRaw(fd int, b []byte) {
 	unix.RawSyscall(unix.SYS_WRITE, uintptr(fd), uintptr(unsafe.Pointer(&b[0])), uintptr(len(b)))
 }
 
+//go:nosplit
+//go:norace
+//go:nocheckptr
 func readRaw(fd int, b []byte) {
 	if len(b) == 0 {
 		return
@@ -238,6 +289,10 @@ func readRaw(fd int, b []byte) {
 
 // rtSigprocmaskRaw sets (SIG_SETMASK) or blocks (SIG_BLOCK) the calling
 // thread's signal mask. old may be nil.
+//
+//go:nosplit
+//go:norace
+//go:nocheckptr
 func rtSigprocmaskRaw(how uintptr, set *[sigsetSize]byte, old *[sigsetSize]byte) {
 	var oldPtr uintptr
 	if old != nil {
@@ -246,6 +301,9 @@ func rtSigprocmaskRaw(how uintptr, set *[sigsetSize]byte, old *[sigsetSize]byte)
 	unix.RawSyscall6(unix.SYS_RT_SIGPROCMASK, how, uintptr(unsafe.Pointer(set)), oldPtr, sigsetSize, 0, 0)
 }
 
+//go:nosplit
+//go:norace
+//go:nocheckptr
 func exitGroupRaw(code int) {
 	unix.RawSyscall(unix.SYS_EXIT_GROUP, uintptr(code), 0, 0)
 	// exit_group does not return. If it somehow did, looping here is still

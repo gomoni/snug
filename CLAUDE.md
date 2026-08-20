@@ -269,6 +269,24 @@ first, or delegate to the agent that owns it.
   `~/.gitconfig` for an entire milestone before the mechanical sweep — not a
   `redteam` round — caught it, so treat that as the measured base rate for
   noticing this by eye. Read it as raising the bar, not as retiring the rule.
+- **A SOCKET is the third noun, and `ro` restrains it least of all.** The rule
+  above is about files a tool *interprets*. A socket is not interpreted, it is
+  *spoken to*: read-only stops the sandbox replacing it and does nothing about
+  using it, and the private netns does not help because a unix socket is
+  filesystem, not network. Measured (issue #219): from inside a sandbox holding
+  a read-only bind of a home directory, a payload **enumerated the host's
+  ssh-agent and signed with it** — `--clearenv` had correctly stripped
+  `SSH_AUTH_SOCK` and the payload simply re-derived the path. That is
+  `@ssh-agent`'s filtering proxy — one pinned key, no enumeration, the whole
+  reason that profile exists — defeated by a mount. The general form is #140's
+  again with a different object: **a grant of a directory is a grant of every
+  socket anyone puts in it later**, and `~/.ssh/agent`, `~/.docker/desktop`,
+  podman's machine socket and gpg-agent's `S.gpg-agent` are all real spellings.
+  **Nothing checks this**, the same way nothing checks the command-table rule
+  since #207 — no builtin does it today, and the next `ro {home}`-shaped profile
+  would not be noticed. The one structural defence that does exist is narrow and
+  worth knowing: `Validate` refuses any bind covering `$HOME` (#220), so the
+  measured route specifically is closed.
 - **The abuse sentence is written once and nothing re-reads it as the code grows
   around it.** That is why `redteam` carries a standing inventory sweep —
   *working exactly as designed, what did we hand over?* — a question no
@@ -490,6 +508,18 @@ meant. It cannot prove the sandbox holds.
   Affordable because the requirement turned out avoidable: a raw `fork` from a
   multithreaded Go program yields a child that is single-threaded *and* owns its
   own `fs_struct` — exactly the two states the kernel checks.
+
+  **What that child costs is not editorial care, it is `//go:nosplit`.** The fork
+  child also carries the forking goroutine's `stackguard0`, which the runtime
+  poisons whenever it wants that goroutine preempted, so an ordinary function's
+  PROLOGUE calls `runtime.newstack` before its first statement and asks the
+  scheduler for threads the fork did not copy. Measured: 17 of 40 forks wedged in
+  `futex_do_wait` forever under stop-the-world pressure, 0 of 40 with a nosplit
+  first call, and in the wild two `snug attach` bridges alive hours after their
+  caller died (issue #221, NOCGO.md §3). "Nothing here may ask the Go runtime for
+  anything" is therefore a property of the PRAGMAS, not of the body — the first
+  ordinary call is already a runtime call whatever it says. `internal/attach` is
+  the only raw-fork site; `internal/stage` re-execs and starts a fresh runtime.
 - **Config format is TOML.** Strict decoding with `DisallowUnknownFields()` is
   load-bearing: an unknown key is a fatal parse error, so a negation key cannot
   be smuggled in.
@@ -567,11 +597,21 @@ meant. It cannot prove the sandbox holds.
   #22: WROTE-OK, `command -v git` resolved to it, and the shadowed git RAN. That
   reason applies unchanged to every path snug will ever own, and Tier C alone
   would have added four. **A list that grows once per feature is a rule written
-  somewhere it can be forgotten.** The two checks answer different questions and
-  do not overlap: `snugsOwn` asks *does this grant swallow a node snug placed*
-  (an ancestor test, and what G1 asks of a graft), the namespace rule asks *is
-  this grant inside snug's namespace at all* — which is what catches a path snug
-  has not placed anything at yet.
+  somewhere it can be forgotten.** `snugsOwn` asks *does this grant swallow a
+  node snug placed* (an ancestor test); the namespace rule asks *is this grant
+  inside snug's namespace at all*, which is what catches a path snug has not
+  placed anything at yet. They overlap at `/snug` and `/snug/bin`, where
+  `snugsOwn` is checked first and wins.
+
+  *The namespace rule has TWO halves and shipped with one.* `Validate`'s rule 4b
+  covers the payload's mounts; **grafts** go through G1, which consults
+  `snugsOwn` — the list — so the namespace was total on one side and partial on
+  the other, in the change that quotes "a rule written once and applied to one of
+  its two halves". Measured by an independent review: a writable graft at
+  `/snug/podman.sock` was **accepted**, putting an arbitrary host tree where the
+  engine expects the container proxy's socket. G1b now states the graft half as a
+  rule too — a graft may land inside `/snug` **only** under `/snug/engine/`,
+  which is the one subtree Tier C needs — so it does not grow either.
 
   *Why `/snug` and not `/opt/snug`.* `/opt` is a real FHS location a profile
   could legitimately want, and **reserving a subtree of a path other people have

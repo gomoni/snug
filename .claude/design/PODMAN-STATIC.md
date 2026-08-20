@@ -208,13 +208,14 @@ MEASURED after both fixes — `podman info` mentions no host path at all; every
 ~/.local/opt/podman-static/bin/snug-podman run --rm docker.io/library/alpine:3.20 echo hi
 ```
 
-The wrapper is nine lines and sets four variables:
+The wrapper sets five variables:
 
 ```sh
 CONTAINERS_CONF="$ROOT/etc/snug/containers.conf"
 CONTAINERS_STORAGE_CONF="$ROOT/etc/snug/storage.conf"
 CONTAINERS_REGISTRIES_CONF="$ROOT/etc/snug/registries.conf"
 HOME="$ROOT/home"
+XDG_RUNTIME_DIR="${SNUG_PODMAN_RUNTIME_DIR:-/tmp/snug-podman-static/xdg}"
 exec "$ROOT/usr/local/bin/podman" "$@"
 ```
 
@@ -261,6 +262,50 @@ our run root "/tmp/snug-podman-static/run": database configuration mismatch
 ```
 
 One runroot serving both invocation modes is what makes that error impossible.
+
+**The sixth shared path, which this list read as complete without (issue #201).**
+The five paths above are pinned in `containers.conf`. libpod's rootless
+**pause-process bookkeeping** is not: it lives at `$XDG_RUNTIME_DIR/libpod/tmp/`
+and is derived from the **environment**, so pinning storage does not move it. On
+this host `/run/user/1000` is shared into the distrobox while the **pid namespace
+is not**, so a `pause.pid` written there by one engine names a different process,
+or none, when read by the other:
+
+```console
+$ ~/.local/opt/podman-static/bin/snug-podman run --rm docker.io/library/alpine:3.20 echo hi
+Error: cannot re-exec process to join the existing user namespace
+```
+
+MEASURED, with controls, against a throwaway runtime directory — the trigger is
+specifically a **live** process in a namespace the bundle cannot join, not a
+leftover file:
+
+| `pause.pid` contains | result |
+|---|---|
+| absent, a dead pid, empty, or a live pid in **our own** userns | starts |
+| a live pid in a **foreign** userns | `cannot join mount namespace for N: Operation not permitted` |
+
+So the wrapper exports its own:
+
+```sh
+XDG_RUNTIME_DIR="${SNUG_PODMAN_RUNTIME_DIR:-/tmp/snug-podman-static/xdg}"
+```
+
+`/tmp` rather than `/run/user/<uid>` for the same reason `runroot` is: the tmpfs
+`snug-podman-ns` puts over `/run` would mask it.
+
+MEASURED after the change, with the poisoned directory still in the environment
+and a live foreign-userns process named in its `pause.pid` — the failure above,
+then `hi`. It **fails closed** and has no security consequence: it can only stop
+the engine starting, never widen what a started one reaches. It cost a session an
+hour of chasing a container tier that was working, which is the whole argument
+for pinning it.
+
+`test/integration` was never affected and needs no new machinery:
+`containerEngineEnv` goes through `attachEnv`, which already hands every test its
+own `$XDG_RUNTIME_DIR` — the same isolation this asks the wrapper to adopt. This
+is a by-hand-invocation defect, and a test for it would be a test of the harness
+rather than of snug.
 
 ### 5.1 The second wrapper, and why there has to be one
 
