@@ -43,38 +43,49 @@ profile claim puts a bind of /opt at /dev, but /dev is snug's own: it must be bw
        Remove the grant. snug mounts bwrap's device tree at /dev in every sandbox;
        one more device node is a change to snug, not a grant a profile can make.
 
-== grant_covers_stagedbindir_tmpfs_run ==
-profile claim puts an empty tmpfs at /run, which CONTAINS /run/snug/bin — and /run/snug/bin is snug's own: it is a plain directory on the root tmpfs, which is what makes it unwritable once / is remounted read-only, and snug puts it FIRST on PATH. A mount at or above it is not covered by that remount, so it would hand the payload a writable directory ahead of /usr/bin.
-       A grant at an ancestor takes the descendant with it: /run/snug/bin ends up inside that
-       mount instead of where snug put it, and the property snug relies on there
-       stops holding. Naming the parent is not a narrower grant than naming the child.
-       Stage the FILE, never the directory:
-         ro = ["/host/path/tool:/run/snug/bin/tool"]
-       If you named an ancestor (`tmpfs = ["/run"]`) because something inside needs
-       a writable runtime directory, grant THAT directory — `tmpfs = ["/run/myapp"]`,
-       any path that neither is nor contains /run/snug/bin.
+== grant_at_snugdir_tmpfs ==
+profile claim puts an empty tmpfs at /snug, but /snug is snug's own: it is the namespace snug reserves for everything it needs a path for inside a sandbox — /snug/bin among them — and those paths are unwritable only because they are plain directories on the root tmpfs that --remount-ro / covers. A mount here takes /snug/bin with it, and snug puts that directory FIRST on PATH.
+       Whatever a profile puts there displaces it, so this is a hole no profile may
+       open.
+       Grant the path you actually meant — any path that neither is nor contains
+       /snug. Nothing a profile needs lives there; it is snug's own.
 
-== grant_covers_stagedbindir_tmpfs_run_snug ==
-profile claim puts an empty tmpfs at /run/snug, which CONTAINS /run/snug/bin — and /run/snug/bin is snug's own: it is a plain directory on the root tmpfs, which is what makes it unwritable once / is remounted read-only, and snug puts it FIRST on PATH. A mount at or above it is not covered by that remount, so it would hand the payload a writable directory ahead of /usr/bin.
-       A grant at an ancestor takes the descendant with it: /run/snug/bin ends up inside that
-       mount instead of where snug put it, and the property snug relies on there
-       stops holding. Naming the parent is not a narrower grant than naming the child.
+== grant_at_stagedbindir_tmpfs ==
+profile claim puts an empty tmpfs at /snug/bin, but /snug/bin is snug's own: it is a plain directory on the root tmpfs, which is what makes it unwritable once / is remounted read-only, and snug puts it FIRST on PATH. A mount at or above it is not covered by that remount, so it would hand the payload a writable directory ahead of /usr/bin.
+       Whatever a profile puts there displaces it, so this is a hole no profile may
+       open.
        Stage the FILE, never the directory:
-         ro = ["/host/path/tool:/run/snug/bin/tool"]
-       If you named an ancestor (`tmpfs = ["/run"]`) because something inside needs
-       a writable runtime directory, grant THAT directory — `tmpfs = ["/run/myapp"]`,
-       any path that neither is nor contains /run/snug/bin.
+         ro = ["/host/path/tool:/snug/bin/tool"]
+       If you named an ancestor because something inside needs a writable runtime
+       directory, grant THAT directory — any path that neither is nor contains
+       /snug/bin.
 
-== grant_covers_stagedbindir_bind_run ==
-profile claim puts a bind of /opt at /run, which CONTAINS /run/snug/bin — and /run/snug/bin is snug's own: it is a plain directory on the root tmpfs, which is what makes it unwritable once / is remounted read-only, and snug puts it FIRST on PATH. A mount at or above it is not covered by that remount, so it would hand the payload a writable directory ahead of /usr/bin.
-       A grant at an ancestor takes the descendant with it: /run/snug/bin ends up inside that
-       mount instead of where snug put it, and the property snug relies on there
-       stops holding. Naming the parent is not a narrower grant than naming the child.
+== grant_inside_snugdir_unplaced_path ==
+profile claim puts an empty tmpfs at /snug/engine, inside snug's own namespace /snug:
+       the ONE thing a profile may do there is stage a single executable read-only
+       under /snug/bin, which is what that directory exists for. Anything else — a tmpfs, a
+       writable bind, or a mount AT one of the directories snug creates — either
+       displaces something snug put there or escapes --remount-ro / and becomes a
+       writable directory ahead of /usr/bin on the PATH snug hands over.
        Stage the FILE, never the directory:
-         ro = ["/host/path/tool:/run/snug/bin/tool"]
-       If you named an ancestor (`tmpfs = ["/run"]`) because something inside needs
-       a writable runtime directory, grant THAT directory — `tmpfs = ["/run/myapp"]`,
-       any path that neither is nor contains /run/snug/bin.
+         ro = ["/host/path/tool:/snug/bin/tool"]
+
+== grant_at_legacy_snugdir ==
+profile claim puts a bind of /opt at /run/snug/bin/tool, but snug's own paths moved from /run/snug to /snug
+       (issue #206), and /run/snug is kept refused so this grant cannot silently stop
+       working. A staging grant there would still validate, stage into a directory
+       that is no longer on PATH, and say nothing.
+       Stage into the new location instead:
+         ro = ["/host/path/tool:/snug/bin/tool"]
+       If you wanted an unrelated runtime directory rather than snug's, pick a path
+       outside /run/snug — that name is a tombstone now, not a feature.
+
+== grant_at_snugdir_bind ==
+profile claim puts a bind of /opt at /snug, but /snug is snug's own: it is the namespace snug reserves for everything it needs a path for inside a sandbox — /snug/bin among them — and those paths are unwritable only because they are plain directories on the root tmpfs that --remount-ro / covers. A mount here takes /snug/bin with it, and snug puts that directory FIRST on PATH.
+       Whatever a profile puts there displaces it, so this is a hole no profile may
+       open.
+       Grant the path you actually meant — any path that neither is nor contains
+       /snug. Nothing a profile needs lives there; it is snug's own.
 
 == grant_strictly_inside_proc ==
 profile nest puts a bind of /opt at /proc/sys, which is inside /proc — a pseudo-filesystem the kernel and bwrap populate, not a grant any profile made.
@@ -122,28 +133,19 @@ profile hostile puts a bind of /opt at /home/u/.claude.json/evil, which is insid
 == forbidden_env_unset_on_host ==
 profile "bad": environ.inherit on LD_PRELOAD, which is a list. Inheriting a host search path wholesale imports directories the sandbox does not have — use environ.sanitise, which copies the host value and keeps only the elements policy grants
 
-== graft_covers_stagedbindir_ancestor_run ==
-cannot graft /run into the engine's view: it CONTAINS /run/snug/bin, and /run/snug/bin is snug's
-       own: it is a plain directory on the root tmpfs, which is what makes it unwritable once / is remounted read-only, and snug puts it FIRST on PATH. A mount at or above it is not covered by that remount, so it would hand the payload a writable directory ahead of /usr/bin.
-       A graft at an ancestor takes the descendant with it in the engine's mount
-       namespace, exactly as it would in the sandbox's — naming the parent is not a
-       narrower graft than naming the child. Graft a destination that is neither /run/snug/bin
-       nor an ancestor of it.
-
-== graft_covers_stagedbindir_ancestor_run_snug ==
-cannot graft /run/snug into the engine's view: it CONTAINS /run/snug/bin, and /run/snug/bin is snug's
-       own: it is a plain directory on the root tmpfs, which is what makes it unwritable once / is remounted read-only, and snug puts it FIRST on PATH. A mount at or above it is not covered by that remount, so it would hand the payload a writable directory ahead of /usr/bin.
-       A graft at an ancestor takes the descendant with it in the engine's mount
-       namespace, exactly as it would in the sandbox's — naming the parent is not a
-       narrower graft than naming the child. Graft a destination that is neither /run/snug/bin
-       nor an ancestor of it.
-
-== graft_covers_stagedbindir_exact ==
-cannot graft /run/snug/bin into the engine's view: /run/snug/bin is snug's own: it is a plain directory on the root tmpfs, which is what makes it unwritable once / is remounted read-only, and snug puts it FIRST on PATH. A mount at or above it is not covered by that remount, so it would hand the payload a writable directory ahead of /usr/bin.
+== graft_covers_stagedbindir_ancestor_snugdir ==
+cannot graft /snug into the engine's view: /snug is snug's own: it is the namespace snug reserves for everything it needs a path for inside a sandbox — /snug/bin among them — and those paths are unwritable only because they are plain directories on the root tmpfs that --remount-ro / covers. A mount here takes /snug/bin with it, and snug puts that directory FIRST on PATH.
        A graft at that path would displace it in the ENGINE's mount namespace
        exactly as a profile's grant would displace it in the sandbox's — this is a
        hole no graft may open, snug's own code included. Graft a destination that
-       is neither /run/snug/bin nor an ancestor of it.
+       is neither /snug nor an ancestor of it.
+
+== graft_covers_stagedbindir_exact ==
+cannot graft /snug/bin into the engine's view: /snug/bin is snug's own: it is a plain directory on the root tmpfs, which is what makes it unwritable once / is remounted read-only, and snug puts it FIRST on PATH. A mount at or above it is not covered by that remount, so it would hand the payload a writable directory ahead of /usr/bin.
+       A graft at that path would displace it in the ENGINE's mount namespace
+       exactly as a profile's grant would displace it in the sandbox's — this is a
+       hole no graft may open, snug's own code included. Graft a destination that
+       is neither /snug/bin nor an ancestor of it.
 
 == graft_destination_does_not_exist_etc_containers ==
 snug cannot graft /etc/containers into the engine's view: nothing in this policy

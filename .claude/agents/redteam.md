@@ -149,7 +149,7 @@ and every measurement it holds is owed to the human as an annotation on
 
 - A profile achieving an effect it did not NAME. A NUL in a value authoring a
   bwrap flag, an overmount masking another profile's grant, a `tmpfs` at
-  `/run/snug/bin` turning snug's own PATH band into a shadow slot. The
+  `/snug/bin` turning snug's own PATH band into a shadow slot. The
   distinguishing question is always: *did the profile say it, and does the screen
   show it?* — not *is it dangerous?*
 - snug handing over something the screen does not show, or showing something
@@ -184,12 +184,12 @@ Work through these, and prefer actually running the attack over reasoning about 
   compromised step into control of every later step and of anything a human types
   at the sandbox shell. Run this with `-p @claude` and with `-p @podman-socket`
   specifically, and re-run it whenever a profile gains an executable.
-  `/run/snug/bin` must refuse the write (EROFS); anything under `$HOME` or `/tmp`
+  `/snug/bin` must refuse the write (EROFS); anything under `$HOME` or `/tmp`
   on that PATH is a confirmed finding.
 
   Then attack the staging directory from the *profile* side, which is where the
   same defect was found a second time: write a throwaway profile that mounts
-  something AT `/run/snug/bin` — a `tmpfs`, a `rw` bind — and stages one file
+  something AT `/snug/bin` — a `tmpfs`, a `rw` bind — and stages one file
   inside it. snug must refuse before the sandbox starts. If it runs, the profile
   has obtained a writable directory that **snug itself** puts first on PATH,
   without ever naming PATH, which defeats the "a human declared it" defence

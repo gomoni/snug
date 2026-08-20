@@ -14,7 +14,7 @@ import (
 
 // containerSocketGuest is where the sandbox sees the proxy. A fixed path snug
 // chooses, never one a profile names.
-const containerSocketGuest = "/run/snug/podman.sock"
+const containerSocketGuest = policy.ContainerSocketGuest
 
 // containerAudit is the proxy's -v channel, and it is the ONE place text written
 // by the PAYLOAD becomes a line on the host user's terminal.

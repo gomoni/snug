@@ -905,7 +905,7 @@ var envNotes = map[string]envNote{
 	// sandbox that had been given a PINNED ssh identity by a DIFFERENT profile:
 	//
 	//   snug -p work -p helper <tgt> -- git fetch origin
-	//     HIJACKED-GIT-TRANSPORT host=git@github.com … SSH_AUTH_SOCK=/run/snug/ssh-agent.sock
+	//     HIJACKED-GIT-TRANSPORT host=git@github.com … SSH_AUTH_SOCK=/snug/ssh-agent.sock
 	//
 	// `helper` granted no filesystem path at all. That finding is why the
 	// sentences below say what the program is USED FOR: one profile can weaken

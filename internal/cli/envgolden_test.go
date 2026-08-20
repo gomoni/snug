@@ -55,7 +55,7 @@ func newEnvFakeEnv() *envFakeEnv {
 			// CONTROL rather than scenery: every other @claude grant is
 			// optional and absent here, so this one file is what makes the
 			// staged-bin band appear at all. Remove it and the golden shows a
-			// PATH with no /run/snug/bin entry — which is correct (nothing was
+			// PATH with no /snug/bin entry — which is correct (nothing was
 			// staged) and would silently stop testing that staging reaches PATH.
 			"/home/u/.local/bin/claude": true,
 		},
@@ -172,7 +172,7 @@ func TestGoldenEnvironment(t *testing.T) {
 		{"defaults", profile.BuiltinDefaults(), envGoldenCtx(), false, nil},
 		// The one shipped profile that touches the environment today. What the
 		// golden shows: EDITOR and NO_COLOR arriving through `inherit`, and
-		// /run/snug/bin on PATH because the profile's binary is staged there.
+		// /snug/bin on PATH because the profile's binary is staged there.
 		// @claude names NO PATH directory of its own — the band is snug's, and
 		// that is the fix for the shadow slot the old `merge {home}/.local/bin`
 		// installed (TestNoBuiltinPutsAWritableDirectoryOnPATH).

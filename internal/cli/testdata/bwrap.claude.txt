@@ -14,11 +14,9 @@
 --perms 0755
 --dir /home
 --perms 0755
---dir /run
+--dir /snug
 --perms 0755
---dir /run/snug
---perms 0755
---dir /run/snug/bin
+--dir /snug/bin
 --symlink usr/bin /bin
 --dev /dev
 --symlink usr/lib /lib
@@ -39,20 +37,20 @@
 --file 11 /home/u/.claude.json
 --tmpfs /home/u/.config
 --ro-bind /home/u/proj /home/u/proj
+--ro-bind-try /home/u/.local/bin/claude /snug/bin/claude
 --ro-bind-data 12 /home/u/.claude/CLAUDE.md
 --perms 0600
 --file 13 /home/u/.claude/settings.json
 --tmpfs /home/u/.local/share
 --tmpfs /home/u/.local/state
 --bind /home/u/proj/sub /home/u/proj/sub
---ro-bind-try /home/u/.local/bin/claude /run/snug/bin/claude
 --remount-ro /
 --clearenv
 --setenv EDITOR vim
 --setenv HOME /home/u
 --setenv LOGNAME u
 --setenv NO_COLOR 
---setenv PATH /run/snug/bin:/usr/bin:/bin:/usr/sbin:/sbin
+--setenv PATH /snug/bin:/usr/bin:/bin:/usr/sbin:/sbin
 --setenv PS1 🔒 snug:\w\$ 
 --setenv SHELL /usr/bin/bash
 --setenv SNUG 1

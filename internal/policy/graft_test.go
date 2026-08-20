@@ -327,7 +327,7 @@ func refusalGraftCoversStagedBinDir(t testing.TB, guest string) error {
 // enough on its own — see the report for how this was verified by actually
 // adding the clause and watching this fail.
 func TestGraftCoveringStagedBinDirIsRefused(t *testing.T) {
-	for _, guest := range []string{"/", "/run", "/run/snug", StagedBinDir, "/proc", "/dev"} {
+	for _, guest := range []string{"/", SnugDir, StagedBinDir, "/proc", "/dev"} {
 		t.Run(guest, func(t *testing.T) {
 			err := refusalGraftCoversStagedBinDir(t, guest)
 			if err == nil {
@@ -350,7 +350,7 @@ func TestGraftCoveringStagedBinDirIsRefused(t *testing.T) {
 			// reason. Without it, the StagedBinDir-exact subtest still
 			// "passes" if `&& !g.Authored` is reintroduced into G1: G1 stops
 			// firing, but G3 then refuses the same guest anyway (nothing
-			// creates /run/snug/bin either), producing a non-nil error that
+			// creates /snug/bin either), producing a non-nil error that
 			// also names the guest — a false pass, caught only by requiring
 			// G1's own wording. Measured by reverting this exact clause into
 			// graft.go and re-running this test: five of six subtests failed
@@ -435,22 +435,24 @@ func TestEngineViewIsShadowSlotSeesAGraft(t *testing.T) {
 	}
 
 	p.Grafts = map[string]Graft{
-		"/run": {
-			Mount: Mount{Guest: "/run", Kind: KindGraft, Access: AccessRW, From: []string{"(snug)"}},
+		SnugDir: {
+			Mount: Mount{Guest: SnugDir, Kind: KindGraft, Access: AccessRW, From: []string{"(snug)"}},
 			Why:   "test",
 		},
 	}
 
-	// THE CLAIM. /run is not itself StagedBinDir, but it is StagedBinDir's
+	// THE CLAIM. SnugDir is not itself StagedBinDir, but it is StagedBinDir's
 	// ancestor, and the graft's writability makes the whole subtree it covers
-	// writable in the ENGINE's derived view — the /run-graft-covers-/run/snug/bin
-	// shape issue #55 is named for.
+	// writable in the ENGINE's derived view — the graft-covers-the-staging-
+	// directory shape issue #55 is named for. (It was written against /run,
+	// which stopped being an ancestor when issue #206 moved snug's paths to
+	// their own namespace; the shape is the same one directory up.)
 	ev, ok := p.EngineView()
 	if !ok {
 		t.Fatal("EngineView() ok=false with a graft present")
 	}
 	if !ev.IsShadowSlot(StagedBinDir) {
-		t.Fatal("EngineView().IsShadowSlot(StagedBinDir) = false with an AccessRW graft at /run — " +
+		t.Fatal("EngineView().IsShadowSlot(StagedBinDir) = false with an AccessRW graft at " + SnugDir + " — " +
 			"a graft is a Mount like any other once it is in the engine's view, and this is the " +
 			"exact hole issue #55 reports: neither Validate nor IsShadowSlot could see one")
 	}

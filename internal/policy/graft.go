@@ -622,7 +622,7 @@ var EngineMountpoints = []string{"/sys", "/sys/fs", "/sys/fs/cgroup"}
 // Checked against ENGINE-NETNS.md §5.1's four measured rows: /etc/containers
 // and /var/tmp match none of the three (@sys binds fourteen individual /etc
 // entries, never /etc itself) -> refused, matching the measurement. /run is a
-// strict ancestor of /run/snug/bin/claude under @claude -> passes this, then
+// strict ancestor of /snug/bin/claude under @claude -> passes this, then
 // is refused by G1 — also matching. A destination inside an AccessRW bind ->
 // accepted by the third disjunct, matching "onto a writable grant".
 func existsInSandbox(p *Policy, guest string) bool {

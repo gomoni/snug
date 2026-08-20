@@ -430,7 +430,7 @@ four steps in Go, in the stage. `CGO_ENABLED=0` is not negotiable.
 A second harness re-asked the same questions against `snug --profile @claude`
 rather than against a bare bwrap, because the difference is the whole point: the
 prototype's sandbox had a writable tmpfs root and nothing staged in it, while
-snug's has a **read-only** root, `/run/snug/bin` first on `PATH`, and grants
+snug's has a **read-only** root, `/snug/bin` first on `PATH`, and grants
 under `/run`. Sixty checks. An earlier plan had called the grafts for
 `/etc/containers`, `/run` and `/var/tmp` "the same mechanism repeated". They are
 not.
@@ -439,7 +439,7 @@ not.
 |---|---|
 | `/etc/containers` | **cannot even be created** — `mkdir` fails `Read-only file system`, because the destination does not exist in the sandbox and the root is read-only |
 | `/var/tmp` | identical, for the identical reason |
-| `/run` | **lands** (`mkdir` is `EEXIST`, `move_mount` OK) — and takes `/run/snug/bin` with it |
+| `/run` | **lands** (`mkdir` is `EEXIST`, `move_mount` OK) — and takes `/snug/bin` with it |
 | onto a writable grant | **lands**, and the `mkdir` persists **to the host**, because a writable grant is a bind of a host directory. The sandbox sees the empty directory but not the graft's contents |
 
 **The read-only root cannot be forced open.** Remounting the derived root
@@ -452,7 +452,7 @@ namespace however much `CAP_SYS_ADMIN` the deriver holds.
 **The `/run` graft is the expensive one, twice over.** It lands on top of three
 grants, and:
 
-- `PATH` still leads with `/run/snug/bin`, but **nothing is staged there any
+- `PATH` still leads with `/snug/bin`, but **nothing is staged there any
   more** — the staged `claude` stops resolving, because the graft covered the
   very directory `PATH`'s head names. A Phase 2 that grafts `/run` silently
   removes every command snug staged.
@@ -472,21 +472,21 @@ nothing implements grafts yet.
 A **writable** graft at `/run` — or a fresh tmpfs there, which is the wording an
 earlier plan used — makes `PATH`'s head writable. Measured with capabilities
 dropped, which is the authority a payload has: a process in the derived view
-creates `/run/snug/bin`, writes a `claude` into it, and **that file is what
+creates `/snug/bin`, writes a `claude` into it, and **that file is what
 runs**. The planted file persists on the host side of the graft. The sandbox's
-own `/run/snug/bin` is untouched, so this is the derived view only — but the
+own `/snug/bin` is untouched, so this is the derived view only — but the
 derived view is exactly where Phase 2 puts the engine.
 
-`CLAUDE.md` states the rule this defeats: snug adds `/run/snug/bin` to `PATH`
+`CLAUDE.md` states the rule this defeats: snug adds `/snug/bin` to `PATH`
 only when something is staged there, and the directory is in `snugsOwn` so that a
 profile cannot mount over it. Measured, that guard holds for a `Mount` and cannot
 see a graft:
 
 | shape | what snug does |
 |---|---|
-| a profile with `ro = ["/run"]` alongside `@claude` | **REFUSED** by `Validate`, naming the collision at `/run/snug/bin/claude` — a bind snug did not author |
+| a profile with `ro = ["/run"]` alongside `@claude` | **REFUSED** by `Validate`, naming the collision at `/snug/bin/claude` — a bind snug did not author |
 | the same with `@podman-socket` instead | **accepted**: every grant under `/run` there is snug-authored, so nothing is masked |
-| a profile with `tmpfs = ["/run"]` and `@podman-socket` | accepted by `Validate`, but `IsShadowSlot` catches it and `--dry-run` prints `/run/snug/bin IS WRITABLE from inside, which it must never be`. Measured exploitable: the payload wrote `/run/snug/bin/git` and shadowed the real one |
+| a profile with `tmpfs = ["/run"]` and `@podman-socket` | accepted by `Validate`, but `IsShadowSlot` catches it and `--dry-run` prints `/snug/bin IS WRITABLE from inside, which it must never be`. Measured exploitable: the payload wrote `/snug/bin/git` and shadowed the real one |
 | the same directory arriving as a **graft** | nothing refuses it, nothing warns, and `--dry-run` does not mention it |
 
 The difference is one line: `IsShadowSlot` asks `coveringMount`, and a graft is

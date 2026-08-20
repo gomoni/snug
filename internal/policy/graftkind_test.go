@@ -110,7 +110,7 @@ func freshMountGraft(kind Kind) Graft {
 // graft is Authored by construction, so that spelling makes G1 a permanent
 // no-op — the exact trap validate.go's own comment warns about and that issue
 // #55's TestGraftCoveringStagedBinDirIsRefused had to be strengthened to catch
-// (its /run/snug/bin case first passed for the wrong reason, refused by G3).
+// (its /snug/bin case first passed for the wrong reason, refused by G3).
 // If this test survives that mutation, it is not testing G1.
 func TestG1AdmitsExactlyProcAsKindProc(t *testing.T) {
 	for _, tc := range []struct {

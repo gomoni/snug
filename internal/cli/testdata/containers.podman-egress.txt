@@ -1,4 +1,4 @@
-CONTAINERS  a per-sandbox engine behind a filtering proxy at /run/snug/podman.sock
+CONTAINERS  a per-sandbox engine behind a filtering proxy at /snug/podman.sock
          Containers run in THIS sandbox's own network namespace: with no
          '@net', a container has no egress either; with '@net', full egress
          via the sandbox's pasta, exactly as the NETWORK block above states.

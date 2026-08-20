@@ -196,22 +196,37 @@ func refusalGrantCoversStagedBinDir(t testing.TB, kind, guest string) error {
 	return err
 }
 
-func TestGrantCoveringStagedBinDirIsFatal(t *testing.T) {
+// TestGrantAtOrAboveStagedBinDirIsFatal is issue #22's rule after issue #206
+// moved the paths it guards.
+//
+// #22's hole was an ANCESTOR: the check was an exact map lookup, so a grant at
+// the staging directory was refused and a grant one directory up was accepted,
+// and the mount that grant created was not covered by `--remount-ro /`.
+// Measured then, with @podman-socket to put the directory on PATH: WROTE-OK,
+// `command -v git` resolved to it, and the shadowed git RAN.
+//
+// After #206 both rungs of that ladder are named in snugsOwn — SnugDir and
+// StagedBinDir — so each case here reports "at", not "contains". That is the
+// intended consequence and not a weakening: the ancestor arm of the rule is
+// still there and still depth-independent, which is #22's actual lesson, and
+// TestGrantAtRootIsFatal covers the one rung above.
+func TestGrantAtOrAboveStagedBinDirIsFatal(t *testing.T) {
 	cases := []struct{ kind, guest string }{
-		{"tmpfs", "/run"},
-		{"tmpfs", "/run/snug"},
-		{"ro", "/run"},
-		{"rw", "/run"},
+		{"tmpfs", SnugDir},
+		{"ro", SnugDir},
+		{"rw", SnugDir},
+		{"tmpfs", StagedBinDir},
+		{"rw", StagedBinDir},
 	}
 	for _, tc := range cases {
 		t.Run(tc.kind+"_"+tc.guest, func(t *testing.T) {
 			err := refusalGrantCoversStagedBinDir(t, tc.kind, tc.guest)
 			if err == nil {
-				t.Fatalf("a profile %s grant at %s was accepted; it CONTAINS %s, snug's own "+
+				t.Fatalf("a profile %s grant at %s was accepted; it is at or above %s, snug's own "+
 					"staged-bin directory, so a payload staged inside that mount gets a writable "+
 					"directory ahead of /usr/bin on PATH", tc.kind, tc.guest, StagedBinDir)
 			}
-			for _, want := range []string{"claim", tc.guest, StagedBinDir, "CONTAINS"} {
+			for _, want := range []string{"claim", tc.guest, "snug's own"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("error %q does not contain %q", err, want)
 				}
@@ -235,17 +250,71 @@ func TestGrantInsideStagedBinDirStillLegal(t *testing.T) {
 	}
 }
 
-// POSITIVE CONTROL: a sibling that merely shares a string PREFIX with
-// StagedBinDir must not be refused. `covers` is a path-ancestor test, not
-// strings.HasPrefix — /run/snug/binaries is not an ancestor of
-// /run/snug/bin, and a prefix-based check would wrongly refuse it.
-func TestGrantAtStringPrefixSiblingOfStagedBinDirStillLegal(t *testing.T) {
+// POSITIVE CONTROL: a sibling that merely shares a string PREFIX with SnugDir
+// must not be refused. Both `covers` and insideSnugDir are path-ancestor tests,
+// not strings.HasPrefix — /snugly is not inside /snug, and a prefix-based check
+// would wrongly refuse a path that is none of snug's business.
+//
+// It used to test StagedBinDir+"aries" (/run/snug/binaries), a sibling INSIDE
+// snug's directory. Issue #206 refuses that, and correctly: everything under
+// SnugDir is snug's whether or not the rule's author had that name in mind. The
+// property being guarded is unchanged — the boundary just moved outward, so the
+// control has to be a path outside the namespace to still be a control.
+func TestGrantAtStringPrefixSiblingOfSnugDirStillLegal(t *testing.T) {
 	reg := testRegistry()
-	reg["claim"] = &Profile{Name: "claim", Tmpfs: []string{StagedBinDir + "aries"}} // /run/snug/binaries
+	reg["claim"] = &Profile{Name: "claim", Tmpfs: []string{SnugDir + "ly"}} // /snugly
 	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "claim"}, testCtx(), newFakeEnv())
 	if err != nil {
-		t.Fatalf("control: %saries is a string-prefix sibling of %s, not an ancestor, and must "+
-			"stay legal: %v", StagedBinDir, StagedBinDir, err)
+		t.Fatalf("control: %sly is a string-prefix sibling of %s, not inside it, and must "+
+			"stay legal: %v", SnugDir, SnugDir, err)
+	}
+}
+
+// TestGrantAnywhereInsideSnugDirIsFatal is issue #206's own rule, and the case
+// the pre-#206 model accepted: a path inside snug's directory that is neither
+// the staging directory nor one of its ancestors. /snug/engine is Tier C's
+// graft destination (#125) and did not exist when this rule was written, which
+// is the whole argument for stating it over the namespace rather than over a
+// list of paths.
+func TestGrantAnywhereInsideSnugDirIsFatal(t *testing.T) {
+	for _, guest := range []string{SnugDir + "/engine", SnugDir + "/binaries", SnugDir + "/anything"} {
+		t.Run(guest, func(t *testing.T) {
+			reg := testRegistry()
+			reg["claim"] = &Profile{Name: "claim", Tmpfs: []string{guest}}
+			_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "claim"}, testCtx(), newFakeEnv())
+			if err == nil {
+				t.Fatalf("a tmpfs at %s was accepted; it is inside %s, which is snug's own, and a "+
+					"profile's tmpfs there escapes --remount-ro / exactly as one at %s would",
+					guest, SnugDir, StagedBinDir)
+			}
+			if !strings.Contains(err.Error(), SnugDir) {
+				t.Errorf("the refusal does not name %s: %v", SnugDir, err)
+			}
+		})
+	}
+}
+
+// TestGrantAtTheLegacySnugDirIsRefusedAndNamesTheNewPath is the tombstone
+// (issue #206). A profile written before the move must not keep validating
+// while quietly staging into a directory that is no longer on PATH — the
+// failure mode a rename owes its users a refusal for.
+func TestGrantAtTheLegacySnugDirIsRefusedAndNamesTheNewPath(t *testing.T) {
+	for _, guest := range []string{legacySnugDir, legacySnugDir + "/bin", legacySnugDir + "/bin/tool"} {
+		t.Run(guest, func(t *testing.T) {
+			reg := testRegistry()
+			reg["claim"] = &Profile{Name: "claim", RO: []string{"/opt:" + guest}}
+			_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "claim"}, testCtx(), newFakeEnv())
+			if err == nil {
+				t.Fatalf("a grant at the pre-#206 path %s was accepted; it would validate and then "+
+					"stage into a directory that is not on PATH, saying nothing", guest)
+			}
+			// The refusal must NAME the replacement. A rename whose old name
+			// merely stops working is a trap.
+			if !strings.Contains(err.Error(), StagedBinDir) {
+				t.Errorf("the refusal does not name the new location %s, so it is a dead end rather "+
+					"than a migration: %v", StagedBinDir, err)
+			}
+		})
 	}
 }
 
@@ -752,12 +821,23 @@ func TestGoldenRefusals(t *testing.T) {
 		{"grant_at_root_ro", func(t testing.TB) error { return refusalGrantAtRoot(t, "ro") }},
 		{"grant_at_exactly_proc", func(t testing.TB) error { return refusalGrantAtExactly(t, "/proc") }},
 		{"grant_at_exactly_dev", func(t testing.TB) error { return refusalGrantAtExactly(t, "/dev") }},
-		{"grant_covers_stagedbindir_tmpfs_run", func(t testing.TB) error { return refusalGrantCoversStagedBinDir(t, "tmpfs", "/run") }},
-		{"grant_covers_stagedbindir_tmpfs_run_snug", func(t testing.TB) error { return refusalGrantCoversStagedBinDir(t, "tmpfs", "/run/snug") }},
+		{"grant_at_snugdir_tmpfs", func(t testing.TB) error { return refusalGrantCoversStagedBinDir(t, "tmpfs", SnugDir) }},
+		{"grant_at_stagedbindir_tmpfs", func(t testing.TB) error { return refusalGrantCoversStagedBinDir(t, "tmpfs", StagedBinDir) }},
+		// Issue #206's namespace rule, which is the one the map cannot state:
+		// a path snug has not placed anything at YET. /snug/engine is Tier C's
+		// graft destination and did not exist when the rule was written.
+		{"grant_inside_snugdir_unplaced_path", func(t testing.TB) error {
+			return refusalGrantCoversStagedBinDir(t, "tmpfs", SnugDir+"/engine")
+		}},
+		// The tombstone. A profile written before #206 must be refused with the
+		// new path named, not accepted into a directory that is no longer on PATH.
+		{"grant_at_legacy_snugdir", func(t testing.TB) error {
+			return refusalGrantCoversStagedBinDir(t, "ro", legacySnugDir+"/bin/tool")
+		}},
 		// Only ONE bind spelling is golded here, not two. describeNode does not
 		// render Access, so a `ro` and an `rw` bind at the same guest path produce
 		// byte-IDENTICAL refusal text ("profile claim puts a bind of /opt at
-		// /run..." names neither "(ro)" nor "(rw)" anywhere) - a review found the
+		// /snug..." names neither "(ro)" nor "(rw)" anywhere) - a review found the
 		// pair sitting in this table as two copies of one assertion: a change that
 		// only affected `rw` would leave both golden entries unchanged. `ro` stands
 		// as the representative of "a BIND, of either access, covering the
@@ -769,7 +849,7 @@ func TestGoldenRefusals(t *testing.T) {
 		// difference is actually observable: test/integration/sandbox_test.go's
 		// TestAProfileCannotMountOverTheStagingDirectory, as its own subtest
 		// against the real bwrap argv.
-		{"grant_covers_stagedbindir_bind_run", func(t testing.TB) error { return refusalGrantCoversStagedBinDir(t, "ro", "/run") }},
+		{"grant_at_snugdir_bind", func(t testing.TB) error { return refusalGrantCoversStagedBinDir(t, "ro", SnugDir) }},
 		{"grant_strictly_inside_proc", func(t testing.TB) error { return refusalGrantStrictlyInside(t, "/proc/sys") }},
 		{"grant_strictly_inside_dev", func(t testing.TB) error { return refusalGrantStrictlyInside(t, "/dev/null") }},
 		{"grant_strictly_inside_resolv_conf", refusalGrantStrictlyInsideResolvConf},
@@ -795,11 +875,8 @@ func TestGoldenRefusals(t *testing.T) {
 		// six the behavioural TestGraftCoveringStagedBinDirIsRefused covers —
 		// the same "one representative, not every spelling" choice this file
 		// already makes for grant_covers_stagedbindir above.
-		{"graft_covers_stagedbindir_ancestor_run", func(t testing.TB) error {
-			return refusalGraftCoversStagedBinDir(t, "/run")
-		}},
-		{"graft_covers_stagedbindir_ancestor_run_snug", func(t testing.TB) error {
-			return refusalGraftCoversStagedBinDir(t, "/run/snug")
+		{"graft_covers_stagedbindir_ancestor_snugdir", func(t testing.TB) error {
+			return refusalGraftCoversStagedBinDir(t, SnugDir)
 		}},
 		{"graft_covers_stagedbindir_exact", func(t testing.TB) error {
 			return refusalGraftCoversStagedBinDir(t, StagedBinDir)

@@ -447,7 +447,7 @@ func (p *Policy) Replace(m Mount) {
 // read as though the identity machinery had opened it.
 //
 // It bypasses no check that matters: the path is snug's own choice under
-// /run/snug, not a profile's, and the socket is one snug just created.
+// /snug, not a profile's, and the socket is one snug just created.
 func (p *Policy) BindSocket(hostPath, guestPath, from string) {
 	p.Replace(Mount{
 		Guest: guestPath, Host: hostPath, Kind: KindBind,

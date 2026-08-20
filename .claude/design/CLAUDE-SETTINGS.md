@@ -599,7 +599,7 @@ how the last three findings happened. Filed as
 [issue #68](https://github.com/gomoni/snug/issues/68), `sev:medium`, and it is
 the **third** time a rule in this project was defeated one indirection below the
 layer it was written about (the `@claude` PATH shadow slot and the
-`/run/snug/bin` overmount are the other two).
+`/snug/bin` overmount are the other two).
 
 ---
 
@@ -788,7 +788,7 @@ is how a stale claim survives a rewrite.
 description = "Claude Code: binary and skills read-only, credentials and settings generated."
 include = ["sys", "home"]
 ro = [
-  "{home}/.local/bin/claude:/run/snug/bin/claude",
+  "{home}/.local/bin/claude:/snug/bin/claude",
   "{home}/.local/share/claude",
   "{home}/.claude/skills",
   "{home}/.claude/plugins",

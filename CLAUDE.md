@@ -552,6 +552,38 @@ meant. It cannot prove the sandbox holds.
 - **D-Bus**: no profile ships. A filtering bus proxy that is 95% correct is a
   sandbox that is 0% sound.
 
+- **`/snug` is snug's own guest namespace, and it is a RULE rather than a list.**
+  Everything snug needs a path for *inside* a sandbox lives there — `/snug/bin`
+  (the staging directory), `/snug/podman.sock`, `/snug/ssh-agent.sock`, and
+  `/snug/engine` when Tier C lands. A profile may do exactly one thing under it:
+  stage a single executable read-only into `/snug/bin`. Anything else — a tmpfs,
+  a writable bind, a mount at one of the directories snug creates — is refused.
+
+  *Why a namespace and not more entries in `snugsOwn`.* That map held three
+  paths, and the third was there for a reason the other two do not share:
+  nothing is mounted at the staging directory, so a profile mounting **anything**
+  there is a separate mount `--remount-ro /` does not reach inside, and the
+  directory snug relied on being unwritable becomes writable — measured, issue
+  #22: WROTE-OK, `command -v git` resolved to it, and the shadowed git RAN. That
+  reason applies unchanged to every path snug will ever own, and Tier C alone
+  would have added four. **A list that grows once per feature is a rule written
+  somewhere it can be forgotten.** The two checks answer different questions and
+  do not overlap: `snugsOwn` asks *does this grant swallow a node snug placed*
+  (an ancestor test, and what G1 asks of a graft), the namespace rule asks *is
+  this grant inside snug's namespace at all* — which is what catches a path snug
+  has not placed anything at yet.
+
+  *Why `/snug` and not `/opt/snug`.* `/opt` is a real FHS location a profile
+  could legitimately want, and **reserving a subtree of a path other people have
+  a claim to is a weaker reservation than reserving a name nobody claims**.
+  `/snug` is not in the FHS, so the reservation is total and needs no exceptions.
+
+  *Consequences to know.* A default sandbox no longer creates `/run` at all —
+  it existed only because snug's paths lived under it. And the old location is
+  kept **refused** rather than freed: a profile still naming it gets an error
+  that names the replacement, because a rename whose old name merely stops
+  working is a trap — the staging grant would keep validating and quietly stage
+  into a directory that is no longer on PATH.
 - **One live sandbox per target directory.** `snug <dir>` refuses to start a
   second sandbox while one is already live for the same target, and the refusal
   names the fix: `snug attach <dir>`. The guard is a per-target advisory `flock`

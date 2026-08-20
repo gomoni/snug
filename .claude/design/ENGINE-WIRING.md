@@ -280,7 +280,7 @@ bwrap gives the **sandbox** a fresh tmpfs `/tmp` in **its own** mount ns (the
 writable-surface list). That is a different filesystem from the host `/tmp` the
 engine's copy shares, so `/tmp/snug-<uid>-<runid>/podman.sock` **does not exist
 in the payload's view**. The payload reaches the engine only through the
-**proxy** socket bound at the fixed guest path `/run/snug/podman.sock`
+**proxy** socket bound at the fixed guest path `/snug/podman.sock`
 (`containerSocketGuest`, via `pol.BindSocket`). The `/tmp` socket is the proxy's
 private upstream endpoint, never the sandbox's — which is the whole point of
 having a filtering proxy. redteam must confirm this negatively (§8).

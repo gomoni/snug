@@ -1077,9 +1077,9 @@ func TestPublishUnionsAndAddressesAgree(t *testing.T) {
 // granted it. `from` is now a parameter; this pins both call shapes.
 func TestBindSocketProvenanceIsParameterized(t *testing.T) {
 	p := mustResolveDefaults(t)
-	p.BindSocket("/run/host/podman.sock", "/run/snug/containers.sock", "(containers)")
+	p.BindSocket("/run/host/podman.sock", "/snug/containers.sock", "(containers)")
 
-	m, ok := p.Mounts["/run/snug/containers.sock"]
+	m, ok := p.Mounts["/snug/containers.sock"]
 	if !ok {
 		t.Fatal("BindSocket did not install a mount")
 	}

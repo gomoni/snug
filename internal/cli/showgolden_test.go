@@ -13,7 +13,7 @@ import (
 // theoretical: relocating @claude's binary to policy.StagedBinDir changed this
 // line
 //
-//	ro    {home}/.local/bin/claude          ->  {home}/.local/bin/claude:/run/snug/bin/claude
+//	ro    {home}/.local/bin/claude          ->  {home}/.local/bin/claude:/snug/bin/claude
 //
 // and produced no test diff at all. By CLAUDE.md's own standard — a security
 // change that produces no golden diff is probably untested — that one qualified.

@@ -1161,7 +1161,7 @@ func describeCommands(out *os.File, p *policy.Policy) {
 	// It used to be unconditional, and with a profile grant at StagedBinDir the
 	// screen contradicted itself four lines apart: this paragraph said "NOT
 	// writable from inside" while the ENVIRONMENT block below rendered
-	// `PATH  /run/snug/bin  (snug) staged bin  ← writable from inside`. Validate
+	// `PATH  /snug/bin  (snug) staged bin  ← writable from inside`. Validate
 	// refuses that arrangement outright — at the directory since the tmpfs-at-it
 	// finding, and at any ANCESTOR of it since issue #22.
 	//

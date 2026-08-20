@@ -224,7 +224,7 @@ finding was that `BindSocket` was a *third* path writing straight into
 than the fix this document was going to ask for.** Provenance is now a parameter
 (`internal/policy/types.go:243`), and `internal/cli/container.go:55` passes
 `"(containers)"`; measured, `--dry-run -p @podman-socket` prints `rw
-/run/snug/podman.sock (from …) (containers)`. More importantly there is now
+/snug/podman.sock (from …) (containers)`. More importantly there is now
 **exactly one** post-resolution writer, `Policy.Replace` (`types.go:221`):
 `claudeFiles`, `stageGhConfig`, `BindSocket` and `Resolve`'s identity/resolv.conf
 block all route through it, it appends `"replaces:"+…` so displacement is no
@@ -537,11 +537,11 @@ stub with a snug-authored filter is the same authorship as `dockerproxy`, which
 the project already accepts. And the staging mechanism already exists and was
 chosen deliberately: `internal/cli/podmanshim.go` plus CLAUDE.md's *"PATH precedence,
 not overmounting"* — stage the replacement in `policy.StagedBinDir`
-(`/run/snug/bin`), the one directory snug owns, which snug puts on `PATH` in its
+(`/snug/bin`), the one directory snug owns, which snug puts on `PATH` in its
 own band iff something is actually staged there (`policy.HasStagedBin`).
 Additive, no mount, no masking-rule exemption, works where the target path is a
 symlink; `@claude` uses it for this shape, binding one file read-only at
-`{home}/.local/bin/claude:/run/snug/bin/claude`.
+`{home}/.local/bin/claude:/snug/bin/claude`.
 
 **Three corrections to what this paragraph said until 2026-08-13**, because each
 is a shape someone will otherwise copy. *"Write the replacement into the writable
@@ -924,7 +924,7 @@ ENGINE-NETNS §4 as a third guarantee that changes shape.
 ##### h. The control channel: accounting, not authentication
 
 The stub is **not** a boundary and the first draft never said so. It sits in
-`/run/snug/bin`, world-readable inside; the payload reads it, learns the protocol,
+`/snug/bin`, world-readable inside; the payload reads it, learns the protocol,
 and speaks to P0 directly. Every check lives in P0. Authentication buys nothing —
 the channel's holder is the whole sandbox by design.
 
@@ -1722,7 +1722,7 @@ should be checked first.
 - **A broker socket is a new *kind* of hole in the `--dry-run` rendering.** Today
   the security-relevant surface is mounts, env, network. A broker's host, listen
   address and **full allowlist** are the boundary and must be printed as such — a
-  mount line saying `rw /run/snug/anthropic.sock` tells a reader nothing.
+  mount line saying `rw /snug/anthropic.sock` tells a reader nothing.
 - **`snug -p @claude` has no network today** (`include = ["sys","home"]`) **[M]**,
   so a brokered `@claude` changes the recommended invocation from `-p @claude -p
   @net` to `-p @claude` alone. A genuine usability win — *provided* §1.3's engine

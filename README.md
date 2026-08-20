@@ -271,7 +271,7 @@ under `/usr` — a tarball in `~/bin` is common — `@sys` does not carry it:
 
 ```toml
 [profile.gh-cli]
-ro = ["{home}/bin/gh_X.Y.Z_linux_amd64/bin/gh:/run/snug/bin/gh"]
+ro = ["{home}/bin/gh_X.Y.Z_linux_amd64/bin/gh:/snug/bin/gh"]
 ```
 
 And a normal `gh auth login` token carries `repo`, `gist`, `read:org` and
@@ -450,7 +450,7 @@ which forwards to an engine *outside* the container. That is not distrobox's
 default — it is a choice someone made on that machine, for usability — so snug
 detects it rather than assuming it. From inside a sandbox the forwarding cannot
 work, and podman's own error for it names neither the cause nor a fix. Where snug
-finds such a shim it stages its own `podman` at `/run/snug/bin/podman`
+finds such a shim it stages its own `podman` at `/snug/bin/podman`
 and puts that directory on `PATH` ahead of `/usr/bin`. It forwards the
 subcommands `docker` can serve, byte-for-byte, and refuses the rest in its own
 voice:
@@ -462,7 +462,7 @@ snug: stub refuses 'podman pod' -- pods are a podman-only grouping; docker has
 ```
 
 Nothing is hidden: `/usr/bin/podman` is untouched and still runs by absolute
-path, `/run/snug/bin` is read-only from inside, and a `podman` provided by a
+path, `/snug/bin` is read-only from inside, and a `podman` provided by a
 profile's `path` still wins over snug's. It appears only when a podman profile
 is selected — a default `snug <dir>` has no stub and an unchanged `PATH`.
 

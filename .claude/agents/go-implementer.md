@@ -49,7 +49,7 @@ You have `Edit` and `Write` and the agents that own these rules do not, so you
 are the last line on both.
 
 - **Never put an executable anywhere the payload can write.** Everything snug
-  stages goes in `policy.StagedBinDir` (`/run/snug/bin`), which is on the root
+  stages goes in `policy.StagedBinDir` (`/snug/bin`), which is on the root
   tmpfs and therefore covered by `--remount-ro /`. `$HOME`, `/tmp`,
   `$HOME/.cache`, `$HOME/.config`, `$HOME/.local/state`, `$HOME/.local/share` and
   `/dev` are writable; a command staged in any of them is a **shadow slot** — the
