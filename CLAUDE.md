@@ -567,11 +567,21 @@ meant. It cannot prove the sandbox holds.
   #22: WROTE-OK, `command -v git` resolved to it, and the shadowed git RAN. That
   reason applies unchanged to every path snug will ever own, and Tier C alone
   would have added four. **A list that grows once per feature is a rule written
-  somewhere it can be forgotten.** The two checks answer different questions and
-  do not overlap: `snugsOwn` asks *does this grant swallow a node snug placed*
-  (an ancestor test, and what G1 asks of a graft), the namespace rule asks *is
-  this grant inside snug's namespace at all* — which is what catches a path snug
-  has not placed anything at yet.
+  somewhere it can be forgotten.** `snugsOwn` asks *does this grant swallow a
+  node snug placed* (an ancestor test); the namespace rule asks *is this grant
+  inside snug's namespace at all*, which is what catches a path snug has not
+  placed anything at yet. They overlap at `/snug` and `/snug/bin`, where
+  `snugsOwn` is checked first and wins.
+
+  *The namespace rule has TWO halves and shipped with one.* `Validate`'s rule 4b
+  covers the payload's mounts; **grafts** go through G1, which consults
+  `snugsOwn` — the list — so the namespace was total on one side and partial on
+  the other, in the change that quotes "a rule written once and applied to one of
+  its two halves". Measured by an independent review: a writable graft at
+  `/snug/podman.sock` was **accepted**, putting an arbitrary host tree where the
+  engine expects the container proxy's socket. G1b now states the graft half as a
+  rule too — a graft may land inside `/snug` **only** under `/snug/engine/`,
+  which is the one subtree Tier C needs — so it does not grow either.
 
   *Why `/snug` and not `/opt/snug`.* `/opt` is a real FHS location a profile
   could legitimately want, and **reserving a subtree of a path other people have

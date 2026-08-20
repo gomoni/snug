@@ -411,6 +411,47 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 			g.Guest, at, at, own.why, at)
 	}
 
+	// G1b — SnugDir is snug's own namespace for GRAFTS too, and only the
+	// engine's own subtree inside it may be grafted onto.
+	//
+	// G1 above is a LIST (snugsOwn), and a list is what left this half open:
+	// it held SnugDir and StagedBinDir and not the two proxy socket paths, so
+	// the namespace rule was total for the payload's mounts (validate.go's rule
+	// 4b) and partial for grafts. MEASURED before this existed: an AccessRW
+	// graft at ContainerSocketGuest, with a source G4 admits, was ACCEPTED —
+	// G1 saw it cover nothing in the map, G2 found no sibling graft, and G3 was
+	// satisfied because the socket IS a mount. That puts an arbitrary writable
+	// host tree where the engine expects the container proxy's socket.
+	//
+	// Adding the sockets to snugsOwn would have closed that and kept the shape.
+	// This closes the shape: graftAllowedInSnugDir names the ONE subtree a graft
+	// may use, so anything snug puts under SnugDir next is protected the day it
+	// is named rather than the day someone remembers an entry.
+	//
+	// Note what this does NOT rely on: G3 refusing a destination that does not
+	// exist. /snug/engine is refused by G3 today only because nothing creates
+	// that directory yet, and that is a coincidence of Tier C not having landed
+	// — the day it does, G3 stops refusing and this rule is what remains.
+	if insideSnugDir(g.Guest) && !graftAllowedInSnugDir(g.Guest) {
+		return fmt.Errorf("cannot graft %s into the engine's view: it is inside snug's own\n"+
+			"       namespace %s, and the only part of it a graft may land in is the engine's own\n"+
+			"       subtree under %s/.\n"+
+			"       Everything else there belongs to the PAYLOAD — the staging directory and the\n"+
+			"       proxy sockets — and a graft at one of those replaces it in the engine's mount\n"+
+			"       namespace with whatever this graft's source is.",
+			g.Guest, SnugDir, EngineDir)
+	}
+
+	// G1c — the pre-#206 location is a tombstone for grafts as well as for
+	// profile grants. Neither should be able to name it; a rule that refuses it
+	// on one side only is the same half-applied shape G1b exists to close.
+	if namesLegacySnugDir(g.Guest) {
+		return fmt.Errorf("cannot graft %s into the engine's view: snug's own paths moved from\n"+
+			"       %s to %s (issue #206), and the old location is kept refused so that nothing\n"+
+			"       names it by habit. The engine's own destinations are under %s/.",
+			g.Guest, legacySnugDir, SnugDir, EngineDir)
+	}
+
 	// G2 — a graft may not cover, or be covered by, another graft. The
 	// exact-Guest case is skipped here (see the doc comment above): it is
 	// handled by Policy.Graft before this runs, and when Validate re-checks an

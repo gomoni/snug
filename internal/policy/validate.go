@@ -175,8 +175,17 @@ func (p *Policy) Validate(env Environ) error {
 		// path happening to sit at depth 1.
 		if at, own, ours := snugsOwnCovered(g); ours && !m.Authored {
 			if at == g {
+				// "displaces it" was the whole sentence here, and it was written
+				// for /proc and /dev, where snug really does author a node a
+				// profile would replace. It is inaccurate for SnugDir and
+				// StagedBinDir, where snug mounts NOTHING and the hazard is the
+				// opposite shape: a profile's mount is a separate mount that
+				// `--remount-ro /` does not reach inside, so the directory that
+				// was unwritable becomes writable.
 				return fmt.Errorf("profile %s puts %s at %s, but %s is snug's own: %s\n"+
-					"       Whatever a profile puts there displaces it, so this is a hole no profile may\n"+
+					"       Whatever a profile puts there takes it over — by displacing the node snug\n"+
+					"       authors, or, where snug mounts nothing at all, by being a separate mount that\n"+
+					"       --remount-ro / does not reach inside. Either way it is a hole no profile may\n"+
 					"       open.\n"+
 					"       %s",
 					provenance(m), describeNode(m), g, g, own.why, own.instead)
