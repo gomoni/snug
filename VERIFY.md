@@ -1991,6 +1991,36 @@ namespace and is a direct child of it, while the container's own process — one
 hop further down, inside crun's nested namespace — is in neither. A future
 `--pid=host` decision (issue #145) would need to re-check this exact relation.
 
+### 9k. The engine's run directory is split by writability (issue #125, C2b)
+
+`conf/` holds only files snug generated and the engine reads; `sock/` holds the
+one thing the engine creates. Tier C grafts each half into the engine's own
+mount namespace **with an access**, so without the split there is no directory
+that can be read-only — and the `AccessRO` arm of the graft model would ship
+with nothing exercising it.
+
+With a container run live in one terminal, from another:
+
+```bash
+ls /tmp/snug-$(id -u)-*/
+ls /tmp/snug-$(id -u)-*/conf/ /tmp/snug-$(id -u)-*/sock/
+stat -c '%a %U %n' /tmp/snug-$(id -u)-*/conf /tmp/snug-$(id -u)-*/sock
+```
+
+Expect exactly `conf` and `sock` at the top and **nothing else** — a generated
+file in neither is one the split does not classify, and under Tier C it would be
+silently writable inside the engine. `conf/` holds `containers.conf`,
+`registries.conf`, `auth.json`, `resolv.conf` and `home/`; `sock/` holds only
+`podman-<pid>.sock`. Both are `700` and owned by you: they go through
+`createRunDir`, not `MkdirAll`, so each gets the same refuse-to-reuse and
+ownership checks the parent got — `/tmp` is commonly world-writable and that
+reasoning does not weaken one directory down.
+
+Worth reading once while you are here: `auth.json` is deliberately empty, and
+`writeAuthFile`'s own comment states the cost — no registry login is possible
+from inside. Under Tier C it sits in a read-only graft, so that sentence stops
+depending on nobody trying.
+
 ## 10. A repository cannot grant itself anything
 
 ```bash

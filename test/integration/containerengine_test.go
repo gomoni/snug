@@ -710,16 +710,23 @@ func cutTwice(s, a, b string) (before, mid, after string) {
 // ── shared: find the engine's own pid from the HOST side, by socket path ────
 
 // engineSocketPath is what internal/engine.New computes: New's own doc
-// comment pins the shape — /tmp/snug-<uid>-<pid>/podman-<pid>.sock, where pid
-// is the SNUG PROCESS's own pid (the first Engine.New call in that process;
-// a real run only ever makes one). Recomputed here rather than imported,
-// deliberately: this is the HOST's own view of a path a container never sees
-// (TestContainerSocketNeverExposesEngineSocketDir, internal/cli, is the
-// guard that it never reaches the sandbox), so a test that wants to observe
-// it from outside has to know the same shape independently.
+// comment pins the shape — /tmp/snug-<uid>-<pid>/sock/podman-<pid>.sock, where
+// pid is the SNUG PROCESS's own pid (the first Engine.New call in that
+// process; a real run only ever makes one). Recomputed here rather than
+// imported, deliberately: this is the HOST's own view of a path a container
+// never sees (TestContainerSocketNeverExposesEngineSocketDir, internal/cli, is
+// the guard that it never reaches the sandbox), so a test that wants to
+// observe it from outside has to know the same shape independently.
+//
+// The `sock/` element arrived with issue #125's C2b split, and the drift was
+// caught by the failure message findEnginePID already carried — "either the
+// engine never started, or this test's own path computation has drifted from
+// internal/engine.New's". An independent restatement is only worth its
+// duplication if it says which of the two happened when it disagrees; this
+// one did.
 func engineSocketPath(uid, snugPID int) string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("snug-%d-%d", uid, snugPID),
-		fmt.Sprintf("podman-%d.sock", snugPID))
+		"sock", fmt.Sprintf("podman-%d.sock", snugPID))
 }
 
 // findEnginePID polls /proc for a process whose cmdline names sock — the

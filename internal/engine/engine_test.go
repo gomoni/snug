@@ -105,6 +105,87 @@ func TestEngineRunDirIsHardenedAndNotReused(t *testing.T) {
 	}
 }
 
+// TestEngineRunDirSplitsByWritability is issue #125's C2b: the run directory is
+// divided by what the ENGINE does with each file, not by topic. conf/ holds
+// only files snug generated and the engine reads; sock/ holds the one thing
+// the engine creates.
+//
+// It matters because Tier C grafts each of these into the engine's own mount
+// namespace WITH AN ACCESS. Without the split there is no directory that can be
+// read-only, so the AccessRO arm of the graft model would ship with nothing
+// exercising it — and a model whose stricter half is never used is a model
+// whose stricter half is untested.
+//
+// The generated-file list is asserted EXHAUSTIVELY rather than by spot check.
+// A new generated file landing in sock/ instead of conf/ would be silently
+// writable inside the engine under Tier C, which is the failure this test is
+// the only warning for: nothing else notices where a file was written.
+func TestEngineRunDirSplitsByWritability(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Both halves get the SAME hardening the parent got — /tmp is commonly
+	// world-writable and that reasoning does not weaken one directory down.
+	for _, d := range []string{e.sockDir, e.confDir} {
+		fi, statErr := os.Stat(d)
+		if statErr != nil {
+			t.Fatalf("%s: %v", d, statErr)
+		}
+		if !fi.IsDir() {
+			t.Fatalf("%s is not a directory", d)
+		}
+		if mode := fi.Mode().Perm(); mode != 0o700 {
+			t.Errorf("%s mode is %#o, want 0700", d, mode)
+		}
+		if createRunDir(d) == nil {
+			t.Errorf("createRunDir reused the existing %s; it must refuse here exactly as it "+
+				"does for the parent", d)
+		}
+	}
+
+	// The socket is the ONLY thing under sock/, because it is the only thing
+	// the engine itself creates.
+	if got := filepath.Dir(e.sock); got != e.sockDir {
+		t.Errorf("the engine socket is in %s, want %s — a socket the engine must create cannot "+
+			"live in the half Tier C grafts read-only", got, e.sockDir)
+	}
+
+	// Every generated file, written through the real writers rather than
+	// re-derived here, so a writer that starts choosing its own directory is
+	// caught rather than mirrored.
+	if _, err := e.Spec("/usr/bin/podman", []string{"PATH=/usr/bin"}, false,
+		policy.NetPolicy{}); err != nil {
+		t.Fatalf("Spec: %v", err)
+	}
+	generated := []string{"containers.conf", "registries.conf", "auth.json", "resolv.conf",
+		filepath.Join("home", ".config", "containers", "policy.json")}
+	for _, name := range generated {
+		path := filepath.Join(e.confDir, name)
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Errorf("%s is not under conf/ (%v) — a generated file outside conf/ is one Tier C "+
+				"cannot graft read-only, and nothing else notices where it was written", name, statErr)
+		}
+	}
+
+	// NEGATIVE: nothing generated may sit at the top of the run directory any
+	// more. Without this the test passes on an engine that writes each file
+	// TWICE, once in each place.
+	entries, err := os.ReadDir(e.runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ent := range entries {
+		if ent.Name() != "sock" && ent.Name() != "conf" {
+			t.Errorf("%s sits at the top of the run directory; everything belongs in sock/ or "+
+				"conf/, and a file in neither is one the split does not classify", ent.Name())
+		}
+	}
+}
+
 // ownedPIDs is what reaps an engine that is not snug's child. It has to find
 // the real thing (positive control) and it must never claim a process that
 // merely looks like podman.
