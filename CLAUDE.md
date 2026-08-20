@@ -269,6 +269,24 @@ first, or delegate to the agent that owns it.
   `~/.gitconfig` for an entire milestone before the mechanical sweep — not a
   `redteam` round — caught it, so treat that as the measured base rate for
   noticing this by eye. Read it as raising the bar, not as retiring the rule.
+- **A SOCKET is the third noun, and `ro` restrains it least of all.** The rule
+  above is about files a tool *interprets*. A socket is not interpreted, it is
+  *spoken to*: read-only stops the sandbox replacing it and does nothing about
+  using it, and the private netns does not help because a unix socket is
+  filesystem, not network. Measured (issue #219): from inside a sandbox holding
+  a read-only bind of a home directory, a payload **enumerated the host's
+  ssh-agent and signed with it** — `--clearenv` had correctly stripped
+  `SSH_AUTH_SOCK` and the payload simply re-derived the path. That is
+  `@ssh-agent`'s filtering proxy — one pinned key, no enumeration, the whole
+  reason that profile exists — defeated by a mount. The general form is #140's
+  again with a different object: **a grant of a directory is a grant of every
+  socket anyone puts in it later**, and `~/.ssh/agent`, `~/.docker/desktop`,
+  podman's machine socket and gpg-agent's `S.gpg-agent` are all real spellings.
+  **Nothing checks this**, the same way nothing checks the command-table rule
+  since #207 — no builtin does it today, and the next `ro {home}`-shaped profile
+  would not be noticed. The one structural defence that does exist is narrow and
+  worth knowing: `Validate` refuses any bind covering `$HOME` (#220), so the
+  measured route specifically is closed.
 - **The abuse sentence is written once and nothing re-reads it as the code grows
   around it.** That is why `redteam` carries a standing inventory sweep —
   *working exactly as designed, what did we hand over?* — a question no
