@@ -263,9 +263,12 @@ first, or delegate to the agent that owns it.
   catalogue of interpreted paths — and both were deleted with that catalogue,
   because a list of known-bad paths is the subtractive shape invariant 2 calls a
   design smell and `internal/policy` is where it least belongs. The trade is
-  explicit: **the rule above is now enforced by review, and a builtin granting
-  `~/.ssh` would ship.** Read it as raising the bar on reading a profile diff,
-  not as retiring the rule.
+  explicit, and "checked by review" would overstate it — no process has been
+  committed to: **the rule above now depends on whoever reads a profile diff
+  remembering it, and a builtin granting `~/.ssh` would ship.** `@git-ro` bound
+  `~/.gitconfig` for an entire milestone before the mechanical sweep — not a
+  `redteam` round — caught it, so treat that as the measured base rate for
+  noticing this by eye. Read it as raising the bar, not as retiring the rule.
 - **The abuse sentence is written once and nothing re-reads it as the code grows
   around it.** That is why `redteam` carries a standing inventory sweep —
   *working exactly as designed, what did we hand over?* — a question no
