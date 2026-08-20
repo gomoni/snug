@@ -185,20 +185,24 @@ func lockTarget(abs string) (unlock func(), err error) {
 	}
 	root, err := os.OpenRoot(base)
 	if err != nil {
-		return noop, fmt.Errorf("target lock: opening %s: %w", base, err)
+		return noop, fmt.Errorf("target lock: opening the per-user runtime directory %s: %w - it exists but "+
+			"cannot be opened, so this run cannot serialise against other runs on the same target; "+
+			"check that it is a directory you own with mode 0700", base, err)
 	}
 	defer root.Close()
 
 	snugRoot, _, err := secureSubroot(root, base, snugName)
 	if err != nil {
-		return noop, fmt.Errorf("target lock: %w", err)
+		return noop, fmt.Errorf("target lock: %w - this is where the per-target lock lives, so "+
+			"the run is refused rather than started without one (issue #122)", err)
 	}
 	defer snugRoot.Close()
 
 	name := targetLockName(real)
 	lock, err := snugRoot.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return noop, fmt.Errorf("target lock: opening %s/%s: %w", filepath.Join(base, snugName), name, err)
+		return noop, fmt.Errorf("target lock: creating the lock file %s/%s: %w - the directory is usable but "+
+			"this file is not; check free space and inodes on that filesystem", filepath.Join(base, snugName), name, err)
 	}
 
 	if flockErr := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); flockErr != nil {
@@ -211,7 +215,9 @@ func lockTarget(abs string) (unlock func(), err error) {
 			return noop, &targetBusyError{target: real, holder: holder}
 		}
 		lock.Close()
-		return noop, fmt.Errorf("target lock: locking %s/%s: %w", filepath.Join(base, snugName), name, flockErr)
+		return noop, fmt.Errorf("target lock: flock on %s/%s: %w - NOT the busy case, which is handled above "+
+			"and names `snug attach`; this is flock itself failing, which usually means the "+
+			"filesystem does not support it. Put the runtime directory on a local filesystem", filepath.Join(base, snugName), name, flockErr)
 	}
 
 	// We hold it. Record our pid so the next contender can name us. The lock
