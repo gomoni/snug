@@ -841,7 +841,10 @@ func TestEngineNetnsReapedOnSIGKILL(t *testing.T) {
 	bg.ready(t)
 	bg.waitForState(t)
 
-	sock := engineSocketPath(os.Getuid(), bg.pid())
+	// The GUEST socket path, for findEnginePID's reason: the engine's argv is
+	// written in terms of its derived view since Tier C (issue #125).
+	sock := filepath.Join(policy.EngineSockGuest,
+		filepath.Base(engineSocketPath(os.Getuid(), bg.pid())))
 
 	// CONTROL: it DID exist before the kill.
 	before := pidsNamingCmdlineSubstring(sock)
@@ -1673,7 +1676,11 @@ func TestASignalledContainerRunLeavesNothingRunning(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	sock := engineSocketPath(os.Getuid(), bg.pid())
+	// The GUEST socket path: since Tier C the engine's argv is written in
+	// terms of its own derived view, so the host path appears nowhere in its
+	// cmdline (issue #125). Same shape as findEnginePID's own search.
+	sock := filepath.Join(policy.EngineSockGuest,
+		filepath.Base(engineSocketPath(os.Getuid(), bg.pid())))
 	if len(pidsNamingCmdlineSubstring(sock)) == 0 {
 		t.Fatalf("PRECONDITION: no process names this run's engine socket %s while its "+
 			"container is running", sock)
