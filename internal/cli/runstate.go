@@ -84,7 +84,7 @@ var runStateNamespaceKinds = []string{"mnt", "pid", "net", "ipc", "uts", "cgroup
 // info.InitPID names the process whose /proc/<pid>/stat this reads
 // immediately: field 22 (starttime), the second half of the pid-reuse guard
 // alongside the six namespace inodes info already carries.
-func writeRunState(runPath string, pol *policy.Policy, info sandbox.RunInfo) error {
+func writeRunState(pol *policy.Policy, info sandbox.RunInfo) error {
 	starttime, err := procStartTime(info.InitPID)
 	if err != nil {
 		return fmt.Errorf("run state: reading start time of pid %d: %w", info.InitPID, err)
@@ -140,11 +140,13 @@ func writeRunState(runPath string, pol *policy.Policy, info sandbox.RunInfo) err
 
 	// Published to the TARGET-keyed path (targetstate.go), not into this
 	// run's own directory: a run and the `snug attach` that must find it have
-	// to agree on where the file is, and runPath is derived from
+	// to agree on where the file is, and the run directory is derived from
 	// $XDG_RUNTIME_DIR/$TMPDIR, which they need not agree on (issue #123).
-	// runPath stays a parameter because it still names the directory this
-	// run's sockets live in and because callers pass it; nothing here writes
-	// to it any more.
+	//
+	// That change also left this function taking a runPath it never used —
+	// carried for three releases because callers had one to pass. A function
+	// that needs the runtime directory should say so in its signature; this
+	// one does not need it, so it no longer says so (issue #103).
 	if err := writeTargetState(pol.Target, st); err != nil {
 		return err
 	}
