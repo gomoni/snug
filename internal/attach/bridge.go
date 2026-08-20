@@ -170,8 +170,29 @@ func Start(cfg *Config) (int, error) {
 		return 0, err
 	}
 
+	// Block every signal on THIS thread across the fork, and put the mask
+	// back the moment the clone has returned in the parent. Two different
+	// windows need this, and child()'s own step 1 covers neither, because it
+	// is already too late by the time it runs:
+	//
+	//   - A signal delivered to B between the clone returning and step 1
+	//     runs whatever handler this process image has installed — Go's own,
+	//     copied verbatim by fork — inside a process the Go runtime cannot
+	//     schedule. ^C to a foreground process group is the everyday
+	//     spelling. The child inherits this blocked mask, so the window
+	//     closes; step 1 stays as the statement of the property for a reader
+	//     of child(), and A restores cfg.SignalMask before its execve.
+	//   - The parent's own mask is restored below on every path, including
+	//     the clone-failed one.
+	var blockAll, saved [sigsetSize]byte
+	for i := range blockAll {
+		blockAll[i] = 0xff
+	}
+	rtSigprocmaskRaw(sigSetmask, &blockAll, &saved)
+
 	pid, _, errno := unix.RawSyscall6(unix.SYS_CLONE, uintptr(unix.SIGCHLD), 0, 0, 0, 0, 0)
 	if errno != 0 {
+		rtSigprocmaskRaw(sigSetmask, &saved, nil)
 		return 0, fmt.Errorf("attach: clone(SIGCHLD): %w — this is the same raw fork "+
 			"internal/stage relies on for the same reason (see .claude/design/NOCGO.md §3); "+
 			"if it fails here it is a resource limit (RLIMIT_NPROC, pid_max), not a permission "+
@@ -179,6 +200,29 @@ func Start(cfg *Config) (int, error) {
 	}
 	if pid == 0 {
 		// CHILD (B). Never returns.
+		//
+		// This call is the FIRST instruction the fork child executes, and
+		// issue #221 is what happens when it is an ordinary Go call: an
+		// ordinary function's prologue compares SP against the goroutine's
+		// stackguard0, and the runtime POISONS stackguard0 with stackPreempt
+		// whenever it wants this goroutine preempted — every stop-the-world,
+		// and sysmon's retake of any goroutine that has been running for
+		// 10ms. The parent carries that poison into the child, whose
+		// prologue then calls runtime.newstack, which asks the scheduler for
+		// threads that the fork did not copy. Measured: futex_do_wait,
+		// forever, with SigBlk=0 / NoNewPrivs=0 / Seccomp=0 / the caller's
+		// own namespaces — B stopped before step 1, which is also before
+		// step 2's PDEATHSIG, so it outlived a killed C by hours. C, for its
+		// part, was still in its report-pipe read. 17 of 40 forks wedged
+		// under stop-the-world pressure with a splittable first call, 0 of
+		// 40 with a nosplit one.
+		//
+		// So child() and EVERY function it can reach carry //go:nosplit,
+		// which removes the prologue that consults the poisoned value at
+		// all. The linker enforces the budget for the whole chain, so a call
+		// added here to something splittable is a BUILD failure and not a
+		// rare hang — see TestEveryFunctionOnTheChildPathIsNosplit for the
+		// half the linker does not check.
 		child(marshalled)
 		// Unreachable: child's every path is a raw exit_group. If control
 		// somehow reaches here, the only safe thing left to do is the same —
@@ -186,6 +230,7 @@ func Start(cfg *Config) (int, error) {
 		// touch.
 		exitGroupRaw(127)
 	}
+	rtSigprocmaskRaw(sigSetmask, &saved, nil)
 	return int(pid), nil
 }
 
