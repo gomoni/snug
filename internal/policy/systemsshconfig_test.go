@@ -336,6 +336,34 @@ func TestDiscoveredSSHConfigPathsAreFiltered(t *testing.T) {
 	}
 }
 
+// TestADiscoveredPathInsideTheTargetIsRefused needs a target OUTSIDE $HOME to
+// mean anything, which is why it is not a row in the table above: testCtx's
+// target is /home/u/proj/sub, so the home filter refuses it there whether the
+// target filter exists or not — measured by deleting the target filter and
+// watching the table stay green.
+//
+// The shape it closes: the chain is host text, but a human's own
+// `Include <some repo>/ssh_config` puts a path from the SANDBOXED TREE into
+// it, and a KindData mount is assigned straight into p.Mounts (rejectMasking
+// exempts KindData by kind), so snug would displace the repository's own file
+// with a read-only file of its own, inside the one tree the run exists to let
+// the payload write.
+func TestADiscoveredPathInsideTheTargetIsRefused(t *testing.T) {
+	ctx := testCtx()
+	ctx.Target = "/srv/work"
+	ctx.HostSSHConfigs = []string{"/srv/work/ssh_config", "/usr/local/etc/ssh/ssh_config"}
+
+	got := systemSSHConfigCandidates(ctx)
+	if slices.Contains(got, "/srv/work/ssh_config") {
+		t.Errorf("a path inside the target became a candidate: %q", got)
+	}
+	// POSITIVE CONTROL: a discovered path outside it still gets through, so
+	// this cannot pass on a filter that refuses everything.
+	if !slices.Contains(got, "/usr/local/etc/ssh/ssh_config") {
+		t.Errorf("candidates = %q: the control path was dropped too", got)
+	}
+}
+
 // TestSystemSSHConfigCandidatesDeduplicates tests the candidate list DIRECTLY
 // rather than through Resolve, and the reason is a mutation check: deleting
 // the dedup and running the resolve-level test left it passing. Replace's own

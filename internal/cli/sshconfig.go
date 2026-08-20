@@ -86,6 +86,14 @@ func probeSSHConfig(home string, verbose bool) ([]string, policy.SSHValues) {
 	cmd := exec.CommandContext(ctx, ssh, "-G", "-v", "-o", "BatchMode=yes", sshProbeHost)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	// cmd.Env stays nil, so the probe inherits the HOST user's environment —
+	// the opposite of every other exec in this project, and deliberate. The
+	// `cmd.Env = []string{}` rule (internal/sandbox/exec.go) exists because
+	// bwrap becomes PID 1 of the sandbox and the payload can read
+	// /proc/1/environ; nothing here enters a sandbox, and a probe run with an
+	// empty environment would answer a question about a machine the user does
+	// not have (no LANG, no PATH for a `Match exec`, no SSH_* the user set).
+	//
 	// Stdin stays nil, which exec makes /dev/null: a `Match exec` command in
 	// the user's config inherits it, and a probe is not a place for something
 	// to start reading the terminal snug was launched from.

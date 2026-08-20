@@ -72,6 +72,28 @@ func systemSSHConfigCandidates(ctx Context) []string {
 		if ctx.Home != "" && underPath(ctx.Home, p) {
 			continue
 		}
+		// NOR ANYWHERE INSIDE THE TARGET. Found by attacking this change rather
+		// than by writing it: the chain is host text, but a human's own
+		// `Include <some repo>/ssh_config` line puts a path from the SANDBOXED
+		// TREE into it, and a KindData mount is assigned straight into p.Mounts
+		// — rejectMasking exempts KindData by kind, so it would displace the
+		// repository's own file at that path with bytes snug wrote, read-only,
+		// inside the one tree the run exists to let the payload write. Not an
+		// escalation (the content is snug's own comment block), but it is snug
+		// taking a file away from the thing it is supposed to be working on.
+		if ctx.Target != "" && underPath(ctx.Target, p) {
+			continue
+		}
+		// NOR ANYWHERE INSIDE THE TARGET. Found by attacking this change rather
+		// than by writing it: the chain is host text, but a human's own
+		// `Include <some repo>/ssh_config` line puts a path from the SANDBOXED
+		// TREE into it, and a KindData mount is assigned straight into p.Mounts
+		// — rejectMasking exempts KindData by kind, so it would displace the
+		// repository's own file at that path with bytes snug wrote, read-only,
+		// inside the one tree the run exists to let the payload write. Not an
+		// escalation (the content is snug's own comment block), but it is snug
+		// taking a file away from the thing it is supposed to be working on,
+		// and the guest path is the target's.
 		if strings.IndexFunc(p, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
 			continue
 		}
