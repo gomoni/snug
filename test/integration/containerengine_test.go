@@ -316,9 +316,7 @@ func requireRealEngine(t *testing.T, env []string) {
 func probeRealEngine(t *testing.T, env []string) string {
 	t.Helper()
 	proj, _ := target(t)
-	if err := os.WriteFile(filepath.Join(proj, "probe.py"), []byte(buildProbe), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeBuildProbe(t, proj)
 	r := runEnv(t, env, []string{"-p", "@podman-build", "-p", "@net"}, proj, `python3 probe.py`)
 	if !r.ran {
 		return fmt.Sprintf("the probe payload never ran (snug exited %d): %s", r.code, r.out)
@@ -850,9 +848,7 @@ func TestHostNsfsBindsDoNotLeak(t *testing.T) {
 	before := readDirNamesOrEmpty(netnsDir)
 
 	proj, _ := target(t)
-	if err := os.WriteFile(filepath.Join(proj, "probe.py"), []byte(buildProbe), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeBuildProbe(t, proj)
 	// CONTROL: the run really did build AND run a container (BUILT-INSIDE-SNUG
 	// only appears if the RUN step actually executed).
 	r := runEnv(t, env, []string{"-p", "@podman-build", "-p", "@net"}, proj, `python3 probe.py`).mustRun(t)
