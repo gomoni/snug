@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 
+	"github.com/gomoni/snug/internal/vdir"
 	"golang.org/x/sys/unix"
 )
 
@@ -34,7 +34,7 @@ import (
 //     methods "follow symbolic links, but symbolic links may not reference a
 //     location outside the root" — so an in-root symlink planted at one of
 //     the two names snug itself creates ("snug"/"snug-<uid>", and the
-//     per-run directory) would still be followed. secureSubroot narrows that
+//     per-run directory) would still be followed. vdir.SecureSubdir narrows that
 //     at exactly those two names with an Lstat-based refusal before opening
 //     either one; it is not a distrust of os.Root generally, only of what
 //     it explicitly leaves following.
@@ -88,7 +88,7 @@ func openRuntimeDir() (*runtimeDir, error) {
 	}
 	defer root.Close()
 
-	snugRoot, created, err := secureSubroot(root, base, snugName)
+	snugRoot, created, err := vdir.SecureSubdir(root, base, snugName)
 	if err != nil {
 		return nil, fmt.Errorf("runtime directory: %w - snug refuses to keep run state anywhere "+
 			"it cannot verify it owns", err)
@@ -299,7 +299,7 @@ var errLockFileSwept = errors.New("lock file was removed by a concurrent sweep b
 func lockRunDir(snugRoot *os.Root, snugPath, runName string) (*os.File, error) {
 	runPath := filepath.Join(snugPath, runName)
 
-	runRoot, _, err := secureSubroot(snugRoot, snugPath, runName)
+	runRoot, _, err := vdir.SecureSubdir(snugRoot, snugPath, runName)
 	if err != nil {
 		return nil, fmt.Errorf("runtime directory: %w - this is the run's own subdirectory, "+
 			"and snug refuses to use one whose owner and mode it cannot verify", err)
@@ -439,121 +439,6 @@ func sweepStaleRunDirs(snugRoot *os.Root, snugPath string) {
 		verboseHousekeeping(fmt.Sprintf("removed stale run directory %s (its owning process is "+
 			"gone; left behind by a run that did not exit cleanly)", full))
 	}
-}
-
-// secureSubroot opens (creating it if absent) a directory named `name`
-// inside the already-verified root `parent`, and returns it as its own
-// *os.Root so nothing opened through it can walk back out or past it.
-//
-// It never trusts an existing entry: found means checked, and — per
-// invariant 5 — a check that fails is refused rather than repaired.
-//
-// The Lstat immediately below is the deliberate narrowing described on
-// runtimeDir: os.Root's documented behaviour is to follow an in-root
-// symlink, and this is one of the two names ("snug"/"snug-<uid>", and the
-// per-run directory) where that is one degree more permissive than this
-// function wants. It runs AFTER Mkdir, not before: Mkdir is the atomic
-// step — either it creates a fresh directory (nothing could have raced a
-// symlink into that exact name in between, because the parent directory
-// this create just happened in has already passed the ownership+mode 0700
-// check below, and 0700 owned by this uid is the only thing that can write
-// there), or it reports EEXIST, in which case the Lstat is what tells apart
-// "a directory left by an earlier run" from "a symlink something planted
-// before snug got here".
-func secureSubroot(parent *os.Root, parentDesc, name string) (child *os.Root, created bool, err error) {
-	mkErr := parent.Mkdir(name, 0o700)
-	created = mkErr == nil
-	if mkErr != nil && !errors.Is(mkErr, fs.ErrExist) {
-		return nil, false, fmt.Errorf("creating %s: %w - snug needs this directory to hold its run state; check "+
-			"free space, inodes and write permission on the parent", filepath.Join(parentDesc, name), mkErr)
-	}
-
-	full := filepath.Join(parentDesc, name)
-
-	if fi, lerr := parent.Lstat(name); lerr != nil {
-		return nil, false, fmt.Errorf("checking %s: %w - snug verifies what it is about to open "+
-			"before opening it, and refuses rather than trusting it", full, lerr)
-	} else if fi.Mode()&os.ModeSymlink != 0 {
-		return nil, false, fmt.Errorf("refusing %s: it is a symlink — something on this host "+
-			"planted it before snug got here; remove it by hand and re-run snug", full)
-	}
-
-	child, err = parent.OpenRoot(name)
-	if err != nil {
-		return nil, false, fmt.Errorf("opening %s: %w - it passed the symlink and ownership "+
-			"checks a moment ago, so something changed underneath: re-run, and if it repeats, "+
-			"something else on this host is writing into snug's runtime directory", full, err)
-	}
-
-	if verr := verifyOwnedAndPrivate(child, full); verr != nil {
-		child.Close()
-		return nil, false, verr
-	}
-	return child, created, nil
-}
-
-// openExistingSubroot is secureSubroot without the Mkdir: it opens a
-// directory that is expected to already exist (another run's directory,
-// being read rather than claimed) and refuses it exactly as hard —
-// ownership, mode, and no symlink at this name — without creating anything
-// if it is absent. Used by `snug attach`'s run discovery, which must never
-// bring a directory into existence just by looking for one.
-func openExistingSubroot(parent *os.Root, parentDesc, name string) (*os.Root, error) {
-	full := filepath.Join(parentDesc, name)
-
-	if fi, lerr := parent.Lstat(name); lerr != nil {
-		return nil, fmt.Errorf("checking %s: %w - snug verifies what it is about to open before "+
-			"opening it, and refuses rather than trusting it", full, lerr)
-	} else if fi.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("refusing %s: it is a symlink — something on this host "+
-			"planted it before snug got here; remove it by hand and re-run snug", full)
-	}
-
-	child, err := parent.OpenRoot(name)
-	if err != nil {
-		return nil, fmt.Errorf("opening %s: %w - it passed the symlink and ownership checks a "+
-			"moment ago, so something changed underneath: re-run, and if it repeats, something "+
-			"else on this host is writing into snug's runtime directory", full, err)
-	}
-	if verr := verifyOwnedAndPrivate(child, full); verr != nil {
-		child.Close()
-		return nil, verr
-	}
-	return child, nil
-}
-
-// verifyOwnedAndPrivate refuses a directory that is not ours, or that is
-// readable, writable or searchable by anyone else — the two properties that
-// make it safe to place a unix socket inside without asking who else could
-// already be watching that path.
-//
-// It checks the open HANDLE (root.Stat(".")), not a path string, so what
-// gets checked is exactly the directory that was just opened — os.Root
-// prevents this handle from having been redirected out of the tree it was
-// opened on, but says nothing on its own about who owns what is inside it.
-func verifyOwnedAndPrivate(root *os.Root, desc string) error {
-	fi, err := root.Stat(".")
-	if err != nil {
-		return fmt.Errorf("checking %s: %w - snug must confirm it owns this directory before "+
-			"putting run state in it, and refuses rather than assuming", desc, err)
-	}
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok {
-		return fmt.Errorf("checking %s: could not read its owner on this platform - snug needs POSIX "+
-			"stat to confirm the directory is yours, so it cannot run here at all", desc)
-	}
-	if uid := int(st.Uid); uid != os.Getuid() {
-		return fmt.Errorf("refusing %s: owned by uid %d, not you (uid %d) — "+
-			"something else on this host created it; remove it by hand if you are sure "+
-			"it is not in use — snug will not use a directory it does not own for sockets",
-			desc, uid, os.Getuid())
-	}
-	if mode := fi.Mode().Perm(); mode != 0o700 {
-		return fmt.Errorf("refusing %s: mode is %#o, must be exactly 0700 — "+
-			"check the umask that created it and fix the permissions by hand; "+
-			"snug will not repair it silently", desc, mode)
-	}
-	return nil
 }
 
 // ── housekeeping notices (issue #118) ─────────────────────────────────────

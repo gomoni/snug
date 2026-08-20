@@ -100,8 +100,13 @@ func TestEngineRunDirIsHardenedAndNotReused(t *testing.T) {
 		t.Errorf("run directory mode is %#o, want 0700", mode)
 	}
 
-	if err := createRunDir(e.runDir); err == nil {
-		t.Fatal("createRunDir silently reused an existing directory; it must refuse")
+	// The no-reuse rule, asserted through the same door production uses: a
+	// second openRunDirs at this exact name must refuse, because the name
+	// carries a pid and an entry already at it is either a leftover from a
+	// reused pid or something planted first. /tmp is world-writable, which is
+	// what makes the second case real.
+	if _, err := openRunDirs(filepath.Dir(e.runDir), filepath.Base(e.runDir)); err == nil {
+		t.Fatal("openRunDirs silently reused an existing directory; it must refuse")
 	}
 }
 
@@ -146,9 +151,9 @@ func TestEngineRunDirSplitsByWritability(t *testing.T) {
 		if mode := fi.Mode().Perm(); mode != 0o700 {
 			t.Errorf("%s mode is %#o, want 0700", d, mode)
 		}
-		if createRunDir(d) == nil {
-			t.Errorf("createRunDir reused the existing %s; it must refuse here exactly as it "+
-				"does for the parent", d)
+		if _, err := openRunDirs(filepath.Dir(d), filepath.Base(d)); err == nil {
+			t.Errorf("a second create reused the existing %s; it must refuse here exactly as "+
+				"it does for the parent", d)
 		}
 	}
 

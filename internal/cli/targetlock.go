@@ -4,7 +4,7 @@ package cli
 // `snug <dir>` run takes a per-target advisory flock before it creates
 // anything, and refuses — naming `snug attach <dir>` — if another live run
 // already holds it. It sits next to runtimedir.go because it reuses that
-// file's *os.Root + flock machinery (secureSubroot / verifyOwnedAndPrivate),
+// file's *os.Root + flock machinery (vdir.SecureSubdir / verifyOwnedAndPrivate),
 // which stays package-private on purpose: a runtime directory reached by a
 // bare path lookup is exactly the shape issue #61(c)/#85 closed.
 //
@@ -36,6 +36,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gomoni/snug/internal/vdir"
 	"golang.org/x/sys/unix"
 )
 
@@ -191,7 +192,7 @@ func lockTarget(abs string) (unlock func(), err error) {
 	}
 	defer root.Close()
 
-	snugRoot, _, err := secureSubroot(root, base, snugName)
+	snugRoot, _, err := vdir.SecureSubdir(root, base, snugName)
 	if err != nil {
 		return noop, fmt.Errorf("target lock: %w - this is where the per-target lock lives, so "+
 			"the run is refused rather than started without one (issue #122)", err)

@@ -3,9 +3,10 @@ package engine
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 
-	"golang.org/x/sys/unix"
+	"github.com/gomoni/snug/internal/vdir"
 )
 
 // runSeq disambiguates the run directory name when New is called more than
@@ -26,54 +27,88 @@ func runDirName(uid, pid int) string {
 	return fmt.Sprintf("snug-%d-%d-%d", uid, pid, n)
 }
 
-// createRunDir creates the per-run directory the engine's socket and runroot
-// live under, hardened the way commit dfe6ac8 (#61, #85) hardened snug's
-// $XDG_RUNTIME_DIR-based runtime directory — because /tmp is a REAL new
-// exposure that one did not have (ENGINE-WIRING.md §3.2): it is commonly
-// world-writable+sticky, so a same-uid process on a shared host can plant an
-// entry at a guessable path before this one gets there.
+// runDirs is this engine's own run directory: the verified handle, its
+// verified parent, and the path string podman's argv still needs.
 //
-// Two guards:
+// It replaces createRunDir, which hand-rolled what internal/vdir now does for
+// everyone — mkdir-that-refuses-to-reuse, then O_DIRECTORY|O_NOFOLLOW, then
+// fstat on the descriptor rather than a second walk of the path. That code was
+// right, and #233 is about what happened NEXT: the descriptor was closed, the
+// path became a string, and every later operation on the most exposed
+// directory snug creates re-derived it by name.
 //
-//   - mkdir, which FAILS if the path already exists — never a blind
-//     os.MkdirAll into a directory this process did not just create, and
-//     never a reuse of whatever is already there. The path is unique per run
-//     (it carries this process's own pid), so an existing entry at that exact
-//     name is itself suspicious: either a planted symlink, or a leftover
-//     from a run whose pid was reused, and either way the right answer is to
-//     refuse, not repair.
-//   - open with O_DIRECTORY|O_NOFOLLOW immediately after, then fstat the
-//     resulting descriptor (never the path a second time) to confirm owner
-//     and mode. This is what defeats the TOCTOU where something races the
-//     mkdir above: if the directory this process just created was removed
-//     and replaced with a symlink before this open runs, O_NOFOLLOW refuses
-//     to follow it rather than silently operating on whatever it now points
-//     at.
-func createRunDir(dir string) error {
-	if err := unix.Mkdir(dir, 0o700); err != nil {
-		return fmt.Errorf("engine run directory %s: %w — refusing to reuse an existing entry at "+
-			"this path. /tmp is commonly world-writable, and a pre-planted directory or symlink "+
-			"there is exactly the shape a same-host attacker would use; if you are sure nothing is "+
-			"using it, remove it by hand and re-run snug", dir, err)
-	}
+// /tmp is why this matters more here than for the $XDG_RUNTIME_DIR directory:
+// it is commonly world-writable and sticky, so a same-uid process on a shared
+// host can plant an entry at a guessable path before this one gets there
+// (ENGINE-WIRING.md §3.2).
+//
+// THE LIMIT, stated rather than left to be discovered: podman is a separate
+// process taking --root and --runroot as ARGV, and the paths in this struct
+// are handed to it as strings. A descriptor cannot be passed there. What the
+// handles buy is everything on THIS side — creation that cannot follow a
+// planted symlink, verification of the thing actually opened, and a removal
+// that finds this run's directory by inode rather than by a route that may no
+// longer lead there.
+type runDirs struct {
+	parent *os.Root // os.TempDir(), held open for the life of the engine
+	root   *os.Root // the run directory itself
+	name   string
+	path   string
+}
 
-	fd, err := unix.Open(dir, unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+// openRunDirs creates and verifies the run directory, and keeps both handles.
+//
+// The name carries this process's own pid, so an entry already at it is
+// suspicious by construction — vdir.MustCreateSubdir refuses reuse, which is
+// the rule the old createRunDir enforced with a bare unix.Mkdir and the
+// reason it never called MkdirAll.
+func openRunDirs(base, name string) (*runDirs, error) {
+	parent, err := os.OpenRoot(base)
 	if err != nil {
-		return fmt.Errorf("engine run directory %s: opening the directory just created: %w", dir, err)
+		return nil, fmt.Errorf("engine run directory: opening %s: %w — snug puts this run's "+
+			"engine socket and generated config under it; check that it exists and is a "+
+			"directory you can write to", base, err)
 	}
-	defer unix.Close(fd)
+	root, err := vdir.MustCreateSubdir(parent, base, name)
+	if err != nil {
+		parent.Close()
+		return nil, fmt.Errorf("engine run directory: %w", err)
+	}
+	return &runDirs{parent: parent, root: root, name: name, path: filepath.Join(base, name)}, nil
+}
 
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
-		return fmt.Errorf("engine run directory %s: checking it: %w", dir, err)
+// sub creates one of the run directory's own children — sock/ and conf/,
+// which #125's C2b split by writability — through the already-verified
+// handle, and verifies it the same way.
+func (d *runDirs) sub(name string) (*os.Root, string, error) {
+	child, err := vdir.MustCreateSubdir(d.root, d.path, name)
+	if err != nil {
+		return nil, "", fmt.Errorf("engine run directory: %w", err)
 	}
-	if int(st.Uid) != os.Getuid() {
-		return fmt.Errorf("engine run directory %s: owned by uid %d, not this process's own uid "+
-			"%d — refusing to use a directory something else on this host created", dir, st.Uid, os.Getuid())
+	return child, filepath.Join(d.path, name), nil
+}
+
+// remove takes the run directory away through the verified parent handle.
+//
+// The difference from os.RemoveAll(d.path) is not stylistic and is measured
+// the same way #103's was: a descriptor names an inode, a path names a route,
+// and os.RemoveAll on a route that no longer leads here reports success having
+// removed nothing — which would leave this run's engine socket and generated
+// config on disk while snug reported a clean teardown.
+func (d *runDirs) remove() error {
+	if d == nil {
+		return nil
 	}
-	if mode := st.Mode & 0o777; mode != 0o700 {
-		return fmt.Errorf("engine run directory %s: mode is %#o, must be exactly 0700 — check the "+
-			"umask that created it", dir, mode)
+	return d.parent.RemoveAll(d.name)
+}
+
+// close releases the handles without removing anything. The engine holds them
+// for its whole life, so this runs only on a construction path that fails
+// after they were opened.
+func (d *runDirs) close() {
+	if d == nil {
+		return
 	}
-	return nil
+	d.root.Close()
+	d.parent.Close()
 }

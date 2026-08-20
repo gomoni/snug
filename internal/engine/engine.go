@@ -147,6 +147,11 @@ const quietBudget = idleTimeout + 5*time.Second
 const RunLabelKey = "snug.run"
 
 type Engine struct {
+	// dirs holds this run's own directory as a verified handle plus its
+	// verified parent — see runDirs. The string fields below it are what
+	// podman's argv and the generated config files still need.
+	dirs *runDirs
+
 	sock     string
 	runroot  string
 	store    string
@@ -208,10 +213,11 @@ func New(profiles []policy.ProfileName, target string) (*Engine, error) {
 	}
 
 	pid := os.Getpid()
-	runDir := filepath.Join(os.TempDir(), runDirName(os.Getuid(), pid))
-	if err := createRunDir(runDir); err != nil {
+	dirs, err := openRunDirs(os.TempDir(), runDirName(os.Getuid(), pid))
+	if err != nil {
 		return nil, err
 	}
+	runDir := dirs.path
 
 	e := &Engine{
 		// runLabel is what teardown stops, and it identifies THIS RUN rather
@@ -224,13 +230,10 @@ func New(profiles []policy.ProfileName, target string) (*Engine, error) {
 		runLabel: fmt.Sprintf("%s=%d", RunLabelKey, pid),
 
 		store:   filepath.Join(dataHome, "snug", "engines", key, "storage"),
+		dirs:    dirs,
 		runDir:  runDir,
-		sockDir: filepath.Join(runDir, "sock"),
-		confDir: filepath.Join(runDir, "conf"),
 		runroot: filepath.Join(os.TempDir(), fmt.Sprintf("snug-engines-%d-%s", os.Getuid(), key), "rr"),
 	}
-	e.sock = filepath.Join(e.sockDir, fmt.Sprintf("podman-%d.sock", pid))
-
 	// The run directory is SPLIT by writability, not by topic (issue #125,
 	// C2b). Everything in conf/ is a file snug generated and the engine only
 	// ever READS; sock/ holds the one thing the engine creates.
@@ -254,15 +257,40 @@ func New(profiles []policy.ProfileName, target string) (*Engine, error) {
 	// commonly world-writable and a pre-planted entry is the shape a same-host
 	// attacker would use, and that reasoning does not weaken one directory
 	// down.
-	for _, d := range []string{e.sockDir, e.confDir} {
-		if err := createRunDir(d); err != nil {
-			_ = os.RemoveAll(runDir)
+	for _, split := range []struct {
+		name string
+		into *string
+	}{{"sock", &e.sockDir}, {"conf", &e.confDir}} {
+		root, path, err := dirs.sub(split.name)
+		if err != nil {
+			_ = dirs.remove()
+			dirs.close()
 			return nil, err
 		}
+		// The handle is not kept: nothing writes into these two through a
+		// Root today (the socket is bound by podman, the config files are
+		// written by path from generateConfigs), and a descriptor held for a
+		// reader that does not exist is a fact nobody is checking — the shape
+		// #103 found in runStateRoot. Verification of what was created is what
+		// this call is for; #233 lists the writers as their own site.
+		root.Close()
+		*split.into = path
 	}
+	e.sock = filepath.Join(e.sockDir, fmt.Sprintf("podman-%d.sock", pid))
+
+	// The store and the runroot are DELIBERATELY not run through vdir, and
+	// this is the one place in the conversion where reuse is the point rather
+	// than the hazard. Both are keyed by profiles+target, not by pid: a warm
+	// start means a second run finds the first run's store and uses it, and
+	// the libpod database refuses a runroot that disagrees with the one
+	// recorded in it. MkdirAll's first-writer-wins is that design, so a
+	// refuse-to-reuse check here would break the feature it is protecting.
+	// What they need instead is the sharing question asked properly — who
+	// else can reach a store keyed by a hash — and that is not this change.
 	for _, d := range []string{e.store, e.runroot} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
-			_ = os.RemoveAll(runDir)
+			_ = dirs.remove()
+			dirs.close()
 			return nil, err
 		}
 	}
@@ -1103,7 +1131,14 @@ func (e *Engine) stopLocked() {
 	e.reap.standDown()
 	e.reap = nil
 
-	_ = os.RemoveAll(e.runDir)
+	if err := e.dirs.remove(); err != nil {
+		// Named rather than swallowed, the same way sweepStaleRunDirs names a
+		// stale directory it could not remove: this one holds this run's
+		// engine socket and generated config, and a directory snug could not
+		// clean up is state that survives the user (invariant 4).
+		fmt.Fprintf(os.Stderr, "snug: could not remove this engine's run directory %s: %v\n",
+			e.runDir, err)
+	}
 }
 
 func joinPIDs(pids []int) string {

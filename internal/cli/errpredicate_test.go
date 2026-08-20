@@ -24,7 +24,7 @@ var nonUnwrappingPredicates = map[string]string{
 // than the site that issue #124 was found at.
 //
 // The bug was one line: discoverLiveRuns asked `os.IsNotExist(err)` about an
-// error openExistingSubroot had wrapped with %w, so "snug has never run on
+// error vdir.OpenExistingSubdir had wrapped with %w, so "snug has never run on
 // this host" — the zero case — surfaced to the user as a raw path error.
 //
 // Fixing that one line would have been fixing the instance. The DEFECT is that
