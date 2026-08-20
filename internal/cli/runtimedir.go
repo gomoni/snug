@@ -73,13 +73,15 @@ func runtimeDir() (string, error) {
 
 	root, err := os.OpenRoot(base)
 	if err != nil {
-		return "", fmt.Errorf("runtime directory: opening %s: %w", base, err)
+		return "", fmt.Errorf("runtime directory: opening %s: %w - snug keeps its per-run state "+
+			"there; check that it is a directory you own with mode 0700", base, err)
 	}
 	defer root.Close()
 
 	snugRoot, created, err := secureSubroot(root, base, snugName)
 	if err != nil {
-		return "", fmt.Errorf("runtime directory: %w", err)
+		return "", fmt.Errorf("runtime directory: %w - snug refuses to keep run state anywhere "+
+			"it cannot verify it owns", err)
 	}
 	defer snugRoot.Close()
 	snugPath := filepath.Join(base, snugName)
@@ -197,7 +199,9 @@ func runStateRoot(runPath string) (*os.Root, error) {
 	defer runLocksMu.Unlock()
 	h, ok := runLocks[runPath]
 	if !ok {
-		return nil, fmt.Errorf("runtime directory: %s was never claimed by runtimeDir in this process", runPath)
+		return nil, fmt.Errorf("runtime directory: %s was never claimed by runtimeDir in this process - this "+
+			"is a bug in snug rather than something to fix from outside it; please report it with "+
+			"the command you ran", runPath)
 	}
 	return h.root, nil
 }
@@ -230,13 +234,15 @@ func lockRunDir(snugRoot *os.Root, snugPath, runName string) (*os.File, *os.Root
 
 	runRoot, _, err := secureSubroot(snugRoot, snugPath, runName)
 	if err != nil {
-		return nil, nil, fmt.Errorf("runtime directory: %w", err)
+		return nil, nil, fmt.Errorf("runtime directory: %w - this is the run's own subdirectory, "+
+			"and snug refuses to use one whose owner and mode it cannot verify", err)
 	}
 
 	lock, err := runRoot.OpenFile("lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		runRoot.Close()
-		return nil, nil, fmt.Errorf("runtime directory: opening %s/lock: %w", runPath, err)
+		return nil, nil, fmt.Errorf("runtime directory: creating %s/lock: %w - check free space and inodes on "+
+			"that filesystem", runPath, err)
 	}
 	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		lock.Close()
@@ -249,7 +255,9 @@ func lockRunDir(snugRoot *os.Root, snugPath, runName string) (*os.File, *os.Root
 	if linked, lerr := stillLinked(lock); lerr != nil {
 		lock.Close()
 		runRoot.Close()
-		return nil, nil, fmt.Errorf("runtime directory: checking whether %s/lock is still linked: %w", runPath, lerr)
+		return nil, nil, fmt.Errorf("runtime directory: checking whether %s/lock is still linked: %w - snug needs "+
+			"to know whether a concurrent sweep removed it, and refuses rather than returning a "+
+			"path that may already be gone", runPath, lerr)
 	} else if !linked {
 		lock.Close()
 		runRoot.Close()
@@ -391,13 +399,15 @@ func secureSubroot(parent *os.Root, parentDesc, name string) (child *os.Root, cr
 	mkErr := parent.Mkdir(name, 0o700)
 	created = mkErr == nil
 	if mkErr != nil && !errors.Is(mkErr, fs.ErrExist) {
-		return nil, false, fmt.Errorf("creating %s: %w", filepath.Join(parentDesc, name), mkErr)
+		return nil, false, fmt.Errorf("creating %s: %w - snug needs this directory to hold its run state; check "+
+			"free space, inodes and write permission on the parent", filepath.Join(parentDesc, name), mkErr)
 	}
 
 	full := filepath.Join(parentDesc, name)
 
 	if fi, lerr := parent.Lstat(name); lerr != nil {
-		return nil, false, fmt.Errorf("checking %s: %w", full, lerr)
+		return nil, false, fmt.Errorf("checking %s: %w - snug verifies what it is about to open "+
+			"before opening it, and refuses rather than trusting it", full, lerr)
 	} else if fi.Mode()&os.ModeSymlink != 0 {
 		return nil, false, fmt.Errorf("refusing %s: it is a symlink — something on this host "+
 			"planted it before snug got here; remove it by hand and re-run snug", full)
@@ -405,7 +415,9 @@ func secureSubroot(parent *os.Root, parentDesc, name string) (child *os.Root, cr
 
 	child, err = parent.OpenRoot(name)
 	if err != nil {
-		return nil, false, fmt.Errorf("opening %s: %w", full, err)
+		return nil, false, fmt.Errorf("opening %s: %w - it passed the symlink and ownership "+
+			"checks a moment ago, so something changed underneath: re-run, and if it repeats, "+
+			"something else on this host is writing into snug's runtime directory", full, err)
 	}
 
 	if verr := verifyOwnedAndPrivate(child, full); verr != nil {
@@ -425,7 +437,8 @@ func openExistingSubroot(parent *os.Root, parentDesc, name string) (*os.Root, er
 	full := filepath.Join(parentDesc, name)
 
 	if fi, lerr := parent.Lstat(name); lerr != nil {
-		return nil, fmt.Errorf("checking %s: %w", full, lerr)
+		return nil, fmt.Errorf("checking %s: %w - snug verifies what it is about to open before "+
+			"opening it, and refuses rather than trusting it", full, lerr)
 	} else if fi.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("refusing %s: it is a symlink — something on this host "+
 			"planted it before snug got here; remove it by hand and re-run snug", full)
@@ -433,7 +446,9 @@ func openExistingSubroot(parent *os.Root, parentDesc, name string) (*os.Root, er
 
 	child, err := parent.OpenRoot(name)
 	if err != nil {
-		return nil, fmt.Errorf("opening %s: %w", full, err)
+		return nil, fmt.Errorf("opening %s: %w - it passed the symlink and ownership checks a "+
+			"moment ago, so something changed underneath: re-run, and if it repeats, something "+
+			"else on this host is writing into snug's runtime directory", full, err)
 	}
 	if verr := verifyOwnedAndPrivate(child, full); verr != nil {
 		child.Close()
@@ -454,11 +469,13 @@ func openExistingSubroot(parent *os.Root, parentDesc, name string) (*os.Root, er
 func verifyOwnedAndPrivate(root *os.Root, desc string) error {
 	fi, err := root.Stat(".")
 	if err != nil {
-		return fmt.Errorf("checking %s: %w", desc, err)
+		return fmt.Errorf("checking %s: %w - snug must confirm it owns this directory before "+
+			"putting run state in it, and refuses rather than assuming", desc, err)
 	}
 	st, ok := fi.Sys().(*syscall.Stat_t)
 	if !ok {
-		return fmt.Errorf("checking %s: could not read its owner on this platform", desc)
+		return fmt.Errorf("checking %s: could not read its owner on this platform - snug needs POSIX "+
+			"stat to confirm the directory is yours, so it cannot run here at all", desc)
 	}
 	if uid := int(st.Uid); uid != os.Getuid() {
 		return fmt.Errorf("refusing %s: owned by uid %d, not you (uid %d) — "+
