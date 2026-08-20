@@ -1,0 +1,16 @@
+profile     @net-anon
+            As net, but the sandbox gets a synthetic address in BOTH families instead of the host's.
+defined in  builtin:base.toml
+
+  includes         @net
+  address          10.13.13.2/24 via 10.13.13.1
+                   synthetic; the host's own address is not copied inside, so
+                   the sandbox does not learn your LAN or ISP-attributable
+                   address
+  address6         fd00:5e79:1::2/64 via fd00:5e79:1::1
+                   synthetic; the host's own address is not copied inside, so
+                   the sandbox does not learn your LAN or ISP-attributable
+                   address
+
+To see what this actually produces for a directory:
+  snug --dry-run -p @net-anon <dir>
