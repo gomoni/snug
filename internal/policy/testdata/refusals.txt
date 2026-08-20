@@ -255,8 +255,9 @@ cannot graft /home/u/proj/sub/sigil-probe: From is ["@podman-socket"], and a gra
 == graft_kind_not_in_the_table ==
 cannot graft /home/u/proj/sub/kind-probe: Kind is "bind", and a graft's Kind must be one the engine's
        derived view actually builds — KindGraft (an open_tree(2) clone of a host path),
-       KindProc or KindCgroup2 (a fresh mount the stage makes itself). A caller building
-       a Graft with any other Kind is a bug in that caller, not a policy this can accept.
+       or KindProc, KindCgroup2 or KindTmpfs (a fresh mount the stage makes itself). A
+       caller building a Graft with any other Kind is a bug in that caller, not a policy
+       this can accept.
 
 == graft_fresh_mount_carries_a_host ==
 cannot graft /proc: Kind is "proc", which the stage builds as a FRESH mount,

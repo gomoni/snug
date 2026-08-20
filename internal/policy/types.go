@@ -82,6 +82,17 @@ const (
 	// so reusing it is what lets G1's one hard-coded admission read as "the
 	// engine's view legitimately replaces the same kind of node snug's own
 	// procfs is", rather than inventing a second name for one idea.
+	//
+	// KindTmpfs is the THIRD "no Host" graft kind, for the engine's own /run,
+	// and it is reused for KindProc's reason rather than given a name of its
+	// own: a fresh empty tmpfs is a fresh empty tmpfs, and which namespace it
+	// lands in is already said by which map it lives in (p.Mounts is the
+	// payload's, p.Grafts is the engine's). A KindEngineTmpfs beside it would
+	// be a second noun for one concept, and a Kind that appears in only one
+	// map is exactly what BwrapFlags's switch and Validate's
+	// "belongs-only-in-p.Grafts" list have to be taught about — KindTmpfs is
+	// already handled correctly in both, because the payload legitimately has
+	// tmpfs grants of its own.
 	KindCgroup2
 )
 

@@ -250,6 +250,13 @@ type graftKindRule struct {
 //	                      fresh cgroup2 (`mount("cgroup2", "/sys/fs/cgroup",
 //	                      "cgroup2", 0, "")`), never open_tree(2) of a host
 //	                      path.
+//	KindTmpfs    false    the engine's own /run (`mount("tmpfs", "/run",
+//	                      "tmpfs", 0, "")`). Same "the stage mounts it" half
+//	                      as the two above, and the same reuse of an existing
+//	                      Kind as KindProc: a fresh empty tmpfs is a fresh
+//	                      empty tmpfs, and which namespace it lands in is
+//	                      decided by which map it lives in, not by a second
+//	                      name for one idea (issue #125's design pass §9.2).
 //
 // Every OTHER rule — G1 (no graft may cover snug's own paths), G2 (no graft
 // may cover or be covered by another graft), G3 (the destination must exist
@@ -260,6 +267,7 @@ var graftKindRules = map[Kind]graftKindRule{
 	KindGraft:   {hasHost: true},
 	KindProc:    {hasHost: false},
 	KindCgroup2: {hasHost: false},
+	KindTmpfs:   {hasHost: false},
 }
 
 // checkGraft runs G1-G5 over one graft WITHOUT installing it, so Policy.Graft
@@ -286,8 +294,9 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 	if !allowed {
 		return fmt.Errorf("cannot graft %s: Kind is %q, and a graft's Kind must be one the engine's\n"+
 			"       derived view actually builds — KindGraft (an open_tree(2) clone of a host path),\n"+
-			"       KindProc or KindCgroup2 (a fresh mount the stage makes itself). A caller building\n"+
-			"       a Graft with any other Kind is a bug in that caller, not a policy this can accept.",
+			"       or KindProc, KindCgroup2 or KindTmpfs (a fresh mount the stage makes itself). A\n"+
+			"       caller building a Graft with any other Kind is a bug in that caller, not a policy\n"+
+			"       this can accept.",
 			g.Guest, g.Kind)
 	}
 	if g.Access != AccessRO && g.Access != AccessRW {
@@ -694,6 +703,20 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 // there is nowhere for the engine's cgroup2 mount (Guest /sys/fs/cgroup,
 // Kind KindCgroup2) to land.
 //
+// /run is here for the same reason and a different mount: the engine needs a
+// WRITABLE /run of its own — podman, seeing itself as root-like with the full
+// delegated subuid range, does not self-mount one and fails outright on `mkdir
+// /run/libpod` — and since issue #206 moved snug's own paths to /snug, a
+// sandbox no longer creates /run at all. Under the derived view the engine's
+// /run is whatever the SANDBOX's view has at /run, so without this entry there
+// is no directory for the engine's tmpfs to land on and the mount fails ENOENT.
+//
+// What that costs the payload is one empty directory on the read-only root, and
+// only on a run that selects a container engine. It grants nothing: the tmpfs
+// itself is mounted in the ENGINE's namespace (Kind KindTmpfs in p.Grafts,
+// which is why it is modelled rather than unmodelled — issue #125's design pass
+// §9.2), and the payload sees the empty mountpoint, never the tmpfs.
+//
 // All THREE of /sys, /sys/fs and /sys/fs/cgroup are listed, not just the
 // leaf: bwrap's --dir does not create ancestors implicitly the way a bind's
 // auto-created mountpoint parents do (skeletonDirs, bwrap.go), and the
@@ -702,7 +725,7 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 // what was not pre-created here. Order matters for the same reason
 // skeletonDirs is depth-ascending: /sys/fs/cgroup needs /sys/fs to already
 // be a directory, which needs /sys.
-var EngineMountpoints = []string{"/sys", "/sys/fs", "/sys/fs/cgroup"}
+var EngineMountpoints = []string{"/run", "/sys", "/sys/fs", "/sys/fs/cgroup"}
 
 // existsInSandbox is G3: a graft's destination must already be a directory
 // inside the SANDBOX's own mount namespace before move_mount(2) can land

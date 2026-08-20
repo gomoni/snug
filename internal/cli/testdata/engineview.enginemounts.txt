@@ -1,0 +1,35 @@
+
+ENGINE VIEW  (grafts — mounts in the ENGINE's derived mount namespace, NOT the
+  payload's. The payload cannot see any of these; no profile can ask for one.)
+  proc-rw     /proc                                         (snug)
+            from (nothing — the stage mounts a fresh proc here; no host path is opened)
+            abuse: read the process table of the engine's own pid namespace —
+            which is what a container engine legitimately needs, and is why this
+            is a FRESH procfs rather than the host's: without it the engine
+            would carry the stage's copy of the HOST /proc, and every host
+            process's cmdline, environ and fd table with it
+            note: this graft's destination coincides with an existing proc grant
+            (access rw) in the sandbox's own view.
+  tmpfs-rw    /run                                          (snug)
+            from (nothing — the stage mounts a fresh tmpfs here; no host path is opened)
+            abuse: write anything it likes into a tmpfs that dies with the run —
+            podman needs /run/libpod writable and does not self-mount one when
+            it reads itself as root-like (the full delegated subuid range), and
+            the sandbox's own /run is a directory on the read-only root. Nothing
+            of the HOST's /run is in it: this is a fresh, empty filesystem, not
+            a graft of anything
+            note: this graft's destination is created on the sandbox's own root
+            tmpfs and IS visible to the payload — empty, and unwritable once /
+            is remounted read-only. The mount namespace is private; the tmpfs
+            superblock is not (ENGINE-NETNS.md §5.1).
+  cgroup2-rw  /sys/fs/cgroup                                (snug)
+            from (nothing — the stage mounts a fresh cgroup2 here; no host path is opened)
+            abuse: write cgroup controller files for the containers it starts —
+            a fresh cgroup2 rooted at the engine's OWN cgroup namespace, so what
+            it can write is the delegated subtree and not the host's cgroup
+            tree, which is what the inherited mount would still have been rooted
+            at
+            note: this graft's destination is created on the sandbox's own root
+            tmpfs and IS visible to the payload — empty, and unwritable once /
+            is remounted read-only. The mount namespace is private; the tmpfs
+            superblock is not (ENGINE-NETNS.md §5.1).

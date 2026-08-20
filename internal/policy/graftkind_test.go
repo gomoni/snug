@@ -46,6 +46,12 @@ func TestAFreshMountGraftMayNotCarryAHost(t *testing.T) {
 	}{
 		{"proc with a host", KindProc, func(g *Graft) { g.Host = "/home/u/.ssh" }},
 		{"cgroup2 with a host", KindCgroup2, func(g *Graft) { g.Host = "/home/u/.ssh" }},
+		// The THIRD fresh-mount kind (issue #125's design pass §9.2, the
+		// engine's own /run). Added to the table on the day the kind was
+		// added, which is the only way a table-driven rule stays a rule: a
+		// kind that joins graftKindRules and not this table is a kind whose
+		// Host half nothing checks.
+		{"tmpfs with a host", KindTmpfs, func(g *Graft) { g.Host = "/home/u/.ssh" }},
 		// HostAsked reaches the screen too (issue #55, F6 §2c), so it is the
 		// other half of the same field and must be refused by the same rule.
 		// A guard written for one of two fields is this file's whole subject.
@@ -76,10 +82,34 @@ func TestAFreshMountGraftMayNotCarryAHost(t *testing.T) {
 // above: without it, "a fresh-mount graft was refused" would pass on a fixture
 // that could never have been accepted for some unrelated reason.
 func TestAFreshMountGraftWithNoHostIsAccepted(t *testing.T) {
-	p := mustResolveDefaults(t)
-	if err := p.Graft(newFakeEnv(), freshMountGraft(KindProc)); err != nil {
-		t.Fatalf("control: the fresh-mount fixture was refused with no Host set, so every "+
-			"refusal above may be refusing for a reason that has nothing to do with Host: %v", err)
+	// Every fresh-mount kind, not just the first: the control has to cover the
+	// same set the refusal table does, or a kind could be refused for an
+	// unrelated reason (a destination G3 does not admit, say) and the refusal
+	// test above would still pass, proving nothing about Host.
+	//
+	// THE SELECTION MATTERS, and finding out why is worth the sentence: with
+	// the DEFAULT selection this control fails for cgroup2 and tmpfs, because
+	// G3's fourth disjunct — the one that admits an EngineMountpoints
+	// destination — is conditioned on p.Podman != PodmanOff, and /sys/fs/cgroup
+	// and /run exist in the sandbox's view only on a run that selects an
+	// engine. That is the model being right rather than a fixture being wrong:
+	// the engine's own mounts are graftable exactly on the runs that have an
+	// engine. /proc needs no such help, since every resolved policy already
+	// mounts a procfs there.
+	for _, kind := range []Kind{KindProc, KindCgroup2, KindTmpfs} {
+		t.Run(kind.String(), func(t *testing.T) {
+			p := mustResolve(t, append(slices.Clone(testDefaults), "@podman-socket")...)
+			if p.Podman == PodmanOff {
+				t.Fatal("fixture: @podman-socket resolved to PodmanOff, so G3's fourth disjunct " +
+					"is inactive and this control cannot distinguish its own failure from the " +
+					"selection's")
+			}
+			if err := p.Graft(newFakeEnv(), freshMountGraft(kind)); err != nil {
+				t.Fatalf("control: the fresh-mount fixture for %v was refused with no Host set, "+
+					"so every refusal above may be refusing for a reason that has nothing to do "+
+					"with Host: %v", kind, err)
+			}
+		})
 	}
 }
 
@@ -88,8 +118,11 @@ func TestAFreshMountGraftWithNoHostIsAccepted(t *testing.T) {
 // adjacent — see TestG1AdmitsExactlyProcAsKindProc.
 func freshMountGraft(kind Kind) Graft {
 	guest := "/proc"
-	if kind == KindCgroup2 {
+	switch kind {
+	case KindCgroup2:
 		guest = "/sys/fs/cgroup"
+	case KindTmpfs:
+		guest = "/run"
 	}
 	return Graft{
 		Mount: Mount{Guest: guest, Kind: kind, Access: AccessRW, From: []string{"(snug)"}},

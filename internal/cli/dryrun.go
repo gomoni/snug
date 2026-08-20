@@ -1963,15 +1963,37 @@ func describeGrafts(out *os.File, p *policy.Policy) {
 	indent := strings.Repeat(" ", graftIndent)
 	for _, guest := range guests {
 		gr := p.Grafts[guest]
-		kind := "graft-ro"
+		// The kind's own word, not "graft" for everything: a fresh procfs and
+		// an open_tree(2) clone of a host directory are different objects with
+		// different rules, and a block that called both "graft" would make the
+		// reader look at the `from` line to tell them apart — which is exactly
+		// the line a fresh mount does not have. KindGraft still renders
+		// byte-identically to what it always did (graft-ro / graft-rw).
+		access := "ro"
 		if gr.Access == policy.AccessRW {
-			kind = "graft-rw"
+			access = "rw"
 		}
-		fmt.Fprintf(out, "  %-8s  %-44s  %s\n",
-			kind, visibleValue(gr.Guest), visibleValue(strings.Join(gr.From, "+")))
-		// Verbatim: Host may legally contain runs of whitespace, and
-		// wrapGraftField's strings.Fields would collapse them (F9).
-		fmt.Fprintf(out, "%sfrom %s\n", indent, visibleValue(gr.Host))
+		// %-10s, not the %-8s this column used when "graft-ro" and "graft-rw"
+		// were the only two words it could hold: "cgroup2-rw" is ten, and a
+		// column that overflows shifts every field after it on that row only,
+		// which is exactly the kind of ragged block a human stops reading.
+		fmt.Fprintf(out, "  %-10s  %-44s  %s\n",
+			gr.Kind.String()+"-"+access, visibleValue(gr.Guest),
+			visibleValue(strings.Join(gr.From, "+")))
+		// A HOST-shaped graft names the tree it clones; a fresh mount has no
+		// host path at all, and printing "from " with nothing after it said
+		// something false in the shape of something true. Host is EXACTLY
+		// empty for those kinds rather than approximately so — checkGraft
+		// refuses a non-empty Host on a kind the stage mounts itself — so this
+		// is a fact about the graft, not a guess from an empty string.
+		if gr.Host != "" {
+			// Verbatim: Host may legally contain runs of whitespace, and
+			// wrapGraftField's strings.Fields would collapse them (F9).
+			fmt.Fprintf(out, "%sfrom %s\n", indent, visibleValue(gr.Host))
+		} else {
+			fmt.Fprintf(out, "%sfrom (nothing — the stage mounts a fresh %s here; no host path is opened)\n",
+				indent, gr.Kind)
+		}
 		if gr.HostAsked != "" {
 			// Verbatim, for F9's reason: a host path may legally contain runs
 			// of whitespace and wrapGraftField's strings.Fields collapses them.
@@ -1984,7 +2006,14 @@ func describeGrafts(out *os.File, p *policy.Policy) {
 				fmt.Fprintln(out, line)
 			}
 		}
-		if !p.HostPathVisible(gr.Host, gr.Access == policy.AccessRW) {
+		// G4 asks about a SOURCE, so this whole block is about grafts that
+		// have one. A fresh mount skips G4 entirely (graftKindRules'
+		// hasHost=false), and the `owned:` line below claimed it "passed G4
+		// only because snug declared it its own for this run" — a reason that
+		// did not happen, printed next to a mount that has no source at all.
+		// A screen that explains a check the code did not run is worse than a
+		// screen that says nothing, because it reads as evidence.
+		if gr.Host != "" && !p.HostPathVisible(gr.Host, gr.Access == policy.AccessRW) {
 			// WHICH of G4's other two sources admitted it, named separately.
 			// One sentence covering both would be false about whichever one
 			// it did not describe, and these two have different owners: snug
