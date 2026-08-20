@@ -335,7 +335,11 @@ func run(cfg config) int {
 		HostNameservers: hostNameservers(),
 		KnownHosts:      knownHostsFor(identityHost(reg, selected)),
 		HostGit:         hostGit,
-		HostShims:       detectHostShims(),
+		// Asked once per run, before Resolve, because a pure resolver may not
+		// run a host binary. See sshConfigChain for what the probe costs and
+		// why the fixed list is still the floor (issue #42).
+		HostSSHConfigs: sshConfigChain(home, cfg.verbose),
+		HostShims:      detectHostShims(),
 	}
 
 	pol, err := policy.Resolve(reg, selected, ctx, env)

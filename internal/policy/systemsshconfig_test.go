@@ -235,3 +235,124 @@ func sysSSHProbeEnv() *fakeEnv {
 	env.dirs["/usr/etc/ssh/ssh_config"] = true
 	return env
 }
+
+// TestDiscoveredSystemSSHConfigPathIsReplaced is issue #42's whole point: a
+// host that spells the system-wide ssh_config a third way — FreeBSD's and
+// Homebrew's /usr/local/etc/ssh, a /nix/store path — is not in
+// SystemSSHConfigPaths and never will be, because a list of platform
+// spellings is a rule written somewhere it can be forgotten. What the run has
+// instead is the answer this host's own ssh gave when asked which files it
+// reads (Context.HostSSHConfigs).
+//
+// Without this the failure is not just "unfixed", it is SILENT: ssh inside
+// dies with `Bad owner or permissions` naming a root-owned file the human
+// never wrote, and the SSH block on --dry-run says nothing, because it only
+// speaks for a path that was actually replaced.
+func TestDiscoveredSystemSSHConfigPathIsReplaced(t *testing.T) {
+	env := newFakeEnv()
+	// The FreeBSD/Homebrew spelling, and NOT either fixed one — so a run that
+	// still consults only the fixed list authors nothing at all here.
+	env.dirs["/usr/local/etc/ssh/ssh_config"] = true
+
+	ctx := testCtx()
+	ctx.HostSSHConfigs = []string{"/usr/local/etc/ssh/ssh_config"}
+
+	p, err := Resolve(testRegistry(), testDefaults, ctx, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, ok := p.Mounts["/usr/local/etc/ssh/ssh_config"]
+	if !ok {
+		t.Fatalf("the path this host's ssh actually reads was not replaced; on such a host "+
+			"ssh, git-over-ssh, scp and rsync -e ssh all die inside the sandbox with "+
+			"`Bad owner or permissions` and nothing on screen explains it (mounts: %q)",
+			sortedGuests(p.Mounts))
+	}
+	if m.Kind != KindData || !m.Authored {
+		t.Errorf("mount at the discovered path is %v/authored=%v, want an authored data mount",
+			m.Kind, m.Authored)
+	}
+	if !slices.Contains(p.SystemSSHConfigs, "/usr/local/etc/ssh/ssh_config") {
+		t.Errorf("p.SystemSSHConfigs = %q does not record the discovered path; --dry-run's "+
+			"SSH block reads that field, so the replacement would happen with nothing on screen",
+			p.SystemSSHConfigs)
+	}
+}
+
+// TestDiscoveredSSHConfigPathsAreFiltered is the other half, and it is the
+// half that matters for the threat model: the strings in HostSSHConfigs come
+// out of `ssh -G -v`, which names every file in the chain — the user's own
+// ~/.ssh/config, every file an Include pulls in, and therefore any path a line
+// like `Include /tmp/whatever.conf` puts there. Each one would otherwise
+// author a mount.
+//
+// Every case here is a real shape from the measured chain on this host, not an
+// invented one, except the two path-hygiene entries.
+func TestDiscoveredSSHConfigPathsAreFiltered(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		why  string
+	}{
+		{"the user's own config", "/home/u/.ssh/config",
+			"~/.ssh/config is the human's own file; snug authors that one only when an identity is pinned"},
+		{"an Include'd fragment", "/usr/etc/ssh/ssh_config.d/50-suse.conf",
+			"the replacement carries no Include line, so nothing under the top-level file is ever read"},
+		{"a crypto-policy fragment", "/etc/crypto-policies/back-ends/openssh.config",
+			"same: an included file, and not named ssh_config"},
+		{"an arbitrary Include target", "/tmp/anything/ssh_config.conf",
+			"a host config line must not choose where snug authors bytes"},
+		{"a relative path", "usr/etc/ssh/ssh_config", "not absolute"},
+		{"an unclean path", "/usr/etc/ssh/../ssh/ssh_config", "not clean"},
+		{"a path carrying a newline", "/usr/etc/ssh\n/ssh_config", "control characters author lies and mounts"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newFakeEnv()
+			env.dirs[tc.path] = true
+
+			ctx := testCtx()
+			ctx.HostSSHConfigs = []string{tc.path}
+
+			p, err := Resolve(testRegistry(), testDefaults, ctx, env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := p.Mounts[tc.path]; ok {
+				t.Fatalf("authored a mount at %q from the ssh chain: %s", tc.path, tc.why)
+			}
+			if len(p.SystemSSHConfigs) != 0 {
+				t.Fatalf("recorded %q as a replaced system ssh_config: %s", p.SystemSSHConfigs, tc.why)
+			}
+		})
+	}
+}
+
+// TestDiscoveredSSHConfigPathIsNotDuplicated pins the measured shape rather
+// than a hypothetical one: `ssh -G -v` prints the whole chain TWICE per
+// invocation (it parses again after resolving the host name), and a discovered
+// path may equally be one the fixed list already names. Neither may produce two
+// candidates, because the record --dry-run reads would then say the same thing
+// twice.
+func TestDiscoveredSSHConfigPathIsNotDuplicated(t *testing.T) {
+	env := newFakeEnv()
+	env.dirs["/usr/etc/ssh/ssh_config"] = true
+	env.dirs["/usr/local/etc/ssh/ssh_config"] = true
+
+	ctx := testCtx()
+	ctx.HostSSHConfigs = []string{
+		"/usr/local/etc/ssh/ssh_config", "/usr/etc/ssh/ssh_config",
+		"/usr/local/etc/ssh/ssh_config", "/usr/etc/ssh/ssh_config",
+	}
+
+	p, err := Resolve(testRegistry(), testDefaults, ctx, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/usr/etc/ssh/ssh_config", "/usr/local/etc/ssh/ssh_config"}
+	got := slices.Clone(p.SystemSSHConfigs)
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Fatalf("p.SystemSSHConfigs = %q, want %q", got, want)
+	}
+}

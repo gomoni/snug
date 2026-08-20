@@ -1065,12 +1065,19 @@ func describeGit(out *os.File, p *policy.Policy) {
 // disclosure ("we generated this file instead of trusting the host's") and
 // both need to say what triggered it and what it costs.
 //
-// It walks policy.SystemSSHConfigPaths and reads p.Mounts rather than
-// re-deriving the coverage predicate: the screen must describe what
-// Resolve actually decided, not recompute a second opinion that could
-// disagree with it. A host with neither spelling present gets nothing here,
-// silently and correctly — the same as a host with no [identity] getting
-// nothing from describeGit.
+// It reads p.SystemSSHConfigs — the record Resolve wrote — rather than
+// re-deriving the coverage predicate: the screen must describe what Resolve
+// actually decided, not recompute a second opinion that could disagree with
+// it. A host where nothing was replaced gets nothing here, silently and
+// correctly — the same as a host with no [identity] getting nothing from
+// describeGit.
+//
+// It used to walk policy.SystemSSHConfigPaths itself, and that stopped being
+// the whole set when discovery landed (issue #42): the paths a run may
+// replace are now the fixed list PLUS whatever this host's ssh named, so a
+// sandbox on a host with a third spelling would have had its system ssh_config
+// replaced with nothing on screen saying so. A screen that recomputes a
+// predicate is a copy of state held somewhere else.
 //
 // The PATH line is per replaced mount — a host can have both spellings
 // covered at once (openSUSE's /usr/etc/ssh plus a human profile binding
@@ -1080,18 +1087,10 @@ func describeGit(out *os.File, p *policy.Policy) {
 // not once per path, which would repeat six identical lines for a
 // coincidence of two paths sharing one cause.
 func describeSSH(out *os.File, p *policy.Policy) {
-	var replaced []string
-	for _, guest := range policy.SystemSSHConfigPaths {
-		m, ok := p.Mounts[guest]
-		if !ok || !m.Authored || m.Kind != policy.KindData {
-			continue
-		}
-		replaced = append(replaced, guest)
-	}
-	if len(replaced) == 0 {
+	if len(p.SystemSSHConfigs) == 0 {
 		return
 	}
-	for _, guest := range replaced {
+	for _, guest := range p.SystemSSHConfigs {
 		fmt.Fprintf(out, "SSH      system-wide ssh_config REPLACED at %s\n", guest)
 	}
 	fmt.Fprintf(out, "         the host's is root-owned and reads as 65534 inside (one uid is\n")

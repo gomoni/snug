@@ -287,6 +287,14 @@ type Policy struct {
 	Identity *Identity
 	Podman   PodmanMode
 
+	// SystemSSHConfigs is every guest path where snug replaced this host's
+	// system-wide ssh_config for this run, in the order it decided them. It
+	// is the RECORD of a decision, written only by replaceSystemSSHConfig,
+	// and it exists so --dry-run can describe what happened rather than
+	// recompute a second opinion from a list that is no longer the whole set
+	// (issue #42: the set now includes whatever the host's ssh named).
+	SystemSSHConfigs []string
+
 	// Git says whether the sandbox's git config is reconstructed from the
 	// host's. See gitextract.go — the host's file is read as data and never
 	// mounted, because its keys name programs to run.

@@ -1,17 +1,94 @@
 package policy
 
-import "strings"
+import (
+	"path/filepath"
+	"slices"
+	"strings"
+)
 
-// SystemSSHConfigPaths are the system-wide ssh_config locations snug may
-// replace. Both spellings ship in the wild: the traditional /etc/ssh, and
-// /usr/etc/ssh on distributions that moved the vendor copy out of /etc
-// (openSUSE). A third spelling exists in the wild too
-// (/usr/local/etc/ssh/ssh_config) and is deliberately NOT added here — see
-// an unmeasured path in a security-relevant list is a claim with no
-// evidence behind it (issue #40).
+// SystemSSHConfigPaths is the FLOOR of system-wide ssh_config locations snug
+// may replace, not the whole set. Both spellings here ship in the wild: the
+// traditional /etc/ssh, and /usr/etc/ssh on distributions that moved the
+// vendor copy out of /etc (openSUSE).
+//
+// A third, fourth and fifth spelling exist too — /usr/local/etc/ssh on
+// FreeBSD and under a Homebrew-shaped prefix, a /nix/store/… path — and they
+// are still deliberately NOT written down here. A list of platform spellings
+// is a rule written somewhere it can be forgotten, and an entry nobody has a
+// host to measure on is a claim with no evidence behind it (issue #40). What
+// closed issue #42 instead is Context.HostSSHConfigs: the caller ASKS this
+// host's ssh which files it reads, and whatever it names joins this list for
+// the run.
+//
+// So this list is what remains when the question cannot be asked — no ssh on
+// the host, a probe that times out, output the parser does not recognise —
+// and a host in that state is exactly as well off as it was before #42, which
+// is the fail-closed direction. See systemSSHConfigCandidates.
 var SystemSSHConfigPaths = []string{
 	"/etc/ssh/ssh_config",
 	"/usr/etc/ssh/ssh_config",
+}
+
+// systemSSHConfigCandidates is every guest path this run may replace: the
+// fixed floor, then whatever the host's own ssh named, in chain order.
+//
+// The filter on a discovered path is the load-bearing half, because these
+// strings come from a HOST FILE the user's own ~/.ssh/config can Include, and
+// they end up authoring a mount. Four conditions, each closing a measured
+// shape rather than a hypothetical one:
+//
+//   - ABSOLUTE and CLEAN. A relative or unnormalised path cannot be reasoned
+//     about against a mount's Guest, and Validate would refuse it later; being
+//     refused here means a weird chain entry never becomes a policy at all.
+//   - BASENAME ssh_config. `ssh -G -v` names every file in the chain,
+//     INCLUDING the ones an Include pulls in
+//     (/usr/etc/ssh/ssh_config.d/50-suse.conf,
+//     /etc/crypto-policies/back-ends/openssh.config — both measured on this
+//     host). Replacing an included file is pointless: snug replaces the
+//     TOP-LEVEL file and the replacement carries no Include line, so nothing
+//     under it is ever read. It is also how a chain entry chosen by a human's
+//     own `Include /tmp/whatever.conf` stops being able to steer where snug
+//     authors bytes.
+//   - NOT UNDER Home. The user's own ~/.ssh/config is in the chain and is not
+//     a system file: snug generates that one only when an identity is pinned
+//     (identity.go), and replacing it here would silently displace a file the
+//     human wrote for themselves.
+//   - NO CONTROL CHARACTER. Same rule as every other host string that reaches
+//     a mount or a screen; Validate refuses one in a guest path anyway, and
+//     this keeps it from getting that far.
+//
+// Duplicates are dropped so a chain that names the same file twice — the
+// measured shape, ssh parses the whole chain twice per invocation — cannot
+// produce two mounts at one guest path.
+func systemSSHConfigCandidates(ctx Context) []string {
+	out := slices.Clone(SystemSSHConfigPaths)
+	for _, p := range ctx.HostSSHConfigs {
+		if !filepath.IsAbs(p) || filepath.Clean(p) != p {
+			continue
+		}
+		if filepath.Base(p) != "ssh_config" {
+			continue
+		}
+		if ctx.Home != "" && underPath(ctx.Home, p) {
+			continue
+		}
+		if strings.IndexFunc(p, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+			continue
+		}
+		if slices.Contains(out, p) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// underPath reports whether p is dir itself or anything beneath it. Written
+// out rather than a strings.HasPrefix, which answers a different question:
+// /home/us is not under /home/u.
+func underPath(dir, p string) bool {
+	dir = strings.TrimSuffix(filepath.Clean(dir), "/")
+	return p == dir || strings.HasPrefix(p, dir+"/")
 }
 
 // SystemSSHConfig is the generated replacement for the system-wide
@@ -137,9 +214,9 @@ func SystemSSHConfig() []byte {
 //
 // Runs AFTER every profile mount is folded (so coverage sees the final set)
 // and BEFORE applyEnvClaims (so sanitise sees the final mount set).
-func replaceSystemSSHConfig(p *Policy, env Environ) {
+func replaceSystemSSHConfig(p *Policy, ctx Context, env Environ) {
 	cfg := SystemSSHConfig()
-	for _, guest := range SystemSSHConfigPaths {
+	for _, guest := range systemSSHConfigCandidates(ctx) {
 		// Runs before any graft can exist (Resolve, never Tier C's post-Resolve
 		// Policy.Graft), and this is a question about the PAYLOAD's own view
 		// either way — the sandbox's, explicitly.
@@ -171,5 +248,11 @@ func replaceSystemSSHConfig(p *Policy, env Environ) {
 			Content: cfg,
 			From:    from,
 		})
+		// Recorded rather than re-derived. --dry-run's SSH block used to walk
+		// SystemSSHConfigPaths itself, which stopped being the whole set the
+		// moment discovery landed: a run that replaced a discovered path would
+		// have shown the reader nothing at all. The screen reads what Resolve
+		// DECIDED (issue #42).
+		p.SystemSSHConfigs = append(p.SystemSSHConfigs, guest)
 	}
 }
