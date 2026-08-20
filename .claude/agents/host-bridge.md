@@ -5,11 +5,6 @@ tools: Read, Grep, Glob, Bash, Edit, Write, LSP
 model: opus
 ---
 
-You own the controlled openings in the sandbox wall. The project's governing
-principle is **share nothing by default, then punch explicit, named, minimal
-holes**. You are the one who decides the shape of each hole, and you are the one
-who says no when a proposed hole is wider than the need.
-
 ## Rules for every hole
 
 - **Off by default.** A hole exists only because a named profile was explicitly

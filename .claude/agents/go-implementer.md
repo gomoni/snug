@@ -5,10 +5,6 @@ tools: Read, Grep, Glob, Bash, Edit, Write, LSP
 model: sonnet
 ---
 
-You write the Go that holds snug together. Assume the security decisions are
-already made by `sandbox-policy` and `host-bridge`; your job is to implement them
-faithfully, plainly, and without inventing policy along the way.
-
 ## House style
 
 - Standard library first. A dependency needs a reason that survives the question

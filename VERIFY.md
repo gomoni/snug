@@ -2868,6 +2868,94 @@ real home so the guard can recognise it.
 Only `redteam` carries this rule. Every other agent works on the host as its
 ordinary mode and is right to.
 
+## 17. A destructive command does not have to name a path (issue #197)
+
+§15 and §16 both start from a path. The two commands that actually took this
+host down did not have one:
+
+    pkill -x bwrap
+    podman system reset
+
+Flatpak runs every desktop application under `bwrap`, and the development
+environment is a rootless-podman distrobox. Measure the target set first — this
+is a read, and it is what the issue's reproduction is built from:
+
+```console
+$ pgrep -cx bwrap
+17
+
+$ pgrep -ax bwrap | sed -E 's/.*-- //' | sort | uniq -c | sort -rn | head -4
+      2 thunderbird
+      2 firefox
+      2 /app/bin/ptyxis --gapplication-service
+      2 /app/bin/pika-backup --gapplication-service
+
+$ pgrep -ax bwrap | grep -c snug
+0
+
+$ podman ps --format '{{.Names}}'
+cv
+```
+
+Seventeen `bwrap` processes, none of them snug's, and `cv` is the container this
+session is running inside. `.claude/hooks/deny-host-process-selectors.py` is what
+stands between an agent and that set. Ask it directly:
+
+```console
+$ ask() { python3 -c 'import json,sys;print(json.dumps({"tool_input":{"command":sys.argv[1]}}))' "$1" \
+    | .claude/hooks/deny-host-process-selectors.py \
+    | python3 -c 'import sys;print("DENY" if sys.stdin.read().strip() else "ALLOW")'; }
+
+$ ask 'pkill -x bwrap'
+DENY
+$ ask 'podman system reset'
+DENY
+$ ask 'kill $(pgrep -f snug)'
+DENY
+$ ask 'systemctl --user stop snug.service'
+DENY
+```
+
+The ALLOW half carries the same weight. A guard that refuses ordinary work is one
+somebody switches off within the hour, and a switched-off guard protects nothing:
+
+```console
+$ ask 'kill 12345'
+ALLOW
+$ ask 'podman ps -a'
+ALLOW
+$ ask 'podman rm snug-test-1'
+ALLOW
+$ ask "snug /tmp/t -- sh -c 'pkill -9 -x sleep'"
+ALLOW
+```
+
+The last one is the exemption that matters, and it is the one place where "it is
+inside" IS a safety property. `bin/blast-radius` exists because it is *not* one
+for mounts — a policy granting `rw` over `~/.ssh` is inside and lethal.
+Processes differ in kind: snug always gives the sandbox its own pid namespace
+(`PidMode=host` is refused, issue #145), so a payload cannot signal a host pid
+whatever the policy says. `test/integration`'s `pkill -9 -x sleep` probe asserts
+exactly that and is committed work this hook must not block.
+
+What to check:
+
+1. The four DENY lines refuse, and the refusal **names the fix** — `P=$!` or
+   `cmd.Process.Pid`, and `descendantsOf` in `test/integration/stage_test.go` for
+   reaching a tree. A refusal that does not say what to do instead gets worked
+   around.
+2. The four ALLOW lines pass. `kill <numeric-pid>` is the correct form and is
+   deliberately not what is refused.
+3. Break one pattern in the hook and re-run `go test ./test/guard/`. The DENY
+   test must fail. A deny-list with a broken pattern denies nothing and looks
+   identical from the outside to one that works.
+
+The rule also lives in `redteam.md`, mechanism first, with both incident dates —
+and in that file alone, mirroring how §16's sandbox-run rule is scoped. The hook
+is the enforcement and covers every agent and the main thread without being read,
+so a second copy of the prose adds no protection and spends attention in every
+invocation. `go test ./test/guard/ -run KillRule` grades both halves.
+
 ## If a check fails
 
 1. Re-run it with `--dry-run` and compare what snug *claimed* against what you
