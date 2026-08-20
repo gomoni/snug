@@ -31,6 +31,17 @@ TOPOLOGY
                   which is why a container may not ask for either; the payload
                   does have its own (bwrap --unshare-ipc --unshare-uts).
                   capability bounding set (12): CAP_SYS_ADMIN CAP_SYS_CHROOT CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_FSETID CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_SETFCAP CAP_KILL CAP_NET_BIND_SERVICE
+  payload gate    the payload is PARKED (bwrap --block-fd) from the moment its
+                  mount tree is built until this engine's socket answers, so a
+                  run whose engine never came up is a run whose payload never
+                  existed. The same pipe's write end is passed as --sync-fd and
+                  held by the sandbox's own pid 1, so snug being KILLED cannot
+                  release it either — only snug writing the byte can.
+                  Residual: a snug SIGKILLed inside that window is measured to
+                  leave nothing behind — the stage sees the lifeline close and
+                  kills the parked init first — but a stage that cannot run code
+                  at all (a SIGSTOPped tree) orphans that init, holding N and the
+                  mount tree with a payload that does not exist and never will.
   control         an anonymous SOCK_SEQPACKET socketpair, inherited, between snug
                   and the stage. UNREACHABLE from the sandbox: no pathname, no
                   listener, and no descriptor for it in the payload's table. It

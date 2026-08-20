@@ -42,6 +42,11 @@ the `--dry-run` engine block, and `TestContainerBindFilterMatchesPolicyVisibilit
 The engine is forked **eagerly**, **by the stage**, as a **second long-lived
 child of P1** alongside bwrap — never threaded through bwrap's lifecycle. The
 stage's control protocol gains **one** new single-use message, `startengine`,
+> **SUPERSEDED by issue #125's C2 gate:** `startengine` no longer exists as a message. Its
+> content moved INTO the `start` request, which now emits two events (`enginestarted`, then
+> `exited`), because the engine has to start while bwrap's payload is parked — and because a
+> request answered without returning is a request after which the stage reads another one.
+> Everything below about WHAT the stage does with the engine still holds; only the framing changed.
 handled once in the existing at-most-N state machine, strictly **after**
 `netready` and **before** `start`. The engine child is cloned with
 `CLONE_NEWNS|CLONE_NEWCGROUP` (fresh mount + cgroup ns, a private copy of P1's

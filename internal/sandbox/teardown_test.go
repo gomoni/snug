@@ -130,7 +130,7 @@ func TestTheTeardownGuardIsArmedBeforeEveryForkItProtects(t *testing.T) {
 	// staged topology losing its guard with a green test.
 	for _, fn := range []struct{ name, fork string }{
 		{"Run", "cmd.Start()"},
-		{"runStaged", "st.StartSandbox(bwrap, argv)"},
+		{"runStaged", "st.StartSandbox(bwrap, argv, opts.EngineSpec, release != nil)"},
 	} {
 		body := funcBody(text, fn.name)
 		if body == "" {

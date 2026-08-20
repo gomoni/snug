@@ -436,6 +436,15 @@ parked payload, so there is nothing for a dying snug to release, and
 `internal/sandbox/parked.go` is gone along with `readChildPID` and
 `waitForNetDevice`.
 
+That is still true of every run this document describes, and **no longer true of
+a run with a container engine** (issue #125): the engine's mount view is derived
+from the sandbox's, so bwrap must exist first, and its payload parks on
+`--block-fd` until the engine is confirmed. What makes that safe is a flag this
+document never had — `--sync-fd` on the SAME pipe, held open by the sandbox's own
+pid 1, so a dying snug still cannot release the payload (measured 5/5 → 0/5).
+INDEX §4.3 carries the measurement; nothing about the network's own ordering
+changes.
+
 **What made it possible, having been recorded as a blocker.** Confirming the
 interface needed a process inside N to read `/proc/<pid>/net/dev`, and before
 bwrap there is none. But **a socket's network namespace is fixed when the socket

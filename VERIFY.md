@@ -2265,6 +2265,126 @@ because it created the netns it ran in; under the stage, bwrap does not create
 still inside — losing this silently is exactly the kind of regression a user
 finds, not a golden diff.
 
+### 12b. The C2 gate — a killed snug cannot release a parked container payload (issue #125)
+
+A container run (`-p @podman-socket`/`-p @podman-build`) cannot start the
+engine before bwrap has built the sandbox's mount tree, so the payload is
+PARKED (`--block-fd`) until the engine is confirmed up, and P0 alone holds
+the byte that releases it (`--sync-fd` on the same pipe). Both checks below
+use `$SNUG_PODMAN` (trusted outright, never re-resolved through PATH) pointed
+at a throwaway stand-in that creates a real listening `unix://` socket at the
+path snug's own argv names.
+
+**The delay and the first-response status must be BAKED INTO the script
+file, not read from the environment.** `$SNUG_PODMAN` is exec'd with the
+EXPLICIT, minimal environment `internal/engine.Engine.Spec` built (PATH,
+HOME, XDG_RUNTIME_DIR, `CONTAINERS_*`) — never this shell's own — so a
+wrapper that reads `$FAKE_DELAY` at run time silently sees nothing and
+behaves as though it were never set. Write a fresh script per scenario
+instead. **It must also refuse to run when no `unix://` argument is
+present**, rather than binding an empty path: `internal/engine`'s own
+teardown (`engine.go`'s `stopLocked`) invokes this SAME binary a second time
+with a plain `stop --all --filter …` argv that names no socket at all, and
+`socket.bind('')` in Python silently succeeds as an ABSTRACT-namespace
+autobind socket — `accept()` on it then blocks forever, and `stopLocked`'s
+own `stop.Run()` has no timeout, so a wrapper without this guard hangs the
+whole check. This is an artifact of a hand-rolled stand-in speaking a wider
+protocol than it means to, not a snug defect — the committed Go binary
+(`test/integration/testdata/fakepodman`) refuses the same way, cleanly:
+`net.Listen("unix", "")` returns an error rather than an abstract socket.
+
+```bash
+fakepodman() {  # fakepodman DELAY STATUS -> writes $1's own wrapper script
+  local dir=$1 delay=$2 status=$3
+  cat > $dir/podman <<EOF
+#!/bin/sh
+SOCK=""
+for a in "\$@"; do case "\$a" in unix://*) SOCK=\${a#unix://};; esac; done
+if [ -z "\$SOCK" ]; then echo "fakepodman: no unix:// argument" >&2; exit 2; fi
+sleep $delay
+mkdir -p "\$(dirname "\$SOCK")"
+exec python3 -c "
+import socket
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind('\$SOCK'); s.listen(5)
+while True:
+    c, _ = s.accept()
+    c.recv(4096)  # read BEFORE writing/closing — see the note above the RST it avoids
+    c.sendall(b'HTTP/1.1 $status X\r\n\r\n')
+    if '$status' != '200': c.close()
+"
+EOF
+  chmod +x $dir/podman
+}
+```
+
+**1. SIGKILL of snug while the payload is parked must never run it** —
+`TestAKilledSnugCannotReleaseTheParkedPayload`'s own headline, with the fake
+engine delayed long enough to guarantee snug dies while still parked:
+
+```bash
+FAKE=$(mktemp -d); fakepodman $FAKE 3 200
+rm -f $SC/proj/sub/PWNED
+SNUG_PODMAN=$FAKE/podman ./bin/snug -p @podman-socket $SC/proj/sub -- \
+  /bin/sh -c 'echo pwned > "$SNUG_TARGET/PWNED"' &
+SNUGPID=$!
+sleep 0.8
+STAGE=$(ps -o pid,ppid,comm --ppid $SNUGPID | awk '$3=="exe"{print $1}')
+ps -o pid,ppid,comm --ppid $STAGE           # expect a bwrap below the stage: PRECONDITION
+kill -9 $SNUGPID; sleep 2
+ls $SC/proj/sub/PWNED                       # expect: No such file or directory
+```
+
+Expect the marker absent. Run it several times — this is a race, and the
+committed test runs it five times per CLAUDE.md's own discipline for exactly
+that reason. The POSITIVE CONTROL and the ADJACENT NEGATIVE (an ordinary,
+released run's payload holds no descriptor beyond stdio — the leak an
+arbitrary extra fd would have caused instead of `--sync-fd`) are not
+practical to reproduce by hand with the same rigor as the committed test's
+own `ls -l /proc/self/fd/` check; read that test rather than re-deriving it.
+
+**2. The one-shot property** — the stage answers at most one `netready` and
+one `start`, and a second request sent after `start` is never consumed, not
+even ignored-and-answered. There is no pathname socket to reach the control
+channel from outside snug's own process, so this one is not meaningfully
+hand-checkable; `TestTheStageReadsNoRequestAfterStart`
+(`internal/stage/onerequest_test.go`) drives it directly against the
+unexported control socket from within the package.
+
+**3. An abort while parked must kill bwrap AND the init** — while parked,
+bwrap has not yet armed `--die-with-parent` on its own init (measured), so an
+abort that kills only the outer bwrap and trusts the kernel's own cascade
+leaves the init alive, still parked, still releasable. Point the fake engine
+at an immediate non-200 response, which fails `OnEngineReady` (the lifeline
+dial) right after the payload is confirmed parked. Backgrounded with a
+timeout, per the pattern above and section 12's own checks — the container
+engine's own teardown (`eng.Stop()`) runs `podman stop` against this same
+stand-in on the ordinary path too, so this waits it out rather than assuming
+a bare foreground call returns promptly:
+
+```bash
+FAKE=$(mktemp -d); fakepodman $FAKE 0 503
+rm -f $SC/proj/sub/PWNED
+SNUG_PODMAN=$FAKE/podman ./bin/snug -p @podman-socket $SC/proj/sub -- \
+  /bin/sh -c 'echo pwned > "$SNUG_TARGET/PWNED"' > /tmp/gate3.log 2>&1 &
+SNUGPID=$!
+for i in $(seq 1 100); do kill -0 $SNUGPID 2>/dev/null || break; sleep 0.1; done
+kill -0 $SNUGPID 2>/dev/null && { echo "STILL RUNNING after 10s"; kill -9 $SNUGPID; }
+wait $SNUGPID 2>/dev/null; echo "exit: $?"
+ls $SC/proj/sub/PWNED                       # expect: No such file or directory
+pgrep -a bwrap                              # expect: nothing of this run
+tail -3 /tmp/gate3.log
+```
+
+Expect a nonzero exit, the tail saying the engine "would not accept the
+keepalive" stream, no
+marker, and no surviving `bwrap` process. `TestKillingOnlyBwrapLeavesAReleasableInit`
+is the automated form, and it is confirmed to catch the regression: with the
+explicit pidfd kill removed from `internal/stage/gate.go`'s `parked.kill()`,
+the outer bwrap dies (from the ordinary abort path) but its own forked init
+is left running, still parked — the exact shape the fix in `gate.go` exists
+to close.
+
 ---
 
 ## 13. Two accounts on one host — an identity is a pin, not a preference
@@ -2637,6 +2757,116 @@ reset            # or: stty sane
 kill -9 $SNUG; rm -rf "$T"
 ```
 
+
+## 15. snug never writes its generated files onto the host
+
+Issue #186. A writable grant covering a path snug GENERATES into used to turn
+snug's own setup into a host overwrite: bwrap's `--file` copies onto its
+destination, so `settings.json`, the staged `.credentials.json` and the injected
+`CLAUDE.md` landed on the host's copies and destroyed them. No payload acted and
+no grant was exceeded — snug did the writing, on the way in.
+
+Use a throwaway `HOME`. That is not politeness; the run this check reproduces
+happened against a real one.
+
+```console
+$ h=$(mktemp -d)/u && mkdir -p "$h/.ssh"
+$ echo "HOST-ORIGINAL" > "$h/.ssh/known_hosts"
+$ cfg=$(mktemp -d) && mkdir -p "$cfg/snug/profiles.d"
+$ cat > "$cfg/snug/profiles.d/sshrw.toml" <<'EOF'
+[profile.sshrw]
+description = "rw over the directory snug generates into"
+rw = ["{home}/.ssh"]
+EOF
+$ cat > "$cfg/snug/profiles.d/pinned.toml" <<'EOF'
+[profile.pinned]
+description = "an identity, so the ssh files are generated"
+[profile.pinned.identity]
+ssh_mode = "agent-proxy"
+ssh_key = "/path/to/some/id_ed25519.pub"
+EOF
+$ HOME=$h XDG_CONFIG_HOME=$cfg snug -p pinned -p sshrw /tmp/some-target -- true
+snug: profile sshrw grants rw on .../.ssh (the host's .../.ssh), and snug generates
+      .../.ssh/known_hosts inside it.
+       snug writes generated content with bwrap's --file, which COPIES onto its destination,
+       so this policy would overwrite .../.ssh/known_hosts on the HOST — outside the sandbox,
+       with no undo.
+       ...
+       Fix: drop the rw grant on .../.ssh, or deselect pinned, which generates at ...
+$ cat "$h/.ssh/known_hosts"
+HOST-ORIGINAL
+```
+
+What to check:
+
+1. The run is **refused**, exit non-zero, before anything starts.
+2. The host's file is **byte-identical** afterwards.
+3. The refusal names **both** grants — the `rw` one and the profile that
+   generates there — because snug cannot know which one you meant. It is a
+   refusal rather than a demotion: silently downgrading the grant to `ro` would
+   be a restriction operation, and invariant 1 does not have one.
+4. Drop `-p sshrw` and the same command runs, generating `~/.ssh/config` and
+   `known_hosts` **inside**, with the host's copies still untouched.
+
+## 16. What can this run destroy? — the check before a red-team payload
+
+Issues #185 and #186. The obvious form of this check asks *am I inside a
+sandbox?*. It was built, and deleted, because the measurement killed it:
+
+```console
+$ snug "$t" -p sshrw -- sh -c './inside-snug; echo "guard says: exit=$?"
+    echo PWNED-FROM-INSIDE > "$HOME/.ssh/id_ed25519"'
+guard says: exit=0                      <- true: a real snug sandbox
+$ cat "$FAKE/.ssh/id_ed25519"
+PWNED-FROM-INSIDE                       <- the host's private key, one command later
+```
+
+The verdict was true and useless. **"Inside" is not a safety property; the mount
+policy is.** A sandbox granting `rw` on `{home}/.ssh` is inside and lethal.
+
+`bin/blast-radius` asks the other question — *is anything worth losing reachable
+from here* — and reads nothing snug produces, so it holds when snug is broken,
+half-built, or being actively attacked.
+
+```console
+$ bin/blast-radius                       # on the host, where the assets are
+blast-radius: REACHABLE FROM HERE — /home/you/.gnupg (WRITABLE — this run can destroy it)
+[exit 1]
+
+$ HOME=$(mktemp -d) bin/blast-radius -v  # the sanctioned way to work
+blast-radius: ok — the host canary is not visible
+blast-radius: ok — no key material, cloud credential or token store is visible
+blast-radius: ok — no host Claude credential is visible
+blast-radius: ok — the transcript archive and hook scripts are not writable from here
+[exit 0]
+
+$ snug . -- sh -c 'blast-radius; echo exit=$?'          # an ordinary sandbox
+exit=0
+
+$ snug "$t" -p sshrw -- sh -c 'blast-radius; echo exit=$?'   # the lethal policy
+blast-radius: REACHABLE FROM HERE — .../.ssh/id_ed25519 (WRITABLE — this run can destroy it)
+exit=1
+```
+
+What to check:
+
+1. It **refuses on the host** and **passes with a scratch `HOME`** — the second
+   is the workflow `redteam` is required to use, so a guard that refused there
+   would be one somebody deletes.
+2. It **refuses inside a real sandbox whose policy reaches a host asset**. That
+   is the case its predecessor passed, and the reason this file's §16 was
+   rewritten.
+3. It passes inside an ordinary sandbox, where `$HOME` is a fresh tmpfs.
+4. Use it in the same invocation as the payload:
+   `snug <dir> -- sh -c 'blast-radius && <the destructive thing>'`.
+
+The structural version beats the check: **pin `HOME` to a scratch directory for
+any run that creates a sandbox**, and a wrong grant, a snug bug and a wrong shell
+all land in a throwaway directory. `bin/blast-radius --install-canary` marks the
+real home so the guard can recognise it.
+
+Only `redteam` carries this rule. Every other agent works on the host as its
+ordinary mode and is right to.
 
 ## If a check fails
 
