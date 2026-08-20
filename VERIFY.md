@@ -2612,6 +2612,116 @@ kill -9 $SNUG; rm -rf "$T"
 ```
 
 
+## 15. snug never writes its generated files onto the host
+
+Issue #186. A writable grant covering a path snug GENERATES into used to turn
+snug's own setup into a host overwrite: bwrap's `--file` copies onto its
+destination, so `settings.json`, the staged `.credentials.json` and the injected
+`CLAUDE.md` landed on the host's copies and destroyed them. No payload acted and
+no grant was exceeded — snug did the writing, on the way in.
+
+Use a throwaway `HOME`. That is not politeness; the run this check reproduces
+happened against a real one.
+
+```console
+$ h=$(mktemp -d)/u && mkdir -p "$h/.ssh"
+$ echo "HOST-ORIGINAL" > "$h/.ssh/known_hosts"
+$ cfg=$(mktemp -d) && mkdir -p "$cfg/snug/profiles.d"
+$ cat > "$cfg/snug/profiles.d/sshrw.toml" <<'EOF'
+[profile.sshrw]
+description = "rw over the directory snug generates into"
+rw = ["{home}/.ssh"]
+EOF
+$ cat > "$cfg/snug/profiles.d/pinned.toml" <<'EOF'
+[profile.pinned]
+description = "an identity, so the ssh files are generated"
+[profile.pinned.identity]
+ssh_mode = "agent-proxy"
+ssh_key = "/path/to/some/id_ed25519.pub"
+EOF
+$ HOME=$h XDG_CONFIG_HOME=$cfg snug -p pinned -p sshrw /tmp/some-target -- true
+snug: profile sshrw grants rw on .../.ssh (the host's .../.ssh), and snug generates
+      .../.ssh/known_hosts inside it.
+       snug writes generated content with bwrap's --file, which COPIES onto its destination,
+       so this policy would overwrite .../.ssh/known_hosts on the HOST — outside the sandbox,
+       with no undo.
+       ...
+       Fix: drop the rw grant on .../.ssh, or deselect pinned, which generates at ...
+$ cat "$h/.ssh/known_hosts"
+HOST-ORIGINAL
+```
+
+What to check:
+
+1. The run is **refused**, exit non-zero, before anything starts.
+2. The host's file is **byte-identical** afterwards.
+3. The refusal names **both** grants — the `rw` one and the profile that
+   generates there — because snug cannot know which one you meant. It is a
+   refusal rather than a demotion: silently downgrading the grant to `ro` would
+   be a restriction operation, and invariant 1 does not have one.
+4. Drop `-p sshrw` and the same command runs, generating `~/.ssh/config` and
+   `known_hosts` **inside**, with the host's copies still untouched.
+
+## 16. What can this run destroy? — the check before a red-team payload
+
+Issues #185 and #186. The obvious form of this check asks *am I inside a
+sandbox?*. It was built, and deleted, because the measurement killed it:
+
+```console
+$ snug "$t" -p sshrw -- sh -c './inside-snug; echo "guard says: exit=$?"
+    echo PWNED-FROM-INSIDE > "$HOME/.ssh/id_ed25519"'
+guard says: exit=0                      <- true: a real snug sandbox
+$ cat "$FAKE/.ssh/id_ed25519"
+PWNED-FROM-INSIDE                       <- the host's private key, one command later
+```
+
+The verdict was true and useless. **"Inside" is not a safety property; the mount
+policy is.** A sandbox granting `rw` on `{home}/.ssh` is inside and lethal.
+
+`bin/blast-radius` asks the other question — *is anything worth losing reachable
+from here* — and reads nothing snug produces, so it holds when snug is broken,
+half-built, or being actively attacked.
+
+```console
+$ bin/blast-radius                       # on the host, where the assets are
+blast-radius: REACHABLE FROM HERE — /home/you/.gnupg (WRITABLE — this run can destroy it)
+[exit 1]
+
+$ HOME=$(mktemp -d) bin/blast-radius -v  # the sanctioned way to work
+blast-radius: ok — the host canary is not visible
+blast-radius: ok — no key material, cloud credential or token store is visible
+blast-radius: ok — no host Claude credential is visible
+blast-radius: ok — the transcript archive and hook scripts are not writable from here
+[exit 0]
+
+$ snug . -- sh -c 'blast-radius; echo exit=$?'          # an ordinary sandbox
+exit=0
+
+$ snug "$t" -p sshrw -- sh -c 'blast-radius; echo exit=$?'   # the lethal policy
+blast-radius: REACHABLE FROM HERE — .../.ssh/id_ed25519 (WRITABLE — this run can destroy it)
+exit=1
+```
+
+What to check:
+
+1. It **refuses on the host** and **passes with a scratch `HOME`** — the second
+   is the workflow `redteam` is required to use, so a guard that refused there
+   would be one somebody deletes.
+2. It **refuses inside a real sandbox whose policy reaches a host asset**. That
+   is the case its predecessor passed, and the reason this file's §16 was
+   rewritten.
+3. It passes inside an ordinary sandbox, where `$HOME` is a fresh tmpfs.
+4. Use it in the same invocation as the payload:
+   `snug <dir> -- sh -c 'blast-radius && <the destructive thing>'`.
+
+The structural version beats the check: **pin `HOME` to a scratch directory for
+any run that creates a sandbox**, and a wrong grant, a snug bug and a wrong shell
+all land in a throwaway directory. `bin/blast-radius --install-canary` marks the
+real home so the guard can recognise it.
+
+Only `redteam` carries this rule. Every other agent works on the host as its
+ordinary mode and is right to.
+
 ## If a check fails
 
 1. Re-run it with `--dry-run` and compare what snug *claimed* against what you
