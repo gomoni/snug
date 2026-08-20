@@ -99,11 +99,10 @@ func TestOnlyRedteamCarriesTheSandboxRunRule(t *testing.T) {
 // reasoning that they all have a host shell and could all reach for `pkill`.
 // That is the paste #191 already rejected once, and the reasons hold here:
 //
-//   - Four copies of the same 25 lines add no enforcement and cost attention in
-//     every invocation of every agent. A `PreToolUse` hook briefly carried the
-//     enforcement half and was removed (issue #203) — so the prose is now the
-//     ONLY layer, which is an argument for keeping it sharp and in one place,
-//     not for spreading it.
+//   - Four copies of the same 25 lines cost attention in every invocation of
+//     every agent, and nothing mechanical backs them up (issue #203). The prose
+//     is the only layer there is, which is an argument for keeping it sharp and
+//     in one place, not for spreading it.
 //   - The scope was wrong in both directions when it was broad. `go-implementer`
 //     supervises processes in GO — `cmd.Process.Pid`, signal forwarding — and
 //     has no host-shell kill moment at all, while `sandbox-policy`, which the
