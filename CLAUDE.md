@@ -15,19 +15,6 @@ anything. This file is the working agreement: the invariants that must not be
 broken, who does what, and the facts about this environment that were expensive
 to learn.
 
-## Key features
-
- 1. No root, no setuid — it has always been questionable that restricting access
-    and improving security should need elevated privileges.
- 2. No daemon, no service files — just execute a binary. **That means no process
-    the user did not start and no state that survives them, not "exactly one
-    process".** `@net` runs a second one — the stage; its cost is under
-    "Decisions made → Networking".
- 3. Works everywhere, including from containers like a `distrobox` environment.
- 4. Host integration is possible, just tightly controlled.
- 5. Written in Go around bubblewrap — it reads the configuration, creates a
-    policy, and provides integration with a "host".
-
 ## The guiding principle
 
 > **Share nothing. Then punch explicit, named, minimal holes until the sandbox
@@ -133,7 +120,10 @@ Break any of these and the project has lost its point.
    the host user's own env var, not something the sandboxed agent controls), but
    do not claim the §2.7 gate exists until it does.
 4. **No root, no setuid, no daemon.** Helpers are children that die with the
-   sandbox and leave nothing behind.
+   sandbox and leave nothing behind. **"No daemon" means no process the user did
+   not start and no state that survives them — not "exactly one process".**
+   `@net` runs a second one, the stage; its cost is under "Decisions made →
+   Networking".
 5. **No silent downgrade, ever.** If a requested capability is unavailable, snug
    says so and exits. A user believing a guarantee that no longer holds is worse
    than a failure. (Seccomp is the single exception, and it still warns.)
