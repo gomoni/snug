@@ -15,68 +15,14 @@ anything. This file is the working agreement: the invariants that must not be
 broken, who does what, and the facts about this environment that were expensive
 to learn.
 
-## Status
-
-*State, not doctrine. Everything here is derivable from the code and drifts if
-you let it, so it stays short and points at the command that answers instead of
-copying the answer. `snug profile list` is the profile set; `snug --dry-run`
-shows what a run will do; `snug doctor` says whether a host can run it; `make
-gate` is the pre-commit check; `VERIFY.md` is the by-hand checklist — run it
-rather than trusting this section.*
-
-**M3 works: share nothing, hardened, networking, scoped identity, containers.**
-`snug <dir>` runs a command in a sandbox where the target is the only writable
-thing that *persists*, the parent is readable, nothing else exists. Identity
-pins one git/ssh/gh account. `podman` and `podman build` work, each behind its
-own profile and its own filter.
-
-Three properties are not derivable from a command, and are the ones to carry:
-
-- **Seccomp buys less than the syscall list suggests.** It denies ptrace, bpf,
-  keyctl, perf_event_open, userfaultfd, TIOCSTI, nested user namespaces, and —
-  ptrace's effect without calling ptrace — `pidfd_getfd`, `process_vm_readv`,
-  `process_vm_writev`. That last group does **not** isolate co-resident payloads
-  from each other: `/proc/<pid>/fd/N` reaches a sibling's files and
-  `/proc/<pid>/mem` reaches its MEMORY, read and write, and neither is
-  syscall-shaped, so no filter can name them (issue #47). What denying
-  `pidfd_getfd` buys is narrow: procfs already reopens a sibling's pipe, memfd,
-  deleted or `O_TMPFILE` file through `/proc/<pid>/fd/N` with contents intact
-  (measured, issue #115), so the denial's residual value is the **socket**,
-  which procfs cannot reopen (`ENXIO`, because sockfs has no open method) — one
-  object, not the four this line used to name.
-- **`@net` runs a second long-lived process, the stage, and that is a cost.** It
-  creates the netns, pins it, *leaves* it, and forks bwrap back in through a
-  `setns` shim, so a later phase can put a container engine in the same
-  namespace. One-shot, binds no pathname, opens no listener, torn down two ways
-  because they cover different failures — an inherited pipe for a stage that can
-  still run code, `PR_SET_PDEATHSIG` for one that has been stopped and cannot.
-  The price is on screen in `--dry-run`: the sandbox's user namespace now has a
-  **privileged ancestor** for the whole run, so a userns-escape bug is worth
-  more than it was. Measured to give the payload no new reach and to widen no
-  host surface — a same-uid host process already reaches that authority without
-  a stage, via `NS_GET_USERNS` on the sandbox's own namespace descriptors.
-  Nothing else starts one: offline and `@net-host` (the `--i-know` path) take the
-  single-process path, which is deny-by-default applied to snug's own process
-  tree. `@net` is not the only network profile — `@net-anon` and `@net-host` are
-  variants, and `@podman-build` is a container one; `snug profile list` is the
-  roster.
-- **Out of scope, deliberately:** GUI, audio and D-Bus passthrough (Wayland,
-  PulseAudio, X11). A filtering proxy that is 95% correct is a sandbox that is
-  0% sound. The private netns excludes them by construction — a property to
-  keep, not a gap to close. Do not add a profile for them without a decision to
-  reopen this.
-
-Offline, how `@podman-socket` handles the network (its own netns, since Tier B),
-`@default`'s absence and what `@claude` stages are all under "Decisions made";
-`redteam` runs on every milestone without exception, under "Definition of done".
-
 ## Key features
 
  1. No root, no setuid — it has always been questionable that restricting access
     and improving security should need elevated privileges.
  2. No daemon, no service files — just execute a binary. **That means no process
     the user did not start and no state that survives them, not "exactly one
-    process".** `@net` runs a second one; see the stage, under Status.
+    process".** `@net` runs a second one — the stage; its cost is under
+    "Decisions made → Networking".
  3. Works everywhere, including from containers like a `distrobox` environment.
  4. Host integration is possible, just tightly controlled.
  5. Written in Go around bubblewrap — it reads the configuration, creates a
@@ -245,6 +191,18 @@ first, or delegate to the agent that owns it.
   environment is not a guarantee about the sandbox's PID 1.** Whenever a helper
   process joins the sandbox's namespaces, ask what its own `/proc/<pid>/`
   exposes.
+- **Seccomp's residual is ONE object, not the four the syscall list suggests.**
+  The filter denies ptrace, bpf, keyctl, perf_event_open, userfaultfd, TIOCSTI,
+  nested user namespaces, and — ptrace's effect without calling ptrace —
+  `pidfd_getfd`, `process_vm_readv`, `process_vm_writev`. That last group does
+  **not** isolate co-resident payloads from each other: `/proc/<pid>/fd/N`
+  reaches a sibling's files and `/proc/<pid>/mem` reaches its MEMORY, read and
+  write, and neither is syscall-shaped, so **no filter can name them** (issue
+  #47). And procfs already reopens a sibling's pipe, memfd, deleted and
+  `O_TMPFILE` files through `/proc/<pid>/fd/N` **with contents intact**
+  (measured, issue #115) — so what denying `pidfd_getfd` actually buys is the
+  **socket**, which procfs cannot reopen (`ENXIO`: sockfs has no open method).
+  One object. This line named four for a milestone before anyone measured it.
 - **An open directory descriptor ignores the mount namespace entirely.**
   `openat(2)` walks from the descriptor's own vfsmount, so a dirfd handed into
   the sandbox is a complete bypass of every grant. `sealInheritedFDs` marks
@@ -344,10 +302,21 @@ first, or delegate to the agent that owns it.
   `internal/profile/profiles/base.toml`, `[profile.home]` — check there before
   quoting the count, because it has drifted once already: **a count in prose is a
   copy of state held somewhere else.**
-- **The sandbox sets `PS1`.** snug does not grant `/etc/bash.bashrc`, so without
-  it the shell shows bash's built-in `bash-5.3$` and nothing on screen says you
-  are sandboxed. Humans and agents both act on the prompt, and "am I inside?" is
-  the question where guessing wrong is expensive. Keep it distinctive.
+- **The sandbox sets `PS1`, and an agent cannot read it.** snug does not grant
+  `/etc/bash.bashrc`, so without it the shell shows bash's built-in `bash-5.3$`
+  and nothing on screen says you are sandboxed. Keep it distinctive **for
+  humans** — but bash unsets `PS1` when it is not interactive, so inside `sh -c`
+  the payload's own `/proc/self/environ` has no `PS1`, and `/proc/1/environ`
+  cannot supply it either because it is deliberately zero bytes. `SNUG`,
+  `SNUG_PROFILES` and `SNUG_TARGET` do survive. Measured, issue #185.
+
+  **And "am I inside?" is the wrong question anyway.** A guard answering it
+  returned `exit=0` inside a real sandbox one command before the host's private
+  key was destroyed **through that sandbox's own `rw` grant**. Inside is not the
+  safety property; the mount policy is. `bin/blast-radius` asks what is
+  *reachable from here* instead, and reads nothing snug produces — this being the
+  repository where snug is built and attacked, a check trusting snug's own
+  signals is only as truthful as the branch you are standing on.
 - `/proc/sys/dev/tty/legacy_tiocsti` is `0` on this kernel, so `--new-session`
   is unnecessary here and snug omits it, which is why job control works inside
   an interactive sandbox shell. On a host where it is `1`, snug adds the flag
@@ -440,6 +409,12 @@ meant. It cannot prove the sandbox holds.
   network, so a sandbox with no `@net` reaches the internet through one*
   (`.claude/design/ENGINE-NETNS.md` §0). **A limitation and a hole are frequently
   the same fact facing two directions.**
+
+  **Tier B closed that particular hole** — a container now runs in the sandbox's
+  own netns — and `-p` is still unsupported, for an unrelated reason: the engine
+  holds no `CAP_NET_ADMIN`. Note what that means for the habit rather than for
+  the fact: **the annoyance survived its own explanation.** When the hole closes,
+  re-derive the limitation instead of assuming it went with it.
 - **Golden argv diffs are the review artifact.** A change to a golden file is a
   change to the security boundary and is read as such. A security change that
   produces no golden diff is probably untested.
@@ -547,7 +522,10 @@ meant. It cannot prove the sandbox holds.
   vector in one. Only `~/.config/git` by default; anything else is a line the
   human writes in their own profile.
 - **Claude Code's files**: binary, `settings.json`, skills and plugins read-only;
-  `.credentials.json` staged as a writable copy. `~/.claude.json` is **generated,
+  `.credentials.json` staged as a **projection** — `policy.ProjectClaudeCredentials`
+  writes a five-key allowlist, not a copy of the host's file (issue #58). Say
+  projection, not "writable copy": the difference is that a key the host adds
+  later does not arrive inside by default. `~/.claude.json` is **generated,
   not copied** — three keys, zero host bytes (issue #19). The host's is 62 KB and
   carries every project path on the machine, org and account UUIDs, `machineID`,
   `mcpServers` and per-project tool approvals; copying it verbatim was justified
@@ -575,6 +553,16 @@ meant. It cannot prove the sandbox holds.
   closed. Offline is the *absence* of the `@net` profile, not a setting — so it
   cannot be accidentally re-enabled.
 
+  **`@net` runs a second long-lived process, the stage, and that is the cost.**
+  It creates the netns, pins it, *leaves* it, and forks bwrap back in through a
+  `setns` shim, which is what lets the container engine share that namespace.
+  The price is on screen in `--dry-run`: the sandbox's user namespace has a
+  **privileged ancestor for the whole run**, so a userns-escape bug is worth
+  more than it was. Measured to give the payload no new reach and to widen no
+  host surface — a same-uid host process already reaches that authority without
+  a stage, via `NS_GET_USERNS` on the sandbox's own namespace descriptors.
+  Offline and `@net-host` (the `--i-know` path) take the single-process path.
+
   *Containers included, now that Tier B has landed (issue #63).* A container
   runs in the sandbox's own network namespace, so `@podman-socket` without
   `@net` is genuinely offline and `--dry-run` says so truthfully. Selecting a
@@ -589,12 +577,26 @@ meant. It cannot prove the sandbox holds.
   terminal and the stage is never handed a pid it must trust (issue #125).
   `TestPodmanSocketDoesNotImplyEgress` and `TestPodmanSelectsAStage` are what
   keep this true; the mount view is still a private copy enforced by the proxy
-  bind filter, which Tier C (#125) makes structural. Host→sandbox port publishing is off by
+  bind filter, which Tier C (#125) makes structural.
+
+  **The pid row has moved and the sentence "pid is the host's" is now false
+  wherever it appears**: Tier C's C0 piece gave the engine `CLONE_NEWPID` and a
+  procfs bound to it (`internal/stage/enginefork.go`). Two consequences follow
+  and both are tracked rather than folded in — the pids libpod records in the
+  runroot are numbered in the **engine's** namespace, so no host-side caller may
+  read them as host pids (issue #167, fixed by deleting the caller); and a
+  container now gets the kernel's `SIGKILL` at pid-namespace collapse, **never a
+  graceful `SIGTERM`** (issue #174, open). If graceful stop ever returns, it
+  comes through the engine's **own socket**, where recorded pids are numbered in
+  the namespace doing the killing — never a host-side CLI again. Host→sandbox port publishing is off by
   default and scoped to `127.0.0.1` when enabled: with `-t auto` the *agent*
   would choose which host loopback ports appear, which inverts the guiding
   principle. See INDEX §4.6 — this is the decision most likely to be revisited.
-- **D-Bus**: no profile ships. A filtering bus proxy that is 95% correct is a
-  sandbox that is 0% sound.
+- **GUI, audio and D-Bus passthrough are out of scope deliberately** (Wayland,
+  PulseAudio, X11, and the bus itself). No profile ships. A filtering proxy that
+  is 95% correct is a sandbox that is 0% sound. The private netns excludes them
+  by construction — **a property to keep, not a gap to close** — so do not add a
+  profile for any of them without a decision to reopen this.
 
 - **`/snug` is snug's own guest namespace, and it is a RULE rather than a list.**
   Everything snug needs a path for *inside* a sandbox lives there — `/snug/bin`
