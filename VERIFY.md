@@ -1641,6 +1641,48 @@ The sibling counter uses the same walk and got the same fix: a sibling with
 something bound beneath it is reported separately rather than counted as an
 entry that reads as absent.
 
+## 9a. A profile that takes over snug's own /tmp says so (issue #223)
+
+`yieldTo` installs snug's own `/proc`, `/dev` and `/tmp` **only if nothing else
+claims that path**. That is how `@tmp-shared` works. What is not intended is
+`@parent-ro` reaching `/tmp` by accident of where the target sits:
+
+```console
+$ ./bin/snug --dry-run "$(mktemp -d)" | sed -n '/^  ro     \/tmp /,/^  ro     \/usr/p'
+  ro     /tmp                                           @parent-ro
+                     ← this is the HOST's /tmp, not snug's private one — a
+                       profile claimed the path, so the tmpfs snug would have
+                       put here never landed. $TMPDIR points inside it,
+                       READ-ONLY, which most tooling breaks on
+```
+
+A `mktemp -d` target has `/tmp` as its parent, so this is the ordinary shape, not
+an exotic one — it is how `VERIFY.md` and the integration suite build targets.
+
+What to check:
+
+1. The row is marked. Before #223 it rendered as a bare `ro /tmp @parent-ro`,
+   indistinguishable from any other read-only bind.
+2. **The writable surface is seven for this run, not the eight this file and
+   CLAUDE.md quote.** `/tmp` is the host's and read-only. That is the whole point
+   of the mark: a guarantee that quietly stopped holding.
+3. An ordinary target gets **no** mark:
+
+```console
+$ ./bin/snug --dry-run ~/src/anything | grep -A1 'tmpfs  /tmp'
+  tmpfs  /tmp                                           (snug)
+  ro     /usr                                           @sys
+```
+
+   A warning on every run is a warning nobody reads.
+4. `@tmp-shared`'s writable takeover keeps the "this is the host's" note and
+   loses the READ-ONLY clause, because that clause would be false.
+
+**Said rather than refused, deliberately.** `snug /tmp/x` is ordinary, so a
+refusal would break snug's own test workflow unless it could distinguish "the
+yield was asked for" from "the yield happened by accident" — and this layer
+cannot. `--dry-run` being honest is the mechanism the project already relies on.
+
 ## 9b. The `@` namespace belongs to snug
 
 `@` marks a profile snug ships. Nothing else may wear it, so a name in
