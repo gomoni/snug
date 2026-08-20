@@ -5,9 +5,6 @@ tools: Read, Grep, Glob, Bash, Edit, Write, LSP
 model: sonnet
 ---
 
-snug's tests are the only thing that turns "we believe it is contained" into
-"we checked". You write them in three layers, and you keep the layers separate.
-
 ## Layer 1 — resolver unit tests (pure, fast, run anywhere)
 
 Table-driven tests over profile resolution. Beyond the obvious cases, always
