@@ -421,6 +421,13 @@ meant. It cannot prove the sandbox holds.
   holds no `CAP_NET_ADMIN`. Note what that means for the habit rather than for
   the fact: **the annoyance survived its own explanation.** When the hole closes,
   re-derive the limitation instead of assuming it went with it.
+- **Pull requests: caveman prose, and never a session link.** A PR body is
+  technical prose that prefers brevity and accuracy over narration — drop
+  articles and filler, keep every measurement, path, flag and exact error
+  string. **Never put a `claude.ai/code/session` URL in a PR body, a commit
+  message, an issue or a comment.** It is a link nobody outside this machine can
+  open, it dates the artifact, and it points at a transcript rather than at the
+  code. Cite the issue, the file and the measurement instead.
 - **Golden argv diffs are the review artifact.** A change to a golden file is a
   change to the security boundary and is read as such. A security change that
   produces no golden diff is probably untested.
