@@ -559,15 +559,27 @@ what makes it a rename.
 
 Also worth seeing once, and note WHICH run: the skeleton directories are derived
 from the mounts a run actually has, so a **default** sandbox has no `--dir /snug`
-either — nothing is staged there. Select something that stages a binary, and the
-directories appear while `--dir /run` does not:
+either — nothing is staged there, and no `--dir /run`, because `/run` existed
+only because snug's own paths lived under it:
+
+```bash
+./bin/snug --dry-run $SC/proj/sub | grep -E '^  --dir'
+```
+
+Expect **no `--dir /run` and no `--dir /snug`**.
+
+Select something that stages a binary and the `/snug` directories appear — and
+so does `/run`, on a container run only:
 
 ```bash
 ./bin/snug --dry-run -p @podman-socket $SC/proj/sub | grep -E '^  --dir'
 ```
 
-Expect `--dir /snug` and `--dir /snug/bin` and **no `--dir /run` at all**. `/run`
-existed only because snug's own paths lived under it.
+Expect `--dir /snug`, `--dir /snug/bin` **and `--dir /run`**. The last one is not
+snug's own path coming back: it is a MOUNTPOINT for the engine, which mounts a
+fresh tmpfs on `/run` in its OWN namespace because podman needs `/run/libpod`
+writable and does not self-mount one. What the payload gets is the empty
+directory, on a root that is read-only by the time it runs.
 
 ### 6j. All five verbs at once, and the payload agrees with the screen
 
@@ -1808,6 +1820,27 @@ spellings of `--network=host`, and for an option snug does not know.
 `--network=host` sets TWO parameters and either alone re-opens the host network,
 which is the same shape as the pasta flags in check 7. Both are refused, and the
 suite pins each to its own message so neither can cover for the other.
+
+## 9c-bis. The ENGINE VIEW block names every mount the engine makes
+
+The engine's own mount namespace holds three mounts snug makes for it, and until
+issue #125's §9.2 the model described none of them — so `--dry-run` was silent
+about a namespace it claims to explain, and the `/run` one is WRITABLE, which is
+the ingredient #55 is about.
+
+```bash
+./bin/snug --dry-run -p @podman-socket $SC/proj/sub | sed -n '/^ENGINE VIEW/,/^$/p'
+```
+
+Expect three rows — `proc-rw /proc`, `tmpfs-rw /run`, `cgroup2-rw /sys/fs/cgroup`
+— each with an abuse sentence, each saying **`from (nothing — the stage mounts a
+fresh … here; no host path is opened)`**. That last line is the one to read: a
+mount the stage MAKES has no source, and an earlier version of this block printed
+an empty `from` and an `owned:` line claiming G4 admitted it, which is a check
+that never runs for these three.
+
+Nothing here is a host path, and the payload sees none of it: what it sees is the
+empty `/run` mountpoint from 6i above.
 
 ## 9d. `@podman-socket` without `@net` is offline, containers included
 

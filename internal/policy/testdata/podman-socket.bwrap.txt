@@ -15,6 +15,8 @@
 --perms 0755
 --dir /snug/bin
 --perms 0755
+--dir /run
+--perms 0755
 --dir /sys
 --perms 0755
 --dir /sys/fs

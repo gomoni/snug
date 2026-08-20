@@ -118,6 +118,15 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 			"the container profile.")
 	}
 
+	// The engine's OWN mounts into the model, before anything else in this
+	// function — including the --dry-run branch below, which is the whole
+	// point: a --dry-run that renders fewer mounts than the run performs is
+	// the gap this closes (issue #125's design pass §9.2). See engineview.go
+	// for why these three and not the four host-tree grafts.
+	if err := installEngineViewGrafts(env, pol); err != nil {
+		return containerRun{}, err
+	}
+
 	if dryRun {
 		// --dry-run's own promise is "having started nothing" (CLAUDE.md).
 		// Binding the proxy's LISTENING socket is not starting the engine —

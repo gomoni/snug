@@ -2706,3 +2706,65 @@ print("PROBE-COMPLETE", flush=True)
 		t.Errorf("the refusal does not say the sandbox cannot see /proc, the actual mechanism:\n%s", r.out)
 	}
 }
+
+// TestContainerRunGivesThePayloadAnEmptyUnwritableRun is the cost of modelling
+// the engine's own /run tmpfs (issue #125's design pass §9.2), asserted from
+// the payload's side rather than from the screen's.
+//
+// The engine mounts a fresh tmpfs on /run in ITS OWN namespace, because podman
+// reads itself as root-like with the full delegated subuid range and does not
+// self-mount one. A mount needs a mountpoint, and since issue #206 moved snug's
+// own paths to /snug a sandbox creates no /run at all — so BwrapFlags now
+// pre-creates the directory on a container run (EngineMountpoints). That is a
+// real, if small, change to what the payload sees, and this is what it may see:
+// an empty directory it cannot write.
+//
+// THE NEGATIVE CONTROL IS THE SECOND HALF and is what makes the first mean
+// anything: a DEFAULT run has no /run at all. Without it, "the payload sees an
+// empty /run" would pass on a snug that created /run for every sandbox.
+func TestContainerRunGivesThePayloadAnEmptyUnwritableRun(t *testing.T) {
+	budget(t, 60*time.Second)
+	env, _ := containerEngineEnv(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	script := `printf '%s\n' ` + payloadMarker + `
+[ -d /run ] && echo "run-is-a-directory=yes" || echo "run-is-a-directory=no"
+echo "run-entries=$(ls -A /run 2>/dev/null | wc -l)"
+if touch /run/snug-probe 2>/dev/null; then echo "run-write=OK"; else echo "run-write=REFUSED"; fi
+`
+	out, code := cli(t, env, "-p", "@podman-socket", proj, "--", "/bin/sh", "-c", script)
+	if code != 0 {
+		t.Fatalf("a @podman-socket run exited %d:\n%s", code, out)
+	}
+	if !strings.Contains(out, "run-is-a-directory=yes") {
+		t.Fatalf("the payload of a container run found no /run directory, so the engine's own "+
+			"tmpfs would have nowhere to land once its view is derived from the sandbox's "+
+			"(EngineMountpoints):\n%s", out)
+	}
+	if !strings.Contains(out, "run-entries=0") {
+		t.Errorf("/run is not EMPTY in the payload's view — it is a mountpoint snug creates for "+
+			"the ENGINE, and anything in it is something the payload was handed without a grant "+
+			"saying so:\n%s", out)
+	}
+	if !strings.Contains(out, "run-write=REFUSED") {
+		t.Errorf("/run is WRITABLE in the payload's view. It sits on the root tmpfs, which "+
+			"--remount-ro / covers; a writable directory here is a shadow slot of exactly the "+
+			"shape issue #22 measured:\n%s", out)
+	}
+
+	// NEGATIVE CONTROL: no container profile, no /run. Same payload, same
+	// harness, one profile fewer.
+	control := `printf '%s\n' ` + payloadMarker + `
+[ -e /run ] && echo "control-run=present" || echo "control-run=absent"
+`
+	cout, ccode := cli(t, baseEnv(), proj, "--", "/bin/sh", "-c", control)
+	if ccode != 0 {
+		t.Fatalf("the default-selection control run exited %d:\n%s", ccode, cout)
+	}
+	if !strings.Contains(cout, "control-run=absent") {
+		t.Errorf("control: a DEFAULT sandbox has a /run, so the assertions above say nothing "+
+			"about the container selection — /run existed only because snug's own paths lived "+
+			"under it, and issue #206 moved them:\n%s", cout)
+	}
+}
