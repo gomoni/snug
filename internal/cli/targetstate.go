@@ -46,6 +46,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/gomoni/snug/internal/vdir"
 	"golang.org/x/sys/unix"
 )
 
@@ -59,7 +60,7 @@ func targetStateName(realpath string) string {
 
 // openTargetStateDir opens the uid-derived snug runtime directory the target
 // lock lives in, creating it if needed, with the same ownership and mode
-// verification secureSubroot applies everywhere else.
+// verification vdir.SecureSubdir applies everywhere else.
 //
 // create=false is the reader's mode: it must never bring a directory into
 // existence just by looking for a run, so a missing directory is reported as
@@ -77,14 +78,14 @@ func openTargetStateDir(create bool) (*os.Root, string, error) {
 
 	snugPath := filepath.Join(base, snugName)
 	if create {
-		snugRoot, _, serr := secureSubroot(root, base, snugName)
+		snugRoot, _, serr := vdir.SecureSubdir(root, base, snugName)
 		if serr != nil {
 			return nil, "", fmt.Errorf("run state: %w", serr)
 		}
 		return snugRoot, snugPath, nil
 	}
 
-	snugRoot, oerr := openExistingSubroot(root, base, snugName)
+	snugRoot, oerr := vdir.OpenExistingSubdir(root, base, snugName)
 	if oerr != nil {
 		return nil, "", oerr
 	}

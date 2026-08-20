@@ -41,9 +41,18 @@ import (
 // with one global floor, deleting targetlock.go from this list changed nothing,
 // because runtimedir.go's nineteen sites cleared it on their own.
 //
-// The floors are well below the measured counts (19 and 5) so an ordinary
-// refactor does not trip them, while a file that stops yielding errors — renamed,
-// gutted, or its calls no longer spelled fmt.Errorf — does.
+// The floors are well below the measured counts so an ordinary refactor does not
+// trip them, while a file that stops yielding errors — renamed, gutted, or its
+// calls no longer spelled fmt.Errorf — does.
+//
+// THE SWEEP REACHES OUT OF THIS PACKAGE, and deliberately (#233). The
+// verified-directory checks moved to internal/vdir, taking most of
+// runtimedir.go's messages with them; leaving this map alone would have dropped
+// runtimedir.go below its floor, and — once the floor was lowered to match —
+// would have left those messages swept by nothing at all. They are what a human
+// meets when $XDG_RUNTIME_DIR or /tmp is in a state snug refuses, which is
+// exactly the odd-environment path issue #180 wrote this sweep for. The parser
+// takes a relative path, so following them is one map entry.
 //
 // WHAT IT STILL CANNOT CATCH, said out loud rather than left implied: deleting an
 // entry from THIS MAP. A test cannot police edits to its own input list, and
@@ -51,7 +60,7 @@ import (
 // edit one line down. The mutation was run and it survives; the per-file floor is
 // what turns the version that matters — a file quietly stopping being covered
 // while still existing — into a failure.
-var errorFixFiles = map[string]int{"runtimedir.go": 12, "targetlock.go": 3}
+var errorFixFiles = map[string]int{"runtimedir.go": 6, "targetlock.go": 3, "../vdir/vdir.go": 8}
 
 // A message clears the bar if it carries a clause beyond the "what failed" head.
 // The dash is snug's own idiom for that clause across every screen it prints;
