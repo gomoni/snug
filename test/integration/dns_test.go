@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -273,35 +274,57 @@ timeout 5 getent hosts example.com >/dev/null && echo RESOLVED || echo RESOLVE-F
 	}
 }
 
-// runWithFakeHostResolvConf runs a scripted sandbox payload with snug ITSELF
-// wrapped in an outer bwrap that overlays a FIXTURE /etc/resolv.conf — the
-// only way to make hostNameservers() (internal/cli/main.go) read something
-// other than this real machine's file, since it reads the fixed path
-// directly rather than through an injected Environ.
+// fakeHostEtc builds a copy of this host's /etc with `content` substituted for
+// resolv.conf and returns its path, for an outer bwrap to bind over /etc.
 //
-// --dev-bind / / keeps everything else exactly as the real host is;
-// --share-net is what lets the sandbox snug creates INSIDE this wrapper still
-// reach the real network for pasta's egress — the outer bwrap must not put
-// itself in a netns of its own, or every DNS/egress assertion downstream
-// would be testing the wrapper instead of snug.
-func fakeResolvConfFixture(t *testing.T, content string) string {
+// It replaces the WHOLE directory rather than the single file it wants to
+// change, and that is not gold-plating. On a host where /etc/resolv.conf is
+// itself a bind mount whose source inode has since been deleted — a distrobox
+// whose NetworkManager rewrote the file by rename, which is this project's
+// development environment — mounting anything onto that dentry is ENOENT:
+//
+//	bwrap: Can't bind mount /oldroot/.../resolv.conf on /newroot/etc/resolv.conf:
+//	Unable to mount source on destination: No such file or directory
+//
+// Both tests in this file failed that way, for a reason with nothing to do
+// with DNS. Binding a fresh directory over /etc has no such dependency.
+//
+// The copy is made as the test user, so files it cannot read are dropped.
+// That is faithful rather than lossy: bwrap runs the sandbox as that same uid,
+// and a file unreadable to the copy is equally unreadable inside.
+func fakeHostEtc(t *testing.T, content string) string {
 	t.Helper()
-	fixturePath := filepath.Join(t.TempDir(), "resolv.conf")
-	if err := os.WriteFile(fixturePath, []byte(content), 0o644); err != nil {
+	dir := filepath.Join(t.TempDir(), "etc")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return fixturePath
+	// cp exits non-zero on the files this uid may not read (shadow, gshadow),
+	// which is expected, so the exit code is not the check — the assertions
+	// below are, and they are what stops a silently empty copy from turning
+	// every test using this harness into a confusing pass.
+	out, _ := exec.Command("cp", "-a", "/etc/.", dir+"/").CombinedOutput()
+	for _, must := range []string{"passwd", "nsswitch.conf"} {
+		if _, err := os.Stat(filepath.Join(dir, must)); err != nil {
+			t.Fatalf("the /etc copy this harness binds is missing %s, so the sandbox "+
+				"below would be failing for that reason rather than the one under "+
+				"test: %v\ncp said:\n%s", must, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "resolv.conf"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 // cliWithFakeHostResolvConf is cli() (internal/cli's entry point, invoked
-// directly), wrapped in the SAME outer-bwrap resolv.conf overlay
+// directly), wrapped in the SAME outer-bwrap /etc overlay
 // runWithFakeHostResolvConf uses — needed so --dry-run's own hostNameservers()
 // read sees the fixture too, not the real host's file.
-func cliWithFakeHostResolvConf(t *testing.T, fixturePath string, args ...string) (string, int) {
+func cliWithFakeHostResolvConf(t *testing.T, resolvConf string, args ...string) (string, int) {
 	t.Helper()
 	bwrapArgs := append([]string{
 		"--dev-bind", "/", "/",
-		"--ro-bind", fixturePath, "/etc/resolv.conf",
+		"--ro-bind", fakeHostEtc(t, resolvConf), "/etc",
 		"--share-net",
 		"--", snugBin,
 	}, args...)
@@ -332,10 +355,11 @@ func cliWithFakeHostResolvConf(t *testing.T, fixturePath string, args ...string)
 }
 
 // runWithFakeHostResolvConf runs a scripted sandbox payload with snug ITSELF
-// wrapped in an outer bwrap that overlays a FIXTURE /etc/resolv.conf — the
-// only way to make hostNameservers() (internal/cli/main.go) read something
-// other than this real machine's file, since it reads the fixed path
-// directly rather than through an injected Environ.
+// wrapped in an outer bwrap that overlays an /etc carrying a FIXTURE
+// resolv.conf (fakeHostEtc) — the only way to make hostNameservers()
+// (internal/cli/main.go) read something other than this real machine's file,
+// since it reads the fixed path directly rather than through an injected
+// Environ.
 //
 // --dev-bind / / keeps everything else exactly as the real host is;
 // --share-net is what lets the sandbox snug creates INSIDE this wrapper still
@@ -344,11 +368,10 @@ func cliWithFakeHostResolvConf(t *testing.T, fixturePath string, args ...string)
 // would be testing the wrapper instead of snug.
 func runWithFakeHostResolvConf(t *testing.T, fixture string, args []string, dir, script string) sandboxRun {
 	t.Helper()
-	fixturePath := fakeResolvConfFixture(t, fixture)
 
 	full := append(append([]string{}, args...), dir, "--", "/bin/bash", "-c",
 		"printf '%s\\n' "+payloadMarker+"\n"+script)
-	out, code := cliWithFakeHostResolvConf(t, fixturePath, full...)
+	out, code := cliWithFakeHostResolvConf(t, fixture, full...)
 
 	ran := false
 	var kept []string
@@ -360,6 +383,42 @@ func runWithFakeHostResolvConf(t *testing.T, fixture string, args []string, dir,
 		kept = append(kept, line)
 	}
 	return sandboxRun{out: strings.Join(kept, "\n"), ran: ran, code: code}
+}
+
+// The two fixture resolvers this file hands to a synthetic /etc/resolv.conf
+// are PUBLIC on purpose, and one of them was not.
+//
+// The v4 fixture used to name 192.168.1.1 — the router of the LAN the test was
+// written on. Everywhere else that address answers nothing, so the CONTROL
+// failed and took the v6 assertion down with it: a GitHub runner reported "an
+// anonymised sandbox cannot resolve at all on a v6-only-resolver host" for a
+// build whose family handling was fine. A fixture that only works on one
+// network is a defect in the fixture, not a flake.
+const (
+	fixtureResolver4 = "1.1.1.1"
+	fixtureResolver6 = "2606:4700:4700::1111"
+)
+
+// hostCanQuery reports whether THIS HOST can itself get an answer out of the
+// resolver `addr` names, measured directly rather than through snug.
+//
+// It is the harness's precondition and not part of what is under test: pasta
+// forwards DNS from the HOST's network namespace, so whatever --dns-host names
+// has to answer the host, or the run measures the machine's connectivity
+// instead of snug's family handling. Kept short — an unreachable address fails
+// in milliseconds and a black-holed one is the case the timeout is for.
+func hostCanQuery(addr string) bool {
+	r := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, net.JoinHostPort(addr, "53"))
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	addrs, err := r.LookupHost(ctx, "example.com")
+	return err == nil && len(addrs) > 0
 }
 
 // TestAnonymisedSandboxResolvesOnAnIPv6OnlyResolverHost is issue #162's
@@ -376,10 +435,46 @@ func TestAnonymisedSandboxResolvesOnAnIPv6OnlyResolverHost(t *testing.T) {
 	requireSandbox(t)
 	requirePasta(t)
 	requireInternet(t)
+
+	// The harness's own preconditions, measured on the host BEFORE anything is
+	// asserted. Checking them afterwards is what produced the CI report this
+	// guard exists to stop: a confident v6 failure followed by an admission
+	// that the control had not worked either.
+	//
+	// Plain t.Skip rather than skipOrFail, and the distinction is the reason
+	// this is not an unfailable test: SNUG_REQUIRE_SANDBOX asserts the machine
+	// CAN sandbox, while IPv6 egress is a property of the network it sits on.
+	// GitHub's runners have none, so this test does not run there; it runs on a
+	// dual-stack host, where a regression in the family logic still fails it.
+	if !hostCanQuery(fixtureResolver4) {
+		t.Skipf("this host cannot itself query %s, so the control that carries this "+
+			"test cannot pass and the v6 case below would be asserted through a "+
+			"harness already known to be broken", fixtureResolver4)
+	}
+	if !hostCanQuery(fixtureResolver6) {
+		t.Skipf("this host cannot itself query %s, so it has no IPv6 egress for pasta "+
+			"to forward a v6 lookup through and this would measure the network "+
+			"rather than snug's choice of family", fixtureResolver6)
+	}
+
 	proj, _ := target(t)
 
-	v6Fixture := "nameserver 2606:4700:4700::1111\n" // a live public v6 resolver (Cloudflare)
-	r := runWithFakeHostResolvConf(t, v6Fixture, []string{"-p", "@net-anon"}, proj,
+	// CONTROL FIRST, and it is fatal rather than a skip. The probes above
+	// already established that this host reaches both fixture resolvers, so a
+	// v4 lookup failing HERE is snug's doing and not the machine's — skipping
+	// on it would let a regression that broke BOTH families disappear into a
+	// green run, which is worse than having no test.
+	c := runWithFakeHostResolvConf(t, "nameserver "+fixtureResolver4+"\n",
+		[]string{"-p", "@net-anon"}, proj,
+		`timeout 5 getent hosts example.com >/dev/null && echo RESOLVED || echo RESOLVE-FAILED`).mustRun(t)
+	if !strings.Contains(c.out, "RESOLVED") {
+		t.Fatalf("control: the v4 fixture failed to resolve through @net-anon, though this "+
+			"host answers %s directly — the harness is broken and nothing below it "+
+			"would mean anything:\n%s", fixtureResolver4, c.out)
+	}
+
+	r := runWithFakeHostResolvConf(t, "nameserver "+fixtureResolver6+"\n",
+		[]string{"-p", "@net-anon"}, proj,
 		`grep ^nameserver /etc/resolv.conf
 timeout 5 getent hosts example.com >/dev/null && echo RESOLVED || echo RESOLVE-FAILED`).mustRun(t)
 	if !strings.Contains(r.out, "fd00:5e79:1::53") {
@@ -389,15 +484,6 @@ timeout 5 getent hosts example.com >/dev/null && echo RESOLVED || echo RESOLVE-F
 	if !strings.Contains(r.out, "RESOLVED") {
 		t.Errorf("an anonymised sandbox cannot resolve at all on a v6-only-resolver host — "+
 			"the forwarder and its destination disagreed on family:\n%s", r.out)
-	}
-
-	// CONTROL: the v4 fixture resolves too, through the v4 forwarder.
-	v4Fixture := "nameserver 192.168.1.1\n"
-	c := runWithFakeHostResolvConf(t, v4Fixture, []string{"-p", "@net-anon"}, proj,
-		`timeout 5 getent hosts example.com >/dev/null && echo RESOLVED || echo RESOLVE-FAILED`).mustRun(t)
-	if !strings.Contains(c.out, "RESOLVED") {
-		t.Errorf("control: the v4 fixture failed to resolve, so this test's harness "+
-			"(not the v6 case) is broken:\n%s", c.out)
 	}
 }
 
@@ -439,7 +525,7 @@ func TestNoResolverHostFailsFastAndSaysSo(t *testing.T) {
 		t.Errorf("getent succeeded with no resolver configured, which should be impossible:\n%s", r.out)
 	}
 
-	screen, code := cliWithFakeHostResolvConf(t, fakeResolvConfFixture(t, ""),
+	screen, code := cliWithFakeHostResolvConf(t, "",
 		"--dry-run", "-p", "@net", proj, "--", "true")
 	if code != 0 {
 		t.Fatalf("--dry-run -p @net exited %d:\n%s", code, screen)
