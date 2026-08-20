@@ -116,7 +116,12 @@ func TestEngineRunDirIsHardenedAndNotReused(t *testing.T) {
 // exercising it — and a model whose stricter half is never used is a model
 // whose stricter half is untested.
 //
-// The generated-file list is asserted EXHAUSTIVELY rather than by spot check.
+// The generated-file list is asserted EXHAUSTIVELY rather than by spot check —
+// and "exhaustively" is a claim this list has already failed once: storage.conf
+// was added to the engine one commit after this comment was written and did not
+// arrive here until a review caught it. The negative below is what makes the
+// claim self-enforcing rather than aspirational, since a file in neither
+// directory fails whether or not anyone remembers this line.
 // A new generated file landing in sock/ instead of conf/ would be silently
 // writable inside the engine under Tier C, which is the failure this test is
 // the only warning for: nothing else notices where a file was written.
@@ -161,8 +166,8 @@ func TestEngineRunDirSplitsByWritability(t *testing.T) {
 		policy.NetPolicy{}); err != nil {
 		t.Fatalf("Spec: %v", err)
 	}
-	generated := []string{"containers.conf", "registries.conf", "auth.json", "resolv.conf",
-		filepath.Join("home", ".config", "containers", "policy.json")}
+	generated := []string{"containers.conf", "registries.conf", "storage.conf", "auth.json",
+		"resolv.conf", filepath.Join("home", ".config", "containers", "policy.json")}
 	for _, name := range generated {
 		path := filepath.Join(e.confDir, name)
 		if _, statErr := os.Stat(path); statErr != nil {
