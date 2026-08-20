@@ -93,6 +93,48 @@ What that killed:
 - **`nsenter(1)` as a drop-in.** MEASURED **FAILED** in this topology:
   `nsenter: setgroups failed: Operation not permitted`.
 
+### What the technique costs, measured a milestone later (issue #221)
+
+The child is single-threaded and owns its own `fs_struct`, as claimed. What that
+sentence does not say is that it is also carrying the **forking goroutine's
+`stackguard0`**, and the Go runtime poisons that value with `stackPreempt`
+whenever it wants the goroutine preempted — on every stop-the-world and on any
+sysmon retake of a goroutine that has run for 10 ms. An ordinary Go function's
+prologue compares SP against it *before its first statement*, loses, and calls
+`runtime.newstack`, which asks the scheduler for threads the fork did not copy.
+
+So "nothing between the fork and the exec may allocate, lock, or re-enter the
+scheduler" is **not a property a reader can uphold by writing careful code**: the
+first ordinary call is already a runtime call, whatever its body says.
+
+MEASURED, twice:
+
+- In the wild. Two `snug attach` bridge processes were found alive hours after
+  their caller had died: `Threads: 1`, `wchan: futex_do_wait`, `SigBlk: 0`,
+  `NoNewPrivs: 0`, `Seccomp: 0`, and the *caller's own* namespaces — a B that had
+  not executed one instruction of its own step 1. Because that is also before
+  step 2's `PR_SET_PDEATHSIG`, killing the client did not clean it up; and
+  because B never wrote its report byte, the client sat in a read that had no
+  deadline. That pair — a hung `snug attach` and an orphan that outlives it — is
+  the whole of issue #221.
+- In isolation. A harness forking 40 children under `runtime.GC()` pressure:
+  **17 of 40 wedged** when the child's first call was an ordinary function,
+  **0 of 40** when it was `//go:nosplit`.
+
+The fix is therefore structural, not editorial: `//go:nosplit` on the child's
+entire call graph removes the prologue that consults the poisoned value,
+`//go:norace` and `//go:nocheckptr` remove the instrumentation a `-race` or
+`-d=checkptr` build would otherwise inject into the same path, and the parent
+blocks every signal on the forking thread across the clone so the child cannot
+run an inherited Go signal handler before it blocks them itself. The linker
+enforces the nosplit budget for the chain; `TestEveryFunctionOnTheChildPathIsNosplit`
+enforces the half the linker does not check — that nothing on the path is left
+unmarked or reaches outside the package.
+
+**Anything that raw-forks in this tree inherits this cost**, which today is
+`internal/attach` alone: `internal/stage` re-execs `/proc/self/exe` instead and
+so starts a fresh runtime.
+
 ## 4. The decision it changed, and the one it did not
 
 Attach is **fork-from-init**: the new payload is forked by the sandbox's own

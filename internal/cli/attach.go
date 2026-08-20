@@ -29,6 +29,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -548,11 +549,36 @@ func procNamespaceInodes(pid int) (map[string]uint64, error) {
 // and independently verify all four confinement lines plus the recorded
 // namespace ids, and ONLY THEN write the release byte. Any mismatch: kill B,
 // A never exists.
+// bridgeReportTimeout bounds releaseGate's wait for B's one report byte —
+// see the comment at the read for why a bound exists at all and why this
+// number is not a performance target.
+const bridgeReportTimeout = 10 * time.Second
+
 func releaseGate(bpid int, st runState, reportR, gateW *os.File, relay *stdioRelay) (int, error) {
+	// The deadline is what makes the message below true. It read "before
+	// this timed out waiting" for a milestone while the read had no
+	// deadline at all, so the one failure it named — a B that never reports
+	// — was the one failure it could not produce: `snug attach` blocked
+	// here forever instead, which is issue #221's visible half. Ten seconds
+	// is not a performance target: B's whole sequence is a handful of
+	// syscalls and no I/O, so a B that has not reported in ten seconds is
+	// not slow, it is stopped, and the caller SIGKILLs it (runAttach's error
+	// path) rather than leaving it in the sandbox's namespaces.
+	if err := reportR.SetReadDeadline(time.Now().Add(bridgeReportTimeout)); err != nil {
+		return 0, fmt.Errorf("arming the deadline on the bridge's report pipe: %w", err)
+	}
 	buf := make([]byte, 1)
-	if _, err := reportR.Read(buf); err != nil || buf[0] != 'C' {
-		return 0, fmt.Errorf("the bridge process did not report confinement before this timed out "+
-			"waiting: %v", err)
+	if _, err := reportR.Read(buf); err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return 0, fmt.Errorf("the bridge process did not report confinement within %s and has "+
+				"been killed. It was forked but never ran: if this is reproducible, it is the "+
+				"class of bug issue #221 records (a fork child that entered the Go runtime and "+
+				"stopped there), not a slow machine", bridgeReportTimeout)
+		}
+		return 0, fmt.Errorf("reading the bridge's confinement report: %w", err)
+	}
+	if buf[0] != 'C' {
+		return 0, fmt.Errorf("the bridge process reported %q rather than confinement", buf[0])
 	}
 
 	if err := verifyBridgeConfined(bpid, st); err != nil {

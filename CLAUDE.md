@@ -508,6 +508,18 @@ meant. It cannot prove the sandbox holds.
   Affordable because the requirement turned out avoidable: a raw `fork` from a
   multithreaded Go program yields a child that is single-threaded *and* owns its
   own `fs_struct` — exactly the two states the kernel checks.
+
+  **What that child costs is not editorial care, it is `//go:nosplit`.** The fork
+  child also carries the forking goroutine's `stackguard0`, which the runtime
+  poisons whenever it wants that goroutine preempted, so an ordinary function's
+  PROLOGUE calls `runtime.newstack` before its first statement and asks the
+  scheduler for threads the fork did not copy. Measured: 17 of 40 forks wedged in
+  `futex_do_wait` forever under stop-the-world pressure, 0 of 40 with a nosplit
+  first call, and in the wild two `snug attach` bridges alive hours after their
+  caller died (issue #221, NOCGO.md §3). "Nothing here may ask the Go runtime for
+  anything" is therefore a property of the PRAGMAS, not of the body — the first
+  ordinary call is already a runtime call whatever it says. `internal/attach` is
+  the only raw-fork site; `internal/stage` re-execs and starts a fresh runtime.
 - **Config format is TOML.** Strict decoding with `DisallowUnknownFields()` is
   load-bearing: an unknown key is a fatal parse error, so a negation key cannot
   be smuggled in.
