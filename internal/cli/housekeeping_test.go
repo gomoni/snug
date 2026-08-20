@@ -74,15 +74,19 @@ func TestStaleRunDirectoryNoticeIsQuietByDefault(t *testing.T) {
 		t.Setenv("XDG_RUNTIME_DIR", xdg)
 		stale := seedStaleRunDir(t, xdg, "run-999999")
 
-		var runPath string
+		var rt *runtimeDir
 		out := captureStderr(t, func() {
 			var err error
-			runPath, err = runtimeDir()
+			rt, err = openRuntimeDir()
 			if err != nil {
-				t.Errorf("runtimeDir: %v", err)
+				t.Errorf("openRuntimeDir: %v", err)
 			}
 		})
-		t.Cleanup(func() { os.RemoveAll(runPath) })
+		t.Cleanup(func() {
+			if rt != nil {
+				rt.Remove()
+			}
+		})
 
 		if strings.Contains(out, "stale run directory") {
 			t.Errorf("a routine sweep announced itself on stderr with no --verbose asked for: %q", out)
@@ -104,15 +108,19 @@ func TestStaleRunDirectoryNoticeIsQuietByDefault(t *testing.T) {
 		setHousekeepingVerbose(true)
 		t.Cleanup(func() { setHousekeepingVerbose(prev) })
 
-		var runPath string
+		var rt *runtimeDir
 		out := captureStderr(t, func() {
 			var err error
-			runPath, err = runtimeDir()
+			rt, err = openRuntimeDir()
 			if err != nil {
-				t.Errorf("runtimeDir: %v", err)
+				t.Errorf("openRuntimeDir: %v", err)
 			}
 		})
-		t.Cleanup(func() { os.RemoveAll(runPath) })
+		t.Cleanup(func() {
+			if rt != nil {
+				rt.Remove()
+			}
+		})
 
 		if !strings.Contains(out, "removed stale run directory") {
 			t.Errorf("--verbose did not report the sweep it performed: %q", out)

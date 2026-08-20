@@ -289,7 +289,7 @@ func TestAttachRefusesWhenTheTargetLockIsNotHeld(t *testing.T) {
 }
 
 // TestStateFileIsWrittenSixOhOhInASevenHundredDirectory is §13.1 test 6:
-// pins §6.3's mode table end to end, through the real runtimeDir()/
+// pins §6.3's mode table end to end, through the real openRuntimeDir()/
 // writeRunState() path rather than by asserting a literal 0o600/0o700
 // somewhere in the source — a test that reads the mode off the filesystem
 // is the one thing a refactor of HOW the file is opened cannot quietly break
@@ -300,11 +300,12 @@ func TestStateFileIsWrittenSixOhOhInASevenHundredDirectory(t *testing.T) {
 	// lock); it deliberately no longer governs where state.json lands.
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 
-	runPath, err := runtimeDir()
+	rt, err := openRuntimeDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(runPath)
+	runPath := rt.Path()
+	defer rt.Remove()
 
 	if fi, err := os.Stat(runPath); err != nil {
 		t.Fatal(err)
@@ -326,7 +327,7 @@ func TestStateFileIsWrittenSixOhOhInASevenHundredDirectory(t *testing.T) {
 			"mnt": 1, "pid": 2, "net": 3, "ipc": 4, "uts": 5, "cgroup": 6,
 		},
 	}
-	if err := writeRunState(runPath, pol, info); err != nil {
+	if err := writeRunState(pol, info); err != nil {
 		t.Fatal(err)
 	}
 
