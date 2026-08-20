@@ -1,6 +1,6 @@
 BIN := bin/snug
 
-.PHONY: all build test gate integration golden clean install
+.PHONY: all build test gate integration forkstress golden clean install
 
 all: build
 
@@ -15,6 +15,12 @@ test:
 gate:
 	gofmt -l . | (! grep .) || (echo "gofmt needed"; exit 1)
 	go vet ./...
+	# Same reason as the integration line below, for the other build tag in
+	# this tree: internal/attach's fork-stress arm is `forkstress`-tagged, so
+	# `go vet ./...` never compiles it and it could sit broken indefinitely
+	# with every gate green. Type-checking costs nothing; RUNNING it is the
+	# part deliberately kept out of the gate (see the forkstress target).
+	go vet -tags forkstress ./internal/attach/...
 	# `go vet ./...` does NOT compile build-tagged files, so the integration
 	# harness could sit broken indefinitely and every gate would still be green.
 	# Type-checking it costs nothing and needs no privileges — unlike running it.
@@ -98,6 +104,27 @@ gate:
 integration:
 	SNUG_TEST_NET=$${SNUG_TEST_NET:-$${SNUG_REQUIRE_SANDBOX:+1}} \
 		go test -tags integration -timeout 4m -v ./test/integration/...
+
+# The regression test for issue #221 — a raw-fork child that wedged in the Go
+# runtime — behind its own tag and its own CI job, deliberately NOT in `go test
+# ./...`.
+#
+# It is not slow by accident: to be a test at all it has to PROVOKE the
+# condition, which means a stop-the-world storm and up to 240 forked processes,
+# a few seconds of a loaded machine. That buys re-proving a property that only
+# moves when internal/attach's fork path moves, so the gate should not pay it on
+# every run — but it stays in CI, in parallel, because the alternative to a slow
+# test here is no test (the mechanism is invisible without load).
+#
+# Its structural twin, TestEveryFunctionOnTheChildPathIsNosplit, is untagged and
+# takes 0.00s: that is the one that catches the everyday regression (a pragma
+# dropped, a splittable call added), and it runs in `make gate` like everything
+# else.
+# -v deliberately: the control arm's own line ("a splittable fork child wedged
+# on round N — the pressure is real") is the evidence that this run provoked the
+# condition at all, and a green tick without it says nothing.
+forkstress:
+	go test -tags forkstress -count=1 -timeout 5m -v -run TestForkChild ./internal/attach/
 
 # Regenerate the golden argv files, then READ THE DIFF. A change to a golden
 # file is a change to the sandbox boundary.

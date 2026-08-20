@@ -48,6 +48,30 @@ jobs:
           check-latest: true
       - run: make gate
 
+  # Tier 1b: the fork child does not wedge (issue #221). Its own job, in
+  # parallel, for one reason — it costs seconds and the gate should stay quick —
+  # and on a plain runner, because it needs no privileges at all: it raw-forks
+  # and reads /proc, it does not create a namespace.
+  #
+  # Kept BLOCKING rather than advisory. The property it proves is that
+  # `snug attach` returns at all under load, and the only thing that can prove
+  # it is this test failing when it stops being true. Note it carries its own
+  # positive control: if the runner never provokes a preempt request, the test
+  # FAILS saying the harness needs repair, rather than passing vacuously.
+  forkstress:
+    name: the fork child does not wedge
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26'
+          check-latest: true
+      - run: make forkstress
+
   # Tier 3: really launch sandboxes and assert what is and is not reachable.
   #
   # The assertions live in Go, under the `integration` build tag, in
