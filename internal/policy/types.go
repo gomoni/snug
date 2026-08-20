@@ -295,6 +295,13 @@ type Policy struct {
 	// (issue #42: the set now includes whatever the host's ssh named).
 	SystemSSHConfigs []string
 
+	// SystemSSHCarried is the whitelisted keys snug copied from this host's
+	// resolved ssh configuration into the file it generated, sorted. Written
+	// only by replaceSystemSSHConfig, and read by --dry-run's SSH block for
+	// the same reason SystemSSHConfigs is: the screen states what Resolve
+	// decided rather than recomputing it (issue #43).
+	SystemSSHCarried []string
+
 	// Git says whether the sandbox's git config is reconstructed from the
 	// host's. See gitextract.go — the host's file is read as data and never
 	// mounted, because its keys name programs to run.

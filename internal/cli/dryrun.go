@@ -1096,9 +1096,34 @@ func describeSSH(out *os.File, p *policy.Policy) {
 	fmt.Fprintf(out, "         the host's is root-owned and reads as 65534 inside (one uid is\n")
 	fmt.Fprintf(out, "         mapped); OpenSSH refuses such a file, so ssh, git-over-ssh, scp\n")
 	fmt.Fprintf(out, "         and rsync -e ssh all die without this\n")
-	fmt.Fprintf(out, "         cost       the host's system-wide defaults do not apply — on a\n")
-	fmt.Fprintf(out, "                    crypto-policy distro that is the policy's algorithm\n")
-	fmt.Fprintf(out, "                    lists and RequiredRSASize (2048 -> OpenSSH's 1024)\n")
+	if len(p.SystemSSHCarried) == 0 {
+		fmt.Fprintf(out, "         cost       the host's system-wide defaults do not apply — this host\n")
+		fmt.Fprintf(out, "                    resolves the algorithm lists and RequiredRSASize to\n")
+		fmt.Fprintf(out, "                    OpenSSH's compiled-in values anyway, so nothing was lost\n")
+		return
+	}
+	var spelled []string
+	for _, k := range p.SystemSSHCarried {
+		spelled = append(spelled, policy.SSHKeySpelling(k))
+	}
+	// The list is DERIVED from what this host's ssh actually said, so its
+	// length varies per host and a hand-wrapped literal cannot track it — the
+	// same reason the syscall list is wrapped rather than written out.
+	for i, line := range wrapList(spelled, 56) {
+		label := "carried   "
+		if i > 0 {
+			label = "          "
+		}
+		fmt.Fprintf(out, "         %s %s\n", label, line)
+	}
+	fmt.Fprintf(out, "                    — this host's own values, read with `ssh -G`, kept because\n")
+	fmt.Fprintf(out, "                    they name algorithms and nothing else\n")
+	fmt.Fprintf(out, "         left out   everything that names a program, a file or a socket —\n")
+	fmt.Fprintf(out, "                    ProxyCommand, Match exec, KnownHostsCommand, PKCS11Provider,\n")
+	fmt.Fprintf(out, "                    IdentityFile, IdentityAgent, ControlPath\n")
+	fmt.Fprintf(out, "         cost       anything else the host's file said is gone, and an\n")
+	fmt.Fprintf(out, "                    algorithm name this sandbox's ssh does not know is a loud\n")
+	fmt.Fprintf(out, "                    failure (`Bad SSH2 cipher spec`), never a silent one\n")
 }
 
 // describeCommands names EVERY executable staged in policy.StagedBinDir, which

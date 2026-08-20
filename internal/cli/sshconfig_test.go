@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // measuredChain is the debug output of `ssh -G -v -o BatchMode=yes <host>` on
@@ -98,12 +100,131 @@ func TestSSHConfigChainOnThisHost(t *testing.T) {
 		t.Skip("no ssh on this host; there is nothing to ask")
 	}
 	home := t.TempDir() // not the real home: this asserts the filter, not the host
-	for _, p := range sshConfigChain(home, false) {
+	chain, _ := probeSSHConfig(home, false)
+	for _, p := range chain {
 		if !strings.HasPrefix(p, "/") {
 			t.Errorf("chain entry %q is not absolute", p)
 		}
 		if !strings.HasSuffix(p, "/ssh_config") {
 			t.Errorf("chain entry %q is not a top-level system ssh_config", p)
+		}
+	}
+}
+
+// measuredValues is `ssh -G` output on the development host, trimmed to the
+// lines that matter plus a few that must NOT be carried. Verbatim shapes, not
+// paraphrases: the parser's job is to survive what ssh really prints.
+const measuredValues = `user michal
+hostname snug-probe.invalid
+requiredrsasize 2048
+ciphers aes256-gcm@openssh.com,chacha20-poly1305@openssh.com,aes256-ctr
+macs hmac-sha2-256-etm@openssh.com,hmac-sha1-etm@openssh.com
+proxycommand /usr/bin/nc %h %p
+identityfile ~/.ssh/id_rsa
+permitlocalcommand no
+sendenv LANG
+forwardx11trusted yes
+`
+
+const measuredDefaults = `user michal
+hostname snug-probe.invalid
+requiredrsasize 1024
+ciphers chacha20-poly1305@openssh.com,aes128-gcm@openssh.com,aes256-ctr
+macs hmac-sha2-256-etm@openssh.com,hmac-sha1-etm@openssh.com
+forwardx11trusted no
+`
+
+func TestParseSSHValuesKeepsOnlyTheWhitelist(t *testing.T) {
+	got := parseSSHValues(measuredValues)
+
+	if got["requiredrsasize"] != "2048" {
+		t.Errorf("requiredrsasize = %q, want 2048 — it is the one entry with security "+
+			"content: without it the sandbox accepts a 1024-bit RSA key the host refuses",
+			got["requiredrsasize"])
+	}
+	// ssh_config is a command table. Every key here names a program or a file,
+	// and read-only does not demote one into data — which is why snug generates
+	// this file instead of binding the host's.
+	for _, k := range []string{"proxycommand", "identityfile", "permitlocalcommand", "sendenv", "forwardx11trusted"} {
+		if v, ok := got[k]; ok {
+			t.Errorf("carried %s = %q; it is not in policy.SSHKeyWhitelist", k, v)
+		}
+	}
+}
+
+func TestSSHValuesDeltaIsWhatTheHostAddsToTheDefaults(t *testing.T) {
+	got := sshValuesDelta(parseSSHValues(measuredValues), parseSSHValues(measuredDefaults))
+
+	if got["requiredrsasize"] != "2048" {
+		t.Errorf("requiredrsasize = %q, want 2048 (the host raises it from 1024)", got["requiredrsasize"])
+	}
+	if _, ok := got["ciphers"]; !ok {
+		t.Error("ciphers was dropped; the host's list differs from the compiled-in one")
+	}
+	// The half that keeps the generated file small — and the goldens quiet on a
+	// host that customises nothing. macs is IDENTICAL to the default here, so
+	// restating it would be snug claiming to restore something nothing lost.
+	if v, ok := got["macs"]; ok {
+		t.Errorf("carried macs = %q although it equals OpenSSH's compiled-in value", v)
+	}
+}
+
+// TestSSHValuesDeltaWithNoDefaultsCarriesEverything pins the fail-safe
+// direction of the second probe: if `ssh -G -F /dev/null` cannot be run, snug
+// has no defaults to subtract and carries the host's values whole. That is
+// more of the host's own policy, never less, and every value still has to pass
+// the whitelist and the shape predicate.
+func TestSSHValuesDeltaWithNoDefaultsCarriesEverything(t *testing.T) {
+	got := sshValuesDelta(parseSSHValues(measuredValues), nil)
+	for _, k := range []string{"requiredrsasize", "ciphers", "macs"} {
+		if _, ok := got[k]; !ok {
+			t.Errorf("%s was dropped with no defaults to compare against", k)
+		}
+	}
+}
+
+func TestParseSSHValuesDropsAValueItCannotWriteSafely(t *testing.T) {
+	// ssh will not print these — it is the host's own binary and it quotes
+	// nothing — but the file snug writes is parsed by ssh, and the extractor is
+	// the sink where a value stops being a string and starts being a directive.
+	// Assert the predicate, not the source's good manners.
+	for name, line := range map[string]string{
+		"a directive smuggled after a newline": "requiredrsasize 2048\nproxycommand touch /tmp/PWNED",
+		"a comment":                            "requiredrsasize 2048 # rest",
+		"an escape sequence":                   "requiredrsasize 2048\x1b[2J",
+		"a quote":                              "ciphers \"aes256-ctr\"",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := parseSSHValues(line + "\n")
+			for k, v := range got {
+				if strings.ContainsAny(v, " \t\"#\n\x1b") {
+					t.Fatalf("carried %s = %q", k, v)
+				}
+			}
+			// POSITIVE CONTROL: the same parser, one good line, must still keep
+			// it — otherwise this passes on a parser that returns nothing.
+			if ok := parseSSHValues("requiredrsasize 2048\n"); ok["requiredrsasize"] != "2048" {
+				t.Fatalf("the control line was dropped too, so this case proves nothing: %q", ok)
+			}
+		})
+	}
+}
+
+// TestProbeSSHConfigOnThisHost is the end-to-end half of the extraction, and
+// it asserts the property that holds on every host rather than this box's
+// crypto policy: whatever comes back is a whitelisted key whose value snug is
+// willing to write.
+func TestProbeSSHConfigOnThisHost(t *testing.T) {
+	if _, err := exec.LookPath("ssh"); err != nil {
+		t.Skip("no ssh on this host; there is nothing to ask")
+	}
+	_, values := probeSSHConfig(t.TempDir(), false)
+	for k, v := range values {
+		if !slices.Contains(policy.SSHKeyWhitelist, k) {
+			t.Errorf("probe returned %q, which is not in the whitelist", k)
+		}
+		if !sshValueShape(v) {
+			t.Errorf("probe returned %s = %q, which snug would not write", k, v)
 		}
 	}
 }

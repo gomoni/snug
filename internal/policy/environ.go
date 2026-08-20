@@ -84,6 +84,18 @@ type Context struct {
 	// it becomes a mount.
 	HostSSHConfigs []string
 
+	// HostSSHConfig is the whitelisted subset of this host's RESOLVED
+	// system-wide ssh configuration — algorithm lists and RequiredRSASize,
+	// nothing that names a program, a file or a socket — extracted by the
+	// caller with `ssh -G` because running a host binary is not the
+	// resolver's job. Only keys in SSHKeyWhitelist ever appear here, and only
+	// where the host's value DIFFERS from OpenSSH's compiled-in default.
+	//
+	// Empty is the ordinary case and costs nothing: the generated file then
+	// carries no directives and the sandbox's ssh uses the same compiled-in
+	// defaults the host's does (issue #43).
+	HostSSHConfig SSHValues
+
 	// KnownHosts is the subset of the host's known_hosts for the pinned host,
 	// filtered by the caller. Binding the whole file would tell the sandbox
 	// every host you have ever connected to.
