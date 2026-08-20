@@ -198,7 +198,8 @@ cannot graft /home/u/proj/sub/xdg (host /run/user/1000) into the engine's view: 
        A graft may only reach a host path the sandbox's OWN grants already expose — the
        engine's view is DERIVED from the sandbox's, never a second, wider window onto
        the host — or a path snug itself created (the container store, the runroot, a
-       socket directory). Grant it to the sandbox first, or graft a path snug owns.
+       socket directory), or this run's recorded engine toolchain root, read-only.
+       Grant it to the sandbox first, or graft a path snug owns.
 
 == graft_covers_graft ==
 cannot graft /home/u/proj/sub/nest into the engine's view: it would CONTAIN the graft
@@ -227,7 +228,8 @@ cannot graft /home/u/proj/sub/resolve-probe (host /home/u/secrets) into the engi
        A graft may only reach a host path the sandbox's OWN grants already expose — the
        engine's view is DERIVED from the sandbox's, never a second, wider window onto
        the host — or a path snug itself created (the container store, the runroot, a
-       socket directory). Grant it to the sandbox first, or graft a path snug owns.
+       socket directory), or this run's recorded engine toolchain root, read-only.
+       Grant it to the sandbox first, or graft a path snug owns.
        The source was named as /home/u/proj/sub/link, which is a SYMLINK on the host;
        snug judges what it resolves to, because open_tree(2) follows it (measured, issue #55).
 

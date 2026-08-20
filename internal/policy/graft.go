@@ -130,6 +130,54 @@ func (p *Policy) OwnEngineHostPath(env Environ, path string) error {
 	return nil
 }
 
+// EngineToolchain records the ONE host directory the container engine's own
+// program files live in, as G4's third source — see the field's doc comment
+// (types.go) for what it is for and why it is exact, single and read-only.
+// It is the ONLY writer of p.EngineToolchainRoot
+// (TestOnlyOneWriterOfEngineToolchainRoot), the same device Policy.Graft is
+// for p.Grafts and OwnEngineHostPath is for p.EngineOwnedHostPaths.
+//
+// Written ONCE. A second call with a DIFFERENT value is an error rather than
+// a replacement: there is one engine per run, so two toolchain roots is a bug
+// in the caller, and silently keeping either one would decide, without saying
+// so, which host directory the engine may execute out of. A repeat of the
+// SAME value is accepted — idempotence costs nothing and lets a caller
+// re-assert what it already established.
+//
+// Resolution and hygiene are OwnEngineHostPath's, for OwnEngineHostPath's
+// reasons: the stage hands this path to open_tree(2), which follows a final
+// symlink, and G4 is exact membership — so a root recorded unresolved while a
+// graft's Host is resolved fails membership for a reason nobody wrote down
+// (issue #55, F6 §2d).
+//
+// An empty argument is a REFUSAL, not a no-op that clears the field. A caller
+// with nothing to record must not call this at all; treating "" as "forget
+// what you knew" would make the write-once property depend on argument value.
+func (p *Policy) EngineToolchain(env Environ, root string) error {
+	if root == "" {
+		return fmt.Errorf("cannot record the engine's toolchain root: the path is empty.\n" +
+			"       A caller with no toolchain root to record must not call this — an empty\n" +
+			"       value here would silently clear one already recorded.")
+	}
+	if real, err := ResolveExistingHostPath(env, root); err == nil {
+		root = real
+	} else {
+		root = filepath.Clean(root)
+	}
+	if err := checkPathHygiene("engine toolchain root", root, "(snug)", "the ENGINE VIEW block"); err != nil {
+		return err
+	}
+	if p.EngineToolchainRoot != "" && p.EngineToolchainRoot != root {
+		return fmt.Errorf("cannot record %s as the engine's toolchain root: this run already\n"+
+			"       recorded %s. There is one engine per run, so a second, different root is a\n"+
+			"       bug in the caller rather than a disagreement to resolve — and choosing\n"+
+			"       between them here would decide which host directory the engine may execute\n"+
+			"       out of without saying so.", root, p.EngineToolchainRoot)
+	}
+	p.EngineToolchainRoot = root
+	return nil
+}
+
 // ResolveExistingHostPath canonicalises as much of a host path as exists, then
 // rejoins the remainder lexically.
 //
@@ -573,8 +621,28 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 	//     subvolume — so RESOLVE_NO_XDEV would fail EXDEV on an unremarkable
 	//     layout, not on an attack. open_tree(2)'s AT_RECURSIVE cloning the
 	//     crossed submounts is the INTENT here, not a hazard to fence off.
+	//
+	// THE THIRD DISJUNCT, added by Tier C's toolchain graft (issue #125): the
+	// engine's own program files. It is the narrowest of the three and is
+	// written as MEMBERSHIP rather than as a question — `g.Host ==
+	// p.EngineToolchainRoot`, one value, exact, never a prefix — deliberately,
+	// because the alternative shape was to ask "did the path preflight
+	// accept this?" and preflight answers a DIFFERENT question ("is this a
+	// host-escape shim?"). Two questions that will drift, where a later
+	// relaxation of preflight would widen what may be grafted with nothing
+	// named G4 noticing. So preflight writes one resolved value into one
+	// field through one writer, and G4 checks membership in it.
+	//
+	// AccessRO only, checked here rather than left to the caller: the two
+	// other sources have an owner who can say a write is intended — the
+	// sandbox's own grants say so for the first, snug created the artefact
+	// for the second — and this one is the host user's own installation,
+	// where a writable graft is a host-write channel out of the engine.
 	if rules.hasHost {
-		if !p.HostPathVisible(g.Host, g.Access == AccessRW) && !p.EngineOwnedHostPaths[g.Host] {
+		toolchain := p.EngineToolchainRoot != "" &&
+			g.Host == p.EngineToolchainRoot &&
+			g.Access == AccessRO
+		if !p.HostPathVisible(g.Host, g.Access == AccessRW) && !p.EngineOwnedHostPaths[g.Host] && !toolchain {
 			needWrite := ""
 			if g.Access == AccessRW {
 				needWrite = ", writable"
@@ -584,8 +652,18 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 				"       A graft may only reach a host path the sandbox's OWN grants already expose — the\n"+
 				"       engine's view is DERIVED from the sandbox's, never a second, wider window onto\n"+
 				"       the host — or a path snug itself created (the container store, the runroot, a\n"+
-				"       socket directory). Grant it to the sandbox first, or graft a path snug owns.",
+				"       socket directory), or this run's recorded engine toolchain root, read-only.\n"+
+				"       Grant it to the sandbox first, or graft a path snug owns.",
 				g.Guest, g.Host, needWrite)
+			// Said separately from the sentence above, because "the root is
+			// recorded and you asked for it WRITABLE" is a different mistake
+			// from "the root is not recorded", and one message covering both
+			// would name neither.
+			if p.EngineToolchainRoot != "" && g.Host == p.EngineToolchainRoot && g.Access == AccessRW {
+				msg += "\n       That path IS this run's engine toolchain root, but it may only be grafted\n" +
+					"       READ-ONLY: it is the host user's own installation, not something snug created\n" +
+					"       for this run, so a writable graft of it is a host-write channel out of the engine."
+			}
 			// Appended ONLY when HostAsked is set — i.e. only when resolution
 			// actually changed the source — so the ordinary (non-symlink) refusal
 			// stays byte-identical to what it read before this fix (issue #55, F6).

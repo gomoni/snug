@@ -1985,10 +1985,27 @@ func describeGrafts(out *os.File, p *policy.Policy) {
 			}
 		}
 		if !p.HostPathVisible(gr.Host, gr.Access == policy.AccessRW) {
-			for _, line := range wrapGraftField("owned: ",
-				"the sandbox's own grants do not expose this host path — it passed G4 only "+
-					"because snug declared it its own for this run (EngineOwnedHostPaths)") {
-				fmt.Fprintln(out, line)
+			// WHICH of G4's other two sources admitted it, named separately.
+			// One sentence covering both would be false about whichever one
+			// it did not describe, and these two have different owners: snug
+			// authored the contents of an engine-owned path, while the
+			// toolchain root is the host user's own installation that snug
+			// only ever reads.
+			if gr.Host == p.EngineToolchainRoot && gr.Access == policy.AccessRO {
+				for _, line := range wrapGraftField("toolchain: ",
+					"the sandbox's own grants do not expose this host path — it passed G4 as "+
+						"this run's engine toolchain root ($SNUG_PODMAN_ROOT), read-only. It is "+
+						"the engine's own program files, which it must be able to execute once "+
+						"its view is derived from the sandbox's rather than copied from the "+
+						"host's") {
+					fmt.Fprintln(out, line)
+				}
+			} else {
+				for _, line := range wrapGraftField("owned: ",
+					"the sandbox's own grants do not expose this host path — it passed G4 only "+
+						"because snug declared it its own for this run (EngineOwnedHostPaths)") {
+					fmt.Fprintln(out, line)
+				}
 			}
 		}
 		for _, line := range wrapGraftField("abuse: ", visibleValue(gr.Why)) {
@@ -1997,6 +2014,14 @@ func describeGrafts(out *os.File, p *policy.Policy) {
 		for _, line := range wrapGraftField("note: ", graftDestinationNote(p, gr)) {
 			fmt.Fprintln(out, line)
 		}
+	}
+
+	if p.EngineToolchainRoot != "" {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "  engine toolchain root    the engine's own program files. A graft's Host may name")
+		fmt.Fprintln(out, "                           EXACTLY this path, read-only, under G4 even though no")
+		fmt.Fprintln(out, "                           sandbox grant exposes it — never a path under it:")
+		fmt.Fprintf(out, "    %s\n", visibleValue(p.EngineToolchainRoot))
 	}
 
 	if len(p.EngineOwnedHostPaths) > 0 {
