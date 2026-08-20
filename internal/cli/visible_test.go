@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"net/netip"
 	"os"
 	"strings"
 	"testing"
@@ -133,21 +134,22 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	}
 
 	// AND THE NETWORK VALUES (redteam host round 4, F1). `address` and
-	// `gateway` are profile-supplied scalars that reached TWO sinks raw: the
+	// `gateway` used to be raw strings reaching TWO sinks unescaped: the
 	// NETWORK block's address row, and the pasta argv printed a few lines
 	// below it, which — unlike the bwrap argv beside it — was joined without
 	// escaping. A round demonstrated a profile rewriting the `host loopback
 	// UNREACHABLE` row from an `address` value while the sandbox ran normally,
 	// because pasta's `-n` parser tolerates the trailing junk.
 	//
-	// Assigned RAW here for the same reason the graft fixture above is:
-	// Policy.Validate now refuses this class of rune in both fields, so this
-	// is not a reachable production path — and the renderer must not depend on
-	// that staying true, which is the whole argument for visibleValue existing
-	// alongside a refusal.
-	p.Net.Address = "10.5.5.2/24\x1b[1A\r         host loopback   REACHABLE   " + forged + "-NET-ADDRESS"
-	p.Net.Gateway = "10.5.5.1\u009b1A\u0085  " + forged + "-NET-GATEWAY-C1"
-
+	// netip typing (issue #165) closes that for PREFIXES structurally — a
+	// forging rune cannot survive netip.ParsePrefix, so `p.Net.Address =
+	// <raw string>` no longer even compiles — but NOT for a GATEWAY's ZONE
+	// (J.2's correction): netip.ParseAddr accepts one and Addr.String()
+	// re-emits it verbatim. Gateway6 carries the payload here for exactly
+	// that reason; Address6 is set alongside it only so PastaArgs actually
+	// renders the pair (addrPairs skips a family whose Address is invalid).
+	p.Net.Address6 = netip.MustParsePrefix("fd00:5e79:1::2/64")
+	p.Net.Gateway6 = netip.MustParseAddr("fe80::1%\x1b[1A\r         host loopback   REACHABLE   " + forged + "-NET-GATEWAY-ZONE")
 	got := captureStdout(t, func() { dryRun(p, p.BwrapArgs(0, 0), config{}, nil) })
 
 	// POSITIVE CONTROL for the interpreted-path fixture: without this, the
@@ -159,20 +161,14 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 			"sweep measures nothing:\n%s", got)
 	}
 
-	// POSITIVE CONTROLS for the network fixture, named separately so a failure
-	// says which sink stopped rendering rather than "something is missing".
-	// The address reaches BOTH the NETWORK block and the pasta argv; the
-	// gateway reaches the pasta argv only, since the block does not print it.
-	for _, want := range []string{forged + "-NET-ADDRESS", forged + "-NET-GATEWAY-C1"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("the network fixture's %q never reached the screen, so the NETWORK half "+
-				"of this test measures nothing:\n%s", want, got)
-		}
-	}
-	if n := strings.Count(got, forged+"-NET-ADDRESS"); n < 2 {
-		t.Fatalf("the address fixture appears %d time(s), want at least 2 — the NETWORK block "+
-			"and the pasta argv both render it, and the pasta argv is the one that was "+
-			"unescaped:\n%s", n, got)
+	// POSITIVE CONTROL for the network fixture. The zoned gateway6 reaches the
+	// pasta argv ONLY — the NETWORK block's routes row says "the gateway
+	// above" without rendering the value itself (dryrun.go's describeNetwork),
+	// so there is one sink here, not two, unlike the pre-netip version of
+	// this fixture.
+	if want := forged + "-NET-GATEWAY-ZONE"; !strings.Contains(got, want) {
+		t.Fatalf("the network fixture's %q never reached the screen, so the NETWORK half "+
+			"of this test measures nothing:\n%s", want, got)
 	}
 
 	// POSITIVE CONTROLS for the graft fixture specifically: each of the four

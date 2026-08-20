@@ -92,19 +92,20 @@
 //     /proc/<host-pid>/ with a readable cmdline, which is all the sweep needs.
 //     Measured: one process named this run's socket path while the engine was
 //     live, zero after it died.
-//   - The ORDERING in Stop is still right, for a NEW reason. Containers no
-//     longer outlive the engine, so stopping them first is no longer about
-//     reaching something that would otherwise be orphaned — it is the
-//     difference between a graceful `podman stop` and the kernel SIGKILLing
-//     them when the namespace collapses.
-//   - NOT fixed here, and a finding rather than a comment: the runroot's
-//     recorded conmon.pid and pidfile are now pids in the ENGINE's pid
-//     namespace. Measured on the same container in both eras — pre-C0 they
-//     read 1954739/1954741 and matched /proc exactly; with C0 they read
-//     168/170 while the host pids were seven digits. So the HOST-side `podman
-//     stop` in stopLocked below, and the identical command in reaperScript,
-//     are reading pid numbers that mean nothing in their own numbering. See
-//     stopLocked's own comment on step 1.
+//   - FIXED by issue #167, not merely noted: the runroot's recorded
+//     conmon.pid and pidfile are pids in the ENGINE's pid namespace now, not
+//     the host's — measured on the same container in both eras: pre-C0 they
+//     read 1954739/1954741 and matched /proc exactly, with C0 they read
+//     168/170 while the host pids were seven digits. A HOST-side `podman
+//     stop` reading those numbers reads numbers meaningless in its own
+//     numbering, so stopLocked's step 1 and reaperScript's identical
+//     invocation are DELETED rather than translated — see stopLocked's own
+//     comment on step 1 for why translating them was rejected. The ORDERING
+//     argument this used to rest on ("stop containers before anything
+//     touches the engine, for a graceful stop instead of the kernel's
+//     SIGKILL") no longer has a first step to order: dropping this run's
+//     keepalive (step 2) is what now starts teardown, and the namespace
+//     collapse is the only mechanism that stops a container at all.
 package engine
 
 import (
@@ -112,7 +113,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -152,14 +152,6 @@ type Engine struct {
 	store    string
 	runDir   string
 	runLabel string
-
-	// podman and env are what Stop needs to run a HOST-SIDE `podman stop`
-	// against this run's store — set once, from the same values Spec() puts
-	// into the stage.EngineSpec, so the two never diverge (invariant 6's
-	// spirit applied within this package: one source of the engine's own
-	// identity).
-	podman string
-	env    []string
 
 	mu   sync.Mutex
 	life *lifeline
@@ -276,9 +268,11 @@ func (e *Engine) RunLabel() string { return e.runLabel }
 // inline (the same "pointer, not inline value" rule CLAUDE.md states for
 // GIT_CONFIG_GLOBAL, PIP_CONFIG_FILE and friends).
 //
-// Spec also remembers podman and the final env on the Engine itself, so
-// Stop's own host-side `podman stop` (reap.go) uses the IDENTICAL values
-// rather than a second, potentially-diverging computation.
+// Spec used to also remember podman and the final env on the Engine itself,
+// so Stop's own host-side `podman stop` could use the IDENTICAL values —
+// removed along with that invocation (issue #167): podman and baseEnv are
+// consumed here and handed to the returned EngineSpec, which is all a caller
+// needs.
 //
 // resolvConf is the generated /etc/resolv.conf content the caller's resolved
 // Policy already produced for the sandbox payload (policy.NetPolicy.ResolvConf)
@@ -349,9 +343,6 @@ func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool, net
 	if err != nil {
 		return stage.EngineSpec{}, err
 	}
-
-	e.podman = podman
-	e.env = finalEnv
 
 	argv := []string{
 		"--root", e.store,
@@ -721,13 +712,14 @@ func (e *Engine) writeResolvConf(resolvConf []byte) (string, error) {
 // tied to whether the engine has actually started yet, unlike DialLifeline
 // below, because arming it early is what covers a snug killed during the
 // stage's own startup window (creating U+N, waiting for the network), before
-// the engine has been forked at all. It needs only paths and the podman
-// binary, all of which Spec has already fixed on the Engine by the time this
-// is called; it does not need the engine's socket to exist yet.
+// the engine has been forked at all. It needs only this run's socket path,
+// already fixed on the Engine by New; it does not need the engine's socket to
+// exist yet, still less the engine's own binary path (issue #167 removed the
+// reaper's own host-side `podman stop`, so it no longer needs one at all).
 func (e *Engine) ArmReaper() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	r, err := startReaper(e.podman, e.store, e.runroot, e.sock, e.runLabel)
+	r, err := startReaper(e.sock, e.runDir)
 	if err != nil {
 		return err
 	}
@@ -745,9 +737,13 @@ func (e *Engine) ArmReaper() error {
 //
 // The reaper is the only process snug starts that the sweep must spare, and
 // the reason is the same one reaper.go gives for its missing Pdeathsig: its
-// whole job is to outlive snug and stop this run's containers when snug did
-// not get to. A guard that killed it would be killing the thing that exists
-// because the guard might not run.
+// whole job is to outlive snug and clean up this run's stale state (the run
+// directory — socket, containers.conf, registries.conf, auth.json,
+// resolv.conf, generated home/) when snug did not get to. It no longer stops
+// any container itself (issue #167 deleted the host-side `podman stop` that
+// used to be its job; the kernel's own namespace collapse fells containers
+// by the time the reaper's cleanup runs). A guard that killed it would be
+// killing the thing that exists because the guard might not run.
 func (e *Engine) ReaperPIDs() []int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -787,9 +783,14 @@ func (e *Engine) DialLifeline() error {
 // Stop tears the engine's CONTAINERS down and verifies. The engine PROCESS
 // itself is not signalled here at all: it is Pdeathsig'd to the stage (P1),
 // which is Pdeathsig'd (and lifeline-held) to P0, so it dies with the stage
-// on every path — clean exit, panic, SIGKILL. What is left for this to do is
-// exactly what Pdeathsig cannot reach: containers are not the engine's
-// children, so they outlive it whatever kills it.
+// on every path — clean exit, panic, SIGKILL. Since issue #125's C0,
+// containers ARE inside the engine's own pid namespace, so dropping this
+// process's own keepalive (step 2) and returning is what actually fells
+// them: the engine dies once nothing holds it open, and the pid namespace
+// collapse takes its containers with it. What this still does beyond that is
+// VERIFY (step 3) — "the collapse should have killed them" is not evidence
+// that it did — never a graceful stop of its own; issue #167 removed the
+// host-side attempt at one (step 1's own comment says why).
 func (e *Engine) Stop() {
 	e.once.Do(func() {
 		e.mu.Lock()
@@ -806,40 +807,57 @@ func (e *Engine) stopLocked() {
 		exclude[e.reap.cmd.Process.Pid] = true
 	}
 
-	// 1. Containers, FIRST — and the reason changed under issue #125's C0
-	//    without the ordering changing. It used to read "not the engine's
-	//    children, and they outlive it": true pre-C0, false now (see the
-	//    package comment's measurement). Containers are inside the engine's
-	//    own pid namespace since C0, so the engine's death already fells
-	//    them. What this step still buys is that they get a GRACEFUL stop
-	//    while the engine is live, instead of the kernel's SIGKILL when that
-	//    pid namespace collapses — so it still has to run before anything
-	//    touches the engine.
+	// 1. NO host-side `podman stop` here any more (issue #167). Pre-C0 this
+	//    step ran a graceful stop while the engine was still live, reaching
+	//    containers that were "not the engine's children" and would
+	//    otherwise outlive it. Issue #125's C0 gave the engine its own pid
+	//    namespace, so containers ARE inside it now and its death already
+	//    fells them (see the package comment's measurement) — but that same
+	//    change renumbered the runroot's recorded conmon.pid/pidfile INTO
+	//    the engine's own pid namespace, so a HOST-side invocation reading
+	//    them is reading numbers that mean nothing in the host's numbering.
+	//    Measured pre-/post-C0: 1954739/1954741 (matched /proc exactly) vs
+	//    168/170 (host pids were seven digits).
 	//
-	//    KNOWN GAP, tracked as a finding rather than fixed here: the runroot's
-	//    recorded conmon.pid/pidfile are pids in the ENGINE's pid namespace
-	//    now, not host pids, so this HOST-side invocation is reading numbers
-	//    that mean nothing in its own numbering. On this development host it
-	//    never got that far in either era — it exits 125 with "creating events
-	//    dirs: mkdir /run/libpod: permission denied", measured identically
-	//    pre- and post-C0, so that failure is environmental and not C0's. The
-	//    outcome the run promises is unaffected: step 3's sweep is what
-	//    verifies, and the namespace collapse is what actually delivers.
-	if e.podman != "" {
-		// --filter, not just --all: the store is shared with any concurrent
-		// sandbox that resolved to the same key, and stopping ITS containers
-		// because this one is going away is collateral a user cannot predict.
-		//
-		// Run on the HOST here, unconfined — this is P0 itself, not the
-		// engine, invoking podman's CLI directly against the shared store's
-		// path (which is host-uid-owned, exactly like every other file this
-		// process writes) to STOP, never to run anything new. It needs no
-		// network and no namespace of its own.
-		stop := exec.Command(e.podman, "--root", e.store, "--runroot", e.runroot,
-			"stop", "--all", "--filter", "label="+e.runLabel, "--time", "5")
-		stop.Env = e.env
-		_ = stop.Run()
-	}
+	//    Translating those numbers through the engine's namespace before use
+	//    was the alternative and was rejected: it is new teardown machinery
+	//    built to make a mechanism land on numbers meaningful only inside
+	//    the namespace doing the killing, for an outcome the kernel's own
+	//    SIGKILL-at-collapse already delivers faster (measured under 70ms
+	//    end to end from a SIGKILL of snug).
+	//
+	//    THE RENUMBERING ARGUMENT IS WHAT CARRIES THIS DELETION — not "the
+	//    engine is already dead", which is not true of stopLocked's own
+	//    call sites (a correction from a previous version of this comment,
+	//    red team F5). stopLocked runs from live Go code inside snug's own
+	//    process: on the clean path via sandbox.Options.OnPayloadExit,
+	//    BEFORE the deferred st.Close() that starts the Pdeathsig cascade
+	//    (internal/sandbox/exec.go's own comment says so explicitly — "while
+	//    the engine's socket is still reachable"), so the engine is ALIVE
+	//    here. "Already dead, nothing left to stop" describes the SEPARATE
+	//    reaper PROCESS (reaper.go), which fires only on pipe EOF — i.e.
+	//    only once snug's own process has actually died, which is what
+	//    collapses the engine's pid namespace in the first place. The two
+	//    call sites of "no host-side podman stop" are both right to delete
+	//    the call, for the SAME renumbering reason, but for that one reason
+	//    only: on this (stopLocked's) path a host-side stop would be racing
+	//    a live engine and reading its numbers wrong; on the reaper's path
+	//    there is additionally nothing left to reach at all. Do not conflate
+	//    the two arguments onto one call site again.
+	//
+	//    The residual risk this deletion accepts is a stray signal, not a
+	//    missed teardown: reading a small pid as a HOST pid and asking
+	//    podman to stop it could hit an unrelated live process on a host
+	//    sharing the boot pid namespace, or a container/CI runner handing
+	//    low pids to the invoking uid (checked on this development host:
+	//    the specific pids read here did not exist, so nothing was
+	//    signalled — that is this host's absence of the risk, not a general
+	//    proof it cannot happen). What is knowingly given up is a
+	//    best-effort graceful SIGTERM on the clean path, for workloads that
+	//    handle one — restorable later, if wanted, by issuing a stop
+	//    through the engine's OWN socket, where the recorded pids are
+	//    numbered in the namespace doing the killing, never by reading a
+	//    host-side CLI against host-numbered pids again.
 
 	// 2. Drop the keepalive. From here the engine is on its own idle timeout
 	//    even if it somehow outlives the stage.

@@ -124,7 +124,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// shape TestOnlyTheConstructorConvertsToAProfileName forbids — correctly, on
 	// the general rule, even though this particular operand is a constant.
 	var identityOwner, gitOwner ProfileName
-	var addressOwner, gatewayOwner, mtuOwner ProfileName
+	var addressOwner, gatewayOwner, address6Owner, gateway6Owner, mtuOwner ProfileName
 	publish := map[int]bool{}
 	// Environment claims are ACCUMULATED here and resolved after the fold — see
 	// envresolve.go for why deciding during the fold cannot name every claimant.
@@ -311,24 +311,60 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			publish[port] = true
 		}
 
-		// address / gateway / mtu are NOT joins: there is no "more permissive"
-		// IP address. They were last-writer-wins, which survived only because the
-		// fold is sorted — the alphabetically later profile won, silently and
-		// arbitrarily. No key in the model may be last-writer-wins, so two
-		// profiles disagreeing is a symmetric error naming both, exactly as
-		// `identity` already is. They are pasta cosmetics either way: they change
-		// which address the sandbox SEES, never what it can reach.
+		// address / gateway / address6 / gateway6 / mtu are NOT joins: there
+		// is no "more permissive" IP address. They were last-writer-wins,
+		// which survived only because the fold is sorted — the
+		// alphabetically later profile won, silently and arbitrarily. No key
+		// in the model may be last-writer-wins, so two profiles disagreeing
+		// is a symmetric error naming both, exactly as `identity` already is.
+		// They are pasta cosmetics either way: they change which address the
+		// sandbox SEES, never what it can reach.
+		//
+		// Each is PARSED here (V1, V2, V5 — net.go's parseNetPrefix/
+		// parseNetGateway) rather than compared as raw strings: a typed
+		// comparison is also a BEHAVIOUR change, and a deliberate one — two
+		// spellings of the same address (measured: "fd00:5e79:1::2/64" and
+		// "fd00:5e79:0001::2/64" compare EQUAL as netip.Prefix) are no longer
+		// a spurious conflict.
 		if prof.Address != "" {
-			if p.Net.Address != "" && p.Net.Address != prof.Address {
-				return nil, scalarConflict("network addresses", addressOwner, p.Net.Address, name, prof.Address)
+			v, err := parseNetPrefix(name, "address", prof.Address, true)
+			if err != nil {
+				return nil, err
 			}
-			p.Net.Address, addressOwner = prof.Address, name
+			if p.Net.Address.IsValid() && p.Net.Address != v {
+				return nil, scalarConflict("network addresses", addressOwner, p.Net.Address, name, v)
+			}
+			p.Net.Address, addressOwner = v, name
 		}
 		if prof.Gateway != "" {
-			if p.Net.Gateway != "" && p.Net.Gateway != prof.Gateway {
-				return nil, scalarConflict("network gateways", gatewayOwner, p.Net.Gateway, name, prof.Gateway)
+			v, err := parseNetGateway(name, "gateway", prof.Gateway, true)
+			if err != nil {
+				return nil, err
 			}
-			p.Net.Gateway, gatewayOwner = prof.Gateway, name
+			if p.Net.Gateway.IsValid() && p.Net.Gateway != v {
+				return nil, scalarConflict("network gateways", gatewayOwner, p.Net.Gateway, name, v)
+			}
+			p.Net.Gateway, gatewayOwner = v, name
+		}
+		if prof.Address6 != "" {
+			v, err := parseNetPrefix(name, "address6", prof.Address6, false)
+			if err != nil {
+				return nil, err
+			}
+			if p.Net.Address6.IsValid() && p.Net.Address6 != v {
+				return nil, scalarConflict("network IPv6 addresses", address6Owner, p.Net.Address6, name, v)
+			}
+			p.Net.Address6, address6Owner = v, name
+		}
+		if prof.Gateway6 != "" {
+			v, err := parseNetGateway(name, "gateway6", prof.Gateway6, false)
+			if err != nil {
+				return nil, err
+			}
+			if p.Net.Gateway6.IsValid() && p.Net.Gateway6 != v {
+				return nil, scalarConflict("network IPv6 gateways", gateway6Owner, p.Net.Gateway6, name, v)
+			}
+			p.Net.Gateway6, gateway6Owner = v, name
 		}
 		if prof.MTU > 0 {
 			if p.Net.MTU > 0 && p.Net.MTU != prof.MTU {
@@ -363,6 +399,26 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// profiles happened to be folded in.
 	if len(publish) > 0 {
 		p.Net.Publish = sortedInts(publish)
+	}
+
+	// V6 (all four network-address keys, or none) is checked HERE — POST-FOLD,
+	// over the fully resolved p.Net — and not inside the loop above, because a
+	// pair legitimately split across two profiles (one naming `address`/
+	// `gateway`, another `address6`/`gateway6`) must resolve successfully
+	// however the fold order reaches them. Per-profile, resolve([a,b]) would
+	// refuse or succeed depending on which profile the sorted fold reached
+	// first, and resolve([a,b]) != resolve([b,a]) would become writable as a
+	// PASSING test — see TestTheAddressPairRuleIsCheckedAfterTheFold. V3, V4
+	// and V7 are re-asserted here too (checkAddressPair enforces all four
+	// together over the pair, once); see net.go for why they cannot simply be
+	// checked value-by-value where address/gateway are parsed above (a valid
+	// address from one profile and a valid gateway from another are each
+	// individually fine and only wrong together).
+	if err := p.Net.checkAddressPair(map[string]ProfileName{
+		"address": addressOwner, "gateway": gatewayOwner,
+		"address6": address6Owner, "gateway6": gateway6Owner,
+	}); err != nil {
+		return nil, err
 	}
 
 	// 3b. If podman resolves to a host-escape shim on this host AND a podman

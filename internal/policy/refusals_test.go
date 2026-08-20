@@ -431,6 +431,49 @@ func TestConflictingGatewaysAreFatal(t *testing.T) {
 	}
 }
 
+// TestAddressConflictNamesBothProfilesForBothFamilies is the IPv6 mirror of
+// TestConflictingAddressesAreFatal/TestConflictingGatewaysAreFatal (issue
+// #165): address6/gateway6 disagreeing between two profiles is a symmetric
+// scalarConflict naming both profiles and both values, exactly as the v4
+// pair already does. Each profile carries a COMPLETE, self-consistent pair
+// (all four keys) so the refusal under test is the address6/gateway6
+// CONFLICT, never V6's half-set refusal firing first and masking it.
+func TestAddressConflictNamesBothProfilesForBothFamilies(t *testing.T) {
+	t.Run("address6", func(t *testing.T) {
+		reg := testRegistry()
+		reg["addr6-a"] = &Profile{Name: "addr6-a", Network: "egress",
+			Address: "10.13.13.2/24", Gateway: "10.13.13.1", Address6: "fd00:5e79:1::2/64", Gateway6: "fd00:5e79:1::1"}
+		reg["addr6-b"] = &Profile{Name: "addr6-b", Network: "egress",
+			Address: "10.13.13.2/24", Gateway: "10.13.13.1", Address6: "fd00:aaaa:1::2/64", Gateway6: "fd00:aaaa:1::1"}
+		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "addr6-a", "addr6-b"}, testCtx(), newFakeEnv())
+		if err == nil {
+			t.Fatal("two profiles setting different network IPv6 addresses were silently resolved")
+		}
+		for _, want := range []string{"addr6-a", "addr6-b", "fd00:5e79:1::2/64", "fd00:aaaa:1::2/64"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not contain %q", err, want)
+			}
+		}
+	})
+
+	t.Run("gateway6", func(t *testing.T) {
+		reg := testRegistry()
+		reg["gw6-a"] = &Profile{Name: "gw6-a", Network: "egress",
+			Address: "10.13.13.2/24", Gateway: "10.13.13.1", Address6: "fd00:5e79:1::/64", Gateway6: "fd00:5e79:1::1"}
+		reg["gw6-b"] = &Profile{Name: "gw6-b", Network: "egress",
+			Address: "10.13.13.2/24", Gateway: "10.13.13.1", Address6: "fd00:5e79:1::/64", Gateway6: "fd00:5e79:1::9"}
+		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "gw6-a", "gw6-b"}, testCtx(), newFakeEnv())
+		if err == nil {
+			t.Fatal("two profiles setting different network IPv6 gateways were silently resolved")
+		}
+		for _, want := range []string{"gw6-a", "gw6-b", "fd00:5e79:1::1", "fd00:5e79:1::9"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not contain %q", err, want)
+			}
+		}
+	})
+}
+
 func TestConflictingMTUsAreFatal(t *testing.T) {
 	err := refusalScalarConflict(t, "mtu")
 	if err == nil {

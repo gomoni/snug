@@ -1299,23 +1299,49 @@ default (issue #166). Check it against the argv:
 Both must name the same address. They are two authors of one fact and this is
 the line where they are made to agree.
 
-**Two more lines in the same block, and the second is a disclosure this
-checklist should not let you miss.** Under `@net-anon` the `address` line reads
-`10.13.13.2/24 (synthetic; the host's IPv4 address is hidden)` followed by a
-note that IPv6 is *not* anonymised. Check that against the interface:
+**Two more lines in the same block, fixed by issue #165's v6 pair.** Under
+`@net-anon` the block now prints an `address v4` row and an `address v6` row,
+each carrying its own synthetic value — `10.13.13.2/24` and
+`fd00:5e79:1::2/64`. Check that against the interface:
 
 ```bash
 ip -br addr show scope global
-./bin/snug -p @net-anon $SC/proj/sub -- /bin/sh -c 'ip -br addr show dev snug0'
+./bin/snug -p @net-anon $SC/proj/sub -- /bin/sh -c 'ip -br addr show dev snug0; ip -6 route show default'
 ```
 
-Expect the sandbox's `snug0` to carry `10.13.13.2/24` — not the host's v4
-address — **and, on a dual-stack host, the host's own global IPv6 addresses
-verbatim**. That is issue #165 and it is currently true: `address` is a single
-IPv4 value, so pasta's IPv6 default (copy the addresses from the interface with
-the default route) still applies. The screen says so; the leak is not fixed.
-If the screen ever stops saying so while the addresses are still there, that is
+Expect the sandbox's `snug0` to carry **only** `10.13.13.2/24` and
+`fd00:5e79:1::2/64` (plus a link-local address whose EUI-64 comes from a
+per-run random tap MAC) — **none of the host's own addresses, in either
+family** — and a default route via `fd00:5e79:1::1`, never a `proto ra` route
+through the router's own link-local address. That is issue #165, fixed: the
+v4-only address used to leave pasta's IPv6 default in place (copy the
+addresses from the interface holding the default route), so the sandbox kept
+the host's own GLOBAL v6 addresses verbatim — the weaker (RFC1918) half hidden,
+the stronger (globally routable, geolocatable) half disclosed. If either of the
+host's addresses from the first command ever reappears in the second, that is
 the regression this line exists to catch.
+
+**The host's own address becomes reachable *because* it is hidden — issue
+#176, and it is documented, not closed.** Anonymising an address takes it off
+the sandbox's own interface, so a connection to it stops being refused by the
+sandbox's own kernel and instead leaves the netns for pasta to open on the
+real host. `@net` is the control that makes this checkable: the same address
+must be refused there and reached under `@net-anon`.
+
+```bash
+python3 -m http.server -b "$(hostname -I | awk '{print $1}')" 8199 &
+HOSTPY=$!
+./bin/snug -p @net $SC/proj/sub -- /bin/sh -c \
+  "curl -s -o /dev/null -w '%{http_code}\n' --max-time 3 http://$(hostname -I | awk '{print $1}'):8199/ || echo REFUSED"
+./bin/snug -p @net-anon $SC/proj/sub -- /bin/sh -c \
+  "curl -s -o /dev/null -w '%{http_code}\n' --max-time 3 http://$(hostname -I | awk '{print $1}'):8199/ || echo REFUSED"
+kill $HOSTPY
+```
+
+Expect `REFUSED` (or a curl connect-error line) under `@net`, and `200` under
+`@net-anon`. **Host loopback stays closed in both** — `127.0.0.1`/`::1` are
+never reachable, and that is the property this project promises regardless of
+which profile is selected; only the host's *own, non-loopback* address moves.
 
 ## 8. Profile order is irrelevant
 

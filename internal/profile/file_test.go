@@ -808,6 +808,8 @@ func TestNoTOMLKeyProducesATopology(t *testing.T) {
 		nil, // Publish
 		"",  // Address
 		"",  // Gateway
+		"",  // Address6
+		"",  // Gateway6
 		0,   // MTU
 		"",  // Podman
 		"",  // Git

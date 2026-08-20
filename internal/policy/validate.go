@@ -214,39 +214,40 @@ func (p *Policy) Validate(env Environ) error {
 	// hand-built Policy through it, so Validate is the backstop.
 	// THE NETWORK VALUES ARE PROFILE TEXT AND THEY REACH TWO SCREENS.
 	//
-	// `address` and `gateway` are the only profile-supplied scalars that were
-	// never asked this question. Both are rendered raw into --dry-run — the
-	// NETWORK block's address row, and the pasta argv four lines below it — so
-	// an ESC/CR payload in either rewrites rows a human reads to decide whether
-	// a sandbox leaks its network position, including the `host loopback
-	// UNREACHABLE` row directly above. A red team round demonstrated exactly
-	// that, and the run stayed HEALTHY while the screen lied: pasta's `-n`
-	// parser tolerates the trailing junk, so the forged profile launches and
-	// works, which removes the one signal that would otherwise give it away.
+	// `address`/`gateway`/`address6`/`gateway6` are the only profile-supplied
+	// scalars typed as netip rather than string (net.go's NetPolicy). The
+	// parse a Prefix goes through is a SUPERSET of the old forging refusal for
+	// that half of the pair — ParsePrefix refuses a v6 ZONE outright and
+	// refuses trailing junk after the prefix, both measured — so the loop that
+	// used to run IsForgingRune over these two raw strings is retired for
+	// prefixes.
 	//
-	// The refusal goes here rather than at the render site because every other
-	// sink in this file is closed the same way — one predicate, asked at parse
-	// time, so a rune added to IsForgingRune is added everywhere at once. The
-	// renderers escape as well (visibleValue), and that belt-and-braces is the
-	// same pairing checkEnvValue and VisibleText already have: refusing what a
-	// profile may CONTAIN and escaping what a screen may SHOW are two
-	// guarantees, not one done twice.
-	for _, v := range []struct{ name, value string }{
-		{"address", p.Net.Address},
-		{"gateway", p.Net.Gateway},
-	} {
-		if i := strings.IndexFunc(v.value, IsForgingRune); i >= 0 {
-			r := []rune(v.value[i:])[0]
-			return fmt.Errorf("network %s %q has %q in it, and %s.\n"+
-				"       The NETWORK block of `snug --dry-run` is one row per fact, and the "+
-				"pasta\n"+
-				"       command is printed below it — a value that spans two lines can forge "+
-				"a row\n"+
-				"       that does not otherwise exist, including the one saying host loopback "+
-				"is\n"+
-				"       unreachable. Write the address you meant.",
-				v.name, v.value, r, forgingRuneReason(r))
-		}
+	// It is NOT retired for gateways, and this is the one place the netip
+	// claim above was wrong: a ZONE is arbitrary text on a netip.Addr, and
+	// Addr.String() re-emits it verbatim wherever the value is later shown —
+	// the NETWORK block and the pasta argv four lines below it, including the
+	// `host loopback UNREACHABLE` row directly above. A red team round
+	// demonstrated the pre-netip version of this exact hazard (an ESC/CR
+	// payload in a raw `address` string), and the run stayed HEALTHY while the
+	// screen lied: pasta's `-n` parser tolerated the trailing junk, so the
+	// forged profile launched and worked, which removed the one signal that
+	// would otherwise give it away. checkAddressPair's V7 is what closes the
+	// zone half, and it has to run here too, not only in Resolve's own parse:
+	// a hand-built Policy can hold a Gateway built directly from
+	// netip.MustParseAddr("fe80::1%<payload>") — or an Address built from
+	// netip.PrefixFrom(zonedAddr, bits) — without ever going through the
+	// parse that would have refused it.
+	//
+	// One body (net.go's checkAddressPair) for both call sites, invoked here
+	// with a nil owner map — Validate has no fold to attribute a value to —
+	// because two spellings of the pair-and-zone rule are exactly what a
+	// reader would have to diff to trust either. The renderers escape as well
+	// (visibleValue), and that belt-and-braces is the same pairing
+	// checkEnvValue and VisibleText already have: refusing what a profile may
+	// CONTAIN and escaping what a screen may SHOW are two guarantees, not one
+	// done twice.
+	if err := p.Net.checkAddressPair(nil); err != nil {
+		return err
 	}
 
 	grafts := make([]string, 0, len(p.Grafts))

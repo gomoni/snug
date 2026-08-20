@@ -392,7 +392,8 @@ does not unshare pid), so containers outlive the engine and need an explicit
 stop. Two mechanisms, unchanged in spirit from the current engine package:
 
 > **Superseded by issue #125's C0 on the parenthetical, and therefore on the
-> conclusion.** The engine now unshares pid (`CLONE_NEWPID` on its own clone,
+> conclusion — and issue #167 (redteam F5/F7) supersedes this block a second
+> time.** The engine now unshares pid (`CLONE_NEWPID` on its own clone,
 > `internal/stage/enginefork.go`, plus a fresh procfs in `__inengine`). conmon
 > still double-forks; the init that adopts the orphan is now **podman**, pid 1
 > of the engine's own pid namespace, so containers **no longer outlive the
@@ -400,27 +401,48 @@ stop. Two mechanisms, unchanged in spirit from the current engine package:
 > A/B against C0's parent commit: the same isolated "SIGKILL the engine and
 > touch nothing else" left the container running past a 10s deadline before,
 > and killed it inside one 250 ms poll tick after; a SIGKILL of snug reached a
-> clean state in under 70 ms end to end. **Both mechanisms below stay** — the
-> clean path still buys a *graceful* stop instead of the kernel's SIGKILL, and
-> the reaper is redundant rather than wrong. Full measurement and the residual
-> finding (the runroot's recorded pids are now engine-pid-namespace pids, which
-> a host-side `podman stop` cannot use) are in `internal/engine`'s package
-> comment and `stopLocked`'s step 1.
+> clean state in under 70 ms end to end.
+>
+> **"Both mechanisms below stay" was wrong about the first one, and issue #167
+> deleted it rather than correcting the claim a second time.** The clean
+> path's `podman stop --filter label=<runLabel>` and the SIGKILL path's
+> identical invocation inside the reaper both read pids the runroot records
+> in the ENGINE's own pid namespace (C0's own change) — meaningless to a
+> HOST-side `podman stop`, whether the engine happens to still be alive (the
+> clean path) or already collapsed (the SIGKILL path): the pid NUMBERING is
+> wrong either way, independent of the engine's liveness. Translating those
+> pids through the engine's namespace before use was considered and
+> rejected — new teardown machinery built to make a mechanism land on
+> numbers meaningful only from inside the namespace doing the killing, for
+> an outcome the kernel already delivers faster (measured under 70 ms end to
+> end from a SIGKILL). Both invocations are DELETED, not corrected in place;
+> `internal/engine`'s package comment and `stopLocked`'s step 1 carry the
+> full argument. What is lost is a best-effort GRACEFUL `SIGTERM` on the
+> clean path, for workloads that handle one — restorable later, if wanted, by
+> issuing a stop through the engine's OWN socket, never by reading host-
+> numbered pids again. The reaper PROCESS, the pipe, the socket-path sweep
+> and now the run-directory cleanup (§6 below, redteam F4) all stay; only
+> the `podman stop` line inside the reaper's script is gone alongside
+> `stopLocked`'s.
 
-- **Clean path:** containers are stopped **before** the engine is killed, while
-  the engine socket is still live — `podman stop --filter label=<runLabel>`
-  (`engine.RunLabelKey`=`snug.run`=`<pid>`, filtered so a concurrent sibling
-  sharing the store is untouched). This must run **before** `st.Close()`
-  collapses P1→engine. Since `sandbox` must not import `engine` (layering),
-  thread it as a hook: `sandbox.Options.OnPayloadExit func()` (or
-  `EngineStop`), called by `runStaged` after `st.Wait()` returns and **before**
-  the deferred `st.Close()`. `startContainers` supplies the closure. This is the
-  one new seam the tier needs — flagged in §9.
+- **Clean path:** `sandbox.Options.OnPayloadExit` (§12 item 1) still fires
+  after `st.Wait()` and before the deferred `st.Close()`, and still calls
+  `Engine.Stop`, which still drops the keepalive, verifies by the socket-path
+  sweep, and tears down the reaper — but no longer stops anything by label:
+  that call is gone (issue #167), so this position in the sequence no longer
+  buys a graceful stop ahead of the kernel's own collapse. See §12 item 1 for
+  what remains of the seam's justification.
 - **SIGKILL path:** the pipe-triggered reaper (`internal/engine/reaper.go`)
-  stays: P0 holds a pipe; on EOF a detached `/bin/sh` runs the same filtered
-  `podman stop` against the store and removes the `/tmp` run dir. It carries its
-  paths in the **environment**, not argv, so the by-path verification sweep does
-  not mistake the reaper for a leak.
+  stays: P0 holds a pipe; on EOF a detached `/bin/sh` removes the run
+  directory (containers.conf, registries.conf, auth.json, resolv.conf, the
+  generated home/, and the socket) — no `podman stop` any more, for the same
+  reason as the clean path's. It carries its paths in the **environment**,
+  not argv, so the by-path verification sweep does not mistake the reaper
+  for a leak. `rm -rf` on the run directory rather than a per-file removal
+  list: the directory is 0700, uid-checked, under an unpredictable pid-
+  derived name — exclusively snug's own — so recursively removing it cannot
+  reach anything this run did not itself create, and it needs no shell-side
+  duplicate of what `Engine.Spec` writes there.
 
 **Verification.** `reap.go`'s `signalOwned`/`waitQuiet` still sweep `/proc/*/cmdline`
 for the **socket path** (pid-unique: `/tmp/snug-<uid>-<runid>/podman-<pid>.sock`)
@@ -530,13 +552,24 @@ tests are in `test/integration/containerengine_test.go`.
 
 ## 12. Genuinely undecided — the maintainer's to settle
 
-1. **The `OnPayloadExit`/`EngineStop` seam (§6). SETTLED: the hook.** `sandbox`
-   must not import `engine`, so the clean-path "stop containers before the
-   engine dies" is a hook on `sandbox.Options` — `OnPayloadExit`, called after
-   `st.Wait()` and before the deferred `st.Close()` collapses the stage, while
-   the engine's socket is still reachable. The rejected alternative was routing
-   a filtered `podman stop` through the still-live proxy; the hook keeps the
-   ordering explicit and the proxy free of teardown responsibility.
+1. **The `OnPayloadExit`/`EngineStop` seam (§6). SETTLED: the hook — its
+   ORIGINAL justification did not survive issue #167 (redteam F5).** `sandbox`
+   must not import `engine`, so the clean-path teardown call is a hook on
+   `sandbox.Options` — `OnPayloadExit`, called after `st.Wait()` and before the
+   deferred `st.Close()` collapses the stage, while the engine's socket is
+   still reachable. It was wired to fire at THAT point so a filtered `podman
+   stop` could run against a still-live engine before the collapse; #167
+   deleted that call (the pids it would stop are numbered in the engine's own
+   pid namespace, meaningless to a host-side invocation whether the engine is
+   alive or dead — see §6). `OnPayloadExit` still runs `Engine.Stop`, which
+   still drops the keepalive, verifies by the socket-path sweep and tears down
+   the reaper — none of which specifically needs to happen BEFORE `st.Close()`
+   rather than after, now that nothing in it depends on the engine still being
+   reachable. The seam is kept rather than removed or repositioned: moving it
+   is a second, independent decision with its own review, and leaving it here
+   costs nothing observable. What changed is what a reader should expect it to
+   buy — no longer a graceful stop ahead of the kernel's own collapse, only the
+   verify-and-standdown bookkeeping that also runs on the SIGKILL path.
 2. **`@net-host` + podman (§4). SETTLED: refuse at preflight**, consistent with
    `@net-host` already being an `--i-know` escape hatch. `startContainers`
    refuses the combination before anything is created, so it never reaches

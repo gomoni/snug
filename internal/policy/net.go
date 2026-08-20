@@ -3,6 +3,7 @@ package policy
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -83,11 +84,49 @@ type NetPolicy struct {
 	// applies it, per arm.
 	Nameservers []string
 
-	// Address, when set, gives the sandbox a synthetic address instead of
-	// copying the host's — so the agent does not learn your LAN IP.
-	Address string // "10.13.13.2/24"
-	Gateway string
-	MTU     int
+	// Address/Gateway (v4) and Address6/Gateway6 (v6), when set, give the
+	// sandbox a synthetic address instead of copying the host's — so the
+	// agent does not learn your LAN IP. Typed as netip rather than string:
+	// Resolve is the only place profile TEXT is parsed into these, and the
+	// parse is a structural refusal of most of the forging-rune hazard for
+	// free (a prefix or address literal contains only hex digits, dots,
+	// colons and a slash). It is NOT a complete one — an IPv6 ZONE is
+	// arbitrary text and Addr.String() re-emits it verbatim, so Gateway and
+	// Gateway6 still need V7's explicit check (checkAddressPair). See
+	// addrPairs for why every rule about these four fields is written once
+	// over the pair rather than twice over the fields.
+	//
+	// V6 (checkAddressPair) requires all four or none: pasta assigns
+	// addresses PER FAMILY, so a policy naming only one leaves the other at
+	// the host's own (issue #165).
+	Address  netip.Prefix // v4; !IsValid() means "copy the host's"
+	Gateway  netip.Addr
+	Address6 netip.Prefix // v6; !IsValid() means "copy the host's"
+	Gateway6 netip.Addr
+	MTU      int
+}
+
+// netAddrPair is one family's (address, gateway) with the TOML key names that
+// spell it. Every rule about these fields is written ONCE over addrPairs()
+// and never twice over four fields, because "a rule written once and applied
+// to one of its two halves" is this project's named recurring defect and it
+// has already produced #162 (search domain anonymised, nameserver not) and
+// #165 (v4 anonymised, v6 not) in the same subsystem. Adding a family later —
+// there is no third one on the horizon, but the shape should not assume that —
+// is one element here, not a sweep for every site that said "v4".
+type netAddrPair struct {
+	keyAddr, keyGW string
+	addr           netip.Prefix
+	gw             netip.Addr
+	want4          bool
+}
+
+// addrPairs is the one place that knows there are two families.
+func (n NetPolicy) addrPairs() [2]netAddrPair {
+	return [2]netAddrPair{
+		{keyAddr: "address", keyGW: "gateway", addr: n.Address, gw: n.Gateway, want4: true},
+		{keyAddr: "address6", keyGW: "gateway6", addr: n.Address6, gw: n.Gateway6, want4: false},
+	}
 }
 
 // dnsForwardAddr is the link-local address the sandbox is told to use as its
@@ -111,6 +150,21 @@ type NetPolicy struct {
 // does not: it talks to a link-local address that goes nowhere, and pasta
 // answers on its behalf from outside.
 const dnsForwardAddr = "169.254.1.1"
+
+// dnsForwardAddr6 is the IPv6 interception address, and it exists because
+// pasta re-issues a query only to a --dns-host of the SAME family — measured:
+// on a host whose only resolver is 2a00:ca8::100, `--dns-forward 169.254.1.1
+// --dns-host 2a00:ca8::100` times out for A and AAAA alike, with or without
+// the flag, while `--dns-forward fd00:5e79:1::53` answers both (issue #162's
+// remnant).
+//
+// A ULA (RFC 4193 fd00::/8) rather than link-local: glibc will not use a
+// link-local nameserver without a %scope suffix, and this address is never
+// globally routed, so a query to it cannot leave even where no pasta
+// intercepts. Inside @net-anon's own /64 (issue #165) so it is on-link there;
+// MEASURED to be intercepted off-link too, under plain @net, so one constant
+// serves both arms.
+const dnsForwardAddr6 = "fd00:5e79:1::53"
 
 // ResolvConf is the generated /etc/resolv.conf content — generated, never a
 // bind of the host's, which may name an address the sandbox must not reach.
@@ -169,14 +223,21 @@ const dnsForwardAddr = "169.254.1.1"
 func (n NetPolicy) ResolvConf() []byte {
 	r := n.Resolver()
 	if len(r.Servers) == 0 {
-		// Two states reach here and the text must fit both: no network
-		// profile at all, and a profile granting egress that never asked for
-		// DNS (`network = "egress"` with no `dns = true`). The old wording
-		// named only the first, so the second read as a lie in the one file
-		// whose whole job is to make a lookup fail fast.
+		// THREE states reach here and the text must fit all of them: no
+		// network profile at all; a profile granting egress that never asked
+		// for DNS (`network = "egress"` with no `dns = true`); and — since
+		// issue #162's remnant — a profile that DID ask for DNS on a host
+		// that names no nameserver snug could parse and forward to at all.
+		// The old wording named only the first two, so the third used to fall
+		// through to naming dnsForwardAddr with nothing behind it: every
+		// lookup inside waited out a five-second timeout instead of failing
+		// immediately, measured at 40s for a single `getent` call. Naming
+		// none here is what turns that into a 2ms failure — see the warning
+		// internal/cli/main.go prints on the host side when this is why.
 		return []byte("# snug: this sandbox has no resolver; DNS is intentionally unavailable.\n" +
-			"# Either no network profile was selected, or the one that was did not ask\n" +
-			"# for DNS. Resolver libraries will fail immediately rather than hang.\n")
+			"# Either no network profile was selected, the one that was did not ask for DNS,\n" +
+			"# or this host has no usable resolver for snug to forward to. Resolver\n" +
+			"# libraries will fail immediately rather than hang.\n")
 	}
 	var b strings.Builder
 	for _, s := range r.Servers {
@@ -245,11 +306,19 @@ func (n NetPolicy) Resolver() ResolverConfig {
 	// Naming it grants nothing the profile has not already handed over, and
 	// withholding it just leaves the sandbox unable to resolve (issue #164).
 	//
+	// PARSED and re-rendered through netip, never the host's raw bytes (issue
+	// #177): a nameserver line carrying a control character or an ESC
+	// sequence would otherwise land unescaped here and in the dns row of
+	// --dry-run. A zoned resolver is DROPPED rather than rendered — parsing
+	// alone is not escaping (netip.ParseAddr accepts a zone and String()
+	// re-emits it verbatim), and a link-local resolver is unusable inside the
+	// sandbox regardless of the zone.
+	//
 	// Searches stay anonymised even here. @net-host discloses the network; the
 	// host's internal domain NAMES are a separate disclosure and nothing in
 	// this mode needs them.
 	if n.Mode == NetHost {
-		r.Servers = n.Nameservers
+		r.Servers = renderAddrs(n.parsedNameservers())
 		return r
 	}
 
@@ -290,49 +359,153 @@ func (n NetPolicy) Resolver() ResolverConfig {
 		r.Servers = nil
 	}
 	if len(r.Servers) == 0 {
-		r.Servers = []string{dnsForwardAddr}
+		// THE FORWARDER, CHOSEN BY FAMILY (issue #162's remnant). Empty when
+		// the host names no nameserver snug could parse — three states share
+		// this branch (offline is excluded above already): a routable
+		// resolver that turned out to be unparseable text, a host with only
+		// loopback resolvers (systemd-resolved), and an anonymising profile.
+		// See ResolvConf's doc comment for what an empty result means to the
+		// generated file, and internal/cli/main.go for the host-side warning
+		// when it is the no-nameserver-at-all case.
+		if f := n.forwardAddr(); f != "" {
+			r.Servers = []string{f}
+		}
 	}
 	return r
 }
 
-// DNSHost is the host-side resolver pasta is told to send intercepted queries
-// to: the host's FIRST nameserver, loopback included.
+// parsedNameservers parses n.Nameservers (RAW host text) into netip.Addr, in
+// order, dropping anything that does not parse and anything carrying a ZONE.
 //
-// Passed explicitly rather than left to pasta's default, which is documented
-// as "first nameserver from host's /etc/resolv.conf" and would therefore READ
-// THE SAME FILE A SECOND TIME with a second selection rule (issue #166). The
-// two disagree on a host listing a local resolver first and a router second:
-// snug's own filter drops the loopback entry, pasta's default takes it. Same
-// two-authors defect as #28 and #164, one layer out — and CLAUDE.md's standing
-// rule is to pass every security-relevant flag explicitly even when it matches
-// the current default, because a default that changes upstream is a silent
-// regression.
+// This is not a refusal — Nameservers is the host's own /etc/resolv.conf,
+// invariant 3's trust class, not profile text a hostile payload can reach —
+// so a line snug cannot use is silently skipped rather than fatal, the same
+// way a malformed line is not a proof of anything. Dropping a ZONE rather
+// than rendering it is V7's argument applied to host text (issue #177):
+// netip.ParseAddr("fe80::1%<anything>") succeeds and String() re-emits the
+// zone verbatim, so parsing alone is not escaping, and a link-local resolver
+// is unusable inside the sandbox regardless of the zone's contents.
+//
+// Unmap()'d before it is kept (red team F3): a host naming a 4-in-6 mapped
+// resolver (`::ffff:8.8.8.8`) classifies as Is4()||Is4In6() everywhere this
+// file picks a family from it (forwardAddr, DNSHost), but String() on the
+// UNmapped value still renders the v6-mapped spelling — so an anonymising
+// policy on such a host emitted `--dns-forward 169.254.1.1 --dns-host
+// ::ffff:8.8.8.8`: a v4 forwarder paired with a v6-spelled --dns-host, which
+// pasta cannot answer (this file's own measured rule: pasta never crosses
+// families when forwarding). Unmapping here makes the RENDERED value agree
+// with the family the classifier already chose. Host text, not profile
+// text, so it is fixed by coping (Unmap) rather than refused — the opposite
+// of parseNetPrefix/parseNetGateway's treatment of the same shape in a
+// profile's own address/gateway keys, where a wrong rendering is not the
+// risk; a wrong ACCEPTANCE is (see their doc comments).
+func (n NetPolicy) parsedNameservers() []netip.Addr {
+	var out []netip.Addr
+	for _, s := range n.Nameservers {
+		a, err := netip.ParseAddr(s)
+		if err != nil || a.Zone() != "" {
+			continue
+		}
+		out = append(out, a.Unmap())
+	}
+	return out
+}
+
+// renderAddrs renders a list of parsed addresses back to strings, through
+// netip's own String() — the belt half of "parse, then render", never the
+// host's original bytes.
+func renderAddrs(addrs []netip.Addr) []string {
+	if len(addrs) == 0 {
+		return nil
+	}
+	out := make([]string, len(addrs))
+	for i, a := range addrs {
+		out[i] = a.String()
+	}
+	return out
+}
+
+// forwardAddr picks WHICH interception address to arm, by the family of the
+// host's nameservers (issue #162's remnant) — empty when the host names none
+// snug could parse.
+//
+// IPv4 preferred when the host has one, for a measured reason: the sandbox
+// always has a v4 address and a v4 default route, whereas on a v4-only host
+// pasta's v6 default is a local-mode stub via fe80::1, so a v4 forwarder is
+// never stranded. Loopback nameservers count as "has a family" here — pasta
+// runs on the HOST, where loopback is reachable, exactly DNSHost's own
+// reasoning.
+func (n NetPolicy) forwardAddr() string {
+	var haveV4, haveV6 bool
+	for _, a := range n.parsedNameservers() {
+		if a.Is4() || a.Is4In6() {
+			haveV4 = true
+		} else {
+			haveV6 = true
+		}
+	}
+	switch {
+	case haveV4:
+		return dnsForwardAddr
+	case haveV6:
+		return dnsForwardAddr6
+	default:
+		return ""
+	}
+}
+
+// DNSHost is the host-side resolver pasta is told to send intercepted queries
+// to: the host's FIRST nameserver OF THE ARMED FORWARDER'S FAMILY, loopback
+// included.
+//
+// Family-matched because pasta never crosses families when forwarding
+// (measured, dnsForwardAddr6's doc comment): a v4-forwarded query re-issued
+// to a v6 --dns-host times out, with or without a live v6 resolver behind it,
+// and the reverse. Passed explicitly rather than left to pasta's default,
+// which is documented as "first nameserver from host's /etc/resolv.conf" and
+// would therefore READ THE SAME FILE A SECOND TIME with a second selection
+// rule that additionally does not know about family (issue #166). CLAUDE.md's
+// standing rule is to pass every security-relevant flag explicitly even when
+// it matches the current default, because a default that changes upstream is
+// a silent regression.
 //
 // Loopback INCLUDED is the deliberate half. pasta runs on the HOST, where
 // 127.0.0.53 is reachable; RoutableNameservers exists to keep the SANDBOX off
 // host loopback and its premise does not apply to the forwarder. Filtering
 // here would break the systemd-resolved host that interception exists for.
 //
-// Empty when the host names no resolver, in which case nothing is passed and
-// pasta's own default applies to an equally empty file.
+// PARSED and re-rendered through netip, never the host's raw bytes (issue
+// #177) — see parsedNameservers. Empty when no forwarder is armed, or none of
+// the host's nameservers are of the armed family (which forwardAddr already
+// guarantees cannot happen when it returned non-empty).
 func (n NetPolicy) DNSHost() string {
-	if len(n.Nameservers) == 0 {
-		return ""
+	fam := n.forwardAddr()
+	for _, a := range n.parsedNameservers() {
+		is4 := a.Is4() || a.Is4In6()
+		if (fam == dnsForwardAddr && is4) || (fam == dnsForwardAddr6 && !is4) {
+			return a.String()
+		}
 	}
-	return n.Nameservers[0]
+	return ""
 }
 
-// Anonymised reports whether this sandbox withholds the HOST's network position
-// from the payload. Today `address` is the only profile key that says so — it
-// replaces pasta's default of copying the host's addresses into the namespace —
-// and every withholding that follows from that intent keys off this predicate
-// rather than off the field, so the next one does not have to re-decide which
-// field meant "anonymous".
-func (n NetPolicy) Anonymised() bool { return n.Address != "" }
+// Anonymised reports whether this sandbox withholds the HOST's network
+// position from the payload, in EITHER family — not the v4 one, and not both.
+// Every consumer withholds MORE when this is true (Resolver drops the host's
+// resolvers entirely), so the safe direction under an incomplete NetPolicy is
+// true: NOT `&&`, because AND would report a half-set policy as NOT
+// anonymising, re-opening #162 for that configuration (the host's real
+// resolvers named inside a sandbox whose author asked for anonymity).
+//
+// checkAddressPair's V6 makes the incomplete case unreachable through Resolve
+// and Validate, which is exactly why this predicate must not DEPEND on V6: a
+// correctness argument enforced two functions away is the shape that produced
+// #165.
+func (n NetPolicy) Anonymised() bool { return n.Address.IsValid() || n.Address6.IsValid() }
 
 // NeedsDNSForward reports whether pasta must be given --dns-forward: exactly
-// when the file the sandbox will read names the link-local address rather than
-// a real resolver.
+// when the file the sandbox will read names an interception address rather
+// than a real resolver.
 //
 // It is DERIVED from Resolver rather than re-deciding the same question from
 // the same fields, and that is the point rather than a style choice. The two
@@ -347,7 +520,7 @@ func (n NetPolicy) NeedsDNSForward() bool {
 		return false
 	}
 	s := n.Resolver().Servers
-	return len(s) == 1 && s[0] == dnsForwardAddr
+	return len(s) == 1 && (s[0] == dnsForwardAddr || s[0] == dnsForwardAddr6)
 }
 
 // RoutableNameservers filters a host nameserver list down to the ones a sandbox
@@ -363,6 +536,294 @@ func RoutableNameservers(hostServers []string) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// familyWord names the family of an already-parsed address, for a V2 refusal.
+func familyWord(is4 bool) string {
+	if is4 {
+		return "IPv4"
+	}
+	return "IPv6"
+}
+
+// siblingNetKey names the OTHER family's spelling of a network scalar key, so
+// a V2 refusal can say "you probably meant %s" rather than just "wrong".
+func siblingNetKey(key string) string {
+	switch key {
+	case "address":
+		return "address6"
+	case "address6":
+		return "address"
+	case "gateway":
+		return "gateway6"
+	case "gateway6":
+		return "gateway"
+	}
+	return ""
+}
+
+// checkAddrIsUsable is V5: no unspecified, loopback or multicast address in
+// ANY of the four network scalars. pasta may accept one of these silently and
+// let the sandbox do something no profile author meant — an unspecified
+// address is not a real synthetic one, a loopback address is the one thing a
+// private netns exists to keep unreachable, and a multicast address cannot be
+// assigned to an interface at all.
+func checkAddrIsUsable(a netip.Addr) string {
+	switch {
+	case a.IsUnspecified():
+		return "is unspecified"
+	case a.IsLoopback():
+		return "is a loopback address"
+	case a.IsMulticast():
+		return "is a multicast address"
+	}
+	return ""
+}
+
+// mappedV4Error is part of V2, split out because it is checked identically
+// in all four keys and its message must name the real problem rather than
+// "wrong family" (red team F1). A 4-in-6 mapped literal (::ffff:a.b.c.d)
+// satisfies Is4()||Is4In6() as though it were an ordinary v4 value — which
+// is exactly the shortcut this file used to take — but pasta does not agree
+// with itself about it: measured, `-a ::ffff:10.13.13.2/120` is read as an
+// IPv4 address (so V2's old check saw a match and let it through), while `-g
+// ::ffff:10.13.13.1` is silently DISCARDED, and pasta falls back to its OWN
+// default gateway — the host's real router. The result was accepted by V2,
+// left V3/V4/V6 nothing to object to (the pair "matched"), and reached
+// `--dry-run` as an ordinary synthetic address: `default via 192.168.1.1`
+// appeared inside, no warning, exit 0 — precisely the half-anonymised state
+// V6 exists to forbid, produced without tripping it.
+//
+// Refused in EITHER family's keys, unconditionally: it is never the
+// spelling a profile author meant, in address/gateway (where it silently
+// re-admits the host's router) or in address6/gateway6 (where it is not a
+// real v6 address either). suggestion is the bare literal to write instead.
+func mappedV4Error(name ProfileName, key, raw, suggestion string) error {
+	return fmt.Errorf("profile %q: network %s %s is a 4-in-6 mapped address (::ffff:a.b.c.d). "+
+		"pasta treats a mapped ADDRESS as IPv4 but silently DISCARDS a mapped GATEWAY, falling "+
+		"back to its own default — the host's real router — which is exactly the "+
+		"half-anonymised state this profile's own address key exists to forbid (measured: "+
+		"`default via <host router>` appeared inside, exit 0, no warning). "+
+		"Write the bare literal instead: %s",
+		name, key, VisibleText(raw), suggestion)
+}
+
+// parseNetPrefix parses a profile's address/address6 value: V1 (parses as a
+// netip.Prefix — ParsePrefix refuses a v6 ZONE outright, measured, and
+// refuses trailing junk after the prefix, which is why the pre-netip forging
+// refusal in validate.go could be retired for this half of the pair at all —
+// see checkAddressPair for the half it could NOT retire), V2 (the value's
+// family must match the key it was written under, and must not be a 4-in-6
+// mapped spelling of either family — mappedV4Error), and V5.
+//
+// err's own text is escaped too (VisibleText, not %v) even though it is
+// SAFE today — measured: netip.ParsePrefix/ParseAddr already quote the raw
+// input inside their own error (`‮`, not the raw byte) — because this
+// refusal must not depend on a standard-library error format staying that
+// way, which is the same reasoning that keeps visibleValue on a Prefix's own
+// String() even though String() cannot forge either.
+func parseNetPrefix(name ProfileName, key, raw string, want4 bool) (netip.Prefix, error) {
+	pfx, err := netip.ParsePrefix(raw)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("profile %q: network %s %s does not parse as an "+
+			"address/prefix (e.g. \"10.13.13.2/24\"): %s", name, key, VisibleText(raw), VisibleText(err.Error()))
+	}
+	a := pfx.Addr()
+	// Checked BEFORE the family-mismatch message below, on purpose: a mapped
+	// value satisfies want4's check today, and moving straight to "wrong
+	// family, use %s instead" would send the author to address6/gateway6
+	// with a value that is not a real v6 literal there either.
+	if a.Is4In6() {
+		bits := pfx.Bits() - 96
+		suggestion := a.Unmap().String()
+		if bits >= 0 {
+			suggestion = fmt.Sprintf("%s/%d", a.Unmap(), bits)
+		}
+		return netip.Prefix{}, mappedV4Error(name, key, raw, suggestion)
+	}
+	if is4 := a.Is4(); is4 != want4 {
+		return netip.Prefix{}, fmt.Errorf("profile %q: network %s is %s (%s), which is an %s "+
+			"value; write it as %s instead", name, key, VisibleText(raw), a, familyWord(is4), siblingNetKey(key))
+	}
+	if reason := checkAddrIsUsable(a); reason != "" {
+		return netip.Prefix{}, fmt.Errorf("profile %q: network %s %s %s (%s); pasta may accept "+
+			"it silently and the sandbox would do something no profile author meant",
+			name, key, VisibleText(raw), reason, a)
+	}
+	return pfx, nil
+}
+
+// parseNetGateway parses a profile's gateway/gateway6 value: V1, V2 (family
+// match, and no 4-in-6 mapped spelling — mappedV4Error, same reasoning as
+// parseNetPrefix and the more dangerous half of the pair: pasta silently
+// DISCARDS a mapped gateway rather than merely mis-filing it), V5, and V7 —
+// no ZONE. Unlike a Prefix, ParseAddr does NOT refuse a zoned literal, and
+// Addr.String() re-emits the zone verbatim wherever this value is later
+// shown, which is the corrected half of the netip claim (a zoned link-local
+// gateway is the shape of a real v6 default route, not a contrived one).
+func parseNetGateway(name ProfileName, key, raw string, want4 bool) (netip.Addr, error) {
+	a, err := netip.ParseAddr(raw)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("profile %q: network %s %s does not parse as an "+
+			"address: %s", name, key, VisibleText(raw), VisibleText(err.Error()))
+	}
+	if a.Is4In6() {
+		return netip.Addr{}, mappedV4Error(name, key, raw, a.Unmap().String())
+	}
+	if is4 := a.Is4(); is4 != want4 {
+		return netip.Addr{}, fmt.Errorf("profile %q: network %s is %s, which is an %s value; "+
+			"write it as %s instead", name, key, VisibleText(raw), familyWord(is4), siblingNetKey(key))
+	}
+	if a.Zone() != "" {
+		return netip.Addr{}, fmt.Errorf("profile %q: network %s %s carries a zone (%s); a "+
+			"zoned address re-emits the zone verbatim wherever this value is later shown — in "+
+			"`snug --dry-run` and in the pasta command below it — so write the bare address",
+			name, key, VisibleText(raw), VisibleText(a.Zone()))
+	}
+	if reason := checkAddrIsUsable(a); reason != "" {
+		return netip.Addr{}, fmt.Errorf("profile %q: network %s %s %s (%s); pasta may accept "+
+			"it silently and the sandbox would do something no profile author meant",
+			name, key, VisibleText(raw), reason, a)
+	}
+	return a, nil
+}
+
+// checkAddressPair enforces V3, V4, V6 and V7 over the RESOLVED values — see
+// addrPairs for why this is written once over the pair rather than twice over
+// four fields. Called from Resolve, post-fold, with the owning profile for
+// each present key so the refusal can name it; and from Validate with a nil
+// map, as the backstop for a Policy built by hand, which never ran the
+// per-value parse above that ALSO enforces V7 — one body, because two
+// spellings of this rule are exactly what a reader would have to diff to
+// trust either.
+//
+// V1, V2 and V5 are NOT re-checked here: they are properties of a single
+// profile-supplied value, already enforced at parse time in Resolve, and a
+// hand-built Policy's netip fields cannot fail to "parse" (they already are
+// the typed value) — see net_test.go's own note on what that leaves
+// uncovered for V2 specifically.
+func (n NetPolicy) checkAddressPair(owners map[string]ProfileName) error {
+	pairs := n.addrPairs()
+	var present, missing []string
+	for _, pr := range pairs {
+		if pr.addr.IsValid() {
+			present = append(present, pr.keyAddr)
+		} else {
+			missing = append(missing, pr.keyAddr)
+		}
+		if pr.gw.IsValid() {
+			present = append(present, pr.keyGW)
+		} else {
+			missing = append(missing, pr.keyGW)
+		}
+		// V7, ADDRESS role. A Prefix built by ParsePrefix cannot carry a
+		// zone (measured). This branch's own doc comment used to claim a
+		// hand-built netip.PrefixFrom(zonedAddr, bits) could smuggle one in
+		// — MEASURED FALSE, and it is worth naming the error rather than
+		// quietly fixing it (red team F2): PrefixFrom(zonedAddr, bits)
+		// STRIPS the zone (`PrefixFrom(fe80::1%eth0, 64) -> addrZone=""`),
+		// so this branch is UNREACHABLE today — every zoned Prefix a Go
+		// program can construct through the stdlib loses the zone before it
+		// ever reaches here. It stays anyway, as belt-and-braces against a
+		// future netip release changing that behaviour, and because a
+		// Prefix built through some OTHER means (a third-party library, an
+		// unsafe cast) is not something this package can rule out by
+		// reading net/netip's current source. See
+		// TestAZonedAddressIsRefusedEverywhereItCanBeBuilt for why its own
+		// "ADDRESS role" subtest could not actually exercise this branch
+		// either, and what asserting that honestly requires.
+		if pr.addr.IsValid() && pr.addr.Addr().Zone() != "" {
+			return fmt.Errorf("network %s %s carries a zone (%s): a zoned address re-emits the "+
+				"zone verbatim wherever this value is later shown — in `snug --dry-run` and in "+
+				"the pasta command below it — so write the bare prefix",
+				pr.keyAddr, VisibleText(pr.addr.String()), VisibleText(pr.addr.Addr().Zone()))
+		}
+		if pr.gw.IsValid() && pr.gw.Zone() != "" {
+			return fmt.Errorf("network %s %s carries a zone (%s): a zoned address re-emits the "+
+				"zone verbatim wherever this value is later shown — in `snug --dry-run` and in "+
+				"the pasta command below it — so write the bare address",
+				pr.keyGW, VisibleText(pr.gw.String()), VisibleText(pr.gw.Zone()))
+		}
+		if pr.addr.IsValid() && pr.gw.IsValid() {
+			// V3: pasta refuses a gateway outside its address's prefix
+			// ("No route to host", measured).
+			if !pr.addr.Contains(pr.gw) {
+				return fmt.Errorf("network %s %s is not inside %s %s: pasta refuses this "+
+					"combination (\"No route to host\")", pr.keyGW, pr.gw, pr.keyAddr, pr.addr)
+			}
+			// V4: pasta refuses a gateway equal to the address itself
+			// ("Invalid argument", measured).
+			if pr.gw == pr.addr.Addr() {
+				return fmt.Errorf("network %s %s equals the %s address %s: pasta refuses this "+
+					"combination (\"Invalid argument\"); pick a different address inside the prefix",
+					pr.keyGW, pr.gw, pr.keyAddr, pr.addr)
+			}
+		}
+	}
+	// V6: all four, or none.
+	if len(present) == 0 || len(missing) == 0 {
+		return nil
+	}
+	return halfAnonymisedError(present, missing, pairs, owners)
+}
+
+// halfAnonymisedError is V6's refusal. Subject is the RESOLVED policy, not
+// one profile — a pair legitimately split across two profiles (one naming
+// `address`/`gateway`, another `address6`/`gateway6`) must not be blamed on
+// either alone — but the owning profile(s) are named when known, because
+// "it broke" should become "I know which line to change".
+//
+// snug REFUSES here rather than warning, and that asymmetry with the
+// no-resolver case (internal/cli/main.go) is one rule, not two moods: warn
+// when the missing thing makes the sandbox do LESS (a payload with no DNS is
+// strictly less capable, and the absence is loudly visible from inside in
+// milliseconds); refuse when it makes the sandbox LEAK MORE. A
+// half-anonymised sandbox WORKS PERFECTLY and discloses exactly what the
+// profile's own name says it hides — invisible from inside, and invisible in
+// --dry-run until a human reads this refusal.
+func halfAnonymisedError(present, missing []string, pairs [2]netAddrPair, owners map[string]ProfileName) error {
+	subject := "the resolved policy"
+	if owners != nil {
+		seen := map[ProfileName]bool{}
+		var who []string
+		for _, key := range present {
+			if o := owners[key]; o != "" && !seen[o] {
+				seen[o] = true
+				who = append(who, string(o))
+			}
+		}
+		if len(who) > 0 {
+			subject = "profile " + strings.Join(who, "+")
+		}
+	}
+	var have []string
+	for _, pr := range pairs {
+		if pr.addr.IsValid() {
+			have = append(have, fmt.Sprintf("%s = %q", pr.keyAddr, pr.addr))
+		}
+		if pr.gw.IsValid() {
+			have = append(have, fmt.Sprintf("%s = %q", pr.keyGW, pr.gw))
+		}
+	}
+	return fmt.Errorf("network anonymisation is half-applied: %s sets %s but not %s.\n"+
+		"       pasta assigns addresses PER FAMILY, so the family you did not name keeps the\n"+
+		"       HOST's own addresses. Measured on a dual-stack host: `-a 10.13.13.2/24` alone left\n"+
+		"       BOTH of the host's global IPv6 addresses on the sandbox's interface, the privacy-\n"+
+		"       extension temporary one included, plus a default route through the router's\n"+
+		"       link-local address. Those are globally routable, geolocatable and ISP-attributable;\n"+
+		"       the IPv4 address you withheld is RFC1918 (issue #165). An `address` with no\n"+
+		"       `gateway` is the same shape one step further in: pasta then keeps the host's own\n"+
+		"       default route, so the ROUTE TABLE discloses the router and the LAN prefix even\n"+
+		"       though the address itself is synthetic.\n"+
+		"       snug refuses rather than warns because this is a guarantee that no longer holds,\n"+
+		"       not a capability that is missing: the sandbox works perfectly and discloses\n"+
+		"       exactly what the profile's own name says it hides.\n"+
+		"       Currently set: %s\n"+
+		"       Fix: write all four keys, or none. These are @net-anon's, and they work:\n"+
+		"           address  = \"10.13.13.2/24\"          gateway  = \"10.13.13.1\"\n"+
+		"           address6 = \"fd00:5e79:1::2/64\"      gateway6 = \"fd00:5e79:1::1\"\n"+
+		"       Or drop your own profile and select @net-anon.",
+		subject, strings.Join(present, ", "), strings.Join(missing, ", "), strings.Join(have, ", "))
 }
 
 // PastaTarget is what pasta must be aimed at: the paths it opens for --netns
@@ -419,7 +880,10 @@ func PastaTargetStage(stagePID, netnsFD int) PastaTarget {
 //
 //   - --map-host-loopback none. pasta's default is THE GATEWAY ADDRESS, which
 //     translates to the host's loopback — the exact hole a private netns exists
-//     to close.
+//     to close. ONE occurrence closes BOTH families — measured: the v4 gateway
+//     maps to the host's 127.0.0.1 and the v6 gateway to ::1, but it is one
+//     flag value, not two, so a second "--map-host-loopback none" for the v6
+//     pair is not hardening. There is no second pasta default to close here.
 //   - -T none -U none. These are ns->host forwards and BOTH DEFAULT TO auto,
 //     which splices host loopback services into the namespace's own loopback.
 //     The previous generation of this project passed the first flag and not
@@ -465,23 +929,31 @@ func (p *Policy) PastaArgs(t PastaTarget) []string {
 	}
 
 	if n.NeedsDNSForward() {
-		a = append(a, "--dns-forward", dnsForwardAddr)
-		// And WHERE those queries go, named rather than defaulted — see
-		// DNSHost for why leaving it to pasta means the host's resolv.conf is
-		// read twice with two different rules (issue #166).
-		if h := n.DNSHost(); h != "" {
-			a = append(a, "--dns-host", h)
-		}
+		// The forwarder and its destination are ONE decision in TWO flags and
+		// must agree on family: pasta re-issues a v4-forwarded query only to
+		// a v4 --dns-host (measured — a live v6 --dns-host does not rescue
+		// it, and neither does pasta's own default). Both come from
+		// forwardAddr/DNSHost's shared family choice, so the file the sandbox
+		// reads and the flags pasta gets cannot disagree.
+		a = append(a, "--dns-forward", n.forwardAddr(), "--dns-host", n.DNSHost())
 	}
-	if n.Address != "" {
-		addr, prefix, _ := strings.Cut(n.Address, "/")
-		a = append(a, "-a", addr)
-		if prefix != "" {
-			a = append(a, "-n", prefix)
+	for _, pair := range n.addrPairs() {
+		if !pair.addr.IsValid() {
+			continue
 		}
-		if n.Gateway != "" {
-			a = append(a, "-g", n.Gateway)
-		}
+		// ONE -a per family, and the prefix INLINE in both. pasta's -n is a
+		// single GLOBAL netmask, not a per-family one: with -n present, an
+		// inline prefix in ANY -a is "Redundant prefix length specification"
+		// and exit 1 (measured), and there is no v6 -n at all. Leaving the v6
+		// prefix off works only because pasta defaults it to /64 — a helper
+		// default for a value that decides what the sandbox treats as
+		// on-link, which is what this file refuses to inherit.
+		//
+		// pair.gw is always valid here too: checkAddressPair's V6 (all four
+		// values or none) has already run by the time a Policy reaches this
+		// point, in Resolve or in Validate for a hand-built one — see net.go
+		// and validate.go.
+		a = append(a, "-a", pair.addr.String(), "-g", pair.gw.String())
 	}
 	if n.MTU > 0 {
 		a = append(a, "--mtu", strconv.Itoa(n.MTU))

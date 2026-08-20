@@ -112,10 +112,7 @@ profiles "mtu-a" and "mtu-b" set different MTUs (1400 and 9000); select only one
        profiles are folded, and the model has no such order.
 
 == scalar_conflict_address_forging ==
-profiles "addr-a" and "addr-b" set different network addresses (10.0.0.2/24 \u202eSSERDDA-NA-YB-DEGROF and 10.0.0.3/24 \u009b1AFORGED-BY-A-C1); select only one.
-       This key has no permissive direction — there is no "more open" address — so snug
-       refuses rather than choosing. Picking one would make the answer depend on the order
-       profiles are folded, and the model has no such order.
+profile "addr-a": network address 10.0.0.2/24 \u202eSSERDDA-NA-YB-DEGROF does not parse as an address/prefix (e.g. "10.13.13.2/24"): netip.ParsePrefix("10.0.0.2/24 \u202eSSERDDA-NA-YB-DEGROF"): bad bits after slash: "24 \u202eSSERDDA-NA-YB-DEGROF"
 
 == poststaging_nested_grant_under_later_replace ==
 profile hostile puts a bind of /opt at /home/u/.claude.json/evil, which is inside /home/u/.claude.json — a generated FILE (from @claude).
