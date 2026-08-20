@@ -384,7 +384,7 @@ dns = true
 # it. One read-only bind into the directory snug stages commands in:
 #
 #   [profile.gh-cli]
-#   ro = ["{home}/bin/gh_X.Y.Z_linux_amd64/bin/gh:/run/snug/bin/gh"]
+#   ro = ["{home}/bin/gh_X.Y.Z_linux_amd64/bin/gh:/snug/bin/gh"]
 #
 # Not a builtin, deliberately: the path is host-specific, and a profile that
 # guesses wrong would fail at a different layer than the one the human wrote.
@@ -479,12 +479,12 @@ dns = true
 description = "Claude Code: binary and skills read-only, credentials projected and settings generated."
 include = ["sys", "home"]
 #
-# The BINARY lands at /run/snug/bin/claude, not at its host path. snug stages
+# The BINARY lands at /snug/bin/claude, not at its host path. snug stages
 # every executable it puts in front of the payload in that one directory,
 # because that directory is not writable from inside — see the note under `ro`
 # below and CLAUDE.md's shadow-slot rule.
 ro = [
-  "{home}/.local/bin/claude:/run/snug/bin/claude",
+  "{home}/.local/bin/claude:/snug/bin/claude",
   "{home}/.local/share/claude",
   "{home}/.claude/skills",
   "{home}/.claude/plugins",
@@ -544,13 +544,13 @@ NO_COLOR = true
 # inside the sandbox is that file. Nothing about the bind of `claude` was unsafe;
 # the DIRECTORY it lived in was.
 #
-# Now the binary is bound at /run/snug/bin/claude and snug adds /run/snug/bin to
+# Now the binary is bound at /snug/bin/claude and snug adds /snug/bin to
 # PATH itself, in its own band, whenever anything is staged there — so no profile
 # names a PATH directory at all and none can pick a writable one by accident.
 # See policy.StagedBinDir and CLAUDE.md.
 #
 # ABUSE: a hostile process inside the sandbox can run whatever is in
-# /run/snug/bin ahead of the distro's copy of the same name — and it cannot add
+# /snug/bin ahead of the distro's copy of the same name — and it cannot add
 # to it, because that directory sits on the root tmpfs and --remount-ro / covers
 # it (measured: `touch` and `echo >` both EROFS).
 

@@ -4,7 +4,7 @@ defined in  builtin:base.toml
 
   includes         @sys
                    @home
-  ro               {home}/.local/bin/claude:/run/snug/bin/claude
+  ro               {home}/.local/bin/claude:/snug/bin/claude
                    {home}/.local/share/claude
                    {home}/.claude/skills
                    {home}/.claude/plugins

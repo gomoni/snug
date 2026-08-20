@@ -37,7 +37,7 @@ You own the two layers where snug's security actually lives: the **policy model*
    policy itself is an unordered set. Never leak argv ordering up into the
    profile file format.
 6. **snug never puts an executable anywhere the payload can write.** One staging
-   directory, `policy.StagedBinDir` (`/run/snug/bin`), for everything snug puts
+   directory, `policy.StagedBinDir` (`/snug/bin`), for everything snug puts
    in front of the payload — the generated podman dispatcher and `@claude`'s
    bound binary alike. It is on the root tmpfs, so `--remount-ro /` covers it.
    `$HOME`, `/tmp`, `$HOME/.cache`, `$HOME/.config`, `$HOME/.local/state`,
@@ -67,7 +67,7 @@ You own the two layers where snug's security actually lives: the **policy model*
 
    **And the directory itself is snug's, in `snugsOwn` alongside `/proc` and
    `/dev`.** An independent review found the same defect one indirection out: a
-   profile that mounts a tmpfs (or a `rw` bind) AT `/run/snug/bin` and stages one
+   profile that mounts a tmpfs (or a `rw` bind) AT `/snug/bin` and stages one
    file inside gets a writable directory that snug then puts first on PATH *in
    its own `(snug)` provenance*, with the profile never naming PATH at all. That
    is not the accepted-residual class — no human read a declaration — and it is

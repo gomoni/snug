@@ -133,7 +133,7 @@ func startIdentity(pol *policy.Policy, verbose, iKnow, dryRun bool) (cleanup fun
 			cleanup()
 			return nil, fmt.Errorf("ssh_mode = \"host-agent\" but no agent is running on the host")
 		}
-		pol.BindSocket(upstream, "/run/snug/ssh-agent.sock", "(identity)")
+		pol.BindSocket(upstream, policy.AgentSocketGuest, "(identity)")
 
 	case policy.SSHAgentProxy:
 		if id.SSHKey == "" {
@@ -153,7 +153,7 @@ func startIdentity(pol *policy.Policy, verbose, iKnow, dryRun bool) (cleanup fun
 		go p.Serve()
 		inner := cleanup
 		cleanup = func() { p.Close(); inner() }
-		pol.BindSocket(sock, "/run/snug/ssh-agent.sock", "(identity)")
+		pol.BindSocket(sock, policy.AgentSocketGuest, "(identity)")
 	}
 
 	// The pinned PUBLIC key, so the generated ~/.ssh/config's IdentityFile
@@ -192,7 +192,7 @@ func startIdentity(pol *policy.Policy, verbose, iKnow, dryRun bool) (cleanup fun
 		})
 	}
 
-	pol.AuthorEnv("SSH_AUTH_SOCK", "/run/snug/ssh-agent.sock")
+	pol.AuthorEnv("SSH_AUTH_SOCK", policy.AgentSocketGuest)
 
 	if err := stageGhConfig(pol, id, dryRun); err != nil {
 		cleanup()

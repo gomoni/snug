@@ -159,11 +159,12 @@ func (p *Policy) Validate(env Environ) error {
 		// because @tmp-shared replacing the private tmpfs is the intended use.
 		//
 		// COVERING, not just AT, and that distinction is the whole of issue #22.
-		// The check was an exact map lookup, so `tmpfs = ["/run/snug/bin"]` was
-		// refused and `tmpfs = ["/run"]` was accepted — the identical hole one
-		// directory up. Measured, with @podman-socket to put the directory on PATH:
-		// WROTE-OK /run/snug/bin/git, `command -v git` resolved to it, and the
-		// shadowed git RAN. Same at `tmpfs = ["/run/snug"]`. --remount-ro / does
+		// The check was an exact map lookup, so a grant AT the staging directory
+		// was refused and a grant one directory up was accepted — the identical
+		// hole. Measured, with @podman-socket to put the directory on PATH:
+		// WROTE-OK, `command -v git` resolved to it, and the shadowed git RAN.
+		// (The paths in that measurement were the pre-#206 ones under /run/snug;
+		// the shape is unchanged, one namespace over.) --remount-ro / does
 		// not reach either, because the profile's tmpfs is a separate mount and the
 		// staging directory is then created inside it.
 		//
@@ -186,6 +187,62 @@ func (p *Policy) Validate(env Environ) error {
 				"       stops holding. Naming the parent is not a narrower grant than naming the child.\n"+
 				"       %s",
 				provenance(m), describeNode(m), g, at, at, own.why, at, own.instead)
+		}
+		// RULE 4b: SnugDir is snug's own NAMESPACE, and that is the difference
+		// between this rule and the one above (issue #206).
+		//
+		// Rule 4 is a LIST, and it had to grow every time snug acquired a path.
+		// The reason it gave for the staging directory — a profile's mount is a
+		// SEPARATE mount, so `--remount-ro /` does not reach inside it and the
+		// directory snug relied on being unwritable becomes writable — applies
+		// word for word to every path snug will ever own; Tier C (#125) alone
+		// would have added four. So this one is stated over the namespace rather
+		// than over its current members, and a path snug adds next is protected
+		// the day it exists rather than the day someone remembers the entry.
+		//
+		// It asks a DIFFERENT question from rule 4 and does not repeat it. Rule 4
+		// asks "does this grant swallow a node snug placed" — an ancestor test,
+		// over a map of specific paths. This one asks "is this grant inside
+		// snug's namespace at all", which catches the paths snug has not placed
+		// yet: /snug/engine (issue #125's graft destinations) is refused here on
+		// the day the name is chosen, not on the day someone remembers to add a
+		// map entry. Between them there is no gap and no overlap.
+		if !m.Authored && insideSnugDir(g) && !stagedFileUnderSnugDir(g, m) {
+			return fmt.Errorf("profile %s puts %s at %s, inside snug's own namespace %s:\n"+
+				"       the ONE thing a profile may do there is stage a single executable read-only\n"+
+				"       under %s, which is what that directory exists for. Anything else — a tmpfs, a\n"+
+				"       writable bind, or a mount AT one of the directories snug creates — either\n"+
+				"       displaces something snug put there or escapes --remount-ro / and becomes a\n"+
+				"       writable directory ahead of /usr/bin on the PATH snug hands over.\n"+
+				"       Stage the FILE, never the directory:\n"+
+				"         ro = [\"/host/path/tool:%s/tool\"]",
+				provenance(m), describeNode(m), g, SnugDir, StagedBinDir, StagedBinDir)
+		}
+		// A TOMBSTONE, and it is deliberately a refusal rather than silence.
+		//
+		// snug's own paths moved out of legacySnugDir in issue #206. A profile
+		// on this host that still names the old location would otherwise keep
+		// validating and quietly stop doing what its author meant: the staging
+		// grant would stage into an ordinary directory that is not on PATH, and
+		// nothing on screen would say so. That is the failure mode a rename owes
+		// its users a refusal for.
+		//
+		// The cost is stated rather than hidden: legacySnugDir stays reserved,
+		// so a profile that wants a runtime directory there for reasons of its
+		// own cannot have that exact path any more. That is a smaller price than
+		// a grant that looks fine and does nothing, and it is the only way the
+		// old name can say where the new one is.
+		if !m.Authored && namesLegacySnugDir(g) {
+			return fmt.Errorf("profile %s puts %s at %s, but snug's own paths moved from %s to %s\n"+
+				"       (issue #206), and %s is kept refused so this grant cannot silently stop\n"+
+				"       working. A staging grant there would still validate, stage into a directory\n"+
+				"       that is no longer on PATH, and say nothing.\n"+
+				"       Stage into the new location instead:\n"+
+				"         ro = [\"/host/path/tool:%s/tool\"]\n"+
+				"       If you wanted an unrelated runtime directory rather than snug's, pick a path\n"+
+				"       outside %s — that name is a tombstone now, not a feature.",
+				provenance(m), describeNode(m), g, legacySnugDir, SnugDir, legacySnugDir,
+				StagedBinDir, legacySnugDir)
 		}
 		// bwrap cannot create a mountpoint at a symlink destination. Catch the
 		// case where a grant's guest path traverses a symlink snug itself
@@ -422,38 +479,54 @@ var snugsOwn = map[string]ownedPath{
 			"       one more device node is a change to snug, not a grant a profile can make.",
 	},
 
-	// StagedBinDir is here for a different reason from the other two, and the
-	// difference is the point. /proc and /dev are refused because a profile grant
-	// DISPLACES snug's own node. Nothing is mounted at StagedBinDir at all — it is
-	// a plain directory on the root tmpfs, and that is precisely what makes it
-	// unwritable, because `--remount-ro /` covers it. A profile mounting ANYTHING
-	// there — a tmpfs, or a rw bind — is a separate mount, is not covered by that
-	// remount, and turns the directory writable.
+	// SnugDir and StagedBinDir are here for a different reason from the other
+	// two, and the difference is the point. /proc and /dev are refused because a
+	// profile grant DISPLACES snug's own node. Nothing is mounted at these two
+	// at all — they are plain directories on the root tmpfs, and that is
+	// precisely what makes them unwritable, because `--remount-ro /` covers
+	// them. A profile mounting ANYTHING there — a tmpfs, or a rw bind — is a
+	// separate mount, is not covered by that remount, and turns the directory
+	// writable.
 	//
 	// What that buys the profile is not its own writable directory. It is
 	// SNUG's PATH band: HasStagedBin sees the staged executable, snug puts
 	// StagedBinDir first on PATH in `(snug)` provenance, and the payload then
-	// writes `git` into a directory that runs ahead of /usr/bin. Measured, with
-	// `tmpfs = ["/run/snug/bin"]` plus one staged bind: WROTE-OK, and the
-	// shadowed git ran. The rw-bind spelling is worse — the shadowed command
-	// persists to the host directory.
+	// writes `git` into a directory that runs ahead of /usr/bin.
 	//
-	// This is the case the staging rule in CLAUDE.md says cannot happen ("a
-	// profile cannot pick a writable directory by accident, because it does not
-	// pick one at all"), and it is not the accepted residual class either: the
-	// profile writes no PATH declaration, so no human ever read a line saying a
-	// writable directory would go on PATH.
+	// COVERING, not just AT, and that distinction is the whole of issue #22.
+	// The check was an exact map lookup, so a grant AT the staging directory was
+	// refused and a grant one directory up was accepted — the identical hole.
+	// Measured, with @podman-socket to put the directory on PATH: WROTE-OK,
+	// `command -v git` resolved to it, and the shadowed git RAN.
+	//
+	// BOTH entries, not just the outer one, and the reason is `covers`'s
+	// direction: a grant AT StagedBinDir does not cover SnugDir, so the outer
+	// entry alone would miss exactly the case issue #22 is about. This map
+	// answers "does this grant swallow a node snug placed"; rule 4b answers "is
+	// this grant inside snug's namespace at all". Two questions, no overlap —
+	// which is why both exist and why rule 4b does not repeat the ancestor test.
 	//
 	// Note what is NOT refused, and must not be: a grant at a path INSIDE the
-	// directory. The predicate is a path-ANCESTOR test, so @claude's
-	// `{home}/.local/bin/claude:/run/snug/bin/claude` is untouched — staging one
+	// staging directory. The predicate is a path-ANCESTOR test, so @claude's
+	// `{home}/.local/bin/claude:/snug/bin/claude` is untouched — staging one
 	// executable is the whole purpose of the directory. Nor is a sibling that
-	// merely shares a string prefix: /run/snug/binaries is not an ancestor of
-	// /run/snug/bin and stays legal.
-	//
-	// What IS refused, since issue #22, is any ancestor: /run/snug, /run, /. The
-	// exact-key version of this rule shipped, and `tmpfs = ["/run"]` walked
-	// straight past it.
+	// merely shares a string prefix: /snug/binaries is not an ancestor of
+	// /snug/bin (it is refused, but by rule 4b, for being in the namespace).
+	// The `why` names StagedBinDir on purpose, even though this entry is about
+	// the whole namespace. A refusal that says only "/snug is snug's own" tells
+	// the reader they may not have it without telling them what is at stake, and
+	// the thing at stake is concrete: this grant takes the directory snug puts
+	// FIRST on PATH down with it. Every refusal in this family names the thing
+	// at risk, and the integration test asserts it does.
+	SnugDir: {
+		why: "it is the namespace snug reserves for everything it needs a path for inside " +
+			"a sandbox — " + StagedBinDir + " among them — and those paths are unwritable " +
+			"only because they are plain directories on the root tmpfs that --remount-ro / " +
+			"covers. A mount here takes " + StagedBinDir + " with it, and snug puts that " +
+			"directory FIRST on PATH.",
+		instead: "Grant the path you actually meant — any path that neither is nor contains\n" +
+			"       " + SnugDir + ". Nothing a profile needs lives there; it is snug's own.",
+	},
 	StagedBinDir: {
 		why: "it is a plain directory on the root tmpfs, which is what makes it " +
 			"unwritable once / is remounted read-only, and snug puts it FIRST on PATH. " +
@@ -461,9 +534,9 @@ var snugsOwn = map[string]ownedPath{
 			"payload a writable directory ahead of /usr/bin.",
 		instead: "Stage the FILE, never the directory:\n" +
 			"         ro = [\"/host/path/tool:" + StagedBinDir + "/tool\"]\n" +
-			"       If you named an ancestor (`tmpfs = [\"/run\"]`) because something inside needs\n" +
-			"       a writable runtime directory, grant THAT directory — `tmpfs = [\"/run/myapp\"]`,\n" +
-			"       any path that neither is nor contains " + StagedBinDir + ".",
+			"       If you named an ancestor because something inside needs a writable runtime\n" +
+			"       directory, grant THAT directory — any path that neither is nor contains\n" +
+			"       " + StagedBinDir + ".",
 	},
 }
 
@@ -481,8 +554,8 @@ var snugsOwn = map[string]ownedPath{
 // build "//" and match nothing.
 //
 // It is a path-ancestor test and NOT a string-prefix test, in both directions:
-// /run/snug/binaries does not cover /run/snug/bin, and /run/snug/bin/claude does
-// not cover /run/snug/bin. The first is what a bare strings.HasPrefix gets
+// /snug/binaries does not cover /snug/bin, and /snug/bin/claude does
+// not cover /snug/bin. The first is what a bare strings.HasPrefix gets
 // wrong; the second is the grant the staging directory EXISTS for, and refusing
 // it would break @claude on every run.
 func covers(outer, inner string) bool {
@@ -494,7 +567,7 @@ func covers(outer, inner string) bool {
 //
 // The keys are sorted, so a grant covering more than one reports the same one on
 // every run. Nothing reachable covers two today (the only common ancestor of
-// /proc, /dev and /run/snug/bin is /, refused before this by its own rule), but
+// /proc, /dev, /snug and /snug/bin is /, refused before this by its own rule), but
 // a security verdict that depends on Go's map iteration order is one that
 // changes between runs, and the model has been bitten by exactly that before —
 // see the note on resolveViaDeepest.

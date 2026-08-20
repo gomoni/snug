@@ -524,7 +524,7 @@ to disable any of it**. Issue #68.
 
 That is the **third** time a rule in this project was defeated one indirection
 below the layer it was written about — the `@claude` PATH shadow slot and the
-`/run/snug/bin` overmount are the other two. So the rule for an adapter is:
+`/snug/bin` overmount are the other two. So the rule for an adapter is:
 
 > When you generate a file, write down what the adapter does **not** close, in
 > the profile's abuse block, in the guidance the sandbox reads, and in the design

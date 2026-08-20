@@ -272,7 +272,7 @@ stub is `/bin/sh` text delivered from a memfd with no host reference in it.
 Two constraints follow and both are load-bearing:
 
 1. **The staged file and its directory must be unwritable from inside.**
-   Measured: under `--remount-ro /`, `/run/snug/bin` refuses both `touch
+   Measured: under `--remount-ro /`, `/snug/bin` refuses both `touch
    .../evil` and `echo x > .../podman` (EROFS); `$HOME/.local/bin`, a writable
    tmpfs, refuses neither. A writable directory ahead of `/usr/bin` on `PATH` is
    a command-shadowing surface *snug would be creating*.
@@ -289,7 +289,7 @@ Two constraints follow and both are load-bearing:
 >
 > **Both closed.** CLAUDE.md carries the amendment, and the `@claude` half — the
 > one this note filed as "pre-existing and separate", which is how it survived a
-> further milestone — is gone: its binary is bound at `/run/snug/bin/claude`,
+> further milestone — is gone: its binary is bound at `/snug/bin/claude`,
 > `@claude` names no `PATH` directory at all, and snug adds the staging directory
 > itself whenever anything is staged there. So the abuse sentence above no longer
 > has its second clause: **no shipped profile puts a writable directory ahead of
@@ -298,7 +298,7 @@ Two constraints follow and both are load-bearing:
 > 1 generalised from "the staged file and its directory" to every executable snug
 > stages — see `policy.StagedBinDir`.
 
-**Mechanism.** `/run/snug/bin/podman`, `KindData`, `AccessRO`, `Perms 0755`,
+**Mechanism.** `/snug/bin/podman`, `KindData`, `AccessRO`, `Perms 0755`,
 `From ["(snug)"]`, installed via `Policy.Replace` (sets `Authored`, so
 `rejectMasking` skips it — no new exemption). Detection is impure and lives in
 `internal/cli/podmanshim.go`, returning a value type carried into `policy.Context` as
@@ -309,7 +309,7 @@ goldens stay deterministic.
 flatpak-spawn}`. NOT "is a symlink". The `#!` heuristic is fine for *warning* and
 too broad to license *staging*.
 
-**PATH order:** profile-contributed entries, then `/run/snug/bin`, then the base.
+**PATH order:** profile-contributed entries, then `/snug/bin`, then the base.
 The stub must beat `/usr/bin/podman` — its whole job — and must LOSE to any
 profile entry, because a profile entry is an explicit human grant.
 
@@ -346,7 +346,7 @@ Attacked against the live proxy. **No working escape on any axis.** Clean
 negatives worth pinning as regression tests:
 
 - **Repointing `docker` off the proxy is impossible, and this is the property
-  that makes the stub safe at all.** `/run/snug/podman.sock` is the only
+  that makes the stub safe at all.** `/snug/podman.sock` is the only
   container socket in the namespace; the real engine socket lives under
   `$XDG_RUNTIME_DIR/snug/engines/…`, and `/run/user/1000` is **not in the
   sandbox's mount namespace**. The private netns kills any `tcp://` repoint.

@@ -194,7 +194,7 @@ silent violation — and only because it is gated by a test.**
 |---|---|---|
 | engine mount ns source | `unshare(CLONE_NEWNS)` + `MS_REC\|MS_PRIVATE` on a private copy of the **host** tree | `open_tree(…OPEN_TREE_CLONE\|AT_RECURSIVE)` of policy-named paths, grafted into a fresh tmpfs derived from the **sandbox's** view (`ENGINE-NETNS.md` §5.1) |
 | what stops the engine seeing `~/.ssh` | **nothing structural** — the engine sees the whole host tree in its private copy; bind safety is enforced by the proxy's filter, which refuses a `-v` naming a path the sandbox cannot see. This is the honest gap. | the derived view — a `-v` can only ever name a path the sandbox already sees, so the filter stops being a parallel implementation of policy |
-| grafts | **none.** No `/run`, `/etc/containers` or `/var/tmp` grafts; no fresh-tmpfs-mountpoint dance; no read-only-root fight; no `/run/snug/bin` PATH shadow. | the graft sequence, its ordering rule, and routing grafts through `Validate`/`IsShadowSlot` so they do not become a shadow slot one layer down |
+| grafts | **none.** No `/run`, `/etc/containers` or `/var/tmp` grafts; no fresh-tmpfs-mountpoint dance; no read-only-root fight; no `/snug/bin` PATH shadow. | the graft sequence, its ordering rule, and routing grafts through `Validate`/`IsShadowSlot` so they do not become a shadow slot one layer down |
 | #55 | **not touched** — Tier B does not put the engine in bwrap's namespace, so the read-only-locked-root problem never arises | in scope |
 
 > **The implementer's rule: if you find yourself writing `open_tree`,

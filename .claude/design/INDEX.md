@@ -113,7 +113,7 @@ cost review rounds.
 **Inside the sandbox.** T1–T4 above. Hostile by assumption. Everything in snug is
 aimed here: the empty tmpfs root, the private netns with host loopback closed,
 `--clearenv` plus `cmd.Env = []string{}`, the seccomp filter, `sealInheritedFDs`,
-`safeStdio`, `rejectMasking`, the `/run/snug/bin` staging rule. A defect on this
+`safeStdio`, `rejectMasking`, the `/snug/bin` staging rule. A defect on this
 side is a snug bug and gets a `sev:` label.
 
 **Outside it, writing profiles.** A human. Invariant 3 exists to put the trusted

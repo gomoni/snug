@@ -1302,7 +1302,7 @@ func TestThePayloadNameResolvesAgainstTheSandboxPATH(t *testing.T) {
 // milestone: it bound one file read-only under {home}/.local/bin and merged that
 // DIRECTORY onto PATH, and {home} is a writable tmpfs. The bind was sound; the
 // directory was the hole. The repair stages every executable snug fronts the
-// payload with in policy.StagedBinDir (/run/snug/bin), which sits on the root
+// payload with in policy.StagedBinDir (/snug/bin), which sits on the root
 // tmpfs and is covered by --remount-ro /.
 //
 // It asserts the EFFECT rather than the argv, because that is the half a golden
@@ -1344,7 +1344,7 @@ func TestSnugStagesNoCommandInAWritableDirectory(t *testing.T) {
 		t.Errorf("snug handed over a PATH with a writable directory ahead of /usr/bin:\n%s\n"+
 			"That is a shadow slot: the payload writes a file called `git` into it and the "+
 			"next `git` anything in this sandbox runs is that file. Stage the command in "+
-			"/run/snug/bin instead.", out)
+			"/snug/bin instead.", out)
 	}
 
 	// 2. Same probe with @claude, which is the profile that had the defect and
@@ -1374,7 +1374,7 @@ func TestSnugStagesNoCommandInAWritableDirectory(t *testing.T) {
 	// reintroduces it fails with the reason rather than with a generic message.
 	if strings.Contains(out, filepath.Join(os.Getenv("HOME"), ".local/bin")+":") {
 		t.Errorf("@claude put {home}/.local/bin back on PATH; it is @home's writable "+
-			"tmpfs. Bind the binary at /run/snug/bin/claude instead:\n%s", out)
+			"tmpfs. Bind the binary at /snug/bin/claude instead:\n%s", out)
 	}
 
 	// 3. CONTROL. The probe must be able to SEE a writable directory when one is
@@ -1470,12 +1470,16 @@ EDITOR = "vim\u0000--ro-bind\u0000SECRET\u0000SECRET"
 // without the profile ever naming PATH.
 //
 // TestAProfileCannotMountOverTheStagingDirectory covers both shapes issue #22
-// distinguishes: a grant AT policy.StagedBinDir (/run/snug/bin) and a grant
-// COVERING it — a mount at an ANCESTOR, /run or /run/snug, which takes the
-// staging directory down with it. Before the #22 fix, `snugsOwn` was keyed on
+// distinguishes: a grant AT policy.StagedBinDir (/snug/bin) and a grant
+// COVERING it — a mount at its ANCESTOR /snug, which takes the staging
+// directory down with it. (It was written against /run and /run/snug; issue
+// #206 moved snug's paths into their own namespace, so the ancestor ladder is
+// now two rungs rather than three, and the two cases below it did not have
+// before are #206's own: a path inside the namespace snug has not placed
+// anything at, and the pre-#206 location.) Before the #22 fix, `snugsOwn` was keyed on
 // the exact guest path, so the "at" cases here were refused and the
 // "covering" ones were silently ACCEPTED: the sandbox started, and a payload
-// could write /run/snug/bin/git and have the shadowed command win PATH.
+// could write /snug/bin/git and have the shadowed command win PATH.
 //
 // The refusal now happens in Validate, before bwrap ever runs, so the
 // assertion is "the sandbox did not start" rather than "the write failed" —
@@ -1490,24 +1494,34 @@ func TestAProfileCannotMountOverTheStagingDirectory(t *testing.T) {
 	}{
 		{"tmpfs_at_the_directory", `[profile.stagey]
 description = "stage a tool, and quietly make the staging dir a tmpfs"
-tmpfs = ["/run/snug/bin"]
-ro    = ["/etc/hostname:/run/snug/bin/mytool"]
+tmpfs = ["/snug/bin"]
+ro    = ["/etc/hostname:/snug/bin/mytool"]
 `},
-		{"tmpfs_covers_via_run", `[profile.stagey]
-description = "a tmpfs at an ANCESTOR of the staging dir"
-tmpfs = ["/run"]
+		{"tmpfs_at_the_namespace", `[profile.stagey]
+description = "a tmpfs at the ANCESTOR of the staging dir"
+tmpfs = ["/snug"]
 `},
-		{"tmpfs_covers_via_run_snug", `[profile.stagey]
-description = "a tmpfs one directory closer to the staging dir"
-tmpfs = ["/run/snug"]
+		{"ro_bind_at_the_namespace", `[profile.stagey]
+description = "a read-only bind over the ANCESTOR of the staging dir"
+ro = ["/etc:/snug"]
 `},
-		{"ro_bind_covers_via_run", `[profile.stagey]
-description = "a read-only bind over an ANCESTOR of the staging dir"
-ro = ["/etc:/run"]
+		{"rw_bind_at_the_namespace", `[profile.stagey]
+description = "a writable bind over the ANCESTOR of the staging dir — the worse variant: it persists the shadowed command to the HOST"
+rw = ["/tmp:/snug"]
 `},
-		{"rw_bind_covers_via_run", `[profile.stagey]
-description = "a writable bind over an ANCESTOR of the staging dir — the worse variant: it persists the shadowed command to the HOST"
-rw = ["/tmp:/run"]
+		// Issue #206's own rule, and the case a LIST of owned paths cannot
+		// state: a path inside snug's namespace that snug has not placed
+		// anything at yet. /snug/engine is Tier C's graft destination (#125),
+		// and it must be refused now rather than on the day it is used.
+		{"tmpfs_inside_the_namespace_at_an_unplaced_path", `[profile.stagey]
+description = "a tmpfs at a path inside snug's namespace that snug has not used yet"
+tmpfs = ["/snug/engine"]
+`},
+		// The tombstone (#206). A profile written before the move must be
+		// refused, not accepted into a directory that is no longer on PATH.
+		{"the_pre_206_staging_path_is_refused", `[profile.stagey]
+description = "stage into the old location, as a profile written before the move would"
+ro = ["/etc/hostname:/run/snug/bin/mytool"]
 `},
 	}
 
@@ -1518,18 +1532,18 @@ rw = ["/tmp:/run"]
 
 			out, code := cli(t, env, "-p", "stagey", proj, "--", "/bin/sh", "-c", `
 				echo SNUG-PROBE-RAN
-				echo "#!/bin/sh" > /run/snug/bin/git && echo WROTE-A-COMMAND-INTO-PATH`)
+				echo "#!/bin/sh" > /snug/bin/git && echo WROTE-A-COMMAND-INTO-PATH`)
 			if strings.Contains(out, "SNUG-PROBE-RAN") {
-				t.Errorf("the sandbox started with a profile grant that covers /run/snug/bin:\n%s", out)
+				t.Errorf("the sandbox started with a profile grant that covers /snug/bin:\n%s", out)
 			}
 			if code == 0 {
-				t.Errorf("snug exited 0 on a profile grant that covers /run/snug/bin; the refusal "+
+				t.Errorf("snug exited 0 on a profile grant that covers /snug/bin; the refusal "+
 					"must be fatal, not a warning:\n%s", out)
 			}
 			if strings.Contains(out, "WROTE-A-COMMAND-INTO-PATH") {
 				t.Error("the payload wrote an executable into the directory snug puts first on PATH")
 			}
-			if !strings.Contains(out, "/run/snug/bin") {
+			if !strings.Contains(out, "/snug/bin") {
 				t.Errorf("snug refused, but the message does not name the staging directory:\n%s", out)
 			}
 		})
@@ -1542,13 +1556,13 @@ rw = ["/tmp:/run"]
 	// directory still refusing writes.
 	const ok = `[profile.stagey]
 description = "stage one tool, the right way"
-ro = ["/etc/hostname:/run/snug/bin/mytool"]
+ro = ["/etc/hostname:/snug/bin/mytool"]
 `
 	env := envProfileLayer(t, "stagey.toml", ok, os.Getenv("PATH"))
 	out, code := cli(t, env, "-p", "stagey", proj, "--", "/bin/sh", "-c", `
 		echo SNUG-PROBE-RAN
-		[ -e /run/snug/bin/mytool ] && echo STAGED-TOOL-IS-THERE
-		echo "#!/bin/sh" > /run/snug/bin/git 2>/dev/null && echo WROTE-A-COMMAND-INTO-PATH
+		[ -e /snug/bin/mytool ] && echo STAGED-TOOL-IS-THERE
+		echo "#!/bin/sh" > /snug/bin/git 2>/dev/null && echo WROTE-A-COMMAND-INTO-PATH
 		echo "PATH=$PATH"`)
 	if code != 0 || !strings.Contains(out, "SNUG-PROBE-RAN") {
 		t.Fatalf("control: staging one file must still work (exit %d):\n%s", code, out)
@@ -1557,7 +1571,7 @@ ro = ["/etc/hostname:/run/snug/bin/mytool"]
 		t.Errorf("control: the staged file is not in the sandbox, so this control does not "+
 			"exercise the staging path at all:\n%s", out)
 	}
-	if !strings.Contains(out, "PATH=/run/snug/bin:") {
+	if !strings.Contains(out, "PATH=/snug/bin:") {
 		t.Errorf("control: snug did not put the staging directory first on PATH, so the "+
 			"refusal above is about a directory nothing searches:\n%s", out)
 	}

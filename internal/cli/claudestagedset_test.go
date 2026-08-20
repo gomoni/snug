@@ -302,7 +302,7 @@ func TestClaudeStagedSetIsExactlyThisTable(t *testing.T) {
 		// call does, and base.toml's abuse block makes promises about host
 		// session history and MCP configuration that only an enumeration can
 		// keep honest.
-		"/run/snug/bin/claude":  {"bind", "ro", "-", "bound from host ~/.local/bin/claude"},
+		"/snug/bin/claude":      {"bind", "ro", "-", "bound from host ~/.local/bin/claude"},
 		"~/.claude/skills":      {"bind", "ro", "-", "bound from host ~/.claude/skills"},
 		"~/.claude/plugins":     {"bind", "ro", "-", "bound from host ~/.claude/plugins"},
 		"~/.local/share/claude": {"bind", "ro", "-", "bound from host ~/.local/share/claude"},

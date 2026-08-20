@@ -147,7 +147,7 @@ func TestShadowSlotPredicateFiresOnAWritableHomeDirectory(t *testing.T) {
 
 	// The control: mount a tmpfs at StagedBinDir and the predicate must say yes.
 	// This is the arrangement a profile could once write — `tmpfs =
-	// ["/run/snug/bin"]` plus one staged bind, measured as WROTE-OK with the
+	// ["/snug/bin"]` plus one staged bind, measured as WROTE-OK with the
 	// shadowed git running — and Validate refuses it now (snugsOwn), which is why
 	// it has to be constructed here rather than resolved.
 	p.Mounts[policy.StagedBinDir] = policy.Mount{
@@ -166,10 +166,10 @@ func TestShadowSlotPredicateFiresOnAWritableHomeDirectory(t *testing.T) {
 // regression test for the finding that made it a rule.
 //
 // The route was indirect, which is why nothing caught it. The profile writes no
-// PATH declaration at all: it mounts a tmpfs at /run/snug/bin and stages one
+// PATH declaration at all: it mounts a tmpfs at /snug/bin and stages one
 // file inside, HasStagedBin sees the staged file, and SNUG then puts the
 // directory first on PATH in its own `(snug)` provenance. Measured before the
-// fix: `echo > /run/snug/bin/git` succeeded and the shadowed git ran. The rw-bind
+// fix: `echo > /snug/bin/git` succeeded and the shadowed git ran. The rw-bind
 // spelling was worse — the shadowed command persisted to the host directory.
 //
 // That is the case CLAUDE.md's staging rule says cannot happen ("a profile

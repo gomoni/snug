@@ -312,9 +312,9 @@ func TestIsInlineConfigEnvCaseRules(t *testing.T) {
 // Confirmed end to end by redteam, issue #26 follow-up: a profile carrying
 //
 //	[profile.leaky.environ.set]
-//	RUSTC_WRAPPER = "/run/snug/bin/evil"
+//	RUSTC_WRAPPER = "/snug/bin/evil"
 //
-// reached the bwrap argv as `--setenv RUSTC_WRAPPER /run/snug/bin/evil`, and
+// reached the bwrap argv as `--setenv RUSTC_WRAPPER /snug/bin/evil`, and
 // `RUSTC_WRAPPER=./wrap.sh cargo build` then ran `wrap.sh rustc -vV` as the
 // sandbox's own uid — cargo executes whatever program the variable names as
 // its compiler driver. RUSTC and RUSTC_WORKSPACE_WRAPPER carry the identical
@@ -377,7 +377,7 @@ func TestEnvironSetRustcWrapperIsCarriedAndAnnotated(t *testing.T) {
 				Name:    "leaky",
 				Include: []policy.ProfileName{"@sys", "@home"},
 				Environ: policy.EnvGrants{
-					Set: map[string]string{name: "/run/snug/bin/evil"},
+					Set: map[string]string{name: "/snug/bin/evil"},
 				},
 			}
 
@@ -544,7 +544,7 @@ func TestPositiveControlClaudeCodeProcessWrapperShapeTripsInlineConfigSweep(t *t
 	env := map[string]policy.EnvVar{
 		name: {
 			Name:    name,
-			Entries: []policy.EnvEntry{{Value: "/run/snug/bin/evil", Verb: policy.VerbSet}},
+			Entries: []policy.EnvEntry{{Value: "/snug/bin/evil", Verb: policy.VerbSet}},
 		},
 	}
 

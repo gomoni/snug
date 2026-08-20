@@ -62,7 +62,7 @@ rule is yours as much as `sandbox-policy`'s, and it has been broken once in
 shipped code.
 
 **Never put an executable anywhere the payload can write.** Everything snug
-stages goes in `policy.StagedBinDir` (`/run/snug/bin`), on the root tmpfs and so
+stages goes in `policy.StagedBinDir` (`/snug/bin`), on the root tmpfs and so
 covered by `--remount-ro /`. `$HOME`, `/tmp`, `$HOME/.cache`, `$HOME/.config`,
 `$HOME/.local/state`, `$HOME/.local/share` and `/dev` are all writable, and a
 command staged in any of them is a **shadow slot**: the payload writes `git`

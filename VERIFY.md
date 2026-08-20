@@ -435,12 +435,12 @@ it:
 ```bash
 ./bin/snug -p @claude $SC/proj/sub -- /bin/sh -c '
   echo "PATH=$PATH"; command -v claude
-  touch /run/snug/bin/git || echo "touch REFUSED"
-  echo x > /run/snug/bin/git || echo "redirect REFUSED"'
+  touch /snug/bin/git || echo "touch REFUSED"
+  echo x > /snug/bin/git || echo "redirect REFUSED"'
 ```
 
-Expect `/run/snug/bin` first on `PATH`, `command -v claude` answering
-`/run/snug/bin/claude`, and **both** write attempts refused with
+Expect `/snug/bin` first on `PATH`, `command -v claude` answering
+`/snug/bin/claude`, and **both** write attempts refused with
 `Read-only file system` — `touch` and the shell redirect are different syscall
 paths and a check of one is not a check of the other.
 
@@ -499,7 +499,7 @@ git does with a perfectly well-formed value.
 
 ### 6i. A profile cannot mount over the staging directory
 
-`/run/snug/bin` is unwritable because it is a plain directory on the root tmpfs
+`/snug/bin` is unwritable because it is a plain directory on the root tmpfs
 and `--remount-ro /` covers it. A mount there is a *separate* mount, which that
 remount does not cover — and snug then puts the now-writable directory first on
 `PATH` itself, in its own `(snug)` provenance, without the profile ever naming
@@ -507,20 +507,59 @@ remount does not cover — and snug then puts the now-writable directory first o
 
 ```bash
 printf '%s\n' '[profile.stagey]' 'description = "stage a tool"' \
-  'tmpfs = ["/run/snug/bin"]' 'ro    = ["/etc/hostname:/run/snug/bin/mytool"]' \
+  'tmpfs = ["/snug/bin"]' 'ro    = ["/etc/hostname:/snug/bin/mytool"]' \
   > $SC/cfg/snug/profiles.d/stagey.toml
 
 XDG_CONFIG_HOME=$SC/cfg ./bin/snug -p stagey $SC/proj/sub -- \
-  sh -c 'echo "#!/bin/sh" > /run/snug/bin/git && echo WROTE-A-COMMAND-INTO-PATH'
+  sh -c 'echo "#!/bin/sh" > /snug/bin/git && echo WROTE-A-COMMAND-INTO-PATH'
 ```
 
-Expect a refusal naming `/run/snug/bin` and the profile. Before the fix: the
+Expect a refusal naming `/snug/bin` and the profile. Before the fix: the
 sandbox started, the write succeeded, and the shadowed `git` ran. The `rw`-bind
 spelling was worse — the shadowed command persisted to the host directory.
 
 Drop the `tmpfs` line and re-run: staging one file *inside* the directory is the
 legitimate shape (`@claude` does it on every run), so that must still work, with
-`/run/snug/bin` first on `PATH` and the write still refused.
+`/snug/bin` first on `PATH` and the write still refused.
+
+### 6i-2. `/snug` is a namespace, not a list of paths (issue #206)
+
+The check above names one directory. The rule is wider: **nothing a profile
+writes may mount anywhere under `/snug`**, including paths snug has not put
+anything at yet. `/snug/engine` is Tier C's graft destination and does not exist
+in any sandbox today — it must already be refused.
+
+```bash
+printf '%s\n' '[profile.grabby]' 'description = "a path snug has not used yet"' \
+  'tmpfs = ["/snug/engine"]' \
+  > $SC/cfg/snug/profiles.d/grabby.toml
+
+XDG_CONFIG_HOME=$SC/cfg ./bin/snug -p grabby $SC/proj/sub -- true
+```
+
+Expect a refusal naming `/snug` and the profile. The point is that nobody had to
+add `/snug/engine` to a list first: a rule stated over the namespace covers the
+path the day the name is chosen.
+
+Now the **tombstone**. snug's paths lived under `/run/snug` before #206, and a
+profile written then must not keep validating while staging into a directory
+that is no longer on `PATH`:
+
+```bash
+printf '%s\n' '[profile.oldway]' 'description = "stage where snug used to keep its paths"' \
+  'ro = ["/etc/hostname:/run/snug/bin/mytool"]' \
+  > $SC/cfg/snug/profiles.d/oldway.toml
+
+XDG_CONFIG_HOME=$SC/cfg ./bin/snug -p oldway $SC/proj/sub -- true
+```
+
+Expect a refusal that **names `/snug/bin`** — the replacement, not just the
+problem. A rename whose old name merely stops working is a trap; the refusal is
+what makes it a rename.
+
+Also worth seeing once, on any run: `--dry-run` shows `--dir /snug` and
+`--dir /snug/bin` and **no `--dir /run` at all**. `/run` existed in a default
+sandbox only because snug's own paths lived under it.
 
 ### 6j. All five verbs at once, and the payload agrees with the screen
 
@@ -2424,7 +2463,7 @@ it. Grant it into the one directory snug stages commands in:
 
 ```toml
 [profile.gh-cli]
-ro = ["{home}/bin/gh_X.Y.Z_linux_amd64/bin/gh:/run/snug/bin/gh"]
+ro = ["{home}/bin/gh_X.Y.Z_linux_amd64/bin/gh:/snug/bin/gh"]
 ```
 
 Both accounts must be logged in on the host (`gh auth status`), and the key for

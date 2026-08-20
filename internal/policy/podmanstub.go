@@ -6,25 +6,9 @@ import (
 	"strings"
 )
 
-// StagedBinDir is the ONE directory snug puts executables in, and the only
-// directory of snug's own making that ever goes on PATH.
-//
-// It is under /run/snug, alongside the container proxy socket and the ssh-agent
-// proxy socket — all snug's own, all unwritable from inside once --remount-ro /
-// has run (constraint 1, CONTAINER-CLIENT.md §8: measured — /run/snug/bin
-// refuses `touch` and `echo >` with EROFS), and all gone with the sandbox.
-//
-// UNWRITABLE IS THE WHOLE POINT, and it is why there is one directory rather
-// than a per-caller choice. A writable directory ahead of /usr/bin on PATH is a
-// SHADOW SLOT: the payload writes a file called `git` into it and the next `git`
-// a human or another agent runs inside the sandbox is that file. The payload can
-// always rewrite its own PATH and nothing stops it — what this rule buys is that
-// the environment SNUG ITSELF hands over does not ship the slot pre-installed.
-//
-// It gets its read-only property from being a plain directory on the ROOT tmpfs,
-// which --remount-ro / covers. A `tmpfs` grant at this path would be a separate
-// mount, would NOT be covered, and would quietly undo it.
-const StagedBinDir = "/run/snug/bin"
+// StagedBinDir has moved to snugns.go, together with the namespace rule that
+// protects it (issue #206). It is a path snug owns, and every path snug owns is
+// now declared in one file rather than beside whichever feature first needed it.
 
 // HasStagedBin reports whether anything was staged in StagedBinDir, and is what
 // decides whether that directory joins PATH at all.

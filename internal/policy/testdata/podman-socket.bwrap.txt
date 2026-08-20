@@ -11,11 +11,9 @@
 --perms 0755
 --dir /home
 --perms 0755
---dir /run
+--dir /snug
 --perms 0755
---dir /run/snug
---perms 0755
---dir /run/snug/bin
+--dir /snug/bin
 --perms 0755
 --dir /sys
 --perms 0755
@@ -33,16 +31,16 @@
 --tmpfs /home/u
 --tmpfs /home/u/.cache
 --tmpfs /home/u/.config
+--perms 0755
+--ro-bind-data 11 /snug/bin/podman
 --tmpfs /home/u/.local/share
 --tmpfs /home/u/.local/state
 --bind /home/u/proj/sub /home/u/proj/sub
---perms 0755
---ro-bind-data 11 /run/snug/bin/podman
 --remount-ro /
 --clearenv
 --setenv HOME /home/u
 --setenv LOGNAME u
---setenv PATH /run/snug/bin:/usr/bin:/bin:/usr/sbin:/sbin
+--setenv PATH /snug/bin:/usr/bin:/bin:/usr/sbin:/sbin
 --setenv PS1 🔒 snug:\w\$ 
 --setenv SHELL /bin/sh
 --setenv SNUG 1

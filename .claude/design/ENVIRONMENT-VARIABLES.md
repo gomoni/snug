@@ -162,7 +162,7 @@ that same profile. This is a rule about profiles only — snug's own variables
 still unconditional. See §4.2.
 
 **There is deliberately no `@stubs-in-path` profile.** Two drafts proposed one —
-first prepending `/run/snug/bin`, then as a switch granting nothing. Both are
+first prepending `/snug/bin`, then as a switch granting nothing. Both are
 wrong, and the second instructively so: **the abuse sentence cannot be written.**
 The stub is read-only, snug-generated, refuses everything outside its allowlist,
 and `/usr/bin/podman` is untouched and still reachable by absolute path. A profile
@@ -181,7 +181,7 @@ create and that does not exist today.
 
 What the profile was reaching for is *telling the human*, and `--dry-run` already
 does it: a `COMMANDS` block naming the shim, the reason, the allowlist and the
-read-only property, plus `exec /run/snug/bin/podman (snug)` in `FILESYSTEM`. §2.8
+read-only property, plus `exec /snug/bin/podman (snug)` in `FILESYSTEM`. §2.8
 finishes the job by giving the `PATH` line the same provenance. **The answer is
 provenance in `--dry-run`, not a name in `$SNUG_PROFILES`.**
 
@@ -526,7 +526,7 @@ staged a read-only bind inside a *writable* directory and then put that director
 on `PATH` with `merge` — and no amount of correctness in this filter could reach
 it, because `sanitise` only ever inspects the **host's** value for an imported
 variable and a `merge` entry is written in a profile. The binary now lands in
-`policy.StagedBinDir` (`/run/snug/bin`), which is unwritable from inside. The
+`policy.StagedBinDir` (`/snug/bin`), which is unwritable from inside. The
 nesting rule above is unchanged and still right; what changed is that its
 best-known example was itself a hole, in the half of the environment this
 document does not govern.
@@ -722,7 +722,7 @@ ENVIRONMENT  (--clearenv, then:)
   HOME             /home/u                    (snug)
   PATH             /opt/bin                        prepend   mytools
                    /home/u/.cargo/bin         merge     @rust
-                   /run/snug/bin                   (snug)    podman stub
+                   /snug/bin                   (snug)    podman stub
                    /usr/bin /bin /usr/sbin /sbin   (snug)    base
   PKG_CONFIG_PATH  /usr/lib64/pkgconfig            sanitise  @pkgconfig
                    (2 host entries dropped: /opt/x/lib/pkgconfig, /srv/pkgconfig)
@@ -1364,7 +1364,7 @@ Environment Modules has `prepend-path -d` and Lmod takes a delimiter argument. S
   field invariant 1 was written against. Ties put you back where you started.
 - *Declared shadowing* (`shadows = ["podman"]`) — conflict detected by comparing
   directory **contents**. Need filesystem read, so `internal/policy` stop being
-  pure, and stay *partial* because `/run/snug/bin/podman` not exist at resolve
+  pure, and stay *partial* because `/snug/bin/podman` not exist at resolve
   time. "One prepend across the set" get same guarantee from declarations alone.
 - *Order from structure* — mounts need no priority because depth decide; nothing
   in a search path play that role. Provenance class give a *band* — the
