@@ -44,18 +44,30 @@ func TestRunDirsRemoveGoesThroughTheDescriptorNotThePath(t *testing.T) {
 	}
 }
 
-// TestRunDirsRefusesAPreplantedSymlink is the guard the hand-rolled
-// createRunDir had (O_DIRECTORY|O_NOFOLLOW) and the one prepareHostTmpDir's
-// spelling of these checks did not: /tmp is world-writable, so a same-uid
-// process can plant a symlink at a guessable name before snug arrives, and
-// os.Root's own contract is to FOLLOW an in-root symlink.
+// TestRunDirsRefusesAPreplantedSymlink asserts the OUTCOME for this caller —
+// a planted symlink does not become this run's directory, and nothing is
+// created through it — and says plainly which rule delivers that, because two
+// do and only one of them is the symlink guard.
+//
+// Measured by deleting vdir's Lstat refusal: this test still passed. The
+// refusal that fires first here is MustCreateSubdir's no-reuse rule — an entry
+// already at a pid-carrying name is refused whatever it is. The symlink guard
+// is the one that matters where reuse is legitimate, and it is discriminated
+// there instead: internal/vdir's own TestSecureSubdirRefusesAnInRootSymlink
+// and internal/cli's TestHostTmpDirRefusesAPreplantedSymlink both fail when it
+// is removed. Belt and braces is worth having; claiming a test proves the
+// brace when the belt is holding is not.
 func TestRunDirsRefusesAPreplantedSymlink(t *testing.T) {
 	base := t.TempDir()
 	trap := filepath.Join(base, "attacker-owned")
 	if err := os.Mkdir(trap, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(trap, filepath.Join(base, "snug-test-rundir")); err != nil {
+	// RELATIVE: os.Root refuses an absolute symlink target on its own (it
+	// leaves the root), so an absolute trap tests os.Root rather than snug's
+	// guard. A relative, in-root symlink is exactly what os.Root's contract
+	// says it will FOLLOW, and vdir's Lstat refusal is what stops it.
+	if err := os.Symlink(filepath.Base(trap), filepath.Join(base, "snug-test-rundir")); err != nil {
 		t.Fatal(err)
 	}
 
