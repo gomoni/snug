@@ -235,3 +235,156 @@ func sysSSHProbeEnv() *fakeEnv {
 	env.dirs["/usr/etc/ssh/ssh_config"] = true
 	return env
 }
+
+// TestDiscoveredSystemSSHConfigPathIsReplaced is issue #42's whole point: a
+// host that spells the system-wide ssh_config a third way — FreeBSD's and
+// Homebrew's /usr/local/etc/ssh, a /nix/store path — is not in
+// SystemSSHConfigPaths and never will be, because a list of platform
+// spellings is a rule written somewhere it can be forgotten. What the run has
+// instead is the answer this host's own ssh gave when asked which files it
+// reads (Context.HostSSHConfigs).
+//
+// Without this the failure is not just "unfixed", it is SILENT: ssh inside
+// dies with `Bad owner or permissions` naming a root-owned file the human
+// never wrote, and the SSH block on --dry-run says nothing, because it only
+// speaks for a path that was actually replaced.
+func TestDiscoveredSystemSSHConfigPathIsReplaced(t *testing.T) {
+	env := newFakeEnv()
+	// The FreeBSD/Homebrew spelling, and NOT either fixed one — so a run that
+	// still consults only the fixed list authors nothing at all here.
+	env.dirs["/usr/local/etc/ssh/ssh_config"] = true
+
+	ctx := testCtx()
+	ctx.HostSSHConfigs = []string{"/usr/local/etc/ssh/ssh_config"}
+
+	p, err := Resolve(testRegistry(), testDefaults, ctx, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, ok := p.Mounts["/usr/local/etc/ssh/ssh_config"]
+	if !ok {
+		t.Fatalf("the path this host's ssh actually reads was not replaced; on such a host "+
+			"ssh, git-over-ssh, scp and rsync -e ssh all die inside the sandbox with "+
+			"`Bad owner or permissions` and nothing on screen explains it (mounts: %q)",
+			sortedGuests(p.Mounts))
+	}
+	if m.Kind != KindData || !m.Authored {
+		t.Errorf("mount at the discovered path is %v/authored=%v, want an authored data mount",
+			m.Kind, m.Authored)
+	}
+	if !slices.Contains(p.SystemSSHConfigs, "/usr/local/etc/ssh/ssh_config") {
+		t.Errorf("p.SystemSSHConfigs = %q does not record the discovered path; --dry-run's "+
+			"SSH block reads that field, so the replacement would happen with nothing on screen",
+			p.SystemSSHConfigs)
+	}
+}
+
+// TestDiscoveredSSHConfigPathsAreFiltered is the half that matters for the
+// threat model: the strings in HostSSHConfigs come out of `ssh -G -v`, which
+// names every file in the chain — the user's own ~/.ssh/config, every file an
+// Include pulls in, and therefore any path a line like
+// `Include /tmp/whatever.conf` puts there. Each one would otherwise author a
+// mount.
+//
+// It asserts against systemSSHConfigCandidates rather than against a resolved
+// Policy, and that is a correction rather than a shortcut: a resolve-level
+// version of this test passed with the HOME filter deleted, because @home
+// covers $HOME with a TMPFS and the coverage condition already refuses to
+// replace anything a tmpfs covers. The path never became a mount, so the
+// assertion held while the filter it names was gone. Here the filter is the
+// only thing under test.
+//
+// Every case is a real shape from the chain measured on this host, except the
+// last three, which are path hygiene.
+func TestDiscoveredSSHConfigPathsAreFiltered(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		why  string
+	}{
+		{"the user's own config", "/home/u/.ssh/config",
+			"~/.ssh/config is the human's own file; snug authors that one only when an identity is pinned"},
+		{"a home path spelled like a system one", "/home/u/etc/ssh/ssh_config",
+			"the basename rule passes this one, so the home filter is the only thing that stops it"},
+		{"an Include'd fragment", "/usr/etc/ssh/ssh_config.d/50-suse.conf",
+			"the replacement carries no Include line, so nothing under the top-level file is ever read"},
+		{"a crypto-policy fragment", "/etc/crypto-policies/back-ends/openssh.config",
+			"same: an included file, and not named ssh_config"},
+		{"an arbitrary Include target", "/tmp/anything/ssh_config.conf",
+			"a host config line must not choose where snug authors bytes"},
+		{"a relative path", "usr/etc/ssh/ssh_config", "not absolute"},
+		{"an unclean path", "/usr/etc/ssh/../ssh/ssh_config", "not clean"},
+		{"a path carrying a newline", "/usr/etc/ssh\n/ssh_config", "control characters author lies and mounts"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := testCtx()
+			ctx.HostSSHConfigs = []string{tc.path}
+			if got := systemSSHConfigCandidates(ctx); slices.Contains(got, tc.path) {
+				t.Fatalf("%q became a candidate for replacement: %s", tc.path, tc.why)
+			}
+			// POSITIVE CONTROL, per case rather than once: without it every
+			// assertion above would also pass on a candidate list that dropped
+			// EVERYTHING discovered, which is the failure this whole change
+			// exists to fix.
+			ctx.HostSSHConfigs = []string{tc.path, "/usr/local/etc/ssh/ssh_config"}
+			if got := systemSSHConfigCandidates(ctx); !slices.Contains(got, "/usr/local/etc/ssh/ssh_config") {
+				t.Fatalf("candidates = %q: the control path was dropped too, so this case "+
+					"proves nothing about the filter it names", got)
+			}
+		})
+	}
+}
+
+// TestADiscoveredPathInsideTheTargetIsRefused needs a target OUTSIDE $HOME to
+// mean anything, which is why it is not a row in the table above: testCtx's
+// target is /home/u/proj/sub, so the home filter refuses it there whether the
+// target filter exists or not — measured by deleting the target filter and
+// watching the table stay green.
+//
+// The shape it closes: the chain is host text, but a human's own
+// `Include <some repo>/ssh_config` puts a path from the SANDBOXED TREE into
+// it, and a KindData mount is assigned straight into p.Mounts (rejectMasking
+// exempts KindData by kind), so snug would displace the repository's own file
+// with a read-only file of its own, inside the one tree the run exists to let
+// the payload write.
+func TestADiscoveredPathInsideTheTargetIsRefused(t *testing.T) {
+	ctx := testCtx()
+	ctx.Target = "/srv/work"
+	ctx.HostSSHConfigs = []string{"/srv/work/ssh_config", "/usr/local/etc/ssh/ssh_config"}
+
+	got := systemSSHConfigCandidates(ctx)
+	if slices.Contains(got, "/srv/work/ssh_config") {
+		t.Errorf("a path inside the target became a candidate: %q", got)
+	}
+	// POSITIVE CONTROL: a discovered path outside it still gets through, so
+	// this cannot pass on a filter that refuses everything.
+	if !slices.Contains(got, "/usr/local/etc/ssh/ssh_config") {
+		t.Errorf("candidates = %q: the control path was dropped too", got)
+	}
+}
+
+// TestSystemSSHConfigCandidatesDeduplicates tests the candidate list DIRECTLY
+// rather than through Resolve, and the reason is a mutation check: deleting
+// the dedup and running the resolve-level test left it passing. Replace's own
+// coverage condition makes a repeated candidate a no-op — the second time
+// round, the covering mount at that guest path is the KindData file snug just
+// authored, not a bind — so a resolve-level assertion cannot tell a working
+// dedup from a missing one, and a test that cannot fail is worse than no test.
+//
+// The shapes are both measured: `ssh -G -v` prints the whole chain TWICE per
+// invocation (it parses again after resolving the host name), and a discovered
+// path may equally be one the fixed list already names.
+func TestSystemSSHConfigCandidatesDeduplicates(t *testing.T) {
+	ctx := testCtx()
+	ctx.HostSSHConfigs = []string{
+		"/usr/local/etc/ssh/ssh_config", "/usr/etc/ssh/ssh_config",
+		"/usr/local/etc/ssh/ssh_config", "/usr/etc/ssh/ssh_config",
+	}
+	got := systemSSHConfigCandidates(ctx)
+	want := append(slices.Clone(SystemSSHConfigPaths), "/usr/local/etc/ssh/ssh_config")
+	if !slices.Equal(got, want) {
+		t.Fatalf("systemSSHConfigCandidates = %q, want %q — the fixed floor in order, then\n"+
+			"each discovered path once", got, want)
+	}
+}
