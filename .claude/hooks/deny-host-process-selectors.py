@@ -145,9 +145,39 @@ def words(segment):
 
 
 def is_snug_invocation(argv):
-    """A snug run with a payload after `--`. The payload runs in the sandbox's
-    own pid namespace and cannot reach a host pid, so it is not this hook's
-    business."""
+    """A snug run with a payload after `--`. The one carve-out in this deny list.
+
+    WHY IT IS SAFE, and why the same claim would be false one file over. The
+    sibling hook is emphatic that "inside a sandbox" is NOT a safety property,
+    and for MOUNTS that is right: what a payload can reach is decided by the
+    policy, and a policy granting write access over the host key directory is
+    inside and lethal. bin/blast-radius exists because of exactly that.
+
+    Processes are a different kind of thing. The sandbox's pid namespace is
+    STRUCTURAL, not a default that a profile can vary: `PidMode=host` is refused
+    outright and every mode says why in its own words (issues #145, #125). A
+    payload therefore cannot signal a host pid whatever the policy grants, so
+    there is no policy under which this exemption becomes wrong. That is the
+    load-bearing difference, and it is the reason this carve-out can exist while
+    the mount-shaped one cannot.
+
+    It also has to exist: test/integration's `pkill -9 -x sleep` probe is
+    committed work that asserts a name-matched kill inside a sandbox reaches
+    nothing outside it. A hook that refused it would block the test that proves
+    the property the hook is relying on.
+
+    TWO WAYS THIS GOES WRONG, and both are tested:
+
+    * TOO WIDE — the exemption leaks past the segment that ends the snug run.
+      `snug d -- sh -c 'echo hi'; pkill -x bwrap` must still be refused, which is
+      what split_top_level() is for. The DENY suite carries that case, and a
+      mutation returning True here fails the ALLOW side loudly.
+    * TOO NARROW — a future edit stops recognising a real snug invocation, and
+      the committed integration probe silently starts being refused. That fails
+      in the annoying direction rather than the unsafe one, but it still fails,
+      and it is the direction nobody looks at. The ALLOW suite carries two snug
+      forms for exactly this.
+    """
     if not argv or "--" not in argv:
         return False
     head = argv[:argv.index("--")]

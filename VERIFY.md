@@ -2924,9 +2924,11 @@ What to check:
    test must fail. A deny-list with a broken pattern denies nothing and looks
    identical from the outside to one that works.
 
-The rule also lives at the top of `redteam.md`, `sandbox-tester.md`,
-`host-bridge.md` and `go-implementer.md`, mechanism first, with both incident
-dates. `go test ./test/guard/ -run KillRule` grades that.
+The rule also lives in `redteam.md`, mechanism first, with both incident dates —
+and in that file alone, mirroring how §16's sandbox-run rule is scoped. The hook
+is the enforcement and covers every agent and the main thread without being read,
+so a second copy of the prose adds no protection and spends attention in every
+invocation. `go test ./test/guard/ -run KillRule` grades both halves.
 
 ## If a check fails
 
