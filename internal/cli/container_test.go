@@ -43,11 +43,14 @@ func TestContainerSocketNeverExposesEngineSocketDir(t *testing.T) {
 	}
 	defer eng.Stop()
 
-	rdir, err := runtimeDir()
+	rt, err := openRuntimeDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	sock := filepath.Join(rdir, "podman.sock")
+	sock, err := rt.Socket("podman.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
 	proxy, err := dockerproxy.New(p, eng.Socket(), sock, eng.RunLabel(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
