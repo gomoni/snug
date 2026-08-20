@@ -279,15 +279,23 @@ func TestDiscoveredSystemSSHConfigPathIsReplaced(t *testing.T) {
 	}
 }
 
-// TestDiscoveredSSHConfigPathsAreFiltered is the other half, and it is the
-// half that matters for the threat model: the strings in HostSSHConfigs come
-// out of `ssh -G -v`, which names every file in the chain — the user's own
-// ~/.ssh/config, every file an Include pulls in, and therefore any path a line
-// like `Include /tmp/whatever.conf` puts there. Each one would otherwise
-// author a mount.
+// TestDiscoveredSSHConfigPathsAreFiltered is the half that matters for the
+// threat model: the strings in HostSSHConfigs come out of `ssh -G -v`, which
+// names every file in the chain — the user's own ~/.ssh/config, every file an
+// Include pulls in, and therefore any path a line like
+// `Include /tmp/whatever.conf` puts there. Each one would otherwise author a
+// mount.
 //
-// Every case here is a real shape from the measured chain on this host, not an
-// invented one, except the two path-hygiene entries.
+// It asserts against systemSSHConfigCandidates rather than against a resolved
+// Policy, and that is a correction rather than a shortcut: a resolve-level
+// version of this test passed with the HOME filter deleted, because @home
+// covers $HOME with a TMPFS and the coverage condition already refuses to
+// replace anything a tmpfs covers. The path never became a mount, so the
+// assertion held while the filter it names was gone. Here the filter is the
+// only thing under test.
+//
+// Every case is a real shape from the chain measured on this host, except the
+// last three, which are path hygiene.
 func TestDiscoveredSSHConfigPathsAreFiltered(t *testing.T) {
 	cases := []struct {
 		name string
@@ -297,8 +305,7 @@ func TestDiscoveredSSHConfigPathsAreFiltered(t *testing.T) {
 		{"the user's own config", "/home/u/.ssh/config",
 			"~/.ssh/config is the human's own file; snug authors that one only when an identity is pinned"},
 		{"a home path spelled like a system one", "/home/u/etc/ssh/ssh_config",
-			"the basename filter passes this one, so the home filter is the only thing that stops it — " +
-				"a chain entry under $HOME is the user's own file whatever it is called"},
+			"the basename rule passes this one, so the home filter is the only thing that stops it"},
 		{"an Include'd fragment", "/usr/etc/ssh/ssh_config.d/50-suse.conf",
 			"the replacement carries no Include line, so nothing under the top-level file is ever read"},
 		{"a crypto-policy fragment", "/etc/crypto-policies/back-ends/openssh.config",
@@ -311,21 +318,19 @@ func TestDiscoveredSSHConfigPathsAreFiltered(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			env := newFakeEnv()
-			env.dirs[tc.path] = true
-
 			ctx := testCtx()
 			ctx.HostSSHConfigs = []string{tc.path}
-
-			p, err := Resolve(testRegistry(), testDefaults, ctx, env)
-			if err != nil {
-				t.Fatal(err)
+			if got := systemSSHConfigCandidates(ctx); slices.Contains(got, tc.path) {
+				t.Fatalf("%q became a candidate for replacement: %s", tc.path, tc.why)
 			}
-			if _, ok := p.Mounts[tc.path]; ok {
-				t.Fatalf("authored a mount at %q from the ssh chain: %s", tc.path, tc.why)
-			}
-			if len(p.SystemSSHConfigs) != 0 {
-				t.Fatalf("recorded %q as a replaced system ssh_config: %s", p.SystemSSHConfigs, tc.why)
+			// POSITIVE CONTROL, per case rather than once: without it every
+			// assertion above would also pass on a candidate list that dropped
+			// EVERYTHING discovered, which is the failure this whole change
+			// exists to fix.
+			ctx.HostSSHConfigs = []string{tc.path, "/usr/local/etc/ssh/ssh_config"}
+			if got := systemSSHConfigCandidates(ctx); !slices.Contains(got, "/usr/local/etc/ssh/ssh_config") {
+				t.Fatalf("candidates = %q: the control path was dropped too, so this case "+
+					"proves nothing about the filter it names", got)
 			}
 		})
 	}
