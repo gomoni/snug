@@ -1556,6 +1556,53 @@ rm -rf $X
 Expect a parse error naming the unknown key. A silently-ignored `mask` would let
 someone believe their sandbox is tighter than it is.
 
+## 9a. `profile show` names the network hole, not only the path holes (issue #195)
+
+`snug profile show` is the screen a human reads to decide **whether** to select a
+profile, which puts it upstream of every `--dry-run`. It rendered every key that
+names a path and dropped every key that does not, so a profile granting full
+internet egress read as a profile granting nothing:
+
+```console
+$ ./bin/snug profile show @net
+profile     @net
+            Internet access via a private network namespace. Host loopback unreachable.
+defined in  builtin:base.toml
+
+  network          egress
+                   the sandbox reaches the whole internet, from a private netns.
+                   Host loopback and abstract sockets stay unreachable.
+  dns              yes
+                   a generated /etc/resolv.conf names a resolver inside the
+                   sandbox
+```
+
+```console
+$ ./bin/snug profile show @podman-socket | grep -A2 podman
+  podman           socket
+                   starts a container engine and delegates your whole subuid
+                   range, even with no network profile selected
+```
+
+What to check:
+
+1. `@net` names `network` and `dns`, `@net-anon` names both synthetic address
+   pairs, `@podman-socket` names `podman`. Before #195 all three printed nothing
+   about any of it.
+2. Each row carries the **consequence**, not just the value. "egress" is a word;
+   "the sandbox reaches the whole internet" is the thing being agreed to.
+3. `@sys` prints **no** capability rows at all — it grants only paths, and an
+   empty block would be noise on the profile people read most.
+4. Every capability row fits 80 columns. The consequences are wrapped by hand,
+   so this is a claim that can rot; `TestProfileShowCapabilityRowsFitAnEightyColumnScreen`
+   is the automated half.
+
+The structural half is `TestProfileShowRendersEveryProfileField`, which walks
+`policy.Profile` by reflection and fails on any field that is neither rendered
+nor exempted with a reason. The nine missing rows were not the defect — **nothing
+noticing** was, and a hand-written renderer falls one behind the struct once per
+feature.
+
 ## 9b. The `@` namespace belongs to snug
 
 `@` marks a profile snug ships. Nothing else may wear it, so a name in

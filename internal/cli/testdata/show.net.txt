@@ -1,0 +1,13 @@
+profile     @net
+            Internet access via a private network namespace. Host loopback unreachable.
+defined in  builtin:base.toml
+
+  network          egress
+                   the sandbox reaches the whole internet, from a private netns.
+                   Host loopback and abstract sockets stay unreachable.
+  dns              yes
+                   a generated /etc/resolv.conf names a resolver inside the
+                   sandbox
+
+To see what this actually produces for a directory:
+  snug --dry-run -p @net <dir>

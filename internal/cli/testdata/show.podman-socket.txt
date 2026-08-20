@@ -5,6 +5,9 @@ defined in  builtin:base.toml
   includes         @sys
                    @home
   ro               /etc/containers
+  podman           socket
+                   starts a container engine and delegates your whole subuid
+                   range, even with no network profile selected
   optional         /etc/containers
 
 To see what this actually produces for a directory:
