@@ -35,6 +35,7 @@ package integration
 // CI runner today — degrades to a skip rather than either a false pass or a
 // hard failure for a capability nobody promised it.
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -66,9 +67,43 @@ const podmanStaticRootRel = ".local/opt/podman-static"
 // Every test in this file that starts a real engine uses it.
 func containerEngineEnv(t *testing.T) (env []string, xdgRuntime string) {
 	t.Helper()
-	wrapper := provisionEngineWrapper(t)
+	root, podman := podmanBundle(t)
 	base, xdg := attachEnv(t)
-	return append(base, "SNUG_PODMAN="+wrapper), xdg
+	// SNUG_PODMAN_ROOT is not optional here since Tier C: the engine's view is
+	// derived from the sandbox's, so a bundle outside every grant reaches it
+	// only through the toolchain graft, and the graft's source is exactly this
+	// variable (preflight P9, G4's third source). Without it snug refuses the
+	// run — correctly — with "the container engine cannot see the engine
+	// binary".
+	//
+	// NO WRAPPER SCRIPT, and its removal is a simplification Tier C forced
+	// rather than a tidy-up: a wrapper in a temp directory is a program the
+	// engine's view does not contain, and everything the wrapper used to do
+	// (stripping the bundle's own storage/containers keys, forcing
+	// cgroups=disabled) is now snug's own job — #212 authors storage.conf,
+	// #133 containers.conf, and preflight P5 selects cgroups=disabled on a
+	// host like this one. Measured: the bundle binary runs directly, with
+	// snug's generated configuration in play.
+	return append(base, "SNUG_PODMAN="+podman, "SNUG_PODMAN_ROOT="+root), xdg
+}
+
+// podmanBundle returns the pinned static bundle's root and its podman binary,
+// skipping cleanly when the bundle is not installed — the same contract
+// provisionEngineWrapper had, and for the same reason: this suite never points
+// SNUG_PODMAN at whatever the host's own `podman` resolves to.
+func podmanBundle(t *testing.T) (root, podman string) {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("SKIP: cannot determine $HOME to look for a static podman bundle: " + err.Error())
+	}
+	root = filepath.Join(home, podmanStaticRootRel)
+	podman = filepath.Join(root, "usr", "local", "bin", "podman")
+	if fi, statErr := os.Stat(podman); statErr != nil || fi.IsDir() {
+		t.Skip("SKIP: no static podman bundle at " + podman + " (.claude/design/PODMAN-STATIC.md); " +
+			"this suite never points SNUG_PODMAN at whatever the host's OWN `podman` resolves to")
+	}
+	return root, podman
 }
 
 // provisionEngineWrapper builds a small shell wrapper around the pinned
@@ -736,7 +771,13 @@ func engineSocketPath(uid, snugPID int) string {
 // actually finds something.
 func findEnginePID(t *testing.T, uid, snugPID int) int {
 	t.Helper()
-	sock := engineSocketPath(uid, snugPID)
+	// The GUEST socket path, not the host one, and the difference is Tier C:
+	// the engine is exec'd with an argv written in terms of its own derived
+	// view (issue #125), so the host path this used to search for appears
+	// nowhere in its cmdline. The pid part still comes from the host side —
+	// engine.New names the socket after snug's own pid — so this stays a
+	// search for THIS run's engine rather than for any engine.
+	sock := filepath.Join(policy.EngineSockGuest, filepath.Base(engineSocketPath(uid, snugPID)))
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		if pids := pidsNamingCmdlineSubstring(sock); len(pids) > 0 {
@@ -2767,4 +2808,169 @@ if touch /run/snug-probe 2>/dev/null; then echo "run-write=OK"; else echo "run-w
 			"about the container selection — /run existed only because snug's own paths lived "+
 			"under it, and issue #206 moved them:\n%s", cout)
 	}
+}
+
+// TestTheEnginesViewIsDerivedAndCarriesNoHostTree is what Tier C's C2-view is
+// FOR, asserted where it is true rather than through a container: the engine's
+// own mount namespace, read from the host through /proc/<engine>/mountinfo.
+//
+// Before C2-view the engine held a private copy of the HOST tree and what
+// stopped a container naming an ungranted path was the proxy's bind filter —
+// enforcement by predicate. After it, the host tree is not there to name.
+// Every other test in this file exercises the filter; this one exercises its
+// absence.
+//
+// THREE ARMS, because the negative alone would pass on a namespace this test
+// failed to find:
+//
+//	CONTROL A — the mount table was really read and is really the engine's:
+//	            it has the graft destinations in it. A table with none of them
+//	            is some other process's.
+//	CONTROL B — a path the SANDBOX grants (/usr) is present, so "the host tree
+//	            is absent" is not being satisfied by an empty namespace.
+//	NEGATIVE  — no mount point under the host user's own home, and no
+//	            /oldroot: the two shapes the measurement on #125 found when the
+//	            engine joined too early.
+func TestTheEnginesViewIsDerivedAndCarriesNoHostTree(t *testing.T) {
+	budget(t, 60*time.Second)
+	env, _ := containerEngineEnv(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	// The payload prints the SANDBOX's own mount table and then waits, so the
+	// comparison below is against what the payload really sees rather than
+	// against a list this test keeps.
+	var out bytes.Buffer
+	cmd := exec.Command(snugBin, "-p", "@podman-socket", proj, "--",
+		"/bin/sh", "-c", "cat /proc/self/mountinfo; echo "+payloadMarker+"; sleep 30")
+	cmd.Env = env
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	cmd.WaitDelay = waitDelay
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	killed := false
+	t.Cleanup(func() {
+		if !killed {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+
+	enginePID, ok := findDescendant(cmd.Process.Pid, isEngineProcess, 20*time.Second)
+	if !ok {
+		t.Fatalf("PRECONDITION: no engine process appeared under a @podman-socket run, so there "+
+			"is no mount namespace to read and this test proves nothing:\n%s", out.String())
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for !strings.Contains(out.String(), payloadMarker) && time.Now().Before(deadline) {
+		time.Sleep(25 * time.Millisecond)
+	}
+	sandbox := mountPointsOf(t, out.String())
+	if len(sandbox) < 5 {
+		t.Fatalf("PRECONDITION: the payload printed %d mount(s); the comparison below would be "+
+			"vacuous:\n%s", len(sandbox), out.String())
+	}
+
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/mountinfo", enginePID))
+	if err != nil {
+		t.Fatalf("reading the engine's own mount table (pid %d): %v", enginePID, err)
+	}
+	points := mountPointsOf(t, string(raw))
+
+	// CONTROL A: this really is the engine's namespace — the grafts landed.
+	for _, want := range []string{policy.EngineStoreGuest, policy.EngineRunrootGuest,
+		policy.EngineSockGuest, policy.EngineConfGuest} {
+		if !points[want] {
+			t.Fatalf("the engine's mount table has no %s — either this is not the engine's "+
+				"namespace or the grafts did not land, and the negative below would then be "+
+				"true of the wrong process:\n%s", want, raw)
+		}
+	}
+
+	// CONTROL B: the engine's view really is DERIVED — it carries the
+	// sandbox's own mounts, not merely its own additions.
+	inherited := 0
+	for p := range sandbox {
+		if points[p] {
+			inherited++
+		}
+	}
+	if inherited < len(sandbox)/2 {
+		t.Errorf("only %d of the sandbox's %d mounts appear in the engine's view; the engine's "+
+			"namespace is supposed to BE the sandbox's plus this run's grafts:\n%s",
+			inherited, len(sandbox), raw)
+	}
+
+	// THE NEGATIVE: every mount in the engine's view is either one the SANDBOX
+	// itself has, or one snug added for the engine — and nothing else. This is
+	// the whole of C2-view stated as a set relation, which is stronger than
+	// naming shapes to forbid: a host mount nobody predicted fails it too.
+	engineOwn := map[string]bool{
+		"/proc": true, "/sys/fs/cgroup": true, "/run": true, "/var/tmp": true,
+		policy.EngineStoreGuest: true, policy.EngineRunrootGuest: true,
+		policy.EngineSockGuest: true, policy.EngineConfGuest: true,
+		policy.EngineToolchainGuest: true,
+	}
+	for p := range points {
+		if sandbox[p] || engineOwn[p] {
+			continue
+		}
+		// A submount carried in by a graft (AT_RECURSIVE) is the graft's, not
+		// a stray: it is inside a destination snug named.
+		under := false
+		for own := range engineOwn {
+			if strings.HasPrefix(p, own+"/") {
+				under = true
+				break
+			}
+		}
+		if under {
+			continue
+		}
+		t.Errorf("the engine's view has a mount at %s that the SANDBOX does not have and snug "+
+			"did not add for the engine. Before C2-view the engine held a private copy of the "+
+			"whole host tree; a mount here that is neither the sandbox's nor a graft is that "+
+			"tree coming back:\n%s", p, raw)
+	}
+}
+
+// mountPointsOf is the set of mount points in a mountinfo dump — field 5,
+// which is the one field of that format this comparison needs.
+func mountPointsOf(t *testing.T, dump string) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+	for _, ln := range strings.Split(dump, "\n") {
+		f := strings.Fields(ln)
+		if len(f) > 4 && strings.HasPrefix(f[4], "/") {
+			out[f[4]] = true
+		}
+	}
+	return out
+}
+
+// isEngineProcess identifies the engine by its ARGV: the stage execs the
+// resolved podman with `system service` on it, which no other process in this
+// tree does. By argv rather than by comm for the same reason isStageProcess
+// gives — comm is truncated to 15 bytes and is the kernel's, not ours.
+func isEngineProcess(pid int) bool {
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil {
+		return false
+	}
+	args := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+	if len(args) < 3 {
+		return false
+	}
+	sawSystem, sawService := false, false
+	for _, a := range args {
+		switch a {
+		case "system":
+			sawSystem = true
+		case "service":
+			sawService = true
+		}
+	}
+	return sawSystem && sawService
 }

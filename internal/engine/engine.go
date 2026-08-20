@@ -287,7 +287,12 @@ func New(profiles []policy.ProfileName, target string) (*Engine, error) {
 	// refuse-to-reuse check here would break the feature it is protecting.
 	// What they need instead is the sharing question asked properly — who
 	// else can reach a store keyed by a hash — and that is not this change.
-	for _, d := range []string{e.store, e.runroot} {
+	// e.runroot/tmp is created HERE rather than left to podman: it is
+	// containers.conf's image_copy_tmp_dir (see writeContainersConf), and
+	// podman STATS it rather than creating it — measured as `stat
+	// /snug/engine/runroot/tmp: no such file or directory`, a 500 from every
+	// build. Created on the host side so the runroot graft carries it in.
+	for _, d := range []string{e.store, e.runroot, filepath.Join(e.runroot, "tmp")} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			_ = dirs.remove()
 			dirs.close()
@@ -298,6 +303,41 @@ func New(profiles []policy.ProfileName, target string) (*Engine, error) {
 }
 
 func (e *Engine) Socket() string { return e.sock }
+
+// Store, Runroot, SockDir and ConfDir are the four host directories this run's
+// engine works out of, and they are exported for ONE caller: the Tier C code
+// that grafts each of them into the engine's derived view (internal/cli's
+// engineview.go). They are deliberately not exported as a set or a struct —
+// the graft of each carries its own access and its own abuse sentence, and a
+// caller iterating a list would be a caller that writes one sentence for four
+// different grants.
+// guestPath is every path this file hands the ENGINE, put through the one
+// question that matters once the engine's view is derived from the sandbox's:
+// can the engine see it, and under what name?
+//
+// It is a thin wrapper on policy.EngineGuestPath and exists for the error, not
+// for the mapping. A path no graft and no grant exposes is a REFUSAL that names
+// the path and the variable it was about to be written into (invariant 5) —
+// because the alternative is podman failing several layers down about a file
+// that is not there, in a namespace nobody can look into, with nothing on
+// screen connecting it to the boundary that removed it.
+func (e *Engine) guestPath(pol *policy.Policy, what, host string) (string, error) {
+	guest, ok := pol.EngineGuestPath(host)
+	if !ok {
+		return "", fmt.Errorf("the container engine cannot see %s (%s): nothing grafts it into "+
+			"the engine's view and no grant of this sandbox exposes it.\n"+
+			"       Since Tier C the engine's mount namespace is DERIVED from the sandbox's, so "+
+			"a host path\n"+
+			"       reaches it only through a graft — this is the boundary working, not a "+
+			"missing file.", what, host)
+	}
+	return guest, nil
+}
+
+func (e *Engine) Store() string   { return e.store }
+func (e *Engine) Runroot() string { return e.runroot }
+func (e *Engine) SockDir() string { return e.sockDir }
+func (e *Engine) ConfDir() string { return e.confDir }
 
 // RunLabel is the `key=value` this run's containers are stamped with. The proxy
 // applies it at create; teardown filters on it.
@@ -342,15 +382,27 @@ func (e *Engine) RunLabel() string { return e.runLabel }
 // consumed here and handed to the returned EngineSpec, which is all a caller
 // needs.
 //
-// resolvConf is the generated /etc/resolv.conf content the caller's resolved
-// Policy already produced for the sandbox payload (policy.NetPolicy.ResolvConf)
-// — the SAME bytes, not a second computation of them. Spec writes it to a
-// file under this run's own hardened /tmp directory and returns its path in
-// EngineSpec.ResolvConfPath; EnterEngine bind-mounts that path over the
-// engine's own /etc/resolv.conf so a container never learns the host's real
-// DNS config (issue #126).
-func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool, net policy.NetPolicy) (stage.EngineSpec, error) {
-	finalEnv := setEnv(append([]string{}, baseEnv...), "XDG_RUNTIME_DIR", e.runroot)
+// The engine's own /etc/resolv.conf needs nothing from this function since
+// Tier C: its view is DERIVED from the sandbox's, so the file it reads is the
+// one snug generated for the payload (policy.NetPolicy.ResolvConf), already
+// mounted there. The bind that used to put it in place is gone with the host
+// tree it existed to shadow — see __inengine's own note where step 11 was.
+// What a CONTAINER gets is decided by the generated containers.conf and needs
+// no mount at all (issue #126).
+func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgroupsDisabled bool) (stage.EngineSpec, error) {
+	net := pol.Net
+
+	// EVERY path below goes through guestPath. The engine's view is the
+	// sandbox's plus this run's grafts (issue #125, Tier C), so a host path in
+	// its argv, its environment or a configuration file it reads is a path
+	// that resolves to nothing — or, worse, to something else with the same
+	// name. The mapping is not cosmetic: it is the difference between naming
+	// the store and naming a directory the payload could have created.
+	guestRunroot, err := e.guestPath(pol, "$XDG_RUNTIME_DIR (the engine's runroot)", e.runroot)
+	if err != nil {
+		return stage.EngineSpec{}, err
+	}
+	finalEnv := setEnv(append([]string{}, baseEnv...), "XDG_RUNTIME_DIR", guestRunroot)
 
 	// The engine's PATH is snug's, never the host's (issue #125). Under a
 	// DERIVED mount view the host's PATH elements under $HOME are the
@@ -365,6 +417,21 @@ func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool, net
 	// than appends, so a caller-supplied PATH in baseEnv cannot win.
 	finalEnv = setEnv(finalEnv, "PATH", "/usr/bin:/usr/sbin:/bin:/sbin")
 
+	// TMPDIR, and it is Tier C's key as much as image_copy_tmp_dir is.
+	// containers/storage falls back to /var/tmp for the temporary directory it
+	// creates while COMMITTING a layer, and reads TMPDIR first. The engine's
+	// derived view has no /var/tmp — measured twice, once as a 500 from every
+	// build and again, after image_copy_tmp_dir was set, from the commit step
+	// alone, which is the half that config key does not cover.
+	//
+	// Same directory as image_copy_tmp_dir: this run's own runroot, writable,
+	// grafted, and gone when the run's directories are.
+	guestTmpDir, err := e.guestPath(pol, "$TMPDIR", filepath.Join(e.runroot, "tmp"))
+	if err != nil {
+		return stage.EngineSpec{}, err
+	}
+	finalEnv = setEnv(finalEnv, "TMPDIR", guestTmpDir)
+
 	// HOME is snug's, not the host user's (issues #137, #142). Everything
 	// podman reads out of a home directory — registries.conf, policy.json,
 	// storage.conf, auth.json — is then a file this run authored or a file
@@ -376,19 +443,31 @@ func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool, net
 	if err != nil {
 		return stage.EngineSpec{}, err
 	}
-	finalEnv = setEnv(finalEnv, "HOME", engineHome)
+	guestHome, err := e.guestPath(pol, "$HOME (the engine's own home)", engineHome)
+	if err != nil {
+		return stage.EngineSpec{}, err
+	}
+	finalEnv = setEnv(finalEnv, "HOME", guestHome)
 
 	registriesPath, err := e.writeRegistriesConf()
 	if err != nil {
 		return stage.EngineSpec{}, err
 	}
-	finalEnv = setEnv(finalEnv, "CONTAINERS_REGISTRIES_CONF", registriesPath)
+	guestRegistriespath, err := e.guestPath(pol, "$CONTAINERS_REGISTRIES_CONF", registriesPath)
+	if err != nil {
+		return stage.EngineSpec{}, err
+	}
+	finalEnv = setEnv(finalEnv, "CONTAINERS_REGISTRIES_CONF", guestRegistriespath)
 
 	authPath, err := e.writeAuthFile()
 	if err != nil {
 		return stage.EngineSpec{}, err
 	}
-	finalEnv = setEnv(finalEnv, "REGISTRY_AUTH_FILE", authPath)
+	guestAuthpath, err := e.guestPath(pol, "$REGISTRY_AUTH_FILE", authPath)
+	if err != nil {
+		return stage.EngineSpec{}, err
+	}
+	finalEnv = setEnv(finalEnv, "REGISTRY_AUTH_FILE", guestAuthpath)
 
 	// SET, not left to the caller, and that is the change (issue #125). This
 	// variable used to be one of the "anything a pinned engine bundle needs"
@@ -397,13 +476,17 @@ func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool, net
 	// runroot and mount_program. setEnv replaces rather than appends, so a
 	// caller that still passes one loses to this, which is the direction that
 	// makes the guarantee hold rather than the one that makes it polite.
-	storagePath, err := e.writeStorageConf(podman)
+	storagePath, err := e.writeStorageConf(pol, podman)
 	if err != nil {
 		return stage.EngineSpec{}, err
 	}
-	finalEnv = setEnv(finalEnv, "CONTAINERS_STORAGE_CONF", storagePath)
+	guestStoragepath, err := e.guestPath(pol, "$CONTAINERS_STORAGE_CONF", storagePath)
+	if err != nil {
+		return stage.EngineSpec{}, err
+	}
+	finalEnv = setEnv(finalEnv, "CONTAINERS_STORAGE_CONF", guestStoragepath)
 
-	confPath, err := e.writeContainersConf(cgroupsDisabled, net.Resolver())
+	confPath, err := e.writeContainersConf(pol, podman, cgroupsDisabled, net.Resolver())
 	if err != nil {
 		return stage.EngineSpec{}, err
 	}
@@ -417,27 +500,74 @@ func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool, net
 	// wrapper). Setting only the first is defeated by such an export; setting
 	// only the second leaves the host's files loaded underneath and reduces
 	// the guarantee to "every key snug remembered to enumerate".
-	finalEnv = setEnv(finalEnv, "CONTAINERS_CONF", confPath)
-	finalEnv = setEnv(finalEnv, "CONTAINERS_CONF_OVERRIDE", confPath)
+	guestConfPath, err := e.guestPath(pol, "$CONTAINERS_CONF", confPath)
+	if err != nil {
+		return stage.EngineSpec{}, err
+	}
+	finalEnv = setEnv(finalEnv, "CONTAINERS_CONF", guestConfPath)
+	finalEnv = setEnv(finalEnv, "CONTAINERS_CONF_OVERRIDE", guestConfPath)
 
-	resolvConfPath, err := e.writeResolvConf(net.ResolvConf())
+	guestStore, err := e.guestPath(pol, "--root (the image store)", e.store)
+	if err != nil {
+		return stage.EngineSpec{}, err
+	}
+	guestSock, err := e.guestPath(pol, "the socket the engine listens on", e.sock)
+	if err != nil {
+		return stage.EngineSpec{}, err
+	}
+	guestPodman, err := e.guestPath(pol, "the engine binary", podman)
 	if err != nil {
 		return stage.EngineSpec{}, err
 	}
 
 	argv := []string{
-		"--root", e.store,
-		"--runroot", e.runroot,
+		"--root", guestStore,
+		"--runroot", guestRunroot,
 		// NOT --time 0. The idle timeout is the engine's own "my client went
 		// away", and the lifeline (lifeline.go) is what keeps it from firing
 		// while the sandbox lives.
 		"system", "service", "--time", strconv.Itoa(int(idleTimeout.Seconds())),
-		"unix://" + e.sock,
+		"unix://" + guestSock,
 	}
 
+	// Podman and Argv are what the ENGINE is exec'd with, so they are guest
+	// paths. Sock is what P1 WAITS for on the host side (enginefork.go's
+	// waitForSocket) and what the container proxy dials, so it stays the host
+	// path — the same inode reached under two names, which is the whole point
+	// of a graft and the one place this file must not "tidy" them into one.
 	return stage.EngineSpec{
-		Podman: podman, Argv: argv, Env: finalEnv, Sock: e.sock, ResolvConfPath: resolvConfPath,
+		Podman: guestPodman, Argv: argv, Env: finalEnv, Sock: e.sock,
+		Grafts: engineGrafts(pol),
 	}, nil
+}
+
+// engineGrafts flattens the resolved policy's HOST-tree grafts into what the
+// stage needs to build them. Read out of p.Grafts rather than rebuilt from the
+// paths this file knows: the model is the author of the engine's view
+// (invariant 6), and a second list here would be a second author that agrees
+// until the day it does not.
+//
+// The fresh-mount kinds are deliberately absent — the stage MOUNTS /proc,
+// /sys/fs/cgroup and /run itself, and they carry no Host to clone. They are in
+// p.Grafts for the model's sake (issue #125 §9.2) and would be a source of
+// nothing here.
+func engineGrafts(pol *policy.Policy) []stage.EngineGraft {
+	guests := make([]string, 0, len(pol.Grafts))
+	for guest, g := range pol.Grafts {
+		if g.Kind != policy.KindGraft || g.Host == "" {
+			continue
+		}
+		guests = append(guests, guest)
+	}
+	sort.Strings(guests)
+	out := make([]stage.EngineGraft, 0, len(guests))
+	for _, guest := range guests {
+		g := pol.Grafts[guest]
+		out = append(out, stage.EngineGraft{
+			Host: g.Host, Guest: g.Guest, ReadOnly: g.Access != policy.AccessRW,
+		})
+	}
+	return out
 }
 
 // writeContainersConf generates THE containers.conf this run's engine reads —
@@ -497,7 +627,7 @@ func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool, net
 // res is policy.NetPolicy.Resolver() — the SAME derivation the sandbox
 // payload's own /etc/resolv.conf comes from, taken as VALUES rather than by
 // parsing the rendered file back, so the two cannot diverge (invariant 6).
-func (e *Engine) writeContainersConf(cgroupsDisabled bool, res policy.ResolverConfig) (string, error) {
+func (e *Engine) writeContainersConf(pol *policy.Policy, podman string, cgroupsDisabled bool, res policy.ResolverConfig) (string, error) {
 	path := filepath.Join(e.confDir, "containers.conf")
 
 	var b strings.Builder
@@ -558,7 +688,32 @@ func (e *Engine) writeContainersConf(cgroupsDisabled bool, res policy.ResolverCo
 	// DIRECTORIES OF PROGRAMS the OCI runtime executes for every container,
 	// which is a command table rather than data, so it is the one key in this
 	// file whose misplacement would have mattered most.
+	// image_copy_tmp_dir, and it is Tier C's own key rather than a hardening
+	// one. MEASURED: a build through the proxy returned 500 with `stat
+	// /var/tmp: no such file or directory` — buildah's default scratch space
+	// is /var/tmp, and the engine's DERIVED view has no /var/tmp, because the
+	// sandbox has none. #125's design pass predicted both the failure and the
+	// answer: /var/tmp is one of the three paths it named as "not grafts,
+	// deliberately... the answer is configuration, not reshaping the
+	// filesystem".
+	//
+	// It points inside the RUNROOT graft, which is this run's own writable
+	// host directory: the engine can create it, it dies with the run's own
+	// cleanup rather than accumulating under /var/tmp, and it is a path no
+	// profile can name and the payload cannot reach.
+	guestTmp, err := e.guestPath(pol, "containers.conf image_copy_tmp_dir", filepath.Join(e.runroot, "tmp"))
+	if err != nil {
+		return "", err
+	}
+	quotedTmp, err := tomlString(guestTmp)
+	if err != nil {
+		return "", fmt.Errorf("containers.conf image_copy_tmp_dir: %w", err)
+	}
 	b.WriteString("\n[engine]\n" +
+		"# Scratch space for image copies. The default is /var/tmp, which the\n" +
+		"# engine's derived view does not have (issue #125, measured as a 500\n" +
+		"# from every build); this is inside the runroot snug grafts for it.\n" +
+		"image_copy_tmp_dir = " + quotedTmp + "\n" +
 		"# Directories of programs run for every container. A command table,\n" +
 		"# not data (issue #132).\n" +
 		"hooks_dir = []\n" +
@@ -566,7 +721,7 @@ func (e *Engine) writeContainersConf(cgroupsDisabled bool, res policy.ResolverCo
 		"# Belt and braces on top of Spec's pinned PATH (issue #125): PATH is not\n" +
 		"# podman's only lookup for conmon/crun/newuidmap and friends, so name the\n" +
 		"# search list explicitly rather than let it fall back to inheritance.\n" +
-		"helper_binaries_dir = [\"/usr/libexec/podman\", \"/usr/lib/podman\", \"/usr/bin\"]\n")
+		"helper_binaries_dir = [" + helperBinariesDirs(pol, podman) + "]\n")
 
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		return "", fmt.Errorf("writing %s: %w", path, err)
@@ -804,7 +959,7 @@ unqualified-search-registries = ["docker.io"]
 // rootless overlay instead — so it is named when it is found beside the engine
 // binary and left out when it is not, which is the only choice that is right on
 // both host shapes.
-func (e *Engine) writeStorageConf(podman string) (string, error) {
+func (e *Engine) writeStorageConf(pol *policy.Policy, podman string) (string, error) {
 	path := filepath.Join(e.confDir, "storage.conf")
 
 	var b strings.Builder
@@ -826,9 +981,22 @@ func (e *Engine) writeStorageConf(podman string) (string, error) {
 		"# same trade issues #133 and #137 already made for containers.conf and\n" +
 		"# registries.conf.\n" +
 		"[storage]\n")
+	// GUEST paths, not host ones. The file is read by the ENGINE, inside a
+	// view derived from the sandbox's, so a host path here names nothing —
+	// and a generated config is exactly the place where that failure is
+	// hardest to read, because podman reports it as a storage error rather
+	// than as a missing mount (issue #125, Tier C).
+	guestStore, err := e.guestPath(pol, "storage.conf graphroot", e.store)
+	if err != nil {
+		return "", err
+	}
+	guestRunroot, err := e.guestPath(pol, "storage.conf runroot", e.runroot)
+	if err != nil {
+		return "", err
+	}
 	for _, kv := range []struct{ key, path string }{
-		{"graphroot", e.store},
-		{"runroot", e.runroot},
+		{"graphroot", guestStore},
+		{"runroot", guestRunroot},
 	} {
 		v, err := tomlString(kv.path)
 		if err != nil {
@@ -842,6 +1010,10 @@ func (e *Engine) writeStorageConf(podman string) (string, error) {
 		return "", err
 	}
 	if mp != "" {
+		mp, err = e.guestPath(pol, "storage.conf mount_program", mp)
+		if err != nil {
+			return "", err
+		}
 		v, err := tomlString(mp)
 		if err != nil {
 			return "", fmt.Errorf("storage.conf mount_program: %w", err)
@@ -930,19 +1102,6 @@ func helperBesideEngine(podman, name string) (string, error) {
 func (e *Engine) writeAuthFile() (string, error) {
 	path := filepath.Join(e.confDir, "auth.json")
 	if err := os.WriteFile(path, []byte("{\n    \"auths\": {}\n}\n"), 0o600); err != nil {
-		return "", fmt.Errorf("writing %s: %w", path, err)
-	}
-	return path, nil
-}
-
-// writeResolvConf writes resolvConf (the caller's already-resolved
-// policy.NetPolicy.ResolvConf() bytes) to this run's own hardened /tmp
-// directory, so EnterEngine can bind-mount it over the engine's own
-// /etc/resolv.conf (issue #126) — a pointer, never the content itself,
-// crossing the same "start" request the cgroups-disabled config does.
-func (e *Engine) writeResolvConf(resolvConf []byte) (string, error) {
-	path := filepath.Join(e.confDir, "resolv.conf")
-	if err := os.WriteFile(path, resolvConf, 0o600); err != nil {
 		return "", fmt.Errorf("writing %s: %w", path, err)
 	}
 	return path, nil
@@ -1147,4 +1306,149 @@ func joinPIDs(pids []int) string {
 		parts = append(parts, strconv.Itoa(p))
 	}
 	return strings.Join(parts, " ")
+}
+
+// helperBinariesDirs is the value of containers.conf's helper_binaries_dir,
+// and it has to answer a question that only exists once the engine's view is
+// derived: WHERE, inside that view, are conmon, crun, netavark and the rest?
+//
+// The three /usr entries are the distribution answer and are always present —
+// @sys binds the OS runtime, so they are there whatever else is. A PINNED
+// BUNDLE is the other case, and it needs its own directory named FIRST: its
+// podman is statically built against its own helpers, and the /usr entries on
+// this host hold the distribution's, which is a different set of versions
+// answering to the same names. Silently mixing them is the failure this
+// avoids — it does not announce itself as a mismatch, it announces itself as
+// a container that will not start.
+//
+// The bundle's directory is the ENGINE BINARY's own, mapped into the engine's
+// view, which is the same rule helperBesideEngine already applies to
+// mount_program: "the engine's own directory is the right place to look and
+// the only one". A binary the mapping cannot place is simply not named here —
+// Spec has already refused the run by then, so this arm cannot silently drop
+// a helper directory a working run needed.
+func helperBinariesDirs(pol *policy.Policy, podman string) string {
+	dirs := []string{"/usr/libexec/podman", "/usr/lib/podman", "/usr/bin"}
+	if podman != "" && filepath.IsAbs(podman) {
+		if guest, ok := pol.EngineGuestPath(filepath.Dir(podman)); ok && !strings.HasPrefix(guest, "/usr/") {
+			dirs = append([]string{guest}, dirs...)
+		}
+	}
+	quoted := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		v, err := tomlString(d)
+		if err != nil {
+			// Unreachable for the three literals; for a mapped bundle path it
+			// would mean a control character in a host path, which
+			// checkPathHygiene refused long before this.
+			continue
+		}
+		quoted = append(quoted, v)
+	}
+	return strings.Join(quoted, ", ")
+}
+
+// GraftInto is the other half of the engine's view: the host
+// directories this run's engine works out of, cloned into its namespace with
+// open_tree(2) rather than mounted fresh.
+//
+// FOUR, and the count is the point — after Tier C a bind-filter bug in the
+// container proxy reaches these and nothing else, where today it reaches the
+// whole host tree. A fifth is added when this host's engine lives outside every
+// grant the sandbox makes (a pinned bundle): its toolchain, read-only.
+//
+// Each of the four is declared to the policy TWICE and the two are different
+// claims. OwnEngineHostPath says "snug created this host path for this run", so
+// G4's second disjunct admits it even though no sandbox grant exposes it;
+// Policy.Graft then installs the graft itself and runs G1-G5 over it. Skipping
+// the first would make G4 refuse every one of them; skipping the second would
+// leave a declared host path with nothing mounting it.
+//
+// THE TOOLCHAIN ROOT IS READ FROM THE POLICY, never taken as an argument, and
+// that is the ordering trap removed rather than documented: G4 admits the
+// toolchain graft only by exact membership in p.EngineToolchainRoot, so a
+// caller that passed a root here without also recording it would get a refusal
+// naming G4 rather than naming the missing call. One writer (preflight P9,
+// through Policy.EngineToolchain), one reader.
+//
+// ORDER: after New (the paths must exist to be resolved) and before Spec (which maps every path it hands the engine through these grafts,
+// and refuses a path no graft or grant exposes).
+func (e *Engine) GraftInto(env policy.Environ, p *policy.Policy) error {
+	for _, host := range []string{e.store, e.runroot, e.sockDir, e.confDir} {
+		if err := p.OwnEngineHostPath(env, host); err != nil {
+			return fmt.Errorf("declaring %s as this run's own: %w", host, err)
+		}
+	}
+
+	if err := p.Graft(env, policy.Graft{
+		Mount: policy.Mount{
+			Guest: policy.EngineStoreGuest, Host: e.store,
+			Kind: policy.KindGraft, Access: policy.AccessRW, From: []string{"(snug)"},
+		},
+		Why: "write image layers into a store that PERSISTS across runs and is shared with " +
+			"every other sandbox resolving to the same profiles+target key — so a layer a " +
+			"container poisons outlives the sandbox that pulled it, and is there for the next " +
+			"run of the same project",
+	}); err != nil {
+		return fmt.Errorf("grafting the engine's image store: %w", err)
+	}
+
+	if err := p.Graft(env, policy.Graft{
+		Mount: policy.Mount{
+			Guest: policy.EngineRunrootGuest, Host: e.runroot,
+			Kind: policy.KindGraft, Access: policy.AccessRW, From: []string{"(snug)"},
+		},
+		Why: "write into the engine's runroot, which is keyed by profiles+target rather than " +
+			"by pid (podman's libpod database refuses a runroot that disagrees with the one it " +
+			"recorded), so it is reachable by a concurrent sandbox with the same key",
+	}); err != nil {
+		return fmt.Errorf("grafting the engine's runroot: %w", err)
+	}
+
+	if err := p.Graft(env, policy.Graft{
+		Mount: policy.Mount{
+			Guest: policy.EngineSockGuest, Host: e.sockDir,
+			Kind: policy.KindGraft, Access: policy.AccessRW, From: []string{"(snug)"},
+		},
+		Why: "create or replace the socket the container proxy dials — the engine must be " +
+			"able to bind it, which is why this half of the run directory is writable and the " +
+			"other half is not",
+	}); err != nil {
+		return fmt.Errorf("grafting the engine's socket directory: %w", err)
+	}
+
+	if err := p.Graft(env, policy.Graft{
+		Mount: policy.Mount{
+			Guest: policy.EngineConfGuest, Host: e.confDir,
+			Kind: policy.KindGraft, Access: policy.AccessRO, From: []string{"(snug)"},
+		},
+		Why: "READ every configuration file snug generated for it — and only read them: this " +
+			"is the half of the run directory that is read-only, so an engine that is talked " +
+			"into writing cannot rewrite the storage, registry or signature policy it was " +
+			"started under, nor turn the deliberately EMPTY auth file into a usable one",
+	}); err != nil {
+		return fmt.Errorf("grafting the engine's config directory: %w", err)
+	}
+
+	// The toolchain, only when this host has one outside every grant. A
+	// distribution podman in /usr/bin needs nothing here: @sys already binds
+	// the OS runtime and the engine's view is derived from the sandbox's, so
+	// the binary is simply there.
+	toolchainRoot := p.EngineToolchainRoot
+	if toolchainRoot == "" {
+		return nil
+	}
+	if err := p.Graft(env, policy.Graft{
+		Mount: policy.Mount{
+			Guest: policy.EngineToolchainGuest, Host: toolchainRoot,
+			Kind: policy.KindGraft, Access: policy.AccessRO, From: []string{"(snug)"},
+		},
+		Why: "READ the engine's own program files — the binary it is about to exec and every " +
+			"helper it resolves — from the host user's installation. Read-only: it is the " +
+			"user's own tree rather than something snug created for this run, so a writable " +
+			"graft of it would be a host-write channel out of the engine",
+	}); err != nil {
+		return fmt.Errorf("grafting the engine's toolchain: %w", err)
+	}
+	return nil
 }

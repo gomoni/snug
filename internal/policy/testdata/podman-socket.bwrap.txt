@@ -36,6 +36,8 @@
 --dir /sys/fs
 --perms 0755
 --dir /sys/fs/cgroup
+--perms 0755
+--dir /var/tmp
 --symlink usr/bin /bin
 --dev /dev
 --ro-bind /etc /etc

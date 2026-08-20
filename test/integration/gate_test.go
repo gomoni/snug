@@ -134,7 +134,14 @@ func TestAKilledSnugCannotReleaseTheParkedPayload(t *testing.T) {
 	t.Run("positive-control-and-adjacent-negative", func(t *testing.T) {
 		proj, _ := target(t)
 		writeFakePodmanConfig(t, fp, 0, 200)
-		env := append(baseEnv(), "SNUG_PODMAN="+fp)
+		env := append(baseEnv(), "SNUG_PODMAN="+fp,
+			// SNUG_PODMAN_ROOT is what the toolchain graft is built from since
+			// Tier C: the engine's view is derived from the sandbox's, so a
+			// binary in a temp directory reaches it only through a graft, and
+			// snug refuses the run rather than exec a path the engine cannot
+			// see. The fake engine is self-contained, so its own directory is
+			// the whole toolchain.
+			"SNUG_PODMAN_ROOT="+filepath.Dir(fp))
 
 		r := runEnv(t, env, []string{"-p", "@podman-socket"}, proj,
 			"echo GATE-RELEASED; ls -l /proc/self/fd/")
@@ -193,7 +200,14 @@ func TestAKilledSnugCannotReleaseTheParkedPayload(t *testing.T) {
 			// the 500ms we sleep below before killing snug, not the engine's
 			// own real-world cold start.
 			writeFakePodmanConfig(t, fp, 3*time.Second, 200)
-			env := append(baseEnv(), "SNUG_PODMAN="+fp)
+			env := append(baseEnv(), "SNUG_PODMAN="+fp,
+				// SNUG_PODMAN_ROOT is what the toolchain graft is built from since
+				// Tier C: the engine's view is derived from the sandbox's, so a
+				// binary in a temp directory reaches it only through a graft, and
+				// snug refuses the run rather than exec a path the engine cannot
+				// see. The fake engine is self-contained, so its own directory is
+				// the whole toolchain.
+				"SNUG_PODMAN_ROOT="+filepath.Dir(fp))
 
 			argv := []string{"-p", "@podman-socket", proj, "--", "/bin/sh", "-c", script}
 			cmd := exec.Command(snugBin, argv...)
@@ -295,7 +309,14 @@ func TestKillingOnlyBwrapLeavesAReleasableInit(t *testing.T) {
 	// open long enough for the PRECONDITION scan below to reliably catch the
 	// real bwrap pid(s) of THIS run before the abort tears them down.
 	writeFakePodmanConfig(t, fp, 300*time.Millisecond, 503)
-	env := append(baseEnv(), "SNUG_PODMAN="+fp)
+	env := append(baseEnv(), "SNUG_PODMAN="+fp,
+		// SNUG_PODMAN_ROOT is what the toolchain graft is built from since
+		// Tier C: the engine's view is derived from the sandbox's, so a
+		// binary in a temp directory reaches it only through a graft, and
+		// snug refuses the run rather than exec a path the engine cannot
+		// see. The fake engine is self-contained, so its own directory is
+		// the whole toolchain.
+		"SNUG_PODMAN_ROOT="+filepath.Dir(fp))
 
 	argv := []string{"-p", "@podman-socket", proj, "--", "/bin/sh", "-c", script}
 	cmd := exec.Command(snugBin, argv...)

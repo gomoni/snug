@@ -165,6 +165,12 @@ func TestEngineViewGraftsCarryTheirOwnKindAndAccess(t *testing.T) {
 		"/proc":          policy.KindProc,
 		"/sys/fs/cgroup": policy.KindCgroup2,
 		"/run":           policy.KindTmpfs,
+		// The FOURTH, added with C2-view: containers/image hardcodes /var/tmp
+		// for the scratch directory it creates while committing a layer, with
+		// no configuration key and no environment variable reaching it, so the
+		// engine gets a fresh tmpfs there too (measured: every build 500'd on
+		// `stat /var/tmp` until it existed).
+		"/var/tmp": policy.KindTmpfs,
 	}
 	if len(p.Grafts) != len(want) {
 		guests := make([]string, 0, len(p.Grafts))
