@@ -137,27 +137,28 @@ so starts a fresh runtime.
 
 ## 4. The decision it changed, and the one it did not
 
-Attach is **fork-from-init**: the new payload is forked by the sandbox's own
-init rather than injected from outside by a joiner.
+**Attach IS the joiner, and it shipped.** `internal/attach` is the measured
+joiner from §3. This section previously led with the opposite — *"attach is
+fork-from-init"* — and carried the correction twenty lines below it, so a reader
+who stopped early got the wrong answer. The current truth leads; the argument
+that lost is kept below it, because it names the cost the shipped design pays.
 
-Note carefully what the measurement above did to the *argument* for that choice.
-Fork-from-init was originally preferred because it avoided cgo. The pure-Go
-joiner result removes that reason — a joiner is now buildable without cgo — so
-the decision has to stand on its security merits alone. **It does**, on three
-counts, all measured:
+**Why fork-from-init lost** (issue #61 part (e), 2026-08-18): fork-off-the-stage
+produces a *second* sandbox rather than entry into the first. The stage holds
+the capability-carrying user and network namespaces, bwrap holds the mount and
+pid namespaces the payload runs in, and **there is no single process a
+fork-from-init design could inject into that owns all seven.** It also removed
+the control listener that design assumed: attach joins by descriptor, from the
+host, as a client, with no accept loop.
 
-- one code path instead of two;
-- no window in which a process holds a full capability set in the sandbox's user
-  namespace (a joiner necessarily acquires one on entry and must remember to drop
-  it — the undropped case was measured, and it is a full set);
-- confinement is **inherited** rather than reproduced. A joiner has to re-apply
-  every restriction the sandbox has, and every one it forgets is a hole. A child
-  of init has them by descent.
+**What fork-from-init would have bought, and what the joiner therefore owes.**
+Three counts, all measured, all still true as an argument: one code path instead
+of two; no window in which a process holds a full capability set in the
+sandbox's user namespace; and confinement **inherited** rather than reproduced —
+a joiner must re-apply every restriction, and every one it forgets is a hole.
+The shipped design pays the second and third: see the window described below.
 
-Keep the measured joiner as a fallback for the case where something must be
-injected into a sandbox that has no snug init. Do not build the attach path on it.
-
-**Superseded, 2026-08-18: attach IS the joiner, and it shipped.** A later
+**Detail of the settlement.** A later
 settlement (issue #61 part (e)) measured that fork-off-the-stage produces a
 *second* sandbox rather than entry into the first — the stage holds the
 capability-carrying user and network namespaces, bwrap holds the mount and pid

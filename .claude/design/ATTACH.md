@@ -6,30 +6,6 @@ settlement of 2026-08-17 ("Settled by an independent two-sided review") and its
 2026-08-18** against real snug sandboxes started from `origin/main`
 (`312742d`).
 
-> **Promoted into `.claude/design/` on 2026-08-19
-> ([#156](https://github.com/gomoni/snug/issues/156)), and renamed from
-> `ATTACH-SHAPE.md`.** It lived in `.claude/scratchpad/`, which is in
-> `.gitignore` — so the three Go comments citing it named a path that existed
-> on exactly one machine, inside a feature worktree, in no commit and no clone.
-> The suffix went because `CLAUDE.md`'s rule is one design document per
-> subject with no plan-stage twin beside it, and this is now that document.
->
-> **It is written in the future tense, from before the code existed, and that
-> is left alone** — rewriting a design record into a description of what
-> shipped produces a document that is neither. Read it as the design that was
-> agreed; the code is what runs. The one place they are known to differ —
-> publishing the state file — is marked inline at §6.1. §13's test list is
-> kept, unlike the equivalent section in
-> [`ENGINE-WIRING.md`](ENGINE-WIRING.md), for the plain reason that two test
-> files cite it by subsection as their specification.
-
-`go-implementer` and `sandbox-tester` should be able to work from this document
-without making a policy decision. Where something is genuinely the maintainer's
-to settle it is in §16, settled in §17, and **nowhere else** — if you find
-yourself choosing, stop and ask.
-
----
-
 ## 1. What is settled, and is not reopened here
 
 From the settlement, restated so a reader of this file alone cannot get it wrong:
@@ -782,111 +758,14 @@ package stays pure.
 
 ---
 
-## 13. The tests that must exist
+## 13. The tests
 
-`sandbox-tester` owns these. Every negative needs a positive control and every
-payload needs a marker, because "the sandbox did not reach X" passes on a sandbox
-that never started.
-
-### 13.1 Unit — state file (no privileges, runs in CI)
-
-1. `TestAttachRefusesAStateFileWhoseSchemaItDoesNotKnow`
-2. `TestAttachRefusesAStateFileInADirectoryItDoesNotOwn` — and the control: the
-   same file in a correct directory is accepted.
-3. `TestAttachRefusesWhenTheRunLockIsNotHeld` — control: with the lock held by a
-   live process, the same directory is accepted.
-4. `TestStateFileCarriesNoCommandNoArgvAndNoExecutablePath` — a mechanical sweep
-   over the marshalled JSON keys, not an allowlist of the ones we remember.
-5. `TestStateFileEnvIsOnlySnugAuthoredNames` — build a policy with a
-   profile-passed host variable, assert it is **absent** from the record while a
-   snug-authored one is present. This is the test that keeps a token off disk.
-6. `TestStateFileIsWrittenSixOhOhInASevenHundredDirectory`
-
-### 13.2 Unit — the confinement plan
-
-7. `TestAttachRefusesASeccompDigestMismatch` — and the control: the matching
-   digest proceeds.
-8. `TestAttachRefusesWhenItCannotBuildAFilterTheRunHad`
-9. `TestAttachCapBoundingLoopUsesCapLastCapFromProc` — assert it reads the file;
-   a hardcoded 40 must fail this test.
-10. `TestAttachJoinsExactlySevenNamespacesInOneCall` — a golden on the flag word.
-    A change to it is a change to the security boundary and is read as one.
-11. `TestAttachNeverAsksForTheParentUserNamespace` — a source-level sweep for
-    `NS_GET_PARENT`/`NS_GET_USERNS` in the attach path, with the reason from
-    §3.1 in the failure message.
-
-### 13.3 Integration — it works (`SNUG_REQUIRE_SANDBOX=1`)
-
-12. `TestAttachRunsInsideTheRunningSandbox` — the payload writes a marker into its
-    tmpfs `$HOME`; the attached command reads it back. Control: the same command
-    outside the sandbox does not find it.
-13. `TestAttachWorksOnBothTopologies` — offline and `@net`, same assertions.
-14. `TestAttachedProcessIsInTheSandboxPidNamespace` — its pid inside is small and
-    `/proc/1/comm` is `bwrap`; control: on the host the same process has a large
-    pid.
-
-### 13.4 Integration — the negatives, each with its control
-
-15. `TestAttachedProcessCarriesNoHostEnvironmentVariable` — set a marker variable
-    in the attach client's environment; assert it is absent from the attached
-    process's `/proc/<pid>/environ` **as read from inside the sandbox**. Control:
-    the marker is present in the client's own environment.
-16. `TestAttachedProcessHasTheRunsSeccompFilterInstalled` — `Seccomp: 2` from
-    inside, and a behavioural check (`unshare -U true` fails), not just the
-    status line. Control: the same binary succeeds on the host.
-17. `TestAttachedProcessHasAnEmptyCapabilityBoundingSet` — `CapBnd: 0`. Control:
-    the attach client on the host has `000001ffffffffff`. **This control is the
-    test**: without it the assertion passes on a process that never joined.
-18. `TestAttachedProcessCannotReachHostLoopback` — a live host listener answering
-    200 from the host is the positive control; from the attached process it is
-    refused. (M19.)
-19. `TestAttachRefusesAPidWhoseUserNamespaceIsOurOwn` — the message must name the
-    situation, not surface EINVAL.
-20. `TestAttachRefusesAfterPidReuse` — forge a `state.json` whose start time is
-    stale; control: the true start time is accepted.
-21. **Adjacent-still-closed:** `TestAttachDoesNotGrantAnythingTheRunDidNot` — from
-    the attached process, `~/.ssh` is absent, the host home is not listable, and a
-    sibling directory of the target is not readable, while the target itself is.
-
-### 13.5 Integration — the residual, asserted rather than hoped
-
-22. `TestKnownOpenResidualPayloadReachesAnAttachedProcessDescriptor` — in the
-    shape of the existing `TestKnownOpenResidual…` tests: assert that the payload
-    **can** list `/proc/<attached>/fd`, **can** read `/proc/<attached>/environ`,
-    and **can** reopen a relayed pipe (M24 — do not write this test asserting the
-    reopen fails; it does not). The narrowing the relay actually buys is the
-    subject of test 22b.
-22b. `TestRelayedStdioKeepsTheHostInodeOutOfTheSandbox` — attach with stdout
-    redirected to a host file containing a marker written *before* the attach;
-    from inside, assert the payload can write into fd 1 (it reaches the relay) but
-    **cannot read the marker back**, because what it holds is a pipe and not the
-    file. The positive control is the same test with the relay disabled in the
-    harness, where the marker **is** readable. This pair is the whole justification
-    for §5.4 rule 3 and must fail if the relay is ever removed.
-
-### 13.6 Integration — teardown, one test per row of §11
-
-23. `TestAttachedProcessDiesWithASIGKILLedSnug` — with a marker process, and the
-    control that it was alive immediately before the kill.
-24. `TestAttachedProcessDiesWithASIGKILLedAttachClient` — and, in the same test,
-    that the **sandbox survives**.
-25. `TestAttachLeavesNoProcessAndNoFileBehind` — before/after sweep of the run
-    directory and of the process table for the marker.
-26. `TestAttachSurvivesGoRuntimeThreadChurn` — the `LockOSThread` regression:
-    attach with `GOMAXPROCS` and background goroutine churn, assert the session
-    lives the full duration. Without the lock this fails intermittently, which is
-    exactly why it must exist as a named test rather than as a comment.
-
-### 13.7 Golden / screen
-
-27. `TestBwrapFlagsCarryInfoFdBeforeTheSeparator` — `--info-fd` is in the flag
-    slice, before `--`, and its number matches the descriptor actually passed.
-    The `--seccomp`-after-`--` bug is the reason this is a test and not a review.
-28. `TestDryRunAttachBlockNamesThePathPatternAndSaysItGatesNothing`
-29. The existing `TestNoSnugScreenEmitsARawControlCharacter` must cover the new
-    block and the new help text — check that it does, rather than assuming.
-
----
+**All of them exist; the suite is the truth and this section is not.** They live
+in `test/integration/attach_test.go`, `internal/attach/bridge_test.go` and
+`internal/cli/attach_test.go`. Two names this section once required are folded
+into larger tests as numbered sub-cases rather than standing alone — the pid
+namespace membership (`test 14`) and adjacent-still-closed (`test 21`) — so
+grepping for the name and finding nothing is not evidence of a gap here.
 
 ## 14. What this design deliberately does not do
 
@@ -904,91 +783,27 @@ that never started.
 
 ---
 
-## 15. Documents this contradicts, and which is right
+## 15. Decisions, settled 2026-08-18
 
-`NOCGO.md` §4 says "Attach is **fork-from-init**: the new payload is forked by the
-sandbox's own init rather than injected from outside by a joiner", and "Keep the
-measured joiner as a fallback… Do not build the attach path on it."
+All five were open questions in an earlier draft; the questions are gone and the
+answers stand on their own. Each names its reason, so none needs the question
+back.
 
-**That paragraph is superseded by the 2026-08-17 settlement**, which measured that
-fork-off-the-stage produces a *second sandbox* rather than entry into the first
-(the stage holds U and N; bwrap holds the mount and pid namespaces), and cut the
-listener that fork-from-init needed. Attach *is* the joiner.
-
-Its three-count argument for fork-from-init should be answered rather than
-deleted, because two of the three are real and this design pays them explicitly:
-
-- *"one code path instead of two"* — still true, and this design has one path with
-  no per-topology branch (§6.4).
-- *"no window in which a process holds a full capability set in the sandbox's user
-  namespace"* — **conceded**: §4.2 steps 4–6 are exactly that window. It is a
-  handful of raw syscalls with no fork and no exec in it, and it is why the
-  bounding-set drop is step 5 rather than step 9.
-- *"confinement is inherited rather than reproduced"* — **conceded, and it is why
-  §5 exists at all**. This design reproduces four things (filter, caps, NNP,
-  environment) and inherits the rest by descent from B to A. The gate in §4.2a is
-  the compensating control: reproduction that is not verified is the
-  `--seccomp`-after-`--` shape.
-
-Whoever implements this should update `NOCGO.md` §4 in the same change — one
-design per subject; a stale decision in a research record is how the next reader
-builds the wrong thing.
-
----
-
-## 16. Open — the maintainer's to settle
-
-1. **Pay for a pty relay now, or ship tty-passthrough and file it?** §5.4 relays
-   non-tty stdio through pipes — which keeps the host **inode** out of the
-   sandbox, though not the stream itself (M24) — and passes a terminal through
-   unchanged. Passing a terminal through means the payload can
-   reopen it: it can write escape sequences to your screen and read input you type
-   at the attached session. A pty relay narrows that to a terminal that exists
-   only for the attach session — it does **not** remove it, since the client
-   copies those bytes onward to your real terminal anyway. My recommendation: ship
-   the pipe relay, file the pty with M18 as its justification. The counter-case is
-   that the automation invocation (`snug -p @claude … > log`) is exactly where a
-   terminal is *new* reach for the payload, and that is the invocation attach is
-   for.
-2. **`TERM`: recorded, or from the attach client?** §5.3 takes the recorded value
-   so that "the environment is authored by the run's policy" has no exception. The
-   cost is a wrong `TERM` when you attach from a different terminal type than the
-   run was started from — which is a real annoyance for exactly the people who
-   will use this.
-3. **Should a run with no publishable state be a warning or a failure?** §6.1 says
-   warning, on the grounds that a debugging convenience must not stop a sandbox
-   from starting. The opposite reading is that `runtimeDir()`'s refusals are all
-   "a directory snug owns is wrong", and continuing past one is the shape
-   invariant 5 exists to forbid.
-4. **`snug attach --no-seccomp`.** §5.1 refuses to add one. The counter-argument
-   is narrow but real: a run started *before* you needed to debug it cannot be
-   restarted with `--no-seccomp` without losing its state, and the filter denies
-   `ptrace`, which is what a debugger needs. If it is ever added, it must print the
-   same five-line warning shape `--i-know` does, and it must be impossible from a
-   config file.
-5. **Does `snug attach --list` belong in this ticket or the next one?** It is the
-   only thing here that is convenience rather than mechanism, and the error
-   messages in §8.1 name it.
-
----
-
-## 17. Maintainer decisions, settled 2026-08-18
-
-- **§16.1 stdio relay — pipe relay AND pty, both in this ticket.** Not "pipe now,
+- **stdio relay — pipe relay AND pty, both in this ticket.** Not "pipe now,
   file pty". Build the pty relay so the attached session gets a terminal that
   exists only for attach, narrowing what the payload can inject/read. Reason: the
   automation invocation (`snug -p @claude … > log`) is exactly where a
   passed-through terminal is new reach, and that is the invocation attach exists
   for. This enlarges E5's scope — say so to the implementer.
-- **§16.4 `--no-seccomp` — does NOT exist.** Attach always applies the run's
+- **`--no-seccomp` — does NOT exist.** Attach always applies the run's
   filter. The debug-an-already-running-sandbox case pays the cost (no ptrace
   without restart); the confinement guarantee stays unconditional.
-- **§16.2 TERM — DEFAULT TAKEN: recorded value**, no exception to "the
+- **TERM — DEFAULT TAKEN: recorded value**, no exception to "the
   environment is authored by the run's policy". Maintainer may override; flagged
   as a low-stakes default, not an explicit ruling.
-- **§16.3 unpublishable state — DEFAULT TAKEN: FAIL, not warn** (leans against the
+- **Unpublishable state — DEFAULT TAKEN: FAIL, not warn** (leans against the
   doc's recommendation). `runtimeDir()`'s refusals are all "a directory snug owns
   is wrong", and continuing past one is the shape invariant 5 forbids. Flagged for
   explicit maintainer override if the debugging-convenience argument wins.
-- **§16.5 `--list` — DEFAULT TAKEN: NOT in this ticket** (convenience, not
+- **`--list` — DEFAULT TAKEN: NOT in this ticket** (convenience, not
   mechanism; next ticket). Error messages that name it should degrade gracefully.
