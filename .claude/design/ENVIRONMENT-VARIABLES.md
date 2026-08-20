@@ -1,6 +1,11 @@
 # Environment variables — the configuration format
 
-**Status: accepted; implementation in progress.** §1–§3 = format. §4 = measured evidence forcing each rule. §5 = sidenote on considered-and-rejected — read only to reopen something.
+**Status: shipped.** `internal/policy/env*.go` is the implementation and the
+truth; this document is the format and the evidence behind each rule. §1–§3
+format, §4 the measurements that forced each rule, §5 what was considered and
+rejected — read that one only to reopen something. **§6 is genuinely open**:
+`env = [...]` and `path = [...]` are still live keys (`internal/profile/file.go`)
+and both are slated for a named error, not a silent change of meaning.
 
 Decided: five verbs nested under one `environ` section, all of them profile
 keys; `prepend` usable **once per variable** across the selected set, a second is
@@ -69,7 +74,7 @@ codebase already draws for mounts and CLAUDE.md already states: *a profile
 mounting over another profile's grant is masking and is refused; snug replacing a
 path with its own generated content is replacement and is allowed.* `Mount` has
 an `Authored` field and `Policy.Replace` is its single writer. The environment
-needs the same, and an earlier draft of this document did not have it — which
+needs the same, and omitting it is easy to do — which
 made the format contradict itself in three places (§1.2 note, §2.5, §4.2).
 
 Nested, not five root keys. Written as table headers, not inline tables. Three
@@ -81,10 +86,10 @@ reasons, heaviest first — and one that was claimed and does not hold.
 
 **(c) `append` later cost a nested field, not a sixth root key.**
 
-**Retracted: "the flat spelling does not parse".** An earlier draft made this the
-heaviest argument, on a measurement taken against the wrong parser. Multi-line
-inline tables are invalid in **TOML 1.0** and `python3 -m tomllib` refuses them —
-but snug uses `go-toml/v2 v2.4.3`, which **accepts** them:
+**"The flat spelling does not parse" is FALSE, and it is a measurement taken
+against the wrong parser.** Multi-line inline tables are invalid in **TOML 1.0**
+and `python3 -m tomllib` refuses them — but snug uses `go-toml/v2 v2.4.3`, which
+**accepts** them. Check the parser snug actually links, not the spec:
 
 ```
 environ-set = {                 python3 tomllib:      Invalid initial character for a key part
@@ -110,9 +115,8 @@ Greppability survive — why verbs beat inferring operation from value type: `gr
 
 ```toml
 # NOTE: @sys sets NO environment. SHELL and the four base PATH entries are
-# snug's (§1.1) — an earlier draft showed them here, which contradicted §1.1 in
-# the same document. A profile that wants a tool on PATH grants the directory
-# and merges it, like @rust below.
+# snug's (§1.1), not a profile's — showing them here contradicts §1.1. A profile
+# that wants a tool on PATH grants the directory and merges it, like @rust below.
 [profile.sys]
 description = "The system's binaries, libraries and a curated /etc."
 ro = ["/usr", "/etc/ssl", "/etc/pki", "/etc/passwd"]
@@ -388,7 +392,7 @@ prepend (at most one profile)  →  merge (sorted)  →  sanitise (host order, f
 
 This is what `resolve.go` does today, with `prepend` added in front.
 
-**Be precise about the guarantee, because an earlier draft overclaimed it.**
+**Be precise about the guarantee; the obvious reading overclaims it.**
 `prepend` guarantees *the front* — ahead of every merged entry. It does **not**
 make merge order-free: merged entries are sorted, so between two profiles ASCII
 decides, and `/opt/bin` beats `/usr/bin` without anyone using `prepend` or
@@ -630,8 +634,8 @@ snug: mytools and othertools both prepend to PATH (/opt/bin and /srv/bin).
 ```
 
 **The slot is a user's to take.** snug's own contribution (§1.1) is authored, not
-a prepend, so `defaults` does not consume the slot — which an earlier draft got
-wrong, leaving no way to prepend on an ordinary run short of `--no-defaults`.
+a prepend, so `defaults` does not consume the slot. Getting that backwards
+leaves no way to prepend on an ordinary run short of `--no-defaults`.
 Two profiles wanting the front is a genuine disagreement and is worth an error;
 snug quietly holding it forever would not have been.
 
@@ -655,7 +659,7 @@ never reaches an agreement check. The real reason is independently-authored
 duplication: two profiles both writing `XDG_CONFIG_HOME = "{home}/.config"` is
 plausible and harmless.
 
-**The same rule applies to `prepend`, and an earlier draft had it wrong.** Two
+**The same rule applies to `prepend`, and the tempting answer is wrong.** Two
 profiles naming the *identical* directory do not disagree about who is first, and
 the resolved policy is byte-identical either way — refusing it refuses a
 non-conflict. Making agreement legal collapses a rule rather than adding one:
@@ -885,7 +889,7 @@ Everything `char*`; that all they share. Three types, and type decide which verb
 
 ### 3.1 Reading the tables
 
-Both tables use the same marks, which an earlier draft never defined:
+Both tables use the same marks:
 
 | mark | means |
 |---|---|
@@ -1021,13 +1025,17 @@ granting `/usr/share/zoneinfo` has made a guarantee it does not keep — invaria
 | `TERMINFO_DIRS` | `:` | = the system location | ✓ | ⚠ |
 | `GOFLAGS` | **space** | n/a | ✗ | ✗ |
 
-**Discriminator for `sanitise` not the type — this column.** Safe where empty element *ignored*; hazardous where it mean *CWD*; illegal where it *operator*. Type carrying separator must also carry empty-element kind, or sanitiser written once and wrong for third of its inputs.
+**The discriminator for `sanitise` is this column, not the type.** An empty
+element is safe where it is *ignored*, hazardous where it means *CWD*, and
+illegal where it is an *operator*. So a type that carries a separator must also
+carry the empty-element kind — otherwise the sanitiser is written once and is
+wrong for a third of its inputs.
 
-`PYTHONPATH`'s `merge` column read `✗` rather than the `⚠` an earlier draft of
-this table gave it: `sitecustomize.py` on any element runs at interpreter start
-(§2.1, §4.4), so it moved from the type table's "reviewably mergeable" list to
-the forbidden-name table, which refused every verb — `merge`/`prepend` included,
-not only `set`/`inherit`.
+`PYTHONPATH`'s `merge` column is `✗`, not the `⚠` it looks like it should be:
+`sitecustomize.py` on **any** element runs at interpreter start (§2.1, §4.4), so
+it belongs in the forbidden-name table rather than the "reviewably mergeable"
+one — and that table refuses **every** verb, `merge`/`prepend` included, not
+only `set`/`inherit`.
 
 **That column is now wrong, and it is the ONLY row in either table where the
 annotation change widened what a profile may write.** The refusal came from the
@@ -1081,7 +1089,7 @@ prompt = "{lock} snug[{profiles}]:{cwd}$ "
 
 snug render from fixed placeholder set — `{lock}`, `{profiles}`, `{target}`, `{cwd}` — emitting bash's own escapes. No command substitution, no host string. One caveat worth writing now: template still a display string, so `\r` or cursor-movement escape erase whatever precede it. Place marker last, or reject control characters.
 
-*Machine-readable = separate channel, already solved:* `SNUG=1` and `SNUG_PROFILES` what agent or script should test. Prompt for humans; do not make it carry both jobs.
+*Machine-readable = separate channel, already solved:* `SNUG=1` and `SNUG_PROFILES` are what an agent or script should test. Prompt for humans; do not make it carry both jobs.
 
 ---
 
@@ -1376,7 +1384,7 @@ Environment Modules has `prepend-path -d` and Lmod takes a delimiter argument. S
   worth understanding.** TOML with `DisallowUnknownFields` load-bearing because
   unknown key = fatal parse error, so negation key cannot be smuggled in. That
   guarantee **syntactic** — checked by listing keys. Expression language move it
-  to **semantics**: nothing need a `deny` key when a profile can write
+  to **semantics**: nothing needs a `deny` key when a profile can write
   `filter (λd → d != "/usr/bin") host.PATH`. Subtraction stop being a key you
   forgot to forbid and become a function composed from safe primitives, and
   invariant 1 would have to be re-proved against a language on every release of
@@ -1389,14 +1397,14 @@ Environment Modules has `prepend-path -d` and Lmod takes a delimiter argument. S
 
 ## 6. Open
 
-- **The `env` key has to go.** `environ.inherit` take its meaning, so existing
+- **The `env` key has to go.** `environ.inherit` takes its meaning, so existing
   profiles with `env = [...]` break. Make it a named error pointing at the
   replacement, in shape of the retired `@null`. Keeping prefix `environ` rather
   than reusing `env` deliberate: a silently *changed* meaning worse than a
   removed key.
-- **Is `environ.append` needed?** Nothing has asked. Leaving it out keep exactly
-  one ordered operation — what make "at most one across the set" easy to state
-  and check. Adding it mean answering whether prepend and append coexist (they
+- **Is `environ.append` needed?** Nothing has asked. Leaving it out keeps exactly
+  one ordered operation — what makes "at most one across the set" easy to state
+  and check. Adding it means answering whether prepend and append coexist (they
   do — different ends) and whether two appends conflict (yes, same argument).
 - ~~Is `environ.inherit` a preference or a grant?~~ **Settled: a grant, so it
   stays in a profile.** An earlier draft moved it to `config.toml` and argued
@@ -1407,7 +1415,7 @@ Environment Modules has `prepend-path -d` and Lmod takes a delimiter argument. S
   `environ.merge` on `PATH` would, and `@claude` uses it today. Shipping both is
   two mechanisms for one idea — what the `default`-profile decision exists to
   prevent. Same named-error treatment.
-- **`XDG_RUNTIME_DIR`** need an owner — whichever profile create a directory
+- **`XDG_RUNTIME_DIR`** needs an owner — whichever profile create a directory
   meeting the spec's obligations.
 - §4.5 (the environment outranking a pinned config file) is untouched by any of
   this and wants its own fix.
@@ -1416,28 +1424,21 @@ Environment Modules has `prepend-path -d` and Lmod takes a delimiter argument. S
   not deduplicated. None needs this design to land, and (a) shares its one-line
   fix with §4.4.
 
-## Tests this needs
+## Tests
 
-- `resolve([a,b]) == resolve([b,a])` for the environment.
-  `TestResolveIsCommutative` already cover `Env` via `canon()`; extend to new
-  verbs.
-- Second `prepend` refused, **with a positive control** — one that resolves — so
-  refusal cannot pass on a resolver that refuse everything.
-- **§4.3 as named regression test**: sanitise a `PATH` to one surviving element
-  and assert no empty element, with positive control that a planted binary in
-  the target *is* found when an empty element present. This the one place where
-  getting it wrong add a hole rather than fail to close one.
-- **§4.1's payload-name resolution**: binary only on host `PATH` must not run;
-  one in a profile's directory must; name in both resolve to the profile's.
-- `--dry-run` renders §2.8, and golden file changes.
-- `redteam` on `environ.set`, only genuinely new power here.
-- **§2.9's annotation, at every sink and as a golden.**
-  `internal/policy/testdata/annotations.txt` pins the sentences;
-  `TestProfileShowRendersTheAnnotation` and
-  `TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark` pin the two screens and
-  the three-mark order. The one that is easy to forget is the negative:
-  `NO_COLOR` and an authored pointer must carry NO sentence, or "annotated"
-  stops distinguishing anything.
+**They exist; the suite is the truth and this section is not.** The resolver
+invariants and the verb behaviour are in `internal/policy/envresolve_test.go`,
+`envtypes_test.go`, `envallowlist_test.go`, `envnotes_test.go` and
+`envcoupling_test.go`; the `--dry-run` rendering is pinned by
+`internal/cli/testdata/env.*.txt`.
+
+One requirement from that list is worth keeping as prose, because it is the
+reasoning rather than a name: **§4.3's `PATH` sanitise is the one place here
+where getting it wrong ADDS a hole rather than fails to close one**, so its
+regression test needs the positive control that a planted binary in the target
+*is* found when an empty element is present. `envresolve_test.go:158` carries
+the same hazard from the other side — an empty element in the HOST's value must
+never be carried through.
 
 ## Sources
 

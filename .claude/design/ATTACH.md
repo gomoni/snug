@@ -376,8 +376,8 @@ redirection. Three rules:
    terminal properly means a pty. §16.1 is the maintainer's call on paying for
    the pty now.
 
-   **What the relay does and does not buy — measured, and not what the first
-   draft of this document claimed.** M24: a pipe *is* reopenable through
+   **What the relay does and does not buy — measured, and less than it looks.**
+   M24: a pipe *is* reopenable through
    `/proc/<pid>/fd/N`, both ends, cross-process, same uid. So the payload can
    still write into a relayed stream and read from it. What it can no longer do is
    reach the **host inode**: it cannot read what is already in the file, cannot
@@ -785,9 +785,7 @@ grepping for the name and finding nothing is not evidence of a gap here.
 
 ## 15. Decisions, settled 2026-08-18
 
-All five were open questions in an earlier draft; the questions are gone and the
-answers stand on their own. Each names its reason, so none needs the question
-back.
+Each names its reason and stands on its own.
 
 - **stdio relay — pipe relay AND pty, both in this ticket.** Not "pipe now,
   file pty". Build the pty relay so the attached session gets a terminal that
