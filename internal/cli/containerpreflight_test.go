@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -120,5 +121,82 @@ func TestP7DoesNotDisturbTheHostsOwnResolvConf(t *testing.T) {
 		if strings.HasPrefix(e.Name(), "snug-resolvbind-probe-") {
 			t.Errorf("the probe left %s behind in %s", e.Name(), tmp)
 		}
+	}
+}
+
+// TestPreflightToolchainRootNamesRatherThanGuesses is P9, and every case here
+// is one of the ways a derived answer would have been wrong.
+//
+// The positive control is first and is the whole reason the refusals below
+// mean anything: a root that DOES contain the resolved engine is returned
+// unchanged, so a test that only checked refusals could not tell "this
+// refuses correctly" from "this refuses everything".
+func TestPreflightToolchainRootNamesRatherThanGuesses(t *testing.T) {
+	root := t.TempDir()
+	binDir := filepath.Join(root, "usr", "local", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	podman := filepath.Join(binDir, "podman")
+	if err := os.WriteFile(podman, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// CONTROL: the engine really is inside the named root — accepted.
+	t.Setenv("SNUG_PODMAN_ROOT", root)
+	got, err := preflightToolchainRoot(podman)
+	if err != nil {
+		t.Fatalf("control: a root that contains the resolved engine was refused, so every "+
+			"refusal below could be refusing for the wrong reason: %v", err)
+	}
+	if got != root {
+		t.Fatalf("control: got %q, want the named root %q", got, root)
+	}
+
+	// UNSET: empty, and NOT an error. This is the ordinary host — a
+	// distribution podman in /usr/bin, which @sys already exposes, so G4's
+	// first disjunct answers and there is nothing to record.
+	t.Setenv("SNUG_PODMAN_ROOT", "")
+	if got, err := preflightToolchainRoot("/usr/bin/podman"); err != nil || got != "" {
+		t.Errorf("with $SNUG_PODMAN_ROOT unset: got (%q, %v), want (\"\", nil) — an engine the "+
+			"sandbox's own grants already expose needs no toolchain root, and making this a "+
+			"failure would refuse a configuration that works", got, err)
+	}
+
+	// THE ONE CHECK THAT CAN BE MADE: a root that does not contain the engine.
+	// Its symptom would otherwise be an engine that cannot exec, several
+	// seconds later, inside a namespace nobody can look into.
+	other := t.TempDir()
+	t.Setenv("SNUG_PODMAN_ROOT", other)
+	_, err = preflightToolchainRoot(podman)
+	if err == nil {
+		t.Fatalf("a root (%s) that does not contain the resolved engine (%s) was accepted",
+			other, podman)
+	}
+	if !strings.Contains(err.Error(), other) || !strings.Contains(err.Error(), podman) {
+		t.Errorf("the refusal names neither the root nor the engine, so a reader cannot see "+
+			"which of the two to change:\n%v", err)
+	}
+
+	// A SIBLING of the root that merely shares its string prefix must not
+	// count as containing the engine: the check is an ancestor test, not
+	// strings.HasPrefix on the bare value.
+	t.Setenv("SNUG_PODMAN_ROOT", root)
+	if _, err := preflightToolchainRoot(root + "-other/bin/podman"); err == nil {
+		t.Errorf("an engine at %s-other/bin/podman was accepted as living inside %s", root, root)
+	}
+
+	// RELATIVE: refused. snug resolves this before the sandbox exists, so a
+	// relative root means one thing here and another to every process that
+	// reads it later.
+	t.Setenv("SNUG_PODMAN_ROOT", "relative/root")
+	if _, err := preflightToolchainRoot(podman); err == nil {
+		t.Error("a relative $SNUG_PODMAN_ROOT was accepted")
+	}
+
+	// NOT A DIRECTORY: refused. It names a tree, not a file.
+	t.Setenv("SNUG_PODMAN_ROOT", podman)
+	if _, err := preflightToolchainRoot(podman); err == nil {
+		t.Error("a $SNUG_PODMAN_ROOT naming a FILE was accepted")
 	}
 }

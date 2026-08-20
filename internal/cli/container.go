@@ -89,7 +89,7 @@ type containerRun struct {
 // file's own doc comment for why, and what covers it instead (__inengine's
 // own mount call, which still refuses loudly, just one step later than the
 // design's own probe would).
-func startContainers(pol *policy.Policy, verbose, dryRun bool) (containerRun, error) {
+func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun bool) (containerRun, error) {
 	if pol.Podman == policy.PodmanOff {
 		return containerRun{cleanup: func() {}}, nil
 	}
@@ -139,6 +139,21 @@ func startContainers(pol *policy.Policy, verbose, dryRun bool) (containerRun, er
 	}
 
 	warnAboutPodmanClient()
+
+	// P9's answer into the policy, through the policy's own single writer.
+	// Recorded HERE — after preflight resolved it and before anything is
+	// created — because it is G4's third source and G4 runs when a graft is
+	// installed, which for Tier C is after Resolve and before the stage
+	// exists. Empty is the ordinary case (an engine the sandbox's own grants
+	// already expose) and records nothing: EngineToolchain refuses "" rather
+	// than treating it as a clear, so the emptiness is handled here, once,
+	// instead of inside a writer whose contract would then depend on the
+	// value it is handed.
+	if pf.ToolchainRoot != "" {
+		if err := pol.EngineToolchain(env, pf.ToolchainRoot); err != nil {
+			return containerRun{}, err
+		}
+	}
 
 	// P7 said the engine's own /etc/resolv.conf cannot be replaced on this
 	// host. Said HERE, before anything starts, rather than left to

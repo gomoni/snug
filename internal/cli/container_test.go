@@ -90,7 +90,7 @@ func TestStartContainersRefusesNetHostPlusPodman(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 
 	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@net-host", "@podman-socket"})
-	_, err := startContainers(p, false, false)
+	_, err := startContainers(policy.OSEnviron{}, p, false, false)
 	if err == nil {
 		t.Fatal("startContainers accepted @net-host + @podman-socket; the container engine has " +
 			"no sandbox network namespace to join under @net-host")
@@ -108,7 +108,7 @@ func TestStartContainersOffPodmanIsANoop(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 
 	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw"})
-	ctr, err := startContainers(p, false, false)
+	ctr, err := startContainers(policy.OSEnviron{}, p, false, false)
 	if err != nil {
 		t.Fatalf("startContainers refused a policy with no container profile: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestStartContainersDryRunNeedsNoHostCapability(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 
 	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@podman-socket"})
-	ctr, err := startContainers(p, false, true)
+	ctr, err := startContainers(policy.OSEnviron{}, p, false, true)
 	if err != nil {
 		t.Fatalf("startContainers(dryRun=true) refused a podman-selected policy: %v", err)
 	}

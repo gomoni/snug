@@ -279,6 +279,39 @@ type Policy struct {
 	// correct, honest answer for a run that grafts nothing.
 	EngineOwnedHostPaths map[string]bool
 
+	// EngineToolchainRoot is G4's THIRD source, and the narrowest of the
+	// three: the one host directory holding the container engine's own
+	// program files — a pinned podman bundle — which the engine must be able
+	// to execute out of AFTER its view stops being a copy of the host's
+	// (issue #125, Tier C). Empty on every topology that ships today, and
+	// empty on any host whose podman is an ordinary distribution one: /usr is
+	// already exposed by @sys, so `/usr/bin/podman` passes G4's FIRST
+	// disjunct and this field is not consulted at all. It exists for exactly
+	// the case where it is needed — an engine deliberately installed outside
+	// every grant the sandbox makes.
+	//
+	// A STRING, not a set, and written ONCE: there is one engine per run, so
+	// a second value is a bug in the caller rather than a second legitimate
+	// toolchain. EngineToolchain (graft.go) is the only writer
+	// (TestOnlyOneWriterOfEngineToolchainRoot) and refuses a second, differing
+	// write.
+	//
+	// EXACT MEMBERSHIP, like EngineOwnedHostPaths and for the same reason: a
+	// graft whose Host IS this path passes, a graft of a SUBDIRECTORY of it
+	// does not. A prefix rule would turn one named directory into a licence
+	// to graft anything under it, and the bundle contains an image store
+	// (var/), a home directory (home/) and a configuration tree (etc/) —
+	// widening this to a prefix would hand the engine's view three things
+	// nobody argued for, without a line saying so.
+	//
+	// READ-ONLY ONLY. checkGraft refuses an AccessRW graft against this
+	// source however exactly it matches. The bundle is the HOST USER's own
+	// installation, not something snug created for this run: a writable graft
+	// of it is a host-write channel out of the engine, and the two other G4
+	// sources both have an owner who can say a write is intended, while this
+	// one does not.
+	EngineToolchainRoot string
+
 	// Env is keyed by EnvVar.Name. It carries structure rather than strings
 	// because provenance per entry is a product requirement, not a debugging
 	// aid — see env.go and ENVIRONMENT-VARIABLES.md §2.8.

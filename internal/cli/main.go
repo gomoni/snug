@@ -447,7 +447,7 @@ func run(cfg config) int {
 	}
 	defer idCleanup()
 
-	ctr, err := startContainers(pol, cfg.verbose, cfg.dryRun)
+	ctr, err := startContainers(env, pol, cfg.verbose, cfg.dryRun)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 		return exitPolicy

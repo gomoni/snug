@@ -52,6 +52,11 @@ type containerPreflight struct {
 	// entirely), non-nil when snug's generated policy.json is WEAKER than
 	// what this host configured. Not fatal — see preflightSignaturePolicy.
 	SignaturePolicy *signaturePolicyNotice
+
+	// ToolchainRoot is P9's answer: the one host directory holding the
+	// engine's own program files, or "" when this host names none. Empty is
+	// the ordinary case and is not a failure — see preflightToolchainRoot.
+	ToolchainRoot string
 }
 
 func runContainerPreflight() (containerPreflight, error) {
@@ -67,12 +72,86 @@ func runContainerPreflight() (containerPreflight, error) {
 			"subgid range and could not get one: %w", err)
 	}
 	cgroupsDisabled := preflightCgroupsWritable()
+	toolchainRoot, err := preflightToolchainRoot(podman)
+	if err != nil {
+		return containerPreflight{}, err
+	}
 	return containerPreflight{
 		Podman:          podman,
 		CgroupsDisabled: cgroupsDisabled,
 		ResolvConfBind:  preflightResolvConfBind(),
 		SignaturePolicy: preflightSignaturePolicy(),
+		ToolchainRoot:   toolchainRoot,
 	}, nil
+}
+
+// preflightToolchainRoot is P9: which host directory the engine's own program
+// files live in, for Tier C's derived view (issue #125).
+//
+// WHY THIS EXISTS AT ALL. Today the engine runs in the stage's private copy of
+// the HOST tree, so a podman anywhere on the host is reachable. Under the
+// derived view it is not: the engine's view becomes the SANDBOX's plus a
+// handful of grafts, and a binary the sandbox's own grants do not expose has
+// to be one of them. G4 will not admit a graft of a path nobody named, which
+// is the point of G4 — so somebody has to name it, once, before the run.
+//
+// WHY IT IS USUALLY EMPTY, and why empty is not a failure. An ordinary
+// distribution podman lives in /usr/bin, and @sys already binds the OS
+// runtime, so `/usr/bin/podman` passes G4's FIRST disjunct — the sandbox can
+// see it — and there is nothing for this to record. Empty is the answer for
+// every host that has not deliberately installed an engine outside every
+// grant.
+//
+// WHY IT IS NAMED RATHER THAN DERIVED, which is the decision in this function.
+// A bundle root is NOT recoverable from the binary path: this host's pinned
+// bundle keeps podman at $ROOT/usr/local/bin/podman, others keep it at
+// $ROOT/bin/podman, and a distribution podman has no bundle at all — so any
+// "walk up N directories" rule is a guess that is wrong on some real layout,
+// and grafting one directory too high hands the engine's view a tree nobody
+// argued for. $SNUG_PODMAN_ROOT is not invented here either: the pinned
+// bundle's OWN wrapper (bin/snug-podman, .claude/design/PODMAN-STATIC.md)
+// already reads that exact variable, so this adopts the vocabulary the
+// bundle already speaks rather than adding a second one beside it.
+//
+// The one check it makes is the one that can be made: the resolved engine
+// binary must be INSIDE the named root. A root that does not contain the
+// binary is a misconfiguration whose symptom would otherwise be an engine
+// that cannot exec, and naming it here costs one stat.
+func preflightToolchainRoot(podman string) (string, error) {
+	root := os.Getenv("SNUG_PODMAN_ROOT")
+	if root == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(root) {
+		return "", fmt.Errorf("$SNUG_PODMAN_ROOT=%s is not an absolute path.\n"+
+			"      It names the host directory the container engine's program files live in, and\n"+
+			"      snug resolves it before the sandbox exists — a relative path here would be\n"+
+			"      resolved against snug's own working directory and mean something else to every\n"+
+			"      other process that reads it.", root)
+	}
+	fi, err := os.Stat(root)
+	if err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("$SNUG_PODMAN_ROOT=%s is not a directory on this host.\n"+
+			"      It must name the ROOT of the engine's own installation — the directory that\n"+
+			"      contains its binary, its helpers and its configuration — because that whole\n"+
+			"      tree is what the engine gets to see once its view stops being a copy of the\n"+
+			"      host's.", root)
+	}
+	if !filepath.IsAbs(podman) {
+		return "", fmt.Errorf("$SNUG_PODMAN_ROOT is set but the engine %q is not an absolute path, "+
+			"so snug cannot check that the engine lives inside the root it was told about.\n"+
+			"      Set $SNUG_PODMAN to an absolute path.", podman)
+	}
+	if podman != root && !strings.HasPrefix(podman, root+string(filepath.Separator)) {
+		return "", fmt.Errorf("$SNUG_PODMAN_ROOT=%s does not contain the engine snug resolved (%s).\n"+
+			"      The root is what the engine will be able to execute out of once its view is\n"+
+			"      derived from the sandbox's, so a root that does not contain the binary is an\n"+
+			"      engine that cannot start — named here rather than as an exec failure later.\n"+
+			"      Fix: point $SNUG_PODMAN_ROOT at the directory the engine really lives under, or\n"+
+			"      unset it if the engine is somewhere the sandbox's own profiles already grant.",
+			root, podman)
+	}
+	return root, nil
 }
 
 // maxSignaturePolicyBytes bounds what P8 reads. A signature policy is a small
