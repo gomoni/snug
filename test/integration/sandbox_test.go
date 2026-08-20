@@ -3121,9 +3121,7 @@ func TestPodmanBuildIsFilteredEndToEnd(t *testing.T) {
 
 	proj, _ := target(t)
 
-	if err := os.WriteFile(filepath.Join(proj, "probe.py"), []byte(buildProbe), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeBuildProbe(t, proj)
 
 	r := run(t, []string{"-p", "@podman-build", "-p", "@net"}, proj, `python3 probe.py`).mustRun(t)
 
@@ -3157,9 +3155,61 @@ func TestPodmanBuildIsFilteredEndToEnd(t *testing.T) {
 	}
 }
 
+// writeBuildProbe puts the build probe and the binary its Dockerfile copies
+// into a target directory. Both, always: the script tars "marker" from its own
+// working directory, so writing probe.py alone produces a probe that fails on
+// its first open() with an error about a missing file rather than anything to
+// do with what it was measuring.
+func writeBuildProbe(t *testing.T, proj string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(proj, "probe.py"), []byte(buildProbe), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "marker"), mustRead(t, buildMarkerBin(t)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// buildMarkerBin builds testdata/buildmarker the way holderBin builds its own
+// binary: statically (CGO_ENABLED=0), because it is about to be the ENTIRE
+// contents of a FROM-scratch image and there is no dynamic loader in there to
+// find a libc with.
+func buildMarkerBin(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "marker")
+	cmd := exec.Command("go", "build", "-o", bin, "./testdata/buildmarker")
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	var out strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("building test/integration/testdata/buildmarker: %v: %s", err, out.String())
+	}
+	return bin
+}
+
 // buildProbe posts context tars to $CONTAINER_HOST with the query parameters a
 // real `podman build` sends, one per case. The parameter sets are the ones
 // recorded from podman 5.8.3; see internal/dockerproxy/build_test.go.
+//
+// IT NEEDS NO REGISTRY, and that is issue #235 rather than tidiness. It used to
+// build `FROM docker.io/library/alpine:3.20`, so this probe — and
+// requireRealEngine, which gates sixteen more tests — depended on an anonymous
+// Docker Hub pull. When Docker Hub refuses one, and it does
+// ("toomanyrequests: You have reached your unauthenticated pull rate limit",
+// measured on a development host), the build never starts, the probe never
+// finishes, and the test reports a 30-second timeout that names no registry.
+// Four separate diagnoses of that failure blamed something else, twice with
+// the correction already committed in this file.
+//
+// `FROM scratch` plus one static binary needs neither a registry nor egress —
+// the same trade holder's doc comment already records for a container that has
+// to keep RUNNING. The shell was the only thing lost, and the EXEC form of RUN
+// does not need one: `RUN ["/marker"]` runs testdata/buildmarker directly and
+// its stdout lands in the build output exactly where `echo`'s did (measured
+// with podman 5.x before it was written here). Callers use writeBuildProbe,
+// which puts both files in place — the script alone is no longer enough.
 const buildProbe = `import http.client, socket, os, tarfile, io, urllib.parse
 
 class UnixHTTP(http.client.HTTPConnection):
@@ -3175,25 +3225,28 @@ sock = os.environ["CONTAINER_HOST"].replace("unix://", "")
 
 buf = io.BytesIO()
 with tarfile.open(fileobj=buf, mode="w") as tf:
-    # A FULLY QUALIFIED reference, not the bare "alpine" this used to say.
-    # MEASURED (issue #63, Tier B, sandbox-tester): with a short name,
-    # containers/image resolves it through registries.conf's short-name-alias
-    # cache, and — because __inengine's own process reports euid 0
-    # (root-in-U, not "really" root on this host) — that code picks the
-    # SYSTEM cache path (/var/cache/containers) over the user one, which the
-    # real host uid cannot write to: "creating build container: mkdir
-    # /var/cache/containers: permission denied". The build itself still
-    # returns 200 (STEP 1/2 succeeded before the failure), so this is exactly
-    # the "200 but BUILT-INSIDE-SNUG never appears" shape probeRealEngine's
-    # own doc comment (containerengine_test.go) attributed to cgroup
-    # delegation — that diagnosis was WRONG; the private-cgroup-namespace
-    # remount warning is a harmless red herring that happens to appear right
-    # next to the real failure. A fully qualified name skips short-name
-    # resolution entirely, so this never runs regardless of euid.
-    data = b"FROM docker.io/library/alpine:3.20\nRUN echo BUILT-INSIDE-SNUG\n"
+    # FROM scratch, not a registry reference. The build has to PROVE it ran a
+    # step, which is what BUILT-INSIDE-SNUG is for, and a shell was the obvious
+    # way to print it — at the cost of a base image, an anonymous pull, and a
+    # 30-second silent hang whenever the registry says no (issue #235). The
+    # exec form of RUN needs no shell: it runs the copied binary directly.
+    #
+    # The old comment here recorded a second reason the reference had to be
+    # FULLY QUALIFIED — a short name goes through registries.conf's
+    # short-name-alias cache, and __inengine reports euid 0, so containers/image
+    # picks the SYSTEM cache path (/var/cache/containers) that the real host uid
+    # cannot write to. That whole failure mode is gone with the registry: there
+    # is no name to resolve.
+    data = b"FROM scratch\nCOPY marker /marker\nRUN [\"/marker\"]\n"
     ti = tarfile.TarInfo("Dockerfile")
     ti.size = len(data)
     tf.addfile(ti, io.BytesIO(data))
+    with open("marker", "rb") as f:
+        binary = f.read()
+    tb = tarfile.TarInfo("marker")
+    tb.size = len(binary)
+    tb.mode = 0o755
+    tf.addfile(tb, io.BytesIO(binary))
 ctx = buf.getvalue()
 
 BASE = {"dockerfile": '["Dockerfile"]', "t": "snugtest:1", "output": "snugtest:1",
@@ -3212,6 +3265,14 @@ def build(label, extra):
     print("%s: %d" % (label, r.status), flush=True)
     if "BUILT-INSIDE-SNUG" in body:
         print("BUILT-INSIDE-SNUG", flush=True)
+    elif label == "ordinary build":
+        # SAY WHAT WENT WRONG. The build's own answer carries the reason — a
+        # registry refusing a pull, a step exiting non-zero, a mount denied —
+        # and throwing it away is what turned every such failure into "the
+        # probe did not finish in 30s", a message naming nothing. Four wrong
+        # diagnoses came out of that silence (issue #235). Only the control
+        # case prints it: a refusal is the expected outcome for the others.
+        print("ORDINARY-BUILD-FAILED: %s" % body[-800:].replace("\n", " | "), flush=True)
 
 # nocache on the control, deliberately: with a warm layer cache podman prints
 # "Using cache" and the RUN step's own output never appears, so the
