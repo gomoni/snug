@@ -154,8 +154,12 @@ facts loaded** — that is the trade this split makes. Read the relevant agent f
 first, or delegate to the agent that owns it.
 
 - `bwrap` 0.11.2, `pasta` (passt) 20260612, Go 1.26. No `slirp4netns`.
-- Development happens *inside* a rootless-podman distrobox. Nested userns, netns
-  creation, pasta attach, egress and DNS all work there.
+- **Development SHOULD happen inside a rootless-podman distrobox** — a
+  requirement, not an observation of where it happens to run. Nested userns,
+  netns creation, pasta attach, egress and DNS all work there, so nothing about
+  snug needs the bare host; and the two host-damage incidents of 2026-08-19 both
+  came from a shell that was on the host. Verified there: `bwrap` 0.11.2,
+  `pasta` (passt) 20260612, Go 1.26, no `slirp4netns`.
 - **Never trust a helper's default, in either direction.** Pass every
   security-relevant flag explicitly even when it matches the current default, and
   assert the *behaviour* in an integration test. The live case is pasta, where
