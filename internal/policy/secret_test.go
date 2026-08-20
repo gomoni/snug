@@ -321,20 +321,46 @@ type unexportedHolder struct {
 // unexportedsecretfield_test.go to assert, rather than "any reachability at
 // all".
 //
-// One caveat, found while writing this test and worth recording rather than
-// quietly working around: the pointer safety above holds for %v/%+v/%#v/%d/%x
-// — every verb this file's sweep actually cares about — but NOT for a verb
-// that is invalid for the pointee's own type. `fmt.Sprintf("%s",
-// pointerHolder{&m})` (measured, not included in the table below) prints
-// `{%!s(*policy.Mount=&{[... raw bytes ...]})}` — fmt's bad-verb fallback
+// One caveat, and it is now IN the table below rather than only described here
+// (issue #56). The pointer safety above holds for %v/%+v/%#v/%d/%x, but NOT for
+// a verb that is invalid for the pointee's own type: fmt's bad-verb fallback
 // formats the mismatched value with its own internal renderer, which walks
-// straight through the pointer and does NOT consult CanInterface() either, so
+// straight through the pointer and does NOT consult CanInterface() either. So
 // the same "%s where a %d-shaped verb was expected" trick that leaks %d-typed
-// bytes elsewhere in this file also defeats the pointer boundary. That is a
-// second, independent fmt gap — it is not specific to Secret (it would leak
-// any pointee's fields under a mismatched verb) and it is not one of the two
-// gaps this pair of tests was asked to close, so it is named here rather than
-// silently asserted safe or silently left for someone to trip over.
+// bytes elsewhere in this file also defeats the pointer boundary. It is not
+// specific to Secret — it would expose any pointee's fields under a mismatched
+// verb.
+//
+// MEASURED ON go1.26.5, ALL SEVEN VERBS, because "a %s leaks" is not the same
+// claim as "the pointer boundary is gone":
+//
+//	%v %+v %#v %d %x   bare address, no leak — the boundary holds
+//	%s %q              {%!s(*policy.Mount=&{/g 5 … [115 107 45 …] …})}
+//
+// THE TRAP FOR WHOEVER RE-MEASURES THIS: the leak is the DECIMAL BYTE FORM, not
+// ASCII. `strings.Contains(out, secretNeedle)` returns FALSE on that output and
+// reads as "safe" — the bytes [115 107 45 97 …] spell the needle exactly.
+// secretNeedleEncodings() already carries fmt.Sprintf("%d", b) for precisely
+// this reason, which is why the rows below fire; a hand-rolled check that looks
+// only for the raw string will conclude the opposite.
+//
+// WHY THIS IS RECORDED RATHER THAN GUARDED, and why the other two options on
+// issue #56 were declined:
+//
+//   - "Make the AST sweep flag pointer-to-Secret-bearing types under unexported
+//     fields, and exempt dockerproxy." Declined: it starts the allowlist #51
+//     deliberately avoided, and it would flag the one shipped field that is
+//     correct today.
+//   - "Assert that no format string in the tree applies a string-shaped verb to
+//     such a struct." Declined because `go vet` ALREADY DOES IT, measured rather
+//     than assumed — a literal fmt.Sprintf("%s", pointerHolder{&m}) fails
+//     `go vet ./internal/policy/` with "format %s has arg ph of wrong type", and
+//     `go vet ./...` is the first thing `make gate` runs. Re-implementing that in
+//     an AST sweep would duplicate a check that already gates every commit.
+//
+// What neither vet nor a sweep catches is a COMPUTED format string, which is the
+// residual this table exists to hold: the leak is real, nothing in this package
+// can close it, and the day fmt's fallback changes these rows go red and say so.
 type pointerHolder struct{ m *Mount }
 
 // unexportedSecretLeakSinks is deliberately a SEPARATE table from
@@ -354,6 +380,7 @@ func unexportedSecretLeakSinks(content Secret) map[string]string {
 	mh := mountHolder{m: m}
 	rbv := runByValue{name: "r", pol: Policy{Mounts: map[string]Mount{"/g": m}}}
 	uh := unexportedHolder{name: "n", secret: content}
+	ph := pointerHolder{m: &Mount{Guest: "/generated", Kind: KindData, Content: content}}
 
 	// Format strings are built at runtime, exactly as secretSinks does above
 	// and for the identical reason: `go vet`'s printf checker refuses a
@@ -363,7 +390,7 @@ func unexportedSecretLeakSinks(content Secret) map[string]string {
 	// reaching it). A variable format string sidesteps the check without
 	// hiding anything: this is not a synthetic dodge, it is the same
 	// resolution the shipped table already uses.
-	verbPlusV, verbD, verbX, verbS := "%+v", "%d", "%x", "%s"
+	verbPlusV, verbD, verbX, verbS, verbQ := "%+v", "%d", "%x", "%s", "%q"
 
 	return map[string]string{
 		"Sprintf(%+v, mountHolder)":     fmt.Sprintf(verbPlusV, mh),
@@ -373,6 +400,11 @@ func unexportedSecretLeakSinks(content Secret) map[string]string {
 		"Sprintf(%d, runByValue)":       fmt.Sprintf(verbD, rbv),
 		"Sprintf(%s, unexportedHolder)": fmt.Sprintf(verbS, uh),
 		"Sprintf(%x, unexportedHolder)": fmt.Sprintf(verbX, uh),
+		// ISSUE #56 — the bad-verb fallback walks THROUGH the pointer. These two
+		// are the rows that make the pointerHolder caveat above a measurement the
+		// suite re-runs rather than a sentence somebody has to believe.
+		"Sprintf(%s, pointerHolder)": fmt.Sprintf(verbS, ph),
+		"Sprintf(%q, pointerHolder)": fmt.Sprintf(verbQ, ph),
 	}
 }
 
@@ -393,6 +425,22 @@ func TestFmtLeaksASecretBehindAnUnexportedFieldKnownLimit(t *testing.T) {
 
 	if len(names) == 0 {
 		t.Fatal("unexportedSecretLeakSinks returned nothing to check")
+	}
+
+	// The #56 rows are the reason this table grew, and a table asserted to LEAK
+	// cannot notice one of its own rows going missing — deleting a row simply
+	// asserts one fewer thing, which mutation testing confirmed survives the
+	// suite. So their PRESENCE is asserted, not just their behaviour. Without
+	// this, the measurement #56 exists to record is one tidy-up away from being
+	// prose again.
+	for _, required := range []string{"Sprintf(%s, pointerHolder)", "Sprintf(%q, pointerHolder)"} {
+		if _, ok := sinks[required]; !ok {
+			t.Errorf("%s is missing from unexportedSecretLeakSinks. It is the measured record "+
+				"that fmt's bad-verb fallback walks THROUGH a pointer under an unexported "+
+				"field (issue #56), which is the one case where the pointer boundary the "+
+				"reflect sweep relies on does not hold. Removing it does not make the leak "+
+				"go away, it makes the suite stop noticing if it ever changes", required)
+		}
 	}
 
 	for _, name := range names {
