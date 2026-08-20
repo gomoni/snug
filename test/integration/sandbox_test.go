@@ -80,6 +80,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -339,25 +340,100 @@ func requirePython(t *testing.T) {
 	}
 }
 
-// requireInternet gates the tests that reach the public internet. Whether
-// outbound traffic is acceptable is a policy of the machine running the suite
-// rather than a capability it either has or lacks, so on a laptop this is a
-// plain skip.
+// internetHost and internetPort are the one endpoint this suite means by "the
+// internet". A single named endpoint rather than one per test, so that the
+// host-side control and the sandbox-side assertion can be the SAME address:
+// a container that cannot reach it while the host just did is a snug failure,
+// and nothing else.
 //
-// Under SNUG_REQUIRE_SANDBOX it is a failure, because otherwise dropping
-// SNUG_TEST_NET from the CI workflow would silently delete the egress coverage —
-// exactly the "green run that checked nothing" this suite exists to prevent.
+// tcp4, deliberately. The probe run inside a container dials an IPv4 literal
+// (testdata/egressprobe), and a v4 control for a v4 assertion is the only pair
+// that cannot disagree about which family the host actually has.
+const (
+	internetHost = "example.com"
+	internetPort = "443"
+)
+
+var (
+	internetOnce sync.Once
+	internetIP   string
+	internetErr  error
+)
+
+// requireInternet gates the tests that reach the public internet, on TWO
+// separate things — and until issue #235 it checked only the first.
+//
+//  1. Whether outbound traffic is ACCEPTABLE is a policy of the machine
+//     running the suite rather than a capability it either has or lacks, so on
+//     a laptop a missing SNUG_TEST_NET is a plain skip. Under
+//     SNUG_REQUIRE_SANDBOX it is a failure, because otherwise dropping
+//     SNUG_TEST_NET from the CI workflow would silently delete the egress
+//     coverage — exactly the "green run that checked nothing" this suite
+//     exists to prevent.
+//
+//  2. Whether the internet is actually REACHABLE from this host. This gate
+//     named the internet and measured nothing, which is the "documented but
+//     not implemented" shape CLAUDE.md warns about, and it is how issue #235
+//     cost four wrong diagnoses: when the far end refused, no test said so.
+//     Every test past this point then failed — or, worse, silently ate its
+//     whole budget — with a message naming a subsystem that was working. One
+//     dial, once, five seconds, and the endpoint is NAMED in the failure.
+//
+// The measurement is memoized across the suite: it is one TCP connect, but
+// running it per test would make a network outage cost one five-second stall
+// for every test that mentions the network.
 func requireInternet(t *testing.T) {
 	t.Helper()
-	if os.Getenv("SNUG_TEST_NET") != "" {
+	if os.Getenv("SNUG_TEST_NET") == "" {
+		if os.Getenv("SNUG_REQUIRE_SANDBOX") != "" {
+			t.Fatal("SNUG_REQUIRE_SANDBOX is set but SNUG_TEST_NET is not: " +
+				"set SNUG_TEST_NET=1 to allow the tests that reach the internet, " +
+				"or unset SNUG_REQUIRE_SANDBOX to let them skip")
+		}
+		t.Skip("SKIP: set SNUG_TEST_NET=1 to allow tests that reach the internet")
+	}
+
+	internetOnce.Do(func() { internetIP, internetErr = probeInternet() })
+	if internetErr == nil {
 		return
 	}
+	msg := fmt.Sprintf("this HOST cannot reach %s:%s (tcp4): %v — nothing below this line "+
+		"is a statement about snug", internetHost, internetPort, internetErr)
 	if os.Getenv("SNUG_REQUIRE_SANDBOX") != "" {
-		t.Fatal("SNUG_REQUIRE_SANDBOX is set but SNUG_TEST_NET is not: " +
-			"set SNUG_TEST_NET=1 to allow the tests that reach the internet, " +
-			"or unset SNUG_REQUIRE_SANDBOX to let them skip")
+		t.Fatal(msg)
 	}
-	t.Skip("SKIP: set SNUG_TEST_NET=1 to allow tests that reach the internet")
+	t.Skip("SKIP: " + msg)
+}
+
+// probeInternet dials internetHost:internetPort and reports the address that
+// answered. The timeout is short on purpose: a host with no route produces a
+// named failure in seconds rather than a per-test budget expiring in silence.
+func probeInternet() (string, error) {
+	d := net.Dialer{Timeout: 5 * time.Second}
+	c, err := d.Dial("tcp4", net.JoinHostPort(internetHost, internetPort))
+	if err != nil {
+		return "", err
+	}
+	defer c.Close()
+	ip, _, err := net.SplitHostPort(c.RemoteAddr().String())
+	if err != nil {
+		return "", err
+	}
+	return ip, nil
+}
+
+// internetTarget is requireInternet plus the ADDRESS that answered, for the
+// tests that have to hand a reachable address to a payload which cannot
+// resolve a name of its own — a container built FROM scratch, in
+// TestContainerEgressFollowsNetProfile.
+//
+// Handing over the resolved literal rather than the name is what makes the
+// sandbox-side result unambiguous: the host resolved and connected first, so a
+// REFUSED inside the sandbox is a routing answer and cannot be a DNS answer.
+func internetTarget(t *testing.T) string {
+	t.Helper()
+	requireInternet(t)
+	return net.JoinHostPort(internetIP, internetPort)
 }
 
 // ── plumbing ────────────────────────────────────────────────────────────────
@@ -3105,7 +3181,11 @@ func TestPodmanBuildIsFilteredEndToEnd(t *testing.T) {
 	requireSandbox(t)
 	requireEngine(t)
 	requirePython(t)
-	requireInternet(t) // the build pulls alpine
+	// No requireInternet, and its absence is the point: this test used to
+	// carry `requireInternet(t) // the build pulls alpine`, and since #241
+	// the build probe is FROM scratch with a static binary copied in, so it
+	// contacts no registry and needs no egress at all. A gate whose stated
+	// reason has stopped being true is how folklore starts (issue #235).
 	// requireRealEngine (containerengine_test.go) is the fix for this test
 	// FAILING outright on a CI runner instead of skipping: requireEngine
 	// above only proves a `podman` binary is on PATH, and a GitHub-hosted
