@@ -440,234 +440,126 @@ meant. It cannot prove the sandbox holds.
 
 ## Decisions made
 
-- **One vocabulary: `profile`.** Grants live in profiles and nowhere else. The
-  CLI says the same word the config says: `-p/--profile`, `snug profile list`,
-  `snug profile show NAME`. No second noun for the same concept.
-- **`@` marks a profile snug ships, and the mark is derived, not written.**
-  `@sys`, `@net`, `@claude`; a profile in `~/.config/snug/profiles.d` has no
-  mark, and `checkName` refuses one. The point is provenance: `--dry-run`, a
-  `Validate` error and `$SNUG_PROFILES` all render a profile name, and a bare
-  name could not tell you whether the grant was snug's or something a file on
-  this host defined — you had to go and look.
+Settled, with the reasoning in the document that owns each subject. **Re-opening
+one of these is a maintainer decision, not a refactor** — that is the whole point
+of the list. Where a line states a *rule* rather than a preference, breaking it
+by hand is possible and the consequence is a security regression, so those are
+stated in full.
 
-  Two properties, structural rather than checked. `profile.mark` (reached from
-  `profile.Builtins()`) adds the sigil and is the ONLY code that does, while
-  `checkName` refuses a leading `@` in
-  **every** file it parses — `base.toml` included, which is why the builtins are
-  written there under bare names. So a builtin cannot forget the mark and a user
-  profile cannot borrow it. And the namespaces cannot collide: a user file
-  defining `sys` defines their own profile, so "a config file could quietly
-  change what `sys` means" **stops being a thing `merge` has to prevent** — do
-  not remove `checkName`'s guard on the belief that `merge` covers it. That
-  matters most where invariant 3 is weakest — `$XDG_CONFIG_HOME` is trusted unconditionally, and a profiles.d
-  loaded from the wrong place still cannot impersonate `@sys`.
+**Vocabulary and CLI.** One noun: `profile`. Grants live in profiles and nowhere
+else, and the CLI says the word the config says (`-p/--profile`, `snug profile
+list|show|tree`). `--dry-run`, never `explain` — the tool does not invent
+vocabulary. The directory is **positional**, not `-C`: it is the thing being
+sandboxed, like `git clone <url>`. Config is TOML, and `DisallowUnknownFields()`
+is **load-bearing** — an unknown key is a fatal parse error, so a negation key
+cannot be smuggled in.
 
-  Consequence: `include` inside a builtin is rewritten with the marks, so a
-  builtin can only ever include another builtin — correct, but a rule rather than
-  an accident (`profile.mark`). snug's own mounts (`/proc`, `/dev`, generated
-  `/etc/resolv.conf`) carry `(snug)`, not `(builtin)`: with `@`-marked builtin
-  profiles on screen, one word meant two things.
-- **`--dry-run`, not `explain`.** It is the conventional name and the tool
-  should not invent vocabulary. What it prints is unchanged: the resolved
-  policy and the exact bwrap command, having started nothing.
-- **`snug config` holds preferences, never grants.** Today that is `defaults` —
-  which profiles a bare `snug <dir>` selects. It names profiles and cannot
-  define one, because a config file able to redefine a builtin could quietly
-  change what `@sys` means.
-- **There is no `default` profile; there is a `defaults` setting.** A default
-  selection is a *preference*, a profile is a *grant*; having both was two
-  mechanisms for one idea, and the empty `[profile.default]` appeared in
-  `SNUG_PROFILES` and in `Mount.From` provenance as though it were a hole. Now:
-  built-in list in `internal/profile/defaults.go`; `defaults = [...]` in
-  config.toml **replaces** it wholesale (merging would make "fewer defaults than
-  snug ships" impossible); `-p` **adds** to what that resolved to;
-  `--no-defaults` declines it. The list is `@sys @home @cwd-rw @parent-ro`, and
-  **`@net` must never join it** — offline is the *absence* of a profile, which is
-  what stops it being switched on by accident. Same reasoning kills `@null`: the
-  floor of the lattice is what `Resolve` computes from an empty selection, not
-  something a file names. `-p @null` errors and names `--no-defaults`.
-- **The directory is positional, not `-C`.** `go -C` and `make -C` mean "go
-  somewhere else, then do the usual thing"; for snug the directory *is* the
-  thing being sandboxed, like `git clone <url>`. Defaults to `.`.
-- **No cgo.** snug builds with `CGO_ENABLED=0` and nothing in it may change
-  that. The full statement, with the measurements, is
-  [`.claude/design/NOCGO.md`](.claude/design/NOCGO.md), and the temptation is
-  concrete: a cgo `__attribute__((constructor))` runs before the Go runtime
-  starts its threads, which is the one clean way to satisfy
-  `setns(CLONE_NEWUSER)`'s single-threaded requirement, in less code. The price
-  is paid elsewhere — a cgo binary is bound to the libc it linked against, so key
-  feature 3 becomes a glibc build *and* a musl build, cross-compiling needs a
-  toolchain per target, and snug re-execs itself through `/proc/self/exe` for the
-  stage, so the binary is a runtime dependency of itself.
+**`@` marks a profile snug ships, and the mark is derived, not written.**
+`profile.mark` (via `profile.Builtins()`) is the ONLY code that adds the sigil,
+and `checkName` refuses a leading `@` in **every** file it parses — `base.toml`
+included, which is why builtins are written there under bare names. So a builtin
+cannot forget the mark and a user profile cannot borrow it. **Do not remove
+`checkName`'s guard on the belief that `merge` covers it:** the namespaces cannot
+collide precisely because a user file defining `sys` defines *their own* profile,
+which is what stops a `profiles.d` loaded from the wrong place impersonating
+`@sys` — and invariant 3 is weakest exactly there. Consequence: `include` inside
+a builtin is rewritten with the marks, so a builtin can only ever include another
+builtin. snug's own mounts carry `(snug)`, not `(builtin)`.
 
-  Affordable because the requirement turned out avoidable: a raw `fork` from a
-  multithreaded Go program yields a child that is single-threaded *and* owns its
-  own `fs_struct` — exactly the two states the kernel checks.
+**`snug config` holds preferences, never grants**, and **there is no `default`
+profile — there is a `defaults` setting.** The list is `@sys @home @cwd-rw
+@parent-ro`; `defaults = [...]` **replaces** it wholesale (merging would make
+"fewer defaults than snug ships" impossible), `-p` adds, `--no-defaults`
+declines. **`@net` must never join it** — offline is the *absence* of a profile,
+which is what stops it being switched on by accident. Same reasoning kills
+`@null`: the floor of the lattice is what `Resolve` computes from an empty
+selection, not something a file names.
 
-  **What that child costs is not editorial care, it is `//go:nosplit`.** The fork
-  child also carries the forking goroutine's `stackguard0`, which the runtime
-  poisons whenever it wants that goroutine preempted, so an ordinary function's
-  PROLOGUE calls `runtime.newstack` before its first statement and asks the
-  scheduler for threads the fork did not copy. Measured: 17 of 40 forks wedged in
-  `futex_do_wait` forever under stop-the-world pressure, 0 of 40 with a nosplit
-  first call, and in the wild two `snug attach` bridges alive hours after their
-  caller died (issue #221, NOCGO.md §3). "Nothing here may ask the Go runtime for
-  anything" is therefore a property of the PRAGMAS, not of the body — the first
-  ordinary call is already a runtime call whatever it says. `internal/attach` is
-  the only raw-fork site; `internal/stage` re-execs and starts a fresh runtime.
-- **Config format is TOML.** Strict decoding with `DisallowUnknownFields()` is
-  load-bearing: an unknown key is a fatal parse error, so a negation key cannot
-  be smuggled in.
-- **ssh identities**: `ssh_mode = "agent-proxy"` — a filtering proxy to the
-  already-unlocked host agent exposing exactly one pinned key. No key material
-  inside, no passphrase prompt, other keys not enumerable. The `[identity]`
-  vocabulary carries over from the previous generation unchanged. What it
-  *cannot* do:
-  restrict what gets signed. That is inherent to every agent forwarder.
-- **`~/.config`**: no blanket bind — it is a credential dump and a persistence
-  vector in one. Only `~/.config/git` by default; anything else is a line the
-  human writes in their own profile.
-- **Claude Code's files**: binary, `settings.json`, skills and plugins read-only;
-  `.credentials.json` staged as a **projection** — `policy.ProjectClaudeCredentials`
-  writes a five-key allowlist, not a copy of the host's file (issue #58). Say
-  projection, not "writable copy": the difference is that a key the host adds
-  later does not arrive inside by default. `~/.claude.json` is **generated,
-  not copied** — three keys, zero host bytes (issue #19). The host's is 62 KB and
-  carries every project path on the machine, org and account UUIDs, `machineID`,
-  `mcpServers` and per-project tool approvals; copying it verbatim was justified
-  as "both files are needed", measured false. Generation rather than removal —
-  and **note that issue #19's own measurement is partly wrong**: without the file
-  there is no login prompt, but there IS onboarding, and it blocks on every run
-  since `$HOME` is a fresh tmpfs. Read that issue with this caveat.
+**No cgo.** `CGO_ENABLED=0`, and nothing may change that —
+[`NOCGO.md`](.claude/design/NOCGO.md) carries the measurements and why
+`setns(CLONE_NEWUSER)`'s single-threaded requirement turned out avoidable. **The
+rule an implementer can break by hand is `//go:nosplit`**, not editorial care: a
+raw-fork child carries the forking goroutine's poisoned `stackguard0`, so an
+ordinary function's *prologue* calls `runtime.newstack` and asks for threads the
+fork did not copy — 17 of 40 forks wedged forever, 0 of 40 with a nosplit first
+call (issue #221). "Nothing here may ask the runtime for anything" is a property
+of the **pragmas**, not the body. `internal/attach` is the only raw-fork site;
+`internal/stage` re-execs and starts a fresh runtime.
 
-  **No staged credential is written back to the host — that channel does not
-  exist**, and the cost is that a token refreshed inside is lost when the sandbox
-  exits. Keep that sentence credential-scoped: the sandbox writes to the host
-  through the target bind by design, and through `@tmp-shared` when selected, so
-  "nothing leaves the sandbox" is false. It previously read "only the credentials
-  file syncs back, and only after structural validation" — describing a design
-  never built, found by a red team sweeping what `@claude` hands over rather than
-  by review. A doc that invents a host-write channel invites someone to reason
-  about a boundary that does not exist. If sync-back is ever built, the
-  structural validation is the load-bearing half: `~/.claude.json` carries MCP
-  config, a natural target for injecting a tool that would run *outside* the
-  sandbox on the next host-side session.
-- **Injected `~/.claude/CLAUDE.md`**: generated per-run from the *actual*
-  resolved policy, so a run whose engine failed to start truthfully reads "no
-  engine". Every sentence in it removes a class of wasted agent turns.
-- **Networking**: private netns per sandbox, egress via pasta, host loopback
-  closed. Offline is the *absence* of the `@net` profile, not a setting — so it
-  cannot be accidentally re-enabled.
+**`/snug` is snug's own guest namespace, and it is a RULE rather than a list.**
+Everything snug needs a path for inside a sandbox lives there. A profile may do
+exactly one thing under it: stage a single executable read-only into
+`/snug/bin`. Anything else is refused. **The rule has two halves and shipped with
+one** — `Validate`'s 4b covers the payload's mounts, while grafts go through G1;
+a writable graft at `/snug/podman.sock` was accepted until G1b stated the graft
+half too (a graft may land inside `/snug` only under `/snug/engine/`). A list
+that grows once per feature is a rule written somewhere it can be forgotten, and
+`/opt/snug` was rejected because **reserving a subtree of a path other people
+have a claim to is a weaker reservation than reserving a name nobody claims.**
+The old location stays **refused** rather than freed: a rename whose old name
+merely stops working is a trap.
 
-  **`@net` runs a second long-lived process, the stage, and that is the cost.**
-  It creates the netns, pins it, *leaves* it, and forks bwrap back in through a
-  `setns` shim, which is what lets the container engine share that namespace.
-  The price is on screen in `--dry-run`: the sandbox's user namespace has a
-  **privileged ancestor for the whole run**, so a userns-escape bug is worth
-  more than it was. Measured to give the payload no new reach and to widen no
-  host surface — a same-uid host process already reaches that authority without
-  a stage, via `NS_GET_USERNS` on the sandbox's own namespace descriptors.
-  Offline and `@net-host` (the `--i-know` path) take the single-process path.
+**Identity and credentials** — [`SECRETS.md`](.claude/design/SECRETS.md),
+[`GIT-CONFIG.md`](.claude/design/GIT-CONFIG.md),
+[`CLAUDE-SETTINGS.md`](.claude/design/CLAUDE-SETTINGS.md),
+[`GENERATED-CONFIG.md`](.claude/design/GENERATED-CONFIG.md) own the subjects.
+`ssh_mode = "agent-proxy"`: a filtering proxy to the already-unlocked host agent
+exposing one pinned key — no key material inside, other keys not enumerable, and
+it **cannot restrict what gets signed**, which is inherent to every agent
+forwarder. `~/.config` gets **no blanket bind** (a credential dump and a
+persistence vector in one); only `~/.config/git`. Claude Code's files are
+read-only, `.credentials.json` is a five-key **projection** and `~/.claude.json`
+is **generated** — three keys, zero host bytes.
 
-  *Containers included, now that Tier B has landed (issue #63).* A container
-  runs in the sandbox's own network namespace, so `@podman-socket` without
-  `@net` is genuinely offline and `--dry-run` says so truthfully. Selecting a
-  container engine starts a stage and delegates the full subuid range even
-  offline — a real cost the TOPOLOGY block states — and a container's egress
-  follows the sandbox's exactly: with `@net` the whole internet, without it
-  nothing; it publishes no port onto any loopback the sandbox does not already
-  own, because the engine holds no `CAP_NET_ADMIN`. The engine is forked into
-  that netns by the stage (`internal/stage`'s `start` request and `__inengine`),
-  its own capabilities dropped to `policy.EngineCapBounding`. There is no
-  `startengine` request: it was folded into `start` so that `start` stays
-  terminal and the stage is never handed a pid it must trust (issue #125).
-  `TestPodmanSocketDoesNotImplyEgress` and `TestPodmanSelectsAStage` are what
-  keep this true; the mount view is still a private copy enforced by the proxy
-  bind filter, which Tier C (#125) makes structural.
+**No staged credential is written back to the host — that channel does not
+exist.** Keep the sentence credential-scoped: the sandbox writes to the host
+through the target bind by design and through `@tmp-shared` when selected, so
+"nothing leaves the sandbox" is false. If sync-back is ever built, structural
+validation is the load-bearing half — `~/.claude.json` carries MCP config, a
+natural target for injecting a tool that runs *outside* the sandbox on the next
+host-side session.
 
-  **The pid row has moved and the sentence "pid is the host's" is now false
-  wherever it appears**: Tier C's C0 piece gave the engine `CLONE_NEWPID` and a
-  procfs bound to it (`internal/stage/enginefork.go`). Two consequences follow
-  and both are tracked rather than folded in — the pids libpod records in the
-  runroot are numbered in the **engine's** namespace, so no host-side caller may
-  read them as host pids (issue #167, fixed by deleting the caller); and a
-  container now gets the kernel's `SIGKILL` at pid-namespace collapse, **never a
-  graceful `SIGTERM`** (issue #174, open). If graceful stop ever returns, it
-  comes through the engine's **own socket**, where recorded pids are numbered in
-  the namespace doing the killing — never a host-side CLI again. Host→sandbox port publishing is off by
-  default and scoped to `127.0.0.1` when enabled: with `-t auto` the *agent*
-  would choose which host loopback ports appear, which inverts the guiding
-  principle. See INDEX §4.6 — this is the decision most likely to be revisited.
-- **GUI, audio and D-Bus passthrough are out of scope deliberately** (Wayland,
-  PulseAudio, X11, and the bus itself). No profile ships. A filtering proxy that
-  is 95% correct is a sandbox that is 0% sound. The private netns excludes them
-  by construction — **a property to keep, not a gap to close** — so do not add a
-  profile for any of them without a decision to reopen this.
+**Injected `~/.claude/CLAUDE.md`** is generated per-run from the *actual*
+resolved policy, so a run whose engine failed to start truthfully reads "no
+engine".
 
-- **`/snug` is snug's own guest namespace, and it is a RULE rather than a list.**
-  Everything snug needs a path for *inside* a sandbox lives there — `/snug/bin`
-  (the staging directory), `/snug/podman.sock`, `/snug/ssh-agent.sock`, and
-  `/snug/engine` when Tier C lands. A profile may do exactly one thing under it:
-  stage a single executable read-only into `/snug/bin`. Anything else — a tmpfs,
-  a writable bind, a mount at one of the directories snug creates — is refused.
+**Networking** — [`ENGINE-NETNS.md`](.claude/design/ENGINE-NETNS.md),
+[`TIER-B.md`](.claude/design/TIER-B.md) and INDEX §4 own it. Private netns per
+sandbox, egress via pasta, host loopback closed; **offline is the absence of
+`@net`, not a setting**, so it cannot be accidentally re-enabled. Containers run
+in the sandbox's own netns since Tier B, so `@podman-socket` without `@net` is
+genuinely offline; a container's egress follows the sandbox's exactly, and it
+publishes no port onto any loopback the sandbox does not already own, because
+the engine holds no `CAP_NET_ADMIN`. Host→sandbox publishing is off by default
+and scoped to `127.0.0.1` when enabled — with `-t auto` the *agent* would choose
+which host ports appear, inverting the guiding principle (INDEX §4.6, the
+decision most likely to be revisited).
 
-  *Why a namespace and not more entries in `snugsOwn`.* That map held three
-  paths, and the third was there for a reason the other two do not share:
-  nothing is mounted at the staging directory, so a profile mounting **anything**
-  there is a separate mount `--remount-ro /` does not reach inside, and the
-  directory snug relied on being unwritable becomes writable — measured, issue
-  #22: WROTE-OK, `command -v git` resolved to it, and the shadowed git RAN. That
-  reason applies unchanged to every path snug will ever own, and Tier C alone
-  would have added four. **A list that grows once per feature is a rule written
-  somewhere it can be forgotten.** `snugsOwn` asks *does this grant swallow a
-  node snug placed* (an ancestor test); the namespace rule asks *is this grant
-  inside snug's namespace at all*, which is what catches a path snug has not
-  placed anything at yet. They overlap at `/snug` and `/snug/bin`, where
-  `snugsOwn` is checked first and wins.
+**The cost `@net` carries is a second long-lived process**, the stage: the
+sandbox's user namespace has a **privileged ancestor for the whole run**, so a
+userns-escape bug is worth more than it was. Measured to give the payload no new
+reach — a same-uid host process already reaches that authority via
+`NS_GET_USERNS` without a stage. Offline and `@net-host` take the single-process
+path.
 
-  *The namespace rule has TWO halves and shipped with one.* `Validate`'s rule 4b
-  covers the payload's mounts; **grafts** go through G1, which consults
-  `snugsOwn` — the list — so the namespace was total on one side and partial on
-  the other, in the change that quotes "a rule written once and applied to one of
-  its two halves". Measured by an independent review: a writable graft at
-  `/snug/podman.sock` was **accepted**, putting an arbitrary host tree where the
-  engine expects the container proxy's socket. G1b now states the graft half as a
-  rule too — a graft may land inside `/snug` **only** under `/snug/engine/`,
-  which is the one subtree Tier C needs — so it does not grow either.
+**The engine's pid namespace is its own** since Tier C's C0, so *"pid is the
+host's"* is false wherever it appears. Two consequences are tracked, not folded
+in: libpod's recorded pids are numbered in the **engine's** namespace, so no
+host-side caller may read them as host pids (#167, fixed by deleting the
+caller); and a container gets the kernel's `SIGKILL` at namespace collapse,
+**never a graceful `SIGTERM`** (#174, open). If graceful stop returns it comes
+through the engine's **own socket**, never a host-side CLI again.
 
-  *Why `/snug` and not `/opt/snug`.* `/opt` is a real FHS location a profile
-  could legitimately want, and **reserving a subtree of a path other people have
-  a claim to is a weaker reservation than reserving a name nobody claims**.
-  `/snug` is not in the FHS, so the reservation is total and needs no exceptions.
+**GUI, audio and D-Bus passthrough are out of scope deliberately.** No profile
+ships. A filtering proxy that is 95% correct is a sandbox that is 0% sound, and
+the private netns excludes them by construction — **a property to keep, not a gap
+to close.** Do not add a profile without a decision to reopen this.
 
-  *Consequences to know.* A default sandbox no longer creates `/run` at all —
-  it existed only because snug's paths lived under it. And the old location is
-  kept **refused** rather than freed: a profile still naming it gets an error
-  that names the replacement, because a rename whose old name merely stops
-  working is a trap — the staging grant would keep validating and quietly stage
-  into a directory that is no longer on PATH.
-- **One live sandbox per target directory.** `snug <dir>` refuses to start a
-  second sandbox while one is already live for the same target, and the refusal
-  names the fix: `snug attach <dir>`. The guard is a per-target advisory `flock`
-  named `target-<sha256(realpath)>.lock` in snug's per-uid runtime directory,
-  resolved from the uid alone — canonical `/run/user/<uid>`, else
-  `/tmp/snug-<uid>` — **never** from `$XDG_RUNTIME_DIR`/`$TMPDIR`, because two runs
-  that disagreed on those env vars once flock'd two different inodes and both
-  acquired, letting a second sandbox onto the target the lock exists to forbid
-  (issue #122). It is taken in the run path before anything is created (no stage,
-  no netns, no bwrap, no proxy), released by the kernel on exit — SIGKILL
-  included, so a dead holder never wedges a directory — and deliberately never
-  unlinked, which is what keeps the reclaim free of a sweep-vs-acquire race. It
-  reuses `runtimeDir`'s `*os.Root`+`flock` machinery and fails **closed**: if the
-  per-uid directory cannot be established the run refuses rather than falling back
-  to a per-env path. "Same directory" is realpath, so a symlink to the target is
-  the same target. The lock path is derived from the target the host user named,
-  on a host path never bound into the sandbox: a hostile payload can neither reach
-  the file nor steer its name, so it can neither release the lock to smuggle in a
-  racing second sandbox nor point snug at the wrong path. This makes `snug
-  attach`'s address-by-directory total — at most one live run per directory, so
-  its multi-match branch is a defensive guard, not a user-facing dead end. A
-  second sandbox on one directory is not a relaxation of this refusal but a
-  different feature with a different name; it is a run-path guard, not a grant,
-  and lives in `internal/cli`, never in the pure `internal/policy`.
-
+**One live sandbox per target directory** —
+[`ONE-SANDBOX-PER-DIR.md`](.claude/design/ONE-SANDBOX-PER-DIR.md) and INDEX §11.
+`snug <dir>` refuses a second live run and names `snug attach <dir>` as the fix.
+The guard is a per-target advisory `flock` on `sha256(realpath)`, resolved **from
+the uid alone — never from `$XDG_RUNTIME_DIR`/`$TMPDIR`**, because two runs
+disagreeing on those once locked two different inodes and both acquired (#122).
+It fails **closed**, is never unlinked, and is a run-path guard in
+`internal/cli` — never in the pure `internal/policy`.
