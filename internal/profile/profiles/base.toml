@@ -184,6 +184,20 @@ description = "The target directory is writable and persists."
 include = ["home"]
 rw = ["{target}"]
 
+# ABUSE: a hostile process inside the sandbox can read every file under the
+# target's parent — every sibling project, their .git/config, their .env files,
+# any credential anyone left in one, and any SOCKET sitting in the tree.
+#
+# WHAT THAT MEANS DEPENDS ON WHERE THE TARGET SITS, and that is the sentence to
+# read twice, because it is the only abuse sentence in this file whose blast
+# radius is not fixed by the grant. For ~/src/proj the parent is ~/src. For a
+# project directly in your home directory the parent IS $HOME — every key, every
+# dotfile, every agent socket. snug refuses that outright (issue #220): Validate
+# rejects any bind covering $HOME, so this profile cannot be used to reach it.
+# The refusal is doing real work rather than being fussy — it was measured
+# handing over 14 private keys, .netrc, .aws, an EXECUTED ~/.gitconfig alias, an
+# EXECUTED ~/.bashrc, and a signature from the host's ssh-agent.
+#
 # The target's parent is readable. Everything under higher ancestors stays
 # invisible — not hidden, never granted. This is one line because the model has
 # no hiding operation to get wrong.
