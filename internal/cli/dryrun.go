@@ -2134,13 +2134,22 @@ func notGranted(p *policy.Policy) []string {
 		".ssh", ".gnupg", ".aws", ".config/gh", ".kube", ".docker", ".netrc",
 		".claude", ".mozilla", ".local/share/keyrings",
 	}
-	var absent []string
+	var absent, partial []string
 	for _, c := range candidates {
 		full := filepath.Join(p.Home, c)
 		if _, err := os.Stat(full); err != nil {
 			continue // not on this host either; do not claim credit for it
 		}
-		if covered(p, full) {
+		cov, beneath := coverageOf(p, full)
+		if cov == coverageFull {
+			continue
+		}
+		// PARTIAL gets its own line rather than a place in the joined list. The
+		// list is a run of bare names a reader skims as "none of these"; a
+		// qualified entry buried in it is read as one more bare name, which is
+		// the misreading issue #59 is about.
+		if cov == coveragePartial {
+			partial = append(partial, partialLines("~/"+c, beneath, authored(p, full))...)
 			continue
 		}
 		// The host's copy is not granted — but if snug generates content at
@@ -2157,20 +2166,35 @@ func notGranted(p *policy.Policy) []string {
 	if len(absent) > 0 {
 		lines = append(lines, strings.Join(absent, "  "))
 	}
+	lines = append(lines, partial...)
 
 	// Siblings of the target, which is the property the parent-ro profile is
 	// really about: the parent is readable, its other children are not.
 	parent := filepath.Dir(p.Target)
 	if entries, err := os.ReadDir(parent); err == nil {
-		n := 0
+		n, part := 0, 0
 		for _, e := range entries {
 			full := filepath.Join(parent, e.Name())
-			if full != p.Target && !covered(p, full) {
+			if full == p.Target {
+				continue
+			}
+			switch cov, _ := coverageOf(p, full); cov {
+			case coverageFull:
+			case coveragePartial:
+				// Same blind spot as the candidate list, same fix: a sibling
+				// with a bind strictly beneath it is not an entry that reads as
+				// absent, and counting it as one overstates what is denied.
+				part++
+			default:
 				n++
 			}
 		}
 		if n > 0 {
 			lines = append(lines, fmt.Sprintf("%d sibling entries under %s", n, parent))
+		}
+		if part > 0 {
+			lines = append(lines, fmt.Sprintf("(%d further sibling entries under %s have "+
+				"something bound BENEATH them — see FILESYSTEM)", part, parent))
 		}
 	}
 
@@ -2209,16 +2233,52 @@ func authored(p *policy.Policy, guest string) bool {
 }
 
 // covered reports whether a host path is reachable through some grant.
-func covered(p *policy.Policy, host string) bool {
+// coverage is how much of a candidate host path the grant set reaches. The
+// distinction exists because `covered` used to walk UPWARD only —
+//
+//	host == m.Host || strings.HasPrefix(host, m.Host+"/")
+//
+// so a mount BENEATH a candidate never marked that candidate covered. `~/.claude`
+// has no mount at or above it, so NOT GRANTED said it reads as absent, twelve
+// rows below a FILESYSTEM block binding `~/.claude/plugins` and
+// `~/.claude/settings.json` read-only (issue #59). Both statements were true
+// about different things; together they read as a false one, on the screen
+// CLAUDE.md calls the mechanism by which a human can trust snug at all.
+//
+// Three states rather than a wider `covered`, because "some of it is bound" is
+// neither "granted" nor "absent" and saying either is a lie in one direction.
+// Full wins over partial: a bind at or above the candidate reaches everything
+// beneath it anyway.
+type coverage int
+
+const (
+	coverageNone    coverage = iota // no bind at, above or below it
+	coveragePartial                 // a bind lies strictly BENEATH it
+	coverageFull                    // a bind lies AT or ABOVE it
+)
+
+func coverageOf(p *policy.Policy, host string) (coverage, int) {
+	beneath := 0
 	for _, m := range p.Mounts {
 		if m.Kind != policy.KindBind {
 			continue
 		}
 		if host == m.Host || strings.HasPrefix(host, m.Host+"/") {
-			return true
+			return coverageFull, 0
+		}
+		if strings.HasPrefix(m.Host, host+"/") {
+			beneath++
 		}
 	}
-	return false
+	if beneath > 0 {
+		return coveragePartial, beneath
+	}
+	return coverageNone, 0
+}
+
+func covered(p *policy.Policy, host string) bool {
+	c, _ := coverageOf(p, host)
+	return c == coverageFull
 }
 
 func formatArgs(args []string) string {
@@ -2334,3 +2394,24 @@ func claudeCredentialExpiry(m policy.Mount, now time.Time) (string, bool) {
 // for a test, and widening a rendering function's parameters to advertise that
 // would put the test's needs in the screen's API.
 var screenNow = func() time.Time { return time.Now() }
+
+// partialLine says what is bound and what is not, in that order. "Granted" would
+// be a lie in the other direction — most of the tree is genuinely absent — and
+// the word the row needs is one that is true for "some of it" (issue #59).
+func partialLines(name string, beneath int, generated bool) []string {
+	what, verb := "path", "is"
+	if beneath != 1 {
+		what, verb = "paths", "are"
+	}
+	head := fmt.Sprintf("%s  PARTIAL — %d host %s beneath it %s bound (see FILESYSTEM)",
+		name, beneath, what, verb)
+	tail := "the rest of it is not granted"
+	if generated {
+		tail += ", and snug generates its own content here"
+	}
+	// Two lines rather than one. The block prints each line at a fixed indent
+	// with no wrapping of its own, and the single-line form ran past 150
+	// columns — where a terminal breaks it mid-clause, in the middle of the
+	// sentence that says what is NOT granted.
+	return []string{head, "  " + tail}
+}
