@@ -102,8 +102,15 @@ rather than widening the target.
 A payload running INSIDE a sandbox is a different matter and needs no
 workaround. snug always gives it its own pid namespace, so
 `snug <dir> -- sh -c '<payload>'` cannot signal a host process whatever it does.
-The `PreToolUse` hook in `.claude/settings.json` enforces all of this and lets
-that form through unread (issues #197, #185).
+
+**Nothing enforces this but you.** A `PreToolUse` hook that refused these
+commands existed for one day and was removed (issue #203): a deny-list matching
+strings in an argv is the opposite kind of control from the one this project
+builds, and it does not belong in this repository. Read that as raising the
+stakes on the paragraphs above rather than lowering them — the mechanism that
+actually bounds the damage is pinning `HOME` to a scratch directory before any
+run that creates a sandbox, which is the section at the top of this file
+(issues #197, #185).
 
 ## Threat model you work within
 
