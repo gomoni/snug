@@ -3,16 +3,14 @@ package cli
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/profile"
+	"github.com/gomoni/snug/internal/vdir"
 )
 
 // needsHostTmpDir reports whether any selected profile refers to the
@@ -59,46 +57,48 @@ func hostTmpDirPath(target string) string {
 
 func prepareHostTmpDir(target string) (string, error) {
 	path := hostTmpDirPath(target)
+	base, name := filepath.Dir(path), filepath.Base(path)
 
-	fi, err := os.Lstat(path)
-	switch {
-	// errors.Is, not os.IsNotExist: see issue #124 — the old predicate does
-	// not unwrap a %w-wrapped ENOENT.
-	case errors.Is(err, fs.ErrNotExist):
-		if err := os.Mkdir(path, 0o700); err != nil {
-			return "", fmt.Errorf("shared tmp: %w", err)
-		}
-		return path, nil
-	case err != nil:
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return "", fmt.Errorf("shared tmp: opening %s: %w - the sandbox's /tmp is a directory "+
+			"under it; check that it exists and is a directory you can write to", base, err)
+	}
+	defer root.Close()
+
+	// vdir.SecureSubdir, not the Lstat-then-check this function used to do.
+	// The old version asked its questions of a PATH — Lstat it, refuse a
+	// symlink, check owner and mode on that FileInfo — and never held a
+	// descriptor at all, so every answer was about a name at a moment. This
+	// creates through a handle that cannot name anything outside `base`,
+	// refuses a symlink at exactly the name it is about to open, and checks
+	// owner and mode on the opened directory itself (issue #233).
+	//
+	// Reuse is expected here, unlike the engine's run directory: the name is
+	// derived from the target, so a project gets the same directory across
+	// runs and a build cache stays warm. Hence SecureSubdir with the created
+	// flag ignored, rather than MustCreateSubdir.
+	//
+	// One behaviour change worth stating: the old check refused a mode with
+	// ANY group or other bits (perm&0o077); vdir requires exactly 0700. A
+	// directory that was 0500 or 0000 passed before and is refused now. That
+	// is the stricter direction, it is the same rule the runtime directory has
+	// always had, and a shared /tmp snug cannot write to is not usable as one
+	// anyway.
+	child, _, err := vdir.SecureSubdir(root, base, name)
+	if err != nil {
 		return "", fmt.Errorf("shared tmp: %w", err)
 	}
+	child.Close()
 
-	if fi.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("shared tmp: %s is a symlink; refusing to follow it", path)
-	}
-	if !fi.IsDir() {
-		return "", fmt.Errorf("shared tmp: %s exists and is not a directory", path)
-	}
-	if err := ownedByUsAndPrivate(path, fi); err != nil {
-		return "", err
-	}
+	// THE LIMIT, inherent rather than an omission: bwrap binds this directory
+	// BY PATH, in a process snug forks later, and there is no way to hand it a
+	// descriptor. So the handle above establishes that the directory snug
+	// created and checked is the one it opened — not that the name still leads
+	// there when bwrap walks it. Holding the descriptor open would not close
+	// that window either: a rename or replace of the NAME is what the window
+	// is. What changed is that the check is now about the thing rather than
+	// about the string, and that creation cannot follow a symlink planted
+	// first.
 	return path, nil
-}
-
-func ownedByUsAndPrivate(path string, fi os.FileInfo) error {
-	if uid, ok := fileUID(fi); ok && uid != os.Getuid() {
-		return fmt.Errorf("shared tmp: %s is owned by uid %d, not you; refusing to use it", path, uid)
-	}
-	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
-		return fmt.Errorf("shared tmp: %s is mode %#o; it must not be group- or world-accessible", path, perm)
-	}
-	return nil
-}
-
-func fileUID(fi os.FileInfo) (int, bool) {
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok {
-		return 0, false
-	}
-	return int(st.Uid), true
 }

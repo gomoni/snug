@@ -11,6 +11,7 @@ import (
 
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/sandbox"
+	"github.com/gomoni/snug/internal/vdir"
 )
 
 // openTestRoot and writeTestFile are the minimal *os.Root plumbing
@@ -187,12 +188,12 @@ func TestFilterDigestConsistent(t *testing.T) {
 }
 
 // TestAttachRefusesAStateFileInADirectoryItDoesNotOwn is §13.1 test 2.
-// openExistingSubroot is the exact check `snug attach`'s own discovery path
+// vdir.OpenExistingSubdir is the exact check `snug attach`'s own discovery path
 // (openTargetStateDir, since issue #123) uses to open the shared runtime
 // directory it did not itself create THIS call — the uid half of "does not own" cannot be
 // forced without root (there is no other uid this test can create a
 // directory as), so this exercises the mode half, on the same
-// verifyOwnedAndPrivate check TestRuntimeDirRefusesAWronglyPermissionedSharedDirectory
+// vdir.VerifyOwnedAndPrivate check TestRuntimeDirRefusesAWronglyPermissionedSharedDirectory
 // already relies on for the shared "snug" directory one level up.
 func TestAttachRefusesAStateFileInADirectoryItDoesNotOwn(t *testing.T) {
 	base := t.TempDir()
@@ -206,7 +207,7 @@ func TestAttachRefusesAStateFileInADirectoryItDoesNotOwn(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(base, bad), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := openExistingSubroot(root, base, bad); err == nil {
+	if _, err := vdir.OpenExistingSubdir(root, base, bad); err == nil {
 		t.Fatal("expected a refusal for a group/other-readable run directory")
 	}
 
@@ -217,7 +218,7 @@ func TestAttachRefusesAStateFileInADirectoryItDoesNotOwn(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(base, good), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := openExistingSubroot(root, base, good); err != nil {
+	if _, err := vdir.OpenExistingSubdir(root, base, good); err != nil {
 		t.Fatalf("control: a correctly permissioned run directory should be accepted: %v", err)
 	}
 }
@@ -416,7 +417,7 @@ func TestSnugAuthoredEnvPairsExcludesAProfilePassedVariable(t *testing.T) {
 //
 // The mechanism is worth naming because it is invisible at the call site and
 // it is a whole CLASS of mistake, not one typo. The old code asked
-// `os.IsNotExist(err)` about an error openExistingSubroot had wrapped with
+// `os.IsNotExist(err)` about an error vdir.OpenExistingSubdir had wrapped with
 // %w. os.IsNotExist is the pre-errors API: it inspects the concrete error
 // value and does NOT unwrap, so it answered false for a perfectly ordinary
 // wrapped ENOENT. errors.Is does unwrap. Every %w between a syscall and a
