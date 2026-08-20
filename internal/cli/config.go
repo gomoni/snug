@@ -431,6 +431,7 @@ func profileCmd(args []string) int {
 			}
 			fmt.Printf("  %-16s %s -> %s\n", head, visibleValue(s.At), visibleValue(s.Target))
 		}
+		showCapabilities(p, show)
 		if len(p.Optional) > 0 {
 			fmt.Printf("  %-16s %s\n", "optional", visibleValue(strings.Join(p.Optional, " ")))
 		}
@@ -581,4 +582,165 @@ func sortedNames(reg profile.Registry) []policy.ProfileName {
 	}
 	slices.Sort(names)
 	return names
+}
+
+// showCapabilities renders the NON-PATH grants: the network, the container
+// engine, the git reconstruction and the pinned identity.
+//
+// WHY THIS EXISTS (issue #195). `profile show` rendered `description`, `source`,
+// `includes`, `ro`, `rw`, `tmpfs`, the environ verbs, `symlink` and `optional` —
+// every key that names a PATH — and dropped every key that does not. A profile
+// granting full internet egress plus a host->sandbox port forward therefore read
+// as a profile with ZERO grants, on the screen a human uses to decide whether to
+// select it. Under the guiding principle a hole is a named grant, so a screen
+// that cannot name the network hole is naming the wrong set.
+//
+// Each entry carries the CONSEQUENCE on continuation rows, not just the value,
+// for the same reason --dry-run's NETWORK block does: "egress" is a word, "the
+// sandbox reaches the whole internet" is the thing being agreed to. The
+// profile's RAW text is rendered rather than a resolved NetMode, because this
+// screen has no target and no resolution — it shows what the FILE says, and an
+// unrecognised value must render as itself rather than be normalised away.
+//
+// TestProfileShowRendersEveryProfileField is what stops this recurring: it walks
+// policy.Profile by reflection, so a field added for a future feature fails the
+// suite until it is either rendered here or exempted with a reason.
+func showCapabilities(p *policy.Profile, show func(string, []string)) {
+	if p.Network != "" {
+		show("network", capRows(p.Network, networkConsequence(p.Network)))
+	}
+	if p.DNS {
+		show("dns", capRows("yes",
+			"a generated /etc/resolv.conf names a resolver inside the sandbox"))
+	}
+	if len(p.Publish) > 0 {
+		ports := make([]string, len(p.Publish))
+		for i, n := range p.Publish {
+			ports[i] = strconv.Itoa(n)
+		}
+		show("publish", capRows(strings.Join(ports, " "),
+			"the HOST's 127.0.0.1 forwards these INTO the sandbox, so anything "+
+				"a hostile process listens on there is reachable from your browser"))
+	}
+	// Address and gateway render as ONE entry per family. They are a pair by
+	// construction (checkAddressPair requires all four or none, issue #165), and
+	// two rows would invite reading them as two independent grants.
+	if p.Address != "" || p.Gateway != "" {
+		show("address", addressRows(p.Address, p.Gateway))
+	}
+	if p.Address6 != "" || p.Gateway6 != "" {
+		show("address6", addressRows(p.Address6, p.Gateway6))
+	}
+	if p.MTU != 0 {
+		show("mtu", []string{strconv.Itoa(p.MTU)})
+	}
+	if p.Podman != "" {
+		show("podman", capRows(p.Podman,
+			"starts a container engine and delegates your whole subuid range, "+
+				"even with no network profile selected"))
+	}
+	if p.Git != "" {
+		show("git", capRows(p.Git,
+			"~/.gitconfig is REGENERATED from a whitelist, never bound - it names "+
+				"programs git would run"))
+	}
+	showIdentity(p.Identity, show)
+}
+
+// capRows puts the value on the labelled row and the consequence on wrapped
+// continuation rows, which `show` renders with a blank label. One long line
+// would run past 120 columns and wrap wherever the terminal decided, in the
+// middle of a sentence a human is meant to weigh.
+func capRows(value, consequence string) []string {
+	rows := []string{value}
+	return append(rows, wrapWords(consequence, showConsequenceWidth)...)
+}
+
+// showConsequenceWidth is 80 minus the "  %-16s " prefix `show` prints, so a
+// full row lands inside an 80-column terminal. Asserted by
+// TestProfileShowFitsAnEightyColumnScreen rather than trusted.
+const showConsequenceWidth = 80 - 19
+
+func wrapWords(text string, width int) []string {
+	if text == "" {
+		return nil
+	}
+	var out []string
+	line := ""
+	for _, w := range strings.Fields(text) {
+		switch {
+		case line == "":
+			line = w
+		case len(line)+1+len(w) <= width:
+			line += " " + w
+		default:
+			out = append(out, line)
+			line = w
+		}
+	}
+	if line != "" {
+		out = append(out, line)
+	}
+	return out
+}
+
+// networkConsequence says what the mode COSTS, in the same vocabulary
+// --dry-run's NETWORK block uses. An unrecognised value gets no sentence rather
+// than a guessed one: profile text is not validated at this point, and inventing
+// a consequence for a mode snug does not implement would be worse than silence.
+func networkConsequence(mode string) string {
+	switch mode {
+	case "egress":
+		return "the sandbox reaches the whole internet, from a private netns. " +
+			"Host loopback and abstract sockets stay unreachable."
+	case "host":
+		return "the HOST's own netns. Loopback services and abstract sockets " +
+			"(X11, D-Bus) ARE reachable. This is the --i-know path."
+	default:
+		return ""
+	}
+}
+
+func addressRows(addr, gw string) []string {
+	value := addr
+	if gw != "" {
+		if value == "" {
+			value = "(no address)"
+		}
+		value += " via " + gw
+	}
+	return capRows(value, "synthetic; the host's own address is not copied inside, "+
+		"so the sandbox does not learn your LAN or ISP-attributable address")
+}
+
+// showIdentity renders the pin. WHICH account is the whole point of an identity
+// profile and is exactly what a human is deciding about, so each half gets its
+// own row rather than being packed onto one line.
+//
+// No key MATERIAL is rendered and none is available to render: Identity.SSHKey
+// selects one key from the already-unlocked host agent, and ssh_mode =
+// "agent-proxy" means no private key ever enters the sandbox.
+func showIdentity(id *policy.Identity, show func(string, []string)) {
+	if id == nil {
+		return
+	}
+	var rows []string
+	if id.SSHKey != "" {
+		row := "ssh key " + id.SSHKey
+		if id.SSHMode != "" {
+			row += " (" + string(id.SSHMode) + ")"
+		}
+		rows = append(rows, row)
+	}
+	if id.GitName != "" || id.GitEmail != "" {
+		rows = append(rows, strings.TrimSpace("git "+id.GitName+" <"+id.GitEmail+">"))
+	}
+	if id.GhUser != "" {
+		host := id.GhHost
+		if host == "" {
+			host = "github.com"
+		}
+		rows = append(rows, "gh "+id.GhUser+" @ "+host)
+	}
+	show("identity", rows)
 }
