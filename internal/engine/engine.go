@@ -151,6 +151,8 @@ type Engine struct {
 	runroot  string
 	store    string
 	runDir   string
+	sockDir  string
+	confDir  string
 	runLabel string
 
 	mu   sync.Mutex
@@ -223,8 +225,40 @@ func New(profiles []policy.ProfileName, target string) (*Engine, error) {
 
 		store:   filepath.Join(dataHome, "snug", "engines", key, "storage"),
 		runDir:  runDir,
+		sockDir: filepath.Join(runDir, "sock"),
+		confDir: filepath.Join(runDir, "conf"),
 		runroot: filepath.Join(os.TempDir(), fmt.Sprintf("snug-engines-%d-%s", os.Getuid(), key), "rr"),
-		sock:    filepath.Join(runDir, fmt.Sprintf("podman-%d.sock", pid)),
+	}
+	e.sock = filepath.Join(e.sockDir, fmt.Sprintf("podman-%d.sock", pid))
+
+	// The run directory is SPLIT by writability, not by topic (issue #125,
+	// C2b). Everything in conf/ is a file snug generated and the engine only
+	// ever READS; sock/ holds the one thing the engine creates.
+	//
+	// It exists for Tier C's derived view, where each of these becomes a graft
+	// into the engine's own mount namespace and the graft carries an access:
+	// without the split there is no directory that CAN be read-only, so the
+	// AccessRO arm of the graft model would ship with nothing exercising it —
+	// and §7's gate forbids emitting an AccessRO graft until a test proves it
+	// is enforced. A model whose stricter half is never used is a model whose
+	// stricter half is untested.
+	//
+	// It also makes a cost snug already states STRUCTURAL rather than merely
+	// intended. writeAuthFile deliberately writes an EMPTY auth file, and its
+	// own comment says "no registry login is possible from inside, so a
+	// private image cannot be pulled". Under Tier C that file sits in a
+	// read-only graft, so the sentence stops depending on nobody trying.
+	//
+	// Both are created with createRunDir rather than MkdirAll, so each gets the
+	// same refuse-to-reuse, owner and 0700 checks the parent got — /tmp is
+	// commonly world-writable and a pre-planted entry is the shape a same-host
+	// attacker would use, and that reasoning does not weaken one directory
+	// down.
+	for _, d := range []string{e.sockDir, e.confDir} {
+		if err := createRunDir(d); err != nil {
+			_ = os.RemoveAll(runDir)
+			return nil, err
+		}
 	}
 	for _, d := range []string{e.store, e.runroot} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -417,7 +451,7 @@ func (e *Engine) Spec(podman string, baseEnv []string, cgroupsDisabled bool, net
 // payload's own /etc/resolv.conf comes from, taken as VALUES rather than by
 // parsing the rendered file back, so the two cannot diverge (invariant 6).
 func (e *Engine) writeContainersConf(cgroupsDisabled bool, res policy.ResolverConfig) (string, error) {
-	path := filepath.Join(e.runDir, "containers.conf")
+	path := filepath.Join(e.confDir, "containers.conf")
 
 	var b strings.Builder
 	b.WriteString("# snug: generated for this run. Pointed at by both CONTAINERS_CONF and\n" +
@@ -569,7 +603,7 @@ func setEnv(env []string, key, value string) []string {
 // residual, stated plainly: on such a podman the host's policy.json is still
 // read, so signature policy stays host-authored. Nothing else does.
 func (e *Engine) writeEngineHome() (string, error) {
-	home := filepath.Join(e.runDir, "home")
+	home := filepath.Join(e.confDir, "home")
 	confDir := filepath.Join(home, ".config", "containers")
 	if err := os.MkdirAll(confDir, 0o700); err != nil {
 		return "", fmt.Errorf("creating %s: %w", confDir, err)
@@ -645,7 +679,7 @@ const SignaturePolicyJSON = `{
 // insecure (non-TLS) registry can be reached through configuration this run
 // authored.
 func (e *Engine) writeRegistriesConf() (string, error) {
-	path := filepath.Join(e.runDir, "registries.conf")
+	path := filepath.Join(e.confDir, "registries.conf")
 	const content = `# snug: generated for this run. Pointed at by CONTAINERS_REGISTRIES_CONF, so
 # the host's /etc/containers/registries.conf and
 # ~/.config/containers/registries.conf are not read (issue #137).
@@ -685,7 +719,7 @@ unqualified-search-registries = ["docker.io"]
 // direction. The cost is stated plainly instead: no registry login is
 // possible from inside, so a private image cannot be pulled.
 func (e *Engine) writeAuthFile() (string, error) {
-	path := filepath.Join(e.runDir, "auth.json")
+	path := filepath.Join(e.confDir, "auth.json")
 	if err := os.WriteFile(path, []byte("{\n    \"auths\": {}\n}\n"), 0o600); err != nil {
 		return "", fmt.Errorf("writing %s: %w", path, err)
 	}
@@ -698,7 +732,7 @@ func (e *Engine) writeAuthFile() (string, error) {
 // /etc/resolv.conf (issue #126) — a pointer, never the content itself,
 // crossing the same "start" request the cgroups-disabled config does.
 func (e *Engine) writeResolvConf(resolvConf []byte) (string, error) {
-	path := filepath.Join(e.runDir, "resolv.conf")
+	path := filepath.Join(e.confDir, "resolv.conf")
 	if err := os.WriteFile(path, resolvConf, 0o600); err != nil {
 		return "", fmt.Errorf("writing %s: %w", path, err)
 	}
