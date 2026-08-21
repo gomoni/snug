@@ -593,10 +593,40 @@ host, 2026-08-13:
   (`~/.claude/plugins/*/hooks/hooks.json`)"* and *"The standard
   `hooks/hooks.json` is loaded automatically"*.
 
-So **dropping `enabledPlugins` from the generated file was never enough on its
-own**: the bound directory carried its own record of what is installed and
-where, and Claude Code auto-loads each installed plugin's `hooks.json`
-regardless of `enabledPlugins`. That was the residual this section first named.
+So **dropping `enabledPlugins` was never enough on its own**: the bound directory
+carried its own record of what is installed and where, and that record is a
+second, independent gate on which plugin loads. That was the residual this
+section first named.
+
+**Remeasured on claude 2.1.238, 2026-08-21, because the earlier phrasing drifted.**
+This section once said Claude Code auto-loads each installed plugin's `hooks.json`
+*"regardless of `enabledPlugins`"*. That is **false on 2.1.238**: a plugin's
+`SessionStart` hook fires only when it is BOTH named in
+`installed_plugins.json` AND enabled in `settings.json`'s `enabledPlugins` — two
+AND-gates, measured with a two-plugin fixture driven headless
+(`TestManifestGatesPluginHookFiring`, whose three rows are that matrix). The
+imprecision is itself the
+lesson this file keeps recording: `enabledPlugins` moved from `~/.claude.json`
+to `settings.json` between versions, so a sentence about a third party's binary
+without its version number went stale. Both claims below carry their version for
+that reason.
+
+The load-bearing half is unchanged and now DIRECTLY measured: with a plugin
+enabled in `settings.json` but ABSENT from `installed_plugins.json`, its hook
+does **not** fire, while one present in both DOES (rows 2 vs 3 of the matrix).
+The manifest is an independent gate on the binary, which is the premise #68
+rests on.
+
+**And snug closes this channel by TWO mechanisms, not one — on 2.1.238.** #68
+regenerates `installed_plugins.json` (the manifest gate). Separately, snug's
+`settings.json` filter DROPS `enabledPlugins` entirely
+(`internal/policy/claudesettings.go`, `ClaudeSettingAllowlist`), and on 2.1.238
+an empty `enabledPlugins` means no plugin hook fires at all (row 4). So #68 is
+**defence-in-depth behind an enablement gate that was already there** — either
+alone stops the measured channel on this version. State both, because either can
+drift out from under the other: if a future claude fires hooks from the manifest
+without `enabledPlugins`, the enablement gate silently stops carrying its half
+and only #68 remains.
 
 **Issue #68 closes it, by the same mechanism this whole document is about.**
 snug now REGENERATES `installed_plugins.json` from a per-profile `plugins`
@@ -613,15 +643,28 @@ being defeated one indirection below where it was written — three times so far
 channel), and it must not become a fourth by overclaiming:
 
 > snug regenerates `installed_plugins.json` to name only the allowlisted
-> plugins, and a test asserts the MANIFEST
-> (`TestFilterKeepsExactlyTheAllowlistedPlugins`, the staged-set tests, and
-> VERIFY 6g-bis by hand). No test yet asserts that an UNNAMED plugin's hooks do
-> not fire in a live `claude` run, with a named plugin's firing as the control.
+> plugins. Unit tests assert the MANIFEST snug WRITES
+> (`TestFilterKeepsExactlyTheAllowlistedPlugins`, the staged-set tests, VERIFY
+> 6g-bis by hand), and `TestManifestGatesPluginHookFiring` asserts what the real
+> `claude` binary DOES with it: a plugin enabled in `settings.json` but absent
+> from the regenerated manifest does not fire its `SessionStart` hook, while one
+> present in the manifest does (the positive control). That test covers the
+> **manifest gate** on the binary; it does NOT exercise the sandbox MOUNT that
+> delivers the file inside a run (that is `claudestagedset_test.go` and the
+> in-sandbox inventory test).
 
-That sentence is load-bearing and its narrow form appears in `base.toml`'s abuse
-block, `claudeGuidance`'s injected text and `--dry-run`'s CLAUDE block for the
-same reason. Filed as [issue #68](https://github.com/gomoni/snug/issues/68),
-`sev:medium`, fixed by the allowlist above.
+**The live assertion is host-level, and cannot be otherwise on 2.1.238** — worth
+one line so nobody tries to move it. Inside `@claude` the `settings.json` filter
+drops `enabledPlugins`, so nothing fires (row 4), so a positive control ("the
+named plugin fired") cannot exist inside the sandbox; a negative there would pass
+because nothing ran. The control lives only where `enabledPlugins` survives —
+the host, against the binary directly.
+
+That residual sentence is load-bearing and its narrow form appears in
+`base.toml`'s abuse block, `claudeGuidance`'s injected text and `--dry-run`'s
+CLAUDE block for the same reason. Filed as
+[issue #68](https://github.com/gomoni/snug/issues/68), `sev:medium`, fixed by
+the allowlist above and covered by the test named here.
 
 ### 4.5 Project-scope settings — the same command table, facing outward (issue #73)
 
