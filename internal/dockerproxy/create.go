@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -403,7 +404,7 @@ func (p *Proxy) checkOne(source, dest string, ro bool) (mount, error) {
 	// can be swapped between here and podman's own resolution — which is why the
 	// RESOLVED path is what gets forwarded, so podman is asked for the thing we
 	// actually approved.
-	real, err := resolveExisting(source)
+	real, err := resolveForwardable(source)
 	if err != nil {
 		return mount{}, fmt.Errorf("mount source %q cannot be resolved: %v", source, err)
 	}
@@ -703,6 +704,86 @@ func isEmptyJSON(raw json.RawMessage) bool {
 // survives in this package.
 func resolveExisting(p string) (string, error) {
 	return policy.ResolveExistingHostPath(policy.OSEnviron{}, p)
+}
+
+// resolveForwardable is resolveExisting plus the ONE refusal Tier C's derived
+// view made necessary: a source containing a symlink whose target does not
+// exist in snug's OWN namespace, but may exist in the engine's DERIVED one.
+//
+// THE DIVERGENCE, stated as the mechanism and not as one path. Every proxy
+// check that vets a host path — this one for a bind, checkSeccompProfile for a
+// profile file — resolves the source in snug's mount namespace and then judges
+// it, while the engine bind-mounts it in a namespace DERIVED from the sandbox's
+// with this run's grafts on top (issue #125). For almost every path the two
+// namespaces agree. They diverge in exactly one direction that matters: a name
+// that resolves to NOTHING here (`/snug/engine/store`, `/snug/engine/toolchain`
+// and every other `/snug/engine/*` graft) resolves to a REAL object there. A
+// payload cannot bind such a path directly — hostPathVisible refuses it,
+// because no sandbox grant covers `/snug` — so it reaches it through a symlink
+// in its own writable target: resolveExisting cannot follow the dangling link,
+// walks up to the target, and returns the link's own path, which hostPathVisible
+// then approves because the target IS a writable bind. crun follows the symlink
+// on the far side and lands in the graft (issue #251, measured: the engine's
+// whole read-write container store).
+//
+// THE TEST IS "does a symlink on this path dangle on the host", not "does it
+// point at /snug". Keying on the destination string would miss the next graft
+// namespace and read as a fix while a spelling slips past; keying on the
+// divergence itself — a symlink snug cannot resolve is a symlink that may mean
+// something else where the mount actually happens — covers the class. A path
+// whose tail is plain-missing (a name podman will CREATE under a real,
+// host-visible directory) is left alone: it means nothing in either namespace,
+// and refusing it would break a legitimate bind for no security gain.
+//
+// os.Stat, which FOLLOWS symlinks, is what distinguishes the two: on a dangling
+// symlink it returns a not-exist error while os.Lstat (which does not follow)
+// says the component is a symlink. No filepath.EvalSymlinks and no walk of its
+// own — resolveExisting stays the one author of "resolve as far as it exists"
+// (TestResolveExistingHasOneAuthor).
+func resolveForwardable(source string) (string, error) {
+	if where, dangling := danglingSymlinkOn(source); dangling {
+		return "", fmt.Errorf("its component %s is a symlink whose target does not exist in this "+
+			"sandbox's own namespace. The container engine resolves a bind in a namespace derived "+
+			"from the sandbox's, where the same name can point at one of snug's own /snug/engine "+
+			"grafts (the container store, the toolchain) that no grant exposes here — so a source "+
+			"snug cannot follow is one it will not forward (issue #251)", where)
+	}
+	return resolveExisting(source)
+}
+
+// danglingSymlinkOn walks source component by component and reports the first
+// one that is a symlink whose target does not resolve on the host. It uses
+// os.Lstat (to see a symlink without following it) and os.Stat (to ask whether
+// following it lands on a real object) — deliberately NOT filepath.EvalSymlinks,
+// so it neither re-implements resolveExisting's resolve-as-far-as-exists walk
+// nor trips the one-author sweep that forbids a second EvalSymlinks loop in this
+// package.
+//
+// A symlink that resolves to a real HOST path is not flagged here: it fully
+// resolves, so the source either resolves entirely (and is judged canonically)
+// or fails on a plain-missing tail below it (and hostPathVisible judges the
+// resolved prefix). Only the symlink that dangles HERE is the divergence.
+func danglingSymlinkOn(source string) (string, bool) {
+	cur := "/"
+	for _, elem := range strings.Split(filepath.Clean(source), "/") {
+		if elem == "" {
+			continue
+		}
+		cur = filepath.Join(cur, elem)
+		fi, err := os.Lstat(cur)
+		if err != nil {
+			// Plain-missing from here down: nothing below this exists on the
+			// host, symlink or otherwise, so there is no symlink left to dangle.
+			return "", false
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		if _, err := os.Stat(cur); err != nil {
+			return cur, true
+		}
+	}
+	return "", false
 }
 
 // hostPathVisible reports whether the sandbox can itself see a host path at the

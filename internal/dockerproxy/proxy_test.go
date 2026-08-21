@@ -1133,3 +1133,89 @@ func TestVolumeCreateIsCaseProof(t *testing.T) {
 	refuse(t, sock, eng, "/v1.41/volumes/create",
 		`{"Name":"v","options":{"device":"/","o":"bind","type":"none"}}`, "not permitted")
 }
+
+// TestBindSourceDanglingIntoTheEngineNamespaceIsRefused is issue #251's
+// regression: a container bind whose source is a symlink pointing at a path
+// that exists ONLY in the engine's derived mount namespace — `/snug/engine/*`
+// — must be refused here, never forwarded, because crun would follow it on the
+// far side and reach a graft (measured: the engine's read-write container
+// store).
+//
+// It is keyed on the DIVERGENCE, not on the one spelling. `/snug/engine/store`
+// is the measured target, but the defect is a filter that resolves in a
+// different namespace from the one that mounts, so the cases below are a set of
+// symlinks-that-dangle-here, and the assertion is "none of them reaches the
+// engine". A future graft namespace fails this by the same mechanism without
+// anyone adding its name.
+func TestBindSourceDanglingIntoTheEngineNamespaceIsRefused(t *testing.T) {
+	sock, eng, target := startProxy(t)
+
+	// CONTROL 1: the direct path is already refused (hostPathVisible: no grant
+	// covers /snug). Without this, "the symlink is refused" could be true of a
+	// proxy that refuses /snug for some unrelated reason.
+	refuse(t, sock, eng, "/v1.41/containers/create",
+		`{"HostConfig":{"Binds":["`+policy.EngineStoreGuest+`:/store:rw"]}}`,
+		"cannot see")
+
+	// The divergence, in several shapes. Each is a symlink (or a chain, or a
+	// symlink with a further component) inside the writable target whose target
+	// does not resolve on the host but names something under /snug — the exact
+	// class Tier C created.
+	mk := func(name, dest string) string {
+		p := filepath.Join(target, name)
+		if err := os.Symlink(dest, p); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	chainA := filepath.Join(target, "chainA")
+	if err := os.Symlink(policy.EngineStoreGuest, chainA); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct{ name, source string }{
+		{"leaf symlink into the store", mk("lstore", policy.EngineStoreGuest)},
+		{"leaf symlink into the toolchain", mk("ltool", policy.EngineToolchainGuest)},
+		{"symlink into /snug itself", mk("lsnug", policy.SnugDir)},
+		{"a further component under a dangling symlink", filepath.Join(mk("ldir", policy.EngineConfGuest), "storage.conf")},
+		{"a two-hop chain ending in the store", filepath.Join(target, "chainB")},
+	}
+	if err := os.Symlink(chainA, filepath.Join(target, "chainB")); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := eng.reached.Load()
+			code, resp := post(t, sock, "/v1.41/containers/create",
+				`{"HostConfig":{"Binds":["`+tc.source+`:/x:rw"]}}`)
+			if code != 403 {
+				t.Errorf("status %d, want 403 — a symlink dangling into the engine's own "+
+					"namespace was FORWARDED: %s", code, resp)
+			}
+			if eng.reached.Load() != before {
+				t.Errorf("the request reached the engine (%s). crun would follow the symlink in "+
+					"the derived namespace and land in the graft (issue #251)", tc.source)
+			}
+		})
+	}
+
+	// CONTROL 2: the fix does NOT refuse a plain-missing source. A name podman
+	// will create under the writable, host-visible target means nothing in
+	// either namespace, and refusing it would break a legitimate bind. This is
+	// what keeps the fix keyed on the divergence rather than on "the source
+	// does not exist".
+	code, resp := post(t, sock, "/v1.41/containers/create",
+		`{"HostConfig":{"Binds":["`+filepath.Join(target, "not-created-yet")+`:/x:rw"]}}`)
+	if code != 200 {
+		t.Errorf("a plain non-existent path under the writable target was refused (status %d): "+
+			"%s\nthe fix over-reached — it is refusing absence, not the namespace divergence",
+			code, resp)
+	}
+
+	// CONTROL 3: a symlink to a real, host-EXISTENT but ungranted path is still
+	// refused — by visibility, the earlier redteam hole — and must stay so. The
+	// new dangling-symlink refusal must not have replaced that check.
+	refuse(t, sock, eng, "/v1.41/containers/create",
+		`{"HostConfig":{"Binds":["`+mk("letc", "/etc")+`:/x"]}}`, "cannot see /etc")
+}
