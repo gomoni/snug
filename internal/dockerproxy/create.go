@@ -252,14 +252,17 @@ var namespaceModeReason = map[string]string{
 		`tree it once was, but the read-write store is enough. There is no flag ` +
 		`that enables it and no narrower spelling: PidMode=container:<id> reaches ` +
 		`a sibling container the same way`,
-	"IpcMode": `the engine does not unshare IPC, so "host" here really is the ` +
-		`machine's: it reaches the System V shared memory, semaphores and message ` +
-		`queues of every host process running as your uid, which the sandbox has ` +
-		`no other route to`,
-	"UTSMode": `the engine does not unshare UTS, so "host" here really is the ` +
-		`machine's: it discloses the real hostname and domainname, which the ` +
+	"IpcMode": `the engine has its OWN IPC namespace since issue #182, so "host" ` +
+		`here names the ENGINE's, not the machine's: joining it reaches only the ` +
+		`System V shared memory, semaphores and message queues the engine itself ` +
+		`holds — none, podman creates no host segment — not the host's, which the ` +
+		`sandbox has no route to. Refused whether or not it would disclose ` +
+		`anything, the same way CgroupnsMode is`,
+	"UTSMode": `the engine has its OWN UTS namespace since issue #182, so "host" ` +
+		`here names the ENGINE's hostname, not the machine's real one, which the ` +
 		`sandbox is otherwise never told (bwrap gives the payload --unshare-uts ` +
-		`and a hostname snug chooses)`,
+		`and a hostname snug chooses). Refused whether or not it would disclose ` +
+		`anything`,
 	"UsernsMode": `the only user namespace on offer is U, the engine's own — ` +
 		`root-in-U with the full delegated subuid range and ` +
 		`policy.EngineCapBounding. snug decides a container's user namespace; a ` +

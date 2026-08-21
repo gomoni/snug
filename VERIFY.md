@@ -2236,6 +2236,33 @@ not fire.
 private image can be pulled from inside, and `podman login` has nothing to
 persist to.
 
+### 9j-bis. The container engine holds its own IPC and UTS namespaces (issue #182)
+
+Before #182 the engine shared the MACHINE's System V IPC and its UTS namespace —
+measured: `/proc/<engine>/ns/ipc` and `/ns/uts` were byte-for-byte the host's,
+while the payload had its own of each. That made `IpcMode=host`/`UTSMode=host`
+the only two proxy filters standing between a container and the host's SysV
+shm/sem/mq and real hostname (the #146 inventory). #182 gives the engine its
+own of both, dropping those refusals to defence-in-depth.
+
+**Needs a real engine** (see 9j).
+
+```bash
+snug -p @podman-socket $SC/proj/sub -- sleep 300 &
+sleep 2
+ENGINE_PID=$(pgrep -f 'podman-[0-9]+\.sock' | head -1)
+for n in ipc uts; do
+  echo "$n engine=$(readlink /proc/$ENGINE_PID/ns/$n) host=$(readlink /proc/self/ns/$n)"
+done
+kill %1
+```
+
+Expect the engine's `ipc:[...]` and `uts:[...]` to DIFFER from the host's — the
+opposite of what the pre-#182 code produced. The refusals stay: `IpcMode=host`
+and `UTSMode=host` are still refused (now naming the engine's namespaces, not
+the machine's), which is `TestIpcAndUtsReasonsMatchTheEnginesActualCloneflags`
+keeping the refusal reasons in sync with the two clone-flag sets.
+
 ### 9j. The container engine holds its own pid namespace (issue #125, C0)
 
 `enginefork.go` clones the engine with `CLONE_NEWPID` and `EnterEngine` mounts

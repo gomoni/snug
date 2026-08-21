@@ -1792,9 +1792,10 @@ func describeTopology(out *os.File, p *policy.Policy) {
 		fmt.Fprintf(out, "                  /proc/<pid>/root reaches that process's whole mount namespace,\n")
 		fmt.Fprintf(out, "                  and pid 1 here is the engine — whose mount namespace is the\n")
 		fmt.Fprintf(out, "                  private copy of the host tree named above.\n")
-		fmt.Fprintf(out, "                  ipc + uts namespaces: the HOST's. The engine unshares neither,\n")
-		fmt.Fprintf(out, "                  which is why a container may not ask for either; the payload\n")
-		fmt.Fprintf(out, "                  does have its own (bwrap --unshare-ipc --unshare-uts).\n")
+		fmt.Fprintf(out, "                  ipc + uts namespaces: the ENGINE's OWN (issue #182). A container\n")
+		fmt.Fprintf(out, "                  may not ask for either — \"host\" would name the engine's, not the\n")
+		fmt.Fprintf(out, "                  machine's; the payload has its own too (bwrap --unshare-ipc\n")
+		fmt.Fprintf(out, "                  --unshare-uts).\n")
 		fmt.Fprintf(out, "                  capability bounding set (%d): %s\n",
 			len(policy.EngineCapBounding), strings.Join(policy.EngineCapBounding, " "))
 		// The gate (issue #125), printed for exactly the selections that get
