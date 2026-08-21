@@ -398,6 +398,53 @@ refusal exists to stop a mount from replacing. The exemption is keyed on
 `Mount.Authored`, which only `Policy.Replace` sets and nothing a profile can
 write reaches.
 
+### 4c. What the payload learns about its supervisor (issue #272, accepted)
+
+The sandbox cannot see, signal or `/proc`-inspect the `snug` process supervising
+it — its pid namespace is its own. It can, on some runs, **read that process's
+host pid**, and this section is the measurement rather than a paraphrase of it.
+
+A run that mounts a proxy socket — an identity profile, or a container profile:
+
+```bash
+XDG_CONFIG_HOME=$X ./bin/snug -p myid $SC/proj/sub -- /bin/sh -c 'grep run- /proc/self/mountinfo'
+```
+
+```
+68896 68857 0:70 /snug/run-901003/ssh-agent.sock /snug/ssh-agent.sock rw,nosuid,nodev,relatime …
+```
+
+`901003` is the host pid of the supervising `snug`. **Field 4 of a mountinfo
+line is the root within the SOURCE filesystem**, so the bind's host-side path
+comes along with the mount, and the run directory is named `run-<pid>`.
+
+A DEFAULT run discloses nothing, and that is not the same statement:
+
+```bash
+./bin/snug $SC/proj/sub -- /bin/sh -c 'grep -c "run-[0-9]" /proc/self/mountinfo'
+```
+
+Expect `0`. The run directory exists on every real run, but nothing is bound out
+of it unless a profile puts a proxy socket there — so "no pid in mountinfo" is
+true on the common path for a reason that has nothing to do with the property,
+which is why the test pinning this
+(`TestTheRunDirectoryIsInMountinfoOnlyWhenAProxySocketIsMounted`) has two arms
+and is named for what it asserts rather than for a property the tree does not
+support.
+
+**What it gives and what it does not.** `sev:low`, information disclosure only:
+a number, not a capability. The payload cannot act on that pid from inside — no
+signal, no `/proc`, no visibility — so what it buys is a *target*, useful only
+if some other bug ever yields a way to act on the host. Contrast
+`/proc/1/environ`, which was high severity because it handed over 106 host
+variables including credentials: that was material, this is an address.
+
+**Accepted rather than fixed**, deliberately: the pid also appears in the
+engine's socket filename (`podman-<pid>.sock`), the integration suite computes
+that name from it, and this file prints `run-<pid>` in several expected outputs
+— so a pid-free rename is a change with three consumers, not one line. #31
+carries the row; #272 carries the reproduction.
+
 ## 5. What `@parent-ro` actually grants
 
 ```bash
