@@ -53,6 +53,7 @@ import (
 func TestPastaOffersNoHostValueUnderNetAnon(t *testing.T) {
 	budget(t, 90*time.Second)
 	requirePasta(t)
+	requireOwnUserNamespace(t)
 	probe := dhcpProbeBin(t)
 	proj, _ := target(t)
 
@@ -106,6 +107,35 @@ func TestPastaOffersNoHostValueUnderNetAnon(t *testing.T) {
 				"option 55 and pasta's -D/-S defaults are what withhold it — if this fires, that "+
 				"default has changed:\n%s", opt.code, opt.what, got)
 		}
+	}
+}
+
+// requireOwnUserNamespace gates on what this test needs and requirePasta does
+// not cover: pasta SPAWNS the probe, which means it creates a user and network
+// namespace of its own, and a host can have the binary while refusing that.
+//
+// Measured, and the reason this exists: CI's hostless job installs pasta but
+// restricts unprivileged user namespaces, so the first run of this test failed
+// there rather than skipping —
+//
+//	Couldn't write to /proc/self/uid_map: Operation not permitted
+//	Failed to clone process with detached namespaces: Operation not permitted
+//
+// which read as "the DHCP probe did not run to the end", a message about the
+// probe rather than about the host. One level, not two: pasta needs a
+// namespace of its own, not a nested one, so requireNestedUserNamespace would
+// skip on hosts where this test works.
+func requireOwnUserNamespace(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("unshare"); err != nil {
+		skipOrFail(t, "unshare (util-linux) is not installed, so this test cannot check "+
+			"whether pasta will be able to create the namespace it spawns the probe in")
+	}
+	probe := exec.Command("unshare", "--user", "--map-root-user", "--", "/bin/true")
+	if out, err := probe.CombinedOutput(); err != nil {
+		skipOrFail(t, "cannot create a user namespace here, so pasta cannot spawn the DHCP "+
+			"probe (see kernel.apparmor_restrict_unprivileged_userns and "+
+			"kernel.unprivileged_userns_clone): %s", strings.TrimSpace(string(out)))
 	}
 }
 
