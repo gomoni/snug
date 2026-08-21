@@ -1920,6 +1920,19 @@ container is even created. Add `-p @net` and expect the pull to succeed.
 Positive control: `curl --unix-socket ... http://x/v1.41/version` succeeds
 either way — the engine exists and answers locally; only egress differs.
 
+**READ THE PULL'S OWN BODY before concluding anything about the second half.**
+Docker Hub refuses anonymous pulls whenever it likes ("toomanyrequests: You
+have reached your unauthenticated pull rate limit"), and podman retries three
+times before answering, so a refused pull with `-p @net` selected looks exactly
+like broken egress and takes about thirty seconds to look like it. That
+mistake has been made four times in this repository, twice with the correction
+already committed (issue #235). The automated suite no longer depends on a
+registry for this property at all — `TestContainerEgressFollowsNetProfile`
+dials an address the test resolved on the host first — and this by-hand check
+keeps the pull only because a human can read the body. If the body names the
+registry, the registry is what refused you; nothing here is a statement about
+snug.
+
 ## 9e. A profile name is refused as a NAME, not as a missing profile
 
 9b covers the `@` namespace; this covers the rest of the grammar, and it covers

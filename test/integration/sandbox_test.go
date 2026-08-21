@@ -80,6 +80,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -339,25 +340,100 @@ func requirePython(t *testing.T) {
 	}
 }
 
-// requireInternet gates the tests that reach the public internet. Whether
-// outbound traffic is acceptable is a policy of the machine running the suite
-// rather than a capability it either has or lacks, so on a laptop this is a
-// plain skip.
+// internetHost and internetPort are the one endpoint this suite means by "the
+// internet". A single named endpoint rather than one per test, so that the
+// host-side control and the sandbox-side assertion can be the SAME address:
+// a container that cannot reach it while the host just did is a snug failure,
+// and nothing else.
 //
-// Under SNUG_REQUIRE_SANDBOX it is a failure, because otherwise dropping
-// SNUG_TEST_NET from the CI workflow would silently delete the egress coverage —
-// exactly the "green run that checked nothing" this suite exists to prevent.
+// tcp4, deliberately. The probe run inside a container dials an IPv4 literal
+// (testdata/egressprobe), and a v4 control for a v4 assertion is the only pair
+// that cannot disagree about which family the host actually has.
+const (
+	internetHost = "example.com"
+	internetPort = "443"
+)
+
+var (
+	internetOnce sync.Once
+	internetIP   string
+	internetErr  error
+)
+
+// requireInternet gates the tests that reach the public internet, on TWO
+// separate things — and until issue #235 it checked only the first.
+//
+//  1. Whether outbound traffic is ACCEPTABLE is a policy of the machine
+//     running the suite rather than a capability it either has or lacks, so on
+//     a laptop a missing SNUG_TEST_NET is a plain skip. Under
+//     SNUG_REQUIRE_SANDBOX it is a failure, because otherwise dropping
+//     SNUG_TEST_NET from the CI workflow would silently delete the egress
+//     coverage — exactly the "green run that checked nothing" this suite
+//     exists to prevent.
+//
+//  2. Whether the internet is actually REACHABLE from this host. This gate
+//     named the internet and measured nothing, which is the "documented but
+//     not implemented" shape CLAUDE.md warns about, and it is how issue #235
+//     cost four wrong diagnoses: when the far end refused, no test said so.
+//     Every test past this point then failed — or, worse, silently ate its
+//     whole budget — with a message naming a subsystem that was working. One
+//     dial, once, five seconds, and the endpoint is NAMED in the failure.
+//
+// The measurement is memoized across the suite: it is one TCP connect, but
+// running it per test would make a network outage cost one five-second stall
+// for every test that mentions the network.
 func requireInternet(t *testing.T) {
 	t.Helper()
-	if os.Getenv("SNUG_TEST_NET") != "" {
+	if os.Getenv("SNUG_TEST_NET") == "" {
+		if os.Getenv("SNUG_REQUIRE_SANDBOX") != "" {
+			t.Fatal("SNUG_REQUIRE_SANDBOX is set but SNUG_TEST_NET is not: " +
+				"set SNUG_TEST_NET=1 to allow the tests that reach the internet, " +
+				"or unset SNUG_REQUIRE_SANDBOX to let them skip")
+		}
+		t.Skip("SKIP: set SNUG_TEST_NET=1 to allow tests that reach the internet")
+	}
+
+	internetOnce.Do(func() { internetIP, internetErr = probeInternet() })
+	if internetErr == nil {
 		return
 	}
+	msg := fmt.Sprintf("this HOST cannot reach %s:%s (tcp4): %v — nothing below this line "+
+		"is a statement about snug", internetHost, internetPort, internetErr)
 	if os.Getenv("SNUG_REQUIRE_SANDBOX") != "" {
-		t.Fatal("SNUG_REQUIRE_SANDBOX is set but SNUG_TEST_NET is not: " +
-			"set SNUG_TEST_NET=1 to allow the tests that reach the internet, " +
-			"or unset SNUG_REQUIRE_SANDBOX to let them skip")
+		t.Fatal(msg)
 	}
-	t.Skip("SKIP: set SNUG_TEST_NET=1 to allow tests that reach the internet")
+	t.Skip("SKIP: " + msg)
+}
+
+// probeInternet dials internetHost:internetPort and reports the address that
+// answered. The timeout is short on purpose: a host with no route produces a
+// named failure in seconds rather than a per-test budget expiring in silence.
+func probeInternet() (string, error) {
+	d := net.Dialer{Timeout: 5 * time.Second}
+	c, err := d.Dial("tcp4", net.JoinHostPort(internetHost, internetPort))
+	if err != nil {
+		return "", err
+	}
+	defer c.Close()
+	ip, _, err := net.SplitHostPort(c.RemoteAddr().String())
+	if err != nil {
+		return "", err
+	}
+	return ip, nil
+}
+
+// internetTarget is requireInternet plus the ADDRESS that answered, for the
+// tests that have to hand a reachable address to a payload which cannot
+// resolve a name of its own — a container built FROM scratch, in
+// TestContainerEgressFollowsNetProfile.
+//
+// Handing over the resolved literal rather than the name is what makes the
+// sandbox-side result unambiguous: the host resolved and connected first, so a
+// REFUSED inside the sandbox is a routing answer and cannot be a DNS answer.
+func internetTarget(t *testing.T) string {
+	t.Helper()
+	requireInternet(t)
+	return net.JoinHostPort(internetIP, internetPort)
 }
 
 // ── plumbing ────────────────────────────────────────────────────────────────
@@ -3105,7 +3181,11 @@ func TestPodmanBuildIsFilteredEndToEnd(t *testing.T) {
 	requireSandbox(t)
 	requireEngine(t)
 	requirePython(t)
-	requireInternet(t) // the build pulls alpine
+	// No requireInternet, and its absence is the point: this test used to
+	// carry `requireInternet(t) // the build pulls alpine`, and since #241
+	// the build probe is FROM scratch with a static binary copied in, so it
+	// contacts no registry and needs no egress at all. A gate whose stated
+	// reason has stopped being true is how folklore starts (issue #235).
 	// requireRealEngine (containerengine_test.go) is the fix for this test
 	// FAILING outright on a CI runner instead of skipping: requireEngine
 	// above only proves a `podman` binary is on PATH, and a GitHub-hosted
@@ -3121,9 +3201,7 @@ func TestPodmanBuildIsFilteredEndToEnd(t *testing.T) {
 
 	proj, _ := target(t)
 
-	if err := os.WriteFile(filepath.Join(proj, "probe.py"), []byte(buildProbe), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeBuildProbe(t, proj)
 
 	r := run(t, []string{"-p", "@podman-build", "-p", "@net"}, proj, `python3 probe.py`).mustRun(t)
 
@@ -3157,9 +3235,61 @@ func TestPodmanBuildIsFilteredEndToEnd(t *testing.T) {
 	}
 }
 
+// writeBuildProbe puts the build probe and the binary its Dockerfile copies
+// into a target directory. Both, always: the script tars "marker" from its own
+// working directory, so writing probe.py alone produces a probe that fails on
+// its first open() with an error about a missing file rather than anything to
+// do with what it was measuring.
+func writeBuildProbe(t *testing.T, proj string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(proj, "probe.py"), []byte(buildProbe), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "marker"), mustRead(t, buildMarkerBin(t)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// buildMarkerBin builds testdata/buildmarker the way holderBin builds its own
+// binary: statically (CGO_ENABLED=0), because it is about to be the ENTIRE
+// contents of a FROM-scratch image and there is no dynamic loader in there to
+// find a libc with.
+func buildMarkerBin(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "marker")
+	cmd := exec.Command("go", "build", "-o", bin, "./testdata/buildmarker")
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	var out strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("building test/integration/testdata/buildmarker: %v: %s", err, out.String())
+	}
+	return bin
+}
+
 // buildProbe posts context tars to $CONTAINER_HOST with the query parameters a
 // real `podman build` sends, one per case. The parameter sets are the ones
 // recorded from podman 5.8.3; see internal/dockerproxy/build_test.go.
+//
+// IT NEEDS NO REGISTRY, and that is issue #235 rather than tidiness. It used to
+// build `FROM docker.io/library/alpine:3.20`, so this probe — and
+// requireRealEngine, which gates sixteen more tests — depended on an anonymous
+// Docker Hub pull. When Docker Hub refuses one, and it does
+// ("toomanyrequests: You have reached your unauthenticated pull rate limit",
+// measured on a development host), the build never starts, the probe never
+// finishes, and the test reports a 30-second timeout that names no registry.
+// Four separate diagnoses of that failure blamed something else, twice with
+// the correction already committed in this file.
+//
+// `FROM scratch` plus one static binary needs neither a registry nor egress —
+// the same trade holder's doc comment already records for a container that has
+// to keep RUNNING. The shell was the only thing lost, and the EXEC form of RUN
+// does not need one: `RUN ["/marker"]` runs testdata/buildmarker directly and
+// its stdout lands in the build output exactly where `echo`'s did (measured
+// with podman 5.x before it was written here). Callers use writeBuildProbe,
+// which puts both files in place — the script alone is no longer enough.
 const buildProbe = `import http.client, socket, os, tarfile, io, urllib.parse
 
 class UnixHTTP(http.client.HTTPConnection):
@@ -3175,25 +3305,28 @@ sock = os.environ["CONTAINER_HOST"].replace("unix://", "")
 
 buf = io.BytesIO()
 with tarfile.open(fileobj=buf, mode="w") as tf:
-    # A FULLY QUALIFIED reference, not the bare "alpine" this used to say.
-    # MEASURED (issue #63, Tier B, sandbox-tester): with a short name,
-    # containers/image resolves it through registries.conf's short-name-alias
-    # cache, and — because __inengine's own process reports euid 0
-    # (root-in-U, not "really" root on this host) — that code picks the
-    # SYSTEM cache path (/var/cache/containers) over the user one, which the
-    # real host uid cannot write to: "creating build container: mkdir
-    # /var/cache/containers: permission denied". The build itself still
-    # returns 200 (STEP 1/2 succeeded before the failure), so this is exactly
-    # the "200 but BUILT-INSIDE-SNUG never appears" shape probeRealEngine's
-    # own doc comment (containerengine_test.go) attributed to cgroup
-    # delegation — that diagnosis was WRONG; the private-cgroup-namespace
-    # remount warning is a harmless red herring that happens to appear right
-    # next to the real failure. A fully qualified name skips short-name
-    # resolution entirely, so this never runs regardless of euid.
-    data = b"FROM docker.io/library/alpine:3.20\nRUN echo BUILT-INSIDE-SNUG\n"
+    # FROM scratch, not a registry reference. The build has to PROVE it ran a
+    # step, which is what BUILT-INSIDE-SNUG is for, and a shell was the obvious
+    # way to print it — at the cost of a base image, an anonymous pull, and a
+    # 30-second silent hang whenever the registry says no (issue #235). The
+    # exec form of RUN needs no shell: it runs the copied binary directly.
+    #
+    # The old comment here recorded a second reason the reference had to be
+    # FULLY QUALIFIED — a short name goes through registries.conf's
+    # short-name-alias cache, and __inengine reports euid 0, so containers/image
+    # picks the SYSTEM cache path (/var/cache/containers) that the real host uid
+    # cannot write to. That whole failure mode is gone with the registry: there
+    # is no name to resolve.
+    data = b"FROM scratch\nCOPY marker /marker\nRUN [\"/marker\"]\n"
     ti = tarfile.TarInfo("Dockerfile")
     ti.size = len(data)
     tf.addfile(ti, io.BytesIO(data))
+    with open("marker", "rb") as f:
+        binary = f.read()
+    tb = tarfile.TarInfo("marker")
+    tb.size = len(binary)
+    tb.mode = 0o755
+    tf.addfile(tb, io.BytesIO(binary))
 ctx = buf.getvalue()
 
 BASE = {"dockerfile": '["Dockerfile"]', "t": "snugtest:1", "output": "snugtest:1",
@@ -3212,6 +3345,14 @@ def build(label, extra):
     print("%s: %d" % (label, r.status), flush=True)
     if "BUILT-INSIDE-SNUG" in body:
         print("BUILT-INSIDE-SNUG", flush=True)
+    elif label == "ordinary build":
+        # SAY WHAT WENT WRONG. The build's own answer carries the reason — a
+        # registry refusing a pull, a step exiting non-zero, a mount denied —
+        # and throwing it away is what turned every such failure into "the
+        # probe did not finish in 30s", a message naming nothing. Four wrong
+        # diagnoses came out of that silence (issue #235). Only the control
+        # case prints it: a refusal is the expected outcome for the others.
+        print("ORDINARY-BUILD-FAILED: %s" % body[-800:].replace("\n", " | "), flush=True)
 
 # nocache on the control, deliberately: with a warm layer cache podman prints
 # "Using cache" and the RUN step's own output never appears, so the

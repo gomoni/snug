@@ -66,6 +66,18 @@ gate:
 	# lazily by gate_test.go's fakePodmanBin. Same fix, same reasoning as
 	# the five above.
 	go vet ./test/integration/testdata/fakepodman
+	# testdata/buildmarker (issue #235) is the seventh: the RUN step of the
+	# build probe's Dockerfile, which is what let that probe stop building
+	# FROM alpine and stop needing an anonymous Docker Hub pull. Built lazily
+	# by sandbox_test.go's buildMarkerBin. Same fix, same reasoning as the
+	# six above.
+	go vet ./test/integration/testdata/buildmarker
+	# testdata/egressprobe (issue #235) is the eighth: a `FROM scratch`
+	# entrypoint that dials the addresses it is given, which is what let
+	# TestContainerEgressFollowsNetProfile stop proving egress with an
+	# anonymous Docker Hub pull. Built lazily by containerengine_test.go's
+	# egressprobeBin. Same fix, same reasoning as the seven above.
+	go vet ./test/integration/testdata/egressprobe
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This

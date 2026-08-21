@@ -1,6 +1,8 @@
 # Design note — parameterised profiles
 
-**Status: postponed by decision. Not scheduled.** Filed so the reasoning is not
+**Status: DRAFT — postponed by decision, not scheduled, nothing built.**
+Exempt from the prose-pruning pass for the same reason as `SECRETS.md`: with no
+code to be the answer, the reasoning is the whole asset. Filed so it is not
 re-derived later. Read this before starting; several conclusions are not obvious
 and two of them are independent bug reports (see "Findings that are not about
 parameterisation", at the end).

@@ -273,9 +273,13 @@ func forceCgroupsDisabled(conf string) string {
 // ── the shared "is there a REAL, working engine" gate ───────────────────────
 
 // realEngineResults memoizes probeRealEngine per distinct env: standing a
-// working engine up (subuid delegation, a private cgroup namespace, crun,
-// a real image pull) costs real wall-clock time, and every test in this file
-// needs the same host-capability answer.
+// working engine up (subuid delegation, a private cgroup namespace, crun, a
+// build that really runs a step) costs real wall-clock time, and every test in
+// this file needs the same host-capability answer.
+//
+// It used to say "a real image pull" and that was true until issue #241: the
+// probe built FROM alpine, so this gate — and therefore every test in this
+// file — depended on an anonymous Docker Hub pull. It builds FROM scratch now.
 var (
 	realEngineMu      sync.Mutex
 	realEngineResults = map[string]string{}
@@ -327,7 +331,12 @@ func requireRealEngine(t *testing.T, env []string) {
 	t.Helper()
 	requireSandbox(t)
 	requirePython(t)
-	requireInternet(t)
+	// No requireInternet. This gate carried one until issue #235, from when
+	// its probe built FROM alpine, and it put every test in this file behind
+	// SNUG_TEST_NET for a pull none of them make any more — the probe is FROM
+	// scratch since #241. It still selects @net (see probeRealEngine, which
+	// says why), but @net is a network NAMESPACE with pasta attached, not a
+	// working route to the internet, and the two were being conflated.
 
 	key := strings.Join(env, "\x00")
 	realEngineMu.Lock()
@@ -348,12 +357,17 @@ func requireRealEngine(t *testing.T, env []string) {
 // TestPodmanBuildIsFilteredEndToEnd asserts, in a throwaway target of its
 // own, and reports WHY the engine is not usable rather than letting whichever
 // test happened to need it first fail with a confusing, unrelated message.
+//
+// It keeps @net even though the probe needs no egress (issue #235 removed the
+// registry the probe used to pull from), because the leg it exists to
+// pre-flight is the one TestPodmanBuildIsFilteredEndToEnd runs, and that test
+// selects @net. Dropping it here would make the gate pass on a host where the
+// @net path is what fails, which is the exact failure requireRealEngine was
+// written to convert into a clean skip.
 func probeRealEngine(t *testing.T, env []string) string {
 	t.Helper()
 	proj, _ := target(t)
-	if err := os.WriteFile(filepath.Join(proj, "probe.py"), []byte(buildProbe), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeBuildProbe(t, proj)
 	r := runEnv(t, env, []string{"-p", "@podman-build", "-p", "@net"}, proj, `python3 probe.py`)
 	if !r.ran {
 		return fmt.Sprintf("the probe payload never ran (snug exited %d): %s", r.code, r.out)
@@ -376,18 +390,28 @@ func probeRealEngine(t *testing.T, env []string) string {
 const pyPreamble = `import http.client, socket, os, json
 
 class UnixHTTP(http.client.HTTPConnection):
-    def __init__(self, path):
+    # The timeout is kept in an attribute of our own rather than handed to
+    # HTTPConnection: that class stores socket._GLOBAL_DEFAULT_TIMEOUT (a
+    # sentinel object, not None and not a number) when none is given, so
+    # "if self.timeout is not None: settimeout(self.timeout)" passes the
+    # sentinel straight through and raises. Only the ONE caller that talks to a
+    # registry sets it -- see TestAnEngineWithNetPullsFromARegistry for why a
+    # request that can hang needs its own bound (issue #235).
+    def __init__(self, path, timeout=None):
         super().__init__("localhost")
         self.path = path
+        self._to = timeout
     def connect(self):
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        if self._to is not None:
+            s.settimeout(self._to)
         s.connect(self.path)
         self.sock = s
 
 _sock = os.environ["CONTAINER_HOST"].replace("unix://", "")
 
-def req(method, path, body=None, headers=None):
-    c = UnixHTTP(_sock)
+def req(method, path, body=None, headers=None, timeout=None):
+    c = UnixHTTP(_sock, timeout)
     c.request(method, path, body=body, headers=headers or {})
     r = c.getresponse()
     data = r.read()
@@ -401,70 +425,279 @@ def req(method, path, body=None, headers=None):
 // so a container's egress is governed by whether @net was selected for the
 // SANDBOX, not by the engine having its own (formerly the host's) route out.
 //
-// Both directions in one test, per the implementer's own spec: without @net,
-// a pull fails on a network marker while the engine itself still answers
-// locally (so the failure is "no network", not "no engine" — the control
-// that makes the negative meaningful); with @net, the identical pull
-// succeeds.
+// Both directions in one test: without @net a container cannot reach a public
+// address the HOST reached moments earlier, while the engine itself still
+// answers locally (so the failure is "no network", not "no engine" — the
+// control that makes the negative meaningful); with @net the identical
+// container reaches it.
+//
+// # Why this no longer pulls an image (issue #235)
+//
+// It used to prove both directions with `POST /images/create?fromImage=alpine`
+// — an anonymous Docker Hub pull. Docker Hub refuses those ("toomanyrequests:
+// You have reached your unauthenticated pull rate limit", measured on this
+// development host), and when it does, podman retries internally and the test
+// reports nothing but a budget expiring. That failure has been misdiagnosed
+// four times, twice with the correction already committed in this repository,
+// because the message closest to it names a subsystem that is working. This
+// test was the LAST place in the suite that needed a registry.
+//
+// A local registry of our own cannot replace it, and that is a measurement
+// rather than a preference: with @net, `ip -4 addr` inside the sandbox shows
+// snug0 carrying the HOST's own address (192.168.1.120/24 here), because that
+// is pasta's model. So a listener the test starts on the host's LAN address is
+// not reachable from inside — packets to that address stay in the sandbox's
+// own netns — and host loopback is closed by design. The only endpoint that is
+// reachable with @net and unreachable without it is the real internet, so the
+// registry can go and the internet cannot.
+//
+// What goes with the registry: this no longer proves the engine can complete a
+// TLS pull from inside the sandbox's mount view (a CA bundle the engine can
+// read is a snug property, not podman's). That leg has its own test —
+// TestAnEngineWithNetPullsFromARegistry — which is allowed to SKIP, with the
+// registry named, when the registry is the thing refusing.
 func TestContainerEgressFollowsNetProfile(t *testing.T) {
-	budget(t, 120*time.Second)
+	budget(t, 180*time.Second)
 	env, _ := containerEngineEnv(t)
 	requireRealEngine(t, env)
 
-	pull := pyPreamble + `
+	// The host-side positive control AND the address the container is given.
+	// internetTarget dials it from here first, so a REFUSED inside the sandbox
+	// is a routing answer about snug and cannot be "this laptop is offline" or
+	// "DNS is broken" — the container, built FROM scratch, resolves nothing.
+	addr := internetTarget(t)
+
+	const tag = "snugegress"
+	probeBin := egressprobeBin(t)
+
+	// "host" as the container's NetworkMode, the same as every other container
+	// in this file: it means the ENGINE's network namespace, which since Tier B
+	// is the sandbox's own N. That is the namespace whose egress is under test.
+	script := buildScratchProbeImageFor(tag, "egressprobe") + runContainerAndCollectFn + fmt.Sprintf(`
 status, _ = req("GET", "/v1.41/version")
-print("version: %d" % status, flush=True)
+print("version: %%d" %% status, flush=True)
+if build_scratch_probe():
+    # Cmd is the ADDRESS ALONE, with no "/egressprobe" in front of it. The
+    # image already carries ENTRYPOINT ["/egressprobe"] (buildScratchProbeImageFor),
+    # and podman APPENDS Cmd to the entrypoint rather than replacing it, so
+    # passing the binary here too would hand the probe its own path as the
+    # first address to dial. Measured, first run of this test: "RESULT
+    # /egressprobe REFUSED dial tcp: address /egressprobe: missing port in
+    # address".
+    run_and_collect(%q, [%q], "host")
+print("SCRIPT-COMPLETE", flush=True)
+`, tag, addr)
 
-status, body = req("POST", "/v1.41/images/create?fromImage=alpine&tag=3.20")
-print("pull-http: %d" % status, flush=True)
-print("pull-body-tail: %s" % body[-300:].decode(errors="replace").replace("\n", " "), flush=True)
-
-status, _ = req("GET", "/v1.41/images/alpine:3.20/json")
-print("inspect: %d" % status, flush=True)
-print("PULLED" if status == 200 else "NOT-PULLED", flush=True)
-print("PROBE-COMPLETE", flush=True)
-`
+	// SCRIPT-COMPLETE, not PROBE-COMPLETE: egressprobe prints PROBE-COMPLETE of
+	// its own, inside the container logs, and the two markers are checked
+	// separately below — one says the payload ran to the end, the other says a
+	// container really executed. Sharing a marker would let either stand in for
+	// the other, which is how a test stops being able to fail.
 	run := func(withNet bool) sandboxRun {
 		proj, _ := target(t)
-		if err := os.WriteFile(filepath.Join(proj, "pull.py"), []byte(pull), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(proj, "egress.py"), []byte(script), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		args := []string{"-p", "@podman-socket"}
+		if err := os.WriteFile(filepath.Join(proj, "egressprobe"), mustRead(t, probeBin), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// @podman-build, where this test used @podman-socket before it built
+		// an image of its own: @podman-socket's filter refuses /build, and it
+		// refuses it by closing the connection, so the payload dies on a
+		// BrokenPipeError with no status code — measured, first run of this
+		// rewrite. The profile is not what the test is about (egress follows
+		// @net under either one), but a container has to exist to have egress,
+		// and building one is how this suite makes a container without a
+		// registry.
+		args := []string{"-p", "@podman-build"}
 		if withNet {
 			args = append(args, "-p", "@net")
 		}
-		return runEnv(t, env, args, proj, `python3 pull.py`).mustRun(t)
+		return runEnv(t, env, args, proj, `python3 egress.py`).mustRun(t)
+	}
+
+	// checkRan is the three things that must hold in BOTH directions before
+	// either verdict means anything: the payload finished, the engine was
+	// alive, and a container really ran. Without them, "the probe did not
+	// reach the internet" is equally true of a sandbox where no container
+	// started at all.
+	checkRan := func(label string, r sandboxRun) {
+		t.Helper()
+		if !strings.Contains(r.out, "SCRIPT-COMPLETE") {
+			t.Fatalf("%s: the probe payload did not run to the end:\n%s", label, r.out)
+		}
+		if !strings.Contains(r.out, "version: 200") {
+			t.Fatalf("control: %s: the engine did not even answer /version, so the egress "+
+				"verdict below proves nothing about egress specifically:\n%s", label, r.out)
+		}
+		if !strings.Contains(r.out, "BUILD "+tag+": 200") {
+			t.Fatalf("control: %s: the FROM scratch probe image did not build, so no container "+
+				"ran and the egress verdict below is vacuous:\n%s", label, r.out)
+		}
+		if !strings.Contains(r.out, "PROBE-COMPLETE") {
+			t.Fatalf("control: %s: the container never printed its own PROBE-COMPLETE, so it "+
+				"did not run to the end and its verdict is not a network answer:\n%s", label, r.out)
+		}
 	}
 
 	offline := run(false)
-	if !strings.Contains(offline.out, "PROBE-COMPLETE") {
-		t.Fatalf("offline probe did not run to the end:\n%s", offline.out)
+	checkRan("offline", offline)
+	if strings.Contains(offline.out, "RESULT "+addr+" REACHED") {
+		t.Errorf("a container REACHED %s without @net — the engine has egress an offline "+
+			"sandbox must not have:\n%s", addr, offline.out)
 	}
-	// CONTROL: the engine answers locally even with no egress at all — so the
-	// failure below is "no network", not "no engine".
-	if !strings.Contains(offline.out, "version: 200") {
-		t.Fatalf("control: the engine did not even answer /version without @net, so the pull "+
-			"failure below proves nothing about egress specifically:\n%s", offline.out)
-	}
-	if strings.Contains(offline.out, "PULLED") && !strings.Contains(offline.out, "NOT-PULLED") {
-		t.Errorf("a container pull SUCCEEDED without @net — the engine has egress an offline "+
-			"sandbox must not have:\n%s", offline.out)
-	}
-	if !strings.Contains(offline.out, "NOT-PULLED") {
-		t.Errorf("expected the offline pull to fail (NOT-PULLED), got:\n%s", offline.out)
+	if !strings.Contains(offline.out, "RESULT "+addr+" REFUSED") {
+		t.Errorf("expected the offline container to be refused at %s, got:\n%s", addr, offline.out)
 	}
 
 	withNet := run(true)
-	if !strings.Contains(withNet.out, "PROBE-COMPLETE") {
-		t.Fatalf("@net probe did not run to the end:\n%s", withNet.out)
+	checkRan("@net", withNet)
+	if !strings.Contains(withNet.out, "RESULT "+addr+" REACHED") {
+		t.Errorf("the SAME container, with @net selected, must reach %s — the host reached it "+
+			"from outside the sandbox moments ago, so this is snug's answer and not the "+
+			"network's. Egress follows the profile in both directions or this tier does not "+
+			"do what it claims:\n%s", addr, withNet.out)
 	}
-	if !strings.Contains(withNet.out, "version: 200") {
-		t.Fatalf("control: the engine did not answer /version with @net either:\n%s", withNet.out)
+}
+
+// TestAnEngineWithNetPullsFromARegistry is the leg
+// TestContainerEgressFollowsNetProfile gave up when it stopped needing a
+// registry (issue #235): an engine inside the sandbox, with @net, completing a
+// real TLS pull from a public registry. That is a snug property and not
+// podman's — the engine runs in snug's mount view, so it succeeds only if a CA
+// bundle and a resolver are actually reachable from in there.
+//
+// # This test is ALLOWED to skip, and that is the fix rather than a weakness
+//
+// The registry is someone else's service and it refuses anonymous pulls
+// whenever it likes. What issue #235 is actually about is not the refusal, it
+// is that the refusal used to arrive as a thirty-second budget with nothing on
+// screen naming a registry — so four separate diagnoses blamed cgroups, then
+// the proxy, then preflight P5. Here the pull carries its own timeout, its
+// body tail is printed, and a refusal SKIPS with the registry named and the
+// registry's own words quoted. A skip nobody can misread beats a failure
+// everybody does.
+//
+// A skip is right rather than convenient: a refused anonymous pull is a fact
+// about Docker Hub's rate limiter, not about this branch, and there is no
+// change to snug that would make it green.
+func TestAnEngineWithNetPullsFromARegistry(t *testing.T) {
+	budget(t, 180*time.Second)
+	env, _ := containerEngineEnv(t)
+	requireRealEngine(t, env)
+	requireInternet(t)
+
+	// pullTimeout bounds the ONE request that talks to a registry. podman
+	// retries a refused pull three times internally and only then answers, so
+	// without a client-side bound this is exactly the silent budget-eater #235
+	// was filed about. It is generous because a cold pull over a slow link is
+	// legitimate, and still far inside the budget above.
+	script := pyPreamble + fmt.Sprintf(`
+status, _ = req("GET", "/v1.41/version")
+print("version: %%d" %% status, flush=True)
+
+try:
+    status, body = req("POST", "/v1.41/images/create?fromImage=%[1]s&tag=%[2]s", timeout=%[3]d)
+    print("pull-http: %%d" %% status, flush=True)
+    print("pull-body-tail: %%s" %% body[-400:].decode(errors="replace").replace("\n", " "), flush=True)
+except Exception as e:
+    print("pull-http: -1", flush=True)
+    print("pull-body-tail: the request to the registry did not answer within %[3]ds: %%r" %% (e,), flush=True)
+
+status, _ = req("GET", "/v1.41/images/%[1]s:%[2]s/json")
+print("inspect: %%d" %% status, flush=True)
+print("PULLED" if status == 200 else "NOT-PULLED", flush=True)
+print("SCRIPT-COMPLETE", flush=True)
+`, dockerHubImage, dockerHubTag, 40)
+
+	proj, _ := target(t)
+	if err := os.WriteFile(filepath.Join(proj, "pull.py"), []byte(script), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(withNet.out, "PULLED") || strings.Contains(withNet.out, "NOT-PULLED") {
-		t.Errorf("the SAME pull, with @net selected, must succeed — egress follows the profile "+
-			"in both directions or this tier does not do what it claims:\n%s", withNet.out)
+	r := runEnv(t, env, []string{"-p", "@podman-socket", "-p", "@net"}, proj, `python3 pull.py`).mustRun(t)
+
+	if !strings.Contains(r.out, "SCRIPT-COMPLETE") {
+		t.Fatalf("the pull payload did not run to the end:\n%s", r.out)
 	}
+	if !strings.Contains(r.out, "version: 200") {
+		t.Fatalf("control: the engine did not even answer /version, so the pull result below "+
+			"says nothing about registries:\n%s", r.out)
+	}
+	if strings.Contains(r.out, "PULLED") && !strings.Contains(r.out, "NOT-PULLED") {
+		return
+	}
+	if reason := registryRefusal(r.out); reason != "" {
+		t.Skipf("SKIP: %s refused the pull of %s:%s, so this host cannot measure the "+
+			"engine's registry path today — this is the registry's answer, not snug's: %s",
+			dockerHubRegistry, dockerHubImage, dockerHubTag, reason)
+	}
+	t.Errorf("an engine with @net could not pull %s:%s from %s, and %s did not refuse it in "+
+		"words registryRefusalMarkers recognises — so this is snug's failure until the "+
+		"pull-body-tail line below says otherwise:\n%s",
+		dockerHubImage, dockerHubTag, dockerHubRegistry, dockerHubRegistry, r.out)
+}
+
+// The suite's ONE registry dependency, named once. Anything in this suite that
+// contacts a registry must go through these three constants, and
+// TestTheSuiteHasExactlyOneRegistryDependency enforces that by parsing every
+// test file — because the dependency issue #235 is about was invisible: it sat
+// in a python heredoc inside a helper, and "every container test needs a
+// Docker Hub pull" was believed, filed, and wrong.
+//
+// Fully qualified on purpose. A SHORT name goes through registries.conf's
+// short-name-alias cache, and __inengine reports euid 0, so containers/image
+// picks the SYSTEM cache path (/var/cache/containers) that the real host uid
+// cannot write to — measured, and recorded at requireRealEngine above.
+const (
+	dockerHubRegistry = "docker.io"
+	dockerHubImage    = "docker.io/library/alpine"
+	dockerHubTag      = "3.20"
+)
+
+// registryRefusalMarkers are the registry's OWN words for "not today", as
+// distinct from any failure inside the sandbox. Matched against the body the
+// engine streamed back, lowercased.
+//
+// Deliberately narrow: every marker here turns a failure into a skip, so a
+// marker that is too broad silently deletes this test. Absent, and each for a
+// reason worth stating, because each is a failure shape a reader will be
+// tempted to add here the next time it appears:
+//
+//   - "connection refused", "no route to host", "i/o timeout", "did not answer
+//     within" (our own bound) — this is what a BROKEN @net looks like, which is
+//     the thing under test.
+//   - "no such host", "temporary failure in name resolution" — DNS inside the
+//     sandbox is snug's own property (the generated /etc/resolv.conf), and
+//     requireInternet has already proved the HOST resolves, so a resolver
+//     failure in here is snug's answer and must stay a failure.
+//
+// A skip is not the only way this stays legible when the registry is at fault:
+// both paths out of this test name the registry and quote the body tail, which
+// is the whole of what issue #235 asked for.
+var registryRefusalMarkers = []string{
+	"toomanyrequests",
+	"rate limit",
+	"429",
+	"unauthorized",
+}
+
+// registryRefusal reports the registry's own explanation if the output carries
+// one, and "" if it does not. The returned string is the pull-body-tail line
+// itself, so a skip quotes the registry verbatim rather than paraphrasing it.
+func registryRefusal(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "pull-body-tail: ") {
+			continue
+		}
+		low := strings.ToLower(line)
+		for _, m := range registryRefusalMarkers {
+			if strings.Contains(low, m) {
+				return line
+			}
+		}
+	}
+	return ""
 }
 
 // ── shared: build a from-scratch image around the static netprobe binary ────
@@ -504,6 +737,38 @@ func netprobeBin(t *testing.T) string {
 		t.Fatal(netprobeBinErr)
 	}
 	return netprobeBinPath
+}
+
+// egressprobeBinPath is testdata/egressprobe, built the same lazy way as
+// netprobeBin below and for the same reason — it is the entrypoint of a
+// `FROM scratch` image, so it must be a static host-architecture binary, and
+// most hosts skip every test in this file before ever needing it.
+var (
+	egressprobeBinOnce sync.Once
+	egressprobeBinPath string
+	egressprobeBinErr  error
+)
+
+func egressprobeBin(t *testing.T) string {
+	t.Helper()
+	egressprobeBinOnce.Do(func() {
+		dir := t.TempDir()
+		bin := filepath.Join(dir, "egressprobe")
+		cmd := exec.Command("go", "build", "-o", bin, "./testdata/egressprobe")
+		cmd.Dir = "."
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+		var out strings.Builder
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Run(); err != nil {
+			egressprobeBinErr = fmt.Errorf("building test/integration/testdata/egressprobe: %w: %s", err, out.String())
+			return
+		}
+		egressprobeBinPath = bin
+	})
+	if egressprobeBinErr != nil {
+		t.Fatal(egressprobeBinErr)
+	}
+	return egressprobeBinPath
 }
 
 // buildScratchProbeImage builds a `FROM scratch` image whose entrypoint is
@@ -894,9 +1159,7 @@ func TestHostNsfsBindsDoNotLeak(t *testing.T) {
 	before := readDirNamesOrEmpty(netnsDir)
 
 	proj, _ := target(t)
-	if err := os.WriteFile(filepath.Join(proj, "probe.py"), []byte(buildProbe), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeBuildProbe(t, proj)
 	// CONTROL: the run really did build AND run a container (BUILT-INSIDE-SNUG
 	// only appears if the RUN step actually executed).
 	r := runEnv(t, env, []string{"-p", "@podman-build", "-p", "@net"}, proj, `python3 probe.py`).mustRun(t)

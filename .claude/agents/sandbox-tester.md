@@ -72,6 +72,27 @@ coverage in every review.
   pinned. **When a comment says "requires X", grep for X before believing it,
   then write the test that makes it true.**
 
+  *The same shape hides in this suite's own helpers, where it costs diagnosis
+  rather than security.* `requireInternet` was named for the internet and
+  measured only whether `SNUG_TEST_NET` was set — so when the far end refused,
+  no test said so, and the failure arrived as a per-test budget expiring beside
+  an unrelated warning. Four separate sessions diagnosed cgroups, then the
+  container proxy, then container preflight P5, twice with the correction
+  already committed in the repository (issue #235). It now dials one endpoint,
+  once, and NAMES it. **A `requireX` helper that does not measure X is the same
+  defect as a security gate nobody checks; the difference is only who pays.**
+
+- **"Did it run?" is not "did it run against the right target?"** A probe
+  container in this suite carried three good controls — the payload finished,
+  the image built, the container printed `RESULT` lines — and every one of them
+  held while the probe dialled a nonsense address, because podman APPENDS `Cmd`
+  to `ENTRYPOINT` and the probe read its own path as the port (issue #243,
+  measured: `RESULT v4-loop REFUSED dial tcp: lookup tcp//netprobe: unknown
+  port`). Three security negatives, none of which had ever been able to fail.
+  **When a payload takes a target as an argument, assert the target back out of
+  its output** — and treat a verdict whose reason is a PARSE error, not a
+  network answer, as a failure in its own right.
+
 ### Regressions from the red team
 
 You own the committed suite; `redteam` owns exploration. Every escape it

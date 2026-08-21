@@ -1,8 +1,17 @@
 # Secrets
 
-**Status: living design document.** §5 records what is settled; everything else
-is analysis, not a decision. It exists so each decision is made against measured
-ground truth rather than against what the comments say.
+**Status: DRAFT. Nothing here is built.** The broker is blocked on one
+unauthorised measurement (issue #18) and `gh`'s answer is a menu, not a pick
+(D6). §5 records what is settled; everything else is analysis of a design space,
+not a decision.
+
+**Exempt from the prose-pruning pass**, deliberately: a shipped subject's design
+doc may lose its option space to the code, because the code is the answer. This
+one has no code, so the option space *is* the document. Do not compress §3
+before the design lands — the exploration is the asset, and the thing to fix
+after it lands is the same thing that was fixed in `CLAUDE.md`: a document
+narrating its own drafting history (`Struck:`, "the earlier audit", "the first
+draft said").
 
 Builds on **the earlier secrets audit**, whose findings are now
 [issue #18](https://github.com/gomoni/snug/issues/18). Where this contradicts
