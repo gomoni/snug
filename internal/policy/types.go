@@ -331,6 +331,12 @@ type Policy struct {
 	Identity *Identity
 	Podman   PodmanMode
 
+	// PluginAllowlist is the union of the selected profiles' `plugins` lists —
+	// the Claude Code plugins whose installed_plugins.json entry snug
+	// regenerates (issue #68). Sorted, deduplicated. Names only; the guest path
+	// is snug's, never a profile's.
+	PluginAllowlist []string
+
 	// SystemSSHConfigs is every guest path where snug replaced this host's
 	// system-wide ssh_config for this run, in the order it decided them. It
 	// is the RECORD of a decision, written only by replaceSystemSSHConfig,

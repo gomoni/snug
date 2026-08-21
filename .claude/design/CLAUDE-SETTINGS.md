@@ -370,10 +370,11 @@ fetches and loads; `enabledPlugins` enables code that `@claude` already mounts
 read-only; the `*Mcpjson*` pair pre-approves servers named by the **target
 repository's** `.mcp.json`, which is invariant 3 verbatim — a host key handing
 the sandboxed material an execution channel.
-*Cost, stated:* the human's plugins are not *selected* inside. On this host that
-is `gopls-lsp` and `caveman`. It is said in the injected guidance so nobody
-diagnoses it — **and see §4.4, because it does not follow that they do not
-load.**
+*Cost, stated:* the human's plugins are not *selected* inside via
+`enabledPlugins`. It is said in the injected guidance so nobody diagnoses it.
+Dropping `enabledPlugins` is no longer the only thing standing between an
+installed plugin and auto-loading — since issue #68 the `plugins` allowlist
+regenerates `installed_plugins.json` so only named plugins load; see §4.4.
 
 **(c) Environment.** `env`.
 *Reason:* "Environment variables to set for Claude Code sessions" — it lands in
@@ -567,7 +568,7 @@ inside a run whose whole premise is that *this* run is a separate decision.
 - **The network**, when `@net` is selected — and `@claude` is commonly combined
   with `@net`.
 
-### 4.4 What this does NOT close — the plugin channel, and it is stronger than first written
+### 4.4 The plugin channel — why settings.json alone did not close it, and what #68 did
 
 `@claude` binds `{home}/.claude/plugins` read-only. Measured on the development
 host, 2026-08-13:
@@ -583,23 +584,35 @@ host, 2026-08-13:
   (`~/.claude/plugins/*/hooks/hooks.json`)"* and *"The standard
   `hooks/hooks.json` is loaded automatically"*.
 
-So **dropping `enabledPlugins` from the generated file is not known to disable
-anything**: the bound directory carries its own record of what is installed and
-where. The first draft of this section said only "whether they fire is not
-known"; the `installed_plugins.json` measurement makes the residual stronger
-than that, and the honest statement is the narrow one:
+So **dropping `enabledPlugins` from the generated file was never enough on its
+own**: the bound directory carried its own record of what is installed and
+where, and Claude Code auto-loads each installed plugin's `hooks.json`
+regardless of `enabledPlugins`. That was the residual this section first named.
 
-> snug does not supply hooks **from the host's settings file**. It does not
-> follow, and no test asserts, that the sandbox runs no hooks.
+**Issue #68 closes it, by the same mechanism this whole document is about.**
+snug now REGENERATES `installed_plugins.json` from a per-profile `plugins`
+allowlist (`@claude`'s `plugins = [...]`, `policy.FilterInstalledPlugins`,
+`internal/cli.stageInstalledPlugins`), mounted `AccessRO` at that path — so the
+file Claude Code reads names only the plugins the profile named, empty by
+default, and the host's manifest naming every plugin ever installed is not what
+the sandbox sees. The measurements above are why the fix exists and stay true;
+what changed is the conclusion, not them.
 
-That sentence is load-bearing and appears in three places besides this document
-— `base.toml`'s abuse block, `claudeGuidance`'s injected text, and
-`--dry-run`'s CLAUDE block — because a fix that reads wider than its effect is
-how the last three findings happened. Filed as
-[issue #68](https://github.com/gomoni/snug/issues/68), `sev:medium`, and it is
-the **third** time a rule in this project was defeated one indirection below the
-layer it was written about (the `@claude` PATH shadow slot and the
-`/snug/bin` overmount are the other two).
+Keep the residual NARROW, because this section is itself the record of a rule
+being defeated one indirection below where it was written — three times so far
+(the `@claude` PATH shadow slot, the `/snug/bin` overmount, and this plugin
+channel), and it must not become a fourth by overclaiming:
+
+> snug regenerates `installed_plugins.json` to name only the allowlisted
+> plugins, and a test asserts the MANIFEST
+> (`TestFilterKeepsExactlyTheAllowlistedPlugins`, the staged-set tests, and
+> VERIFY 6g-bis by hand). No test yet asserts that an UNNAMED plugin's hooks do
+> not fire in a live `claude` run, with a named plugin's firing as the control.
+
+That sentence is load-bearing and its narrow form appears in `base.toml`'s abuse
+block, `claudeGuidance`'s injected text and `--dry-run`'s CLAUDE block for the
+same reason. Filed as [issue #68](https://github.com/gomoni/snug/issues/68),
+`sev:medium`, fixed by the allowlist above.
 
 ---
 

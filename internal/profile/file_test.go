@@ -800,6 +800,7 @@ func TestNoTOMLKeyProducesATopology(t *testing.T) {
 		nil, // Tmpfs
 		nil, // Symlink
 		nil, // Optional
+		nil, // Plugins
 		nil, // Environ
 		nil, // Env (retired spelling)
 		nil, // Path (retired spelling)

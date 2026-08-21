@@ -149,8 +149,9 @@ func stageClaude(t *testing.T, host hostClaude) (policy.Mount, string, string) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	claudeFiles(pol, home, false)
-
+	if err := claudeFiles(pol, home, false); err != nil {
+		t.Fatalf("claudeFiles: %v", err)
+	}
 	m, ok := pol.Mounts[filepath.Join(home, ".claude.json")]
 	if !ok {
 		t.Fatalf("@claude staged NOTHING at ~/.claude.json. Without the mount every "+

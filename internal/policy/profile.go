@@ -50,6 +50,13 @@ type Profile struct {
 	// so one profile can cover several distro layouts.
 	Optional []string
 
+	// Plugins is @claude's allowlist of Claude Code plugins whose
+	// installed_plugins.json entry snug regenerates — an ALLOWLIST of names,
+	// never a path: snug decides the guest path (issue #68). Empty or absent
+	// names nothing, which is the strict default. Unioned across selected
+	// profiles like Publish.
+	Plugins []string
+
 	// Network is "isolated" | "egress" | "host", joined by max. There is
 	// deliberately no "offline": offline is the ABSENCE of a net profile, so it
 	// cannot be re-enabled by adding one.

@@ -228,13 +228,14 @@ func testRegistry() map[ProfileName]*Profile {
 		"netty": {Name: "netty", Network: "egress", DNS: true, Publish: []int{4000, 3000},
 			Address: "10.13.13.2/24", Gateway: "10.13.13.1",
 			Address6: "fd00:5e79:1::2/64", Gateway6: "fd00:5e79:1::1",
-			MTU: 1400, Podman: "socket"},
+			MTU: 1400, Podman: "socket", Plugins: []string{"caveman", "superpowers"}},
 		// Same values, different name: two profiles agreeing on a scalar must
 		// join, not conflict, whichever order they are folded in. Both
 		// families, matching netty's — TestPublishUnionsAndAddressesAgree
 		// resolves the two together.
 		"netty-too": {Name: "netty-too", Network: "egress", Publish: []int{3000},
-			Address: "10.13.13.2/24", Address6: "fd00:5e79:1::2/64"},
+			Address: "10.13.13.2/24", Address6: "fd00:5e79:1::2/64",
+			Plugins: []string{"superpowers", "code-review"}},
 		// The TOP of the network lattice, and the registry had nothing at it —
 		// so no test in this package had ever resolved `network = "host"`, and
 		// TestAddingAProfileNeverLowersATopologyField could not take the
@@ -1146,6 +1147,20 @@ func TestPublishUnionsAndAddressesAgree(t *testing.T) {
 	for i, v := range want {
 		if p.Net.Publish[i] != v {
 			t.Errorf("publish = %v, want %v", p.Net.Publish, want)
+		}
+	}
+
+	// Plugins union the same way (issue #68): netty names caveman+superpowers,
+	// netty-too names superpowers+code-review; the resolved allowlist is the
+	// union, sorted, with superpowers appearing once.
+	wantPlugins := []string{"caveman", "code-review", "superpowers"}
+	if len(p.PluginAllowlist) != len(wantPlugins) {
+		t.Fatalf("PluginAllowlist = %v, want %v — repeating a plugin across profiles must not "+
+			"duplicate it", p.PluginAllowlist, wantPlugins)
+	}
+	for i, v := range wantPlugins {
+		if p.PluginAllowlist[i] != v {
+			t.Errorf("PluginAllowlist = %v, want %v (sorted, deduped)", p.PluginAllowlist, wantPlugins)
 		}
 	}
 }
