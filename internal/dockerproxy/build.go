@@ -134,7 +134,9 @@ var buildParams = map[string]buildParamCheck{
 	"seccomp":                 checkSeccompProfile,
 	"idmappingoptions":        nil, // rootless bounds this; the CLI always sends it
 
-	"devices":      refuseBuildParam("device passthrough reaches hardware the sandbox cannot see"),
+	"devices": refuseBuildParam("the engine's /dev is the sandbox's own synthetic tree since " +
+		"Tier C (issue #125), with no host device nodes, and the engine holds no CAP_MKNOD to " +
+		"make one — so a device request has nothing host-shaped to pass through"),
 	"cgroupparent": refuseBuildParam("it places the build in a cgroup outside this sandbox's own"),
 	"isolation":    checkIsolation,
 	"extrahosts":   refuseBuildParam("name redirection"),

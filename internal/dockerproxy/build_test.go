@@ -57,7 +57,7 @@ func TestBuildRefusesTheHostReachingOptions(t *testing.T) {
 			`additionalbuildcontexts=%7B%22extra%22%3A%7B%22IsURL%22%3Atrue%2C%22IsImage%22%3Afalse%2C%22Value%22%3A%22https%3A%2F%2Fevil%2Fx%22%7D%7D`,
 			"the ENGINE fetches"},
 		{"a host device", "--device /dev/fuse",
-			"devices=%5B%22%2Fdev%2Ffuse%22%5D", "device passthrough"},
+			"devices=%5B%22%2Fdev%2Ffuse%22%5D", "no host device nodes"},
 		{"a cgroup outside the sandbox", "--cgroup-parent foo",
 			"cgroupparent=foo", "outside this sandbox"},
 		{"name redirection", "--add-host h:1.2.3.4",
