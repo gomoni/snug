@@ -544,19 +544,29 @@ The old location stays **refused** rather than freed: a rename whose old name
 merely stops working is a trap.
 
 **A command table snug exposes is REINTERPRETED, not bound.** Maintainer's
-ruling, 2026-08-21, generalising what `~/.gitconfig`, `.credentials.json`,
-`~/.claude.json` and `installed_plugins.json` already do: where a file the
+ruling, 2026-08-21, generalising what `~/.gitconfig`, `~/.claude.json` and
+`installed_plugins.json` already do (`.credentials.json` is a **projection of a
+SECRET**, not of a command table — same mechanism, different rule): where a file the
 sandbox reads names programs, snug generates its own version from an allowlist
 and mounts it read-only, rather than binding the host's bytes or the target's.
 This is a security tool, so the answer to a dangerous file is a refusal
 expressed as a projection — **never a warning**, which reports a breach instead
 of preventing one, and never a bare read-only bind, which stops the *editing*
-and supplies every command in it. The projection closes both directions at once:
-what the file can run **inside** is only what the allowlist kept, and what the
-payload writes **outward** fails with EROFS because the mount is snug's. Issue
-#73 is the worked example — a payload writing `{target}/.claude/settings.json`,
-measured firing its hook on the host under `claude -p` with **no trust dialog,
-no approval and no record**.
+and supplies every command in it. Where the projection is mounted it closes both
+directions at once: what the file can run **inside** is only what the allowlist
+kept, and what the payload writes **outward** fails with EROFS because the mount
+is snug's.
+
+Issue #73 is the worked example **and the limit**. A payload writing
+`{target}/.claude/settings.json` was measured firing its hook on the host under
+`claude -p` with **no trust dialog, no approval and no record** — and the
+projection closes that only where the file ALREADY EXISTS. Where it does not,
+`--ro-bind-data` over an absent path makes bwrap CREATE the mountpoint on the
+host (measured: a 0-byte `-r--r--r--` file in the repo), which
+`rejectGeneratedOntoHost` refuses, so the outward half stays open on a clean
+repo and `--dry-run` says which state a run is in. **The inbound half — a
+hostile repo SHIPPING a command table — is closed either way, and it is the
+sharper one.**
 
 **Identity and credentials** — [`SECRETS.md`](.claude/design/SECRETS.md),
 [`GIT-CONFIG.md`](.claude/design/GIT-CONFIG.md),
