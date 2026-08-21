@@ -235,8 +235,8 @@ a pin.
 
 Stated because a divergence nobody wrote down is a bug report waiting to happen:
 
-- **Ordering matches git**, and an earlier draft of this document said it did
-  not. `git config --list` emits entries in file order and the recursion happens
+- **Ordering matches git**, which is not obvious and is easy to assume
+  otherwise. `git config --list` emits entries in file order and the recursion happens
   at the include's position inside the same loop, so a whitelisted key written
   after an include still overrides it, exactly as git does.
 - **Values are re-quoted.** snug writes `key = "value"` with `\` and `"`

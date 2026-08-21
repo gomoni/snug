@@ -2,11 +2,14 @@
 
 package integration
 
-// attach_test.go is ATTACH.md §13.3-§13.6 (and the
-// bwrap-argv half of §13.7): `snug attach` against a REALLY running sandbox.
-// §13.1/§13.2's pure tests (the state file, the confinement plan) live in
-// internal/cli and internal/attach — this file is everything that needs a
-// real, live sandbox to attach to.
+// attach_test.go is `snug attach` against a REALLY running sandbox: everything
+// that needs a live sandbox to attach to. The pure tests — the state file and
+// the confinement plan — live in internal/cli and internal/attach.
+//
+// This comment used to cite ATTACH.md §13.3-§13.6. That section was a checklist
+// of tests that had to exist, all of which now do, so it collapsed to a pointer
+// back at these files and the subsection numbers stopped existing. The design
+// doc no longer enumerates the suite; the suite is the truth.
 //
 // Every negative here has the positive control the working agreement
 // demands: a marker the payload emits before anything else, a process

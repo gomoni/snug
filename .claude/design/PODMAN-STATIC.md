@@ -6,24 +6,19 @@ Provisioning, 2026-08-12, by `host-bridge`. Every claim below is tagged
 
 ## 0. What this is and what it is not
 
-The supervisor implementation plan — a working document held outside version
-control, so do not go looking for it in a clone — makes Phase 0a the kill gate
-on the engine leg, and 0a has
-never been run because `/usr/bin/podman` on this host is a distrobox shim. This
-document removes that excuse: **a real, local, rootless container engine now
-runs here, and one command line invokes it.**
+This document exists because `/usr/bin/podman` on this host is a distrobox
+shim, so nothing that needs a real engine could be measured. **A real, local,
+rootless container engine runs here, and one command line invokes it.**
 
-It deliberately stops there. The three Phase 0a questions — engine in a mount
-view derived from the sandbox's, container gets N's network *under the stage's
-topology*, teardown with a real engine — are **not answered here**. They need
-the supervisor stage, which when this was written existed only as a proof of
-concept being rewritten in parallel; that rewrite has since shipped as
-`internal/stage` ([`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md)), and the proof
-of concept has been deleted
-([#49](https://github.com/gomoni/snug/issues/49)). What this document
-provides is the *positive control* those questions need: a known-good reading
-from before the stage is involved, so that a red result in 0a proper can be told
-apart from "the engine never worked on this box".
+It deliberately stops there, and what it provides is a **positive control**: a
+known-good reading from before the stage is involved, so a red result later can
+be told apart from "the engine never worked on this box".
+
+The three questions it does *not* answer were answered elsewhere: a container
+gets the sandbox's network under the stage's topology, and teardown with a real
+engine, both in Tier B ([`TIER-B.md`](TIER-B.md), issue #63); the engine in a
+mount view **derived** from the sandbox's is Tier C, still in flight (issue
+#125).
 
 Nothing under the proof of concept, `internal/` or `cmd/` was touched.
 
@@ -642,6 +637,12 @@ when Phase 0a returns something confusing.
 
 ## 10. What this means for CI
 
+**None of this is wired, and that is the state today, not an oversight this
+section describes.** CI does not fetch the bundle and does not install `uidmap`
+— verified against `.github/workflows/` — so every container test **skips** on a
+runner with the message naming the absent bundle path. This section is what
+wiring it would take, not a description of what happens.
+
 INFERRED except where marked; nothing in this section was executed on a runner.
 
 - **The artifact is the answer, and it is now pinned rather than floating.** URL,
@@ -650,9 +651,10 @@ INFERRED except where marked; nothing in this section was executed on a runner.
   key pinned in the workflow — worth doing, and no worse than the sha256, which
   at least fails closed on a re-cut release.
 - **The AppArmor blocker is already cleared** (MEASURED by reading the file):
-  `.github/workflows/ci.yml` line 118 sets
-  `kernel.apparmor_restrict_unprivileged_userns=0` in the integration job, which
-  is precisely the `ubuntu-latest` restriction the bundle's README warns about.
+  the integration job sets `kernel.apparmor_restrict_unprivileged_userns=0`,
+  which is precisely the `ubuntu-latest` restriction the bundle's README warns
+  about. **Grep for the sysctl, do not trust a line number** — this bullet named
+  line 118 and it is now line 211.
 - **CI must still `apt-get install uidmap`.** §8 is the reason and it is
   structural: `newuidmap`/`newgidmap` carry file capabilities that root sets at
   install time, and a tarball a user extracts cannot carry them. Every other

@@ -550,7 +550,10 @@ tests are in `test/integration/containerengine_test.go`.
 
 ---
 
-## 12. Genuinely undecided — the maintainer's to settle
+## 12. Settled, and the one thing that is not
+
+Two of the three below are **SETTLED** and say so inline; the heading used to
+claim all three were open. Only item 3 — retiring the lifeline — is undecided.
 
 1. **The `OnPayloadExit`/`EngineStop` seam (§6). SETTLED: the hook — its
    ORIGINAL justification did not survive issue #167 (redteam F5).** `sandbox`

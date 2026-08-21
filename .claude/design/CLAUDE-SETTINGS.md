@@ -940,36 +940,34 @@ recommended configuration brought it back through a different door.
 §4.4, [issue #68](https://github.com/gomoni/snug/issues/68). No sentence
 anywhere may claim the hook channel is closed.
 
-### 10.3 Enterprise managed settings do not apply inside — open, `sev:low`
+### 10.3 Enterprise managed settings do not apply inside — DECIDED, not doing it
 
 §1.4. `/etc/claude-code/managed-settings.json` is not in `@sys`'s enumerated
 `/etc` list, so an organisation's `permissions.deny`, `allowManagedHooksOnly`,
 `availableModels` and `forceLoginOrgUUID` are absent inside. This is the correct
 default (root-owned host policy — `GIT-CONFIG.md` §7's position on
 `/etc/gitconfig`) and granting it would mean granting a file full of
-`policyHelper` and `processWrapper` keys. Filed so an enterprise user is not
-surprised and the decision is recorded rather than accidental:
-[issue #70](https://github.com/gomoni/snug/issues/70).
+`policyHelper` and `processWrapper` keys. **Settled as `not planned`, YAGNI**
+([issue #70](https://github.com/gomoni/snug/issues/70)). Two wider options were
+designed out and rejected first: reading the host's managed file as data and
+authoring snug's own version inside, and refusing `@claude` on a managed host
+with an opt-in `@claude-managed` as the sanctioned path. Both went through two
+independent adversarial passes before the decision. **Do not re-propose either
+without reading that issue** — the absence is the answer, not an oversight.
 
-### 10.4 `CLAUDE_CODE_PROCESS_WRAPPER` is not named by `IsInlineConfigEnv` — open, `sev:low`
+### 10.4 `CLAUDE_CODE_PROCESS_WRAPPER` — CLOSED, issue #69
 
-The schema says `processWrapper` is "Equivalent to the
-`CLAUDE_CODE_PROCESS_WRAPPER` environment variable, **which takes precedence
-when set**" — an argv prefix for every process Claude Code spawns, i.e.
-`LD_PRELOAD`'s shape for this tool. `policy.IsInlineConfigEnv` does not name it.
-snug does not set it and no builtin does, so this is a gap in the *mechanical*
-check, not a live leak — the same distinction
-`TestNoBuiltinHandsOverAnInlineConfigVariable` was created to make.
-[Issue #69](https://github.com/gomoni/snug/issues/69).
+`processWrapper` is an argv prefix for every process Claude Code spawns —
+`LD_PRELOAD`'s shape for this tool — and the schema says the environment
+variable **takes precedence when set**. It is now named:
+`internal/policy/envtypes.go:1320`, asserted by `envtypes_test.go:733`.
 
-### 10.5 `@claude` has no bwrap-argv golden — open, `sev:low`, process
+### 10.5 `@claude`'s bwrap-argv golden — CLOSED, issue #71
 
-The profile that stages an OAuth token and mounts four host paths is covered by
-an ENVIRONMENT golden, a `profile show` golden and a `CLAUDE`-block golden, but
-nothing renders its argv. CLAUDE.md: "a security change that produces no golden
-diff is probably untested". The `CLAUDE`-block goldens narrowed the gap for this
-change; the general one stays open as
-[issue #71](https://github.com/gomoni/snug/issues/71).
+`internal/cli/testdata/bwrap.claude.txt` exists. The reason it mattered is worth
+keeping: this is the profile that stages an OAuth token and mounts four host
+paths, and *"a security change that produces no golden diff is probably
+untested"*.
 
 ### 10.6 What the generated file does not bound
 

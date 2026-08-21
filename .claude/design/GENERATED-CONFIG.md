@@ -1,9 +1,17 @@
 # Generating a tool's configuration inside the sandbox
 
-**Status: the rule.** Two adapters implement it today —
-[`GIT-CONFIG.md`](GIT-CONFIG.md) (`@git-ro`, `~/.gitconfig`) and
-[`CLAUDE-SETTINGS.md`](CLAUDE-SETTINGS.md) (`@claude`,
-`~/.claude/settings.json`) — and `npm`, `cargo`, `docker` and `pip` are queued
+**Status: the rule.** Five files are generated under it today. Two have their
+own design document — [`GIT-CONFIG.md`](GIT-CONFIG.md) (`@git-ro`,
+`~/.gitconfig`) and [`CLAUDE-SETTINGS.md`](CLAUDE-SETTINGS.md) (`@claude`,
+`~/.claude/settings.json`) — and three are the container engine's, authored in
+`internal/engine`: `containers.conf` (issue #133), `registries.conf` (#137) and
+`storage.conf` (#212). **Count them in the tree, not here.** The engine three
+arrived for a reason this document did not anticipate and which is worth
+carrying: under a **derived** mount view, a config naming a path snug does not
+own is a path snug cannot move, so authoring the file stopped being tidiness and
+became load-bearing.
+
+`npm`, `cargo`, `docker` and `pip` are queued
 behind them in CLAUDE.md's "Generate, don't bind" bullet. This document is what
 the next adapter starts from, so it does not rediscover any of this. The
 measurements stay in the instance documents and are cited here; what is here is

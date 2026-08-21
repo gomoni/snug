@@ -32,11 +32,11 @@ This was `DESIGN.md`, a single 1768-line document written **before most of the c
 | [`GENERATED-CONFIG.md`](GENERATED-CONFIG.md) | **The rule** for configuring a tool inside the sandbox: classify the file as data or command table, allowlist never denylist, R-SCALAR, R-NOPATH, reconstruct from parsed values rather than editing host bytes, and name every drop. `GIT-CONFIG.md` and `CLAUDE-SETTINGS.md` are its two instances; npm, cargo, docker and pip start here. |
 | [`GIT-CONFIG.md`](GIT-CONFIG.md) | Why `~/.gitconfig` is generated rather than bound, measured: `includeIf` evaluated by snug, `hasconfig:` refused, the whitelist and what is deliberately off it, and the seven wildmatch divergences the oracle test now catches. |
 | [`CLAUDE-SETTINGS.md`](CLAUDE-SETTINGS.md) | Why `~/.claude/settings.json` is generated rather than bound: the key inventory measured against claude 2.1.232, the ten-scalar allowlist, the `env` door to `ANTHROPIC_API_KEY` it closed, and the plugin-hook channel it does **not** close (issue #68). |
-| [`SECRETS.md`](SECRETS.md) | Which credentials reach a sandbox, why each is or is not allowed, the severity model, and brokering versus injection. |
+| [`SECRETS.md`](SECRETS.md) | **DRAFT — nothing built.** Which credentials reach a sandbox, why each is or is not allowed, the severity model, and brokering versus injection. |
 | [`CONTAINER-CLIENT.md`](CONTAINER-CLIENT.md) | Which container CLI actually works inside the sandbox, measured — and the `podman` stub that replaces a host-escape shim. |
 | [`ENVIRONMENT-VARIABLES.md`](ENVIRONMENT-VARIABLES.md) | The environment configuration format: five `environ` verbs, the variable type table, resolution order, and the measured evidence behind each rule. |
 | [`PSEUDOFS-AUDIT.md`](PSEUDOFS-AUDIT.md) | What `/proc`, `/sys` and `/dev` expose, measured against a real host. |
-| [`PARAMETERISED-PROFILES.md`](PARAMETERISED-PROFILES.md) | Profiles that take arguments — postponed by decision, with the reasoning kept so it is not re-derived. |
+| [`PARAMETERISED-PROFILES.md`](PARAMETERISED-PROFILES.md) | **DRAFT — nothing built.** Profiles that take arguments — postponed by decision, with the reasoning kept so it is not re-derived. |
 | [`ONE-SANDBOX-PER-DIR.md`](ONE-SANDBOX-PER-DIR.md) | Why a run is tied to its target directory and `snug <dir>` refuses a second live sandbox on it, naming `snug attach <dir>` as the fix: the per-target `flock` keyed on `sha256(realpath)`, resolved from the uid alone (never `$XDG_RUNTIME_DIR` — that split was the #122 fail-open), and why removing a run-selector is a simplification a security tool wants. |
 
 Outside this directory: [`../../CLAUDE.md`](../../CLAUDE.md) is the working agreement and the list of expensive environment facts, [`../../VERIFY.md`](../../VERIFY.md) is the executable by-hand checklist, and the [GitHub issues](https://github.com/gomoni/snug/issues) are the live list of known gaps and deferred work — each carries a severity label and the measurement that confirmed it.
@@ -1465,8 +1465,21 @@ There is no flag that grants less. A read-only project means not selecting `@cwd
 | `snug profile tree [NAME…]` / `dot` | Which profiles imply which; the same as a graphviz graph. |
 | `snug config` | The effective configuration and where each part came from. |
 | `snug doctor` | Host capability report and the fallback matrix as it applies here (§4.9). |
+| `snug attach <dir>` | Join the live sandbox on that directory ([`ATTACH.md`](ATTACH.md)). Addressed **by directory rather than by run id**, which is total only because of the guard below. |
 
 **Designed, not built:** `--config PATH` (§2.7), `--publish PORT`, `--keep-tmp` (§7.3), `--net-strict`, `snug prune` (§8.2), a `--dry-run --json` machine format, and shell completion. Do not cite any of them as existing.
+
+**At most one live sandbox per target directory.** `snug <dir>` refuses to start
+a second run while one is already live on the same target, and the refusal names
+`snug attach <dir>` as the fix. That is what makes addressing a run *by
+directory* total rather than ambiguous — `attach`'s multi-match branch is a
+defensive guard, not a user-facing case. The guard is a per-target advisory
+`flock` keyed on `sha256(realpath)` in snug's per-uid runtime directory,
+resolved **from the uid alone** and never from `$XDG_RUNTIME_DIR` — two runs
+disagreeing on that env var once locked two different inodes and both acquired,
+which is the #122 fail-open. It is a run-path guard in `internal/cli`, not a
+grant, so it never enters the pure `internal/policy`.
+[`ONE-SANDBOX-PER-DIR.md`](ONE-SANDBOX-PER-DIR.md) owns the subject.
 
 ### 11.1 Exit codes
 

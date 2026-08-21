@@ -35,6 +35,11 @@ command was **executed**; everything else is marked as reasoning.
 
 ## 0. Why this exists
 
+> **§2 is a feasibility proof, not the shipped shape** — see the banner above.
+> Containers share the sandbox's netns in host mode: no per-container bridge and
+> no port publishing, because the engine holds no `CAP_NET_ADMIN`. Repeated here
+> because a reader who jumps to §2 from a cross-reference never sees the banner.
+
 **This section is the canonical write-up of the finding.** Code and prose across
 the repo cite it — `CLAUDE.md`, `base.toml`, `internal/cli/dryrun.go`,
 `internal/profile/file_test.go`, `VERIFY.md`, `.claude/design/SECRETS.md` §1.3.
