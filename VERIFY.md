@@ -357,23 +357,29 @@ Both halves matter. Without the read, "read-only" is indistinguishable from a
 `/proc/sys` that is not there at all, which would break every build that reads
 a sysctl.
 
-### 4b. A grant whose source is a SOCKET is refused (issue #219)
+### 4b. A grant whose source is a SOCKET or a FIFO is refused (issues #219, #287)
 
-A socket is the third noun, after the file a tool reads and the config file a
-tool INTERPRETS, and `ro` restrains it least of all: read-only stops the sandbox
-*replacing* the socket and does nothing about *speaking to* whatever is
-listening. The private netns does not help — a unix socket is filesystem, not
-network. Measured in #219: from a sandbox holding a read-only bind of a home
-directory, a payload enumerated the host's ssh-agent and signed with it, having
-simply re-derived the path `--clearenv` had stripped.
+A socket and a FIFO are the third and fourth nouns, after the file a tool reads
+and the config file a tool INTERPRETS, and `ro` restrains neither of them: the
+kernel clears `MAY_WRITE` for a socket, a FIFO and a device node before it ever
+consults the read-only bit, so read-only stops the sandbox *replacing* the node
+and does nothing about *speaking through* it. The private netns does not help
+either — a unix socket is filesystem, not network. Measured in #219: from a
+sandbox holding a read-only bind of a home directory, a payload enumerated the
+host's ssh-agent and signed with it, having simply re-derived the path
+`--clearenv` had stripped. Measured in #287: a payload **wrote** through a FIFO
+mounted read-only and a host process on the other end received the bytes,
+while `touch` on a regular file in the same read-only bind got `EROFS` in the
+same run.
 
 ```bash
 D=$(mktemp -d)
 python3 -c "import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])" $D/agent.sock
+mkfifo $D/pipe
 : > $D/a-file; mkdir $D/a-dir
 mkdir -p $X/snug/profiles.d
 printf '[profile.binder]\ndescription = "one bind"\nro = ["%s:{home}/mounted"]\n' \
-  $D/agent.sock > $X/snug/profiles.d/b.toml
+  $D/pipe > $X/snug/profiles.d/b.toml
 XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p binder $SC/proj/sub; echo "exit=$?"
 ```
 
@@ -381,26 +387,46 @@ Expect a refusal, on `--dry-run` and not only at launch, naming what to select
 instead **and** what the check does not cover:
 
 ```
-snug: profile binder binds /home/<you>/mounted, whose source is a unix SOCKET.
-       Read-only does not restrain a socket: `ro` stops the sandbox replacing it
-       …
-       If you want the sandbox to sign with ONE key, select '@ssh-agent', which
-       proxies a single pinned key and enumerates nothing. …
-       NOTE THE LIMIT of this refusal: it sees sockets that exist NOW. Granting
-       a DIRECTORY still grants every socket anyone puts in it later, and that
-       case is not checked by anything.
+snug: profile binder binds /home/<you>/mounted, whose source is a FIFO (a named pipe).
+       Read-only does not restrain an endpoint. `ro` stops the sandbox REPLACING the
+       node and does nothing about SPEAKING THROUGH it: the kernel clears MAY_WRITE
+       for a socket, a FIFO and a device node before it ever consults the read-only
+       bit, so MNT_READONLY guards the filesystem, not the process on the other end.
+       Measured on a read-only bind: a payload wrote through a FIFO and a host process
+       received the bytes, while `touch` on a regular file in the same bind got EROFS
+       (issue #287). A socket got the host's ssh-agent enumerated and used for a
+       signature through exactly this shape (issue #219). The private network
+       namespace does not help either — a unix socket is filesystem, not network.
+       If you want the sandbox to sign with ONE key, do not mount an agent socket.
+       Put an identity block in your own profile and select it with -p:
+           [profile.work.identity]
+           ssh_key  = "{home}/.ssh/id_ed25519.pub"   # the PUBLIC half
+           ssh_mode = "agent-proxy"
+       snug then runs a proxy that offers that one key, enumerates nothing, and needs
+       no mount. If you want a container engine, select '@podman-socket', whose
+       socket is a filtering proxy rather than the engine itself.
+       NOTE THE LIMIT of this refusal: it sees the node a grant NAMES, and only if it
+       exists now. Granting a DIRECTORY still grants every socket and every FIFO
+       anyone puts in it later, and nothing checks that — it is how issue #287 was
+       measured, through @parent-ro alone.
 exit=77
 ```
 
+Point `ro` at `$D/agent.sock` instead of `$D/pipe` and the SAME message comes
+back with one word changed — `whose source is a unix SOCKET.` — which is the
+whole point: one predicate, two nouns, issue #289's fix (naming a real `identity`
+block instead of the nonexistent `@ssh-agent` profile) reads identically for
+both.
+
 **The positive controls are the same profile with a different source.** Point
 `ro` at `$D/a-file` and then at `$D/a-dir`: both must resolve cleanly. Without
-them, "the socket was refused" is equally true of a check that refuses that path
-whatever is at it — and the refusal is detected by `stat` (S_IFSOCK), never by
-matching path text, which is what stops it being the catalogue shape #207
-deleted.
+them, "the endpoint was refused" is equally true of a check that refuses that
+path whatever is at it — and the refusal is detected by `stat` (`S_IFSOCK` /
+`S_IFIFO`), never by matching path text, which is what stops it being the
+catalogue shape #207 deleted.
 
-**THE LIMIT, and it is half the rule.** Bind the DIRECTORY holding that socket
-instead:
+**THE LIMIT, and it is half the rule — for BOTH nouns.** Bind the DIRECTORY
+holding that socket and that FIFO instead:
 
 ```bash
 printf '[profile.binder]\ndescription = "one bind"\nro = ["%s:{home}/mounted"]\n' \
@@ -408,18 +434,50 @@ printf '[profile.binder]\ndescription = "one bind"\nro = ["%s:{home}/mounted"]\n
 XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p binder $SC/proj/sub; echo "exit=$?"
 ```
 
-Expect **exit=0**. A `stat` at resolve time sees only sockets that exist then,
-and a grant of a directory is a grant of every socket anyone puts in it
-afterwards. That case is checked by nothing, it is stated in the refusal text
-and in the code, and it is pinned by
-`TestABindOfADirectoryHoldingASocketIsStillAccepted` so that closing it means
-changing a test that says the old behaviour out loud.
+Expect **exit=0**. A `stat` at resolve time sees only endpoints that exist
+then, and a grant of a directory is a grant of every socket AND every FIFO
+anyone puts in it afterwards — the directory case is unchecked for both
+nouns, not only for the socket. That case is checked by nothing, it is stated
+in the refusal text and in the code, and it is pinned by
+`TestABindOfADirectoryHoldingAnEndpointIsStillAccepted` so that closing it
+means changing a test that says the old behaviour out loud.
 
-snug's OWN sockets are exempt and must be: the `@ssh-agent` proxy and the
-container proxy are sockets, and they are the narrower alternatives this
-refusal exists to stop a mount from replacing. The exemption is keyed on
-`Mount.Authored`, which only `Policy.Replace` sets and nothing a profile can
-write reaches.
+**And the residual is reachable with NO profile at all**, through `@parent-ro`
+alone — the default selection a plain `snug <dir>` uses. `$SC/proj` is
+`@parent-ro`'s grant (identity-mapped: same absolute path inside as out), so a
+FIFO planted there before the sandbox starts is visible inside at the same
+path:
+
+```bash
+mkfifo $SC/proj/escape.fifo
+cat $SC/proj/escape.fifo &        # the host reader, holding it open
+./bin/snug $SC/proj/sub -- /bin/sh -c \
+  "mkfifo $SC/proj/newfifo 2>&1; printf hi > $SC/proj/escape.fifo"
+wait
+```
+
+Expect the `mkfifo` half to fail with `Read-only file system` — measured:
+
+```
+mkfifo: cannot create fifo '/tmp/tmp.xxxxxxxxxx/proj/newfifo': Read-only file system
+```
+
+— and the `printf` half to complete silently, with `hi` landing on the
+backgrounded host `cat` reading `$SC/proj/escape.fifo`, because `@parent-ro`
+grants that directory read-only and the FIFO planted inside it existed before
+the sandbox started. This is `TestAFifoInAGrantedDirectoryStillReachesTheHost`
+(`test/integration`), and it is the reason this section is not the whole
+story: the two bounds on the residual are that the payload cannot MANUFACTURE
+a fresh endpoint inside a read-only grant (the `mkfifo` failure above), only
+speak into one a host process already created and is holding open, and that
+there is no mount flag that closes this the way `nodev` closes the device
+case — this is a kernel-level residual, not laziness.
+
+snug's OWN sockets are exempt and must be: the ssh-agent proxy (an `identity`
+block with `ssh_mode = "agent-proxy"`) and the container proxy are sockets,
+and they are the narrower alternatives this refusal exists to stop a mount
+from replacing. The exemption is keyed on `Mount.Authored`, which only
+`Policy.Replace` sets and nothing a profile can write reaches.
 
 ### 4c. What the payload learns about its supervisor (issue #272, accepted)
 

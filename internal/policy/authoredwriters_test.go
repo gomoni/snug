@@ -20,7 +20,7 @@ var authoredWriteRE = regexp.MustCompile(`\.Authored\s*=[^=]`)
 // borrow the exemption" argument CHECKABLE instead of prose.
 //
 // Two rules rest on Mount.Authored: rejectMasking's RULE 3 (snug may replace
-// what a profile exposed) and rejectSocketSource (#219 — snug's own proxy
+// what a profile exposed) and rejectEndpointSource (#219 — snug's own proxy
 // sockets are sockets, deliberately). Both carried the same sentence — "set
 // only by Policy.Replace, which nothing a profile can write reaches" — and it
 // was false in both: there are THREE writers. The exemption survives, for a
@@ -73,7 +73,7 @@ func TestAuthoredWritersAreTheThreeTheCommentsName(t *testing.T) {
 	want := []string{"policy/graft.go", "policy/resolve.go", "policy/types.go"}
 	if len(files) != len(want) {
 		t.Fatalf("Mount.Authored is assigned in %v (%d sites), want exactly %v.\n"+
-			"Two security rules — rejectMasking's RULE 3 and rejectSocketSource — exempt an\n"+
+			"Two security rules — rejectMasking's RULE 3 and rejectEndpointSource — exempt an\n"+
 			"Authored mount, and both justify it by naming who can set the field. A new writer\n"+
 			"is a new way for a mount to become exempt, so it belongs in that argument or it\n"+
 			"belongs nowhere.", hits, len(hits), want)
@@ -112,7 +112,7 @@ func TestAuthoredIsNotSettableFromProfileText(t *testing.T) {
 	}
 	if m.Authored {
 		t.Error("a mount that came from PROFILE TEXT is Authored — it would be exempt from " +
-			"rejectMasking's RULE 3 and from rejectSocketSource, which is exactly the " +
+			"rejectMasking's RULE 3 and from rejectEndpointSource, which is exactly the " +
 			"loophole both comments claim is impossible")
 	}
 }

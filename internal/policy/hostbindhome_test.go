@@ -19,7 +19,8 @@ import (
 // read, .netrc read, .aws read, a git alias from the host's ~/.gitconfig
 // EXECUTED, ~/.bashrc executed by an interactive shell, and a host ssh-agent
 // enumerated and used for a signature through the socket in ~/.ssh (issue #219)
-// — the @ssh-agent filtering proxy's one-pinned-key design defeated by a mount.
+// — what `ssh_mode = "agent-proxy"` (one pinned key, no enumeration) exists to
+// prevent, defeated by a mount.
 //
 // snug is deliberately permissive about foot-guns; it will not catch a typo in a
 // profile variable name. This is not that. There is no narrower version of it a
