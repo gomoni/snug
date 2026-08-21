@@ -128,26 +128,64 @@ func sweepOneOrphan(snugRoot *os.Root, snugPath, name string) {
 }
 
 // killOrphanInit SIGKILLs the sandbox init a dead run left behind, if it is
-// still there and still the same process.
+// still there, still the same process, and still in the same namespaces.
 //
 // SIGKILL rather than SIGTERM, and it is not impatience: this is bwrap's own
 // init, which either has not reached its signal handling yet (the wedged
 // case) or is pid 1 of its own pid namespace, where an unhandled SIGTERM from
 // outside is simply discarded by the kernel. Killing the init collapses the
 // namespace, which is what takes the payload with it.
+//
+// A pidfd carries the whole identity check, and it is the reason there is no
+// residual pid-reuse window at all. pidfd_open PINS the process: while the fd
+// is held the kernel cannot recycle that pid number, so every check below AND
+// the kill refer to the same task — a numeric-pid kill after a separate check
+// has a TOCTOU (the pid could be reaped and reused between the two), and this
+// does not. pidfd_open itself, however, will happily pin a pid that was ALREADY
+// reused before we opened it, so identity must still be confirmed after the
+// open, in two parts (#285):
+//
+//   - starttime, which proves the pinned pid is the one the state file named
+//     and not a pre-open reuse of that number;
+//   - the six namespace inodes, because starttime alone does NOT prove the
+//     process is a sandbox init — a forged or hostile state file naming any
+//     live same-uid process would otherwise turn this sweep into an
+//     arbitrary-pid kill. Require the process to live in exactly the namespaces
+//     the file recorded, the same identity `attach` checks before it joins
+//     (attach.go, procNamespaceInodes).
+//
+// Fail CLOSED throughout: ESRCH or any mismatch means "not provably our init",
+// and leaving an orphan is the less-bad outcome than killing a process we
+// cannot confirm.
 func killOrphanInit(st runState, statePath string) {
 	pid := st.Sandbox.InitPID
 	if pid <= 1 {
 		return // 0 means the run never published one; 1 is never a host init
 	}
+	pidfd, err := unix.PidfdOpen(pid, 0)
+	if err != nil {
+		return // ESRCH: already gone, which is the ordinary case
+	}
+	defer unix.Close(pidfd)
+	// pid is pinned from here: the number cannot be recycled while pidfd is
+	// held, so the checks below and the kill all name the same task.
 	start, err := procStartTime(pid)
 	if err != nil {
-		return // already gone, which is the ordinary case
+		return // gone between open and stat, or /proc unreadable: not provably ours
 	}
 	if start != st.Sandbox.InitStarttime {
-		return // pid reused since the state was written: not our process
+		return // the pinned pid was reused before we opened it: not our process
 	}
-	if err := unix.Kill(pid, unix.SIGKILL); err != nil {
+	nsIno, err := procNamespaceInodes(pid)
+	if err != nil {
+		return // its /proc entry is unreadable: not provably ours
+	}
+	for _, k := range runStateNamespaceKinds {
+		if nsIno[k] != st.Sandbox.Namespaces[k] {
+			return // a live pid, but not in the sandbox namespaces the file recorded
+		}
+	}
+	if err := unix.PidfdSendSignal(pidfd, unix.SIGKILL, nil, 0); err != nil {
 		fmt.Fprintf(os.Stderr, "snug: could not kill the orphaned sandbox init pid %d named by "+
 			"%s: %v\n", pid, statePath, err)
 		return
