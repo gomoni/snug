@@ -2,11 +2,13 @@ package dockerproxy
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1218,4 +1220,127 @@ func TestBindSourceDanglingIntoTheEngineNamespaceIsRefused(t *testing.T) {
 	// new dangling-symlink refusal must not have replaced that check.
 	refuse(t, sock, eng, "/v1.41/containers/create",
 		`{"HostConfig":{"Binds":["`+mk("letc", "/etc")+`:/x"]}}`, "cannot see /etc")
+}
+
+// countingReader streams n zero bytes and records how many the server actually
+// pulled. That count is the whole point of the test below: the fix for #255 is
+// "the server reads the refused build's body before it answers", and the number
+// of bytes the transport was able to write is a direct, deterministic readout of
+// whether it did.
+type countingReader struct {
+	n    int
+	read int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	if c.read >= c.n {
+		return 0, io.EOF
+	}
+	take := len(p)
+	if rem := c.n - c.read; take > rem {
+		take = rem
+	}
+	for i := 0; i < take; i++ {
+		p[i] = 0
+	}
+	c.read += take
+	return take, nil
+}
+
+// TestRefusedBuildDrainsTheBodySoTheClientCanReadThe403 is issue #255's
+// regression. A refused `libpod/build` used to write the 403 and return with the
+// streamed tar context UNREAD, so net/http closed the connection mid-upload and
+// a client still in sendall got EPIPE instead of the 403 (measured end-to-end
+// against the static bundle; the bundle-only e2e test is skipped in CI and
+// cannot be this check).
+//
+// It asserts BOTH halves the fix owes:
+//   - the build is still REFUSED (403, engine not reached) — the fix must not
+//     have turned a refusal into a forward;
+//   - the server CONSUMED the whole body before answering — which is the
+//     mechanism that lets a naive streaming client read the response at all.
+//
+// The body is 8 MiB, deliberately larger than net/http's own
+// maxPostHandlerReadBytes (256 KiB) auto-drain: without the explicit drain the
+// server reads only that much before closing, so the transport cannot write the
+// whole body and the recorded count falls far short of 8 MiB. With the drain the
+// server reads all of it and the count reaches 8 MiB. The assertion is on the
+// count, because Go's own client is robust enough to read the 403 even in the
+// broken case — it is the SERVER draining that the fix changes, and that is what
+// a python/naive client depends on.
+func TestRefusedBuildDrainsTheBodySoTheClientCanReadThe403(t *testing.T) {
+	sock, eng, _ := startProxyMode(t, policy.PodmanBuild)
+
+	const bodyN = 8 << 20
+	body := &countingReader{n: bodyN}
+
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+		},
+	}}
+
+	// A build with a forbidden `-v /etc:/x`: /etc is not writable to the
+	// sandbox, so checkBuildVolume refuses it — the exact case the finding used.
+	req, err := http.NewRequest("POST",
+		"http://engine/v5.0.0/libpod/build?dockerfile=Dockerfile&volume="+
+			url.QueryEscape("/etc:/x"), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-tar")
+	req.ContentLength = bodyN
+
+	before := eng.reached.Load()
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("the client got a transport error rather than a readable response — the "+
+			"server closed the connection mid-upload, which is exactly issue #255: %v", err)
+	}
+	defer resp.Body.Close()
+	buf, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+
+	// Half 1: still refused, never reached the engine.
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status %d, want 403 — the drain fix must not turn a refusal into a forward: %s",
+			resp.StatusCode, buf)
+	}
+	if eng.reached.Load() != before {
+		t.Error("the refused build reached the engine")
+	}
+	if msg := denyMessage(string(buf)); !strings.Contains(msg, "cannot see /etc") {
+		t.Errorf("the 403 does not carry the refusal reason a client should be able to read: %s", buf)
+	}
+
+	// Half 2 (the mechanism): the server consumed the whole body. This is what
+	// a naive streaming client depends on, and what was broken. maxRefusedBuildDrain
+	// is 64 MiB, so an 8 MiB body is drained in full.
+	if body.read < bodyN {
+		t.Errorf("the server read only %d of %d body bytes before answering — without draining "+
+			"the streamed context, a client still uploading gets EPIPE instead of this 403 "+
+			"(issue #255)", body.read, bodyN)
+	}
+}
+
+// TestAllowedBuildIsNotDrainedByTheProxy is the negative control: the drain is
+// on the REFUSAL path only. An allowed build must still stream its body straight
+// to the engine — draining it here would consume the tar context the engine
+// needs and break every real build.
+func TestAllowedBuildIsNotDrainedByTheProxy(t *testing.T) {
+	sock, eng, _ := startProxyMode(t, policy.PodmanBuild)
+
+	// A build inside the target is allowed; forward must carry its body to the
+	// engine. The fakeEngine records the body it received.
+	code, resp := post(t, sock, "/v5.0.0/libpod/build?dockerfile=Dockerfile",
+		"THE-TAR-CONTEXT-BYTES")
+	if code != 200 {
+		t.Fatalf("an allowed build was not forwarded (status %d): %s", code, resp)
+	}
+	if eng.reached.Load() == 0 {
+		t.Fatal("an allowed build did not reach the engine")
+	}
+	if got, _ := eng.lastBody.Load().(string); got != "THE-TAR-CONTEXT-BYTES" {
+		t.Errorf("the engine received %q, not the build context the client sent — the proxy "+
+			"consumed or altered the body on the ALLOWED path", got)
+	}
 }
