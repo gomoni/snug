@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -419,7 +420,17 @@ func runOneSandbox(control, netnsN, infoR *os.File, req request) error {
 	// #125 C2). Absent EnginePodman means no container profile is selected and
 	// there is simply no engine in this run.
 	if req.EnginePodman != "" {
-		if err := startEngine(netnsN, req); err != nil {
+		// WAIT FIRST, and this is not a nicety. bwrap answers --info-fd long
+		// before it has finished: MEASURED at that moment, the init's mount
+		// namespace held 816 mounts with the whole HOST TREE at /oldroot and a
+		// writable root, settling ~150ms later to 44 mounts rooted at
+		// /newroot, read-only. An engine that joined at the early moment and
+		// unshared would keep a private copy of the host tree FOREVER — in the
+		// one namespace Tier C exists to make host-free.
+		if err := waitForSandboxMounts(info.InitPID, sandboxMountsTimeout); err != nil {
+			return abort(err)
+		}
+		if err := startEngine(netnsN, info.InitPID, req); err != nil {
 			return abort(err)
 		}
 	}
@@ -471,4 +482,77 @@ func runOneSandbox(control, netnsN, infoR *os.File, req request) error {
 		}
 	}
 	return sendEvent(control, ev)
+}
+
+// sandboxMountsTimeout bounds waitForSandboxMounts. Measured on this host at
+// 115ms and 184ms across runs, so ten seconds is not a performance target: it
+// is the point at which "bwrap is still setting up" stops being a plausible
+// explanation and the run should say so rather than keep polling.
+const sandboxMountsTimeout = 10 * time.Second
+
+// waitForSandboxMounts blocks until bwrap has performed every mount snug asked
+// for, so the engine can join the sandbox's mount namespace and get the view
+// the payload will get — rather than the half-built one bwrap is still holding
+// when it answers --info-fd.
+//
+// THE SIGNAL IS SNUG'S OWN, which is what makes it sound rather than a sleep
+// with a justification. `--remount-ro /` is the LAST filesystem operation
+// BwrapFlags emits (see its own comment: every --dir, every bind and every
+// tmpfs precedes it, because nothing could be created afterwards), so the
+// init's ROOT MOUNT turning read-only means the argv's filesystem section has
+// been executed to the end and pivot_root is done.
+//
+// It reads the target's mountinfo from OUTSIDE, without joining: a process that
+// joined to look would be the very process this exists to keep out of the
+// half-built namespace.
+//
+// MEASURED, and the numbers are the reason this function is not a comment
+// saying "bwrap is probably ready by now" (issue #125's derived-view pass):
+//
+//	t+0ms     816 mounts, root "/"        rw   <- the whole host tree, /oldroot present
+//	t+300ms    44 mounts, root "/newroot" ro   <- the sandbox's own view
+//
+// A timeout here is FATAL to the run (invariant 5). The alternative — start the
+// engine anyway — is exactly the case above: an engine holding the host tree,
+// with nothing on screen saying so.
+func waitForSandboxMounts(initPID int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		ro, err := rootMountIsReadOnly(initPID)
+		if err == nil && ro {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("__stage-serve: the sandbox's mounts were not finished %s after "+
+				"bwrap reported its init (pid %d): its root mount is still writable, which means "+
+				"`--remount-ro /` has not run and the namespace may still hold the host tree.\n"+
+				"      Refusing to start the container engine rather than joining a half-built "+
+				"view (last error: %v)", timeout, initPID, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// rootMountIsReadOnly reports whether pid's mount namespace has its ROOT mount
+// mounted read-only. Parsed from /proc/<pid>/mountinfo field 5 (the mount
+// point) and field 6 (the per-mount options), which is the only place the
+// distinction is visible without joining.
+func rootMountIsReadOnly(pid int) (bool, error) {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/mountinfo", pid))
+	if err != nil {
+		return false, err
+	}
+	for _, ln := range strings.Split(string(b), "\n") {
+		f := strings.Fields(ln)
+		if len(f) < 6 || f[4] != "/" {
+			continue
+		}
+		for _, opt := range strings.Split(f[5], ",") {
+			if opt == "ro" {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	return false, fmt.Errorf("no mount at / in /proc/%d/mountinfo", pid)
 }

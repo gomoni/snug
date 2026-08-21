@@ -222,18 +222,22 @@ func TestEngineMountpointsTrackTheArgvThatCreatesThem(t *testing.T) {
 			withEngine := mustResolve(t, append(slices.Clone(testDefaults), "@podman-socket")...)
 			withoutEngine := mustResolveDefaults(t)
 
-			// The policy half.
-			g := freshMountGraft(KindCgroup2)
-			g.Guest = mp
-			if err := withEngine.Graft(newFakeEnv(), g); err != nil {
-				t.Fatalf("with a container engine, a graft at %s was refused, but BwrapFlags "+
-					"creates that directory: %v", mp, err)
+			// The policy half, asked of G3 ITSELF rather than of a whole
+			// graft. This used to install a real graft and require it to be
+			// accepted, which conflated two different questions the day
+			// EngineMountpoints gained /snug and /snug/engine (issue #125's
+			// derived-view destinations): those two are ANCESTORS that exist
+			// so the destinations under them can, and G1b refuses a graft AT
+			// them on purpose — snug's namespace rule, not G3. Existence and
+			// permission are different rules, and a test that reads one
+			// through the other reports the wrong one as broken.
+			if !existsInSandbox(withEngine, mp) {
+				t.Fatalf("with a container engine, G3 says %s does not exist in the sandbox's "+
+					"view, but BwrapFlags creates that directory", mp)
 			}
-			g2 := freshMountGraft(KindCgroup2)
-			g2.Guest = mp
-			if err := withoutEngine.Graft(newFakeEnv(), g2); err == nil {
-				t.Fatalf("with NO container engine, a graft at %s was accepted — but nothing in "+
-					"that policy creates the directory and the sandbox root is read-only, so the "+
+			if existsInSandbox(withoutEngine, mp) {
+				t.Fatalf("with NO container engine, G3 says %s exists — but nothing in that "+
+					"policy creates the directory and the sandbox root is read-only, so the "+
 					"stage's move_mount would fail EROFS at runtime (ENGINE-NETNS.md §5.1)", mp)
 			}
 
@@ -343,4 +347,73 @@ func refusalGraftKindProcAtTheWrongPath(t testing.TB) error {
 	g := freshMountGraft(KindProc)
 	g.Guest = "/dev"
 	return p.Graft(newFakeEnv(), g)
+}
+
+// TestRemountReadOnlyIsTheLastFilesystemOperation pins the assumption the
+// stage's own wait is built on.
+//
+// waitForSandboxMounts (internal/stage) treats "the sandbox init's root mount
+// has turned read-only" as "bwrap has performed every mount snug asked for",
+// and joins the namespace only then. That is sound exactly while
+// `--remount-ro /` is the LAST filesystem operation in the argv: if anything
+// mounted after it, the engine could join a namespace still being built — and
+// MEASURED (issue #125), the namespace at that moment holds the whole host
+// tree at /oldroot, which an unshare would then freeze into the engine's view
+// forever.
+//
+// So this is not a style check on argv order. It is the premise of a security
+// property, asserted where it can be read.
+func TestRemountReadOnlyIsTheLastFilesystemOperation(t *testing.T) {
+	p := mustResolve(t, append(slices.Clone(testDefaults), "@podman-socket")...)
+	flags := p.BwrapFlags(1000, 1000, func(string) int { return 9 })
+
+	last := -1
+	for i, f := range flags {
+		if f == "--remount-ro" {
+			last = i
+		}
+	}
+	if last < 0 {
+		t.Fatal("the argv contains no --remount-ro at all: the sandbox root is writable, and " +
+			"the stage's wait for the engine's join has no signal to wait for")
+	}
+	if flags[last+1] != "/" {
+		t.Fatalf("--remount-ro is applied to %q, not /: the stage waits for the ROOT mount to "+
+			"turn read-only", flags[last+1])
+	}
+
+	// Every flag that MOUNTS something. A new one added after the remount is
+	// what this catches; a new one added anywhere else is fine and must not
+	// fail here, which is why this is a list of mounting verbs rather than
+	// "nothing follows".
+	mounting := map[string]bool{
+		"--bind": true, "--bind-try": true, "--ro-bind": true, "--ro-bind-try": true,
+		"--dev-bind": true, "--dev-bind-try": true, "--tmpfs": true, "--dir": true,
+		"--proc": true, "--dev": true, "--mqueue": true, "--symlink": true,
+		"--bind-data": true, "--ro-bind-data": true, "--file": true, "--overlay": true,
+		"--ro-overlay": true, "--tmp-overlay": true,
+	}
+	for i := last + 2; i < len(flags); i++ {
+		if mounting[flags[i]] {
+			t.Errorf("%s appears at position %d, AFTER --remount-ro / at %d. The stage reads the "+
+				"root mount turning read-only as \"every mount snug asked for is done\" and joins "+
+				"the sandbox's namespace on it; a mount after that point makes the signal early, "+
+				"and joining early hands the engine the host tree (issue #125).",
+				flags[i], i, last)
+		}
+	}
+
+	// POSITIVE CONTROL on the scan itself: the argv really does contain
+	// mounting flags, so "none after the remount" is a fact about position
+	// rather than about a list that matches nothing.
+	found := 0
+	for _, f := range flags {
+		if mounting[f] {
+			found++
+		}
+	}
+	if found < 5 {
+		t.Fatalf("the scan recognised only %d mounting flag(s) in the whole argv; the check "+
+			"above would pass on an argv it cannot read", found)
+	}
 }

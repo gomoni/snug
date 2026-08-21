@@ -49,16 +49,35 @@ func engineSpecEnv(t *testing.T) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec, err := e.Spec(podmanBundleBinary(t), []string{"PATH=/usr/bin:/bin"}, true, policy.NetPolicy{})
+	pol := &policy.Policy{
+		Podman: policy.PodmanSocket,
+		Mounts: map[string]policy.Mount{
+			"/usr": {Guest: "/usr", Host: "/usr", Kind: policy.KindBind,
+				Access: policy.AccessRO, From: []string{"@sys"}},
+		},
+	}
+	if err := pol.EngineToolchain(policy.OSEnviron{}, root); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.GraftInto(policy.OSEnviron{}, pol); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := e.Spec(pol, podmanBundleBinary(t), []string{"PATH=/usr/bin:/bin"}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Spec created this run's directory; nothing was started, so removing it
 	// is the whole teardown.
-	if dir := filepath.Dir(envLookup(t, spec.Env, "CONTAINERS_CONF")); dir != "" {
-		t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	}
-	return append(spec.Env,
+	t.Cleanup(func() { _ = os.RemoveAll(e.ConfDir()) })
+
+	// BACK TO HOST PATHS, and the translation is the point rather than a
+	// workaround. Since Tier C every path Spec writes is a GUEST path — what
+	// the engine sees inside its derived view — and these probes run podman
+	// ON THE HOST, where /snug/engine/conf exists in no namespace at all. The
+	// subject of these tests is which variables Spec sets and what the bundle
+	// does with them, so the variables are kept exactly as Spec wrote them and
+	// only the four roots are mapped back.
+	return append(hostSideEnv(t, e, root, spec.Env),
 		"CONTAINERS_STORAGE_CONF="+filepath.Join(root, "etc", "snug", "storage.conf"))
 }
 
@@ -254,4 +273,29 @@ func TestTheEngineCarriesItsOwnSignaturePolicy(t *testing.T) {
 		t.Fatalf("the engine has no signature policy of its own, so whether an image may be "+
 			"used at all is decided by the host, or not at all (issue #137):\n%s", got)
 	}
+}
+
+// hostSideEnv maps the four guest roots in a spec's environment back to the
+// host directories behind them, for a probe that runs the engine outside any
+// sandbox. It is deliberately EXACT about which roots it knows: a guest path
+// under a root not listed here is left alone and the probe will fail on it,
+// which is the honest outcome — a new graft that these tests need to see must
+// be added here consciously rather than mapped by a prefix rule that guesses.
+func hostSideEnv(t *testing.T, e *engine.Engine, toolchainRoot string, env []string) []string {
+	t.Helper()
+	roots := [][2]string{
+		{policy.EngineConfGuest, e.ConfDir()},
+		{policy.EngineStoreGuest, e.Store()},
+		{policy.EngineRunrootGuest, e.Runroot()},
+		{policy.EngineSockGuest, e.SockDir()},
+		{policy.EngineToolchainGuest, toolchainRoot},
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		for _, r := range roots {
+			kv = strings.Replace(kv, r[0], r[1], 1)
+		}
+		out = append(out, kv)
+	}
+	return out
 }

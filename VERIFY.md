@@ -1842,6 +1842,42 @@ that never runs for these three.
 Nothing here is a host path, and the payload sees none of it: what it sees is the
 empty `/run` mountpoint from 6i above.
 
+## 9c-ter. The engine's view is DERIVED — no host tree in it
+
+This is what Tier C is for. Before it, the engine held a private copy of the
+whole host tree and what stopped a container naming an ungranted path was the
+proxy's bind filter. After it, the host tree is not there to name.
+
+Start a container run and look at the ENGINE's own mount table from the host:
+
+```bash
+snug -p @podman-socket $SC/proj/sub -- sleep 30 &
+sleep 3
+ENG=$(pgrep -f 'system service' | head -1)
+awk '{print $5}' /proc/$ENG/mountinfo | sort | head -30
+```
+
+Expect the sandbox's own mounts (`/usr`, `/etc/...`, `$HOME`, the target) plus
+snug's own five for the engine — `/snug/engine/store`, `/snug/engine/runroot`,
+`/snug/engine/sock`, `/snug/engine/conf`, and `/snug/engine/toolchain` when a
+pinned bundle is in use — plus `/proc`, `/run`, `/var/tmp` and `/sys/fs/cgroup`.
+
+**Nothing else.** In particular no `/oldroot` and no host path the sandbox does
+not grant: `/oldroot` is bwrap's staging root, and its presence would mean the
+engine joined before bwrap had finished and froze a copy of the host tree into
+its own namespace (measured on #125; the stage now waits for the sandbox's root
+mount to turn read-only before it joins).
+
+The engine's argv agrees, and that is the other half:
+
+```bash
+tr '\0' ' ' < /proc/$ENG/cmdline; echo
+```
+
+Expect `--root /snug/engine/store --runroot /snug/engine/runroot` and a
+`unix:///snug/engine/sock/...` socket — GUEST paths. A host path here would be
+one the engine cannot resolve.
+
 ## 9d. `@podman-socket` without `@net` is offline, containers included
 
 This is the inversion the previous version of this check predicted (issue

@@ -17,11 +17,27 @@
 --perms 0755
 --dir /run
 --perms 0755
+--dir /snug
+--perms 0755
+--dir /snug/engine
+--perms 0755
+--dir /snug/engine/store
+--perms 0755
+--dir /snug/engine/runroot
+--perms 0755
+--dir /snug/engine/sock
+--perms 0755
+--dir /snug/engine/conf
+--perms 0755
+--dir /snug/engine/toolchain
+--perms 0755
 --dir /sys
 --perms 0755
 --dir /sys/fs
 --perms 0755
 --dir /sys/fs/cgroup
+--perms 0755
+--dir /var/tmp
 --symlink usr/bin /bin
 --dev /dev
 --ro-bind /etc /etc

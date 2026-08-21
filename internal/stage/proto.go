@@ -102,13 +102,10 @@ type request struct {
 	EngineArgv   []string `json:"engine_argv,omitempty"`
 	EngineEnv    []string `json:"engine_env,omitempty"`
 	EngineSock   string   `json:"engine_sock,omitempty"`
-	// EngineResolvConf is a HOST path holding the SAME generated
-	// /etc/resolv.conf content the sandbox payload gets (issue #126) —
-	// never the content itself, and never the host's real
-	// /etc/resolv.conf. __inengine bind-mounts it over /etc/resolv.conf
-	// inside the engine's own private mount-namespace copy of the host
-	// tree, before exec.
-	EngineResolvConf string `json:"engine_resolv_conf,omitempty"`
+	// EngineGrafts is the derived view the engine is given: one entry per
+	// host directory, with the guest path it is attached at. See EngineSpec's
+	// own field for why the clone happens before the namespace join.
+	EngineGrafts []EngineGraft `json:"engine_grafts,omitempty"`
 }
 
 // event is a P1 -> P0 message. Five shapes: "needmap", sent at most once,

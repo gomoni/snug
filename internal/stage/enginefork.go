@@ -40,18 +40,32 @@ const engineSocketWaitTimeout = 30 * time.Second
 // background goroutine so it never sits as a zombie under P1 for the
 // (possibly long) remainder of this run; teardown's own verification is by
 // socket path (internal/engine/reap.go), not by this reap.
-func startEngine(netnsN *os.File, req request) error {
+func startEngine(netnsN *os.File, initPID int, req request) error {
 	if req.EngineSock == "" {
 		return fmt.Errorf("__stage-serve: malformed start request: an engine with no socket path to wait for")
 	}
-	if req.EngineResolvConf == "" {
-		// Fatal, not a silent fallback (invariant 5): without this path
-		// EnterEngine has nothing to bind over /etc/resolv.conf, and the
-		// engine's private tree copy would carry the HOST's real one straight
-		// through to every container it starts (issue #126).
-		return fmt.Errorf("__stage-serve: malformed start request: an engine with no resolv.conf path " +
-			"to bind over its own /etc/resolv.conf")
+	if len(req.EngineGrafts) == 0 {
+		// Fatal, not a silent fallback (invariant 5). Since Tier C the
+		// engine's view is DERIVED from the sandbox's, which contains none of
+		// this run's store, runroot, socket or configuration — an engine
+		// started with no grafts would exec into a namespace where its own
+		// binary and every path on its argv resolve to nothing.
+		return fmt.Errorf("__stage-serve: malformed start request: an engine with no grafts, " +
+			"which cannot see its own store, runroot, socket directory or configuration")
 	}
+
+	// The SANDBOX's mount namespace, opened HERE and handed over as a
+	// descriptor rather than as a pid: __inengine must not have to trust, or
+	// re-resolve, a pid — and by the time this runs the caller has already
+	// waited for bwrap to finish every mount snug asked for (see
+	// waitForSandboxMounts, and issue #125's measurement of what joining too
+	// early hands the engine).
+	mntNS, err := os.Open(fmt.Sprintf("/proc/%d/ns/mnt", initPID))
+	if err != nil {
+		return fmt.Errorf("__stage-serve: opening the sandbox's mount namespace (pid %d): %w",
+			initPID, err)
+	}
+	defer mntNS.Close()
 
 	// Everything __inengine needs travels on ITS OWN argv, never in an
 	// environment variable — the same discipline fds.go states for descriptor
@@ -60,14 +74,22 @@ func startEngine(netnsN *os.File, req request) error {
 	// (the netns descriptor), then the env count and the env pairs
 	// themselves, then the podman path, then podman's own argv. See
 	// EnterEngine for the matching decode.
-	argv := []string{"__inengine", req.EngineResolvConf, "3", strconv.Itoa(len(req.EngineEnv))}
+	argv := []string{"__inengine", "3", "4", strconv.Itoa(len(req.EngineEnv))}
 	argv = append(argv, req.EngineEnv...)
+	argv = append(argv, strconv.Itoa(len(req.EngineGrafts)))
+	for _, g := range req.EngineGrafts {
+		access := "rw"
+		if g.ReadOnly {
+			access = "ro"
+		}
+		argv = append(argv, g.Host, g.Guest, access)
+	}
 	argv = append(argv, req.EnginePodman)
 	argv = append(argv, req.EngineArgv...)
 
 	cmd := exec.Command("/proc/self/exe", argv...)
 	cmd.Args[0] = "snug"
-	cmd.ExtraFiles = []*os.File{netnsN}
+	cmd.ExtraFiles = []*os.File{netnsN, mntNS}
 	cmd.Env = []string{}
 	// podman `system service` reads nothing from stdin (Go substitutes
 	// /dev/null when Stdin is nil); its stdout is not useful without a

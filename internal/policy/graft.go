@@ -703,6 +703,32 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 // there is nowhere for the engine's cgroup2 mount (Guest /sys/fs/cgroup,
 // Kind KindCgroup2) to land.
 //
+// The five under /snug/engine are Tier C's own destinations, and /snug and
+// /snug/engine are listed above them for the same depth-ascending reason the
+// /sys chain is: --dir creates no ancestors, and the root is read-only by the
+// time anything else could. Listing /snug is not a second author of that
+// directory — skeletonDirs already creates it whenever a profile stages a
+// binary — it is what makes the destinations reachable on a container run that
+// stages nothing, where nothing else would have created it.
+//
+// MEASURED, and it is why G3 insists the destination exist rather than trying
+// to create it: mkdir on the sandbox's read-only root fails EROFS, while
+// move_mount ONTO a directory that is already there succeeds — a mountpoint
+// needs no write access to the filesystem beneath it (issue #125, the
+// derived-view measurement).
+//
+// /var/tmp is here for a reason the design pass predicted and this
+// implementation measured twice. containers/image hardcodes /var/tmp as the
+// scratch space for the COMMIT step of a build — `TemporaryDirectoryForBigFiles`
+// on Linux, which no environment variable reaches — so a build through the
+// proxy returned 500 with `stat /var/tmp: no such file or directory` and kept
+// doing so after containers.conf's image_copy_tmp_dir and $TMPDIR were both
+// pointed somewhere the engine can write. The remaining consumer cannot be
+// configured, so it gets a mountpoint and a fresh tmpfs, exactly like /run.
+//
+// It is NOT a graft of the host's /var/tmp, which is what §6 of the design
+// ruled out: nothing of the host's is in it.
+//
 // /run is here for the same reason and a different mount: the engine needs a
 // WRITABLE /run of its own — podman, seeing itself as root-like with the full
 // delegated subuid range, does not self-mount one and fails outright on `mkdir
@@ -725,7 +751,13 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 // what was not pre-created here. Order matters for the same reason
 // skeletonDirs is depth-ascending: /sys/fs/cgroup needs /sys/fs to already
 // be a directory, which needs /sys.
-var EngineMountpoints = []string{"/run", "/sys", "/sys/fs", "/sys/fs/cgroup"}
+var EngineMountpoints = []string{
+	"/run",
+	"/snug", "/snug/engine",
+	EngineStoreGuest, EngineRunrootGuest, EngineSockGuest, EngineConfGuest, EngineToolchainGuest,
+	"/sys", "/sys/fs", "/sys/fs/cgroup",
+	"/var/tmp",
+}
 
 // existsInSandbox is G3: a graft's destination must already be a directory
 // inside the SANDBOX's own mount namespace before move_mount(2) can land
@@ -855,4 +887,92 @@ func (p *Policy) HostPathVisible(host string, needWrite bool) bool {
 		return true
 	}
 	return false
+}
+
+// EngineGuestPath maps a HOST path to the path the ENGINE sees it at, or
+// reports that the engine cannot see it at all.
+//
+// It exists because Tier C moves the engine off a copy of the host tree and
+// onto a view derived from the sandbox's, at which point every host path snug
+// hands the engine — its argv, its environment, and the absolute paths inside
+// the configuration files snug generates for it — stops meaning what it said.
+// A store at /home/u/.local/share/snug/engines/<key>/storage is
+// /snug/engine/store from inside; a podman inside a pinned bundle is under
+// /snug/engine/toolchain; a podman in /usr/bin is still /usr/bin, because the
+// sandbox's own @sys grant already exposes it and the engine's view inherits
+// that.
+//
+// THE THREE CASES ARE THE WHOLE RULE, and the third one is why this returns a
+// bool rather than a string:
+//
+//   - a GRAFT's Host covers it — the deepest such graft wins, and the answer is
+//     that graft's Guest plus the remainder;
+//   - failing that, a KindBind MOUNT's Host covers it — the sandbox's own view,
+//     which the engine's is derived from, so the same path with the same
+//     remainder;
+//   - failing both, THE ENGINE CANNOT SEE IT. Callers must treat that as a
+//     refusal and say so (invariant 5): handing the engine a path it cannot
+//     resolve produces podman's own error several layers down, about a file
+//     rather than about a boundary.
+//
+// A mount-derived answer is discarded when a graft's Guest covers it. Grafts
+// are installed ON TOP of the sandbox's view, so the mount that would have
+// answered is shadowed in the engine's namespace and its path now names the
+// graft's content instead — a different tree with the same name, which is the
+// one answer worse than "cannot see it".
+//
+// Purely lexical, like HostPathVisible and for the same reason: internal/policy
+// touches no filesystem. Callers owe it a path already put through
+// ResolveExistingHostPath — Policy.Graft has already done that for every
+// graft's own Host, so the SET this matches against is resolved even when the
+// question is not.
+func (p *Policy) EngineGuestPath(host string) (string, bool) {
+	host = filepath.Clean(host)
+
+	best, bestGuest := "", ""
+	for _, g := range p.Grafts {
+		if !graftKindRules[g.Kind].hasHost || g.Host == "" {
+			continue
+		}
+		if !covers(g.Host, host) {
+			continue
+		}
+		if len(g.Host) > len(best) {
+			best, bestGuest = g.Host, g.Guest
+		}
+	}
+	if best != "" {
+		return joinRemainder(bestGuest, best, host), true
+	}
+
+	for _, m := range p.Mounts {
+		if m.Kind != KindBind || m.Host == "" {
+			continue
+		}
+		if !covers(m.Host, host) {
+			continue
+		}
+		if len(m.Host) > len(best) {
+			best, bestGuest = m.Host, m.Guest
+		}
+	}
+	if best == "" {
+		return "", false
+	}
+	guest := joinRemainder(bestGuest, best, host)
+	for _, g := range p.Grafts {
+		if covers(g.Guest, guest) {
+			return "", false
+		}
+	}
+	return guest, true
+}
+
+// joinRemainder is the "same remainder" half of EngineGuestPath: the part of
+// host below root, appended to guest. Split out so the two arms cannot drift.
+func joinRemainder(guest, root, host string) string {
+	if host == root {
+		return guest
+	}
+	return filepath.Join(guest, strings.TrimPrefix(host, root+"/"))
 }

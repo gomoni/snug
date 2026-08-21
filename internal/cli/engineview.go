@@ -89,6 +89,22 @@ func installEngineViewGrafts(env policy.Environ, p *policy.Policy) error {
 
 	if err := p.Graft(env, policy.Graft{
 		Mount: policy.Mount{
+			Guest:  "/var/tmp",
+			Kind:   policy.KindTmpfs,
+			Access: policy.AccessRW,
+			From:   []string{"(snug)"},
+		},
+		Why: "write anything it likes into a second tmpfs that dies with the run — " +
+			"containers/image hardcodes /var/tmp for the temporary directory it creates while " +
+			"committing a layer, with no configuration key and no environment variable that " +
+			"reaches it (measured: every build 500'd on `stat /var/tmp` until this existed). " +
+			"Nothing of the HOST's /var/tmp is in it",
+	}); err != nil {
+		return fmt.Errorf("recording the engine's own /var/tmp: %w", err)
+	}
+
+	if err := p.Graft(env, policy.Graft{
+		Mount: policy.Mount{
 			Guest:  "/run",
 			Kind:   policy.KindTmpfs,
 			Access: policy.AccessRW,

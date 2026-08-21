@@ -211,7 +211,15 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 	// baseEnv carries nothing of the host's own environment, PATH included
 	// (issue #125): Spec pins PATH itself, and see its doc comment for why
 	// os.Getenv("PATH") is not a value this call site is trusted to supply.
-	spec, err := eng.Spec(pf.Podman, nil, pf.CgroupsDisabled, pol.Net)
+	// The engine's own host directories into the model, BEFORE Spec: Spec maps
+	// every path it hands the engine through these grafts and refuses one that
+	// no graft and no grant exposes, so a Spec built before them would refuse
+	// every path it was about to write (issue #125, Tier C).
+	if err := eng.GraftInto(env, pol); err != nil {
+		return containerRun{}, err
+	}
+
+	spec, err := eng.Spec(pol, pf.Podman, nil, pf.CgroupsDisabled)
 	if err != nil {
 		return containerRun{}, err
 	}

@@ -16,18 +16,21 @@ import (
 // engine will be started with. The sibling of engine_test.go's specConf, and
 // deliberately the same shape: these assertions are about the ENVIRONMENT
 // rather than about the generated containers.conf.
-func specEnv(t *testing.T, baseEnv []string) []string {
+// specEnv returns the engine's environment AND the engine, because since Tier C
+// the two are needed together: every path in that environment is a GUEST path
+// and hostSideOf needs the engine to say where snug actually wrote the file.
+func specEnv(t *testing.T, baseEnv []string) ([]string, *Engine) {
 	t.Helper()
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec, err := e.Spec("/usr/bin/podman", baseEnv, false, policy.NetPolicy{})
+	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman", baseEnv, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return spec.Env
+	return spec.Env, e
 }
 
 // envValue returns the value of name in a KEY=VALUE environment, and how many
@@ -58,7 +61,7 @@ func envValue(env []string, name string) (string, int) {
 // be noticed at all. A new file podman starts reading from $HOME will not be
 // caught by this test, but a REGRESSION of any of these will.
 func TestSpecAuthorsEveryFileTheEngineReadsFromAHome(t *testing.T) {
-	env := specEnv(t, []string{"PATH=/usr/bin"})
+	env, specEng := specEnv(t, []string{"PATH=/usr/bin"})
 
 	home, n := envValue(env, "HOME")
 	if n != 1 {
@@ -69,7 +72,7 @@ func TestSpecAuthorsEveryFileTheEngineReadsFromAHome(t *testing.T) {
 			"of a home directory is then host-authored (issues #137, #142)", home)
 	}
 
-	policyPath := filepath.Join(home, ".config", "containers", "policy.json")
+	policyPath := filepath.Join(hostSideOf(t, specEng, home), ".config", "containers", "policy.json")
 	if _, err := os.Stat(policyPath); err != nil {
 		t.Fatalf("no generated policy.json at %s: podman refuses to pull without one, so the "+
 			"answer would come from whatever the host has, or the pull would fail (issue #137): %v",
@@ -82,8 +85,8 @@ func TestSpecAuthorsEveryFileTheEngineReadsFromAHome(t *testing.T) {
 			t.Errorf("%s appears %d times in the engine's environment, want exactly 1", name, n)
 			continue
 		}
-		if _, err := os.Stat(path); err != nil {
-			t.Errorf("%s=%s does not exist: %v", name, path, err)
+		if _, err := os.Stat(hostSideOf(t, specEng, path)); err != nil {
+			t.Errorf("%s=%s does not exist on the host side: %v", name, path, err)
 		}
 	}
 }
@@ -99,7 +102,7 @@ func TestSpecAuthorsEveryFileTheEngineReadsFromAHome(t *testing.T) {
 // this test passes one deliberately: the guard has to survive a caller that
 // starts doing it again.
 func TestSpecReplacesACallerSuppliedHome(t *testing.T) {
-	env := specEnv(t, []string{"PATH=/usr/bin", "HOME=/host/home", "REGISTRY_AUTH_FILE=/host/auth.json"})
+	env, _ := specEnv(t, []string{"PATH=/usr/bin", "HOME=/host/home", "REGISTRY_AUTH_FILE=/host/auth.json"})
 
 	if home, n := envValue(env, "HOME"); n != 1 || home == "/host/home" {
 		t.Errorf("HOME = %q (%d occurrences), want exactly one entry that is not the caller's", home, n)
@@ -115,9 +118,9 @@ func TestSpecReplacesACallerSuppliedHome(t *testing.T) {
 // there, it must name no registry, because the point is that the engine
 // authenticates as nobody.
 func TestTheGeneratedAuthFileCarriesNoCredential(t *testing.T) {
-	env := specEnv(t, []string{"PATH=/usr/bin"})
+	env, specEng := specEnv(t, []string{"PATH=/usr/bin"})
 	path, _ := envValue(env, "REGISTRY_AUTH_FILE")
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(hostSideOf(t, specEng, path))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,9 +146,9 @@ func TestTheGeneratedAuthFileCarriesNoCredential(t *testing.T) {
 // the single search key snug does write. Asserted by name, so a future edit
 // that adds one has to argue with a test rather than with a comment.
 func TestTheGeneratedRegistriesConfRedirectsNothing(t *testing.T) {
-	env := specEnv(t, []string{"PATH=/usr/bin"})
+	env, specEng := specEnv(t, []string{"PATH=/usr/bin"})
 	path, _ := envValue(env, "CONTAINERS_REGISTRIES_CONF")
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(hostSideOf(t, specEng, path))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +186,7 @@ func TestTheGeneratedStorageConfIsSnugsOwn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec, err := e.Spec("/usr/bin/podman", []string{"PATH=/usr/bin"}, false, policy.NetPolicy{})
+	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman", []string{"PATH=/usr/bin"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,23 +197,33 @@ func TestTheGeneratedStorageConfIsSnugsOwn(t *testing.T) {
 			"returns the first, which is not necessarily snug's", n)
 	}
 	// It has to live in the half Tier C grafts READ-ONLY, like every other
-	// file snug generates for the engine (issue #125, C2b).
-	if got := filepath.Dir(path); got != e.confDir {
-		t.Errorf("the generated storage.conf is in %s, want %s", got, e.confDir)
+	// file snug generates for the engine (issue #125, C2b) — and the engine is
+	// told about it under the GUEST name that graft gives it, which is what
+	// this now checks. hostSideOf asserts the first half and returns where the
+	// file really is.
+	if got := filepath.Dir(path); got != policy.EngineConfGuest {
+		t.Errorf("the engine is told storage.conf is in %s, want %s", got, policy.EngineConfGuest)
 	}
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(hostSideOf(t, e, path))
 	if err != nil {
 		t.Fatal(err)
 	}
 	body := string(raw)
 
-	// The two paths must be SNUG's, and must match what podman also gets on
-	// its argv — libpod records the runroot in its database and refuses a
-	// later run against the same store with a different one, so a disagreement
-	// here is not cosmetic.
+	// The two paths must be the ones the ENGINE can actually reach, and must
+	// match what podman also gets on its argv — libpod records the runroot in
+	// its database and refuses a later run against the same store with a
+	// different one, so a disagreement here is not cosmetic.
+	//
+	// Since Tier C both are GUEST paths (issue #125): the engine's view is
+	// derived from the sandbox's, so the host path this file used to carry
+	// names nothing there. Note what that buys beyond correctness — the value
+	// written here is now snug's own constant plus a fixed suffix, so no
+	// property of the host's own directory layout reaches the config file at
+	// all.
 	for _, want := range []string{
-		`graphroot = "` + e.store + `"`,
-		`runroot = "` + e.runroot + `"`,
+		`graphroot = "` + policy.EngineStoreGuest + `"`,
+		`runroot = "` + policy.EngineRunrootGuest + `"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the generated storage.conf does not carry %s:\n%s", want, body)
@@ -260,17 +273,26 @@ func TestTheGeneratedStorageConfNamesAMountProgramOnlyWhenThereIsOne(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			spec, err := e.Spec(podman, []string{"PATH=/usr/bin"}, false, policy.NetPolicy{})
+			// dir is this fixture's stand-in for a pinned bundle, so it is
+			// what the toolchain graft names. Without it Spec refuses — an
+			// engine binary under no grant and no graft is one the engine
+			// cannot see, which is the refusal working rather than a fixture
+			// problem.
+			spec, err := e.Spec(specPolicy(t, e, dir, policy.NetPolicy{}), podman, []string{"PATH=/usr/bin"}, false)
 			if err != nil {
 				t.Fatal(err)
 			}
 			path, _ := envValue(spec.Env, "CONTAINERS_STORAGE_CONF")
-			raw, err := os.ReadFile(path)
+			raw, err := os.ReadFile(hostSideOf(t, e, path))
 			if err != nil {
 				t.Fatal(err)
 			}
 			body := string(raw)
-			named := strings.Contains(body, "mount_program = "+strconv.Quote(helper))
+			// The GUEST path, because that is what the engine can open:
+			// dir is this fixture's pinned bundle and the toolchain graft
+			// attaches it at policy.EngineToolchainGuest (issue #125).
+			wantHelper := filepath.Join(policy.EngineToolchainGuest, filepath.Base(helper))
+			named := strings.Contains(body, "mount_program = "+strconv.Quote(wantHelper))
 			switch {
 			case tc.want && !named:
 				t.Errorf("an executable fuse-overlayfs sits beside the engine and the generated "+
@@ -309,8 +331,7 @@ func TestEveryPathAGeneratedConfigNamesIsOneSnugOwns(t *testing.T) {
 		t.Fatal(err)
 	}
 	const enginePath = "/usr/bin/podman"
-	spec, err := e.Spec(enginePath, []string{"PATH=/usr/bin"}, true,
-		policy.NetPolicy{})
+	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), enginePath, []string{"PATH=/usr/bin"}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +359,16 @@ func TestEveryPathAGeneratedConfigNamesIsOneSnugOwns(t *testing.T) {
 	// mount_program at /usr/bin/env passed, because the test then exempted
 	// /usr/bin/env too. An exemption has to be an independent restatement of
 	// where the helper is allowed to be, or it exempts whatever the code did.
-	helperPath := filepath.Join(filepath.Dir(enginePath), "fuse-overlayfs")
+	// TWO exact values, because there are exactly two places a helper beside
+	// the engine can END UP once the engine's view is derived: beside a
+	// distribution engine under /usr (which @sys exposes, so it keeps its own
+	// path), or beside a pinned bundle (which reaches the engine only through
+	// the toolchain graft). Stated as exact strings rather than derived from
+	// the code under test, for the reason the paragraph above gives.
+	helperPaths := map[string]bool{
+		"/usr/bin/fuse-overlayfs":                                    true,
+		filepath.Join(policy.EngineToolchainGuest, "fuse-overlayfs"): true,
+	}
 	// The directories containers.conf names for podman's own helper lookup.
 	// Exempt as EXACT values, so a fourth entry — or any other path on such a
 	// line — is caught rather than waved through by a prefix.
@@ -348,8 +378,13 @@ func TestEveryPathAGeneratedConfigNamesIsOneSnugOwns(t *testing.T) {
 		"/usr/bin":            true,
 	}
 
+	// The GUEST roots since Tier C, which is what turns this check from "a
+	// path snug owns" into the stronger "a path the ENGINE can see" — a
+	// generated config naming a host path now fails here rather than at the
+	// moment podman opens it (issue #125).
 	owned := func(p string) bool {
-		for _, root := range []string{e.store, e.runroot, e.sockDir, e.confDir} {
+		for _, root := range []string{policy.EngineStoreGuest, policy.EngineRunrootGuest,
+			policy.EngineSockGuest, policy.EngineConfGuest, policy.EngineToolchainGuest} {
 			if p == root || strings.HasPrefix(p, root+string(filepath.Separator)) {
 				return true
 			}
@@ -362,7 +397,7 @@ func TestEveryPathAGeneratedConfigNamesIsOneSnugOwns(t *testing.T) {
 	// over-reports is the safe direction for a check like this.
 	quoted := regexp.MustCompile(`"(/[^"]*)"`)
 	for _, f := range files {
-		raw, readErr := os.ReadFile(f)
+		raw, readErr := os.ReadFile(hostSideOf(t, e, f))
 		if readErr != nil {
 			t.Fatalf("%s: %v", f, readErr)
 		}
@@ -388,7 +423,7 @@ func TestEveryPathAGeneratedConfigNamesIsOneSnugOwns(t *testing.T) {
 				// key this check exists for — measured: with the prefix form, a
 				// mutation pointing mount_program at an existing /usr binary
 				// passed.
-				if p == helperPath || helperDirs[p] {
+				if helperPaths[p] || helperDirs[p] {
 					continue
 				}
 				if !owned(p) {
@@ -425,7 +460,7 @@ func TestARelativeEngineRefusesRatherThanWritingARelativeMountProgram(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = e.Spec("./podman", []string{"PATH=/usr/bin"}, false, policy.NetPolicy{})
+	_, err = e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "./podman", []string{"PATH=/usr/bin"}, false)
 	if err == nil {
 		t.Fatal("Spec accepted a relative engine path; the generated storage.conf would then " +
 			"carry a relative mount_program, which the engine resolves against its own working " +
@@ -453,22 +488,63 @@ func TestAnUnquotablePathIsRefusedRatherThanSubstituted(t *testing.T) {
 	if err := os.MkdirAll(odd, 0o700); err != nil {
 		t.Skipf("this filesystem will not hold a directory with a quote in its name: %v", err)
 	}
-	t.Setenv("XDG_DATA_HOME", odd)
 
+	// HALF ONE, and it is the property Tier C ADDED rather than one it kept:
+	// an unquotable HOST path can no longer reach storage.conf at all, because
+	// the file names the GUEST path — snug's own constant — and the host's
+	// directory layout stops being an input to the file's contents (issue
+	// #125). The old refusal for this case is gone because the case is gone.
+	t.Setenv("XDG_DATA_HOME", odd)
 	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = e.Spec("/usr/bin/podman", []string{"PATH=/usr/bin"}, false, policy.NetPolicy{})
-	if err == nil {
-		t.Fatal("Spec accepted a store path containing a quote; storage.conf would then carry a " +
-			"placeholder while podman's own --root carried the real path, and nothing would say so")
+	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman",
+		[]string{"PATH=/usr/bin"}, false)
+	if err != nil {
+		t.Fatalf("Spec refused a store under a directory with a quote in its name, but the "+
+			"quote can no longer reach the generated config — storage.conf names %s: %v",
+			policy.EngineStoreGuest, err)
 	}
-	if !strings.Contains(err.Error(), "graphroot") {
+	path, _ := envValue(spec.Env, "CONTAINERS_STORAGE_CONF")
+	raw, err := os.ReadFile(hostSideOf(t, e, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := string(raw); strings.Contains(body, `a"b`) {
+		t.Errorf("the host store path's quote reached storage.conf:\n%s", body)
+	}
+
+	// HALF TWO, the positive control for the refusal itself, on the one value
+	// that CAN still carry a host-chosen string: mount_program is the graft's
+	// guest root plus the REMAINDER of the host path, so a quote in the
+	// helper's own filename still reaches tomlString — and must still be
+	// refused rather than substituted. Without this half, the check that a
+	// quote is refused would have been deleted rather than moved.
+	bundle := t.TempDir()
+	podman := filepath.Join(bundle, "podman")
+	if err := os.WriteFile(podman, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oddHelperDir := filepath.Join(bundle, `q"d`)
+	if err := os.MkdirAll(oddHelperDir, 0o755); err != nil {
+		t.Skipf("this filesystem will not hold a directory with a quote in its name: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(oddHelperDir, "fuse-overlayfs"),
+		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	e2, err := New([]policy.ProfileName{"@podman-socket"}, "/proj2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pol := specPolicy(t, e2, bundle, policy.NetPolicy{})
+	if _, err := e2.writeStorageConf(pol, filepath.Join(oddHelperDir, "podman")); err == nil {
+		t.Fatal("writeStorageConf accepted a helper path containing a quote; storage.conf would " +
+			"carry a placeholder while nothing said so")
+	} else if !strings.Contains(err.Error(), "mount_program") {
 		t.Errorf("the refusal does not name which setting could not be rendered: %v", err)
-	}
-	if strings.Contains(err.Error(), "snug-refused-unquotable-value") {
-		t.Errorf("the placeholder reached the caller instead of an error: %v", err)
 	}
 }
 
@@ -480,7 +556,7 @@ func TestAnUnquotablePathIsRefusedRatherThanSubstituted(t *testing.T) {
 // would still be the file in play while the environment read as though snug's
 // had won. That is CLAUDE.md's "the flag is present and the feature is not".
 func TestSpecReplacesACallerSuppliedStorageConf(t *testing.T) {
-	env := specEnv(t, []string{"PATH=/usr/bin", "CONTAINERS_STORAGE_CONF=/host/bundle/storage.conf"})
+	env, _ := specEnv(t, []string{"PATH=/usr/bin", "CONTAINERS_STORAGE_CONF=/host/bundle/storage.conf"})
 	seen := 0
 	for _, kv := range env {
 		if strings.HasPrefix(kv, "CONTAINERS_STORAGE_CONF=") {
@@ -545,7 +621,7 @@ func TestTheGeneratedSignaturePolicyIsPodmansOwnDefault(t *testing.T) {
 // C2-view's sweep — for every element of the engine's PATH,
 // EngineView().IsShadowSlot(elem) must be false — pass rather than be a comment.
 func TestSpecPinsTheEnginesPATH(t *testing.T) {
-	env := specEnv(t, nil)
+	env, _ := specEnv(t, nil)
 
 	path, n := envValue(env, "PATH")
 	if n != 1 {
@@ -583,7 +659,7 @@ func TestSpecReplacesACallerSuppliedPATH(t *testing.T) {
 	if hostPATH == "" {
 		t.Skip("no PATH in this test process's environment, so there is nothing to try to smuggle")
 	}
-	env := specEnv(t, []string{"PATH=" + hostPATH})
+	env, _ := specEnv(t, []string{"PATH=" + hostPATH})
 
 	path, n := envValue(env, "PATH")
 	if n != 1 {

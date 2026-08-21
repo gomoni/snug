@@ -120,17 +120,28 @@ import (
 // everything a raw exec needs has to be named on the command line of the shim
 // that performs it. resolvConfPath is a HOST path, never the content itself
 // (issue #126) — see the bind-mount step below.
+// engineGraft is one entry of the derived view, as __inengine works with it:
+// the flat triple P0 wrote down, plus the detached tree this process clones
+// from it BEFORE joining the sandbox's namespace.
+type engineGraft struct {
+	host     string
+	guest    string
+	readOnly bool
+	tree     int
+}
+
 func EnterEngine(argv []string) error {
 	if len(argv) < 4 {
-		return fmt.Errorf("__inengine: usage: __inengine RESOLVCONF FD NENV [ENV...] PODMAN [ARGS...]")
+		return fmt.Errorf("__inengine: usage: __inengine NETNSFD MNTFD NENV [ENV...] " +
+			"NGRAFTS [HOST GUEST ro|rw]... PODMAN [ARGS...]")
 	}
-	resolvConfPath := argv[0]
-	if resolvConfPath == "" {
-		return fmt.Errorf("__inengine: empty resolv.conf path")
-	}
-	fd := atoiOrZero(argv[1])
+	fd := atoiOrZero(argv[0])
 	if fd <= 0 {
-		return fmt.Errorf("__inengine: bad fd %q", argv[1])
+		return fmt.Errorf("__inengine: bad netns fd %q", argv[0])
+	}
+	mntFD := atoiOrZero(argv[1])
+	if mntFD <= 0 {
+		return fmt.Errorf("__inengine: bad sandbox-mount-namespace fd %q", argv[1])
 	}
 	nEnv, err := strconv.Atoi(argv[2])
 	if err != nil || nEnv < 0 {
@@ -138,10 +149,34 @@ func EnterEngine(argv []string) error {
 	}
 	rest := argv[3:]
 	if len(rest) < nEnv+1 {
-		return fmt.Errorf("__inengine: argv too short for %d env pair(s) and a podman path", nEnv)
+		return fmt.Errorf("__inengine: argv too short for %d env pair(s)", nEnv)
 	}
 	env := rest[:nEnv]
-	podmanArgv := rest[nEnv:]
+	rest = rest[nEnv:]
+
+	nGrafts, err := strconv.Atoi(rest[0])
+	if err != nil || nGrafts < 0 {
+		return fmt.Errorf("__inengine: bad graft count %q", rest[0])
+	}
+	rest = rest[1:]
+	if len(rest) < nGrafts*3+1 {
+		return fmt.Errorf("__inengine: argv too short for %d graft(s) and a podman path", nGrafts)
+	}
+	grafts := make([]engineGraft, 0, nGrafts)
+	for i := 0; i < nGrafts; i++ {
+		host, guest, access := rest[i*3], rest[i*3+1], rest[i*3+2]
+		if host == "" || guest == "" {
+			return fmt.Errorf("__inengine: graft %d has an empty host or guest path", i)
+		}
+		switch access {
+		case "ro", "rw":
+		default:
+			return fmt.Errorf("__inengine: graft %d (%s) has access %q, want ro or rw",
+				i, guest, access)
+		}
+		grafts = append(grafts, engineGraft{host: host, guest: guest, readOnly: access == "ro"})
+	}
+	podmanArgv := rest[nGrafts*3:]
 	podman := podmanArgv[0]
 
 	runtime.LockOSThread()
@@ -158,6 +193,82 @@ func EnterEngine(argv []string) error {
 		return fmt.Errorf("__inengine: closing the netns fd: %w", err)
 	}
 
+	// THE CLONE HAPPENS BEFORE THE JOIN, and the ordering is measured rather
+	// than chosen. This process still holds the stage's private copy of the
+	// HOST tree, so every graft's source resolves here; after the setns below
+	// its root is the SANDBOX's and the identical path resolves inside the
+	// sandbox — measured as ENOENT, not as a different tree, which is the only
+	// mercy in it (issue #125's derived-view pass corrects the design's §4 on
+	// exactly this point).
+	//
+	// It is also the only place with the AUTHORITY: open_tree(OPEN_TREE_CLONE)
+	// needs CAP_SYS_ADMIN in the user namespace owning the mount namespace,
+	// which this process has here (root-in-U) and P0 does not — the design's
+	// own measurement of the P0 variant is EPERM, and reading that as
+	// "invariant 4 working" rather than "the kernel refused our plumbing" is
+	// what makes this the right place rather than a workaround.
+	//
+	// The detached trees survive the namespace change and attach on the far
+	// side (measured). Each fd is CLOEXEC, so nothing here reaches podman.
+	for i := range grafts {
+		how := &unix.OpenHow{
+			Flags: unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC,
+			// RESOLVE_NO_SYMLINKS, and ELOOP here is FATAL with no fallback to
+			// the path form: Policy.Graft already resolved this source, so a
+			// component that has BECOME a symlink since is the attack this
+			// closing exists to catch, not a host layout to route around
+			// (issue #55, F6; issue #125's G4 comment records the decision).
+			// RESOLVE_NO_XDEV is deliberately absent: these sources plausibly
+			// cross a mount boundary on an ordinary host, and AT_RECURSIVE
+			// cloning the crossed submounts is the intent.
+			Resolve: unix.RESOLVE_NO_SYMLINKS,
+		}
+		src, err := unix.Openat2(unix.AT_FDCWD, grafts[i].host, how)
+		if err != nil {
+			return fmt.Errorf("__inengine: opening the graft source %s (for %s): %w",
+				grafts[i].host, grafts[i].guest, err)
+		}
+		tree, err := unix.OpenTree(src, "",
+			unix.AT_EMPTY_PATH|unix.OPEN_TREE_CLONE|unix.AT_RECURSIVE|unix.OPEN_TREE_CLOEXEC)
+		unix.Close(src)
+		if err != nil {
+			return fmt.Errorf("__inengine: cloning the graft source %s (for %s): %w",
+				grafts[i].host, grafts[i].guest, err)
+		}
+		grafts[i].tree = tree
+	}
+
+	// Step 3 of the design's sequence, and NOT the single-threaded requirement
+	// the whole no-cgo decision is written around (NOCGO.md): setns(CLONE_NEWNS)
+	// checks fs_struct SHARING, not thread count, and every Go runtime thread
+	// shares one. One per-thread unshare satisfies it. Same symptom as
+	// setns(CLONE_NEWUSER)'s check, different kernel test, and only one of them
+	// costs a raw fork.
+	if err := unix.Unshare(unix.CLONE_FS); err != nil {
+		return fmt.Errorf("__inengine: unshare(CLONE_FS) before joining the sandbox's mount "+
+			"namespace: %w", err)
+	}
+
+	// Step 4: the sandbox's OWN view, which is what makes the engine's view
+	// DERIVED rather than a second window onto the host. The caller waited for
+	// bwrap to finish every mount snug asked for before opening this
+	// descriptor (waitForSandboxMounts) — joining earlier lands in a namespace
+	// that still holds the host tree at /oldroot, measured.
+	if err := unix.Setns(mntFD, unix.CLONE_NEWNS); err != nil {
+		return fmt.Errorf("__inengine: setns into the sandbox's mount namespace: %w", err)
+	}
+	if err := unix.Close(mntFD); err != nil {
+		return fmt.Errorf("__inengine: closing the sandbox mount-namespace fd: %w", err)
+	}
+
+	// Step 5: the engine's OWN copy of that view, so everything below — the
+	// grafts, the fresh procfs, the cgroup2, the tmpfs on /run — is invisible
+	// to the payload. Without this the engine would be mounting into the
+	// SANDBOX's own namespace, which is the opposite of the ticket.
+	if err := unix.Unshare(unix.CLONE_NEWNS); err != nil {
+		return fmt.Errorf("__inengine: unshare(CLONE_NEWNS) for the engine's own view: %w", err)
+	}
+
 	// Two reasons, both load-bearing, identical to __stage-setup's own copy
 	// of this call: overlay refuses to make its own mount private without a
 	// private tree to work in, and a private tree is what stops podman's
@@ -166,6 +277,38 @@ func EnterEngine(argv []string) error {
 	// exists to avoid a different flavour of.
 	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
 		return fmt.Errorf("__inengine: making / private: %w", err)
+	}
+
+	// Step 10: attach each detached tree. MEASURED, and the two facts worth
+	// carrying: move_mount onto a directory on the sandbox's READ-ONLY root
+	// succeeds (a mountpoint needs no write access to the filesystem beneath
+	// it), while mkdir there is EROFS — which is why G3 insists the
+	// destination already exist and why BwrapFlags pre-creates every one of
+	// them (policy.EngineMountpoints).
+	//
+	// Every failure is FATAL (invariant 5). G3's third disjunct is a soundness
+	// approximation by its own doc comment; this is where an approximation
+	// that guessed wrong has to surface rather than be papered over.
+	for _, g := range grafts {
+		if err := unix.MoveMount(g.tree, "", unix.AT_FDCWD, g.guest,
+			unix.MOVE_MOUNT_F_EMPTY_PATH); err != nil {
+			return fmt.Errorf("__inengine: attaching %s at %s in the engine's view: %w",
+				g.host, g.guest, err)
+		}
+		unix.Close(g.tree)
+		if !g.readOnly {
+			continue
+		}
+		// Read-only is a REQUIREMENT of the model, not a hint: the config
+		// directory and the toolchain are grafted AccessRO precisely so an
+		// engine that is talked into writing cannot rewrite what it was
+		// started under. Applied after the attach, recursively, and measured
+		// to refuse a write with EROFS afterwards.
+		attr := &unix.MountAttr{Attr_set: unix.MOUNT_ATTR_RDONLY}
+		if err := unix.MountSetattr(unix.AT_FDCWD, g.guest, unix.AT_RECURSIVE, attr); err != nil {
+			return fmt.Errorf("__inengine: making %s read-only in the engine's view: %w",
+				g.guest, err)
+		}
 	}
 
 	// A FRESH procfs, bound to THIS process's own pid namespace (issue #125's
@@ -189,46 +332,18 @@ func EnterEngine(argv []string) error {
 		return fmt.Errorf("__inengine: mounting a fresh /proc for this engine's own pid namespace: %w", err)
 	}
 
-	// Bind-mount snug's own generated /etc/resolv.conf (the SAME content the
-	// sandbox payload gets, policy.NetPolicy.ResolvConf, threaded here as a
-	// host path — never re-read from the host, never regenerated) OVER the
-	// private tree's own /etc/resolv.conf, which up to this point is still
-	// the HOST's real one (issue #126). Without this, podman generates every
-	// container's /etc/resolv.conf FROM the engine's own — so an offline
-	// sandbox's container would learn the host LAN's nameservers, the IPv6
-	// ULA prefix and the search domain, a channel the proxy's bind filter
-	// (internal/dockerproxy/create.go) never sees because it is not a
-	// client-requested mount. MS_PRIVATE above is what makes this bind safe
-	// to do at all: it is invisible to the host and to every other process —
-	// the private tree copy is the only thing shadowed.
+	// STEP 11 IS GONE, and its absence is the point rather than a tidy-up.
+	// It used to bind snug's own generated /etc/resolv.conf over the engine's,
+	// because the engine's view was a private copy of the HOST tree and
+	// therefore carried the host's real resolver configuration (issue #126).
+	// Under the derived view there is nothing host-shaped left to shadow: the
+	// engine's /etc/resolv.conf IS the sandbox's, which snug generated. A bind
+	// here would now be snug shadowing its own file with a second copy of
+	// itself.
 	//
-	// A bind, not an overwrite of the file's own content: the target inode is
-	// still the host's real /etc/resolv.conf (or, on a systemd-resolved host,
-	// whatever it symlinks to) as far as the REST of the host mount tree
-	// knows — MS_BIND only shadows the mountpoint inside THIS process's own
-	// private namespace, so the host's file is never opened for writing here
-	// at all.
-	//
-	// BEST-EFFORT, and deliberately so since issue #126's second half. This
-	// mount is the ENGINE's own resolver configuration; what a CONTAINER gets
-	// is now decided by the generated containers.conf (engine.writeContainersConf),
-	// which needs no mount to take effect. So a host where this bind cannot
-	// succeed — issue #128 measured one where /etc/resolv.conf is a bind over
-	// a DELETED inode, on which mounting returns ENOENT while reading works
-	// perfectly — costs the engine fast offline failure, not a container's DNS
-	// isolation. Failing the whole run here would refuse to start an engine
-	// that is not actually leaking anything. Preflight P7 says this on the
-	// host before the run starts (internal/cli/containerpreflight.go); this
-	// line is the backstop for a host where P7 and reality disagree, and it is
-	// loud either way — never silent.
-	if err := unix.Mount(resolvConfPath, "/etc/resolv.conf", "", unix.MS_BIND, ""); err != nil {
-		// Terse on purpose: preflight P7 has already said this in full on the
-		// host, before the run started. This line exists for the case where
-		// P7 and reality disagree, so it must still be printed — but printing
-		// the whole explanation twice is noise a reader learns to skip.
-		fmt.Fprintf(os.Stderr, "snug: the container engine kept the host's /etc/resolv.conf "+
-			"(%v) — containers are unaffected; see preflight P7's note above.\n", err)
-	}
+	// What a CONTAINER gets is unchanged and was never this mount's job since
+	// issue #126's second half: the generated containers.conf names DNS
+	// explicitly, which needs no mount to take effect.
 
 	// A bare tmpfs on /run, MEASURED necessary and NOT what ENGINE-WIRING.md
 	// §7 assumed. That doc's "no /run graft" reasoning was "podman's own
@@ -254,6 +369,18 @@ func EnterEngine(argv []string) error {
 	}
 	if err := unix.Mkdir("/run/lock", 0o1777); err != nil {
 		return fmt.Errorf("__inengine: creating /run/lock: %w", err)
+	}
+
+	// /var/tmp, and it is a mount rather than a configuration key because the
+	// consumer cannot be configured: containers/image hardcodes /var/tmp for
+	// the scratch space it creates while COMMITTING a layer
+	// (TemporaryDirectoryForBigFiles), which is why containers.conf's
+	// image_copy_tmp_dir and $TMPDIR — both of which snug also sets — left
+	// every build failing at the commit step. A fresh, empty tmpfs: nothing of
+	// the host's /var/tmp is in it, and it dies with the engine.
+	if err := unix.Mount("tmpfs", "/var/tmp", "tmpfs", 0, ""); err != nil {
+		return fmt.Errorf("__inengine: mounting a fresh tmpfs on /var/tmp for the engine's own "+
+			"image-commit scratch space: %w", err)
 	}
 
 	// A FRESH cgroup2 mount over /sys/fs/cgroup, MEASURED necessary and the

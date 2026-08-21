@@ -167,12 +167,16 @@ func TestEngineRunDirSplitsByWritability(t *testing.T) {
 	// Every generated file, written through the real writers rather than
 	// re-derived here, so a writer that starts choosing its own directory is
 	// caught rather than mirrored.
-	if _, err := e.Spec("/usr/bin/podman", []string{"PATH=/usr/bin"}, false,
-		policy.NetPolicy{}); err != nil {
+	if _, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman", []string{"PATH=/usr/bin"}, false); err != nil {
 		t.Fatalf("Spec: %v", err)
 	}
+	// resolv.conf is NOT in this list any more, and its absence is the point:
+	// Tier C deleted the bind that put snug's generated resolver config over
+	// the engine's, because the engine's view is now derived from the
+	// sandbox's and already carries that exact file. A generator with no
+	// consumer would be the "documented but not implemented" shape in reverse.
 	generated := []string{"containers.conf", "registries.conf", "storage.conf", "auth.json",
-		"resolv.conf", filepath.Join("home", ".config", "containers", "policy.json")}
+		filepath.Join("home", ".config", "containers", "policy.json")}
 	for _, name := range generated {
 		path := filepath.Join(e.confDir, name)
 		if _, statErr := os.Stat(path); statErr != nil {
@@ -486,7 +490,7 @@ func specConf(t *testing.T, net policy.NetPolicy, cgroupsDisabled bool) (conf st
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec, err := e.Spec("/usr/bin/podman", []string{"PATH=/usr/bin"}, cgroupsDisabled, net)
+	spec, err := e.Spec(specPolicy(t, e, "", net), "/usr/bin/podman", []string{"PATH=/usr/bin"}, cgroupsDisabled)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -499,6 +503,7 @@ func specConf(t *testing.T, net policy.NetPolicy, cgroupsDisabled bool) (conf st
 	if path == "" {
 		t.Fatal("Spec set no CONTAINERS_CONF at all — the engine reads the HOST's containers.conf")
 	}
+	path = hostSideOf(t, e, path)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -759,4 +764,58 @@ func TestNoHostSidePodmanReadsARecordedPid(t *testing.T) {
 				"the engine's OWN pid namespace, meaningless in the host's (issue #167)", f, got)
 		}
 	}
+}
+
+// specPolicy is the fixture every Spec test needs since Tier C (issue #125):
+// a resolved-enough Policy that GRAFTS this engine's own four directories, plus
+// the /usr bind @sys makes on a real run.
+//
+// Spec maps every path it hands the engine through those grafts and REFUSES one
+// it cannot see, so a test that built a Spec against an empty Policy would now
+// be testing the refusal rather than the spec. Built by calling the engine's own
+// GraftInto — never by hand-listing the four paths — so this fixture cannot
+// drift from what a real run installs.
+func specPolicy(t *testing.T, e *Engine, toolchainRoot string, net policy.NetPolicy) *policy.Policy {
+	t.Helper()
+	p := &policy.Policy{
+		Podman: policy.PodmanSocket,
+		Net:    net,
+		Mounts: map[string]policy.Mount{
+			"/usr": {Guest: "/usr", Host: "/usr", Kind: policy.KindBind,
+				Access: policy.AccessRO, From: []string{"@sys"}},
+		},
+	}
+	if toolchainRoot != "" {
+		if err := p.EngineToolchain(policy.OSEnviron{}, toolchainRoot); err != nil {
+			t.Fatalf("fixture: recording the toolchain root: %v", err)
+		}
+	}
+	if err := e.GraftInto(policy.OSEnviron{}, p); err != nil {
+		t.Fatalf("fixture: grafting the engine's own directories: %v", err)
+	}
+	return p
+}
+
+// hostSideOf maps a path the SPEC handed the engine back to where snug actually
+// wrote it.
+//
+// Since Tier C (issue #125) every path in the spec is a GUEST path — what the
+// engine sees inside its derived view — while the file itself lives in this
+// run's own host directory under conf/. A test that opens the spec's value
+// directly is opening /snug/engine/conf/..., which exists in no namespace this
+// process is in.
+//
+// It ALSO asserts the property rather than merely working around it: a config
+// path that is not under the config graft is one Tier C cannot attach
+// read-only, and this fails naming it.
+func hostSideOf(t *testing.T, e *Engine, guest string) string {
+	t.Helper()
+	rest, ok := strings.CutPrefix(guest, policy.EngineConfGuest+"/")
+	if !ok {
+		t.Fatalf("the spec names %q, which is not under the engine's config graft (%s). Every "+
+			"generated file the engine reads must be, or it is a file Tier C cannot attach "+
+			"read-only and the engine could rewrite what it was started under.",
+			guest, policy.EngineConfGuest)
+	}
+	return filepath.Join(e.ConfDir(), rest)
 }
