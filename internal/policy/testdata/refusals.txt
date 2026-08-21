@@ -115,6 +115,22 @@ profile nest puts a bind of /opt at /dev/null, which is inside /dev — a pseudo
        content: it must be bwrap's synthetic minimal device set, never a bind of the host's (which hands over every block device and every input device).
        Remove the grant at /dev/null.
 
+== bind_of_a_socket_source ==
+profile binder binds /home/u/mounted, whose source is a unix SOCKET.
+       Read-only does not restrain a socket: `ro` stops the sandbox replacing it
+       and does nothing about speaking to whatever is listening. The private
+       network namespace does not help either — a unix socket is filesystem, not
+       network. Measured: a payload enumerated the host's ssh-agent and signed
+       with it through exactly this shape (issue #219).
+       If you want the sandbox to sign with ONE key, select '@ssh-agent', which
+       proxies a single pinned key and enumerates nothing. If you want a
+       container engine, select '@podman-socket', whose socket is a filtering
+       proxy rather than the engine itself.
+       NOTE THE LIMIT of this refusal: it sees sockets that exist NOW. Granting
+       a DIRECTORY still grants every socket anyone puts in it later, and that
+       case is not checked by anything.
+
+
 == grant_strictly_inside_resolv_conf ==
 profile nest puts a bind of /opt at /etc/resolv.conf/x, which is inside /etc/resolv.conf — a generated FILE (from (snug)).
        A grant beneath a file is meaningless: nothing can be mounted inside a regular file.

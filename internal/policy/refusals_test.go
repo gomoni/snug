@@ -888,6 +888,18 @@ func TestGoldenRefusals(t *testing.T) {
 			return refusalGrantStrictlyInside(t, "/proc/sys/kernel")
 		}},
 		{"grant_strictly_inside_dev", func(t testing.TB) error { return refusalGrantStrictlyInside(t, "/dev/null") }},
+		// The socket refusal's exact text is a review artifact: it names the
+		// narrower profile to select instead AND the half of the rule it does
+		// not cover, and both are things a future edit could quietly drop
+		// (issue #219).
+		{"bind_of_a_socket_source", func(t testing.TB) error {
+			env := newFakeEnv()
+			env.sockets = map[string]bool{"/home/u/agent.sock": true}
+			reg := testRegistry()
+			reg["binder"] = &Profile{Name: "binder", RO: []string{"/home/u/agent.sock:/home/u/mounted"}}
+			_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "binder"}, testCtx(), env)
+			return err
+		}},
 		{"grant_strictly_inside_resolv_conf", refusalGrantStrictlyInsideResolvConf},
 		{"scalar_conflict_address", func(t testing.TB) error { return refusalScalarConflict(t, "address") }},
 		{"scalar_conflict_gateway", func(t testing.TB) error { return refusalScalarConflict(t, "gateway") }},
