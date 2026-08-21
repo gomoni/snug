@@ -2605,11 +2605,64 @@ carries the measurement.
 
 Section 11 kills a sandbox that has been up for two seconds, which is the easy
 case: bwrap has long since armed `--die-with-parent` on its own init. Issue #13
-is the other one. bwrap arms that late — roughly 40 ms in — and before then,
-killing the process snug forked does **not** take the init with it. Measured at
-the time: the init survived, reparented to the surrounding container's
-subreaper, holding the payload and the network namespace, still writing to the
-target *after* snug was gone.
+is the other one: before that moment, killing does **not** take the init with
+it. It survives, reparented to the surrounding container's subreaper, holding
+the payload and the network namespace, still writing to the target *after* snug
+is gone.
+
+**THE WINDOW DEPENDS ON WHICH PROCESS YOU KILL, and this section quoted one
+number for the other actor.** "Roughly 40 ms" is issue #13's measurement of
+killing **bwrap** — the process snug forked:
+
+```
+kill outer at 0.005s -> payload ran 3/3      kill outer at 0.040s -> payload ran 0/3
+```
+
+Killing **snug** is the case a human, a test harness or a supervisor actually
+produces, and it is the one the script below exercises. Re-measured on this
+host, SIGKILL only, marker compared against a stamp touched the instant snug
+dies, 2 runs per cell:
+
+```
+topology   offset   payload still writing afterwards
+offline    0.05     0/2
+offline    0.10     0/2
+offline    0.15     1/2
+offline    0.20     2/2
+offline    0.25     2/2
+offline    0.30     2/2
+offline    0.40     0/2
+net        0.15     0/2
+net        0.20     1/2
+net        0.25     2/2
+net        0.30     2/2
+net        0.40     0/2
+```
+
+So the window for a killed *snug* is roughly **0.15–0.30 s**, an order of
+magnitude later and wider than the 40 ms this section used to quote, and its
+edges move with load (0.15 offline came back 2/2 on an idle box and 1/2 on a
+busy one). Both ends are sharp for a reason: before ~0.10 s nothing has been
+forked yet, and after ~0.40 s the init has armed its own `PR_SET_PDEATHSIG`.
+
+**Catchable signals are closed** — snug's teardown guard catches `TERM`, `INT`,
+`HUP` and `QUIT` (issues #13, #111), which is what the loop below proves.
+`SIGKILL` is the residual, by construction: it never reaches userspace, so
+nothing snug does at the time can help.
+
+**What DOES help is the next run** (issue #236, merged in #253): it kills the
+orphaned init a stale run-state file names, guarded by the target lock, the
+filename-is-the-hash check and a start-time match. That closes the case where
+the run got far enough to publish its init pid — which, measured, is a run
+killed after about 165 ms. It does **not** close the narrower wedge in the same
+window: an init blocked in bwrap's own uid-map sync `read()` on an eventfd,
+before `execvp`, never answers `--info-fd`, so no state file ever names it.
+Measured on merged main while writing this: two such inits survived a later
+`snug` run, and `--verbose` reported killing none. `ps -o pid,args` finds them
+as `bwrap --args N -- <payload>` with **no children**, and
+`cut -d' ' -f1 /proc/<pid>/syscall` reads `0` (a `read`) rather than `61` (a
+`wait4`) — that pair is what tells a wedged init from a healthy one, since both
+show `do_wait_intr_irq` in `wchan`.
 
 Run it on both topologies. `$TOK` is what makes the survivor findable: an
 orphan has been reparented out of snug's tree, so `pgrep -P` cannot see it.
