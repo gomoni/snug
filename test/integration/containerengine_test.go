@@ -3339,6 +3339,14 @@ func isEngineProcess(pid int) bool {
 			sawSystem = true
 		case "service":
 			sawService = true
+		// __inengine carries the engine's whole argv on its OWN argv (it is
+		// what execs it), so it matches `system service` too — for the window
+		// between the stage forking it and the exec, during which it has not
+		// finished building the derived view. A test that took that pid read
+		// the engine's mount namespace BEFORE the grafts were attached and
+		// reported them missing (measured: this test's own control fired).
+		case "__inengine":
+			return false
 		}
 	}
 	return sawSystem && sawService

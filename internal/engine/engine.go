@@ -415,7 +415,15 @@ func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgrou
 	// /bin and /sbin are @sys's own symlinks into /usr, so all four elements
 	// below resolve inside the same read-only bind. setEnv REPLACES rather
 	// than appends, so a caller-supplied PATH in baseEnv cannot win.
-	finalEnv = setEnv(finalEnv, "PATH", "/usr/bin:/usr/sbin:/bin:/sbin")
+	//
+	// Pinning it is half the property; the other half is that the four
+	// elements really are read-only IN THE ENGINE'S OWN VIEW, which is a
+	// question about this run's resolved policy and not about the literal.
+	// checkEnginePATH asks it.
+	if err := checkEnginePATH(pol); err != nil {
+		return stage.EngineSpec{}, err
+	}
+	finalEnv = setEnv(finalEnv, "PATH", PinnedPATH)
 
 	// TMPDIR, and it is Tier C's key as much as image_copy_tmp_dir is.
 	// containers/storage falls back to /var/tmp for the temporary directory it
