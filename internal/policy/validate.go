@@ -892,8 +892,25 @@ func (p *Policy) rejectMasking(env Environ) error {
 		// This used to exempt Kind == KindData, justified by "no TOML key
 		// produces a KindData grant". True, but a proxy for the property that
 		// actually matters — WHO WROTE IT — and one that a future TOML key would
-		// have inherited for free. Mount.Authored is set only by Policy.Replace,
-		// which nothing a profile can write reaches.
+		// have inherited for free.
+		//
+		// THE SAME FALSE SENTENCE STOOD IN TWO PLACES, which is this project's
+		// most-repeated shape: this comment and rejectSocketSource's both said
+		// "Mount.Authored is set only by Policy.Replace". It is not — there are
+		// three production writers, and the claim is the one carrying "a
+		// profile cannot borrow the exemption" in BOTH rules:
+		//
+		//   Policy.Replace   snug's own post-resolve writes. A profile cannot
+		//                    express one.
+		//   Policy.Graft     writes p.GRAFTS, a different map. Neither this
+		//                    loop nor rejectSocketSource reads it.
+		//   Policy.yieldTo   installs snug's base mounts (/proc, /dev, /tmp)
+		//                    ONLY when the guest is unclaimed. A profile's
+		//                    grant at the same path is left UNauthored, which
+		//                    is precisely what lets RULE 4 refuse it BY NAME.
+		//
+		// So the exemption holds, for a reason that has to be stated per
+		// writer rather than by naming one of them.
 		if m.Authored {
 			continue
 		}
