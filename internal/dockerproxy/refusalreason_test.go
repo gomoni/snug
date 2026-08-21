@@ -64,6 +64,14 @@ func TestNoRefusalReasonDescribesTheHostSideEngine(t *testing.T) {
 		"engine's side of the world",
 		"host-visible surface",
 		"outside this sandbox's own",
+		// Tier C (issue #125) made the engine's /dev the sandbox's own
+		// synthetic tree with no host device nodes; #257 corrected the Devices
+		// reason that still said device passthrough "reaches hardware the
+		// sandbox cannot see". Same class — a reason placing the engine on the
+		// far side of a boundary a later tier removed — so it guards here
+		// (issue #146, #257).
+		"hardware the sandbox cannot see",
+		"reaches hardware",
 	}
 
 	for field, reason := range refusalReason {
@@ -84,18 +92,26 @@ func TestNoRefusalReasonDescribesTheHostSideEngine(t *testing.T) {
 	if len(refusalReason) < 10 {
 		t.Fatalf("refusalReason has only %d entries; the sweep above proves nothing", len(refusalReason))
 	}
-	poisoned := map[string]string{"Test": "published ports land where the sandbox cannot reach them"}
-	hits := 0
-	for _, reason := range poisoned {
-		for _, phrase := range stale {
+	// POSITIVE CONTROL, per phrase: every stale phrase must be caught by a
+	// sentence shaped like the defect it guards, so a phrase that matches
+	// nothing cannot masquerade as coverage.
+	poisoned := []string{
+		"published ports land where the sandbox cannot reach them",
+		"the engine's side of the world is unreachable, a host-visible surface outside this sandbox's own netns",
+		"device passthrough reaches hardware the sandbox cannot see",
+	}
+	for _, phrase := range stale {
+		caught := false
+		for _, reason := range poisoned {
 			if strings.Contains(strings.ToLower(reason), strings.ToLower(phrase)) {
-				hits++
+				caught = true
+				break
 			}
 		}
-	}
-	if hits == 0 {
-		t.Error("the phrase list no longer matches the exact sentence this test was written " +
-			"against, so it would not have caught the original defect")
+		if !caught {
+			t.Errorf("no poisoned control sentence contains %q, so adding it to the stale list "+
+				"proves nothing", phrase)
+		}
 	}
 }
 
@@ -213,6 +229,13 @@ func TestNoNamespaceReasonClaimsTheEnginesPidNamespaceIsTheHosts(t *testing.T) {
 		"the engine's own pid namespace is the real host",
 		"does not unshare pid",
 		"a full host-pidns escape",
+		// Tier C (issue #125) made the engine's mount namespace its DERIVED
+		// view, not a copy of the host tree; #257 corrected the PidMode reason
+		// that still said so. Guard the revert here, in the same map, so the
+		// correction has coverage rather than depending on nobody putting it
+		// back (issue #146, #257).
+		"private copy of the whole host tree",
+		"copy of the host tree",
 	}
 
 	for field, reason := range namespaceModeReason {
@@ -233,21 +256,27 @@ func TestNoNamespaceReasonClaimsTheEnginesPidNamespaceIsTheHosts(t *testing.T) {
 		t.Fatalf("namespaceModeReason has only %d entries; the sweep above proves nothing",
 			len(namespaceModeReason))
 	}
-	poisoned := map[string]string{
-		"Test": "PidMode=host is refused because the engine's own pid namespace is the real host " +
+	// POSITIVE CONTROL, per phrase: each stale phrase must be caught by a
+	// sentence shaped like the defect it guards, or a phrase could be added to
+	// the list, match nothing, and read as coverage while proving nothing.
+	poisoned := []string{
+		"PidMode=host is refused because the engine's own pid namespace is the real host " +
 			"pid namespace, since __inengine does not unshare pid — this is a full host-pidns escape",
+		"PidMode=host reaches pid 1, whose mount namespace is a private copy of the whole host tree",
+		"PidMode=host lands in the engine, whose view is a copy of the host tree",
 	}
-	hits := 0
-	for _, reason := range poisoned {
-		for _, phrase := range stale {
+	for _, phrase := range stale {
+		caught := false
+		for _, reason := range poisoned {
 			if strings.Contains(strings.ToLower(reason), strings.ToLower(phrase)) {
-				hits++
+				caught = true
+				break
 			}
 		}
-	}
-	if hits == 0 {
-		t.Error("the phrase list no longer matches a sentence shaped like the pre-C0 claim, so " +
-			"it would not have caught the original defect")
+		if !caught {
+			t.Errorf("no poisoned control sentence contains %q, so adding it to the stale list "+
+				"proves nothing — it would match no real defect either", phrase)
+		}
 	}
 }
 
