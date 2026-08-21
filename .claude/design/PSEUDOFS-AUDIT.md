@@ -96,7 +96,7 @@ kernel bug — correct today) vs *snug-level* (a leak snug could close).
 | P3 | /proc | `/proc/keys` + `/proc/key-users` — host user's live keyring incl. Kerberos ccache. Key *use* is dead (seccomp), this is enumeration | Medium |
 | P4 | /proc | `/proc/kallsyms` + `/proc/modules`. Addresses zeroed **only** by host `kptr_restrict=1`; on `=0` this is a full KASLR base leak snug neither checks nor reports | Medium (High on an unhardened host) |
 | P5 | /proc | `/proc/interrupts` — operator keystroke/touchpad timing oracle; `/proc/bus/input/devices` names the hardware | Medium |
-| P6 | /proc | Fingerprint set: `boot_id`, `btime`/`uptime`, `/proc/asound`, `/proc/bus/pci`, `/proc/partitions`, `loginuid`/`sessionid`/`attr/current`. `--unshare-all` does **not** unshare the time namespace, which is why `uptime`/`btime` leak. Contradicts INDEX §5.3 | Medium |
+| P6 | /proc | Fingerprint set: `boot_id`, `btime`/`uptime`, `/proc/asound`, `/proc/bus/pci`, `/proc/partitions`, `loginuid`/`sessionid`/`attr/current`. `--unshare-all` does **not** unshare the time namespace, which is why `uptime`/`btime` leak. INDEX §5.3 now records the same (the machine-id "cannot fingerprint" claim it once carried is marked falsified there), so the contradiction this row flagged is closed | Medium |
 | P7 | /proc | `/proc/self/mountinfo` — real host paths of every grant, launcher home, container storage layout. Inherent to guest==host path convention | Medium — **accept + document** |
 | P8 | /proc | Hardening-posture sysctls readable | Low |
 | P9 | /proc | Structural: procfs `rw`, no `hidepid=`, no `subset=pid`; `--remount-ro /` does not reach it. The cause behind every row above | Low as finding, High as cause |
