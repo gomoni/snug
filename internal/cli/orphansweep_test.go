@@ -90,6 +90,59 @@ func TestSweepDoesNotKillARecycledPid(t *testing.T) {
 	}
 }
 
+// The namespace guard (#285), and it is why the record carries six inodes at
+// all. The starttime guard proves only that the pid was not RECYCLED — not that
+// it is a sandbox init. A state file whose init_pid/init_starttime name any
+// live same-uid process (a forged one, or a hostile one in a future where the
+// uid-private state dir is exposed) must NOT be honoured when that process does
+// not live in the namespaces the file recorded, or the sweep is an
+// arbitrary-pid kill primitive.
+//
+// Two victims differing ONLY in whether their recorded namespaces match their
+// real ones, so the survival of the foreign one is attributable to the
+// namespace mismatch and nothing else — without the `own` control this would
+// pass on a sweep that had simply stopped killing anything.
+func TestSweepDoesNotKillAPidInForeignNamespaces(t *testing.T) {
+	dir, root := stateDirForTest(t)
+
+	// FOREIGN: correct pid, correct starttime, correct file name — but the
+	// recorded namespace inodes are not this process's. A real sleep runs in the
+	// host namespaces; these small fabricated inodes cannot match them.
+	foreign := liveProcess(t)
+	const foreignTarget = "/tmp/foreign-ns-target"
+	fSt := stateFor(foreignTarget, foreign)
+	fSt.Sandbox.Namespaces = map[string]uint64{"mnt": 1, "pid": 2, "net": 3, "ipc": 4, "uts": 5, "cgroup": 6}
+	writeState(t, dir, foreignTarget, fSt)
+
+	// OWN (the control): identical in every other respect, recorded with its
+	// real namespaces, so the sweep SHOULD kill it. If this one survives too,
+	// the sweep is inert and the foreign assertion proves nothing.
+	own := liveProcess(t)
+	const ownTarget = "/tmp/own-ns-target"
+	writeStateFor(t, dir, ownTarget, own)
+
+	sweepOrphanedSandboxesIn(root, dir)
+
+	if !waitDead(own.pid, 5*time.Second) {
+		t.Fatalf("control: the sweep did not kill pid %d whose recorded namespaces MATCH its "+
+			"real ones — the sweep is not killing anything, so the foreign-namespace assertion "+
+			"below would prove nothing", own.pid)
+	}
+	settle()
+	if !processAlive(foreign.pid) {
+		t.Errorf("the sweep killed pid %d although its recorded namespace inodes do not match "+
+			"the ones it actually runs in — the starttime matched, but that only rules out pid "+
+			"reuse; a state file naming an unrelated live process must not turn the sweep into "+
+			"an arbitrary-pid kill (#285)", foreign.pid)
+	}
+	// The stale file is removed either way: its run is gone, and the sweep's file
+	// removal is unconditional. Not killing the pid does not mean keeping the file.
+	if _, err := os.Stat(filepath.Join(dir, targetStateName(foreignTarget))); !os.IsNotExist(err) {
+		t.Errorf("the foreign-namespace state file survived the sweep (err=%v); the pid must be "+
+			"spared but the stale file must still be removed", err)
+	}
+}
+
 // The name is the index. A state file whose name is not sha256(its own target)
 // was not written by snug's own writer, and the sweep must not act on the pid
 // it names — otherwise dropping one file into a directory this user owns is a
@@ -162,14 +215,22 @@ func waitDead(pid int, within time.Duration) bool {
 func settle() { time.Sleep(200 * time.Millisecond) }
 
 type testVictim struct {
-	pid       int
-	starttime uint64
+	pid        int
+	starttime  uint64
+	namespaces map[string]uint64
 }
 
 // liveProcess starts a real process the sweep can be pointed at, and reads
-// its start time the same way the sweep does. `sleep 60` rather than a Go
+// both halves of the identity the sweep checks the same way the sweep does:
+// its start time and its six namespace inodes. `sleep 60` rather than a Go
 // goroutine because the thing under test is a pid: it has to be visible in
 // /proc and killable from outside this process.
+//
+// The namespace inodes are the process's REAL ones (host namespaces — this is
+// an ordinary child, not a sandbox init), which is exactly what a state file a
+// genuine run wrote would carry, so a fixture using them exercises the #285
+// cross-check positively. A fixture that wants the MISMATCH case overrides
+// them (see TestSweepDoesNotKillAPidInForeignNamespaces).
 func liveProcess(t *testing.T) testVictim {
 	t.Helper()
 	cmd := exec.Command("/bin/sleep", "60")
@@ -185,7 +246,11 @@ func liveProcess(t *testing.T) testVictim {
 	if err != nil {
 		t.Fatalf("reading the fixture process's start time: %v", err)
 	}
-	return testVictim{pid: pid, starttime: start}
+	ns, err := procNamespaceInodes(pid)
+	if err != nil {
+		t.Fatalf("reading the fixture process's namespace inodes: %v", err)
+	}
+	return testVictim{pid: pid, starttime: start, namespaces: ns}
 }
 
 // processAlive answers the question the assertions ask, and it deliberately
@@ -235,7 +300,10 @@ func stateFor(target string, v testVictim) runState {
 		Sandbox: runStateSandbox{
 			InitPID:       v.pid,
 			InitStarttime: v.starttime,
-			Namespaces:    map[string]uint64{"mnt": 1, "pid": 2, "net": 3, "ipc": 4, "uts": 5, "cgroup": 6},
+			// The victim's REAL namespace inodes: a state file a genuine run
+			// wrote carries the init's own, and killOrphanInit now cross-checks
+			// them (#285). A fixture testing the MISMATCH overrides this map.
+			Namespaces: v.namespaces,
 		},
 	}
 }

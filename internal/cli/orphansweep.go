@@ -128,13 +128,25 @@ func sweepOneOrphan(snugRoot *os.Root, snugPath, name string) {
 }
 
 // killOrphanInit SIGKILLs the sandbox init a dead run left behind, if it is
-// still there and still the same process.
+// still there, still the same process, and still in the same namespaces.
 //
 // SIGKILL rather than SIGTERM, and it is not impatience: this is bwrap's own
 // init, which either has not reached its signal handling yet (the wedged
 // case) or is pid 1 of its own pid namespace, where an unhandled SIGTERM from
 // outside is simply discarded by the kernel. Killing the init collapses the
 // namespace, which is what takes the payload with it.
+//
+// The identity check is two-part on purpose (#285). The starttime guard alone
+// only proves the pid was not RECYCLED since the state was written; it does
+// NOT prove the process it names is a sandbox init at all. A state file whose
+// init_pid/init_starttime happen to name any live same-uid process — a forged
+// one, or a hostile one in the future where the uid-private state dir is
+// somehow exposed — would otherwise turn this sweep into an arbitrary-pid
+// kill. So before SIGKILL, require the process to still live in exactly the six
+// namespaces the file recorded, the same identity check `attach` makes before
+// it joins (attach.go, procNamespaceInodes). Fail CLOSED: a read error or any
+// mismatch means "not provably our init", and leaving an orphan is the
+// less-bad outcome than killing a process we cannot confirm.
 func killOrphanInit(st runState, statePath string) {
 	pid := st.Sandbox.InitPID
 	if pid <= 1 {
@@ -146,6 +158,15 @@ func killOrphanInit(st runState, statePath string) {
 	}
 	if start != st.Sandbox.InitStarttime {
 		return // pid reused since the state was written: not our process
+	}
+	nsIno, err := procNamespaceInodes(pid)
+	if err != nil {
+		return // gone, or its /proc entry is unreadable: not provably ours
+	}
+	for _, k := range runStateNamespaceKinds {
+		if nsIno[k] != st.Sandbox.Namespaces[k] {
+			return // a live pid, but not in the sandbox namespaces the file recorded
+		}
 	}
 	if err := unix.Kill(pid, unix.SIGKILL); err != nil {
 		fmt.Fprintf(os.Stderr, "snug: could not kill the orphaned sandbox init pid %d named by "+
