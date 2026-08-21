@@ -276,6 +276,15 @@ func run(cfg config) int {
 			return exitPolicy
 		}
 		defer unlock()
+
+		// Housekeeping, and it is placed HERE for two reasons. It kills
+		// processes, so a dry run must never reach it (a dry run starts
+		// nothing and stops nothing — issue #21); and it runs only once the
+		// lock proves no OTHER live run owns this target, so the sweep and
+		// the refusal above read the same fact from the same lock rather
+		// than from two sources that could disagree. See orphansweep.go for
+		// why this cannot reach a live sandbox.
+		sweepOrphanedSandboxes()
 	}
 
 	env := policy.OSEnviron{}

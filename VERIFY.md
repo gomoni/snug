@@ -2461,6 +2461,73 @@ pgrep -a bwrap || echo "no leftovers: ok"
 Expect the bwrap process to be gone. `--die-with-parent` kills the payload even
 when snug is SIGKILLed and cannot clean up after itself.
 
+### 11c-bis. …and an orphan that outlived its snug is killed by the NEXT run (issue #236)
+
+Section 11b is about the signals snug can catch. `SIGKILL` never reaches
+userspace, so nothing snug does at the time can help: the init survives,
+reparented, holding a pid, net, user and mount namespace — and inside the wider
+part of the window, still running the payload. They accumulate; one development
+box had 23, the oldest 12 h old.
+
+The answer is deferred rather than real-time, the same trade issue #85 made for
+the run directory: the next `snug` run cleans it up.
+
+Make one on purpose. The run's state file lands at about 165 ms and the orphan
+window is open from ~150 ms to ~350 ms, so waiting for that file and killing
+immediately afterwards lands inside it — measured 5 attempts out of 5:
+
+```bash
+SP=/run/user/$(id -u)/snug/target-$(printf %s "$(readlink -f $SC/proj/sub)" | sha256sum | cut -d' ' -f1).json
+rm -f $SP
+./bin/snug $SC/proj/sub -- /bin/sleep 300 & SNUG=$!
+while [ ! -f $SP ]; do sleep 0.002; done
+kill -9 $SNUG; wait $SNUG 2>/dev/null; sleep 1
+PID=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['sandbox']['init_pid'])" $SP)
+ps -o pid,ppid,stat,args -p $PID
+```
+
+Expect a live process whose parent is **not** your shell — it has been
+reparented, which is what "its snug is gone" looks like:
+
+```
+ 325698    8266 S    /usr/bin/bwrap --args 7 -- /bin/sleep 300
+```
+
+That is the positive control: without it the next step proves nothing, because
+a sandbox that died with its snug is also absent afterwards. Now any ordinary
+run, on any directory:
+
+```bash
+./bin/snug --verbose $SC/other -- /bin/true
+ps -p $PID >/dev/null && echo "STILL ALIVE <-- FAIL" || echo "swept: ok"
+```
+
+Expect the notice and then `swept: ok`:
+
+```
+snug: killed orphaned sandbox init pid 325698 for target /tmp/.../proj/sub (its snug is
+      gone; left behind by a run that did not exit cleanly)
+```
+
+**Why this cannot reach a live sandbox**, and it is worth checking rather than
+believing: start a run in one terminal, run `snug` on a different directory in
+another, and the first is untouched. The sweep acts only on a state file whose
+per-target lock is **not held** — a live run holds that lock for its whole life
+and the kernel releases it only when that process dies — and only when the
+recorded start time still matches `/proc/<pid>/stat` field 22, which is the
+pid-reuse guard `snug attach` already relies on.
+
+The same pass removes the stale state file, which nothing did before: one was
+published per run and removed by nobody, so this box had accumulated 1099 of
+them.
+
+Two leftovers this does **not** reach, both measured: a run killed before its
+state file lands (~165 ms) published no pid at all, and the narrower wedge —
+an init blocked in bwrap's own uid-map sync `read()` on an eventfd, before
+`execvp`, which therefore never answers `--info-fd` — never gets a state file
+for the same reason. Those are bwrap's window, not snug's, and issue #236
+carries the measurement.
+
 ### 11b. …including when the signal lands during startup
 
 Section 11 kills a sandbox that has been up for two seconds, which is the easy
