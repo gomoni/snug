@@ -16,11 +16,17 @@ import (
 type fakeInfo struct {
 	name string
 	dir  bool
+	// mode is what Stat reports. It used to be fs.ModeDir unconditionally,
+	// which made every fixture FILE claim to be a directory — harmless while
+	// the only thing anyone read was the error, and wrong the moment a check
+	// asked WHAT the path is. rejectSocketSource (issue #219) asks exactly
+	// that, so the fixture stops lying.
+	mode fs.FileMode
 }
 
 func (f fakeInfo) Name() string       { return f.name }
 func (f fakeInfo) Size() int64        { return 0 }
-func (f fakeInfo) Mode() fs.FileMode  { return fs.ModeDir }
+func (f fakeInfo) Mode() fs.FileMode  { return f.mode }
 func (f fakeInfo) ModTime() time.Time { return time.Time{} }
 func (f fakeInfo) IsDir() bool        { return f.dir }
 func (f fakeInfo) Sys() any           { return nil }
@@ -36,8 +42,12 @@ type fakeEnv struct {
 	// read — and would be a fixture that lies, in a file whose whole job is to
 	// stand in for a host.
 	files map[string]bool
-	links map[string]string
-	env   map[string]string
+	// sockets is the third kind, for issue #219: a bind whose SOURCE is a unix
+	// socket is refused, detected by mode rather than by path text. A fixture
+	// that could only be a file or a directory could not express the case.
+	sockets map[string]bool
+	links   map[string]string
+	env     map[string]string
 }
 
 func newFakeEnv() *fakeEnv {
@@ -93,7 +103,11 @@ func (f *fakeEnv) EvalSymlinks(p string) (string, error) {
 	if t, ok := f.links[p]; ok {
 		return t, nil
 	}
-	if f.dirs[p] {
+	// Every kind this fixture can hold resolves to itself. It used to answer
+	// for directories alone, so a fixture FILE — or, since issue #219, a
+	// fixture SOCKET — reached the resolver's existence check as "does not
+	// exist" and the test after it was measuring the wrong refusal.
+	if f.dirs[p] || f.files[p] || f.sockets[p] {
 		return p, nil
 	}
 	return "", &fs.PathError{Op: "lstat", Path: p, Err: fs.ErrNotExist}
@@ -101,7 +115,10 @@ func (f *fakeEnv) EvalSymlinks(p string) (string, error) {
 
 func (f *fakeEnv) Stat(p string) (fs.FileInfo, error) {
 	if f.dirs[p] {
-		return fakeInfo{name: p, dir: true}, nil
+		return fakeInfo{name: p, dir: true, mode: fs.ModeDir}, nil
+	}
+	if f.sockets[p] {
+		return fakeInfo{name: p, mode: fs.ModeSocket}, nil
 	}
 	if f.files[p] {
 		return fakeInfo{name: p}, nil
