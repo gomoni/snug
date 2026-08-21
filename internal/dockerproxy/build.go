@@ -3,6 +3,7 @@ package dockerproxy
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -49,6 +50,35 @@ import (
 func (p *Proxy) handleBuild(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
+	if reason := p.buildRefusalReason(q); reason != "" {
+		// Drain the streamed tar context BEFORE answering. `libpod/build` (and
+		// docker-compat `/build`) is the one endpoint where the client uploads a
+		// large body and only reads the response AFTER its upload finishes — so a
+		// refusal that writes the 403 and returns with the body unread makes
+		// net/http close the connection mid-upload, and the client sees EPIPE on
+		// `sendall` before it ever reads the 403 (issue #255, measured: a refused
+		// `build -v /etc:/x` surfaced as a BrokenPipe, not snug's message).
+		// Consuming the body lets the client finish sending and then read the
+		// refusal it was owed. Bounded, because a refused build is not owed an
+		// unbounded read of attacker-streamed data.
+		drainBeforeRefusing(r)
+		p.deny(w, "%s", reason)
+		return
+	}
+
+	p.audit("build: " + summarise(q))
+	p.forward(w, r, nil)
+}
+
+// buildRefusalReason returns the refusal message for a build whose parameters
+// are not permitted, or "" if the build may proceed. Split out of handleBuild
+// so the refusal is decided BEFORE the body is touched: handleBuild drains the
+// streamed context on the refusal path (issue #255), and mixing that drain into
+// the decision loop would drain on the allowed path too.
+//
+// The rule is unchanged: an unknown parameter fails closed, and a known one is
+// judged by its own check.
+func (p *Proxy) buildRefusalReason(q url.Values) string {
 	names := make([]string, 0, len(q))
 	for k := range q {
 		names = append(names, k)
@@ -58,25 +88,40 @@ func (p *Proxy) handleBuild(w http.ResponseWriter, r *http.Request) {
 	for _, name := range names {
 		check, known := buildParams[strings.ToLower(name)]
 		if !known {
-			p.deny(w, "build parameter %q is not permitted. snug allows a named set of "+
+			return fmt.Sprintf("build parameter %q is not permitted. snug allows a named set of "+
 				"build options and refuses the rest, so an option it has not been taught "+
 				"about fails closed rather than reaching the engine unexamined. If this "+
 				"one is harmless, it belongs in buildParams with a note saying why.", name)
-			return
 		}
 		if check == nil {
 			continue // allowed as-is
 		}
 		for _, v := range q[name] {
 			if err := check(p, v); err != nil {
-				p.deny(w, "build parameter %s: %v", name, err)
-				return
+				return fmt.Sprintf("build parameter %s: %v", name, err)
 			}
 		}
 	}
+	return ""
+}
 
-	p.audit("build: " + summarise(q))
-	p.forward(w, r, nil)
+// maxRefusedBuildDrain bounds how much of a refused build's body handleBuild
+// will read to unblock the client. Generous enough for an ordinary build
+// context, bounded so a pathologically large refused upload is not an
+// unbounded read on snug itself — that one still gets EPIPE, which is the
+// correct outcome for a multi-hundred-megabyte context the sandbox was never
+// allowed to build.
+const maxRefusedBuildDrain = 64 << 20
+
+// drainBeforeRefusing consumes up to maxRefusedBuildDrain of a request body the
+// handler is about to refuse, so the client can finish its upload and read the
+// response (issue #255). io.Copy to io.Discard streams in O(1) memory; nothing
+// is retained.
+func drainBeforeRefusing(r *http.Request) {
+	if r.Body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, maxRefusedBuildDrain))
 }
 
 // buildParamCheck validates one value. A nil check means the parameter carries
