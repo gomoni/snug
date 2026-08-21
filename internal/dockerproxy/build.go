@@ -383,7 +383,12 @@ func checkSeccompProfile(p *Proxy, v string) error {
 		return fmt.Errorf("`unconfined` is not permitted; the sandbox does not get to " +
 			"turn off the build container's seccomp filter")
 	}
-	real, err := resolveExisting(v)
+	// Through resolveForwardable, not resolveExisting: a seccomp profile named
+	// by a symlink that dangles in snug's namespace is the same two-namespace
+	// divergence a bind is (issue #251). The writable-refusal below already
+	// stops the measured route (the symlink sits in the writable target), but
+	// the divergence is the general defect and belongs in one place.
+	real, err := resolveForwardable(v)
 	if err != nil {
 		return fmt.Errorf("%q cannot be resolved: %v", v, err)
 	}
