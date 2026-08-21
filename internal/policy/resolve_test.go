@@ -19,8 +19,8 @@ type fakeInfo struct {
 	// mode is what Stat reports. It used to be fs.ModeDir unconditionally,
 	// which made every fixture FILE claim to be a directory — harmless while
 	// the only thing anyone read was the error, and wrong the moment a check
-	// asked WHAT the path is. rejectSocketSource (issue #219) asks exactly
-	// that, so the fixture stops lying.
+	// asked WHAT the path is. rejectEndpointSource (issues #219, #287) asks
+	// exactly that, so the fixture stops lying.
 	mode fs.FileMode
 }
 
@@ -46,8 +46,12 @@ type fakeEnv struct {
 	// socket is refused, detected by mode rather than by path text. A fixture
 	// that could only be a file or a directory could not express the case.
 	sockets map[string]bool
-	links   map[string]string
-	env     map[string]string
+	// fifos is the fourth kind, for issue #287: a bind whose SOURCE is a named
+	// pipe is refused by the same predicate that catches a socket, and a
+	// fixture that could not hold one could not measure that half of it.
+	fifos map[string]bool
+	links map[string]string
+	env   map[string]string
 }
 
 func newFakeEnv() *fakeEnv {
@@ -106,8 +110,11 @@ func (f *fakeEnv) EvalSymlinks(p string) (string, error) {
 	// Every kind this fixture can hold resolves to itself. It used to answer
 	// for directories alone, so a fixture FILE — or, since issue #219, a
 	// fixture SOCKET — reached the resolver's existence check as "does not
-	// exist" and the test after it was measuring the wrong refusal.
-	if f.dirs[p] || f.files[p] || f.sockets[p] {
+	// exist" and the test after it was measuring the wrong refusal. The same
+	// omission would have cost issue #287's FIFO case the same way — this arm
+	// is why it does not: every kind this fixture can hold is listed here, not
+	// just the ones a check happened to exist for yet.
+	if f.dirs[p] || f.files[p] || f.sockets[p] || f.fifos[p] {
 		return p, nil
 	}
 	return "", &fs.PathError{Op: "lstat", Path: p, Err: fs.ErrNotExist}
@@ -119,6 +126,9 @@ func (f *fakeEnv) Stat(p string) (fs.FileInfo, error) {
 	}
 	if f.sockets[p] {
 		return fakeInfo{name: p, mode: fs.ModeSocket}, nil
+	}
+	if f.fifos[p] {
+		return fakeInfo{name: p, mode: fs.ModeNamedPipe}, nil
 	}
 	if f.files[p] {
 		return fakeInfo{name: p}, nil
