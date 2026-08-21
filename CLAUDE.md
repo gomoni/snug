@@ -68,6 +68,17 @@ Break any of these and the project has lost its point.
    mount, the exemption stops being about snug's own files and starts being a
    write primitive with someone else's aim.**
 
+   *And one where visibility and PROTECTION point in opposite directions —
+   measured, issue #29.* A run that starts a container engine gets **none** of
+   snug's procfs closures (`/proc/config.gz`, `/proc/keys`, `/proc/key-users`,
+   `/proc/sys`): the kernel refuses the engine a fresh procfs for its own pid
+   namespace while a mask covers one it can see, and neither way of keeping both
+   works (`MNT_LOCKED`). So selecting a container profile makes that run **less
+   protected while making those paths more visible** — invariant 1's letter holds,
+   "adding a profile never makes anything worse" does not. The exemption follows
+   the SELECTION, transitively through `include`; `--dry-run` states it on the
+   `/proc` row, and `TestResolveIsMonotone` carries it explicitly.
+
    *Effective write access at a strict subpath is NOT monotone, by design.*
    `join` is keyed by `Mount.Guest`, so it applies at identical paths only.
    Grants at different depths become two mounts, and effective access at a path
@@ -263,18 +274,23 @@ first, or delegate to the agent that owns it.
   `@ssh-agent`'s filtering proxy — one pinned key, no enumeration, the whole
   reason that profile exists — defeated by a mount. The general form is #140's
   again with a different object: **a grant of a directory is a grant of every
-  socket anyone puts in it later**, and `~/.ssh/agent`, `~/.docker/desktop`,
-  podman's machine socket and gpg-agent's `S.gpg-agent` are all real spellings.
+  socket — and every FIFO — anyone puts in it later**, and `~/.ssh/agent`,
+  `~/.docker/desktop`, podman's machine socket and gpg-agent's `S.gpg-agent` are
+  all real spellings. A FIFO is the same noun (measured, #287): `ro` restrains it
+  no better, and under default `@parent-ro` a host-held pipe in a granted
+  directory is a bidirectional channel.
 - **Half of the socket rule is checked now**, and knowing WHICH half is the
-  point. `Validate` refuses a bind whose SOURCE IS a socket (#219), detected by
-  `S_IFSOCK` through the injected `Environ` — not by a path list, which is why it
+  point. `Validate` refuses a bind whose SOURCE IS a socket **or a FIFO**
+  (`rejectEndpointSource`, #219/#295), detected by `S_IFSOCK`/`S_IFIFO` through
+  the injected `Environ` — not by a path list, which is why it
   is not the catalogue #207 deleted: a `stat` does not care how a path was
   spelled. snug's own proxy sockets are exempt by `Mount.Authored`, which is the
   distinction the rule turns on rather than a carve-out. What is NOT checked is
   the DIRECTORY case, which is the general form: a `stat` at resolve time sees
-  only sockets that exist then, so `ro {home}/.ssh` is accepted today and is a
+  only endpoints that exist then, so `ro {home}/.ssh` is accepted today and is a
   hole the moment an agent starts there. That half still depends on whoever reads
-  a profile diff remembering it. **Two routes, one check each**: #220 refuses any
+  a profile diff remembering it (tracked: #292 sockets, #296 FIFOs). **Two
+  routes, one check each**: #220 refuses any
   bind covering `$HOME`, which is what closes the MEASURED route (a directory
   bind, so #219 never fires on it); #219 closes the direct spelling. Neither is
   redundant.
@@ -599,8 +615,10 @@ through the engine's **own socket**, never a host-side CLI again.
 
 **GUI, audio and D-Bus passthrough are out of scope deliberately.** No profile
 ships. A filtering proxy that is 95% correct is a sandbox that is 0% sound, and
-the private netns excludes them by construction — **a property to keep, not a gap
-to close.** Do not add a profile without a decision to reopen this.
+both mechanisms exclude them by construction — the **abstract** desktop sockets
+are netns-scoped, the **pathname** ones (`/tmp/.X11-unix/X0`,
+`/run/user/<uid>/bus`) are never mounted — **a property to keep, not a gap to
+close.** Do not add a profile without a decision to reopen this.
 
 **One live sandbox per target directory** —
 [`ONE-SANDBOX-PER-DIR.md`](.claude/design/ONE-SANDBOX-PER-DIR.md) and INDEX §11.

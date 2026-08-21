@@ -1184,7 +1184,7 @@ An earlier draft of this section specified `wayland` and `x11` profiles as expli
 
 The reasoning is the same as §7.4's for D-Bus, and it generalises: passing a display, audio or bus socket into the sandbox either hands over the protocol wholesale — X11 in particular has no client isolation at all, so any client can keylog and screenshot every other — or requires a filtering proxy for an extensible, service-defined interface set. That is a project in its own right, and a proxy that is 95% correct is a sandbox that is 0% sound.
 
-The private network namespace already excludes all of them by construction, because abstract AF_UNIX sockets are netns-scoped (§4.1). **That is a property to preserve, not a gap to close.** A coding agent does not need a display.
+Both mechanisms already exclude all of them by construction: the abstract AF_UNIX sockets are netns-scoped (§4.1), and the pathname sockets (`/tmp/.X11-unix/X0`, `/run/user/<uid>/bus`) are never mounted — absence, not masking. **That is a property to preserve, not a gap to close.** A coding agent does not need a display.
 
 If a concrete need ever appears, it should be designed then, for that one interface, with its own threat model — not anticipated here.
 
