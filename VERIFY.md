@@ -144,6 +144,29 @@ has one — an identity, or an engine on a host where `@podman-socket` is not
 refused — and is covered by `TestDryRunLeavesNoRunDirectoryOrSocket` in
 `test/integration`.
 
+### 2a. `--dry-run` names which engine it will start (issue #278)
+
+A host with a host-escape shim on PATH and `$SNUG_PODMAN` exported starts a
+different engine binary than one without, and `--dry-run` must say which. It
+names the SOURCE, not a probed binary — the screen stays offline and runs no
+preflight.
+
+```bash
+# unpinned: the source is PATH, resolved when the run starts
+env -u SNUG_PODMAN -u SNUG_PODMAN_ROOT \
+  ./bin/snug --dry-run -p @podman-socket $SC/proj/sub | grep -A2 'engine      binary'
+# pinned: the source is $SNUG_PODMAN, and PATH was bypassed on purpose
+SNUG_PODMAN=/opt/snug-podman/bin/podman SNUG_PODMAN_ROOT=/opt/snug-podman \
+  ./bin/snug --dry-run -p @podman-socket $SC/proj/sub | grep -A4 'engine      binary'
+```
+
+Expect the first to say `binary resolved from PATH when the run starts` and the
+second to name `/opt/snug-podman/bin/podman ($SNUG_PODMAN)` and the bundle root.
+The env values are read, never the filesystem — set them to a path that does not
+exist and the line is unchanged, because `--dry-run` does not stat it. Golden:
+`internal/cli/testdata/containers.podman-pinned.txt` vs the two PATH-case
+`containers.podman-*.txt`.
+
 ## 3. The writable surface
 
 ```bash
@@ -789,6 +812,18 @@ snug -p badclaude $SC/proj/sub -- true
 Expect a refusal naming `ghost-plugin-xyz` and listing the installed plugins,
 and the payload does NOT run — a plugin the run asked for and did not get is an
 error, not a silent omission.
+
+**The checks above assert what snug WRITES. What the real `claude` binary DOES
+with it** — a plugin absent from the regenerated manifest does not fire its
+`SessionStart` hook, one present does — is asserted by
+`TestManifestGatesPluginHookFiring` (host-level, `-tags integration`), not by
+hand here: firing needs a real `claude` session, and on claude 2.1.238 it needs
+BOTH the manifest entry AND `enabledPlugins` in `settings.json`. That second
+gate is why the assertion is host-level and not run inside a sandbox — snug's
+own `settings.json` filter drops `enabledPlugins`, so inside `@claude` nothing
+fires and no positive control could exist there. Run it with
+`go test -tags integration -run TestManifestGatesPluginHookFiring ./test/integration/`;
+it skips where `claude` is absent.
 
 ### 6g-ter. The target's own `.claude/settings.json` is reinterpreted read-only where it exists (issue #73)
 
