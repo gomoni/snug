@@ -86,10 +86,15 @@ Break any of these and the project has lost its point.
    line. `--read-only` and the `policy.Clamp`/`Policy.Apply` machinery behind it
    are **gone**; to grant less, select fewer profiles (`snug --no-defaults -p
    @sys -p @home -p @parent-ro <dir>`), verbose on purpose. The point is not the
-   flag but the *carve-out*: an invariant with no exceptions is checked by
-   grepping for a demote and finding none (`TestPolicyHasNoRestrictionOperation`),
-   one with an exception only by understanding where the exception applies. A
-   patch reintroducing a demote under any name is reintroducing the exception.
+   flag but the *carve-out*: an invariant with no exceptions could be checked by
+   grepping for a demote and finding none, one with an exception only by
+   understanding where the exception applies. A patch reintroducing a demote
+   under any name is reintroducing the exception — **and no check catches one**
+   (#271). `TestPolicyHasNoRestrictionOperation` only asserts that `Access.Join`
+   takes the max; a `Derive()` returning a copy with every `AccessRW` rewritten
+   to `AccessRO` ships green. This half of invariant 1 is enforced by review, and
+   a list of demote spellings is not the fix — that is the catalogue shape
+   invariant 2 rejects.
 2. **Deny by default.** Every visible path traces to exactly one explicit grant.
    **Corollary — wanting "X but not Y" means X was too coarse a grant.** The
    urge to exclude is a design smell pointing at the grant above it, not a
@@ -260,17 +265,19 @@ first, or delegate to the agent that owns it.
   again with a different object: **a grant of a directory is a grant of every
   socket anyone puts in it later**, and `~/.ssh/agent`, `~/.docker/desktop`,
   podman's machine socket and gpg-agent's `S.gpg-agent` are all real spellings.
-- **Half of this is checked now**, and knowing WHICH half is the point.
-  Validate refuses a bind whose SOURCE IS a socket (#219), detected by S_IFSOCK
-  through the injected Environ — not by a path list, which is why it is not the
-  catalogue #207 deleted: a stat does not care how a path was spelled. snug's own
-  proxy sockets are exempt by Mount.Authored, which is the distinction the rule
-  turns on rather than a carve-out. What is NOT checked is the directory case,
-  which is the general form: a stat at resolve time sees only sockets that exist
-  then, so ro {home}/.ssh is accepted today and is a hole the moment an agent
-  starts there. That half still depends on whoever reads a profile diff
-  remembering it. Validate also refuses any bind covering $HOME (#220), so the
-  measured route specifically is closed twice over.
+- **Half of the socket rule is checked now**, and knowing WHICH half is the
+  point. `Validate` refuses a bind whose SOURCE IS a socket (#219), detected by
+  `S_IFSOCK` through the injected `Environ` — not by a path list, which is why it
+  is not the catalogue #207 deleted: a `stat` does not care how a path was
+  spelled. snug's own proxy sockets are exempt by `Mount.Authored`, which is the
+  distinction the rule turns on rather than a carve-out. What is NOT checked is
+  the DIRECTORY case, which is the general form: a `stat` at resolve time sees
+  only sockets that exist then, so `ro {home}/.ssh` is accepted today and is a
+  hole the moment an agent starts there. That half still depends on whoever reads
+  a profile diff remembering it. **Two routes, one check each**: #220 refuses any
+  bind covering `$HOME`, which is what closes the MEASURED route (a directory
+  bind, so #219 never fires on it); #219 closes the direct spelling. Neither is
+  redundant.
 - **The abuse sentence is written once and nothing re-reads it as the code grows
   around it.** That is why `redteam` carries a standing inventory sweep —
   *working exactly as designed, what did we hand over?* — a question no
@@ -479,6 +486,18 @@ which is what stops a `profiles.d` loaded from the wrong place impersonating
 a builtin is rewritten with the marks, so a builtin can only ever include another
 builtin. snug's own mounts carry `(snug)`, not `(builtin)`.
 
+**Reading and building a profile never needs network access.** Maintainer's
+ruling, 2026-08-21. Parsing a profile, resolving a selection, validating it and
+rendering `--dry-run` are offline, and no convenience may make them reach a
+service — not to check that `identity.ssh_key` and `identity.gh_user` name the
+same account, not to check a token's scopes. Egress is a profile the user
+selects; a tool that phones a service while deciding what a sandbox may see has
+inverted that, and it is what keeps `internal/policy` pure and testable in CI
+with no privileges. Ergonomics that need the network go to a separate binary
+with its own `go.mod` (issue #30, `snug setup`), whose output is a profile file
+snug reads like any other. **snug's own `go.mod` stays minimal**: every
+dependency there runs with the authority of the thing building the sandbox.
+
 **`snug config` holds preferences, never grants**, and **there is no `default`
 profile — there is a `defaults` setting.** The list is `@sys @home @cwd-rw
 @parent-ro`; `defaults = [...]` **replaces** it wholesale (merging would make
@@ -511,6 +530,21 @@ that grows once per feature is a rule written somewhere it can be forgotten, and
 have a claim to is a weaker reservation than reserving a name nobody claims.**
 The old location stays **refused** rather than freed: a rename whose old name
 merely stops working is a trap.
+
+**A command table snug exposes is REINTERPRETED, not bound.** Maintainer's
+ruling, 2026-08-21, generalising what `~/.gitconfig`, `~/.claude.json` and
+`installed_plugins.json` already do: where a file the sandbox reads names
+programs, snug generates its own version from an allowlist and mounts it
+read-only, rather than binding the host's bytes or the target's. The answer to a
+dangerous file is a refusal expressed as a projection — **never a warning**,
+which reports a breach instead of preventing one, and never a bare read-only
+bind, which stops the *editing* and supplies every command in it. The projection
+closes both directions: what the file can run **inside** is only what the
+allowlist kept, and what the payload writes **outward** hits EROFS. Its limit is
+that it can only be mounted where the host file ALREADY EXISTS — over an absent
+path bwrap creates the mountpoint on the host, which `rejectGeneratedOntoHost`
+refuses (issue #73, `CLAUDE-SETTINGS.md` §4.5). The inbound half — a hostile repo
+SHIPPING a command table — is closed either way.
 
 **Identity and credentials** — [`SECRETS.md`](.claude/design/SECRETS.md),
 [`GIT-CONFIG.md`](.claude/design/GIT-CONFIG.md),
