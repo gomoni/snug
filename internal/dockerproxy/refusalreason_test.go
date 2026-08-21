@@ -257,9 +257,11 @@ func TestNoNamespaceReasonClaimsTheEnginesPidNamespaceIsTheHosts(t *testing.T) {
 // `|`).
 var stageCloneflagsRE = regexp.MustCompile(`(?s)const stageCloneflags = (.*?)\n\n`)
 
-// engineCloneflagsRE extracts the RHS of internal/stage/enginefork.go's
-// `Cloneflags: ...,` field inside startEngine's SysProcAttr literal.
-var engineCloneflagsRE = regexp.MustCompile(`Cloneflags:\s*([^,\n]*),`)
+// engineCloneflagsRE extracts the RHS of the Cloneflags field, which spans two
+// source lines since issue #182 (the flag list is joined by `|` across a line
+// break). (?s) lets `.` cross the newline; the capture is non-greedy to the
+// first `,` that ends the field, and no `,` appears inside the flag list.
+var engineCloneflagsRE = regexp.MustCompile(`(?s)Cloneflags:\s*(.*?),\n`)
 
 // TestIpcAndUtsReasonsMatchTheEnginesActualCloneflags is what makes issue
 // #182 (adding CLONE_NEWIPC|CLONE_NEWUTS to the engine fork) a SAFE change
@@ -300,23 +302,58 @@ func TestIpcAndUtsReasonsMatchTheEnginesActualCloneflags(t *testing.T) {
 			"startEngine Cloneflags field — it was renamed or reshaped, and this test needs to be " +
 			"updated to match")
 	}
+	flags := string(stageMatch[1]) + " " + string(engineMatch[1])
 
-	stageFlags := string(stageMatch[1])
-	engineFlags := string(engineMatch[1])
-
-	// POSITIVE CONTROL: both extracted expressions actually name flags, so a
-	// broken regex matching an empty capture does not pass this test by
-	// finding nothing to search.
-	if !strings.Contains(stageFlags, "CLONE_NEW") || !strings.Contains(engineFlags, "CLONE_NEW") {
-		t.Fatalf("control: extraction found no CLONE_NEW* flag at all — stage=%q engine=%q, "+
-			"the regex is matching the wrong text", stageFlags, engineFlags)
+	// POSITIVE CONTROL: the extraction actually named flags, using CLONE_NEWPID
+	// — the engine's C0 flag, present unconditionally, so this proves the regex
+	// found the field and captured its content WITHOUT presupposing #182's own
+	// CLONE_NEWIPC/CLONE_NEWUTS (which are the variables the invariant below
+	// tests, and must stay free to be absent so the flag-removed direction is
+	// live rather than dead). A two-line capture bug that dropped the second
+	// line still surfaces below: the missing ipc/uts flag reads as "not
+	// unshared", which then disagrees with the engine-scope reason and fails
+	// the invariant naming the disagreement.
+	if !strings.Contains(flags, "CLONE_NEWPID") {
+		t.Fatalf("control: extraction captured no CLONE_NEWPID — the regex is matching the wrong "+
+			"text (flags=%q)", flags)
 	}
 
-	for _, flag := range []string{"CLONE_NEWIPC", "CLONE_NEWUTS"} {
-		if strings.Contains(stageFlags, flag) || strings.Contains(engineFlags, flag) {
-			t.Errorf("the ipc/uts refusal reasons say \"the engine does not unshare\" — it now "+
-				"does (%s found in a clone flag set: stage=%q engine=%q); rewrite them", flag,
-				stageFlags, engineFlags)
+	// The invariant, checked in BOTH directions (issue #182): each of ipc and
+	// uts is unshared by the engine's lineage IFF its refusal reason says the
+	// engine has its own. A flag that moves without its reason, OR a reason
+	// that moves without its flag, fails here — which is the whole point of a
+	// re-read that keeps prose honest as the code grows around it.
+	for _, c := range []struct{ key, flag string }{
+		{"IpcMode", "CLONE_NEWIPC"},
+		{"UTSMode", "CLONE_NEWUTS"},
+	} {
+		unshared := strings.Contains(flags, c.flag)
+		reason := namespaceModeReason[c.key]
+		saysMachine := strings.Contains(reason, "does not unshare")
+		saysEngineOwn := strings.Contains(reason, "its OWN")
+
+		if unshared {
+			if saysMachine {
+				t.Errorf("%s is in a clone flag set, so the engine unshares it — but the %s "+
+					"reason still says \"does not unshare\" (machine-scope). Rewrite it to "+
+					"engine-scope:\n%s", c.flag, c.key, reason)
+			}
+			if !saysEngineOwn {
+				t.Errorf("%s is unshared but the %s reason does not say the engine has \"its OWN\" "+
+					"namespace, so a reader cannot tell whether \"host\" means the engine or the "+
+					"machine:\n%s", c.flag, c.key, reason)
+			}
+		} else {
+			if !saysMachine {
+				t.Errorf("%s is NOT in any clone flag set, so the engine shares the machine's — "+
+					"but the %s reason does not say \"does not unshare\", so it overstates the "+
+					"isolation:\n%s", c.flag, c.key, reason)
+			}
+			if saysEngineOwn {
+				t.Errorf("the %s reason claims the engine has \"its OWN\" namespace, but %s is in "+
+					"no clone flag set — the engine still shares the machine's, and the reason "+
+					"is now a lie in the reassuring direction:\n%s", c.key, c.flag, reason)
+			}
 		}
 	}
 }
