@@ -556,31 +556,38 @@ This is alpha status - while the basic concept feels solid, more real world usag
 The builtin profiles, their dependencies, CLI or an ability to attach to an existing sandbox - all of this
 may be refined in the near future.
 
-## TODO
+## Drafts — designed, not built
 
- * how to properly deal with [secrets](.claude/design/SECRETS.md)
- * [podman network](.claude/design/ENGINE-NETNS.md)
- * environment variable handling
- * tighten the podman build
- * better defined identities - requires secrets to be final
+Two designs are written down and deliberately unimplemented. They are kept
+because the reasoning is expensive to re-derive, not because the work is
+scheduled:
+
+ * [`SECRETS.md`](.claude/design/SECRETS.md) — which credentials reach a
+   sandbox, the severity model, and brokering versus injection. What ships
+   today is narrower than what it proposes: one pinned ssh key through a
+   filtering agent proxy, a five-key projection of Claude Code's credentials,
+   and a generated `~/.gitconfig`. The broker itself is not built.
+ * [`PARAMETERISED-PROFILES.md`](.claude/design/PARAMETERISED-PROFILES.md) —
+   profiles that take arguments, postponed by decision.
+
+Everything else that was once on this list has landed: the container engine
+runs in the sandbox's own network namespace, environment handling has its five
+`environ` verbs, and an identity is one `[identity]` block per profile.
+
+**Known gaps live in the [issue tracker](https://github.com/gomoni/snug/issues),
+never here** — each one carries a severity label and the measurement that
+confirmed it. A list in prose goes stale; a list with issue numbers does not.
 
 ## Documentation
 
-[`VERIFY.md`](VERIFY.md) is the hands-on checklist: run it rather than trusting
-this file.
+[`VERIFY.md`](VERIFY.md) is the hands-on checklist: every line is a command with
+its expected output, so run it rather than trusting this file.
 
-Design and research material is **not** user documentation and lives apart, under
-[`.claude/design/`](.claude/design/), beside the agents that work from it:
-
-| | |
-|---|---|
-| [`INDEX.md`](.claude/design/INDEX.md) | Architecture, threat model, the policy model, roadmap |
-| [`PSEUDOFS-AUDIT.md`](.claude/design/PSEUDOFS-AUDIT.md) | What `/proc`, `/sys` and `/dev` expose, measured |
-| [`PARAMETERISED-PROFILES.md`](.claude/design/PARAMETERISED-PROFILES.md) | A deferred design, and why |
-| [`SECRETS.md`](.claude/design/SECRETS.md) | What snug does with credentials, and what it should |
-| [`GIT-CONFIG.md`](.claude/design/GIT-CONFIG.md) | Why `~/.gitconfig` is generated rather than bound, measured |
-| [`ENVIRONMENT-VARIABLES.md`](.claude/design/ENVIRONMENT-VARIABLES.md) | The five `environ` verbs, the variable types behind them, measured |
-| [`CLAUDE.md`](CLAUDE.md) | Working agreement: invariants, and hard-won facts about this environment |
+Design and research material is **not** user documentation — it is the best
+record that exists, written for the people building snug and measured against
+real hosts. It lives under [`.claude/design/`](.claude/design/), and
+[`INDEX.md`](.claude/design/INDEX.md) is the way in: architecture, threat model,
+the policy model, and a table of every topic document with what it settles.
 
 ## Requirements
 
