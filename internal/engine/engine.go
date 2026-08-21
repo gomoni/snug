@@ -625,9 +625,30 @@ func engineGrafts(pol *policy.Policy) []stage.EngineGraft {
 //     default_capabilities, default_sysctls, default_ulimits, seccomp_profile
 //     and userns are deliberately absent: emptying or pinning any of them
 //     overrides podman's own default for every container, which is a policy
-//     decision this file must not make silently. For those keys the guarantee
-//     is CONTAINERS_CONF's replacement and nothing else — issue #136 carries
-//     the residual and the measurement.
+//     decision this file must not make silently.
+//
+//     For those keys the guarantee is now MEASURED, not assumed.
+//     CONTAINERS_CONF REPLACES the host's writable config layers, it does not
+//     merge them (issue #136): measured on podman 5.8.4 with an invalid-TOML
+//     probe — a broken ~/.config/containers/containers.conf IS read when
+//     nothing sets CONTAINERS_CONF and is IGNORED when this file does, so a
+//     hostile ~/.config or /etc config injects none of these keys, enumerated
+//     or not. default_capabilities is bounded a SECOND way regardless of any
+//     config: a container's delivered set is its own default INTERSECTED with
+//     policy.EngineCapBounding — measured 0x802405fb, the full 12-cap set, for
+//     `CapAdd:["ALL"]` (issue #146) — so the capability ceiling answers that
+//     key by construction even if it leaked.
+//
+//     ONE layer is REASONED, not measured, and named here so a future reader
+//     does not re-derive it wrongly: /usr/share/containers/containers.conf is
+//     podman's always-read base, and its
+//     default_sysctls=["net.ipv4.ping_group_range=0 0"] is containers/common's
+//     OWN documented default (its config comment gives that exact value as the
+//     example), present on every podman with or without a config — not an
+//     injection, root-owned, outside the payload-writable threat this file
+//     guards. Whether CONTAINERS_CONF suppresses /usr/share too is UNMEASURED
+//     (it is root-owned, so the invalid-TOML probe cannot touch it); it does
+//     not change the answer, because /usr/share is trusted.
 //
 //     What the enumeration IS worth was measured, against a hostile
 //     containers.conf on CONTAINERS_CONF and this file on
