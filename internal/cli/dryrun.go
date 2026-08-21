@@ -1000,8 +1000,10 @@ func describeContainers(out *os.File, p *policy.Policy) {
 	fmt.Fprintf(out, "         reaches that process's entire filesystem view.\n")
 	fmt.Fprintf(out, "         A container may mount only a path the sandbox can already see,\n")
 	fmt.Fprintf(out, "         enforced by the proxy's bind filter, which reads this same resolved\n")
-	fmt.Fprintf(out, "         policy (the mount view itself is still a private copy of the host\n")
-	fmt.Fprintf(out, "         tree, not a derived one — see the TOPOLOGY block).\n")
+	fmt.Fprintf(out, "         policy — and the engine's own mount namespace is DERIVED from the\n")
+	fmt.Fprintf(out, "         sandbox's view rather than being a copy of the host tree, so the\n")
+	fmt.Fprintf(out, "         filter now refuses by name what the namespace does not contain\n")
+	fmt.Fprintf(out, "         anyway (see the TOPOLOGY and ENGINE VIEW blocks).\n")
 	describeImageProvenance(out)
 }
 
@@ -1767,31 +1769,41 @@ func describeTopology(out *os.File, p *policy.Policy) {
 		// The engine (issue #63, Tier B): a second process the stage forks
 		// into its OWN user + network namespace, as a sibling of bwrap, so a
 		// container it starts shares exactly the sandbox's own N. Its mount
-		// namespace is a private COPY of the host tree, not bwrap's view and
-		// not derived from this policy — what stops it seeing an ungranted
-		// path is the proxy's bind filter, which reads this same resolved
-		// policy (a named, tested deferral; Tier C is what makes the VIEW
-		// itself structural instead of enforced). Widening the capability set
-		// below is necessarily a diff to this line, which is the point of
-		// keeping it a policy-owned constant rather than a per-profile field.
-		// Its pid namespace, unlike its mount namespace, IS its own from the
-		// moment it exists (issue #125's C0): CLONE_NEWPID at the engine's
-		// clone time plus a fresh procfs mount (internal/stage/inengine.go),
-		// landing under Tier B's existing mount-namespace shape, not Tier C's
-		// derived view.
+		// namespace is DERIVED from the sandbox's view since Tier C (#245):
+		// its root IS the sandbox's own root with the grafts under ENGINE VIEW
+		// on top, so an ungranted path is not there to be named. The proxy's
+		// bind filter still refuses one by name, reading this same resolved
+		// policy — belt and braces now rather than the only barrier.
+		//
+		// This comment said the opposite for two tiers ("a private COPY of the
+		// host tree … Tier C is what makes the VIEW itself structural"), which
+		// is issue #252 one layer in: the screen was corrected there and the
+		// comment above it would have kept telling the next reader that the
+		// correction was wrong.
+		//
+		// Widening the capability set below is necessarily a diff to this
+		// line, which is the point of keeping it a policy-owned constant
+		// rather than a per-profile field. The pid namespace is its own from
+		// the moment the engine exists (issue #125's C0): CLONE_NEWPID at the
+		// engine's clone time plus a fresh procfs mount
+		// (internal/stage/inengine.go).
 		fmt.Fprintf(out, "  engine          joins THIS sandbox's own network namespace (N) — a container has\n")
 		fmt.Fprintf(out, "                  exactly the sandbox's own network, nothing more.\n")
-		fmt.Fprintf(out, "                  mount namespace: a private COPY of the host tree, not the\n")
-		fmt.Fprintf(out, "                  sandbox's view. A container may bind only what this policy\n")
-		fmt.Fprintf(out, "                  already exposes — enforced by the proxy's bind filter (Tier C\n")
-		fmt.Fprintf(out, "                  makes this structural instead of enforced).\n")
+		fmt.Fprintf(out, "                  mount namespace: DERIVED from this sandbox's view — the\n")
+		fmt.Fprintf(out, "                  engine's root IS the sandbox's own root, with the grafts\n")
+		fmt.Fprintf(out, "                  listed under ENGINE VIEW below mounted on top of it. The host\n")
+		fmt.Fprintf(out, "                  tree is not in it, and neither is your home directory.\n")
+		fmt.Fprintf(out, "                  So a container may bind only what this policy already\n")
+		fmt.Fprintf(out, "                  exposes, and that is now STRUCTURAL — the proxy's bind filter\n")
+		fmt.Fprintf(out, "                  still refuses one by name, but a path the sandbox cannot see\n")
+		fmt.Fprintf(out, "                  is not in the engine's namespace to be bound.\n")
 		fmt.Fprintf(out, "                  pid namespace: its own, so the engine cannot see the host's\n")
 		fmt.Fprintf(out, "                  process table and the sandbox cannot see the engine's. Each\n")
 		fmt.Fprintf(out, "                  container gets its own too, and may not ask for anyone else's:\n")
 		fmt.Fprintf(out, "                  '--pid=host' is REFUSED, because in a shared pid namespace\n")
 		fmt.Fprintf(out, "                  /proc/<pid>/root reaches that process's whole mount namespace,\n")
 		fmt.Fprintf(out, "                  and pid 1 here is the engine — whose mount namespace is the\n")
-		fmt.Fprintf(out, "                  private copy of the host tree named above.\n")
+		fmt.Fprintf(out, "                  derived view named above, plus every graft on it.\n")
 		fmt.Fprintf(out, "                  ipc + uts namespaces: the ENGINE's OWN (issue #182). A container\n")
 		fmt.Fprintf(out, "                  may not ask for either — \"host\" would name the engine's, not the\n")
 		fmt.Fprintf(out, "                  machine's; the payload has its own too (bwrap --unshare-ipc\n")
@@ -1954,6 +1966,25 @@ func describeGrafts(out *os.File, p *policy.Policy) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "ENGINE VIEW  (grafts — mounts in the ENGINE's derived mount namespace, NOT the")
 	fmt.Fprintln(out, "  payload's. The payload cannot see any of these; no profile can ask for one.)")
+
+	// The one graft this screen CANNOT show, said here rather than left to be
+	// discovered by diffing a dry run against a real one (issue #252). The
+	// toolchain graft's source is a preflight answer — which host directory
+	// this engine's own program files live in — and --dry-run runs no
+	// preflight, so on a host that needs one this block is four grafts where
+	// the run makes five. An absent row that nothing explains is the same
+	// defect this issue was filed for, one graft smaller.
+	//
+	// Written as len(...) == 0 rather than == "": TestOnlyOneWriterOfEngine\
+	// ToolchainRoot greps for `\.EngineToolchainRoot\s*=`, which a COMPARISON
+	// against "" also matches, so the natural spelling trips a guard that
+	// exists to catch assignments. Reported rather than loosened — the guard
+	// is right about the field and wrong only about this read.
+	if p.Podman != policy.PodmanOff && len(p.EngineToolchainRoot) == 0 {
+		fmt.Fprintln(out, "  (a bring-your-own engine adds a fifth graft at "+
+			policy.EngineToolchainGuest+" — whether")
+		fmt.Fprintln(out, "  this host needs one is a preflight answer, and --dry-run runs no preflight.)")
+	}
 
 	guests := make([]string, 0, len(p.Grafts))
 	for g := range p.Grafts {
