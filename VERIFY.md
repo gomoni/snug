@@ -790,6 +790,18 @@ Expect a refusal naming `ghost-plugin-xyz` and listing the installed plugins,
 and the payload does NOT run — a plugin the run asked for and did not get is an
 error, not a silent omission.
 
+**The checks above assert what snug WRITES. What the real `claude` binary DOES
+with it** — a plugin absent from the regenerated manifest does not fire its
+`SessionStart` hook, one present does — is asserted by
+`TestManifestGatesPluginHookFiring` (host-level, `-tags integration`), not by
+hand here: firing needs a real `claude` session, and on claude 2.1.238 it needs
+BOTH the manifest entry AND `enabledPlugins` in `settings.json`. That second
+gate is why the assertion is host-level and not run inside a sandbox — snug's
+own `settings.json` filter drops `enabledPlugins`, so inside `@claude` nothing
+fires and no positive control could exist there. Run it with
+`go test -tags integration -run TestManifestGatesPluginHookFiring ./test/integration/`;
+it skips where `claude` is absent.
+
 ### 6g-ter. The target's own `.claude/settings.json` is reinterpreted read-only where it exists (issue #73)
 
 A repo's `.claude/settings.json` / `settings.local.json` is a command table
