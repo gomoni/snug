@@ -260,17 +260,11 @@ first, or delegate to the agent that owns it.
   again with a different object: **a grant of a directory is a grant of every
   socket anyone puts in it later**, and `~/.ssh/agent`, `~/.docker/desktop`,
   podman's machine socket and gpg-agent's `S.gpg-agent` are all real spellings.
-- **Half of this is checked now**, and knowing WHICH half is the point.
-  Validate refuses a bind whose SOURCE IS a socket (#219), detected by S_IFSOCK
-  through the injected Environ — not by a path list, which is why it is not the
-  catalogue #207 deleted: a stat does not care how a path was spelled. snug's own
-  proxy sockets are exempt by Mount.Authored, which is the distinction the rule
-  turns on rather than a carve-out. What is NOT checked is the directory case,
-  which is the general form: a stat at resolve time sees only sockets that exist
-  then, so ro {home}/.ssh is accepted today and is a hole the moment an agent
-  starts there. That half still depends on whoever reads a profile diff
-  remembering it. Validate also refuses any bind covering $HOME (#220), so the
-  measured route specifically is closed twice over.
+  **Nothing checks this**, the same way nothing checks the command-table rule
+  since #207 — no builtin does it today, and the next `ro {home}`-shaped profile
+  would not be noticed. The one structural defence that does exist is narrow and
+  worth knowing: `Validate` refuses any bind covering `$HOME` (#220), so the
+  measured route specifically is closed.
 - **The abuse sentence is written once and nothing re-reads it as the code grows
   around it.** That is why `redteam` carries a standing inventory sweep —
   *working exactly as designed, what did we hand over?* — a question no

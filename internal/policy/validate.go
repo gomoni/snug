@@ -471,8 +471,21 @@ func (p *Policy) rejectHostHomeBind() error {
 // ssh-agent proxy at AgentSocketGuest exposes one pinned key and enumerates
 // nothing, and the container proxy filters every request. Those are the
 // narrower alternatives this refusal exists to stop a mount from replacing.
-// Mount.Authored is set only by Policy.Replace, which nothing a profile can
-// write reaches, so a profile cannot borrow the exemption.
+// A PROFILE CANNOT BORROW THE EXEMPTION, and the reason takes three writers
+// rather than one — the earlier version of this comment said "set only by
+// Policy.Replace", which is false and was the sentence carrying the whole
+// argument:
+//
+//   - Policy.Replace (types.go) — snug's own post-resolve writes: the proxy
+//     sockets, the generated identity files, the staged credentials. Nothing a
+//     profile can express reaches it.
+//   - Policy.Graft (graft.go) — writes p.GRAFTS, a different map. This loop
+//     reads p.Mounts, so a graft's authorship never reaches this decision at
+//     all; the engine's own socket graft is exempt by not being here.
+//   - Policy.yieldTo (resolve.go) — installs snug's base mounts (/proc, /dev,
+//     /tmp) ONLY when the guest is unclaimed. A profile's grant at the same
+//     path is left in place UNauthored, which is exactly what lets RULE 4 name
+//     the profile that wrote it, so yieldTo cannot launder one either.
 //
 // WHAT THIS DOES NOT COVER, and it must be read as part of the rule rather
 // than discovered later:
