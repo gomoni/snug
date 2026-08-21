@@ -1,6 +1,6 @@
 BIN := bin/snug
 
-.PHONY: all build test gate integration forkstress golden clean install
+.PHONY: all build test gate integration integration-sandbox integration-signals integration-hostless forkstress golden clean install
 
 all: build
 
@@ -116,6 +116,92 @@ gate:
 integration:
 	SNUG_TEST_NET=$${SNUG_TEST_NET:-$${SNUG_REQUIRE_SANDBOX:+1}} \
 		go test -tags integration -timeout 4m -v ./test/integration/...
+
+# bash, not sh: both split targets read $${PIPESTATUS[0]} so that a real test
+# failure is still a failure after the output has been through `tee`. With
+# /bin/sh the guard would swallow it, which is the failure mode these two
+# targets exist to prevent — a job that goes green having proved nothing.
+SHELL := /bin/bash
+
+SIGNALS_LOG ?= $(CURDIR)/.integration-signals.log
+HOSTLESS_LOG ?= $(CURDIR)/.integration-hostless.log
+
+# ── the same suite, split three ways for CI ─────────────────────────────────
+#
+# `make integration` above still runs EVERYTHING and is what a human runs. The
+# three targets below exist because one CI job was doing all of it serially:
+# measured on run 32471090448, `real sandbox behaviour` took 147s, of which the
+# test binary was 106s — and 68s of that 106s was three tests.
+#
+# The split is by COST and by WHAT THE HOST MUST PROVIDE, not by subject:
+#
+#   integration-signals   the three kill-during-startup tests. 68s of the 106s.
+#                         They are slow because they must be: each one signals a
+#                         real sandbox at a real moment and repeats to make the
+#                         race show up, so the seconds ARE the measurement.
+#   integration-sandbox   everything else that needs bwrap or pasta. ~37s.
+#   integration-hostless  the tests that need neither, which is decided by the
+#                         RUNNER rather than by a list here — see below.
+#
+# SNUG_SIGNAL_TESTS is written once and used twice, as a -run and as a -skip, so
+# the two halves cannot drift into overlapping or into leaving a test unrun.
+SNUG_SIGNAL_TESTS = TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox|TestAKilledSnugCannotReleaseTheParkedPayload|TestKillingSnugDuringStartupNeverRunsThePayload
+
+integration-sandbox:
+	SNUG_TEST_NET=$${SNUG_TEST_NET:-$${SNUG_REQUIRE_SANDBOX:+1}} \
+		go test -tags integration -timeout 4m -v \
+			-skip '$(SNUG_SIGNAL_TESTS)' ./test/integration/...
+
+# A -run regexp that matches nothing exits 0 and prints a warning, which is the
+# "test that cannot fail" shape: the job would go green having run none of the
+# three tests it exists for. So the warning is turned into a failure here, and
+# the message names the variable to fix rather than the symptom.
+integration-signals:
+	@SNUG_TEST_NET=$${SNUG_TEST_NET:-$${SNUG_REQUIRE_SANDBOX:+1}} \
+		go test -tags integration -timeout 4m -v \
+			-run '$(SNUG_SIGNAL_TESTS)' ./test/integration/... 2>&1 \
+		| tee $(SIGNALS_LOG); \
+	status=$${PIPESTATUS[0]}; \
+	if grep -q 'no tests to run' $(SIGNALS_LOG); then \
+		echo 'ERROR: SNUG_SIGNAL_TESTS matched no test — a name in the Makefile has'; \
+		echo 'ERROR: drifted from the suite, so this job would have gone green having'; \
+		echo 'ERROR: run none of the three tests it exists for.'; \
+		exit 1; \
+	fi; \
+	exit $$status
+
+# The hostless half, and the interesting part is what decides membership.
+#
+# NOTHING here lists which tests do not need a sandbox. The suite already gates
+# every sandbox test on requireSandbox/requirePasta/requireEngine, so on a host
+# with neither binary installed those tests SKIP and what remains — the dry-run
+# screens, the refusals that happen before anything is launched, the generated
+# identity files — runs. Membership is therefore answered by the runner, and a
+# test that stops needing bwrap joins this job by itself. A list would be the
+# catalogue shape this project keeps deleting.
+#
+# SNUG_REQUIRE_SANDBOX must stay UNSET for this target: with it, every skip
+# becomes a failure, which is exactly right for the sandbox job and exactly
+# wrong here.
+#
+# The floor is what stops it becoming a job that passes having run nothing —
+# the failure this whole suite exists to refuse. It is a floor, not the count:
+# adding hostless tests keeps it true, and deleting them all makes it fail.
+SNUG_HOSTLESS_FLOOR = 15
+
+integration-hostless:
+	@go test -tags integration -timeout 4m -v ./test/integration/... 2>&1 \
+		| tee $(HOSTLESS_LOG); \
+	status=$${PIPESTATUS[0]}; \
+	ran=$$(grep -c '^--- PASS' $(HOSTLESS_LOG) || true); \
+	echo "tests that ran without a sandbox: $$ran (floor $(SNUG_HOSTLESS_FLOOR))"; \
+	if [ "$$ran" -lt "$(SNUG_HOSTLESS_FLOOR)" ]; then \
+		echo "ERROR: only $$ran test(s) ran here. Either bwrap/pasta leaked into this"; \
+		echo "ERROR: environment and changed what this job measures, or the tests that"; \
+		echo "ERROR: need no sandbox have gone. Both are worth a look."; \
+		exit 1; \
+	fi; \
+	exit $$status
 
 # The regression test for issue #221 — a raw-fork child that wedged in the Go
 # runtime — behind its own tag and its own CI job, deliberately NOT in `go test
