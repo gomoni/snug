@@ -1240,19 +1240,22 @@ the host:
 md5sum ~/.claude/settings.json   # unchanged on the host
 ```
 
-**And the measurement that stays open after this fix**, on a host with a
-hook-carrying plugin installed:
+**The plugin channel, closed by the allowlist (issue #68).** `@claude` still
+binds `{home}/.claude/plugins` read-only, and a plugin's manifest carries its
+own `hooks` block Claude Code loads automatically — but snug now regenerates
+`installed_plugins.json` to name only the allowlisted plugins (empty by
+default), so nothing auto-loads unless you named it. The manifest content is
+what 6g-bis above checks. The residual #68 keeps: no test yet asserts an unnamed
+plugin's hooks do not fire in a live `claude` run. To watch it by hand, on a
+host with a hook-carrying plugin installed but NOT named:
 
 ```bash
 ./bin/snug -p @claude <a-directory-you-have-trusted> -- claude
 ```
 
-Watch for the plugin's `SessionStart` hook firing (a file it writes, or a
-status message it prints). `@claude` still binds `{home}/.claude/plugins`
-read-only, and a plugin manifest — plus `installed_plugins.json`, independently
-of `settings.json` — carries its own `hooks` block that Claude Code loads
-automatically. Filtering `settings.json` does not touch that channel. See
-https://github.com/gomoni/snug/issues/68.
+Expect the plugin's `SessionStart` hook NOT to fire (no file it writes, no
+status it prints), because @claude's default allowlist is empty and the manifest
+names nothing. See https://github.com/gomoni/snug/issues/68.
 
 What you should also expect, and it is not breakage: `/mcp` shows nothing from
 your host user config — a `.mcp.json` committed in the target is a different
