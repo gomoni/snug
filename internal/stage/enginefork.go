@@ -128,7 +128,24 @@ func startEngine(netnsN *os.File, initPID int, req request) error {
 	// keeps the sandbox's pid namespace unaffected; this flag applies only to
 	// the engine's own clone, here.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWNS | syscall.CLONE_NEWCGROUP | syscall.CLONE_NEWPID,
+		// CLONE_NEWIPC | CLONE_NEWUTS (issue #182): the engine gets its OWN
+		// System V IPC namespace and its OWN UTS namespace, rather than sharing
+		// the machine's. Measured before this change (issue #146 inventory):
+		// /proc/<engine>/ns/ipc and /ns/uts were byte-for-byte the HOST's,
+		// while the payload had its own of each (bwrap --unshare-ipc
+		// --unshare-uts). podman reads no host SysV segment and needs no host
+		// hostname, so the engine had no use for either — the hole was never
+		// argued for, it was simply what this clone flag set happened not to
+		// include. It closes a channel that does NOT go through checkCreate: an
+		// OCI hook, an unenumerated containers.conf key (#136), or an image
+		// config carrying an ipc mode could supply the namespace without the
+		// HostConfig field the proxy filters. With this, IpcMode=host and
+		// UTSMode=host name the ENGINE's own namespaces, not the machine's, and
+		// their proxy refusals drop from sole-guard to defence-in-depth
+		// (namespaceModeReason, kept in sync by
+		// TestIpcAndUtsReasonsMatchTheEnginesActualCloneflags).
+		Cloneflags: syscall.CLONE_NEWNS | syscall.CLONE_NEWCGROUP | syscall.CLONE_NEWPID |
+			syscall.CLONE_NEWIPC | syscall.CLONE_NEWUTS,
 		// Cascades the engine's death to whenever P1 dies, however it dies —
 		// exit, panic, SIGKILL — exactly as P1's OWN Pdeathsig cascades from
 		// P0 (stage.go). Survives the execve into podman below because that
