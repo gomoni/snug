@@ -713,6 +713,65 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 		}
 	}
 
+	// G6 — a graft's SOURCE must be a DIRECTORY (issue #290).
+	//
+	// A POSITIVE PREDICATE, deliberately, not a mode blacklist mirroring §1's
+	// socket-plus-FIFO check in validate.go: there is nothing to exempt and
+	// nothing a future inode kind can be forgotten from. G3 already requires
+	// the graft's DESTINATION to be a directory the sandbox created; this is
+	// its other half — a graft moves a directory TREE onto a directory, and
+	// relaxing either end without the other is the shape to watch. G3 and G6
+	// are one sentence, not two rules that happen to sit near each other.
+	//
+	// COVERS SOCKET, FIFO AND DEVICE IN ONE CLAUSE, and that breadth matters
+	// here in a way it does not for the mount-level check: the graft path is
+	// open_tree(OPEN_TREE_CLONE) followed by move_mount (internal/stage's
+	// engine-side stager), which CLONES the source mount and carries its
+	// existing mount flags forward, adding only MOUNT_ATTR_RDONLY. bwrap's
+	// `nosuid,nodev` on the sandbox's own binds does NOT travel with it — that
+	// flag belongs to the bind bwrap created, not to the underlying mount
+	// open_tree clones from — so the device exclusion validate.go's
+	// rejectEndpointSource comment explains would be UNSOUND if copied here.
+	// A positive "must be a directory" predicate sidesteps the question
+	// entirely: it needs no device flag to lean on, because a device node is
+	// not a directory either.
+	//
+	// ABSENT SOURCE IS NOT THIS RULE'S BUSINESS: skip silently on a Stat
+	// error. GraftPathsInto runs at a point where the run directory a caller
+	// is about to graft may not exist yet — issue #125's design pass measured
+	// this — and refusing here would make --dry-run fail on host state
+	// instead of on policy, which is a different function's job (G4's "source
+	// must be visible" question, not this one's "source must be a
+	// directory").
+	//
+	// NO Authored EXEMPTION, and none may be added. Policy.Graft marks every
+	// graft's Authored field true a few lines into this file, BEFORE
+	// checkGraft ever runs (see the doc comment on Graft above) — so `if
+	// g.Authored { continue }` here would be unconditionally true for every
+	// graft this package ever builds, the exact "documented but not
+	// implemented" shape CLAUDE.md names. If snug ever needs the engine to
+	// see a socket, the fix is to graft the DIRECTORY CONTAINING it and let
+	// the engine bind the socket itself — which is what EngineSockGuest
+	// already does. That sentence is what stops the next author reaching for
+	// an exemption here instead.
+	//
+	// All five shipped graft sources are directories today (the container
+	// store, the runroot, the socket directory, the config directory, and
+	// EngineToolchainRoot), so nothing shipped starts failing.
+	if rules.hasHost {
+		if fi, err := env.Stat(g.Host); err == nil && !fi.IsDir() {
+			return fmt.Errorf("cannot graft %s: its source %s is not a directory (mode %s).\n"+
+				"       A graft is an open_tree(2) clone of the source moved onto the destination —\n"+
+				"       G3 already requires the destination to be a directory the sandbox created, and\n"+
+				"       this is that rule's other half: a graft moves a directory TREE, never a single\n"+
+				"       socket, FIFO or device node. bwrap's `nosuid,nodev` does not travel with the\n"+
+				"       clone into the engine's view, so a device node here would be a real hole, not a\n"+
+				"       cosmetic one. If you need the engine to see a socket, graft the DIRECTORY\n"+
+				"       containing it and let the engine bind the socket itself.",
+				g.Guest, g.Host, fi.Mode())
+		}
+	}
+
 	return nil
 }
 

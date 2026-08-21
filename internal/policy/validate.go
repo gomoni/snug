@@ -336,7 +336,7 @@ func (p *Policy) Validate(env Environ) error {
 		return err
 	}
 
-	if err := p.rejectSocketSource(env); err != nil {
+	if err := p.rejectEndpointSource(env); err != nil {
 		return err
 	}
 
@@ -381,13 +381,13 @@ func sortedGuests(mounts map[string]Mount) []string {
 // MEASURED through it, against a scratch home: an ssh private key read, .netrc
 // read, .aws read, a git alias from the host's ~/.gitconfig EXECUTED, ~/.bashrc
 // executed by an interactive shell, and — issue #219 — a host ssh-agent
-// enumerated and used for a signature through the socket in ~/.ssh, which is the
-// whole @ssh-agent filtering-proxy design defeated by a mount.
+// enumerated and used for a signature through the socket in ~/.ssh, which is what
+// ssh_mode = "agent-proxy" (one pinned key, no enumeration) exists to prevent.
 //
 // Three rules this project already holds fail at once here: the command-table
 // rule (read-only SUPPLIES every program the file names), the socket rule
-// (#219), and @ssh-agent's one-pinned-key design. The working agreement's own
-// test settles it — write the abuse sentence: "a hostile process inside the
+// (#219), and what ssh_mode = "agent-proxy" exists to prevent. The working
+// agreement's own test settles it — write the abuse sentence: "a hostile process inside the
 // sandbox can use this to read every credential you own, execute your shell rc
 // files, and sign with your ssh agent." If you cannot write it, the grant is not
 // ready; this one writes itself and the answer is no.
@@ -428,8 +428,8 @@ func (p *Policy) rejectHostHomeBind() error {
 			"       That is the largest grant snug can emit: every credential under it is\n"+
 			"       readable by the sandbox, ~/.bashrc and ~/.gitconfig are COMMAND TABLES a\n"+
 			"       read-only bind SUPPLIES rather than restrains, and any agent socket in it\n"+
-			"       can be used unfiltered — which is the @ssh-agent proxy's one-pinned-key\n"+
-			"       design defeated by a mount.\n"+
+			"       can be used unfiltered — which is what ssh_mode = \"agent-proxy\" (one pinned\n"+
+			"       key, no enumeration) exists to prevent, defeated by a mount.\n"+
 			"       There is no flag to allow it. Grant the part you meant instead, e.g.\n"+
 			"       ro = [\"{home}/src\"] in your own profile. If the target sits directly in\n"+
 			"       your home directory, @parent-ro's \"the target's parent\" IS $HOME — move\n"+
@@ -439,20 +439,63 @@ func (p *Policy) rejectHostHomeBind() error {
 	return nil
 }
 
-// rejectSocketSource refuses a bind whose SOURCE is a unix socket (issue #219).
+// endpointNoun names, for the refusal message, what kind of endpoint a
+// mode was found to be. Kept to exactly the two modes rejectEndpointSource
+// tests for — anything else is a caller bug, not a case this needs to render.
+func endpointNoun(mode fs.FileMode) string {
+	switch {
+	case mode&fs.ModeSocket != 0:
+		return "unix SOCKET"
+	case mode&fs.ModeNamedPipe != 0:
+		return "FIFO (a named pipe)"
+	}
+	return "endpoint"
+}
+
+// rejectEndpointSource refuses a bind whose SOURCE is a unix socket or a FIFO
+// (issues #219, #287).
 //
-// A socket is the third noun, after the file a tool reads and the config file a
-// tool INTERPRETS, and `ro` restrains it least of all: read-only stops the
-// sandbox REPLACING the socket and does nothing about SPEAKING to whatever
-// listens on it. The private netns does not help either — a unix socket is
-// filesystem, not network.
+// THE RULE, stated once so it explains both nouns without repeating the
+// reasoning per kind: an inode that is an ENDPOINT to a process rather than a
+// container of bytes is one for which the read-only bit means nothing. The
+// kernel's may_open() clears MAY_WRITE for S_IFSOCK, S_IFIFO, S_IFBLK and
+// S_IFCHR before MNT_READONLY is ever consulted — read-only guards the
+// FILESYSTEM, not the process on the other end of the node.
 //
-// MEASURED (issue #219, found by redteam attacking #179): from a sandbox
-// holding a read-only bind of a home directory, a payload enumerated the host's
-// ssh-agent and signed with it. `--clearenv` had correctly stripped
-// SSH_AUTH_SOCK and the payload simply re-derived the path. That is
-// @ssh-agent's filtering proxy — one pinned key, no enumeration, the entire
-// reason that profile exists — defeated by a mount.
+// DEVICES ARE DELIBERATELY NOT IN THIS PREDICATE, and that is not an
+// oversight in the list above: a device is in the same kernel list, and is
+// still out of scope because a SECOND, independent flag closes it. bwrap sets
+// `nosuid,nodev` on every bind it creates. Measured on this host (bwrap
+// 0.11.2), one sandbox, three `--ro-bind`s:
+//
+//	fifo:WROTE-OK
+//	/bin/sh: line 1: /tmp/devnull: Permission denied      devnull:FAIL
+//	/bin/sh: line 1: /tmp/regular: Read-only file system  regular:FAIL
+//
+// and mountinfo showed `ro,nosuid,nodev` on both binds. There is no MS_NOFIFO
+// and no MS_NOSOCK — the kernel gives snug the device case for free, through a
+// flag that already has to be there for an unrelated reason, and gives it
+// nothing for the other two. That asymmetry is the entire reason this
+// predicate is socket-plus-FIFO rather than socket-plus-FIFO-plus-device. The
+// device argument depends on snug never emitting `--dev-bind` or
+// `--dev-bind-try`; sandbox-tester pins that separately.
+//
+// MEASURED FOR THE FIFO HALF (issue #287): a payload wrote through a FIFO
+// mounted read-only and a host process on the other end received the bytes,
+// while `touch` on a regular file in the same read-only bind got EROFS in the
+// same run. The socket half was measured earlier, by #219: a payload
+// enumerated the host's ssh-agent and signed with it through a read-only
+// bind — `--clearenv` had correctly stripped SSH_AUTH_SOCK and the payload
+// simply re-derived the path. Both are the same kernel fact wearing a
+// different noun.
+//
+// THERE IS NO @ssh-agent BUILTIN, and there never was — the mechanism this
+// refusal points at is an identity block (`ssh_mode = "agent-proxy"`), not a
+// profile `snug -p` can select. An earlier version of this message named
+// '@ssh-agent' and snug rejected it with `unknown profile "@ssh-agent"` for a
+// full milestone before anyone noticed (issue #289) — the message pointed the
+// reader at a fix that did not exist. Whatever this message names, verify it
+// resolves.
 //
 // DETECTED BY stat, NEVER BY A PATH LIST, and that distinction is the whole
 // reason this is not the catalogue shape #207 deleted. That catalogue was a
@@ -490,19 +533,43 @@ func (p *Policy) rejectHostHomeBind() error {
 // WHAT THIS DOES NOT COVER, and it must be read as part of the rule rather
 // than discovered later:
 //
-//   - A stat at resolve time sees only sockets that EXIST THEN. A grant of a
-//     DIRECTORY is a grant of every socket anyone puts in it afterwards, and
-//     that case passes this check. `ro {home}/.ssh` with no socket in it today
-//     is accepted, and is a hole the moment an agent is started there.
+//   - A stat at resolve time sees only endpoints that EXIST THEN. A grant of a
+//     DIRECTORY is a grant of every socket and every FIFO anyone puts in it
+//     afterwards, and that case passes this check. `ro {home}/.ssh` with
+//     nothing in it today is accepted, and is a hole the moment an agent is
+//     started there. #287's headline measurement went through exactly this
+//     door — no user profile, a FIFO created inside @parent-ro's directory
+//     grant after resolve, WROTE-OK — and it STAYS OPEN after this change:
+//     what this refusal closes is the spelled-out case (a grant naming the
+//     endpoint itself), the same ratchet #219 got for sockets.
+//   - RESOLVE-TIME SCANNING OF GRANTED DIRECTORIES WAS CONSIDERED AND
+//     REJECTED, not merely left undone: it would make policy acceptance
+//     depend on host state that changes out from under it, it is unbounded
+//     work over an arbitrary directory tree, and it races anything creating a
+//     node after resolve returns — a check that can be defeated by winning a
+//     race is not a check.
+//   - TWO BOUNDS ON THE RESIDUAL, because they are the difference between
+//     medium and critical severity rather than decoration. First, the payload
+//     cannot CREATE the endpoint inside a read-only grant — measured: `mkfifo:
+//     cannot create fifo '/tmp/rodir/newfifo': Read-only file system` — so an
+//     attacker can only speak into a FIFO (or a socket) a host process already
+//     created and is holding open, never manufacture a fresh one. Second,
+//     there is NO mount flag that would let snug close this the way `nodev`
+//     closes the device case: this is a kernel-level residual, not laziness.
+//   - snug already refuses to READ a FIFO as data elsewhere
+//     (internal/cli/claude.go, readHostFileBounded: "will not read a FIFO, a
+//     device or a directory there") and was still willing to MOUNT one — the
+//     rule applied to one of its two halves, the sixth recorded instance of
+//     that shape (CLAUDE.md).
 //   - So this closes the spelled-out case and ratchets the accidental one. It
 //     is not a complete answer to "a grant of a directory is a grant of every
-//     socket in it", which remains the rule CLAUDE.md states and which nothing
-//     mechanically enforces.
+//     socket or FIFO in it", which remains the rule CLAUDE.md states and which
+//     nothing mechanically enforces.
 //
 // A check that silently covers half its rule is this project's most-repeated
-// defect — five recorded instances — so the refusal text says the same thing
-// to whoever reads it.
-func (p *Policy) rejectSocketSource(env Environ) error {
+// defect — six recorded instances now, this one included — so the refusal
+// text says the same thing to whoever reads it.
+func (p *Policy) rejectEndpointSource(env Environ) error {
 	for _, g := range sortedGuests(p.Mounts) {
 		m := p.Mounts[g]
 		if m.Kind != KindBind || m.Authored {
@@ -515,23 +582,33 @@ func (p *Policy) rejectSocketSource(env Environ) error {
 			// refused by the existence check with a better message.
 			continue
 		}
-		if fi.Mode()&fs.ModeSocket == 0 {
+		if fi.Mode()&(fs.ModeSocket|fs.ModeNamedPipe) == 0 {
 			continue
 		}
-		return fmt.Errorf("profile %s binds %s, whose source is a unix SOCKET.\n"+
-			"       Read-only does not restrain a socket: `ro` stops the sandbox replacing it\n"+
-			"       and does nothing about speaking to whatever is listening. The private\n"+
-			"       network namespace does not help either — a unix socket is filesystem, not\n"+
-			"       network. Measured: a payload enumerated the host's ssh-agent and signed\n"+
-			"       with it through exactly this shape (issue #219).\n"+
-			"       If you want the sandbox to sign with ONE key, select '@ssh-agent', which\n"+
-			"       proxies a single pinned key and enumerates nothing. If you want a\n"+
-			"       container engine, select '@podman-socket', whose socket is a filtering\n"+
-			"       proxy rather than the engine itself.\n"+
-			"       NOTE THE LIMIT of this refusal: it sees sockets that exist NOW. Granting\n"+
-			"       a DIRECTORY still grants every socket anyone puts in it later, and that\n"+
-			"       case is not checked by anything.\n",
-			provenance(m), VisibleText(m.Guest))
+		noun := endpointNoun(fi.Mode())
+		return fmt.Errorf("profile %s binds %s, whose source is a %s.\n"+
+			"       Read-only does not restrain an endpoint. `ro` stops the sandbox REPLACING the\n"+
+			"       node and does nothing about SPEAKING THROUGH it: the kernel clears MAY_WRITE\n"+
+			"       for a socket, a FIFO and a device node before it ever consults the read-only\n"+
+			"       bit, so MNT_READONLY guards the filesystem, not the process on the other end.\n"+
+			"       Measured on a read-only bind: a payload wrote through a FIFO and a host process\n"+
+			"       received the bytes, while `touch` on a regular file in the same bind got EROFS\n"+
+			"       (issue #287). A socket got the host's ssh-agent enumerated and used for a\n"+
+			"       signature through exactly this shape (issue #219). The private network\n"+
+			"       namespace does not help either — a unix socket is filesystem, not network.\n"+
+			"       If you want the sandbox to sign with ONE key, do not mount an agent socket.\n"+
+			"       Put an identity block in your own profile and select it with -p:\n"+
+			"           [profile.work.identity]\n"+
+			"           ssh_key  = \"{home}/.ssh/id_ed25519.pub\"   # the PUBLIC half\n"+
+			"           ssh_mode = \"agent-proxy\"\n"+
+			"       snug then runs a proxy that offers that one key, enumerates nothing, and needs\n"+
+			"       no mount. If you want a container engine, select '@podman-socket', whose\n"+
+			"       socket is a filtering proxy rather than the engine itself.\n"+
+			"       NOTE THE LIMIT of this refusal: it sees the node a grant NAMES, and only if it\n"+
+			"       exists now. Granting a DIRECTORY still grants every socket and every FIFO\n"+
+			"       anyone puts in it later, and nothing checks that — it is how issue #287 was\n"+
+			"       measured, through @parent-ro alone.\n",
+			provenance(m), VisibleText(m.Guest), noun)
 	}
 	return nil
 }
@@ -895,15 +972,20 @@ func (p *Policy) rejectMasking(env Environ) error {
 		// have inherited for free.
 		//
 		// THE SAME FALSE SENTENCE STOOD IN TWO PLACES, which is this project's
-		// most-repeated shape: this comment and rejectSocketSource's both said
+		// most-repeated shape: this comment and rejectEndpointSource's both said
 		// "Mount.Authored is set only by Policy.Replace". It is not — there are
 		// three production writers, and the claim is the one carrying "a
 		// profile cannot borrow the exemption" in BOTH rules:
 		//
 		//   Policy.Replace   snug's own post-resolve writes. A profile cannot
 		//                    express one.
-		//   Policy.Graft     writes p.GRAFTS, a different map. Neither this
-		//                    loop nor rejectSocketSource reads it.
+		//   Policy.Graft     writes p.GRAFTS, a different map — irrelevant to
+		//                    this loop and to rejectEndpointSource, which both
+		//                    read only p.Mounts, but not because a graft goes
+		//                    unchecked: a graft is judged by G1-G6 in
+		//                    checkGraft, which Validate re-runs over every
+		//                    installed graft (validate.go:326, in Validate
+		//                    itself, before this function runs).
 		//   Policy.yieldTo   installs snug's base mounts (/proc, /dev, /tmp)
 		//                    ONLY when the guest is unclaimed. A profile's
 		//                    grant at the same path is left UNauthored, which

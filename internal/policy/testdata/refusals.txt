@@ -117,18 +117,27 @@ profile nest puts a bind of /opt at /dev/null, which is inside /dev — a pseudo
 
 == bind_of_a_socket_source ==
 profile binder binds /home/u/mounted, whose source is a unix SOCKET.
-       Read-only does not restrain a socket: `ro` stops the sandbox replacing it
-       and does nothing about speaking to whatever is listening. The private
-       network namespace does not help either — a unix socket is filesystem, not
-       network. Measured: a payload enumerated the host's ssh-agent and signed
-       with it through exactly this shape (issue #219).
-       If you want the sandbox to sign with ONE key, select '@ssh-agent', which
-       proxies a single pinned key and enumerates nothing. If you want a
-       container engine, select '@podman-socket', whose socket is a filtering
-       proxy rather than the engine itself.
-       NOTE THE LIMIT of this refusal: it sees sockets that exist NOW. Granting
-       a DIRECTORY still grants every socket anyone puts in it later, and that
-       case is not checked by anything.
+       Read-only does not restrain an endpoint. `ro` stops the sandbox REPLACING the
+       node and does nothing about SPEAKING THROUGH it: the kernel clears MAY_WRITE
+       for a socket, a FIFO and a device node before it ever consults the read-only
+       bit, so MNT_READONLY guards the filesystem, not the process on the other end.
+       Measured on a read-only bind: a payload wrote through a FIFO and a host process
+       received the bytes, while `touch` on a regular file in the same bind got EROFS
+       (issue #287). A socket got the host's ssh-agent enumerated and used for a
+       signature through exactly this shape (issue #219). The private network
+       namespace does not help either — a unix socket is filesystem, not network.
+       If you want the sandbox to sign with ONE key, do not mount an agent socket.
+       Put an identity block in your own profile and select it with -p:
+           [profile.work.identity]
+           ssh_key  = "{home}/.ssh/id_ed25519.pub"   # the PUBLIC half
+           ssh_mode = "agent-proxy"
+       snug then runs a proxy that offers that one key, enumerates nothing, and needs
+       no mount. If you want a container engine, select '@podman-socket', whose
+       socket is a filtering proxy rather than the engine itself.
+       NOTE THE LIMIT of this refusal: it sees the node a grant NAMES, and only if it
+       exists now. Granting a DIRECTORY still grants every socket and every FIFO
+       anyone puts in it later, and nothing checks that — it is how issue #287 was
+       measured, through @parent-ro alone.
 
 
 == grant_strictly_inside_resolv_conf ==
