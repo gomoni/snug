@@ -15,17 +15,21 @@ TOPOLOGY
   subuid          full
   engine          joins THIS sandbox's own network namespace (N) — a container has
                   exactly the sandbox's own network, nothing more.
-                  mount namespace: a private COPY of the host tree, not the
-                  sandbox's view. A container may bind only what this policy
-                  already exposes — enforced by the proxy's bind filter (Tier C
-                  makes this structural instead of enforced).
+                  mount namespace: DERIVED from this sandbox's view — the
+                  engine's root IS the sandbox's own root, with the grafts
+                  listed under ENGINE VIEW below mounted on top of it. The host
+                  tree is not in it, and neither is your home directory.
+                  So a container may bind only what this policy already
+                  exposes, and that is now STRUCTURAL — the proxy's bind filter
+                  still refuses one by name, but a path the sandbox cannot see
+                  is not in the engine's namespace to be bound.
                   pid namespace: its own, so the engine cannot see the host's
                   process table and the sandbox cannot see the engine's. Each
                   container gets its own too, and may not ask for anyone else's:
                   '--pid=host' is REFUSED, because in a shared pid namespace
                   /proc/<pid>/root reaches that process's whole mount namespace,
                   and pid 1 here is the engine — whose mount namespace is the
-                  private copy of the host tree named above.
+                  derived view named above, plus every graft on it.
                   ipc + uts namespaces: the ENGINE's OWN (issue #182). A container
                   may not ask for either — "host" would name the engine's, not the
                   machine's; the payload has its own too (bwrap --unshare-ipc

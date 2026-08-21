@@ -11,8 +11,10 @@ CONTAINERS  a per-sandbox engine behind a filtering proxy at /snug/podman.sock
          reaches that process's entire filesystem view.
          A container may mount only a path the sandbox can already see,
          enforced by the proxy's bind filter, which reads this same resolved
-         policy (the mount view itself is still a private copy of the host
-         tree, not a derived one — see the TOPOLOGY block).
+         policy — and the engine's own mount namespace is DERIVED from the
+         sandbox's view rather than being a copy of the host tree, so the
+         filter now refuses by name what the namespace does not contain
+         anyway (see the TOPOLOGY and ENGINE VIEW blocks).
 IMAGES   provenance is snug's, not this host's (issue #137)
          search      docker.io and nothing else — no mirror, no rewrite, no
                      insecure registry. A generated registries.conf, pointed

@@ -138,6 +138,32 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		// probes are needed to render a resolved policy, and running them
 		// (a real /etc/subuid read, a real cgroup write probe) would be
 		// host I/O a debugging command has no business doing.
+		// The engine's HOST-TREE grafts, recorded so the screen can show
+		// them. installEngineViewGrafts above covers the engine's OWN four
+		// mounts; the store, runroot, sock and conf grafts were recorded by
+		// eng.GraftInto — a hundred lines below this return — so --dry-run
+		// never showed them at all (issue #252). The store graft is the
+		// highest-value hand-over a container run makes: read-write, shared
+		// with every sandbox resolving to the same profiles+target key, and
+		// persistent across runs. It had no abuse sentence on screen because
+		// it was never on screen.
+		//
+		// PlannedPaths, not engine.New: New CREATES those directories, and a
+		// dry run creates nothing (issue #21). The paths come out of the same
+		// arithmetic New uses, and New refuses to start if what it created
+		// disagrees with what was predicted.
+		//
+		// The TOOLCHAIN graft is absent here, and that is a real gap rather
+		// than an oversight: it is a preflight answer, and preflight does not
+		// run for a dry run (see the comment above). describeEngineView says
+		// so on screen.
+		paths, perr := engine.PlannedPaths(pol.Profiles, pol.Target)
+		if perr != nil {
+			return containerRun{}, perr
+		}
+		if gerr := engine.GraftPathsInto(env, pol, paths); gerr != nil {
+			return containerRun{}, gerr
+		}
 		return startContainersScreen(pol)
 	}
 

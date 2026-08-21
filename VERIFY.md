@@ -1888,24 +1888,70 @@ suite pins each to its own message so neither can cover for the other.
 
 ## 9c-bis. The ENGINE VIEW block names every mount the engine makes
 
-The engine's own mount namespace holds three mounts snug makes for it, and until
-issue #125's §9.2 the model described none of them — so `--dry-run` was silent
-about a namespace it claims to explain, and the `/run` one is WRITABLE, which is
-the ingredient #55 is about.
+The title was a claim this block did not meet until issue #252. The engine's own
+mounts — the ones the stage MAKES, with no host source — rendered from #125's
+§9.2 onward. The four HOST-TREE grafts did not render at all: they were recorded
+a hundred lines after `--dry-run` had already returned, so the screen showed the
+harmless half of the engine's namespace and none of the half that hands over a
+host directory.
 
 ```bash
 ./bin/snug --dry-run -p @podman-socket $SC/proj/sub | sed -n '/^ENGINE VIEW/,/^$/p'
 ```
 
-Expect three rows — `proc-rw /proc`, `tmpfs-rw /run`, `cgroup2-rw /sys/fs/cgroup`
-— each with an abuse sentence, each saying **`from (nothing — the stage mounts a
-fresh … here; no host path is opened)`**. That last line is the one to read: a
-mount the stage MAKES has no source, and an earlier version of this block printed
-an empty `from` and an `owned:` line claiming G4 admitted it, which is a check
-that never runs for these three.
+Expect eight rows:
 
-Nothing here is a host path, and the payload sees none of it: what it sees is the
-empty `/run` mountpoint from 6i above.
+```
+  proc-rw     /proc                                         (snug)
+  tmpfs-rw    /run                                          (snug)
+  graft-ro    /snug/engine/conf                             (snug)
+  graft-rw    /snug/engine/runroot                          (snug)
+  graft-rw    /snug/engine/sock                             (snug)
+  graft-rw    /snug/engine/store                            (snug)
+  cgroup2-rw  /sys/fs/cgroup                                (snug)
+  tmpfs-rw    /var/tmp                                      (snug)
+```
+
+The four the stage makes (`proc`, `run`, `sys/fs/cgroup`, `var/tmp`) each say
+**`from (nothing — the stage mounts a fresh … here; no host path is opened)`**.
+That line is the one to read: a mount the stage MAKES has no source, and an
+earlier version of this block printed an empty `from` and an `owned:` line
+claiming G4 admitted it — a check that never runs for these.
+
+The four `graft-` rows each name a real host directory under `from`, and each
+carries an abuse sentence. **Read the store's**, because it is the largest
+hand-over a container run makes and it is the one that was invisible:
+
+```
+  graft-rw    /snug/engine/store                            (snug)
+            from /home/<you>/.local/share/snug/engines/<key>/storage
+            owned: the sandbox's own grants do not expose this host path — it
+            passed G4 only because snug declared it its own for this run
+            abuse: write image layers into a store that PERSISTS across runs and
+            is shared with every other sandbox resolving to the same
+            profiles+target key …
+```
+
+`<key>` is `sha256(profiles+target)`, so the same selection on the same directory
+lands in the same store — that is what makes a warm start warm, and it is also
+why a poisoned layer outlives the sandbox that pulled it.
+
+**A dry run still creates none of them.** The paths are computed, not made
+(`engine.PlannedPaths`), which is the same rule as issue #21's:
+
+```bash
+TD=$(mktemp -d); DH=$(mktemp -d)
+TMPDIR=$TD XDG_DATA_HOME=$DH ./bin/snug --dry-run -p @podman-socket $SC/proj/sub >/dev/null
+find $TD $DH -mindepth 1 | sed 's/^/LEFT /'
+```
+
+Expect no `LEFT` line at all.
+
+**One graft is deliberately absent from a dry run: the toolchain.** Its host path
+is a preflight ANSWER, and `--dry-run` runs no preflight (it would be host I/O a
+debugging command has no business doing). So a dry run names four grafts and a
+real run with a bring-your-own engine makes five. The screen says so rather than
+leaving the difference to be discovered.
 
 ## 9c-ter. The engine's view is DERIVED — no host tree in it
 
