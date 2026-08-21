@@ -109,8 +109,6 @@
 package engine
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -198,22 +196,17 @@ type Engine struct {
 // reasoning (a root-in-userns podman masks $XDG_RUNTIME_DIR with its own
 // tmpfs on /run) is unaffected by this correction.
 func New(profiles []policy.ProfileName, target string) (*Engine, error) {
-	sorted := policy.NameStrings(profiles)
-	sort.Strings(sorted)
-	sum := sha256.Sum256([]byte(strings.Join(sorted, ",") + "\x00" + target))
-	key := hex.EncodeToString(sum[:])[:16]
-
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, err
-		}
-		dataHome = filepath.Join(home, ".local", "share")
+	pid := os.Getpid()
+	// The name is allocated FIRST and the paths are computed from it, so that
+	// what this function creates and what --dry-run predicts (PlannedPaths)
+	// come out of one arithmetic rather than two copies of it — see paths.go.
+	name := runDirName(os.Getuid(), pid)
+	planned, err := planPaths(profiles, target, name)
+	if err != nil {
+		return nil, err
 	}
 
-	pid := os.Getpid()
-	dirs, err := openRunDirs(os.TempDir(), runDirName(os.Getuid(), pid))
+	dirs, err := openRunDirs(os.TempDir(), name)
 	if err != nil {
 		return nil, err
 	}
@@ -229,10 +222,10 @@ func New(profiles []policy.ProfileName, target string) (*Engine, error) {
 		// started.
 		runLabel: fmt.Sprintf("%s=%d", RunLabelKey, pid),
 
-		store:   filepath.Join(dataHome, "snug", "engines", key, "storage"),
+		store:   planned.Store,
 		dirs:    dirs,
 		runDir:  runDir,
-		runroot: filepath.Join(os.TempDir(), fmt.Sprintf("snug-engines-%d-%s", os.Getuid(), key), "rr"),
+		runroot: planned.Runroot,
 	}
 	// The run directory is SPLIT by writability, not by topic (issue #125,
 	// C2b). Everything in conf/ is a file snug generated and the engine only
@@ -275,6 +268,17 @@ func New(profiles []policy.ProfileName, target string) (*Engine, error) {
 		// this call is for; #233 lists the writers as their own site.
 		root.Close()
 		*split.into = path
+	}
+	// The created paths must be the predicted ones. Not defensive: the whole
+	// value of planPaths is that --dry-run shows what the run will use, and a
+	// silent disagreement between the two would make that screen a lie about
+	// the one graft set nobody can see any other way (issue #252).
+	if e.sockDir != planned.SockDir || e.confDir != planned.ConfDir {
+		_ = dirs.remove()
+		dirs.close()
+		return nil, fmt.Errorf("engine run directory: created %s and %s but planPaths predicted "+
+			"%s and %s — --dry-run would name directories this run does not use",
+			e.sockDir, e.confDir, planned.SockDir, planned.ConfDir)
 	}
 	e.sock = filepath.Join(e.sockDir, fmt.Sprintf("podman-%d.sock", pid))
 
@@ -1382,81 +1386,7 @@ func helperBinariesDirs(pol *policy.Policy, podman string) string {
 // ORDER: after New (the paths must exist to be resolved) and before Spec (which maps every path it hands the engine through these grafts,
 // and refuses a path no graft or grant exposes).
 func (e *Engine) GraftInto(env policy.Environ, p *policy.Policy) error {
-	for _, host := range []string{e.store, e.runroot, e.sockDir, e.confDir} {
-		if err := p.OwnEngineHostPath(env, host); err != nil {
-			return fmt.Errorf("declaring %s as this run's own: %w", host, err)
-		}
-	}
-
-	if err := p.Graft(env, policy.Graft{
-		Mount: policy.Mount{
-			Guest: policy.EngineStoreGuest, Host: e.store,
-			Kind: policy.KindGraft, Access: policy.AccessRW, From: []string{"(snug)"},
-		},
-		Why: "write image layers into a store that PERSISTS across runs and is shared with " +
-			"every other sandbox resolving to the same profiles+target key — so a layer a " +
-			"container poisons outlives the sandbox that pulled it, and is there for the next " +
-			"run of the same project",
-	}); err != nil {
-		return fmt.Errorf("grafting the engine's image store: %w", err)
-	}
-
-	if err := p.Graft(env, policy.Graft{
-		Mount: policy.Mount{
-			Guest: policy.EngineRunrootGuest, Host: e.runroot,
-			Kind: policy.KindGraft, Access: policy.AccessRW, From: []string{"(snug)"},
-		},
-		Why: "write into the engine's runroot, which is keyed by profiles+target rather than " +
-			"by pid (podman's libpod database refuses a runroot that disagrees with the one it " +
-			"recorded), so it is reachable by a concurrent sandbox with the same key",
-	}); err != nil {
-		return fmt.Errorf("grafting the engine's runroot: %w", err)
-	}
-
-	if err := p.Graft(env, policy.Graft{
-		Mount: policy.Mount{
-			Guest: policy.EngineSockGuest, Host: e.sockDir,
-			Kind: policy.KindGraft, Access: policy.AccessRW, From: []string{"(snug)"},
-		},
-		Why: "create or replace the socket the container proxy dials — the engine must be " +
-			"able to bind it, which is why this half of the run directory is writable and the " +
-			"other half is not",
-	}); err != nil {
-		return fmt.Errorf("grafting the engine's socket directory: %w", err)
-	}
-
-	if err := p.Graft(env, policy.Graft{
-		Mount: policy.Mount{
-			Guest: policy.EngineConfGuest, Host: e.confDir,
-			Kind: policy.KindGraft, Access: policy.AccessRO, From: []string{"(snug)"},
-		},
-		Why: "READ every configuration file snug generated for it — and only read them: this " +
-			"is the half of the run directory that is read-only, so an engine that is talked " +
-			"into writing cannot rewrite the storage, registry or signature policy it was " +
-			"started under, nor turn the deliberately EMPTY auth file into a usable one",
-	}); err != nil {
-		return fmt.Errorf("grafting the engine's config directory: %w", err)
-	}
-
-	// The toolchain, only when this host has one outside every grant. A
-	// distribution podman in /usr/bin needs nothing here: @sys already binds
-	// the OS runtime and the engine's view is derived from the sandbox's, so
-	// the binary is simply there.
-	toolchainRoot := p.EngineToolchainRoot
-	if toolchainRoot == "" {
-		return nil
-	}
-	if err := p.Graft(env, policy.Graft{
-		Mount: policy.Mount{
-			Guest: policy.EngineToolchainGuest, Host: toolchainRoot,
-			Kind: policy.KindGraft, Access: policy.AccessRO, From: []string{"(snug)"},
-		},
-		Why: "READ the engine's own program files — the binary it is about to exec and every " +
-			"helper it resolves — from the host user's installation. Read-only: it is the " +
-			"user's own tree rather than something snug created for this run, so a writable " +
-			"graft of it would be a host-write channel out of the engine",
-	}); err != nil {
-		return fmt.Errorf("grafting the engine's toolchain: %w", err)
-	}
-	return nil
+	return GraftPathsInto(env, p, Paths{
+		Store: e.store, Runroot: e.runroot, SockDir: e.sockDir, ConfDir: e.confDir,
+	})
 }
