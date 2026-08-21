@@ -32,15 +32,19 @@
 --ro-bind /etc/passwd /etc/passwd
 --ro-bind-data 10 /etc/resolv.conf
 --tmpfs /home/u
+--ro-bind-data 11 /proc/config.gz
+--ro-bind-data 12 /proc/key-users
+--ro-bind-data 13 /proc/keys
+--ro-bind /proc/sys /proc/sys
 --tmpfs /home/u/.cache
 --perms 0600
---file 11 /home/u/.claude.json
+--file 14 /home/u/.claude.json
 --tmpfs /home/u/.config
 --ro-bind /home/u/proj /home/u/proj
 --ro-bind-try /home/u/.local/bin/claude /snug/bin/claude
---ro-bind-data 12 /home/u/.claude/CLAUDE.md
+--ro-bind-data 15 /home/u/.claude/CLAUDE.md
 --perms 0600
---file 13 /home/u/.claude/settings.json
+--file 16 /home/u/.claude/settings.json
 --tmpfs /home/u/.local/share
 --tmpfs /home/u/.local/state
 --bind /home/u/proj/sub /home/u/proj/sub

@@ -483,6 +483,13 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	p.yieldTo(Mount{Guest: "/dev", Kind: KindDev, Access: AccessRW, From: []string{"(snug)"}})
 	p.yieldTo(Mount{Guest: "/tmp", Kind: KindTmpfs, Access: AccessRW, From: []string{"(snug)"}})
 
+	//    And the read side of that procfs, which bwrap cannot curate at mount
+	//    time: three snug-authored empty files and a read-only /proc/sys (issue
+	//    #29, .claude/design/PSEUDOFS-AUDIT.md R3/R4). AFTER the /proc mount
+	//    above, so SortedMounts emits them in the order bwrap needs; see
+	//    procfs.go for why each is on the list and why the list is short.
+	installProcfsReplacements(p, env)
+
 	if p.Net.DNS {
 		// RAW, unfiltered. Which of these the sandbox may be told about is a
 		// MODE-dependent question — a private netns cannot reach a loopback

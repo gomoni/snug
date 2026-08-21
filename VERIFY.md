@@ -228,6 +228,112 @@ there to deny access to.
 Try the same for anything else you care about — `~/.gnupg`, `~/.aws`,
 `~/.config/gh`, your other projects.
 
+### 4a. The procfs entries snug replaces, and the read-only `/proc/sys` (issue #29)
+
+`bwrap --proc DEST` takes no mount options — no `hidepid=`, no `subset=pid`, no
+read-only procfs — so a curated procfs is impossible and every closure here is
+a **replacement**: snug's own empty file at a named path, never a profile
+hiding what another profile granted.
+
+The comparison is the check, because "empty inside" is also what a kernel that
+publishes nothing looks like:
+
+```bash
+for f in /proc/config.gz /proc/keys /proc/key-users; do
+  echo "$f $(wc -c < $f 2>/dev/null || echo absent)"
+done
+./bin/snug $SC/proj/sub -- /bin/sh -c \
+  'for f in /proc/config.gz /proc/keys /proc/key-users; do echo "$f $(wc -c < $f)"; done'
+```
+
+Measured here:
+
+```
+host                      inside
+/proc/config.gz 70885     /proc/config.gz 0
+/proc/keys 717            /proc/keys 0
+/proc/key-users 65        /proc/key-users 0
+```
+
+The host column is the positive control. On a kernel built without
+`CONFIG_IKCONFIG_PROC` or `CONFIG_KEYS` an entry reads `absent` on both sides,
+and that row proves nothing — snug mounts nothing it cannot see on the host,
+because `--ro-bind-data` has no `-try` spelling and naming an absent path would
+fail the run.
+
+What is deliberately NOT replaced: `/proc/cpuinfo`, `/proc/meminfo`,
+`/proc/stat` — build and test runners parse them, and snug is a build sandbox.
+`kallsyms`, `modules`, `interrupts`, `timer_list` and `sysrq-trigger` are the
+audit's Tier 2, still open as a judgement rather than shipped as a freebie.
+
+**AND A RUN THAT STARTS A CONTAINER ENGINE GETS NONE OF IT.** This is a named
+exception to invariant 1 — selecting a profile makes that run less protected —
+and it is the one thing in this section to check by hand, because it is the
+case a reader will not predict:
+
+```bash
+./bin/snug --dry-run -p @podman-socket $SC/proj/sub | grep -c 'data   /proc/'
+./bin/snug --dry-run -p @podman-socket $SC/proj/sub | grep -A3 'proc   /proc'
+```
+
+Expect `0` closure rows, and the screen saying so where the rows would have
+been:
+
+```
+  proc   /proc                                          (snug)
+                     ← the /proc closures are NOT applied on this run: this
+                       sandbox starts a container engine, and the engine mounts
+                       its own procfs for its own pid namespace — which the
+                       kernel refuses while any mount covers part of the procfs
+                       it can see (issue #29). …
+```
+
+**Why it cannot be otherwise, measured.** The kernel refuses a fresh procfs
+mount inside a nested user namespace while any mount covers part of a procfs it
+can see, and the engine mounts its own for its own pid namespace. With the
+closures applied to an engine run:
+
+```
+snug: __inengine: mounting a fresh /proc for this engine's own pid namespace:
+      operation not permitted
+```
+
+Bisected: the three empty files alone do it, and the read-only `/proc/sys`
+alone does it. Both ways of having both are closed — unmounting them inside the
+engine's own mount namespace is refused by `MNT_LOCKED`, and installing them
+where the engine tolerates them puts them where the payload never sees them.
+
+**The exemption is scoped to the RUN, not to the host.** A container profile
+merely installed changes nothing; it is selecting one — including *transitively*,
+through a profile that includes it — that drops the closures. That is why the
+disclosure is a line on the screen rather than a note in a profile description:
+
+```bash
+./bin/snug --dry-run $SC/proj/sub | grep -c 'closures are NOT applied'   # 0
+./bin/snug --dry-run $SC/proj/sub | grep -c 'data   /proc/'              # 3
+```
+
+Then the write side of `/proc/sys`:
+
+```bash
+./bin/snug $SC/proj/sub -- /bin/sh -c '
+  (echo 1 > /proc/sys/kernel/ns_last_pid) 2>&1 | tail -1
+  echo "read: $(cat /proc/sys/kernel/pid_max)"
+  echo "ifaces: $(ls /proc/sys/net/ipv4/conf | tr "\n" " ")"'
+```
+
+Expect the write to fail with `Read-only file system`, the read to still work,
+and the interface list to be the SANDBOX's netns (`all default lo`) rather than
+the host's. That last line is the one worth running: the bind's source is the
+host's `/proc/sys`, and the objection to R4 is that it might import the host's
+namespace-scoped view. It does not — `/proc/sys/net` and
+`/proc/sys/kernel/ns_last_pid` resolve through the READING TASK's namespaces.
+Measured: `ns_last_pid` reads `2` inside against `363451` on the host.
+
+Both halves matter. Without the read, "read-only" is indistinguishable from a
+`/proc/sys` that is not there at all, which would break every build that reads
+a sysctl.
+
 ## 5. What `@parent-ro` actually grants
 
 ```bash
