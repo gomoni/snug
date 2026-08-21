@@ -245,11 +245,13 @@ var namespaceModeReason = map[string]string{
 		`and /proc/<pid>/cwd walk into a namespace member's own MOUNT namespace, ` +
 		`and /proc/<pid>/fd/N reopens its open descriptors, both at plain uid with ` +
 		`no capability at all (measured). Pid 1 there is the engine, whose mount ` +
-		`namespace is a private copy of the whole host tree, so this would be a ` +
-		`filesystem escape by another route — the one the -v filter exists to ` +
-		`stop, spelled differently. There is no flag that enables it and no ` +
-		`narrower spelling: PidMode=container:<id> reaches a sibling container ` +
-		`the same way`,
+		`namespace since Tier C (issue #125) is its DERIVED view — the sandbox's ` +
+		`own, plus this run's grafts: the container store, the runroot, the config ` +
+		`directory. So this is a filesystem escape by another route, reaching the ` +
+		`same grafts issue #251 reached through a -v symlink — not the whole host ` +
+		`tree it once was, but the read-write store is enough. There is no flag ` +
+		`that enables it and no narrower spelling: PidMode=container:<id> reaches ` +
+		`a sibling container the same way`,
 	"IpcMode": `the engine does not unshare IPC, so "host" here really is the ` +
 		`machine's: it reaches the System V shared memory, semaphores and message ` +
 		`queues of every host process running as your uid, which the sandbox has ` +
@@ -280,23 +282,35 @@ var refusedHostConfig = []string{
 }
 
 var refusalReason = map[string]string{
-	"Privileged":        "it disables essentially every container protection at once",
-	"CapAdd":            "added capabilities apply to the host kernel, not to the sandbox",
-	"Devices":           "device passthrough reaches hardware the sandbox cannot see",
-	"DeviceRequests":    "device passthrough reaches hardware the sandbox cannot see",
-	"DeviceCgroupRules": "device passthrough reaches hardware the sandbox cannot see",
-	"SecurityOpt":       "snug sets this itself; a client value could undo no-new-privileges or seccomp",
-	"Runtime":           "an alternate OCI runtime is an arbitrary host binary",
-	"VolumesFrom":       "it inherits another container's mounts, which snug never approved",
-	"VolumeDriver":      "a non-local driver can name a host path or a remote share",
-	"Sysctls":           "kernel tunables are not namespaced the way you would hope",
-	"DNS":               "resolver redirection",
-	"DNSSearch":         "resolver redirection",
-	"DNSOptions":        "resolver redirection",
-	"ExtraHosts":        "name redirection",
-	"MaskedPaths":       "it edits the container's own /proc protections",
-	"ReadonlyPaths":     "it edits the container's own /proc protections",
-	"Annotations":       "podman honours run.oci.* annotations, which reach the runtime",
+	"Privileged": "it disables essentially every container protection at once",
+	"CapAdd":     "added capabilities apply to the host kernel, not to the sandbox",
+	"Devices": "device passthrough would name a host device, but since Tier C (issue #125) " +
+		"the engine's /dev is the sandbox's own synthetic tree (measured: null, zero, " +
+		"tty, pts, shm, random and the like, with none of the host's nvme/dri/kvm/mem " +
+		"nodes), and the engine holds no CAP_MKNOD to create one — so there is no host " +
+		"device to pass through. Refused as defence-in-depth, not as the only barrier",
+	"DeviceRequests": "device passthrough would name a host device, but since Tier C (issue #125) " +
+		"the engine's /dev is the sandbox's own synthetic tree (measured: null, zero, " +
+		"tty, pts, shm, random and the like, with none of the host's nvme/dri/kvm/mem " +
+		"nodes), and the engine holds no CAP_MKNOD to create one — so there is no host " +
+		"device to pass through. Refused as defence-in-depth, not as the only barrier",
+	"DeviceCgroupRules": "device passthrough would name a host device, but since Tier C (issue #125) " +
+		"the engine's /dev is the sandbox's own synthetic tree (measured: null, zero, " +
+		"tty, pts, shm, random and the like, with none of the host's nvme/dri/kvm/mem " +
+		"nodes), and the engine holds no CAP_MKNOD to create one — so there is no host " +
+		"device to pass through. Refused as defence-in-depth, not as the only barrier",
+	"SecurityOpt":   "snug sets this itself; a client value could undo no-new-privileges or seccomp",
+	"Runtime":       "an alternate OCI runtime is an arbitrary host binary",
+	"VolumesFrom":   "it inherits another container's mounts, which snug never approved",
+	"VolumeDriver":  "a non-local driver can name a host path or a remote share",
+	"Sysctls":       "kernel tunables are not namespaced the way you would hope",
+	"DNS":           "resolver redirection",
+	"DNSSearch":     "resolver redirection",
+	"DNSOptions":    "resolver redirection",
+	"ExtraHosts":    "name redirection",
+	"MaskedPaths":   "it edits the container's own /proc protections",
+	"ReadonlyPaths": "it edits the container's own /proc protections",
+	"Annotations":   "podman honours run.oci.* annotations, which reach the runtime",
 	// Both of these described the PRE-TIER-B world until issue #154 §B:
 	// "published ports land on the engine's side of the world, where the
 	// sandbox cannot reach them". The engine is IN the sandbox's netns now, so
