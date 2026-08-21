@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -335,6 +336,10 @@ func (p *Policy) Validate(env Environ) error {
 		return err
 	}
 
+	if err := p.rejectSocketSource(env); err != nil {
+		return err
+	}
+
 	if err := p.rejectTargetInAnEphemeralDirectory(); err != nil {
 		return err
 	}
@@ -430,6 +435,103 @@ func (p *Policy) rejectHostHomeBind() error {
 			"       your home directory, @parent-ro's \"the target's parent\" IS $HOME — move\n"+
 			"       the project one level down (~/src/myproject) or select without it.",
 			provenance(m), VisibleText(m.Guest), what, m.Access)
+	}
+	return nil
+}
+
+// rejectSocketSource refuses a bind whose SOURCE is a unix socket (issue #219).
+//
+// A socket is the third noun, after the file a tool reads and the config file a
+// tool INTERPRETS, and `ro` restrains it least of all: read-only stops the
+// sandbox REPLACING the socket and does nothing about SPEAKING to whatever
+// listens on it. The private netns does not help either — a unix socket is
+// filesystem, not network.
+//
+// MEASURED (issue #219, found by redteam attacking #179): from a sandbox
+// holding a read-only bind of a home directory, a payload enumerated the host's
+// ssh-agent and signed with it. `--clearenv` had correctly stripped
+// SSH_AUTH_SOCK and the payload simply re-derived the path. That is
+// @ssh-agent's filtering proxy — one pinned key, no enumeration, the entire
+// reason that profile exists — defeated by a mount.
+//
+// DETECTED BY stat, NEVER BY A PATH LIST, and that distinction is the whole
+// reason this is not the catalogue shape #207 deleted. That catalogue was a
+// maintained list of path strings, and #189 proved a list of strings is
+// defeated by spelling one path five ways with three going unmarked. A stat
+// does not care how a path was spelled, there is nothing to keep in sync with
+// a third party's layout, and there is no normalisation gap. This is the
+// NUL-check shape: a structural property of a VALUE, refused wherever it
+// appears.
+//
+// internal/policy stays pure: the stat goes through the injected Environ, the
+// same way every other host lookup in this package does.
+//
+// AUTHORED MOUNTS ARE EXEMPT, and this is not a loophole — it is the whole
+// point of the rule. snug's own proxy sockets ARE sockets, deliberately: the
+// ssh-agent proxy at AgentSocketGuest exposes one pinned key and enumerates
+// nothing, and the container proxy filters every request. Those are the
+// narrower alternatives this refusal exists to stop a mount from replacing.
+// A PROFILE CANNOT BORROW THE EXEMPTION, and the reason takes three writers
+// rather than one — the earlier version of this comment said "set only by
+// Policy.Replace", which is false and was the sentence carrying the whole
+// argument:
+//
+//   - Policy.Replace (types.go) — snug's own post-resolve writes: the proxy
+//     sockets, the generated identity files, the staged credentials. Nothing a
+//     profile can express reaches it.
+//   - Policy.Graft (graft.go) — writes p.GRAFTS, a different map. This loop
+//     reads p.Mounts, so a graft's authorship never reaches this decision at
+//     all; the engine's own socket graft is exempt by not being here.
+//   - Policy.yieldTo (resolve.go) — installs snug's base mounts (/proc, /dev,
+//     /tmp) ONLY when the guest is unclaimed. A profile's grant at the same
+//     path is left in place UNauthored, which is exactly what lets RULE 4 name
+//     the profile that wrote it, so yieldTo cannot launder one either.
+//
+// WHAT THIS DOES NOT COVER, and it must be read as part of the rule rather
+// than discovered later:
+//
+//   - A stat at resolve time sees only sockets that EXIST THEN. A grant of a
+//     DIRECTORY is a grant of every socket anyone puts in it afterwards, and
+//     that case passes this check. `ro {home}/.ssh` with no socket in it today
+//     is accepted, and is a hole the moment an agent is started there.
+//   - So this closes the spelled-out case and ratchets the accidental one. It
+//     is not a complete answer to "a grant of a directory is a grant of every
+//     socket in it", which remains the rule CLAUDE.md states and which nothing
+//     mechanically enforces.
+//
+// A check that silently covers half its rule is this project's most-repeated
+// defect — five recorded instances — so the refusal text says the same thing
+// to whoever reads it.
+func (p *Policy) rejectSocketSource(env Environ) error {
+	for _, g := range sortedGuests(p.Mounts) {
+		m := p.Mounts[g]
+		if m.Kind != KindBind || m.Authored {
+			continue
+		}
+		fi, err := env.Stat(m.Host)
+		if err != nil {
+			// Absent is not this check's business: an optional grant that does
+			// not exist is legal, and a required one that does not exist is
+			// refused by the existence check with a better message.
+			continue
+		}
+		if fi.Mode()&fs.ModeSocket == 0 {
+			continue
+		}
+		return fmt.Errorf("profile %s binds %s, whose source is a unix SOCKET.\n"+
+			"       Read-only does not restrain a socket: `ro` stops the sandbox replacing it\n"+
+			"       and does nothing about speaking to whatever is listening. The private\n"+
+			"       network namespace does not help either — a unix socket is filesystem, not\n"+
+			"       network. Measured: a payload enumerated the host's ssh-agent and signed\n"+
+			"       with it through exactly this shape (issue #219).\n"+
+			"       If you want the sandbox to sign with ONE key, select '@ssh-agent', which\n"+
+			"       proxies a single pinned key and enumerates nothing. If you want a\n"+
+			"       container engine, select '@podman-socket', whose socket is a filtering\n"+
+			"       proxy rather than the engine itself.\n"+
+			"       NOTE THE LIMIT of this refusal: it sees sockets that exist NOW. Granting\n"+
+			"       a DIRECTORY still grants every socket anyone puts in it later, and that\n"+
+			"       case is not checked by anything.\n",
+			provenance(m), VisibleText(m.Guest))
 	}
 	return nil
 }

@@ -334,6 +334,70 @@ Both halves matter. Without the read, "read-only" is indistinguishable from a
 `/proc/sys` that is not there at all, which would break every build that reads
 a sysctl.
 
+### 4b. A grant whose source is a SOCKET is refused (issue #219)
+
+A socket is the third noun, after the file a tool reads and the config file a
+tool INTERPRETS, and `ro` restrains it least of all: read-only stops the sandbox
+*replacing* the socket and does nothing about *speaking to* whatever is
+listening. The private netns does not help — a unix socket is filesystem, not
+network. Measured in #219: from a sandbox holding a read-only bind of a home
+directory, a payload enumerated the host's ssh-agent and signed with it, having
+simply re-derived the path `--clearenv` had stripped.
+
+```bash
+D=$(mktemp -d)
+python3 -c "import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])" $D/agent.sock
+: > $D/a-file; mkdir $D/a-dir
+mkdir -p $X/snug/profiles.d
+printf '[profile.binder]\ndescription = "one bind"\nro = ["%s:{home}/mounted"]\n' \
+  $D/agent.sock > $X/snug/profiles.d/b.toml
+XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p binder $SC/proj/sub; echo "exit=$?"
+```
+
+Expect a refusal, on `--dry-run` and not only at launch, naming what to select
+instead **and** what the check does not cover:
+
+```
+snug: profile binder binds /home/<you>/mounted, whose source is a unix SOCKET.
+       Read-only does not restrain a socket: `ro` stops the sandbox replacing it
+       …
+       If you want the sandbox to sign with ONE key, select '@ssh-agent', which
+       proxies a single pinned key and enumerates nothing. …
+       NOTE THE LIMIT of this refusal: it sees sockets that exist NOW. Granting
+       a DIRECTORY still grants every socket anyone puts in it later, and that
+       case is not checked by anything.
+exit=77
+```
+
+**The positive controls are the same profile with a different source.** Point
+`ro` at `$D/a-file` and then at `$D/a-dir`: both must resolve cleanly. Without
+them, "the socket was refused" is equally true of a check that refuses that path
+whatever is at it — and the refusal is detected by `stat` (S_IFSOCK), never by
+matching path text, which is what stops it being the catalogue shape #207
+deleted.
+
+**THE LIMIT, and it is half the rule.** Bind the DIRECTORY holding that socket
+instead:
+
+```bash
+printf '[profile.binder]\ndescription = "one bind"\nro = ["%s:{home}/mounted"]\n' \
+  $D > $X/snug/profiles.d/b.toml
+XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p binder $SC/proj/sub; echo "exit=$?"
+```
+
+Expect **exit=0**. A `stat` at resolve time sees only sockets that exist then,
+and a grant of a directory is a grant of every socket anyone puts in it
+afterwards. That case is checked by nothing, it is stated in the refusal text
+and in the code, and it is pinned by
+`TestABindOfADirectoryHoldingASocketIsStillAccepted` so that closing it means
+changing a test that says the old behaviour out loud.
+
+snug's OWN sockets are exempt and must be: the `@ssh-agent` proxy and the
+container proxy are sockets, and they are the narrower alternatives this
+refusal exists to stop a mount from replacing. The exemption is keyed on
+`Mount.Authored`, which only `Policy.Replace` sets and nothing a profile can
+write reaches.
+
 ## 5. What `@parent-ro` actually grants
 
 ```bash
