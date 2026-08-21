@@ -376,6 +376,23 @@ closed by the fix this section calls for. Re-run this section's three `[M]`
 measurements once the engine is actually forked through the stage into N,
 and update this status to reflect the real result rather than the refusal.
 
+**Status, 2026-08-21 — the engine is forked through the stage into N (issue #63
+Tier B, #125 Tier C), and the finding is CLOSED.** `internal/engine` no longer
+execs podman as a plain host process: the stage forks it into the sandbox's own
+netns N by `setns`, drops it to `policy.EngineCapBounding`, and `internal/cli`
+starts it on a real run. So the two premises the 08-18 entry hung its hedge on —
+"the engine is not yet running at all" and "internal/cli REFUSES to start" — are
+both superseded. The egress-without-`@net` CHANNEL this section measured is
+closed structurally: a container runs in the sandbox's own netns, so with no
+`@net` it has no egress and with `@net` exactly the sandbox's, measured both
+directions by `TestContainerEgressFollowsNetProfile`, and it holds no
+`CAP_NET_ADMIN` to publish a port. What §0 leaves LIVE is the *fact*, not the
+channel: a container's network IS the sandbox's, exactly and no more (see
+`ENGINE-NETNS.md` §0.1, finding-closed / fact-live). The three `[M]`
+measurements the 08-18 entry asked to be re-run adversarially are the `redteam`
+round still owed on #63 (its checklist's last open box); the structural closure
+above is what the committed integration suite already asserts.
+
 This remains a redteam finding rather than a secrets finding, and it is here
 because it invalidates the broker plan's most attractive property — *"a brokered
 Claude needs no `@net`, so exfiltration is closed by construction"* (that audit). That

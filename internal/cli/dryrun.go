@@ -106,6 +106,31 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 		for _, frag := range wrapMark(yieldedMark(p, m)) {
 			fmt.Fprintln(out, frag)
 		}
+		// The procfs closures (issue #29). Only for snug's OWN mount at that
+		// path: a row there that is not Authored is a profile grant, which
+		// Validate refuses — and if that ever changes, this must not describe
+		// someone else's mount with snug's reasoning.
+		//
+		// THE EXEMPTION IS DISCLOSED ON THE /proc ROW, which is the one row
+		// that is always there. The closures themselves are absent on an
+		// engine run, so a note attached to them would be a note nobody sees
+		// — the missing rows are exactly what has to be explained. This is
+		// invariant 1's named exception reaching the screen it has to reach:
+		// a profile that INCLUDES a container profile removes the closures
+		// from every selection carrying it, and the command line need never
+		// say "podman".
+		if m.Authored && m.Guest == "/proc" && policy.ProcfsClosuresSkipped(p) {
+			for _, frag := range wrapMark("  ← " + policy.ProcfsClosureExemptionNote) {
+				fmt.Fprintln(out, frag)
+			}
+		}
+		if m.Authored {
+			if note := policy.ProcfsNote(m.Guest); note != "" {
+				for _, frag := range wrapMark("  ← " + note) {
+					fmt.Fprintln(out, frag)
+				}
+			}
+		}
 	}
 	fmt.Fprintf(out, "  %-6s %s\n", "ro-/", "everything else is a read-only skeleton (--remount-ro /)")
 

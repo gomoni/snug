@@ -81,14 +81,14 @@ implemented — see the banner now on that section.
 ## 0.1 What in this document is still live, and what has moved
 
 Updated 2026-08-13, when the supervisor work overtook parts of this file. This
-document is **not** obsolete — §0 is the canonical record of a finding that is
-still open, and §1–§4 are the measurements every later document builds on. But
+document is **not** obsolete — §0 is the canonical record of a finding now
+CLOSED (Tier B), whose enduring FACT §1–§4's measurements still build on. But
 three sections now have a newer companion, and reading this file alone will give
 you a stale answer in exactly those places.
 
 | section | status |
 |---|---|
-| §0, the finding | **Live and canonical.** `@podman-socket` still implies the engine's network. Cited by `CLAUDE.md`, `base.toml`, `internal/cli/dryrun.go`, `internal/profile/file_test.go`, `VERIFY.md`, `README.md` and `SECRETS.md` §1.3. Nothing has closed it. |
+| §0, the finding | **Finding CLOSED (Tier B, 2026-08-18); the FACT it rests on is LIVE.** The *finding* — a sandbox with no `@net` reaches the internet through a container, because the container ran in the ENGINE's own netns — is closed: since Tier B the engine sits in the sandbox's netns N (the blockquote at the top of this file). What is live and canonical is the *fact* the citations rely on: a container's network IS the sandbox's, so `@podman-socket` hands a container exactly the network the sandbox has and nothing more — permanently true, not open. This is CLAUDE.md's own pattern: a limitation and a hole are the same fact facing two directions, and when the hole closes you re-derive the limitation rather than assume it went with it. Cited by `CLAUDE.md`, `base.toml`, `internal/cli/dryrun.go`, `internal/profile/file_test.go`, `VERIFY.md`, `README.md` and `SECRETS.md` §1.3, all of which rely on the live fact. |
 | §1, you cannot join only the netns | **Live.** A kernel fact, unchanged. [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md) §0 accepts it and works around the *shape* it imposed, not the fact. |
 | §2, the inversion works | **Live, and since reproduced twice.** The numbers here were taken with plain `unshare`. [`PODMAN-STATIC.md`](PODMAN-STATIC.md) §7 reproduces the same baseline against a real pinned engine; and the supervisor proof of concept reproduced it under the actual stage topology — MEASURED 2026-08-13 on this host, 42 checks, `fail=0`, in three identical consecutive runs, each section run twice so the payoff was shown absent first. That proof of concept has been deleted ([#49](https://github.com/gomoni/snug/issues/49)); §5.1 below carries what it measured about the derived mount view, and [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md) §1 carries the rest. |
 | §3, where it does not work | **Live, with one blocker now answered.** The distrobox shim is no longer decisive — see the note in §3 itself. The subuid, cgroup, `$XDG_RUNTIME_DIR` and host-uid findings all still stand and are still preflight requirements. |

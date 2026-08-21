@@ -15,6 +15,10 @@
 --proc /proc
 --tmpfs /tmp
 --ro-bind-data 10 /etc/resolv.conf
+--ro-bind-data 11 /proc/config.gz
+--ro-bind-data 12 /proc/key-users
+--ro-bind-data 13 /proc/keys
+--ro-bind /proc/sys /proc/sys
 --remount-ro /
 --clearenv
 --setenv HOME /home/u

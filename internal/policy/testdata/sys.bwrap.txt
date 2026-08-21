@@ -20,6 +20,10 @@
 --ro-bind /usr /usr
 --ro-bind-data 10 /etc/resolv.conf
 --tmpfs /home/u
+--ro-bind-data 11 /proc/config.gz
+--ro-bind-data 12 /proc/key-users
+--ro-bind-data 13 /proc/keys
+--ro-bind /proc/sys /proc/sys
 --tmpfs /home/u/.cache
 --tmpfs /home/u/.config
 --tmpfs /home/u/.local/share
