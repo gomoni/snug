@@ -80,36 +80,56 @@ func ghToken(host, user string) policy.Secret {
 //
 // On error it returns a nil cleanup, having already run its own.
 //
-// dryRun does not stop the proxy or the runtime directory — those are still
-// started, and https://github.com/gomoni/snug/issues/21 records that with its
-// reproduction — but it
-// does decide what a MISSING gh token means: a refusal for a real run, a warning
-// for a dry run. main.go makes the same distinction for the @tmp-shared host
-// directory, and for the same stated reason: failing on host state would make
-// --dry-run refuse a policy the real run might well accept, and --dry-run is the
-// only way to inspect a profile on a host that cannot mint the token at all.
+// dryRun starts NOTHING (issue #21): no runtime directory is created, no
+// listening socket is bound, no proxy goroutine runs. The socket path is
+// NAMED instead — plannedSocket computes the path a real run would use — so
+// --dry-run's MOUNTS section is unchanged and still shows where the agent
+// socket would appear. main.go draws the same distinction one indirection up
+// for the @tmp-shared host directory: name it, do not create it.
+//
+// Two host-state checks go with the proxy, and that is the intended
+// direction rather than a loss: sshproxy.New refuses when SSH_AUTH_SOCK is
+// unset and parses the pinned public key, so before this a dry run on a host
+// with no agent running could not inspect an identity profile at all.
+// failing on host state would make --dry-run refuse a policy the real run
+// might well accept. An UNREADABLE ssh_key is still refused here, by the
+// staging read below, for both modes.
+//
+// dryRun also still decides what a MISSING gh token means: a refusal for a
+// real run, a warning for a dry run, for exactly the same reason.
 func startIdentity(pol *policy.Policy, verbose, iKnow, dryRun bool) (cleanup func(), err error) {
 	id := pol.Identity
 	if id == nil || id.SSHMode == policy.SSHNone {
 		return func() {}, nil
 	}
 
-	rt, err := openRuntimeDir()
-	if err != nil {
-		return nil, err
-	}
 	// No os.RemoveAll here: the run directory now has one owner for its
-	// whole lifetime — run() in main.go, which creates it (unconditionally,
-	// on every run, since snug attach's state.json needs one) and is the
-	// sole remover, once, after the sandbox has exited. Two removers racing
-	// each other over the same directory is exactly the shape issue #85's
-	// sweep already has to defend against from a DIFFERENT process; there is
-	// no reason to build a second copy of that race inside one.
+	// whole lifetime — run() in main.go, which creates it (on every REAL
+	// run, since snug attach's state.json needs one) and is the sole
+	// remover, once, after the sandbox has exited. Two removers racing each
+	// other over the same directory is exactly the shape issue #85's sweep
+	// already has to defend against from a DIFFERENT process; there is no
+	// reason to build a second copy of that race inside one.
 	cleanup = func() {}
 
-	sock, err := rt.Socket("ssh-agent.sock")
-	if err != nil {
-		return nil, err
+	// A dry run NAMES the socket; a real run opens the directory that will
+	// hold it. openRuntimeDir is what creates that directory, so it is on
+	// this side of the branch and not above it.
+	var sock string
+	if dryRun {
+		sock, err = plannedSocket("ssh-agent.sock")
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		rt, rerr := openRuntimeDir()
+		if rerr != nil {
+			return nil, rerr
+		}
+		sock, err = rt.Socket("ssh-agent.sock")
+		if err != nil {
+			return nil, err
+		}
 	}
 	upstream := os.Getenv("SSH_AUTH_SOCK")
 
@@ -143,6 +163,14 @@ func startIdentity(pol *policy.Policy, verbose, iKnow, dryRun bool) (cleanup fun
 			cleanup()
 			return nil, fmt.Errorf("ssh_mode = \"agent-proxy\" needs ssh_key: the PUBLIC key " +
 				"file that pins which identity the sandbox may sign with")
+		}
+		// The ssh_key refusal above is a POLICY error — the profile is
+		// incomplete however the host is configured — so it is checked
+		// before this branch, not after. Everything below it starts
+		// something, which a dry run may not.
+		if dryRun {
+			pol.BindSocket(sock, policy.AgentSocketGuest, "(identity)")
+			break
 		}
 		audit := func(string) {}
 		if verbose {

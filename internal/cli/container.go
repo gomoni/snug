@@ -138,7 +138,7 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		// probes are needed to render a resolved policy, and running them
 		// (a real /etc/subuid read, a real cgroup write probe) would be
 		// host I/O a debugging command has no business doing.
-		return startContainersScreen(pol, verbose)
+		return startContainersScreen(pol)
 	}
 
 	pf, err := runContainerPreflight()
@@ -277,31 +277,28 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 	}, nil
 }
 
-// startContainersScreen is the --dry-run path: it binds the proxy's real
-// listening socket (so --dry-run's MOUNTS section shows the real bound
-// path, exactly as before Tier B) and stops there. No engine, no preflight,
-// no store directory — nothing sandbox.Run will ever be asked to fork.
-func startContainersScreen(pol *policy.Policy, verbose bool) (containerRun, error) {
-	rt, err := openRuntimeDir()
+// startContainersScreen is the --dry-run path: it NAMES the path the proxy
+// would bind (so --dry-run's MOUNTS section shows the same path a real run
+// uses) and stops there. No engine, no preflight, no store directory —
+// nothing sandbox.Run will ever be asked to fork.
+//
+// It used to open the runtime directory and bind the listening socket for
+// real, which is half of issue #21: a dry run left $XDG_RUNTIME_DIR/snug/
+// run-<pid>/ and a podman.sock behind it, and on a piped invocation killed
+// by SIGPIPE the deferred cleanup never ran, so they accumulated. The
+// screen is unchanged — plannedSocket computes the identical path — and
+// verbose is now unused here for the same reason the proxy is: there is no
+// proxy to audit.
+func startContainersScreen(pol *policy.Policy) (containerRun, error) {
+	sock, err := plannedSocket("podman.sock")
 	if err != nil {
 		return containerRun{}, err
 	}
-	sock, err := rt.Socket("podman.sock")
-	if err != nil {
-		return containerRun{}, err
-	}
-	audit := containerAudit(verbose)
-
-	p, err := dockerproxy.New(pol, "", sock, "", audit, nil)
-	if err != nil {
-		return containerRun{}, err
-	}
-	go p.Serve()
 
 	pol.BindSocket(sock, containerSocketGuest, "(containers)")
 	containerEnv(pol)
 
-	return containerRun{cleanup: func() { p.Close() }}, nil
+	return containerRun{cleanup: func() {}}, nil
 }
 
 // containerEnv points the client at the proxy. A function of its own so it can

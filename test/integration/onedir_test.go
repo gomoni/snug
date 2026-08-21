@@ -212,9 +212,15 @@ type backgroundSnug struct {
 	killed bool
 }
 
-func startBackgroundSnug(t *testing.T, env []string, dir, script string) *backgroundSnug {
+// snugArgs are flags placed BEFORE the target directory — a profile
+// selection, say. Variadic so every existing caller reads unchanged; a test
+// that needs a live sandbox with a particular profile (issue #21's control:
+// only an identity profile binds an agent socket) no longer has to build its
+// own copy of this function to get one.
+func startBackgroundSnug(t *testing.T, env []string, dir, script string, snugArgs ...string) *backgroundSnug {
 	t.Helper()
-	cmd := exec.Command(snugBin, dir, "--", "/bin/bash", "-c", script)
+	argv := append(append([]string{}, snugArgs...), dir, "--", "/bin/bash", "-c", script)
+	cmd := exec.Command(snugBin, argv...)
 	cmd.Env = env
 	buf := &syncBuffer{}
 	cmd.Stdout = buf
