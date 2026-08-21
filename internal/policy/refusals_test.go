@@ -404,6 +404,32 @@ func TestGrantStrictlyInsideProcIsFatal(t *testing.T) {
 	}
 }
 
+// THE REGRESSION FOR THE HOLE ISSUE #29 OPENED AND CLOSED IN THE SAME CHANGE.
+//
+// Before #29, /proc had no sub-mounts, so "is this grant inside /proc" and "what
+// is the nearest covering mount" were the same question and rejectMasking could
+// ask either. #29's read-only bind at /proc/sys made them different: for a grant
+// at /proc/sys/kernel the nearest covering mount became a KindBind of the same
+// host tree, and the KindBind row's re-grant clause ACCEPTED it — a profile
+// could substitute host content for kernel content two levels inside snug's own
+// procfs. Measured on the first run of the suite with that mount present.
+//
+// The fix asks over the REGION (pseudoAncestor), so this case is refused with
+// the KindProc message even though a snug-authored bind sits between it and
+// /proc. The case one level up is TestGrantStrictlyInsideProcIsFatal; this one
+// is what that test could not see.
+func TestGrantUnderASnugAuthoredMountInsideProcIsFatal(t *testing.T) {
+	err := refusalGrantStrictlyInside(t, "/proc/sys/kernel")
+	if err == nil {
+		t.Fatal("ro = [\"/proc/sys/kernel\"] was accepted: a snug-authored mount inside /proc " +
+			"must not become a foothold a profile can grant beneath")
+	}
+	if !strings.Contains(err.Error(), "kernel and bwrap populate") {
+		t.Errorf("refused for the wrong reason — this must be the pseudo-filesystem refusal, "+
+			"not the bind-subpath one: %v", err)
+	}
+}
+
 func TestGrantStrictlyInsideDevIsFatal(t *testing.T) {
 	err := refusalGrantStrictlyInside(t, "/dev/null")
 	if err == nil {
@@ -858,6 +884,9 @@ func TestGoldenRefusals(t *testing.T) {
 		// against the real bwrap argv.
 		{"grant_at_snugdir_bind", func(t testing.TB) error { return refusalGrantCoversStagedBinDir(t, "ro", SnugDir) }},
 		{"grant_strictly_inside_proc", func(t testing.TB) error { return refusalGrantStrictlyInside(t, "/proc/sys") }},
+		{"grant_under_snug_authored_mount_inside_proc", func(t testing.TB) error {
+			return refusalGrantStrictlyInside(t, "/proc/sys/kernel")
+		}},
 		{"grant_strictly_inside_dev", func(t testing.TB) error { return refusalGrantStrictlyInside(t, "/dev/null") }},
 		{"grant_strictly_inside_resolv_conf", refusalGrantStrictlyInsideResolvConf},
 		{"scalar_conflict_address", func(t testing.TB) error { return refusalScalarConflict(t, "address") }},

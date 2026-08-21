@@ -466,6 +466,34 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 			"       narrower graft than naming the child. Graft a destination that is neither %s\n"+
 			"       nor an ancestor of it.",
 			g.Guest, at, at, own.why, at)
+	} else if at, own, inside := snugsOwnAncestorOf(g.Guest); inside && !insideSnugDir(g.Guest) {
+		// STRICTLY INSIDE, which the two clauses above do not cover: they ask
+		// whether the graft is AT one of snug's own paths or CONTAINS one.
+		//
+		// Nothing refused a graft at /proc/sys until issue #29, and what
+		// refused it then was an accident of arithmetic rather than a rule:
+		// G3 requires the destination to exist in the sandbox's view, and
+		// nothing mounted anything under /proc, so the case never arose. #29's
+		// read-only /proc/sys made that path exist — and (/proc/sys, KindProc)
+		// was ACCEPTED, which TestG1AdmitsExactlyProcAsKindProc caught on the
+		// first run after the mount appeared.
+		//
+		// A graft inside /proc or /dev substitutes host content for kernel
+		// content in the ENGINE's namespace, which is the hole G1 exists to
+		// refuse one level up. Stated over the region, so the next mount snug
+		// authors inside one of those trees cannot re-open it.
+		//
+		// SnugDir is excluded because it is not that shape: /snug is a
+		// NAMESPACE with a legal subtree (/snug/engine), and G1b below is the
+		// rule that admits it. Swallowing it here would refuse every engine
+		// graft — measured, TestGraftInsideSnugDirIsRefusedExceptUnderTheEngine\
+		// Subtree went red the first time this clause did not exclude it.
+		return fmt.Errorf("cannot graft %s into the engine's view: it is INSIDE %s, and %s is\n"+
+			"       snug's own: %s\n"+
+			"       A graft there substitutes host content for kernel content in the engine's\n"+
+			"       mount namespace, exactly as a profile's grant would in the sandbox's. Graft a\n"+
+			"       destination outside %s.",
+			g.Guest, at, at, own.why, at)
 	}
 
 	// G1b — SnugDir is snug's own namespace for GRAFTS too, and only the

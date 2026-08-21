@@ -44,6 +44,14 @@ type envFakeEnv struct {
 func newEnvFakeEnv() *envFakeEnv {
 	return &envFakeEnv{
 		dirs: map[string]bool{
+			// The procfs entries snug replaces (issue #29). This fixture's
+			// Stat does not distinguish files from directories, and
+			// installProcfsReplacements reads only whether the host publishes
+			// the path — but a fixture host that published NONE of them would
+			// leave every one of those mounts out of @claude's golden, which
+			// is the argv this file exists to make reviewable.
+			"/proc/config.gz": true, "/proc/keys": true, "/proc/key-users": true,
+
 			"/usr": true,
 			// @sys's non-optional /etc entries. Without these Resolve refuses,
 			// because a grant that is not marked optional must exist.
