@@ -625,6 +625,60 @@ entry written in a file — and `make gate` was green throughout. It was found b
 reading, which is why it now has both an integration test
 (`TestSnugStagesNoCommandInAWritableDirectory`) and this check.
 
+### 6g-bis. `@claude` auto-loads only the plugins the profile named (issue #68)
+
+`@claude` binds `~/.claude/plugins` read-only, and Claude Code auto-loads every
+installed plugin's `hooks.json`. snug REGENERATES
+`~/.claude/plugins/installed_plugins.json` from the profile's `plugins`
+allowlist, so auto-loading is "the plugins you named", not "everything installed".
+
+**The default names nothing** — bare `@claude` ships `plugins = []`, so the
+generated manifest is empty and the host's is REPLACED:
+
+```bash
+snug -p @claude $SC/proj/sub -- sh -c \
+  'python3 -c "import json;print(sorted(json.load(open(\"$HOME/.claude/plugins/installed_plugins.json\"))[\"plugins\"]))"'
+```
+
+Expect `[]`. The host's real manifest (which names every plugin ever installed)
+does not appear — that is the point: nothing auto-loads by default even though
+the tree is still bound and present.
+
+**A named plugin is kept, an unnamed one is dropped.** In a user profile under
+`$XDG_CONFIG_HOME/snug/profiles.d`:
+
+```toml
+[profile.myclaude]
+include = ["@claude"]
+plugins = ["caveman"]        # a plugin actually installed on this host
+```
+
+```bash
+snug -p myclaude $SC/proj/sub -- sh -c \
+  'python3 -c "import json;print(sorted(json.load(open(\"$HOME/.claude/plugins/installed_plugins.json\"))[\"plugins\"]))"'
+```
+
+Expect exactly `['caveman@caveman']` — the one named, and no other installed
+plugin. The positive control is built in: if the manifest came back empty the
+NAMED plugin would be missing too, so a non-empty result naming only `caveman`
+proves both halves (kept the named, dropped the rest).
+
+**A named-but-not-installed plugin refuses** (invariant 5):
+
+```toml
+[profile.badclaude]
+include = ["@claude"]
+plugins = ["ghost-plugin-xyz"]
+```
+
+```bash
+snug -p badclaude $SC/proj/sub -- true
+```
+
+Expect a refusal naming `ghost-plugin-xyz` and listing the installed plugins,
+and the payload does NOT run — a plugin the run asked for and did not get is an
+error, not a silent omission.
+
 ### 6h. A profile cannot author a mount through an environment value
 
 `--setenv NAME VALUE` is three elements of a flag list that snug NUL-joins into

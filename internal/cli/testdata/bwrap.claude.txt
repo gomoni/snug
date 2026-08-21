@@ -48,6 +48,8 @@
 --tmpfs /home/u/.local/share
 --tmpfs /home/u/.local/state
 --bind /home/u/proj/sub /home/u/proj/sub
+--perms 0600
+--ro-bind-data 17 /home/u/.claude/plugins/installed_plugins.json
 --remount-ro /
 --clearenv
 --setenv EDITOR vim

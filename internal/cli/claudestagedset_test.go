@@ -244,7 +244,9 @@ func claudeFixtureHome(t *testing.T, trustTarget bool) (*policy.Policy, string, 
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	claudeFiles(pol, home, false)
+	if err := claudeFiles(pol, home, false); err != nil {
+		t.Fatalf("claudeFiles: %v", err)
+	}
 	return pol, home, target
 }
 
@@ -294,6 +296,15 @@ func TestClaudeStagedSetIsExactlyThisTable(t *testing.T) {
 		// the same `gh` reason ~/.claude.json is: Claude Code rewrites settings
 		// files at runtime and the rewrite must go nowhere the host can see.
 		"~/.claude/settings.json": {"data", "rw", "0600", "generated"},
+		// GENERATED from the profile's plugin allowlist since issue #68:
+		// installed_plugins.json is what tells Claude Code which plugins to
+		// auto-load, and the host's names every plugin ever installed. snug
+		// regenerates it naming only the allowlisted set (empty here — no
+		// `plugins` key on @claude by default — so an empty, valid manifest that
+		// still REPLACES the host's, which is the point). RO: a writable copy
+		// would let the sandbox re-add an excluded plugin by writing its name
+		// back, handing the allowlist straight back.
+		"~/.claude/plugins/installed_plugins.json": {"data", "ro", "0600", "generated"},
 
 		// ── bound: read-only grants written in base.toml [profile.claude] ────
 		//

@@ -454,7 +454,10 @@ func run(cfg config) int {
 		}
 	}()
 
-	claudeFiles(pol, home, cfg.verbose)
+	if err := claudeFiles(pol, home, cfg.verbose); err != nil {
+		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
+		return exitPolicy
+	}
 
 	idCleanup, err := startIdentity(pol, cfg.verbose, cfg.iKnow, cfg.dryRun)
 	if err != nil {

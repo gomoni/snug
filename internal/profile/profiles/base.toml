@@ -506,17 +506,18 @@ dns = true
 # injected ~/.claude/CLAUDE.md enumerates the real names at runtime rather
 # than counting them (claudeAllowlistNames, internal/cli/claude.go).
 #
-# WHAT THIS DOES NOT CLOSE, stated because the fix would otherwise read wider
-# than it is: `ro` below still binds {home}/.claude/plugins, and dropping
-# `enabledPlugins` from the generated file is NOT known to disable anything —
-# `~/.claude/plugins/installed_plugins.json` records the installed plugin set
-# and their install paths independently of settings.json, and it sits inside
-# that same read-only bind. A plugin's own manifest carries its own `hooks`
-# block that Claude Code loads automatically: MEASURED on the development
-# host, both `caveman@caveman`'s manifest (a SessionStart hook) and the
-# official `security-guidance` plugin's (SessionStart, UserPromptSubmit,
-# PostToolUse and Stop hooks, each running a shell command). This fix closes
-# the SETTINGS-FILE door only. See
+# THE PLUGIN DOOR, closed by `plugins` below (issue #68). `ro` still binds
+# {home}/.claude/plugins, but dropping `enabledPlugins` from settings.json was
+# never enough on its own: `~/.claude/plugins/installed_plugins.json` records
+# the installed set and their paths independently, sits inside that same
+# read-only bind, and Claude Code auto-loads each installed plugin's own
+# `hooks.json`. MEASURED on the development host: 1075 files under the bind, of
+# which 9 hooks.json (each running bash/sh/python3) and 7 package.json scripts
+# name a program — 16 command tables the bind hands over — while 0 carry a
+# credential today. snug now REGENERATES installed_plugins.json from the
+# `plugins` allowlist below (the ~/.gitconfig precedent: extract a whitelist,
+# generate the file), so Claude Code auto-loads only the plugins you named. The
+# rest of the tree stays visible and inert. See
 # https://github.com/gomoni/snug/issues/68.
 [profile.claude]
 description = "Claude Code: binary and skills read-only, credentials projected and settings generated."
@@ -538,6 +539,23 @@ optional = [
   "{home}/.claude/skills",
   "{home}/.claude/plugins",
 ]
+
+# The Claude Code plugins whose installed_plugins.json entry snug regenerates,
+# so Claude Code auto-loads ONLY these — names, never paths (snug decides the
+# path; issue #68). Empty here is the strict default: the generated manifest
+# names nothing, so no plugin auto-loads even though the tree is still bound.
+# A name may be bare ("caveman") or marketplace-qualified
+# ("code-review@claude-plugins-official"); a named plugin that is not installed
+# on the host is a hard error, not a silent omission.
+#
+# ABUSE: naming a plugin here hands the sandbox every command table that plugin
+# ships — measured today as hooks.json running bash/sh/python3 and package.json
+# scripts, 16 program-naming tables across the installed set, and the count
+# grows with whatever the named plugins ship next. No credential is carried
+# today, so the credential exposure is a bet on what the ecosystem writes into
+# these files next rather than an observed problem; the program-naming reach is
+# real now. Name only plugins you would run on the host unsandboxed.
+plugins = []
 
 # Host variables re-admitted past --clearenv, one name per line.
 #
