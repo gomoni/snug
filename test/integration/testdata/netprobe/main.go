@@ -16,7 +16,17 @@
 //
 // Usage: netprobe PORT
 //
-// Prints one "RESULT <label> <verdict>" line per address tried:
+// PORT must be a decimal port number. Anything else is a usage ERROR and no
+// dial happens at all — issue #243, where the container was created with a
+// Cmd that podman APPENDED to the image's own ENTRYPOINT, so this process ran
+// as `/netprobe /netprobe <port>` and read the string "/netprobe" as its
+// port. `net.DialTimeout` turned that into a port-NAME lookup, whose failure
+// is spelled the same way a refusal is, and three security negatives passed
+// for a milestone on a probe that never dialled anything.
+//
+// Prints one "RESULT <label> <addr> <verdict>" line per address tried. The
+// address is in the line because a caller asserting a negative has to be able
+// to tell "did not reach the target" from "never aimed at the target":
 //
 //	v4-loop   127.0.0.1:PORT  — this netns's OWN loopback
 //	v6-loop   [::1]:PORT      — same, IPv6
@@ -29,25 +39,39 @@
 // A REACHED verdict includes whatever bytes the far end sent back, so a
 // genuine escape shows the host's banner text on screen and not just
 // "connected" — the same "read the banner, don't just check for a refusal"
-// discipline the rest of this suite uses.
+// discipline the rest of this suite uses. A REFUSED verdict means the kernel
+// answered; a dial that never left this process (an unparseable address, a
+// name lookup) is verdict ERROR instead, which is never a network answer and
+// which callers treat as a broken probe rather than as a closed port.
 package main
 
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("RESULT usage ERROR missing-port")
+		fmt.Println("RESULT usage - ERROR missing-port")
 		return
 	}
 	port := os.Args[1]
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		// Loud and early rather than one unparseable address per label: an
+		// argv this process cannot make sense of means the caller's idea of
+		// what is being dialled and this process's differ, and every RESULT
+		// line after that point is about the wrong target.
+		fmt.Printf("RESULT usage - ERROR bad-port %q\n", port)
+		fmt.Println("PROBE-COMPLETE")
+		return
+	}
 
 	probe("v4-loop", net.JoinHostPort("127.0.0.1", port))
 	if _, err := net.ResolveTCPAddr("tcp6", "[::1]:0"); err == nil {
@@ -71,14 +95,23 @@ func main() {
 func probe(label, addr string) {
 	c, err := net.DialTimeout("tcp", addr, 2*time.Second)
 	if err != nil {
-		fmt.Printf("RESULT %s REFUSED %v\n", label, err)
+		// A parse or name-lookup failure is not a verdict about the network:
+		// nothing was sent. Reporting it as REFUSED is what let issue #243
+		// hide — "REFUSED" read as "the sandbox held".
+		var ae *net.AddrError
+		var de *net.DNSError
+		if errors.As(err, &ae) || errors.As(err, &de) {
+			fmt.Printf("RESULT %s %s ERROR %v\n", label, addr, err)
+			return
+		}
+		fmt.Printf("RESULT %s %s REFUSED %v\n", label, addr, err)
 		return
 	}
 	defer c.Close()
 	_ = c.SetReadDeadline(time.Now().Add(1 * time.Second))
 	buf := make([]byte, 256)
 	n, _ := c.Read(buf)
-	fmt.Printf("RESULT %s REACHED %s\n", label, strings.TrimSpace(string(buf[:n])))
+	fmt.Printf("RESULT %s %s REACHED %s\n", label, addr, strings.TrimSpace(string(buf[:n])))
 }
 
 // gateway4 reads /proc/net/route directly rather than shelling out to `ip`
