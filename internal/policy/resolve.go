@@ -141,6 +141,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	var identityOwner, gitOwner ProfileName
 	var addressOwner, gatewayOwner, address6Owner, gateway6Owner, mtuOwner ProfileName
 	publish := map[int]bool{}
+	pluginAllow := map[string]bool{}
 	// Environment claims are ACCUMULATED here and resolved after the fold — see
 	// envresolve.go for why deciding during the fold cannot name every claimant.
 	envClaims := newEnvClaims()
@@ -326,6 +327,13 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			publish[port] = true
 		}
 
+		// Plugins: a SET unioned across profiles, same reasoning as Publish —
+		// two profiles naming "caveman" must resolve to one, not two, and the
+		// value must not depend on fold order (issue #68).
+		for _, name := range prof.Plugins {
+			pluginAllow[name] = true
+		}
+
 		// address / gateway / address6 / gateway6 / mtu are NOT joins: there
 		// is no "more permissive" IP address. They were last-writer-wins,
 		// which survived only because the fold is sorted — the
@@ -414,6 +422,11 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// profiles happened to be folded in.
 	if len(publish) > 0 {
 		p.Net.Publish = sortedInts(publish)
+	}
+	// Not gated on publish (a plugin allowlist has nothing to do with ports):
+	// @claude names plugins and publishes no port, so this must run regardless.
+	if len(pluginAllow) > 0 {
+		p.PluginAllowlist = sortedKeys(pluginAllow)
 	}
 
 	// V6 (all four network-address keys, or none) is checked HERE — POST-FOLD,

@@ -20,9 +20,9 @@ import (
 // a profile cannot express: files that must be WRITABLE COPIES, a file whose
 // content depends on the resolved policy, and a file that must be RECONSTRUCTED
 // from an allowlist of the host's rather than either bound or copied.
-func claudeFiles(pol *policy.Policy, home string, verbose bool) {
+func claudeFiles(pol *policy.Policy, home string, verbose bool) error {
 	if !hasProfile(pol, "@claude") {
-		return
+		return nil
 	}
 
 	stageClaudeCredentials(pol, home)
@@ -53,11 +53,65 @@ func claudeFiles(pol *policy.Policy, home string, verbose bool) {
 
 	stageClaudeSettings(pol, home, verbose)
 
+	// installed_plugins.json regenerated from the profile's allowlist (issue
+	// #68). This one CAN fail the run — a named plugin that is not installed is
+	// an error (invariant 5), unlike the degrade-to-nothing rule the settings
+	// files follow — so claudeFiles returns it.
+	if err := stageInstalledPlugins(pol, home); err != nil {
+		return err
+	}
+
 	guest := filepath.Join(home, ".claude", "CLAUDE.md")
 	pol.Replace(policy.Mount{
 		Guest: guest, Kind: policy.KindData, Access: policy.AccessRO,
 		Content: claudeGuidance(pol), From: []string{"@claude"},
 	})
+	return nil
+}
+
+// maxInstalledPluginsBytes caps the host installed_plugins.json read. The one
+// on the development host is ~1.8 KiB; 256 KiB is generous headroom without
+// being a memory-exhaustion primitive on a file snug reads every run.
+const maxInstalledPluginsBytes = 256 << 10
+
+// stageInstalledPlugins replaces the host's installed_plugins.json with one
+// naming only the profile's allowlisted plugins (issue #68).
+//
+// The guest path is snug's — filepath.Join(home, ".claude/plugins/
+// installed_plugins.json), fixed — never a value the profile influences: the
+// `plugins` key names plugins, and letting it steer the path would turn the
+// KindData exemption from "snug's own file" into a write primitive with the
+// profile's aim (CLAUDE.md, the #42 shape). The KindData mount displaces the
+// host's file that the ~/.claude/plugins read-only bind exposes, which is the
+// intended silent overwrite rejectMasking exempts by kind.
+//
+// AccessRO, not RW: the sandbox must not be able to re-enable an excluded
+// plugin by writing its name back into the manifest — everything else under the
+// bind is still present, only inert because nothing names it, so a writable
+// copy would hand the allowlist straight back. Read-only matches the read-only
+// bind it sits inside.
+func stageInstalledPlugins(pol *policy.Policy, home string) error {
+	guest := filepath.Join(home, ".claude", "plugins", "installed_plugins.json")
+
+	raw, problem := readHostFileBounded(guest, maxInstalledPluginsBytes)
+	if problem != "" && len(pol.PluginAllowlist) > 0 {
+		return fmt.Errorf("@claude names %d plugin(s) (%s) but the host's installed_plugins.json "+
+			"%s — snug cannot validate the named plugins are installed, and a named plugin that "+
+			"is not installed is an error (issue #68, invariant 5)",
+			len(pol.PluginAllowlist), strings.Join(pol.PluginAllowlist, ", "), problem)
+	}
+
+	body, err := policy.FilterInstalledPlugins(raw, pol.PluginAllowlist)
+	if err != nil {
+		return err
+	}
+
+	perm := uint32(0o600)
+	pol.Replace(policy.Mount{
+		Guest: guest, Kind: policy.KindData, Access: policy.AccessRO,
+		Content: policy.Secret(body), Perms: &perm, From: []string{"@claude"},
+	})
+	return nil
 }
 
 // stageClaudeCredentials writes the sandbox's ~/.claude/.credentials.json from
@@ -754,10 +808,11 @@ func claudeGuidance(pol *policy.Policy) []byte {
 	fmt.Fprintf(&b, "host's. Carried: %s. NOT carried:\n", claudeAllowlistNames())
 	b.WriteString("`hooks`, `apiKeyHelper`, `env`, `mcpServers`,\n")
 	b.WriteString("`enabledPlugins` and the marketplace keys, because each names a\n")
-	b.WriteString("program to run, a credential to print, or code to fetch. THIS DOES NOT CLOSE\n")
-	b.WriteString("THE PLUGIN CHANNEL: `~/.claude/plugins` is still bound read-only, and a\n")
-	b.WriteString("plugin's own manifest carries its own `hooks` block that Claude Code loads\n")
-	b.WriteString("automatically, independently of this file. See\n")
+	b.WriteString("program to run, a credential to print, or code to fetch. THE PLUGIN\n")
+	b.WriteString("CHANNEL: `~/.claude/plugins` is still bound read-only, but snug regenerates\n")
+	b.WriteString("`installed_plugins.json` to name only the plugins the profile allowlisted\n")
+	b.WriteString("(empty by default), so Claude Code auto-loads only those. No test asserts an\n")
+	b.WriteString("UNNAMED plugin's hooks do not fire in a live run; see\n")
 	b.WriteString("https://github.com/gomoni/snug/issues/68 if that matters to what you are doing.\n")
 	b.WriteString("Settings you change here do not persist: it is a writable file on the\n")
 	b.WriteString("`~/.claude` tmpfs, and dies with this session along with the rest of that\n")

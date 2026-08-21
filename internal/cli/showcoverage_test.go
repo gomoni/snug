@@ -47,6 +47,7 @@ var probes = map[string]string{
 	"Network":     "egress",
 	"DNS":         "resolv.conf",
 	"Publish":     "31415",
+	"Plugins":     "probe-plugin",
 	"Address":     "10.99.99.2/24",
 	"Gateway":     "10.99.99.1",
 	"Address6":    "fd00:99::2/64",
@@ -82,6 +83,7 @@ symlink  = [{at = "/probe-link", target = "/probe-ro"}]
 network  = "egress"
 dns      = true
 publish  = [31415]
+plugins  = ["probe-plugin"]
 address  = "10.99.99.2/24"
 gateway  = "10.99.99.1"
 address6 = "fd00:99::2/64"

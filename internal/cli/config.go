@@ -622,6 +622,12 @@ func showCapabilities(p *policy.Profile, show func(string, []string)) {
 			"the HOST's 127.0.0.1 forwards these INTO the sandbox, so anything "+
 				"a hostile process listens on there is reachable from your browser"))
 	}
+	if len(p.Plugins) > 0 {
+		show("plugins", capRows(strings.Join(p.Plugins, " "),
+			"regenerates ~/.claude/plugins/installed_plugins.json naming only these, so "+
+				"Claude Code auto-loads each named plugin's command tables — measured on the "+
+				"development host as hooks.json running bash/sh/python3 (issue #68)"))
+	}
 	// Address and gateway render as ONE entry per family. They are a pair by
 	// construction (checkAddressPair requires all four or none, issue #165), and
 	// two rows would invite reading them as two independent grants.

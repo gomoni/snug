@@ -66,7 +66,9 @@ func TestGoldenClaudeBlock(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
 		}
-		claudeFiles(plain, ctx.Home, false)
+		if err := claudeFiles(plain, ctx.Home, false); err != nil {
+			t.Fatalf("claudeFiles: %v", err)
+		}
 		if got := captureFile(t, func(f *os.File) { describeClaude(f, plain) }); got != "" {
 			t.Errorf("the CLAUDE block printed for a selection without @claude:\n%s", got)
 		}
@@ -97,8 +99,9 @@ func goldenClaudeBlock(t *testing.T, name string, hostTrusts, exerciseSettingsFi
 	// — settings.json is staged with an empty allowlisted set ("{}\n"). That IS
 	// the untrusted arm, reached the way a real host reaches it rather than by
 	// poking the policy.
-	claudeFiles(p, ctx.Home, false)
-
+	if err := claudeFiles(p, ctx.Home, false); err != nil {
+		t.Fatalf("claudeFiles: %v", err)
+	}
 	if hostTrusts {
 		// The trusted arm, produced by the REAL generator against a REAL host file
 		// that records this exact path. Only the host home is faked out (the

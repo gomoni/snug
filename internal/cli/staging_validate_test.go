@@ -48,8 +48,9 @@ func TestPostStagingValidateCatchesNestedGrant(t *testing.T) {
 			"Validate call cannot see the nesting: %v", err)
 	}
 
-	claudeFiles(pol, home, false)
-
+	if err := claudeFiles(pol, home, false); err != nil {
+		t.Fatalf("claudeFiles: %v", err)
+	}
 	err = pol.Validate(policy.OSEnviron{})
 	if err == nil {
 		t.Fatal("a profile grant nested inside the staged ~/.claude.json went unnoticed after " +
@@ -87,8 +88,9 @@ func TestPostStagingValidateStaysSilentOnANormalRun(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 
-	claudeFiles(pol, home, false)
-
+	if err := claudeFiles(pol, home, false); err != nil {
+		t.Fatalf("claudeFiles: %v", err)
+	}
 	if err := pol.Validate(policy.OSEnviron{}); err != nil {
 		t.Fatalf("the post-staging Validate must be silent on a policy that was fine: %v", err)
 	}

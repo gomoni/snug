@@ -31,6 +31,7 @@ type rawProfile struct {
 	Tmpfs       []string         `toml:"tmpfs"`
 	Symlink     []policy.Symlink `toml:"symlink"`
 	Optional    []string         `toml:"optional"`
+	Plugins     []string         `toml:"plugins"`
 
 	// Environ is the five verbs, nested under one key. Nested rather than five
 	// root keys for three reasons, the load-bearing one being that `environ` is
@@ -321,6 +322,7 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 			Tmpfs:       r.Tmpfs,
 			Symlink:     r.Symlink,
 			Optional:    r.Optional,
+			Plugins:     r.Plugins,
 			Environ:     environ,
 			Network:     r.Network,
 			DNS:         r.DNS,

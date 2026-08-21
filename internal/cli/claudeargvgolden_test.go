@@ -86,8 +86,9 @@ func TestGoldenClaudeArgv(t *testing.T) {
 	// exist, so the credentials copy is skipped and ~/.claude.json carries no
 	// trust entry, but ~/.claude/settings.json is still generated
 	// unconditionally (issue #17) and is exactly the mount PR #74 added.
-	claudeFiles(p, ctx.Home, false)
-
+	if err := claudeFiles(p, ctx.Home, false); err != nil {
+		t.Fatalf("claudeFiles: %v", err)
+	}
 	// CONTROL: the two mounts PR #74 is about must really be in the policy, or
 	// this golden pins an argv that says nothing about the change it exists to
 	// catch.
@@ -140,7 +141,9 @@ func TestClaudeArgvIsByteIdenticalAcrossTrustArms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve(%v): %v", sel, err)
 	}
-	claudeFiles(untrustedPolicy, ctx.Home, false)
+	if err := claudeFiles(untrustedPolicy, ctx.Home, false); err != nil {
+		t.Fatalf("claudeFiles: %v", err)
+	}
 	untrusted := untrustedPolicy.BwrapArgs(1000, 1000)
 
 	// Trusted arm: same recipe claudeblockgolden_test.go uses — a real host
@@ -150,7 +153,9 @@ func TestClaudeArgvIsByteIdenticalAcrossTrustArms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve(%v): %v", sel, err)
 	}
-	claudeFiles(trustedPolicy, ctx.Home, false)
+	if err := claudeFiles(trustedPolicy, ctx.Home, false); err != nil {
+		t.Fatalf("claudeFiles: %v", err)
+	}
 	hostHome := t.TempDir()
 	body := []byte(`{"projects":{"` + ctx.Target + `":{"hasTrustDialogAccepted":true}}}`)
 	if err := os.WriteFile(filepath.Join(hostHome, ".claude.json"), body, 0o600); err != nil {
