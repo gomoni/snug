@@ -1013,6 +1013,7 @@ func describeContainers(out *os.File, p *policy.Policy) {
 	}
 	fmt.Fprintf(out, "CONTAINERS  a per-sandbox engine behind a filtering proxy at %s\n",
 		containerSocketGuest)
+	describeEngineSource(out)
 	fmt.Fprintf(out, "         Containers run in THIS sandbox's own network namespace: with no\n")
 	fmt.Fprintf(out, "         '@net', a container has no egress either; with '@net', full egress\n")
 	fmt.Fprintf(out, "         via the sandbox's pasta, exactly as the NETWORK block above states.\n")
@@ -1030,6 +1031,43 @@ func describeContainers(out *os.File, p *policy.Policy) {
 	fmt.Fprintf(out, "         filter now refuses by name what the namespace does not contain\n")
 	fmt.Fprintf(out, "         anyway (see the TOPOLOGY and ENGINE VIEW blocks).\n")
 	describeImageProvenance(out)
+}
+
+// describeEngineSource names WHICH engine binary this run will start, and which
+// of the three sources answered — $SNUG_PODMAN, $SNUG_PODMAN_ROOT, or PATH.
+//
+// Why it matters: a host with a host-escape shim on PATH and $SNUG_PODMAN
+// exported starts a DIFFERENT binary from one without, and the resolution
+// deliberately trusts those two env vars (preflightPodmanBinary trusts
+// $SNUG_PODMAN outright to BYPASS a shim on PATH; $SNUG_PODMAN_ROOT names a
+// bundle root that is not recoverable from the binary path). --dry-run is the
+// screen a human trusts, so it must not be silent about which engine it is
+// about to run (issue #278).
+//
+// It stays OFFLINE, which is why it reports the SOURCE rather than a verified
+// binary for the PATH case. --dry-run runs no preflight (see the toolchain
+// graft block's own note): resolving "podman" from PATH here would mean a host
+// PATH search plus the shim readlink chain, host I/O --dry-run does not do. The
+// env vars are read, not the filesystem — an env read is free and is what makes
+// "which of the three answered" legible without a probe. Their VALUES are
+// host-controlled, so both go through visibleValue, the same guard every other
+// host-controlled value on this screen uses against a forged line.
+func describeEngineSource(out *os.File) {
+	if custom := os.Getenv("SNUG_PODMAN"); custom != "" {
+		fmt.Fprintf(out, "         engine      binary %s ($SNUG_PODMAN) — trusted outright, PATH\n",
+			visibleValue(custom))
+		fmt.Fprintf(out, "                     resolution bypassed on purpose (a pinned bundle, or a\n")
+		fmt.Fprintf(out, "                     host whose PATH resolves podman to a host-escape shim)\n")
+	} else {
+		fmt.Fprintf(out, "         engine      binary resolved from PATH when the run starts — preflight\n")
+		fmt.Fprintf(out, "                     P1 refuses a host-escape shim there; --dry-run does not\n")
+		fmt.Fprintf(out, "                     probe PATH, so it names the source, not the binary\n")
+	}
+	if root := os.Getenv("SNUG_PODMAN_ROOT"); root != "" {
+		fmt.Fprintf(out, "                     bundle root %s ($SNUG_PODMAN_ROOT) — named, not\n",
+			visibleValue(root))
+		fmt.Fprintf(out, "                     derived from the binary path, and must contain it\n")
+	}
 }
 
 // describeImageProvenance states who decides which bytes become an image, for

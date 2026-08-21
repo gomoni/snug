@@ -35,6 +35,13 @@ func TestGoldenContainers(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// The PATH-case goldens must not depend on the developer's own shell:
+			// describeEngineSource reads $SNUG_PODMAN/$SNUG_PODMAN_ROOT, and a dev
+			// who exports one would otherwise regenerate a different golden. Clear
+			// them so these two cases are the unpinned PATH branch by construction;
+			// the pinned branch has its own test below (issue #278).
+			t.Setenv("SNUG_PODMAN", "")
+			t.Setenv("SNUG_PODMAN_ROOT", "")
 			p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), tc.sel, envGoldenCtx(), newEnvFakeEnv())
 			if err != nil {
 				t.Fatalf("Resolve(%v): %v", tc.sel, err)
@@ -81,5 +88,44 @@ func TestDescribeContainersIsSilentWhenPodmanIsOff(t *testing.T) {
 	got := captureFile(t, func(f *os.File) { describeContainers(f, p) })
 	if got != "" {
 		t.Errorf("describeContainers printed %q for a PodmanOff policy, want nothing", got)
+	}
+}
+
+// TestGoldenContainersEnginePinned is the OTHER branch of describeEngineSource
+// (issue #278): a run whose engine comes from $SNUG_PODMAN with a
+// $SNUG_PODMAN_ROOT bundle root reads DIFFERENTLY from the PATH-case goldens
+// above — a shim on PATH plus $SNUG_PODMAN exported is exactly the run whose
+// engine binary a human could not tell from --dry-run before this. The env
+// values are what the screen must name, so they are set here and asserted to
+// appear.
+func TestGoldenContainersEnginePinned(t *testing.T) {
+	reg, err := profile.Builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SNUG_PODMAN", "/opt/snug-podman/bin/podman")
+	t.Setenv("SNUG_PODMAN_ROOT", "/opt/snug-podman")
+
+	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
+		[]policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, envGoldenCtx(), newEnvFakeEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := captureFile(t, func(f *os.File) { describeContainers(f, p) })
+
+	path := filepath.Join("testdata", "containers.podman-pinned.txt")
+	if *update {
+		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%v (run: go test ./internal/cli -update)", err)
+	}
+	if got != string(want) {
+		t.Errorf("the pinned-engine CONTAINERS block changed — this names which binary the run "+
+			"starts and that PATH was bypassed.\n--- got\n%s\n--- want\n%s", got, want)
 	}
 }
