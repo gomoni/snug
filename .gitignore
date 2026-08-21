@@ -40,3 +40,4 @@ local-profiles/
 # belong in a clone. Ignored rather than merely untracked for the reason the
 # .claude/scratchpad/ entry above gives.
 poc/
+.integration-*.log

@@ -101,11 +101,65 @@ jobs:
   # Only (1) can say WHICH test was slow, which is why the numbers below are
   # deliberately not generous: if (2) or (3) ever fires, the interesting fact is
   # that (1) did not.
-  integration:
-    name: real sandbox behaviour
+  # Tier 3a: the tests that need neither bwrap nor pasta.
+  #
+  # This job installs NOTHING and finishes in seconds, so a broken dry-run
+  # screen or a refusal that stopped refusing is reported without waiting for
+  # the sandbox jobs. It is not a subset anyone maintains: the suite already
+  # gates every sandbox test on requireSandbox/requirePasta/requireEngine, so on
+  # a runner with neither binary those skip and what remains runs. Membership is
+  # decided by the runner, and a test that stops needing bwrap joins this job by
+  # itself.
+  #
+  # SNUG_REQUIRE_SANDBOX is deliberately NOT set here — it turns every skip into
+  # a failure, which is right for the jobs below and wrong for this one. What
+  # stops the job going green having run nothing is the floor in
+  # `make integration-hostless`, which fails if fewer tests ran than the number
+  # of tests that need no sandbox today.
+  hostless:
+    name: dry-run and refusal behaviour
     runs-on: ubuntu-latest
-    # The suite is ~6s locally; apt and setup-go dominate this number. Was 15,
-    # which was long enough for a hung job to look like a slow one.
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26'
+          check-latest: true
+      - run: make build
+      - run: make integration-hostless
+
+  # Tier 3b and 3c: really launch sandboxes and assert what is and is not
+  # reachable.
+  #
+  # ONE job did all of this until 2026-08-21, and it was the long pole at 147s.
+  # Measured on run 32471090448: the test binary was 106s of that, and THREE
+  # tests were 68s of the 106s — the kill-during-startup family, which is slow
+  # for a good reason (each signals a real sandbox at a real moment and repeats
+  # to make the race appear, so the seconds are the measurement). Splitting them
+  # into a sibling job that runs in parallel makes the longest job ~70s instead
+  # of ~147s and changes nothing about what is asserted.
+  #
+  # A matrix rather than two copied jobs, because everything above `make` —
+  # the apt rewrite, the bounded update, the pasta install and its version
+  # check, the sysctl — is identical and a second copy would drift.
+  integration:
+    name: ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    strategy:
+      # Both halves always run: a failure in one must not hide the other's
+      # result, which is what fail-fast would do.
+      fail-fast: false
+      matrix:
+        include:
+          - suite: integration-sandbox
+            label: real sandbox behaviour
+          - suite: integration-signals
+            label: sandbox startup signal races
+    # apt and setup-go dominate the fixed cost; the variable half is now at most
+    # ~70s. Was 8 when one job ran everything.
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -223,7 +277,7 @@ jobs:
       - name: doctor
         run: ./bin/snug doctor
 
-      - name: the sandbox holds
+      - name: ${{ matrix.label }}
         env:
           # The harness SKIPS where the host cannot create namespaces, so a
           # laptop without bubblewrap degrades gracefully. CI must not: a green
@@ -244,5 +298,5 @@ jobs:
           # test failing when it does not. Splitting it would be deleting the
           # coverage with extra steps.
           SNUG_TEST_NET: '1'
-        run: make integration
+        run: make ${{ matrix.suite }}
 
