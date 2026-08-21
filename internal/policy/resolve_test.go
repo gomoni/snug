@@ -26,13 +26,29 @@ func (f fakeInfo) IsDir() bool        { return f.dir }
 func (f fakeInfo) Sys() any           { return nil }
 
 type fakeEnv struct {
-	dirs  map[string]bool
+	dirs map[string]bool
+	// files is dirs' non-directory half. It exists for issue #29: the procfs
+	// entries snug replaces are FILES, and installProcfsReplacements asks
+	// Environ.Stat whether this host publishes each one (a kernel without
+	// CONFIG_IKCONFIG_PROC has no /proc/config.gz, and --ro-bind-data has no
+	// -try spelling, so naming an absent path would fail the whole run).
+	// Recording them as directories would work today, since only the error is
+	// read — and would be a fixture that lies, in a file whose whole job is to
+	// stand in for a host.
+	files map[string]bool
 	links map[string]string
 	env   map[string]string
 }
 
 func newFakeEnv() *fakeEnv {
 	return &fakeEnv{
+		// The procfs entries snug replaces (issue #29). Present here so the
+		// GOLDENS carry those mounts: they are the review artifact for this
+		// change, and a fixture host that published none of them would hide
+		// every line of it.
+		files: map[string]bool{
+			"/proc/config.gz": true, "/proc/keys": true, "/proc/key-users": true,
+		},
 		dirs: map[string]bool{
 			"/usr": true, "/etc": true, "/opt": true,
 			"/home/u": true, "/home/u/proj": true, "/home/u/proj/sub": true,
@@ -86,6 +102,9 @@ func (f *fakeEnv) EvalSymlinks(p string) (string, error) {
 func (f *fakeEnv) Stat(p string) (fs.FileInfo, error) {
 	if f.dirs[p] {
 		return fakeInfo{name: p, dir: true}, nil
+	}
+	if f.files[p] {
+		return fakeInfo{name: p}, nil
 	}
 	return nil, &fs.PathError{Op: "stat", Path: p, Err: fs.ErrNotExist}
 }
@@ -382,6 +401,37 @@ func TestResolveIsMonotone(t *testing.T) {
 		for guest, was := range basePol.Mounts {
 			now, ok := with.Mounts[guest]
 			if !ok {
+				// THE ONE EXCEPTION, and it is named here rather than absorbed
+				// by loosening the assertion (issue #29).
+				//
+				// snug's procfs closures — the three empty-file replacements and
+				// the read-only /proc/sys — are NOT applied on a run that starts
+				// a container engine. The kernel refuses a fresh procfs mount in
+				// a nested user namespace while any mount covers part of a
+				// procfs it can see, and the engine mounts its own for its own
+				// pid namespace. Measured: with the closures in place the engine
+				// dies with `__inengine: mounting a fresh /proc for this
+				// engine's own pid namespace: operation not permitted`, and both
+				// ways of having both are closed — unmounting them in the
+				// engine's namespace is refused by MNT_LOCKED, and installing
+				// them where the engine tolerates them puts them where the
+				// payload never sees them.
+				//
+				// So adding a container profile DOES make this run less
+				// protected. That is a real exception to this test's own
+				// headline, and --dry-run states it on screen
+				// (policy.ProcfsClosureExemptionNote) rather than letting a
+				// human infer it.
+				//
+				// CHECKED, not waved through, and the two conditions are what
+				// keep it from becoming a hole: the removed mount must be one of
+				// the four closures, and the profile being added must be what
+				// turned the engine on. A profile that removes anything else, or
+				// removes these without enabling an engine, still fails.
+				if IsProcfsClosurePath(guest) &&
+					ProcfsClosuresSkipped(with) && !ProcfsClosuresSkipped(basePol) {
+					continue
+				}
 				t.Errorf("adding %q REMOVED the grant at %s — profiles must only relax", name, guest)
 				continue
 			}
@@ -910,7 +960,15 @@ func TestEmptySelectionResolvesToTheFloor(t *testing.T) {
 		t.Fatal("Resolve(nil selection) returned no error; the floor must still be refused by Validate")
 	}
 
-	want := map[string]bool{"/proc": true, "/dev": true, "/tmp": true, "/etc/resolv.conf": true}
+	// Four snug authors unconditionally, plus the four issue #29 adds to the
+	// procfs it just mounted: three empty-file replacements and the read-only
+	// /proc/sys. They are part of the floor because they are not grants —
+	// nothing selects them and no profile can name them.
+	want := map[string]bool{
+		"/proc": true, "/dev": true, "/tmp": true, "/etc/resolv.conf": true,
+		"/proc/config.gz": true, "/proc/keys": true, "/proc/key-users": true,
+		"/proc/sys": true,
+	}
 	if len(p.Mounts) != len(want) {
 		t.Fatalf("floor has %d mount(s), want exactly %d: %v", len(p.Mounts), len(want), mountGuests(p))
 	}
@@ -920,6 +978,27 @@ func TestEmptySelectionResolvesToTheFloor(t *testing.T) {
 		}
 	}
 	for _, m := range p.Mounts {
+		// THE ONE EXEMPTION, and it is narrow on purpose: snug's own read-only
+		// bind at /proc/sys (issue #29). It is a bind of a HOST path, so the
+		// blanket rule below would catch it, and it grants nothing from the
+		// host — measured rather than argued:
+		//
+		//	/proc/sys/kernel/ns_last_pid   inside: 2   host: 363451
+		//	/proc/sys/net/ipv4/conf        inside: all default lo   host: + enp2s0f0 wlp3s0 wwan0
+		//
+		// Both the pid- and net-namespaced entries resolve through the READING
+		// TASK's namespaces, not through the procfs superblock the path went
+		// via, so the sandbox reads its own values either way. What the bind
+		// changes is the write side: EROFS instead of a capability check snug
+		// does not own. bwrap offers no other mechanism — `--remount-ro
+		// /proc/sys` fails with `Unable to find "/newroot/proc/sys" in mount
+		// table`, because it is not a mount point inside a fresh procfs.
+		//
+		// Exempted by GUEST AND AUTHORSHIP, so a profile's bind at the same
+		// path (which Validate refuses anyway, RULE 2) would still fail here.
+		if m.Kind == KindBind && m.Authored && m.Guest == "/proc/sys" {
+			continue
+		}
 		if m.Kind == KindBind {
 			t.Errorf("floor contains a KindBind mount at %s (from %s); an empty selection "+
 				"must grant nothing from the host — that is deny-by-default itself, not "+

@@ -680,6 +680,27 @@ func covers(outer, inner string) bool {
 // a security verdict that depends on Go's map iteration order is one that
 // changes between runs, and the model has been bitten by exactly that before —
 // see the note on resolveViaDeepest.
+// snugsOwnAncestorOf is snugsOwnCovered's mirror: the deepest of snug's own
+// paths that STRICTLY CONTAINS guest, rather than the one guest contains.
+// Both directions are refused for a graft, and they need separate messages —
+// "you named the parent" and "you named something inside it" are different
+// mistakes with different fixes.
+func snugsOwnAncestorOf(guest string) (at string, own ownedPath, ok bool) {
+	keys := make([]string, 0, len(snugsOwn))
+	for k := range snugsOwn {
+		keys = append(keys, k)
+	}
+	// Deepest first, so a message names the closest owner rather than the
+	// alphabetically first one.
+	sort.Sort(sort.Reverse(sort.StringSlice(keys)))
+	for _, k := range keys {
+		if k != guest && covers(k, guest) {
+			return k, snugsOwn[k], true
+		}
+	}
+	return "", ownedPath{}, false
+}
+
 func snugsOwnCovered(guest string) (at string, own ownedPath, ok bool) {
 	keys := make([]string, 0, len(snugsOwn))
 	for k := range snugsOwn {
@@ -764,6 +785,29 @@ func (p *Policy) rejectMasking(env Environ) error {
 		if m.Authored {
 			continue
 		}
+		// THE PSEUDO-FILESYSTEM ANCESTOR IS ASKED FIRST, and it is not the same
+		// question as "what is the nearest covering mount".
+		//
+		// nearestCovering answers "who supplies the content at this path", which
+		// is the right question when the answer is a profile's bind. It is the
+		// WRONG question the moment snug itself authors a mount inside /proc or
+		// /dev: issue #29 put a read-only bind of /proc/sys at /proc/sys, and
+		// `ro = ["/proc/sys/kernel"]` from a profile then became LEGAL — the
+		// nearest covering mount was a KindBind of the same tree, so the KindBind
+		// row's re-grant clause admitted it, and the KindProc row that had
+		// refused every grant under /proc never ran. Measured: the suite's own
+		// TestGrantStrictlyInsideProcIsFatal went red the moment that mount
+		// existed, which is what this clause restores.
+		//
+		// The rule is stated over the REGION rather than over the nearest mount:
+		// anything a profile puts strictly inside snug's procfs or device tree
+		// substitutes host content for kernel content, however many snug-authored
+		// mounts happen to sit between the two. A future snug-authored mount
+		// under /proc or /dev therefore cannot re-open this by accident, which is
+		// the property the previous spelling lacked.
+		if outer, at, ok := p.pseudoAncestor(m.Guest); ok {
+			return checkNesting(env, outer, at, m)
+		}
 		outer, at, ok := p.nearestCovering(m.Guest)
 		if !ok {
 			continue
@@ -773,6 +817,24 @@ func (p *Policy) rejectMasking(env Environ) error {
 		}
 	}
 	return nil
+}
+
+// pseudoAncestor returns the deepest KindProc or KindDev mount that strictly
+// contains guest, if any. Unlike nearestCovering it looks past whatever sits
+// between: the two answers differ exactly when snug has authored a mount inside
+// one of those regions, which is the case that made the caller's own comment
+// necessary.
+func (p *Policy) pseudoAncestor(guest string) (Mount, string, bool) {
+	for d := filepath.Dir(guest); d != "/" && d != "."; d = filepath.Dir(d) {
+		m, ok := p.Mounts[d]
+		if !ok {
+			continue
+		}
+		if m.Kind == KindProc || m.Kind == KindDev {
+			return m, d, true
+		}
+	}
+	return Mount{}, "", false
 }
 
 // nearestCovering returns the deepest mount that strictly contains guest. The
