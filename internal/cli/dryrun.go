@@ -1424,7 +1424,40 @@ func describeClaude(out *os.File, p *policy.Policy) {
 		fmt.Fprintf(out, "                    enabledPlugins, extraKnownMarketplaces, permissions — each\n")
 		fmt.Fprintf(out, "                    names a program, selects/fetches code, or sets env; see\n")
 		fmt.Fprintf(out, "                    policy.ClaudeExecutingKeys for the full catalogue\n")
+
+		// Project scope (issue #73), and the two states MUST read differently
+		// here: a run that projects the target's settings and a run whose target
+		// has no such file look identical in the reject-list above, so this line
+		// names which project-scope files are actually reinterpreted. Read from
+		// the resolved mount set, so it says what snug did, not what it might.
+		projected := projectedTargetSettings(p)
+		if len(projected) > 0 {
+			fmt.Fprintf(out, "         project    the TARGET's own %s reinterpreted read-only:\n",
+				strings.Join(projected, " and "))
+			fmt.Fprintf(out, "                    a hostile repo's hooks do not run inside, and the\n")
+			fmt.Fprintf(out, "                    payload cannot write one that runs on your host later\n")
+		} else {
+			fmt.Fprintf(out, "         project    the target ships no .claude/settings.json or\n")
+			fmt.Fprintf(out, "                    settings.local.json, so none is projected — a NEW one\n")
+			fmt.Fprintf(out, "                    the payload writes there is NOT closed (issue #73)\n")
+		}
 	}
+}
+
+// projectedTargetSettings returns the target-scope settings files snug is
+// projecting read-only this run (issue #73), read from the resolved mounts so
+// --dry-run states what happened rather than re-deriving it. Empty when the
+// target ships neither file — the state --dry-run must not let read the same as
+// the projecting one.
+func projectedTargetSettings(p *policy.Policy) []string {
+	var out []string
+	for _, name := range projectClaudeSettingsFiles {
+		guest := filepath.Join(p.Target, ".claude", name)
+		if m, ok := p.Mounts[guest]; ok && m.Kind == policy.KindData && m.HostDestExists {
+			out = append(out, ".claude/"+name)
+		}
+	}
+	return out
 }
 
 // claudeTrustCarried reports whether the GENERATED ~/.claude.json actually

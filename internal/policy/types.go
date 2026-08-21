@@ -162,6 +162,24 @@ type Mount struct {
 	// Set ONLY by Policy.Replace, which is the only permitted writer of p.Mounts
 	// once Resolve has returned. Nothing a profile can write reaches it.
 	Authored bool
+
+	// HostDestExists states a FACT the caller measured, not a permission: the
+	// file at this mount's guest path ALREADY EXISTS on the host. It matters for
+	// exactly one thing — a KindData mount rendered as bwrap's --ro-bind-data
+	// over an EXISTING file OVERMOUNTS it and writes nothing to the host, while
+	// the same mount over an ABSENT path CREATES the mountpoint file on the host
+	// (measured, issue #73). So rejectGeneratedOntoHost, which otherwise refuses
+	// a generated mount landing on a writable host bind because it would write
+	// the host, may pass one whose destination preexists.
+	//
+	// It is a fact rather than an "allowed" flag deliberately: a reader can
+	// check "does the host file exist" against the filesystem; a reader cannot
+	// check "was this allowed to overmount" against anything. Set ONLY by the
+	// cli after an os.Stat — internal/policy has no filesystem and must not
+	// acquire one to answer this (issue #73). A false value is the safe default:
+	// a generated mount whose destination is not known to exist is refused by
+	// the guard as before.
+	HostDestExists bool
 }
 
 // Mount deliberately has NO String or GoString method, and that is a decision

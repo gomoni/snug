@@ -485,6 +485,16 @@ func (p *Policy) rejectGeneratedOntoHost() error {
 		if m.Kind != KindData {
 			continue
 		}
+		// An overmount of a file that ALREADY EXISTS on the host writes nothing
+		// there — bwrap's --ro-bind-data binds over the existing inode rather
+		// than creating a mountpoint (measured, issue #73). The cli sets this
+		// only after an os.Stat, so it is a fact the guard can trust without a
+		// filesystem of its own. A generated mount over an ABSENT path still
+		// falls through and is refused, because there --ro-bind-data (or --file)
+		// creates the file on the host.
+		if m.HostDestExists {
+			continue
+		}
 		// The DEEPEST mount containing the generated path is the one that
 		// supplies it, the same "effective access is the deepest mount covering
 		// it" rule join is keyed on. A tmpfs nested inside a writable bind

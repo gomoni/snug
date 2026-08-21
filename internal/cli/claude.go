@@ -61,6 +61,10 @@ func claudeFiles(pol *policy.Policy, home string, verbose bool) error {
 		return err
 	}
 
+	// The TARGET's own project-scope settings, projected read-only where they
+	// exist (issue #73). See stageProjectClaudeSettings.
+	stageProjectClaudeSettings(pol, verbose)
+
 	guest := filepath.Join(home, ".claude", "CLAUDE.md")
 	pol.Replace(policy.Mount{
 		Guest: guest, Kind: policy.KindData, Access: policy.AccessRO,
@@ -375,7 +379,7 @@ func stageClaudeSettings(pol *policy.Policy, home string, verbose bool) {
 	const readCap = 1 << 20 // 1 MiB — §5.6's read cap
 	path := filepath.Join(home, ".claude", "settings.json")
 
-	raw, degraded := loadHostClaudeSettings(path, readCap)
+	raw, degraded := loadHostClaudeSettings(path, "~/.claude/settings.json", readCap)
 	if degraded != "" {
 		fmt.Fprintf(os.Stderr, "snug: %s\n", degraded)
 	}
@@ -462,6 +466,99 @@ func stageClaudeSettings(pol *policy.Policy, home string, verbose bool) {
 	})
 }
 
+// projectClaudeSettingsFiles are the two project-scope command tables Claude
+// Code reads inside a target and — MEASURED, issue #73 — runs on the host with
+// no gate: a SessionStart hook in either fired from `claude -p` on a directory
+// claude had never trusted, no dialog, no approval, no entry in ~/.claude.json.
+// `.mcp.json` is deliberately NOT here: it is gated by enableAllProjectMcpServers
+// (measured weaker), and this is one decision per file (issue #73).
+var projectClaudeSettingsFiles = []string{"settings.json", "settings.local.json"}
+
+// stageProjectClaudeSettings projects the target's own .claude/settings.json and
+// settings.local.json read-only, WHERE THEY ALREADY EXIST — the same
+// "generate, don't bind" mechanism as stageClaudeSettings and
+// stageInstalledPlugins, applied to project scope (issue #73).
+//
+// One AccessRO KindData mount per existing file closes two directions:
+//
+//   - INBOUND: a repo's settings.json is SANDBOXED MATERIAL (invariant 3), and
+//     Claude Code inside would load it and run its `hooks`. The projection
+//     carries only policy.ClaudeSettingAllowlist's scalar keys — the SAME
+//     allowlist as user scope, not forked, because a key that names a program
+//     is no safer for being repo-supplied — so a repo's hooks block does not
+//     execute inside.
+//   - OUTBOUND: AccessRO means a payload write to that path fails EROFS, so a
+//     hook the payload writes into an EXISTING settings file does not survive to
+//     run on the host later.
+//
+// ONLY WHERE THE FILE EXISTS, and that boundary is load-bearing rather than an
+// optimisation. A generated mount over an ABSENT path does not overmount an
+// inode, it CREATES the mountpoint FILE on the host — measured with bwrap: a
+// 0-byte read-only settings.local.json appeared in the host repo (issue #73).
+// snug must not write the host during setup (issue #186's rejectGeneratedOntoHost
+// is the guard), so the projection is mounted only where an os.Stat confirms the
+// file already exists, and HostDestExists carries that fact to the guard. Where
+// the file does not exist, NOTHING is mounted.
+//
+// THE RESIDUAL, stated because a check that covers half its rule must say which
+// half: a clean repo where the payload CREATES a .claude/settings.json that did
+// not exist before is NOT closed — closing it would need the host write above.
+// The half that closes is the sharper one: a hostile repo SHIPPING a
+// settings.json with hooks is the exists case, reinterpreted and its hooks
+// dropped; the payload-creates case leaves a file the human sees in `git
+// status`, which is not a guarantee and is not nothing.
+//
+// AccessRO throughout, unlike the user-scope file (rw, because Claude Code
+// rewrites it — the gh precedent). Project scope is read-only on purpose: that
+// writability IS the outbound channel.
+func stageProjectClaudeSettings(pol *policy.Policy, verbose bool) {
+	const readCap = 1 << 20 // the user-scope cap
+	for _, name := range projectClaudeSettingsFiles {
+		guest := filepath.Join(pol.Target, ".claude", name)
+		label := "the target's .claude/" + name
+
+		// The existence decision, in the cli because internal/policy has no
+		// filesystem. os.Lstat, not the safe open below: existence is the
+		// question, and a FIFO or a directory at that path still EXISTS, so
+		// overmounting it writes nothing to the host — the content just carries
+		// nothing (loadHostClaudeSettings degrades it).
+		if _, err := os.Lstat(guest); err != nil {
+			continue // absent: mount nothing, write nothing
+		}
+
+		raw, degraded := loadHostClaudeSettings(guest, label, readCap)
+		if degraded != "" {
+			fmt.Fprintf(os.Stderr, "snug: %s\n", degraded)
+		}
+		carried, drops := policy.FilterClaudeSettings(raw)
+		if len(drops.Executing) > 0 {
+			fmt.Fprintf(os.Stderr, "snug: %s: dropped %s — a repo's own settings file may name a "+
+				"program or a hook, and snug reinterprets it into the allowlist rather than binding "+
+				"it, so a hostile repo's hooks do not run inside (issue #73)\n",
+				label, strings.Join(drops.Executing, ", "))
+		}
+		for _, r := range drops.Refused {
+			fmt.Fprintf(os.Stderr, "snug: %s: dropping %q — %s\n", label, r.Name, r.Reason)
+		}
+		if verbose && len(carried) > 0 {
+			names := make([]string, 0, len(carried))
+			for k := range carried {
+				names = append(names, k)
+			}
+			sort.Strings(names)
+			fmt.Fprintf(os.Stderr, "snug: %s carried: %s\n", label, strings.Join(names, ", "))
+		}
+
+		body := policy.ClaudeSettingsJSON(carried)
+		perm := uint32(0o600)
+		pol.Replace(policy.Mount{
+			Guest: guest, Kind: policy.KindData, Access: policy.AccessRO,
+			Content: policy.Secret(body), Perms: &perm, From: []string{"@claude"},
+			HostDestExists: true,
+		})
+	}
+}
+
 // loadHostClaudeSettings reads and decodes the host's ~/.claude/settings.json,
 // or reports why it could not — never both, and never an error the caller must
 // treat as fatal (§5.6's degradation rules: every failure here is "carry
@@ -499,7 +596,7 @@ func stageClaudeSettings(pol *policy.Policy, home string, verbose bool) {
 // parsed could only contribute allowlisted, type-checked, charset-checked
 // scalars through FilterClaudeSettings. Contrast the bind this replaces, which
 // followed the identical symlink and mounted the target file WHOLE.
-func loadHostClaudeSettings(path string, maxBytes int64) (map[string]any, string) {
+func loadHostClaudeSettings(path, label string, maxBytes int64) (map[string]any, string) {
 	// O_NONBLOCK applies to the OPEN, and for a regular file it has no further
 	// effect on the reads below — it exists solely so that opening a FIFO
 	// returns instead of blocking.
@@ -515,29 +612,26 @@ func loadHostClaudeSettings(path string, maxBytes int64) (map[string]any, string
 
 	fi, err := f.Stat()
 	if err != nil {
-		return nil, fmt.Sprintf("~/.claude/settings.json could not be inspected (%v); "+
-			"carrying nothing", err)
+		return nil, fmt.Sprintf("%s could not be inspected (%v); carrying nothing", label, err)
 	}
 	if !fi.Mode().IsRegular() {
-		return nil, fmt.Sprintf("~/.claude/settings.json is not a regular file (mode %s); "+
-			"carrying nothing. snug reads that path as data and will not read a FIFO, a "+
-			"device or a directory there", fi.Mode())
+		return nil, fmt.Sprintf("%s is not a regular file (mode %s); carrying nothing. snug "+
+			"reads that path as data and will not read a FIFO, a device or a directory there", label, fi.Mode())
 	}
 	if fi.Size() > maxBytes {
-		return nil, fmt.Sprintf("~/.claude/settings.json is %d bytes, over the %d-byte cap "+
-			"snug reads for it; carrying nothing rather than reading an arbitrarily large "+
-			"file into memory on every run", fi.Size(), maxBytes)
+		return nil, fmt.Sprintf("%s is %d bytes, over the %d-byte cap snug reads for it; "+
+			"carrying nothing rather than reading an arbitrarily large file into memory on every "+
+			"run", label, fi.Size(), maxBytes)
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
 	if err != nil {
-		return nil, fmt.Sprintf("~/.claude/settings.json exists but could not be read (%v); "+
-			"carrying nothing", err)
+		return nil, fmt.Sprintf("%s exists but could not be read (%v); carrying nothing", label, err)
 	}
 	// The real cap. A file whose st_size lied — /dev/zero through a symlink,
 	// anything under /proc, a file that grew since the stat — lands here.
 	if int64(len(data)) > maxBytes {
-		return nil, fmt.Sprintf("~/.claude/settings.json produced more than the %d-byte cap "+
-			"snug reads for it (its reported size was %d); carrying nothing", maxBytes, fi.Size())
+		return nil, fmt.Sprintf("%s produced more than the %d-byte cap snug reads for it "+
+			"(its reported size was %d); carrying nothing", label, maxBytes, fi.Size())
 	}
 	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -545,9 +639,9 @@ func loadHostClaudeSettings(path string, maxBytes int64) (map[string]any, string
 		// into map[string]any refuses an array or a bare scalar with the same
 		// error shape, so there is one branch for both degradations rather than
 		// two.
-		return nil, fmt.Sprintf("~/.claude/settings.json did not parse as strict JSON (%v) — "+
-			"Claude Code itself reads JSONC (comments, trailing commas) here and snug does "+
-			"not, so a hand-edited file in that dialect carries nothing into the sandbox", err)
+		return nil, fmt.Sprintf("%s did not parse as strict JSON (%v) — Claude Code itself "+
+			"reads JSONC (comments, trailing commas) here and snug does not, so a hand-edited file "+
+			"in that dialect carries nothing into the sandbox", label, err)
 	}
 	return raw, ""
 }
@@ -820,11 +914,15 @@ func claudeGuidance(pol *policy.Policy) []byte {
 	// The exception, stated because "settings do not persist" is otherwise
 	// absolute and the target is writable AND persistent — which is exactly where
 	// Claude Code puts a project-scope permission grant.
-	b.WriteString("One exception, and it is not a fault either. The PROJECT persists:\n")
+	b.WriteString("One exception, narrowed. The PROJECT persists:\n")
 	fmt.Fprintf(&b, "`%s`\n", pol.Target)
-	b.WriteString("is on the host's disk, so anything Claude Code writes there — including\n")
-	b.WriteString("`.claude/settings.local.json`, where a project-scope permission you accept in\n")
-	b.WriteString("this session goes — is still there after the sandbox exits.\n\n")
+	b.WriteString("is on the host's disk, so a file you edit or build there is still there after\n")
+	b.WriteString("the sandbox exits. But snug now projects the target's own\n")
+	b.WriteString("`.claude/settings.json` and `.claude/settings.local.json` READ-ONLY where they\n")
+	b.WriteString("EXIST (issue #73), so a hostile repo's hooks in them do not run here, and a\n")
+	b.WriteString("project-scope permission you accept does NOT persist into an existing one — the\n")
+	b.WriteString("write fails. A settings file the repo did not already ship, you can still\n")
+	b.WriteString("create, and it persists to the host; that half is not closed.\n\n")
 	b.WriteString("A token you refresh here does not reach the host; it is lost when this session\n")
 	b.WriteString("ends.\n\n")
 
