@@ -487,9 +487,17 @@ var projectClaudeSettingsFiles = []string{"settings.json", "settings.local.json"
 //     allowlist as user scope, not forked, because a key that names a program
 //     is no safer for being repo-supplied — so a repo's hooks block does not
 //     execute inside.
-//   - OUTBOUND: AccessRO means a payload write to that path fails EROFS, so a
-//     hook the payload writes into an EXISTING settings file does not survive to
-//     run on the host later.
+//   - OUTBOUND, IN-PLACE ONLY: AccessRO means a payload write to that path, IN
+//     PLACE, fails EROFS, so a hook the payload writes into an EXISTING settings
+//     file that way does not survive to run on the host. But the RO mount pins one
+//     inode at one PATH — it does NOT pin the NAME. The target bind is rw by
+//     design, so a payload renames the parent `.claude` (`mv .claude .claudeOLD;
+//     mkdir .claude`), which drags the RO mountpoint into `.claudeOLD/` and frees
+//     the original name for a fresh host-written `.claude/settings.json` carrying
+//     hooks (measured, issue #286). So the OUTBOUND close is the in-place write
+//     ONLY; the rename REDUCES the exists case to the create-case residual below.
+//     It is not silent — the mount is EBUSY-pinned into `.claudeOLD/`, so both
+//     that directory and the modified `.claude/settings.json` show in `git status`.
 //
 // ONLY WHERE THE FILE EXISTS, and that boundary is load-bearing rather than an
 // optimisation. A generated mount over an ABSENT path does not overmount an
@@ -503,10 +511,14 @@ var projectClaudeSettingsFiles = []string{"settings.json", "settings.local.json"
 // THE RESIDUAL, stated because a check that covers half its rule must say which
 // half: a clean repo where the payload CREATES a .claude/settings.json that did
 // not exist before is NOT closed — closing it would need the host write above.
-// The half that closes is the sharper one: a hostile repo SHIPPING a
-// settings.json with hooks is the exists case, reinterpreted and its hooks
-// dropped; the payload-creates case leaves a file the human sees in `git
-// status`, which is not a guarantee and is not nothing.
+// An EXISTING file reaches this same residual by RENAME (issue #286): the RO
+// mount closes editing in place, not the name, so `mv .claude .claudeOLD` frees
+// the path and a fresh settings.json lands on the host. The exists case is only
+// the sharper, closed one for the INBOUND direction — a hostile repo SHIPPING a
+// settings.json with hooks is reinterpreted and its hooks dropped, and rename
+// does not touch that. OUTBOUND, exists and create collapse to one residual: a
+// file the human sees in `git status`, which is not a guarantee and is not
+// nothing.
 //
 // AccessRO throughout, unlike the user-scope file (rw, because Claude Code
 // rewrites it — the gh precedent). Project scope is read-only on purpose: that
@@ -922,9 +934,10 @@ func claudeGuidance(pol *policy.Policy) []byte {
 	b.WriteString("the sandbox exits. But snug now projects the target's own\n")
 	b.WriteString("`.claude/settings.json` and `.claude/settings.local.json` READ-ONLY where they\n")
 	b.WriteString("EXIST (issue #73), so a hostile repo's hooks in them do not run here, and a\n")
-	b.WriteString("project-scope permission you accept does NOT persist into an existing one — the\n")
-	b.WriteString("write fails. A settings file the repo did not already ship, you can still\n")
-	b.WriteString("create, and it persists to the host; that half is not closed.\n\n")
+	b.WriteString("project-scope permission you accept cannot overwrite an existing one IN PLACE —\n")
+	b.WriteString("that write fails EROFS. It is not fully closed OUTBOUND: renaming the `.claude`\n")
+	b.WriteString("directory and recreating it, or creating a settings file the repo did not ship,\n")
+	b.WriteString("both persist to the host (and both show in `git status`); that half is not closed.\n\n")
 	b.WriteString("A token you refresh here does not reach the host; it is lost when this session\n")
 	b.WriteString("ends.\n\n")
 
