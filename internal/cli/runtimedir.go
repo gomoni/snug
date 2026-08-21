@@ -109,7 +109,7 @@ func openRuntimeDir() (*runtimeDir, error) {
 	// The lock taken below is what tells a live run's directory apart from a
 	// dead one; the pid in the name is not load-bearing the way it used to
 	// be when a stale directory was identified by parsing this string.
-	runName := fmt.Sprintf("run-%d", os.Getpid())
+	runName := runDirName()
 	runPath := filepath.Join(snugPath, runName)
 
 	d, err := claimRunDir(runPath, snugRoot, snugPath, runName)
@@ -171,12 +171,45 @@ func (d *runtimeDir) Path() string { return d.path }
 // it is what keeps the guarantee the type carries from being lost the first
 // time someone joins a variable onto it.
 func (d *runtimeDir) Socket(name string) (string, error) {
-	if name == "" || name == "." || name == ".." ||
-		strings.ContainsRune(name, filepath.Separator) || strings.Contains(name, "\x00") {
-		return "", fmt.Errorf("runtime directory: %q is not a name this run's directory may "+
-			"create - snug's sockets are single path elements inside it, never a path", name)
+	if err := checkSocketName(name); err != nil {
+		return "", err
 	}
 	return filepath.Join(d.path, name), nil
+}
+
+func checkSocketName(name string) error {
+	if name == "" || name == "." || name == ".." ||
+		strings.ContainsRune(name, filepath.Separator) || strings.Contains(name, "\x00") {
+		return fmt.Errorf("runtime directory: %q is not a name this run's directory may "+
+			"create - snug's sockets are single path elements inside it, never a path", name)
+	}
+	return nil
+}
+
+// runDirName is this run's directory name, computed the same way for the run
+// that CREATES it and for the dry run that only NAMES it. One function rather
+// than two spellings of the same fmt.Sprintf, because the whole value of
+// plannedSocket is that --dry-run shows the path a real run would use.
+func runDirName() string { return fmt.Sprintf("run-%d", os.Getpid()) }
+
+// plannedSocket names the host path a proxy WOULD bind for name, creating,
+// verifying and locking NOTHING. It is the --dry-run counterpart of
+// openRuntimeDir().Socket, and it exists because a dry run that leaves a
+// directory and a socket behind contradicts its own first line (issue #21).
+// main.go already draws the same distinction one indirection up for the
+// @tmp-shared host directory: name it, do not create it.
+//
+// None of runtimeDir's guarantees come with this string and none is needed:
+// nothing is opened through it, so there is nothing for a planted symlink or
+// a hostile mode to redirect. It is a label for a screen. That is also why it
+// must never be handed to anything that binds, opens or removes — the type
+// distinction (string here, *runtimeDir there) is the whole guard.
+func plannedSocket(name string) (string, error) {
+	if err := checkSocketName(name); err != nil {
+		return "", err
+	}
+	base, snugName := runtimeBase()
+	return filepath.Join(base, snugName, runDirName(), name), nil
 }
 
 // Remove deletes this run's directory, through the verified parent

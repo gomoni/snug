@@ -79,6 +79,71 @@ document against what it claimed. If `--dry-run` and reality ever disagree, that
 is the most serious class of bug in this project, because every other guarantee
 is read off this output.
 
+### 2a. …and "starts nothing" is literal (issue #21)
+
+The sentence above is checkable, not decorative. `--dry-run` used to open this
+run's private directory under `$XDG_RUNTIME_DIR` and **bind** the container
+proxy's and the ssh-agent proxy's listening sockets inside it, purely so the
+screen could print a path.
+
+```bash
+RT=$(mktemp -d /tmp/snugvrt.XXXXXX)
+XDG_RUNTIME_DIR=$RT ./bin/snug --dry-run -p @podman-socket $SC/proj/sub |
+  grep 'rw     /snug/podman.sock'
+find $RT -mindepth 1 | sed 's/^/LEFT /'
+```
+
+Expect the `grep` to print
+
+```
+  rw     /snug/podman.sock (from /tmp/snugvrt.XXXXXX/snug/run-<pid>/podman.sock) (containers)
+```
+
+— the screen still says exactly where the socket would be — and **no `LEFT`
+line at all**: nothing was created.
+
+Then the piped shape, which leaked worst, because SIGPIPE kills snug mid-screen
+and no deferred cleanup runs:
+
+```bash
+XDG_RUNTIME_DIR=$RT ./bin/snug --dry-run -p @podman-socket $SC/proj/sub | head -3 >/dev/null
+find $RT -mindepth 1 | sed 's/^/LEFT /'
+```
+
+Expect no `LEFT` line here either. Before the fix each invocation left
+`snug/run-<pid>/lock` behind, and with an identity profile a bound
+`ssh-agent.sock` beside it.
+
+**The control, and it is the half that makes the check mean anything** — "no
+directory appeared" is equally true of a snug that ignored `$XDG_RUNTIME_DIR`
+entirely. A REAL run creates the same directory:
+
+```bash
+XDG_RUNTIME_DIR=$RT ./bin/snug $SC/proj/sub -- /bin/sh -c 'sleep 5' &
+sleep 2
+find $RT -mindepth 1 | sed 's/^/LIVE /'
+wait
+find $RT -mindepth 1 | sed 's/^/AFTER /'
+```
+
+Measured:
+
+```
+LIVE /tmp/snugvrt.XXXXXX/snug
+LIVE /tmp/snugvrt.XXXXXX/snug/run-125892
+LIVE /tmp/snugvrt.XXXXXX/snug/run-125892/lock
+AFTER /tmp/snugvrt.XXXXXX/snug
+```
+
+The run's own directory exists while the sandbox is up and is gone after it
+exits; the shared `snug` directory stays, by design — it is the parent every
+run and every `snug attach` looks in, and it holds nothing. No profile is
+selected here because none is needed: every real run publishes its state so
+`snug attach` can find it. The SOCKET half of the control needs a profile that
+has one — an identity, or an engine on a host where `@podman-socket` is not
+refused — and is covered by `TestDryRunLeavesNoRunDirectoryOrSocket` in
+`test/integration`.
+
 ## 3. The writable surface
 
 ```bash
