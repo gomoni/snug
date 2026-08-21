@@ -158,12 +158,21 @@ contribution.
 
 Two sources remain outside this fix, and both are stated rather than implied:
 
-- **`projectSettings` / `localSettings` live in the target tree.** snug does not
-  filter them and must not — the target is the material being sandboxed, it is
-  writable by design, and the thing that gates it is Claude Code's trust dialog,
-  which `claudeStateJSON` deliberately preserves (INDEX §9.3, and the A/B
-  measurement in `internal/cli/claude.go`). Nothing in this change altered that
-  balance.
+- **`projectSettings` / `localSettings` live in the target tree, and snug now
+  projects them read-only WHERE THEY EXIST (issue #73).** The inbound-only
+  framing this bullet once carried — "the target is sandboxed material, gated by
+  Claude Code's trust dialog" — was true one direction and wrong the other: the
+  payload can WRITE a `.claude/settings.json` hook into the target, which
+  persists and runs on the host later. MEASURED: a `SessionStart` hook in a
+  target's `.claude/settings.json` fired from a host-side `claude -p` with no
+  trust dialog, no approval and no `~/.claude.json` entry, on a never-trusted
+  directory. So snug reinterprets both files through the SAME allowlist as the
+  user-scope one and mounts them `AccessRO` — a hostile repo's hooks do not run
+  inside, and the payload's write does not survive outside. ONLY where the file
+  exists: a generated mount over an absent path CREATES the file on the host
+  (measured, issue #73/#186), so a target that ships neither file gets no mount,
+  and a NEW file the payload writes there is the residual this does not close.
+  See §4.5.
 - **`policySettings` (`/etc/claude-code/managed-settings.json`) is not visible
   inside** — §10.3, issue #70.
 
@@ -613,6 +622,44 @@ That sentence is load-bearing and its narrow form appears in `base.toml`'s abuse
 block, `claudeGuidance`'s injected text and `--dry-run`'s CLAUDE block for the
 same reason. Filed as [issue #68](https://github.com/gomoni/snug/issues/68),
 `sev:medium`, fixed by the allowlist above.
+
+### 4.5 Project-scope settings — the same command table, facing outward (issue #73)
+
+§1.4 once said snug "does not filter" the target's `.claude/settings.json` and
+`settings.local.json`, gated by Claude Code's trust dialog. That was the INBOUND
+reading. Turned around: the payload can WRITE a `hooks` block into the target,
+which persists on the host and runs on the next `claude` there.
+
+MEASURED (claude 2.1.238): a `SessionStart` hook in a target's
+`.claude/settings.json` fired from a host-side `claude -p` with **no trust
+dialog, no approval, and no entry recorded in `~/.claude.json`**, on a directory
+claude had never seen; `settings.local.json` behaved identically; an interactive
+`claude` on an already-trusted target fires it too. Two of the three realistic
+host scenarios have no gate. `.mcp.json` is the exception and is left alone — it
+is gated by `enableAllProjectMcpServers` (measured weaker), one decision per file.
+
+**The fix is this document's own mechanism, applied to project scope.** snug
+projects each file read-only through the SAME `ClaudeSettingAllowlist` — not a
+forked table, because a key that names a program is no safer for being
+repo-supplied — so the repo's hooks do not run inside (inbound) and the payload's
+write to the path fails EROFS (outbound). `internal/cli.stageProjectClaudeSettings`.
+
+**ONLY where the file exists, and the residual is written down rather than
+implied**, because this is a check that covers half its rule. A generated mount
+over an ABSENT path does not overmount an inode — bwrap CREATES the mountpoint
+FILE on the host (MEASURED: a 0-byte read-only `settings.local.json` appeared in
+the host repo). snug must not write the host during setup (§1's whole premise,
+and `rejectGeneratedOntoHost`, issue #186), so the projection is mounted only
+where an `os.Stat` confirms the file exists, carried to the pure guard as
+`Mount.HostDestExists`. The half that closes is the sharper one: a hostile repo
+SHIPPING a `settings.json` with hooks is the exists case, reinterpreted. A clean
+repo where the payload CREATES one that did not exist is NOT closed — it leaves a
+file the human sees in `git status`, which is not a guarantee and is not nothing.
+
+Filed as [issue #73](https://github.com/gomoni/snug/issues/73), and it is the
+same argument as issue #17 (`~/.claude/settings.json` is a command table) on the
+project-scope file, facing outward instead of inward — CLAUDE.md's "a limitation
+and a hole are frequently the same fact facing two directions."
 
 ---
 

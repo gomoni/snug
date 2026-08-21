@@ -51,7 +51,7 @@ func TestLoadHostClaudeSettingsFIFODoesNotHang(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		raw, degraded := loadHostClaudeSettings(path, 1<<20)
+		raw, degraded := loadHostClaudeSettings(path, "~/.claude/settings.json", 1<<20)
 		done <- result{raw, degraded}
 	}()
 
@@ -109,7 +109,7 @@ func TestLoadHostClaudeSettingsBoundsAReadEvenWhenSizeLies(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		raw, degraded := loadHostClaudeSettings(path, maxBytes)
+		raw, degraded := loadHostClaudeSettings(path, "~/.claude/settings.json", maxBytes)
 		done <- result{raw, degraded}
 	}()
 
@@ -149,7 +149,7 @@ func TestLoadHostClaudeSettingsRefusesADirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	raw, degraded := loadHostClaudeSettings(path, 1<<20)
+	raw, degraded := loadHostClaudeSettings(path, "~/.claude/settings.json", 1<<20)
 	if raw != nil {
 		t.Errorf("a directory produced a non-nil settings map: %+v", raw)
 	}
@@ -172,7 +172,7 @@ func TestLoadHostClaudeSettingsReadsAnOrdinaryFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	raw, degraded := loadHostClaudeSettings(path, 1<<20)
+	raw, degraded := loadHostClaudeSettings(path, "~/.claude/settings.json", 1<<20)
 	if degraded != "" {
 		t.Fatalf("an ordinary, well-formed settings file produced a degradation message: %q", degraded)
 	}
@@ -188,7 +188,7 @@ func TestLoadHostClaudeSettingsAbsentFileIsSilent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json") // never created
 
-	raw, degraded := loadHostClaudeSettings(path, 1<<20)
+	raw, degraded := loadHostClaudeSettings(path, "~/.claude/settings.json", 1<<20)
 	if raw != nil {
 		t.Errorf("an absent file produced a non-nil settings map: %+v", raw)
 	}
