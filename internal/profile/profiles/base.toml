@@ -519,6 +519,26 @@ dns = true
 # generate the file), so Claude Code auto-loads only the plugins you named. The
 # rest of the tree stays visible and inert. See
 # https://github.com/gomoni/snug/issues/68.
+#
+# THE PROJECT-SETTINGS DOOR, both directions, closed where the file exists
+# (issue #73). The TARGET's own .claude/settings.json and settings.local.json
+# are command tables Claude Code reads — and MEASURED, a SessionStart hook in
+# one fired from a later host-side `claude -p` with NO trust dialog, NO
+# approval, and NO entry recorded in ~/.claude.json, on a directory claude had
+# never seen; an interactive `claude` on an already-trusted target fires it too.
+# Two of the three realistic host scenarios have no gate at all. snug projects
+# each file read-only through the SAME allowlist as the user-scope one, so a
+# hostile repo's hooks do not run INSIDE and the payload's write does not survive
+# OUTSIDE to run on your host later.
+#
+# RESIDUAL, stated because this check closes half its rule for a good reason: it
+# projects ONLY where the file already exists, because a generated mount over an
+# ABSENT path CREATES the file on the host (measured), which snug must not do. A
+# clean repo where the payload CREATES a .claude/settings.json that did not
+# exist before is NOT closed — that leaves a file you see in `git status`, which
+# is not a guarantee and is not nothing. The half that closes is the sharper
+# one: a hostile repo SHIPPING a settings.json with hooks is the exists case.
+# See https://github.com/gomoni/snug/issues/73.
 [profile.claude]
 description = "Claude Code: binary and skills read-only, credentials projected and settings generated."
 include = ["sys", "home"]

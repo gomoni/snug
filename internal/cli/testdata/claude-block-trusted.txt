@@ -37,3 +37,6 @@ CLAUDE   ~/.claude.json is GENERATED, not copied — three keys, no host bytes
                     enabledPlugins, extraKnownMarketplaces, permissions — each
                     names a program, selects/fetches code, or sets env; see
                     policy.ClaudeExecutingKeys for the full catalogue
+         project    the target ships no .claude/settings.json or
+                    settings.local.json, so none is projected — a NEW one
+                    the payload writes there is NOT closed (issue #73)
