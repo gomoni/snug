@@ -69,20 +69,15 @@ Break any of these and the project has lost its point.
    write primitive with someone else's aim.**
 
    *And one where visibility and PROTECTION point in opposite directions —
-   measured, issue #29.* snug's procfs closures (`/proc/config.gz`, `/proc/keys`,
-   `/proc/key-users` replaced with empty files, `/proc/sys` bound read-only) are
-   **not applied on a run that starts a container engine**: the kernel refuses
-   the engine a fresh procfs for its own pid namespace while any mount covers
-   part of one it can see, and both ways of having both are closed (`MNT_LOCKED`;
-   a mask the engine tolerates is one the payload never sees). So selecting a
-   container profile makes that run **less protected while making those paths
-   more visible** — invariant 1's letter holds and what a human means by "adding
-   a profile never makes anything worse" does not. The exemption follows the
-   SELECTION, not the host, and applies transitively through `include`;
-   `--dry-run` states it on the `/proc` row for exactly the runs it applies to.
-   `TestResolveIsMonotone` carries the exception explicitly — the removed mount
-   must be one of the four closures **and** the added profile must be what turned
-   the engine on.
+   measured, issue #29.* A run that starts a container engine gets **none** of
+   snug's procfs closures (`/proc/config.gz`, `/proc/keys`, `/proc/key-users`,
+   `/proc/sys`): the kernel refuses the engine a fresh procfs for its own pid
+   namespace while a mask covers one it can see, and neither way of keeping both
+   works (`MNT_LOCKED`). So selecting a container profile makes that run **less
+   protected while making those paths more visible** — invariant 1's letter holds,
+   "adding a profile never makes anything worse" does not. The exemption follows
+   the SELECTION, transitively through `include`; `--dry-run` states it on the
+   `/proc` row, and `TestResolveIsMonotone` carries it explicitly.
 
    *Effective write access at a strict subpath is NOT monotone, by design.*
    `join` is keyed by `Mount.Guest`, so it applies at identical paths only.
@@ -281,10 +276,9 @@ first, or delegate to the agent that owns it.
   again with a different object: **a grant of a directory is a grant of every
   socket — and every FIFO — anyone puts in it later**, and `~/.ssh/agent`,
   `~/.docker/desktop`, podman's machine socket and gpg-agent's `S.gpg-agent` are
-  all real spellings. A FIFO is the same noun (measured, #287): it is *written
-  through*, not interpreted, so `ro` restrains it no better, and under default
-  `@parent-ro` a host-held pipe in a granted directory is a bidirectional
-  channel.
+  all real spellings. A FIFO is the same noun (measured, #287): `ro` restrains it
+  no better, and under default `@parent-ro` a host-held pipe in a granted
+  directory is a bidirectional channel.
 - **Half of the socket rule is checked now**, and knowing WHICH half is the
   point. `Validate` refuses a bind whose SOURCE IS a socket **or a FIFO**
   (`rejectEndpointSource`, #219/#295), detected by `S_IFSOCK`/`S_IFIFO` through
@@ -295,8 +289,8 @@ first, or delegate to the agent that owns it.
   the DIRECTORY case, which is the general form: a `stat` at resolve time sees
   only endpoints that exist then, so `ro {home}/.ssh` is accepted today and is a
   hole the moment an agent starts there. That half still depends on whoever reads
-  a profile diff remembering it, and it is now tracked — the socket directory
-  residual as #292, the FIFO directory residual as #296. **Two routes, one check each**: #220 refuses any
+  a profile diff remembering it (tracked: #292 sockets, #296 FIFOs). **Two
+  routes, one check each**: #220 refuses any
   bind covering `$HOME`, which is what closes the MEASURED route (a directory
   bind, so #219 never fires on it); #219 closes the direct spelling. Neither is
   redundant.
@@ -623,9 +617,8 @@ through the engine's **own socket**, never a host-side CLI again.
 ships. A filtering proxy that is 95% correct is a sandbox that is 0% sound, and
 both mechanisms exclude them by construction — the **abstract** desktop sockets
 are netns-scoped, the **pathname** ones (`/tmp/.X11-unix/X0`,
-`/run/user/<uid>/bus`) are simply never mounted, since `/tmp` is a fresh tmpfs
-and the host's is never a source — **a property to keep, not a gap to close.**
-Do not add a profile without a decision to reopen this.
+`/run/user/<uid>/bus`) are never mounted — **a property to keep, not a gap to
+close.** Do not add a profile without a decision to reopen this.
 
 **One live sandbox per target directory** —
 [`ONE-SANDBOX-PER-DIR.md`](.claude/design/ONE-SANDBOX-PER-DIR.md) and INDEX §11.
