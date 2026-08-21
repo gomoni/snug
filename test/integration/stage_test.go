@@ -458,14 +458,18 @@ func TestOfflineStartsNoStage(t *testing.T) {
 // SUPERVISOR-DESIGN.md §1: it reports the OLD namespace,
 // scheduler-dependently).
 func TestSandboxNetnsIsTheStagesPinnedNetns(t *testing.T) {
-	budget(t, 15*time.Second)
+	budget(t, 40*time.Second)
 	requireSandbox(t)
 	requirePasta(t)
 	proj, _ := target(t)
 
 	netnsFile := proj + "/netns.txt"
 	cmd := exec.Command(snugBin, "-p", "@net", proj, "--", "/bin/sh", "-c",
-		"readlink /proc/self/ns/net > "+netnsFile+"; sleep 5")
+		// Long enough that the steady-state poll below still has a LIVE stage
+		// to sweep: it may wait up to five seconds, after up to ten spent
+		// finding bwrap, and a sweep of a stage whose sandbox has already
+		// exited answers a different question.
+		"readlink /proc/self/ns/net > "+netnsFile+"; sleep 25")
 	cmd.Env = baseEnv()
 	cmd.WaitDelay = waitDelay
 	if err := cmd.Start(); err != nil {
@@ -483,48 +487,15 @@ func TestSandboxNetnsIsTheStagesPinnedNetns(t *testing.T) {
 	if !ok {
 		t.Fatal("PRECONDITION: no stage ('snug') process appeared as a descendant of a @net run")
 	}
-	// Positive control for the thread-count claim below: a freshly started Go
-	// program has more than one OS thread to be wrong about.
-	//
-	// POLLED, not sampled once, and that is a real bug this test had rather
-	// than defensive padding: "a Go program has several threads" is only
-	// EVENTUALLY true — the runtime starts them as it needs them — and
-	// findDescendant returns the instant the stage appears in /proc, which can
-	// be microseconds after its exec. Whether this precondition held was
-	// therefore decided by how long P0 took to get to the fork relative to the
-	// poll loop above, and anything that changes snug's startup cost by a few
-	// tens of milliseconds flips it. Measured: adding the `ssh -G` probe
-	// (issue #42, ~70ms before the stage is forked) made this fail every time
-	// on this host, in isolation, while main passed every time — a false
-	// failure about thread counts, in a test about namespaces.
-	var before map[string]int
-	total := 0
-	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
-		before = threadNetnsIDs(stagePID)
-		total = 0
-		for _, n := range before {
-			total += n
-		}
-		if total > 1 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if total <= 1 {
-		t.Fatalf("PRECONDITION: the stage (pid %d) still reports only %d thread(s) after two "+
-			"seconds; this test needs more than one to be a meaningful sweep", stagePID, total)
-	}
-
-	// The stage's OWN netns (a fresh one it left N for) must be present among
-	// its threads, and N must NOT be.
+	// The payload's own namespace FIRST, because the sweep below has to know
+	// which id it is looking for. It is written by the payload's first
+	// command, so it lands early.
 	p0Net, err := os.Readlink("/proc/" + strconv.Itoa(cmd.Process.Pid) + "/ns/net")
 	if err != nil {
 		t.Fatalf("reading P0's own netns: %v", err)
 	}
-
-	deadline := time.Now().Add(5 * time.Second)
 	var payloadNet string
-	for time.Now().Before(deadline) {
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
 		b, err := os.ReadFile(netnsFile)
 		if err == nil && len(strings.TrimSpace(string(b))) > 0 {
 			payloadNet = netnsIDFromReadlink(string(b))
@@ -536,22 +507,87 @@ func TestSandboxNetnsIsTheStagesPinnedNetns(t *testing.T) {
 		t.Fatal("the payload never reported its own netns; the sandbox probably did not start")
 	}
 
+	// CONTROL, and it is what makes the negative below mean anything: some
+	// process's threads really do carry this id, found by the SAME function
+	// the sweep uses. Without it, "no stage thread is in N" passes just as
+	// well against a threadNetnsIDs that can no longer read a link, or a
+	// payloadNet parsed into a string nothing will ever equal.
+	bwrapPID, ok := findDescendant(cmd.Process.Pid, isComm("bwrap"), 10*time.Second)
+	if !ok {
+		t.Fatal("PRECONDITION: no bwrap process appeared under a @net run")
+	}
+	if n := threadNetnsIDs(bwrapPID)[payloadNet]; n == 0 {
+		t.Fatalf("CONTROL: the same sweep finds no thread of bwrap (pid %d) in %s, which is the "+
+			"namespace bwrap is supposed to be IN — so the sweep cannot match this id at all and "+
+			"the assertion below is vacuous", bwrapPID, payloadNet)
+	}
+
+	// THE ASSERTION, polled to a steady state rather than sampled once.
+	//
+	// Two things have to be true at the same instant and only one of them is
+	// true immediately: the stage must have more than one thread (or the sweep
+	// is not a sweep), and none of those threads may still be in N. The second
+	// is only EVENTUALLY true — the stage creates N, pins it, and then moves
+	// its threads out, and the Go runtime spins up threads while that is
+	// happening.
+	//
+	// This test used to break out of its poll the moment the thread COUNT
+	// exceeded one and assert against that sample, which is the setup window
+	// exactly. Measured on main at 5fe13ce: three runs in isolation, three
+	// failures, 3 then 6 then 7 threads reported still in N (issue #231) —
+	// while a hand-run @net sandbox showed 0 of 8 stage threads in N on three
+	// samples five seconds apart. The property held; the sample was taken too
+	// early.
+	//
+	// THE DEADLINE MUST NOT QUIETLY BECOME THE ASSERTION. If the stage ever
+	// stops moving its threads, this has to fail — so the loop exits on the
+	// steady state and the failure below reports the LAST sample rather than
+	// treating a timeout as a pass.
+	var before map[string]int
+	total, stillInN := 0, 0
+	settled := false
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		before = threadNetnsIDs(stagePID)
+		total, stillInN = 0, before[payloadNet]
+		for _, n := range before {
+			total += n
+		}
+		if total > 1 && stillInN == 0 {
+			settled = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	cmd.Process.Kill()
 	cmd.Wait()
 	killed = true
 
+	// The thread-count precondition, kept POLLED for the reason it was made
+	// polled in the first place: "a Go program has several threads" is only
+	// EVENTUALLY true — the runtime starts them as it needs them — and
+	// findDescendant returns the instant the stage appears in /proc, which can
+	// be microseconds after its exec. Measured: adding the `ssh -G` probe
+	// (issue #42, ~70ms before the stage is forked) made a once-sampled
+	// version fail every time on this host, in isolation, while main passed
+	// every time — a false failure about thread counts, in a test about
+	// namespaces. The loop above waits for BOTH conditions, so this reports the
+	// last sample rather than re-reading /proc after the kill.
+	if total <= 1 {
+		t.Fatalf("PRECONDITION: the stage (pid %d) still reports only %d thread(s) after five "+
+			"seconds; this test needs more than one to be a meaningful sweep", stagePID, total)
+	}
+	if !settled {
+		t.Errorf("%d of the stage's own %d threads were still in the sandbox's namespace %s five "+
+			"seconds after the sandbox started, while it was still running — the move did not "+
+			"survive. This is not the startup window: the stage moves its threads out of N "+
+			"immediately after pinning it, and a hand-run sandbox shows zero within milliseconds.",
+			stillInN, total, payloadNet)
+	}
+
 	if payloadNet == p0Net {
 		t.Errorf("the sandbox's netns (%s) equals P0's own — the stage granted no isolation at all",
 			payloadNet)
-	}
-
-	// Nothing about the stage's OWN thread set may still carry the namespace it
-	// handed to the sandbox — reading it back here, after the kill, is still
-	// meaningful only if the sweep was taken WHILE the stage was alive, which
-	// `before` was.
-	if n := before[payloadNet]; n > 0 {
-		t.Errorf("%d of the stage's own threads were still in the sandbox's namespace %s "+
-			"while the sandbox was running — the move did not survive", n, payloadNet)
 	}
 }
 
