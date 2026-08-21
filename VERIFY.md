@@ -2331,6 +2331,88 @@ Worth reading once while you are here: `auth.json` is deliberately empty, and
 from inside. Under Tier C it sits in a read-only graft, so that sentence stops
 depending on nobody trying.
 
+### 9l. The payload cannot see any graft (issue #125, C3)
+
+The grafts go into the ENGINE's namespace. The payload sits in the sandbox's,
+and a graft appearing there is a host directory no profile granted it —
+invisible to `Validate`, to `rejectMasking` and to `--dry-run`, because none of
+them describes a mount the payload was never supposed to have.
+
+With a container run live, from another terminal:
+
+```bash
+ENG=$(pgrep -f 'system service' | head -1)
+PAY=$(pgrep -f 'sleep 300' | head -1)   # whatever your payload is
+awk '{print $5}' /proc/$ENG/mountinfo | grep /snug/engine
+awk '{print $5}' /proc/$PAY/mountinfo | grep /snug/engine
+```
+
+The first command must print the graft destinations; the second must print
+**nothing**. Both halves matter: without the first you are reading a run that
+grafted nothing, and then the second is true of any sandbox at all.
+
+Inside the sandbox the destinations still EXIST — they are empty directories
+`bwrap` created on the read-only root — so `ls /snug/engine/store` succeeds and
+shows an empty directory. That is the correct answer, and it is what makes the
+mount table the thing to look at rather than the directory listing.
+
+What makes this true is `__inengine`'s `unshare(CLONE_NEWNS)`, not the
+`MS_REC|MS_PRIVATE` on `/` a reader expects: with the unshare removed the
+payload's mount table holds all 53 of the engine's, and with the propagation
+flag changed to `MS_SLAVE` or `MS_SHARED` it holds none of them. Measured both
+ways.
+
+### 9m. A read-only graft is read-only in the KERNEL (issue #125, C3)
+
+`AccessRO` is a field in the model. `mount_setattr(MOUNT_ATTR_RDONLY)` is what
+makes it true of the mount, and every unit test in this repo passes if that call
+is never made.
+
+```bash
+ENG=$(pgrep -f 'system service' | head -1)
+awk '$5 ~ /snug.engine/ {print $5, $6}' /proc/$ENG/mountinfo
+```
+
+Expect `ro` on `/snug/engine/conf` and `rw` on `store`, `runroot` and `sock`.
+The `rw` half is the control: a table where everything reads `ro` is a broken
+engine, not a strict one.
+
+The `conf` half is the one with teeth. It holds the `containers.conf`,
+`storage.conf`, `registries.conf` and signature policy snug generated and
+started the engine under — and the engine is root in the sandbox's user
+namespace with the full delegated subuid range. Writable, it could rewrite what
+it was started under.
+
+### 9n. `snug attach` cannot reach the engine (issue #125, C3)
+
+`/proc/<pid>/fd` reaches a sibling's files and `/proc/<pid>/mem` its memory,
+neither of them syscall-shaped, so no seccomp filter can name them. What keeps
+`snug attach` away from the engine is that the engine holds its own **pid
+namespace** (issue #145) and the payload's `/proc` does not enumerate it.
+
+With a container run live:
+
+```bash
+ENG=$(pgrep -f 'system service' | head -1)
+ls /proc/$ENG/fd | head -3          # from the HOST: works
+
+snug attach $SC/proj/sub -- /bin/sh -c '
+  a=sys; b=tem; c=ser; d=vice
+  for p in /proc/[0-9]*; do
+    [ "$p" = "/proc/$$" ] && continue
+    tr "\0" " " < $p/cmdline 2>/dev/null | grep -q "$a$b $c$d" && echo "SAW $p"
+  done
+  echo SWEPT'
+```
+
+Expect `SWEPT` and no `SAW` line. Note the needle is assembled from two
+variables: written out literally it appears in the probe's own command line and
+the probe reports **itself** — measured, and it is the reason this reads oddly.
+
+Do not read a bare `ls /proc/<hostpid>/fd` failure as the property. The engine's
+HOST pid can name an unrelated process inside the sandbox's own pid namespace,
+so the question is identity, not the number.
+
 ## 10. A repository cannot grant itself anything
 
 ```bash

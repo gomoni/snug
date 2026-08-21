@@ -842,14 +842,39 @@ func TestHostLoopbackClosedFromContainer(t *testing.T) {
 	}
 	c.Close()
 
+	// POSITIVE CONTROL, on the exact binary the container will run: from a
+	// process that CAN reach this listener, netprobe prints the REACHED
+	// spelling the negatives below grep for, naming this address and carrying
+	// the banner. Without it "no REACHED line" has two explanations — the
+	// sandbox held, or netprobe never produces that line here at all — and
+	// issue #243 was three security negatives living on the second one.
+	hostOut, err := exec.Command(probeBin, strconv.Itoa(port)).CombinedOutput()
+	if err != nil {
+		t.Fatalf("control: netprobe failed on the host: %v\n%s", err, hostOut)
+	}
+	if !hasResultVerdict(parseProbeResults(string(hostOut)), "v4-loop", fmt.Sprintf("127.0.0.1:%d", port), "REACHED") {
+		t.Fatalf("control: netprobe run ON THE HOST did not report REACHED for the host's own "+
+			"listener — the negatives below cannot distinguish a closed sandbox from a broken "+
+			"probe:\n%s", hostOut)
+	}
+	if !strings.Contains(string(hostOut), hostBanner) {
+		t.Fatalf("control: netprobe run ON THE HOST did not read the banner this test's "+
+			"escape assertion greps for:\n%s", hostOut)
+	}
+
 	probeOnce := func(withNet bool, tag string) string {
 		proj, _ := target(t)
 		if err := os.WriteFile(filepath.Join(proj, "netprobe"), mustRead(t, probeBin), 0o755); err != nil {
 			t.Fatal(err)
 		}
+		// Cmd carries the PORT ALONE. podman APPENDS Cmd to the image's own
+		// ENTRYPOINT rather than replacing it, so a Cmd of ["/netprobe",
+		// "<port>"] ran the probe as `/netprobe /netprobe <port>` and it read
+		// "/netprobe" as its port — issue #243, three security negatives that
+		// could not fail for a milestone.
 		script := buildScratchProbeImage(tag) + runContainerAndCollectFn + fmt.Sprintf(`
 if build_scratch_probe():
-    run_and_collect(%q, ["/netprobe", "%d"], "host")
+    run_and_collect(%q, ["%d"], "host")
 print("PROBE-COMPLETE", flush=True)
 `, tag, port)
 		if err := os.WriteFile(filepath.Join(proj, "loopback.py"), []byte(script), 0o644); err != nil {
@@ -878,6 +903,28 @@ print("PROBE-COMPLETE", flush=True)
 			t.Fatalf("the container never produced its own RESULT lines (withNet=%v) — it did "+
 				"not actually run:\n%s", withNet, r.out)
 		}
+		// CONTROL: the RESULT lines are about the address this test opened.
+		// The three controls above all held while issue #243 was live — the
+		// payload ran, the image built, RESULT lines appeared — because none
+		// of them asks what the probe aimed at. This one does, and it is the
+		// only thing standing between "the container could not reach the
+		// host's loopback" and "the container never tried".
+		results := parseProbeResults(r.out)
+		want := fmt.Sprintf("127.0.0.1:%d", port)
+		if !hasResult(results, "v4-loop", want) {
+			t.Fatalf("the container's probe never dialled %s (withNet=%v) — every negative "+
+				"below would pass on a sandbox that leaks (issue #243). RESULT lines: %v\n%s",
+				want, withNet, results, r.out)
+		}
+		// A dial that never left the probe process (unparseable address, port
+		// or host name lookup) is not an answer about the network at all.
+		for _, res := range results {
+			if res.verdict == "ERROR" {
+				t.Fatalf("the container's probe reported ERROR rather than a network verdict "+
+					"(withNet=%v): %v — the probe is broken, and its negatives mean nothing\n%s",
+					withNet, res, r.out)
+			}
+		}
 		return r.out
 	}
 
@@ -893,15 +940,62 @@ print("PROBE-COMPLETE", flush=True)
 			t.Errorf("a container (NetworkMode=host, @net=%v) READ the host's loopback banner:\n%s",
 				tc.withNet, out)
 		}
-		if strings.Contains(out, "RESULT v4-loop REACHED") {
-			t.Errorf("a container (NetworkMode=host, @net=%v) REACHED the host's 127.0.0.1 listener:\n%s",
-				tc.withNet, out)
-		}
-		if strings.Contains(out, "RESULT gw REACHED") {
-			t.Errorf("a container (NetworkMode=host, @net=%v) REACHED the gateway address — the "+
-				"one --map-host-loopback actually controls:\n%s", tc.withNet, out)
+		for _, res := range parseProbeResults(out) {
+			if res.verdict != "REACHED" {
+				continue
+			}
+			switch res.label {
+			case "v4-loop", "v6-loop":
+				t.Errorf("a container (NetworkMode=host, @net=%v) REACHED the host's loopback "+
+					"listener at %s:\n%s", tc.withNet, res.addr, out)
+			case "gw":
+				t.Errorf("a container (NetworkMode=host, @net=%v) REACHED the gateway address %s "+
+					"— the one --map-host-loopback actually controls:\n%s", tc.withNet, res.addr, out)
+			}
 		}
 	}
+}
+
+// probeResult is one "RESULT <label> <addr> <verdict> [detail]" line from
+// netprobe. The address is part of the line (issue #243) so that a test
+// asserting a negative can first prove the probe aimed where it was told to:
+// a verdict about the wrong address is not a weaker result, it is no result.
+type probeResult struct {
+	label   string
+	addr    string
+	verdict string
+}
+
+func (p probeResult) String() string { return p.label + " " + p.addr + " " + p.verdict }
+
+func parseProbeResults(out string) []probeResult {
+	var got []probeResult
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 || f[0] != "RESULT" {
+			continue
+		}
+		got = append(got, probeResult{label: f[1], addr: f[2], verdict: f[3]})
+	}
+	return got
+}
+
+func hasResult(results []probeResult, label, addr string) bool {
+	for _, r := range results {
+		if r.label == label && r.addr == addr {
+			return true
+		}
+	}
+	return false
+}
+
+func hasResultVerdict(results []probeResult, label, addr, verdict string) bool {
+	for _, r := range results {
+		if r.label == label && r.addr == addr && r.verdict == verdict {
+			return true
+		}
+	}
+	return false
 }
 
 func mustRead(t *testing.T, path string) []byte {
@@ -1853,7 +1947,12 @@ func holderBin(t *testing.T) string {
 func buildAndStartHolder(tag, token string) string {
 	return buildScratchProbeImage(tag) + fmt.Sprintf(`
 def start_holder(tag, token):
-    body = json.dumps({"Image": "localhost/" + tag, "Cmd": ["/netprobe", token],
+    # Cmd is the token ALONE: podman appends Cmd to the image's ENTRYPOINT
+    # rather than replacing it (issue #243), so naming the binary here made
+    # the holder print "HOLDING /netprobe" and pushed the token to argv[2].
+    # The host-side scan below matches on cmdline, so it survived that either
+    # way -- which is the reason it went unnoticed, not a reason to keep it.
+    body = json.dumps({"Image": "localhost/" + tag, "Cmd": [token],
                         "Tty": True, "HostConfig": {"NetworkMode": "host"}}).encode()
     status, resp = req("POST", "/v1.41/containers/create", body, {"Content-Type": "application/json"})
     print("CREATE: %%d %%s" %% (status, resp.decode(errors="replace")[:300]), flush=True)
@@ -2646,7 +2745,7 @@ func TestContainersDieWithTheEngineWithoutAGracefulStop(t *testing.T) {
 //
 //	pid=1898978 ppid=1898951 pid:[4026534989] .../podman ... system service ...
 //	pid=1899295 ppid=1898978 pid:[4026534989] /usr/bin/conmon --api-version 1 -c 0fd4a62e...
-//	pid=1899298 ppid=1899295 pid:[4026535001] /netprobe /netprobe c0probe-...
+//	pid=1899298 ppid=1899295 pid:[4026535001] /netprobe c0probe-...
 //
 // conmon still double-forks (unchanged by C0); what changed is which
 // process its own grandchild reparents onto, because pid 1 of the engine's
@@ -2788,7 +2887,7 @@ func TestContainerCannotJoinTheEnginesPidNamespace(t *testing.T) {
 if build_scratch_probe():
     # POSITIVE CONTROL: the identical container, WITHOUT PidMode, actually
     # runs through the real engine.
-    run_and_collect(%q, ["/pidnsprobe"], "host")
+    run_and_collect(%q, [], "host")
 
     # The refusal under test: the same create, PLUS PidMode="host".
     body = json.dumps({"Image": "localhost/%s", "Cmd": ["/pidnsprobe"], "Tty": True,
@@ -2865,7 +2964,7 @@ func TestContainerSeesOnlyItsOwnPids(t *testing.T) {
 	tag := "snugtest-ownpids:1"
 	script := buildScratchProbeImageFor(tag, "pidnsprobe") + runContainerAndCollectFn + fmt.Sprintf(`
 if build_scratch_probe():
-    run_and_collect(%q, ["/pidnsprobe"], "host")
+    run_and_collect(%q, [], "host")
 print("PROBE-COMPLETE", flush=True)
 `, tag)
 	if err := os.WriteFile(filepath.Join(proj, "ownpids.py"), []byte(script), 0o644); err != nil {
@@ -3240,6 +3339,14 @@ func isEngineProcess(pid int) bool {
 			sawSystem = true
 		case "service":
 			sawService = true
+		// __inengine carries the engine's whole argv on its OWN argv (it is
+		// what execs it), so it matches `system service` too — for the window
+		// between the stage forking it and the exec, during which it has not
+		// finished building the derived view. A test that took that pid read
+		// the engine's mount namespace BEFORE the grafts were attached and
+		// reported them missing (measured: this test's own control fired).
+		case "__inengine":
+			return false
 		}
 	}
 	return sawSystem && sawService
