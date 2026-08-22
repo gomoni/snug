@@ -507,7 +507,9 @@ func TestMarkerDoesNotReturnUntilItsCmdlineNamesItsArg(t *testing.T) {
 // proof of the exact regression #167 exists to prevent.
 // TestReaperFiresOnEOFAndRemovesTheWholeRunDirectoryAndStandsDownWithoutTouchingIt
 // is issue #167's own reaper test, extended for red team F4: the reaper used
-// to remove only the socket FILE (`rm -f "$SNUG_REAP_SOCK"`), leaving the
+// to remove only the socket FILE (`rm -f "$SNUG_REAP_SOCK"` — a variable
+// startReaper stopped setting in #344; both mentions of it in this file are
+// history, so grep will not find a live one), leaving the
 // rest of the run directory — containers.conf, registries.conf, auth.json,
 // resolv.conf, the generated home/ — behind on the SIGKILL path, because
 // stopLocked's own `os.RemoveAll(e.runDir)` (step 4) does not run when no Go
@@ -549,31 +551,51 @@ func TestReaperFiresOnEOFAndRemovesTheWholeRunDirectoryAndStandsDownWithoutTouch
 			t.Fatal(err)
 		}
 
-		r, err := startReaper(sock, dir)
+		r, err := startReaper(dir)
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The reaper must not name the socket in its own command line, or the
-		// /proc sweep would find snug's own cleanup and report it as a leak.
+		// The reaper must name NO run-specific path in its own command line, or
+		// a /proc sweep matching on path strings finds snug's own cleanup:
+		// reap.go's cmdlineNamesPath reports it as a leaked engine, and
+		// internal/sandbox/teardown.go's confirmTeardown would kill it were it
+		// not exempted by pid.
+		//
+		// The SET, not the site (issue #344 deleted SNUG_REAP_SOCK, and a test
+		// naming only the variable that was deleted would have gone green by
+		// deletion rather than by the property holding). Two strings are
+		// checked: the run directory, which startReaper really is handed, and
+		// the socket path, which it is not handed any more — because the rule
+		// is about what may reach argv, not about which parameter exists this
+		// month.
 		//
 		// This is a NEGATIVE assertion, which is exactly the shape issue #317
 		// warned about elsewhere in this file: read immediately after
 		// startReaper, /proc/<pid>/cmdline is empty 2965/3000 times (the
 		// arg_start window), and an empty cmdline trivially satisfies
-		// "does not contain sock" whether or not the reaper actually avoids
-		// naming it. So the two questions are asked separately, with
+		// "does not contain a path" whether or not the reaper actually avoids
+		// naming one. So the two questions are asked separately, with
 		// DISTINGUISHABLE messages, because they are different bugs: an empty
 		// read means this assertion never ran at all; a populated one
-		// containing sock means the reaper really does leak it.
+		// containing a path means the reaper really does leak it.
 		cmdline := waitCmdline(t, r.cmd.Process.Pid)
 		if cmdline == "" {
 			t.Errorf("the reaper's command line is empty (pid %d) even after waiting — this "+
 				"assertion proved nothing, since an empty cmdline vacuously satisfies "+
-				"'does not name the socket' whether or not the reaper actually avoids it",
-				r.cmd.Process.Pid)
+				"'does not name a run-specific path' whether or not the reaper actually "+
+				"avoids one", r.cmd.Process.Pid)
 		}
-		if strings.Contains(cmdline, sock) {
-			t.Errorf("the reaper's command line names the socket; the sweep will match itself")
+		for _, p := range []struct{ what, path string }{
+			{"this run's directory", dir},
+			{"this run's socket", sock},
+		} {
+			if strings.Contains(cmdline, p.path) {
+				t.Errorf("the reaper's command line names %s (%q); a /proc sweep matching "+
+					"on path strings will match snug's own cleanup process.\n"+
+					"       Every run-specific path this helper needs travels in its "+
+					"ENVIRONMENT (see startReaper), never in argv.\n       cmdline was %q",
+					p.what, p.path, cmdline)
+			}
 		}
 
 		if standDown {

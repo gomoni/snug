@@ -1177,14 +1177,15 @@ func (e *Engine) writeAuthFile() (string, error) {
 // tied to whether the engine has actually started yet, unlike DialLifeline
 // below, because arming it early is what covers a snug killed during the
 // stage's own startup window (creating U+N, waiting for the network), before
-// the engine has been forked at all. It needs only this run's socket path,
+// the engine has been forked at all. It needs only this run's DIRECTORY,
 // already fixed on the Engine by New; it does not need the engine's socket to
-// exist yet, still less the engine's own binary path (issue #167 removed the
-// reaper's own host-side `podman stop`, so it no longer needs one at all).
+// exist yet, nor the socket's path at all (issue #344 deleted the unread
+// SNUG_REAP_SOCK), still less the engine's own binary path (issue #167 removed
+// the reaper's own host-side `podman stop`, so it no longer needs one).
 func (e *Engine) ArmReaper() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	r, err := startReaper(e.sock, e.runDir)
+	r, err := startReaper(e.runDir)
 	if err != nil {
 		return err
 	}
