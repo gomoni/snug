@@ -43,10 +43,10 @@ Where it is silent, ambiguous, or does not survive contact with the code, do not
 close the gap with a plausible guess — the guess is a policy decision wearing an
 implementation's clothes. Name the gap and hand it back.
 
-## Two rules you can break by hand, without deciding anything
+## Rules you can break by hand, without deciding anything
 
 You have `Edit` and `Write` and the agents that own these rules do not, so you
-are the last line on both.
+are the last line on all of them.
 
 - **Never put an executable anywhere the payload can write.** Everything snug
   stages goes in `policy.StagedBinDir` (`/snug/bin`), which is on the root
@@ -62,6 +62,24 @@ are the last line on both.
   setting; `GIT_CONFIG_GLOBAL`, `GH_CONFIG_DIR`, `NPM_CONFIG_USERCONFIG`,
   `PIP_CONFIG_FILE`, `CARGO_HOME`, `DOCKER_CONFIG` are pointers to a file a human
   can read. snug authors only the second kind. Same file, "Generate, don't bind".
+- **To signal or track a process for its lifetime, pin it with a pidfd — never
+  `kill(2)` a pid you learned by scanning `/proc` or reading a file.** A bare
+  numeric pid is reuse-PRONE: between learning the number and the signal, the
+  process can be reaped and its number handed to an unrelated one, which you then
+  SIGKILL. `unix.PidfdOpen` pins the task the number named at open time, so
+  `unix.PidfdSendSignal` can never land on a later reuse; re-verify identity
+  through the pin (e.g. re-read the cmdline) before signalling, because the number
+  could have been recycled *before* you opened the pidfd. The one safe numeric
+  case is **your own `exec.Cmd` child you have not yet `Wait()`ed** — it stays a
+  zombie holding its number until you reap it, so `cmd.Process.Kill()` cannot hit
+  a stranger; a one-line comment saying so is welcome. Reading `/proc/<pid>/…` for
+  DATA (starttime, ns inodes, cmdline, mountinfo) by number is fine — the rule is
+  about SIGNALLING and liveness-identity, not every appearance of a pid. Caveat
+  (#167): `pidfd_open` takes a pid in the CALLER's namespace, and the engine's
+  recorded pids are numbered in the ENGINE's namespace — confirm which namespace a
+  scanned pid is numbered in before pinning it. Live instances converted: the
+  orphan sweep (#294) and `engine/reap.go` `signalOwned` (#298); own-child
+  `cmd.Process.Kill()` sites are left as-is.
 
 ## A verified path is a type, not a string
 

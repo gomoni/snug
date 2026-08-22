@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Identity by PATH, not by process tree.
@@ -57,30 +59,78 @@ func ownedPIDs(paths []string, exclude map[int]bool) []int {
 		if err != nil || exclude[pid] {
 			continue
 		}
-		raw, err := os.ReadFile("/proc/" + ent.Name() + "/cmdline")
-		if err != nil || len(raw) == 0 {
-			// Gone, or another user's. Either way not actionable.
-			continue
-		}
-		cmdline := strings.ReplaceAll(string(raw), "\x00", " ")
-		for _, p := range paths {
-			if p != "" && strings.Contains(cmdline, p) {
-				out = append(out, pid)
-				break
-			}
+		if cmdlineNamesPath(pid, paths) {
+			out = append(out, pid)
 		}
 	}
 	sort.Ints(out)
 	return out
 }
 
-// signalOwned sends sig to every process that owns one of paths.
-func signalOwned(paths []string, exclude map[int]bool, sig syscall.Signal) []int {
-	pids := ownedPIDs(paths, exclude)
-	for _, pid := range pids {
-		_ = syscall.Kill(pid, sig)
+// cmdlineNamesPath reports whether pid's command line contains one of paths.
+// Reading /proc/<pid>/cmdline for DATA by numeric pid is reuse-safe — the worst
+// a recycled number does is answer for the wrong process, and the caller that
+// SIGNALS re-checks this through a pidfd (see signalPinned). A read error (pid
+// gone, another user's) is "does not name us".
+func cmdlineNamesPath(pid int, paths []string) bool {
+	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
+	if err != nil || len(raw) == 0 {
+		return false
 	}
-	return pids
+	cmdline := strings.ReplaceAll(string(raw), "\x00", " ")
+	for _, p := range paths {
+		if p != "" && strings.Contains(cmdline, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// signalOwned sends sig to every process that owns one of paths, pinning each
+// with a pidfd and re-verifying identity through the pin before it signals.
+// It returns the pids it actually signalled.
+//
+// The pin is the point, not decoration. ownedPIDs learned each pid by scanning
+// /proc; between that scan and the kill the pid can be reaped and its number
+// handed to an unrelated process, and a bare syscall.Kill(pid) would then
+// SIGKILL that innocent process — the exact reuse TOCTOU #294 removed from the
+// orphan sweep. pidfd_open pins the task the number named AT OPEN TIME, so
+// pidfd_send_signal can never land on a later reuse; and re-reading the cmdline
+// after the open drops a number the scan matched but that no longer names us
+// (recycled, or an engine that exited between scan and signal).
+//
+// These pids are HOST-namespace: ownedPIDs reads the host /proc and matches the
+// socket path in a host command line, so pidfd_open — which takes a pid in the
+// caller's namespace — refers to the same task. This never sees the engine's
+// OWN pids, which are numbered in its own namespace (#167) and are not what this
+// matches; it matches the host-visible process serving the socket.
+func signalOwned(paths []string, exclude map[int]bool, sig syscall.Signal) []int {
+	var signalled []int
+	for _, pid := range ownedPIDs(paths, exclude) {
+		if signalPinned(pid, paths, sig) {
+			signalled = append(signalled, pid)
+		}
+	}
+	return signalled
+}
+
+// signalPinned pins pid with a pidfd, confirms the pinned process still names
+// one of paths, and only then sends sig. It reports whether it signalled.
+func signalPinned(pid int, paths []string, sig syscall.Signal) bool {
+	pidfd, err := unix.PidfdOpen(pid, 0)
+	if err != nil {
+		// ESRCH: reaped between the scan and here. Nothing to signal, and
+		// crucially nothing to signal BY NUMBER — the number may already be
+		// someone else's.
+		return false
+	}
+	defer unix.Close(pidfd)
+	if !cmdlineNamesPath(pid, paths) {
+		// The number was recycled to a process that is not this run's engine.
+		// The pidfd pins that innocent process; do not signal it.
+		return false
+	}
+	return unix.PidfdSendSignal(pidfd, sig, nil, 0) == nil
 }
 
 // waitQuiet polls until nothing owns paths any more, or the budget runs out.

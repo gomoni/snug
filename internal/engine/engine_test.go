@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -280,6 +281,52 @@ func TestOwnedPIDsMatchesOnlyThisEnginesPaths(t *testing.T) {
 	if len(excl) > 0 {
 		t.Logf("note: %d process(es) other than the ones under test name %s:\n%s",
 			len(excl), e.sock, describe(excl))
+	}
+}
+
+// TestSignalOwnedReverifiesThroughAPidfdBeforeKilling is #298's regression: the
+// signal path pins each discovered pid with a pidfd and re-verifies the pinned
+// process still names the engine before it kills, so a number the scan matched
+// but that no longer belongs to this run is never signalled.
+//
+// The negative is the load-bearing half and models the reuse TOCTOU directly: a
+// live process whose command line does NOT name our socket must survive being
+// handed to the signal path by pid — the case where the number ownedPIDs matched
+// has since been reaped and recycled to something unrelated. Without the
+// re-verify (a bare syscall.Kill by number) this innocent process dies.
+//
+// The positive control is a process that DOES name the socket: it must actually
+// die from the SIGKILL, otherwise "the other one survived" would pass equally on
+// a signal path that kills nothing at all.
+func TestSignalOwnedReverifiesThroughAPidfdBeforeKilling(t *testing.T) {
+	sock := "unix://" + filepath.Join(t.TempDir(), "podman-298.sock")
+	paths := []string{sock}
+
+	mine := marker(t, sock)                          // names our socket
+	other := marker(t, "unrelated-daemon --serve 9") // does not
+
+	// Negative: the non-matching process is pinned, found not to name us, and
+	// left alone.
+	if signalPinned(other.Process.Pid, paths, syscall.SIGKILL) {
+		t.Fatalf("signalPinned killed pid %d, which does not name %s — the reuse guard did "+
+			"not re-verify identity through the pidfd", other.Process.Pid, sock)
+	}
+	if err := syscall.Kill(other.Process.Pid, 0); err != nil {
+		t.Fatalf("the unrelated process (pid %d) is gone after signalPinned; it must survive: %v",
+			other.Process.Pid, err)
+	}
+
+	// Positive control: the matching process is signalled, and really dies.
+	if !signalPinned(mine.Process.Pid, paths, syscall.SIGKILL) {
+		t.Fatalf("signalPinned did not signal pid %d, which names %s", mine.Process.Pid, sock)
+	}
+	st, err := mine.Process.Wait()
+	if err != nil {
+		t.Fatalf("waiting on the matching process (pid %d) failed: %v", mine.Process.Pid, err)
+	}
+	if ws, ok := st.Sys().(syscall.WaitStatus); !ok || !ws.Signaled() || ws.Signal() != syscall.SIGKILL {
+		t.Errorf("positive control: the matching process did not die from SIGKILL (state %v); "+
+			"a signal path that kills nothing would pass the negative above vacuously", st)
 	}
 }
 
