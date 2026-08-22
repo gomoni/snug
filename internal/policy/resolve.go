@@ -798,6 +798,25 @@ func (p *Policy) join(m Mount) error {
 	old.Access = old.Access.Join(m.Access)
 	old.Optional = old.Optional && m.Optional
 	old.From = union(old.From, m.From)
+	// Authored is a MEET, and it is the one field here that gets less
+	// permissive on merge — which is not a demotion of ACCESS and so not the
+	// restriction operation invariant 1 forbids. Authorship is a claim about
+	// PROVENANCE ("a mount snug wrote ITSELF", types.go), and a mount any
+	// profile contributed to is by that definition not one, so the merged
+	// entry must not keep snug's exemption from rejectMasking RULE 3 or from
+	// rejectEndpointSource.
+	//
+	// MEASURED before this line existed (issue #291, part 1c): a profile's rw
+	// grant merged into an authored mount produced `Authored=true Access=rw
+	// From=[(snug) hostile]`, and both rules skipped it. Unreachable in the
+	// shipped path ONLY because Resolve folds profiles (step 3) before every
+	// Replace/yieldTo (step 3b/4) — nothing asserted that ordering, so the
+	// property rested on statement order in one function. It no longer does.
+	//
+	// Commutative and idempotent like every other join here, so Resolve's
+	// fixpoint is untouched, and it fails CLOSED: losing the exemption means
+	// Validate NAMES the profile instead of waving it through.
+	old.Authored = old.Authored && m.Authored
 	p.Mounts[m.Guest] = old
 	return nil
 }

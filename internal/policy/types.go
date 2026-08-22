@@ -159,8 +159,27 @@ type Mount struct {
 	// still: the strings are "(snug)", "identity:<name>", "@claude" and
 	// "(containers)", so no single match covers them.
 	//
-	// Set ONLY by Policy.Replace, which is the only permitted writer of p.Mounts
-	// once Resolve has returned. Nothing a profile can write reaches it.
+	// THREE writers set it, and naming only Policy.Replace was false — the
+	// sentence this replaces (issue #291 part 2) survived here for a milestone
+	// after #270 corrected the identical claim in validate.go's two comments,
+	// which is this project's most-repeated shape: a rule written once and
+	// applied to some of its sites. Each writer owes its own reason why a
+	// profile cannot reach it:
+	//
+	//	Policy.Replace   snug's own post-resolve writes; a profile cannot
+	//	                 express one at all
+	//	Policy.Graft     writes p.Grafts, a different map neither exemption
+	//	                 reads
+	//	Policy.yieldTo   installs a base mount ONLY at an unclaimed guest, so a
+	//	                 profile's grant is left UNauthored and RULE 4 names it
+	//
+	// Nothing a profile can write reaches any of the three, and join — the one
+	// operation a profile's grant DOES reach — meets the field rather than
+	// inheriting it (resolve.go), so a mount a profile contributed to cannot
+	// come out of Resolve wearing the exemption.
+	// TestAuthoredWritersAreTheThreeTheCommentsName holds this list to the
+	// module's actual writers, and TestJoinDoesNotInheritAuthored holds the
+	// last sentence.
 	Authored bool
 
 	// HostDestExists states a FACT the caller measured, not a permission: the
