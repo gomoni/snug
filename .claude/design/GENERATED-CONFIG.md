@@ -1,24 +1,25 @@
 # Generating a tool's configuration inside the sandbox
 
-**Status: the rule.** Six files are generated under it today. Three have their
-own design document — [`GIT-CONFIG.md`](GIT-CONFIG.md) (`@git-ro`,
+**Status: the rule.** Several files are generated under it today, four with a
+design document of their own — [`GIT-CONFIG.md`](GIT-CONFIG.md) (`@git-ro`,
 `~/.gitconfig`), [`CLAUDE-SETTINGS.md`](CLAUDE-SETTINGS.md) (`@claude`,
-`~/.claude/settings.json`) and
+`~/.claude/settings.json`), [`STORAGE-CONF.md`](STORAGE-CONF.md) and
 [`SIGNATURE-POLICY.md`](SIGNATURE-POLICY.md) (the container engine's
-`policy.json`) — and three more are the container engine's, authored in
-`internal/engine`: `containers.conf` (issue #133), `registries.conf` (#137) and
-`storage.conf` (#212).
-
-`policy.json` is the one that is a PROJECTION rather than an allowlisted
-reconstruction, and the difference is the rule's sharpest edge: the host
-configured an enforcement posture, so generating a permissive file would be
-snug deciding that verification does not apply here. Where the other five ask
-"which keys carry no execution", it asks "can snug reproduce this requirement
-faithfully" — and refuses the run when the answer is no. **Count them in the tree, not here.** The engine three
+`storage.conf` and `policy.json`) — and the rest are the container engine's,
+authored in `internal/engine`: `containers.conf` (issue #133) and
+`registries.conf` (#137). **Count them in the tree, not here.** The engine ones
 arrived for a reason this document did not anticipate and which is worth
 carrying: under a **derived** mount view, a config naming a path snug does not
 own is a path snug cannot move, so authoring the file stopped being tidiness and
 became load-bearing.
+
+`policy.json` is the one that is a PROJECTION rather than an allowlisted
+reconstruction, and the difference is the rule's sharpest edge. The others answer
+"which keys carry no execution" and drop the rest; this one answers "can snug
+reproduce this requirement faithfully", because the host configured an
+enforcement posture and generating a permissive file over it would be snug
+deciding that verification does not apply here. Where it cannot reproduce, it
+refuses the run — a drop would be the silent downgrade.
 
 `npm`, `cargo`, `docker` and `pip` are queued
 behind them in CLAUDE.md's "Generate, don't bind" bullet. This document is what
