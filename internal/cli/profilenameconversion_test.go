@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -79,6 +80,13 @@ func productionGoFiles(t *testing.T) (root string, files []string) {
 	t.Helper()
 	root = filepath.Join("..", "..")
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		// A source sweep walks a tree other packages' tests are writing in. An entry
+		// that vanished between its parent's ReadDir and this call is not a source
+		// file and is not this sweep's business: skipping it keeps a failure in
+		// THIS package from being caused by another one (issue #350).
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}

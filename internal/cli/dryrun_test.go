@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -52,12 +53,21 @@ func loadTestRegistry(t *testing.T) profile.Registry {
 //     red team lost twenty minutes to it before deciding the tree was innocent.
 //
 // So the root is one the test OWNS: $SNUG_TEST_FIXTURE_ROOT if the caller set
-// one, else $HOME, else the package directory as a last resort. And the property
-// the old comment stated in prose is now CHECKED rather than assumed, by the
-// only predicate that can be right about it — the floor policy's own mounts. A
-// selection of NO profiles still carries snug's own /tmp, /proc and /dev, so
-// "does anything cover this path with nothing selected" is exactly the question,
-// asked of the code that will answer it later.
+// one, else $HOME, else os.UserCacheDir() ($XDG_CACHE_HOME, which can name a
+// writable place when $HOME is not one). NEVER a path inside the checkout: a
+// fixture under the module root appears and vanishes while other packages' tests
+// walk that tree, and a leftover is committable by a routine `git add -A`
+// (issue #350). If none of the three works the fixture is a FATAL error naming
+// the variable, not a silent fallback into the source tree.
+//
+// And the property the old comment stated in prose is CHECKED rather than
+// assumed, by the only predicate that can be right about it — the floor policy's
+// own mounts. A selection of NO profiles still carries snug's own /tmp, /proc
+// and /dev, so "does anything cover this path with nothing selected" is exactly
+// the question, asked of the code that will answer it later. It is a SELECTION
+// criterion rather than an assertion after the fact: a candidate that lands
+// under one of snug's own mounts is removed and the next one tried, so a
+// checkout under /tmp degrades to $HOME instead of failing the suite.
 func testTree(t *testing.T) (home, target string) {
 	t.Helper()
 
@@ -68,48 +78,66 @@ func testTree(t *testing.T) (home, target string) {
 	if h, err := os.UserHomeDir(); err == nil && h != "" {
 		roots = append(roots, h)
 	}
-	roots = append(roots, ".")
+	if c, err := os.UserCacheDir(); err == nil && c != "" {
+		roots = append(roots, c)
+	}
 
-	var root string
-	var errs []string
+	var abs string
+	var rejected []string
 	for _, base := range roots {
 		r, err := os.MkdirTemp(base, "snug-dryrun-fixture-")
 		if err != nil {
-			errs = append(errs, err.Error())
+			rejected = append(rejected, fmt.Sprintf("%s (%v)", base, err))
 			continue
 		}
-		root = r
+		a, err := filepath.Abs(r)
+		if err != nil {
+			os.RemoveAll(r)
+			rejected = append(rejected, fmt.Sprintf("%s (%v)", base, err))
+			continue
+		}
+		// The tree is built BEFORE the candidate is judged: Resolve is handed
+		// this home as both Target and Home, and it does not answer for a
+		// target that does not exist.
+		h := filepath.Join(a, "home", "u")
+		if err := os.MkdirAll(filepath.Join(h, "proj", "sub"), 0o755); err != nil {
+			os.RemoveAll(r)
+			rejected = append(rejected, fmt.Sprintf("%s (%v)", base, err))
+			continue
+		}
+		if m, covered := floorMountCovering(t, h); covered {
+			os.RemoveAll(r)
+			rejected = append(rejected, fmt.Sprintf("%s (under %s, which snug mounts itself as %s)",
+				base, m.Guest, strings.Join(m.From, "+")))
+			continue
+		}
+		abs = a
 		break
 	}
-	if root == "" {
-		t.Fatalf("no writable root for the fixture tree (%s). Set SNUG_TEST_FIXTURE_ROOT to a "+
-			"directory that is NOT under any path snug mounts itself — /tmp is not one",
-			strings.Join(errs, "; "))
+	if abs == "" {
+		t.Fatalf("no usable root for the fixture tree. Tried: %s.\n"+
+			"Set SNUG_TEST_FIXTURE_ROOT to a writable directory that is NOT under any path snug "+
+			"mounts itself — /tmp is not one — and NOT inside this checkout, because a fixture "+
+			"under the module root races the source sweeps in internal/policy and is committable "+
+			"by a routine `git add -A` (issue #350).",
+			strings.Join(rejected, "; "))
 	}
-	t.Cleanup(func() { os.RemoveAll(root) })
-	abs, err := filepath.Abs(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(func() { os.RemoveAll(abs) })
 	home = filepath.Join(abs, "home", "u")
 	target = filepath.Join(home, "proj", "sub")
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	assertFixtureIsOutsideSnugsOwnMounts(t, home)
 	return home, target
 }
 
-// assertFixtureIsOutsideSnugsOwnMounts fails the fixture, loudly and with the
-// fix in the message, rather than letting the test it feeds fail as though the
-// code were wrong.
+// floorMountCovering reports the mount snug authors over a candidate fixture
+// home, if any — the predicate testTree selects on, so a bad candidate is
+// rejected and the next one tried rather than failing the suite.
 //
 // It resolves the FLOOR — no profiles at all — because that is precisely the set
 // of mounts snug authors regardless of what anyone selected, and asks
 // mountedAt(), the same helper pathAnnotation uses. Reimplementing the check
 // with a list of paths ("/tmp, /proc, /dev") would be a second copy of a fact
 // resolve.go already holds, and the copy is what drifts.
-func assertFixtureIsOutsideSnugsOwnMounts(t *testing.T, home string) {
+func floorMountCovering(t *testing.T, home string) (policy.Mount, bool) {
 	t.Helper()
 	reg, err := profile.Builtins()
 	if err != nil {
@@ -126,14 +154,7 @@ func assertFixtureIsOutsideSnugsOwnMounts(t *testing.T, home string) {
 		t.Fatal("Resolve returned no policy for the floor selection, so the fixture's location " +
 			"was not checked at all — see its doc comment for why it returns one with the error")
 	}
-	if m, ok := mountedAt(floor, home); ok {
-		t.Fatalf("the fixture home %s is under %s, which snug mounts ITSELF (%s) with no profile "+
-			"selected. Every annotation this suite checks would then describe that mount rather "+
-			"than the grant under test — a fixture bug wearing the exact costume of the defect "+
-			"these tests exist to catch. Set SNUG_TEST_FIXTURE_ROOT to a directory outside it, "+
-			"or move this checkout out of %s.",
-			home, m.Guest, strings.Join(m.From, "+"), m.Guest)
-	}
+	return mountedAt(floor, home)
 }
 
 func resolveFor(t *testing.T, sel []policy.ProfileName) *policy.Policy {
