@@ -281,7 +281,7 @@ var refusedHostConfig = []string{
 	"Sysctls", "DNS", "DNSSearch", "DNSOptions", "ExtraHosts",
 	"MaskedPaths", "ReadonlyPaths", "Annotations",
 	"PortBindings", "PublishAllPorts",
-	"LogConfig", "StorageOpt", "CgroupParent", "Isolation",
+	"LogConfig", "ContainerIDFile", "StorageOpt", "CgroupParent", "Isolation",
 }
 
 var refusalReason = map[string]string{
@@ -332,6 +332,37 @@ var refusalReason = map[string]string{
 		"then writes that file ON THE HOST as your uid — an arbitrary host-file write, " +
 		"needing no privileges. The redteam agent used it to create a file in a $HOME " +
 		"the sandbox sees only as an empty tmpfs",
+	// Issue #305, found by a redteam sweep of this proxy. Same SHAPE as
+	// LogConfig one line up — a client-named path an engine component opens on
+	// snug's side of the proxy — and it was the one field of that shape the
+	// list did not carry.
+	//
+	// MEASURED against podman 6.0.2 over its own API socket, because the issue
+	// filed the write side as the open question and the answer turned out to
+	// be the wrong question:
+	//
+	//	create with ContainerIDFile   201, and `inspect` echoes the path back
+	//	start                         204, and NO file appears. podman does NOT
+	//	                              write the cidfile server-side; the docker
+	//	                              CLI writes its own, client-side
+	//	DELETE the container          the host file AT THAT PATH IS UNLINKED
+	//
+	// So it is not an arbitrary-write primitive, it is an arbitrary-DELETE
+	// one, and it is cheaper than the write would have been: create + delete,
+	// two calls, no start, no image ever run. A file planted at the path
+	// beforehand was gone after removal; the control — the identical sequence
+	// with no ContainerIDFile — left it untouched. Executed by the engine, as
+	// the host user, on a path the client chose.
+	//
+	// The refusal does not rest on any of that. It rests on the same sentence
+	// every other entry here rests on: snug names what a container may touch.
+	// The measurement decides the SEVERITY, not the decision.
+	"ContainerIDFile": "it is a client-named host path the engine records against the " +
+		"container and UNLINKS when the container is removed — measured on podman 6.0.2: " +
+		"create then delete, no start needed, and a file planted at that path was gone. " +
+		"That is an arbitrary host-file delete, running as your uid, resolved in the " +
+		"engine's derived view — the sandbox's own tree plus this run's grafts, the " +
+		"read-write container store among them. snug names what a container may touch",
 	"StorageOpt": "storage driver options reach the host's storage layer",
 	// Not "outside this sandbox's own" any more, which is what this said
 	// before issue #154 §B. __inengine clones with CLONE_NEWCGROUP and mounts
