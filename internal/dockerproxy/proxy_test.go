@@ -290,8 +290,16 @@ func TestEscapeFieldsAreRefused(t *testing.T) {
 // verbatim. The agent bound the host's ~/.ssh into a privileged container with
 // host networking and read a private key out.
 //
-// A filter that understands one schema must never be handed the other, so
-// body-bearing libpod endpoints are refused outright rather than forwarded.
+// A filter that understands one schema must never be handed the other, so a
+// state-changing libpod endpoint this filter has not read is refused outright
+// rather than forwarded.
+//
+// This test enumerates the six routes the escape was measured on, and that is
+// all it can prove — issue #340 was two segments it does not name. The
+// rule-shaped sweep, derived from allowed()'s own switch so a route cannot
+// arrive unexamined, is TestEveryRouteTheRouterCanReachIsClassifiedForLibpod
+// and TestNoUnexaminedLibpodBodyReachesTheEngine in routeclassification_test.go.
+// Keep both: this one pins the measured escape to the mechanism that stops it.
 func TestLibpodNativeBodyIsRefusedRatherThanForwardedUnexamined(t *testing.T) {
 	sock, eng, _ := startProxy(t)
 
@@ -309,7 +317,7 @@ func TestLibpodNativeBodyIsRefusedRatherThanForwardedUnexamined(t *testing.T) {
 		"/v5.0.0/libpod/play/kube",
 	} {
 		t.Run(path, func(t *testing.T) {
-			refuse(t, sock, eng, path, escape, "the libpod-native API is not supported")
+			refuse(t, sock, eng, path, escape, "snug does not filter the libpod-native API")
 		})
 	}
 
@@ -333,10 +341,10 @@ func TestLibpodNativeBodyIsRefusedRatherThanForwardedUnexamined(t *testing.T) {
 		if !ok || !libpod {
 			t.Fatalf("normaliseFull did not recognise the libpod prefix: %v %v %v", segs, libpod, ok)
 		}
-		if bodyBearing(segs, http.MethodGet) {
+		if !safeMethod(http.MethodGet) {
 			t.Error("a GET carries no body to misread and must not be refused as libpod")
 		}
-		if !allowed(segs) {
+		if !allowed(segs, http.MethodGet) {
 			t.Error("listing containers over libpod should still be allowed")
 		}
 		_ = before
@@ -458,36 +466,55 @@ func TestDockerCpStaysRefusedWithTheExecTarAlternativeNamed(t *testing.T) {
 	refuse(t, sock, eng, "/v1.41/containers/abc/archive", "", "docker exec")
 }
 
+// TestEndpointAllowlist is the review artifact for this file: there is no golden
+// argv here, so the table IS the boundary a human reads.
+//
+// It carries a METHOD column since issue #339. allowed() used to be
+// method-blind, so `GET /containers/json` and `DELETE /containers/<id>` were
+// one entry and reading a resource implied destroying it — read the DELETE rows
+// below next to the GET rows on the same prefix.
 func TestEndpointAllowlist(t *testing.T) {
 	for _, tc := range []struct {
-		path string
-		segs []string
-		want bool
+		method string
+		path   string
+		want   bool
 	}{
-		{"/v1.41/_ping", nil, true},
-		{"/v1.41/containers/json", nil, true},
-		{"/v5.0.0/libpod/containers/json", nil, true},
-		{"/v1.41/containers/abc/start", nil, true},
+		{"GET", "/v1.41/_ping", true},
+		{"GET", "/v1.41/containers/json", true},
+		{"GET", "/v5.0.0/libpod/containers/json", true},
+		{"POST", "/v1.41/containers/abc/start", true},
 		// attach and exec are permitted: the container is already the sandbox's
 		// own, created under this policy, so a shell in it grants nothing that
 		// running it did not. Refusing attach broke `docker run` outright.
-		{"/v1.41/containers/abc/exec", nil, true},
-		{"/v1.41/containers/abc/attach", nil, true},
+		{"POST", "/v1.41/containers/abc/exec", true},
+		{"POST", "/v1.41/containers/abc/attach", true},
 		// These are host-filesystem channels and stay refused.
-		{"/v1.41/containers/abc/archive", nil, false},
-		{"/v1.41/containers/abc/export", nil, false},
-		{"/v1.41/containers/abc/commit", nil, false},
-		{"/v1.41/build", nil, false},
-		{"/v1.41/images/load", nil, false},
-		{"/v1.41/commit", nil, false},
+		{"GET", "/v1.41/containers/abc/archive", false},
+		{"GET", "/v1.41/containers/abc/export", false},
+		{"POST", "/v1.41/containers/abc/commit", false},
+		{"POST", "/v1.41/build", false},
+		{"POST", "/v1.41/images/load", false},
+		{"POST", "/v1.41/commit", false},
+		// Issue #339. Reading the engine's state is not destroying it, and the
+		// pairs are deliberately adjacent: what changed is the verb, not the
+		// path. The three DELETE verdicts with something to say — containers
+		// (scoped to this run), images and volumes (refused) — are taken by
+		// their own cases in ServeHTTP before allowed() runs, so what this table
+		// pins is that allowed() no longer waves them through on the strength of
+		// the GET.
+		{"GET", "/v1.41/images/json", true},
+		{"GET", "/v1.41/volumes", true},
+		{"GET", "/v1.41/system/df", true},
+		{"POST", "/v1.41/system/check", false},
+		{"POST", "/v5.0.0/libpod/system/prune", false},
 	} {
 		segs, ok := normalise(tc.path)
 		if !ok {
 			t.Errorf("%s failed to normalise", tc.path)
 			continue
 		}
-		if got := allowed(segs); got != tc.want {
-			t.Errorf("%s -> allowed=%v, want %v (segs %v)", tc.path, got, tc.want, segs)
+		if got := allowed(segs, tc.method); got != tc.want {
+			t.Errorf("%s %s -> allowed=%v, want %v (segs %v)", tc.method, tc.path, got, tc.want, segs)
 		}
 	}
 }
