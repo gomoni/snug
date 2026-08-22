@@ -189,8 +189,20 @@ func killOrphanInit(st runState, statePath string) {
 		return // ESRCH: already gone, which is the ordinary case
 	}
 	defer unix.Close(pidfd)
-	// pid is pinned from here: the number cannot be recycled while pidfd is
-	// held, so the checks below and the kill all name the same task.
+	// The TASK is pinned from here; the NUMBER is not (issue #345). Measured on
+	// this kernel — see this function's doc comment: a reaped pid's number is
+	// handed out again while the fd is still open. What the pidfd guarantees is
+	// that a signal THROUGH IT reaches the task it opened or returns ESRCH, so
+	// the kill below fails closed.
+	//
+	// So the checks between here and that kill do NOT all name the same task by
+	// virtue of the pin — procStartTime and procNamespaceInodes below read
+	// /proc/<pid> BY NUMBER, and it is what they COMPARE (the recorded start
+	// time, the recorded namespace inodes) that establishes identity, not the
+	// pin. This comment claimed otherwise for as long as the doc comment above
+	// did, and was left behind when that one was corrected: a rule fixed at the
+	// site the reporter quoted while a second copy survived twelve lines below
+	// it, inside the function the corrected header governs.
 	start, err := procStartTime(pid)
 	if err != nil {
 		return // gone between open and stat, or /proc unreadable: not provably ours
