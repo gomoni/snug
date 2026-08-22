@@ -676,6 +676,33 @@ NO_COLOR = true
 # resolved policy (Tier B; Tier C makes it structural via a derived mount
 # view instead of a private copy of the host tree).
 #
+# ABUSE (post-#284 fix): a hostile process inside the sandbox can use
+# @podman-socket to bind, into a container, any path this sandbox can already
+# see whose every path component it cannot rewrite — so a container's mounts
+# are a subset of the sandbox's, and a name the payload owns can no longer be
+# re-pointed at snug's own engine store, socket or toolchain between create and
+# start (the anchored source rule, policy.CheckEngineBindSource).
+#
+# ERGONOMIC COST, and it is LARGE — measured, not estimated. A source is
+# forwarded only if EVERY name on its path is anchored, so `-v
+# $SNUG_TARGET/build:/out` is refused (`build` is a plain name in a directory
+# this sandbox can write), and so, usually, is `-v $SNUG_TARGET:/work` itself:
+# a target's path normally runs through plain directory names inside the
+# home tmpfs or /tmp, and those are renameable. Measured: with the target at
+# $HOME/x/y/proj/sub, the payload ran `mv "$HOME/x" other` successfully,
+# carrying both mounts with it; with the target under /tmp/..., create refused
+# the target naming the temp-root component. Anchored, and therefore still
+# mountable: a read-only bind of `/usr` (201 against a real engine), and a
+# target whose own parent is a mount root sitting directly in the home tmpfs
+# (renaming a mount root is EBUSY from inside — measured, M1).
+#
+# So with this profile as it stands, most `-v` requests naming the target are
+# refused. That is a refusal, never a silent narrowing: nothing is mounted
+# with less than what was asked for, and no container gains reach the sandbox
+# lacks. Widening it back needs a source path snug OWNS in the engine's view
+# (a per-bind graft under /snug/engine), which is a design decision, not a
+# tweak to this rule.
+#
 # The engine runs in the SANDBOX's netns now (issue #63, Tier B), so
 # `@podman-socket` without `@net` is genuinely offline, containers included.
 # That is why `net` is NO LONGER included below: offline is once again the

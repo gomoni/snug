@@ -482,9 +482,40 @@ func (p *Proxy) checkOne(source, dest string, ro bool) (mount, error) {
 			"mount it either. Grant it to the sandbox first, or mount a path inside %s",
 			source, access, p.pol.Target)
 	}
-	return mount{Type: "bind", Source: filepath.Clean(source), Target: dest, ReadOnly: ro}, nil
+
+	// The engine resolves a bind SOURCE in its own derived view, not in the
+	// sandbox's — sound only while the two name it identically. checkOne has
+	// so far sampled the HOST filesystem and is about to forward the host
+	// string as-is; splitSpec accepts host:guest grants where they diverge
+	// (issue #284 §3.3). Refuse rather than forward a spelling the engine
+	// would resolve to something else — or to nothing this check ever judged.
+	guest, ok := p.pol.EngineGuestPath(source)
+	if !ok || guest != source {
+		return mount{}, fmt.Errorf("mount source %s is not visible to the container engine at "+
+			"the same path this sandbox sees it at, so what gets bound at container start is not "+
+			"what this check judged. Grant a path whose guest and host spelling are identical", source)
+	}
+
+	// The engine re-resolves this same path string a SECOND time, from a
+	// separate process, at container START — a distinct client request with
+	// an attacker-controlled gap after this check. Refuse any source where a
+	// name on the path can still be re-pointed in that gap (issue #284).
+	if err := p.pol.CheckEngineBindSource(guest); err != nil {
+		return mount{}, err
+	}
+
+	return mount{Type: "bind", Source: guest, Target: dest, ReadOnly: ro}, nil
 }
 
+// mount is deliberately these four fields and no others: HostConfig.Mounts
+// from the client is re-serialised through this struct rather than forwarded
+// verbatim, so a field this package has not modelled — notably
+// BindOptions.NonRecursive or a propagation mode — cannot be smuggled through
+// to the engine. That matters for CheckEngineBindSource's M4 clause (issue
+// #284): an unmodelled propagation setting is exactly the kind of thing that
+// could make a submount visible or invisible in a way the anchored-source
+// rule did not account for, so re-serialising to this fixed shape is
+// load-bearing, not incidental.
 type mount struct {
 	Type     string `json:"Type"`
 	Source   string `json:"Source"`

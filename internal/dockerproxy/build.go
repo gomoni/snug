@@ -987,6 +987,22 @@ func checkSeccompProfile(p *Proxy, v string) (string, error) {
 			"could have written itself — which is `unconfined` with extra steps. A seccomp "+
 			"profile must be one the sandbox can read but did not author", v)
 	}
+	// The engine reads this path itself, a second time, when it applies the
+	// profile — the same create/start TOCTOU checkOne closes for a bind
+	// source (issue #284): a name on the path swapped after this check and
+	// before the engine reads it re-points what gets applied as security
+	// policy.
+	//
+	// THIS AND THE `return real` BELOW ARE LAYERED, NOT ALTERNATIVES, and the
+	// rebase that brought them together is where that could have been lost.
+	// Forwarding the RESOLVED path narrows the window — the engine no longer
+	// re-walks the symlink the caller named — and does not close it, because
+	// the resolved string is still a string and every name on it is still
+	// re-pointable until this predicate says otherwise. Deleting either one
+	// leaves a real gap.
+	if err := p.pol.CheckEngineBindSource(real); err != nil {
+		return "", err
+	}
 	// The RESOLVED path is what the engine is asked for. Returning v here
 	// would leave the swap window open on the one parameter whose whole job is
 	// to decide the build container's security posture.
