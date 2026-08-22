@@ -1,0 +1,16 @@
+{
+  "oauthAccount": {
+    "emailAddress": "leak@example.com",
+    "organizationUuid": "CANARY-ORG-UUID",
+    "organizationName": "Acme"
+  },
+  "machineID": "CANARY-MACHINE-ID",
+  "userID": "CANARY-USER-ID",
+  "mcpServers": {"tmux": {"command": "CANARY-MCP-SERVER"}},
+  "projects": {
+    "/home/u/secret-project": {
+      "hasTrustDialogAccepted": true,
+      "allowedTools": ["CANARY-ALLOWED-TOOL"]
+    }
+  }
+}

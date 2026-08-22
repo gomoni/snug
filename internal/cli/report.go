@@ -4,6 +4,7 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strings"
 
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/sandbox"
@@ -30,6 +31,19 @@ import (
 // JSON `mounts` array cannot list different grants —
 // TestHumanAndJSONFilesystemBlocksAgree drives both for real and compares the
 // sets, which is what makes "cannot drift" a check rather than a claim.
+//
+// Issue #332 found this claim false for seven fact-producers that renderHuman
+// called and this file did not: policy.EnvNote, grantMark/p.IsShadowSlot,
+// policy.ProcfsClosuresSkipped, policy.ProcfsNote, p.PastaArgs,
+// describeBwrapAuthoredEnv (the PWD row) and yieldedMark. All seven are
+// fields here now (MountNotes, Topology.ProcfsClosures*, Pasta, the
+// reportEnvEntry additions, and the synthetic PWD entry in buildReport).
+// STILL NOT HERE, named rather than silently absent: the host-derived
+// GIT/SSH/CLAUDE facts describeGit/describeSSH/describeClaude compute
+// (#332 F1f) and graft provenance beyond EngineView's own fields — the
+// "owned:" line and the engine-owned-host-paths list describeGrafts prints
+// (#332 F1h). Both were judged materially larger than the seven above and
+// were handed back rather than half-done.
 type Report struct {
 	// Outcome is "ok" or "refused", and is the discriminator every consumer
 	// reads first. A refused policy is still fully described: --dry-run's
@@ -58,6 +72,15 @@ type Report struct {
 	// undiffable and the golden fixture worthless.
 	Mounts []policy.Mount
 
+	// MountNotes carries the two per-mount facts that are not properties of
+	// policy.Mount itself, keyed by Mount.Guest (the same key Policy.Mounts
+	// uses): whether a profile YIELDED one of the three paths snug would
+	// otherwise author (yieldedMark, issue #223) and, for a snug-authored
+	// /proc entry, why its content differs from the host's (policy.ProcfsNote,
+	// issue #29). Present only where there is something to say — most mounts
+	// have neither, so most Guests have no entry.
+	MountNotes map[string]reportMountNote
+
 	// Grafts is the ENGINE's derived-view mounts, sorted by Guest. The payload
 	// cannot see any of them; they are a separate field for the same reason
 	// p.Grafts is a separate map (issue #55).
@@ -72,6 +95,56 @@ type Report struct {
 	Seccomp     reportSeccomp
 	NewSession  bool
 	BwrapArgv   []string
+	// BwrapIncomplete is true when BwrapArgv, run standalone, will NOT
+	// reproduce this policy's actual network posture — see
+	// BwrapIncompleteReason for why. Refs #332 F1d: making the argv look more
+	// directly runnable without this caveat is worse than the omission it
+	// replaces, because under a stage netns the argv carries no
+	// --unshare-net and lands the caller in their OWN network namespace.
+	BwrapIncomplete bool
+	// BwrapIncompleteReason is "" when BwrapIncomplete is false, and otherwise
+	// the same fact describeBwrap prints IN CAPITALS on the human screen: the
+	// stage created and pinned the sandbox's netns and a setns shim placed
+	// bwrap inside it before bwrap ran, so no --netns flag exists for bwrap to
+	// carry, host loopback and the host's abstract sockets are reachable if
+	// this argv is run standalone, and that contradicts network.host_loopback
+	// and network.abstract_sockets elsewhere in this same document.
+	BwrapIncompleteReason string
+	// Pasta is the pasta invocation this run's egress actually uses, nil when
+	// this policy starts no pasta (p.Net.Mode != NetEgress). Refs #332 F1e:
+	// the rest of this document carries snug's CLAIM about the network
+	// (Network.HostLoopback, Network.AbstractSockets) and not the closing
+	// flag set that implements it — "never trust a helper's default, assert
+	// the behaviour" applies to a consumer of this document exactly as it
+	// does to an integration test.
+	Pasta *reportPasta
+}
+
+// reportMountNote is MountNotes' value type.
+type reportMountNote struct {
+	// Yielded is true when a profile took over one of /tmp, /proc or /dev
+	// instead of snug's own mount landing there — yieldedMark's predicate,
+	// m.Authored == false at one of those three guests.
+	Yielded bool
+	// ProcfsReplacement is policy.ProcfsNote(m.Guest) for a snug-authored
+	// mount: why this path's content differs from the host's ("replaced with
+	// an EMPTY file — the host's copy is …", or /proc/sys's read-only note).
+	// "" for every mount ProcfsNote has nothing to say about.
+	ProcfsReplacement string
+}
+
+// reportPasta is the pasta invocation snug would run for this policy's
+// egress, and the same placeholder every --dry-run screen already prints
+// instead of a real pid: PastaTargetStage(0, 63) under the stage topology
+// (dryrun.go's NetnsStage arm), PastaTargetChild(0) otherwise. See
+// policy.PastaTarget's doc comment for why a single pid cannot always name
+// both namespaces pasta needs.
+type reportPasta struct {
+	Argv []string
+	// Placeholder names which part of Argv is a stand-in rather than the real
+	// pid a live run would use, so a consumer does not mistake /proc/0/... for
+	// a real path.
+	Placeholder string
 }
 
 // reportNetwork is the NETWORK block's facts. Every field answers a question a
@@ -113,6 +186,22 @@ type reportTopology struct {
 	// when an engine runs. Widening it is a golden diff here as well as on the
 	// human screen.
 	EngineCapBounding []string
+	// ProcfsClosuresSkipped is policy.ProcfsClosuresSkipped(p): true exactly
+	// when this run starts a container engine, so NONE of snug's /proc
+	// closures (config.gz, keys, key-users, /proc/sys) apply — CLAUDE.md
+	// invariant 1's third named exception, and one of the two facts that
+	// invariant says --dry-run must state. It reduces to the same test as
+	// Containers != nil (both are p.Podman != PodmanOff), but nothing asserted
+	// that equivalence before this field existed, and the exemption follows
+	// PROFILE SELECTION transitively through include — so a consumer deriving
+	// it from Containers rather than reading this field is reading a
+	// coincidence, not a documented equivalence.
+	ProcfsClosuresSkipped bool
+	// ProcfsClosureNote is policy.ProcfsClosureExemptionNote, "" when
+	// ProcfsClosuresSkipped is false: snug's own text for why, carried
+	// verbatim because there is no further fact behind it to state instead —
+	// the same convention policy.Graft.Why uses.
+	ProcfsClosureNote string
 }
 
 // reportContainers is the CONTAINERS and IMAGES blocks' facts. The engine
@@ -143,15 +232,51 @@ type reportEnvEntry struct {
 	Value string
 	Verb  string
 	From  []string
-	// Note is why snug authored this entry ("base", "podman stub"), and is
-	// set only for a VerbSnug entry, which has no From.
-	Note string
-	// Unchecked mirrors the `← unchecked` mark: snug has no roster row for
-	// this NAME, so nothing about the variable's meaning was checked. It is an
-	// ENVIRONMENT property and belongs on an entry — issue #52's brief listed
-	// it under mounts, where there is no such mark and putting one would be
-	// inventing a field.
-	Unchecked bool
+	// AuthoredBy is policy.EnvEntry.Note: why SNUG authored this entry
+	// ("base", "podman stub", "--chdir" for the synthetic PWD row), set only
+	// for a VerbSnug entry (or PWD's bwrap-authored row), which has no From.
+	//
+	// RENAMED from this field's original name "Note" (refs #332 F1a). The old
+	// name collided with policy.EnvNote — a completely different fact, the
+	// annotation that the VALUE is a command — so the JSON emitted `"note":
+	// ""` for the one entry that HAD an annotation, with `unchecked:false`
+	// beside it reading as approval. See ValueNote for the fact "note" used to
+	// be mistaken for.
+	AuthoredBy string
+	// TypeUnknown is policy.IsUncheckedEnv(name, verb): snug has no TYPE for
+	// this NAME — no roster row, so nothing is known about whether it is a
+	// scalar or a list, its separator, or what an empty element means. It is
+	// an ENVIRONMENT property and belongs on an entry — issue #52's brief
+	// listed it under mounts, where there is no such mark and putting one
+	// would be inventing a field.
+	//
+	// RENAMED from "Unchecked" for the same reason as AuthoredBy: the human
+	// screen's `← unchecked` mark carries its own gloss on the same line, so
+	// the label can stay short; a JSON key has no room for a gloss, so the
+	// key has to BE the gloss instead. See policy.UncheckedEnvNote's doc
+	// comment for the other half of this cross-reference.
+	TypeUnknown bool
+	// ValueNote is policy.EnvNote(name, verb)'s text, stripped of the
+	// "  ← " prefix that is dryrun.go's rendering convention rather than part
+	// of the fact: what the TOOL DOES with the value ("the value is a
+	// command; git runs it…"), never a claim about the name's type — that is
+	// TypeUnknown's question, and both can be true of the same entry without
+	// contradiction. "" where snug has nothing to say.
+	ValueNote string
+	// Grant is envGrantVerdict's CODE for this entry's Value as a path:
+	// grantOK ("") when Value is not shaped like an absolute path or is
+	// covered by a grant, grantShadowSlot when Name is PATH and
+	// p.IsShadowSlot(Value) (the payload can write a command at this entry —
+	// @claude's {home}/.local/bin "survived a milestone on screen in front of
+	// everybody" before this mark existed), grantNotGranted when nothing
+	// inside covers it. grantMark's own comment forbids a consumer
+	// reimplementing IsShadowSlot over mounts[]; this field is the fact that
+	// check needs instead.
+	Grant string
+	// GrantsInside is meaningful only when Grant is grantNotGranted: the
+	// count of mounts strictly beneath Value, the same count grantMark's
+	// parenthetical reports ("not granted (2 grants inside)").
+	GrantsInside int
 }
 
 type reportEnvDrop struct {
@@ -214,10 +339,85 @@ func buildReport(p *policy.Policy, args []string, cfg config, refusedBy error) R
 		rep.Outcome = "refused"
 		rep.Refusal = refusedBy.Error()
 	}
+	rep.MountNotes = buildMountNotes(p, rep.Mounts)
+	// See BwrapIncomplete's own comment: this is the SAME condition
+	// describeBwrap's NetnsStage arm branches on, read here rather than
+	// recomputed independently so the two cannot disagree about which runs
+	// get the caveat.
+	if p.Topology.Netns == policy.NetnsStage {
+		rep.BwrapIncomplete = true
+		rep.BwrapIncompleteReason = "the network namespace is not in this argv: the stage " +
+			"created it, pinned it, and a setns shim placed bwrap inside it before bwrap ran, " +
+			"and bwrap has no --netns flag to carry that here. No pasta helper starts if this " +
+			"argv is run standalone, either. Run as printed, this command lands in the CALLER's " +
+			"own network namespace: host loopback and the host's abstract sockets are reachable, " +
+			"contradicting network.host_loopback and network.abstract_sockets elsewhere in this " +
+			"document."
+	}
+	rep.Pasta = buildPastaReport(p)
 	for _, name := range p.EnvNames() {
-		rep.Environment = append(rep.Environment, buildEnvReport(p.Env[name]))
+		rep.Environment = append(rep.Environment, buildEnvReport(p, p.Env[name]))
+	}
+	// The one variable inside the sandbox snug does not write itself: PWD,
+	// which bwrap sets from --chdir. Appended AFTER the sorted names for the
+	// same reason describeBwrapAuthoredEnv renders it after the sorted rows —
+	// it is not part of snug's own resolved environment, and its verb
+	// ("(bwrap)") is a provenance no policy.EnvVerb value produces. Refs #332
+	// F1g: 16 entries for a sandbox that has 17.
+	if p.Chdir != "" {
+		rep.Environment = append(rep.Environment, reportEnvVar{
+			Name: "PWD",
+			Entries: []reportEnvEntry{{
+				Value:      p.Chdir,
+				Verb:       "(bwrap)",
+				AuthoredBy: "--chdir",
+			}},
+		})
 	}
 	return rep
+}
+
+// buildMountNotes computes Report.MountNotes. See its doc comment for what
+// each note means; this only decides WHICH mounts get one.
+func buildMountNotes(p *policy.Policy, mounts []policy.Mount) map[string]reportMountNote {
+	notes := make(map[string]reportMountNote, len(mounts))
+	for _, m := range mounts {
+		var n reportMountNote
+		// yieldedMark takes p for parity with every other describe* helper in
+		// dryrun.go, but its answer depends only on m — see its own doc
+		// comment.
+		if yieldedMark(p, m) != "" {
+			n.Yielded = true
+		}
+		if m.Authored {
+			n.ProcfsReplacement = policy.ProcfsNote(m.Guest)
+		}
+		if n != (reportMountNote{}) {
+			notes[m.Guest] = n
+		}
+	}
+	return notes
+}
+
+// buildPastaReport mirrors dryrun.go's own NetnsStage/else branch for the
+// pasta block, so the placeholder text and the target this renders agree with
+// what a human --dry-run already prints. nil when this policy starts no
+// pasta at all.
+func buildPastaReport(p *policy.Policy) *reportPasta {
+	if p.Net.Mode != policy.NetEgress {
+		return nil
+	}
+	if p.Topology.Netns == policy.NetnsStage {
+		return &reportPasta{
+			Argv: p.PastaArgs(policy.PastaTargetStage(0, 63)),
+			Placeholder: "/proc/0/fd/63 is a placeholder; the real pid is the stage's, " +
+				"and 63 is fdNetnsN (internal/stage/fds.go)",
+		}
+	}
+	return &reportPasta{
+		Argv:        p.PastaArgs(policy.PastaTargetChild(0)),
+		Placeholder: "/proc/0/... is a placeholder; the real pid is bwrap's child",
+	}
 }
 
 func sortedGrafts(p *policy.Policy) []policy.Graft {
@@ -266,15 +466,19 @@ func buildNetworkReport(p *policy.Policy) reportNetwork {
 
 func buildTopologyReport(p *policy.Policy) reportTopology {
 	t := reportTopology{
-		NeedsStage: p.Topology.NeedsStage(),
-		Netns:      p.Topology.Netns.String(),
-		Subuid:     p.Topology.Subuid.String(),
+		NeedsStage:            p.Topology.NeedsStage(),
+		Netns:                 p.Topology.Netns.String(),
+		Subuid:                p.Topology.Subuid.String(),
+		ProcfsClosuresSkipped: policy.ProcfsClosuresSkipped(p),
 	}
 	for _, pr := range longLivedProcesses(p) {
 		t.Processes = append(t.Processes, pr.name)
 	}
 	if p.Podman != policy.PodmanOff {
 		t.EngineCapBounding = policy.EngineCapBounding
+	}
+	if t.ProcfsClosuresSkipped {
+		t.ProcfsClosureNote = policy.ProcfsClosureExemptionNote
 	}
 	return t
 }
@@ -307,24 +511,39 @@ func buildContainersReport(p *policy.Policy) *reportContainers {
 	return c
 }
 
-func buildEnvReport(v policy.EnvVar) reportEnvVar {
+func buildEnvReport(p *policy.Policy, v policy.EnvVar) reportEnvVar {
 	out := reportEnvVar{Name: v.Name}
 	for _, e := range v.Entries {
+		grant, inside := envGrantVerdict(p, v.Name, e.Value)
 		out.Entries = append(out.Entries, reportEnvEntry{
-			Value: e.Value,
-			Verb:  e.Verb.String(),
-			From:  e.From,
-			Note:  e.Note,
+			Value:      e.Value,
+			Verb:       e.Verb.String(),
+			From:       e.From,
+			AuthoredBy: e.Note,
 			// The same predicate the `← unchecked` mark uses, from
 			// internal/policy so the two screens and this format cannot
-			// disagree about what "unchecked" means.
-			Unchecked: policy.UncheckedEnvNote(v.Name, e.Verb) != "",
+			// disagree about what "no type for this name" means.
+			TypeUnknown: policy.IsUncheckedEnv(v.Name, e.Verb),
+			ValueNote:   envValueNoteText(v.Name, e.Verb),
+			// envGrantVerdict returns insideCount == 0 for every grant other
+			// than grantNotGranted, so this is never a stray count attached
+			// to a "granted" or "not a path" verdict.
+			Grant:        grant,
+			GrantsInside: inside,
 		})
 	}
 	for _, d := range v.Dropped {
 		out.Dropped = append(out.Dropped, reportEnvDrop{Value: d.Value, Reason: d.Reason.String()})
 	}
 	return out
+}
+
+// envValueNoteText is policy.EnvNote's text with dryrun.go's own rendering
+// prefix ("  ← ", wrapMark's convention for a line meant to be concatenated)
+// removed. The fact is the sentence after the bullet; the bullet is
+// presentation, and report.go carries facts.
+func envValueNoteText(name string, verb policy.EnvVerb) string {
+	return strings.TrimPrefix(policy.EnvNote(name, verb), "  ← ")
 }
 
 // buildSeccompReport is the one fact-gathering step both renderers MUST share

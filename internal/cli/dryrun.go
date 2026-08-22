@@ -882,14 +882,48 @@ func isForgingRune(r rune) bool {
 // For every case reachable before the symlink work the two orderings agree, so
 // this is a reorder rather than a behaviour change wherever it can be compared.
 func grantMark(p *policy.Policy, name, value string) string {
+	grant, inside := envGrantVerdict(p, name, value)
+	switch grant {
+	case grantShadowSlot:
+		return "  ← writable from inside"
+	case grantNotGranted:
+		switch inside {
+		case 0:
+			return "  ← not granted"
+		case 1:
+			return "  ← not granted (1 grant inside)"
+		}
+		return fmt.Sprintf("  ← not granted (%d grants inside)", inside)
+	}
+	return ""
+}
+
+// The three CODES envGrantVerdict returns. jsonEnvEntry.Grant carries these
+// spellings verbatim (dryrunjson.go), so a consumer can assert `grant !=
+// "shadow_slot"` without reimplementing IsShadowSlot over mounts[] — the thing
+// grantMark's own history above warns against.
+const (
+	grantOK         = ""
+	grantShadowSlot = "shadow_slot"
+	grantNotGranted = "not_granted"
+)
+
+// envGrantVerdict is grantMark's FACT, split from its SENTENCE, so both
+// renderers derive one answer rather than the human screen owning the only
+// copy. insideCount is meaningful only when grant is grantNotGranted; it is
+// the same count grantMark's parenthetical reports.
+//
+// See grantMark's own comment for why the shadow-slot check runs before
+// GrantsGuestPath and why it is scoped to PATH alone.
+func envGrantVerdict(p *policy.Policy, name, value string) (grant string, insideCount int) {
 	if !strings.HasPrefix(value, "/") {
-		return ""
+		return grantOK, 0
 	}
 	if name == "PATH" && p.IsShadowSlot(value) {
-		return "  ← writable from inside"
+		return grantShadowSlot, 0
 	}
 	if p.GrantsGuestPath(value) {
-		return ""
+		return grantOK, 0
 	}
 	inside := 0
 	for _, m := range p.Mounts {
@@ -897,13 +931,7 @@ func grantMark(p *policy.Policy, name, value string) string {
 			inside++
 		}
 	}
-	switch inside {
-	case 0:
-		return "  ← not granted"
-	case 1:
-		return "  ← not granted (1 grant inside)"
-	}
-	return fmt.Sprintf("  ← not granted (%d grants inside)", inside)
+	return grantNotGranted, inside
 }
 
 // mountedAt finds the mount that determines what is visible at path — the
