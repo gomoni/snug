@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 
 	"github.com/gomoni/snug/internal/policy"
 )
@@ -24,8 +22,10 @@ import (
 // debugging command does no host probing. So a dry run can name four of the
 // five grafts and says so rather than inventing the fifth.
 type Paths struct {
-	// Store persists across runs and is SHARED with every other sandbox
-	// resolving to the same profiles+target key. It is keyed rather than
+	// Store persists across runs and is SHARED with every other sandbox on
+	// the SAME TARGET DIRECTORY, whatever profiles it selected (issue #276:
+	// the profile selection was removed from the key — see engineKey's own
+	// doc comment for why it may never come back). It is keyed rather than
 	// pid-unique on purpose: that sharing is what makes a warm start warm.
 	Store string
 	// Runroot is keyed the same way, and must be: podman's libpod database
@@ -39,29 +39,69 @@ type Paths struct {
 	ConfDir string
 }
 
-// engineKey is the profiles+target hash both the store and the runroot are
-// named by. One function, because two spellings of this hash would silently
-// give a run a cold store.
-func engineKey(profiles []policy.ProfileName, target string) string {
-	sorted := policy.NameStrings(profiles)
-	sort.Strings(sorted)
-	sum := sha256.Sum256([]byte(strings.Join(sorted, ",") + "\x00" + target))
+// engineKey is the TARGET's hash, and nothing else — see issue #276. It used
+// to also hash the sorted profile set, which meant adding one inert profile
+// to a selection moved a project to a cold store for no reason a user could
+// see, and it made the runroot's name (below, under world-writable /tmp)
+// LESS predictable only by as much entropy as the profile set added, which
+// was never the guarantee actually protecting it (that guarantee is
+// VerifyOwnedAndPrivate's uid+mode check — see New).
+//
+// # The soundness rule, for whoever proposes a coarser key next
+//
+// Let L(x) be the equivalence class the per-target lock enforces
+// (internal/cli's lockTarget, keyed on sha256(realpath) — see
+// ONE-SANDBOX-PER-DIR.md) and S(x) the store's own partition — two targets
+// share a key iff engineKey returns the same string for both. The property
+// snug depends on is S(a) = S(b) ⟹ L(a) = L(b): the store's partition must be
+// AT LEAST AS FINE as the lock's, so "at most one live user of a given store"
+// falls out of an invariant snug already enforces, rather than needing its
+// own proof. Today S = L exactly, because both hash the identical canonical
+// target string. A key COARSER than the lock — a global store, or any key
+// that merges two different targets into one hash — is the UNSOUND
+// direction: it would let a second run reach a store a live sandbox still
+// owns, and no test catches that by construction the way this one does.
+//
+// pol.Target is ALREADY canonical: policy.Resolve runs EvalSymlinks on it
+// (internal/policy/resolve.go) before storing it, and types.go's own doc
+// comment says so. This function must NOT call EvalSymlinks a second time —
+// that would only create drift between two supposedly-identical forms of the
+// same string, which is the defect issue #276 falsified rather than one it
+// introduces. Residual, named rather than claimed closed: Resolve
+// canonicalises once, and bwrap walks {target} again later when the sandbox
+// actually starts, so a symlink flipped in the window between the two makes
+// the store key name one project while the bind lands on another. The
+// per-target lock carries the identical window; this change neither creates
+// nor widens it.
+func engineKey(pol *policy.Policy) string {
+	sum := sha256.Sum256([]byte(pol.Target))
 	return hex.EncodeToString(sum[:])[:16]
+}
+
+// dataHomeDir returns $XDG_DATA_HOME, or ~/.local/share when it is unset.
+// String arithmetic only — no filesystem access — so both planPaths (which
+// must stay pure for --dry-run) and New's vdir walk, which creates and
+// verifies what this names, compute the identical value.
+func dataHomeDir() (string, error) {
+	if d := os.Getenv("XDG_DATA_HOME"); d != "" {
+		return d, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".local", "share"), nil
 }
 
 // planPaths computes the four paths for a run whose run directory is named
 // runDir. It touches nothing: every value here is string arithmetic over the
 // environment, which is why --dry-run can call it.
-func planPaths(profiles []policy.ProfileName, target, runDirName string) (Paths, error) {
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return Paths{}, err
-		}
-		dataHome = filepath.Join(home, ".local", "share")
+func planPaths(pol *policy.Policy, runDirName string) (Paths, error) {
+	dataHome, err := dataHomeDir()
+	if err != nil {
+		return Paths{}, err
 	}
-	key := engineKey(profiles, target)
+	key := engineKey(pol)
 	runDir := filepath.Join(os.TempDir(), runDirName)
 	return Paths{
 		Store:   filepath.Join(dataHome, "snug", "engines", key, "storage"),
@@ -80,8 +120,8 @@ func planPaths(profiles []policy.ProfileName, target, runDirName string) (Paths,
 // nothing. A dry run starts no engine, so there is exactly one name to
 // predict, and predicting it is what lets --dry-run print the same paths the
 // run would use.
-func PlannedPaths(profiles []policy.ProfileName, target string) (Paths, error) {
-	return planPaths(profiles, target, fmt.Sprintf("snug-%d-%d", os.Getuid(), os.Getpid()))
+func PlannedPaths(pol *policy.Policy) (Paths, error) {
+	return planPaths(pol, fmt.Sprintf("snug-%d-%d", os.Getuid(), os.Getpid()))
 }
 
 // GraftPathsInto records the engine's host-tree grafts — store, runroot, sock,
@@ -110,8 +150,9 @@ func GraftPathsInto(env policy.Environ, p *policy.Policy, ps Paths) error {
 			Kind: policy.KindGraft, Access: policy.AccessRW, From: []string{"(snug)"},
 		},
 		Why: "write image layers into a store that PERSISTS across runs and is shared with " +
-			"every other sandbox resolving to the same profiles+target key — so a layer a " +
-			"container poisons outlives the sandbox that pulled it, and is there for the next " +
+			"every other sandbox on the SAME TARGET DIRECTORY, whatever profiles it selected " +
+			"— so a run with a narrow selection inherits what a broader one pulled, and a layer " +
+			"a container poisons outlives the sandbox that pulled it, and is there for the next " +
 			"run of the same project",
 	}); err != nil {
 		return fmt.Errorf("grafting the engine's image store: %w", err)
@@ -122,9 +163,10 @@ func GraftPathsInto(env policy.Environ, p *policy.Policy, ps Paths) error {
 			Guest: policy.EngineRunrootGuest, Host: ps.Runroot,
 			Kind: policy.KindGraft, Access: policy.AccessRW, From: []string{"(snug)"},
 		},
-		Why: "write into the engine's runroot, which is keyed by profiles+target rather than " +
-			"by pid (podman's libpod database refuses a runroot that disagrees with the one it " +
-			"recorded), so it is reachable by a concurrent sandbox with the same key",
+		Why: "write into the engine's runroot, which is keyed by the TARGET DIRECTORY rather " +
+			"than by pid (podman's libpod database refuses a runroot that disagrees with the " +
+			"one it recorded), so a LATER run of the same project inherits whatever an earlier " +
+			"one left there",
 	}); err != nil {
 		return fmt.Errorf("grafting the engine's runroot: %w", err)
 	}

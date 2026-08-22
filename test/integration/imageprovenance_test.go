@@ -45,7 +45,7 @@ func engineSpecEnv(t *testing.T) []string {
 	root := bundleRoot(t)
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
-	e, err := engine.New([]policy.ProfileName{"@podman-socket"}, t.TempDir())
+	e, err := engine.New(&policy.Policy{Profiles: []policy.ProfileName{"@podman-socket"}, Target: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

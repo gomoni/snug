@@ -22,7 +22,7 @@ import (
 func specEnv(t *testing.T, baseEnv []string) ([]string, *Engine) {
 	t.Helper()
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestTheGeneratedRegistriesConfRedirectsNothing(t *testing.T) {
 // snug cannot move a path it does not author.
 func TestTheGeneratedStorageConfIsSnugsOwn(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +269,7 @@ func TestTheGeneratedStorageConfNamesAMountProgramOnlyWhenThereIsOne(t *testing.
 					t.Fatal(err)
 				}
 			}
-			e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+			e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -326,7 +326,7 @@ func TestTheGeneratedStorageConfNamesAMountProgramOnlyWhenThereIsOne(t *testing.
 // snugsOwn's growing list.
 func TestEveryPathAGeneratedConfigNamesIsOneSnugOwns(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +456,7 @@ func TestARelativeEngineRefusesRatherThanWritingARelativeMountProgram(t *testing
 	}
 	t.Chdir(dir)
 
-	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +495,7 @@ func TestAnUnquotablePathIsRefusedRatherThanSubstituted(t *testing.T) {
 	// directory layout stops being an input to the file's contents (issue
 	// #125). The old refusal for this case is gone because the case is gone.
 	t.Setenv("XDG_DATA_HOME", odd)
-	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,7 +535,7 @@ func TestAnUnquotablePathIsRefusedRatherThanSubstituted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e2, err := New([]policy.ProfileName{"@podman-socket"}, "/proj2")
+	e2, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj2"))
 	if err != nil {
 		t.Fatal(err)
 	}

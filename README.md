@@ -436,16 +436,20 @@ so the client you run inside can be anything that speaks it. `CONTAINER_HOST` an
 
 **A container profile creates persistent mutable state on your disk.**
 `@podman-socket` and `@podman-build` give the sandbox its own image store at
-`~/.local/share/snug/engines/<key>/`, keyed by the profile selection and the
-target directory. It persists across runs and is reused, so images are not
-re-downloaded every time — a deliberate convenience. Two consequences worth
-stating plainly: the store is writable state a container leaves behind, and a
-later run with the **same profiles on the same directory** reuses whatever images
-and layers an earlier run pulled or built there; and it is never
-garbage-collected today, so it grows (issue #308). What it does **not** touch is
-your host's own podman/docker store — that is separate and never mounted. Why
-this cross-run reuse is an accepted non-goal (it never reaches host state beyond
-snug's own store) is spelled out in
+`~/.local/share/snug/engines/<key>/`, keyed by the target directory. It persists
+across runs and is reused, so images are not re-downloaded every time — a
+deliberate convenience. The store is writable state a container leaves behind,
+and it is never garbage-collected today, so it grows (issue #308). What it does
+**not** touch is your host's own podman/docker store — that is separate and
+never mounted.
+
+The store is shared by every run on that directory, whatever profiles it
+selected. That has a cost: a run that pulls or builds a bad image leaves it
+there, and a later run on the same directory will use it without
+re-downloading, because nothing in the path checks what an image is. Selecting
+fewer profiles does not give you a clean store — delete the directory if you
+want one. Why this cross-run reuse is an accepted non-goal (it never reaches
+host state beyond snug's own store) is spelled out in
 [`.claude/design/THREAT-MODEL.md`](.claude/design/THREAT-MODEL.md).
 
 In practice that means **`docker` is the client to use inside a sandbox**:
