@@ -1608,12 +1608,16 @@ func describeNetwork(out *os.File, p *policy.Policy) {
 	switch p.Net.Mode {
 	case policy.NetIsolated:
 		fmt.Fprintf(out, "NETWORK  isolated — private netns, loopback only, no helper process.\n")
-		fmt.Fprintf(out, "         No egress. No host loopback. No abstract sockets (X11/D-Bus are\n")
-		fmt.Fprintf(out, "         netns-scoped, so they are out too). Add the '@net' profile for egress.\n")
+		fmt.Fprintf(out, "         No egress. No host loopback. No abstract unix sockets (netns-scoped).\n")
+		fmt.Fprintf(out, "         Pathname sockets (X11, D-Bus, Wayland, ssh-agent) are a MOUNT\n")
+		fmt.Fprintf(out, "         question, not a network one — see FILESYSTEM for what is granted.\n")
+		fmt.Fprintf(out, "         Add the '@net' profile for egress.\n")
 	case policy.NetEgress:
 		fmt.Fprintf(out, "NETWORK  egress — private netns (one per sandbox) with a pasta helper.\n")
 		fmt.Fprintf(out, "         host loopback   UNREACHABLE (--map-host-loopback none, -T none, -U none)\n")
-		fmt.Fprintf(out, "         abstract unix   UNREACHABLE (netns-scoped: X11, D-Bus)\n")
+		fmt.Fprintf(out, "         abstract unix   UNREACHABLE (netns-scoped)\n")
+		fmt.Fprintf(out, "         pathname sockets (X11, D-Bus, Wayland, ssh-agent) — see FILESYSTEM,\n")
+		fmt.Fprintf(out, "                         not this block; a directory grant can expose one\n")
 		fmt.Fprintf(out, "         egress          full, IPv4 + IPv6\n")
 		// RENDERED FROM THE RESOLVED POLICY, never from a literal (issue
 		// #28), and printed UNCONDITIONALLY in this arm rather than gated on
@@ -2412,6 +2416,19 @@ func notGranted(p *policy.Policy) []string {
 		}
 	}
 
+	// UNCONDITIONAL, and that is issue #32's R7 (PSEUDOFS-AUDIT.md, Y5): every
+	// other candidate above reaches this slice only after a coverage check, and
+	// this one does not, so a run that grants /tmp still prints /tmp/.X11-unix
+	// as NOT GRANTED. Deliberately NOT fixed alongside #288's four
+	// misattribution sites: /sys and /tmp/.X11-unix are static host paths and
+	// would route through coverageOf mechanically, but the Wayland and session
+	// D-Bus paths are derived from $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY and from
+	// DBUS_SESSION_BUS_ADDRESS (a `unix:path=...,guid=...` string, not a bare
+	// path), and NOTHING in this tree derives either today. Choosing which host
+	// environment to trust is a decision, not a refactor, and half a fix would
+	// leave the other half of the same sentence false. #288 corrected what the
+	// four sites ATTRIBUTE; this line's defect is that it asserts absence with
+	// nothing behind it.
 	lines = append(lines, "/sys  /tmp/.X11-unix  the Wayland socket  the session D-Bus socket")
 	return lines
 }
