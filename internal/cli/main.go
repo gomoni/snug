@@ -39,6 +39,10 @@ type config struct {
 	target   string
 	command  []string
 	dryRun   bool
+	// json REPLACES the human --dry-run screen with one JSON document. It is
+	// meaningless without dryRun and is a usage error there rather than a
+	// silent no-op — see run's check, and issue #52.
+	json bool
 	// removed (snug stays minimal; bwrap is the swiss knife). dryrun.go
 	noSeccomp  bool
 	noDefaults bool
@@ -90,7 +94,7 @@ func Main() {
 	if len(argv) > 0 && !strings.HasPrefix(argv[0], "-") {
 		switch argv[0] {
 		case "doctor":
-			os.Exit(doctor())
+			os.Exit(doctor(argv[1:]))
 		case "profile":
 			os.Exit(profileCmd(argv[1:]))
 		case "config":
@@ -145,6 +149,7 @@ flags:
       --no-seccomp     run without the seccomp filter (debugging; weakens defence in depth)
       --i-know         acknowledge a knowingly-large hole (required by @net-host)
   -n, --dry-run        print the resolved policy and the bwrap command, run nothing
+  -j, --json           with --dry-run: emit that policy as one JSON document instead
   -v, --verbose        audit lines from the ssh-agent proxy
   -h, --help           this
 
@@ -167,7 +172,7 @@ func parseArgs(argv []string) (config, error) {
 		switch {
 		case a == "--":
 			cfg.command = argv[i+1:]
-			return cfg, nil
+			return cfg, checkFlagCombination(cfg)
 		case a == "-p" || a == "--profile":
 			if i+1 >= len(argv) {
 				return cfg, fmt.Errorf("%s needs a profile name", a)
@@ -200,6 +205,13 @@ func parseArgs(argv []string) (config, error) {
 			cfg.noSeccomp = true
 		case a == "-n" || a == "--dry-run":
 			cfg.dryRun = true
+		case a == "-j" || a == "--json":
+			// -j/--json rather than -o/--format. Both nearest neighbours
+			// converge there (iproute2 `-j[son]`, systemd `-j`); `-o` collides
+			// with iproute2's own `-o[neline]` and apt's `--option`, and it
+			// implies a format FAMILY that cannot exist here — YAML is refused
+			// by decision, so there would be one member forever.
+			cfg.json = true
 		case a == "-h" || a == "--help":
 			usage()
 			os.Exit(0)
@@ -212,7 +224,24 @@ func parseArgs(argv []string) (config, error) {
 			cfg.target = a
 		}
 	}
-	return cfg, nil
+	return cfg, checkFlagCombination(cfg)
+}
+
+// checkFlagCombination is where a flag pair that parses but cannot MEAN
+// anything is refused. There is exactly one today.
+//
+// `--json` without `--dry-run` is a usage error, not a silent no-op, and that
+// is the same rule the subcommands now follow (doctor and profile, issue #52):
+// silently ignoring a format flag yields PROSE on a stream something is about
+// to json.Unmarshal, which is strictly worse for the consumer than a rejection
+// it can read. It names --dry-run rather than saying "invalid combination",
+// because an error that names the fix is worth the sentence.
+func checkFlagCombination(cfg config) error {
+	if cfg.json && !cfg.dryRun {
+		return fmt.Errorf("--json needs --dry-run: it replaces that screen with one JSON " +
+			"document, and there is no machine-readable form of an actual run")
+	}
+	return nil
 }
 
 func run(cfg config) int {
@@ -364,7 +393,12 @@ func run(cfg config) int {
 		// never run below, whichever branch fires.
 		if cfg.dryRun && pol != nil {
 			args := pol.BwrapArgs(env.Uid(), env.Gid())
-			dryRun(pol, args, cfg, err)
+			// The refusal is still the run's outcome and still exits 77 below.
+			// A render failure is reported and does not replace it: "the
+			// policy was refused" is the fact the caller must not lose.
+			if derr := dryRun(os.Stdout, pol, args, cfg, err); derr != nil {
+				fmt.Fprintf(os.Stderr, "snug: %v\n", derr)
+			}
 		}
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 		return exitPolicy
@@ -488,7 +522,9 @@ func run(cfg config) int {
 	// policy that was fine, so a passing run is byte-identical to before.
 	if err := pol.Validate(env); err != nil {
 		if cfg.dryRun {
-			dryRun(pol, pol.BwrapArgs(env.Uid(), env.Gid()), cfg, err)
+			if derr := dryRun(os.Stdout, pol, pol.BwrapArgs(env.Uid(), env.Gid()), cfg, err); derr != nil {
+				fmt.Fprintf(os.Stderr, "snug: %v\n", derr)
+			}
 		}
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 		return exitPolicy
@@ -497,7 +533,10 @@ func run(cfg config) int {
 	args := pol.BwrapArgs(env.Uid(), env.Gid())
 
 	if cfg.dryRun {
-		dryRun(pol, args, cfg, nil)
+		if derr := dryRun(os.Stdout, pol, args, cfg, nil); derr != nil {
+			fmt.Fprintf(os.Stderr, "snug: %v\n", derr)
+			return exitInternal
+		}
 		return 0
 	}
 

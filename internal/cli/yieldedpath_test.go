@@ -45,7 +45,7 @@ func renderFilesystem(t *testing.T, guest string, kind policy.Kind, access polic
 			},
 		},
 	}
-	return captureStdout(t, func() { dryRun(p, p.BwrapArgs(0, 0), config{}, nil) })
+	return dryRunText(p, p.BwrapArgs(0, 0), config{}, nil)
 }
 
 func TestDryRunSaysWhenAProfileTookOverSnugsOwnTmp(t *testing.T) {

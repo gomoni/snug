@@ -53,7 +53,7 @@ func TestDryRunDisclosesTheProcfsClosureExemption(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := captureStdout(t, func() { dryRun(p, p.BwrapArgs(0, 0), config{}, nil) })
+			got := dryRunText(p, p.BwrapArgs(0, 0), config{}, nil)
 
 			// CONTROL: the /proc row itself is on the screen. The disclosure
 			// hangs off that row precisely because the closures are absent on

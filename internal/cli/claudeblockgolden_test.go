@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,7 +70,7 @@ func TestGoldenClaudeBlock(t *testing.T) {
 		if err := claudeFiles(plain, ctx.Home, false); err != nil {
 			t.Fatalf("claudeFiles: %v", err)
 		}
-		if got := captureFile(t, func(f *os.File) { describeClaude(f, plain) }); got != "" {
+		if got := captureFile(t, func(f io.Writer) { describeClaude(f, plain) }); got != "" {
 			t.Errorf("the CLAUDE block printed for a selection without @claude:\n%s", got)
 		}
 	})
@@ -241,7 +242,7 @@ func goldenClaudeBlock(t *testing.T, name string, hostTrusts, exerciseSettingsFi
 	screenNow = func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
 	t.Cleanup(func() { screenNow = prev })
 
-	got := captureFile(t, func(f *os.File) { describeClaude(f, p) })
+	got := captureFile(t, func(f io.Writer) { describeClaude(f, p) })
 	if !strings.Contains(got, ctx.Target) {
 		t.Fatalf("the block does not name the target, which is the ONE variable in the "+
 			"generated file and the whole scope of the trust decision:\n%s", got)

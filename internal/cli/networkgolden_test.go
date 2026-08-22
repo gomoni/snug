@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -43,7 +44,7 @@ func TestGoldenNetwork(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Resolve(%v): %v", tc.sel, err)
 			}
-			got := captureFile(t, func(f *os.File) { describeNetwork(f, p) })
+			got := captureFile(t, func(f io.Writer) { describeNetwork(f, p) })
 
 			path := filepath.Join("testdata", "network."+tc.name+".txt")
 			if *update {

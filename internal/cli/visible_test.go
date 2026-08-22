@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"net/netip"
 	"os"
 	"strings"
@@ -130,7 +131,7 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	// renders the pair (addrPairs skips a family whose Address is invalid).
 	p.Net.Address6 = netip.MustParsePrefix("fd00:5e79:1::2/64")
 	p.Net.Gateway6 = netip.MustParseAddr("fe80::1%\x1b[1A\r         host loopback   REACHABLE   " + forged + "-NET-GATEWAY-ZONE")
-	got := captureStdout(t, func() { dryRun(p, p.BwrapArgs(0, 0), config{}, nil) })
+	got := dryRunText(p, p.BwrapArgs(0, 0), config{}, nil)
 
 	// POSITIVE CONTROL for the network fixture. The zoned gateway6 reaches the
 	// pasta argv ONLY — the NETWORK block's routes row says "the gateway
@@ -191,6 +192,36 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 			"ENVIRONMENT block and the bwrap argv block both render this value. A "+
 			"directional override reverses how the rest of the row reads, on any terminal, "+
 			"pager, editor or review UI that implements the bidi algorithm", n)
+	}
+
+	// AND THE MACHINE FORMAT, from the SAME fixture (issue #52). --dry-run has
+	// two renderers now, and a sweep that covered one of them would be this
+	// file's own recurring shape: a rule written once and applied to one of its
+	// two halves.
+	//
+	// The document does NOT escape the way the screen does — it is a machine
+	// format, so the value must stay the value (see lossyEncoder's doc
+	// comment). What it does instead is spell the hazard as JSON's own
+	// \uXXXX, which encoding/json already does for C0 and does NOT do for C1
+	// or bidi. Same predicate, different spelling, same guarantee: nothing
+	// raw reaches the artifact.
+	var doc bytes.Buffer
+	if err := dryRun(&doc, p, p.BwrapArgs(0, 0), config{json: true}, nil); err != nil {
+		t.Fatalf("dryRun --json: %v", err)
+	}
+	// POSITIVE CONTROL first: the poisoned values really did reach the
+	// document, or "nothing raw" is a statement about an empty file.
+	if !strings.Contains(doc.String(), forged) {
+		t.Fatalf("the fixture value never reached the JSON document, so this half measures "+
+			"nothing:\n%s", doc.String())
+	}
+	if r, ok := rawForgingRune(doc.String()); ok {
+		t.Errorf("the machine-readable dry run rendered %q raw. It is read in a golden diff, "+
+			"through jq and in a review UI, so it answers to this sweep too", r)
+	}
+	if !strings.Contains(doc.String(), `\u202e`) {
+		t.Error("the JSON document carries no \\u202e escape, so either the fixture's bidi " +
+			"value stopped reaching it or the escape stopped being applied")
 	}
 }
 

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -46,7 +47,7 @@ func TestGoldenContainers(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Resolve(%v): %v", tc.sel, err)
 			}
-			got := captureFile(t, func(f *os.File) { describeContainers(f, p) })
+			got := captureFile(t, func(f io.Writer) { describeContainers(f, p) })
 
 			path := filepath.Join("testdata", "containers."+tc.name+".txt")
 			if *update {
@@ -85,7 +86,7 @@ func TestDescribeContainersIsSilentWhenPodmanIsOff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := captureFile(t, func(f *os.File) { describeContainers(f, p) })
+	got := captureFile(t, func(f io.Writer) { describeContainers(f, p) })
 	if got != "" {
 		t.Errorf("describeContainers printed %q for a PodmanOff policy, want nothing", got)
 	}
@@ -111,7 +112,7 @@ func TestGoldenContainersEnginePinned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := captureFile(t, func(f *os.File) { describeContainers(f, p) })
+	got := captureFile(t, func(f io.Writer) { describeContainers(f, p) })
 
 	path := filepath.Join("testdata", "containers.podman-pinned.txt")
 	if *update {

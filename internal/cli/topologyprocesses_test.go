@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"os"
+	"io"
 	"strings"
 	"testing"
 
@@ -115,7 +115,7 @@ func TestTopologyProcessCountMatchesTheListItPrints(t *testing.T) {
 		t.Fatalf("expected snug+stage+pasta+engine+bwrap = 5 for %v, got %d: %v", sel, len(procs), procs)
 	}
 
-	got := captureFile(t, func(f *os.File) { describeTopology(f, p) })
+	got := captureFile(t, func(f io.Writer) { describeTopology(f, p) })
 
 	// Every listed process is named in the block, and the count agrees.
 	if !strings.Contains(got, "processes       5 —") {

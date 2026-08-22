@@ -333,6 +333,25 @@ func profileCmd(args []string) int {
 		code = exitPolicy
 	}
 
+	// Every SUBCOMMAND here used to drop the arguments it did not read:
+	// `snug profile list --json` exited 0 with the human listing and the flag
+	// silently ignored, and so did `snug profile show NAME --json` (issue
+	// #52). Prose on a stream something is about to json.Unmarshal is worse
+	// for a consumer than a rejection it can read, so a flag is refused before
+	// any subcommand runs.
+	//
+	// "anything starting with -", not a list of known flags: a profile name
+	// cannot begin with one (checkName is an allowlist), so this refuses
+	// exactly the argument class that has no meaning here, and it does not go
+	// stale when a flag is added to the main parser.
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			fmt.Fprintf(os.Stderr, "snug: `snug profile` takes no flags (got %s)\n", visibleValue(a))
+			fmt.Fprintln(os.Stderr, "      there is no machine-readable profile listing; --json belongs to --dry-run")
+			return exitUsage
+		}
+	}
+
 	sub := "list"
 	if len(args) > 0 {
 		sub = args[0]
