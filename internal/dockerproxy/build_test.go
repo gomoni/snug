@@ -371,12 +371,16 @@ var recordedBuildDefaults = map[string]string{
 // directions: a newer podman sending a second unmodelled parameter fails it,
 // and so does #314's grant landing without this line being removed. Neither is
 // something to find out from a user's broken build.
-var unmodelledBuildParams = map[string][]string{
-	// refs #314 — recorded on podman 6.0.2, grant decision pending. The
-	// fourth of the compression family; compression, compressionformat and
-	// compressionlevel are already allowed.
-	"6.0.2": {"forcecompressionformat"},
-}
+//
+// It is EMPTY, which is the healthy value: every parameter both recorded
+// podmans send on a plain build is modelled. It stays here as a map rather than
+// becoming an assertion of emptiness so that the next version whose defaults
+// outrun buildParams has somewhere to be recorded with its issue number, and so
+// the exact-set comparison below keeps failing in both directions.
+//
+// It carried {"6.0.2": {"forcecompressionformat"}} until that grant was ruled
+// on (issue #314).
+var unmodelledBuildParams = map[string][]string{}
 
 // Every parameter a real podman sends on a PLAIN build must be one buildParams
 // knows about, or that podman cannot build at all — the allowlist doing its job
@@ -413,36 +417,54 @@ func TestRecordedDefaultsAreKnownParameters(t *testing.T) {
 }
 
 // The end-to-end half of the same fact, and the one that says what a user sees:
-// podman 6.0.2's own default build is refused, by exactly one parameter.
+// podman 6.0.2's own default build is ACCEPTED and reaches the engine.
 //
-// This test is a TRIPWIRE, not an endorsement. It asserts today's outcome so
-// that the day forceCompressionFormat is ruled on, the failure lands here
-// rather than nowhere.
-func TestPodman602DefaultBuildIsRefusedByForceCompressionFormatAlone(t *testing.T) {
+// It is the 6.0.2 twin of TestAnOrdinaryBuildIsAllowed and carries the same
+// weight — every refusal in this file would be equally true of a snug that
+// refuses every 6.0.2 build, and the fixture would then say nothing about the
+// version most users are on. This was a TRIPWIRE asserting the refusal until
+// forceCompressionFormat was ruled on (issue #314); the flip is deliberate.
+func TestPodman602DefaultBuildIsAllowed(t *testing.T) {
 	sock, eng, _ := startBuildProxy(t)
 
-	refuse(t, sock, eng, buildURL602(""), "",
-		`build parameter "forceCompressionFormat" is not permitted`)
-
-	// POSITIVE CONTROL, and the load-bearing half of this file's claim to check
-	// 6.0.2 at all: with that ONE parameter removed, every OTHER parameter
-	// podman 6.0.2 sends is accepted and the build reaches the engine. Without
-	// it, "6.0.2 is refused" would be equally true of a snug that refuses all of
-	// 6.0.2, and the second fixture would say nothing about the other 22.
-	q, err := url.ParseQuery(buildDefaults602)
-	if err != nil {
-		t.Fatal(err)
-	}
-	q.Del("forceCompressionFormat")
 	before := eng.reached.Load()
-	code, resp := post(t, sock, "/v6.0.2/libpod/build?"+q.Encode(), "")
+	code, resp := post(t, sock, buildURL602(""), "")
 	if code != 200 {
-		t.Fatalf("podman 6.0.2's default build minus forceCompressionFormat was refused "+
-			"(status %d): %s\nThat parameter is not the only thing standing between "+
-			"6.0.2 and a working build, which is more than issue #314 says.", code, resp)
+		t.Fatalf("podman 6.0.2's own default build was refused (status %d): %s\n"+
+			"Every refusal in this file is meaningless if this cannot pass.", code, resp)
 	}
 	if eng.reached.Load() == before {
 		t.Fatal("the build never reached the engine")
+	}
+
+	// The granted parameter must arrive AT THE ENGINE, not merely survive the
+	// filter: a check that dropped it would leave this test green while the
+	// engine built with a different compression decision than the client asked
+	// for. lastURI exists for exactly this class of mistake (issue #304).
+	uri, _ := eng.lastURI.Load().(string)
+	fwd, err := url.Parse(uri)
+	if err != nil {
+		t.Fatalf("the forwarded request-URI does not parse: %q", uri)
+	}
+	if got := fwd.Query().Get("forceCompressionFormat"); got != "1" {
+		t.Errorf("forceCompressionFormat reached the engine as %q, want \"1\"\n  forwarded: %s", got, uri)
+	}
+}
+
+// NEGATIVE CONTROL for the grant: allowing forceCompressionFormat must not have
+// made the 6.0.2 path permissive in general. The same recorded query with one
+// unmodelled parameter added is still refused, and a host-reaching one is still
+// judged — on the 6.0.2 base, not only on 5.8.3's.
+func TestPodman602BaseStillFailsClosed(t *testing.T) {
+	for _, tc := range []struct{ name, query, wantMsg string }{
+		{"an unmodelled parameter", "somethingnew=1", "is not permitted"},
+		{"a host bind", "volume=%2Fetc%3A%2Fx", "cannot see /etc as writable"},
+		{"a host device", "devices=%5B%22%2Fdev%2Ffuse%22%5D", "no host device nodes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sock, eng, _ := startBuildProxy(t)
+			refuse(t, sock, eng, buildURL602(tc.query), "", tc.wantMsg)
+		})
 	}
 }
 
