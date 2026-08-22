@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"sort"
 
+	"github.com/gomoni/snug/internal/engine"
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/sandbox"
 )
@@ -129,8 +130,18 @@ type reportContainers struct {
 	BundleRoot         string
 	RegistrySearch     []string
 	SignaturesVerified bool
-	Logins             bool
-	PortMapping        bool
+	// SignaturePolicySource is the host file the engine's signature policy is
+	// PROJECTED from, empty when this host configured none. It is host text.
+	SignaturePolicySource string
+	// SignaturePolicyRefusal is why a real run will not start: a requirement in
+	// that file snug cannot reproduce. Empty on every ordinary host.
+	//
+	// A dry run that omitted it would describe a run that cannot start, and
+	// --dry-run is the mechanism by which a human trusts snug at all. It is
+	// host text twice over — a path and a decoder's rendering of the file.
+	SignaturePolicyRefusal string
+	Logins                 bool
+	PortMapping            bool
 }
 
 type reportEnvVar struct {
@@ -192,7 +203,15 @@ type reportSeccomp struct {
 // It touches the host in exactly the two places --dry-run already did:
 // notGranted stats candidate paths, and the engine source reads two
 // environment variables. Neither is new here.
-func buildReport(p *policy.Policy, args []string, cfg config, refusedBy error) Report {
+// sig is a THUNK and a PARAMETER, for the reason buildContainersReport's own doc
+// gives one line down: it is the only host read anywhere in this report, so a
+// builder that fetched it itself would make every golden's verdict depend on
+// whether the machine running it has an /etc/containers/policy.json. Measured:
+// it does in CI and does not on the development host, so json.podman-socket.json
+// passed locally and failed there with
+// "signature_policy_source": "/etc/containers/policy.json".
+func buildReport(p *policy.Policy, args []string, cfg config, refusedBy error,
+	sig func() engine.SignaturePolicySummary) Report {
 	rep := Report{
 		Outcome:    "ok",
 		Target:     p.Target,
@@ -205,7 +224,7 @@ func buildReport(p *policy.Policy, args []string, cfg config, refusedBy error) R
 		NotGranted: notGranted(p),
 		Network:    buildNetworkReport(p),
 		Topology:   buildTopologyReport(p),
-		Containers: buildContainersReport(p),
+		Containers: buildContainersReport(p, sig),
 		Seccomp:    buildSeccompReport(cfg),
 		NewSession: p.NewSession,
 		BwrapArgv:  args,
@@ -279,7 +298,20 @@ func buildTopologyReport(p *policy.Policy) reportTopology {
 	return t
 }
 
-func buildContainersReport(p *policy.Policy) *reportContainers {
+// buildContainersReport takes the signature-policy summary as a PARAMETER
+// rather than reading it here, and that is not a style choice. The summary is
+// the one fact in this struct that comes off the host filesystem, so a builder
+// that fetched it itself would make every golden test's verdict depend on
+// whether the machine running it enforces image signatures — the same trap
+// $SNUG_PODMAN is, and the reason the golden tests clear that too.
+//
+// A THUNK, not a value, because an argument is evaluated before the callee runs
+// and this callee returns early for a run with no engine. Passed by value, a
+// `snug --dry-run -p @sys -p @cwd-rw` read the host's policy.json and every key
+// it names — measured by strace — and threw the answer away. --dry-run's whole
+// pitch is that it touches as little as possible, and a host policy naming
+// 24,000 key paths made an unrelated dry run do 24,000 host reads.
+func buildContainersReport(p *policy.Policy, sig func() engine.SignaturePolicySummary) *reportContainers {
 	if p.Podman == policy.PodmanOff {
 		return nil
 	}
@@ -290,8 +322,10 @@ func buildContainersReport(p *policy.Policy) *reportContainers {
 		// docker.io and nothing else — a generated registries.conf, no mirror,
 		// no rewrite, no insecure registry (issue #137).
 		RegistrySearch: []string{"docker.io"},
-		// snug generates the engine's policy.json (accept anything), so the
-		// host's own cannot decide it.
+		// Filled in below from the projection itself, not from a constant.
+		// What the engine enforces is what the HOST configured (issue #307),
+		// so it is host-dependent and --dry-run must read it rather than
+		// assert it.
 		SignaturesVerified: false,
 		// REGISTRY_AUTH_FILE points at an empty file, so no private image can
 		// be pulled from inside (issue #142).
@@ -300,6 +334,15 @@ func buildContainersReport(p *policy.Policy) *reportContainers {
 		// namespace to publish a port.
 		PortMapping: false,
 	}
+	// AFTER the PodmanOff early return above: this is the one host read in this
+	// function, and a run with no engine must not make it.
+	summary := sig()
+	c.SignaturesVerified = summary.Verified
+	c.SignaturePolicySource = summary.Source
+	if summary.Refusal != nil {
+		c.SignaturePolicyRefusal = summary.Refusal.Error()
+	}
+
 	if custom := os.Getenv("SNUG_PODMAN"); custom != "" {
 		c.EngineSource = "SNUG_PODMAN"
 		c.EngineBinary = custom
