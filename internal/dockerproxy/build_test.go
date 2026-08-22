@@ -332,8 +332,19 @@ func TestEveryBuildValidatorIsExercised(t *testing.T) {
 		"isolation": true, "dockerfile": true, "secrets": true, "version": true,
 		"idmappingoptions": true,
 	}
+	// `check == nil` is not skipped: buildParams has no nil entry, and a
+	// parameter forwarded unexamined lives in unexaminedBuildParams with its
+	// abuse sentence (issue #331). isFlatRefusal's exemption is KEPT — a
+	// refuseBuildParam entry carries its reason in the 403 the client reads,
+	// which is a stronger record than a comment, and a flat refusal has no
+	// value-dependent behaviour to exercise.
 	for name, check := range buildParams {
-		if check == nil || isFlatRefusal(name) {
+		if isFlatRefusal(name) {
+			continue
+		}
+		if check == nil {
+			t.Errorf("build parameter %q has a nil check; it belongs in "+
+				"unexaminedBuildParams with its abuse sentence", name)
 			continue
 		}
 		if !covered[name] {
@@ -399,7 +410,7 @@ func TestRecordedDefaultsAreKnownParameters(t *testing.T) {
 			}
 			var unknown []string
 			for name := range q {
-				if _, known := buildParams[strings.ToLower(name)]; !known {
+				if !knownBuildParam(name) {
 					unknown = append(unknown, strings.ToLower(name))
 				}
 			}

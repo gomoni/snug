@@ -112,16 +112,27 @@ func (p *Proxy) filterBuildQuery(q url.Values) (url.Values, bool, string) {
 	rewritten := false
 
 	for _, name := range names {
-		check, known := buildParams[strings.ToLower(name)]
+		lower := strings.ToLower(name)
+		if _, unexamined := unexaminedBuildParams[lower]; unexamined {
+			out[name] = append([]string(nil), q[name]...) // forwarded as-is
+			continue
+		}
+		check, known := buildParams[lower]
 		if !known {
 			return nil, false, fmt.Sprintf("build parameter %q is not permitted. snug allows a named set of "+
 				"build options and refuses the rest, so an option it has not been taught "+
 				"about fails closed rather than reaching the engine unexamined. If this "+
-				"one is harmless, it belongs in buildParams with a note saying why.", name)
+				"one is harmless, it belongs in unexaminedBuildParams with the abuse "+
+				"sentence for why.", name)
 		}
 		if check == nil {
-			out[name] = append([]string(nil), q[name]...) // allowed as-is
-			continue
+			// Unreachable while buildParams has no nil entry, and a REFUSAL
+			// rather than a pass-through so that adding one fails closed. A
+			// nil forwarded verbatim is the defect this map's split exists to
+			// remove; a nil that panics would be worse than either.
+			return nil, false, fmt.Sprintf("build parameter %q has a nil check. A parameter snug does "+
+				"not judge belongs in unexaminedBuildParams with its abuse sentence, not in "+
+				"buildParams with no validator.", name)
 		}
 		for _, v := range q[name] {
 			forward, err := check(p, v)
@@ -166,17 +177,118 @@ func drainBeforeRefusing(r *http.Request) {
 // that mistake unrepresentable — every future host-reaching parameter has to
 // hand back the string the engine will see, or it does not compile.
 //
-// A check that changes nothing returns its input. A nil check means the
-// parameter carries nothing snug needs to judge, and its values are forwarded
-// verbatim.
+// A check that changes nothing returns its input. There is no nil check: a
+// parameter snug does not judge lives in unexaminedBuildParams, which requires
+// the abuse sentence for why not.
 type buildParamCheck func(p *Proxy, value string) (string, error)
 
-var buildParams = map[string]buildParamCheck{
+// unexaminedBuildParams is every parameter forwarded to the engine without its
+// value being looked at, each carrying the abuse sentence for why that is safe.
+//
+// It is a second map rather than a nil in buildParams because a nil cannot
+// carry a reason and nothing can make it. The string is documentation the
+// COMPILER requires and a test reads — the same device as refuseBuildParam's
+// reason one map down, which the client sees in the 403.
+//
+// What this shape guarantees, stated exactly: an unexamined parameter cannot be
+// SILENT. It cannot guarantee the sentence is true. Two entries here were host
+// reads while carrying a justification comment — `secrets`, a four-line note
+// with a recorded verification, and `idmappingoptions`, "rootless bounds this;
+// the CLI always sends it". Both comments described what the friendly CLI does,
+// which is not a security argument and is why the required form is the abuse
+// sentence: it is written from the attacker's side, so it cannot be satisfied
+// by describing benign behaviour.
+//
+// A sentence written for a CLASS is shared by every member, which is what keeps
+// one claim in one place for the twenty-nine ordinary parameters. Membership is
+// then the author's explicit choice rather than a consequence of which line an
+// entry was appended to — `manifest` and `createdannotation` sit immediately
+// below forcecompressionformat's justification, with no blank line, and
+// inherited its authority by position alone.
+var unexaminedBuildParams = map[string]string{
 	// ── naming and output ────────────────────────────────────────────────
-	"t":            nil, // image tag
-	"output":       nil, // podman sends the tag here too
-	"outputformat": nil,
-	"annotations":  refuseBuildParam("podman honours run.oci.* annotations, which reach the runtime"),
+	"t":            notYetAnalysed, // image tag
+	"output":       notYetAnalysed, // podman sends the tag here too
+	"outputformat": notYetAnalysed,
+
+	// ── ordinary build behaviour ─────────────────────────────────────────
+	"buildargs": ordinaryBuildBehaviour, "labels": ordinaryBuildBehaviour,
+	"target": ordinaryBuildBehaviour, "platform": ordinaryBuildBehaviour,
+	"nocache": ordinaryBuildBehaviour, "rm": ordinaryBuildBehaviour,
+	"forcerm": ordinaryBuildBehaviour, "layers": ordinaryBuildBehaviour,
+	"squash": ordinaryBuildBehaviour, "pull": ordinaryBuildBehaviour,
+	"pullpolicy": ordinaryBuildBehaviour, "q": ordinaryBuildBehaviour,
+	"quiet": ordinaryBuildBehaviour, "unsetenv": ordinaryBuildBehaviour,
+	"unsetlabel": ordinaryBuildBehaviour, "compatvolumes": ordinaryBuildBehaviour,
+	"inheritannotations": ordinaryBuildBehaviour, "inheritlabels": ordinaryBuildBehaviour,
+	"omithistory": ordinaryBuildBehaviour, "rewritetimestamp": ordinaryBuildBehaviour,
+	"timestamp": ordinaryBuildBehaviour, "sourcedateepoch": ordinaryBuildBehaviour,
+	"jobs": ordinaryBuildBehaviour, "retry": ordinaryBuildBehaviour,
+	"retry-delay": ordinaryBuildBehaviour, "identitylabel": ordinaryBuildBehaviour,
+	"compression": ordinaryBuildBehaviour, "compressionformat": ordinaryBuildBehaviour,
+	"compressionlevel": ordinaryBuildBehaviour,
+
+	// The fourth of the compression family, and the one that makes an
+	// ORDINARY podman 6.0.2 build possible at all — 6.0.2 sends it on every
+	// build, so without this entry the profile cannot build (issue #314).
+	"forcecompressionformat": forceCompressionFormat,
+
+	// forceCompressionFormat's inertness argument names manifest as a
+	// parameter that would supply a non-local destination. It is not refused,
+	// and what an unexamined one buys is not established.
+	"manifest": notYetAnalysed, "createdannotation": notYetAnalysed,
+
+	// ── resource limits ──────────────────────────────────────────────────
+	"shmsize": resourceLimit, "memory": resourceLimit, "memswap": resourceLimit,
+	"ulimits": resourceLimit, "cpushares": resourceLimit,
+	"cpusetcpus": resourceLimit, "cpusetmems": resourceLimit,
+	"cpuperiod": resourceLimit, "cpuquota": resourceLimit,
+
+	"httpproxy": notYetAnalysed,
+}
+
+// The abuse sentences. Each is written once and shared by its class, so the
+// claim a reader has to judge is one paragraph rather than one per parameter.
+const (
+	ordinaryBuildBehaviour = "A hostile process inside the sandbox can use these to change how its own " +
+		"image is built and labelled: cache use, layer and squash behaviour, build arguments, " +
+		"labels, retries, timestamps and compression. None of them names a path, selects a " +
+		"destination, or reaches a host resource."
+
+	resourceLimit = "A hostile process inside the sandbox can use these to choose how much memory, " +
+		"CPU and shared memory its own build may use. They bound the build rather than widening " +
+		"it, and cgroupparent — the one parameter that would move it into a cgroup outside this " +
+		"sandbox's own — is refused."
+
+	// Inert for an ordinary build, measured in the source rather than assumed:
+	// buildah 1.44.1 imagebuildah/stage_executor.go:2748-2756 applies
+	// CompressionFormat, CompressionLevel and ForceCompressionFormat only when
+	// imageRef.Transport().Name() != is.Transport.Name(), and `podman build -t
+	// x` commits to containers-storage, which is the local transport.
+	// define/build.go:173 states its only job: ensure the algorithm in
+	// CompressionFormat is used exclusively and blobs of other compression
+	// algorithms are not reused.
+	forceCompressionFormat = "A hostile process inside the sandbox can use this to force the chosen " +
+		"compression algorithm to be used exclusively (no blob reuse) when an image is committed " +
+		"to a non-local transport. That is the whole of it: a boolean modifier of " +
+		"compressionformat, which is already allowed. It names no path, reaches no host resource, " +
+		"and does not select the transport. cachefrom and cacheto, which would supply a non-local " +
+		"destination, are refused; manifest is not — it is unexamined, under notYetAnalysed."
+
+	// The honest class, and a claim about the state of the review rather than
+	// about the parameter. An entry here is permitted and unexamined exactly as
+	// a nil was, and says so in a name that greps.
+	notYetAnalysed = "A hostile process inside the sandbox can use this to ___ — nobody has " +
+		"established what. The value reaches the engine unexamined and no analysis has been " +
+		"done. Membership here is not a justification; it is the absence of one, named."
+)
+
+// buildParams is every parameter snug JUDGES or REFUSES. A parameter forwarded
+// without its value being looked at belongs in unexaminedBuildParams above,
+// with its abuse sentence; there is no nil here, and filterBuildQuery refuses
+// one rather than forwarding it.
+var buildParams = map[string]buildParamCheck{
+	"annotations": refuseBuildParam("podman honours run.oci.* annotations, which reach the runtime"),
 
 	// ── the Dockerfile, which must stay inside the context ───────────────
 	"dockerfile": checkDockerfile,
@@ -191,49 +303,7 @@ var buildParams = map[string]buildParamCheck{
 	// here and is refused by name rather than silently accepted.
 	"version": checkBuilderVersion,
 
-	// ── ordinary build behaviour, none of it host-reaching ───────────────
-	"buildargs": nil, "labels": nil, "target": nil, "platform": nil,
-	"nocache": nil, "rm": nil, "forcerm": nil, "layers": nil, "squash": nil,
-	"pull": nil, "pullpolicy": nil, "q": nil, "quiet": nil,
-	"unsetenv": nil, "unsetlabel": nil, "compatvolumes": nil,
-	"inheritannotations": nil, "inheritlabels": nil, "omithistory": nil,
-	"rewritetimestamp": nil, "timestamp": nil, "sourcedateepoch": nil,
-	"jobs": nil, "retry": nil, "retry-delay": nil, "identitylabel": nil,
-	"compression": nil, "compressionformat": nil, "compressionlevel": nil,
-
-	// The fourth of the compression family, and the one that makes an
-	// ORDINARY podman 6.0.2 build possible at all — 6.0.2 sends it on every
-	// build, so without this entry the profile cannot build (issue #314).
-	//
-	// A hostile process inside the sandbox can use this to force the chosen
-	// compression algorithm to be used exclusively (no blob reuse) when an
-	// image is committed to a non-local transport. That is the whole of it:
-	// a boolean modifier of compressionformat, which is already allowed. It
-	// names no path, reaches no host resource, and does not select the
-	// transport — the parameters that would supply a non-local destination
-	// (manifest, cachefrom, cacheto) are refused above.
-	//
-	// Inert for an ordinary build, measured in the source rather than
-	// assumed: buildah 1.44.1 imagebuildah/stage_executor.go:2748-2756
-	// applies CompressionFormat, CompressionLevel and ForceCompressionFormat
-	// only when imageRef.Transport().Name() != is.Transport.Name(), and
-	// `podman build -t x` commits to containers-storage, which is the local
-	// transport. define/build.go:173 states its only job: ensure the
-	// algorithm in CompressionFormat is used exclusively and blobs of other
-	// compression algorithms are not reused.
-	"forcecompressionformat": nil,
-	"manifest":               nil, "createdannotation": nil,
-
-	// Resource limits. They bound the build rather than widening it.
-	"shmsize": nil, "memory": nil, "memswap": nil, "ulimits": nil,
-	"cpushares": nil, "cpusetcpus": nil, "cpusetmems": nil,
-	"cpuperiod": nil, "cpuquota": nil,
-
 	"secrets": checkBuildSecrets,
-
-	// The engine's own proxy environment, not the sandbox's, and the CLI sends
-	// it on every build.
-	"httpproxy": nil,
 
 	// ── the host-reaching set ────────────────────────────────────────────
 	"volume":                  checkBuildVolume,
@@ -261,6 +331,19 @@ var buildParams = map[string]buildParamCheck{
 	"cachefrom": refuseBuildParam("a cache source is resolved by the engine and may name a " +
 		"local path; not yet modelled"),
 	"cacheto": refuseBuildParam("a cache destination is written by the engine; not yet modelled"),
+}
+
+// knownBuildParam reports whether a query parameter is modelled at all —
+// judged, refused, or forwarded unexamined with its abuse sentence. The
+// question "does snug know this name" has one answer across two maps, and this
+// is the one place that joins them.
+func knownBuildParam(name string) bool {
+	lower := strings.ToLower(name)
+	if _, ok := unexaminedBuildParams[lower]; ok {
+		return true
+	}
+	_, ok := buildParams[lower]
+	return ok
 }
 
 func refuseBuildParam(reason string) buildParamCheck {
