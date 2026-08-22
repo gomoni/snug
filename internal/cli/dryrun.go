@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/gomoni/snug/internal/engine"
 	"github.com/gomoni/snug/internal/policy"
 )
 
@@ -36,7 +37,12 @@ func dryRun(out io.Writer, p *policy.Policy, args []string, cfg config, refusedB
 	// ONE Report, then ONE renderer. --json REPLACES the human form; it never
 	// adds to it, because the document is the whole of stdout (renderJSON's
 	// doc comment says why that matters on a refusal).
-	rep := buildReport(p, args, cfg, refusedBy)
+	// The one call site with a real host behind it. Everywhere else — every
+	// golden, every unit test — pins the summary, so no fixture's verdict
+	// depends on what this machine has in /etc/containers.
+	rep := buildReport(p, args, cfg, refusedBy, func() engine.SignaturePolicySummary {
+		return engine.SummariseSignaturePolicy(p.Home)
+	})
 	if cfg.json {
 		return renderJSON(out, rep)
 	}

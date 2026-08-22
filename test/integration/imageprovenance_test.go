@@ -380,7 +380,11 @@ func plantHostSignaturePolicy(t *testing.T, body string) string {
 // not a verdict on the projection.
 func TestTheEngineEnforcesTheProjectedSignaturePolicy(t *testing.T) {
 	requireSandbox(t)
-	const image = "docker.io/library/alpine:3.20"
+	// THE SUITE'S ONE REGISTRY DEPENDENCY, named through the constants that own
+	// it rather than spelled out here — TestTheSuiteHasExactlyOneRegistryDependency
+	// enforces that, and the gate it demands for a reference like this is
+	// reachedNoRegistry below.
+	image := dockerHubImage + ":" + dockerHubTag
 	const rejected = "rejected by policy"
 
 	rejectEnv, rejectEng := engineSpecEnvWithSignaturePolicy(t, `{"default":[{"type":"reject"}]}`)

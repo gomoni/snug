@@ -203,7 +203,15 @@ type reportSeccomp struct {
 // It touches the host in exactly the two places --dry-run already did:
 // notGranted stats candidate paths, and the engine source reads two
 // environment variables. Neither is new here.
-func buildReport(p *policy.Policy, args []string, cfg config, refusedBy error) Report {
+// sig is a THUNK and a PARAMETER, for the reason buildContainersReport's own doc
+// gives one line down: it is the only host read anywhere in this report, so a
+// builder that fetched it itself would make every golden's verdict depend on
+// whether the machine running it has an /etc/containers/policy.json. Measured:
+// it does in CI and does not on the development host, so json.podman-socket.json
+// passed locally and failed there with
+// "signature_policy_source": "/etc/containers/policy.json".
+func buildReport(p *policy.Policy, args []string, cfg config, refusedBy error,
+	sig func() engine.SignaturePolicySummary) Report {
 	rep := Report{
 		Outcome:    "ok",
 		Target:     p.Target,
@@ -216,9 +224,7 @@ func buildReport(p *policy.Policy, args []string, cfg config, refusedBy error) R
 		NotGranted: notGranted(p),
 		Network:    buildNetworkReport(p),
 		Topology:   buildTopologyReport(p),
-		Containers: buildContainersReport(p, func() engine.SignaturePolicySummary {
-			return engine.SummariseSignaturePolicy(p.Home)
-		}),
+		Containers: buildContainersReport(p, sig),
 		Seccomp:    buildSeccompReport(cfg),
 		NewSession: p.NewSession,
 		BwrapArgv:  args,

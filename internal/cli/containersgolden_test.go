@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -310,5 +311,48 @@ func TestEveryHostTextFieldInTheContainersBlockCarriesItsBytes(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("control: the sweep examined no field at all, so it proves nothing")
+	}
+}
+
+// TestOnlyTheRenderPathReadsTheHostSignaturePolicy is the guard for the trap
+// that made CI red while the local gate was green.
+//
+// buildReport used to call engine.SummariseSignaturePolicy itself, so every
+// fixture that built a report read the machine's own signature policy. The
+// development host has no /etc/containers/policy.json and CI's runner does, so
+// json.podman-socket.json passed here and failed there with
+// `"signature_policy_source": "/etc/containers/policy.json"`.
+//
+// The structural fix is that buildReport takes the summary as a thunk, which
+// forces every caller to decide. This is the sweep that notices a SECOND caller
+// deciding wrongly: exactly one non-test site in this package may read the host.
+func TestOnlyTheRenderPathReadsTheHostSignaturePolicy(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sites []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "//") {
+				continue
+			}
+			if strings.Contains(line, "SummariseSignaturePolicy(") {
+				sites = append(sites, e.Name()+":"+strconv.Itoa(i+1))
+			}
+		}
+	}
+	if len(sites) != 1 || !strings.HasPrefix(sites[0], "dryrun.go:") {
+		t.Errorf("the host's signature policy is read at %v, want exactly one site in "+
+			"dryrun.go — the render path, which is the only one with a real host behind it. "+
+			"Any other caller makes a fixture's verdict depend on whether the machine "+
+			"running it has an /etc/containers/policy.json", sites)
 	}
 }
