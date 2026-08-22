@@ -385,18 +385,71 @@ func checkBuildVolume(p *Proxy, v string) (string, error) {
 	return strings.Join(parts, ":"), nil
 }
 
+// additionalContextFields is the DEFAULT-DENY ALLOWLIST over one entry's own
+// fields, and it is the same rule buildParams applies to the query one level
+// up — applied one level down, which is where issues #310 and #311 both live.
+//
+// RECORDED, not guessed, in the spelling this file's other fixtures follow: a
+// `podman 6.0.2 build --build-context extra=<dir>` against a listening socket
+// sends exactly
+//
+//	{"extra":{"IsURL":false,"IsImage":false,"Value":"<dir>","DownloadedCache":""}}
+//
+// so four fields, with DownloadedCache empty on an ordinary build. A fifth one
+// arriving is a field snug has not been taught about reaching the engine
+// unexamined, which is precisely what the parameter-level rule refuses.
+var additionalContextFields = map[string]string{
+	"isurl":           "IsURL",
+	"isimage":         "IsImage",
+	"value":           "Value",
+	"downloadedcache": "DownloadedCache",
+}
+
 // checkAdditionalContexts judges `--build-context name=VALUE`.
 //
 // An image reference is fine — it is content the engine pulls under the same
 // rules as any other image. A URL is not: the engine fetches it from somewhere
 // snug never sees. Anything else is a host path, and gets the mount rule, read
 // only, because a build context is only ever read.
+//
 // Like checkBuildVolume it returns the value respelled with the RESOLVED path
-// (issue #304). The re-marshal goes through json.RawMessage per entry rather
-// than through a struct, so every field podman sends that snug does not model
-// — buildah's AdditionalBuildContext has grown fields before — survives the
-// round trip byte for byte. Rewriting through a three-field struct would
-// silently DELETE the rest, which is a different bug in the same line of code.
+// (issue #304).
+//
+// THE SHAPE THIS FUNCTION HAD BETWEEN #306 AND #310, because it is the mistake
+// worth not repeating. It re-marshalled each entry through
+// map[string]json.RawMessage and preserved every field snug does not model,
+// writing the resolved path back "under the key spelling actually present":
+//
+//	key := "Value"
+//	for k := range fields { if strings.EqualFold(k, "Value") { key = k; break } }
+//	fields[key] = enc
+//
+// Two holes, one cause. The preserve-what-we-do-not-model instinct is the
+// OPPOSITE of the rule this file states four hundred lines up — "an option it
+// has not been taught about fails closed rather than reaching the engine
+// unexamined" — and applying it inside an allowed parameter re-opened by hand
+// what the parameter-level allowlist closes:
+//
+//   - #310 (sev:high). Two case-variant spellings of Value in one entry:
+//     {"Value":"<link>","value":"<link>"}. The loop rewrites whichever the map
+//     yields FIRST — range order, so a coin flip, freely retriable — and
+//     json.Marshal then emits keys SORTED, putting "value" (0x76) after
+//     "Value" (0x56). The engine decodes with encoding/json, which is
+//     case-insensitive LAST-WINS, so it takes the raw one. Measured ~38/40
+//     trials: forwarded {"x":{"Value":"/usr","value":"<target>/link"}}, engine
+//     effective Value = the raw link. #304's primitive, reopened.
+//   - #311 (sev:medium, engine consumption unverified). DownloadedCache is a
+//     path-bearing field snug never validated, forwarded verbatim. Its
+//     documented role is the materialised local directory for a URL or archive
+//     context, so if buildah honours one supplied over the API it is a direct
+//     host-path read with no symlink and no race at all.
+//
+// The fix is one rule rather than two patches: an entry's fields are an
+// allowlist, no field may appear twice under different casing, and the one
+// path-bearing field snug does not model may only be empty. Then the resolved
+// Value is written under a CANONICAL key with every other spelling of it
+// deleted — so "which duplicate wins" is not a question either side has to
+// answer, because there is never more than one.
 func checkAdditionalContexts(p *Proxy, v string) (string, error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(v), &raw); err != nil {
@@ -414,6 +467,44 @@ func checkAdditionalContexts(p *Proxy, v string) (string, error) {
 		if err := json.Unmarshal(raw[name], &fields); err != nil {
 			return "", fmt.Errorf("context %q is not the JSON object podman sends", name)
 		}
+
+		// Default-deny over the fields, and at most one spelling of each.
+		// Sorted so a refusal names the same key every time — a message that
+		// varies with map order is one a test cannot pin.
+		keys := make([]string, 0, len(fields))
+		for k := range fields {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		spelling := map[string]string{} // canonical field -> the key that carried it
+		for _, k := range keys {
+			canon, known := additionalContextFields[strings.ToLower(k)]
+			if !known {
+				return "", fmt.Errorf("context %q carries the field %q, which snug does not "+
+					"model. A build context's fields are an allowlist for the same reason the "+
+					"build parameters are: a field snug has not been taught about may name a "+
+					"second host path, and would reach the engine unexamined. If it is "+
+					"harmless it belongs in additionalContextFields with a note saying why",
+					name, k)
+			}
+			if prev, dup := spelling[canon]; dup {
+				return "", fmt.Errorf("context %q carries %s twice, as %q and %q. snug and the "+
+					"engine do not agree on which duplicate wins — encoding/json takes the "+
+					"LAST after a sort, so a second spelling is a way to have snug judge one "+
+					"value and the engine use another (issue #310)", name, canon, prev, k)
+			}
+			spelling[canon] = k
+		}
+
+		// The one modelled field that carries a path and that snug does not
+		// resolve. Empty is what an ordinary build sends; anything else is a
+		// host path arriving through a field with no check behind it (#311).
+		if k, ok := spelling["DownloadedCache"]; ok && !isEmptyJSON(fields[k]) {
+			return "", fmt.Errorf("context %q sets %s, which names a host directory the engine "+
+				"may read the context from — a second path beside Value, and one snug does "+
+				"not resolve or judge. Only an empty value is permitted", name, k)
+		}
+
 		var c struct {
 			IsURL   bool
 			IsImage bool
@@ -433,31 +524,30 @@ func checkAdditionalContexts(p *Proxy, v string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("context %q: %w", name, err)
 		}
-		if m.Source == c.Value {
-			continue
-		}
-		// Write back under the key spelling that was actually present.
-		// encoding/json matches field names case-insensitively on the way in,
-		// so assuming "Value" here would leave a lowercase "value" in place
-		// and add a second key the engine might prefer either way.
-		key := "Value"
-		for k := range fields {
-			if strings.EqualFold(k, "Value") {
-				key = k
-				break
-			}
+
+		// CANONICALISE rather than write back in place. Deleting the key that
+		// carried Value and emitting "Value" is what makes the duplicate
+		// question unaskable; the refusal above already makes it unreachable,
+		// and both are kept because they fail in opposite directions — the
+		// refusal stops a request, this stops a request snug rewrote from
+		// carrying a spelling it did not intend.
+		if k, ok := spelling["Value"]; ok {
+			delete(fields, k)
 		}
 		enc, err := json.Marshal(m.Source)
 		if err != nil {
 			return "", fmt.Errorf("context %q: %v", name, err)
 		}
-		fields[key] = enc
+		fields["Value"] = enc
+
 		out, err := json.Marshal(fields)
 		if err != nil {
 			return "", fmt.Errorf("context %q: %v", name, err)
 		}
-		raw[name] = out
-		changed = true
+		if string(out) != string(raw[name]) {
+			raw[name] = out
+			changed = true
+		}
 	}
 	if !changed {
 		return v, nil
