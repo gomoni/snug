@@ -42,6 +42,13 @@ import (
 //	    by deleting them, has to write a Mounts map to have any effect, and the
 //	    set below names every place that does.
 //
+// P2 is load-bearing rather than belt-and-braces, and this is the measurement
+// that says so: issue #271's own example — a Derive returning a copy of the
+// mounts with every AccessRW rewritten to AccessRO — is reported by P2 ONLY.
+// P1 shows nothing for it, because it assigns no Access field anywhere. Anyone
+// who finds P1 sufficient and deletes P2 restores exactly the patch this file
+// exists to catch. Both fixtures are below.
+//
 // Together they leave three ways in, and each is monotone or documented:
 //
 //	Policy.join     Access joins by max (resolve.go), which is P1's one site.
@@ -409,7 +416,9 @@ func TestMountCollectionsHaveThreeWriters(t *testing.T) {
 	// []jsonMount rendering of the policy that shares nothing but the field
 	// name. They are listed rather than filtered: a name-matched sweep that
 	// hid its own name collisions would be hiding exactly what a reader has
-	// to check.
+	// to check, and filtering by package would make the sweep's scope a second
+	// thing to keep in step with the walk. The failure message says which rows
+	// are collisions, so whoever adds a seventh write is not left guessing.
 	want := []string{
 		"internal/cli/dryrunjson.go (*lossyEncoder).document (whole-field assignment)",
 		"internal/cli/dryrunjson.go (*lossyEncoder).document (whole-field assignment)",
@@ -433,7 +442,14 @@ func TestMountCollectionsHaveThreeWriters(t *testing.T) {
 			"paths only) and Policy.Replace (invariant 1's named exception, snug's own generated\n"+
 			"mounts). A fourth is a fourth way for a resolved policy to say something other than\n"+
 			"what the profiles granted: a rebuilt mount set is a demote whatever it is called,\n"+
-			"and a delete is an un-grant. Add it to the argument above or do not add it.",
+			"and a delete is an un-grant. Add it to the argument above or do not add it.\n\n"+
+			"The two (*lossyEncoder).document rows are a NAME COLLISION, not a fourth writer:\n"+
+			"that Mounts is the --dry-run JSON document's own []jsonMount, a rendering of the\n"+
+			"policy that shares nothing with p.Mounts but the field name. This sweep matches by\n"+
+			"field name deliberately — Policy.SandboxView returns a View sharing the very map,\n"+
+			"so a write through v.Mounts[k] IS a write to p.Mounts — and it lists its own\n"+
+			"collisions rather than filtering them, because a sweep that hides them hides what\n"+
+			"a reader has to check. If you edited that renderer, add or drop the row here.",
 			len(got), strings.Join(sitesLines(sites), "\n  "), len(sorted), strings.Join(sorted, "\n  "))
 	}
 	for i := range got {
