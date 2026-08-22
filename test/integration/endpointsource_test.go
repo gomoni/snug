@@ -121,9 +121,30 @@ func TestDryRunRefusesABindOfAnEndpoint(t *testing.T) {
 // so, the doc comment says so, and this test pins it so that the day someone
 // closes the gap they have to come here and change a test that states the old
 // behaviour — rather than discovering years later that "endpoints are
-// refused" was half true. TestAFifoInAGrantedDirectoryStillReachesTheHost
-// (fiforesidual_test.go) is this same gap's REAL-WORLD residual, measured
-// through the default profile selection rather than through --dry-run alone.
+// refused" was half true.
+//
+// This test and four others split the claim deliberately, and the split is
+// the point rather than an accident of who wrote what when. THIS test pins
+// ACCEPTANCE: the grant is not refused, and the endpoint check does not fire
+// merely because a directory happens to contain an endpoint. It says nothing
+// about whether the endpoint is USABLE — a reader who stops here would
+// conclude the residual is a --dry-run curiosity, which understates it. Four
+// more tests pin REACHABILITY, on a real running sandbox rather than
+// --dry-run alone:
+//
+//   - TestAFifoInAGrantedDirectoryStillReachesTheHost (fiforesidual_test.go) —
+//     a FIFO already present when the sandbox starts, sandbox-to-host,
+//     through the default @parent-ro selection alone.
+//   - TestAFifoCreatedAfterTheSandboxStartsStillReachesTheHost and
+//     TestTheFifoResidualAlsoReachesFromHostIntoTheSandbox
+//     (fifoafterstart_test.go) — a FIFO created strictly AFTER the sandbox is
+//     already running, in both directions.
+//   - TestASocketCreatedAfterTheSandboxStartsStillReachesTheHost
+//     (socketafterstart_test.go) — the socket parallel of the above.
+//   - TestDirectoryBindOfALiveAgentSocketEnumeratesAndSignsWithTheDecoy
+//     (agentdirectory_test.go) — a live ssh-agent socket in a granted
+//     directory both enumerates and signs with a decoy key, tied to the
+//     decoy specifically rather than to "a signature happened".
 //
 // It is deliberately NOT phrased as an approval of the gap. A check that
 // silently covers half its rule is this project's most-repeated defect, and

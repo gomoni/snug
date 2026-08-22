@@ -200,7 +200,29 @@ var buildParams = map[string]buildParamCheck{
 	"rewritetimestamp": nil, "timestamp": nil, "sourcedateepoch": nil,
 	"jobs": nil, "retry": nil, "retry-delay": nil, "identitylabel": nil,
 	"compression": nil, "compressionformat": nil, "compressionlevel": nil,
-	"manifest": nil, "createdannotation": nil,
+
+	// The fourth of the compression family, and the one that makes an
+	// ORDINARY podman 6.0.2 build possible at all — 6.0.2 sends it on every
+	// build, so without this entry the profile cannot build (issue #314).
+	//
+	// A hostile process inside the sandbox can use this to force the chosen
+	// compression algorithm to be used exclusively (no blob reuse) when an
+	// image is committed to a non-local transport. That is the whole of it:
+	// a boolean modifier of compressionformat, which is already allowed. It
+	// names no path, reaches no host resource, and does not select the
+	// transport — the parameters that would supply a non-local destination
+	// (manifest, cachefrom, cacheto) are refused above.
+	//
+	// Inert for an ordinary build, measured in the source rather than
+	// assumed: buildah 1.44.1 imagebuildah/stage_executor.go:2748-2756
+	// applies CompressionFormat, CompressionLevel and ForceCompressionFormat
+	// only when imageRef.Transport().Name() != is.Transport.Name(), and
+	// `podman build -t x` commits to containers-storage, which is the local
+	// transport. define/build.go:173 states its only job: ensure the
+	// algorithm in CompressionFormat is used exclusively and blobs of other
+	// compression algorithms are not reused.
+	"forcecompressionformat": nil,
+	"manifest":               nil, "createdannotation": nil,
 
 	// Resource limits. They bound the build rather than widening it.
 	"shmsize": nil, "memory": nil, "memswap": nil, "ulimits": nil,
