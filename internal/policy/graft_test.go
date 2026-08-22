@@ -983,12 +983,13 @@ func TestGraftCarriesAnAbuseSentence(t *testing.T) {
 	// already proves validGraft's own Why is accepted; nothing further needed
 	// here beyond that shared control.
 
-	sites := graftCallSitesWithoutWhy(t)
+	sites, dirs := graftCallSitesWithoutWhy(t)
+	requireWalked(t, dirs)
 	for _, s := range sites {
 		t.Errorf("%s", s)
 	}
 	if len(sites) == 0 {
-		t.Log("no policy.Graft call sites found under internal/ with a missing or empty Why " +
+		t.Log("no policy.Graft call sites found under the module root with a missing or empty Why " +
 			"(expected: Tier C, issue #125, has not landed — see the positive control below, " +
 			"which proves this walk can actually see a violation)")
 	}
@@ -1054,32 +1055,52 @@ func graftLiteralsWithoutWhy(filename, src string) []string {
 }
 
 // graftCallSitesWithoutWhy runs graftLiteralsWithoutWhy over every non-test
-// .go file under internal/.
-func graftCallSitesWithoutWhy(t *testing.T) []string {
+// .go file under the module root (moduleRoot, authoredwriters_test.go) —
+// not just internal/, so a call site in cmd/snug is in scope too (issue
+// #353). It also returns the directories it visited: requireWalked
+// (norestriction_test.go) is the walk's own positive control, shared with
+// P1/P2's sweep, so a future narrowing of the root fails loudly instead of
+// shipping green.
+func graftCallSitesWithoutWhy(t *testing.T) ([]string, map[string]bool) {
 	t.Helper()
-	root := filepath.Join("..", "..", "internal")
+	root := moduleRoot(t)
 	var bad []string
+	dirs := map[string]bool{}
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
+			name := d.Name()
+			// Dotted directories (.claude/worktrees/ holds full copies of
+			// this tree on other branches, in the primary checkout) and
+			// vendor/ are skipped for the same reason sweepModule skips
+			// them.
+			if path != root && (strings.HasPrefix(name, ".") || name == "vendor") {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
+		rel, rerr := filepath.Rel(root, path)
+		if rerr != nil {
+			return rerr
+		}
+		rel = filepath.ToSlash(rel)
+		dirs[filepath.ToSlash(filepath.Dir(rel))] = true
 		src, rerr := os.ReadFile(path)
 		if rerr != nil {
 			return rerr
 		}
-		bad = append(bad, graftLiteralsWithoutWhy(path, string(src))...)
+		bad = append(bad, graftLiteralsWithoutWhy(rel, string(src))...)
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return bad
+	return bad, dirs
 }
 
 // ── §7 item 11 ────────────────────────────────────────────────────────────────
@@ -1271,18 +1292,34 @@ var engineOwnedWriteRE = regexp.MustCompile(`\.EngineOwnedHostPaths\s*(\[[^]]*\]
 // makes OwnEngineHostPath's writer discipline checkable rather than merely
 // documented.
 func TestOnlyOneWriterOfEngineOwnedHostPaths(t *testing.T) {
-	root := filepath.Join("..", "..", "internal")
+	// The walk root is the module root (moduleRoot, authoredwriters_test.go),
+	// not internal/ — a write in cmd/snug is in scope (issue #353). dirs is
+	// the walk's own positive control (requireWalked,
+	// norestriction_test.go): without it a future narrowing of root ships
+	// green again.
+	root := moduleRoot(t)
 	var hits []string
+	dirs := map[string]bool{}
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
+			name := d.Name()
+			if path != root && (strings.HasPrefix(name, ".") || name == "vendor") {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
+		rel, rerr := filepath.Rel(root, path)
+		if rerr != nil {
+			return rerr
+		}
+		rel = filepath.ToSlash(rel)
+		dirs[filepath.ToSlash(filepath.Dir(rel))] = true
 		src, rerr := os.ReadFile(path)
 		if rerr != nil {
 			return rerr
@@ -1290,28 +1327,29 @@ func TestOnlyOneWriterOfEngineOwnedHostPaths(t *testing.T) {
 		text := string(src)
 		for _, loc := range engineOwnedWriteRE.FindAllStringIndex(text, -1) {
 			line := 1 + strings.Count(text[:loc[0]], "\n")
-			rel, _ := filepath.Rel(root, path)
-			hits = append(hits, fmt.Sprintf("%s:%d", filepath.ToSlash(rel), line))
+			hits = append(hits, fmt.Sprintf("%s:%d", rel, line))
 		}
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	requireWalked(t, dirs)
 
 	// Two hits are EXPECTED from the one legitimate writer — the nil-init
 	// whole-map assignment and the bracketed one, both inside
 	// OwnEngineHostPath — so the assertion is "every hit traces to
-	// policy/graft.go", not "exactly one", which the widened pattern can no
-	// longer promise even for the correct code.
+	// internal/policy/graft.go", not "exactly one", which the widened
+	// pattern can no longer promise even for the correct code.
 	if len(hits) == 0 {
-		t.Fatal("found ZERO assignments into a .EngineOwnedHostPaths map under internal/ — " +
+		t.Fatal("found ZERO assignments into a .EngineOwnedHostPaths map under the module root — " +
 			"OwnEngineHostPath itself must trip this sweep, or it is not testing anything")
 	}
 	for _, h := range hits {
-		if !strings.HasPrefix(h, "policy/graft.go:") {
-			t.Errorf("found an assignment into p.EngineOwnedHostPaths outside policy/graft.go, at "+
-				"%s — OwnEngineHostPath is meant to be the only writer", h)
+		if !strings.HasPrefix(h, "internal/policy/graft.go:") {
+			t.Errorf("found an assignment into p.EngineOwnedHostPaths outside "+
+				"internal/policy/graft.go, at %s — OwnEngineHostPath is meant to be the only "+
+				"writer", h)
 		}
 	}
 
