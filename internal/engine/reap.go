@@ -48,6 +48,22 @@ func (e *Engine) paths() []string { return []string{e.sock} }
 // ownedPIDs lists every visible process whose command line names one of paths.
 // Processes in exclude (snug itself, and the podman clients snug is running
 // right now) are never returned.
+//
+// A pid whose /proc/<pid>/cmdline reads back EMPTY means "cannot tell yet", NOT
+// "not ours" — issue #318, and the distinction is the point. The kernel sets
+// mm->arg_start only after close-on-exec fires, so for a real window after
+// execve a live process reads back zero bytes: measured empty 2965/3000
+// immediately after exec.Cmd.Start (#317). Rootless podman re-execs itself with
+// the same argv, so the one process this sweep looks for is exactly the kind
+// that passes through that window, and while it does it is invisible here.
+//
+// Deliberately not retried, and cmdlineNamesPath is deliberately unchanged.
+// Retrying is not cheap: a zero-byte cmdline is not only mid-exec — every
+// kernel thread reads zero bytes forever, and so does a zombie — so telling
+// mid-exec apart from those needs /proc/<pid>/stat parsing (state Z, PF_KTHREAD)
+// on the teardown path. That is new machinery in the file that most needs to
+// stay simple, to shorten a miss that is already fail-safe and already bounded;
+// waitQuiet names what bounds it.
 func ownedPIDs(paths []string, exclude map[int]bool) []int {
 	ents, err := os.ReadDir("/proc")
 	if err != nil {
@@ -72,6 +88,13 @@ func ownedPIDs(paths []string, exclude map[int]bool) []int {
 // a recycled number does is answer for the wrong process, and the caller that
 // SIGNALS re-checks this through a pidfd (see signalPinned). A read error (pid
 // gone, another user's) is "does not name us".
+//
+// So is an EMPTY read, and that answer is right for this predicate and wrong
+// for one of its callers. The predicate asked here is "does this command line
+// name us", and a command line nobody can read does not name us. What differs
+// is the question the caller is asking it: signalPinned asks "may I KILL this
+// pid", where false must mean no; ownedPIDs/waitQuiet ask "is anything of mine
+// still ALIVE", where false is not an answer at all. See both (#318).
 func cmdlineNamesPath(pid int, paths []string) bool {
 	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
 	if err != nil || len(raw) == 0 {
@@ -128,6 +151,13 @@ func signalPinned(pid int, paths []string, sig syscall.Signal) bool {
 	if !cmdlineNamesPath(pid, paths) {
 		// The number was recycled to a process that is not this run's engine.
 		// The pidfd pins that innocent process; do not signal it.
+		//
+		// An unreadable or EMPTY cmdline lands here too, and that is correct
+		// and deliberate — unlike ownedPIDs, this caller is asking "may I kill
+		// this", so "cannot tell" must answer no. Do NOT make this one retry
+		// (#318): retrying here is signalling a process snug could not
+		// identify, which is the reuse TOCTOU #298 exists to prevent wearing a
+		// different hat. Whatever the liveness side ever does, this stays.
 		return false
 	}
 	return unix.PidfdSendSignal(pidfd, sig, nil, 0) == nil
@@ -138,6 +168,20 @@ func signalPinned(pid int, paths []string, sig syscall.Signal) bool {
 //
 // Polling rather than waiting on a pid is deliberate: these are not our
 // children, so there is no wait(2) to call on them.
+//
+// Read the empty return as "nothing I could IDENTIFY", never as "nothing
+// alive". ownedPIDs cannot see a pid that is mid-execve (#318), and this loop
+// returns on its first quiet observation, so a poll landing in that window
+// reports a clean teardown while the engine is live — Stop then skips its
+// SIGKILL and removes the run directory under it.
+//
+// What holds instead is named, because "best effort" without a named backstop
+// is the kind of prose that rots: the engine is started with --time
+// idleTimeout (engine.go), so an engine this sweep missed exits by itself
+// within that, and quietBudget is idleTimeout + 5s. Same category as the other
+// blindness this file already accepts — in a container without the host PID
+// namespace the engine is not in /proc at all — and the same backstop covers
+// both.
 func waitQuiet(paths []string, exclude map[int]bool, budget time.Duration) []int {
 	deadline := time.Now().Add(budget)
 	for {

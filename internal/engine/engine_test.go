@@ -330,17 +330,90 @@ func TestSignalOwnedReverifiesThroughAPidfdBeforeKilling(t *testing.T) {
 	}
 }
 
+// cmdlinePollInterval and cmdlinePollTimeout govern every /proc/<pid>/cmdline
+// poll in this file (marker below, and the reaper's own read in
+// TestReaperFiresOnEOFAndRemovesTheWholeRunDirectory…). Chosen for a loaded
+// 2-core GitHub runner: the kernel window described below (issue #317) closes
+// within microseconds with no contention, but scheduler contention on a busy
+// 2-core box can stretch it considerably further, so the deadline is generous
+// (2s) rather than tight. The interval (500us) is short enough to catch the
+// window promptly without the polling loop's own /proc reads becoming the
+// bottleneck — worst case a few thousand iterations, each one read of a small
+// procfs file.
+const (
+	cmdlinePollInterval = 500 * time.Microsecond
+	cmdlinePollTimeout  = 2 * time.Second
+)
+
+// waitCmdline polls /proc/<pid>/cmdline until it is non-empty, or until
+// cmdlinePollTimeout elapses, and returns whatever the last read produced —
+// "" on timeout or on any read error (pid gone, wrong owner, ...).
+//
+// issue #317, MEASURED: exec.Cmd.Start returns as soon as execve succeeds, but
+// the kernel does not populate mm->arg_start — what /proc/<pid>/cmdline reads
+// — until AFTER close-on-exec fires, later in the exec path. So there is a
+// real window, immediately after Start returns, where the process exists,
+// pidfd_open succeeds against it, and /proc/<pid>/cmdline reads back ZERO
+// bytes: 2965 of 3000 reads taken immediately after Start were empty.
+// cmdlineNamesPath (reap.go) reads an empty cmdline as "does not name us", so
+// a caller that used the pid the instant Start returned could act on a
+// process that has not yet grown the identity it was started to carry — which
+// is exactly what starved TestSignalOwnedReverifiesThroughAPidfdBeforeKilling's
+// positive control on a loaded CI runner, and what made a NEGATIVE assertion
+// elsewhere in this file (the reaper's own cmdline, below) pass vacuously
+// instead of actually checking anything.
+//
+// This makes NO assertion of its own and never calls t.Fatal/t.Error: "is the
+// cmdline populated at all" and "does it name what I expect" are two
+// different questions, and folding both into one helper — worse, into one
+// helper with a mode flag — is the rule-applied-to-only-one-half shape
+// CLAUDE.md warns about (checkEnvName guarding the NAME while the VALUE went
+// unguarded is its worked example); keeping this helper to exactly the first
+// question is what stops the next one. Every caller decides for
+// itself what an empty return means and says so in its own words.
+func waitCmdline(t *testing.T, pid int) string {
+	t.Helper()
+	deadline := time.Now().Add(cmdlinePollTimeout)
+	for {
+		raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
+		if err == nil && len(raw) > 0 {
+			return string(raw)
+		}
+		if time.Now().After(deadline) {
+			return ""
+		}
+		time.Sleep(cmdlinePollInterval)
+	}
+}
+
 // marker starts a process whose command line contains arg and which NEVER
-// FORKS, then blocks until the test ends.
+// FORKS, then blocks until the test ends. It does not return until
+// /proc/<pid>/cmdline actually contains arg — see waitCmdline and issue #317
+// above.
 //
 // The non-forking part is deliberate. The helper used to be
 // `sh -c "sleep 30; true" ARG`, and sh forks to run sleep — between the fork
 // and the exec the child is a copy of sh, command line and marker included, so
 // a /proc sweep can see a second pid carrying our socket. That was the leading
-// theory for the CI failure above and it is NOT confirmed: 40 trials of a tight
-// scan immediately after Start never caught the window on this developer's box.
-// Removing the fork is still right (fewer processes, and one fewer thing the
-// test depends on), it is simply not known to be the cause.
+// theory for the CI failure this helper exists to fix, and it was NOT the
+// cause: 40 trials of a tight scan immediately after Start never caught a
+// forked window on this developer's box. Removing the fork is still right
+// (fewer processes, and one fewer thing the test depends on), but the real
+// mechanism is issue #317 above, and it applies to this exec'd, non-forking
+// process too. Returning on Start alone is wrong for every caller, not just
+// the one that first exposed it.
+//
+// Two separate questions, two separate polls: waitCmdline answers "is a
+// cmdline there at all", and on top of that this answers "does it name arg" —
+// through cmdlineNamesPath, the SAME predicate ownedPIDs/signalPinned use in
+// production. That second coupling would ordinarily be a reason not to reuse
+// the helper; it is acceptable here because the deadline+Fatal below turns a
+// broken predicate into a loud helper failure at the marker call site, never
+// a silent pass of the real assertions two lines down. On timeout this calls
+// t.Fatal with the pid, the arg it never saw, and the last cmdline it did
+// read, rather than letting the caller hang until go test's own global
+// timeout fires (a timeout-shaped failure is in the cannot-fail family: it
+// gives no reason).
 //
 // `read` is a shell builtin, so this sh runs it in-process and never has a
 // child at all; closing stdin is what ends it.
@@ -359,7 +432,52 @@ func marker(t *testing.T, arg string) *exec.Cmd {
 		_ = c.Process.Kill()
 		_, _ = c.Process.Wait()
 	})
+
+	if raw := waitCmdline(t, c.Process.Pid); raw == "" {
+		t.Fatalf("marker: pid %d's /proc/%d/cmdline is still empty after %s — the arg_start "+
+			"window (issue #317) never closed, or the process exited before it did",
+			c.Process.Pid, c.Process.Pid, cmdlinePollTimeout)
+	}
+	deadline := time.Now().Add(cmdlinePollTimeout)
+	for !cmdlineNamesPath(c.Process.Pid, []string{arg}) {
+		if time.Now().After(deadline) {
+			raw, readErr := os.ReadFile("/proc/" + strconv.Itoa(c.Process.Pid) + "/cmdline")
+			t.Fatalf("marker: pid %d never showed %q in /proc/%d/cmdline within %s "+
+				"(last read: %q, err: %v) — the cmdline was populated but never came to "+
+				"include arg, which waitCmdline alone would not have caught",
+				c.Process.Pid, arg, c.Process.Pid, cmdlinePollTimeout, raw, readErr)
+		}
+		time.Sleep(cmdlinePollInterval)
+	}
 	return c
+}
+
+// TestMarkerDoesNotReturnUntilItsCmdlineNamesItsArg is issue #317's permanent
+// regression: marker's POSTCONDITION, asserted directly rather than left as a
+// property the tests above happen to depend on.
+//
+// It exists because the mutation check for #317 does not reproduce through
+// those tests on an idle developer box: the window is ~50-200us there, and the
+// work they do between marker returning and the assertion that needs the
+// cmdline (constructing a second marker, a pidfd open, a /proc read) reliably
+// burns through it. Reverting marker to return-on-Start would therefore ship
+// green on a fast machine and start flaking again only on a loaded 2-core
+// runner — the exact failure this fix was written for. Asserting the
+// postcondition with NOTHING in between is what makes the mutation fail here
+// and now: measured 30/30 under a return-on-Start marker, 0/30 with the fix.
+//
+// The loop is the positive control's teeth, not caution: one iteration would
+// pass 1 time in 85 on the 2965/3000 measurement even with the bug present.
+func TestMarkerDoesNotReturnUntilItsCmdlineNamesItsArg(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		arg := "unix://" + filepath.Join(t.TempDir(), "podman-317.sock")
+		m := marker(t, arg)
+		if !cmdlineNamesPath(m.Process.Pid, []string{arg}) {
+			t.Fatalf("iteration %d: marker returned for pid %d but /proc/%d/cmdline does not "+
+				"name %q yet — the arg_start window (issue #317) was still open, and every "+
+				"caller of marker inherits that", i, m.Process.Pid, m.Process.Pid, arg)
+		}
+	}
 }
 
 // The reaper is the only thing that runs after snug is SIGKILLed, and it is
@@ -426,8 +544,24 @@ func TestReaperFiresOnEOFAndRemovesTheWholeRunDirectoryAndStandsDownWithoutTouch
 		}
 		// The reaper must not name the socket in its own command line, or the
 		// /proc sweep would find snug's own cleanup and report it as a leak.
-		cmdline, err := os.ReadFile("/proc/" + strconv.Itoa(r.cmd.Process.Pid) + "/cmdline")
-		if err == nil && strings.Contains(string(cmdline), sock) {
+		//
+		// This is a NEGATIVE assertion, which is exactly the shape issue #317
+		// warned about elsewhere in this file: read immediately after
+		// startReaper, /proc/<pid>/cmdline is empty 2965/3000 times (the
+		// arg_start window), and an empty cmdline trivially satisfies
+		// "does not contain sock" whether or not the reaper actually avoids
+		// naming it. So the two questions are asked separately, with
+		// DISTINGUISHABLE messages, because they are different bugs: an empty
+		// read means this assertion never ran at all; a populated one
+		// containing sock means the reaper really does leak it.
+		cmdline := waitCmdline(t, r.cmd.Process.Pid)
+		if cmdline == "" {
+			t.Errorf("the reaper's command line is empty (pid %d) even after waiting — this "+
+				"assertion proved nothing, since an empty cmdline vacuously satisfies "+
+				"'does not name the socket' whether or not the reaper actually avoids it",
+				r.cmd.Process.Pid)
+		}
+		if strings.Contains(cmdline, sock) {
 			t.Errorf("the reaper's command line names the socket; the sweep will match itself")
 		}
 

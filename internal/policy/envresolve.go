@@ -468,16 +468,17 @@ func (p *Policy) GrantsGuestPath(guest string) bool {
 	return p.SandboxView().GrantsGuestPath(guest)
 }
 
-// (*Policy).coveringMount and (*Policy).resolveThroughLinks are the same kind
-// of one-line wrapper over SandboxView, kept for the package-internal callers
-// that ask the walk directly rather than through IsShadowSlot/GrantsGuestPath
-// — existsInSandbox (graft.go, G3) and the pre-issue-#55 test suite in
-// envresolve_test.go, which built fixtures as bare *Policy values and calls
-// these by name. Nothing here changes the walk; it is still SandboxView's.
-func (p *Policy) coveringMount(guest string) (Mount, bool) {
-	return p.SandboxView().coveringMount(guest)
-}
-
+// (*Policy).resolveThroughLinks is a one-line wrapper over SandboxView, kept
+// for the pre-issue-#55 test suite in envresolve_test.go, which builds fixtures
+// as bare *Policy values and calls the walk by name rather than through
+// IsShadowSlot/GrantsGuestPath. Nothing here changes the walk; it is still
+// SandboxView's.
+//
+// There is no (*Policy).coveringMount beside it. One existed and had no
+// callers: the comment here claimed existsInSandbox (graft.go, G3) was one,
+// and graft.go:898 in fact calls p.SandboxView().coveringMount directly, as
+// systemsshconfig.go:150 does. A comment naming a caller is a copy of state
+// held in the caller.
 func (p *Policy) resolveThroughLinks(guest string) (final Mount, replaceable, ok bool) {
 	return p.SandboxView().resolveThroughLinks(guest)
 }
