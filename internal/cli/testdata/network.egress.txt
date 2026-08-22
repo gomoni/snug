@@ -1,0 +1,13 @@
+NETWORK  egress — private netns (one per sandbox) with a pasta helper.
+         host loopback   UNREACHABLE (--map-host-loopback none, -T none, -U none)
+         abstract unix   UNREACHABLE (netns-scoped)
+         pathname sockets (X11, D-Bus, Wayland, ssh-agent) — see FILESYSTEM,
+                         not this block; a directory grant can expose one
+         egress          full, IPv4 + IPv6
+         dns             NONE — no resolver is named inside; lookups fail fast
+                         (this profile grants egress but never asked for DNS)
+         host -> sandbox CLOSED (publish = [3000] in a profile opens one)
+         address         copied from the host — add '@net-anon' to hide it
+         host's own IPs  unreachable, incidentally rather than by design: they are
+                         on the sandbox's own interface, so a connection to one
+                         never leaves the netns. '@net-anon' removes that.

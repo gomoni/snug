@@ -1,0 +1,5 @@
+NETWORK  isolated — private netns, loopback only, no helper process.
+         No egress. No host loopback. No abstract unix sockets (netns-scoped).
+         Pathname sockets (X11, D-Bus, Wayland, ssh-agent) are a MOUNT
+         question, not a network one — see FILESYSTEM for what is granted.
+         Add the '@net' profile for egress.

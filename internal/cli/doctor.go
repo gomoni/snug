@@ -11,6 +11,21 @@ import (
 	"github.com/gomoni/snug/internal/stage"
 )
 
+// doctorNetnsOKMessage is a named constant rather than an inline fmt.Println
+// sequence so a test can assert its wording WITHOUT running the userns/netns
+// probes above it, which need real unprivileged-userns support and so cannot
+// be part of Layer 1/2. Issue #288: this used to attribute X11/D-Bus/Wayland's
+// absence to the netns (they are pathname sockets on a typical desktop and are
+// closed by the MOUNT POLICY, by absence — see CLAUDE.md). The netns closes the
+// ABSTRACT instance only. Kept in step with dryrun.go's two describeNetwork
+// arms and config.go's networkConsequence by
+// TestTheNetworkBlockDoesNotClaimPathnameSocketsAreNetnsScoped, which drives
+// all four and applies one shared predicate rather than one test per site.
+const doctorNetnsOKMessage = "" +
+	"  ✅ private network namespace — loopback only\n" +
+	"     🔒 no egress, no host loopback, no abstract unix sockets (netns-scoped)\n" +
+	"     ℹ️  X11/D-Bus/Wayland are pathname sockets — a mount question, not this probe's\n"
+
 // doctor reports whether this host can run snug, so a user diagnoses a machine
 // before their first run rather than during it.
 //
@@ -102,8 +117,7 @@ func doctor() int {
 			fmt.Println("  ⚠️  could not list the sandbox's interfaces — probe inconclusive")
 			fmt.Printf("     💬 %s\n", firstLine(strings.TrimSpace(string(out))))
 		case len(got) == 1 && got[0] == "lo":
-			fmt.Println("  ✅ private network namespace — loopback only")
-			fmt.Println("     🔒 no egress, no host loopback, no abstract sockets (X11/D-Bus)")
+			fmt.Print(doctorNetnsOKMessage)
 		default:
 			// Fatal, and this one has earned it: the interfaces parsed cleanly
 			// and there is something in the namespace that should not be there.

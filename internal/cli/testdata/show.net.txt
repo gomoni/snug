@@ -4,7 +4,9 @@ defined in  builtin:base.toml
 
   network          egress
                    the sandbox reaches the whole internet, from a private netns.
-                   Host loopback and abstract sockets stay unreachable.
+                   Host loopback and abstract unix sockets stay unreachable
+                   (pathname sockets — X11, D-Bus — are a mount question,
+                   not this one).
   dns              yes
                    a generated /etc/resolv.conf names a resolver inside the
                    sandbox
