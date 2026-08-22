@@ -16,9 +16,9 @@ import (
 // dry-run branch returns and eng.GraftInto ran a hundred lines after it.
 //
 // The store graft is the highest-value hand-over a container run makes —
-// read-write, shared with every sandbox resolving to the same profiles+target
-// key, persistent across runs — and it had no abuse sentence on screen because
-// it was never on screen.
+// read-write, shared with every sandbox on the SAME TARGET DIRECTORY, whatever
+// profiles it selected (issue #276), persistent across runs — and it had no
+// abuse sentence on screen because it was never on screen.
 //
 // THE CONTROL IS A LIVE ENGINE, not a second reading of the same screen. The
 // dry run claims the store lives at a host path; this test starts a real
@@ -96,11 +96,12 @@ func TestDryRunNamesTheEnginesHostTreeGrafts(t *testing.T) {
 	t.Logf("the live engine mounted store=%s runroot=%s", liveStore, liveRunroot)
 
 	// Only the KEY-DERIVED paths are compared, and by SUFFIX rather than by
-	// equality. store and runroot are named from sha256(profiles+target), so
-	// the same selection on the same target gives the same answer in both
-	// runs — that identity is what makes this a check of the screen rather
-	// than of two unrelated strings. sock and conf are named from the RUN's
-	// pid, so they legitimately differ and are asserted by shape above.
+	// equality. store and runroot are named from sha256(target) alone (issue
+	// #276 removed the profile selection from the hash), so ANY selection on
+	// the same target gives the same answer in both runs — that identity is
+	// what makes this a check of the screen rather than of two unrelated
+	// strings. sock and conf are named from the RUN's pid, so they
+	// legitimately differ and are asserted by shape above.
 	//
 	// Equality is the wrong test for a reason worth writing down: mountinfo's
 	// field 4 is the root WITHIN THE SOURCE FILESYSTEM, not the absolute host
@@ -150,7 +151,7 @@ func TestDryRunSaysTheEngineViewIsDerived(t *testing.T) {
 	}
 }
 
-// keyTail is the part of an engine path that carries the profiles+target key:
+// keyTail is the part of an engine path that carries the target-only key:
 // the last two elements (…/<key>/storage, …/snug-engines-<uid>-<key>/rr). It
 // is what survives mountinfo's filesystem-relative rendering, and it is the
 // half that decides which store a run uses.

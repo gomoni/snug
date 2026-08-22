@@ -144,9 +144,9 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		// eng.GraftInto — a hundred lines below this return — so --dry-run
 		// never showed them at all (issue #252). The store graft is the
 		// highest-value hand-over a container run makes: read-write, shared
-		// with every sandbox resolving to the same profiles+target key, and
-		// persistent across runs. It had no abuse sentence on screen because
-		// it was never on screen.
+		// with every sandbox on the SAME TARGET DIRECTORY, whatever profiles
+		// it selected, and persistent across runs. It had no abuse sentence
+		// on screen because it was never on screen.
 		//
 		// PlannedPaths, not engine.New: New CREATES those directories, and a
 		// dry run creates nothing (issue #21). The paths come out of the same
@@ -157,7 +157,7 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		// than an oversight: it is a preflight answer, and preflight does not
 		// run for a dry run (see the comment above). describeEngineView says
 		// so on screen.
-		paths, perr := engine.PlannedPaths(pol.Profiles, pol.Target)
+		paths, perr := engine.PlannedPaths(pol)
 		if perr != nil {
 			return containerRun{}, perr
 		}
@@ -217,7 +217,7 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		fmt.Fprint(os.Stderr, n.String())
 	}
 
-	eng, err := engine.New(pol.Profiles, pol.Target)
+	eng, err := engine.New(pol)
 	if err != nil {
 		return containerRun{}, err
 	}
