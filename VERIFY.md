@@ -2324,6 +2324,59 @@ The sibling counter uses the same walk and got the same fix: a sibling with
 something bound beneath it is reported separately rather than counted as an
 entry that reads as absent.
 
+### 9a-bis. The two STATIC host paths are coverage-checked too (issue #301)
+
+The last line of the block went through **no** coverage check at all until
+#301's mechanical half: it was appended unconditionally, so a run that bound the
+host's `/tmp` still printed `/tmp/.X11-unix` as not granted. `/sys` and
+`/tmp/.X11-unix` now route through `coverageOf` like every other candidate.
+
+```console
+$ ./bin/snug --dry-run --no-defaults -p @sys -p @home -p @cwd-rw . | sed -n '/NOT GRANTED/,/^$/p' | tail -1
+    /sys  /tmp/.X11-unix  the Wayland socket  the session D-Bus socket
+```
+
+Now grant the host's `/tmp` and re-run. Write the profile somewhere snug will
+read it:
+
+```console
+$ mkdir -p /tmp/xdg/snug/profiles.d
+$ cat > /tmp/xdg/snug/profiles.d/hosttmp.toml <<'EOF'
+# abuse: a hostile process inside the sandbox can use this to read every host
+# /tmp file any process on this box wrote. Verification fixture only.
+[profile.hosttmp]
+ro = ["/tmp:/hosttmp"]
+EOF
+$ XDG_CONFIG_HOME=/tmp/xdg ./bin/snug --dry-run --no-defaults \
+    -p @sys -p @home -p @cwd-rw -p hosttmp . | sed -n '/NOT GRANTED/,/^$/p' | tail -1
+    /sys  the Wayland socket  the session D-Bus socket
+```
+
+`/tmp/.X11-unix` is GONE from the line and `/sys` is still there — the second
+half is the positive control, since a fix that dropped the whole line would look
+identical on the first half alone. Grant something strictly beneath `/sys`
+instead and `/sys` moves to its own `PARTIAL` line, exactly as `~/.claude` does
+above.
+
+Note what this profile also demonstrates, unchanged by #301: `$XDG_CONFIG_HOME`
+is trusted unconditionally, which is invariant 3's weakest point and is issue
+#27.
+
+**What #301 does NOT close, and you can see it on the same line.** *The Wayland
+socket* and *the session D-Bus socket* are still printed unconditionally. They
+are NAMED rather than pathed because snug does not know their paths — those come
+from `$XDG_RUNTIME_DIR`/`$WAYLAND_DISPLAY` and from `DBUS_SESSION_BUS_ADDRESS`
+(a `unix:path=...,guid=...` string, not a bare path), and nothing in the tree
+derives either. Read that half as *"snug mounts no desktop socket"*, which is
+true of every profile snug ships — not as a checked claim about two host paths.
+A profile granting the directory one of them sits in would make it false and
+nothing would notice. Choosing which host environment to trust is a decision,
+not a refactor.
+
+Neither static path is stat-gated, unlike the `~/` candidates above. A stat gate
+would make the golden files depend on whether the developer's box runs a display
+server — the same trap `TestGoldenContainers` sidesteps for `$SNUG_PODMAN`.
+
 ## 9. A project directly in an ephemeral directory is refused (issue #179)
 
 `~/myproject` is an extremely common layout and snug will not sandbox it. The old

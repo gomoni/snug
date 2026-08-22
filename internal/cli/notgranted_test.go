@@ -160,3 +160,84 @@ func TestCoverageOfWalksBothDirections(t *testing.T) {
 		}
 	}
 }
+
+// The two STATIC host paths in the block went through no coverage check at all
+// until issue #301's mechanical half: the whole line was appended
+// unconditionally, so a run that bound the host's /tmp still printed
+// /tmp/.X11-unix under NOT GRANTED. Same "wrong in the reassuring direction"
+// shape as #59 above, on the same screen.
+//
+// A real host tree is NOT needed here, unlike the ~/ candidates: these two are
+// absolute host paths and are deliberately not stat-gated, because a stat gate
+// would make every golden in this package depend on whether the developer's box
+// runs a display server.
+func TestNotGrantedCoverageChecksTheStaticHostPaths(t *testing.T) {
+	home := homeWithDirs(t)
+	base := &policy.Policy{Home: home, Target: filepath.Join(home, "proj")}
+
+	// POSITIVE CONTROL FIRST. With nothing bound, both names must be present —
+	// otherwise every assertion below passes on a block that stopped printing
+	// them for an unrelated reason.
+	none := strings.Join(notGranted(base), "\n")
+	for _, want := range []string{"/sys", "/tmp/.X11-unix"} {
+		if !strings.Contains(none, want) {
+			t.Fatalf("nothing is bound, so %s must be listed as not granted:\n%s", want, none)
+		}
+	}
+
+	// THE BUG: bound outright and still listed.
+	p := &policy.Policy{Home: home, Target: base.Target, Mounts: binds("/tmp")}
+	got := strings.Join(notGranted(p), "\n")
+	if strings.Contains(got, "/tmp/.X11-unix") {
+		t.Errorf("the host's /tmp is bound, so /tmp/.X11-unix is reachable and must not be "+
+			"listed as not granted (issue #301):\n%s", got)
+	}
+	// And the sibling must be unaffected — a fix that dropped the whole line
+	// would pass the assertion above while deleting a true statement.
+	if !strings.Contains(got, "/sys") {
+		t.Errorf("/sys has nothing bound at or above it and must still be listed:\n%s", got)
+	}
+
+	// PARTIAL: a bind strictly beneath is neither "granted" nor "absent", and
+	// saying either is a lie in one direction.
+	deep := &policy.Policy{Home: home, Target: base.Target, Mounts: binds("/sys/fs/cgroup")}
+	gotDeep := strings.Join(notGranted(deep), "\n")
+	if !strings.Contains(gotDeep, "/sys  PARTIAL — 1 host path beneath it is bound") {
+		t.Errorf("/sys has a bind strictly beneath it and must be marked PARTIAL:\n%s", gotDeep)
+	}
+	for _, line := range strings.Split(gotDeep, "\n") {
+		if strings.HasPrefix(line, "/sys  /tmp") || line == "/sys" {
+			t.Errorf("/sys is PARTIAL and must not also appear in the run of bare "+
+				"absent names:\n%s", gotDeep)
+		}
+	}
+}
+
+// The RESIDUAL #301 does not close, asserted positively so the next reader
+// cannot mistake the mechanical half for the whole fix.
+//
+// The Wayland and session D-Bus sockets are named rather than pathed, because
+// their paths come from $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY and from
+// DBUS_SESSION_BUS_ADDRESS and nothing in this tree derives either. So they get
+// no coverage check, and a profile granting the directory one of them sits in
+// would leave this line saying "not granted" about a socket the sandbox can
+// reach. That is a decision about which host environment to trust, not a
+// refactor — this test pins the gap rather than the wish.
+func TestTheDesktopSocketNamesAreStillAssertedWithNothingBehindThem(t *testing.T) {
+	home := homeWithDirs(t)
+	// A bind of the directory the session bus lives in on this host's spelling.
+	// Nothing about it reaches the desktop-socket half of the line.
+	p := &policy.Policy{
+		Home:   home,
+		Target: filepath.Join(home, "proj"),
+		Mounts: binds("/run/user/1000", "/tmp"),
+	}
+	got := strings.Join(notGranted(p), "\n")
+	for _, want := range []string{"the Wayland socket", "the session D-Bus socket"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("%q is expected to still be printed unconditionally; if this line now "+
+				"has a coverage check behind it, #301's residual is closed and this test "+
+				"should be replaced by one asserting the check:\n%s", want, got)
+		}
+	}
+}
