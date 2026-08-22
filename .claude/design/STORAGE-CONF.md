@@ -157,6 +157,13 @@ the argv is where a graph-driver option has to go.
 `[storage.options.overlay] mount_program`. `Engine.Spec` builds the argv
 `--root <store> --runroot <runroot> system service …`.
 
+Both paths come from `planPaths`: the store is
+`$XDG_DATA_HOME/snug/engines/<key>/storage`, the runroot
+`$TMPDIR/snug-engines-<uid>-<key>/rr`, and `<key>` is a hash of the canonical
+target alone, so every run on one target directory addresses one store. What
+follows is about which configuration that engine then reads, which is
+independent of how the two paths are named.
+
 | fact about the engine's store | pinned by | without it |
 |---|---|---|
 | `graphroot`, `runroot` | `--root`/`--runroot` **and** the generated file | either alone suffices |
