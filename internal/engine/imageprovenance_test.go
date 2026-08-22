@@ -240,6 +240,12 @@ func TestTheGeneratedStorageConfIsSnugsOwn(t *testing.T) {
 // The positive arm plants a file called fuse-overlayfs beside a stand-in
 // engine binary; the negative arm uses a directory with no such file. Without
 // the negative arm this passes on an implementation that hardcodes a path.
+//
+// The two failure messages below describe consequences that do not follow:
+// podman discards every [storage.options*] key when --root is on the argv, and
+// Spec always passes --root (STORAGE-CONF.md §3). What this test asserts is the
+// CONTENTS OF THE FILE, a real and checkable property; it does not assert that
+// the key reaches the driver.
 func TestTheGeneratedStorageConfNamesAMountProgramOnlyWhenThereIsOne(t *testing.T) {
 	for _, tc := range []struct {
 		name string
