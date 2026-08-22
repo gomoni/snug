@@ -130,11 +130,22 @@ import (
 // slow re-dial of the lifeline cannot expire it.
 const idleTimeout = 10 * time.Second
 
-// quietBudget bounds how long Stop waits for this run's containers to go away
-// before it gives up and says so. It exceeds idleTimeout so that the
-// lifeline alone is enough to reach a verified-clean state even when the
-// direct filtered stop below could not land.
-const quietBudget = idleTimeout + 5*time.Second
+// quietBudget bounds how long Stop waits for a SIGKILL that has ALREADY BEEN
+// DELIVERED to take effect. Stop runs after the stage has been reaped, so the
+// engine's Pdeathsig is queued before this constant is ever consulted, and all
+// it covers is scheduling plus a walk of /proc.
+//
+// DELIBERATELY NOT RELATED TO idleTimeout ANY MORE (issue #344). It used to be
+// idleTimeout + 5s, from a position where the engine was still alive: that made
+// snug's own exit wait out a timeout whose entire purpose is to cover snug NOT
+// BEING THERE. Nothing observed it for a milestone because the sweep was
+// matching a string no process carried, so it never waited at all.
+const quietBudget = 2 * time.Second
+
+// killBudget is the second wait, after the sweep has escalated to SIGKILL
+// itself. Anything still here has ignored two SIGKILLs — the cascade's and
+// ours — and is named to the user rather than waited for.
+const killBudget = 3 * time.Second
 
 // RunLabelKey is the container label snug stamps every container it creates
 // with, so that teardown can reach this run's containers and only those.
@@ -157,6 +168,21 @@ type Engine struct {
 	sockDir  string
 	confDir  string
 	runLabel string
+
+	// guestSock is the socket path as it appears in the ENGINE's argv — the
+	// derived-view spelling Spec computes. It is what teardown matches on
+	// (reap.go's paths()), recorded here by the one function that builds the
+	// argv rather than derived a second time, because a second derivation of
+	// the host->guest mapping would agree with Spec until the day it did not.
+	// Empty until Spec has run, which means no engine was ever exec'd.
+	guestSock string
+
+	// dialled records that the lifeline was accepted at least once, i.e. that
+	// an engine really answered on the socket. Kept separately from life,
+	// which Detach clears: Stop needs to know an engine EXISTED in order to
+	// tell "no engine this run" apart from "an engine ran and this sweep is
+	// looking for nothing" (issue #344).
+	dialled bool
 
 	mu   sync.Mutex
 	life *lifeline
@@ -527,6 +553,10 @@ func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgrou
 	if err != nil {
 		return stage.EngineSpec{}, err
 	}
+	// RECORDED FOR TEARDOWN, here and nowhere else: this is the spelling the
+	// engine's own command line will carry, so it is the only string a sweep
+	// over /proc can match (reap.go, issue #344).
+	e.guestSock = guestSock
 	guestPodman, err := e.guestPath(pol, "the engine binary", podman)
 	if err != nil {
 		return stage.EngineSpec{}, err
@@ -1212,6 +1242,7 @@ func (e *Engine) DialLifeline() error {
 			"      refuses to hand the sandbox an engine it cannot guarantee to reap", err)
 	}
 	e.life = life
+	e.dialled = true
 	return nil
 }
 
@@ -1232,6 +1263,33 @@ func (e *Engine) Stop() {
 		defer e.mu.Unlock()
 		e.stopLocked()
 	})
+}
+
+// Detach drops the keepalive and returns. From here the engine is on its own
+// idle timeout even if it somehow outlives the stage.
+//
+// SPLIT OUT OF Stop BY ISSUE #344, and the split is the whole of that fix's
+// wiring half. Detach is what runs at payload exit — before the deferred
+// st.Close() collapses the stage and, through P1's Pdeathsig, the engine. Stop
+// runs from the caller's own deferred cleanup, which is strictly AFTER that
+// collapse. Verification belongs there and only there: at payload exit the
+// engine is ALIVE by construction, so a sweep for it can only answer "still
+// running", and the previous wiring made snug's exit wait out the engine's idle
+// timeout to get any other answer.
+//
+// Idempotent, and it must stay so: Stop calls the same logic, so an error path
+// that never reached payload exit still closes the lifeline.
+func (e *Engine) Detach() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.detachLocked()
+}
+
+func (e *Engine) detachLocked() {
+	if e.life != nil {
+		e.life.Close()
+		e.life = nil
+	}
 }
 
 func (e *Engine) stopLocked() {
@@ -1294,19 +1352,53 @@ func (e *Engine) stopLocked() {
 	//    numbered in the namespace doing the killing, never by reading a
 	//    host-side CLI against host-numbered pids again.
 
-	// 2. Drop the keepalive. From here the engine is on its own idle timeout
-	//    even if it somehow outlives the stage.
-	e.life.Close()
-	e.life = nil
+	// 2. Drop the keepalive, if payload exit did not already (Detach). From
+	//    here the engine is on its own idle timeout even if it somehow
+	//    outlives the stage.
+	e.detachLocked()
 
 	// 3. Verify. "The stop command returned no error" is not evidence anything
 	//    died — that assumption is what let a wrapper-engine case leak
 	//    silently in the pre-Tier-B design. The sweep is by SOCKET PATH, never
 	//    by comm and never by the shared store path (which would reach a
 	//    concurrent sibling).
+	//
+	//    THIS IS THE FIRST POSITION FROM WHICH THE SWEEP CAN ANSWER ANYTHING
+	//    (issue #344). It ran at payload exit until then — before the deferred
+	//    st.Close(), i.e. before the Pdeathsig cascade P1 -> engine has fired —
+	//    so the engine was alive by construction and the only thing that could
+	//    make the sweep go quiet was the engine's own idle timeout. Nobody
+	//    observed the resulting 15s wait for a milestone because paths()
+	//    returned the HOST socket spelling while the engine's argv carries the
+	//    GUEST one, so step 3 returned on its first poll every time and has, in
+	//    effect, never executed.
+	//
+	//    Here the SIGKILL is already queued: st.Close() does not return until
+	//    P1 has been reaped, and the kernel delivers a child's pdeathsig in
+	//    forget_original_parent BEFORE do_notify_parent wakes our Wait. So the
+	//    question this asks can be answered wrong — "the mechanism that kills
+	//    the engine has run; is anything still serving this run's socket?" A
+	//    process the cascade killed is either gone or a zombie, and a zombie
+	//    reads back an EMPTY cmdline, which cmdlineNamesPath already answers
+	//    "not ours" to — correctly, since a zombie serves nothing. What
+	//    survives is an engine outside the cascade's reach, which is the case
+	//    this sweep was written for.
+	//
+	//    A dialled lifeline with no recorded mark is a wiring bug, not an
+	//    engine-less run, and it is named rather than swept vacuously: the
+	//    whole of #344 is a sweep that reported success because it was looking
+	//    for nothing.
+	if e.dialled && len(e.paths()) == 0 {
+		fmt.Fprintf(os.Stderr,
+			"snug: WARNING — an engine answered this run's keepalive, but teardown has\n"+
+				"      no command-line mark to look for, so it verified nothing.\n"+
+				"      This is a bug in snug's wiring (Spec must record the engine's\n"+
+				"      socket path); the engine's own idle timeout is the only thing\n"+
+				"      left holding.\n")
+	}
 	if left := waitQuiet(e.paths(), exclude, quietBudget); len(left) > 0 {
 		signalOwned(e.paths(), exclude, syscall.SIGKILL)
-		if left = waitQuiet(e.paths(), exclude, 3*time.Second); len(left) > 0 {
+		if left = waitQuiet(e.paths(), exclude, killBudget); len(left) > 0 {
 			fmt.Fprintf(os.Stderr,
 				"snug: WARNING — this sandbox's containers did not die with it.\n"+
 					"      Still running:\n%s"+

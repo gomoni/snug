@@ -290,11 +290,28 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 	pol.BindSocket(sock, containerSocketGuest, "(containers)")
 	containerEnv(pol)
 
+	// VERIFY WHERE THE ENGINE IS EXPECTED DEAD, NEVER WHERE IT IS EXPECTED
+	// ALIVE (issue #344). onPayloadExit runs from inside runStaged, BEFORE its
+	// deferred st.Close(), so the Pdeathsig cascade P1 -> engine has not fired
+	// and the engine is alive by construction: all that can be done there is
+	// drop the keepalive, which is Detach. cleanup is registered by main.go as
+	// `defer ctr.cleanup()` BEFORE it calls sandbox.Run, so it runs strictly
+	// after st.Close() has returned — and st.Close() waits for P1 to be reaped,
+	// with the kernel delivering the engine's pdeathsig before that wait wakes.
+	// So Stop's sweep runs against an engine the cascade has already SIGKILLed,
+	// which is the only position from which "is anything still serving this
+	// run's socket?" has an answer other than "yes, obviously".
+	//
+	// Both halves matter. Wiring Stop here and nothing at payload exit would
+	// leave the keepalive held through snug's own post-payload code; wiring
+	// Stop at payload exit — which is what shipped — makes snug's exit wait out
+	// the engine's idle timeout, which is a timeout whose whole purpose is to
+	// cover snug not being there.
 	return containerRun{
 		cleanup:       func() { p.Close(); eng.Stop() },
 		spec:          &spec,
 		onEngineReady: eng.DialLifeline,
-		onPayloadExit: eng.Stop,
+		onPayloadExit: eng.Detach,
 		// The reaper is the one helper snug starts that is MEANT to outlive
 		// it, so it is the one thing the signalled-teardown sweep must not
 		// SIGKILL (issue #113). Its pid is already fixed: ArmReaper ran above,

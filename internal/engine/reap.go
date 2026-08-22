@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // Identity by PATH, not by process tree.
@@ -29,21 +31,58 @@ import (
 // sibling sandbox that is still working. It was written that way first, and it
 // killed a concurrent sandbox's engine mid-run.
 //
+// THE MARK IS THE SPELLING THE ENGINE'S OWN ARGV CARRIES, which since Tier C is
+// the GUEST path — engine.go's Spec builds "unix://" + guestSock, and its
+// comment there says the host and guest names must not be tidied into one. This
+// file was not told for a milestone, and matched the HOST spelling: a string no
+// process on the machine ever carries, so the sweep answered "nothing of mine is
+// running" on its first poll of every run (issue #344, sev:medium). A matcher
+// that names a string nobody produces is not a strict matcher, it is a check
+// that cannot fail.
+//
 // The accident sentence, which matters more here than an abuse sentence
 // because this kills things: the ONLY way this reaps something that is not
 // this run's engine is if a foreign command line contains the literal string
-// $XDG_RUNTIME_DIR/snug/engines/<key>/podman-<our pid>.sock. The user's own
-// rootless podman — eleven images and several containers on the host this was
-// developed on — serves $XDG_RUNTIME_DIR/podman/podman.sock and can never
-// match. Tests assert both halves.
+// /snug/engine/sock/podman-<our pid>.sock. That names a path which exists only
+// inside the engine's derived view and carries snug's own pid, unique among
+// live processes, so nothing produces it by accident. The user's own rootless
+// podman — eleven images and several containers on the host this was developed
+// on — serves $XDG_RUNTIME_DIR/podman/podman.sock and can never match, and a
+// concurrent snug on the same (deliberately shared) store carries a different
+// pid. Tests assert both halves.
+//
+// IT IS A STRING THE PAYLOAD CAN AUTHOR, and what stops that is not the matcher
+// but WHEN this runs. A payload can put candidate pids on its own argv, and
+// payload processes are visible in the host /proc. Stop sweeps only after the
+// stage has been reaped, which collapsed the sandbox's pid namespace and with it
+// every payload process, so there is nothing of the payload's left to match.
+// Moving this sweep back before that collapse re-opens it, and the symptom would
+// be snug naming a payload-chosen command line in the warning that tells a human
+// what to kill -9.
 //
 // It is best-effort by construction: in a container without the host PID
 // namespace the engine simply is not in /proc, so this finds nothing. That is
 // why it is a fast path plus a verification, never the only mechanism — the
 // engine's own idle timeout (see lifeline.go) is what holds when this is blind.
 
-// paths returns the strings that identify this run's engine processes.
-func (e *Engine) paths() []string { return []string{e.sock} }
+// paths returns the strings that identify this run's engine processes: the
+// socket path the engine's argv carries, recorded by Spec when it built that
+// argv rather than recomputed here (invariant 6 — one author for the host->guest
+// mapping; a second derivation would agree until the day it did not).
+//
+// EMPTY means Spec never ran, which means no engine was ever exec'd and there is
+// nothing to sweep for. Deliberately NOT a fallback to e.sock: that spelling
+// appears in no command line on this machine, so falling back to it is
+// indistinguishable from not sweeping while looking like a sweep — which is
+// precisely the defect issue #344 was. Emptiness has its own failure mode,
+// silent vacuity, so stopLocked reconciles it against the lifeline rather than
+// trusting it.
+func (e *Engine) paths() []string {
+	if e.guestSock == "" {
+		return nil
+	}
+	return []string{e.guestSock}
+}
 
 // ownedPIDs lists every visible process whose command line names one of paths.
 // Processes in exclude (snug itself, and the podman clients snug is running
@@ -178,7 +217,10 @@ func signalPinned(pid int, paths []string, sig syscall.Signal) bool {
 // What holds instead is named, because "best effort" without a named backstop
 // is the kind of prose that rots: the engine is started with --time
 // idleTimeout (engine.go), so an engine this sweep missed exits by itself
-// within that, and quietBudget is idleTimeout + 5s. Same category as the other
+// within that. quietBudget is no longer tied to idleTimeout and must not be
+// read as covering it (issue #344) — Stop runs after the cascade has already
+// SIGKILLed the engine, so the budget covers scheduling, not a timeout snug
+// would otherwise be standing there waiting out. Same category as the other
 // blindness this file already accepts — in a container without the host PID
 // namespace the engine is not in /proc at all — and the same backstop covers
 // both.
@@ -198,13 +240,32 @@ func waitQuiet(paths []string, exclude map[int]bool, budget time.Duration) []int
 
 // describe renders a pid list with its command lines, for a message a human can
 // act on.
+//
+// EVERY COMMAND LINE HERE IS TEXT SNUG DID NOT WRITE, so it goes through
+// policy.VisibleText — the same render-half predicate the dry-run screen and the
+// container audit line use. Before the matcher was fixed this was theoretical,
+// because the string being matched was one only snug could produce; the match is
+// now on the GUEST socket path, which is a string a PAYLOAD can put in its own
+// argv, and payload processes are visible in the host /proc. A process that
+// wants a human to misread the line telling them what to `kill -9` is not an
+// edge case, it is the threat model — and this warning is a screen a human reads
+// especially carefully, since it is the one that stopped them.
+//
+// Escaped BEFORE the length clamp: truncating first could cut a multi-byte rune
+// and leave a raw 0x9b behind, which is the CSI introducer on a terminal in
+// 8-bit mode. Cutting inside %q output is only ever harmless text.
+//
+// The cmdline is re-read by NUMBER after waitQuiet returned, so on a recycled
+// pid this prints an unrelated process's line. Harmless — this only describes,
+// it does not signal, and signalPinned is where reuse matters — but it is why
+// the escaping is not optional: the line may be some other process's text.
 func describe(pids []int) string {
 	var b strings.Builder
 	for _, pid := range pids {
 		raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
 		cmd := "(exited)"
 		if err == nil {
-			cmd = strings.TrimSpace(strings.ReplaceAll(string(raw), "\x00", " "))
+			cmd = policy.VisibleText(strings.TrimSpace(strings.ReplaceAll(string(raw), "\x00", " ")))
 		}
 		if len(cmd) > 120 {
 			cmd = cmd[:120] + "…"

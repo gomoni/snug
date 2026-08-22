@@ -212,10 +212,21 @@ func TestOwnedPIDsMatchesOnlyThisEnginesPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Spec is what RECORDS the mark (issue #344): the sweep matches the socket
+	// spelling the engine's own argv carries, which is the GUEST one, and
+	// paths() is empty until Spec has run. A fixture that skipped this would
+	// sweep for nothing and every negative below would pass vacuously — which
+	// is exactly the defect #344 was.
+	if _, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman",
+		[]string{"PATH=/usr/bin"}, false); err != nil {
+		t.Fatal(err)
+	}
+	guestSock := e.paths()[0]
+
 	// Positive control: a process whose command line names our socket. Without
 	// this assertion the negative ones below could pass on a sweep that never
 	// matches anything at all.
-	mine := marker(t, "unix://"+e.sock)
+	mine := marker(t, "unix://"+guestSock)
 
 	// Two things that must NEVER match: the user's own rootless podman, and a
 	// CONCURRENT snug sandbox that resolved to the same store. The store is
@@ -225,7 +236,7 @@ func TestOwnedPIDsMatchesOnlyThisEnginesPaths(t *testing.T) {
 		" --runroot /run/user/1000/containers system service")
 
 	sibling := marker(t, "podman --root "+e.store+" --runroot "+e.runroot+
-		" system service --time 10 unix://"+filepath.Join(filepath.Dir(e.sock), "podman-999999.sock"))
+		" system service --time 10 unix://"+filepath.Join(filepath.Dir(guestSock), "podman-999999.sock"))
 
 	var pids []int
 	for i := 0; i < 100; i++ {
@@ -252,7 +263,7 @@ func TestOwnedPIDsMatchesOnlyThisEnginesPaths(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("the sweep did not find pid %d, which names %s — it cannot reap what it "+
-			"cannot see", mine.Process.Pid, e.store)
+			"cannot see", mine.Process.Pid, guestSock)
 	}
 
 	// Exclusion is honoured: the pid named in `exclude` is not returned, and
@@ -280,7 +291,7 @@ func TestOwnedPIDsMatchesOnlyThisEnginesPaths(t *testing.T) {
 	}
 	if len(excl) > 0 {
 		t.Logf("note: %d process(es) other than the ones under test name %s:\n%s",
-			len(excl), e.sock, describe(excl))
+			len(excl), guestSock, describe(excl))
 	}
 }
 
