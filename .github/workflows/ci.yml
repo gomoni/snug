@@ -4,9 +4,28 @@ on:
   push:
     branches: [main]
   pull_request:
+    # Writing `types:` at all REPLACES the default set, so the three defaults
+    # are spelled out beside the one being added. `ready_for_review` is the
+    # addition: the jobs below do not run while a pull request is a draft, so
+    # taking it out of draft is what has to start the real suite. Without this
+    # line a draft opened, pushed to, and then marked ready would carry the
+    # skipped checks from its draft life into a mergeable state.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
+
+# One run per pull request. A push that supersedes an in-flight run cancels it
+# rather than racing it: the older run grades code nobody will merge, and the
+# integration jobs are the slowest thing here.
+#
+# Scoped to pull requests on purpose — `cancel-in-progress` is false for a push
+# to main, where every commit's result is a record and a cancelled run would
+# leave a gap in it. The group key is the PR number where there is one, so two
+# pushes to the same PR share a group and a push to main never joins one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Third-party actions are pinned to a COMMIT SHA, never to a tag, and the tag is
 # written beside it as a comment so a human can read what the SHA is meant to be.
@@ -24,6 +43,30 @@ permissions:
 #
 # Upgrading means re-running that command and replacing both halves together. A
 # SHA whose comment has drifted from it is worse than no comment.
+#
+# Every job below carries `if: github.event.pull_request.draft != true`, which
+# is the whole of the draft support. Three things about that line:
+#
+#   - It is a JOB condition, not `paths-ignore` or a second workflow. A job
+#     skipped by `if:` still posts its check run, with conclusion `skipped`,
+#     and the branch ruleset counts that as satisfied. A workflow filtered out
+#     of running never posts the check at all, and a pull request requiring it
+#     sits at "Expected — waiting for status" with no way forward.
+#   - Skipping is safe HERE only because a draft cannot be merged. The checks
+#     go green-by-absence, and the ruleset would accept them; what stops an
+#     untested merge is GitHub refusing to merge a draft at all. Do not copy
+#     this shape to skip jobs on a condition that leaves the pull request
+#     mergeable — that is a bypass, not an optimisation.
+#   - `github.event.pull_request` is null on a push to main, and `null != true`
+#     is true, so pushes to main run everything. The comparison is against
+#     `true` rather than a truthiness test for exactly that reason.
+#
+# The convention this buys: open a pull request as a DRAFT while it is still
+# being written or while sandbox-policy and redteam are still looking at it,
+# and mark it Ready for review when it is meant to be graded. Ready is the
+# signal that runs the suite. The cost is real and worth stating — a draft gets
+# no CI signal at all, so a break introduced in the middle of a long draft
+# branch surfaces all at once when it is marked ready.
 jobs:
   # Tier 1 and 2: the resolver's algebraic invariants and the golden argv files.
   # These need no privileges and no namespaces — that is the payoff for keeping
@@ -31,6 +74,7 @@ jobs:
   # security-critical checks run on any runner.
   gate:
     name: gofmt, vet, unit tests
+    if: ${{ github.event.pull_request.draft != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -60,6 +104,7 @@ jobs:
   # FAILS saying the harness needs repair, rather than passing vacuously.
   forkstress:
     name: the fork child does not wedge
+    if: ${{ github.event.pull_request.draft != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
@@ -118,6 +163,7 @@ jobs:
   # of tests that need no sandbox today.
   hostless:
     name: dry-run and refusal behaviour
+    if: ${{ github.event.pull_request.draft != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
@@ -147,6 +193,7 @@ jobs:
   # check, the sysctl — is identical and a second copy would drift.
   integration:
     name: ${{ matrix.label }}
+    if: ${{ github.event.pull_request.draft != true }}
     runs-on: ubuntu-latest
     strategy:
       # Both halves always run: a failure in one must not hide the other's
