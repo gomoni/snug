@@ -2,6 +2,9 @@ package dockerproxy
 
 import (
 	"net/url"
+	"slices"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/gomoni/snug/internal/policy"
@@ -34,6 +37,46 @@ func buildURL(extra string) string {
 		return "/v5.8.3/libpod/build?" + buildDefaults
 	}
 	return "/v5.8.3/libpod/build?" + buildDefaults + "&" + extra
+}
+
+// buildDefaults602 is the same recording one podman major later: VERBATIM from
+// `podman --remote --url unix://<sock> build -t probe:x .` on podman 6.0.2
+// against a listening recorder, the recorder answering /_ping as 6.0.2 — a
+// client that believes it is talking to an older engine sends an older
+// parameter set, so the version on BOTH sides is part of the recording.
+//
+// It is a SECOND oracle, not a replacement for buildDefaults: snug may meet
+// either version and the allowlist has to hold against both. Three things
+// changed, and each is why keeping both is worth the duplication:
+//
+//   - two parameters 5.8.3 never sent at all: compressionFormat and
+//     forceCompressionFormat. The second is not in buildParams, so an ORDINARY
+//     6.0.2 build is refused today (issue #314). Whether it belongs there is a
+//     grant decision and is NOT taken here — see
+//     TestRecordedDefaultsAreKnownParameters, which pins the pending set.
+//   - podman's own spelling is MIXED CASE. filterBuildQuery lowercases before
+//     the lookup, so the spelling a real client sends is part of what this
+//     fixture checks. The 5.8.3 fixture is all-lowercase by accident and
+//     exercises none of that folding.
+//   - idmappingoptions grew from {"HostUIDMapping":true} to the whole
+//     IDMappingOptions struct, AutoUserNsOpts included. It is forwarded
+//     unexamined (buildParams["idmappingoptions"] is nil), so what that struct
+//     now carries is recorded here rather than described.
+const buildDefaults602 = `compressionFormat=gzip&dockerfile=%5B%22Dockerfile%22%5D&forceCompressionFormat=1&` +
+	`forcerm=1&httpproxy=1&` +
+	`idmappingoptions=%7B%22HostUIDMapping%22%3Atrue%2C%22HostGIDMapping%22%3Atrue%2C%22UIDMap%22%3A%5B%5D%2C%22GIDMap%22%3A%5B%5D%2C%22AutoUserNs%22%3Afalse%2C%22AutoUserNsOpts%22%3A%7B%22Size%22%3A0%2C%22InitialSize%22%3A0%2C%22PasswdFile%22%3A%22%22%2C%22GroupFile%22%3A%22%22%2C%22AdditionalUIDMappings%22%3Anull%2C%22AdditionalGIDMappings%22%3Anull%7D%7D&` +
+	`inheritannotations=1&isolation=0&jobs=1&layers=1&networkmode=0&` +
+	`nsoptions=%5B%7B%22Name%22%3A%22user%22%2C%22Host%22%3Atrue%2C%22Path%22%3A%22%22%7D%5D&` +
+	`omithistory=0&output=probe%3Ax&` +
+	`outputformat=application%2Fvnd.oci.image.manifest.v1%2Bjson&pullpolicy=missing&` +
+	`retry=3&retry-delay=2s&rewritetimestamp=0&rm=1&` +
+	`seccomp=%2Fusr%2Fshare%2Fcontainers%2Fseccomp.json&shmsize=67108864&t=probe%3Ax`
+
+func buildURL602(extra string) string {
+	if extra == "" {
+		return "/v6.0.2/libpod/build?" + buildDefaults602
+	}
+	return "/v6.0.2/libpod/build?" + buildDefaults602 + "&" + extra
 }
 
 // Building is gated on the profile, not on the endpoint being reachable.
@@ -308,4 +351,117 @@ func isFlatRefusal(name string) bool {
 		return true
 	}
 	return false
+}
+
+// recordedBuildDefaults is every plain-build parameter set snug may actually
+// meet, each one recorded against its own podman rather than composed from the
+// docs. A third recording is one more entry.
+var recordedBuildDefaults = map[string]string{
+	"5.8.3": buildDefaults,
+	"6.0.2": buildDefaults602,
+}
+
+// unmodelledBuildParams pins, per recorded version, the parameters an ORDINARY
+// build sends that buildParams does not know — the ones that make a plain build
+// fail closed with nobody having asked for anything unusual. The healthy value
+// is no entry at all; an entry is a compatibility break, and it carries the
+// issue where the grant decision for it is being taken.
+//
+// It is asserted as an EXACT set rather than as a floor, so it fails in both
+// directions: a newer podman sending a second unmodelled parameter fails it,
+// and so does #314's grant landing without this line being removed. Neither is
+// something to find out from a user's broken build.
+var unmodelledBuildParams = map[string][]string{
+	// refs #314 — recorded on podman 6.0.2, grant decision pending. The
+	// fourth of the compression family; compression, compressionformat and
+	// compressionlevel are already allowed.
+	"6.0.2": {"forcecompressionformat"},
+}
+
+// Every parameter a real podman sends on a PLAIN build must be one buildParams
+// knows about, or that podman cannot build at all — the allowlist doing its job
+// in the wrong direction. The check is mechanical over the recordings so it
+// keeps holding as versions are added.
+func TestRecordedDefaultsAreKnownParameters(t *testing.T) {
+	for version, defaults := range recordedBuildDefaults {
+		t.Run("podman "+version, func(t *testing.T) {
+			q, err := url.ParseQuery(defaults)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(q) == 0 {
+				t.Fatal("the recorded defaults parsed to no parameters at all")
+			}
+			var unknown []string
+			for name := range q {
+				if _, known := buildParams[strings.ToLower(name)]; !known {
+					unknown = append(unknown, strings.ToLower(name))
+				}
+			}
+			want := append([]string(nil), unmodelledBuildParams[version]...)
+			sort.Strings(unknown)
+			sort.Strings(want)
+			if !slices.Equal(unknown, want) {
+				t.Errorf("podman %s's plain build sends parameters buildParams does not "+
+					"model:\n  unmodelled now:  %v\n  pinned as known: %v\n"+
+					"An addition here breaks ordinary builds on that podman. A removal "+
+					"means the grant landed: delete the entry from unmodelledBuildParams.",
+					version, unknown, want)
+			}
+		})
+	}
+}
+
+// The end-to-end half of the same fact, and the one that says what a user sees:
+// podman 6.0.2's own default build is refused, by exactly one parameter.
+//
+// This test is a TRIPWIRE, not an endorsement. It asserts today's outcome so
+// that the day forceCompressionFormat is ruled on, the failure lands here
+// rather than nowhere.
+func TestPodman602DefaultBuildIsRefusedByForceCompressionFormatAlone(t *testing.T) {
+	sock, eng, _ := startBuildProxy(t)
+
+	refuse(t, sock, eng, buildURL602(""), "",
+		`build parameter "forceCompressionFormat" is not permitted`)
+
+	// POSITIVE CONTROL, and the load-bearing half of this file's claim to check
+	// 6.0.2 at all: with that ONE parameter removed, every OTHER parameter
+	// podman 6.0.2 sends is accepted and the build reaches the engine. Without
+	// it, "6.0.2 is refused" would be equally true of a snug that refuses all of
+	// 6.0.2, and the second fixture would say nothing about the other 22.
+	q, err := url.ParseQuery(buildDefaults602)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q.Del("forceCompressionFormat")
+	before := eng.reached.Load()
+	code, resp := post(t, sock, "/v6.0.2/libpod/build?"+q.Encode(), "")
+	if code != 200 {
+		t.Fatalf("podman 6.0.2's default build minus forceCompressionFormat was refused "+
+			"(status %d): %s\nThat parameter is not the only thing standing between "+
+			"6.0.2 and a working build, which is more than issue #314 says.", code, resp)
+	}
+	if eng.reached.Load() == before {
+		t.Fatal("the build never reached the engine")
+	}
+}
+
+// The mixed-case spelling a real 6.0.2 client sends must reach the same
+// decision as the lowercase one — filterBuildQuery lowercases before the
+// lookup, and the 5.8.3 fixture is all-lowercase by accident, so nothing else
+// in this file would notice that folding being dropped.
+//
+// Both halves are asserted: a checked parameter is still CHECKED under podman's
+// own spelling (not merely known), and a flatly refused one is still refused.
+func TestBuildParameterLookupFoldsCase(t *testing.T) {
+	for _, tc := range []struct{ name, query, wantMsg string }{
+		{"a checked parameter, camel-cased", "Volume=%2Fetc%3A%2Fx", "cannot see /etc as writable"},
+		{"a refused parameter, camel-cased", "CgroupParent=foo", "outside this sandbox"},
+		{"a refused parameter, upper-cased", "DEVICES=%5B%22%2Fdev%2Ffuse%22%5D", "no host device nodes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sock, eng, _ := startBuildProxy(t)
+			refuse(t, sock, eng, buildURL(tc.query), "", tc.wantMsg)
+		})
+	}
 }
