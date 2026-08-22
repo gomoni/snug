@@ -89,6 +89,27 @@ package integration
 // mechanism neither wiring controls (P1's own unconditional near-instant
 // exit) wins the race on every measured run.
 //
+// # NAME THE PROPERTY DOING THE CLEARING, BECAUSE A CLEARING EXPIRES
+//
+// "Unwritable" is a fact about today's architecture, not a law, and the repo
+// has been bitten by an unnamed clearing before: a round cleared a route on a
+// property a later ticket then deleted, and the pass was silently inherited
+// (CLAUDE.md's "when a round clears a route, RECORD WHICH PROPERTY DID THE
+// CLEARING"). So, explicitly — THIS SLOT IS UNFILLABLE BECAUSE, AND ONLY
+// BECAUSE, BOTH OF THESE HOLD:
+//
+//   1. The engine is Pdeathsig'd to P1, the stage, not to P0
+//      (internal/stage/enginefork.go:156), so P1's exit alone fells it.
+//   2. MainServe waits on nothing P0 does — it returns the moment
+//      runOneSandbox has sent the "exited" event, and exitOnStageError then
+//      calls os.Exit(0) (internal/stage/serve.go, internal/cli/main.go).
+//
+// CHANGE EITHER AND THIS COMMENT IS WRONG. Pdeathsig the engine to P0, or give
+// MainServe anything to wait for, and the shipped bug acquires a real per-run
+// cost — at which point a wall-clock test becomes both writable and NECESSARY,
+// and the right move is to write the one this file could not. Whoever makes
+// that change: this paragraph is addressed to you.
+//
 // # What is actually being measured, and why it is a PROXY rather than a fact
 //
 // The property under test is "the Pdeathsig cascade (stage -> engine) felled
