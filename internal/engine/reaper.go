@@ -109,10 +109,19 @@ import (
 // see: internal/cli's `defer ctrCleanup()` runs after sandbox.Run returns and
 // performed the teardown itself. Two facts one edit apart from disagreeing.
 //
-// The path travels in the ENVIRONMENT, not in argv, so the reaper's own
-// command line does not name the socket the sweep in reap.go matches on —
-// otherwise teardown would find the reaper and count snug's own cleanup as a
-// leak.
+// EVERY run-specific path this helper is given travels in the ENVIRONMENT, not
+// in argv, and that is a rule about the reaper's argv rather than a fact about
+// one variable. Its command line is `/bin/sh -c <script>`, and the script names
+// only variables — never their values. Two /proc sweeps match on path strings
+// (reap.go's cmdlineNamesPath and internal/sandbox/teardown.go's
+// confirmTeardown), so a path that reached argv would make snug's own cleanup
+// process match its own sweep and be reported as a leak, or killed as one.
+//
+// SNUG_REAP_SOCK is gone (issue #344). It went with the `podman stop`
+// invocation #167 deleted — reaperScript below reads only $SNUG_REAP_DIR — and
+// a variable nothing reads is a path handed to a process that outlives snug for
+// no reason anyone can state. The rule above is what survives it, and it is the
+// half worth keeping: the next path this helper needs goes in the environment.
 const reaperScript = `
 read -r tok
 [ "$tok" = ok ] && exit 0
@@ -131,14 +140,16 @@ type reaper struct {
 // startReaper arms the helper. Called before the engine is started, so that a
 // snug killed during startup is still covered.
 //
-// Only sock and runDir, now (issue #167): podman/store/runroot/runLabel
-// existed solely to feed the `podman stop` invocation this script no longer
-// makes.
+// Only runDir, now. podman/store/runroot/runLabel went with the `podman stop`
+// invocation #167's script no longer makes; sock went with issue #344, having
+// outlived the same deletion unread — reaperScript has referred to
+// $SNUG_REAP_DIR alone since #167.
 //
 // runDir is passed EXPLICITLY rather than derived in the shell, and that is a
 // safety property, not a tidiness one. The first version of this removal ran
-// `rm -rf "$(dirname "$SNUG_REAP_SOCK")"`, which is a different command from
-// the `rm -f "$SNUG_REAP_SOCK"` it replaced in one way that matters: `rm -f`
+// `rm -rf "$(dirname "$SNUG_REAP_SOCK")"` — a variable this function no longer
+// sets — which is a different command from the `rm -f "$SNUG_REAP_SOCK"` it
+// replaced in one way that matters: `rm -f`
 // on an empty variable is a harmless no-op, while `dirname ""` is `.` and
 // this process sets no Dir, so it inherits snug's cwd — the user's project
 // directory, usually. An empty value would therefore have deleted the
@@ -146,7 +157,7 @@ type reaper struct {
 // cannot supervise. e.sock is non-empty on every path New can return, so it
 // was not reachable; it was one refactor away from being so, and the whole
 // blast radius sat behind a variable being non-empty.
-func startReaper(sock, runDir string) (*reaper, error) {
+func startReaper(runDir string) (*reaper, error) {
 	r, w, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -158,7 +169,6 @@ func startReaper(sock, runDir string) (*reaper, error) {
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
-		"SNUG_REAP_SOCK=" + sock,
 		"SNUG_REAP_DIR=" + runDir,
 	}
 	// Own process group, and NO Pdeathsig. See the comment above.
