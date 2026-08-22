@@ -2435,20 +2435,54 @@ func notGranted(p *policy.Policy) []string {
 		}
 	}
 
-	// UNCONDITIONAL, and that is issue #32's R7 (PSEUDOFS-AUDIT.md, Y5): every
-	// other candidate above reaches this slice only after a coverage check, and
-	// this one does not, so a run that grants /tmp still prints /tmp/.X11-unix
-	// as NOT GRANTED. Deliberately NOT fixed alongside #288's four
-	// misattribution sites: /sys and /tmp/.X11-unix are static host paths and
-	// would route through coverageOf mechanically, but the Wayland and session
+	// The two STATIC host paths in this block now route through coverageOf like
+	// every other candidate, which is issue #301's mechanical half (also #32's
+	// R7 / PSEUDOFS-AUDIT.md Y5). Before this, the whole line was unconditional:
+	// a run that bound the host's /tmp still printed /tmp/.X11-unix as NOT
+	// GRANTED, asserting an absence with nothing behind it.
+	//
+	// NOT stat-gated, unlike the ~/ candidates above, and the reason is the
+	// golden files. Those candidates sit under p.Home, which the golden fixtures
+	// point at a directory that does not exist, so os.Stat skips them and the
+	// golden is host-independent. /sys and /tmp/.X11-unix are absolute HOST
+	// paths: a stat gate here would print one answer on a developer's box with a
+	// display server and another on CI, which is the trap
+	// TestGoldenContainers already had to sidestep for $SNUG_PODMAN — a golden
+	// whose content depends on the host has a different correct value for every
+	// developer. coverageOf reads only p.Mounts and is host-independent, so the
+	// coverage half is safe and the existence half is not.
+	//
+	// The DESKTOP SOCKETS stay unconditional, and this is the residual #301
+	// keeps open rather than something the fix reached. The Wayland and session
 	// D-Bus paths are derived from $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY and from
 	// DBUS_SESSION_BUS_ADDRESS (a `unix:path=...,guid=...` string, not a bare
 	// path), and NOTHING in this tree derives either today. Choosing which host
-	// environment to trust is a decision, not a refactor, and half a fix would
-	// leave the other half of the same sentence false. #288 corrected what the
-	// four sites ATTRIBUTE; this line's defect is that it asserts absence with
-	// nothing behind it.
-	lines = append(lines, "/sys  /tmp/.X11-unix  the Wayland socket  the session D-Bus socket")
+	// environment to trust is a decision, not a refactor. They are named rather
+	// than pathed here precisely because snug does not know their paths — so
+	// read the line as "snug mounts no desktop socket", which is true of every
+	// profile snug ships, and NOT as a coverage-checked claim about two host
+	// paths. A profile granting the directory one of them sits in would make it
+	// false, and nothing here would notice.
+	//
+	// `partial` is NOT reused for these: it was appended to lines above, so a
+	// later append to it would be silently dropped. Their PARTIAL lines follow
+	// the joined line instead, which also reads better — the qualification sits
+	// next to the run of bare names it qualifies.
+	var static, staticPartial []string
+	for _, c := range []string{"/sys", "/tmp/.X11-unix"} {
+		cov, beneath := coverageOf(p, c)
+		switch cov {
+		case coverageFull:
+			continue
+		case coveragePartial:
+			staticPartial = append(staticPartial, partialLines(c, beneath, authored(p, c))...)
+			continue
+		}
+		static = append(static, c)
+	}
+	static = append(static, "the Wayland socket", "the session D-Bus socket")
+	lines = append(lines, strings.Join(static, "  "))
+	lines = append(lines, staticPartial...)
 	return lines
 }
 
