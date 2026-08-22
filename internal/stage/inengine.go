@@ -25,23 +25,40 @@ import (
 //
 //  1. lock the OS thread — setns(CLONE_NEWNET) is per-task, exactly like
 //     __innetns's own setns.
+//
 //  2. setns(fd, CLONE_NEWNET) into the sandbox's N; re-read and refuse if the
 //     thread did not move — the __innetns check, verbatim, using the
 //     DESCRIPTOR P1 pinned before it left N, never a /proc/<pid>/ns/net path
 //     (the wrong-attach silent failure, SUPERVISOR-DESIGN.md §3.4).
+//
 //  3. close fd — nothing downstream of this point (podman, conmon, a
 //     container) ever holds a reference to N it could setns with.
-//  4. mount("", "/", MS_REC|MS_PRIVATE) — load-bearing TWICE
+//
+//  4. build the engine's view, DERIVED from the sandbox's. Four calls, in
+//     this order, and the order is the whole of it:
+//
+//     4a. setns(mntFD, CLONE_NEWNS) — join the SANDBOX's own mount namespace.
+//     The caller waited for bwrap to finish every mount snug asked for
+//     (waitForSandboxMounts); joining earlier lands in a namespace still
+//     holding the host tree at /oldroot, measured.
+//     4b. unshare(CLONE_NEWNS) — the engine's OWN copy of that view, so
+//     everything below is invisible to the payload. Without it the engine
+//     would be mounting into the sandbox's namespace.
+//     4c. mount("", "/", MS_REC|MS_PRIVATE) — load-bearing TWICE
 //     (ENGINE-NETNS.md §1): overlay refuses to make its own mount private
 //     without it, and it keeps podman's per-container nsfs binds out of the
-//     host mount tree. This is a plain private COPY of the host tree,
-//     deliberately NOT derived from the resolved Policy — that is Tier C's
-//     later pieces (TIER-B.md §4: "if you find yourself writing open_tree,
-//     move_mount, a graft… you have crossed into Tier C — stop"). What stops
-//     the engine acting on an ungranted path is the proxy's bind filter,
-//     which reads the SAME resolved Policy a container may not bypass
-//     (TestContainerBindFilterMatchesPolicyVisibility is the standing gate);
-//     this mount step is not that enforcement and must never be read as one.
+//     host mount tree.
+//     4d. move_mount each detached tree onto its guest path, then
+//     MOUNT_ATTR_RDONLY where the graft is AccessRO. The trees come from
+//     p.Grafts, so the resolved Policy is their author (invariant 6).
+//
+//     So the engine's starting point is the sandbox's view, not the host's,
+//     and a host path reaches the engine only through a graft. What the view
+//     does NOT do is decide what a CONTAINER may bind: that is the proxy's
+//     bind filter, reading the same resolved Policy
+//     (TestContainerBindFilterMatchesPolicyVisibility is the standing gate).
+//     Two mechanisms over one model — do not read either as the other.
+//
 //  5. mount("proc", "/proc", "proc") — a FRESH procfs bound to THIS process's
 //     own pid namespace (C0), replacing whatever /proc this process inherited
 //     from the stage's private host-tree copy (step 4's mount, still the
@@ -53,6 +70,7 @@ import (
 //     (invariant 5): no fallback to the inherited /proc, which would leave the
 //     engine reading every host pid's cmdline, exe symlink and fd table while
 //     TOPOLOGY on screen claimed it could not.
+//
 //  6. dropCapsToExactly(policy.EngineCapBounding) — runs AFTER the mounts that
 //     need the full set and IMMEDIATELY BEFORE the exec, per capdrop.go's
 //     own documented contract. No uid-map re-exec here, unlike
@@ -60,12 +78,14 @@ import (
 //     FULL effective set (it created no nested userns), so it inherits full
 //     caps immediately and this single drop is enough — TIER-B.md §3 names
 //     this distinction explicitly so nobody adds a spurious re-exec.
+//
 //  7. fdseal.SealExcept() with an EMPTY keep list — this is the last exec
 //     before podman, and the whole point is that the engine talks to snug
 //     ONLY through its own /tmp socket. The control socket and lifeline pipe
 //     are never in this reach: cmd.Env is set to []string{} and no fd beyond
 //     the netns descriptor (already closed at step 3) was ever added to this
 //     process's ExtraFiles when it was forked.
+//
 //  8. execve podman with an EXPLICIT, MINIMAL argv AND env, both chosen
 //     entirely by P0 and carried on THIS function's own argv — never
 //     os.Environ() (the /proc/1/environ lesson, restated for a process whose
