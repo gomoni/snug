@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -14,7 +13,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/gomoni/snug/internal/policy"
-	"github.com/gomoni/snug/internal/sandbox"
 )
 
 // dryRun is not a debugging convenience. It is the mechanism by which a human
@@ -34,7 +32,23 @@ import (
 // renderer that cannot attach to the block helpers would have to re-derive
 // what they know, which is the copy-with-no-link-back shape this repo keeps
 // paying for.
-func dryRun(out io.Writer, p *policy.Policy, args []string, cfg config, refusedBy error) {
+func dryRun(out io.Writer, p *policy.Policy, args []string, cfg config, refusedBy error) error {
+	// ONE Report, then ONE renderer. --json REPLACES the human form; it never
+	// adds to it, because the document is the whole of stdout (renderJSON's
+	// doc comment says why that matters on a refusal).
+	rep := buildReport(p, args, cfg, refusedBy)
+	if cfg.json {
+		return renderJSON(out, rep)
+	}
+	renderHuman(out, rep, p, args, cfg, refusedBy)
+	return nil
+}
+
+// renderHuman is the screen this file has always printed. It takes the Report
+// as well as the Policy because the facts both renderers state must come from
+// ONE derivation — see Report's doc comment for where the sharing is
+// structural (Mounts) and where it is only parallel.
+func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg config, refusedBy error) {
 	if refusedBy != nil {
 		fmt.Fprintln(out, "snug — dry run of a REFUSED policy (nothing below can run; nothing was started)")
 	} else {
@@ -63,18 +77,23 @@ func dryRun(out io.Writer, p *policy.Policy, args []string, cfg config, refusedB
 	describeSSH(out, p)
 	describeCommands(out, p)
 	describeClaude(out, p)
-	if p.NewSession {
+	if rep.NewSession {
 		fmt.Fprintf(out, "TTY      --new-session (this kernel allows TIOCSTI, so the sandbox is kept\n")
 		fmt.Fprintf(out, "         out of your terminal — the cost is no job control inside)\n")
 	} else {
 		fmt.Fprintf(out, "TTY      shared session — job control works (TIOCSTI is disabled kernel-wide)\n")
 	}
-	describeSeccomp(out, cfg)
+	describeSeccomp(out, rep.Seccomp)
 	describeAttach(out)
 	fmt.Fprintln(out)
 
 	fmt.Fprintln(out, "FILESYSTEM  (deny-by-default; every line is a grant, there are no deny rules)")
-	for _, m := range p.SortedMounts() {
+	// rep.Mounts, NOT p.SortedMounts(): this is the ONE place the two
+	// renderers share a derivation structurally rather than in parallel, so
+	// the FILESYSTEM block and the JSON `mounts` array cannot list different
+	// grants. TestHumanAndJSONFilesystemBlocksAgree drives both and compares
+	// the sets.
+	for _, m := range rep.Mounts {
 		kind := m.Kind.String()
 		if m.Kind == policy.KindBind {
 			kind = m.Access.String()
@@ -145,7 +164,7 @@ func dryRun(out io.Writer, p *policy.Policy, args []string, cfg config, refusedB
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "  NOT GRANTED (never mounted — these read as absent, they are not hidden;")
 	fmt.Fprintln(out, "  where it says \"host's\", snug generates its own file at that path instead):")
-	for _, line := range notGranted(p) {
+	for _, line := range rep.NotGranted {
 		fmt.Fprintf(out, "    %s\n", line)
 	}
 
@@ -256,15 +275,14 @@ func describeAttach(out io.Writer) {
 	fmt.Fprintln(out, "         plain nsenter has none of the three.")
 }
 
-func describeSeccomp(out io.Writer, cfg config) {
-	// DeniedSyscallNames panics if internal/sandbox's own name table has
-	// fallen behind deniedSyscalls — see its doc comment. That is deliberate:
-	// failing this dry run loudly beats rendering a screen that no longer
-	// matches the filter.
-	names := sandbox.DeniedSyscallNames()
-	listLines := wrapList(names, 64)
+func describeSeccomp(out io.Writer, sc reportSeccomp) {
+	// The facts arrive from buildSeccompReport, which is the ONLY caller of
+	// sandbox.BuildFilter on this path. Deriving them here as well would be
+	// two opinions about whether the filter assembles on this host, on the one
+	// screen whose job is saying whether it is actually installed.
+	listLines := wrapList(sc.Denied, 64)
 
-	if cfg.noSeccomp {
+	if !sc.Requested {
 		fmt.Fprintln(out, "SECCOMP  DISABLED (--no-seccomp) — every syscall below runs UNFILTERED:")
 		for _, l := range listLines {
 			fmt.Fprintf(out, "           %s\n", l)
@@ -275,13 +293,8 @@ func describeSeccomp(out io.Writer, cfg config) {
 		return
 	}
 
-	// BuildFilter is pure (no OS calls beyond reading runtime.GOARCH), so this
-	// is safe to call from a dry run that starts nothing. It is the same
-	// function sandbox.Run calls to build the real filter, so this line cannot
-	// disagree with what actually gets installed — no second copy of "which
-	// architectures are supported" to drift out of sync.
-	prog, ok, err := sandbox.BuildFilter()
-	if err != nil {
+	switch sc.Reason {
+	case "assembly-error":
 		// An ASSEMBLY failure, not an unsupported architecture: BuildFilter
 		// returns (nil, false, err) only when asm.offset's jump-range check
 		// trips, on a host whose GOARCH is otherwise fully supported. This is
@@ -289,20 +302,18 @@ func describeSeccomp(out io.Writer, cfg config) {
 		// it here rather than the "no syscall table" sentence below, which
 		// would name the wrong fix (there is nothing to fix on this host; the
 		// bug is in snug's own filter construction).
-		fmt.Fprintf(out, "SECCOMP  BROKEN — %v\n", err)
+		fmt.Fprintf(out, "SECCOMP  BROKEN — %s\n", sc.Error)
 		fmt.Fprintln(out, "         This is a bug in snug's filter assembly, not a property of this")
 		fmt.Fprintln(out, "         host. sandbox.Run will warn and continue WITHOUT the filter. The")
 		fmt.Fprintln(out, "         namespace boundary is unaffected; this filter is defence in depth,")
 		fmt.Fprintln(out, "         not the boundary.")
 		return
-	}
-	if !ok {
-		fmt.Fprintf(out, "SECCOMP  UNAVAILABLE for GOARCH=%s (no syscall table) — sandbox.Run will\n", runtime.GOARCH)
+	case "unsupported-arch":
+		fmt.Fprintf(out, "SECCOMP  UNAVAILABLE for GOARCH=%s (no syscall table) — sandbox.Run will\n", sc.Arch)
 		fmt.Fprintln(out, "         warn and continue WITHOUT it. The namespace boundary is unaffected;")
 		fmt.Fprintln(out, "         this filter is defence in depth, not the boundary.")
 		return
 	}
-	_ = prog // only the length/validity matters here; the argv carries the bytes
 
 	fmt.Fprintln(out, "SECCOMP  active — denies (EPERM), derived from deniedSyscalls in")
 	fmt.Fprintln(out, "         internal/sandbox/seccomp.go:")
@@ -311,7 +322,7 @@ func describeSeccomp(out io.Writer, cfg config) {
 	}
 	fmt.Fprintln(out, "         — plus clone3 (ENOSYS), ioctl(_, TIOCSTI, _), and")
 	fmt.Fprintln(out, "         clone/unshare(CLONE_NEWUSER).")
-	if runtime.GOARCH == "amd64" {
+	if sc.CompatArchGap {
 		fmt.Fprintln(out, "         KNOWN GAP on this architecture: a 32-bit (i386 compat) payload runs")
 		fmt.Fprintln(out, "         under a DIFFERENT audit arch, and this filter denies it NOTHING —")
 		fmt.Fprintln(out, "         see BuildFilter's doc comment in internal/sandbox/seccomp.go.")

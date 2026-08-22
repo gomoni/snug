@@ -1,0 +1,364 @@
+package cli
+
+import (
+	"os"
+	"runtime"
+	"sort"
+
+	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/sandbox"
+)
+
+// Report is the DATA layer under --dry-run: the facts about one resolved
+// policy, with none of the English the human screen wraps around them. It
+// exists because issue #52 adds a second renderer, and two renderers reading
+// the policy independently is how the two drift.
+//
+// What it deliberately is NOT: a full model of the human screen. That screen is
+// prose — wrapped explanation paragraphs, `←` marks, column alignment, and
+// whole blocks (NOT GRANTED's preamble, the network guarantees, the seccomp
+// residual) that exist to EXPLAIN rather than to state. Modelling those would
+// mean putting English in the machine format, which is the weaker of the two
+// choices systemd made: English cannot be asserted on. So the split is by
+// substance, not by block —
+//
+//	shared here      every fact the JSON document carries
+//	human only       the sentences ABOUT those facts
+//
+// The one place the sharing is STRUCTURAL rather than merely parallel is
+// Mounts. Both renderers iterate this slice, so the FILESYSTEM block and the
+// JSON `mounts` array cannot list different grants —
+// TestHumanAndJSONFilesystemBlocksAgree drives both for real and compares the
+// sets, which is what makes "cannot drift" a check rather than a claim.
+type Report struct {
+	// Outcome is "ok" or "refused", and is the discriminator every consumer
+	// reads first. A refused policy is still fully described: --dry-run's
+	// entire job is showing what snug decided, and "it was refused" without
+	// the policy is the half a human cannot act on.
+	Outcome string
+
+	// Refusal is Validate's error text, empty when Outcome is "ok". A STRING
+	// and nothing else in format 1, on purpose: Validate's errors are bare
+	// fmt.Errorf values with no code, no type and no offending path as a
+	// field, and restructuring all of them (plus the 50-case corpus in
+	// internal/policy/testdata/refusals.txt) is not something the format
+	// should wait for. refusal.code and refusal.path can be added later
+	// without a version bump.
+	Refusal string
+
+	Target string
+	Home   string
+	Chdir  string
+
+	Selected []policy.ProfileName
+	Implied  []policy.ProfileName
+
+	// Mounts is p.SortedMounts() — depth-then-lexicographic, an ARRAY and
+	// never a map, because a map's iteration order would make the JSON
+	// undiffable and the golden fixture worthless.
+	Mounts []policy.Mount
+
+	// Grafts is the ENGINE's derived-view mounts, sorted by Guest. The payload
+	// cannot see any of them; they are a separate field for the same reason
+	// p.Grafts is a separate map (issue #55).
+	Grafts []policy.Graft
+
+	NotGranted []string
+
+	Network     reportNetwork
+	Topology    reportTopology
+	Containers  *reportContainers // nil when no engine runs
+	Environment []reportEnvVar
+	Seccomp     reportSeccomp
+	NewSession  bool
+	BwrapArgv   []string
+}
+
+// reportNetwork is the NETWORK block's facts. Every field answers a question a
+// CI gate might actually assert on — "does this policy reach the host's
+// loopback", "does it name a LAN resolver inside" — rather than restating the
+// paragraph the human screen prints about it.
+type reportNetwork struct {
+	Mode         string
+	Egress       bool
+	HostLoopback bool
+	// AbstractSockets is netns-scoped reachability of the host's abstract
+	// AF_UNIX namespace. It is FALSE for both private-netns modes and true
+	// only under host networking. Pathname sockets are a mount question and
+	// are deliberately absent here — they are in Mounts.
+	AbstractSockets bool
+	// DNS is the servers the sandbox will really read out of /etc/resolv.conf,
+	// from the resolved policy rather than from a literal (issue #28).
+	DNS []string
+	// DNSForwarded says pasta answers those addresses from the host side, so
+	// no host resolver address is named inside (NeedsDNSForward).
+	DNSForwarded bool
+	DNSHost      string
+	Publish      []int
+	Anonymised   bool
+	Address      string
+	Address6     string
+}
+
+type reportTopology struct {
+	// Processes is every long-lived process this run starts, snug included,
+	// by name — derived from longLivedProcesses, which reads the same
+	// predicates runStaged branches on. Names only: each one's ROLE is a
+	// sentence, and a sentence is not a fact a consumer can assert on.
+	Processes  []string
+	NeedsStage bool
+	Netns      string
+	Subuid     string
+	// EngineCapBounding is the engine's capability bounding set, present only
+	// when an engine runs. Widening it is a golden diff here as well as on the
+	// human screen.
+	EngineCapBounding []string
+}
+
+// reportContainers is the CONTAINERS and IMAGES blocks' facts. The engine
+// SOURCE is here rather than the engine binary: --dry-run runs no preflight
+// and does not probe PATH (see describeEngineSource), so naming a binary it
+// has not resolved would be a lie in the machine format as much as on screen.
+type reportContainers struct {
+	Socket string
+	// EngineSource is "SNUG_PODMAN" or "PATH".
+	EngineSource string
+	// EngineBinary is $SNUG_PODMAN's value, empty when PATH answered.
+	EngineBinary string
+	// BundleRoot is $SNUG_PODMAN_ROOT's value, empty when unset.
+	BundleRoot         string
+	RegistrySearch     []string
+	SignaturesVerified bool
+	Logins             bool
+	PortMapping        bool
+}
+
+type reportEnvVar struct {
+	Name    string
+	Entries []reportEnvEntry
+	Dropped []reportEnvDrop
+}
+
+type reportEnvEntry struct {
+	Value string
+	Verb  string
+	From  []string
+	// Note is why snug authored this entry ("base", "podman stub"), and is
+	// set only for a VerbSnug entry, which has no From.
+	Note string
+	// Unchecked mirrors the `← unchecked` mark: snug has no roster row for
+	// this NAME, so nothing about the variable's meaning was checked. It is an
+	// ENVIRONMENT property and belongs on an entry — issue #52's brief listed
+	// it under mounts, where there is no such mark and putting one would be
+	// inventing a field.
+	Unchecked bool
+}
+
+type reportEnvDrop struct {
+	Value  string
+	Reason string
+}
+
+// reportSeccomp separates REQUESTED from INSTALLED, which is the distinction
+// CLAUDE.md's "verify a security feature is active, not merely requested" is
+// about: `--seccomp` was once passed, accepted and never installed, with a
+// zero exit code. A consumer asserting `seccomp.installed` is asking the
+// question that matters; one asserting `requested` is asking the one that
+// looked the same and was not.
+type reportSeccomp struct {
+	Requested bool
+	Installed bool
+	// Reason is a CODE, not a sentence: "" when installed, else
+	// "no-seccomp-flag", "assembly-error" or "unsupported-arch".
+	Reason string
+	// Error is the assembly failure's text, present only for
+	// "assembly-error". It is snug's own message about snug's own filter
+	// construction, so it is not host text.
+	Error  string
+	Arch   string
+	Denied []string
+	// CompatArchGap is BuildFilter's known gap: on x86_64 a 32-bit (i386
+	// compat) payload runs under a different audit arch and this filter denies
+	// it nothing. Saying "installed" without it would be the unqualified
+	// guarantee the human block is careful not to make.
+	CompatArchGap bool
+}
+
+// buildReport derives every fact both renderers need, once. It reads the same
+// policy accessors the human blocks read — p.Net.Resolver(), NeedsDNSForward,
+// longLivedProcesses, notGranted — rather than a second opinion computed
+// beside them.
+//
+// It touches the host in exactly the two places --dry-run already did:
+// notGranted stats candidate paths, and the engine source reads two
+// environment variables. Neither is new here.
+func buildReport(p *policy.Policy, args []string, cfg config, refusedBy error) Report {
+	rep := Report{
+		Outcome:    "ok",
+		Target:     p.Target,
+		Home:       p.Home,
+		Chdir:      p.Chdir,
+		Selected:   p.Selected,
+		Implied:    p.Implied(),
+		Mounts:     p.SortedMounts(),
+		Grafts:     sortedGrafts(p),
+		NotGranted: notGranted(p),
+		Network:    buildNetworkReport(p),
+		Topology:   buildTopologyReport(p),
+		Containers: buildContainersReport(p),
+		Seccomp:    buildSeccompReport(cfg),
+		NewSession: p.NewSession,
+		BwrapArgv:  args,
+	}
+	if refusedBy != nil {
+		rep.Outcome = "refused"
+		rep.Refusal = refusedBy.Error()
+	}
+	for _, name := range p.EnvNames() {
+		rep.Environment = append(rep.Environment, buildEnvReport(p.Env[name]))
+	}
+	return rep
+}
+
+func sortedGrafts(p *policy.Policy) []policy.Graft {
+	guests := make([]string, 0, len(p.Grafts))
+	for g := range p.Grafts {
+		guests = append(guests, g)
+	}
+	sort.Strings(guests)
+	out := make([]policy.Graft, 0, len(guests))
+	for _, g := range guests {
+		out = append(out, p.Grafts[g])
+	}
+	return out
+}
+
+func buildNetworkReport(p *policy.Policy) reportNetwork {
+	n := reportNetwork{
+		Mode:            p.Net.Mode.String(),
+		Egress:          p.Net.Mode != policy.NetIsolated,
+		HostLoopback:    p.Net.Mode == policy.NetHost,
+		AbstractSockets: p.Net.Mode == policy.NetHost,
+		DNS:             p.Net.Resolver().Servers,
+		Publish:         p.Net.Publish,
+		Anonymised:      p.Net.Anonymised(),
+	}
+	// NeedsDNSForward and DNSHost only mean anything where a pasta actually
+	// runs. Under host networking there is none, which is the defect issue
+	// #164 was: the sandbox was handed pasta's interception address while
+	// nothing was intercepting.
+	if p.Net.Mode == policy.NetEgress && p.Net.NeedsDNSForward() {
+		n.DNSForwarded = true
+		n.DNSHost = p.Net.DNSHost()
+	}
+	// Anonymised(), not Address.IsValid(): a hand-built Policy can carry
+	// Address6 without Address (net.go's checkAddressPair refuses it, but a
+	// Policy that never went through Resolve did not meet that refusal), and
+	// this must render what is there rather than what the ordinary case pairs.
+	if p.Net.Address.IsValid() {
+		n.Address = p.Net.Address.String()
+	}
+	if p.Net.Address6.IsValid() {
+		n.Address6 = p.Net.Address6.String()
+	}
+	return n
+}
+
+func buildTopologyReport(p *policy.Policy) reportTopology {
+	t := reportTopology{
+		NeedsStage: p.Topology.NeedsStage(),
+		Netns:      p.Topology.Netns.String(),
+		Subuid:     p.Topology.Subuid.String(),
+	}
+	for _, pr := range longLivedProcesses(p) {
+		t.Processes = append(t.Processes, pr.name)
+	}
+	if p.Podman != policy.PodmanOff {
+		t.EngineCapBounding = policy.EngineCapBounding
+	}
+	return t
+}
+
+func buildContainersReport(p *policy.Policy) *reportContainers {
+	if p.Podman == policy.PodmanOff {
+		return nil
+	}
+	c := &reportContainers{
+		Socket:       containerSocketGuest,
+		EngineSource: "PATH",
+		BundleRoot:   os.Getenv("SNUG_PODMAN_ROOT"),
+		// docker.io and nothing else — a generated registries.conf, no mirror,
+		// no rewrite, no insecure registry (issue #137).
+		RegistrySearch: []string{"docker.io"},
+		// snug generates the engine's policy.json (accept anything), so the
+		// host's own cannot decide it.
+		SignaturesVerified: false,
+		// REGISTRY_AUTH_FILE points at an empty file, so no private image can
+		// be pulled from inside (issue #142).
+		Logins: false,
+		// The engine holds no CAP_NET_ADMIN, so it cannot reconfigure this
+		// namespace to publish a port.
+		PortMapping: false,
+	}
+	if custom := os.Getenv("SNUG_PODMAN"); custom != "" {
+		c.EngineSource = "SNUG_PODMAN"
+		c.EngineBinary = custom
+	}
+	return c
+}
+
+func buildEnvReport(v policy.EnvVar) reportEnvVar {
+	out := reportEnvVar{Name: v.Name}
+	for _, e := range v.Entries {
+		out.Entries = append(out.Entries, reportEnvEntry{
+			Value: e.Value,
+			Verb:  e.Verb.String(),
+			From:  e.From,
+			Note:  e.Note,
+			// The same predicate the `← unchecked` mark uses, from
+			// internal/policy so the two screens and this format cannot
+			// disagree about what "unchecked" means.
+			Unchecked: policy.UncheckedEnvNote(v.Name, e.Verb) != "",
+		})
+	}
+	for _, d := range v.Dropped {
+		out.Dropped = append(out.Dropped, reportEnvDrop{Value: d.Value, Reason: d.Reason.String()})
+	}
+	return out
+}
+
+// buildSeccompReport is the one fact-gathering step both renderers MUST share
+// rather than merely parallel, because it calls sandbox.BuildFilter — the same
+// function sandbox.Run calls to build the real filter. Two callers would be two
+// opinions about whether the filter assembles on this host.
+func buildSeccompReport(cfg config) reportSeccomp {
+	// DeniedSyscallNames panics if internal/sandbox's own name table has
+	// fallen behind deniedSyscalls — see its doc comment. Failing this dry run
+	// loudly beats rendering a screen, or a document, that no longer matches
+	// the filter.
+	s := reportSeccomp{
+		Requested: !cfg.noSeccomp,
+		Arch:      runtime.GOARCH,
+		Denied:    sandbox.DeniedSyscallNames(),
+	}
+	if cfg.noSeccomp {
+		s.Reason = "no-seccomp-flag"
+		return s
+	}
+	prog, ok, err := sandbox.BuildFilter()
+	_ = prog // only validity matters here; the argv carries the bytes
+	switch {
+	case err != nil:
+		// An ASSEMBLY failure on an otherwise supported architecture — a bug
+		// in snug's own filter construction, not a property of this host.
+		// Collapsing it into "unsupported arch" would name the wrong fix.
+		s.Reason = "assembly-error"
+		s.Error = err.Error()
+	case !ok:
+		s.Reason = "unsupported-arch"
+	default:
+		s.Installed = true
+		s.CompatArchGap = runtime.GOARCH == "amd64"
+	}
+	return s
+}

@@ -13,6 +13,7 @@ package policy
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -44,6 +45,18 @@ func (a Access) String() string {
 		return "none"
 	}
 }
+
+// MarshalJSON emits the WORD, not the iota. Access is a uint8, so without this
+// a machine-readable --dry-run (issue #52) would carry `"access":2` — a number
+// whose meaning lives in the order of the constants above, so inserting a
+// fourth access level between two existing ones would silently renumber every
+// document already written against the format. The string set is part of the
+// interface and changing a spelling is a format bump; renumbering is not
+// something a consumer could even detect.
+//
+// strconv.Quote rather than json.Marshal: internal/policy must stay cheap to
+// import and these are ASCII identifiers, so there is nothing to escape.
+func (a Access) MarshalJSON() ([]byte, error) { return []byte(strconv.Quote(a.String())), nil }
 
 // Kind is what sort of node exists at a Mount's Guest path.
 type Kind uint8
@@ -116,6 +129,12 @@ func (k Kind) String() string {
 		return "bind"
 	}
 }
+
+// MarshalJSON emits the WORD, not the iota — see Access.MarshalJSON for why,
+// and note that Kind is the worse of the two if it is ever got wrong: the
+// constants above are grouped by which map a Kind may appear in, so a new one
+// is naturally added in the middle rather than at the end.
+func (k Kind) MarshalJSON() ([]byte, error) { return []byte(strconv.Quote(k.String())), nil }
 
 // Mount is one grant. Guest is the primary key: two grants at the same guest
 // path are joined (or rejected), never both emitted.
