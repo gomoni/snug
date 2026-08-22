@@ -50,7 +50,8 @@ import (
 func (p *Proxy) handleBuild(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
-	if reason := p.buildRefusalReason(q); reason != "" {
+	forwardQ, rewritten, reason := p.filterBuildQuery(q)
+	if reason != "" {
 		// Drain the streamed tar context BEFORE answering. `libpod/build` (and
 		// docker-compat `/build`) is the one endpoint where the client uploads a
 		// large body and only reads the response AFTER its upload finishes — so a
@@ -66,7 +67,28 @@ func (p *Proxy) handleBuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p.audit("build: " + summarise(q))
+	// FORWARD WHAT WAS JUDGED, not what the client wrote. handleCreate has
+	// always substituted the RESOLVED bind source into the body it forwards;
+	// this endpoint used to call p.forward on the ORIGINAL URI while its
+	// checks resolved and then DISCARDED the resolved path, so
+	// hostPathVisible, the #251/#255 dangling-symlink refusal and the
+	// writable-seccomp refusal all judged a string the engine never resolves
+	// (issue #304, sev:high). `ln -sfT /snug/engine/store <target>/link` in a
+	// loop then made `build -v <link>:/x:ro` read the cross-run image store,
+	// and `seccomp=<link>` swapped to {"defaultAction":"SCMP_ACT_ALLOW"} ran
+	// the build container unconfined.
+	//
+	// RawQuery is only replaced when a value actually CHANGED. url.Values.Encode
+	// sorts and re-escapes, so assigning unconditionally would rewrite every
+	// build's URI — a diff in the forwarded bytes for every request, hiding the
+	// one case that matters inside noise nobody reads.
+	if rewritten {
+		enc := forwardQ.Encode()
+		p.audit("build: forwarding resolved paths, not the client's own: " + enc)
+		r.URL.RawQuery = enc
+	}
+
+	p.audit("build: " + summarise(forwardQ))
 	p.forward(w, r, nil)
 }
 
@@ -78,31 +100,40 @@ func (p *Proxy) handleBuild(w http.ResponseWriter, r *http.Request) {
 //
 // The rule is unchanged: an unknown parameter fails closed, and a known one is
 // judged by its own check.
-func (p *Proxy) buildRefusalReason(q url.Values) string {
+func (p *Proxy) filterBuildQuery(q url.Values) (url.Values, bool, string) {
 	names := make([]string, 0, len(q))
 	for k := range q {
 		names = append(names, k)
 	}
 	sort.Strings(names)
 
+	out := make(url.Values, len(q))
+	rewritten := false
+
 	for _, name := range names {
 		check, known := buildParams[strings.ToLower(name)]
 		if !known {
-			return fmt.Sprintf("build parameter %q is not permitted. snug allows a named set of "+
+			return nil, false, fmt.Sprintf("build parameter %q is not permitted. snug allows a named set of "+
 				"build options and refuses the rest, so an option it has not been taught "+
 				"about fails closed rather than reaching the engine unexamined. If this "+
 				"one is harmless, it belongs in buildParams with a note saying why.", name)
 		}
 		if check == nil {
-			continue // allowed as-is
+			out[name] = append([]string(nil), q[name]...) // allowed as-is
+			continue
 		}
 		for _, v := range q[name] {
-			if err := check(p, v); err != nil {
-				return fmt.Sprintf("build parameter %s: %v", name, err)
+			forward, err := check(p, v)
+			if err != nil {
+				return nil, false, fmt.Sprintf("build parameter %s: %v", name, err)
 			}
+			if forward != v {
+				rewritten = true
+			}
+			out[name] = append(out[name], forward)
 		}
 	}
-	return ""
+	return out, rewritten, ""
 }
 
 // maxRefusedBuildDrain bounds how much of a refused build's body handleBuild
@@ -124,9 +155,20 @@ func drainBeforeRefusing(r *http.Request) {
 	_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, maxRefusedBuildDrain))
 }
 
-// buildParamCheck validates one value. A nil check means the parameter carries
-// nothing snug needs to judge.
-type buildParamCheck func(p *Proxy, value string) error
+// buildParamCheck validates one value AND returns the value to forward.
+//
+// The return of a string is the whole of issue #304's fix, and it is a type
+// change rather than three call-site edits on purpose: the defect was that
+// checkBuildVolume and checkAdditionalContexts computed a resolved path and
+// then threw it away (`_, err := p.checkOne(...)`), while handleBuild forwarded
+// the client's original URI. A check that cannot report what it judged makes
+// that mistake unrepresentable — every future host-reaching parameter has to
+// hand back the string the engine will see, or it does not compile.
+//
+// A check that changes nothing returns its input. A nil check means the
+// parameter carries nothing snug needs to judge, and its values are forwarded
+// verbatim.
+type buildParamCheck func(p *Proxy, value string) (string, error)
 
 var buildParams = map[string]buildParamCheck{
 	// ── naming and output ────────────────────────────────────────────────
@@ -199,7 +241,9 @@ var buildParams = map[string]buildParamCheck{
 }
 
 func refuseBuildParam(reason string) buildParamCheck {
-	return func(*Proxy, string) error { return fmt.Errorf("is not permitted: %s", reason) }
+	return func(*Proxy, string) (string, error) {
+		return "", fmt.Errorf("is not permitted: %s", reason)
+	}
 }
 
 // checkBuildSecrets keeps a secret's source inside the build context.
@@ -229,11 +273,14 @@ func refuseBuildParam(reason string) buildParamCheck {
 // The rule is the one checkDockerfile already applies, for the same reason: a
 // legitimate src names something in the context, and a context name cannot climb
 // out of it.
-func checkBuildSecrets(_ *Proxy, v string) error {
+// The value is forwarded unchanged: a secret source is relative to the build
+// CONTEXT, which the engine unpacks from the tar the client sent, so there is
+// no host path here to resolve.
+func checkBuildSecrets(_ *Proxy, v string) (string, error) {
 	var specs []string
 	if strings.HasPrefix(strings.TrimSpace(v), "[") {
 		if err := json.Unmarshal([]byte(v), &specs); err != nil {
-			return fmt.Errorf("is not a JSON list of secret specs")
+			return "", fmt.Errorf("is not a JSON list of secret specs")
 		}
 	} else {
 		specs = []string{v}
@@ -247,12 +294,12 @@ func checkBuildSecrets(_ *Proxy, v string) error {
 			switch strings.ToLower(strings.TrimSpace(k)) {
 			case "src", "source":
 				if err := insideContext(val); err != nil {
-					return fmt.Errorf("secret source %w", err)
+					return "", fmt.Errorf("secret source %w", err)
 				}
 			}
 		}
 	}
-	return nil
+	return v, nil
 }
 
 // insideContext refuses a name that does not stay within the build context.
@@ -280,29 +327,40 @@ func insideContext(n string) error {
 // podman sends a JSON array of names; the compat endpoint sends a bare string.
 // Both are relative to the context root, so an absolute path or a `..` reaches
 // out of the directory the engine unpacked into.
-func checkDockerfile(_ *Proxy, v string) error {
+// Forwarded unchanged, for checkBuildSecrets's reason: a Dockerfile name is
+// relative to the context the client shipped, not a host path.
+func checkDockerfile(_ *Proxy, v string) (string, error) {
 	names := []string{v}
 	if strings.HasPrefix(strings.TrimSpace(v), "[") {
 		var list []string
 		if err := json.Unmarshal([]byte(v), &list); err != nil {
-			return fmt.Errorf("is not a name or a JSON list of names")
+			return "", fmt.Errorf("is not a name or a JSON list of names")
 		}
 		names = list
 	}
 	for _, n := range names {
 		if err := insideContext(n); err != nil {
-			return err
+			return "", err
 		}
 	}
-	return nil
+	return v, nil
 }
 
 // checkBuildVolume applies the rule in the package comment to `build -v`, which
 // is the same host bind that HostConfig.Binds is, spelled differently.
-func checkBuildVolume(p *Proxy, v string) error {
+//
+// It returns the volume respelled with checkOne's RESOLVED source. The old body
+// was `_, err := p.checkOne(...)` — it resolved the symlink, judged the
+// resolved path, and threw it away while handleBuild forwarded the client's
+// original string (issue #304). checkOne's own comment already says why the
+// resolved path is what must be forwarded: the link can be swapped between the
+// check and the engine's own resolution, so the engine has to be asked for the
+// thing that was actually approved. That sentence was true of the create path
+// and false of this one.
+func checkBuildVolume(p *Proxy, v string) (string, error) {
 	parts := strings.Split(v, ":")
 	if len(parts) < 2 || len(parts) > 3 {
-		return fmt.Errorf("%q is not src:dst[:opts]", v)
+		return "", fmt.Errorf("%q is not src:dst[:opts]", v)
 	}
 	ro := false
 	if len(parts) == 3 {
@@ -312,12 +370,19 @@ func checkBuildVolume(p *Proxy, v string) error {
 				ro = true
 			case "rw", "z", "Z", "":
 			default:
-				return fmt.Errorf("option %q is not permitted", o)
+				return "", fmt.Errorf("option %q is not permitted", o)
 			}
 		}
 	}
-	_, err := p.checkOne(parts[0], parts[1], ro)
-	return err
+	m, err := p.checkOne(parts[0], parts[1], ro)
+	if err != nil {
+		return "", err
+	}
+	// Only the SOURCE is respelled. The destination and the options are the
+	// client's own and were validated above, not resolved — rewriting them
+	// would be snug authoring a request nobody made.
+	parts[0] = m.Source
+	return strings.Join(parts, ":"), nil
 }
 
 // checkAdditionalContexts judges `--build-context name=VALUE`.
@@ -326,34 +391,82 @@ func checkBuildVolume(p *Proxy, v string) error {
 // rules as any other image. A URL is not: the engine fetches it from somewhere
 // snug never sees. Anything else is a host path, and gets the mount rule, read
 // only, because a build context is only ever read.
-func checkAdditionalContexts(p *Proxy, v string) error {
-	var m map[string]struct {
-		IsURL   bool
-		IsImage bool
-		Value   string
+// Like checkBuildVolume it returns the value respelled with the RESOLVED path
+// (issue #304). The re-marshal goes through json.RawMessage per entry rather
+// than through a struct, so every field podman sends that snug does not model
+// — buildah's AdditionalBuildContext has grown fields before — survives the
+// round trip byte for byte. Rewriting through a three-field struct would
+// silently DELETE the rest, which is a different bug in the same line of code.
+func checkAdditionalContexts(p *Proxy, v string) (string, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(v), &raw); err != nil {
+		return "", fmt.Errorf("is not the JSON object podman sends")
 	}
-	if err := json.Unmarshal([]byte(v), &m); err != nil {
-		return fmt.Errorf("is not the JSON object podman sends")
-	}
-	names := make([]string, 0, len(m))
-	for k := range m {
+	names := make([]string, 0, len(raw))
+	for k := range raw {
 		names = append(names, k)
 	}
 	sort.Strings(names)
+
+	changed := false
 	for _, name := range names {
-		c := m[name]
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw[name], &fields); err != nil {
+			return "", fmt.Errorf("context %q is not the JSON object podman sends", name)
+		}
+		var c struct {
+			IsURL   bool
+			IsImage bool
+			Value   string
+		}
+		if err := json.Unmarshal(raw[name], &c); err != nil {
+			return "", fmt.Errorf("context %q is not the JSON object podman sends", name)
+		}
 		switch {
 		case c.IsURL:
-			return fmt.Errorf("context %q is a URL, which the ENGINE fetches from a place "+
+			return "", fmt.Errorf("context %q is a URL, which the ENGINE fetches from a place "+
 				"snug never sees", name)
 		case c.IsImage:
 			continue
 		}
-		if _, err := p.checkOne(c.Value, "/", true); err != nil {
-			return fmt.Errorf("context %q: %w", name, err)
+		m, err := p.checkOne(c.Value, "/", true)
+		if err != nil {
+			return "", fmt.Errorf("context %q: %w", name, err)
 		}
+		if m.Source == c.Value {
+			continue
+		}
+		// Write back under the key spelling that was actually present.
+		// encoding/json matches field names case-insensitively on the way in,
+		// so assuming "Value" here would leave a lowercase "value" in place
+		// and add a second key the engine might prefer either way.
+		key := "Value"
+		for k := range fields {
+			if strings.EqualFold(k, "Value") {
+				key = k
+				break
+			}
+		}
+		enc, err := json.Marshal(m.Source)
+		if err != nil {
+			return "", fmt.Errorf("context %q: %v", name, err)
+		}
+		fields[key] = enc
+		out, err := json.Marshal(fields)
+		if err != nil {
+			return "", fmt.Errorf("context %q: %v", name, err)
+		}
+		raw[name] = out
+		changed = true
 	}
-	return nil
+	if !changed {
+		return v, nil
+	}
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return "", fmt.Errorf("%v", err)
+	}
+	return string(out), nil
 }
 
 // checkNetworkMode refuses host networking for the build.
@@ -362,12 +475,12 @@ func checkAdditionalContexts(p *Proxy, v string) error {
 // spellings are enumerated. Default-deny: an unrecognised value is refused
 // rather than assumed benign, because the numbers are buildah's internal enum
 // and a new one could mean anything.
-func checkNetworkMode(_ *Proxy, v string) error {
+func checkNetworkMode(_ *Proxy, v string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "", "0", "1", "default", "none", "private", "bridge", "slirp4netns", "pasta":
-		return nil
+		return v, nil
 	}
-	return fmt.Errorf("%q is not permitted; a build may not join the host's network "+
+	return "", fmt.Errorf("%q is not permitted; a build may not join the host's network "+
 		"namespace (the sandbox's own network is what it gets)", v)
 }
 
@@ -381,27 +494,27 @@ func checkNetworkMode(_ *Proxy, v string) error {
 // `user` with Host:true is the rootless default the CLI always sends — the
 // engine already runs in that user namespace — so it is the one exception, and
 // it is named rather than pattern-matched.
-func checkNSOptions(_ *Proxy, v string) error {
+func checkNSOptions(_ *Proxy, v string) (string, error) {
 	var opts []struct {
 		Name string
 		Host bool
 		Path string
 	}
 	if err := json.Unmarshal([]byte(v), &opts); err != nil {
-		return fmt.Errorf("is not the JSON list podman sends")
+		return "", fmt.Errorf("is not the JSON list podman sends")
 	}
 	for _, o := range opts {
 		name := strings.ToLower(o.Name)
 		if o.Host && name != "user" {
-			return fmt.Errorf("%q asks for the HOST's %s namespace, which is outside this "+
+			return "", fmt.Errorf("%q asks for the HOST's %s namespace, which is outside this "+
 				"sandbox", o.Name, name)
 		}
 		if o.Path != "" {
-			return fmt.Errorf("%q names an existing namespace at %q, which snug did not "+
+			return "", fmt.Errorf("%q names an existing namespace at %q, which snug did not "+
 				"create and cannot vouch for", o.Name, o.Path)
 		}
 	}
-	return nil
+	return v, nil
 }
 
 // checkSeccompProfile keeps the profile one the sandbox can READ but did not
@@ -422,12 +535,12 @@ func checkNSOptions(_ *Proxy, v string) error {
 // SECURITY POLICY, where the question is who wrote it. So the rule here is
 // readable-but-not-writable: a distro profile under /usr passes, anything the
 // sandbox could have authored does not.
-func checkSeccompProfile(p *Proxy, v string) error {
+func checkSeccompProfile(p *Proxy, v string) (string, error) {
 	if v == "" {
-		return nil
+		return v, nil
 	}
 	if strings.EqualFold(v, "unconfined") {
-		return fmt.Errorf("`unconfined` is not permitted; the sandbox does not get to " +
+		return "", fmt.Errorf("`unconfined` is not permitted; the sandbox does not get to " +
 			"turn off the build container's seccomp filter")
 	}
 	// Through resolveForwardable, not resolveExisting: a seccomp profile named
@@ -437,17 +550,20 @@ func checkSeccompProfile(p *Proxy, v string) error {
 	// the divergence is the general defect and belongs in one place.
 	real, err := resolveForwardable(v)
 	if err != nil {
-		return fmt.Errorf("%q cannot be resolved: %v", v, err)
+		return "", fmt.Errorf("%q cannot be resolved: %v", v, err)
 	}
 	if !p.hostPathVisible(real, false) {
-		return fmt.Errorf("%q is not a path this sandbox can see", v)
+		return "", fmt.Errorf("%q is not a path this sandbox can see", v)
 	}
 	if p.hostPathVisible(real, true) {
-		return fmt.Errorf("%q is writable by this sandbox, so it is a profile the sandbox "+
+		return "", fmt.Errorf("%q is writable by this sandbox, so it is a profile the sandbox "+
 			"could have written itself — which is `unconfined` with extra steps. A seccomp "+
 			"profile must be one the sandbox can read but did not author", v)
 	}
-	return nil
+	// The RESOLVED path is what the engine is asked for. Returning v here
+	// would leave the swap window open on the one parameter whose whole job is
+	// to decide the build container's security posture.
+	return real, nil
 }
 
 // checkBuilderVersion allows only the classic builder. `version=2` selects
@@ -456,12 +572,12 @@ func checkSeccompProfile(p *Proxy, v string) error {
 // would mean this allowlist stopped being the whole story for a request
 // that took that path. `""` is the CLI's own default when the flag is not
 // sent at all, and is treated the same as `1`.
-func checkBuilderVersion(_ *Proxy, v string) error {
+func checkBuilderVersion(_ *Proxy, v string) (string, error) {
 	switch strings.TrimSpace(v) {
 	case "", "1":
-		return nil
+		return v, nil
 	}
-	return fmt.Errorf("%q is not permitted: `version` selects the BUILDER, and `2` is "+
+	return "", fmt.Errorf("%q is not permitted: `version` selects the BUILDER, and `2` is "+
 		"BuildKit — a backend whose build options are a different set from the ones snug "+
 		"filters here. Only the classic builder (version 1, docker's DOCKER_BUILDKIT=0 path) "+
 		"is supported", v)
@@ -469,12 +585,12 @@ func checkBuilderVersion(_ *Proxy, v string) error {
 
 // checkIsolation allows only the default. `--isolation chroot` sends 2, and an
 // isolation mode is a runtime selector by another name.
-func checkIsolation(_ *Proxy, v string) error {
+func checkIsolation(_ *Proxy, v string) (string, error) {
 	switch strings.TrimSpace(v) {
 	case "", "0", "default", "oci":
-		return nil
+		return v, nil
 	}
-	return fmt.Errorf("%q is not permitted: an isolation mode is a runtime selector "+
+	return "", fmt.Errorf("%q is not permitted: an isolation mode is a runtime selector "+
 		"by another name", v)
 }
 

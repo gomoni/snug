@@ -24,6 +24,13 @@ import (
 type fakeEngine struct {
 	reached  atomic.Int32
 	lastBody atomic.Value
+	// lastURI is the REQUEST-URI the proxy forwarded, query string included.
+	// The build endpoint carries every policy-relevant option in the query and
+	// nothing in the body but the context tar, so a body recorder alone cannot
+	// see what a build actually asked the engine for — which is how issue #304
+	// (the raw client path forwarded on the build path) went unnoticed by a
+	// suite that already asserted plenty about lastBody.
+	lastURI atomic.Value
 }
 
 func startProxy(t *testing.T) (sock string, eng *fakeEngine, target string) {
@@ -56,6 +63,7 @@ func startProxyMode(t *testing.T, mode policy.PodmanMode) (sock string, eng *fak
 		// than by filtering.
 		b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		eng.lastBody.Store(string(b))
+		eng.lastURI.Store(r.URL.RequestURI())
 		w.WriteHeader(200)
 		w.Write([]byte(`{"Id":"deadbeef"}`))
 	}))
