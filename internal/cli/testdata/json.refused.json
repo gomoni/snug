@@ -129,7 +129,11 @@
   "grafts": [],
   "not_granted": {
     "lines": [
-      "/sys  /tmp/.X11-unix  the Wayland socket  the session D-Bus socket"
+      "/sys  /tmp/.X11-unix",
+      "snug mounts no desktop socket — no Wayland, no session D-Bus.",
+      "  (a claim about what snug mounts, not a probe of this host. A profile granting",
+      "   the directory one of these sockets sits in would make it false, and nothing",
+      "   here would notice.)"
     ]
   },
   "network": {

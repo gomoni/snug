@@ -2452,17 +2452,12 @@ func notGranted(p *policy.Policy) []string {
 	// developer. coverageOf reads only p.Mounts and is host-independent, so the
 	// coverage half is safe and the existence half is not.
 	//
-	// The DESKTOP SOCKETS stay unconditional, and this is the residual #301
-	// keeps open rather than something the fix reached. The Wayland and session
-	// D-Bus paths are derived from $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY and from
-	// DBUS_SESSION_BUS_ADDRESS (a `unix:path=...,guid=...` string, not a bare
-	// path), and NOTHING in this tree derives either today. Choosing which host
-	// environment to trust is a decision, not a refactor. They are named rather
-	// than pathed here precisely because snug does not know their paths — so
-	// read the line as "snug mounts no desktop socket", which is true of every
-	// profile snug ships, and NOT as a coverage-checked claim about two host
-	// paths. A profile granting the directory one of them sits in would make it
-	// false, and nothing here would notice.
+	// The DESKTOP SOCKETS are no longer in this run of names at all — see the
+	// claim appended after it. #301 asked whether to derive their paths from
+	// host environment so they could be coverage-checked like everything else
+	// here, and the answer is NO, ruled: the line was never a claim about two
+	// host paths. It is a claim about snug's mount set, and a claim about the
+	// mount set needs no host environment to be true.
 	//
 	// `partial` is NOT reused for these: it was appended to lines above, so a
 	// later append to it would be silently dropped. Their PARTIAL lines follow
@@ -2480,9 +2475,47 @@ func notGranted(p *policy.Policy) []string {
 		}
 		static = append(static, c)
 	}
-	static = append(static, "the Wayland socket", "the session D-Bus socket")
-	lines = append(lines, strings.Join(static, "  "))
+	// The joined line is CONDITIONAL now, and it did not need to be before.
+	// Until the desktop-socket names moved out of `static` below, two literals
+	// were always appended, so the slice was never empty. It can be now — a run
+	// binding the host's /sys and /tmp covers both — and joining an empty slice
+	// would print a blank row under NOT GRANTED that reads as a missing entry.
+	if len(static) > 0 {
+		lines = append(lines, strings.Join(static, "  "))
+	}
 	lines = append(lines, staticPartial...)
+
+	// The desktop-socket claim, stated as what it IS rather than left sitting in
+	// the run of coverage-checked paths above, where it read as one more of them
+	// (issue #301's residual).
+	//
+	// It is a claim about snug's MOUNT SET, not a probe of this host, and that
+	// is what makes it host-independent: "snug mounts no desktop socket" is true
+	// headless, true on a desktop, true on a CI runner. Deriving the paths
+	// instead — $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY, and DBUS_SESSION_BUS_ADDRESS
+	// which is a `unix:path=...,guid=...` string that also takes `abstract=`,
+	// `tcp:` and a semicolon-separated list of alternatives — would convert a
+	// true host-independent statement into a host-dependent approximation of the
+	// same statement, and put a per-developer value into three golden fixtures
+	// and VERIFY.md. That is the cost #320 refused when it declined to stat-gate
+	// /sys and /tmp/.X11-unix, for a strictly stronger reason than this one.
+	//
+	// The residual is printed HERE, in plain words and without issue numbers,
+	// because a human reading --dry-run has no issue tracker: a bare number
+	// leads nowhere and dates the artifact. It is tracked as #292 (a grant of a
+	// DIRECTORY is a grant of every socket in it) and #296 (the FIFO sibling) —
+	// those numbers belong in this comment and in the test, not on the screen.
+	//
+	// What the claim actually rests on, none of which is a coverage check:
+	// snug ships no profile naming a desktop socket, GUI/audio/D-Bus
+	// passthrough being out of scope by construction; rejectEndpointSource
+	// refuses a bind whose SOURCE is a socket; and the directory case is the
+	// tracked, measured residual the second line states.
+	lines = append(lines,
+		"snug mounts no desktop socket — no Wayland, no session D-Bus.",
+		"  (a claim about what snug mounts, not a probe of this host. A profile granting",
+		"   the directory one of these sockets sits in would make it false, and nothing",
+		"   here would notice.)")
 	return lines
 }
 

@@ -2300,7 +2300,11 @@ $ ./bin/snug --dry-run -p @sys -p @home -p @claude . | sed -n '/NOT GRANTED/,/^$
     ~/.ssh  ~/.gnupg  ~/.aws  ~/.config/gh  ~/.kube  ~/.docker  ~/.netrc  ~/.mozilla  ~/.local/share/keyrings
     ~/.claude  PARTIAL — 1 host path beneath it is bound (see FILESYSTEM)
       the rest of it is not granted, and snug generates its own content here
-    /sys  /tmp/.X11-unix  the Wayland socket  the session D-Bus socket
+    /sys  /tmp/.X11-unix
+    snug mounts no desktop socket — no Wayland, no session D-Bus.
+      (a claim about what snug mounts, not a probe of this host. A profile granting
+       the directory one of these sockets sits in would make it false, and nothing
+       here would notice.)
 ```
 
 Before the fix, `~/.claude` sat in the bare run at the top — reading as "none of
@@ -2332,8 +2336,9 @@ host's `/tmp` still printed `/tmp/.X11-unix` as not granted. `/sys` and
 `/tmp/.X11-unix` now route through `coverageOf` like every other candidate.
 
 ```console
-$ ./bin/snug --dry-run --no-defaults -p @sys -p @home -p @cwd-rw . | sed -n '/NOT GRANTED/,/^$/p' | tail -1
-    /sys  /tmp/.X11-unix  the Wayland socket  the session D-Bus socket
+$ ./bin/snug --dry-run --no-defaults -p @sys -p @home -p @cwd-rw . \
+    | sed -n '/NOT GRANTED/,/^$/p' | grep -E '^\s+/'
+    /sys  /tmp/.X11-unix
 ```
 
 Now grant the host's `/tmp` and re-run. Write the profile somewhere snug will
@@ -2348,15 +2353,64 @@ $ cat > /tmp/xdg/snug/profiles.d/hosttmp.toml <<'EOF'
 ro = ["/tmp:/hosttmp"]
 EOF
 $ XDG_CONFIG_HOME=/tmp/xdg ./bin/snug --dry-run --no-defaults \
-    -p @sys -p @home -p @cwd-rw -p hosttmp . | sed -n '/NOT GRANTED/,/^$/p' | tail -1
-    /sys  the Wayland socket  the session D-Bus socket
+    -p @sys -p @home -p @cwd-rw -p hosttmp . \
+    | sed -n '/NOT GRANTED/,/^$/p' | grep -E '^\s+/'
+    /sys
 ```
 
 `/tmp/.X11-unix` is GONE from the line and `/sys` is still there — the second
 half is the positive control, since a fix that dropped the whole line would look
-identical on the first half alone. Grant something strictly beneath `/sys`
+identical on the first half alone. The `grep` isolates the coverage-checked run:
+the desktop-socket claim printed below it is a separate, unconditional statement
+and is deliberately not in this comparison — see 9a-ter. Grant something strictly beneath `/sys`
 instead and `/sys` moves to its own `PARTIAL` line, exactly as `~/.claude` does
 above.
+
+### 9a-ter. The desktop sockets are a claim about MOUNTS, not a probe of this host (issue #301)
+
+#301 asked whether to derive the Wayland and session D-Bus paths from
+`$XDG_RUNTIME_DIR`, `$WAYLAND_DISPLAY` and `DBUS_SESSION_BUS_ADDRESS` so they
+could be coverage-checked like `/sys` above. **Ruled: no.** The line was never a
+claim about two host paths — it is a claim about snug's mount set, and a claim
+about the mount set needs no host environment to be true. It is true headless,
+true on a desktop, true on a CI runner.
+
+Deriving would have converted a true host-independent statement into a
+host-dependent approximation of the same statement, imported a parsing surface
+(`DBUS_SESSION_BUS_ADDRESS` also takes `abstract=`, `tcp:`, and a
+semicolon-separated list of alternatives — each a way to print a wrong path
+confidently), and put a per-developer value into three golden fixtures and this
+file. That is the cost 9a-bis refused for a strictly stronger reason.
+
+What #301 actually delivered is the second half: the residual moved from a
+source comment — which nobody reading `--dry-run` ever sees — onto the screen.
+
+Set the environment to something no real host would produce, bind the directory
+the sockets live in, and check that neither reaches the screen:
+
+```console
+$ XDG_RUNTIME_DIR=/run/user/DERIVED WAYLAND_DISPLAY=wayland-DERIVED \
+  DBUS_SESSION_BUS_ADDRESS='unix:path=/run/user/DERIVED/bus,guid=deadbeef' \
+  ./bin/snug --dry-run . | grep -A3 'no desktop socket'
+    snug mounts no desktop socket — no Wayland, no session D-Bus.
+      (a claim about what snug mounts, not a probe of this host. A profile granting
+       the directory one of these sockets sits in would make it false, and nothing
+       here would notice.)
+```
+
+What to check:
+
+1. `DERIVED`, `guid=` and `unix:path=` appear **nowhere** on the screen. If any
+   of them does, the line is being derived from host environment again.
+2. The claim is present at all — the positive control. A run printing nothing
+   under NOT GRANTED would satisfy check 1 vacuously.
+3. Binding `/run/user/<uid>` does **not** silence it. Unlike `/sys`, it carries
+   no coverage check, because a bind of the directory a socket sits in does not
+   make the claim false — it makes it **unchecked**, which is exactly what the
+   parenthesis says.
+4. No issue number appears on the screen. A human reading `--dry-run` has no
+   tracker: a bare number leads nowhere and dates the artifact. The trackers for
+   the residual are in the source comment and in the test.
 
 Note what this profile also demonstrates, unchanged by #301: `$XDG_CONFIG_HOME`
 is trusted unconditionally, which is invariant 3's weakest point and is issue
