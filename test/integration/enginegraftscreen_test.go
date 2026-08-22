@@ -151,6 +151,52 @@ func TestDryRunSaysTheEngineViewIsDerived(t *testing.T) {
 	}
 }
 
+// TestDryRunStoreAbuseSentenceNamesTheTargetNotTheProfiles is issue #276's
+// dry-run correction. Before this issue the store and runroot abuse sentences
+// (paths.go's GraftPathsInto) said "profiles+target key" — true while
+// engineKey hashed the sorted profile set alongside the target, and FALSE the
+// moment part 1 removed the profile selection from the preimage. --dry-run is
+// the artifact a human reads to decide whether to trust the run (CLAUDE.md),
+// so a stale abuse sentence there is not a wording nit: it describes a key
+// that no longer exists.
+//
+// This asserts the NEW text is on screen, not merely that the old text is
+// gone — a screen with NEITHER sentence would pass a test that only checked
+// absence, and "the abuse sentence is missing" is a different failure than
+// "the abuse sentence is stale".
+func TestDryRunStoreAbuseSentenceNamesTheTargetNotTheProfiles(t *testing.T) {
+	budget(t, 60*time.Second)
+	proj, _ := target(t)
+
+	out, code := cli(t, nil, "--dry-run", "-p", "@podman-socket", proj)
+	if code != 0 {
+		t.Fatalf("snug --dry-run exited %d:\n%s", code, out)
+	}
+	if !strings.Contains(out, "ENGINE VIEW") {
+		t.Fatalf("no ENGINE VIEW block on a @podman-socket dry run:\n%s", out)
+	}
+
+	if strings.Contains(out, "profiles+target") {
+		t.Errorf("--dry-run still says \"profiles+target\", describing a key issue #276 removed "+
+			"from engineKey's preimage:\n%s", out)
+	}
+
+	// The abuse sentences are word-wrapped onto several screen lines, so the
+	// comparison is done on WHITESPACE-COLLAPSED text: a substring check
+	// against the raw output would fail on a wrap boundary that happens to
+	// fall inside the phrase, which is a rendering fact and not the one this
+	// test is about.
+	flat := strings.Join(strings.Fields(out), " ")
+	for _, want := range []string{
+		"SAME TARGET DIRECTORY, whatever profiles it selected",
+		"keyed by the TARGET DIRECTORY rather than by pid",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("--dry-run does not carry the corrected abuse sentence %q:\n%s", want, out)
+		}
+	}
+}
+
 // keyTail is the part of an engine path that carries the target-only key:
 // the last two elements (…/<key>/storage, …/snug-engines-<uid>-<key>/rr). It
 // is what survives mountinfo's filesystem-relative rendering, and it is the
