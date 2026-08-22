@@ -3,12 +3,10 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/gomoni/snug/internal/hostread"
@@ -539,30 +537,10 @@ func stageProjectClaudeSettings(pol *policy.Policy, verbose bool) {
 // treat as fatal (§5.6's degradation rules: every failure here is "carry
 // nothing", none of them may fail the run).
 //
-// OPEN FIRST, THEN STAT THE DESCRIPTOR, THEN READ THROUGH A LIMIT. All three
-// steps earned their place by a red-team finding against the first version,
-// which did `os.Stat` on the PATH and then `os.ReadFile`:
-//
-//   - `O_NONBLOCK` is what stops a FIFO at this path hanging the run FOREVER.
-//     Measured: `mkfifo ~/.claude/settings.json` made `os.ReadFile` block in
-//     `open(2)` waiting for a writer that never came — no sandbox, no exit
-//     code, no line on any screen. That is strictly worse than the fatal error
-//     the degradation rule forbids, and the doc comment three paragraphs up
-//     promised it could not happen.
-//   - `IsRegular` refuses the FIFO, the device and the directory outright, so
-//     the read below is only ever a read of a file.
-//   - `io.LimitReader` is where the CAP actually lives. Statting the path
-//     first only bounded what `st_size` CLAIMED. Measured: a symlink to
-//     `/dev/zero` stats as zero bytes, sailed past the size branch and took
-//     the process to 3.1 GB of resident memory in two seconds, still climbing;
-//     a symlink to `/proc/self/environ` likewise stats as zero and had its
-//     contents read in full (only the JSON decode stopped it). A regular file
-//     that grows between the stat and the read is the same bug without the
-//     symlink. The stat is now a cheap early exit for the honest case, never
-//     the bound.
-//
-// It reads maxBytes+1 so that "exactly at the cap" and "over the cap" are
-// distinguishable without a second syscall.
+// The FIFO and the /dev/zero symlink this path was measured against, and the
+// reason the sequence is an O_NONBLOCK open before an fstat before a limited
+// read, are in internal/hostread. They are that package's whole subject and
+// this site is one of its callers.
 //
 // The open FOLLOWS SYMLINKS, deliberately — a human may legitimately symlink
 // their settings file — so a `~/.claude/settings.json` pointing at
@@ -571,61 +549,20 @@ func stageProjectClaudeSettings(pol *policy.Policy, verbose bool) {
 // parsed could only contribute allowlisted, type-checked, charset-checked
 // scalars through FilterClaudeSettings. Contrast the bind this replaces, which
 // followed the identical symlink and mounted the target file WHOLE.
-// SECOND IMPLEMENTATION OF hostread's DISCIPLINE, and that is a drift risk
-// stated rather than hidden (issue #337). internal/hostread now owns the same
-// sequence — O_NONBLOCK open, fstat + IsRegular, LimitReader, post-read cap
-// re-check — for every host path snug does not own. This one is kept separate
-// for exactly one reason: every message here is PREFIXED WITH A LABEL and
-// suffixed with "carrying nothing", because it renders into a screen a human
-// reads, and hostread's notes are phrased to stand alone. Folding it in would
-// change that user-visible wording, which is a decision for whoever owns the
-// screen text, not a refactor.
-//
-// So: IF YOU CHANGE THE READ SEQUENCE, CHANGE IT IN BOTH PLACES. A rule
-// written once and applied to one of its two halves is this repo's
-// most-repeated defect, and this is knowingly two halves.
-//
-// Tracked as issue #342, which carries the wording ruling that makes the fold
-// decision-free: hostread returns a reason clause that COMPOSES — a bare noun
-// phrase with no subject of its own — and the caller supplies the subject and
-// any suffix. THIS COMMENT IS DELETED WHEN #342 LANDS: a comment warning about
-// a hazard that has been fixed is its own small lie.
+// The read is hostread.Clause: one sequence for every host path snug does not
+// own. This site supplies the subject (label) and the suffix ("carrying
+// nothing"), which is the whole of what it needs that a standalone caller does
+// not, and is why Clause exists beside Optional.
 func loadHostClaudeSettings(path, label string, maxBytes int64) (map[string]any, string) {
-	// O_NONBLOCK applies to the OPEN, and for a regular file it has no further
-	// effect on the reads below — it exists solely so that opening a FIFO
-	// returns instead of blocking.
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		// Absent, or a permission error — either way there is nothing to carry
-		// and no host file the human is entitled to be told snug ignored.
-		// Matches claudeFiles' stage() closure for every other optional host
-		// path.
+	// An absent file, or one this user may not read, is (nil, "") — nothing to
+	// carry and no host file the human is entitled to be told snug ignored.
+	// Matches claudeFiles' stage() closure for every other optional host path.
+	data, clause := hostread.Clause(path, maxBytes)
+	if clause != "" {
+		return nil, fmt.Sprintf("%s %s; carrying nothing", label, clause)
+	}
+	if data == nil {
 		return nil, ""
-	}
-	defer f.Close()
-
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, fmt.Sprintf("%s could not be inspected (%v); carrying nothing", label, err)
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Sprintf("%s is not a regular file (mode %s); carrying nothing. snug "+
-			"reads that path as data and will not read a FIFO, a device or a directory there", label, fi.Mode())
-	}
-	if fi.Size() > maxBytes {
-		return nil, fmt.Sprintf("%s is %d bytes, over the %d-byte cap snug reads for it; "+
-			"carrying nothing rather than reading an arbitrarily large file into memory on every "+
-			"run", label, fi.Size(), maxBytes)
-	}
-	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
-	if err != nil {
-		return nil, fmt.Sprintf("%s exists but could not be read (%v); carrying nothing", label, err)
-	}
-	// The real cap. A file whose st_size lied — /dev/zero through a symlink,
-	// anything under /proc, a file that grew since the stat — lands here.
-	if int64(len(data)) > maxBytes {
-		return nil, fmt.Sprintf("%s produced more than the %d-byte cap snug reads for it "+
-			"(its reported size was %d); carrying nothing", label, maxBytes, fi.Size())
 	}
 	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil {
