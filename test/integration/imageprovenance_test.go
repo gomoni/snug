@@ -42,6 +42,24 @@ import (
 // use) and because a test must never touch the developer's own store.
 func engineSpecEnv(t *testing.T) []string {
 	t.Helper()
+	// Accept-anything, planted rather than inherited. Since issue #307 the
+	// engine's policy.json is a PROJECTION of the host's, so a probe that let
+	// the developer's own ~/.config/containers/policy.json through would grade
+	// a different file on every machine.
+	env, _ := engineSpecEnvWithSignaturePolicy(t, `{"default":[{"type":"insecureAcceptAnything"}]}`)
+	return env
+}
+
+// engineSpecEnvWithSignaturePolicy is engineSpecEnv with the HOST's signature
+// policy chosen by the caller. hostPolicy is planted under a temporary home and
+// projected exactly as a run projects it, so what podman ends up reading came
+// out of snug's real projection rather than out of a fixture.
+//
+// It returns the Engine as well, because a probe that runs podman on the HOST
+// has to pass --root and --runroot itself: the generated storage.conf names the
+// GUEST paths, and a real run supplies the host ones on the argv.
+func engineSpecEnvWithSignaturePolicy(t *testing.T, hostPolicy string) ([]string, *engine.Engine) {
+	t.Helper()
 	root := bundleRoot(t)
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
@@ -62,7 +80,11 @@ func engineSpecEnv(t *testing.T) []string {
 	if err := e.GraftInto(policy.OSEnviron{}, pol); err != nil {
 		t.Fatal(err)
 	}
-	spec, err := e.Spec(pol, podmanBundleBinary(t), []string{"PATH=/usr/bin:/bin"}, true)
+	sig, err := engine.ProjectHostSignaturePolicy(plantHostSignaturePolicy(t, hostPolicy))
+	if err != nil {
+		t.Fatalf("projecting the planted host signature policy: %v", err)
+	}
+	spec, err := e.Spec(pol, podmanBundleBinary(t), []string{"PATH=/usr/bin:/bin"}, true, sig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,8 +99,13 @@ func engineSpecEnv(t *testing.T) []string {
 	// subject of these tests is which variables Spec sets and what the bundle
 	// does with them, so the variables are kept exactly as Spec wrote them and
 	// only the four roots are mapped back.
-	return append(hostSideEnv(t, e, root, spec.Env),
-		"CONTAINERS_STORAGE_CONF="+filepath.Join(root, "etc", "snug", "storage.conf"))
+	// NO CONTAINERS_STORAGE_CONF is appended here. Spec has SET it since issue
+	// #125 — at the storage.conf snug generated in this run's own config
+	// directory — and a second entry appended after it named a file inside the
+	// bundle that this bundle does not ship, so every probe in this file died
+	// with "Failed to obtain podman configuration" before reaching what it was
+	// testing. MEASURED: removing it is what lets the pull actually run.
+	return hostSideEnv(t, e, root, spec.Env), e
 }
 
 // envLookup returns the value of name in a KEY=VALUE environment, failing the
@@ -251,7 +278,14 @@ func TestAHostRegistriesConfDoesNotSteerTheEnginesPull(t *testing.T) {
 func TestTheEngineCarriesItsOwnSignaturePolicy(t *testing.T) {
 	budget(t, 90*time.Second)
 
-	env := engineSpecEnv(t)
+	// probeRuntime, for the same reason the enforcement test below needs it:
+	// podman validates conmon and its network helper before it reaches the
+	// signature policy, and on the host those live inside the pinned bundle
+	// rather than at the absolute paths podman looks in. Without it the CONTROL
+	// below never fires and this test skips on every run.
+	baseEnv, eng := engineSpecEnvWithSignaturePolicy(t,
+		`{"default":[{"type":"insecureAcceptAnything"}]}`)
+	env := probeRuntime(t, baseEnv)
 	const image = "registry.snug-test.invalid/snug/nothing:1"
 
 	// CONTROL: a home with no policy.json, on a host that has no system one
@@ -262,13 +296,14 @@ func TestTheEngineCarriesItsOwnSignaturePolicy(t *testing.T) {
 		t.Skip("SKIP: this host has /etc/containers/policy.json, so a missing per-home policy " +
 			"is not observable and the control cannot fail")
 	}
-	control := runPodman(t, envWith(env, "HOME", t.TempDir()), "pull", image)
+	control := runPodman(t, envWith(env, "HOME", t.TempDir()),
+		storeArgs(eng, "pull", image)...)
 	if !strings.Contains(control, "no policy.json file found") {
 		t.Skipf("SKIP: the control did not produce podman's missing-policy refusal, so this "+
 			"podman finds a signature policy some other way: %s", control)
 	}
 
-	got := runPodman(t, env, "pull", image)
+	got := runPodman(t, env, storeArgs(eng, "pull", image)...)
 	if strings.Contains(got, "no policy.json file found") {
 		t.Fatalf("the engine has no signature policy of its own, so whether an image may be "+
 			"used at all is decided by the host, or not at all (issue #137):\n%s", got)
@@ -298,4 +333,112 @@ func hostSideEnv(t *testing.T, e *engine.Engine, toolchainRoot string, env []str
 		out = append(out, kv)
 	}
 	return out
+}
+
+// plantHostSignaturePolicy writes body as the host's own policy.json under a
+// throwaway home and returns that home.
+//
+// The HOME candidate is written rather than the system one, so
+// /etc/containers/policy.json is never consulted and the probe means the same
+// thing on a host that has one as on a host that does not.
+func plantHostSignaturePolicy(t *testing.T, body string) string {
+	t.Helper()
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "containers")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "policy.json"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
+// TestTheEngineEnforcesTheProjectedSignaturePolicy is the test every other
+// assertion about issue #307 is downstream of.
+//
+// The unit tests prove snug WROTE a file. Only this proves podman READS it, and
+// that matters more than it sounds: writeEngineHome's own doc comment records
+// that a rootless podman is free to derive "the user's home" from the passwd
+// entry rather than from $HOME, in which case the generated file is one podman
+// never opens. Under the old accept-anything policy that residual was harmless.
+// Under a projection it would mean the enforcement snug believes it installed is
+// not installed at all, with nothing on any screen saying so.
+//
+// So: plant a host policy that REJECTS everything, project it, and assert the
+// pull is refused for a signature-policy reason. The CONTROL is the identical
+// run with an accept-anything host policy, which must get past that check —
+// without it, "the pull failed" would pass on a broken bundle, a missing
+// network or a typo in the image name.
+//
+// No network is needed for the reject arm: containers/image evaluates the
+// policy before it contacts a registry, which is the same property the rest of
+// this file relies on.
+func TestTheEngineEnforcesTheProjectedSignaturePolicy(t *testing.T) {
+	requireSandbox(t)
+	const image = "docker.io/library/alpine:3.20"
+	const rejected = "rejected by policy"
+
+	rejectEnv, rejectEng := engineSpecEnvWithSignaturePolicy(t, `{"default":[{"type":"reject"}]}`)
+	got := runPodman(t, probeRuntime(t, rejectEnv), storeArgs(rejectEng, "pull", image)...)
+	if !strings.Contains(got, rejected) {
+		t.Errorf("a host policy of {\"default\":[{\"type\":\"reject\"}]} was projected and the "+
+			"pull was NOT refused for a signature-policy reason. The engine is enforcing "+
+			"something other than what this host configured, so the projection is writing a "+
+			"file podman does not read (issue #307):\n%s", got)
+	}
+
+	// CONTROL. Same bundle, same probe, a host policy that accepts anything:
+	// the run must get PAST the signature check. It may still fail on the
+	// network — this suite does not require one — so the assertion is on the
+	// absence of the rejection, not on success.
+	anyEnv, anyEng := engineSpecEnvWithSignaturePolicy(t,
+		`{"default":[{"type":"insecureAcceptAnything"}]}`)
+	control := runPodman(t, probeRuntime(t, anyEnv), storeArgs(anyEng, "pull", image)...)
+	if strings.Contains(control, rejected) {
+		t.Fatalf("control: an accept-anything host policy was ALSO refused, so the assertion "+
+			"above proves nothing about the projection:\n%s", control)
+	}
+}
+
+// probeRuntime names the bundle's own conmon and crun absolutely, through a
+// CONTAINERS_CONF_OVERRIDE layered on top of the one Spec generated.
+//
+// WHY A PROBE NEEDS THIS AND A RUN DOES NOT. podman validates its OCI runtime
+// before doing anything else, and it looks for conmon at a fixed list of
+// ABSOLUTE paths (/usr/libexec/podman/conmon and friends). Inside a real run
+// the toolchain graft puts the pinned bundle where the generated
+// helper_binaries_dir names it; here podman runs on the HOST, outside every
+// namespace, where those paths hold nothing — measured on this host as "could
+// not find a working conmon binary", which is what the sibling probes in this
+// file have been skipping on.
+//
+// helper_binaries_dir is here for the same reason and is the one key this
+// OVERRIDES rather than adds: the generated one names the guest toolchain path,
+// so netavark is not found either. What these tests grade is untouched — the
+// signature policy reaches podman through HOME, and none of these keys is
+// about images.
+func probeRuntime(t *testing.T, env []string) []string {
+	t.Helper()
+	root := bundleRoot(t)
+	path := filepath.Join(t.TempDir(), "runtime.conf")
+	body := fmt.Sprintf("[engine]\nconmon_path = [%q]\nhelper_binaries_dir = [%q, %q]\n"+
+		"runtime = \"crun\"\n[engine.runtimes]\ncrun = [%q]\n",
+		filepath.Join(root, "usr", "local", "lib", "podman", "conmon"),
+		filepath.Join(root, "usr", "local", "lib", "podman"),
+		filepath.Join(root, "usr", "local", "bin"),
+		filepath.Join(root, "usr", "local", "bin", "crun"))
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return envWith(env, "CONTAINERS_CONF_OVERRIDE", path)
+}
+
+// storeArgs prefixes --root and --runroot with this run's HOST directories.
+//
+// A real run passes them on the argv, which is why the generated storage.conf
+// may name guest paths at all; a probe running podman outside every namespace
+// has to do the same or podman tries to create /snug on the host.
+func storeArgs(e *engine.Engine, args ...string) []string {
+	return append([]string{"--root", e.Store(), "--runroot", e.Runroot()}, args...)
 }

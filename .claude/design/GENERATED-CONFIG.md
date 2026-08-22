@@ -1,11 +1,20 @@
 # Generating a tool's configuration inside the sandbox
 
-**Status: the rule.** Five files are generated under it today. Two have their
+**Status: the rule.** Six files are generated under it today. Three have their
 own design document — [`GIT-CONFIG.md`](GIT-CONFIG.md) (`@git-ro`,
-`~/.gitconfig`) and [`CLAUDE-SETTINGS.md`](CLAUDE-SETTINGS.md) (`@claude`,
-`~/.claude/settings.json`) — and three are the container engine's, authored in
+`~/.gitconfig`), [`CLAUDE-SETTINGS.md`](CLAUDE-SETTINGS.md) (`@claude`,
+`~/.claude/settings.json`) and
+[`SIGNATURE-POLICY.md`](SIGNATURE-POLICY.md) (the container engine's
+`policy.json`) — and three more are the container engine's, authored in
 `internal/engine`: `containers.conf` (issue #133), `registries.conf` (#137) and
-`storage.conf` (#212). **Count them in the tree, not here.** The engine three
+`storage.conf` (#212).
+
+`policy.json` is the one that is a PROJECTION rather than an allowlisted
+reconstruction, and the difference is the rule's sharpest edge: the host
+configured an enforcement posture, so generating a permissive file would be
+snug deciding that verification does not apply here. Where the other five ask
+"which keys carry no execution", it asks "can snug reproduce this requirement
+faithfully" — and refuses the run when the answer is no. **Count them in the tree, not here.** The engine three
 arrived for a reason this document did not anticipate and which is worth
 carrying: under a **derived** mount view, a config naming a path snug does not
 own is a path snug cannot move, so authoring the file stopped being tidiness and

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,7 +12,6 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/gomoni/snug/internal/hostread"
 	"github.com/gomoni/snug/internal/stage"
 )
 
@@ -48,12 +46,6 @@ type containerPreflight struct {
 	// Not fatal — see preflightResolvConfBind.
 	ResolvConfBind error
 
-	// SignaturePolicy is P8's answer: nil when the host's own signature
-	// policy is the same permissive default snug generates (or absent
-	// entirely), non-nil when snug's generated policy.json is WEAKER than
-	// what this host configured. Not fatal — see preflightSignaturePolicy.
-	SignaturePolicy *signaturePolicyNotice
-
 	// ToolchainRoot is P9's answer: the one host directory holding the
 	// engine's own program files, or "" when this host names none. Empty is
 	// the ordinary case and is not a failure — see preflightToolchainRoot.
@@ -81,7 +73,6 @@ func runContainerPreflight() (containerPreflight, error) {
 		Podman:          podman,
 		CgroupsDisabled: cgroupsDisabled,
 		ResolvConfBind:  preflightResolvConfBind(),
-		SignaturePolicy: preflightSignaturePolicy(),
 		ToolchainRoot:   toolchainRoot,
 	}, nil
 }
@@ -153,144 +144,6 @@ func preflightToolchainRoot(podman string) (string, error) {
 			root, podman)
 	}
 	return root, nil
-}
-
-// maxSignaturePolicyBytes bounds what P8 reads. A signature policy is a small
-// hand-written JSON document — this host's is 233 bytes — and the cap exists
-// to make the read finite, not to judge the file: over it, P8 says it could
-// not compare rather than pretending the file is permissive.
-const maxSignaturePolicyBytes = 1 << 20
-
-// signaturePolicyNotice is what P8 found: a host signature policy that snug's
-// generated one does not reproduce, and which file it came from.
-type signaturePolicyNotice struct {
-	Path   string
-	Detail string
-}
-
-// String is the whole message, built here rather than at the print site so
-// that it can be tested without a preflight, an engine or a host.
-//
-// BOTH FIELDS GO THROUGH visibleValue. Detail carries a decoder's rendering of
-// the host's own file and Path carries $HOME, and this is a stderr message —
-// the sink issue #58's red-team round found sitting outside
-// TestNoSnugScreenEmitsARawControlCharacter's reach, where a crafted value
-// erased the real refusal and wrote a fabricated one in its place. Not
-// payload-reachable (it is the host user's own file), so this is screen
-// integrity rather than an escape; asserted anyway, because the rule is to
-// name every sink a value reaches rather than the site where it was noticed.
-func (n *signaturePolicyNotice) String() string {
-	return fmt.Sprintf("snug: container images inside this sandbox are NOT signature-verified.\n"+
-		"      snug generates the signature policy the engine reads, so that a file snug does "+
-		"not control cannot decide which bytes become an image (issue #137).\n"+
-		"      Your host's %s is stricter: %s.\n"+
-		"      Nothing outside the sandbox is affected: the host's own podman, skopeo and "+
-		"buildah keep reading that file.\n", visibleValue(n.Path), visibleValue(n.Detail))
-}
-
-// hostSignaturePolicyPaths are the two files containers/image reads a
-// signature policy from, in order. $HOME/.config first, then the system one —
-// the same order podman prints when it finds neither:
-//
-//	Error: no policy.json file found at any of the following:
-//	  "/home/u/.config/containers/policy.json", "/etc/containers/policy.json"
-//
-// A distribution file outside these two (openSUSE ships
-// /usr/share/containers/policy.json) is deliberately NOT read here: podman
-// 5.8.4 does not look at it, so reporting on it would be reporting a
-// difference that does not exist.
-var hostSignaturePolicyPaths = []string{
-	filepath.Join(os.Getenv("HOME"), ".config", "containers", "policy.json"),
-	"/etc/containers/policy.json",
-}
-
-// preflightSignaturePolicy is P8: does snug's generated policy.json make this
-// host's container images LESS verified than the host's own configuration
-// would?
-//
-// snug now authors the signature policy (engine.go's signaturePolicyJSON),
-// because it is the one file podman requires and the one with no environment
-// variable to point at it — so on a host with no policy.json at all, pulls
-// went from failing to working, and on a host with the ordinary permissive
-// default nothing changed. On a host that configured signature ENFORCEMENT,
-// though, snug has quietly relaxed it, and invariant 5 says a downgrade is
-// never silent.
-//
-// WARNS rather than refuses, for the same reason P7 does: refusing would
-// refuse a run over the sandbox's images being verified no more strictly
-// than a stock podman verifies them. What it must not do is say nothing.
-//
-// A file that does not parse is reported too. "snug could not tell whether it
-// weakened your policy" is a different sentence from "it did not", and only
-// one of them is honest.
-func preflightSignaturePolicy() *signaturePolicyNotice {
-	for _, path := range hostSignaturePolicyPaths {
-		// hostread.Optional rather than os.ReadFile, for the reasons issue
-		// #58's third red-team finding measured on the credential path: a FIFO
-		// at this path would hang the run in open(2) forever with no output,
-		// and a symlink to /dev/zero would be read until memory ran out. A
-		// preflight probe that can hang is worse than the probe not existing.
-		// (nil, "") is ABSENT, which is the ordinary case and says nothing.
-		raw, note := hostread.Optional(path, maxSignaturePolicyBytes)
-		if note != "" {
-			return &signaturePolicyNotice{Path: path, Detail: note}
-		}
-		if raw == nil {
-			continue // absent, or not ours to read: nothing to compare against
-		}
-		strict, err := signaturePolicyIsStricterThanSnugs(raw)
-		if err != nil {
-			return &signaturePolicyNotice{Path: path, Detail: err.Error()}
-		}
-		if strict {
-			return &signaturePolicyNotice{
-				Path:   path,
-				Detail: "it requires images to satisfy a signature policy, and snug's does not",
-			}
-		}
-		return nil // the host's own is the permissive default: nothing was weakened
-	}
-	return nil
-}
-
-// signaturePolicyIsStricterThanSnugs reports whether raw (a host policy.json)
-// demands anything of an image that snug's generated policy does not.
-//
-// The test is the one that cannot be fooled by structure: EVERY requirement
-// in the file — the default list and every transport's — must be
-// `insecureAcceptAnything`, which is what snug writes. Anything else (a
-// signedBy, a sigstoreSigned, a reject) is strictness this run will not
-// reproduce. Unknown keys are ignored on purpose: a requirement type this
-// code has never heard of is still not insecureAcceptAnything, so it counts
-// as stricter by the same rule.
-func signaturePolicyIsStricterThanSnugs(raw []byte) (bool, error) {
-	var doc struct {
-		Default []struct {
-			Type string `json:"type"`
-		} `json:"default"`
-		Transports map[string]map[string][]struct {
-			Type string `json:"type"`
-		} `json:"transports"`
-	}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return false, fmt.Errorf("snug could not parse it (%v), so it cannot say whether "+
-			"the generated policy is weaker", err)
-	}
-	for _, req := range doc.Default {
-		if req.Type != "insecureAcceptAnything" {
-			return true, nil
-		}
-	}
-	for _, scopes := range doc.Transports {
-		for _, reqs := range scopes {
-			for _, req := range reqs {
-				if req.Type != "insecureAcceptAnything" {
-					return true, nil
-				}
-			}
-		}
-	}
-	return false, nil
 }
 
 // preflightResolvConfBind is P7: can a file be bind-mounted over

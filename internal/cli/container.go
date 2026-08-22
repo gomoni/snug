@@ -167,6 +167,22 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		return startContainersScreen(pol)
 	}
 
+	// The host's signature policy, PROJECTED — read, parsed and classified
+	// here, before engine.New creates a directory and before the preflight
+	// probes anything (issue #307). The engine's policy.json reproduces what
+	// this host configured rather than accepting any image over the top of it,
+	// and a requirement snug cannot reproduce refuses the run.
+	//
+	// THE POSITION IS THE POINT. engine.New creates /tmp/snug-<uid>-<pid>/ and
+	// only containerRun.cleanup — built at the end of this function — removes
+	// it, so a refusal after New leaks a run directory that a later run with a
+	// recycled pid then refuses to reuse. Refusing here creates nothing at all,
+	// and copies no host key material into /tmp on a run that will not start.
+	sig, err := engine.ProjectHostSignaturePolicy(pol.Home)
+	if err != nil {
+		return containerRun{}, err
+	}
+
 	pf, err := runContainerPreflight()
 	if err != nil {
 		return containerRun{}, err
@@ -209,14 +225,6 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 			"(issue #128); restarting the container or VM snug runs in repairs it.\n", err)
 	}
 
-	// P8: snug now authors the signature policy the engine reads, and on a
-	// host that had configured a stricter one that is a DOWNGRADE. Invariant
-	// 5 forbids doing it silently, so it is said here, before anything
-	// starts, and it names the file it is talking about.
-	if n := pf.SignaturePolicy; n != nil {
-		fmt.Fprint(os.Stderr, n.String())
-	}
-
 	eng, err := engine.New(pol)
 	if err != nil {
 		return containerRun{}, err
@@ -245,7 +253,7 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		return containerRun{}, err
 	}
 
-	spec, err := eng.Spec(pol, pf.Podman, nil, pf.CgroupsDisabled)
+	spec, err := eng.Spec(pol, pf.Podman, nil, pf.CgroupsDisabled, sig)
 	if err != nil {
 		return containerRun{}, err
 	}

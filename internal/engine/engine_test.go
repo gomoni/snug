@@ -183,7 +183,7 @@ func TestEngineRunDirSplitsByWritability(t *testing.T) {
 	// Every generated file, written through the real writers rather than
 	// re-derived here, so a writer that starts choosing its own directory is
 	// caught rather than mirrored.
-	if _, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman", []string{"PATH=/usr/bin"}, false); err != nil {
+	if _, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman", []string{"PATH=/usr/bin"}, false, noSignaturePolicy(t)); err != nil {
 		t.Fatalf("Spec: %v", err)
 	}
 	// resolv.conf is NOT in this list any more, and its absence is the point:
@@ -686,7 +686,7 @@ func specConf(t *testing.T, net policy.NetPolicy, cgroupsDisabled bool) (conf st
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec, err := e.Spec(specPolicy(t, e, "", net), "/usr/bin/podman", []string{"PATH=/usr/bin"}, cgroupsDisabled)
+	spec, err := e.Spec(specPolicy(t, e, "", net), "/usr/bin/podman", []string{"PATH=/usr/bin"}, cgroupsDisabled, noSignaturePolicy(t))
 	if err != nil {
 		t.Fatal(err)
 	}
