@@ -330,6 +330,7 @@ func TestEveryBuildValidatorIsExercised(t *testing.T) {
 		"volume": true, "volumes": true, "additionalbuildcontexts": true,
 		"networkmode": true, "nsoptions": true, "seccomp": true,
 		"isolation": true, "dockerfile": true, "secrets": true, "version": true,
+		"idmappingoptions": true,
 	}
 	for name, check := range buildParams {
 		if check == nil || isFlatRefusal(name) {
