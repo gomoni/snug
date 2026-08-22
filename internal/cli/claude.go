@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gomoni/snug/internal/hostread"
 	"github.com/gomoni/snug/internal/policy"
 )
 
@@ -97,7 +98,7 @@ const maxInstalledPluginsBytes = 256 << 10
 func stageInstalledPlugins(pol *policy.Policy, home string) error {
 	guest := filepath.Join(home, ".claude", "plugins", "installed_plugins.json")
 
-	raw, problem := readHostFileBounded(guest, maxInstalledPluginsBytes)
+	raw, problem := hostread.Optional(guest, maxInstalledPluginsBytes)
 	if problem != "" && len(pol.PluginAllowlist) > 0 {
 		return fmt.Errorf("@claude names %d plugin(s) (%s) but the host's installed_plugins.json "+
 			"%s — snug cannot validate the named plugins are installed, and a named plugin that "+
@@ -171,7 +172,7 @@ func stageClaudeCredentials(pol *policy.Policy, home string) {
 	// the loud failure the degradation rule demands.
 	//
 	// The cap is small on purpose: the real file is 508 bytes.
-	raw, note := readHostFileBounded(path, maxCredentialsBytes)
+	raw, note := hostread.Optional(path, maxCredentialsBytes)
 	if note != "" {
 		fmt.Fprintf(os.Stderr, "snug: not staging ~/.claude/.credentials.json: %s\n"+
 			"      The sandbox will start LOGGED OUT rather than receive a credential file snug\n"+
@@ -245,52 +246,14 @@ func stageClaudeCredentials(pol *policy.Policy, home string) {
 // pathological file can hide behind.
 const maxCredentialsBytes = 64 << 10
 
-// readHostFileBounded opens path without blocking on a FIFO, refuses anything
-// that is not a regular file, and reads at most maxBytes.
-//
-// Three returns rather than two, and the distinction is the one
-// stageClaudeCredentials' doc comment turns on: (nil, "") means ABSENT, which
-// is an ordinary state and says nothing; (nil, note) means PRESENT AND
-// UNREADABLE, which must be said out loud; (data, "") is the file.
-//
-// This is loadHostClaudeSettings' body, generalised. It was not generalised
-// when that function earned its guards, and this path was written without
-// them — so the second caller is what turns a lesson into a shared mechanism
-// rather than a comment somebody has to remember to copy.
-func readHostFileBounded(path string, maxBytes int64) ([]byte, string) {
-	// O_NONBLOCK applies to the OPEN; for a regular file it has no further
-	// effect on the read below. It exists solely so opening a FIFO returns
-	// instead of blocking forever.
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, "" // absent, or unreadable by permission: nothing to stage
-	}
-	defer f.Close()
-
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, fmt.Sprintf("it could not be inspected (%v)", err)
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Sprintf("it is not a regular file (mode %s). snug reads that path as "+
-			"data and will not read a FIFO, a device or a directory there", fi.Mode())
-	}
-	if fi.Size() > maxBytes {
-		return nil, fmt.Sprintf("it is %d bytes, over the %d-byte cap snug reads for it",
-			fi.Size(), maxBytes)
-	}
-	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
-	if err != nil {
-		return nil, fmt.Sprintf("it could not be read (%v)", err)
-	}
-	// The real cap. A file whose st_size lied — /dev/zero through a symlink,
-	// anything under /proc, a file that grew since the stat — lands here.
-	if int64(len(data)) > maxBytes {
-		return nil, fmt.Sprintf("it produced more than the %d-byte cap snug reads for it "+
-			"(its reported size was %d)", maxBytes, fi.Size())
-	}
-	return data, ""
-}
+// readHostFileBounded used to live here as loadHostClaudeSettings' body,
+// generalised for a second caller. It is now internal/hostread.Optional: a
+// third caller outside internal/cli (internal/sshproxy, for identity.ssh_key,
+// issue #337) cannot import this package, and a fourth (internal/profile, for
+// a profiles.d layer) genuinely cannot either — internal/policy must stay
+// pure, and profile sits below cli. The discipline moved so it stays one
+// mechanism instead of becoming a comment every new caller has to remember to
+// copy back in.
 
 // stageClaudeSettings generates the sandbox's ~/.claude/settings.json from an
 // ALLOWLIST of the host's, and is now the ONLY thing that ever writes a mount
@@ -608,6 +571,25 @@ func stageProjectClaudeSettings(pol *policy.Policy, verbose bool) {
 // parsed could only contribute allowlisted, type-checked, charset-checked
 // scalars through FilterClaudeSettings. Contrast the bind this replaces, which
 // followed the identical symlink and mounted the target file WHOLE.
+// SECOND IMPLEMENTATION OF hostread's DISCIPLINE, and that is a drift risk
+// stated rather than hidden (issue #337). internal/hostread now owns the same
+// sequence — O_NONBLOCK open, fstat + IsRegular, LimitReader, post-read cap
+// re-check — for every host path snug does not own. This one is kept separate
+// for exactly one reason: every message here is PREFIXED WITH A LABEL and
+// suffixed with "carrying nothing", because it renders into a screen a human
+// reads, and hostread's notes are phrased to stand alone. Folding it in would
+// change that user-visible wording, which is a decision for whoever owns the
+// screen text, not a refactor.
+//
+// So: IF YOU CHANGE THE READ SEQUENCE, CHANGE IT IN BOTH PLACES. A rule
+// written once and applied to one of its two halves is this repo's
+// most-repeated defect, and this is knowingly two halves.
+//
+// Tracked as issue #342, which carries the wording ruling that makes the fold
+// decision-free: hostread returns a reason clause that COMPOSES — a bare noun
+// phrase with no subject of its own — and the caller supplies the subject and
+// any suffix. THIS COMMENT IS DELETED WHEN #342 LANDS: a comment warning about
+// a hazard that has been fixed is its own small lie.
 func loadHostClaudeSettings(path, label string, maxBytes int64) (map[string]any, string) {
 	// O_NONBLOCK applies to the OPEN, and for a regular file it has no further
 	// effect on the reads below — it exists solely so that opening a FIFO
@@ -807,9 +789,23 @@ func claudeStateJSON(pol *policy.Policy, home string) []byte {
 // home is main.go's raw os.UserHomeDir() (the same value stage() reads host
 // files from), while target is the canonicalised pol.Target — see
 // claudeStateJSON's doc comment on why the match is exact.
+// maxClaudeJSONBytes bounds the read of the host's ~/.claude.json. Only one
+// boolean is ever extracted (see the doc comment above), but the file itself
+// carries an object per tracked project plus MCP server config; a few
+// hundred tracked projects is still well under a megabyte. 4 MiB is
+// generous headroom without being a memory-exhaustion primitive on a file
+// read on every run that selects @claude (issue #337: a FIFO here used to
+// hang before the sandbox existed, and a giant file used to be read whole).
+const maxClaudeJSONBytes = 4 << 20
+
 func hostTrustsTarget(home, target string) bool {
-	b, err := os.ReadFile(filepath.Join(home, ".claude.json"))
-	if err != nil {
+	// hostread.Optional, not os.ReadFile: this is the host user's own file,
+	// not payload-reachable, but the FIFO/symlink primitive issue #337
+	// measured elsewhere applies here identically, and "every failure is the
+	// same failure — not trusted" (see above) already means a note here gets
+	// no different treatment than an absent file.
+	b, note := hostread.Optional(filepath.Join(home, ".claude.json"), maxClaudeJSONBytes)
+	if note != "" || b == nil {
 		return false
 	}
 	var doc struct {
