@@ -122,11 +122,13 @@ func startEngine(netnsN *os.File, initPID int, req request) error {
 	// both useless to podman (measured: it reports no processes at all
 	// against a foreign pid namespace's numbering) and the precondition
 	// issue #55 acceptance item 2 names for reaching a co-resident process's
-	// descriptors through /proc/<pid>/fd/N. This is the pid-namespace
-	// MECHANISM only: no derived mount VIEW, no grafts — those are issue
-	// #125's later pieces, tracked on the issue itself. The stage's own P1
-	// keeps the sandbox's pid namespace unaffected; this flag applies only to
-	// the engine's own clone, here.
+	// descriptors through /proc/<pid>/fd/N. This flag is the pid-namespace
+	// half; the derived mount VIEW and the grafts are EnterEngine's step 4
+	// (inengine.go), and C0 is the precondition for them rather than a piece
+	// that shipped without them — a procfs mount inside this namespace is what
+	// makes the view buildable at all. The stage's own P1 keeps the sandbox's
+	// pid namespace unaffected; this flag applies only to the engine's own
+	// clone, here.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		// CLONE_NEWIPC | CLONE_NEWUTS (issue #182): the engine gets its OWN
 		// System V IPC namespace and its OWN UTS namespace, rather than sharing
