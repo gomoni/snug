@@ -144,6 +144,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.handleVolumeCreate(w, r)
 	case isImageCreate(segs):
 		p.handleImageCreate(w, r)
+	case isPrune(segs, r.Method):
+		p.deny(w, "pruning (%s /%s) is not permitted. A prune names no object, so this "+
+			"proxy has nothing to check it against, and what it deletes OUTLIVES this "+
+			"sandbox: the engine store is keyed on the target directory and is shared "+
+			"with every LATER run on it — that sharing is what makes a warm start warm — "+
+			"so a prune throws away images and container records this run never created. "+
+			"Delete what you created, by id: `docker rm <id>`, `docker rmi <image>`, "+
+			"`docker volume rm <name>`. There is no scoped form of `system/prune` to "+
+			"offer: it names no object either.", r.Method, strings.Join(segs, "/"))
 	case isArchive(segs):
 		// A specific refusal, not the generic one below: this endpoint is
 		// permanently refused (see the case "archive", "export" comment in
@@ -205,8 +214,38 @@ func normaliseFull(path string) (segs []string, libpod bool, ok bool) {
 	return out, libpod, true
 }
 
-// bodyBearing reports whether a request's BODY carries policy-relevant fields,
-// i.e. whether the schema difference between libpod and docker-compat matters.
+// libpodExamined is the ALLOWLIST of first path segments whose POST or PUT this
+// filter judges COMPLETELY without reading a libpod-shaped body — either
+// because no such request carries a body at all, or because everything
+// policy-relevant in it lives somewhere the filter does read. The value is why,
+// and it is required: a segment listed with no reason is a segment nobody
+// classified.
+//
+// An allowlist, not a denylist, is issue #340's fix. bodyBearing used to name
+// the eight segments known to MATTER — containers, volumes, images, pods, play,
+// generate, secrets, manifests — and omitted `networks` and `system`, so
+// POST /v5.0.0/libpod/networks/create and POST /v5.0.0/libpod/system/prune
+// reached the engine with the body forwarded unexamined while the 403 text a
+// human reads claims that forwarding it unexamined "would bypass every check".
+// A denylist over an engine's API is the catalogue shape CLAUDE.md's invariant 2
+// calls a design smell: a segment podman adds next arrives PERMITTED because
+// nobody had heard of it. Inverted, it arrives REFUSED until someone puts it
+// here and says why.
+//
+// TestEveryReachableRouteIsClassified derives the segment set from allowed()'s
+// own switch, so a route added to the router and not classified here fails the
+// suite rather than shipping.
+var libpodExamined = map[string]string{
+	"_ping":   "GET only; no body in any spelling",
+	"version": "GET only; no body in any spelling",
+	"info":    "GET only; no body in any spelling",
+	"events":  "GET only; no body in any spelling",
+	"build":   "the body is the context tar, which handleBuild forwards unread by design; every policy-relevant build option is a QUERY parameter and handleBuild filters those with its own default-deny allowlist, identically for /v1.41/build and /libpod/build",
+}
+
+// bodyBearing reports whether a libpod-spelled request must be refused rather
+// than forwarded: whether its BODY could carry policy-relevant fields this
+// filter cannot read, because the libpod schema is not the docker-compat one.
 func bodyBearing(segs []string, method string) bool {
 	if method != http.MethodPost && method != http.MethodPut {
 		return false
@@ -214,11 +253,8 @@ func bodyBearing(segs []string, method string) bool {
 	if len(segs) == 0 {
 		return false
 	}
-	switch segs[0] {
-	case "containers", "volumes", "images", "pods", "play", "generate", "secrets", "manifests":
-		return true
-	}
-	return false
+	_, examined := libpodExamined[segs[0]]
+	return !examined
 }
 
 func isContainerCreate(s []string) bool {
@@ -251,6 +287,40 @@ func isImageCreate(s []string) bool {
 // endpoint. Matched separately from allowed() (which already refuses it, see
 // the case "archive", "export" comment below) purely so the refusal can name
 // the alternative rather than fall through to the generic "not permitted".
+// isPrune matches every endpoint whose last segment is `prune`, in both API
+// spellings: containers/prune, images/prune, volumes/prune, networks/prune,
+// build/prune and podman's own system/prune.
+//
+// A RULE rather than a list of five, deliberately. The list would be the
+// catalogue shape CLAUDE.md's invariant 2 warns about — podman adding a sixth
+// prune would arrive permitted because nobody had heard of it — and the rule
+// costs nothing extra: an endpoint that spells itself `prune` is destruction of
+// everything matching a filter, which is precisely the shape this proxy cannot
+// judge.
+//
+// ABUSE: a hostile process inside the sandbox can use a prune to destroy the
+// engine store's contents — images and the container records of earlier runs on
+// this target — in one POST. Measured through this proxy against podman 6.0.2
+// (issue #339): a container carrying Labels {"snug.run":"OTHER-SANDBOX"} was
+// deleted by POST /v1.41/containers/prune (200, ContainersDeleted listing it),
+// and POST /v5.0.0/libpod/system/prune?all=true&volumes=true removed
+// localhost/warmcache:v1 from the read-write store. Not an escape: the store is
+// snug's own, keyed on this target, and nothing outside it is reachable. What
+// it costs is a re-pull and the container records of every earlier run.
+//
+// Refused rather than scoped, which is the choice worth stating. Scoping would
+// mean forcing `filters={"label":["snug.run=<this run>"]}` onto every prune,
+// and it fails on its own terms three times over: `system/prune` takes no label
+// filter at all, an image carries no run label to filter ON (snug stamps
+// containers, not images), and a filter merged into a client-supplied one has
+// to be exactly right in a query-string schema that differs between the two
+// APIs. `commit` and `update` are refused a few lines below for the analogous
+// reason. A refusal is checkable by reading it; a scope is correct only if the
+// merge is.
+func isPrune(segs []string, method string) bool {
+	return method == http.MethodPost && len(segs) >= 2 && segs[len(segs)-1] == "prune"
+}
+
 func isArchive(s []string) bool {
 	return len(s) >= 3 && s[0] == "containers" && s[2] == "archive"
 }
@@ -287,7 +357,8 @@ func allowed(segs []string) bool {
 		return true
 
 	case "images":
-		// Pull, list, inspect, tag, prune, remove. `load` and `import` bring in a
+		// Pull, list, inspect, tag, remove — prune is taken by isPrune above,
+		// for every segment, before this switch runs. `load` and `import` bring in a
 		// filesystem image from a stream the engine did not fetch and snug never
 		// saw, so they stay refused. `create` is routed to handleImageCreate,
 		// which distinguishes a pull from an import by query string — blocking it
