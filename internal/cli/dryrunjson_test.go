@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gomoni/snug/internal/engine"
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/profile"
 	"github.com/gomoni/snug/internal/sandbox"
@@ -61,7 +62,7 @@ func jsonGoldenReport(t *testing.T, sel []policy.ProfileName, refused bool) stri
 		t.Fatalf("Resolve(%v): %v", sel, err)
 	}
 
-	rep := buildReport(p, p.BwrapArgs(0, 0), config{json: true}, err)
+	rep := buildReport(p, p.BwrapArgs(0, 0), config{json: true}, err, pinnedSignaturePolicy)
 	rep.Seccomp = jsonGoldenSeccomp
 
 	var buf bytes.Buffer
@@ -441,7 +442,7 @@ func TestJSONNeverCarriesASecretsPlaintext(t *testing.T) {
 		t.Fatal("the fixture policy does not carry the needle, so its absence below proves nothing")
 	}
 
-	rep := buildReport(p, p.BwrapArgs(0, 0), config{json: true}, nil)
+	rep := buildReport(p, p.BwrapArgs(0, 0), config{json: true}, nil, pinnedSignaturePolicy)
 	var buf bytes.Buffer
 	if err := renderJSON(&buf, rep); err != nil {
 		t.Fatalf("renderJSON: %v", err)
@@ -716,4 +717,14 @@ func TestSubcommandsRejectAFormatFlag(t *testing.T) {
 				"invocation, not just the ones carrying a flag")
 		}
 	})
+}
+
+// pinnedSignaturePolicy is what every fixture in this package passes instead of
+// reading the machine's own signature policy.
+//
+// It is the ordinary host: nothing configured. Without it json.podman-socket.json
+// carries whatever /etc/containers/policy.json this runner happens to have —
+// measured, and it is the difference between a green local gate and a red CI one.
+func pinnedSignaturePolicy() engine.SignaturePolicySummary {
+	return engine.SignaturePolicySummary{}
 }

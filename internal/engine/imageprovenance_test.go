@@ -22,11 +22,11 @@ import (
 func specEnv(t *testing.T, baseEnv []string) ([]string, *Engine) {
 	t.Helper()
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman", baseEnv, false)
+	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman", baseEnv, false, noSignaturePolicy(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,11 +182,11 @@ func TestTheGeneratedRegistriesConfRedirectsNothing(t *testing.T) {
 // snug cannot move a path it does not author.
 func TestTheGeneratedStorageConfIsSnugsOwn(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman", []string{"PATH=/usr/bin"}, false)
+	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman", []string{"PATH=/usr/bin"}, false, noSignaturePolicy(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,6 +240,12 @@ func TestTheGeneratedStorageConfIsSnugsOwn(t *testing.T) {
 // The positive arm plants a file called fuse-overlayfs beside a stand-in
 // engine binary; the negative arm uses a directory with no such file. Without
 // the negative arm this passes on an implementation that hardcodes a path.
+//
+// The two failure messages below describe consequences that do not follow:
+// podman discards every [storage.options*] key when --root is on the argv, and
+// Spec always passes --root (STORAGE-CONF.md §3). What this test asserts is the
+// CONTENTS OF THE FILE, a real and checkable property; it does not assert that
+// the key reaches the driver.
 func TestTheGeneratedStorageConfNamesAMountProgramOnlyWhenThereIsOne(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -269,7 +275,7 @@ func TestTheGeneratedStorageConfNamesAMountProgramOnlyWhenThereIsOne(t *testing.
 					t.Fatal(err)
 				}
 			}
-			e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+			e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -278,7 +284,7 @@ func TestTheGeneratedStorageConfNamesAMountProgramOnlyWhenThereIsOne(t *testing.
 			// engine binary under no grant and no graft is one the engine
 			// cannot see, which is the refusal working rather than a fixture
 			// problem.
-			spec, err := e.Spec(specPolicy(t, e, dir, policy.NetPolicy{}), podman, []string{"PATH=/usr/bin"}, false)
+			spec, err := e.Spec(specPolicy(t, e, dir, policy.NetPolicy{}), podman, []string{"PATH=/usr/bin"}, false, noSignaturePolicy(t))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -326,12 +332,12 @@ func TestTheGeneratedStorageConfNamesAMountProgramOnlyWhenThereIsOne(t *testing.
 // snugsOwn's growing list.
 func TestEveryPathAGeneratedConfigNamesIsOneSnugOwns(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	const enginePath = "/usr/bin/podman"
-	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), enginePath, []string{"PATH=/usr/bin"}, true)
+	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), enginePath, []string{"PATH=/usr/bin"}, true, noSignaturePolicy(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,11 +462,11 @@ func TestARelativeEngineRefusesRatherThanWritingARelativeMountProgram(t *testing
 	}
 	t.Chdir(dir)
 
-	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "./podman", []string{"PATH=/usr/bin"}, false)
+	_, err = e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "./podman", []string{"PATH=/usr/bin"}, false, noSignaturePolicy(t))
 	if err == nil {
 		t.Fatal("Spec accepted a relative engine path; the generated storage.conf would then " +
 			"carry a relative mount_program, which the engine resolves against its own working " +
@@ -495,12 +501,12 @@ func TestAnUnquotablePathIsRefusedRatherThanSubstituted(t *testing.T) {
 	// directory layout stops being an input to the file's contents (issue
 	// #125). The old refusal for this case is gone because the case is gone.
 	t.Setenv("XDG_DATA_HOME", odd)
-	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman",
-		[]string{"PATH=/usr/bin"}, false)
+		[]string{"PATH=/usr/bin"}, false, noSignaturePolicy(t))
 	if err != nil {
 		t.Fatalf("Spec refused a store under a directory with a quote in its name, but the "+
 			"quote can no longer reach the generated config — storage.conf names %s: %v",
@@ -535,7 +541,7 @@ func TestAnUnquotablePathIsRefusedRatherThanSubstituted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e2, err := New([]policy.ProfileName{"@podman-socket"}, "/proj2")
+	e2, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj2"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,28 +578,45 @@ func TestSpecReplacesACallerSuppliedStorageConf(t *testing.T) {
 	}
 }
 
-// TestTheGeneratedSignaturePolicyIsPodmansOwnDefault pins what SignaturePolicyJSON
-// MEANS, not how it is spelled.
+// TestTheGeneratedSignaturePolicyIsTheHostsOwn pins what Spec writes for the
+// engine: not a value this package holds, but a projection of the host's own
+// policy.json (signaturepolicy.go).
 //
-// It is the file with no environment variable, so it is the one whose content
-// is the whole mechanism, and its value is a deliberate NON-hardening choice
-// (see its doc comment): accept anything, exactly as a stock podman does. A
-// patch that quietly made it stricter would break every unsigned image at
-// runtime, and one that made it emptier would make podman refuse to pull at
-// all — neither shows up in a golden argv diff, so it is asserted here.
-func TestTheGeneratedSignaturePolicyIsPodmansOwnDefault(t *testing.T) {
-	var doc struct {
-		Default []struct {
-			Type string `json:"type"`
-		} `json:"default"`
+// It asserts through Spec rather than through the projection's own unit tests
+// because the WIRING is the half those cannot see: a projection nothing calls
+// leaves the engine reading whatever was written last.
+func TestTheGeneratedSignaturePolicyIsTheHostsOwn(t *testing.T) {
+	const hostPolicy = `{"default":[{"type":"reject"}],
+	    "transports":{"docker":{"registry.example.internal":[{"type":"insecureAcceptAnything"}]}}}`
+
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := json.Unmarshal([]byte(SignaturePolicyJSON), &doc); err != nil {
-		t.Fatalf("SignaturePolicyJSON is not valid JSON (%v); podman would refuse every pull "+
-			"with a parse error: %s", err, SignaturePolicyJSON)
+	pol := specPolicy(t, e, "", policy.NetPolicy{})
+	sig, err := ProjectHostSignaturePolicy(hostWithPolicy(t, hostPolicy))
+	if err != nil {
+		t.Fatalf("a host policy snug should project was refused: %v", err)
 	}
-	if len(doc.Default) != 1 || doc.Default[0].Type != "insecureAcceptAnything" {
-		t.Fatalf("SignaturePolicyJSON's default requirement is %+v, want exactly one "+
-			"insecureAcceptAnything", doc.Default)
+
+	spec, err := e.Spec(pol, "/usr/bin/podman", nil, false, sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, _ := envValue(spec.Env, "HOME")
+	body, err := os.ReadFile(filepath.Join(hostSideOf(t, e, home),
+		".config", "containers", "policy.json"))
+	if err != nil {
+		t.Fatalf("no generated policy.json: podman refuses to pull without one (issue #137): %v",
+			err)
+	}
+
+	want := []string{"default: reject", "docker/registry.example.internal: insecureAcceptAnything"}
+	if got := requirementTypes(t, body); strings.Join(got, " | ") != strings.Join(want, " | ") {
+		t.Errorf("the engine's policy.json requires\n  %v\nand this host's requires\n  %v\n"+
+			"— the engine enforcing less than the host configured is the silent downgrade "+
+			"invariant 5 forbids:\n%s", got, want, body)
 	}
 }
 

@@ -906,6 +906,11 @@ func TestParentRoGrantsTheParentAndNoHigher(t *testing.T) {
 // profiles. If a `Clamp`, an `Apply`, or any other demote appears here again,
 // the model has grown a carve-out and every monotonicity argument in
 // .claude/design/INDEX.md needs re-reading.
+//
+// This pins Access.Join's maximum for one path in one selection, and that is
+// all it pins: a demote elsewhere in the module satisfies it. The module-wide
+// half is norestriction_test.go — every Access assignment is a join with the
+// previous value, and the mount collections have three named writers.
 func TestPolicyHasNoRestrictionOperation(t *testing.T) {
 	p := mustResolveDefaults(t)
 	if got := p.Mounts["/home/u/proj/sub"].Access; got != AccessRW {

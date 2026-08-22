@@ -25,12 +25,12 @@ import (
 // recurring for paths. This assertion is what stops the next one.
 func TestTeardownMatchesTheArgvTheEngineIsStartedWith(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman",
-		[]string{"PATH=/usr/bin"}, false)
+		[]string{"PATH=/usr/bin"}, false, noSignaturePolicy(t))
 	if err != nil {
 		t.Fatal(err)
 	}

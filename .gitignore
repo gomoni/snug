@@ -41,3 +41,13 @@ local-profiles/
 # .claude/scratchpad/ entry above gives.
 poc/
 .integration-*.log
+
+# internal/cli's dry-run fixture tree. testTree builds it under
+# $SNUG_TEST_FIXTURE_ROOT, $HOME or $XDG_CACHE_HOME and never inside the
+# checkout, so this entry should match nothing — it is here because one WAS
+# found under internal/cli/ and had to be rm -rf'd out of a worktree before
+# committing. The cleanup is a t.Cleanup, which does not survive a panic, a
+# -timeout kill or an interrupted run, and a leftover under the module root also
+# races the source sweeps in internal/policy (issue #350). An instruction a
+# routine `git add -A` can quietly undo is not a rule.
+snug-dryrun-fixture-*/

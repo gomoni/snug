@@ -144,9 +144,9 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		// eng.GraftInto — a hundred lines below this return — so --dry-run
 		// never showed them at all (issue #252). The store graft is the
 		// highest-value hand-over a container run makes: read-write, shared
-		// with every sandbox resolving to the same profiles+target key, and
-		// persistent across runs. It had no abuse sentence on screen because
-		// it was never on screen.
+		// with every sandbox on the SAME TARGET DIRECTORY, whatever profiles
+		// it selected, and persistent across runs. It had no abuse sentence
+		// on screen because it was never on screen.
 		//
 		// PlannedPaths, not engine.New: New CREATES those directories, and a
 		// dry run creates nothing (issue #21). The paths come out of the same
@@ -157,7 +157,7 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		// than an oversight: it is a preflight answer, and preflight does not
 		// run for a dry run (see the comment above). describeEngineView says
 		// so on screen.
-		paths, perr := engine.PlannedPaths(pol.Profiles, pol.Target)
+		paths, perr := engine.PlannedPaths(pol)
 		if perr != nil {
 			return containerRun{}, perr
 		}
@@ -165,6 +165,22 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 			return containerRun{}, gerr
 		}
 		return startContainersScreen(pol)
+	}
+
+	// The host's signature policy, PROJECTED — read, parsed and classified
+	// here, before engine.New creates a directory and before the preflight
+	// probes anything (issue #307). The engine's policy.json reproduces what
+	// this host configured rather than accepting any image over the top of it,
+	// and a requirement snug cannot reproduce refuses the run.
+	//
+	// THE POSITION IS THE POINT. engine.New creates /tmp/snug-<uid>-<pid>/ and
+	// only containerRun.cleanup — built at the end of this function — removes
+	// it, so a refusal after New leaks a run directory that a later run with a
+	// recycled pid then refuses to reuse. Refusing here creates nothing at all,
+	// and copies no host key material into /tmp on a run that will not start.
+	sig, err := engine.ProjectHostSignaturePolicy(pol.Home)
+	if err != nil {
+		return containerRun{}, err
 	}
 
 	pf, err := runContainerPreflight()
@@ -209,18 +225,29 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 			"(issue #128); restarting the container or VM snug runs in repairs it.\n", err)
 	}
 
-	// P8: snug now authors the signature policy the engine reads, and on a
-	// host that had configured a stricter one that is a DOWNGRADE. Invariant
-	// 5 forbids doing it silently, so it is said here, before anything
-	// starts, and it names the file it is talking about.
-	if n := pf.SignaturePolicy; n != nil {
-		fmt.Fprint(os.Stderr, n.String())
-	}
-
-	eng, err := engine.New(pol.Profiles, pol.Target)
+	eng, err := engine.New(pol)
 	if err != nil {
 		return containerRun{}, err
 	}
+
+	// EVERY error path from here to the successful return removes this run's
+	// directory, and the reason changed with issue #307. Before it, an early
+	// return left behind snug-authored text; now Spec writes COPIES OF HOST KEY
+	// MATERIAL into conf/sigkeys/ and a sidecar naming the host paths they came
+	// from. /tmp is commonly world-writable, nothing sweeps
+	// /tmp/snug-<uid>-<pid>/ (sweepStaleRunDirs covers the per-uid runtime
+	// directory's run-* only), and a leaked directory is also a landmine for a
+	// later run whose pid recycles onto it — createRunDir refuses to reuse an
+	// existing entry.
+	//
+	// Disarmed on success, where containerRun.cleanup takes over: the same
+	// eng.Stop() reached by a different route, never both.
+	started := false
+	defer func() {
+		if !started {
+			eng.Stop()
+		}
+	}()
 
 	// pol.Net, the resolved network policy itself — not a rendering of it.
 	// The engine needs the same DNS decision twice over, once as an
@@ -245,7 +272,7 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		return containerRun{}, err
 	}
 
-	spec, err := eng.Spec(pol, pf.Podman, nil, pf.CgroupsDisabled)
+	spec, err := eng.Spec(pol, pf.Podman, nil, pf.CgroupsDisabled, sig)
 	if err != nil {
 		return containerRun{}, err
 	}
@@ -290,23 +317,39 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 	pol.BindSocket(sock, containerSocketGuest, "(containers)")
 	containerEnv(pol)
 
+	// Disarm the early-cleanup defer above: from here containerRun.cleanup
+	// owns eng.Stop(), and the two routes must never both fire.
+	started = true
+
 	// VERIFY WHERE THE ENGINE IS EXPECTED DEAD, NEVER WHERE IT IS EXPECTED
 	// ALIVE (issue #344). onPayloadExit runs from inside runStaged, BEFORE its
 	// deferred st.Close(), so the Pdeathsig cascade P1 -> engine has not fired
 	// and the engine is alive by construction: all that can be done there is
 	// drop the keepalive, which is Detach. cleanup is registered by main.go as
 	// `defer ctr.cleanup()` BEFORE it calls sandbox.Run, so it runs strictly
-	// after st.Close() has returned — and st.Close() waits for P1 to be reaped,
-	// with the kernel delivering the engine's pdeathsig before that wait wakes.
-	// So Stop's sweep runs against an engine the cascade has already SIGKILLed,
-	// which is the only position from which "is anything still serving this
-	// run's socket?" has an answer other than "yes, obviously".
+	// after st.Close() has returned — and st.Close() waits for P1 to be reaped
+	// (Stage.Close ends with cmd.Process.Wait), with the kernel delivering the
+	// engine's pdeathsig in forget_original_parent before that wait wakes. So
+	// Stop's sweep runs against an engine the cascade has already SIGKILLed.
 	//
-	// Both halves matter. Wiring Stop here and nothing at payload exit would
-	// leave the keepalive held through snug's own post-payload code; wiring
-	// Stop at payload exit — which is what shipped — makes snug's exit wait out
-	// the engine's idle timeout, which is a timeout whose whole purpose is to
-	// cover snug not being there.
+	// BE PRECISE ABOUT WHAT THAT BUYS, because a measurement makes the loose
+	// version false. Measured on this branch against a real podman 5.8.4
+	// bundle: wiring Stop at payload exit — what shipped — costs 15ms, exactly
+	// what the fixed wiring costs, because the engine is Pdeathsig'd to P1 and
+	// P1 exits on its own the moment the payload is reaped, waiting for nothing
+	// P0 does. So this is NOT "the shipped wiring stalls every run"; the 15.3s
+	// on issue #344 was measured with a DECOY, which carries no Pdeathsig and
+	// therefore cannot die with P1.
+	//
+	// What the position actually buys is a GUARANTEE where there was a RACE.
+	// Stage.Wait returns on recvEvent — when the "exited" bytes ARRIVE — not
+	// when P1 exits, so at payload exit P0 and a still-exiting P1 race, and P1
+	// merely happens to win. After st.Close() it cannot lose. The losing side
+	// is the rare one, which is why no wall clock can see this and why
+	// test/integration/enginereapteardown_test.go says so at length.
+	//
+	// Both halves still matter. Wiring Stop here and nothing at payload exit
+	// would leave the keepalive held through snug's own post-payload code.
 	return containerRun{
 		cleanup:       func() { p.Close(); eng.Stop() },
 		spec:          &spec,

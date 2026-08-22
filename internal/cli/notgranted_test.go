@@ -213,31 +213,81 @@ func TestNotGrantedCoverageChecksTheStaticHostPaths(t *testing.T) {
 	}
 }
 
-// The RESIDUAL #301 does not close, asserted positively so the next reader
-// cannot mistake the mechanical half for the whole fix.
+// #301's ruling, asserted positively: the desktop-socket line is a claim about
+// snug's MOUNT SET, and it is deliberately not derived from host environment
+// and deliberately not coverage-checked.
 //
-// The Wayland and session D-Bus sockets are named rather than pathed, because
-// their paths come from $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY and from
-// DBUS_SESSION_BUS_ADDRESS and nothing in this tree derives either. So they get
-// no coverage check, and a profile granting the directory one of them sits in
-// would leave this line saying "not granted" about a socket the sandbox can
-// reach. That is a decision about which host environment to trust, not a
-// refactor — this test pins the gap rather than the wish.
-func TestTheDesktopSocketNamesAreStillAssertedWithNothingBehindThem(t *testing.T) {
+// The residual it leaves is real and is stated on the screen in plain words:
+// a profile granting the DIRECTORY one of those sockets sits in would make the
+// claim false, and nothing here would notice. That is #292's shape (a grant of
+// a directory is a grant of every socket in it) with #296 as its FIFO sibling
+// — the issue numbers live here and in the source comment, never on the
+// screen, because a human reading --dry-run has no tracker and a bare number
+// leads nowhere.
+//
+// This test replaces the one that pinned the OLD shape ("the Wayland socket",
+// "the session D-Bus socket" printed as bare names in the run of
+// coverage-checked paths). It was changed, never deleted: the residual did not
+// go away, it moved from a source comment nobody reading the screen ever sees
+// onto the screen itself.
+func TestTheDesktopSocketClaimIsAboutMountsNotAboutThisHost(t *testing.T) {
 	home := homeWithDirs(t)
-	// A bind of the directory the session bus lives in on this host's spelling.
-	// Nothing about it reaches the desktop-socket half of the line.
+
+	// Distinctive host environment. If anyone ever derives the paths from it,
+	// these strings land on the screen and the assertion below fails — which is
+	// the whole point of setting them to something no real host would produce.
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/DERIVED-FROM-ENV")
+	t.Setenv("WAYLAND_DISPLAY", "wayland-DERIVED-FROM-ENV")
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/DERIVED-FROM-ENV/bus,guid=deadbeef")
+
+	// Bind the directory the session bus and the Wayland socket live in on this
+	// host's spelling, AND /tmp. Under a coverage check both would be "granted"
+	// and the claim would be silenced; it must not be, because the claim is
+	// about what snug mounts and these binds are not snug mounting a desktop
+	// socket.
 	p := &policy.Policy{
 		Home:   home,
 		Target: filepath.Join(home, "proj"),
 		Mounts: binds("/run/user/1000", "/tmp"),
 	}
 	got := strings.Join(notGranted(p), "\n")
-	for _, want := range []string{"the Wayland socket", "the session D-Bus socket"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("%q is expected to still be printed unconditionally; if this line now "+
-				"has a coverage check behind it, #301's residual is closed and this test "+
-				"should be replaced by one asserting the check:\n%s", want, got)
+
+	// Positive control: the claim is on screen at all. Without this, a run that
+	// printed NOTHING under NOT GRANTED would satisfy every assertion below.
+	if !strings.Contains(got, "snug mounts no desktop socket") {
+		t.Fatalf("the desktop-socket claim is not on screen at all:\n%s", got)
+	}
+
+	// Not coverage-checked: the binds above did not silence it.
+	if !strings.Contains(got, "no Wayland, no session D-Bus") {
+		t.Errorf("binding /run/user/1000 and /tmp silenced the desktop-socket claim, so it "+
+			"has acquired a coverage check. It is a claim about snug's MOUNT SET, not about "+
+			"host paths, and a bind of the directory a socket sits in does not make it "+
+			"false — it makes it UNCHECKED, which is the residual the next line states:\n%s", got)
+	}
+
+	// The residual is stated on the screen, in words, with no issue number.
+	if !strings.Contains(got, "would make it false, and nothing") {
+		t.Errorf("the residual is not stated on screen. It used to live only in a source "+
+			"comment, which a human reading --dry-run never sees, and moving it here is what "+
+			"#301 actually delivered:\n%s", got)
+	}
+	for _, n := range []string{"#292", "#296", "#301"} {
+		if strings.Contains(got, n) {
+			t.Errorf("%s appears on the --dry-run screen. A human reading it has no issue "+
+				"tracker: a bare number leads nowhere and dates the artifact. Issue numbers "+
+				"belong in the source comment and in this test:\n%s", n, got)
+		}
+	}
+
+	// Not derived from host environment — the assertion that fails the day
+	// someone reintroduces derivation.
+	for _, leak := range []string{"DERIVED-FROM-ENV", "guid=", "unix:path="} {
+		if strings.Contains(got, leak) {
+			t.Errorf("%q reached the screen, so the desktop-socket line is being derived from "+
+				"host environment. It must not be: that turns a true host-independent claim "+
+				"into a host-dependent approximation of the same claim, and puts a "+
+				"per-developer value into three golden fixtures and VERIFY.md:\n%s", leak, got)
 		}
 	}
 }

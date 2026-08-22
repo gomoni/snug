@@ -557,10 +557,10 @@ func endpointNoun(mode fs.FileMode) string {
 //     there is NO mount flag that would let snug close this the way `nodev`
 //     closes the device case: this is a kernel-level residual, not laziness.
 //   - snug already refuses to READ a FIFO as data elsewhere
-//     (internal/cli/claude.go, readHostFileBounded: "will not read a FIFO, a
-//     device or a directory there") and was still willing to MOUNT one — the
-//     rule applied to one of its two halves, the sixth recorded instance of
-//     that shape (CLAUDE.md).
+//     (internal/hostread, "will not read a FIFO, a device or a directory
+//     there") and was still willing to MOUNT one — the rule applied to one
+//     of its two halves, the sixth recorded instance of that shape
+//     (CLAUDE.md).
 //   - So this closes the spelled-out case and ratchets the accidental one. It
 //     is not a complete answer to "a grant of a directory is a grant of every
 //     socket or FIFO in it", which remains the rule CLAUDE.md states and which

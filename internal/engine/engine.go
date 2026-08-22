@@ -6,9 +6,10 @@
 //
 //   - the host's images, containers, volumes and networks are untouched, and
 //     the sandbox cannot list or delete them
-//   - two projects cannot see each other's containers
-//   - a more privileged profile set never inherits a store built under a less
-//     privileged one, because the store key includes the profile set
+//   - two projects cannot see each other's containers — the store key is the
+//     TARGET DIRECTORY alone (issue #276); a project's own images persist
+//     across runs regardless of which profiles a given run selected, and
+//     nothing about the profile set changes which store a run opens
 //
 // # The engine runs in the sandbox's own network namespace (issue #63, Tier B)
 //
@@ -109,6 +110,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -121,6 +123,7 @@ import (
 
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/stage"
+	"github.com/gomoni/snug/internal/vdir"
 )
 
 // idleTimeout is how long the engine outlives its last client. Never
@@ -190,23 +193,185 @@ type Engine struct {
 	once sync.Once
 }
 
+// verifyEngineStore walks dataHome/snug/engines/<key>/storage through
+// internal/vdir, creating any directory in that chain that is absent and
+// refusing any that is not owned by this uid and mode exactly 0700 — reuse
+// included, which is the property a bare os.MkdirAll never had (issue #276).
+//
+// It returns the walk's own path, built from the SAME components the walk
+// actually opened, so New can compare it against planPaths' independently
+// computed string rather than assuming the two arithmetics agree — the same
+// defence the sockDir/confDir check above already applies. e.store itself
+// stays the planned string (see New): this function verifies, it does not
+// re-derive what the Engine uses.
+//
+// dataHome is opened with a BARE os.OpenRoot: a default ~/.local/share is
+// 0755, snug does not own $XDG_DATA_HOME, and rooting the vdir walk there
+// would refuse every run (VerifyOwnedAndPrivate demands exactly 0700). The
+// first component this function OWNS, and therefore the first one it takes
+// through SecureSubdir, is "snug". Every *os.Root opened along the way is
+// closed before returning — vdir's ordering guarantee (nothing opened
+// through a Root can be redirected out of the tree it was opened on) is what
+// this walk needs; it is not a TOCTOU-free handle held for later use, and
+// internal/vdir's own package doc asks each caller to say so.
+//
+// "snug" and "engines" are what makes a SYMLINKED
+// ~/.local/share/snug/engines a hard refusal now rather than a silently
+// followed one (issue #276, spec item 8) — a behaviour change with a real
+// user, so the refusal at "engines" names the fix.
+func verifyEngineStore(dataHome, key string) (string, error) {
+	// os.MkdirAll follows a symlink — including one AT dataHome itself, not
+	// just below it. That is a residual this call does not close: the vdir
+	// walk below only starts protecting once os.OpenRoot(dataHome) succeeds,
+	// so a $XDG_DATA_HOME pointed at a symlink into a WORLD-WRITABLE parent
+	// (unlike the default ~/.local/share, which is 0755 victim-owned) is
+	// still followed here, silently. It is user-inflicted — nobody but the
+	// user who set $XDG_DATA_HOME can place that symlink — and out of scope
+	// for issue #276's fix, which is about the top-level, uid-guessable
+	// name under /tmp; naming the limit here rather than leaving MkdirAll
+	// look covered by the walk that follows it.
+	if err := os.MkdirAll(dataHome, 0o755); err != nil {
+		return "", fmt.Errorf("engine store: creating %s: %w", dataHome, err)
+	}
+	root, err := os.OpenRoot(dataHome)
+	if err != nil {
+		return "", fmt.Errorf("engine store: opening %s: %w", dataHome, err)
+	}
+	defer root.Close()
+
+	snug, _, err := vdir.SecureSubdir(root, dataHome, "snug")
+	if err != nil {
+		return "", fmt.Errorf("engine store: %w", err)
+	}
+	defer snug.Close()
+	snugPath := filepath.Join(dataHome, "snug")
+
+	engines, _, err := vdir.SecureSubdir(snug, snugPath, "engines")
+	if err != nil {
+		return "", fmt.Errorf("engine store: %w — a symlinked engines directory used to be "+
+			"followed silently; move the directory instead of symlinking it, or point "+
+			"$XDG_DATA_HOME at the other filesystem", err)
+	}
+	defer engines.Close()
+	enginesPath := filepath.Join(snugPath, "engines")
+
+	// This directory is SHARED across runs of the same target on purpose —
+	// see New's own doc comment on the store — so SecureSubdir, not
+	// MustCreateSubdir: reuse is exactly the warm start this key exists to
+	// produce, and MustCreateSubdir would refuse the second run outright.
+	keyDir, _, err := vdir.SecureSubdir(engines, enginesPath, key)
+	if err != nil {
+		return "", fmt.Errorf("engine store: %w", err)
+	}
+	defer keyDir.Close()
+	keyPath := filepath.Join(enginesPath, key)
+
+	storage, _, err := vdir.SecureSubdir(keyDir, keyPath, "storage")
+	if err != nil {
+		return "", fmt.Errorf("engine store: %w", err)
+	}
+	storage.Close()
+	return filepath.Join(keyPath, "storage"), nil
+}
+
+// verifyEngineRunroot walks $TMPDIR/snug-engines-<uid>-<key>/rr through
+// internal/vdir the same way verifyEngineStore does for the store, and for
+// the same reason: the runroot must be REUSED across runs sharing the same
+// store (podman's libpod database refuses a runroot that disagrees with the
+// one it recorded), so this is SecureSubdir, not MustCreateSubdir, and it
+// checks owner and mode on every call, reuse included.
+//
+// /tmp itself is opened with a bare os.OpenRoot: it is commonly 1777, snug
+// does not own it, and — load-bearing, not merely a bare os.OpenRoot — the
+// FIRST component this function owns, and the one that gets the vdir walk's
+// in-root open plus the 0700+no-symlink discipline, is
+// "snug-engines-<uid>-<key>" ITSELF, not something beneath it. Rooting the
+// check one level lower (at "rr") would leave the top name wide open:
+// os.MkdirAll on a pre-planted symlink at that exact path returns <nil> and
+// creates "rr/tmp" INSIDE the attacker's own directory (measured — issue
+// #276's part 3, sev:medium, redteam round 2).
+//
+// This is the load-bearing half of that finding, not defence in depth: the
+// engine writes the OCI bundle's config.json, conmon's pid file and
+// image_copy_tmp_dir into this runroot, so an attacker who wins the pre-plant
+// gets those read (cross-uid disclosure) at minimum, and a TOCTOU write of
+// config.json between podman authoring it and crun/runc reading it can inject
+// hooks.prestart — an arbitrary program run as THIS run's uid, not the
+// attacker's own. Once snug creates "snug-engines-<uid>-<key>" here, 0700 and
+// owned by this uid, /tmp's own sticky bit is what stops any OTHER uid
+// renaming or deleting it out from under a later run — the same reasoning
+// internal/cli's runtimeDir (runtimedir.go) already applies to its own
+// uid-scoped name directly under /tmp.
+//
+// With the check rooted here, a same-uid host process can pre-plant that
+// name only as a symlink (refused by the Lstat this walk does before
+// opening) or as a directory it owns (refused by VerifyOwnedAndPrivate's uid
+// check, since an attacker cannot chown a directory to the victim's uid) —
+// it can no longer have either silently adopted, which is what a bare
+// os.MkdirAll used to do.
+//
+// It also creates rr/tmp, which containers.conf's image_copy_tmp_dir needs
+// present before podman starts (podman STATS it rather than creating it).
+//
+// The return value is the RUNROOT itself (…/rr), not …/rr/tmp — the same
+// convention verifyEngineStore uses, and what New compares against
+// planPaths' Runroot.
+func verifyEngineRunroot(key string) (string, error) {
+	tmpDir := os.TempDir()
+	root, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		return "", fmt.Errorf("engine runroot: opening %s: %w", tmpDir, err)
+	}
+	defer root.Close()
+
+	name := fmt.Sprintf("snug-engines-%d-%s", os.Getuid(), key)
+	base, _, err := vdir.SecureSubdir(root, tmpDir, name)
+	if err != nil {
+		return "", fmt.Errorf("engine runroot: %w", err)
+	}
+	defer base.Close()
+	basePath := filepath.Join(tmpDir, name)
+
+	rr, _, err := vdir.SecureSubdir(base, basePath, "rr")
+	if err != nil {
+		return "", fmt.Errorf("engine runroot: %w", err)
+	}
+	defer rr.Close()
+	rrPath := filepath.Join(basePath, "rr")
+
+	tmp, _, err := vdir.SecureSubdir(rr, rrPath, "tmp")
+	if err != nil {
+		return "", fmt.Errorf("engine runroot: %w", err)
+	}
+	tmp.Close()
+	return rrPath, nil
+}
+
 // New computes the paths for a sandbox's engine but starts nothing.
 //
-// The STORE key is derived from the profile set AND the target, so the same
-// project with the same profiles reuses its images across runs (a warm
-// start) while a different project — or the same project with wider profiles
-// — gets a different store. It stays under XDG_DATA_HOME, unaffected by
-// issue #63 Tier B: nothing about WHERE the engine runs changes what should
-// persist across runs.
+// It takes the resolved *policy.Policy rather than a (profiles, target) pair
+// on purpose (issue #276): pol.Target is the ONLY thing engineKey hashes, and
+// making that a parameter of its own type is what stops a caller handing it
+// ctx.Target, a filepath.Abs, or a hand-rolled realpath instead of the
+// canonical string policy.Resolve already produced — see engineKey's own doc
+// comment for the soundness rule this exists to keep.
+//
+// The STORE key is derived from the target ALONE, so the same project
+// reuses its images across runs (a warm start) regardless of which profiles
+// a given run selected, while a different project gets a different store.
+// It stays under XDG_DATA_HOME, unaffected by issue #63 Tier B: nothing
+// about WHERE the engine runs changes what should persist across runs.
 //
 // The SOCKET lives under /tmp/snug-<uid>-<pid>/ (issue #63, Tier B,
 // ENGINE-WIRING.md §3.1), hardened and unique to THIS run — createRunDir
 // refuses to reuse an existing entry at that path, the same discipline
 // commit dfe6ac8 (#61, #85) applied to snug's own runtime directory. That is
 // what teardown matches on (see reap.go): the store is shared with every
-// past and concurrent sandbox that resolved to the same key, so killing
-// "whatever names the store" would reach into a sibling sandbox that is
-// still working.
+// past and concurrent sandbox on the SAME TARGET, so killing "whatever names
+// the store" would reach into a sibling sandbox that is still working — see
+// reap.go's own doc comment for why that sibling can only be a PAST run in
+// practice, never a concurrent one, because the per-target lock permits at
+// most one live run per target.
 //
 // The RUNROOT, MEASURED, must NOT be pid-unique the way the socket is, and
 // that is a correction of what ENGINE-WIRING.md §3.1 assumed: podman's own
@@ -216,18 +381,20 @@ type Engine struct {
 // persists across runs (by design, for a warm start) needs a runroot that is
 // STABLE across those same runs — exactly like ordinary rootless podman's
 // own default ($XDG_RUNTIME_DIR/containers, stable for a login session) — so
-// it is keyed by the SAME profiles+target key as the store, not by pid, and
-// created with the SAME shared, first-writer-wins MkdirAll the store already
-// uses. It still lives under /tmp, not $XDG_RUNTIME_DIR — that half of §3.1's
+// it is keyed by the SAME target-only key as the store, not by pid, and
+// verified through the same vdir walk the store now is (issue #276 — both
+// used to be a bare, first-writer-wins MkdirAll(0o700), which never checked
+// the OWNER of an existing directory, only created a fresh one that way).
+// It still lives under /tmp, not $XDG_RUNTIME_DIR — that half of §3.1's
 // reasoning (a root-in-userns podman masks $XDG_RUNTIME_DIR with its own
 // tmpfs on /run) is unaffected by this correction.
-func New(profiles []policy.ProfileName, target string) (*Engine, error) {
+func New(pol *policy.Policy) (*Engine, error) {
 	pid := os.Getpid()
 	// The name is allocated FIRST and the paths are computed from it, so that
 	// what this function creates and what --dry-run predicts (PlannedPaths)
 	// come out of one arithmetic rather than two copies of it — see paths.go.
 	name := runDirName(os.Getuid(), pid)
-	planned, err := planPaths(profiles, target, name)
+	planned, err := planPaths(pol, name)
 	if err != nil {
 		return nil, err
 	}
@@ -308,26 +475,58 @@ func New(profiles []policy.ProfileName, target string) (*Engine, error) {
 	}
 	e.sock = filepath.Join(e.sockDir, fmt.Sprintf("podman-%d.sock", pid))
 
-	// The store and the runroot are DELIBERATELY not run through vdir, and
-	// this is the one place in the conversion where reuse is the point rather
-	// than the hazard. Both are keyed by profiles+target, not by pid: a warm
-	// start means a second run finds the first run's store and uses it, and
-	// the libpod database refuses a runroot that disagrees with the one
-	// recorded in it. MkdirAll's first-writer-wins is that design, so a
-	// refuse-to-reuse check here would break the feature it is protecting.
-	// What they need instead is the sharing question asked properly — who
-	// else can reach a store keyed by a hash — and that is not this change.
+	// The store and the runroot are the one place vdir's REUSE case applies
+	// (SecureSubdir, not MustCreateSubdir): both are keyed by the target
+	// alone, not by pid, so a warm start means a second run finds the first
+	// run's store and reuses it, and the libpod database refuses a runroot
+	// that disagrees with the one recorded in it. A refuse-to-reuse check
+	// here would break the feature it is protecting.
+	//
+	// That reuse is exactly why this can no longer be a bare, first-writer-
+	// wins os.MkdirAll(0o700): MkdirAll leaves an EXISTING directory's owner
+	// and mode alone, so a shared, sticky /tmp that let something else plant
+	// snug-engines-<uid>-<key> first (a symlink, or a directory some other
+	// uid owns) went unnoticed forever — measured as part of issue #276's
+	// part 3, sev:medium, because part 1 below made that name strictly MORE
+	// predictable by removing the profile selection from engineKey's
+	// preimage. verifyEngineStore/verifyEngineRunroot check owner and mode
+	// EVERY time, reuse included, which is the property MkdirAll never had.
+	//
 	// e.runroot/tmp is created HERE rather than left to podman: it is
 	// containers.conf's image_copy_tmp_dir (see writeContainersConf), and
 	// podman STATS it rather than creating it — measured as `stat
 	// /snug/engine/runroot/tmp: no such file or directory`, a 500 from every
-	// build. Created on the host side so the runroot graft carries it in.
-	for _, d := range []string{e.store, e.runroot, filepath.Join(e.runroot, "tmp")} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
-			_ = dirs.remove()
-			dirs.close()
-			return nil, err
-		}
+	// build.
+	dataHome, err := dataHomeDir()
+	if err != nil {
+		_ = dirs.remove()
+		dirs.close()
+		return nil, err
+	}
+	key := engineKey(pol)
+	createdStore, err := verifyEngineStore(dataHome, key)
+	if err != nil {
+		_ = dirs.remove()
+		dirs.close()
+		return nil, err
+	}
+	createdRunroot, err := verifyEngineRunroot(key)
+	if err != nil {
+		_ = dirs.remove()
+		dirs.close()
+		return nil, err
+	}
+	// Same discipline as the sockDir/confDir check above, extended to the
+	// other two grafts (issue #276): a silent disagreement here is exactly
+	// what let sockDir/confDir go unchecked for a whole tier before issue
+	// #252 named it, and part 3 gives the store and runroot a second way to
+	// diverge (the vdir walk's own path arithmetic) that MkdirAll never had.
+	if createdStore != planned.Store || createdRunroot != planned.Runroot {
+		_ = dirs.remove()
+		dirs.close()
+		return nil, fmt.Errorf("engine store/runroot: created %s and %s but planPaths predicted "+
+			"%s and %s — --dry-run would name directories this run does not use",
+			createdStore, createdRunroot, planned.Store, planned.Runroot)
 	}
 	return e, nil
 }
@@ -419,7 +618,17 @@ func (e *Engine) RunLabel() string { return e.runLabel }
 // tree it existed to shadow — see __inengine's own note where step 11 was.
 // What a CONTAINER gets is decided by the generated containers.conf and needs
 // no mount at all (issue #126).
-func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgroupsDisabled bool) (stage.EngineSpec, error) {
+func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgroupsDisabled bool, sig *SignaturePolicy) (stage.EngineSpec, error) {
+	if sig == nil {
+		// A caller that skipped ProjectHostSignaturePolicy. Answering with a
+		// permissive default here is precisely the fallback clause 3 forbids,
+		// so it is an error naming the missing call instead — the same shape
+		// checkEnginePATH uses for a policy with no grafts.
+		return stage.EngineSpec{}, errors.New("the container engine's signature policy was " +
+			"never projected: engine.ProjectHostSignaturePolicy must run before Spec, and " +
+			"before engine.New, so that a host policy snug cannot reproduce refuses the run " +
+			"before anything is created")
+	}
 	net := pol.Net
 
 	// EVERY path below goes through guestPath. The engine's view is the
@@ -477,7 +686,7 @@ func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgrou
 	// variable of their own are ALSO pointed at explicitly below, because
 	// which home a rootless podman believes in is a version-dependent
 	// question (see writeEngineHome) and an environment variable is not.
-	engineHome, err := e.writeEngineHome()
+	engineHome, err := e.writeEngineHome(pol, sig)
 	if err != nil {
 		return stage.EngineSpec{}, err
 	}
@@ -514,6 +723,19 @@ func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgrou
 	// runroot and mount_program. setEnv replaces rather than appends, so a
 	// caller that still passes one loses to this, which is the direction that
 	// makes the guarantee hold rather than the one that makes it polite.
+	//
+	// The variable replaces the file set: with it pointed here, podman opens no
+	// /etc/containers/storage.conf, no $HOME one and no storage.conf.d drop-in
+	// (STORAGE-CONF.md §2, measured on podman 5.8.4 and 6.0.2).
+	//
+	// What it carries is narrower than it reads, and the narrowing comes from
+	// this run's own argv: --root/--runroot below pin graphroot and runroot
+	// anyway, and they discard every [storage.options*] key in whatever file
+	// this variable names (§3). The residual it alone is responsible for is
+	// `driver` and the remaining [storage] scalars. That is also why no
+	// CONTAINERS_STORAGE_CONF_OVERRIDE stands beside it the way one stands
+	// beside CONTAINERS_CONF: a later export of this variable still loses the
+	// store location to the flags, and its options to the same discard.
 	storagePath, err := e.writeStorageConf(pol, podman)
 	if err != nil {
 		return stage.EngineSpec{}, err
@@ -876,7 +1098,9 @@ func setEnv(env []string, key, value string) []string {
 //     variable and no flag: podman 5.8.4 has no --signature-policy at all,
 //     and a per-command flag would not reach an API-driven pull anyway. A
 //     home of our own is the only lever, which is the same conclusion
-//     PODMAN-STATIC.md §5 reached for the research bundle.
+//     PODMAN-STATIC.md §5 reached for the research bundle. What that lever
+//     carries is the HOST's own policy, projected — signaturepolicy.go — so
+//     taking the file over is a change of author and not of posture.
 //   - $HOME/.config/containers/registries.conf — where an image comes from.
 //     Also closed by CONTAINERS_REGISTRIES_CONF below; both, for the reason
 //     the next paragraph gives.
@@ -895,50 +1119,29 @@ func setEnv(env []string, key, value string) []string {
 // this closes nothing on that version — which is exactly why policy.json's
 // two neighbours are ALSO pointed at by their own environment variables. The
 // residual, stated plainly: on such a podman the host's policy.json is still
-// read, so signature policy stays host-authored. Nothing else does.
-func (e *Engine) writeEngineHome() (string, error) {
+// read directly. That one costs nothing now that the generated file is a
+// projection of it — the two agree, or the run has already refused. Nothing
+// else survives.
+func (e *Engine) writeEngineHome(pol *policy.Policy, sp *SignaturePolicy) (string, error) {
 	home := filepath.Join(e.confDir, "home")
-	confDir := filepath.Join(home, ".config", "containers")
-	if err := os.MkdirAll(confDir, 0o700); err != nil {
-		return "", fmt.Errorf("creating %s: %w", confDir, err)
+	containersDir := filepath.Join(home, ".config", "containers")
+	if err := os.MkdirAll(containersDir, 0o700); err != nil {
+		return "", fmt.Errorf("creating %s: %w", containersDir, err)
 	}
-	path := filepath.Join(confDir, "policy.json")
-	if err := os.WriteFile(path, []byte(SignaturePolicyJSON), 0o600); err != nil {
-		return "", fmt.Errorf("writing %s: %w", path, err)
+
+	// The signature policy is a PROJECTION of the host's, not a value this file
+	// holds (signaturepolicy.go). It arrives already read and already
+	// classified: everything that can refuse refused in
+	// ProjectHostSignaturePolicy, which the caller runs BEFORE engine.New, so a
+	// host policy snug cannot reproduce leaves no run directory behind and no
+	// copy of a host key in /tmp. All that is left here is writing.
+	if err := sp.write(e.confDir, containersDir, func(what, host string) (string, error) {
+		return e.guestPath(pol, what, host)
+	}); err != nil {
+		return "", err
 	}
 	return home, nil
 }
-
-// SignaturePolicyJSON is the signature policy this run's engine reads.
-//
-// Exported for ONE reader: containerpreflight.go's P8, which compares the
-// host's own policy against it. A second copy of "what snug considers
-// permissive" living in the preflight would be a fact stored twice, and the
-// half that drifts would be the one that decides whether a downgrade is
-// announced.
-//
-// It is podman's own shipped default, verbatim in meaning: accept any image,
-// verify no signature. Choosing it is not a hardening decision and must not
-// be read as one — a stricter policy (requiring a signature) would refuse
-// every image on Docker Hub and make the container profiles unusable, and
-// snug has no vocabulary in which a user could say which keys they trust.
-// What this file buys is that the ANSWER IS SNUG'S: today the answer is
-// whatever the host happens to have, or on a host with no policy.json at all
-// (measured: openSUSE ships only /usr/share/containers/policy.json, which
-// podman 5.8.4 does not look at) the answer is "no pull works", which is a
-// host-dependent failure a sandbox should not inherit.
-//
-// The downgrade case — a host that configured a STRICTER policy than this —
-// is not silently accepted: containerpreflight.go's P8 reads the host's own
-// policy.json and says so before the run (CLAUDE.md invariant 5).
-const SignaturePolicyJSON = `{
-    "default": [
-        {
-            "type": "insecureAcceptAnything"
-        }
-    ]
-}
-`
 
 // writeRegistriesConf generates the registries.conf this run's engine reads,
 // and returns its path for CONTAINERS_REGISTRIES_CONF.
@@ -1072,6 +1275,20 @@ func (e *Engine) writeStorageConf(pol *policy.Policy, podman string) (string, er
 	if err != nil {
 		return "", err
 	}
+	// Inert as written, and left here rather than removed: podman discards every
+	// [storage.options*] key in this file when --root is on the argv, and Spec's
+	// argv always passes --root (STORAGE-CONF.md §3, measured on podman 5.8.4
+	// and 6.0.2 with a bogus mount_program, which makes store init fail loudly
+	// when the key reaches the driver and is silent when it does not, `podman
+	// system service` included). On 5.8.4 it is inert twice over, since this
+	// file also omits `driver` and that engine prefixes the option with the
+	// driver name.
+	//
+	// The direction is toward less driver configuration, never more, so this is
+	// a portability defect and not a hole: a host that needs fuse-overlayfs for
+	// rootless overlay gets whatever containers/storage auto-selects. The fix is
+	// `--storage-opt overlay.mount_program=<guest path>` beside --root, measured
+	// to work; it changes the engine argv and its golden files.
 	if mp != "" {
 		mp, err = e.guestPath(pol, "storage.conf mount_program", mp)
 		if err != nil {

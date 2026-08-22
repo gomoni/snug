@@ -1,0 +1,30 @@
+── this host configured none
+         signatures  NOT verified, and that is snug's decision, not your
+                     host's: this host has no policy.json where podman looks,
+                     so a podman here refuses every pull outright and snug
+                     generates an accept-anything one so the sandbox can pull
+                     at all. Nothing you configured was weakened — you
+                     configured nothing — but the sandbox verifies LESS than
+                     the bare host. Write ~/.config/containers/policy.json and
+                     snug projects it
+── the host's own accepts anything
+         signatures  NOT verified, because your host does not verify them
+                     either: /home/u/.config/containers/policy.json accepts
+                     any image, and snug reproduces it rather than deciding
+── the host's own demands a signature
+         signatures  as /etc/containers/policy.json requires.
+                     snug projects that file into the engine's own
+                     policy.json — the keys it names are copies snug makes,
+                     because a host path resolves to nothing in the engine's
+                     derived view. A requirement snug cannot reproduce
+                     refuses the run rather than being dropped
+                     It binds PULLS, not the warm store: an image already in
+                     this target's store runs without a second policy check,
+                     whatever admitted it. See the store graft above
+── the host's own cannot be reproduced
+         signatures  THIS RUN WILL REFUSE. The engine's policy.json is a
+                     projection of your host's, and this host configured one
+                     snug cannot reproduce. Accepting any image instead would
+                     drop exactly the check you configured:
+                     /etc/containers/policy.json: transport "docker", scope "registry.example.internal" is "sigstoreSigned", which snug does not project.
+                     Fix: use a signedBy requirement for the scopes a sandbox needs.

@@ -28,6 +28,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/gomoni/snug/internal/hostread"
 )
 
 // Agent protocol message numbers (draft-miller-ssh-agent).
@@ -271,8 +273,17 @@ func takeString(b []byte) (val, rest []byte, ok bool) {
 }
 
 // parsePublicKey reads an OpenSSH .pub file: "<type> <base64 blob> [comment]".
+//
+// hostread.Required, not os.ReadFile: this path is payload-reachable in the
+// most direct sense a profile allows — ssh_key names a file under the
+// target, which @cwd-rw makes rw, and `rm key.pub && mkfifo key.pub` from a
+// PREVIOUS run turned a plain ReadFile into an open(2) that never returns,
+// before the sandbox even exists (issue #337). "Required" because an
+// unreadable pinned key must stay a hard error naming the path, exactly as
+// os.ReadFile's did — a silent skip here would start a proxy with no key to
+// pin against.
 func parsePublicKey(path string) ([]byte, string, error) {
-	data, err := os.ReadFile(path)
+	data, err := hostread.Required(path, hostread.MaxSSHPublicKeyBytes)
 	if err != nil {
 		return nil, "", fmt.Errorf("pinned ssh key: %w", err)
 	}

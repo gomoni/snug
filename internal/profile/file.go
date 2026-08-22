@@ -16,8 +16,19 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
+	"github.com/gomoni/snug/internal/hostread"
 	"github.com/gomoni/snug/internal/policy"
 )
+
+// maxProfileFileBytes bounds a single file read from a profiles.d layer.
+// snug's own base.toml, which defines every builtin profile, is ~40 KB; a
+// user's own layer defining a handful of custom profiles with comments might
+// run to a few hundred KB. 4 MiB is two orders of magnitude beyond that — a
+// legitimate layer clears it easily — while still bounding what a hostile
+// file at this path can make snug allocate (issue #337: unbounded before
+// this, and reachable without the host's cooperation, since
+// $XDG_CONFIG_HOME can point into a checked-out repo — CLAUDE.md invariant 3).
+const maxProfileFileBytes = 4 << 20
 
 type file struct {
 	Profile map[string]rawProfile `toml:"profile"`
@@ -659,10 +670,18 @@ func loadDir(dir string) (Registry, []BadFile, error) {
 	var bad []BadFile
 	for _, n := range names {
 		path := filepath.Join(dir, n)
-		// A file that cannot be READ is recorded the same way as one that cannot
-		// be parsed: it is one file's problem, and the rest of the layer is still
-		// perfectly good.
-		data, err := os.ReadFile(path)
+		// hostread.Required, not os.ReadFile: this is the one site of the six
+		// issue #337 named where the attacker does not need the host user's
+		// cooperation at all — a repo need only get $XDG_CONFIG_HOME pointed
+		// at itself (invariant 3's known gap) and ship
+		// profiles.d/x.toml as a FIFO. Before this fix that hung `snug
+		// profile list`, `snug --dry-run` and every real run in open(2)
+		// forever, with nothing on screen and no profile loaded yet to say
+		// why. A file that cannot be READ is recorded the same way as one
+		// that cannot be parsed: it is one file's problem, and the rest of
+		// the layer is still perfectly good — but "the rest of the layer" no
+		// longer includes waiting on this one.
+		data, err := hostread.Required(path, maxProfileFileBytes)
 		if err != nil {
 			bad = append(bad, BadFile{Path: path, Err: err})
 			continue

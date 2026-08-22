@@ -160,12 +160,12 @@ func TestNoEngineViewIsARefusalRatherThanAnEmptySweep(t *testing.T) {
 // defensive — and a reader of either test finds the other.
 func TestSpecRefusesAGraftlessPolicyBeforeItReachesThePATHCheck(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := &policy.Policy{Podman: policy.PodmanSocket, Mounts: roUsr()}
-	if _, err := e.Spec(p, "/usr/bin/podman", []string{"PATH=/usr/bin"}, false); err == nil {
+	if _, err := e.Spec(p, "/usr/bin/podman", []string{"PATH=/usr/bin"}, false, noSignaturePolicy(t)); err == nil {
 		t.Fatal("Spec accepted a policy with no grafts")
 	} else if !strings.Contains(err.Error(), "cannot see") {
 		t.Errorf("Spec refused a graftless policy for some reason other than an unmappable host "+

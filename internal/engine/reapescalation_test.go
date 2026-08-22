@@ -44,7 +44,7 @@ import (
 func TestStopEscalatesToSIGKILLWhenTheEngineOutlivesTheCascade(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
-	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,8 +52,13 @@ func TestStopEscalatesToSIGKILLWhenTheEngineOutlivesTheCascade(t *testing.T) {
 	// has run. A fixture that skipped it would make every assertion below
 	// pass on a sweep that was never armed, which is the defect this test
 	// exists to rule out.
+	// noSignaturePolicy is "this host configured none", NOT nil — Spec refuses
+	// nil outright as a caller that skipped ProjectHostSignaturePolicy (#307).
+	// It reaches the engine as a generated policy.json under its own $HOME, so
+	// no value of it changes the mark paths() records, which is all this test
+	// reads out of Spec.
 	if _, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman",
-		[]string{"PATH=/usr/bin"}, false); err != nil {
+		[]string{"PATH=/usr/bin"}, false, noSignaturePolicy(t)); err != nil {
 		t.Fatal(err)
 	}
 

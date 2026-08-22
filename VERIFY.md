@@ -2300,7 +2300,11 @@ $ ./bin/snug --dry-run -p @sys -p @home -p @claude . | sed -n '/NOT GRANTED/,/^$
     ~/.ssh  ~/.gnupg  ~/.aws  ~/.config/gh  ~/.kube  ~/.docker  ~/.netrc  ~/.mozilla  ~/.local/share/keyrings
     ~/.claude  PARTIAL — 1 host path beneath it is bound (see FILESYSTEM)
       the rest of it is not granted, and snug generates its own content here
-    /sys  /tmp/.X11-unix  the Wayland socket  the session D-Bus socket
+    /sys  /tmp/.X11-unix
+    snug mounts no desktop socket — no Wayland, no session D-Bus.
+      (a claim about what snug mounts, not a probe of this host. A profile granting
+       the directory one of these sockets sits in would make it false, and nothing
+       here would notice.)
 ```
 
 Before the fix, `~/.claude` sat in the bare run at the top — reading as "none of
@@ -2332,8 +2336,9 @@ host's `/tmp` still printed `/tmp/.X11-unix` as not granted. `/sys` and
 `/tmp/.X11-unix` now route through `coverageOf` like every other candidate.
 
 ```console
-$ ./bin/snug --dry-run --no-defaults -p @sys -p @home -p @cwd-rw . | sed -n '/NOT GRANTED/,/^$/p' | tail -1
-    /sys  /tmp/.X11-unix  the Wayland socket  the session D-Bus socket
+$ ./bin/snug --dry-run --no-defaults -p @sys -p @home -p @cwd-rw . \
+    | sed -n '/NOT GRANTED/,/^$/p' | grep -E '^\s+/'
+    /sys  /tmp/.X11-unix
 ```
 
 Now grant the host's `/tmp` and re-run. Write the profile somewhere snug will
@@ -2348,15 +2353,64 @@ $ cat > /tmp/xdg/snug/profiles.d/hosttmp.toml <<'EOF'
 ro = ["/tmp:/hosttmp"]
 EOF
 $ XDG_CONFIG_HOME=/tmp/xdg ./bin/snug --dry-run --no-defaults \
-    -p @sys -p @home -p @cwd-rw -p hosttmp . | sed -n '/NOT GRANTED/,/^$/p' | tail -1
-    /sys  the Wayland socket  the session D-Bus socket
+    -p @sys -p @home -p @cwd-rw -p hosttmp . \
+    | sed -n '/NOT GRANTED/,/^$/p' | grep -E '^\s+/'
+    /sys
 ```
 
 `/tmp/.X11-unix` is GONE from the line and `/sys` is still there — the second
 half is the positive control, since a fix that dropped the whole line would look
-identical on the first half alone. Grant something strictly beneath `/sys`
+identical on the first half alone. The `grep` isolates the coverage-checked run:
+the desktop-socket claim printed below it is a separate, unconditional statement
+and is deliberately not in this comparison — see 9a-ter. Grant something strictly beneath `/sys`
 instead and `/sys` moves to its own `PARTIAL` line, exactly as `~/.claude` does
 above.
+
+### 9a-ter. The desktop sockets are a claim about MOUNTS, not a probe of this host (issue #301)
+
+#301 asked whether to derive the Wayland and session D-Bus paths from
+`$XDG_RUNTIME_DIR`, `$WAYLAND_DISPLAY` and `DBUS_SESSION_BUS_ADDRESS` so they
+could be coverage-checked like `/sys` above. **Ruled: no.** The line was never a
+claim about two host paths — it is a claim about snug's mount set, and a claim
+about the mount set needs no host environment to be true. It is true headless,
+true on a desktop, true on a CI runner.
+
+Deriving would have converted a true host-independent statement into a
+host-dependent approximation of the same statement, imported a parsing surface
+(`DBUS_SESSION_BUS_ADDRESS` also takes `abstract=`, `tcp:`, and a
+semicolon-separated list of alternatives — each a way to print a wrong path
+confidently), and put a per-developer value into three golden fixtures and this
+file. That is the cost 9a-bis refused for a strictly stronger reason.
+
+What #301 actually delivered is the second half: the residual moved from a
+source comment — which nobody reading `--dry-run` ever sees — onto the screen.
+
+Set the environment to something no real host would produce, bind the directory
+the sockets live in, and check that neither reaches the screen:
+
+```console
+$ XDG_RUNTIME_DIR=/run/user/DERIVED WAYLAND_DISPLAY=wayland-DERIVED \
+  DBUS_SESSION_BUS_ADDRESS='unix:path=/run/user/DERIVED/bus,guid=deadbeef' \
+  ./bin/snug --dry-run . | grep -A3 'no desktop socket'
+    snug mounts no desktop socket — no Wayland, no session D-Bus.
+      (a claim about what snug mounts, not a probe of this host. A profile granting
+       the directory one of these sockets sits in would make it false, and nothing
+       here would notice.)
+```
+
+What to check:
+
+1. `DERIVED`, `guid=` and `unix:path=` appear **nowhere** on the screen. If any
+   of them does, the line is being derived from host environment again.
+2. The claim is present at all — the positive control. A run printing nothing
+   under NOT GRANTED would satisfy check 1 vacuously.
+3. Binding `/run/user/<uid>` does **not** silence it. Unlike `/sys`, it carries
+   no coverage check, because a bind of the directory a socket sits in does not
+   make the claim false — it makes it **unchecked**, which is exactly what the
+   parenthesis says.
+4. No issue number appears on the screen. A human reading `--dry-run` has no
+   tracker: a bare number leads nowhere and dates the artifact. The trackers for
+   the residual are in the source comment and in the test.
 
 Note what this profile also demonstrates, unchanged by #301: `$XDG_CONFIG_HOME`
 is trusted unconditionally, which is invariant 3's weakest point and is issue
@@ -2587,13 +2641,14 @@ hand-over a container run makes and it is the one that was invisible:
             owned: the sandbox's own grants do not expose this host path — it
             passed G4 only because snug declared it its own for this run
             abuse: write image layers into a store that PERSISTS across runs and
-            is shared with every other sandbox resolving to the same
-            profiles+target key …
+            is shared with every other sandbox on the SAME TARGET DIRECTORY,
+            whatever profiles it selected …
 ```
 
-`<key>` is `sha256(profiles+target)`, so the same selection on the same directory
-lands in the same store — that is what makes a warm start warm, and it is also
-why a poisoned layer outlives the sandbox that pulled it.
+`<key>` is `sha256(target)` (issue #276 — it used to also hash the profile
+selection; it no longer does), so ANY selection on the same directory lands in
+the same store — that is what makes a warm start warm, and it is also why a
+poisoned layer outlives the sandbox that pulled it.
 
 **A dry run still creates none of them.** The paths are computed, not made
 (`engine.PlannedPaths`), which is the same rule as issue #21's:
@@ -2906,8 +2961,38 @@ of it in the `IMAGES` block:
 ./bin/snug --dry-run -p @podman-socket $SC/proj | sed -n '/^IMAGES/,/^[A-Z][A-Z]/p'
 ```
 
-Expect `docker.io and nothing else`, `signatures  NOT verified`, and
-`logins      NONE`.
+Expect `docker.io and nothing else` and `logins      NONE`. The `signatures`
+line depends on the HOST, because the engine's `policy.json` is a projection of
+the host's own (issue #307) — on a host with none it reads `NOT verified, and
+nothing was weakened`.
+
+### 9i-1. The engine enforces the signature policy this host configured
+
+The generated `policy.json` reproduces the host's rather than accepting any
+image over the top of it, and a requirement snug cannot reproduce refuses the
+run. Prove the enforcement end to end with a host policy that rejects
+everything:
+
+```bash
+D=$(mktemp -d); mkdir -p $D/.config/containers
+echo '{"default":[{"type":"reject"}]}' > $D/.config/containers/policy.json
+HOME=$D ./bin/snug --dry-run -p @podman-socket $SC/proj | sed -n '/signatures/,/logins/p'
+```
+
+Expect `signatures  as <path> requires.` — not `NOT verified`. Then a host
+policy snug cannot reproduce must refuse rather than warn:
+
+```bash
+echo '{"default":[{"type":"sigstoreSigned","keyPath":"/etc/pki/k.pub"}]}' \
+  > $D/.config/containers/policy.json
+HOME=$D ./bin/snug --dry-run -p @podman-socket $SC/proj | sed -n '/signatures/,/logins/p'
+HOME=$D ./bin/snug -p @podman-socket $SC/proj -- true; echo "exit=$?"
+```
+
+Expect `THIS RUN WILL REFUSE` on the dry run, and a non-zero exit from the real
+run whose message names `sigstoreSigned`. The scripted equivalent is
+`TestTheEngineEnforcesTheProjectedSignaturePolicy` (integration, real podman)
+and `TestAnUnprojectableRequirementRefusesTheRun`.
 
 **The credential is the sharp one.** A developer host has
 `~/.docker/config.json`, and podman falls through to it because
@@ -3110,7 +3195,7 @@ The `rw` half is the control: a table where everything reads `ro` is a broken
 engine, not a strict one.
 
 The `conf` half is the one with teeth. It holds the `containers.conf`,
-`storage.conf`, `registries.conf` and signature policy snug generated and
+`storage.conf`, `registries.conf` and the projected signature policy snug generated and
 started the engine under — and the engine is root in the sandbox's user
 namespace with the full delegated subuid range. Writable, it could rewrite what
 it was started under.

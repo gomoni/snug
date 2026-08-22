@@ -1,6 +1,10 @@
 package cli
 
 import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -195,5 +199,152 @@ func TestLoadHostClaudeSettingsAbsentFileIsSilent(t *testing.T) {
 	if degraded != "" {
 		t.Errorf("an absent file produced a degradation message %q; a host that has never run "+
 			"Claude Code has nothing to be told snug ignored", degraded)
+	}
+}
+
+// ── the fold onto internal/hostread ─────────────────────────────────────────
+//
+// loadHostClaudeSettings reads through hostread.Clause. Two things have to hold
+// for that to be one read sequence rather than two that agree today.
+
+// TestClaudeSettingsMessagesAreOneSentence makes the composition ruling
+// checkable. hostread returns a bare clause and this site supplies the subject,
+// so `<label> <clause>` must read as one sentence — the failure it prevents is
+// a second subject arriving in the middle, which is what hostread.Optional's
+// pronoun produces when a caller has already named the file:
+//
+//	the host's installed_plugins.json it is not a regular file
+//
+// That sentence is what kept a second copy of the read sequence alive here.
+func TestClaudeSettingsMessagesAreOneSentence(t *testing.T) {
+	const label = "~/.claude/settings.json"
+	dir := t.TempDir()
+
+	fifo := filepath.Join(dir, "fifo.json")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	big := filepath.Join(dir, "big.json")
+	if err := os.WriteFile(big, []byte(strings.Repeat("x", 4096)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(dir, "bad.json")
+	if err := os.WriteFile(bad, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name, path string
+		max        int64
+	}{
+		{"a FIFO", fifo, 1 << 20},
+		{"a directory", dir, 1 << 20},
+		{"over the cap", big, 16},
+		{"not JSON", bad, 1 << 20},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, degraded := loadHostClaudeSettings(tc.path, label, tc.max)
+			if raw != nil {
+				t.Fatalf("carried %v, want nothing", raw)
+			}
+			// POSITIVE CONTROL: there IS a message. Without this, every
+			// assertion below passes on silence, which is the one outcome the
+			// degradation rule forbids for a file that exists and is wrong.
+			if degraded == "" {
+				t.Fatal("degraded silently, so this test measures nothing")
+			}
+			rest, ok := strings.CutPrefix(degraded, label+" ")
+			if !ok {
+				t.Fatalf("the message does not open with the label:\n  %s", degraded)
+			}
+			// The subject is the label. A pronoun here is a second one.
+			if first, _, _ := strings.Cut(rest, " "); first == "it" || first == "It" {
+				t.Errorf("the clause supplies its own subject, so the message reads "+
+					"%q — two subjects, one sentence. hostread.Clause returns a bare "+
+					"clause for exactly this reason; hostread.Optional is the pronoun "+
+					"form and is for callers that name no file.", degraded)
+			}
+			// "carrying nothing" for a read failure, "carries nothing into the
+			// sandbox" for the JSON-decode branch, whose sentence is this
+			// site's own and deliberately different. The property is that the
+			// message states the OUTCOME, not that it uses one spelling.
+			if !strings.Contains(degraded, "carrying nothing") &&
+				!strings.Contains(degraded, "carries nothing") {
+				t.Errorf("the message does not say what snug did about it:\n  %s", degraded)
+			}
+		})
+	}
+}
+
+// TestClaudeSettingsHasNoSecondReadSequence is the ratchet. The fold is only
+// worth anything while it stays folded, and what would undo it is a plain
+// os.ReadFile or os.OpenFile appearing in this file again — the FIFO hang and
+// the /dev/zero symlink at the top of this file are both what a raw read here
+// buys.
+//
+// The check is on the FILE rather than on the function: a helper beside
+// loadHostClaudeSettings doing its own open is the same defect one identifier
+// over.
+func TestClaudeSettingsHasNoSecondReadSequence(t *testing.T) {
+	const file = "claude.go"
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, file, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var found []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel == nil {
+			return true
+		}
+		pkg, ok := sel.X.(*ast.Ident)
+		if !ok || pkg.Name != "os" {
+			return true
+		}
+		switch sel.Sel.Name {
+		case "ReadFile", "Open", "OpenFile":
+			found = append(found, fmt.Sprintf("%s:%d os.%s",
+				file, fset.Position(call.Pos()).Line, sel.Sel.Name))
+		}
+		return true
+	})
+
+	// POSITIVE CONTROL on the detector, against source the test authors: a
+	// check that matched nothing would report no raw read and read as proof.
+	probe := `package cli
+func f(path string) { _, _ = os.ReadFile(path) }`
+	pf, perr := parser.ParseFile(token.NewFileSet(), "probe.go", probe, 0)
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	hits := 0
+	ast.Inspect(pf, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				if id, ok := sel.X.(*ast.Ident); ok && id.Name == "os" && sel.Sel.Name == "ReadFile" {
+					hits++
+				}
+			}
+		}
+		return true
+	})
+	if hits != 1 {
+		t.Fatalf("the detector found %d raw reads in a fixture containing exactly one, "+
+			"so its verdict on %s means nothing", hits, file)
+	}
+
+	if len(found) != 0 {
+		t.Errorf("%s reads a host file directly: %v.\n"+
+			"       Every host path snug does not own goes through internal/hostread — one "+
+			"O_NONBLOCK open, one fstat, one limited read, one post-read cap re-check. A raw "+
+			"read here is the FIFO hang and the /dev/zero symlink at the top of this file, "+
+			"back at the site that first measured them.", file, found)
 	}
 }

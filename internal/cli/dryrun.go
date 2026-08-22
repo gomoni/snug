@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/gomoni/snug/internal/engine"
 	"github.com/gomoni/snug/internal/policy"
 )
 
@@ -36,7 +37,12 @@ func dryRun(out io.Writer, p *policy.Policy, args []string, cfg config, refusedB
 	// ONE Report, then ONE renderer. --json REPLACES the human form; it never
 	// adds to it, because the document is the whole of stdout (renderJSON's
 	// doc comment says why that matters on a refusal).
-	rep := buildReport(p, args, cfg, refusedBy)
+	// The one call site with a real host behind it. Everywhere else — every
+	// golden, every unit test — pins the summary, so no fixture's verdict
+	// depends on what this machine has in /etc/containers.
+	rep := buildReport(p, args, cfg, refusedBy, func() engine.SignaturePolicySummary {
+		return engine.SummariseSignaturePolicy(p.Home)
+	})
 	if cfg.json {
 		return renderJSON(out, rep)
 	}
@@ -72,7 +78,7 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 	describeNetwork(out, p)
 	describeTopology(out, p)
 	describeGrafts(out, p)
-	describeContainers(out, p)
+	describeContainers(out, p, rep.Containers)
 	describeGit(out, p)
 	describeSSH(out, p)
 	describeCommands(out, p)
@@ -1026,7 +1032,7 @@ func accessWord(m policy.Mount) string {
 // block's engine line for the capability set it runs with), so the pasta
 // guarantees above cover containers too, and `@podman-socket` alone really is
 // offline.
-func describeContainers(out io.Writer, p *policy.Policy) {
+func describeContainers(out io.Writer, p *policy.Policy, c *reportContainers) {
 	if p.Podman == policy.PodmanOff {
 		return
 	}
@@ -1049,7 +1055,7 @@ func describeContainers(out io.Writer, p *policy.Policy) {
 	fmt.Fprintf(out, "         sandbox's view rather than being a copy of the host tree, so the\n")
 	fmt.Fprintf(out, "         filter now refuses by name what the namespace does not contain\n")
 	fmt.Fprintf(out, "         anyway (see the TOPOLOGY and ENGINE VIEW blocks).\n")
-	describeImageProvenance(out)
+	describeImageProvenance(out, c)
 }
 
 // describeEngineSource names WHICH engine binary this run will start, and which
@@ -1101,24 +1107,77 @@ func describeEngineSource(out io.Writer) {
 // appears only sometimes would invite the reader to conclude something from
 // its absence.
 //
+// The SIGNATURES line is the exception, and it is host-dependent because the
+// fact is (issue #307). snug projects this host's own policy.json into the
+// engine's rather than writing a permissive one over it, so the line has four
+// answers and the reader needs to know which: no host policy at all, a host
+// policy that accepts anything, a host policy that demands something, and a
+// host policy snug cannot reproduce — which is a run that will REFUSE, stated
+// here because a dry run describing a run that cannot start is worse than no
+// dry run.
+//
 // The credential line is the one worth reading twice: it is a CAPABILITY the
 // sandbox does not have (issue #142), stated plainly rather than apologised
 // for, and it is what makes "a private image cannot be pulled from inside"
 // a documented property rather than a bug report.
-func describeImageProvenance(out io.Writer) {
+func describeImageProvenance(out io.Writer, c *reportContainers) {
 	fmt.Fprintf(out, "IMAGES   provenance is snug's, not this host's (issue #137)\n")
 	fmt.Fprintf(out, "         search      docker.io and nothing else — no mirror, no rewrite, no\n")
 	fmt.Fprintf(out, "                     insecure registry. A generated registries.conf, pointed\n")
 	fmt.Fprintf(out, "                     at by CONTAINERS_REGISTRIES_CONF\n")
-	fmt.Fprintf(out, "         signatures  NOT verified: snug generates the engine's policy.json\n")
-	fmt.Fprintf(out, "                     (accept anything), so the host's own cannot decide it.\n")
-	fmt.Fprintf(out, "                     A host policy stricter than that is named on stderr\n")
-	fmt.Fprintf(out, "                     before the run starts\n")
+	describeSignaturePolicy(out, c)
 	fmt.Fprintf(out, "         logins      NONE. REGISTRY_AUTH_FILE points at an empty file, so the\n")
 	fmt.Fprintf(out, "                     host's ~/.docker/config.json and auth.json are not read,\n")
 	fmt.Fprintf(out, "                     and no private image can be pulled (issue #142)\n")
 	fmt.Fprintf(out, "         home        the engine gets a HOME of its own for the same reason —\n")
 	fmt.Fprintf(out, "                     everything podman reads out of one is snug's or absent\n")
+}
+
+// describeSignaturePolicy renders the four answers.
+//
+// BOTH HOST-TEXT FIELDS GO THROUGH visibleValue. The source is a path out of
+// $HOME and the refusal carries a decoder's rendering of the host's own file —
+// the sink class issue #58's red-team round found, where a crafted value erases
+// the lines above it and writes a reassuring one in their place. Not
+// payload-reachable (it is the host user's own file), so this is screen
+// integrity rather than an escape; asserted anyway, because the rule is to name
+// every sink a value reaches rather than the site where it was noticed.
+func describeSignaturePolicy(out io.Writer, c *reportContainers) {
+	switch {
+	case c.SignaturePolicyRefusal != "":
+		fmt.Fprintf(out, "         signatures  THIS RUN WILL REFUSE. The engine's policy.json is a\n")
+		fmt.Fprintf(out, "                     projection of your host's, and this host configured one\n")
+		fmt.Fprintf(out, "                     snug cannot reproduce. Accepting any image instead would\n")
+		fmt.Fprintf(out, "                     drop exactly the check you configured:\n")
+		for _, line := range strings.Split(strings.TrimRight(c.SignaturePolicyRefusal, "\n"), "\n") {
+			fmt.Fprintf(out, "                     %s\n", visibleValue(strings.TrimSpace(line)))
+		}
+	case c.SignaturePolicySource == "":
+		fmt.Fprintf(out, "         signatures  NOT verified, and that is snug's decision, not your\n")
+		fmt.Fprintf(out, "                     host's: this host has no policy.json where podman looks,\n")
+		fmt.Fprintf(out, "                     so a podman here refuses every pull outright and snug\n")
+		fmt.Fprintf(out, "                     generates an accept-anything one so the sandbox can pull\n")
+		fmt.Fprintf(out, "                     at all. Nothing you configured was weakened — you\n")
+		fmt.Fprintf(out, "                     configured nothing — but the sandbox verifies LESS than\n")
+		fmt.Fprintf(out, "                     the bare host. Write ~/.config/containers/policy.json and\n")
+		fmt.Fprintf(out, "                     snug projects it\n")
+	case !c.SignaturesVerified:
+		fmt.Fprintf(out, "         signatures  NOT verified, because your host does not verify them\n")
+		fmt.Fprintf(out, "                     either: %s accepts\n",
+			visibleValue(c.SignaturePolicySource))
+		fmt.Fprintf(out, "                     any image, and snug reproduces it rather than deciding\n")
+	default:
+		fmt.Fprintf(out, "         signatures  as %s requires.\n",
+			visibleValue(c.SignaturePolicySource))
+		fmt.Fprintf(out, "                     snug projects that file into the engine's own\n")
+		fmt.Fprintf(out, "                     policy.json — the keys it names are copies snug makes,\n")
+		fmt.Fprintf(out, "                     because a host path resolves to nothing in the engine's\n")
+		fmt.Fprintf(out, "                     derived view. A requirement snug cannot reproduce\n")
+		fmt.Fprintf(out, "                     refuses the run rather than being dropped\n")
+		fmt.Fprintf(out, "                     It binds PULLS, not the warm store: an image already in\n")
+		fmt.Fprintf(out, "                     this target's store runs without a second policy check,\n")
+		fmt.Fprintf(out, "                     whatever admitted it. See the store graft above\n")
+	}
 }
 
 // describeGit states that the sandbox's git config was RECONSTRUCTED, and from
@@ -2452,17 +2511,12 @@ func notGranted(p *policy.Policy) []string {
 	// developer. coverageOf reads only p.Mounts and is host-independent, so the
 	// coverage half is safe and the existence half is not.
 	//
-	// The DESKTOP SOCKETS stay unconditional, and this is the residual #301
-	// keeps open rather than something the fix reached. The Wayland and session
-	// D-Bus paths are derived from $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY and from
-	// DBUS_SESSION_BUS_ADDRESS (a `unix:path=...,guid=...` string, not a bare
-	// path), and NOTHING in this tree derives either today. Choosing which host
-	// environment to trust is a decision, not a refactor. They are named rather
-	// than pathed here precisely because snug does not know their paths — so
-	// read the line as "snug mounts no desktop socket", which is true of every
-	// profile snug ships, and NOT as a coverage-checked claim about two host
-	// paths. A profile granting the directory one of them sits in would make it
-	// false, and nothing here would notice.
+	// The DESKTOP SOCKETS are no longer in this run of names at all — see the
+	// claim appended after it. #301 asked whether to derive their paths from
+	// host environment so they could be coverage-checked like everything else
+	// here, and the answer is NO, ruled: the line was never a claim about two
+	// host paths. It is a claim about snug's mount set, and a claim about the
+	// mount set needs no host environment to be true.
 	//
 	// `partial` is NOT reused for these: it was appended to lines above, so a
 	// later append to it would be silently dropped. Their PARTIAL lines follow
@@ -2480,9 +2534,47 @@ func notGranted(p *policy.Policy) []string {
 		}
 		static = append(static, c)
 	}
-	static = append(static, "the Wayland socket", "the session D-Bus socket")
-	lines = append(lines, strings.Join(static, "  "))
+	// The joined line is CONDITIONAL now, and it did not need to be before.
+	// Until the desktop-socket names moved out of `static` below, two literals
+	// were always appended, so the slice was never empty. It can be now — a run
+	// binding the host's /sys and /tmp covers both — and joining an empty slice
+	// would print a blank row under NOT GRANTED that reads as a missing entry.
+	if len(static) > 0 {
+		lines = append(lines, strings.Join(static, "  "))
+	}
 	lines = append(lines, staticPartial...)
+
+	// The desktop-socket claim, stated as what it IS rather than left sitting in
+	// the run of coverage-checked paths above, where it read as one more of them
+	// (issue #301's residual).
+	//
+	// It is a claim about snug's MOUNT SET, not a probe of this host, and that
+	// is what makes it host-independent: "snug mounts no desktop socket" is true
+	// headless, true on a desktop, true on a CI runner. Deriving the paths
+	// instead — $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY, and DBUS_SESSION_BUS_ADDRESS
+	// which is a `unix:path=...,guid=...` string that also takes `abstract=`,
+	// `tcp:` and a semicolon-separated list of alternatives — would convert a
+	// true host-independent statement into a host-dependent approximation of the
+	// same statement, and put a per-developer value into three golden fixtures
+	// and VERIFY.md. That is the cost #320 refused when it declined to stat-gate
+	// /sys and /tmp/.X11-unix, for a strictly stronger reason than this one.
+	//
+	// The residual is printed HERE, in plain words and without issue numbers,
+	// because a human reading --dry-run has no issue tracker: a bare number
+	// leads nowhere and dates the artifact. It is tracked as #292 (a grant of a
+	// DIRECTORY is a grant of every socket in it) and #296 (the FIFO sibling) —
+	// those numbers belong in this comment and in the test, not on the screen.
+	//
+	// What the claim actually rests on, none of which is a coverage check:
+	// snug ships no profile naming a desktop socket, GUI/audio/D-Bus
+	// passthrough being out of scope by construction; rejectEndpointSource
+	// refuses a bind whose SOURCE is a socket; and the directory case is the
+	// tracked, measured residual the second line states.
+	lines = append(lines,
+		"snug mounts no desktop socket — no Wayland, no session D-Bus.",
+		"  (a claim about what snug mounts, not a probe of this host. A profile granting",
+		"   the directory one of these sockets sits in would make it false, and nothing",
+		"   here would notice.)")
 	return lines
 }
 

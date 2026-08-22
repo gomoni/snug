@@ -14,22 +14,50 @@ import (
 	"github.com/gomoni/snug/internal/policy"
 )
 
-// Identity by PATH, not by process tree.
+// Identity by PATH, not by process tree — and since Tier C the reason is
+// VERIFICATION, not reach.
 //
-// That is what makes teardown work when /usr/bin/podman is a WRAPPER. Inside
-// distrobox it is a symlink to distrobox-host-exec, which forwards the call
-// over D-Bus to the real podman on the host: snug's child is the shim, the
-// engine is in a process tree parented to the host's systemd, and both a
-// process-group kill and Pdeathsig miss it entirely. The process tree is a lie
-// there; the socket the engine is serving is not.
+// The wrapper case this was written for is closed. A `podman` that forwards to
+// the host — distrobox's distrobox-host-exec shim is the live spelling — put
+// the engine in a process tree parented to the host's systemd, where a
+// process-group kill and Pdeathsig both missed it, and the socket path was the
+// only true thing about it. It cannot happen now, for two independent reasons:
+//
+//   - The engine's argv names GUEST paths only. Spec resolves --root, --runroot
+//     and the socket through Engine.guestPath, which refuses a path no graft
+//     exposes, so the argv is entirely under /snug (asserted by
+//     TestEngineArgvNamesOnlyGuestPaths). Those paths resolve only inside the
+//     engine's derived mount namespace, so an engine that exec'd on the host
+//     could not open its own store or bind its own socket — it cannot start.
+//   - Preflight P1 refuses the shim before that, by name. Measured on the
+//     development host: "podman resolves to /usr/bin/podman, a host-escape
+//     helper (distrobox-host-exec) ... snug will not run the container engine
+//     through it."
+//
+// What kills the engine now is the CASCADE: it is pid 1 of its own pid
+// namespace (Tier C's C0), so the namespace collapsing takes it and every
+// container with it. This file is what checks the cascade worked.
+//
+// Path identity is still the right mechanism for that check, and the reason is
+// not the wrapper: a RECORDED PID is not an option. libpod's recorded pids are
+// numbered in the engine's own namespace and mean nothing to a host-side reader
+// (#167, which cost a caller its existence), and the engine's own host-side pid
+// would still have to be re-verified before any signal — which is what a pidfd
+// and a cmdline re-read already do here, without a second thing to keep in
+// step. Cheap, and a verification rather than the mechanism.
+//
+// A wrapper that re-execs INSIDE the derived view is still possible and is not
+// this paragraph's case: whatever it execs is a descendant in the engine's pid
+// namespace, so the cascade already covers it.
 //
 // The mark is the SOCKET path, not the store, and the difference is the whole
 // design of this file. The socket carries snug's pid, so it names exactly one
 // run. The store is deliberately SHARED — that is what makes a warm start
-// possible — so two sandboxes with the same profiles on the same directory
-// have the same store, and "kill whatever names the store" would reach into a
-// sibling sandbox that is still working. It was written that way first, and it
-// killed a concurrent sandbox's engine mid-run.
+// possible — so two sandboxes on the same target directory, whatever profiles
+// either one selected (issue #276), have the same store, and "kill whatever
+// names the store" would reach into a sibling sandbox that is still working.
+// It was written that way first, and it killed a concurrent sandbox's engine
+// mid-run.
 //
 // THE MARK IS THE SPELLING THE ENGINE'S OWN ARGV CARRIES, which since Tier C is
 // the GUEST path — engine.go's Spec builds "unix://" + guestSock, and its
@@ -50,6 +78,15 @@ import (
 // on — serves $XDG_RUNTIME_DIR/podman/podman.sock and can never match, and a
 // concurrent snug on the same (deliberately shared) store carries a different
 // pid. Tests assert both halves.
+//
+// FOR CONTRAST, THE SPELLING THIS DELIBERATELY DOES NOT MATCH (kept from #362,
+// because paths() returning nil rather than falling back to it is a decision a
+// reader needs the other half of): e.sock is
+// /tmp/snug-<uid>-<our pid>/sock/podman-<our pid>.sock — NOT under
+// $XDG_RUNTIME_DIR, which is where an earlier design put it before issue #63
+// Tier B moved the engine's own run directory to /tmp (see engine.go's own doc
+// comment on New). No process on the machine carries that string, which is
+// exactly why falling back to it would be indistinguishable from not sweeping.
 //
 // IT IS A STRING THE PAYLOAD CAN AUTHOR, and what stops that is not the matcher
 // but WHEN this runs. A payload can put candidate pids on its own argv, and
@@ -250,6 +287,12 @@ func waitQuiet(paths []string, exclude map[int]bool, budget time.Duration) []int
 // wants a human to misread the line telling them what to `kill -9` is not an
 // edge case, it is the threat model — and this warning is a screen a human reads
 // especially carefully, since it is the one that stopped them.
+//
+// WHICH TEST COVERS THIS SINK (kept from #362, and the distinction is the point):
+// TestNoSnugScreenEmitsARawControlCharacter drives the --dry-run screen and does
+// NOT reach internal/engine, which is why this could print a raw command line
+// for as long as it did. TestDescribeSanitisesACommandLine is the one that
+// reaches it, with a live decoy.
 //
 // Escaped BEFORE the length clamp: truncating first could cut a multi-byte rune
 // and leave a raw 0x9b behind, which is the CSI introducer on a terminal in

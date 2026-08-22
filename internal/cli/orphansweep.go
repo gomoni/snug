@@ -136,14 +136,36 @@ func sweepOneOrphan(snugRoot *os.Root, snugPath, name string) {
 // outside is simply discarded by the kernel. Killing the init collapses the
 // namespace, which is what takes the payload with it.
 //
-// A pidfd carries the whole identity check, and it is the reason there is no
-// residual pid-reuse window at all. pidfd_open PINS the process: while the fd
-// is held the kernel cannot recycle that pid number, so every check below AND
-// the kill refer to the same task — a numeric-pid kill after a separate check
-// has a TOCTOU (the pid could be reaped and reused between the two), and this
-// does not. pidfd_open itself, however, will happily pin a pid that was ALREADY
-// reused before we opened it, so identity must still be confirmed after the
-// open, in two parts (#285):
+// A pidfd carries the identity check, and what it guarantees is narrower than
+// "no reuse window" — MEASURED on this kernel, in a fresh user+pid namespace
+// writing ns_last_pid:
+//
+//	pinned pid           = 7 (reaped, pidfd still open)
+//	fdinfo says          = Pid: -1  NSpid: -1
+//	next child got pid   = 7  (collision=true)
+//	signal through pin   = no such process
+//	new occupant alive   = true
+//
+// So the NUMBER is recyclable while the fd is held. What the pin actually
+// guarantees is the other half, and it is the half this sweep needs: the pidfd
+// refers to the task it opened and dies with it, so a signal through it can
+// never reach whatever holds that number later — it returns ESRCH instead
+// (#303). That is what makes the kill below fail CLOSED rather than land on a
+// stranger, and it is why the kill goes through the pin and never through the
+// number.
+//
+// The consequence for everything else in this function: anything reading
+// /proc/<pid> BY NUMBER after the open may be describing a different task.
+// The starttime and namespace-inode checks below are exactly that, and they are
+// what turns "some process holds this number" into "this is provably our init".
+// reap.go and teardown.go state the same guarantee the same way — "pins the
+// task the number named AT OPEN TIME" — and a future edit that acts on the
+// NUMBER inside this window (a kill(2) fallback, a cgroup lookup, a
+// /proc/<pid> write) is not made safe by the pin.
+//
+// pidfd_open will also happily pin a pid that was ALREADY reused before we
+// opened it, so identity must still be confirmed after the open, in two parts
+// (#285):
 //
 //   - starttime, which proves the pinned pid is the one the state file named
 //     and not a pre-open reuse of that number;
@@ -167,8 +189,20 @@ func killOrphanInit(st runState, statePath string) {
 		return // ESRCH: already gone, which is the ordinary case
 	}
 	defer unix.Close(pidfd)
-	// pid is pinned from here: the number cannot be recycled while pidfd is
-	// held, so the checks below and the kill all name the same task.
+	// The TASK is pinned from here; the NUMBER is not (issue #345). Measured on
+	// this kernel — see this function's doc comment: a reaped pid's number is
+	// handed out again while the fd is still open. What the pidfd guarantees is
+	// that a signal THROUGH IT reaches the task it opened or returns ESRCH, so
+	// the kill below fails closed.
+	//
+	// So the checks between here and that kill do NOT all name the same task by
+	// virtue of the pin — procStartTime and procNamespaceInodes below read
+	// /proc/<pid> BY NUMBER, and it is what they COMPARE (the recorded start
+	// time, the recorded namespace inodes) that establishes identity, not the
+	// pin. This comment claimed otherwise for as long as the doc comment above
+	// did, and was left behind when that one was corrected: a rule fixed at the
+	// site the reporter quoted while a second copy survived twelve lines below
+	// it, inside the function the corrected header governs.
 	start, err := procStartTime(pid)
 	if err != nil {
 		return // gone between open and stat, or /proc unreadable: not provably ours

@@ -3,14 +3,13 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/gomoni/snug/internal/hostread"
 	"github.com/gomoni/snug/internal/policy"
 )
 
@@ -97,7 +96,7 @@ const maxInstalledPluginsBytes = 256 << 10
 func stageInstalledPlugins(pol *policy.Policy, home string) error {
 	guest := filepath.Join(home, ".claude", "plugins", "installed_plugins.json")
 
-	raw, problem := readHostFileBounded(guest, maxInstalledPluginsBytes)
+	raw, problem := hostread.Optional(guest, maxInstalledPluginsBytes)
 	if problem != "" && len(pol.PluginAllowlist) > 0 {
 		return fmt.Errorf("@claude names %d plugin(s) (%s) but the host's installed_plugins.json "+
 			"%s — snug cannot validate the named plugins are installed, and a named plugin that "+
@@ -171,7 +170,7 @@ func stageClaudeCredentials(pol *policy.Policy, home string) {
 	// the loud failure the degradation rule demands.
 	//
 	// The cap is small on purpose: the real file is 508 bytes.
-	raw, note := readHostFileBounded(path, maxCredentialsBytes)
+	raw, note := hostread.Optional(path, maxCredentialsBytes)
 	if note != "" {
 		fmt.Fprintf(os.Stderr, "snug: not staging ~/.claude/.credentials.json: %s\n"+
 			"      The sandbox will start LOGGED OUT rather than receive a credential file snug\n"+
@@ -245,52 +244,14 @@ func stageClaudeCredentials(pol *policy.Policy, home string) {
 // pathological file can hide behind.
 const maxCredentialsBytes = 64 << 10
 
-// readHostFileBounded opens path without blocking on a FIFO, refuses anything
-// that is not a regular file, and reads at most maxBytes.
-//
-// Three returns rather than two, and the distinction is the one
-// stageClaudeCredentials' doc comment turns on: (nil, "") means ABSENT, which
-// is an ordinary state and says nothing; (nil, note) means PRESENT AND
-// UNREADABLE, which must be said out loud; (data, "") is the file.
-//
-// This is loadHostClaudeSettings' body, generalised. It was not generalised
-// when that function earned its guards, and this path was written without
-// them — so the second caller is what turns a lesson into a shared mechanism
-// rather than a comment somebody has to remember to copy.
-func readHostFileBounded(path string, maxBytes int64) ([]byte, string) {
-	// O_NONBLOCK applies to the OPEN; for a regular file it has no further
-	// effect on the read below. It exists solely so opening a FIFO returns
-	// instead of blocking forever.
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, "" // absent, or unreadable by permission: nothing to stage
-	}
-	defer f.Close()
-
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, fmt.Sprintf("it could not be inspected (%v)", err)
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Sprintf("it is not a regular file (mode %s). snug reads that path as "+
-			"data and will not read a FIFO, a device or a directory there", fi.Mode())
-	}
-	if fi.Size() > maxBytes {
-		return nil, fmt.Sprintf("it is %d bytes, over the %d-byte cap snug reads for it",
-			fi.Size(), maxBytes)
-	}
-	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
-	if err != nil {
-		return nil, fmt.Sprintf("it could not be read (%v)", err)
-	}
-	// The real cap. A file whose st_size lied — /dev/zero through a symlink,
-	// anything under /proc, a file that grew since the stat — lands here.
-	if int64(len(data)) > maxBytes {
-		return nil, fmt.Sprintf("it produced more than the %d-byte cap snug reads for it "+
-			"(its reported size was %d)", maxBytes, fi.Size())
-	}
-	return data, ""
-}
+// readHostFileBounded used to live here as loadHostClaudeSettings' body,
+// generalised for a second caller. It is now internal/hostread.Optional: a
+// third caller outside internal/cli (internal/sshproxy, for identity.ssh_key,
+// issue #337) cannot import this package, and a fourth (internal/profile, for
+// a profiles.d layer) genuinely cannot either — internal/policy must stay
+// pure, and profile sits below cli. The discipline moved so it stays one
+// mechanism instead of becoming a comment every new caller has to remember to
+// copy back in.
 
 // stageClaudeSettings generates the sandbox's ~/.claude/settings.json from an
 // ALLOWLIST of the host's, and is now the ONLY thing that ever writes a mount
@@ -576,30 +537,10 @@ func stageProjectClaudeSettings(pol *policy.Policy, verbose bool) {
 // treat as fatal (§5.6's degradation rules: every failure here is "carry
 // nothing", none of them may fail the run).
 //
-// OPEN FIRST, THEN STAT THE DESCRIPTOR, THEN READ THROUGH A LIMIT. All three
-// steps earned their place by a red-team finding against the first version,
-// which did `os.Stat` on the PATH and then `os.ReadFile`:
-//
-//   - `O_NONBLOCK` is what stops a FIFO at this path hanging the run FOREVER.
-//     Measured: `mkfifo ~/.claude/settings.json` made `os.ReadFile` block in
-//     `open(2)` waiting for a writer that never came — no sandbox, no exit
-//     code, no line on any screen. That is strictly worse than the fatal error
-//     the degradation rule forbids, and the doc comment three paragraphs up
-//     promised it could not happen.
-//   - `IsRegular` refuses the FIFO, the device and the directory outright, so
-//     the read below is only ever a read of a file.
-//   - `io.LimitReader` is where the CAP actually lives. Statting the path
-//     first only bounded what `st_size` CLAIMED. Measured: a symlink to
-//     `/dev/zero` stats as zero bytes, sailed past the size branch and took
-//     the process to 3.1 GB of resident memory in two seconds, still climbing;
-//     a symlink to `/proc/self/environ` likewise stats as zero and had its
-//     contents read in full (only the JSON decode stopped it). A regular file
-//     that grows between the stat and the read is the same bug without the
-//     symlink. The stat is now a cheap early exit for the honest case, never
-//     the bound.
-//
-// It reads maxBytes+1 so that "exactly at the cap" and "over the cap" are
-// distinguishable without a second syscall.
+// The FIFO and the /dev/zero symlink this path was measured against, and the
+// reason the sequence is an O_NONBLOCK open before an fstat before a limited
+// read, are in internal/hostread. They are that package's whole subject and
+// this site is one of its callers.
 //
 // The open FOLLOWS SYMLINKS, deliberately — a human may legitimately symlink
 // their settings file — so a `~/.claude/settings.json` pointing at
@@ -608,42 +549,20 @@ func stageProjectClaudeSettings(pol *policy.Policy, verbose bool) {
 // parsed could only contribute allowlisted, type-checked, charset-checked
 // scalars through FilterClaudeSettings. Contrast the bind this replaces, which
 // followed the identical symlink and mounted the target file WHOLE.
+// The read is hostread.Clause: one sequence for every host path snug does not
+// own. This site supplies the subject (label) and the suffix ("carrying
+// nothing"), which is the whole of what it needs that a standalone caller does
+// not, and is why Clause exists beside Optional.
 func loadHostClaudeSettings(path, label string, maxBytes int64) (map[string]any, string) {
-	// O_NONBLOCK applies to the OPEN, and for a regular file it has no further
-	// effect on the reads below — it exists solely so that opening a FIFO
-	// returns instead of blocking.
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		// Absent, or a permission error — either way there is nothing to carry
-		// and no host file the human is entitled to be told snug ignored.
-		// Matches claudeFiles' stage() closure for every other optional host
-		// path.
+	// An absent file, or one this user may not read, is (nil, "") — nothing to
+	// carry and no host file the human is entitled to be told snug ignored.
+	// Matches claudeFiles' stage() closure for every other optional host path.
+	data, clause := hostread.Clause(path, maxBytes)
+	if clause != "" {
+		return nil, fmt.Sprintf("%s %s; carrying nothing", label, clause)
+	}
+	if data == nil {
 		return nil, ""
-	}
-	defer f.Close()
-
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, fmt.Sprintf("%s could not be inspected (%v); carrying nothing", label, err)
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Sprintf("%s is not a regular file (mode %s); carrying nothing. snug "+
-			"reads that path as data and will not read a FIFO, a device or a directory there", label, fi.Mode())
-	}
-	if fi.Size() > maxBytes {
-		return nil, fmt.Sprintf("%s is %d bytes, over the %d-byte cap snug reads for it; "+
-			"carrying nothing rather than reading an arbitrarily large file into memory on every "+
-			"run", label, fi.Size(), maxBytes)
-	}
-	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
-	if err != nil {
-		return nil, fmt.Sprintf("%s exists but could not be read (%v); carrying nothing", label, err)
-	}
-	// The real cap. A file whose st_size lied — /dev/zero through a symlink,
-	// anything under /proc, a file that grew since the stat — lands here.
-	if int64(len(data)) > maxBytes {
-		return nil, fmt.Sprintf("%s produced more than the %d-byte cap snug reads for it "+
-			"(its reported size was %d); carrying nothing", label, maxBytes, fi.Size())
 	}
 	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -807,9 +726,23 @@ func claudeStateJSON(pol *policy.Policy, home string) []byte {
 // home is main.go's raw os.UserHomeDir() (the same value stage() reads host
 // files from), while target is the canonicalised pol.Target — see
 // claudeStateJSON's doc comment on why the match is exact.
+// maxClaudeJSONBytes bounds the read of the host's ~/.claude.json. Only one
+// boolean is ever extracted (see the doc comment above), but the file itself
+// carries an object per tracked project plus MCP server config; a few
+// hundred tracked projects is still well under a megabyte. 4 MiB is
+// generous headroom without being a memory-exhaustion primitive on a file
+// read on every run that selects @claude (issue #337: a FIFO here used to
+// hang before the sandbox existed, and a giant file used to be read whole).
+const maxClaudeJSONBytes = 4 << 20
+
 func hostTrustsTarget(home, target string) bool {
-	b, err := os.ReadFile(filepath.Join(home, ".claude.json"))
-	if err != nil {
+	// hostread.Optional, not os.ReadFile: this is the host user's own file,
+	// not payload-reachable, but the FIFO/symlink primitive issue #337
+	// measured elsewhere applies here identically, and "every failure is the
+	// same failure — not trusted" (see above) already means a note here gets
+	// no different treatment than an absent file.
+	b, note := hostread.Optional(filepath.Join(home, ".claude.json"), maxClaudeJSONBytes)
+	if note != "" || b == nil {
 		return false
 	}
 	var doc struct {
