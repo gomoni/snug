@@ -219,7 +219,7 @@ var buildParams = map[string]buildParamCheck{
 	"networkmode":             checkNetworkMode,
 	"nsoptions":               checkNSOptions,
 	"seccomp":                 checkSeccompProfile,
-	"idmappingoptions":        nil, // rootless bounds this; the CLI always sends it
+	"idmappingoptions":        checkIDMappingOptions,
 
 	"devices": refuseBuildParam("the engine's /dev is the sandbox's own synthetic tree since " +
 		"Tier C (issue #125), with no host device nodes, and the engine holds no CAP_MKNOD to " +
@@ -383,6 +383,187 @@ func checkBuildVolume(p *Proxy, v string) (string, error) {
 	// would be snug authoring a request nobody made.
 	parts[0] = m.Source
 	return strings.Join(parts, ":"), nil
+}
+
+// idMappingFields is the DEFAULT-DENY ALLOWLIST over idmappingoptions' own
+// fields: #313's rule for a build context's fields, applied to the OTHER
+// waved-through parameter that turned out to carry a host path (issue #323).
+//
+// It was `nil` — "rootless bounds this; the CLI always sends it" — and that was
+// true of the value podman 5.8.3 sent. RECORDED, both versions this file has
+// fixtures for:
+//
+//	5.8.3: {"HostUIDMapping":true}
+//	6.0.2: {"HostUIDMapping":true,"HostGIDMapping":true,"UIDMap":[],"GIDMap":[],
+//	        "AutoUserNs":false,"AutoUserNsOpts":{"Size":0,"InitialSize":0,
+//	        "PasswdFile":"","GroupFile":"","AdditionalUIDMappings":null,
+//	        "AdditionalGIDMappings":null}}
+//
+// One podman major later the same parameter name carries a struct with two host
+// PATHS in it. That is what a `nil` entry actually is: a known NAME with an
+// unmodelled VALUE, and the value is free to grow.
+//
+// UIDMap/GIDMap/HostUIDMapping/HostGIDMapping stay permitted with content: they
+// carry integers, name nothing, and the build container's user namespace is a
+// CHILD of the sandbox's, so every host id in a map must already be mapped
+// there. That bound is REASONED FROM SOURCE AND FROM THE USERNS HIERARCHY — it
+// was NOT measured inside snug's own U, and it is not a licence to relax them.
+var idMappingFields = map[string]string{
+	"hostuidmapping": "HostUIDMapping",
+	"hostgidmapping": "HostGIDMapping",
+	"uidmap":         "UIDMap",
+	"gidmap":         "GIDMap",
+	"autouserns":     "AutoUserNs",
+	"autousernsopts": "AutoUserNsOpts",
+}
+
+// autoUserNsFields is the same allowlist one level down. Every one of these may
+// only be EMPTY, so the map's job is to refuse a field snug has not been taught
+// about rather than to say which are dangerous — a seventh field arriving is a
+// value reaching the engine unexamined, which is the thing this file refuses.
+var autoUserNsFields = map[string]string{
+	"size":                  "Size",
+	"initialsize":           "InitialSize",
+	"passwdfile":            "PasswdFile",
+	"groupfile":             "GroupFile",
+	"additionaluidmappings": "AdditionalUIDMappings",
+	"additionalgidmappings": "AdditionalGIDMappings",
+}
+
+// allowlistJSONFields applies the two rules #310 and #311 cost us, over one JSON
+// object's keys: every key must be modelled, and no field may appear twice under
+// different casing. It returns canonical field name -> the key that carried it.
+//
+// The duplicate rule is not "pick a winner". Picking works only if snug and the
+// engine agree on the rule, and the bug WAS that they do not: encoding/json is
+// case-insensitive LAST-WINS after a sort, so a second spelling is a way to have
+// snug judge one value and the engine use another (#310). Keys are sorted first
+// so a refusal names the same key on every run — a message that varies with map
+// order cannot be pinned by a test.
+func allowlistJSONFields(fields map[string]json.RawMessage, allow map[string]string,
+	what string) (map[string]string, error) {
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	spelling := make(map[string]string, len(keys))
+	for _, k := range keys {
+		canon, known := allow[strings.ToLower(k)]
+		if !known {
+			return nil, fmt.Errorf("%s carries the field %q, which snug does not model. "+
+				"Its fields are an allowlist for the same reason the build parameters are: "+
+				"a field snug has not been taught about may name a host path and would reach "+
+				"the engine unexamined. Drop it; if it is harmless it belongs in this file's "+
+				"allowlist with a note saying why", what, k)
+		}
+		if prev, dup := spelling[canon]; dup {
+			return nil, fmt.Errorf("%s carries %s twice, as %q and %q. Send it once: snug and "+
+				"the engine do not agree on which duplicate wins — encoding/json takes the "+
+				"LAST after a sort, so a second spelling is a way to have snug judge one value "+
+				"and the engine use another (issue #310)", what, canon, prev, k)
+		}
+		spelling[canon] = k
+	}
+	return spelling, nil
+}
+
+// checkIDMappingOptions judges the id-mapping request a build carries.
+//
+// THE MEASUREMENT (issue #323, sev:low). AutoUserNsOpts.PasswdFile and
+// .GroupFile are HOST PATHS, and the engine opens them: containers/storage
+// userns.go:101 `parseMountedFiles` calls os.Open on a non-empty override,
+// absolute, resolved in the ENGINE's own mount namespace. A planted
+//
+//	snugmarker:x:99123:99123::/x:/bin/sh
+//
+// came back as "the container needs a user namespace with size 99124", which is
+// the planted uid + 1 — the engine read and parsed a file the caller named. It
+// is bounded (EnterEngine confines the engine to a private copy of the
+// sandbox's view plus the engine-only grafts, and the observable is one
+// integer, not content) and it is still a path-bearing field with no check
+// behind it, forwarded by a parameter --dry-run says nothing about.
+//
+// ONLY-EMPTY IS NOT A WEAKER RULE THAN REFUSING THE FIELD, and the difference
+// is worth stating because a diff shows only the word "allowed". An ordinary
+// podman 6.0.2 build SENDS AutoUserNsOpts, with every field zero; refusing the
+// field's presence would break every 6.0.2 build, which is issue #314 again one
+// level down. Permitting the NAME and refusing all CONTENT closes the measured
+// primitive exactly, and leaves "a real workflow needs a non-empty one" where it
+// belongs: a grant decision with its own abuse sentence.
+//
+// The value is forwarded unchanged; nothing here resolves a path, because
+// nothing here is permitted to carry one.
+func checkIDMappingOptions(_ *Proxy, v string) (string, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(v), &raw); err != nil {
+		return "", fmt.Errorf("is not the JSON object podman sends")
+	}
+	spelling, err := allowlistJSONFields(raw, idMappingFields, "idmappingoptions")
+	if err != nil {
+		return "", err
+	}
+
+	// AutoUserNs=true is what makes the engine go looking for a passwd/group
+	// file at all. An ordinary build sends false, so only false is permitted:
+	// drop --userns=auto.
+	if k, ok := spelling["AutoUserNs"]; ok && !isEmptyJSON(raw[k]) {
+		return "", fmt.Errorf("%s asks the engine to allocate a user namespace automatically "+
+			"(--userns=auto), which makes it READ AND PARSE files to size the range. Only "+
+			"false is permitted — drop --userns=auto", k)
+	}
+
+	if k, ok := spelling["AutoUserNsOpts"]; ok {
+		if err := checkAutoUserNsOpts(raw[k], k); err != nil {
+			return "", err
+		}
+	}
+	return v, nil
+}
+
+// checkAutoUserNsOpts permits the sub-object podman sends and refuses every
+// value inside it. `{}`, `null` and the all-zero object an ordinary build sends
+// are the shapes that pass.
+func checkAutoUserNsOpts(rawOpts json.RawMessage, key string) error {
+	if isEmptyJSON(rawOpts) {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(rawOpts, &fields); err != nil {
+		return fmt.Errorf("%s is not the JSON object podman sends", key)
+	}
+	// The nested level gets the SAME two rules, because the last-wins trap
+	// works just as well one field down: {"AutoUserNsOpts":{...zero...},
+	// "autousernsopts":{"PasswdFile":"/etc/passwd"}} is caught above, and
+	// {"PasswdFile":"","passwdfile":"/etc/passwd"} is caught here.
+	spelling, err := allowlistJSONFields(fields, autoUserNsFields, key)
+	if err != nil {
+		return err
+	}
+
+	canon := make([]string, 0, len(spelling))
+	for c := range spelling {
+		canon = append(canon, c)
+	}
+	sort.Strings(canon)
+
+	for _, c := range canon {
+		k := spelling[c]
+		if isEmptyJSON(fields[k]) {
+			continue
+		}
+		switch c {
+		case "PasswdFile", "GroupFile":
+			return fmt.Errorf("%s.%s must be empty — it names a HOST FILE the engine opens and "+
+				"parses to size a user namespace (issue #323), and snug does not forward a "+
+				"host path here. Drop it", key, k)
+		default:
+			return fmt.Errorf("%s.%s must be empty — snug does not model what the engine does "+
+				"with it, and an ordinary build sends it zero. Drop it", key, k)
+		}
+	}
+	return nil
 }
 
 // additionalContextFields is the DEFAULT-DENY ALLOWLIST over one entry's own
