@@ -25,7 +25,7 @@ even a read access to the most of the system. Static linked binary written in Go
 echo "hello" > hello
 snug ~/src/myproject
 
-# sandbox hides and protects the filesystem
+# nothing is hidden — what no profile grants is simply never there
 🔒 snug:~/src/myproject> ls ~/.ssh
 ls: cannot access '/home/you/.ssh': No such file or directory
 🔒 snug:~/src/myproject$ echo "hello" > ../hello
@@ -434,6 +434,20 @@ snug *filters* is the **docker-compatible** schema — which podman itself serve
 so the client you run inside can be anything that speaks it. `CONTAINER_HOST` and
 `DOCKER_HOST` both point at snug's proxy.
 
+**A container profile creates persistent mutable state on your disk.**
+`@podman-socket` and `@podman-build` give the sandbox its own image store at
+`~/.local/share/snug/engines/<key>/`, keyed by the profile selection and the
+target directory. It persists across runs and is reused, so images are not
+re-downloaded every time — a deliberate convenience. Two consequences worth
+stating plainly: the store is writable state a container leaves behind, and a
+later run with the **same profiles on the same directory** reuses whatever images
+and layers an earlier run pulled or built there; and it is never
+garbage-collected today, so it grows (issue #308). What it does **not** touch is
+your host's own podman/docker store — that is separate and never mounted. Why
+this cross-run reuse is an accepted non-goal (it never reaches host state beyond
+snug's own store) is spelled out in
+[`.claude/design/THREAT-MODEL.md`](.claude/design/THREAT-MODEL.md).
+
 In practice that means **`docker` is the client to use inside a sandbox**:
 
 ```bash
@@ -530,6 +544,10 @@ snug refuses three things, and none of them is "too dangerous for you":
 
 `snug doctor` may get louder about profiles that are dangerous but correct
 (issue #80). It will not refuse to run one.
+
+The complete goals and non-goals — what host state snug protects, what it
+deliberately does not, and worked prevented/not-prevented examples — live in
+[`.claude/design/THREAT-MODEL.md`](.claude/design/THREAT-MODEL.md).
 
 ## Verifying the sandbox
 
