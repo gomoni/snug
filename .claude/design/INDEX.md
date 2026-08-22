@@ -1129,20 +1129,6 @@ Normalisation first: strip the `/v1.x` API-version prefix, split into segments, 
 | **Rejected, with an audited reason** | `exec`, `commit`, `session`, `grpc`, `distribution`, `images/load`, `images/create?fromSrc`, `containers/{id}/{exec,attach,update}`, `containers/{id}/archive` (GET/PUT/HEAD — a direct host-filesystem read/write channel); **every endpoint whose last segment is `prune`**, and `DELETE` on `images`/`volumes` (issue #339) |
 | **Scoped to this run** | `DELETE /containers/{id}` — forwarded only for a container carrying this run's `snug.run` label, which the proxy asks the ENGINE for. Fails closed on any answer it cannot read. `docker run --rm` issues exactly this request and is unaffected. |
 
-**Destruction is refused, not scoped, and the asymmetry is the point (issue
-#339).** The engine's store is keyed on the target directory alone since
-[#276](https://github.com/gomoni/snug/issues/276) and persists across runs —
-that sharing is what makes a warm start warm — so it holds images and container
-records that earlier runs of the same project created. A prune names no object,
-so the proxy has nothing to check it against, and `system/prune` cannot be
-scoped at all; an image or a volume carries no run label to scope BY, because
-snug stamps containers and podman has no "label on pull", so a label-scoped
-image prune would answer 200 and delete nothing — the silent downgrade invariant
-5 forbids. Only containers admit a truthful partition by run, and only they get
-one. The additive route, if `docker system prune` inside a sandbox ever matters,
-is to stamp the run label on BUILT images first and then allow the two prunes
-with snug's own filter forced onto the query; it is not built.
-
 `POST /containers/create`, in order:
 
 1. **Strict decode** into pinned `container.CreateRequest` types with `DisallowUnknownFields()` **and** a trailing-data check. Any unknown key — a future-API field that could grant an unmodelled capability — is a 403. Cost: a genuinely-new benign field from a newer client also 403s. Deliberate; bump the pinned dependency to widen.
