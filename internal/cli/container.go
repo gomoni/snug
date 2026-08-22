@@ -317,12 +317,44 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 	pol.BindSocket(sock, containerSocketGuest, "(containers)")
 	containerEnv(pol)
 
+	// Disarm the early-cleanup defer above: from here containerRun.cleanup
+	// owns eng.Stop(), and the two routes must never both fire.
 	started = true
+
+	// VERIFY WHERE THE ENGINE IS EXPECTED DEAD, NEVER WHERE IT IS EXPECTED
+	// ALIVE (issue #344). onPayloadExit runs from inside runStaged, BEFORE its
+	// deferred st.Close(), so the Pdeathsig cascade P1 -> engine has not fired
+	// and the engine is alive by construction: all that can be done there is
+	// drop the keepalive, which is Detach. cleanup is registered by main.go as
+	// `defer ctr.cleanup()` BEFORE it calls sandbox.Run, so it runs strictly
+	// after st.Close() has returned — and st.Close() waits for P1 to be reaped
+	// (Stage.Close ends with cmd.Process.Wait), with the kernel delivering the
+	// engine's pdeathsig in forget_original_parent before that wait wakes. So
+	// Stop's sweep runs against an engine the cascade has already SIGKILLed.
+	//
+	// BE PRECISE ABOUT WHAT THAT BUYS, because a measurement makes the loose
+	// version false. Measured on this branch against a real podman 5.8.4
+	// bundle: wiring Stop at payload exit — what shipped — costs 15ms, exactly
+	// what the fixed wiring costs, because the engine is Pdeathsig'd to P1 and
+	// P1 exits on its own the moment the payload is reaped, waiting for nothing
+	// P0 does. So this is NOT "the shipped wiring stalls every run"; the 15.3s
+	// on issue #344 was measured with a DECOY, which carries no Pdeathsig and
+	// therefore cannot die with P1.
+	//
+	// What the position actually buys is a GUARANTEE where there was a RACE.
+	// Stage.Wait returns on recvEvent — when the "exited" bytes ARRIVE — not
+	// when P1 exits, so at payload exit P0 and a still-exiting P1 race, and P1
+	// merely happens to win. After st.Close() it cannot lose. The losing side
+	// is the rare one, which is why no wall clock can see this and why
+	// test/integration/enginereapteardown_test.go says so at length.
+	//
+	// Both halves still matter. Wiring Stop here and nothing at payload exit
+	// would leave the keepalive held through snug's own post-payload code.
 	return containerRun{
 		cleanup:       func() { p.Close(); eng.Stop() },
 		spec:          &spec,
 		onEngineReady: eng.DialLifeline,
-		onPayloadExit: eng.Stop,
+		onPayloadExit: eng.Detach,
 		// The reaper is the one helper snug starts that is MEANT to outlive
 		// it, so it is the one thing the signalled-teardown sweep must not
 		// SIGKILL (issue #113). Its pid is already fixed: ArmReaper ran above,

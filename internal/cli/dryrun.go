@@ -2093,10 +2093,42 @@ func wrapGraftField(label, text string) []string {
 // Placed right after TOPOLOGY and before FILESYSTEM: a graft is a property of
 // the engine TOPOLOGY already describes, not of the sandbox's own filesystem.
 //
-// Prints ONLY when len(p.Grafts) > 0. Every topology that ships today has
-// none — Tier B's engine gets a private COPY of the host tree and makes no
-// graft — so this is silent on every shipping run today, and
-// topology.podman-*.txt do not move because of it.
+// Prints ONLY when len(p.Grafts) > 0, and since Tier C that is EVERY container
+// run: startContainers calls installEngineViewGrafts before its --dry-run
+// branch (four grafts — /proc, /sys/fs/cgroup, /var/tmp, /run: the mounts the
+// stage really makes in the engine's own namespace), and the branch itself
+// records the store, runroot, sock and conf grafts from engine.PlannedPaths.
+// The silent case is a run with NO engine, not a shipping gap.
+//
+// This paragraph said the opposite for a tier — "every topology that ships
+// today has none, Tier B's engine gets a private COPY of the host tree and
+// makes no graft" — which was true when written and false from #245 onward.
+// It mattered more than an ordinary stale comment because it was the standing
+// JUSTIFICATION for topology.podman-*.txt carrying no graft rows: prose
+// explaining why a golden is empty outlives the reason, and then the empty
+// golden looks checked.
+//
+// topology.podman-*.txt still do not move, and that is a FIXTURE BOUNDARY
+// rather than a hole — verified, not assumed. Those files are goldens of
+// describeTopology ALONE (topologygolden_test.go captures that one call), and
+// describeTopology never reads p.Grafts, so installing grafts in that fixture
+// would produce no diff at all. One block, one golden, the same way FILESYSTEM
+// lives in filesystem.defaults.txt. THIS block's own golden is
+// engineview.enginemounts.txt — real installEngineViewGrafts output on the
+// same @sys @cwd-rw @podman-socket selection the podman-offline topology case
+// uses — plus the hand-built engineview.tierc.txt for the host-tree render
+// path. The TOPOLOGY prose pointing at "ENGINE VIEW below" is true ON THE
+// SCREEN, which is where a human reads it, and graft_test.go's
+// blockBetween(t, got, "ENGINE VIEW", "FILESYSTEM") pins that ordering.
+//
+// THERE IS DELIBERATELY NO WHOLE-SCREEN PODMAN GOLDEN, and the reason is a
+// constraint rather than a preference: engine.PlannedPaths keys the runroot on
+// fmt.Sprintf("snug-%d-%d", os.Getuid(), os.Getpid()), so a screen golden would
+// embed a live pid and fail on its second run and on every other machine. The
+// residual that leaves, named rather than implied: the store/runroot/sock/conf
+// rows have no golden that exercises the real PlannedPaths. Covering them needs
+// an injectable tag in place of snug-<uid>-<pid>, which is a bigger change than
+// any comment.
 //
 // KIND-COLUMN DISTINCTION IS REQUIRED, NOT DECORATIVE: "graft-ro"/"graft-rw",
 // never bare "ro"/"rw" — a reader must never have to know which block a row

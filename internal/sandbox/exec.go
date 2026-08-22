@@ -544,9 +544,15 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 		// NOW EXISTS FOR NOTHING SPECIFIC TO ITS POSITION: opts.OnPayloadExit
 		// (Engine.Stop) still drops the keepalive, verifies by the socket-
 		// path sweep and tears down the reaper, and none of those three
-		// needs the engine reachable rather than already collapsed. Left
-		// here rather than moved after st.Close(): moving it is a separate
-		// decision, and leaving it costs nothing observable. Called whatever
+		// needs the engine reachable rather than already collapsed. THAT
+		// SEPARATE DECISION HAS SINCE BEEN MADE (issue #344): the hook here
+		// now only DETACHES the engine, and the verification moved to the
+		// caller's own deferred cleanup, which runs after the st.Close()
+		// above. "Leaving it costs nothing observable" was measured false —
+		// from this position the engine is alive by construction, so a sweep
+		// for it can only go quiet by waiting out the engine's idle timeout,
+		// and the sweep did not notice for a milestone only because it was
+		// matching a socket spelling no process carries. Called whatever
 		// the payload's own outcome, because "did this run have containers
 		// to stop" is a question about opts.EngineSpec, not about how the
 		// payload exited.

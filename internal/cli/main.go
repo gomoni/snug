@@ -561,9 +561,14 @@ func run(cfg config) int {
 		// OnEngineReady dials the lifeline once its socket exists, UNLIKE
 		// OnInfo above a FAILURE here refuses the whole run (invariant 5 —
 		// an engine snug cannot guarantee to reap is not handed to the
-		// sandbox); OnPayloadExit stops this run's containers by label
-		// while the engine's socket is still reachable, before the stage
-		// collapses.
+		// sandbox); OnPayloadExit DETACHES the engine — it drops the
+		// keepalive and nothing else. It stopped containers by label until
+		// issue #167 deleted that, and verified by sweep until issue #344
+		// moved the verification into ctr.cleanup, which the `defer` above
+		// runs after runStaged's own deferred st.Close() has collapsed the
+		// stage and the engine with it. Verification belongs where the
+		// engine is expected DEAD; the socket being reachable here is no
+		// longer wanted by anything.
 		EngineSpec:    ctr.spec,
 		OnEngineReady: ctr.onEngineReady,
 		OnPayloadExit: ctr.onPayloadExit,
