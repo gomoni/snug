@@ -167,6 +167,156 @@ exist and the line is unchanged, because `--dry-run` does not stat it. Golden:
 `internal/cli/testdata/containers.podman-pinned.txt` vs the two PATH-case
 `containers.podman-*.txt`.
 
+### 2b. …and a machine can read the same policy (issue #52)
+
+`--json` **replaces** the human screen with one JSON document. It never adds to
+it, and it is meaningless without `--dry-run`:
+
+```bash
+./bin/snug --json $SC/proj/sub; echo "exit=$?"
+```
+
+Expect exit 64 and an error naming the fix:
+
+```
+snug: --json needs --dry-run: it replaces that screen with one JSON document, and
+there is no machine-readable form of an actual run
+```
+
+The discriminator is first, so a consumer reads it before anything else:
+
+```bash
+./bin/snug --dry-run --json $SC/proj/sub | head -6
+```
+
+```
+{
+  "snug": {
+    "format": 1,
+    "outcome": "ok",
+    "lossy": false
+  },
+```
+
+**The document is the whole of stdout for EVERY exit code**, refusals included.
+This is the property the format exists for — a redirect that yields an empty
+file on failure is useless to CI:
+
+```bash
+./bin/snug --dry-run --json --no-defaults $SC/proj/sub > /tmp/policy.json
+echo "exit=$?"
+python3 -c 'import json;d=json.load(open("/tmp/policy.json"));print(d["snug"]["outcome"])'
+```
+
+Expect `exit=77` — the refusal is unchanged — and `refused` parsed back out of a
+complete document. The human refusal text is still on stderr.
+
+**The two renderers cannot list different grants.** The FILESYSTEM block and the
+`mounts` array come from one `Report`, so this is an identity, not a
+coincidence:
+
+```bash
+./bin/snug --dry-run $SC/proj/sub |
+  sed -n '/^FILESYSTEM/,/^  ro-\//p' |
+  grep -cE '^  (bind|tmpfs|link|proc|dev|data|graft|cgroup2|none|ro|rw|exec) +/'
+./bin/snug --dry-run --json $SC/proj/sub |
+  python3 -c 'import json,sys;print(len(json.load(sys.stdin)["mounts"]))'
+```
+
+Expect the same number twice — `35` on this host with the default selection.
+`TestHumanAndJSONFilesystemBlocksAgree` compares the SETS rather than the
+counts.
+
+**It carries facts, not English.** The network guarantees the human block spends
+a paragraph on are four booleans a gate can assert:
+
+```bash
+./bin/snug --dry-run --json -p @net $SC/proj/sub |
+  python3 -c 'import json,sys;n=json.load(sys.stdin)["network"];print({k:n[k] for k in ("mode","egress","host_loopback","abstract_sockets")})'
+```
+
+```
+{'mode': 'egress', 'egress': True, 'host_loopback': False, 'abstract_sockets': False}
+```
+
+**No credential reaches it, in any encoding.** A `KindData` mount's `Content` is
+a `policy.Secret` and the document carries no content field at all — not the
+bytes, not base64, not even the redaction placeholder:
+
+```bash
+./bin/snug --dry-run --json -p @claude $SC/proj/sub | grep -c '"content"\|redacted'
+```
+
+Expect `0`. Grep the KEY, not the word: "content" also occurs in the NOT
+GRANTED prose ("snug generates its own content here"), which is a sentence
+about a path and not a file body.
+
+**A path that is not valid UTF-8 does not slip past a gate.** The string field is
+lossy — `json.Marshal` substitutes U+FFFD and returns no error — so a sibling
+carries the real bytes and one top-level flag says the document has one:
+
+```bash
+BAD=$SC/proj/$(printf 'bad\xff\xfedir'); mkdir -p $BAD
+./bin/snug --dry-run --json --no-defaults -p @sys -p @cwd-rw $BAD |
+  python3 -c 'import json,sys;d=json.load(sys.stdin);print(d["snug"]["lossy"], d["target_bytes"][-6:])'
+```
+
+Expect `True [100, 255, 254, 100, 105, 114]` — `d`, then the two bytes the
+string field could only render as replacement characters, then `d`, `i`, `r`.
+A CI gate asserts
+`snug.lossy == false` ONCE and fails closed; it does not have to know which
+fields can carry a sibling.
+
+**A forging rune is SPELLED, not lost, and that is a different property from
+the one above.** Measured on this host, `encoding/json` escapes C0 for free —
+ESC becomes `\u001b` — and leaves C1 (U+009B CSI, U+0085 NEL) and the bidi
+overrides (U+202E RLO) RAW. This document is read by humans in a golden diff,
+through `jq` and in a review UI, so snug rewrites those as JSON's own
+`\uXXXX`. A host path carrying U+202E, granted at a guest path nothing else
+claims:
+
+```bash
+H="$SC/proj/host$(printf '\342\200\256')OLR-FORGED"; mkdir -p "$H"
+X=$(mktemp -d); mkdir -p $X/snug/profiles.d
+{ echo '[profile.hostbidi]'; echo 'description = "a host path carrying a bidi override"'
+  echo "ro = [\"$H:/mnt/x\"]"; } > $X/snug/profiles.d/hostbidi.toml
+XDG_CONFIG_HOME=$X ./bin/snug --dry-run --json --no-defaults \
+  -p @sys -p @cwd-rw -p hostbidi $SC/proj/sub | grep '"host".*OLR-FORGED'
+```
+
+```
+      "host": "/tmp/.../proj/host\u202eOLR-FORGED",
+```
+
+Expect exit 0, that line, and **no raw RLO byte anywhere** in the document
+(`cat -v` finds none). `snug.lossy` stays **false**, because nothing was lost:
+this is JSON's own spelling of a character, not snug's rendering of one, so a
+decoder gives back the real rune and `mounts[].host` still compares equal to
+the directory that was created — measured on the same run. That is exactly why
+it is not `policy.VisibleText`, which is a TERMINAL-display transform and would
+make the field stop being the value.
+
+The guest side needs no escaping and gets none: `Validate` refuses a forging
+rune in a guest path outright, so `-p @cwd-rw` on a target whose own name
+carries one exits 77 — with a complete document, which is the point of the
+previous check.
+
+**The subcommands refuse the flag rather than dropping it.** They used to exit 0
+with the human report:
+
+```bash
+./bin/snug doctor --json; echo "exit=$?"
+./bin/snug profile list --json; echo "exit=$?"
+```
+
+Expect exit 64 from both. Prose on a stream something is about to
+`json.Unmarshal`, under a zero exit code, is worse for a consumer than a
+rejection it can read.
+
+Goldens: `internal/cli/testdata/json.defaults.json`,
+`json.podman-socket.json`, `json.refused.json`. A change to any of them is a
+change to an interface and is reviewed as one.
+
 ## 3. The writable surface
 
 ```bash

@@ -214,7 +214,7 @@ func TestDryRunDoesNotContradictAGrantThatExposesAPathnameSocket(t *testing.T) {
 				t.Fatalf("fixture: %s resolved to host %q, want %q", guest, m.Host, hostDir)
 			}
 
-			got := captureStdout(t, func() { dryRun(p, p.BwrapArgs(0, 0), config{}, nil) })
+			got := dryRunText(p, p.BwrapArgs(0, 0), config{}, nil)
 			if !strings.Contains(got, guest) {
 				t.Fatalf("the grant never reached the --dry-run screen, so this test "+
 					"measures nothing:\n%s", got)

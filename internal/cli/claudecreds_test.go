@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -196,7 +197,7 @@ func TestTheCredsBlockNeverDeniesACredentialItStaged(t *testing.T) {
 	p := &policy.Policy{Mounts: map[string]policy.Mount{}, Home: canonical}
 	stageClaudeCredentials(p, home) // staged under `home`, not `canonical`
 
-	out := captureFile(t, func(f *os.File) { describeCredsOnly(t, f, p) })
+	out := captureFile(t, func(f io.Writer) { describeCredsOnly(t, f, p) })
 	if strings.Contains(out, "staged NOTHING") {
 		t.Errorf("the CLAUDE block denies a credential that IS in the policy. On a host whose "+
 			"$HOME is a symlink this screen tells the reader they are logged out while the "+
@@ -208,7 +209,7 @@ func TestTheCredsBlockNeverDeniesACredentialItStaged(t *testing.T) {
 
 	// CONTROL: nothing staged reaches the other arm.
 	empty := &policy.Policy{Mounts: map[string]policy.Mount{}, Home: canonical}
-	quiet := captureFile(t, func(f *os.File) { describeCredsOnly(t, f, empty) })
+	quiet := captureFile(t, func(f io.Writer) { describeCredsOnly(t, f, empty) })
 	if !strings.Contains(quiet, "staged NOTHING") {
 		t.Errorf("control: a policy with no credential mount did not reach the NOT-staged "+
 			"arm, so the assertion above cannot distinguish the two:\n%s", quiet)
@@ -219,7 +220,7 @@ func TestTheCredsBlockNeverDeniesACredentialItStaged(t *testing.T) {
 // claudeCredentialsMount the same question describeClaude asks. describeClaude
 // itself needs a ~/.claude.json mount to print anything at all, which this test
 // is not about.
-func describeCredsOnly(t *testing.T, f *os.File, p *policy.Policy) {
+func describeCredsOnly(t *testing.T, f io.Writer, p *policy.Policy) {
 	t.Helper()
 	if m, ok := claudeCredentialsMount(p); ok {
 		when, _ := claudeCredentialExpiry(m, time.Now())

@@ -631,9 +631,37 @@ func TestUnmarshalOfAMarshalledMountRefusesRatherThanSubstitutingThePlaceholder(
 			"That is a correctness and security regression, not a feature: give Secret an "+
 			"UnmarshalJSON that returns an error instead of letting this pass", string(back.Content), len(back.Content))
 	}
-	if !strings.Contains(err.Error(), "illegal base64 data") {
-		t.Errorf("json.Unmarshal(Mount) failed for a different reason than the one this test "+
+	// THE MOUNT-LEVEL REFUSAL IS NO LONGER EVIDENCE ABOUT Content, and that is
+	// worth saying out loud rather than letting the assertion quietly change
+	// meaning. Issue #52 gave Kind and Access a MarshalJSON (they are uint8
+	// iota, so a machine-readable --dry-run must carry the word, not the
+	// number) and deliberately no Unmarshal counterpart — so json.Unmarshal of
+	// a marshalled Mount now fails at Kind, BEFORE it ever reaches Content.
+	// Asserting "illegal base64 data" on this error would have started passing
+	// for the wrong reason, or failing for one, either way testing nothing
+	// about the placeholder.
+	//
+	// So the accidental refusal this test exists for is exercised where it
+	// actually lives: on the content field alone.
+	var fields struct {
+		Content json.RawMessage `json:"Content"`
+	}
+	if uerr := json.Unmarshal(b, &fields); uerr != nil {
+		t.Fatalf("reading the Content field back out of the marshalled Mount: %v", uerr)
+	}
+	var backContent Secret
+	cerr := json.Unmarshal(fields.Content, &backContent)
+	if cerr == nil {
+		t.Fatalf("json.Unmarshal(Secret) succeeded and produced %q (%d bytes) — the accidental "+
+			"refusal this test pins has gone away, which means Secret is now SILENTLY "+
+			"SUBSTITUTING the placeholder text for a real file body on round-trip. That is a "+
+			"correctness and security regression, not a feature: give Secret an UnmarshalJSON "+
+			"that returns an error instead of letting this pass",
+			string(backContent), len(backContent))
+	}
+	if !strings.Contains(cerr.Error(), "illegal base64 data") {
+		t.Errorf("json.Unmarshal(Secret) failed for a different reason than the one this test "+
 			"pins (%q); re-check whether the accidental refusal still works the same way: %v",
-			"illegal base64 data", err)
+			"illegal base64 data", cerr)
 	}
 }

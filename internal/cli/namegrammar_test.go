@@ -118,7 +118,7 @@ func TestDryRunDoesNotRenderAProfileNameVerbatim(t *testing.T) {
 		t.Fatalf("malImplied is not in p.Implied(): %v", p.Implied())
 	}
 
-	got := captureStdout(t, func() { dryRun(p, p.BwrapArgs(0, 0), config{}, resolveErr) })
+	got := dryRunText(p, p.BwrapArgs(0, 0), config{}, resolveErr)
 
 	if !strings.Contains(got, forgedSelected) {
 		t.Fatalf("the selected profile's marker never reached the screen, so the PROFILES site "+

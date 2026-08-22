@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,7 +69,7 @@ func renderedEnvBlocks(t *testing.T) map[string]string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out["live:markjoin"] = captureFile(t, func(f *os.File) { describeEnvironment(f, p) })
+	out["live:markjoin"] = captureFile(t, func(f io.Writer) { describeEnvironment(f, p) })
 
 	// A DROP LINE, which no committed golden happens to contain and which the
 	// column rules below cannot be checked without: it is the other thing that
@@ -89,7 +90,7 @@ func renderedEnvBlocks(t *testing.T) map[string]string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out["live:dropper"] = captureFile(t, func(f *os.File) { describeEnvironment(f, dp) })
+	out["live:dropper"] = captureFile(t, func(f io.Writer) { describeEnvironment(f, dp) })
 	return out
 }
 
@@ -283,7 +284,7 @@ func TestAValueCannotForgeAMarkLine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := captureFile(t, func(f *os.File) { describeEnvironment(f, p) })
+	got := captureFile(t, func(f io.Writer) { describeEnvironment(f, p) })
 
 	if !strings.Contains(got, "←not-granted") {
 		t.Fatalf("the forged value never reached the screen, so this test measures nothing:\n%s", got)

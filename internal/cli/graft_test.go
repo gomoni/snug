@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -98,7 +99,7 @@ func TestGraftIsNotInTheFilesystemBlock(t *testing.T) {
 	}
 	grafts := twoValidGrafts(t, p)
 
-	got := captureStdout(t, func() { dryRun(p, p.BwrapArgs(0, 0), config{}, nil) })
+	got := dryRunText(p, p.BwrapArgs(0, 0), config{}, nil)
 
 	fsBlock := blockBetween(t, got, "FILESYSTEM", "NOT GRANTED")
 	engineBlock := blockBetween(t, got, "ENGINE VIEW", "FILESYSTEM")
@@ -223,7 +224,7 @@ func TestGoldenEngineView(t *testing.T) {
 		t.Fatalf("fixture: the diverging (symlink) graft was rejected: %v", err)
 	}
 
-	got := captureFile(t, func(f *os.File) { describeGrafts(f, p) })
+	got := captureFile(t, func(f io.Writer) { describeGrafts(f, p) })
 
 	path := filepath.Join("testdata", "engineview.tierc.txt")
 	if *update {
@@ -290,7 +291,7 @@ func TestGraftRendersASourceThatResolvedElsewhere(t *testing.T) {
 			"checks never fires unless resolution actually changed something")
 	}
 
-	got := captureFile(t, func(f *os.File) { describeGrafts(f, p) })
+	got := captureFile(t, func(f io.Writer) { describeGrafts(f, p) })
 
 	// Split into each graft's own rendered block, the same technique
 	// TestEngineOwnedHostPathsAreOnTheScreen uses.
@@ -346,7 +347,7 @@ func TestGraftAddsNoGoldenSurfaceToTopology(t *testing.T) {
 	if len(p.Grafts) != 0 {
 		t.Fatalf("a podman-socket selection resolved with %d graft(s); Tier B must make none", len(p.Grafts))
 	}
-	if got := captureFile(t, func(f *os.File) { describeGrafts(f, p) }); got != "" {
+	if got := captureFile(t, func(f io.Writer) { describeGrafts(f, p) }); got != "" {
 		t.Errorf("describeGrafts printed %q for a policy with zero grafts — the ENGINE VIEW block "+
 			"must be silent whenever len(p.Grafts) == 0, or topology.podman-*.txt would start "+
 			"moving the day dryRun's block order or spacing changes", got)
@@ -464,7 +465,7 @@ func TestEngineOwnedHostPathsAreOnTheScreen(t *testing.T) {
 		t.Fatalf("fixture: a graft sourced from a sandbox-visible path was refused: %v", err)
 	}
 
-	got := captureFile(t, func(f *os.File) { describeGrafts(f, p) })
+	got := captureFile(t, func(f io.Writer) { describeGrafts(f, p) })
 
 	// POSITIVE CONTROLS: both grafts actually reached the screen.
 	idxOwned := strings.Index(got, ownedGraft.Guest)

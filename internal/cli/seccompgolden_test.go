@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -70,10 +71,15 @@ const knownGapParagraph = "         KNOWN GAP on this architecture: a 32-bit (i3
 // internal/sandbox's TestBuildFilterReturnsAnErrorWhenTheJumpRangeOverflows
 // injects enough denied syscalls to trigger it for real and asserts the error
 // text. That proves the STRING describeSeccomp's BROKEN row renders verbatim
-// is meaningful. It does not reach describeSeccomp itself: doing that would
-// need a seam in internal/cli for swapping out sandbox.BuildFilter (a package
-// function, not a var), which is a production-code change this test file is
-// not the place to decide on its own — noted rather than silently skipped.
+// is meaningful.
+//
+// It no longer needs a seam to reach describeSeccomp itself. Issue #52 split
+// the FACTS (buildSeccompReport, which is now the only caller of
+// sandbox.BuildFilter on this path) from the rendering, so the BROKEN branch
+// is reachable by handing describeSeccomp a reportSeccomp with that Reason —
+// see TestSeccompBrokenBranchRenders in dryrunjson_test.go. What still has no
+// seam is BuildFilter failing for real inside internal/cli, and that is the
+// half internal/sandbox's own test covers.
 func TestGoldenSeccomp(t *testing.T) {
 	cases := []struct {
 		name string
@@ -90,7 +96,7 @@ func TestGoldenSeccomp(t *testing.T) {
 					t.Skip("no syscall table for this GOARCH")
 				}
 			}
-			got := captureFile(t, func(f *os.File) { describeSeccomp(f, tc.cfg) })
+			got := captureFile(t, func(f io.Writer) { describeSeccomp(f, buildSeccompReport(tc.cfg)) })
 
 			if tc.name == "active" {
 				got = assertKnownGapParagraph(t, got)
@@ -156,8 +162,8 @@ func assertKnownGapParagraph(t *testing.T, got string) string {
 // UNAVAILABLE text depending on GOARCH — either way that text is not the
 // DISABLED text, so the inequality holds on every architecture.
 func TestGoldenSeccompRowsDiffer(t *testing.T) {
-	active := captureFile(t, func(f *os.File) { describeSeccomp(f, config{}) })
-	disabled := captureFile(t, func(f *os.File) { describeSeccomp(f, config{noSeccomp: true}) })
+	active := captureFile(t, func(f io.Writer) { describeSeccomp(f, buildSeccompReport(config{})) })
+	disabled := captureFile(t, func(f io.Writer) { describeSeccomp(f, buildSeccompReport(config{noSeccomp: true})) })
 	if active == disabled {
 		t.Fatalf("--no-seccomp produced BYTE-IDENTICAL output to the active filter — a "+
 			"security feature deliberately switched off must read differently on screen "+

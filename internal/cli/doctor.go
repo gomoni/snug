@@ -32,7 +32,23 @@ const doctorNetnsOKMessage = "" +
 // The messages name the exact sysctl or package to change. snug runs in odd
 // environments — distrobox, CI containers, hardened kernels — and a vague error
 // there costs an hour.
-func doctor() int {
+func doctor(argv []string) int {
+	// argv was DROPPED here until issue #52, which made `snug doctor --json`
+	// exit 0 with the human report and the flag silently ignored. That is the
+	// worst of the three possible answers: a consumer that asked for a machine
+	// format got prose on a stream it is about to parse, and a zero exit code
+	// saying it worked.
+	//
+	// doctor has no flags and no positional argument at all, so the refusal is
+	// "any argument", not a list of known ones — a list is the catalogue shape
+	// that goes stale the moment a flag is added elsewhere.
+	if len(argv) > 0 {
+		fmt.Fprintf(os.Stderr, "snug: doctor takes no arguments (got %s)\n",
+			visibleValue(argv[0]))
+		fmt.Fprintln(os.Stderr, "      there is no machine-readable doctor; --json belongs to --dry-run")
+		return exitUsage
+	}
+
 	ok := true
 
 	fmt.Println("🩺 snug doctor")

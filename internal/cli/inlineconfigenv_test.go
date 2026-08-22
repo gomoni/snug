@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"os"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -413,7 +413,7 @@ func TestEnvironSetRustcWrapperIsCarriedAndAnnotated(t *testing.T) {
 			// the row (dryrun.go's markIndent), so the hand-rolled line search
 			// this used to do would find the data row — which carries no
 			// annotation — and report the table as not reaching the screen.
-			row := rowFor(t, captureFile(t, func(f *os.File) { describeEnvironment(f, p) }), name)
+			row := rowFor(t, captureFile(t, func(f io.Writer) { describeEnvironment(f, p) }), name)
 			if !strings.Contains(row, "cargo runs this") {
 				t.Errorf("the --dry-run row for %s carries no annotation:\n%s\nThe table is only "+
 					"worth having if it reaches the screen a human reads", name, row)

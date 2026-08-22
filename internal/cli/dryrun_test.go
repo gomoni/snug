@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -288,25 +290,24 @@ func TestDryRunAnnotationDoesNotUnderstateWriteAccess(t *testing.T) {
 	}
 }
 
-// captureFile runs fn with an *os.File --dry-run's describe* helpers can
-// write to (they take *os.File, matching os.Stdout, not io.Writer) and
-// returns what it wrote.
-func captureFile(t *testing.T, fn func(*os.File)) string {
+// dryRunText renders the whole human screen into a buffer. dryRun took no
+// writer until issue #52's prerequisite, so every caller here used to
+// redirect the real os.Stdout; none of them needs to any more.
+func dryRunText(p *policy.Policy, args []string, cfg config, refusedBy error) string {
+	var buf bytes.Buffer
+	dryRun(&buf, p, args, cfg, refusedBy)
+	return buf.String()
+}
+
+// captureFile runs fn with a writer --dry-run's describe* helpers can write
+// to and returns what it wrote. The helpers took *os.File until issue #52's
+// prerequisite; the name stays so the call sites do not all churn, but there
+// is no file any more — a buffer is what an io.Writer renderer needs.
+func captureFile(t *testing.T, fn func(io.Writer)) string {
 	t.Helper()
-	f, err := os.CreateTemp(t.TempDir(), "dryrun-capture-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	fn(f)
-	if _, err := f.Seek(0, 0); err != nil {
-		t.Fatal(err)
-	}
-	b, err := os.ReadFile(f.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
+	var buf bytes.Buffer
+	fn(&buf)
+	return buf.String()
 }
 
 // TestDescribeCommandsNamesTheStagedStub is the --dry-run review artifact for
@@ -328,7 +329,7 @@ func TestDescribeCommandsNamesTheStagedStub(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 
-	got := captureFile(t, func(f *os.File) { describeCommands(f, p) })
+	got := captureFile(t, func(f io.Writer) { describeCommands(f, p) })
 	if !strings.Contains(got, "COMMANDS") {
 		t.Fatalf("no COMMANDS block: %q", got)
 	}
@@ -346,7 +347,7 @@ func TestDescribeCommandsNamesTheStagedStub(t *testing.T) {
 	// the block must not print at all — a block that always prints proves
 	// nothing about the staging condition.
 	plain := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw"})
-	if got := captureFile(t, func(f *os.File) { describeCommands(f, plain) }); got != "" {
+	if got := captureFile(t, func(f io.Writer) { describeCommands(f, plain) }); got != "" {
 		t.Errorf("COMMANDS block printed with no stub staged: %q", got)
 	}
 }
@@ -587,7 +588,7 @@ func TestDropLinesNameTheirReason(t *testing.T) {
 		},
 	}
 
-	got := captureFile(t, func(f *os.File) { describeEnvironment(f, p) })
+	got := captureFile(t, func(f io.Writer) { describeEnvironment(f, p) })
 
 	noGrantLine := "nothing grants that path: /srv/nothing"
 	tmpfsLine := "only an empty writable tmpfs is mounted there: /tmp/x/bin"
@@ -656,8 +657,8 @@ func TestDryRunDropLineDoesNotRenderControlCharsVerbatim(t *testing.T) {
 		}
 	}
 
-	forged := captureFile(t, func(f *os.File) { describeEnvironment(f, build(forgedDrop, forgedKept)) })
-	safe := captureFile(t, func(f *os.File) { describeEnvironment(f, build(safeDrop, safeKept)) })
+	forged := captureFile(t, func(f io.Writer) { describeEnvironment(f, build(forgedDrop, forgedKept)) })
+	safe := captureFile(t, func(f io.Writer) { describeEnvironment(f, build(safeDrop, safeKept)) })
 
 	// THE ASSERTION THAT ACTUALLY MATTERS: a value with a newline in it must
 	// not add a line to the block. Comparing against the space-separated
@@ -707,22 +708,11 @@ func TestFilesystemBlockRendersTheStubAsExec(t *testing.T) {
 	}
 	args := p.BwrapArgs(0, 0)
 
-	// dryRun writes to os.Stdout directly rather than taking a writer, so
-	// this redirects the real thing for the duration of the call.
-	orig := os.Stdout
-	f, err := os.CreateTemp(t.TempDir(), "dryrun-stdout-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stdout = f
-	dryRun(p, args, config{}, nil)
-	os.Stdout = orig
-	f.Close()
-	b, err := os.ReadFile(f.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := string(b)
+	// dryRun takes an io.Writer (issue #52's prerequisite), so this no longer
+	// redirects the real os.Stdout — it hands the renderer a buffer.
+	var buf bytes.Buffer
+	dryRun(&buf, p, args, config{}, nil)
+	got := buf.String()
 
 	if !strings.Contains(got, "exec   "+policy.StagedBinDir+"/podman") {
 		t.Errorf("FILESYSTEM block does not render the stub as kind 'exec':\n%s", got)
@@ -763,7 +753,7 @@ func TestDescribeSSHNamesTheReplacedPathAndItsCost(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 
-	got := captureFile(t, func(f *os.File) { describeSSH(f, p) })
+	got := captureFile(t, func(f io.Writer) { describeSSH(f, p) })
 	if !strings.Contains(got, "SSH") {
 		t.Fatalf("no SSH block: %q", got)
 	}
@@ -788,7 +778,7 @@ func TestDescribeSSHNamesTheReplacedPathAndItsCost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if got := captureFile(t, func(f *os.File) { describeSSH(f, plain) }); got != "" {
+	if got := captureFile(t, func(f io.Writer) { describeSSH(f, plain) }); got != "" {
 		t.Errorf("SSH block printed with nothing covering either system ssh_config path: %q", got)
 	}
 }
@@ -824,7 +814,7 @@ func TestDescribeSSHNamesADiscoveredPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if got := captureFile(t, func(f *os.File) { describeSSH(f, p) }); !strings.Contains(got, guest) {
+	if got := captureFile(t, func(f io.Writer) { describeSSH(f, p) }); !strings.Contains(got, guest) {
 		t.Fatalf("SSH block does not name the discovered path %s:\n%s", guest, got)
 	}
 }
@@ -856,7 +846,7 @@ func TestDescribeSSHNamesRequiredRSASizeWhenItIsNotCarried(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	got := captureFile(t, func(f *os.File) { describeSSH(f, p) })
+	got := captureFile(t, func(f io.Writer) { describeSSH(f, p) })
 	if !strings.Contains(got, "Ciphers") {
 		t.Fatalf("the SSH block does not name the key that WAS carried, so this test is "+
 			"not exercising the carried branch at all:\n%s", got)

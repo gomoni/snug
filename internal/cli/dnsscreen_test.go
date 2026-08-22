@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"os"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -33,7 +33,7 @@ func dnsPolicy(t *testing.T, profiles ...policy.ProfileName) *policy.Policy {
 
 func networkBlock(t *testing.T, p *policy.Policy) string {
 	t.Helper()
-	return captureFile(t, func(f *os.File) { describeNetwork(f, p) })
+	return captureFile(t, func(f io.Writer) { describeNetwork(f, p) })
 }
 
 // TestTheDNSLineRendersTheResolvedPolicy is issue #28's review artifact.
