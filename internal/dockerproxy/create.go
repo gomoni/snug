@@ -718,6 +718,24 @@ func (p *Proxy) checkedMounts(hc map[string]json.RawMessage) ([]mount, error) {
 	return out, nil
 }
 
+// checkOne is a REWRITER, not a validator, and that is the sentence this file
+// turns on.
+//
+// It does not answer "may the client have this path". It returns the mount snug
+// will ask the engine for — `mount{Source: filepath.Clean(real)}` — and
+// handleCreate then deletes Binds and Mounts and re-encodes only what came back.
+// So the engine is asked for THE PATH SNUG APPROVED, not the path the client
+// wrote, and the residual TOCTOU is bounded by that rewrite rather than by the
+// check.
+//
+// The consequence for anything added to this file later, which is why the
+// sentence is here and not only at its one current use (blkioPathField): a
+// create-body field that carries a path is allowlistable only if snug both
+// RESOLVES it and FORWARDS the resolved string. A field snug can judge but
+// cannot rewrite is refused, because judging a string the engine will never be
+// asked for is judging the wrong string — the shape issue #304 cost on the
+// build path, where checkBuildVolume computed a resolved path and threw it away
+// while handleBuild forwarded the client's original.
 func (p *Proxy) checkOne(source, dest string, ro bool) (mount, error) {
 	if !filepath.IsAbs(source) {
 		return mount{}, fmt.Errorf("mount source %q must be an absolute path", source)
