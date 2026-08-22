@@ -13,7 +13,13 @@
 // three owners is obliged to honor that: `rm key.pub && mkfifo key.pub`
 // (issue #337) turns the read into an open(2) that never returns — no
 // output, no sandbox, no exit code — and a symlink to /dev/zero or a sparse
-// file turns it into an unbounded host-side allocation.
+// file turns it into an unbounded host-side allocation. Both measured against
+// ~/.claude/settings.json: /dev/zero stats as zero bytes, sailed past a size
+// check on the PATH, and took the process to 3.1 GB resident in two seconds,
+// still climbing; /proc/self/environ likewise stats as zero and had its
+// contents read in full, stopped only by the JSON decode. Which is why the
+// cap is the LimitReader and the stat is a cheap early exit for the honest
+// case, never the bound.
 //
 // This package exists because that lesson was learned once, at
 // internal/cli/claude.go's loadHostClaudeSettings, and then had to be
@@ -23,13 +29,6 @@
 // means — that is the caller's call, and Optional/Required below exist
 // because the two answers are genuinely different — and it does not belong
 // in internal/policy, which stays pure and touches no filesystem.
-// There is a SECOND implementation of this exact sequence in
-// internal/cli/claude.go (loadHostClaudeSettings), kept separate because its
-// messages are label-prefixed for a screen a human reads. It is named here so
-// the pair is discoverable from both ends: change the sequence in one and it
-// must change in the other (issue #337). Issue #342 folds them and deletes
-// this paragraph with the same commit.
-
 package hostread
 
 import (
@@ -63,6 +62,11 @@ const MaxSSHPublicKeyBytes = 64 << 10
 //   - problem is a human-readable reason for a failure that only becomes
 //     visible once the file is OPEN: wrong type, oversized, a stat or read
 //     that failed outright. It is never about whether the file exists.
+//
+// problem is a BARE CLAUSE with no subject of its own — "is not a regular
+// file", not "it is not a regular file" — so a caller can put its own subject
+// in front of it and get one sentence. Clause below hands it over unchanged;
+// Optional and Required supply "it" so their existing callers read as before.
 func read(path string, maxBytes int64) (data []byte, openErr error, problem string) {
 	// O_NONBLOCK applies to the OPEN; for a regular file it has no further
 	// effect on the read below. It exists solely so opening a FIFO returns
@@ -75,24 +79,24 @@ func read(path string, maxBytes int64) (data []byte, openErr error, problem stri
 
 	fi, err := f.Stat()
 	if err != nil {
-		return nil, nil, fmt.Sprintf("it could not be inspected (%v)", err)
+		return nil, nil, fmt.Sprintf("could not be inspected (%v)", err)
 	}
 	if !fi.Mode().IsRegular() {
-		return nil, nil, fmt.Sprintf("it is not a regular file (mode %s). snug reads that path as "+
+		return nil, nil, fmt.Sprintf("is not a regular file (mode %s). snug reads that path as "+
 			"data and will not read a FIFO, a device or a directory there", fi.Mode())
 	}
 	if fi.Size() > maxBytes {
-		return nil, nil, fmt.Sprintf("it is %d bytes, over the %d-byte cap snug reads for it",
+		return nil, nil, fmt.Sprintf("is %d bytes, over the %d-byte cap snug reads for it",
 			fi.Size(), maxBytes)
 	}
 	data, err = io.ReadAll(io.LimitReader(f, maxBytes+1))
 	if err != nil {
-		return nil, nil, fmt.Sprintf("it could not be read (%v)", err)
+		return nil, nil, fmt.Sprintf("could not be read (%v)", err)
 	}
 	// The real cap. A file whose st_size lied — /dev/zero through a symlink,
 	// anything under /proc, a file that grew since the stat — lands here.
 	if int64(len(data)) > maxBytes {
-		return nil, nil, fmt.Sprintf("it produced more than the %d-byte cap snug reads for it "+
+		return nil, nil, fmt.Sprintf("produced more than the %d-byte cap snug reads for it "+
 			"(its reported size was %d)", maxBytes, fi.Size())
 	}
 	return data, nil, ""
@@ -111,12 +115,42 @@ func read(path string, maxBytes int64) (data []byte, openErr error, problem stri
 //
 // Do not reach for this when the caller cannot tell "absent" apart from "the
 // user explicitly asked for this file" — that is Required, below.
+//
+// note carries the subject "it", so every existing caller reads as it did.
+// Clause is the same read with the subject left out, for a caller that has a
+// better one — and at least one does: stageInstalledPlugins renders
+// `the host's installed_plugins.json <note>`, which with the pronoun is
+// "the host's installed_plugins.json it is not a regular file". That is a
+// caller to move to Clause, not a reason to change this wording (issue #342).
 func Optional(path string, maxBytes int64) (data []byte, note string) {
+	data, clause := Clause(path, maxBytes)
+	return data, itIs(clause)
+}
+
+// Clause is Optional with the SUBJECT left to the caller: the same three
+// states, and a reason phrased as a bare clause — "is not a regular file",
+// "is 9000 bytes, over the 4096-byte cap snug reads for it" — so that
+// `<subject> <clause>` is one sentence and the caller decides what the
+// subject is and what follows.
+//
+// It exists because a caller that renders onto a screen needs a label and a
+// suffix of its own, and that requirement is what kept a second copy of this
+// read sequence alive in internal/cli. One sequence, two renderings.
+func Clause(path string, maxBytes int64) (data []byte, clause string) {
 	data, openErr, problem := read(path, maxBytes)
 	if openErr != nil {
 		return nil, "" // absent, or unreadable by permission: nothing to stage
 	}
 	return data, problem
+}
+
+// itIs supplies the subject read() deliberately omits. Empty in, empty out:
+// "no problem" must not become a sentence.
+func itIs(clause string) string {
+	if clause == "" {
+		return ""
+	}
+	return "it " + clause
 }
 
 // Required reads path the way a file the user (or a profile) NAMED must be
@@ -137,7 +171,7 @@ func Required(path string, maxBytes int64) ([]byte, error) {
 		return nil, openErr
 	}
 	if problem != "" {
-		return nil, fmt.Errorf("%s: %s", path, problem)
+		return nil, fmt.Errorf("%s: %s", path, itIs(problem))
 	}
 	return data, nil
 }
