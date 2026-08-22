@@ -2122,13 +2122,37 @@ func wrapGraftField(label, text string) []string {
 // blockBetween(t, got, "ENGINE VIEW", "FILESYSTEM") pins that ordering.
 //
 // THERE IS DELIBERATELY NO WHOLE-SCREEN PODMAN GOLDEN, and the reason is a
-// constraint rather than a preference: engine.PlannedPaths keys the runroot on
-// fmt.Sprintf("snug-%d-%d", os.Getuid(), os.Getpid()), so a screen golden would
-// embed a live pid and fail on its second run and on every other machine. The
-// residual that leaves, named rather than implied: the store/runroot/sock/conf
-// rows have no golden that exercises the real PlannedPaths. Covering them needs
-// an injectable tag in place of snug-<uid>-<pid>, which is a bigger change than
-// any comment.
+// constraint rather than a preference: engine.PlannedPaths keys this run's
+// directory on fmt.Sprintf("snug-%d-%d", os.Getuid(), os.Getpid()), so a screen
+// golden would embed a live pid and fail on its second run and on every other
+// machine. That much still holds.
+//
+// The residual it used to leave — the store/runroot/sock/conf rows having no
+// golden that exercises the real PlannedPaths — is CLOSED, by
+// engineview.planned.txt (TestGoldenEngineViewPlannedPaths). This paragraph
+// used to say covering them "needs an injectable tag in place of
+// snug-<uid>-<pid>"; that was wrong twice over, and the correction is worth
+// carrying because a seam in this particular function is the tempting fix.
+//
+// It was wrong about the REMEDY. A settable tag fixes the pid and leaves
+// os.Getuid(), which enters a SECOND time through the runroot's own name
+// (snug-engines-<uid>-<key> in planPaths), so the output stays host-dependent
+// and the golden stays unwritable. Making the uid injectable too is the worse
+// half: the runroot sits under world-writable /tmp and engineKey's own doc
+// comment names what protects it — VerifyOwnedAndPrivate's uid+mode check,
+// which compares against os.Getuid() and would keep doing so. A seam bypasses
+// no ownership check; what it breaks is the AGREEMENT between the name and the
+// owner, and planPaths is the sole author of "which host directory is this
+// run's own".
+//
+// And it was wrong about the DIFFICULTY. Two of the four host-dependent inputs
+// are already injectable through the environment — dataHomeDir() reads
+// $XDG_DATA_HOME, os.TempDir() re-reads $TMPDIR — and the other two are the
+// process's identity, which a test can normalise to placeholders after
+// capture. No production change at all. See that test's own comment for what
+// the normalisation must preserve (the 16-hex engineKey is left intact, so the
+// golden still shows on its face which rows are per-run and which are
+// per-target-and-persistent).
 //
 // KIND-COLUMN DISTINCTION IS REQUIRED, NOT DECORATIVE: "graft-ro"/"graft-rw",
 // never bare "ro"/"rw" — a reader must never have to know which block a row

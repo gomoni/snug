@@ -1,0 +1,67 @@
+
+ENGINE VIEW  (grafts — mounts in the ENGINE's derived mount namespace, NOT the
+  payload's. The payload cannot see any of these; no profile can ask for one.)
+  (a bring-your-own engine adds a fifth graft at /snug/engine/toolchain — whether
+  this host needs one is a preflight answer, and --dry-run runs no preflight.)
+  graft-ro    /snug/engine/conf                             (snug)
+            from /tmpdir/snug-UID-PID/conf
+            owned: the sandbox's own grants do not expose this host path — it
+            passed G4 only because snug declared it its own for this run
+            (EngineOwnedHostPaths)
+            abuse: READ every configuration file snug generated for it — and
+            only read them: this is the half of the run directory that is
+            read-only, so an engine that is talked into writing cannot rewrite
+            the storage, registry or signature policy it was started under, nor
+            turn the deliberately EMPTY auth file into a usable one
+            note: this graft's destination is created on the sandbox's own root
+            tmpfs and IS visible to the payload — empty, and unwritable once /
+            is remounted read-only. The mount namespace is private; the tmpfs
+            superblock is not (ENGINE-NETNS.md §5.1).
+  graft-rw    /snug/engine/runroot                          (snug)
+            from /tmpdir/snug-engines-UID-5f724cfb226eb5b9/rr
+            owned: the sandbox's own grants do not expose this host path — it
+            passed G4 only because snug declared it its own for this run
+            (EngineOwnedHostPaths)
+            abuse: write into the engine's runroot, which is keyed by the TARGET
+            DIRECTORY rather than by pid (podman's libpod database refuses a
+            runroot that disagrees with the one it recorded), so a LATER run of
+            the same project inherits whatever an earlier one left there
+            note: this graft's destination is created on the sandbox's own root
+            tmpfs and IS visible to the payload — empty, and unwritable once /
+            is remounted read-only. The mount namespace is private; the tmpfs
+            superblock is not (ENGINE-NETNS.md §5.1).
+  graft-rw    /snug/engine/sock                             (snug)
+            from /tmpdir/snug-UID-PID/sock
+            owned: the sandbox's own grants do not expose this host path — it
+            passed G4 only because snug declared it its own for this run
+            (EngineOwnedHostPaths)
+            abuse: create or replace the socket the container proxy dials — the
+            engine must be able to bind it, which is why this half of the run
+            directory is writable and the other half is not
+            note: this graft's destination is created on the sandbox's own root
+            tmpfs and IS visible to the payload — empty, and unwritable once /
+            is remounted read-only. The mount namespace is private; the tmpfs
+            superblock is not (ENGINE-NETNS.md §5.1).
+  graft-rw    /snug/engine/store                            (snug)
+            from /xdg-data/snug/engines/5f724cfb226eb5b9/storage
+            owned: the sandbox's own grants do not expose this host path — it
+            passed G4 only because snug declared it its own for this run
+            (EngineOwnedHostPaths)
+            abuse: write image layers into a store that PERSISTS across runs and
+            is shared with every other sandbox on the SAME TARGET DIRECTORY,
+            whatever profiles it selected — so a run with a narrow selection
+            inherits what a broader one pulled, and a layer a container poisons
+            outlives the sandbox that pulled it, and is there for the next run
+            of the same project
+            note: this graft's destination is created on the sandbox's own root
+            tmpfs and IS visible to the payload — empty, and unwritable once /
+            is remounted read-only. The mount namespace is private; the tmpfs
+            superblock is not (ENGINE-NETNS.md §5.1).
+
+  engine-owned host paths  snug created these for this run; a graft's Host may
+                           name one under G4 even though no sandbox grant
+                           exposes it (OwnEngineHostPath, the only writer):
+    /tmpdir/snug-UID-PID/conf
+    /tmpdir/snug-UID-PID/sock
+    /tmpdir/snug-engines-UID-5f724cfb226eb5b9/rr
+    /xdg-data/snug/engines/5f724cfb226eb5b9/storage
