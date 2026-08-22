@@ -1124,9 +1124,10 @@ Normalisation first: strip the `/v1.x` API-version prefix, split into segments, 
 
 | Class | Endpoints |
 |---|---|
-| **Allowed (passthrough)** | `_ping`, `version`, `info`, `events`, `system/df`; container lifecycle/inspect/logs/wait/stats; `images` pull/list/inspect/tag/push/prune/rm; networks; volumes list/inspect/rm |
+| **Allowed (passthrough)** | `_ping`, `version`, `info`, `events`, `system/df` (read-only methods only); container lifecycle/inspect/logs/wait/stats; `images` pull/list/inspect/tag/push; networks, including `DELETE` (a network holds no data and costs the next run nothing); volumes list/inspect |
 | **Filtered** (strict-decode → sanitise → re-encode) | `POST /containers/create`, `POST /volumes/create`, `POST /images/create`, `POST /build` (only with `podman = "build"`) |
-| **Rejected, with an audited reason** | `exec`, `commit`, `session`, `grpc`, `distribution`, `images/load`, `images/create?fromSrc`, `containers/{id}/{exec,attach,update}`, `containers/{id}/archive` (GET/PUT/HEAD — a direct host-filesystem read/write channel) |
+| **Rejected, with an audited reason** | `exec`, `commit`, `session`, `grpc`, `distribution`, `images/load`, `images/create?fromSrc`, `containers/{id}/{exec,attach,update}`, `containers/{id}/archive` (GET/PUT/HEAD — a direct host-filesystem read/write channel); **every endpoint whose last segment is `prune`**, and `DELETE` on `images`/`volumes` (issue #339) |
+| **Scoped to this run** | `DELETE /containers/{id}` — forwarded only for a container carrying this run's `snug.run` label, which the proxy asks the ENGINE for. Fails closed on any answer it cannot read. `docker run --rm` issues exactly this request and is unaffected. |
 
 `POST /containers/create`, in order:
 

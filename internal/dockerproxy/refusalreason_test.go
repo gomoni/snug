@@ -1,9 +1,13 @@
 package dockerproxy
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -384,5 +388,91 @@ func TestIpcAndUtsReasonsMatchTheEnginesActualCloneflags(t *testing.T) {
 					"is now a lie in the reassuring direction:\n%s", c.key, c.flag, reason)
 			}
 		}
+	}
+}
+
+// TestNoRefusalTextOverclaimsWhatTheFilterDoes is issue #340's honest-screen
+// half, and it guards the CLASS rather than the one clause.
+//
+// The libpod gate's 403 read "forwarding it unexamined would bypass every
+// check" — a universal claim, made by a gate that was a denylist of eight
+// segments and let `networks` and `system` through. The refusal a user meets is
+// the only account they get of the boundary, so a refusal that describes a
+// tighter mechanism than the one that ran is a lie in the artifact a human
+// reads, whichever way the request went.
+//
+// The blocklist is short on purpose: a universal quantifier over checks snug
+// runs is the shape that cannot be true of an allowlist and a denylist at once,
+// so it is the shape to refuse. Any refusal text needing one of these phrases
+// needs a proof, not a sentence.
+func TestNoRefusalTextOverclaimsWhatTheFilterDoes(t *testing.T) {
+	overclaims := []string{
+		"bypass every check",
+		"every check snug",
+		"no request reaches the engine",
+		"nothing reaches the engine",
+	}
+
+	// STRING LITERALS only, via the parser. A comment quoting the falsified
+	// clause — the one above this function does — is documentation, not a claim
+	// made to a user, and a grep over the file text cannot tell the two apart.
+	var seen, literals int
+	for _, name := range []string{"proxy.go", "create.go", "build.go"} {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", name, err)
+		}
+		seen++
+		ast.Inspect(f, func(n ast.Node) bool {
+			bl, ok := n.(*ast.BasicLit)
+			if !ok || bl.Kind != token.STRING {
+				return true
+			}
+			v, err := strconv.Unquote(bl.Value)
+			if err != nil {
+				return true
+			}
+			literals++
+			lower := strings.ToLower(v)
+			for _, phrase := range overclaims {
+				if strings.Contains(lower, phrase) {
+					t.Errorf("%s:%d has refusal text containing %q — a refusal that claims "+
+						"MORE than the mechanism that ran. That clause is what issue #340 "+
+						"falsified: the libpod gate said forwarding a body unexamined "+
+						"\"would bypass every check\" while two segments were being "+
+						"forwarded unexamined.", name, fset.Position(bl.Pos()).Line, phrase)
+				}
+			}
+			return true
+		})
+	}
+
+	// POSITIVE CONTROL. Without it the sweep passes when every file fails to
+	// open, when the package is renamed out from under it, and when the phrase
+	// list is empty — each of which reads as "no overclaim found".
+	if seen != 3 {
+		t.Fatalf("read %d of 3 files; the sweep above proves nothing", seen)
+	}
+	if literals < 50 {
+		t.Fatalf("only %d string literals inspected; the parse stopped matching the code's "+
+			"shape and the sweep is vacuous", literals)
+	}
+	if !strings.Contains(strings.ToLower("Forwarding it unexamined would BYPASS EVERY CHECK."),
+		overclaims[0]) {
+		t.Error("the blocklist does not catch the exact clause issue #340 falsified, so it " +
+			"is not guarding the defect it was written for")
+	}
+	// And the sweep must be looking at real refusal text, not at an empty file.
+	b, err := os.ReadFile("proxy.go")
+	if err != nil || !strings.Contains(string(b), "is not permitted") {
+		t.Fatal("proxy.go carries no refusal text; the sweep is reading the wrong thing")
+	}
+	// The comment above this function quotes the falsified clause verbatim. If
+	// the sweep ever starts reading comments it will fire on its own
+	// documentation, and this is what says so.
+	if !strings.Contains(strings.ToLower(string(b)), "bypass every check") {
+		t.Log("proxy.go no longer quotes the clause issue #340 falsified in a comment; " +
+			"the literal-only parse is then belt without braces, which is fine")
 	}
 }
