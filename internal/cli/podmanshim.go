@@ -171,15 +171,20 @@ func warnAboutPodmanClient() {
 
 	// podman resolves to a genuine binary, and it STILL cannot `run` or `pull`
 	// here: podman's own CLI speaks the libpod-native API against
-	// $CONTAINER_HOST, and snug refuses body-bearing libpod requests by design
-	// — the filter reads the docker-compat schema, and a libpod body is a
-	// different shape it cannot inspect (internal/dockerproxy). `ps`, `images`
-	// and `info` are read-only libpod routes and answer truthfully; `run` and
-	// `pull` do not. See CONTAINER-CLIENT.md §3.
+	// $CONTAINER_HOST, and snug refuses a libpod request that changes state
+	// unless its own filter has read it — the filter reads the docker-compat
+	// schema, and a libpod body is a different shape it cannot inspect
+	// (internal/dockerproxy). "body-bearing" is what this said until issue #340
+	// inverted the gate from a denylist of segments to `libpodExamined`; the
+	// test is now "not GET or HEAD, and not examined", which also covers the
+	// DELETE routes the old wording never named. `ps`, `images` and `info` are
+	// read-only libpod routes and answer truthfully; `run` and `pull` do not.
+	// See CONTAINER-CLIENT.md §3.
 	fmt.Fprint(os.Stderr,
 		"snug: podman here is genuine, but `run` and `pull` will not work through this\n"+
 			"      sandbox's proxy — podman's CLI speaks the libpod-native API, and snug\n"+
-			"      refuses body-bearing libpod requests by design (it filters the docker-compat\n"+
-			"      schema only). `podman ps`, `podman images` and `podman info` are read-only\n"+
-			"      libpod routes and work fine. For `run` and `pull`, use `docker` instead.\n")
+			"      refuses a libpod request that changes state unless its own filter has read\n"+
+			"      it (it filters the docker-compat schema only). `podman ps`, `podman images`\n"+
+			"      and `podman info` are read-only libpod routes and work fine. For `run` and\n"+
+			"      `pull`, use `docker` instead.\n")
 }
