@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -145,7 +146,9 @@ func TestGoldenContainersEnginePinned(t *testing.T) {
 // ordinary host: nothing configured. The other three renderings have a golden
 // of their own, below.
 func containersFor(p *policy.Policy) *reportContainers {
-	return buildContainersReport(p, engine.SignaturePolicySummary{})
+	return buildContainersReport(p, func() engine.SignaturePolicySummary {
+		return engine.SignaturePolicySummary{}
+	})
 }
 
 // TestGoldenSignatureLine is the review artifact for the one line in IMAGES
@@ -189,7 +192,8 @@ func TestGoldenSignatureLine(t *testing.T) {
 	for _, st := range states {
 		fmt.Fprintf(&b, "── %s\n", st.name)
 		b.WriteString(captureFile(t, func(f io.Writer) {
-			describeSignaturePolicy(f, buildContainersReport(p, st.sig))
+			describeSignaturePolicy(f, buildContainersReport(p,
+				func() engine.SignaturePolicySummary { return st.sig }))
 		}))
 	}
 	got := b.String()
@@ -248,5 +252,63 @@ func TestTheSignatureLineCannotForgeALine(t *testing.T) {
 			t.Errorf("an ordinary signatures line lost %q in the escaping, so it no longer "+
 				"tells the reader which file it means:\n%s", want, readable)
 		}
+	}
+}
+
+// TestEveryHostTextFieldInTheContainersBlockCarriesItsBytes is the "assert the
+// set, not the site" rule applied to the JSON containers block.
+//
+// Two of its string fields hold HOST text — an environment variable's value, a
+// path out of $HOME, a decoder's rendering of the host's own policy.json — and
+// host text can be invalid UTF-8, which `encoding/json` replaces with U+FFFD
+// silently. The document carries a `_bytes` sibling and sets `snug.lossy` for
+// exactly that. Every existing field is correct; what was missing is anything
+// that fails when the NEXT one is added without a sibling.
+//
+// So the sweep is over the type: a string field must either have a `…Bytes`
+// sibling or be named here as text snug itself authored. Adding a host-text
+// field without a sibling fails; adding a snug-authored one is a one-line,
+// deliberate declaration.
+func TestEveryHostTextFieldInTheContainersBlockCarriesItsBytes(t *testing.T) {
+	// Authored by snug, never by the host: a constant guest path and a
+	// two-valued enum. Neither can carry a byte snug did not choose.
+	snugAuthored := map[string]bool{
+		"Socket":       true,
+		"EngineSource": true,
+	}
+
+	typ := reflect.TypeOf(jsonContainers{})
+	fields := map[string]bool{}
+	for i := 0; i < typ.NumField(); i++ {
+		fields[typ.Field(i).Name] = true
+	}
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		if f.Type.Kind() != reflect.String || strings.HasSuffix(f.Name, "Bytes") {
+			continue
+		}
+		if snugAuthored[f.Name] {
+			continue
+		}
+		if !fields[f.Name+"Bytes"] {
+			t.Errorf("jsonContainers.%s is host text with no %sBytes sibling, so a value that "+
+				"is not valid UTF-8 is replaced with U+FFFD and nothing marks the document "+
+				"lossy. Add the sibling and put the field through e.text, or name it in "+
+				"snugAuthored if snug really is its only author", f.Name, f.Name)
+		}
+	}
+
+	// CONTROL: the sweep must actually be looking at something. A struct whose
+	// string fields were all in snugAuthored would pass vacuously.
+	var checked int
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		if f.Type.Kind() == reflect.String && !strings.HasSuffix(f.Name, "Bytes") &&
+			!snugAuthored[f.Name] {
+			checked++
+		}
+	}
+	if checked == 0 {
+		t.Fatal("control: the sweep examined no field at all, so it proves nothing")
 	}
 }

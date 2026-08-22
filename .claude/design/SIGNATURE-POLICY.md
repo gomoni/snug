@@ -73,6 +73,35 @@ is how a projection stops being one.
   so all four are equally projectable and the value carries verbatim.
 - **Each `prm*` arm decodes with exact fields**, so `dockerReference` inside a
   `matchExact` is a file podman refuses.
+- **A duplicate key is fatal.** `ParanoidUnmarshalJSONObject` reports
+  `Duplicate key %q`; `encoding/json` silently keeps the **last** value. So the
+  projection walks the raw document for repeated keys at every object level
+  before decoding. Without that walk, a host file spelling `default` twice —
+  first `reject`, then `insecureAcceptAnything` — makes podman refuse every pull
+  on the host while snug generates a policy that accepts every image. It is the
+  only input measured where the sandbox ends up materially more permissive than
+  the posture the host configured, and the projection is what produces it.
+  `DisallowUnknownFields` cannot see it: both keys are known.
+
+## Presence, not emptiness
+
+Upstream keys "exactly one of `keyPath`, `keyPaths`, `keyData`" off **presence**.
+`"keyPaths": []` and `"keyData": ""` are present, and podman loads a host file
+carrying either.
+
+The emitter must key off presence too. `omitempty` keys off emptiness, so those
+two spellings came out as a `signedBy` with no key source at all — which podman
+refuses outright (`Exactly one of keyPath, keyPaths and keyData must be
+specified, none of them present`), killing every image operation in every sandbox
+on that host, with the error naming a file inside `/snug` the user cannot open.
+
+The general property, and what the test asserts: **for every host policy podman
+loads, the generated file must also load.**
+
+The same rule forbids the emitter inventing a field. containers/image defaults an
+absent `signedIdentity` to `matchRepoDigestOrExact`, so writing one in is snug
+choosing which images a signature is accepted for; a synthesised `keyType` is
+snug choosing a trust root.
 
 ## Transport scopes are the projection's own downgrade hazard
 
@@ -162,6 +191,31 @@ start.
 
 `Spec` receives the projected value and only writes. Nothing there can refuse
 for a policy reason.
+
+The write side needs the same care from the other direction: `Spec` is the first
+thing that puts **host bytes** — key copies, and a sidecar naming the host paths
+they came from — into the run directory. Any error between `engine.New` and the
+successful return would leave them in a world-writable `/tmp` that nothing
+sweeps, so every such path removes the run directory, disarmed on success where
+`containerRun.cleanup` takes over.
+
+## What the projection does not bind
+
+It binds **pulls**. The image store is keyed by target alone, is read-write and
+persists across runs, so an image admitted by an earlier projection keeps running
+under a later, stricter one — measured: with `{"default":[{"type":"reject"}]}`,
+`podman pull`, `import` and `save` are refused while `podman create` on an image
+already in the store succeeds. `--dry-run` says so on the `signatures` line
+rather than implying the store was re-checked.
+
+## `--dry-run` reads nothing on a run with no engine
+
+The summary reaches the report through a thunk, not a value. Passed by value it
+was evaluated as an argument, before the builder's early return for a run with no
+container profile — so `snug --dry-run -p @sys -p @cwd-rw` read the host's
+`policy.json` and every key it names (measured by strace) and discarded the
+answer. A host policy naming 24,000 key paths made an unrelated dry run do 24,000
+host reads.
 
 ## What is not projected
 

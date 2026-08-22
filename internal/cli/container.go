@@ -230,6 +230,25 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		return containerRun{}, err
 	}
 
+	// EVERY error path from here to the successful return removes this run's
+	// directory, and the reason changed with issue #307. Before it, an early
+	// return left behind snug-authored text; now Spec writes COPIES OF HOST KEY
+	// MATERIAL into conf/sigkeys/ and a sidecar naming the host paths they came
+	// from. /tmp is commonly world-writable, nothing sweeps
+	// /tmp/snug-<uid>-<pid>/ (sweepStaleRunDirs covers the per-uid runtime
+	// directory's run-* only), and a leaked directory is also a landmine for a
+	// later run whose pid recycles onto it — createRunDir refuses to reuse an
+	// existing entry.
+	//
+	// Disarmed on success, where containerRun.cleanup takes over: the same
+	// eng.Stop() reached by a different route, never both.
+	started := false
+	defer func() {
+		if !started {
+			eng.Stop()
+		}
+	}()
+
 	// pol.Net, the resolved network policy itself — not a rendering of it.
 	// The engine needs the same DNS decision twice over, once as an
 	// /etc/resolv.conf and once as three containers.conf keys, and handing it
@@ -298,6 +317,7 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 	pol.BindSocket(sock, containerSocketGuest, "(containers)")
 	containerEnv(pol)
 
+	started = true
 	return containerRun{
 		cleanup:       func() { p.Close(); eng.Stop() },
 		spec:          &spec,

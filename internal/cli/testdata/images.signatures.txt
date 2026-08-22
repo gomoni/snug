@@ -1,7 +1,12 @@
 ── this host configured none
-         signatures  NOT verified, and nothing was weakened: this host has no
-                     policy.json where podman looks, so there was no posture
-                     to preserve. A stock podman here accepts any image too
+         signatures  NOT verified, and that is snug's decision, not your
+                     host's: this host has no policy.json where podman looks,
+                     so a podman here refuses every pull outright and snug
+                     generates an accept-anything one so the sandbox can pull
+                     at all. Nothing you configured was weakened — you
+                     configured nothing — but the sandbox verifies LESS than
+                     the bare host. Write ~/.config/containers/policy.json and
+                     snug projects it
 ── the host's own accepts anything
          signatures  NOT verified, because your host does not verify them
                      either: /home/u/.config/containers/policy.json accepts
@@ -13,6 +18,9 @@
                      because a host path resolves to nothing in the engine's
                      derived view. A requirement snug cannot reproduce
                      refuses the run rather than being dropped
+                     It binds PULLS, not the warm store: an image already in
+                     this target's store runs without a second policy check,
+                     whatever admitted it. See the store graft above
 ── the host's own cannot be reproduced
          signatures  THIS RUN WILL REFUSE. The engine's policy.json is a
                      projection of your host's, and this host configured one

@@ -1147,9 +1147,14 @@ func describeSignaturePolicy(out io.Writer, c *reportContainers) {
 			fmt.Fprintf(out, "                     %s\n", visibleValue(strings.TrimSpace(line)))
 		}
 	case c.SignaturePolicySource == "":
-		fmt.Fprintf(out, "         signatures  NOT verified, and nothing was weakened: this host has no\n")
-		fmt.Fprintf(out, "                     policy.json where podman looks, so there was no posture\n")
-		fmt.Fprintf(out, "                     to preserve. A stock podman here accepts any image too\n")
+		fmt.Fprintf(out, "         signatures  NOT verified, and that is snug's decision, not your\n")
+		fmt.Fprintf(out, "                     host's: this host has no policy.json where podman looks,\n")
+		fmt.Fprintf(out, "                     so a podman here refuses every pull outright and snug\n")
+		fmt.Fprintf(out, "                     generates an accept-anything one so the sandbox can pull\n")
+		fmt.Fprintf(out, "                     at all. Nothing you configured was weakened — you\n")
+		fmt.Fprintf(out, "                     configured nothing — but the sandbox verifies LESS than\n")
+		fmt.Fprintf(out, "                     the bare host. Write ~/.config/containers/policy.json and\n")
+		fmt.Fprintf(out, "                     snug projects it\n")
 	case !c.SignaturesVerified:
 		fmt.Fprintf(out, "         signatures  NOT verified, because your host does not verify them\n")
 		fmt.Fprintf(out, "                     either: %s accepts\n",
@@ -1163,6 +1168,9 @@ func describeSignaturePolicy(out io.Writer, c *reportContainers) {
 		fmt.Fprintf(out, "                     because a host path resolves to nothing in the engine's\n")
 		fmt.Fprintf(out, "                     derived view. A requirement snug cannot reproduce\n")
 		fmt.Fprintf(out, "                     refuses the run rather than being dropped\n")
+		fmt.Fprintf(out, "                     It binds PULLS, not the warm store: an image already in\n")
+		fmt.Fprintf(out, "                     this target's store runs without a second policy check,\n")
+		fmt.Fprintf(out, "                     whatever admitted it. See the store graft above\n")
 	}
 }
 

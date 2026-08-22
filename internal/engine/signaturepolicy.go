@@ -166,8 +166,15 @@ const SignatureKeyDir = "sigkeys"
 // snug's own working directory — so `snug` run inside a checked-out repo that
 // ships .config/containers/policy.json would read that repo's file as the
 // host's, which is invariant 3 with the repo choosing which host paths snug
-// then copies. policy.Policy.Home is absolute by construction: Resolve fails
-// closed rather than producing an empty one.
+// then copies.
+//
+// BE PRECISE ABOUT WHY policy.Policy.Home IS SAFE HERE, because the obvious
+// reason is the wrong one: Resolve refuses an EMPTY home, not a relative one.
+// What refuses a relative one is @home's own environ.set validation, and every
+// path to a container profile includes @home — measured, `HOME=. snug --dry-run
+// --no-defaults -p @sys …` refuses. The guarantee holds through a profile rather
+// than through Resolve, so a future profile set reaching this code without
+// @home would need its own check.
 func hostSignaturePolicyPaths(home string) []string {
 	return []string{
 		filepath.Join(home, ".config", "containers", "policy.json"),
@@ -204,10 +211,15 @@ type hostPolicyDoc struct {
 type requirement struct {
 	Type string
 
-	KeyType  string
-	KeyPath  string
-	KeyPaths []string
-	KeyData  string
+	KeyType string
+	// POINTERS, carrying PRESENCE rather than a value. Exactly one of the three
+	// is non-nil for a signedBy, because upstream admits exactly one and keys
+	// that rule off presence — `"keyData": ""` is present. render emits the same
+	// way; see its own note for the file this distinction breaks when it is
+	// collapsed to emptiness.
+	KeyPath  *string
+	KeyPaths *[]string
+	KeyData  *string
 
 	SignedIdentity *identityMatch
 }
@@ -324,14 +336,19 @@ func ProjectHostSignaturePolicy(home string) (*SignaturePolicy, error) {
 // path that HAD host bytes and gave up cannot reach it, and
 // TestNothingFallsBackToAcceptAnything counts constructions.
 //
-// It is not a fallback. A host with no policy.json anywhere podman looks
-// configured nothing, so there is no posture to preserve and nothing is being
-// weakened — a stock podman on that host accepts any image too. An empty
-// requirement list would not do instead: containers/image refuses one outright
-// ("List of verification policy requirements must not be empty"), so every pull
-// would fail on a host that had asked for nothing.
+// It is not a fallback in the sense clause 3 forbids: there is no host posture
+// here to preserve, so nothing the host configured is being weakened.
 //
-// The generated file's sidecar says which of the two happened.
+// BUT IT IS A DECISION SNUG MADE, and saying otherwise would be the screen
+// claiming a property nobody checked. MEASURED, pinned podman 5.8.4 with no
+// policy.json in either place: `Error: no policy.json file found at any of the
+// following: …`. A stock podman there pulls NOTHING. snug makes every pull
+// succeed, so the sandbox is more permissive than the bare host — the trade
+// being that a host-dependent total failure is not one a sandbox should
+// inherit. The sidecar and --dry-run both say so in those words.
+//
+// An empty requirement list is not the alternative: containers/image refuses
+// one outright ("List of verification policy requirements must not be empty").
 func hostConfiguredNoSignaturePolicy() *SignaturePolicy {
 	return &SignaturePolicy{Default: []requirement{{Type: reqAcceptAnything}}}
 }
@@ -339,6 +356,12 @@ func hostConfiguredNoSignaturePolicy() *SignaturePolicy {
 // projectSignaturePolicy is the projection proper, separated from the read so a
 // test can feed it a document without a host.
 func projectSignaturePolicy(raw []byte) (*SignaturePolicy, error) {
+	// BEFORE anything is decoded: a duplicate key changes what the document
+	// means to Go and makes it unloadable to podman, so neither half of the
+	// projection can be trusted about a file that has one.
+	if err := refuseDuplicateKeys(raw); err != nil {
+		return nil, fmt.Errorf("snug will not project it: %w", err)
+	}
 	var doc hostPolicyDoc
 	if err := strictDecode(raw, &doc); err != nil {
 		return nil, fmt.Errorf("snug cannot parse it (%s), so it cannot reproduce what it "+
@@ -578,15 +601,15 @@ func projectSignedBy(raw []byte, at string, addKey func(string)) (requirement, e
 	out := requirement{Type: reqSignedBy, KeyType: *r.KeyType}
 	switch {
 	case r.KeyPath != nil:
-		out.KeyPath = *r.KeyPath
+		out.KeyPath = r.KeyPath
 		addKey(*r.KeyPath)
 	case r.KeyPaths != nil:
-		out.KeyPaths = *r.KeyPaths
+		out.KeyPaths = r.KeyPaths
 		for _, p := range *r.KeyPaths {
 			addKey(p)
 		}
 	default:
-		out.KeyData = *r.KeyData
+		out.KeyData = r.KeyData
 	}
 
 	if r.SignedIdentity != nil {
@@ -654,6 +677,94 @@ func projectIdentityMatch(raw json.RawMessage, at string) (*identityMatch, error
 			at, policy.VisibleText(err.Error()))
 	}
 	return &m, nil
+}
+
+// refuseDuplicateKeys walks the whole raw document and refuses a repeated key at
+// any object level.
+//
+// encoding/json takes the LAST duplicate silently; containers/image's
+// ParanoidUnmarshalJSONObject treats one as fatal. Without this snug accepts,
+// and re-authors, a file podman refuses to load — and picks the later value.
+// MEASURED: a host file spelling `"default"` twice, first `reject` and then
+// `insecureAcceptAnything`, made podman refuse every pull on the host while
+// snug generated a policy that accepted every image. That is the only input
+// found where the sandbox ends up materially MORE permissive than the posture
+// the host configured, and it is the projection producing it.
+//
+// DisallowUnknownFields cannot see this: both keys are known. It has to be a
+// token walk over the bytes.
+// ONLY A DUPLICATE KEY is reported. A malformed document makes the token walk
+// fail too, and reporting that here would replace strictDecode's "snug cannot
+// parse it (…), so it cannot reproduce what it requires" — which names the fix —
+// with a raw scanner error. Every other failure falls through to the decoder
+// that has a message for it.
+func refuseDuplicateKeys(raw []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	var dup *duplicateKeyError
+	if err := walkDistinctKeys(dec, ""); errors.As(err, &dup) {
+		return dup
+	}
+	return nil
+}
+
+// duplicateKeyError is the one failure the token walk owns.
+type duplicateKeyError struct{ key, at string }
+
+func (e *duplicateKeyError) Error() string {
+	return fmt.Sprintf("the key %q appears twice in the same object (at %s).\n"+
+		"       containers/image refuses a duplicate key outright, so this is a file podman "+
+		"itself will not load — and snug will not reproduce it either, because Go's JSON "+
+		"decoder would silently keep the LAST value and the file would then mean something "+
+		"its author cannot see by reading it",
+		policy.VisibleText(e.key), policy.VisibleText(e.at))
+}
+
+// walkDistinctKeys consumes exactly one JSON value from dec. where names the
+// position for the error, because a policy.json with four transports repeats a
+// key somewhere the reader has to be told about.
+func walkDistinctKeys(dec *json.Decoder, where string) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok {
+		return nil // a scalar: nothing below it
+	}
+	switch delim {
+	case '{':
+		seen := map[string]bool{}
+		for dec.More() {
+			keyTok, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyTok.(string)
+			if !ok {
+				return fmt.Errorf("a JSON object key that is not a string")
+			}
+			at := key
+			if where != "" {
+				at = where + "." + key
+			}
+			if seen[key] {
+				return &duplicateKeyError{key: key, at: at}
+			}
+			seen[key] = true
+			if err := walkDistinctKeys(dec, at); err != nil {
+				return err
+			}
+		}
+	case '[':
+		for dec.More() {
+			if err := walkDistinctKeys(dec, where+"[]"); err != nil {
+				return err
+			}
+		}
+	}
+	// The closing delimiter.
+	_, err = dec.Token()
+	return err
 }
 
 // strictDecode decodes one JSON object into v, refusing an unknown key and a
@@ -811,12 +922,20 @@ func (sp *SignaturePolicy) write(confDir, containersDir string, guest func(what,
 // in the output goes through it, so a copy that no graft exposes is a refusal
 // here rather than a file the engine cannot open three layers down.
 func (sp *SignaturePolicy) render(copies map[string]string, guest func(what, host string) (string, error)) ([]byte, error) {
+	// POINTERS FOR THE THREE KEY SOURCES, and this is not a style choice.
+	// containers/image keys its "exactly one of keyPath, keyPaths, keyData"
+	// rule off PRESENCE, and projectSignedBy matches that. `omitempty` keys off
+	// EMPTINESS, so a host `"keyPaths": []` or `"keyData": ""` — both present,
+	// both loaded by podman — came out as a signedBy with NO key source, which
+	// podman refuses outright: every image operation in every sandbox on that
+	// host, dead, with the error naming a file inside /snug that the user
+	// cannot open. Presence in, presence out.
 	type jsonRequirement struct {
 		Type           string         `json:"type"`
 		KeyType        string         `json:"keyType,omitempty"`
-		KeyPath        string         `json:"keyPath,omitempty"`
-		KeyPaths       []string       `json:"keyPaths,omitempty"`
-		KeyData        string         `json:"keyData,omitempty"`
+		KeyPath        *string        `json:"keyPath,omitempty"`
+		KeyPaths       *[]string      `json:"keyPaths,omitempty"`
+		KeyData        *string        `json:"keyData,omitempty"`
 		SignedIdentity *identityMatch `json:"signedIdentity,omitempty"`
 	}
 	// EXACTLY the two keys containers/image's resolver returns a destination
@@ -844,19 +963,26 @@ func (sp *SignaturePolicy) render(copies map[string]string, guest func(what, hos
 				Type: r.Type, KeyType: r.KeyType, KeyData: r.KeyData,
 				SignedIdentity: r.SignedIdentity,
 			}
-			if r.KeyPath != "" {
-				g, err := keyGuest(r.KeyPath)
+			switch {
+			case r.KeyPath != nil:
+				g, err := keyGuest(*r.KeyPath)
 				if err != nil {
 					return nil, err
 				}
-				j.KeyPath = g
-			}
-			for _, p := range r.KeyPaths {
-				g, err := keyGuest(p)
-				if err != nil {
-					return nil, err
+				j.KeyPath = &g
+			case r.KeyPaths != nil:
+				// A NON-NIL EMPTY SLICE stays a non-nil empty slice: the host
+				// wrote `[]`, podman loads it, and dropping it would emit a
+				// keyless signedBy podman refuses.
+				guests := make([]string, 0, len(*r.KeyPaths))
+				for _, p := range *r.KeyPaths {
+					g, err := keyGuest(p)
+					if err != nil {
+						return nil, err
+					}
+					guests = append(guests, g)
 				}
-				j.KeyPaths = append(j.KeyPaths, g)
+				j.KeyPaths = &guests
 			}
 			out = append(out, j)
 		}
@@ -901,8 +1027,15 @@ func (sp *SignaturePolicy) sidecar(copies map[string]string) []byte {
 	if sp.Source == "" {
 		b.WriteString("This host has no policy.json where podman looks " +
 			"(~/.config/containers, /etc/containers), so there was no posture to preserve and " +
-			"the generated file accepts any image. That is what a stock podman on this host " +
-			"does too, and it is not a decision snug made about verification.\n")
+			"the generated file accepts any image.\n\n" +
+			"That IS a decision snug made, and it goes the permissive way. A podman on this " +
+			"host with no policy.json refuses every pull outright (\"no policy.json file " +
+			"found at any of the following\"); snug generates one so the sandbox can pull at " +
+			"all. Nothing your host configured has been weakened, because your host " +
+			"configured nothing — but the sandbox verifies less than the bare host, not the " +
+			"same.\n\n" +
+			"To have the sandbox enforce something, write the policy.json you want at " +
+			"~/.config/containers/policy.json; snug projects it.\n")
 		return []byte(b.String())
 	}
 	fmt.Fprintf(&b, "It is a PROJECTION of %s. Every requirement there is reproduced; a "+

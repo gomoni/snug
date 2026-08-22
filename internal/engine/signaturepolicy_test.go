@@ -793,3 +793,141 @@ func TestTheGeneratedPolicyBytes(t *testing.T) {
 			"--- got\n%s\n--- want\n%s", body, want)
 	}
 }
+
+// TestEveryHostPolicyPodmanLoadsProducesAFileItLoads is the general property
+// behind a red-team finding, stated as the property rather than as the two
+// spellings that exposed it.
+//
+// The projection is only a projection if what comes out is loadable wherever
+// what went in was. The measured failure: `"keyPaths": []` and `"keyData": ""`
+// are PRESENT to containers/image, which keys its exactly-one rule off presence
+// and loads the host file — while the emitter's `omitempty` keyed off
+// emptiness and dropped them, emitting a `signedBy` with no key source at all.
+// podman refuses that outright ("Exactly one of keyPath, keyPaths and keyData
+// must be specified, none of them present"), so every image operation in every
+// sandbox on such a host died, with the error naming a file inside /snug the
+// user cannot open — and --dry-run said the run enforced their policy.
+//
+// Asserted here against snug's OWN decoder as the cheap local proxy;
+// test/integration drives the real podman.
+func TestEveryHostPolicyPodmanLoadsProducesAFileItLoads(t *testing.T) {
+	for _, host := range []string{
+		`{"default":[{"type":"signedBy","keyType":"GPGKeys","keyPaths":[]}]}`,
+		`{"default":[{"type":"signedBy","keyType":"GPGKeys","keyData":""}]}`,
+		`{"default":[{"type":"insecureAcceptAnything"}]}`,
+		`{"default":[{"type":"reject"}],"transports":{"docker-daemon":{"":[{"type":"reject"}]}}}`,
+	} {
+		t.Run(host, func(t *testing.T) {
+			body, _, err := projectAndWrite(t, host)
+			if err != nil {
+				t.Fatalf("a host policy podman loads was refused: %v", err)
+			}
+			// Round-trip through the projection's own decoder. A generated file
+			// snug cannot re-read is a generated file podman cannot read.
+			if _, err := projectSignaturePolicy(body); err != nil {
+				t.Fatalf("the generated file does not survive snug's own decoder (%v), so it "+
+					"is not a file containers/image will load either:\n%s", err, body)
+			}
+		})
+	}
+}
+
+// TestADuplicateKeyRefusesRatherThanTakingTheLastValue is the one measured input
+// where the sandbox came out MATERIALLY MORE PERMISSIVE than the host's
+// configured posture, and the projection itself produced it.
+//
+// encoding/json takes the LAST duplicate key silently; containers/image treats
+// one as fatal. So a host file spelling "default" twice — first `reject`, then
+// `insecureAcceptAnything` — made podman refuse every pull ON THE HOST while
+// snug generated a policy that accepted every image, and --dry-run reported
+// "your host does not verify them either" about a file whose first line says
+// reject.
+//
+// DisallowUnknownFields cannot see this: both keys are known. It takes a token
+// walk, which is why refuseDuplicateKeys exists separately.
+func TestADuplicateKeyRefusesRatherThanTakingTheLastValue(t *testing.T) {
+	cases := []struct{ name, host string }{{
+		name: "the default list, reject then accept-anything",
+		host: `{"default":[{"type":"reject"}],"default":[{"type":"insecureAcceptAnything"}]}`,
+	}, {
+		name: "a requirement's own type",
+		host: `{"default":[{"type":"reject","type":"insecureAcceptAnything"}]}`,
+	}, {
+		name: "one transport scope",
+		host: `{"default":[{"type":"reject"}],"transports":{"docker":{` +
+			`"quay.io":[{"type":"reject"}],"quay.io":[{"type":"insecureAcceptAnything"}]}}}`,
+	}, {
+		name: "a transport name",
+		host: `{"default":[{"type":"reject"}],"transports":{` +
+			`"docker":{"":[{"type":"reject"}]},"docker":{"":[{"type":"insecureAcceptAnything"}]}}}`,
+	}, {
+		name: "a signedIdentity field",
+		host: `{"default":[{"type":"signedBy","keyType":"GPGKeys","keyData":"QUFB",` +
+			`"signedIdentity":{"type":"exactRepository","dockerRepository":"a","dockerRepository":"b"}}]}`,
+	}}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, confDir, err := projectAndWrite(t, tc.host)
+			if err == nil {
+				t.Fatalf("a host policy with a duplicate key was projected anyway. podman "+
+					"refuses to load that file, so the host verifies MORE than the sandbox "+
+					"does:\n%s", body)
+			}
+			if !strings.Contains(err.Error(), "appears twice") {
+				t.Errorf("the refusal does not say a key was repeated, so the reader cannot "+
+					"find it: %v", err)
+			}
+			nothingWasWritten(t, confDir)
+		})
+	}
+
+	// CONTROL: the same documents without the duplicate must project. A
+	// duplicate-key check that refused everything would pass the table above.
+	for _, ok := range []string{
+		`{"default":[{"type":"insecureAcceptAnything"}]}`,
+		`{"default":[{"type":"reject"}],"transports":{"docker":{"quay.io":[{"type":"reject"}]}}}`,
+	} {
+		if _, _, err := projectAndWrite(t, ok); err != nil {
+			t.Errorf("control: a document with no duplicate key was refused (%v), so the "+
+				"assertions above may be refusing for the wrong reason: %s", err, ok)
+		}
+	}
+}
+
+// TestTheAbsentHostPolicyBranchDoesNotClaimStockPodmanAgrees is the screen
+// half of a red-team finding, and the class is the one this project cares about
+// most: an artifact claiming a property nobody measured.
+//
+// The sidecar and --dry-run both defended the one accept-anything construction
+// with "a stock podman on this host accepts any image too". MEASURED, pinned
+// podman 5.8.4 with neither policy.json present: `Error: no policy.json file
+// found at any of the following: …`. It pulls NOTHING. snug makes every pull
+// succeed, which is a decision snug made, and both artifacts told the reader no
+// decision was made. The same commit's own integration control asserts that
+// exact string.
+func TestTheAbsentHostPolicyBranchDoesNotClaimStockPodmanAgrees(t *testing.T) {
+	sp, err := ProjectHostSignaturePolicy(hostWithPolicy(t, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	side := string(sp.sidecar(nil))
+
+	for _, false_ := range []string{
+		"stock podman on this host accepts any image",
+		"not a decision snug made",
+		"nothing is being weakened",
+	} {
+		if strings.Contains(side, false_) {
+			t.Errorf("the sidecar says %q. A podman here with no policy.json refuses every "+
+				"pull, so that is measurably false and it is the sentence justifying the one "+
+				"accept-anything construction in the package:\n%s", false_, side)
+		}
+	}
+	for _, want := range []string{"decision snug made", "refuses every pull"} {
+		if !strings.Contains(side, want) {
+			t.Errorf("the sidecar never says %q, so a reader cannot tell that the permissive "+
+				"file is snug's choice rather than their host's:\n%s", want, side)
+		}
+	}
+}

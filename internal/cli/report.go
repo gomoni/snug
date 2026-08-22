@@ -216,7 +216,9 @@ func buildReport(p *policy.Policy, args []string, cfg config, refusedBy error) R
 		NotGranted: notGranted(p),
 		Network:    buildNetworkReport(p),
 		Topology:   buildTopologyReport(p),
-		Containers: buildContainersReport(p, engine.SummariseSignaturePolicy(p.Home)),
+		Containers: buildContainersReport(p, func() engine.SignaturePolicySummary {
+			return engine.SummariseSignaturePolicy(p.Home)
+		}),
 		Seccomp:    buildSeccompReport(cfg),
 		NewSession: p.NewSession,
 		BwrapArgv:  args,
@@ -296,7 +298,14 @@ func buildTopologyReport(p *policy.Policy) reportTopology {
 // that fetched it itself would make every golden test's verdict depend on
 // whether the machine running it enforces image signatures — the same trap
 // $SNUG_PODMAN is, and the reason the golden tests clear that too.
-func buildContainersReport(p *policy.Policy, sig engine.SignaturePolicySummary) *reportContainers {
+//
+// A THUNK, not a value, because an argument is evaluated before the callee runs
+// and this callee returns early for a run with no engine. Passed by value, a
+// `snug --dry-run -p @sys -p @cwd-rw` read the host's policy.json and every key
+// it names — measured by strace — and threw the answer away. --dry-run's whole
+// pitch is that it touches as little as possible, and a host policy naming
+// 24,000 key paths made an unrelated dry run do 24,000 host reads.
+func buildContainersReport(p *policy.Policy, sig func() engine.SignaturePolicySummary) *reportContainers {
 	if p.Podman == policy.PodmanOff {
 		return nil
 	}
@@ -319,10 +328,13 @@ func buildContainersReport(p *policy.Policy, sig engine.SignaturePolicySummary) 
 		// namespace to publish a port.
 		PortMapping: false,
 	}
-	c.SignaturesVerified = sig.Verified
-	c.SignaturePolicySource = sig.Source
-	if sig.Refusal != nil {
-		c.SignaturePolicyRefusal = sig.Refusal.Error()
+	// AFTER the PodmanOff early return above: this is the one host read in this
+	// function, and a run with no engine must not make it.
+	summary := sig()
+	c.SignaturesVerified = summary.Verified
+	c.SignaturePolicySource = summary.Source
+	if summary.Refusal != nil {
+		c.SignaturePolicyRefusal = summary.Refusal.Error()
 	}
 
 	if custom := os.Getenv("SNUG_PODMAN"); custom != "" {

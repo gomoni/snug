@@ -24,9 +24,14 @@ IMAGES   provenance is snug's, not this host's (issue #137)
          search      docker.io and nothing else — no mirror, no rewrite, no
                      insecure registry. A generated registries.conf, pointed
                      at by CONTAINERS_REGISTRIES_CONF
-         signatures  NOT verified, and nothing was weakened: this host has no
-                     policy.json where podman looks, so there was no posture
-                     to preserve. A stock podman here accepts any image too
+         signatures  NOT verified, and that is snug's decision, not your
+                     host's: this host has no policy.json where podman looks,
+                     so a podman here refuses every pull outright and snug
+                     generates an accept-anything one so the sandbox can pull
+                     at all. Nothing you configured was weakened — you
+                     configured nothing — but the sandbox verifies LESS than
+                     the bare host. Write ~/.config/containers/policy.json and
+                     snug projects it
          logins      NONE. REGISTRY_AUTH_FILE points at an empty file, so the
                      host's ~/.docker/config.json and auth.json are not read,
                      and no private image can be pulled (issue #142)

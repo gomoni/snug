@@ -371,9 +371,13 @@ func plantHostSignaturePolicy(t *testing.T, body string) string {
 // without it, "the pull failed" would pass on a broken bundle, a missing
 // network or a typo in the image name.
 //
-// No network is needed for the reject arm: containers/image evaluates the
-// policy before it contacts a registry, which is the same property the rest of
-// this file relies on.
+// THIS TEST NEEDS THE NETWORK, measured rather than assumed. The rest of this
+// file does not, because a missing policy.json and an unparsable
+// registries.conf both surface before the first DNS lookup — but a policy that
+// REJECTS does not: podman 5.8.4 reaches `initializing source docker://…`
+// first, so offline the failure is the DNS error and never `rejected by
+// policy`. That case SKIPS by name rather than failing, because "no network" is
+// not a verdict on the projection.
 func TestTheEngineEnforcesTheProjectedSignaturePolicy(t *testing.T) {
 	requireSandbox(t)
 	const image = "docker.io/library/alpine:3.20"
@@ -381,6 +385,10 @@ func TestTheEngineEnforcesTheProjectedSignaturePolicy(t *testing.T) {
 
 	rejectEnv, rejectEng := engineSpecEnvWithSignaturePolicy(t, `{"default":[{"type":"reject"}]}`)
 	got := runPodman(t, probeRuntime(t, rejectEnv), storeArgs(rejectEng, "pull", image)...)
+	if reachedNoRegistry(got) {
+		t.Skipf("SKIP: this host cannot reach the registry, and podman evaluates the policy "+
+			"only after initializing the source, so there is nothing to observe:\n%s", got)
+	}
 	if !strings.Contains(got, rejected) {
 		t.Errorf("a host policy of {\"default\":[{\"type\":\"reject\"}]} was projected and the "+
 			"pull was NOT refused for a signature-policy reason. The engine is enforcing "+
@@ -441,4 +449,19 @@ func probeRuntime(t *testing.T, env []string) []string {
 // has to do the same or podman tries to create /snug on the host.
 func storeArgs(e *engine.Engine, args ...string) []string {
 	return append([]string{"--root", e.Store(), "--runroot", e.Runroot()}, args...)
+}
+
+// reachedNoRegistry reports whether podman failed before it could evaluate the
+// signature policy at all. Name-resolution and dial failures only: anything
+// else must be judged, not skipped.
+func reachedNoRegistry(out string) bool {
+	for _, offline := range []string{
+		"no such host", "server misbehaving", "Temporary failure in name resolution",
+		"connection refused", "network is unreachable", "i/o timeout",
+	} {
+		if strings.Contains(out, offline) {
+			return true
+		}
+	}
+	return false
 }
