@@ -13,9 +13,18 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
+	"github.com/gomoni/snug/internal/hostread"
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/profile"
 )
+
+// maxUserConfigBytes bounds the read of ~/.config/snug/config.toml. Its only
+// field today is a list of profile names; a few hundred bytes covers even a
+// generously-commented file naming every builtin plus several custom ones.
+// 256 KiB is far beyond that while still bounding the read this fixes (issue
+// #337: a FIFO planted here — or set via $XDG_CONFIG_HOME — used to hang
+// every invocation of snug before it did anything else).
+const maxUserConfigBytes = 256 << 10
 
 // userConfig is ~/.config/snug/config.toml. It holds preferences, never grants:
 // what a bare `snug <dir>` selects, and nothing that could widen a sandbox on
@@ -68,15 +77,25 @@ func loadUserConfig() userConfig {
 	if path == "" {
 		return cfg
 	}
-	data, err := os.ReadFile(path)
+	// hostread.Required, not os.ReadFile: $XDG_CONFIG_HOME can point into a
+	// checked-out repo (CLAUDE.md invariant 3), so config.toml is a path a
+	// hostile tree can influence the timing of, not only the host user's own
+	// file. Before this fix a FIFO there hung snug before it did anything at
+	// all — no sandbox, no message, nothing to attach to (issue #337).
+	// Required's contract keeps the ENOENT-vs-everything-else distinction the
+	// os.ReadFile-based code below already depended on: absent unwraps to
+	// errors.Is(err, fs.ErrNotExist) exactly as it always did, and a FIFO or
+	// an oversized file now lands in the fatal branch alongside a permission
+	// error rather than hanging before reaching it.
+	data, err := hostread.Required(path, maxUserConfigBytes)
 	if err != nil {
 		// Only "there is no config file" is a non-event. Every OTHER read error
-		// — unreadable mode, EIO, a dangling symlink — used to return the empty
-		// config, which silently WIDENS the sandbox back to the built-in four
-		// while `snug config` reports the source as "built-in". `chmod 000` on a
-		// file saying `defaults = []` produced a full default sandbox. A parse
-		// error was already fatal; a read error must be too, for the same reason
-		// (invariant 5: no silent downgrade).
+		// — unreadable mode, EIO, a dangling symlink, a FIFO, an oversized file —
+		// used to return the empty config, which silently WIDENS the sandbox
+		// back to the built-in four while `snug config` reports the source as
+		// "built-in". `chmod 000` on a file saying `defaults = []` produced a
+		// full default sandbox. A parse error was already fatal; a read error
+		// must be too, for the same reason (invariant 5: no silent downgrade).
 		// errors.Is, not os.IsNotExist — see internal/cli/runstate.go and
 		// issue #124: the old predicate does not unwrap, so it silently
 		// answers false for a wrapped ENOENT. Here that would turn "there is
