@@ -43,6 +43,15 @@ func startProxy(t *testing.T) (sock string, eng *fakeEngine, target string) {
 // every other test keeps the container-only mode.
 func startProxyMode(t *testing.T, mode policy.PodmanMode) (sock string, eng *fakeEngine, target string) {
 	t.Helper()
+	return startProxyAudited(t, mode, nil)
+}
+
+// startProxyAudited is startProxyMode with the proxy's audit sink captured.
+// Split out for issue #338: dropping an unmodelled EMPTY HostConfig field is a
+// downgrade, and invariant 5 forbids a silent one — so the test that asserts the
+// drop has to be able to read the line that announces it.
+func startProxyAudited(t *testing.T, mode policy.PodmanMode, audit func(string)) (sock string, eng *fakeEngine, target string) {
+	t.Helper()
 	dir := t.TempDir()
 	target = filepath.Join(dir, "proj")
 	if err := os.MkdirAll(target, 0o755); err != nil {
@@ -78,7 +87,7 @@ func startProxyMode(t *testing.T, mode policy.PodmanMode) (sock string, eng *fak
 		},
 	}
 	sock = filepath.Join(dir, "proxy.sock")
-	p, err := New(pol, up, sock, "snug.run=test", nil, nil)
+	p, err := New(pol, up, sock, "snug.run=test", audit, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
