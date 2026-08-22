@@ -40,7 +40,7 @@ func TestTheEnginesPATHIsUnwritableUnderTheREALBuiltins(t *testing.T) {
 	if err := installEngineViewGrafts(newEnvFakeEnv(), p); err != nil {
 		t.Fatal(err)
 	}
-	eng, err := engine.New(sel, p.Target)
+	eng, err := engine.New(p)
 	if err != nil {
 		t.Fatal(err)
 	}

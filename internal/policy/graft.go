@@ -636,8 +636,9 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 	//
 	// The residual actors, because THIS run's payload cannot be one of them,
 	// are (a) a PREVIOUS run's payload — the container store persists across
-	// runs of the same profiles+target, and so does /tmp under @tmp-shared, so
-	// a symlink an earlier sandbox planted is still there to win the race —
+	// runs of the same TARGET DIRECTORY, whatever profiles either run
+	// selected, and so does /tmp under @tmp-shared, so a symlink an earlier
+	// sandbox planted is still there to win the race —
 	// and (b) another same-uid HOST process, which is OUTSIDE snug's threat
 	// model: it already has, without any of this, every capability U-namespace
 	// confinement does not remove.

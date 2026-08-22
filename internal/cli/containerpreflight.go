@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/gomoni/snug/internal/hostread"
 	"github.com/gomoni/snug/internal/stage"
 )
 
@@ -224,13 +225,13 @@ var hostSignaturePolicyPaths = []string{
 // one of them is honest.
 func preflightSignaturePolicy() *signaturePolicyNotice {
 	for _, path := range hostSignaturePolicyPaths {
-		// readHostFileBounded rather than os.ReadFile, for the reasons issue
+		// hostread.Optional rather than os.ReadFile, for the reasons issue
 		// #58's third red-team finding measured on the credential path: a FIFO
 		// at this path would hang the run in open(2) forever with no output,
 		// and a symlink to /dev/zero would be read until memory ran out. A
 		// preflight probe that can hang is worse than the probe not existing.
 		// (nil, "") is ABSENT, which is the ordinary case and says nothing.
-		raw, note := readHostFileBounded(path, maxSignaturePolicyBytes)
+		raw, note := hostread.Optional(path, maxSignaturePolicyBytes)
 		if note != "" {
 			return &signaturePolicyNotice{Path: path, Detail: note}
 		}

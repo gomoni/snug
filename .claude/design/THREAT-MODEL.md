@@ -114,6 +114,12 @@ a bad OCI image) that a subsequent run then uses is not considered a breach.
 Unless such payloads allow a containment escape, they are fine from the tool's
 point of view.
 
+A run that pulls or builds a bad image leaves it in the store, and a later run
+on the same target may use it. That gains no host reach the later run's own
+policy did not already grant, which is why it is a non-goal rather than a
+threat. The store is keyed on the target alone, so selecting fewer profiles
+does not give you a clean one — deleting the store directory does.
+
 ### 3.4 User-provided holes
 
 Passing in a socket that snug does not control is outside the tool's scope. In

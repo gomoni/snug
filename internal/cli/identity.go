@@ -10,10 +10,19 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gomoni/snug/internal/hostread"
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/profile"
 	"github.com/gomoni/snug/internal/sshproxy"
 )
+
+// maxKnownHostsBytes bounds the read of the host's ~/.ssh/known_hosts. A
+// busy user can accumulate thousands of hosts, each roughly a few hundred
+// bytes (hostname patterns, key type, base64 key blob, optional comment); 8
+// MiB covers tens of thousands of such entries with room to spare while
+// still bounding the host-side allocation a planted symlink or oversized
+// file would otherwise demand (issue #337).
+const maxKnownHostsBytes = 8 << 20
 
 // knownHostsFor extracts the entries for one host from the host's known_hosts.
 //
@@ -26,8 +35,14 @@ func knownHostsFor(host string) []byte {
 	if err != nil {
 		return nil
 	}
-	data, err := os.ReadFile(filepath.Join(home, ".ssh", "known_hosts"))
-	if err != nil {
+	// hostread.Optional, not os.ReadFile: the same FIFO/symlink primitive
+	// issue #337 measured against identity.ssh_key applies here too — this
+	// one is the host user's own file rather than payload-reachable, but a
+	// FIFO at ~/.ssh/known_hosts would still hang every run before the
+	// sandbox exists. "Optional" because an absent or unreadable
+	// known_hosts already meant "no entries" here, silently, before this fix.
+	data, note := hostread.Optional(filepath.Join(home, ".ssh", "known_hosts"), maxKnownHostsBytes)
+	if note != "" || data == nil {
 		return nil
 	}
 	var out bytes.Buffer
@@ -206,7 +221,12 @@ func startIdentity(pol *policy.Policy, verbose, iKnow, dryRun bool) (cleanup fun
 	// under-target symlink check as a mount path, so there is one spelling with
 	// one fate.
 	if id.SSHKey != "" {
-		data, rerr := os.ReadFile(id.SSHKey)
+		// hostread.Required, not os.ReadFile: ssh_key is a path a payload can
+		// plant a FIFO or a symlink to /dev/zero at (issue #337) — it is
+		// resolved under the target, which a previous run's own @cwd-rw could
+		// have written into. "Required" because an unreadable pinned key must
+		// stay a hard error naming the path, exactly as os.ReadFile's did.
+		data, rerr := hostread.Required(id.SSHKey, hostread.MaxSSHPublicKeyBytes)
 		if rerr != nil {
 			// Reachable in practice only for host-agent mode: agent-proxy has
 			// already read the same file through sshproxy.New and failed there.

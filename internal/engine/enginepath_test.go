@@ -160,7 +160,7 @@ func TestNoEngineViewIsARefusalRatherThanAnEmptySweep(t *testing.T) {
 // defensive — and a reader of either test finds the other.
 func TestSpecRefusesAGraftlessPolicyBeforeItReachesThePATHCheck(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 	if err != nil {
 		t.Fatal(err)
 	}

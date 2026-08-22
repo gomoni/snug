@@ -2641,13 +2641,14 @@ hand-over a container run makes and it is the one that was invisible:
             owned: the sandbox's own grants do not expose this host path — it
             passed G4 only because snug declared it its own for this run
             abuse: write image layers into a store that PERSISTS across runs and
-            is shared with every other sandbox resolving to the same
-            profiles+target key …
+            is shared with every other sandbox on the SAME TARGET DIRECTORY,
+            whatever profiles it selected …
 ```
 
-`<key>` is `sha256(profiles+target)`, so the same selection on the same directory
-lands in the same store — that is what makes a warm start warm, and it is also
-why a poisoned layer outlives the sandbox that pulled it.
+`<key>` is `sha256(target)` (issue #276 — it used to also hash the profile
+selection; it no longer does), so ANY selection on the same directory lands in
+the same store — that is what makes a warm start warm, and it is also why a
+poisoned layer outlives the sandbox that pulled it.
 
 **A dry run still creates none of them.** The paths are computed, not made
 (`engine.PlannedPaths`), which is the same rule as issue #21's:
