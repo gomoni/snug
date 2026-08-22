@@ -406,13 +406,20 @@ func New(pol *policy.Policy) (*Engine, error) {
 	runDir := dirs.path
 
 	e := &Engine{
-		// runLabel is what teardown stops, and it identifies THIS RUN rather
-		// than the store. The store is shared on purpose — that is what makes
-		// a warm start warm — so `stop --all` scoped to it stopped a
-		// concurrent sibling's containers as collateral. The proxy stamps
-		// this label on every container it creates; Stop and the reaper both
-		// filter on it, so a teardown reaches exactly the containers this run
-		// started.
+		// runLabel identifies THIS RUN rather than the store, and its
+		// consumer is the PROXY, inbound: dockerproxy stamps it on every
+		// container it creates and refuses a removal that names a container
+		// carrying anyone else's (issue #339).
+		//
+		// RE-DERIVED. This used to say "teardown stops" and "Stop and the
+		// reaper both filter on it" — false since issue #167 deleted the
+		// host-side `podman stop`; teardown is pid-namespace collapse and
+		// filters on nothing. It also rested on a CONCURRENT sibling sharing
+		// the store, which issue #276 removed: engineKey is sha256(target)
+		// alone and S = L exactly (paths.go), so at most one live run uses a
+		// store. What the label separates is runs in TIME — the store
+		// persists and teardown removes no container record, so a later run of
+		// the same target opens a store holding every earlier run's.
 		runLabel: fmt.Sprintf("%s=%d", RunLabelKey, pid),
 
 		store:   planned.Store,

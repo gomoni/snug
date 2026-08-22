@@ -31,6 +31,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -106,14 +107,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The filter understands the docker-compat request schema only. Any libpod
-	// endpoint that CARRIES A BODY we would have to inspect is refused rather
-	// than forwarded unexamined — read-only libpod routes are harmless and stay
-	// allowed.
-	if libpod && bodyBearing(segs, r.Method) {
-		p.deny(w, "the libpod-native API is not supported for %s /%s. snug filters the "+
-			"docker-compat schema, and the libpod body is a different shape that this "+
-			"filter cannot read — forwarding it unexamined would bypass every check. "+
-			"Use the docker-compat endpoint (/v1.41/...).", r.Method, strings.Join(segs, "/"))
+	// endpoint that CHANGES STATE and that this filter has not read is refused
+	// rather than forwarded unexamined — read-only libpod routes carry no schema
+	// to misread and stay allowed.
+	if libpod && !safeMethod(r.Method) && !libpodExamined(segs) {
+		p.deny(w, "snug does not filter the libpod-native API for %s /%s, so it refuses it. "+
+			"snug reads the docker-compat request schema; the libpod schema is a different "+
+			"shape, and what this filter has not read it does not forward. Read-only libpod "+
+			"routes (GET, HEAD) and /libpod/build are the exceptions. Use `docker` against "+
+			"the docker-compat endpoint (/v1.41/...) instead.", r.Method, strings.Join(segs, "/"))
 		return
 	}
 
@@ -144,6 +146,30 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.handleVolumeCreate(w, r)
 	case isImageCreate(segs):
 		p.handleImageCreate(w, r)
+	case isContainerDelete(segs, r.Method):
+		p.handleContainerDelete(w, r, segs[1])
+	case isImageDelete(segs, r.Method):
+		p.deny(w, "removing image %q is not permitted. The engine's image store is this "+
+			"PROJECT's, not this run's — it is keyed on the target directory and persists "+
+			"across runs, which is what makes a warm start warm — so an image is not this "+
+			"run's to delete, and an image an earlier run BUILT exists nowhere else and no "+
+			"pull restores it. Build or pull under a fresh tag inside this run instead. To "+
+			"reclaim the store, remove it from the host.", strings.Join(segs[1:], "/"))
+	case isVolumeDelete(segs, r.Method):
+		p.deny(w, "removing volume %q is not permitted. Volumes live in the engine's store, "+
+			"which is keyed on the target directory and persists across runs, so a volume "+
+			"holds data an earlier run of this project wrote and is not this run's to "+
+			"delete. Use a fresh volume name inside this run instead.",
+			strings.Join(segs[1:], "/"))
+	case isPrune(segs, r.Method):
+		p.deny(w, "pruning (%s /%s) is not permitted. A prune names no object, so this "+
+			"proxy has nothing to check it against, and what it deletes OUTLIVES this "+
+			"sandbox: the engine store is keyed on the target directory and is shared "+
+			"with every LATER run on it — that sharing is what makes a warm start warm — "+
+			"so a prune throws away images and container records this run never created. "+
+			"Delete what you created, by id: `docker rm <id>`, `docker rmi <image>`, "+
+			"`docker volume rm <name>`. There is no scoped form of `system/prune` to "+
+			"offer: it names no object either.", r.Method, strings.Join(segs, "/"))
 	case isArchive(segs):
 		// A specific refusal, not the generic one below: this endpoint is
 		// permanently refused (see the case "archive", "export" comment in
@@ -155,7 +181,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"bounded by this sandbox's mount grants the way `exec` is. Read or write the "+
 			"file with `docker exec <container> cat <path>` or `... | docker exec -i "+
 			"<container> tar -x ...` instead.", r.Method, strings.Join(segs, "/"))
-	case allowed(segs):
+	case allowed(segs, r.Method):
 		p.forward(w, r, nil)
 	default:
 		p.deny(w, "endpoint %s /%s is not permitted", r.Method, strings.Join(segs, "/"))
@@ -205,20 +231,42 @@ func normaliseFull(path string) (segs []string, libpod bool, ok bool) {
 	return out, libpod, true
 }
 
-// bodyBearing reports whether a request's BODY carries policy-relevant fields,
-// i.e. whether the schema difference between libpod and docker-compat matters.
-func bodyBearing(segs []string, method string) bool {
-	if method != http.MethodPost && method != http.MethodPut {
-		return false
-	}
-	if len(segs) == 0 {
-		return false
-	}
-	switch segs[0] {
-	case "containers", "volumes", "images", "pods", "play", "generate", "secrets", "manifests":
-		return true
-	}
-	return false
+// libpodExamined reports whether snug's filter has actually READ this libpod
+// route. It is the only ground on which a state-changing libpod request may be
+// forwarded.
+//
+// An allowlist, and deliberately a one-entry one — issue #340. It replaces
+// `bodyBearing`, a denylist of the eight segments known to matter (containers,
+// volumes, images, pods, play, generate, secrets, manifests) which omitted
+// `networks` and `system`: POST /v5.0.0/libpod/networks/create and
+// POST /v5.0.0/libpod/system/prune reached the engine with the body forwarded
+// unexamined, while the 403 text a human reads claims that forwarding it
+// unexamined "would bypass every check". A list of the DANGEROUS segments is
+// wrong twice over — it has to be complete, and it has to STAY complete as
+// podman adds routes, which is the catalogue shape CLAUDE.md's invariant 2
+// calls a design smell. A list of the READ ones cannot rot in the unsafe
+// direction: a route podman adds next arrives refused.
+//
+// build is the entry, and it earns it rather than being grandfathered:
+// handleBuild parses the libpod query exhaustively against a default-deny
+// allowlist (an unrecognised parameter is a 403 that names it), and the body is
+// only the context tar, assembled by the client from files the sandbox could
+// already read. It is also the PRIMARY spelling — the podman CLI posts to
+// /libpod/build, not to /v1.41/build (build.go), and two integration tests plus
+// the whole of build_test.go depend on it.
+func libpodExamined(segs []string) bool { return isBuild(segs) }
+
+// safeMethod is the other half of the gate: a GET or a HEAD changes nothing and
+// carries no schema to misread.
+//
+// The method test used to be "POST or PUT", which let DELETE through — so
+// DELETE /v5.0.0/libpod/containers/<id>, /libpod/images/<id> and
+// /libpod/volumes/<name> all reached the engine over a schema this filter does
+// not read. Stating the gate as "not a safe method" rather than as a list of
+// unsafe ones means issue #339's removal rules are written ONCE, on the
+// docker-compat path, instead of twice.
+func safeMethod(method string) bool {
+	return method == http.MethodGet || method == http.MethodHead
 }
 
 func isContainerCreate(s []string) bool {
@@ -251,6 +299,158 @@ func isImageCreate(s []string) bool {
 // endpoint. Matched separately from allowed() (which already refuses it, see
 // the case "archive", "export" comment below) purely so the refusal can name
 // the alternative rather than fall through to the generic "not permitted".
+// isContainerDelete matches DELETE /containers/{id} — `docker rm`, and what
+// `docker run --rm` issues after the container exits.
+func isContainerDelete(segs []string, method string) bool {
+	return method == http.MethodDelete && len(segs) == 2 && segs[0] == "containers"
+}
+
+// isImageDelete and isVolumeDelete match `docker rmi` and `docker volume rm`.
+//
+// len >= 2, not == 2: an image is addressed by NAME as often as by id, and a
+// name carries slashes (`DELETE /images/docker.io/library/alpine`), so an
+// equality test would refuse the id spelling and forward the name spelling.
+func isImageDelete(segs []string, method string) bool {
+	return method == http.MethodDelete && len(segs) >= 2 && segs[0] == "images"
+}
+
+func isVolumeDelete(segs []string, method string) bool {
+	return method == http.MethodDelete && len(segs) >= 2 && segs[0] == "volumes"
+}
+
+// handleContainerDelete forwards a removal only for a container THIS run
+// created, which is what the run label is for (create.go's step 4).
+//
+// ABUSE: a hostile process inside the sandbox can use `GET /containers/json?all=1`
+// to enumerate every container in the engine's store — the store is keyed on the
+// target directory and persists, so that list includes every container an
+// EARLIER run of this project created — and then remove any of them by id.
+// Measured through this proxy against podman 6.0.2 (issue #339). What it buys
+// is destruction of a record that outlives the sandbox; there is no escape and
+// nothing outside the store is reachable.
+//
+// Ownership is asked of the ENGINE, not taken from the request, because the
+// client's word for what a container is is the thing being checked.
+//
+// FAIL CLOSED at every step. A proxy that permits the removal when it could not
+// determine ownership has exactly the property that was measured, with one extra
+// HTTP request in front of it — so a transport error, a non-200, an undecodable
+// body, a missing Config and a missing label all refuse. `docker run --rm` is
+// unaffected: the container it removes is one this proxy stamped.
+func (p *Proxy) handleContainerDelete(w http.ResponseWriter, r *http.Request, id string) {
+	if p.runLabel == "" {
+		p.deny(w, "this proxy stamps no run label, so no container is recorded as this "+
+			"run's and none can be removed. That is a misconfiguration of snug itself, "+
+			"not of your command.")
+		return
+	}
+	key, want, ok := strings.Cut(p.runLabel, "=")
+	if !ok {
+		p.deny(w, "this proxy's run label %q is not key=value, so ownership cannot be "+
+			"checked. That is a misconfiguration of snug itself, not of your command.",
+			p.runLabel)
+		return
+	}
+
+	got, err := p.containerRunLabel(r.Context(), id)
+	if err != nil {
+		p.deny(w, "snug could not confirm that container %s belongs to this sandbox run "+
+			"(%v), so it refuses to remove it. Ownership is checked against the engine, "+
+			"and a check that did not complete is not a pass.", id, err)
+		return
+	}
+	if got != want {
+		p.deny(w, "container %s was not created by this sandbox run. snug stamps every "+
+			"container it creates with %s and removes only those; this one carries %q. "+
+			"The engine's store is keyed on the target directory and persists across "+
+			"runs, so it holds containers earlier runs of this project created. Remove a "+
+			"container this run created, or leave it.", id, p.runLabel, key+"="+got)
+		return
+	}
+	p.forward(w, r, nil)
+}
+
+// containerRunLabel asks the engine for one container's snug run label.
+//
+// The docker-compat spelling on purpose: it is the schema this filter reads
+// (package comment), and asking over libpod would mean reading a shape this
+// package has spent three issues refusing to read.
+//
+// url.PathEscape on the id is not decoration. The id arrives from the request
+// path and this function BUILDS a new request URI out of it, which is a request
+// smuggling primitive if it is pasted raw; normaliseFull's `.`/`..` refusal
+// guards the ROUTE and is not an escaper.
+func (p *Proxy) containerRunLabel(ctx context.Context, id string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"http://engine/v1.41/containers/"+url.PathEscape(id)+"/json", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("asking the engine what %s is: %w", id, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("the engine answered %d when asked what %s is", resp.StatusCode, id)
+	}
+
+	// 1 MiB is generous for an inspect and bounded on purpose: the engine is
+	// snug's own, but a body read with no limit is a hang or an OOM waiting for
+	// the first engine that misbehaves.
+	var body struct {
+		Config *struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+		return "", fmt.Errorf("reading the engine's answer for %s: %w", id, err)
+	}
+	if body.Config == nil {
+		return "", fmt.Errorf("the engine's answer for %s carries no Config", id)
+	}
+	key, _, _ := strings.Cut(p.runLabel, "=")
+	v, ok := body.Config.Labels[key]
+	if !ok {
+		return "", fmt.Errorf("container %s carries no %s label", id, key)
+	}
+	return v, nil
+}
+
+// isPrune matches every endpoint whose last segment is `prune`, in both API
+// spellings: containers/prune, images/prune, volumes/prune, networks/prune,
+// build/prune and podman's own system/prune.
+//
+// A RULE rather than a list of five, deliberately. The list would be the
+// catalogue shape CLAUDE.md's invariant 2 warns about — podman adding a sixth
+// prune would arrive permitted because nobody had heard of it — and the rule
+// costs nothing extra: an endpoint that spells itself `prune` is destruction of
+// everything matching a filter, which is precisely the shape this proxy cannot
+// judge.
+//
+// ABUSE: a hostile process inside the sandbox can use a prune to destroy the
+// engine store's contents — images and the container records of earlier runs on
+// this target — in one POST. Measured through this proxy against podman 6.0.2
+// (issue #339): a container carrying Labels {"snug.run":"OTHER-SANDBOX"} was
+// deleted by POST /v1.41/containers/prune (200, ContainersDeleted listing it),
+// and POST /v5.0.0/libpod/system/prune?all=true&volumes=true removed
+// localhost/warmcache:v1 from the read-write store. Not an escape: the store is
+// snug's own, keyed on this target, and nothing outside it is reachable. What
+// it costs is a re-pull and the container records of every earlier run.
+//
+// Refused rather than scoped, which is the choice worth stating. Scoping would
+// mean forcing `filters={"label":["snug.run=<this run>"]}` onto every prune,
+// and it fails on its own terms three times over: `system/prune` takes no label
+// filter at all, an image carries no run label to filter ON (snug stamps
+// containers, not images), and a filter merged into a client-supplied one has
+// to be exactly right in a query-string schema that differs between the two
+// APIs. `commit` and `update` are refused a few lines below for the analogous
+// reason. A refusal is checkable by reading it; a scope is correct only if the
+// merge is.
+func isPrune(segs []string, method string) bool {
+	return method == http.MethodPost && len(segs) >= 2 && segs[len(segs)-1] == "prune"
+}
+
 func isArchive(s []string) bool {
 	return len(s) >= 3 && s[0] == "containers" && s[2] == "archive"
 }
@@ -278,16 +478,34 @@ func (p *Proxy) handleImageCreate(w http.ResponseWriter, r *http.Request) {
 
 // allowed is the endpoint allowlist. The default verdict is DENY, so a new or
 // unrecognised engine API cannot quietly widen what the sandbox can do.
-func allowed(segs []string) bool {
+//
+// It takes the METHOD, and that is issue #339's shape as much as the prune
+// refusal is: it used to be method-blind, so `GET /containers/json` and
+// `DELETE /containers/<id>` were one allowlist entry and reading a resource
+// implied destroying it. The three DELETE routes with a verdict of their own —
+// containers (scoped to this run), images and volumes (refused) — are taken by
+// the cases above this one in ServeHTTP so their refusals can name what to do
+// instead; what the method buys HERE is the compat-path POST refusals below.
+func allowed(segs []string, method string) bool {
 	if len(segs) == 0 {
 		return false
 	}
 	switch segs[0] {
-	case "_ping", "version", "info", "events", "system":
+	case "_ping", "version", "info", "events":
 		return true
 
+	case "system":
+		// Read-only only. `system/df`, `system/info` and `system/events` answer
+		// questions; podman's compat layer also serves state-changing routes
+		// under this prefix (`system/prune` is taken by isPrune above, and
+		// `system/check` repairs the store), and none of them is a schema this
+		// filter reads. Refusing every non-safe method here is cheaper than
+		// guessing which ones podman's compat layer happens to serve.
+		return safeMethod(method)
+
 	case "images":
-		// Pull, list, inspect, tag, prune, remove. `load` and `import` bring in a
+		// Pull, list, inspect, tag, remove — prune is taken by isPrune above,
+		// for every segment, before this switch runs. `load` and `import` bring in a
 		// filesystem image from a stream the engine did not fetch and snug never
 		// saw, so they stay refused. `create` is routed to handleImageCreate,
 		// which distinguishes a pull from an import by query string — blocking it
