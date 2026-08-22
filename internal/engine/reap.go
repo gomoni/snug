@@ -24,18 +24,22 @@ import (
 // The mark is the SOCKET path, not the store, and the difference is the whole
 // design of this file. The socket carries snug's pid, so it names exactly one
 // run. The store is deliberately SHARED — that is what makes a warm start
-// possible — so two sandboxes with the same profiles on the same directory
-// have the same store, and "kill whatever names the store" would reach into a
-// sibling sandbox that is still working. It was written that way first, and it
-// killed a concurrent sandbox's engine mid-run.
+// possible — so two sandboxes on the same target directory, whatever profiles
+// either one selected (issue #276), have the same store, and "kill whatever
+// names the store" would reach into a sibling sandbox that is still working.
+// It was written that way first, and it killed a concurrent sandbox's engine
+// mid-run.
 //
 // The accident sentence, which matters more here than an abuse sentence
 // because this kills things: the ONLY way this reaps something that is not
 // this run's engine is if a foreign command line contains the literal string
-// $XDG_RUNTIME_DIR/snug/engines/<key>/podman-<our pid>.sock. The user's own
-// rootless podman — eleven images and several containers on the host this was
-// developed on — serves $XDG_RUNTIME_DIR/podman/podman.sock and can never
-// match. Tests assert both halves.
+// /tmp/snug-<uid>-<our pid>/sock/podman-<our pid>.sock — NOT under
+// $XDG_RUNTIME_DIR, which is where an earlier design put it before issue #63
+// Tier B moved the engine's own run directory to /tmp (see engine.go's own
+// doc comment on New). The user's own rootless podman — eleven images and
+// several containers on the host this was developed on — serves
+// $XDG_RUNTIME_DIR/podman/podman.sock and can never match. Tests assert both
+// halves.
 //
 // It is best-effort by construction: in a container without the host PID
 // namespace the engine simply is not in /proc, so this finds nothing. That is

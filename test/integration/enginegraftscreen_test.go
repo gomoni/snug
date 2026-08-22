@@ -16,9 +16,9 @@ import (
 // dry-run branch returns and eng.GraftInto ran a hundred lines after it.
 //
 // The store graft is the highest-value hand-over a container run makes —
-// read-write, shared with every sandbox resolving to the same profiles+target
-// key, persistent across runs — and it had no abuse sentence on screen because
-// it was never on screen.
+// read-write, shared with every sandbox on the SAME TARGET DIRECTORY, whatever
+// profiles it selected (issue #276), persistent across runs — and it had no
+// abuse sentence on screen because it was never on screen.
 //
 // THE CONTROL IS A LIVE ENGINE, not a second reading of the same screen. The
 // dry run claims the store lives at a host path; this test starts a real
@@ -96,11 +96,12 @@ func TestDryRunNamesTheEnginesHostTreeGrafts(t *testing.T) {
 	t.Logf("the live engine mounted store=%s runroot=%s", liveStore, liveRunroot)
 
 	// Only the KEY-DERIVED paths are compared, and by SUFFIX rather than by
-	// equality. store and runroot are named from sha256(profiles+target), so
-	// the same selection on the same target gives the same answer in both
-	// runs — that identity is what makes this a check of the screen rather
-	// than of two unrelated strings. sock and conf are named from the RUN's
-	// pid, so they legitimately differ and are asserted by shape above.
+	// equality. store and runroot are named from sha256(target) alone (issue
+	// #276 removed the profile selection from the hash), so ANY selection on
+	// the same target gives the same answer in both runs — that identity is
+	// what makes this a check of the screen rather than of two unrelated
+	// strings. sock and conf are named from the RUN's pid, so they
+	// legitimately differ and are asserted by shape above.
 	//
 	// Equality is the wrong test for a reason worth writing down: mountinfo's
 	// field 4 is the root WITHIN THE SOURCE FILESYSTEM, not the absolute host
@@ -150,7 +151,53 @@ func TestDryRunSaysTheEngineViewIsDerived(t *testing.T) {
 	}
 }
 
-// keyTail is the part of an engine path that carries the profiles+target key:
+// TestDryRunStoreAbuseSentenceNamesTheTargetNotTheProfiles is issue #276's
+// dry-run correction. Before this issue the store and runroot abuse sentences
+// (paths.go's GraftPathsInto) said "profiles+target key" — true while
+// engineKey hashed the sorted profile set alongside the target, and FALSE the
+// moment part 1 removed the profile selection from the preimage. --dry-run is
+// the artifact a human reads to decide whether to trust the run (CLAUDE.md),
+// so a stale abuse sentence there is not a wording nit: it describes a key
+// that no longer exists.
+//
+// This asserts the NEW text is on screen, not merely that the old text is
+// gone — a screen with NEITHER sentence would pass a test that only checked
+// absence, and "the abuse sentence is missing" is a different failure than
+// "the abuse sentence is stale".
+func TestDryRunStoreAbuseSentenceNamesTheTargetNotTheProfiles(t *testing.T) {
+	budget(t, 60*time.Second)
+	proj, _ := target(t)
+
+	out, code := cli(t, nil, "--dry-run", "-p", "@podman-socket", proj)
+	if code != 0 {
+		t.Fatalf("snug --dry-run exited %d:\n%s", code, out)
+	}
+	if !strings.Contains(out, "ENGINE VIEW") {
+		t.Fatalf("no ENGINE VIEW block on a @podman-socket dry run:\n%s", out)
+	}
+
+	if strings.Contains(out, "profiles+target") {
+		t.Errorf("--dry-run still says \"profiles+target\", describing a key issue #276 removed "+
+			"from engineKey's preimage:\n%s", out)
+	}
+
+	// The abuse sentences are word-wrapped onto several screen lines, so the
+	// comparison is done on WHITESPACE-COLLAPSED text: a substring check
+	// against the raw output would fail on a wrap boundary that happens to
+	// fall inside the phrase, which is a rendering fact and not the one this
+	// test is about.
+	flat := strings.Join(strings.Fields(out), " ")
+	for _, want := range []string{
+		"SAME TARGET DIRECTORY, whatever profiles it selected",
+		"keyed by the TARGET DIRECTORY rather than by pid",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("--dry-run does not carry the corrected abuse sentence %q:\n%s", want, out)
+		}
+	}
+}
+
+// keyTail is the part of an engine path that carries the target-only key:
 // the last two elements (…/<key>/storage, …/snug-engines-<uid>-<key>/rr). It
 // is what survives mountinfo's filesystem-relative rendering, and it is the
 // half that decides which store a run uses.

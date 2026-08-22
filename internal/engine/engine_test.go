@@ -14,20 +14,35 @@ import (
 	"github.com/gomoni/snug/internal/policy"
 )
 
+// testPol builds the minimal *policy.Policy New needs — a target and a
+// profile set — for tests that only care about the paths New derives, not
+// about a real resolved policy. New no longer takes (profiles, target)
+// separately (issue #276), so every test call site needs one of these.
+func testPol(profiles []policy.ProfileName, target string) *policy.Policy {
+	return &policy.Policy{Profiles: profiles, Target: target}
+}
+
 // The store key is what teardown uses as identity, so two different sandboxes
 // must never share one, and the same sandbox must get the same one twice.
+//
+// It is also, since issue #276, the TARGET's identity alone: the profile
+// selection is no longer part of engineKey's preimage, so the two runs below
+// with different profile sets on the SAME target must still share a store —
+// see TestEngineKeyIgnoresTheProfileSelection for the test that asserts that
+// directly; this one predates it and still holds, now for a stronger reason
+// than "reordering doesn't matter".
 func TestStoreKeyIdentifiesTheSandbox(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
-	a, err := New([]policy.ProfileName{"@sys", "@podman-socket"}, "/proj/one")
+	a, err := New(testPol([]policy.ProfileName{"@sys", "@podman-socket"}, "/proj/one"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := New([]policy.ProfileName{"@podman-socket", "@sys"}, "/proj/one")
+	b, err := New(testPol([]policy.ProfileName{"@podman-socket", "@sys"}, "/proj/one"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := New([]policy.ProfileName{"@sys", "@podman-socket"}, "/proj/two")
+	c, err := New(testPol([]policy.ProfileName{"@sys", "@podman-socket"}, "/proj/two"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,11 +77,11 @@ func TestStoreKeyIdentifiesTheSandbox(t *testing.T) {
 	// unique per pid. The runroot, MEASURED, deliberately does NOT: podman's
 	// own libpod database (inside the persisted store) records the runroot a
 	// run used and refuses a LATER run against the same store with a
-	// different one, so runroot is keyed by the same profiles+target key the
-	// store already is, shared across runs the way the store is (Spec's own
-	// doc comment). The two are therefore in DIFFERENT directories now,
-	// which is the corrected shape, not a regression of the earlier "both in
-	// one run directory" assertion this replaces.
+	// different one, so runroot is keyed by the same TARGET-ONLY key the
+	// store already is (issue #276), shared across runs the way the store
+	// is (Spec's own doc comment). The two are therefore in DIFFERENT
+	// directories now, which is the corrected shape, not a regression of
+	// the earlier "both in one run directory" assertion this replaces.
 	if filepath.Dir(a.sock) == filepath.Dir(a.runroot) {
 		t.Errorf("socket %q and runroot %q are in the same directory; the runroot must be keyed "+
 			"by the store's own key so it stays stable across runs sharing that store, not by "+
@@ -85,7 +100,7 @@ func TestStoreKeyIdentifiesTheSandbox(t *testing.T) {
 func TestEngineRunDirIsHardenedAndNotReused(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
-	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +149,7 @@ func TestEngineRunDirIsHardenedAndNotReused(t *testing.T) {
 func TestEngineRunDirSplitsByWritability(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
-	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +222,7 @@ func TestEngineRunDirSplitsByWritability(t *testing.T) {
 func TestOwnedPIDsMatchesOnlyThisEnginesPaths(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -667,7 +682,7 @@ func TestTheReaperRefusesToRemoveAnythingButItsOwnRunDirectory(t *testing.T) {
 func specConf(t *testing.T, net policy.NetPolicy, cgroupsDisabled bool) (conf string, env []string) {
 	t.Helper()
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	e, err := New([]policy.ProfileName{"@podman-socket"}, "/proj")
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 	if err != nil {
 		t.Fatal(err)
 	}

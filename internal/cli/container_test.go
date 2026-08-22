@@ -37,7 +37,7 @@ func TestContainerSocketNeverExposesEngineSocketDir(t *testing.T) {
 
 	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@podman-socket"})
 
-	eng, err := engine.New(p.Profiles, p.Target)
+	eng, err := engine.New(p)
 	if err != nil {
 		t.Fatal(err)
 	}
