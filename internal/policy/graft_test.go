@@ -2,6 +2,8 @@ package policy
 
 import (
 	"fmt"
+	"go/ast"
+	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -60,179 +62,260 @@ func typeMentionsGraft(t reflect.Type) bool {
 }
 
 // ── §7 item 2 ─────────────────────────────────────────────────────────────────
-
-// graftWriteRE matches an ASSIGNMENT into a Grafts map — both the bracketed
-// single-key form (`X.Grafts[k] = v`) and the WHOLE-MAP form (`X.Grafts =
-// ...`) — and not a read: `p.Grafts[k]` alone (no trailing `=`), a range over
-// the map, or a comparison (`==`, excluded by the trailing `[^=]`).
 //
-// WIDENED past the bracket-only form (issue #55, finding F3b), which the
-// redteam measured missing three real evasions: `p.Grafts = map[string]Graft{
-// "/run": g}` (the whole-map form — not hypothetical, graft.go's OWN
-// Policy.Graft contains one two lines above its bracketed write, so a SECOND
-// whole-map write anywhere else in the tree would not have stood out in
-// review, and would not have been caught by the old pattern either),
-// `maps.Copy(p.Grafts, other)` (no `=` anywhere in the call — graftMapsCopyRE
-// below), and `m := p.Grafts; m["/run"] = g` (an alias — graftAliasRE below,
-// which cannot see the SUBSEQUENT write through the alias and so flags the
-// alias itself as the thing a human must look at).
+// The property, over the syntax tree rather than over source text (issue
+// #354): Policy.Graft (graft.go) is meant to be the ONLY place that ever
+// mutates a field named Grafts, module-wide, not just within internal/policy —
+// p.Grafts is an exported field, and a future Tier C (#125) writer could just
+// as easily land in internal/cli or internal/stage. This is
+// TestMountCollectionsHaveThreeWriters's shape (norestriction_test.go, P2 of
+// the no-restriction sweep) restated for a different field: a single-writer
+// invariant is checkable by finding every mutation and asking where it lives,
+// not by trusting the comment that claims it, and not by cataloguing the
+// spellings a demote might take. It reuses that file's walk (sweepModule,
+// moduleRoot), its detector plumbing (forEachFunc, fieldSelector, unparen,
+// writeSite, detectInSource, requireWalked) and its shape for a mutation
+// (index assignment, whole-field assignment, alias assignment, address taken,
+// delete, clear, maps.Copy/Insert/DeleteFunc as destination) — all defined in
+// norestriction_test.go and reused here verbatim, same package, because the
+// property is identical to P2's and only the field name changes.
 //
-// This is Go's regexp package (RE2), not a shell invocation of grep(1) — the
-// `|` inside a pattern here is never the "grep 'a|b' without -E matches a
-// literal pipe" trap CLAUDE.md warns about, because that trap is specific to
-// the grep BINARY's basic-regex mode. The positive controls below still prove
-// each pattern can see a violation, for the same reason every sweep in this
-// codebase carries one: a pattern that matched nothing would pass by finding
-// exactly the one real hit and look identical to "the sweep works".
-var graftWriteRE = regexp.MustCompile(`\.Grafts\s*(\[[^]]*\])?\s*=[^=]`)
+// It replaces three regexps that answered "which spellings write p.Grafts" by
+// listing them: graftWriteRE for `X.Grafts[k] = v` and `X.Grafts = ...`,
+// graftMapsCopyRE for maps.Copy with Grafts as the destination, graftAliasRE
+// for `x := (something).Grafts`. Each was itself a response to a redteam
+// evasion the previous, narrower pattern missed (issue #55, finding F3b), and
+// the shape recurred: a fourth evasion answered by a fourth pattern is the
+// catalogue invariant 2's corollary rejects. graftAliasRE is also the worked
+// example of the failure mode this ticket names — it required `:=` immediately
+// before the aliased expression, so `req.EngineGrafts = spec.Grafts`
+// (internal/stage/stage.go, a plain `=`, not `:=`) is an alias of `.Grafts`
+// that regexp could never see. The AST detector below does not care which
+// assignment token was used, and this exact statement is
+// TestGraftsMutationDetectorCatchesEverySpelling's "the spelling a `:=`-only
+// regexp misses" fixture, and TestOnlyGraftWritesGrafts's one documented,
+// non-filtered collision below.
 
-// graftMapsCopyRE catches maps.Copy(p.Grafts, src) — Grafts as the
-// DESTINATION (maps.Copy's first argument) is a write graftWriteRE cannot see
-// at all, because there is no `=` anywhere in the call. Deliberately matches
-// only when .Grafts appears as the FIRST argument (immediately after the open
-// paren, give or take whitespace): maps.Copy(dst, p.Grafts) uses Grafts as
-// the SOURCE, which is a read, and must not match.
-var graftMapsCopyRE = regexp.MustCompile(`maps\.Copy\(\s*[A-Za-z_][A-Za-z0-9_.]*\.Grafts\b`)
+// graftsField is the field name the sweep keys on, the same device
+// accessField and mountsField are in norestriction_test.go.
+const graftsField = "Grafts"
 
-// graftAliasRE flags `x := (something).Grafts` — an alias of the WHOLE MAP
-// that lets a later `x[k] = v` write through a name this sweep no longer
-// recognises as p.Grafts at all. It cannot see the subsequent write through
-// the alias (that is the whole point of aliasing defeating a textual sweep);
-// what it flags is the alias assignment itself, so a human looks at it.
-//
-// Two things it must NOT match, both legitimate reads: `for _, g := range
-// p.Grafts` (anchored out by requiring `:=` immediately before the map
-// expression — "range" sits between them there), and `gr := p.Grafts[guest]`
-// (a single-entry COPY via indexing, not a map alias — excluded by requiring
-// the character right after `.Grafts` to be anything other than `[`, or end
-// of input; RE2 has no lookahead, so this is spelled as a consumed
-// not-`[` alternative rather than a zero-width assertion).
-var graftAliasRE = regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*\s*:=\s*[A-Za-z_][A-Za-z0-9_.]*\.Grafts([^\[]|$)`)
-
-// TestOnlyGraftWritesGrafts is the same device as TestPolicyHasNoRestrictionOperation
-// (resolve_test.go) and TestTopologyIsDerivedNotSettable (topology_test.go): an
-// invariant with a single writer is checkable by finding it, not by trusting
-// the doc comment that claims it. Policy.Graft is meant to be the ONLY place in
-// the tree that ever assigns into p.Grafts — issue #55's own writer discipline,
-// the same device as Policy.Replace for p.Mounts and deriveTopology for
-// p.Topology — and this sweep asserts that by finding every assignment,
-// package-tree-wide, not just within internal/policy: p.Grafts is an exported
-// field, and a future Tier C (#125) writer could just as easily land in
-// internal/cli or internal/stage.
-//
-// The count assertion changed from "exactly 1" to "every hit traces to
-// policy/graft.go" (issue #55, F3b): the widened graftWriteRE now ALSO
-// matches the legitimate nil-init whole-map assignment inside Policy.Graft
-// (`p.Grafts = map[string]Graft{}`), two lines above the bracketed write it
-// already matched — so the one correct writer now trips the sweep twice, and
-// an exact-1 assertion would itself have to be re-loosened the moment the
-// widening this test exists to force actually happened.
-func TestOnlyGraftWritesGrafts(t *testing.T) {
-	root := filepath.Join("..", "..", "internal")
-	var hits []string
-	sweep := func(re *regexp.Regexp) {
-		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				return err
+// graftMutations is mountsMutations's twin for a different field name. It
+// cannot simply call mountsMutations, which is hardcoded to mountsField, so
+// this restates the same four AssignStmt/UnaryExpr/CallExpr shapes against
+// graftsField instead.
+func graftMutations(file string, f *ast.File, fset *token.FileSet) []writeSite {
+	var sites []writeSite
+	forEachFunc(f, func(name string, root ast.Node) {
+		add := func(pos token.Pos, how string) {
+			sites = append(sites, writeSite{file: file, fn: name, how: how, line: fset.Position(pos).Line})
+		}
+		ast.Inspect(root, func(n ast.Node) bool {
+			switch v := n.(type) {
+			case *ast.AssignStmt:
+				for _, lhs := range v.Lhs {
+					switch l := unparen(lhs).(type) {
+					case *ast.IndexExpr:
+						if fieldSelector(l.X, graftsField) {
+							add(l.Pos(), "index assignment")
+						}
+					case *ast.SelectorExpr:
+						if l.Sel != nil && l.Sel.Name == graftsField {
+							add(l.Pos(), "whole-field assignment")
+						}
+					}
+				}
+				// `m := p.Grafts` aliases the map: the later `m[k] = v` is
+				// invisible to every shape above, so what is flagged is the
+				// alias itself, and a human looks at it. `for _, g := range
+				// p.Grafts` (a RangeStmt, not an AssignStmt) and `gr :=
+				// p.Grafts[guest]` (an IndexExpr, a one-entry copy) are
+				// ordinary reads and are not alias assignments. Unlike the
+				// regexp this replaces, the alias's own token (`=` or `:=`)
+				// is not part of the shape — both are AssignStmt.
+				for _, rhs := range v.Rhs {
+					if fieldSelector(rhs, graftsField) {
+						add(rhs.Pos(), "alias assignment")
+					}
+				}
+			case *ast.UnaryExpr:
+				if v.Op == token.AND && fieldSelector(v.X, graftsField) {
+					add(v.Pos(), "address taken")
+				}
+			case *ast.CallExpr:
+				graftCallMutation(v, add)
 			}
-			if d.IsDir() {
-				return nil
-			}
-			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			src, rerr := os.ReadFile(path)
-			if rerr != nil {
-				return rerr
-			}
-			text := string(src)
-			for _, loc := range re.FindAllStringIndex(text, -1) {
-				line := 1 + strings.Count(text[:loc[0]], "\n")
-				rel, _ := filepath.Rel(root, path)
-				hits = append(hits, fmt.Sprintf("%s:%d", filepath.ToSlash(rel), line))
-			}
-			return nil
+			return true
 		})
-		if err != nil {
-			t.Fatal(err)
+	})
+	return sites
+}
+
+// graftCallMutation names the builtin and stdlib spellings that mutate a map
+// in place, reporting through add so that a call matching none of them adds
+// nothing. Grafts must be the FIRST argument (the destination); as maps.Copy's
+// second argument it is the source, a read.
+func graftCallMutation(c *ast.CallExpr, add func(token.Pos, string)) {
+	if len(c.Args) == 0 || !fieldSelector(c.Args[0], graftsField) {
+		return
+	}
+	switch fn := unparen(c.Fun).(type) {
+	case *ast.Ident:
+		switch fn.Name {
+		case "delete":
+			add(c.Pos(), "delete")
+		case "clear":
+			add(c.Pos(), "clear")
+		}
+	case *ast.SelectorExpr:
+		if fn.Sel != nil && (fn.Sel.Name == "Copy" || fn.Sel.Name == "Insert" || fn.Sel.Name == "DeleteFunc") {
+			add(c.Pos(), "maps."+fn.Sel.Name)
 		}
 	}
-	sweep(graftWriteRE)
-	sweep(graftMapsCopyRE)
-	sweep(graftAliasRE)
+}
 
-	if len(hits) == 0 {
-		t.Fatal("found ZERO writes into p.Grafts across internal/ — Policy.Graft itself must trip " +
-			"this sweep, or it is not testing anything")
-	}
-	for _, h := range hits {
-		if !strings.HasPrefix(h, "policy/graft.go:") {
-			t.Errorf("found a write into p.Grafts outside policy/graft.go, at %s — Policy.Graft is "+
-				"meant to be the only writer of p.Grafts, and that is where it must live", h)
+// TestOnlyGraftWritesGrafts sweeps the whole module for every mutation of a
+// field named Grafts and asserts that Policy.Graft — and only Policy.Graft —
+// performs one. It is the same device TestMountCollectionsHaveThreeWriters
+// (norestriction_test.go) is for p.Mounts and deriveTopology's discipline is
+// for p.Topology: an invariant with a single writer, checked by finding every
+// mutation module-wide rather than trusted from a doc comment.
+func TestOnlyGraftWritesGrafts(t *testing.T) {
+	sites, dirs := sweepModule(t, graftMutations)
+	requireWalked(t, dirs)
+
+	var fromGraftGo, others []writeSite
+	for _, s := range sites {
+		if s.file == "internal/policy/graft.go" {
+			fromGraftGo = append(fromGraftGo, s)
+		} else {
+			others = append(others, s)
 		}
 	}
 
-	// POSITIVE CONTROLS. Exercised on in-memory fixtures rather than by
-	// planting a second writer in the tree, because a check that can only be
-	// proven by temporarily breaking the invariant it guards is not one this
-	// suite should run by default.
-
-	// 1. The ORIGINAL bracket-write control: the pattern can tell a write from
-	// a read and from a comparison.
-	fixture := "func evil(p *Policy) { p.Grafts[\"x\"] = Graft{} }\n" +
-		"// a read: _ = p.Grafts[\"y\"]\n" +
-		"// a comparison: ok := a == p.Grafts[\"z\"]\n" +
-		"for _, g := range p.Grafts { _ = g }\n"
-	if got := graftWriteRE.FindAllString(fixture, -1); len(got) != 1 {
-		t.Fatalf("control: graftWriteRE found %d writes in a fixture with exactly one real "+
-			"bracketed assignment, one read, one comparison and one range: %v", len(got), got)
+	// POSITIVE CONTROL on the walk: Policy.Graft writes p.Grafts TWICE — the
+	// nil-init whole-field assignment (`p.Grafts = map[string]Graft{}`) and
+	// the bracketed write (`p.Grafts[g.Guest] = g`) two lines below it — and
+	// both rows are kept rather than collapsed, so a third write landing in
+	// Policy.Graft is a failure rather than a no-op. A detector that matched
+	// nothing at all would report zero rows here and read as proof that
+	// nobody writes p.Grafts, which is not a claim this sweep can make.
+	if len(fromGraftGo) != 2 {
+		t.Fatalf("the sweep found %d write(s) to a field named Grafts in policy/graft.go, want\n"+
+			"exactly 2 — the nil-init whole-field assignment and the bracketed index assignment\n"+
+			"inside Policy.Graft. Policy.Graft is the whole of the single-writer argument in code;\n"+
+			"if this sweep cannot see both of its writes, it cannot see a third writer either:\n  %s",
+			len(fromGraftGo), strings.Join(sitesLines(fromGraftGo), "\n  "))
+	}
+	for _, s := range fromGraftGo {
+		if s.fn != "(*Policy).Graft" {
+			t.Errorf("policy/graft.go writes a field named Grafts outside (*Policy).Graft, at %s — "+
+				"Policy.Graft is meant to be the only writer, and that is where it must live", s)
+		}
 	}
 
-	// 2. The WHOLE-MAP form, which the pre-F3b spelling of graftWriteRE could
-	// not see at all — the redteam's own measured evasion.
-	if got := graftWriteRE.FindAllString(
-		"func evil(p *Policy) { p.Grafts = map[string]Graft{\"/run\": g} }\n", -1); len(got) != 1 {
-		t.Fatalf("control: graftWriteRE does not see the WHOLE-MAP assignment shape: %v", got)
+	// internal/stage's EngineSpec.Grafts ([]EngineGraft, the engine's own
+	// flattened list — internal/engine's engineGrafts builds it FROM p.Grafts
+	// and it is never held alongside p.Mounts) shares the field name and is a
+	// KNOWN COLLISION, listed rather than filtered: a sweep that hid its own
+	// name collisions would be hiding exactly what a reader has to check
+	// (norestriction_test.go's two (*lossyEncoder).document rows for Mounts
+	// are the same call). `req.EngineGrafts = spec.Grafts` is read as an
+	// alias of spec.Grafts — this is the plain-`=` spelling graftAliasRE's
+	// `:=`-only pattern could never see, which is this ticket's own argument
+	// for the change, sitting in the tree already. If you touch StartSandbox,
+	// add or drop this row; anything else here is a genuine fourth writer.
+	want := "internal/stage/stage.go (*Stage).StartSandbox (alias assignment)"
+	if len(others) != 1 || others[0].key() != want {
+		t.Fatalf("the sweep found writes to a field named Grafts outside policy/graft.go:\n  %s\n"+
+			"want exactly one, the documented collision:\n  %s\n\n"+
+			"Policy.Graft is meant to be the only writer of p.Grafts. A hit here that is not the\n"+
+			"stage.EngineSpec.Grafts alias above is a fourth writer, and p.Grafts must move to\n"+
+			"where it lives or this sweep's expectation must change with a stated reason.",
+			strings.Join(sitesLines(others), "\n  "), want)
 	}
-	// A whole-map READ (a comparison, or the nil check Policy.Graft itself
-	// contains) must NOT match.
-	if got := graftWriteRE.FindAllString("if p.Grafts == nil {\n", -1); len(got) != 0 {
-		t.Fatalf("control: graftWriteRE matched a whole-map COMPARISON (p.Grafts == nil), which "+
-			"is not a write: %v", got)
+}
+
+// TestGraftsMutationDetectorCatchesEverySpelling is the mandatory positive
+// control on graftMutations, in TestMountsMutationDetectorCatchesEveryDeriveSpelling's
+// style (norestriction_test.go): fixtures the OLD three regexps could not see
+// at all, plus the two they could, each asserted reported AND classified.
+func TestGraftsMutationDetectorCatchesEverySpelling(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"the bracketed write graftWriteRE always saw", `package p
+func evil(p *Policy) { p.Grafts["x"] = Graft{} }`, "index assignment"},
+
+		{"the whole-map form, graft.go's own nil-init shape", `package p
+func evil(p *Policy) { p.Grafts = map[string]Graft{"/run": g} }`, "whole-field assignment"},
+
+		{"maps.Copy with Grafts as the destination", `package p
+func evil(p *Policy) { maps.Copy(p.Grafts, other) }`, "maps.Copy"},
+
+		{"the `:=` alias graftAliasRE saw", `package p
+func evil(p *Policy) { m := p.Grafts; m["/run"] = g }`, "alias assignment"},
+
+		// The spelling graftAliasRE COULD NOT see: an alias through a plain
+		// `=`, not `:=` — issue #354's own example, and the exact shape at
+		// internal/stage/stage.go:423 (`req.EngineGrafts = spec.Grafts`) that
+		// TestOnlyGraftWritesGrafts above must list as a collision rather
+		// than miss entirely.
+		{"an alias through a plain `=`, not `:=`", `package p
+func evil(req *Request, spec *EngineSpec) { req.EngineGrafts = spec.Grafts }`, "alias assignment"},
+
+		// Three spellings none of the three regexps covered at all — no
+		// pattern in graft_test.go's previous form ever looked for them.
+		{"un-granting by delete", `package p
+func evil(p *Policy, k string) { delete(p.Grafts, k) }`, "delete"},
+
+		{"un-granting everything", `package p
+func evil(p *Policy) { clear(p.Grafts) }`, "clear"},
+
+		{"address of the map handed to a callee", `package p
+func evil(p *Policy) { rebuild(&p.Grafts) }`, "address taken"},
+
+		{"overwriting through maps.Insert", `package p
+func evil(p *Policy, other iter.Seq2[string, Graft]) { maps.Insert(p.Grafts, other) }`, "maps.Insert"},
 	}
 
-	// 3. maps.Copy(p.Grafts, other) — Grafts as the destination.
-	if got := graftMapsCopyRE.FindAllString("maps.Copy(p.Grafts, other)\n", -1); len(got) != 1 {
-		t.Fatalf("control: graftMapsCopyRE does not see maps.Copy with p.Grafts as the "+
-			"destination: %v", got)
-	}
-	// maps.Copy(dst, p.Grafts) — Grafts as the SOURCE — is a READ and must not
-	// match.
-	if got := graftMapsCopyRE.FindAllString("maps.Copy(dst, p.Grafts)\n", -1); len(got) != 0 {
-		t.Fatalf("control: graftMapsCopyRE matched p.Grafts used as maps.Copy's SOURCE argument, "+
-			"which is a read: %v", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := detectInSource(t, graftMutations, tc.src)
+			if len(got) == 0 {
+				t.Fatalf("the detector reports nothing for this spelling, so a fourth writer of "+
+					"p.Grafts written this way ships green:\n%s", tc.src)
+			}
+			var hows []string
+			for _, s := range got {
+				hows = append(hows, s.how)
+			}
+			if !strings.Contains(strings.Join(hows, ","), tc.want) {
+				t.Errorf("reported %v, want one containing %q", hows, tc.want)
+			}
+		})
 	}
 
-	// 4. `m := p.Grafts` — an alias through which a later write is invisible
-	// to every pattern above.
-	if got := graftAliasRE.FindAllString("m := p.Grafts\nm[\"/run\"] = g\n", -1); len(got) != 1 {
-		t.Fatalf("control: graftAliasRE does not see the alias assignment `m := p.Grafts`: %v", got)
-	}
-	// `for _, g := range p.Grafts` is an ordinary read and must not match —
-	// this is the exact shape a naive `:=.*\.Grafts` pattern would confuse
-	// with an alias.
-	if got := graftAliasRE.FindAllString("for _, g := range p.Grafts {\n\t_ = g\n}\n", -1); len(got) != 0 {
-		t.Fatalf("control: graftAliasRE matched an ordinary `range p.Grafts` loop, which is a "+
-			"read, not an alias: %v", got)
-	}
-	// `gr := p.Grafts[guest]` — a single-entry COPY via indexing (this is
-	// describeGrafts's own real shape, internal/cli/dryrun.go) — is a read of
-	// ONE Graft, not an alias of the whole map, and must not match either.
-	// This is the false positive graftAliasRE's first draft actually produced
-	// against the real tree before this exclusion was added.
-	if got := graftAliasRE.FindAllString("gr := p.Grafts[guest]\n", -1); len(got) != 0 {
-		t.Fatalf("control: graftAliasRE matched an indexed single-entry read (p.Grafts[guest]), "+
-			"which is not a whole-map alias: %v", got)
+	// NEGATIVE controls: the ordinary reads this module is full of, each a
+	// real shape from internal/policy, internal/cli or internal/engine, and
+	// each what a naive pattern confuses with a write.
+	clean := `package p
+func f(p *Policy, guest string) int {
+	for g := range p.Grafts { _ = g }
+	for _, g := range p.Grafts { _ = g }
+	gr := p.Grafts[guest]
+	_ = gr
+	if _, ok := p.Grafts[guest]; ok { return 1 }
+	if p.Grafts == nil { return 0 }
+	maps.Copy(dst, p.Grafts)
+	ok := a == p.Grafts["z"]
+	_ = ok
+	return len(p.Grafts)
+}`
+	if got := detectInSource(t, graftMutations, clean); len(got) != 0 {
+		t.Errorf("the detector reports one of these ordinary reads as a mutation: %v", got)
 	}
 }
 
