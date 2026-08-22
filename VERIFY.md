@@ -2961,8 +2961,38 @@ of it in the `IMAGES` block:
 ./bin/snug --dry-run -p @podman-socket $SC/proj | sed -n '/^IMAGES/,/^[A-Z][A-Z]/p'
 ```
 
-Expect `docker.io and nothing else`, `signatures  NOT verified`, and
-`logins      NONE`.
+Expect `docker.io and nothing else` and `logins      NONE`. The `signatures`
+line depends on the HOST, because the engine's `policy.json` is a projection of
+the host's own (issue #307) — on a host with none it reads `NOT verified, and
+nothing was weakened`.
+
+### 9i-1. The engine enforces the signature policy this host configured
+
+The generated `policy.json` reproduces the host's rather than accepting any
+image over the top of it, and a requirement snug cannot reproduce refuses the
+run. Prove the enforcement end to end with a host policy that rejects
+everything:
+
+```bash
+D=$(mktemp -d); mkdir -p $D/.config/containers
+echo '{"default":[{"type":"reject"}]}' > $D/.config/containers/policy.json
+HOME=$D ./bin/snug --dry-run -p @podman-socket $SC/proj | sed -n '/signatures/,/logins/p'
+```
+
+Expect `signatures  as <path> requires.` — not `NOT verified`. Then a host
+policy snug cannot reproduce must refuse rather than warn:
+
+```bash
+echo '{"default":[{"type":"sigstoreSigned","keyPath":"/etc/pki/k.pub"}]}' \
+  > $D/.config/containers/policy.json
+HOME=$D ./bin/snug --dry-run -p @podman-socket $SC/proj | sed -n '/signatures/,/logins/p'
+HOME=$D ./bin/snug -p @podman-socket $SC/proj -- true; echo "exit=$?"
+```
+
+Expect `THIS RUN WILL REFUSE` on the dry run, and a non-zero exit from the real
+run whose message names `sigstoreSigned`. The scripted equivalent is
+`TestTheEngineEnforcesTheProjectedSignaturePolicy` (integration, real podman)
+and `TestAnUnprojectableRequirementRefusesTheRun`.
 
 **The credential is the sharp one.** A developer host has
 `~/.docker/config.json`, and podman falls through to it because
@@ -3165,7 +3195,7 @@ The `rw` half is the control: a table where everything reads `ro` is a broken
 engine, not a strict one.
 
 The `conf` half is the one with teeth. It holds the `containers.conf`,
-`storage.conf`, `registries.conf` and signature policy snug generated and
+`storage.conf`, `registries.conf` and the projected signature policy snug generated and
 started the engine under — and the engine is root in the sandbox's user
 namespace with the full delegated subuid range. Writable, it could rewrite what
 it was started under.

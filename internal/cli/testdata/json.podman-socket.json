@@ -316,6 +316,8 @@
       "docker.io"
     ],
     "signatures_verified": false,
+    "signature_policy_source": "",
+    "signature_policy_refusal": "",
     "logins": false,
     "port_mapping": false
   },

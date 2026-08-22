@@ -387,8 +387,15 @@ type jsonContainers struct {
 	BundleRootBytes    byteList `json:"bundle_root_bytes,omitempty"`
 	RegistrySearch     []string `json:"registry_search"`
 	SignaturesVerified bool     `json:"signatures_verified"`
-	Logins             bool     `json:"logins"`
-	PortMapping        bool     `json:"port_mapping"`
+	// The host file the engine's signature policy is projected from, and the
+	// reason a real run will refuse. Both are host text, so both carry a bytes
+	// sibling (issue #307). Additive fields: format 1 does not bump for them.
+	SignaturePolicySource       string   `json:"signature_policy_source"`
+	SignaturePolicySourceBytes  byteList `json:"signature_policy_source_bytes,omitempty"`
+	SignaturePolicyRefusal      string   `json:"signature_policy_refusal"`
+	SignaturePolicyRefusalBytes byteList `json:"signature_policy_refusal_bytes,omitempty"`
+	Logins                      bool     `json:"logins"`
+	PortMapping                 bool     `json:"port_mapping"`
 }
 
 type jsonEnvVar struct {
@@ -529,6 +536,8 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 		// the human block puts them through visibleValue.
 		jc.EngineBinary, jc.EngineBinaryBytes = e.text(c.EngineBinary)
 		jc.BundleRoot, jc.BundleRootBytes = e.text(c.BundleRoot)
+		jc.SignaturePolicySource, jc.SignaturePolicySourceBytes = e.text(c.SignaturePolicySource)
+		jc.SignaturePolicyRefusal, jc.SignaturePolicyRefusalBytes = e.text(c.SignaturePolicyRefusal)
 		doc.Containers = &jc
 	}
 

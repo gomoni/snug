@@ -167,6 +167,22 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		return startContainersScreen(pol)
 	}
 
+	// The host's signature policy, PROJECTED — read, parsed and classified
+	// here, before engine.New creates a directory and before the preflight
+	// probes anything (issue #307). The engine's policy.json reproduces what
+	// this host configured rather than accepting any image over the top of it,
+	// and a requirement snug cannot reproduce refuses the run.
+	//
+	// THE POSITION IS THE POINT. engine.New creates /tmp/snug-<uid>-<pid>/ and
+	// only containerRun.cleanup — built at the end of this function — removes
+	// it, so a refusal after New leaks a run directory that a later run with a
+	// recycled pid then refuses to reuse. Refusing here creates nothing at all,
+	// and copies no host key material into /tmp on a run that will not start.
+	sig, err := engine.ProjectHostSignaturePolicy(pol.Home)
+	if err != nil {
+		return containerRun{}, err
+	}
+
 	pf, err := runContainerPreflight()
 	if err != nil {
 		return containerRun{}, err
@@ -209,18 +225,29 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 			"(issue #128); restarting the container or VM snug runs in repairs it.\n", err)
 	}
 
-	// P8: snug now authors the signature policy the engine reads, and on a
-	// host that had configured a stricter one that is a DOWNGRADE. Invariant
-	// 5 forbids doing it silently, so it is said here, before anything
-	// starts, and it names the file it is talking about.
-	if n := pf.SignaturePolicy; n != nil {
-		fmt.Fprint(os.Stderr, n.String())
-	}
-
 	eng, err := engine.New(pol)
 	if err != nil {
 		return containerRun{}, err
 	}
+
+	// EVERY error path from here to the successful return removes this run's
+	// directory, and the reason changed with issue #307. Before it, an early
+	// return left behind snug-authored text; now Spec writes COPIES OF HOST KEY
+	// MATERIAL into conf/sigkeys/ and a sidecar naming the host paths they came
+	// from. /tmp is commonly world-writable, nothing sweeps
+	// /tmp/snug-<uid>-<pid>/ (sweepStaleRunDirs covers the per-uid runtime
+	// directory's run-* only), and a leaked directory is also a landmine for a
+	// later run whose pid recycles onto it — createRunDir refuses to reuse an
+	// existing entry.
+	//
+	// Disarmed on success, where containerRun.cleanup takes over: the same
+	// eng.Stop() reached by a different route, never both.
+	started := false
+	defer func() {
+		if !started {
+			eng.Stop()
+		}
+	}()
 
 	// pol.Net, the resolved network policy itself — not a rendering of it.
 	// The engine needs the same DNS decision twice over, once as an
@@ -245,7 +272,7 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		return containerRun{}, err
 	}
 
-	spec, err := eng.Spec(pol, pf.Podman, nil, pf.CgroupsDisabled)
+	spec, err := eng.Spec(pol, pf.Podman, nil, pf.CgroupsDisabled, sig)
 	if err != nil {
 		return containerRun{}, err
 	}
@@ -290,6 +317,7 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 	pol.BindSocket(sock, containerSocketGuest, "(containers)")
 	containerEnv(pol)
 
+	started = true
 	return containerRun{
 		cleanup:       func() { p.Close(); eng.Stop() },
 		spec:          &spec,

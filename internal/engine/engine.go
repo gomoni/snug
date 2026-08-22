@@ -110,6 +110,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -591,7 +592,17 @@ func (e *Engine) RunLabel() string { return e.runLabel }
 // tree it existed to shadow — see __inengine's own note where step 11 was.
 // What a CONTAINER gets is decided by the generated containers.conf and needs
 // no mount at all (issue #126).
-func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgroupsDisabled bool) (stage.EngineSpec, error) {
+func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgroupsDisabled bool, sig *SignaturePolicy) (stage.EngineSpec, error) {
+	if sig == nil {
+		// A caller that skipped ProjectHostSignaturePolicy. Answering with a
+		// permissive default here is precisely the fallback clause 3 forbids,
+		// so it is an error naming the missing call instead — the same shape
+		// checkEnginePATH uses for a policy with no grafts.
+		return stage.EngineSpec{}, errors.New("the container engine's signature policy was " +
+			"never projected: engine.ProjectHostSignaturePolicy must run before Spec, and " +
+			"before engine.New, so that a host policy snug cannot reproduce refuses the run " +
+			"before anything is created")
+	}
 	net := pol.Net
 
 	// EVERY path below goes through guestPath. The engine's view is the
@@ -649,7 +660,7 @@ func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgrou
 	// variable of their own are ALSO pointed at explicitly below, because
 	// which home a rootless podman believes in is a version-dependent
 	// question (see writeEngineHome) and an environment variable is not.
-	engineHome, err := e.writeEngineHome()
+	engineHome, err := e.writeEngineHome(pol, sig)
 	if err != nil {
 		return stage.EngineSpec{}, err
 	}
@@ -1057,7 +1068,9 @@ func setEnv(env []string, key, value string) []string {
 //     variable and no flag: podman 5.8.4 has no --signature-policy at all,
 //     and a per-command flag would not reach an API-driven pull anyway. A
 //     home of our own is the only lever, which is the same conclusion
-//     PODMAN-STATIC.md §5 reached for the research bundle.
+//     PODMAN-STATIC.md §5 reached for the research bundle. What that lever
+//     carries is the HOST's own policy, projected — signaturepolicy.go — so
+//     taking the file over is a change of author and not of posture.
 //   - $HOME/.config/containers/registries.conf — where an image comes from.
 //     Also closed by CONTAINERS_REGISTRIES_CONF below; both, for the reason
 //     the next paragraph gives.
@@ -1076,50 +1089,29 @@ func setEnv(env []string, key, value string) []string {
 // this closes nothing on that version — which is exactly why policy.json's
 // two neighbours are ALSO pointed at by their own environment variables. The
 // residual, stated plainly: on such a podman the host's policy.json is still
-// read, so signature policy stays host-authored. Nothing else does.
-func (e *Engine) writeEngineHome() (string, error) {
+// read directly. That one costs nothing now that the generated file is a
+// projection of it — the two agree, or the run has already refused. Nothing
+// else survives.
+func (e *Engine) writeEngineHome(pol *policy.Policy, sp *SignaturePolicy) (string, error) {
 	home := filepath.Join(e.confDir, "home")
-	confDir := filepath.Join(home, ".config", "containers")
-	if err := os.MkdirAll(confDir, 0o700); err != nil {
-		return "", fmt.Errorf("creating %s: %w", confDir, err)
+	containersDir := filepath.Join(home, ".config", "containers")
+	if err := os.MkdirAll(containersDir, 0o700); err != nil {
+		return "", fmt.Errorf("creating %s: %w", containersDir, err)
 	}
-	path := filepath.Join(confDir, "policy.json")
-	if err := os.WriteFile(path, []byte(SignaturePolicyJSON), 0o600); err != nil {
-		return "", fmt.Errorf("writing %s: %w", path, err)
+
+	// The signature policy is a PROJECTION of the host's, not a value this file
+	// holds (signaturepolicy.go). It arrives already read and already
+	// classified: everything that can refuse refused in
+	// ProjectHostSignaturePolicy, which the caller runs BEFORE engine.New, so a
+	// host policy snug cannot reproduce leaves no run directory behind and no
+	// copy of a host key in /tmp. All that is left here is writing.
+	if err := sp.write(e.confDir, containersDir, func(what, host string) (string, error) {
+		return e.guestPath(pol, what, host)
+	}); err != nil {
+		return "", err
 	}
 	return home, nil
 }
-
-// SignaturePolicyJSON is the signature policy this run's engine reads.
-//
-// Exported for ONE reader: containerpreflight.go's P8, which compares the
-// host's own policy against it. A second copy of "what snug considers
-// permissive" living in the preflight would be a fact stored twice, and the
-// half that drifts would be the one that decides whether a downgrade is
-// announced.
-//
-// It is podman's own shipped default, verbatim in meaning: accept any image,
-// verify no signature. Choosing it is not a hardening decision and must not
-// be read as one — a stricter policy (requiring a signature) would refuse
-// every image on Docker Hub and make the container profiles unusable, and
-// snug has no vocabulary in which a user could say which keys they trust.
-// What this file buys is that the ANSWER IS SNUG'S: today the answer is
-// whatever the host happens to have, or on a host with no policy.json at all
-// (measured: openSUSE ships only /usr/share/containers/policy.json, which
-// podman 5.8.4 does not look at) the answer is "no pull works", which is a
-// host-dependent failure a sandbox should not inherit.
-//
-// The downgrade case — a host that configured a STRICTER policy than this —
-// is not silently accepted: containerpreflight.go's P8 reads the host's own
-// policy.json and says so before the run (CLAUDE.md invariant 5).
-const SignaturePolicyJSON = `{
-    "default": [
-        {
-            "type": "insecureAcceptAnything"
-        }
-    ]
-}
-`
 
 // writeRegistriesConf generates the registries.conf this run's engine reads,
 // and returns its path for CONTAINERS_REGISTRIES_CONF.
