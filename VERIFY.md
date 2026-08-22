@@ -1756,6 +1756,51 @@ A sandbox with no `@net` is offline by design — there is no egress either. Tha
 is not a bug; it is the floor, and egress arrives only by naming `@net` (§9d is
 the one interim exception, and it says so on the screen).
 
+## 7a. The unshare set snug EMITS, and the one flag that must be missing (issue #277)
+
+The section above measures the namespace from inside. This one reads the argv
+snug hands bwrap, because the two topologies emit **different** sets and the
+difference is easy to get wrong in the invisible direction.
+
+```bash
+./bin/snug --dry-run $SC/proj/sub          | grep -E '^\s+--unshare'
+./bin/snug --dry-run -p @net $SC/proj/sub  | grep -E '^\s+--unshare'
+```
+
+Offline expects six flags:
+
+```
+  --unshare-user
+  --unshare-ipc
+  --unshare-pid
+  --unshare-uts
+  --unshare-cgroup-try
+  --unshare-net
+```
+
+`@net` expects the same five **without** `--unshare-net`. The stage creates the
+network namespace and forks bwrap already inside it, so bwrap unsharing its own
+would put the sandbox in a fresh empty namespace with pasta attached to one
+nothing is in. Its absence is deliberate, and the `@net` screen says so above the
+command in prose. Note what that prose does to a careless check: it contains
+the string `--unshare-net`, in a sentence explaining the flag is not there, so
+`grep -c -- --unshare-net` on the whole screen answers `1` for a run that emits
+it zero times. Both commands above anchor on the INDENTED argv lines (`^\s+--`)
+for that reason, and the test does the same by cutting the block to the tokens
+between `bwrap` and `--`.
+
+Two spellings are exact and neither is cosmetic (issue #24): **cgroup is
+`-try`** (a kernel-support check — strict refuses a host built without
+`CONFIG_CGROUPS` and buys nothing), and **user is NOT** (`--unshare-user-try`
+exits 0 having created no user namespace when the ucount is exhausted, #98).
+
+`TestBwrapUnshareSetIsExhaustive` does not cover any of this: it compares a
+literal set written in the test against `bwrap --help`, so deleting
+`--unshare-pid` from `internal/policy/bwrap.go` leaves it green.
+`TestTheEmittedArgvUnsharesWhatEachTopologyRequires` reads the emitted argv
+instead — verified by that mutation, which fails it naming the flag, and fails
+the golden files, while the exhaustiveness test stays green.
+
 ## 7b. What the sandbox is told about DNS, and whether the screen agrees (issues #28, #162)
 
 Two questions on one screen, and until issue #28 they were answered by a
