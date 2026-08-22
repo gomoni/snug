@@ -63,11 +63,13 @@ This has three consequences that shape the whole system:
 
 ## 1. Goals, non-goals, threat model
 
+> **[`THREAT-MODEL.md`](THREAT-MODEL.md) is authoritative for goals, non-goals and the threat model.** The G/N/T enumeration below stays as the detailed, citable form; where the two disagree, that document wins.
+
 ### 1.1 Goals
 
 - **G1** Run an untrusted payload (a build, a test suite, a coding agent — Claude Code, Codex, aider, …) against one project directory with **no root, no setuid, no daemon, no unit files**. `snug` is a process; when it exits, nothing remains.
 - **G2** Deny-by-default filesystem. The agent sees the project, the OS runtime, and exactly what a profile granted.
-- **G3** The sandbox **cannot reach the host's loopback**. This is a hard requirement, not a nice-to-have (§4.1). One live qualification: a *container* started through `@podman-socket` runs on the engine's network and is not covered by this — see [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §0.
+- **G3** The sandbox **cannot reach the host's loopback**. This is a hard requirement, not a nice-to-have (§4.1). Since Tier B (#63) a *container* started through `@podman-socket` runs in the sandbox's **own** netns, so it is covered by this too — it reaches exactly what the sandbox reaches and no more (see [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §0).
 - **G4** Internet egress works by default when a `@net` profile is selected; fully-offline is the *absence* of that profile, so it is trivially achievable and cannot be accidentally re-enabled.
 - **G5** Works inside `distrobox`/containers with nested user namespaces. Where a capability is genuinely missing, `snug` **fails loudly with a diagnosis**, and never silently downgrades its security posture.
 - **G6** Host integration (ssh signing, container engine, tmp sharing) is possible but goes through *filtering proxies* that `snug` owns, never through raw socket passthrough.
@@ -97,7 +99,7 @@ This has three consequences that shape the whole system:
 |---|---|
 | Credentials outside the grant set (`~/.ssh`, `~/.aws`, `~/.gnupg`, browser profiles, keyrings) | Never mounted. Not masked — *absent*. See [`SECRETS.md`](SECRETS.md) for what is *inside* the grant set and why. |
 | Other projects on the same machine | Never mounted (§3). |
-| Host services on `127.0.0.1` / `::1` | Private netns + `pasta` with loopback forwarding explicitly disabled (§4). Containers are the exception — [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §0. |
+| Host services on `127.0.0.1` / `::1` | Private netns + `pasta` with loopback forwarding explicitly disabled (§4). Since Tier B a container shares the sandbox's netns, so it is no longer an exception — [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §0. |
 | Host desktop session (X11 keylogging, Wayland, D-Bus, abstract AF_UNIX) | Not mounted; abstract sockets are additionally netns-scoped (§4.2). |
 | Host container engine as an escape vector | Filtering proxy over a per-sandbox engine; the host's engine never sees a client request (§7.2). |
 | Host persistence (`~/.bashrc`, systemd user units, cron, `~/.config/autostart`) | Not writable. `$HOME` is an ephemeral tmpfs (§9.7). |
