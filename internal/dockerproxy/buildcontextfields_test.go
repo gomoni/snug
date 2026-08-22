@@ -225,3 +225,69 @@ func mustJSON(t *testing.T, s string) string {
 	}
 	return string(b)
 }
+
+// HARDENING, suggested by the redteam pass on this PR. It could not break the
+// fix; this pins the reason it holds so a plausible future edit cannot quietly
+// remove it.
+//
+// snug dedups field names with strings.ToLower. Go's encoding/json matches
+// them with its own SIMPLE FOLD, and the two agree on ASCII and DIVERGE ON
+// NON-ASCII. Measured against Go's encoding/json:
+//
+//	json.Unmarshal(`{"IsImage":false,"IſImage":true,...}`)  -> IsImage=true
+//	strings.ToLower("IſImage") == "isimage"                 -> FALSE
+//	strings.EqualFold("IſImage", "IsImage")                 -> TRUE
+//	strings.EqualFold("\u212aeyPath", "keyPath")            -> TRUE  (Kelvin sign)
+//
+// U+017F LATIN SMALL LETTER LONG S folds to 's' for encoding/json and for
+// EqualFold, and does NOT lower to 's' for ToLower. So today "IſImage" misses
+// the allowlist entirely and is refused as a field snug does not model — the
+// divergence lands FAIL-CLOSED, which is why the redteam found nothing.
+//
+// The edit to guard against is switching the dedup or the lookup to
+// strings.EqualFold, which reads like a tidy-up and would make snug agree with
+// the engine about ſ — at which point whether this stays closed depends
+// entirely on the duplicate rule still being there. This test asserts the
+// OUTCOME rather than which rule produces it, so it holds across that edit and
+// fails only if both are relaxed together.
+//
+// POSITIVE CONTROL, run by hand before committing, because "still refused" is
+// the kind of pass that can mean nothing. Adding "iſimage"/"iſurl" to
+// additionalContextFields ALONE does not fail this test — the duplicate rule
+// catches it instead, which is the defence in depth working. Disabling BOTH
+// (allowlist the fold spellings and short-circuit the duplicate check) DOES
+// fail it:
+//
+//	--- FAIL: TestBuildContextRefusesAUnicodeFoldFieldSpelling/IsImage,_long-s_variant_last
+//
+// So the test measures the outcome, not one mechanism, and it can fail.
+//
+// ONLY TWO OF THE FOUR FIELDS CAN HAVE A FOLD VARIANT AT ALL, and saying so is
+// the difference between a table that tests something and one that looks like
+// it does. A fold variant needs a letter with a non-ASCII fold partner: ſ
+// stands in for 's', U+212A (Kelvin) for 'k'. IsURL and IsImage carry an 's';
+// Value and DownloadedCache contain neither an 's' nor a 'k', so no spelling
+// of either folds — "Valuſe" is a DIFFERENT WORD, not a variant, and a case
+// built on it would be refused for its length and prove nothing about folding.
+func TestBuildContextRefusesAUnicodeFoldFieldSpelling(t *testing.T) {
+	for _, tc := range []struct{ name, entry string }{
+		// The fold variant AFTER the real key, which is the ordering that
+		// wins under encoding/json's last-wins.
+		{"IsImage, long-s variant last",
+			`{"IsURL":false,"IsImage":false,"I\u017fImage":true,"Value":"/etc/shadow"}`},
+		{"IsImage, long-s variant first",
+			`{"IsURL":false,"I\u017fImage":true,"IsImage":false,"Value":"/etc/shadow"}`},
+		{"IsURL, long-s variant",
+			`{"I\u017fURL":true,"IsURL":false,"IsImage":false,"Value":"/etc/shadow"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sock, eng, _ := startBuildProxy(t)
+			// No wantMsg beyond the shared stem: WHICH rule refuses this is
+			// the thing that may legitimately change (today the allowlist,
+			// after an EqualFold switch the duplicate rule). Pinning the
+			// message would make a safe refactor fail and teach whoever hits
+			// it to loosen the test.
+			refuse(t, sock, eng, buildURL(buildContextQuery(tc.entry)), "", "context \"x\"")
+		})
+	}
+}
