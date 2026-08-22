@@ -653,6 +653,14 @@ channel), and it must not become a fourth by overclaiming:
 > delivers the file inside a run (that is `claudestagedset_test.go` and the
 > in-sandbox inventory test).
 
+**Re-confirmed on claude 2.1.239**, 2026-08-22: `TestManifestGatesPluginHookFiring`
+passes against that version (18.26s), so both gates still hold. The 2.1.238
+measurement above **stays** rather than being replaced — this section stamps its
+claims with a version precisely because a sentence about a third party's binary
+without one goes stale, and *"regardless of `enabledPlugins`"* is the recorded
+case of that happening. Two datapoints give the next drift a direction to read;
+one gives it only a date.
+
 **The live assertion is host-level, and cannot be otherwise on 2.1.238** — worth
 one line so nobody tries to move it. Inside `@claude` the `settings.json` filter
 drops `enabledPlugins`, so nothing fires (row 4), so a positive control ("the
