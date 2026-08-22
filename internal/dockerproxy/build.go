@@ -1,6 +1,7 @@
 package dockerproxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -440,11 +441,29 @@ var autoUserNsFields = map[string]string{
 // snug judge one value and the engine use another (#310). Keys are sorted first
 // so a refusal names the same key on every run — a message that varies with map
 // order cannot be pinned by a test.
-func allowlistJSONFields(fields map[string]json.RawMessage, allow map[string]string,
-	what string) (map[string]string, error) {
-	keys := make([]string, 0, len(fields))
-	for k := range fields {
-		keys = append(keys, k)
+func allowlistJSONFields(raw json.RawMessage, allow map[string]string,
+	what string) (map[string]json.RawMessage, map[string]string, error) {
+	// THE KEYS COME FROM THE BYTES, NOT FROM THE MAP, and that is the whole of
+	// the exact-duplicate defence. json.Unmarshal into a map COLLAPSES an
+	// exact-duplicate key to the last occurrence before any check can see it,
+	// while the engine decodes the same bytes into a STRUCT — where duplicate
+	// OBJECT fields are MERGED field by field, so a first occurrence's scalar
+	// survives a later empty one. Measured, Go encoding/json, on
+	// {"AutoUserNsOpts":{"PasswdFile":"/etc/passwd"},"AutoUserNsOpts":{}}:
+	//
+	//	map[string]json.RawMessage  ->  AutoUserNsOpts = {}          (empty)
+	//	the struct                  ->  PasswdFile = "/etc/passwd"   (survives)
+	//
+	// Same divergence as #310, different spelling of "twice": snug would judge
+	// the empty one and the engine would use the planted path. A decoder that
+	// reports the keys as WRITTEN is the only way to see it.
+	fields := map[string]json.RawMessage{}
+	keys, err := jsonObjectKeys(raw)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s %w", what, err)
+	}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, nil, fmt.Errorf("%s is not the JSON object podman sends", what)
 	}
 	sort.Strings(keys)
 
@@ -452,21 +471,60 @@ func allowlistJSONFields(fields map[string]json.RawMessage, allow map[string]str
 	for _, k := range keys {
 		canon, known := allow[strings.ToLower(k)]
 		if !known {
-			return nil, fmt.Errorf("%s carries the field %q, which snug does not model. "+
+			return nil, nil, fmt.Errorf("%s carries the field %q, which snug does not model. "+
 				"Its fields are an allowlist for the same reason the build parameters are: "+
 				"a field snug has not been taught about may name a host path and would reach "+
 				"the engine unexamined. Drop it; if it is harmless it belongs in this file's "+
 				"allowlist with a note saying why", what, k)
 		}
 		if prev, dup := spelling[canon]; dup {
-			return nil, fmt.Errorf("%s carries %s twice, as %q and %q. Send it once: snug and "+
-				"the engine do not agree on which duplicate wins — encoding/json takes the "+
+			if prev == k {
+				return nil, nil, fmt.Errorf("%s carries the key %q twice. Send it once: snug "+
+					"and the engine do not read a repeated key the same way — a map keeps the "+
+					"LAST occurrence, a struct MERGES two objects field by field, so a value "+
+					"in the first can survive an empty second and be used by the engine after "+
+					"snug judged the empty one", what, k)
+			}
+			return nil, nil, fmt.Errorf("%s carries %s twice, as %q and %q. Send it once: snug "+
+				"and the engine do not agree on which duplicate wins — encoding/json takes the "+
 				"LAST after a sort, so a second spelling is a way to have snug judge one value "+
 				"and the engine use another (issue #310)", what, canon, prev, k)
 		}
 		spelling[canon] = k
 	}
-	return spelling, nil
+	return fields, spelling, nil
+}
+
+// jsonObjectKeys returns one JSON object's keys IN THE ORDER WRITTEN, repeats
+// included. json.Unmarshal into a map cannot answer this — it has already
+// collapsed the repeats — so the bytes are walked with a Decoder: a key token,
+// then its value consumed whole, until the object closes.
+func jsonObjectKeys(raw json.RawMessage) ([]string, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	t, err := dec.Token()
+	if err != nil {
+		return nil, fmt.Errorf("is not the JSON object podman sends")
+	}
+	if d, ok := t.(json.Delim); !ok || d != '{' {
+		return nil, fmt.Errorf("is not the JSON object podman sends")
+	}
+	var keys []string
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return nil, fmt.Errorf("is not the JSON object podman sends")
+		}
+		k, ok := kt.(string)
+		if !ok {
+			return nil, fmt.Errorf("is not the JSON object podman sends")
+		}
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return nil, fmt.Errorf("is not the JSON object podman sends")
+		}
+		keys = append(keys, k)
+	}
+	return keys, nil
 }
 
 // checkIDMappingOptions judges the id-mapping request a build carries.
@@ -496,11 +554,7 @@ func allowlistJSONFields(fields map[string]json.RawMessage, allow map[string]str
 // The value is forwarded unchanged; nothing here resolves a path, because
 // nothing here is permitted to carry one.
 func checkIDMappingOptions(_ *Proxy, v string) (string, error) {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(v), &raw); err != nil {
-		return "", fmt.Errorf("is not the JSON object podman sends")
-	}
-	spelling, err := allowlistJSONFields(raw, idMappingFields, "idmappingoptions")
+	raw, spelling, err := allowlistJSONFields(json.RawMessage(v), idMappingFields, "idmappingoptions")
 	if err != nil {
 		return "", err
 	}
@@ -529,15 +583,12 @@ func checkAutoUserNsOpts(rawOpts json.RawMessage, key string) error {
 	if isEmptyJSON(rawOpts) {
 		return nil
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(rawOpts, &fields); err != nil {
-		return fmt.Errorf("%s is not the JSON object podman sends", key)
-	}
+
 	// The nested level gets the SAME two rules, because the last-wins trap
 	// works just as well one field down: {"AutoUserNsOpts":{...zero...},
 	// "autousernsopts":{"PasswdFile":"/etc/passwd"}} is caught above, and
 	// {"PasswdFile":"","passwdfile":"/etc/passwd"} is caught here.
-	spelling, err := allowlistJSONFields(fields, autoUserNsFields, key)
+	fields, spelling, err := allowlistJSONFields(rawOpts, autoUserNsFields, key)
 	if err != nil {
 		return err
 	}

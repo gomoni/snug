@@ -94,6 +94,33 @@ func TestIDMappingOptionsRefusesEveryValueInAutoUserNsOpts(t *testing.T) {
 			`{"AutoUserNsOpts":{"PasswdFile":"","passwdfile":"","PASSWDFILE":"/etc/passwd"}}`,
 			"twice"},
 
+		// EXACT-duplicate keys, found by the redteam round on this branch and
+		// a different divergence from the case-variant one above. json.Unmarshal
+		// into a map collapses a repeated key to the LAST occurrence before any
+		// check can see it; the engine decodes the same bytes into a STRUCT,
+		// where duplicate OBJECT fields are MERGED field by field, so the FIRST
+		// occurrence's scalar survives an empty second. Measured on the payload
+		// below: snug's map read AutoUserNsOpts as {} and passed it, the struct
+		// read PasswdFile = "/etc/passwd", and podman 6.0.2 then parsed the
+		// planted file end to end.
+		//
+		// Refused rather than normalised: picking a winner only works if snug
+		// and the engine agree on the rule, and the bug IS that they do not.
+		{"the measured exact-duplicate payload",
+			`{"AutoUserNsOpts":{"PasswdFile":"/etc/passwd"},"AutoUserNsOpts":{}}`,
+			`idmappingoptions carries the key "AutoUserNsOpts" twice`},
+		{"the same, empty one first",
+			`{"AutoUserNsOpts":{},"AutoUserNsOpts":{"PasswdFile":"/etc/passwd"}}`,
+			`idmappingoptions carries the key "AutoUserNsOpts" twice`},
+		{"an exact-duplicate nested key",
+			`{"AutoUserNsOpts":{"PasswdFile":"/etc/passwd","PasswdFile":""}}`,
+			`AutoUserNsOpts carries the key "PasswdFile" twice`},
+		// A repeated SCALAR is refused too, though both decoders happen to agree
+		// on last-wins for one: the rule is "send it once", not "send it once
+		// where we have checked that it matters".
+		{"an exact-duplicate scalar", `{"AutoUserNs":false,"AutoUserNs":true}`,
+			`idmappingoptions carries the key "AutoUserNs" twice`},
+
 		{"a value that is not the object podman sends", `["not","an","object"]`,
 			"is not the JSON object podman sends"},
 		{"a nested value that is not an object", `{"AutoUserNsOpts":"/etc/passwd"}`,
@@ -173,5 +200,30 @@ func TestIDMappingRefusalSurvivesAStreamedBody(t *testing.T) {
 	}
 	if msg := denyMessage(resp); !strings.Contains(msg, "must be empty") {
 		t.Errorf("the client got a 403 without the reason it was owed: %s", msg)
+	}
+}
+
+// The exact-duplicate payload must not reach the engine in ANY form. The
+// refusal above is the mechanism; this asserts the outcome the redteam measured
+// against — with the bug, snug returned 200 and forwarded both keys byte for
+// byte, so the engine received a PasswdFile snug had judged empty.
+//
+// It reads the forwarded URI rather than only the status code: a fix that
+// accepted the value and re-marshalled it would pass a status check while the
+// question "what did the engine actually get" went unasked.
+func TestIDMappingExactDuplicateNeverReachesTheEngine(t *testing.T) {
+	sock, eng, _ := startBuildProxy(t)
+	before := eng.reached.Load()
+
+	code, resp := post(t, sock, buildURLWithIDMapping(t,
+		`{"AutoUserNs":true,"AutoUserNsOpts":{"PasswdFile":"/etc/passwd"},"AutoUserNsOpts":{}}`), "")
+	if code != 403 {
+		t.Fatalf("status %d, want 403: %s", code, resp)
+	}
+	if eng.reached.Load() != before {
+		t.Fatal("the request reached the engine; it should have been refused here")
+	}
+	if uri, ok := eng.lastURI.Load().(string); ok && strings.Contains(uri, "PasswdFile") {
+		t.Errorf("a PasswdFile reached the engine: %s", uri)
 	}
 }
