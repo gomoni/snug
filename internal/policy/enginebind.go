@@ -135,9 +135,11 @@ func (p *Policy) CheckEngineBindSource(guest string) error {
 				"       be replaced with a symlink after this check and before the container starts —\n"+
 				"       the engine resolves the source at START, in a namespace that also contains\n"+
 				"       snug's own /snug/engine grafts (issue #284).\n"+
-				"       Fix: bind an ancestor whose whole path this sandbox cannot rewrite — here\n"+
-				"       %s — and address the subdirectory inside the container.",
-				guest, filepath.Base(child), parent, parent)
+				"       The rule: a source is forwarded only if EVERY component from it up to / is\n"+
+				"       anchored. A name whose parent this sandbox can write is re-pointable; a mount\n"+
+				"       root is not.\n"+
+				"%s",
+				guest, filepath.Base(child), parent, swappableFix(p.Mounts, parent))
 		}
 
 		if rwBindCovers(p.Mounts, parent) {
@@ -148,6 +150,9 @@ func (p *Policy) CheckEngineBindSource(guest string) error {
 				"       route, invisibly to the mount at %s, and the engine resolves the source fresh at\n"+
 				"       START, in a namespace that does not contain this sandbox's mount either\n"+
 				"       (issue #284).\n"+
+				"       The rule: a source is forwarded only if EVERY component from it up to / is\n"+
+				"       anchored, and a mount root is only anchored while no other route reaches the\n"+
+				"       same directory entry.\n"+
 				"       Fix: bind an ancestor no read-write grant covers.",
 				guest, child, parent, child, child)
 		}
@@ -155,6 +160,43 @@ func (p *Policy) CheckEngineBindSource(guest string) error {
 	}
 
 	return nil
+}
+
+// swappableFix writes the last paragraph of the case-2 refusal: what, if
+// anything, the caller can do instead.
+//
+// The walk in CheckEngineBindSource returns at the FIRST swappable component,
+// so every shallower component already passed the identical walk — which makes
+// `parent` exactly the DEEPEST ancestor of the source that this rule accepts.
+// That is a fact about the predicate, not a guess.
+//
+// But "accepted" is not the same as "a useful substitute", and saying so would
+// be the message implying a workaround that does not exist. The distinction is
+// the parent's own Kind:
+//
+//   - a KindBind parent is a real HOST tree that CONTAINS the source, so
+//     binding it and addressing the subdirectory inside the container mounts
+//     the same bytes the caller asked for. A genuine mitigation, and the
+//     common case: a source one level inside the sandbox's target.
+//   - anything else covering the parent is a tmpfs (or /dev, or procfs) that
+//     snug created for this run. The caller's files are not in it — they are
+//     behind further mounts stacked on top — so offering it as "the fix" would
+//     send someone to mount an ephemeral empty directory and wonder why their
+//     project is not in it. This is the case that fires once the target sits
+//     three or more levels below $HOME, where the deepest anchored ancestor is
+//     the $HOME tmpfs itself. There is no workaround there and the message
+//     says so rather than inventing one (issue #376 is the widening).
+func swappableFix(mounts map[string]Mount, parent string) string {
+	if m, ok := deepestNonSymlinkCover(mounts, parent); ok && m.Kind == KindBind {
+		return "       Fix: bind " + parent + " — the deepest ancestor of this source whose whole\n" +
+			"       path this sandbox cannot rewrite — and address the subdirectory inside the\n" +
+			"       container."
+	}
+	return "       The deepest ancestor this rule accepts is " + parent + ", which is not a bind of a\n" +
+		"       host directory — it is a filesystem snug created for this run, so binding it would\n" +
+		"       not mount what you asked for. There is NO substitute source for this one: see\n" +
+		"       issue #376, which tracks handing the engine a per-bind graft under /snug/engine\n" +
+		"       (a mount) instead of a path string it re-resolves."
 }
 
 // pathComponents returns the cumulative absolute paths from "/" up to and

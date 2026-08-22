@@ -2727,18 +2727,55 @@ shallowest component of the source that this sandbox can still rename — with
 says the engine resolves the source at START. The bind is refused before the
 symlink swap this issue is about ever gets a chance to run.
 
-Note what that means, because it is the ergonomic cost and it is large:
-`-v $SNUG_TARGET:/work` is normally refused too. A target's path runs through
-plain directory names inside the home tmpfs or `/tmp`, and the payload can
-rename those:
+### The rule, because the outcome alone is unpredictable
+
+A source is forwarded only if **every component from the source up to `/` is
+anchored**. A name whose parent this sandbox can write is re-pointable and is
+refused; a **mount root** is not re-pointable (renaming one from inside is
+`Device or resource busy`, measured) and anchors the walk.
+
+State the rule rather than the outcome, because the outcome depends on where
+`@parent-ro`'s bind happens to land and is otherwise not something a user can
+predict. Measured, defaults plus `@podman-socket`:
+
+| target | `-v $SNUG_TARGET:/work` | `-v $SNUG_TARGET/subdir:/x` |
+|---|---|---|
+| `~/proj/sub`, `~/src/proj` (2 below `$HOME`) | accepted | **refused** |
+| `~/src/projects/foo` (3 below) | **refused** | **refused** |
+| `~/x/y/proj/sub` (4 below) | **refused** | **refused** |
+| `$TMPDIR/build-123/proj` (2 below `$TMPDIR`) | accepted | **refused** |
+| `-v /usr:/u:ro`, `-v $HOME:/h` | accepted | — |
+
+Read off the rule, both columns follow. **Nothing inside the target is ever
+accepted**, at any depth: the target is a read-write bind, so every name in it
+has a writable parent. The target **root** is accepted exactly while
+`@parent-ro`'s own bind sits directly inside a mount root — true two levels
+below `$HOME` and under `$TMPDIR/<dir>/`, false at three levels, where the
+intermediate directory is a plain name in the home tmpfs. The `$SC/proj/sub`
+target this section uses is itself three levels below `/tmp`, which is why the
+refusal above names the temp-root directory and not `realdir`.
+
+So, plainly: **`-v` works for paths outside the sandbox's writable trees, and
+for the target root at shallow depth, and never for anything inside the
+target.** Where the root is accepted, bind it and address the subdirectory
+inside the container. At three levels and deeper there is no workaround, and
+the refusal message does not pretend otherwise. `.claude/design` tracks the
+widening (issue #376): a per-bind graft under `/snug/engine`, handing the
+engine a mount instead of a re-resolvable string.
+
+This is a refusal, never a silent narrowing. Nothing mounts with less than what
+was asked for, and no container gains reach the sandbox lacks.
+
+Why an intermediate directory is enough to lose the whole chain — an ancestor
+of both the `@parent-ro` and the `@cwd-rw` mount carries them with it when it
+is renamed:
 
 ```bash
 mkdir -p ~/snugtest/x/y/proj/sub
 snug ~/snugtest/x/y/proj/sub -- sh -c 'mv "$HOME/snugtest" other && echo RENAME-OK'
 ```
 
-Expect `RENAME-OK` — an ancestor of both the `@parent-ro` and the `@cwd-rw`
-mount carries them with it. That is why the rule refuses a source above it.
+Expect `RENAME-OK`.
 
 Positive control — a source whose every name IS anchored still mounts:
 
@@ -2750,9 +2787,8 @@ snug -p @podman-socket $SC/proj/sub -- sh -c '
 ```
 
 Expect a container ID. `/usr` is a read-only mount root under a root tmpfs
-nothing grants, so no name on its path can be re-pointed. Renaming a mount
-root from inside is `Device or resource busy` (measured), which is what makes
-that half of the rule sound:
+nothing grants, so no name on its path can be re-pointed. The other half of
+the rule, measured — a mount root cannot be renamed from inside:
 
 ```bash
 mkdir -p ~/snugtest2/sub

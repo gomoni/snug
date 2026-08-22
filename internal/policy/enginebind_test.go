@@ -19,6 +19,22 @@ func TestCheckEngineBindSource(t *testing.T) {
 		// wantComponent, when set, must appear in the error text — the
 		// refusal must name the offending COMPONENT, not merely the source.
 		wantComponent string
+		// wantInMsg / wantNotInMsg assert the SHAPE of the refusal, not only
+		// that one happened. The message branches on whether a usable
+		// substitute source exists (swappableFix), and a branch nothing
+		// asserts is the "documented but not implemented" shape this repo
+		// keeps naming: a refusal that offers a fix which does not work is
+		// worse than one that admits there is none.
+		wantInMsg    []string
+		wantNotInMsg []string
+		// wantRule asserts the ANCHORED-SOURCE rule is stated in the message.
+		// Not every refusal states it and that is correct: the graft clause
+		// refuses for a different reason (a graft is a different tree in the
+		// engine's derived view) and states ITS rule instead. Demanding one
+		// sentence everywhere would force the wrong explanation onto the
+		// wrong refusal — so the flag is per case, and the assertion below
+		// that EVERY refusal cites #284 is what covers all of them.
+		wantRule bool
 	}{
 		{
 			// M-baseline: every ancestor of an ordinary @sys-style read-only
@@ -58,6 +74,12 @@ func TestCheckEngineBindSource(t *testing.T) {
 			guest:         "/work/realdir",
 			wantErr:       true,
 			wantComponent: "realdir",
+			wantRule:      true,
+			// The deepest anchored ancestor here IS a KindBind of a host
+			// directory containing the source, so "bind /work and address the
+			// subdirectory inside the container" really does mount the bytes
+			// that were asked for. This branch must offer it.
+			wantInMsg: []string{"Fix: bind /work"},
 		},
 		{
 			// M1/M3: the target's own mount root sits directly under a
@@ -126,6 +148,35 @@ func TestCheckEngineBindSource(t *testing.T) {
 			wantComponent: "/snug/engine/store",
 		},
 		{
+			// THE NO-WORKAROUND BRANCH, and the reason it exists (measured
+			// against the real builtins: a target three or more levels below
+			// $HOME). The walk stops at /home/u/src, whose parent is the
+			// $HOME tmpfs — so the deepest ancestor this rule ACCEPTS is
+			// /home/u itself. Accepted is not the same as usable: that tmpfs
+			// is a filesystem snug created for this run, and the caller's
+			// files sit behind further mounts stacked on top of it, so
+			// offering it as "the fix" would send someone to mount an empty
+			// ephemeral directory and wonder where their project went.
+			//
+			// So the message must NOT say "Fix: bind", and must say plainly
+			// that there is no substitute. Asserted in BOTH directions,
+			// because only the negative half catches the regression that
+			// matters — a later edit collapsing the two branches back into
+			// one unconditional "Fix:" line.
+			name: "deepest anchored ancestor is a tmpfs -> refusal offers NO substitute",
+			mounts: map[string]Mount{
+				"/home/u":                  {Guest: "/home/u", Kind: KindTmpfs, Access: AccessRW},
+				"/home/u/src/projects":     {Guest: "/home/u/src/projects", Kind: KindBind, Host: "/home/u/src/projects", Access: AccessRO},
+				"/home/u/src/projects/foo": {Guest: "/home/u/src/projects/foo", Kind: KindBind, Host: "/home/u/src/projects/foo", Access: AccessRW},
+			},
+			guest:         "/home/u/src/projects/foo",
+			wantErr:       true,
+			wantComponent: "/home/u/src",
+			wantRule:      true,
+			wantInMsg:     []string{"There is NO substitute source", "#376"},
+			wantNotInMsg:  []string{"Fix: bind"},
+		},
+		{
 			// POSITIVE CONTROL: the exact #284-primitive policy above, with
 			// the same mount demoted from rw to ro, must return nil — proving
 			// the refusal above is about writability and not merely about the
@@ -154,6 +205,34 @@ func TestCheckEngineBindSource(t *testing.T) {
 				if !strings.Contains(got, tc.wantComponent) {
 					t.Errorf("CheckEngineBindSource(%q) error does not name the offending component %q:\n%s",
 						tc.guest, tc.wantComponent, got)
+				}
+			}
+			if tc.wantErr {
+				got := err.Error()
+				// THE RULE ITSELF IS PART OF EVERY REFUSAL. An outcome a user
+				// cannot predict reads as a bug; the rule is what turns the
+				// depth-dependence into something they can reason about.
+				// EVERY refusal, whatever its clause, cites the issue whose
+				// reproduction explains why a create-time check is not the
+				// last word — that is the fact a reader needs in all three.
+				if !strings.Contains(got, "#284") {
+					t.Errorf("CheckEngineBindSource(%q) refuses without citing issue #284:\n%s", tc.guest, got)
+				}
+				if tc.wantRule && !strings.Contains(got, "EVERY component from it up to / is") {
+					t.Errorf("CheckEngineBindSource(%q) refuses without stating the anchored-source "+
+						"rule; an outcome a user cannot predict reads as a bug, and the rule is what "+
+						"makes the depth-dependence something they can reason about:\n%s", tc.guest, got)
+				}
+				for _, want := range tc.wantInMsg {
+					if !strings.Contains(got, want) {
+						t.Errorf("CheckEngineBindSource(%q) error does not contain %q:\n%s", tc.guest, want, got)
+					}
+				}
+				for _, unwanted := range tc.wantNotInMsg {
+					if strings.Contains(got, unwanted) {
+						t.Errorf("CheckEngineBindSource(%q) error contains %q, which it must not:\n%s",
+							tc.guest, unwanted, got)
+					}
 				}
 			}
 		})
