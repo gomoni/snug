@@ -1,6 +1,8 @@
 package dockerproxy
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -99,19 +101,46 @@ var hostPathVisibleCallRE = regexp.MustCompile(`\.HostPathVisible\(`)
 // that inventory honest: it fails the moment a caller appears that the doc
 // comment does not know about.
 func TestHostPathVisibleCallersAreInventoried(t *testing.T) {
-	root := filepath.Join("..", "..", "internal")
+	// moduleRoot, not filepath.Join("..", "..", "internal"): a hardcoded
+	// subroot makes the walk a subdirectory of the module, so a caller in
+	// cmd/snug ships green (issue #291 part 1b). visited below asserts the
+	// walk really reached outside internal/.
+	root := moduleRoot(t)
+	visited := map[string]bool{}
 	hits := map[string]bool{}
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		// A source sweep walks a tree other packages' tests are writing in. An entry
+		// that vanished between its parent's ReadDir and this call is not a source
+		// file and is not this sweep's business: skipping it keeps a failure in
+		// THIS package from being caused by another one (issue #350).
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
+			name := d.Name()
+			// Dotted directories hold complete copies of this tree on other
+			// branches (.claude/worktrees/), and walking them reports another
+			// branch's callers as this one's.
+			if path != root && (strings.HasPrefix(name, ".") || name == "vendor") {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
+		if rel, rerr := filepath.Rel(root, path); rerr == nil {
+			visited[filepath.ToSlash(filepath.Dir(rel))] = true
+		}
 		src, rerr := os.ReadFile(path)
+		// The file can vanish between the walk naming it and this read, for
+		// the reason above.
+		if errors.Is(rerr, fs.ErrNotExist) {
+			return nil
+		}
 		if rerr != nil {
 			return rerr
 		}
@@ -132,10 +161,20 @@ func TestHostPathVisibleCallersAreInventoried(t *testing.T) {
 	//   - policy/graft.go — checkGraft, G4's first disjunct.
 	//   - cli/dryrun.go — describeGrafts, the "owned:" provenance render.
 	want := map[string]bool{
-		"dockerproxy/create.go": true,
-		"policy/graft.go":       true,
-		"cli/dryrun.go":         true,
+		"internal/dockerproxy/create.go": true,
+		"internal/policy/graft.go":       true,
+		"internal/cli/dryrun.go":         true,
 	}
+	// The walk really reached outside internal/, which is what a subroot
+	// silently skipped. Without this, the inventory is a statement about
+	// whatever subtree happened to be walked.
+	for _, dir := range []string{"internal/dockerproxy", "internal/policy", "internal/cli", "cmd/snug"} {
+		if !visited[dir] {
+			t.Fatalf("the sweep never visited %s, so a caller there ships green (issue #291 "+
+				"part 1b). Visited %d directories under %s.", dir, len(visited), root)
+		}
+	}
+
 	for f := range hits {
 		if !want[f] {
 			t.Errorf("a NEW caller of policy.HostPathVisible appeared at %s — the doc comment on "+
@@ -271,5 +310,29 @@ func TestResolveExistingHasOneAuthor(t *testing.T) {
 	if !evalSymlinksLoopRE.MatchString(oldShape) {
 		t.Fatalf("control: evalSymlinksLoopRE does not match the pre-#55 shape of resolveExisting's " +
 			"own loop — it would not catch a reintroduced copy either")
+	}
+}
+
+// moduleRoot finds the directory holding go.mod by walking UP, never by
+// counting ".." segments: a hardcoded subroot made this sweep walk a
+// subdirectory of the module and miss cmd/snug entirely (issue #291 part 1b).
+// internal/policy and test/guard each carry the same twelve lines, because Go
+// has no way to share a test helper across packages without a non-test package
+// to put it in.
+func moduleRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("no go.mod above the test's working directory")
+		}
+		dir = parent
 	}
 }

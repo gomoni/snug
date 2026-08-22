@@ -1,9 +1,11 @@
 package policy
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1067,6 +1069,13 @@ func graftCallSitesWithoutWhy(t *testing.T) ([]string, map[string]bool) {
 	var bad []string
 	dirs := map[string]bool{}
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		// A source sweep walks a tree other packages' tests are writing in. An entry
+		// that vanished between its parent's ReadDir and this call is not a source
+		// file and is not this sweep's business: skipping it keeps a failure in
+		// THIS package from being caused by another one (issue #350).
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -1091,6 +1100,11 @@ func graftCallSitesWithoutWhy(t *testing.T) ([]string, map[string]bool) {
 		rel = filepath.ToSlash(rel)
 		dirs[filepath.ToSlash(filepath.Dir(rel))] = true
 		src, rerr := os.ReadFile(path)
+		// The file can vanish between the walk naming it and this read, for
+		// the reason above.
+		if errors.Is(rerr, fs.ErrNotExist) {
+			return nil
+		}
 		if rerr != nil {
 			return rerr
 		}
@@ -1301,6 +1315,13 @@ func TestOnlyOneWriterOfEngineOwnedHostPaths(t *testing.T) {
 	var hits []string
 	dirs := map[string]bool{}
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		// A source sweep walks a tree other packages' tests are writing in. An entry
+		// that vanished between its parent's ReadDir and this call is not a source
+		// file and is not this sweep's business: skipping it keeps a failure in
+		// THIS package from being caused by another one (issue #350).
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -1321,6 +1342,11 @@ func TestOnlyOneWriterOfEngineOwnedHostPaths(t *testing.T) {
 		rel = filepath.ToSlash(rel)
 		dirs[filepath.ToSlash(filepath.Dir(rel))] = true
 		src, rerr := os.ReadFile(path)
+		// The file can vanish between the walk naming it and this read, for
+		// the reason above.
+		if errors.Is(rerr, fs.ErrNotExist) {
+			return nil
+		}
 		if rerr != nil {
 			return rerr
 		}

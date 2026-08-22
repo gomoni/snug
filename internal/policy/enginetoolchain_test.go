@@ -1,7 +1,9 @@
 package policy
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -152,16 +154,46 @@ func TestEngineToolchainRunsTheSameHygieneAsTheOtherG4Source(t *testing.T) {
 var engineToolchainWriteRE = regexp.MustCompile(`\.EngineToolchainRoot\s*=`)
 
 func TestOnlyOneWriterOfEngineToolchainRoot(t *testing.T) {
-	root := filepath.Join("..", "..", "internal")
+	// moduleRoot, not filepath.Join("..", "..", "internal"): a hardcoded
+	// subroot makes the walk a subdirectory of the module, so a writer in
+	// cmd/snug ships green (issue #291 part 1b). visited below asserts the
+	// walk really reached outside internal/.
+	root := moduleRoot(t)
+	visited := map[string]bool{}
 	var hits []string
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		// A source sweep walks a tree other packages' tests are writing in. An entry
+		// that vanished between its parent's ReadDir and this call is not a source
+		// file and is not this sweep's business: skipping it keeps a failure in
+		// THIS package from being caused by another one (issue #350).
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+		if d.IsDir() {
+			name := d.Name()
+			// Dotted directories hold complete copies of this tree on other
+			// branches (.claude/worktrees/), and walking them reports another
+			// branch's writers as this one's.
+			if path != root && (strings.HasPrefix(name, ".") || name == "vendor") {
+				return fs.SkipDir
+			}
 			return nil
 		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		if rel, rerr := filepath.Rel(root, path); rerr == nil {
+			visited[filepath.ToSlash(filepath.Dir(rel))] = true
+		}
 		src, rerr := os.ReadFile(path)
+		// The file can vanish between the walk naming it and this read, for
+		// the reason above.
+		if errors.Is(rerr, fs.ErrNotExist) {
+			return nil
+		}
 		if rerr != nil {
 			return rerr
 		}
@@ -177,8 +209,18 @@ func TestOnlyOneWriterOfEngineToolchainRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The walk really reached outside internal/, which is what a subroot
+	// silently skipped. Without this, "exactly one writer" is a statement about
+	// whatever subtree happened to be walked.
+	for _, dir := range []string{"internal/policy", "internal/cli", "cmd/snug"} {
+		if !visited[dir] {
+			t.Fatalf("the sweep never visited %s, so a writer there ships green (issue #291 "+
+				"part 1b). Visited %d directories under %s.", dir, len(visited), root)
+		}
+	}
+
 	// Exactly one: the assignment inside EngineToolchain itself.
-	if len(hits) != 1 || !strings.HasPrefix(hits[0], "policy/graft.go:") {
+	if len(hits) != 1 || !strings.HasPrefix(hits[0], "internal/policy/graft.go:") {
 		t.Errorf("p.EngineToolchainRoot is assigned at %v; the only legitimate writer is\n"+
 			"EngineToolchain (policy/graft.go). A caller assigning it directly skips resolution\n"+
 			"and hygiene and passes G4's third disjunct with nothing bounding what it names —\n"+
