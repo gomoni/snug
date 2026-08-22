@@ -7,13 +7,23 @@ import (
 )
 
 // TestContainerBindFilterMatchesPolicyVisibility is the invariant-6 gate for
-// issue #63, Tier B (TIER-B.md §4). Tier B gives the engine its own
-// private COPY of the whole host tree — structurally two mount authors — so
-// what stops a container mounting a path the sandbox cannot see is THIS
-// filter, hostPathVisible, and it must be provably the same predicate as the
-// resolved Policy's own visibility. Tier C is what makes the engine's VIEW
-// itself structural instead of enforced; this test is what makes the
-// enforcement in Tier B an ASSERTED boundary rather than an unverified hope.
+// issue #63, Tier B (TIER-B.md §4).
+//
+// BELT AND BRACES, and both halves are true. Since Tier C the engine's mount
+// namespace is DERIVED from this sandbox's view — its root IS the sandbox's own
+// root, with the grafts mounted on top — rather than the private copy of the
+// whole host tree Tier B gave it. So a container may bind only what this policy
+// already exposes, and that is now STRUCTURAL: a path the sandbox cannot see is
+// not in the engine's namespace to be bound. The proxy's bind filter,
+// hostPathVisible, still refuses one BY NAME, and this test is what makes that
+// half an ASSERTED boundary rather than an unverified hope: it must be provably
+// the same predicate as the resolved Policy's own visibility.
+//
+// Neither half is retired and the filter is NOT redundant — what it may stop
+// refusing is issue #146's inventory to decide, not this comment's. The wording
+// here is taken from the two --dry-run emitters that already say it
+// (internal/cli/dryrun.go, the TOPOLOGY and ENGINE VIEW blocks), so the screen
+// and the test do not describe the same boundary differently.
 //
 // Positive control, in the same table: a granted path is accepted. Negative:
 // an adjacent SIBLING directory — not a random unrelated path, but one that

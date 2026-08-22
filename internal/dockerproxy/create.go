@@ -183,11 +183,23 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 	hc["Privileged"] = json.RawMessage(`false`)
 	hc["SecurityOpt"] = json.RawMessage(`["no-new-privileges:true"]`)
 
-	// And stamp this run's label, which is what lets teardown stop the
-	// containers THIS sandbox started and no others. The engine store is shared
-	// with any concurrent sandbox that resolved to the same key — deliberately,
-	// so a warm start is warm — so without the label `stop --all` was collateral
-	// damage on a sibling that was still working.
+	// And stamp this run's label. Its consumer is INBOUND, in this proxy: it is
+	// how a DELETE is judged to name a container THIS run created
+	// (handleContainerDelete, issue #339).
+	//
+	// RE-DERIVED, because the reason this was written for is gone twice over.
+	// It used to say the store was "shared with any concurrent sandbox that
+	// resolved to the same key" — false since issue #276: engineKey is
+	// sha256(target) alone and S = L exactly (internal/engine/paths.go), so at
+	// most one LIVE run uses a given store. And it used to say teardown filtered
+	// on the label — false since issue #167 deleted the host-side `podman stop`.
+	// Between #167 and #339 nothing read this label at all; it was write-only.
+	//
+	// What survives is TIME-ORDERED, not concurrent. The store persists, and
+	// teardown removes no container: the engine's pid namespace collapses, the
+	// kernel SIGKILLs the processes, and the RECORDS stay. So a later run of the
+	// same target opens a store holding every earlier run's containers, and this
+	// label is what separates them.
 	//
 	// MERGED into whatever labels the client sent, and merged by REPLACING our
 	// own key only: a client that sets its own labels keeps them, and a client
