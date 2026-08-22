@@ -687,23 +687,18 @@ func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgrou
 	// caller that still passes one loses to this, which is the direction that
 	// makes the guarantee hold rather than the one that makes it polite.
 	//
-	// MEASURED, and it had never been (issue #330, STORAGE-CONF.md §3): the
-	// variable really does REPLACE the file set — with it pointed here, podman
-	// opens no /etc/containers/storage.conf, no $HOME one and no
-	// storage.conf.d drop-in, on 5.8.4 and on 6.0.2 alike. An earlier reading
-	// that it "appeared to do nothing" was an artifact of measuring through
-	// this host's /usr/bin/podman, a distrobox shim whose host-spawn forwards
-	// only $TERM, so the variable never reached the process being watched.
+	// The variable replaces the file set: with it pointed here, podman opens no
+	// /etc/containers/storage.conf, no $HOME one and no storage.conf.d drop-in
+	// (STORAGE-CONF.md §2, measured on podman 5.8.4 and 6.0.2).
 	//
-	// What it carries is NARROWER than it reads, and the narrowing comes from
-	// this run's own argv. --root/--runroot below pin graphroot and runroot
-	// anyway, AND they discard every [storage.options*] key in whatever file
-	// this variable names (§4). So the residual this variable alone is
-	// responsible for is `driver` and the remaining [storage] scalars. That is
-	// also why there is no CONTAINERS_STORAGE_CONF_OVERRIDE beside it the way
-	// there is for CONTAINERS_CONF: a later export of this variable by
-	// something in between still loses the store location to the flags, and
-	// its options to the same discard.
+	// What it carries is narrower than it reads, and the narrowing comes from
+	// this run's own argv: --root/--runroot below pin graphroot and runroot
+	// anyway, and they discard every [storage.options*] key in whatever file
+	// this variable names (§3). The residual it alone is responsible for is
+	// `driver` and the remaining [storage] scalars. That is also why no
+	// CONTAINERS_STORAGE_CONF_OVERRIDE stands beside it the way one stands
+	// beside CONTAINERS_CONF: a later export of this variable still loses the
+	// store location to the flags, and its options to the same discard.
 	storagePath, err := e.writeStorageConf(pol, podman)
 	if err != nil {
 		return stage.EngineSpec{}, err
@@ -1258,22 +1253,20 @@ func (e *Engine) writeStorageConf(pol *policy.Policy, podman string) (string, er
 	if err != nil {
 		return "", err
 	}
-	// KNOWN INERT AS WRITTEN, measured, and left in place deliberately rather
-	// than removed here (issue #330, STORAGE-CONF.md §4): podman DISCARDS every
-	// [storage.options*] key in this file when --root is on the argv, and
-	// Spec's argv always passes --root. Measured on 5.8.4 and 6.0.2 with a
-	// deliberately bogus mount_program, which makes store init fail loudly when
-	// the key reaches the driver and is silent when it does not — including on
-	// `podman system service`, which is what snug actually runs. On 5.8.4 it is
-	// inert twice over, because this file also omits `driver` and that engine
-	// prefixes the option with the driver name.
+	// Inert as written, and left here rather than removed: podman discards every
+	// [storage.options*] key in this file when --root is on the argv, and Spec's
+	// argv always passes --root (STORAGE-CONF.md §3, measured on podman 5.8.4
+	// and 6.0.2 with a bogus mount_program, which makes store init fail loudly
+	// when the key reaches the driver and is silent when it does not, `podman
+	// system service` included). On 5.8.4 it is inert twice over, since this
+	// file also omits `driver` and that engine prefixes the option with the
+	// driver name.
 	//
-	// The direction is toward LESS driver configuration, never more, so this is
+	// The direction is toward less driver configuration, never more, so this is
 	// a portability defect and not a hole: a host that needs fuse-overlayfs for
-	// rootless overlay silently gets whatever containers/storage auto-selects.
-	// The fix is `--storage-opt overlay.mount_program=<guest path>` beside
-	// --root, measured to work — an engine-argv change, so it belongs to its own
-	// issue and its own golden diff rather than to the ticket that found it.
+	// rootless overlay gets whatever containers/storage auto-selects. The fix is
+	// `--storage-opt overlay.mount_program=<guest path>` beside --root, measured
+	// to work; it changes the engine argv and its golden files.
 	if mp != "" {
 		mp, err = e.guestPath(pol, "storage.conf mount_program", mp)
 		if err != nil {

@@ -241,15 +241,11 @@ func TestTheGeneratedStorageConfIsSnugsOwn(t *testing.T) {
 // engine binary; the negative arm uses a directory with no such file. Without
 // the negative arm this passes on an implementation that hardcodes a path.
 //
-// READ THE TWO FAILURE MESSAGES BELOW WITH THIS CAVEAT (issue #330,
-// STORAGE-CONF.md §4): neither consequence they describe actually happens
-// today, because podman discards every [storage.options*] key when --root is
-// on the argv and Spec always passes --root — measured on 5.8.4 and 6.0.2,
-// `podman system service` included. This test asserts the CONTENTS OF THE
-// FILE, which is a real and checkable property; it does not and never did
-// assert that the key reaches the driver. It is the shape CLAUDE.md warns
-// about — a passing test beside a behaviour that is not there — and it is
-// named here rather than fixed here, because the fix is an engine-argv change.
+// The two failure messages below describe consequences that do not follow:
+// podman discards every [storage.options*] key when --root is on the argv, and
+// Spec always passes --root (STORAGE-CONF.md §3). What this test asserts is the
+// CONTENTS OF THE FILE, a real and checkable property; it does not assert that
+// the key reaches the driver.
 func TestTheGeneratedStorageConfNamesAMountProgramOnlyWhenThereIsOne(t *testing.T) {
 	for _, tc := range []struct {
 		name string
