@@ -463,6 +463,66 @@ func target(t *testing.T) (proj, secret string) {
 	return proj, secret
 }
 
+// shortTarget is target()'s exact root/proj/{sibling,sub} + SECRET shape and
+// contract, rooted at a short path instead of t.TempDir().
+//
+// It exists SOLELY for AF_UNIX's sun_path limit (~108 bytes) and for nothing
+// else — do not "tidy" this back to t.TempDir(). t.TempDir() names its
+// directory after the calling test function, and this suite's test names run
+// long: target()'s own root already measures 80+ bytes on this host before
+// adding a subdirectory and a socket filename, which is what pushed a socket
+// fixture straight past sun_path (measured while writing
+// TestASocketCreatedAfterTheSandboxStartsStillReachesTheHost:
+// net.Listen("unix", …) failed with "bind: invalid argument" nesting the
+// socket under a target()-rooted parent — the fixture broke on its own path
+// length, not on anything sandboxed). Rooting at a short, test-name-agnostic
+// path instead leaves room to spare and lets a socket fixture live under the
+// target's PARENT like every other test in this residual family, so it can
+// use the default @parent-ro selection rather than a named test profile.
+//
+// t.TempDir() is what this helper avoids, so cleanup is manual rather than
+// automatic.
+func shortTarget(t *testing.T) (proj, secret string) {
+	t.Helper()
+	root, err := os.MkdirTemp("/tmp", "s")
+	if err != nil {
+		t.Fatalf("shortTarget: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+
+	proj = filepath.Join(root, "proj", "sub")
+	if err := os.MkdirAll(filepath.Join(root, "proj", "sibling"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret = filepath.Join(root, "SECRET")
+	if err := os.WriteFile(secret, []byte("must-not-be-readable\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The guard this helper exists to make unnecessary to rediscover by
+	// hand: a REPRESENTATIVE socket path under the returned tree (the
+	// longest filename this residual family actually uses) must fit
+	// sun_path comfortably. Without this, a future change to the pattern —
+	// a longer prefix, an extra path segment — reappears as an unexplained
+	// "bind: invalid argument" from whatever caller happens to hit the
+	// limit first, rather than failing here, by name, with the measured
+	// length in the message.
+	const sunPathLimit = 108 // Linux's sizeof(((struct sockaddr_un*)0)->sun_path)
+	const wantSlack = 40     // room left for a caller's own filename choices
+	probe := filepath.Join(filepath.Dir(proj), "payload-made-this.sock")
+	if len(probe) > sunPathLimit-wantSlack {
+		t.Fatalf("shortTarget: a representative socket path is %d bytes (%s) — too close to "+
+			"AF_UNIX's sun_path limit of %d bytes to leave the %d bytes of slack this helper "+
+			"promises its callers. shortTarget no longer does the one job it exists for.",
+			len(probe), probe, sunPathLimit, wantSlack)
+	}
+
+	return proj, secret
+}
+
 // baseEnv is the environment every snug invocation in this suite gets.
 //
 // XDG_CONFIG_HOME points at an empty directory on purpose. snug reads
