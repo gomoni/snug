@@ -231,7 +231,7 @@ func TestDryRunDoesNotRenderAPastaArgOrNetworkScalarVerbatim(t *testing.T) {
 			p.Net.Address6 = netip.MustParsePrefix("fd00:5e79:1::2/64")
 			p.Net.Gateway6 = netip.MustParseAddr("fe80::1%" + probe.payload + forged)
 
-			got := captureStdout(t, func() { dryRun(p, p.BwrapArgs(0, 0), config{}, nil) })
+			got := dryRunText(p, p.BwrapArgs(0, 0), config{}, nil)
 
 			// CONTROL: the row this test is about is on the screen. A pasta
 			// line that stopped being printed would satisfy every "no raw

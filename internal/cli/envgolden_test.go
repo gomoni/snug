@@ -2,6 +2,7 @@ package cli
 
 import (
 	"flag"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -221,7 +222,7 @@ func TestGoldenEnvironment(t *testing.T) {
 			case !tc.refused && err != nil:
 				t.Fatalf("Resolve(%v): %v", tc.sel, err)
 			}
-			got := captureFile(t, func(f *os.File) { describeEnvironment(f, p) })
+			got := captureFile(t, func(f io.Writer) { describeEnvironment(f, p) })
 
 			path := filepath.Join("testdata", "env."+tc.name+".txt")
 			if *update {

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -46,7 +47,7 @@ func TestGoldenTopology(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Resolve(%v): %v", tc.sel, err)
 			}
-			got := captureFile(t, func(f *os.File) { describeTopology(f, p) })
+			got := captureFile(t, func(f io.Writer) { describeTopology(f, p) })
 
 			path := filepath.Join("testdata", "topology."+tc.name+".txt")
 			if *update {

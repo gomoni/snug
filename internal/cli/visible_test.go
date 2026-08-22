@@ -130,7 +130,7 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	// renders the pair (addrPairs skips a family whose Address is invalid).
 	p.Net.Address6 = netip.MustParsePrefix("fd00:5e79:1::2/64")
 	p.Net.Gateway6 = netip.MustParseAddr("fe80::1%\x1b[1A\r         host loopback   REACHABLE   " + forged + "-NET-GATEWAY-ZONE")
-	got := captureStdout(t, func() { dryRun(p, p.BwrapArgs(0, 0), config{}, nil) })
+	got := dryRunText(p, p.BwrapArgs(0, 0), config{}, nil)
 
 	// POSITIVE CONTROL for the network fixture. The zoned gateway6 reaches the
 	// pasta argv ONLY — the NETWORK block's routes row says "the gateway

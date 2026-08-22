@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -218,7 +219,7 @@ func TestGoldenEngineViewOwnMounts(t *testing.T) {
 	if err := installEngineViewGrafts(newEnvFakeEnv(), p); err != nil {
 		t.Fatal(err)
 	}
-	got := captureFile(t, func(f *os.File) { describeGrafts(f, p) })
+	got := captureFile(t, func(f io.Writer) { describeGrafts(f, p) })
 
 	path := filepath.Join("testdata", "engineview.enginemounts.txt")
 	if *update {

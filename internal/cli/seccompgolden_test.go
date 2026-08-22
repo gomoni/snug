@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -90,7 +91,7 @@ func TestGoldenSeccomp(t *testing.T) {
 					t.Skip("no syscall table for this GOARCH")
 				}
 			}
-			got := captureFile(t, func(f *os.File) { describeSeccomp(f, tc.cfg) })
+			got := captureFile(t, func(f io.Writer) { describeSeccomp(f, tc.cfg) })
 
 			if tc.name == "active" {
 				got = assertKnownGapParagraph(t, got)
@@ -156,8 +157,8 @@ func assertKnownGapParagraph(t *testing.T, got string) string {
 // UNAVAILABLE text depending on GOARCH — either way that text is not the
 // DISABLED text, so the inequality holds on every architecture.
 func TestGoldenSeccompRowsDiffer(t *testing.T) {
-	active := captureFile(t, func(f *os.File) { describeSeccomp(f, config{}) })
-	disabled := captureFile(t, func(f *os.File) { describeSeccomp(f, config{noSeccomp: true}) })
+	active := captureFile(t, func(f io.Writer) { describeSeccomp(f, config{}) })
+	disabled := captureFile(t, func(f io.Writer) { describeSeccomp(f, config{noSeccomp: true}) })
 	if active == disabled {
 		t.Fatalf("--no-seccomp produced BYTE-IDENTICAL output to the active filter — a "+
 			"security feature deliberately switched off must read differently on screen "+

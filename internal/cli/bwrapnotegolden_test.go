@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,7 +65,7 @@ func TestGoldenBwrapNote(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Resolve(%v): %v", tc.sel, err)
 			}
-			got := captureFile(t, func(f *os.File) { describeBwrap(f, p, bwrapNoteArgv, nil) })
+			got := captureFile(t, func(f io.Writer) { describeBwrap(f, p, bwrapNoteArgv, nil) })
 
 			path := filepath.Join("testdata", "bwrap-note."+tc.name+".txt")
 			if *update {
@@ -106,7 +107,7 @@ func TestTheStagedArgvIsNotPrintedAsSelfContained(t *testing.T) {
 		// The REAL argv, not the stub: the claim is about what snug prints for a
 		// run, and the note has to travel with the argv it is about.
 		argv := p.BwrapArgs(0, 0)
-		return captureFile(t, func(f *os.File) { describeBwrap(f, p, argv, nil) }), argv
+		return captureFile(t, func(f io.Writer) { describeBwrap(f, p, argv, nil) }), argv
 	}
 	has := func(argv []string, flag string) bool {
 		for _, a := range argv {

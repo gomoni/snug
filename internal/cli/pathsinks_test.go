@@ -71,7 +71,7 @@ func TestTheDryRunHeaderNeverRendersAHostPathRaw(t *testing.T) {
 			"was never reached, so it is measuring a different screen")
 	}
 
-	got := captureStdout(t, func() { dryRun(p, p.BwrapArgs(0, 0), config{}, nil) })
+	got := dryRunText(p, p.BwrapArgs(0, 0), config{}, nil)
 
 	// The positive controls, and they are load-bearing twice over: without them
 	// a dry run that failed to render either path would pass every assertion

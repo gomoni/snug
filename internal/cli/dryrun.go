@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -25,8 +26,15 @@ import (
 // contract) — dryRun renders it anyway, so a human can see exactly what was
 // refused, but says so at the top and bottom instead of implying this is a
 // runnable sandbox.
-func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
-	out := os.Stdout
+//
+// out is an io.Writer rather than the *os.File this took until issue #52,
+// because the human screen is no longer the only renderer of this policy:
+// renderJSON (dryrunjson.go) writes the same facts to the same stream. Every
+// describe* helper below takes the same type for the same reason — a second
+// renderer that cannot attach to the block helpers would have to re-derive
+// what they know, which is the copy-with-no-link-back shape this repo keeps
+// paying for.
+func dryRun(out io.Writer, p *policy.Policy, args []string, cfg config, refusedBy error) {
 	if refusedBy != nil {
 		fmt.Fprintln(out, "snug — dry run of a REFUSED policy (nothing below can run; nothing was started)")
 	} else {
@@ -235,7 +243,7 @@ func dryRun(p *policy.Policy, args []string, cfg config, refusedBy error) {
 // name is a human-readable label only; nothing parses it back out), and
 // inventing one would be the kind of small lie CLAUDE.md says makes the
 // whole artifact untrustworthy.
-func describeAttach(out *os.File) {
+func describeAttach(out io.Writer) {
 	base, snugName := runtimeBase()
 	pattern := filepath.Join(base, snugName, "run-<pid>", "state.json")
 	fmt.Fprintf(out, "ATTACH   this run publishes %s (0600,\n", pattern)
@@ -248,7 +256,7 @@ func describeAttach(out *os.File) {
 	fmt.Fprintln(out, "         plain nsenter has none of the three.")
 }
 
-func describeSeccomp(out *os.File, cfg config) {
+func describeSeccomp(out io.Writer, cfg config) {
 	// DeniedSyscallNames panics if internal/sandbox's own name table has
 	// fallen behind deniedSyscalls — see its doc comment. That is deliberate:
 	// failing this dry run loudly beats rendering a screen that no longer
@@ -397,7 +405,7 @@ func wrapList(items []string, width int) []string {
 // the renderer is lying, and a flat NAME=value list (which this replaced) could
 // not disagree because it said nothing: not which verb produced a value, not
 // which profile, and not what a filter dropped on the way.
-func describeEnvironment(out *os.File, p *policy.Policy) {
+func describeEnvironment(out io.Writer, p *policy.Policy) {
 	fmt.Fprintln(out, "ENVIRONMENT  (--clearenv, then:)")
 	for _, name := range p.EnvNames() {
 		v := p.Env[name]
@@ -477,7 +485,7 @@ func describeEnvironment(out *os.File, p *policy.Policy) {
 // column says `(bwrap)` — a provenance no policy can produce, since EnvVerb has
 // no such value — so the row cannot be mistaken for something a profile asked
 // for.
-func describeBwrapAuthoredEnv(out *os.File, p *policy.Policy) {
+func describeBwrapAuthoredEnv(out io.Writer, p *policy.Policy) {
 	if p.Chdir == "" {
 		return
 	}
@@ -1007,7 +1015,7 @@ func accessWord(m policy.Mount) string {
 // block's engine line for the capability set it runs with), so the pasta
 // guarantees above cover containers too, and `@podman-socket` alone really is
 // offline.
-func describeContainers(out *os.File, p *policy.Policy) {
+func describeContainers(out io.Writer, p *policy.Policy) {
 	if p.Podman == policy.PodmanOff {
 		return
 	}
@@ -1052,7 +1060,7 @@ func describeContainers(out *os.File, p *policy.Policy) {
 // "which of the three answered" legible without a probe. Their VALUES are
 // host-controlled, so both go through visibleValue, the same guard every other
 // host-controlled value on this screen uses against a forged line.
-func describeEngineSource(out *os.File) {
+func describeEngineSource(out io.Writer) {
 	if custom := os.Getenv("SNUG_PODMAN"); custom != "" {
 		fmt.Fprintf(out, "         engine      binary %s ($SNUG_PODMAN) — trusted outright, PATH\n",
 			visibleValue(custom))
@@ -1086,7 +1094,7 @@ func describeEngineSource(out *os.File) {
 // sandbox does not have (issue #142), stated plainly rather than apologised
 // for, and it is what makes "a private image cannot be pulled from inside"
 // a documented property rather than a bug report.
-func describeImageProvenance(out *os.File) {
+func describeImageProvenance(out io.Writer) {
 	fmt.Fprintf(out, "IMAGES   provenance is snug's, not this host's (issue #137)\n")
 	fmt.Fprintf(out, "         search      docker.io and nothing else — no mirror, no rewrite, no\n")
 	fmt.Fprintf(out, "                     insecure registry. A generated registries.conf, pointed\n")
@@ -1113,7 +1121,7 @@ func describeImageProvenance(out *os.File) {
 //
 // It also gives Policy.Git a reader. A field that is written and never read is a
 // field nobody notices going wrong.
-func describeGit(out *os.File, p *policy.Policy) {
+func describeGit(out io.Writer, p *policy.Policy) {
 	if p.Git != policy.GitExtract {
 		return
 	}
@@ -1151,7 +1159,7 @@ func describeGit(out *os.File, p *policy.Policy) {
 // it is printed ONCE, after the loop, gated on whether anything matched —
 // not once per path, which would repeat six identical lines for a
 // coincidence of two paths sharing one cause.
-func describeSSH(out *os.File, p *policy.Policy) {
+func describeSSH(out io.Writer, p *policy.Policy) {
 	if len(p.SystemSSHConfigs) == 0 {
 		return
 	}
@@ -1208,7 +1216,7 @@ func describeSSH(out *os.File, p *policy.Policy) {
 // bind gets the one-line form: what it is and where it came from is a profile's
 // grant, already on the FILESYSTEM lines above, and repeating it here would be
 // two places to keep true.
-func describeCommands(out *os.File, p *policy.Policy) {
+func describeCommands(out io.Writer, p *policy.Policy) {
 	var staged []string
 	for guest := range p.Mounts {
 		if strings.HasPrefix(guest, policy.StagedBinDir+"/") {
@@ -1317,7 +1325,7 @@ func describeCommands(out *os.File, p *policy.Policy) {
 // could disagree with it. The trust arm and the settings.json sentence are gated
 // the same way, off the staged CONTENT and off the resolved mounts respectively
 // — never off a re-read of the host.
-func describeClaude(out *os.File, p *policy.Policy) {
+func describeClaude(out io.Writer, p *policy.Policy) {
 	m, ok := claudeStateMount(p)
 	if !ok {
 		return
@@ -1604,7 +1612,7 @@ func claudeSettingsCarriedNames(m policy.Mount) []string {
 
 // describeNetwork spells out what the sandbox can and cannot reach. The
 // negative half matters more than the positive half and is stated first.
-func describeNetwork(out *os.File, p *policy.Policy) {
+func describeNetwork(out io.Writer, p *policy.Policy) {
 	switch p.Net.Mode {
 	case policy.NetIsolated:
 		fmt.Fprintf(out, "NETWORK  isolated — private netns, loopback only, no helper process.\n")
@@ -1822,7 +1830,7 @@ func longLivedProcesses(p *policy.Policy) []longLivedProcess {
 	return append(procs, longLivedProcess{"bwrap", "the sandbox itself, and the payload inside it"})
 }
 
-func describeTopology(out *os.File, p *policy.Policy) {
+func describeTopology(out io.Writer, p *policy.Policy) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "TOPOLOGY")
 	// One denominator, counted the same way in every arm: every long-lived
@@ -2059,7 +2067,7 @@ func wrapGraftField(label, text string) []string {
 // reason. Guest, Host and HostAsked print VERBATIM (never through
 // wrapGraftField, see its own comment, finding F9); only prose (Why, the
 // destination note, the "resolved:" line) is wrapped.
-func describeGrafts(out *os.File, p *policy.Policy) {
+func describeGrafts(out io.Writer, p *policy.Policy) {
 	if len(p.Grafts) == 0 {
 		return
 	}
@@ -2305,7 +2313,7 @@ func graftDestinationNote(p *policy.Policy, gr policy.Graft) string {
 // case's warning a contrast rather than an isolated scare. MEASURED, bwrap
 // 0.11.2: --unshare-all yields a netns id different from the host's,
 // --unshare-all --share-net yields the host's exactly.
-func describeBwrap(out *os.File, p *policy.Policy, args []string, refusedBy error) {
+func describeBwrap(out io.Writer, p *policy.Policy, args []string, refusedBy error) {
 	fmt.Fprintln(out, "── bwrap ─────────────────────────────────────────────────────────────────")
 	if refusedBy != nil {
 		fmt.Fprintln(out, "(this argv describes the REFUSED policy above; it is not a command you can")

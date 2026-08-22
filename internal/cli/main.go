@@ -364,7 +364,7 @@ func run(cfg config) int {
 		// never run below, whichever branch fires.
 		if cfg.dryRun && pol != nil {
 			args := pol.BwrapArgs(env.Uid(), env.Gid())
-			dryRun(pol, args, cfg, err)
+			dryRun(os.Stdout, pol, args, cfg, err)
 		}
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 		return exitPolicy
@@ -488,7 +488,7 @@ func run(cfg config) int {
 	// policy that was fine, so a passing run is byte-identical to before.
 	if err := pol.Validate(env); err != nil {
 		if cfg.dryRun {
-			dryRun(pol, pol.BwrapArgs(env.Uid(), env.Gid()), cfg, err)
+			dryRun(os.Stdout, pol, pol.BwrapArgs(env.Uid(), env.Gid()), cfg, err)
 		}
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 		return exitPolicy
@@ -497,7 +497,7 @@ func run(cfg config) int {
 	args := pol.BwrapArgs(env.Uid(), env.Gid())
 
 	if cfg.dryRun {
-		dryRun(pol, args, cfg, nil)
+		dryRun(os.Stdout, pol, args, cfg, nil)
 		return 0
 	}
 
