@@ -27,7 +27,8 @@
       ],
       "optional": false,
       "authored": false,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/dev",
@@ -39,7 +40,8 @@
       ],
       "optional": false,
       "authored": true,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/lib",
@@ -51,7 +53,8 @@
       ],
       "optional": false,
       "authored": false,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/lib64",
@@ -63,7 +66,8 @@
       ],
       "optional": false,
       "authored": false,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/proc",
@@ -75,7 +79,8 @@
       ],
       "optional": false,
       "authored": true,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/sbin",
@@ -87,7 +92,8 @@
       ],
       "optional": false,
       "authored": false,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/tmp",
@@ -99,7 +105,8 @@
       ],
       "optional": false,
       "authored": true,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/usr",
@@ -111,7 +118,8 @@
       ],
       "optional": false,
       "authored": false,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/etc/group",
@@ -123,7 +131,8 @@
       ],
       "optional": false,
       "authored": false,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/etc/ld.so.cache",
@@ -135,7 +144,8 @@
       ],
       "optional": false,
       "authored": false,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/etc/ld.so.conf",
@@ -147,7 +157,8 @@
       ],
       "optional": false,
       "authored": false,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/etc/nsswitch.conf",
@@ -159,7 +170,8 @@
       ],
       "optional": false,
       "authored": false,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/etc/passwd",
@@ -171,7 +183,8 @@
       ],
       "optional": false,
       "authored": false,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/etc/resolv.conf",
@@ -183,7 +196,8 @@
       ],
       "optional": false,
       "authored": true,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/home/u",
@@ -195,7 +209,8 @@
       ],
       "optional": false,
       "authored": false,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/proc/config.gz",
@@ -207,7 +222,9 @@
       ],
       "optional": false,
       "authored": true,
-      "executable": false
+      "executable": false,
+      "yielded": false,
+      "procfs_replacement": "replaced with an EMPTY file — the host's copy is the complete host kernel config — an exploit-selection oracle"
     },
     {
       "guest": "/proc/key-users",
@@ -219,7 +236,9 @@
       ],
       "optional": false,
       "authored": true,
-      "executable": false
+      "executable": false,
+      "yielded": false,
+      "procfs_replacement": "replaced with an EMPTY file — the host's copy is the host user's keyring accounting"
     },
     {
       "guest": "/proc/keys",
@@ -231,7 +250,9 @@
       ],
       "optional": false,
       "authored": true,
-      "executable": false
+      "executable": false,
+      "yielded": false,
+      "procfs_replacement": "replaced with an EMPTY file — the host's copy is the host user's live keyring (keyctl is already seccomp-denied)"
     },
     {
       "guest": "/proc/sys",
@@ -243,7 +264,9 @@
       ],
       "optional": false,
       "authored": true,
-      "executable": false
+      "executable": false,
+      "yielded": false,
+      "procfs_replacement": "read-only: the write side is snug's own mount now, not a capability check snug does not own. Reads are unchanged, and namespace-scoped values are still this sandbox's"
     },
     {
       "guest": "/home/u/.cache",
@@ -255,7 +278,8 @@
       ],
       "optional": false,
       "authored": false,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/home/u/.config",
@@ -267,7 +291,8 @@
       ],
       "optional": false,
       "authored": false,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/home/u/proj",
@@ -279,7 +304,8 @@
       ],
       "optional": false,
       "authored": false,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/home/u/.local/share",
@@ -291,7 +317,8 @@
       ],
       "optional": false,
       "authored": false,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/home/u/.local/state",
@@ -303,7 +330,8 @@
       ],
       "optional": false,
       "authored": false,
-      "executable": false
+      "executable": false,
+      "yielded": false
     },
     {
       "guest": "/home/u/proj/sub",
@@ -315,7 +343,8 @@
       ],
       "optional": false,
       "authored": false,
-      "executable": false
+      "executable": false,
+      "yielded": false
     }
   ],
   "grafts": [],
@@ -348,7 +377,8 @@
     ],
     "needs_stage": false,
     "netns": "sandbox",
-    "subuid": "none"
+    "subuid": "none",
+    "procfs_closures_skipped": false
   },
   "containers": null,
   "environment": [
@@ -359,8 +389,10 @@
           "value": "/home/u",
           "verb": "(snug)",
           "from": null,
-          "note": "",
-          "unchecked": false
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
         }
       ]
     },
@@ -371,8 +403,10 @@
           "value": "u",
           "verb": "(snug)",
           "from": null,
-          "note": "",
-          "unchecked": false
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
         }
       ]
     },
@@ -383,29 +417,37 @@
           "value": "/usr/bin",
           "verb": "(snug)",
           "from": null,
-          "note": "base",
-          "unchecked": false
+          "authored_by": "base",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
         },
         {
           "value": "/bin",
           "verb": "(snug)",
           "from": null,
-          "note": "base",
-          "unchecked": false
+          "authored_by": "base",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
         },
         {
           "value": "/usr/sbin",
           "verb": "(snug)",
           "from": null,
-          "note": "base",
-          "unchecked": false
+          "authored_by": "base",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
         },
         {
           "value": "/sbin",
           "verb": "(snug)",
           "from": null,
-          "note": "base",
-          "unchecked": false
+          "authored_by": "base",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
         }
       ]
     },
@@ -416,8 +458,10 @@
           "value": "🔒 snug:\\w\\$ ",
           "verb": "(snug)",
           "from": null,
-          "note": "",
-          "unchecked": false
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
         }
       ]
     },
@@ -428,8 +472,10 @@
           "value": "/usr/bin/bash",
           "verb": "(snug)",
           "from": null,
-          "note": "",
-          "unchecked": false
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
         }
       ]
     },
@@ -440,8 +486,10 @@
           "value": "1",
           "verb": "(snug)",
           "from": null,
-          "note": "",
-          "unchecked": false
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
         }
       ]
     },
@@ -452,8 +500,10 @@
           "value": "@cwd-rw,@home,@parent-ro,@sys",
           "verb": "(snug)",
           "from": null,
-          "note": "",
-          "unchecked": false
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
         }
       ]
     },
@@ -464,8 +514,10 @@
           "value": "/home/u/proj/sub",
           "verb": "(snug)",
           "from": null,
-          "note": "",
-          "unchecked": false
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
         }
       ]
     },
@@ -476,8 +528,10 @@
           "value": "/tmp",
           "verb": "(snug)",
           "from": null,
-          "note": "",
-          "unchecked": false
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
         }
       ]
     },
@@ -488,8 +542,10 @@
           "value": "u",
           "verb": "(snug)",
           "from": null,
-          "note": "",
-          "unchecked": false
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
         }
       ]
     },
@@ -502,8 +558,10 @@
           "from": [
             "@home"
           ],
-          "note": "",
-          "unchecked": false
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
         }
       ]
     },
@@ -516,8 +574,10 @@
           "from": [
             "@home"
           ],
-          "note": "",
-          "unchecked": false
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
         }
       ]
     },
@@ -530,8 +590,10 @@
           "from": [
             "@home"
           ],
-          "note": "",
-          "unchecked": false
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
         }
       ]
     },
@@ -544,8 +606,24 @@
           "from": [
             "@home"
           ],
-          "note": "",
-          "unchecked": false
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
+        }
+      ]
+    },
+    {
+      "name": "PWD",
+      "entries": [
+        {
+          "value": "/home/u/proj/sub",
+          "verb": "(bwrap)",
+          "from": null,
+          "authored_by": "--chdir",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
         }
       ]
     }
@@ -566,6 +644,7 @@
   },
   "bwrap": {
     "argv": [
+      "bwrap",
       "--unshare-user",
       "--unshare-ipc",
       "--unshare-pid",
@@ -705,6 +784,10 @@
       "/home/u/proj/sub",
       "--",
       "/bin/sh"
-    ]
-  }
+    ],
+    "argv0_resolved": false,
+    "argv0_note": "argv[0] is the bare name \"bwrap\" and snug does not exec that name: it calls exec.LookPath(\"bwrap\") against the HOST user's own $PATH at the moment the run starts, and execs the absolute path that search returns. WHICH bwrap runs is therefore a fact about that $PATH then — a directory earlier on it than /usr/bin chooses the binary, after this artifact has said everything it has to say. Settle it by hand with: command -v bwrap",
+    "incomplete": false
+  },
+  "pasta": null
 }
