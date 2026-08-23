@@ -3,6 +3,7 @@ package dockerproxy
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,6 +32,54 @@ type fakeEngine struct {
 	// (the raw client path forwarded on the build path) went unnoticed by a
 	// suite that already asserted plenty about lastBody.
 	lastURI atomic.Value
+	// inspects counts the ownership gate's own lookups, which are deliberately
+	// NOT counted as the engine being reached — see the handler.
+	inspects atomic.Int32
+}
+
+// ownershipInspect answers the two lookups the ownership gate makes, and
+// nothing else. Every container this fake knows carries the run label
+// startProxyMode stamps ("snug.run=test"), so the gate passes and each existing
+// case keeps testing what it was written to test.
+//
+// The ids are derived, not fixed: the gate refuses an engine answer that is not
+// 64 lowercase hex (a name or a short id forwarded after a check on a name is
+// #386's TOCTOU), so a fake answering `{"Id":"deadbeef"}` would refuse every
+// gated route and the whole file would go red for the wrong reason.
+func ownershipInspect(r *http.Request) (string, bool) {
+	if r.Method != http.MethodGet {
+		return "", false
+	}
+	segs, _, _, ok := normaliseFull(r.URL.Path)
+	if !ok || len(segs) != 3 || segs[2] != "json" {
+		return "", false
+	}
+	switch segs[0] {
+	case "containers":
+		b, _ := json.Marshal(map[string]any{
+			"Id":     hex64(segs[1]),
+			"Config": map[string]any{"Labels": map[string]string{"snug.run": "test"}},
+		})
+		return string(b), true
+	case "exec":
+		b, _ := json.Marshal(map[string]any{
+			"ID":          hex64(segs[1]),
+			"ContainerID": hex64("container-of:" + segs[1]),
+		})
+		return string(b), true
+	}
+	return "", false
+}
+
+// hex64 is the fake engine's id assignment: a reference the engine already
+// spells canonically keeps its id, anything else gets a stable derived one. The
+// idempotence is load-bearing for exec — the gate re-inspects the ContainerID
+// this fake returns and refuses if the engine names it something else.
+func hex64(ref string) string {
+	if canonicalID(ref) {
+		return ref
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(ref)))
 }
 
 func startProxy(t *testing.T) (sock string, eng *fakeEngine, target string) {
@@ -65,6 +114,19 @@ func startProxyAudited(t *testing.T, mode policy.PodmanMode, audit func(string))
 		t.Fatal(err)
 	}
 	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// An ownership inspect is snug ASKING A QUESTION, not the client's
+		// request being forwarded, so it is served without touching `reached`.
+		// Every "did it reach the engine" assertion in this file therefore keeps
+		// meaning what it meant before the gate existed. The cost is stated
+		// rather than hidden: a client's OWN forwarded GET .../json is
+		// indistinguishable from the gate's here, so a test that wants to see an
+		// inspect forwarded must assert on ownedInspects/lastURI instead.
+		if body, ok := ownershipInspect(r); ok {
+			eng.inspects.Add(1)
+			w.WriteHeader(200)
+			w.Write([]byte(body))
+			return
+		}
 		eng.reached.Add(1)
 		// io.ReadAll, not a single Read: a short read would record a TRUNCATED
 		// body, and every "the escape field did not reach the engine" assertion
@@ -346,7 +408,7 @@ func TestLibpodNativeBodyIsRefusedRatherThanForwardedUnexamined(t *testing.T) {
 	// about schema confusion.
 	t.Run("control: a read-only libpod route still works", func(t *testing.T) {
 		before := eng.reached.Load()
-		segs, libpod, ok := normaliseFull("/v5.0.0/libpod/containers/json")
+		segs, _, libpod, ok := normaliseFull("/v5.0.0/libpod/containers/json")
 		if !ok || !libpod {
 			t.Fatalf("normaliseFull did not recognise the libpod prefix: %v %v %v", segs, libpod, ok)
 		}

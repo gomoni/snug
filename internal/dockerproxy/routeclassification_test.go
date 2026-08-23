@@ -227,7 +227,7 @@ func TestNoUnexaminedLibpodBodyReachesTheEngine(t *testing.T) {
 	// POSITIVE CONTROL: a GET on a refused segment is untouched. bodyBearing is
 	// about bodies, and a read-only libpod route carries none to misread.
 	t.Run("control: a read-only libpod route is not caught by the body rule", func(t *testing.T) {
-		segs, libpod, ok := normaliseFull("/v5.0.0/libpod/containers/json")
+		segs, _, libpod, ok := normaliseFull("/v5.0.0/libpod/containers/json")
 		if !ok || !libpod {
 			t.Fatalf("normaliseFull did not recognise the libpod prefix: %v %v %v", segs, libpod, ok)
 		}

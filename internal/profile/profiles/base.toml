@@ -727,6 +727,27 @@ NO_COLOR = true
 # Selecting a container engine starts a stage (a privileged-ancestor U) and
 # delegates the full subuid range even offline — a real cost that
 # `--dry-run`'s TOPOLOGY block states plainly.
+#
+# ABUSE (post-#386 fix): a hostile process inside the sandbox can still
+# ENUMERATE every container the engine's store holds — the store is keyed on the
+# target directory and PERSISTS, so `GET /containers/json?all=1` lists the names,
+# images, commands, labels and mount tables an EARLIER run of this project left
+# behind — and it can run an image an earlier run built. What it can no longer
+# do is ACT on another run's container: every request addressed to one container
+# is refused unless this run created it, and it is forwarded addressed by the
+# container's immutable 64-hex id, so a rename cannot re-point the object
+# between the check and the forward.
+#
+# The gate covered `DELETE` and nothing else for a milestone. Measured on podman
+# 5.8.4, two runs on one target: run B answered 204 to
+# `POST /containers/<A's container>/start`, then execed in as uid=0 and read a
+# secret out of run A's container. Read that as the base rate for a rule applied
+# to one of its verbs: the reasoning for gating `rm` was already the reasoning
+# for gating `start`, and nobody re-read it.
+#
+# The image cache stays SHARED across runs on purpose — it is what makes a warm
+# start warm — so an image an earlier run built is code a later run may execute.
+# CONTAINERS are run-scoped; IMAGES are the project's.
 [profile.podman-socket]
 description = "Containers via a filtering proxy over a per-sandbox podman engine, offline unless @net is also selected."
 include = ["sys", "home"]

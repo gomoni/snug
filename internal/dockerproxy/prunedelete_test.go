@@ -21,15 +21,77 @@ import (
 // to everything — which is exactly the malformed answer the fail-closed case
 // wants and exactly the wrong one for the case that must succeed.
 type recorder struct {
-	mu       atomic.Value // []string of "METHOD /path"
-	inspect  func(id string) (int, string)
-	requests atomic.Int32
+	mu   atomic.Value // []string of "METHOD /path"
+	uris atomic.Value // []string of "METHOD <request-uri>", query string included
+	// inspect answers GET /containers/{ref}/json; execInspect answers
+	// GET /exec/{ref}/json. Both are the ownership gate's lookups, and both are
+	// RECORDED — unlike fakeEngine's, this recorder shows the gate's own traffic,
+	// which is what lets a case assert the gate asked before it forwarded.
+	inspect     func(ref string) (int, string)
+	execInspect func(ref string) (int, string)
+	requests    atomic.Int32
+	// inspects counts the gate's own lookups, which requests counts too but
+	// seen()/seenURIs() deliberately do not record.
+	inspects atomic.Int32
 }
 
-func (rec *recorder) record(m, p string) {
+func (rec *recorder) record(m, p, uri string) {
 	prev, _ := rec.mu.Load().([]string)
 	rec.mu.Store(append(append([]string{}, prev...), m+" "+p))
+	prevU, _ := rec.uris.Load().([]string)
+	rec.uris.Store(append(append([]string{}, prevU...), m+" "+uri))
 	rec.requests.Add(1)
+}
+
+// ownershipLookup matches the two requests the gate makes — GET
+// /containers/{ref}/json and GET /exec/{ref}/json — and nothing else. The
+// segment BEFORE the reference is what separates them from the collection route
+// GET /containers/json, which a suffix test alone would answer with an inspect.
+func (rec *recorder) ownershipLookup(r *http.Request) (string, func(string) (int, string), bool) {
+	if r.Method != http.MethodGet || r.URL.RawQuery != "" {
+		return "", nil, false
+	}
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) < 4 || parts[len(parts)-1] != "json" {
+		return "", nil, false
+	}
+	ref := parts[len(parts)-2]
+	switch parts[len(parts)-3] {
+	case "containers":
+		if rec.inspect != nil {
+			return ref, rec.inspect, true
+		}
+	case "exec":
+		if rec.execInspect != nil {
+			return ref, rec.execInspect, true
+		}
+	}
+	return "", nil, false
+}
+
+// seenURIs is seen() with the query string kept. Canonical addressing and
+// query-string preservation are both assertions about the forwarded URI, and
+// r.URL.Path cannot carry either.
+func (rec *recorder) seenURIs() []string {
+	v, _ := rec.uris.Load().([]string)
+	return v
+}
+
+// forwardedURI returns the one request-URI the recorder saw for method. The
+// gate's own lookups are not recorded, so this is the client's request as the
+// engine received it. Fails the test if there is not exactly one.
+func (rec *recorder) forwardedURI(t *testing.T, method string) string {
+	t.Helper()
+	var hits []string
+	for _, r := range rec.seenURIs() {
+		if strings.HasPrefix(r, method+" ") {
+			hits = append(hits, strings.TrimPrefix(r, method+" "))
+		}
+	}
+	if len(hits) != 1 {
+		t.Fatalf("want exactly one forwarded %s, saw %d: %v", method, len(hits), rec.seenURIs())
+	}
+	return hits[0]
 }
 
 func (rec *recorder) seen() []string {
@@ -47,28 +109,43 @@ func (rec *recorder) sawAny(method string) bool {
 }
 
 // startRecorded is startProxyMode against a recorder rather than fakeEngine.
-func startRecorded(t *testing.T, runLabel string, inspect func(id string) (int, string)) (string, *recorder) {
+func startRecorded(t *testing.T, runLabel string, inspect func(ref string) (int, string)) (string, *recorder) {
+	t.Helper()
+	return startRecordedWith(t, runLabel, &recorder{inspect: inspect})
+}
+
+// startRecordedWith takes the recorder ready-made, so a case can supply an
+// execInspect too. Set before Serve starts: the handler goroutine reads those
+// fields, and assigning them afterwards is a data race whether or not a request
+// has been made yet.
+func startRecordedWith(t *testing.T, runLabel string, rec *recorder) (string, *recorder) {
 	t.Helper()
 	dir := t.TempDir()
 	target := filepath.Join(dir, "proj")
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	rec := &recorder{inspect: inspect}
 	up := filepath.Join(dir, "engine.sock")
 	ln, err := net.Listen("unix", up)
 	if err != nil {
 		t.Fatal(err)
 	}
 	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rec.record(r.Method, r.URL.Path)
-		if rec.inspect != nil && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/json") {
-			parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-			code, body := rec.inspect(parts[len(parts)-2])
+		// An ownership lookup is snug ASKING A QUESTION; it is counted but kept
+		// out of seen()/seenURIs(), which therefore mean "what the CLIENT's
+		// request turned into" throughout this package. Without the split, the
+		// gate's own GET .../json is indistinguishable from a forwarded inspect
+		// and every "did the operation reach the engine" assertion softens into
+		// "was the engine touched at all".
+		if ref, answer, ok := rec.ownershipLookup(r); ok {
+			rec.requests.Add(1)
+			rec.inspects.Add(1)
+			code, body := answer(ref)
 			w.WriteHeader(code)
 			_, _ = w.Write([]byte(body))
 			return
 		}
+		rec.record(r.Method, r.URL.Path, r.URL.RequestURI())
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte(`{"Id":"deadbeef"}`))
 	}))
@@ -91,10 +168,19 @@ func startRecorded(t *testing.T, runLabel string, inspect func(id string) (int, 
 	return sock, rec
 }
 
+// inspectWithLabels answers every container inspect with the same labels and a
+// CANONICAL id derived from the reference.
+//
+// Derived rather than echoed: the ownership gate refuses an engine answer that
+// is not 64 lowercase hex, because a name — or a short id, which podman 5.8.4
+// resolves (`GET /containers/08cfc5d47cf3/json` → 200) — checked here and
+// re-resolved by the engine at forward time is issue #386's TOCTOU. Echoing the
+// request string back would make every case in this file refuse for that reason
+// instead of the one it was written for.
 func inspectWithLabels(labels map[string]string) func(string) (int, string) {
-	return func(id string) (int, string) {
+	return func(ref string) (int, string) {
 		b, _ := json.Marshal(map[string]any{
-			"Id":     id,
+			"Id":     hex64(ref),
 			"Config": map[string]any{"Labels": labels},
 		})
 		return 200, string(b)
