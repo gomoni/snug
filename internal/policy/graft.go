@@ -625,14 +625,41 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 	// (issue #125's design pass §5): *the descriptor is the object the graft
 	// is built from, so nothing observed between the openat2 and the graft
 	// can redirect IT* — not "the graft cannot be redirected" in general. The
-	// remaining window is the instructions between ResolveExistingHostPath
-	// (above, in Policy.Graft) and the openat2(AT_FDCWD, g.Host,
-	// {O_PATH|O_DIRECTORY|O_CLOEXEC, RESOLVE_NO_SYMLINKS}) call that reads the
-	// SAME resolved Host a few lines later, in the SAME function, in P0 — one
-	// process, no process boundary, and *before the stage, the netns, bwrap or
-	// the payload exist*. The fd that call returns travels P0 -> P1 -> the
-	// engine child by ExtraFiles; open_tree(2) clones from the fd, never a
-	// re-walked path, so nothing after the openat2 can be raced.
+	// remaining window is between ResolveExistingHostPath (above, in
+	// Policy.Graft) and the openat2(AT_FDCWD, g.Host,
+	// {O_PATH|O_DIRECTORY|O_CLOEXEC, RESOLVE_NO_SYMLINKS}) that re-walks the
+	// same path — and THAT WINDOW IS NOT SMALL. This paragraph said "a few
+	// lines later, in the SAME function, in P0 — one process, no process
+	// boundary", and that a fd travelled "P0 -> P1 -> the engine child by
+	// ExtraFiles" so "nothing after the openat2 can be raced". Every clause of
+	// that is false as shipped, verified by grep rather than argued:
+	//
+	//   - the whole family lives in internal/stage's __inengine — openat2 at
+	//     inengine.go:246, open_tree at :251, move_mount at :313 — a DIFFERENT
+	//     PROCESS, reached after the stage, the netns and bwrap all exist;
+	//   - the resolved Host travels there as an ARGV STRING and is RE-WALKED.
+	//     This comment was the sole mention of ExtraFiles in internal/policy,
+	//     naming a transport that does not exist.
+	//
+	// The fd claim was not fantasy, it was MISPLACED, and the corrected
+	// version is the useful one: a descriptor IS held across a gap, but the gap
+	// is inside __inengine — open_tree(:251) clones from the openat2 fd, and
+	// move_mount(:313) attaches from THAT fd in a second loop. So nothing
+	// between the openat2 and the move_mount can redirect the graft. What the
+	// old text got backwards is WHICH SIDE the window is on: the walk that
+	// produces the descriptor happens in __inengine, from a string, after
+	// everything exists — so the exposure is BEFORE the openat2, not after it.
+	//
+	// So the window spans the whole stage/netns/bwrap startup, across a
+	// process boundary. WHAT CLOSES THE RACE IS THE FLAG, NOT THE WINDOW:
+	// RESOLVE_NO_SYMLINKS refuses a symlink at ANY depth, final or not, and
+	// ELOOP is fatal with no fallback to the path form (below). That is
+	// payload-independent, which is why it holds over a window this long.
+	//
+	// Read the difference before touching either site: a reader who believed
+	// the old text would judge the window a few instructions in one process
+	// and could relax RESOLVE_NO_SYMLINKS thinking the window had closed the
+	// race. It has not. The flag is doing all of the work.
 	//
 	// The residual actors, because THIS run's payload cannot be one of them,
 	// are (a) a PREVIOUS run's payload — the container store persists across
@@ -643,13 +670,17 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 	// model: it already has, without any of this, every capability U-namespace
 	// confinement does not remove.
 	//
-	// Two decisions this closing carries, made by #125's design pass and not
-	// to be re-derived differently when the openat2 call itself lands (issue
-	// #125, C2):
+	// Two decisions this closing carries, made by #125's design pass. They
+	// were written forward-looking — "not to be re-derived differently when
+	// the openat2 call itself lands" — and it HAS landed, at
+	// internal/stage/inengine.go:246. Read them as describing that site
+	// (issue #125, C2):
 	//   - ELOOP from the openat2 is FATAL, with NO fallback to the path form.
 	//     A component becoming a symlink between ResolveExistingHostPath and
-	//     the openat2 a few instructions later IS the attack this closing
-	//     exists to catch, not a host layout snug should route around —
+	//     the openat2 — a window spanning a process boundary and the whole
+	//     stage/netns/bwrap startup, NOT "a few instructions later" as this
+	//     said — IS the attack this closing exists to catch, not a host
+	//     layout snug should route around —
 	//     falling back to open_tree(2) on the path would silently reopen
 	//     exactly the F6 hole this paragraph says is closed.
 	//   - RESOLVE_NO_XDEV is deliberately NOT set. All four host grafts (the
