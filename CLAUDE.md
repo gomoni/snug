@@ -436,6 +436,24 @@ meant. It cannot prove the sandbox holds.
 - **Write the abuse sentence first.** Before implementing any grant: "a hostile
   process inside the sandbox can use this to ___". It goes in the profile TOML as
   a comment. If you cannot write it, the grant is not ready.
+- **Write the account AS the work happens, not afterwards — and when a detail
+  cannot be recovered exactly, write "not recovered" rather than reconstructing
+  it.** An account written after the fact is rebuilt from a memory of the
+  OUTCOME, so the details that get smoothed are precisely the ones the outcome
+  does not depend on — which is the set a later reader relies on, because the
+  outcome is the part they already have. A reproduction tidied into plausibility
+  lands on a ticket carrying the authority of something that was run.
+  **Correct in place and leave the wrong version visible**; a silent fix erases
+  the evidence that the shape recurs, which is worth more than any one instance.
+  This is not the copy-of-state rule: that one is about prose going stale LATER,
+  this one is about prose that is wrong WHEN WRITTEN.
+
+  The sharpest case is an **ordering claim**, because nothing in the code records
+  the order — the code records the intent. Clear one by observing the order from
+  outside the code that claims it, then ask what ENFORCES it. "Does A run before
+  B" can only confirm; "can anything make B run early, or A run late" can refute,
+  and a payload that delays a teardown past a sweep breaks the claim without
+  breaking a line of code.
 - **When you write down a limitation, ask what it GRANTS as well as what it
   costs.** A true ergonomics footnote sat in `base.toml` for a milestone —
   "containers run in the ENGINE's network namespace, not the sandbox's…
