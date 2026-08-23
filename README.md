@@ -67,7 +67,9 @@ There is no tool I was aware about, which would match all points
 
 ## Quick start
 
-Needs `bubblewrap`, and `pasta` (package `passt`) if you want networking.
+Needs `bubblewrap`, and `pasta` (package `passt`) if you want networking. The
+container profiles (`@podman-socket`, `@podman-build`) additionally need a podman
+engine and `conmon` — see [Requirements](#requirements).
 
 ```bash
 make build
@@ -617,3 +619,39 @@ MIT licensed. Linux with unprivileged user namespaces, `bubblewrap`, Go 1.26+ to
 `pasta` for networking. Works inside `distrobox` and other containers — nested
 user namespaces are fine. `snug doctor` tells you where you stand, and names the
 exact sysctl when something is missing.
+
+### Containers
+
+`@podman-socket` and `@podman-build` additionally need a podman engine and its
+**helper binaries** — `conmon`, `netavark`, `aardvark-dns`, `catatonit`,
+`rootlessport`, plus `crun`/`runc`. podman looks these up by absolute directory,
+never by walking a bundle prefix, so each one has to sit in a directory podman is
+told about.
+
+The `podman-static` bundle splits them across two directories:
+
+```
+usr/local/bin/          crun fuse-overlayfs fusermount3 pasta podman runc
+usr/local/lib/podman/   aardvark-dns catatonit conmon netavark rootlessport
+```
+
+Measured on this host: snug's generated `helper_binaries_dir` names the first
+(`/snug/engine/toolchain/usr/local/bin`) and not the second, so the five helpers
+in `usr/local/lib/podman/` are unreachable and a container run fails at whichever
+one it needs first:
+
+```
+Error: could not find a working conmon binary (configured options: [...]: invalid argument)
+Error: could not find "netavark" in one of [/snug/engine/toolchain/usr/local/bin
+       /usr/libexec/podman /usr/lib/podman /usr/bin].  To resolve this error, set
+       the helper_binaries_dir key in the `[engine]` section of containers.conf to
+       the directory containing your helper binaries.
+```
+
+Installing a distribution `conmon` (`/usr/bin/conmon`) satisfies that one lookup,
+because `/usr/bin` *is* on the list — and then `netavark` fails the same way, with
+no distribution package to fall back on. Until `helper_binaries_dir` names the
+bundle's `usr/local/lib/podman`, containers do not work from the bundle alone.
+
+`snug doctor` does not check any of these, so a host missing them looks ready and
+fails at the first container.

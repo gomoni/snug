@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/gomoni/snug/internal/policy"
@@ -214,6 +215,8 @@ func doctor(argv []string) int {
 		fmt.Printf("  ⚠️  podman CLI will not work inside a sandbox — %s\n", detail)
 		fmt.Println("     🔒 snug's engine and proxy still work; drive the API at $CONTAINER_HOST")
 	}
+
+	reportPodmanHelpers()
 
 	if legacyTIOCSTI() {
 		fmt.Println("  ⚠️  this kernel still allows the TIOCSTI ioctl")
@@ -437,4 +440,119 @@ func parseNetDev(out string) []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// ── podman's helper binaries ────────────────────────────────────────────────
+//
+// A host can have `podman`, pass every other check here, and still fail at the
+// FIRST container because one helper is missing. Measured on this host, twice in
+// a row — which is the point, because fixing the first only reveals the second:
+//
+//	Error: could not find a working conmon binary (configured options: [...]:
+//	       invalid argument)
+//	Error: could not find "netavark" in one of [/snug/engine/toolchain/usr/local/bin
+//	       /usr/libexec/podman /usr/lib/podman /usr/bin]
+//
+// podman resolves a helper by looking in ABSOLUTE DIRECTORIES. It never walks a
+// prefix, so a relocated bundle's helpers are invisible unless
+// helper_binaries_dir names the directory they are in — and `podman-static`
+// splits them across usr/local/bin (crun, runc, pasta, podman) and
+// usr/local/lib/podman (conmon, netavark, aardvark-dns, catatonit,
+// rootlessport), of which snug's generated config names only the first.
+//
+// doctor exists so a user diagnoses that before their first run rather than
+// during it, which is why this is a check and not a paragraph in the README.
+
+// podmanHelperDirs are the absolute directories podman searches. Taken from
+// libpod's own two error messages above rather than from memory, so the list a
+// user is checked against is the list podman actually used.
+func podmanHelperDirs() []string {
+	return []string{
+		"/usr/libexec/podman",
+		"/usr/local/libexec/podman",
+		"/usr/local/lib/podman",
+		"/usr/lib/podman",
+		"/usr/bin",
+		"/usr/sbin",
+		"/usr/local/bin",
+		"/usr/local/sbin",
+		"/run/current-system/sw/bin",
+	}
+}
+
+// findPodmanHelper returns the full path of the first executable named name in
+// podmanHelperDirs, or "" when no directory podman searches holds one.
+//
+// NOT exec.LookPath: that answers "is it on MY $PATH", which is a different and
+// misleading question here — a helper on the user's PATH but in none of the
+// directories above is one podman will not find, and reporting it as present is
+// exactly the false green this check exists to remove.
+func findPodmanHelper(name string) string {
+	return findPodmanHelperIn(podmanHelperDirs(), name)
+}
+
+// findPodmanHelperIn is findPodmanHelper with the directory list injected, so a
+// test can point it at a temp tree and assert BOTH arms. Without the seam the
+// only reachable assertion would be "this host happens to have conmon", which
+// passes or fails for reasons that have nothing to do with the code — the "test
+// that cannot fail" shape.
+func findPodmanHelperIn(dirs []string, name string) string {
+	for _, d := range dirs {
+		p := filepath.Join(d, name)
+		fi, err := os.Stat(p)
+		if err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
+			return p
+		}
+	}
+	return ""
+}
+
+// requiredPodmanHelpers are the helpers a container run needs unconditionally.
+//
+// rootlessport is deliberately absent, and the exclusion is MEASURED rather
+// than only reasoned. The reasoning: snug publishes no ports (the engine holds
+// no CAP_NET_ADMIN — INDEX §4.6), so a missing rootlessport changes nothing
+// this tool can do, and warning about it would be a warning nobody can act on.
+// The measurement: two independent hosts running the container tests GREEN with
+// no rootlessport anywhere in podmanHelperDirs — this one, and a second
+// development host checked for exactly this question. A required-set entry that
+// is absent on every host where the feature works is a false alarm, not a check.
+// TestRequiredPodmanHelpersExcludesRootlessport holds it out.
+//
+// crun/runc are absent too — they are an either/or, checked separately, because
+// requiring one would report a working host as broken.
+func requiredPodmanHelpers() []string {
+	return []string{"conmon", "netavark", "aardvark-dns", "catatonit"}
+}
+
+// reportPodmanHelpers prints one line per missing helper and one summary line
+// when nothing is missing. Named the way the other checks here are: the message
+// carries the package to install, because a vague answer in an odd environment
+// costs an hour.
+func reportPodmanHelpers() {
+	missing := []string{}
+	for _, h := range requiredPodmanHelpers() {
+		if findPodmanHelper(h) == "" {
+			missing = append(missing, h)
+		}
+	}
+	// One OCI runtime is enough. podman needs crun OR runc, so neither is
+	// "missing" while the other is present, and reporting both would tell a
+	// working host it is broken.
+	crun, runc := findPodmanHelper("crun"), findPodmanHelper("runc")
+	if crun == "" && runc == "" {
+		missing = append(missing, "crun or runc")
+	}
+
+	if len(missing) == 0 {
+		fmt.Println("  ✅ podman's helper binaries are all findable")
+		return
+	}
+	fmt.Printf("  ⚠️  podman helper binaries not found: %s\n", strings.Join(missing, ", "))
+	fmt.Println("     📦 zypper in conmon netavark aardvark-dns catatonit crun  |  apt install")
+	fmt.Println("        conmon netavark aardvark-dns catatonit crun  |  dnf install conmon")
+	fmt.Println("        netavark aardvark-dns catatonit crun")
+	fmt.Println("     🔒 only the container profiles need these; every other sandbox is unaffected")
+	fmt.Println("     📍 podman searches these directories and does NOT walk a bundle prefix:")
+	fmt.Printf("        %s\n", strings.Join(podmanHelperDirs(), " "))
 }
