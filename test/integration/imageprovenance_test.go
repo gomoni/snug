@@ -5,7 +5,9 @@ package integration
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,7 +63,12 @@ func engineSpecEnv(t *testing.T) []string {
 func engineSpecEnvWithSignaturePolicy(t *testing.T, hostPolicy string) ([]string, *engine.Engine) {
 	t.Helper()
 	root := bundleRoot(t)
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	data := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", data)
+	// Registered AFTER the TempDir call, so it runs BEFORE that directory's own
+	// RemoveAll (cleanups are LIFO) and leaves it nothing to trip over. See
+	// removeContainerStore for why RemoveAll alone cannot do this.
+	t.Cleanup(func() { removeContainerStore(t, data) })
 
 	e, err := engine.New(&policy.Policy{Profiles: []policy.ProfileName{"@podman-socket"}, Target: t.TempDir()})
 	if err != nil {
@@ -352,6 +359,135 @@ func plantHostSignaturePolicy(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return home
+}
+
+// removeContainerStore deletes a containers/storage store the way a store has
+// to be deleted, and reports a failure rather than swallowing one.
+//
+// ISSUE #367. `t.TempDir`'s own cleanup is `os.RemoveAll`, and that CANNOT
+// remove a store an image has been pulled into:
+//
+//	testing.go:1464: TempDir RemoveAll cleanup: unlinkat
+//	  .../storage/overlay/<layer>/diff/var: permission denied
+//
+// Every assertion in the test passed; only the cleanup failed — so the single
+// red line in an otherwise green suite said "the signature policy is not
+// enforced" when what happened was "a directory could not be removed". A wrong
+// sentence on the only integration test covering issue #307, and "that one is
+// expected" is how a real regression gets waved through.
+//
+// THE CAUSE IS THE MODE, NOT THE OWNERSHIP, and the difference decides the fix.
+// MEASURED on the leftover tree: every one of its paths is owned by uid 1000,
+// the test's own uid — this is not the root-in-a-userns ownership a rootless
+// engine's extracted layers were expected to carry. Exactly two directories
+// lack the owner write bit, `diff` and `diff/proc`, both mode 0555, and both
+// carry that mode because THE PULLED IMAGE'S OWN TAR says so. Unlinking an
+// entry needs write on the directory holding it, and `os.RemoveAll` never
+// chmods, so it stops at the first one.
+//
+// `rm -rf` is defeated identically — measured on a copy of the same tree:
+//
+//	rm: cannot remove '.../diff/var': Permission denied
+//
+// so this is not a Go-versus-coreutils detail. What removes it is restoring the
+// owner's write bit on the directories first, which is what this does.
+//
+// It is NOT an unconditional ignore, and must not become one. Issue #308
+// measured 4582 directories and 16 GB of store with no GC at all, and a
+// cleanup that swallowed errors would hide exactly that. Every failure here is
+// reported: a tree that cannot be walked, and a tree that will not remove after
+// the modes are restored, are both a t.Errorf.
+//
+// Chmod is deliberately the minimum that makes a directory removable — u+wx,
+// nothing else, and only on directories, and only on a tree that is being
+// deleted in the next statement.
+func removeContainerStore(t *testing.T, root string) {
+	t.Helper()
+	if _, err := os.Lstat(root); errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		// Chmod BEFORE the walk descends: a directory missing x cannot be
+		// entered either, and WalkDir calls this for a directory before it
+		// reads it.
+		if perm := info.Mode().Perm(); perm&0o300 != 0o300 {
+			return os.Chmod(p, perm|0o300)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Errorf("restoring write permission before removing the container store at %s: %v. "+
+			"The store is not removable and the leak is real; do not silence this (issue "+
+			"#308 measured 4582 directories and 16 GB with no GC).", root, err)
+		return
+	}
+	if err := os.RemoveAll(root); err != nil {
+		t.Errorf("removing the container store at %s after restoring write permission: %v. "+
+			"Something other than a read-only directory is holding it; find out what "+
+			"rather than ignoring it.", root, err)
+	}
+}
+
+// TestRemoveContainerStoreRemovesWhatRemoveAllCannot is removeContainerStore's
+// positive control, and it asserts the REPRODUCTION as well as the fix.
+//
+// Without the first half this would pass on a specimen that was never hostile,
+// which is the shape CLAUDE.md calls a test that cannot fail. Without the
+// second it would pass on a helper that removes nothing.
+func TestRemoveContainerStoreRemovesWhatRemoveAllCannot(t *testing.T) {
+	specimen := func() string {
+		root := filepath.Join(t.TempDir(), "storage")
+		// The exact shape the pull leaves: a layer root at 0555 with entries
+		// under it. `diff/proc` is the second one alpine ships that way.
+		diff := filepath.Join(root, "overlay", "deadbeef", "diff")
+		for _, d := range []string{"var", "proc", "usr"} {
+			if err := os.MkdirAll(filepath.Join(diff, d), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(diff, "var", "f"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(diff, "proc"), 0o555); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(diff, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+
+	// THE REPRODUCTION, and the control that the specimen really is hostile.
+	hostile := specimen()
+	if err := os.RemoveAll(hostile); err == nil {
+		t.Fatal("os.RemoveAll removed the specimen, so it does not reproduce issue #367 and " +
+			"the assertion below proves nothing. The layer root must be mode 0555 with " +
+			"entries under it")
+	}
+	// Leave nothing behind: this tree is under t.TempDir, whose own RemoveAll
+	// would fail on it for exactly the reason under test.
+	removeContainerStore(t, hostile)
+
+	// THE FIX.
+	fixed := specimen()
+	removeContainerStore(t, fixed)
+	if _, err := os.Lstat(fixed); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("removeContainerStore left %s behind (lstat: %v)", fixed, err)
+	}
+
+	// Removing a path that is already gone is not an error: the cleanup runs
+	// whether or not a pull ever happened.
+	removeContainerStore(t, filepath.Join(t.TempDir(), "never-created"))
 }
 
 // TestTheEngineEnforcesTheProjectedSignaturePolicy is the test every other

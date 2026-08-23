@@ -144,7 +144,71 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 3. Every requested mount must name a host path the SANDBOX can already
+	// 3. A restart policy that asks for something is refused; the one the CLI
+	//    always sends asks for nothing.
+	if raw, ok := hc["RestartPolicy"]; ok && !isEmptyJSON(raw) {
+		if err := checkRestartPolicy(raw); err != nil {
+			p.deny(w, "%v", err)
+			return
+		}
+	}
+
+	// 4. THE INVERSION (issue #338). Every remaining HostConfig field must be
+	//    one snug has been taught about — judged above, or allowlisted with an
+	//    abuse sentence. A field nobody has modelled fails closed.
+	//
+	//    Before this, the two loops above were a DENYLIST over a schema snug
+	//    does not model: 38 of docker's 71 HostConfig fields reached the engine
+	//    verbatim, five of them carrying a host path the engine stats. Adding
+	//    those five to refusedHostConfig would have closed the instance and left
+	//    the shape; this closes the shape, and the build query and the build
+	//    context had already been inverted the same way.
+	//
+	//    An EMPTY unmodelled field is deleted rather than refused, and that is
+	//    what makes the inversion shippable at all. MEASURED: a stock docker
+	//    29.4.0-ce sends 62 HostConfig fields on `docker run --rm alpine true`,
+	//    of which exactly six are non-empty by isEmptyJSON — AutoRemove,
+	//    ConsoleSize, LogConfig, MemorySwappiness, NetworkMode, RestartPolicy
+	//    (testdata/docker-run-create-body.json). An allowlist evaluated on raw
+	//    PRESENCE would 403 every `docker run` on 62 keys, which is the LogConfig
+	//    trap at schema scale — that one shipped a message about log drivers to
+	//    users who had asked for nothing of the sort. So isEmptyJSON is part of
+	//    the security boundary here, not a formatting helper.
+	//
+	//    Deleting an empty value inherits isDefaultLogConfig's justification
+	//    rather than being an exception to it: docker and podman decode the
+	//    create body into a struct with non-pointer fields, so for those the
+	//    engine cannot distinguish absent from zero-valued. The residual, stated
+	//    rather than hidden: for a POINTER field an explicit zero and an absent
+	//    key do differ — MemorySwappiness *int64 is the live example, which is
+	//    exactly why the CLI sends -1 rather than 0 — and the direction of the
+	//    miss is always "the engine's own default applies", a tightening, never
+	//    attacker-chosen. It reaches only fields nobody has modelled.
+	//
+	//    And it is not silent: invariant 5 forbids a silent downgrade, not a
+	//    downgrade, so every dropped name goes in the audit line below.
+	var droppedEmpty []string
+	for k, v := range hc {
+		lower := strings.ToLower(k)
+		if judgedCreateField[lower] || unexaminedCreateField[lower] {
+			continue
+		}
+		if isEmptyJSON(v) {
+			droppedEmpty = append(droppedEmpty, k)
+			delete(hc, k)
+			continue
+		}
+		p.deny(w, "HostConfig.%s is not permitted. snug allows a named set of HostConfig "+
+			"fields and refuses the rest, so a field it has not been taught about fails "+
+			"closed rather than reaching the engine unexamined. If this one is harmless it "+
+			"belongs in unexaminedCreateFields with the abuse sentence for why — and if it "+
+			"carries a host path it does not belong there at all, because snug can only "+
+			"forward a path it rewrote (see the Blkio*Device* entries)", k)
+		return
+	}
+	sort.Strings(droppedEmpty)
+
+	// 5. Every requested mount must name a host path the SANDBOX can already
 	//    see, at the access it asks for. This is the rule in the package
 	//    comment, and it is checked rather than assumed.
 	//
@@ -168,18 +232,22 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 	// HostConfig.Tmpfs is FORWARDED, and used to be deleted here — silently,
 	// two comments below the paragraph saying nothing is silently dropped.
 	//
-	// ABUSE: a hostile process inside the sandbox can use this to allocate host
-	// RAM as a container tmpfs, and to give itself an exec/suid filesystem
-	// inside its own container.
+	// The abuse sentence that used to sit here now lives in
+	// containerResourceLimit, which Tmpfs and ShmSize share. That move IS a
+	// finding of issue #338: build.go carried the argument for `shmsize`, this
+	// file carried it for Tmpfs in a comment nothing read, and ShmSize — the
+	// same noun on the same schema — carried none at all. An allowlist forces
+	// the two paths to agree, because a member without a sentence does not
+	// compile into the map.
 	//
-	// Neither reaches a host resource, which is why it is forwarded rather than
-	// refused: a tmpfs has no source, so the mount rule in the package comment
-	// has nothing to check — there is no host path to be visible or not. The RAM
-	// is the same RAM any process in the container could allocate anyway, and it
-	// is the tmpfs-sizing gap snug already has on its own mounts (TODO R8), not
-	// a new one. `docker run --tmpfs /run` is ordinary and worked nowhere.
+	// What the sentence says, unchanged: neither reaches a host resource. A
+	// tmpfs has no source, so the mount rule in the package comment has nothing
+	// to check — there is no host path to be visible or not. The RAM is the same
+	// RAM any process in the container could allocate anyway, and it is the
+	// tmpfs-sizing gap snug already has on its own mounts (TODO R8), not a new
+	// one. `docker run --tmpfs /run` is ordinary and worked nowhere.
 
-	// 4. Inject the hardening the sandbox cannot rely on the client to set.
+	// 6. Inject the hardening the sandbox cannot rely on the client to set.
 	hc["Privileged"] = json.RawMessage(`false`)
 	hc["SecurityOpt"] = json.RawMessage(`["no-new-privileges:true"]`)
 
@@ -212,7 +280,7 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 5. Re-encode from our own map. This is a second, independent drift guard:
+	// 7. Re-encode from our own map. This is a second, independent drift guard:
 	//    only what survived the checks above reaches the engine.
 	encHC, err := json.Marshal(hc)
 	if err != nil {
@@ -226,7 +294,12 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 		p.deny(w, "%v", err)
 		return
 	}
-	p.audit(fmt.Sprintf("container create: %d mount(s) allowed", len(mounts)))
+	audit := fmt.Sprintf("container create: %d mount(s) allowed", len(mounts))
+	if len(droppedEmpty) > 0 {
+		audit += fmt.Sprintf("; dropped %d empty unmodelled HostConfig field(s): %s",
+			len(droppedEmpty), strings.Join(droppedEmpty, ", "))
+	}
+	p.audit(audit)
 	p.forward(w, r, out)
 }
 
@@ -294,6 +367,12 @@ var refusedHostConfig = []string{
 	"MaskedPaths", "ReadonlyPaths", "Annotations",
 	"PortBindings", "PublishAllPorts",
 	"LogConfig", "ContainerIDFile", "StorageOpt", "CgroupParent", "Isolation",
+	"Cgroup",
+	// The five path-bearing fields of issue #338. Listed together because they
+	// share one reason and one shape, and refused rather than resolved for the
+	// reason blkioPathField states.
+	"BlkioWeightDevice", "BlkioDeviceReadBps", "BlkioDeviceWriteBps",
+	"BlkioDeviceReadIOps", "BlkioDeviceWriteIOps",
 }
 
 var refusalReason = map[string]string{
@@ -384,6 +463,195 @@ var refusalReason = map[string]string{
 	"CgroupParent": "snug authors the container's cgroup placement; a client-named parent " +
 		"is a path snug did not choose, resolved inside the engine's own cgroup namespace",
 	"Isolation": "an isolation mode is a runtime selector by another name",
+	// Issue #338. A third spelling of the grant CgroupParent and CgroupnsMode
+	// already carry, and deliberately NOT a member of namespaceModeKeys: that
+	// loop matches the "host" / "container:" / "ns:" prefixes, and CgroupSpec
+	// has only the one spelling, so a row there would read like the other six
+	// while covering less than they do.
+	//
+	// Named explicitly even though the allowlist sweep in handleCreate would
+	// refuse it unnamed, because the sweep's message tells a reader to ask for
+	// the field to be allowlisted and that is the wrong advice for this one.
+	"Cgroup": "it names another container's cgroup (container:<id>), which snug did not " +
+		"author — the same grant CgroupParent and CgroupnsMode are refused for, spelled a " +
+		"third way. Measured ignored by podman 6.0.2, so it is latent rather than open; it " +
+		"is refused so that it does not become open when podman starts honouring it",
+	"BlkioWeightDevice":    blkioPathField,
+	"BlkioDeviceReadBps":   blkioPathField,
+	"BlkioDeviceWriteBps":  blkioPathField,
+	"BlkioDeviceReadIOps":  blkioPathField,
+	"BlkioDeviceWriteIOps": blkioPathField,
+}
+
+// blkioPathField is why the five Blkio*Device* fields are refused rather than
+// checked, and it is the one refusal in this file that turns on snug being
+// unable to REWRITE rather than unable to judge.
+//
+// A bind source is resolved AND forwarded as the resolved string: checkOne
+// returns mount{Source: filepath.Clean(real)}, handleCreate deletes Binds and
+// Mounts and re-encodes only what came back, so the engine is asked for the
+// path snug approved. A blkio entry is an array of objects with a .Path inside;
+// snug would have to rewrite each element in place to make a check mean
+// anything, and a check that judges a string the engine will not be asked for
+// is judging the wrong string (the shape issue #304 cost, one schema over).
+//
+// The capability is dead inside a snug sandbox anyway, which is why refusing it
+// costs nothing: block-IO throttling needs a block device NODE, an ordinary
+// bwrap bind is nodev (only --dev-bind grants device access, and
+// internal/cli/devicebind_test.go asserts no builtin emits one), and the
+// sandbox's /dev is bwrap's synthetic character-device tree — the same
+// measurement refusalReason["Devices"] already carries. If a human's own
+// profile ever --dev-binds a block device that leg stops holding; the other
+// three still refuse, so re-derive rather than assume.
+const blkioPathField = "it names a host path the ENGINE stats, and snug neither resolves nor " +
+	"rewrites it — unlike a bind source, which checkOne resolves and forwards as the " +
+	"resolved string. Inside this sandbox the field cannot do its job at all: block-IO " +
+	"throttling needs a block device node, an ordinary bind is nodev, and the sandbox's " +
+	"/dev is bwrap's synthetic character-device tree. What is left is a stat oracle — " +
+	"measured against podman 6.0.2, `not a block device` and `no such file or directory` " +
+	"are distinguishable, one bit per request, over the engine's derived view. There is no " +
+	"narrower spelling to ask for: podman's own guard is lexical (must be under /dev/) and " +
+	"/dev/../ defeats it"
+
+// unexaminedCreateFields is every HostConfig field forwarded to the engine
+// without its value being looked at, each carrying the abuse sentence for why
+// that is safe. It is the create body's half of the shape build.go already has
+// (unexaminedBuildParams), and it exists for the same reason: a field snug does
+// not judge cannot be SILENT about it.
+//
+// Issue #338. Before this, handleCreate was the last denylist in this package —
+// enumerated danger refused, everything else forwarded verbatim, 38 of docker's
+// 71 HostConfig fields among them — while the build query and the build context
+// had both already been inverted to "unmodelled is refused".
+//
+// Keys are canonical docker spellings; every lookup folds through
+// strings.ToLower, because podman folds and snug must agree with podman about
+// which field a name is. Membership here is authored one entry at a time. It is
+// NOT derived from what the docker CLI sends: the CLI sends 62 fields on a
+// plain `docker run`, and allowlisting all 62 on the authority of a friendly
+// client is the mistake unexaminedBuildParams' own comment records for
+// `secrets` and `idmappingoptions`.
+var unexaminedCreateFields = map[string]string{
+	// ── resource limits ──────────────────────────────────────────────────
+	"ShmSize":            containerResourceLimit,
+	"Tmpfs":              containerResourceLimit,
+	"Memory":             containerResourceLimit,
+	"MemoryReservation":  containerResourceLimit,
+	"MemorySwap":         containerResourceLimit,
+	"MemorySwappiness":   containerResourceLimit,
+	"NanoCpus":           containerResourceLimit,
+	"CpuShares":          containerResourceLimit,
+	"CpuPeriod":          containerResourceLimit,
+	"CpuQuota":           containerResourceLimit,
+	"CpuRealtimePeriod":  containerResourceLimit,
+	"CpuRealtimeRuntime": containerResourceLimit,
+	"CpusetCpus":         containerResourceLimit,
+	"CpusetMems":         containerResourceLimit,
+	"CpuCount":           containerResourceLimit,
+	"CpuPercent":         containerResourceLimit,
+	"PidsLimit":          containerResourceLimit,
+	"Ulimits":            containerResourceLimit,
+	"BlkioWeight":        containerResourceLimit,
+	"IOMaximumIOps":      containerResourceLimit,
+	"IOMaximumBandwidth": containerResourceLimit,
+
+	// ── ordinary container behaviour ─────────────────────────────────────
+	"AutoRemove":  ordinaryContainerBehaviour,
+	"ConsoleSize": ordinaryContainerBehaviour,
+
+	// ── the honest class ─────────────────────────────────────────────────
+	"OomScoreAdj":    notYetAnalysed,
+	"OomKillDisable": notYetAnalysed,
+	"ReadonlyRootfs": notYetAnalysed,
+	"GroupAdd":       notYetAnalysed,
+	"CapDrop":        notYetAnalysed,
+	"Init":           notYetAnalysed,
+}
+
+// The abuse sentences for the create body, written per CLASS so the claim a
+// reader has to judge is one paragraph rather than one per field. notYetAnalysed
+// is build.go's and is shared deliberately: it is a claim about the state of the
+// review, and the review is one review.
+const (
+	// Deliberately the same claim build.go's resourceLimit makes, extended to
+	// the container fields. ShmSize and Tmpfs are the RAM half and are named
+	// together because the two paths had drifted: build.go carried the
+	// argument for `shmsize`, create.go carried it for Tmpfs in a comment, and
+	// ShmSize — the same noun on the same schema — carried nothing.
+	containerResourceLimit = "A hostile process inside the sandbox can use these to choose how " +
+		"much memory, swap, CPU, pids, block-IO weight and shared memory its own container may " +
+		"use, and — through ShmSize and Tmpfs — to allocate host RAM as a container filesystem. " +
+		"They bound the container rather than widening it: the RAM is the same RAM any process " +
+		"in the sandbox could allocate anyway, no value names a path or a device, and " +
+		"CgroupParent, the one field that would move the container into a cgroup outside this " +
+		"sandbox's own, is refused."
+
+	ordinaryContainerBehaviour = "A hostile process inside the sandbox can use these to change " +
+		"how its own container is run and reaped: whether the engine removes it when it exits, " +
+		"and what terminal size it reports. Neither names a path, selects a namespace, or " +
+		"reaches a host resource."
+)
+
+// judgedCreateField reports whether handleCreate itself decides on a HostConfig
+// key — refuses it, reads it as a namespace mode, consumes it as a mount, or
+// validates it.
+//
+// DERIVED rather than written out, so a key added to refusedHostConfig or
+// namespaceModeKeys does not also have to be remembered here. The four written
+// names are the ones no list already holds: Binds and Mounts are consumed by
+// checkedMounts, RestartPolicy is validated by checkRestartPolicy, and Privileged
+// and SecurityOpt are on refusedHostConfig already but are also INJECTED, which
+// is worth reading in one place.
+var judgedCreateField = func() map[string]bool {
+	m := map[string]bool{}
+	add := func(names ...string) {
+		for _, n := range names {
+			m[strings.ToLower(n)] = true
+		}
+	}
+	add(refusedHostConfig...)
+	add(namespaceModeKeys...)
+	add("Binds", "Mounts", "RestartPolicy")
+	return m
+}()
+
+// unexaminedCreateField is the folded index of unexaminedCreateFields, built
+// once. decodeObject canonicalises a client's spelling through canonicalKey, but
+// this is what the sweep consults, so the two agree on a name whatever case it
+// arrived in.
+var unexaminedCreateField = func() map[string]bool {
+	m := make(map[string]bool, len(unexaminedCreateFields))
+	for k := range unexaminedCreateFields {
+		m[strings.ToLower(k)] = true
+	}
+	return m
+}()
+
+// checkRestartPolicy permits only the policy that asks for nothing.
+//
+// It is isDefaultLogConfig generalised: the docker CLI sends
+// {"Name":"no","MaximumRetryCount":0} on EVERY create, which isEmptyJSON does
+// not see as empty, so an allowlist without this check would refuse every
+// `docker run` — the LogConfig trap a second time.
+//
+// A restart policy is judged rather than given an abuse sentence because the
+// sentence would be a containment claim with no test behind it: a container the
+// engine restarts outlives the request that created it, and nobody has
+// established what it outlives inside this sandbox.
+func checkRestartPolicy(raw json.RawMessage) error {
+	var rp struct {
+		Name string `json:"Name"`
+	}
+	if err := json.Unmarshal(raw, &rp); err != nil {
+		return fmt.Errorf("HostConfig.RestartPolicy is not the docker-compat shape: %v", err)
+	}
+	switch rp.Name {
+	case "", "no":
+		return nil
+	}
+	return fmt.Errorf("HostConfig.RestartPolicy = %q is not permitted; only \"no\" is. A "+
+		"container the engine restarts outlives the request that created it, and nobody has "+
+		"established what it outlives inside this sandbox", rp.Name)
 }
 
 // checkedMounts validates every mount the client asked for against what the
@@ -450,6 +718,24 @@ func (p *Proxy) checkedMounts(hc map[string]json.RawMessage) ([]mount, error) {
 	return out, nil
 }
 
+// checkOne is a REWRITER, not a validator, and that is the sentence this file
+// turns on.
+//
+// It does not answer "may the client have this path". It returns the mount snug
+// will ask the engine for — `mount{Source: filepath.Clean(real)}` — and
+// handleCreate then deletes Binds and Mounts and re-encodes only what came back.
+// So the engine is asked for THE PATH SNUG APPROVED, not the path the client
+// wrote, and the residual TOCTOU is bounded by that rewrite rather than by the
+// check.
+//
+// The consequence for anything added to this file later, which is why the
+// sentence is here and not only at its one current use (blkioPathField): a
+// create-body field that carries a path is allowlistable only if snug both
+// RESOLVES it and FORWARDS the resolved string. A field snug can judge but
+// cannot rewrite is refused, because judging a string the engine will never be
+// asked for is judging the wrong string — the shape issue #304 cost on the
+// build path, where checkBuildVolume computed a resolved path and threw it away
+// while handleBuild forwarded the client's original.
 func (p *Proxy) checkOne(source, dest string, ro bool) (mount, error) {
 	if !filepath.IsAbs(source) {
 		return mount{}, fmt.Errorf("mount source %q must be an absolute path", source)
@@ -767,12 +1053,30 @@ var canonicalKey = func() map[string]string {
 	}
 	add(refusedHostConfig...)
 	add(namespaceModeKeys...)
+	for k := range unexaminedCreateFields { // issue #338's allowlist
+		add(k)
+	}
+	add("RestartPolicy")                                        // checkRestartPolicy
 	add("HostConfig", "Volumes")                                // top-level create
 	add("Binds", "Mounts", "Tmpfs")                             // what checkedMounts consumes
 	add("Driver", "Options", "DriverOpts", "ClusterVolumeSpec") // volume create
 	return m
 }()
 
+// isEmptyJSON is PART OF THE SECURITY BOUNDARY, not a formatting helper.
+//
+// Every check in this file is evaluated on non-empty VALUES rather than on the
+// presence of a key, so what this function calls empty decides what the create
+// allowlist admits. MEASURED (issue #338): a stock docker 29.4.0-ce sends 62
+// HostConfig fields on `docker run --rm alpine true` and exactly six of them are
+// non-empty by this predicate. Widen it and a field stops being examined;
+// narrow it and the proxy 403s ordinary `docker run` — which has already
+// happened once at one-field scale, when the LogConfig denylist entry refused
+// every create there had ever been with a message about log drivers.
+//
+// So do not "simplify" it, and do not add a case without deciding what stops
+// being read. TestTheCreateAllowlistAdmitsWhatDockerActuallySends is the set
+// assertion that catches the change.
 func isEmptyJSON(raw json.RawMessage) bool {
 	s := strings.TrimSpace(string(raw))
 	switch s {
