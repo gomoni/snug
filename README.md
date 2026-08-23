@@ -653,5 +653,10 @@ because `/usr/bin` *is* on the list — and then `netavark` fails the same way, 
 no distribution package to fall back on. Until `helper_binaries_dir` names the
 bundle's `usr/local/lib/podman`, containers do not work from the bundle alone.
 
-`snug doctor` does not check any of these, so a host missing them looks ready and
-fails at the first container.
+`snug doctor` checks for them, so a host missing one says so before the first
+container rather than during it:
+
+```console
+$ ./bin/snug doctor
+  ✅ podman's helper binaries are all findable
+```
