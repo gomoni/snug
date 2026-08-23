@@ -415,7 +415,26 @@ func runInUsernsEngine(t *testing.T, subStart int, script string) {
 		t.Fatalf("signalling the userns helper to proceed: %v", err)
 	}
 	if err := <-waitDone; err != nil {
-		t.Fatalf("userns helper failed: %v; stderr: %s", err, stderr.String())
+		// SKIP, not Fatal: the chown IS the mechanism, so its failure means
+		// this host cannot supply the fixture — same class as a missing
+		// newuidmap, and it must be reported the same way. CI proved the
+		// distinction matters: four preconditions were guarded with t.Skip
+		// (the three binaries, the /etc/subuid delegation, newuidmap and
+		// newgidmap succeeding), all four passed on a GitHub runner, and the
+		// FIFTH step — the chown itself — was fatal, so the suite went red on
+		// a host that simply cannot do this. A guard list is a catalogue of
+		// known-bad conditions and the thing that fails is the one not on the
+		// list; making the OUTCOME the guard removes the list.
+		//
+		// The real stderr goes in the skip reason: "cannot chown" without the
+		// kernel's own words is the unfalsifiable skip this project treats as
+		// worse than no test.
+		//
+		// What stays FATAL is the chown claiming success and changing nothing
+		// (checked by the caller): that is a mechanism that LIED, producing a
+		// fabricated fixture, which is worse than an absent one.
+		t.Skipf("this host cannot build a real cross-uid fixture — the userns chown failed: "+
+			"%v; stderr: %s", err, stderr.String())
 	}
 }
 

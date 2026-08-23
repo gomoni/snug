@@ -357,7 +357,26 @@ func makeForeignOwnedDir(t *testing.T, dir string) (foreignUID int) {
 	}
 
 	if err := <-waitDone; err != nil {
-		t.Fatalf("userns helper failed: %v; stderr: %s", err, stderr.String())
+		// SKIP, not Fatal: the chown IS the mechanism, so its failure means
+		// this host cannot supply the fixture — same class as a missing
+		// newuidmap, and it must be reported the same way. CI proved the
+		// distinction matters: four preconditions were guarded with t.Skip
+		// (the three binaries, the /etc/subuid delegation, newuidmap and
+		// newgidmap succeeding), all four passed on a GitHub runner, and the
+		// FIFTH step — the chown itself — was fatal, so the suite went red on
+		// a host that simply cannot do this. A guard list is a catalogue of
+		// known-bad conditions and the thing that fails is the one not on the
+		// list; making the OUTCOME the guard removes the list.
+		//
+		// The real stderr goes in the skip reason: "cannot chown" without the
+		// kernel's own words is the unfalsifiable skip this project treats as
+		// worse than no test.
+		//
+		// What stays FATAL is the chown claiming success and changing nothing
+		// (checked by the caller): that is a mechanism that LIED, producing a
+		// fabricated fixture, which is worse than an absent one.
+		t.Skipf("this host cannot build a real cross-uid fixture — the userns chown failed: "+
+			"%v; stderr: %s", err, stderr.String())
 	}
 
 	fi, err := os.Lstat(dir)
@@ -416,4 +435,52 @@ func mustReadFile(t *testing.T, path string) string {
 // fixtures only, never a value an attacker controls.
 func shq(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// TestOpenForRemovalRefusesARootOwnedDirectory is the ownership branch with a
+// REAL cross-uid stat and NO privileges: /usr is owned by uid 0 on every Linux
+// host, and this process is not uid 0.
+//
+// It exists because its userns sibling below CANNOT run everywhere, and the
+// ownership branch had no unprivileged coverage at all until this test — which
+// is exactly how CI went red on a branch whose `make gate` was green locally.
+// The two tests are deliberately not one:
+//
+//   - THIS one always runs, in CI included, and proves the predicate refuses a
+//     directory this process does not own and names the owning uid.
+//   - the userns one proves the same branch fires on genuinely DELEGATED
+//     subuid-range content, the way a container image's foreign layer actually
+//     lands. That is host-specific by nature, so it may skip.
+//
+// One test that skips-or-explodes was the wrong shape. A skip must never be
+// the only coverage of a branch.
+func TestOpenForRemovalRefusesARootOwnedDirectory(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as uid 0, so /usr is not foreign to this process and the " +
+			"ownership branch cannot be reached this way")
+	}
+	root := mustRoot(t, "/")
+	defer root.Close()
+
+	child, mode, err := OpenForRemoval(root, "/", "usr")
+	if child != nil {
+		child.Close()
+	}
+	if err == nil {
+		t.Fatalf("OpenForRemoval accepted /usr, which uid %d does not own (mode %#o)",
+			os.Getuid(), mode.Perm())
+	}
+	var fo *ForeignOwnerError
+	if !errors.As(err, &fo) {
+		t.Fatalf("OpenForRemoval refused /usr for the wrong reason — want *ForeignOwnerError "+
+			"so the caller can tell EPERM territory (a foreign owner) from EACCES territory "+
+			"(a mode we own and may chmod): %v", err)
+	}
+	if fo.UID != 0 {
+		t.Errorf("ForeignOwnerError named uid %d, want 0 — /usr is root-owned", fo.UID)
+	}
+	// The refusal must be a decision, not a side effect: /usr is still there.
+	if _, serr := os.Stat("/usr"); serr != nil {
+		t.Fatalf("/usr is no longer statable after a refusal that must not have touched it: %v", serr)
+	}
 }
