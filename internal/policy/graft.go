@@ -1003,6 +1003,20 @@ func (p *Policy) HostPathVisible(host string, needWrite bool) bool {
 //     resolve produces podman's own error several layers down, about a file
 //     rather than about a boundary.
 //
+// WHAT THIS IS NOT (issue #371). This answers "where does the engine see this
+// host CONTENT", which is a WIRING question: internal/engine asks it about
+// paths SNUG owns, to write them into the engine's argv, environment and
+// generated configuration. It is not "what does the engine find at this NAME",
+// and it must never be asked about a payload-supplied string — its first arm
+// matches a GRAFT by Graft.Host and so answers "visible at /snug/engine/store"
+// for exactly the engine-owned host paths HostPathVisible refuses (the hole
+// issue #251 closed), and its graft-first tie-break returns the graft's name
+// even where the sandbox's own mount still exposes the same content at its own
+// name — a live over-refusal wherever $SNUG_PODMAN_ROOT sits inside a grant,
+// which containerpreflight.go permits ("usually" outside, not "always"). The
+// security question is Policy.CheckEngineForwardedPath. Callers: internal/engine
+// only — TestEngineGuestPathIsAskedOnlyByTheEngineWiring.
+//
 // A mount-derived answer is discarded when a graft's Guest covers it. Grafts
 // are installed ON TOP of the sandbox's view, so the mount that would have
 // answered is shadowed in the engine's namespace and its path now names the
