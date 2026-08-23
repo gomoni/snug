@@ -1,11 +1,14 @@
 CONTAINERS  a per-sandbox engine behind a filtering proxy at /snug/podman.sock
-         engine      binary resolved from PATH when the run starts — preflight
-                     P1 refuses a host-escape shim there; --dry-run does not
-                     probe PATH, so it names the source, not the binary
-                     the run also refuses it if any grant of this sandbox makes it
-                     WRITABLE — snug execs it as uid 0, pid 1 of the engine's own
-                     pid namespace (issue #405). Not checkable here: that needs
-                     the resolved binary, and this screen has only the source
+         engine      binary /home/u/proj/sub/bin/podman ($SNUG_PODMAN) — trusted outright, PATH
+                     resolution bypassed on purpose; refused if it is
+                     itself a host-escape shim (a testing seam, not a
+                     supported way to install an engine)
+                     THIS RUN WILL REFUSE: a grant of this sandbox makes that
+                     path WRITABLE, and snug execs the engine as uid 0, pid 1
+                     of its own pid namespace — so a payload-writable engine is
+                     the payload choosing what runs as root (issue #405)
+                     judged on the path AS SPELLED: a real run canonicalises it
+                     first, and --dry-run reads no filesystem
          Containers run in THIS sandbox's own network namespace: with no
          '@net', a container has no egress either; with '@net', full egress
          via the sandbox's pasta, exactly as the NETWORK block above states.

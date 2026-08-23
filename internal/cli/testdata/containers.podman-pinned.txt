@@ -3,8 +3,14 @@ CONTAINERS  a per-sandbox engine behind a filtering proxy at /snug/podman.sock
                      resolution bypassed on purpose; refused if it is
                      itself a host-escape shim (a testing seam, not a
                      supported way to install an engine)
+                     no grant of this sandbox makes that path writable, so the
+                     engine is not payload-controlled (issue #405)
+                     judged on the path AS SPELLED: a real run canonicalises it
+                     first, and --dry-run reads no filesystem
                      toolchain root /opt/snug-podman ($SNUG_PODMAN_ROOT) — named, not
                      derived from the binary path, and must contain it
+                     no grant makes the root or any part of the tree below it
+                     writable (issue #405)
          Containers run in THIS sandbox's own network namespace: with no
          '@net', a container has no egress either; with '@net', full egress
          via the sandbox's pasta, exactly as the NETWORK block above states.
