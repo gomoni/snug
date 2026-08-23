@@ -54,7 +54,8 @@
       "optional": false,
       "authored": true,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "size_bytes": 1073741824
     },
     {
       "guest": "/etc/resolv.conf",
@@ -404,6 +405,8 @@
       "/dev",
       "--proc",
       "/proc",
+      "--size",
+      "1073741824",
       "--tmpfs",
       "/tmp",
       "--ro-bind-data",

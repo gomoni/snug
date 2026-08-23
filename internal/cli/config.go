@@ -57,6 +57,43 @@ type userConfig struct {
 	// gets an error naming the file. TestNoDecodedStructFieldIsAProfileName
 	// asserts no struct in this module takes the other route.
 	Defaults *[]string `toml:"defaults"`
+
+	// TmpfsSizeMiB is the bound applied to every KindTmpfs mount snug emits
+	// (issue #281), in MiB. It is a PREFERENCE, not a grant: it makes nothing
+	// visible that was not already, and it names no path — a path-keyed size
+	// here would be a grant living in the one file that may not hold one.
+	//
+	// MiB rather than a "1GiB"-shaped string: an integer needs no unit parser,
+	// and the KEY carries the unit. A large value is the user's own
+	// declaration about their own host, and is not a relaxation of anything
+	// the payload can reach; it is capped only so the shift into bytes cannot
+	// overflow uint64.
+	//
+	// A POINTER, deliberately: an explicit `tmpfs_size_mib = 0` is a plausible
+	// thing for a human to write meaning "unlimited", and invariant 5 says a
+	// user who wrote something and got something else must be told. A plain
+	// int64 cannot tell a written 0 from an absent key — loadUserConfig
+	// refuses the written-0 case outright rather than silently reading it as
+	// "unset".
+	TmpfsSizeMiB *int64 `toml:"tmpfs_size_mib"`
+}
+
+// maxTmpfsSizeMiB bounds tmpfs_size_mib so the shift into bytes cannot
+// overflow uint64: 1 TiB in MiB. A value this large is not a relaxation of
+// anything the payload can reach — it is the user's own declaration about
+// their own host's RAM — so the cap exists purely to keep the arithmetic
+// honest.
+const maxTmpfsSizeMiB = 1 << 20
+
+// tmpfsSizeBytes converts the config's MiB preference to the bytes
+// policy.Context wants, returning 0 (meaning "unset") when the key was
+// absent. loadUserConfig has already refused every value this must not see
+// (0, negative, over maxTmpfsSizeMiB), so the conversion here cannot fail.
+func (c userConfig) tmpfsSizeBytes() uint64 {
+	if c.TmpfsSizeMiB == nil {
+		return 0
+	}
+	return uint64(*c.TmpfsSizeMiB) << 20
 }
 
 func configPath() string {
@@ -121,6 +158,27 @@ func loadUserConfig() userConfig {
 			policy.VisibleText(err.Error()))
 		os.Exit(exitPolicy)
 	}
+	if cfg.TmpfsSizeMiB != nil {
+		v := *cfg.TmpfsSizeMiB
+		switch {
+		case v == 0:
+			// The default is NAMED, not retyped: policy.DefaultTmpfsSize is
+			// the authority and this message derives from it, so changing the
+			// constant cannot leave a message quoting the old number.
+			fmt.Fprintf(os.Stderr, "snug: %s: tmpfs_size_mib = 0 would mean an unbounded tmpfs; "+
+				"omit the key for the %s default\n", policy.VisibleText(path),
+				policy.FormatBytes(policy.DefaultTmpfsSize))
+			os.Exit(exitPolicy)
+		case v < 0:
+			fmt.Fprintf(os.Stderr, "snug: %s: tmpfs_size_mib = %d is negative; it must be between "+
+				"1 and %d\n", policy.VisibleText(path), v, int64(maxTmpfsSizeMiB))
+			os.Exit(exitPolicy)
+		case v > maxTmpfsSizeMiB:
+			fmt.Fprintf(os.Stderr, "snug: %s: tmpfs_size_mib = %d is too large; it must be between "+
+				"1 and %d (1 TiB)\n", policy.VisibleText(path), v, int64(maxTmpfsSizeMiB))
+			os.Exit(exitPolicy)
+		}
+	}
 	return cfg
 }
 
@@ -145,6 +203,20 @@ func defaultProfiles() (names []policy.ProfileName, source string) {
 		os.Exit(exitPolicy)
 	}
 	return out, configPath()
+}
+
+// tmpfsSizeSetting is tmpfs_size_mib's counterpart to defaultProfiles: the
+// effective bound in bytes, plus the source it came from so `snug config` and
+// main.go's ctx construction can agree on it. loadUserConfig has already
+// exited on every value that could reach here as something other than a valid
+// preference or "unset".
+func tmpfsSizeSetting() (bytes uint64, source string) {
+	c := loadUserConfig()
+	b := c.tmpfsSizeBytes()
+	if b == 0 {
+		return 0, "built-in"
+	}
+	return b, configPath()
 }
 
 // configCmd prints the resolved configuration and where each part came from.
@@ -215,6 +287,21 @@ func configCmd(args []string) int {
 	fmt.Println()
 	fmt.Println("Nothing grants less: profiles only ever grant, and no flag reduces a resolved")
 	fmt.Println("policy. A read-only project is --no-defaults plus the profiles you do want.")
+	fmt.Println()
+
+	tmpfsBytes, tmpfsSource := tmpfsSizeSetting()
+	if tmpfsBytes == 0 {
+		tmpfsBytes = policy.DefaultTmpfsSize
+	}
+	tmpfsOrigin := "(built-in)"
+	if tmpfsSource != "built-in" {
+		tmpfsOrigin = "(" + tmpfsSource + ")"
+	}
+	fmt.Printf("tmpfs size       %-8s %s\n", policy.FormatBytes(tmpfsBytes), tmpfsOrigin)
+	fmt.Println()
+	fmt.Println("`tmpfs_size_mib` bounds every KindTmpfs mount snug emits (issue #281). It is a")
+	fmt.Println("preference, not a grant: it makes nothing visible that was not already, and")
+	fmt.Println("names no path.")
 	fmt.Println()
 
 	fmt.Println("profile search path, in order (later layers may add names, never redefine one):")

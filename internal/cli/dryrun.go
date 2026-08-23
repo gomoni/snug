@@ -134,6 +134,12 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 			detail = fmt.Sprintf("%s -> %s", visibleValue(m.Guest), visibleValue(m.Host))
 		} else if m.Kind == policy.KindBind && m.Host != m.Guest {
 			detail = fmt.Sprintf("%s (from %s)", visibleValue(m.Guest), visibleValue(m.Host))
+		} else if m.Kind == policy.KindTmpfs {
+			// The bound goes on the FILESYSTEM picture, not just in accessWord's
+			// "ephemeral" note, because --dry-run is the mechanism by which a
+			// human can trust snug and a size a payload could fill the host's
+			// RAM with is exactly what this screen exists to disclose (#281).
+			detail = fmt.Sprintf("%s (max %s)", visibleValue(m.Guest), policy.FormatBytes(p.TmpfsSizeBytes))
 		}
 		fmt.Fprintf(out, "  %-6s %-46s %s%s\n", kind, detail, visibleValue(strings.Join(m.From, "+")), opt)
 		for _, frag := range wrapMark(yieldedMark(p, m)) {

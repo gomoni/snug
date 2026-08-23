@@ -23,6 +23,7 @@
 --symlink usr/lib64 /lib64
 --proc /proc
 --symlink usr/sbin /sbin
+--size 1073741824
 --tmpfs /tmp
 --ro-bind /usr /usr
 --ro-bind /etc/group /etc/group
@@ -31,21 +32,26 @@
 --ro-bind /etc/nsswitch.conf /etc/nsswitch.conf
 --ro-bind /etc/passwd /etc/passwd
 --ro-bind-data 10 /etc/resolv.conf
+--size 1073741824
 --tmpfs /home/u
 --ro-bind-data 11 /proc/config.gz
 --ro-bind-data 12 /proc/key-users
 --ro-bind-data 13 /proc/keys
 --ro-bind /proc/sys /proc/sys
+--size 1073741824
 --tmpfs /home/u/.cache
 --perms 0600
 --file 14 /home/u/.claude.json
+--size 1073741824
 --tmpfs /home/u/.config
 --ro-bind /home/u/proj /home/u/proj
 --ro-bind-try /home/u/.local/bin/claude /snug/bin/claude
 --ro-bind-data 15 /home/u/.claude/CLAUDE.md
 --perms 0600
 --file 16 /home/u/.claude/settings.json
+--size 1073741824
 --tmpfs /home/u/.local/share
+--size 1073741824
 --tmpfs /home/u/.local/state
 --bind /home/u/proj/sub /home/u/proj/sub
 --perms 0600

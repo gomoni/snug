@@ -307,6 +307,35 @@ type Policy struct {
 
 	Mounts map[string]Mount
 
+	// TmpfsSizeBytes bounds EVERY KindTmpfs mount snug emits, each independently
+	// (measured: two `--size 1048576 --tmpfs` mounts each filled to 1 MiB, not
+	// 1 MiB between them). Without it bwrap defaults each tmpfs to half of host
+	// RAM — 27.3 GiB on the machine this was measured on — so a payload could
+	// `dd` into /tmp or the {home} tree and take the HOST down: a denial of
+	// service against the human running snug, not against the sandbox (#281).
+	//
+	// It is a POLICY-LEVEL scalar and not a Mount field, deliberately, and the
+	// reason is structural rather than stylistic. BwrapFlags's KindTmpfs arm
+	// reads this field, so a FUTURE writer of a KindTmpfs mount — there are two
+	// today, a profile's `tmpfs` key and yieldTo's /tmp — cannot ship an
+	// unbounded tmpfs by forgetting to set a per-mount size. A per-Mount field
+	// would also be a place for a TOML key to attach to later, and a size in a
+	// profile would be the first number in the grant language that is not a
+	// grant: `snug config` holds preferences, profiles hold grants, and this is
+	// a preference (CLAUDE.md, "Decisions made").
+	//
+	// Consequently there is NO join rule to get wrong. Had this been per-Mount
+	// the join would have had to be MAX, matching Access.Join: max is the only
+	// monotone choice, and min is the restriction operation invariant 1 forbids
+	// — a second profile granting the same guest tmpfs would have SHRUNK a
+	// bound the first one set.
+	//
+	// Zero is not a value: Resolve always sets it, Validate refuses a policy
+	// carrying a KindTmpfs without it, and bwrap itself refuses `--size 0`
+	// ("bwrap: --size takes a non-zero number of bytes", measured, exit 1).
+	// Three layers, none of them a duplicated default.
+	TmpfsSizeBytes uint64
+
 	// Grafts is the ENGINE's derived-view mounts, keyed by Guest. Empty on every
 	// topology that ships today: Tier B's engine gets a private COPY of the host
 	// tree and makes no graft (internal/stage/inengine.go's own doc comment).

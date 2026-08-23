@@ -106,7 +106,8 @@
       "optional": false,
       "authored": true,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "size_bytes": 1073741824
     },
     {
       "guest": "/usr",
@@ -210,7 +211,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "size_bytes": 1073741824
     },
     {
       "guest": "/proc/config.gz",
@@ -279,7 +281,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "size_bytes": 1073741824
     },
     {
       "guest": "/home/u/.config",
@@ -292,7 +295,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "size_bytes": 1073741824
     },
     {
       "guest": "/home/u/proj",
@@ -318,7 +322,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "size_bytes": 1073741824
     },
     {
       "guest": "/home/u/.local/state",
@@ -331,7 +336,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "size_bytes": 1073741824
     },
     {
       "guest": "/home/u/proj/sub",
@@ -684,6 +690,8 @@
       "--symlink",
       "usr/sbin",
       "/sbin",
+      "--size",
+      "1073741824",
       "--tmpfs",
       "/tmp",
       "--ro-bind",
@@ -707,6 +715,8 @@
       "--ro-bind-data",
       "10",
       "/etc/resolv.conf",
+      "--size",
+      "1073741824",
       "--tmpfs",
       "/home/u",
       "--ro-bind-data",
@@ -721,15 +731,23 @@
       "--ro-bind",
       "/proc/sys",
       "/proc/sys",
+      "--size",
+      "1073741824",
       "--tmpfs",
       "/home/u/.cache",
+      "--size",
+      "1073741824",
       "--tmpfs",
       "/home/u/.config",
       "--ro-bind",
       "/home/u/proj",
       "/home/u/proj",
+      "--size",
+      "1073741824",
       "--tmpfs",
       "/home/u/.local/share",
+      "--size",
+      "1073741824",
       "--tmpfs",
       "/home/u/.local/state",
       "--bind",

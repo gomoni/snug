@@ -2535,13 +2535,21 @@ What to check:
 
 ```console
 $ ./bin/snug --dry-run ~/src/anything | grep -A1 'tmpfs  /tmp'
-  tmpfs  /tmp                                           (snug)
+  tmpfs  /tmp (max 1 GiB)                               (snug)
   ro     /usr                                           @sys
 ```
 
    A warning on every run is a warning nobody reads.
 4. `@tmp-shared`'s writable takeover keeps the "this is the host's" note and
    loses the READ-ONLY clause, because that clause would be false.
+5. Every tmpfs snug emits is bounded, not just `/tmp` (issue #281): the default
+   selection resolves to `@sys @home @cwd-rw @parent-ro`, and `[profile.home]`
+   grants five more tmpfs mounts on top of `/tmp` itself.
+
+```console
+$ ./bin/snug --dry-run ~/src/anything | grep -c 'tmpfs .*max '
+6
+```
 
 **Said rather than refused, deliberately.** `snug /tmp/x` is ordinary, so a
 refusal would break snug's own test workflow unless it could distinguish "the

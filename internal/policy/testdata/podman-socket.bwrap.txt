@@ -43,15 +43,21 @@
 --ro-bind /etc /etc
 --ro-bind-try /opt /opt
 --proc /proc
+--size 1073741824
 --tmpfs /tmp
 --ro-bind /usr /usr
 --ro-bind-data 10 /etc/resolv.conf
+--size 1073741824
 --tmpfs /home/u
+--size 1073741824
 --tmpfs /home/u/.cache
+--size 1073741824
 --tmpfs /home/u/.config
 --perms 0755
 --ro-bind-data 11 /snug/bin/podman
+--size 1073741824
 --tmpfs /home/u/.local/share
+--size 1073741824
 --tmpfs /home/u/.local/state
 --bind /home/u/proj/sub /home/u/proj/sub
 --remount-ro /

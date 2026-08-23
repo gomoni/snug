@@ -79,15 +79,16 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	}
 
 	p := &Policy{
-		Target:     target,
-		Home:       home,
-		Hostname:   "snug",
-		Chdir:      target,
-		Command:    ctx.Command,
-		Mounts:     map[string]Mount{},
-		Env:        map[string]EnvVar{},
-		Selected:   append([]ProfileName(nil), selected...),
-		NewSession: ctx.LegacyTIOCSTI,
+		Target:         target,
+		Home:           home,
+		Hostname:       "snug",
+		Chdir:          target,
+		Command:        ctx.Command,
+		Mounts:         map[string]Mount{},
+		TmpfsSizeBytes: tmpfsSize(ctx.TmpfsSizeBytes),
+		Env:            map[string]EnvVar{},
+		Selected:       append([]ProfileName(nil), selected...),
+		NewSession:     ctx.LegacyTIOCSTI,
 	}
 
 	// 3. Fold every profile's grants into map[Guest]Mount, in sorted name order.

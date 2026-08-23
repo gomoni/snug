@@ -344,6 +344,10 @@ func (p *Policy) Validate(env Environ) error {
 		return err
 	}
 
+	if err := p.rejectUnboundedTmpfs(); err != nil {
+		return err
+	}
+
 	return p.rejectMasking(env)
 }
 
@@ -1298,4 +1302,28 @@ func ephemeralTargetError(target, parent, ephemeral, home, from string) error {
 		"       sandbox, and one answer beats a fork somebody guesses at.",
 		VisibleText(target), VisibleText(ephemeral), from,
 		VisibleText(target), VisibleText(home), VisibleText(home), filepath.Base(target))
+}
+
+// rejectUnboundedTmpfs refuses a policy that would emit a tmpfs with no
+// bound. It is an internal-consistency check, not a judgement on a profile:
+// Resolve always sets the field, so reaching this means a Policy was built
+// by hand and would hand the payload a mount defaulting to half of host RAM
+// (issue #281). Named rather than defaulted, because a default here would be
+// a second copy of DefaultTmpfsSize living where nobody looks for it.
+func (p *Policy) rejectUnboundedTmpfs() error {
+	if p.TmpfsSizeBytes != 0 {
+		return nil
+	}
+	for _, g := range sortedGuests(p.Mounts) {
+		m := p.Mounts[g]
+		if m.Kind != KindTmpfs {
+			continue
+		}
+		return fmt.Errorf("tmpfs at %s has no size bound, so bwrap would default it to half of host RAM.\n"+
+			"       Every KindTmpfs mount is bounded by Policy.TmpfsSizeBytes, which Resolve always\n"+
+			"       sets. A policy that reaches here was not built by Resolve: set the field, or set\n"+
+			"       tmpfs_size_mib in ~/.config/snug/config.toml and resolve again.",
+			VisibleText(m.Guest))
+	}
+	return nil
 }
