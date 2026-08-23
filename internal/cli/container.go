@@ -229,6 +229,15 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 	if err != nil {
 		return containerRun{}, err
 	}
+	// Not fatal — see Engine.BreadcrumbWarning's own doc comment. Behind
+	// --verbose, like every other "routine work did not go perfectly but the
+	// run continues" notice this package prints (verboseHousekeeping's own
+	// examples): the store still works, it will just be reported
+	// unattributed by `snug engine gc` (issue #308) until a later run's
+	// write succeeds.
+	if eng.BreadcrumbWarning != nil && verbose {
+		fmt.Fprintf(os.Stderr, "snug: %v\n", eng.BreadcrumbWarning)
+	}
 
 	// EVERY error path from here to the successful return removes this run's
 	// directory, and the reason changed with issue #307. Before it, an early

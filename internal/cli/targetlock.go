@@ -27,8 +27,6 @@ package cli
 // keeps the env-derived base; the target lock cannot.
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -36,6 +34,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gomoni/snug/internal/targetkey"
 	"github.com/gomoni/snug/internal/vdir"
 	"golang.org/x/sys/unix"
 )
@@ -146,9 +145,13 @@ func targetLockName(realpath string) string {
 // never drift onto different hashes of the same path — a drift that would not
 // fail loudly, it would simply mean `snug attach` looked up a state file no
 // run had written.
+//
+// The hash itself is internal/targetkey's Hash — see that package's doc
+// comment for why every target-derived name on disk, including the engine
+// store's own key (internal/engine's KeyForTarget), now goes through the one
+// function and uses the full, untruncated digest.
 func targetKeyPrefix(realpath string) string {
-	sum := sha256.Sum256([]byte(realpath))
-	return "target-" + hex.EncodeToString(sum[:])
+	return "target-" + targetkey.Hash(realpath)
 }
 
 // lockTarget takes the per-target advisory lock for abs, an already-absolute
