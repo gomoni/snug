@@ -1013,7 +1013,7 @@ func (e *Engine) writeContainersConf(pol *policy.Policy, podman string, cgroupsD
 		"# Belt and braces on top of Spec's pinned PATH (issue #125): PATH is not\n" +
 		"# podman's only lookup for conmon/crun/newuidmap and friends, so name the\n" +
 		"# search list explicitly rather than let it fall back to inheritance.\n" +
-		"helper_binaries_dir = [" + helperBinariesDirs(pol, podman) + "]\n")
+		"helper_binaries_dir = [" + helperBinariesDirs() + "]\n")
 
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		return "", fmt.Errorf("writing %s: %w", path, err)
@@ -1668,7 +1668,7 @@ func joinPIDs(pids []int) string {
 // the only one". A binary the mapping cannot place is simply not named here —
 // Spec has already refused the run by then, so this arm cannot silently drop
 // a helper directory a working run needed.
-func helperBinariesDirs(pol *policy.Policy, podman string) string {
+func helperBinariesDirs() string {
 	// ISSUE #390. This used to prepend EngineGuestPath(filepath.Dir(podman)) —
 	// the engine binary's own directory, mapped into the engine's view. That is
 	// a HOST string snug transformed, and EngineGuestPath's bind arm resolves
@@ -1700,14 +1700,24 @@ func helperBinariesDirs(pol *policy.Policy, podman string) string {
 	// EngineGuestPath, and G4b has already refused a toolchain root the payload
 	// can write.
 	dirs := []string{"/usr/libexec/podman", "/usr/lib/podman", "/usr/bin"}
-	_ = podman
 	quoted := make([]string, 0, len(dirs))
 	for _, d := range dirs {
 		v, err := tomlString(d)
 		if err != nil {
-			// Unreachable for the three literals; for a mapped bundle path it
-			// would mean a control character in a host path, which
-			// checkPathHygiene refused long before this.
+			// UNREACHABLE, and now provably so: the three values above are
+			// literals in this file, and tomlString only refuses a quote, a
+			// backslash or a control character. It used to be reachable — the
+			// list carried a path mapped from filepath.Dir(podman), where a
+			// control character in a host path was the hazard — and #390
+			// removed that entry, so nothing here comes from outside this
+			// function any longer.
+			//
+			// Kept rather than deleted, and the `continue` is the part to look
+			// at twice if that ever changes: silently dropping a helper
+			// directory is invariant 5's silent downgrade, and the symptom
+			// would be an engine that cannot find netavark rather than an
+			// error naming the path. A future entry from outside wants an
+			// error return here, not this branch.
 			continue
 		}
 		quoted = append(quoted, v)
