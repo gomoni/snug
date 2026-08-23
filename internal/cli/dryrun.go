@@ -186,14 +186,16 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 		// under NetnsStage no single pid can produce both (policy.PastaTarget's
 		// doc comment), so pasta is aimed at a DESCRIPTOR the stage pinned,
 		// named from outside as /proc/<stage>/fd/<n>.
+		pastaExec := execResolution("pasta")
 		if p.Topology.Netns == policy.NetnsStage {
-			fmt.Fprintln(out, "pasta "+visibleArgs(p.PastaArgs(policy.PastaTargetStage(0, 63))))
+			fmt.Fprintln(out, pastaExec.Argv0+" "+visibleArgs(p.PastaArgs(policy.PastaTargetStage(0, 63))))
 			fmt.Fprintln(out, "  (/proc/0/fd/63 is a placeholder; the real pid is the stage's, "+
 				"and 63 is fdNetnsN)")
 		} else {
-			fmt.Fprintln(out, "pasta "+visibleArgs(p.PastaArgs(policy.PastaTargetChild(0))))
+			fmt.Fprintln(out, pastaExec.Argv0+" "+visibleArgs(p.PastaArgs(policy.PastaTargetChild(0))))
 			fmt.Fprintln(out, "  (/proc/0/... is a placeholder; the real pid is bwrap's child)")
 		}
+		describeArgv0(out, pastaExec)
 	}
 
 	fmt.Fprintln(out)
@@ -888,14 +890,48 @@ func isForgingRune(r rune) bool {
 // For every case reachable before the symlink work the two orderings agree, so
 // this is a reorder rather than a behaviour change wherever it can be compared.
 func grantMark(p *policy.Policy, name, value string) string {
+	grant, inside := envGrantVerdict(p, name, value)
+	switch grant {
+	case grantShadowSlot:
+		return "  ← writable from inside"
+	case grantNotGranted:
+		switch inside {
+		case 0:
+			return "  ← not granted"
+		case 1:
+			return "  ← not granted (1 grant inside)"
+		}
+		return fmt.Sprintf("  ← not granted (%d grants inside)", inside)
+	}
+	return ""
+}
+
+// The three CODES envGrantVerdict returns. jsonEnvEntry.Grant carries these
+// spellings verbatim (dryrunjson.go), so a consumer can assert `grant !=
+// "shadow_slot"` without reimplementing IsShadowSlot over mounts[] — the thing
+// grantMark's own history above warns against.
+const (
+	grantOK         = ""
+	grantShadowSlot = "shadow_slot"
+	grantNotGranted = "not_granted"
+)
+
+// envGrantVerdict is grantMark's FACT, split from its SENTENCE, so both
+// renderers derive one answer rather than the human screen owning the only
+// copy. insideCount is meaningful only when grant is grantNotGranted; it is
+// the same count grantMark's parenthetical reports.
+//
+// See grantMark's own comment for why the shadow-slot check runs before
+// GrantsGuestPath and why it is scoped to PATH alone.
+func envGrantVerdict(p *policy.Policy, name, value string) (grant string, insideCount int) {
 	if !strings.HasPrefix(value, "/") {
-		return ""
+		return grantOK, 0
 	}
 	if name == "PATH" && p.IsShadowSlot(value) {
-		return "  ← writable from inside"
+		return grantShadowSlot, 0
 	}
 	if p.GrantsGuestPath(value) {
-		return ""
+		return grantOK, 0
 	}
 	inside := 0
 	for _, m := range p.Mounts {
@@ -903,13 +939,7 @@ func grantMark(p *policy.Policy, name, value string) string {
 			inside++
 		}
 	}
-	switch inside {
-	case 0:
-		return "  ← not granted"
-	case 1:
-		return "  ← not granted (1 grant inside)"
-	}
-	return fmt.Sprintf("  ← not granted (%d grants inside)", inside)
+	return grantNotGranted, inside
 }
 
 // mountedAt finds the mount that determines what is visible at path — the
@@ -2464,7 +2494,9 @@ func describeBwrap(out io.Writer, p *policy.Policy, args []string, refusedBy err
 		fmt.Fprintln(out, " the sandbox's own empty network namespace, so running it by hand reproduces")
 		fmt.Fprintln(out, " it.)")
 	}
-	fmt.Fprintln(out, formatArgs(args))
+	bwrapExec := execResolution("bwrap")
+	fmt.Fprintln(out, formatArgs(bwrapExec.Argv0, args))
+	describeArgv0(out, bwrapExec)
 	if p.Topology.Netns == policy.NetnsStage {
 		fmt.Fprintln(out, "(the argv ends here and the network namespace was never in it — see the note")
 		fmt.Fprintln(out, " above it. To check the netns by hand, compare inside against outside:")
@@ -2713,9 +2745,12 @@ func covered(p *policy.Policy, host string) bool {
 	return c == coverageFull
 }
 
-func formatArgs(args []string) string {
+// formatArgs renders the argv block. argv0 is the producer's word (see
+// reportExec) rather than a literal here, so this screen and the JSON document
+// cannot name the binary differently.
+func formatArgs(argv0 string, args []string) string {
 	var b strings.Builder
-	b.WriteString("bwrap")
+	b.WriteString(argv0)
 	for _, a := range args {
 		if strings.HasPrefix(a, "--") || a == "--" {
 			b.WriteString("\n  ")
@@ -2739,6 +2774,33 @@ func formatArgs(args []string) string {
 	}
 	return b.String()
 }
+
+// describeArgv0 prints the one fact the argv block above it cannot carry: the
+// word at index 0 is not the binary. The sentence is reportExec's, wrapped
+// here and emitted verbatim in the JSON document, so the two renderers state
+// one answer — the arrangement grantMark/envGrantVerdict already uses.
+//
+// argv0NoteWidth is 78 minus this block's two-space indent, the width the rest
+// of the screen's wrapped prose uses.
+func describeArgv0(out io.Writer, ex reportExec) {
+	lines := wrapWords(ex.Note, argv0NoteWidth)
+	for i, line := range lines {
+		open, close := " ", ""
+		if i == 0 {
+			open = "("
+		}
+		if i == len(lines)-1 {
+			close = ")"
+		}
+		fmt.Fprintf(out, "%s%s%s\n", open, line, close)
+	}
+}
+
+// argv0NoteWidth is 78 minus the one column the "(" / " " prefix takes. The
+// parenthesised shape is describeBwrap's own, and it is NOT the two-space
+// indent this note first shipped with: the argv block indents every flag by
+// two, so a two-space note directly beneath it reads as more argv.
+const argv0NoteWidth = 78 - 1
 
 // claudeCredentialsMount finds the staged ~/.claude/.credentials.json, which
 // stageClaudeCredentials writes only when the host's file both exists and

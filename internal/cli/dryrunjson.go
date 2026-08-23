@@ -272,6 +272,9 @@ type jsonDoc struct {
 	Seccomp     jsonSeccomp     `json:"seccomp"`
 	TTY         jsonTTY         `json:"tty"`
 	Bwrap       jsonBwrap       `json:"bwrap"`
+	// Pasta is nil when this policy starts no pasta process
+	// (network.mode != "egress"). Refs #332 F1e.
+	Pasta *jsonPasta `json:"pasta"`
 }
 
 type jsonMeta struct {
@@ -327,6 +330,14 @@ type jsonMount struct {
 	// only the Go spelling moves.
 	SnugAuthored bool `json:"authored"`
 	Executable   bool `json:"executable"`
+	// Yielded is Report.MountNotes[guest].Yielded: a profile took over one of
+	// /tmp, /proc or /dev instead of snug's own mount landing there
+	// (yieldedMark, issue #223) — false for every mount that is not one of
+	// those three guests, and false for snug's own mount AT one of them.
+	Yielded bool `json:"yielded"`
+	// ProcfsReplacement is Report.MountNotes[guest].ProcfsReplacement:
+	// policy.ProcfsNote's text for a snug-authored mount, "" everywhere else.
+	ProcfsReplacement string `json:"procfs_replacement,omitempty"`
 }
 
 // jsonGraft is a mount in the ENGINE's derived namespace, never the payload's.
@@ -376,6 +387,13 @@ type jsonTopology struct {
 	Netns             string   `json:"netns"`
 	Subuid            string   `json:"subuid"`
 	EngineCapBounding []string `json:"engine_cap_bounding,omitempty"`
+	// ProcfsClosuresSkipped is Report.Topology.ProcfsClosuresSkipped —
+	// CLAUDE.md invariant 1's third named exception, stated rather than left
+	// derivable from Containers != nil. Refs #332 F1c.
+	ProcfsClosuresSkipped bool `json:"procfs_closures_skipped"`
+	// ProcfsClosureNote is policy.ProcfsClosureExemptionNote, omitted when
+	// ProcfsClosuresSkipped is false.
+	ProcfsClosureNote string `json:"procfs_closure_note,omitempty"`
 }
 
 type jsonContainers struct {
@@ -406,13 +424,37 @@ type jsonEnvVar struct {
 	Dropped []jsonEnvDrop `json:"dropped,omitempty"`
 }
 
+// jsonEnvEntry's field set was renamed one day after this format shipped
+// (refs #332 F1a): the JSON key `note` used to carry policy.EnvEntry.Note
+// (snug's own AUTHORSHIP reason, "base", "podman stub"), not
+// policy.EnvNote's text (what the tool DOES with the value) — so a consumer
+// reading `note` got "" for the one entry that had an annotation, with
+// `unchecked:false` beside it reading as approval. `note` is retired rather
+// than reused for the other meaning: a consumer pinned to the old format
+// would silently misread the same key under a new meaning, which is worse
+// than a rename it fails on.
 type jsonEnvEntry struct {
 	Value      string   `json:"value"`
 	ValueBytes byteList `json:"value_bytes,omitempty"`
 	Verb       string   `json:"verb"`
 	From       []string `json:"from"`
-	Note       string   `json:"note"`
-	Unchecked  bool     `json:"unchecked"`
+	// AuthoredBy is policy.EnvEntry.Note — see reportEnvEntry.AuthoredBy.
+	AuthoredBy string `json:"authored_by"`
+	// TypeUnknown is policy.IsUncheckedEnv — see reportEnvEntry.TypeUnknown
+	// and policy.UncheckedEnvNote's doc comment for why this key and the
+	// screen's `← unchecked` mark are worded differently on purpose.
+	TypeUnknown bool `json:"type_unknown"`
+	// ValueNote is policy.EnvNote's text — see reportEnvEntry.ValueNote and
+	// policy.EnvNote's doc comment.
+	ValueNote string `json:"value_note,omitempty"`
+	// Grant is envGrantVerdict's code ("", "shadow_slot", "not_granted") —
+	// see reportEnvEntry.Grant. Always present, like Verb and From: "" is
+	// itself the fact "nothing to say", not an absent key a consumer has to
+	// branch on.
+	Grant string `json:"grant"`
+	// GrantsInside is meaningful only when Grant is "not_granted"; 0 (and
+	// present) otherwise.
+	GrantsInside int `json:"grants_inside"`
 }
 
 type jsonEnvDrop struct {
@@ -435,9 +477,57 @@ type jsonTTY struct {
 	NewSession bool `json:"new_session"`
 }
 
+// jsonBwrap.Argv[0] is the bare name "bwrap", PREPENDED to Report.BwrapArgv
+// (refs #332, the mechanical half). Before this the key named `argv` held only
+// the ARGUMENTS — index 0 was "--unshare-user" — so
+// `subprocess.run(doc.bwrap.argv)` executed a flag.
+//
+// It is the bare word and NOT exec.LookPath's resolved path, for the reasons
+// reportExec's doc comment measures: snug resolves the name itself, from the
+// host user's own $PATH, at the moment the run starts, so no value written
+// here can be the binary that runs. `argv0_resolved` and `argv0_note` say that
+// rather than leaving a consumer to read the bare word as an answer — a
+// resolved path here would also make every golden host-dependent, the trap
+// issues #301 and #320 both refused.
 type jsonBwrap struct {
 	Argv      []string   `json:"argv"`
 	ArgvBytes []byteList `json:"argv_bytes,omitempty"`
+	// Argv0Resolved is false: Argv[0] names a binary chosen at run time. A
+	// field rather than an implied constant, so a consumer branches on the
+	// fact and so the day it changes the document says it changed.
+	Argv0Resolved bool `json:"argv0_resolved"`
+	// Argv0Note is reportExec.Note, the same string the human screen wraps.
+	Argv0Note string `json:"argv0_note"`
+	// Incomplete is Report.BwrapIncomplete: true when running Argv standalone
+	// will NOT reproduce this policy's actual network posture. See Reason,
+	// and Report.BwrapIncompleteReason's doc comment for why this must not
+	// ship unpaired with the caveat — making the argv look more directly
+	// runnable without it is worse than the plain omission it replaces.
+	Incomplete bool `json:"incomplete"`
+	// Reason is "" when Incomplete is false, and otherwise the same fact
+	// describeBwrap prints in capitals on the human screen.
+	Reason string `json:"reason,omitempty"`
+}
+
+// jsonPasta is the pasta invocation this run's egress actually uses. See
+// Report.Pasta's doc comment for the placeholder pid this carries instead of
+// a real one, and CLAUDE.md's "never trust a helper's default" for why this
+// exists at all: the rest of the document carries snug's CLAIM about the
+// network (jsonNetwork.HostLoopback, .AbstractSockets) and this is the
+// closing flag set that is supposed to implement it.
+//
+// Argv[0] is the bare name "pasta", prepended the same way and for the same
+// reason as jsonBwrap.Argv[0]: Report.Pasta.Argv holds only the arguments
+// (index 0 is "--config-net"), and a key named `argv` should not hold a value
+// whose first element is a flag. It carries the same argv0_resolved /
+// argv0_note pair, from the same producer, because snug starts pasta the same
+// way it starts bwrap — exec.LookPath at run time (internal/sandbox/netns.go:93).
+type jsonPasta struct {
+	Argv          []string   `json:"argv"`
+	ArgvBytes     []byteList `json:"argv_bytes,omitempty"`
+	Argv0Resolved bool       `json:"argv0_resolved"`
+	Argv0Note     string     `json:"argv0_note"`
+	Placeholder   string     `json:"placeholder"`
 }
 
 func (e *lossyEncoder) document(rep Report) jsonDoc {
@@ -461,11 +551,13 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			Address6:        rep.Network.Address6,
 		},
 		Topology: jsonTopology{
-			Processes:         rep.Topology.Processes,
-			NeedsStage:        rep.Topology.NeedsStage,
-			Netns:             rep.Topology.Netns,
-			Subuid:            rep.Topology.Subuid,
-			EngineCapBounding: rep.Topology.EngineCapBounding,
+			Processes:             rep.Topology.Processes,
+			NeedsStage:            rep.Topology.NeedsStage,
+			Netns:                 rep.Topology.Netns,
+			Subuid:                rep.Topology.Subuid,
+			EngineCapBounding:     rep.Topology.EngineCapBounding,
+			ProcfsClosuresSkipped: rep.Topology.ProcfsClosuresSkipped,
+			ProcfsClosureNote:     rep.Topology.ProcfsClosureNote,
 		},
 		Seccomp: jsonSeccomp{
 			Requested:     rep.Seccomp.Requested,
@@ -502,6 +594,10 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			// podman stub is the one case today).
 			Executable: m.Perms != nil && *m.Perms&0o111 != 0,
 		}
+		if n, ok := rep.MountNotes[m.Guest]; ok {
+			jm.Yielded = n.Yielded
+			jm.ProcfsReplacement = n.ProcfsReplacement
+		}
 		jm.Guest, jm.GuestBytes = e.text(m.Guest)
 		jm.Host, jm.HostBytes = e.text(m.Host)
 		doc.Mounts = append(doc.Mounts, jm)
@@ -521,7 +617,31 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 	}
 
 	doc.NotGranted.Lines, doc.NotGranted.LinesBytes = e.texts(rep.NotGranted)
-	doc.Bwrap.Argv, doc.Bwrap.ArgvBytes = e.texts(rep.BwrapArgv)
+	// The bare word, PREPENDED — never exec.LookPath's resolved path. The
+	// word itself comes from the producer rather than from a literal here, so
+	// the two renderers cannot print different names for the same binary.
+	// See jsonBwrap's doc comment and reportExec's.
+	bwrapArgv := make([]string, 0, len(rep.BwrapArgv)+1)
+	bwrapArgv = append(bwrapArgv, rep.BwrapExec.Argv0)
+	bwrapArgv = append(bwrapArgv, rep.BwrapArgv...)
+	doc.Bwrap.Argv, doc.Bwrap.ArgvBytes = e.texts(bwrapArgv)
+	doc.Bwrap.Argv0Resolved = rep.BwrapExec.Resolved
+	doc.Bwrap.Argv0Note = rep.BwrapExec.Note
+	doc.Bwrap.Incomplete = rep.BwrapIncomplete
+	doc.Bwrap.Reason = rep.BwrapIncompleteReason
+
+	if pa := rep.Pasta; pa != nil {
+		pastaArgv := make([]string, 0, len(pa.Argv)+1)
+		pastaArgv = append(pastaArgv, pa.Exec.Argv0)
+		pastaArgv = append(pastaArgv, pa.Argv...)
+		jp := jsonPasta{
+			Placeholder:   pa.Placeholder,
+			Argv0Resolved: pa.Exec.Resolved,
+			Argv0Note:     pa.Exec.Note,
+		}
+		jp.Argv, jp.ArgvBytes = e.texts(pastaArgv)
+		doc.Pasta = &jp
+	}
 
 	if c := rep.Containers; c != nil {
 		jc := jsonContainers{
@@ -544,7 +664,15 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 	for _, v := range rep.Environment {
 		jv := jsonEnvVar{Name: v.Name}
 		for _, en := range v.Entries {
-			je := jsonEnvEntry{Verb: en.Verb, From: en.From, Note: en.Note, Unchecked: en.Unchecked}
+			je := jsonEnvEntry{
+				Verb:         en.Verb,
+				From:         en.From,
+				AuthoredBy:   en.AuthoredBy,
+				TypeUnknown:  en.TypeUnknown,
+				ValueNote:    en.ValueNote,
+				Grant:        en.Grant,
+				GrantsInside: en.GrantsInside,
+			}
 			je.Value, je.ValueBytes = e.text(en.Value)
 			jv.Entries = append(jv.Entries, je)
 		}
