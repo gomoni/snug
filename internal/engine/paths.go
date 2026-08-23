@@ -1,13 +1,12 @@
 package engine
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/targetkey"
 )
 
 // Paths are the four host directories a run's engine uses, as VALUES rather
@@ -73,9 +72,25 @@ type Paths struct {
 // the store key name one project while the bind lands on another. The
 // per-target lock carries the identical window; this change neither creates
 // nor widens it.
+//
+// It is now internal/targetkey's Hash, applied to pol.Target: see that
+// package's doc comment for why every target-derived name on disk goes
+// through one function, and why that function returns the FULL hex digest
+// rather than a truncation. engineKey used to be its own truncated
+// sha256.Sum256; KeyForTarget below is the exported, string-only half other
+// packages (issue #308's `snug engine gc`) need to re-derive the identical
+// key from a target string without a *policy.Policy to hand.
 func engineKey(pol *policy.Policy) string {
-	sum := sha256.Sum256([]byte(pol.Target))
-	return hex.EncodeToString(sum[:])[:16]
+	return KeyForTarget(pol.Target)
+}
+
+// KeyForTarget is engineKey's pure string-only half, exported so a caller
+// that only has a target string — not a *policy.Policy — can compute the
+// identical store key. `snug engine gc` uses it to check a breadcrumb's
+// recorded target against the directory name that carries it
+// (orphansweep.go's "the name is the index", applied to the store).
+func KeyForTarget(target string) string {
+	return targetkey.Hash(target)
 }
 
 // dataHomeDir returns $XDG_DATA_HOME, or ~/.local/share when it is unset.

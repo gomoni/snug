@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +8,7 @@ import (
 
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/profile"
+	"github.com/gomoni/snug/internal/targetkey"
 	"github.com/gomoni/snug/internal/vdir"
 )
 
@@ -50,9 +49,21 @@ func needsHostTmpDir(reg profile.Registry, selected []policy.ProfileName) (bool,
 // can render the exact path it WOULD use without creating it: `--dry-run` says
 // "It starts no process and creates no file", and this was the one place that
 // was false — `--dry-run -p @tmp-shared` left a /tmp/snug-* behind.
+//
+// The key is internal/targetkey's Hash, full and untruncated — see that
+// package's doc comment. This directory used to carry a 12-character
+// truncation of its own, a third length alongside engineKey's 16 and
+// targetKeyPrefix's full form; standardising on the full form means a reader
+// holding the target can verify this name against it without knowing this
+// site used to cut it short. This directory lives under os.TempDir(), not
+// $XDG_DATA_HOME, so unlike the engine store, an orphan left by the rename
+// (an old-format "snug-<uid>-<hex12>" directory nothing names any more)
+// needs no GC: /tmp clears it at the next reboot. The store persists across
+// reboots by design and does not get that for free — that asymmetry is why
+// only the store needed `snug engine gc` (issue #308) and this directory did
+// not.
 func hostTmpDirPath(target string) string {
-	sum := sha256.Sum256([]byte(target))
-	return filepath.Join(os.TempDir(), fmt.Sprintf("snug-%d-%s", os.Getuid(), hex.EncodeToString(sum[:])[:12]))
+	return filepath.Join(os.TempDir(), fmt.Sprintf("snug-%d-%s", os.Getuid(), targetkey.Hash(target)))
 }
 
 func prepareHostTmpDir(target string) (string, error) {

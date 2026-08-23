@@ -101,6 +101,8 @@ func Main() {
 			os.Exit(configCmd(argv[1:]))
 		case "attach":
 			os.Exit(attachCmd(argv[1:]))
+		case "engine":
+			os.Exit(engineCmd(argv[1:]))
 		case "help":
 			usage()
 			os.Exit(0)
