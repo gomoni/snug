@@ -223,15 +223,56 @@ snug cannot graft /var/tmp into the engine's view: nothing in this policy
        Graft a destination that already exists — a path some grant mounts, an ancestor
        of one, or a path inside a writable grant.
 
+== engine_toolchain_root_is_payload_writable ==
+/home/u/proj/sub cannot be this run's engine toolchain root: a grant of this sandbox makes it
+       WRITABLE.
+       Grafting it read-only does not help, because read-only restrains the wrong
+       party: it stops the ENGINE writing and does nothing about the payload, which
+       writes the same host directory through its own rw grant so the new bytes
+       appear under the engine's read-only graft. The engine resolves conmon, crun
+       and netavark out of that directory as root in this sandbox's user namespace,
+       so a directory the payload can write is the payload choosing what the engine
+       executes as root.
+       Fix: put the engine somewhere no rw grant covers, or drop the rw grant.
+
+== engine_toolchain_root_contains_a_writable_grant ==
+/home/u/proj cannot be this run's engine toolchain root: the root itself is not
+       writable, but a grant of this sandbox makes part of the TREE below it writable:
+             /home/u/proj/sub
+       The engine resolves conmon, crun, netavark and fuse-overlayfs out of that tree as
+       uid 0 in this sandbox's user namespace, and helper_binaries_dir plus the toolchain
+       graft exist precisely so it can — so one writable directory anywhere inside is the
+       payload choosing what the engine executes as root, even when it holds no podman.
+       Grafting the root read-only does not help: `ro` restrains the ENGINE, while the
+       payload writes the same host inode through its own rw grant and the bytes appear
+       under the graft.
+       Fix: put the engine's installation outside every rw grant, or drop the grant(s)
+       listed above.
+
+== engine_binary_inside_a_writable_grant ==
+/home/u/proj/sub/bin/podman cannot be this run's container engine: a grant of this sandbox makes it
+       WRITABLE.
+       snug execs this file as uid 0, pid 1 of the engine's pid namespace, with
+       CAP_SYS_ADMIN in this sandbox's user namespace and the whole delegated subuid
+       range — so an engine binary the payload can write is the payload choosing what
+       runs as root, and every other filter on the container path is moot because the
+       payload IS the engine.
+       Read-only would not help: `ro` restrains the ENGINE, and the payload writes the
+       same host inode through its own rw grant.
+       Fix: install the engine somewhere no rw grant covers, or point $SNUG_PODMAN at
+       one, or drop the rw grant. `snug --dry-run` lists every grant this sandbox makes;
+       the one to look for is whichever covers this path.
+
 == graft_toolchain_root_is_payload_writable ==
-cannot graft /home/u/proj/sub/toolchain (host /home/u/proj/sub) into the engine's view: it IS this run's
-       engine toolchain root, but a grant of this sandbox makes it WRITABLE.
-       The graft is read-only, which stops the ENGINE writing and does nothing about
-       the payload: the payload writes the same host directory through its own rw
-       grant and the file appears under the engine's read-only graft. The engine
-       resolves conmon, crun and netavark out of that directory as root in this
-       sandbox's user namespace, so a directory the payload can write is the payload
-       choosing what the engine executes as root.
+cannot graft /home/u/proj/sub/toolchain into the engine's view: /home/u/proj/sub cannot be this run's engine toolchain root: a grant of this sandbox makes it
+       WRITABLE.
+       Grafting it read-only does not help, because read-only restrains the wrong
+       party: it stops the ENGINE writing and does nothing about the payload, which
+       writes the same host directory through its own rw grant so the new bytes
+       appear under the engine's read-only graft. The engine resolves conmon, crun
+       and netavark out of that directory as root in this sandbox's user namespace,
+       so a directory the payload can write is the payload choosing what the engine
+       executes as root.
        Fix: put the engine somewhere no rw grant covers, or drop the rw grant.
 
 == graft_source_not_visible_xdg_runtime_dir ==

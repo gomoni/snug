@@ -267,9 +267,14 @@ func TestEngineToolchainRootInsideAWritableGrantIsRefused(t *testing.T) {
 			t.Fatalf("fixture: %s is not write-visible, so this test would be asserting "+
 				"nothing about the writable case", writable)
 		}
-		if err := p.EngineToolchain(env, writable); err != nil {
-			t.Fatalf("EngineToolchain refused to record the root, so G4b is never reached: %v", err)
-		}
+		// Issue #405 gave EngineToolchain its own check (CheckEngineToolchainTree,
+		// asked at record time as well as at graft time), so it now refuses to
+		// record a writable root before G4b — Policy.Graft's own check, which is
+		// what this test targets — is ever reached. Set directly, which is legal
+		// only in _test.go: TestOnlyOneWriterOfEngineToolchainRoot's source sweep
+		// excludes it, and this fixture's whole point is exercising G4b itself,
+		// not the (now duplicate, and separately tested) B1 refusal at record time.
+		p.EngineToolchainRoot = writable
 		g := validGraft(p, "toolchain")
 		g.Host = writable
 		g.Access = AccessRO

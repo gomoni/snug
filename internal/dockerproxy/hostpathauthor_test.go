@@ -154,16 +154,19 @@ func TestHostPathVisibleCallersAreInventoried(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The three files named in policy.HostPathVisible's own doc comment
+	// The four files named in policy.HostPathVisible's own doc comment
 	// (internal/policy/graft.go):
 	//   - dockerproxy/create.go — checkOne, via the hostPathVisible wrapper
 	//     this file's own TestHostPathVisibleHasOneAuthor already pins.
 	//   - policy/graft.go — checkGraft, G4's first disjunct.
 	//   - cli/dryrun.go — describeGrafts, the "owned:" provenance render.
+	//   - policy/engineexec.go — CheckEngineBinary and CheckEngineToolchainTree
+	//     (issue #405), one file, two callers of the ancestor arm.
 	want := map[string]bool{
 		"internal/dockerproxy/create.go": true,
 		"internal/policy/graft.go":       true,
 		"internal/cli/dryrun.go":         true,
+		"internal/policy/engineexec.go":  true,
 	}
 	// The walk really reached outside internal/, which is what a subroot
 	// silently skipped. Without this, the inventory is a statement about
