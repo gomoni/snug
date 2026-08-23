@@ -247,7 +247,14 @@ func seedEngineHome(t *testing.T, home string) {
 // counts these against SNUG_ENGINE_FLOOR.
 func markEngineRan(t *testing.T, enginePath string) {
 	t.Helper()
-	t.Logf("snug-engine-ran: %s", enginePath)
+	// The TEST NAME is in the marker, and the Makefile counts DISTINCT names
+	// rather than marker lines. Measured, and it is the floor's own version of
+	// "a test that cannot fail": some tests reach this twice (requireRealEngine
+	// is called per distinct env, and a test driving two envs marks twice), so
+	// a bypass run emitted 33 marker LINES from fewer than 32 distinct tests.
+	// Counting lines would let 32 lines come from 20 tests and the floor would
+	// pass having lost twelve.
+	t.Logf("snug-engine-ran: %s %s", t.Name(), enginePath)
 }
 
 // enginePathFromEnv reads $SNUG_PODMAN back out of an env slice this file

@@ -205,6 +205,13 @@ SNUG_SIGNAL_TESTS = TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox|TestA
 # how "green by skipping" survived the first time (issue #393's own defect:
 # 32 tests skipped and `make integration` was green).
 #
+# DISTINCT TEST NAMES, not marker lines, which is why the marker carries
+# t.Name(). Some tests mark twice — requireRealEngine memoizes per env, so a
+# test driving two envs reaches it twice — MEASURED at 33 marker lines from
+# fewer than 32 distinct tests. Counting lines would let 32 lines come from 20
+# tests and the floor would pass having lost twelve: the floor's own version of
+# "a test that cannot fail is worse than no test".
+#
 # The count is PRINTED on every run, always, and it names WHICH of three
 # cases produced it — "no podman resolved" (green, legitimately, on a host
 # with no engine at all), "podman resolved but could not run a container"
@@ -228,7 +235,7 @@ integration-sandbox:
 			-skip '$(SNUG_SIGNAL_TESTS)' ./test/integration/... 2>&1 \
 		| tee $(SANDBOX_LOG); \
 	status=$${PIPESTATUS[0]}; \
-	ran=$$(grep -c 'snug-engine-ran:' $(SANDBOX_LOG) || true); \
+	ran=$$(grep -o 'snug-engine-ran: [^ ]*' $(SANDBOX_LOG) | sort -u | wc -l); \
 	if grep -q 'snug-engine-none:' $(SANDBOX_LOG); then \
 		echo "engine tests: $$ran of $(SNUG_ENGINE_FLOOR) ran — no podman resolved"; \
 	elif grep -q 'snug-engine-failed:' $(SANDBOX_LOG); then \
