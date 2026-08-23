@@ -953,6 +953,12 @@ func TestGoldenRefusals(t *testing.T) {
 		// the same host inode through its own rw grant and the engine execs
 		// what appears there as root. The refusal's WORDING is the half a human
 		// meets, which is why it is golded rather than only asserted.
+		// issue #405: the same predicate, asked at the two OTHER doors G4b
+		// does not cover — recording the root at all (before any graft is
+		// attempted), and the binary itself, which G4b never judges.
+		{"engine_toolchain_root_is_payload_writable", refusalEngineToolchainRootIsPayloadWritable},
+		{"engine_toolchain_root_contains_a_writable_grant", refusalEngineToolchainRootContainsAWritableGrant},
+		{"engine_binary_inside_a_writable_grant", refusalEngineBinaryInsideAWritableGrant},
 		{"graft_toolchain_root_is_payload_writable", refusalGraftToolchainRootWritable},
 		{"graft_source_not_visible_xdg_runtime_dir", refusalGraftSourceNotVisible},
 		{"graft_covers_graft", refusalGraftCoversGraft},
@@ -1198,6 +1204,45 @@ func TestARefusalNeverRendersARawForgingRune(t *testing.T) {
 	}
 }
 
+// refusalEngineToolchainRootIsPayloadWritable is issue #405's first half
+// through EngineToolchain, the B1 call site — where the ancestor arm now
+// actually fires on a real run, before any graft is attempted at all (G4b,
+// checkGraft's own ancestor arm below, never runs while $SNUG_PODMAN_ROOT is
+// unset). Root is the target itself, which @cwd-rw grants AccessRW, so this
+// is CheckEngineToolchainTree's ancestor arm, reached through the writer that
+// now asks it, and the message is UNPREFIXED — EngineToolchain returns the
+// error CheckEngineToolchainTree built, with no "cannot graft ...: %w" wrapper
+// (that wrapper is checkGraft's, in the row below, not this one's).
+func refusalEngineToolchainRootIsPayloadWritable(t testing.TB) error {
+	p := resolveDefaults(t)
+	env := newFakeEnv()
+	return p.EngineToolchain(env, "/home/u/proj/sub")
+}
+
+// refusalEngineToolchainRootContainsAWritableGrant is issue #405's SECOND
+// half, and the finding the ticket exists for: the root itself
+// (/home/u/proj) is only read-only (@parent-ro), so the ancestor arm clears,
+// but /home/u/proj/sub sits strictly inside it and @cwd-rw grants THAT
+// AccessRW — a writable grant inside the tree the ancestor arm can never see.
+// Reached through EngineToolchain (B1), the same call site as the row above,
+// so the pair demonstrates both arms through one writer.
+func refusalEngineToolchainRootContainsAWritableGrant(t testing.TB) error {
+	p := resolveDefaults(t)
+	env := newFakeEnv()
+	return p.EngineToolchain(env, "/home/u/proj")
+}
+
+// refusalEngineBinaryInsideAWritableGrant is issue #405's first half through
+// its OTHER door: CheckEngineBinary judges a FILE, not a tree, so there is no
+// tree arm to exercise here — only the ancestor arm, fired by naming a path
+// strictly inside the target's own AccessRW grant, the shape a real
+// $SNUG_PODMAN or PATH lookup produces when the engine binary lives inside
+// the sandboxed source tree.
+func refusalEngineBinaryInsideAWritableGrant(t testing.TB) error {
+	p := resolveDefaults(t)
+	return p.CheckEngineBinary("/home/u/proj/sub/bin/podman")
+}
+
 // refusalGraftToolchainRootWritable: issue #390, G4b. The recorded toolchain
 // root is the TARGET, which @cwd-rw grants writable — the real spelling, since
 // $SNUG_PODMAN pointed at ./bin/podman inside a sandboxed source tree produces
@@ -1205,9 +1250,13 @@ func TestARefusalNeverRendersARawForgingRune(t *testing.T) {
 func refusalGraftToolchainRootWritable(t testing.TB) error {
 	p := resolveDefaults(t)
 	env := newFakeEnv()
-	if err := p.EngineToolchain(env, "/home/u/proj/sub"); err != nil {
-		t.Fatalf("recording the toolchain root failed, so G4b is never reached: %v", err)
-	}
+	// Issue #405 gave EngineToolchain its own B1 check (CheckEngineToolchainTree),
+	// which now refuses to RECORD a writable root at all — this fixture's whole
+	// point is reaching G4b (Policy.Graft's own check) with a root already
+	// recorded, so the field is set directly rather than through the writer that
+	// would refuse first. Legal only in _test.go: TestOnlyOneWriterOfEngineToolchainRoot's
+	// source sweep excludes it.
+	p.EngineToolchainRoot = "/home/u/proj/sub"
 	g := validGraft(p, "toolchain")
 	g.Host = "/home/u/proj/sub"
 	g.Access = AccessRO

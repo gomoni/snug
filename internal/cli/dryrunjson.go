@@ -418,8 +418,17 @@ type jsonContainers struct {
 	SignaturePolicySourceBytes  byteList `json:"signature_policy_source_bytes,omitempty"`
 	SignaturePolicyRefusal      string   `json:"signature_policy_refusal"`
 	SignaturePolicyRefusalBytes byteList `json:"signature_policy_refusal_bytes,omitempty"`
-	Logins                      bool     `json:"logins"`
-	PortMapping                 bool     `json:"port_mapping"`
+	// Why a real run will refuse the engine binary or its toolchain root: a
+	// grant of this sandbox makes it writable (issue #405). Additive and
+	// omitempty — they are only computable when $SNUG_PODMAN/$SNUG_PODMAN_ROOT
+	// name a path, since --dry-run runs no preflight and cannot resolve PATH.
+	// Both are derived from env values, so both carry a bytes sibling.
+	EngineBinaryRefusal       string   `json:"engine_binary_refusal,omitempty"`
+	EngineBinaryRefusalBytes  byteList `json:"engine_binary_refusal_bytes,omitempty"`
+	ToolchainRootRefusal      string   `json:"toolchain_root_refusal,omitempty"`
+	ToolchainRootRefusalBytes byteList `json:"toolchain_root_refusal_bytes,omitempty"`
+	Logins                    bool     `json:"logins"`
+	PortMapping               bool     `json:"port_mapping"`
 }
 
 type jsonEnvVar struct {
@@ -667,6 +676,8 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 		jc.ToolchainRoot, jc.ToolchainRootBytes = e.text(c.ToolchainRoot)
 		jc.SignaturePolicySource, jc.SignaturePolicySourceBytes = e.text(c.SignaturePolicySource)
 		jc.SignaturePolicyRefusal, jc.SignaturePolicyRefusalBytes = e.text(c.SignaturePolicyRefusal)
+		jc.EngineBinaryRefusal, jc.EngineBinaryRefusalBytes = e.text(c.EngineBinaryRefusal)
+		jc.ToolchainRootRefusal, jc.ToolchainRootRefusalBytes = e.text(c.ToolchainRootRefusal)
 		doc.Containers = &jc
 	}
 

@@ -159,6 +159,16 @@ func (p *Policy) EngineToolchain(env Environ, root string) error {
 			"       A caller with no toolchain root to record must not call this — an empty\n" +
 			"       value here would silently clear one already recorded.")
 	}
+	// One operation, two policies, worth stating rather than leaving for a
+	// reader to discover by diffing this against Resolve's own resolution
+	// (resolve.go:177): on an EvalSymlinks error, Resolve HARD-FAILS a
+	// non-Optional grant, while this degrades to a bare filepath.Clean. Not a
+	// defect and not unified here — a caller of EngineToolchain has no
+	// Optional to consult, and the fallback is unreachable for the one
+	// production caller anyway (preflightToolchainRoot's os.Stat+IsDir already
+	// requires the root to exist, so ResolveExistingHostPath's own "not even /
+	// resolves" failure mode never fires against a real filesystem). Named so
+	// the next reader finds it stated instead of re-deriving it.
 	if real, err := ResolveExistingHostPath(env, root); err == nil {
 		root = real
 	} else {
@@ -173,6 +183,16 @@ func (p *Policy) EngineToolchain(env Environ, root string) error {
 			"       bug in the caller rather than a disagreement to resolve — and choosing\n"+
 			"       between them here would decide which host directory the engine may execute\n"+
 			"       out of without saying so.", root, p.EngineToolchainRoot)
+	}
+	// Issue #405, first half through this door: G4b (checkGraft, below) only
+	// ever runs when a graft of this root is actually installed, which never
+	// happens while $SNUG_PODMAN_ROOT is unset. Asking here, at the one writer
+	// of p.EngineToolchainRoot, means a root the sandbox's own grants (or a
+	// grant strictly inside it) already make writable is refused before it is
+	// ever recorded — not left to wait for a graft that, on the common
+	// unset-env path, is never attempted at all.
+	if err := p.CheckEngineToolchainTree(root); err != nil {
+		return err
 	}
 	p.EngineToolchainRoot = root
 	return nil
@@ -625,14 +645,41 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 	// (issue #125's design pass §5): *the descriptor is the object the graft
 	// is built from, so nothing observed between the openat2 and the graft
 	// can redirect IT* — not "the graft cannot be redirected" in general. The
-	// remaining window is the instructions between ResolveExistingHostPath
-	// (above, in Policy.Graft) and the openat2(AT_FDCWD, g.Host,
-	// {O_PATH|O_DIRECTORY|O_CLOEXEC, RESOLVE_NO_SYMLINKS}) call that reads the
-	// SAME resolved Host a few lines later, in the SAME function, in P0 — one
-	// process, no process boundary, and *before the stage, the netns, bwrap or
-	// the payload exist*. The fd that call returns travels P0 -> P1 -> the
-	// engine child by ExtraFiles; open_tree(2) clones from the fd, never a
-	// re-walked path, so nothing after the openat2 can be raced.
+	// remaining window is between ResolveExistingHostPath (above, in
+	// Policy.Graft) and the openat2(AT_FDCWD, g.Host,
+	// {O_PATH|O_DIRECTORY|O_CLOEXEC, RESOLVE_NO_SYMLINKS}) that re-walks the
+	// same path — and THAT WINDOW IS NOT SMALL. This paragraph said "a few
+	// lines later, in the SAME function, in P0 — one process, no process
+	// boundary", and that a fd travelled "P0 -> P1 -> the engine child by
+	// ExtraFiles" so "nothing after the openat2 can be raced". Every clause of
+	// that is false as shipped, verified by grep rather than argued:
+	//
+	//   - the whole family lives in internal/stage's __inengine — openat2 at
+	//     inengine.go:246, open_tree at :251, move_mount at :313 — a DIFFERENT
+	//     PROCESS, reached after the stage, the netns and bwrap all exist;
+	//   - the resolved Host travels there as an ARGV STRING and is RE-WALKED.
+	//     This comment was the sole mention of ExtraFiles in internal/policy,
+	//     naming a transport that does not exist.
+	//
+	// The fd claim was not fantasy, it was MISPLACED, and the corrected
+	// version is the useful one: a descriptor IS held across a gap, but the gap
+	// is inside __inengine — open_tree(:251) clones from the openat2 fd, and
+	// move_mount(:313) attaches from THAT fd in a second loop. So nothing
+	// between the openat2 and the move_mount can redirect the graft. What the
+	// old text got backwards is WHICH SIDE the window is on: the walk that
+	// produces the descriptor happens in __inengine, from a string, after
+	// everything exists — so the exposure is BEFORE the openat2, not after it.
+	//
+	// So the window spans the whole stage/netns/bwrap startup, across a
+	// process boundary. WHAT CLOSES THE RACE IS THE FLAG, NOT THE WINDOW:
+	// RESOLVE_NO_SYMLINKS refuses a symlink at ANY depth, final or not, and
+	// ELOOP is fatal with no fallback to the path form (below). That is
+	// payload-independent, which is why it holds over a window this long.
+	//
+	// Read the difference before touching either site: a reader who believed
+	// the old text would judge the window a few instructions in one process
+	// and could relax RESOLVE_NO_SYMLINKS thinking the window had closed the
+	// race. It has not. The flag is doing all of the work.
 	//
 	// The residual actors, because THIS run's payload cannot be one of them,
 	// are (a) a PREVIOUS run's payload — the container store persists across
@@ -643,13 +690,17 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 	// model: it already has, without any of this, every capability U-namespace
 	// confinement does not remove.
 	//
-	// Two decisions this closing carries, made by #125's design pass and not
-	// to be re-derived differently when the openat2 call itself lands (issue
-	// #125, C2):
+	// Two decisions this closing carries, made by #125's design pass. They
+	// were written forward-looking — "not to be re-derived differently when
+	// the openat2 call itself lands" — and it HAS landed, at
+	// internal/stage/inengine.go:246. Read them as describing that site
+	// (issue #125, C2):
 	//   - ELOOP from the openat2 is FATAL, with NO fallback to the path form.
 	//     A component becoming a symlink between ResolveExistingHostPath and
-	//     the openat2 a few instructions later IS the attack this closing
-	//     exists to catch, not a host layout snug should route around —
+	//     the openat2 — a window spanning a process boundary and the whole
+	//     stage/netns/bwrap startup, NOT "a few instructions later" as this
+	//     said — IS the attack this closing exists to catch, not a host
+	//     layout snug should route around —
 	//     falling back to open_tree(2) on the path would silently reopen
 	//     exactly the F6 hole this paragraph says is closed.
 	//   - RESOLVE_NO_XDEV is deliberately NOT set. All four host grafts (the
@@ -681,39 +732,35 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 			g.Host == p.EngineToolchainRoot &&
 			g.Access == AccessRO
 
-		// G4b, issue #390. The toolchain disjunct above admits a path the
-		// sandbox's own grants do NOT expose — that is the whole point of it —
-		// and AccessRO was treated as making that safe. It does not, because
-		// READ-ONLY RESTRAINS THE WRONG PARTY. The graft being read-only stops
-		// the ENGINE writing; the PAYLOAD writes the same host inode through
-		// its own rw grant, and the new bytes appear under the engine's
-		// read-only graft on the next run. The engine resolves conmon, crun,
-		// netavark and fuse-overlayfs out of that tree as root in the
-		// sandbox's user namespace, with EngineCapBounding and the whole
-		// delegated subuid range — so a toolchain root the payload can write
-		// is the payload choosing what the engine executes as root.
+		// G4b, issue #390, and its second half (issue #405): the toolchain
+		// disjunct above admits a path the sandbox's own grants do NOT
+		// expose — that is the whole point of it — and AccessRO was treated
+		// as making that safe. It does not, because READ-ONLY RESTRAINS THE
+		// WRONG PARTY, and not only at the root: the engine resolves conmon,
+		// crun, netavark and fuse-overlayfs out of the WHOLE tree as root in
+		// this sandbox's user namespace, so a writable directory anywhere
+		// inside it — not just AT it — is the payload choosing what the
+		// engine executes as root. This is CLAUDE.md's socket/FIFO lesson
+		// with a third noun: `ro` says nothing about who else holds the path.
 		//
-		// This is CLAUDE.md's socket/FIFO lesson with a third noun: `ro` says
-		// nothing about who else holds the path.
-		//
-		// Asked in HOST space, deliberately. An engine-view predicate is the
-		// wrong instrument here: View.IsShadowSlot sees AccessRO and answers
-		// "safe", correctly and uselessly, because the write does not arrive
-		// through the engine's view at all. HostPathVisible(dir, true) is the
-		// question that matches the threat — "does any grant of this sandbox
-		// make this writable" — and it is purely lexical, so internal/policy
-		// stays pure.
-		if toolchain && p.HostPathVisible(g.Host, true) {
-			return fmt.Errorf("cannot graft %s (host %s) into the engine's view: it IS this run's\n"+
-				"       engine toolchain root, but a grant of this sandbox makes it WRITABLE.\n"+
-				"       The graft is read-only, which stops the ENGINE writing and does nothing about\n"+
-				"       the payload: the payload writes the same host directory through its own rw\n"+
-				"       grant and the file appears under the engine's read-only graft. The engine\n"+
-				"       resolves conmon, crun and netavark out of that directory as root in this\n"+
-				"       sandbox's user namespace, so a directory the payload can write is the payload\n"+
-				"       choosing what the engine executes as root.\n"+
-				"       Fix: put the engine somewhere no rw grant covers, or drop the rw grant.",
-				g.Guest, g.Host)
+		// Delegated to CheckEngineToolchainTree rather than asked here twice
+		// (once for the root, once for the tree): the question and its
+		// wording are authored ONCE in internal/policy/engineexec.go, and
+		// KEPT here rather than folded into Policy.Graft's own B1 check
+		// because Policy.Graft is a boundary check over a possibly hand-built
+		// Policy — TestOnlyOneWriterOfEngineToolchainRoot's source sweep
+		// excludes _test.go — and Validate re-runs checkGraft over every
+		// already-installed graft, so B1 going stale (a mount added after it
+		// ran) is still caught here.
+		if toolchain {
+			if err := p.CheckEngineToolchainTree(g.Host); err != nil {
+				// Guest only in the prefix: the delegated message already
+				// names the host, which for a toolchain graft IS the root it
+				// judges. Naming it in both read "cannot graft X (host Y) ...:
+				// Y cannot be ..." — the same path three times in one
+				// sentence.
+				return fmt.Errorf("cannot graft %s into the engine's view: %w", g.Guest, err)
+			}
 		}
 
 		if !p.HostPathVisible(g.Host, g.Access == AccessRW) && !p.EngineOwnedHostPaths[g.Host] && !toolchain {
@@ -964,7 +1011,7 @@ func existsInSandbox(p *Policy, guest string) bool {
 // Every caller therefore owes it a path already put through
 // ResolveExistingHostPath, and must USE the resolved path afterwards rather than
 // the one it asked about — resolving and then passing the literal onward moves
-// the hole instead of closing it. There are exactly THREE non-test callers,
+// the hole instead of closing it. There are exactly FOUR non-test callers,
 // and every one either discharges the obligation immediately before calling,
 // or is reading a value some OTHER caller already discharged it for:
 //
@@ -983,8 +1030,17 @@ func existsInSandbox(p *Policy, guest string) bool {
 //     this caller owes nothing further; it would be wrong for it to resolve
 //     a SECOND time and risk printing a provenance line about a different
 //     sample of the host than the one that was actually judged.
+//   - policy.(*Policy).CheckEngineBinary and policy.(*Policy).
+//     CheckEngineToolchainTree (engineexec.go, issue #405) — both ask about a
+//     value the CALLER resolved before handing it here: CheckEngineBinary's
+//     path is preflightPodmanBinary's return, resolved at
+//     containerpreflight.go's own two return sites; CheckEngineToolchainTree's
+//     root is EngineToolchain's argument, already put through
+//     ResolveExistingHostPath a few lines above where it calls this file's B1
+//     check, or (from checkGraft's G4b) a Graft.Host Policy.Graft already
+//     resolved — the same fixed point checkGraft's own entry above relies on.
 //
-// TestHostPathVisibleCallersAreInventoried fails when a FOURTH caller
+// TestHostPathVisibleCallersAreInventoried fails when a FIFTH caller
 // appears. Adding one means writing its resolution obligation (or its reason
 // for owing none, as describeGrafts's entry does) into this list: a tripwire
 // on the SET is the only enforceable form of an obligation that cannot be

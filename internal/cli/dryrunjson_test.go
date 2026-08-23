@@ -43,6 +43,18 @@ var jsonGoldenSeccomp = reportSeccomp{
 // environment goldens use and renders the machine format for it.
 func jsonGoldenReport(t *testing.T, sel []policy.ProfileName, refused bool) string {
 	t.Helper()
+	return jsonGoldenReportWithEngine(t, sel, refused, "")
+}
+
+// jsonGoldenReportWithEngine is jsonGoldenReport with $SNUG_PODMAN PINNED to a
+// value the case chooses rather than cleared.
+//
+// It exists for issue #405's refusal, which has TWO sinks — the human CONTAINERS
+// block and this document — and only the first had a golden. The variable is
+// still never read from the developer's host: the caller supplies a literal, so
+// the document stays host-independent for the same reason the cleared case does.
+func jsonGoldenReportWithEngine(t *testing.T, sel []policy.ProfileName, refused bool, engineBin string) string {
+	t.Helper()
 	reg, err := profile.Builtins()
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +62,7 @@ func jsonGoldenReport(t *testing.T, sel []policy.ProfileName, refused bool) stri
 	// $SNUG_PODMAN and $SNUG_PODMAN_ROOT reach the CONTAINERS block through
 	// os.Getenv, so a developer with either exported would otherwise write
 	// their own host into the golden.
-	t.Setenv("SNUG_PODMAN", "")
+	t.Setenv("SNUG_PODMAN", engineBin)
 	t.Setenv("SNUG_PODMAN_ROOT", "")
 
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), newEnvFakeEnv())
@@ -87,25 +99,37 @@ func TestGoldenDryRunJSON(t *testing.T) {
 		name    string
 		sel     []policy.ProfileName
 		refused bool
+		// engineBin pins $SNUG_PODMAN for the case. Empty clears it, which is
+		// what every case but the last one wants.
+		engineBin string
 	}{
 		// The document a bare `snug --dry-run --json <dir>` produces.
-		{"defaults", profile.BuiltinDefaults(), false},
+		{"defaults", profile.BuiltinDefaults(), false, ""},
 		// An engine run: the CONTAINERS block appears, the topology grows the
 		// engine process and its capability bounding set, and the FILESYSTEM
 		// block gains the staged podman stub — the one mount whose
 		// "executable" is true, which is the fact behind the human column's
 		// "exec" word.
-		{"podman-socket", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, false},
+		{"podman-socket", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, false, ""},
 		// A REFUSED policy still writes a complete document, and exits 77
 		// separately. `snug --dry-run --json x > policy.json` yielding a
 		// parseable file on a refusal is the property this format is designed
 		// for; clang's SARIF does the opposite (0 bytes on redirect).
-		{"refused", []policy.ProfileName{"@parent-ro"}, true},
+		{"refused", []policy.ProfileName{"@parent-ro"}, true, ""},
+		// ISSUE #405, and it is here because the refusal has TWO SINKS: the
+		// human CONTAINERS block and this document. A wording change asserted
+		// in one is not asserted in the other, and CLAUDE.md's rule is to name
+		// every sink a value reaches and assert the SET. $SNUG_PODMAN points
+		// inside the target, which @cwd-rw grants writable — the finding's own
+		// spelling — so engine_binary_refusal is populated here and nowhere
+		// else in this table.
+		{"engine-writable", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, false,
+			"/home/u/proj/sub/bin/podman"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := jsonGoldenReport(t, tc.sel, tc.refused)
+			got := jsonGoldenReportWithEngine(t, tc.sel, tc.refused, tc.engineBin)
 
 			path := filepath.Join("testdata", "json."+tc.name+".json")
 			if *update {

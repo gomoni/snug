@@ -195,11 +195,25 @@ SANDBOX_LOG ?= $(CURDIR)/.integration-sandbox.log
 # the two halves cannot drift into overlapping or into leaving a test unrun.
 SNUG_SIGNAL_TESTS = TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox|TestAKilledSnugCannotReleaseTheParkedPayload|TestKillingSnugDuringStartupNeverRunsThePayload
 
-# SNUG_ENGINE_FLOOR is issue #393's run-count floor: the number of test
-# functions in test/integration that need a REAL container engine, enumerated
-# by a literal-string sweep over containerEngineEnv|podmanBundle|bundleRoot|
-# requireRealEngine (hostEngine's own doc comment in containerengine_test.go
-# names the sweep). Counted here from the "snug-engine-ran:" marker each such
+# SNUG_ENGINE_FLOOR is issue #393's run-count floor: the number of tests in
+# test/integration that need a REAL container engine.
+#
+# MEMBERSHIP IS REACHING THE MARKER, NOT THE LITERAL SWEEP, and the two
+# disagree — measured on a full run against a working engine, which reported
+# "33 of 32". The sweep this constant was first derived from (a literal-string
+# search for containerEngineEnv|podmanBundle|bundleRoot|requireRealEngine)
+# undercounts by two and overcounts by one:
+#
+#   + TestAReadOnlyGraftIsReadOnlyInTheKernel, TestThePayloadCannotSeeAnyGraft
+#     reach the marker through startEngineRun (enginec3_test.go) and contain
+#     none of the four tokens;
+#   - TestAHostRegistriesConfDoesNotSteerTheEnginesPull contains a token but
+#     skips on its own control, so it never marks here.
+#
+# 33 is therefore what a working engine actually produces on this host. It is a
+# FLOOR, not an equality: a host where the registries test's control does fire
+# reports 34 and passes. Deriving it from a token sweep again would be
+# rebuilding the catalogue the marker replaced. Counted here from the "snug-engine-ran:" marker each such
 # test logs once it is COMMITTED to having run with a real engine — never
 # merely resolved one, and never a bare `go test` exit code, which is exactly
 # how "green by skipping" survived the first time (issue #393's own defect:
@@ -235,7 +249,7 @@ SNUG_SIGNAL_TESTS = TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox|TestA
 # SNUG_REQUIRE_SANDBOX=1 with no working engine promised anywhere in that
 # environment. This is #395's seam — set SNUG_REQUIRE_ENGINE=1 once a lane
 # can promise 32/32, and not before.
-SNUG_ENGINE_FLOOR = 32
+SNUG_ENGINE_FLOOR = 33
 
 integration-sandbox:
 	@SNUG_TEST_NET=$${SNUG_TEST_NET:-$${SNUG_REQUIRE_SANDBOX:+1}} \
