@@ -21,8 +21,9 @@
 // path (os.Args[0] + ".cfg"), not from flags: the argv this process is
 // exec'd with is entirely engine.Spec's, and this binary has no say in it.
 // The test writes that file before each snug invocation, so ONE compiled
-// binary — built once — serves every scenario. Two "key=value" lines,
-// missing file or missing key defaulting to "no delay, answer 200":
+// binary — built once — serves every scenario. Three "key=value" lines,
+// missing file or missing key defaulting to "no delay, answer 200, no
+// --version support":
 //
 //	delay=DURATION   sleep this long before creating the socket, so a caller
 //	                 can hold snug's payload parked on --block-fd for a
@@ -35,6 +36,18 @@
 //	                 once, so dialLifeline's own status check fails FAST
 //	                 rather than waiting out its own 10s read deadline (M5's
 //	                 abort path).
+//	version=STRING   printed as "podman version STRING\n" to stdout, THEN
+//	                 exit 0 — but only when argv is EXACTLY ["--version"], so
+//	                 this key is additive and inert for every existing caller
+//	                 of writeFakePodmanConfig (gate_test.go's
+//	                 TestAKilledSnugCannotReleaseTheParkedPayload and
+//	                 TestKillingOnlyBwrapLeavesAReleasableInit): both write
+//	                 only delay=/status= and exec this binary with the
+//	                 "system service …" argv above, never "--version", so the
+//	                 branch below never activates for them. It exists so
+//	                 test/integration/podmanversiongate_test.go can drive
+//	                 internal/engine.CheckPodmanBinaryVersion against a
+//	                 controlled binary rather than only the real bundle.
 //
 // This is not a channel a sandboxed payload could ever reach: the config file
 // lives on the HOST, at a path this binary's own argv0 names, never bound
@@ -60,11 +73,11 @@ import (
 	"time"
 )
 
-func readConfig() (delay time.Duration, status int) {
+func readConfig() (delay time.Duration, status int, version string) {
 	status = 200
 	b, err := os.ReadFile(os.Args[0] + ".cfg")
 	if err != nil {
-		return delay, status
+		return delay, status, version
 	}
 	for _, line := range strings.Split(string(b), "\n") {
 		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
@@ -80,13 +93,28 @@ func readConfig() (delay time.Duration, status int) {
 			if n, err := strconv.Atoi(v); err == nil {
 				status = n
 			}
+		case "version":
+			version = v
 		}
 	}
-	return delay, status
+	return delay, status, version
 }
 
 func main() {
-	delay, status := readConfig()
+	delay, status, version := readConfig()
+
+	// version=/--version is checked FIRST and returns immediately: it is a
+	// wholly separate mode from the socket-serving one below, matching what
+	// engine.CheckPodmanBinaryVersion actually execs against a real bundle
+	// (`podman --version`, never the "system service" argv). Only fires when
+	// BOTH the cfg carries version= AND argv is exactly ["--version"], so it
+	// is inert for every caller that never sets version= or never passes
+	// --version — see the doc comment above for why that covers every
+	// existing caller of writeFakePodmanConfig.
+	if version != "" && len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Printf("podman version %s\n", version)
+		return
+	}
 
 	sock := ""
 	for _, a := range os.Args[1:] {

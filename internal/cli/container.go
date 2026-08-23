@@ -188,6 +188,27 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		return containerRun{}, err
 	}
 
+	// Reported here, unconditionally, host-authored, and never gating the
+	// run (issue #384): $SNUG_PODMAN is trusted outright by
+	// preflightPodmanBinary's own comment precisely so a caller can point it
+	// at a newer host podman, and a newer version is not a downgrade under
+	// invariant 5. On a probe failure the version is empty and the reason
+	// rides along instead of becoming a refusal — containerPreflight.PodmanVersion's
+	// doc comment has the detail.
+	//
+	// DELIBERATELY ABSENT FROM --dry-run: that path returns via
+	// startContainersScreen above and never reaches runContainerPreflight at
+	// all (see the comment on the dryRun branch — "none of its probes are
+	// needed to render a resolved policy, and running them … would be host
+	// I/O a debugging command has no business doing"). A --version exec is
+	// exactly that host I/O, so it stays out for the same reason P1-P9 do; do
+	// not "fix" this by adding it to the dry-run path.
+	version := pf.PodmanVersion
+	if version == "" {
+		version = fmt.Sprintf("unknown: %v", pf.PodmanVersionErr)
+	}
+	fmt.Fprintf(os.Stderr, "snug: container engine: %s (%s)\n", pf.Podman, version)
+
 	warnAboutPodmanClient()
 
 	// P9's answer into the policy, through the policy's own single writer.

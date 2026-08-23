@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/gomoni/snug/internal/engine"
 	"github.com/gomoni/snug/internal/stage"
 )
 
@@ -41,6 +42,16 @@ type containerPreflight struct {
 	Podman          string
 	CgroupsDisabled bool
 
+	// PodmanVersion is Podman's own answer to `--version`, reported for
+	// observability only (issue #384) — never a refusal. $SNUG_PODMAN is
+	// trusted outright by preflightPodmanBinary's own comment precisely so a
+	// caller can point it at a newer host podman, and a newer version is not
+	// a downgrade under invariant 5, so this never gates the run. Empty when
+	// the probe itself failed (exec error, unparseable output); PodmanVersionErr
+	// carries why, for the report at the call site to fold into its message.
+	PodmanVersion    string
+	PodmanVersionErr error
+
 	// ResolvConfBind is P7's answer: nil when snug's generated resolv.conf can
 	// be bound over the engine's own, non-nil (naming why) when it cannot.
 	// Not fatal — see preflightResolvConfBind.
@@ -60,6 +71,14 @@ func runContainerPreflight() (containerPreflight, error) {
 	if err != nil {
 		return containerPreflight{}, err
 	}
+	// Probed right here, right after P1 resolved a real podman binary — not a
+	// refusal on its own error, per issue #384's reporting-only decision; see
+	// containerPreflight.PodmanVersion's doc comment.
+	// engine.ProbePodmanBinaryVersion, NOT a second exec written here: the
+	// `--version` flag rather than the subcommand, the empty environment and
+	// the timeout are all measured decisions, and a copy of them beside this
+	// call would agree with the original until somebody changed one of them.
+	podmanVersion, podmanVersionErr := engine.ProbePodmanBinaryVersion(podman)
 	if err := stage.CheckSubuidDelegation(); err != nil {
 		return containerPreflight{}, fmt.Errorf("the container engine needs a delegated subuid/"+
 			"subgid range and could not get one: %w", err)
@@ -70,10 +89,12 @@ func runContainerPreflight() (containerPreflight, error) {
 		return containerPreflight{}, err
 	}
 	return containerPreflight{
-		Podman:          podman,
-		CgroupsDisabled: cgroupsDisabled,
-		ResolvConfBind:  preflightResolvConfBind(),
-		ToolchainRoot:   toolchainRoot,
+		Podman:           podman,
+		CgroupsDisabled:  cgroupsDisabled,
+		PodmanVersion:    podmanVersion,
+		PodmanVersionErr: podmanVersionErr,
+		ResolvConfBind:   preflightResolvConfBind(),
+		ToolchainRoot:    toolchainRoot,
 	}, nil
 }
 

@@ -4540,6 +4540,111 @@ real home so the guard can recognise it.
 Only `redteam` carries this rule. Every other agent works on the host as its
 ordinary mode and is right to.
 
+## 17. The pinned engine bundle is the one being measured (issue #384)
+
+The bundle was pinned **on disk** — a tarball, a detached signature, a
+`PROVENANCE` file (`.claude/design/PODMAN-STATIC.md` §1) — and asserted
+**nowhere in code**. Every gate that resolved it did `os.Stat` plus `!IsDir()`
+and stopped, so re-provisioning `~/.local/opt/podman-static` at a different tag
+changed what every engine test measured with nothing to notice: no failure, no
+diff, and every round still reporting that "a real engine" served the request
+while a different engine answered.
+
+`engine.PinnedPodmanBundleVersion` is now the single pin, and the gate execs the
+binary rather than trusting the directory.
+
+**The flag, never the subcommand.** This is the part worth knowing by hand,
+because the wrong one looks fine until the install is minimal:
+
+```console
+$ ~/.local/opt/podman-static/usr/local/bin/podman --version
+podman version 5.8.4
+
+$ ~/.local/opt/podman-static/usr/local/bin/podman version
+Error: could not find a working conmon binary (configured options: [...]: invalid argument)
+```
+
+The **subcommand** queries the whole helper set and fails on a bundle that was
+only extracted; the **flag** answers from the binary alone. A gate built on the
+subcommand fails on exactly the install §3 documents.
+
+**Provenance, computed rather than quoted.** `PROVENANCE`'s numbers are only
+worth cross-checking against if they were measured rather than copied out of
+prose:
+
+```console
+$ sha256sum podman-linux-amd64.tar.gz
+a58765fe8be6ab3fb79f892f1a027b4ce4a7e8eb589df1ef960c167cbde08d69   # == §1
+
+$ gpg --batch --verify podman-linux-amd64.tar.gz.asc podman-linux-amd64.tar.gz
+gpg: Good signature from "Max Goltzsche <max.goltzsche@gmail.com>" [unknown]
+gpg: WARNING: This key is not certified with a trusted signature!
+
+$ sha256sum ~/.local/opt/podman-static/usr/local/bin/podman
+3ae655eb71d62e2b44c25d83364da99175458a0a5f9a77a91c51e99f0cba4d79   # == the tarball's own
+```
+
+The signature is **circular by construction** and `PROVENANCE` says so in a
+machine-readable field (`trust_is_circular = true`): the fingerprint and the
+artifact come from one GitHub account, so what it proves is who built the
+tarball, not that the key is the right one. The hashes are a
+**reproducibility** claim, not a trust one — do not let the field's presence
+read as the stronger thing.
+
+What to check:
+
+1. **A mismatch fails; an absence skips.** This is the whole point, and it is
+   the one thing to test by hand, because getting it backwards restores exactly
+   the silence the issue is about:
+
+   ```console
+   $ printf '#!/bin/sh\necho "podman version 6.0.2"\n' > /tmp/fake-podman
+   $ chmod +x /tmp/fake-podman
+   $ SNUG_PODMAN=/tmp/fake-podman go test -tags integration -run TestPodmanVersion ./test/integration/
+   --- FAIL: ...   podman version 6.0.2 does not match the pinned 5.8.4
+   ```
+
+   Then move the bundle aside and confirm the *absence* path still skips
+   cleanly rather than failing — absence is a capability nobody promised, a
+   wrong bundle is a lie about what was measured.
+
+2. **The substring traps are closed.** `5.8.40`, `15.8.4` and `5.8.4-rc1` all
+   contain the pinned string. Point the fake at each and each must fail. A
+   `strings.Contains` gate passes all three and looks green.
+
+3. **The check is not silently skipping on a machine that HAS the bundle.**
+   Run the engine suite with `-v` and confirm the version line appears rather
+   than a skip. A gate that skips where it should assert is indistinguishable
+   from a gate that passes, which is the failure mode of this whole issue.
+
+4. **`PROVENANCE` absent is a skip, disagreeing is a failure.** The documented
+   minimal install (`tar -xzf … --strip-components=1`) produces exactly
+   `README.md etc/ usr/` and no `PROVENANCE`, so a fatal there would punish
+   whoever followed the design doc. Edit `[versions] podman` in `PROVENANCE` to
+   a wrong value and confirm *that* fails.
+
+5. **The real run reports which engine served it**, and `--dry-run` does not:
+
+   ```console
+   $ snug -p @podman-socket <dir> -- true
+   snug: container engine: /home/you/.local/opt/podman-static/usr/local/bin/podman (5.8.4)
+   ```
+
+   `--dry-run` deliberately never probes — it skips preflight entirely, because
+   "none of its probes are needed to render a resolved policy, and running them
+   would be host I/O a debugging command has no business doing" (issues #21,
+   #252). A version on a dry run would be that host I/O; its absence is the
+   rule holding, not a gap.
+
+**Known red, and not from this check.** `SNUG_REQUIRE_SANDBOX=1 make
+integration` does not currently pass on a host provisioned exactly as
+`PODMAN-STATIC.md` describes: `helperBinariesDirs` names the bundle's
+`usr/local/bin` but its helpers live in `usr/local/lib/podman`, and the `/usr`
+fallback the code calls "always present" is absent in the development
+distrobox — so `Error: could not find a working conmon binary` and no container
+starts. The version gate above fires *before* any container does, so it is
+verifiable on such a host; the container-dependent checks in §9 are not.
+
 ## If a check fails
 
 1. Re-run it with `--dry-run` and compare what snug *claimed* against what you
