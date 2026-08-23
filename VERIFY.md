@@ -3016,13 +3016,13 @@ one and watch it work **without** snug:
 ```bash
 D=$(mktemp -d); S=$(mktemp -d); echo HOST-SECRET-MARKER > $S/token
 mkdir -p $D/.config/containers
-cp ~/.local/opt/podman-static/home/.config/containers/policy.json $D/.config/containers/
+printf '{"default":[{"type":"insecureAcceptAnything"}]}\n' > $D/.config/containers/policy.json
 cat > $D/.config/containers/containers.conf <<EOF
 [containers]
 mounts = ["type=bind,source=$S,destination=/leak,ro=true"]
 default_ulimits = ["nofile=13571:13571"]
 EOF
-env -u CONTAINERS_CONF -u XDG_CONFIG_HOME HOME=$D   ~/.local/opt/podman-static/usr/local/bin/podman run --rm alpine:3.20 cat /leak/token
+env -u CONTAINERS_CONF -u XDG_CONFIG_HOME HOME=$D   podman run --rm alpine:3.20 cat /leak/token
 ```
 
 Expect `HOST-SECRET-MARKER`. Then set `CONTAINERS_CONF` at a file containing
@@ -3046,7 +3046,7 @@ proves is shut:
 
 ```bash
 echo 'THIS IS NOT VALID TOML {{{' > $D/.config/containers/registries.conf
-env -u CONTAINERS_REGISTRIES_CONF -u XDG_CONFIG_HOME HOME=$D   ~/.local/opt/podman-static/usr/local/bin/podman pull alpine:3.20
+env -u CONTAINERS_REGISTRIES_CONF -u XDG_CONFIG_HOME HOME=$D   podman pull alpine:3.20
 ```
 
 Expect a parse error naming that path — which is the proof it was read.
@@ -3103,13 +3103,12 @@ Prove the channel, then prove it is shut, with a name you are already logged in
 to:
 
 ```bash
-P=~/.local/opt/podman-static
-E="CONTAINERS_STORAGE_CONF=$P/etc/snug/storage.conf PATH=/usr/bin"
+E="PATH=/usr/bin"
 
 # the channel: the host's own home resolves the host's own credential
-env -i $E HOME=$HOME       $P/usr/local/bin/podman login --get-login <a registry you use>
+env -i $E HOME=$HOME       podman login --get-login <a registry you use>
 # what snug does instead
-env -i $E HOME=$HOME REGISTRY_AUTH_FILE=/dev/null $P/usr/local/bin/podman login --get-login <the same registry>
+env -i $E HOME=$HOME REGISTRY_AUTH_FILE=/dev/null podman login --get-login <the same registry>
 ```
 
 Expect your username, then `Error: not logged into ...`. `REGISTRY_AUTH_FILE`

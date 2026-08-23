@@ -377,7 +377,7 @@ Plans, review write-ups, red-team round reports and working notes live there and
 stay there. A document is *promoted* into `.claude/design/` by a deliberate `git
 mv`, only once it is either **the** design for a subject (one per subject, no
 `-PLAN` or `-REVIEW` twin beside it) or a research record whose measurements stay
-useful after the work lands (`NOCGO.md`, `PODMAN-STATIC.md`, `ENGINE-NETNS.md`).
+useful after the work lands (`NOCGO.md`, `ENGINE-NETNS.md`).
 Findings never wait on promotion: a confirmed finding becomes a GitHub issue with
 its severity label, which is the milestone rule anyway.
 

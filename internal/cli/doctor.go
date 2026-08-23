@@ -455,7 +455,7 @@ func parseNetDev(out string) []string {
 //
 // podman resolves a helper by looking in ABSOLUTE DIRECTORIES. It never walks a
 // prefix, so a relocated bundle's helpers are invisible unless
-// helper_binaries_dir names the directory they are in — and `podman-static`
+// helper_binaries_dir names the directory they are in — and a relocated engine
 // splits them across usr/local/bin (crun, runc, pasta, podman) and
 // usr/local/lib/podman (conmon, netavark, aardvark-dns, catatonit,
 // rootlessport), of which snug's generated config names only the first.

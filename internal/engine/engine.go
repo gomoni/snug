@@ -1105,7 +1105,7 @@ func setEnv(env []string, key, value string) []string {
 //     variable and no flag: podman 5.8.4 has no --signature-policy at all,
 //     and a per-command flag would not reach an API-driven pull anyway. A
 //     home of our own is the only lever, which is the same conclusion
-//     PODMAN-STATIC.md §5 reached for the research bundle. What that lever
+//     the research measurements reached independently. What that lever
 //     carries is the HOST's own policy, projected — signaturepolicy.go — so
 //     taking the file over is a change of author and not of posture.
 //   - $HOME/.config/containers/registries.conf — where an image comes from.

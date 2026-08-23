@@ -311,7 +311,7 @@ instantly:
 | # | probe | fires | outcome |
 |---|---|---|---|
 | **P6** | `/proc/sys/kernel/yama/ptrace_scope` | first | **REFUSE iff == 0** (settled Q2). The M6 in-U cap-drop argument holds only on `ptrace_scope=1`; `2`/`3` are stricter and pass. No warn-and-continue. |
-| **P1** | real podman, not a host-escape shim (`detectHostShim`/`podmanClientUsable`, promoted from warning to refusal) | 2nd | **FATAL.** A distrobox `distrobox-host-exec`/`host-spawn`/`flatpak-spawn`/`#!` wrapper forwards to the host engine over a *filesystem* socket netns does not touch — a container would land on the host and the whole tier evaporates while looking healthy. Error names the shim and "bring your own engine: the static bundle" (`PODMAN-STATIC.md`). This also **eliminates the wrapper case** the old lifeline existed for (§6). |
+| **P1** | real podman, not a host-escape shim (`detectHostShim`/`podmanClientUsable`, promoted from warning to refusal) | 2nd | **FATAL.** A distrobox `distrobox-host-exec`/`host-spawn`/`flatpak-spawn`/`#!` wrapper forwards to the host engine over a *filesystem* socket netns does not touch — a container would land on the host and the whole tier evaporates while looking healthy. Error names the shim and the fix: install the distribution `podman` package. This also **eliminates the wrapper case** the old lifeline existed for (§6). |
 | **P2** | `/etc/subuid` + `/etc/subgid` have a range for this user | 3rd | **FATAL.** Names the fix: `<user>:100000:65536`. |
 | **P3** | `newuidmap`/`newgidmap` present with authority (file caps or setuid — accepted, Q3) to write a multi-range map | 4th | **FATAL.** Names shadow-utils. |
 | **P4** | overlay + `MS_REC\|MS_PRIVATE` in a userns (a throwaway probe: unshare mount ns, make `/` private, confirm overlay usable) | 5th | **FATAL.** Names the storage-driver hint. |
@@ -336,6 +336,55 @@ do not leave it as a `stage.Start` panic.
 > pointed at "§9" for the flag, which was the build-plan section and never
 > carried it — one of the two dangling *section* references that showed nobody
 > had followed a citation into this file.)
+
+---
+
+## 4a. Which config key governs which binary
+
+MEASURED against podman 5.8.4 and 6.0.2, driving real container starts. snug
+writes `helper_binaries_dir` and does **not** write `conmon_path`,
+`[engine.runtimes]` or `seccomp_profile`.
+
+| key | governs | snug writes it | fallback if unset |
+|---|---|---|---|
+| `helper_binaries_dir` | netavark, aardvark-dns, catatonit, rootlessport, pasta | yes | **none** — no `$PATH`, no default merge |
+| `conmon_path` | conmon | no | compiled default list, then **`$PATH`** |
+| `[engine.runtimes]` | crun, runc | no | compiled default list |
+| `seccomp_profile` | the seccomp profile | no | `/usr/share/containers/seccomp.json` |
+
+Consequences, each measured:
+
+- `helper_binaries_dir` does **not** govern conmon or the OCI runtime. Setting it
+  and nothing else leaves both resolving from the compiled defaults.
+- With `helper_binaries_dir` set to one empty directory:
+  `Error: could not find "netavark" in one of [<that dir>]`. It is the whole
+  authority for its five, so an entry snug omits is a helper the engine cannot
+  find.
+- `conmon_path` falls back to `$PATH`: with a nonexistent path,
+  `Using conmon from $PATH: "/usr/bin/conmon"`. So `PinnedPATH` is a second door
+  into conmon selection, and writing `conmon_path` alone would not pin it.
+- `seccomp_profile` unset plus no `/usr/share/containers/seccomp.json` gives
+  `building at STEP "RUN …": opening seccomp profile failed`, and the affected
+  tests **skip** rather than fail — a green suite measuring nothing.
+
+**Why this is here and not in prose elsewhere:** these are facts about podman,
+not about any particular engine installation, and each one decides whether a
+generated `containers.conf` actually pins what its author believed it pinned.
+
+`--signature-policy` is per-subcommand, and the projection depends on it.
+MEASURED on 5.8.4 and 6.0.2 alike, with a control
+(`--snug-bogus-flag` -> `unknown flag`):
+
+| command | verdict |
+|---|---|
+| global, `podman system service` | `Error: unknown flag: --signature-policy` |
+| `pull`, `image pull`, `create`, `run`, `build` | accepted, hidden, absent from `--help` |
+
+`system service` is the only command snug runs and the proxy's pull happens
+inside that process over the API, so no per-command flag reaches it and the
+engine's own `$HOME` is the whole mechanism. **The engine is not pinned, so this
+is a claim about a moving target: it belongs in a test that goes red, not in this
+table alone.**
 
 ---
 
