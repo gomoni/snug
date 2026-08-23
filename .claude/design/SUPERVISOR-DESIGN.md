@@ -498,5 +498,5 @@ Three consequences worth stating:
   into the stage. The floor and the lattice law exist; nothing raises them.
 - **The engine in the sandbox's netns** — the thing all of this is for.
   [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §2 measured that it works and §3 measured
-  where it does not; [`PODMAN-STATIC.md`](PODMAN-STATIC.md) is the pinned engine
+  where it does not; the engine is the host's own podman
   that makes the measurement runnable on a host whose `podman` is a shim.

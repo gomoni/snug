@@ -90,9 +90,9 @@ you a stale answer in exactly those places.
 |---|---|
 | §0, the finding | **Finding CLOSED (Tier B, 2026-08-18); the FACT it rests on is LIVE.** The *finding* — a sandbox with no `@net` reaches the internet through a container, because the container ran in the ENGINE's own netns — is closed: since Tier B the engine sits in the sandbox's netns N (the blockquote at the top of this file). What is live and canonical is the *fact* the citations rely on: a container's network IS the sandbox's, so `@podman-socket` hands a container exactly the network the sandbox has and nothing more — permanently true, not open. This is CLAUDE.md's own pattern: a limitation and a hole are the same fact facing two directions, and when the hole closes you re-derive the limitation rather than assume it went with it. Cited by `CLAUDE.md`, `base.toml`, `internal/cli/dryrun.go`, `internal/profile/file_test.go`, `VERIFY.md`, `README.md` and `SECRETS.md` §1.3, all of which rely on the live fact. |
 | §1, you cannot join only the netns | **Live.** A kernel fact, unchanged. [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md) §0 accepts it and works around the *shape* it imposed, not the fact. |
-| §2, the inversion works | **Live, and since reproduced twice.** The numbers here were taken with plain `unshare`. [`PODMAN-STATIC.md`](PODMAN-STATIC.md) §7 reproduces the same baseline against a real pinned engine; and the supervisor proof of concept reproduced it under the actual stage topology — MEASURED 2026-08-13 on this host, 42 checks, `fail=0`, in three identical consecutive runs, each section run twice so the payoff was shown absent first. That proof of concept has been deleted ([#49](https://github.com/gomoni/snug/issues/49)); §5.1 below carries what it measured about the derived mount view, and [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md) §1 carries the rest. |
+| §2, the inversion works | **Live, and since reproduced twice.** The numbers here were taken with plain `unshare`; the same baseline was reproduced against a real engine (that record was retired with the static-bundle fallback, #384); and the supervisor proof of concept reproduced it under the actual stage topology — MEASURED 2026-08-13 on this host, 42 checks, `fail=0`, in three identical consecutive runs, each section run twice so the payoff was shown absent first. That proof of concept has been deleted ([#49](https://github.com/gomoni/snug/issues/49)); §5.1 below carries what it measured about the derived mount view, and [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md) §1 carries the rest. |
 | §3, where it does not work | **Live, with one blocker now answered.** The distrobox shim is no longer decisive — see the note in §3 itself. The subuid, cgroup, `$XDG_RUNTIME_DIR` and host-uid findings all still stand and are still preflight requirements. |
-| §4, two guarantees change shape | **Live.** Still the reason teardown needs asserting rather than assuming, and `PODMAN-STATIC.md` §4 measured `conmon` surviving a Pdeathsig teardown a second time. |
+| §4, two guarantees change shape | **Live.** Still the reason teardown needs asserting rather than assuming, and `conmon` surviving a Pdeathsig teardown was measured a second time (record retired with #384). |
 | §5, the proposed shape | **Superseded — see §5.** M-a landed; M-b's topology is now [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md)'s, and the requirements list in §5 is what carried over. |
 
 > **Read [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md) alongside §5.** §1 below is still
@@ -210,7 +210,7 @@ a gate.
 > the symptom as the cause. The engine is not broken on such a host; only the
 > `/usr/bin/podman` *path* is, and `rpm -V podman` shows the package differing
 > from its manifest in the symlink alone. A self-contained engine bundle sidesteps
-> it entirely — [`PODMAN-STATIC.md`](PODMAN-STATIC.md) pins one, and the engine
+> it entirely — the host's own podman is the engine, and the engine
 > then runs rootless inside a netns on this very host, which is what unblocked
 > the measurement this section said could not be taken here.
 >

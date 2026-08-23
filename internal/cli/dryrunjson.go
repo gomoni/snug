@@ -407,8 +407,8 @@ type jsonContainers struct {
 	EngineSource       string   `json:"engine_source"`
 	EngineBinary       string   `json:"engine_binary"`
 	EngineBinaryBytes  byteList `json:"engine_binary_bytes,omitempty"`
-	BundleRoot         string   `json:"bundle_root"`
-	BundleRootBytes    byteList `json:"bundle_root_bytes,omitempty"`
+	ToolchainRoot      string   `json:"toolchain_root"`
+	ToolchainRootBytes byteList `json:"toolchain_root_bytes,omitempty"`
 	RegistrySearch     []string `json:"registry_search"`
 	SignaturesVerified bool     `json:"signatures_verified"`
 	// The host file the engine's signature policy is projected from, and the
@@ -664,7 +664,7 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 		// Both are environment variables' VALUES — host text, and the reason
 		// the human block puts them through visibleValue.
 		jc.EngineBinary, jc.EngineBinaryBytes = e.text(c.EngineBinary)
-		jc.BundleRoot, jc.BundleRootBytes = e.text(c.BundleRoot)
+		jc.ToolchainRoot, jc.ToolchainRootBytes = e.text(c.ToolchainRoot)
 		jc.SignaturePolicySource, jc.SignaturePolicySourceBytes = e.text(c.SignaturePolicySource)
 		jc.SignaturePolicyRefusal, jc.SignaturePolicyRefusalBytes = e.text(c.SignaturePolicyRefusal)
 		doc.Containers = &jc

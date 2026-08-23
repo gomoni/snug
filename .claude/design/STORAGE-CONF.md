@@ -1,9 +1,10 @@
 # The engine's storage configuration
 
 What pins each part of the container engine's store, and which keys snug's
-generated `storage.conf` can and cannot deliver. Measured against podman 5.8.4
-(the pinned bundle, [`PODMAN-STATIC.md`](PODMAN-STATIC.md)) and podman 6.0.2.
-The two agree except on one row of §3.
+generated `storage.conf` can and cannot deliver. Measured against podman 5.8.4 and 6.0.2; the two agree except on one row of
+§3. 5.8.4 was a pinned static bundle, retired in #384 — the measurements stand,
+but the engine is now host-provided and therefore **not pinned**, so any claim
+here that depends on a version needs re-measuring rather than trusting.
 
 ## 1. The oracle
 
@@ -200,9 +201,8 @@ Anything that changes the engine argv re-reads §3 first.
 ## 5. Reproducing it
 
 ```
-$ ~/.local/opt/podman-static/usr/local/bin/podman --version
-podman version 5.8.4
-$ ./storage-conf-lab.sh /tmp/lab-bundle
+$ podman --version
+$ ./storage-conf-lab.sh /tmp/lab
 
 $ cat hostpodman
 #!/bin/sh
@@ -212,10 +212,6 @@ exec /usr/bin/host-spawn -no-pty \
 $ ./storage-conf-lab.sh ~/.cache/lab-host ./hostpodman
 ```
 
-The bundle's sha256 matches the [`PODMAN-STATIC.md`](PODMAN-STATIC.md) §1 pin
-byte for byte:
-`a58765fe8be6ab3fb79f892f1a027b4ce4a7e8eb589df1ef960c167cbde08d69`.
-
 ### 5.1 `storage-conf-lab.sh`
 
 ```sh
@@ -223,7 +219,7 @@ byte for byte:
 # storage-conf-lab.sh -- the oracle and the measurements behind STORAGE-CONF.md.
 #
 #   usage: storage-conf-lab.sh [LABDIR] [PODMAN]
-#   default PODMAN: ~/.local/opt/podman-static/usr/local/bin/podman
+#   default PODMAN: whatever `podman` resolves to on PATH
 #
 # The oracle is an image that exists ONLY in store A. If it appears in
 # `podman images` against store B, something told podman to read store A.
@@ -234,7 +230,7 @@ LAB="${1:-$(mktemp -d)}"
 # always remove one (an imported layer is owned by a uid inside the import
 # userns). Refuse rather than measure on it.
 [ -e "$LAB" ] && [ -n "$(ls -A "$LAB" 2>/dev/null)" ] && { echo "refusing to reuse a non-empty $LAB"; exit 1; }
-PODMAN="${2:-$HOME/.local/opt/podman-static/usr/local/bin/podman}"
+PODMAN="${2:-$(command -v podman)}"
 BUNDLE="$(cd "$(dirname "$PODMAN")/../../.." && pwd)"
 mkdir -p "$LAB"/{home/.config/containers,xdgconf/containers,xdg,tmp,conf,pinned,storeA,runA,rootfs}
 echo "lab:    $LAB"
@@ -242,9 +238,9 @@ echo "podman: $($PODMAN --version)"
 
 echo '{"default":[{"type":"insecureAcceptAnything"}]}' > "$LAB"/home/.config/containers/policy.json
 { echo '[engine]'; echo 'cgroup_manager = "cgroupfs"'; echo 'events_logger = "file"'
-  # Pin the helpers only when PODMAN really is the static bundle. Pointed at
-  # anything else these keys name directories that do not exist, and podman
-  # refuses before the question under test is asked.
+  # Pin the helpers only when PODMAN sits in a tree that carries its own.
+  # Pointed at anything else these keys name directories that do not exist, and
+  # podman refuses before the question under test is asked.
   if [ -x "$BUNDLE/usr/local/lib/podman/conmon" ]; then
     echo "helper_binaries_dir = [\"$BUNDLE/usr/local/lib/podman\", \"$BUNDLE/usr/local/bin\"]"
     echo "conmon_path = [\"$BUNDLE/usr/local/lib/podman/conmon\"]"

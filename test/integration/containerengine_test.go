@@ -20,7 +20,7 @@ package integration
 // which preflight P1 (containerpreflight.go) correctly refuses before
 // anything is created. Testing this tier at all, on this host, needs a real,
 // non-shim engine pinned explicitly — the static bundle host-bridge
-// provisioned at ~/.local/opt/podman-static (.claude/design/PODMAN-STATIC.md)
+// provisioned at ~/.local/opt/podman-static
 // — via its own `snug-podman` wrapper script, which sets the CONTAINERS_CONF/
 // STORAGE_CONF/REGISTRIES_CONF/HOME env the bundle needs to find its own
 // pinned helper binaries (conmon, crun, netavark, pasta) rather than
@@ -58,7 +58,7 @@ import (
 )
 
 // podmanStaticRootRel is where host-bridge's provisioning left the pinned
-// engine bundle, relative to $HOME (.claude/design/PODMAN-STATIC.md §1/§5).
+// engine bundle, relative to $HOME.
 const podmanStaticRootRel = ".local/opt/podman-static"
 
 // containerEngineEnv is baseEnv (via attachEnv's own isolation, so
@@ -100,7 +100,7 @@ func podmanBundle(t *testing.T) (root, podman string) {
 	root = filepath.Join(home, podmanStaticRootRel)
 	podman = filepath.Join(root, "usr", "local", "bin", "podman")
 	if fi, statErr := os.Stat(podman); statErr != nil || fi.IsDir() {
-		t.Skip("SKIP: no static podman bundle at " + podman + " (.claude/design/PODMAN-STATIC.md); " +
+		t.Skip("SKIP: no static podman bundle at " + podman + "; " +
 			"this suite never points SNUG_PODMAN at whatever the host's OWN `podman` resolves to")
 	}
 	return root, podman
@@ -161,7 +161,7 @@ func provisionEngineWrapperWithHome(t *testing.T, homeOverride string) string {
 	root := filepath.Join(home, podmanStaticRootRel)
 	podmanBin := filepath.Join(root, "usr", "local", "bin", "podman")
 	if fi, statErr := os.Stat(podmanBin); statErr != nil || fi.IsDir() {
-		t.Skip("SKIP: no static podman bundle at " + podmanBin + " (.claude/design/PODMAN-STATIC.md); " +
+		t.Skip("SKIP: no static podman bundle at " + podmanBin + "; " +
 			"this suite never points SNUG_PODMAN at whatever the host's OWN `podman` resolves to")
 	}
 
@@ -2417,7 +2417,7 @@ func podmanBundleBinary(t *testing.T) string {
 	}
 	bin := filepath.Join(home, podmanStaticRootRel, "usr", "local", "bin", "podman")
 	if fi, statErr := os.Stat(bin); statErr != nil || fi.IsDir() {
-		t.Skip("SKIP: no static podman bundle at " + bin + " (.claude/design/PODMAN-STATIC.md)")
+		t.Skip("SKIP: no static podman bundle at " + bin + "")
 	}
 	return bin
 }
@@ -2432,7 +2432,7 @@ func bundleRoot(t *testing.T) string {
 	}
 	root := filepath.Join(home, podmanStaticRootRel)
 	if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
-		t.Skip("SKIP: no static podman bundle at " + root + " (.claude/design/PODMAN-STATIC.md)")
+		t.Skip("SKIP: no static podman bundle at " + root + "")
 	}
 	return root
 }

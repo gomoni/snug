@@ -161,7 +161,7 @@ SNUG_PODMAN=/opt/snug-podman/bin/podman SNUG_PODMAN_ROOT=/opt/snug-podman \
 ```
 
 Expect the first to say `binary resolved from PATH when the run starts` and the
-second to name `/opt/snug-podman/bin/podman ($SNUG_PODMAN)` and the bundle root.
+second to name `/opt/snug-podman/bin/podman ($SNUG_PODMAN)` and the toolchain root.
 The env values are read, never the filesystem — set them to a path that does not
 exist and the line is unchanged, because `--dry-run` does not stat it. Golden:
 `internal/cli/testdata/containers.podman-pinned.txt` vs the two PATH-case
@@ -2672,7 +2672,7 @@ Expect no `LEFT` line at all.
 **One graft is deliberately absent from a dry run: the toolchain.** Its host path
 is a preflight ANSWER, and `--dry-run` runs no preflight (it would be host I/O a
 debugging command has no business doing). So a dry run names four grafts and a
-real run with a bring-your-own engine makes five. The screen says so rather than
+real run with an engine outside every grant makes five. The screen says so rather than
 leaving the difference to be discovered.
 
 ## 9c-ter. The engine's view is DERIVED — no host tree in it
@@ -3016,13 +3016,13 @@ one and watch it work **without** snug:
 ```bash
 D=$(mktemp -d); S=$(mktemp -d); echo HOST-SECRET-MARKER > $S/token
 mkdir -p $D/.config/containers
-cp ~/.local/opt/podman-static/home/.config/containers/policy.json $D/.config/containers/
+printf '{"default":[{"type":"insecureAcceptAnything"}]}\n' > $D/.config/containers/policy.json
 cat > $D/.config/containers/containers.conf <<EOF
 [containers]
 mounts = ["type=bind,source=$S,destination=/leak,ro=true"]
 default_ulimits = ["nofile=13571:13571"]
 EOF
-env -u CONTAINERS_CONF -u XDG_CONFIG_HOME HOME=$D   ~/.local/opt/podman-static/usr/local/bin/podman run --rm alpine:3.20 cat /leak/token
+env -u CONTAINERS_CONF -u XDG_CONFIG_HOME HOME=$D   podman run --rm alpine:3.20 cat /leak/token
 ```
 
 Expect `HOST-SECRET-MARKER`. Then set `CONTAINERS_CONF` at a file containing
@@ -3046,7 +3046,7 @@ proves is shut:
 
 ```bash
 echo 'THIS IS NOT VALID TOML {{{' > $D/.config/containers/registries.conf
-env -u CONTAINERS_REGISTRIES_CONF -u XDG_CONFIG_HOME HOME=$D   ~/.local/opt/podman-static/usr/local/bin/podman pull alpine:3.20
+env -u CONTAINERS_REGISTRIES_CONF -u XDG_CONFIG_HOME HOME=$D   podman pull alpine:3.20
 ```
 
 Expect a parse error naming that path — which is the proof it was read.
@@ -3103,13 +3103,12 @@ Prove the channel, then prove it is shut, with a name you are already logged in
 to:
 
 ```bash
-P=~/.local/opt/podman-static
-E="CONTAINERS_STORAGE_CONF=$P/etc/snug/storage.conf PATH=/usr/bin"
+E="PATH=/usr/bin"
 
 # the channel: the host's own home resolves the host's own credential
-env -i $E HOME=$HOME       $P/usr/local/bin/podman login --get-login <a registry you use>
+env -i $E HOME=$HOME       podman login --get-login <a registry you use>
 # what snug does instead
-env -i $E HOME=$HOME REGISTRY_AUTH_FILE=/dev/null $P/usr/local/bin/podman login --get-login <the same registry>
+env -i $E HOME=$HOME REGISTRY_AUTH_FILE=/dev/null podman login --get-login <the same registry>
 ```
 
 Expect your username, then `Error: not logged into ...`. `REGISTRY_AUTH_FILE`

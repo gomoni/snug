@@ -101,7 +101,7 @@ func runContainerPreflight() (containerPreflight, error) {
 // "walk up N directories" rule is a guess that is wrong on some real layout,
 // and grafting one directory too high hands the engine's view a tree nobody
 // argued for. $SNUG_PODMAN_ROOT is not invented here either: the pinned
-// bundle's OWN wrapper (bin/snug-podman, .claude/design/PODMAN-STATIC.md)
+// engine's own wrapper conventionally
 // already reads that exact variable, so this adopts the vocabulary the
 // bundle already speaks rather than adding a second one beside it.
 //
@@ -287,15 +287,42 @@ func preflightPtraceScope() error {
 // everything looks healthy (ENGINE-WIRING.md §4, P1).
 func preflightPodmanBinary() (string, error) {
 	// $SNUG_PODMAN is checked FIRST and, when set, is trusted outright rather
-	// than run back through detectHostShim's own PATH lookup below — a
-	// caller pointing this at an explicit path (e.g. a pinned static bundle,
-	// .claude/design/PODMAN-STATIC.md) is BYPASSING PATH resolution on
+	// than run back through detectHostShim's own PATH lookup below — a caller
+	// pointing this at an explicit path is BYPASSING PATH resolution on
 	// purpose, and re-resolving "podman" from PATH here would ask the wrong
 	// question ("is whatever PATH finds a shim") about a binary the caller
 	// never asked to use.
+	//
+	// THAT BYPASS IS ISSUE #396: the named path is never checked for being a
+	// shim itself, so $SNUG_PODMAN pointing at a host-escape helper is
+	// accepted by the function whose whole purpose is refusing one.
 	if custom := os.Getenv("SNUG_PODMAN"); custom != "" {
 		if fi, err := os.Stat(custom); err != nil || fi.IsDir() {
 			return "", fmt.Errorf("$SNUG_PODMAN=%s does not name a usable file", custom)
+		}
+		// ISSUE #396. The named path gets the SAME shim check as a path from
+		// PATH. It did not, and the bypass had a rationale that no longer
+		// exists: pointing at an explicit path used to mean "a bundle snug
+		// ships", so the check was skipped as asking the wrong question. With
+		// the fallback retired the variable is a testing seam, and skipping the
+		// check means `$SNUG_PODMAN=/usr/bin/podman` on a host where that IS
+		// distrobox-host-exec is accepted by the function whose entire purpose
+		// is refusing one — which was the configuration this whole subject
+		// existed because of.
+		//
+		// detectHostShim needs no change to take an absolute path: MEASURED,
+		// exec.LookPath("/usr/bin/podman") returns it directly and never
+		// consults PATH, while a nonexistent or non-executable path errors. So
+		// the fix is asking the question, not building a mechanism.
+		if shim, ok := detectHostShim(custom); ok {
+			return "", fmt.Errorf("$SNUG_PODMAN=%s resolves to %s, a host-escape helper (%s) "+
+				"that forwards to the HOST's own podman over a channel no network namespace "+
+				"touches — a container started through it would land on the host, silently "+
+				"contradicting everything --dry-run says about this sandbox's network. snug "+
+				"will not run the container engine through it, however it was named.\n"+
+				"      Fix: point $SNUG_PODMAN at a real engine binary, or unset it and "+
+				"install the distribution podman package.",
+				custom, shim.Path, filepath.Base(shim.Resolved))
 		}
 		return custom, nil
 	}
@@ -305,17 +332,17 @@ func preflightPodmanBinary() (string, error) {
 			"started through it would land on the host, silently contradicting everything "+
 			"--dry-run says about this sandbox's network. snug will not run the container engine "+
 			"through it.\n"+
-			"      Fix: bring your own engine — a statically linked podman not shadowed by this "+
-			"shim (see .claude/design/PODMAN-STATIC.md) — and put it ahead of %s on PATH, or set "+
-			"$SNUG_PODMAN to its absolute path.",
+			"      Fix: install the distribution podman package, so %s is a real engine binary "+
+			"rather than a symlink. To reach the HOST's engine on purpose, add a connection to "+
+			"its socket (podman system connection add) — never a symlink here, and never a "+
+			"global CONTAINER_HOST, because snug execs podman to run its own engine.",
 			shim.Path, filepath.Base(shim.Resolved), shim.Path)
 	}
 	path, err := exec.LookPath("podman")
 	if err != nil {
 		return "", fmt.Errorf("the podman profile is selected but podman is not installed.\n" +
 			"      snug will not silently hand the sandbox no engine, or the host's.\n" +
-			"      Install podman, or point $SNUG_PODMAN at a static build " +
-			"(.claude/design/PODMAN-STATIC.md)")
+			"      Install the distribution podman package.")
 	}
 	return path, nil
 }

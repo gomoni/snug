@@ -625,33 +625,25 @@ exact sysctl when something is missing.
 `@podman-socket` and `@podman-build` additionally need a podman engine and its
 **helper binaries** — `conmon`, `netavark`, `aardvark-dns`, `catatonit`,
 `rootlessport`, plus `crun`/`runc`. podman looks these up by absolute directory,
-never by walking a bundle prefix, so each one has to sit in a directory podman is
-told about.
+so each has to sit in a directory podman is told about. A distribution install
+puts them there:
 
-The `podman-static` bundle splits them across two directories:
+| binary | package's location |
+|---|---|
+| `podman`, `conmon`, `crun`, `runc`, `catatonit`, `pasta` | `/usr/bin` |
+| `netavark`, `aardvark-dns` | `/usr/libexec/podman` |
 
-```
-usr/local/bin/          crun fuse-overlayfs fusermount3 pasta podman runc
-usr/local/lib/podman/   aardvark-dns catatonit conmon netavark rootlessport
-```
+Install the distribution packages. snug resolves `podman` from `PATH` and does
+not ship or download an engine.
 
-Measured on this host: snug's generated `helper_binaries_dir` names the first
-(`/snug/engine/toolchain/usr/local/bin`) and not the second, so the five helpers
-in `usr/local/lib/podman/` are unreachable and a container run fails at whichever
-one it needs first:
-
-```
-Error: could not find a working conmon binary (configured options: [...]: invalid argument)
-Error: could not find "netavark" in one of [/snug/engine/toolchain/usr/local/bin
-       /usr/libexec/podman /usr/lib/podman /usr/bin].  To resolve this error, set
-       the helper_binaries_dir key in the `[engine]` section of containers.conf to
-       the directory containing your helper binaries.
-```
-
-Installing a distribution `conmon` (`/usr/bin/conmon`) satisfies that one lookup,
-because `/usr/bin` *is* on the list — and then `netavark` fails the same way, with
-no distribution package to fall back on. Until `helper_binaries_dir` names the
-bundle's `usr/local/lib/podman`, containers do not work from the bundle alone.
+**If `/usr/bin/podman` is a symlink to `distrobox-host-exec`** (or another
+host-escape helper), snug refuses to run the engine through it: it forwards to
+the host's podman over a filesystem socket no network namespace touches, so a
+container would land on the host while `--dry-run` still described this sandbox.
+Install the real package. For a shell that reaches the host's engine on purpose,
+`podman system connection add host unix:///run/user/$(id -u)/podman/podman.sock`
+plus an alias — never a symlink at `/usr/bin/podman`, and never a global
+`CONTAINER_HOST`, since snug execs `podman` to run its own engine.
 
 `snug doctor` checks for them, so a host missing one says so before the first
 container rather than during it:
