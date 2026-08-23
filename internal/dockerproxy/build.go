@@ -987,6 +987,23 @@ func checkSeccompProfile(p *Proxy, v string) (string, error) {
 			"could have written itself — which is `unconfined` with extra steps. A seccomp "+
 			"profile must be one the sandbox can read but did not author", v)
 	}
+	// The ENGINE opens this file, in its own DERIVED view, and everything above
+	// judged a HOST path (issue #371). Those are two spaces, and every mount
+	// whose Host and Guest differ makes them give different answers — @claude's
+	// `{home}/.local/bin/claude:/snug/bin/claude` is a shipped example whose
+	// Host string, read in guest space, lands on the writable $HOME tmpfs.
+	// Without this the host spelling passes both checks above while the engine
+	// reads whatever this sandbox's own mount set puts at that name: a file the
+	// payload wrote, which is `unconfined` by the third route this function has
+	// had to close.
+	//
+	// It also discharges CheckEngineBindSource's documented precondition, which
+	// this caller did not establish before — that function's parameter is named
+	// `guest`, and every predicate inside it walks Mount.Guest, while this one
+	// was handing it `real`, a host path (issue #371).
+	if err := p.pol.CheckEngineForwardedPath(real); err != nil {
+		return "", err
+	}
 	// The engine reads this path itself, a second time, when it applies the
 	// profile — the same create/start TOCTOU checkOne closes for a bind
 	// source (issue #284): a name on the path swapped after this check and

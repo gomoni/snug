@@ -102,9 +102,16 @@ import (
 // policy.EngineGuestPath beside it: no filesystem, no Environ, so it runs
 // unprivileged in CI. Its correctness depends on its caller having already
 // established that guest is BOTH the resolved host source AND the path the
-// engine will see it at (checkOne's EngineGuestPath check, issue #284 §3.3) —
+// engine will see it at (Policy.CheckEngineForwardedPath, issue #284 §3.3) —
 // this function does not re-derive that; it only judges whether guest, once
 // it is that path, can still be re-pointed.
+//
+// Both current callers now discharge that precondition immediately before
+// calling: create.go's checkOne, and build.go's checkSeccompProfile, which did
+// NOT until issue #371 — it passed a host path to a parameter named `guest`,
+// every predicate here having walked Mount.Guest all along. This function's own
+// graft-component clause is therefore redundant by contract, and is kept as the
+// backstop for a caller that forgets.
 func (p *Policy) CheckEngineBindSource(guest string) error {
 	guest = filepath.Clean(guest)
 	components := pathComponents(guest)

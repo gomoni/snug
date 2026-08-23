@@ -775,22 +775,27 @@ func (p *Proxy) checkOne(source, dest string, ro bool) (mount, error) {
 	// string as-is; splitSpec accepts host:guest grants where they diverge
 	// (issue #284 §3.3). Refuse rather than forward a spelling the engine
 	// would resolve to something else — or to nothing this check ever judged.
-	guest, ok := p.pol.EngineGuestPath(source)
-	if !ok || guest != source {
-		return mount{}, fmt.Errorf("mount source %s is not visible to the container engine at "+
-			"the same path this sandbox sees it at, so what gets bound at container start is not "+
-			"what this check judged. Grant a path whose guest and host spelling are identical", source)
+	//
+	// Asked in GUEST space, and asked AFTER hostPathVisible, both on purpose
+	// (issue #371). Authorization is a host-space question and stays one:
+	// EngineGuestPath, which this check used to be written with, matches
+	// GRAFTS by Graft.Host and so answers "visible at /snug/engine/store" for
+	// exactly the engine-owned host paths hostPathVisible refuses — the hole
+	// issue #251 closed. CheckEngineForwardedPath asks the other question, the
+	// one the engine actually answers: what does the engine find at this NAME.
+	if err := p.pol.CheckEngineForwardedPath(source); err != nil {
+		return mount{}, err
 	}
 
 	// The engine re-resolves this same path string a SECOND time, from a
 	// separate process, at container START — a distinct client request with
 	// an attacker-controlled gap after this check. Refuse any source where a
 	// name on the path can still be re-pointed in that gap (issue #284).
-	if err := p.pol.CheckEngineBindSource(guest); err != nil {
+	if err := p.pol.CheckEngineBindSource(source); err != nil {
 		return mount{}, err
 	}
 
-	return mount{Type: "bind", Source: guest, Target: dest, ReadOnly: ro}, nil
+	return mount{Type: "bind", Source: source, Target: dest, ReadOnly: ro}, nil
 }
 
 // mount is deliberately these four fields and no others: HostConfig.Mounts
