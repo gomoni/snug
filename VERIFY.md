@@ -4542,16 +4542,11 @@ ordinary mode and is right to.
 
 ## 17. The pinned engine bundle is the one being measured (issue #384)
 
-The bundle was pinned **on disk** — a tarball, a detached signature, a
-`PROVENANCE` file (`.claude/design/PODMAN-STATIC.md` §1) — and asserted
-**nowhere in code**. Every gate that resolved it did `os.Stat` plus `!IsDir()`
-and stopped, so re-provisioning `~/.local/opt/podman-static` at a different tag
-changed what every engine test measured with nothing to notice: no failure, no
-diff, and every round still reporting that "a real engine" served the request
-while a different engine answered.
-
-`engine.PinnedPodmanBundleVersion` is now the single pin, and the gate execs the
-binary rather than trusting the directory.
+`engine.SupportedPodmanBundles` (`internal/engine/podmanpin.go`) is the
+authority: tag, version, tarball sha256 and size, and the only supported set.
+The gate execs the binary rather than trusting the directory, so a bundle
+re-provisioned at a different tag fails instead of silently changing what every
+engine test measures.
 
 **The flag, never the subcommand.** This is the part worth knowing by hand,
 because the wrong one looks fine until the install is minimal:
@@ -4620,8 +4615,14 @@ What to check:
 4. **`PROVENANCE` absent is a skip, disagreeing is a failure.** The documented
    minimal install (`tar -xzf … --strip-components=1`) produces exactly
    `README.md etc/ usr/` and no `PROVENANCE`, so a fatal there would punish
-   whoever followed the design doc. Edit `[versions] podman` in `PROVENANCE` to
-   a wrong value and confirm *that* fails.
+   whoever followed the design doc. Tamper `[artifact] tag`, `sha256`,
+   `size_bytes` or `[versions] podman` and confirm each fails against
+   `engine.SupportedPodmanBundles`.
+
+   **Use `go test -count=1` for that.** `PROVENANCE` is outside the package, so
+   Go's test cache does not see it change and replays `ok (cached)` against the
+   file you just edited — a check that silently cannot fail, which is the shape
+   this whole section exists to prevent.
 
 5. **The real run reports which engine served it**, and `--dry-run` does not:
 

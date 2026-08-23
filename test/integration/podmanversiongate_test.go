@@ -3,24 +3,19 @@
 package integration
 
 // podmanversiongate_test.go is issue #384's integration layer: it drives the
-// consolidated checkedPodmanBundle resolver (containerengine_test.go) and
-// PROVENANCE cross-check through a REAL subprocess and a REAL installed
-// bundle, which is what the pure table in internal/engine/podmanpin_test.go
-// cannot reach — that file never touches a filesystem path, this one does.
+// consolidated checkedPodmanBundle resolver (containerengine_test.go) and the
+// PROVENANCE cross-check through a REAL subprocess and REAL fixtures.
 //
-// Two independent things are asserted, and they must not be confused:
+// Two independent things are asserted:
 //
-//   - TestCheckedPodmanBundleGate exercises the RESOLVER (checkedPodmanBundle,
-//     via podmanBundle) end to end, using a FAKE bundle under a fake $HOME —
-//     never the real one — so ABSENT/MATCH/MISMATCH/non-executable can all be
-//     produced on demand, on any host, without depending on what happens to
-//     be installed here.
+//   - TestCheckedPodmanBundleGate exercises the RESOLVER end to end against a
+//     FAKE bundle under a fake $HOME — never the real one — so ABSENT/MATCH/
+//     MISMATCH/non-executable can all be produced on demand, on any host.
 //   - TestPodmanBundleProvenanceMatchesPin and
 //     TestPodmanBundleBinariesMatchProvenanceHashes read the REAL, installed
-//     PROVENANCE file and the REAL binaries beside it, because those are the
-//     one thing that cannot be faked without defeating the point: they prove
-//     THIS machine's bundle is what it claims to be, not that the checking
-//     code works in the abstract.
+//     PROVENANCE file and binaries: that is the one thing that cannot be
+//     faked without defeating the point, and since #384 the comparison is
+//     against engine.SupportedPodmanBundles (Go), not the design doc.
 import (
 	"crypto/sha256"
 	"encoding/hex"
@@ -35,6 +30,16 @@ import (
 
 	"github.com/gomoni/snug/internal/engine"
 )
+
+// pinnedVersion is the one version engine.SupportedPodmanBundles ships today,
+// read from the set rather than repeated as a literal.
+func pinnedVersion(t *testing.T) string {
+	t.Helper()
+	if len(engine.SupportedPodmanBundles) == 0 {
+		t.Fatal("engine.SupportedPodmanBundles is empty")
+	}
+	return engine.SupportedPodmanBundles[0].Version
+}
 
 // ── TestCheckedPodmanBundleGate: the resolver, against a fake bundle ───────
 
@@ -136,15 +141,18 @@ func buildFakePodmanBundleHome(t *testing.T, version string, executable bool) st
 
 // TestCheckedPodmanBundleGate is issue #384's crux, tested against a fake
 // bundle rather than the real one so every branch is reachable on any host:
-// ABSENT skips, an exact MATCH passes through, and a version that is present
-// but wrong — including the substring-trap neighbours named in issue #384 —
-// is FATAL, never silently accepted, never confused with a parse failure.
+// ABSENT skips, a supported version passes through, and a version that is
+// present but unsupported — including the substring-trap neighbours named in
+// issue #384 — is FATAL, never silently accepted, never confused with a parse
+// failure.
 func TestCheckedPodmanBundleGate(t *testing.T) {
+	v := pinnedVersion(t)
+
 	t.Run("match_passes", func(t *testing.T) {
-		home := buildFakePodmanBundleHome(t, engine.PinnedPodmanBundleVersion, true)
+		home := buildFakePodmanBundleHome(t, v, true)
 		out, code := runPodmanVersionGateHelper(t, home)
 		if code != 0 {
-			t.Fatalf("expected exit 0 for a matching version, got %d:\n%s", code, out)
+			t.Fatalf("expected exit 0 for a supported version, got %d:\n%s", code, out)
 		}
 		// This IS the positive control the rest of this test needs: it proves
 		// the fixture mechanics (fake HOME, a real copy of fakepodman, the
@@ -153,7 +161,7 @@ func TestCheckedPodmanBundleGate(t *testing.T) {
 		// something, not the fixture being broken in a way that fails no
 		// matter what version string is written.
 		if !strings.Contains(out, "HELPER-REACHED-END") {
-			t.Fatalf("a MATCHING version did not reach past the gate — the fixture itself is "+
+			t.Fatalf("a SUPPORTED version did not reach past the gate — the fixture itself is "+
 				"broken, which would make every mismatch case below pass for the wrong reason:\n%s", out)
 		}
 	})
@@ -176,21 +184,21 @@ func TestCheckedPodmanBundleGate(t *testing.T) {
 	// (fakepodman really answering "podman --version", not a string handed
 	// straight to the pure parser) — "9.9.9" is a plain mismatch, the other
 	// three are near-misses that a strings.Contains or prefix/suffix check
-	// would wrongly accept as "5.8.4".
-	mismatches := []string{"9.9.9", "5.8.40", "15.8.4", "5.8.4-rc1"}
-	for _, v := range mismatches {
-		v := v
-		t.Run("mismatch_"+v, func(t *testing.T) {
-			home := buildFakePodmanBundleHome(t, v, true)
+	// would wrongly accept as a member of the supported set.
+	mismatches := []string{"9.9.9", v + "0", "1" + v, v + "-rc1"}
+	for _, mv := range mismatches {
+		mv := mv
+		t.Run("mismatch_"+mv, func(t *testing.T) {
+			home := buildFakePodmanBundleHome(t, mv, true)
 			out, code := runPodmanVersionGateHelper(t, home)
 			if code == 0 {
-				t.Fatalf("version %q must be refused (pin is %s), but the helper exited 0:\n%s",
-					v, engine.PinnedPodmanBundleVersion, out)
+				t.Fatalf("version %q must be refused (supported set is %v), but the helper "+
+					"exited 0:\n%s", mv, engine.SupportedPodmanVersions(), out)
 			}
 			if strings.Contains(out, "HELPER-REACHED-END") {
-				t.Fatalf("version %q reached past the gate instead of failing it:\n%s", v, out)
+				t.Fatalf("version %q reached past the gate instead of failing it:\n%s", mv, out)
 			}
-			if !strings.Contains(out, "PRESENT but failed the pinned-version check") {
+			if !strings.Contains(out, "PRESENT but not in the supported set") {
 				t.Fatalf("expected checkedPodmanBundle's own FATAL message naming the pin "+
 					"failure, got:\n%s", out)
 			}
@@ -207,16 +215,14 @@ func TestCheckedPodmanBundleGate(t *testing.T) {
 		if code == 0 {
 			t.Fatalf("a non-executable bundle binary must be refused, but the helper exited 0:\n%s", out)
 		}
-		// The exact phrases engine.CheckPodmanVersion/ParsePodmanVersion use for
-		// their own two error shapes (checked, not "does not match"/"could not
-		// parse" alone: checkedPodmanBundle's own wrapper prose talks about the
-		// pin in a way that contains the bare word "match", which would make a
-		// looser substring here a false positive against its OWN wording).
-		if strings.Contains(out, "does not match the pinned") || strings.Contains(out, "could not parse a podman version") {
+		// "could not parse a podman version" alone, not "PRESENT but not in the
+		// supported set", would mean this got misreported as a parse failure
+		// rather than the exec error it actually is.
+		if strings.Contains(out, "could not parse a podman version") {
 			t.Fatalf("a non-executable file must fail as an EXEC error, not be misreported as a "+
-				"version mismatch or a parse failure:\n%s", out)
+				"parse failure:\n%s", out)
 		}
-		if !strings.Contains(out, "PRESENT but failed the pinned-version check") {
+		if !strings.Contains(out, "PRESENT but not in the supported set") {
 			t.Fatalf("expected checkedPodmanBundle's own FATAL message, got:\n%s", out)
 		}
 	})
@@ -231,7 +237,9 @@ func TestCheckedPodmanBundleGate(t *testing.T) {
 // never a grant, so a future field must not break this reader.
 type podmanProvenance struct {
 	Artifact struct {
-		Tag string `toml:"tag"`
+		Tag       string `toml:"tag"`
+		SHA256    string `toml:"sha256"`
+		SizeBytes int64  `toml:"size_bytes"`
 	} `toml:"artifact"`
 	Versions struct {
 		Podman string `toml:"podman"`
@@ -242,16 +250,13 @@ type podmanProvenance struct {
 // loadPodmanProvenance reads and parses the REAL PROVENANCE file beside the
 // REAL installed bundle.
 //
-// ABSENT is a skip, reversed from an earlier draft of this gate. §3 of
-// .claude/design/PODMAN-STATIC.md documents a minimal install
-// (`README.md etc/ usr/` and nothing else) as a legitimate, supported shape —
-// measured on the development host itself, issue #384 — and PROVENANCE is
-// not part of it. Fataling on absence would fail every test in this file,
-// and every future CI runner, for anyone who followed that documented path
-// literally, over a file the design doc never promises. PRESENT but
-// unparseable, or present but DISAGREEING with the pin, is a different
-// claim — that bundle asserts something about itself and is wrong — and
-// stays fatal, which is what the two tests below do.
+// ABSENT is a skip: §3 of .claude/design/PODMAN-STATIC.md documents a minimal
+// install (`README.md etc/ usr/`, no PROVENANCE) as legitimate, so fataling on
+// absence would fail this test for anyone who followed that path literally,
+// over a file the design doc never promises. PRESENT but unparseable, or
+// present but DISAGREEING with engine.SupportedPodmanBundles, is a different
+// claim — the installed bundle asserts something about itself and it is
+// wrong — and stays fatal.
 func loadPodmanProvenance(t *testing.T) (*podmanProvenance, string) {
 	t.Helper()
 	home, err := os.UserHomeDir()
@@ -273,33 +278,45 @@ func loadPodmanProvenance(t *testing.T) (*podmanProvenance, string) {
 }
 
 // TestPodmanBundleProvenanceMatchesPin cross-checks the REAL, installed
-// PROVENANCE's [versions].podman against engine.PinnedPodmanBundleVersion —
-// the two are recorded independently (one measured by host-bridge running
-// `podman --version` while provisioning, one hand-written into the pin), so
-// agreement here is not a tautology.
+// PROVENANCE against engine.SupportedPodmanBundles — since issue #384 the Go
+// tuple is the authority, and PROVENANCE (recorded independently, by
+// host-bridge running `podman --version` while provisioning) must agree with
+// it, tag, sha256 and size together, not just the bare version.
+// PROVENANCE lives outside this package, so `go test` caching does not observe
+// edits to it: re-run with -count=1 when checking these assertions by hand, or
+// a tampered file replays a cached pass.
 func TestPodmanBundleProvenanceMatchesPin(t *testing.T) {
 	p, path := loadPodmanProvenance(t)
-	if p.Versions.Podman != engine.PinnedPodmanBundleVersion {
-		t.Fatalf("%s records [versions].podman = %q, but engine.PinnedPodmanBundleVersion = %q.\n"+
-			"       This is a PRESENT-but-disagreeing PROVENANCE, not an absent one: the "+
+
+	bundle, ok := engine.SupportedPodmanBundle(p.Versions.Podman)
+	if !ok {
+		t.Fatalf("%s records [versions].podman = %q, which is not a member of the supported set "+
+			"%v.\n       This is a PRESENT-but-disagreeing PROVENANCE, not an absent one: the "+
 			"installed bundle claims a version the pin does not recognise. If this is a "+
-			"deliberate re-pin, update engine.PinnedPodmanBundleVersion AND "+
+			"deliberate re-pin, update engine.SupportedPodmanBundles AND "+
 			".claude/design/PODMAN-STATIC.md §1 together.",
-			path, p.Versions.Podman, engine.PinnedPodmanBundleVersion)
+			path, p.Versions.Podman, engine.SupportedPodmanVersions())
 	}
-	// The tag and the bare version are deliberately both present in
-	// PROVENANCE (the file's own [artifact] comment names why: a naive
-	// compare against the tag's "v" prefix must not be the one that matches).
-	// Cross-checking them against each other here is what makes that
-	// deliberate choice a checked fact instead of a comment nobody re-reads.
-	if p.Artifact.Tag != "" {
-		wantTag := "v" + p.Versions.Podman
-		if p.Artifact.Tag != wantTag {
-			t.Fatalf("%s: [artifact].tag = %q does not agree with [versions].podman = %q "+
-				"(expected tag %q) — these two fields exist precisely so a bare-version compare "+
-				"cannot be fooled by the tag's leading \"v\", and they have drifted apart",
-				path, p.Artifact.Tag, p.Versions.Podman, wantTag)
-		}
+
+	// [artifact].tag versus the member's Tag — the "v" prefix trap. Tag
+	// carries the GitHub release tag ("v5.8.4"); Versions.Podman is the bare
+	// form ("5.8.4") that podman --version prints. Comparing tag against
+	// bundle.Tag directly (not "v"+p.Versions.Podman) proves the trap is
+	// closed rather than assuming it, on both sides: this fails just as hard
+	// if PROVENANCE ever drops the "v" as it does if the pin ever gains one.
+	if p.Artifact.Tag != bundle.Tag {
+		t.Fatalf("%s: [artifact].tag = %q does not equal the supported bundle's Tag = %q for "+
+			"version %q", path, p.Artifact.Tag, bundle.Tag, p.Versions.Podman)
+	}
+	if p.Artifact.SHA256 != bundle.TarballSHA256 {
+		t.Fatalf("%s: [artifact].sha256 = %q does not equal the supported bundle's "+
+			"TarballSHA256 = %q for version %q", path, p.Artifact.SHA256, bundle.TarballSHA256,
+			p.Versions.Podman)
+	}
+	if p.Artifact.SizeBytes != bundle.TarballSize {
+		t.Fatalf("%s: [artifact].size_bytes = %d does not equal the supported bundle's "+
+			"TarballSize = %d for version %q", path, p.Artifact.SizeBytes, bundle.TarballSize,
+			p.Versions.Podman)
 	}
 }
 

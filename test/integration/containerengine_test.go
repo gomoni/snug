@@ -3,57 +3,40 @@
 package integration
 
 // containerengine_test.go is issue #63 Tier B's own integration layer: the
-// engine now runs INSIDE the sandbox's own network namespace N, forked by the
+// engine runs INSIDE the sandbox's own network namespace N, forked by the
 // stage as root-in-U and reduced to policy.EngineCapBounding immediately
-// before it execs. go-implementer built and wired the mechanism (the commits
-// on this branch under "refs #63") and specified exactly what this file must
-// assert without writing the assertions — the engine-in-N property can only
-// be tested now that the engine is actually wired into internal/cli. Every
-// test below is one of those seven assertions, named for the property, with
-// its own positive control per CLAUDE.md's standing rule: "a test that cannot
-// fail is worse than no test".
+// before it execs. Every test below asserts one property of that shape, each
+// with its own positive control ("a test that cannot fail is worse than no
+// test").
 //
 // # Why every real-engine test drives $SNUG_PODMAN at a pinned static bundle
 //
-// This development host's own `podman` resolves to distrobox-host-exec (a
-// host-escape shim — see internal/cli/podmanshim.go's hostEscapeShims list),
-// which preflight P1 (containerpreflight.go) correctly refuses before
-// anything is created. Testing this tier at all, on this host, needs a real,
-// non-shim engine pinned explicitly — the static bundle host-bridge
+// This host's own `podman` resolves to distrobox-host-exec (a host-escape
+// shim, internal/cli/podmanshim.go's hostEscapeShims), which preflight P1
+// correctly refuses before anything is created. Testing this tier needs a
+// real, non-shim engine pinned explicitly: the static bundle host-bridge
 // provisioned at ~/.local/opt/podman-static (.claude/design/PODMAN-STATIC.md).
 //
-// NO WRAPPER SCRIPT any more — this paragraph used to describe a
-// `snug-podman` wrapper that set CONTAINERS_CONF/STORAGE_CONF/REGISTRIES_CONF/
-// HOME for the bundle, and that description went stale the moment Tier C
-// removed it: see provisionEngineWrapperWithHome's own doc comment below for
-// what replaced it (snug's own generated containers.conf/storage.conf/
-// registries.conf, and an engine-owned HOME). A stale header here is exactly
-// the kind of drift issue #384's own version gate exists to catch elsewhere;
-// this one had no check, so it is fixed by hand instead — read the body, not
-// this paragraph, when the two disagree again.
+// NO WRAPPER SCRIPT: snug generates its own containers.conf/storage.conf/
+// registries.conf and gives the engine its own HOME (see
+// provisionEngineWrapperWithHome for what a caller still needs one for).
 //
-// containerpreflight.go's own preflightPodmanBinary trusts $SNUG_PODMAN
-// outright and never re-resolves it through PATH, which is exactly what lets
-// a bundle binary (or, since #384, a checked bundle binary) be handed to it
-// directly.
+// containerpreflight.go's preflightPodmanBinary trusts $SNUG_PODMAN outright
+// and never re-resolves it through PATH — exactly what lets a checked bundle
+// binary be handed to it directly.
 //
-// containerEngineEnv, and the other three functions that resolve the bundle
+// containerEngineEnv and the other three functions that resolve the bundle
 // (podmanBundle, provisionEngineWrapperWithHome, podmanBundleBinary,
-// bundleRoot), now draw on ONE shared resolver, checkedPodmanBundle, which
+// bundleRoot) draw on one shared resolver, checkedPodmanBundle, which
 // distinguishes two failure shapes that read alike at a glance but are not:
 //
 //   - ABSENT (no file at the expected path, or a directory there instead)
-//     skips CLEANLY, never fails, even under SNUG_REQUIRE_SANDBOX — the same
-//     convention requireEngine already uses in sandbox_test.go — because a
-//     host without the bundle (any CI runner today) is missing a capability
-//     nobody promised it.
-//   - PRESENT BUT WRONG (a binary that exists at the path but answers
-//     `--version` with something other than engine.PinnedPodmanBundleVersion,
-//     or cannot be exec'd at all) is FATAL, never a skip, because a bundle
-//     that is there but not what the pin says it is is not a missing
-//     capability — it is a false measurement, the exact silence issue #384
-//     is about: re-provisioning that directory at a different tag used to
-//     change what every test in this file measured with nothing to notice.
+//     skips cleanly, never fails, even under SNUG_REQUIRE_SANDBOX — a host
+//     without the bundle is missing a capability nobody promised it.
+//   - PRESENT BUT UNSUPPORTED (a binary that exists but answers `--version`
+//     with something outside engine.SupportedPodmanBundles, or cannot be
+//     exec'd at all) is FATAL, never a skip: it is a false measurement, not a
+//     missing capability — the exact silence issue #384 is about.
 import (
 	"bytes"
 	"context"
@@ -110,47 +93,28 @@ func containerEngineEnv(t *testing.T) (env []string, xdgRuntime string) {
 
 // checkedPodmanBundle is issue #384's single resolver: every place in this
 // file that used to run its own independent os.Stat against
-// ~/.local/opt/podman-static now funnels through here instead of repeating
-// the check with no version pin behind it — podmanBundle,
-// provisionEngineWrapperWithHome's own inline stat, podmanBundleBinary and
-// bundleRoot are all thin callers of this function now, keeping their own
-// signatures.
+// ~/.local/opt/podman-static funnels through here instead — podmanBundle,
+// provisionEngineWrapperWithHome's inline stat, podmanBundleBinary and
+// bundleRoot are all thin callers, keeping their own signatures. One resolver
+// means the version check protects all four by construction, not by each
+// call site remembering to add it.
 //
-// Consolidating matters for more than tidiness. Adding the version check to
-// only ONE of those four original inline sites would have protected only
-// that one function's callers, leaving the other three's independent stats
-// duplicated and unchecked — three copies of "does a file exist here", zero
-// copies of "is it the file the pin says it is". Funnelling all four through
-// one resolver means the check protects all four at once, by construction,
-// the same way `internal/policy` prefers one checked path over a catalogue of
-// call sites that each remember to check by hand.
+// Not every caller is equally security-relevant: three feed a real engine
+// invocation (containerEngineEnv, provisionEngineWrapperWithHome, bundleRoot's
+// copyTree), the fourth (podmanBundleBinary) is reached only from
+// assertHostileConfInjectsWithoutSnug, itself a positive control for issue
+// #132's channel. containerEngineEnv is the site that would have caught issue
+// #384's silent drift on its own.
 //
-// Not every one of the four downstream callers is equally security-relevant,
-// and this comment says so rather than overstating what got added: three of
-// the four feed a real engine invocation (containerEngineEnv,
-// provisionEngineWrapperWithHome, and bundleRoot's copyTree of the bundle's
-// own home skeleton), but the fourth — podmanBundleBinary — is reached only
-// from assertHostileConfInjectsWithoutSnug, which is ITSELF a positive
-// control for issue #132's channel, not a security assertion in its own
-// right. Checking its binary's version too is not wasted, but it is not the
-// site that would have caught issue #384's silent drift on its own; that site
-// is containerEngineEnv, which every real-engine test in this file calls.
+// ABSENT skips cleanly, never fails, even under SNUG_REQUIRE_SANDBOX: a host
+// with no bundle is missing a capability nobody promised it.
 //
-// ABSENT skips cleanly (never fails, even under SNUG_REQUIRE_SANDBOX — the
-// same convention requireEngine uses in sandbox_test.go): a host with no
-// bundle at all is missing a capability nobody promised it, exactly as
-// before this change.
-//
-// PRESENT BUT WRONG — the binary exists at the expected path but
-// engine.CheckPodmanBinaryVersion refuses it, whether because `--version`
-// printed something other than engine.PinnedPodmanBundleVersion or because
-// the exec itself failed (e.g. a non-executable file) — is FATAL, never a
-// skip. That is the crux of issue #384: a bundle that is THERE but not what
-// the pin says it is must not silently change what every test in this file
-// measures. If this fires because of a deliberate re-pin, update
-// engine.PinnedPodmanBundleVersion AND .claude/design/PODMAN-STATIC.md §1
-// together — a version bump in one without the other reintroduces exactly
-// the drift this check exists to catch.
+// PRESENT BUT UNSUPPORTED — the binary exists but its `--version` is outside
+// engine.SupportedPodmanBundles, or it cannot be exec'd — is FATAL, never a
+// skip: that bundle is a false measurement, not a missing capability. A
+// deliberate re-pin updates engine.SupportedPodmanBundles AND
+// .claude/design/PODMAN-STATIC.md §1 together; either alone reintroduces the
+// drift this check exists to catch.
 func checkedPodmanBundle(t *testing.T) (root, podman string) {
 	t.Helper()
 	home, err := os.UserHomeDir()
@@ -163,15 +127,13 @@ func checkedPodmanBundle(t *testing.T) (root, podman string) {
 		t.Skip("SKIP: no static podman bundle at " + podman + " (.claude/design/PODMAN-STATIC.md); " +
 			"this suite never points SNUG_PODMAN at whatever the host's OWN `podman` resolves to")
 	}
-	if err := engine.CheckPodmanBinaryVersion(podman, engine.PinnedPodmanBundleVersion); err != nil {
-		t.Fatalf("the podman bundle at %s is PRESENT but failed the pinned-version check "+
-			"(want %s): %v\n"+
-			"       This is not absence — a bundle that is there but does not match the pin is "+
-			"a false measurement, the exact silence issue #384 is about: re-provisioning this "+
-			"directory at a different tag used to change what every test in this file measured "+
-			"with nothing to notice. If this is a deliberate re-pin, update "+
-			"engine.PinnedPodmanBundleVersion AND .claude/design/PODMAN-STATIC.md §1 together.",
-			podman, engine.PinnedPodmanBundleVersion, err)
+	if err := engine.CheckPodmanBinaryVersionSupported(podman); err != nil {
+		t.Fatalf("the podman bundle at %s is PRESENT but not in the supported set %v: %v\n"+
+			"       This is not absence — a bundle that is there but is not a supported version is "+
+			"a false measurement, the exact silence issue #384 is about. If this is a deliberate "+
+			"re-pin, update engine.SupportedPodmanBundles AND .claude/design/PODMAN-STATIC.md §1 "+
+			"together.",
+			podman, engine.SupportedPodmanVersions(), err)
 	}
 	return root, podman
 }

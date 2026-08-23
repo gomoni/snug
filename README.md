@@ -484,6 +484,59 @@ path, `/snug/bin` is read-only from inside, and a `podman` provided by a
 profile's `path` still wins over snug's. It appears only when a podman profile
 is selected — a default `snug <dir>` has no stub and an unchanged `PATH`.
 
+### Installing the engine
+
+snug does not ship an engine. A distribution `podman` in `/usr/bin` is found
+automatically; a **static bundle** is what you need where `/usr/bin/podman` is
+the shim above, or where the host's podman is older than the supported set.
+
+The supported set lives in the source tree —
+`engine.SupportedPodmanBundles` in
+[`internal/engine/podmanpin.go`](internal/engine/podmanpin.go) — as tag,
+version, tarball sha256 and size. It is the only version snug is tested and
+developed against, and the test suite fails rather than skips when it finds a
+bundle that is not in it.
+
+```bash
+tag=v5.8.4        # engine.SupportedPodmanBundles[0].Tag
+url=https://github.com/mgoltzsche/podman-static/releases/download/$tag
+curl -sSLO $url/podman-linux-amd64.tar.gz
+curl -sSLO $url/podman-linux-amd64.tar.gz.asc
+
+sha256sum podman-linux-amd64.tar.gz         # must equal .TarballSHA256
+gpg --recv-keys 0CCF102C4F95D89E583FF1D4F8B5AF50344BB503
+gpg --batch --verify podman-linux-amd64.tar.gz.asc podman-linux-amd64.tar.gz
+
+mkdir -p ~/.local/opt/podman-static
+tar -xzf podman-linux-amd64.tar.gz -C ~/.local/opt/podman-static --strip-components=1
+```
+
+The signature is worth reading for what it does **not** prove: the signing key
+and the artifact come from the same account, so a good signature says who built
+the tarball, not that the key is the right one. The sha256 is the reproducible
+claim.
+
+Then point snug at it:
+
+```bash
+export SNUG_PODMAN=~/.local/opt/podman-static/usr/local/bin/podman
+export SNUG_PODMAN_ROOT=~/.local/opt/podman-static
+```
+
+`$SNUG_PODMAN` is trusted as given and never re-resolved through `PATH`.
+`$SNUG_PODMAN_ROOT` is the bundle root, and it is **required** for a bundle
+outside `/usr`: the engine runs in a view derived from the sandbox's, so its
+program files reach it only as a named graft. Without it snug refuses the run
+rather than starting an engine that cannot exec its own helpers. Both are
+reported on startup:
+
+```
+snug: container engine: /home/you/.local/opt/podman-static/usr/local/bin/podman (5.8.4)
+```
+
+Details, including the bundle's own helper layout, are in
+[`.claude/design/PODMAN-STATIC.md`](.claude/design/PODMAN-STATIC.md).
+
 **Known rough edges**, measured and not yet fixed:
 
 - `docker run` exits 0 but prints nothing — the container's stdout is not

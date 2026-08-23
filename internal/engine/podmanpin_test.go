@@ -6,18 +6,19 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
 
 // podmanpin_test.go is the pure, privilege-free half of issue #384's gate:
-// ParsePodmanVersion and CheckPodmanVersion take a string and return a
-// string or an error, so every case here runs under `make gate` with no
-// bundle installed and no sandbox — CheckPodmanBinaryVersion's own exec is
-// exercised too, but only against fixtures this test writes itself, never
-// against the real ~/.local/opt/podman-static bundle (that belongs to
+// ParsePodmanVersion and CheckPodmanVersionSupported take a string and return
+// a string or an error, so every case here runs under `make gate` with no
+// bundle installed and no sandbox. CheckPodmanBinaryVersionSupported's own
+// exec is exercised too, but only against fixtures this test writes itself,
+// never against ~/.local/opt/podman-static — that belongs to
 // test/integration/podmanversiongate_test.go, which can skip when the bundle
-// is absent; this file must not skip, ever, so it never touches a real path).
+// is absent; this file must not skip, ever, so it never touches a real path.
 
 func TestParsePodmanVersionExact(t *testing.T) {
 	got, err := ParsePodmanVersion("podman version 5.8.4\n")
@@ -57,65 +58,119 @@ func TestParsePodmanVersionRejects(t *testing.T) {
 	}
 }
 
-func TestCheckPodmanVersionExactMatch(t *testing.T) {
-	if err := CheckPodmanVersion("podman version 5.8.4\n", "5.8.4"); err != nil {
-		t.Fatalf("unexpected error on an exact match: %v", err)
+// pinnedVersion is the one version SupportedPodmanBundles ships today, read
+// from the set rather than repeated as a literal — the set is the only
+// authority for this fact.
+func pinnedVersion(t *testing.T) string {
+	t.Helper()
+	if len(SupportedPodmanBundles) == 0 {
+		t.Fatal("SupportedPodmanBundles is empty; every test in this file needs at least one entry")
+	}
+	return SupportedPodmanBundles[0].Version
+}
+
+func TestCheckPodmanVersionSupportedExactMatch(t *testing.T) {
+	v := pinnedVersion(t)
+	if err := CheckPodmanVersionSupported("podman version " + v + "\n"); err != nil {
+		t.Fatalf("unexpected error on a supported version: %v", err)
 	}
 }
 
-// TestCheckPodmanVersionRejectsSubstringNeighbours is the substring-trap
-// sweep named explicitly in issue #384: "5.8.40", "15.8.4" and "5.8.4-rc1"
-// all CONTAIN "5.8.4" as a substring and must still be refused, because the
-// comparison in CheckPodmanVersion is `==` on the whole parsed field, never
-// strings.Contains and never a prefix/suffix check.
-func TestCheckPodmanVersionRejectsSubstringNeighbours(t *testing.T) {
+// TestCheckPodmanVersionSupportedRejectsSubstringNeighbours is the
+// substring-trap sweep named in issue #384: each case CONTAINS a supported
+// version as a substring and must still be refused, because membership is
+// checked with `==` per element, never strings.Contains, never a prefix or
+// suffix.
+func TestCheckPodmanVersionSupportedRejectsSubstringNeighbours(t *testing.T) {
+	v := pinnedVersion(t)
 	cases := []string{
-		"5.8.40",    // "5.8.4" is a PREFIX of this
-		"15.8.4",    // "5.8.4" is a SUFFIX of this
-		"5.8.4-rc1", // "5.8.4" is a PREFIX of this
+		v + "0",    // v is a PREFIX of this
+		"1" + v,    // v is a SUFFIX of this
+		v + "-rc1", // v is a PREFIX of this
 	}
 	for _, got := range cases {
 		t.Run(got, func(t *testing.T) {
 			output := fmt.Sprintf("podman version %s\n", got)
-			err := CheckPodmanVersion(output, "5.8.4")
+			err := CheckPodmanVersionSupported(output)
 			if err == nil {
-				t.Fatalf("CheckPodmanVersion(%q, %q) = nil; %q must not be accepted as a match "+
-					"for the pin even though it contains it as a substring", output, "5.8.4", got)
+				t.Fatalf("CheckPodmanVersionSupported(%q) = nil; %q must not be accepted as "+
+					"supported even though it contains %q as a substring", output, got, v)
 			}
-			if !strings.Contains(err.Error(), "does not match") {
-				t.Fatalf("error %q does not identify itself as a MISMATCH, distinct from a parse "+
-					"failure — a caller needs to tell the two apart", err.Error())
+			if strings.Contains(err.Error(), "could not parse") {
+				t.Fatalf("error %q is a PARSE failure, not the MISMATCH this case is meant to "+
+					"exercise — %q parses fine as a version, it is just unsupported", err.Error(), got)
+			}
+			if !strings.Contains(err.Error(), got) {
+				t.Fatalf("error %q does not name the unsupported version it rejected", err.Error())
 			}
 		})
 	}
 }
 
-func TestCheckPodmanVersionPropagatesParseFailure(t *testing.T) {
-	err := CheckPodmanVersion("not a version string at all", "5.8.4")
+func TestCheckPodmanVersionSupportedPropagatesParseFailure(t *testing.T) {
+	err := CheckPodmanVersionSupported("not a version string at all")
 	if err == nil {
 		t.Fatal("expected an error")
 	}
 	if !strings.Contains(err.Error(), "could not parse") {
-		t.Fatalf("CheckPodmanVersion must surface ParsePodmanVersion's own PARSE error verbatim "+
-			"when the output cannot be parsed at all, not fold it into a mismatch: got %q", err.Error())
+		t.Fatalf("CheckPodmanVersionSupported must surface ParsePodmanVersion's own PARSE error "+
+			"verbatim when the output cannot be parsed at all, not fold it into a mismatch: got %q",
+			err.Error())
 	}
 }
 
-// TestPinnedPodmanBundleVersionHasNoVPrefix guards the exact hazard the
-// constant's own doc comment names: the GitHub tag is "v5.8.4" but `podman
-// --version` prints the bare form, so a "v" smuggled into the constant would
-// make CheckPodmanVersion reject every real binary it is pointed at.
-func TestPinnedPodmanBundleVersionHasNoVPrefix(t *testing.T) {
-	if strings.HasPrefix(PinnedPodmanBundleVersion, "v") {
-		t.Fatalf("PinnedPodmanBundleVersion = %q carries a leading %q; podman --version prints "+
-			"the bare form and CheckPodmanVersion compares with ==, so this would reject the "+
-			"pinned binary itself", PinnedPodmanBundleVersion, "v")
+// TestSupportedPodmanBundlesVersionHasNoVPrefix guards the exact hazard named
+// in podmanpin.go: the GitHub tag carries "v", `podman --version` never does,
+// so a "v" smuggled into Version would reject the pinned binary itself.
+func TestSupportedPodmanBundlesVersionHasNoVPrefix(t *testing.T) {
+	for _, b := range SupportedPodmanBundles {
+		if strings.HasPrefix(b.Version, "v") {
+			t.Fatalf("SupportedPodmanBundles entry %+v has a Version with a leading %q; "+
+				"podman --version prints the bare form", b, "v")
+		}
+		if err := CheckPodmanVersionSupported("podman version " + b.Version + "\n"); err != nil {
+			t.Fatalf("bundle %+v does not accept its own Version: %v", b, err)
+		}
 	}
-	// Sanity check on the flip side: the fixture above only catches a literal
-	// "v" prefix, so also assert the pin round-trips through the same parser
-	// CheckPodmanVersion uses, against the exact line the real binary prints.
-	if err := CheckPodmanVersion("podman version "+PinnedPodmanBundleVersion+"\n", PinnedPodmanBundleVersion); err != nil {
-		t.Fatalf("the pin does not accept itself: %v", err)
+}
+
+// TestSupportedPodmanBundlesTagCarriesVPrefix is the flip side of the trap
+// above: Tag is the GitHub release tag, and it DOES carry the "v" that
+// Version must not, so a bundle whose two fields drifted apart is caught
+// here.
+func TestSupportedPodmanBundlesTagCarriesVPrefix(t *testing.T) {
+	for _, b := range SupportedPodmanBundles {
+		want := "v" + b.Version
+		if b.Tag != want {
+			t.Fatalf("SupportedPodmanBundles entry has Tag = %q, want %q (from Version = %q)",
+				b.Tag, want, b.Version)
+		}
+	}
+}
+
+func TestSupportedPodmanBundleLookup(t *testing.T) {
+	v := pinnedVersion(t)
+	got, ok := SupportedPodmanBundle(v)
+	if !ok {
+		t.Fatalf("SupportedPodmanBundle(%q) = _, false; want the pinned bundle", v)
+	}
+	if got.Version != v {
+		t.Fatalf("SupportedPodmanBundle(%q).Version = %q, want %q", v, got.Version, v)
+	}
+	if _, ok := SupportedPodmanBundle("9.9.9"); ok {
+		t.Fatal("SupportedPodmanBundle(\"9.9.9\") = _, true; want false for an unsupported version")
+	}
+}
+
+func TestSupportedPodmanVersionsMatchesBundles(t *testing.T) {
+	var want []string
+	for _, b := range SupportedPodmanBundles {
+		want = append(want, b.Version)
+	}
+	got := SupportedPodmanVersions()
+	if !slices.Equal(got, want) {
+		t.Fatalf("SupportedPodmanVersions() = %v, want %v (SupportedPodmanBundles' own Version "+
+			"fields, in order)", got, want)
 	}
 }
 
@@ -139,38 +194,40 @@ func writeFakeVersionScript(t *testing.T, path, output string, mode os.FileMode)
 	}
 }
 
-func TestCheckPodmanBinaryVersionMatch(t *testing.T) {
+func TestCheckPodmanBinaryVersionSupportedMatch(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("SKIP: fixture is a #!/bin/sh script, this test assumes a POSIX shell is exec'able")
 	}
+	v := pinnedVersion(t)
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "fake-podman")
-	writeFakeVersionScript(t, bin, "podman version 5.8.4\n", 0o755)
+	writeFakeVersionScript(t, bin, "podman version "+v+"\n", 0o755)
 
-	if err := CheckPodmanBinaryVersion(bin, "5.8.4"); err != nil {
+	if err := CheckPodmanBinaryVersionSupported(bin); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestCheckPodmanBinaryVersionMismatchIsDistinguishableFromParseFailure(t *testing.T) {
+func TestCheckPodmanBinaryVersionSupportedMismatchIsDistinguishableFromParseFailure(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("SKIP: fixture is a #!/bin/sh script, this test assumes a POSIX shell is exec'able")
 	}
+	v := pinnedVersion(t)
 	dir := t.TempDir()
 
 	mismatch := filepath.Join(dir, "fake-podman-mismatch")
-	writeFakeVersionScript(t, mismatch, "podman version 5.8.4-rc1\n", 0o755)
-	err := CheckPodmanBinaryVersion(mismatch, "5.8.4")
+	writeFakeVersionScript(t, mismatch, "podman version "+v+"-rc1\n", 0o755)
+	err := CheckPodmanBinaryVersionSupported(mismatch)
 	if err == nil {
 		t.Fatal("expected a mismatch error")
 	}
-	if !strings.Contains(err.Error(), "does not match") {
-		t.Fatalf("mismatch error %q is not textually distinguishable as a MISMATCH", err.Error())
+	if strings.Contains(err.Error(), "could not parse") {
+		t.Fatalf("mismatch error %q is a PARSE failure, not a MISMATCH", err.Error())
 	}
 
 	unparseable := filepath.Join(dir, "fake-podman-garbage")
 	writeFakeVersionScript(t, unparseable, "not a version line\n", 0o755)
-	err = CheckPodmanBinaryVersion(unparseable, "5.8.4")
+	err = CheckPodmanBinaryVersionSupported(unparseable)
 	if err == nil {
 		t.Fatal("expected a parse error")
 	}
@@ -179,13 +236,12 @@ func TestCheckPodmanBinaryVersionMismatchIsDistinguishableFromParseFailure(t *te
 	}
 }
 
-// TestCheckPodmanBinaryVersionNonExecutableFileIsAnExecErrorNotAParseOrMismatch
+// TestCheckPodmanBinaryVersionSupportedNonExecutableFileIsAnExecErrorNotAParseOrMismatch
 // is issue #384's third named case: a file that exists at the expected path
-// (0o644, no exec bit) is neither "absent" nor "wrong version" — it is a
-// broken install that never produces any output to parse at all, so its
-// error must be distinguishable from both CheckPodmanVersion error shapes
-// ("could not parse", "does not match").
-func TestCheckPodmanBinaryVersionNonExecutableFileIsAnExecErrorNotAParseOrMismatch(t *testing.T) {
+// (0o644, no exec bit) is neither "absent" nor "unsupported" — it is a broken
+// install that never produces any output to parse, so its error must be
+// distinguishable from both other error shapes.
+func TestCheckPodmanBinaryVersionSupportedNonExecutableFileIsAnExecErrorNotAParseOrMismatch(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("SKIP: this test depends on the POSIX executable-bit permission model")
 	}
@@ -193,25 +249,25 @@ func TestCheckPodmanBinaryVersionNonExecutableFileIsAnExecErrorNotAParseOrMismat
 		t.Skip("SKIP: root ignores the executable bit, so this test cannot fail for the right " +
 			"reason as root")
 	}
+	v := pinnedVersion(t)
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "fake-podman-not-executable")
-	writeFakeVersionScript(t, bin, "podman version 5.8.4\n", 0o644)
+	writeFakeVersionScript(t, bin, "podman version "+v+"\n", 0o644)
 
-	err := CheckPodmanBinaryVersion(bin, "5.8.4")
+	err := CheckPodmanBinaryVersionSupported(bin)
 	if err == nil {
 		t.Fatal("expected an exec error for a non-executable file")
 	}
-	if strings.Contains(err.Error(), "could not parse") || strings.Contains(err.Error(), "does not match") {
+	if strings.Contains(err.Error(), "could not parse") {
 		t.Fatalf("a non-executable file must fail as an EXEC error, not be misreported as a "+
-			"parse failure or a version mismatch: %v", err)
+			"parse failure: %v", err)
 	}
 	if !strings.Contains(err.Error(), bin) {
 		t.Fatalf("exec error %q does not name the path that failed to run", err.Error())
 	}
 	// Positive control for the negative above: confirm the OS really does
-	// refuse to exec this file directly, so "CheckPodmanBinaryVersion
-	// returned an error" is not passing because of something else (a missing
-	// binary, a bad shebang) that happens to also error.
+	// refuse to exec this file directly, so "an error came back" is not
+	// passing for an unrelated reason (a missing binary, a bad shebang).
 	if execErr := exec.Command(bin, "--version").Run(); execErr == nil {
 		t.Fatal("positive control failed: a 0o644 file with no exec bit ran successfully, so " +
 			"this test's exec-error case never had a chance to be exercised for the reason it " +
@@ -219,15 +275,15 @@ func TestCheckPodmanBinaryVersionNonExecutableFileIsAnExecErrorNotAParseOrMismat
 	}
 }
 
-func TestCheckPodmanBinaryVersionMissingBinaryIsAnExecError(t *testing.T) {
+func TestCheckPodmanBinaryVersionSupportedMissingBinaryIsAnExecError(t *testing.T) {
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "does-not-exist")
-	err := CheckPodmanBinaryVersion(missing, "5.8.4")
+	err := CheckPodmanBinaryVersionSupported(missing)
 	if err == nil {
 		t.Fatal("expected an error for a binary that does not exist")
 	}
-	if strings.Contains(err.Error(), "could not parse") || strings.Contains(err.Error(), "does not match") {
+	if strings.Contains(err.Error(), "could not parse") {
 		t.Fatalf("a missing binary must fail as an EXEC error, not be misreported as a parse "+
-			"failure or a version mismatch: %v", err)
+			"failure: %v", err)
 	}
 }

@@ -1101,27 +1101,15 @@ func setEnv(env []string, key, value string) []string {
 //
 //   - $HOME/.config/containers/policy.json — the signature policy. It decides
 //     whether an image may be used at all, it is REQUIRED (podman refuses to
-//     pull without one), and it is the one file here with NO environment
-//     variable and no flag that reaches it.
-//
-//     CORRECTED, issue #384: this said "podman 5.8.4 has no
-//     --signature-policy at all", and that is FALSE — signaturepolicy.go's
-//     own doc comment, in this package, already had it right. The flag is
-//     PER-SUBCOMMAND. Re-measured on the pinned bundle, classifying on
-//     whether cobra rejects the flag by name (control: --snug-bogus-flag ->
-//     "Error: unknown flag: --snug-bogus-flag"): REJECTED on the global
-//     command and on `system service`; accepted but HIDDEN, absent from
-//     --help, on `pull`, `image pull`, `create`, `run` and `build`.
-//
-//     The conclusion is UNCHANGED, and the rejection is precisely why: the
-//     only command snug runs is `system service`, and the container proxy's
-//     pull happens inside that process over the API, where no per-command
-//     flag reaches it. So a home of our own is still the only lever, the
-//     same conclusion PODMAN-STATIC.md §5 reached for the research bundle.
-//     Read the correction as a correction of the FACT, not of the design.
-//     What that lever carries is the HOST's own policy, projected —
-//     signaturepolicy.go — so taking the file over is a change of author and
-//     not of posture.
+//     pull without one), and no environment variable or flag reaches it.
+//     `--signature-policy` is per-subcommand: rejected with "unknown flag" on
+//     the global command and on `system service`, hidden but accepted on
+//     pull/image pull/create/run/build. `system service` is the only command
+//     snug runs and the proxy's pull happens inside it over the API, so a home
+//     of our own is the only lever — the same conclusion PODMAN-STATIC.md §5
+//     reached for the research bundle. What that lever carries is the HOST's
+//     own policy, projected (signaturepolicy.go), so taking the file over is a
+//     change of author and not of posture.
 //
 //   - $HOME/.config/containers/registries.conf — where an image comes from.
 //     Also closed by CONTAINERS_REGISTRIES_CONF below; both, for the reason
