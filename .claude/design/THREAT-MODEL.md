@@ -134,7 +134,21 @@ surprised when this leads to a containment escape.
 
 Two same-uid siblings inside one sandbox reach each other's fds and memory
 through `/proc/<pid>/fd/N` and `/proc/<pid>/mem` — neither is syscall-shaped, so
-no seccomp filter can name them.
+no seccomp filter can name them. A file another payload holds open can be
+re-opened with its contents intact, including a pipe, a memfd, a deleted file
+and an unnamed temporary one; its memory can be read *and written*.
+
+This follows from two payloads sharing one pid namespace under one uid, and it
+holds for as long as that is what a sandbox is. It is not waiting on a fix, and
+the seccomp filter is not a partial answer to it: what the filter's refusal of
+`pidfd_getfd` keeps out of a sibling's reach is an open *socket*, which procfs
+cannot re-open, and nothing else.
+
+There is a structural answer — snug's own init inside a nested pid namespace, so
+that co-resident payloads cannot see each other's processes at all. That is an
+idea and not a plan: it is not scheduled and it is not promised here. Until it
+exists, everything running inside one sandbox is one trust domain. Two payloads
+that must not reach each other need two sandboxes.
 
 ### 3.6 Linux
 
