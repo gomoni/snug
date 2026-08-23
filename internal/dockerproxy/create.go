@@ -19,18 +19,47 @@ const maxBody = 4 << 20
 
 // handleCreate is the security core of this package.
 //
-// Strategy, and the deviation from the original design worth naming: the design
-// specified strict decoding of the WHOLE create request into pinned types, so
-// any unmodelled field is a 403. In practice that rejects most real invocations,
-// because clients send a large and moving set of benign fields. So the strictness
-// is applied where the danger is — HostConfig — and the rest of the body is
-// passed through as opaque JSON.
+// Strategy: every key of the create body is either judged, allowlisted with an
+// abuse sentence, or refused — at BOTH levels. The top level is inverted by
+// step 1 below and HostConfig by step 5, and the two use the same machinery for
+// the same reason.
 //
+// THE SENTENCE THIS COMMENT USED TO CARRY, because the shape it conceded is the
+// one issues #375 and #397 closed and a later reader needs to know it was
+// deliberate before it was fixed: *"the strictness is applied where the danger
+// is — HostConfig — and the rest of the body is passed through as opaque JSON …
 // That is a real, stated weakening: a NEW dangerous field added to podman's
-// top-level create body would pass. It is bounded by the fact that essentially
-// every escape primitive lives in HostConfig, and by the denylist below being
-// checked against the raw JSON rather than a struct, so a field does not have to
-// be modelled to be refused.
+// top-level create body would pass."* It was bounded by the claim that
+// "essentially every escape primitive lives in HostConfig".
+//
+// That claim was measured wrong by ONE field, which is the useful part. Of 18
+// top-level keys in a recorded real-client body, 6 were non-empty and only two —
+// Volumes and HostConfig — were judged; `Healthcheck` was among the unjudged,
+// and a healthcheck asks the ENGINE to run
+//
+//	systemd-run --user --unit <cid> --on-unit-inactive=<interval> <podman> healthcheck run <cid>
+//
+// — a transient unit AND TIMER on the host user's session manager, as the host
+// uid, able to outlive the run. That is invariant 4 ("no process the user did
+// not start and no state that survives them") reached from the object nobody
+// was reading, and it is why "the danger lives in HostConfig" is not a boundary
+// anybody should have been resting on.
+//
+// Read topLevelRefusalReason["Healthcheck"] before touching that refusal: it is
+// on the OBJECT and not on the interval, and it says why with the measurement.
+// "A non-zero Interval schedules the timer" is the intuitive reading and it is
+// FALSE — absent, zero and negative all record podman's own 30s default — so a
+// gate on Interval would admit the unsafe case and refuse the opt-out. This
+// comment carried that wrong sentence itself until the measurement came back.
+//
+// The scope this inversion has to cover is BOUNDED, which is what makes it
+// shippable where the original design was not: ServeHTTP refuses every
+// state-changing libpod-native request outright (see normaliseFull and
+// libpodExamined), so handleCreate only ever sees the docker-compat schema —
+// docker's container.Config plus HostConfig plus NetworkingConfig rather than
+// podman's open-ended SpecGenerator. Bounded, NOT closed — podman's compat
+// handler takes three top-level keys docker does not define, and toplevel.go's
+// own header says which and why the inversion is unharmed by them.
 func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
 	if err != nil {
@@ -44,10 +73,18 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Anonymous volumes named in the top-level Config. A volume is a host path
-	// by another name.
-	if v, ok := req["Volumes"]; ok && !isEmptyJSON(v) {
-		p.deny(w, "Volumes is not permitted; snug decides what a container may mount")
+	// 1. THE TOP-LEVEL INVERSION (issues #375, #397). Judged, allowlisted, or
+	//    refused — the same three verdicts step 5 applies to HostConfig, one
+	//    level up, so a sibling of HostConfig cannot reach the engine on the
+	//    strength of nobody having looked at it.
+	//
+	//    Ordered BEFORE the HostConfig work deliberately: the body is judged
+	//    outside in, so a refusal names the outermost thing that is wrong. The
+	//    only key this ordering matters for is HostConfig itself, which is
+	//    `judged` here and decided below.
+	droppedTop, err := p.checkTopLevel(req)
+	if err != nil {
+		p.deny(w, "%v", err)
 		return
 	}
 
@@ -60,7 +97,7 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 1. Refuse outright. Each of these is either a direct escape or a way to
+	// 2. Refuse outright. Each of these is either a direct escape or a way to
 	//    reach something the sandbox itself cannot.
 	for _, k := range refusedHostConfig {
 		v, ok := hc[k]
@@ -81,7 +118,7 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Namespace modes must not join the host's or another container's.
+	// 3. Namespace modes must not join the host's or another container's.
 	//
 	// NetworkMode="host" is the ONE exception, and it inverts what it meant
 	// before issue #63 Tier B: the container engine itself now runs INSIDE
@@ -144,7 +181,7 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 3. A restart policy that asks for something is refused; the one the CLI
+	// 4. A restart policy that asks for something is refused; the one the CLI
 	//    always sends asks for nothing.
 	if raw, ok := hc["RestartPolicy"]; ok && !isEmptyJSON(raw) {
 		if err := checkRestartPolicy(raw); err != nil {
@@ -153,7 +190,7 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 4. THE INVERSION (issue #338). Every remaining HostConfig field must be
+	// 5. THE INVERSION (issue #338). Every remaining HostConfig field must be
 	//    one snug has been taught about — judged above, or allowlisted with an
 	//    abuse sentence. A field nobody has modelled fails closed.
 	//
@@ -208,7 +245,7 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Strings(droppedEmpty)
 
-	// 5. Every requested mount must name a host path the SANDBOX can already
+	// 6. Every requested mount must name a host path the SANDBOX can already
 	//    see, at the access it asks for. This is the rule in the package
 	//    comment, and it is checked rather than assumed.
 	//
@@ -247,7 +284,7 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 	// tmpfs-sizing gap snug already has on its own mounts (TODO R8), not a new
 	// one. `docker run --tmpfs /run` is ordinary and worked nowhere.
 
-	// 6. Inject the hardening the sandbox cannot rely on the client to set.
+	// 7. Inject the hardening the sandbox cannot rely on the client to set.
 	hc["Privileged"] = json.RawMessage(`false`)
 	hc["SecurityOpt"] = json.RawMessage(`["no-new-privileges:true"]`)
 
@@ -280,7 +317,7 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 7. Re-encode from our own map. This is a second, independent drift guard:
+	// 8. Re-encode from our own map. This is a second, independent drift guard:
 	//    only what survived the checks above reaches the engine.
 	encHC, err := json.Marshal(hc)
 	if err != nil {
@@ -298,6 +335,10 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if len(droppedEmpty) > 0 {
 		audit += fmt.Sprintf("; dropped %d empty unmodelled HostConfig field(s): %s",
 			len(droppedEmpty), strings.Join(droppedEmpty, ", "))
+	}
+	if len(droppedTop) > 0 {
+		audit += fmt.Sprintf("; dropped %d empty unmodelled top-level field(s): %s",
+			len(droppedTop), strings.Join(droppedTop, ", "))
 	}
 	p.audit(audit)
 	p.forward(w, r, out)
@@ -1061,8 +1102,40 @@ var canonicalKey = func() map[string]string {
 	for k := range unexaminedCreateFields { // issue #338's allowlist
 		add(k)
 	}
-	add("RestartPolicy")                                        // checkRestartPolicy
-	add("HostConfig", "Volumes")                                // top-level create
+	add("RestartPolicy") // checkRestartPolicy
+
+	// The create body's TOP level (issues #375, #397). Derived from the same
+	// lists checkTopLevel consults, for the reason this map's own comment
+	// gives: a name missing here arrives in whatever case the client spelled
+	// it, and the sweep would then judge a key the engine reads as a
+	// different one. TestEveryCheckedTopLevelKeyIsCanonicalised fails if one
+	// is missed.
+	add(refusedTopLevel...)
+	add(topLevelChecked...)
+	for k := range unexaminedTopLevelFields {
+		add(k)
+	}
+	// HostConfig and Labels are judged and held by no list above.
+	//
+	// `Labels` FIXES A LIVE BUG rather than completing a set, so it is named
+	// here: stampRunLabel does an exact-key req["Labels"] lookup, and without a
+	// canonical spelling a client sending lowercase "labels" kept its own key,
+	// stampRunLabel saw no "Labels" and added its own, json.Marshal sorted
+	// "Labels" (0x4C) before "labels" (0x6C), and podman — which folds
+	// case-insensitively and takes the LAST key — read the client's. So snug's
+	// run label was DISCARDED by a lowercase spelling, and the container became
+	// invisible to handleContainerDelete's ownership check (#339). It failed
+	// closed for deletion, which is why nothing caught it. The exact mechanism
+	// decodeObject's own comment records for {"privileged":true}, one map over.
+	// TestALowercaseLabelsKeyDoesNotDiscardTheRunLabel is the regression test.
+	add("HostConfig", "Labels")
+
+	// The endpoint fields checkNetworkingConfig walks. It judges them by
+	// EMPTINESS and never by name, so it needs no canonical spelling of its
+	// own — but EndpointsConfig itself is compared as a string, so that one
+	// does.
+	add("EndpointsConfig")
+
 	add("Binds", "Mounts", "Tmpfs")                             // what checkedMounts consumes
 	add("Driver", "Options", "DriverOpts", "ClusterVolumeSpec") // volume create
 	return m

@@ -3408,6 +3408,115 @@ comparison against the ENGINE's own answer for who created the container
 (`inspectContainer` in ownership.go), not a check against anything the
 client sent.
 
+### 9p. The create body's TOP level is filtered, not just `HostConfig` (issues #375, #397)
+
+Issue #338 inverted `HostConfig`: a non-empty field snug has not modelled is
+refused rather than forwarded. **The object CONTAINING `HostConfig` was not
+inverted**, and that is what this checks. Measured before the fix: of 18
+top-level keys in a recorded real-client body, 6 were non-empty and only two —
+`Volumes` and `HostConfig` — were judged. `handleCreate`'s own comment conceded
+it: *"a NEW dangerous field added to podman's top-level create body would pass."*
+
+One already had. `Healthcheck` asks the ENGINE to run, as your uid, on the HOST
+user's session manager:
+
+```
+systemd-run --user --unit <cid> --on-unit-inactive=<interval> <podman> healthcheck run <cid>
+```
+
+— a transient unit **and timer** outside the sandbox, which nothing then
+unschedules (teardown collapses the engine's pid namespace and removes no
+container, #174). That is invariant 4.
+
+**Needs a real engine for `create` — but deliberately NOT for `start`.** On a
+host with no `CAP_NET_ADMIN` no container can start at all (measured:
+`netavark: Netlink error: Operation not permitted` for bridge, `crun: ioctl
+SIOCSIFFLAGS` on the build path), so `requireRealEngine` skips here while the
+create path — the entire surface under test — works fine:
+
+```bash
+go test -tags integration -run TestCreateTopLevelIsFilteredEndToEnd -v ./test/integration/
+```
+
+Expect `PASS`. Read the assertions in order, because the **controls come first
+and they are the load-bearing half**:
+
+- `build: 200` — the probe builds its own `FROM scratch` image with a static
+  marker binary. No registry, no egress (issue #235).
+- `ordinary create: 201` — the top-level body a stock docker CLI sends is
+  **accepted**. Every refusal below is equally true of a proxy that 403s every
+  create, so without this the profile could be useless with this test green.
+- `recorded-cmd: ok`, `recorded-env: ok`, `recorded-label: ok` — and this is the
+  control with teeth. The values are read BACK out of `GET /containers/{id}/json`,
+  because `201` on its own is satisfied by an engine that accepted the body and
+  dropped every field in it. `recorded-label` also proves snug's own `snug.run`
+  label survived alongside the client's, which is what the ownership gate reads
+  (§9o, issue #339).
+- `empty unmodelled: 201` — an **empty** unmodelled key is dropped and named in
+  the audit, not refused. This is the half that makes the inversion shippable:
+  evaluated on raw PRESENCE instead, the allowlist would 403 every `docker run`
+  on 18 keys.
+- `stock networkingconfig: 201` — the endpoint object a real client really sends
+  is structurally non-empty and semantically all-zero (15 fields, every one empty
+  by `isEmptyJSON`). Refusing it for being present would ban `docker run`.
+
+Only then the refusals, each a `403`:
+
+```
+unmodelled top-level: 403      the inversion itself
+healthcheck: 403               the systemd unit and timer
+healthcheck no interval: 403   see the trap below
+env bare name: 403             copies the ENGINE's own variable of that name
+env star: 403                  copies every engine variable
+macaddress: 403                a static MAC on the interface snug authors
+endpoint macaddress: 403       and the same value spelled inside NetworkingConfig
+endpoint ipaddress: 403        a static IP on the namespace containment rests on
+volumes: 403                   an anonymous volume is a host path by another name
+```
+
+**The Healthcheck trap, and why `healthcheck no interval: 403` is a separate
+line.** The obvious fix — refuse a non-zero `Interval` — is *inverted*. podman's
+compat handler overrides its own 30s default only when the body's `Interval` is
+`> 0`, so absent, `0` **and negative** all record 30s. Measured against podman
+6.0.2, reading back the container config:
+
+```
+{"Test":["CMD-SHELL","true"]}            -> Interval 30000000000
+{"Test":[...],"Interval":0}              -> Interval 30000000000
+{"Test":[...],"Interval":-1}             -> Interval 30000000000
+{"Test":["NONE"]}                        -> Interval 30000000000
+```
+
+`Interval` is the exact field `disableHealthCheckSystemd` tests for zero, so the
+cut on `Interval` would have **admitted** the unsafe case and **refused** the one
+spelling a human would write to opt out. The whole field is refused instead.
+
+**The `Env` trap, verified by hand rather than believed.** A bare name is not a
+malformed variable — it is a documented spelling (`docker run -e FOO`) that makes
+podman copy its OWN environment variable of that name into the container. Drive
+it and read what comes back:
+
+```bash
+# inside a sandbox with @podman-socket, against $CONTAINER_HOST
+#   Env: ["*"]   ->  10 variables, every one naming this run's grafts:
+#     XDG_RUNTIME_DIR=/snug/engine/runroot
+#     REGISTRY_AUTH_FILE=/snug/engine/conf/auth.json
+#     CONTAINERS_STORAGE_CONF=/snug/engine/conf/storage.conf   ...
+```
+
+Not a host-credential leak — the environment being read is the one
+`internal/engine` AUTHORS, so `SSH_AUTH_SOCK` comes back absent (measured; the
+mechanism worked, the variable was not there). What it leaks is **this run's
+graft layout**, which is the map a `-v` request navigates by.
+
+**What this does NOT close, and must not be read as closing.** Refusing the
+FIELD does not close the MECHANISM: an image's own `HEALTHCHECK` instruction
+reaches the same `createTimer` with no `Healthcheck` key in any create body, and
+`/v1.41/build` is an allowed route, so the payload can author that image itself.
+The barrier that would be snug's own policy is `DISABLE_HC_SYSTEMD=true` in the
+engine's authored environment — it short-circuits unconditionally, whatever the
+healthcheck's origin — and that is an engine change, not a proxy one.
+
 ## 10. A repository cannot grant itself anything
 
 ```bash
