@@ -113,6 +113,14 @@ symlink = [
 # host path — so what it buys an attacker is a place to stage files for the rest
 # of THIS run, not a foothold in the next one.
 #
+# Each of these is bounded: snug passes bwrap `--size`, per mount, defaulting to
+# policy.DefaultTmpfsSize and overridable by `tmpfs_size_mib` in
+# ~/.config/snug/config.toml. The number lives in that constant and is
+# deliberately not retyped here. Without the bound
+# each one defaulted to HALF OF HOST RAM, so "a place to stage files" included
+# staging enough of them to take the host down — a denial of service against
+# the human running snug rather than against the sandbox (issue #281).
+#
 # {home}/.local/share is the fifth entry and the newest. It is here because
 # XDG_DATA_HOME below names it, and a profile must grant every path it names
 # (§2.5): without the tmpfs the variable would point at a directory that is not

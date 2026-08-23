@@ -338,6 +338,12 @@ type jsonMount struct {
 	// ProcfsReplacement is Report.MountNotes[guest].ProcfsReplacement:
 	// policy.ProcfsNote's text for a snug-authored mount, "" everywhere else.
 	ProcfsReplacement string `json:"procfs_replacement,omitempty"`
+	// SizeBytes is Policy.TmpfsSizeBytes, populated for KindTmpfs mounts only
+	// (issue #281). omitempty is required here, not a style choice: a
+	// non-tmpfs row carrying "size_bytes": 0 would read as "unbounded" to a
+	// consumer, when it in fact means "not a tmpfs; this field does not
+	// apply". Additive — see dryRunFormat's doc comment — so no format bump.
+	SizeBytes uint64 `json:"size_bytes,omitempty"`
 }
 
 // jsonGraft is a mount in the ENGINE's derived namespace, never the payload's.
@@ -593,6 +599,9 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			// with an executable permission bit is CODE, not config (the
 			// podman stub is the one case today).
 			Executable: m.Perms != nil && *m.Perms&0o111 != 0,
+		}
+		if m.Kind == policy.KindTmpfs {
+			jm.SizeBytes = rep.TmpfsSizeBytes
 		}
 		if n, ok := rep.MountNotes[m.Guest]; ok {
 			jm.Yielded = n.Yielded

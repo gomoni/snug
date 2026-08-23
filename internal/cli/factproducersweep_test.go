@@ -173,6 +173,8 @@ var humanOnlyFacts = map[string]string{
 	"policy.VisibleText": "escaping for a terminal; the document runs escapeRawForgingRunes over itself instead",
 	"policy.JoinNames":   "joins profile names into a screen column; the document emits the array",
 	"policy.IsEnvList":   "decides whether a value is quoted on screen; the document emits the string",
+	"policy.FormatBytes": "renders a byte count as \"1 GiB\"/\"512 MiB\" for the FILESYSTEM block's tmpfs " +
+		"rows (issue #281); the document carries the raw uint64 instead, as mounts[].size_bytes",
 }
 
 // producerSweep is the parsed corpus: every non-test file in internal/cli and

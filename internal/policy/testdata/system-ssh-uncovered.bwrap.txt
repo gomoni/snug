@@ -16,17 +16,23 @@
 --ro-bind /opt /bin
 --dev /dev
 --proc /proc
+--size 1073741824
 --tmpfs /tmp
 --ro-bind-data 10 /etc/resolv.conf
+--size 1073741824
 --tmpfs /home/u
 --ro-bind-data 11 /proc/config.gz
 --ro-bind-data 12 /proc/key-users
 --ro-bind-data 13 /proc/keys
 --ro-bind /proc/sys /proc/sys
+--size 1073741824
 --tmpfs /home/u/.cache
+--size 1073741824
 --tmpfs /home/u/.config
 --ro-bind /home/u/proj /home/u/proj
+--size 1073741824
 --tmpfs /home/u/.local/share
+--size 1073741824
 --tmpfs /home/u/.local/state
 --bind /home/u/proj/sub /home/u/proj/sub
 --remount-ro /

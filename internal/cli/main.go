@@ -362,6 +362,8 @@ func run(cfg config) int {
 
 	sshConfigs, sshValues := probeSSHConfig(home, cfg.verbose)
 
+	tmpfsSizeBytes, _ := tmpfsSizeSetting()
+
 	ctx := policy.Context{
 		Target:          abs,
 		HostTmpDir:      hostTmp,
@@ -381,6 +383,7 @@ func run(cfg config) int {
 		HostSSHConfigs: sshConfigs,
 		HostSSHConfig:  sshValues,
 		HostShims:      detectHostShims(),
+		TmpfsSizeBytes: tmpfsSizeBytes,
 	}
 
 	pol, err := policy.Resolve(reg, selected, ctx, env)

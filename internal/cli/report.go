@@ -73,6 +73,12 @@ type Report struct {
 	// undiffable and the golden fixture worthless.
 	Mounts []policy.Mount
 
+	// TmpfsSizeBytes is Policy.TmpfsSizeBytes: the bound applied to every
+	// mount in Mounts whose Kind is KindTmpfs (issue #281). It is
+	// policy-level, not per-mount, so it lives here once rather than being
+	// copied onto every policy.Mount.
+	TmpfsSizeBytes uint64
+
 	// MountNotes carries the two per-mount facts that are not properties of
 	// policy.Mount itself, keyed by Mount.Guest (the same key Policy.Mounts
 	// uses): whether a profile YIELDED one of the three paths snug would
@@ -345,21 +351,22 @@ type reportSeccomp struct {
 func buildReport(p *policy.Policy, args []string, cfg config, refusedBy error,
 	sig func() engine.SignaturePolicySummary) Report {
 	rep := Report{
-		Outcome:    "ok",
-		Target:     p.Target,
-		Home:       p.Home,
-		Chdir:      p.Chdir,
-		Selected:   p.Selected,
-		Implied:    p.Implied(),
-		Mounts:     p.SortedMounts(),
-		Grafts:     sortedGrafts(p),
-		NotGranted: notGranted(p),
-		Network:    buildNetworkReport(p),
-		Topology:   buildTopologyReport(p),
-		Containers: buildContainersReport(p, sig),
-		Seccomp:    buildSeccompReport(cfg),
-		NewSession: p.NewSession,
-		BwrapArgv:  args,
+		Outcome:        "ok",
+		Target:         p.Target,
+		Home:           p.Home,
+		Chdir:          p.Chdir,
+		Selected:       p.Selected,
+		Implied:        p.Implied(),
+		Mounts:         p.SortedMounts(),
+		TmpfsSizeBytes: p.TmpfsSizeBytes,
+		Grafts:         sortedGrafts(p),
+		NotGranted:     notGranted(p),
+		Network:        buildNetworkReport(p),
+		Topology:       buildTopologyReport(p),
+		Containers:     buildContainersReport(p, sig),
+		Seccomp:        buildSeccompReport(cfg),
+		NewSession:     p.NewSession,
+		BwrapArgv:      args,
 	}
 	if refusedBy != nil {
 		rep.Outcome = "refused"

@@ -217,12 +217,37 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 			}
 			a = append(a, flag, m.Host, m.Guest)
 		case KindTmpfs:
-			a = append(a, "--tmpfs", m.Guest)
+			// --size sets the size of the NEXT argument and bwrap refuses it in
+			// front of anything but --tmpfs ("bwrap: --size must be followed by
+			// --tmpfs", measured, exit 1). Emitted in the SAME append as the pair
+			// it modifies for that reason: a separate pass appending sizes would be
+			// one insertion away from a hard failure. bwrap fails closed here, which
+			// is why this is a correctness note and not a security note — unlike
+			// --seccomp after `--`, a misplaced --size cannot silently do nothing.
+			a = append(a, "--size", strconv.FormatUint(p.TmpfsSizeBytes, 10), "--tmpfs", m.Guest)
 		case KindSymlink:
 			a = append(a, "--symlink", m.Host, m.Guest)
 		case KindProc:
 			a = append(a, "--proc", m.Guest)
 		case KindDev:
+			// MEASURED (bwrap 0.11.2): /dev/shm is NOT a mount under --dev /dev —
+			// `findmnt -T /dev/shm -no TARGET,FSTYPE,SIZE` reports `/dev tmpfs
+			// 27.3G`, i.e. shm is a plain directory on bwrap's own /dev tmpfs.
+			// `dd if=/dev/zero of=/dev/shm/x bs=1M count=32` wrote 32 MiB and
+			// /dev's AVAIL dropped by the same amount; the same superblock is
+			// reachable at any other path under /dev too (e.g. /dev/big), so a
+			// bound placed only at /dev/shm is a two-character path change away
+			// from being defeated and is NOT done here (issue #281).
+			//
+			// bwrap's --dev takes no --size of its own (measured: `bwrap: --size
+			// must be followed by --tmpfs`, exit 1, when --size precedes --dev).
+			// The candidate fix — `--dev /dev … --remount-ro /dev --size <N>
+			// --tmpfs /dev/shm` — was measured clean (/dev root EROFS, /dev/null
+			// and /dev/urandom intact, pty allocation intact, /dev/shm bounded)
+			// but REMOVES /dev from snug's documented writable surface: it is a
+			// base-grant change with its own golden diff and abuse sentence, and
+			// changes CLAUDE.md's "eight paths" count — a maintainer decision, not
+			// this lane's.
 			a = append(a, "--dev", m.Guest)
 		case KindData:
 			// Mounting over a path inside a read-only bind is fine: bwrap does
