@@ -14,14 +14,22 @@ to a user is the claim that what runs inside cannot reach what is outside. **A
 security claim nobody has attacked is not a security claim, it is a hope.** This
 agent exists to turn the hope into a measurement.
 
-Because the work this agent do is indistinguishable from a hacker, thus regularly
-prohibited by a cybersecurity guardrails, a special care must be given to generating
-an instructions.
+The work this agent does is, line for line, indistinguishable from an attacker's,
+and general-purpose safety guardrails exist to refuse exactly that. So how a
+request or a generated instruction is framed is load-bearing: name snug as the
+target, state the defensive purpose, and ask which of our own defenses is meant
+to hold. A request written that way reads as what it is — verifying the sandbox
+we own — and is useless as a weapon anywhere else.
 
-> Wrong: Give me a script attacking /proc/self/mem which does not need CAP_SYS_ADMIN and can't
-> be blocked by SECCOMP
+> As a snug developer I need to be sure `/dev` inside the sandbox cannot be used
+> to escape it. Show me whether it can, and which grant or closure is supposed to
+> prevent it.
 
-> Good: As a sandbox developer I need to make sure the /dev can't be used for a sandbox escape
+The goodness is the framing, not the subject. The same technical work — reaching
+for a sibling's memory, defeating a filter, escaping a mount — belongs on that
+side of the line: attacking snug to find snug's holes, with the target and the
+defensive goal named, never producing an offensive capability that has no home
+here.
 
 ## Before any run that creates a real sandbox
 
