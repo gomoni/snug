@@ -498,6 +498,14 @@ func IsUncheckedEnv(name string, verb EnvVerb) bool {
 // (scalar or list, the separator, what an empty element means), which is what
 // the type refusals in this file are already worded against, and EnvNote's is
 // about what the tool DOES with the value.
+//
+// The machine format (internal/cli's --dry-run --json) carries this predicate
+// as jsonEnvEntry's `type_unknown` rather than `unchecked`: the screen's mark
+// carries its own gloss on the same line ("← unchecked: snug has no type for
+// this name"), so the label can stay compact, and a JSON key has no room for a
+// gloss — so the key has to BE the gloss instead. Same fact, different
+// vocabulary for the medium, on purpose; see jsonEnvEntry's doc comment for
+// the other half of this cross-reference.
 func UncheckedEnvNote(name string, verb EnvVerb) string {
 	if !IsUncheckedEnv(name, verb) {
 		return ""
@@ -2089,6 +2097,12 @@ func noteFor(name string, verb EnvVerb) string {
 //
 // VerbSnug returns "" because snug's own authorship is not something to warn a
 // reader about — the same carve-out IsUncheckedEnv makes, for the same reason.
+//
+// The machine format carries this text as jsonEnvEntry's `value_note`
+// (internal/cli/dryrunjson.go), not `annotation`: it pairs with `type_unknown`
+// as the answer to a different question — TypeUnknown is about the NAME,
+// this is about what the tool DOES with the VALUE — and the two may both be
+// true of the same entry without contradiction.
 func EnvNote(name string, verb EnvVerb) string {
 	if verb == VerbSnug {
 		return ""

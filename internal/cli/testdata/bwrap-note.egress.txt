@@ -10,6 +10,12 @@ INCOMPLETE ON ITS OWN — the network namespace is NOT in this argv.
 bwrap
   --ro-bind /usr /usr
   -- /bin/sh
+(argv[0] is the bare name "bwrap" and snug does not exec that name: it calls
+ exec.LookPath("bwrap") against the HOST user's own $PATH at the moment the
+ run starts, and execs the absolute path that search returns. WHICH bwrap runs
+ is therefore a fact about that $PATH then — a directory earlier on it than
+ /usr/bin chooses the binary, after this artifact has said everything it has
+ to say. Settle it by hand with: command -v bwrap)
 (the argv ends here and the network namespace was never in it — see the note
  above it. To check the netns by hand, compare inside against outside:
      readlink /proc/self/ns/net                        # on the host
