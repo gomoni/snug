@@ -1653,8 +1653,15 @@ func joinPIDs(pids []int) string {
 // and it has to answer a question that only exists once the engine's view is
 // derived: WHERE, inside that view, are conmon, crun, netavark and the rest?
 //
-// The three /usr entries are the distribution answer and are always present —
-// @sys binds the OS runtime, so they are there whatever else is. A PINNED
+// The three /usr entries are the distribution answer, and "always present" is
+// what this said until it was MEASURED: on the development host (podman 6.0.2,
+// openSUSE Tumbleweed) /usr/libexec/podman and /usr/bin exist and
+// /usr/lib/podman does NOT. So the list is a SUPERSET of the spellings the
+// distributions use, not three directories a host has — which is the right
+// shape for a search list and the wrong claim to make about it. podman ignores
+// an entry that is not there; @sys binding the OS runtime is what makes the
+// ones that DO exist reachable inside the engine's view, and that half stands.
+// A PINNED
 // BUNDLE is the other case, and it needs its own directory named FIRST: its
 // podman is statically built against its own helpers, and the /usr entries on
 // this host hold the distribution's, which is a different set of versions

@@ -287,7 +287,7 @@ func preflightPtraceScope() error {
 // everything looks healthy (ENGINE-WIRING.md §4, P1).
 func preflightPodmanBinary() (string, error) {
 	// $SNUG_PODMAN is checked FIRST and, when set, is trusted outright rather
-	// than run back through detectHostShim's own PATH lookup below — a caller
+	// than run back through DetectHostShim's own PATH lookup below — a caller
 	// pointing this at an explicit path is BYPASSING PATH resolution on
 	// purpose, and re-resolving "podman" from PATH here would ask the wrong
 	// question ("is whatever PATH finds a shim") about a binary the caller
@@ -310,11 +310,11 @@ func preflightPodmanBinary() (string, error) {
 		// is refusing one — which was the configuration this whole subject
 		// existed because of.
 		//
-		// detectHostShim needs no change to take an absolute path: MEASURED,
+		// DetectHostShim needs no change to take an absolute path: MEASURED,
 		// exec.LookPath("/usr/bin/podman") returns it directly and never
 		// consults PATH, while a nonexistent or non-executable path errors. So
 		// the fix is asking the question, not building a mechanism.
-		if shim, ok := detectHostShim(custom); ok {
+		if shim, ok := DetectHostShim(custom); ok {
 			return "", fmt.Errorf("$SNUG_PODMAN=%s resolves to %s, a host-escape helper (%s) "+
 				"that forwards to the HOST's own podman over a channel no network namespace "+
 				"touches — a container started through it would land on the host, silently "+
@@ -326,7 +326,7 @@ func preflightPodmanBinary() (string, error) {
 		}
 		return custom, nil
 	}
-	if shim, ok := detectHostShim("podman"); ok {
+	if shim, ok := DetectHostShim("podman"); ok {
 		return "", fmt.Errorf("podman resolves to %s, a host-escape helper (%s) that forwards "+
 			"to the HOST's own podman over a channel no network namespace touches — a container "+
 			"started through it would land on the host, silently contradicting everything "+

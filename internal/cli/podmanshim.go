@@ -22,8 +22,16 @@ var hostEscapeShims = map[string]bool{
 	"flatpak-spawn":       true,
 }
 
-// detectHostShim resolves name on $PATH and reports it as a policy.HostShim
+// DetectHostShim resolves name on $PATH and reports it as a policy.HostShim
 // only when it resolves to a host-escape helper.
+//
+// EXPORTED for one caller outside this package: test/integration's engine
+// gate, which must refuse a shim rather than refuse the host's own podman
+// (issue #393). It is exported instead of copied because the alternative is
+// two spellings of one security predicate, and the copy is the one nobody
+// updates when hostEscapeShims grows — issue #396's fix landed on THIS
+// function, and a second copy in the test tree would have missed it. The map
+// stays unexported: callers ask the question, they do not read the list.
 //
 // This is deliberately narrower than podmanClientUsable's "#!" heuristic
 // below, which stays exactly where it is and is used for the WARNING only —
@@ -31,7 +39,7 @@ var hostEscapeShims = map[string]bool{
 // for a binary that might have worked. Symlinks are ordinary; the "#!" test
 // catches wrapper scripts of every shape, most of which are not host-escape
 // helpers at all.
-func detectHostShim(name string) (policy.HostShim, bool) {
+func DetectHostShim(name string) (policy.HostShim, bool) {
 	path, err := exec.LookPath(name)
 	if err != nil {
 		return policy.HostShim{}, false
@@ -51,7 +59,7 @@ func detectHostShim(name string) (policy.HostShim, bool) {
 // another command means adding a name here, not a new mechanism.
 func detectHostShims() []policy.HostShim {
 	var out []policy.HostShim
-	if s, ok := detectHostShim("podman"); ok {
+	if s, ok := DetectHostShim("podman"); ok {
 		out = append(out, s)
 	}
 	return out
@@ -138,7 +146,7 @@ func podmanClientUsable() (ok bool, detail string) {
 func warnAboutPodmanClient() {
 	ok, detail := podmanClientUsable()
 	if !ok {
-		_, staged := detectHostShim("podman")
+		_, staged := DetectHostShim("podman")
 		fmt.Fprintf(os.Stderr,
 			"snug: the podman CLI will not work inside this sandbox — %s.\n"+
 				"      snug's own engine and filtering proxy are fine; it is the client binary\n"+
