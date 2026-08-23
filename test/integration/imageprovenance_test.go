@@ -62,7 +62,6 @@ func engineSpecEnv(t *testing.T) []string {
 // GUEST paths, and a real run supplies the host ones on the argv.
 func engineSpecEnvWithSignaturePolicy(t *testing.T, hostPolicy string) ([]string, *engine.Engine) {
 	t.Helper()
-	root := bundleRoot(t)
 	data := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", data)
 	// Registered AFTER the TempDir call, so it runs BEFORE that directory's own
@@ -81,9 +80,12 @@ func engineSpecEnvWithSignaturePolicy(t *testing.T, hostPolicy string) ([]string
 				Access: policy.AccessRO, From: []string{"@sys"}},
 		},
 	}
-	if err := pol.EngineToolchain(policy.OSEnviron{}, root); err != nil {
-		t.Fatal(err)
-	}
+	// NO pol.EngineToolchain call (issue #393 §6): with a system podman there
+	// is no separate toolchain root to record — /usr/bin/podman passes G4's
+	// first disjunct (@sys already binds /usr, right above), and
+	// EngineToolchain("") errors by design rather than treating an empty root
+	// as a clear. A harness that synthesised one would be grafting a tree
+	// nobody named.
 	if err := e.GraftInto(policy.OSEnviron{}, pol); err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +93,7 @@ func engineSpecEnvWithSignaturePolicy(t *testing.T, hostPolicy string) ([]string
 	if err != nil {
 		t.Fatalf("projecting the planted host signature policy: %v", err)
 	}
-	spec, err := e.Spec(pol, podmanBundleBinary(t), []string{"PATH=/usr/bin:/bin"}, true, sig)
+	spec, err := e.Spec(pol, hostEngine(t), []string{"PATH=/usr/bin:/bin"}, true, sig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,16 +105,19 @@ func engineSpecEnvWithSignaturePolicy(t *testing.T, hostPolicy string) ([]string
 	// workaround. Since Tier C every path Spec writes is a GUEST path — what
 	// the engine sees inside its derived view — and these probes run podman
 	// ON THE HOST, where /snug/engine/conf exists in no namespace at all. The
-	// subject of these tests is which variables Spec sets and what the bundle
-	// does with them, so the variables are kept exactly as Spec wrote them and
-	// only the four roots are mapped back.
+	// subject of these tests is which variables Spec sets and what the SYSTEM
+	// podman does with them, so the variables are kept exactly as Spec wrote
+	// them and only the four roots are mapped back. The toolchain root is not
+	// among them any more (see above), so "" is passed and that substitution
+	// is a no-op.
 	// NO CONTAINERS_STORAGE_CONF is appended here. Spec has SET it since issue
 	// #125 — at the storage.conf snug generated in this run's own config
-	// directory — and a second entry appended after it named a file inside the
-	// bundle that this bundle does not ship, so every probe in this file died
-	// with "Failed to obtain podman configuration" before reaching what it was
-	// testing. MEASURED: removing it is what lets the pull actually run.
-	return hostSideEnv(t, e, root, spec.Env), e
+	// directory — and a second entry appended after it named a file the
+	// pinned bundle this suite used to run against did not ship, so every
+	// probe in this file died with "Failed to obtain podman configuration"
+	// before reaching what it was testing. MEASURED: removing it is what lets
+	// the pull actually run.
+	return hostSideEnv(t, e, "", spec.Env), e
 }
 
 // envLookup returns the value of name in a KEY=VALUE environment, failing the
@@ -157,7 +162,7 @@ func runPodman(t *testing.T, env []string, args ...string) string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, podmanBundleBinary(t), args...)
+	cmd := exec.CommandContext(ctx, hostEngine(t), args...)
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -249,9 +254,14 @@ func TestAHostRegistriesConfDoesNotSteerTheEnginesPull(t *testing.T) {
 	if err := os.MkdirAll(conf, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// The bundle's own policy.json, so that a MISSING signature policy cannot
-	// be what stops the pull — this test is about registries.conf alone.
-	copyTree(t, filepath.Join(bundleRoot(t), "home"), home)
+	// The seeded policy.json, so that a MISSING signature policy cannot be
+	// what stops the pull — this test is about registries.conf alone. See
+	// seedEngineHome's own doc comment for why this is generated rather than
+	// copied from a bundle: /etc/containers/policy.json is ABSENT on the
+	// development host while /usr/share/containers/policy.json is present, so
+	// generating the seed is what makes this test's result independent of
+	// which of those a given host happens to carry.
+	seedEngineHome(t, home)
 	planted := filepath.Join(conf, "registries.conf")
 	if err := os.WriteFile(planted, []byte("THIS IS NOT VALID TOML {{{\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -265,6 +275,10 @@ func TestAHostRegistriesConfDoesNotSteerTheEnginesPull(t *testing.T) {
 		t.Skipf("SKIP: the control did not read the planted registries.conf, so this podman "+
 			"resolves it from somewhere else and there is nothing to regress: %s", control)
 	}
+	// COMMIT POINT for the run-count floor (issue #393 §4): the control above
+	// just proved this podman really reads the planted file, in this env —
+	// only past this Skipf is the test actually going to exercise the engine.
+	markEngineRan(t, hostEngine(t))
 
 	got := runPodman(t, env, "pull", image)
 	if strings.Contains(got, planted) {
@@ -549,33 +563,46 @@ func TestTheEngineEnforcesTheProjectedSignaturePolicy(t *testing.T) {
 	}
 }
 
-// probeRuntime names the bundle's own conmon and crun absolutely, through a
-// CONTAINERS_CONF_OVERRIDE layered on top of the one Spec generated.
+// probeRuntime overrides helper_binaries_dir through a
+// CONTAINERS_CONF_OVERRIDE layered on top of the one Spec generated, undoing
+// the GUEST path Spec wrote there.
 //
 // WHY A PROBE NEEDS THIS AND A RUN DOES NOT. podman validates its OCI runtime
 // before doing anything else, and it looks for conmon at a fixed list of
-// ABSOLUTE paths (/usr/libexec/podman/conmon and friends). Inside a real run
-// the toolchain graft puts the pinned bundle where the generated
-// helper_binaries_dir names it; here podman runs on the HOST, outside every
-// namespace, where those paths hold nothing — measured on this host as "could
-// not find a working conmon binary", which is what the sibling probes in this
-// file have been skipping on.
+// ABSOLUTE paths. Inside a real run the toolchain graft puts the engine's
+// view where the generated helper_binaries_dir names it; here podman runs on
+// the HOST, outside every namespace, where the GUEST path holds nothing.
 //
-// helper_binaries_dir is here for the same reason and is the one key this
-// OVERRIDES rather than adds: the generated one names the guest toolchain path,
-// so netavark is not found either. What these tests grade is untouched — the
+// With a system podman the host's own defaults are the right ones (issue
+// #393 §6): this overrides helper_binaries_dir with whichever of
+// /usr/libexec/podman, /usr/lib/podman, /usr/bin actually exist on this
+// host, and drops the conmon_path/runtime/runtimes pins entirely so podman
+// resolves conmon and crun itself. What these tests grade is untouched — the
 // signature policy reaches podman through HOME, and none of these keys is
 // about images.
 func probeRuntime(t *testing.T, env []string) []string {
 	t.Helper()
-	root := bundleRoot(t)
+	var dirs []string
+	for _, d := range []string{"/usr/libexec/podman", "/usr/lib/podman", "/usr/bin"} {
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+			dirs = append(dirs, d)
+		}
+	}
+	if len(dirs) == 0 {
+		t.Skip("SKIP: none of /usr/libexec/podman, /usr/lib/podman, /usr/bin exist on this host")
+	}
+	if _, err := exec.LookPath("conmon"); err != nil {
+		t.Skip("SKIP: conmon not found on PATH — cannot probe a runtime this host does not have")
+	}
+	if _, err := exec.LookPath("crun"); err != nil {
+		t.Skip("SKIP: crun not found on PATH — cannot probe a runtime this host does not have")
+	}
+	quoted := make([]string, len(dirs))
+	for i, d := range dirs {
+		quoted[i] = fmt.Sprintf("%q", d)
+	}
 	path := filepath.Join(t.TempDir(), "runtime.conf")
-	body := fmt.Sprintf("[engine]\nconmon_path = [%q]\nhelper_binaries_dir = [%q, %q]\n"+
-		"runtime = \"crun\"\n[engine.runtimes]\ncrun = [%q]\n",
-		filepath.Join(root, "usr", "local", "lib", "podman", "conmon"),
-		filepath.Join(root, "usr", "local", "lib", "podman"),
-		filepath.Join(root, "usr", "local", "bin"),
-		filepath.Join(root, "usr", "local", "bin", "crun"))
+	body := fmt.Sprintf("[engine]\nhelper_binaries_dir = [%s]\n", strings.Join(quoted, ", "))
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

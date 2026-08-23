@@ -72,6 +72,10 @@ func startEngineRun(t *testing.T, marker string) (proj string, payloadPID, engin
 		t.Fatalf("PRECONDITION: no engine process appeared under a @podman-socket run, so there "+
 			"is no derived view to make any assertion about:\n%s", b)
 	}
+	// COMMIT POINT for the run-count floor (issue #393 §4): the fatal check
+	// above already proved a real engine process exists, for every caller of
+	// this shared helper.
+	markEngineRan(t, enginePathFromEnv(env))
 	payloadPID, ok = findDescendant(proc.pid(), func(pid int) bool {
 		raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 		if err != nil {

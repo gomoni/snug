@@ -172,6 +172,7 @@ SHELL := /bin/bash
 
 SIGNALS_LOG ?= $(CURDIR)/.integration-signals.log
 HOSTLESS_LOG ?= $(CURDIR)/.integration-hostless.log
+SANDBOX_LOG ?= $(CURDIR)/.integration-sandbox.log
 
 # ── the same suite, split three ways for CI ─────────────────────────────────
 #
@@ -194,10 +195,56 @@ HOSTLESS_LOG ?= $(CURDIR)/.integration-hostless.log
 # the two halves cannot drift into overlapping or into leaving a test unrun.
 SNUG_SIGNAL_TESTS = TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox|TestAKilledSnugCannotReleaseTheParkedPayload|TestKillingSnugDuringStartupNeverRunsThePayload
 
+# SNUG_ENGINE_FLOOR is issue #393's run-count floor: the number of test
+# functions in test/integration that need a REAL container engine, enumerated
+# by a literal-string sweep over containerEngineEnv|podmanBundle|bundleRoot|
+# requireRealEngine (hostEngine's own doc comment in containerengine_test.go
+# names the sweep). Counted here from the "snug-engine-ran:" marker each such
+# test logs once it is COMMITTED to having run with a real engine — never
+# merely resolved one, and never a bare `go test` exit code, which is exactly
+# how "green by skipping" survived the first time (issue #393's own defect:
+# 32 tests skipped and `make integration` was green).
+#
+# The count is PRINTED on every run, always, and it names WHICH of three
+# cases produced it — "no podman resolved" (green, legitimately, on a host
+# with no engine at all), "podman resolved but could not run a container"
+# (a broken environment, e.g. a misconfigured rootless podman or a GHA
+# runner — and this must NOT read like case 1, or a broken environment wears
+# case 1's clothes and the bug that opened this issue survives a second
+# time), or "N of 32 ran" against a real, working engine. Never a bare N —
+# the reader must not have to know 32 is the target.
+#
+# SNUG_REQUIRE_ENGINE is its OWN variable, default OFF, and deliberately NOT
+# derived from SNUG_REQUIRE_SANDBOX: wiring a real engine into CI is #395's
+# job, not this one, and CI's `integration` matrix already sets
+# SNUG_REQUIRE_SANDBOX=1 with no working engine promised anywhere in that
+# environment. This is #395's seam — set SNUG_REQUIRE_ENGINE=1 once a lane
+# can promise 32/32, and not before.
+SNUG_ENGINE_FLOOR = 32
+
 integration-sandbox:
-	SNUG_TEST_NET=$${SNUG_TEST_NET:-$${SNUG_REQUIRE_SANDBOX:+1}} \
+	@SNUG_TEST_NET=$${SNUG_TEST_NET:-$${SNUG_REQUIRE_SANDBOX:+1}} \
 		go test -tags integration -timeout 4m -v \
-			-skip '$(SNUG_SIGNAL_TESTS)' ./test/integration/...
+			-skip '$(SNUG_SIGNAL_TESTS)' ./test/integration/... 2>&1 \
+		| tee $(SANDBOX_LOG); \
+	status=$${PIPESTATUS[0]}; \
+	ran=$$(grep -c 'snug-engine-ran:' $(SANDBOX_LOG) || true); \
+	if grep -q 'snug-engine-none:' $(SANDBOX_LOG); then \
+		echo "engine tests: $$ran of $(SNUG_ENGINE_FLOOR) ran — no podman resolved"; \
+	elif grep -q 'snug-engine-failed:' $(SANDBOX_LOG); then \
+		reason=$$(grep -m1 'snug-engine-failed:' $(SANDBOX_LOG) | sed 's/.*snug-engine-failed: //'); \
+		echo "engine tests: $$ran of $(SNUG_ENGINE_FLOOR) ran — $$reason"; \
+	elif grep -q 'snug-engine-version:' $(SANDBOX_LOG); then \
+		version=$$(grep -m1 'snug-engine-version:' $(SANDBOX_LOG) | sed 's/.*snug-engine-version: //'); \
+		echo "engine tests: $$ran of $(SNUG_ENGINE_FLOOR) ran — $$version"; \
+	else \
+		echo "engine tests: $$ran of $(SNUG_ENGINE_FLOOR) ran — no engine marker of any kind was seen"; \
+	fi; \
+	if [ -n "$$SNUG_REQUIRE_ENGINE" ] && [ "$$ran" -lt "$(SNUG_ENGINE_FLOOR)" ]; then \
+		echo "ERROR: SNUG_REQUIRE_ENGINE is set and only $$ran/$(SNUG_ENGINE_FLOOR) engine tests ran."; \
+		exit 1; \
+	fi; \
+	exit $$status
 
 # A -run regexp that matches nothing exits 0 and prints a warning, which is the
 # "test that cannot fail" shape: the job would go green having run none of the

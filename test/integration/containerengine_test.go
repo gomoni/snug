@@ -13,33 +13,27 @@ package integration
 // its own positive control per CLAUDE.md's standing rule: "a test that cannot
 // fail is worse than no test".
 //
-// # Why every real-engine test drives $SNUG_PODMAN at a pinned static bundle
+// # Which podman this file runs against (issue #393)
 //
-// This development host's own `podman` resolves to distrobox-host-exec (a
-// host-escape shim — see internal/cli/podmanshim.go's hostEscapeShims list),
-// which preflight P1 (containerpreflight.go) correctly refuses before
-// anything is created. Testing this tier at all, on this host, needs a real,
-// non-shim engine pinned explicitly — the static bundle host-bridge
-// provisioned at ~/.local/opt/podman-static
-// — via its own `snug-podman` wrapper script, which sets the CONTAINERS_CONF/
-// STORAGE_CONF/REGISTRIES_CONF/HOME env the bundle needs to find its own
-// pinned helper binaries (conmon, crun, netavark, pasta) rather than
-// whatever a bare exec of the pinned podman binary would fall back to.
-// containerpreflight.go's own preflightPodmanBinary trusts $SNUG_PODMAN
-// outright and never re-resolves it through PATH, which is exactly what lets
-// this wrapper be handed to it directly.
+// The retired static-podman bundle is gone (#398): this suite resolves the
+// engine from $SNUG_PODMAN when set, and otherwise from the host's own
+// `podman` on PATH — see hostEngine below, the ONE resolver every helper in
+// this file goes through. A shim (distrobox-host-exec and friends,
+// internal/cli/podmanshim.go's hostEscapeShims) is a t.Fatal, never a skip:
+// preflight P1 refuses it for the same reason, and this suite testing a
+// capability preflight would refuse is not a legitimate skip. A missing
+// engine — no `podman` on PATH and $SNUG_PODMAN unset — is the ONLY skip.
 //
-// containerEngineEnv skips CLEANLY (never fails, even under
-// SNUG_REQUIRE_SANDBOX — the same convention requireEngine already uses in
-// sandbox_test.go) when the bundle is not present, so a host without it — any
-// CI runner today — degrades to a skip rather than either a false pass or a
-// hard failure for a capability nobody promised it.
+// containerEngineEnv therefore degrades to a skip (no engine at all) or a
+// fatal (a wrong engine) but never silently measures the wrong binary: on a
+// host carrying both a system podman and something else claiming to be one,
+// hostEngine's own PATH/$SNUG_PODMAN resolution is the only place that
+// decision is made, so it cannot drift from what preflight itself resolves.
 import (
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -54,220 +48,222 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	snugcli "github.com/gomoni/snug/internal/cli"
 	"github.com/gomoni/snug/internal/policy"
 )
 
-// podmanStaticRootRel is where host-bridge's provisioning left the pinned
-// engine bundle, relative to $HOME.
-const podmanStaticRootRel = ".local/opt/podman-static"
+// ── the single engine resolver (issue #393) ─────────────────────────────────
+
+// engineResolution is hostEngineOnce's cached answer: at most one of path or
+// shim is meaningful, decided once for the whole test binary run.
+type engineResolution struct {
+	path        string // "" means "no engine found"
+	versionLine string // `podman --version`'s output, only when path != ""
+	shim        policy.HostShim
+	isShim      bool
+	// named is $SNUG_PODMAN's value when it was set and did NOT resolve. That
+	// is a MISCONFIGURATION, not "no engine on this host": somebody named an
+	// engine and the name is wrong, so it fails rather than skipping. Letting
+	// it skip would reproduce issue #393's own defect one level down — a
+	// deliberately pointed-at engine silently not being tested, with a green
+	// run to show for it.
+	named string
+}
+
+var (
+	hostEngineOnce   sync.Once
+	hostEngineResult engineResolution
+
+	// versionOnce, engineNoneOnce and engineFailedOnce each print ONE line for
+	// the whole run (issue #393 §4's amendment): the healthy case, the "no
+	// podman at all" case, and the "podman resolved but could not actually
+	// run a container" case are three DIFFERENT facts, and printing the wrong
+	// one on the wrong host is exactly how a broken environment reads as an
+	// absent one. Makefile's integration-sandbox target greps for these to
+	// print "N of 32 ran — <reason>".
+	versionOnce      sync.Once
+	engineNoneOnce   sync.Once
+	engineFailedOnce sync.Once
+)
+
+// resolveHostEngineOnce computes engineResolution exactly once per test
+// binary run: $SNUG_PODMAN if set, else exec.LookPath("podman"), then the
+// same host-escape-shim check preflight's own preflightPodmanBinary applies
+// (internal/cli's DetectHostShim, exported for exactly this caller — see its
+// own doc comment. Imported here as snugcli: this package already has its
+// own unexported `cli` helper in sandbox_test.go, and the two names collide
+// at file scope otherwise).
+func resolveHostEngineOnce() engineResolution {
+	hostEngineOnce.Do(func() {
+		name := os.Getenv("SNUG_PODMAN")
+		if name == "" {
+			p, err := exec.LookPath("podman")
+			if err != nil {
+				hostEngineResult = engineResolution{}
+				return
+			}
+			name = p
+		} else if _, err := exec.LookPath(name); err != nil {
+			hostEngineResult = engineResolution{named: name}
+			return
+		}
+		if shim, ok := snugcli.DetectHostShim(name); ok {
+			hostEngineResult = engineResolution{path: name, shim: shim, isShim: true}
+			return
+		}
+		abs := name
+		if p, err := exec.LookPath(name); err == nil {
+			abs = p
+		}
+		out, _ := exec.Command(abs, "--version").Output()
+		hostEngineResult = engineResolution{path: abs, versionLine: strings.TrimSpace(string(out))}
+	})
+	return hostEngineResult
+}
+
+// hostEngine resolves the podman this suite runs on. "no engine on this
+// host" is the ONLY skip; a wrong engine (a host-escape shim) is a t.Fatal
+// naming the shim and how it was named, never a skip — the whole point of
+// issue #393 is that this harness must not treat "preflight would refuse
+// this" as "there is nothing to test here".
+func hostEngine(t *testing.T) string {
+	t.Helper()
+	r := resolveHostEngineOnce()
+	if r.isShim {
+		t.Fatalf("podman (named %q) resolves to %s, a host-escape helper (%s) that forwards to "+
+			"the HOST's own podman over a channel no network namespace touches. This is exactly "+
+			"the configuration preflight P1 refuses, and this suite testing a capability "+
+			"preflight would refuse is not a legitimate skip.\n"+
+			"      Fix: point $SNUG_PODMAN at a real engine binary, or fix PATH.",
+			r.shim.Name, r.shim.Path, filepath.Base(r.shim.Resolved))
+	}
+	if r.named != "" {
+		t.Fatalf("$SNUG_PODMAN=%s does not resolve to an executable on this host. An engine "+
+			"somebody NAMED and got wrong is a misconfiguration, not an absent engine, so this "+
+			"fails rather than skipping — a skip here would be issue #393's own defect one level "+
+			"down, a deliberately pointed-at engine silently going untested with a green run to "+
+			"show for it.\n"+
+			"      Fix: point $SNUG_PODMAN at a real engine binary, or unset it to use PATH.",
+			r.named)
+	}
+	if r.path == "" {
+		engineNoneOnce.Do(func() { t.Logf("snug-engine-none: no podman resolved") })
+		t.Skip("SKIP: no podman on PATH and $SNUG_PODMAN unset — no engine on this host to test against")
+	}
+	versionOnce.Do(func() {
+		t.Logf("snug-engine-version: %s at %s", r.versionLine, r.path)
+	})
+	return r.path
+}
+
+// describeResolvedEngine renders the resolved engine for the negative
+// markers below, so a "failed to start" line still names WHICH podman failed.
+func describeResolvedEngine() string {
+	r := resolveHostEngineOnce()
+	if r.named != "" {
+		return "$SNUG_PODMAN=" + r.named + " does not resolve"
+	}
+	if r.path == "" {
+		return "no podman resolved"
+	}
+	return r.versionLine + " at " + r.path
+}
 
 // containerEngineEnv is baseEnv (via attachEnv's own isolation, so
 // $XDG_RUNTIME_DIR never collides with another test's live run) plus
-// $SNUG_PODMAN pointed at a freshly provisioned wrapper (provisionEngineWrapper).
-// Every test in this file that starts a real engine uses it.
+// $SNUG_PODMAN pointed at hostEngine's resolved binary. Every test in this
+// file that starts a real engine uses it.
 func containerEngineEnv(t *testing.T) (env []string, xdgRuntime string) {
 	t.Helper()
-	root, podman := podmanBundle(t)
+	podman := hostEngine(t)
 	base, xdg := attachEnv(t)
-	// SNUG_PODMAN_ROOT is not optional here since Tier C: the engine's view is
-	// derived from the sandbox's, so a bundle outside every grant reaches it
-	// only through the toolchain graft, and the graft's source is exactly this
-	// variable (preflight P9, G4's third source). Without it snug refuses the
-	// run — correctly — with "the container engine cannot see the engine
-	// binary".
-	//
-	// NO WRAPPER SCRIPT, and its removal is a simplification Tier C forced
-	// rather than a tidy-up: a wrapper in a temp directory is a program the
-	// engine's view does not contain, and everything the wrapper used to do
-	// (stripping the bundle's own storage/containers keys, forcing
-	// cgroups=disabled) is now snug's own job — #212 authors storage.conf,
-	// #133 containers.conf, and preflight P5 selects cgroups=disabled on a
-	// host like this one. Measured: the bundle binary runs directly, with
-	// snug's generated configuration in play.
-	return append(base, "SNUG_PODMAN="+podman, "SNUG_PODMAN_ROOT="+root), xdg
+	out := append(base, "SNUG_PODMAN="+podman)
+	// SNUG_PODMAN_ROOT is passed through from the AMBIENT environment when a
+	// developer set it, and never invented (issue #393 spec §1): a system
+	// podman at /usr/bin passes G4's first disjunct (@sys already binds
+	// /usr), so there is nothing to record, and policy.EngineToolchain("")
+	// errors by design. A harness that synthesised a root would be grafting
+	// a tree nobody named.
+	if root := os.Getenv("SNUG_PODMAN_ROOT"); root != "" {
+		out = append(out, "SNUG_PODMAN_ROOT="+root)
+	}
+	return out, xdg
 }
 
-// podmanBundle returns the pinned static bundle's root and its podman binary,
-// skipping cleanly when the bundle is not installed — the same contract
-// provisionEngineWrapper had, and for the same reason: this suite never points
-// SNUG_PODMAN at whatever the host's own `podman` resolves to.
-func podmanBundle(t *testing.T) (root, podman string) {
+// engineWithHome returns a $SNUG_PODMAN value whose engine runs with
+// HOME=homeOverride. A tiny exec wrapper is still the only way to plant HOME
+// for a process snug starts — everything else provisionEngineWrapper used to
+// do (stripping a bundle's own storage/containers keys) is gone with the
+// bundle itself; measured (internal/cli.preflightPodmanBinary only os.Stats
+// the path and shim-checks it) that a "#!" wrapper is accepted as $SNUG_PODMAN
+// exactly like a real binary.
+//
+// The one caller (TestHostContainersConfAuthorsNothingInAContainer) needs
+// this because podman reads a USER containers.conf from
+// $XDG_CONFIG_HOME/containers/ and, when that variable is unset, from
+// $HOME/.config/containers/ — and the engine's own environment carries no
+// XDG_CONFIG_HOME, so on a real run the file podman reads is HOME's. A test
+// cannot plant a hostile config into the developer's own ~/.config/containers,
+// so it points the engine's HOME at a temporary one instead.
+func engineWithHome(t *testing.T, homeOverride string) string {
 	t.Helper()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("SKIP: cannot determine $HOME to look for a static podman bundle: " + err.Error())
-	}
-	root = filepath.Join(home, podmanStaticRootRel)
-	podman = filepath.Join(root, "usr", "local", "bin", "podman")
-	if fi, statErr := os.Stat(podman); statErr != nil || fi.IsDir() {
-		t.Skip("SKIP: no static podman bundle at " + podman + "; " +
-			"this suite never points SNUG_PODMAN at whatever the host's OWN `podman` resolves to")
-	}
-	return root, podman
-}
-
-// provisionEngineWrapper builds a small shell wrapper around the pinned
-// static podman binary, the way both go-implementer and redteam actually ran
-// it while measuring this tier — copying the SHAPE of the working wrapper
-// redteam left behind, not the path (that one lived under a redteam-only
-// scratchpad and is not something this suite may depend on existing).
-//
-// The bundle's OWN etc/snug/containers.conf and storage.conf pin
-// graphroot/runroot/static_dir/tmp_dir/volume_path to the BUNDLE's own
-// store, which COLLIDES with the PER-RUN --root/--runroot
-// internal/engine.Engine.Spec passes — podman's libpod database then refuses
-// with "database run root ... does not match our run root". This strips
-// exactly those keys from a COPY of the bundle's own config (the bundle
-// itself is never touched) and forces cgroups=disabled, matching
-// preflight P5's own default choice for a host in this shape
-// (containerpreflight.go's preflightCgroupsWritable): __inengine's own
-// private-cgroup-namespace remount is non-fatal-but-failing here (EBUSY),
-// and disabling cgroup management avoids relying on it actually working.
-// Measured NOT to be what a real container run needed on this development
-// host, though — see requireRealEngine's own doc comment for what was.
-//
-// Skips cleanly (never fails, even under SNUG_REQUIRE_SANDBOX) if the bundle
-// itself is not present, for the same reason containerEngineEnv's own doc
-// gives.
-func provisionEngineWrapper(t *testing.T) string {
-	t.Helper()
-	return provisionEngineWrapperWithHome(t, "")
-}
-
-// provisionEngineWrapperWithHome is provisionEngineWrapper with the engine's
-// $HOME under the caller's control. It exists for issue #132's regression
-// test and for nothing else, so read the reason rather than the signature:
-//
-// podman reads a USER containers.conf from $XDG_CONFIG_HOME/containers/ and,
-// when that variable is unset, from $HOME/.config/containers/. The engine's
-// environment is built by engine.Engine.Spec from PATH, HOME and
-// XDG_RUNTIME_DIR alone — no XDG_CONFIG_HOME — so on a real run the file
-// podman reads is the HOST USER's own, under their real home. Measured, and
-// it is the whole channel:
-//
-//	$ env -u CONTAINERS_CONF -u XDG_CONFIG_HOME HOME=$D podman run --rm alpine:3.20 cat /leak/token
-//	HOST-SECRET-MARKER
-//
-// A test cannot plant a hostile config in the developer's own
-// ~/.config/containers, so it points the engine's HOME at a temporary one
-// instead. homeOverride == "" keeps the bundle's own home, which is what
-// every other test wants.
-func provisionEngineWrapperWithHome(t *testing.T, homeOverride string) string {
-	t.Helper()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("SKIP: cannot determine $HOME to look for a static podman bundle: " + err.Error())
-	}
-	root := filepath.Join(home, podmanStaticRootRel)
-	podmanBin := filepath.Join(root, "usr", "local", "bin", "podman")
-	if fi, statErr := os.Stat(podmanBin); statErr != nil || fi.IsDir() {
-		t.Skip("SKIP: no static podman bundle at " + podmanBin + "; " +
-			"this suite never points SNUG_PODMAN at whatever the host's OWN `podman` resolves to")
-	}
-
+	podman := hostEngine(t)
 	dir := t.TempDir()
-
-	containersConf := stripConfigLines(t, filepath.Join(root, "etc", "snug", "containers.conf"),
-		"static_dir", "tmp_dir", "volume_path")
-	containersConf = forceCgroupsDisabled(containersConf)
-	if err := os.WriteFile(filepath.Join(dir, "containers.conf"), []byte(containersConf), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	storageConf := stripConfigLines(t, filepath.Join(root, "etc", "snug", "storage.conf"),
-		"graphroot", "runroot")
-	if err := os.WriteFile(filepath.Join(dir, "storage.conf"), []byte(storageConf), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// NOT `export CONTAINERS_CONF` (issue #133). It used to, and that had two
-	// costs, both measured rather than reasoned about:
-	//
-	//  1. snug's own generated containers.conf was never the file under test.
-	//     Only CONTAINERS_CONF_OVERRIDE reached the engine, so preflight P5's
-	//     cgroups remedy — the reason that file first existed — was verified
-	//     by a suite in which it was not loaded.
-	//  2. It MASKED the channel issue #132 is about. podman ignores the system
-	//     and user containers.conf whenever CONTAINERS_CONF is set, by
-	//     ANYONE — so the wrapper was suppressing the host's files itself, and
-	//     TestHostContainersConfAuthorsNothingInAContainer passed identically
-	//     with snug's own CONTAINERS_CONF deleted. A regression test the
-	//     harness satisfies on snug's behalf proves nothing about snug.
-	//
-	// The copied containers.conf is still written above and still stripped and
-	// cgroups-forced; it is simply not pointed at any more, so the file the
-	// engine reads is the one snug generates. Storage and registries keep
-	// their own variables, which name different files and are not part of this.
-	// NOT `export CONTAINERS_REGISTRIES_CONF` either, and for issue #133's
-	// reason applied to issue #137's file: snug now generates a registries.conf
-	// and points that variable at it, so a wrapper exporting its own would be
-	// the harness deciding image provenance on snug's behalf and the
-	// regression test would pass with snug's variable deleted.
-	//
-	// HOME is exported ONLY when a caller planted one. snug now sets HOME
-	// itself (to a run-private home carrying the generated policy.json), which
-	// is what the default case must exercise. The override case keeps the
-	// export deliberately: it stands in for the HOST USER's own home — which a
-	// test cannot plant into — so that what is under test there stays
-	// CONTAINERS_CONF closing the channel, rather than snug's HOME making the
-	// planted file unreachable.
-	homeLine := ""
-	if homeOverride != "" {
-		homeLine = fmt.Sprintf("export HOME=%s\n", homeOverride)
-	}
 	wrapper := filepath.Join(dir, "snug-test-podman")
-	script := fmt.Sprintf("#!/bin/sh\n"+
-		"export CONTAINERS_STORAGE_CONF=%s\n"+
-		"%s"+
-		"exec %s \"$@\"\n",
-		filepath.Join(dir, "storage.conf"), homeLine, podmanBin)
+	script := fmt.Sprintf("#!/bin/sh\nexport HOME=%s\nexec %s \"$@\"\n", homeOverride, podman)
 	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return wrapper
 }
 
-// stripConfigLines copies path with every line whose (trimmed) text starts
-// with one of dropPrefixes followed by a space or "=" removed — a plain
-// textual filter, not a TOML parser, which is enough for the small,
-// hand-authored files this reads and keeps this test file from taking on a
-// TOML dependency of its own.
-func stripConfigLines(t *testing.T, path string, dropPrefixes ...string) string {
+// seedEngineHome writes the minimum a podman needs to decide an image may be
+// used at all, into a home the test owns: $home/.config/containers/policy.json
+// = insecureAcceptAnything. The property under test in both callers
+// (TestHostContainersConfAuthorsNothingInAContainer,
+// TestAHostRegistriesConfDoesNotSteerTheEnginesPull) is that a HOST
+// containers.conf/registries.conf does not steer the engine, and that holds
+// whatever this host's OWN /etc/containers/policy.json says — measured
+// ABSENT on the development host while /usr/share/containers/policy.json is
+// present, so generating the seed is what makes the test's result independent
+// of undeclared host state rather than a workaround for one missing
+// directory in one retired bundle.
+func seedEngineHome(t *testing.T, home string) {
 	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Skip("SKIP: reading " + path + ": " + err.Error())
+	dir := filepath.Join(home, ".config", "containers")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	var kept []string
-	for _, line := range strings.Split(string(data), "\n") {
-		trimmed := strings.TrimSpace(line)
-		drop := false
-		for _, p := range dropPrefixes {
-			if strings.HasPrefix(trimmed, p+" ") || strings.HasPrefix(trimmed, p+"=") {
-				drop = true
-				break
-			}
-		}
-		if !drop {
-			kept = append(kept, line)
-		}
+	policyJSON := `{"default":[{"type":"insecureAcceptAnything"}]}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "policy.json"), []byte(policyJSON), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	return strings.Join(kept, "\n")
 }
 
-// forceCgroupsDisabled overwrites whatever the bundle's own `cgroups = ...`
-// line said (measured "enabled" in the bundle as provisioned) with
-// "disabled" — see provisionEngineWrapper's own doc comment for why.
-func forceCgroupsDisabled(conf string) string {
-	var out []string
-	for _, line := range strings.Split(conf, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "cgroups") {
-			out = append(out, `cgroups = "disabled"`)
-			continue
+// markEngineRan is the per-test half of issue #393 §4's run-count floor:
+// exactly one "snug-engine-ran: <path>" line for every test that is
+// COMMITTED to having run with a real engine — never for one that merely
+// resolved a binary and then skipped. Makefile's integration-sandbox target
+// counts these against SNUG_ENGINE_FLOOR.
+func markEngineRan(t *testing.T, enginePath string) {
+	t.Helper()
+	t.Logf("snug-engine-ran: %s", enginePath)
+}
+
+// enginePathFromEnv reads $SNUG_PODMAN back out of an env slice this file
+// built, for markEngineRan's benefit — the env, not hostEngine's own cached
+// path, because a caller may have pointed SNUG_PODMAN at engineWithHome's
+// wrapper rather than at the resolved binary directly.
+func enginePathFromEnv(env []string) string {
+	for _, kv := range env {
+		if rest, ok := strings.CutPrefix(kv, "SNUG_PODMAN="); ok {
+			return rest
 		}
-		out = append(out, line)
 	}
-	return strings.Join(out, "\n")
+	// No explicit SNUG_PODMAN in this env (e.g. TestPodmanBuildIsFilteredEndToEnd's
+	// baseEnv()) — the engine actually used is whatever hostEngine already
+	// resolved for the whole run, from PATH.
+	return resolveHostEngineOnce().path
 }
 
 // ── the shared "is there a REAL, working engine" gate ───────────────────────
@@ -323,10 +319,18 @@ var (
 // sitting closest to the symptom over reading what the engine itself
 // actually said.
 //
-// A plain, unconditional t.Skip on failure — never skipOrFail — for the same
-// reason requireEngine's own doc gives: no CI lane promises a working engine
-// today, so a green run that never got one is a developer-machine fact, not
-// a regression.
+// A plain t.Skip on failure — never skipOrFail — UNLESS $SNUG_REQUIRE_ENGINE
+// is set, for the same reason requireEngine's own doc gives: no CI lane
+// promises a working engine today, so a green run that never got one is a
+// developer-machine fact, not a regression, and that stays true with the
+// variable unset. With it set (issue #393 §4: "an engine that is present but
+// cannot run a container is the wrong-engine case"), the same failure is a
+// t.Fatal — the caller asked this run to MEAN something.
+//
+// This is also the ONE place that reaches "committed to running with a real
+// engine": markEngineRan fires here, after the skip/fatal decision, never
+// before it — a test that resolved an engine and then skipped on this probe
+// must NOT count toward the floor (issue #393 §4).
 func requireRealEngine(t *testing.T, env []string) {
 	t.Helper()
 	requireSandbox(t)
@@ -349,8 +353,16 @@ func requireRealEngine(t *testing.T, env []string) {
 		realEngineMu.Unlock()
 	}
 	if reason != "" {
+		engineFailedOnce.Do(func() {
+			t.Logf("snug-engine-failed: %s: engine failed to start: %s", describeResolvedEngine(), reason)
+		})
+		if os.Getenv("SNUG_REQUIRE_ENGINE") != "" {
+			t.Fatalf("SNUG_REQUIRE_ENGINE is set and no usable real container engine is available "+
+				"in this environment: %s", reason)
+		}
 		t.Skip("SKIP: no usable real container engine in this environment: " + reason)
 	}
+	markEngineRan(t, enginePathFromEnv(env))
 }
 
 // probeRealEngine drives the exact "ordinary build" leg
@@ -1322,7 +1334,9 @@ func TestPreflightRefusesUnconfinableEngine(t *testing.T) {
 		bg.waitForState(t)
 		// bg's own t.Cleanup kills it; reaching here means the payload started,
 		// which (per Engine.DialLifeline's own doc) only happens after the
-		// engine reported ready.
+		// engine reported ready — this IS the commit point for the run-count
+		// floor (issue #393 §4): a real engine served this control.
+		markEngineRan(t, enginePathFromEnv(env))
 	})
 
 	t.Run("P1: podman resolves to a host-escape shim", func(t *testing.T) {
@@ -2198,14 +2212,15 @@ func hostileContainersConfHome(t *testing.T) (home, marker string) {
 	secret := t.TempDir()
 	marker = "HOST-CONTAINERS-CONF-MARKER"
 
-	// Seed the bundle's own home first. It carries
-	// .config/containers/policy.json, which podman needs to decide whether an
-	// image may be used at all — without it requireRealEngine reports "a build
+	// Seed policy.json first. podman needs it to decide whether an image may
+	// be used at all — without it requireRealEngine reports "a build
 	// succeeded but its RUN step never actually executed a container", which
 	// looks like a broken host rather than a missing file. Measured, not
 	// guessed: the skip appeared the moment $HOME moved and went away when
-	// this copy was added.
-	copyTree(t, filepath.Join(bundleRoot(t), "home"), home)
+	// the seed was added. Generating it (rather than copying a bundle's own
+	// home/) is also what keeps this independent of undeclared host state —
+	// see seedEngineHome's own doc comment.
+	seedEngineHome(t, home)
 
 	if err := os.WriteFile(filepath.Join(secret, "token"), []byte(marker+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -2257,7 +2272,7 @@ func TestHostContainersConfAuthorsNothingInAContainer(t *testing.T) {
 	budget(t, 180*time.Second)
 
 	home, marker := hostileContainersConfHome(t)
-	wrapper := provisionEngineWrapperWithHome(t, home)
+	wrapper := engineWithHome(t, home)
 	base, _ := attachEnv(t)
 	env := append(base, "SNUG_PODMAN="+wrapper)
 	requireRealEngine(t, env)
@@ -2356,7 +2371,7 @@ const ulimitMarker = "13571"
 func assertHostileConfInjectsWithoutSnug(t *testing.T, home, probe, marker string) {
 	t.Helper()
 
-	podman := podmanBundleBinary(t)
+	podman := hostEngine(t)
 	ctx := t.TempDir()
 	if err := os.WriteFile(filepath.Join(ctx, "confprobe"), mustRead(t, probe), 0o755); err != nil {
 		t.Fatal(err)
@@ -2403,69 +2418,6 @@ func assertHostileConfInjectsWithoutSnug(t *testing.T, home, probe, marker strin
 			"(issue #132's channel may have moved, or the key spellings changed):\n%s", out)
 	}
 	t.Logf("control: the planted host containers.conf DOES inject without snug (marker %q seen)", marker)
-}
-
-// podmanBundleBinary returns the pinned static podman the whole real-engine
-// suite runs on, skipping cleanly if the bundle is absent — the same rule
-// provisionEngineWrapper follows, and for the same reason: this suite never
-// points anything at whatever the host's own `podman` resolves to.
-func podmanBundleBinary(t *testing.T) string {
-	t.Helper()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("SKIP: cannot determine $HOME to look for a static podman bundle: " + err.Error())
-	}
-	bin := filepath.Join(home, podmanStaticRootRel, "usr", "local", "bin", "podman")
-	if fi, statErr := os.Stat(bin); statErr != nil || fi.IsDir() {
-		t.Skip("SKIP: no static podman bundle at " + bin + "")
-	}
-	return bin
-}
-
-// bundleRoot is the pinned static podman bundle's own root, skipping cleanly
-// when it is absent — the same rule the rest of the real-engine suite follows.
-func bundleRoot(t *testing.T) string {
-	t.Helper()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("SKIP: cannot determine $HOME to look for a static podman bundle: " + err.Error())
-	}
-	root := filepath.Join(home, podmanStaticRootRel)
-	if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
-		t.Skip("SKIP: no static podman bundle at " + root + "")
-	}
-	return root
-}
-
-// copyTree copies src's contents into dst, files and directories only. Small
-// and deliberately unclever: the one tree it is used on holds a single
-// policy.json.
-func copyTree(t *testing.T, src, dst string) {
-	t.Helper()
-	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(target, data, 0o644)
-	})
-	if err != nil {
-		t.Fatalf("seeding the engine home from the bundle's own: %v", err)
-	}
 }
 
 // ── issue #125, C0: the engine holds its own pid namespace ─────────────────
@@ -3157,6 +3109,10 @@ if touch /run/snug-probe 2>/dev/null; then echo "run-write=OK"; else echo "run-w
 			"tmpfs would have nowhere to land once its view is derived from the sandbox's "+
 			"(EngineMountpoints):\n%s", out)
 	}
+	// COMMIT POINT for the run-count floor (issue #393 §4): a @podman-socket
+	// run that got past the fatal check above really stood the engine's own
+	// mountpoint up.
+	markEngineRan(t, enginePathFromEnv(env))
 	if !strings.Contains(out, "run-entries=0") {
 		t.Errorf("/run is not EMPTY in the payload's view — it is a mountpoint snug creates for "+
 			"the ENGINE, and anything in it is something the payload was handed without a grant "+
@@ -3237,6 +3193,9 @@ func TestTheEnginesViewIsDerivedAndCarriesNoHostTree(t *testing.T) {
 		t.Fatalf("PRECONDITION: no engine process appeared under a @podman-socket run, so there "+
 			"is no mount namespace to read and this test proves nothing:\n%s", out.String())
 	}
+	// COMMIT POINT for the run-count floor (issue #393 §4): the fatal check
+	// above already proved a real engine process exists.
+	markEngineRan(t, enginePathFromEnv(env))
 	deadline := time.Now().Add(15 * time.Second)
 	for !strings.Contains(out.String(), payloadMarker) && time.Now().Before(deadline) {
 		time.Sleep(25 * time.Millisecond)
