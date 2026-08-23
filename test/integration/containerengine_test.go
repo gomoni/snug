@@ -190,13 +190,35 @@ func containerEngineEnv(t *testing.T) (env []string, xdgRuntime string) {
 	return out, xdg
 }
 
-// engineWithHome returns a $SNUG_PODMAN value whose engine runs with
-// HOME=homeOverride. A tiny exec wrapper is still the only way to plant HOME
-// for a process snug starts — everything else provisionEngineWrapper used to
-// do (stripping a bundle's own storage/containers keys) is gone with the
-// bundle itself; measured (internal/cli.preflightPodmanBinary only os.Stats
-// the path and shim-checks it) that a "#!" wrapper is accepted as $SNUG_PODMAN
-// exactly like a real binary.
+// engineWithHome returns the $SNUG_PODMAN and $SNUG_PODMAN_ROOT a run needs to
+// get an engine whose HOME is homeOverride. A tiny exec wrapper is still the
+// only way to plant HOME for a process snug starts — everything else
+// provisionEngineWrapper used to do (stripping a bundle's own
+// storage/containers keys) is gone with the bundle itself.
+//
+// # Why it returns a ROOT as well, and why the first version was wrong
+//
+// It returned the wrapper alone, and BOTH gates have to admit that path
+// rather than just one. What was measured for #393 was
+// internal/cli.preflightPodmanBinary, which only os.Stats the path and
+// shim-checks it, so a "#!" wrapper passes — true, and not the question. G4
+// asks the OTHER half: can the ENGINE SEE this binary? Since Tier C the
+// engine's mount namespace is DERIVED from the sandbox's, so a wrapper in
+// t.TempDir() reaches it through nothing at all, and every run through here
+// died with
+//
+//	snug: the container engine cannot see the engine binary (…/snug-test-podman):
+//	nothing grafts it into the engine's view and no grant of this sandbox exposes it.
+//
+// which is the boundary working. $SNUG_PODMAN_ROOT is the seam that names a
+// toolchain root for exactly this case (preflight P9, G4's third source), so
+// the wrapper's own directory is the root. G4b (#400) does not fire: a
+// t.TempDir() is outside every grant of the sandbox under test, so it is not
+// payload-writable — the guard refuses a root the PAYLOAD can write, which is
+// a different thing from one the test can.
+//
+// Two gates, and the earlier work measured one. That is the same half-a-rule
+// shape CLAUDE.md warns about, so the doc comment names both from now on.
 //
 // The one caller (TestHostContainersConfAuthorsNothingInAContainer) needs
 // this because podman reads a USER containers.conf from
@@ -205,16 +227,16 @@ func containerEngineEnv(t *testing.T) (env []string, xdgRuntime string) {
 // XDG_CONFIG_HOME, so on a real run the file podman reads is HOME's. A test
 // cannot plant a hostile config into the developer's own ~/.config/containers,
 // so it points the engine's HOME at a temporary one instead.
-func engineWithHome(t *testing.T, homeOverride string) string {
+func engineWithHome(t *testing.T, homeOverride string) (wrapper, root string) {
 	t.Helper()
 	podman := hostEngine(t)
-	dir := t.TempDir()
-	wrapper := filepath.Join(dir, "snug-test-podman")
+	root = t.TempDir()
+	wrapper = filepath.Join(root, "snug-test-podman")
 	script := fmt.Sprintf("#!/bin/sh\nexport HOME=%s\nexec %s \"$@\"\n", homeOverride, podman)
 	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return wrapper
+	return wrapper, root
 }
 
 // seedEngineHome writes the minimum a podman needs to decide an image may be
@@ -2279,9 +2301,12 @@ func TestHostContainersConfAuthorsNothingInAContainer(t *testing.T) {
 	budget(t, 180*time.Second)
 
 	home, marker := hostileContainersConfHome(t)
-	wrapper := engineWithHome(t, home)
+	wrapper, toolchainRoot := engineWithHome(t, home)
 	base, _ := attachEnv(t)
-	env := append(base, "SNUG_PODMAN="+wrapper)
+	// SNUG_PODMAN_ROOT is not optional: the wrapper is the engine binary for
+	// this run and it lives outside every grant, so without the graft G4
+	// refuses the run outright. See engineWithHome's own doc comment.
+	env := append(base, "SNUG_PODMAN="+wrapper, "SNUG_PODMAN_ROOT="+toolchainRoot)
 	requireRealEngine(t, env)
 
 	probe := confprobeBin(t)
