@@ -3324,6 +3324,83 @@ Do not read a bare `ls /proc/<hostpid>/fd` failure as the property. The engine's
 HOST pid can name an unrelated process inside the sandbox's own pid namespace,
 so the question is identity, not the number.
 
+### 9o. A container from an earlier run cannot be acted on (issue #386)
+
+§9c-bis's own store note is the precondition here: the engine's store is
+keyed on the target directory and persists across runs — "what makes a warm
+start warm" — so two `snug` invocations against the SAME target directory,
+one after the other, share ONE store. That is also what makes "another run's
+container" a real object rather than a hypothetical one, and
+`internal/dockerproxy/ownership.go`'s gate is the one place that decides
+whose container a request may then touch. Before issue #386 the gate covered
+`DELETE` alone; every other route that addresses a single container by id —
+`start`, `exec`, `rename`, `logs`, `json`, and the hijacked routes
+(`attach`, `exec/{id}/start`) — forwarded unchecked.
+
+**Needs a real engine.** The recipe needs a `FROM scratch` image with a real
+marker binary as its entrypoint (a dynamically-linked `/bin/true` has no
+loader inside `scratch`, so its exit code would prove nothing), which is
+fiddly to get right as a one-off shell snippet — the committed test builds
+`test/integration/testdata/buildmarker` for exactly this reason, the same way
+9j's own by-hand check hands off to a named test rather than a raw snippet:
+
+```bash
+go test -tags integration -run TestContainerOwnershipGateRefusesAnotherRunsContainer -v ./test/integration/
+```
+
+Expect `PASS`, and read the `-v` log in order. Run A builds its own image
+(`BUILD snugtest-ownership-a:1: 200`), creates and starts a container with
+`HostConfig.NetworkMode: "host"`, and its `/logs` come back carrying
+`BUILT-INSIDE-SNUG` — the marker actually written INSIDE the container,
+recovered through the ordinary logs endpoint, which is the control that says
+a container really ran before anything asks whether it can be touched again.
+Run A then exits — the two invocations are sequential, since a second LIVE
+`snug` on the same target directory is refused outright. Run B is a
+completely separate invocation against the SAME target, carrying its own
+`snug.run` label, and its own `-v` output shows six `ATTACK-*` lines — one
+each for `start`, `exec`, `rename`, `logs`, `json`, `rm` against run A's
+leftover container id — every one a `403` whose body contains `not created
+by this sandbox run`. In the SAME run, immediately after, `B-CREATE`,
+`B-START`, `B-EXEC-CREATE`, `B-EXEC-START` and `B-RM` all show ordinary 2xx
+codes: run B's own container, created and torn down inside the same
+invocation that was refused six times against run A's. That round trip is
+the load-bearing control — without it, the six refusals above would pass
+identically against a proxy that refuses the entire container API, gate or
+no gate.
+
+**The row-3 trap, read by hand rather than trusted.** `NetworkMode: "host"`
+is baked into run A's leftover container on purpose. Without it, run B's own
+`start` against it answers `500` — the engine holds no `CAP_NET_ADMIN`, so
+starting ANY container without host networking fails at the network setup
+step regardless of ownership — which reads exactly like a refusal on any
+check weaker than the literal `403` plus the `not created by this sandbox
+run` substring. Measured against podman 5.8.4 on the code before this fix,
+by temporarily checking out the pre-#386 tree and running this same test
+against it: the very same `start`, against the very same `NetworkMode:
+"host"` container, answered `204` — and only `rm` was refused, because the
+old gate covered `DELETE` alone. `exec` on that same run answered `500` too,
+but for a THIRD reason (`can only create exec sessions on running
+containers` — the container had already exited): a reminder that "not 2xx"
+on its own proves nothing about which of ownership, networking or container
+state actually produced a given status code, which is why every assertion in
+the committed test reads the exact status and the exact message rather than
+merely rejecting success.
+
+The full JSON is on screen in the `ATTACK-rm` line for exactly this reason —
+worth reading once by eye:
+
+```
+ATTACK-rm: 403 {"cause":"snug policy","message":"snug refused this request:
+container <64-hex-id> ... was not created by this sandbox run. snug stamps
+every container it creates with snug.run=<run B's value> and acts only on
+those; this one carries \"snug.run=<run A's value>\". ..."}
+```
+
+Two different `snug.run` values in one message — proof this refusal is a
+comparison against the ENGINE's own answer for who created the container
+(`inspectContainer` in ownership.go), not a check against anything the
+client sent.
+
 ## 10. A repository cannot grant itself anything
 
 ```bash
