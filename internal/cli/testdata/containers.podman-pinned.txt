@@ -1,8 +1,9 @@
 CONTAINERS  a per-sandbox engine behind a filtering proxy at /snug/podman.sock
          engine      binary /opt/snug-podman/bin/podman ($SNUG_PODMAN) — trusted outright, PATH
-                     resolution bypassed on purpose (a pinned bundle, or a
-                     host whose PATH resolves podman to a host-escape shim)
-                     bundle root /opt/snug-podman ($SNUG_PODMAN_ROOT) — named, not
+                     resolution bypassed on purpose; refused if it is
+                     itself a host-escape shim (a testing seam, not a
+                     supported way to install an engine)
+                     toolchain root /opt/snug-podman ($SNUG_PODMAN_ROOT) — named, not
                      derived from the binary path, and must contain it
          Containers run in THIS sandbox's own network namespace: with no
          '@net', a container has no egress either; with '@net', full egress

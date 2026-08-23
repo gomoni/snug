@@ -339,7 +339,7 @@
     "socket": "/snug/podman.sock",
     "engine_source": "PATH",
     "engine_binary": "",
-    "bundle_root": "",
+    "toolchain_root": "",
     "registry_search": [
       "docker.io"
     ],

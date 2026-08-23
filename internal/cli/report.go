@@ -228,8 +228,11 @@ type reportContainers struct {
 	EngineSource string
 	// EngineBinary is $SNUG_PODMAN's value, empty when PATH answered.
 	EngineBinary string
-	// BundleRoot is $SNUG_PODMAN_ROOT's value, empty when unset.
-	BundleRoot         string
+	// ToolchainRoot is $SNUG_PODMAN_ROOT's value, empty when unset. Named for
+	// what it is — the directory the engine's own program files live under —
+	// rather than for the retired static bundle that was its first consumer
+	// (#384).
+	ToolchainRoot      string
 	RegistrySearch     []string
 	SignaturesVerified bool
 	// SignaturePolicySource is the host file the engine's signature policy is
@@ -537,9 +540,9 @@ func buildContainersReport(p *policy.Policy, sig func() engine.SignaturePolicySu
 		return nil
 	}
 	c := &reportContainers{
-		Socket:       containerSocketGuest,
-		EngineSource: "PATH",
-		BundleRoot:   os.Getenv("SNUG_PODMAN_ROOT"),
+		Socket:        containerSocketGuest,
+		EngineSource:  "PATH",
+		ToolchainRoot: os.Getenv("SNUG_PODMAN_ROOT"),
 		// docker.io and nothing else — a generated registries.conf, no mirror,
 		// no rewrite, no insecure registry (issue #137).
 		RegistrySearch: []string{"docker.io"},

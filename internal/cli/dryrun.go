@@ -1100,8 +1100,9 @@ func describeContainers(out io.Writer, p *policy.Policy, c *reportContainers) {
 // Why it matters: a host with a host-escape shim on PATH and $SNUG_PODMAN
 // exported starts a DIFFERENT binary from one without, and the resolution
 // deliberately trusts those two env vars (preflightPodmanBinary trusts
-// $SNUG_PODMAN outright to BYPASS a shim on PATH; $SNUG_PODMAN_ROOT names a
-// bundle root that is not recoverable from the binary path). --dry-run is the
+// $SNUG_PODMAN for WHICH binary, checking only that it is not itself a shim
+// (#396); $SNUG_PODMAN_ROOT names a toolchain root that is not recoverable from
+// the binary path). --dry-run is the
 // screen a human trusts, so it must not be silent about which engine it is
 // about to run (issue #278).
 //
@@ -1117,15 +1118,16 @@ func describeEngineSource(out io.Writer) {
 	if custom := os.Getenv("SNUG_PODMAN"); custom != "" {
 		fmt.Fprintf(out, "         engine      binary %s ($SNUG_PODMAN) — trusted outright, PATH\n",
 			visibleValue(custom))
-		fmt.Fprintf(out, "                     resolution bypassed on purpose (a pinned bundle, or a\n")
-		fmt.Fprintf(out, "                     host whose PATH resolves podman to a host-escape shim)\n")
+		fmt.Fprintf(out, "                     resolution bypassed on purpose; refused if it is\n")
+		fmt.Fprintf(out, "                     itself a host-escape shim (a testing seam, not a\n")
+		fmt.Fprintf(out, "                     supported way to install an engine)\n")
 	} else {
 		fmt.Fprintf(out, "         engine      binary resolved from PATH when the run starts — preflight\n")
 		fmt.Fprintf(out, "                     P1 refuses a host-escape shim there; --dry-run does not\n")
 		fmt.Fprintf(out, "                     probe PATH, so it names the source, not the binary\n")
 	}
 	if root := os.Getenv("SNUG_PODMAN_ROOT"); root != "" {
-		fmt.Fprintf(out, "                     bundle root %s ($SNUG_PODMAN_ROOT) — named, not\n",
+		fmt.Fprintf(out, "                     toolchain root %s ($SNUG_PODMAN_ROOT) — named, not\n",
 			visibleValue(root))
 		fmt.Fprintf(out, "                     derived from the binary path, and must contain it\n")
 	}
@@ -2251,7 +2253,7 @@ func describeGrafts(out io.Writer, p *policy.Policy) {
 	// exists to catch assignments. Reported rather than loosened — the guard
 	// is right about the field and wrong only about this read.
 	if p.Podman != policy.PodmanOff && len(p.EngineToolchainRoot) == 0 {
-		fmt.Fprintln(out, "  (a bring-your-own engine adds a fifth graft at "+
+		fmt.Fprintln(out, "  (an engine outside every grant this sandbox makes adds a fifth graft at "+
 			policy.EngineToolchainGuest+" — whether")
 		fmt.Fprintln(out, "  this host needs one is a preflight answer, and --dry-run runs no preflight.)")
 	}

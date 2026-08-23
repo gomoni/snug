@@ -161,7 +161,7 @@ SNUG_PODMAN=/opt/snug-podman/bin/podman SNUG_PODMAN_ROOT=/opt/snug-podman \
 ```
 
 Expect the first to say `binary resolved from PATH when the run starts` and the
-second to name `/opt/snug-podman/bin/podman ($SNUG_PODMAN)` and the bundle root.
+second to name `/opt/snug-podman/bin/podman ($SNUG_PODMAN)` and the toolchain root.
 The env values are read, never the filesystem — set them to a path that does not
 exist and the line is unchanged, because `--dry-run` does not stat it. Golden:
 `internal/cli/testdata/containers.podman-pinned.txt` vs the two PATH-case
@@ -2672,7 +2672,7 @@ Expect no `LEFT` line at all.
 **One graft is deliberately absent from a dry run: the toolchain.** Its host path
 is a preflight ANSWER, and `--dry-run` runs no preflight (it would be host I/O a
 debugging command has no business doing). So a dry run names four grafts and a
-real run with a bring-your-own engine makes five. The screen says so rather than
+real run with an engine outside every grant makes five. The screen says so rather than
 leaving the difference to be discovered.
 
 ## 9c-ter. The engine's view is DERIVED — no host tree in it
