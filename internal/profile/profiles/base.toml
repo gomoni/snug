@@ -676,6 +676,50 @@ NO_COLOR = true
 # resolved policy (Tier B; Tier C makes it structural via a derived mount
 # view instead of a private copy of the host tree).
 #
+# ABUSE (post-#284 fix): a hostile process inside the sandbox can use
+# @podman-socket to bind, into a container, any path this sandbox can already
+# see whose every path component it cannot rewrite — so a container's mounts
+# are a subset of the sandbox's, and a name the payload owns can no longer be
+# re-pointed at snug's own engine store, socket or toolchain between create and
+# start (the anchored source rule, policy.CheckEngineBindSource).
+#
+# THE RULE, stated because the OUTCOME alone is not predictable. A source is
+# forwarded only if EVERY component from it up to / is ANCHORED. A name whose
+# parent this sandbox can write is re-pointable and is refused; a MOUNT ROOT is
+# not re-pointable (renaming one from inside is EBUSY — measured, M1) and
+# anchors the walk.
+#
+# ERGONOMIC COST, and it is LARGE — measured, not estimated. Two consequences
+# fall out of that one rule:
+#
+#   NOTHING INSIDE THE TARGET IS EVER ACCEPTED, at any depth. The target is a
+#   read-write bind, so every name in it has a writable parent. `-v
+#   $SNUG_TARGET/build:/out` and `-v ./data:/data` are refused on every layout.
+#
+#   THE TARGET ROOT is accepted exactly while @parent-ro's own bind sits
+#   DIRECTLY inside a mount root. Measured with defaults + @podman-socket:
+#   accepted at ~/proj/sub and ~/src/proj (two levels below $HOME) and at
+#   $TMPDIR/<dir>/proj; REFUSED at ~/src/projects/foo and deeper, where the
+#   intermediate directory is a plain renameable name in the home tmpfs.
+#   Measured directly: with the target at $HOME/x/y/proj/sub the payload ran
+#   `mv "$HOME/x" other` successfully, carrying BOTH mounts with it.
+#
+# Always anchored, and therefore always still mountable: a read-only bind of
+# /usr (201 against a real engine), and $HOME itself.
+#
+# So, plainly: `-v` works for paths OUTSIDE the sandbox's writable trees and
+# for the target ROOT at shallow depth, and NEVER for anything inside the
+# target. Where the root is accepted, bind it and address the subdirectory
+# inside the container; at three levels and deeper there is no workaround, and
+# the refusal message does not pretend there is.
+#
+# That is a refusal, never a silent narrowing: nothing is mounted with less
+# than what was asked for, and no container gains reach the sandbox lacks.
+# Widening it back needs a source path snug OWNS in the engine's view — a
+# per-bind graft under /snug/engine, so the engine is handed a MOUNT rather
+# than a re-resolvable string. Issue #376, a design decision and not a tweak
+# to this rule.
+#
 # The engine runs in the SANDBOX's netns now (issue #63, Tier B), so
 # `@podman-socket` without `@net` is genuinely offline, containers included.
 # That is why `net` is NO LONGER included below: offline is once again the

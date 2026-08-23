@@ -3048,11 +3048,11 @@ func lineField(logs, label string) string {
 // is what turns that into a measurement against a real engine and a real
 // container-create request, rather than trusting the code reading alone.
 //
-// POSITIVE CONTROL, against the SAME real engine: a bind of the sandbox's
-// own target directory (which the default profile set already grants
-// read-write) is accepted — so the /proc refusal below is a decision about
-// /proc specifically, not evidence that every bind request fails, or that
-// the engine never came up at all.
+// POSITIVE CONTROL, against the SAME real engine: a read-only bind of /usr,
+// which the default profile set already grants and whose every path component
+// is anchored (issue #284), is accepted — so the /proc refusal below is a
+// decision about /proc specifically, not evidence that every bind request
+// fails, or that the engine never came up at all.
 func TestEngineProcfsIsNotBindMountable(t *testing.T) {
 	budget(t, 120*time.Second)
 	env, _ := containerEngineEnv(t)
@@ -3076,13 +3076,18 @@ if build_scratch_probe():
     print("PROCBIND-CREATE: %%d %%s" %% (status, resp.decode(errors="replace")[:400]), flush=True)
 
     # POSITIVE CONTROL: an ORDINARY bind, of a path the sandbox itself already
-    # has read-write, is accepted by the same filter against the same engine.
+    # has, is accepted by the same filter against the same engine. It is /usr
+    # read-only rather than the writable target, since issue #284: every name
+    # on /usr's path is anchored (the root tmpfs above it is not writable and
+    # /usr is itself a read-only mount root), while the target's own path runs
+    # through the plain, payload-renameable directory names the anchored source
+    # rule now refuses -- see TestASwappedBindSourceCannotReachTheEngineGrafts.
     body2 = json.dumps({"Image": "localhost/%s",
                          "HostConfig": {"NetworkMode": "host",
-                                        "Mounts": [{"Type": "bind", "Source": os.getcwd(),
-                                                     "Target": "/hostproj"}]}}).encode()
+                                        "Mounts": [{"Type": "bind", "Source": "/usr",
+                                                     "Target": "/hostusr", "ReadOnly": True}]}}).encode()
     status2, resp2 = req("POST", "/v1.41/containers/create", body2, {"Content-Type": "application/json"})
-    print("PROJBIND-CREATE: %%d %%s" %% (status2, resp2.decode(errors="replace")[:400]), flush=True)
+    print("USRBIND-CREATE: %%d %%s" %% (status2, resp2.decode(errors="replace")[:400]), flush=True)
     if status2 == 201:
         cid = json.loads(resp2)["Id"]
         req("DELETE", "/v1.41/containers/%%s?force=1" %% cid)
@@ -3102,10 +3107,10 @@ print("PROBE-COMPLETE", flush=True)
 
 	// POSITIVE CONTROL: an ordinary bind against the same real engine and the
 	// same filter is accepted.
-	if !strings.Contains(r.out, "PROJBIND-CREATE: 201") {
-		t.Fatalf("control: an ordinary bind of the sandbox's own read-write target was NOT "+
-			"accepted (want 201) — this test's /proc refusal below proves nothing about a "+
-			"working bind filter:\n%s", r.out)
+	if !strings.Contains(r.out, "USRBIND-CREATE: 201") {
+		t.Fatalf("control: an ordinary read-only bind of /usr, every name on whose path is "+
+			"anchored, was NOT accepted (want 201) — this test's /proc refusal below proves "+
+			"nothing about a working bind filter:\n%s", r.out)
 	}
 
 	// The refusal itself.
@@ -3350,4 +3355,151 @@ func isEngineProcess(pid int) bool {
 		}
 	}
 	return sawSystem && sawService
+}
+
+// ── issue #284: the create/start TOCTOU on a bind SOURCE ────────────────────
+
+// TestASwappedBindSourceCannotReachTheEngineGrafts is issue #284's two
+// measured reproductions, kept in one test because the second is the first
+// amplified and a fix that closes only the first leaves the worse half open.
+//
+// The primitive. The proxy resolves a bind source once, at container CREATE,
+// and forwards the resolved NAME. crun re-resolves that same string a second
+// time, at container START, from a separate process in the ENGINE's
+// namespace — a distinct client request with an attacker-controlled gap in
+// between. filepath.Clean pins a string, not an inode, so:
+//
+//	mkdir realdir
+//	POST /containers/create -v $PWD/realdir:/x:rw     -> 201 (pre-fix)
+//	rmdir realdir; ln -s /snug/engine/store realdir
+//	POST /containers/<id>/start                        -> the container got
+//	                                                      /snug/engine/store
+//	                                                      READ-WRITE
+//
+// — this sandbox's host-backed, cross-run container store, which the payload's
+// own /snug/engine/store cannot even see (it is not in the sandbox's mount
+// namespace at all).
+//
+// The amplification, and why the destination is not the interesting half: the
+// SAME swap aimed at /snug/engine/sock hands the container the RAW engine
+// API, the one this proxy exists to stand in front of. Measured on the
+// unfixed tree: a create carrying {Privileged: true, CapAdd: ["SYS_ADMIN"],
+// Binds: ["/snug/engine/store:/store:rw"]} — every one of which this proxy
+// refuses by name — returned 201 through that socket. So a store-only pin
+// would have left the bypass that reopens everything else.
+//
+// What the fix asserts here is destination-agnostic by construction
+// (policy.CheckEngineBindSource): the refusal is about the SOURCE having a
+// name this sandbox can still re-point, whatever it is eventually aimed at.
+// Both reproductions therefore die at CREATE, before any symlink is planted,
+// and the test also plants them anyway and re-attempts — a fix that only
+// refused the pre-swap spelling would pass the first assertion and fail the
+// second.
+//
+// POSITIVE CONTROL, against the same real engine and the same filter: a
+// read-only bind of /usr — anchored, because the root tmpfs above it is not
+// writable and /usr is itself a mount root — is accepted with 201. Without it
+// every 403 below is equally explained by an engine that never came up.
+func TestASwappedBindSourceCannotReachTheEngineGrafts(t *testing.T) {
+	budget(t, 120*time.Second)
+	env, _ := containerEngineEnv(t)
+	requireRealEngine(t, env)
+	proj, _ := target(t)
+
+	// The image needs a file to COPY, not a working binary: this test never
+	// STARTS a container — every create it makes must be refused, and the one
+	// that is not is deleted immediately. So it writes its own placeholder
+	// rather than calling one of this file's probe builders, which cache the
+	// built path in a sync.Once against the FIRST calling test's t.TempDir()
+	// and hand a deleted path to every later caller in a full-suite run
+	// (measured: "open .../TestContainerGetsGeneratedResolvConf.../resolvprobe:
+	// no such file or directory", passing in isolation and failing under
+	// `make integration`).
+	if err := os.WriteFile(filepath.Join(proj, "swapprobe"), []byte("#!/bin/false\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tag := "snugtest-swapsrc:1"
+	script := buildScratchProbeImageFor(tag, "swapprobe") + fmt.Sprintf(`
+def create(label, src, dst="/x", opts="rw"):
+    body = json.dumps({"Image": "localhost/%[1]s",
+                       "HostConfig": {"Binds": ["%%s:%%s:%%s" %% (src, dst, opts)]}}).encode()
+    status, resp = req("POST", "/v1.41/containers/create", body, {"Content-Type": "application/json"})
+    text = resp.decode(errors="replace")
+    print("%%s: %%d %%s" %% (label, status, text[:600].replace("\n", " | ")), flush=True)
+    if status == 201:
+        req("DELETE", "/v1.41/containers/%%s?force=1" %% json.loads(resp)["Id"])
+    return status
+
+if build_scratch_probe():
+    # CONTROL: an anchored source is still mountable against this engine.
+    create("CONTROL-ANCHORED", "/usr", "/u", "ro")
+
+    # R1, the #284 primitive itself, as the issue reproduces it.
+    os.mkdir("realdir")
+    create("R1-CREATE", os.path.join(os.getcwd(), "realdir"))
+
+    # ... and the swap the gap exists for, performed anyway: a fix that only
+    # refused the pre-swap spelling would still forward this one.
+    os.rmdir("realdir")
+    os.symlink("%[2]s", "realdir")
+    create("R1-AFTER-SWAP", os.path.join(os.getcwd(), "realdir"))
+    create("R1-DIRECT", "%[2]s")
+
+    # R2, the amplification: the same primitive aimed at the socket graft,
+    # which is what turns a store write into the raw unfiltered API.
+    os.symlink("%[3]s", "socklink")
+    create("R2-CREATE", os.path.join(os.getcwd(), "socklink"), "/sock")
+    create("R2-DIRECT", "%[3]s", "/sock")
+print("PROBE-COMPLETE", flush=True)
+`, tag, policy.EngineStoreGuest, policy.EngineSockGuest)
+	if err := os.WriteFile(filepath.Join(proj, "swapsrc.py"), []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := runEnv(t, env, []string{"-p", "@podman-build"}, proj, `python3 swapsrc.py`).mustRun(t)
+	if !strings.Contains(r.out, "PROBE-COMPLETE") {
+		t.Fatalf("the probe did not run to the end:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, fmt.Sprintf("BUILD %s: 200", tag)) {
+		t.Fatalf("the from-scratch image did not even build — this test proves nothing:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "CONTROL-ANCHORED: 201") {
+		t.Fatalf("control: an anchored read-only bind of /usr was NOT accepted (want 201) — "+
+			"every refusal below is then equally explained by a dead engine:\n%s", r.out)
+	}
+
+	for _, label := range []string{"R1-CREATE", "R1-AFTER-SWAP", "R1-DIRECT", "R2-CREATE", "R2-DIRECT"} {
+		if !strings.Contains(r.out, label+": 403") {
+			t.Errorf("%s was not refused with 403 — issue #284's reproduction is open:\n%s",
+				label, r.out)
+		}
+	}
+
+	// The refusal for the pre-swap spelling must be THIS check and not one of
+	// the older ones that happen to sit on the same path: only the anchored
+	// source rule refuses a source that resolves, exists, and is visible to
+	// the sandbox read-write, and only it says why.
+	if !strings.Contains(r.out, "before the container starts") {
+		t.Errorf("R1-CREATE was refused by some other check: the anchored source rule's own "+
+			"wording is absent, so a later change could delete it and this test would still "+
+			"pass:\n%s", r.out)
+	}
+	// The graft half of the source rule (CheckEngineBindSource's own refusal
+	// for a component under /snug/engine/*) is deliberately NOT asserted from
+	// the message here, and the measurement is the reason: against a real
+	// engine an EARLIER check answers first on every route to a graft — a
+	// direct spelling hits hostPathVisible ("this sandbox cannot see
+	// /snug/engine/store as writable"), and a planted symlink hits the
+	// dangling-symlink refusal of #251/#255, because a graft guest path
+	// resolves to nothing in the sandbox's own namespace. So the graft clause
+	// is a third layer under those two, and asserting its wording here would
+	// be asserting which of three refusals happens to fire first. Its own
+	// coverage is the unit table in internal/policy/enginebind_test.go
+	// ("an ancestor is covered by a graft's Guest -> refused"). What matters
+	// to #284 and IS asserted above: every one of these five routes to
+	// /snug/engine/{store,sock} is refused, with no container id returned.
+	if strings.Contains(r.out, `"Id"`) && !strings.Contains(r.out, "CONTROL-ANCHORED: 201") {
+		t.Errorf("a create returned a container id where none should have:\n%s", r.out)
+	}
 }

@@ -387,11 +387,17 @@ func TestSymlinkedBindSourceIsJudgedAfterResolution(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// CONTROL: a plain path inside the target is accepted, so a refusal below is
-	// attributable to where the link points and not to the target being unusable.
+	// CONTROL: the sandbox's own writable target is still mountable, so a
+	// refusal below is attributable to where the link points and not to the
+	// target being unusable. It is bound WHOLE rather than a subdirectory of
+	// it: since issue #284, a plain name inside a writable mount's own tree is
+	// SWAPPABLE (nothing anchors it) and is refused by
+	// policy.CheckEngineBindSource regardless of where it resolves — the
+	// target's own mount root is the one path in this tree that check still
+	// admits, because no writable grant covers ITS parent.
 	if code, resp := post(t, sock, "/v1.41/containers/create",
-		`{"HostConfig":{"Binds":["`+filepath.Join(target, "sub")+`:/src"]}}`); code != 200 {
-		t.Fatalf("control: a real directory inside the target must be mountable "+
+		`{"HostConfig":{"Binds":["`+target+`:/src"]}}`); code != 200 {
+		t.Fatalf("control: the writable target itself must be mountable "+
 			"(status %d): %s", code, resp)
 	}
 
@@ -404,24 +410,21 @@ func TestSymlinkedBindSourceIsJudgedAfterResolution(t *testing.T) {
 
 	// And the RESOLVED path is what gets forwarded, so podman is asked for the
 	// thing that was approved rather than for a link it will re-resolve itself.
-	// A link inside the target pointing at another place inside the target is
-	// legitimate and must still work.
-	inner := filepath.Join(target, "real")
-	if err := os.MkdirAll(inner, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	// A link pointing at the target's OWN mount root — the one destination in
+	// this tree the anchored-source rule still admits (issue #284) — is
+	// legitimate and must still work; a link into a plain subdirectory is not,
+	// per the control above, so this is the strongest in-target case left.
 	alias := filepath.Join(target, "alias")
-	if err := os.Symlink(inner, alias); err != nil {
+	if err := os.Symlink(target, alias); err != nil {
 		t.Fatal(err)
 	}
 	code, resp := post(t, sock, "/v1.41/containers/create",
 		`{"HostConfig":{"Binds":["`+alias+`:/src"]}}`)
 	if code != 200 {
-		t.Fatalf("a symlink to a permitted path inside the target should be allowed "+
-			"(status %d): %s", code, resp)
+		t.Fatalf("a symlink to a permitted path should be allowed (status %d): %s", code, resp)
 	}
 	sent, _ := eng.lastBody.Load().(string)
-	if !strings.Contains(sent, inner) {
+	if !strings.Contains(sent, target) {
 		t.Errorf("the RESOLVED path was not what reached the engine; podman would "+
 			"re-resolve the link itself, which is the TOCTOU this fix closes:\n%s", sent)
 	}
@@ -1246,17 +1249,22 @@ func TestBindSourceDanglingIntoTheEngineNamespaceIsRefused(t *testing.T) {
 		})
 	}
 
-	// CONTROL 2: the fix does NOT refuse a plain-missing source. A name podman
-	// will create under the writable, host-visible target means nothing in
-	// either namespace, and refusing it would break a legitimate bind. This is
-	// what keeps the fix keyed on the divergence rather than on "the source
-	// does not exist".
+	// CONTROL 2: the DANGLING-SYMLINK check (#251/#255, above) does not refuse
+	// a plain-missing source on ITS OWN account — a name podman will create
+	// under the writable target is not a symlink dangling into the engine's
+	// namespace, so danglingSymlinkOn does not flag it. It is refused anyway,
+	// since issue #284: a plain name in a directory this sandbox can still
+	// write is exactly the SWAPPABLE case policy.CheckEngineBindSource exists
+	// to catch — a symlink planted at that same name between create and start
+	// reaches the engine's own grafts precisely as this file's other test
+	// measured. The two checks are independent and this asserts which one
+	// fires here.
 	code, resp := post(t, sock, "/v1.41/containers/create",
 		`{"HostConfig":{"Binds":["`+filepath.Join(target, "not-created-yet")+`:/x:rw"]}}`)
-	if code != 200 {
-		t.Errorf("a plain non-existent path under the writable target was refused (status %d): "+
-			"%s\nthe fix over-reached — it is refusing absence, not the namespace divergence",
-			code, resp)
+	if code != 403 {
+		t.Errorf("a plain non-existent path under the writable target was NOT refused (status %d): "+
+			"%s\nsince issue #284 this name is swappable regardless of whether anything dangles "+
+			"there yet", code, resp)
 	}
 
 	// CONTROL 3: a symlink to a real, host-EXISTENT but ungranted path is still

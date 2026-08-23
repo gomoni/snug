@@ -2703,6 +2703,100 @@ Expect `--root /snug/engine/store --runroot /snug/engine/runroot` and a
 `unix:///snug/engine/sock/...` socket — GUEST paths. A host path here would be
 one the engine cannot resolve.
 
+## 9c-quater. A bind source swapped between create and start is refused AT CREATE (issue #284)
+
+Needs a working container engine (see 9c). The proxy used to resolve a bind
+source once, at `create`, and forward the resolved NAME — not a pinned
+inode — so a component in the writable target renamed to a symlink between
+`create` and `start` had the engine follow it at start, into
+`/snug/engine/store`: a read-write, host-backed, cross-run store. The fix,
+`policy.CheckEngineBindSource`, refuses the swappable case AT create, before
+any symlink is planted.
+
+```bash
+snug -p @podman-socket $SC/proj/sub -- sh -c '
+  export PATH=/snug/bin:$PATH; cd "$SNUG_TARGET"
+  mkdir realdir
+  podman create -v "$PWD/realdir:/x:rw" alpine:3.20 true
+'
+```
+
+Expect a **refusal at `create`**, not a container ID: the message names the
+shallowest component of the source that this sandbox can still rename — with
+`$SC` under `/tmp` that is the temp-root directory name, not `realdir` — and
+says the engine resolves the source at START. The bind is refused before the
+symlink swap this issue is about ever gets a chance to run.
+
+### The rule, because the outcome alone is unpredictable
+
+A source is forwarded only if **every component from the source up to `/` is
+anchored**. A name whose parent this sandbox can write is re-pointable and is
+refused; a **mount root** is not re-pointable (renaming one from inside is
+`Device or resource busy`, measured) and anchors the walk.
+
+State the rule rather than the outcome, because the outcome depends on where
+`@parent-ro`'s bind happens to land and is otherwise not something a user can
+predict. Measured, defaults plus `@podman-socket`:
+
+| target | `-v $SNUG_TARGET:/work` | `-v $SNUG_TARGET/subdir:/x` |
+|---|---|---|
+| `~/proj/sub`, `~/src/proj` (2 below `$HOME`) | accepted | **refused** |
+| `~/src/projects/foo` (3 below) | **refused** | **refused** |
+| `~/x/y/proj/sub` (4 below) | **refused** | **refused** |
+| `$TMPDIR/build-123/proj` (2 below `$TMPDIR`) | accepted | **refused** |
+| `-v /usr:/u:ro`, `-v $HOME:/h` | accepted | — |
+
+Read off the rule, both columns follow. **Nothing inside the target is ever
+accepted**, at any depth: the target is a read-write bind, so every name in it
+has a writable parent. The target **root** is accepted exactly while
+`@parent-ro`'s own bind sits directly inside a mount root — true two levels
+below `$HOME` and under `$TMPDIR/<dir>/`, false at three levels, where the
+intermediate directory is a plain name in the home tmpfs. The `$SC/proj/sub`
+target this section uses is itself three levels below `/tmp`, which is why the
+refusal above names the temp-root directory and not `realdir`.
+
+So, plainly: **`-v` works for paths outside the sandbox's writable trees, and
+for the target root at shallow depth, and never for anything inside the
+target.** Where the root is accepted, bind it and address the subdirectory
+inside the container. At three levels and deeper there is no workaround, and
+the refusal message does not pretend otherwise. `.claude/design` tracks the
+widening (issue #376): a per-bind graft under `/snug/engine`, handing the
+engine a mount instead of a re-resolvable string.
+
+This is a refusal, never a silent narrowing. Nothing mounts with less than what
+was asked for, and no container gains reach the sandbox lacks.
+
+Why an intermediate directory is enough to lose the whole chain — an ancestor
+of both the `@parent-ro` and the `@cwd-rw` mount carries them with it when it
+is renamed:
+
+```bash
+mkdir -p ~/snugtest/x/y/proj/sub
+snug ~/snugtest/x/y/proj/sub -- sh -c 'mv "$HOME/snugtest" other && echo RENAME-OK'
+```
+
+Expect `RENAME-OK`.
+
+Positive control — a source whose every name IS anchored still mounts:
+
+```bash
+snug -p @podman-socket $SC/proj/sub -- sh -c '
+  export PATH=/snug/bin:$PATH
+  podman create -v /usr:/u:ro alpine:3.20 true
+'
+```
+
+Expect a container ID. `/usr` is a read-only mount root under a root tmpfs
+nothing grants, so no name on its path can be re-pointed. The other half of
+the rule, measured — a mount root cannot be renamed from inside:
+
+```bash
+mkdir -p ~/snugtest2/sub
+snug ~/snugtest2/sub -- sh -c 'cd "$HOME"; mv snugtest2 other'
+```
+
+Expect `mv: cannot move 'snugtest2' to 'other': Device or resource busy`.
+
 ## 9d. `@podman-socket` without `@net` is offline, containers included
 
 This is the inversion the previous version of this check predicted (issue
