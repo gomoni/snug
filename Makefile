@@ -90,12 +90,43 @@ gate:
 # does) to turn those skips into failures, and SNUG_TEST_NET=1 to allow the
 # checks that reach the public internet.
 #
-# -timeout is 4m, not 15m. The whole suite runs in about 6 seconds here and every
-# test carries its own budget (see test/integration: budget()), so this is the
-# outermost of three nested bounds and should never be the one that fires. When
-# it was 15m it was the ONLY bound, and a single hung test could burn the entire
-# CI job and end in an anonymous goroutine dump. If this timeout fires, the
-# per-test watchdog did not — which is itself the bug worth looking at.
+# THE BOUND, and what firing it now MEANS (issue #379). This target does not run
+# `go test` itself: it runs the same two suites CI runs, one after the other,
+# each in its own `go test` process with its own 4m budget. Read a failure here
+# as a failure of ONE suite, and the suite names it.
+#
+# It ran everything in a single process against a single 4m budget until then,
+# and that budget was not a bound that should never fire — it was the one that
+# fired, on every full local run. MEASURED here, 185 tests: 242.09s of test time
+# (summed top-level PASS and SKIP durations), nothing hung, and the panic landed
+# on whatever test the alarm happened to catch. The three heaviest:
+#
+#   TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox   52.15s
+#   TestManifestGatesPluginHookFiring                        18.26s
+#   TestAKilledSnugCannotReleaseTheParkedPayload              9.10s
+#
+# Sequentially, as two suites, the same host: 176.61s and 67.73s of `go test`,
+# 4m15s wall for the whole target including both compiles. Neither suite is
+# close to its own 4m, and the outer bound is a bound again.
+#
+# CI never saw it, because CI has run these as two parallel jobs since
+# 2026-08-21 (.github/workflows/ci.yml, the `integration` matrix), neither of
+# them carrying the whole suite. THAT divergence was the defect: green in CI, panicking locally, and the same
+# suite in both places. Local now matches CI — same suites, same -run selection,
+# same environment, different scheduling.
+#
+# So the comment this replaces is worth naming, because it was the expensive
+# half. It said the suite ran in "about 6 seconds" (stale, ordinary) and that
+# "if this timeout fires, the per-test watchdog did not — which is itself the
+# bug worth looking at". That sent a reader hunting a HUNG TEST THAT DOES NOT
+# EXIST, with confidence, while the real answer was that the work genuinely
+# takes four minutes. A stale number is ordinary; a stale DIAGNOSTIC costs an
+# afternoon.
+#
+# The three nested bounds are unchanged and still nest: budget() per test
+# (seconds, names the test), -timeout 4m per suite here, timeout-minutes per job
+# in CI. Only budget() can say WHICH test was slow, so if a 4m fires, that is
+# still the first question — of the suite that fired, not of the run.
 #
 # SNUG_REQUIRE_SANDBOX=1 make integration used to FAIL outright, every time,
 # on any host — requireInternet (test/integration/sandbox_test.go) correctly
@@ -113,9 +144,25 @@ gate:
 # still gets no defaults and fails loudly if asked to be strict about a host
 # it was not told is allowed to reach the network — exactly per "a bare go
 # test invocation still refuses to pretend".
+# SNUG_INTEGRATION_SUITES is the SUITE LIST, and it is written here once.
+# .github/workflows/ci.yml's `integration` matrix names the same two, and each
+# job there runs `make <suite>`, so the -run selection, the environment
+# defaults and the timeout are all this file's and CI copies none of them.
+# What CI does hold is the two NAMES, which is the one thing that could drift —
+# TestTheIntegrationSuitesAreTheSameLocallyAndInCI (test/guard) fails if it
+# does. A `# keep in sync` comment would be the mechanism that failed
+# everywhere else in this repository.
+#
+# integration-hostless is deliberately NOT here: it is a third CI job that must
+# run with SNUG_REQUIRE_SANDBOX UNSET (see its own comment), so folding it into
+# a strict local run would invert what it measures.
+SNUG_INTEGRATION_SUITES = integration-sandbox integration-signals
+
 integration:
-	SNUG_TEST_NET=$${SNUG_TEST_NET:-$${SNUG_REQUIRE_SANDBOX:+1}} \
-		go test -tags integration -timeout 4m -v ./test/integration/...
+	@for suite in $(SNUG_INTEGRATION_SUITES); do \
+		echo "── $$suite ─────────────────────────────────────────────────────"; \
+		$(MAKE) --no-print-directory $$suite || exit $$?; \
+	done
 
 # bash, not sh: both split targets read $${PIPESTATUS[0]} so that a real test
 # failure is still a failure after the output has been through `tee`. With
