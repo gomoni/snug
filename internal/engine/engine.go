@@ -191,6 +191,15 @@ type Engine struct {
 	life *lifeline
 	reap *reaper
 	once sync.Once
+
+	// BreadcrumbWarning is non-nil when this run could not write (or
+	// refresh) engines/<key>/store.json — see verifyEngineStore. It is
+	// deliberately NOT fatal to the run (a store snug cannot attribute is
+	// still a perfectly good store), so it is exported for the one caller
+	// that knows whether the human asked to see housekeeping notices
+	// (internal/cli's startContainers, behind --verbose) rather than printed
+	// unconditionally by a package that has no such flag of its own.
+	BreadcrumbWarning error
 }
 
 // verifyEngineStore walks dataHome/snug/engines/<key>/storage through
@@ -219,7 +228,17 @@ type Engine struct {
 // ~/.local/share/snug/engines a hard refusal now rather than a silently
 // followed one (issue #276, spec item 8) — a behaviour change with a real
 // user, so the refusal at "engines" names the fix.
-func verifyEngineStore(dataHome, key string) (string, error) {
+//
+// It also writes (or refreshes) this key's breadcrumb — engines/<key>/store.json,
+// beside storage/, never inside it — recording target and stamping LastUsed
+// with THIS call's time (issue #308; see breadcrumb.go). That write is NOT
+// allowed to fail this function: a store snug cannot attribute is still a
+// perfectly good store, just one `snug engine gc` will report as
+// unattributed until a later run's write succeeds. The failure, if any, is
+// returned as a second value for New to decide what to do with (surfacing it
+// behind --verbose), never folded into the hard error this function already
+// has for a store it could not open at all.
+func verifyEngineStore(dataHome, key, target string) (storagePath string, breadcrumbWarning, err error) {
 	// os.MkdirAll follows a symlink — including one AT dataHome itself, not
 	// just below it. That is a residual this call does not close: the vdir
 	// walk below only starts protecting once os.OpenRoot(dataHome) succeeds,
@@ -230,25 +249,25 @@ func verifyEngineStore(dataHome, key string) (string, error) {
 	// for issue #276's fix, which is about the top-level, uid-guessable
 	// name under /tmp; naming the limit here rather than leaving MkdirAll
 	// look covered by the walk that follows it.
-	if err := os.MkdirAll(dataHome, 0o755); err != nil {
-		return "", fmt.Errorf("engine store: creating %s: %w", dataHome, err)
+	if merr := os.MkdirAll(dataHome, 0o755); merr != nil {
+		return "", nil, fmt.Errorf("engine store: creating %s: %w", dataHome, merr)
 	}
 	root, err := os.OpenRoot(dataHome)
 	if err != nil {
-		return "", fmt.Errorf("engine store: opening %s: %w", dataHome, err)
+		return "", nil, fmt.Errorf("engine store: opening %s: %w", dataHome, err)
 	}
 	defer root.Close()
 
 	snug, _, err := vdir.SecureSubdir(root, dataHome, "snug")
 	if err != nil {
-		return "", fmt.Errorf("engine store: %w", err)
+		return "", nil, fmt.Errorf("engine store: %w", err)
 	}
 	defer snug.Close()
 	snugPath := filepath.Join(dataHome, "snug")
 
 	engines, _, err := vdir.SecureSubdir(snug, snugPath, "engines")
 	if err != nil {
-		return "", fmt.Errorf("engine store: %w — a symlinked engines directory used to be "+
+		return "", nil, fmt.Errorf("engine store: %w — a symlinked engines directory used to be "+
 			"followed silently; move the directory instead of symlinking it, or point "+
 			"$XDG_DATA_HOME at the other filesystem", err)
 	}
@@ -261,17 +280,23 @@ func verifyEngineStore(dataHome, key string) (string, error) {
 	// produce, and MustCreateSubdir would refuse the second run outright.
 	keyDir, _, err := vdir.SecureSubdir(engines, enginesPath, key)
 	if err != nil {
-		return "", fmt.Errorf("engine store: %w", err)
+		return "", nil, fmt.Errorf("engine store: %w", err)
 	}
 	defer keyDir.Close()
 	keyPath := filepath.Join(enginesPath, key)
 
 	storage, _, err := vdir.SecureSubdir(keyDir, keyPath, "storage")
 	if err != nil {
-		return "", fmt.Errorf("engine store: %w", err)
+		return "", nil, fmt.Errorf("engine store: %w", err)
 	}
 	storage.Close()
-	return filepath.Join(keyPath, "storage"), nil
+
+	var warning error
+	if berr := writeBreadcrumb(keyDir, keyPath, key, target); berr != nil {
+		warning = fmt.Errorf("engine store breadcrumb for %s: %w — this store will be reported "+
+			"unattributed by `snug engine gc` until a later run writes one successfully", keyPath, berr)
+	}
+	return filepath.Join(keyPath, "storage"), warning, nil
 }
 
 // verifyEngineRunroot walks $TMPDIR/snug-engines-<uid>-<key>/rr through
@@ -511,12 +536,13 @@ func New(pol *policy.Policy) (*Engine, error) {
 		return nil, err
 	}
 	key := engineKey(pol)
-	createdStore, err := verifyEngineStore(dataHome, key)
+	createdStore, breadcrumbWarning, err := verifyEngineStore(dataHome, key, pol.Target)
 	if err != nil {
 		_ = dirs.remove()
 		dirs.close()
 		return nil, err
 	}
+	e.BreadcrumbWarning = breadcrumbWarning
 	createdRunroot, err := verifyEngineRunroot(key)
 	if err != nil {
 		_ = dirs.remove()

@@ -144,6 +144,90 @@ func OpenExistingSubdir(parent *os.Root, parentDesc, name string) (*os.Root, err
 	return child, nil
 }
 
+// ForeignOwnerError is OpenForRemoval's refusal when a directory belongs to a
+// uid other than the caller's own. It is a distinct type — not a plain
+// fmt.Errorf — because the caller (Purge in internal/engine's `snug engine
+// gc`) has to tell this apart from an EACCES it can fix with a chmod: EPERM
+// from a chmod attempt and this error both mean "not yours", and the fix in
+// both cases is the same word, "refuse", never "retry as root".
+type ForeignOwnerError struct {
+	Path string // the full, human-facing path this was checked at
+	UID  int    // the directory's actual owner
+}
+
+func (e *ForeignOwnerError) Error() string {
+	return fmt.Sprintf("refusing %s: owned by uid %d, not you — this needs a userns carrying "+
+		"the same delegated uid map to remove; snug will not chmod or delete something it does "+
+		"not own", e.Path, e.UID)
+}
+
+// OpenForRemoval is SecureSubdir's sibling for a directory about to be
+// DELETED rather than used: it refuses exactly what every other predicate in
+// this package refuses — an in-root symlink, and an entry this process does
+// not own — but it neither creates the entry nor requires any particular
+// mode, and it reports whatever mode it finds instead.
+//
+// Every other predicate here assumes a directory snug created for its own
+// use, where 0700 is the FLOOR of what counts as safe and a caller checking
+// it means to KEEP using the directory afterwards (VerifyOwnedAndPrivate:
+// "found means checked", refused rather than repaired). Removal inverts
+// that: the caller means to make the entry go away regardless of how
+// permissive or restrictive its CURRENT mode is. A container engine's own
+// overlayfs leaves a work/work directory at mode 0000, non-empty, and still
+// owned by the same uid that ran the engine (measured — see
+// internal/engine's Purge, the caller this exists for) — requiring 0700 here
+// would make `snug engine gc` refuse to open the exact directories it exists
+// to remove.
+//
+// Ownership and the symlink refusal are both checked from Lstat alone,
+// deliberately BEFORE any attempt to open the entry: Lstat needs only search
+// permission on the already-verified PARENT, not on the target itself, so a
+// foreign-owned or mode-0000 entry is fully classifiable without ever trying
+// to enter it. A foreign owner is refused outright — OpenForRemoval never
+// attempts to open something it does not own, matching ForeignOwnerError's
+// own message. Only once ownership is confirmed does this attempt OpenRoot,
+// whose failure past that point is a MODE question (measured: a 0000
+// directory a process owns still refuses openat(2) with EACCES) rather than
+// an ownership one, and the caller is expected to chmod and retry — this
+// function does not chmod anything itself, staying a predicate rather than a
+// mutation.
+func OpenForRemoval(parent *os.Root, parentDesc, name string) (child *os.Root, mode os.FileMode, err error) {
+	full := filepath.Join(parentDesc, name)
+
+	fi, lerr := parent.Lstat(name)
+	if lerr != nil {
+		return nil, 0, fmt.Errorf("checking %s: %w - snug verifies what it is about to remove "+
+			"before touching it, and refuses rather than trusting it", full, lerr)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return nil, 0, fmt.Errorf("refusing %s: it is a symlink — something planted it; "+
+			"remove it by hand", full)
+	}
+	if !fi.IsDir() {
+		return nil, 0, fmt.Errorf("refusing %s: not a directory", full)
+	}
+
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil, 0, fmt.Errorf("checking %s: could not read its owner on this platform - snug "+
+			"needs POSIX stat to confirm the directory is yours before removing it", full)
+	}
+	mode = fi.Mode().Perm()
+	if uid := int(st.Uid); uid != os.Getuid() {
+		return nil, mode, &ForeignOwnerError{Path: full, UID: uid}
+	}
+
+	child, oerr := parent.OpenRoot(name)
+	if oerr != nil {
+		return nil, mode, fmt.Errorf("opening %s: %w - ownership is already confirmed at this "+
+			"point, so EACCES here means the directory's OWN mode denies traversal (measured: an "+
+			"overlayfs work directory at mode 0000); a caller meaning to remove it chmods the name "+
+			"and retries (internal/engine.Purge does exactly this) rather than treating this as fatal",
+			full, oerr)
+	}
+	return child, mode, nil
+}
+
 // verifyOwnedAndPrivate refuses a directory that is not ours, or that is
 // readable, writable or searchable by anyone else — the two properties that
 // make it safe to place a unix socket inside without asking who else could

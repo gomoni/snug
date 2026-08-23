@@ -18,7 +18,7 @@ ENGINE VIEW  (grafts — mounts in the ENGINE's derived mount namespace, NOT the
             is remounted read-only. The mount namespace is private; the tmpfs
             superblock is not (ENGINE-NETNS.md §5.1).
   graft-rw    /snug/engine/runroot                          (snug)
-            from /tmpdir/snug-engines-UID-5f724cfb226eb5b9/rr
+            from /tmpdir/snug-engines-UID-5f724cfb226eb5b98f5cd51ec1ccf05a9d433cb3a5377cf8006f94b157ffe3a9/rr
             owned: the sandbox's own grants do not expose this host path — it
             passed G4 only because snug declared it its own for this run
             (EngineOwnedHostPaths)
@@ -43,7 +43,7 @@ ENGINE VIEW  (grafts — mounts in the ENGINE's derived mount namespace, NOT the
             is remounted read-only. The mount namespace is private; the tmpfs
             superblock is not (ENGINE-NETNS.md §5.1).
   graft-rw    /snug/engine/store                            (snug)
-            from /xdg-data/snug/engines/5f724cfb226eb5b9/storage
+            from /xdg-data/snug/engines/5f724cfb226eb5b98f5cd51ec1ccf05a9d433cb3a5377cf8006f94b157ffe3a9/storage
             owned: the sandbox's own grants do not expose this host path — it
             passed G4 only because snug declared it its own for this run
             (EngineOwnedHostPaths)
@@ -63,5 +63,5 @@ ENGINE VIEW  (grafts — mounts in the ENGINE's derived mount namespace, NOT the
                            exposes it (OwnEngineHostPath, the only writer):
     /tmpdir/snug-UID-PID/conf
     /tmpdir/snug-UID-PID/sock
-    /tmpdir/snug-engines-UID-5f724cfb226eb5b9/rr
-    /xdg-data/snug/engines/5f724cfb226eb5b9/storage
+    /tmpdir/snug-engines-UID-5f724cfb226eb5b98f5cd51ec1ccf05a9d433cb3a5377cf8006f94b157ffe3a9/rr
+    /xdg-data/snug/engines/5f724cfb226eb5b98f5cd51ec1ccf05a9d433cb3a5377cf8006f94b157ffe3a9/storage
