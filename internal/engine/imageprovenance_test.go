@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -231,36 +230,34 @@ func TestTheGeneratedStorageConfIsSnugsOwn(t *testing.T) {
 	}
 }
 
-// TestTheGeneratedStorageConfNamesAMountProgramOnlyWhenThereIsOne covers both
-// arms of the one line in writeStorageConf that can be wrong in two
-// directions: naming a path that does not exist breaks every run ("can't stat
-// program"), and omitting it on a host that needs it breaks rootless overlay
-// instead.
+// TestTheGeneratedStorageConfNeverNamesAMountProgram is issue #390, and it
+// replaces a test that asserted mount_program was written WHEN a helper sat
+// beside the engine. That property is gone because the key is gone.
 //
-// The positive arm plants a file called fuse-overlayfs beside a stand-in
-// engine binary; the negative arm uses a directory with no such file. Without
-// the negative arm this passes on an implementation that hardcodes a path.
+// Why the key went, and it is not "it was inert". Inertness was the old
+// comment's argument — podman discards every [storage.options*] key when
+// --root is on the argv, measured on 5.8.4 and 6.0.2, and Spec always passes
+// --root. That answers whether podman HONOURS the key. It says nothing about
+// whether snug WRITES it, and snug did: helperBesideEngine derives from
+// filepath.Dir(podman) and e.guestPath maps that through EngineGuestPath's
+// bind arm, which has no Access test. MEASURED with fuse-overlayfs beside an
+// engine inside an @cwd-rw target: mount_program = "/proj/bin/fuse-overlayfs",
+// a payload-writable path in the engine's storage configuration.
 //
-// The two failure messages below describe consequences that do not follow:
-// podman discards every [storage.options*] key when --root is on the argv, and
-// Spec always passes --root (STORAGE-CONF.md §3). What this test asserts is the
-// CONTENTS OF THE FILE, a real and checkable property; it does not assert that
-// the key reaches the driver.
-func TestTheGeneratedStorageConfNamesAMountProgramOnlyWhenThereIsOne(t *testing.T) {
+// So this asserts the SET rather than the site: no line of the generated
+// storage.conf names a mount_program at all, whatever sits beside the engine.
+// The three arms are the old test's three, kept because they are the inputs
+// that used to PRODUCE the key — an executable helper, no helper, and a
+// non-executable file of the right name. The first is the one that matters:
+// the input that wrote a payload-writable path must now write nothing.
+func TestTheGeneratedStorageConfNeverNamesAMountProgram(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		mode os.FileMode // 0 = do not create the file at all
-		want bool
 	}{
-		{"executable helper beside the engine", 0o755, true},
-		{"no helper beside the engine", 0, false},
-		// The third arm is the one the first two cannot see. A file of the
-		// right name that CANNOT RUN — a tarball unpacked under a restrictive
-		// umask, a stray artifact — was named as mount_program and produced
-		// exactly the "can't stat program" failure this derivation exists to
-		// prevent. Checking IsRegular alone tested that something is there,
-		// not that it can run.
-		{"non-executable file of the right name", 0o644, false},
+		{"executable helper beside the engine", 0o755},
+		{"no helper beside the engine", 0},
+		{"non-executable file of the right name", 0o644},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("XDG_DATA_HOME", t.TempDir())
@@ -269,9 +266,8 @@ func TestTheGeneratedStorageConfNamesAMountProgramOnlyWhenThereIsOne(t *testing.
 			if err := os.WriteFile(podman, []byte("#!/bin/sh\n"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			helper := filepath.Join(dir, "fuse-overlayfs")
 			if tc.mode != 0 {
-				if err := os.WriteFile(helper, []byte("#!/bin/sh\n"), tc.mode); err != nil {
+				if err := os.WriteFile(filepath.Join(dir, "fuse-overlayfs"), []byte("#!/bin/sh\n"), tc.mode); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -279,34 +275,30 @@ func TestTheGeneratedStorageConfNamesAMountProgramOnlyWhenThereIsOne(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			// dir is this fixture's stand-in for a pinned bundle, so it is
-			// what the toolchain graft names. Without it Spec refuses — an
-			// engine binary under no grant and no graft is one the engine
-			// cannot see, which is the refusal working rather than a fixture
-			// problem.
 			spec, err := e.Spec(specPolicy(t, e, dir, policy.NetPolicy{}), podman, []string{"PATH=/usr/bin"}, false, noSignaturePolicy(t))
 			if err != nil {
 				t.Fatal(err)
 			}
-			path, _ := envValue(spec.Env, "CONTAINERS_STORAGE_CONF")
-			raw, err := os.ReadFile(hostSideOf(t, e, path))
+			conf, n := envValue(spec.Env, "CONTAINERS_STORAGE_CONF")
+			if n != 1 || conf == "" {
+				t.Fatalf("CONTAINERS_STORAGE_CONF appears %d times with value %q; this test would "+
+					"then be reading a file nobody was pointed at", n, conf)
+			}
+			raw, err := os.ReadFile(hostSideOf(t, e, conf))
 			if err != nil {
 				t.Fatal(err)
 			}
-			body := string(raw)
-			// The GUEST path, because that is what the engine can open:
-			// dir is this fixture's pinned bundle and the toolchain graft
-			// attaches it at policy.EngineToolchainGuest (issue #125).
-			wantHelper := filepath.Join(policy.EngineToolchainGuest, filepath.Base(helper))
-			named := strings.Contains(body, "mount_program = "+strconv.Quote(wantHelper))
-			switch {
-			case tc.want && !named:
-				t.Errorf("an executable fuse-overlayfs sits beside the engine and the generated "+
-					"storage.conf does not name it, so a host whose overlay needs it loses it:\n%s", body)
-			case !tc.want && strings.Contains(body, "mount_program"):
-				t.Errorf("no RUNNABLE fuse-overlayfs sits beside the engine and the generated "+
-					"storage.conf names a mount_program anyway — podman refuses with \"can't stat "+
-					"program\" before it does any work:\n%s", body)
+			// POSITIVE CONTROL: the file really is the generated storage.conf
+			// and really has content. Without this, an empty or unwritten file
+			// passes the assertion below for the wrong reason.
+			if !strings.Contains(string(raw), "runroot") {
+				t.Fatalf("the generated storage.conf does not mention runroot, so it is not the "+
+					"file this test means to read:\n%s", raw)
+			}
+			if strings.Contains(string(raw), "mount_program") {
+				t.Errorf("storage.conf names a mount_program (issue #390: it is derived from "+
+					"filepath.Dir(podman) through an Access-blind mapping, so it can name a "+
+					"payload-writable path):\n%s", raw)
 			}
 		})
 	}
@@ -468,12 +460,23 @@ func TestARelativeEngineRefusesRatherThanWritingARelativeMountProgram(t *testing
 	}
 	_, err = e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "./podman", []string{"PATH=/usr/bin"}, false, noSignaturePolicy(t))
 	if err == nil {
-		t.Fatal("Spec accepted a relative engine path; the generated storage.conf would then " +
-			"carry a relative mount_program, which the engine resolves against its own working " +
-			"directory rather than snug's")
+		t.Fatal("Spec accepted a relative engine path")
 	}
-	if !strings.Contains(err.Error(), "absolute") {
-		t.Errorf("the refusal does not say what is wrong with the path: %v", err)
+	// THE REFUSAL MOVED, and the property did not — issue #390. It used to come
+	// from helperBesideEngine's own absoluteness check, reached because
+	// writeStorageConf derived mount_program from filepath.Dir(podman). That
+	// derivation is gone, so the message no longer says "absolute"; the refusal
+	// now comes from guestPath on the engine binary itself, which cannot place
+	// a relative path in the engine's view either.
+	//
+	// Asserting the SURVIVING refusal rather than deleting the test, because
+	// what mattered was never the wording: a relative $SNUG_PODMAN must not
+	// reach a generated file, and preflightPodmanBinary trusts the variable
+	// outright (os.Stat and a shim check, no absoluteness test), so Spec is
+	// where it is caught. If a later change makes Spec accept one, this fails.
+	if !strings.Contains(err.Error(), "engine binary") {
+		t.Errorf("the refusal does not name the engine binary, so it may not be the check that "+
+			"catches a relative path: %v", err)
 	}
 }
 
@@ -521,15 +524,26 @@ func TestAnUnquotablePathIsRefusedRatherThanSubstituted(t *testing.T) {
 		t.Errorf("the host store path's quote reached storage.conf:\n%s", body)
 	}
 
-	// HALF TWO, the positive control for the refusal itself, on the one value
-	// that CAN still carry a host-chosen string: mount_program is the graft's
-	// guest root plus the REMAINDER of the host path, so a quote in the
-	// helper's own filename still reaches tomlString — and must still be
-	// refused rather than substituted. Without this half, the check that a
-	// quote is refused would have been deleted rather than moved.
+	// HALF TWO. Its premise is now FALSE in the stronger direction, and that is
+	// worth stating rather than quietly deleting the half.
+	//
+	// It used to read: "mount_program is the one value that CAN still carry a
+	// host-chosen string, so a quote in the helper's own filename still reaches
+	// tomlString and must be refused rather than substituted." Issue #390
+	// deleted mount_program, and with it the last host-derived path in this
+	// file. Every value writeStorageConf now renders is a GUEST CONSTANT —
+	// policy.EngineStoreGuest and policy.EngineRunrootGuest, via guestPath — so
+	// no host string reaches tomlString from here at all.
+	//
+	// Two assertions replace it, because "the hazard is unreachable" and "the
+	// guard still works" are different claims and deleting the half would have
+	// asserted neither.
+	//
+	// 2a: the hazard really is unreachable — a quote in the HELPER's own
+	// directory name no longer reaches the generated file, where before it
+	// produced a refusal naming mount_program.
 	bundle := t.TempDir()
-	podman := filepath.Join(bundle, "podman")
-	if err := os.WriteFile(podman, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(bundle, "podman"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	oddHelperDir := filepath.Join(bundle, `q"d`)
@@ -540,17 +554,38 @@ func TestAnUnquotablePathIsRefusedRatherThanSubstituted(t *testing.T) {
 		[]byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-
+	if err := os.WriteFile(filepath.Join(oddHelperDir, "podman"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	e2, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj2"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	pol := specPolicy(t, e2, bundle, policy.NetPolicy{})
-	if _, err := e2.writeStorageConf(pol, filepath.Join(oddHelperDir, "podman")); err == nil {
-		t.Fatal("writeStorageConf accepted a helper path containing a quote; storage.conf would " +
-			"carry a placeholder while nothing said so")
-	} else if !strings.Contains(err.Error(), "mount_program") {
-		t.Errorf("the refusal does not name which setting could not be rendered: %v", err)
+	confPath, err := e2.writeStorageConf(pol, filepath.Join(oddHelperDir, "podman"))
+	if err != nil {
+		t.Fatalf("writeStorageConf refused an engine whose own directory name holds a quote, but "+
+			"no host path reaches this file any more: %v", err)
+	}
+	raw2, err := os.ReadFile(confPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw2), `q"d`) {
+		t.Errorf("the engine directory's quote reached storage.conf:\n%s", raw2)
+	}
+
+	// 2b: the guard itself still refuses, tested directly. tomlString remains
+	// reachable with host-chosen values elsewhere (writeContainersConf), so the
+	// check must not be allowed to rot just because THIS file stopped feeding
+	// it one. Without this, 2a alone would pass on a tomlString that silently
+	// substituted.
+	if _, err := tomlString(`a"b`); err == nil {
+		t.Error("tomlString accepted a value containing a quote; a config line would carry a " +
+			"placeholder, or close the string early and let the rest be read as TOML")
+	}
+	if _, err := tomlString("/plain/path"); err != nil {
+		t.Errorf("tomlString refused an ordinary path, so the refusal above proves nothing: %v", err)
 	}
 }
 

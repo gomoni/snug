@@ -947,6 +947,13 @@ func TestGoldenRefusals(t *testing.T) {
 		{"graft_destination_does_not_exist_var_tmp", func(t testing.TB) error {
 			return refusalGraftDestinationDoesNotExist(t, "/var/tmp")
 		}},
+		// issue #390: G4b. The toolchain disjunct admits a path the sandbox's
+		// grants do NOT expose, and AccessRO was treated as making that safe.
+		// It is not — read-only restrains the ENGINE, while the PAYLOAD writes
+		// the same host inode through its own rw grant and the engine execs
+		// what appears there as root. The refusal's WORDING is the half a human
+		// meets, which is why it is golded rather than only asserted.
+		{"graft_toolchain_root_is_payload_writable", refusalGraftToolchainRootWritable},
 		{"graft_source_not_visible_xdg_runtime_dir", refusalGraftSourceNotVisible},
 		{"graft_covers_graft", refusalGraftCoversGraft},
 		{"graft_optional_forbidden", refusalGraftOptional},
@@ -1189,4 +1196,20 @@ func TestARefusalNeverRendersARawForgingRune(t *testing.T) {
 		t.Errorf("an ordinary host path was escaped in the refusal, which makes every message "+
 			"harder to read than the problem it names: %v", err)
 	}
+}
+
+// refusalGraftToolchainRootWritable: issue #390, G4b. The recorded toolchain
+// root is the TARGET, which @cwd-rw grants writable — the real spelling, since
+// $SNUG_PODMAN pointed at ./bin/podman inside a sandboxed source tree produces
+// exactly this. Read-only is requested, and refused anyway.
+func refusalGraftToolchainRootWritable(t testing.TB) error {
+	p := resolveDefaults(t)
+	env := newFakeEnv()
+	if err := p.EngineToolchain(env, "/home/u/proj/sub"); err != nil {
+		t.Fatalf("recording the toolchain root failed, so G4b is never reached: %v", err)
+	}
+	g := validGraft(p, "toolchain")
+	g.Host = "/home/u/proj/sub"
+	g.Access = AccessRO
+	return p.Graft(env, g)
 }

@@ -227,3 +227,99 @@ func TestOnlyOneWriterOfEngineToolchainRoot(t *testing.T) {
 			"which is issue #55's finding F2, one field over.", hits)
 	}
 }
+
+// TestEngineToolchainRootInsideAWritableGrantIsRefused is G4b, issue #390.
+//
+// G4's third disjunct admits a host path the sandbox's own grants do NOT
+// expose — that is the whole point of it — and AccessRO was treated as making
+// that safe. It is not, because READ-ONLY RESTRAINS THE WRONG PARTY. The graft
+// being read-only stops the ENGINE writing; the PAYLOAD writes the same host
+// inode through its own rw grant, and the new bytes appear under the engine's
+// read-only graft on the next run. The engine resolves conmon, crun and
+// netavark out of that tree as root in the sandbox's user namespace with the
+// whole delegated subuid range, so a toolchain root the payload can write is
+// the payload choosing what the engine executes as root.
+//
+// It is CLAUDE.md's socket/FIFO lesson with a third noun: `ro` says nothing
+// about who else holds the path.
+//
+// WHY THE QUESTION IS ASKED IN HOST SPACE. An engine-view predicate is the
+// wrong instrument — View.IsShadowSlot sees AccessRO and answers "safe",
+// correctly and uselessly, because the write never arrives through the engine's
+// view at all. So the check is HostPathVisible(host, true): "does any grant of
+// this sandbox make this writable".
+//
+// TWO CONTROLS, and neither is decoration. A clause that refused every
+// toolchain graft would pass a test that only checked the refusal, and this
+// clause sits on the one disjunct whose job is to ACCEPT an ungranted path —
+// so "still accepted" is the property most at risk from getting this wrong.
+func TestEngineToolchainRootInsideAWritableGrantIsRefused(t *testing.T) {
+	env := newFakeEnv()
+
+	// The real spelling, not a contrivance: $SNUG_PODMAN inside the target,
+	// which @cwd-rw grants writable. A podman developer sandboxing the podman
+	// tree and pointing snug at ./bin/podman types exactly this.
+	const writable = "/home/u/proj/sub"
+
+	t.Run("a writable toolchain root is refused even read-only", func(t *testing.T) {
+		p := mustResolveDefaults(t)
+		if !p.HostPathVisible(writable, true) {
+			t.Fatalf("fixture: %s is not write-visible, so this test would be asserting "+
+				"nothing about the writable case", writable)
+		}
+		if err := p.EngineToolchain(env, writable); err != nil {
+			t.Fatalf("EngineToolchain refused to record the root, so G4b is never reached: %v", err)
+		}
+		g := validGraft(p, "toolchain")
+		g.Host = writable
+		g.Access = AccessRO
+		err := p.Graft(env, g)
+		if err == nil {
+			t.Fatal("a READ-ONLY graft of a toolchain root the payload can write was accepted; " +
+				"the payload writes the host directory through its own rw grant and the engine " +
+				"execs what appears there as root (issue #390)")
+		}
+		// The refusal must be THIS refusal, not the pre-existing "not recorded"
+		// or "asked writable" one — both of which would also be non-nil.
+		for _, want := range []string{"WRITABLE", "read-only"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("refusal does not mention %q, so it may be a different clause firing: %v",
+					want, err)
+			}
+		}
+	})
+
+	t.Run("control: an ungranted toolchain root is still accepted read-only", func(t *testing.T) {
+		p := mustResolveDefaults(t)
+		const ungranted = "/home/u/secrets"
+		if p.HostPathVisible(ungranted, true) {
+			t.Fatalf("fixture: %s is write-visible, so it is the wrong control", ungranted)
+		}
+		if err := p.EngineToolchain(env, ungranted); err != nil {
+			t.Fatal(err)
+		}
+		g := validGraft(p, "toolchain")
+		g.Host = ungranted
+		g.Access = AccessRO
+		if err := p.Graft(env, g); err != nil {
+			t.Fatalf("G4b refused a toolchain root no grant makes writable — the third disjunct's "+
+				"whole job is to accept an ungranted path read-only, so this is the property most "+
+				"at risk from an over-broad clause: %v", err)
+		}
+	})
+
+	t.Run("control: a read-only-granted root is still accepted", func(t *testing.T) {
+		p := mustResolveDefaults(t)
+		const readOnly = "/usr" // @sys grants it ro
+		if p.HostPathVisible(readOnly, true) {
+			t.Fatalf("fixture: %s is write-visible, so it is the wrong control", readOnly)
+		}
+		g := validGraft(p, "toolchain")
+		g.Host = readOnly
+		g.Access = AccessRO
+		if err := p.Graft(env, g); err != nil {
+			t.Fatalf("a graft of a read-only-granted path was refused; ro visibility is not the "+
+				"hazard and must not be caught by G4b: %v", err)
+		}
+	})
+}

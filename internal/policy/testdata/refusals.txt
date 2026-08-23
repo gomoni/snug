@@ -223,6 +223,17 @@ snug cannot graft /var/tmp into the engine's view: nothing in this policy
        Graft a destination that already exists — a path some grant mounts, an ancestor
        of one, or a path inside a writable grant.
 
+== graft_toolchain_root_is_payload_writable ==
+cannot graft /home/u/proj/sub/toolchain (host /home/u/proj/sub) into the engine's view: it IS this run's
+       engine toolchain root, but a grant of this sandbox makes it WRITABLE.
+       The graft is read-only, which stops the ENGINE writing and does nothing about
+       the payload: the payload writes the same host directory through its own rw
+       grant and the file appears under the engine's read-only graft. The engine
+       resolves conmon, crun and netavark out of that directory as root in this
+       sandbox's user namespace, so a directory the payload can write is the payload
+       choosing what the engine executes as root.
+       Fix: put the engine somewhere no rw grant covers, or drop the rw grant.
+
 == graft_source_not_visible_xdg_runtime_dir ==
 cannot graft /home/u/proj/sub/xdg (host /run/user/1000) into the engine's view: the sandbox's own
        policy does not expose this host path, and snug did not create it for this run.

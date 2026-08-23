@@ -1013,7 +1013,7 @@ func (e *Engine) writeContainersConf(pol *policy.Policy, podman string, cgroupsD
 		"# Belt and braces on top of Spec's pinned PATH (issue #125): PATH is not\n" +
 		"# podman's only lookup for conmon/crun/newuidmap and friends, so name the\n" +
 		"# search list explicitly rather than let it fall back to inheritance.\n" +
-		"helper_binaries_dir = [" + helperBinariesDirs(pol, podman) + "]\n")
+		"helper_binaries_dir = [" + helperBinariesDirs() + "]\n")
 
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		return "", fmt.Errorf("writing %s: %w", path, err)
@@ -1278,37 +1278,28 @@ func (e *Engine) writeStorageConf(pol *policy.Policy, podman string) (string, er
 		b.WriteString(kv.key + " = " + v + "\n")
 	}
 
-	mp, err := helperBesideEngine(podman, "fuse-overlayfs")
-	if err != nil {
-		return "", err
-	}
-	// Inert as written, and left here rather than removed: podman discards every
-	// [storage.options*] key in this file when --root is on the argv, and Spec's
-	// argv always passes --root (STORAGE-CONF.md §3, measured on podman 5.8.4
-	// and 6.0.2 with a bogus mount_program, which makes store init fail loudly
-	// when the key reaches the driver and is silent when it does not, `podman
-	// system service` included). On 5.8.4 it is inert twice over, since this
-	// file also omits `driver` and that engine prefixes the option with the
-	// driver name.
+	// mount_program IS NOT WRITTEN, issue #390 — and it was the second spelling
+	// of the same defect as helper_binaries_dir, not a separate one.
+	// helperBesideEngine derives its value from filepath.Dir(podman), which
+	// e.guestPath then maps through EngineGuestPath's Access-blind bind arm.
+	// MEASURED on cd17ea0, with fuse-overlayfs beside an engine inside an
+	// @cwd-rw target: `mount_program = "/proj/bin/fuse-overlayfs"` — a
+	// payload-writable path written into the engine's storage configuration.
 	//
-	// The direction is toward less driver configuration, never more, so this is
-	// a portability defect and not a hole: a host that needs fuse-overlayfs for
-	// rootless overlay gets whatever containers/storage auto-selects. The fix is
-	// `--storage-opt overlay.mount_program=<guest path>` beside --root, measured
-	// to work; it changes the engine argv and its golden files.
-	if mp != "" {
-		mp, err = e.guestPath(pol, "storage.conf mount_program", mp)
-		if err != nil {
-			return "", err
-		}
-		v, err := tomlString(mp)
-		if err != nil {
-			return "", fmt.Errorf("storage.conf mount_program: %w", err)
-		}
-		b.WriteString("\n[storage.options.overlay]\n")
-		b.WriteString("mount_program = " + v + "\n")
-	}
-
+	// Note what "inert" did and did not cover. The old comment here said the
+	// key is discarded by podman whenever --root is on the argv, measured on
+	// 5.8.4 and 6.0.2, and Spec's argv always passes --root. That answers "does
+	// podman HONOUR it". It says nothing about "does snug WRITE it", and snug
+	// did. Two questions, and only the first had been asked.
+	//
+	// Deleted rather than gated, because its own reasoning already pointed
+	// elsewhere: the direction is toward less driver configuration, and the
+	// real fix for a host that needs fuse-overlayfs for rootless overlay is
+	// `--storage-opt overlay.mount_program=<guest path>` beside --root, which
+	// changes the engine argv and its golden files. A key that is discarded
+	// when written and dangerous in how it is derived has no argument left.
+	// helperBesideEngine stays, unused here, because its absoluteness refusal
+	// is asserted by its own test.
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		return "", fmt.Errorf("writing %s: %w", path, err)
 	}
@@ -1677,20 +1668,56 @@ func joinPIDs(pids []int) string {
 // the only one". A binary the mapping cannot place is simply not named here —
 // Spec has already refused the run by then, so this arm cannot silently drop
 // a helper directory a working run needed.
-func helperBinariesDirs(pol *policy.Policy, podman string) string {
+func helperBinariesDirs() string {
+	// ISSUE #390. This used to prepend EngineGuestPath(filepath.Dir(podman)) —
+	// the engine binary's own directory, mapped into the engine's view. That is
+	// a HOST string snug transformed, and EngineGuestPath's bind arm resolves
+	// through any KindBind mount, WRITABLE ONES INCLUDED: it has no Access test
+	// at all. MEASURED on cd17ea0 with $SNUG_PODMAN inside a target granted rw
+	// by @cwd-rw, the generated file read
+	//
+	//     helper_binaries_dir = ["/proj/bin", "/usr/libexec/podman", …]
+	//
+	// with /proj payload-writable and FIRST. This list is not an incidental
+	// lookup: writeContainersConf names it as snug's explicit search set so
+	// podman does not fall back to inheritance, and the engine resolves
+	// netavark, aardvark-dns, catatonit, rootlessport and pasta out of it as
+	// root in the sandbox's user namespace. So the payload chose what the
+	// engine executed.
+	//
+	// The guard is not a check on the derived string, it is a change of author:
+	// every entry is now a literal snug wrote. The old `!strings.HasPrefix(
+	// guest, "/usr/")` test was de-duplication wearing a security hat — a
+	// prefix test on a guest path, which is the catalogue shape invariant 2
+	// rejects, and it admitted every non-/usr path rather than refusing one.
+	//
+	// A real engine outside /usr that carries its OWN helpers is not served by
+	// this today, and that is deliberate: with the static-bundle fallback
+	// retired (#384) every supported configuration has them in the three
+	// directories below, measured on this host. If one ever needs its own, the
+	// entry comes back as policy.EngineToolchainGuest — the graft's guest
+	// constant, a literal — never filepath.Dir(podman) mapped through
+	// EngineGuestPath, and G4b has already refused a toolchain root the payload
+	// can write.
 	dirs := []string{"/usr/libexec/podman", "/usr/lib/podman", "/usr/bin"}
-	if podman != "" && filepath.IsAbs(podman) {
-		if guest, ok := pol.EngineGuestPath(filepath.Dir(podman)); ok && !strings.HasPrefix(guest, "/usr/") {
-			dirs = append([]string{guest}, dirs...)
-		}
-	}
 	quoted := make([]string, 0, len(dirs))
 	for _, d := range dirs {
 		v, err := tomlString(d)
 		if err != nil {
-			// Unreachable for the three literals; for a mapped bundle path it
-			// would mean a control character in a host path, which
-			// checkPathHygiene refused long before this.
+			// UNREACHABLE, and now provably so: the three values above are
+			// literals in this file, and tomlString only refuses a quote, a
+			// backslash or a control character. It used to be reachable — the
+			// list carried a path mapped from filepath.Dir(podman), where a
+			// control character in a host path was the hazard — and #390
+			// removed that entry, so nothing here comes from outside this
+			// function any longer.
+			//
+			// Kept rather than deleted, and the `continue` is the part to look
+			// at twice if that ever changes: silently dropping a helper
+			// directory is invariant 5's silent downgrade, and the symptom
+			// would be an engine that cannot find netavark rather than an
+			// error naming the path. A future entry from outside wants an
+			// error return here, not this branch.
 			continue
 		}
 		quoted = append(quoted, v)
