@@ -680,6 +680,42 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 		toolchain := p.EngineToolchainRoot != "" &&
 			g.Host == p.EngineToolchainRoot &&
 			g.Access == AccessRO
+
+		// G4b, issue #390. The toolchain disjunct above admits a path the
+		// sandbox's own grants do NOT expose — that is the whole point of it —
+		// and AccessRO was treated as making that safe. It does not, because
+		// READ-ONLY RESTRAINS THE WRONG PARTY. The graft being read-only stops
+		// the ENGINE writing; the PAYLOAD writes the same host inode through
+		// its own rw grant, and the new bytes appear under the engine's
+		// read-only graft on the next run. The engine resolves conmon, crun,
+		// netavark and fuse-overlayfs out of that tree as root in the
+		// sandbox's user namespace, with EngineCapBounding and the whole
+		// delegated subuid range — so a toolchain root the payload can write
+		// is the payload choosing what the engine executes as root.
+		//
+		// This is CLAUDE.md's socket/FIFO lesson with a third noun: `ro` says
+		// nothing about who else holds the path.
+		//
+		// Asked in HOST space, deliberately. An engine-view predicate is the
+		// wrong instrument here: View.IsShadowSlot sees AccessRO and answers
+		// "safe", correctly and uselessly, because the write does not arrive
+		// through the engine's view at all. HostPathVisible(dir, true) is the
+		// question that matches the threat — "does any grant of this sandbox
+		// make this writable" — and it is purely lexical, so internal/policy
+		// stays pure.
+		if toolchain && p.HostPathVisible(g.Host, true) {
+			return fmt.Errorf("cannot graft %s (host %s) into the engine's view: it IS this run's\n"+
+				"       engine toolchain root, but a grant of this sandbox makes it WRITABLE.\n"+
+				"       The graft is read-only, which stops the ENGINE writing and does nothing about\n"+
+				"       the payload: the payload writes the same host directory through its own rw\n"+
+				"       grant and the file appears under the engine's read-only graft. The engine\n"+
+				"       resolves conmon, crun and netavark out of that directory as root in this\n"+
+				"       sandbox's user namespace, so a directory the payload can write is the payload\n"+
+				"       choosing what the engine executes as root.\n"+
+				"       Fix: put the engine somewhere no rw grant covers, or drop the rw grant.",
+				g.Guest, g.Host)
+		}
+
 		if !p.HostPathVisible(g.Host, g.Access == AccessRW) && !p.EngineOwnedHostPaths[g.Host] && !toolchain {
 			needWrite := ""
 			if g.Access == AccessRW {
