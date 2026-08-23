@@ -45,8 +45,11 @@ type containerPreflight struct {
 	// PodmanVersion is Podman's own answer to `--version`, reported for
 	// observability only (issue #384) — never a refusal. $SNUG_PODMAN is
 	// trusted outright by preflightPodmanBinary's own comment precisely so a
-	// caller can point it at a newer host podman, and a newer version is not
-	// a downgrade under invariant 5, so this never gates the run. Empty when
+	// caller can point it at a newer host podman — the caller's own explicit
+	// choice of binary is not preflight's to refuse — so this never gates the
+	// run. (Deliberately NOT invariant 5: that is about a requested
+	// capability being unavailable and snug exiting rather than downgrading
+	// quietly, and a higher version number is not that.) Empty when
 	// the probe itself failed (exec error, unparseable output); PodmanVersionErr
 	// carries why, for the report at the call site to fold into its message.
 	PodmanVersion    string

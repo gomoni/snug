@@ -80,6 +80,21 @@ func CheckPodmanVersion(output, want string) error {
 	if err != nil {
 		return err
 	}
+	return checkParsedPodmanVersion(got, want)
+}
+
+// checkParsedPodmanVersion is the mismatch comparison and its message, written
+// ONCE.
+//
+// Both CheckPodmanVersion and CheckPodmanBinaryVersion need it, and each used
+// to spell the message out for itself. That is the same
+// two-copies-that-agree-until-somebody-changes-one shape
+// ProbePodmanBinaryVersion exists to avoid one function down, and here it has
+// a sharper edge: podmanversiongate_test.go asserts on the exact phrases
+// "could not parse" versus "does not match" to tell the two failure kinds
+// apart, so a divergence would leave one path's assertion passing while the
+// other quietly tested a string nothing produces any more.
+func checkParsedPodmanVersion(got, want string) error {
 	if got != want {
 		return fmt.Errorf("podman version %s does not match the pinned %s", got, want)
 	}
@@ -120,8 +135,12 @@ const podmanVersionProbeTimeout = 5 * time.Second
 // It returns the PARSED VERSION rather than a pass/fail, because its two
 // callers want different things from the same measurement: the test gate
 // compares against the pin and fails, while preflight only reports, since
-// $SNUG_PODMAN may legitimately name a newer podman than the pinned bundle
-// and newer is not a downgrade under invariant 5.
+// $SNUG_PODMAN may legitimately name a newer podman than the pinned bundle,
+// and a caller's own explicit choice of binary is not this function's to
+// refuse. (Not invariant 5: that one is about a REQUESTED CAPABILITY being
+// unavailable and snug exiting rather than downgrading quietly. A higher
+// version number is not an unavailable capability, and citing an invariant
+// loosely is how an invariant gets loose.)
 func ProbePodmanBinaryVersion(path string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), podmanVersionProbeTimeout)
 	defer cancel()
@@ -153,8 +172,5 @@ func CheckPodmanBinaryVersion(path, want string) error {
 	if err != nil {
 		return err
 	}
-	if got != want {
-		return fmt.Errorf("podman version %s does not match the pinned %s", got, want)
-	}
-	return nil
+	return checkParsedPodmanVersion(got, want)
 }

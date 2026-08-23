@@ -191,8 +191,9 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 	// Reported here, unconditionally, host-authored, and never gating the
 	// run (issue #384): $SNUG_PODMAN is trusted outright by
 	// preflightPodmanBinary's own comment precisely so a caller can point it
-	// at a newer host podman, and a newer version is not a downgrade under
-	// invariant 5. On a probe failure the version is empty and the reason
+	// at a newer host podman, and refusing a caller's own explicit choice of
+	// binary is not this report's business. On a probe failure the version is
+	// empty and the reason
 	// rides along instead of becoming a refusal — containerPreflight.PodmanVersion's
 	// doc comment has the detail.
 	//
