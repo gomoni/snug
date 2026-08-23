@@ -287,7 +287,7 @@ func TestBuildMayBindWhatTheSandboxCanSee(t *testing.T) {
 func TestBothBuildPathsAreFiltered(t *testing.T) {
 	for _, p := range []string{"/v1.41/build", "/build", "/v5.8.3/libpod/build"} {
 		t.Run(p, func(t *testing.T) {
-			segs, _, ok := normaliseFull(p)
+			segs, _, _, ok := normaliseFull(p)
 			if !ok || !isBuild(segs) {
 				t.Fatalf("%s is not recognised as the build endpoint (segs %v)", p, segs)
 			}

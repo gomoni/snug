@@ -31,7 +31,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 
@@ -100,7 +99,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	segs, libpod, ok := normaliseFull(r.URL.Path)
+	segs, prefix, libpod, ok := normaliseFull(r.URL.Path)
 	if !ok {
 		p.deny(w, "malformed path %q", r.URL.Path)
 		return
@@ -117,6 +116,33 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"routes (GET, HEAD) and /libpod/build are the exceptions. Use `docker` against "+
 			"the docker-compat endpoint (/v1.41/...) instead.", r.Method, strings.Join(segs, "/"))
 		return
+	}
+
+	// The ownership gate — ownership.go, and the ONE place this package decides
+	// whose container a request may touch.
+	//
+	// It runs HERE, before isHijack, and the ordering is the fix rather than a
+	// detail. `POST /containers/{id}/start` carrying `Upgrade:` — foreground
+	// `docker run`, and the route measured in issue #386 — is taken by isHijack
+	// below and never reaches the switch, as is `exec/{id}/start`. A gate placed
+	// in the switch misses both halves of the exploit.
+	//
+	// It runs AFTER the libpod schema gate, which is equally deliberate in the
+	// other direction: a libpod GET passes that gate (safeMethod), so
+	// `GET /libpod/containers/{id}/logs` normalises to the same segments as its
+	// compat spelling and IS gated here. Without that, the libpod spelling would
+	// be an unchecked read path around the whole fix.
+	//
+	// r is REASSIGNED, and that single line is what carries the canonical
+	// address to hijack(), handleExecCreate and every forward() below.
+	// Corollary: after this point no handler may re-derive an object id from
+	// `segs` — segs still carries the client's string.
+	if idx, kind := addressedObject(segs, r.Method); kind != refNone {
+		gated, ok := p.gate(w, r, segs, prefix, idx, kind)
+		if !ok {
+			return // p.gate wrote the refusal
+		}
+		r = gated
 	}
 
 	// Attach and exec upgrade the connection and then speak a raw stream. They
@@ -146,8 +172,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.handleVolumeCreate(w, r)
 	case isImageCreate(segs):
 		p.handleImageCreate(w, r)
-	case isContainerDelete(segs, r.Method):
-		p.handleContainerDelete(w, r, segs[1])
 	case isImageDelete(segs, r.Method):
 		p.deny(w, "removing image %q is not permitted. The engine's image store is this "+
 			"PROJECT's, not this run's — it is keyed on the target directory and persists "+
@@ -195,11 +219,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // `/containers/../build` reaches the build endpoint while matching an allowed
 // prefix.
 func normalise(path string) ([]string, bool) {
-	segs, _, ok := normaliseFull(path)
+	segs, _, _, ok := normaliseFull(path)
 	return segs, ok
 }
 
-// normaliseFull also reports whether the path used podman's NATIVE libpod API.
+// normaliseFull also reports how many leading segments it stripped (the API
+// version and podman's `libpod`) and whether the path used podman's NATIVE
+// libpod API.
+//
+// The count is what lets the ownership gate rewrite a RAW path segment after
+// judging a NORMALISED one; without it the two indexes are related by a guess.
 //
 // That distinction is load-bearing. An earlier version collapsed the `libpod`
 // segment and forgot it, so /v5.0.0/libpod/containers/create routed into
@@ -209,26 +238,28 @@ func normalise(path string) ([]string, bool) {
 // the body was forwarded verbatim. The redteam agent used it to bind the host's
 // ~/.ssh into a privileged container with host networking and read a private key
 // out. A filter that understands one schema MUST NOT be handed the other.
-func normaliseFull(path string) (segs []string, libpod bool, ok bool) {
+func normaliseFull(path string) (segs []string, prefix int, libpod bool, ok bool) {
 	var out []string
 	for _, s := range strings.Split(strings.Trim(path, "/"), "/") {
 		switch s {
 		case "":
 			continue
 		case ".", "..":
-			return nil, false, false
+			return nil, 0, false, false
 		}
 		out = append(out, s)
 	}
 	// /v1.41/... (docker-compat) or /v5.0.0/libpod/... (podman native)
 	if len(out) > 0 && len(out[0]) > 1 && out[0][0] == 'v' && strings.ContainsAny(out[0], "0123456789") {
 		out = out[1:]
+		prefix++
 	}
 	if len(out) > 0 && out[0] == "libpod" {
 		out = out[1:]
+		prefix++
 		libpod = true
 	}
-	return out, libpod, true
+	return out, prefix, libpod, true
 }
 
 // libpodExamined reports whether snug's filter has actually READ this libpod
@@ -299,11 +330,14 @@ func isImageCreate(s []string) bool {
 // endpoint. Matched separately from allowed() (which already refuses it, see
 // the case "archive", "export" comment below) purely so the refusal can name
 // the alternative rather than fall through to the generic "not permitted".
-// isContainerDelete matches DELETE /containers/{id} — `docker rm`, and what
-// `docker run --rm` issues after the container exits.
-func isContainerDelete(segs []string, method string) bool {
-	return method == http.MethodDelete && len(segs) == 2 && segs[0] == "containers"
-}
+// DELETE /containers/{id} — `docker rm`, and what `docker run --rm` issues
+// after the container exits — has no case of its own any more. It is one of the
+// container-addressed routes the ownership gate takes before this switch runs
+// (ownership.go), and it then falls through to allowed()'s containers clause
+// like every other operation on a container this run created.
+//
+// Deleted rather than kept beside the gate on purpose: two ownership checks in
+// one package is the shape where one gets updated and the other does not.
 
 // isImageDelete and isVolumeDelete match `docker rmi` and `docker volume rm`.
 //
@@ -316,105 +350,6 @@ func isImageDelete(segs []string, method string) bool {
 
 func isVolumeDelete(segs []string, method string) bool {
 	return method == http.MethodDelete && len(segs) >= 2 && segs[0] == "volumes"
-}
-
-// handleContainerDelete forwards a removal only for a container THIS run
-// created, which is what the run label is for (create.go's step 4).
-//
-// ABUSE: a hostile process inside the sandbox can use `GET /containers/json?all=1`
-// to enumerate every container in the engine's store — the store is keyed on the
-// target directory and persists, so that list includes every container an
-// EARLIER run of this project created — and then remove any of them by id.
-// Measured through this proxy against podman 6.0.2 (issue #339). What it buys
-// is destruction of a record that outlives the sandbox; there is no escape and
-// nothing outside the store is reachable.
-//
-// Ownership is asked of the ENGINE, not taken from the request, because the
-// client's word for what a container is is the thing being checked.
-//
-// FAIL CLOSED at every step. A proxy that permits the removal when it could not
-// determine ownership has exactly the property that was measured, with one extra
-// HTTP request in front of it — so a transport error, a non-200, an undecodable
-// body, a missing Config and a missing label all refuse. `docker run --rm` is
-// unaffected: the container it removes is one this proxy stamped.
-func (p *Proxy) handleContainerDelete(w http.ResponseWriter, r *http.Request, id string) {
-	if p.runLabel == "" {
-		p.deny(w, "this proxy stamps no run label, so no container is recorded as this "+
-			"run's and none can be removed. That is a misconfiguration of snug itself, "+
-			"not of your command.")
-		return
-	}
-	key, want, ok := strings.Cut(p.runLabel, "=")
-	if !ok {
-		p.deny(w, "this proxy's run label %q is not key=value, so ownership cannot be "+
-			"checked. That is a misconfiguration of snug itself, not of your command.",
-			p.runLabel)
-		return
-	}
-
-	got, err := p.containerRunLabel(r.Context(), id)
-	if err != nil {
-		p.deny(w, "snug could not confirm that container %s belongs to this sandbox run "+
-			"(%v), so it refuses to remove it. Ownership is checked against the engine, "+
-			"and a check that did not complete is not a pass.", id, err)
-		return
-	}
-	if got != want {
-		p.deny(w, "container %s was not created by this sandbox run. snug stamps every "+
-			"container it creates with %s and removes only those; this one carries %q. "+
-			"The engine's store is keyed on the target directory and persists across "+
-			"runs, so it holds containers earlier runs of this project created. Remove a "+
-			"container this run created, or leave it.", id, p.runLabel, key+"="+got)
-		return
-	}
-	p.forward(w, r, nil)
-}
-
-// containerRunLabel asks the engine for one container's snug run label.
-//
-// The docker-compat spelling on purpose: it is the schema this filter reads
-// (package comment), and asking over libpod would mean reading a shape this
-// package has spent three issues refusing to read.
-//
-// url.PathEscape on the id is not decoration. The id arrives from the request
-// path and this function BUILDS a new request URI out of it, which is a request
-// smuggling primitive if it is pasted raw; normaliseFull's `.`/`..` refusal
-// guards the ROUTE and is not an escaper.
-func (p *Proxy) containerRunLabel(ctx context.Context, id string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		"http://engine/v1.41/containers/"+url.PathEscape(id)+"/json", nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("asking the engine what %s is: %w", id, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("the engine answered %d when asked what %s is", resp.StatusCode, id)
-	}
-
-	// 1 MiB is generous for an inspect and bounded on purpose: the engine is
-	// snug's own, but a body read with no limit is a hang or an OOM waiting for
-	// the first engine that misbehaves.
-	var body struct {
-		Config *struct {
-			Labels map[string]string `json:"Labels"`
-		} `json:"Config"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
-		return "", fmt.Errorf("reading the engine's answer for %s: %w", id, err)
-	}
-	if body.Config == nil {
-		return "", fmt.Errorf("the engine's answer for %s carries no Config", id)
-	}
-	key, _, _ := strings.Cut(p.runLabel, "=")
-	v, ok := body.Config.Labels[key]
-	if !ok {
-		return "", fmt.Errorf("container %s carries no %s label", id, key)
-	}
-	return v, nil
 }
 
 // isPrune matches every endpoint whose last segment is `prune`, in both API
