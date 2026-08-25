@@ -1490,6 +1490,194 @@ print("PROBE-COMPLETE", flush=True)
 	}
 }
 
+// sandboxOwnListenerBanner is what the listener TestAContainerReachesAListenerThePayloadHoldsInN's
+// own sandbox PAYLOAD opens inside N answers with. Deliberately not hostBanner
+// (sandbox_test.go), which answers on the HOST's own real loopback: a REACHED
+// line naming this text can only mean the dialler reached the listener this
+// test's own payload opened inside N, not some other listener entirely.
+const sandboxOwnListenerBanner = "SNUG-SANDBOX-OWN-LISTENER"
+
+// allSections is section's own line-scanning discipline (a Tty=true
+// container log line carries a trailing \r before the \n, so an exact-line
+// match against a bare "…-END" never fires without trimming it first)
+// generalised to return every occurrence in call order rather than only the
+// first. section (below) is reused everywhere else in this file, where a
+// single sandbox run only ever produces one instance of a given marker pair;
+// this test drives TWO containers through the same run_and_collect* helpers
+// in one sandbox invocation, so their "LOGS-BEGIN"/"LOGS-END" pairs repeat
+// and the first-only helper would silently hand back the first container's
+// section for both.
+func allSections(out, label string) []string {
+	lines := strings.Split(out, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], "\r")
+	}
+	var got []string
+	for i := 0; i < len(lines); i++ {
+		if lines[i] != label+"-BEGIN" {
+			continue
+		}
+		end := -1
+		for j := i + 1; j < len(lines); j++ {
+			if lines[j] == label+"-END" {
+				end = j
+				break
+			}
+		}
+		if end < 0 {
+			break
+		}
+		got = append(got, strings.Join(lines[i+1:end], "\n"))
+		i = end
+	}
+	return got
+}
+
+// TestAContainerReachesAListenerThePayloadHoldsInN is the functional
+// counterpart the netns-pin family above lacked: both
+// TestAContainerThatNamesNoNetworkModeJoinsTheSandboxsNetns and
+// TestABuildsRunStepRunsInTheSandboxsNetns prove netns INODE equality between
+// a container (or a build's RUN step) and the sandbox payload, which is not
+// the same claim as "the namespace is usable" — `lo` inside a fresh netns
+// must be brought UP, and doing that needs CAP_NET_ADMIN, which the engine
+// deliberately does not hold (policy.EngineCapBounding, the 2026-08-18
+// decision INDEX §"Networking" records). A container landing in the right
+// netns with `lo` still down would pass every inode-equality assertion above
+// while being unable to reach anything at all — exactly the gap this test
+// closes: the sandbox payload opens a TCP listener on its own 127.0.0.1
+// inside N, and a container started through the proxy must connect to it and
+// read back a marker it could only have gotten from that listener.
+//
+// Both network-mode shapes runContainerAndCollectFn's own doc comment
+// distinguishes are exercised, in one sandbox run against the one listener:
+// an explicit NetworkMode="host" (Tier B's established path) and no
+// HostConfig.NetworkMode at all (issue #401's own pin).
+func TestAContainerReachesAListenerThePayloadHoldsInN(t *testing.T) {
+	budget(t, 120*time.Second)
+	requireSandbox(t)
+	requireEngine(t)
+	requirePython(t)
+	requireRealEngine(t, baseEnv())
+
+	proj, _ := target(t)
+	if err := os.WriteFile(filepath.Join(proj, "netprobe"), mustRead(t, netprobeBin(t)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tag := "snugtest-reachpayload401:1"
+	script := buildScratchProbeImage(tag) + runContainerAndCollectFn + runContainerAndCollectDefaultFn +
+		fmt.Sprintf(`
+import threading, subprocess
+
+print("OUTERNS " + os.readlink("/proc/self/ns/net"), flush=True)
+
+srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", 0))
+srv.listen(16)
+port = srv.getsockname()[1]
+print("LISTENER-PORT " + str(port), flush=True)
+
+def serve():
+    while True:
+        try:
+            conn, _ = srv.accept()
+        except OSError:
+            return
+        try:
+            conn.sendall((%[2]q + "\n").encode())
+        finally:
+            conn.close()
+
+threading.Thread(target=serve, daemon=True).start()
+
+# POSITIVE CONTROL: the payload itself, sharing N with the listener it just
+# opened, can reach it -- run BEFORE either container, so a failure below
+# cannot be confused with a listener that never came up (CLAUDE.md's "a test
+# that cannot fail" rule).
+self_out = subprocess.run(["./netprobe", str(port)], capture_output=True, text=True).stdout
+print("SELF-BEGIN", flush=True)
+print(self_out, flush=True)
+print("SELF-END", flush=True)
+
+if build_scratch_probe():
+    run_and_collect(%[1]q, [str(port)], "host")
+    run_and_collect_default(%[1]q, [str(port)])
+print("PROBE-COMPLETE", flush=True)
+`, tag, sandboxOwnListenerBanner)
+	if err := os.WriteFile(filepath.Join(proj, "reachpayload401.py"), []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := run(t, []string{"-p", "@podman-build"}, proj, `python3 reachpayload401.py`).mustRun(t)
+	if !strings.Contains(r.out, "PROBE-COMPLETE") {
+		t.Fatalf("the probe did not run to the end:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, fmt.Sprintf("BUILD %s: 200", tag)) {
+		t.Fatalf("the from-scratch image did not build — this test proves nothing about a "+
+			"container it never ran:\n%s", r.out)
+	}
+
+	payloadNS, ok := outerNetnsMarker(r.out)
+	if !ok {
+		t.Fatalf("the sandbox payload never reported its own netns:\n%s", r.out)
+	}
+	hostSelf, err := os.Readlink("/proc/self/ns/net")
+	if err != nil {
+		t.Fatalf("reading this TEST PROCESS's own (host) netns: %v", err)
+	}
+	if payloadNS == hostSelf {
+		t.Fatalf("PRECONDITION: the sandbox payload's own netns (%s) equals this HOST test "+
+			"process's — this run has no network isolation for a container's reach into it to "+
+			"mean anything", payloadNS)
+	}
+
+	portLine := regexp.MustCompile(`LISTENER-PORT (\d+)`).FindStringSubmatch(r.out)
+	if portLine == nil {
+		t.Fatalf("the payload never reported the port its own listener bound to:\n%s", r.out)
+	}
+	want := fmt.Sprintf("127.0.0.1:%s", portLine[1])
+
+	selfSections := allSections(r.out, "SELF")
+	if len(selfSections) != 1 {
+		t.Fatalf("expected exactly 1 SELF section (the payload's own positive control), got "+
+			"%d:\n%s", len(selfSections), r.out)
+	}
+	if !hasResultVerdict(parseProbeResults(selfSections[0]), "v4-loop", want, "REACHED") ||
+		!strings.Contains(selfSections[0], sandboxOwnListenerBanner) {
+		t.Fatalf("POSITIVE CONTROL FAILED: the sandbox payload itself, sharing N with the "+
+			"listener it just opened, could not reach %s and read its banner — nothing below "+
+			"can distinguish a container that cannot reach it from a listener that never came "+
+			"up:\n%s", want, selfSections[0])
+	}
+
+	logSections := allSections(r.out, "LOGS")
+	if len(logSections) != 2 {
+		t.Fatalf("expected exactly 2 container LOGS sections (explicit NetworkMode=\"host\", "+
+			"then no HostConfig.NetworkMode at all), got %d:\n%s", len(logSections), r.out)
+	}
+	for i, mode := range []string{`NetworkMode="host"`, "no HostConfig.NetworkMode at all"} {
+		section := logSections[i]
+		results := parseProbeResults(section)
+		// CONTROL: the container's probe actually dialled the address this
+		// test opened, not something else entirely (issue #243's own
+		// discipline — a verdict about the wrong address is no result).
+		if !hasResult(results, "v4-loop", want) {
+			t.Fatalf("a container created with %s never dialled %s at all — every assertion "+
+				"below would pass on a container that never tried. RESULT lines: %v\n%s",
+				mode, want, results, section)
+		}
+		if !hasResultVerdict(results, "v4-loop", want, "REACHED") ||
+			!strings.Contains(section, sandboxOwnListenerBanner) {
+			t.Errorf("a container created with %s could not reach the sandbox payload's own "+
+				"listener at %s and read its banner — issue #401's containers.conf pin places "+
+				"it in N, but that only proves inode equality: `lo` inside N must still be "+
+				"brought up by something else, since the engine holds no CAP_NET_ADMIN to do "+
+				"it itself:\n%s", mode, want, section)
+		}
+	}
+}
+
 // ── 3. no abstract sockets, and the engine's pid is not in the sandbox's pidns ─
 
 // TestNoAbstractSocketsWithEngineInN checks the ordinary sandboxed PAYLOAD's
