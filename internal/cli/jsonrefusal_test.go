@@ -462,3 +462,68 @@ func captureRun(t *testing.T, cfg config) (stdout, stderr string, code int) {
 	}
 	return string(ob), string(eb), code
 }
+
+// TestTheRefusalDocumentEscapesForgingRunes covers the SECOND document shape
+// this change introduced.
+//
+// jsonRefusalDoc is a separate type from jsonDoc, so the forging-rune escape is
+// the kind of rule that gets applied to one of its two halves. It does not here
+// only because both go through writeJSONDoc, and this test is what keeps that
+// true if the two are ever split again.
+//
+// The refusal message quotes HOST text — the target path, an unreadable profile
+// file's name — so it is exactly the class escapeRawForgingRunes exists for,
+// arriving in a document that carries no policy beside it.
+func TestTheRefusalDocumentEscapesForgingRunes(t *testing.T) {
+	const forged = "FORGED-BY-A-TARGET"
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	// U+202E reverses how the rest of the row reads; U+007F is issue #333's one
+	// code point. In a path that does NOT exist, so the refusal quotes it back.
+	missing := filepath.Join(home, "src", "tgt\u202eOLR\u007fDEL-"+forged)
+	if err := os.MkdirAll(filepath.Dir(missing), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := captureRun(t, config{dryRun: true, json: true, target: missing})
+	if code != 77 {
+		t.Fatalf("exit %d, want 77\nstderr:\n%s", code, stderr)
+	}
+	// POSITIVE CONTROL: the poisoned name really did reach the document, or
+	// "nothing raw" is a statement about a document that never mentioned it.
+	if !strings.Contains(stdout, forged) {
+		t.Fatalf("the fixture path never reached the document:\n%s", stdout)
+	}
+	if r, ok := rawForgingRune(stdout); ok {
+		t.Errorf("the policy-less refusal document rendered %q raw. It is read in a golden "+
+			"diff, through jq and in a review UI, so it answers to the same sweep the "+
+			"policy-bearing document does", r)
+	}
+	for _, esc := range []string{`\u202e`, `\u007f`} {
+		if !strings.Contains(stdout, esc) {
+			t.Errorf("the document carries no %s escape, so either the fixture stopped "+
+				"reaching it or the escape stopped being applied:\n%s", esc, stdout)
+		}
+	}
+
+	// The escape changes the SPELLING, not the value: a decoder gets the real
+	// runes back, which is why this does not set lossy.
+	var doc refusalDoc
+	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+		t.Fatalf("the escaped document no longer parses: %v\n%s", err, stdout)
+	}
+	if doc.Snug.Lossy {
+		t.Error("snug.lossy is true for a valid-UTF-8 path — lossy is about bytes no string " +
+			"can carry, not about escaping")
+	}
+	if doc.Refusal == nil {
+		t.Fatalf("no refusal object:\n%s", stdout)
+	}
+	for _, r := range []rune{'\u202e', '\u007f'} {
+		if !strings.ContainsRune(doc.Refusal.Message, r) {
+			t.Errorf("the decoded refusal message lost %q: %q", r, doc.Refusal.Message)
+		}
+	}
+}

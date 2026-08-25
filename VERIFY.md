@@ -259,6 +259,33 @@ refused 77 True True
 The pair is the check. One of them alone passes on a build that always emits
 the full document and on a build that never does.
 
+**And the policy-less document answers to the forging-rune sweep too.**
+`jsonRefusalDoc` is a separate type from `jsonDoc`, so this is the shape of rule
+that gets applied to one of its two halves — it does not, only because both go
+through one writer. The refusal message quotes HOST text, so a target directory
+whose own name carries U+202E puts a directional override into a document that
+has no policy beside it:
+
+```bash
+BAD=$SC/proj/tgt$(printf '\342\200\256')OLR-FORGED
+./bin/snug --dry-run --json "$BAD" > /tmp/forged.json; echo "exit=$?"
+LC_ALL=C grep -c $'\342\200\256' /tmp/forged.json   # raw RLO bytes
+grep -o 'u202e' /tmp/forged.json | wc -l            # the escape
+python3 -c 'import json;d=json.load(open("/tmp/forged.json"))
+print(d["snug"]["lossy"], d["snug"]["policy_resolved"])'
+```
+
+```
+exit=77
+0
+2
+False False
+```
+
+Zero raw, escaped twice, `lossy` still false and `policy_resolved` false — the
+same guarantee the policy-bearing document gives, in the shape that carries no
+policy.
+
 **One exit is still not a document, and it is named rather than left for a
 redirect to find:** a flag that does not PARSE exits 64 with the usage screen,
 from `Main`, before `run`. The document's own flag is among the ones that failed
