@@ -27,44 +27,6 @@ model: sonnet
   parent, signals are forwarded, exit codes propagate, and nothing is left behind
   on the ugly paths.
 
-## Comments
-
-**Scope first: only code you touch in this task.** Comment you did not disturb,
-function you did not edit, file you only read — leave it, however bad it is. No
-drive-by cleanup, no sweep. Comment churn nobody asked for buries the change the
-reviewer came for.
-
-A comment says what the code cannot. If it says what the code says, it is a copy
-of state one line below and goes stale on the next edit. Cut it.
-
-- **The bar.** Would a good Go reader, cold, get this wrong without the
-  sentence? No — cut. Yes — write the thing they would get wrong: errno, kernel
-  behaviour, ordering nothing enforces, why the obvious version is broken, the
-  abuse sentence. Long is fine when it carries a measurement (worked examples:
-  `internal/policy/enginebind.go`, `internal/engine/reap.go`). Length is not the
-  currency, the measurement is.
-- **Never narrate.** `// lock the mutex`, `// loop over mounts`, `// return the
-  error`, banner comments restating file structure.
-- **Exported identifier: godoc sentence, starts with the name.** "Resolve
-  returns …", never "This function …". Name the exact condition for each
-  non-nil error, panic and sentinel — the half a caller cannot read off the
-  signature.
-- **Godoc is not Markdown.** `**bold**` renders as asterisks, backticks as
-  backticks (doubled ones become curly quotes). It knows `#` headings, indented
-  code, indented `-` lists, `[Name]` doc links. Existing backticks stay; add none.
-- **A comment contradicting the code is a bug with no reporter** — the next
-  reader believes the prose and writes the caller it describes. Change a
-  function, its comment is part of that diff.
-- **History is not a changelog.** "previously a map", "refactored to os.Root",
-  "added in Tier B" — git has it and keeps it accurate for free. History stays
-  only where a wrong CLAIM recurred and the sentence sits on the guard that now
-  prevents it (`reap.go`: matched the HOST spelling for a milestone, so the sweep
-  answered "nothing of mine is running" on its first poll of every run).
-- **No `// TODO` parking a decision.** Gap becomes a GitHub issue with the
-  measurement (CLAUDE.md, definition of done, step 4); the comment cites the
-  number. A TODO
-  in a security path is a decision nobody made, where no process re-reads it.
-
 ## Things that are not yours to decide
 
 If a task requires choosing what a profile grants, how grants resolve, what a
@@ -169,6 +131,46 @@ the pattern, because both implementations pass on an undisturbed filesystem.
 
 `internal/policy` is exempt and stays exempt: pure by rule, no filesystem, which
 is what lets the security-critical tests run in CI with no privileges.
+
+## Comments
+
+**Scope: the lines you changed, plus the doc comment of any declaration whose
+behaviour you changed.** Everything else — other comments in a function you
+edited, other functions, files you only read — leave, however bad. No drive-by
+cleanup. Two exceptions: a comment your change made FALSE is a bug, fix or
+delete it; a comment handed to you in a specification is not yours to cut.
+
+- **Never narrate.** `// lock the mutex`, `// loop over mounts`, `// Step 1:
+  validate`, `// now uses os.Root`, `// unchanged`, banners restating file
+  structure. A comment saying what the code says is a copy of state one line
+  below, stale on the next edit.
+- **The bar.** Would a good Go reader, cold, get this wrong without the
+  sentence? No — cut. Yes — write what they would get wrong: errno, kernel
+  behaviour, ordering nothing enforces, why the obvious version is broken, the
+  abuse sentence. Long is fine when it carries a measurement (worked examples:
+  `internal/policy/enginebind.go`, `internal/engine/reap.go`).
+- **Never write a measurement, errno, quoted string or issue number you did not
+  read with your own tools this task.** Reason real, citation not to hand —
+  write the reason, drop the citation. Nothing checks a `#NNN` in a comment,
+  there are hundreds, and an invented one is indistinguishable from a real one.
+  CLAUDE.md's rule: "not recovered" beats reconstructing it.
+- **Finish an edit by re-reading every comment on and inside what you changed;
+  delete or fix any sentence now false**, doc comment first. A comment
+  contradicting the code is a bug with no reporter — the next reader believes
+  the prose and writes the caller it describes.
+- **Exported identifier: godoc sentence starting with the name** ("Resolve
+  returns …", never "This function …"), naming the exact condition for each
+  non-nil error, panic and sentinel — the half a caller cannot read off the
+  signature. Godoc is not Markdown: `**bold**` renders as literal asterisks,
+  single backticks are the house spelling and doubled ones become curly quotes,
+  and lists and code render only when indented.
+- **History is not a changelog** — "previously a map", "refactored to os.Root";
+  git has it. History stays where the old version was WRONG, because CLAUDE.md
+  keeps the wrong version visible rather than silently fixed, or where it is why
+  the current shape is not obvious: `internal/engine/reap.go`,
+  `internal/policy/net.go:191`.
+- **No `// TODO` parking a decision.** The gap becomes a GitHub issue with the
+  measurement (CLAUDE.md, definition of done, step 4); the comment cites it.
 
 ## Definition of done
 

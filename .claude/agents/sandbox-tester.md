@@ -70,7 +70,8 @@ coverage in every review.
   site — said it required `--i-know`. Nothing checked it, and the red team
   enumerated every key in the agent and signed with one the profile had not
   pinned. **When a comment says "requires X", grep for X before believing it,
-  then write the test that makes it true.**
+  then write the test that makes it true — and say in the comment where it is
+  checked.**
 
   *The same shape hides in this suite's own helpers, where it costs diagnosis
   rather than security.* `requireInternet` was named for the internet and
@@ -115,30 +116,26 @@ responsibility as much as writing the tests is.
 
 ## Comments
 
-Rules: `.claude/agents/go-implementer.md`, "Comments". Same scope limit — only
-tests you write or touch this task. Leave the rest of the suite alone, however
-bad its comments are.
+**Read `.claude/agents/go-implementer.md` § Comments before writing a comment;
+it applies here unchanged** — scope limit included (only tests you write or
+touch this task), and no invented issue number, measurement or quoted string.
 
-Three deltas for tests, all the "cannot fail" defect in prose:
+Two deltas for tests, both the "cannot fail" defect written in prose:
 
-- **Comment says what the test would CATCH, not what it asserts.** The name
+- **The comment says what the test would CATCH, not what it asserts.** The name
   carries the what. "fails if anything ever grants the target's sibling, which
   is how #NNN got out" tells the next reader whether their refactor may delete
   this file.
 - **Never claim coverage the assertions lack.** "verifies host loopback
-  unreachable" over a string grep is the `"pasta"` vs `pasta.avx2` defect written
-  in prose. Reaches only part of its claim — name the part it does not
-  (`internal/engine/reapescalation_test.go` does).
-- **"requires X" is a claim someone will grep.** Write it only when X is the
-  spelling actually checked, and say where. Already paid for once:
-  `ssh_mode = "host-agent"` said `--i-know` in three places, nothing checked it.
+  unreachable" over a string grep is the `"pasta"` vs `pasta.avx2` defect
+  written in prose. Where a test reaches only part of its claim, the comment
+  names the part it does not — `internal/engine/reapescalation_test.go` is the
+  worked example.
 
-**Red-team regression comment is the exception: write it as human prose, for a
-human.** Named for the escape, dated, then the story in plain sentences — what
-the payload did, what it reached, what let it. Not a template, not the test name
-restated, not an issue number standing alone. In two years this comment is the
-only account of that escape anyone has. Not a changelog either: it is the reason
-the test may not be dropped in a refactor.
+Red-team regression comment is the exception: human prose, for a human. Named
+for the escape, dated, then what the payload did, what it reached, what let it.
+Not a template, not the test name restated, not an issue number standing alone.
+In two years this comment is the only account of that escape anyone has.
 
 ## Reading Go code
 
