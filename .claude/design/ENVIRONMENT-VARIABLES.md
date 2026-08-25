@@ -98,9 +98,9 @@ environ-set = {                 python3 tomllib:      Invalid initial character 
 }
 ```
 
-The scratch module used to "verify" this pinned v2.2.3, not the version in
-`go.mod`. **Check the version the project actually builds with, not the one the
-test module resolved to.**
+**Check the version the project actually builds with, not the one a scratch
+module resolves to** — a scratch module pins whatever it likes, and a
+"verification" against v2.2.3 says nothing about the version in `go.mod`.
 
 What survives is smaller and worth stating on its own: the flat form is
 spec-invalid but *silently accepted here*, so a profile written that way works on
@@ -256,18 +256,18 @@ which is the whole of the argument. The table survived intact, name for name and
 measurement for measurement; what changed is the sink. A name in it is
 **annotated** on `--dry-run` and on `snug profile show` instead of being refused
 at parse time, because snug has only allowlists and the author of a profile is a
-human on the trusted side of the boundary. The paragraphs below are kept in the
-past tense where they describe what the table used to DO, because the *reasoning*
-that put each name in it is still exactly why each name carries a sentence today.
+human on the trusted side of the boundary. The reasoning that put each name in
+the table is exactly why each name carries a sentence today.
 
-**The split by verb survived and matters MORE than it did.** `set` carries a
+**The split by verb is what carries this, and it matters more here than in a
+refusal.** `set` carries a
 value from a reviewable file in the trusted profile layer; `inherit` carries
 whatever the host process had at launch, put there by whatever invoked snug.
-**`inherit` is a hole punched in `--clearenv`; `set` is not.** That difference
-used to be visible for free, because one of the two was refused. Now that neither
-is, the difference IS the sentence: `envNote` carries one string for the authored
-verbs and one for the host verbs, and the old middle bucket — `BASH_ENV`, `ENV`,
-`PYTHONSTARTUP`, `PYTHONBREAKPOINT`, `LESSOPEN` — is where they differ:
+**`inherit` is a hole punched in `--clearenv`; `set` is not.** A refusal made
+that difference visible for free. With neither refused, the difference IS the
+sentence: `envNote` carries one string for the authored verbs and one for the
+host verbs, and the middle bucket — `BASH_ENV`, `ENV`, `PYTHONSTARTUP`,
+`PYTHONBREAKPOINT`, `LESSOPEN` — is where they differ:
 `BASH_ENV = "{home}/.snug-init"` with the file granted by the same profile is
 coherent and reviewable, while the same name inherited names a file chosen on the
 host, outside any profile. A note table flattened to one string per name would
@@ -294,11 +294,11 @@ all run unconditionally on interpreter start (`sitecustomize.py`/
 `usercustomize.py`, `--require`, `-M`), which is a stronger claim than
 "reviewable as set" survives — measured, not reasoned about.
 
-Two of those are worth reading twice, because the flip changed their reach and
-their reach only. `PYTHONPATH` is a **list**, so `forbidBoth` used to refuse
-`environ.merge`/`environ.prepend` on it as a side effect of refusing the name;
-it is mergeable, so those two verbs are legal now, annotated, and they are the
-**only new list-verb capability in the change**. `LD_PRELOAD`,
+Two of those are worth reading twice, because the annotation model changed their
+reach and their reach only. `PYTHONPATH` is a **list**: `forbidBoth` would refuse
+`environ.merge`/`environ.prepend` on it as a side effect of refusing the name,
+but it is mergeable, so those two verbs are legal and annotated — the **only
+list-verb capability the annotation model adds**. `LD_PRELOAD`,
 `LD_LIBRARY_PATH`, `CDPATH` and `GOFLAGS` gained nothing at all: they are lists
 the roster marks neither mergeable nor sanitisable, so every verb is still
 refused — on TYPE grounds, which is snug declining an operation rather than
@@ -315,7 +315,7 @@ spelling npm's own case-insensitive lookup honours, which is also why a single
 shared table (`prefixCaseFold`) decides case-folding for every prefix in both the
 annotation table and the sink-sweep predicate that reads the same names
 (`policy.IsInlineConfigEnv`) — two tables each keeping an independent copy of
-"does this tool fold case" is how they drifted apart in the first place. The
+"does this tool fold case" is how they drift apart. The
 carve-outs are the POINTERS, and both tables now name the same set, asserted by
 `TestPointerExemptionsAgreeBetweenTheTwoTables`: a pointer gets no family
 sentence at the verbs that AUTHOR it, because authoring one is the mechanism
@@ -522,9 +522,9 @@ while the tmpfs directory above it is dropped. Do not read that as "keep if any
 mount exists at or below" — that is a second, downward walk, and it re-admits the
 element the rule exists to remove.
 
-The example this paragraph used to give was `{home}/.local/bin/claude` kept and
-`{home}/.local/bin` dropped, "which `@claude` really does stage". **It no longer
-does, and the reason is worth keeping in view here of all places.** `@claude`
+**`@claude` does NOT stage `{home}/.local/bin`, and the reason belongs here of
+all places** — an example built on "which `@claude` really does stage" would be
+describing a hole rather than the rule. `@claude`
 staged a read-only bind inside a *writable* directory and then put that directory
 on `PATH` with `merge` — and no amount of correctness in this filter could reach
 it, because `sanitise` only ever inspects the **host's** value for an imported
@@ -536,9 +536,8 @@ document does not govern.
 
 *Why it matters, and the bound on the claim.* Under `@home`, `{home}` and four
 subdirectories are tmpfs, and `/tmp` is tmpfs in every policy. So a host `PATH`
-carrying `/tmp/x/bin` used to survive into the `PATH` snug writes — at a
-directory that is **empty and writable inside**, in a band **ahead of**
-`/usr/bin`. The payload creates the directory, drops a file called `git` in it,
+carrying `/tmp/x/bin` reaching the `PATH` snug writes would land at a directory
+that is **empty and writable inside**, in a band **ahead of** `/usr/bin`. The payload creates the directory, drops a file called `git` in it,
 and the next `git` a human or another agent runs inside is that file. Verified
 end to end (marker `SHADOWED-GIT-RAN`).
 
@@ -758,8 +757,8 @@ kept and unmarked, directly above a `sanitise` drop line explaining that a
 writable directory is a shadow slot. The filter was right in both cases:
 `sanitise` judges only the **host's** value for an imported variable, and can
 never reach a `merge` entry written in a file. But a reader cannot see that
-distinction on the screen, and the gap is not academic — it is exactly where
-`@claude`'s `{home}/.local/bin` sat, unmarked, for a milestone.
+distinction on the screen, and the gap is not academic: `@claude`'s
+`{home}/.local/bin` is exactly the shape that sits in it unmarked.
 
 The scope is the substance. `PATH` entries are searched for **commands**, so a
 writable one is a slot the payload can fill; a writable `CARGO_HOME` or
@@ -794,9 +793,9 @@ that the screen you approve it on says what you approved.
 So: `forbiddenEnv`, `forbiddenEnvPrefixes` and the roster's own `noInherit` bit
 are all **annotations** now (`policy.EnvNote`), rendered by `--dry-run`'s
 ENVIRONMENT block and by `snug profile show`. Measured, over the 113 names snug
-has a table entry for: **147 (name, verb) pairs across 82 names moved from
-refused to allowed-with-annotation, and nothing moved the other way.** The prefix
-families are unbounded, so the real figure is "every name under `LD_*`,
+has a table entry for: **147 (name, verb) pairs across 82 names are
+allowed-with-annotation rather than refused, and nothing goes the other way.**
+The prefix families are unbounded, so the real figure is "every name under `LD_*`,
 `GIT_CONFIG_*`, `PIP_*`, `CARGO_*` and `npm_config_*`" as well.
 
 **The roster holds type facts only.** Scalar or list, the separator, the
@@ -842,9 +841,9 @@ have one about what pip does with it). Pinned by
 `TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark`, which drives a fixture
 carrying all three at once (`GIT_SSH_COMMAND`, unrostered, annotated, ungranted).
 
-**An annotation must never become a grant, and there is one place it nearly did.**
-`IsUncheckedEnv` used to answer from the roster OR the forbidden table — harmless
-while that table refused, because a refused pair never reached a screen.
+**An annotation must never become a grant, and `IsUncheckedEnv` is where that
+nearly happens.** Answering from the roster OR the forbidden table is harmless
+only while that table refuses, because a refused pair never reaches a screen.
 `internal/profile`'s `checkBuiltinEnvRoster` is written on that predicate, so
 folding the *annotation* table in would have made every annotated name — sixty of
 them, `GIT_SSH_COMMAND` and `RUSTC_WRAPPER` included — a name a profile snug
@@ -868,10 +867,10 @@ mechanism, the same argument as the golden argv files. It is not a gate and does
 not pretend to be.
 
 **The review artifact.** `internal/policy/testdata/annotations.txt` is the golden
-of every sentence, at every verb a profile can actually write. It exists because
-the review artifact used to be `refusals.txt`: while these names were refused, a
-change to the boundary showed up as a changed refusal. The boundary moved into
-the thing a human READS, so the sentence is now the artifact, and a sentence with
+of every sentence, at every verb a profile can actually write. It exists because the boundary
+lives in the thing a human READS: against a refusal, a change to the boundary
+showed up as a changed refusal in `refusals.txt`; against an annotation, it shows
+up as a changed sentence, so the sentence is the artifact, and a sentence with
 no golden is prose drifting away from the measurement it was written from. Five
 rows left `refusals.txt` in the commit that added that file.
 
@@ -897,16 +896,15 @@ Both tables use the same marks:
 | **✗** | refused at load time, with the reason in the note |
 | **—** | not applicable to this type at all |
 
-**Read every ✗ below against §2.9, because half of them are no longer refusals.**
+**Read every ✗ below against §2.9: half of them are annotations, not refusals.**
 A ✗ that says *snug cannot carry out this verb correctly* — `merge` on a scalar,
 `sanitise` on `MANPATH`, `inherit` on any list, any list verb on a name with no
 row — is still a refusal, and comes from `checkEnvVerbType`. A ✗ that said *a
 profile may not take this from the host* is an **annotation** now: the `inherit ✗`
 column on `XDG_*`, `CARGO_HOME`, `DOCKER_CONFIG`, `NPM_CONFIG_USERCONFIG` and
-`PIP_CONFIG_FILE` was the roster's `noInherit` bit, which no longer exists. Those
-rows are legal and marked. The tables are left as written because the *reasoning*
-in each note is unchanged and is what the sentence now says; the column is what
-moved.
+`PIP_CONFIG_FILE` marked the roster's `noInherit` bit, which the model does not
+carry: those rows are legal and marked. The reasoning in each note is what the
+sentence says; only the column differs.
 
 `sanitise` and `merge` are list-only, `set` is scalar-only, and `inherit` is
 scalar-only (§2.1). `prepend` gets no column because it is allowed wherever
@@ -973,10 +971,9 @@ and the `RUSTC_*`/`CARGO_*` pair (issue #26 review).** Those two were the same
 sibling-miss shape — a specific spelling refused, a general one it falls back
 to left open — and the reviewer asked, correctly, why `EDITOR`/`VISUAL` were
 not fixed alongside `GIT_EDITOR` in the same change, offering an *unconditional*
-`forbidBoth` rather than the identity-conditional refusal rejected above (which
-sidesteps the invariant-1 objection, since it is no longer conditional on a
-neighbour). It was not implemented, and the reason is the other objection in
-this section, confirmed by measurement rather than argued afresh: `@claude`
+`forbidBoth` rather than the identity-conditional refusal rejected above — which
+sidesteps the invariant-1 objection by not being conditional on a neighbour. It
+is not implemented, and the reason is the other objection in this section, confirmed by measurement rather than argued afresh: `@claude`
 (`internal/profile/profiles/base.toml`, `[profile.claude.environ.inherit]`)
 inherits `EDITOR` and `VISUAL` today, and `forbidBoth` refuses `VerbInherit`
 unconditionally — so this specific fix does not add a table row, it breaks a
@@ -1188,10 +1185,10 @@ Measured against type table, list wrong in both directions. `PYTHONSTARTUP` in i
 
 Four of these = name **prefixes**, which `map[string]bool` cannot express.
 
-**Closed by `86fea49` (Step 3).** The refusal no longer consults the host at all,
-so a profile's verdict is the same on every machine, and the table moved to
-`internal/policy/envtypes.go` where it is split by verb (§2.1) and carries the
-prefix rules `LD_`, `BASH_FUNC_`, `GIT_CONFIG_`, `PIP_`, `npm_config_`. It has
+**Closed by `86fea49` (Step 3).** The refusal does not consult the host, so a
+profile's verdict is the same on every machine, and the table is
+`internal/policy/envtypes.go`, split by verb (§2.1) and carrying the prefix
+rules `LD_`, `BASH_FUNC_`, `GIT_CONFIG_`, `PIP_`, `npm_config_`. It has
 since been extended once more, by `68c6363`, after the red team demonstrated that
 `GIT_SSH` passed while `GIT_SSH_COMMAND` — its exact equivalent — was refused two
 entries above it. As this section says, the list is to be **extended**, not
