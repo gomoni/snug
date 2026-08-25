@@ -113,6 +113,33 @@ reports how many integration tests were skipped. A green run that silently
 skipped every containment test is a false signal, and preventing that is your
 responsibility as much as writing the tests is.
 
+## Comments
+
+Rules: `.claude/agents/go-implementer.md`, "Comments". Same scope limit — only
+tests you write or touch this task. Leave the rest of the suite alone, however
+bad its comments are.
+
+Three deltas for tests, all the "cannot fail" defect in prose:
+
+- **Comment says what the test would CATCH, not what it asserts.** The name
+  carries the what. "fails if @parent-ro is ever widened to the whole parent,
+  which is how #NNN got out" tells the next reader whether their refactor may
+  delete this file.
+- **Never claim coverage the assertions lack.** "verifies host loopback
+  unreachable" over a string grep is the `"pasta"` vs `pasta.avx2` defect written
+  in prose. Reaches only part of its claim — name the part it does not
+  (`internal/engine/reapescalation_test.go` does).
+- **"requires X" is a claim someone will grep.** Write it only when X is the
+  spelling actually checked, and say where. Already paid for once:
+  `ssh_mode = "host-agent"` said `--i-know` in three places, nothing checked it.
+
+**Red-team regression comment is the exception: write it as human prose, for a
+human.** Named for the escape, dated, then the story in plain sentences — what
+the payload did, what it reached, what let it. Not a template, not the test name
+restated, not an issue number standing alone. In two years this comment is the
+only account of that escape anyone has. Not a changelog either: it is the reason
+the test may not be dropped in a refactor.
+
 ## Reading Go code
 
 Use **LSP** for anything that is a Go symbol, and `Grep` only for things that

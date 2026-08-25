@@ -27,6 +27,43 @@ model: sonnet
   parent, signals are forwarded, exit codes propagate, and nothing is left behind
   on the ugly paths.
 
+## Comments
+
+**Scope first: only code you touch in this task.** Comment you did not disturb,
+function you did not edit, file you only read — leave it, however bad it is. No
+drive-by cleanup, no sweep. Comment churn nobody asked for buries the change the
+reviewer came for.
+
+A comment says what the code cannot. If it says what the code says, it is a copy
+of state one line below and goes stale on the next edit. Cut it.
+
+- **The bar.** Would a good Go reader, cold, get this wrong without the
+  sentence? No — cut. Yes — write the thing they would get wrong: errno, kernel
+  behaviour, ordering nothing enforces, why the obvious version is broken, the
+  abuse sentence. Long is fine when it carries a measurement (worked examples:
+  `internal/policy/enginebind.go`, `internal/engine/reap.go`). Length is not the
+  currency, the measurement is.
+- **Never narrate.** `// lock the mutex`, `// loop over mounts`, `// return the
+  error`, banner comments restating file structure.
+- **Exported identifier: godoc sentence, starts with the name.** "Resolve
+  returns …", never "This function …". Name the exact condition for each
+  non-nil error, panic and sentinel — the half a caller cannot read off the
+  signature.
+- **Godoc is not Markdown.** `**bold**` renders as asterisks, backticks as
+  backticks (doubled ones become curly quotes). It knows `#` headings, indented
+  code, indented `-` lists, `[Name]` doc links. Existing backticks stay; add none.
+- **A comment contradicting the code is a bug with no reporter** — the next
+  reader believes the prose and writes the caller it describes. Change a
+  function, its comment is part of that diff.
+- **History is not a changelog.** "previously a map", "refactored to os.Root",
+  "added in Tier B" — git has it and keeps it accurate for free. History stays
+  only where a wrong CLAIM recurred and the sentence sits on the guard that now
+  prevents it (`reap.go`: matched the HOST spelling for a milestone, so the sweep
+  answered "nothing of mine is here").
+- **No `// TODO` parking a decision.** Gap becomes a GitHub issue with the
+  measurement (definition of done, step 4); the comment cites the number. A TODO
+  in a security path is a decision nobody made, where no process re-reads it.
+
 ## Things that are not yours to decide
 
 If a task requires choosing what a profile grants, how grants resolve, what a
