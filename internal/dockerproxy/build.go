@@ -39,15 +39,20 @@ import (
 //	-v /etc:/x               volume=/etc:/x                      host bind during RUN
 //	--build-context x=/etc   additionalbuildcontexts={...}       host bind by another name
 //	--device /dev/fuse       devices=["/dev/fuse"]               host device
-//	--network=host           networkmode=2 AND nsoptions=[...]   TWO independent spellings
+//	--network=none          networkmode=1 AND nsoptions=[...]   TWO independent spellings
+//	--network=bridge/pasta  networkmode=2, name in nsoptions    the name rides in Path
 //	--cgroup-parent foo      cgroupparent=foo                    a cgroup outside the sandbox's
 //	--add-host h:1.2.3.4     extrahosts=[...]                    name redirection
 //	--security-opt seccomp=  seccomp=unconfined | /host/path     hardening downgrade, host read
 //
-// `--network=host` is the one to look at twice. It sets networkmode AND a
-// nsoptions entry, either of which alone re-opens the host network — the same
-// shape as pasta's --map-host-loopback and -T/-U, where closing three of four
-// flags left the hole wide open. Both are checked here, and both have a test.
+// A private network namespace for the build step is the one to look at twice
+// (issue #401). It sets networkmode AND an nsoptions entry, either of which
+// alone gives the RUN step a netns of its own — the same shape as pasta's
+// --map-host-loopback and -T/-U, where closing three of four flags left the
+// hole wide open. Both are checked here, and both have a test.
+// `--network=host` is NOT in this table: since the containers.conf pin
+// (engine.go's writeContainersConf), it names this sandbox's own network
+// namespace, not the machine's, and is accepted rather than refused.
 func (p *Proxy) handleBuild(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
@@ -896,31 +901,102 @@ func checkAdditionalContexts(p *Proxy, v string) (string, error) {
 	return string(out), nil
 }
 
-// checkNetworkMode refuses host networking for the build.
+// checkNetworkMode refuses a build step a network namespace of its own
+// (issue #401), which since the containers.conf pin (engine.go's
+// writeContainersConf) is the only network mode this tier's engine can
+// actually deliver.
 //
 // The libpod endpoint sends an integer and the compat one a string, so both
 // spellings are enumerated. Default-deny: an unrecognised value is refused
 // rather than assumed benign, because the numbers are buildah's internal enum
 // and a new one could mean anything.
+//
+// Inverted from the pre-#401 reading, which refused exactly the one value
+// that works and admitted everything that does not:
+//
+//	accept  ""  "0"  "default"   — not a request; the containers.conf pin
+//	                                decides, and it decides N.
+//	accept  "2" "host"           — Tier B's inversion: here "host" means the
+//	                                ENGINE's netns, which is N, not the
+//	                                machine's.
+//	refuse  "1" "none" "private" "bridge" "slirp4netns" "pasta" — every one
+//	                                of these asks buildah to give the RUN
+//	                                step a network namespace OF ITS OWN,
+//	                                which needs CAP_NET_ADMIN to bring lo up
+//	                                in that namespace and the engine does not
+//	                                have it (policy.EngineCapBounding,
+//	                                2026-08-18). MEASURED dead on both podman
+//	                                5.8.4 and 6.0.2, with and without the
+//	                                pin: `ioctl SIOCSIFFLAGS: Operation not
+//	                                permitted` (crun) or `netavark: Netlink
+//	                                error: Operation not permitted` (libpod).
+//
+// "" and "default" are kept for robustness rather than for a known caller —
+// no measured client sends either; the podman CLI's libpod endpoint only
+// ever sends 0, 1 or 2 (no flag -> 0, --network=none -> 1, --network=host ->
+// 2, everything else -> 2 with the name carried in nsoptions instead), and
+// docker 29.4.0-ce's compat endpoint omits the parameter for no-flag AND for
+// --network=default. They are safe to accept because they are not a
+// request: the containers.conf pin is what binds them, not this check.
+//
+// Accepting "2"/"host" grants nothing the accepted default does not:
+// networkmode=2 puts the RUN step in exactly the netns the default already
+// puts it in, MEASURED. The engine is guaranteed to be running inside this
+// sandbox's own netns because internal/cli/container.go refuses @net-host
+// together with any container profile outright.
+//
+// v is returned UNCHANGED on the accept path rather than normalised to one
+// spelling — filterBuildQuery marks a build "rewritten" when the forwarded
+// value differs from the client's, so translating here would mark every
+// accepted build as carrying a snug-modified parameter it does not.
 func checkNetworkMode(_ *Proxy, v string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "", "0", "1", "default", "none", "private", "bridge", "slirp4netns", "pasta":
+	// Normalised ONCE and used by every arm below. The switch used to be the
+	// only reader, so the container:/ns: arm compared the raw value and a
+	// "Container:abc" fell past it into the generic refusal — the right
+	// outcome reached by the wrong sentence, which is the half of "errors
+	// name the fix" that a default-deny hides.
+	norm := strings.ToLower(strings.TrimSpace(v))
+	switch norm {
+	case "", "0", "default", "2", "host":
 		return v, nil
+	case "1", "none", "private", "bridge", "slirp4netns", "pasta":
+		return "", fmt.Errorf("%q is not permitted: it asks for a network namespace of the "+
+			"BUILD STEP's own, and the engine holds no CAP_NET_ADMIN to configure one (a "+
+			"deliberate limit — a compromised engine must not be able to reconfigure this "+
+			"sandbox's network). A build that gets one dies at "+
+			"`ioctl SIOCSIFFLAGS: Operation not permitted`. Inside this sandbox "+
+			"`--network=host` does NOT mean the machine's network: the engine runs in THIS "+
+			"sandbox's own network namespace, so it means exactly what the sandbox itself "+
+			"has, and it is what a build with no --network flag already gets.\n"+
+			"       Fix: drop the --network flag, or use --network=host.", v)
 	}
-	return "", fmt.Errorf("%q is not permitted; a build may not join the host's network "+
-		"namespace (the sandbox's own network is what it gets)", v)
+	if strings.HasPrefix(norm, "container:") || strings.HasPrefix(norm, "ns:") {
+		return "", fmt.Errorf("%q is not permitted: it names a network namespace snug did not "+
+			"author — another container's. What a build may have is this sandbox's own, "+
+			"which is the default.", v)
+	}
+	return "", fmt.Errorf("%q is not permitted; snug allows a named set of network modes and "+
+		"refuses the rest, so a value it has not been taught about fails closed", v)
 }
 
-// checkNSOptions is the second spelling of the same hole.
+// checkNSOptions is the second spelling of the same request checkNetworkMode
+// judges (issue #401 both narrowed and widened this): `--network=host` sets
+// networkmode AND an nsoptions entry, and either alone can re-open a request
+// checkNetworkMode already refused or accepted differently. That is the shape
+// of the pasta bug this project already paid for once: three of four closing
+// flags passed, and the fourth left every host loopback service reachable.
 //
-// `--network=host` sets networkmode AND an nsoptions entry, and either alone
-// re-opens the host network. That is the shape of the pasta bug this project
-// already paid for once: three of four closing flags passed, and the fourth
-// left every host loopback service reachable.
+// Two names are exceptions to "Host:true means the HOST's namespace, which is
+// outside this sandbox", each named rather than pattern-matched:
 //
-// `user` with Host:true is the rootless default the CLI always sends — the
-// engine already runs in that user namespace — so it is the one exception, and
-// it is named rather than pattern-matched.
+//   - `user`, the rootless default the CLI always sends — the engine already
+//     runs in that user namespace.
+//   - `network`, since Tier B: the engine's own network namespace IS this
+//     sandbox's (N), so Host:true here means N, not the machine's — the same
+//     inversion checkNetworkMode applies to networkmode=2/"host". Host:false
+//     on `network` is the other spelling of asking for a namespace of the
+//     BUILD STEP's own, MEASURED dead for the same reason networkmode=1 is:
+//     it needs CAP_NET_ADMIN to bring lo up and the engine does not have it.
 func checkNSOptions(_ *Proxy, v string) (string, error) {
 	var opts []struct {
 		Name string
@@ -932,13 +1008,31 @@ func checkNSOptions(_ *Proxy, v string) (string, error) {
 	}
 	for _, o := range opts {
 		name := strings.ToLower(o.Name)
-		if o.Host && name != "user" {
+		if o.Host && name != "user" && name != "network" {
 			return "", fmt.Errorf("%q asks for the HOST's %s namespace, which is outside this "+
 				"sandbox", o.Name, name)
 		}
+		if name == "network" && o.Host {
+			continue // Host:true means N, this sandbox's own netns (issue #401).
+		}
 		if o.Path != "" {
+			if name == "network" {
+				// Path here is a network NAME (bridge, pasta, slirp4netns), not a
+				// namespace path — it names the mode buildah would configure for
+				// the build step's own netns, which is exactly what
+				// checkNetworkMode refuses for the same value under networkmode.
+				return "", fmt.Errorf("%q names the network %q, which asks for a network "+
+					"namespace of the BUILD STEP's own rather than the engine's; see the "+
+					"networkmode refusal for why that needs a capability the engine does "+
+					"not have", o.Name, o.Path)
+			}
 			return "", fmt.Errorf("%q names an existing namespace at %q, which snug did not "+
 				"create and cannot vouch for", o.Name, o.Path)
+		}
+		if name == "network" {
+			return "", fmt.Errorf("%q with Host:false asks for a network namespace of the "+
+				"BUILD STEP's own; see the networkmode refusal for why that needs a "+
+				"capability the engine does not have", o.Name)
 		}
 	}
 	return v, nil

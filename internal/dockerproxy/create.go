@@ -170,6 +170,19 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 			_ = json.Unmarshal(v, &mode)
 		}
 		if mode == "" {
+			// An UNSET or empty mode is not a request, and since issue #401 that is
+			// load-bearing rather than incidental: snug pins `netns = "host"` in the
+			// generated containers.conf, so a body that says nothing about the
+			// network gets N — the engine's own netns, which is this sandbox's.
+			// MEASURED (podman 6.0.2): absent and "" both come back recorded as
+			// "host" and the container's /proc/self/ns/net is the payload's.
+			// "default" reaches the same place by the other route, falling through
+			// the checks below unrefused. Do NOT turn this into a gate that
+			// substitutes "host": that is translating a request nobody made, and
+			// the pin is the place that binds it. What the pin does NOT do is
+			// override a request that IS made — NetworkMode="bridge" still reaches
+			// the engine and still fails (netavark: Netlink error: Operation not
+			// permitted), which is why build.go's allowlist is not cosmetic.
 			continue
 		}
 		if k == "NetworkMode" && mode == "host" {

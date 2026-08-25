@@ -800,6 +800,28 @@ func TestGeneratedContainersConfClosesTheHostInjectionKeys(t *testing.T) {
 	}
 }
 
+// TestGeneratedContainersConfPinsTheNetworkNamespace is issue #401's own key,
+// checked cheap and allowed here for exactly that reason — this is a grep of
+// the generated file's BYTES, not proof the pin has any effect. That proof is
+// test/integration/containerengine_test.go's
+// TestAContainerThatNamesNoNetworkModeJoinsTheSandboxsNetns and
+// TestABuildsRunStepRunsInTheSandboxsNetns (a container/build step actually
+// lands in the sandbox's own netns) and
+// TestADefaultModeContainerCannotReachHostLoopback (what that placement
+// buys): a podman that ignores this key entirely — the same failure mode
+// writeContainersConf's own dns_servers comment already warns about — would
+// pass this test while every default-mode container or build died at `ioctl
+// SIOCSIFFLAGS: Operation not permitted` (measured, both podman 5.8.4 and
+// 6.0.2). The unit assertion earns its keep only alongside those.
+func TestGeneratedContainersConfPinsTheNetworkNamespace(t *testing.T) {
+	conf, _ := specConf(t, policy.NetPolicy{Mode: policy.NetEgress, DNS: true, Nameservers: []string{"192.0.2.53"}}, false)
+	if !strings.Contains(conf, `netns = "host"`) {
+		t.Errorf("generated containers.conf does not pin netns = \"host\" — without it, podman's "+
+			"OWN default (a fresh netns per container/build step) needs CAP_NET_ADMIN to bring lo "+
+			"up, which policy.EngineCapBounding withholds by design (issue #401):\n%s", conf)
+	}
+}
+
 // TestTheInjectionKeyListSaysWhatItDoesNotClose is the honesty half, and it
 // exists because the first version of this list was PRESENTED as complete and
 // was not — a red-team pass measured a bare `env` key injecting into every
