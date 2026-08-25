@@ -59,9 +59,10 @@ of state one line below and goes stale on the next edit. Cut it.
   "added in Tier B" — git has it and keeps it accurate for free. History stays
   only where a wrong CLAIM recurred and the sentence sits on the guard that now
   prevents it (`reap.go`: matched the HOST spelling for a milestone, so the sweep
-  answered "nothing of mine is here").
+  answered "nothing of mine is running" on its first poll of every run).
 - **No `// TODO` parking a decision.** Gap becomes a GitHub issue with the
-  measurement (definition of done, step 4); the comment cites the number. A TODO
+  measurement (CLAUDE.md, definition of done, step 4); the comment cites the
+  number. A TODO
   in a security path is a decision nobody made, where no process re-reads it.
 
 ## Things that are not yours to decide

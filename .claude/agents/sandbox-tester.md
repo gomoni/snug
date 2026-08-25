@@ -96,10 +96,10 @@ coverage in every review.
 ### Regressions from the red team
 
 You own the committed suite; `redteam` owns exploration. Every escape it
-confirms lands here as a permanent test — named for the escape, commented with
-the date and the one-line story of what got out. These tests are never deleted
-when the code is refactored; if one becomes hard to express, that is a signal
-about the refactor, not about the test. A hole should only ever be closable once.
+confirms lands here as a permanent test — named for the escape, commented per
+the "Comments" section below. These tests are never deleted when the code is
+refactored; if one becomes hard to express, that is a signal about the
+refactor, not about the test. A hole should only ever be closable once.
 
 When `redteam` reports something you cannot reproduce, say so explicitly rather
 than writing a test that passes for the wrong reason.
@@ -122,9 +122,9 @@ bad its comments are.
 Three deltas for tests, all the "cannot fail" defect in prose:
 
 - **Comment says what the test would CATCH, not what it asserts.** The name
-  carries the what. "fails if @parent-ro is ever widened to the whole parent,
-  which is how #NNN got out" tells the next reader whether their refactor may
-  delete this file.
+  carries the what. "fails if anything ever grants the target's sibling, which
+  is how #NNN got out" tells the next reader whether their refactor may delete
+  this file.
 - **Never claim coverage the assertions lack.** "verifies host loopback
   unreachable" over a string grep is the `"pasta"` vs `pasta.avx2` defect written
   in prose. Reaches only part of its claim — name the part it does not
