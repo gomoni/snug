@@ -508,10 +508,11 @@ func TestCheckNetworkModeOnTheCompatEndpoint(t *testing.T) {
 // TestCheckNSOptionsRefusesAnUntaughtName pins the NAME-axis fix (refs #369):
 // before it, any Name with Host:false and an empty Path fell through the
 // loop's Host/Path checks straight to the accept, and what actually refused
-// "net" was buildah's own mapStrToNamespace — case-sensitively, so "net" (not
-// "network") was rejected by luck of spelling, while "mount" and "time" are
-// BOTH accepted by mapStrToNamespace and buildah's setupNamespaces has no
-// default: arm, so they were configured into the OCI spec verbatim. This
+// "net" was buildah's own mapStrToNamespace — not because snug judged it, and
+// not by case: "net" simply is not one of the names that table accepts, so it
+// was refused by luck of spelling. "mount" and "time" ARE both in that table,
+// and buildah's setupNamespaces has no default: arm, so those two were
+// configured into the OCI spec verbatim. This
 // fails if the NAME axis is ever again left to fall through to an accept for
 // any name outside the six podman is measured to send.
 //
@@ -521,7 +522,7 @@ func TestCheckNetworkModeOnTheCompatEndpoint(t *testing.T) {
 func TestCheckNSOptionsRefusesAnUntaughtName(t *testing.T) {
 	const wantMsg = "names a namespace snug has not been taught about"
 	for _, tc := range []struct{ name, nsName string }{
-		{"net — the pre-#401 misspelling that buildah refused only by accident of casing", "net"},
+		{"net — refused today only because buildah's name table happens not to list it", "net"},
 		{"mount — buildah accepts this and configures it verbatim; snug did not check it until now", "mount"},
 		{"time — the second name buildah accepts that snug never checked", "time"},
 		{"the empty name", ""},

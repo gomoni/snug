@@ -3637,6 +3637,83 @@ The barrier that would be snug's own policy is `DISABLE_HC_SYSTEMD=true` in the
 engine's authored environment — it short-circuits unconditionally, whatever the
 healthcheck's origin — and that is an engine change, not a proxy one.
 
+### 9q. A build cannot name a namespace snug never judged (issue #369)
+
+`--network=host` reaches the build proxy as TWO parameters — `networkmode`,
+a string, and `nsoptions`, a JSON list — and either alone carries the whole
+request. `checkNetworkMode` allowlists the string. `checkNSOptions` judged
+only the `Host` and `Path` fields of each entry, so any `Name` it had never
+been taught about, with `Host:false` and an empty `Path`, fell through to the
+accept. What refused `{"Name":"net"}` was buildah, not snug — and only by
+luck of spelling, because `mount` and `time` are both in the same name table
+and buildah's `setupNamespaces` has no `default:` arm, so those two were
+configured into the OCI spec verbatim.
+
+No engine needed — this is a pure proxy gate:
+
+```bash
+go test -run 'TestCheckNSOptions|TestNSOptionsIsFilteredOnEveryBuildPath|TestNetworkHostFalseKeepsItsOwnMessage' -v ./internal/dockerproxy/
+```
+
+Expect `PASS`, and read the subtest names rather than only the verdict. The
+load-bearing rows are `mount` and `time`: they are the two the fix closes
+that buildah does **not**. `net` is there for the record — it is the name the
+red-team round probed with, and it is refused today only because buildah's
+table happens not to list it.
+
+`TestCheckNSOptionsStillAcceptsRealClients` is the half that says the gate is
+not merely "refuse everything": the recorded rootless default (`user`,
+`Host:true`), `--userns=container`, and `--pid`/`--ipc`/`--uts`/`--cgroupns=private`
+all still reach the engine. The six names are what `podman --remote build`
+6.0.2 was recorded sending, one per namespace flag plus `user`; a
+`containers.conf` naming all six namespace keys adds nothing, and docker's
+compat builder sends no `nsoptions` at all.
+
+`TestNetworkHostFalseKeepsItsOwnMessage` is the trap this section exists to
+avoid: `network` with `Host:false` was ALREADY refused, with its own message,
+before any of this. If the new name switch ever grew to cover that case too,
+every assertion above would still pass while the older, more specific
+refusal quietly stopped existing.
+
+### 9r. A container can actually USE the sandbox's netns, not merely sit in it (issue #369)
+
+Every other check in this family proves either netns inode equality (9-series,
+and `TestAContainerThatNamesNoNetworkModeJoinsTheSandboxsNetns`) or a negative
+— that a container cannot reach the host's real loopback (9-series, §4). None
+of them proves the namespace WORKS. That is a real second property: a
+container can be in N with `lo` down, and bringing `lo` up needs the
+`CAP_NET_ADMIN` the engine deliberately does not hold, which is the exact
+failure this whole family is arranged around.
+
+**Needs a real engine.**
+
+```bash
+SNUG_REQUIRE_SANDBOX=1 go test -tags integration -run TestAContainerReachesAListenerThePayloadHoldsInN -v ./test/integration/
+```
+
+Expect `PASS`. Read the `-v` log in order: the payload opens a listener on its
+own `127.0.0.1:<port>` inside N and serves `SNUG-SANDBOX-OWN-LISTENER`; the
+`SELF` section is the payload reaching its OWN listener, without which a
+failure below cannot be told apart from a listener that never came up; then
+two `LOGS` sections, one container created with explicit
+`NetworkMode: "host"` and one with no `HostConfig.NetworkMode` at all — the
+containers.conf pin's own path. Each must show a `RESULT` line naming the
+exact address the test opened, with verdict `REACHED`, and must carry the
+banner.
+
+The address check is not decoration. Without it the test would pass on a
+container that dialled something else entirely, or nothing:
+
+```
+a container created with no HostConfig.NetworkMode at all never dialled
+127.0.0.1:<port> at all — every assertion below would pass on a container
+that never tried. RESULT lines: []
+```
+
+That is the message the test prints when the `netns = "host"` write in
+`writeContainersConf` is removed — the no-`NetworkMode` container then
+produces no output at all, because it dies before its entrypoint runs.
+
 ## 10. A repository cannot grant itself anything
 
 ```bash
