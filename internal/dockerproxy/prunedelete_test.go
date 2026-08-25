@@ -394,8 +394,9 @@ func TestImageAndVolumeRemovalAreRefused(t *testing.T) {
 		})
 	}
 
-	// A network holds no data, `networks/create` is allowed on TIER-B Q5's
-	// containment argument (the engine holds no CAP_NET_ADMIN), and deleting one
+	// A network holds no data, `networks/create` is allowed on Q5's containment
+	// argument (a container in N cannot escape N by creating a podman network —
+	// proxy.go's `case "networks"`), and deleting one
 	// costs the next run nothing. Allowed deliberately, asserted here so it reads
 	// as a decision rather than as an endpoint somebody forgot.
 	t.Run("control: a network is deletable, and that is deliberate", func(t *testing.T) {

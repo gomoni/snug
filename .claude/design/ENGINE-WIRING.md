@@ -1,4 +1,4 @@
-# Tier B — engine-in-N wiring, as built
+# The container engine in the sandbox's netns — wiring as built
 
 `host-bridge`, **2026-08-18**. Settles the one architecture question
 `go-implementer` handed back: how the **long-lived** container engine composes
@@ -7,23 +7,12 @@ joins the sandbox's network namespace **N**, and serves proxied requests for
 the whole run — with the engine confined to `policy.EngineCapBounding` and torn
 down on every path.
 
-> **Promoted into `.claude/design/` on 2026-08-19
-> ([#156](https://github.com/gomoni/snug/issues/156)), unchanged except where
-> marked.** It was written as a design pass and lived in `.claude/scratchpad/`,
-> which is in `.gitignore`, so the twenty-four Go comments citing it — across
-> `internal/stage`, `internal/engine`, `internal/sandbox` and `internal/cli` —
-> pointed at a file that had never been committed and existed on exactly one
-> machine, inside a feature worktree one `git worktree remove` from deletion.
-> The same near-miss as [`TIER-B.md`](TIER-B.md), found by the sweep that one
-> landed ([#154](https://github.com/gomoni/snug/issues/154) §C).
+> **Section numbers are load-bearing** — twenty-four Go comments across
+> `internal/stage`, `internal/engine`, `internal/sandbox` and `internal/cli`
+> cite them, and nothing checks a section number. Do not renumber; append.
 >
-> **Section numbers are preserved deliberately**, because the citations name
-> them. What has changed: the "what to build next" and "what to test next"
-> plans (§9, §10) are gone, since that work landed and a plan kept past its
-> execution drifts into a lie; §12's undecided items carry what was settled;
-> and the tense is left as written — this is a record of a design pass, not a
-> description of today's code. Where the two disagree, the code is right and
-> the disagreement is a bug in this file.
+> This is a record of a design pass, so the tense is as written. **Where it and
+> the code disagree, the code is right and the disagreement is a bug here.**
 
 Everything upstream of the runtime was already landed and is NOT reopened here:
 `policy.EngineCapBounding` (12 caps, measured floor), `deriveTopology` raising
@@ -41,14 +30,10 @@ the `--dry-run` engine block, and `TestContainerBindFilterMatchesPolicyVisibilit
 
 The engine is forked **eagerly**, **by the stage**, as a **second long-lived
 child of P1** alongside bwrap — never threaded through bwrap's lifecycle. The
-stage's control protocol gains **one** new single-use message, `startengine`,
-> **SUPERSEDED by issue #125's C2 gate:** `startengine` no longer exists as a message. Its
-> content moved INTO the `start` request, which now emits two events (`enginestarted`, then
-> `exited`), because the engine has to start while bwrap's payload is parked — and because a
-> request answered without returning is a request after which the stage reads another one.
-> Everything below about WHAT the stage does with the engine still holds; only the framing changed.
-handled once in the existing at-most-N state machine, strictly **after**
-`netready` and **before** `start`. The engine child is cloned with
+engine start rides on the `start` request, which emits two events
+(`enginestarted`, then `exited`): the engine has to come up while bwrap's
+payload is parked, and a request answered without returning is a request after
+which the stage reads another one. It happens strictly **after** `netready`. The engine child is cloned with
 `CLONE_NEWNS|CLONE_NEWCGROUP` (fresh mount + cgroup ns, a private copy of P1's
 host-tree view), then a new re-exec verb `__inengine` does, on a locked thread
 and in this order: `setns(fd63, CLONE_NEWNET)` into the sandbox's pinned N →
@@ -104,8 +89,7 @@ including one that never runs a container, and including an **offline** one —
 pays the engine boot (podman `system service` coming up, ~1–2s, plus overlay
 store init). This is acceptable: selecting a container profile *is* the
 declaration of intent to run containers, and offline-with-a-stage is already a
-stated cost (`TIER-B-POLICY §2`, the privileged-ancestor U on the TOPOLOGY
-block). `--dry-run` states it (§5).
+stated cost (the privileged-ancestor U line on the TOPOLOGY block). `--dry-run` states it (§5).
 
 ---
 
@@ -116,7 +100,8 @@ block). `--dry-run` states it (§5).
 The engine must (a) be a **member of U** — joining N needs `CAP_SYS_ADMIN` in
 N's owning userns, which is P1's U, and `setns(CLONE_NEWUSER)` from
 multithreaded Go is closed (EINVAL); the only route into U is **inheritance
-through a fork by a member of U**, i.e. P1 (`TIER-B-SHAPE §0.1`). It must (b)
+through a fork by a member of U**, i.e. P1 ([`ENGINE-NETNS.md`](ENGINE-NETNS.md)
+§1, "you cannot join only the netns"). It must (b)
 have its **own** mount + cgroup namespaces (a private host-tree copy, invisible
 to the sandbox), which P1 must **not** share (P1 forks bwrap next and bwrap
 needs P1's mount view intact). And it must (c) reach `execve` podman with
@@ -436,51 +421,31 @@ netns, no bridge, no `-p`), podman creates **no** per-container netns nsfs bind 
 so the host's `/run/user/<uid>/netns/` stays empty by construction, and
 `MS_REC|MS_PRIVATE` on the engine's tree is the belt-and-suspenders that also
 keeps any nsfs podman *does* make from propagating out. conmon still
-double-forks and its grandchild reparents in the **host** pid ns (the engine
-does not unshare pid), so containers outlive the engine and need an explicit
-stop. Two mechanisms, unchanged in spirit from the current engine package:
+double-forks, but the init that adopts the grandchild is **podman**, pid 1 of
+the engine's own pid namespace (`CLONE_NEWPID` on the engine's clone in
+`internal/stage/enginefork.go`, plus the fresh procfs `__inengine` mounts), so
+**containers die with the engine**: killing it collapses the namespace and
+everything in it. A SIGKILL of snug reaches a clean state in under 70 ms end to
+end.
 
-> **Superseded by issue #125's C0 on the parenthetical, and therefore on the
-> conclusion — and issue #167 (redteam F5/F7) supersedes this block a second
-> time.** The engine now unshares pid (`CLONE_NEWPID` on its own clone,
-> `internal/stage/enginefork.go`, plus a fresh procfs in `__inengine`). conmon
-> still double-forks; the init that adopts the orphan is now **podman**, pid 1
-> of the engine's own pid namespace, so containers **no longer outlive the
-> engine** — killing it collapses the namespace and everything in it. Measured
-> A/B against C0's parent commit: the same isolated "SIGKILL the engine and
-> touch nothing else" left the container running past a 10s deadline before,
-> and killed it inside one 250 ms poll tick after; a SIGKILL of snug reached a
-> clean state in under 70 ms end to end.
->
-> **"Both mechanisms below stay" was wrong about the first one, and issue #167
-> deleted it rather than correcting the claim a second time.** The clean
-> path's `podman stop --filter label=<runLabel>` and the SIGKILL path's
-> identical invocation inside the reaper both read pids the runroot records
-> in the ENGINE's own pid namespace (C0's own change) — meaningless to a
-> HOST-side `podman stop`, whether the engine happens to still be alive (the
-> clean path) or already collapsed (the SIGKILL path): the pid NUMBERING is
-> wrong either way, independent of the engine's liveness. Translating those
-> pids through the engine's namespace before use was considered and
-> rejected — new teardown machinery built to make a mechanism land on
-> numbers meaningful only from inside the namespace doing the killing, for
-> an outcome the kernel already delivers faster (measured under 70 ms end to
-> end from a SIGKILL). Both invocations are DELETED, not corrected in place;
-> `internal/engine`'s package comment and `stopLocked`'s step 1 carry the
-> full argument. What is lost is a best-effort GRACEFUL `SIGTERM` on the
-> clean path, for workloads that handle one — restorable later, if wanted, by
-> issuing a stop through the engine's OWN socket, never by reading host-
-> numbered pids again. The reaper PROCESS, the pipe, the socket-path sweep
-> and now the run-directory cleanup (§6 below, redteam F4) all stay; only
-> the `podman stop` line inside the reaper's script is gone alongside
-> `stopLocked`'s.
+**Neither path runs a host-side `podman` teardown, and must not.** The pids
+libpod records in the runroot are numbered in the ENGINE's pid namespace, so a
+host-side invocation reads numbers meaningless in its own numbering — whether
+the engine is still alive or already collapsed. Translating them through the
+engine's namespace was rejected: it is new machinery to make a mechanism land
+on namespace-local numbers, for an outcome the kernel already delivers faster.
+The cost, stated: no best-effort graceful `SIGTERM` for a workload that handles
+one. Restorable through the engine's OWN socket if wanted, never by reading
+host-numbered pids. `internal/engine`'s package comment and `stopLocked` carry
+the argument.
 
-- **Clean path:** `sandbox.Options.OnPayloadExit` (§12 item 1) still fires
-  after `st.Wait()` and before the deferred `st.Close()`, and still calls
-  `Engine.Stop`, which still drops the keepalive, verifies by the socket-path
-  sweep, and tears down the reaper — but no longer stops anything by label:
-  that call is gone (issue #167), so this position in the sequence no longer
-  buys a graceful stop ahead of the kernel's own collapse. See §12 item 1 for
-  what remains of the seam's justification.
+Two mechanisms:
+
+- **Clean path:** `sandbox.Options.OnPayloadExit` (§12 item 1) fires after
+  `st.Wait()` and before the deferred `st.Close()`, and calls `Engine.Stop`:
+  drop the keepalive, verify by the socket-path sweep, tear down the reaper.
+  Bookkeeping only — nothing in it depends on the engine still being
+  reachable.
 - **SIGKILL path:** the pipe-triggered reaper (`internal/engine/reaper.go`)
   stays: P0 holds a pipe; on EOF a detached `/bin/sh` removes the run
   directory (containers.conf, registries.conf, auth.json, resolv.conf, the
@@ -512,43 +477,36 @@ Decision: **no graft.** The engine's private mount-ns copy gets a working `/run`
 from podman itself (the forced `tmpfs` on `/run`), and the socket + runroot live
 on `/tmp` precisely to sit *outside* that masking. So there is nothing to graft.
 
-This keeps Tier B out of #55: a graft is **not a `Mount`** — it would be a raw
-`open_tree`/`move_mount` into the engine's namespace, which is the Tier C
-machinery (`TIER-B-SHAPE §4`: "if you find yourself writing `open_tree`,
-`move_mount`, a graft, or fighting a locked read-only root, you have crossed
-into Tier C — stop"). If a host were ever found where podman does **not** self-
-mount `/run`, the engine simply sees the host `/run` in its private copy (which
-already has `/run/user/<uid>`), and still needs no graft. State in the
-`__inengine` comment that a `/run` graft is deliberately absent and why.
+A `/run` graft would put a piece of the **host's** `/run` in the engine's view,
+which nothing needs: the engine's own `/run` is a fresh, empty tmpfs the stage
+mounts (podman does not self-mount one for a root-in-U process holding the full
+delegated subuid range), and `internal/cli/engineview.go` models that mount so
+the model can see it. The distinction this rests on: a **graft** is an
+`open_tree`/`move_mount` of a policy-named host subtree and is the only thing
+that can carry host data into the view; `/proc`, `/sys/fs/cgroup`, `/run` and
+`/var/tmp` are fresh mounts of empty or namespace-local filesystems and carry
+none. State in the `__inengine` comment that a `/run` graft is deliberately
+absent and why.
 
 ---
 
 ## 8. Invariant 6 — do not diverge the two authors
 
-The engine's mount view is a **private copy of the host tree**, NOT derived from
-the policy — the named, gated deferral to Tier C. What stops a container binding
-an ungranted path is the **proxy's bind filter**, which reads the **same
-resolved `Policy`**. This wiring pass must not add any mount to the engine's
-view beyond the host copy, and must not let the engine spec become a second
-place that decides what a container may see. `TestContainerBindFilterMatchesPolicyVisibility`
-is the standing gate; the `__inengine` mount step gets a one-sentence comment
-naming Tier C as the ticket that makes the view structural.
+The engine's mount view is **derived from the sandbox's** (`policy.EngineView()`),
+so a host path reaches the engine only through a `p.Grafts` entry the resolved
+`Policy` authored. What stops a *container* binding an ungranted path is the
+**proxy's bind filter**, which reads the **same resolved `Policy`**. Two
+mechanisms over one model: no mount may be added to the engine's view that the
+model does not name, and the engine spec must never become a second place that
+decides what a container may see. `TestContainerBindFilterMatchesPolicyVisibility`
+is the standing gate.
 
 ---
 
-## 9, 10 — the build plan and the test plan: REMOVED, because they landed
+## 9, 10 — vacant
 
-This document ended with a numbered list of what `go-implementer` would build
-and the six integration tests `sandbox-tester` would then assert. All of it
-shipped in issue #63, Tier B. **A plan kept past its execution stops being a
-plan and becomes a claim about the present**, which is the exact drift
-[#149](https://github.com/gomoni/snug/issues/149) and
-[#154](https://github.com/gomoni/snug/issues/154) record — so it is removed
-rather than carried with a banner.
-
-The numbering of §11 and §12 is preserved regardless: Go comments cite sections
-of this file by number, and renumbering to close a gap would break citations to
-buy tidiness.
+`§11` and `§12` keep their numbers: Go comments cite sections of this file by
+number.
 
 Where the answers live now: `internal/stage`'s `EnterEngine`
 (`__inengine`), `Stage.StartEngine` and its `startengine` message;
@@ -569,8 +527,10 @@ tests are in `test/integration/containerengine_test.go`.
 > namespace U as root-in-U bounded to 12 capabilities. It **cannot** reach the
 > host loopback, the host's containers or images, the host `/run`, or reconfigure
 > N (no `CAP_NET_ADMIN`); it **cannot** ptrace a peer in U (no `CAP_SYS_PTRACE`);
-> and it can bind into a container only a path the sandbox can already see
-> (enforced by the proxy filter, not yet structural — Tier C). The engine's
+> and it can bind into a container only a path the sandbox can already see —
+> structurally, because the engine's view is derived from the sandbox's
+> (`policy.EngineView`), and by name, because the proxy's bind filter refuses
+> one anyway. The engine's
 > `/tmp` socket is the proxy's private upstream and is not in the payload's mount
 > view.
 
@@ -593,40 +553,27 @@ tests are in `test/integration/containerengine_test.go`.
 - **The offline claim under load** — `@podman-socket` no `@net`, a container
   trying DNS, raw IP, container-to-container: every path fails while the screen
   says "No egress."
-- **The invariant-6 mount gap** — every `-v`/`--build-context`/`--mount` shape
-  for a path the sandbox cannot see reaching a container (the thinnest surface;
-  Tier C's job to make structural).
+- **The invariant-6 mount surface** — every `-v`/`--build-context`/`--mount`
+  shape for a path the sandbox cannot see reaching a container. Both layers
+  must refuse: the derived view has no such path to name, and the bind filter
+  refuses it by name.
 
 ---
 
-## 12. Settled, and the one thing that is not
+## 12. Two answers, and the one open question
 
-Two of the three below are **SETTLED** and say so inline; the heading used to
-claim all three were open. Only item 3 — retiring the lifeline — is undecided.
-
-1. **The `OnPayloadExit`/`EngineStop` seam (§6). SETTLED: the hook — its
-   ORIGINAL justification did not survive issue #167 (redteam F5).** `sandbox`
-   must not import `engine`, so the clean-path teardown call is a hook on
-   `sandbox.Options` — `OnPayloadExit`, called after `st.Wait()` and before the
-   deferred `st.Close()` collapses the stage, while the engine's socket is
-   still reachable. It was wired to fire at THAT point so a filtered `podman
-   stop` could run against a still-live engine before the collapse; #167
-   deleted that call (the pids it would stop are numbered in the engine's own
-   pid namespace, meaningless to a host-side invocation whether the engine is
-   alive or dead — see §6). `OnPayloadExit` still runs `Engine.Stop`, which
-   still drops the keepalive, verifies by the socket-path sweep and tears down
-   the reaper — none of which specifically needs to happen BEFORE `st.Close()`
-   rather than after, now that nothing in it depends on the engine still being
-   reachable. The seam is kept rather than removed or repositioned: moving it
-   is a second, independent decision with its own review, and leaving it here
-   costs nothing observable. What changed is what a reader should expect it to
-   buy — no longer a graceful stop ahead of the kernel's own collapse, only the
-   verify-and-standdown bookkeeping that also runs on the SIGKILL path.
-2. **`@net-host` + podman (§4). SETTLED: refuse at preflight**, consistent with
+1. **The `OnPayloadExit`/`EngineStop` seam (§6).** `sandbox` must not import
+   `engine`, so the clean-path teardown call is a hook on `sandbox.Options` —
+   `OnPayloadExit`, called after `st.Wait()` and before the deferred
+   `st.Close()` collapses the stage. What it does there is verify-and-standdown
+   bookkeeping, which also runs on the SIGKILL path, so its POSITION buys
+   nothing observable; it is kept where it is because moving it is an
+   independent decision with its own review.
+2. **`@net-host` + podman (§4): refuse at preflight**, consistent with
    `@net-host` already being an `--i-know` escape hatch. `startContainers`
    refuses the combination before anything is created, so it never reaches
    `stage.Start` as an unhandled `NetnsHost`.
-3. **Retiring the lifeline entirely.** With `Pdeathsig` cascading engine death
+3. **OPEN — retiring the lifeline entirely.** With `Pdeathsig` cascading engine death
    and preflight refusing wrappers, the lifeline's *teardown* rationale is gone;
    it survives only to keep a finite-timeout engine alive during idle. An
    alternative is `--time 0` + `Pdeathsig` alone (simpler, but an immortal engine

@@ -127,7 +127,8 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 	// "join the engine's current netns", which is exactly what podman's
 	// `--network=host` / HostConfig.NetworkMode="host" means, now joins N,
 	// not the host's. That is the "share N host-mode" design the maintainer
-	// settled (TIER-B.md, the NET_ADMIN decision): no per-container
+	// settled (the NET_ADMIN decision, 2026-08-18 —
+	// policy.EngineCapBounding's own comment): no per-container
 	// bridge, no `-p` publishing (the engine holds no CAP_NET_ADMIN to set
 	// one up even if asked), a container reaches exactly what the sandbox
 	// reaches. Every OTHER namespace mode stays refused unconditionally.

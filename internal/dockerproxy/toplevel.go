@@ -416,11 +416,11 @@ func checkEnv(raw json.RawMessage) error {
 // applied to one of its two halves.
 //
 // It is left alone anyway, because the other half is a SETTLED MAINTAINER
-// DECISION and not an oversight. TIER-B.md Q5: "the `networks` endpoints are NOT
-// special-cased as a hole and carry no refusal list: containment answers it
-// structurally … Do not also inject NetworkMode constraints." Adding a filter
-// there would be reopening that, which CLAUDE.md calls a maintainer decision
-// rather than a refactor.
+// DECISION and not an oversight (2026-08-18, issue #63, "Q5"): the `networks`
+// endpoints are NOT special-cased as a hole and carry no refusal list —
+// containment answers it structurally, and NetworkMode constraints must not be
+// injected here either. Adding a filter there would be reopening that, which
+// CLAUDE.md calls a maintainer decision rather than a refactor.
 //
 // The two are not actually inconsistent, and the line between them is WHICH
 // ENDPOINT rather than which object: Q5 governs the /networks/* routes, while

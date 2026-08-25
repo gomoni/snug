@@ -106,8 +106,11 @@ func lookupIDRange(path string, id int) (idRange, error) {
 // namespace id 0" line unprivileged (the -map-root-user shape); anything
 // wider needs a program that reads subuid(5)/subgid(5) on the caller's
 // behalf. Accepting a setuid or file-capability host tool here is the
-// explicit call ("no root, no setuid" is about snug's OWN staged binaries,
-// not a host tool it merely invokes — TIER-B.md §1, Q3).
+// explicit call (maintainer decision, 2026-08-18): "no root, no setuid" is
+// about snug's OWN staged binaries, not a host tool it merely invokes. Note
+// this SUPERSEDES issue #63's own plan text, which asked for file
+// capabilities and not setuid; the setuid host tool is the common distro
+// shape and is accepted. The preflight message names it either way.
 func findIDMapTool(name string) (string, error) {
 	path, err := exec.LookPath(name)
 	if err != nil {

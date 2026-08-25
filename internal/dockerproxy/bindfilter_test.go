@@ -7,7 +7,7 @@ import (
 )
 
 // TestContainerBindFilterMatchesPolicyVisibility is the invariant-6 gate for
-// issue #63, Tier B (TIER-B.md §4).
+// issue #63.
 //
 // BELT AND BRACES, and both halves are true. Since Tier C the engine's mount
 // namespace is DERIVED from this sandbox's view — its root IS the sandbox's own

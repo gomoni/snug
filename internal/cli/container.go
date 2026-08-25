@@ -76,9 +76,8 @@ type containerRun struct {
 // onPayloadExit values this function returns, wired into sandbox.Options by
 // the caller (internal/cli/main.go). That split is what keeps
 // internal/sandbox from importing internal/engine (layering: sandbox is
-// lower-level) — the ONE seam issue #63 needed and TIER-B.md/
-// ENGINE-WIRING.md both flagged and settled: a hook, not a proxy-routed
-// `podman stop`.
+// lower-level) — the ONE seam issue #63 needed and ENGINE-WIRING.md §6
+// settled: a hook, not a proxy-routed `podman stop`.
 //
 // Preflight (P1, P2, P3, P5, P6 — see containerpreflight.go) runs here,
 // BEFORE anything is created, and refuses cleanly rather than letting a
