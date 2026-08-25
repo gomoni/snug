@@ -123,6 +123,61 @@ func TestBreadcrumbKeyCheck(t *testing.T) {
 	}
 }
 
+// TestReadBreadcrumbAcceptsALegacyNamedDirectory is F3, the red-team round's
+// finding on this diff: before the fix, a directory named by the PRE-issue-
+// #349 bare-64-hex digest was read as BreadcrumbMismatched even though its
+// own store.json hashed to exactly that digest, once labelled — 883 stores
+// on the maintainer's box were silently de-attributed this way, moving
+// --older-than to a no-op on 2.8 GB and dropping every one of them onto the
+// liveness arm that holds no lock. ReadBreadcrumb must accept a legacy-named
+// directory whose breadcrumb hashes to the CURRENT labelled form of the same
+// digest, and must still flag a directory that merely LOOKS legacy-shaped
+// but whose breadcrumb hashes to a different digest entirely — the "name is
+// the index" check has to keep working across the rename, not stop working
+// altogether.
+func TestReadBreadcrumbAcceptsALegacyNamedDirectory(t *testing.T) {
+	target := "/proj/legacy-breadcrumb-check"
+	labelledKey := KeyForTarget(target)
+	legacyKey := strings.TrimPrefix(labelledKey, "sha256_")
+	if "sha256_"+legacyKey != labelledKey {
+		t.Fatalf("control failed: stripping the label did not round-trip back to %q", labelledKey)
+	}
+
+	validJSON := `{"schema":1,"target":"` + target + `","created":"2026-01-01T00:00:00Z","last_used":"2026-01-01T00:00:00Z"}`
+
+	t.Run("legacy directory name, breadcrumb hashes to the labelled form of the same digest", func(t *testing.T) {
+		keyDir := keyDirWith(t, validJSON)
+		bc, state := ReadBreadcrumb(keyDir, legacyKey)
+		if state != BreadcrumbOK {
+			t.Errorf("state = %v, want BreadcrumbOK — this is snug's own rename landing on a "+
+				"directory it has not renamed yet, not a hand-placed or hostile file", state)
+		}
+		if !state.Trustworthy() {
+			t.Error("BreadcrumbOK read from a legacy-named directory is not Trustworthy()")
+		}
+		if bc.Target != target {
+			t.Errorf("Target = %q, want %q", bc.Target, target)
+		}
+	})
+
+	t.Run("legacy-shaped directory name, breadcrumb hashes to a different digest entirely", func(t *testing.T) {
+		otherTarget := "/proj/a-completely-different-target"
+		otherJSON := `{"schema":1,"target":"` + otherTarget + `","created":"2026-01-01T00:00:00Z","last_used":"2026-01-01T00:00:00Z"}`
+		keyDir := keyDirWith(t, otherJSON)
+		bc, state := ReadBreadcrumb(keyDir, legacyKey)
+		if state != BreadcrumbMismatched {
+			t.Errorf("state = %v, want BreadcrumbMismatched — a legacy-shaped name is not a "+
+				"licence to accept ANY breadcrumb, only one whose digest actually matches", state)
+		}
+		if state.Trustworthy() {
+			t.Error("BreadcrumbMismatched must never be Trustworthy()")
+		}
+		if bc.Target != otherTarget {
+			t.Errorf("Target = %q, want %q", bc.Target, otherTarget)
+		}
+	})
+}
+
 // TestBreadcrumbRejectsControlCharactersInTarget is the forging-rune half of
 // the key check: a Target carrying a newline or ESC must never be read as
 // OK, because breadcrumb.go's own doc comment names the abuse sentence

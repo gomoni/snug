@@ -82,9 +82,12 @@ const (
 	BreadcrumbCorrupt
 	// BreadcrumbMismatched: parses cleanly, known schema, but
 	// KeyForTarget(Target) does not equal the directory name that carries
-	// it — the same "the name is the index" check orphansweep.go already
-	// applies to run-state JSON, applied here to the store. A copied or
-	// hand-placed file fails it. Reported as unattributed AND flagged.
+	// it under EITHER generation that name may be in (ReadBreadcrumb also
+	// accepts a legacy, pre-issue-#349 directory name whose digest matches
+	// once labelled — that is snug's own rename, not a mismatch) — the same
+	// "the name is the index" check orphansweep.go already applies to
+	// run-state JSON, applied here to the store. A copied or hand-placed
+	// file fails it. Reported as unattributed AND flagged.
 	BreadcrumbMismatched
 	// BreadcrumbOK: parses, known schema, key matches. Attributed.
 	BreadcrumbOK
@@ -129,7 +132,16 @@ func ReadBreadcrumb(keyDir *os.Root, key string) (Breadcrumb, BreadcrumbState) {
 	if bc.Target == "" || strings.ContainsFunc(bc.Target, policy.IsForgingRune) {
 		return bc, BreadcrumbCorrupt
 	}
-	if KeyForTarget(bc.Target) != key {
+	want := KeyForTarget(bc.Target)
+	if want != key {
+		// A legacy-named directory (issue #349: pre-label, the bare 64-hex
+		// digest) whose breadcrumb hashes to the CURRENT labelled form of
+		// the same digest is snug's own rename landing on a directory it
+		// has not renamed yet, not a hand-placed or hostile file — treat it
+		// as attributed rather than flagging a mismatch that does not exist.
+		if "sha256_"+key == want {
+			return bc, BreadcrumbOK
+		}
 		return bc, BreadcrumbMismatched
 	}
 	return bc, BreadcrumbOK

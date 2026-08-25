@@ -58,6 +58,17 @@ func targetStateName(realpath string) string {
 	return targetKeyPrefix(realpath) + ".json"
 }
 
+// targetStateNameMatches reports whether name is realpath's run-state
+// filename under either generation targetKeyPrefix has produced: the current
+// "target-sha256_<hex>.json" or the pre-issue-#349 "target-<hex>.json" a
+// binary written before the digest was labelled. sweepOrphanedSandboxesIn is
+// the only caller — without this, every run-state record a pre-upgrade
+// binary wrote is invisible to the sweep forever, and the orphan init it
+// names is never killed.
+func targetStateNameMatches(realpath, name string) bool {
+	return name == targetStateName(realpath) || name == legacyTargetKeyPrefix(realpath)+".json"
+}
+
 // openTargetStateDir opens the uid-derived snug runtime directory the target
 // lock lives in, creating it if needed, with the same ownership and mode
 // verification vdir.SecureSubdir applies everywhere else.

@@ -26,8 +26,15 @@
 // the three consumers used to truncate (engineKey to 16 hex chars,
 // hostTmpDirPath to 12); both now use the same full form targetKeyPrefix
 // already did, rather than inventing a fourth length. Path lengths are
-// comfortable — "target-<64hex>.lock" is 76 characters and has never been a
-// problem.
+// comfortable — "target-sha256_<64hex>.lock" is 83 characters and has never
+// been a problem.
+//
+// THE NAME ALSO CARRIES ITS ALGORITHM (issue #349): Hash returns
+// "sha256_<64hex>", not a bare digest. A name built from a bare hex string
+// says nothing about what produced it; a reader — or a future second
+// algorithm — can now tell a sha256 key apart from any other kind on sight,
+// rather than every consumer having to already know which transform this
+// package happens to run today.
 //
 // THE PAYOFF: with every key identical, the relationship issue #308's
 // garbage collector needs between a store's key and its per-target lock
@@ -57,11 +64,13 @@ import (
 	"encoding/hex"
 )
 
-// Hash is the full hex sha256 digest of the target's canonical path. Every
-// on-disk name snug derives from a target starts here; a consumer may prefix
-// or label this value (targetKeyPrefix adds "target-") but must not truncate
-// it — see the package doc comment for why a truncation is a lossy transform
-// nothing else can detect.
+// Hash is "sha256_" followed by the full hex sha256 digest of the target's
+// canonical path. Every on-disk name snug derives from a target starts here;
+// a consumer may prefix this value further (targetKeyPrefix adds "target-")
+// but must not truncate it — see the package doc comment for why a
+// truncation is a lossy transform nothing else can detect, and for why the
+// algorithm name is now part of the value rather than left for a consumer to
+// add or, worse, to omit.
 //
 // target must already be canonical — EvalSymlinks'd, as policy.Resolve
 // leaves pol.Target and lockTarget leaves the realpath it hashes. This
@@ -71,5 +80,5 @@ import (
 // is not reopened casually).
 func Hash(target string) string {
 	sum := sha256.Sum256([]byte(target))
-	return hex.EncodeToString(sum[:])
+	return "sha256_" + hex.EncodeToString(sum[:])
 }

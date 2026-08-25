@@ -29,8 +29,8 @@ import (
 )
 
 // startingPath is attachSandbox.statePath's (attach_test.go) sibling for the
-// ".starting" kill record: the identical sha256(realpath) stem, ".starting"
-// instead of ".json".
+// ".starting" kill record: the identical "sha256_"+sha256(realpath) stem
+// (issue #349), ".starting" instead of ".json".
 func (s *attachSandbox) startingPath(t *testing.T) string {
 	t.Helper()
 	real, err := filepath.EvalSymlinks(s.proj)
@@ -38,7 +38,7 @@ func (s *attachSandbox) startingPath(t *testing.T) string {
 		t.Fatalf("resolving the target %s: %v", s.proj, err)
 	}
 	sum := sha256.Sum256([]byte(real))
-	return filepath.Join(uidRuntimeSnugDir(t), "target-"+hex.EncodeToString(sum[:])+".starting")
+	return filepath.Join(uidRuntimeSnugDir(t), "target-sha256_"+hex.EncodeToString(sum[:])+".starting")
 }
 
 // waitForGone polls for a path to stop existing — waitForFile's opposite

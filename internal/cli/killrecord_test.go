@@ -43,11 +43,19 @@ func initStateFor(target string, v testVictim) initState {
 // happens to be.
 func writeInitStateFile(t *testing.T, dir, target string, st initState) {
 	t.Helper()
+	writeInitStateFileAtName(t, dir, initStateName(target), st)
+}
+
+// writeInitStateFileAtName is writeInitStateFile with the filename chosen by
+// the caller rather than derived from st.Target — orphansweep_test.go's
+// writeStateAtName, for the ".starting" shape.
+func writeInitStateFileAtName(t *testing.T, dir, name string, st initState) {
+	t.Helper()
 	blob, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, initStateName(target)), append(blob, '\n'), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, name), append(blob, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -322,6 +330,35 @@ func TestSweepRefusesAKillRecordWhoseNameDoesNotHashItsTarget(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 		t.Errorf("the sweep removed a .starting record it had decided not to act on (err=%v)", err)
+	}
+}
+
+// TestSweepFindsAKillRecordNamedByThePreIssue349Prefix is F2's ".starting"
+// half: a kill record a PRE-#349 binary wrote is named
+// "target-<bare-64-hex>.starting", and before the fix
+// sweepOneStartingOrphan's own name check rejected it exactly as
+// sweepOneOrphan rejected the legacy ".json" shape — an orphan init caught
+// mid-mount-settle or mid-engine-cold-start by a pre-upgrade binary's crash
+// would then be invisible to every later sweep, forever.
+func TestSweepFindsAKillRecordNamedByThePreIssue349Prefix(t *testing.T) {
+	dir, root := stateDirForTest(t)
+	victim := liveProcess(t)
+	const target = "/tmp/legacy-prefix-init-target"
+	name := legacyTargetKeyPrefix(target) + ".starting"
+	if name == initStateName(target) {
+		t.Fatalf("control failed: the legacy name and the current name are identical (%q)", name)
+	}
+	writeInitStateFileAtName(t, dir, name, initStateFor(target, victim))
+
+	sweepOrphanedSandboxesIn(root, dir)
+
+	if !waitDead(victim.pid, 5*time.Second) {
+		t.Errorf("the sweep left pid %d alive: its .starting record used the PRE-#349 name "+
+			"%q, which initStateNameMatches must still recognise as %s's own record",
+			victim.pid, name, target)
+	}
+	if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+		t.Errorf("the legacy-named .starting record survived the sweep (err=%v)", err)
 	}
 }
 

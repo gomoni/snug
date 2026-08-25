@@ -183,6 +183,66 @@ func TestSweepIgnoresAStateFileWhoseNameDoesNotMatchItsTarget(t *testing.T) {
 	}
 }
 
+// TestSweepFindsARunStateRecordNamedByThePreIssue349Prefix is F2, the
+// red-team round's finding on this diff: a run-state record a PRE-#349
+// binary wrote is named "target-<bare-64-hex>.json", not the current
+// "target-sha256_<64hex>.json" — before the fix, sweepOneOrphan's own name
+// check (targetStateName(st.Target) != name) rejected every one of those on
+// sight, so an orphan init a pre-upgrade binary left behind became invisible
+// to the sweep forever, regardless of how long its lock had been released.
+func TestSweepFindsARunStateRecordNamedByThePreIssue349Prefix(t *testing.T) {
+	dir, root := stateDirForTest(t)
+	victim := liveProcess(t)
+	const target = "/tmp/legacy-prefix-target"
+	name := legacyTargetKeyPrefix(target) + ".json"
+	if name == targetStateName(target) {
+		t.Fatalf("control failed: the legacy name and the current name are identical (%q) — "+
+			"this fixture proves nothing about legacy tolerance", name)
+	}
+	writeStateAtName(t, dir, name, stateFor(target, victim))
+
+	sweepOrphanedSandboxesIn(root, dir)
+
+	if !waitDead(victim.pid, 5*time.Second) {
+		t.Errorf("the sweep left pid %d alive: its run-state record used the PRE-#349 name "+
+			"%q, which targetStateNameMatches must still recognise as %s's own record",
+			victim.pid, name, target)
+	}
+	if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+		t.Errorf("the legacy-named record survived the sweep (err=%v)", err)
+	}
+}
+
+// TestSweepIgnoresALegacyNamedRecordWhoseNameDoesNotMatchItsTarget is the
+// "name is the index" check's OTHER half, re-asserted for the legacy
+// generation specifically: accepting a SECOND name shape must not have
+// widened the check into "any name ending .json", only into "either
+// generation of THIS target's own derived name". A record shaped like a
+// legacy name but naming a DIFFERENT target than the one it actually carries
+// is exactly what a hand-placed file pointing the sweep at an arbitrary pid
+// would look like.
+func TestSweepIgnoresALegacyNamedRecordWhoseNameDoesNotMatchItsTarget(t *testing.T) {
+	dir, root := stateDirForTest(t)
+	victim := liveProcess(t)
+	st := stateFor("/tmp/legacy-mismatch-real-target", victim)
+
+	// Legacy-shaped, but for a DIFFERENT target than the one st carries.
+	name := legacyTargetKeyPrefix("/tmp/legacy-mismatch-a-different-target") + ".json"
+	writeStateAtName(t, dir, name, st)
+
+	sweepOrphanedSandboxesIn(root, dir)
+
+	settle()
+	if !processAlive(victim.pid) {
+		t.Errorf("the sweep killed pid %d named by a legacy-shaped record whose name is not "+
+			"the legacy hash of the target it carries — accepting a second name generation "+
+			"must not mean accepting any name", victim.pid)
+	}
+	if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+		t.Errorf("the sweep removed a file it had decided not to act on (err=%v)", err)
+	}
+}
+
 // A file this snug cannot parse may have been written by a NEWER one whose run
 // is live; removing it would break that run's `snug attach`, and killing on a
 // half-decoded record is worse still.
@@ -471,11 +531,20 @@ func writeStateFor(t *testing.T, dir, target string, v testVictim) {
 
 func writeState(t *testing.T, dir, target string, st runState) {
 	t.Helper()
+	writeStateAtName(t, dir, targetStateName(target), st)
+}
+
+// writeStateAtName is writeState with the filename chosen by the caller
+// rather than derived from st.Target — what a legacy-named or hand-placed
+// record on disk looks like, where the name and the content's own claimed
+// target need not agree.
+func writeStateAtName(t *testing.T, dir, name string, st runState) {
+	t.Helper()
 	blob, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, targetStateName(target)), append(blob, '\n'), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, name), append(blob, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

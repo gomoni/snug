@@ -10,6 +10,7 @@ package engine
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
@@ -62,6 +63,81 @@ func plantModeZeroTree(t *testing.T, base, name string) string {
 	return root
 }
 
+// plantOverlayfsReadOnlyDiffTree builds base/name holding TWO overlayfs
+// shapes that both surface as an error out of Remove/openat, but for
+// opposite reasons, so ONE Purge call has to tell them apart correctly:
+//
+//   - storage/overlay/<hex1>/diff/ at mode 0555 (dr-xr-xr-x — readable,
+//     executable, NOT writable), holding a regular file "marker". This is
+//     the shape measured against a real store for issue #308: diff/ itself
+//     denies the WRITE bit unlinkat(2) needs on the directory being
+//     iterated, so Remove("marker") returns EACCES despite marker being a
+//     plain file with no unusual mode of its own.
+//   - storage/overlay/<hex2>/work/work at mode 0000, non-empty — the
+//     ORIGINAL shape this package's Purge already handled (openat on the
+//     entry's OWN mode-0000 denies traversal). Included as the POSITIVE
+//     CONTROL that fixing the diff/-shape bug did not regress the
+//     work/work path it shares code with.
+//
+// Returns the full path to base/name.
+func plantOverlayfsReadOnlyDiffTree(t *testing.T, base, name string) string {
+	t.Helper()
+	root := filepath.Join(base, name)
+
+	diff := filepath.Join(root, "storage", "overlay", "hex1", "diff")
+	if err := os.MkdirAll(diff, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(diff, "marker"), []byte("layer content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// diff/ itself denies write LAST, once its content already exists —
+	// mode 0555 still permits read+execute (open, ReadDir), matching the
+	// real "dr-xr-xr-x" measured on disk; only the write bit unlinkat(2)
+	// needs is missing.
+	if err := os.Chmod(diff, 0o555); err != nil {
+		t.Fatal(err)
+	}
+
+	work := filepath.Join(root, "storage", "overlay", "hex2", "work", "work")
+	if err := os.MkdirAll(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "leftover.tmp"), []byte("wip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(work, 0o000); err != nil {
+		t.Fatal(err)
+	}
+
+	return root
+}
+
+// TestPurgeReclaimsAnUnwritableOverlayDiffDirectory is issue #308's
+// regression: before the fix, Purge treated ANY EACCES from Remove as "name
+// is a directory whose own mode blocks traversal" and opened it as one via
+// vdir.OpenForRemoval — which refuses a REGULAR FILE with "not a directory",
+// aborting the whole store. Measured against a real store: "opening
+// .../diff/marker: refusing .../diff/marker: not a directory", with `ls -la`
+// showing dr-xr-xr-x on diff/ and a regular file inside it.
+//
+// Both shapes plantOverlayfsReadOnlyDiffTree builds must be gone after ONE
+// Purge call — the diff/-mode-0555-with-a-file-inside shape this test
+// exists for, and the work/work-mode-0000 shape (POSITIVE CONTROL) that
+// Purge already handled and must keep handling.
+func TestPurgeReclaimsAnUnwritableOverlayDiffDirectory(t *testing.T) {
+	base := t.TempDir()
+	root := plantOverlayfsReadOnlyDiffTree(t, base, "store")
+
+	if err := Purge(openRootT(t, base), base, "store", false); err != nil {
+		t.Fatalf("Purge failed on a tree containing an unwritable (0555) diff/ directory "+
+			"holding a regular file: %v", err)
+	}
+	if _, err := os.Lstat(root); !os.IsNotExist(err) {
+		t.Errorf("Purge did not remove %s (err=%v)", root, err)
+	}
+}
+
 // TestPurgeRemovesAModeZeroNonEmptyDirectory is the core of issue #308's
 // Purge: a mode-0000, non-empty directory (the exact overlayfs work/work
 // shape gc.go's package comment measures) is removed along with everything
@@ -95,7 +171,7 @@ func TestPurgeRemovesAModeZeroNonEmptyDirectory(t *testing.T) {
 
 	// Now Purge, on a fresh, identically-built tree.
 	purgeRoot := plantModeZeroTree(t, base, "purge-me")
-	if err := Purge(openRootT(t, base), base, "purge-me"); err != nil {
+	if err := Purge(openRootT(t, base), base, "purge-me", false); err != nil {
 		t.Fatalf("Purge failed on a mode-0000, non-empty directory: %v", err)
 	}
 	if _, err := os.Lstat(purgeRoot); !os.IsNotExist(err) {
@@ -122,7 +198,7 @@ func TestPurgeChmodsOnlyWhatBlockedIt(t *testing.T) {
 			t.Fatalf("helper: opening %s: %v", filepath.Dir(dir), err)
 		}
 		defer root.Close()
-		if err := Purge(root, filepath.Dir(dir), filepath.Base(dir)); err != nil {
+		if err := Purge(root, filepath.Dir(dir), filepath.Base(dir), false); err != nil {
 			t.Fatalf("helper: Purge failed: %v", err)
 		}
 		return
@@ -205,7 +281,7 @@ func TestPurgeDoesNotFollowASymlinkOutOfTheTree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Purge(openRootT(t, base), base, "store"); err != nil {
+	if err := Purge(openRootT(t, base), base, "store", false); err != nil {
 		t.Fatalf("Purge failed on a tree containing a symlink out of it: %v", err)
 	}
 
@@ -258,7 +334,7 @@ func TestPurgeRefusesAForeignOwnedDirectory(t *testing.T) {
 
 	foreignUID, restore := makeForeignOwnedDirEngine(t, foreign)
 
-	err := Purge(openRootT(t, base), base, "store")
+	err := Purge(openRootT(t, base), base, "store", false)
 	var fo *vdir.ForeignOwnerError
 	if err == nil {
 		t.Fatal("Purge removed a store containing a foreign-owned directory")
@@ -285,9 +361,349 @@ func TestPurgeRefusesAForeignOwnedDirectory(t *testing.T) {
 	// the refusal above is really about ownership, not about something else
 	// broken in the fixture.
 	restore()
-	if err := Purge(openRootT(t, base), base, "store"); err != nil {
+	if err := Purge(openRootT(t, base), base, "store", false); err != nil {
 		t.Fatalf("control: Purge refused an otherwise-owned store: %v", err)
 	}
+}
+
+// TestPurgeEACCESRetryRefusesAForeignOwnedFileBehindAReadOnlyDiff is the
+// red-team round's own finding on this diff (F1), and the case its own
+// writeup calls out as "the one that exercises the new branch": before this
+// test existed, Purge's fix for the diff/-mode-0555-holding-a-regular-file
+// shape (TestPurgeReclaimsAnUnwritableOverlayDiffDirectory, unchanged by F1)
+// chmodded the blocking directory and retried Remove UNCONDITIONALLY — which
+// deletes whatever is at that name regardless of who owns it. Measured by
+// hand against this exact tree before the F1 fix: a uid-owned-by-someone-
+// else marker under a 0555 diff/ went from SURVIVES to DELETED. Purge must
+// now re-ask ownership (parent.Lstat) between the chmod and the retry and
+// refuse via *vdir.ForeignOwnerError instead.
+//
+// TestPurgeReclaimsAnUnwritableOverlayDiffDirectory is this test's own
+// positive control, already in this file: the IDENTICAL tree shape with an
+// OWNED marker must keep reclaiming, or the fix below would just be "refuse
+// everything under a 0555 diff/", which breaks #308's own case.
+func TestPurgeEACCESRetryRefusesAForeignOwnedFileBehindAReadOnlyDiff(t *testing.T) {
+	base := t.TempDir()
+	diff := filepath.Join(base, "store", "storage", "overlay", "hex1", "diff")
+	if err := os.MkdirAll(diff, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(diff, "marker")
+	if err := os.WriteFile(marker, []byte("layer content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	foreignUID, restore := makeForeignOwnedDirEngine(t, marker)
+
+	// diff/ itself denies write LAST, exactly as plantOverlayfsReadOnlyDiffTree
+	// does: mode 0555 still permits read+execute, matching the real
+	// "dr-xr-xr-x" measured on disk.
+	if err := os.Chmod(diff, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(diff, 0o700) })
+
+	err := Purge(openRootT(t, base), base, "store", false)
+	var fo *vdir.ForeignOwnerError
+	if err == nil {
+		t.Fatal("Purge removed a store whose diff/ held a foreign-owned regular file")
+	}
+	if !errors.As(err, &fo) {
+		t.Fatalf("Purge failed for the wrong reason (want *vdir.ForeignOwnerError): %v", err)
+	}
+	if fo.UID != foreignUID {
+		t.Errorf("ForeignOwnerError named uid %d, want the real foreign owner %d", fo.UID, foreignUID)
+	}
+	if fo.Path != marker {
+		t.Errorf("ForeignOwnerError named path %q, want %q", fo.Path, marker)
+	}
+	// The exact wording the red-team round measured by hand against this
+	// reproduction, so a future edit that changes the WORDS without changing
+	// the fields is caught here rather than only in vdir's own test.
+	wantMsg := fmt.Sprintf("refusing %s: owned by uid %d, not you — this needs a userns "+
+		"carrying the same delegated uid map to remove; snug will not chmod or delete "+
+		"something it does not own", marker, foreignUID)
+	if err.Error() != wantMsg {
+		t.Errorf("error text = %q, want %q", err.Error(), wantMsg)
+	}
+	if _, err := os.Lstat(marker); err != nil {
+		t.Errorf("the foreign-owned marker was removed despite the refusal (err=%v)", err)
+	}
+
+	// CONTROL: restore ownership, and the SAME tree now reclaims — proving
+	// the refusal above is about ownership, not some other break in the
+	// fixture (mirrors TestPurgeRefusesAForeignOwnedDirectory's own control).
+	restore()
+	if err := Purge(openRootT(t, base), base, "store", false); err != nil {
+		t.Fatalf("control: Purge refused an otherwise-owned store: %v", err)
+	}
+}
+
+// TestPurgeEACCESRetryRefusesAForeignOwnedEmptyDirBehindAReadOnlyDiff is F1's
+// second reproduction: the same 0555 diff/ shape, but the entry it hides is
+// an EMPTY directory rather than a regular file. rmdir(2), like unlink(2),
+// needs only write on the CONTAINING directory, so an empty foreign-owned
+// directory is exactly as exposed to the chmod-and-retry as a foreign file
+// is — the fix's ownership recheck has to cover both, not just the file
+// shape the finding's other bullet names first.
+func TestPurgeEACCESRetryRefusesAForeignOwnedEmptyDirBehindAReadOnlyDiff(t *testing.T) {
+	base := t.TempDir()
+	diff := filepath.Join(base, "store", "storage", "overlay", "hex1", "diff")
+	if err := os.MkdirAll(diff, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	emptyDir := filepath.Join(diff, "emptydir")
+	if err := os.Mkdir(emptyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	foreignUID, restore := makeForeignOwnedDirEngine(t, emptyDir)
+
+	if err := os.Chmod(diff, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(diff, 0o700) })
+
+	err := Purge(openRootT(t, base), base, "store", false)
+	var fo *vdir.ForeignOwnerError
+	if err == nil {
+		t.Fatal("Purge removed a store whose diff/ held a foreign-owned empty directory")
+	}
+	if !errors.As(err, &fo) {
+		t.Fatalf("Purge failed for the wrong reason (want *vdir.ForeignOwnerError): %v", err)
+	}
+	if fo.UID != foreignUID {
+		t.Errorf("ForeignOwnerError named uid %d, want the real foreign owner %d", fo.UID, foreignUID)
+	}
+	if _, err := os.Lstat(emptyDir); err != nil {
+		t.Errorf("the foreign-owned empty directory was removed despite the refusal (err=%v)", err)
+	}
+
+	restore()
+	if err := Purge(openRootT(t, base), base, "store", false); err != nil {
+		t.Fatalf("control: Purge refused an otherwise-owned store: %v", err)
+	}
+}
+
+// TestPurgeWithUnownedParentNeverChmodsItOnEACCES is F5: ownedParent must
+// gate the chmod-and-retry branch, not just decide whether Purge attempts
+// it. The two top-level callers in enginegc.go (engines/ itself and
+// os.TempDir()) pass ownedParent=false for exactly this reason — parent
+// there is the directory ABOVE whatever is being reclaimed, never part of
+// the reclaim, and relaxing its mode would be a mutation outside anything
+// the call was asked to touch.
+//
+// parent is deliberately made non-writable so Remove(name) genuinely returns
+// EACCES — the same condition that triggers the chmod when ownedParent is
+// true — so this proves the GATE, not merely that nothing happens when
+// nothing would have happened anyway.
+func TestPurgeWithUnownedParentNeverChmodsItOnEACCES(t *testing.T) {
+	base := t.TempDir()
+	parent := filepath.Join(base, "parent")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(parent, "target")
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	// t.TempDir()'s own cleanup needs to remove `parent`'s content, which
+	// needs write back on it — restored regardless of how the test itself
+	// comes out.
+	t.Cleanup(func() { os.Chmod(parent, 0o700) })
+
+	parentRoot, err := os.OpenRoot(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parentRoot.Close()
+
+	// Purge is expected to FAIL here — parent's own missing write bit blocks
+	// removal and ownedParent=false forbids fixing that — but this test's
+	// whole point is the SIDE EFFECT, not the return value: an ownedParent
+	// gate that fails closed and STILL chmods the directory would pass a
+	// test that only checked the error.
+	_ = Purge(parentRoot, parent, "target", false)
+
+	fi, err := os.Stat(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode().Perm(); got != 0o555 {
+		t.Errorf("parent's mode changed to %#o after a Purge call with ownedParent=false, "+
+			"want unchanged 0555 — this directory was never part of what the call was asked "+
+			"to reclaim", got)
+	}
+}
+
+// TestPurgeRefusesAForeignOwnedEntryAfterAnOwnedSiblingWidensTheDirectory is
+// the ordering gap the ownership recheck's FIRST shape had: the recheck
+// lived on the EACCES-from-Remove branch alone, so it only ever ran for the
+// entry whose OWN removal attempt hit EACCES. Under a 0555 diff/ holding an
+// OWNED entry that sorts BEFORE a FOREIGN one, the owned entry's own retry
+// chmods diff/ to 0700 as a side effect — and that chmod is durable across
+// the rest of the SAME directory's entries, because they share one open
+// descriptor. The foreign entry, processed second, then hits Remove against
+// an already-writable directory: err == nil on the very first attempt, no
+// EACCES, so the EACCES-branch recheck never ran at all.
+//
+// Measured against this exact fixture before the fix: Purge returned nil and
+// the foreign entry was gone. The fix moves the ownership check to the TOP
+// of every Purge call, before the first Remove, so it no longer depends on
+// which branch removal happens to fail on. Names are load-bearing: "aowned"
+// must sort before "zforeign" in the ReadDir this test relies on, or the
+// fixture stops exercising the ordering this test is named for.
+func TestPurgeRefusesAForeignOwnedEntryAfterAnOwnedSiblingWidensTheDirectory(t *testing.T) {
+	base := t.TempDir()
+	diff := filepath.Join(base, "store", "storage", "overlay", "hex1", "diff")
+	if err := os.MkdirAll(diff, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owned := filepath.Join(diff, "aowned")
+	if err := os.WriteFile(owned, []byte("layer content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	foreignDir := filepath.Join(diff, "zforeign")
+	if err := os.Mkdir(foreignDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	foreignUID, restore := makeForeignOwnedDirEngine(t, foreignDir)
+
+	if err := os.Chmod(diff, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(diff, 0o700) })
+
+	err := Purge(openRootT(t, base), base, "store", false)
+	var fo *vdir.ForeignOwnerError
+	if err == nil {
+		t.Fatal("Purge removed a store whose diff/ held a foreign-owned entry sorting after an owned sibling")
+	}
+	if !errors.As(err, &fo) {
+		t.Fatalf("Purge failed for the wrong reason (want *vdir.ForeignOwnerError): %v", err)
+	}
+	if fo.UID != foreignUID {
+		t.Errorf("ForeignOwnerError named uid %d, want the real foreign owner %d", fo.UID, foreignUID)
+	}
+	if _, err := os.Lstat(foreignDir); err != nil {
+		t.Errorf("the foreign-owned entry was removed despite the refusal (err=%v) — the owned "+
+			"sibling's own retry widened diff/ to 0700, and this proves that widening did not "+
+			"waive the ownership check for the next entry in the same directory", err)
+	}
+
+	restore()
+	if err := Purge(openRootT(t, base), base, "store", false); err != nil {
+		t.Fatalf("control: Purge refused an otherwise-owned store: %v", err)
+	}
+}
+
+// TestPurgeRefusesAForeignOwnedEntryHiddenInAModeZeroDirectory is the OTHER
+// gap the same measurement found, and it predates this round entirely: a
+// mode-0000 directory (the ORIGINAL work/work shape this package has always
+// handled) hiding a foreign-owned entry — file or empty directory — with NO
+// owned sibling needed at all. ScanStore's own doc comment already promises
+// this case is safe: pre-flight cannot see inside a mode-0000 directory it
+// owns, so it proceeds; "phase 2 (Purge) reaches the same directory, gets
+// the SAME EACCES, chmods it open ... and only then meets the foreign-owned
+// child — where it stops with a ForeignOwnerError". That promise did not
+// hold: chmodding the mode-0000 directory open makes it writable BEFORE any
+// child is ever examined, so a child's Remove never returns EACCES and the
+// EACCES-branch recheck never ran — for a FILE or an EMPTY directory,
+// because unlink(2) and rmdir(2) on an empty directory are both authorised
+// by the CONTAINING directory's mode alone, never by the target's own
+// ownership. A NON-EMPTY foreign directory was always safe (ENOTEMPTY forces
+// vdir.OpenForRemoval's unconditional Lstat-based ownership check); these
+// two shapes are the ones that were not.
+//
+// Measured against these exact fixtures before the fix: Purge returned nil
+// and the foreign entry was gone, in both shapes.
+func TestPurgeRefusesAForeignOwnedEntryHiddenInAModeZeroDirectory(t *testing.T) {
+	t.Run("regular file", func(t *testing.T) {
+		base := t.TempDir()
+		work := filepath.Join(base, "store", "storage", "overlay", "hex2", "work", "work")
+		if err := os.MkdirAll(work, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		foreignFile := filepath.Join(work, "secret.bin")
+		if err := os.WriteFile(foreignFile, []byte("payload"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		foreignUID, restore := makeForeignOwnedDirEngine(t, foreignFile)
+
+		if err := os.Chmod(work, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(work, 0o700) })
+
+		err := Purge(openRootT(t, base), base, "store", false)
+		var fo *vdir.ForeignOwnerError
+		if err == nil {
+			t.Fatal("Purge removed a store whose mode-0000 work/ hid a foreign-owned file")
+		}
+		if !errors.As(err, &fo) {
+			t.Fatalf("Purge failed for the wrong reason (want *vdir.ForeignOwnerError): %v", err)
+		}
+		if fo.UID != foreignUID {
+			t.Errorf("ForeignOwnerError named uid %d, want the real foreign owner %d", fo.UID, foreignUID)
+		}
+		if _, err := os.Lstat(foreignFile); err != nil {
+			t.Errorf("the foreign-owned file was removed despite the refusal (err=%v) — opening "+
+				"the mode-0000 directory made it writable before this file was ever examined, and "+
+				"unlink(2) does not check a file's own ownership", err)
+		}
+
+		restore()
+		if err := Purge(openRootT(t, base), base, "store", false); err != nil {
+			t.Fatalf("control: Purge refused an otherwise-owned store: %v", err)
+		}
+	})
+
+	t.Run("empty directory", func(t *testing.T) {
+		base := t.TempDir()
+		work := filepath.Join(base, "store", "storage", "overlay", "hex2", "work", "work")
+		if err := os.MkdirAll(work, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		foreignDir := filepath.Join(work, "secretdir")
+		if err := os.Mkdir(foreignDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+
+		foreignUID, restore := makeForeignOwnedDirEngine(t, foreignDir)
+
+		if err := os.Chmod(work, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(work, 0o700) })
+
+		err := Purge(openRootT(t, base), base, "store", false)
+		var fo *vdir.ForeignOwnerError
+		if err == nil {
+			t.Fatal("Purge removed a store whose mode-0000 work/ hid a foreign-owned empty directory")
+		}
+		if !errors.As(err, &fo) {
+			t.Fatalf("Purge failed for the wrong reason (want *vdir.ForeignOwnerError): %v", err)
+		}
+		if fo.UID != foreignUID {
+			t.Errorf("ForeignOwnerError named uid %d, want the real foreign owner %d", fo.UID, foreignUID)
+		}
+		if _, err := os.Lstat(foreignDir); err != nil {
+			t.Errorf("the foreign-owned empty directory was removed despite the refusal (err=%v) "+
+				"— rmdir(2) on an EMPTY directory is authorised by the parent's mode alone, never "+
+				"by the target's own ownership, so opening the mode-0000 parent was enough on its "+
+				"own to let this succeed before the fix", err)
+		}
+
+		restore()
+		if err := Purge(openRootT(t, base), base, "store", false); err != nil {
+			t.Fatalf("control: Purge refused an otherwise-owned store: %v", err)
+		}
+	})
 }
 
 // ── makeForeignOwnedDirEngine: a REAL cross-uid directory, no root needed ──
