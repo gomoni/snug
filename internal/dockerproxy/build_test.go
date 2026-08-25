@@ -1,6 +1,7 @@
 package dockerproxy
 
 import (
+	"encoding/json"
 	"net/url"
 	"slices"
 	"sort"
@@ -77,6 +78,47 @@ func buildURL602(extra string) string {
 		return "/v6.0.2/libpod/build?" + buildDefaults602
 	}
 	return "/v6.0.2/libpod/build?" + buildDefaults602 + "&" + extra
+}
+
+// nsOption is the JSON shape checkNSOptions decodes. Building nsoptions
+// entries through json.Marshal, rather than by hand-writing more
+// percent-escaped literals like noneNS/hostNS above, is what makes the
+// per-branch cases below (refs #369) readable as a table instead of as a
+// wall of URL-encoding.
+type nsOption struct {
+	Name string
+	Host bool
+	Path string
+}
+
+// nsOptionsQuery encodes one nsoptions entry as the query parameter podman
+// sends.
+func nsOptionsQuery(o nsOption) string {
+	b, err := json.Marshal([]nsOption{o})
+	if err != nil {
+		panic(err)
+	}
+	return "nsoptions=" + url.QueryEscape(string(b))
+}
+
+// buildURLOverride is the pattern TestBuildRefusesAPrivateNetworkNamespaceInBothSpellings
+// established, pulled out for reuse: `extra` REPLACES the recorded default's
+// own value for any key it shares, rather than being appended alongside a
+// second copy of the same key.
+func buildURLOverride(t *testing.T, extra string) string {
+	t.Helper()
+	base, err := url.ParseQuery(buildDefaults)
+	if err != nil {
+		t.Fatal(err)
+	}
+	over, err := url.ParseQuery(extra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range over {
+		base[k] = v
+	}
+	return "/v5.8.3/libpod/build?" + base.Encode()
 }
 
 // Building is gated on the profile, not on the endpoint being reachable.
@@ -421,6 +463,7 @@ func TestCheckNetworkModeOnTheCompatEndpoint(t *testing.T) {
 	})
 
 	for _, tc := range []struct{ name, value, wantMsg string }{
+		{"the numeric private mode", "1", "ioctl SIOCSIFFLAGS"},
 		{"bridge", "bridge", "ioctl SIOCSIFFLAGS"},
 		{"none", "none", "ioctl SIOCSIFFLAGS"},
 		{"private", "private", "ioctl SIOCSIFFLAGS"},
@@ -435,6 +478,183 @@ func TestCheckNetworkModeOnTheCompatEndpoint(t *testing.T) {
 			}
 			base.Set("networkmode", tc.value)
 			refuse(t, sock, eng, "/v1.41/build?"+base.Encode(), "", tc.wantMsg)
+		})
+	}
+
+	// POSITIVE CONTROL for the row above: the accepted spellings must reach
+	// the engine on THIS endpoint too, at the numeric AND the word spelling —
+	// a docker client asking for --network=host must not meet a stricter rule
+	// than the podman CLI's own libpod endpoint does (refs #369).
+	for _, v := range []string{"2", "host", "default", ""} {
+		t.Run("accept networkmode="+v, func(t *testing.T) {
+			sock, eng, _ := startBuildProxy(t)
+			base, err := url.ParseQuery(buildDefaults)
+			if err != nil {
+				t.Fatal(err)
+			}
+			base.Set("networkmode", v)
+			before := eng.reached.Load()
+			code, resp := post(t, sock, "/v1.41/build?"+base.Encode(), "")
+			if code != 200 {
+				t.Fatalf("networkmode=%q on the compat endpoint was refused (status %d): %s", v, code, resp)
+			}
+			if eng.reached.Load() == before {
+				t.Fatal("the build never reached the engine")
+			}
+		})
+	}
+}
+
+// TestCheckNSOptionsRefusesAnUntaughtName pins the NAME-axis fix (refs #369):
+// before it, any Name with Host:false and an empty Path fell through the
+// loop's Host/Path checks straight to the accept, and what actually refused
+// "net" was buildah's own mapStrToNamespace — case-sensitively, so "net" (not
+// "network") was rejected by luck of spelling, while "mount" and "time" are
+// BOTH accepted by mapStrToNamespace and buildah's setupNamespaces has no
+// default: arm, so they were configured into the OCI spec verbatim. This
+// fails if the NAME axis is ever again left to fall through to an accept for
+// any name outside the six podman is measured to send.
+//
+// Each row asserts eng.reached did not move: a refusal message that happened
+// to be right for the wrong reason (e.g. the build failing for an unrelated
+// cause) must not be mistaken for this check having fired.
+func TestCheckNSOptionsRefusesAnUntaughtName(t *testing.T) {
+	const wantMsg = "names a namespace snug has not been taught about"
+	for _, tc := range []struct{ name, nsName string }{
+		{"net — the pre-#401 misspelling that buildah refused only by accident of casing", "net"},
+		{"mount — buildah accepts this and configures it verbatim; snug did not check it until now", "mount"},
+		{"time — the second name buildah accepts that snug never checked", "time"},
+		{"the empty name", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sock, eng, _ := startBuildProxy(t)
+			u := buildURLOverride(t, nsOptionsQuery(nsOption{Name: tc.nsName, Host: false, Path: ""}))
+			refuse(t, sock, eng, u, "", wantMsg)
+		})
+	}
+}
+
+// TestCheckNSOptionsStillAcceptsRealClients is the positive control for the
+// refusal above: none of the entries a real podman CLI actually sends may
+// have started being refused by the new NAME switch. Without this, "unknown
+// names are refused" would be equally true of a check that refuses every
+// name.
+func TestCheckNSOptionsStillAcceptsRealClients(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opt  nsOption
+	}{
+		{"the recorded default: user, Host:true — the rootless default, sent with no flag at all",
+			nsOption{Name: "user", Host: true, Path: ""}},
+		{"--userns=container: user, Host:false, Path empty",
+			nsOption{Name: "user", Host: false, Path: ""}},
+		{"--pid=private", nsOption{Name: "pid", Host: false, Path: ""}},
+		{"--ipc=private", nsOption{Name: "ipc", Host: false, Path: ""}},
+		{"--uts=private", nsOption{Name: "uts", Host: false, Path: ""}},
+		{"--cgroupns=private", nsOption{Name: "cgroup", Host: false, Path: ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sock, eng, _ := startBuildProxy(t)
+			u := buildURLOverride(t, nsOptionsQuery(tc.opt))
+			before := eng.reached.Load()
+			code, resp := post(t, sock, u, "")
+			if code != 200 {
+				t.Fatalf("status %d, want 200: %s", code, resp)
+			}
+			if eng.reached.Load() == before {
+				t.Fatal("the build never reached the engine")
+			}
+		})
+	}
+}
+
+// TestNetworkHostFalseKeepsItsOwnMessage guards the new name-axis switch
+// against silently covering for the OLDER network-specific refusal it now
+// sits in front of: "network" is a taught name, so it must still fall
+// through the switch to the check that names WHY Host:false is refused
+// (needs CAP_NET_ADMIN the engine does not have), not stop at the generic
+// "not been taught about" message the switch produces for an unknown name.
+// TestBuildRefusesAPrivateNetworkNamespaceInBothSpellings already pins this
+// via the compound --network=none query; this is the same fact reached
+// directly through checkNSOptions' own inputs.
+func TestNetworkHostFalseKeepsItsOwnMessage(t *testing.T) {
+	sock, eng, _ := startBuildProxy(t)
+	u := buildURLOverride(t, nsOptionsQuery(nsOption{Name: "network", Host: false, Path: ""}))
+	refuse(t, sock, eng, u, "", "Host:false")
+}
+
+// TestCheckNSOptionsHostTrueOnNonNetworkName pins a branch that predates
+// #369 and that no test before this one ever executed:
+// TestEveryBuildValidatorIsExercised reports nsoptions "covered" purely
+// because SOME case drives it, and every existing nsoptions case either
+// names "network" or "user" — none put Host:true on pid/ipc/uts/cgroup. This
+// fails if that arm is ever changed to admit the host's pid/ipc/uts/cgroup
+// namespace under a name other than user or network.
+func TestCheckNSOptionsHostTrueOnNonNetworkName(t *testing.T) {
+	for _, name := range []string{"pid", "ipc", "uts", "cgroup"} {
+		t.Run(name, func(t *testing.T) {
+			sock, eng, _ := startBuildProxy(t)
+			u := buildURLOverride(t, nsOptionsQuery(nsOption{Name: name, Host: true, Path: ""}))
+			refuse(t, sock, eng, u, "", "asks for the HOST's")
+		})
+	}
+}
+
+// TestCheckNSOptionsNetworkPathNamesTheMode pins the `network`+non-empty-Path
+// branch, the second spelling of --network=<mode> (the first being
+// networkmode, checkNetworkMode's own table): a namespace NAME in Path is how
+// --network=pasta/bridge/ns:/p arrive here. This fails if that branch is ever
+// changed to accept a network mode name through nsoptions after
+// checkNetworkMode already refuses the same word under networkmode.
+func TestCheckNSOptionsNetworkPathNamesTheMode(t *testing.T) {
+	for _, path := range []string{"pasta", "bridge", "slirp4netns", "/proc/self/ns/net"} {
+		t.Run(path, func(t *testing.T) {
+			sock, eng, _ := startBuildProxy(t)
+			u := buildURLOverride(t, nsOptionsQuery(nsOption{Name: "network", Host: false, Path: path}))
+			refuse(t, sock, eng, u, "", "names the network")
+		})
+	}
+}
+
+// TestCheckNSOptionsPathOnNonNetworkName pins the non-`network`,
+// non-empty-Path branch — `--pid=/proc/self/ns/pid` joining a namespace snug
+// did not create. This fails if a namespace path on any name other than
+// `network` is ever accepted.
+func TestCheckNSOptionsPathOnNonNetworkName(t *testing.T) {
+	sock, eng, _ := startBuildProxy(t)
+	u := buildURLOverride(t, nsOptionsQuery(nsOption{Name: "pid", Host: false, Path: "/proc/self/ns/pid"}))
+	refuse(t, sock, eng, u, "", "names an existing namespace at")
+}
+
+// TestCheckNSOptionsRejectsMalformedJSON pins the json.Unmarshal failure
+// path, unexecuted by any case before this one — every existing nsoptions
+// query is well-formed JSON, so this arm has only ever been read, never run.
+func TestCheckNSOptionsRejectsMalformedJSON(t *testing.T) {
+	sock, eng, _ := startBuildProxy(t)
+	u := buildURLOverride(t, "nsoptions="+url.QueryEscape("not a json list"))
+	refuse(t, sock, eng, u, "", "is not the JSON list podman sends")
+}
+
+// TestNSOptionsIsFilteredOnEveryBuildPath is the nsoptions half of
+// TestBothBuildPathsAreFiltered's claim (that claim is driven by `volume`
+// alone): a docker-compat client posting nsoptions to /v1.41/build or the
+// bare /build path must meet the same NAME-axis and network-Host:false
+// refusals as the podman CLI's own /libpod/build. These paths carry no other
+// query parameter, which is enough — filterBuildQuery refuses on the first
+// bad parameter it finds, so the recorded defaults are not needed to reach
+// checkNSOptions here, matching the precedent TestBothBuildPathsAreFiltered
+// already set for `volume`.
+func TestNSOptionsIsFilteredOnEveryBuildPath(t *testing.T) {
+	for _, p := range []string{"/v1.41/build", "/build", "/v5.8.3/libpod/build"} {
+		t.Run(p+"/untaught name", func(t *testing.T) {
+			sock, eng, _ := startBuildProxy(t)
+			q := nsOptionsQuery(nsOption{Name: "mount", Host: false, Path: ""})
+			refuse(t, sock, eng, p+"?"+q, "", "names a namespace snug has not been taught about")
+		})
+		t.Run(p+"/private network", func(t *testing.T) {
+			sock, eng, _ := startBuildProxy(t)
+			q := nsOptionsQuery(nsOption{Name: "network", Host: false, Path: ""})
+			refuse(t, sock, eng, p+"?"+q, "", "Host:false")
 		})
 	}
 }
@@ -524,6 +744,25 @@ func TestBuildVersionSelectorAllowsClassicOnly(t *testing.T) {
 // Every validator in the allowlist must be exercised by a case above. A check
 // nothing tests is a check that can rot, and this file's whole claim is that
 // the dangerous parameters are judged rather than merely listed.
+//
+// WHAT THIS DOES NOT ASSERT (refs #369): "exercised" here means the
+// validator's NAME is in `covered`, which whoever adds the first case for it
+// sets by hand — it says nothing about how many of that validator's own
+// branches the covering case actually reaches. nsoptions was "covered" by
+// this accounting for the whole of #369's finding: checkNSOptions had (and,
+// for four of them, still has) branches — Host:true on a name other than
+// user/network, the network+Path and non-network+Path arms, and the
+// malformed-JSON arm — that no case in this file executed, and this loop
+// was and remains green throughout. The name axis itself was the fifth: any
+// unrecognised Name with Host:false and an empty Path fell through to the
+// accept, and nothing here noticed. Those five now have their own tests
+// (TestCheckNSOptionsRefusesAnUntaughtName,
+// TestCheckNSOptionsHostTrueOnNonNetworkName,
+// TestCheckNSOptionsNetworkPathNamesTheMode,
+// TestCheckNSOptionsPathOnNonNetworkName,
+// TestCheckNSOptionsRejectsMalformedJSON) — this loop does not, and cannot,
+// confirm they exist; a per-branch check would need a coverage hook this
+// package does not have, and this comment is the substitute for one.
 func TestEveryBuildValidatorIsExercised(t *testing.T) {
 	// The validators with a real decision to make, each covered above.
 	covered := map[string]bool{

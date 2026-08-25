@@ -185,10 +185,20 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 			// permitted), which is why build.go's allowlist is not cosmetic.
 			continue
 		}
-		if k == "NetworkMode" && mode == "host" {
+		// Normalised ONCE and used by every arm below, the same correction
+		// checkNetworkMode already carries on its side (build.go): the arms
+		// compared the raw value, so "Container:abc" and "HOST" fell past
+		// them. On BUILD, falling past a refusal arm lands in a generic
+		// default-deny; here it lands in FORWARD, so the two files disagreed
+		// about which direction a missed spelling fails in. Whether the engine
+		// then honoured such a spelling was never measured here — which is the
+		// point: a refusal snug states must not depend on the answer. Folding
+		// can only refuse more; it cannot grant.
+		norm := strings.ToLower(strings.TrimSpace(mode))
+		if k == "NetworkMode" && norm == "host" {
 			continue
 		}
-		if mode == "host" || strings.HasPrefix(mode, "container:") || strings.HasPrefix(mode, "ns:") {
+		if norm == "host" || strings.HasPrefix(norm, "container:") || strings.HasPrefix(norm, "ns:") {
 			p.deny(w, "HostConfig.%s = %q: %s", k, mode, namespaceModeReason[k])
 			return
 		}
@@ -374,6 +384,20 @@ var namespaceModeKeys = []string{
 // PidMode is worth reading in full: joining a pid namespace is not "seeing
 // more pids", it is acquiring procfs's naming rights into everything every
 // member holds, and the engine is what sits behind pid 1 there.
+// The value axis here is a DENYLIST, and build.go's is an allowlist — say it
+// out loud, because each reason string below reads as though the key were
+// closed. What the loop refuses is "host", "container:<id>" and "ns:<path>";
+// every OTHER value is FORWARDED to the engine unjudged. Real spellings that
+// go through today: NetworkMode "bridge"/"none"/"private"/"pasta"/
+// "slirp4netns", PidMode "private", IpcMode "shareable"/"none", CgroupnsMode
+// "private", UsernsMode "keep-id"/"nomap"/"auto". They are closed by the
+// engine failing (netavark: Netlink error: Operation not permitted), not by
+// snug. Making this an allowlist is an ergonomic behaviour change on a path
+// that currently works by failing, and it is a maintainer call recorded on
+// issue #34 rather than folded in here. Whoever takes it must keep "" AND
+// "default" accepted: testdata/docker-run-create-body.json records
+// NetworkMode:"default" on a plain `docker run`, and podman's compat handler
+// maps both through the containers.conf netns pin to N.
 var namespaceModeReason = map[string]string{
 	"NetworkMode": `"host" is allowed here and means THIS sandbox's own network ` +
 		`namespace N (issue #63, Tier B). What is refused is naming a namespace ` +
@@ -395,18 +419,18 @@ var namespaceModeReason = map[string]string{
 		`here names the ENGINE's, not the machine's: joining it reaches only the ` +
 		`System V shared memory, semaphores and message queues the engine itself ` +
 		`holds — none, podman creates no host segment — not the host's, which the ` +
-		`sandbox has no route to. Refused whether or not it would disclose ` +
-		`anything, the same way CgroupnsMode is`,
+		`sandbox has no route to. "host" is refused whether or not it would ` +
+		`disclose anything, the same way CgroupnsMode's is`,
 	"UTSMode": `the engine has its OWN UTS namespace since issue #182, so "host" ` +
 		`here names the ENGINE's hostname, not the machine's real one, which the ` +
 		`sandbox is otherwise never told (bwrap gives the payload --unshare-uts ` +
-		`and a hostname snug chooses). Refused whether or not it would disclose ` +
-		`anything`,
+		`and a hostname snug chooses). "host" is refused whether or not it ` +
+		`would disclose anything`,
 	"UsernsMode": `the only user namespace on offer is U, the engine's own — ` +
 		`root-in-U with the full delegated subuid range and ` +
-		`policy.EngineCapBounding. snug decides a container's user namespace; a ` +
-		`request that names one is refused whether or not it would have changed ` +
-		`anything`,
+		`policy.EngineCapBounding. snug decides a container's user namespace; ` +
+		`"host", container:<id> and ns:<path> are refused whether or not they ` +
+		`would have changed anything`,
 	"CgroupnsMode": `"host" names the ENGINE's cgroup namespace, which it clones for ` +
 		`itself (CLONE_NEWCGROUP): joining it discloses the engine's own cgroup ` +
 		`path and the placement of every other container this sandbox started. ` +
