@@ -3714,6 +3714,97 @@ That is the message the test prints when the `netns = "host"` write in
 `writeContainersConf` is removed — the no-`NetworkMode` container then
 produces no output at all, because it dies before its entrypoint runs.
 
+### 9s. `snug engine gc` sees every generation of store name, and never deletes what another uid owns (issues #349, #308)
+
+`internal/targetkey.Hash` now labels the digest: a store is
+`sha256_<64 hex>`, so a later algorithm change is a new prefix rather than a
+silent reinterpretation of 64 hex characters. The cost of a rename is that
+`engine gc` can stop SEEING what snug itself wrote, which leaves no tool at
+all for the accumulation the command exists to reclaim.
+
+```bash
+snug engine gc --dry-run | tail -4
+```
+
+Both older generations must be counted. On the machine this was written on:
+
+```
+1443 store(s), >= 2.8 GB. Nothing selected, nothing removed.
+  554 unattributed (target unknown)   >= 946.1 MB   -> --unattributed
+  889 attributed                      >= 1.8 GB   -> --older-than <dur>, or name a key
+```
+
+The split is the point, not the totals. The 554 are the 16-hex truncation that
+predates `store.json` entirely — no breadcrumb exists for them, so snug cannot
+say whose they are and `--older-than` must not touch them. The rest carry a
+breadcrumb whose target hashes to the LABELLED form of their own bare-hex name,
+so they stay ATTRIBUTED across the rename; before that tolerance they all
+moved to unattributed at once, which silently made `--older-than` a no-op on
+1.8 GB.
+
+A legacy name is still reclaimable by being named outright:
+
+```bash
+snug engine gc --dry-run <bare-64-hex-key>
+```
+
+```
+would reclaim  004c38ef…  (target: /tmp/TestEngineCapBounding…/proj/sub)  >= 114.9 KB
+```
+
+and a key in no generation at all is refused with the shape it wanted:
+
+```bash
+snug engine gc zzz
+```
+
+```
+snug: zzz is not shaped like a store key ("sha256_" followed by 64 lowercase
+hex characters, or a bare 64-character digest for a store written before that
+label) — run `snug engine gc --dry-run` to list valid keys
+```
+
+The removal half cannot be driven from the command line — `Purge` takes a
+directory this walk owns, not a path a human names — so it is verified by
+tests that plant a uid the caller does not own with
+`unshare --user --map-auto --map-root-user -- chown 1001:1001`:
+
+```bash
+go test ./internal/engine/ -run TestPurge -v -count=1
+```
+
+Expect `PASS` with none of them SKIPped (a skip names what was missing:
+`unshare`, `newuidmap`/`newgidmap`, or subuid delegation). Three of those
+tests exist because `unlink(2)` and `rmdir(2)` are permission-checked against
+the CONTAINING directory and never against the entry's own owner, so any
+ownership check that runs only when Remove itself returns EACCES never fires:
+
+- `TestPurgeRefusesAForeignOwnedEntryAfterAnOwnedSiblingWidensTheDirectory` —
+  overlayfs leaves `diff/` at 0555, so removing the first entry chmods the
+  directory 0700 for the rest of the walk; a foreign entry sorting after an
+  owned one then deleted cleanly.
+- `TestPurgeRefusesAForeignOwnedEntryHiddenInAModeZeroDirectory`, both
+  subtests — a `work/work` at mode 0000 is chmodded open before any child is
+  examined, so a foreign file or empty directory alone inside it needed no
+  owned sibling at all.
+- `TestPurgeEACCESRetryRefusesAForeignOwnedFileBehindAReadOnlyDiff` — the
+  0555-parent retry itself.
+
+Only a NON-EMPTY foreign directory was ever structurally safe, because
+`ENOTEMPTY` forces the fall-through to `vdir.OpenForRemoval`'s own `Lstat`.
+The refusal now comes from `refuseForeign`, ahead of the first `Remove` on
+every entry:
+
+```
+refusing <path>/store/work/foreignFile: owned by uid 2001, not you — this
+needs a userns carrying the same delegated uid map to remove; snug will not
+chmod or delete something it does not own
+```
+
+and #308's own case — an owned `diff/marker` under a 0555 parent — must still
+reclaim (`TestPurgeReclaimsAnUnwritableOverlayDiffDirectory`), or the refusal
+has just been bought by breaking the reclaim it was added for.
+
 ## 10. A repository cannot grant itself anything
 
 ```bash

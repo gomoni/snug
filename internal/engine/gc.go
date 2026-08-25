@@ -69,18 +69,44 @@ import (
 // comment on ListEngineEntries says what makes it self-describing.
 const leftoverPrefix = ".gc-"
 
-// storeKeyPattern is exactly what internal/targetkey.Hash produces: a full,
-// lowercase hex sha256 digest, 64 characters. Used to tell an engine store's
-// own directory apart from a leftover (leftoverPrefix) or from something
-// under engines/ that snug's own naming never produced and is therefore left
-// alone rather than guessed at.
-var storeKeyPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+// storeKeyPattern is exactly what internal/targetkey.Hash produces:
+// "sha256_" followed by a full, lowercase hex sha256 digest, 64 characters
+// (issue #349 — the name now carries its algorithm rather than a bare
+// digest). Used to tell an engine store's own directory apart from a
+// leftover (leftoverPrefix) or from something under engines/ that snug's own
+// naming never produced and is therefore left alone rather than guessed at.
+var storeKeyPattern = regexp.MustCompile(`^sha256_[0-9a-f]{64}$`)
 
 // StoreKey reports whether s is shaped like an engine store key — the same
 // shape KeyForTarget produces. Used to validate a key a human names on the
 // `snug engine gc` command line before this package tries to open anything
 // by that name.
 func StoreKey(s string) bool { return storeKeyPattern.MatchString(s) }
+
+// legacyStoreKeyPattern is every store name snug wrote before this one. Two
+// generations, both counted under engines/ on the maintainer's box: 883
+// directories at the bare 64-char digest that preceded issue #349's label,
+// and 554 at the 16-char truncation that preceded the full digest. The
+// labelled pattern matches none of those 1437.
+var legacyStoreKeyPattern = regexp.MustCompile(`^([0-9a-f]{64}|[0-9a-f]{16})$`)
+
+// ReclaimableStoreKey is StoreKey plus those older shapes, and it exists so a
+// rename never strands what snug itself wrote: a GC that stops SEEING a store
+// leaves the user no tool at all for the accumulation `snug engine gc` exists
+// to reclaim. The 16-char generation was already unreachable before the label
+// landed, which is how 554 directories came to sit under engines/ with
+// nothing able to name them.
+//
+// It is NOT a lookup fallback: KeyForTarget returns the labelled name only,
+// so one target still has exactly one name. Attribution is decided by the
+// breadcrumb rather than by the name — ReadBreadcrumb accepts a 64-hex
+// directory whose store.json hashes to the labelled form of that same digest,
+// and all 883 carry one. The 16-hex generation predates store.json entirely
+// (0 of 554 carry one), so those stay unattributed: reclaimed by
+// --unattributed or by being named outright, never by --older-than.
+func ReclaimableStoreKey(s string) bool {
+	return StoreKey(s) || legacyStoreKeyPattern.MatchString(s)
+}
 
 // EnginesRoot opens $XDG_DATA_HOME/snug/engines for a caller that means to
 // LIST or REMOVE stores rather than create one — `snug engine gc`. Nothing
@@ -162,7 +188,7 @@ func leftoverKey(name string) string {
 		return ""
 	}
 	parts := strings.SplitN(rest, "-", 2)
-	if len(parts) == 0 || !StoreKey(parts[0]) {
+	if len(parts) == 0 || !ReclaimableStoreKey(parts[0]) {
 		return ""
 	}
 	return parts[0]
@@ -185,7 +211,7 @@ func ListEngineEntries(root *os.Root) ([]EngineEntry, error) {
 		}
 		name := e.Name()
 		switch {
-		case StoreKey(name):
+		case ReclaimableStoreKey(name):
 			out = append(out, EngineEntry{Name: name, Key: name})
 		case strings.HasPrefix(name, leftoverPrefix):
 			if key := leftoverKey(name); key != "" {
@@ -259,6 +285,15 @@ type StoreScan struct {
 	// one link to its parent, so nlink-2 is a floor on how many there are,
 	// never a ceiling and never their size.
 	UnreadableSubdirs int
+	// WriteBlockedDirs counts directories this process owns and could ENTER
+	// but whose own mode lacks the owner WRITE bit — the overlayfs diff/
+	// shape (measured at 0555: dr-xr-xr-x) that lets this walk read and size
+	// everything inside it while still blocking Remove's unlinkat(2) on any
+	// one of its entries. Real removal chmods each one before it can remove
+	// what is beneath it; this walk only counts it, so --dry-run can say a
+	// reclaim would chmod something even when UnreadableDirs (which counts a
+	// stricter, unenterable shape) stays zero.
+	WriteBlockedDirs int
 	// ForeignUID and ForeignPath are set when this walk finds an entry NOT
 	// owned by this process. Non-empty ForeignPath means the whole store
 	// this scan covers must be refused, not merely the one subtree — see
@@ -331,6 +366,10 @@ func scanInto(dir *os.Root, dirPath string, scan *StoreScan) error {
 			continue
 		}
 
+		if fi.Mode().Perm()&0o200 == 0 {
+			scan.WriteBlockedDirs++
+		}
+
 		sub, oerr := dir.OpenRoot(name)
 		if oerr != nil {
 			// Owned (checked above) but this walk cannot enter it — the
@@ -351,23 +390,111 @@ func scanInto(dir *os.Root, dirPath string, scan *StoreScan) error {
 	return nil
 }
 
+// refuseForeign is the question Remove never asks. unlink(2) and rmdir(2) are
+// permission-checked against the CONTAINING directory and never against the
+// entry's own owner, so the moment a directory this process owns is writable —
+// because it always was, because an earlier sibling's EACCES retry chmodded it,
+// or because the mode-0000 branch below opened it — Remove deletes a
+// foreign-owned file or empty directory with nothing having looked at its uid.
+// Measured on this tree with the check sited on the EACCES branch instead of
+// here: a uid-2001 empty dir sorting AFTER an owned file under a 0555 diff/,
+// and a uid-2001 file alone inside a mode-0000 work/, were both deleted with
+// Purge returning nil. Only a NON-EMPTY foreign directory was ever
+// structurally safe, because ENOTEMPTY forces the fall-through to
+// vdir.OpenForRemoval's own Lstat — which is why the check belongs at the top
+// of every call, on every entry, ahead of the first Remove.
+//
+// Lstat on an *os.Root is fstatat(parentfd, name, AT_SYMLINK_NOFOLLOW): no
+// component resolves, and a symlink is described rather than followed. Fail
+// closed — an ownership this call cannot establish is not one it may act on —
+// with the single exception of an entry that is already gone, which is not
+// this call's problem and not a refusal either.
+func refuseForeign(parent *os.Root, full, name string) error {
+	fi, err := parent.Lstat(name)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("engine gc: refusing %s: cannot establish its owner: %w", full, err)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("engine gc: refusing %s: Lstat returned no owner uid", full)
+	}
+	if uid := int(st.Uid); uid != os.Getuid() {
+		return &vdir.ForeignOwnerError{Path: full, UID: uid}
+	}
+	return nil
+}
+
 // Purge removes name from parent, recursively, tolerating the one shape a
 // container engine's overlayfs leaves behind — see this file's package
 // comment for the measurements that force this shape and the rmdir-first
 // ordering.
+//
+// ownedParent says whether parent ITSELF is a directory this call may chmod
+// when Remove(name) returns EACCES from parent's own missing write bit — true
+// only when parent was opened by an earlier Purge call descending into the
+// subtree being reclaimed. The two top-level callers in enginegc.go (the
+// engines/ root, and os.TempDir() for the runroot) pass false: parent there
+// is the directory ABOVE the subtree, never reclaimed itself, so relaxing its
+// mode is a mutation outside anything this call was asked to touch.
 //
 // A ForeignOwnerError (from vdir.OpenForRemoval or from Chmod's own EPERM)
 // stops the walk immediately and is returned as-is: the caller is expected
 // to leave everything ABOVE the refusal exactly where phase 1 put it — a
 // named ".gc-<key>-..." directory, still carrying its own store.json, that a
 // later `snug engine gc` will find and describe rather than silently retry.
-func Purge(parent *os.Root, parentDesc, name string) error {
+func Purge(parent *os.Root, parentDesc, name string, ownedParent bool) error {
 	full := filepath.Join(parentDesc, name)
+
+	if ferr := refuseForeign(parent, full, name); ferr != nil {
+		return ferr
+	}
 
 	err := parent.Remove(name)
 	if err == nil {
 		return nil
 	}
+
+	if ownedParent && errors.Is(err, syscall.EACCES) {
+		// Measured against a real store (issue #308): "opening
+		// .../diff/marker: refusing .../diff/marker: not a directory". The
+		// EACCES came from Remove on a PLAIN FILE — overlayfs leaves diff/
+		// itself at 0555 and unlinkat(2) needs write on the directory being
+		// iterated, not on name — and the code that ran next read it as
+		// "name is a directory needing its own chmod", which aborts on a
+		// regular file. So chmod the directory being iterated, then re-ask
+		// who owns name before retrying: relaxing a mode on parentDesc is
+		// this process's to do, deleting what a foreign uid put inside it is
+		// not.
+		//
+		// Chmod on an *os.Root is fd-relative, not path-based chmod(2):
+		// os/root_unix.go's chmodat is unix.Fchmodat(parentfd, name, mode,
+		// AT_SYMLINK_NOFOLLOW) (go1.27), and for "." there is no component
+		// to swap under the call. Do not "modernise" it into unix.Fchmod:
+		// os.Root exports no Fd(), so that costs an extra OpenFile(".",
+		// O_DIRECTORY) for the same guarantee, outside the vdir discipline.
+		if cerr := parent.Chmod(".", 0o700); cerr != nil {
+			if errors.Is(cerr, syscall.EPERM) {
+				return fmt.Errorf("engine gc: refusing %s: chmod on the enclosing directory %s "+
+					"returned EPERM — that directory is not this process's to fix, so the walk "+
+					"stops rather than retrying a mode it can never change: %w", full, parentDesc, cerr)
+			}
+			return fmt.Errorf("engine gc: chmod %s: %w", parentDesc, cerr)
+		}
+		// Asked again, after the chmod rather than only before it: the chmod
+		// is the thing that makes the retry possible, so the ownership
+		// question has to be the last word before Remove, not a check from
+		// the other side of a widened mode.
+		if ferr := refuseForeign(parent, full, name); ferr != nil {
+			return ferr
+		}
+		if err = parent.Remove(name); err == nil {
+			return nil
+		}
+	}
+
 	if !errors.Is(err, syscall.ENOTEMPTY) && !errors.Is(err, syscall.EACCES) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil // already gone: not this call's problem
@@ -413,7 +540,7 @@ func Purge(parent *os.Root, parentDesc, name string) error {
 		return fmt.Errorf("engine gc: reading %s: %w", full, rerr)
 	}
 	for _, e := range entries {
-		if perr := Purge(child, full, e.Name()); perr != nil {
+		if perr := Purge(child, full, e.Name(), true); perr != nil {
 			return perr
 		}
 	}

@@ -134,8 +134,9 @@ func makeOrphanedInit(t *testing.T) (pid int, statePath, proj string) {
 	return pid, statePath, proj
 }
 
-// targetStatePath derives the same name snug does: sha256 of the target's
-// realpath, in the uid-derived directory (never $XDG_RUNTIME_DIR — issue
+// targetStatePath derives the same name snug does: "sha256_" followed by the
+// sha256 of the target's realpath (issue #349 — the name carries its
+// algorithm), in the uid-derived directory (never $XDG_RUNTIME_DIR — issue
 // #122). Recomputed here rather than imported because this package drives the
 // built binary and links none of snug's own packages; if the two ever
 // disagree, waitForFile below times out and says so.
@@ -146,7 +147,7 @@ func targetStatePath(t *testing.T, target string) string {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256([]byte(real))
-	name := "target-" + hex.EncodeToString(sum[:]) + ".json"
+	name := "target-sha256_" + hex.EncodeToString(sum[:]) + ".json"
 
 	base := fmt.Sprintf("/run/user/%d/snug", os.Getuid())
 	if fi, err := os.Stat(base); err != nil || !fi.IsDir() {

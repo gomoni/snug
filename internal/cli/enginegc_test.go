@@ -411,3 +411,56 @@ func TestEngineGCTwoPhaseLeavesNoPartialStore(t *testing.T) {
 		t.Errorf("the pre-existing .gc-* leftover was not removed (err=%v)", err)
 	}
 }
+
+// TestHumanSizeNoteNamesTheChmodOnlyWhenWriteBlockedDirsIsNonzero is F7's
+// string half: --dry-run must say a reclaim would chmod something whenever
+// StoreScan.WriteBlockedDirs is nonzero (the overlayfs diff/ shape — 0555,
+// enterable but not writable), and must NOT say so when it is zero, or the
+// disclosure is boilerplate rather than a fact about this particular scan.
+func TestHumanSizeNoteNamesTheChmodOnlyWhenWriteBlockedDirsIsNonzero(t *testing.T) {
+	blocked := engine.StoreScan{SizeBytes: 100, WriteBlockedDirs: 1}
+	if note := humanSizeNote(blocked); !strings.Contains(note, "chmod") {
+		t.Errorf("humanSizeNote(%+v) = %q, want it to name the chmod a real reclaim would need", blocked, note)
+	}
+
+	clean := engine.StoreScan{SizeBytes: 100}
+	if note := humanSizeNote(clean); strings.Contains(note, "chmod") {
+		t.Errorf("humanSizeNote(%+v) = %q, mentions chmod although nothing in this scan needs one", clean, note)
+	}
+}
+
+// TestEngineGCAcceptsALegacyKeyNamedOnTheCommandLine is the rename's own CLI
+// surface: parseEngineGCArgs switched engine.StoreKey for
+// engine.ReclaimableStoreKey specifically so a store written before issue
+// #349 labelled the name can still be named outright on the command line —
+// without this, `snug engine gc <bare-64-hex>` would be refused as "not
+// shaped like a store key" for every store the rename didn't touch.
+func TestEngineGCAcceptsALegacyKeyNamedOnTheCommandLine(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	useTargetLockBase(t)
+
+	target := "/proj/legacy-key-on-cli"
+	labelledKey, storageDir := buildEngineStoreFixture(t, dataHome, target, time.Now(), true)
+	legacyKey := strings.TrimPrefix(labelledKey, "sha256_")
+
+	// Move the store to its pre-#349 bare-digest name on disk — the exact
+	// shape a store written before the rename has.
+	enginesDir := filepath.Join(dataHome, "snug", "engines")
+	if err := os.Rename(filepath.Join(enginesDir, labelledKey), filepath.Join(enginesDir, legacyKey)); err != nil {
+		t.Fatal(err)
+	}
+	_ = storageDir
+
+	var code int
+	out := captureStdout(t, func() { code = engineGCCmd([]string{legacyKey}) })
+	if code != 0 {
+		t.Errorf("`engine gc %s` exited %d, want 0:\n%s", legacyKey, code, out)
+	}
+	if strings.Contains(out, "not shaped like a store key") {
+		t.Fatalf("a legacy bare-hex key was refused as malformed: %q", out)
+	}
+	if _, err := os.Lstat(filepath.Join(enginesDir, legacyKey)); !os.IsNotExist(err) {
+		t.Errorf("naming the legacy key on the command line did not reclaim it (err=%v)", err)
+	}
+}

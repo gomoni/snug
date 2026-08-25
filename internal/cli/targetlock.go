@@ -132,8 +132,9 @@ func (e *targetBusyError) message(display string) string {
 
 // targetLockName is the single path component the per-target lock lives at,
 // inside the shared snug runtime directory. It is the SHA-256 of the target's
-// realpath: fixed length, no separators (so it cannot escape the directory),
-// and collision-resistant (so two unrelated targets never share a lock).
+// realpath: fixed length, no path separators (so it cannot escape the
+// directory), and collision-resistant (so two unrelated targets never share a
+// lock).
 // Exported to the package's tests, which must compute the identical name to
 // seed a held lock from a helper process.
 func targetLockName(realpath string) string {
@@ -149,9 +150,22 @@ func targetLockName(realpath string) string {
 // The hash itself is internal/targetkey's Hash — see that package's doc
 // comment for why every target-derived name on disk, including the engine
 // store's own key (internal/engine's KeyForTarget), now goes through the one
-// function and uses the full, untruncated digest.
+// function and uses the full, untruncated digest. Hash's own "sha256_" label
+// uses an underscore, not a dash, so the "target-" here stays the only dash
+// in the name and "target-sha256_<hex>.lock" splits on it unambiguously.
 func targetKeyPrefix(realpath string) string {
 	return "target-" + targetkey.Hash(realpath)
+}
+
+// legacyTargetKeyPrefix is the stem targetKeyPrefix produced before issue
+// #349 labelled the digest: "target-" followed by the bare hex sha256, with
+// no "sha256_" in between. Nothing derives a name in this shape any more —
+// it exists only so sweepOrphanedSandboxesIn can still recognise a run-state
+// or ".starting" record a pre-#349 binary wrote. It strips the label back
+// off targetkey.Hash's own output rather than hashing independently, so the
+// two stay one algorithm.
+func legacyTargetKeyPrefix(realpath string) string {
+	return "target-" + strings.TrimPrefix(targetkey.Hash(realpath), "sha256_")
 }
 
 // lockTarget takes the per-target advisory lock for abs, an already-absolute

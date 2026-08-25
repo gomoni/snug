@@ -123,8 +123,11 @@ usage:
   snug engine gc [flags] [KEY...]
 
 With NO flag and NO key, snug engine gc REPORTS what stores exist and their
-lower-bound sizes, and removes NOTHING. Nothing is ever reclaimed without a
-selector naming it.
+lower-bound sizes, and removes no STORE. Nothing is ever reclaimed without a
+selector naming it — with one exception, stated here because it prints
+"reclaimed" on a run that selected nothing: a ".gc-" directory a previous
+incomplete reclaim left behind is retried on EVERY invocation. That is not a
+store snug still uses; it is the wreckage of removing one.
 
 selectors (combine — each one adds its own matches to what gets reclaimed):
   --older-than DUR    select ATTRIBUTED stores whose last recorded use is
@@ -209,9 +212,14 @@ func parseEngineGCArgs(argv []string) (engineGCOptions, error) {
 		case strings.HasPrefix(a, "-"):
 			return opts, fmt.Errorf("unknown flag %s", visibleValue(a))
 		default:
-			if !engine.StoreKey(a) {
-				return opts, fmt.Errorf("%s is not shaped like a store key (64 lowercase hex "+
-					"characters) — run `snug engine gc --dry-run` to list valid keys", visibleValue(a))
+			// ReclaimableStoreKey, not StoreKey: a store written before issue
+			// #349 labelled the name carries a bare digest, and naming one
+			// outright has to keep working or those stores are unreclaimable.
+			if !engine.ReclaimableStoreKey(a) {
+				return opts, fmt.Errorf("%s is not shaped like a store key (\"sha256_\" followed "+
+					"by 64 lowercase hex characters, or a bare 64-character digest for a store "+
+					"written before that label) — run `snug engine gc --dry-run` to list valid "+
+					"keys", visibleValue(a))
 			}
 			opts.keys = append(opts.keys, a)
 		}
@@ -228,6 +236,14 @@ type engineGCCandidate struct {
 }
 
 func (c engineGCCandidate) attributed() bool { return c.state.Trustworthy() }
+
+// mismatched reports a GENUINE mismatch — a breadcrumb whose Target hashes
+// to neither generation of this directory's own name — as opposed to no
+// breadcrumb at all (BreadcrumbMissing, the ordinary and expected case).
+// engine.BreadcrumbState's own doc comment promises this is "reported as
+// unattributed AND FLAGGED, never silently folded into either bucket"; this
+// is that flag.
+func (c engineGCCandidate) mismatched() bool { return c.state == engine.BreadcrumbMismatched }
 
 func engineGCCmd(argv []string) int {
 	opts, err := parseEngineGCArgs(argv)
@@ -301,13 +317,13 @@ func describeLeftover(root *os.Root, rootPath string, e engine.EngineEntry, dryR
 			target = visibleValue(bc.Target)
 		}
 	}
-	fmt.Printf("leftover  %s  (from a previous incomplete reclaim; target: %s)\n", e.Name, target)
+	fmt.Printf("leftover  %s  (from a previous incomplete reclaim; target: %s)\n", visibleValue(e.Name), target)
 	if dryRun {
 		fmt.Println("          --dry-run: not retried")
 		return
 	}
-	if perr := engine.Purge(root, rootPath, e.Name); perr != nil {
-		fmt.Printf("          still stuck: %v\n", perr)
+	if perr := engine.Purge(root, rootPath, e.Name, false); perr != nil {
+		fmt.Printf("          still stuck: %s\n", visibleValue(perr.Error()))
 		return
 	}
 	fmt.Println("          reclaimed")
@@ -325,7 +341,7 @@ func engineGCReport(root *os.Root, rootPath string, candidates []engineGCCandida
 	}
 
 	var totalSize, unattrSize, attrSize int64
-	var unattrCount, attrCount int
+	var unattrCount, attrCount, mismatchedCount int
 	for _, c := range candidates {
 		storeRoot, storePath, oerr := engine.OpenStore(root, rootPath, c.entry.Name)
 		var size int64
@@ -341,6 +357,9 @@ func engineGCReport(root *os.Root, rootPath string, candidates []engineGCCandida
 		} else {
 			unattrCount++
 			unattrSize += size
+			if c.mismatched() {
+				mismatchedCount++
+			}
 		}
 	}
 
@@ -349,6 +368,11 @@ func engineGCReport(root *os.Root, rootPath string, candidates []engineGCCandida
 	if unattrCount > 0 {
 		fmt.Printf("  %d unattributed (target unknown)   >= %s   -> --unattributed\n",
 			unattrCount, humanBytes(unattrSize))
+		if mismatchedCount > 0 {
+			fmt.Printf("    %d of these carry a breadcrumb whose target does not hash back to "+
+				"this store's own key — a copied or hand-placed file, not merely an absent one\n",
+				mismatchedCount)
+		}
 	}
 	if attrCount > 0 {
 		fmt.Printf("  %d attributed                      >= %s   -> --older-than <dur>, or name a key\n",
@@ -434,9 +458,13 @@ func engineGCSelect(root *os.Root, rootPath string, candidates []engineGCCandida
 func processCandidate(root *os.Root, rootPath string, c engineGCCandidate, opts engineGCOptions) bool {
 	key := c.entry.Key
 	label := key
-	if c.attributed() {
+	switch {
+	case c.attributed():
 		label = fmt.Sprintf("%s  (target: %s)", key, visibleValue(c.bc.Target))
-	} else {
+	case c.mismatched():
+		label = fmt.Sprintf("%s  (unattributed, mismatched breadcrumb: target %s does not hash "+
+			"back to this key)", key, visibleValue(c.bc.Target))
+	default:
 		label = fmt.Sprintf("%s  (unattributed)", key)
 	}
 
@@ -479,7 +507,7 @@ func processCandidate(root *os.Root, rootPath string, c engineGCCandidate, opts 
 	if scan.ForeignOwner() {
 		unlock()
 		fmt.Printf("refuse    %s  (owned by uid %d at %s — needs a userns carrying the same "+
-			"delegated uid map to remove; store left intact)\n", label, scan.ForeignUID, scan.ForeignPath)
+			"delegated uid map to remove; store left intact)\n", label, scan.ForeignUID, visibleValue(scan.ForeignPath))
 		return true
 	}
 
@@ -512,17 +540,17 @@ func processCandidate(root *os.Root, rootPath string, c engineGCCandidate, opts 
 	unlock()
 
 	if rerr == nil {
-		if perr := engine.Purge(root, rootPath, leftover); perr != nil {
-			fmt.Printf("partial   %s  stopped mid-reclaim: %v (left as %s for a later run to "+
-				"retry or describe)\n", label, perr, leftover)
+		if perr := engine.Purge(root, rootPath, leftover, false); perr != nil {
+			fmt.Printf("partial   %s  stopped mid-reclaim: %s (left as %s for a later run to "+
+				"retry or describe)\n", label, visibleValue(perr.Error()), visibleValue(leftover))
 		} else {
 			fmt.Printf("reclaimed %s  %s\n", label, sizeNote)
 		}
 	}
 	if tmpErr == nil {
 		if runrootLeftover != "" {
-			if perr := engine.Purge(tmpRoot, os.TempDir(), runrootLeftover); perr != nil {
-				fmt.Printf("          runroot stopped mid-reclaim: %v\n", perr)
+			if perr := engine.Purge(tmpRoot, os.TempDir(), runrootLeftover, false); perr != nil {
+				fmt.Printf("          runroot stopped mid-reclaim: %s\n", visibleValue(perr.Error()))
 			}
 		}
 		tmpRoot.Close()
@@ -534,12 +562,17 @@ func processCandidate(root *os.Root, rootPath string, c engineGCCandidate, opts 
 // notice both must: a LOWER BOUND, stated as one, never a number the walk
 // could not actually measure.
 func humanSizeNote(scan engine.StoreScan) string {
-	if scan.UnreadableDirs == 0 {
-		return fmt.Sprintf(">= %s", humanBytes(scan.SizeBytes))
+	note := fmt.Sprintf(">= %s", humanBytes(scan.SizeBytes))
+	if scan.UnreadableDirs > 0 {
+		note += fmt.Sprintf(", plus %d unreadable subtree(s) containing at least %d "+
+			"subdirector(y/ies); the real removal will chmod them",
+			scan.UnreadableDirs, scan.UnreadableSubdirs)
 	}
-	return fmt.Sprintf(">= %s, plus %d unreadable subtree(s) containing at least %d "+
-		"subdirector(y/ies); the real removal will chmod them",
-		humanBytes(scan.SizeBytes), scan.UnreadableDirs, scan.UnreadableSubdirs)
+	if scan.WriteBlockedDirs > 0 {
+		note += fmt.Sprintf("; a reclaim would chmod %d director(y/ies) whose own mode "+
+			"otherwise blocks removing what is inside them", scan.WriteBlockedDirs)
+	}
+	return note
 }
 
 func humanBytes(n int64) string {

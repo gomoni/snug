@@ -160,10 +160,10 @@ func uidRuntimeSnugDir(t *testing.T) string {
 	return filepath.Join("/tmp", fmt.Sprintf("snug-%d", uid), "snug")
 }
 
-// statePath is where THIS run's state file lives: named from the sha256 of the
-// TARGET's realpath, beside the target lock of the same name (issue #123).
-// Note what it no longer takes — the test's $XDG_RUNTIME_DIR — because the
-// answer no longer depends on it.
+// statePath is where THIS run's state file lives: named from "sha256_"
+// followed by the sha256 of the TARGET's realpath (issue #349), beside the
+// target lock of the same name (issue #123). Note what it no longer takes —
+// the test's $XDG_RUNTIME_DIR — because the answer no longer depends on it.
 func (s *attachSandbox) statePath(t *testing.T) string {
 	t.Helper()
 	real, err := filepath.EvalSymlinks(s.proj)
@@ -171,7 +171,7 @@ func (s *attachSandbox) statePath(t *testing.T) string {
 		t.Fatalf("resolving the target %s: %v", s.proj, err)
 	}
 	sum := sha256.Sum256([]byte(real))
-	return filepath.Join(uidRuntimeSnugDir(t), "target-"+hex.EncodeToString(sum[:])+".json")
+	return filepath.Join(uidRuntimeSnugDir(t), "target-sha256_"+hex.EncodeToString(sum[:])+".json")
 }
 
 func (s *attachSandbox) waitForState(t *testing.T) {
@@ -503,15 +503,16 @@ func plantForgedRunState(t *testing.T, target string, initPID int, initStarttime
 	t.Helper()
 
 	// The TARGET-keyed layout (issue #123): the state file and the lock that
-	// makes it count as live are siblings named from sha256(realpath), in the
-	// uid-derived directory. Realpath, not the raw path, for the same reason
-	// production does it — the name is a hash OF the canonical form.
+	// makes it count as live are siblings named from "sha256_"+sha256(realpath)
+	// (issue #349), in the uid-derived directory. Realpath, not the raw path,
+	// for the same reason production does it — the name is a hash OF the
+	// canonical form.
 	real, err := filepath.EvalSymlinks(target)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256([]byte(real))
-	stem := "target-" + hex.EncodeToString(sum[:])
+	stem := "target-sha256_" + hex.EncodeToString(sum[:])
 
 	dir := uidRuntimeSnugDir(t)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

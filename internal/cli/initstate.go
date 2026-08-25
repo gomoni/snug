@@ -73,6 +73,12 @@ func initStateName(realpath string) string {
 	return targetKeyPrefix(realpath) + ".starting"
 }
 
+// initStateNameMatches is targetStateNameMatches' sibling for the
+// ".starting" record — same two generations, same reason.
+func initStateNameMatches(realpath, name string) bool {
+	return name == initStateName(realpath) || name == legacyTargetKeyPrefix(realpath)+".starting"
+}
+
 // writeInitState publishes the orphan-kill record for pid, the sandbox's
 // init, the instant sandbox.Options.OnInit reports it.
 //

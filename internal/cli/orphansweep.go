@@ -120,8 +120,10 @@ func sweepOneOrphan(snugRoot *os.Root, snugPath, name string) {
 	}
 
 	// The name is the index (targetKeyPrefix), so this is checkable rather
-	// than trusted — see the doc comment's second condition.
-	if targetStateName(st.Target) != name {
+	// than trusted — see the doc comment's second condition. Either
+	// generation of the prefix counts (targetStateNameMatches, issue #349):
+	// a record a pre-upgrade binary named is still this target's record.
+	if !targetStateNameMatches(st.Target, name) {
 		return
 	}
 
@@ -167,7 +169,7 @@ func sweepOneStartingOrphan(snugRoot *os.Root, snugPath, name string) {
 		return
 	}
 
-	if initStateName(st.Target) != name {
+	if !initStateNameMatches(st.Target, name) {
 		return
 	}
 
