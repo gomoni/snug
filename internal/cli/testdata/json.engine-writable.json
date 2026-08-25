@@ -349,6 +349,8 @@
     "signature_policy_source": "",
     "signature_policy_refusal": "",
     "engine_binary_refusal": "/home/u/proj/sub/bin/podman cannot be this run's container engine: a grant of this sandbox makes it\n       WRITABLE.\n       snug execs this file as uid 0, pid 1 of the engine's pid namespace, with\n       CAP_SYS_ADMIN in this sandbox's user namespace and the whole delegated subuid\n       range — so an engine binary the payload can write is the payload choosing what\n       runs as root, and every other filter on the container path is moot because the\n       payload IS the engine.\n       Read-only would not help: `ro` restrains the ENGINE, and the payload writes the\n       same host inode through its own rw grant.\n       Fix: install the engine somewhere no rw grant covers, or point $SNUG_PODMAN at\n       one, or drop the rw grant. `snug --dry-run` lists every grant this sandbox makes;\n       the one to look for is whichever covers this path.",
+    "engine_binary_is_regular_file": true,
+    "toolchain_root_is_dir": false,
     "logins": false,
     "port_mapping": false
   },

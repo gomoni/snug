@@ -256,8 +256,6 @@ func TestTheJSONEnvironmentCarriesPWD(t *testing.T) {
 // re-derived from the other.
 func jsonGoldenHumanScreen(t *testing.T, sel []policy.ProfileName) string {
 	t.Helper()
-	t.Setenv("SNUG_PODMAN", "")
-	t.Setenv("SNUG_PODMAN_ROOT", "")
 	reg, err := profile.Builtins()
 	if err != nil {
 		t.Fatal(err)

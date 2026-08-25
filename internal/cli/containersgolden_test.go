@@ -42,18 +42,19 @@ func TestGoldenContainers(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// The PATH-case goldens must not depend on the developer's own shell:
-			// describeEngineSource reads $SNUG_PODMAN/$SNUG_PODMAN_ROOT, and a dev
-			// who exports one would otherwise regenerate a different golden. Clear
-			// them so these two cases are the unpinned PATH branch by construction;
-			// the pinned branch has its own test below (issue #278).
-			t.Setenv("SNUG_PODMAN", "")
-			t.Setenv("SNUG_PODMAN_ROOT", "")
-			p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), tc.sel, envGoldenCtx(), newEnvFakeEnv())
+			// The PATH-case goldens must not depend on the developer's own shell.
+			// Since issue #422 that is structural rather than hygiene:
+			// buildContainersReport reads $SNUG_PODMAN/$SNUG_PODMAN_ROOT off the
+			// INJECTED Environ, and this fake has neither, so these two cases are
+			// the unpinned PATH branch by construction — an exported variable in
+			// the developer's shell cannot reach them. The pinned branch has its
+			// own test below (issue #278).
+			env := newEnvFakeEnv()
+			p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), tc.sel, envGoldenCtx(), env)
 			if err != nil {
 				t.Fatalf("Resolve(%v): %v", tc.sel, err)
 			}
-			got := captureFile(t, func(f io.Writer) { describeContainers(f, p, containersFor(p)) })
+			got := captureFile(t, func(f io.Writer) { describeContainers(f, p, containersFor(env, p)) })
 
 			path := filepath.Join("testdata", "containers."+tc.name+".txt")
 			if *update {
@@ -87,12 +88,13 @@ func TestDescribeContainersIsSilentWhenPodmanIsOff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	env := newEnvFakeEnv()
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
-		[]policy.ProfileName{"@sys", "@cwd-rw"}, envGoldenCtx(), newEnvFakeEnv())
+		[]policy.ProfileName{"@sys", "@cwd-rw"}, envGoldenCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := captureFile(t, func(f io.Writer) { describeContainers(f, p, containersFor(p)) })
+	got := captureFile(t, func(f io.Writer) { describeContainers(f, p, containersFor(env, p)) })
 	if got != "" {
 		t.Errorf("describeContainers printed %q for a PodmanOff policy, want nothing", got)
 	}
@@ -110,15 +112,22 @@ func TestGoldenContainersEnginePinned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SNUG_PODMAN", "/opt/snug-podman/bin/podman")
-	t.Setenv("SNUG_PODMAN_ROOT", "/opt/snug-podman")
+	// The bundle EXISTS on this fake host, and both objects are of the kind
+	// their consumer needs: a directory for the root, a regular FILE for the
+	// binary. Without them the screen renders NOT JUDGED for both — correct, and
+	// not what this golden is named for (issue #422's three states).
+	env := newEnvFakeEnv()
+	env.env["SNUG_PODMAN"] = "/opt/snug-podman/bin/podman"
+	env.env["SNUG_PODMAN_ROOT"] = "/opt/snug-podman"
+	env.dirs["/opt/snug-podman"] = true
+	env.files["/opt/snug-podman/bin/podman"] = true
 
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
-		[]policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, envGoldenCtx(), newEnvFakeEnv())
+		[]policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, envGoldenCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := captureFile(t, func(f io.Writer) { describeContainers(f, p, containersFor(p)) })
+	got := captureFile(t, func(f io.Writer) { describeContainers(f, p, containersFor(env, p)) })
 
 	path := filepath.Join("testdata", "containers.podman-pinned.txt")
 	if *update {
@@ -156,11 +165,12 @@ func TestGoldenContainersEngineInsideAWritableGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	const engineBin = "/home/u/proj/sub/bin/podman"
-	t.Setenv("SNUG_PODMAN", engineBin)
-	t.Setenv("SNUG_PODMAN_ROOT", "")
+	env := newEnvFakeEnv()
+	env.env["SNUG_PODMAN"] = engineBin
+	env.files[engineBin] = true
 
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
-		[]policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, envGoldenCtx(), newEnvFakeEnv())
+		[]policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, envGoldenCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +182,7 @@ func TestGoldenContainersEngineInsideAWritableGrant(t *testing.T) {
 		t.Fatalf("fixture: no rw grant covers %s, so this golden would pin the ACCEPTING "+
 			"sentence and issue #405's disclosure would go unasserted", engineBin)
 	}
-	got := captureFile(t, func(f io.Writer) { describeContainers(f, p, containersFor(p)) })
+	got := captureFile(t, func(f io.Writer) { describeContainers(f, p, containersFor(env, p)) })
 	if !strings.Contains(got, "THIS RUN WILL REFUSE") {
 		t.Errorf("the CONTAINERS block does not say the run will be refused for a "+
 			"payload-writable engine binary, which is the whole of issue #405's "+
@@ -205,8 +215,8 @@ func TestGoldenContainersEngineInsideAWritableGrant(t *testing.T) {
 // not — the same trap $SNUG_PODMAN is, two lines above. The pinned value is the
 // ordinary host: nothing configured. The other three renderings have a golden
 // of their own, below.
-func containersFor(p *policy.Policy) *reportContainers {
-	return buildContainersReport(p, func() engine.SignaturePolicySummary {
+func containersFor(env policy.Environ, p *policy.Policy) *reportContainers {
+	return buildContainersReport(env, p, func() engine.SignaturePolicySummary {
 		return engine.SignaturePolicySummary{}
 	})
 }
@@ -224,10 +234,9 @@ func TestGoldenSignatureLine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SNUG_PODMAN", "")
-	t.Setenv("SNUG_PODMAN_ROOT", "")
+	env := newEnvFakeEnv()
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
-		[]policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, envGoldenCtx(), newEnvFakeEnv())
+		[]policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, envGoldenCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +261,7 @@ func TestGoldenSignatureLine(t *testing.T) {
 	for _, st := range states {
 		fmt.Fprintf(&b, "── %s\n", st.name)
 		b.WriteString(captureFile(t, func(f io.Writer) {
-			describeSignaturePolicy(f, buildContainersReport(p,
+			describeSignaturePolicy(f, buildContainersReport(env, p,
 				func() engine.SignaturePolicySummary { return st.sig }))
 		}))
 	}

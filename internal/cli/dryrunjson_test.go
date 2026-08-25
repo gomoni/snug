@@ -59,13 +59,19 @@ func jsonGoldenReportWithEngine(t *testing.T, sel []policy.ProfileName, refused 
 	if err != nil {
 		t.Fatal(err)
 	}
-	// $SNUG_PODMAN and $SNUG_PODMAN_ROOT reach the CONTAINERS block through
-	// os.Getenv, so a developer with either exported would otherwise write
-	// their own host into the golden.
-	t.Setenv("SNUG_PODMAN", engineBin)
-	t.Setenv("SNUG_PODMAN_ROOT", "")
+	// $SNUG_PODMAN and $SNUG_PODMAN_ROOT reach the CONTAINERS block through the
+	// INJECTED Environ since issue #422, so the fake host is what decides them
+	// and a developer with either exported cannot write their own host into the
+	// golden. engineBin is declared a regular FILE for the same reason the human
+	// golden declares one: without an object of the right kind the block renders
+	// NOT JUDGED, which is a different case from the refusal this pins.
+	env := newEnvFakeEnv()
+	if engineBin != "" {
+		env.env["SNUG_PODMAN"] = engineBin
+		env.files[engineBin] = true
+	}
 
-	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), newEnvFakeEnv())
+	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), env)
 	switch {
 	case refused && err == nil:
 		t.Fatalf("Resolve(%v) was expected to be refused; if this selection became runnable, "+
@@ -74,7 +80,7 @@ func jsonGoldenReportWithEngine(t *testing.T, sel []policy.ProfileName, refused 
 		t.Fatalf("Resolve(%v): %v", sel, err)
 	}
 
-	rep := buildReport(p, p.BwrapArgs(0, 0), config{json: true}, err, pinnedSignaturePolicy)
+	rep := buildReport(env, p, p.BwrapArgs(0, 0), config{json: true}, err, pinnedSignaturePolicy)
 	rep.Seccomp = jsonGoldenSeccomp
 
 	var buf bytes.Buffer
@@ -276,8 +282,6 @@ func TestHumanAndJSONFilesystemBlocksAgree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SNUG_PODMAN", "")
-	t.Setenv("SNUG_PODMAN_ROOT", "")
 	// The engine selection deliberately: it is the widest mount set any
 	// shipped profile produces, and it is the one that carries a graft map as
 	// well — which the FILESYSTEM block must NOT list and the `mounts` array
@@ -292,7 +296,7 @@ func TestHumanAndJSONFilesystemBlocksAgree(t *testing.T) {
 	human := dryRunText(p, args, config{}, nil)
 
 	var jsonOut bytes.Buffer
-	if err := dryRun(&jsonOut, p, args, config{json: true}, nil); err != nil {
+	if err := dryRun(newEnvFakeEnv(), &jsonOut, p, args, config{json: true}, nil); err != nil {
 		t.Fatalf("dryRun --json: %v", err)
 	}
 	var doc struct {
@@ -439,8 +443,6 @@ func TestJSONNeverCarriesASecretsPlaintext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SNUG_PODMAN", "")
-	t.Setenv("SNUG_PODMAN_ROOT", "")
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
 		profile.BuiltinDefaults(), envGoldenCtx(), newEnvFakeEnv())
 	if err != nil {
@@ -466,7 +468,7 @@ func TestJSONNeverCarriesASecretsPlaintext(t *testing.T) {
 		t.Fatal("the fixture policy does not carry the needle, so its absence below proves nothing")
 	}
 
-	rep := buildReport(p, p.BwrapArgs(0, 0), config{json: true}, nil, pinnedSignaturePolicy)
+	rep := buildReport(newEnvFakeEnv(), p, p.BwrapArgs(0, 0), config{json: true}, nil, pinnedSignaturePolicy)
 	var buf bytes.Buffer
 	if err := renderJSON(&buf, rep); err != nil {
 		t.Fatalf("renderJSON: %v", err)

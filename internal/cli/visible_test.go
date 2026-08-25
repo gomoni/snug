@@ -234,7 +234,7 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	// or bidi. Same predicate, different spelling, same guarantee: nothing
 	// raw reaches the artifact.
 	var doc bytes.Buffer
-	if err := dryRun(&doc, p, p.BwrapArgs(0, 0), config{json: true}, nil); err != nil {
+	if err := dryRun(newEnvFakeEnv(), &doc, p, p.BwrapArgs(0, 0), config{json: true}, nil); err != nil {
 		t.Fatalf("dryRun --json: %v", err)
 	}
 	// POSITIVE CONTROL first: the poisoned values really did reach the

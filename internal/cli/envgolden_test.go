@@ -36,8 +36,14 @@ var update = flag.Bool("update", false, "rewrite golden files")
 // resolve. @sys's optional entries are deliberately ABSENT — an optional grant
 // whose host path is missing is skipped, which is the arrangement most hosts
 // are actually in for at least one of them.
+// files is the fake's REGULAR FILES, and it exists because envFakeInfo used to
+// report fs.ModeDir for everything in dirs: with only dirs, no path on this fake
+// host could be a regular file, so every $SNUG_PODMAN would render NOT JUDGED
+// (issue #422's kind check) and the pinned golden would silently stop testing
+// the clearance it is named for.
 type envFakeEnv struct {
 	dirs  map[string]bool
+	files map[string]bool
 	links map[string]string
 	env   map[string]string
 }
@@ -73,6 +79,10 @@ func newEnvFakeEnv() *envFakeEnv {
 		// — the same order fakeEnv.EvalSymlinks uses, so a link can repoint a
 		// path that is also a real directory in dirs.
 		links: map[string]string{},
+		// Empty by default: a fixture that wants a regular file says so, and
+		// the two goldens that pin a $SNUG_PODMAN clearance are the ones that
+		// do.
+		files: map[string]bool{},
 		// EDITOR is set because @claude re-admits it past --clearenv. It is the
 		// POSITIVE CONTROL for that whole mechanism: without one variable the
 		// host actually has, the @claude golden would be identical to the
@@ -89,7 +99,7 @@ func (f *envFakeEnv) EvalSymlinks(p string) (string, error) {
 	if t, ok := f.links[p]; ok {
 		return t, nil
 	}
-	if f.dirs[p] {
+	if f.dirs[p] || f.files[p] {
 		return p, nil
 	}
 	return "", &fs.PathError{Op: "lstat", Path: p, Err: fs.ErrNotExist}
@@ -97,6 +107,9 @@ func (f *envFakeEnv) EvalSymlinks(p string) (string, error) {
 
 func (f *envFakeEnv) Stat(p string) (fs.FileInfo, error) {
 	if f.dirs[p] {
+		return envFakeInfo{name: p, dir: true}, nil
+	}
+	if f.files[p] {
 		return envFakeInfo{name: p}, nil
 	}
 	return nil, &fs.PathError{Op: "stat", Path: p, Err: fs.ErrNotExist}
@@ -111,13 +124,28 @@ func (f *envFakeEnv) LookupEnv(k string) (string, bool) {
 func (f *envFakeEnv) Uid() int { return 1000 }
 func (f *envFakeEnv) Gid() int { return 1000 }
 
-type envFakeInfo struct{ name string }
+// LookPath is never called against this fixture — the golden tests it backs
+// never reach preflightPodmanBinary — so it models an empty PATH: not found,
+// answered from the fixture's own (absent) data.
+func (f *envFakeEnv) LookPath(name string) (string, error) {
+	return "", &fs.PathError{Op: "lookpath", Path: name, Err: fs.ErrNotExist}
+}
 
-func (i envFakeInfo) Name() string       { return i.name }
-func (i envFakeInfo) Size() int64        { return 0 }
-func (i envFakeInfo) Mode() fs.FileMode  { return fs.ModeDir }
+type envFakeInfo struct {
+	name string
+	dir  bool
+}
+
+func (i envFakeInfo) Name() string { return i.name }
+func (i envFakeInfo) Size() int64  { return 0 }
+func (i envFakeInfo) Mode() fs.FileMode {
+	if i.dir {
+		return fs.ModeDir
+	}
+	return 0
+}
 func (i envFakeInfo) ModTime() time.Time { return time.Time{} }
-func (i envFakeInfo) IsDir() bool        { return true }
+func (i envFakeInfo) IsDir() bool        { return i.dir }
 func (i envFakeInfo) Sys() any           { return nil }
 
 // envGoldenCtx pins Target and Home to fixed FAKE paths. Not t.TempDir():

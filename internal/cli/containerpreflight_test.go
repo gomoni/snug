@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // TestMain exists for ONE reason: preflightResolvConfBind re-execs
@@ -144,7 +146,7 @@ func TestPreflightToolchainRootNamesRatherThanGuesses(t *testing.T) {
 
 	// CONTROL: the engine really is inside the named root — accepted.
 	t.Setenv("SNUG_PODMAN_ROOT", root)
-	got, err := preflightToolchainRoot(podman)
+	got, err := preflightToolchainRoot(policy.OSEnviron{}, podman)
 	if err != nil {
 		t.Fatalf("control: a root that contains the resolved engine was refused, so every "+
 			"refusal below could be refusing for the wrong reason: %v", err)
@@ -157,7 +159,7 @@ func TestPreflightToolchainRootNamesRatherThanGuesses(t *testing.T) {
 	// distribution podman in /usr/bin, which @sys already exposes, so G4's
 	// first disjunct answers and there is nothing to record.
 	t.Setenv("SNUG_PODMAN_ROOT", "")
-	if got, err := preflightToolchainRoot("/usr/bin/podman"); err != nil || got != "" {
+	if got, err := preflightToolchainRoot(policy.OSEnviron{}, "/usr/bin/podman"); err != nil || got != "" {
 		t.Errorf("with $SNUG_PODMAN_ROOT unset: got (%q, %v), want (\"\", nil) — an engine the "+
 			"sandbox's own grants already expose needs no toolchain root, and making this a "+
 			"failure would refuse a configuration that works", got, err)
@@ -168,7 +170,7 @@ func TestPreflightToolchainRootNamesRatherThanGuesses(t *testing.T) {
 	// seconds later, inside a namespace nobody can look into.
 	other := t.TempDir()
 	t.Setenv("SNUG_PODMAN_ROOT", other)
-	_, err = preflightToolchainRoot(podman)
+	_, err = preflightToolchainRoot(policy.OSEnviron{}, podman)
 	if err == nil {
 		t.Fatalf("a root (%s) that does not contain the resolved engine (%s) was accepted",
 			other, podman)
@@ -182,7 +184,7 @@ func TestPreflightToolchainRootNamesRatherThanGuesses(t *testing.T) {
 	// count as containing the engine: the check is an ancestor test, not
 	// strings.HasPrefix on the bare value.
 	t.Setenv("SNUG_PODMAN_ROOT", root)
-	if _, err := preflightToolchainRoot(root + "-other/bin/podman"); err == nil {
+	if _, err := preflightToolchainRoot(policy.OSEnviron{}, root+"-other/bin/podman"); err == nil {
 		t.Errorf("an engine at %s-other/bin/podman was accepted as living inside %s", root, root)
 	}
 
@@ -190,13 +192,13 @@ func TestPreflightToolchainRootNamesRatherThanGuesses(t *testing.T) {
 	// relative root means one thing here and another to every process that
 	// reads it later.
 	t.Setenv("SNUG_PODMAN_ROOT", "relative/root")
-	if _, err := preflightToolchainRoot(podman); err == nil {
+	if _, err := preflightToolchainRoot(policy.OSEnviron{}, podman); err == nil {
 		t.Error("a relative $SNUG_PODMAN_ROOT was accepted")
 	}
 
 	// NOT A DIRECTORY: refused. It names a tree, not a file.
 	t.Setenv("SNUG_PODMAN_ROOT", podman)
-	if _, err := preflightToolchainRoot(podman); err == nil {
+	if _, err := preflightToolchainRoot(policy.OSEnviron{}, podman); err == nil {
 		t.Error("a $SNUG_PODMAN_ROOT naming a FILE was accepted")
 	}
 }

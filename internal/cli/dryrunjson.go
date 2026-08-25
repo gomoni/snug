@@ -543,8 +543,19 @@ type jsonContainers struct {
 	EngineBinaryRefusalBytes  byteList `json:"engine_binary_refusal_bytes,omitempty"`
 	ToolchainRootRefusal      string   `json:"toolchain_root_refusal,omitempty"`
 	ToolchainRootRefusalBytes byteList `json:"toolchain_root_refusal_bytes,omitempty"`
-	Logins                    bool     `json:"logins"`
-	PortMapping               bool     `json:"port_mapping"`
+	// What each path RESOLVES to on this host, and whether an object of the
+	// right kind is there (issue #422). A consumer needs all three states the
+	// human block distinguishes: refused, cleared, and not judged — which is
+	// `*_refusal` empty AND the `*_is_*` flag false, never a clearance. A
+	// symlink target is host text, so both carry a bytes sibling.
+	EngineBinaryResolved       string   `json:"engine_binary_resolved,omitempty"`
+	EngineBinaryResolvedBytes  byteList `json:"engine_binary_resolved_bytes,omitempty"`
+	EngineBinaryIsRegularFile  bool     `json:"engine_binary_is_regular_file"`
+	ToolchainRootResolved      string   `json:"toolchain_root_resolved,omitempty"`
+	ToolchainRootResolvedBytes byteList `json:"toolchain_root_resolved_bytes,omitempty"`
+	ToolchainRootIsDir         bool     `json:"toolchain_root_is_dir"`
+	Logins                     bool     `json:"logins"`
+	PortMapping                bool     `json:"port_mapping"`
 }
 
 type jsonEnvVar struct {
@@ -788,12 +799,14 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 
 	if c := rep.Containers; c != nil {
 		jc := jsonContainers{
-			Socket:             c.Socket,
-			EngineSource:       c.EngineSource,
-			RegistrySearch:     c.RegistrySearch,
-			SignaturesVerified: c.SignaturesVerified,
-			Logins:             c.Logins,
-			PortMapping:        c.PortMapping,
+			Socket:                    c.Socket,
+			EngineSource:              c.EngineSource,
+			RegistrySearch:            c.RegistrySearch,
+			SignaturesVerified:        c.SignaturesVerified,
+			EngineBinaryIsRegularFile: c.EngineBinaryIsRegularFile,
+			ToolchainRootIsDir:        c.ToolchainRootIsDir,
+			Logins:                    c.Logins,
+			PortMapping:               c.PortMapping,
 		}
 		// Both are environment variables' VALUES — host text, and the reason
 		// the human block puts them through visibleValue.
@@ -803,6 +816,8 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 		jc.SignaturePolicyRefusal, jc.SignaturePolicyRefusalBytes = e.text(c.SignaturePolicyRefusal)
 		jc.EngineBinaryRefusal, jc.EngineBinaryRefusalBytes = e.text(c.EngineBinaryRefusal)
 		jc.ToolchainRootRefusal, jc.ToolchainRootRefusalBytes = e.text(c.ToolchainRootRefusal)
+		jc.EngineBinaryResolved, jc.EngineBinaryResolvedBytes = e.text(c.EngineBinaryResolved)
+		jc.ToolchainRootResolved, jc.ToolchainRootResolvedBytes = e.text(c.ToolchainRootResolved)
 		doc.Containers = &jc
 	}
 

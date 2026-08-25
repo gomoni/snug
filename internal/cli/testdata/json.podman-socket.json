@@ -348,6 +348,8 @@
     "signatures_verified": false,
     "signature_policy_source": "",
     "signature_policy_refusal": "",
+    "engine_binary_is_regular_file": false,
+    "toolchain_root_is_dir": false,
     "logins": false,
     "port_mapping": false
   },

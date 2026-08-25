@@ -241,6 +241,29 @@ func TestGoldenEngineViewPlannedPaths(t *testing.T) {
 	}
 }
 
+// TestBuildReportJudgesTheToolchainRootWithoutRecordingIt is --dry-run's own
+// version of the assertion just above (TestGoldenEngineViewPlannedPaths's
+// EngineToolchainRoot check): JudgeEngineToolchain, buildReport's caller,
+// records nothing, so a cleared $SNUG_PODMAN_ROOT on the fake host must leave
+// EngineToolchainRoot empty after a full buildReport. --dry-run becoming a
+// second writer of a write-once field is exactly what would make the run and
+// the screen able to disagree about which root is recorded.
+func TestBuildReportJudgesTheToolchainRootWithoutRecordingIt(t *testing.T) {
+	p := engineViewPolicy(t)
+	env := newEnvFakeEnv()
+	env.env["SNUG_PODMAN_ROOT"] = "/home/u/secrets-tools" // clean, ungranted, cleared
+	env.dirs["/home/u/secrets-tools"] = true
+
+	_ = buildReport(env, p, nil, config{}, nil, func() engine.SignaturePolicySummary {
+		return engine.SignaturePolicySummary{}
+	})
+
+	if p.EngineToolchainRoot != "" {
+		t.Errorf("buildReport left EngineToolchainRoot = %q; --dry-run must judge without "+
+			"recording", p.EngineToolchainRoot)
+	}
+}
+
 // plannedIdentitySubs are the two tokens engine.planPaths composes from THIS
 // process's own identity, with the placeholder each is replaced by.
 //
