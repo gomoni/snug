@@ -36,13 +36,28 @@ import (
 const dryRunFormat = 1
 
 // renderJSON writes the WHOLE of stdout for a machine-readable dry run — one
-// object, never NDJSON, and for EVERY exit code including a refusal.
+// object, never NDJSON, and for every exit code `run` produces.
 //
 // That last part is the design decision most worth keeping. `snug --dry-run
 // --json x > policy.json` must produce a parseable file even when the policy
 // was refused; clang's SARIF does the opposite (0 bytes on redirect) and it is
 // the failure mode this format is designed against. The human refusal text
 // stays on stderr, where it already was.
+//
+// IT SAID "EVERY EXIT CODE" AND WAS FALSE FOR FIVE REFUSAL CLASSES (issue
+// #334), which is worse than not claiming it: the strongest sentence in the
+// feature's documentation was the one a user's redirect disproved. A refusal
+// ahead of Validate has no policy, never reached this renderer, and wrote zero
+// bytes. renderJSONRefusal below is the other half, and `run` now funnels
+// every one of its refusals through refuse() so a new one cannot skip it
+// silently.
+//
+// THE ONE EXIT THAT IS STILL NOT A DOCUMENT, named rather than left for a
+// redirect to find: a flag that does not PARSE (exit 64) prints usage text and
+// stops in Main, before `run`. The document's own flag is among the ones that
+// failed to parse, so there is no request for a document to honour — and the
+// answer to `--jsn` is the usage screen, not a JSON object saying the usage
+// screen would have helped.
 //
 // The discriminator comes FIRST, which is why this builds an explicit struct
 // tree rather than marshalling a map: encoding/json sorts map keys
@@ -59,7 +74,73 @@ func renderJSON(out io.Writer, rep Report) error {
 	// assertion instead of auditing every field for a sibling it may not know
 	// about yet.
 	doc.Snug.Lossy = e.lossy
+	return writeJSONDoc(out, doc)
+}
 
+// renderJSONRefusal is the document for a refusal that happened BEFORE a policy
+// existed, and it is what makes renderJSON's doc comment above true rather than
+// aspirational (issue #334).
+//
+// WHAT WAS MEASURED. `pol != nil` was the real boundary: policy.Resolve returns
+// a policy only for a Validate failure, so every refusal ahead of Validate never
+// entered the JSON path at all. All seven classes below exit 77; five of them
+// wrote ZERO BYTES — unknown profile, target does not exist, @net-host without
+// --i-know, a missing @tmp-shared grant, an unparseable profile file. So `snug
+// --dry-run --json x > policy.json` produced exactly the empty file the format
+// documents itself as designed against, for the most ordinary user errors, which
+// are also the ones a CI gate hits most.
+//
+// WHY THE BLOCKS ARE ABSENT AND NOT EMPTY. There is no policy to describe, and
+// "mounts": [] would say this sandbox mounts nothing — a statement about a
+// sandbox, made by a document that never got far enough to have one. A consumer
+// reading the empty array is worse off than one that finds no key and knows the
+// question was never answered. snug.policy_resolved is the same fact as one
+// boolean, for a gate that would rather not test for a missing key.
+//
+// WHAT IT DELIBERATELY DOES NOT CARRY. Not the selection, not the target: both
+// are knowable at some of these call sites and not at others (profile.Load fails
+// before the selection is assembled), and a key whose presence depends on which
+// refusal fired is worse than one that is never there. Adding either later is
+// additive and needs no format bump.
+func renderJSONRefusal(out io.Writer, message string, code int) error {
+	var e lossyEncoder
+	// Through the SAME encoder as every other host-influenced value: these
+	// messages quote host paths (an unreadable profile file names it, a
+	// missing target names it), so they can carry bytes no Go string renders
+	// and runes that forge a row.
+	msg, _ := e.text(message)
+	doc := jsonRefusalDoc{
+		Snug: jsonMeta{
+			Format:         dryRunFormat,
+			Outcome:        "refused",
+			ExitCode:       code,
+			PolicyResolved: false,
+		},
+		Refusal: jsonRefusal{Message: msg},
+	}
+	doc.Snug.Lossy = e.lossy
+	return writeJSONDoc(out, doc)
+}
+
+// jsonRefusalDoc is the policy-less document. It is a SEPARATE type rather than
+// jsonDoc with everything omitempty, and that is the load-bearing choice: with
+// omitempty, "absent" and "the zero value" become the same wire form, so a
+// future field that is legitimately false or empty in a real document would
+// silently vanish from it. Two types keep the two shapes honest, and the
+// discriminator (snug.outcome, then snug.policy_resolved) is what a consumer
+// reads to know which one it is holding — exactly the order renderJSON's doc
+// comment argues for.
+type jsonRefusalDoc struct {
+	Snug    jsonMeta    `json:"snug"`
+	Refusal jsonRefusal `json:"refusal"`
+}
+
+// writeJSONDoc marshals, escapes and writes — the tail both renderers share, so
+// the forging-rune escape cannot be applied to one document shape and forgotten
+// on the other. That is this repo's most-repeated defect (a rule written once
+// and applied to one of its two halves), and here it is closed by there being
+// one place to apply it.
+func writeJSONDoc(out io.Writer, doc any) error {
 	b, err := json.MarshalIndent(doc, "", "  ")
 	if err == nil {
 		// After marshalling, ONCE, so it covers every string in the document
@@ -68,9 +149,10 @@ func renderJSON(out io.Writer, rep Report) error {
 		b = escapeRawForgingRunes(b)
 	}
 	if err != nil {
-		// Unreachable for this tree — it is strings, bools, ints and slices of
-		// those — but reported rather than swallowed: a machine format that
-		// half-wrote itself and said nothing is invariant 5's shape.
+		// Unreachable for either tree — both are strings, bools, ints and
+		// slices of those — but reported rather than swallowed: a machine
+		// format that half-wrote itself and said nothing is invariant 5's
+		// shape.
 		return fmt.Errorf("rendering the machine-readable dry run: %w", err)
 	}
 	if _, err := out.Write(append(b, '\n')); err != nil {
@@ -192,11 +274,22 @@ func (e *lossyEncoder) texts(in []string) ([]string, []byteList) {
 // a list beside policy.IsForgingRune is the second catalogue that drifts, and
 // the hazard set stays the screen's.
 //
+// THE BOUND IS 0x20 BECAUSE THAT IS WHAT THE PARAGRAPH ABOVE ARGUES, and it
+// shipped as 0x80 for a milestone (issue #333). encoding/json escapes runes
+// BELOW U+0020, plus quote and backslash; it does not escape U+007F, and
+// policy.IsForgingRune answers true for U+007F. So the two bounds differ by
+// exactly one code point, DEL, and it reached the document raw — in an
+// environment value, in mounts[].guest, in mounts[].host and in bwrap.argv —
+// with `snug.lossy` false beside it asserting the document was clean. The
+// justification and the constant now state the same boundary, which is the
+// half that was missing: the comment was right and the code was not, and
+// nothing made them answer to each other.
+//
 // The name is not `rawForgingRune`: screensinks_test.go already owns that one,
 // for the sweep every SCREEN in this package shares. Two predicates, one
 // vocabulary — that one asks "did a raw hazard reach a terminal", this one
 // asks "did one survive encoding/json".
-func jsonRawForgingRune(r rune) bool { return r >= 0x80 && policy.IsForgingRune(r) }
+func jsonRawForgingRune(r rune) bool { return r >= 0x20 && policy.IsForgingRune(r) }
 
 func escapeRawForgingRunes(b []byte) []byte {
 	// The common document has none, and re-allocating every one of them to
@@ -281,6 +374,29 @@ type jsonMeta struct {
 	Format  int    `json:"format"`
 	Outcome string `json:"outcome"`
 	Lossy   bool   `json:"lossy"`
+	// ExitCode is the process exit status this document accompanies, so a
+	// consumer that only has the FILE still knows what the shell would have
+	// seen. Both are stated because they are not the same fact: `outcome` is
+	// snug's verdict on the policy and `exit_code` is sysexits-flavoured and
+	// distinguishes a policy refusal (77) from an unavailable host (69) from
+	// snug's own bug (70).
+	ExitCode int `json:"exit_code"`
+	// PolicyResolved says whether the policy-derived blocks are in this
+	// document at all (issue #334).
+	//
+	// It exists because a refusal can happen on either side of
+	// policy.Resolve, and the two produce documents of different SHAPE: a
+	// profile file that does not parse, an unknown profile name or a target
+	// that does not exist are refused before any policy exists, so there are
+	// no mounts, no environment and no argv to describe. Those blocks are then
+	// ABSENT rather than empty — a consumer reading `"mounts": []` as "this
+	// sandbox mounts nothing" would be worse off than one that sees no
+	// `mounts` key and knows not to ask.
+	//
+	// Absence alone is the mechanism; this boolean is the one-expression
+	// spelling of it, so a gate does not have to test for a missing key to
+	// learn which shape it is holding.
+	PolicyResolved bool `json:"policy_resolved"`
 }
 
 // jsonRefusal carries the message and nothing else in format 1. See
@@ -418,8 +534,17 @@ type jsonContainers struct {
 	SignaturePolicySourceBytes  byteList `json:"signature_policy_source_bytes,omitempty"`
 	SignaturePolicyRefusal      string   `json:"signature_policy_refusal"`
 	SignaturePolicyRefusalBytes byteList `json:"signature_policy_refusal_bytes,omitempty"`
-	Logins                      bool     `json:"logins"`
-	PortMapping                 bool     `json:"port_mapping"`
+	// Why a real run will refuse the engine binary or its toolchain root: a
+	// grant of this sandbox makes it writable (issue #405). Additive and
+	// omitempty — they are only computable when $SNUG_PODMAN/$SNUG_PODMAN_ROOT
+	// name a path, since --dry-run runs no preflight and cannot resolve PATH.
+	// Both are derived from env values, so both carry a bytes sibling.
+	EngineBinaryRefusal       string   `json:"engine_binary_refusal,omitempty"`
+	EngineBinaryRefusalBytes  byteList `json:"engine_binary_refusal_bytes,omitempty"`
+	ToolchainRootRefusal      string   `json:"toolchain_root_refusal,omitempty"`
+	ToolchainRootRefusalBytes byteList `json:"toolchain_root_refusal_bytes,omitempty"`
+	Logins                    bool     `json:"logins"`
+	PortMapping               bool     `json:"port_mapping"`
 }
 
 type jsonEnvVar struct {
@@ -538,7 +663,16 @@ type jsonPasta struct {
 
 func (e *lossyEncoder) document(rep Report) jsonDoc {
 	doc := jsonDoc{
-		Snug: jsonMeta{Format: dryRunFormat, Outcome: rep.Outcome},
+		Snug: jsonMeta{
+			Format:   dryRunFormat,
+			Outcome:  rep.Outcome,
+			ExitCode: rep.ExitCode,
+			// A Report only exists where a policy does: buildReport takes a
+			// *policy.Policy and dereferences it on its first line. So this
+			// renderer's answer is a constant, and the false case lives in
+			// renderJSONRefusal, which has no Report at all.
+			PolicyResolved: true,
+		},
 		Profiles: jsonProfiles{
 			Selected: policy.NameStrings(rep.Selected),
 			Implied:  policy.NameStrings(rep.Implied),
@@ -667,6 +801,8 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 		jc.ToolchainRoot, jc.ToolchainRootBytes = e.text(c.ToolchainRoot)
 		jc.SignaturePolicySource, jc.SignaturePolicySourceBytes = e.text(c.SignaturePolicySource)
 		jc.SignaturePolicyRefusal, jc.SignaturePolicyRefusalBytes = e.text(c.SignaturePolicyRefusal)
+		jc.EngineBinaryRefusal, jc.EngineBinaryRefusalBytes = e.text(c.EngineBinaryRefusal)
+		jc.ToolchainRootRefusal, jc.ToolchainRootRefusalBytes = e.text(c.ToolchainRootRefusal)
 		doc.Containers = &jc
 	}
 

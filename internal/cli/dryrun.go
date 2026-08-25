@@ -1074,7 +1074,7 @@ func describeContainers(out io.Writer, p *policy.Policy, c *reportContainers) {
 	}
 	fmt.Fprintf(out, "CONTAINERS  a per-sandbox engine behind a filtering proxy at %s\n",
 		containerSocketGuest)
-	describeEngineSource(out)
+	describeEngineSource(out, c)
 	fmt.Fprintf(out, "         Containers run in THIS sandbox's own network namespace: with no\n")
 	fmt.Fprintf(out, "         '@net', a container has no egress either; with '@net', full egress\n")
 	fmt.Fprintf(out, "         via the sandbox's pasta, exactly as the NETWORK block above states.\n")
@@ -1114,22 +1114,46 @@ func describeContainers(out io.Writer, p *policy.Policy, c *reportContainers) {
 // "which of the three answered" legible without a probe. Their VALUES are
 // host-controlled, so both go through visibleValue, the same guard every other
 // host-controlled value on this screen uses against a forged line.
-func describeEngineSource(out io.Writer) {
+func describeEngineSource(out io.Writer, c *reportContainers) {
 	if custom := os.Getenv("SNUG_PODMAN"); custom != "" {
 		fmt.Fprintf(out, "         engine      binary %s ($SNUG_PODMAN) — trusted outright, PATH\n",
 			visibleValue(custom))
 		fmt.Fprintf(out, "                     resolution bypassed on purpose; refused if it is\n")
 		fmt.Fprintf(out, "                     itself a host-escape shim (a testing seam, not a\n")
 		fmt.Fprintf(out, "                     supported way to install an engine)\n")
+		if c.EngineBinaryRefusal != "" {
+			fmt.Fprintf(out, "                     THIS RUN WILL REFUSE: a grant of this sandbox makes that\n")
+			fmt.Fprintf(out, "                     path WRITABLE, and snug execs the engine as uid 0, pid 1\n")
+			fmt.Fprintf(out, "                     of its own pid namespace — so a payload-writable engine is\n")
+			fmt.Fprintf(out, "                     the payload choosing what runs as root (issue #405)\n")
+		} else {
+			fmt.Fprintf(out, "                     no grant of this sandbox makes that path writable, so the\n")
+			fmt.Fprintf(out, "                     engine is not payload-controlled (issue #405)\n")
+		}
+		fmt.Fprintf(out, "                     judged on the path AS SPELLED: a real run canonicalises it\n")
+		fmt.Fprintf(out, "                     first, and --dry-run reads no filesystem\n")
 	} else {
 		fmt.Fprintf(out, "         engine      binary resolved from PATH when the run starts — preflight\n")
 		fmt.Fprintf(out, "                     P1 refuses a host-escape shim there; --dry-run does not\n")
 		fmt.Fprintf(out, "                     probe PATH, so it names the source, not the binary\n")
+		fmt.Fprintf(out, "                     the run also refuses it if any grant of this sandbox makes it\n")
+		fmt.Fprintf(out, "                     WRITABLE — snug execs it as uid 0, pid 1 of the engine's own\n")
+		fmt.Fprintf(out, "                     pid namespace (issue #405). Not checkable here: that needs\n")
+		fmt.Fprintf(out, "                     the resolved binary, and this screen has only the source\n")
 	}
 	if root := os.Getenv("SNUG_PODMAN_ROOT"); root != "" {
 		fmt.Fprintf(out, "                     toolchain root %s ($SNUG_PODMAN_ROOT) — named, not\n",
 			visibleValue(root))
 		fmt.Fprintf(out, "                     derived from the binary path, and must contain it\n")
+		if c.ToolchainRootRefusal != "" {
+			fmt.Fprintf(out, "                     THIS RUN WILL REFUSE: a grant of this sandbox makes the\n")
+			fmt.Fprintf(out, "                     root, or part of the tree below it, WRITABLE — the engine\n")
+			fmt.Fprintf(out, "                     resolves conmon, crun and netavark out of that tree as\n")
+			fmt.Fprintf(out, "                     uid 0 (issue #405)\n")
+		} else {
+			fmt.Fprintf(out, "                     no grant makes the root or any part of the tree below it\n")
+			fmt.Fprintf(out, "                     writable (issue #405)\n")
+		}
 	}
 }
 

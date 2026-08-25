@@ -61,6 +61,19 @@ type Report struct {
 	// without a version bump.
 	Refusal string
 
+	// ExitCode is the process status this report's document accompanies, so a
+	// consumer holding only the redirected file still knows what the shell
+	// saw. It is the mapping run() implements — 0 for a policy that can run,
+	// exitPolicy for one Validate refused — and it is derived here rather
+	// than threaded through dryRun because the two facts are the same
+	// decision: refusedBy != nil IS why run() returns 77.
+	//
+	// The claim is not left as a comment: the refusal-class enumeration in
+	// jsonrefusal_test.go drives the real refusals and compares this field
+	// against the exit status run() actually returned, so a divergence is a
+	// red test rather than a stale sentence.
+	ExitCode int
+
 	Target string
 	Home   string
 	Chdir  string
@@ -245,8 +258,29 @@ type reportContainers struct {
 	// --dry-run is the mechanism by which a human trusts snug at all. It is
 	// host text twice over — a path and a decoder's rendering of the file.
 	SignaturePolicyRefusal string
-	Logins                 bool
-	PortMapping            bool
+	// EngineBinaryRefusal is why a real run will REFUSE this engine binary: a
+	// grant of this sandbox makes it writable, so snug would be exec'ing a file
+	// the PAYLOAD chooses, as uid 0 and pid 1 of the engine's pid namespace
+	// (issue #405, first half). Empty when no grant covers it.
+	//
+	// Empty ALSO when $SNUG_PODMAN is unset, and that is the honest limit rather
+	// than an omission: --dry-run runs no preflight, so it cannot resolve PATH,
+	// and there is no path to judge. The screen says which of the two it is.
+	//
+	// JUDGED ON THE PATH AS SPELLED. A real run canonicalises with
+	// ResolveExistingHostPath first (preflightPodmanBinary) and --dry-run touches
+	// no filesystem, so a symlinked spelling can differ from what the run judges.
+	// Naming the rule and the path is the disclosure #405 asked for — the most
+	// privileged exec of the run was the one thing this artifact never mentioned.
+	// Claiming the run's VERDICT would be a lie in the artifact a human is told
+	// to trust, so the screen states what it judged.
+	EngineBinaryRefusal string
+	// ToolchainRootRefusal is the same for $SNUG_PODMAN_ROOT, and it covers the
+	// arm G4b structurally could not see: a writable grant anywhere INSIDE the
+	// tree, not only at or above the root (issue #405, second half).
+	ToolchainRootRefusal string
+	Logins               bool
+	PortMapping          bool
 }
 
 type reportEnvVar struct {
@@ -374,6 +408,7 @@ func buildReport(p *policy.Policy, args []string, cfg config, refusedBy error,
 	if refusedBy != nil {
 		rep.Outcome = "refused"
 		rep.Refusal = refusedBy.Error()
+		rep.ExitCode = exitPolicy
 	}
 	rep.MountNotes = buildMountNotes(p, rep.Mounts)
 	// See BwrapIncomplete's own comment: this is the SAME condition
@@ -570,6 +605,17 @@ func buildContainersReport(p *policy.Policy, sig func() engine.SignaturePolicySu
 	if custom := os.Getenv("SNUG_PODMAN"); custom != "" {
 		c.EngineSource = "SNUG_PODMAN"
 		c.EngineBinary = custom
+		// Free and offline: an env read plus the same lexical predicate the run
+		// uses. No filesystem, so this stays inside --dry-run's own budget (see
+		// this function's doc comment on the signature-policy thunk).
+		if err := p.CheckEngineBinary(custom); err != nil {
+			c.EngineBinaryRefusal = err.Error()
+		}
+	}
+	if c.ToolchainRoot != "" {
+		if err := p.CheckEngineToolchainTree(c.ToolchainRoot); err != nil {
+			c.ToolchainRootRefusal = err.Error()
+		}
 	}
 	return c
 }

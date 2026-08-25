@@ -81,10 +81,12 @@ const (
 // The uid and pid digits carry exactly one piece of security content: WHICH
 // paths are per-run and which are per-target-and-persistent. So the
 // substitution is structure-preserving and uses two DISTINGUISHABLE
-// placeholders, and it deliberately leaves the 16-hex engineKey alone — that
-// value is sha256(pol.Target)[:16] and nothing else since #276, identical on
-// every machine, and it is the evidence that the store and the runroot are
-// keyed on the TARGET.
+// placeholders, and it deliberately leaves the engineKey hash alone — that
+// value is internal/targetkey.Hash(pol.Target), the full untruncated sha256
+// hex digest (issue #308's key-length ruling: engineKey used to truncate to
+// 16 hex chars, a lossy transform a reader could not detect from the name
+// alone), identical on every machine, and it is the evidence that the store
+// and the runroot are keyed on the TARGET.
 //
 // Read the golden and the distinction is on its face: the key hash appears in
 // the store and runroot rows and NOT in sock/conf; snug-UID-PID appears in
@@ -251,7 +253,7 @@ func plannedIdentitySubs() []struct{ from, to string } {
 		{fmt.Sprintf("snug-%d-%d", os.Getuid(), os.Getpid()), "snug-UID-PID"},
 		// The runroot's parent, which carries the uid a SECOND time — the
 		// reason a tag seam alone could never have produced this golden. The
-		// trailing dash keeps the 16-hex engineKey that follows it intact.
+		// trailing dash keeps the full-hex engineKey that follows it intact.
 		{fmt.Sprintf("snug-engines-%d-", os.Getuid()), "snug-engines-UID-"},
 	}
 }

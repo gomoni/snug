@@ -101,6 +101,8 @@ func Main() {
 			os.Exit(configCmd(argv[1:]))
 		case "attach":
 			os.Exit(attachCmd(argv[1:]))
+		case "engine":
+			os.Exit(engineCmd(argv[1:]))
 		case "help":
 			usage()
 			os.Exit(0)
@@ -244,18 +246,116 @@ func checkFlagCombination(cfg config) error {
 	return nil
 }
 
+// refuse is the plainest of run's four refusal funnels, and the four exist so
+// that "--dry-run --json produces a document for every exit code" is a property
+// of the control flow rather than a claim about it (issue #334).
+//
+// Before this, each refusal wrote its own line to stderr and returned its own
+// code, and five of them did so on paths that never reached a renderer — the
+// document was emitted only where policy.Resolve had handed back a policy to
+// describe. A sixth refusal added tomorrow would have joined them silently,
+// which is why the fix is a funnel and not five call sites: a new `return
+// exitPolicy` written the old way is caught by
+// TestEveryRefusalInRunGoesThroughAFunnel, which reads run's own AST and
+// treats every non-zero exit return as an obligation.
+//
+// refuse itself is the no-policy arm. refusePolicy is the arm that has one to
+// describe, refuseVerbatim the arm whose diagnostic is not an error value, and
+// refuseWithoutDocument the single named exemption. Four spellings, and the
+// sweep accepts exactly those four — the point is that the set is closed and
+// each member says in its own comment why it exists.
+//
+// stderr is unchanged, byte for byte. The human refusal text is where it
+// always was, and the JSON document is written only when this run actually
+// asked for one.
+func refuse(cfg config, code int, err error) int {
+	return refuseVerbatim(cfg, code, fmt.Sprintf("snug: %v\n", err), err.Error())
+}
+
+// refuseVerbatim is refuse for a diagnostic that is not a bare error value:
+// the multi-line refusals that explain a hole before declining it, and
+// targetBusyError's pre-formatted block. text goes to stderr exactly as
+// given; message is what the document's refusal.message carries.
+//
+// Two spellings rather than one because the two really are different — most
+// refusals ARE an error and formatting them here keeps "snug: %v" in one
+// place — and both are funnels, so the AST sweep accepts either and nothing
+// else.
+func refuseVerbatim(cfg config, code int, text, message string) int {
+	fmt.Fprint(os.Stderr, text)
+	if cfg.dryRun && cfg.json {
+		// A render failure is REPORTED and does not replace the refusal: "the
+		// policy was refused" is the fact the caller must not lose, and it is
+		// the same rule the Validate-failure path already follows.
+		if derr := renderJSONRefusal(os.Stdout, message, code); derr != nil {
+			fmt.Fprintf(os.Stderr, "snug: %v\n", derr)
+		}
+	}
+	return code
+}
+
+// refusePolicy is the funnel for a refusal that happens where a POLICY exists,
+// and it renders that policy rather than a bare refusal object.
+//
+// The rule it implements is Report's own doc comment, applied uniformly: *a
+// refused policy is still fully described — "it was refused" without the
+// policy is the half a human cannot act on.* Three sites reach it — Resolve's
+// Validate failure, the re-Validate after the staged mounts are added, and
+// @net-host without --i-know — and only the first had it before, which is why
+// `snug --dry-run --json -p @net-host .` wrote nothing at all (issue #334's
+// third row).
+//
+// pol MAY be nil: policy.Resolve's contract returns a policy only for a
+// Validate failure, and every other failure hands back nil. That is the whole
+// branch, and it is here rather than at the call site so no caller has to
+// remember which of Resolve's two shapes it is holding.
+//
+// dryRun writes the document AND, when --json was not given, the human screen.
+// Both renderers describing the same refusal is the point: a policy visible in
+// one and absent from the other is the drift Report exists to prevent.
+func refusePolicy(cfg config, code int, err error, pol *policy.Policy, env policy.Environ) int {
+	if !cfg.dryRun || pol == nil {
+		return refuse(cfg, code, err)
+	}
+	// The refusal is still the run's outcome and still returns code below. A
+	// render failure is reported and does not replace it: "the policy was
+	// refused" is the fact the caller must not lose.
+	if derr := dryRun(os.Stdout, pol, pol.BwrapArgs(env.Uid(), env.Gid()), cfg, err); derr != nil {
+		fmt.Fprintf(os.Stderr, "snug: %v\n", derr)
+	}
+	fmt.Fprintf(os.Stderr, "snug: %v\n", err)
+	return code
+}
+
+// refuseWithoutDocument is the ONE exit that deliberately writes no document,
+// and it is a named function precisely so the exemption is reviewable instead
+// of being an ordinary `return exitInternal` that the AST sweep would have to
+// carry a list of exceptions for.
+//
+// The site is the render failure itself: dryRun was asked for a document and
+// could not produce one. Emitting a SECOND document on the same stream is the
+// wrong answer twice over — if the failure was the write, stdout is already
+// broken and a second write is futile; if it was the marshal, the consumer
+// asked for a description of this policy and would get a refusal object about
+// a rendering bug instead, which is not the same document and not the answer.
+//
+// Exit 70 rather than 77 says which it is: snug's own bug, not a policy
+// refusal. It takes no config because there is nothing for it to branch on.
+func refuseWithoutDocument(code int, err error) int {
+	fmt.Fprintf(os.Stderr, "snug: %v\n", err)
+	return code
+}
+
 func run(cfg config) int {
 	reg, bad, err := profile.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
-		return exitPolicy
+		return refuse(cfg, exitPolicy, err)
 	}
 	// FATAL here, and only here-shaped commands. See internal/cli/badfiles.go: this
 	// is the path that starts a sandbox, and a sandbox assembled from whichever
 	// profile files happened to parse is a silent downgrade.
 	if err := refuseBadFiles(bad); err != nil {
-		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
-		return exitPolicy
+		return refuse(cfg, exitPolicy, err)
 	}
 
 	// -p ADDS to the `defaults` setting rather than replacing it. `snug -p
@@ -276,8 +376,7 @@ func run(cfg config) int {
 	}
 	abs, err := filepath.Abs(target)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
-		return exitUsage
+		return refuse(cfg, exitUsage, err)
 	}
 
 	// One live sandbox per target directory (issue #119). This is the earliest
@@ -293,16 +392,14 @@ func run(cfg config) int {
 			var busy *targetBusyError
 			if errors.As(err, &busy) {
 				// The named-fix refusal: another live run holds this target.
-				fmt.Fprint(os.Stderr, busy.message(target))
-				return exitUnavail
+				return refuseVerbatim(cfg, exitUnavail, busy.message(target), busy.Error())
 			}
 			// A hard error (a runtime directory that fails the ownership,
 			// mode or symlink guards secureSubroot enforces) is the same
 			// refusal the per-run lock produces from startIdentity /
 			// startContainers, and takes the same exit code — this path
 			// simply reaches those guards earlier.
-			fmt.Fprintf(os.Stderr, "snug: %v\n", err)
-			return exitPolicy
+			return refuse(cfg, exitPolicy, err)
 		}
 		defer unlock()
 
@@ -333,8 +430,7 @@ func run(cfg config) int {
 
 	hostTmp := ""
 	if need, err := needsHostTmpDir(reg, selected); err != nil {
-		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
-		return exitPolicy
+		return refuse(cfg, exitPolicy, err)
 	} else if need && cfg.dryRun {
 		// Name it, do not create it. A dry run that leaves a directory behind
 		// contradicts its own first line, and the path is all --dry-run needs to
@@ -346,8 +442,7 @@ func run(cfg config) int {
 	} else if need {
 		hostTmp, err = prepareHostTmpDir(abs)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "snug: %v\n", err)
-			return exitPolicy
+			return refuse(cfg, exitPolicy, err)
 		}
 	}
 
@@ -356,8 +451,7 @@ func run(cfg config) int {
 	// the error can still be reported, rather than inside the pure resolver.
 	hostGit, err := hostGitValues(reg, selected, home, abs, cfg.verbose, cfg.dryRun)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
-		return exitPolicy
+		return refuse(cfg, exitPolicy, err)
 	}
 
 	sshConfigs, sshValues := probeSSHConfig(home, cfg.verbose)
@@ -391,26 +485,17 @@ func run(cfg config) int {
 		// Resolve's contract (see its doc comment): a Validate failure returns
 		// the policy it refused ALONGSIDE the error, precisely so --dry-run can
 		// show what was refused instead of just saying "no". Every other
-		// failure returns a nil policy, so there is nothing to show. Either
-		// way, a non-nil err means this policy must never be executed — it is
-		// never run below, whichever branch fires.
-		if cfg.dryRun && pol != nil {
-			args := pol.BwrapArgs(env.Uid(), env.Gid())
-			// The refusal is still the run's outcome and still exits 77 below.
-			// A render failure is reported and does not replace it: "the
-			// policy was refused" is the fact the caller must not lose.
-			if derr := dryRun(os.Stdout, pol, args, cfg, err); derr != nil {
-				fmt.Fprintf(os.Stderr, "snug: %v\n", derr)
-			}
-		}
-		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
-		return exitPolicy
+		// failure returns a nil policy, so there is nothing to show — and that
+		// branch is refusePolicy's, not this call site's. Either way, a
+		// non-nil err means this policy must never be executed: it is never
+		// run below, whichever shape came back.
+		return refusePolicy(cfg, exitPolicy, err, pol, env)
 	}
 	// A knowingly-large hole needs a deliberate act, not just a profile name.
 	// The warning is five lines because the cost genuinely is that large, and
 	// because someone who reads it and proceeds has made an informed choice.
 	if pol.Net.Mode == policy.NetHost && !cfg.iKnow {
-		fmt.Fprintln(os.Stderr, `snug: refusing to share the host network namespace without --i-know.
+		const netHostRefusal = `refusing to share the host network namespace without --i-know.
 
       With host networking the sandbox can reach:
         - every service on your 127.0.0.1, including ones with no authentication
@@ -420,8 +505,8 @@ func run(cfg config) int {
 
       This is not a sandbox with networking; it is a process with a different
       filesystem view. If you meant "the sandbox needs internet", use the '@net'
-      profile instead. To proceed anyway, add --i-know.`)
-		return exitPolicy
+      profile instead. To proceed anyway, add --i-know.`
+		return refusePolicy(cfg, exitPolicy, errors.New(netHostRefusal), pol, env)
 	}
 
 	// WARN, do not exit — the rule that unifies this with the refusal above
@@ -471,10 +556,12 @@ func run(cfg config) int {
 	if !cfg.dryRun {
 		d, rerr := openRuntimeDir()
 		if rerr != nil {
-			fmt.Fprintf(os.Stderr, "snug: %v\n\n"+
-				"      This run cannot publish its state, so `snug attach` could never find it —\n"+
-				"      refusing to start rather than running a sandbox nothing else can reach.\n", rerr)
-			return exitPolicy
+			const cannotPublish = "This run cannot publish its state, so `snug attach` could " +
+				"never find it — refusing to start rather than running a sandbox nothing else " +
+				"can reach."
+			return refuseVerbatim(cfg, exitPolicy,
+				fmt.Sprintf("snug: %v\n\n      %s\n", rerr, cannotPublish),
+				fmt.Sprintf("%v: %s", rerr, cannotPublish))
 		}
 		runDir = d
 	}
@@ -492,21 +579,18 @@ func run(cfg config) int {
 	}()
 
 	if err := claudeFiles(pol, home, cfg.verbose); err != nil {
-		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
-		return exitPolicy
+		return refuse(cfg, exitPolicy, err)
 	}
 
 	idCleanup, err := startIdentity(pol, cfg.verbose, cfg.iKnow, cfg.dryRun)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
-		return exitPolicy
+		return refuse(cfg, exitPolicy, err)
 	}
 	defer idCleanup()
 
 	ctr, err := startContainers(env, pol, cfg.verbose, cfg.dryRun)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
-		return exitPolicy
+		return refuse(cfg, exitPolicy, err)
 	}
 	// Load-bearing on the SIGNAL path as well as the ordinary one: this defer
 	// is what stops a signalled run's containers, because the teardown guard
@@ -524,21 +608,14 @@ func run(cfg config) int {
 	// checked rather than asserted. It must be cheap and it must be silent on a
 	// policy that was fine, so a passing run is byte-identical to before.
 	if err := pol.Validate(env); err != nil {
-		if cfg.dryRun {
-			if derr := dryRun(os.Stdout, pol, pol.BwrapArgs(env.Uid(), env.Gid()), cfg, err); derr != nil {
-				fmt.Fprintf(os.Stderr, "snug: %v\n", derr)
-			}
-		}
-		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
-		return exitPolicy
+		return refusePolicy(cfg, exitPolicy, err, pol, env)
 	}
 
 	args := pol.BwrapArgs(env.Uid(), env.Gid())
 
 	if cfg.dryRun {
 		if derr := dryRun(os.Stdout, pol, args, cfg, nil); derr != nil {
-			fmt.Fprintf(os.Stderr, "snug: %v\n", derr)
-			return exitInternal
+			return refuseWithoutDocument(exitInternal, derr)
 		}
 		return 0
 	}
@@ -581,8 +658,7 @@ func run(cfg config) int {
 		ExcludeFromTeardown: ctr.excludeFromTeardown,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
-		return exitUnavail
+		return refuse(cfg, exitUnavail, err)
 	}
 	return code
 }

@@ -183,12 +183,24 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		return containerRun{}, err
 	}
 
-	pf, err := runContainerPreflight()
+	pf, err := runContainerPreflight(env)
 	if err != nil {
 		return containerRun{}, err
 	}
 
 	warnAboutPodmanClient()
+
+	// Issue #405, first half: pf.Podman is a single field carrying BOTH
+	// sources preflight can name it from ($SNUG_PODMAN or a PATH lookup), so
+	// gating this one field covers the set by construction. Positioned here —
+	// before engine.New, which creates this run's /tmp/snug-<uid>-<pid>/ and,
+	// since #307, copies host signing-key material into it — for the same
+	// reason ProjectHostSignaturePolicy's own comment above gives: a refusal
+	// here creates no run directory and copies nothing onto disk for a run
+	// that will not start.
+	if err := pol.CheckEngineBinary(pf.Podman); err != nil {
+		return containerRun{}, err
+	}
 
 	// P9's answer into the policy, through the policy's own single writer.
 	// Recorded HERE — after preflight resolved it and before anything is
@@ -228,6 +240,15 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 	eng, err := engine.New(pol)
 	if err != nil {
 		return containerRun{}, err
+	}
+	// Not fatal — see Engine.BreadcrumbWarning's own doc comment. Behind
+	// --verbose, like every other "routine work did not go perfectly but the
+	// run continues" notice this package prints (verboseHousekeeping's own
+	// examples): the store still works, it will just be reported
+	// unattributed by `snug engine gc` (issue #308) until a later run's
+	// write succeeds.
+	if eng.BreadcrumbWarning != nil && verbose {
+		fmt.Fprintf(os.Stderr, "snug: %v\n", eng.BreadcrumbWarning)
 	}
 
 	// EVERY error path from here to the successful return removes this run's

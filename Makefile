@@ -195,15 +195,36 @@ SANDBOX_LOG ?= $(CURDIR)/.integration-sandbox.log
 # the two halves cannot drift into overlapping or into leaving a test unrun.
 SNUG_SIGNAL_TESTS = TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox|TestAKilledSnugCannotReleaseTheParkedPayload|TestKillingSnugDuringStartupNeverRunsThePayload
 
-# SNUG_ENGINE_FLOOR is issue #393's run-count floor: the number of test
-# functions in test/integration that need a REAL container engine, enumerated
-# by a literal-string sweep over containerEngineEnv|podmanBundle|bundleRoot|
-# requireRealEngine (hostEngine's own doc comment in containerengine_test.go
-# names the sweep). Counted here from the "snug-engine-ran:" marker each such
+# SNUG_ENGINE_FLOOR is issue #393's run-count floor: the number of tests in
+# test/integration that need a REAL container engine.
+#
+# MEMBERSHIP IS REACHING THE MARKER, NOT THE LITERAL SWEEP, and the two
+# disagree — measured on a full run against a working engine, which reported
+# "33 of 32". The sweep this constant was first derived from (a literal-string
+# search for containerEngineEnv|podmanBundle|bundleRoot|requireRealEngine)
+# undercounts by two and overcounts by one:
+#
+#   + TestAReadOnlyGraftIsReadOnlyInTheKernel, TestThePayloadCannotSeeAnyGraft
+#     reach the marker through startEngineRun (enginec3_test.go) and contain
+#     none of the four tokens;
+#   - TestAHostRegistriesConfDoesNotSteerTheEnginesPull contains a token but
+#     skips on its own control, so it never marks here.
+#
+# 33 is therefore what a working engine actually produces on this host. It is a
+# FLOOR, not an equality: a host where the registries test's control does fire
+# reports 34 and passes. Deriving it from a token sweep again would be
+# rebuilding the catalogue the marker replaced. Counted here from the "snug-engine-ran:" marker each such
 # test logs once it is COMMITTED to having run with a real engine — never
 # merely resolved one, and never a bare `go test` exit code, which is exactly
 # how "green by skipping" survived the first time (issue #393's own defect:
 # 32 tests skipped and `make integration` was green).
+#
+# DISTINCT TEST NAMES, not marker lines, which is why the marker carries
+# t.Name(). Some tests mark twice — requireRealEngine memoizes per env, so a
+# test driving two envs reaches it twice — MEASURED at 33 marker lines from
+# fewer than 32 distinct tests. Counting lines would let 32 lines come from 20
+# tests and the floor would pass having lost twelve: the floor's own version of
+# "a test that cannot fail is worse than no test".
 #
 # The count is PRINTED on every run, always, and it names WHICH of three
 # cases produced it — "no podman resolved" (green, legitimately, on a host
@@ -214,13 +235,21 @@ SNUG_SIGNAL_TESTS = TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox|TestA
 # time), or "N of 32 ran" against a real, working engine. Never a bare N —
 # the reader must not have to know 32 is the target.
 #
+# THE COUNT SELECTS THE CASE, not marker precedence. Both a "failed" and a
+# "version" marker can appear in one run: realEngineResults is keyed per env,
+# so one env variant can fail its probe while every other test runs. Ordering
+# the cases by marker made a full run report "32 of 32 ran — engine failed to
+# start", which is two contradictory facts in one line — MEASURED on a run that
+# really did have all 32. So a run that REACHED the floor reports the engine,
+# and only a shortfall reports a reason.
+#
 # SNUG_REQUIRE_ENGINE is its OWN variable, default OFF, and deliberately NOT
 # derived from SNUG_REQUIRE_SANDBOX: wiring a real engine into CI is #395's
 # job, not this one, and CI's `integration` matrix already sets
 # SNUG_REQUIRE_SANDBOX=1 with no working engine promised anywhere in that
 # environment. This is #395's seam — set SNUG_REQUIRE_ENGINE=1 once a lane
 # can promise 32/32, and not before.
-SNUG_ENGINE_FLOOR = 32
+SNUG_ENGINE_FLOOR = 33
 
 integration-sandbox:
 	@SNUG_TEST_NET=$${SNUG_TEST_NET:-$${SNUG_REQUIRE_SANDBOX:+1}} \
@@ -228,8 +257,11 @@ integration-sandbox:
 			-skip '$(SNUG_SIGNAL_TESTS)' ./test/integration/... 2>&1 \
 		| tee $(SANDBOX_LOG); \
 	status=$${PIPESTATUS[0]}; \
-	ran=$$(grep -c 'snug-engine-ran:' $(SANDBOX_LOG) || true); \
-	if grep -q 'snug-engine-none:' $(SANDBOX_LOG); then \
+	ran=$$(grep -o 'snug-engine-ran: [^ ]*' $(SANDBOX_LOG) | sort -u | wc -l); \
+	if [ "$$ran" -ge "$(SNUG_ENGINE_FLOOR)" ] && grep -q 'snug-engine-version:' $(SANDBOX_LOG); then \
+		version=$$(grep -m1 'snug-engine-version:' $(SANDBOX_LOG) | sed 's/.*snug-engine-version: //'); \
+		echo "engine tests: $$ran of $(SNUG_ENGINE_FLOOR) ran — $$version"; \
+	elif grep -q 'snug-engine-none:' $(SANDBOX_LOG); then \
 		echo "engine tests: $$ran of $(SNUG_ENGINE_FLOOR) ran — no podman resolved"; \
 	elif grep -q 'snug-engine-failed:' $(SANDBOX_LOG); then \
 		reason=$$(grep -m1 'snug-engine-failed:' $(SANDBOX_LOG) | sed 's/.*snug-engine-failed: //'); \

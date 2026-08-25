@@ -137,6 +137,65 @@ func TestGoldenContainersEnginePinned(t *testing.T) {
 	}
 }
 
+// TestGoldenContainersEngineInsideAWritableGrant is issue #405's DISCLOSURE
+// half, and it is the row that fails if the screen goes quiet again.
+//
+// The refusal itself is asserted in internal/policy (CheckEngineBinary). What
+// this pins is that --dry-run SAYS SO: before #405 the most privileged exec of
+// the run — a binary the payload can rewrite, exec'd as uid 0 and pid 1 of the
+// engine's pid namespace — was the one thing the artifact a human is told to
+// trust never named. A screen that stays silent here is the defect, so the
+// golden carries the sentence rather than a test asserting "non-empty".
+//
+// The fixture needs nothing new: @cwd-rw grants the target
+// /home/u/proj/sub writable, so $SNUG_PODMAN under it is the real spelling of
+// the finding ($SNUG_PODMAN=./bin/podman inside a sandboxed source tree).
+func TestGoldenContainersEngineInsideAWritableGrant(t *testing.T) {
+	reg, err := profile.Builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const engineBin = "/home/u/proj/sub/bin/podman"
+	t.Setenv("SNUG_PODMAN", engineBin)
+	t.Setenv("SNUG_PODMAN_ROOT", "")
+
+	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
+		[]policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, envGoldenCtx(), newEnvFakeEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// FIXTURE ASSERTION, without which this test can pass having stopped
+	// testing anything: if the grant ever stops making the path writable, the
+	// screen correctly says "not payload-controlled" and the golden would pin
+	// the wrong sentence forever.
+	if !p.HostPathVisible(engineBin, true) {
+		t.Fatalf("fixture: no rw grant covers %s, so this golden would pin the ACCEPTING "+
+			"sentence and issue #405's disclosure would go unasserted", engineBin)
+	}
+	got := captureFile(t, func(f io.Writer) { describeContainers(f, p, containersFor(p)) })
+	if !strings.Contains(got, "THIS RUN WILL REFUSE") {
+		t.Errorf("the CONTAINERS block does not say the run will be refused for a "+
+			"payload-writable engine binary, which is the whole of issue #405's "+
+			"disclosure half:\n%s", got)
+	}
+
+	path := filepath.Join("testdata", "containers.podman-writable.txt")
+	if *update {
+		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%v (run: go test ./internal/cli -update)", err)
+	}
+	if got != string(want) {
+		t.Errorf("the writable-engine CONTAINERS block changed — this is the screen that "+
+			"discloses a payload-writable engine binary.\n--- got\n%s\n--- want\n%s", got, want)
+	}
+}
+
 // containersFor builds the CONTAINERS/IMAGES facts for a golden, with the one
 // host-dependent one PINNED.
 //

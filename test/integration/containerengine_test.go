@@ -190,13 +190,35 @@ func containerEngineEnv(t *testing.T) (env []string, xdgRuntime string) {
 	return out, xdg
 }
 
-// engineWithHome returns a $SNUG_PODMAN value whose engine runs with
-// HOME=homeOverride. A tiny exec wrapper is still the only way to plant HOME
-// for a process snug starts — everything else provisionEngineWrapper used to
-// do (stripping a bundle's own storage/containers keys) is gone with the
-// bundle itself; measured (internal/cli.preflightPodmanBinary only os.Stats
-// the path and shim-checks it) that a "#!" wrapper is accepted as $SNUG_PODMAN
-// exactly like a real binary.
+// engineWithHome returns the $SNUG_PODMAN and $SNUG_PODMAN_ROOT a run needs to
+// get an engine whose HOME is homeOverride. A tiny exec wrapper is still the
+// only way to plant HOME for a process snug starts — everything else
+// provisionEngineWrapper used to do (stripping a bundle's own
+// storage/containers keys) is gone with the bundle itself.
+//
+// # Why it returns a ROOT as well, and why the first version was wrong
+//
+// It returned the wrapper alone, and BOTH gates have to admit that path
+// rather than just one. What was measured for #393 was
+// internal/cli.preflightPodmanBinary, which only os.Stats the path and
+// shim-checks it, so a "#!" wrapper passes — true, and not the question. G4
+// asks the OTHER half: can the ENGINE SEE this binary? Since Tier C the
+// engine's mount namespace is DERIVED from the sandbox's, so a wrapper in
+// t.TempDir() reaches it through nothing at all, and every run through here
+// died with
+//
+//	snug: the container engine cannot see the engine binary (…/snug-test-podman):
+//	nothing grafts it into the engine's view and no grant of this sandbox exposes it.
+//
+// which is the boundary working. $SNUG_PODMAN_ROOT is the seam that names a
+// toolchain root for exactly this case (preflight P9, G4's third source), so
+// the wrapper's own directory is the root. G4b (#400) does not fire: a
+// t.TempDir() is outside every grant of the sandbox under test, so it is not
+// payload-writable — the guard refuses a root the PAYLOAD can write, which is
+// a different thing from one the test can.
+//
+// Two gates, and the earlier work measured one. That is the same half-a-rule
+// shape CLAUDE.md warns about, so the doc comment names both from now on.
 //
 // The one caller (TestHostContainersConfAuthorsNothingInAContainer) needs
 // this because podman reads a USER containers.conf from
@@ -205,16 +227,16 @@ func containerEngineEnv(t *testing.T) (env []string, xdgRuntime string) {
 // XDG_CONFIG_HOME, so on a real run the file podman reads is HOME's. A test
 // cannot plant a hostile config into the developer's own ~/.config/containers,
 // so it points the engine's HOME at a temporary one instead.
-func engineWithHome(t *testing.T, homeOverride string) string {
+func engineWithHome(t *testing.T, homeOverride string) (wrapper, root string) {
 	t.Helper()
 	podman := hostEngine(t)
-	dir := t.TempDir()
-	wrapper := filepath.Join(dir, "snug-test-podman")
+	root = t.TempDir()
+	wrapper = filepath.Join(root, "snug-test-podman")
 	script := fmt.Sprintf("#!/bin/sh\nexport HOME=%s\nexec %s \"$@\"\n", homeOverride, podman)
 	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return wrapper
+	return wrapper, root
 }
 
 // seedEngineHome writes the minimum a podman needs to decide an image may be
@@ -247,7 +269,14 @@ func seedEngineHome(t *testing.T, home string) {
 // counts these against SNUG_ENGINE_FLOOR.
 func markEngineRan(t *testing.T, enginePath string) {
 	t.Helper()
-	t.Logf("snug-engine-ran: %s", enginePath)
+	// The TEST NAME is in the marker, and the Makefile counts DISTINCT names
+	// rather than marker lines. Measured, and it is the floor's own version of
+	// "a test that cannot fail": some tests reach this twice (requireRealEngine
+	// is called per distinct env, and a test driving two envs marks twice), so
+	// a bypass run emitted 33 marker LINES from fewer than 32 distinct tests.
+	// Counting lines would let 32 lines come from 20 tests and the floor would
+	// pass having lost twelve.
+	t.Logf("snug-engine-ran: %s %s", t.Name(), enginePath)
 }
 
 // enginePathFromEnv reads $SNUG_PODMAN back out of an env slice this file
@@ -2272,9 +2301,12 @@ func TestHostContainersConfAuthorsNothingInAContainer(t *testing.T) {
 	budget(t, 180*time.Second)
 
 	home, marker := hostileContainersConfHome(t)
-	wrapper := engineWithHome(t, home)
+	wrapper, toolchainRoot := engineWithHome(t, home)
 	base, _ := attachEnv(t)
-	env := append(base, "SNUG_PODMAN="+wrapper)
+	// SNUG_PODMAN_ROOT is not optional: the wrapper is the engine binary for
+	// this run and it lives outside every grant, so without the graft G4
+	// refuses the run outright. See engineWithHome's own doc comment.
+	env := append(base, "SNUG_PODMAN="+wrapper, "SNUG_PODMAN_ROOT="+toolchainRoot)
 	requireRealEngine(t, env)
 
 	probe := confprobeBin(t)
@@ -3462,3 +3494,237 @@ print("PROBE-COMPLETE", flush=True)
 		t.Errorf("a create returned a container id where none should have:\n%s", r.out)
 	}
 }
+
+// ── the create body's TOP level, end to end (issues #375, #397) ──────────────
+
+// TestCreateTopLevelIsFilteredEndToEnd is the integration half of the
+// inversion internal/dockerproxy/toplevelallowlist_test.go covers with a fake
+// engine.
+//
+// What it adds over the unit tests, and the only reason it is worth a real
+// engine: the unit tests prove snug REFUSES the right things, against an engine
+// that accepts anything. This proves the other half — that what snug still
+// FORWARDS is accepted by a real podman. An inversion that refuses everything
+// is trivially "secure" and breaks the profile, and no fake engine can tell you
+// which side of that line you landed on.
+//
+// It needs `create` to work and deliberately NOT `start`. That is not a
+// convenience: on a host with no CAP_NET_ADMIN a container cannot start at all
+// (measured — `netavark: Netlink error: Operation not permitted` for bridge, and
+// `crun: ioctl SIOCSIFFLAGS` on the build path), which is why requireRealEngine
+// SKIPS on this development host. The create path is unaffected and is the
+// entire surface under test, so gating on requireRealEngine would skip this test
+// on the machine it was written on and prove nothing anywhere else. The
+// CONTROL below is the gate instead: an ordinary create must return 201, and if
+// it does not the test skips naming what the engine said.
+//
+// CONSEQUENCE, STATED BECAUSE IT IS A REAL GAP AND NOT A FREE CHOICE: issue
+// #393's SNUG_ENGINE_FLOOR counts test functions by a literal-string sweep over
+// containerEngineEnv|podmanBundle|bundleRoot|requireRealEngine, and this test
+// matches none of them — so it is NOT on the floor, and the floor stays 32. That
+// means a run where this test skipped on its own control is not caught by the
+// mechanism built to catch exactly that ("green by skipping", #393's own
+// defect). The trade was taken deliberately: gating on requireRealEngine would
+// make this test SKIP on the development host where it currently passes and
+// really exercises the filter, which is worse than being uncounted. The skip
+// paths below are t.Skipf with the engine's own words in them so the shortfall
+// is at least visible in the log. A second floor category for "needs create, not
+// run" belongs to #393/#395 and is filed rather than invented here.
+func TestCreateTopLevelIsFilteredEndToEnd(t *testing.T) {
+	budget(t, 240*time.Second)
+	requireSandbox(t)
+	requireEngine(t)
+	requirePython(t)
+
+	proj, _ := target(t)
+	writeTopLevelProbe(t, proj)
+
+	r := run(t, []string{"-p", "@podman-build"}, proj, `python3 probe.py`).mustRun(t)
+
+	if !strings.Contains(r.out, "PROBE-COMPLETE") {
+		t.Fatalf("the probe did not run to the end, so a missing marker below is absent "+
+			"rather than negative:\n%s", r.out)
+	}
+	// The image has to exist before any create can be judged on its merits.
+	if !strings.Contains(r.out, "build: 200") {
+		t.Skipf("SKIP: this host's engine could not build the probe image, so nothing "+
+			"below is a statement about the create filter:\n%s", r.out)
+	}
+
+	// ── THE CONTROL, FIRST AND FATAL ────────────────────────────────────
+	//
+	// A real create, with the top-level body a stock docker CLI sends, must be
+	// ACCEPTED by a real podman. Every refusal after this is equally true of a
+	// proxy that 403s every create, and the profile would be useless with this
+	// test green.
+	if !strings.Contains(r.out, "ordinary create: 201") {
+		t.Skipf("SKIP: an ordinary create did not return 201 on this host, so the refusals "+
+			"below prove nothing about filtering:\n%s", r.out)
+	}
+	// And what podman RECORDED must be what snug forwarded — the positive
+	// control with teeth. Without reading the value back, "201" is satisfied by
+	// an engine that accepted the body and dropped every field in it.
+	if !strings.Contains(r.out, "recorded-cmd: ok") {
+		t.Errorf("the create was accepted but podman did not record the Cmd snug forwarded, "+
+			"so the allowlist is not actually passing values through:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "recorded-env: ok") {
+		t.Errorf("a NAME=VALUE Env entry did not survive to the recorded container config, "+
+			"so checkEnv is refusing more than the bare-name spelling:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "recorded-label: ok") {
+		t.Errorf("snug's own run label is not on the created container, which is what "+
+			"handleContainerDelete's ownership gate reads (#339):\n%s", r.out)
+	}
+
+	// ── the refusals ────────────────────────────────────────────────────
+	for _, want := range []struct{ marker, why string }{
+		{"unmodelled top-level: 403",
+			"a non-empty top-level key nobody modelled must fail closed — the inversion itself"},
+		{"healthcheck: 403",
+			"a healthcheck asks the engine for a systemd unit and timer on the host user's " +
+				"session manager (#397)"},
+		{"healthcheck no interval: 403",
+			"absent/0/negative Interval all record podman's 30s default, so the refusal is " +
+				"on the object and not on Interval"},
+		{"env bare name: 403",
+			"a bare Env name copies the ENGINE's own variable of that name into the container"},
+		{"env star: 403",
+			"Env:[\"*\"] copies every engine variable, all of which name this run's grafts"},
+		{"macaddress: 403",
+			"a static MAC on the interface snug authors — refused at the top level"},
+		{"endpoint macaddress: 403",
+			"and refused inside NetworkingConfig, because one of the two spellings is no " +
+				"refusal at all"},
+		{"endpoint ipaddress: 403",
+			"a static IP reaches the network namespace the containment rests on (#375)"},
+		{"volumes: 403",
+			"an anonymous volume is a host path by another name"},
+	} {
+		if !strings.Contains(r.out, want.marker) {
+			t.Errorf("%s — expected %q in:\n%s", want.why, want.marker, r.out)
+		}
+	}
+
+	// ── and the ergonomic floor, which is the other positive control ─────
+	//
+	// An EMPTY unmodelled key is dropped, not refused, and the create still
+	// succeeds. Without this the refusals above are satisfied by an inversion
+	// evaluated on raw presence, which would 403 every `docker run` on 18 keys.
+	if !strings.Contains(r.out, "empty unmodelled: 201") {
+		t.Errorf("an EMPTY unmodelled top-level key was not dropped-and-forwarded. That is "+
+			"the half that makes the inversion shippable at all:\n%s", r.out)
+	}
+	// The stock client's own NetworkingConfig is structurally non-empty and
+	// semantically zero. It must pass, or `docker run` is banned.
+	if !strings.Contains(r.out, "stock networkingconfig: 201") {
+		t.Errorf("the NetworkingConfig a real docker CLI sends was refused. That is a ban on "+
+			"`docker run`, not a filter:\n%s", r.out)
+	}
+}
+
+// writeTopLevelProbe puts the top-level create probe and the static binary its
+// Dockerfile copies into a target directory.
+//
+// Both, always — the same trap writeBuildProbe's own comment records: the script
+// tars "marker" from its working directory, so writing the script alone produces
+// a probe that fails on a missing file and looks like a filter result.
+func writeTopLevelProbe(t *testing.T, proj string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(proj, "probe.py"), []byte(topLevelProbe), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "marker"), mustRead(t, buildMarkerBin(t)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// topLevelProbe drives POST /containers/create once per case and prints one
+// marker per case, so a missing marker is distinguishable from a negative one
+// (PROBE-COMPLETE is the end-of-script guard the caller checks first).
+//
+// It builds its own FROM-scratch image rather than pulling: no registry, no
+// egress, and no dependency on Docker Hub's rate limiter (issue #235).
+//
+// It never STARTS a container. See the caller's doc comment for why that is a
+// property of the test rather than a shortcut.
+const topLevelProbe = pyPreamble + `
+import io, tarfile
+
+buf = io.BytesIO()
+with tarfile.open(fileobj=buf, mode="w") as tf:
+    df = b'FROM scratch\nCOPY marker /marker\nENTRYPOINT ["/marker"]\n'
+    ti = tarfile.TarInfo("Dockerfile"); ti.size = len(df); ti.mode = 0o644
+    tf.addfile(ti, io.BytesIO(df))
+    tf.add("marker", arcname="marker")
+st, body = req("POST", "/v1.41/build?dockerfile=Dockerfile&t=snugtest-toplevel%3A1&rm=1&forcerm=1&q=0&nocache=0",
+               body=buf.getvalue(), headers={"Content-Type": "application/x-tar"})
+print("build: %d" % st, flush=True)
+if st != 200:
+    print("build-tail: %s" % body[-400:].decode(errors="replace").replace("\n", " | "), flush=True)
+
+IMG = "snugtest-toplevel:1"
+JSONH = {"Content-Type": "application/json"}
+
+def create(label, body, want_id=False):
+    st, resp = req("POST", "/v1.41/containers/create", body=json.dumps(body), headers=JSONH)
+    print("%s: %d" % (label, st), flush=True)
+    if st not in (200, 201):
+        print("    %s" % resp[:220].decode(errors="replace").replace("\n", " "), flush=True)
+        return None
+    return json.loads(resp).get("Id") if want_id else None
+
+# ── THE CONTROL: the top-level body a stock docker CLI sends, plus the two
+#    fields the allowlist has to pass through by value.
+cid = create("ordinary create", {
+    "Image": IMG, "Cmd": ["/marker"], "Env": ["SNUG_PROBE=kept"],
+    "Labels": {"mine": "kept"},
+    "AttachStdout": True, "AttachStderr": True,
+    "NetworkingConfig": {"EndpointsConfig": {}},
+    "HostConfig": {"NetworkMode": "host"},
+}, want_id=True)
+
+# Read the values BACK, so "201" cannot pass on an engine that dropped them.
+if cid:
+    st, resp = req("GET", "/v1.41/containers/%s/json" % cid)
+    if st == 200:
+        cfg = json.loads(resp).get("Config") or {}
+        print("recorded-cmd: %s" % ("ok" if (cfg.get("Cmd") or []) == ["/marker"] else
+                                    "MISSING %r" % (cfg.get("Cmd"),)), flush=True)
+        env = cfg.get("Env") or []
+        print("recorded-env: %s" % ("ok" if "SNUG_PROBE=kept" in env else
+                                    "MISSING %r" % (env,)), flush=True)
+        labels = cfg.get("Labels") or {}
+        ok = labels.get("mine") == "kept" and any(k == "snug.run" for k in labels)
+        print("recorded-label: %s" % ("ok" if ok else "MISSING %r" % (labels,)), flush=True)
+    else:
+        print("recorded-cmd: inspect-%d" % st, flush=True)
+
+# ── the ergonomic floor ──────────────────────────────────────────────
+create("empty unmodelled", {"Image": IMG, "FieldPodmanAddsIn2027": None,
+                            "HostConfig": {"NetworkMode": "host"}})
+# The endpoint object a real docker CLI really sends: structurally non-empty,
+# semantically all-zero. Refusing it would ban 'docker run'.
+create("stock networkingconfig", {"Image": IMG, "HostConfig": {"NetworkMode": "host"},
+    "NetworkingConfig": {"EndpointsConfig": {"default": {
+        "IPAMConfig": None, "Links": None, "Aliases": None, "DriverOpts": None,
+        "GwPriority": 0, "NetworkID": "", "EndpointID": "", "Gateway": "",
+        "IPAddress": "", "MacAddress": "", "IPPrefixLen": 0, "IPv6Gateway": "",
+        "GlobalIPv6Address": "", "GlobalIPv6PrefixLen": 0, "DNSNames": None}}}})
+
+# ── the refusals ─────────────────────────────────────────────────────
+create("unmodelled top-level", {"Image": IMG, "FieldPodmanAddsIn2027": "anything"})
+create("healthcheck", {"Image": IMG,
+                       "Healthcheck": {"Test": ["CMD", "/marker"], "Interval": 30000000000}})
+create("healthcheck no interval", {"Image": IMG, "Healthcheck": {"Test": ["CMD", "/marker"]}})
+create("env bare name", {"Image": IMG, "Env": ["REGISTRY_AUTH_FILE"]})
+create("env star", {"Image": IMG, "Env": ["*"]})
+create("macaddress", {"Image": IMG, "MacAddress": "02:42:ac:11:00:02"})
+create("endpoint macaddress", {"Image": IMG, "NetworkingConfig": {"EndpointsConfig":
+        {"default": {"MacAddress": "02:42:ac:11:00:02"}}}})
+create("endpoint ipaddress", {"Image": IMG, "NetworkingConfig": {"EndpointsConfig":
+        {"default": {"IPAddress": "10.0.0.7"}}}})
+create("volumes", {"Image": IMG, "Volumes": {"/data": {}}})
+
+print("PROBE-COMPLETE", flush=True)
+`
