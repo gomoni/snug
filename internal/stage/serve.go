@@ -30,12 +30,14 @@ import (
 //     userns id and the fd number.
 //  6. serve AT MOST TWO requests, then exit: one "netready" (optional to send,
 //     mandatory to have succeeded before "start" is accepted), and one "start",
-//     after which this function returns whatever the outcome. "start" now emits
-//     TWO events rather than one — "enginestarted" while the payload is still
-//     parked, then "exited" — because P0 must arm the container reaper between
-//     them. THE NUMBER OF REQUESTS is what one-shot means here: there is no
-//     third request and no way back, and the loop is not re-entered once a
-//     sandbox exists.
+//     after which this function returns whatever the outcome. "start" now
+//     answers with up to THREE events rather than one — an optional "forked"
+//     the instant bwrap's init pid is known (issue #236), then
+//     "enginestarted" while the payload is still parked, then "exited" —
+//     because P0 must arm the container reaper between the last two. THE
+//     NUMBER OF REQUESTS is what one-shot means here: there is no third
+//     request and no way back, and the loop is not re-entered once a sandbox
+//     exists.
 func MainServe() error {
 	requireFD(fdControl, "control")
 	requireFD(fdLife, "lifeline")
@@ -410,6 +412,18 @@ func runOneSandbox(control, netnsN, infoR *os.File, req request) error {
 		if info.InitPID <= 1 {
 			return abort(fmt.Errorf("__stage-serve: bwrap's --info-fd answer named child-pid %d, "+
 				"which is not a process this stage can hold", info.InitPID))
+		}
+	}
+
+	// "forked" (issue #236): the earliest point this pid can be named, sent
+	// before whatever is slow on the way to "enginestarted" — the mount
+	// settle and the engine's cold start below, when there is an engine at
+	// all — rather than after it, so P0's orphan-kill record no longer waits
+	// out that whole interval with nothing naming this init. Skipped when
+	// bwrap never answered (info.InitPID <= 1).
+	if info.InitPID > 1 {
+		if err := sendEvent(control, event{Op: "forked", InitPID: info.InitPID}); err != nil {
+			return abort(fmt.Errorf("__stage-serve: reporting forked: %w", err))
 		}
 	}
 

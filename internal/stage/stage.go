@@ -71,6 +71,13 @@ type Config struct {
 	BwrapInfo *os.File
 
 	Stdin, Stdout, Stderr *os.File
+
+	// OnSandboxForked, if non-nil, is called with bwrap's init pid the moment
+	// P1 reports it, synchronously, before StartSandbox waits for anything
+	// else. It is the earliest point at which the host can name a process that
+	// could be orphaned; blocking the handshake for one small file write is
+	// the point, not a cost.
+	OnSandboxForked func(pid int)
 }
 
 // Stage is opaque and only Start can produce one. That is the type-level half
@@ -87,6 +94,8 @@ type Stage struct {
 	userns      string
 	netnsFD     int
 	sandboxSize int
+
+	onSandboxForked func(pid int)
 
 	closeOnce sync.Once
 	waited    bool
@@ -234,11 +243,12 @@ func Start(cfg Config) (*Stage, error) {
 	lifeR.Close()
 
 	st := &Stage{
-		cmd:         cmd,
-		control:     p0Control,
-		life:        lifeW,
-		pid:         cmd.Process.Pid,
-		sandboxSize: len(cfg.Sandbox),
+		cmd:             cmd,
+		control:         p0Control,
+		life:            lifeW,
+		pid:             cmd.Process.Pid,
+		sandboxSize:     len(cfg.Sandbox),
+		onSandboxForked: cfg.OnSandboxForked,
 	}
 
 	// The delegated-map handshake (issue #63, Tier B): one extra request/event
@@ -397,6 +407,12 @@ const startRoundTripTimeout = bwrapInfoTimeout + engineSocketWaitTimeout + 10*ti
 // confirmed. The stage will not serve a second request; this is a ONE-SHOT
 // design, and everRan does not exist as a concept here.
 //
+// One request, up to THREE replies: an optional "forked" — cfg.OnSandboxForked
+// is called with its InitPID synchronously, and reading resumes — arrives
+// first when bwrap answered at all (issue #236), then the "enginestarted" this
+// function returns from. Anything else is a protocol violation and a hard
+// error.
+//
 // On a GATED run (gated true, meaning P0 put --block-fd and --sync-fd in the
 // argv) the payload is still PARKED when this returns, and the caller owns two
 // obligations, in this order:
@@ -425,17 +441,36 @@ func (s *Stage) StartSandbox(bwrapPath string, argv []string, spec *EngineSpec, 
 	if err := sendRequest(s.control, req); err != nil {
 		return bwrapinfo.Info{}, fmt.Errorf("stage: sending the start request: %w", err)
 	}
-	ev, err := recvEventTimeout(s.control, startRoundTripTimeout)
-	if err != nil {
-		return bwrapinfo.Info{}, fmt.Errorf("stage: waiting for the sandbox to reach the starting line: %w", err)
+	forked := false
+	for {
+		ev, err := recvEventTimeout(s.control, startRoundTripTimeout)
+		if err != nil {
+			return bwrapinfo.Info{}, fmt.Errorf("stage: waiting for the sandbox to reach the starting line: %w", err)
+		}
+		switch ev.Op {
+		case "forked":
+			// AT MOST ONE, and the count is enforced rather than documented:
+			// each event read renews startRoundTripTimeout, so a P1 that sent
+			// "forked" repeatedly would keep this loop alive indefinitely and
+			// re-run the caller's hook on every one. One init is forked per
+			// stage, so a second report is a protocol violation.
+			if forked {
+				return bwrapinfo.Info{}, fmt.Errorf("stage: a second %q event for one start request", ev.Op)
+			}
+			forked = true
+			if s.onSandboxForked != nil {
+				s.onSandboxForked(ev.InitPID)
+			}
+			continue
+		case "enginestarted":
+			if ev.Err != "" {
+				return bwrapinfo.Info{}, fmt.Errorf("stage: %s", ev.Err)
+			}
+			return bwrapinfo.Info{InitPID: ev.InitPID, Namespaces: ev.Namespaces}, nil
+		default:
+			return bwrapinfo.Info{}, fmt.Errorf("stage: expected an \"enginestarted\" event, got %q", ev.Op)
+		}
 	}
-	if ev.Op != "enginestarted" {
-		return bwrapinfo.Info{}, fmt.Errorf("stage: expected an \"enginestarted\" event, got %q", ev.Op)
-	}
-	if ev.Err != "" {
-		return bwrapinfo.Info{}, fmt.Errorf("stage: %s", ev.Err)
-	}
-	return bwrapinfo.Info{InitPID: ev.InitPID, Namespaces: ev.Namespaces}, nil
 }
 
 // EngineSpec is what the "start" request asks the stage to fork podman with —

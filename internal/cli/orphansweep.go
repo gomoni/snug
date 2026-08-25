@@ -45,23 +45,22 @@ import (
 //     been recycled since the state was written has a different start time
 //     and is left alone.
 //
-// WHAT IT DOES NOT CATCH, and the two cases are distinguishable from outside
-// by the fd the leftover is blocked on:
+// WHAT IT STILL DOES NOT CATCH: an init that never answers --info-fd at all,
+// parked in read() on one of BWRAP's OWN eventfds (its uid-map sync). No
+// record can name it — the pid it would carry is the one bwrap has not
+// reported yet — and this is upstream's window, closable only by arming the
+// init's PDEATHSIG before that read.
 //
-//   - An init that never answers --info-fd, parked in read() on one of
-//     BWRAP's OWN eventfds (its uid-map sync). No record can name it: the pid
-//     it would carry is the one bwrap has not reported yet. Upstream's window,
-//     closable only by arming the init's PDEATHSIG before that read.
-//   - A GATED run's parked payload, which is the wide one. The init pid is
-//     known here — the stage read it from --info-fd — but exec.go publishes
-//     the record AFTER the release byte, on purpose, so the engine's whole
-//     cold start (1-2s typical, engineSocketWaitTimeout 30s) has an init no
-//     record names. This one waits on snug's --block-fd, which is a PIPE
-//     (os.Pipe, exec.go), not an eventfd.
-//
-// The offline arm's own gap is narrow by comparison: the record lands a few ms
-// after the info answer, and an orphan produced by killing snug across that
-// window IS named by its record and IS killed here — 3 in 3, measured.
+// The wide gap that used to follow it is issue #236: exec.go's OnInfo
+// publishes state.json only AFTER the mount settle and, on a container run,
+// the engine's whole cold start (1-2s typical, engineSocketWaitTimeout 30s) —
+// deliberately, on a GATED run, only after the release byte too (issue #125)
+// — so for that whole interval no record named an init the stage had already
+// learned. initstate.go's ".starting" record closes it: written the instant
+// sandbox.Options.OnInit fires, before any of that waiting, and removed only
+// once state.json is actually published. sweepOneStartingOrphan below judges
+// it through the SAME killOrphanInit, so a leftover from either window is
+// killed the same way.
 //
 // It also removes the stale state file itself, which nothing did before:
 // a state file was published per run and removed by nobody, so a development
@@ -89,10 +88,15 @@ func sweepOrphanedSandboxesIn(snugRoot *os.Root, snugPath string) {
 	}
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() || !strings.HasPrefix(name, "target-") || !strings.HasSuffix(name, ".json") {
+		if e.IsDir() || !strings.HasPrefix(name, "target-") {
 			continue
 		}
-		sweepOneOrphan(snugRoot, snugPath, name)
+		switch {
+		case strings.HasSuffix(name, ".json"):
+			sweepOneOrphan(snugRoot, snugPath, name)
+		case strings.HasSuffix(name, ".starting"):
+			sweepOneStartingOrphan(snugRoot, snugPath, name)
+		}
 	}
 }
 
@@ -140,6 +144,52 @@ func sweepOneOrphan(snugRoot *os.Root, snugPath, name string) {
 		// A file snug could not remove is state that survives the user, and
 		// the user may have to remove it by hand.
 		fmt.Fprintf(os.Stderr, "snug: could not remove stale run state %s: %v\n", full, err)
+	}
+}
+
+// sweepOneStartingOrphan is sweepOneOrphan's twin for a ".starting" record
+// (issue #236): a run that never reached state.json, or reached it and then
+// was SIGKILLed before removeInitState ran. All three conditions from this
+// file's own doc comment apply unchanged — only the record's shape differs,
+// built here into the same runState killOrphanInit already knows how to
+// judge, so the kill and the removal go through exactly one implementation of
+// each rather than a second copy that could disagree with it.
+func sweepOneStartingOrphan(snugRoot *os.Root, snugPath, name string) {
+	full := filepath.Join(snugPath, name)
+
+	f, err := snugRoot.Open(name)
+	if err != nil {
+		return
+	}
+	st, decErr := decodeInitState(f)
+	f.Close()
+	if decErr != nil {
+		return
+	}
+
+	if initStateName(st.Target) != name {
+		return
+	}
+
+	held, err := targetLockIsHeld(snugRoot, snugPath, st.Target)
+	if err != nil || held {
+		return
+	}
+
+	rs := runState{
+		Target: st.Target,
+		Sandbox: runStateSandbox{
+			InitPID:       st.InitPID,
+			InitStarttime: st.InitStarttime,
+			Namespaces:    st.Namespaces,
+		},
+	}
+	if killOrphanInit(rs, full) == orphanUnresolved {
+		return
+	}
+
+	if err := snugRoot.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		fmt.Fprintf(os.Stderr, "snug: could not remove stale sandbox-starting record %s: %v\n", full, err)
 	}
 }
 

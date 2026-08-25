@@ -46,6 +46,22 @@ type Options struct {
 	// that failed to start.
 	OnInfo func(RunInfo)
 
+	// OnInit, if non-nil, is called with the sandbox init's HOST pid the
+	// moment bwrap reports it — on the offline/host-network arm, from
+	// reportInfo's goroutine, right after bwrapinfo.Read returns and BEFORE
+	// publishInfo; on the staged arm, wired to stage.Config.OnSandboxForked,
+	// so it runs the instant P1 forwards bwrap's "forked" event (issue #236)
+	// rather than after the mount settle and the engine's cold start
+	// "enginestarted" waits out. Both arms funnel through notifyInit, the one
+	// place this package turns "bwrap named its init" into the call.
+	//
+	// It carries a pid and nothing else — it is not OnInfo's early twin:
+	// OnInfo is a RunInfo, published (on the staged arm) only after a gated
+	// payload is released, and this runs before that release ever happens. A
+	// failure inside it is warn-only; the run continues regardless of what it
+	// does with the pid.
+	OnInit func(pid int)
+
 	// EngineSpec, when non-nil, tells runStaged to fork a container engine
 	// into this sandbox's own N — EAGERLY, after the network is confirmed and
 	// while bwrap's payload is parked on the gate, as a second long-lived child
@@ -413,6 +429,11 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 		Sandbox:   extra,
 		BwrapInfo: infoR,
 		Stdin:     stdin, Stdout: stdout, Stderr: stderr,
+		// Wired to the same notifyInit the offline arm calls from
+		// reportInfo, so StartSandbox's "forked" event reaches opts.OnInit
+		// synchronously, before the mount settle and the engine's cold start
+		// "enginestarted" waits out (issue #236).
+		OnSandboxForked: func(pid int) { notifyInit(opts, pid) },
 	})
 	if err != nil {
 		return 0, err
@@ -591,8 +612,22 @@ func reportInfo(infoR *os.File, base RunInfo, opts Options) {
 			opts.warn(fmt.Sprintf("this run will not be attachable (%v)", err))
 			return
 		}
+		notifyInit(opts, info.InitPID)
 		publishInfo(info, base, opts)
 	}()
+}
+
+// notifyInit is the one place both arms of Run turn "bwrap named its init"
+// into opts.OnInit(pid) — the offline arm from reportInfo's goroutine, the
+// staged arm through stage.Config.OnSandboxForked (runStaged) — the same
+// convergence publishInfo already gives opts.OnInfo. pid <= 1 means bwrap
+// never answered or named something that cannot be a host init; OnInit is not
+// called for it, same as publishInfo's own InitPID <= 0 guard.
+func notifyInit(opts Options, pid int) {
+	if opts.OnInit == nil || pid <= 1 {
+		return
+	}
+	opts.OnInit(pid)
 }
 
 // publishInfo turns bwrap's answer — however it arrived — into a RunInfo and

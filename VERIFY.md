@@ -3822,13 +3822,74 @@ The same pass removes the stale state file, which nothing did before: one was
 published per run and removed by nobody, so this box had accumulated 1099 of
 them.
 
-Two leftovers this does **not** reach, told apart by the fd they are blocked
-on. An init that never answers `--info-fd` parks in `read()` on one of bwrap's
-**own** eventfds (its uid-map sync) and no record can name it — the pid is the
-one bwrap has not reported. A **gated** run's parked payload waits on snug's
-`--block-fd`, a **pipe**, and its init pid IS known; the record simply is not
-published until after the release byte, leaving the engine's whole cold start
-(1-2 s typical, 30 s bound) nameless. Issue #236 carries the measurements.
+One leftover this does **not** reach: an init that never answers `--info-fd`,
+parked in `read()` on one of bwrap's **own** eventfds (its uid-map sync). No
+record can name it — the pid is the one bwrap has not reported yet. That is
+upstream's window. The other one, a **gated** run's parked payload waiting on
+snug's `--block-fd` (a **pipe**, which is what tells the two apart from
+outside), IS reached now, by the record 11c-ter checks.
+
+### 11c-ter. The kill record exists before the sandbox is attachable (issue #236)
+
+`state.json` is published only once the sandbox is up — and on a gated run only
+after the release byte, because a state file is an invitation to `snug attach`
+and attaching to a parked payload would defeat the gate. On a container run
+that is the engine's whole cold start with no host record naming the init, so a
+`SIGKILL` there left a leftover 11c-bis could not find. `target-<hash>.starting`
+closes it: written the instant bwrap names its init, removed once `state.json`
+lands.
+
+Watch the swap. `@podman-socket` is what makes the window wide enough to see by
+hand:
+
+```bash
+D=/run/user/$(id -u)/snug
+KEY=$(printf %s "$(readlink -f $SC/proj/sub)" | sha256sum | cut -d' ' -f1)
+rm -f $D/target-$KEY.json $D/target-$KEY.starting
+./bin/snug -p @podman-socket $SC/proj/sub -- /bin/sleep 20 & SNUG=$!
+while [ ! -e $D/target-$KEY.starting ] && [ ! -e $D/target-$KEY.json ]; do sleep 0.002; done
+ls -1 $D/target-$KEY.* | sed "s|$D/||"
+cat $D/target-$KEY.starting
+```
+
+Expect the record and **no** `.json` beside it — that absence is the point:
+
+```
+target-b18f2a2a....starting
+target-b18f2a2a....lock
+{
+  "schema": 1,
+  "target": "/tmp/.../proj/sub",
+  "init_pid": 407653,
+  "init_starttime": 1988232,
+  "namespaces": {
+    "cgroup": 4026533860, "ipc": 4026533858, "mnt": 4026533856,
+    "net": 4026533751, "pid": 4026533859, "uts": 4026533857
+  }
+}
+```
+
+Five keys and no sixth. It names who to kill and says **nothing** about seccomp,
+environment, profiles or command — a record any attach path could act on would
+hand out a sandbox whose root is still writable and whose `/oldroot` is still
+the host tree (`internal/stage/serve.go` measures 816 mounts, root `rw`, at
+`t+0ms`). Then let the engine come up:
+
+```bash
+sleep 8; ls -1 $D/target-$KEY.* | sed "s|$D/||"; wait $SNUG
+```
+
+Expect the swap — `.starting` gone, `state.json` there, never both:
+
+```
+target-b18f2a2a....json
+target-b18f2a2a....lock
+```
+
+**Why this order and not the reverse**: the removal happens only after
+`writeRunState` SUCCEEDS, so a `SIGKILL` between the two leaves at least one
+record naming the same init. Both name the same pid, so a sweep acting on both
+is harmless — the second `pidfd_open` returns ESRCH, which is "already gone".
 
 ### 11b. …including when the signal lands during startup
 
