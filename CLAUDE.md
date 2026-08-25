@@ -468,6 +468,19 @@ meant. It cannot prove the sandbox holds.
   holds no `CAP_NET_ADMIN`. Note what that means for the habit rather than for
   the fact: **the annoyance survived its own explanation.** When the hole closes,
   re-derive the limitation instead of assuming it went with it.
+- **Comment rules live in the agent files** — `.claude/agents/go-implementer.md`
+  § Comments, test deltas in `sandbox-tester.md` — and they bind the main thread
+  editing code directly, which is exactly where nothing loads them for you. The
+  half that is not style is the rule above aimed at code: **never write a
+  measurement, errno, quoted string or issue number you did not read this
+  task.** Nothing checks a `#NNN` in a comment, there are hundreds, and an
+  invented one is indistinguishable from a real one — a reconstructed
+  reproduction one file closer to the code than the ticket it would otherwise
+  land on. The commit that first wrote that rule misquoted `reap.go` inside it
+  ("nothing of mine is here"; the string is "nothing of mine is running"), which
+  is the measured base rate for catching this by eye: zero, until someone
+  grepped.
+
 - **Pull requests: caveman prose, and never a session link.** A PR body is
   technical prose that prefers brevity and accuracy over narration — drop
   articles and filler, keep every measurement, path, flag and exact error

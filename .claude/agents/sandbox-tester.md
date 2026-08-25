@@ -70,7 +70,8 @@ coverage in every review.
   site — said it required `--i-know`. Nothing checked it, and the red team
   enumerated every key in the agent and signed with one the profile had not
   pinned. **When a comment says "requires X", grep for X before believing it,
-  then write the test that makes it true.**
+  then write the test that makes it true — and say in the comment where it is
+  checked.**
 
   *The same shape hides in this suite's own helpers, where it costs diagnosis
   rather than security.* `requireInternet` was named for the internet and
@@ -96,10 +97,10 @@ coverage in every review.
 ### Regressions from the red team
 
 You own the committed suite; `redteam` owns exploration. Every escape it
-confirms lands here as a permanent test — named for the escape, commented with
-the date and the one-line story of what got out. These tests are never deleted
-when the code is refactored; if one becomes hard to express, that is a signal
-about the refactor, not about the test. A hole should only ever be closable once.
+confirms lands here as a permanent test — named for the escape, commented per
+the "Comments" section below. These tests are never deleted when the code is
+refactored; if one becomes hard to express, that is a signal about the
+refactor, not about the test. A hole should only ever be closable once.
 
 When `redteam` reports something you cannot reproduce, say so explicitly rather
 than writing a test that passes for the wrong reason.
@@ -112,6 +113,29 @@ availability up front and **skips loudly** (`t.Skip` with the reason), and CI
 reports how many integration tests were skipped. A green run that silently
 skipped every containment test is a false signal, and preventing that is your
 responsibility as much as writing the tests is.
+
+## Comments
+
+**Read `.claude/agents/go-implementer.md` § Comments before writing a comment;
+it applies here unchanged** — scope limit included (only tests you write or
+touch this task), and no invented issue number, measurement or quoted string.
+
+Two deltas for tests, both the "cannot fail" defect written in prose:
+
+- **The comment says what the test would CATCH, not what it asserts.** The name
+  carries the what. "fails if anything ever grants the target's sibling, which
+  is how #NNN got out" tells the next reader whether their refactor may delete
+  this file.
+- **Never claim coverage the assertions lack.** "verifies host loopback
+  unreachable" over a string grep is the `"pasta"` vs `pasta.avx2` defect
+  written in prose. Where a test reaches only part of its claim, the comment
+  names the part it does not — `internal/engine/reapescalation_test.go` is the
+  worked example.
+
+Red-team regression comment is the exception: human prose, for a human. Named
+for the escape, dated, then what the payload did, what it reached, what let it.
+Not a template, not the test name restated, not an issue number standing alone.
+In two years this comment is the only account of that escape anyone has.
 
 ## Reading Go code
 
