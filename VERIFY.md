@@ -301,6 +301,45 @@ rune in a guest path outright, so `-p @cwd-rw` on a target whose own name
 carries one exits 77 — with a complete document, which is the point of the
 previous check.
 
+**And DEL, U+007F, which is the code point the two spellings of that rule
+disagreed about (issue #333).** `encoding/json` escapes runes BELOW U+0020 plus
+quote and backslash; it does not escape U+007F, and `policy.IsForgingRune` has
+always answered true for it — so the JSON predicate's `r >= 0x80` gate left
+exactly one forging rune raw while the human screen escaped it. It arrives from
+the HOST, through `@claude`'s shipped `inherit EDITOR`, with no profile file
+involved:
+
+```bash
+EDITOR=$(printf 'vim\177  ro     /etc/shadow    FORGED') \
+  ./bin/snug --dry-run --json -p @claude $SC/proj/sub > /tmp/del.json; echo "exit=$?"
+LC_ALL=C grep -c $'\177' /tmp/del.json          # lines carrying a raw DEL byte
+grep -o 'vim..007f' /tmp/del.json | head -2     # the escaped form, twice
+python3 -c "import json;d=json.load(open('/tmp/del.json'));print(d['snug']['lossy'],
+  [e['value'] for x in d['environment'] if x['name']=='EDITOR' for e in x['entries']])"
+```
+
+```
+exit=0
+0
+vim\u007f
+vim\u007f
+False ['vim\x7f  ro     /etc/shadow    FORGED']
+```
+
+Read the four lines together, because each one alone passes on a broken build:
+**zero** lines with a raw DEL byte, the escape appearing **twice** (`environment[].value`
+and `bwrap.argv` — the second sink is the one an escape applied at a single call
+site would miss), `lossy` still **false**, and the decoded value still carrying
+the real byte. Before the fix the same run printed **2**, no escape,
+and `False` beside them — a document asserting it was clean while carrying the
+character raw.
+
+Note that the profile route cannot reach this one at all: go-toml refuses a
+control character in a basic string, so a `ro` grant naming a host path with a
+raw DEL in it fails to load and `snug` exits 77. That is why the fixture is a
+host environment value — which is also the only route the original measurement
+had.
+
 **The subcommands refuse the flag rather than dropping it.** They used to exit 0
 with the human report:
 
