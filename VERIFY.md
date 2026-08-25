@@ -4853,6 +4853,88 @@ real home so the guard can recognise it.
 Only `redteam` carries this rule. Every other agent works on the host as its
 ordinary mode and is right to.
 
+## 17. The engine binary a payload can NAME, not only the bytes it can write
+
+Issue #369, row 6's confirmed finding. `CheckEngineBinary` asks *can the payload
+write these bytes*, and canonicalisation answers that correctly — which is why
+the regular-file case always worked. What canonicalisation destroys is the
+ability to ask *did the payload CHOOSE these bytes*, and for a symlink the two
+questions have different answers. Measured before the fix: a payload-writable
+`$TARGET/podman -> /usr/bin/true` was accepted and exec'd as this run's engine,
+failing 30s later at the socket timeout, while a regular file at the same path
+was refused.
+
+Use a throwaway `HOME` that is **not** under the target's parent, or `@parent-ro`
+refuses first for an unrelated reason (§ the `$HOME`-ancestor refusal).
+
+```console
+$ B=./bin/snug; S=$(mktemp -d); H=$(mktemp -d); mkdir -p "$S/proj"
+$ ln -s /usr/bin/true "$S/proj/podman"          # the payload owns the NAME, not the bytes
+$ HOME=$H SNUG_PODMAN="$S/proj/podman" $B --no-defaults \
+    -p @sys -p @home -p @cwd-rw -p @podman-socket "$S/proj" -- true
+snug: /tmp/.../proj/podman cannot be this run's container engine: a grant of this sandbox makes that NAME writable.
+       The bytes at the end of that chain (/usr/bin/true) are not writable, so this is not the
+       payload EDITING the engine — it is the payload CHOOSING it. snug execs whatever
+       this name resolves to as uid 0, pid 1 of the engine's pid namespace, with
+       CAP_SYS_ADMIN in this sandbox's user namespace and the whole delegated subuid
+       range, so a name the payload can rewrite is the payload deciding what runs as
+       root — and every other filter on the container path is moot, because the payload
+       picked the engine.
+       ...
+       NOTE THE LIMIT of this refusal: it resolves a name to its host FIXED POINT in
+       one step, so it sees the first name in a chain and the last, never a middle one.
+$ echo $?
+77
+```
+
+The endpoint arm keeps its own wording, and that is deliberate — the payload
+WRITING the engine is the worse fact and must not be re-described as a naming
+problem:
+
+```console
+$ cp /usr/bin/true "$S/proj/podman2"
+$ HOME=$H SNUG_PODMAN="$S/proj/podman2" $B --no-defaults \
+    -p @sys -p @home -p @cwd-rw -p @podman-socket "$S/proj" -- true
+snug: /tmp/.../proj/podman2 cannot be this run's container engine: a grant of this sandbox makes it
+       WRITABLE.
+```
+
+A relative `$SNUG_PODMAN` is refused rather than accommodated, because every
+check on this path compares against canonical absolute grants — a relative name
+matches none of them and would be accepted **without being judged**. Two
+different messages depending on whether it resolves, and both are refusals:
+
+```console
+$ cd "$S" && HOME=$H SNUG_PODMAN="proj/bin/podman" $B ... "$S/proj" -- true   # exists
+snug: proj/bin/podman cannot be this run's container engine: it is not an absolute path.
+$ HOME=$H SNUG_PODMAN="bin/podman" $B ... "$S/proj" -- true                    # does not exist
+snug: $SNUG_PODMAN=bin/podman does not name a usable file
+```
+
+What to check:
+
+1. The symlink case is **refused, exit 77**, and the refusal names the
+   **symlink** — the object the payload controls — not `/usr/bin/true`.
+2. It also names the endpoint, so a human can see the bytes were clean and the
+   refusal is about the choice.
+3. The regular-file case still says `makes it WRITABLE`, unchanged. If it now
+   says `NAME`, the arms are ordered wrongly: the endpoint check must run first.
+4. Both relative forms are refused. Neither is accepted-and-unjudged.
+5. The `NOTE THE LIMIT` paragraph is present, and it is honest: a **two-hop**
+   chain — a host-owned symlink pointing at a payload-writable name that is
+   itself a symlink to clean bytes — is **not** caught, because each prefix is
+   resolved to its fixed point in one step.
+
+**Not covered here, and it is the sharper of the two doors.** The same
+predicate guards `$SNUG_PODMAN_ROOT`, so a toolchain root named through a
+payload-writable symlink is refused too — but a by-hand attempt at it hits the
+engine-binary arm first whenever the binary itself sits inside the writable
+tree, which is the obvious way to build the case. Isolating it needs a clean
+binary outside every grant with only the ROOT named through the writable
+symlink; the unit tests do that (`TestEngineToolchainJudgesTheNameNotOnlyTheTarget`)
+and a round is owed on the door itself, which was **derived by reading and never
+measured**.
+
 ## If a check fails
 
 1. Re-run it with `--dry-run` and compare what snug *claimed* against what you

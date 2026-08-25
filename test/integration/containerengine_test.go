@@ -412,6 +412,32 @@ func probeRealEngine(t *testing.T, env []string) string {
 	writeBuildProbe(t, proj)
 	r := runEnv(t, env, []string{"-p", "@podman-build", "-p", "@net"}, proj, `python3 probe.py`)
 	if !r.ran {
+		// "the probe payload never ran" used to become a skip reason
+		// unconditionally, no matter WHY snug refused this fixture's own
+		// ordinary run -- issue #369's own measured defect: a test whose
+		// XDG_RUNTIME_DIR made the container proxy's socket path exceed
+		// AF_UNIX's sun_path limit failed here with exitPolicy (77, "container
+		// proxy socket: ... bind: invalid argument"), which this branch folded
+		// into the same "no usable engine" SKIP as a genuinely absent
+		// capability -- and the suite read green while the regression it
+		// existed to catch had never once run.
+		//
+		// exitUnavail (69, internal/cli/main.go) is the one code this probe's
+		// own ordinary, trickery-free fixture can legitimately produce without
+		// it being a bug: sandbox.Run itself failed to bring the engine up
+		// (the CAP_NET_ADMIN case this file's own header comment names for
+		// issue #401). Anything else -- exitPolicy (77, snug REFUSED the run
+		// outright), exitUsage (64), exitInternal (70), or any other code --
+		// is snug or this harness misbehaving against a fixture that asked for
+		// nothing unusual, which is not "there is no engine to test against"
+		// and must fail loudly rather than hide behind that skip.
+		const exitUnavail = 69
+		if r.code != exitUnavail {
+			t.Fatalf("probeRealEngine: snug refused this probe's own ordinary run with exit %d, "+
+				"which is not exitUnavail (%d) -- that is not \"no usable engine\", it is snug or "+
+				"this harness failing for an unrelated reason and must not be swallowed into a "+
+				"SKIP:\n%s", r.code, exitUnavail, r.out)
+		}
 		return fmt.Sprintf("the probe payload never ran (snug exited %d): %s", r.code, r.out)
 	}
 	if !strings.Contains(r.out, "ordinary build: 200") {

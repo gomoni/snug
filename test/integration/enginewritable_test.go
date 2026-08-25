@@ -55,6 +55,25 @@ func scratchHomeEnv(t *testing.T) []string {
 	return []string{"HOME=" + home, "XDG_CONFIG_HOME=" + cfg}
 }
 
+// shortRuntimeDirEnv is an XDG_RUNTIME_DIR override rooted at a short,
+// test-name-agnostic path, exactly like shortTarget (sandbox_test.go) and
+// dryrunleak_test.go's own runtimeDir already do for the same limit:
+// t.TempDir() names its directory after the calling test function, and the
+// container proxy's socket lands at
+// "<XDG_RUNTIME_DIR>/snug/run-<pid>/podman.sock" underneath it, which a long
+// test name pushes past AF_UNIX's ~108-byte sun_path. baseEnv's own doc
+// comment is what makes appending this after attachEnv's/containerEngineEnv's
+// slice enough to win: os/exec's Cmd.Environ keeps the LAST duplicate key.
+func shortRuntimeDirEnv(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "snug-eng-rt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return "XDG_RUNTIME_DIR=" + dir
+}
+
 // wrapperScript is a "#!/bin/sh exec <real podman> \"$@\"" pass-through —
 // content is irrelevant to either check under test (both are purely lexical,
 // asked before the binary is ever exec'd), but it is a real, executable file
@@ -198,7 +217,13 @@ func TestEngineToolchainRootContainsAWritableGrantIsRefused(t *testing.T) {
 func TestEngineBinaryNamedThroughASymlinkInsideAWritableGrantIsRefused(t *testing.T) {
 	budget(t, 60*time.Second)
 
+	// This test's own name is long enough (measured: 65 characters) that
+	// attachEnv's/containerEngineEnv's t.TempDir()-rooted XDG_RUNTIME_DIR
+	// pushes the container proxy's socket path past sun_path — see
+	// shortRuntimeDirEnv's own comment. Both the probe env (requireRealEngine
+	// runs a real build through it) and the test's own env need the override.
 	gateEnv, _ := containerEngineEnv(t)
+	gateEnv = append(gateEnv, shortRuntimeDirEnv(t))
 	requireRealEngine(t, gateEnv)
 	podman := hostEngine(t)
 
@@ -222,6 +247,7 @@ func TestEngineBinaryNamedThroughASymlinkInsideAWritableGrantIsRefused(t *testin
 	}
 
 	base, _ := attachEnv(t)
+	base = append(base, shortRuntimeDirEnv(t))
 	env := append(append([]string{}, base...), scratchHomeEnv(t)...)
 	env = append(env, "SNUG_PODMAN="+link)
 

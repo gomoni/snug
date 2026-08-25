@@ -88,13 +88,27 @@ import (
 // comment on New). No process on the machine carries that string, which is
 // exactly why falling back to it would be indistinguishable from not sweeping.
 //
-// IT IS A STRING THE PAYLOAD CAN AUTHOR, and what stops that is not the matcher
-// but WHEN this runs. A payload can put candidate pids on its own argv, and
-// payload processes are visible in the host /proc. Stop sweeps only after the
-// stage has been reaped, which collapsed the sandbox's pid namespace and with it
-// every payload process, so there is nothing of the payload's left to match.
-// Moving this sweep back before that collapse re-opens it, and the symptom would
-// be snug naming a payload-chosen command line in the warning that tells a human
+// IT IS A STRING THE PAYLOAD CAN AUTHOR, and what stops that is CONFINEMENT
+// PLUS AN UNBLOCKABLE KILL PLUS A FIXED BUDGET — not the wall-clock ordering an
+// earlier version of this comment named. A payload can put candidate pids on its
+// own argv, and payload processes are visible in the host /proc.
+//
+// The old sentence read: Stop sweeps only after the stage has been reaped, so
+// there is nothing of the payload's left to match. That is slightly stronger
+// than the timing guarantees — a poll can land while the cascade completes and
+// momentarily match a dying, payload-argv'd process. What carries the property
+// instead, measured (issue #369 row 1, 2ms poll on host /proc against 1500
+// forged engine-ns processes under load): the payload has its own pid namespace
+// and no route to a host-namespace process, so every process it can create lives
+// under a pid 1 that is Pdeathsig-chained and reaped before this runs, pid 1's
+// SIGKILL and zap_pid_ns_processes are unblockable, and the fixed budget
+// outlasts any collapse the machine can hold. Observed there: 1500 forgeries
+// gone 0.76s before the sweep's first poll.
+//
+// The wrong version is left visible because a future reader quoting "the sweep
+// runs later" would be leaning on the one part that is only usually true. Moving
+// this sweep before the collapse still re-opens it, and the symptom would be
+// snug naming a payload-chosen command line in the warning that tells a human
 // what to kill -9.
 //
 // It is best-effort by construction: in a container without the host PID
