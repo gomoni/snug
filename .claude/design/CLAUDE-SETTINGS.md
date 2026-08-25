@@ -598,9 +598,7 @@ carried its own record of what is installed and where, and that record is a
 second, independent gate on which plugin loads. That was the residual this
 section first named.
 
-**Remeasured on claude 2.1.238, 2026-08-21, because the earlier phrasing drifted.**
-This section once said Claude Code auto-loads each installed plugin's `hooks.json`
-*"regardless of `enabledPlugins`"*. That is **false on 2.1.238**: a plugin's
+**Measured on claude 2.1.238, 2026-08-21.** A plugin's
 `SessionStart` hook fires only when it is BOTH named in
 `installed_plugins.json` AND enabled in `settings.json`'s `enabledPlugins` — two
 AND-gates, measured with a two-plugin fixture driven headless
@@ -929,12 +927,13 @@ how the last three findings happened.
 **The mount is unconditional** — like `~/.claude.json`, unlike
 `.credentials.json`. Three reasons:
 
-1. **It collapses a two-armed claim into one true sentence.** Four sites used to
-   branch on whether the host had a settings file (`claudeSettingsBound`,
-   `describeClaude`, `claudeGuidance`, `VERIFY.md` §6b), and the branch existed
-   only because the bind was `optional`. With snug always authoring the file,
+1. **It collapses a two-armed claim into one true sentence.** An `optional`
+   bind forces every consumer to branch on whether the host has a settings file
+   — `describeClaude`, `claudeGuidance` and `VERIFY.md` §6b would each carry the
+   arm. With snug always authoring the file,
    "`~/.claude/settings.json` is snug's, generated from an allowlist, and dies
-   with the session" is true on every host. `claudeSettingsBound` is gone.
+   with the session" is true on every host, and no `claudeSettingsBound`
+   predicate is needed.
 2. **The sandbox's behaviour stops varying with host state**, which is the same
    argument INDEX §9.3 makes for `~/.claude.json` being unconditional.
 3. **"Absent" and "the filter carried nothing" become distinguishable.** The
@@ -951,12 +950,12 @@ end-to-end: the integration test writes `{}` over the file inside the sandbox,
 requires the write to succeed, and requires the **host's** file to be
 byte-identical afterwards.
 
-**`rw` has a real cost, and this paragraph used to deny it.** The first draft
-read *"the security delta of `rw` over `ro` is nil … on a host with no settings
-file the path was already writable, the payload already has arbitrary execution
-inside, and nothing at that path reaches the host."* The red team measured that
-false, and the flaw is that it argues only the arm where the host has no file.
-Measured both ways, same fixture, payload `echo BAD >> $HOME/.claude/settings.json`:
+**`rw` has a real cost, and the argument that it does not is two-armed.** *"The
+security delta of `rw` over `ro` is nil — the path was already writable, the
+payload already has arbitrary execution inside, and nothing at that path reaches
+the host"* holds only on the arm where the host has **no** settings file. The
+other arm is where it fails. Measured both ways, same fixture, payload
+`echo BAD >> $HOME/.claude/settings.json`:
 
 | build | host HAS a settings file |
 |---|---|
