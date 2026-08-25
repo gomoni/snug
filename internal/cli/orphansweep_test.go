@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -75,6 +77,11 @@ func TestSweepDoesNotKillARecycledPid(t *testing.T) {
 	st := stateFor(target, victim)
 	st.Sandbox.InitStarttime = victim.starttime + 1 // as if the pid had been reused
 	writeState(t, dir, target, st)
+
+	if got := killOrphanInit(st, "test"); got != orphanGone {
+		t.Errorf("killOrphanInit returned %v for a starttime mismatch, want orphanGone: the "+
+			"pid was recycled, so the record is spent and safe to remove", got)
+	}
 
 	sweepOrphanedSandboxesIn(root, dir)
 
@@ -191,6 +198,155 @@ func TestSweepIgnoresAStateFileItCannotParse(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 		t.Errorf("the sweep removed a state file it could not parse (err=%v)", err)
 	}
+}
+
+// killOrphanInit's verdicts one at a time, called directly rather than
+// through the sweep: orphanGone is the caller's licence to delete the
+// record, and each case below is a different reason the init the record
+// names cannot be alive.
+func TestKillOrphanInitVerdicts(t *testing.T) {
+	t.Run("pid<=1 is never a host init", func(t *testing.T) {
+		st := runState{Sandbox: runStateSandbox{InitPID: 1}}
+		if got := killOrphanInit(st, "test"); got != orphanGone {
+			t.Errorf("killOrphanInit(pid=1) = %v, want orphanGone", got)
+		}
+	})
+
+	t.Run("a reaped pid", func(t *testing.T) {
+		cmd := exec.Command("/bin/true")
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		pid := cmd.Process.Pid
+		if err := cmd.Wait(); err != nil {
+			t.Fatal(err)
+		} // reaped: the number no longer names any task, so pidfd_open(2) is ESRCH.
+		st := runState{Sandbox: runStateSandbox{InitPID: pid, InitStarttime: 1}}
+		if got := killOrphanInit(st, "test"); got != orphanGone {
+			t.Errorf("killOrphanInit(reaped pid %d) = %v, want orphanGone", pid, got)
+		}
+	})
+
+	t.Run("namespace mismatch on an otherwise-matching pid", func(t *testing.T) {
+		victim := liveProcess(t)
+		st := stateFor("/tmp/table-ns-mismatch-target", victim)
+		st.Sandbox.Namespaces = map[string]uint64{"mnt": 1, "pid": 2, "net": 3, "ipc": 4, "uts": 5, "cgroup": 6}
+		if got := killOrphanInit(st, "test"); got != orphanGone {
+			t.Errorf("killOrphanInit(namespace mismatch) = %v, want orphanGone", got)
+		}
+		if !processAlive(victim.pid) {
+			t.Errorf("pid %d was killed despite a namespace mismatch", victim.pid)
+		}
+	})
+}
+
+// THE LOAD-BEARING CASE. killOrphanInit returns orphanUnresolved whenever a
+// /proc read fails for a reason other than "no such process" — the pid may
+// still be alive, and deleting the record then would make every later sweep
+// blind to it (issue #236's own accumulation, reintroduced by the cleanup
+// path). This proves the record SURVIVES that case, using a real seam rather
+// than a fabricated error: a live process this test does not own answers
+// pidfd_open(2) and its starttime, but its /proc/<pid>/ns/* are EACCES.
+//
+// This needs a real other-uid process. Root's own PID 1 or a container
+// entrypoint qualifies on most hosts; skip if none is found rather than
+// fabricate the permission boundary.
+func TestSweepKeepsARecordWhenNamespacesCannotBeRead(t *testing.T) {
+	pid, start := findUnreadableNamespacePid(t)
+
+	dir, root := stateDirForTest(t)
+	target := "/tmp/unresolved-target"
+	st := runState{
+		Schema: runStateSchema,
+		Target: target,
+		Sandbox: runStateSandbox{
+			InitPID:       pid,
+			InitStarttime: start,
+			// Presence, not value, is what decodeRunState checks; the real
+			// comparison in killOrphanInit is never reached because the ns
+			// read itself fails first.
+			Namespaces: map[string]uint64{"mnt": 1, "pid": 2, "net": 3, "ipc": 4, "uts": 5, "cgroup": 6},
+		},
+	}
+	writeState(t, dir, target, st)
+
+	// THE CONTROL: a second, ordinary orphan in the SAME directory and SAME
+	// sweep call, which the sweep must still kill and remove. Without this,
+	// "the record survived" is equally explained by a sweep that never ran.
+	control := liveProcess(t)
+	controlTarget := "/tmp/unresolved-control-target"
+	writeStateFor(t, dir, controlTarget, control)
+
+	sweepOrphanedSandboxesIn(root, dir)
+
+	if !waitDead(control.pid, 5*time.Second) {
+		t.Fatalf("control: the sweep did not kill pid %d, an ordinary orphan in the same "+
+			"directory — without this, a sweep that never ran would pass this test too", control.pid)
+	}
+	if _, err := os.Stat(filepath.Join(dir, targetStateName(controlTarget))); !os.IsNotExist(err) {
+		t.Fatalf("control: the ordinary orphan's record survived the sweep (err=%v)", err)
+	}
+
+	// The load-bearing assertion: an EACCES on the namespace read is
+	// orphanUnresolved, not orphanGone, so sweepOneOrphan must not reach its
+	// removal. No signal was ever sent either — killOrphanInit returns before
+	// PidfdSendSignal on every path that yields orphanUnresolved.
+	if _, err := os.Stat(filepath.Join(dir, targetStateName(target))); err != nil {
+		t.Errorf("the record for an unresolvable namespace read was removed (err=%v): the pid "+
+			"may still be alive and nothing else on the host names it, so this is issue #236's "+
+			"accumulation happening again from inside the cleanup path", err)
+	}
+	if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); err != nil {
+		t.Errorf("pid %d is gone at the end of the test (err=%v): it was not this test's to "+
+			"kill, so its disappearance is unrelated to the sweep, but it means the assertion "+
+			"above was not actually exercising the EACCES path", pid, err)
+	}
+}
+
+// findUnreadableNamespacePid scans for a live, non-reaped pid this test does
+// not own, whose /proc/<pid>/ns/* this uid cannot open. It returns the pid
+// and its starttime (read while unprivileged /proc access still works) so the
+// caller can build a state file whose starttime check passes and whose
+// namespace check fails with EACCES rather than ENOENT.
+func findUnreadableNamespacePid(t *testing.T) (int, uint64) {
+	t.Helper()
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		t.Skip("cannot read /proc")
+	}
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid <= 1 {
+			continue
+		}
+		fi, err := os.Lstat(filepath.Join("/proc", e.Name()))
+		if err != nil {
+			continue
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok || int(st.Uid) == os.Getuid() {
+			continue // owned by us: /proc/<pid>/ns/* would be readable, defeating the seam
+		}
+		fd, err := unix.PidfdOpen(pid, 0)
+		if err != nil {
+			continue // gone, or some other reason this candidate cannot pin
+		}
+		unix.Close(fd)
+		start, err := procStartTime(pid)
+		if err != nil {
+			continue
+		}
+		if f, err := os.Open(filepath.Join("/proc", e.Name(), "ns", "mnt")); err == nil {
+			f.Close()
+			continue // readable after all (e.g. same-uid despite the Stat_t check racing)
+		} else if !os.IsPermission(err) {
+			continue // gone (ENOENT) rather than denied: not the seam this test needs
+		}
+		return pid, start
+	}
+	t.Skip("no other-uid process with an unreadable /proc/<pid>/ns found; skipping the " +
+		"orphanUnresolved seam test")
+	return 0, 0
 }
 
 // ── fixtures ──────────────────────────────────────────────────────────────

@@ -3822,12 +3822,13 @@ The same pass removes the stale state file, which nothing did before: one was
 published per run and removed by nobody, so this box had accumulated 1099 of
 them.
 
-Two leftovers this does **not** reach, both measured: a run killed before its
-state file lands (~165 ms) published no pid at all, and the narrower wedge —
-an init blocked in bwrap's own uid-map sync `read()` on an eventfd, before
-`execvp`, which therefore never answers `--info-fd` — never gets a state file
-for the same reason. Those are bwrap's window, not snug's, and issue #236
-carries the measurement.
+Two leftovers this does **not** reach, told apart by the fd they are blocked
+on. An init that never answers `--info-fd` parks in `read()` on one of bwrap's
+**own** eventfds (its uid-map sync) and no record can name it — the pid is the
+one bwrap has not reported. A **gated** run's parked payload waits on snug's
+`--block-fd`, a **pipe**, and its init pid IS known; the record simply is not
+published until after the release byte, leaving the engine's whole cold start
+(1-2 s typical, 30 s bound) nameless. Issue #236 carries the measurements.
 
 ### 11b. …including when the signal lands during startup
 
@@ -3882,12 +3883,14 @@ nothing snug does at the time can help.
 orphaned init a stale run-state file names, guarded by the target lock, the
 filename-is-the-hash check and a start-time match. That closes the case where
 the run got far enough to publish its init pid — which, measured, is a run
-killed after about 165 ms. It does **not** close the narrower wedge in the same
-window: an init blocked in bwrap's own uid-map sync `read()` on an eventfd,
-before `execvp`, never answers `--info-fd`, so no state file ever names it.
-Measured on merged main while writing this: two such inits survived a later
-`snug` run, and `--verbose` reported killing none. `ps -o pid,args` finds them
-as `bwrap --args N -- <payload>` with **no children**, and
+killed after about 165 ms. It does **not** close an init that no state file
+names, in two shapes: one parked on bwrap's own uid-map eventfd before it ever
+answers `--info-fd`, and — on a gated run — one parked on snug's `--block-fd`
+pipe for the engine's whole cold start (1-2 s typical, 30 s bound), whose pid
+the stage knows but nothing publishes until after the release byte. Measured on
+merged main while writing this: two such inits survived a later `snug` run, and
+`--verbose` reported killing none. `ps -o pid,args` finds them as
+`bwrap --args N -- <payload>` with **no children**, and
 `cut -d' ' -f1 /proc/<pid>/syscall` reads `0` (a `read`) rather than `61` (a
 `wait4`) — that pair is what tells a wedged init from a healthy one, since both
 show `do_wait_intr_irq` in `wchan`.
