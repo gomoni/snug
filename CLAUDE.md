@@ -97,8 +97,9 @@ stay there. A document is *promoted* into `.claude/design/` by a deliberate `git
 mv`, only once it is either **the** design for a subject (one per subject, no
 `-PLAN` or `-REVIEW` twin beside it) or a research record whose measurements stay
 useful after the work lands (`NOCGO.md`, `ENGINE-NETNS.md`).
-Findings never wait on promotion: a confirmed finding becomes a GitHub issue with
-its severity label, which is the milestone rule anyway.
+**A design document is NEVER a reason for a ticket. You see it, you fix it,
+in the same change.** Prose does not need a decision, a review or a milestone —
+it needs an edit. The same goes for code: **fix it before you consider filing.**
 
 | agent | owns |
 |---|---|
@@ -125,12 +126,26 @@ All five, in order. A milestone is not finished until the last one is.
    milestone that adds a hole gets a run before it lands, and so does any change
    to the policy model, mount generation, the seccomp filter, or a
    host-integration surface.
-4. Every confirmed finding is either fixed, or **filed as a GitHub issue** with
-   its severity label (`sev:high`/`sev:medium`/`sev:low`) and the measurement
-   that confirmed it — never silently carried. The issue body carries the
-   reproduction, because the reproduction is the valuable half. There is no
-   `TODO.md`: it grew into 1800 lines mixing open work with shipped work written
-   in the future tense, and the rule that grew it is this one.
+4. **Every confirmed finding is FIXED. A ticket is the exception and needs a
+   reason you can say in one sentence** — the fix needs a maintainer decision
+   you do not have, or it is a separate change that would make this one
+   unreviewable. Nothing else qualifies. Not "prose in another file", not "the
+   same shape elsewhere", not "worth tracking", not a list of places to visit
+   later: that is a chore list, and a chore-list row is a copy of tree state,
+   so it is stale the moment it is written and the staleness is found by
+   whoever tries to close it. Trackers `#33` and `#34` were retired for exactly
+   that (8 of `#369`'s 9 rows pointed at closed tickets; 2 of `#34`'s 3 body
+   rows were FALSE when finally read).
+
+   When a ticket IS right, it carries its severity label
+   (`sev:high`/`sev:medium`/`sev:low`), the measurement that confirmed it, and
+   the reproduction — the reproduction is the valuable half. There is no
+   `TODO.md`, and the rule that grew it into 1800 lines of shipped work written
+   in the future tense was a laxer version of this one.
+
+   **Counting rule, because the failure is invisible one ticket at a time: a
+   session that closes fewer tickets than it opens has made the project worse,
+   whatever else it shipped.**
 5. Every confirmed finding becomes a permanent named regression test owned by
    `sandbox-tester`. A hole should only ever be closable once.
 
