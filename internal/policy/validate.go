@@ -459,120 +459,44 @@ func endpointNoun(mode fs.FileMode) string {
 // rejectEndpointSource refuses a bind whose SOURCE is a unix socket or a FIFO
 // (issues #219, #287).
 //
-// THE RULE, stated once so it explains both nouns without repeating the
-// reasoning per kind: an inode that is an ENDPOINT to a process rather than a
-// container of bytes is one for which the read-only bit means nothing. The
-// kernel's may_open() clears MAY_WRITE for S_IFSOCK, S_IFIFO, S_IFBLK and
-// S_IFCHR before MNT_READONLY is ever consulted — read-only guards the
-// FILESYSTEM, not the process on the other end of the node.
+// An inode that is an ENDPOINT to a process rather than a container of bytes is
+// one for which the read-only bit means nothing: may_open() clears MAY_WRITE for
+// S_IFSOCK and S_IFIFO before MNT_READONLY is consulted, so `ro` guards the
+// filesystem and not the process on the other end. Measured both ways — a
+// payload wrote through a read-only FIFO and a host process received the bytes
+// (#287), and a payload enumerated the host's ssh-agent and signed with it
+// through a read-only bind after re-deriving the path `--clearenv` had stripped
+// (#219).
 //
-// DEVICES ARE DELIBERATELY NOT IN THIS PREDICATE, and that is not an
-// oversight in the list above: a device is in the same kernel list, and is
-// still out of scope because a SECOND, independent flag closes it. bwrap sets
-// `nosuid,nodev` on every bind it creates. Measured on this host (bwrap
-// 0.11.2), one sandbox, three `--ro-bind`s:
+// Devices are out of scope because bwrap's `nosuid,nodev` on every bind already
+// closes them; there is no MS_NOFIFO and no MS_NOSOCK. That argument depends on
+// snug never emitting `--dev-bind`, pinned separately.
 //
-//	fifo:WROTE-OK
-//	/bin/sh: line 1: /tmp/devnull: Permission denied      devnull:FAIL
-//	/bin/sh: line 1: /tmp/regular: Read-only file system  regular:FAIL
+// Detected by stat through the injected Environ, never by a path list: a stat
+// does not care how a path was spelled, so this is not the catalogue shape #207
+// deleted.
 //
-// and mountinfo showed `ro,nosuid,nodev` on both binds. There is no MS_NOFIFO
-// and no MS_NOSOCK — the kernel gives snug the device case for free, through a
-// flag that already has to be there for an unrelated reason, and gives it
-// nothing for the other two. That asymmetry is the entire reason this
-// predicate is socket-plus-FIFO rather than socket-plus-FIFO-plus-device. The
-// device argument depends on snug never emitting `--dev-bind` or
-// `--dev-bind-try`; sandbox-tester pins that separately.
+// AUTHORED MOUNTS ARE EXEMPT and a profile cannot borrow the exemption. snug's
+// own proxy sockets are sockets deliberately — the ssh-agent proxy exposes one
+// pinned key, the container proxy filters every request — and they are the
+// narrower alternatives this refusal stops a mount from replacing. Three writers
+// set Authored: Policy.Replace (nothing a profile expresses reaches it),
+// Policy.Graft (writes p.Grafts, a different map this loop never reads), and
+// Policy.yieldTo (installs base mounts only at an unclaimed guest, leaving a
+// profile's grant unauthored so RULE 4 can still name it).
 //
-// MEASURED FOR THE FIFO HALF (issue #287): a payload wrote through a FIFO
-// mounted read-only and a host process on the other end received the bytes,
-// while `touch` on a regular file in the same read-only bind got EROFS in the
-// same run. The socket half was measured earlier, by #219: a payload
-// enumerated the host's ssh-agent and signed with it through a read-only
-// bind — `--clearenv` had correctly stripped SSH_AUTH_SOCK and the payload
-// simply re-derived the path. Both are the same kernel fact wearing a
-// different noun.
-//
-// THERE IS NO @ssh-agent BUILTIN, and there never was — the mechanism this
-// refusal points at is an identity block (`ssh_mode = "agent-proxy"`), not a
-// profile `snug -p` can select. An earlier version of this message named
-// '@ssh-agent' and snug rejected it with `unknown profile "@ssh-agent"` for a
-// full milestone before anyone noticed (issue #289) — the message pointed the
-// reader at a fix that did not exist. Whatever this message names, verify it
-// resolves.
-//
-// DETECTED BY stat, NEVER BY A PATH LIST, and that distinction is the whole
-// reason this is not the catalogue shape #207 deleted. That catalogue was a
-// maintained list of path strings, and #189 proved a list of strings is
-// defeated by spelling one path five ways with three going unmarked. A stat
-// does not care how a path was spelled, there is nothing to keep in sync with
-// a third party's layout, and there is no normalisation gap. This is the
-// NUL-check shape: a structural property of a VALUE, refused wherever it
-// appears.
-//
-// internal/policy stays pure: the stat goes through the injected Environ, the
-// same way every other host lookup in this package does.
-//
-// AUTHORED MOUNTS ARE EXEMPT, and this is not a loophole — it is the whole
-// point of the rule. snug's own proxy sockets ARE sockets, deliberately: the
-// ssh-agent proxy at AgentSocketGuest exposes one pinned key and enumerates
-// nothing, and the container proxy filters every request. Those are the
-// narrower alternatives this refusal exists to stop a mount from replacing.
-// A PROFILE CANNOT BORROW THE EXEMPTION, and the reason takes three writers
-// rather than one — the earlier version of this comment said "set only by
-// Policy.Replace", which is false and was the sentence carrying the whole
-// argument:
-//
-//   - Policy.Replace (types.go) — snug's own post-resolve writes: the proxy
-//     sockets, the generated identity files, the staged credentials. Nothing a
-//     profile can express reaches it.
-//   - Policy.Graft (graft.go) — writes p.GRAFTS, a different map. This loop
-//     reads p.Mounts, so a graft's authorship never reaches this decision at
-//     all; the engine's own socket graft is exempt by not being here.
-//   - Policy.yieldTo (resolve.go) — installs snug's base mounts (/proc, /dev,
-//     /tmp) ONLY when the guest is unclaimed. A profile's grant at the same
-//     path is left in place UNauthored, which is exactly what lets RULE 4 name
-//     the profile that wrote it, so yieldTo cannot launder one either.
-//
-// WHAT THIS DOES NOT COVER, and it must be read as part of the rule rather
-// than discovered later:
-//
-//   - A stat at resolve time sees only endpoints that EXIST THEN. A grant of a
-//     DIRECTORY is a grant of every socket and every FIFO anyone puts in it
-//     afterwards, and that case passes this check. `ro {home}/.ssh` with
-//     nothing in it today is accepted, and is a hole the moment an agent is
-//     started there. #287's headline measurement went through exactly this
-//     door — no user profile, a FIFO created inside @parent-ro's directory
-//     grant after resolve, WROTE-OK — and it STAYS OPEN after this change:
-//     what this refusal closes is the spelled-out case (a grant naming the
-//     endpoint itself), the same ratchet #219 got for sockets.
-//   - RESOLVE-TIME SCANNING OF GRANTED DIRECTORIES WAS CONSIDERED AND
-//     REJECTED, not merely left undone: it would make policy acceptance
-//     depend on host state that changes out from under it, it is unbounded
-//     work over an arbitrary directory tree, and it races anything creating a
-//     node after resolve returns — a check that can be defeated by winning a
-//     race is not a check.
-//   - TWO BOUNDS ON THE RESIDUAL, because they are the difference between
-//     medium and critical severity rather than decoration. First, the payload
-//     cannot CREATE the endpoint inside a read-only grant — measured: `mkfifo:
-//     cannot create fifo '/tmp/rodir/newfifo': Read-only file system` — so an
-//     attacker can only speak into a FIFO (or a socket) a host process already
-//     created and is holding open, never manufacture a fresh one. Second,
-//     there is NO mount flag that would let snug close this the way `nodev`
-//     closes the device case: this is a kernel-level residual, not laziness.
-//   - snug already refuses to READ a FIFO as data elsewhere
-//     (internal/hostread, "will not read a FIFO, a device or a directory
-//     there") and was still willing to MOUNT one — the rule applied to one
-//     of its two halves, the sixth recorded instance of that shape
-//     (CLAUDE.md).
-//   - So this closes the spelled-out case and ratchets the accidental one. It
-//     is not a complete answer to "a grant of a directory is a grant of every
-//     socket or FIFO in it", which remains the rule CLAUDE.md states and which
-//     nothing mechanically enforces.
-//
-// A check that silently covers half its rule is this project's most-repeated
-// defect — six recorded instances now, this one included — so the refusal
-// text says the same thing to whoever reads it.
+// RESIDUAL, and it is the larger half: a stat sees only endpoints that exist at
+// resolve time, so a grant of a DIRECTORY still covers every socket and FIFO
+// created in it afterwards. `ro {home}/.ssh` is accepted today and is a hole the
+// moment an agent starts there; #287's headline measurement went through that
+// door under @parent-ro alone. Scanning granted directories at resolve time was
+// rejected rather than skipped: it makes acceptance depend on host state that
+// changes underneath it, it is unbounded work, and it loses to anything creating
+// a node after resolve returns. Two bounds keep it below critical — the payload
+// cannot create the endpoint inside a read-only grant (measured: `mkfifo: cannot
+// create fifo '/tmp/rodir/newfifo': Read-only file system`), so it can only
+// speak to one a host process already holds open; and no mount flag would close
+// it, so this is a kernel residual rather than laziness.
 func (p *Policy) rejectEndpointSource(env Environ) error {
 	for _, g := range sortedGuests(p.Mounts) {
 		m := p.Mounts[g]
