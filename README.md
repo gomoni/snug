@@ -620,6 +620,57 @@ MIT licensed. Linux with unprivileged user namespaces, `bubblewrap`, Go 1.26+ to
 user namespaces are fine. `snug doctor` tells you where you stand, and names the
 exact sysctl when something is missing.
 
+### Delegated subuid/subgid ranges
+
+`@net` and the container engine need a **subuid/subgid range delegated to your
+user**, because the stage maps namespace ids onto it. `/etc/subuid` and
+`/etc/subgid` each need a line for you, and `newuidmap`/`newgidmap` (package
+`shadow`) must be installed with their file capabilities intact:
+
+```
+you:100000:65536
+```
+
+snug reads the **first** range for your user in each file and refuses with the
+suggested line when there is none. `usermod --add-subuids 100000-165535
+--add-subgids 100000-165535 you` writes it; editing the files directly works
+too, and is the only way while you are logged in — `usermod` refuses with `user
+you is currently used by process N`.
+
+**Inside a container, the range must fit the container's own uid map**, and this
+is the failure worth naming because the error does not mention subuid at all.
+A rootless `distrobox`/`podman` container maps a bounded window of host ids, so
+a range outside it does not exist to delegate:
+
+```console
+$ cat /proc/self/uid_map
+         0          1       1000
+      1000          0          1
+      1001       1001      64535
+$ podman info
+Error: ... running `/usr/bin/newuidmap PID 0 1000 1 1 100000 65536`:
+newuidmap: write to uid_map failed: Operation not permitted
+```
+
+The map ends at 65535, so `you:100000:65536` names nothing. Pick a range inside
+it, above your own uid — `you:1001:64535` for the map above. The same applies to
+snug's stage, which delegates the range it finds.
+
+Re-create the container and `/etc/subuid` goes with it, so put the line in the
+container's own setup rather than adding it by hand:
+
+```ini
+# ~/.config/distrobox/distrobox.ini
+[yourbox]
+init_hooks=grep -q '^you:' /etc/subuid || echo 'you:1001:64535' >> /etc/subuid
+init_hooks=grep -q '^you:' /etc/subgid || echo 'you:1001:64535' >> /etc/subgid
+```
+
+**Do not let an init hook symlink `/usr/bin/podman` at a host-escape helper** —
+`distrobox`'s own suggested hook does exactly that, and snug then refuses the
+engine (see below). The engine tests skip rather than fail, so the suite stays
+green having measured nothing.
+
 ### Containers
 
 `@podman-socket` and `@podman-build` additionally need a podman engine and its
