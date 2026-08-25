@@ -4897,6 +4897,87 @@ reset            # or: stty sane
 kill -9 $SNUG; rm -rf "$T"
 ```
 
+### 14i. Attach returns when the attached command exits, not when its leftovers do (issue #221)
+
+14h leaves the session by exiting the shell, so nothing it does distinguishes
+"attach returned because the command exited" from "attach returned because
+everything the command started also exited". This one does. The payload exits
+immediately and leaves a descendant behind holding its stdio:
+
+```bash
+T=$(mktemp -d)
+./bin/snug "$T" -- sleep 300 &
+SNUG=$!
+sleep 2
+time script -qec "./bin/snug attach $T -- /bin/bash -c \"(trap '' HUP; sleep 60) & echo attached-done\"" /dev/null
+kill -9 $SNUG; rm -rf "$T"
+```
+
+Expect `attached-done`, then a line naming what was given up on, then `real`
+about **two seconds**:
+
+```
+attached-done
+snug: attach: the attached command exited, but something it left behind still holds its stdio open; stopped draining after 2s of silence and any further output is lost
+```
+
+MEASURED on this host: **2.028s**, against **1m0.027s** with
+`internal/cli/attachstdio.go` reverted — the descendant's own `sleep 60` to the
+hundredth of a second, which is what "attach waited for the leftovers" looks
+like. The message is not decoration: a sandbox that silently truncates its own
+transcript is the screen lying, and both ways this drain can cut output are
+otherwise invisible (clean exit status, nothing on stderr).
+
+Two props in that command line, both load-bearing. `script -qec` is only there
+to supply a pty, so `newStdioRelay` takes the interactive branch from a shell
+script; run it from a terminal and `./bin/snug attach` alone does the same.
+`trap '' HUP` is what makes the descendant survive: on the pty path A becomes a
+session leader (`setsid()` + `TIOCSCTTY`, `internal/attach/child.go`), `bash -c`
+is non-interactive so job control is off and the backgrounded subshell stays in
+A's own process group, and A's exit therefore HUPs the terminal's foreground
+group — the descendant's included. Without the trap the descendant dies in a
+fraction of a second and the check passes vacuously.
+
+Why it can hang at all: A's fds 0/1/2 are `dup3`'d and `dup3` clears CLOEXEC by
+design, so a descendant inherits the pty slave (or, with stdin redirected, the
+relay pipe) and holds the far end open. The client has already reaped the
+bridge and has the exit status, and the outbound copy it is draining sees
+neither EOF nor EIO. `stdioRelay.wait` therefore arms a `drainTimeout` read
+deadline on each drain end rather than waiting on them unconditionally, and
+every ioctl on the pty master goes through `ctlFd` (`SyscallConn().Control`)
+instead of `os.File.Fd()`, which would put the master back into blocking mode
+and out of the runtime poller — where no deadline on it can work.
+
+**The bound is on SILENCE, not on elapsed time**, and the difference is what
+keeps this check from being a new bug: `drainCopy` re-arms the deadline after
+every successful read, so output that is still arriving always gets through and
+only a stream that goes quiet for `drainTimeout` with its far end still held
+open ends the drain. An absolute deadline instead cut a benign payload's
+still-flowing output mid-stream — measured by the red team at 16447 of 20019
+bytes, final line gone, no descendant involved at all. A copy parked in
+`write(2)` is deliberately not bounded by any of this: that is the client's own
+consumer applying back-pressure, which the sandbox cannot reach.
+
+The pipe half of the same property, with no pty involved:
+
+```bash
+T=$(mktemp -d)
+./bin/snug "$T" -- sleep 300 &
+SNUG=$!
+sleep 2
+time ./bin/snug attach "$T" -- /bin/bash -c "(trap '' HUP; sleep 60) & echo attached-done" < /dev/null
+kill -9 $SNUG; rm -rf "$T"
+```
+
+Same expectation, same message: **2.015s** measured here. The automated equivalents are
+`TestAttachPTYReturnsPromptlyWhenADescendantHoldsTheSlave` and
+`TestAttachPipeReturnsPromptlyWhenADescendantHoldsThePipe`:
+
+```bash
+SNUG_REQUIRE_SANDBOX=1 go test -tags integration ./test/integration/ \
+  -run 'TestAttach(PTY|Pipe)ReturnsPromptlyWhenADescendantHolds' -count=1 -v
+```
+
 
 ## 15. snug never writes its generated files onto the host
 

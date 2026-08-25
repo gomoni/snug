@@ -23,6 +23,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -1514,9 +1515,10 @@ func TestAttachPTYReturnsPromptlyWhenThePTYIsNeverClosed(t *testing.T) {
 	select {
 	case <-waitDone(p):
 	case <-time.After(15 * time.Second):
-		t.Fatalf("snug attach (pty stdin) did not return within 15s of being started — the " +
-			"pty half of issue #120, the inbound stdin->master copy goroutine with no " +
-			"termination of its own blocking releaseGate's wait forever")
+		t.Fatalf("snug attach (pty stdin) did not return within 15s of being started — the "+
+			"pty half of issue #120, the inbound stdin->master copy goroutine with no "+
+			"termination of its own blocking releaseGate's wait forever\n%s",
+			attachHangReport(t, p, master))
 	}
 	elapsed := time.Since(start)
 
@@ -1545,6 +1547,353 @@ func TestAttachPTYReturnsPromptlyWhenThePTYIsNeverClosed(t *testing.T) {
 		t.Errorf("snug attach (pty stdin) took %s to return after the attached command had "+
 			"already exited, with the pty on the other end never closed — this is issue "+
 			"#120's pty-path shape:\n%s", elapsed, out.String())
+	}
+}
+
+// procSnapshot is one process's diagnostic fields, in the shape
+// internal/attach/wedge_test.go's procField already scrapes (State, wchan,
+// SigBlk) for issue #221's OTHER arm (the fork/preemption wedge) — reused
+// here rather than inventing a second shape for the same kind of report.
+type procSnapshot struct {
+	pid, ppid                       int
+	comm, state, wchan, syscallLine string
+	sigBlk, sigPnd                  string
+}
+
+// readProcSnapshot reads pid's diagnostic fields out of /proc, reporting
+// false if the process is already gone (a natural race with whatever this
+// is diagnosing, not an error worth failing the report over).
+func readProcSnapshot(pid int) (procSnapshot, bool) {
+	statusPath := fmt.Sprintf("/proc/%d/status", pid)
+	data, err := os.ReadFile(statusPath)
+	if err != nil {
+		return procSnapshot{}, false
+	}
+	ps := procSnapshot{pid: pid, state: "?", sigBlk: "?", sigPnd: "?"}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, val, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		val = strings.TrimSpace(val)
+		switch key {
+		case "Name":
+			ps.comm = val
+		case "State":
+			ps.state = val
+		case "PPid":
+			ps.ppid, _ = strconv.Atoi(val)
+		case "SigBlk":
+			ps.sigBlk = val
+		case "SigPnd":
+			ps.sigPnd = val
+		}
+	}
+	if wchan, err := os.ReadFile(fmt.Sprintf("/proc/%d/wchan", pid)); err == nil {
+		ps.wchan = string(wchan)
+	}
+	if sys, err := os.ReadFile(fmt.Sprintf("/proc/%d/syscall", pid)); err == nil {
+		ps.syscallLine = strings.TrimSpace(string(sys))
+	}
+	return ps, true
+}
+
+// procDescendants walks /proc once and returns rootPID plus every process
+// whose PPid chain leads back to it, in breadth-first (parent-before-child)
+// order.
+func procDescendants(rootPID int) []procSnapshot {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	all := map[int]procSnapshot{}
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		if ps, ok := readProcSnapshot(pid); ok {
+			all[pid] = ps
+		}
+	}
+
+	var out []procSnapshot
+	seen := map[int]bool{}
+	queue := []int{rootPID}
+	for len(queue) > 0 {
+		pid := queue[0]
+		queue = queue[1:]
+		if seen[pid] {
+			continue
+		}
+		seen[pid] = true
+		ps, ok := all[pid]
+		if !ok {
+			continue
+		}
+		out = append(out, ps)
+		for cpid, cps := range all {
+			if cps.ppid == pid && !seen[cpid] {
+				queue = append(queue, cpid)
+			}
+		}
+	}
+	return out
+}
+
+// attachHangReport turns a bare "attach did not return" timeout into a
+// diagnosis, in order:
+//
+//  1. a /proc snapshot of the hung client (p) and every descendant it forked
+//     — comm/State/wchan/syscall/SigBlk/SigPnd, captured BEFORE anything below
+//     disturbs the process, since that is the state the hang site's own
+//     Fatal wants explained.
+//  2. SIGQUIT to the client, which the Go runtime's default handler turns
+//     into a dump of every goroutine's stack on the client's own stderr —
+//     which on the pty path IS master (the far end of the client's fd 2).
+//  3. a BOUNDED wait for the client to actually exit from that signal: the
+//     pty's own buffer is small and a dying process can itself block trying
+//     to write more of a dump than it holds, so this does not risk a second,
+//     silent hang inside the very call meant to diagnose one — the client is
+//     killed outright once the bound passes.
+//  4. whatever bytes drainPTY can recover of that dump, which — for the same
+//     buffer-size reason — may be truncated.
+func attachHangReport(t *testing.T, p *bgProc, master *os.File) string {
+	t.Helper()
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "=== /proc snapshot: client pid %d and its descendants ===\n", p.pid())
+	for _, ps := range procDescendants(p.pid()) {
+		fmt.Fprintf(&b, "pid=%d ppid=%d comm=%q State=%q wchan=%q syscall=%q SigBlk=%s SigPnd=%s\n",
+			ps.pid, ps.ppid, ps.comm, ps.state, ps.wchan, ps.syscallLine, ps.sigBlk, ps.sigPnd)
+	}
+
+	unix.Kill(p.pid(), unix.SIGQUIT)
+	deadline := time.Now().Add(2 * time.Second)
+	for unix.Kill(p.pid(), 0) == nil && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	unix.Kill(p.pid(), unix.SIGKILL)
+
+	fmt.Fprintf(&b, "=== pty drain after SIGQUIT (may be truncated or empty; the client may have "+
+		"died mid-write) ===\n%s\n", drainPTY(t, master))
+	return b.String()
+}
+
+// descendantHoldsStdioScript is the shared payload for both #221 regression
+// tests below: the ATTACHED COMMAND exits immediately, but backgrounds a
+// descendant first — dup3's own contract (attachstdio.go's drainEnds
+// comment) deliberately clears CLOEXEC, so that descendant inherits fds
+// 0/1/2 unchanged and keeps them open long after the command that started it
+// is gone. It reports its own (namespace-local) pid and lists its own open
+// fds via /proc before settling into its sleep, so the caller can confirm
+// from that listing — rather than assume backgrounding a shell job has this
+// effect — that fds 0/1/2 really are still held before trusting anything the
+// timing assertion below measures.
+//
+// Ignoring SIGHUP in the descendant (an empty `trap` handler for HUP, below)
+// is not decoration: MEASURED (not assumed) that without it the
+// pty topology's own descendant never survives long enough to prove
+// anything, for a reason specific to the pty path — `bash -c` is
+// non-interactive, so job control is off and the backgrounded subshell
+// shares A's OWN process group rather than getting one of its own; on the
+// pty path A becomes a session leader for the first time via child.go's
+// setsid()+TIOCSCTTY, and when A (the session leader) exits, the kernel
+// sends SIGHUP to the terminal's foreground process group — A's own group,
+// which the descendant still shares — killing it within a fraction of a
+// second instead of leaving it to hold the slave open. Ignoring SIGHUP is
+// what a real long-lived background job (a build daemon, a detached editor
+// session) already has to do to survive its parent shell exiting, so this
+// is the realistic shape of the bug, not a workaround for the test's own
+// sake. The pipe topology below needs no such thing: A never becomes a
+// session leader on that path, so there is no session-death SIGHUP for its
+// backgrounded descendant to receive in the first place.
+func descendantHoldsStdioScript(marker string) string {
+	return fmt.Sprintf(`
+echo %s
+(
+  trap '' HUP
+  echo DESCENDANT-PID=$BASHPID
+  ls -1 /proc/$BASHPID/fd
+  echo ---FDLIST-END---
+  sleep 60
+) &
+echo OUTER-DONE
+`, marker)
+}
+
+// assertDescendantHeldStdio is the positive control the working agreement
+// demands for both tests below: without it, "attach returned promptly" would
+// be equally true of a payload whose backgrounding never actually left
+// anything holding the relay open.
+func assertDescendantHeldStdio(t *testing.T, out string) {
+	t.Helper()
+	idx := strings.Index(out, "DESCENDANT-PID=")
+	if idx < 0 {
+		t.Fatalf("the background descendant never reported its own pid, so this test cannot "+
+			"confirm anything about what it held open:\n%s", out)
+	}
+	rest := out[idx:]
+	end := strings.Index(rest, "---FDLIST-END---")
+	if end < 0 {
+		t.Fatalf("the descendant's /proc/<pid>/fd listing never completed, so this test cannot "+
+			"confirm it held any fd open:\n%s", out)
+	}
+	listing := rest[:end]
+	for _, want := range []string{"0", "1", "2"} {
+		found := false
+		for _, line := range strings.Split(listing, "\n") {
+			if strings.TrimSpace(line) == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("the background descendant's own /proc/<pid>/fd listing does not show fd "+
+				"%s open — this test cannot confirm the descendant actually held the attached "+
+				"command's stdio, so it proves nothing about issue #221:\n%s", want, listing)
+		}
+	}
+}
+
+// drainCutoffMessage is the prefix wait() (attachstdio.go) prints to the
+// client's own stderr when a drain loop ends on drainTimeout of silence
+// rather than on EOF. Pinned as a constant so both #221 regression tests
+// below check the exact wording the drain-timeout path is required to say,
+// not only the timing — a redteam round found the production fix could hit
+// this path without ever saying so (the message existed in source but no
+// test read it back).
+const drainCutoffMessage = "snug: attach: the attached command exited, but something it left " +
+	"behind still holds its stdio open"
+
+// TestAttachPTYReturnsPromptlyWhenADescendantHoldsTheSlave is the permanent
+// regression for issue #221's pty topology: newStdioRelay's outbound
+// io.Copy(os.Stdout, master) only saw EIO once EVERY open reference to the
+// pty SLAVE was gone, and a descendant the attached command leaves running
+// keeps its own copy (dup3 clears CLOEXEC) long after the attached command
+// itself has exited and been reaped — so releaseGate's relay.wait() blocked
+// forever even with the exit status already known. The fix
+// (stdioRelay.wait(), attachstdio.go) bounds the outbound read with
+// drainTimeout instead of waiting on it unconditionally.
+//
+// The 15s bound below is chosen against the descendant's OWN 60s lifetime,
+// not against an arbitrary "feels slow" number: without the fix this test
+// does not hang forever — it returns once the descendant's sleep ends on its
+// own, around the 60s mark — so a bound merely "under 15s" would ALSO be
+// satisfied by a session where the descendant had already gone; the
+// descendant here is made to outlive both this bound and the outer select
+// below by design, and assertDescendantHeldStdio confirms it did.
+func TestAttachPTYReturnsPromptlyWhenADescendantHoldsTheSlave(t *testing.T) {
+	budget(t, 90*time.Second)
+	requireSandbox(t)
+	env, _ := attachEnv(t)
+	proj, _ := target(t)
+
+	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t)
+
+	master, slave := openTestPTY(t)
+	defer master.Close()
+
+	marker := "snugattach221pty" + strconv.Itoa(os.Getpid()) + strconv.FormatInt(time.Now().UnixNano(), 36)
+	cmd := exec.Command(snugBin, "attach", proj, "--", "/bin/bash", "-c", descendantHoldsStdioScript(marker))
+	cmd.Env = env
+	cmd.Stdin = slave
+	cmd.Stdout = slave
+	cmd.Stderr = slave
+
+	start := time.Now()
+	p := startBgProc(t, cmd)
+	slave.Close()
+
+	select {
+	case <-waitDone(p):
+	case <-time.After(75 * time.Second):
+		t.Fatalf("snug attach (pty stdin) did not return within 75s of the attached command "+
+			"exiting, with a background descendant still holding the pty slave — issue #221\n%s",
+			attachHangReport(t, p, master))
+	}
+	elapsed := time.Since(start)
+	out := drainPTY(t, master)
+
+	if !strings.Contains(out, marker) || !strings.Contains(out, "OUTER-DONE") {
+		t.Fatalf("the attached command's own output never appeared through the pty, so this "+
+			"test proves nothing:\n%s", out)
+	}
+	assertDescendantHeldStdio(t, out)
+
+	if elapsed > 15*time.Second {
+		t.Errorf("snug attach (pty stdin) took %s to return after the attached command exited, "+
+			"with a background descendant still holding the pty slave open — issue #221's pty "+
+			"topology: it must return within a couple of seconds (drainTimeout), not wait out "+
+			"the descendant's own 60s lifetime:\n%s", elapsed, out)
+	}
+	if !strings.Contains(out, drainCutoffMessage) {
+		t.Errorf("the client returned promptly but never said WHY the drain gave up on a "+
+			"stream something else still holds open — a silent truncation of the pty relay "+
+			"looks identical to a clean session:\n%s", out)
+	}
+}
+
+// TestAttachPipeReturnsPromptlyWhenADescendantHoldsThePipe is issue #221's
+// pipe topology, the mirror of the pty test above: with the attach CLIENT's
+// own stdin not a terminal, newStdioRelay takes the pipe branch instead
+// (relayOut), and the identical shape applies — the descendant's own copy of
+// the write end (dup3 again clears CLOEXEC) keeps relayOut's io.Copy from
+// ever seeing EOF, independent of the pty-specific EIO mechanism above.
+func TestAttachPipeReturnsPromptlyWhenADescendantHoldsThePipe(t *testing.T) {
+	budget(t, 90*time.Second)
+	requireSandbox(t)
+	env, _ := attachEnv(t)
+	proj, _ := target(t)
+
+	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t)
+
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devNull.Close()
+
+	marker := "snugattach221pipe" + strconv.Itoa(os.Getpid()) + strconv.FormatInt(time.Now().UnixNano(), 36)
+	cmd := exec.Command(snugBin, "attach", proj, "--", "/bin/bash", "-c", descendantHoldsStdioScript(marker))
+	cmd.Env = env
+	cmd.Stdin = devNull
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+
+	start := time.Now()
+	p := startBgProc(t, cmd)
+
+	select {
+	case <-waitDone(p):
+	case <-time.After(75 * time.Second):
+		t.Fatalf("snug attach (pipe stdin) did not return within 75s of the attached command "+
+			"exiting, with a background descendant still holding the relay pipe — issue #221:\n%s",
+			buf.String())
+	}
+	elapsed := time.Since(start)
+	out := buf.String()
+
+	if !strings.Contains(out, marker) || !strings.Contains(out, "OUTER-DONE") {
+		t.Fatalf("the attached command's own output never appeared, so this test proves "+
+			"nothing:\n%s", out)
+	}
+	assertDescendantHeldStdio(t, out)
+
+	if elapsed > 15*time.Second {
+		t.Errorf("snug attach (pipe stdin) took %s to return after the attached command exited, "+
+			"with a background descendant still holding the relay pipe open — issue #221's pipe "+
+			"topology: it must return within a couple of seconds (drainTimeout applied to both "+
+			"pipe read ends), not wait out the descendant's own 60s lifetime:\n%s", elapsed, out)
+	}
+	if !strings.Contains(out, drainCutoffMessage) {
+		t.Errorf("the client returned promptly but never said WHY the drain gave up on a "+
+			"stream something else still holds open — a silent truncation of the pipe relay "+
+			"looks identical to a clean session:\n%s", out)
 	}
 }
 
@@ -1625,7 +1974,8 @@ func TestAttachPTYGivesJobControl(t *testing.T) {
 	select {
 	case <-waitDone(p):
 	case <-time.After(cmdTimeout):
-		t.Fatalf("snug attach (pty stdin, job control test) did not return within %s", cmdTimeout)
+		t.Fatalf("snug attach (pty stdin, job control test) did not return within %s\n%s",
+			cmdTimeout, attachHangReport(t, p, master))
 	}
 
 	var out bytes.Buffer
@@ -1911,7 +2261,7 @@ func runAttachOverPTY(t *testing.T, env []string, proj, script string, master, s
 	select {
 	case <-waitDone(p):
 	case <-time.After(15 * time.Second):
-		t.Fatal("snug attach (pty stdin) did not return within 15s")
+		t.Fatalf("snug attach (pty stdin) did not return within 15s\n%s", attachHangReport(t, p, master))
 	}
 	return drainPTY(t, master)
 }
@@ -2349,5 +2699,120 @@ func TestAttachFindsARunStartedUnderADifferentEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(out, "no live snug run found") {
 		t.Errorf("attaching to a directory with no live run did not say so:\n%s", out)
+	}
+}
+
+// ── redteam round on the #221 fix itself (attachstdio.go) ──────────────────
+//
+// Two sev:high defects, both in the drain the #221 tests above added, not in
+// anything they cover. F1: wait() armed a read deadline on each drain end
+// and RETURNED if arming failed; arming fails with "use of closed file"
+// whenever that end's own copy goroutine has already finished and closed it
+// — the ORDINARY case whenever one stream (an empty stdout here) drains
+// faster than another, measured 15 of 20 runs on a two-stream payload — and
+// it silently abandoned the OTHER stream's goroutine mid-write: 4096 of
+// 96000 bytes delivered, exit status 7, no message. F2: the deadline was
+// ABSOLUTE rather than reset on progress: a goroutine parked in write(2) was
+// never bounded by it at all (a stalled terminal still pinned the client
+// 10.011s against a 2s bound, so #221 was not actually fixed), and the same
+// absolute deadline separately cut a still-flowing, benign payload mid-burst
+// (16447 of 20019 bytes, final line gone, no descendant involved). The fix
+// (drainCopy in attachstdio.go) makes the bound a SILENCE bound, re-armed
+// after every successful read, and wait() now discards arming errors and
+// always calls outWG.Wait() rather than returning early.
+//
+// TestAttachPreExitOutputIsNeverTruncated below is F1 and F2b stated as one
+// property, because they share one reproduction: a payload that writes more
+// than the client can currently absorb, then exits, with nothing left
+// running behind it. F1 as a bare "does draining get skipped" question is not
+// separately testable at this level without duplicating this same fixture —
+// the ordinary-fast-exit race F1 names IS what an empty stdout stream racing
+// a large stderr stream produces, so a third test for "both streams drain
+// even when one finishes first" would only rerun this one under a different
+// name.
+
+// TestAttachPreExitOutputIsNeverTruncated drives the client's stderr through
+// an *os.File pipe (not bash process substitution — a pipe this test owns
+// so its capacity can be pinned) shrunk to one page via F_SETPIPE_SZ, with
+// its reader deliberately slower than drainTimeout. That forces the relay's
+// write into the client's stderr to block while the attached command's own
+// stdout — which nothing ever writes to — races ahead to EOF, which is
+// exactly the ordering that made F1's arming-failure race fire and, once a
+// deadline is in play at all, exactly where F2's absolute-cutoff bug cut
+// real, still-arriving output rather than only a stalled one.
+func TestAttachPreExitOutputIsNeverTruncated(t *testing.T) {
+	budget(t, 30*time.Second)
+	requireSandbox(t)
+	env, _ := attachEnv(t)
+	proj, _ := target(t)
+
+	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t)
+
+	devNullIn, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devNullIn.Close()
+	devNullOut, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devNullOut.Close()
+
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pipeCap = 4096
+	if _, err := unix.FcntlInt(pw.Fd(), unix.F_SETPIPE_SZ, pipeCap); err != nil {
+		t.Fatalf("F_SETPIPE_SZ(%d): %v", pipeCap, err)
+	}
+
+	const burst = 96000
+	const wantExit = 7
+	cmd := exec.Command(snugBin, "attach", proj, "--", "/bin/bash", "-c",
+		fmt.Sprintf(`printf '%%0%dd' 1 >&2; exit %d`, burst, wantExit))
+	cmd.Env = env
+	cmd.Stdin = devNullIn
+	cmd.Stdout = devNullOut
+	cmd.Stderr = pw
+
+	p := startBgProc(t, cmd)
+	pw.Close()
+
+	// The reader is slower than drainTimeout (2s), so the shrunk pipe fills
+	// and the relay's own write into it blocks — see the section comment for
+	// why this ordering is what F1 and F2b need.
+	drained := make(chan struct{})
+	var got bytes.Buffer
+	go func() {
+		time.Sleep(3 * time.Second)
+		io.Copy(&got, pr)
+		close(drained)
+	}()
+
+	waitErr := p.wait()
+	select {
+	case <-drained:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the client's stderr pipe never reached EOF — the attach client itself appears " +
+			"to still be running or holding the descriptor open")
+	}
+
+	if got.Len() != burst {
+		t.Errorf("the client's stderr received %d of %d bytes the attached command wrote before "+
+			"exiting — pre-exit output was truncated", got.Len(), burst)
+	}
+
+	code := 0
+	if exitErr, ok := waitErr.(*exec.ExitError); ok {
+		code = exitErr.ExitCode()
+	} else if waitErr != nil {
+		t.Fatalf("snug attach did not exit normally: %v", waitErr)
+	}
+	if code != wantExit {
+		t.Errorf("snug attach exited %d, want %d (the attached command's own exit code)", code, wantExit)
 	}
 }
