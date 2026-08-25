@@ -986,6 +986,45 @@ func checkNetworkMode(_ *Proxy, v string) (string, error) {
 // of the pasta bug this project already paid for once: three of four closing
 // flags passed, and the fourth left every host loopback service reachable.
 //
+// The NAME axis fails closed, and did not always: the loop judged Host and
+// Path and let any other name with Host:false and an empty Path fall through
+// to the accept. `nsoptions=[{"Name":"net","Host":false}]` was ACCEPTED here,
+// and what refused it was buildah — `adding new "net" namespace for run:
+// unrecognized namespace "net"`, from runtime-tools' mapStrToNamespace. Closed
+// by the helper rather than by snug, which is the arrangement checkNetworkMode
+// one screen up already argues against, and closed only by luck of spelling:
+// buildah's setupNamespaces has no default: arm, so `mount` and `time` — both
+// accepted by mapStrToNamespace — were configured into the OCI spec verbatim.
+//
+// The accepted set is the six names a real client can send, RECORDED from
+// `podman --remote build` 6.0.2 against a listening socket of our own: `user`
+// always (the rootless default, sent with no flag at all), plus one entry per
+// namespace flag — `network`, `pid`, `ipc`, `uts`, `cgroup`. A FLAG is the
+// only source: a containers.conf naming all six of netns/pidns/ipcns/utsns/
+// cgroupns/userns contributed nothing to nsoptions (measured). docker
+// 29.4.0-ce's compat builder sends no nsoptions at all — it spells --network
+// as a word in networkmode, which checkNetworkMode judges.
+//
+// `mount` and `time` stay OUT although buildah accepts both: no measured
+// client sends either, so refusing them costs a request nobody makes, and it
+// is the whole difference between "closed by snug" and "closed by buildah".
+// For the same reason the shape is an allowlist rather than a patch naming
+// `net` — a catalogue of known-bad spellings is the subtractive shape
+// invariant 2 calls a design smell, and it would leave every future name open.
+//
+// Host:false with an empty Path on pid/ipc/uts/cgroup asks for one of the
+// BUILD STEP's own, which is strictly less than it had, so `--pid=private`
+// and its three siblings stay accepted. Unlike `network` that is NOT measured
+// to need a capability the engine lacks — it is accepted today and this
+// allowlist carries no new grant.
+//
+// A hostile process inside the sandbox can use the accept path to put a build
+// step in the engine's own network or user namespace (Host:true on network/
+// user) — N and U, which the sandbox already has — or in a fresh pid/ipc/uts/
+// cgroup namespace of its own, which is strictly less than it had. What the
+// name allowlist closes: handing the engine a namespace request under a name
+// snug has never judged, and getting whatever the runtime does with it.
+//
 // Two names are exceptions to "Host:true means the HOST's namespace, which is
 // outside this sandbox", each named rather than pattern-matched:
 //
@@ -1007,7 +1046,29 @@ func checkNSOptions(_ *Proxy, v string) (string, error) {
 		return "", fmt.Errorf("is not the JSON list podman sends")
 	}
 	for _, o := range opts {
+		// FIRST, so that every check below operates on a name snug has
+		// modelled. The fold can only refuse more ("NETWORK" with Host:false
+		// is refused) or admit a spelling buildah then rejects
+		// case-sensitively; it cannot grant.
 		name := strings.ToLower(o.Name)
+		switch name {
+		case "user", "network", "pid", "ipc", "uts", "cgroup":
+		default:
+			// o.Name, the client's own spelling, not the folded name — and %q
+			// rather than %s, because p.deny feeds p.audit unsanitised and %q
+			// escapes a control character that would otherwise author a lie
+			// in the audit line or the 403 body.
+			return "", fmt.Errorf("%q names a namespace snug has not been taught about; snug "+
+				"allows a named set of namespace names and refuses the rest, so a name it "+
+				"has not been taught about fails closed rather than reaching the engine "+
+				"unexamined. A podman build sends user, network, pid, ipc, uts and cgroup "+
+				"and nothing else (MEASURED, podman 6.0.2); a docker build sends no "+
+				"nsoptions at all.\n"+
+				"       Fix: drop the namespace flag that produced this entry. If a real "+
+				"client sends this name, it belongs in checkNSOptions' switch with the "+
+				"judgement for what Host and Path mean for it — not in the fall-through.",
+				o.Name)
+		}
 		if o.Host && name != "user" && name != "network" {
 			return "", fmt.Errorf("%q asks for the HOST's %s namespace, which is outside this "+
 				"sandbox", o.Name, name)

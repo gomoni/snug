@@ -937,6 +937,16 @@ func TestNetworkModeHostIsAllowedButOtherHostModesAreNot(t *testing.T) {
 // severity-to-rule change only; every case in the table below refuses exactly
 // what it refused before.
 //
+// EXTENDED (refs #369) with the VALUE-axis fold: the loop used to compare the
+// RAW mode string against "host" and against the "container:"/"ns:" prefixes,
+// so "HOST", "Container:abc" and "NS:/proc/1/ns/user" fell past every arm here
+// — and on THIS path, unlike build.go's default-deny, falling past an arm
+// means FORWARDED, not refused. Each new row is pinned to its OWN key's
+// reason text from namespaceModeReason, not to the shared "HostConfig.<Key>"
+// prefix the deny format string already stamps on every row in this table —
+// that prefix would pass even if the fold silently regressed to matching the
+// wrong key, so it cannot be what tells one arm's fold apart from another's.
+//
 // Positive control: NetworkMode="host" is accepted (reaches the fake engine)
 // in the SAME test, so a refusal-shaped bug that accidentally caught
 // NetworkMode too would show up here rather than only in a different test
@@ -953,6 +963,30 @@ func TestNamespaceModeRefusalsAreExhaustive(t *testing.T) {
 				"so every refusal below proves nothing about a REAL inversion")
 		}
 	})
+
+	// CONTROL for the fold (refs #369): a body naming no namespace mode at
+	// all must still reach the engine — the `mode == ""` arm continues rather
+	// than folding, and it must stay that way, since folding is about a
+	// spelling of "host"/"container:"/"ns:", not about substituting one when
+	// the client asked for nothing.
+	t.Run("control: an unset namespace mode still reaches the engine", func(t *testing.T) {
+		sock, eng, _ := startProxy(t)
+		before := eng.reached.Load()
+		code, body := post(t, sock, "/v1.41/containers/create", `{"HostConfig":{}}`)
+		if code != 200 {
+			t.Fatalf("an empty HostConfig: status %d, want 200: %s", code, body)
+		}
+		if eng.reached.Load() == before {
+			t.Fatal("an empty HostConfig never reached the engine")
+		}
+	})
+
+	// CONTROL for the fold, the other half: the recorded `docker run` body
+	// (testdata/docker-run-create-body.json) carries NetworkMode="default",
+	// and TestCreateAcceptsWhatTheDockerCLIActuallySends already asserts that
+	// whole body reaches the engine — a fold that started refusing "default"
+	// as an unrecognised spelling would fail THAT test, not this one, and is
+	// named here so the connection is not left implicit.
 
 	for _, tc := range []struct {
 		name, body, wantMsg string
@@ -972,6 +1006,25 @@ func TestNamespaceModeRefusalsAreExhaustive(t *testing.T) {
 			"HostConfig.PidMode"},
 		{"Privileged:true", `{"HostConfig":{"Privileged":true}}`, "HostConfig.Privileged"},
 		{"CapAdd", `{"HostConfig":{"CapAdd":["SYS_ADMIN"]}}`, "HostConfig.CapAdd"},
+
+		// THE FOLD (refs #369). Before `norm := strings.ToLower(strings.TrimSpace(mode))`,
+		// each of these fell past every arm below — comparing the RAW string
+		// meant "HOST" != "host" and "Container:abc" had no matching
+		// HasPrefix("container:") — and reaching the end of this loop is
+		// FORWARD, not refuse. Pinned to each key's OWN reason substring
+		// (read from namespaceModeReason this task), not the shared
+		// "HostConfig.<Key>" prefix every row above already carries, so a fold
+		// that silently regressed to matching the wrong key's arm would still
+		// be caught.
+		{"PidMode=HOST, upper-cased", `{"HostConfig":{"PidMode":"HOST"}}`,
+			"pid namespace of its own since issue #125's C0"},
+		{"PidMode= host , padded with whitespace", `{"HostConfig":{"PidMode":" host "}}`,
+			"pid namespace of its own since issue #125's C0"},
+		{"NetworkMode=Container:abc, case-folded prefix",
+			`{"HostConfig":{"NetworkMode":"Container:abc"}}`, "snug did not author"},
+		{"UsernsMode=NS:/proc/1/ns/user, case-folded prefix",
+			`{"HostConfig":{"UsernsMode":"NS:/proc/1/ns/user"}}`,
+			"snug decides a container's user namespace"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sock, eng, _ := startProxy(t)
