@@ -102,12 +102,12 @@ N's owning userns, which is P1's U, and `setns(CLONE_NEWUSER)` from
 multithreaded Go is closed (EINVAL); the only route into U is **inheritance
 through a fork by a member of U**, i.e. P1 ([`ENGINE-NETNS.md`](ENGINE-NETNS.md)
 §1, "you cannot join only the netns"). It must (b)
-have its **own** mount + cgroup namespaces (a private host-tree copy, invisible
-to the sandbox), which P1 must **not** share (P1 forks bwrap next and bwrap
-needs P1's mount view intact). And it must (c) reach `execve` podman with
+have its **own** mount + cgroup namespaces — a private copy of the SANDBOX's
+view, invisible to the payload — which P1 must **not** share (P1 forks bwrap
+next and bwrap needs P1's mount view intact). And it must (c) reach `execve` podman with
 `EngineCapBounding` in effect on the thread that execs.
 
-`setns`, the private-tree `mount`, and the cap drop all have to run in the
+`setns`, the private-copy `mount`, and the cap drop all have to run in the
 child, between clone and exec-podman — so a re-exec verb is required, exactly as
 `__innetns` is required for bwrap. Call it `__inengine`
 (`stage.EnterEngine`), dispatched in `internal/cli/main.go` beside the existing

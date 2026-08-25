@@ -10,10 +10,10 @@ package engine
 // PATH is it"; it does not answer "is /usr/bin read-only in the namespace the
 // engine will actually resolve it in", and that second question is about this
 // run's resolved policy — a profile granting {home} over /usr, a graft landing
-// on top of one of these four — not about the literal. Tier C's derived view is
-// what makes the question askable at all: before it, the engine's namespace was
-// a private copy of the HOST tree and no Policy described it, so there was
-// nothing to ask.
+// on top of one of these four — not about the literal. The DERIVED view is what
+// makes the question askable at all: the engine's namespace is built from the
+// resolved Policy, so there is a policy to ask. A namespace nothing in the
+// model describes could not answer it.
 //
 // It is a REFUSAL, unlike the sandbox-side IsShadowSlot caller, and the
 // difference is deliberate. IsShadowSlot's own doc comment says it "is NOT a
