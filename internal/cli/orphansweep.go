@@ -45,14 +45,23 @@ import (
 //     been recycled since the state was written has a different start time
 //     and is left alone.
 //
-// WHAT IT DOES NOT CATCH, measured rather than assumed: a run killed before
-// its state file lands (186 ms on this host, and the orphan window opens at
-// ~150 ms) has published no pid at all, and the narrower wedge — an init
-// blocked in bwrap's uid-map sync `read()` on an eventfd, pre-exec, which
-// never answers `--info-fd` — never gets a state file for the same reason.
-// Those leftovers stay until something else removes them. This closes the
-// half that CAN be closed with the record that already exists; it is not a
-// claim to have closed issue #236's window.
+// WHAT IT DOES NOT CATCH, and the two cases are distinguishable from outside
+// by the fd the leftover is blocked on:
+//
+//   - An init that never answers --info-fd, parked in read() on one of
+//     BWRAP's OWN eventfds (its uid-map sync). No record can name it: the pid
+//     it would carry is the one bwrap has not reported yet. Upstream's window,
+//     closable only by arming the init's PDEATHSIG before that read.
+//   - A GATED run's parked payload, which is the wide one. The init pid is
+//     known here — the stage read it from --info-fd — but exec.go publishes
+//     the record AFTER the release byte, on purpose, so the engine's whole
+//     cold start (1-2s typical, engineSocketWaitTimeout 30s) has an init no
+//     record names. This one waits on snug's --block-fd, which is a PIPE
+//     (os.Pipe, exec.go), not an eventfd.
+//
+// The offline arm's own gap is narrow by comparison: the record lands a few ms
+// after the info answer, and an orphan produced by killing snug across that
+// window IS named by its record and IS killed here — 3 in 3, measured.
 //
 // It also removes the stale state file itself, which nothing did before:
 // a state file was published per run and removed by nobody, so a development
@@ -117,15 +126,41 @@ func sweepOneOrphan(snugRoot *os.Root, snugPath, name string) {
 		return // a live run, or a lock we could not probe: not our business
 	}
 
-	killOrphanInit(st, full)
+	// The record is the only thing that names this init — pid, start time,
+	// six namespace inodes — and nothing else on the host does (a sweep
+	// hunting the process itself would have to key on a process NAME, which
+	// on a developer box is also Flatpak's bwrap). Remove it only once the
+	// init is provably gone: delete it while the orphan lives and every later
+	// sweep is blind to it, which is issue #236's accumulation again.
+	if killOrphanInit(st, full) == orphanUnresolved {
+		return
+	}
 
 	if err := snugRoot.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		// UNCONDITIONAL, the same split sweepStaleRunDirs draws: a file snug
-		// could not remove is state that survives the user, and the user may
-		// have to remove it by hand.
+		// A file snug could not remove is state that survives the user, and
+		// the user may have to remove it by hand.
 		fmt.Fprintf(os.Stderr, "snug: could not remove stale run state %s: %v\n", full, err)
 	}
 }
+
+// orphanVerdict exists because the record's two consumers fail closed in
+// OPPOSITE directions: the kill must refuse anything not provably our init,
+// while the removal must keep any record whose init might still be alive.
+// Collapsing both into "we did not kill it" deleted the only thing naming
+// each survivor.
+type orphanVerdict int
+
+const (
+	// orphanGone: no such pid, or the number is held by a task with a
+	// different start time or different namespaces — the init this file
+	// named is gone and the record is spent.
+	orphanGone orphanVerdict = iota
+	// orphanKilled: provably ours, and dead now.
+	orphanKilled
+	// orphanUnresolved: a /proc read or a syscall failed for a reason that is
+	// not "no such process", so the init may be alive. Keep the record.
+	orphanUnresolved
+)
 
 // killOrphanInit SIGKILLs the sandbox init a dead run left behind, if it is
 // still there, still the same process, and still in the same namespaces.
@@ -179,14 +214,26 @@ func sweepOneOrphan(snugRoot *os.Root, snugPath, name string) {
 // Fail CLOSED throughout: ESRCH or any mismatch means "not provably our init",
 // and leaving an orphan is the less-bad outcome than killing a process we
 // cannot confirm.
-func killOrphanInit(st runState, statePath string) {
+//
+// The VERDICT answers a different question, and the caller deletes the record
+// on that one: ESRCH or a mismatch says the init is gone, while any OTHER
+// failure says nothing about whether it is alive — orphanUnresolved there, and
+// the record survives for the next run to retry.
+func killOrphanInit(st runState, statePath string) orphanVerdict {
 	pid := st.Sandbox.InitPID
 	if pid <= 1 {
-		return // 0 means the run never published one; 1 is never a host init
+		return orphanGone // 0 means the run never published one; 1 is never a host init
 	}
 	pidfd, err := unix.PidfdOpen(pid, 0)
 	if err != nil {
-		return // ESRCH: already gone, which is the ordinary case
+		if errors.Is(err, unix.ESRCH) {
+			return orphanGone // already gone, which is the ordinary case
+		}
+		// EMFILE and friends: the process may well be sitting there, and a
+		// silent sweep would read as "there was nothing to do".
+		fmt.Fprintf(os.Stderr, "snug: could not open a pidfd on the sandbox init pid %d named by "+
+			"%s: %v (left for the next run)\n", pid, statePath, err)
+		return orphanUnresolved
 	}
 	defer unix.Close(pidfd)
 	// The TASK is pinned from here; the NUMBER is not (issue #345). Measured on
@@ -205,28 +252,44 @@ func killOrphanInit(st runState, statePath string) {
 	// it, inside the function the corrected header governs.
 	start, err := procStartTime(pid)
 	if err != nil {
-		return // gone between open and stat, or /proc unreadable: not provably ours
+		// ENOENT: it exited between the open and the stat. Anything else is a
+		// /proc we could not read about a pid that may still be there.
+		if errors.Is(err, fs.ErrNotExist) {
+			return orphanGone
+		}
+		return orphanUnresolved
 	}
 	if start != st.Sandbox.InitStarttime {
-		return // the pinned pid was reused before we opened it: not our process
+		return orphanGone // the number was reused: our init exited
 	}
 	nsIno, err := procNamespaceInodes(pid)
 	if err != nil {
-		return // its /proc entry is unreadable: not provably ours
+		if errors.Is(err, fs.ErrNotExist) {
+			return orphanGone
+		}
+		return orphanUnresolved
 	}
 	for _, k := range runStateNamespaceKinds {
 		if nsIno[k] != st.Sandbox.Namespaces[k] {
-			return // a live pid, but not in the sandbox namespaces the file recorded
+			// The namespaces are created before the pid is published and a
+			// process never leaves them, so this is not our init.
+			return orphanGone
 		}
 	}
 	if err := unix.PidfdSendSignal(pidfd, unix.SIGKILL, nil, 0); err != nil {
 		fmt.Fprintf(os.Stderr, "snug: could not kill the orphaned sandbox init pid %d named by "+
 			"%s: %v\n", pid, statePath, err)
-		return
+		if errors.Is(err, unix.ESRCH) {
+			return orphanGone // it died between the checks and the signal
+		}
+		// EPERM is the case that matters: the init is still there and this
+		// record is the only thing that names it.
+		return orphanUnresolved
 	}
 	// Behind --verbose, like the stale-directory notice: it reports
 	// housekeeping that SUCCEEDED, about a process the user never knew
 	// existed. Unlike that one it names a KILL, so it says whose.
 	verboseHousekeeping(fmt.Sprintf("killed orphaned sandbox init pid %d for target %s "+
 		"(its snug is gone; left behind by a run that did not exit cleanly)", pid, st.Target))
+	return orphanKilled
 }
