@@ -50,7 +50,7 @@ func TestSnugPodmanIsRunThroughTheShimCheck(t *testing.T) {
 
 	t.Run("a shim named by $SNUG_PODMAN is refused", func(t *testing.T) {
 		t.Setenv("SNUG_PODMAN", shimmedPodman)
-		got, err := preflightPodmanBinary(policy.OSEnviron{})
+		got, err := preflightPodmanBinary(policy.OSEnviron{}, &policy.Policy{})
 		if err == nil {
 			t.Fatalf("preflightPodmanBinary accepted a host-escape shim named by "+
 				"$SNUG_PODMAN and returned %q — this is issue #396, and the control "+
@@ -68,7 +68,7 @@ func TestSnugPodmanIsRunThroughTheShimCheck(t *testing.T) {
 
 	t.Run("control: a real binary named by $SNUG_PODMAN is accepted", func(t *testing.T) {
 		t.Setenv("SNUG_PODMAN", realPodman)
-		got, err := preflightPodmanBinary(policy.OSEnviron{})
+		got, err := preflightPodmanBinary(policy.OSEnviron{}, &policy.Policy{})
 		if err != nil {
 			t.Fatalf("preflightPodmanBinary refused a non-shim absolute path %q: %v — "+
 				"the shim check must not refuse an ordinary engine binary, or the "+
@@ -83,7 +83,7 @@ func TestSnugPodmanIsRunThroughTheShimCheck(t *testing.T) {
 
 	t.Run("control: a directory named by $SNUG_PODMAN is still refused", func(t *testing.T) {
 		t.Setenv("SNUG_PODMAN", dir)
-		if _, err := preflightPodmanBinary(policy.OSEnviron{}); err == nil {
+		if _, err := preflightPodmanBinary(policy.OSEnviron{}, &policy.Policy{}); err == nil {
 			t.Fatal("a directory was accepted; the pre-existing os.Stat check regressed")
 		}
 	})

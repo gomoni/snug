@@ -7,6 +7,163 @@ import (
 	"strings"
 )
 
+// writableNameOnChain returns the FIRST name the resolution of asGiven
+// passes through that a writable grant of this sandbox covers. Root-first,
+// so the SHALLOWEST offender is reported — that is the one a human fixes,
+// and it is usually a directory rather than the leaf.
+//
+// It exists beside HostPathVisible because a symlink splits one question
+// into two: HostPathVisible asks whether the payload can write the OBJECT
+// at a path, this asks whether the payload can choose WHICH object a path
+// names. Two arms per prefix answer the second question: a writable grant
+// covering the prefix as spelled (the measured defect — $TARGET/podman
+// writable, /usr/bin/true, what it pointed at, not), or covering what the
+// prefix resolves to (a $PATH entry symlinked into the sandboxed tree). The
+// `real != cur` guard stops the second arm re-asking the first arm's
+// question once a prefix is already canonical.
+//
+// A prefix that does not exist is skipped, not refused: there is no
+// symlink to rewrite there, and making existence a policy input would let a
+// payload choose which refusal a human sees.
+//
+// asked is "" when the spelling arm matched, and the prefix as spelled when
+// the resolved arm did, so a caller's message can name the link AND where
+// it points.
+//
+// It adds nothing on an already-canonical path
+// (TestWritableNameOnChainAddsNothingOnACanonicalPath): the spelling arm's
+// walk is HostPathVisible's own ancestor check, and the resolved arm can
+// never fire, because every prefix of a symlink-free path is itself
+// symlink-free. That is why only the two writers that accept a human's raw
+// string call it: ResolveEngineBinary ($SNUG_PODMAN or exec.LookPath's
+// answer) and EngineToolchain ($SNUG_PODMAN_ROOT). checkGraft's G4b judges
+// g.Host, which for the toolchain disjunct must equal p.EngineToolchainRoot
+// — already a fixed point of ResolveExistingHostPath by the time G4b runs
+// — so the raw spelling never reaches G4b and there is nothing there left
+// to ask this question of.
+//
+// The two callers are ordered in time, not in competition: a root refused
+// here by EngineToolchain is never recorded, so the toolchain disjunct's
+// `g.Host == p.EngineToolchainRoot` can never be satisfied for it and the
+// graft is never attempted.
+func (p *Policy) writableNameOnChain(env Environ, asGiven string) (name, asked string, found bool) {
+	cur := "/"
+	for _, comp := range strings.Split(strings.TrimPrefix(filepath.Clean(asGiven), "/"), "/") {
+		if comp == "" {
+			continue
+		}
+		cur = filepath.Join(cur, comp)
+		if p.HostPathVisible(cur, true) {
+			return cur, "", true
+		}
+		real, err := ResolveExistingHostPath(env, cur)
+		if err != nil {
+			continue
+		}
+		if real != cur && p.HostPathVisible(real, true) {
+			return real, cur, true
+		}
+	}
+	return "", "", false
+}
+
+// ResolveEngineBinary resolves the host path snug will exec as this run's
+// container engine, and returns an error when asGiven is not an absolute
+// path, when the resolved bytes sit inside a writable grant
+// (CheckEngineBinary), or when a writable grant covers a NAME the
+// resolution of asGiven passes through (writableNameOnChain) — the payload
+// choosing the engine rather than merely editing it.
+//
+// asGiven is the path AS NAMED: $SNUG_PODMAN's value, or exec.LookPath's
+// answer. NEVER a path a caller resolved first. That inversion is the fix:
+// resolution and judgement now happen in one function over ONE sample of
+// the host, so there is no call-site precondition left for a later change
+// to move, and no window in which the value judged and the value exec'd
+// could be two different samples.
+//
+// ABSOLUTE, refused rather than accommodated. exec.LookPath fails closed on
+// a relative PATH entry (MEASURED, by the agent that specified this: it
+// returns "bin/podman" together with ErrDot, "cannot run executable found
+// relative to current directory", which preflightPodmanBinary already treats
+// as an error), but $SNUG_PODMAN is only os.Stat'd. A relative value there makes
+// every lexical check on this path VACUOUS: HostPathVisible compares
+// against canonical, absolute grant Hosts, so "bin/podman" matches nothing
+// and is silently ACCEPTED, and DetectHostShim's own LookPath fails closed
+// and does not run either. helperBesideEngine
+// (internal/engine/engine.go:1389) refuses a relative engine too, one layer
+// downstream with a different message; refusing here stops this check from
+// answering a question about a string that means nothing.
+//
+// Arm order is load-bearing: CheckEngineBinary runs FIRST so a hit at the
+// BYTES keeps its own wording and its own golden section byte-identical
+// (refusals.txt, engine_binary_inside_a_writable_grant) — the payload
+// writing the engine is the worse fact and must not be re-described as a
+// naming problem. Once it clears, the chain's last prefix can no longer
+// fire writableNameOnChain's canonical arm on the same string, so the two
+// verdicts do not overlap.
+func (p *Policy) ResolveEngineBinary(env Environ, asGiven string) (string, error) {
+	if !filepath.IsAbs(asGiven) {
+		return "", fmt.Errorf("%s cannot be this run's container engine: it is not an absolute path.\n"+
+			"       Every check snug makes on the engine binary compares it against this sandbox's\n"+
+			"       grants, which are absolute and canonical — a relative name matches none of them,\n"+
+			"       so it would be ACCEPTED without being judged, and then exec'd relative to snug's\n"+
+			"       own working directory rather than to anything --dry-run described.\n"+
+			"       Fix: set $SNUG_PODMAN to an absolute path.", asGiven)
+	}
+	asGiven = filepath.Clean(asGiven)
+	// asGiven reaches a refusal a human reads, twice, below. Same sink rule as
+	// EngineToolchain's "(asked)" check: guard the value at every sink, not at
+	// the site where the need was noticed.
+	if err := checkPathHygiene("container engine binary", asGiven, "(snug)", "the CONTAINERS block"); err != nil {
+		return "", err
+	}
+	resolved, err := ResolveExistingHostPath(env, asGiven)
+	if err != nil {
+		resolved = filepath.Clean(asGiven)
+	}
+	if err := p.CheckEngineBinary(resolved); err != nil {
+		return "", err
+	}
+	if name, asked, found := p.writableNameOnChain(env, asGiven); found {
+		return "", fmt.Errorf("%s cannot be this run's container engine: %s\n"+
+			"       The bytes at the end of that chain (%s) are not writable, so this is not the\n"+
+			"       payload EDITING the engine — it is the payload CHOOSING it. snug execs whatever\n"+
+			"       this name resolves to as uid 0, pid 1 of the engine's pid namespace, with\n"+
+			"       CAP_SYS_ADMIN in this sandbox's user namespace and the whole delegated subuid\n"+
+			"       range, so a name the payload can rewrite is the payload deciding what runs as\n"+
+			"       root — and every other filter on the container path is moot, because the payload\n"+
+			"       picked the engine.\n"+
+			"       Read-only would not help: `ro` restrains the ENGINE, and the payload rewrites the\n"+
+			"       same host name through its own rw grant.\n"+
+			"       Fix: name the engine by a path no rw grant covers — point $SNUG_PODMAN at the\n"+
+			"       binary itself (%s), take the writable directory off $PATH, or drop the rw grant.\n"+
+			"       `snug --dry-run` lists every grant this sandbox makes; the one to look for is\n"+
+			"       whichever covers the name above.\n"+
+			"       NOTE THE LIMIT of this refusal: it resolves a name to its host FIXED POINT in\n"+
+			"       one step, so it sees the first name in a chain and the last, never a middle one.\n"+
+			"       A host-owned symlink pointing at a payload-writable name that is ITSELF a symlink\n"+
+			"       to clean bytes crosses unseen: the outer name is not the payload's to rewrite, the\n"+
+			"       final bytes are clean, and the writable name in between is never separately asked\n"+
+			"       about. Closing it needs a second, hop-by-hop resolver in this package — the thing\n"+
+			"       TestResolveExistingHasOneAuthor exists to keep this package from growing.",
+			asGiven, selectionClause(name, asked), resolved, resolved)
+	}
+	return resolved, nil
+}
+
+// selectionClause renders the one sentence that differs between
+// writableNameOnChain's two arms, so each SUBJECT (the engine binary, the
+// toolchain root) has one message rather than two near-copies — and so the
+// arms stay distinguishable in refusals.txt, which is where a human reads
+// them.
+func selectionClause(name, asked string) string {
+	if asked == "" {
+		return "a grant of this sandbox makes that NAME writable."
+	}
+	return fmt.Sprintf("resolving it goes through %s (%s points there), and a grant of\n"+
+		"       this sandbox makes THAT writable.", name, asked)
+}
+
 // CheckEngineBinary refuses to hand a container engine a host binary this
 // sandbox's own grants let the PAYLOAD write.
 //
@@ -38,34 +195,35 @@ import (
 // points at --dry-run, which already lists every grant.
 //
 // PRECONDITIONS. This is a purely lexical comparison, so it is only as sound
-// as the strings it compares — each is required, and named here with where it
-// is actually discharged, not merely assumed:
+// as the strings it compares, and canonicalisation has OPPOSITE signs on the
+// two sides — merging them is how this defect happened:
 //
-//   - Requires every grant's Host to be CANONICAL, not merely as a profile
-//     spelled it. Discharged by Resolve (resolve.go:177), which runs every
-//     KindBind grant's Host through env.EvalSymlinks before it ever reaches
-//     p.Mounts — the same comment there names why ("a symlink planted inside
-//     the sandbox later cannot retroactively widen a grant resolved here").
-//     This is what stops an obvious-looking evasion from working: a grant
-//     spelled at /proj/link, where link -> the real toolchain directory, does
-//     NOT let a writable grant hide from this check, because m.Host is
-//     already the RESOLVED target by the time this reads it, never the
+//   - The GRANT side must be canonical, and is: Resolve (resolve.go:177)
+//     runs every KindBind grant's Host through env.EvalSymlinks before it
+//     ever reaches p.Mounts, so a grant spelled /proj/link, where link
+//     points at the real toolchain directory, cannot hide a writable grant
+//     from this check — m.Host is already the resolved target, never the
 //     spelling a profile wrote.
-//   - Requires path itself to be CANONICAL. Unlike the grant side, this one is
-//     NOT inherited from an existing invariant — it exists only because this
-//     change adds it: preflightPodmanBinary (containerpreflight.go) now runs
-//     its return value through policy.ResolveExistingHostPath immediately
-//     before every return. If a later change moves or drops that call, this
-//     predicate starts silently comparing an unresolved spelling instead of
-//     refusing to compile or panicking — nothing here can detect that, which
-//     is why the call is also documented at the resolution site itself.
-//   - Requires path to name a regular FILE, which is what makes "ancestor
-//     only, no descendant arm" correct rather than a simplification.
-//     Discharged twice, once per source: preflightPodmanBinary's own
-//     fi.IsDir() refusal of a $SNUG_PODMAN naming a directory
-//     (containerpreflight.go), and, for the PATH lookup, os/exec's own
-//     requirement that a candidate not be a directory before it is returned
-//     from LookPath.
+//
+//   - The JUDGED path must NOT be canonicalised before this runs, and used
+//     to be: the precondition once read "requires path itself to be
+//     CANONICAL", discharged by a ResolveExistingHostPath call at
+//     preflightPodmanBinary's two return sites. MEASURED: a
+//     payload-writable symlink at $TARGET/podman -> /usr/bin/true was
+//     resolved before this ran, so this judged /usr/bin/true — read-only,
+//     correctly accepted — and snug exec'd the binary the payload had
+//     chosen. What this function may assume is therefore not "canonical"
+//     but FINAL: path is the byte sequence snug is about to exec, and this
+//     function takes no view on how that path was named. "Could the
+//     payload choose this name" is a different question, and
+//     ResolveEngineBinary (above) owns it, resolving and judging in one
+//     call so no call site is left holding an obligation it can drop.
+//
+//   - path must name a regular FILE, which is what makes "ancestor only, no
+//     descendant arm" correct rather than a simplification. Discharged
+//     twice: preflightPodmanBinary's own fi.IsDir() refusal of a
+//     $SNUG_PODMAN naming a directory (containerpreflight.go), and
+//     os/exec's own refusal to return a directory from LookPath.
 func (p *Policy) CheckEngineBinary(path string) error {
 	path = filepath.Clean(path)
 	if !p.HostPathVisible(path, true) {

@@ -512,6 +512,253 @@ func TestWritableGrantsBelowEdgeSemantics(t *testing.T) {
 	})
 }
 
+// ── issue #369: ResolveEngineBinary and writableNameOnChain ─────────────────
+//
+// The measured defect: a payload-writable symlink $TARGET/podman ->
+// /usr/bin/true was ACCEPTED and exec'd as the engine, because
+// CheckEngineBinary only ever saw the RESOLVED bytes (clean) and never the
+// symlink NAME a payload had written inside its own rw grant. Every test
+// below is phrased on the symlink or the spelling, never on the resolved
+// target — asserting the resolved target is the shape that let the defect
+// through in the first place.
+
+// TestResolveEngineBinaryJudgesTheNameNotOnlyTheTarget is the measured shape
+// itself: $TARGET/podman -> /usr/bin/podman, a clean system binary. The
+// refusal must be ABOUT THE SYMLINK — the name the payload actually
+// controls — not about the binary it happens to point at.
+func TestResolveEngineBinaryJudgesTheNameNotOnlyTheTarget(t *testing.T) {
+	env := newFakeEnv()
+	env.links["/home/u/proj/sub/podman"] = "/usr/bin/podman"
+	env.files["/usr/bin/podman"] = true
+	p := resolveDefaults(t)
+
+	const symlink = "/home/u/proj/sub/podman"
+	_, err := p.ResolveEngineBinary(env, symlink)
+	if err == nil {
+		t.Fatal("a payload-writable symlink pointing at a clean system binary was accepted as " +
+			"this run's container engine")
+	}
+	// The refusal must open by naming the SYMLINK as the refused object, not
+	// the clean binary it resolves to — that is the whole content of "judges
+	// the name, not only the target".
+	wantPrefix := symlink + " cannot be this run's container engine"
+	if !strings.HasPrefix(err.Error(), wantPrefix) {
+		t.Errorf("refusal %q does not open by naming the SYMLINK as the refused object; a "+
+			"refusal opening with /usr/bin/podman instead would be describing the clean "+
+			"target as the problem, which is the defect itself", err)
+	}
+
+	// POSITIVE CONTROL, same test: without it, a function that refuses every
+	// absolute path would pass the assertions above for the wrong reason.
+	resolved, err := p.ResolveEngineBinary(env, "/usr/bin/podman")
+	if err != nil {
+		t.Fatalf("control: an ungranted system binary, named directly with no symlink involved, "+
+			"was refused: %v", err)
+	}
+	if resolved != "/usr/bin/podman" {
+		t.Errorf("control: resolved = %q, want /usr/bin/podman", resolved)
+	}
+}
+
+// TestResolveEngineBinaryArmsPartition asserts CheckEngineBinary's arm (the
+// BYTES) and writableNameOnChain's arm (the NAME) never absorb each other's
+// case: a target-writable REGULAR FILE, with no symlink anywhere in its
+// spelling, must produce a refusal BYTE-IDENTICAL to calling CheckEngineBinary
+// directly — proving refusals.txt's engine_binary_inside_a_writable_grant
+// section is untouched by this fix — while a symlink into the same grant must
+// produce the SELECTION wording instead.
+func TestResolveEngineBinaryArmsPartition(t *testing.T) {
+	t.Run("a writable regular file keeps CheckEngineBinary's own wording, byte-identical", func(t *testing.T) {
+		env := newFakeEnv()
+		p := resolveDefaults(t)
+		const path = "/home/u/proj/sub/bin/podman"
+
+		_, err := p.ResolveEngineBinary(env, path)
+		if err == nil {
+			t.Fatal("a binary strictly inside the writable target was accepted")
+		}
+		direct := p.CheckEngineBinary(path)
+		if direct == nil {
+			t.Fatal("fixture: CheckEngineBinary itself does not refuse this path, so the " +
+				"byte-identical comparison below would prove nothing")
+		}
+		if err.Error() != direct.Error() {
+			t.Errorf("ResolveEngineBinary's refusal is not byte-identical to CheckEngineBinary's "+
+				"own — the endpoint arm's wording was re-authored (or absorbed by the "+
+				"selection arm):\nResolveEngineBinary: %s\nCheckEngineBinary:   %s", err, direct)
+		}
+	})
+
+	t.Run("a symlink to a clean binary gets the SELECTION wording, not the endpoint's", func(t *testing.T) {
+		env := newFakeEnv()
+		env.links["/home/u/proj/sub/podman"] = "/usr/bin/podman"
+		env.files["/usr/bin/podman"] = true
+		p := resolveDefaults(t)
+
+		_, err := p.ResolveEngineBinary(env, "/home/u/proj/sub/podman")
+		if err == nil {
+			t.Fatal("a symlink into a writable grant, pointing at a clean binary, was accepted")
+		}
+		if !strings.Contains(err.Error(), "CHOOSING") {
+			t.Errorf("refusal %q does not carry the selection arm's wording", err)
+		}
+		if strings.Contains(err.Error(), "snug execs this file") {
+			t.Errorf("refusal %q carries CheckEngineBinary's OWN wording (\"snug execs this "+
+				"file\"), so the endpoint arm absorbed a case that belongs to the "+
+				"selection arm", err)
+		}
+	})
+}
+
+// TestResolveEngineBinaryCatchesAPathEntrySymlinkedIntoTheTarget is
+// writableNameOnChain's CANONICAL arm: a $PATH entry (/opt/tools) is itself
+// symlinked into the sandboxed tree's writable bin directory, so naming
+// "podman" through it is the payload choosing the engine exactly as the
+// measured defect did, just one hop further from the leaf.
+//
+// MEASURED AGAINST THIS TREE, NOT AS FIRST DRAFTED: a fixture with nothing
+// between /opt/tools and the leaf (asGiven = "/opt/tools/podman", no
+// intervening directory) does NOT reach this arm through
+// ResolveEngineBinary at all — ResolveExistingHostPath walks the WHOLE
+// asGiven string in one call and lands on the exact writable bytes
+// CheckEngineBinary already judges, so the endpoint arm fires first and this
+// test would be indistinguishable from TestResolveEngineBinaryArmsPartition's
+// regular-file case. Interposing a real, non-symlinked directory
+// ("/opt/tools/bin", already present in this package's fixture host for
+// unrelated tests) makes the OUTER full-path resolution stop one level too
+// early to ever see /opt/tools's own symlink — while writableNameOnChain's
+// own prefix walk, which visits every ancestor rather than only the two
+// endpoints, still finds it. That gap is exactly what this arm exists to
+// close, and TestWritableNameOnChainAddsNothingOnACanonicalPath's control
+// carries the simpler (one-hop) shape of this same fixture directly against
+// the predicate.
+func TestResolveEngineBinaryCatchesAPathEntrySymlinkedIntoTheTarget(t *testing.T) {
+	env := newFakeEnv()
+	env.links["/opt/tools"] = "/home/u/proj/sub/bin"
+	env.dirs["/opt/tools/bin"] = true
+	p := resolveDefaults(t)
+
+	const asGiven = "/opt/tools/bin/podman"
+	resolved, err := p.ResolveEngineBinary(env, asGiven)
+	if err == nil {
+		t.Fatal("a $PATH entry symlinked into the target's writable bin directory was accepted " +
+			"as this run's container engine")
+	}
+	if resolved != "" {
+		t.Errorf("a refusal also returned a path: %q", resolved)
+	}
+	for _, want := range []string{"/home/u/proj/sub/bin", "/opt/tools"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not name %q — a caller cannot tell WHICH name to fix "+
+				"without both the link and where it points", err, want)
+		}
+	}
+	if !strings.Contains(err.Error(), "CHOOSING") {
+		t.Errorf("refusal %q is not the selection arm's wording", err)
+	}
+}
+
+// TestResolveEngineBinaryRefusesARelativePath: a relative $SNUG_PODMAN makes
+// every lexical check in this file vacuous rather than wrong-answered
+// (HostPathVisible compares against canonical, absolute grant Hosts, so a
+// relative string matches none of them and would be silently accepted).
+func TestResolveEngineBinaryRefusesARelativePath(t *testing.T) {
+	env := newFakeEnv()
+	p := resolveDefaults(t)
+
+	if _, err := p.ResolveEngineBinary(env, "bin/podman"); err == nil {
+		t.Fatal("a relative container engine path was accepted")
+	}
+
+	// CONTROL: the absolute equivalent — ungranted, clean — is accepted.
+	if _, err := p.ResolveEngineBinary(env, "/srv/bin/podman"); err != nil {
+		t.Errorf("control: the absolute equivalent was refused: %v", err)
+	}
+}
+
+// TestResolveEngineBinaryEndpointArmOutranksTheSelectionArm is the mirror of
+// TestEngineToolchainEndpointArmOutranksTheSelectionArm (enginetoolchain_test.go)
+// for ResolveEngineBinary: a PLAIN, non-symlinked writable regular file must
+// be refused with CheckEngineBinary's own wording, never the selection arm's.
+// THE NEGATIVE HALF IS THE ASSERTION — without it this test passes under
+// either arm ordering, and getting the ordering backwards is exactly what
+// EngineToolchain's first draft did (issue #369's commit message).
+func TestResolveEngineBinaryEndpointArmOutranksTheSelectionArm(t *testing.T) {
+	env := newFakeEnv()
+	p := resolveDefaults(t)
+	const path = "/home/u/proj/sub/bin/podman" // no symlink anywhere in this spelling
+
+	_, err := p.ResolveEngineBinary(env, path)
+	if err == nil {
+		t.Fatal("a binary strictly inside the writable target was accepted")
+	}
+	if !strings.Contains(err.Error(), "WRITABLE") {
+		t.Errorf("refusal %q does not carry CheckEngineBinary's own wording", err)
+	}
+	if strings.Contains(err.Error(), "CHOOSING") {
+		t.Errorf("refusal %q carries the selection arm's wording for a case with no chain at "+
+			"all — the endpoint arm must run first", err)
+	}
+}
+
+// TestWritableNameOnChainAddsNothingOnACanonicalPath is the theorem that
+// licenses checkGraft's G4b having no equivalent door (engine.go's own doc
+// comment on writableNameOnChain), made checkable: on a CANONICAL path (one
+// this fixture host has no symlink for), writableNameOnChain must agree with
+// HostPathVisible exactly, over every shape HostPathVisible itself
+// distinguishes.
+//
+// IF THIS TEST EVER FAILS, the G4b asymmetry argument has expired — say so
+// rather than tuning the assertion, because the argument is what justifies
+// checkGraft never calling this predicate itself.
+func TestWritableNameOnChainAddsNothingOnACanonicalPath(t *testing.T) {
+	env := newFakeEnv()
+	p := resolveDefaults(t)
+
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"inside a writable (rw) grant", "/home/u/proj/sub/somefile"},
+		{"inside a read-only (ro) grant", "/usr/bin/somefile"},
+		{"under no grant at all", "/srv/other/thing"},
+		{"exactly a grant's own Host", "/home/u/proj/sub"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, found := p.writableNameOnChain(env, tc.path)
+			want := p.HostPathVisible(tc.path, true)
+			if found != want {
+				t.Errorf("writableNameOnChain(%q).found = %v, HostPathVisible(true) = %v — "+
+					"on a canonical path the two predicates must agree", tc.path, found, want)
+			}
+		})
+	}
+
+	// POSITIVE CONTROL: a NON-canonical path where the two DISAGREE, so the
+	// agreement above is not vacuously true for every input this package can
+	// construct. This is the same $PATH-entry-symlinked-into-the-target shape
+	// TestResolveEngineBinaryCatchesAPathEntrySymlinkedIntoTheTarget exercises
+	// through the full call, asked of the predicate directly.
+	t.Run("control: a non-canonical path where the two disagree", func(t *testing.T) {
+		env := newFakeEnv()
+		env.links["/opt/tools"] = "/home/u/proj/sub/bin"
+		const q = "/opt/tools/podman"
+
+		visible := p.HostPathVisible(q, true)
+		if visible {
+			t.Fatalf("fixture: %q is visible on its own literal spelling, so this is not the "+
+				"non-canonical case this control means to exercise", q)
+		}
+		_, _, found := p.writableNameOnChain(env, q)
+		if !found {
+			t.Fatal("fixture: writableNameOnChain did not find the writable path entry " +
+				"symlinked into the target, so the disagreement this control depends on " +
+				"does not exist")
+		}
+	})
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

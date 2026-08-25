@@ -183,7 +183,7 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		return containerRun{}, err
 	}
 
-	pf, err := runContainerPreflight(env)
+	pf, err := runContainerPreflight(env, pol)
 	if err != nil {
 		return containerRun{}, err
 	}
@@ -198,6 +198,12 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 	// reason ProjectHostSignaturePolicy's own comment above gives: a refusal
 	// here creates no run directory and copies nothing onto disk for a run
 	// that will not start.
+	//
+	// This re-asserts the ENDPOINT only now: the SELECTION half (could the
+	// payload have chosen this name) was already judged in preflight by the
+	// function that produced pf.Podman (pol.ResolveEngineBinary). It stays
+	// precisely for a future third source that sets the field without going
+	// through that function.
 	if err := pol.CheckEngineBinary(pf.Podman); err != nil {
 		return containerRun{}, err
 	}

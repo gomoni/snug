@@ -83,6 +83,18 @@ type userConfig struct {
 // anything the payload can reach — it is the user's own declaration about
 // their own host's RAM — so the cap exists purely to keep the arithmetic
 // honest.
+//
+// NOT the resource bound, and that is measured rather than argued: a round on
+// this constant's own subject filled five profile-authored tmpfs to exactly
+// their 8 MiB cap EACH under tmpfs_size_mib = 8, which is what it means to say
+// every --size is a separate superblock limit. So what this permits is value ×
+// (number of KindTmpfs mounts), and the aggregate has no bound here — nor
+// would a smaller number give it one, because the harm is the sum and a
+// per-mount ceiling is the wrong instrument for a sum. Issue #283 is where
+// that bound belongs; #281 owns the /dev residual --size cannot reach at all.
+// Named here because this is where a reader looking for the resource bound
+// arrives first, and finding only an overflow guard is how it gets mistaken
+// for one.
 const maxTmpfsSizeMiB = 1 << 20
 
 // tmpfsSizeBytes converts the config's MiB preference to the bytes

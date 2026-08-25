@@ -40,7 +40,7 @@ func TestPreflightPodmanBinaryReturnsAResolvedPath(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Setenv("SNUG_PODMAN", link)
-		got, err := preflightPodmanBinary(policy.OSEnviron{})
+		got, err := preflightPodmanBinary(policy.OSEnviron{}, &policy.Policy{})
 		if err != nil {
 			t.Fatalf("preflightPodmanBinary refused a plain symlink to a real binary: %v", err)
 		}
@@ -63,7 +63,7 @@ func TestPreflightPodmanBinaryReturnsAResolvedPath(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Setenv("PATH", pathDir)
-		got, err := preflightPodmanBinary(policy.OSEnviron{})
+		got, err := preflightPodmanBinary(policy.OSEnviron{}, &policy.Policy{})
 		if err != nil {
 			t.Fatalf("preflightPodmanBinary refused a plain symlink found on $PATH: %v", err)
 		}
@@ -88,7 +88,7 @@ func TestPreflightPodmanBinaryReturnsAResolvedPath(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Setenv("SNUG_PODMAN", link)
-		_, err := preflightPodmanBinary(policy.OSEnviron{})
+		_, err := preflightPodmanBinary(policy.OSEnviron{}, &policy.Policy{})
 		if err == nil {
 			t.Fatal("a symlink resolving to a host-escape shim was accepted — issue #396 regressed")
 		}
@@ -97,4 +97,48 @@ func TestPreflightPodmanBinaryReturnsAResolvedPath(t *testing.T) {
 				"run AFTER the shim check, not steer its message toward the resolved target", err, link)
 		}
 	})
+}
+
+// TestPreflightPodmanBinaryRefusesASymlinkInsideAWritableGrant is issue
+// #369's measured defect (redteam row 6 against merged 955dc17): a
+// payload-writable symlink $TARGET/podman -> a real binary OUTSIDE the
+// target was ACCEPTED and exec'd as the engine, because the only check run
+// on it (policy.CheckEngineBinary) saw the RESOLVED bytes — clean, outside
+// every grant — and never the symlink itself, which the writable grant
+// covers. preflightPodmanBinary must refuse it through
+// policy.(*Policy).ResolveEngineBinary now, with a REAL policy carrying an
+// actual rw mount rather than the empty &policy.Policy{} every other case in
+// this file uses (an empty policy has no writable grants at all, so it could
+// never exercise this).
+func TestPreflightPodmanBinaryRefusesASymlinkInsideAWritableGrant(t *testing.T) {
+	writable := t.TempDir()
+	outside := t.TempDir()
+
+	real := filepath.Join(outside, "podman-real")
+	if err := os.WriteFile(real, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(writable, "podman")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+
+	pol := &policy.Policy{Mounts: map[string]policy.Mount{
+		writable: {Guest: writable, Host: writable, Kind: policy.KindBind, Access: policy.AccessRW},
+	}}
+
+	t.Setenv("SNUG_PODMAN", link)
+	got, err := preflightPodmanBinary(policy.OSEnviron{}, pol)
+	if err == nil {
+		t.Fatalf("a symlink inside a writable grant, pointing at a binary OUTSIDE it, was "+
+			"accepted as this run's container engine and returned %q — this is issue #369's "+
+			"measured defect", got)
+	}
+	// A refusal must not also hand a value back.
+	if got != "" {
+		t.Errorf("a refusal also returned a path: %q", got)
+	}
+	if !strings.Contains(err.Error(), link) {
+		t.Errorf("refusal %q does not name the symlink the payload actually controls", err)
+	}
 }
