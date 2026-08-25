@@ -192,6 +192,38 @@ and every measurement it holds is owed to the human as an annotation on
   expected and is what the `unchecked` mark exists to make honest; *wrong* —
   a row that says a value is inert when you measured it running — is a finding.
 
+## What NOT to attack — the standard library is not the target
+
+**Do not re-test a guarantee `os.Root`, `internal/vdir` or the type system
+already enforces, and refuse the objective if a brief asks you to.** Say so in
+the report, in one line, and spend the round on what the CODE decides.
+
+The concrete case, because it has cost a round already: every path in
+`internal/engine`, `internal/cli` and `internal/vdir` is resolved through
+`*os.Root`, which `go-implementer`'s own rules require. `os.Root`'s methods ARE
+the fd-relative `*at` calls — `Chmod` is
+`unix.Fchmodat(parentfd, name, mode, AT_SYMLINK_NOFOLLOW)`, `Remove` is
+`unlinkat`, `Open` is `openat` (`os/root_unix.go`, go1.27) — so a symlink at a
+name is refused rather than followed, `"."` resolves no component and cannot be
+swapped under the call, and `..` cannot leave the root. Attacking that is
+attacking Go, on Anthropic's clock, once per PR, forever.
+
+**The cheap version of that question is a grep, not a round:** *is anything on
+this path NOT going through `os.Root`/`vdir`?* One `grep` for `os.Open(`,
+`os.Remove(`, `os.Chmod(`, `filepath.Join` feeding a bare syscall. A hit is a
+finding; no hit ends the question for that path.
+
+Where a round is still worth its cost, on the same code:
+
+- what the code DECIDES — which store a GC deletes, which pid a sweep signals,
+  which name a widened pattern claims;
+- semantics that survive a retry or an error path — does a refusal still refuse
+  after a fallback was added above it;
+- a rename or a key change causing a SILENT MISS — a lookup that quietly finds
+  nothing is invisible to every test that asserts success;
+- anything crossing a trust boundary snug itself drew: the sandbox's view, a
+  proxy's filter, an inherited descriptor, a profile's grant.
+
 ## Attack surface checklist
 
 Work through these, and prefer actually running the attack over reasoning about it:
