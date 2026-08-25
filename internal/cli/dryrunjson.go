@@ -192,11 +192,22 @@ func (e *lossyEncoder) texts(in []string) ([]string, []byteList) {
 // a list beside policy.IsForgingRune is the second catalogue that drifts, and
 // the hazard set stays the screen's.
 //
+// THE BOUND IS 0x20 BECAUSE THAT IS WHAT THE PARAGRAPH ABOVE ARGUES, and it
+// shipped as 0x80 for a milestone (issue #333). encoding/json escapes runes
+// BELOW U+0020, plus quote and backslash; it does not escape U+007F, and
+// policy.IsForgingRune answers true for U+007F. So the two bounds differ by
+// exactly one code point, DEL, and it reached the document raw — in an
+// environment value, in mounts[].guest, in mounts[].host and in bwrap.argv —
+// with `snug.lossy` false beside it asserting the document was clean. The
+// justification and the constant now state the same boundary, which is the
+// half that was missing: the comment was right and the code was not, and
+// nothing made them answer to each other.
+//
 // The name is not `rawForgingRune`: screensinks_test.go already owns that one,
 // for the sweep every SCREEN in this package shares. Two predicates, one
 // vocabulary — that one asks "did a raw hazard reach a terminal", this one
 // asks "did one survive encoding/json".
-func jsonRawForgingRune(r rune) bool { return r >= 0x80 && policy.IsForgingRune(r) }
+func jsonRawForgingRune(r rune) bool { return r >= 0x20 && policy.IsForgingRune(r) }
 
 func escapeRawForgingRunes(b []byte) []byte {
 	// The common document has none, and re-allocating every one of them to
