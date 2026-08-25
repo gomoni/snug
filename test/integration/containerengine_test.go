@@ -3582,8 +3582,8 @@ print("PROBE-COMPLETE", flush=True)
 //     plus whatever podman itself bind-mounts (/etc, /dev, /proc) — and
 //     specifically none of the ordinary host/sandbox FHS directories
 //     (usr, home, root, var) that would appear if /proc/1/root somehow
-//     dereferenced into the engine's own private copy of the host tree
-//     instead of the container's own.
+//     dereferenced into the engine's own mount namespace instead of the
+//     container's own.
 //   - /proc lists at least two pids — POSITIVE CONTROL: the entrypoint
 //     starts a second, short-lived child of itself before listing /proc
 //     (testdata/pidnsprobe/main.go), and that child's own "CHILD-MARKER-READY"
@@ -3832,11 +3832,11 @@ if touch /run/snug-probe 2>/dev/null; then echo "run-write=OK"; else echo "run-w
 // FOR, asserted where it is true rather than through a container: the engine's
 // own mount namespace, read from the host through /proc/<engine>/mountinfo.
 //
-// Before C2-view the engine held a private copy of the HOST tree and what
-// stopped a container naming an ungranted path was the proxy's bind filter —
-// enforcement by predicate. After it, the host tree is not there to name.
-// Every other test in this file exercises the filter; this one exercises its
-// absence.
+// The engine's view is built from the resolved Policy, so the host tree is not
+// there for a container to name. The proxy's bind filter refuses an ungranted
+// path by name as well — enforcement by predicate — and every other test in
+// this file exercises that half. This one exercises the structural half: the
+// absence of anything to name.
 //
 // THREE ARMS, because the negative alone would pass on a namespace this test
 // failed to find:

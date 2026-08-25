@@ -19,14 +19,14 @@ package cli
 // IsShadowSlot cannot see it — three questions that all answer "there is
 // nothing there" about a mount that is really there.
 //
-// WHAT IT DOES NOT DO, and the honesty this file owes. It does not install the
-// four HOST-tree grafts (the container store, the runroot, the socket
-// directory, the config directory): those are open_tree(2) clones the stage
-// cannot make until the derived view exists, and modelling a graft that no run
-// performs would be the "documented but not implemented" shape this repo keeps
-// naming. The FOUR here are different — the stage makes all four mount(2)
-// calls TODAY, in the engine's own mount namespace, on every container run —
-// so modelling them describes what already happens rather than what is planned.
+// WHAT IT DOES NOT DO, and where that half lives instead. It does not install
+// the HOST-tree grafts — the container store, the runroot, the socket directory,
+// the config directory, and the toolchain when this host needs one. Those are
+// open_tree(2) clones of host paths and `internal/engine/paths.go` installs
+// them, because it is the package that knows those paths. The division is by
+// MECHANISM: a host-tree graft is cloned from the host, while the four here are
+// mount(2) calls the stage makes for itself (a fresh procfs, a fresh cgroup2,
+// two empty tmpfs) and carry nothing of the host at all.
 //
 // WHY THE FOUR CALLS ARE WRITTEN OUT rather than looped over a table, which
 // was the first attempt: TestGraftCarriesAnAbuseSentence sweeps every
