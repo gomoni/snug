@@ -386,7 +386,7 @@ That is the whole pipeline. An earlier design had a *clamp*: a post-resolution s
 
 What that costs, stated plainly: a read-only project is obtained by not selecting `@cwd-rw` — `snug --no-defaults -p @sys -p @home -p @parent-ro <dir>` — which is verbose on purpose. A read-only cwd is possible but highly nonstandard, and the verbosity is proportionate to how rarely it is wanted.
 
-What it buys: an invariant with no exceptions. "Nothing anywhere reduces what a resolved policy grants" is a property a reader can check by grepping for a demote and finding none, and a test can assert directly (`TestPolicyHasNoRestrictionOperation`). One with a carve-out can only be checked by understanding where the carve-out applies.
+What it buys: an invariant with no exceptions. "Nothing anywhere reduces what a resolved policy grants" is a property a reader can check by grepping for a demote and finding none, and two AST sweeps assert directly (`TestEveryAccessWriteIsAJoinWithThePreviousValue` and `TestMountCollectionsHaveThreeWriters`, `internal/policy/norestriction_test.go`, from #271 via #355/#361) — the second catching the shape the first cannot see, a `Derive()` that lowers access by building fresh mounts rather than by assigning to an `Access` field. `TestPolicyHasNoRestrictionOperation` asserts only that `Access.Join` takes the max, which is why it was never sufficient on its own. One with a carve-out can only be checked by understanding where the carve-out applies.
 
 #### Visibility is monotone. Effective write access at a strict subpath is not.
 
