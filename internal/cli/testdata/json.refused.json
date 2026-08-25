@@ -2,7 +2,9 @@
   "snug": {
     "format": 1,
     "outcome": "refused",
-    "lossy": false
+    "lossy": false,
+    "exit_code": 77,
+    "policy_resolved": true
   },
   "refusal": {
     "message": "no OS runtime granted: neither /usr nor /bin is readable, so nothing can execute (add the 'sys' profile)"

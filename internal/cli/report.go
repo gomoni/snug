@@ -61,6 +61,19 @@ type Report struct {
 	// without a version bump.
 	Refusal string
 
+	// ExitCode is the process status this report's document accompanies, so a
+	// consumer holding only the redirected file still knows what the shell
+	// saw. It is the mapping run() implements — 0 for a policy that can run,
+	// exitPolicy for one Validate refused — and it is derived here rather
+	// than threaded through dryRun because the two facts are the same
+	// decision: refusedBy != nil IS why run() returns 77.
+	//
+	// The claim is not left as a comment: the refusal-class enumeration in
+	// jsonrefusal_test.go drives the real refusals and compares this field
+	// against the exit status run() actually returned, so a divergence is a
+	// red test rather than a stale sentence.
+	ExitCode int
+
 	Target string
 	Home   string
 	Chdir  string
@@ -395,6 +408,7 @@ func buildReport(p *policy.Policy, args []string, cfg config, refusedBy error,
 	if refusedBy != nil {
 		rep.Outcome = "refused"
 		rep.Refusal = refusedBy.Error()
+		rep.ExitCode = exitPolicy
 	}
 	rep.MountNotes = buildMountNotes(p, rep.Mounts)
 	// See BwrapIncomplete's own comment: this is the SAME condition

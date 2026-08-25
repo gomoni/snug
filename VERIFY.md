@@ -186,7 +186,7 @@ there is no machine-readable form of an actual run
 The discriminator is first, so a consumer reads it before anything else:
 
 ```bash
-./bin/snug --dry-run --json $SC/proj/sub | head -6
+./bin/snug --dry-run --json $SC/proj/sub | head -8
 ```
 
 ```
@@ -194,12 +194,15 @@ The discriminator is first, so a consumer reads it before anything else:
   "snug": {
     "format": 1,
     "outcome": "ok",
-    "lossy": false
+    "lossy": false,
+    "exit_code": 0,
+    "policy_resolved": true
   },
 ```
 
-**The document is the whole of stdout for EVERY exit code**, refusals included.
-This is the property the format exists for — a redirect that yields an empty
+**The document is the whole of stdout for every exit code `run` produces**,
+refusals included — see the named exception three blocks down, which is the
+usage error and is not one of them. This is the property the format exists for — a redirect that yields an empty
 file on failure is useless to CI:
 
 ```bash
@@ -210,6 +213,84 @@ python3 -c 'import json;d=json.load(open("/tmp/policy.json"));print(d["snug"]["o
 
 Expect `exit=77` — the refusal is unchanged — and `refused` parsed back out of a
 complete document. The human refusal text is still on stderr.
+
+**And for a refusal that happens BEFORE a policy exists — the half that wrote
+zero bytes for a milestone (issue #334).** `pol != nil` was the real boundary:
+`policy.Resolve` hands back a policy only for a `Validate` failure, so an
+unknown profile, a target that does not exist, `@net-host` without `--i-know`, a
+missing `@tmp-shared` grant and an unparseable profile file never entered the
+JSON path at all. Each produced exactly the empty file the paragraph above says
+the format prevents:
+
+```bash
+./bin/snug --dry-run --json -p @nosuchprofile $SC/proj/sub > /tmp/refused.json
+echo "exit=$?"
+python3 -c 'import json;d=json.load(open("/tmp/refused.json"));s=d["snug"]
+print(s["outcome"], s["exit_code"], s["policy_resolved"], "mounts" in d)'
+```
+
+```
+exit=77
+refused 77 False False
+```
+
+Four facts, and the last two are the ones worth reading together. `exit_code`
+is in the document because a consumer holding only the redirected file would
+otherwise not know what the shell saw. `policy_resolved` is **false** and there
+is **no `mounts` key at all** — absent, not `[]` and not `null`. An empty array
+would be a statement about a sandbox, made by a document that never got far
+enough to have one.
+
+Compare against a refusal that DOES have a policy — same exit code, opposite
+shape:
+
+```bash
+./bin/snug --dry-run --json --no-defaults $SC/proj/sub > /tmp/policy.json
+echo "exit=$?"
+python3 -c 'import json;d=json.load(open("/tmp/policy.json"));s=d["snug"]
+print(s["outcome"], s["exit_code"], s["policy_resolved"], "mounts" in d)'
+```
+
+```
+exit=77
+refused 77 True True
+```
+
+The pair is the check. One of them alone passes on a build that always emits
+the full document and on a build that never does.
+
+**And the policy-less document answers to the forging-rune sweep too.**
+`jsonRefusalDoc` is a separate type from `jsonDoc`, so this is the shape of rule
+that gets applied to one of its two halves — it does not, only because both go
+through one writer. The refusal message quotes HOST text, so a target directory
+whose own name carries U+202E puts a directional override into a document that
+has no policy beside it:
+
+```bash
+BAD=$SC/proj/tgt$(printf '\342\200\256')OLR-FORGED
+./bin/snug --dry-run --json "$BAD" > /tmp/forged.json; echo "exit=$?"
+LC_ALL=C grep -c $'\342\200\256' /tmp/forged.json   # raw RLO bytes
+grep -o 'u202e' /tmp/forged.json | wc -l            # the escape
+python3 -c 'import json;d=json.load(open("/tmp/forged.json"))
+print(d["snug"]["lossy"], d["snug"]["policy_resolved"])'
+```
+
+```
+exit=77
+0
+2
+False False
+```
+
+Zero raw, escaped twice, `lossy` still false and `policy_resolved` false — the
+same guarantee the policy-bearing document gives, in the shape that carries no
+policy.
+
+**One exit is still not a document, and it is named rather than left for a
+redirect to find:** a flag that does not PARSE exits 64 with the usage screen,
+from `Main`, before `run`. The document's own flag is among the ones that failed
+to parse, so there is no request to honour — `./bin/snug --dry-run --jsn .`
+prints usage, and that is the answer.
 
 **The two renderers cannot list different grants.** The FILESYSTEM block and the
 `mounts` array come from one `Report`, so this is an identity, not a
