@@ -265,9 +265,10 @@ func probeBindResolvConf(argv []string) error {
 // own doc comment, policy.EngineCapBounding) holds only when
 // /proc/sys/kernel/yama/ptrace_scope is 1: at 0 the kernel's own same-uid
 // rule alone admits ptrace of a non-descendant peer, with no capability check
-// involved at all, and M6's re-measurement under that setting was never run
-// (TIER-B.md §1, "Maintainer decisions, settled" — Q2, REFUSE). 2 and
-// 3 are STRICTER than 1 (they narrow ptrace further) and pass.
+// involved at all, and the re-measurement under that setting was never run.
+// So: REFUSE the run, never warn-and-continue (maintainer decision,
+// 2026-08-18; invariant 5). 2 and 3 are STRICTER than 1 (they narrow ptrace
+// further) and pass.
 func preflightPtraceScope() error {
 	data, err := os.ReadFile("/proc/sys/kernel/yama/ptrace_scope")
 	if err != nil {

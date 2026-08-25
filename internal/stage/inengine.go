@@ -76,8 +76,9 @@ import (
 //     own documented contract. No uid-map re-exec here, unlike
 //     __stage-setup: this process forks from a P1 already uid-0-in-U with a
 //     FULL effective set (it created no nested userns), so it inherits full
-//     caps immediately and this single drop is enough — TIER-B.md §3 names
-//     this distinction explicitly so nobody adds a spurious re-exec.
+//     caps immediately and this single drop is enough. The distinction from
+//     __stage-setup is the whole point: that one DOES need a re-exec to pick
+//     up its map, this one does not — do not copy that shape here.
 //
 //  7. fdseal.SealExcept() with an EMPTY keep list — this is the last exec
 //     before podman, and the whole point is that the engine talks to snug
@@ -94,7 +95,8 @@ import (
 //     namespace by this exec (execve does not change pid); see the pid-1
 //     note below.
 //
-// No /run graft (TIER-B.md §4's boundary table): podman's own forced tmpfs on /run gives
+// No /run graft — a graft would put a piece of the HOST's /run in the engine's
+// derived view, and nothing needs one. podman's own forced tmpfs on /run gives
 // the engine a working /run in its private mount-namespace copy, and the
 // socket + runroot live on /tmp precisely to sit outside that masking
 // (ENGINE-WIRING.md §3.1).
@@ -378,11 +380,10 @@ func EnterEngine(argv []string) error {
 	// mapped range, exactly as the earlier standalone measurement's own
 	// snug-podman-ns wrapper already had to work around by hand. This is a
 	// PLAIN tmpfs mount of a fresh, empty filesystem — not a graft in the
-	// Tier C sense (no open_tree, no move_mount, nothing of the host tree
-	// grafted in): TIER-B.md §4's "no grafts" still holds for what
-	// it actually meant (no piece of the HOST's /run is exposed here), the
-	// mechanism underneath it was simply wrong about needing no mount at
-	// all. XDG_RUNTIME_DIR is recreated empty on it for the same reason
+	// graft sense (no open_tree, no move_mount, nothing of the host tree
+	// grafted in), so the property the design wanted still holds — no piece of
+	// the HOST's /run is exposed here — while the mechanism it assumed
+	// (needing no mount at all) was simply wrong. XDG_RUNTIME_DIR is recreated empty on it for the same reason
 	// podman's own per-container netns bind-mount path looks there.
 	if err := unix.Mount("tmpfs", "/run", "tmpfs", 0, ""); err != nil {
 		return fmt.Errorf("__inengine: mounting a fresh tmpfs on /run: %w", err)

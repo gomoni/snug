@@ -1,4 +1,4 @@
-# Tier B — engine-in-N wiring, as built
+# The container engine in the sandbox's netns — wiring as built
 
 `host-bridge`, **2026-08-18**. Settles the one architecture question
 `go-implementer` handed back: how the **long-lived** container engine composes
@@ -7,23 +7,12 @@ joins the sandbox's network namespace **N**, and serves proxied requests for
 the whole run — with the engine confined to `policy.EngineCapBounding` and torn
 down on every path.
 
-> **Promoted into `.claude/design/` on 2026-08-19
-> ([#156](https://github.com/gomoni/snug/issues/156)), unchanged except where
-> marked.** It was written as a design pass and lived in `.claude/scratchpad/`,
-> which is in `.gitignore`, so the twenty-four Go comments citing it — across
-> `internal/stage`, `internal/engine`, `internal/sandbox` and `internal/cli` —
-> pointed at a file that had never been committed and existed on exactly one
-> machine, inside a feature worktree one `git worktree remove` from deletion.
-> The same near-miss as [`TIER-B.md`](TIER-B.md), found by the sweep that one
-> landed ([#154](https://github.com/gomoni/snug/issues/154) §C).
+> **Section numbers are load-bearing** — twenty-four Go comments across
+> `internal/stage`, `internal/engine`, `internal/sandbox` and `internal/cli`
+> cite them, and nothing checks a section number. Do not renumber; append.
 >
-> **Section numbers are preserved deliberately**, because the citations name
-> them. What has changed: the "what to build next" and "what to test next"
-> plans (§9, §10) are gone, since that work landed and a plan kept past its
-> execution drifts into a lie; §12's undecided items carry what was settled;
-> and the tense is left as written — this is a record of a design pass, not a
-> description of today's code. Where the two disagree, the code is right and
-> the disagreement is a bug in this file.
+> This is a record of a design pass, so the tense is as written. **Where it and
+> the code disagree, the code is right and the disagreement is a bug here.**
 
 Everything upstream of the runtime was already landed and is NOT reopened here:
 `policy.EngineCapBounding` (12 caps, measured floor), `deriveTopology` raising
@@ -104,8 +93,7 @@ including one that never runs a container, and including an **offline** one —
 pays the engine boot (podman `system service` coming up, ~1–2s, plus overlay
 store init). This is acceptable: selecting a container profile *is* the
 declaration of intent to run containers, and offline-with-a-stage is already a
-stated cost (`TIER-B-POLICY §2`, the privileged-ancestor U on the TOPOLOGY
-block). `--dry-run` states it (§5).
+stated cost (the privileged-ancestor U line on the TOPOLOGY block). `--dry-run` states it (§5).
 
 ---
 
@@ -116,7 +104,8 @@ block). `--dry-run` states it (§5).
 The engine must (a) be a **member of U** — joining N needs `CAP_SYS_ADMIN` in
 N's owning userns, which is P1's U, and `setns(CLONE_NEWUSER)` from
 multithreaded Go is closed (EINVAL); the only route into U is **inheritance
-through a fork by a member of U**, i.e. P1 (`TIER-B-SHAPE §0.1`). It must (b)
+through a fork by a member of U**, i.e. P1 ([`ENGINE-NETNS.md`](ENGINE-NETNS.md)
+§1, "you cannot join only the netns"). It must (b)
 have its **own** mount + cgroup namespaces (a private host-tree copy, invisible
 to the sandbox), which P1 must **not** share (P1 forks bwrap next and bwrap
 needs P1's mount view intact). And it must (c) reach `execve` podman with
@@ -512,27 +501,29 @@ Decision: **no graft.** The engine's private mount-ns copy gets a working `/run`
 from podman itself (the forced `tmpfs` on `/run`), and the socket + runroot live
 on `/tmp` precisely to sit *outside* that masking. So there is nothing to graft.
 
-This keeps Tier B out of #55: a graft is **not a `Mount`** — it would be a raw
-`open_tree`/`move_mount` into the engine's namespace, which is the Tier C
-machinery (`TIER-B-SHAPE §4`: "if you find yourself writing `open_tree`,
-`move_mount`, a graft, or fighting a locked read-only root, you have crossed
-into Tier C — stop"). If a host were ever found where podman does **not** self-
-mount `/run`, the engine simply sees the host `/run` in its private copy (which
-already has `/run/user/<uid>`), and still needs no graft. State in the
-`__inengine` comment that a `/run` graft is deliberately absent and why.
+A `/run` graft would put a piece of the **host's** `/run` in the engine's view,
+which nothing needs: the engine's own `/run` is a fresh, empty tmpfs the stage
+mounts (podman does not self-mount one for a root-in-U process holding the full
+delegated subuid range), and `internal/cli/engineview.go` models that mount so
+the model can see it. The distinction this rests on: a **graft** is an
+`open_tree`/`move_mount` of a policy-named host subtree and is the only thing
+that can carry host data into the view; `/proc`, `/sys/fs/cgroup`, `/run` and
+`/var/tmp` are fresh mounts of empty or namespace-local filesystems and carry
+none. State in the `__inengine` comment that a `/run` graft is deliberately
+absent and why.
 
 ---
 
 ## 8. Invariant 6 — do not diverge the two authors
 
-The engine's mount view is a **private copy of the host tree**, NOT derived from
-the policy — the named, gated deferral to Tier C. What stops a container binding
-an ungranted path is the **proxy's bind filter**, which reads the **same
-resolved `Policy`**. This wiring pass must not add any mount to the engine's
-view beyond the host copy, and must not let the engine spec become a second
-place that decides what a container may see. `TestContainerBindFilterMatchesPolicyVisibility`
-is the standing gate; the `__inengine` mount step gets a one-sentence comment
-naming Tier C as the ticket that makes the view structural.
+The engine's mount view is **derived from the sandbox's** (`policy.EngineView()`),
+so a host path reaches the engine only through a `p.Grafts` entry the resolved
+`Policy` authored. What stops a *container* binding an ungranted path is the
+**proxy's bind filter**, which reads the **same resolved `Policy`**. Two
+mechanisms over one model: no mount may be added to the engine's view that the
+model does not name, and the engine spec must never become a second place that
+decides what a container may see. `TestContainerBindFilterMatchesPolicyVisibility`
+is the standing gate.
 
 ---
 

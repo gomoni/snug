@@ -43,6 +43,13 @@ package policy
 // is what dropping NET_ADMIN buys, and it is why port publishing is declined
 // rather than paid for with a 13th cap.
 //
+// EXCLUDED, each a specific denial: CAP_SYS_PTRACE (the standing gate —
+// cannot process_vm_readv or read /proc/<pid>/mem of a peer in U, and only on
+// ptrace_scope>=1, which is why preflightPtraceScope refuses 0);
+// CAP_NET_ADMIN (below); CAP_MKNOD (rootless crun bind-mounts devices rather
+// than creating them); CAP_DAC_READ_SEARCH, CAP_SYS_MODULE, CAP_SYS_RAWIO,
+// CAP_SYS_BOOT, CAP_SYS_TIME, CAP_BPF, CAP_PERFMON, CAP_AUDIT_*, CAP_MAC_*.
+//
 // SCOPE THAT SENTENCE (issue #412): what the exclusion denies is the engine's
 // OWN process in U, and any descendant that stays in U. It is not a denial of
 // the bit to everything the engine runs. A nested user namespace resets the
@@ -57,35 +64,55 @@ package policy
 // list cannot grant; the cap count is how the engine's own reach is bounded,
 // not what makes N unreachable.
 var EngineCapBounding = []string{
+	// Each comment is "why podman needs it" then ABUSE: "a compromised engine
+	// holding it in U can ___" (the working agreement's abuse sentence, which
+	// belongs at the grant). Every one is bounded by U and by the engine's
+	// DERIVED view — it can only ever name paths the resolved Policy granted.
+	//
 	// mount overlay/tmpfs/proc/bind, unshare/setns, pivot_root — the
 	// irreducible reason the engine cannot take the container's own set.
 	// SYS_ADMIN does NOT satisfy PTRACE_MODE_ATTACH, so excluding
 	// CAP_SYS_PTRACE below still holds with this one present.
+	// ABUSE: mount/remount and enter namespaces within U.
 	"CAP_SYS_ADMIN",
 	// pivot_root/chroot into a container rootfs.
+	// ABUSE: chroot within U's mount tree.
 	"CAP_SYS_CHROOT",
 	// chown extracted image files across the delegated subuid range.
+	// ABUSE: chown within the mapped range only — a uid outside the map is
+	// unreachable.
 	"CAP_CHOWN",
-	// read/write/traverse extraction targets regardless of mode — the honest
-	// gap the proxy bind filter (not the mount view) guards in Tier B; Tier C
-	// makes it structural.
+	// read/write/traverse extraction targets regardless of mode.
+	// ABUSE: read/write any file its derived view names, ignoring mode. The
+	// proxy's bind filter is what stops a CONTAINER naming more (belt and
+	// braces: the view is structural, the filter is by name).
 	"CAP_DAC_OVERRIDE",
 	// chmod/utime/setxattr on extracted files.
+	// ABUSE: bypass ownership checks on metadata ops within U.
 	"CAP_FOWNER",
 	// preserve setuid/setgid bits on extracted files.
+	// ABUSE: keep suid bits on files it writes.
 	"CAP_FSETID",
 	// run a container process as its configured id; setgroups.
+	// ABUSE: setuid/setgid within the mapped range only.
 	"CAP_SETUID",
 	"CAP_SETGID",
 	// hand a container its own capability set from the bounding/inheritable
 	// sets — this is the intersection mechanism above: a container's
 	// delivered set is its default set ∩ this bounding set.
+	// ABUSE: raise/drop caps in its own sets within U; cannot exceed the
+	// bounding set it was given.
 	"CAP_SETPCAP",
 	// write file capabilities on extracted files (some images ship fcaps).
+	// ABUSE: set fcaps on files it can write — and this is the cap that lets
+	// a container unshare its own userns and regain a full bounding set (see
+	// the scope note above), because verify_root_map wants it in the parent.
 	"CAP_SETFCAP",
 	// signal container processes it owns.
+	// ABUSE: signal processes it owns.
 	"CAP_KILL",
 	// bind low ports in the shared netns N — the same reach the sandbox
 	// already has, nothing wider.
+	// ABUSE: bind a low port in N, which the sandbox can do anyway.
 	"CAP_NET_BIND_SERVICE",
 }

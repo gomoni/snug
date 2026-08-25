@@ -828,8 +828,8 @@ func TestNamespaceModesAreCaseProof(t *testing.T) {
 }
 
 // TestNetworkModeHostIsAllowedButOtherHostModesAreNot is the settled Tier B
-// inversion (TIER-B.md, the NET_ADMIN decision; internal/dockerproxy/
-// create.go's own comment on namespaceModeKeys): the container engine now
+// inversion (the NET_ADMIN decision, policy.EngineCapBounding; and
+// internal/dockerproxy/create.go's own comment on namespaceModeKeys): the container engine now
 // runs INSIDE this sandbox's own network namespace N (setns'd there by the
 // stage), so HostConfig.NetworkMode="host" joins N — exactly the "share N
 // host-mode" design — not the real host's. Every OTHER "host" namespace mode

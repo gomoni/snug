@@ -12,7 +12,8 @@ import (
 )
 
 // designDocCitation matches a SHOUTY-KEBAB design document name as it appears
-// in a Go comment: ENGINE-NETNS.md, TIER-B.md, ISSUE-40-DESIGN.md. Deliberately
+// in a Go comment: ENGINE-NETNS.md, ENGINE-WIRING.md, ISSUE-40-DESIGN.md.
+// Deliberately
 // narrow — lowercase .md paths, URLs and prose sentences are not citations of
 // this kind, and widening it would make the allowlist below carry noise rather
 // than debt.
@@ -143,12 +144,13 @@ func TestEveryDesignDocACommentCitesExists(t *testing.T) {
 	//
 	// Without the first, this test passes on a walk that read no files at all
 	// — a wrong root, a SkipDir too broad, a suffix check that never matches.
-	// TIER-B.md is asserted by name because promoting it is what this pass
-	// did: if it is ever deleted while its six citations remain, that is the
-	// exact defect returning and it must not pass as "nothing cited".
-	if !seen["TIER-B.md"] {
-		t.Error("the sweep found no citation of TIER-B.md, so it is not reading the files " +
-			"it thinks it is — six comments cite it")
+	// ENGINE-WIRING.md is asserted by name because it is the most-cited design
+	// document in the tree: if it is ever deleted or renamed while those
+	// citations remain, that is the exact defect returning and it must not pass
+	// as "nothing cited".
+	if !seen["ENGINE-WIRING.md"] {
+		t.Error("the sweep found no citation of ENGINE-WIRING.md, so it is not reading the " +
+			"files it thinks it is — two dozen comments cite it")
 	}
 	if len(seen) < 5 {
 		t.Errorf("the sweep found only %d design-doc citations in the whole tree; it is "+

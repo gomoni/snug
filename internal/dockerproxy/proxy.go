@@ -451,7 +451,7 @@ func allowed(segs []string, method string) bool {
 		return true
 
 	case "networks":
-		// Settled Q5 (TIER-B.md, issue #63 Tier B): a client creating a
+		// Settled Q5 (maintainer decision, 2026-08-18, issue #63): a client creating a
 		// podman network object and connecting to it cannot escape N — the
 		// engine holds no CAP_NET_ADMIN to bring one up in the first place,
 		// and even a successful create/connect only ever composes namespaces
