@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/netip"
 	"os"
 	"strings"
@@ -73,6 +74,21 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	// Note the marker is written backwards in the source: what a bidi-rendering
 	// terminal shows after the override is "FORGED-BY-A-VALUE-RLO".
 	env.env["VISUAL"] = "vi\u202eOLR-EULAV-A-YB-DEGROF"
+	// AND DEL, U+007F, ALONE IN A FOURTH VARIABLE (issue #333). It is a control
+	// character, so policy.IsForgingRune has always answered true for it and the
+	// screen has always escaped it — but the JSON half gated its own predicate at
+	// `r >= 0x80` while the comment beside it argued `r >= 0x20`, and encoding/json
+	// escapes nothing between the two except quote and backslash. DEL is the only
+	// forging rune in that window, so it is the whole gap, and it reached the
+	// document raw with `snug.lossy == false` beside it saying the document was
+	// clean.
+	//
+	// PURE, and in a variable of its own, for the reason the C1 probe is: with an
+	// ESC in the same value the human renderer escapes both and the mixed probe
+	// passes on a build that can only see one of them. @claude inherits
+	// ANTHROPIC_BASE_URL, so this arrives by the same shipped `inherit` route as
+	// the three above.
+	env.env["ANTHROPIC_BASE_URL"] = "https://api.example\x7f  ro     /etc/shadow   " + forged + "-DEL"
 
 	reg, err := profile.Builtins()
 	if err != nil {
@@ -168,6 +184,10 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 		t.Fatalf("the pure-C1 fixture value never reached the screen, so the half of this test "+
 			"that is about C1 is measuring nothing:\n%s", got)
 	}
+	if !strings.Contains(got, forged+"-DEL") {
+		t.Fatalf("the pure-DEL fixture value never reached the screen, so the half of this test "+
+			"that is about U+007F is measuring nothing:\n%s", got)
+	}
 	// isForgingRune is the RENDERER'S OWN predicate, so this asserts the property
 	// ("nothing on this screen can author a line") rather than a copy of a
 	// character list that could drift away from it.
@@ -193,6 +213,14 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 			"directional override reverses how the rest of the row reads, on any terminal, "+
 			"pager, editor or review UI that implements the bidi algorithm", n)
 	}
+	// And DEL. This one is about the JSON half below rather than about the
+	// screen — the screen escaped U+007F from the beginning — but it is asserted
+	// here too so a regression that stopped rendering the row at all is named
+	// rather than showing up as a mysteriously clean document.
+	if n := strings.Count(got, `\x7f`); n < 2 {
+		t.Errorf("the escaped form of U+007F appears %d time(s), want at least 2 — the "+
+			"ENVIRONMENT block and the bwrap argv block both render this value", n)
+	}
 
 	// AND THE MACHINE FORMAT, from the SAME fixture (issue #52). --dry-run has
 	// two renderers now, and a sweep that covered one of them would be this
@@ -215,6 +243,10 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 		t.Fatalf("the fixture value never reached the JSON document, so this half measures "+
 			"nothing:\n%s", doc.String())
 	}
+	if !strings.Contains(doc.String(), forged+"-DEL") {
+		t.Fatalf("the DEL fixture value never reached the JSON document, so the U+007F half "+
+			"measures nothing:\n%s", doc.String())
+	}
 	if r, ok := rawForgingRune(doc.String()); ok {
 		t.Errorf("the machine-readable dry run rendered %q raw. It is read in a golden diff, "+
 			"through jq and in a review UI, so it answers to this sweep too", r)
@@ -222,6 +254,63 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	if !strings.Contains(doc.String(), `\u202e`) {
 		t.Error("the JSON document carries no \\u202e escape, so either the fixture's bidi " +
 			"value stopped reaching it or the escape stopped being applied")
+	}
+	// And the DEL spelling, for the reason the bidi one is asserted separately:
+	// the rawForgingRune sweep above also passes on a document the value stopped
+	// reaching. `\u007f` is what the fix produces; a raw 0x7F byte is what shipped.
+	if !strings.Contains(doc.String(), `\u007f`) {
+		t.Error("the JSON document carries no \\u007f escape, so either the fixture's DEL " +
+			"value stopped reaching it or the escape stopped being applied")
+	}
+	// AND THE DOCUMENT STILL PARSES, AND THE VALUE IS STILL THE VALUE. Both
+	// halves are the mutation check for the bound this test moved. Widening it
+	// is the direction that DESTROYS the document rather than hardening it —
+	// escapeRawForgingRunes's own comment records a first draft that used
+	// policy.IsForgingRune directly, rewrote MarshalIndent's structural newlines
+	// to \u000a and produced something no decoder would read. So: drop the bound
+	// to 0 and this Unmarshal goes red; raise it back to 0x80 and the \u007f
+	// assertion above goes red. The two together pin the bound from both sides.
+	//
+	// The round trip is the second half of escapeRawForgingRunes's claim — that
+	// it changes the SPELLING and not the value, which is why it does not set
+	// snug.lossy. A decoder must hand back the DEL byte itself.
+	var back struct {
+		Environment []struct {
+			Name    string `json:"name"`
+			Entries []struct {
+				Value string `json:"value"`
+			} `json:"entries"`
+		} `json:"environment"`
+	}
+	if err := json.Unmarshal(doc.Bytes(), &back); err != nil {
+		t.Fatalf("the escaped document no longer parses: %v\n%s", err, doc.String())
+	}
+	var decoded string
+	for _, v := range back.Environment {
+		for _, e := range v.Entries {
+			if strings.Contains(e.Value, forged+"-DEL") {
+				decoded = e.Value
+			}
+		}
+	}
+	if decoded == "" {
+		t.Fatalf("the DEL fixture value is not in the DECODED environment block, so the round "+
+			"trip measures nothing:\n%s", doc.String())
+	}
+	if !strings.ContainsRune(decoded, 0x7f) {
+		t.Errorf("the decoded value %q lost its U+007F. escapeRawForgingRunes spells a rune "+
+			"in JSON's own \\uXXXX and must not change what a decoder gives back — that is "+
+			"why it does not set snug.lossy", decoded)
+	}
+	// snug.lossy is the document's own claim that nothing was lost, and it is
+	// the part that made #333 more than cosmetic: raw DEL travelled with
+	// `"lossy": false` beside it. A valid-UTF-8 fixture must never set it.
+	// Asserted as the PRESENCE of the false spelling, not the absence of the true
+	// one: an absence assertion passes on a document that renamed the key.
+	if !strings.Contains(doc.String(), `"lossy": false`) {
+		t.Errorf("the JSON document does not carry `\"lossy\": false`. Every fixture value here "+
+			"is valid UTF-8, so lossy must be false and present — lossy is about bytes no "+
+			"string can carry, not about escaping:\n%s", doc.String())
 	}
 }
 
