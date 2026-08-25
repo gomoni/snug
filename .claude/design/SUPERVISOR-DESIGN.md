@@ -2,29 +2,23 @@
 
 `@net` no longer runs one process. snug forks a second long-lived process, the
 **stage**, whose job is to create the sandbox's network namespace, pin it,
-*leave* it, and fork bwrap back into it. This document is what was implemented
-and why. It is written in the past tense on purpose: earlier drafts of this
-design described a system that was then built differently, and a design document
-that describes the intention rather than the artifact is how a reader ends up
-believing in a control socket that does not exist.
+*leave* it, and fork bwrap back into it. This document is the stage as built and
+why it is shaped that way.
 
 Everything marked **MEASURED** was executed on **2026-08-13**, on the development
 host — openSUSE Tumbleweed, `bwrap` 0.11.2, `pasta` 20260612, Go 1.26, inside a
 rootless-podman distrobox. Everything else is reasoning and is marked as such.
 
-The original measurements were taken by a throwaway proof of concept, `poc/nsd`:
-its own Go module plus four C helpers and three harnesses, imported by nothing
-that shipped. **It has been deleted**
-([#49](https://github.com/gomoni/snug/issues/49)), because what it prototyped
-shipped as `internal/stage`, and a second unbuilt copy of the same `setns` logic
-beside the real one is a divergence waiting to happen — one that `./...`,
-`go vet` and `make gate` could not see, because it was a separate module.
-
-Its results did not go with it. `run.sh` was 51 checks and last recorded
-`pass=51 fail=0`; `run-netns.sh` was 42 checks, green in three identical
-consecutive runs; both are distilled into §1 below. A third harness,
-`run-graft.sh`, measured the derived mount view against a **real** snug sandbox,
-and its sixty checks are carried in [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §5.1.
+The measurements were taken by a throwaway proof of concept, `poc/nsd`, since
+deleted ([#49](https://github.com/gomoni/snug/issues/49)) because what it
+prototyped shipped as `internal/stage` and a second unbuilt copy of the same
+`setns` logic beside the real one is a divergence `./...`, `go vet` and `make
+gate` could not see. **The numbers are here rather than in a script for exactly
+that reason:** a citation pointing at a script is worth nothing once the script
+is gone. `run.sh` was 51 checks, `pass=51 fail=0`; `run-netns.sh` was 42 checks,
+green in three identical consecutive runs; both are distilled into §1.
+`run-graft.sh` measured the derived mount view against a **real** snug sandbox,
+and its sixty checks are in [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §5.1.
 
 *Read the counts carefully, because one of them moved.* `run.sh` read `pass=49`
 until a review found that four of those checks passed on a sandbox and an attach
@@ -64,7 +58,7 @@ The distinction that matters is **who owns the process**, not how many there are
 
 ---
 
-## 1. What was measured before anything was written
+## 1. Measurements
 
 | fact | status |
 |---|---|
@@ -120,9 +114,8 @@ other than bwrap must own the sandbox's namespaces. Ordinary offline runs and
 `--i-know` host-network runs take the previous code path byte for byte. That is
 deny-by-default applied to snug's own process tree.
 
-*When this shipped that meant `NetEgress` alone.* **Tier B**
-([#63](https://github.com/gomoni/snug/issues/63)) added the second trigger:
-selecting a container engine also needs a stage — for the full delegated subuid
+*Two things select a stage.* Egress is one; selecting a container engine is the
+other ([#63](https://github.com/gomoni/snug/issues/63)) — for the full delegated subuid
 range and the private mount namespace the engine forks into — so an **offline**
 `@podman-socket` run starts one too, with no pasta and an N holding only
 loopback. `Topology.NeedsStage()` is the live answer; §3.2 and §3.6 below record
@@ -175,9 +168,8 @@ https://github.com/gomoni/snug/issues/24.
 
 ### 3.2 The stage runs only when it is needed
 
-`Topology.NeedsStage()` is derived. When this shipped it was true exactly when
-`Topology.Netns == NetnsStage`; Tier B added `Subuid == SubuidFull` as a second
-disjunct (§2's note). The rejected alternative started a stage for
+`Topology.NeedsStage()` is derived, and true when either
+`Topology.Netns == NetnsStage` or `Subuid == SubuidFull` (§2's note). The rejected alternative started a stage for
 every run — cloning without `CLONE_NEWNET` for host mode — so that there would be
 one process shape to reason about. It loses because an unconditional stage hands
 every default `snug <dir>` a privileged ancestor user namespace in exchange for
@@ -229,10 +221,9 @@ connection's descriptor out of another process's table. Two locks, two
 different reasons they hold — namespace invisibility today, a denied syscall
 whenever that stops being true — rather than one fact doing both jobs.
 
-*`--dry-run` says all of this.* It used to print `control none (no socket, no
-listener, nothing to connect to)`, which was true in its second half and false in
-its first — and "no socket" is the half a reviewer would use to decide there was
-nothing here to audit.
+*`--dry-run` says all of this*, and says it precisely: a line reading "no
+socket" is the half a reviewer would use to decide there is nothing here to
+audit, so the socket is named whenever there is one.
 
 ### 3.4 `PastaArgs` takes a target, not a pid
 
@@ -271,10 +262,10 @@ which makes bwrap's own `--die-with-parent` fire, because bwrap's real parent
 across every exec in the chain is the stage.
 
 **`PR_SET_PDEATHSIG` is the second mechanism and it is load-bearing, not
-decorative.** The code used to carry a comment claiming it does not survive the
-`setup → serve` re-exec, because that exec is a `secureexec` transition where
-capabilities widen. **MEASURED FALSE.** Capabilities do not widen there, so
-there is no `secureexec` and the signal is preserved.
+decorative.** It **survives** the `setup → serve` re-exec — **MEASURED**, and
+worth measuring because the plausible reading is that it does not: a
+`secureexec` transition would clear it, but capabilities do not widen at that
+exec, so there is no `secureexec` and the signal is preserved.
 
 The distinction matters because the lifeline requires the stage to *run a
 goroutine* to notice EOF. A stopped process runs no user code at all. Measured
@@ -436,8 +427,8 @@ parked payload, so there is nothing for a dying snug to release, and
 `internal/sandbox/parked.go` is gone along with `readChildPID` and
 `waitForNetDevice`.
 
-That is still true of every run this document describes, and **no longer true of
-a run with a container engine** (issue #125): the engine's mount view is derived
+That holds for every run with no container engine. **With one** (issue #125) it
+does not: the engine's mount view is derived
 from the sandbox's, so bwrap must exist first, and its payload parks on
 `--block-fd` until the engine is confirmed. What makes that safe is a flag this
 document never had — `--sync-fd` on the SAME pipe, held open by the sandbox's own

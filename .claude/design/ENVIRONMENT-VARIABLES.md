@@ -189,8 +189,8 @@ read-only property, plus `exec /snug/bin/podman (snug)` in `FILESYSTEM`. §2.8
 finishes the job by giving the `PATH` line the same provenance. **The answer is
 provenance in `--dry-run`, not a name in `$SNUG_PROFILES`.**
 
-**`@claude` keeps `inherit`, and that is deliberate.** An earlier draft moved
-`inherit`/`sanitise` to `config.toml`. That is a regression: `ANTHROPIC_API_KEY`
+**`@claude` keeps `inherit`, and moving `inherit`/`sanitise` to `config.toml`
+is refused.** It is a regression: `ANTHROPIC_API_KEY`
 enters only when `@claude` is selected today, whereas a host-wide config line
 would put it in **every** sandbox on the machine — inverting CLAUDE.md's bound on
 adapters ("one opt-in profile per tool, never in `defaults`"). The trust argument
@@ -247,9 +247,9 @@ is the list, and this paragraph is a summary of it.
 **`inherit` is refused for every list variable, without exception.** Copying a
 host search path wholesale imports directories that do not exist inside — what
 §2.7 case 4 refuses for `set`, and what `sanitise` exists to do properly.
-`inherit` is the scalar form; `sanitise` is the list form. An earlier draft
-carried this as a column on every table row and lost it in a rewrite; it is a
-rule, not a row.
+`inherit` is the scalar form; `sanitise` is the list form. It is a rule, not a
+per-row column — carrying it on every table row is how it gets lost in a
+rewrite.
 
 **`forbiddenEnv` is gone. It is `envNotes`, and it refuses nothing** — see §2.9,
 which is the whole of the argument. The table survived intact, name for name and
@@ -338,9 +338,9 @@ newest spelling of the name" — it is **the value is code**, and now: *say so, 
 every spelling*. A missing sentence is the modern shape of that same defect. The
 type table says what may be *merged*; the annotation table says what a tool DOES
 with the value, at any type — `LD_PRELOAD` is a list and is annotated. Two
-tables, both read, neither replacing the other. An earlier draft tried to collapse
-them and got two wrong answers at once (add `PS1`, drop `LD_LIBRARY_PATH`). §4.4
-is a list to be **extended**, not retired.
+tables, both read, neither replacing the other. Collapsing them gets two wrong
+answers at once (add `PS1`, drop `LD_LIBRARY_PATH`). §4.4 is a list to be
+**extended**, not retired.
 
 ### 2.2 snug never splits a string on a separator
 
@@ -370,10 +370,9 @@ or a newline; a leading digit; and any name snug owns (§1.1). **Checked at pars
 time**, next to `checkName` and `DisallowUnknownFields`, so `snug profile show`
 reports it too and the verdict never depends on the invoking host.
 
-*This sentence used to end "or `forbiddenEnv` covers", and that clause is gone
-with the table — §2.9. Note which refusals stayed: they are the ones about what
-a name would BREAK (the wire format, a screen row), not about what a human may
-have.*
+*Note which refusals these are: the ones about what a name would BREAK (the
+wire format, a screen row), not about what a human may have. `forbiddenEnv` is
+not consulted — §2.9.*
 
 `=` is the one worth naming separately. `NAME=VALUE` is the wire format of the
 environment itself, so a key containing `=` is not a weird name — it is a second
@@ -1147,9 +1146,9 @@ snug --dry-run --no-defaults -p @parent-ro . -- true
 Not a hole — twenty-minutes-of-confusion class. But **three existing
 violations**, not hypothetical.
 
-**The repair is to MARK them, not to stop authoring them.** An earlier draft
-concluded the opposite — author only what the profile grants — and that converts
-a confusion bug into a reachable hole, because §4.3 shows `PATH` has no safe
+**The repair is to MARK them, not to stop authoring them.** The opposite
+conclusion — author only what the profile grants — converts a confusion bug into
+a reachable hole, because §4.3 shows `PATH` has no safe
 absent state: leave it unset and bash substitutes a compiled-in default ending in
 `.`, which is the target. Same for `HOME`, which is where the identity generator
 writes `~/.gitconfig`, `~/.ssh/config` and `known_hosts` — a profile able to move
@@ -1407,8 +1406,8 @@ Environment Modules has `prepend-path -d` and Lmod takes a delimiter argument. S
   and check. Adding it means answering whether prepend and append coexist (they
   do — different ends) and whether two appends conflict (yes, same argument).
 - ~~Is `environ.inherit` a preference or a grant?~~ **Settled: a grant, so it
-  stays in a profile.** An earlier draft moved it to `config.toml` and argued
-  CLAUDE.md's "config holds preferences, never grants" should be amended. Wrong
+  stays in a profile.** Moving it to `config.toml` would need CLAUDE.md's
+  "config holds preferences, never grants" amended, which is the wrong
   direction — see §1.2. Config keeps `defaults` and `prompt`, which really are
   preferences.
 - **`path` must be retired alongside `env`.** `path = [...]` does exactly what
