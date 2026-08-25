@@ -108,14 +108,24 @@ type request struct {
 	EngineGrafts []EngineGraft `json:"engine_grafts,omitempty"`
 }
 
-// event is a P1 -> P0 message. Five shapes: "needmap", sent at most once,
+// event is a P1 -> P0 message. Six shapes: "needmap", sent at most once,
 // before "ready", ONLY when __stage-setup's own uid is still the overflow id
 // after the clone (issue #63, Tier B — cfg.Topology.Subuid == SubuidFull left
 // the map for P0 to write via newuidmap/newgidmap instead of writing it
 // itself); "ready", sent once at startup with the namespace ids and the
 // pinned netns fd; "netready", the answer to a "netready" request, carrying
-// Err when the interface never came up; "enginestarted" and "exited", the TWO
-// answers to the one "start" request.
+// Err when the interface never came up; "forked", sent at most once, inside a
+// "start" reply, the instant bwrap's --info-fd answer is parsed and BEFORE
+// anything slow on the way to a payload (the mount settle, the engine's cold
+// start); and "enginestarted" and "exited", the TWO answers to the one
+// "start" request.
+//
+// "forked" (issue #236) carries InitPID and nothing else. Its only consumer
+// is P0's orphan-kill record: the interval between it and "enginestarted" is
+// exactly the one no host record named before, during which a SIGKILLed snug
+// left a sandbox init nothing could find. It is NOT the answer to "start" —
+// "enginestarted" still is — so a stage that sends "forked" and then aborts
+// has still killed bwrap and its init before answering.
 //
 // "enginestarted" is the first of that pair and reports the whole of the
 // startup that happens while no payload exists: bwrap forked, bwrap's own
@@ -130,20 +140,22 @@ type request struct {
 // "exited" is sent once after P1 has reaped the one payload this stage will
 // ever run, whatever the outcome.
 type event struct {
-	Op string `json:"op"` // "needmap" | "ready" | "netready" | "enginestarted" | "exited"
+	Op string `json:"op"` // "needmap" | "ready" | "netready" | "forked" | "enginestarted" | "exited"
 
 	// "ready" only.
 	Netns   string `json:"netns,omitempty"`
 	Userns  string `json:"userns,omitempty"`
 	NetnsFD int    `json:"netns_fd,omitempty"`
 
-	// "enginestarted" only: bwrap's own --info-fd answer, parsed by P1 because
-	// P1 is the process that holds the descriptor (fds.go's fdBwrapInfo).
-	// InitPID is a HOST pid — bwrap sits outside the pid namespace it creates,
-	// and P0, P1 and bwrap are all in the host's — so it means the same thing
-	// on both sides of this socket. Zero when bwrap never answered, which is
-	// fatal for a gated run and warn-only ("this run will not be attachable")
-	// for one with no engine.
+	// "forked" and "enginestarted": bwrap's own --info-fd answer, parsed by P1
+	// because P1 is the process that holds the descriptor (fds.go's
+	// fdBwrapInfo). InitPID is a HOST pid — bwrap sits outside the pid
+	// namespace it creates, and P0, P1 and bwrap are all in the host's — so it
+	// means the same thing on both sides of this socket. Zero when bwrap never
+	// answered, which is fatal for a gated run and warn-only ("this run will
+	// not be attachable") for one with no engine; "forked" is never sent in
+	// that case. Namespaces is "enginestarted" only — "forked" carries InitPID
+	// alone.
 	InitPID    int               `json:"init_pid,omitempty"`
 	Namespaces map[string]uint64 `json:"namespaces,omitempty"`
 

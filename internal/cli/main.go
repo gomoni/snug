@@ -632,6 +632,29 @@ func run(cfg config) int {
 		OnInfo: func(info sandbox.RunInfo) {
 			if werr := writeRunState(pol, info); werr != nil {
 				fmt.Fprintf(os.Stderr, "snug: this run will not be attachable (%v)\n", werr)
+				return
+			}
+			// Only after writeRunState has succeeded, never before: a
+			// SIGKILL between the two calls must still leave at least one
+			// record naming this init for the next run's sweep (issue #236).
+			if rerr := removeInitState(pol.Target); rerr != nil {
+				fmt.Fprintf(os.Stderr, "snug: could not remove this run's starting record: %v\n", rerr)
+			}
+		},
+		// OnInit publishes the orphan-kill record the moment bwrap names its
+		// init — before the mount settle, before the engine's cold start,
+		// before a gated run's release byte, all of which OnInfo above waits
+		// out on purpose (issue #125). Without this record that whole
+		// interval had no host state naming the init at all, so a SIGKILLed
+		// snug left it for nothing to find (issue #236). Warn-only: a failure
+		// here means the NEXT sweep, not this run, may miss an orphan, and
+		// there is nothing to refuse — a payload may already be about to
+		// exist behind it.
+		OnInit: func(pid int) {
+			if werr := writeInitState(pol.Target, pid); werr != nil {
+				fmt.Fprintf(os.Stderr, "snug: could not record this run's sandbox init (%v); "+
+					"a SIGKILL of this run may leave its sandbox init behind and the next snug "+
+					"run will not find it\n", werr)
 			}
 		},
 		// The three container-engine hooks (issue #63, Tier B): nil unless

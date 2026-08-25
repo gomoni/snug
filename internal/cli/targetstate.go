@@ -93,6 +93,15 @@ func openTargetStateDir(create bool) (*os.Root, string, error) {
 }
 
 // writeTargetState publishes st for the target it names.
+func writeTargetState(real string, st runState) error {
+	return writeTargetFile(targetStateName(real), st)
+}
+
+// writeTargetFile publishes payload's JSON rendering at final, inside the
+// uid-derived target-state directory (openTargetStateDir), for anything keyed
+// by targetKeyPrefix — state.json (runState) and the orphan-kill record
+// (initState) both go through this one function rather than through two
+// copies of the same discipline.
 //
 // Written through a temporary file and renamed into place, both inside the
 // already-verified Root. O_EXCL on the final name would be wrong here and
@@ -101,22 +110,20 @@ func openTargetStateDir(create bool) (*os.Root, string, error) {
 // has almost certainly left one behind. That file is not a conflict — its
 // owner is dead, which the lock says — so the correct behaviour is to replace
 // it. Replacing it by rename rather than by truncate-and-write is what stops
-// an attach that arrives mid-write from reading half a file and reporting a
-// live run as unattachable.
-func writeTargetState(real string, st runState) error {
+// a reader that arrives mid-write from reading half a file.
+func writeTargetFile(final string, payload any) error {
 	snugRoot, snugPath, err := openTargetStateDir(true)
 	if err != nil {
 		return err
 	}
 	defer snugRoot.Close()
 
-	blob, err := json.MarshalIndent(st, "", "  ")
+	blob, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
-		return fmt.Errorf("run state: rendering: %w", err)
+		return fmt.Errorf("rendering %s: %w", final, err)
 	}
 	blob = append(blob, '\n')
 
-	final := targetStateName(real)
 	// The pid keeps two concurrent writers apart. They cannot both hold the
 	// target lock, so this is defence against a bug rather than against a
 	// race the design allows.
@@ -139,6 +146,26 @@ func writeTargetState(real string, st runState) error {
 	if rerr := snugRoot.Rename(tmp, final); rerr != nil {
 		_ = snugRoot.Remove(tmp)
 		return fmt.Errorf("run state: renaming %s to %s: %w", tmp, final, rerr)
+	}
+	return nil
+}
+
+// removeTargetFile removes name from the target-state directory, if the
+// directory exists at all. A missing directory or a missing file is not an
+// error — there is nothing to remove either way, and the initState caller
+// relies on that: a run whose init write itself failed has no ".starting"
+// file to clean up, and this must not turn that into a second warning.
+func removeTargetFile(name string) error {
+	snugRoot, _, err := openTargetStateDir(false)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	defer snugRoot.Close()
+	if err := snugRoot.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
 	}
 	return nil
 }

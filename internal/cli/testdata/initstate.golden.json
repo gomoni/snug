@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "target": "/home/u/proj",
+  "init_pid": 4242,
+  "init_starttime": 987654,
+  "namespaces": {
+    "cgroup": 666,
+    "ipc": 444,
+    "mnt": 111,
+    "net": 333,
+    "pid": 222,
+    "uts": 555
+  }
+}
