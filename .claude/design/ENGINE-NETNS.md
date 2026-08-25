@@ -3,35 +3,22 @@
 Investigation, 2026-08-08, by `host-bridge`. Everything below marked with a
 command was **executed**; everything else is marked as reasoning.
 
-> **§0's finding: CLOSED, 2026-08-18 (issue #63, Tier B) — engine wiring
-> landed, MEASURED against a real engine.** `@podman-socket` no longer
-> includes `net`; `--dry-run -p @podman-socket` (no `@net`) prints an isolated
-> NETWORK block, a `TOPOLOGY` engine line naming the sandbox's own netns, and
-> `policy.EngineCapBounding`'s 12-cap set. The engine is now actually FORKED
-> there: `internal/stage`'s `startengine`/`__inengine` (`EnterEngine`) join it
-> to the sandbox's own N by `setns`, drop its capabilities to that set, and
-> `internal/cli/container.go` no longer refuses a real (non-dry-run) run.
-> Measured end to end with the pinned static podman bundle: `@podman-socket`
-> alone, a pull fails with "network is unreachable"; `@podman-socket -p @net`,
-> the same pull succeeds and a container's `wget` reaches the internet; a
-> `version`/`info` call (no network needed) succeeds in BOTH cases — the
-> engine exists and answers either way, only egress differs. Two corrections
-> the wiring pass found that this document's own reasoning did not predict,
-> recorded so `internal/stage/inengine.go`'s comments are not the only place
-> they live: (1) §7's "no /run graft… podman's own forced tmpfs on /run"
-> holds for a rootless (single-uid) podman, not for this root-in-U,
-> full-subuid shape — podman does not self-mount, so `__inengine` mounts a
-> bare tmpfs on `/run` itself; (2) `CLONE_NEWCGROUP` at clone time changes
-> what `/proc/self/cgroup` REPORTS but not what the inherited `/sys/fs/cgroup`
-> mount's content is rooted at — `__inengine` mounts a fresh `cgroup2` over it
-> (with an unmount-then-retry fallback measured necessary on a
-> triply-nested-container development host) to actually get the confinement
-> the namespace was supposed to buy. §2's per-container-bridge / `podman run
-> -p` measurement below is **superseded** by the maintainer's settled
-> NET_ADMIN decision: containers share the sandbox's netns HOST-MODE, no
-> per-container bridge, no port publishing (the engine holds no
-> `CAP_NET_ADMIN`) — read §2 as the feasibility proof it always was, not as
-> the shipped shape.
+> **The finding in §0 is CLOSED and its FACT is LIVE — the distinction that
+> matters.** The engine runs in the sandbox's own netns N: `internal/stage`'s
+> `__inengine` (`EnterEngine`) `setns`es it there and drops it to
+> `policy.EngineCapBounding`. So the finding — *a sandbox with no `@net`
+> reaches the internet through a container* — is closed, and
+> `@podman-socket` no longer includes `net`. The fact every citation relies on
+> is permanent: **a container's network IS the sandbox's**, so
+> `@podman-socket` hands a container exactly the network the sandbox has and
+> nothing more. Measured against a real engine: `@podman-socket` alone, a pull
+> fails "network is unreachable"; `@podman-socket -p @net`, the same pull
+> succeeds and a container's `wget` reaches the internet; `version`/`info`
+> succeeds in both — the engine answers either way, only egress differs.
+>
+> **§2's per-container-bridge / `podman run -p` measurement is a feasibility
+> proof, not the shipped shape.** Containers share N host-mode: no
+> per-container bridge, no port publishing, no `CAP_NET_ADMIN` in the engine.
 
 ## 0. Why this exists
 
@@ -78,30 +65,18 @@ conscious act.
 INDEX §4.4 described the fix ("topology A") in the present tense. It was never
 implemented — see the banner now on that section.
 
-## 0.1 What in this document is still live, and what has moved
+## 0.1 What this document is for, and where each subject lives
 
-Updated 2026-08-13, when the supervisor work overtook parts of this file. This
-document is **not** obsolete — §0 is the canonical record of a finding now
-CLOSED (Tier B), whose enduring FACT §1–§4's measurements still build on. But
-three sections now have a newer companion, and reading this file alone will give
-you a stale answer in exactly those places.
+Measurements. §1's kernel fact (you cannot join only the netns) and §3's host
+requirements (subuid, cgroup and `$XDG_RUNTIME_DIR` delegation, the distrobox
+shim) are preflight requirements today. §2's numbers were taken with plain
+`unshare` and reproduced under the real stage topology. §4 is why teardown is
+asserted rather than assumed. §5.1 measured the derived mount view.
 
-| section | status |
-|---|---|
-| §0, the finding | **Finding CLOSED (Tier B, 2026-08-18); the FACT it rests on is LIVE.** The *finding* — a sandbox with no `@net` reaches the internet through a container, because the container ran in the ENGINE's own netns — is closed: since Tier B the engine sits in the sandbox's netns N (the blockquote at the top of this file). What is live and canonical is the *fact* the citations rely on: a container's network IS the sandbox's, so `@podman-socket` hands a container exactly the network the sandbox has and nothing more — permanently true, not open. This is CLAUDE.md's own pattern: a limitation and a hole are the same fact facing two directions, and when the hole closes you re-derive the limitation rather than assume it went with it. Cited by `CLAUDE.md`, `base.toml`, `internal/cli/dryrun.go`, `internal/profile/file_test.go`, `VERIFY.md`, `README.md` and `SECRETS.md` §1.3, all of which rely on the live fact. |
-| §1, you cannot join only the netns | **Live.** A kernel fact, unchanged. [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md) §0 accepts it and works around the *shape* it imposed, not the fact. |
-| §2, the inversion works | **Live, and since reproduced twice.** The numbers here were taken with plain `unshare`; the same baseline was reproduced against a real engine (that record was retired with the static-bundle fallback, #384); and the supervisor proof of concept reproduced it under the actual stage topology — MEASURED 2026-08-13 on this host, 42 checks, `fail=0`, in three identical consecutive runs, each section run twice so the payoff was shown absent first. That proof of concept has been deleted ([#49](https://github.com/gomoni/snug/issues/49)); §5.1 below carries what it measured about the derived mount view, and [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md) §1 carries the rest. |
-| §3, where it does not work | **Live, with one blocker now answered.** The distrobox shim is no longer decisive — see the note in §3 itself. The subuid, cgroup, `$XDG_RUNTIME_DIR` and host-uid findings all still stand and are still preflight requirements. |
-| §4, two guarantees change shape | **Live.** Still the reason teardown needs asserting rather than assuming, and `conmon` surviving a Pdeathsig teardown was measured a second time (record retired with #384). |
-| §5, the proposed shape | **Superseded — see §5.** M-a landed; M-b's topology is now [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md)'s, and the requirements list in §5 is what carried over. |
-
-> **Read [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md) alongside §5.** §1 below is still
-> correct — you cannot join only the netns — but the shape it forces on the
-> answer was too narrow: snug may fork a process whose only job is to hold the
-> namespaces, and hang the engine, the sandbox and later payloads off it as
-> siblings. The M-b re-exec then stops being a one-shot stage, `snug attach`
-> becomes possible, and the engine can be given a mount view derived from the
-> sandbox's own. All measured.
+The **shape** built on top of them is elsewhere: the supervisor topology in
+[`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md), the engine's wiring in
+[`ENGINE-WIRING.md`](ENGINE-WIRING.md). §5's proposed shape is superseded by
+both; read it for its requirements list only.
 
 ## 1. The crux: you cannot join only the netns
 
@@ -370,9 +345,10 @@ been deleted ([#49](https://github.com/gomoni/snug/issues/49)). The numbers are
 here rather than in a script because a citation that points at a script is worth
 nothing once the script is gone.
 
-Nothing in `internal/` or `cmd/` implements a graft today — measured, the word
-does not occur in either tree — so all of this is a constraint on Phase 2, not a
-description of shipped behaviour.
+These measurements are now implemented: `policy.KindGraft` and `p.Grafts` carry
+the grafts, `graftKindRules` judges them, `internal/cli/engineview.go` installs
+the engine-view ones, and `__inengine` performs the `open_tree`/`move_mount`.
+Read this section as the constraints that shape holds to.
 
 ### The view can be derived, and the order is the safety argument
 

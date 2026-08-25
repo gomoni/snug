@@ -1060,14 +1060,11 @@ func accessWord(m policy.Mount) string {
 // from, because it is worth restating even once it agrees with the NETWORK
 // block above: a reader should not have to infer it from the topology block.
 //
-// Issue #63, Tier B closed the engine-netns finding
-// (.claude/design/ENGINE-NETNS.md §0, now marked CLOSED): a container used to
-// run in the ENGINE's netns and therefore always had the engine's own
-// network, while `--dry-run` printed "No egress. No host loopback." The
-// engine now runs in THIS sandbox's own network namespace (see the TOPOLOGY
-// block's engine line for the capability set it runs with), so the pasta
-// guarantees above cover containers too, and `@podman-socket` alone really is
-// offline.
+// The engine runs in THIS sandbox's own network namespace (issue #63; see the
+// TOPOLOGY block's engine line for the capability set it runs with), so the
+// pasta guarantees above cover containers too and `@podman-socket` alone
+// really is offline. That is what makes this block honest: a container's
+// network IS the sandbox's (.claude/design/ENGINE-NETNS.md §0).
 func describeContainers(out io.Writer, p *policy.Policy, c *reportContainers) {
 	if p.Podman == policy.PodmanOff {
 		return

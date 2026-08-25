@@ -153,7 +153,28 @@ with the tests passing:
   **Correct in place and leave the wrong version visible**; a silent fix erases
   the evidence that the shape recurs, which is worth more than any one instance.
   This is not the copy-of-state rule: that one is about prose going stale LATER,
-  this one is about prose that is wrong WHEN WRITTEN.
+  this one is about prose that is wrong WHEN WRITTEN. **It applies to accounts
+  of work — tickets, findings, reproductions — and NOT to `.claude/design/`,
+  which the next bullet governs.**
+
+- **A design document says what IS. Delete the road there.** No dated decision
+  records, no `SUPERSEDED BY` banners, no "used to"/"no longer"/"was written
+  as", no plan kept past its execution, no table of what moved. When a design
+  changes, rewrite the document; git holds the previous version, and a decision
+  belongs where it is ENFORCED — the comment on the constant, the refusal, the
+  preflight — not in prose one indirection away. `TIER-B.md` was deleted rather
+  than fixed for exactly this: all eleven comments citing it already stated
+  their own substance, so it was a second copy of state, which is how it came to
+  claim a mount-view architecture two refactors old with nothing noticing.
+
+  **Why this is a rule and not taste.** snug is on its fourth architecture.
+  Supervisor mode, the re-exec, the podman engine and retiring the pinned
+  engine bundle (issue #393) were each a refactor the original design did not
+  cover. Prose that records the
+  previous three is context every agent pays for on every read, and it is
+  actively wrong often enough that a reader cannot tell which paragraph to
+  trust. The honest version of "we tried three other shapes" is the code that
+  exists plus `git log` — not a document that says both things at once.
 
   The sharpest case is an **ordering claim**, because nothing in the code records
   the order — the code records the intent. Clear one by observing the order from
