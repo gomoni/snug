@@ -230,4 +230,14 @@ with the tests passing:
 
 ## Decisions made
 
+**Go, and it is not reopened.** `go.mod` has **two** third-party dependencies —
+a TOML parser and `golang.org/x/sys`. That is the whole supply chain, and it is
+the argument: a dependency nobody audits is the attack surface a sandbox cannot
+afford, and no other language with a usable syscall story gets this close (C
+does, and brings its own problems). Go's costs are real and named where they
+bite — `NOCGO.md` for the cgo-free constraint, and every `__`-prefixed re-exec
+verb exists because `setns(CLONE_NEWUSER)` from multithreaded Go is EINVAL. A
+rewrite is not on the table; do not propose one, and do not add a third
+dependency without the maintainer.
+
 Check .claude/design/INDEX.md for more details.
