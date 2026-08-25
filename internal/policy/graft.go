@@ -215,37 +215,27 @@ func (p *Policy) EngineToolchain(env Environ, root string) error {
 	if err := p.CheckEngineToolchainTree(root); err != nil {
 		return err
 	}
-	// Issue #369's second door: this function judges the root AFTER resolving
-	// it, so $SNUG_PODMAN_ROOT=$TARGET/bundle — a symlink the payload can
-	// rewrite, pointing at a host-owned tree — chose which directory the engine
-	// executes out of while every check above saw only where it pointed.
-	// DERIVED BY READING, not measured: the engine-binary door is the one a
-	// redteam round measured, and this is the same shape one field over.
+	// Issue #369's second door: this function used to judge the root only
+	// AFTER resolving it, so $SNUG_PODMAN_ROOT=$TARGET/bundle — a symlink the
+	// payload can rewrite, pointing at a host-owned tree — chose which
+	// directory the engine executes out of while every check above saw only
+	// where it pointed. DERIVED BY READING, not measured: the engine-binary
+	// door above is the one a redteam round measured; this is the same shape
+	// one field over.
 	//
-	// ARM ORDER IS LOAD-BEARING, AND THE FIRST VERSION OF THIS GOT IT BACKWARDS.
-	// This block sat BEFORE the resolution and therefore before
-	// CheckEngineToolchainTree, which made a plain, non-symlinked, payload-
-	// writable root — no chain involved at all — print this arm's message, whose
-	// "the directory at the end of that chain is not writable" clause was FALSE
-	// for exactly that case: the directory at the end was precisely what was
-	// writable. MEASURED consequence in the tree: TestCheckEngineToolchainTree's
-	// "B1: root itself writable is refused via EngineToolchain" failed, and
-	// TestGoldenRefusals reworded refusals.txt's existing
-	// engine_toolchain_root_is_payload_writable section. The endpoint arm runs
-	// first because the payload WRITING the toolchain is strictly the worse fact
-	// than the payload NAMING it, and because a message may only assert what the
-	// code above it has established.
-	//
-	// THE ARMS OVERLAP AND ORDER IS WHAT RESOLVES THE OVERLAP — not a partition,
-	// and stating it as one would be the same overclaim. For a root that is
-	// already canonical (asGiven == root) both arms match the same string, and
-	// CheckEngineToolchainTree wins by running first. What order buys is the
-	// converse, which IS provable: once CheckEngineToolchainTree has cleared,
-	// the chain's last prefix can no longer fire its CANONICAL arm — same
-	// string, same predicate — so anything this arm reports is either an
-	// ANCESTOR name on the way to the root, or the root's own SPELLING differing
-	// from what it resolves to. Both are chains. The message's clauses are then
-	// true by construction rather than by hope.
+	// Arm order is load-bearing, and the first version of this block got it
+	// backwards: it sat BEFORE the resolution and CheckEngineToolchainTree,
+	// so a plain, non-symlinked, payload-writable root printed this arm's
+	// "the directory at the end of that chain is not writable" clause while
+	// that directory was precisely what was writable
+	// (TestCheckEngineToolchainTree's B1 case caught it). The endpoint arm
+	// must run first: the payload WRITING the toolchain is the worse fact,
+	// and a message may only assert what the code above it already
+	// established. Once CheckEngineToolchainTree has cleared, the chain's
+	// last prefix can no longer fire writableNameOnChain's canonical arm on
+	// the same string, so anything reported here is either an ancestor on
+	// the way to the root or the root's own spelling diverging from what it
+	// resolves to.
 	//
 	// checkGraft's G4b deliberately has no equivalent door; the reason is the
 	// theorem in writableNameOnChain's own comment (engineexec.go).
@@ -1107,13 +1097,12 @@ func existsInSandbox(p *Policy, guest string) bool {
 //     ResolveExistingHostPath a few lines above where it calls this file's B1
 //     check, or (from checkGraft's G4b) a Graft.Host Policy.Graft already
 //     resolved — the same fixed point checkGraft's own entry above relies on.
-//   - policy.(*Policy).writableNameOnChain (engineexec.go) — the ONE caller
-//     that deliberately asks about UNRESOLVED and INTERMEDIATE spellings, and
-//     it owes this function nothing as a result. It is not asking "can the
-//     sandbox see this object" about a name someone forgot to resolve; it is
-//     asking "can the payload rewrite this NAME", which only has an answer
-//     BEFORE resolution. Do not "fix" it by resolving its argument: that is
-//     precisely the defect it exists to close.
+//   - policy.(*Policy).writableNameOnChain (engineexec.go) — the one caller
+//     that deliberately asks about UNRESOLVED and INTERMEDIATE spellings. It
+//     is asking "can the payload rewrite this NAME", which only has an
+//     answer BEFORE resolution, not "can the sandbox see this object", so it
+//     owes this function nothing; do not "fix" it by resolving its argument
+//     first — that is precisely the defect it exists to close.
 //
 // TestHostPathVisibleCallersAreInventoried fails when a SIXTH caller
 // appears. Adding one means writing its resolution obligation (or its reason

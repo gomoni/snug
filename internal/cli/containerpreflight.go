@@ -304,15 +304,12 @@ func preflightPtraceScope() error {
 // $TARGET/podman -> /usr/bin/true was ACCEPTED and exec'd, and the run then
 // failed with "the container engine did not create its socket ... within
 // 30s" (exit 69) instead of the refusal the regular-file poison got (exit
-// 77) — because the literal check judged /usr/bin/true, read-only and
-// correctly accepted, never the symlinked NAME the payload had actually
-// chosen. pol.ResolveEngineBinary (policy, engineexec.go) is the real
-// closure: it judges provenance as well as bytes, over one sample of the
-// host, so this function's return is already refused when a writable grant
-// let the payload choose it, not merely resolved for a downstream check to
-// judge. Measured on this development host: readlink -f $(command -v podman)
-// is /usr/bin/podman, already a regular file with no symlink component, so
-// neither arm fires here and no existing golden moves.
+// 77) — the literal check judged /usr/bin/true, read-only and correctly
+// accepted, never the symlinked NAME the payload had actually chosen.
+// Measured on this development host: readlink -f $(command -v podman) is
+// /usr/bin/podman, already a regular file with no symlink component, so
+// neither of ResolveEngineBinary's arms fires here and no existing golden
+// moves.
 func preflightPodmanBinary(env policy.Environ, pol *policy.Policy) (string, error) {
 	// $SNUG_PODMAN is checked FIRST and, when set, is trusted outright rather
 	// than run back through DetectHostShim's own PATH lookup below — a caller

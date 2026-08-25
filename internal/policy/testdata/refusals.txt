@@ -263,6 +263,66 @@ snug cannot graft /var/tmp into the engine's view: nothing in this policy
        one, or drop the rw grant. `snug --dry-run` lists every grant this sandbox makes;
        the one to look for is whichever covers this path.
 
+== engine_binary_selected_through_a_writable_name ==
+/home/u/proj/sub/podman cannot be this run's container engine: a grant of this sandbox makes that NAME writable.
+       The bytes at the end of that chain (/usr/bin/podman) are not writable, so this is not the
+       payload EDITING the engine — it is the payload CHOOSING it. snug execs whatever
+       this name resolves to as uid 0, pid 1 of the engine's pid namespace, with
+       CAP_SYS_ADMIN in this sandbox's user namespace and the whole delegated subuid
+       range, so a name the payload can rewrite is the payload deciding what runs as
+       root — and every other filter on the container path is moot, because the payload
+       picked the engine.
+       Read-only would not help: `ro` restrains the ENGINE, and the payload rewrites the
+       same host name through its own rw grant.
+       Fix: name the engine by a path no rw grant covers — point $SNUG_PODMAN at the
+       binary itself (/usr/bin/podman), take the writable directory off $PATH, or drop the rw grant.
+       `snug --dry-run` lists every grant this sandbox makes; the one to look for is
+       whichever covers the name above.
+       NOTE THE LIMIT of this refusal: it resolves a name to its host FIXED POINT in
+       one step, so it sees the first name in a chain and the last, never a middle one.
+       A host-owned symlink pointing at a payload-writable name that is ITSELF a symlink
+       to clean bytes crosses unseen: the outer name is not the payload's to rewrite, the
+       final bytes are clean, and the writable name in between is never separately asked
+       about. Closing it needs a second, hop-by-hop resolver in this package — the thing
+       TestResolveExistingHasOneAuthor exists to keep this package from growing.
+
+== engine_binary_selected_through_a_writable_path_entry ==
+/opt/tools/bin/podman cannot be this run's container engine: resolving it goes through /home/u/proj/sub/bin (/opt/tools points there), and a grant of
+       this sandbox makes THAT writable.
+       The bytes at the end of that chain (/opt/tools/bin/podman) are not writable, so this is not the
+       payload EDITING the engine — it is the payload CHOOSING it. snug execs whatever
+       this name resolves to as uid 0, pid 1 of the engine's pid namespace, with
+       CAP_SYS_ADMIN in this sandbox's user namespace and the whole delegated subuid
+       range, so a name the payload can rewrite is the payload deciding what runs as
+       root — and every other filter on the container path is moot, because the payload
+       picked the engine.
+       Read-only would not help: `ro` restrains the ENGINE, and the payload rewrites the
+       same host name through its own rw grant.
+       Fix: name the engine by a path no rw grant covers — point $SNUG_PODMAN at the
+       binary itself (/opt/tools/bin/podman), take the writable directory off $PATH, or drop the rw grant.
+       `snug --dry-run` lists every grant this sandbox makes; the one to look for is
+       whichever covers the name above.
+       NOTE THE LIMIT of this refusal: it resolves a name to its host FIXED POINT in
+       one step, so it sees the first name in a chain and the last, never a middle one.
+       A host-owned symlink pointing at a payload-writable name that is ITSELF a symlink
+       to clean bytes crosses unseen: the outer name is not the payload's to rewrite, the
+       final bytes are clean, and the writable name in between is never separately asked
+       about. Closing it needs a second, hop-by-hop resolver in this package — the thing
+       TestResolveExistingHasOneAuthor exists to keep this package from growing.
+
+== engine_toolchain_root_selected_through_a_writable_name ==
+/home/u/proj/sub/bundle cannot be this run's engine toolchain root: a grant of this sandbox makes that NAME writable.
+       The directory at the end of that chain is not writable, and neither is anything
+       inside it — snug checked both of those first. So this is not the payload EDITING
+       the toolchain; it is the payload CHOOSING it. The engine resolves conmon, crun,
+       netavark and fuse-overlayfs out of the recorded root as uid 0 in this sandbox's
+       user namespace, so a name the payload can rewrite is the payload deciding what
+       the engine executes as root.
+       Grafting it read-only does not help: `ro` restrains the ENGINE, and the payload
+       rewrites the same host name through its own rw grant.
+       Fix: point $SNUG_PODMAN_ROOT at the installation directory itself, or drop the rw
+       grant that covers the name above.
+
 == graft_toolchain_root_is_payload_writable ==
 cannot graft /home/u/proj/sub/toolchain into the engine's view: /home/u/proj/sub cannot be this run's engine toolchain root: a grant of this sandbox makes it
        WRITABLE.

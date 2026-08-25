@@ -328,3 +328,84 @@ func TestEngineToolchainRootInsideAWritableGrantIsRefused(t *testing.T) {
 		}
 	})
 }
+
+// ── issue #369's second door: EngineToolchain judges the NAME too ──────────
+
+// TestEngineToolchainJudgesTheNameNotOnlyTheTarget is the toolchain-root
+// mirror of the measured engine-binary defect: $SNUG_PODMAN_ROOT names a
+// payload-writable symlink into a CLEAN host directory (one no grant makes
+// writable), so CheckEngineToolchainTree alone — which only ever sees the
+// resolved bytes — would accept it. The refusal must name the SYMLINK as the
+// refused object.
+func TestEngineToolchainJudgesTheNameNotOnlyTheTarget(t *testing.T) {
+	env := newFakeEnv()
+	env.links["/home/u/proj/sub/bundle"] = "/opt/tools/bin" // clean: /opt is ro via @sys
+	p := resolveDefaults(t)
+
+	const symlink = "/home/u/proj/sub/bundle"
+	err := p.EngineToolchain(env, symlink)
+	if err == nil {
+		t.Fatal("a toolchain root that is a payload-writable symlink to a clean host directory " +
+			"was accepted")
+	}
+	wantPrefix := symlink + " cannot be this run's engine toolchain root"
+	if !strings.HasPrefix(err.Error(), wantPrefix) {
+		t.Errorf("refusal %q does not open by naming the SYMLINK as the refused object", err)
+	}
+}
+
+// TestEngineToolchainEndpointArmOutranksTheSelectionArm: a PLAIN,
+// non-symlinked, writable root (the target itself) must be refused with
+// CheckEngineToolchainTree's own wording, never the selection arm's.
+//
+// THE NEGATIVE HALF IS THE ASSERTION. The first draft of EngineToolchain ran
+// the selection block BEFORE resolution and therefore before
+// CheckEngineToolchainTree, so this exact case — no chain involved at all —
+// printed the selection message's clause "the directory at the end of that
+// chain is not writable", which is FALSE for a root that is itself the
+// writable directory. Without this assertion the test passes on either
+// ordering.
+func TestEngineToolchainEndpointArmOutranksTheSelectionArm(t *testing.T) {
+	env := newFakeEnv()
+	p := resolveDefaults(t)
+
+	err := p.EngineToolchain(env, "/home/u/proj/sub") // the target itself, no symlink
+	if err == nil {
+		t.Fatal("a toolchain root equal to the writable target was accepted")
+	}
+	if !strings.Contains(err.Error(), "WRITABLE") {
+		t.Errorf("refusal %q does not carry CheckEngineToolchainTree's own wording", err)
+	}
+	if strings.Contains(err.Error(), "CHOOSING") {
+		t.Errorf("refusal %q carries the selection arm's wording for a case with no chain at "+
+			"all — the endpoint arm must run first", err)
+	}
+}
+
+// TestEngineToolchainRefusesAForgingRuneInTheAskedSpelling: a
+// $SNUG_PODMAN_ROOT spelling containing a newline, whose RESOLVED form is
+// clean, must still be refused — on the AS-GIVEN spelling, which is a sink
+// (it reaches a refusal a human reads) and therefore gets the same hygiene
+// check the resolved value gets.
+func TestEngineToolchainRefusesAForgingRuneInTheAskedSpelling(t *testing.T) {
+	env := newFakeEnv()
+	env.links["/home/u/proj/sub/wei\nrd"] = "/opt/tools/bin" // resolves clean; the SPELLING carries the newline
+	p := resolveDefaults(t)
+
+	err := p.EngineToolchain(env, "/home/u/proj/sub/wei\nrd")
+	if err == nil {
+		t.Fatal("a $SNUG_PODMAN_ROOT spelling containing a newline was accepted because its " +
+			"resolved form is clean")
+	}
+	if !strings.Contains(err.Error(), "engine toolchain root (asked)") {
+		t.Errorf("refusal %q is not the hygiene check on the AS-GIVEN spelling", err)
+	}
+
+	// CONTROL: a trailing slash is an ordinary human spelling, not a forging
+	// rune, and must still be accepted — this is what filepath.Clean on the
+	// as-given value exists for.
+	p2 := resolveDefaults(t)
+	if err := p2.EngineToolchain(newFakeEnv(), "/srv/bin/"); err != nil {
+		t.Errorf("control: a trailing slash was refused: %v", err)
+	}
+}

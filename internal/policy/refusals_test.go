@@ -959,6 +959,15 @@ func TestGoldenRefusals(t *testing.T) {
 		{"engine_toolchain_root_is_payload_writable", refusalEngineToolchainRootIsPayloadWritable},
 		{"engine_toolchain_root_contains_a_writable_grant", refusalEngineToolchainRootContainsAWritableGrant},
 		{"engine_binary_inside_a_writable_grant", refusalEngineBinaryInsideAWritableGrant},
+		// issue #369: ResolveEngineBinary and EngineToolchain now judge the NAME
+		// the engine is chosen by, not only the bytes it resolves to — a
+		// payload-writable symlink used to be ACCEPTED and exec'd (redteam row
+		// 6 against merged 955dc17, exit 69 "the container engine did not
+		// create its socket ... within 30s"), while the regular-file poison at
+		// the same path was refused (exit 77). See internal/policy/engineexec.go.
+		{"engine_binary_selected_through_a_writable_name", refusalEngineBinarySelectedThroughAWritableName},
+		{"engine_binary_selected_through_a_writable_path_entry", refusalEngineBinarySelectedThroughAWritablePathEntry},
+		{"engine_toolchain_root_selected_through_a_writable_name", refusalEngineToolchainRootSelectedThroughAWritableName},
 		{"graft_toolchain_root_is_payload_writable", refusalGraftToolchainRootWritable},
 		{"graft_source_not_visible_xdg_runtime_dir", refusalGraftSourceNotVisible},
 		{"graft_covers_graft", refusalGraftCoversGraft},
@@ -1241,6 +1250,56 @@ func refusalEngineToolchainRootContainsAWritableGrant(t testing.TB) error {
 func refusalEngineBinaryInsideAWritableGrant(t testing.TB) error {
 	p := resolveDefaults(t)
 	return p.CheckEngineBinary("/home/u/proj/sub/bin/podman")
+}
+
+// refusalEngineBinarySelectedThroughAWritableName is issue #369's measured
+// defect (redteam row 6 against merged 955dc17): $TARGET/podman is a
+// payload-writable SYMLINK to a clean system binary
+// (/usr/bin/podman). CheckEngineBinary alone judges only the resolved
+// bytes — clean, read-only under @sys — and would accept it; this is the
+// SPELLING arm of writableNameOnChain, reached through ResolveEngineBinary,
+// which the engine-binary door (preflightPodmanBinary) now calls instead of
+// CheckEngineBinary directly.
+func refusalEngineBinarySelectedThroughAWritableName(t testing.TB) error {
+	p := resolveDefaults(t)
+	env := newFakeEnv()
+	env.links["/home/u/proj/sub/podman"] = "/usr/bin/podman"
+	env.files["/usr/bin/podman"] = true
+	_, err := p.ResolveEngineBinary(env, "/home/u/proj/sub/podman")
+	return err
+}
+
+// refusalEngineBinarySelectedThroughAWritablePathEntry is
+// writableNameOnChain's CANONICAL arm: a $PATH entry (/opt/tools) is itself
+// symlinked into the target's writable bin directory, so naming "podman"
+// through it is the payload choosing the engine one hop further from the
+// leaf than the row above. "/opt/tools/bin" is an ordinary EXISTING
+// directory in this package's fixture host (used by unrelated tests too),
+// present here so the OUTER full-path resolution stops there — one level too
+// early to see /opt/tools's own symlink — while writableNameOnChain's own
+// prefix walk, which visits every ancestor rather than only the two
+// endpoints, still finds it.
+func refusalEngineBinarySelectedThroughAWritablePathEntry(t testing.TB) error {
+	p := resolveDefaults(t)
+	env := newFakeEnv()
+	env.links["/opt/tools"] = "/home/u/proj/sub/bin"
+	env.dirs["/opt/tools/bin"] = true
+	_, err := p.ResolveEngineBinary(env, "/opt/tools/bin/podman")
+	return err
+}
+
+// refusalEngineToolchainRootSelectedThroughAWritableName is issue #369's
+// second door: $SNUG_PODMAN_ROOT names a payload-writable symlink
+// (/home/u/proj/sub/bundle, inside @cwd-rw's own grant) into a CLEAN host
+// directory that no grant makes writable (/opt/tools/bin, read-only under
+// @sys). CheckEngineToolchainTree alone judges only the resolved directory
+// and would accept it; EngineToolchain's own call to writableNameOnChain,
+// AFTER CheckEngineToolchainTree has cleared, is what catches the name.
+func refusalEngineToolchainRootSelectedThroughAWritableName(t testing.TB) error {
+	p := resolveDefaults(t)
+	env := newFakeEnv()
+	env.links["/home/u/proj/sub/bundle"] = "/opt/tools/bin"
+	return p.EngineToolchain(env, "/home/u/proj/sub/bundle")
 }
 
 // refusalGraftToolchainRootWritable: issue #390, G4b. The recorded toolchain

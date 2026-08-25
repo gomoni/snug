@@ -184,3 +184,90 @@ func TestEngineToolchainRootContainsAWritableGrantIsRefused(t *testing.T) {
 			"the tree check too:\n%s", r2.out)
 	}
 }
+
+// TestEngineBinaryNamedThroughASymlinkInsideAWritableGrantIsRefused is issue
+// #369's measured defect, end to end: $SNUG_PODMAN names a SYMLINK strictly
+// inside @cwd-rw's rw grant of the target, resolving to a real engine binary
+// OUTSIDE every grant. Before the fix, policy.CheckEngineBinary judged only
+// the resolved bytes — clean, outside every grant — and ACCEPTED it; snug
+// then exec'd the payload-chosen binary as the engine and the run failed
+// much later with "the container engine did not create its socket ...
+// within 30s" (exit 69), while a regular-file poison at the identical path
+// was refused immediately (exit 77). policy.(*Policy).ResolveEngineBinary
+// now judges the SYMLINK itself, before any of that.
+func TestEngineBinaryNamedThroughASymlinkInsideAWritableGrantIsRefused(t *testing.T) {
+	budget(t, 60*time.Second)
+
+	gateEnv, _ := containerEngineEnv(t)
+	requireRealEngine(t, gateEnv)
+	podman := hostEngine(t)
+
+	proj, _ := target(t) // <root>/proj/sub, rw via @cwd-rw
+
+	// The real binary lives OUTSIDE every grant of this sandbox — an
+	// ordinary host installation, exactly like /usr/bin/podman.
+	outside := t.TempDir()
+	real := filepath.Join(outside, "podman-real")
+	if err := os.WriteFile(real, wrapperScript(podman), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// The symlink is the payload's own: it sits inside @cwd-rw's rw grant, so
+	// rewriting it is exactly what a payload running inside this sandbox
+	// could do to itself. Its bytes resolve to something clean and outside
+	// every grant — the shape that made the measured defect ACCEPT it.
+	link := filepath.Join(proj, "podman")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+
+	base, _ := attachEnv(t)
+	env := append(append([]string{}, base...), scratchHomeEnv(t)...)
+	env = append(env, "SNUG_PODMAN="+link)
+
+	r := runEnv(t, env, []string{"-p", "@podman-socket"}, proj, `echo SHOULD-NOT-RUN`)
+
+	// THE MARKER: the refusal must precede engine.New, so the payload — and
+	// the engine it would have exec'd — never started at all.
+	if r.ran {
+		t.Fatalf("the payload ran — a symlink inside a writable grant, resolving to a binary "+
+			"OUTSIDE every grant, was accepted as this run's container engine (%s -> %s):\n%s",
+			link, real, r.out)
+	}
+	if r.code == 0 {
+		t.Fatalf("snug exited 0 without running the payload — that is not a refusal:\n%s", r.out)
+	}
+
+	// THE DECISIVE ASSERTION, and it is the NEGATIVE one. This exact string is
+	// what the measured defect produced (exit 69): the broken build ACCEPTED
+	// the symlink, resolved it to the clean binary, exec'd that as the
+	// engine, and the run failed here, much later, well after any refusal
+	// would have. A test asserting only "exit != 0" would have passed on
+	// that build.
+	const socketTimeout = "the container engine did not create its socket"
+	if strings.Contains(r.out, socketTimeout) {
+		t.Fatalf("snug ran the ENGINE and then timed out waiting for its socket — this is the "+
+			"measured defect's own symptom (issue #369), not a refusal of the symlink:\n%s", r.out)
+	}
+
+	for _, want := range []string{link, "cannot be this run's container engine", "CHOOSING"} {
+		if !strings.Contains(r.out, want) {
+			t.Errorf("refusal does not contain %q:\n%s", want, r.out)
+		}
+	}
+
+	// POSITIVE CONTROL: the identical real binary, named DIRECTLY — no
+	// symlink, no writable grant involved — is not refused for THIS reason.
+	// It may still be refused for an unrelated one (G4: nothing grafts it
+	// into the engine's view, as TestEngineBinaryInsideAWritableGrantIsRefused's
+	// own control notes), which is why this checks the ABSENCE of the
+	// selection wording rather than requiring acceptance.
+	envDirect := append(append([]string{}, base...), scratchHomeEnv(t)...)
+	envDirect = append(envDirect, "SNUG_PODMAN="+real)
+	rDirect := runEnv(t, envDirect, []string{"-p", "@podman-socket"}, proj, `echo SHOULD-NOT-RUN`)
+	if strings.Contains(rDirect.out, "CHOOSING") {
+		t.Fatalf("control: a binary named directly, with no symlink and no writable grant "+
+			"involved, was ALSO refused by the selection wording — the refusal above is not "+
+			"distinguishing the symlink from an ordinary custom $SNUG_PODMAN:\n%s", rDirect.out)
+	}
+}

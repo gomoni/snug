@@ -267,17 +267,15 @@ type reportContainers struct {
 	// than an omission: --dry-run runs no preflight, so it cannot resolve PATH,
 	// and there is no path to judge. The screen says which of the two it is.
 	//
-	// JUDGED ON THE PATH AS SPELLED, which used to be a DIVERGENCE from the run
-	// and is now a SUBSET of it. This comment said "a real run canonicalises
-	// with ResolveExistingHostPath first, so a symlinked spelling can differ
-	// from what the run judges" — true, and it was the tell: the run judged
-	// only what the symlink pointed at, so --dry-run refused a spelling the run
-	// then accepted, and the artifact a human trusts was the more honest of the
-	// two. ResolveEngineBinary now judges the spelling and every name between
-	// it and the bytes, so a refusal shown here is a refusal the run will also
-	// make. What --dry-run still cannot see is the CHAIN: it touches no
-	// filesystem, by its own budget, so it cannot follow a symlink. It states
-	// what it judged and claims no verdict.
+	// JUDGED ON THE PATH AS SPELLED. This comment used to say a real run's
+	// canonicalisation could make the run judge a different, unrefused
+	// spelling than this screen showed — true, and it was the tell: the run
+	// judged only what a symlink pointed at, so it accepted what --dry-run
+	// correctly refused. ResolveEngineBinary now judges the spelling and
+	// every name between it and the bytes, so a refusal shown here is a
+	// refusal the run will also make. What --dry-run still cannot see is the
+	// CHAIN itself: it touches no filesystem, so it cannot follow a symlink
+	// to state one.
 	EngineBinaryRefusal string
 	// ToolchainRootRefusal is the same for $SNUG_PODMAN_ROOT, and it covers the
 	// arm G4b structurally could not see: a writable grant anywhere INSIDE the
