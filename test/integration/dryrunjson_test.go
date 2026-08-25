@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +16,11 @@ import (
 
 // TestDryRunJSONIsTheWholeOfStdout is issue #52 end to end, on the real binary,
 // and it asserts the one property a unit test cannot: that the DOCUMENT is
-// alone on stdout, on every exit code, with the human prose on stderr.
+// alone on stdout, on every exit code run produces, with the human prose on
+// stderr. That qualification is issue #334's: this sentence read "every exit
+// code" while five refusal classes wrote nothing at all, and the one exit that
+// is still not a document — a flag that does not parse — is named at
+// renderJSON rather than left for a redirect to find.
 //
 // `snug --dry-run --json <dir> > policy.json` yielding a parseable file even
 // when the policy is REFUSED is the failure mode this format was designed
@@ -288,4 +293,171 @@ func split(t *testing.T, env []string, args ...string) (stdout, stderr string, c
 		return out.String(), errb.String(), ee.ExitCode()
 	}
 	return out.String(), errb.String(), 0
+}
+
+// TestDryRunJSONRedirectIsNeverZeroBytes is issue #334 on the real binary, with
+// a real file redirect — which is the exact shape the failure is named after.
+//
+// The unit-level enumeration (internal/cli's
+// TestEveryRefusalClassProducesAParseableDocument) drives run() and captures two
+// in-process buffers. That is the right place for the class table, and it cannot
+// observe the one thing this test is for: that the FILE a shell leaves behind
+// parses. clang's SARIF writes zero bytes on redirect, a consumer opens the file
+// and cannot tell "refused" from "the tool died", and the two are the same
+// number of bytes.
+//
+// Measured before the fix, `snug --dry-run --json ... > f` for the classes here:
+// 0 bytes each, exit 77, with the human diagnostic on stderr as usual. So the
+// file said nothing at all and the exit code said only "policy".
+func TestDryRunJSONRedirectIsNeverZeroBytes(t *testing.T) {
+	budget(t, 60*time.Second)
+	proj, _ := target(t)
+
+	badCfg := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(badCfg, "snug", "profiles.d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(badCfg, "snug", "profiles.d", "bad.toml"),
+		[]byte("this is not toml {{{\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		env  []string
+		args []string
+		// resolved is snug.policy_resolved: a refusal ahead of policy.Resolve
+		// has no policy, so its document carries no mounts and must not
+		// pretend to by carrying an empty array.
+		resolved bool
+		// says is a distinctive fragment of the refusal. Without it a case
+		// that started hitting a different refusal would still pass every
+		// assertion below, which is the "test that cannot fail" shape.
+		says string
+	}{
+		{
+			name: "unparseable profile file",
+			env:  append(os.Environ(), "XDG_CONFIG_HOME="+badCfg, "SNUG_TEST=1"),
+			args: []string{"--dry-run", "--json", proj},
+			says: "did not load",
+		},
+		{
+			name: "unknown profile",
+			env:  baseEnv(),
+			args: []string{"--dry-run", "--json", "-p", "@nosuchprofile", proj},
+			says: "unknown profile",
+		},
+		{
+			name: "target does not exist",
+			env:  baseEnv(),
+			args: []string{"--dry-run", "--json", filepath.Join(proj, "nope")},
+			says: "no such file",
+		},
+		{
+			name:     "net-host without --i-know",
+			env:      baseEnv(),
+			args:     []string{"--dry-run", "--json", "-p", "@net-host", proj},
+			resolved: true,
+			says:     "--i-know",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "policy.json")
+			f, err := os.Create(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var errb strings.Builder
+			ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, snugBin, tc.args...)
+			cmd.Env = tc.env
+			cmd.Stdout = f
+			cmd.Stderr = &errb
+			cmd.WaitDelay = waitDelay
+			runErr := cmd.Run()
+			f.Close()
+			if ctx.Err() != nil {
+				t.Fatalf("snug did not finish within %s (a hang is a finding)", cmdTimeout)
+			}
+			code := 0
+			if runErr != nil {
+				var ee *exec.ExitError
+				if !errors.As(runErr, &ee) {
+					t.Fatalf("running snug: %v", runErr)
+				}
+				code = ee.ExitCode()
+			}
+			if code != 77 {
+				t.Fatalf("exit %d, want 77 — this case is meant to be a refusal\nstderr:\n%s",
+					code, errb.String())
+			}
+
+			b, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(b) == 0 {
+				t.Fatalf("the redirected file is ZERO BYTES — a consumer opening it cannot "+
+					"tell a refusal from snug having died (issue #334)\nstderr:\n%s", errb.String())
+			}
+
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal(b, &raw); err != nil {
+				t.Fatalf("the redirected file is not one parseable document: %v\n%s", err, b)
+			}
+			var meta struct {
+				Format         int    `json:"format"`
+				Outcome        string `json:"outcome"`
+				ExitCode       int    `json:"exit_code"`
+				PolicyResolved bool   `json:"policy_resolved"`
+			}
+			if err := json.Unmarshal(raw["snug"], &meta); err != nil {
+				t.Fatalf("no snug block: %v\n%s", err, b)
+			}
+			if meta.Format != 1 {
+				t.Errorf("snug.format is %d, want 1", meta.Format)
+			}
+			if meta.Outcome != "refused" {
+				t.Errorf("snug.outcome is %q, want %q", meta.Outcome, "refused")
+			}
+			// Against the code the PROCESS returned, not against a constant:
+			// a consumer holding only this file must be told what the shell
+			// saw.
+			if meta.ExitCode != code {
+				t.Errorf("snug.exit_code is %d and snug exited %d", meta.ExitCode, code)
+			}
+			if meta.PolicyResolved != tc.resolved {
+				t.Errorf("snug.policy_resolved is %v, want %v", meta.PolicyResolved, tc.resolved)
+			}
+			// ABSENT, not empty and not null: `"mounts": []` would be a
+			// statement about a sandbox by a document that never got one.
+			if _, present := raw["mounts"]; present != tc.resolved {
+				t.Errorf("`mounts` present=%v, want %v", present, tc.resolved)
+			}
+
+			// The positive control on WHICH refusal this is.
+			var ref struct {
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal(raw["refusal"], &ref); err != nil {
+				t.Fatalf("no refusal block: %v\n%s", err, b)
+			}
+			if !strings.Contains(ref.Message, tc.says) {
+				t.Errorf("this case is meant to hit the %q refusal and the document says %q",
+					tc.says, ref.Message)
+			}
+			// The prose is still on stderr and NOT in the file.
+			if !strings.Contains(errb.String(), "snug:") {
+				t.Errorf("the refusal did not reach stderr:\n%s", errb.String())
+			}
+			for _, prose := range []string{"snug — dry run", "FILESYSTEM", "NOT GRANTED"} {
+				if strings.Contains(string(b), prose) {
+					t.Errorf("the redirected file carries the human screen's %q", prose)
+				}
+			}
+		})
+	}
 }

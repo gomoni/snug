@@ -2,7 +2,9 @@
   "snug": {
     "format": 1,
     "outcome": "ok",
-    "lossy": false
+    "lossy": false,
+    "exit_code": 0,
+    "policy_resolved": true
   },
   "target": "/home/u/proj/sub",
   "home": "/home/u",
