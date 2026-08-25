@@ -60,9 +60,12 @@ import (
 //     Two mechanisms over one model — do not read either as the other.
 //
 //  5. mount("proc", "/proc", "proc") — a FRESH procfs bound to THIS process's
-//     own pid namespace (C0), replacing whatever /proc this process inherited
-//     from the stage's private host-tree copy (step 4's mount, still the
-//     HOST's real /proc up to this point). This process is already pid 1 of a
+//     own pid namespace, replacing the one step 4 inherited. Be precise about
+//     what that inherited procfs IS, because the guess is "the host's" and it
+//     is not: 4a joined the SANDBOX's mount namespace, the sandbox is built
+//     with --unshare-pid and --proc /proc, and 4d grafts nothing onto /proc —
+//     so up to this line /proc is a procfs for the SANDBOX's pid namespace,
+//     i.e. the PAYLOAD's processes. This process is already pid 1 of a
 //     pid namespace created at clone time (CLONE_NEWPID, owned by U because
 //     that clone carried no CLONE_NEWUSER of its own) — MEASURED that mounting
 //     "proc" needs exactly that ownership: it returns EPERM with no owning
@@ -333,12 +336,12 @@ func EnterEngine(argv []string) error {
 		}
 	}
 
-	// A FRESH procfs, bound to THIS process's own pid namespace (issue #125's
-	// "C0" piece: "the engine must hold its own pid namespace for the
-	// derived-mount-view work to be buildable at all"). Mounted directly over
-	// whatever /proc this process inherited from the stage's private
-	// host-tree copy — which up to this line is still the HOST's real /proc,
-	// exactly like /etc/resolv.conf below before its own bind. This process
+	// A FRESH procfs, bound to THIS process's own pid namespace (issue #125:
+	// "the engine must hold its own pid namespace for the derived-mount-view
+	// work to be buildable at all"). Mounted directly over the procfs joining
+	// the sandbox's mount namespace brought with it — which is the SANDBOX's
+	// own (--unshare-pid, --proc /proc), not the host's, because the view is
+	// derived from the sandbox's and no graft lands on /proc. This process
 	// is pid 1 of a pid namespace created at CLONE_NEWPID clone time
 	// (startEngine), owned by U because that clone carried no CLONE_NEWUSER
 	// of its own, and a procfs mount needs precisely that ownership —
@@ -347,21 +350,22 @@ func EnterEngine(argv []string) error {
 	// the caller's own userns succeeds.
 	//
 	// FATAL on failure, no fallback (invariant 5): the alternative is the
-	// engine silently keeping the host's whole process table — every host
-	// pid's cmdline, exe symlink, environ and fd table — while snug's own
-	// TOPOLOGY block on screen claims a pid namespace it does not have.
+	// engine silently keeping the SANDBOX's procfs — the payload's own pids,
+	// their cmdline, exe symlink, environ and fd table, numbered in a pid
+	// namespace that is not this process's — while snug's own TOPOLOGY block on
+	// screen claims a pid namespace it does not have. The engine holds
+	// capabilities the payload does not, so reading the payload's /proc is the
+	// wrong direction for this boundary, not merely untidy.
 	if err := unix.Mount("proc", "/proc", "proc", 0, ""); err != nil {
 		return fmt.Errorf("__inengine: mounting a fresh /proc for this engine's own pid namespace: %w", err)
 	}
 
-	// STEP 11 IS GONE, and its absence is the point rather than a tidy-up.
-	// It used to bind snug's own generated /etc/resolv.conf over the engine's,
-	// because the engine's view was a private copy of the HOST tree and
-	// therefore carried the host's real resolver configuration (issue #126).
-	// Under the derived view there is nothing host-shaped left to shadow: the
-	// engine's /etc/resolv.conf IS the sandbox's, which snug generated. A bind
-	// here would now be snug shadowing its own file with a second copy of
-	// itself.
+	// NO /etc/resolv.conf BIND HERE, and the absence is deliberate (issue
+	// #126). Binding snug's own generated resolv.conf over the engine's would
+	// only make sense against a view carrying the HOST's resolver
+	// configuration. The derived view has nothing host-shaped to shadow: the
+	// engine's /etc/resolv.conf IS the sandbox's, which snug generated, so a
+	// bind here is snug shadowing its own file with a second copy of itself.
 	//
 	// What a CONTAINER gets is unchanged and was never this mount's job since
 	// issue #126's second half: the generated containers.conf names DNS

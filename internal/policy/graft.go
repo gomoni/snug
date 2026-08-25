@@ -1159,9 +1159,9 @@ func (p *Policy) HostPathVisible(host string, needWrite bool) bool {
 // EngineGuestPath maps a HOST path to the path the ENGINE sees it at, or
 // reports that the engine cannot see it at all.
 //
-// It exists because Tier C moves the engine off a copy of the host tree and
-// onto a view derived from the sandbox's, at which point every host path snug
-// hands the engine — its argv, its environment, and the absolute paths inside
+// It exists because the engine's view is DERIVED from the sandbox's rather than
+// being a copy of the host tree, which means every host path snug hands the
+// engine — its argv, its environment, and the absolute paths inside
 // the configuration files snug generates for it — stops meaning what it said.
 // A store at /home/u/.local/share/snug/engines/<key>/storage is
 // /snug/engine/store from inside; a podman inside a pinned bundle is under

@@ -426,7 +426,7 @@ func runOneSandbox(control, netnsN, infoR *os.File, req request) error {
 		// writable root, settling ~150ms later to 44 mounts rooted at
 		// /newroot, read-only. An engine that joined at the early moment and
 		// unshared would keep a private copy of the host tree FOREVER — in the
-		// one namespace Tier C exists to make host-free.
+		// one namespace the derived view exists to keep host-free.
 		if err := waitForSandboxMounts(info.InitPID, sandboxMountsTimeout); err != nil {
 			return abort(err)
 		}
