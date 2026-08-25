@@ -1,21 +1,24 @@
 CONTAINERS  a per-sandbox engine behind a filtering proxy at /snug/podman.sock
-         engine      binary /home/u/proj/sub/bin/podman ($SNUG_PODMAN) — trusted outright, PATH
-                     resolution bypassed on purpose; refused if it is
-                     itself a host-escape shim (a testing seam, not a
-                     supported way to install an engine)
+         engine      binary resolved from PATH when the run starts — preflight
+                     P1 refuses a host-escape shim there; --dry-run does not
+                     probe PATH, so it names the source, not the binary
+                     the run also refuses it if any grant of this sandbox makes it
+                     WRITABLE — snug execs it as uid 0, pid 1 of the engine's own
+                     pid namespace (issue #405). Not checkable here: that needs
+                     the resolved binary, and this screen has only the source
+                     toolchain root /srv/bundle ($SNUG_PODMAN_ROOT) — named, not
+                     derived from the binary path, and must contain it
                      THIS RUN WILL REFUSE:
-                     /home/u/proj/sub/bin/podman cannot be this run's container engine: a grant of this sandbox makes it
+                     /home/u/proj/sub/tools cannot be this run's engine toolchain root: a grant of this sandbox makes it
                      WRITABLE.
-                     snug execs this file as uid 0, pid 1 of the engine's pid namespace, with
-                     CAP_SYS_ADMIN in this sandbox's user namespace and the whole delegated subuid
-                     range — so an engine binary the payload can write is the payload choosing what
-                     runs as root, and every other filter on the container path is moot because the
-                     payload IS the engine.
-                     Read-only would not help: `ro` restrains the ENGINE, and the payload writes the
-                     same host inode through its own rw grant.
-                     Fix: install the engine somewhere no rw grant covers, or point $SNUG_PODMAN at
-                     one, or drop the rw grant. `snug --dry-run` lists every grant this sandbox makes;
-                     the one to look for is whichever covers this path.
+                     Grafting it read-only does not help, because read-only restrains the wrong
+                     party: it stops the ENGINE writing and does nothing about the payload, which
+                     writes the same host directory through its own rw grant so the new bytes
+                     appear under the engine's read-only graft. The engine resolves conmon, crun
+                     and netavark out of that directory as root in this sandbox's user namespace,
+                     so a directory the payload can write is the payload choosing what the engine
+                     executes as root.
+                     Fix: put the engine somewhere no rw grant covers, or drop the rw grant.
                      judged by the functions the run judges with, against this
                      host as it is NOW: snug resolves each path above and every
                      name on the way to it, so a symlink rewritten after this

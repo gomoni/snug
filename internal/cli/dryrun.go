@@ -33,14 +33,14 @@ import (
 // renderer that cannot attach to the block helpers would have to re-derive
 // what they know, which is the copy-with-no-link-back shape this repo keeps
 // paying for.
-func dryRun(out io.Writer, p *policy.Policy, args []string, cfg config, refusedBy error) error {
+func dryRun(env policy.Environ, out io.Writer, p *policy.Policy, args []string, cfg config, refusedBy error) error {
 	// ONE Report, then ONE renderer. --json REPLACES the human form; it never
 	// adds to it, because the document is the whole of stdout (renderJSON's
 	// doc comment says why that matters on a refusal).
 	// The one call site with a real host behind it. Everywhere else — every
 	// golden, every unit test — pins the summary, so no fixture's verdict
 	// depends on what this machine has in /etc/containers.
-	rep := buildReport(p, args, cfg, refusedBy, func() engine.SignaturePolicySummary {
+	rep := buildReport(env, p, args, cfg, refusedBy, func() engine.SignaturePolicySummary {
 		return engine.SummariseSignaturePolicy(p.Home)
 	})
 	if cfg.json {
@@ -1106,32 +1106,42 @@ func describeContainers(out io.Writer, p *policy.Policy, c *reportContainers) {
 // screen a human trusts, so it must not be silent about which engine it is
 // about to run (issue #278).
 //
-// It stays OFFLINE, which is why it reports the SOURCE rather than a verified
-// binary for the PATH case. --dry-run runs no preflight (see the toolchain
-// graft block's own note): resolving "podman" from PATH here would mean a host
-// PATH search plus the shim readlink chain, host I/O --dry-run does not do. The
-// env vars are read, not the filesystem — an env read is free and is what makes
-// "which of the three answered" legible without a probe. Their VALUES are
-// host-controlled, so both go through visibleValue, the same guard every other
-// host-controlled value on this screen uses against a forged line.
+// It reports the SOURCE rather than a verified binary for the PATH case, and
+// that limit is unchanged: --dry-run runs no preflight, so it does not search
+// PATH and does not follow the shim readlink chain. What it DOES do since issue
+// #422 is judge the two paths a human NAMED, by calling the functions the run
+// judges with (report.go) — the two most security-relevant paths on this screen
+// used to be the only ones judged without looking at the host.
+//
+// THREE STATES per path, and the order is the safety argument: a refusal wins;
+// otherwise a clearance requires an object of the right KIND to exist; otherwise
+// NOT JUDGED. Existence can only downgrade a clearance, never manufacture or
+// soften a refusal (report.go's own comment on why that cannot become a lie).
+//
+// Values are host-controlled, so every one goes through visibleValue — the
+// refusal text included, which is what describeSignaturePolicy already does
+// with the host's own decoder output.
 func describeEngineSource(out io.Writer, c *reportContainers) {
-	if custom := os.Getenv("SNUG_PODMAN"); custom != "" {
+	if c.EngineSource == "SNUG_PODMAN" {
 		fmt.Fprintf(out, "         engine      binary %s ($SNUG_PODMAN) — trusted outright, PATH\n",
-			visibleValue(custom))
+			visibleValue(c.EngineBinary))
 		fmt.Fprintf(out, "                     resolution bypassed on purpose; refused if it is\n")
 		fmt.Fprintf(out, "                     itself a host-escape shim (a testing seam, not a\n")
 		fmt.Fprintf(out, "                     supported way to install an engine)\n")
-		if c.EngineBinaryRefusal != "" {
-			fmt.Fprintf(out, "                     THIS RUN WILL REFUSE: a grant of this sandbox makes that\n")
-			fmt.Fprintf(out, "                     path WRITABLE, and snug execs the engine as uid 0, pid 1\n")
-			fmt.Fprintf(out, "                     of its own pid namespace — so a payload-writable engine is\n")
-			fmt.Fprintf(out, "                     the payload choosing what runs as root (issue #405)\n")
-		} else {
-			fmt.Fprintf(out, "                     no grant of this sandbox makes that path writable, so the\n")
-			fmt.Fprintf(out, "                     engine is not payload-controlled (issue #405)\n")
+		switch {
+		case c.EngineBinaryRefusal != "":
+			describeEngineRefusal(out, c.EngineBinaryRefusal)
+		case !c.EngineBinaryIsRegularFile:
+			fmt.Fprintf(out, "                     NOT JUDGED: no regular file at that path on this host, so\n")
+			fmt.Fprintf(out, "                     the writability question has no object — preflight P1\n")
+			fmt.Fprintf(out, "                     stats it and refuses a run whose engine is missing or a\n")
+			fmt.Fprintf(out, "                     directory\n")
+		default:
+			fmt.Fprintf(out, "                     no grant of this sandbox makes that path, or any name on\n")
+			fmt.Fprintf(out, "                     the way to it, writable — the engine is not\n")
+			fmt.Fprintf(out, "                     payload-controlled (issue #405)\n")
+			describeEngineResolution(out, c.EngineBinary, c.EngineBinaryResolved)
 		}
-		fmt.Fprintf(out, "                     judged on the path AS SPELLED: a real run canonicalises it\n")
-		fmt.Fprintf(out, "                     first, and --dry-run reads no filesystem\n")
 	} else {
 		fmt.Fprintf(out, "         engine      binary resolved from PATH when the run starts — preflight\n")
 		fmt.Fprintf(out, "                     P1 refuses a host-escape shim there; --dry-run does not\n")
@@ -1141,20 +1151,62 @@ func describeEngineSource(out io.Writer, c *reportContainers) {
 		fmt.Fprintf(out, "                     pid namespace (issue #405). Not checkable here: that needs\n")
 		fmt.Fprintf(out, "                     the resolved binary, and this screen has only the source\n")
 	}
-	if root := os.Getenv("SNUG_PODMAN_ROOT"); root != "" {
+	if c.ToolchainRoot != "" {
 		fmt.Fprintf(out, "                     toolchain root %s ($SNUG_PODMAN_ROOT) — named, not\n",
-			visibleValue(root))
+			visibleValue(c.ToolchainRoot))
 		fmt.Fprintf(out, "                     derived from the binary path, and must contain it\n")
-		if c.ToolchainRootRefusal != "" {
-			fmt.Fprintf(out, "                     THIS RUN WILL REFUSE: a grant of this sandbox makes the\n")
-			fmt.Fprintf(out, "                     root, or part of the tree below it, WRITABLE — the engine\n")
-			fmt.Fprintf(out, "                     resolves conmon, crun and netavark out of that tree as\n")
-			fmt.Fprintf(out, "                     uid 0 (issue #405)\n")
-		} else {
-			fmt.Fprintf(out, "                     no grant makes the root or any part of the tree below it\n")
-			fmt.Fprintf(out, "                     writable (issue #405)\n")
+		switch {
+		case c.ToolchainRootRefusal != "":
+			describeEngineRefusal(out, c.ToolchainRootRefusal)
+		case !c.ToolchainRootIsDir:
+			fmt.Fprintf(out, "                     NOT JUDGED: no directory at that path on this host, so\n")
+			fmt.Fprintf(out, "                     there is no tree to walk — preflight P9 stats it and\n")
+			fmt.Fprintf(out, "                     refuses the run\n")
+		default:
+			fmt.Fprintf(out, "                     no grant makes the root, the tree below it, or any name\n")
+			fmt.Fprintf(out, "                     on the way to it, writable (issue #405)\n")
+			describeEngineResolution(out, c.ToolchainRoot, c.ToolchainRootResolved)
 		}
 	}
+	if c.EngineSource == "SNUG_PODMAN" || c.ToolchainRoot != "" {
+		fmt.Fprintf(out, "                     judged by the functions the run judges with, against this\n")
+		fmt.Fprintf(out, "                     host as it is NOW: snug resolves each path above and every\n")
+		fmt.Fprintf(out, "                     name on the way to it, so a symlink rewritten after this\n")
+		fmt.Fprintf(out, "                     screen is judged again — and refused again — when the run\n")
+		fmt.Fprintf(out, "                     starts\n")
+	}
+}
+
+// describeEngineRefusal prints the RUN's own refusal text rather than a
+// paraphrase of it.
+//
+// The paraphrase is what shipped false: it asserted "a grant of this sandbox
+// makes that path WRITABLE" for what is now one of four refusals
+// ResolveEngineBinary and JudgeEngineToolchain can return — not absolute, a
+// control character in the value, writable bytes, a writable NAME on the
+// resolution chain. Re-indented to this block's continuation column, exactly as
+// describeSignaturePolicy does with the host decoder's own output, and through
+// visibleValue for the same reason: the text carries a host-controlled path.
+func describeEngineRefusal(out io.Writer, refusal string) {
+	fmt.Fprintf(out, "                     THIS RUN WILL REFUSE:\n")
+	for _, line := range strings.Split(strings.TrimRight(refusal, "\n"), "\n") {
+		fmt.Fprintf(out, "                     %s\n", visibleValue(strings.TrimSpace(line)))
+	}
+}
+
+// describeEngineResolution states where a CLEARED path resolves to, and only
+// when that differs from the spelling.
+//
+// Cleared only, deliberately. On a refusal the resolved path is "" by contract,
+// and the refusal itself names what was judged; on NOT JUDGED the "resolved"
+// value is a lexical rejoin of a name with nothing behind it, so printing it as
+// "resolves to" would be the prettier lie in miniature.
+func describeEngineResolution(out io.Writer, spelled, resolved string) {
+	if resolved == "" || resolved == spelled {
+		return
+	}
+	fmt.Fprintf(out, "                     resolves to %s, which is what was judged\n",
+		visibleValue(resolved))
 }
 
 // describeImageProvenance states who decides which bytes become an image, for
@@ -2276,6 +2328,23 @@ func describeGrafts(out io.Writer, p *policy.Policy) {
 	// against "" also matches, so the natural spelling trips a guard that
 	// exists to catch assignments. Reported rather than loosened — the guard
 	// is right about the field and wrong only about this read.
+	//
+	// AND THE ANSWER STAYS NO: this screen does not run the read-only preflight
+	// probes either (subuid presence, ptrace_scope), asked and decided under
+	// issue #422 when the block above started resolving $SNUG_PODMAN_ROOT. The
+	// two are different questions. That one judges an INPUT — a path a human
+	// named, judged by the function the run judges it with, over one sample of
+	// the host. A probe answers whether this HOST can do something, which the
+	// run's own preflight answers at the moment it matters; printing it here
+	// invites the reader to treat a dry run's pass as the run's pass, and
+	// invariant 5 is kept by the run refusing, not by the screen predicting.
+	// Order makes a half-measure worse than none: runContainerPreflight runs P6
+	// (ptrace_scope) before P1, so on a ptrace_scope=0 host the run refuses
+	// before the engine binary is reached, and a screen probing some of
+	// preflight would show the later judgement while hiding the earlier one. It
+	// would also make every golden host-dependent — the trap buildReport's own
+	// comment records for /etc/containers/policy.json. `snug doctor` is where
+	// host-capability probes belong; it promises to start nothing.
 	if p.Podman != policy.PodmanOff && len(p.EngineToolchainRoot) == 0 {
 		fmt.Fprintln(out, "  (an engine outside every grant this sandbox makes adds a fifth graft at "+
 			policy.EngineToolchainGuest+" — whether")

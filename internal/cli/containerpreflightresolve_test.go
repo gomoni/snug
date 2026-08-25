@@ -142,3 +142,45 @@ func TestPreflightPodmanBinaryRefusesASymlinkInsideAWritableGrant(t *testing.T) 
 		t.Errorf("refusal %q does not name the symlink the payload actually controls", err)
 	}
 }
+
+// stubbedLookPath is policy.OSEnviron with LookPath replaced by a fixed
+// answer, so a test can plant a PATH entry without touching the process
+// environment. Everything else — Getenv, Stat, EvalSymlinks — stays the real
+// host's, which is what preflightPodmanBinary's other checks need to run at
+// all.
+type stubbedLookPath struct {
+	policy.OSEnviron
+	path string
+}
+
+func (s stubbedLookPath) LookPath(string) (string, error) { return s.path, nil }
+
+// TestPreflightPodmanBinaryPATHLookupGoesThroughTheInjectedEnviron is the
+// seam this change exists for: preflightPodmanBinary's bare-"podman" PATH
+// resolution must read env.LookPath, not exec.LookPath directly, or a test
+// could never plant a PATH answer without mutating $PATH for the whole
+// process. $PATH is set to a directory holding no "podman" at all, so
+// exec.LookPath("podman") run directly against the real host would fail with
+// "not installed" — the only way this test can pass is if
+// preflightPodmanBinary asked the fake instead.
+func TestPreflightPodmanBinaryPATHLookupGoesThroughTheInjectedEnviron(t *testing.T) {
+	t.Setenv("SNUG_PODMAN", "")
+	emptyPathDir := t.TempDir()
+	t.Setenv("PATH", emptyPathDir)
+
+	planted := filepath.Join(t.TempDir(), "not-really-podman")
+	if err := os.WriteFile(planted, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	env := stubbedLookPath{path: planted}
+	got, err := preflightPodmanBinary(env, &policy.Policy{})
+	if err != nil {
+		t.Fatalf("preflightPodmanBinary refused the fake's planted PATH answer: %v", err)
+	}
+	if got != planted {
+		t.Errorf("preflightPodmanBinary returned %q, want the fake's planted answer %q — "+
+			"it must be reading env.LookPath, not the real host's $PATH (which was set to "+
+			"contain no podman at all)", got, planted)
+	}
+}

@@ -45,6 +45,12 @@ func (e refusalFakeEnv) LookupEnv(string) (string, bool) { return "", false }
 func (e refusalFakeEnv) Uid() int                        { return 1000 }
 func (e refusalFakeEnv) Gid() int                        { return 1000 }
 
+// LookPath is never called by anything this file exercises. Not found,
+// answered from the fixture's own (absent) data rather than the real host's.
+func (e refusalFakeEnv) LookPath(name string) (string, error) {
+	return "", &fs.PathError{Op: "lookpath", Path: name, Err: fs.ErrNotExist}
+}
+
 type refusalFakeInfo struct{ mode fs.FileMode }
 
 func (i refusalFakeInfo) Name() string       { return "endpoint" }

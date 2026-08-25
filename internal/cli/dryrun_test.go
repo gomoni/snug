@@ -314,9 +314,15 @@ func TestDryRunAnnotationDoesNotUnderstateWriteAccess(t *testing.T) {
 // dryRunText renders the whole human screen into a buffer. dryRun took no
 // writer until issue #52's prerequisite, so every caller here used to
 // redirect the real os.Stdout; none of them needs to any more.
+//
+// The Environ is the FAKE host, not policy.OSEnviron: since issue #422 the
+// CONTAINERS block reads $SNUG_PODMAN/$SNUG_PODMAN_ROOT off the injected
+// Environ and resolves them, so a developer with either exported would
+// otherwise write their own host into every screen assertion in this package.
+// A caller that wants those set says so on the fake.
 func dryRunText(p *policy.Policy, args []string, cfg config, refusedBy error) string {
 	var buf bytes.Buffer
-	dryRun(&buf, p, args, cfg, refusedBy)
+	dryRun(newEnvFakeEnv(), &buf, p, args, cfg, refusedBy)
 	return buf.String()
 }
 
@@ -732,7 +738,7 @@ func TestFilesystemBlockRendersTheStubAsExec(t *testing.T) {
 	// dryRun takes an io.Writer (issue #52's prerequisite), so this no longer
 	// redirects the real os.Stdout — it hands the renderer a buffer.
 	var buf bytes.Buffer
-	dryRun(&buf, p, args, config{}, nil)
+	dryRun(newEnvFakeEnv(), &buf, p, args, config{}, nil)
 	got := buf.String()
 
 	if !strings.Contains(got, "exec   "+policy.StagedBinDir+"/podman") {

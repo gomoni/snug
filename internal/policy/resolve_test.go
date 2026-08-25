@@ -145,6 +145,14 @@ func (f *fakeEnv) LookupEnv(k string) (string, bool) {
 func (f *fakeEnv) Uid() int { return 1000 }
 func (f *fakeEnv) Gid() int { return 1000 }
 
+// LookPath is never called by anything this file exercises — Resolve itself
+// has no PATH search — so the fixture models an empty PATH: everything is
+// not found, answered from the fixture's own (absent) data rather than the
+// real host's.
+func (f *fakeEnv) LookPath(name string) (string, error) {
+	return "", &fs.PathError{Op: "lookpath", Path: name, Err: fs.ErrNotExist}
+}
+
 // testRegistry is a fake standing in for the loaded profile set. The names
 // mirror the real ones, sigil included (policy.Sigil): the resolver treats a
 // name as opaque, but SNUG_PROFILES and every provenance string end up in the

@@ -20,8 +20,6 @@ func TestDryRunStatesTheTmpfsBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SNUG_PODMAN", "")
-	t.Setenv("SNUG_PODMAN_ROOT", "")
 
 	sel := []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro"}
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), newEnvFakeEnv())
@@ -77,8 +75,6 @@ func TestDryRunJSONCarriesTheTmpfsBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SNUG_PODMAN", "")
-	t.Setenv("SNUG_PODMAN_ROOT", "")
 
 	sel := []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@podman-socket"}
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), newEnvFakeEnv())
@@ -87,7 +83,7 @@ func TestDryRunJSONCarriesTheTmpfsBound(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := dryRun(&buf, p, p.BwrapArgs(0, 0), config{json: true}, nil); err != nil {
+	if err := dryRun(newEnvFakeEnv(), &buf, p, p.BwrapArgs(0, 0), config{json: true}, nil); err != nil {
 		t.Fatalf("dryRun --json: %v", err)
 	}
 

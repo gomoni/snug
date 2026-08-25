@@ -4935,6 +4935,67 @@ symlink; the unit tests do that (`TestEngineToolchainJudgesTheNameNotOnlyTheTarg
 and a round is owed on the door itself, which was **derived by reading and never
 measured**.
 
+## 18. The `--dry-run` screen judges the same string the run does (issue #422)
+
+Section 17's own "not covered here" paragraph named the sibling door and left
+it unmeasured: `$SNUG_PODMAN_ROOT` named through a payload-writable symlink
+that resolves into the writable target. The gap it turned out to have was not
+in the run — `EngineToolchain` already resolved before judging — it was in the
+**screen**: `buildContainersReport` called `CheckEngineToolchainTree` on the
+raw, unresolved spelling, which a symlink outside every grant defeats
+lexically. Confirmed against `origin/main` (5ca7627) before the fix, alongside
+this branch:
+
+```console
+$ B=./bin/snug; S=$(mktemp -d); H=$(mktemp -d)
+$ mkdir -p "$S/proj/tools" "$S/outside"
+$ ln -s "$S/proj/tools" "$S/outside/bundle"     # outside every grant, resolves into the rw target
+$ HOME=$H SNUG_PODMAN_ROOT="$S/outside/bundle" $B --dry-run --no-defaults \
+    -p @sys -p @home -p @cwd-rw -p @parent-ro -p @podman-socket "$S/proj" -- true
+```
+
+`origin/main`, before the fix — a false clearance:
+
+```
+                     toolchain root .../outside/bundle ($SNUG_PODMAN_ROOT) — named, not
+                     derived from the binary path, and must contain it
+                     no grant makes the root or any part of the tree below it
+                     writable (issue #405)
+```
+
+This branch, same fixture — refused, and naming the RESOLVED directory rather
+than the spelling:
+
+```
+                     toolchain root .../outside/bundle ($SNUG_PODMAN_ROOT) — named, not
+                     derived from the binary path, and must contain it
+                     THIS RUN WILL REFUSE:
+                     .../proj/tools cannot be this run's engine toolchain root: a grant of this sandbox makes it
+                     WRITABLE.
+                     ...
+```
+
+What to check:
+
+1. The root prints `THIS RUN WILL REFUSE`, not the "no grant" clearance.
+2. The refusal names `.../proj/tools` — the symlink's TARGET — not
+   `.../outside/bundle`, the spelling: the screen is judging what the run will
+   actually resolve, not the string a human typed.
+3. `$B --dry-run` still exits 0: this is a screen, not a preflight, and it
+   does not itself refuse the run.
+
+**What this cannot isolate by hand, for the reason section 17 already gives
+for the sibling door.** `EngineToolchain` was never the bug — it already
+resolved before judging, on `origin/main` too — so a real (non-`--dry-run`)
+run refuses either way, and by-hand it refuses via `preflightToolchainRoot`'s
+earlier "root must contain the resolved engine binary" gate rather than via
+the writability check this section is about, on both binaries: the same
+structural obstacle as section 17, one door over. The unit test
+(`TestContainersScreenAgreesWithTheRunOnASymlinkedToolchainRoot`,
+`internal/cli`) calls `EngineToolchain` directly, bypassing that earlier gate,
+and is where the run-vs-screen equivalence for this exact refusal is actually
+proven.
+
 ## If a check fails
 
 1. Re-run it with `--dry-run` and compare what snug *claimed* against what you

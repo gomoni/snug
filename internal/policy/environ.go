@@ -3,6 +3,7 @@ package policy
 import (
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 )
 
@@ -27,6 +28,12 @@ type Environ interface {
 	// it at all.
 	LookupEnv(key string) (string, bool)
 
+	// LookPath resolves a bare command name against $PATH the way the host
+	// shell would, so a PATH search is as injectable as every other host fact
+	// this interface carries — see OSEnviron.LookPath and exec.LookPath for
+	// what "the way the host shell would" means precisely.
+	LookPath(file string) (string, error)
+
 	Uid() int
 	Gid() int
 }
@@ -38,6 +45,7 @@ func (OSEnviron) EvalSymlinks(p string) (string, error) { return filepath.EvalSy
 func (OSEnviron) Stat(p string) (fs.FileInfo, error)    { return os.Stat(p) }
 func (OSEnviron) Getenv(k string) string                { return os.Getenv(k) }
 func (OSEnviron) LookupEnv(k string) (string, bool)     { return os.LookupEnv(k) }
+func (OSEnviron) LookPath(f string) (string, error)     { return exec.LookPath(f) }
 func (OSEnviron) Uid() int                              { return os.Getuid() }
 func (OSEnviron) Gid() int                              { return os.Getgid() }
 

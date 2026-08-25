@@ -1,21 +1,17 @@
 CONTAINERS  a per-sandbox engine behind a filtering proxy at /snug/podman.sock
-         engine      binary /home/u/proj/sub/bin/podman ($SNUG_PODMAN) — trusted outright, PATH
+         engine      binary /srv/a-directory ($SNUG_PODMAN) — trusted outright, PATH
                      resolution bypassed on purpose; refused if it is
                      itself a host-escape shim (a testing seam, not a
                      supported way to install an engine)
-                     THIS RUN WILL REFUSE:
-                     /home/u/proj/sub/bin/podman cannot be this run's container engine: a grant of this sandbox makes it
-                     WRITABLE.
-                     snug execs this file as uid 0, pid 1 of the engine's pid namespace, with
-                     CAP_SYS_ADMIN in this sandbox's user namespace and the whole delegated subuid
-                     range — so an engine binary the payload can write is the payload choosing what
-                     runs as root, and every other filter on the container path is moot because the
-                     payload IS the engine.
-                     Read-only would not help: `ro` restrains the ENGINE, and the payload writes the
-                     same host inode through its own rw grant.
-                     Fix: install the engine somewhere no rw grant covers, or point $SNUG_PODMAN at
-                     one, or drop the rw grant. `snug --dry-run` lists every grant this sandbox makes;
-                     the one to look for is whichever covers this path.
+                     NOT JUDGED: no regular file at that path on this host, so
+                     the writability question has no object — preflight P1
+                     stats it and refuses a run whose engine is missing or a
+                     directory
+                     toolchain root /srv/does-not-exist ($SNUG_PODMAN_ROOT) — named, not
+                     derived from the binary path, and must contain it
+                     NOT JUDGED: no directory at that path on this host, so
+                     there is no tree to walk — preflight P9 stats it and
+                     refuses the run
                      judged by the functions the run judges with, against this
                      host as it is NOW: snug resolves each path above and every
                      name on the way to it, so a symlink rewritten after this

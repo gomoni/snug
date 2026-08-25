@@ -130,32 +130,26 @@ func (p *Policy) OwnEngineHostPath(env Environ, path string) error {
 	return nil
 }
 
-// EngineToolchain records the ONE host directory the container engine's own
-// program files live in, as G4's third source — see the field's doc comment
-// (types.go) for what it is for and why it is exact, single and read-only.
-// It is the ONLY writer of p.EngineToolchainRoot
-// (TestOnlyOneWriterOfEngineToolchainRoot), the same device Policy.Graft is
-// for p.Grafts and OwnEngineHostPath is for p.EngineOwnedHostPaths.
+// JudgeEngineToolchain returns the resolved engine toolchain root, or the
+// refusal EngineToolchain would return for the same string. It RECORDS NOTHING,
+// so --dry-run can reach the run's verdict without becoming a writer.
 //
-// Written ONCE. A second call with a DIFFERENT value is an error rather than
-// a replacement: there is one engine per run, so two toolchain roots is a bug
-// in the caller, and silently keeping either one would decide, without saying
-// so, which host directory the engine may execute out of. A repeat of the
-// SAME value is accepted — idempotence costs nothing and lets a caller
-// re-assert what it already established.
+// Split out for issue #422: report.go called CheckEngineToolchainTree on the
+// raw $SNUG_PODMAN_ROOT and cleared a symlinked root the run refuses, because
+// resolution, hygiene and the selection arm all lived one level up. There is
+// now no second copy of the judgement to leave a caller behind.
 //
-// Resolution and hygiene are OwnEngineHostPath's, for OwnEngineHostPath's
-// reasons: the stage hands this path to open_tree(2), which follows a final
-// symlink, and G4 is exact membership — so a root recorded unresolved while a
-// graft's Host is resolved fails membership for a reason nobody wrote down
-// (issue #55, F6 §2d).
+// Resolution and hygiene are OwnEngineHostPath's, for its reasons: the stage
+// hands this path to open_tree(2), which follows a final symlink, and G4 is
+// exact membership — a root recorded unresolved while a graft's Host is
+// resolved fails membership for a reason nobody wrote down (#55, F6 §2d).
 //
-// An empty argument is a REFUSAL, not a no-op that clears the field. A caller
-// with nothing to record must not call this at all; treating "" as "forget
-// what you knew" would make the write-once property depend on argument value.
-func (p *Policy) EngineToolchain(env Environ, root string) error {
+// "" is a REFUSAL, not a no-op that clears the field, and the returned path is
+// "" on every error — a path beside a non-nil error is a value a careless
+// caller renders as though it had been approved.
+func (p *Policy) JudgeEngineToolchain(env Environ, root string) (string, error) {
 	if root == "" {
-		return fmt.Errorf("cannot record the engine's toolchain root: the path is empty.\n" +
+		return "", fmt.Errorf("cannot record the engine's toolchain root: the path is empty.\n" +
 			"       A caller with no toolchain root to record must not call this — an empty\n" +
 			"       value here would silently clear one already recorded.")
 	}
@@ -172,8 +166,8 @@ func (p *Policy) EngineToolchain(env Environ, root string) error {
 	// reader to discover by diffing this against Resolve's own resolution
 	// (resolve.go:177): on an EvalSymlinks error, Resolve HARD-FAILS a
 	// non-Optional grant, while this degrades to a bare filepath.Clean. Not a
-	// defect and not unified here — a caller of EngineToolchain has no
-	// Optional to consult, and the fallback is unreachable for the one
+	// defect and not unified here — a caller here has no Optional to
+	// consult, and the fallback is unreachable for the one
 	// production caller anyway (preflightToolchainRoot's os.Stat+IsDir already
 	// requires the root to exist, so ResolveExistingHostPath's own "not even /
 	// resolves" failure mode never fires against a real filesystem). Named so
@@ -184,7 +178,7 @@ func (p *Policy) EngineToolchain(env Environ, root string) error {
 		root = filepath.Clean(root)
 	}
 	if err := checkPathHygiene("engine toolchain root", root, "(snug)", "the ENGINE VIEW block"); err != nil {
-		return err
+		return "", err
 	}
 	// The as-given spelling reaches a REFUSAL a human reads (the selection arm
 	// at the end of this function), so it is a SINK and gets the same check the
@@ -195,25 +189,18 @@ func (p *Policy) EngineToolchain(env Environ, root string) error {
 	// the ordinary case: the check has already run on it.
 	if asGiven != root {
 		if err := checkPathHygiene("engine toolchain root (asked)", asGiven, "(snug)", "the ENGINE VIEW block"); err != nil {
-			return err
+			return "", err
 		}
-	}
-	if p.EngineToolchainRoot != "" && p.EngineToolchainRoot != root {
-		return fmt.Errorf("cannot record %s as the engine's toolchain root: this run already\n"+
-			"       recorded %s. There is one engine per run, so a second, different root is a\n"+
-			"       bug in the caller rather than a disagreement to resolve — and choosing\n"+
-			"       between them here would decide which host directory the engine may execute\n"+
-			"       out of without saying so.", root, p.EngineToolchainRoot)
 	}
 	// Issue #405, first half through this door: G4b (checkGraft, below) only
 	// ever runs when a graft of this root is actually installed, which never
-	// happens while $SNUG_PODMAN_ROOT is unset. Asking here, at the one writer
-	// of p.EngineToolchainRoot, means a root the sandbox's own grants (or a
-	// grant strictly inside it) already make writable is refused before it is
+	// happens while $SNUG_PODMAN_ROOT is unset. Asking on the path to the one
+	// writer of p.EngineToolchainRoot means a root the sandbox's own grants (or
+	// a grant strictly inside it) already make writable is refused before it is
 	// ever recorded — not left to wait for a graft that, on the common
 	// unset-env path, is never attempted at all.
 	if err := p.CheckEngineToolchainTree(root); err != nil {
-		return err
+		return "", err
 	}
 	// Issue #369's second door: this function used to judge the root only
 	// AFTER resolving it, so $SNUG_PODMAN_ROOT=$TARGET/bundle — a symlink the
@@ -240,7 +227,7 @@ func (p *Policy) EngineToolchain(env Environ, root string) error {
 	// checkGraft's G4b deliberately has no equivalent door; the reason is the
 	// theorem in writableNameOnChain's own comment (engineexec.go).
 	if name, asked, found := p.writableNameOnChain(env, asGiven); found {
-		return fmt.Errorf("%s cannot be this run's engine toolchain root: %s\n"+
+		return "", fmt.Errorf("%s cannot be this run's engine toolchain root: %s\n"+
 			"       The directory at the end of that chain is not writable, and neither is anything\n"+
 			"       inside it — snug checked both of those first. So this is not the payload EDITING\n"+
 			"       the toolchain; it is the payload CHOOSING it. The engine resolves conmon, crun,\n"+
@@ -252,7 +239,43 @@ func (p *Policy) EngineToolchain(env Environ, root string) error {
 			"       Fix: point $SNUG_PODMAN_ROOT at the installation directory itself, or drop the rw\n"+
 			"       grant that covers the name above.", asGiven, selectionClause(name, asked))
 	}
-	p.EngineToolchainRoot = root
+	return root, nil
+}
+
+// EngineToolchain records the ONE host directory the container engine's own
+// program files live in, as G4's third source — see the field's doc comment
+// (types.go) for what it is for and why it is exact, single and read-only.
+// It is the ONLY writer of p.EngineToolchainRoot
+// (TestOnlyOneWriterOfEngineToolchainRoot), the same device Policy.Graft is
+// for p.Grafts and OwnEngineHostPath is for p.EngineOwnedHostPaths.
+//
+// Everything it JUDGES is JudgeEngineToolchain's, so the run and --dry-run
+// cannot reach different verdicts about one string (issue #422). What is left
+// here is the RECORD.
+//
+// Written ONCE. A second call with a DIFFERENT value is an error rather than
+// a replacement: there is one engine per run, so two toolchain roots is a bug
+// in the caller, and silently keeping either one would decide, without saying
+// so, which host directory the engine may execute out of. A repeat of the
+// SAME value is accepted.
+//
+// Write-once now runs AFTER the judgement, so a second, different, WRITABLE
+// root reports the writability refusal where it used to report this one. Both
+// refuse and the writability fact is graver; no production caller reaches the
+// pair anyway (container.go calls this once per run).
+func (p *Policy) EngineToolchain(env Environ, root string) error {
+	resolved, err := p.JudgeEngineToolchain(env, root)
+	if err != nil {
+		return err
+	}
+	if p.EngineToolchainRoot != "" && p.EngineToolchainRoot != resolved {
+		return fmt.Errorf("cannot record %s as the engine's toolchain root: this run already\n"+
+			"       recorded %s. There is one engine per run, so a second, different root is a\n"+
+			"       bug in the caller rather than a disagreement to resolve — and choosing\n"+
+			"       between them here would decide which host directory the engine may execute\n"+
+			"       out of without saying so.", resolved, p.EngineToolchainRoot)
+	}
+	p.EngineToolchainRoot = resolved
 	return nil
 }
 
@@ -1093,7 +1116,7 @@ func existsInSandbox(p *Policy, guest string) bool {
 //     value the CALLER resolved before handing it here: CheckEngineBinary's
 //     path is preflightPodmanBinary's return, resolved at
 //     containerpreflight.go's own two return sites; CheckEngineToolchainTree's
-//     root is EngineToolchain's argument, already put through
+//     root is JudgeEngineToolchain's argument, already put through
 //     ResolveExistingHostPath a few lines above where it calls this file's B1
 //     check, or (from checkGraft's G4b) a Graft.Host Policy.Graft already
 //     resolved — the same fixed point checkGraft's own entry above relies on.

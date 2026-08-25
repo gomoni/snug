@@ -66,7 +66,7 @@ func runContainerPreflight(env policy.Environ, pol *policy.Policy) (containerPre
 			"subgid range and could not get one: %w", err)
 	}
 	cgroupsDisabled := preflightCgroupsWritable()
-	toolchainRoot, err := preflightToolchainRoot(podman)
+	toolchainRoot, err := preflightToolchainRoot(env, podman)
 	if err != nil {
 		return containerPreflight{}, err
 	}
@@ -110,8 +110,16 @@ func runContainerPreflight(env policy.Environ, pol *policy.Policy) (containerPre
 // binary must be INSIDE the named root. A root that does not contain the
 // binary is a misconfiguration whose symptom would otherwise be an engine
 // that cannot exec, and naming it here costs one stat.
-func preflightToolchainRoot(podman string) (string, error) {
-	root := os.Getenv("SNUG_PODMAN_ROOT")
+//
+// The variable and the stat both come off the INJECTED Environ, not os
+// directly. Identical in production (OSEnviron.Getenv is os.Getenv,
+// OSEnviron.Stat is os.Stat), and the point is that the run and --dry-run read
+// ONE host: buildContainersReport judges this same value through
+// JudgeEngineToolchain off the same seam (issue #422), and a preflight reading
+// a second sample is how the two screens start disagreeing about which string
+// was judged.
+func preflightToolchainRoot(env policy.Environ, podman string) (string, error) {
+	root := env.Getenv("SNUG_PODMAN_ROOT")
 	if root == "" {
 		return "", nil
 	}
@@ -122,7 +130,7 @@ func preflightToolchainRoot(podman string) (string, error) {
 			"      resolved against snug's own working directory and mean something else to every\n"+
 			"      other process that reads it.", root)
 	}
-	fi, err := os.Stat(root)
+	fi, err := env.Stat(root)
 	if err != nil || !fi.IsDir() {
 		return "", fmt.Errorf("$SNUG_PODMAN_ROOT=%s is not a directory on this host.\n"+
 			"      It must name the ROOT of the engine's own installation — the directory that\n"+
@@ -321,8 +329,8 @@ func preflightPodmanBinary(env policy.Environ, pol *policy.Policy) (string, erro
 	// THAT BYPASS IS ISSUE #396: the named path is never checked for being a
 	// shim itself, so $SNUG_PODMAN pointing at a host-escape helper is
 	// accepted by the function whose whole purpose is refusing one.
-	if custom := os.Getenv("SNUG_PODMAN"); custom != "" {
-		if fi, err := os.Stat(custom); err != nil || fi.IsDir() {
+	if custom := env.Getenv("SNUG_PODMAN"); custom != "" {
+		if fi, err := env.Stat(custom); err != nil || fi.IsDir() {
 			return "", fmt.Errorf("$SNUG_PODMAN=%s does not name a usable file", custom)
 		}
 		// ISSUE #396. The named path gets the SAME shim check as a path from
@@ -368,7 +376,7 @@ func preflightPodmanBinary(env policy.Environ, pol *policy.Policy) (string, erro
 			"global CONTAINER_HOST, because snug execs podman to run its own engine.",
 			shim.Path, filepath.Base(shim.Resolved), shim.Path)
 	}
-	path, err := exec.LookPath("podman")
+	path, err := env.LookPath("podman")
 	if err != nil {
 		return "", fmt.Errorf("the podman profile is selected but podman is not installed.\n" +
 			"      snug will not silently hand the sandbox no engine, or the host's.\n" +

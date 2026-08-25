@@ -409,3 +409,95 @@ func TestEngineToolchainRefusesAForgingRuneInTheAskedSpelling(t *testing.T) {
 		t.Errorf("control: a trailing slash was refused: %v", err)
 	}
 }
+
+// ── issue #422: the split cannot drift ──────────────────────────────────────
+
+// TestJudgeEngineToolchainAgreesWithEngineToolchain is the split's own
+// invariant: JudgeEngineToolchain (report.go's caller, records nothing) and
+// EngineToolchain (the run's writer) must reach the same verdict for the same
+// root, over the same host. Compared as EQUIVALENCE — error or not, and on
+// success the exact string recorded — rather than by wording, so a future
+// reword of either refusal cannot fail this and a future divergence in
+// verdict always will.
+func TestJudgeEngineToolchainAgreesWithEngineToolchain(t *testing.T) {
+	cases := []struct {
+		name  string
+		root  string
+		setup func(*fakeEnv)
+	}{
+		{"clean and ungranted", "/home/u/secrets", nil},
+		{"the writable target itself", "/home/u/proj/sub", nil},
+		{"empty argument", "", nil},
+		{"relative path", "relative/path", nil},
+		{"nonexistent and ungranted", "/srv/nowhere-422", nil},
+		// The selection arm's shape (TestEngineToolchainJudgesTheNameNotOnlyTheTarget's
+		// fixture): a spelling inside the writable target, resolving to a clean,
+		// ro-granted directory.
+		{"symlink whose name is writable, resolving to clean bytes", "/home/u/proj/sub/bundle",
+			func(env *fakeEnv) { env.links["/home/u/proj/sub/bundle"] = "/opt/tools/bin" }},
+		// Issue #422's own shape, inside this package: a spelling OUTSIDE every
+		// grant that RESOLVES into the writable target. A judge that checked the
+		// spelling instead of the resolved bytes would clear this.
+		{"symlink outside every grant resolving into the writable target", "/srv/bundle-422",
+			func(env *fakeEnv) { env.links["/srv/bundle-422"] = "/home/u/proj/sub" }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newFakeEnv()
+			if tc.setup != nil {
+				tc.setup(env)
+			}
+			p := resolveDefaults(t)
+
+			resolved, jerr := p.JudgeEngineToolchain(env, tc.root)
+			eerr := p.EngineToolchain(env, tc.root)
+
+			if (jerr != nil) != (eerr != nil) {
+				t.Fatalf("JudgeEngineToolchain err=%v, EngineToolchain err=%v for %q — the two "+
+					"functions disagree about whether this root is accepted", jerr, eerr, tc.root)
+			}
+			if eerr == nil {
+				if p.EngineToolchainRoot != resolved {
+					t.Errorf("EngineToolchainRoot = %q, want JudgeEngineToolchain's own answer %q",
+						p.EngineToolchainRoot, resolved)
+				}
+			} else if p.EngineToolchainRoot != "" {
+				t.Errorf("a root EngineToolchain refused was recorded anyway: %q",
+					p.EngineToolchainRoot)
+			}
+		})
+	}
+}
+
+// TestEngineToolchainSecondDifferentWritableRootReportsWritability pins the
+// deliberate behaviour change the split introduced: write-once now runs AFTER
+// the judgement, so a second, different root that is ITSELF writable reports
+// the writability refusal rather than "this run already recorded a different
+// root". Before the split both checks ran in the other order and this case
+// reported write-once's message instead.
+func TestEngineToolchainSecondDifferentWritableRootReportsWritability(t *testing.T) {
+	env := newFakeEnv()
+	p := resolveDefaults(t)
+
+	const first = "/home/u/secrets"   // clean, ungranted — accepted and recorded
+	const second = "/home/u/proj/sub" // the writable target itself
+
+	if err := p.EngineToolchain(env, first); err != nil {
+		t.Fatalf("first write refused: %v", err)
+	}
+	err := p.EngineToolchain(env, second)
+	if err == nil {
+		t.Fatal("a second, writable toolchain root was accepted")
+	}
+	if !strings.Contains(err.Error(), "WRITABLE") {
+		t.Errorf("the second call did not carry the writability refusal: %v", err)
+	}
+	if strings.Contains(err.Error(), "this run already") {
+		t.Errorf("the second call carried write-once's refusal instead of the writability one "+
+			"the judgement should have reached first: %v", err)
+	}
+	if p.EngineToolchainRoot != first {
+		t.Errorf("EngineToolchainRoot changed to %q after a refused second write", p.EngineToolchainRoot)
+	}
+}

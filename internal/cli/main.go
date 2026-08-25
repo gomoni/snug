@@ -320,7 +320,7 @@ func refusePolicy(cfg config, code int, err error, pol *policy.Policy, env polic
 	// The refusal is still the run's outcome and still returns code below. A
 	// render failure is reported and does not replace it: "the policy was
 	// refused" is the fact the caller must not lose.
-	if derr := dryRun(os.Stdout, pol, pol.BwrapArgs(env.Uid(), env.Gid()), cfg, err); derr != nil {
+	if derr := dryRun(env, os.Stdout, pol, pol.BwrapArgs(env.Uid(), env.Gid()), cfg, err); derr != nil {
 		fmt.Fprintf(os.Stderr, "snug: %v\n", derr)
 	}
 	fmt.Fprintf(os.Stderr, "snug: %v\n", err)
@@ -614,7 +614,7 @@ func run(cfg config) int {
 	args := pol.BwrapArgs(env.Uid(), env.Gid())
 
 	if cfg.dryRun {
-		if derr := dryRun(os.Stdout, pol, args, cfg, nil); derr != nil {
+		if derr := dryRun(env, os.Stdout, pol, args, cfg, nil); derr != nil {
 			return refuseWithoutDocument(exitInternal, derr)
 		}
 		return 0

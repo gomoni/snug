@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"os"
 	"runtime"
 	"sort"
 	"strings"
@@ -267,22 +266,35 @@ type reportContainers struct {
 	// than an omission: --dry-run runs no preflight, so it cannot resolve PATH,
 	// and there is no path to judge. The screen says which of the two it is.
 	//
-	// JUDGED ON THE PATH AS SPELLED. This comment used to say a real run's
-	// canonicalisation could make the run judge a different, unrefused
-	// spelling than this screen showed — true, and it was the tell: the run
-	// judged only what a symlink pointed at, so it accepted what --dry-run
-	// correctly refused. ResolveEngineBinary now judges the spelling and
-	// every name between it and the bytes, so a refusal shown here is a
-	// refusal the run will also make. What --dry-run still cannot see is the
-	// CHAIN itself: it touches no filesystem, so it cannot follow a symlink
-	// to state one.
+	// It is the RUN's OWN refusal text, from the run's own entry point
+	// (ResolveEngineBinary), not a paraphrase: since issue #422 this screen
+	// judges by calling what the run calls over the same string, so the
+	// refusal has four possible subjects — not absolute, a control character
+	// in the value, writable bytes, a writable NAME on the resolution chain —
+	// and a canned sentence asserting the third was the version that lied.
 	EngineBinaryRefusal string
+	// EngineBinaryResolved is what $SNUG_PODMAN resolves to on this host, "" on
+	// a refusal (ResolveEngineBinary returns no path beside an error) and equal
+	// to the spelling when nothing on the way to it is a symlink. Host text.
+	EngineBinaryResolved string
+	// EngineBinaryIsRegularFile discharges CheckEngineBinary's regular-FILE
+	// precondition, which the run discharges with preflight's own stat. Without
+	// it this screen would judge a DIRECTORY-valued $SNUG_PODMAN by an
+	// ancestor-only arm that is blind to a writable grant strictly inside it —
+	// issue #422 one field over. False renders NOT JUDGED, never a clearance.
+	EngineBinaryIsRegularFile bool
 	// ToolchainRootRefusal is the same for $SNUG_PODMAN_ROOT, and it covers the
 	// arm G4b structurally could not see: a writable grant anywhere INSIDE the
-	// tree, not only at or above the root (issue #405, second half).
+	// tree, not only at or above the root (issue #405, second half). Also the
+	// run's own text, from JudgeEngineToolchain.
 	ToolchainRootRefusal string
-	Logins               bool
-	PortMapping          bool
+	// ToolchainRootResolved and ToolchainRootIsDir are EngineBinaryResolved and
+	// EngineBinaryIsRegularFile for the root; the kind asked about is IsDir
+	// because a tree is what the two arms of CheckEngineToolchainTree walk.
+	ToolchainRootResolved string
+	ToolchainRootIsDir    bool
+	Logins                bool
+	PortMapping           bool
 }
 
 type reportEnvVar struct {
@@ -377,9 +389,11 @@ type reportSeccomp struct {
 // longLivedProcesses, notGranted — rather than a second opinion computed
 // beside them.
 //
-// It touches the host in exactly the two places --dry-run already did:
-// notGranted stats candidate paths, and the engine source reads two
-// environment variables. Neither is new here.
+// It touches the host where --dry-run already did — notGranted stats candidate
+// paths — plus, since issue #422, the resolution of $SNUG_PODMAN and
+// $SNUG_PODMAN_ROOT when either is set: buildContainersReport judges them by
+// calling what the run calls, which means following the symlinks the run
+// follows.
 // sig is a THUNK and a PARAMETER, for the reason buildContainersReport's own doc
 // gives one line down: it is the only host read anywhere in this report, so a
 // builder that fetched it itself would make every golden's verdict depend on
@@ -387,8 +401,8 @@ type reportSeccomp struct {
 // it does in CI and does not on the development host, so json.podman-socket.json
 // passed locally and failed there with
 // "signature_policy_source": "/etc/containers/policy.json".
-func buildReport(p *policy.Policy, args []string, cfg config, refusedBy error,
-	sig func() engine.SignaturePolicySummary) Report {
+func buildReport(env policy.Environ, p *policy.Policy, args []string, cfg config,
+	refusedBy error, sig func() engine.SignaturePolicySummary) Report {
 	rep := Report{
 		Outcome:        "ok",
 		Target:         p.Target,
@@ -402,7 +416,7 @@ func buildReport(p *policy.Policy, args []string, cfg config, refusedBy error,
 		NotGranted:     notGranted(p),
 		Network:        buildNetworkReport(p),
 		Topology:       buildTopologyReport(p),
-		Containers:     buildContainersReport(p, sig),
+		Containers:     buildContainersReport(env, p, sig),
 		Seccomp:        buildSeccompReport(cfg),
 		NewSession:     p.NewSession,
 		BwrapArgv:      args,
@@ -572,14 +586,14 @@ func buildTopologyReport(p *policy.Policy) reportTopology {
 // it names — measured by strace — and threw the answer away. --dry-run's whole
 // pitch is that it touches as little as possible, and a host policy naming
 // 24,000 key paths made an unrelated dry run do 24,000 host reads.
-func buildContainersReport(p *policy.Policy, sig func() engine.SignaturePolicySummary) *reportContainers {
+func buildContainersReport(env policy.Environ, p *policy.Policy,
+	sig func() engine.SignaturePolicySummary) *reportContainers {
 	if p.Podman == policy.PodmanOff {
 		return nil
 	}
 	c := &reportContainers{
-		Socket:        containerSocketGuest,
-		EngineSource:  "PATH",
-		ToolchainRoot: os.Getenv("SNUG_PODMAN_ROOT"),
+		Socket:       containerSocketGuest,
+		EngineSource: "PATH",
 		// docker.io and nothing else — a generated registries.conf, no mirror,
 		// no rewrite, no insecure registry (issue #137).
 		RegistrySearch: []string{"docker.io"},
@@ -604,19 +618,44 @@ func buildContainersReport(p *policy.Policy, sig func() engine.SignaturePolicySu
 		c.SignaturePolicyRefusal = summary.Refusal.Error()
 	}
 
-	if custom := os.Getenv("SNUG_PODMAN"); custom != "" {
+	// THE RUN'S OWN ENTRY POINTS, not a subset of their checks re-composed here
+	// (issue #422). This screen used to call CheckEngineBinary and
+	// CheckEngineToolchainTree on the raw env value, so a $SNUG_PODMAN_ROOT
+	// spelled outside every grant but resolving INTO the @cwd-rw target printed
+	// "no grant makes the root ... writable" while the run refused it. Neither
+	// ResolveEngineBinary nor JudgeEngineToolchain writes to p.
+	//
+	// This is host I/O the two lines it replaced did not do, and it is in
+	// budget: bounded by the path's component count and spent only when the
+	// variable is set, where the thunk above guards against a cost bounded by
+	// HOST CONTENT (a policy.json naming 24,000 key paths).
+	if custom := env.Getenv("SNUG_PODMAN"); custom != "" {
 		c.EngineSource = "SNUG_PODMAN"
 		c.EngineBinary = custom
-		// Free and offline: an env read plus the same lexical predicate the run
-		// uses. No filesystem, so this stays inside --dry-run's own budget (see
-		// this function's doc comment on the signature-policy thunk).
-		if err := p.CheckEngineBinary(custom); err != nil {
+		resolved, err := p.ResolveEngineBinary(env, custom)
+		c.EngineBinaryResolved = resolved
+		if err != nil {
 			c.EngineBinaryRefusal = err.Error()
 		}
+		// EXISTENCE IS A RENDERING INPUT, NEVER A POLICY ONE, and it may only
+		// move a verdict from cleared to NOT JUDGED — never create a refusal,
+		// never soften one. That asymmetry is what stops it becoming a prettier
+		// lie: a payload can turn NOT JUDGED into a clearance only by CREATING
+		// the object, and only where a writable grant covers it, which is where
+		// the refusal above has already fired.
+		if fi, serr := env.Stat(custom); serr == nil && fi.Mode().IsRegular() {
+			c.EngineBinaryIsRegularFile = true
+		}
 	}
-	if c.ToolchainRoot != "" {
-		if err := p.CheckEngineToolchainTree(c.ToolchainRoot); err != nil {
+	if root := env.Getenv("SNUG_PODMAN_ROOT"); root != "" {
+		c.ToolchainRoot = root
+		resolved, err := p.JudgeEngineToolchain(env, root)
+		c.ToolchainRootResolved = resolved
+		if err != nil {
 			c.ToolchainRootRefusal = err.Error()
+		}
+		if fi, serr := env.Stat(root); serr == nil && fi.IsDir() {
+			c.ToolchainRootIsDir = true
 		}
 	}
 	return c

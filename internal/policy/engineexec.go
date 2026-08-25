@@ -34,16 +34,16 @@ import (
 // (TestWritableNameOnChainAddsNothingOnACanonicalPath): the spelling arm's
 // walk is HostPathVisible's own ancestor check, and the resolved arm can
 // never fire, because every prefix of a symlink-free path is itself
-// symlink-free. That is why only the two writers that accept a human's raw
+// symlink-free. That is why only the two functions that accept a human's raw
 // string call it: ResolveEngineBinary ($SNUG_PODMAN or exec.LookPath's
-// answer) and EngineToolchain ($SNUG_PODMAN_ROOT). checkGraft's G4b judges
+// answer) and JudgeEngineToolchain ($SNUG_PODMAN_ROOT). checkGraft's G4b judges
 // g.Host, which for the toolchain disjunct must equal p.EngineToolchainRoot
 // — already a fixed point of ResolveExistingHostPath by the time G4b runs
 // — so the raw spelling never reaches G4b and there is nothing there left
 // to ask this question of.
 //
 // The two callers are ordered in time, not in competition: a root refused
-// here by EngineToolchain is never recorded, so the toolchain disjunct's
+// here is never recorded by EngineToolchain, so the toolchain disjunct's
 // `g.Host == p.EngineToolchainRoot` can never be satisfied for it and the
 // graft is never attempted.
 func (p *Policy) writableNameOnChain(env Environ, asGiven string) (name, asked string, found bool) {
@@ -80,6 +80,11 @@ func (p *Policy) writableNameOnChain(env Environ, asGiven string) (name, asked s
 // the host, so there is no call-site precondition left for a later change
 // to move, and no window in which the value judged and the value exec'd
 // could be two different samples.
+//
+// It writes nothing to p, which is what lets --dry-run reach the run's own
+// verdict rather than re-compose a subset of it: buildContainersReport
+// (internal/cli/report.go) is the second caller and needs the verdict without
+// the record (issue #422).
 //
 // ABSOLUTE, refused rather than accommodated. exec.LookPath fails closed on
 // a relative PATH entry (MEASURED, by the agent that specified this: it
@@ -194,36 +199,33 @@ func selectionClause(name, asked string) string {
 // HostPathVisible already answers. The message names the path judged and
 // points at --dry-run, which already lists every grant.
 //
-// PRECONDITIONS. This is a purely lexical comparison, so it is only as sound
-// as the strings it compares, and canonicalisation has OPPOSITE signs on the
-// two sides — merging them is how this defect happened:
+// PRECONDITIONS. A purely lexical comparison, so it is only as sound as the
+// strings it compares, and canonicalisation has OPPOSITE signs on the two
+// sides — merging them is how this defect happened:
 //
-//   - The GRANT side must be canonical, and is: Resolve (resolve.go:177)
-//     runs every KindBind grant's Host through env.EvalSymlinks before it
-//     ever reaches p.Mounts, so a grant spelled /proj/link, where link
-//     points at the real toolchain directory, cannot hide a writable grant
-//     from this check — m.Host is already the resolved target, never the
-//     spelling a profile wrote.
+//   - The GRANT side must be CANONICAL, and is: Resolve runs every KindBind
+//     grant's Host through env.EvalSymlinks before it reaches p.Mounts, so a
+//     grant spelled /proj/link cannot hide a writable grant from this check.
 //
-//   - The JUDGED path must NOT be canonicalised before this runs, and used
-//     to be: the precondition once read "requires path itself to be
-//     CANONICAL", discharged by a ResolveExistingHostPath call at
-//     preflightPodmanBinary's two return sites. MEASURED: a
-//     payload-writable symlink at $TARGET/podman -> /usr/bin/true was
-//     resolved before this ran, so this judged /usr/bin/true — read-only,
-//     correctly accepted — and snug exec'd the binary the payload had
-//     chosen. What this function may assume is therefore not "canonical"
-//     but FINAL: path is the byte sequence snug is about to exec, and this
-//     function takes no view on how that path was named. "Could the
-//     payload choose this name" is a different question, and
-//     ResolveEngineBinary (above) owns it, resolving and judging in one
-//     call so no call site is left holding an obligation it can drop.
+//   - path must be FINAL, and NOT canonicalised by the caller. MEASURED: a
+//     payload-writable symlink at $TARGET/podman -> /usr/bin/true, resolved
+//     before this ran, made this judge /usr/bin/true — read-only, correctly
+//     accepted — and snug exec'd the binary the payload had chosen. "Could
+//     the payload choose this NAME" is a different question, and
+//     ResolveEngineBinary (above) owns it, resolving and judging in one call
+//     over one sample of the host.
 //
-//   - path must name a regular FILE, which is what makes "ancestor only, no
-//     descendant arm" correct rather than a simplification. Discharged
-//     twice: preflightPodmanBinary's own fi.IsDir() refusal of a
-//     $SNUG_PODMAN naming a directory (containerpreflight.go), and
-//     os/exec's own refusal to return a directory from LookPath.
+//   - path must name a regular FILE. That is what makes "ancestor only, no
+//     descendant arm" correct rather than a simplification: a DIRECTORY has a
+//     strictly-below direction this function never asks about
+//     (CheckEngineToolchainTree is the tree half). Discharged ONE LEVEL UP,
+//     at ResolveEngineBinary's callers, because that is where a stat is
+//     possible — preflightPodmanBinary's fi.IsDir() refusal and os/exec's own
+//     refusal to return a directory from LookPath for the run;
+//     buildContainersReport's env.Stat for --dry-run, which renders NOT
+//     JUDGED rather than judge a name with no regular file behind it (#422).
+//
+// TWO CALLERS: ResolveEngineBinary (above) and container.go's field gate.
 func (p *Policy) CheckEngineBinary(path string) error {
 	path = filepath.Clean(path)
 	if !p.HostPathVisible(path, true) {
@@ -314,35 +316,21 @@ func (p *Policy) writableGrantsBelow(root string) []string {
 // choosing what the engine executes as root, even on a root whose top level
 // holds no podman at all.
 //
-// PRECONDITIONS, named with where each is discharged rather than assumed —
-// both arms are purely lexical, so an unresolved string on either side of the
-// comparison makes the answer meaningless:
+// PRECONDITIONS. Both arms are purely lexical, so an unresolved string on
+// either side of the comparison makes the answer meaningless:
 //
-//   - Requires every grant's Host to be CANONICAL. Discharged by Resolve
-//     (resolve.go:177) for the same reason and in the same place
-//     CheckEngineBinary's matching precondition names — a symlinked grant
-//     cannot hide a writable path from either arm, because m.Host is already
-//     resolved by the time this walks p.Mounts.
-//   - Requires root to be CANONICAL. Discharged at both call sites, never by
-//     this function itself: at B1, EngineToolchain resolves its argument via
-//     ResolveExistingHostPath (graft.go:162-166) BEFORE checkPathHygiene and
-//     therefore before it calls this check — CONDITIONALLY: that call falls
-//     back to a bare filepath.Clean when ResolveExistingHostPath errors, which
-//     it does only when not even "/" resolves through the injected Environ, an
-//     outcome preflightToolchainRoot's own os.Stat+IsDir on the root already
-//     excludes for the one production caller (containerpreflight.go), so the
-//     fallback is reachable only from a test-supplied Environ built to error
-//     unconditionally. At B2, Policy.Graft (graft.go:69-77) resolves g.Host
-//     through the SAME two-armed call and assigns the result back to g.Host
-//     before calling checkGraft — Policy.Graft's own fallback IS reachable in
-//     production for other grafts (its comment there: a resolution failure is
-//     not a refusal, because a path snug itself is about to create, like the
-//     store, legitimately does not exist yet), but not for the TOOLCHAIN
-//     disjunct specifically: g.Host there must equal p.EngineToolchainRoot,
-//     which preflightToolchainRoot already required to exist (os.Stat) before
-//     it was ever recorded, so the happy (fully-resolved) arm is what runs.
-//     Either way, the graft-time caller of this function is judging the
-//     identical fixed point checkGraft's other G4 disjuncts already rely on.
+//   - Every grant's Host must be CANONICAL. Discharged by Resolve, same place
+//     and same reason CheckEngineBinary's matching precondition names.
+//   - root must be CANONICAL, and both callers resolve it first:
+//     JudgeEngineToolchain (graft.go) through ResolveExistingHostPath, and
+//     checkGraft's G4b over a Graft.Host Policy.Graft already rewrote to the
+//     same fixed point. Both fall back to a bare filepath.Clean only when not
+//     even "/" resolves — a test Environ, not a host: preflightToolchainRoot's
+//     own os.Stat+IsDir excludes it for the production caller.
+//
+// TWO CALLERS, and --dry-run is not one of them: it arrives through
+// JudgeEngineToolchain, which is the whole of issue #422's fix. A third caller
+// judging a raw $SNUG_PODMAN_ROOT is that defect being made again.
 func (p *Policy) CheckEngineToolchainTree(root string) error {
 	root = filepath.Clean(root)
 	if p.HostPathVisible(root, true) {
