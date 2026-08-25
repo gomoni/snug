@@ -932,10 +932,32 @@ func engineGrafts(pol *policy.Policy) []stage.EngineGraft {
 //     nothing sets CONTAINERS_CONF and is IGNORED when this file does, so a
 //     hostile ~/.config or /etc config injects none of these keys, enumerated
 //     or not. default_capabilities is bounded a SECOND way regardless of any
-//     config: a container's delivered set is its own default INTERSECTED with
+//     config: a container's DELIVERED set is its own default INTERSECTED with
 //     policy.EngineCapBounding — measured 0x802405fb, the full 12-cap set, for
-//     `CapAdd:["ALL"]` (issue #146) — so the capability ceiling answers that
-//     key by construction even if it leaked.
+//     `CapAdd:["ALL"]` (issue #146).
+//
+//     That bounds the DELIVERED set only; it is NOT a ceiling on what a
+//     container can HOLD, and an earlier version of this comment called it one
+//     ("the capability ceiling answers that key by construction even if it
+//     leaked" — issue #412). A container that unshares its own userns resets
+//     the bounding set to full — measured, crun 1.28: delivered CapPrm
+//     00000000800405fb, then 000001ffffffffff with CAP_NET_ADMIN after
+//     `unshare -U -r`, which works only because CAP_SETFCAP is in the
+//     delivered set (a CAP_CHOWN-only container fails at `write
+//     /proc/self/uid_map: Operation not permitted`). That was crun with NO
+//     seccomp profile in the bundle; podman would add one, and this host's
+//     /usr/share/containers/seccomp.json allows clone/clone3/unshare with
+//     `args: []` and no CLONE_NEWUSER mask, so it would not close it here
+//     either — but the two were NOT measured together.
+//
+//     Why that is a defect in the sentence and not an escape: the regained
+//     caps are namespace-relative. Measured from root in a child userns U'
+//     with CapEff 000001ffffffffff, still in N — SIOCSIFFLAGS(lo,DOWN) EPERM,
+//     setns(inherited netns fd, CLONE_NEWNET) EPERM, where the same fd and
+//     syscall from a process that stayed in U succeed. So state the guarantee
+//     precisely: the engine's own process in U, and any descendant that stays
+//     in U, cannot reconfigure N. It is not a global denial of a capability to
+//     everything the engine runs.
 //
 //     ONE layer is REASONED, not measured, and named here so a future reader
 //     does not re-derive it wrongly: /usr/share/containers/containers.conf is

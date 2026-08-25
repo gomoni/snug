@@ -42,6 +42,20 @@ package policy
 // publishing. A compromised engine must not be able to reconfigure N — that
 // is what dropping NET_ADMIN buys, and it is why port publishing is declined
 // rather than paid for with a 13th cap.
+//
+// SCOPE THAT SENTENCE (issue #412): what the exclusion denies is the engine's
+// OWN process in U, and any descendant that stays in U. It is not a denial of
+// the bit to everything the engine runs. A nested user namespace resets the
+// bounding set to full — measured, CapBnd 000001ffffffffff with CAP_NET_ADMIN
+// present after `unshare -U -r` from a container holding only podman's
+// default 0x800405fb — and every cap in this file is subject to that, not
+// only CAP_SYS_PTRACE. The decision survives it because the regained bit is
+// namespace-relative and worthless against N: measured from root in a child
+// userns U', SIOCSIFFLAGS(lo,DOWN) on N -> EPERM and setns(inherited netns
+// fd, CLONE_NEWNET) -> EPERM, where the same fd and syscall from a process
+// that stayed in U succeed. The constraint on N is OWNERSHIP of N, which this
+// list cannot grant; the cap count is how the engine's own reach is bounded,
+// not what makes N unreachable.
 var EngineCapBounding = []string{
 	// mount overlay/tmpfs/proc/bind, unshare/setns, pivot_root — the
 	// irreducible reason the engine cannot take the container's own set.

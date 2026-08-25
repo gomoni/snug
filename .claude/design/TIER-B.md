@@ -53,7 +53,12 @@ finding; this is the record of what was decided about it.
   `CAP_NET_ADMIN` to bring a bridge up in the first place. So the `networks`
   endpoints are **not** special-cased as a hole and carry no refusal list:
   containment answers it structurally. Do **not** also inject `NetworkMode`
-  constraints. Implemented at `internal/dockerproxy/proxy.go`'s `case
+  constraints. **Of those two clauses the FIRST is the load-bearing one.** The
+  engine-holds-no-`CAP_NET_ADMIN` clause is true of the engine's own process in
+  U and of any descendant that stays in U — not of a container that unshares
+  its own userns and regains the bit (§3, issue #412). The answer is unchanged:
+  the regained bit reaches only that container's own netns, which has no path
+  to N. Implemented at `internal/dockerproxy/proxy.go`'s `case
   "networks"`.
 
 ---
@@ -61,14 +66,18 @@ finding; this is the record of what was decided about it.
 ## 2. The NET_ADMIN decision — twelve caps, share N, no port publishing
 
 The measurement in §5 surfaced a real fork, and the maintainer took the
-**tightest engine authority** of the two:
+**tightest engine authority** of it. **This table read as a binary for several
+milestones and is not one** — the third column was measured later (issue #412)
+and works; it is listed here so a future reader does not believe the question
+was settled against it, and settled on a *capability* argument when the real
+constraint is *ownership of N*:
 
-| | containers share N (host-mode) | containers get their own netns |
-|---|---|---|
-| engine caps | **12**, `CAP_NET_ADMIN` excluded | 13, `CAP_NET_ADMIN` granted |
-| `podman run -p` | not supported | works, publishing onto the sandbox's loopback |
-| per-container bridge | none | netavark, and its rootless-netns path still owed a re-measurement (it failed `netavark: setns: EPERM` under the bare topology even at 13 caps) |
-| cost | — | more engine authority in U, for the whole run |
+| | containers share N (host-mode) | containers get their own netns, 13 caps | own netns, **12** caps, container userns (#412) |
+|---|---|---|---|
+| engine caps | **12**, `CAP_NET_ADMIN` excluded | 13, `CAP_NET_ADMIN` granted | **12**, `CAP_NET_ADMIN` still excluded |
+| `podman run -p` | not supported | works, publishing onto the sandbox's loopback | not supported (see below) |
+| per-container bridge | none | netavark, and its rootless-netns path still owed a re-measurement (it failed `netavark: setns: EPERM` under the bare topology even at 13 caps) | none — the container has only `lo` |
+| cost | — | more engine authority in U, for the whole run | no new engine authority; the *connectivity* half is unbuilt and would cost invariant 6 |
 
 **Chosen: share N, twelve caps.** The consequences, stated so nobody carries
 the port-publishing assumption forward:
@@ -106,6 +115,48 @@ the port-publishing assumption forward:
 - [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §2's per-container-bridge and `-p`
   measurement is **superseded** by this decision. Read it as the feasibility
   proof it always was, not as the shipped shape.
+
+**The third column, measured (issue #412).** `crun 1.28`, inside U+N, from a
+process holding exactly `EngineCapBounding`, over two bundles differing only in
+`linux.namespaces`:
+
+```
+  config=netonly  {network}         exit=1  ioctl SIOCSIFFLAGS: Operation not permitted   <- #401's exact string
+  config=netuser  {network, user}   exit=0  MARKER-container-ran
+control, identical bundles, FULL caps in U: all three exit=0
+```
+
+The control column is what proves the difference is the capability set and not
+the bundle. A container that authors its own userns owns its own netns and can
+configure it — `uid_map: 0 0 1 / 1 1 64000`, the subuid layout
+`internal/stage/subuid.go` already builds, `CapBnd 000001ffffffffff`,
+`SIOCSIFFLAGS(lo,UP) -> OK` — with **no new engine capability and no new
+privileged helper**.
+
+- **Nothing here re-opens the 2026-08-18 decision, and §3's measurement is why.**
+  A descendant that regains `CAP_NET_ADMIN` still cannot touch N; ownership,
+  not the cap count, is what keeps N out of reach.
+- **The connectivity half is the genuine architecture question, and it is not
+  proposed.** A container in its own netns has only `lo`. Connecting it to N
+  needs `CAP_NET_ADMIN` **in N**, which only the stage holds — so it would mean
+  a per-container privileged operation in the stage's protocol, or one `pasta`
+  per container: a second author of network policy, i.e. invariant 6. Recorded
+  so the cheap half is not mistaken for the whole.
+- **`podman run -p` is not unlocked by any of it.** Publishing under a rootful
+  podman goes through netavark in N and still needs `CAP_NET_ADMIN` there;
+  `rootlessport` is not installed on this host at all.
+- **#401's `netns = "host"` pin is unaffected**, and forecloses nothing: under
+  podman as snug configures it a private-netns container never gets a userns
+  and hits the `SIOCSIFFLAGS` EPERM above, so there is no working private-netns
+  container to lose, and a `userns` pin would live in the same generated file.
+- **Not run, and named rather than smoothed:** pinning `[containers] userns =
+  "private"` with `netns = "none"` in `writeContainersConf` and running one
+  container — the single command that would settle the design question, expected
+  to run with only `lo`. Also unmeasured: `private` vs `auto` vs `keep-id` under
+  a podman that believes it is rootful inside U; podman's own seccomp profile
+  and the kernel behaviour measured together; whether a container in a nested
+  netns is still reaped correctly (`TestHostNsfsBindsDoNotLeak`,
+  `TestEngineNetnsReapedOnSIGKILL` are where that would surface).
 
 ---
 
@@ -147,6 +198,29 @@ U2, where full capabilities are namespace-relative and worthless against U's
 members (`user_namespaces(7)`). So the drop closes the in-U peer-read the
 standing gate forbids — and only on `ptrace_scope=1`, which is what makes Q2's
 refusal load-bearing rather than cautious.
+
+**That paragraph is about EVERY cap in the excluded list, not only PTRACE
+(issue #412).** It was written once and applied to one of its two halves for
+several milestones, and the half it skipped is `CAP_NET_ADMIN`. Measured the
+same way: a container delivered podman's default `0x800405fb` reaches `CapPrm
+000001ffffffffff` with `CAP_NET_ADMIN` present after `unshare -U -r`, and it
+works because **`CAP_SETFCAP` is in the delivered set** — `verify_root_map`
+wants it in the parent, and a `CAP_CHOWN`-only container fails at `write
+/proc/self/uid_map: Operation not permitted`. `CAP_SETFCAP` is in
+`EngineCapBounding` *and* in podman's default container set, so it is there by
+default. The exclusions still hold, for the same reason PTRACE's does: from
+root in a child userns U' with `CapEff 000001ffffffffff`, still in N,
+`SIOCSIFFLAGS(lo,DOWN)` returns EPERM and `setns(inherited netns fd,
+CLONE_NEWNET)` returns EPERM, where the same fd and syscall from a process that
+stayed in U succeed — the positive control that makes the probe mean something.
+So read this list as *what the engine's own process, and any descendant of it
+that stays in U, may do* — never as a ceiling on what everything the engine runs
+can hold. Caveat stated: the container measurement was `crun` with **no seccomp
+profile** in the bundle. Podman adds one; this host's
+`/usr/share/containers/seccomp.json` (libcontainers-common-20260521-1.1) allows
+`clone`/`clone3`/`unshare` with `args: []` and no `CLONE_NEWUSER` mask
+(`grep -c 2114060288` -> `0`), so it does not close it here — but the two were
+**not measured together end to end**.
 
 **One drop, and no uid-map re-exec — the distinction that stops a spurious
 one being added.** `__inengine` forks from a P1 that is *already* uid 0 in U
