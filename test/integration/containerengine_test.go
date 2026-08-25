@@ -38,6 +38,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -756,12 +757,25 @@ var (
 func netprobeBin(t *testing.T) string {
 	t.Helper()
 	netprobeBinOnce.Do(func() {
-		dir := t.TempDir()
-		// t.TempDir() is scoped to THIS test and removed on cleanup, but the
-		// binary is small and the build is fast (a few hundred ms), so paying
-		// it once per calling test rather than truly once per process is a
-		// deliberate simplicity trade, not an oversight — unlike snugBin, this
-		// is never on a hot path.
+		// os.MkdirTemp, NOT t.TempDir() (issue #401 sandbox-tester coverage,
+		// MEASURED). The comment this replaced called the previous choice "a
+		// deliberate simplicity trade... this is never on a hot path" and
+		// reasoned about "paying it once per calling test" — but sync.Once
+		// runs its function exactly ONCE FOR THE WHOLE BINARY, so a
+		// t.TempDir() taken inside it belongs to whichever test happens to
+		// call this FIRST, and is removed on THAT test's own cleanup. This
+		// function had exactly one caller for its whole history, so the
+		// defect never fired; adding
+		// TestADefaultModeContainerCannotReachHostLoopback as a second
+		// caller made it fire immediately: "fork/exec .../netprobe: no such
+		// file or directory" in whichever test ran second. os.MkdirTemp with
+		// no t.Cleanup, mirroring TestMain's own snugBin, is what makes a
+		// second caller in the same binary safe.
+		dir, err := os.MkdirTemp("", "snug-netprobe")
+		if err != nil {
+			netprobeBinErr = fmt.Errorf("creating a build dir for testdata/netprobe: %w", err)
+			return
+		}
 		bin := filepath.Join(dir, "netprobe")
 		cmd := exec.Command("go", "build", "-o", bin, "./testdata/netprobe")
 		cmd.Dir = "."
@@ -825,10 +839,20 @@ func buildScratchProbeImage(tag string) string {
 // runContainerAndCollect creates, starts, waits for and removes a container
 // from tag, returning its stdout/stderr (Tty=true, so the compat logs
 // endpoint needs no stream-framing decode). network is HostConfig.NetworkMode
-// verbatim — "host" is the ONLY mode this tier actually supports (see
-// internal/dockerproxy/create.go's own doc comment on the inversion), so
-// every caller in this file passes it explicitly rather than relying on
-// podman's own default.
+// verbatim — "host" is what every caller in this file has always passed
+// explicitly, rather than relying on podman's own default.
+//
+// That comment used to say "host" is the ONLY mode this tier supports. Since
+// issue #401's containers.conf pin (netns = "host" in
+// internal/engine/engine.go's writeContainersConf) that is no longer true in
+// the way it reads: an UNSET NetworkMode now lands in the same place "host"
+// does — the engine's own netns, which is this sandbox's own since Tier B —
+// so a caller could equally well omit HostConfig.NetworkMode entirely.
+// Nothing here does, on purpose: this function's job is to be the STABLE
+// helper every pre-#401 test already depends on, and
+// TestAContainerThatNamesNoNetworkModeJoinsTheSandboxsNetns below is what
+// actually exercises the omitted-key path, deliberately kept out of this
+// shared helper so a caller that wants "host" spelled out still gets it.
 const runContainerAndCollectFn = `
 def run_and_collect(tag, cmd, network):
     # A freshly built LOCAL image is tagged "localhost/<tag>", not "<tag>" --
@@ -997,6 +1021,127 @@ print("PROBE-COMPLETE", flush=True)
 	}
 }
 
+// TestADefaultModeContainerCannotReachHostLoopback is issue #401's
+// adjacent-closed assertion: TestAContainerThatNamesNoNetworkModeJoinsThe
+// SandboxsNetns proves WHERE a default-mode (no HostConfig.NetworkMode at
+// all) container's netns is; this proves what that placement actually buys —
+// the identical closure TestHostLoopbackClosedFromContainer above already
+// measures for an EXPLICIT NetworkMode="host" container, now for the shape
+// an ordinary docker client sends when it names no --network flag at all.
+// Nothing before this test exercised that shape against a real listener —
+// every existing caller of the closed-loopback check passes "host" or
+// "none" explicitly.
+//
+// Same disciplines as TestHostLoopbackClosedFromContainer, on purpose: the
+// host-side positive control (the listener really is reachable from the
+// host before anything else runs), the ON-THE-HOST positive control for the
+// probe binary itself (issue #243 — a probe that cannot report REACHED for
+// a listener it truly reached proves nothing about a probe that reports
+// nothing for one it could not reach), and the address-named RESULT check
+// (a verdict about the wrong address is no result at all).
+func TestADefaultModeContainerCannotReachHostLoopback(t *testing.T) {
+	budget(t, 60*time.Second)
+	env, _ := containerEngineEnv(t)
+	requireRealEngine(t, env)
+	probeBin := netprobeBin(t)
+
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveBanner(t, ln)
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	// CONTROL: the host can reach its own listener.
+	c, err := net.DialTimeout("tcp4", fmt.Sprintf("127.0.0.1:%d", port), 5*time.Second)
+	if err != nil {
+		t.Fatalf("precondition: the host cannot reach its own listener: %v", err)
+	}
+	c.Close()
+
+	// POSITIVE CONTROL, on the exact binary the container will run: from a
+	// process that CAN reach this listener, netprobe prints the REACHED
+	// spelling the negative below greps for, naming this address and
+	// carrying the banner (issue #243's discipline).
+	hostOut, err := exec.Command(probeBin, strconv.Itoa(port)).CombinedOutput()
+	if err != nil {
+		t.Fatalf("control: netprobe failed on the host: %v\n%s", err, hostOut)
+	}
+	if !hasResultVerdict(parseProbeResults(string(hostOut)), "v4-loop", fmt.Sprintf("127.0.0.1:%d", port), "REACHED") {
+		t.Fatalf("control: netprobe run ON THE HOST did not report REACHED for the host's own "+
+			"listener — the negative below cannot distinguish a closed sandbox from a broken "+
+			"probe:\n%s", hostOut)
+	}
+	if !strings.Contains(string(hostOut), hostBanner) {
+		t.Fatalf("control: netprobe run ON THE HOST did not read the banner this test's escape "+
+			"assertion greps for:\n%s", hostOut)
+	}
+
+	tag := "snugtest-loopback401-default:1"
+	proj, _ := target(t)
+	if err := os.WriteFile(filepath.Join(proj, "netprobe"), mustRead(t, probeBin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Cmd carries the PORT ALONE (issue #243: podman APPENDS Cmd to the
+	// image's own ENTRYPOINT rather than replacing it, so a Cmd naming the
+	// binary again pushed the port to argv[2] and the probe read its own
+	// path as the port).
+	script := buildScratchProbeImage(tag) + runContainerAndCollectDefaultFn + fmt.Sprintf(`
+if build_scratch_probe():
+    run_and_collect_default(%q, ["%d"])
+print("PROBE-COMPLETE", flush=True)
+`, tag, port)
+	if err := os.WriteFile(filepath.Join(proj, "loopback401default.py"), []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := runEnv(t, env, []string{"-p", "@podman-build"}, proj, `python3 loopback401default.py`).mustRun(t)
+	if !strings.Contains(r.out, "PROBE-COMPLETE") {
+		t.Fatalf("the container-loopback probe did not run to the end:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, fmt.Sprintf("BUILD %s: 200", tag)) {
+		t.Fatalf("the from-scratch image did not build — this test proves nothing about a "+
+			"container it never ran:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "LOGS-BEGIN") || !strings.Contains(r.out, "RESULT") {
+		t.Fatalf("the container never produced its own RESULT lines — it did not actually "+
+			"run:\n%s", r.out)
+	}
+
+	// CONTROL: the RESULT lines are about the address this test opened, not
+	// about a dial that never left the probe process (issue #243).
+	results := parseProbeResults(r.out)
+	want := fmt.Sprintf("127.0.0.1:%d", port)
+	if !hasResult(results, "v4-loop", want) {
+		t.Fatalf("the container's probe never dialled %s — every negative below would pass on a "+
+			"sandbox that leaks. RESULT lines: %v\n%s", want, results, r.out)
+	}
+	for _, res := range results {
+		if res.verdict == "ERROR" {
+			t.Fatalf("the container's probe reported ERROR rather than a network verdict — the "+
+				"probe is broken, and its negatives mean nothing\n%s", r.out)
+		}
+	}
+
+	if strings.Contains(r.out, hostBanner) {
+		t.Errorf("a DEFAULT-mode container (no HostConfig.NetworkMode at all) READ the host's "+
+			"loopback banner:\n%s", r.out)
+	}
+	for _, res := range results {
+		if res.verdict != "REACHED" {
+			continue
+		}
+		switch res.label {
+		case "v4-loop", "v6-loop":
+			t.Errorf("a DEFAULT-mode container REACHED the host's loopback listener at %s:\n%s",
+				res.addr, r.out)
+		case "gw":
+			t.Errorf("a DEFAULT-mode container REACHED the gateway address %s — the one "+
+				"--map-host-loopback actually controls:\n%s", res.addr, r.out)
+		}
+	}
+}
+
 // probeResult is one "RESULT <label> <addr> <verdict> [detail]" line from
 // netprobe. The address is part of the line (issue #243) so that a test
 // asserting a negative can first prove the probe aimed where it was told to:
@@ -1046,6 +1191,303 @@ func mustRead(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// ── issue #401: the container netns pin, checked as an effect rather than a
+//    grep of containers.conf's own bytes ───────────────────────────────────
+
+// runContainerAndCollectDefaultFn is runContainerAndCollectFn's twin with NO
+// HostConfig.NetworkMode key at all — the shape a client that never mentions
+// --network actually sends, and which nothing else in this file exercises:
+// every existing caller of runContainerAndCollectFn passes "host" explicitly
+// (that function's own doc comment names why). Before issue #401 that
+// omission had no settled answer; the containers.conf pin is what gives it
+// one, and this is the helper that asks the question the pin is supposed to
+// answer.
+const runContainerAndCollectDefaultFn = `
+def run_and_collect_default(tag, cmd):
+    body = json.dumps({"Image": "localhost/" + tag, "Cmd": cmd, "Tty": True,
+                        "HostConfig": {}}).encode()
+    status, resp = req("POST", "/v1.41/containers/create", body, {"Content-Type": "application/json"})
+    print("CREATE: %d %s" % (status, resp.decode(errors="replace")[:300]), flush=True)
+    if status != 201:
+        return
+    cid = json.loads(resp)["Id"]
+    status, _ = req("POST", "/v1.41/containers/%s/start" % cid)
+    print("START: %d" % status, flush=True)
+    status, w = req("POST", "/v1.41/containers/%s/wait" % cid)
+    print("WAIT: %d %s" % (status, w.decode(errors="replace")), flush=True)
+    status, logs = req("GET", "/v1.41/containers/%s/logs?stdout=1&stderr=1" % cid)
+    print("LOGS-BEGIN", flush=True)
+    print(logs.decode(errors="replace"), flush=True)
+    print("LOGS-END", flush=True)
+    req("DELETE", "/v1.41/containers/%s?force=1" % cid)
+`
+
+// netnsprobeBinPath is built once, lazily, TRULY process-global rather than
+// scoped to whichever test happens to trigger the sync.Once first — unlike
+// netprobeBin/holderBin above, which hand back a path under THAT CALLER's
+// own t.TempDir(). This probe has two callers
+// (TestAContainerThatNamesNoNetworkModeJoinsTheSandboxsNetns and
+// TestABuildsRunStepRunsInTheSandboxsNetns), and t.TempDir() is removed on
+// ITS OWN test's cleanup — MEASURED: whichever of the two ran first left the
+// second reading a path already unlinked ("no such file or directory"), a
+// failure with nothing to do with either test's own subject. os.MkdirTemp
+// with no t.Cleanup, mirroring TestMain's own snugBin, is what makes a
+// second caller in the same binary safe.
+var (
+	netnsprobeBinOnce sync.Once
+	netnsprobeBinPath string
+	netnsprobeBinErr  error
+)
+
+func netnsprobeBin(t *testing.T) string {
+	t.Helper()
+	netnsprobeBinOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "snug-netnsprobe")
+		if err != nil {
+			netnsprobeBinErr = fmt.Errorf("creating a build dir for testdata/netnsprobe: %w", err)
+			return
+		}
+		bin := filepath.Join(dir, "netnsprobe")
+		cmd := exec.Command("go", "build", "-o", bin, "./testdata/netnsprobe")
+		cmd.Dir = "."
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+		var out strings.Builder
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Run(); err != nil {
+			netnsprobeBinErr = fmt.Errorf("building test/integration/testdata/netnsprobe: %w: %s", err, out.String())
+			return
+		}
+		netnsprobeBinPath = bin
+	})
+	if netnsprobeBinErr != nil {
+		t.Fatal(netnsprobeBinErr)
+	}
+	return netnsprobeBinPath
+}
+
+// netnsMarkers pulls every "NETNS net:[...]" line testdata/netnsprobe printed
+// — one per container/RUN-step it ran as — in the order they appear in out.
+// Regexp rather than a line scan: a build's RUN step output arrives wrapped
+// in the streamed JSON build log (each line a `{"stream": "..."}` object,
+// not the raw text run_and_collect's Tty=true container logs give), and a
+// container log line carries a trailing \r (Tty=true) that a line-anchored
+// match would have to know to strip. The marker text itself is plain ASCII
+// with no JSON metacharacter, so it survives either wrapping unescaped.
+var netnsMarkerRe = regexp.MustCompile(`NETNS (net:\[[0-9]+\])`)
+
+func netnsMarkers(out string) []string {
+	matches := netnsMarkerRe.FindAllStringSubmatch(out, -1)
+	vals := make([]string, 0, len(matches))
+	for _, m := range matches {
+		vals = append(vals, m[1])
+	}
+	return vals
+}
+
+// outerNetnsMarkerRe is the sandbox PAYLOAD's own reading of the same path,
+// printed by the python driver itself rather than by the compiled probe —
+// deliberately a different word ("OUTERNS", not "...NETNS...") so a
+// substring match cannot mistake this line for one of netnsMarkers' own.
+var outerNetnsMarkerRe = regexp.MustCompile(`OUTERNS (net:\[[0-9]+\])`)
+
+func outerNetnsMarker(out string) (string, bool) {
+	m := outerNetnsMarkerRe.FindStringSubmatch(out)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
+// TestAContainerThatNamesNoNetworkModeJoinsTheSandboxsNetns is issue #401's
+// central claim, checked as an effect: a container CREATED WITH NO
+// HostConfig.NetworkMode AT ALL must land in the same network namespace as
+// the sandbox payload that asked for it, because the containers.conf pin
+// (netns = "host" in internal/engine/engine.go's writeContainersConf) makes
+// an unset network mode resolve to the ENGINE's own netns, which since Tier
+// B is this sandbox's.
+//
+// Before this test nothing in the suite exercised the omitted-key path at
+// all — every existing container test passes NetworkMode="host" explicitly
+// (runContainerAndCollectFn's own doc comment), which is why the pin's own
+// property had no coverage. The explicit "host" path is this test's
+// POSITIVE CONTROL rather than an assumption: it must land in the identical
+// namespace the omitted-key path does, or the comparison this test relies on
+// is not meaningful even for the well-established case. And the
+// DISCRIMINATING CONTROL is that the sandbox payload's own namespace must
+// differ from this TEST PROCESS's (the host's) — without it, "the
+// container's netns equals the payload's" would also be (trivially) true of
+// a sandbox that got no network isolation of its own at all.
+func TestAContainerThatNamesNoNetworkModeJoinsTheSandboxsNetns(t *testing.T) {
+	budget(t, 120*time.Second)
+	requireSandbox(t)
+	requireEngine(t)
+	requirePython(t)
+	requireRealEngine(t, baseEnv())
+
+	proj, _ := target(t)
+	if err := os.WriteFile(filepath.Join(proj, "netprobe"), mustRead(t, netnsprobeBin(t)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tag := "snugtest-netns401:1"
+	script := buildScratchProbeImage(tag) + runContainerAndCollectDefaultFn + runContainerAndCollectFn +
+		fmt.Sprintf(`
+print("OUTERNS " + os.readlink("/proc/self/ns/net"), flush=True)
+if build_scratch_probe():
+    run_and_collect_default(%[1]q, [])
+    run_and_collect(%[1]q, [], "host")
+print("PROBE-COMPLETE", flush=True)
+`, tag)
+	if err := os.WriteFile(filepath.Join(proj, "netns401.py"), []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := run(t, []string{"-p", "@podman-build"}, proj, `python3 netns401.py`).mustRun(t)
+	if !strings.Contains(r.out, "PROBE-COMPLETE") {
+		t.Fatalf("the probe did not run to the end:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, fmt.Sprintf("BUILD %s: 200", tag)) {
+		t.Fatalf("the from-scratch image did not build — this test proves nothing about a "+
+			"container it never ran:\n%s", r.out)
+	}
+
+	payloadNS, ok := outerNetnsMarker(r.out)
+	if !ok {
+		t.Fatalf("the sandbox payload never reported its own netns:\n%s", r.out)
+	}
+
+	hostSelf, err := os.Readlink("/proc/self/ns/net")
+	if err != nil {
+		t.Fatalf("reading this TEST PROCESS's own (host) netns: %v", err)
+	}
+	if payloadNS == hostSelf {
+		t.Fatalf("PRECONDITION: the sandbox payload's own netns (%s) equals this HOST test "+
+			"process's — this run has no network isolation for a container's netns to be "+
+			"compared against, so nothing below can distinguish containment from its absence",
+			payloadNS)
+	}
+
+	got := netnsMarkers(r.out)
+	if len(got) != 2 {
+		t.Fatalf("expected exactly 2 NETNS lines (no-NetworkMode container, then the explicit "+
+			"\"host\" one), got %d: %v\n%s", len(got), got, r.out)
+	}
+	noModeNS, hostModeNS := got[0], got[1]
+
+	if hostModeNS != payloadNS {
+		t.Fatalf("CONTROL FAILED: a container created with explicit NetworkMode=\"host\" (netns "+
+			"%s) is not in the sandbox payload's own netns (%s) — every other test in this file "+
+			"relies on that equality holding, so this run's engine is not in the state the rest "+
+			"of the suite assumes", hostModeNS, payloadNS)
+	}
+
+	if noModeNS != payloadNS {
+		t.Errorf("a container created with NO NetworkMode at all is in netns %s, not the "+
+			"sandbox payload's own %s — issue #401's containers.conf pin (netns = \"host\" in "+
+			"writeContainersConf) is supposed to make an UNSET network mode land here, exactly "+
+			"as an explicit \"host\" one does", noModeNS, payloadNS)
+	}
+}
+
+// TestABuildsRunStepRunsInTheSandboxsNetns is
+// TestPodmanBuildIsFilteredEndToEnd's regression guard turned into a
+// property: that test already fails without issue #401's containers.conf
+// pin and passes with it (a RUN step that needs to bring its own `lo` up
+// dies at `ioctl SIOCSIFFLAGS: Operation not permitted` otherwise), which
+// proves ONLY that the step ran to completion. This test pins WHERE it ran —
+// the RUN step's own netns must equal the sandbox payload's — which is the
+// property the symptom is standing in for, not the symptom itself.
+//
+// The build request itself asks for nothing (networkmode "0", nsoptions
+// naming only "user" — the same query buildScratchProbeImageFor already
+// sends for every ENTRYPOINT-only build in this file), so this is the
+// DEFAULT path, exactly as TestAContainerThatNamesNoNetworkModeJoinsTheSandboxsNetns
+// is for a container.
+func TestABuildsRunStepRunsInTheSandboxsNetns(t *testing.T) {
+	budget(t, 120*time.Second)
+	requireSandbox(t)
+	requireEngine(t)
+	requirePython(t)
+	requireRealEngine(t, baseEnv())
+
+	proj, _ := target(t)
+	if err := os.WriteFile(filepath.Join(proj, "netnsprobe"), mustRead(t, netnsprobeBin(t)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	script := pyPreamble + `
+import tarfile, io, urllib.parse
+
+print("OUTERNS " + os.readlink("/proc/self/ns/net"), flush=True)
+
+buf = io.BytesIO()
+with tarfile.open(fileobj=buf, mode="w") as tf:
+    data = b"FROM scratch\nCOPY netnsprobe /netnsprobe\nRUN [\"/netnsprobe\"]\n"
+    ti = tarfile.TarInfo("Dockerfile")
+    ti.size = len(data)
+    tf.addfile(ti, io.BytesIO(data))
+    with open("netnsprobe", "rb") as f:
+        binary = f.read()
+    tb = tarfile.TarInfo("netnsprobe")
+    tb.size = len(binary)
+    tb.mode = 0o755
+    tf.addfile(tb, io.BytesIO(binary))
+ctx = buf.getvalue()
+
+q = {"dockerfile": '["Dockerfile"]', "t": "snugtest-netns401b:1", "output": "snugtest-netns401b:1",
+     "networkmode": "0", "nsoptions": '[{"Name":"user","Host":true,"Path":""}]',
+     "isolation": "0", "rm": "1", "layers": "1", "pullpolicy": "missing",
+     "seccomp": "/usr/share/containers/seccomp.json", "shmsize": "67108864", "nocache": "1"}
+status, body = req("POST", "/v5.0.0/libpod/build?" + urllib.parse.urlencode(q), ctx,
+                    {"Content-Type": "application/x-tar"})
+print("BUILD: %d" % status, flush=True)
+print("BODY-BEGIN", flush=True)
+print(body.decode(errors="replace"), flush=True)
+print("BODY-END", flush=True)
+print("PROBE-COMPLETE", flush=True)
+`
+	if err := os.WriteFile(filepath.Join(proj, "netns401build.py"), []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := run(t, []string{"-p", "@podman-build"}, proj, `python3 netns401build.py`).mustRun(t)
+	if !strings.Contains(r.out, "PROBE-COMPLETE") {
+		t.Fatalf("the probe did not run to the end:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "BUILD: 200") {
+		t.Fatalf("the build did not succeed — this test proves nothing about a RUN step that "+
+			"never ran:\n%s", r.out)
+	}
+
+	payloadNS, ok := outerNetnsMarker(r.out)
+	if !ok {
+		t.Fatalf("the sandbox payload never reported its own netns:\n%s", r.out)
+	}
+
+	hostSelf, err := os.Readlink("/proc/self/ns/net")
+	if err != nil {
+		t.Fatalf("reading this TEST PROCESS's own (host) netns: %v", err)
+	}
+	if payloadNS == hostSelf {
+		t.Fatalf("PRECONDITION: the sandbox payload's own netns (%s) equals this HOST test "+
+			"process's — this run has no network isolation for the RUN step's netns to be "+
+			"compared against", payloadNS)
+	}
+
+	got := netnsMarkers(r.out)
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 NETNS line from the RUN step, got %d: %v\n%s", len(got), got, r.out)
+	}
+	runStepNS := got[0]
+
+	if runStepNS != payloadNS {
+		t.Errorf("the build's RUN step ran in netns %s, not the sandbox payload's own %s — "+
+			"issue #401's containers.conf pin (netns = \"host\" in writeContainersConf) is "+
+			"supposed to put the build step in the engine's own netns, which since Tier B is "+
+			"this sandbox's", runStepNS, payloadNS)
+	}
 }
 
 // ── 3. no abstract sockets, and the engine's pid is not in the sandbox's pidns ─

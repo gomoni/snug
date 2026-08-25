@@ -123,10 +123,28 @@ gate:
 # takes four minutes. A stale number is ordinary; a stale DIAGNOSTIC costs an
 # afternoon.
 #
-# The three nested bounds are unchanged and still nest: budget() per test
-# (seconds, names the test), -timeout 4m per suite here, timeout-minutes per job
-# in CI. Only budget() can say WHICH test was slow, so if a 4m fires, that is
-# still the first question — of the suite that fired, not of the run.
+# The three nested bounds still nest: budget() per test (seconds, names the
+# test), -timeout per suite here, timeout-minutes per job in CI. Only budget()
+# can say WHICH test was slow, so if the suite bound fires, that is still the
+# first question — of the suite that fired, not of the run.
+#
+# RAISED 4m -> 8m by issue #401, and the reason is the one this comment block
+# already warns about. #401 pins the container network namespace, which takes
+# the engine tier from mostly SKIPPING to actually running: measured on this
+# host, `snug-engine-ran` markers went from a handful to 34-36 against a floor
+# of 33, and integration-sandbox went from 176.61s to **335.98s** (5m38s wall,
+# PASS). Nothing hangs and no budget() fires — the work genuinely takes that
+# long now, which is exactly the diagnosis the paragraph above says a stale
+# bound sends a reader away from. The first 4m firing after #401 landed in a
+# DIFFERENT test on each of two runs, which is the tell: a hang picks a test,
+# an aggregate picks whatever was running.
+#
+# Headroom is deliberate and matches the ratio the old bound carried (176.61s
+# under 240s, ~1.36x): 335.98s under 480s is ~1.43x. CI is unaffected in
+# practice — it has no engine (#395), so its variable half is still ~70s — but
+# its job bound moves with this one, because an inner bound that equals the
+# outer can never fire, and losing "which suite" is losing the only thing this
+# bound is for.
 #
 # SNUG_REQUIRE_SANDBOX=1 make integration used to FAIL outright, every time,
 # on any host — requireInternet (test/integration/sandbox_test.go) correctly
@@ -253,7 +271,7 @@ SNUG_ENGINE_FLOOR = 33
 
 integration-sandbox:
 	@SNUG_TEST_NET=$${SNUG_TEST_NET:-$${SNUG_REQUIRE_SANDBOX:+1}} \
-		go test -tags integration -timeout 4m -v \
+		go test -tags integration -timeout 8m -v \
 			-skip '$(SNUG_SIGNAL_TESTS)' ./test/integration/... 2>&1 \
 		| tee $(SANDBOX_LOG); \
 	status=$${PIPESTATUS[0]}; \

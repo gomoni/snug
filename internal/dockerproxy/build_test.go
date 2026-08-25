@@ -201,22 +201,31 @@ func TestSeccompProfileMustNotBeSandboxAuthored(t *testing.T) {
 	}
 }
 
-// `--network=host` sets TWO parameters, and either one alone re-opens the host
-// network. This is the shape of the pasta bug this project already paid for
-// once: three of four closing flags were passed and every host loopback service
-// stayed reachable. So both are asserted, separately, with the other left at
-// its default.
-func TestBuildRefusesHostNetworkingInBothSpellings(t *testing.T) {
-	// The full recorded pair, then each half on its own.
-	hostNS := `nsoptions=%5B%7B%22Name%22%3A%22network%22%2C%22Host%22%3Atrue%2C%22Path%22%3A%22%22%7D%2C%7B%22Name%22%3A%22user%22%2C%22Host%22%3Atrue%2C%22Path%22%3A%22%22%7D%5D`
+// `--network=none` sets TWO parameters, and either one alone asks for a
+// network namespace of the BUILD STEP's own — the thing the containers.conf
+// pin (issue #401) makes unconditionally dead, MEASURED on podman 6.0.2:
+// `ioctl SIOCSIFFLAGS: Operation not permitted` regardless of which of the two
+// spellings carried the request. This is the shape of the pasta bug this
+// project already paid for once: three of four closing flags were passed and
+// every host loopback service stayed reachable. So both are asserted,
+// separately, with the other left at its default — and `--network=host`,
+// which since Tier B means the ENGINE's own netns rather than the machine's,
+// is the positive control: it is what a build with no --network flag already
+// gets, and it must still be accepted rather than refused by a check written
+// for the pre-#401 reading.
+func TestBuildRefusesAPrivateNetworkNamespaceInBothSpellings(t *testing.T) {
+	// `--network=none` sends networkmode=1 and an nsoptions entry naming
+	// `network` with Host:false, Path:"" — both spellings of "give this build
+	// step a network namespace of its own".
+	noneNS := `nsoptions=%5B%7B%22Name%22%3A%22network%22%2C%22Host%22%3Afalse%2C%22Path%22%3A%22%22%7D%2C%7B%22Name%22%3A%22user%22%2C%22Host%22%3Atrue%2C%22Path%22%3A%22%22%7D%5D`
 
 	// Each half is pinned to ITS OWN message. A shared substring would let one
 	// check cover for the other's absence, which is exactly the failure mode
 	// this test exists to prevent.
 	for _, tc := range []struct{ name, q, wantMsg string }{
-		{"networkmode alone", "networkmode=2", "may not join the host's network namespace"},
-		{"nsoptions alone", hostNS, `asks for the HOST's network namespace`},
-		{"both, as the CLI sends them", "networkmode=2&" + hostNS, "network"},
+		{"networkmode alone", "networkmode=1", "ioctl SIOCSIFFLAGS"},
+		{"nsoptions alone", noneNS, "Host:false"},
+		{"both, as --network=none sends them", "networkmode=1&" + noneNS, "ioctl SIOCSIFFLAGS"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sock, eng, _ := startBuildProxy(t)
@@ -235,6 +244,197 @@ func TestBuildRefusesHostNetworkingInBothSpellings(t *testing.T) {
 				base[k] = v
 			}
 			refuse(t, sock, eng, "/v5.8.3/libpod/build?"+base.Encode(), "", tc.wantMsg)
+		})
+	}
+}
+
+// TestBuildAcceptsHostNetworkingInBothSpellings is the positive control for
+// the test above: `--network=host` sends the same two parameters, and since
+// Tier B "host" means the ENGINE's own network namespace, which is this
+// sandbox's — the same place a build with no --network flag already lands,
+// via the containers.conf pin (issue #401). A check still reading the
+// pre-#401 rule would refuse exactly this pair.
+func TestBuildAcceptsHostNetworkingInBothSpellings(t *testing.T) {
+	hostNS := `nsoptions=%5B%7B%22Name%22%3A%22network%22%2C%22Host%22%3Atrue%2C%22Path%22%3A%22%22%7D%2C%7B%22Name%22%3A%22user%22%2C%22Host%22%3Atrue%2C%22Path%22%3A%22%22%7D%5D`
+
+	for _, tc := range []struct{ name, q string }{
+		{"networkmode alone", "networkmode=2"},
+		{"nsoptions alone", hostNS},
+		{"both, as the CLI sends them", "networkmode=2&" + hostNS},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sock, eng, _ := startBuildProxy(t)
+			base, err := url.ParseQuery(buildDefaults)
+			if err != nil {
+				t.Fatal(err)
+			}
+			over, err := url.ParseQuery(tc.q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for k, v := range over {
+				base[k] = v
+			}
+			before := eng.reached.Load()
+			code, resp := post(t, sock, "/v5.8.3/libpod/build?"+base.Encode(), "")
+			if code != 200 {
+				t.Fatalf("--network=host build refused (status %d): %s", code, resp)
+			}
+			if eng.reached.Load() == before {
+				t.Fatal("the build never reached the engine")
+			}
+		})
+	}
+}
+
+// TestCheckNetworkModeRecordedSpellings is a table over every literal
+// networkmode SPELLING checkNetworkMode's own switch names (issue #401),
+// each with the message it must carry — not merely accept/refuse, per
+// CLAUDE.md's rule that a table entry without its message can silently stop
+// exercising the rule it was written for while staying green.
+//
+// This is deliberately BROADER than the libpod CLI's own recorded query
+// (TestBuildAcceptsHostNetworkingInBothSpellings /
+// TestBuildRefusesAPrivateNetworkNamespaceInBothSpellings, which drive
+// networkmode=1/2 the way `podman build` actually encodes them alongside an
+// nsoptions entry): the literal words ("none", "bridge", "private",
+// "slirp4netns", "pasta") are what a docker-compat client sends for the SAME
+// key, per build.go's own doc comment distinguishing the two encodings, and
+// checkNetworkMode is the one function judging both. "" and "default" are
+// accepted for robustness (checkNetworkMode's own comment: no measured
+// client sends either), not because a real caller does.
+func TestCheckNetworkModeRecordedSpellings(t *testing.T) {
+	for _, tc := range []struct {
+		name, value, wantMsg string
+		accept               bool
+	}{
+		{"empty (no --network flag at all)", "", "", true},
+		{"explicit 0", "0", "", true},
+		{"the word default", "default", "", true},
+		{"the libpod int for host", "2", "", true},
+		{"the word host", "host", "", true},
+		{"the word HOST, case-folded", "HOST", "", true},
+		{"the libpod int for a private netns", "1",
+			"ioctl SIOCSIFFLAGS", false},
+		{"the word none", "none", "ioctl SIOCSIFFLAGS", false},
+		{"the word private", "private", "ioctl SIOCSIFFLAGS", false},
+		{"the word bridge", "bridge", "ioctl SIOCSIFFLAGS", false},
+		{"the word slirp4netns", "slirp4netns", "ioctl SIOCSIFFLAGS", false},
+		{"the word pasta", "pasta", "ioctl SIOCSIFFLAGS", false},
+		{"a joined container namespace", "container:abc",
+			"snug did not author", false},
+		{"a joined namespace by path", "ns:/proc/123/ns/net",
+			"snug did not author", false},
+		{"an unrecognised value", "some-future-mode",
+			"a value it has not been taught about fails closed", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sock, eng, _ := startBuildProxy(t)
+			base, err := url.ParseQuery(buildDefaults)
+			if err != nil {
+				t.Fatal(err)
+			}
+			base.Set("networkmode", tc.value)
+			u := "/v5.8.3/libpod/build?" + base.Encode()
+			if tc.accept {
+				before := eng.reached.Load()
+				code, resp := post(t, sock, u, "")
+				if code != 200 {
+					t.Fatalf("networkmode=%q was refused (status %d): %s", tc.value, code, resp)
+				}
+				if eng.reached.Load() == before {
+					t.Fatal("the build never reached the engine")
+				}
+				return
+			}
+			refuse(t, sock, eng, u, "", tc.wantMsg)
+		})
+	}
+
+	// CONTROLS: neither recorded ordinary build (each already carrying its
+	// own networkmode=0) was disturbed by anything above — TestAnOrdinaryBuildIsAllowed
+	// and TestPodman602DefaultBuildIsAllowed are the tests that actually pin
+	// this; repeated here as an explicit precondition for this table's own
+	// claim, since a table that judges networkmode in isolation says nothing
+	// if the ordinary case it is a special case OF has quietly stopped
+	// passing.
+	t.Run("control: podman 5.8.3's own default build still passes unchanged", func(t *testing.T) {
+		sock, eng, _ := startBuildProxy(t)
+		before := eng.reached.Load()
+		code, resp := post(t, sock, buildURL(""), "")
+		if code != 200 {
+			t.Fatalf("podman 5.8.3's own default build was refused (status %d): %s", code, resp)
+		}
+		if eng.reached.Load() == before {
+			t.Fatal("the build never reached the engine")
+		}
+	})
+	t.Run("control: podman 6.0.2's own default build still passes unchanged", func(t *testing.T) {
+		sock, eng, _ := startBuildProxy(t)
+		before := eng.reached.Load()
+		code, resp := post(t, sock, buildURL602(""), "")
+		if code != 200 {
+			t.Fatalf("podman 6.0.2's own default build was refused (status %d): %s", code, resp)
+		}
+		if eng.reached.Load() == before {
+			t.Fatal("the build never reached the engine")
+		}
+	})
+}
+
+// TestCheckNetworkModeOnTheCompatEndpoint is the docker-compat half of the
+// same table, issue #401: /v1.41/build is the SAME filter
+// (TestBothBuildPathsAreFiltered already pins that generally), so the
+// literal-word spellings a docker client sends for networkmode must be
+// judged identically there.
+//
+// MEASURED on podman 6.0.2 (this repository's own development host, see
+// go-implementer's coverage note): the compat build endpoint's own handler
+// does not read networkmode as a build-time option at all — a container's
+// network is a RUN-time question on that endpoint, not a build-time one — so
+// this refusal is entirely snug's OWN semantics, judged before the request
+// ever reaches podman, not a property the engine also happens to enforce.
+// That is exactly why this belongs in the allowlist rather than being left
+// for the engine to sort out: an engine that silently ignores a parameter is
+// indistinguishable, from the client's side, from one that honours it.
+func TestCheckNetworkModeOnTheCompatEndpoint(t *testing.T) {
+	compatURL := func(extra string) string {
+		if extra == "" {
+			return "/v1.41/build?" + buildDefaults
+		}
+		return "/v1.41/build?" + buildDefaults + "&" + extra
+	}
+
+	// networkmode ABSENT must still pass: the recorded default carries
+	// networkmode=0 already (buildDefaults), so this asserts that overriding
+	// nothing does not, by itself, break the compat path.
+	t.Run("networkmode absent", func(t *testing.T) {
+		sock, eng, _ := startBuildProxy(t)
+		before := eng.reached.Load()
+		code, resp := post(t, sock, compatURL(""), "")
+		if code != 200 {
+			t.Fatalf("the compat endpoint's own default build was refused (status %d): %s", code, resp)
+		}
+		if eng.reached.Load() == before {
+			t.Fatal("the build never reached the engine")
+		}
+	})
+
+	for _, tc := range []struct{ name, value, wantMsg string }{
+		{"bridge", "bridge", "ioctl SIOCSIFFLAGS"},
+		{"none", "none", "ioctl SIOCSIFFLAGS"},
+		{"private", "private", "ioctl SIOCSIFFLAGS"},
+		{"pasta", "pasta", "ioctl SIOCSIFFLAGS"},
+		{"container:abc", "container:abc", "snug did not author"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sock, eng, _ := startBuildProxy(t)
+			base, err := url.ParseQuery(buildDefaults)
+			if err != nil {
+				t.Fatal(err)
+			}
+			base.Set("networkmode", tc.value)
+			refuse(t, sock, eng, "/v1.41/build?"+base.Encode(), "", tc.wantMsg)
 		})
 	}
 }

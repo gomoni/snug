@@ -205,9 +205,18 @@ jobs:
             label: real sandbox behaviour
           - suite: integration-signals
             label: sandbox startup signal races
-    # apt and setup-go dominate the fixed cost; the variable half is now at most
-    # ~70s. Was 8 when one job ran everything.
-    timeout-minutes: 8
+    # apt and setup-go dominate the fixed cost; the variable half is still at
+    # most ~70s HERE, because this runner has no container engine (#395) and
+    # the engine tier skips.
+    #
+    # 8 -> 12 by issue #401, and NOT because CI got slower. The Makefile's
+    # integration-sandbox bound went 4m -> 8m (the pin un-skips the engine
+    # tier; measured 335.98s on a host with a real podman), and the three
+    # bounds must keep nesting: budget() per test, -timeout per suite,
+    # timeout-minutes per job. An inner bound equal to the outer can never
+    # fire, and then a slow suite reads as a bare job kill naming nothing —
+    # losing the only thing these bounds are for.
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

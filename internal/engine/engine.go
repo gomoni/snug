@@ -902,6 +902,16 @@ func engineGrafts(pol *policy.Policy) []stage.EngineGraft {
 //     at all; naming the keys anyway is CLAUDE.md's "never trust a helper's
 //     default, in either direction".
 //
+//  4. The container network namespace (issue #401). podman's own default
+//     moved under us between 5.8.4 and 6.0.2 — the former left a build's RUN
+//     step in the engine's netns, the latter gives it a fresh one, and a
+//     fresh netns needs CAP_NET_ADMIN to bring lo up, which
+//     policy.EngineCapBounding withholds on purpose (2026-08-18). Pinning
+//     netns = "host" is a decided policy choice, not a default this file
+//     merely states: it commits every container to the engine's own network
+//     namespace, which since Tier B is this sandbox's, rather than leaving
+//     the choice to whichever podman happens to be installed.
+//
 //     BE PRECISE ABOUT WHAT THAT SECOND LINE OF DEFENCE COVERS, because the
 //     first version of this comment claimed more than the code delivered and
 //     a red-team pass measured the gap. The enumeration is NOT the complete
@@ -910,7 +920,10 @@ func engineGrafts(pol *policy.Policy) []stage.EngineGraft {
 //     default_capabilities, default_sysctls, default_ulimits, seccomp_profile
 //     and userns are deliberately absent: emptying or pinning any of them
 //     overrides podman's own default for every container, which is a policy
-//     decision this file must not make silently.
+//     decision this file must not make silently. netns used to belong on
+//     this list too — it is no longer absent, because issue #401 is exactly
+//     that decision being made, deliberately and with a comment saying so,
+//     rather than left to whichever podman default currently happens to work.
 //
 //     For those keys the guarantee is now MEASURED, not assumed.
 //     CONTAINERS_CONF REPLACES the host's writable config layers, it does not
@@ -986,6 +999,36 @@ func (e *Engine) writeContainersConf(pol *policy.Policy, podman string, cgroupsD
 	b.WriteString("\n# The host's /etc/hosts is a hostname table for the host's networks, and\n" +
 		"# podman copies it into every container by default (issue #126).\n" +
 		"base_hosts_file = \"none\"\n")
+
+	// The container network namespace, pinned rather than left to podman's
+	// default (issue #401). "host" in a containers.conf read by THIS engine
+	// does not mean the machine: the engine runs inside this sandbox's own
+	// network namespace N since issue #63 Tier B, so it means N — the same
+	// place HostConfig.NetworkMode="host" lands a container
+	// (internal/dockerproxy/create.go's inversion), and the only network a
+	// container in this tier can have. Any other mode gives the container a
+	// netns OF ITS OWN, which needs CAP_NET_ADMIN in that namespace;
+	// policy.EngineCapBounding withholds it on purpose, so the container
+	// dies at `ioctl SIOCSIFFLAGS: Operation not permitted` (crun) or
+	// `netavark: Netlink error: Operation not permitted` (libpod) before it
+	// runs a byte. Assert the EFFECT — a container that asks for nothing
+	// shares the sandbox's network namespace — rather than this file's
+	// bytes: a podman that reaches the same place by another key satisfies
+	// the same requirement, and a podman that ignores this one passes a grep
+	// of the generated file while every build stays broken.
+	//
+	// Podman's default moved under us, which is why this is written at all:
+	// 5.8.4's default put a build's RUN step in N, 6.0.2's gives it one of
+	// its own, and nothing here said which we wanted (CLAUDE.md, "never
+	// trust a helper's default, in either direction"). MEASURED on both.
+	//
+	// This binds only a request nobody made. An explicit mode still wins:
+	// NetworkMode="bridge" and a build's networkmode=1 both override this
+	// and both still fail — build.go's allowlist is what refuses them, and
+	// it is not made redundant by this line.
+	b.WriteString("\n# Containers join the ENGINE's network namespace, which is THIS sandbox's\n" +
+		"# own (issue #401). \"host\" here is not the machine's network.\n" +
+		"netns = \"host\"\n")
 
 	b.WriteString("\n# Nothing is mounted, no device is passed, no environment is inherited or\n" +
 		"# injected, and no lifecycle hook runs, except what a client asks for and the\n" +

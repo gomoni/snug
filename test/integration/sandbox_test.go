@@ -3281,8 +3281,16 @@ func TestPodmanBuildIsFilteredEndToEnd(t *testing.T) {
 
 	for _, want := range []struct{ marker, why string }{
 		{"host bind: 403", "`build -v /etc:/x` binds a host path the sandbox cannot see"},
-		{"host network: 403", "`build --network=host` joins the host's network namespace"},
-		{"host ns: 403", "the nsoptions spelling of --network=host"},
+		// Since issue #401's containers.conf pin, "--network=host" joins the
+		// ENGINE's own netns, which since Tier B is THIS sandbox's — the same
+		// place a build with no --network flag already lands — so both
+		// spellings of it must now be ACCEPTED rather than refused.
+		{"host network: 200", "`build --network=host` (networkmode spelling) is this sandbox's own network, and must be accepted"},
+		{"host ns: 200", "`build --network=host` (nsoptions spelling) is this sandbox's own network, and must be accepted"},
+		// What actually needs refusing now: a network namespace of the BUILD
+		// STEP's own, which needs CAP_NET_ADMIN the engine does not have.
+		{"private network: 403", "a build asking for a network namespace of its own (networkmode=1) must still fail closed"},
+		{"private ns: 403", "a build asking for a network namespace of its own (nsoptions Host:false) must still fail closed"},
 		{"unknown option: 403", "an option snug has not been taught about must fail closed"},
 	} {
 		if !strings.Contains(r.out, want.marker) {
@@ -3292,6 +3300,92 @@ func TestPodmanBuildIsFilteredEndToEnd(t *testing.T) {
 	if !strings.Contains(r.out, "PROBE-COMPLETE") {
 		t.Errorf("the probe did not run to the end, so a missing marker above is "+
 			"absent rather than negative:\n%s", r.out)
+	}
+}
+
+// TestBuildRefusesTheCompatNetworkModeSpellingWithAMessageNamingTheFix is
+// issue #401's own refusal read as text, not merely as a status code.
+// TestPodmanBuildIsFilteredEndToEnd above already proves "private network:
+// 403" — a status this test's own precondition repeats as a control — but a
+// 403 alone tells a human nothing about what to do instead, and
+// checkNetworkMode's refusal (internal/dockerproxy/build.go) was written
+// with an explicit "Fix:" line for exactly that reason. This is the
+// end-to-end half of proving that line actually reaches the client: the unit
+// table in internal/dockerproxy/build_test.go covers the same input against
+// a synthetic *Proxy, and CLAUDE.md's "a change to a golden file is a change
+// to the security posture" applies just as much to a refusal MESSAGE a human
+// reads as to an argv — a message that only a unit test has ever seen is not
+// proven to survive the real HTTP path (headers, JSON encoding, streaming).
+//
+// The docker-compat build endpoint is deliberately the one exercised here,
+// not the podman-CLI (libpod) one TestPodmanBuildIsFilteredEndToEnd drives:
+// build.go's own doc comment table records that the real `podman build
+// --network=bridge` CLI invocation encodes it as networkmode=2 (which PASSES
+// checkNetworkMode outright, since 2/"host" is accepted since issue #401) AND
+// a SEPARATE nsoptions entry naming "bridge" in Path — so an integration
+// probe reproducing that exact CLI shape would be refused by checkNSOptions
+// instead, whose own message points at "the networkmode refusal" rather than
+// restating it. Sending the bare word "bridge" as networkmode — the shape a
+// docker-compat client (not the podman CLI) sends, and the one
+// internal/dockerproxy/build_test.go's compat-endpoint cases exercise as a
+// unit — is what actually reaches checkNetworkMode's OWN refusal, Fix line
+// included, in one request.
+func TestBuildRefusesTheCompatNetworkModeSpellingWithAMessageNamingTheFix(t *testing.T) {
+	budget(t, 60*time.Second)
+	requireSandbox(t)
+	requireEngine(t)
+	requirePython(t)
+	requireRealEngine(t, baseEnv())
+
+	proj, _ := target(t)
+
+	script := `import http.client, socket, os, urllib.parse
+
+class UnixHTTP(http.client.HTTPConnection):
+    def __init__(self, path):
+        super().__init__("localhost")
+        self.path = path
+    def connect(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(self.path)
+        self.sock = s
+
+sock = os.environ["CONTAINER_HOST"].replace("unix://", "")
+c = UnixHTTP(sock)
+q = {"t": "snugtest-401compat:1", "networkmode": "bridge"}
+c.request("POST", "/v1.41/build?" + urllib.parse.urlencode(q), body=b"",
+          headers={"Content-Type": "application/x-tar"})
+r = c.getresponse()
+body = r.read().decode(errors="replace")
+print("STATUS %d" % r.status, flush=True)
+print("BODY-BEGIN", flush=True)
+print(body, flush=True)
+print("BODY-END", flush=True)
+print("PROBE-COMPLETE", flush=True)
+`
+	if err := os.WriteFile(filepath.Join(proj, "compat401.py"), []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := run(t, []string{"-p", "@podman-build"}, proj, `python3 compat401.py`).mustRun(t)
+	if !strings.Contains(r.out, "PROBE-COMPLETE") {
+		t.Fatalf("the probe did not run to the end:\n%s", r.out)
+	}
+	// CONTROL: it really is refused, not merely worded a certain way in a
+	// 200. Without this, a body assertion below could pass on a response
+	// that forwarded the build anyway.
+	if !strings.Contains(r.out, "STATUS 403") {
+		t.Fatalf("--network=bridge on the docker-compat build endpoint was not refused with a "+
+			"403:\n%s", r.out)
+	}
+	body, ok := section(r.out, "BODY")
+	if !ok {
+		t.Fatalf("the refusal's own response body was not captured:\n%s", r.out)
+	}
+	if !strings.Contains(body, "--network=host") || !strings.Contains(body, "drop the --network flag") {
+		t.Errorf("the refusal for --network=bridge does not NAME THE FIX end to end — expected "+
+			"both \"--network=host\" and \"drop the --network flag\" in the response body a real "+
+			"client would read, got:\n%s", body)
 	}
 }
 
@@ -3420,8 +3514,16 @@ def build(label, extra):
 # can silently stop controlling is the failure mode this suite exists to avoid.
 build("ordinary build", {"nocache": "1"})
 build("host bind", {"volume": "/etc:/x"})
+# Since issue #401 pins containers.conf's netns to the engine's own — which is
+# THIS sandbox's since Tier B — "--network=host" no longer joins anything
+# outside the sandbox, and a build must be able to ask for it explicitly.
 build("host network", {"networkmode": "2"})
 build("host ns", {"nsoptions": '[{"Name":"network","Host":true,"Path":""}]'})
+# A network namespace of the BUILD STEP's own is what actually needs
+# refusing now: it needs CAP_NET_ADMIN to bring lo up and the engine does
+# not have it, so these two spellings must still 403.
+build("private network", {"networkmode": "1"})
+build("private ns", {"nsoptions": '[{"Name":"network","Host":false,"Path":""}]'})
 build("unknown option", {"mountfromhost": "/etc"})
 print("PROBE-COMPLETE", flush=True)
 `
