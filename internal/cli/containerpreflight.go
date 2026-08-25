@@ -53,11 +53,11 @@ type containerPreflight struct {
 	ToolchainRoot string
 }
 
-func runContainerPreflight(env policy.Environ) (containerPreflight, error) {
+func runContainerPreflight(env policy.Environ, pol *policy.Policy) (containerPreflight, error) {
 	if err := preflightPtraceScope(); err != nil {
 		return containerPreflight{}, err
 	}
-	podman, err := preflightPodmanBinary(env)
+	podman, err := preflightPodmanBinary(env, pol)
 	if err != nil {
 		return containerPreflight{}, err
 	}
@@ -287,28 +287,33 @@ func preflightPtraceScope() error {
 // socket that no netns touches — the whole tier's guarantee evaporates while
 // everything looks healthy (ENGINE-WIRING.md §4, P1).
 //
-// Every return is policy.ResolveExistingHostPath'd immediately before it
-// leaves this function, discharging HostPathVisible's resolution obligation
-// AT THE RESOLUTION SITE for both of this function's downstream users:
-// preflightToolchainRoot's containment check (below, called on this return
-// value) and, one field over, policy.(*Policy).CheckEngineBinary
-// (container.go), which both need to judge the SAME string that snug will
-// actually exec. Order is load-bearing: the shim check above runs on the name
-// AS GIVEN, so issue #396's behaviour and message are unchanged — resolution
-// happens only once a value has already cleared that check and is about to be
-// returned.
+// Every return is pol.ResolveEngineBinary'd immediately before it leaves this
+// function, so the value handed to preflightToolchainRoot's containment check
+// (below, called on this return value) and to, one field over,
+// policy.(*Policy).CheckEngineBinary (container.go's field gate) is the one
+// string ResolveEngineBinary already resolved AND judged — not a spelling for
+// either of them to judge a second time. Order is load-bearing: the shim
+// check above runs on the name AS GIVEN, so issue #396's behaviour and
+// message are unchanged — ResolveEngineBinary runs only once a value has
+// already cleared that check and is about to be returned.
 //
-// Be honest about what this closes: no in-model attack needs it. To defeat
-// the literal check a symlink component would have to sit in a host directory
-// the payload can write, which is inside a rw grant, which the literal check
-// (CheckEngineBinary/CheckEngineToolchainTree, both asking HostPathVisible)
-// already refuses. This is defence in depth and fixed-pointing — making sure
-// helperBesideEngine's filepath.Dir(podman) and Engine.guestPath see the same
-// value this function judged — not the closure of a measured route. Measured
-// on this development host: readlink -f $(command -v podman) is
-// /usr/bin/podman, already a regular file with no symlink component, so
-// resolution is a no-op here and moves no existing golden.
-func preflightPodmanBinary(env policy.Environ) (string, error) {
+// This comment used to read "no in-model attack needs it" here, arguing the
+// resolve step was defence in depth because a writable symlink component
+// would already sit inside a rw grant the literal check's ancestor arm
+// caught. MEASURED WRONG (redteam): a payload-writable symlink
+// $TARGET/podman -> /usr/bin/true was ACCEPTED and exec'd, and the run then
+// failed with "the container engine did not create its socket ... within
+// 30s" (exit 69) instead of the refusal the regular-file poison got (exit
+// 77) — because the literal check judged /usr/bin/true, read-only and
+// correctly accepted, never the symlinked NAME the payload had actually
+// chosen. pol.ResolveEngineBinary (policy, engineexec.go) is the real
+// closure: it judges provenance as well as bytes, over one sample of the
+// host, so this function's return is already refused when a writable grant
+// let the payload choose it, not merely resolved for a downstream check to
+// judge. Measured on this development host: readlink -f $(command -v podman)
+// is /usr/bin/podman, already a regular file with no symlink component, so
+// neither arm fires here and no existing golden moves.
+func preflightPodmanBinary(env policy.Environ, pol *policy.Policy) (string, error) {
 	// $SNUG_PODMAN is checked FIRST and, when set, is trusted outright rather
 	// than run back through DetectHostShim's own PATH lookup below — a caller
 	// pointing this at an explicit path is BYPASSING PATH resolution on
@@ -347,12 +352,12 @@ func preflightPodmanBinary(env policy.Environ) (string, error) {
 				"install the distribution podman package.",
 				custom, shim.Path, filepath.Base(shim.Resolved))
 		}
-		// Resolved here, after the shim check ran on custom AS GIVEN (issue
-		// #396's ordering), and here specifically because this is the last
-		// point before the value leaves this function — see this function's
-		// own doc comment for what this discharges and why it is a no-op on
-		// this development host.
-		return policy.ResolveExistingHostPath(env, custom)
+		// Resolved and judged here, after the shim check ran on custom AS
+		// GIVEN (issue #396's ordering), and here specifically because this
+		// is the last point before the value leaves this function — see this
+		// function's own doc comment for what this discharges and why it is
+		// a no-op on this development host.
+		return pol.ResolveEngineBinary(env, custom)
 	}
 	if shim, ok := DetectHostShim("podman"); ok {
 		return "", fmt.Errorf("podman resolves to %s, a host-escape helper (%s) that forwards "+
@@ -372,8 +377,9 @@ func preflightPodmanBinary(env policy.Environ) (string, error) {
 			"      snug will not silently hand the sandbox no engine, or the host's.\n" +
 			"      Install the distribution podman package.")
 	}
-	// Same resolution, same reasoning, as the $SNUG_PODMAN return above.
-	return policy.ResolveExistingHostPath(env, path)
+	// Same resolution and judgement, same reasoning, as the $SNUG_PODMAN
+	// return above.
+	return pol.ResolveEngineBinary(env, path)
 }
 
 // preflightCgroupsWritable is P5: a real (if approximate) probe of whether

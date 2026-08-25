@@ -40,7 +40,7 @@ func TestPreflightPodmanBinaryReturnsAResolvedPath(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Setenv("SNUG_PODMAN", link)
-		got, err := preflightPodmanBinary(policy.OSEnviron{})
+		got, err := preflightPodmanBinary(policy.OSEnviron{}, &policy.Policy{})
 		if err != nil {
 			t.Fatalf("preflightPodmanBinary refused a plain symlink to a real binary: %v", err)
 		}
@@ -63,7 +63,7 @@ func TestPreflightPodmanBinaryReturnsAResolvedPath(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Setenv("PATH", pathDir)
-		got, err := preflightPodmanBinary(policy.OSEnviron{})
+		got, err := preflightPodmanBinary(policy.OSEnviron{}, &policy.Policy{})
 		if err != nil {
 			t.Fatalf("preflightPodmanBinary refused a plain symlink found on $PATH: %v", err)
 		}
@@ -88,7 +88,7 @@ func TestPreflightPodmanBinaryReturnsAResolvedPath(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Setenv("SNUG_PODMAN", link)
-		_, err := preflightPodmanBinary(policy.OSEnviron{})
+		_, err := preflightPodmanBinary(policy.OSEnviron{}, &policy.Policy{})
 		if err == nil {
 			t.Fatal("a symlink resolving to a host-escape shim was accepted — issue #396 regressed")
 		}

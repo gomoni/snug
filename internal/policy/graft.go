@@ -159,6 +159,15 @@ func (p *Policy) EngineToolchain(env Environ, root string) error {
 			"       A caller with no toolchain root to record must not call this — an empty\n" +
 			"       value here would silently clear one already recorded.")
 	}
+	// The spelling the caller handed over, kept because the resolution below
+	// REPLACES root, and the selection arm at the end of this function asks the
+	// one question that only has an answer BEFORE resolution (issue #369).
+	//
+	// Cleaned lexically and only lexically: filepath.Clean follows no symlink,
+	// so it discards nothing the selection arm needs, and a trailing slash in
+	// $SNUG_PODMAN_ROOT is an ordinary human spelling that checkPathHygiene
+	// would otherwise refuse as non-clean.
+	asGiven := filepath.Clean(root)
 	// One operation, two policies, worth stating rather than leaving for a
 	// reader to discover by diffing this against Resolve's own resolution
 	// (resolve.go:177): on an EvalSymlinks error, Resolve HARD-FAILS a
@@ -177,6 +186,18 @@ func (p *Policy) EngineToolchain(env Environ, root string) error {
 	if err := checkPathHygiene("engine toolchain root", root, "(snug)", "the ENGINE VIEW block"); err != nil {
 		return err
 	}
+	// The as-given spelling reaches a REFUSAL a human reads (the selection arm
+	// at the end of this function), so it is a SINK and gets the same check the
+	// resolved form just got — invariant 7's rule that a value's guard belongs
+	// at every sink it can reach, not at the site where it was noticed. This
+	// mirrors Policy.Graft's own treatment of g.HostAsked ("graft source
+	// (asked)", above). Skipped when the two strings are identical, which is
+	// the ordinary case: the check has already run on it.
+	if asGiven != root {
+		if err := checkPathHygiene("engine toolchain root (asked)", asGiven, "(snug)", "the ENGINE VIEW block"); err != nil {
+			return err
+		}
+	}
 	if p.EngineToolchainRoot != "" && p.EngineToolchainRoot != root {
 		return fmt.Errorf("cannot record %s as the engine's toolchain root: this run already\n"+
 			"       recorded %s. There is one engine per run, so a second, different root is a\n"+
@@ -193,6 +214,53 @@ func (p *Policy) EngineToolchain(env Environ, root string) error {
 	// unset-env path, is never attempted at all.
 	if err := p.CheckEngineToolchainTree(root); err != nil {
 		return err
+	}
+	// Issue #369's second door: this function judges the root AFTER resolving
+	// it, so $SNUG_PODMAN_ROOT=$TARGET/bundle — a symlink the payload can
+	// rewrite, pointing at a host-owned tree — chose which directory the engine
+	// executes out of while every check above saw only where it pointed.
+	// DERIVED BY READING, not measured: the engine-binary door is the one a
+	// redteam round measured, and this is the same shape one field over.
+	//
+	// ARM ORDER IS LOAD-BEARING, AND THE FIRST VERSION OF THIS GOT IT BACKWARDS.
+	// This block sat BEFORE the resolution and therefore before
+	// CheckEngineToolchainTree, which made a plain, non-symlinked, payload-
+	// writable root — no chain involved at all — print this arm's message, whose
+	// "the directory at the end of that chain is not writable" clause was FALSE
+	// for exactly that case: the directory at the end was precisely what was
+	// writable. MEASURED consequence in the tree: TestCheckEngineToolchainTree's
+	// "B1: root itself writable is refused via EngineToolchain" failed, and
+	// TestGoldenRefusals reworded refusals.txt's existing
+	// engine_toolchain_root_is_payload_writable section. The endpoint arm runs
+	// first because the payload WRITING the toolchain is strictly the worse fact
+	// than the payload NAMING it, and because a message may only assert what the
+	// code above it has established.
+	//
+	// THE ARMS OVERLAP AND ORDER IS WHAT RESOLVES THE OVERLAP — not a partition,
+	// and stating it as one would be the same overclaim. For a root that is
+	// already canonical (asGiven == root) both arms match the same string, and
+	// CheckEngineToolchainTree wins by running first. What order buys is the
+	// converse, which IS provable: once CheckEngineToolchainTree has cleared,
+	// the chain's last prefix can no longer fire its CANONICAL arm — same
+	// string, same predicate — so anything this arm reports is either an
+	// ANCESTOR name on the way to the root, or the root's own SPELLING differing
+	// from what it resolves to. Both are chains. The message's clauses are then
+	// true by construction rather than by hope.
+	//
+	// checkGraft's G4b deliberately has no equivalent door; the reason is the
+	// theorem in writableNameOnChain's own comment (engineexec.go).
+	if name, asked, found := p.writableNameOnChain(env, asGiven); found {
+		return fmt.Errorf("%s cannot be this run's engine toolchain root: %s\n"+
+			"       The directory at the end of that chain is not writable, and neither is anything\n"+
+			"       inside it — snug checked both of those first. So this is not the payload EDITING\n"+
+			"       the toolchain; it is the payload CHOOSING it. The engine resolves conmon, crun,\n"+
+			"       netavark and fuse-overlayfs out of the recorded root as uid 0 in this sandbox's\n"+
+			"       user namespace, so a name the payload can rewrite is the payload deciding what\n"+
+			"       the engine executes as root.\n"+
+			"       Grafting it read-only does not help: `ro` restrains the ENGINE, and the payload\n"+
+			"       rewrites the same host name through its own rw grant.\n"+
+			"       Fix: point $SNUG_PODMAN_ROOT at the installation directory itself, or drop the rw\n"+
+			"       grant that covers the name above.", asGiven, selectionClause(name, asked))
 	}
 	p.EngineToolchainRoot = root
 	return nil
@@ -1011,7 +1079,7 @@ func existsInSandbox(p *Policy, guest string) bool {
 // Every caller therefore owes it a path already put through
 // ResolveExistingHostPath, and must USE the resolved path afterwards rather than
 // the one it asked about — resolving and then passing the literal onward moves
-// the hole instead of closing it. There are exactly FOUR non-test callers,
+// the hole instead of closing it. There are exactly FIVE non-test callers,
 // and every one either discharges the obligation immediately before calling,
 // or is reading a value some OTHER caller already discharged it for:
 //
@@ -1039,8 +1107,15 @@ func existsInSandbox(p *Policy, guest string) bool {
 //     ResolveExistingHostPath a few lines above where it calls this file's B1
 //     check, or (from checkGraft's G4b) a Graft.Host Policy.Graft already
 //     resolved — the same fixed point checkGraft's own entry above relies on.
+//   - policy.(*Policy).writableNameOnChain (engineexec.go) — the ONE caller
+//     that deliberately asks about UNRESOLVED and INTERMEDIATE spellings, and
+//     it owes this function nothing as a result. It is not asking "can the
+//     sandbox see this object" about a name someone forgot to resolve; it is
+//     asking "can the payload rewrite this NAME", which only has an answer
+//     BEFORE resolution. Do not "fix" it by resolving its argument: that is
+//     precisely the defect it exists to close.
 //
-// TestHostPathVisibleCallersAreInventoried fails when a FIFTH caller
+// TestHostPathVisibleCallersAreInventoried fails when a SIXTH caller
 // appears. Adding one means writing its resolution obligation (or its reason
 // for owing none, as describeGrafts's entry does) into this list: a tripwire
 // on the SET is the only enforceable form of an obligation that cannot be
