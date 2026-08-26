@@ -3678,66 +3678,6 @@ before any of this. If the new name switch ever grew to cover that case too,
 every assertion above would still pass while the older, more specific
 refusal quietly stopped existing.
 
-### 9q2. A build cannot ask for the host network, in either spelling
-
-`network = "host"` is refused wherever snug can refuse it, and a build is one of
-those places. A real `podman build --network=host` sends it TWICE — RECORDED on
-podman 6.0.2 against a listening recorder of our own:
-
-```
-no flag            networkmode=0   nsoptions=[{"Name":"user","Host":true,"Path":""}]
---network=host     networkmode=2   nsoptions=[{"Name":"network","Host":true,...},{"Name":"user",...}]
---network=none     networkmode=1   nsoptions=[{"Name":"network","Host":false,"Path":""},...]
---network=private  networkmode=2   nsoptions=[{"Name":"network","Host":false,"Path":""},...]
---network=bridge   networkmode=2   nsoptions=[{"Name":"network","Host":false,"Path":"bridge"},...]
---network=pasta    networkmode=2   nsoptions=[{"Name":"network","Host":false,"Path":"pasta"},...]
-```
-
-Read the first row against the rest: **only a build with no `--network` flag at
-all is accepted**, and that is the form that already gets what the others were
-asking for — the engine's own network namespace, which is this sandbox's.
-
-No engine needed for the gate itself:
-
-```bash
-go test -run 'TestBuildRefusesHostNetworkingInBothSpellings|TestCheckNSOptionsRefusesHostNetwork|TestCheckNetworkModeRecordedSpellings|TestAnOrdinaryBuildIsAllowed' -v ./internal/dockerproxy/
-```
-
-Expect `PASS`, and read three specific subtests rather than the verdict:
-
-- `TestBuildRefusesHostNetworkingInBothSpellings/networkmode alone` and
-  `/nsoptions alone` — each pinned to its OWN message, so neither can cover for
-  the other going missing. This is the pasta lesson: three of four closing flags
-  were once passed and every host loopback service stayed reachable.
-- `TestCheckNSOptionsRefusesHostNetwork/adjacent: user with Host:true is still
-  accepted` — the adjacent thing that must stay OPEN. The rootless CLI sends
-  `{"Name":"user","Host":true}` on **every** build including one with no flag,
-  so a refusal generalised from "network+Host:true" to "any Host:true" would
-  refuse every build in the world while every negative assertion above still
-  passed.
-- `TestAnOrdinaryBuildIsAllowed` — the control. After this refusal, no
-  `--network` spelling works at all, so "an ordinary build still builds" is the
-  only thing standing between the filter and a proxy that refuses everything.
-
-**End to end, with a real engine**, which is where "no flag still works" is
-actually proved rather than argued:
-
-```bash
-SNUG_REQUIRE_SANDBOX=1 go test -tags integration -v \
-  -run 'TestABuildsRunStepRunsInTheSandboxsNetns|TestPodmanBuildIsFilteredEndToEnd' ./test/integration/
-```
-
-Expect `PASS`. `TestABuildsRunStepRunsInTheSandboxsNetns` posts the no-flag wire
-form (`networkmode=0`, `nsoptions` naming only `user`) and asserts the RUN step's
-netns **inode** equals the sandbox payload's — so the accepted form is not merely
-un-refused, it lands where the refused ones were asking to go.
-`TestPodmanBuildIsFilteredEndToEnd` must print `ordinary build: 200` and
-`BUILT-INSIDE-SNUG` alongside `host network: 403` and `host ns: 403`.
-
-The refusal must also name a fix that is not itself refused —
-`TestBuildRefusesTheCompatNetworkModeSpellingWithAMessageNamingTheFix` asserts
-the 403 body says `drop the --network flag` and does NOT say `--network=host`.
-
 ### 9r. A container can actually USE the sandbox's netns, not merely sit in it (issue #369)
 
 Every other check in this family proves either netns inode equality (9-series,

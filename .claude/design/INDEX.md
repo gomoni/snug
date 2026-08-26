@@ -1167,9 +1167,7 @@ The filter is a **default-deny allowlist over the query string** (`buildParams` 
 | a git/URL context | `remote` | refused |
 | `--file ../x` | `dockerfile` | must stay inside the context |
 
-**`--network=host` is the one to look at twice**, and it is why this table exists. It sets `networkmode=2` *and* an `nsoptions` entry with `Host:true`, and a check reading only one of them lets the other carry the whole request — the identical shape to §4.2's pasta flags, where passing three of the four closing options left every host loopback service reachable. Both are checked, each pinned by its own test message so neither can cover for the other's absence.
-
-**No `--network` value is accepted at all**, and the accepted case is the *absence* of the flag. `network = "host"` is refused wherever snug can refuse it, which is what closes `networkmode=2`/`"host"` and `nsoptions` `network` with `Host:true`; every other value asks for a network namespace of the BUILD STEP's own, which needs the `CAP_NET_ADMIN` `policy.EngineCapBounding` withholds and is measured dead in the engine. A build with no flag gets the engine's own network namespace — this sandbox's N — from the `netns = "host"` pin in the generated `containers.conf`, which is the same place the refused spellings were asking to go. The one `Host:true` that stays accepted is `user`: the rootless CLI sends it on every build including one with no flag at all, so refusing it would refuse every build.
+**`--network=host` is the one to look at twice**, and it is why this table exists. It sets `networkmode=2` *and* an `nsoptions` entry with `Host:true`, and either alone re-opens the host network — the identical shape to §4.2's pasta flags, where passing three of the four closing options left every host loopback service reachable. Both are checked, each pinned by its own test message so neither can cover for the other's absence.
 
 Every outcome — allow, rewrite, reject — is one audit line. Streaming and hijacked endpoints (attach, `logs --follow`, `wait`) are proxied byte-for-byte with headers flushed immediately (§6.1).
 

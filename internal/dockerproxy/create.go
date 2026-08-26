@@ -119,19 +119,26 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Namespace modes must not join the host's or another container's.
-	//    Every key here refuses the same three shapes: "host", container:<id>
-	//    and ns:<path>. No key is exempt.
 	//
-	// A container gets the network namespace snug authored for it, which is
-	// this sandbox's own N, and it gets that by NAMING NOTHING — the
-	// generated containers.conf pins it (issue #401, and the unset arm below).
-	// There is no spelling of "the network I want" that a client may send, so
-	// there is nothing for a hostile process to choose between.
+	// NetworkMode="host" is the ONE exception, and it inverts what it meant
+	// before issue #63 Tier B: the container engine itself now runs INSIDE
+	// this sandbox's own network namespace N (setns'd there by the stage,
+	// internal/stage's EnterEngine) rather than on the real host's — so
+	// "join the engine's current netns", which is exactly what podman's
+	// `--network=host` / HostConfig.NetworkMode="host" means, now joins N,
+	// not the host's. That is the "share N host-mode" design the maintainer
+	// settled (the NET_ADMIN decision, 2026-08-18 —
+	// policy.EngineCapBounding's own comment): no per-container
+	// bridge, no `-p` publishing (the engine holds no CAP_NET_ADMIN to set
+	// one up even if asked), a container reaches exactly what the sandbox
+	// reaches. Every OTHER namespace mode stays refused unconditionally.
 	//
-	// The RULE that decides every mode here (issue #145): joining a namespace
-	// could only ever be safe where its membership set is a SUBSET of what the
-	// sandbox already has, and membership is not the same thing as
-	// reachability. A pid namespace fails that test even after issue
+	// The RULE that inversion follows, stated once here because it decides
+	// every mode below rather than just NetworkMode (issue #145): an
+	// inversion is safe only when the namespace's membership set is a SUBSET
+	// of what the sandbox already has. N contains the sandbox's own network
+	// and nothing else, so "join the engine's netns" is idempotent with
+	// respect to authority. A pid namespace fails that test even after issue
 	// #125's C0 gave the engine one of its own (CLONE_NEWPID at
 	// internal/stage/enginefork.go's clone, plus a fresh procfs): pid
 	// namespace membership is not "seeing more pids", it is the only kind of
@@ -189,6 +196,9 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 		// point: a refusal snug states must not depend on the answer. Folding
 		// can only refuse more; it cannot grant.
 		norm := strings.ToLower(strings.TrimSpace(mode))
+		if k == "NetworkMode" && norm == "host" {
+			continue
+		}
 		if norm == "host" || strings.HasPrefix(norm, "container:") || strings.HasPrefix(norm, "ns:") {
 			p.deny(w, "HostConfig.%s = %q: %s", k, mode, namespaceModeReason[k])
 			return
@@ -370,7 +380,7 @@ var namespaceModeKeys = []string{
 // sentence because the six keys are not refused for the same reason: pid and
 // cgroup name the ENGINE's own namespaces (issue #125's C0), ipc and uts
 // still name the MACHINE's (the engine unshares neither — issue #182), userns
-// names U, and network names the one snug authored for this sandbox.
+// names U, and network is the one key that is not always refused at all.
 //
 // PidMode is worth reading in full: joining a pid namespace is not "seeing
 // more pids", it is acquiring procfs's naming rights into everything every
@@ -387,22 +397,16 @@ var namespaceModeKeys = []string{
 // that works today by FAILING — the engine refuses, not snug — so it is a
 // maintainer call, not something to fold into an unrelated change. Whoever
 // takes it must keep "" AND "default" accepted, and this is the measurement
-// that says so: a stock
-// docker 29.4.0-ce sends NetworkMode:"default" on a plain `docker run` with no
-// --network flag (testdata/docker-run-create-body.json, re-measured against
-// API v1.54 — every --network=X spelling maps 1:1 to NetworkMode:"X", so
-// "default" is the no-flag value and nothing else produces it). podman's
-// compat handler maps "" and "default" through the containers.conf netns pin
-// to N.
+// that says so: a stock docker 29.4.0-ce sends NetworkMode:"default" on a
+// plain `docker run` with no --network flag (testdata/docker-run-create-body.json,
+// re-measured against API v1.54 — every --network=X spelling maps 1:1 onto
+// NetworkMode:"X", so "default" is the no-flag value and nothing else produces
+// it). podman's compat handler maps "" and "default" through the
+// containers.conf netns pin to N.
 var namespaceModeReason = map[string]string{
-	"NetworkMode": `snug authors a container's network namespace and a client does ` +
-		`not choose it. The one on offer is this sandbox's own N — the engine runs ` +
-		`inside it (issue #63, Tier B) and the generated containers.conf pins it — ` +
-		`so a container that names nothing already has the only network there is, ` +
-		`and there is no per-container bridge or -p publishing to ask for either ` +
-		`way (the engine holds no CAP_NET_ADMIN to build one). ` +
-		`Fix: drop the --network flag — it is already the default, and it gives ` +
-		`the container this sandbox's own network`,
+	"NetworkMode": `"host" is allowed here and means THIS sandbox's own network ` +
+		`namespace N (issue #63, Tier B). What is refused is naming a namespace ` +
+		`snug did not author — another container's, or a raw ns:<path>`,
 	"PidMode": `inside this sandbox "host" is not the machine. The engine has had a ` +
 		`pid namespace of its own since issue #125's C0, so this asks to join THE ` +
 		`ENGINE'S — and pid visibility is not merely visibility: /proc/<pid>/root ` +

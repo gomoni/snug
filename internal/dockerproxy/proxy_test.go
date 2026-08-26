@@ -314,11 +314,11 @@ func TestEscapeFieldsAreRefused(t *testing.T) {
 		// network namespace N, so "join the engine's current netns" joins
 		// N, not the real host's — see TestNetworkModeHostIsAllowedButOtherHostModesAreNot.
 		{"another container's netns", `{"HostConfig":{"NetworkMode":"container:abc"}}`,
-			"snug authors a container's network namespace"},
+			"naming a namespace snug did not author"},
 		{"host pid namespace", `{"HostConfig":{"PidMode":"host"}}`,
 			"There is no flag that enables it"},
 		{"a raw netns path", `{"HostConfig":{"NetworkMode":"ns:/proc/1/ns/net"}}`,
-			"snug authors a container's network namespace"},
+			"naming a namespace snug did not author"},
 		{"the host user namespace", `{"HostConfig":{"UsernsMode":"host"}}`,
 			"snug decides a container's user namespace"},
 		{"published ports", `{"HostConfig":{"PortBindings":{"80/tcp":[{"HostPort":"8080"}]}}}`,
@@ -845,21 +845,17 @@ func TestNamespaceModesAreCaseProof(t *testing.T) {
 // one exception, this test would catch it turning into a refusal; if a
 // DIFFERENT key ever started being silently allowed, the loop's own refusal
 // assertion catches that too.
-// TestEveryNamespaceModeRefusesHost sweeps namespaceModeKeys itself rather
-// than a hand-typed list, so a key added to that slice is covered the day it is
-// added instead of the day someone remembers to extend a table. No key is
-// exempt: a client does not choose any of the six namespaces.
-//
-// The value axis is not swept here — TestNamespaceModeRefusalsAreExhaustive
-// below is where container:<id>, ns:<path> and the case/whitespace folding are
-// asserted per key. This one exists for the KEY axis and for one property:
-// nothing in namespaceModeKeys is special.
-func TestEveryNamespaceModeRefusesHost(t *testing.T) {
-	if len(namespaceModeKeys) < 6 {
-		t.Fatalf("namespaceModeKeys has only %d entries; this sweep proves little",
-			len(namespaceModeKeys))
+func TestNetworkModeHostIsAllowedButOtherHostModesAreNot(t *testing.T) {
+	sock, eng, _ := startProxy(t)
+	code, body := post(t, sock, "/v1.41/containers/create", `{"HostConfig":{"NetworkMode":"host"}}`)
+	if code != 200 {
+		t.Fatalf("NetworkMode=host: status %d, want 200: %s", code, body)
 	}
-	for _, k := range namespaceModeKeys {
+	if eng.reached.Load() == 0 {
+		t.Fatal("NetworkMode=host never reached the engine")
+	}
+
+	for _, k := range []string{"PidMode", "IpcMode", "UTSMode", "UsernsMode", "CgroupnsMode"} {
 		t.Run(k, func(t *testing.T) {
 			sock, eng, _ := startProxy(t)
 			refuse(t, sock, eng, "/v1.41/containers/create",
@@ -868,45 +864,56 @@ func TestEveryNamespaceModeRefusesHost(t *testing.T) {
 	}
 }
 
-// TestNamespaceModeRefusalsAreExhaustive is the one place the whole namespace
-// rule is asserted together: every key, every refused spelling, plus
-// Privileged and CapAdd alongside them. The pieces exist in
-// TestEveryNamespaceModeRefusesHost (key axis) and TestNamespaceModesAreCaseProof
-// (folding), and neither covers `container:<id>` and `ns:<path>` per key.
+// TestNamespaceModeRefusalsAreExhaustive is the redteam's own standing gate
+// on issue #63 Tier B's `NetworkMode="host"` inversion (6a2ddb2): the redteam
+// confirmed the inversion BY HAND and found no single committed test proving
+// the whole set together — TestNamespaceModesAreCaseProof and
+// TestNetworkModeHostIsAllowedButOtherHostModesAreNot cover most of it, split
+// across two tests and neither one includes `container:<id>` for a key OTHER
+// than NetworkMode, or Privileged/CapAdd alongside the namespace-mode set.
+// This is the one place all of it is asserted together, with the live
+// inversion in place.
 //
-// THE RULE IT ENCODES, so a future row is judged rather than argued
-// (issue #145): joining a namespace is safe only when that namespace's
-// MEMBERSHIP SET is a subset of what the sandbox already has. Every key here
-// fails that test, and pid fails it hardest — which is why this doc comment
-// states a rule and not a severity ranking. A severity claim decays silently
-// when the mechanism moves; a rule names what would have to become true first.
+// This doc comment used to carry a SEVERITY claim: "PidMode="host" being
+// refused is the ONLY thing standing between a container and a full
+// host-pidns escape; there is no second mechanism behind it the way there is
+// for network." Severity claims decay when the mechanism moves, and issue
+// #125's C0 moved it — it gave the engine its own pid namespace
+// (CLONE_NEWPID, internal/stage/enginefork.go) and a fresh procfs
+// (internal/stage/inengine.go), so "the ONLY thing standing between" stopped
+// being true the moment C0 landed, silently, because nothing here re-read it.
 //
-//   - Pid namespace membership is not "seeing more pids". It is the only kind
-//     of membership that is a HANDLE to every other namespace a member holds:
-//     /proc/<pid>/root and /proc/<pid>/cwd dereference into the member's own
-//     MOUNT namespace, /proc/<pid>/fd/N reopens its open descriptors. The
-//     engine's pid namespace contains THE ENGINE — pid 1, root-in-U,
+// Replaced with a RULE claim (issue #145's decision), which does not decay
+// the same way, because it names the test that has to fail before the row
+// could ever be safely relaxed:
+//
+//   - An inversion — turning a refused "host" mode into an allowed one, the
+//     way NetworkMode="host" was turned into "joins N" — is safe only when the
+//     namespace's MEMBERSHIP SET is a SUBSET of what the sandbox already has.
+//     N contains the sandbox's own network and nothing else, which is why the
+//     network row alone could invert. A pid namespace fails that test even
+//     with an engine-owned one on offer: pid namespace membership is not
+//     "seeing more pids", it is the only kind of membership that is a HANDLE
+//     to every other namespace a member holds — /proc/<pid>/root and
+//     /proc/<pid>/cwd dereference into the member's own MOUNT namespace,
+//     /proc/<pid>/fd/N reopens its open descriptors — and the engine's pid
+//     namespace contains THE ENGINE: pid 1, root-in-U,
 //     policy.EngineCapBounding, the full delegated subuid range, and a mount
-//     namespace that is a private COPY of the entire host tree. That is a
-//     superset of the sandbox's authority, so PidMode="host" is refused
-//     PERMANENTLY, not provisionally, and Tier C (issue #125) makes the row
-//     MORE load-bearing because the graft descriptors the derived view is
-//     built from pass through the engine child too. MEASURED (issue #145,
-//     podman 6.0.2, yama ptrace_scope=1): a container placed in a sibling
-//     container's pid namespace read the sibling's whole filesystem through
-//     /proc/<pid>/root and listed its open file descriptions through
-//     /proc/<pid>/fd, at plain uid, no capability and no ptrace — exactly the
-//     shape PidMode="host" would reproduce against the engine.
-//
-//   - Network does not get an exception for being "only the network". A
-//     container's netns is snug's to author, and the way a client gets the
-//     one on offer is by naming nothing at all.
-//
+//     namespace that is a private COPY of the entire host tree. Joining it is
+//     a superset of the sandbox's authority, not a subset, so PidMode="host"
+//     stays refused PERMANENTLY, not provisionally — and Tier C (issue #125)
+//     makes the row MORE load-bearing, not less, because the graft
+//     descriptors the derived view is built from now pass through the engine
+//     child too. MEASURED (issue #145, podman 6.0.2, yama ptrace_scope=1): a
+//     container placed in a sibling container's pid namespace read the
+//     sibling's whole filesystem through /proc/<pid>/root and listed its open
+//     file descriptions through /proc/<pid>/fd, at plain uid, no capability
+//     and no ptrace — exactly the shape PidMode="host" would reproduce
+//     against the engine.
 //   - CgroupnsMode="host" fails the same subset test the same way: it names
 //     the engine's own cgroup namespace (CLONE_NEWCGROUP), disclosing the
 //     engine's cgroup path and the placement of every other container this
 //     sandbox started — placement snug authors, not the client.
-//
 //   - IpcMode="host" and UTSMode="host" still name the MACHINE's namespaces,
 //     because neither the stage (internal/stage/fds.go's stageCloneflags) nor
 //     the engine fork (internal/stage/enginefork.go's Cloneflags) unshares
@@ -916,12 +923,10 @@ func TestEveryNamespaceModeRefusesHost(t *testing.T) {
 //     refusal reasons — change with it; TestIpcAndUtsReasonsMatchTheEnginesActualCloneflags
 //     (refusalreason_test.go) is the tripwire that keeps that true rather than
 //     assumed.
-//
 //   - UsernsMode="host" names U, the engine's own user namespace, and is
 //     refused on a narrower ground than the subset test: snug decides a
 //     container's user namespace, full stop, whether or not naming U would
 //     have changed anything.
-//
 //   - The `container:<id>` and `ns:<path>` spellings of every key above are
 //     the same rule applied sibling-to-sibling rather than sibling-to-engine:
 //     a sibling container's namespace is exactly as much a superset of this
@@ -947,10 +952,16 @@ func TestEveryNamespaceModeRefusesHost(t *testing.T) {
 // NetworkMode too would show up here rather than only in a different test
 // file.
 func TestNamespaceModeRefusalsAreExhaustive(t *testing.T) {
-	t.Run("NetworkMode=host", func(t *testing.T) {
+	t.Run("control: NetworkMode=host is allowed (joins N)", func(t *testing.T) {
 		sock, eng, _ := startProxy(t)
-		refuse(t, sock, eng, "/v1.41/containers/create",
-			`{"HostConfig":{"NetworkMode":"host"}}`, "HostConfig.NetworkMode")
+		code, body := post(t, sock, "/v1.41/containers/create", `{"HostConfig":{"NetworkMode":"host"}}`)
+		if code != 200 {
+			t.Fatalf("NetworkMode=host: status %d, want 200: %s", code, body)
+		}
+		if eng.reached.Load() == 0 {
+			t.Fatal("NetworkMode=host never reached the engine — the control itself is broken, " +
+				"so every refusal below proves nothing about a REAL inversion")
+		}
 	})
 
 	// CONTROL for the fold (refs #369): a body naming no namespace mode at
@@ -1010,8 +1021,7 @@ func TestNamespaceModeRefusalsAreExhaustive(t *testing.T) {
 		{"PidMode= host , padded with whitespace", `{"HostConfig":{"PidMode":" host "}}`,
 			"pid namespace of its own since issue #125's C0"},
 		{"NetworkMode=Container:abc, case-folded prefix",
-			`{"HostConfig":{"NetworkMode":"Container:abc"}}`,
-			"snug authors a container's network namespace"},
+			`{"HostConfig":{"NetworkMode":"Container:abc"}}`, "snug did not author"},
 		{"UsernsMode=NS:/proc/1/ns/user, case-folded prefix",
 			`{"HostConfig":{"UsernsMode":"NS:/proc/1/ns/user"}}`,
 			"snug decides a container's user namespace"},
