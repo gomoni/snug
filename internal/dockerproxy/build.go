@@ -212,8 +212,8 @@ type buildParamCheck func(p *Proxy, value string) (string, error)
 // inherited its authority by position alone.
 var unexaminedBuildParams = map[string]string{
 	// ── naming and output ────────────────────────────────────────────────
-	"t":            notYetAnalysed, // image tag
-	"output":       notYetAnalysed, // podman sends the tag here too
+	"t": notYetAnalysed, // image tag
+	// "output" is JUDGED, in buildParams: checkBuildOutput.
 	"outputformat": notYetAnalysed,
 
 	// ── ordinary build behaviour ─────────────────────────────────────────
@@ -238,10 +238,7 @@ var unexaminedBuildParams = map[string]string{
 	// build, so without this entry the profile cannot build (issue #314).
 	"forcecompressionformat": forceCompressionFormat,
 
-	// forceCompressionFormat's inertness argument names manifest as a
-	// parameter that would supply a non-local destination. It is not refused,
-	// and what an unexamined one buys is not established.
-	"manifest": notYetAnalysed, "createdannotation": notYetAnalysed,
+	"manifest": manifestNamesALocalList, "createdannotation": notYetAnalysed,
 
 	// ── resource limits ──────────────────────────────────────────────────
 	"shmsize": resourceLimit, "memory": resourceLimit, "memswap": resourceLimit,
@@ -278,7 +275,58 @@ const (
 		"to a non-local transport. That is the whole of it: a boolean modifier of " +
 		"compressionformat, which is already allowed. It names no path, reaches no host resource, " +
 		"and does not select the transport. cachefrom and cacheto, which would supply a non-local " +
-		"destination, are refused; manifest is not — it is unexamined, under notYetAnalysed."
+		"destination, are refused, and manifest names a list in the engine's own store."
+
+	// MEASURED against podman 6.0.2, because "it names a destination" was the
+	// worry and the answer is that this endpoint does not read it at all.
+	//
+	// Raw POSTs to /v5.0.0/libpod/build against a real `podman system service`,
+	// bypassing the CLI entirely (the CLI is not the boundary — see
+	// checkBuildSecrets for why that reasoning is a trap):
+	//
+	//	output=type=local,dest=/tmp/pwn424, no t  -> built, NOTHING at /tmp/pwn424
+	//	output=plaintag424:v1, no t               -> built, image is <none>:<none>
+	//
+	// So the tag comes from `t` alone and `output` is inert on the libpod
+	// endpoint; the podman CLI sends it redundantly beside `t` (both recorded
+	// fixtures carry output=probe%3Ax next to t=probe%3Ax) and refuses the
+	// destination form client-side anyway: `podman --remote build --output
+	// type=local,dest=/tmp/pwn` is `Error: '--output' option is not supported
+	// in remote mode`. The compat endpoint's own spelling is `outputs`, plural,
+	// which is in neither map and therefore fails closed as unknown; a raw
+	// /v1.41/build?outputs=type=local,dest=... also wrote nothing.
+	//
+	// "podman ignores it today" is a fact about a version, not a property, so
+	// this is a VALUE check rather than a pass: a plain tag forwards, and the
+	// buildkit `type=…,dest=…` syntax is refused. `=` and `,` cannot occur in a
+	// legal image tag, so the refusal cannot reject a tag a client meant.
+	buildOutputIsATagOnly = "A hostile process inside the sandbox can use this to name the tag " +
+		"the built image is committed under, and nothing else. The libpod endpoint does not read " +
+		"this parameter at all — the tag comes from `t` — and the buildkit type=/dest= syntax " +
+		"that WOULD name a filesystem destination is refused here rather than left to podman's " +
+		"continued disinterest in it."
+
+	// MEASURED against podman 6.0.2: --manifest names a LOCAL manifest list in
+	// the engine's own store, and nothing else. Raw POSTs as above:
+	//
+	//	manifest=mylist424:1                    -> localhost/mylist424:1 in the store
+	//	manifest=registry.snug-test.invalid/x:1 -> registry.snug-test.invalid/x:1
+	//	                                           in the store; NO network dial,
+	//	                                           no push, and the run did not
+	//	                                           fail on an unreachable registry
+	//
+	// A registry-shaped name is therefore just a local name with a
+	// registry-shaped prefix — the same thing `podman tag` can already produce.
+	// Pushing is a separate endpoint with its own gate, it needs egress the
+	// engine only has when the sandbox itself does (a container runs in N), and
+	// REGISTRY_AUTH_FILE points at snug's own generated auth.json, so a push
+	// authenticates as nobody (issue #142's regression is that the host's
+	// credentials stay unreachable).
+	manifestNamesALocalList = "A hostile process inside the sandbox can use this to create a " +
+		"manifest list in the engine's own store under a name it chooses, including one shaped " +
+		"like a registry reference. That is a store object, not a destination: it is written " +
+		"where every other image this engine builds is written, reaches no path and dials " +
+		"nothing. cachefrom and cacheto, which WOULD supply a non-local destination, are refused."
 
 	// The honest class, and a claim about the state of the review rather than
 	// about the parameter. An entry here is permitted and unexamined exactly as
@@ -294,6 +342,10 @@ const (
 // one rather than forwarding it.
 var buildParams = map[string]buildParamCheck{
 	"annotations": refuseBuildParam("podman honours run.oci.* annotations, which reach the runtime"),
+
+	// The tag the image is committed under, and only that — buildOutputIsATagOnly
+	// carries the measurement.
+	"output": checkBuildOutput,
 
 	// ── the Dockerfile, which must stay inside the context ───────────────
 	"dockerfile": checkDockerfile,
@@ -1238,4 +1290,36 @@ func summarise(q url.Values) string {
 		fmt.Fprintf(&b, ", %d host volume(s) allowed", len(v))
 	}
 	return b.String()
+}
+
+// checkBuildOutput keeps `output` to a plain image tag.
+//
+// buildOutputIsATagOnly carries the measurement: the libpod endpoint does not
+// read this parameter at all, the podman CLI sends it redundantly beside `t`,
+// and the buildkit destination syntax is refused client-side in remote mode.
+// None of that is a property snug can rely on — a later podman that starts
+// honouring `output` would silently gain a filesystem destination behind a
+// parameter snug had waved through, which is the shape cacheto and cachefrom
+// are already refused for.
+//
+// The discriminator is `=` and `,`: both are illegal in an image reference
+// (docker's grammar allows alphanumerics with `_`, `.`, `-`, `/` and the `:`
+// before a tag, and `@` before a digest) and both are structural to
+// `type=local,dest=/path`. So this cannot refuse a tag a client meant, which is
+// what makes it narrow enough to ship — an ordinary build sends
+// output=probe%3Ax and is unaffected.
+//
+// The value is returned UNCHANGED on the accept path, never normalised:
+// filterBuildQuery marks a build "rewritten" when the forwarded value differs
+// from the client's, so translating here would mark every accepted build as
+// carrying a snug-modified parameter it does not.
+func checkBuildOutput(_ *Proxy, v string) (string, error) {
+	if strings.ContainsAny(v, "=,") {
+		return "", fmt.Errorf("%q is not permitted: an `output` carrying `=` or `,` is the "+
+			"buildkit `type=<kind>,dest=<path>` form, which names a destination the ENGINE "+
+			"writes rather than an image tag. snug allows this parameter only as the tag the "+
+			"built image is committed under.\n"+
+			"       Fix: pass the tag with -t, which is where podman sends it anyway.", v)
+	}
+	return v, nil
 }
