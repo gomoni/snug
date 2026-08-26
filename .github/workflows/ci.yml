@@ -448,6 +448,23 @@ jobs:
             bubblewrap passt \
             python3 shadow util-linux
           command -v bash sh make grep sed
+
+          # The Tumbleweed image declares NO Config.Env — MEASURED, its config
+          # blob (sha256:fff90a94…) carries `"Env": null` — so the image names
+          # no PATH at all. The runner reads Config.Env at "Initialize
+          # containers" and hands the result to every later `docker exec`, so
+          # the moment an action rewrites PATH (setup-go does, to add the Go
+          # toolchain) the PATH a step runs with contains ONLY what that action
+          # added. Runs 32940231386 and 32940552970 both died on the step after
+          # setup-go with `exec: "sh"/"bash": executable file not found in
+          # $PATH`, exit 127, having installed a working bash at /usr/bin/bash
+          # one step earlier.
+          #
+          # $GITHUB_PATH is the fix rather than a job-level `env: PATH`: an
+          # action's own addPath prepends to what this leaves, so the toolchain
+          # still wins and the system directories stay reachable underneath.
+          printf '%s\n' /usr/local/bin /usr/bin /bin /usr/local/sbin /usr/sbin /sbin >> "$GITHUB_PATH"
+
           podman --version
           bwrap --version
           pasta --version
