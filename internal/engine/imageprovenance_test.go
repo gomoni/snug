@@ -25,7 +25,7 @@ func specEnv(t *testing.T, baseEnv []string) ([]string, *Engine) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman", baseEnv, false, noSignaturePolicy(t))
+	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman", baseEnv, false, "", "", noSignaturePolicy(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestTheGeneratedStorageConfIsSnugsOwn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman", []string{"PATH=/usr/bin"}, false, noSignaturePolicy(t))
+	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman", []string{"PATH=/usr/bin"}, false, "", "", noSignaturePolicy(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +275,7 @@ func TestTheGeneratedStorageConfNeverNamesAMountProgram(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			spec, err := e.Spec(specPolicy(t, e, dir, policy.NetPolicy{}), podman, []string{"PATH=/usr/bin"}, false, noSignaturePolicy(t))
+			spec, err := e.Spec(specPolicy(t, e, dir, policy.NetPolicy{}), podman, []string{"PATH=/usr/bin"}, false, "", "", noSignaturePolicy(t))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -329,7 +329,7 @@ func TestEveryPathAGeneratedConfigNamesIsOneSnugOwns(t *testing.T) {
 		t.Fatal(err)
 	}
 	const enginePath = "/usr/bin/podman"
-	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), enginePath, []string{"PATH=/usr/bin"}, true, noSignaturePolicy(t))
+	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), enginePath, []string{"PATH=/usr/bin"}, true, "crun", "/usr/bin/crun", noSignaturePolicy(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,6 +366,22 @@ func TestEveryPathAGeneratedConfigNamesIsOneSnugOwns(t *testing.T) {
 	helperPaths := map[string]bool{
 		"/usr/bin/fuse-overlayfs":                                    true,
 		filepath.Join(policy.EngineToolchainGuest, "fuse-overlayfs"): true,
+		// The OCI runtime [engine.runtimes] names (preflight P10), in the same
+		// class and for the same reason as fuse-overlayfs above: it is an OS
+		// program under /usr, which @sys exposes, so it keeps its own path
+		// inside the engine's derived view. A container-capable run has to
+		// grant /usr regardless — podman, conmon and netavark all live there —
+		// so a run that could not see this path could not start an engine at
+		// all.
+		//
+		// EXACT, and this test chose the value it passes to Spec above, so the
+		// exemption is an independent restatement rather than a mirror of what
+		// the code did. The residual it accepts, stated: a crun somewhere /usr
+		// does not cover is pinned to a path the engine's view may not have,
+		// and podman then says `requested OCI runtime crun is not available` —
+		// which names the runtime, unlike the NoCgroups 500 that P10 exists to
+		// prevent.
+		"/usr/bin/crun": true,
 	}
 	// The directories containers.conf names for podman's own helper lookup.
 	// Exempt as EXACT values, so a fourth entry — or any other path on such a
@@ -458,7 +474,7 @@ func TestARelativeEngineRefusesRatherThanWritingARelativeMountProgram(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "./podman", []string{"PATH=/usr/bin"}, false, noSignaturePolicy(t))
+	_, err = e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "./podman", []string{"PATH=/usr/bin"}, false, "", "", noSignaturePolicy(t))
 	if err == nil {
 		t.Fatal("Spec accepted a relative engine path")
 	}
@@ -509,7 +525,7 @@ func TestAnUnquotablePathIsRefusedRatherThanSubstituted(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman",
-		[]string{"PATH=/usr/bin"}, false, noSignaturePolicy(t))
+		[]string{"PATH=/usr/bin"}, false, "", "", noSignaturePolicy(t))
 	if err != nil {
 		t.Fatalf("Spec refused a store under a directory with a quote in its name, but the "+
 			"quote can no longer reach the generated config — storage.conf names %s: %v",
@@ -635,7 +651,7 @@ func TestTheGeneratedSignaturePolicyIsTheHostsOwn(t *testing.T) {
 		t.Fatalf("a host policy snug should project was refused: %v", err)
 	}
 
-	spec, err := e.Spec(pol, "/usr/bin/podman", nil, false, sig)
+	spec, err := e.Spec(pol, "/usr/bin/podman", nil, false, "", "", sig)
 	if err != nil {
 		t.Fatal(err)
 	}

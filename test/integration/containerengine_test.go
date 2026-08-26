@@ -3088,9 +3088,44 @@ const ulimitMarker = "13571"
 // spelling that no longer works — and "no marker through snug" would be
 // proving nothing at all.
 //
-// It builds its own `FROM scratch` image in a throwaway store rather than
-// pulling one, so it needs no registry and no cached image, and it never
-// touches the developer's own podman storage.
+// It imports a tar into a throwaway store rather than pulling or building an
+// image, so it needs no registry and never touches the developer's own
+// podman storage.
+//
+// # Why import, not build (issue #425)
+//
+// `podman build` over a build context directory mounts an overlay on top of
+// it, and that mount fails on this host:
+//
+//	Error: mounting an overlay over build context directory: creating overlay
+//	scaffolding for build context directory: mount
+//	overlay:/var/tmp/buildah-context-.../merge, data:
+//	lowerdir=<ctx>,upperdir=...,workdir=...,userxattr: invalid argument
+//
+// THE CAUSE IS THE FILESYSTEM UNDER THE SCRATCH DIRECTORY, NOT THE CONTEXT.
+// buildah puts that scaffolding under /var/tmp (buildah-context-*,
+// libpod_builder*), and in this development distrobox /var/tmp IS ITSELF
+// overlayfs — `stat -f -c %T /var/tmp` is `overlayfs`, the container's own
+// root. A nested overlay mount with userxattr on an overlayfs lower is what
+// returns EINVAL. Measured: the identical build, against a `podman system
+// service` started with TMPDIR on btrfs, SUCCEEDS and tags the image. I did
+// not observe where buildah relocated its scaffolding, only that the build
+// stopped failing, so the fix's mechanism is inferred and the failure's cause
+// is not.
+//
+// So this is not simply "podman 6.0.2 cannot build here": it is 6.0.2's
+// context overlay meeting an overlayfs /var/tmp, and #401 records the pinned
+// bundle's 5.8.4 building on this same host, which is what places the change
+// on podman's side rather than the filesystem's alone. A `podman build` gap
+// names which podman it was measured against — three independent 6.0.2
+// regressions landed within hours of #398's retiring that bundle: #401's netns
+// one, this overlay failure measured directly against the host's own podman,
+// and the same overlay failure again from inside this control.
+//
+// `podman import` needs no build context and therefore no overlay over one,
+// which is why it is the control's construction step rather than a TMPDIR
+// override: the control must not depend on which filesystem holds the
+// developer's /var/tmp.
 func assertHostileConfInjectsWithoutSnug(t *testing.T, home, probe, marker string) {
 	t.Helper()
 
@@ -3099,9 +3134,9 @@ func assertHostileConfInjectsWithoutSnug(t *testing.T, home, probe, marker strin
 	if err := os.WriteFile(filepath.Join(ctx, "confprobe"), mustRead(t, probe), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(ctx, "Containerfile"),
-		[]byte("FROM scratch\nCOPY confprobe /confprobe\nENTRYPOINT [\"/confprobe\"]\n"), 0o644); err != nil {
-		t.Fatal(err)
+	tarPath := filepath.Join(ctx, "rootfs.tar")
+	if out, err := exec.Command("tar", "-C", ctx, "-cf", tarPath, "confprobe").CombinedOutput(); err != nil {
+		t.Fatalf("building the control's own rootfs tar: %v: %s", err, out)
 	}
 
 	store, runroot := t.TempDir(), t.TempDir()
@@ -3120,11 +3155,34 @@ func assertHostileConfInjectsWithoutSnug(t *testing.T, home, probe, marker strin
 	t.Cleanup(func() { run("system", "reset", "--force") })
 
 	tag := "snugtest-hostconf-control:1"
-	if out, err := run("build", "-t", tag, ctx); err != nil {
-		t.Skipf("SKIP: the control could not build its own from-scratch image with this "+
-			"bundle's podman, so issue #132's plant cannot be shown live here: %v: %s", err, out)
+	if out, err := run("import", "--change", `ENTRYPOINT=["/confprobe"]`, tarPath, tag); err != nil {
+		t.Skipf("SKIP: the control could not construct its own image with %s (the host's resolved "+
+			"podman), so issue #132's plant cannot be shown live here: %v: %s", podman, err, out)
 	}
-	out, err := run("run", "--rm", tag)
+
+	// --runtime is load-bearing. This control drops CONTAINERS_CONF and
+	// XDG_CONFIG_HOME and points HOME at the planted home — exactly what stops
+	// it inheriting any runtime choice — so it falls to podman's built-in
+	// default order, which picked runc on this host and failed (measured,
+	// podman 6.0.2):
+	//
+	//	Error: runc: runc create failed: unable to start container process:
+	//	unable to apply cgroup configuration: failed to write 798916: write
+	//	/sys/fs/cgroup/app.slice/app-tmux.slice/<id>/cgroup.procs: no such file
+	//	or directory: OCI runtime attempted to invoke a command that was not
+	//	found
+	//
+	// internal/cli/doctor.go's ociRuntimeMissing and its comment already state
+	// the general fact: "podman needs crun OR runc" is true of podman and
+	// FALSE of snug's own configuration (runc cannot serve cgroups=disabled).
+	// Naming --runtime on argv is orthogonal to the
+	// default_ulimits/mounts/volumes/env keys this control discriminates on,
+	// so it does not disarm the control.
+	runtime, ok := hostOCIRuntime()
+	if !ok {
+		t.Skip("SKIP: neither crun nor runc is on PATH, so the control cannot run the image it just constructed")
+	}
+	out, err := run("--runtime", runtime, "run", "--rm", tag)
 	if err != nil {
 		t.Fatalf("control: the planted-config container did not run: %v: %s", err, out)
 	}
@@ -3141,6 +3199,21 @@ func assertHostileConfInjectsWithoutSnug(t *testing.T, home, probe, marker strin
 			"(issue #132's channel may have moved, or the key spellings changed):\n%s", out)
 	}
 	t.Logf("control: the planted host containers.conf DOES inject without snug (marker %q seen)", marker)
+}
+
+// hostOCIRuntime resolves which OCI runtime this control's `podman run`
+// should name explicitly (see the comment at that call site for why naming
+// one is required). Prefers crun; falls back to runc; ok is false when
+// neither is on PATH, which is a distinct "the control cannot be run"
+// blocker from "the plant is not read".
+func hostOCIRuntime() (name string, ok bool) {
+	if _, err := exec.LookPath("crun"); err == nil {
+		return "crun", true
+	}
+	if _, err := exec.LookPath("runc"); err == nil {
+		return "runc", true
+	}
+	return "", false
 }
 
 // ── issue #125, C0: the engine holds its own pid namespace ─────────────────

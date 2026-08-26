@@ -423,6 +423,15 @@ func New(pol *policy.Policy) (*Engine, error) {
 	// The name is allocated FIRST and the paths are computed from it, so that
 	// what this function creates and what --dry-run predicts (PlannedPaths)
 	// come out of one arithmetic rather than two copies of it — see paths.go.
+	// Before this run claims a name, reclaim the directories of runs that
+	// died holding theirs. It runs HERE, on the way in, because that is the
+	// only place left: a SIGKILLed run executes nothing on its way out
+	// (issue #85's argument, applied to the directory issue #425 measured
+	// still leaking). It is also what keeps a leftover from being a landmine
+	// for this very call — the name below carries our pid and
+	// MustCreateSubdir refuses to reuse an existing entry.
+	sweepStaleEngineRunDirs()
+
 	name := runDirName(os.Getuid(), pid)
 	planned, err := planPaths(pol, name)
 	if err != nil {
@@ -657,7 +666,7 @@ func (e *Engine) RunLabel() string { return e.runLabel }
 // tree it existed to shadow — see __inengine's own note where step 11 was.
 // What a CONTAINER gets is decided by the generated containers.conf and needs
 // no mount at all (issue #126).
-func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgroupsDisabled bool, sig *SignaturePolicy) (stage.EngineSpec, error) {
+func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgroupsDisabled bool, ociRuntime, ociRuntimePath string, sig *SignaturePolicy) (stage.EngineSpec, error) {
 	if sig == nil {
 		// A caller that skipped ProjectHostSignaturePolicy. Answering with a
 		// permissive default here is precisely the fallback clause 3 forbids,
@@ -785,7 +794,7 @@ func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgrou
 	}
 	finalEnv = setEnv(finalEnv, "CONTAINERS_STORAGE_CONF", guestStoragepath)
 
-	confPath, err := e.writeContainersConf(pol, podman, cgroupsDisabled, net.Resolver())
+	confPath, err := e.writeContainersConf(pol, podman, cgroupsDisabled, ociRuntime, ociRuntimePath, net.Resolver())
 	if err != nil {
 		return stage.EngineSpec{}, err
 	}
@@ -986,7 +995,7 @@ func engineGrafts(pol *policy.Policy) []stage.EngineGraft {
 // res is policy.NetPolicy.Resolver() — the SAME derivation the sandbox
 // payload's own /etc/resolv.conf comes from, taken as VALUES rather than by
 // parsing the rendered file back, so the two cannot diverge (invariant 6).
-func (e *Engine) writeContainersConf(pol *policy.Policy, podman string, cgroupsDisabled bool, res policy.ResolverConfig) (string, error) {
+func (e *Engine) writeContainersConf(pol *policy.Policy, podman string, cgroupsDisabled bool, ociRuntime, ociRuntimePath string, res policy.ResolverConfig) (string, error) {
 	path := filepath.Join(e.confDir, "containers.conf")
 
 	var b strings.Builder
@@ -997,6 +1006,10 @@ func (e *Engine) writeContainersConf(pol *policy.Policy, podman string, cgroupsD
 		"[containers]\n")
 
 	if cgroupsDisabled {
+		// The `runtime` key in the [engine] block below is the other half of
+		// this one and is never absent when this is present (P10). runc does
+		// not implement this mode, so writing it without naming a runtime
+		// that does is what produced a container API that failed at create.
 		b.WriteString("\n# preflight P5 measured that this host's cgroup delegation does not survive\n" +
 			"# even the engine's own private cgroup namespace.\n" +
 			"cgroups = \"disabled\"\n")
@@ -1111,6 +1124,58 @@ func (e *Engine) writeContainersConf(pol *policy.Policy, podman string, cgroupsD
 		"# podman's only lookup for conmon/crun/newuidmap and friends, so name the\n" +
 		"# search list explicitly rather than let it fall back to inheritance.\n" +
 		"helper_binaries_dir = [" + helperBinariesDirs() + "]\n")
+
+	// runtime is an [engine] key and MUST be written inside this block: an
+	// unknown key in containers.conf is not an error, so the same line under
+	// [containers] would be silently ignored while every Contains assertion
+	// still passed. hooks_dir sat in the wrong table for a milestone for
+	// exactly that reason.
+	//
+	// Empty means "author nothing", which is the ordinary case: where cgroups
+	// work, both crun and runc serve, and choosing between them here would
+	// pin a runtime on hosts that do not need one pinned. Non-empty is P10's
+	// answer and only ever "crun" — see preflightOCIRuntime, which owns the
+	// decision and REFUSES the run rather than letting this be empty while
+	// cgroups = "disabled" is written above.
+	//
+	// runtime_supports_nocgroups is deliberately NOT authored, in any arm.
+	// Adding runc to it tells podman runc implements a mode it does not, which
+	// converts a clean refusal into undefined behaviour. Nor is cgroups =
+	// "disabled" ever dropped in favour of runc: that discards P5's
+	// measurement and moves the failure to the first controller write.
+	if ociRuntime != "" {
+		quotedRuntime, err := tomlString(ociRuntime)
+		if err != nil {
+			return "", fmt.Errorf("containers.conf runtime: %w", err)
+		}
+		b.WriteString("# The only runtime that implements the cgroups = \"disabled\" mode\n" +
+			"# selected above (preflight P10).\n" +
+			"runtime = " + quotedRuntime + "\n")
+
+		// [engine.runtimes] names the FILE, not just the name, and it is a
+		// SUBTABLE so it goes last — every scalar [engine] key above it would
+		// otherwise land inside it.
+		//
+		// Naming the path is what stops podman's own runtime search list being
+		// a second author of this decision. The two lists genuinely differ:
+		// P10's predicate stats podmanHelperDirs(), which includes
+		// /usr/libexec/podman and friends, and podman does NOT search those for
+		// a runtime — they are the HELPER lookup, which helper_binaries_dir
+		// above covers, and a runtime is not a helper. A crun found only there
+		// would otherwise have snug authoring a name podman cannot resolve.
+		// Copying podman's list into snug was the alternative and is worse: a
+		// copy of state that drifts silently on a podman upgrade.
+		if ociRuntimePath != "" {
+			quotedPath, err := tomlString(ociRuntimePath)
+			if err != nil {
+				return "", fmt.Errorf("containers.conf engine.runtimes: %w", err)
+			}
+			b.WriteString("\n[engine.runtimes]\n" +
+				"# The file P10 actually found, so podman resolves this run's runtime\n" +
+				"# from snug's answer rather than from its own search list.\n" +
+				ociRuntime + " = [" + quotedPath + "]\n")
+		}
+	}
 
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		return "", fmt.Errorf("writing %s: %w", path, err)

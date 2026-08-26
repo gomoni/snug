@@ -183,7 +183,7 @@ func TestEngineRunDirSplitsByWritability(t *testing.T) {
 	// Every generated file, written through the real writers rather than
 	// re-derived here, so a writer that starts choosing its own directory is
 	// caught rather than mirrored.
-	if _, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman", []string{"PATH=/usr/bin"}, false, noSignaturePolicy(t)); err != nil {
+	if _, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman", []string{"PATH=/usr/bin"}, false, "", "", noSignaturePolicy(t)); err != nil {
 		t.Fatalf("Spec: %v", err)
 	}
 	// resolv.conf is NOT in this list any more, and its absence is the point:
@@ -204,12 +204,24 @@ func TestEngineRunDirSplitsByWritability(t *testing.T) {
 	// NEGATIVE: nothing generated may sit at the top of the run directory any
 	// more. Without this the test passes on an engine that writes each file
 	// TWICE, once in each place.
+	//
+	// "lock" is the one permitted third name, and it is permitted because the
+	// property this asserts does not reach it: the classification exists so
+	// Tier C can graft sock/ writable and conf/ read-only, and the lock is
+	// grafted NEITHER WAY — it never enters the engine's view at all. It is
+	// snug's own host-side liveness marker, held flock'd for the engine's life
+	// so a later run's sweepStaleEngineRunDirs can tell a directory whose
+	// owner died from one still in use. It must sit HERE rather than under
+	// conf/: it has to die with the directory it describes, and a lock inside
+	// conf/ would be grafted read-only into the engine's view for no reason.
+	// The name is spelled out rather than pattern-matched so a SECOND
+	// unclassified file still fails.
 	entries, err := os.ReadDir(e.runDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, ent := range entries {
-		if ent.Name() != "sock" && ent.Name() != "conf" {
+		if ent.Name() != "sock" && ent.Name() != "conf" && ent.Name() != "lock" {
 			t.Errorf("%s sits at the top of the run directory; everything belongs in sock/ or "+
 				"conf/, and a file in neither is one the split does not classify", ent.Name())
 		}
@@ -233,7 +245,7 @@ func TestOwnedPIDsMatchesOnlyThisEnginesPaths(t *testing.T) {
 	// sweep for nothing and every negative below would pass vacuously — which
 	// is exactly the defect #344 was.
 	if _, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman",
-		[]string{"PATH=/usr/bin"}, false, noSignaturePolicy(t)); err != nil {
+		[]string{"PATH=/usr/bin"}, false, "", "", noSignaturePolicy(t)); err != nil {
 		t.Fatal(err)
 	}
 	guestSock := e.paths()[0]
@@ -712,14 +724,14 @@ func TestTheReaperRefusesToRemoveAnythingButItsOwnRunDirectory(t *testing.T) {
 // specConf runs Spec against a throwaway Engine and returns the generated
 // containers.conf's content together with the environment the engine will be
 // started with. It is the shared setup for every #126/#132 assertion below.
-func specConf(t *testing.T, net policy.NetPolicy, cgroupsDisabled bool) (conf string, env []string) {
+func specConf(t *testing.T, net policy.NetPolicy, cgroupsDisabled bool, ociRuntime, ociRuntimePath string) (conf string, env []string) {
 	t.Helper()
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec, err := e.Spec(specPolicy(t, e, "", net), "/usr/bin/podman", []string{"PATH=/usr/bin"}, cgroupsDisabled, noSignaturePolicy(t))
+	spec, err := e.Spec(specPolicy(t, e, "", net), "/usr/bin/podman", []string{"PATH=/usr/bin"}, cgroupsDisabled, ociRuntime, ociRuntimePath, noSignaturePolicy(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -750,7 +762,7 @@ func specConf(t *testing.T, net policy.NetPolicy, cgroupsDisabled bool) (conf st
 // CONTROL: the file the variables name must EXIST and be non-empty — otherwise
 // this test passes on a Spec that names a path it never wrote.
 func TestTheEngineReadsOnlySnugsOwnContainersConf(t *testing.T) {
-	conf, env := specConf(t, policy.NetPolicy{Mode: policy.NetEgress, DNS: true, Nameservers: []string{"192.0.2.53"}}, false)
+	conf, env := specConf(t, policy.NetPolicy{Mode: policy.NetEgress, DNS: true, Nameservers: []string{"192.0.2.53"}}, false, "", "")
 	if strings.TrimSpace(conf) == "" {
 		t.Fatal("CONTAINERS_CONF names an empty file")
 	}
@@ -782,7 +794,7 @@ func TestTheEngineReadsOnlySnugsOwnContainersConf(t *testing.T) {
 // default, in either direction", and it is what still holds if a future podman
 // changes CONTAINERS_CONF from "replaces" to "merges".
 func TestGeneratedContainersConfClosesTheHostInjectionKeys(t *testing.T) {
-	conf, _ := specConf(t, policy.NetPolicy{Mode: policy.NetEgress, DNS: true, Nameservers: []string{"192.0.2.53"}}, false)
+	conf, _ := specConf(t, policy.NetPolicy{Mode: policy.NetEgress, DNS: true, Nameservers: []string{"192.0.2.53"}}, false, "", "")
 	for _, want := range []string{
 		"mounts = []",
 		"volumes = []",
@@ -814,7 +826,7 @@ func TestGeneratedContainersConfClosesTheHostInjectionKeys(t *testing.T) {
 // SIOCSIFFLAGS: Operation not permitted` (measured, both podman 5.8.4 and
 // 6.0.2). The unit assertion earns its keep only alongside those.
 func TestGeneratedContainersConfPinsTheNetworkNamespace(t *testing.T) {
-	conf, _ := specConf(t, policy.NetPolicy{Mode: policy.NetEgress, DNS: true, Nameservers: []string{"192.0.2.53"}}, false)
+	conf, _ := specConf(t, policy.NetPolicy{Mode: policy.NetEgress, DNS: true, Nameservers: []string{"192.0.2.53"}}, false, "", "")
 	if !strings.Contains(conf, `netns = "host"`) {
 		t.Errorf("generated containers.conf does not pin netns = \"host\" — without it, podman's "+
 			"OWN default (a fresh netns per container/build step) needs CAP_NET_ADMIN to bring lo "+
@@ -838,7 +850,7 @@ func TestGeneratedContainersConfPinsTheNetworkNamespace(t *testing.T) {
 // which is the drift it exists to catch — a list whose prose and content
 // disagree is how the finding happened in the first place.
 func TestTheInjectionKeyListSaysWhatItDoesNotClose(t *testing.T) {
-	conf, _ := specConf(t, policy.NetPolicy{Mode: policy.NetEgress, DNS: true, Nameservers: []string{"192.0.2.53"}}, false)
+	conf, _ := specConf(t, policy.NetPolicy{Mode: policy.NetEgress, DNS: true, Nameservers: []string{"192.0.2.53"}}, false, "", "")
 	for _, notClosed := range []string{
 		"default_capabilities",
 		"default_sysctls",
@@ -871,7 +883,7 @@ func TestGeneratedContainersConfTakesDNSFromTheResolvedPolicy(t *testing.T) {
 	// test fail against a policy that was never valid rather than against a
 	// defect.
 	net := policy.NetPolicy{Mode: policy.NetEgress, DNS: true, Nameservers: []string{"192.0.2.53"}}
-	conf, _ := specConf(t, net, false)
+	conf, _ := specConf(t, net, false, "", "")
 
 	for _, want := range []string{
 		`dns_servers = ["192.0.2.53"]`,
@@ -895,7 +907,7 @@ func TestGeneratedContainersConfTakesDNSFromTheResolvedPolicy(t *testing.T) {
 // CONTROL: the egress case above proves a real nameserver does reach the file,
 // so "non-empty offline" is not passing because the key is hardcoded.
 func TestGeneratedContainersConfNeverLeavesDNSUnsetOffline(t *testing.T) {
-	conf, _ := specConf(t, policy.NetPolicy{Mode: policy.NetIsolated}, false)
+	conf, _ := specConf(t, policy.NetPolicy{Mode: policy.NetIsolated}, false, "", "")
 	if strings.Contains(conf, "dns_servers = []") {
 		t.Errorf("offline containers.conf leaves dns_servers EMPTY, which podman reads as "+
 			"'not configured' and answers from the engine's own /etc/resolv.conf:\n%s", conf)
@@ -914,7 +926,7 @@ func TestGeneratedContainersConfNeverLeavesDNSUnsetOffline(t *testing.T) {
 // policy.NetPolicy — this test fails if a future change re-derives either one.
 func TestTheEnginesTwoDNSRenderingsCannotDiverge(t *testing.T) {
 	net := policy.NetPolicy{Mode: policy.NetEgress, DNS: true, Nameservers: []string{"198.51.100.7"}}
-	conf, _ := specConf(t, net, false)
+	conf, _ := specConf(t, net, false, "", "")
 	resolv := string(net.ResolvConf())
 
 	if !strings.Contains(resolv, "nameserver 198.51.100.7") {
@@ -933,11 +945,11 @@ func TestTheEnginesTwoDNSRenderingsCannotDiverge(t *testing.T) {
 // is not asserting a constant.
 func TestCgroupsDisabledStillReachesTheEngine(t *testing.T) {
 	net := policy.NetPolicy{Mode: policy.NetEgress, DNS: true, Nameservers: []string{"192.0.2.53"}}
-	with, _ := specConf(t, net, true)
+	with, _ := specConf(t, net, true, "crun", "/usr/bin/crun")
 	if !strings.Contains(with, `cgroups = "disabled"`) {
 		t.Errorf("preflight P5's selection did not reach the engine:\n%s", with)
 	}
-	without, _ := specConf(t, net, false)
+	without, _ := specConf(t, net, false, "", "")
 	if strings.Contains(without, `cgroups = "disabled"`) {
 		t.Errorf("cgroups was disabled without P5 selecting it:\n%s", without)
 	}
@@ -1069,4 +1081,122 @@ func hostSideOf(t *testing.T, e *Engine, guest string) string {
 			guest, policy.EngineConfGuest)
 	}
 	return filepath.Join(e.ConfDir(), rest)
+}
+
+// TestCgroupsDisabledPinsTheOnlyRuntimeThatImplementsIt is the engine half of
+// P10. `cgroups = "disabled"` is only servable by crun, so the generated file
+// must carry both or neither.
+//
+// The ORDER assertion is the load-bearing half, and it is not pedantry: an
+// unknown key in containers.conf is not an error, so a `runtime` line under
+// [containers] is silently ignored by podman while every Contains assertion in
+// this file still passes. hooks_dir sat in the wrong table for a milestone for
+// exactly that reason, so the test names the table rather than the string.
+func TestCgroupsDisabledPinsTheOnlyRuntimeThatImplementsIt(t *testing.T) {
+	net := policy.NetPolicy{Mode: policy.NetIsolated}
+
+	t.Run("cgroups disabled: both keys, runtime under [engine]", func(t *testing.T) {
+		conf, _ := specConf(t, net, true, "crun", "/usr/bin/crun")
+		if !strings.Contains(conf, `cgroups = "disabled"`) {
+			t.Fatalf("control failed: no cgroups key at all, so the runtime assertion below "+
+				"would prove nothing:\n%s", conf)
+		}
+		if !strings.Contains(conf, `runtime = "crun"`) {
+			t.Fatalf("cgroups are disabled and no runtime is pinned. podman then picks its own, "+
+				"and runc does not implement the mode written four lines up — the create fails "+
+				"with \"requested OCI runtime runc is not compatible with NoCgroups\":\n%s", conf)
+		}
+		engineHdr := strings.Index(conf, "[engine]")
+		runtimeAt := strings.Index(conf, `runtime = "crun"`)
+		if engineHdr < 0 {
+			t.Fatalf("no [engine] table in the generated file:\n%s", conf)
+		}
+		if runtimeAt < engineHdr {
+			t.Fatalf("runtime is at %d, BEFORE the [engine] header at %d, so it lands in "+
+				"[containers] — podman ignores an unknown key there without erroring, and this "+
+				"file's other assertions cannot see the difference:\n%s", runtimeAt, engineHdr, conf)
+		}
+	})
+
+	t.Run("cgroups fine: neither key", func(t *testing.T) {
+		conf, _ := specConf(t, net, false, "", "")
+		if strings.Contains(conf, `cgroups = "disabled"`) {
+			t.Errorf("cgroups are usable and the file disables them anyway:\n%s", conf)
+		}
+		if strings.Contains(conf, "runtime = ") {
+			t.Errorf("cgroups are usable and a runtime is pinned anyway. Both crun and runc "+
+				"serve here, so this chooses on podman's behalf for no reason:\n%s", conf)
+		}
+	})
+}
+
+// TestGeneratedContainersConfNeverClaimsRuncSupportsNoCgroups sweeps both arms
+// for runtime_supports_nocgroups. Adding runc to that list would tell podman
+// runc implements a mode it does not, converting P10's clean refusal into
+// undefined behaviour inside a container create.
+func TestGeneratedContainersConfNeverClaimsRuncSupportsNoCgroups(t *testing.T) {
+	net := policy.NetPolicy{Mode: policy.NetIsolated}
+	for _, arm := range []struct {
+		name            string
+		cgroupsDisabled bool
+		runtime         string
+		runtimePath     string
+	}{
+		{"cgroups disabled", true, "crun", "/usr/bin/crun"},
+		{"cgroups fine", false, "", ""},
+	} {
+		t.Run(arm.name, func(t *testing.T) {
+			conf, _ := specConf(t, net, arm.cgroupsDisabled, arm.runtime, arm.runtimePath)
+			if strings.Contains(conf, "runtime_supports") {
+				t.Fatalf("the generated file writes a runtime_supports key. snug does not get "+
+					"to redefine which runtimes implement NoCgroups:\n%s", conf)
+			}
+		})
+	}
+}
+
+// TestThePinnedRuntimeNamesItsFile is the red team's Target-2 finding: pinning
+// the NAME left podman's own runtime search list as a second, invisible author
+// of this decision, and the two lists genuinely differ — P10's predicate stats
+// podmanHelperDirs() (which includes /usr/libexec/podman), and podman does not
+// search those for a RUNTIME. A crun found only there had snug authoring a name
+// podman could then resolve nowhere.
+//
+// [engine.runtimes] is a SUBTABLE, so the assertion is that it comes after every
+// scalar [engine] key: a subtable header emitted too early swallows the keys
+// below it, and helper_binaries_dir landing inside [engine.runtimes] would be a
+// silently ignored key rather than an error.
+func TestThePinnedRuntimeNamesItsFile(t *testing.T) {
+	net := policy.NetPolicy{Mode: policy.NetIsolated}
+
+	conf, _ := specConf(t, net, true, "crun", "/usr/libexec/podman/crun")
+	if !strings.Contains(conf, `crun = ["/usr/libexec/podman/crun"]`) {
+		t.Fatalf("the generated file pins the runtime by name but never names the file P10 found, "+
+			"so podman resolves it from its own search list — which does not include the "+
+			"directories P10's predicate stats:\n%s", conf)
+	}
+
+	runtimesAt := strings.Index(conf, "[engine.runtimes]")
+	if runtimesAt < 0 {
+		t.Fatalf("no [engine.runtimes] table:\n%s", conf)
+	}
+	for _, scalar := range []string{"helper_binaries_dir", "hooks_dir", "image_copy_tmp_dir", "runtime = "} {
+		at := strings.Index(conf, scalar)
+		if at < 0 {
+			t.Errorf("control failed: %q is absent, so its position proves nothing", scalar)
+			continue
+		}
+		if at > runtimesAt {
+			t.Errorf("%q is at %d, AFTER the [engine.runtimes] subtable header at %d — it lands "+
+				"inside that table, where podman ignores it without erroring",
+				scalar, at, runtimesAt)
+		}
+	}
+
+	// No path, no subtable: the ordinary arm authors neither.
+	plain, _ := specConf(t, net, false, "", "")
+	if strings.Contains(plain, "[engine.runtimes]") {
+		t.Errorf("cgroups are usable and no runtime is pinned, yet a runtimes table was "+
+			"authored:\n%s", plain)
+	}
 }

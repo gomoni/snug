@@ -239,8 +239,17 @@ runroot move to `/tmp`**.
 ### 3.2 Creation, owner, mode, reach
 
 - **Directory:** `/tmp/snug-<uid>-<runid>/`, `<runid>` = snug's pid (unique per
-  run, matching the socket's existing pid-keying). It holds `podman-<pid>.sock`
-  and `rr/` (runroot).
+  run, matching the socket's existing pid-keying). It holds `lock`, `sock/`
+  (`podman-<pid>.sock`) and `conf/` (the generated containers.conf,
+  registries.conf, storage.conf, auth.json and `home/`). The runroot is NOT in
+  here: it is keyed by target, not by run — §13.
+- **`lock`:** the first thing written into the directory, before `sock/` and
+  `conf/` exist, held `LOCK_EX` for the life of the engine and never released
+  explicitly. A held lock is what "this run is live" MEANS for this directory,
+  and closing it is the only announcement that its owner is gone — which is
+  what makes §6's sweep possible. Creation refuses if the lock cannot be taken
+  or if the file has already lost its name to a concurrent sweep; it does not
+  retry (invariant 5).
 - **Who creates it:** **P0 (snug), on the host, before the stage forks the
   engine** — created in `engine.New`, hardened against a planted symlink exactly
   as commit `dfe6ac8` (#61/#85) hardened the live-sockets dir: `mkdir` that
@@ -449,10 +458,51 @@ Two mechanisms:
   reach anything this run did not itself create, and it needs no shell-side
   duplicate of what `Engine.Spec` writes there.
 
+**The run DIRECTORY is part of this guarantee, and nothing above delivers it.**
+`Pdeathsig` and the pid-namespace collapse delete processes; the run directory
+and everything in it are files, and no signal removes a file. Two mechanisms,
+and neither is the other's fallback:
+
+- **`Engine.Stop`,** on every path snug controls — clean exit and every error
+  path `container.go` arms a deferred `Stop` for. It removes the directory
+  through the parent descriptor held since `New` rather than by re-walking the
+  path — `os.RemoveAll` on a route that may not lead to this run's inode
+  reports success having removed nothing — and names on stderr what it could
+  not remove: a directory snug could not clean up is state that survives the
+  user, invariant 4.
+- **`sweepStaleEngineRunDirs`,** on the way IN of the next engine start, called
+  by `New` before it claims its own name. This is the case `Stop` structurally
+  cannot cover: a SIGKILLed run executes nothing on its way out, so the only
+  code that can act there is the pre-armed shell above — and the sweep is what
+  covers a run that never armed one, or whose shell did not get to it. The liveness
+  test is §3.2's flock and nothing else — no `/proc`, no start-time compare, no
+  parsing the pid back out of the name — because SIGKILL releases an flock
+  along with everything else the dying process held. It also keeps a leftover
+  from being a landmine for the very run doing the sweeping: the name carries
+  this process's pid and creation refuses to reuse an existing entry, so a
+  stale directory poisons that pid number until something removes it.
+
+The sweep claims the prefix `snug-<uid>-`, and the **trailing dash is
+load-bearing**: `snug-<uid>` (`internal/cli`'s runtime directory when
+`$XDG_RUNTIME_DIR` is unset) and `snug-engines-<uid>-<key>` (the per-target
+runroot, §13) are other mechanisms' state, and all three live in the same
+`os.TempDir()`. What the sweep **deliberately leaves** is an entry with no
+`lock` file at all: on shared, world-writable `/tmp` that shape is a
+concurrent run mid-creation as much as it is litter, and it is left rather
+than guessed at.
+
+MEASURED (#425): one `go test ./internal/engine/` run took `/tmp/snug-1000-*`
+from 855 to 896 directories, with 100 distinct pids represented across those
+896, on a host whose `/proc/sys/kernel/pid_max` is 4194304.
+
 **Verification.** `reap.go`'s `signalOwned`/`waitQuiet` still sweep `/proc/*/cmdline`
-for the **socket path** (pid-unique: `/tmp/snug-<uid>-<runid>/podman-<pid>.sock`)
-and the label — never `comm`, never the shared **store** path (which would reach
-a concurrent sibling). The engine's own cmdline names the socket; container/conmon
+for the **socket path as the engine's own argv spells it** and for the label:
+never `comm`, and never the shared **store** path (which would reach a
+concurrent sibling). That spelling is the GUEST path inside the engine's derived
+view, `/snug/engine/sock/podman-<pid>.sock`, pid-unique; the host spelling
+`<run dir>/sock/podman-<pid>.sock` is deliberately not matched, because no
+process on the machine carries it and sweeping for it is indistinguishable from
+not sweeping. The engine's own cmdline names the socket; container/conmon
 cmdlines carry the label. "The kill returned no error" is not evidence anything
 died; the sweep is.
 
@@ -570,3 +620,103 @@ tests are in `test/integration/containerengine_test.go`.
    if `Pdeathsig` ever misses, and "the daemon this project does not run").
    Recommendation: keep the finite timeout + keepalive; the maintainer may prefer
    the simpler `--time 0`. Not blocking.
+
+---
+
+## 13. Reclamation — three directories, three lifetimes
+
+| directory | keyed by | ends when |
+|---|---|---|
+| store, `$XDG_DATA_HOME/snug/engines/<key>/storage` | target | `snug engine gc` names it |
+| runroot, `/tmp/snug-engines-<uid>-<key>/rr` | target | it goes with the store |
+| run dir, `/tmp/snug-<uid>-<runid>/` | run | §6 |
+
+`<key>` is `internal/targetkey.Hash` of the canonical target: `sha256_` + the
+full hex digest, the same function the per-target lock's name goes through.
+The store persists across runs ON PURPOSE — it is the image cache a warm start
+reads — so nothing at teardown touches it, and `snug engine gc` with a selector
+is the only thing that removes it. The runroot is per-target too, not per-run,
+which is why it is not inside the run directory; both sit on `/tmp` rather than
+under `$XDG_RUNTIME_DIR` for §3.1's masking reason.
+
+### 13.1 What `gc` reclaims is what `gc` can SEE, and a payload shapes that
+
+`gc`'s pre-flight walks the store read-only and refuses the WHOLE store on any
+entry this uid does not own. It cannot look inside a directory it owns whose
+mode denies traversal, so a foreign-uid subtree hidden under one is invisible
+to that walk. This is payload-reachable rather than hypothetical: image content
+owned by a non-root uid inside the image lands on disk owned by whatever host
+uid the subuid map delegates that namespace uid to, which is commonly not
+snug's own. **So a container payload can shape what a later `gc` is able to
+reclaim.**
+
+The gap is closed at phase 2 instead of papered over at phase 1. The recursive
+delete reaches the same directory, gets the same denial, chmods open what it
+has already confirmed it owns, meets the foreign-owned child and stops —
+leaving a named `.gc-` directory that still carries its own `store.json`. The
+next invocation describes that leftover by name and by target and retries it
+whether or not a selector was given, because it needs no liveness question at
+all. A store snug cannot finish removing is therefore visible, not silently
+retried forever.
+
+### 13.2 Three states, never two
+
+- **attributed** — a breadcrumb whose `Target` checks out: `KeyForTarget(Target)`
+  equals the directory's own name.
+- **unattributed** — no breadcrumb at all. Ordinary rather than suspicious: a
+  store whose breadcrumb was never written, or whose write failed.
+- **untrustworthy** — a breadcrumb IS present and fails the check: unknown
+  schema, a forging rune in `Target`, or a key mismatch. Reported as
+  unattributed **and flagged**.
+
+Three and not two: folding untrustworthy into either bucket would let a forged
+or broken breadcrumb pick which liveness arm runs against a live store.
+
+Attribution decides which liveness arm runs. **Arm A**, for an attributed
+store, computes the EXACT per-target lock name from the breadcrumb's target —
+the same function a live run calls — so there is no scan and nothing to drift,
+and a published run-state whose full pid+starttime+namespace identity still
+matches refuses on its own; that record's absence proves nothing and is never
+read as safety. Arm A does not check liveness and then act: it HOLDS that lock
+while it renames the store aside, and the slow recursive delete runs only after
+the lock is released — the rename, not an assumption about how long deletion
+takes, is what makes the rest safe to run unlocked. **Arm B** is §13.3, and it
+holds no lock at all, because it cannot name one.
+
+### 13.3 Arm B: any live snug run anywhere refuses an unattributable store
+
+For a store with no trustworthy attribution — no breadcrumb, a breadcrumb that
+fails the check, or a key a human named on the command line with nothing
+attributing it — `gc` asks one question that needs no target string: **is any
+snug run live on this host right now?** It probes every `target-*.lock` in the
+shared runtime directory with a non-blocking shared flock; one `EWOULDBLOCK`
+answers yes, and every unattributed removal is then refused. An absent lock
+directory short-circuits the whole question: nothing has ever locked anything
+on this host, so nothing can be live.
+
+**Coarse by design.** A live run elsewhere may be the owner of the very store
+that cannot be attributed, and arm B cannot tell that run from an unrelated
+one, so it refuses on either. It also holds nothing while it works — it has no
+name to lock — so its refusal is the only thing standing between an
+unattributable store and a live user of it. That is the fail-closed direction,
+and it is the direction that matters: removing a layer directory under a live
+overlayfs corrupts it with no error on either side.
+
+**Whether it is the right trade is UNRESOLVED.** The cost is real and falls on
+a human: `--unattributed` does nothing until no sandbox is running anywhere on
+the host, however unrelated. Stated as an open question because the alternative
+has not been decided, not because the coarseness is a bug.
+
+A narrower arm B needs one of two things it cannot have today:
+
+- **Which store key each live run is using.** A run publishes its target
+  (`state.json`), not its key, and that record's ABSENCE is never read as
+  evidence a target is safe — so it cannot carry a fail-closed decision.
+- **A guarantee that a store's key names its lock.** `engineKey` guarantees
+  only the sound direction: the store's partition is at least as fine as the
+  lock's, so a store has at most one live user. Today the two names are the
+  same hash of the same canonical target string, but a probe built on that
+  equality answers "no matching lock, not live" both when no run is live and
+  when the equality has moved — deleting a live run's store on the second.
+  Arm A refuses to lean on it even where it holds the target string, computing
+  the exact lock name from that string instead.

@@ -42,7 +42,7 @@ func TestPathsIsEmptyUntilSpecHasRun(t *testing.T) {
 	// noSignaturePolicy is "this host configured none", NOT nil — Spec refuses
 	// nil outright as a caller that skipped ProjectHostSignaturePolicy (#307).
 	if _, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman",
-		[]string{"PATH=/usr/bin"}, false, noSignaturePolicy(t)); err != nil {
+		[]string{"PATH=/usr/bin"}, false, "", "", noSignaturePolicy(t)); err != nil {
 		t.Fatalf("Spec: %v", err)
 	}
 
@@ -162,7 +162,7 @@ func TestStopLockedReconcilesADialledLifelineWithNoMark(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman",
-			[]string{"PATH=/usr/bin"}, false, noSignaturePolicy(t)); err != nil {
+			[]string{"PATH=/usr/bin"}, false, "", "", noSignaturePolicy(t)); err != nil {
 			t.Fatalf("Spec: %v", err)
 		}
 

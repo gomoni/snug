@@ -42,6 +42,28 @@ type containerPreflight struct {
 	Podman          string
 	CgroupsDisabled bool
 
+	// OCIRuntime is P10's answer: the runtime name the generated
+	// containers.conf pins, or "" for "author no runtime key". Only ever ""
+	// or "crun" — see preflightOCIRuntime.
+	OCIRuntime string
+
+	// OCIRuntimePath is the absolute path P10 found that name at, and it is
+	// authored ALONGSIDE the name so podman's own runtime search list stops
+	// being a second, invisible author.
+	//
+	// Measured on this host: podmanHelperDirs() and podman's default
+	// [engine.runtimes] search list are DIFFERENT sets — snug also stats
+	// /usr/libexec/podman, /usr/local/libexec/podman, /usr/lib/podman, which
+	// podman does not search for a RUNTIME (they are the helper lookup, which
+	// is what helper_binaries_dir covers, and a runtime is not a helper). A
+	// crun installed only under one of those made P10 author runtime = "crun"
+	// for a podman that could then resolve nothing — the exact "fails at
+	// create in podman's voice" outcome P10 exists to prevent, reintroduced by
+	// P10's own arm. Naming the file removes the disagreement rather than
+	// copying podman's list into snug, which would be a copy of state that
+	// drifts on a podman upgrade.
+	OCIRuntimePath string
+
 	// ResolvConfBind is P7's answer: nil when snug's generated resolv.conf can
 	// be bound over the engine's own, non-nil (naming why) when it cannot.
 	// Not fatal — see preflightResolvConfBind.
@@ -66,6 +88,18 @@ func runContainerPreflight(env policy.Environ, pol *policy.Policy) (containerPre
 			"subgid range and could not get one: %w", err)
 	}
 	cgroupsDisabled := preflightCgroupsDisabled()
+	crunPath, runcPath := findPodmanHelper("crun"), findPodmanHelper("runc")
+	ociRuntime, err := preflightOCIRuntime(crunPath != "", runcPath != "", cgroupsDisabled)
+	if err != nil {
+		return containerPreflight{}, err
+	}
+	// The decision above is a pure table over three booleans so it stays
+	// testable on a host where the failing case cannot be constructed; the
+	// PATH is looked up here, beside it, because only "crun" is ever returned.
+	ociRuntimePath := ""
+	if ociRuntime == "crun" {
+		ociRuntimePath = crunPath
+	}
 	toolchainRoot, err := preflightToolchainRoot(env, podman)
 	if err != nil {
 		return containerPreflight{}, err
@@ -73,9 +107,77 @@ func runContainerPreflight(env policy.Environ, pol *policy.Policy) (containerPre
 	return containerPreflight{
 		Podman:          podman,
 		CgroupsDisabled: cgroupsDisabled,
+		OCIRuntime:      ociRuntime,
+		OCIRuntimePath:  ociRuntimePath,
 		ResolvConfBind:  preflightResolvConfBind(),
 		ToolchainRoot:   toolchainRoot,
 	}, nil
+}
+
+// preflightOCIRuntime is P10, and it exists because P5 SELECTS rather than
+// refuses.
+//
+// P5's `cgroups = "disabled"` is servable only by a runtime that implements
+// the mode, and runc does not. Without this, three steps ran in order and
+// nobody exited: P5 silently selected the degraded mode, writeContainersConf
+// wrote it, and the run then served a working-looking container API that
+// failed at create in PODMAN's voice — the 500 quoted in reportPodmanHelpers,
+// "requested OCI runtime runc is not compatible with NoCgroups", measured in a
+// Tumbleweed CI container with runc present and crun absent. A silent
+// downgrade is invariant 5's own case, and the downgrade was snug's.
+//
+// THE REFUSAL PREDICATE IS ociRuntimeMissing, called rather than restated.
+// That function already held this rule, and its only consumers were `snug
+// doctor` and doctor's own test — a report that starts nothing and that a user
+// need never run. The package that CREATES the condition never asked it. One
+// decision, two consumers: doctor reports on it, the run refuses on it.
+//
+// Returns ("", nil) for "author no runtime key". Where cgroups work both
+// runtimes serve, and pinning crun there would refuse nothing but would break
+// a runc-only host that works today — a downgrade in the other direction.
+//
+// The returned name is a snug literal from the closed set {"", "crun"}, never
+// a value from a profile, a flag or the environment. Not krun either: a VM
+// runtime is in podman's own runtime_supports_nocgroups list and is still not
+// an automatic substitution for crun.
+//
+// The three inputs are parameters rather than lookups so the whole table is
+// testable on a host where the failing case cannot be constructed — the same
+// seam, for the same reason, that ociRuntimeMissing itself already has.
+//
+// THE FALSE-REFUSAL COST, stated rather than hidden: P5's probe can be wrong
+// in either direction, so a wrong positive on a crun-less host now refuses a
+// run that runc might have served. That is invariant 5's preferred direction —
+// refuse naming the fix rather than run and fail in a foreign voice — and the
+// fix needs no flag and no maintainer decision. It is in the refusal text
+// rather than only here.
+func preflightOCIRuntime(crun, runc, cgroupsDisabled bool) (string, error) {
+	if !ociRuntimeMissing(crun, runc, cgroupsDisabled) {
+		if cgroupsDisabled {
+			// crun is present — ociRuntimeMissing returns false for
+			// cgroupsDisabled only in that case — and it is the only runtime
+			// here that implements the mode written four lines away in the
+			// same generated file. Pinning it is not choosing a security
+			// posture the way default_capabilities or seccomp_profile would
+			// be; it is naming the one implementation of a mode snug itself
+			// selected, which is why writeContainersConf leaves those
+			// unwritten and writes this.
+			return "crun", nil
+		}
+		return "", nil
+	}
+	if !crun && !runc {
+		return "", fmt.Errorf("podman needs an OCI runtime and neither crun nor runc is in any "+
+			"directory it searches (%s).\n"+
+			"      Fix: install crun", strings.Join(podmanHelperDirs(), ", "))
+	}
+	return "", errors.New("this host needs crun. snug measured that cgroup delegation is not " +
+		"usable here (preflight P5), so every container runs with cgroups disabled — and runc " +
+		"does not implement that mode: podman refuses the create with \"requested OCI runtime " +
+		"runc is not compatible with NoCgroups\". runc is present and cannot serve here; " +
+		"\"crun or runc\" is true of podman and false of snug's configuration.\n" +
+		"      This refuses the container engine only; the sandbox itself is unaffected.\n" +
+		"      Fix: install crun (package name: crun on openSUSE, Fedora, Debian and Ubuntu)")
 }
 
 // preflightToolchainRoot is P9: which host directory the engine's own program
