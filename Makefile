@@ -267,13 +267,23 @@ SNUG_SIGNAL_TESTS = TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox|TestA
 # SNUG_REQUIRE_SANDBOX=1 with no working engine promised anywhere in that
 # environment. This is #395's seam — set SNUG_REQUIRE_ENGINE=1 once a lane
 # can promise 32/32, and not before.
-# SECOND MEASUREMENT, and it is why this stays a FLOOR rather than an equality:
-# the Tumbleweed CI container reports 42 distinct tests (run 32945827262, green,
-# `engine tests: 42 of 33 ran`) against this host's 33. More tests reach the
-# marker where the engine works fully than on a host that cannot start a
-# container — the create-only class in the #406 note is not forced there. 42
-# passing a floor of 33 is the mechanism working, not a number to chase.
-SNUG_ENGINE_FLOOR = 33
+# 33 is THIS host's number and it is a FLOOR, not a total. A second environment
+# now exists and reports a different one: the Tumbleweed CI container measured 42
+# distinct tests on two independent green runs (32945338390 and 32945827262).
+# More tests reach the marker where the engine works fully than on a host that
+# cannot start a container at all — this one cannot (#401), so a chunk of them
+# skip here and the create-only class in the #406 note is forced.
+#
+# So the floor is PER ENVIRONMENT, like SNUG_SANDBOX_TIMEOUT and for the same
+# reason: a single constant is either too low to catch a regression in the strong
+# environment or too high to pass in the weak one. 33 here; 42 in the container,
+# set by test/engine-container.sh. `?=` so the environment can override it — with
+# `=` a Make variable ignores the environment.
+#
+# It also corrects this constant's provenance. It was derived from a token sweep
+# that found 32 candidates; the real population is at least 42, so the sweep
+# undercounted by ten and the marker is doing more work than the number implied.
+SNUG_ENGINE_FLOOR ?= 33
 
 # The per-SUITE bound, and it is a VARIABLE because the same target runs in two
 # environments whose job bounds differ, and the three bounds must keep nesting:
@@ -299,20 +309,20 @@ integration-sandbox:
 	ran=$$(grep -o 'snug-engine-ran: [^ ]*' $(SANDBOX_LOG) | sort -u | wc -l); \
 	if [ "$$ran" -ge "$(SNUG_ENGINE_FLOOR)" ] && grep -q 'snug-engine-version:' $(SANDBOX_LOG); then \
 		version=$$(grep -m1 'snug-engine-version:' $(SANDBOX_LOG) | sed 's/.*snug-engine-version: //'); \
-		echo "engine tests: $$ran of $(SNUG_ENGINE_FLOOR) ran — $$version"; \
+		echo "engine tests: $$ran ran, floor $(SNUG_ENGINE_FLOOR) — $$version"; \
 	elif grep -q 'snug-engine-none:' $(SANDBOX_LOG); then \
-		echo "engine tests: $$ran of $(SNUG_ENGINE_FLOOR) ran — no podman resolved"; \
+		echo "engine tests: $$ran ran, floor $(SNUG_ENGINE_FLOOR) — no podman resolved"; \
 	elif grep -q 'snug-engine-failed:' $(SANDBOX_LOG); then \
 		reason=$$(grep -m1 'snug-engine-failed:' $(SANDBOX_LOG) | sed 's/.*snug-engine-failed: //'); \
-		echo "engine tests: $$ran of $(SNUG_ENGINE_FLOOR) ran — $$reason"; \
+		echo "engine tests: $$ran ran, floor $(SNUG_ENGINE_FLOOR) — $$reason"; \
 	elif grep -q 'snug-engine-version:' $(SANDBOX_LOG); then \
 		version=$$(grep -m1 'snug-engine-version:' $(SANDBOX_LOG) | sed 's/.*snug-engine-version: //'); \
-		echo "engine tests: $$ran of $(SNUG_ENGINE_FLOOR) ran — $$version"; \
+		echo "engine tests: $$ran ran, floor $(SNUG_ENGINE_FLOOR) — $$version"; \
 	else \
-		echo "engine tests: $$ran of $(SNUG_ENGINE_FLOOR) ran — no engine marker of any kind was seen"; \
+		echo "engine tests: $$ran ran, floor $(SNUG_ENGINE_FLOOR) — no engine marker of any kind was seen"; \
 	fi; \
 	if [ -n "$$SNUG_REQUIRE_ENGINE" ] && [ "$$ran" -lt "$(SNUG_ENGINE_FLOOR)" ]; then \
-		echo "ERROR: SNUG_REQUIRE_ENGINE is set and only $$ran/$(SNUG_ENGINE_FLOOR) engine tests ran."; \
+		echo "ERROR: SNUG_REQUIRE_ENGINE is set and only $$ran engine tests ran, below the floor of $(SNUG_ENGINE_FLOOR)."; \
 		exit 1; \
 	fi; \
 	exit $$status

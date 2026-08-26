@@ -197,6 +197,12 @@ provision() {
 	install -d -m 0700 -o snug -g users "/run/user/$SNUG_ENGINE_UID"
 	chown snug: /enginestore
 
+	# SNUG_ENGINE_FLOOR is 42 HERE and 33 on a development host: this container
+	# can actually start containers, so more tests reach the marker. MEASURED at
+	# 42 on two independent green runs (32945338390, 32945827262). The point of
+	# raising it is that CI silently losing nine engine tests would otherwise
+	# still clear a floor of 33.
+	#
 	# SNUG_SANDBOX_TIMEOUT raises the per-suite `go test -timeout` from the 8m
 	# that fits a runner where the engine tier skips. With the tier really
 	# running it fired at `panic: test timed out after 8m0s` with 19 of 33 engine
@@ -212,6 +218,7 @@ provision() {
 		PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin \
 		XDG_RUNTIME_DIR=/run/user/"$SNUG_ENGINE_UID" \
 		XDG_DATA_HOME=/enginestore \
+		SNUG_ENGINE_FLOOR=42 \
 		SNUG_SANDBOX_TIMEOUT=18m \
 		SNUG_REQUIRE_SANDBOX=1 \
 		SNUG_REQUIRE_ENGINE=1 \

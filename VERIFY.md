@@ -5253,19 +5253,22 @@ is no root run and no `--privileged`.
 Expect, near the end:
 
 ```
-engine tests: 42 of 33 ran — podman version 6.0.2 at /usr/bin/podman
+engine tests: 42 ran, floor 42 — podman version 6.0.2 at /usr/bin/podman
 ```
 
-The number is a FLOOR, not an equality (`SNUG_ENGINE_FLOOR`). 42 there against
-33 on a development host is the mechanism working: more tests reach the marker
-where the engine runs fully than on a host that cannot start a container at all.
+`SNUG_ENGINE_FLOOR` is a MINIMUM, not a total, and it is **per environment**: 42
+in this container, 33 for a bare `make integration-sandbox` on this development
+host, where the engine cannot start a container at all (#401) and a chunk of the
+engine tests legitimately skip. So a count above the floor is normal and a count
+below it fails the run.
+
 What must never appear is a low count with a green exit — that is the defect this
 whole section exists to make impossible, and `SNUG_REQUIRE_ENGINE=1` plus the
 floor is what makes the run FAIL instead:
 
 ```
-engine tests: 0 of 33 ran — podman version 6.0.2 at /bin/podman
-ERROR: SNUG_REQUIRE_ENGINE is set and only 0/33 engine tests ran.
+engine tests: 0 ran, floor 42 — podman version 6.0.2 at /bin/podman
+ERROR: SNUG_REQUIRE_ENGINE is set and only 0 engine tests ran, below the floor of 42.
 ```
 
 `snug doctor` runs first inside the container, and on a correctly-set-up host
