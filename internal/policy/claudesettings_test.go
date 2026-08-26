@@ -2,6 +2,8 @@ package policy
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -104,8 +106,18 @@ func TestClaudeSettingsFilterDropsEveryExecutingKey(t *testing.T) {
 
 	// The stderr-line half of invariant 5: every dropped executing key must be
 	// NAMED in the report, or a human has no way to know snug withheld it.
+	// Executing ∪ Overridden, not Executing alone: crossSessionInbound and
+	// isolatePeerMachines are catalogued in ClaudeExecutingKeys AND authored
+	// (ClaudeAuthoredSettings, issue #87), so a host document setting them
+	// lands in drops.Overridden rather than drops.Executing — a fourth,
+	// disjoint report of the same "your value did not survive" fact (see
+	// ClaudeSettingDrops' doc comment on Overridden). Either slice satisfies
+	// this test's actual claim: the drop was reported somewhere.
 	named := map[string]bool{}
 	for _, d := range drops.Executing {
+		named[d] = true
+	}
+	for _, d := range drops.Overridden {
 		named[d] = true
 	}
 	for name := range ClaudeExecutingKeys {
@@ -474,5 +486,220 @@ func TestClaudeSettingsFilterReportsUnknownKeys(t *testing.T) {
 			t.Errorf("drops.Unknown is not sorted: %v", drops.Unknown)
 			break
 		}
+	}
+}
+
+// ── issue #87: snug AUTHORS crossSessionInbound and isolatePeerMachines ──────
+//
+// These cover the structural claims ClaudeAuthoredSetting's doc comment makes
+// about the authored table itself (disjoint from the allowlist, catalogued as
+// executing, scalar-typed) and the two renderers that consume it
+// (ClaudeUserSettingsJSON, ClaudeSettingsJSON).
+
+// TestClaudeAuthoredKeysAreDisjointFromTheAllowlist is what makes a collision
+// between a carried name and an authored name UNREACHABLE rather than merely
+// resolved by write order: ClaudeUserSettingsJSON's own doc comment says
+// authored keys are written last "because the disjointness test fails the
+// build first" — this is that test.
+func TestClaudeAuthoredKeysAreDisjointFromTheAllowlist(t *testing.T) {
+	if len(ClaudeAuthoredSettings) == 0 {
+		t.Fatal("control: ClaudeAuthoredSettings is empty, so disjointness would be trivially true")
+	}
+	if len(ClaudeSettingAllowlist) == 0 {
+		t.Fatal("control: ClaudeSettingAllowlist is empty, so disjointness would be trivially true")
+	}
+	allowed := make(map[string]bool, len(ClaudeSettingAllowlist))
+	for _, k := range ClaudeSettingAllowlist {
+		allowed[k.Name] = true
+	}
+	for _, a := range ClaudeAuthoredSettings {
+		if allowed[a.Name] {
+			t.Errorf("%q is on both ClaudeAuthoredSettings and ClaudeSettingAllowlist", a.Name)
+		}
+	}
+}
+
+// TestClaudeAuthoredKeysAreRefusedFromTheHost is the load-bearing test of this
+// pair: it is what makes "snug overrides Claude Code's default, never a
+// carried human decision" TRUE rather than merely asserted in the doc
+// comment. Every authored name must also be catalogued in ClaudeExecutingKeys,
+// so a host document setting either one is refused (as Overridden, condition
+// 3's own catalogue entry) rather than silently carried the way an
+// unlisted key would be.
+func TestClaudeAuthoredKeysAreRefusedFromTheHost(t *testing.T) {
+	if len(ClaudeAuthoredSettings) == 0 {
+		t.Fatal("control: ClaudeAuthoredSettings is empty, so this test would assert nothing")
+	}
+	for _, a := range ClaudeAuthoredSettings {
+		if _, ok := ClaudeExecutingKeys[a.Name]; !ok {
+			t.Errorf("authored key %q is not catalogued in ClaudeExecutingKeys — a host "+
+				"document setting it would not be recognised as a refused host decision at all",
+				a.Name)
+		}
+	}
+}
+
+// TestClaudeAuthoredValuesMatchTheirDeclaredKind is R-SCALAR applied to
+// ClaudeAuthoredSettings itself: each entry's Value must decode to the Go
+// type its own Kind promises (string for ClaudeString, bool for ClaudeBool,
+// float64 for ClaudeNumber), the same three shapes ClaudeUserSettingsJSON's
+// switch expects when it writes the value straight into the output map with
+// no further check. Why must also be non-empty — it is what --dry-run's CLAUDE
+// block and claudeGuidance render for a human and an agent respectively, and
+// an empty string there would print a blank line with nothing to explain it.
+func TestClaudeAuthoredValuesMatchTheirDeclaredKind(t *testing.T) {
+	for _, a := range ClaudeAuthoredSettings {
+		switch a.Kind {
+		case ClaudeString:
+			if _, ok := a.Value.(string); !ok {
+				t.Errorf("%q declares Kind ClaudeString but Value is %T", a.Name, a.Value)
+			}
+		case ClaudeBool:
+			if _, ok := a.Value.(bool); !ok {
+				t.Errorf("%q declares Kind ClaudeBool but Value is %T", a.Name, a.Value)
+			}
+		case ClaudeNumber:
+			if _, ok := a.Value.(float64); !ok {
+				t.Errorf("%q declares Kind ClaudeNumber but Value is %T", a.Name, a.Value)
+			}
+		default:
+			t.Errorf("%q declares an unrecognised Kind %v", a.Name, a.Kind)
+		}
+		if a.Why == "" {
+			t.Errorf("%q has an empty Why — --dry-run's CLAUDE block and claudeGuidance both "+
+				"render this string and have nothing else to explain the key with", a.Name)
+		}
+	}
+}
+
+// TestClaudeAuthoredSettingsAreScalars is R-SCALAR, mechanised the same way
+// TestClaudeSettingsCarriesNoContainer checks it for the allowlist: every
+// Kind on ClaudeAuthoredSettings must be one of the three scalar constants,
+// which holds by construction (ClaudeSettingKind has no container constant to
+// declare) but is worth asserting directly rather than only inferring it from
+// the kind-switch above never hitting `default`.
+func TestClaudeAuthoredSettingsAreScalars(t *testing.T) {
+	if len(ClaudeAuthoredSettings) == 0 {
+		t.Fatal("control: ClaudeAuthoredSettings is empty, so this test would assert nothing")
+	}
+	for _, a := range ClaudeAuthoredSettings {
+		switch a.Kind {
+		case ClaudeString, ClaudeBool, ClaudeNumber:
+			// scalar, as required
+		default:
+			t.Errorf("authored entry %q declares kind %v, which is none of the three scalar "+
+				"kinds", a.Name, a.Kind)
+		}
+	}
+}
+
+// TestClaudeUserSettingsIgnoreTheHostsValueForAnAuthoredKey is NEGATIVE: a
+// host file that sets both authored keys to the PERMISSIVE value must not
+// move either one into the rendered user-scope file. Both names must also
+// land in drops.Overridden and in NEITHER drops.Executing nor drops.Unknown —
+// Overridden is the one class where a value is both dropped and replaced, and
+// a name counted twice (once as Overridden, once as Executing or Unknown)
+// would double-report the same host decision under two different meanings.
+func TestClaudeUserSettingsIgnoreTheHostsValueForAnAuthoredKey(t *testing.T) {
+	raw := map[string]any{"crossSessionInbound": "accept", "isolatePeerMachines": false}
+	carried, drops := FilterClaudeSettings(raw)
+
+	wantOverridden := map[string]bool{"crossSessionInbound": true, "isolatePeerMachines": true}
+	got := map[string]bool{}
+	for _, name := range drops.Overridden {
+		got[name] = true
+	}
+	for name := range wantOverridden {
+		if !got[name] {
+			t.Errorf("%q was not reported in drops.Overridden: %v", name, drops.Overridden)
+		}
+	}
+	for _, name := range drops.Executing {
+		if wantOverridden[name] {
+			t.Errorf("%q was reported in drops.Executing as well as drops.Overridden — the two "+
+				"classes must be disjoint", name)
+		}
+	}
+	for _, name := range drops.Unknown {
+		if wantOverridden[name] {
+			t.Errorf("%q was reported in drops.Unknown — it is catalogued, not on neither list",
+				name)
+		}
+	}
+
+	body := string(ClaudeUserSettingsJSON(carried))
+	if !strings.Contains(body, `"crossSessionInbound": "refuse"`) {
+		t.Errorf("rendered user settings.json does not carry snug's own \"refuse\" value:\n%s", body)
+	}
+	if !strings.Contains(body, `"isolatePeerMachines": true`) {
+		t.Errorf("rendered user settings.json does not carry snug's own true value:\n%s", body)
+	}
+	if strings.Contains(body, "accept") {
+		t.Errorf("the host's \"accept\" value for crossSessionInbound reached the rendered "+
+			"file:\n%s", body)
+	}
+}
+
+// TestClaudeProjectSettingsAuthorNothing is NEGATIVE: the project-scope
+// renderer, ClaudeSettingsJSON, is UNCHANGED by issue #87 — it must never
+// carry either authored name, and the empty-input, "{}\n" contract it has
+// always had must still hold. Only ClaudeUserSettingsJSON authors anything;
+// see that function's own doc comment on why user scope alone is enough.
+func TestClaudeProjectSettingsAuthorNothing(t *testing.T) {
+	if got := string(ClaudeSettingsJSON(ClaudeSettings{})); got != "{}\n" {
+		t.Errorf("ClaudeSettingsJSON({}) = %q, want \"{}\\n\" — project scope must still be "+
+			"reachable with nothing carried and nothing authored", got)
+	}
+
+	carried := ClaudeSettings{"model": "opus[1m]", "theme": "dark"}
+	body := string(ClaudeSettingsJSON(carried))
+	for _, name := range ClaudeAuthoredNames() {
+		if strings.Contains(body, name) {
+			t.Errorf("project-scope ClaudeSettingsJSON output contains the authored key %q; "+
+				"only ClaudeUserSettingsJSON may author anything:\n%s", name, body)
+		}
+	}
+}
+
+// TestGoldenClaudeUserSettingsJSON pins the exact bytes ClaudeUserSettingsJSON
+// renders — the review artifact for issue #87, since the change lives in FILE
+// CONTENT rather than in bwrap argv (internal/cli/testdata/bwrap.claude.txt
+// does not change: an authored setting is never an argv, so a golden of the
+// rendered document is the only place this change is visible as a diff).
+func TestGoldenClaudeUserSettingsJSON(t *testing.T) {
+	cases := []struct {
+		name    string
+		carried ClaudeSettings
+	}{
+		// An ordinary carried set, alongside the two authored keys — the shape
+		// a real host with model/theme preferences produces.
+		{"claude-settings.user.json", ClaudeSettings{"model": "opus[1m]", "theme": "dark"}},
+		// The empty-carried-set arm: a host with no settings.json (or one that
+		// filtered to nothing) still gets the two authored keys, unconditionally
+		// — unlike ClaudeSettingsJSON's "{}\n", "{}\n" is unreachable here.
+		{"claude-settings.user-empty.json", ClaudeSettings{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(ClaudeUserSettingsJSON(tc.carried))
+			path := filepath.Join("testdata", tc.name)
+			if *update {
+				if err := os.MkdirAll("testdata", 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			want, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("%v (run: go test ./internal/policy -update)", err)
+			}
+			if got != string(want) {
+				t.Errorf("ClaudeUserSettingsJSON(%v) changed.\n--- got\n%s--- want\n%s",
+					tc.carried, got, string(want))
+			}
+		})
 	}
 }

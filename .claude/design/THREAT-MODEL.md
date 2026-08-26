@@ -130,14 +130,40 @@ private tmpfs, so `/tmp/cc-socks/` holds only this session's own socket, and
 per-sandbox directory rather than binding the host's `/tmp`. It holds because
 the guiding principle paid out on a surface nobody had looked at.
 
-**Claude Code's own controls exist and are worth setting, but they are not a
-boundary.** `crossSessionInbound: "refuse"` and `permissions.deny` naming
-`SendMessage`/`ListAgents` (a bare deny removes the tool from the session's
-context) are enforced CLIENT-side by Claude Code; only organisation *managed
-settings* cannot be overridden by a session. A payload holding the credential
-can reach the API without the client, and it controls its own command line
-inside the sandbox — `--settings` layers rather than replaces. So: a default,
-not a guarantee. Invariant 5 is about not letting a user believe otherwise.
+**snug SETS two of Claude Code's own controls, and they are not a boundary.**
+The generated user-scope `~/.claude/settings.json` carries
+`crossSessionInbound = "refuse"` and `isolatePeerMachines = true`
+(`policy.ClaudeAuthoredSettings`). The host's own values for both are dropped,
+like every other remote-surface key, so snug is overriding Claude Code's
+*default* and not a carried human decision.
+
+Both are enforced CLIENT-side. A payload holding the credential can reach the
+API without the client, it controls its own command line (`--settings` layers
+rather than replaces; `--setting-sources project,local` drops user scope), and
+that file is writable inside the sandbox. So: a default, not a guarantee, and
+invariant 5 is about not letting a user believe otherwise. The bounded thing
+they do buy: against a prompt-injected model they are upstream gates in front
+of the tools it would use, and `crossSessionInbound` is enforced in the
+*receiving* client — so a payload in one snug sandbox cannot address a session
+in another, at an enforcement point it does not hold. That closes
+sandbox-to-sandbox lateral movement into a different `rw` target, a case §3.1
+does not otherwise name.
+
+**`permissions.deny` naming `SendMessage`/`ListAgents` is refused, and the
+reason is the denylist argument, not R-SCALAR.** Measured in claude 2.1.246 the
+outbound peer surface is at least three tools — `SendMessageTool`,
+`SendFileTool` and `ObserverReport` — so denying two names leaves peer file
+transfer open, which is the worse half. `policy.ClaudeExecutingKeys`' own doc
+comment already refuses this shape: a denylist naming one spelling is bypassed
+by the other, in the upstream's own documentation, with no attacker required.
+`isolatePeerMachines` is upstream's gate over the whole surface, message and
+file transfer together, and it is `bypassImmune` — the check survives
+bypass-permissions mode and cannot be auto-approved by the classifier.
+
+Project scope authors nothing, and that is measured rather than chosen: a
+repo-scope value may only *tighten* ("a repo may only tighten, so your own
+\"accept\" cannot override it"), so the user-scope value already applies and
+the same claim in three files would be three things to keep true.
 
 ### 3.2 Resource management
 

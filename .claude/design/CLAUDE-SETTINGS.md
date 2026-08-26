@@ -490,6 +490,65 @@ argument in miniature.
 filter copies only what it names. That row is the point of §2 and it is the row
 that will do the most work over time.
 
+### 3.4 AUTHOR — the two keys snug writes itself
+
+`policy.ClaudeAuthoredSettings`. A third operation beside keep and drop:
+snug's own value, a literal in `claudesettings.go`, written into the
+**user-scope** file only. `ClaudeUserSettingsJSON` renders carried-plus-authored;
+`ClaudeSettingsJSON` renders carried alone and stays the project-scope renderer.
+
+| key | value | what it gates |
+|---|---|---|
+| `crossSessionInbound` | `"refuse"` | inbound peer messages, in the RECEIVING client |
+| `isolatePeerMachines` | `true` | `SendMessage` *and* `SendFile` to a peer on another machine |
+
+Authoring is not carrying, so it needs its own admission rule. Four conditions,
+all required:
+
+1. the value depends on **no host and no target byte**;
+2. the key's **absent-default is the permissive value**, so authoring changes
+   behaviour. This is what refuses `remoteControlAtStartup = false`,
+   `channelsEnabled = false` and `autoUploadSessions = false` — they default
+   off, so authoring them is decoration;
+3. it is **upstream's own gate over a whole surface**, not an enumeration of
+   tool names;
+4. it is a **scalar**, so `ClaudeSettingKind` still needs no container constant
+   and R-SCALAR holds by construction.
+
+`FilterClaudeSettings`' `disableAllHooks` refusal is the nearest precedent and
+it splits rather than binding. Invariant 1 is about *grants* — which host paths
+are visible, a union with no subtraction — and a key inside a file snug wholly
+authors is not a grant and subtracts none; snug already authors restriction into
+generated config (`autoUpdates = false`, the regenerated
+`installed_plugins.json`, `registries.conf` searching only `docker.io`). What
+does bind is the other half: *it must not make the fix appear to close a channel
+it does not close*. That is answered by the disclosure at every sink, not by
+refusing the key.
+
+Both names stay in `ClaudeExecutingKeys`, so the **host's** value is still
+dropped — snug overrides Claude Code's default, never a carried human decision,
+and a test asserts that rather than this paragraph. The drop is reported in its
+own `ClaudeSettingDrops.Overridden` class, because `Executing`'s message ("names
+a program, selects or fetches code, sets an environment variable") is false for
+these two.
+
+**`permissions.deny: ["SendMessage","ListAgents"]` is REFUSED.** Three reasons,
+the first sufficient: it is a denylist over a surface with at least three
+members — `SendMessageTool`, `SendFileTool`, `ObserverReport` — so it leaves
+peer file transfer, the worse half, open; §2.1's argument applies unchanged.
+Second, authoring a `permissions` object requires a container constant in
+`ClaudeSettingKind`, after which R-SCALAR holds by whoever remembers rather than
+by construction, and the existing refusal of the *whole* object rather than
+"picking safe-looking fields out of it" is that sentence read backwards. Third,
+Claude Code writes user-scope permission grants into that same object, so
+snug's deny would be edited in place by `/permissions`.
+
+Project scope authors nothing, measured: a repo-scope value may only tighten
+("a repo may only tighten, so your own `\"accept\"` cannot override it"), so the
+user-scope value already applies.
+
+**None of it is a boundary** — §10.7.
+
 ---
 
 ## 4. What the HOST's file caused to run inside
@@ -1079,3 +1138,25 @@ inside the sandbox sets whatever it likes in its own environment, including
 reaches the same hijack through `~/.bashrc` regardless. The generated file
 bounds the **host's** contribution and nothing else. An accepted residual,
 bounded by `$HOME` being a fresh tmpfs on every run.
+
+### 10.7 The two authored keys are a default, not a bound — open by construction
+
+§3.4. Both are enforced **client-side by Claude Code**, so they bind a
+prompt-injected *model* — which acts through the tools its client offers — and
+bind nothing at all against code execution: the payload holds the staged OAuth
+token and can speak HTTP to the API with no client (issue #87 measured `405`
+from inside), controls its own argv (`--settings` layers rather than replaces,
+`--setting-sources project,local` drops user scope outright), and can rewrite
+the generated file, which is `rw` by the `gh` precedent (§7.3).
+
+The one asymmetry worth keeping, because it is the actual argument for shipping:
+`crossSessionInbound` is enforced in the **receiving** client, and every snug
+run authors it. So a payload in sandbox A cannot address a session in sandbox B
+at an enforcement point A controls — which closes lateral movement into B's
+*different* `rw` target. `isolatePeerMachines` is the sending side, so it is
+self-restraint, plus `bypassImmune`.
+
+**Not measured:** the headless arm. That an unanswerable `isolatePeerMachines`
+approval denies in `claude -p` is an expectation, not a measurement, and no
+comment, screen or `Why` string claims it. No sentence anywhere may say the
+session mesh is closed.

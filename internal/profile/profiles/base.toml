@@ -576,8 +576,14 @@ gateway6 = "fd00:5e79:1::1"
 # authority escape iff the peer is less confined than the sender, and an
 # unsandboxed peer on another machine is exactly that. snug's boundary is this
 # MACHINE; the session mesh is the ACCOUNT, and no grant here can close it —
-# see THREAT-MODEL.md 3.1 for why, and for Claude Code's own controls, which
-# are client-side and therefore a default rather than a bound.
+# see THREAT-MODEL.md 3.1. snug does SET two of Claude Code's own controls in
+# the settings.json it generates (crossSessionInbound="refuse",
+# isolatePeerMachines=true, authored in policy.ClaudeAuthoredSettings):
+# inbound peer messages are refused, and reaching a peer on another machine
+# needs an approval that survives bypass-permissions mode. CLIENT-SIDE, so a
+# default and not a bound — the payload holds the credential, controls its own
+# argv and can rewrite that file. No sentence here or anywhere else may say
+# the mesh is closed.
 #
 # The LOCAL half is closed and stays closed by construction: /tmp is snug's
 # private tmpfs so /tmp/cc-socks/ holds only this session's socket, and

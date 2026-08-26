@@ -576,14 +576,33 @@ same host, same credential, same protocol — or removing the credential or the
 egress, which is removing the feature. A filtering proxy that is 95% correct is
 a sandbox that is 0% sound.
 
-**What you can do, and it is worth doing:** Claude Code has its own controls —
-`crossSessionInbound: "refuse"` in a settings file, and `permissions.deny`
-naming `SendMessage` and `ListAgents`, which removes those tools from the
-session's context entirely. Directional: inbound and outbound are separate.
-Organisation *managed settings* are the only variant a session cannot override.
-Everything else is enforced client-side by Claude Code, so treat it as a
-default, not as a boundary — a payload holding the credential can talk to the
-API without the client's help.
+**snug sets two of Claude Code's own controls for you, and they are not a
+boundary.** The `~/.claude/settings.json` snug generates inside the sandbox
+carries `crossSessionInbound = "refuse"` — inbound peer messages are refused
+rather than parked for an approval nothing in there can give — and
+`isolatePeerMachines = true`, so reaching a peer session on *another* machine
+needs an explicit approval that `bypassPermissions` mode does not lift. Your
+host's own values for both keys are dropped, like every other remote-surface
+key. `snug --dry-run` prints both under `snug set`.
+
+Both are enforced **client-side by Claude Code**, so treat them as a default
+and not as a boundary: a payload with code execution holds the credential and
+can talk to the API with no client at all, it controls its own command line
+(`--settings` layers rather than replaces, and `--setting-sources
+project,local` drops user scope outright), and that settings file is writable
+inside the sandbox. What they do buy is real but bounded — against a
+prompt-injected *model*, which acts through the tools its client offers, they
+are upstream gates in front of exactly those tools; and because
+`crossSessionInbound` is enforced in the *receiving* client, a payload in one
+snug sandbox cannot address a session in another, at an enforcement point it
+does not control.
+
+snug deliberately does **not** author `permissions.deny` naming `SendMessage`
+and `ListAgents`. That is a denylist over a surface with at least three members
+— `SendMessage`, `SendFile` and `ObserverReport` — so it would leave peer file
+transfer, the worse half, wide open. `isolatePeerMachines` is upstream's own
+gate over the whole surface instead. Organisation *managed settings* remain the
+only variant a session cannot override.
 
 The complete goals and non-goals — what host state snug protects, what it
 deliberately does not, and worked prevented/not-prevented examples — live in

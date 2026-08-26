@@ -1618,6 +1618,34 @@ func describeClaude(out io.Writer, p *policy.Policy) {
 		} else {
 			fmt.Fprintf(out, "                    carried: (none of the allowlisted keys were present)\n")
 		}
+		// AUTHORED, not carried — snug writes both regardless of what the
+		// host's file said. The pairs render from policy.ClaudeAuthoredSettings
+		// (claudeAuthoredPairs, shared with stageClaudeSettings' stderr lines)
+		// rather than being typed here, so this line cannot state a value the
+		// generated file does not actually contain.
+		fmt.Fprintf(out, "         snug set   %s\n", strings.Join(claudeAuthoredPairs(), "  "))
+		// "these" and not "these two": the line above is rendered from
+		// policy.ClaudeAuthoredSettings, so a counted word here would be a copy
+		// of that table's length and would go quietly false on the third key.
+		fmt.Fprintf(out, "                    snug AUTHORS these; your host's values for them are\n")
+		fmt.Fprintf(out, "                    dropped like every other remote-surface key. Inbound peer\n")
+		fmt.Fprintf(out, "                    messages are refused, and SendMessage/SendFile to a session\n")
+		fmt.Fprintf(out, "                    on ANOTHER machine needs explicit approval (bypassImmune in\n")
+		fmt.Fprintf(out, "                    claude 2.1.246 — bypassPermissions does not lift it)\n")
+		fmt.Fprintf(out, "                    CLIENT-SIDE: a DEFAULT, not a boundary. The payload holds\n")
+		fmt.Fprintf(out, "                    the credential, controls its own argv, and this file is\n")
+		fmt.Fprintf(out, "                    writable — THREAT-MODEL.md 3.1\n")
+		// Overridden names are HOST-CONTROLLED in WHICH they name (the host's
+		// file chose to set one), so this goes through visibleValue the same
+		// way `unknown` below does — even though FilterClaudeSettings only
+		// ever populates p.ClaudeSettingsOverridden with snug's own authored
+		// key spellings, never a byte the host's file supplied.
+		if len(p.ClaudeSettingsOverridden) > 0 {
+			fmt.Fprintf(out, "         overridden %s\n",
+				visibleValue(strings.Join(p.ClaudeSettingsOverridden, " ")))
+			fmt.Fprintf(out, "                    the one class where both happen: your host's value dropped\n")
+			fmt.Fprintf(out, "                    AND snug's own written\n")
+		}
 		// The unknown-key disclosure. UNCONDITIONAL — unlike the -v-gated stderr
 		// line in stageClaudeSettings — because this screen IS the trust
 		// artifact and has no volume problem a human can opt out of: "what did
@@ -1778,13 +1806,26 @@ func claudeSettingsMount(p *policy.Policy) (policy.Mount, bool) {
 // DECIDED, not recompute a second opinion — from a second read of the host's
 // file — that could disagree with the one the sandbox is actually running
 // with.
+//
+// policy.ClaudeAuthoredNames() is subtracted from the decoded key set: the
+// mount's content is policy.ClaudeUserSettingsJSON's output, which now
+// contains the two authored keys alongside the allowlisted ones, and this
+// function's own contract is CARRIED keys — the `snug set` line, not this
+// one, is where an authored key belongs.
 func claudeSettingsCarriedNames(m policy.Mount) []string {
 	var doc map[string]any
 	if err := json.Unmarshal([]byte(m.Content), &doc); err != nil {
 		return nil
 	}
+	authored := make(map[string]bool, len(policy.ClaudeAuthoredSettings))
+	for _, a := range policy.ClaudeAuthoredSettings {
+		authored[a.Name] = true
+	}
 	names := make([]string, 0, len(doc))
 	for k := range doc {
+		if authored[k] {
+			continue
+		}
 		names = append(names, k)
 	}
 	sort.Strings(names)

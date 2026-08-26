@@ -24,6 +24,15 @@ CLAUDE   ~/.claude.json is GENERATED, not copied — two keys, no host bytes
          settings   ~/.claude/settings.json is GENERATED from an allowlist of
                     the host's — not bound, never read-only
                     carried: (none of the allowlisted keys were present)
+         snug set   crossSessionInbound="refuse"  isolatePeerMachines=true
+                    snug AUTHORS these; your host's values for them are
+                    dropped like every other remote-surface key. Inbound peer
+                    messages are refused, and SendMessage/SendFile to a session
+                    on ANOTHER machine needs explicit approval (bypassImmune in
+                    claude 2.1.246 — bypassPermissions does not lift it)
+                    CLIENT-SIDE: a DEFAULT, not a boundary. The payload holds
+                    the credential, controls its own argv, and this file is
+                    writable — THREAT-MODEL.md 3.1
          never      hooks, apiKeyHelper, statusLine, env, mcpServers,
                     enabledPlugins, extraKnownMarketplaces, permissions — each
                     names a program, selects/fetches code, or sets env; see

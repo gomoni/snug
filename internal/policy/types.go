@@ -505,6 +505,22 @@ type Policy struct {
 	// nil when @claude was not selected, or when nothing on the host's file
 	// fell into this class.
 	ClaudeSettingsUnknown []string
+
+	// ClaudeSettingsOverridden is every key stageClaudeSettings found in the
+	// host's ~/.claude/settings.json that FilterClaudeSettings reported as
+	// ClaudeSettingDrops.Overridden — a key snug AUTHORS into the generated
+	// file (policy.ClaudeAuthoredSettings) that the host's own file also set.
+	// Sorted.
+	//
+	// It lives here for the same reason ClaudeSettingsUnknown does: the
+	// generated file carries snug's OWN value for these two names, so the fact
+	// that the host also set one is not present anywhere inside that file —
+	// --dry-run has nowhere else to read it from, and this field is where
+	// stageClaudeSettings writes it, regardless of -v.
+	//
+	// nil when @claude was not selected, or when the host's file set neither
+	// authored key.
+	ClaudeSettingsOverridden []string
 }
 
 // SortedMounts returns the mounts in bwrap emission order: ancestors strictly
