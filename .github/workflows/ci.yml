@@ -475,12 +475,13 @@ jobs:
     name: real engine behaviour (Tumbleweed, podman 6.x)
     if: ${{ github.event.pull_request.draft != true }}
     runs-on: ubuntu-latest
-    # The engine half of integration-sandbox measured 335.98s on a developer
-    # host with a real podman (Makefile's own note), and the image pull plus
-    # zypper sit on top of that — MEASURED at 11s and 14s respectively (run
-    # 32940873115). The three nested bounds still have to nest: budget() per
-    # test, `go test -timeout 8m` per suite, this per job.
-    timeout-minutes: 25
+    # MEASURED, run 32943468831: 8m53s to reach `panic: test timed out after
+    # 8m0s` with 19 of 33 engine tests run and still progressing. The suite bound
+    # is 18m there (SNUG_SANDBOX_TIMEOUT, set by test/engine-container.sh), so
+    # this has to sit above it — budget() per test, the suite bound, then this.
+    # The fixed cost underneath is small: image pull 11s, zypper 14s, setup-go
+    # 9s, `make build` 12s.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -513,87 +514,10 @@ jobs:
             exit 1
           fi
 
+      # Everything about the container — its flags, its packages, its non-root
+      # user, its subuid range — lives in test/engine-container.sh, which
+      # `make integration-engine` also runs. A workflow file is the one place
+      # those instructions must NOT live: nobody can run a yaml step locally,
+      # so a failure here would only ever reproduce by pushing again.
       - name: The engine suite, in a Tumbleweed container
-        run: |
-          set -euo pipefail
-          # The engine STORE goes on the runner's own filesystem, not on the
-          # container's. Same kernel rule as the runroot below, one directory
-          # over: the store is $XDG_DATA_HOME/$HOME-rooted, docker's container
-          # root is overlayfs, and podman's own overlay mount over the store
-          # then fails EINVAL — measured in run 32943065911, where the runroot
-          # tmpfs took the engine from 0 to 6 of 33 and the next overlay error
-          # named /snug/engine/store/overlay/…/merged instead.
-          #
-          # A bind mount rather than a second tmpfs, deliberately: images live
-          # here, and a tmpfs would put them in the runner's RAM. $RUNNER_TEMP
-          # is on the runner's ext4 disk and is cleaned up by the runner itself.
-          #
-          # XDG_DATA_HOME is what moves it, and it reaches the suite because
-          # baseEnv() in test/integration is os.Environ() plus overrides. HOME
-          # stays inside the container, so the Go build and module caches are
-          # unaffected.
-          mkdir -p "$RUNNER_TEMP/enginestore"
-          docker run --rm \
-            --security-opt apparmor=unconfined \
-            --security-opt seccomp=unconfined \
-            --security-opt systempaths=unconfined \
-            --device /dev/fuse \
-            --device /dev/net/tun \
-            --tmpfs /tmp:exec,mode=1777 \
-            -v "$PWD":/src \
-            -v "$RUNNER_TEMP/enginestore":/enginestore \
-            -v "$(go env GOROOT)":/usr/local/go:ro \
-            registry.opensuse.org/opensuse/tumbleweed:latest \
-            bash -euxo pipefail -c '
-              # bash, coreutils, gawk, grep, sed, findutils, diffutils and make
-              # are named EXPLICITLY, and that is a measured requirement.
-              # Without them `--no-recommends` satisfied the new dependencies
-              # with busybox variants and REMOVED what the image had ("214.9
-              # MiB … released by packages that will be removed", run
-              # 32940231386), taking /bin/sh with it.
-              zypper -n --gpg-auto-import-keys refresh
-              zypper -n install --no-recommends \
-                bash bash-sh coreutils gawk grep sed findutils diffutils \
-                make tar gzip git which curl \
-                podman fuse-overlayfs \
-                bubblewrap passt iproute2 \
-                python3 shadow util-linux
-              export PATH=/usr/local/go/bin:$PATH
-              command -v bash make go podman bwrap pasta python3
-              podman --version
-              bwrap --version
-              pasta --version | head -1
-
-              # The harness makes the same check (requirePasta); this is here so
-              # a passt too old for --map-host-loopback is reported by the step
-              # that installed it rather than twenty tests later.
-              pasta --help 2>&1 | grep -q -- --map-host-loopback
-
-              # uid 1001 matches the GHA runner user, so the workspace mounted
-              # at /src is already owned by this uid and nothing has to be
-              # chowned back.
-              useradd --create-home --uid 1001 --shell /bin/bash snug
-              # A range inside the container own uid space. newuidmap is setuid
-              # and needs these to map anything at all; without them rootless
-              # podman fails "write to uid_map failed: Operation not permitted".
-              echo snug:100000:65536 >> /etc/subuid
-              echo snug:100000:65536 >> /etc/subgid
-              # XDG_RUNTIME_DIR is pinned SHORT on purpose: the proxy socket is
-              # <runtime>/snug/run-<pid>/podman.sock and AF_UNIX sun_path has
-              # 107 usable bytes. A runtime dir inherited from a long workspace
-              # path overshot it at 110 and the suite rendered that as "no
-              # usable real container engine" — a skip predicate absorbing the
-              # test own defect (issue #33). /run/user/1001 is 14 bytes.
-              install -d -m 0700 -o snug -g users /run/user/1001
-              chown snug: /enginestore
-
-              runuser -u snug -- env \
-                HOME=/home/snug \
-                PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin \
-                XDG_RUNTIME_DIR=/run/user/1001 \
-                XDG_DATA_HOME=/enginestore \
-                SNUG_REQUIRE_SANDBOX=1 \
-                SNUG_REQUIRE_ENGINE=1 \
-                SNUG_TEST_NET=1 \
-                bash -c "cd /src && make build && ./bin/snug doctor; make integration-sandbox"
-            '
+        run: make integration-engine

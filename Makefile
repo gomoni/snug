@@ -1,6 +1,6 @@
 BIN := bin/snug
 
-.PHONY: all build test gate integration integration-sandbox integration-signals integration-hostless forkstress golden clean install
+.PHONY: all build test gate integration integration-sandbox integration-signals integration-hostless integration-engine forkstress golden clean install
 
 all: build
 
@@ -269,9 +269,24 @@ SNUG_SIGNAL_TESTS = TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox|TestA
 # can promise 32/32, and not before.
 SNUG_ENGINE_FLOOR = 33
 
+# The per-SUITE bound, and it is a VARIABLE because the same target runs in two
+# environments whose job bounds differ, and the three bounds must keep nesting:
+# budget() per test, this per suite, timeout-minutes per job. An inner bound
+# larger than the outer can never fire, and then a slow suite reads as a bare
+# job kill naming nothing.
+#
+#   8m   ubuntu-latest, where the engine tier SKIPS and the suite takes ~70s,
+#        under a 12-minute job.
+#   18m  the Tumbleweed engine container, where the tier really runs, under a
+#        30-minute job. 8m was sized for a runner where it skipped: with a
+#        working engine it fired at `panic: test timed out after 8m0s` having
+#        run 19 of 33 engine tests and still progressing (run 32943468831).
+#        Set by test/engine-container.sh, which owns that environment.
+SNUG_SANDBOX_TIMEOUT ?= 8m
+
 integration-sandbox:
 	@SNUG_TEST_NET=$${SNUG_TEST_NET:-$${SNUG_REQUIRE_SANDBOX:+1}} \
-		go test -tags integration -timeout 8m -v \
+		go test -tags integration -timeout $(SNUG_SANDBOX_TIMEOUT) -v \
 			-skip '$(SNUG_SIGNAL_TESTS)' ./test/integration/... 2>&1 \
 		| tee $(SANDBOX_LOG); \
 	status=$${PIPESTATUS[0]}; \
@@ -370,6 +385,21 @@ forkstress:
 
 # Regenerate the golden argv files, then READ THE DIFF. A change to a golden
 # file is a change to the sandbox boundary.
+# The engine tier in a throwaway Tumbleweed container (issue #395).
+#
+# Same script CI's `engine` job runs, so a CI failure reproduces with one
+# command instead of a push — which is worth stating as a measurement: bringing
+# that job up cost seven runs, and every one of the first six failed on the
+# CONTAINER rather than on snug (a zypper package swap that removed /bin/sh, an
+# image with no Config.Env so PATH lost /usr/bin, a host sysctl a `container:`
+# job cannot write, docker's masked /proc, a missing /dev/net/tun, and the
+# engine store on overlayfs).
+#
+# Needs docker or podman. Override the pieces with SNUG_ENGINE_RUNTIME,
+# SNUG_ENGINE_IMAGE or SNUG_ENGINE_STORE; the script names what each is for.
+integration-engine:
+	./test/engine-container.sh
+
 golden:
 	go test ./internal/policy -update
 
