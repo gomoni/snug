@@ -496,6 +496,42 @@ jobs:
       # overshot it at 110 and the suite rendered that as "no usable real
       # container engine" — a skip predicate absorbing the test's own defect
       # (issue #33). /run/user/1001 is 14 bytes and cannot.
+      # What the CONTAINER can actually do, printed before anything depends on
+      # it. Run 32940873115 failed with `bwrap: loopback: Failed RTM_NEWADDR:
+      # Operation not permitted` and `stage: starting P1: fork/exec
+      # /proc/self/exe: permission denied`, and bwrap on Tumbleweed is NOT
+      # setuid (0755, measured on the development host), so the userns path is
+      # the one being taken and something is refusing capabilities inside it.
+      # Ubuntu's kernel.apparmor_restrict_unprivileged_userns is the candidate:
+      # it lets an unprivileged userns be CREATED and then denies the
+      # capability-requiring operations inside it, which is exactly this
+      # symptom — and it is a HOST sysctl a `container:` job cannot write.
+      #
+      # This step never fails the job. It answers #395's unknowns 1 and 3 with
+      # measurements instead of the argument above.
+      - name: What this container can do
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -x
+          ls -l /bin/bwrap /bin/pasta /bin/podman
+          grep -E '^Cap(Prm|Eff|Bnd)' /proc/self/status
+          for f in kernel/apparmor_restrict_unprivileged_userns \
+                   kernel/unprivileged_userns_clone \
+                   user/max_user_namespaces \
+                   user/max_net_namespaces; do
+            echo -n "$f = "; cat "/proc/sys/$f" 2>&1
+          done
+          echo '--- userns alone'
+          unshare --user --map-root-user -- true && echo userns-ok
+          echo '--- userns + netns, then bring up loopback (the failing operation)'
+          unshare --user --map-root-user --net -- sh -c 'ip link set lo up && echo lo-up-ok' 2>&1
+          echo '--- userns + netns + mountns, what doctor says to try'
+          unshare --user --net --mount -- true && echo three-ns-ok
+          echo '--- bwrap on its own, no snug'
+          bwrap --unshare-all --ro-bind /usr /usr --dev /dev --proc /proc -- /bin/true && echo bwrap-unshare-all-ok
+          bwrap --unshare-user --unshare-pid --ro-bind /usr /usr -- /bin/true && echo bwrap-no-net-ok
+
       - name: Create the non-root test user and delegate a subuid range
         shell: bash
         run: |
