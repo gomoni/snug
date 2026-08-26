@@ -905,8 +905,8 @@ payload holds no `CAP_NET_RAW` in N."*
 Wrong three ways.
 
 - **It is the expensive option, not the cheap one.** bwrap 0.11.2 has **no
-  `--netns` flag** — only `--unshare-net` and `--share-net`, and `--share-net` is
-  emitted for `NetHost` alone behind `--i-know` (`internal/policy/bwrap.go`).
+  `--netns` flag** — only `--unshare-net` and `--share-net`, and snug emits
+  `--share-net` nowhere at all (`internal/policy/bwrap.go`).
   Putting a sibling in N requires `setns` with `CAP_SYS_ADMIN` in N's owning
   userns, i.e. new privileged code that does not exist. A sibling with its own
   netns is a normal `Resolve` plus a second pasta.
@@ -1034,8 +1034,7 @@ carve-out invariant 1 says exists nowhere.
 
 *The model's own answer applies:* **to grant less, select fewer profiles.** The
 sibling gets its **own named profile set, resolved independently**, with
-`@tmp-shared`, `@podman-socket`, `@net-host` and every socket bind structurally
-excluded. Invariant 6 is then restated **per sandbox** — "one `Policy` per
+`@tmp-shared`, `@podman-socket` and every socket bind structurally excluded. Invariant 6 is then restated **per sandbox** — "one `Policy` per
 sandbox, one author" — plus an explicit, tested cross-policy rule for any decision
 that mentions both, because `hostPathVisible` would have to answer "can the
 payload see this" *and* "can the sibling read it" against two policies. That is a
@@ -1900,7 +1899,7 @@ CLAUDE.md invariant 1 makes about `--read-only`.
 
 **Two drafts.** **Draft A** kept the absolute and made the exception a different
 noun: a profile whose name ends in `-credentials`, never in `defaults`, never
-implied by `include`, requiring `--i-know`. Attractive because the invariant
+implied by `include`, and selected explicitly every time. Attractive because the invariant
 stays checkable by grep — nothing outside `*-credentials` staging a credential —
 rather than by judgement; it lost because the absolute is a dishonest sentence
 for as long as `@claude` stages a credential, and the only fix is renaming
@@ -2001,7 +2000,7 @@ agreed with the owner:
 *is* a grant, and config holds preferences and never grants — a boolean there
 would be the first exception, invisible in `--dry-run` and `SNUG_PROFILES`, so
 you would have to read a host file to know which of the two things your sandbox
-is holding. Same shape as `@net` / `@net-host`.
+is holding. Same shape as `@net`: the grant is the profile you named.
 
 Bounding facts, verified while deciding this:
 

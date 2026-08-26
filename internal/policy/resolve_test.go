@@ -271,16 +271,13 @@ func testRegistry() map[ProfileName]*Profile {
 		"netty-too": {Name: "netty-too", Network: "egress", Publish: []int{3000},
 			Address: "10.13.13.2/24", Address6: "fd00:5e79:1::2/64",
 			Plugins: []string{"superpowers", "code-review"}},
-		// The TOP of the network lattice, and the registry had nothing at it —
-		// so no test in this package had ever resolved `network = "host"`, and
-		// TestAddingAProfileNeverLowersATopologyField could not take the
-		// NetnsStage -> NetnsHost edge no matter which profile it added. It
-		// carries nothing but the mode: pasta does not run for NetHost, so the
-		// scalars `netty` holds would describe a helper this profile never
-		// starts. Unmarked, because @net-host is real and gated on --i-know at
-		// the CLI, which is not this layer's business and must not be implied
-		// by a fixture wearing the sigil.
-		"netty-host": {Name: "netty-host", Network: "host"},
+		// THERE IS NO `network = "host"` FIXTURE, and the absence is deliberate
+		// rather than an omission: ParseNetMode refuses that spelling, so a
+		// fixture carrying it would be a profile that never resolves — and
+		// every loop in this file that walks testRegistry() `continue`s past a
+		// resolve error, which would make it invisible rather than red.
+		// TestParseNetModeRefusesHostByName (net_test.go) is where the refusal
+		// is asserted, at the parser, where it lives.
 		// Sigil-marked and mirroring the real @podman-socket in base.toml
 		// (include sys+home+net, podman=socket) rather than reusing `netty`,
 		// which also carries scalars (address/gateway/mtu/publish) that would

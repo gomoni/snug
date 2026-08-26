@@ -26,8 +26,7 @@ import (
 // It compares against NetnsSandbox deliberately, and that choice is the
 // assertion: NetnsSandbox demands the MOST of the kernel of the three
 // topologies. The stage asks bwrap for fewer namespaces (the stage already made
-// the netns) and NetnsHost asks for the same set and then relaxes it with
-// --share-net, so a host passing this probe satisfies all three.
+// the netns), so a host passing this probe satisfies both.
 func TestDoctorProbeIsNotWeakerThanTheSandbox(t *testing.T) {
 	want := policy.Topology{Netns: policy.NetnsSandbox}.UnshareFlags()
 

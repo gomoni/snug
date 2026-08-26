@@ -23,10 +23,16 @@ const (
 	// out, host loopback unreachable.
 	NetEgress
 
-	// NetHost shares the HOST network namespace. Everything on 127.0.0.1, every
-	// abstract AF_UNIX socket (X11, D-Bus), the LAN as the host. Requires
-	// --i-know on the command line.
-	NetHost
+	// NetEgress IS THE TOP. No mode shares the host's network namespace, so
+	// host loopback and the host's abstract AF_UNIX sockets (X11, D-Bus) are
+	// unreachable under every selection — see pastaArgs' --map-host-loopback
+	// and -T/-U.
+	//
+	// Reaching ONE host-local service is an enumerated grant (invariant 2's
+	// corollary), spelled `-T <port>` where pastaArgs passes `-T none`: the
+	// outbound mirror of Publish. It is not built. A mode that hands over the
+	// whole namespace is not the fallback for it — a capability whose only
+	// bound is a CLI flag is one that gets used (CLAUDE.md, working agreement).
 )
 
 func (m NetMode) Join(o NetMode) NetMode {
@@ -40,8 +46,6 @@ func (m NetMode) String() string {
 	switch m {
 	case NetEgress:
 		return "egress"
-	case NetHost:
-		return "host"
 	default:
 		return "isolated"
 	}
@@ -53,10 +57,8 @@ func ParseNetMode(s string) (NetMode, error) {
 		return NetIsolated, nil
 	case "egress":
 		return NetEgress, nil
-	case "host":
-		return NetHost, nil
 	default:
-		return 0, fmt.Errorf("unknown network mode %q (want isolated, egress or host)", s)
+		return 0, fmt.Errorf("unknown network mode %q (want isolated or egress)", s)
 	}
 }
 
@@ -77,11 +79,12 @@ type NetPolicy struct {
 	// It used to arrive already filtered by RoutableNameservers, and that was
 	// the loopback rule being decided in Resolve while the interception rule
 	// was decided in Resolver: two authors for one question (invariant 6), and
-	// the reason @net-host was handed an address nothing answers (issue #164).
-	// The filter's premise is that the sandbox has a netns of its OWN, where
-	// host loopback is unreachable by design — true for egress, false when the
-	// netns IS the host's — so it belongs where the mode is known. Resolver
-	// applies it, per arm.
+	// the reason a sandbox was once handed an address nothing answers (issue
+	// #164). The filter's premise is that the sandbox has a netns of its OWN,
+	// where host loopback is unreachable by design — so it belongs where the
+	// mode is known. Resolver applies it, per arm. Every mode that remains
+	// satisfies that premise; the rule stays because the premise is what makes
+	// it correct, not the count of modes.
 	Nameservers []string
 
 	// Address/Gateway (v4) and Address6/Gateway6 (v6), when set, give the
@@ -140,9 +143,9 @@ func (n NetPolicy) addrPairs() [2]netAddrPair {
 // an address in it. What is true is narrower and is the thing the design
 // actually relies on: INSIDE a sandbox pasta is configured for, traffic to
 // this address is intercepted before it can leave, so nothing on the LAN sees
-// it. Where there is no pasta — @net-host today, issue #164 — the sandbox
-// really does send its queries at whatever answers that address, which is why
-// naming the fallback honestly matters more than it looks.
+// it. Where no pasta is configured the sandbox really would send its queries at
+// whatever answers that address — which is what issue #164 was — so naming the
+// fallback honestly matters more than it looks.
 //
 // This is what makes one sandbox-side configuration work on both a plain
 // resolv.conf host and a systemd-resolved host. On the latter the real
@@ -299,29 +302,6 @@ func (n NetPolicy) Resolver() ResolverConfig {
 		return r
 	}
 
-	// THE NETNS IS THE HOST'S (@net-host). No pasta runs, so interception is
-	// not available and must never be named; and the loopback filter's premise
-	// does not hold — 127.0.0.53 is reachable here for the same reason every
-	// other host service is, which is this profile's whole abuse sentence.
-	// Naming it grants nothing the profile has not already handed over, and
-	// withholding it just leaves the sandbox unable to resolve (issue #164).
-	//
-	// PARSED and re-rendered through netip, never the host's raw bytes (issue
-	// #177): a nameserver line carrying a control character or an ESC
-	// sequence would otherwise land unescaped here and in the dns row of
-	// --dry-run. A zoned resolver is DROPPED rather than rendered — parsing
-	// alone is not escaping (netip.ParseAddr accepts a zone and String()
-	// re-emits it verbatim), and a link-local resolver is unusable inside the
-	// sandbox regardless of the zone.
-	//
-	// Searches stay anonymised even here. @net-host discloses the network; the
-	// host's internal domain NAMES are a separate disclosure and nothing in
-	// this mode needs them.
-	if n.Mode == NetHost {
-		r.Servers = renderAddrs(n.parsedNameservers())
-		return r
-	}
-
 	// EGRESS. The sandbox has a netns of its own, so a host resolver is usable
 	// only if it is routable from there — this is where the filter belongs,
 	// because this is the arm whose premise it encodes.
@@ -351,11 +331,11 @@ func (n NetPolicy) Resolver() ResolverConfig {
 		// re-opening the hole under a different name.
 		//
 		// It is reached only from this arm, and that is a fix rather than a
-		// tidy-up: gating it on the mode was once missing, and `-p @net-host
-		// -p @net-anon --i-know` then resolved on main and stopped resolving
-		// here. Address has no effect in host mode anyway — no pasta applies
-		// it — so anonymising DNS there withheld a working resolver and
-		// substituted nothing.
+		// tidy-up: gating it on the mode was once missing, and a selection
+		// pairing the anonymising profile with a mode no pasta applies it to
+		// then stopped resolving — anonymising DNS there withheld a working
+		// resolver and substituted nothing. That mode is gone; the gate stays,
+		// because the rule is about which arm's premise holds.
 		r.Servers = nil
 	}
 	if len(r.Servers) == 0 {

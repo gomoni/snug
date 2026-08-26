@@ -256,9 +256,15 @@ func writeProfiles(t *testing.T, tomls map[string]string, extraEnv ...string) []
 // the state SSHConfig's own doc comment says "would have broken agent auth".
 //
 // Written because a draft of this milestone staged the key inside `case
-// SSHAgentProxy:` and silently dropped it for host-agent. Nothing failed: both
-// modes still start, and the breakage only shows up when ssh declines to offer
-// an identity to a real server.
+// SSHAgentProxy:` and silently dropped it for the mode beside it. Nothing
+// failed: both modes still started, and the breakage only showed up when ssh
+// declined to offer an identity to a real server.
+//
+// ONE ROW, and it stays a table for that reason rather than in spite of it:
+// `agent-proxy` is the only mode that stages anything, and the bug this pins is
+// per-branch — it can only reappear when a SECOND mode exists. A row is what
+// the next mode gets added to; an inlined single case is what it gets added
+// beside.
 func TestThePinnedPublicKeyIsStagedInEverySSHMode(t *testing.T) {
 	pub, sock := sshAgentAndKey(t)
 	proj, _ := target(t)
@@ -268,10 +274,6 @@ func TestThePinnedPublicKeyIsStagedInEverySSHMode(t *testing.T) {
 		flags []string
 	}{
 		{"agent-proxy", nil},
-		// host-agent forwards the whole agent and is gated on --i-know; the
-		// staged key is not what makes it safe, but the ssh config still names
-		// it and ssh still has to find it.
-		{"host-agent", []string{"--i-know"}},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			env := writeProfile(t, "[profile.pinned]\n"+

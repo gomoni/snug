@@ -837,9 +837,6 @@ func networkConsequence(mode string) string {
 		return "the sandbox reaches the whole internet, from a private netns. " +
 			"Host loopback and abstract unix sockets stay unreachable " +
 			"(pathname sockets — X11, D-Bus — are a mount question, not this one)."
-	case "host":
-		return "the HOST's own netns. Loopback services and abstract unix sockets " +
-			"(X11, D-Bus among them) ARE reachable. This is the --i-know path."
 	default:
 		return ""
 	}

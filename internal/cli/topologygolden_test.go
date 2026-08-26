@@ -32,7 +32,6 @@ func TestGoldenTopology(t *testing.T) {
 	}{
 		{"isolated", []policy.ProfileName{"@sys", "@cwd-rw"}},
 		{"egress", []policy.ProfileName{"@sys", "@cwd-rw", "@net"}},
-		{"host", []policy.ProfileName{"@sys", "@cwd-rw", "@net-host"}},
 		// Issue #63, Tier B: a container engine needs a stage even OFFLINE —
 		// the engine line group and the CAP_SYS_PTRACE/CAP_NET_ADMIN-excluding
 		// bounding set only render when p.Podman != PodmanOff, so these two

@@ -16,23 +16,21 @@ import (
 // SubuidMode.Join, none of which had a caller outside that test — a law about
 // dead code, proved while the live path went partly unwalked.
 //
-// Two BASES, and that is the half the deletion made load-bearing. With only an
-// isolated base, every addition that raises the netns owner raises it from
-// NetnsSandbox, so the NetnsStage -> NetnsHost edge was never taken: the
-// registry had no `network = "host"` fixture either, so nothing in this package
-// had ever resolved one. `netty-host` and the egress base are what walk it.
+// Two BASES. With only an isolated base every addition that raises the netns
+// owner raises it from NetnsSandbox, so no edge OUT of NetnsStage is ever
+// walked — and "adding a profile must not walk back down" is exactly the claim
+// that needs a base sitting above the floor.
 func TestAddingAProfileNeverLowersATopologyField(t *testing.T) {
 	bases := map[string][]ProfileName{
 		"isolated": {"@sys", "@cwd-rw"},
-		// Starts at NetnsStage, so adding a host-network profile takes the
-		// stage -> host edge, and adding an isolated one must not walk back
-		// down it.
+		// Starts at NetnsStage, so adding an isolated profile must not walk
+		// back down to NetnsSandbox.
 		"egress": {"@sys", "@cwd-rw", "netty"},
 	}
 
 	// Coverage, asserted rather than assumed: a base that stopped resolving to
-	// NetnsStage, or a fixture that stopped granting host network, would leave
-	// this test passing over a strictly smaller set of edges and say nothing.
+	// NetnsStage would leave this test passing over a strictly smaller set of
+	// edges and say nothing.
 	// This is the same shape as a positive control — the test must prove it
 	// went where it claims to go.
 	seen := map[string]bool{}
@@ -67,7 +65,11 @@ func TestAddingAProfileNeverLowersATopologyField(t *testing.T) {
 		}
 	}
 
-	for _, edge := range []string{"sandbox->stage", "sandbox->host", "stage->host", "subuid:none->full"} {
+	// TWO EDGES, because the lattice has two points and one Subuid rise. The
+	// host arm's two edges went with the mode; a precondition naming an edge
+	// nothing can walk is a test that always fails, not one that guards
+	// coverage.
+	for _, edge := range []string{"sandbox->stage", "subuid:none->full"} {
 		if !seen[edge] {
 			t.Errorf("PRECONDITION: no profile addition took the %s edge, so this test did "+
 				"not exercise it. Edges walked: %v. Either a base no longer resolves where "+
@@ -113,7 +115,9 @@ func TestTopologyIsDerivedNotSettable(t *testing.T) {
 
 func TestValidateRefusesAnInconsistentTopology(t *testing.T) {
 	p := mustResolve(t, "@sys", "@cwd-rw")
-	p.Topology.Netns = NetnsHost // p.Net.Mode is still NetIsolated/NetEgress-derived
+	// NetnsStage against a selection with no net profile: deriveTopology maps
+	// NetIsolated to NetnsSandbox, so this is a Topology no Resolve produces.
+	p.Topology.Netns = NetnsStage
 	err := p.Validate(newFakeEnv())
 	if err == nil {
 		t.Fatal("Validate accepted a Topology inconsistent with Net.Mode/Podman")
@@ -132,7 +136,7 @@ func TestValidateRefusesAnInconsistentTopology(t *testing.T) {
 // touching a host uid it was not given, whether or not the run has egress.
 func TestPodmanDelegatesFullSubuid(t *testing.T) {
 	for _, pm := range []PodmanMode{PodmanSocket, PodmanBuild} {
-		for _, n := range []NetMode{NetIsolated, NetEgress, NetHost} {
+		for _, n := range []NetMode{NetIsolated, NetEgress} {
 			if got := deriveTopology(n, pm).Subuid; got != SubuidFull {
 				t.Errorf("deriveTopology(%s, %s).Subuid = %s, want full — "+
 					"a container engine always needs the full delegated range", n, pm, got)
@@ -141,19 +145,16 @@ func TestPodmanDelegatesFullSubuid(t *testing.T) {
 	}
 	// Positive control: PodmanOff must NOT raise Subuid, on any NetMode — so
 	// this test can distinguish "podman raises it" from "everything raises it".
-	for _, n := range []NetMode{NetIsolated, NetEgress, NetHost} {
+	for _, n := range []NetMode{NetIsolated, NetEgress} {
 		if got := deriveTopology(n, PodmanOff).Subuid; got != SubuidNone {
 			t.Errorf("deriveTopology(%s, PodmanOff).Subuid = %s, want none", n, got)
 		}
 	}
 }
 
-func TestNeedsStageIsFalseForOfflineAndHost(t *testing.T) {
+func TestNeedsStageIsFalseForOffline(t *testing.T) {
 	if deriveTopology(NetIsolated, PodmanOff).NeedsStage() {
 		t.Error("NetIsolated should not need a stage")
-	}
-	if deriveTopology(NetHost, PodmanOff).NeedsStage() {
-		t.Error("NetHost should not need a stage — it inherits the host's own netns")
 	}
 	// NetEgress needs a stage as of Commit B (deriveTopology's doc comment):
 	// bwrap can no longer create N itself and stay the only process in the
@@ -202,16 +203,22 @@ func TestPodmanSelectsAStage(t *testing.T) {
 			"the podman branch must not fire for PodmanOff", off)
 	}
 
-	// The --i-know @net-host + podman edge: NetnsHost is preserved (the engine
-	// inherits the host netns there), but Subuid still rises to SubuidFull and
-	// NeedsStage is still true, because the stage owns U regardless of which
-	// netns the engine joins.
-	hostPodman := deriveTopology(NetHost, PodmanSocket)
-	if hostPodman.Netns != NetnsHost {
-		t.Errorf("deriveTopology(NetHost, PodmanSocket).Netns = %s, want host (preserved, not lowered)", hostPodman.Netns)
+	// EGRESS + PODMAN: the netns stays NetnsStage and Subuid still rises.
+	//
+	// This does NOT test the `<` guard, and saying so is the point — with
+	// NetnsStage at the top of the order the guard is equivalent to a plain
+	// assignment, so deleting it leaves this green. Its job is to stop a plain
+	// assignment silently LOWERING a NetnsOwner added above NetnsStage later,
+	// and nothing can assert that until such a value exists (see
+	// deriveTopology). What this arm does assert is that the two fields move
+	// independently: podman raises Subuid on a selection whose Netns is
+	// already where podman would put it.
+	egressPodman := deriveTopology(NetEgress, PodmanSocket)
+	if egressPodman.Netns != NetnsStage {
+		t.Errorf("deriveTopology(NetEgress, PodmanSocket).Netns = %s, want stage", egressPodman.Netns)
 	}
-	if hostPodman.Subuid != SubuidFull || !hostPodman.NeedsStage() {
-		t.Errorf("deriveTopology(NetHost, PodmanSocket) = %+v, want Subuid=full and NeedsStage=true", hostPodman)
+	if egressPodman.Subuid != SubuidFull || !egressPodman.NeedsStage() {
+		t.Errorf("deriveTopology(NetEgress, PodmanSocket) = %+v, want Subuid=full and NeedsStage=true", egressPodman)
 	}
 }
 

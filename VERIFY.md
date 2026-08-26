@@ -217,9 +217,8 @@ complete document. The human refusal text is still on stderr.
 **And for a refusal that happens BEFORE a policy exists — the half that wrote
 zero bytes for a milestone (issue #334).** `pol != nil` was the real boundary:
 `policy.Resolve` hands back a policy only for a `Validate` failure, so an
-unknown profile, a target that does not exist, `@net-host` without `--i-know`, a
-missing `@tmp-shared` grant and an unparseable profile file never entered the
-JSON path at all. Each produced exactly the empty file the paragraph above says
+unknown profile, a target that does not exist, a missing `@tmp-shared` grant
+and an unparseable profile file never entered the JSON path at all. Each produced exactly the empty file the paragraph above says
 the format prevents:
 
 ```bash
@@ -2118,24 +2117,28 @@ The cross-check is the point of running both commands rather than either one.
 A screen that agrees with a file is worth more than either alone: issue #28 was
 exactly a screen that described an interception the sandbox was not doing.
 
-**`@net-host` has a dns line now, and that is the point of issue #164.** It
-shares the host's network namespace and runs no pasta, so it used to be handed
-the interception address with nothing behind it — DNS simply did not work — and
-the NETWORK block printed no dns line at all, so nothing said so:
+**Host loopback and the host's abstract AF_UNIX sockets are unreachable under
+every profile.** The netns is the sandbox's own in every mode, and `pastaArgs`
+passes `--map-host-loopback none -T none -U none` — §7c below measures it. There
+are two network modes and `ParseNetMode` accepts nothing else, so a profile
+naming anything else is refused rather than read as the nearest thing it
+resembles:
 
 ```bash
-./bin/snug --dry-run -p @net-host --i-know $SC/proj/sub -- true | grep -A2 '^ *dns '
-./bin/snug -p @net-host --i-know $SC/proj/sub -- /bin/sh -c \
-  'grep ^nameserver /etc/resolv.conf; timeout 5 getent hosts example.com >/dev/null \
-     && echo RESOLVED || echo RESOLVE-FAILED'
+D=$SC/nh; rm -rf $D; mkdir -p $D/snug/profiles.d
+printf '[profile.nh]\nnetwork = "bridge"\n' > $D/snug/profiles.d/nh.toml
+XDG_CONFIG_HOME=$D ./bin/snug --dry-run -p nh $SC/proj/sub -- true 2>&1 | head -2
+XDG_CONFIG_HOME=$D ./bin/snug --dry-run -p nh $SC/proj/sub -- true >/dev/null 2>&1; echo "exit=$?"
 ```
 
-Expect the screen and the file to name **the host's own resolvers**, and
-`RESOLVED`. On a `systemd-resolved` host that means `127.0.0.53` appears inside,
-and that is correct rather than a leak: the netns *is* the host's, so that
-address is reachable, and naming it discloses strictly less than the namespace
-this profile has already handed over. `169.254.1.1` must not appear — no pasta
-runs here to intercept it.
+```
+snug: profile "nh": unknown network mode "bridge" (want isolated or egress)
+exit=77
+```
+
+The message quotes the offending value and names the accepted set — the two
+things a reader needs to fix their own file. `ssh_mode` behaves identically:
+`agent-proxy` and `none`, anything else refused with the same shape.
 
 **And the forwarder's destination is named.** Under `@net-anon` the dns line
 reads `169.254.1.1 -> pasta -> <addr>`, where `<addr>` is the host's first

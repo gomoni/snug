@@ -1904,37 +1904,6 @@ func describeNetwork(out io.Writer, p *policy.Policy) {
 			fmt.Fprintf(out, "                         on the sandbox's own interface, so a connection to one\n")
 			fmt.Fprintf(out, "                         never leaves the netns. '@net-anon' removes that.\n")
 		}
-	case policy.NetHost:
-		fmt.Fprintf(out, "NETWORK  HOST — the sandbox SHARES your network namespace.\n")
-		fmt.Fprintf(out, "         Every 127.0.0.1 service, every abstract socket (X11 keylogging and\n")
-		fmt.Fprintf(out, "         screenshots included), and the LAN as you. Requires --i-know.\n")
-		// ONE LINE, and it must stay one line — this block is edited by the
-		// #162/#165 work too. `-p @net-host -p @net-anon --i-know` resolves
-		// happily (net.go's Anonymised()/Resolver() already know Address has
-		// no effect here — no pasta runs to apply it), and nothing on any
-		// screen said so until issue #178: a human who deliberately selected
-		// the anonymising profile was not told it was ignored, and read as
-		// "host network, but hide my address" — which is not a thing snug can
-		// do under NetHost. Disclosure only, not a refusal: --i-know already
-		// gates this mode, and refusing a selection the human explicitly
-		// asked for is a different decision.
-		if p.Net.Anonymised() {
-			fmt.Fprintf(out, "         address         IGNORED — an anonymising profile's synthetic address has no\n")
-			fmt.Fprintf(out, "                         effect here: this IS the host's namespace, so the sandbox has\n")
-			fmt.Fprintf(out, "                         the host's own addresses regardless (issue #178)\n")
-		}
-		// This arm printed NOTHING about DNS, which is how issue #164 stayed
-		// invisible for as long as it did: the sandbox was handed pasta's
-		// interception address while no pasta runs, and the one screen that
-		// would have said so did not mention DNS in any form. The same defect
-		// #28 was, in the mode that had no line at all.
-		if servers := p.Net.Resolver().Servers; len(servers) > 0 {
-			fmt.Fprintf(out, "         dns             %s\n", strings.Join(servers, " "))
-			fmt.Fprintf(out, "                         (the host's own resolvers, loopback ones included — they\n")
-			fmt.Fprintf(out, "                         are reachable because this IS the host's namespace)\n")
-		} else {
-			fmt.Fprintf(out, "         dns             NONE — no resolver is named inside; lookups fail fast\n")
-		}
 	}
 }
 
@@ -1993,11 +1962,12 @@ func longLivedProcesses(p *policy.Policy) []longLivedProcess {
 	if p.Topology.NeedsStage() {
 		role := "creates the sandbox's network namespace, pins it, leaves it"
 		if p.Topology.Netns != policy.NetnsStage {
-			// Unreachable today: startContainers refuses @net-host with a
-			// container profile before any namespace exists, and that is the
-			// only way NeedsStage() is true without NetnsStage. Rendered
-			// honestly rather than asserted, so a future third way of needing
-			// a stage cannot make this line claim a namespace it did not make.
+			// Unreachable today: the podman branch of deriveTopology is the
+			// only producer of SubuidFull and it raises Netns to at least
+			// NetnsStage in the same breath, so NeedsStage() cannot be true
+			// without NetnsStage. Rendered honestly rather than asserted, so a
+			// future second producer of SubuidFull cannot make this line claim
+			// a namespace it did not make.
 			role = "holds the delegated subuid range"
 		}
 		procs = append(procs, longLivedProcess{"stage (P1)", role})
@@ -2565,8 +2535,7 @@ func graftDestinationNote(p *policy.Policy, gr policy.Graft) string {
 // The complete topologies get one line saying so, always. It is not decoration:
 // it tells a reviewer that a hand-run IS valid there, and it makes the stage
 // case's warning a contrast rather than an isolated scare. MEASURED, bwrap
-// 0.11.2: --unshare-all yields a netns id different from the host's,
-// --unshare-all --share-net yields the host's exactly.
+// 0.11.2: --unshare-all yields a netns id different from the host's.
 func describeBwrap(out io.Writer, p *policy.Policy, args []string, refusedBy error) {
 	fmt.Fprintln(out, "── bwrap ─────────────────────────────────────────────────────────────────")
 	if refusedBy != nil {
@@ -2583,10 +2552,6 @@ func describeBwrap(out io.Writer, p *policy.Policy, args []string, refusedBy err
 		fmt.Fprintln(out, "  pasta helper — host loopback and the host's abstract sockets (X11, D-Bus)")
 		fmt.Fprintln(out, "  are both reachable, every line of the NETWORK block above is false of what")
 		fmt.Fprintln(out, "  you ran, and what you measured is your own host network.")
-	case policy.NetnsHost:
-		fmt.Fprintln(out, "(this argv determines the network posture on its own: --share-net keeps the")
-		fmt.Fprintln(out, " network namespace of whatever starts bwrap, and snug starts it directly, so")
-		fmt.Fprintln(out, " running it by hand reproduces the HOST networking described above.)")
 	default:
 		fmt.Fprintln(out, "(this argv determines the network posture on its own: --unshare-net creates")
 		fmt.Fprintln(out, " the sandbox's own empty network namespace, so running it by hand reproduces")

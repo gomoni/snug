@@ -182,9 +182,10 @@ type reportNetwork struct {
 	Egress       bool
 	HostLoopback bool
 	// AbstractSockets is netns-scoped reachability of the host's abstract
-	// AF_UNIX namespace. It is FALSE for both private-netns modes and true
-	// only under host networking. Pathname sockets are a mount question and
-	// are deliberately absent here — they are in Mounts.
+	// AF_UNIX namespace. FALSE under every mode: each gives the sandbox a
+	// netns of its own, and abstract sockets are scoped by the netns.
+	// Pathname sockets are a mount question and are deliberately absent here
+	// — they are in Mounts.
 	AbstractSockets bool
 	// DNS is the servers the sandbox will really read out of /etc/resolv.conf,
 	// from the resolved policy rather than from a literal (issue #28).
@@ -525,18 +526,24 @@ func sortedGrafts(p *policy.Policy) []policy.Graft {
 
 func buildNetworkReport(p *policy.Policy) reportNetwork {
 	n := reportNetwork{
-		Mode:            p.Net.Mode.String(),
-		Egress:          p.Net.Mode != policy.NetIsolated,
-		HostLoopback:    p.Net.Mode == policy.NetHost,
-		AbstractSockets: p.Net.Mode == policy.NetHost,
+		Mode:   p.Net.Mode.String(),
+		Egress: p.Net.Mode != policy.NetIsolated,
+		// FALSE for every mode, and stated as literals rather than dropped: a
+		// machine reading this document asks whether host loopback is
+		// reachable, and an absent key is not an answer. These are the two
+		// facts a consumer would otherwise have to infer from a mode name.
+		HostLoopback:    false,
+		AbstractSockets: false,
 		DNS:             p.Net.Resolver().Servers,
 		Publish:         p.Net.Publish,
 		Anonymised:      p.Net.Anonymised(),
 	}
 	// NeedsDNSForward and DNSHost only mean anything where a pasta actually
-	// runs. Under host networking there is none, which is the defect issue
-	// #164 was: the sandbox was handed pasta's interception address while
-	// nothing was intercepting.
+	// runs, which is NetEgress alone — naming an interception address with
+	// nothing intercepting is the defect issue #164 was. The mode is named
+	// rather than spelled `!= NetIsolated`, which is equivalent today: this
+	// gate is about which mode STARTS A PASTA, and a mode added later that
+	// does not start one must not inherit the arm by being non-isolated.
 	if p.Net.Mode == policy.NetEgress && p.Net.NeedsDNSForward() {
 		n.DNSForwarded = true
 		n.DNSHost = p.Net.DNSHost()

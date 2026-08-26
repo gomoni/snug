@@ -29,9 +29,8 @@ type Options struct {
 	// file is written through, which is why WHEN it runs is a security
 	// question and not a convenience:
 	//
-	//   offline / host-network — from a background goroutine, before the
-	//     payload's own program has been exec'd, never blocking bwrap's
-	//     startup.
+	//   unstaged — from a background goroutine, before the payload's own
+	//     program has been exec'd, never blocking bwrap's startup.
 	//   staged — from the calling goroutine, and on a container run strictly
 	//     AFTER the parked payload has been released (issue #125). Publishing
 	//     it earlier would make the sandbox attachable while its payload is
@@ -47,7 +46,7 @@ type Options struct {
 	OnInfo func(RunInfo)
 
 	// OnInit, if non-nil, is called with the sandbox init's HOST pid the
-	// moment bwrap reports it — on the offline/host-network arm, from
+	// moment bwrap reports it — on the unstaged arm, from
 	// reportInfo's goroutine, right after bwrapinfo.Read returns and BEFORE
 	// publishInfo; on the staged arm, wired to stage.Config.OnSandboxForked,
 	// so it runs the instant P1 forwards bwrap's "forked" event (issue #236)
@@ -89,7 +88,7 @@ type Options struct {
 	// while the engine's socket is still reachable — internal/sandbox must
 	// not import internal/engine (layering: this package is lower-level), so
 	// the actual "stop --filter label=..." call is supplied by the caller as
-	// a closure. Never called on the offline/host-network arm of Run, which
+	// a closure. Never called on the unstaged arm of Run, which
 	// has no stage and therefore no engine to have started in the first
 	// place.
 	OnPayloadExit func()
@@ -352,11 +351,12 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	}
 	reportInfo(infoR, runInfo, opts)
 
-	// This arm is the OFFLINE and host-network one: bwrap made its own namespace
-	// (or was given the host's) and there is no helper to attach, so the payload
-	// is already running. Every networked run goes through runStaged above —
-	// NetEgress is the only mode deriveTopology maps to NetnsStage, and the only
-	// mode that ever needed a helper.
+	// THE UNSTAGED ARM, which today means offline: bwrap made its own network
+	// namespace and there is no helper to attach, so the payload is already
+	// running. Every networked run goes through runStaged above — NetEgress is
+	// the only mode deriveTopology maps to NetnsStage, and the only mode that
+	// needs a helper. Named for the TOPOLOGY rather than for its one member,
+	// because which arm a reader is in is a question about the topology.
 	//
 	// guard.wait, not a bare wait(cmd): a TERM/INT/HUP arriving in the ~40ms
 	// before bwrap's own init arms its pdeathsig used to leave that init
@@ -596,7 +596,7 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 // fields Run already computed, since bwrap's own JSON says nothing about the
 // filter.
 //
-// THE OFFLINE / HOST-NETWORK ARM ONLY. On the staged arm the read end lives in
+// THE UNSTAGED ARM ONLY. On the staged arm the read end lives in
 // the stage (issue #125), which parses it and forwards the answer in the
 // "start" event; runStaged calls publishInfo below instead. The split is not
 // cosmetic: on that arm the answer must be IN HAND before the payload is

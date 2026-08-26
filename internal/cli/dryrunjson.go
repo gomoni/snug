@@ -84,8 +84,8 @@ func renderJSON(out io.Writer, rep Report) error {
 // WHAT WAS MEASURED. `pol != nil` was the real boundary: policy.Resolve returns
 // a policy only for a Validate failure, so every refusal ahead of Validate never
 // entered the JSON path at all. All seven classes below exit 77; five of them
-// wrote ZERO BYTES — unknown profile, target does not exist, @net-host without
-// --i-know, a missing @tmp-shared grant, an unparseable profile file. So `snug
+// wrote ZERO BYTES — unknown profile, target does not exist, a missing
+// @tmp-shared grant, an unparseable profile file. So `snug
 // --dry-run --json x > policy.json` produced exactly the empty file the format
 // documents itself as designed against, for the most ordinary user errors, which
 // are also the ones a CI gate hits most.

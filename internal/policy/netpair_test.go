@@ -329,19 +329,24 @@ func TestDNSHostNamesNoUnparsedHostText(t *testing.T) {
 		}
 	}
 
-	host := NetPolicy{Mode: NetHost, DNS: true, Nameservers: dirty}
-	for _, s := range host.Resolver().Servers {
+	// The same, through the arm that actually NAMES a host resolver inside.
+	// The egress fixture above carries an Address, so it anonymises and its
+	// Servers are replaced by the forwarder — which is snug's own constant and
+	// could never carry host text. Without a second fixture the assertions
+	// above are about a list nothing put host bytes into.
+	named := NetPolicy{Mode: NetEgress, DNS: true, Nameservers: dirty}
+	for _, s := range named.Resolver().Servers {
 		if strings.ContainsAny(s, "\x1b%") {
-			t.Errorf("Resolver().Servers (NetHost) carries unparsed host text: %q", s)
+			t.Errorf("Resolver().Servers (named host resolvers) carries unparsed host text: %q", s)
 		}
 	}
-	if rc := string(host.ResolvConf()); strings.ContainsAny(rc, "\x1b") || strings.Contains(rc, "%") {
-		t.Errorf("ResolvConf() (NetHost) carries unparsed host text:\n%s", rc)
+	if rc := string(named.ResolvConf()); strings.ContainsAny(rc, "\x1b") || strings.Contains(rc, "%") {
+		t.Errorf("ResolvConf() (named host resolvers) carries unparsed host text:\n%s", rc)
 	}
 
 	// POSITIVE CONTROL: a clean list comes through unchanged, so the checks
 	// above are not vacuously true on a function that drops everything.
-	clean := NetPolicy{Mode: NetHost, DNS: true, Nameservers: []string{"8.8.8.8", "1.1.1.1"}}
+	clean := NetPolicy{Mode: NetEgress, DNS: true, Nameservers: []string{"8.8.8.8", "1.1.1.1"}}
 	got := clean.Resolver().Servers
 	if len(got) != 2 || got[0] != "8.8.8.8" || got[1] != "1.1.1.1" {
 		t.Errorf("control: a clean nameserver list was altered: %v", got)

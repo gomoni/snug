@@ -11,21 +11,24 @@ const (
 	// key material inside, no passphrase prompt, other keys not enumerable.
 	SSHAgentProxy SSHMode = "agent-proxy"
 
-	// SSHHostAgent forwards the whole host agent — every key, no filtering.
-	// Requires --i-know.
-	SSHHostAgent SSHMode = "host-agent"
-
 	SSHNone SSHMode = "none"
 )
 
+// ParseSSHMode is one of the four doors into policy.SSHMode, and it accepts
+// two values. Anything else is unknown — there is no catalogue of spellings it
+// judges individually, which is what keeps the accepted set readable as the
+// whole set.
+//
+// The empty string is `none`, so a profile with an identity block and no
+// ssh_mode gets no agent rather than a refusal.
 func ParseSSHMode(s string) (SSHMode, error) {
 	switch SSHMode(s) {
-	case SSHAgentProxy, SSHHostAgent, SSHNone:
+	case SSHAgentProxy, SSHNone:
 		return SSHMode(s), nil
 	case "":
 		return SSHNone, nil
 	default:
-		return "", fmt.Errorf("unknown ssh_mode %q (want agent-proxy, host-agent or none)", s)
+		return "", fmt.Errorf("unknown ssh_mode %q (want agent-proxy or none)", s)
 	}
 }
 

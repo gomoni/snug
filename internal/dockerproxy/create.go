@@ -394,11 +394,15 @@ var namespaceModeKeys = []string{
 // "private", UsernsMode "keep-id"/"nomap"/"auto". They are closed by the
 // engine failing (netavark: Netlink error: Operation not permitted), not by
 // snug. Making this an allowlist is an ergonomic behaviour change on a path
-// that currently works by failing, and it is a maintainer call recorded on
-// issue #34 rather than folded in here. Whoever takes it must keep "" AND
-// "default" accepted: testdata/docker-run-create-body.json records
-// NetworkMode:"default" on a plain `docker run`, and podman's compat handler
-// maps both through the containers.conf netns pin to N.
+// that works today by FAILING — the engine refuses, not snug — so it is a
+// maintainer call, not something to fold into an unrelated change. Whoever
+// takes it must keep "" AND "default" accepted, and this is the measurement
+// that says so: a stock docker 29.4.0-ce sends NetworkMode:"default" on a
+// plain `docker run` with no --network flag (testdata/docker-run-create-body.json,
+// re-measured against API v1.54 — every --network=X spelling maps 1:1 onto
+// NetworkMode:"X", so "default" is the no-flag value and nothing else produces
+// it). podman's compat handler maps "" and "default" through the
+// containers.conf netns pin to N.
 var namespaceModeReason = map[string]string{
 	"NetworkMode": `"host" is allowed here and means THIS sandbox's own network ` +
 		`namespace N (issue #63, Tier B). What is refused is naming a namespace ` +

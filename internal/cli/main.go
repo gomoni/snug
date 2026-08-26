@@ -46,7 +46,6 @@ type config struct {
 	// removed (snug stays minimal; bwrap is the swiss knife). dryrun.go
 	noSeccomp  bool
 	noDefaults bool
-	iKnow      bool
 	verbose    bool
 }
 
@@ -149,7 +148,6 @@ flags:
       --no-defaults    select nothing at all to begin with
                        (-p adds to the defaults setting; --no-defaults declines it)
       --no-seccomp     run without the seccomp filter (debugging; weakens defence in depth)
-      --i-know         acknowledge a knowingly-large hole (required by @net-host)
   -n, --dry-run        print the resolved policy and the bwrap command, run nothing
   -j, --json           with --dry-run: emit that policy as one JSON document instead
   -v, --verbose        audit lines from the ssh-agent proxy
@@ -199,8 +197,6 @@ func parseArgs(argv []string) (config, error) {
 			// subsystems call independently, so the preference is set here
 			// once rather than threaded through them (issue #118).
 			setHousekeepingVerbose(true)
-		case a == "--i-know":
-			cfg.iKnow = true
 		case a == "--no-seccomp":
 			// Weakening lives on the CLI, never in a profile: a human may
 			// lower defences, a config file may not (INDEX §2.3).
@@ -300,10 +296,9 @@ func refuseVerbatim(cfg config, code int, text, message string) int {
 // The rule it implements is Report's own doc comment, applied uniformly: *a
 // refused policy is still fully described — "it was refused" without the
 // policy is the half a human cannot act on.* Three sites reach it — Resolve's
-// Validate failure, the re-Validate after the staged mounts are added, and
-// @net-host without --i-know — and only the first had it before, which is why
-// `snug --dry-run --json -p @net-host .` wrote nothing at all (issue #334's
-// third row).
+// Validate failure and the re-Validate after the staged mounts are added —
+// and only the first had it before, which is why `snug --dry-run --json` wrote
+// nothing at all for most refusal classes (issue #334).
 //
 // pol MAY be nil: policy.Resolve's contract returns a policy only for a
 // Validate failure, and every other failure hands back nil. That is the whole
@@ -491,24 +486,6 @@ func run(cfg config) int {
 		// run below, whichever shape came back.
 		return refusePolicy(cfg, exitPolicy, err, pol, env)
 	}
-	// A knowingly-large hole needs a deliberate act, not just a profile name.
-	// The warning is five lines because the cost genuinely is that large, and
-	// because someone who reads it and proceeds has made an informed choice.
-	if pol.Net.Mode == policy.NetHost && !cfg.iKnow {
-		const netHostRefusal = `refusing to share the host network namespace without --i-know.
-
-      With host networking the sandbox can reach:
-        - every service on your 127.0.0.1, including ones with no authentication
-        - every abstract AF_UNIX socket — X11 included, which means it can log
-          your keystrokes and screenshot any window on your desktop
-        - the LAN, with the host's identity
-
-      This is not a sandbox with networking; it is a process with a different
-      filesystem view. If you meant "the sandbox needs internet", use the '@net'
-      profile instead. To proceed anyway, add --i-know.`
-		return refusePolicy(cfg, exitPolicy, errors.New(netHostRefusal), pol, env)
-	}
-
 	// WARN, do not exit — the rule that unifies this with the refusal above
 	// (invariant 5's two shapes, issue #162's remnant): warn when the missing
 	// thing makes the sandbox do LESS, refuse when it makes the sandbox LEAK
@@ -582,7 +559,7 @@ func run(cfg config) int {
 		return refuse(cfg, exitPolicy, err)
 	}
 
-	idCleanup, err := startIdentity(pol, cfg.verbose, cfg.iKnow, cfg.dryRun)
+	idCleanup, err := startIdentity(pol, cfg.verbose, cfg.dryRun)
 	if err != nil {
 		return refuse(cfg, exitPolicy, err)
 	}

@@ -43,7 +43,6 @@ func TestTopologyProcessesMatchRunStagedsPredicates(t *testing.T) {
 	}{
 		{"isolated", []policy.ProfileName{"@sys", "@cwd-rw"}},
 		{"egress", []policy.ProfileName{"@sys", "@cwd-rw", "@net"}},
-		{"host", []policy.ProfileName{"@sys", "@cwd-rw", "@net-host"}},
 		{"podman-offline", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}},
 		{"podman-egress", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket", "@net"}},
 		{"podman-build-offline", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-build"}},

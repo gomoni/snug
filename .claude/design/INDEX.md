@@ -240,8 +240,7 @@ type NetMode uint8
 const (
     NetIsolated NetMode = iota // private netns, loopback only, no helper. THE FLOOR.
     NetEgress                  // private netns + pasta: internet in/out, host loopback closed
-    NetHost                    // share the host netns. DANGEROUS. Requires --i-know.
-)
+)                              // the whole set; ParseNetMode accepts nothing else
 
 func (m NetMode) Join(o NetMode) NetMode { if o > m { return o }; return m }
 
@@ -249,11 +248,8 @@ func (m NetMode) Join(o NetMode) NetMode { if o > m { return o }; return m }
 type SSHMode string
 
 const (
-    SSHAgentProxy SSHMode = "agent-proxy" // RECOMMENDED: filter the host agent to one key
-    SSHAgentOwn   SSHMode = "agent"       // private one-key agent; prompts for the passphrase once
-    SSHKeyFile    SSHMode = "key-file"    // stage the encrypted private key in. Weakest.
-    SSHHostAgent  SSHMode = "host-agent"  // forward the WHOLE host agent. Discouraged.
-    SSHNone       SSHMode = "none"
+    SSHAgentProxy SSHMode = "agent-proxy" // filter the host agent to one pinned key
+    SSHNone       SSHMode = "none"        // the default
 )
 
 // ── Podman ───────────────────────────────────────────────────────────────────
@@ -459,7 +455,7 @@ rest              [a-zA-Z0-9-]
 
 `checkName` (`internal/profile/file.go`) is an **allowlist**: a character outside that set is a fatal parse error naming the file, the name, the offending byte and its offset. It was a denylist of five individually-broken characters until [#20](https://github.com/gomoni/snug/issues/20), which is the wrong direction — what snug has not been taught about must fail closed — and the sixth character was already reachable: measured, `[profile."a\u001b[1A\rb"]` parsed cleanly and, once selected, that name reached the `PROFILES` line of `--dry-run` verbatim, where `ESC[1A CR` erases the row above it.
 
-The hyphen is in, decided by the owner; eight builtins depend on it (`cwd-rw`, `parent-ro`, `tmp-shared`, `git-ro`, `net-anon`, `net-host`, `podman-socket`, `podman-build`), so the naive "alphanumerics only" reading would outlaw snug's own names. Underscore stays out until asked for, on the grounds that adding a character later is additive and removing one is a breaking change. Refusing punctuation in the FIRST position is the point: every printable ASCII symbol then stays free to become a sigil later without breaking a name somebody already chose. `@` is already one, and `:` is the reserved next candidate ([`PARAMETERISED-PROFILES.md`](PARAMETERISED-PROFILES.md)).
+The hyphen is in, decided by the owner; seven builtins depend on it (`cwd-rw`, `parent-ro`, `tmp-shared`, `git-ro`, `net-anon`, `podman-socket`, `podman-build`), so the naive "alphanumerics only" reading would outlaw snug's own names. Underscore stays out until asked for, on the grounds that adding a character later is additive and removing one is a breaking change. Refusing punctuation in the FIRST position is the point: every printable ASCII symbol then stays free to become a sigil later without breaking a name somebody already chose. `@` is already one, and `:` is the reserved next candidate ([`PARAMETERISED-PROFILES.md`](PARAMETERISED-PROFILES.md)).
 
 Three things follow.
 
@@ -707,7 +703,7 @@ Isolating the cause:
 
 Two candidate topologies for creating the network namespace:
 
-**(a) `pasta` creates the netns and spawns `bwrap` inside it.** `pasta [OPTS] -- bwrap --unshare-all --share-net ...`.
+**(a) `pasta` creates the netns and spawns `bwrap` inside it**, with `bwrap` inheriting it rather than making its own.
 **VERIFIED** that `pasta`'s command mode creates user + mount + ipc + pid + uts + net namespaces and maps your uid to 0 (`uid_map: 0 1000 1`). That is the problem: `pasta` has already built a user namespace with exactly **one** uid mapped, so `bwrap`'s nested `--unshare-user` inside it can only map that one uid, and any later need for a subuid range (podman) is dead on arrival. It also puts a process `snug` does not control at the root of the tree, and `pasta` is not designed to be an init.
 
 **(b) `snug`'s own tree creates the netns; `pasta` joins it. ← what snug does.**
@@ -748,7 +744,7 @@ P0  snug                                    (host userns, host netns, host mount
 
 `bwrap`'s argv is byte-identical to the `NetnsSandbox` case except for the enumerated `--unshare-*` set (`internal/policy/bwrap.go`, `Topology.Netns == NetnsStage`): **which process called `fork` is what determines the topology, not the argv.** `pasta` is aimed at the descriptor P1 pinned before it moved, *never* at `/proc/<P1>/ns/net` — after the move that path names P1's own empty namespace, and `pasta` attaches to it silently (SUPERVISOR-DESIGN §3.4).
 
-**`NetnsHost` — the host's own netns, `--share-net`, behind `--i-know`.** No stage for the network's sake; `@net-host` together with a container profile still gets one, for the subuid range alone.
+**`NetnsStage` is the top of this order, and `NeedsStage()` is monotone over it.** Nothing emits `--share-net`: no topology relaxes a network namespace snug created, so the container engine runs in a netns the stage made or the run does not start.
 
 #### The ordering
 
@@ -865,7 +861,10 @@ Deliberately **not** passed:
 | `publish = [3000, 8080]` in a profile | `@net`, `-t 127.0.0.1/3000,8080` | Those ports, bound inside the sandbox, become reachable on the **host's** `127.0.0.1` — and only there. **VERIFIED**: a listener answered `200` from the host at `127.0.0.1:18099` and was **refused** at `192.168.1.120:18099`. The LAN never sees it. |
 | `@net-anon` | `@net` + `-a/-g` **for BOTH families** (no `-n`), and DNS forced onto interception | Sandbox does not learn the host's LAN address in either family (issue #165) — nor, since issue #162, the host's LAN *resolver*, which discloses the same prefix (§4.7). **Costs a reach**: hiding the address is what makes the host's own services (any address it binds, including `0.0.0.0`/`::`) reachable from inside — the packet stops being refused by the sandbox's own stack and instead leaves the netns for `pasta` to open on the host (issue #176). Host loopback stays closed throughout; `--dry-run` states the trade. |
 | `@podman-socket` / `@podman-build` | topology (b) via the **stage**, engine forked into N, no `pasta` of its own | No egress on its own. Selects a stage and the full subuid range; a container gets exactly the sandbox's network, whatever that is (§4.4). |
-| `@net-host` | `bwrap --unshare-all --share-net`, **no `pasta`** | **Everything.** Host loopback, every abstract AF_UNIX socket (X11, D-Bus), the LAN as the host. Requires `--i-know` on the command line *and* prints a warning. Exists so that "I need to debug a host service" does not become "so I stopped using snug". |
+
+**Host loopback and the host's abstract AF_UNIX sockets (X11, D-Bus) are unreachable from every sandbox snug builds, under every profile.** There is no mode that shares the host's network namespace and no flag that opens one — a capability whose only bound is a command-line flag is one that gets used, because the flag is documented, greppable, and named in the error telling you what to type. `pastaArgs` passes `--map-host-loopback none -T none -U none`, and `ParseNetMode` accepts `isolated` and `egress` and nothing else.
+
+**The cost, stated: no profile reaches a host-local service.** Wanting one — a dev database on `:5432`, a local registry — is invariant 2's corollary, an enumerated grant spelled coarsely. Its narrow form is `pasta`'s `-T <port>` in place of `-T none`, the outbound mirror of `publish`, and it is not built.
 
 **There is deliberately no `@net-publish` profile and no `publish_auto`.** One shipped once and was removed. The reason: with `-t auto`, **the sandbox chooses which host loopback ports appear**. That inverts the guiding principle — the agent, not the human, would author a host-visible surface, and a prompt-injected agent could squat `127.0.0.1:8080` ahead of your own dev server and intercept your browser. With `publish = [3000]` the human named the port and the hole is exactly one port wide. `base.toml`'s comment above the `publish` key is the standing statement of this; this is the decision in the whole networking section most likely to be revisited.
 
@@ -878,7 +877,6 @@ The sandbox's `/etc/resolv.conf` is a **generated file delivered from an anonymo
 | Mode / host / profile | The sandbox is told | Who answers |
 |---|---|---|
 | Offline, or a profile that never asked for DNS | nothing — the file says so and lookups fail fast | nobody |
-| **`@net-host`** — the netns IS the host's | the host's own resolvers, **loopback included** | the resolver itself; there is no `pasta` here to intercept |
 | Egress, routable host resolvers (a LAN router, a public resolver) | those addresses, verbatim | the resolver itself, reached over ordinary egress |
 | Egress, all host resolvers on loopback, and at least one is IPv4 (`systemd-resolved` on `127.0.0.53`) | `nameserver 169.254.1.1` | `pasta`, re-issuing from the host side to `--dns-host` |
 | Egress, all host resolvers on loopback, **only IPv6 present** | `nameserver fd00:5e79:1::53` | `pasta`, re-issuing from the host side to `--dns-host` (issue #162's remnant — pasta never crosses families when forwarding) |
@@ -886,7 +884,7 @@ The sandbox's `/etc/resolv.conf` is a **generated file delivered from an anonymo
 | Egress, **any profile that sets an address (`@net-anon`)**, host has ONLY a usable IPv6 resolver | `nameserver fd00:5e79:1::53` | `pasta`, re-issuing to the v6 `--dns-host` |
 | Egress, DNS asked for, but the host names **no resolver snug can parse and forward to at all** | nothing — the file says so, and the sandbox is warned on the host side | nobody (issue #162's remnant: this used to be `169.254.1.1` with nothing behind it, a ~40s stall per lookup; now a ~2ms failure) |
 
-`NetPolicy.Resolver` branches on the MODE first and the profile second, and that order is the fix for issue #164 rather than a tidy-up. `RoutableNameservers` drops loopback resolvers because a **private** netns cannot reach host loopback; under `@net-host` that premise is exactly false, and applying the filter there left the profile whose whole purpose is reaching host services unable to resolve anything, pointed at an interception address with no `pasta` behind it. The filter now lives in the egress arm, where its premise holds, and `NetPolicy.Nameservers` carries the host's raw list.
+`NetPolicy.Resolver` branches on the MODE first and the profile second, and that order is the fix for issue #164 rather than a tidy-up. `RoutableNameservers` drops loopback resolvers because a **private** netns cannot reach host loopback — a premise every remaining mode satisfies, and one a mode that shared the host's namespace made exactly false, leaving it pointed at an interception address with no `pasta` behind it. The filter lives in the egress arm, where its premise is *what makes it correct*, and `NetPolicy.Nameservers` carries the host's raw list. It stays keyed on the arm rather than on the mode count.
 
 **Where an intercepted query goes is snug's choice, not `pasta`'s** (issue #166), and the choice is FAMILY-MATCHED (issue #162's remnant): `--dns-host` is passed explicitly, set to the host's first nameserver **of the armed forwarder's family**, loopback included — `pasta` runs on the host, so the sandbox-side filter must not apply to it, and a v4-forwarded query re-issued to a v6 `--dns-host` times out regardless of whether a live resolver answers there (measured). Left to its default, `pasta` re-read the host's `/etc/resolv.conf` with its own rule ("first nameserver", no family awareness at all), which disagrees with snug's both on which address (a host listing a local resolver first and a router second) and on family: two authors for one fact, and `--dry-run` could not name the destination because snug did not know it. It now prints `169.254.1.1 -> pasta -> <addr>` (or the v6 forwarder's line, family-matched).
 
@@ -928,7 +926,7 @@ A silent downgrade is worse than a failure, because the user believes a guarante
 | `bwrap` not on `PATH` | `LookPath` | **FATAL** | `snug requires bubblewrap (bwrap). Install: <distro hint>.` |
 | `@net` requested, `pasta` not installed | `LookPath` | **FATAL** | names `pasta` and says why running with no network — or worse, the host's — is not offered as a fallback. Asserted by an integration test: it must never exit 0. |
 | `@net` requested, `pasta` fails to attach | non-zero `Wait()` or no non-`lo` device within the readiness window | **FATAL**, payload never released (§4.3) | `pasta` stderr is reproduced verbatim. |
-| `--unshare-net` refused (deeply nested userns, some seccomp-restricted CI) | `bwrap` exit + stderr | **FATAL** | names `@net-host --i-know` as the explicit, knowingly-large alternative. |
+| `--unshare-net` refused (deeply nested userns, some seccomp-restricted CI) | `bwrap` exit + stderr | **FATAL** | there is no fallback to offer: running on the host's own network is not a mode snug has. The message names the nesting and the sysctl. |
 | **Inside `distrobox`/podman container** | `/run/.containerenv` or `/.dockerenv` present | **Works.** No special handling. | Everything in this document was verified inside a rootless-podman distrobox: nested userns, netns creation, `pasta` attach, egress, DNS, loopback isolation. `snug doctor` reports the nesting for context. |
 | Seccomp unavailable | probe + install error | **Degrade with a warning.** | `seccomp filter unavailable (<reason>); continuing WITHOUT it. The namespace boundary is unaffected; ptrace/keyctl/TIOCSTI hardening is not active.` |
 | `podman` profile, no usable `podman` binary | `LookPath` + `podmanClientUsable` (host-escape shim detection) | **FATAL** for a missing binary. The shim case is **currently a warning** and [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §3 argues it must become a refusal. | Never degrades to "no engine but the profile said yes". |
@@ -957,7 +955,7 @@ A silent downgrade is worse than a failure, because the user believes a guarante
 
 ```
 --unshare-all          # user, ipc, pid, net, uts, cgroup — everything bwrap supports
-[--share-net]          # ONLY under @net-host
+                       # nothing relaxes it afterwards
 --uid <host uid>
 --gid <host gid>
 --hostname snug
@@ -965,7 +963,7 @@ A silent downgrade is worse than a failure, because the user believes a guarante
 [--new-session]        # ONLY where the kernel still allows TIOCSTI
 ```
 
-`--unshare-all` rather than a selective list, on principle: the selective form is a denylist of namespaces to keep, and this design does not do denylists. `--share-net` is the single documented exception.
+`--unshare-all` rather than a selective list, on principle: the selective form is a denylist of namespaces to keep, and this design does not do denylists. The one selective spelling is `NetnsStage`'s (§4.3), where the netns is deliberately not bwrap's to make; nothing anywhere emits `--share-net`.
 
 **`--new-session` is conditional, and deliberately so.** It gives the sandbox its own TTY session, which blocks TIOCSTI input injection into the launching terminal — but it also breaks job control for an interactive shell inside the sandbox. `/proc/sys/dev/tty/legacy_tiocsti` is `0` on this kernel, so the flag buys nothing here and `snug` omits it; where that sysctl is `1`, `snug` adds it and `--dry-run` says so. The decision is never made silently.
 
@@ -1097,13 +1095,12 @@ Every surface below is off by default and reached by naming a profile. Each is a
 
 **Recommendation: `ssh_mode = "agent-proxy"`, unconditionally, for every real workflow.** The alternatives exist to be rejected in writing. [`SECRETS.md`](SECRETS.md) §3.4 generalises this shape into the pattern the rest of the credential work is measured against.
 
-| Mode | What it does | Verdict |
-|---|---|---|
-| **`agent-proxy`** | `snug` binds a private socket, hands it to the sandbox as `SSH_AUTH_SOCK`, and forwards to the host's **already-unlocked** agent, exposing exactly one pinned key. | **Recommended.** No key material in the sandbox. No passphrase prompt. The sandbox cannot enumerate or use your other keys. |
-| `agent` | A private one-key agent; `ssh-add` prompts once at startup. | Fallback when no host agent is running. Key material lives in a process `snug` owns, still not in the sandbox. |
-| `key-file` | Stage the (encrypted) private key into the sandbox. | **Weakest.** The key bytes are inside the blast radius. Only for keys you would not mind rotating. |
-| `host-agent` | Bind the host `SSH_AUTH_SOCK` straight through. | **Discouraged**, and `snug` requires `--i-know`. Every key, every identity, no filtering. This is the one where the gate was documented in three places and enforced in none — see CLAUDE.md. |
-| `none` | No ssh. | The default. |
+| Mode | What it does |
+|---|---|
+| **`agent-proxy`** | `snug` binds a private socket, hands it to the sandbox as `SSH_AUTH_SOCK`, and forwards to the host's **already-unlocked** agent, exposing exactly one pinned key. No key material in the sandbox. No passphrase prompt. The sandbox cannot enumerate or use your other keys. |
+| `none` | No ssh. The default. |
+
+**Those are the whole set.** `ParseSSHMode` accepts nothing else, and a profile naming anything else is refused rather than resolved as something narrower — an unrecognised mode quietly read as `none`, or as `agent-proxy` with no pinned key, would hand the author a sandbox their profile does not describe. A private one-key agent prompting for a passphrase, and staging an encrypted private key inside, were both considered and are not built: neither reaches a capability `agent-proxy` lacks, and the second puts key bytes in the blast radius.
 
 **The proxy's rules.** It speaks the agent protocol (`golang.org/x/crypto/ssh/agent`), fresh upstream dial per connection (the protocol is not safe to interleave), and is fail-closed on anything it does not understand:
 
@@ -1463,7 +1460,6 @@ There is no flag that grants less. A read-only project means not selecting `@cwd
 | `-p, --profile NAME` | Add a profile. Repeatable. Order is irrelevant (§2.2). |
 | `--no-defaults` | Decline the `defaults` selection entirely. Start from nothing. |
 | `--no-seccomp` | Human-only weakening (§2.3). |
-| `--i-know` | Required by `@net-host`. |
 | `-n, --dry-run` | Print the resolved policy and the `bwrap` command; start nothing. |
 | `-v, --verbose` | Per-decision audit lines from the proxies on stderr. |
 | `-h, --help` | |
@@ -1568,7 +1564,7 @@ TestHostLoopbackIsUnreachable
 
 Both families, deliberately: v4 and v6 loopback are closed by different flags. This is the test that fails on the previous generation's flag set. It is behavioural, not argv-based, and it is therefore immune to a `pasta` upstream default change — which is exactly the failure mode that produced the bug.
 
-Companions, all present: `TestOfflineHasOnlyLoopback`, `TestSandboxHasItsOwnWorkingLoopback`, `TestEgressWorks`, `TestAbstractSocketsAreUnreachable` (the netns-scoping property from §4.1, which nothing else covers), `TestSandboxPortsAreNotPublishedByDefault`, `TestPublishedPortsAreReachable`, `TestNetHostIsRefusedWithoutIKnow`, `TestAbortedNetworkNeverRunsThePayload`, and `TestNoLeakedHelpersAfterSIGKILL`.
+Companions, all present: `TestOfflineHasOnlyLoopback`, `TestSandboxHasItsOwnWorkingLoopback`, `TestEgressWorks`, `TestAbstractSocketsAreUnreachable` (the netns-scoping property from §4.1, which nothing else covers), `TestSandboxPortsAreNotPublishedByDefault`, `TestPublishedPortsAreReachable`, `TestNoHostNetworkModeAndNoIKnowFlag`, `TestAbortedNetworkNeverRunsThePayload`, and `TestNoLeakedHelpersAfterSIGKILL`.
 
 ### 12.5 Live host-integration tests — DESIGNED, NOT BUILT
 
@@ -1618,7 +1614,7 @@ The *mechanism* a worked example would illustrate — how the netns gets created
 | | | status |
 |---|---|---|
 | **M1** | the sandbox: profile loading, the policy model, the bwrap emitter, the fd model, seccomp, `--dry-run`, `doctor`. Offline only, which is a coherent and secure product. | **done** |
-| **M2** | networking: the fd handshake, `PastaArgs`, pasta supervision and teardown, generated `resolv.conf`, `@net` / `@net-anon` / `@net-host`. `TestHostLoopbackIsUnreachable` was the acceptance criterion and nothing shipped without it green. | **done** |
+| **M2** | networking: the fd handshake, `PastaArgs`, pasta supervision and teardown, generated `resolv.conf`, `@net` / `@net-anon`. `TestHostLoopbackIsUnreachable` was the acceptance criterion and nothing shipped without it green. | **done** |
 | **M3** | identity and agent files: the ssh-agent proxy, `[identity]`, generated gitconfig/ssh config/known_hosts, scoped `gh`, `@claude` with staged credentials and the injected `CLAUDE.md`. | **done** |
 | **M4** | containers: per-sandbox engine and store, the filtering proxy, SELinux relabel, `@podman-socket`. | **done**, with the engine on the host's network — [`ENGINE-NETNS.md`](ENGINE-NETNS.md) |
 | **M5** | `podman build`: a default-deny allowlist over the build endpoint's query string, `@podman-build`. | **done** |

@@ -2212,9 +2212,9 @@ func serveBanner(t *testing.T, ln net.Listener) {
 // Abstract AF_UNIX sockets are scoped by the NETWORK namespace, not by the
 // filesystem, so no mount grant can hide one and no mount grant is what keeps
 // them out. X11 and D-Bus both listen on abstract sockets; if the sandbox could
-// reach them it could log keystrokes and screenshot the desktop. This property
-// is the reason `net-host` needs --i-know, and nothing else in the suite covers
-// it (INDEX §12.4).
+// reach them it could log keystrokes and screenshot the desktop. snug has no
+// mode that shares the host's network namespace, so this is an unconditional
+// property of every run; nothing else in the suite covers it (INDEX §12.4).
 func TestAbstractSocketsAreUnreachable(t *testing.T) {
 	budget(t)
 	requireSandbox(t)
@@ -2633,28 +2633,6 @@ func TestEgressWorks(t *testing.T) {
 			"127.0.0.53, which is what most CI images use — takes snug's pasta "+
 			"--dns-forward path, and that path is the one with known client "+
 			"compatibility limits (see internal/policy/net.go):\n%s", r.code, r.out)
-	}
-}
-
-// net-host is a knowingly-large hole — it shares the HOST network namespace,
-// which means host loopback services and abstract AF_UNIX sockets (X11, D-Bus)
-// are all reachable. Selecting the profile must not be enough; the human has to
-// say --i-know. This needs no sandbox to run, so it is checked with --dry-run.
-func TestNetHostIsRefusedWithoutIKnow(t *testing.T) {
-	budget(t)
-	proj, _ := target(t)
-
-	out, code := cli(t, nil, "--dry-run", "-p", "@net-host", proj)
-	if code == 0 {
-		t.Fatalf("net-host was accepted without --i-know:\n%s", out)
-	}
-	if !strings.Contains(out, "--i-know") {
-		t.Errorf("the refusal should name the flag that overrides it:\n%s", out)
-	}
-
-	out, code = cli(t, nil, "--dry-run", "--i-know", "-p", "@net-host", proj)
-	if code != 0 {
-		t.Errorf("net-host with --i-know should be accepted (exit %d):\n%s", code, out)
 	}
 }
 

@@ -92,30 +92,11 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		return containerRun{cleanup: func() {}}, nil
 	}
 
-	// @net-host + a container profile (ENGINE-WIRING.md §4's flagged edge,
-	// settled by the maintainer: REFUSE, do not build a second, host-netns
-	// engine shape). deriveTopology keeps Netns=NetnsHost for @net-host (the
-	// `<` guard preserves it) while still raising Subuid to SubuidFull, so
-	// NeedsStage() is true — but stage.Start refuses any Netns != NetnsStage
-	// outright, and there is no N descriptor for a host-netns engine to
-	// setns into in the first place. Left unhandled, this combination would
-	// reach stage.Start as a crash rather than a clean refusal; caught here,
-	// before a single namespace exists.
-	//
-	// @net-host is already the --i-know escape hatch for "a process with a
-	// different filesystem view, sharing the host's own network" (CLAUDE.md,
-	// invariant 5's "no silent downgrade" is what makes that an explicit
-	// flag rather than a default). A container engine confined to THIS
-	// sandbox's own N is a different, and incompatible, contract: there is
-	// no sandbox network namespace for it to join.
-	if pol.Net.Mode == policy.NetHost {
-		return containerRun{}, fmt.Errorf("@net-host and a container profile " +
-			"(@podman-socket/@podman-build) cannot be combined: the container engine (issue #63, " +
-			"Tier B) must be confined to THIS SANDBOX's own network namespace, and @net-host shares " +
-			"the HOST's instead — there is no sandbox network namespace for the engine to join.\n" +
-			"      Fix: drop @net-host (use '@net' if the sandbox itself needs egress), or drop " +
-			"the container profile.")
-	}
+	// NO NETWORK CHECK HERE, and that is a property rather than an omission:
+	// deriveTopology's podman branch raises Netns to at least NetnsStage, and
+	// NetnsStage is the top of that order, so every container run reaches
+	// stage.Start with the one topology it accepts. A netns the engine cannot
+	// join is unrepresentable, not refused (ENGINE-WIRING.md §4).
 
 	// The engine's OWN mounts into the model, before anything else in this
 	// function — including the --dry-run branch below, which is the whole

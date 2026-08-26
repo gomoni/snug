@@ -61,12 +61,14 @@ func (p *Policy) BwrapArgs(uid, gid int) []string {
 // --unshare-all would silently discard N and replace it with a second,
 // unpinned netns pasta was never aimed at — measured, and exactly what left
 // pasta unable to bring up an interface before this was fixed. For
-// NetnsSandbox and NetnsHost, bwrap makes it, and net MUST stay in the list:
+// NetnsSandbox, bwrap makes it, and net MUST stay in the list:
 // dropping it would silently restore host networking, the worst possible
 // outcome — verified by execution and pinned by TestOfflineHasOnlyLoopback
-// (test/integration/sandbox_test.go). NetHost's --share-net re-opens it
-// afterwards and stays in BwrapFlags, because relaxing a namespace snug
-// created is a different decision from creating it.
+// (test/integration/sandbox_test.go).
+//
+// `net` in this list is unconditional: every topology gets a namespace of its
+// own and nothing relaxes it afterwards, which is what
+// TestEveryNonStageTopologyUnsharesNet asserts.
 //
 // user is the STRICT spelling, not -try. Measured (issue #24): for every
 // unprivileged, non-root caller, bwrap's own DWIM (bubblewrap.c:2997, `if
@@ -159,15 +161,6 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 		// "when running as privileged user".
 		"--cap-drop", "ALL",
 	)
-
-	// In host-network mode the sandbox INHERITS the host netns rather than
-	// getting its own. --share-net negates the --unshare-net emitted above (in
-	// the offline branch's explicit expansion of --unshare-all), and it means
-	// every host loopback service and every abstract AF_UNIX socket (X11,
-	// D-Bus) is reachable. The CLI demands --i-know.
-	if p.Net.Mode == NetHost {
-		a = append(a, "--share-net")
-	}
 
 	// Own TTY session, which blocks TIOCSTI input injection into the terminal
 	// that launched snug — but also breaks job control for an interactive

@@ -22,7 +22,7 @@ import (
 // which is the whole design decision (see describeBwrap): before it, after it,
 // or both.
 //
-// It carries no --unshare-* and no --share-net ON PURPOSE. A stub containing a
+// It carries no --unshare-* ON PURPOSE. A stub containing a
 // namespace flag would sit four lines under a note that talks about which
 // namespace flags are present, and a golden that contradicts itself is worse
 // than no golden — the reader cannot tell the stub from the claim.
@@ -56,7 +56,6 @@ func TestGoldenBwrapNote(t *testing.T) {
 	}{
 		{"isolated", []policy.ProfileName{"@sys", "@cwd-rw"}},
 		{"egress", []policy.ProfileName{"@sys", "@cwd-rw", "@net"}},
-		{"host", []policy.ProfileName{"@sys", "@cwd-rw", "@net-host"}},
 	}
 
 	for _, tc := range cases {
@@ -120,7 +119,6 @@ func TestTheStagedArgvIsNotPrintedAsSelfContained(t *testing.T) {
 
 	staged, stagedArgv := render([]policy.ProfileName{"@sys", "@cwd-rw", "@net"})
 	isolated, isolatedArgv := render([]policy.ProfileName{"@sys", "@cwd-rw"})
-	host, _ := render([]policy.ProfileName{"@sys", "@cwd-rw", "@net-host"})
 
 	// CONTROL for the premise: the staged argv really does omit --unshare-net,
 	// and the isolated one really does carry its own netns flag. Without this the
@@ -161,9 +159,5 @@ func TestTheStagedArgvIsNotPrintedAsSelfContained(t *testing.T) {
 	if strings.Contains(isolated, "INCOMPLETE ON ITS OWN") {
 		t.Error("the isolated argv creates its own netns with --unshare-all and is complete; " +
 			"warning about it trains the reader to ignore the warning that counts")
-	}
-	if strings.Contains(host, "INCOMPLETE ON ITS OWN") {
-		t.Error("the host-network argv inherits snug's own netns and is complete; warning " +
-			"about it trains the reader to ignore the warning that counts")
 	}
 }

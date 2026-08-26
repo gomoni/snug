@@ -42,8 +42,8 @@ import (
 // `<type> <base64-blob> [comment]`; even an RSA-4096 key or an OpenSSH
 // certificate (which embeds principals and a CA signature) runs to a few
 // KiB. 64 KiB is two orders of magnitude of headroom without being a
-// memory-exhaustion primitive on a file read on every agent-proxy and
-// host-agent run. Shared between internal/sshproxy (the proxy's own read)
+// memory-exhaustion primitive on a file read on every agent-proxy run.
+// Shared between internal/sshproxy (the proxy's own read)
 // and internal/cli (the staged copy for ~/.ssh/config's IdentityFile) because
 // both read the identical file for the identical reason.
 const MaxSSHPublicKeyBytes = 64 << 10
