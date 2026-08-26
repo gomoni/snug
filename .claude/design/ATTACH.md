@@ -369,12 +369,29 @@ redirection. Three rules:
 2. **Everything above fd 2 is close-on-exec** (§4.1 step 9). A run-directory
    descriptor or a namespace descriptor reaching the sandbox would be far worse
    than stdio: an open directory descriptor ignores the mount namespace entirely.
-3. **Non-tty stdio is relayed through a pipe; a tty is passed through.** C creates
-   the pipes, hands B only the pipe ends, and copies bytes on the host side. A
-   tty is passed through because the payload's own fd 0/1/2 are already that same
-   terminal in the ordinary interactive invocation, and because interposing a
-   terminal properly means a pty. §16.1 is the maintainer's call on paying for
-   the pty now.
+3. **No host descriptor of the caller's stdio crosses into the sandbox, in
+   either shape.** Non-tty stdio is relayed through pipes; a tty gets a FRESH
+   pty pair, allocated by C, of which only the slave is handed to B. C copies
+   bytes on the host side in both shapes. The relayed stream is what the payload
+   holds, never the terminal or the file the caller redirected from.
+
+   **C's drain of the far end is BOUNDED, and that is a correctness
+   requirement, not a nicety.** A's fds 0/1/2 are `dup3`'d and `dup3` clears
+   CLOEXEC by design, so a descendant A leaves behind inherits them and keeps
+   the far end open after A is reaped. C therefore has the exit status and no
+   EOF, and an unbounded drain never returns (issue #221). The bound lives on
+   `stdioRelay.wait`'s `drainTimeout`; keeping the pty master in the runtime
+   poller — no `os.File.Fd()` on it, ever — is what makes a deadline on it
+   possible at all.
+
+   **The bound is on SILENCE, not elapsed time, and it is announced.**
+   `drainCopy` re-arms the deadline after every successful read, so a stream
+   still delivering is never cut and only one that goes quiet with its far end
+   held open ends the drain; an absolute bound truncated a benign payload's own
+   output instead. A drain that ends on its deadline says so on the client's
+   stderr — a sandbox that silently truncates its own transcript is the screen
+   lying. A copy parked in `write(2)` is deliberately unbounded: that is the
+   client's consumer applying back-pressure, which the sandbox cannot reach.
 
    **What the relay does and does not buy — measured, and less than it looks.**
    M24: a pipe *is* reopenable through

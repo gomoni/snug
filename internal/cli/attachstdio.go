@@ -25,11 +25,15 @@ package cli
 // command dying, or an early error return.
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/signal"
 	"strconv"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -67,12 +71,36 @@ type stdioRelay struct {
 	closeOnce sync.Once
 	childEnds []*os.File // deduplicated; closed once, right after Start()
 
+	// draining is set by wait() for the rest of the process's life: the
+	// copy loops read it to decide whether a successful read re-arms the
+	// drain deadline. It cannot be armed earlier — an interactive session is
+	// idle for minutes at a time and that is not a stream nobody will write
+	// to again, it is a human thinking.
+	draining atomic.Bool
+
+	// cutOff records that a drain loop gave up on a deadline rather than an
+	// EOF, i.e. output was dropped. wait() says so on stderr: a sandbox that
+	// silently truncates its own transcript is the screen lying.
+	cutOff atomic.Bool
+
+	// drainEnds are the READ ends the outbound copy goroutines below are
+	// blocked on — the pty master on the interactive path, the two pipe read
+	// ends on the redirected one. They are held HERE and not only in those
+	// goroutines' closures because wait() has to be able to bound them:
+	// A's exit does NOT close them. A's fds 0/1/2 are dup3'd, and dup3
+	// deliberately clears CLOEXEC (see runAttach's fdseal comment), so any
+	// descendant A leaves behind inherits A's stdio and holds the far end
+	// open. Without a bound, `snug attach` blocks in wait() forever with the
+	// attached command already reaped and its exit status already in hand:
+	// `snug attach dir -- bash -c '(sleep 60 &) ; exit 0'` returned only
+	// when the sleep did.
+	drainEnds []*os.File
+
 	// outWG tracks only the OUTBOUND copy goroutines (A's stdout/stderr, or
 	// the pty master read side, draining into this process's own stdout and
-	// stderr). These terminate on their own once A exits and every write end
-	// they read from is closed, which is exactly the point at which the last
-	// of A's output has been drained — so wait() below can safely block on
-	// this group without dropping trailing output.
+	// stderr). They end when the last write end they read from closes, which
+	// is A's exit ONLY when A left nothing behind holding it — so wait()
+	// bounds them rather than trusting that, see drainEnds above.
 	//
 	// The INBOUND copy goroutine (this process's stdin into A) is
 	// deliberately NOT tracked here. It has no termination path of its own:
@@ -127,10 +155,11 @@ func newStdioRelay() (*stdioRelay, error) {
 		go func() {
 			io.Copy(master, os.Stdin)
 		}()
+		r.drainEnds = []*os.File{master}
 		r.outWG.Add(1)
 		go func() {
 			defer r.outWG.Done()
-			io.Copy(os.Stdout, master)
+			r.drainCopy(os.Stdout, master)
 			master.Close()
 		}()
 		return r, nil
@@ -185,10 +214,11 @@ func (r *stdioRelay) relayOut(dst *os.File) (childEnd *os.File, err error) {
 	if err != nil {
 		return nil, err
 	}
+	r.drainEnds = append(r.drainEnds, pr)
 	r.outWG.Add(1)
 	go func() {
 		defer r.outWG.Done()
-		io.Copy(dst, pr)
+		r.drainCopy(dst, pr)
 		pr.Close()
 	}()
 	return pw, nil
@@ -220,7 +250,79 @@ func (r *stdioRelay) closeChildEnds() {
 // close, and blocking on it here is issue #120 — attach hanging until a
 // pipe upstream of it closes, long after the attached command has exited
 // and its exit status has already been read.
-func (r *stdioRelay) wait() { r.outWG.Wait() }
+func (r *stdioRelay) wait() {
+	// Arming can fail, and the ordinary reason is that this drain end's own
+	// copy loop has ALREADY finished and closed it — measured 15 of 20 runs
+	// on a two-stream payload. A closed drain end is a FINISHED one, so its
+	// WaitGroup entry is already released and there is nothing to skip for:
+	// the error is discarded rather than returned on, because returning here
+	// abandoned the OTHER stream's goroutine mid-write and dropped what it
+	// was carrying (measured: 4096 of 96000 bytes of the payload's own
+	// stderr, with a clean exit status and no message). go1.27 reports it as
+	// a bare *errors.errorString "use of closed file" — not an *os.PathError,
+	// and errors.Is against os.ErrClosed is false — so there is nothing here
+	// worth classifying either.
+	r.draining.Store(true)
+	deadline := time.Now().Add(drainTimeout)
+	for _, f := range r.drainEnds {
+		_ = f.SetReadDeadline(deadline)
+	}
+	r.outWG.Wait()
+	if r.cutOff.Load() {
+		fmt.Fprintf(os.Stderr, "snug: attach: the attached command exited, but something it left "+
+			"behind still holds its stdio open; stopped draining after %s of silence and any "+
+			"further output is lost\n", drainTimeout)
+	}
+}
+
+// drainCopy is the outbound copy loop, and the one thing it does that
+// io.Copy cannot is RE-ARM the drain deadline after every successful read.
+//
+// The bound wait() sets is on SILENCE, not on elapsed time, and the
+// difference is not a nicety: an absolute deadline cut a benign payload's
+// still-flowing output mid-stream (measured: 3572 bytes and the final line
+// of a 20000-byte burst, with no descendant involved at all). Output that is
+// actively arriving therefore gets the whole window again after every read,
+// and only a stream that goes quiet for drainTimeout with its far end still
+// held open — which is issue #221's actual shape — ends the drain.
+//
+// A copy parked in WRITE is deliberately not bounded by any of this. The
+// deadline is a read deadline and does not touch a parked write, and that is
+// correct rather than a gap: a write that has not completed means the
+// CLIENT's own consumer (the human's terminal, a pipeline, a redirect) has
+// not taken the bytes yet, which is the caller's business and ordinary Unix
+// back-pressure. The sandbox side cannot reach it.
+func (r *stdioRelay) drainCopy(dst io.Writer, src *os.File) {
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := src.Read(buf)
+		if n > 0 {
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return
+			}
+			if r.draining.Load() {
+				src.SetReadDeadline(time.Now().Add(drainTimeout))
+			}
+		}
+		if err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				r.cutOff.Store(true)
+			}
+			return
+		}
+	}
+}
+
+// drainTimeout is how long a stream may stay SILENT, after the attached
+// command has been reaped, before the drain gives up on it — not a budget for
+// the drain as a whole (see drainCopy) and not a performance target. It
+// delays nothing on a healthy session: by then every descriptor snug itself
+// holds on the far end is closed, so the drain ends on EOF/EIO at once. Two
+// seconds is what a stream gets to produce its next byte when something that
+// OUTLIVED the attached command is still holding it open, and after that the
+// client returns with the exit status it already has, saying on stderr that
+// it did.
+const drainTimeout = 2 * time.Second
 
 // isTerminal reports whether fd refers to a terminal, via TCGETS: it
 // succeeds only on a tty-like device, so its error/success split IS the
@@ -240,12 +342,17 @@ func openPTY() (master, slave *os.File, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := unix.IoctlSetPointerInt(int(m.Fd()), unix.TIOCSPTLCK, 0); err != nil {
+	if err := ctlFd(m, func(fd int) error {
+		return unix.IoctlSetPointerInt(fd, unix.TIOCSPTLCK, 0)
+	}); err != nil {
 		m.Close()
 		return nil, nil, err
 	}
-	n, err := unix.IoctlGetInt(int(m.Fd()), unix.TIOCGPTN)
-	if err != nil {
+	var n int
+	if err := ctlFd(m, func(fd int) (err error) {
+		n, err = unix.IoctlGetInt(fd, unix.TIOCGPTN)
+		return err
+	}); err != nil {
 		m.Close()
 		return nil, nil, err
 	}
@@ -296,7 +403,33 @@ func syncWinsize(clientFd int, master *os.File) error {
 	if err != nil {
 		return err
 	}
-	return unix.IoctlSetWinsize(int(master.Fd()), unix.TIOCSWINSZ, ws)
+	return ctlFd(master, func(fd int) error {
+		return unix.IoctlSetWinsize(fd, unix.TIOCSWINSZ, ws)
+	})
+}
+
+// ctlFd runs an ioctl on f's descriptor WITHOUT taking f out of the runtime
+// poller, and every ioctl this file issues on the pty master goes through it.
+//
+// os.File.Fd() is the alternative and it is not equivalent: it puts a
+// pollable file back into BLOCKING mode and dissociates it from the poller,
+// permanently, which costs the file both its read deadlines and Close()'s
+// ability to interrupt a read already in flight. Those two are exactly what
+// wait()'s bound is built on, and openPTY did this to the master twice
+// (TIOCSPTLCK, TIOCGPTN) before the master had ever been read from — so the
+// master was blocking-mode from birth and no deadline on it could have
+// worked. SyscallConn().Control gives the same descriptor for the duration
+// of the call and leaves the file's mode alone.
+func ctlFd(f *os.File, op func(fd int) error) error {
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var opErr error
+	if cerr := rc.Control(func(fd uintptr) { opErr = op(int(fd)) }); cerr != nil {
+		return cerr
+	}
+	return opErr
 }
 
 // watchWinsize does the initial sync (so the attached process's very first
