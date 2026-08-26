@@ -424,17 +424,30 @@ jobs:
     timeout-minutes: 25
     steps:
       # Before checkout, because actions/checkout wants git and setup-go wants
-      # tar, and the Tumbleweed base image carries neither. libstdc++6 is for
-      # the runner's own node, which GHA mounts into the container.
+      # tar, and the Tumbleweed base image carries neither — nor make.
+      # libstdc++6 is for the runner's own node, which GHA mounts into the
+      # container.
+      #
+      # bash, bash-sh, coreutils, gawk, grep, sed, findutils and diffutils are
+      # named EXPLICITLY, and that is a measured requirement rather than
+      # belt-and-braces. Without them `zypper -n install --no-recommends`
+      # satisfied the new dependencies with busybox variants and REMOVED what
+      # the base image had ("214.9 MiB … released by packages that will be
+      # removed", run 32940231386): /bin/sh went with them and the NEXT step
+      # died with `exec: "sh": executable file not found in $PATH` — a job that
+      # failed for its own packaging rather than for anything about snug.
+      # Naming the real tools leaves zypper nothing to swap.
       - name: Install the engine and the suite's host tools
         run: |
           zypper -n --gpg-auto-import-keys refresh
           zypper -n install --no-recommends \
-            tar gzip git which curl \
+            bash bash-sh coreutils gawk grep sed findutils diffutils \
+            make tar gzip git which curl \
             libstdc++6 \
             podman fuse-overlayfs \
             bubblewrap passt \
             python3 shadow util-linux
+          command -v bash sh make grep sed
           podman --version
           bwrap --version
           pasta --version
@@ -453,6 +466,7 @@ jobs:
       # passt too old for --map-host-loopback is reported by the step that
       # installed it rather than twenty tests later.
       - name: Check pasta is new enough
+        shell: bash
         run: |
           if ! pasta --help 2>&1 | grep -q -- --map-host-loopback; then
             echo "::error::this pasta predates --map-host-loopback (2024_08_21); snug cannot close the host loopback on it, so nothing below would be testing what it claims"
@@ -466,6 +480,7 @@ jobs:
       # container engine" — a skip predicate absorbing the test's own defect
       # (issue #33). /run/user/1001 is 14 bytes and cannot.
       - name: Create the non-root test user and delegate a subuid range
+        shell: bash
         run: |
           useradd --create-home --uid 1001 --shell /bin/bash snug
           # A range inside the container's own uid space. newuidmap is setuid
@@ -477,6 +492,7 @@ jobs:
           chown -R snug: "$GITHUB_WORKSPACE"
 
       - name: doctor, build and the engine suite
+        shell: bash
         run: |
           runuser -u snug -- env \
             HOME=/home/snug \
