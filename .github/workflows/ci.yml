@@ -516,6 +516,23 @@ jobs:
       - name: The engine suite, in a Tumbleweed container
         run: |
           set -euo pipefail
+          # The engine STORE goes on the runner's own filesystem, not on the
+          # container's. Same kernel rule as the runroot below, one directory
+          # over: the store is $XDG_DATA_HOME/$HOME-rooted, docker's container
+          # root is overlayfs, and podman's own overlay mount over the store
+          # then fails EINVAL — measured in run 32943065911, where the runroot
+          # tmpfs took the engine from 0 to 6 of 33 and the next overlay error
+          # named /snug/engine/store/overlay/…/merged instead.
+          #
+          # A bind mount rather than a second tmpfs, deliberately: images live
+          # here, and a tmpfs would put them in the runner's RAM. $RUNNER_TEMP
+          # is on the runner's ext4 disk and is cleaned up by the runner itself.
+          #
+          # XDG_DATA_HOME is what moves it, and it reaches the suite because
+          # baseEnv() in test/integration is os.Environ() plus overrides. HOME
+          # stays inside the container, so the Go build and module caches are
+          # unaffected.
+          mkdir -p "$RUNNER_TEMP/enginestore"
           docker run --rm \
             --security-opt apparmor=unconfined \
             --security-opt seccomp=unconfined \
@@ -524,6 +541,7 @@ jobs:
             --device /dev/net/tun \
             --tmpfs /tmp:exec,mode=1777 \
             -v "$PWD":/src \
+            -v "$RUNNER_TEMP/enginestore":/enginestore \
             -v "$(go env GOROOT)":/usr/local/go:ro \
             registry.opensuse.org/opensuse/tumbleweed:latest \
             bash -euxo pipefail -c '
@@ -567,11 +585,13 @@ jobs:
               # usable real container engine" — a skip predicate absorbing the
               # test own defect (issue #33). /run/user/1001 is 14 bytes.
               install -d -m 0700 -o snug -g users /run/user/1001
+              chown snug: /enginestore
 
               runuser -u snug -- env \
                 HOME=/home/snug \
                 PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin \
                 XDG_RUNTIME_DIR=/run/user/1001 \
+                XDG_DATA_HOME=/enginestore \
                 SNUG_REQUIRE_SANDBOX=1 \
                 SNUG_REQUIRE_ENGINE=1 \
                 SNUG_TEST_NET=1 \
