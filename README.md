@@ -67,9 +67,10 @@ There is no tool I was aware about, which would match all points
 
 ## Quick start
 
-Needs `bubblewrap`, and `pasta` (package `passt`) if you want networking. The
-container profiles (`@podman-socket`, `@podman-build`) additionally need a podman
-engine and `conmon` — see [Requirements](#requirements).
+Needs `bubblewrap`, and `pasta` (package `passt`) plus `/dev/net/tun` if you want
+networking. The container profiles (`@podman-socket`, `@podman-build`)
+additionally need a podman engine, `conmon` and `crun` — see
+[Requirements](#requirements).
 
 ```bash
 make build
@@ -620,6 +621,23 @@ MIT licensed. Linux with unprivileged user namespaces, `bubblewrap`, Go 1.26+ to
 user namespaces are fine. `snug doctor` tells you where you stand, and names the
 exact sysctl when something is missing.
 
+**Networking also needs `/dev/net/tun`**: `pasta` puts a tap device in the
+sandbox's own network namespace, so the node has to be present and openable.
+A bare host wants `modprobe tun`; a container is not given the node by default
+and needs `--device /dev/net/tun` (docker and podman spell it the same way).
+Without it a sandbox starts and then `-p @net` fails with `pasta exited before
+the network came up: Failed to open() /dev/net/tun: No such file or directory`.
+`snug doctor` opens the node itself rather than only reporting pasta's version.
+
+**Inside a container, two host-level settings are not reachable from within it.**
+`kernel.apparmor_restrict_unprivileged_userns` must be 0 on the machine running
+the container — it is not namespaced, so it can only be set outside — and the
+container must not mask `/proc` (`docker: --security-opt systempaths=unconfined`,
+`podman: --security-opt unmask=/proc`), because the kernel refuses a fresh procfs
+mount inside a user namespace while the mounter's view of `/proc` is obstructed.
+`snug doctor` names whichever of the two is in the way rather than blaming the
+user namespace for both.
+
 ### Delegated subuid/subgid ranges
 
 `@net` and the container engine need a **subuid/subgid range delegated to your
@@ -674,15 +692,32 @@ green having measured nothing.
 ### Containers
 
 `@podman-socket` and `@podman-build` additionally need a podman engine and its
-**helper binaries** — `conmon`, `netavark`, `aardvark-dns`, `catatonit`,
-`rootlessport`, plus `crun`/`runc`. podman looks these up by absolute directory,
-so each has to sit in a directory podman is told about. A distribution install
-puts them there:
+**helper binaries** — `conmon`, `netavark`, `aardvark-dns`, `catatonit` and
+**`crun`**. podman looks these up by absolute directory, so each has to sit in a
+directory podman is told about. A distribution install puts them there:
 
 | binary | package's location |
 |---|---|
-| `podman`, `conmon`, `crun`, `runc`, `catatonit`, `pasta` | `/usr/bin` |
+| `podman`, `conmon`, `crun`, `catatonit`, `pasta` | `/usr/bin` |
 | `netavark`, `aardvark-dns` | `/usr/libexec/podman` |
+
+**`crun`, not `runc`, and they are not interchangeable here.** snug asks podman
+for `cgroups = "disabled"` whenever the host's cgroup delegation is not usable —
+which is every sandbox that is itself inside a container — and `runc` does not
+implement that mode. With runc installed and crun absent, a build returns 200
+and the container create then returns
+
+```
+500 {"cause":"invalid argument","message":"container create: requested OCI runtime
+runc is not compatible with NoCgroups: invalid argument"}
+```
+
+Install crun. runc alongside it is harmless and unused.
+
+`rootlessport` is **not** in the list, deliberately: snug publishes no ports (the
+engine holds no `CAP_NET_ADMIN`), so a missing `rootlessport` changes nothing
+snug can do, and two development hosts run the container tests green without it
+anywhere on the system.
 
 Install the distribution packages. snug resolves `podman` from `PATH` and does
 not ship or download an engine.
@@ -703,3 +738,8 @@ container rather than during it:
 $ ./bin/snug doctor
   ✅ podman's helper binaries are all findable
 ```
+
+A host with `runc` and no `crun` is reported as missing
+`crun (runc is present, and cannot run with cgroups disabled on this host)`
+rather than as "crun or runc", because the either/or advice is what lets the
+create above fail with a green tick behind it.

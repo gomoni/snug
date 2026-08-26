@@ -144,10 +144,20 @@ provision() {
 		make tar gzip git which curl \
 		podman crun fuse-overlayfs \
 		bubblewrap passt iproute2 \
-		python3 shadow util-linux
+		python3 shadow util-linux util-linux-systemd \
+		openssh-clients
 
+	# util-linux-systemd, not util-linux: openSUSE puts findmnt there (measured,
+	# `rpm -qf $(command -v findmnt)` = util-linux-systemd-2.42.2). Without it
+	# the tmpfs-bound tests read `findmnt: command not found` — while the bound
+	# itself was working, `dd: error writing '/tmp/probe': No space left on
+	# device` at 16 MiB. A missing tool that reads as a failed assertion.
+	#
+	# openssh-clients because five identity tests refuse to skip under
+	# SNUG_REQUIRE_SANDBOX: "ssh is not installed; there is no system ssh_config
+	# to protect" — right, since the suite is asked to mean something here.
 	export PATH=/usr/local/go/bin:$PATH
-	command -v bash make go podman bwrap pasta python3
+	command -v bash make go podman bwrap pasta python3 findmnt ssh
 	podman --version
 	bwrap --version
 	pasta --version | head -1
