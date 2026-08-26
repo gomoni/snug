@@ -3095,18 +3095,37 @@ const ulimitMarker = "13571"
 // # Why import, not build (issue #425)
 //
 // `podman build` over a build context directory mounts an overlay on top of
-// it, and that mount fails on this host. A `podman build` gap names which
-// podman it was measured against: three independent podman 6.0.2
-// regressions landed within hours of #398's retiring the pinned bundle —
-// #401's netns one, this overlay failure measured directly against the
-// host's own podman, and the same overlay failure again from inside this
-// control. Measured:
+// it, and that mount fails on this host:
 //
 //	Error: mounting an overlay over build context directory: creating overlay
 //	scaffolding for build context directory: mount
-//	overlay:...,userxattr: invalid argument
+//	overlay:/var/tmp/buildah-context-.../merge, data:
+//	lowerdir=<ctx>,upperdir=...,workdir=...,userxattr: invalid argument
 //
-// `podman import` needs no build context and therefore no overlay over one.
+// THE CAUSE IS THE FILESYSTEM UNDER THE SCRATCH DIRECTORY, NOT THE CONTEXT.
+// buildah puts that scaffolding under /var/tmp (buildah-context-*,
+// libpod_builder*), and in this development distrobox /var/tmp IS ITSELF
+// overlayfs — `stat -f -c %T /var/tmp` is `overlayfs`, the container's own
+// root. A nested overlay mount with userxattr on an overlayfs lower is what
+// returns EINVAL. Measured: the identical build, against a `podman system
+// service` started with TMPDIR on btrfs, SUCCEEDS and tags the image. I did
+// not observe where buildah relocated its scaffolding, only that the build
+// stopped failing, so the fix's mechanism is inferred and the failure's cause
+// is not.
+//
+// So this is not simply "podman 6.0.2 cannot build here": it is 6.0.2's
+// context overlay meeting an overlayfs /var/tmp, and #401 records the pinned
+// bundle's 5.8.4 building on this same host, which is what places the change
+// on podman's side rather than the filesystem's alone. A `podman build` gap
+// names which podman it was measured against — three independent 6.0.2
+// regressions landed within hours of #398's retiring that bundle: #401's netns
+// one, this overlay failure measured directly against the host's own podman,
+// and the same overlay failure again from inside this control.
+//
+// `podman import` needs no build context and therefore no overlay over one,
+// which is why it is the control's construction step rather than a TMPDIR
+// override: the control must not depend on which filesystem holds the
+// developer's /var/tmp.
 func assertHostileConfInjectsWithoutSnug(t *testing.T, home, probe, marker string) {
 	t.Helper()
 
