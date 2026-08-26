@@ -136,6 +136,17 @@ symlink = [
 # host path — so what it buys an attacker is a place to stage files for the rest
 # of THIS run, not a foothold in the next one.
 #
+# "The rest of THIS run" includes the OPTIONS of tools a later command in the
+# same run happens to run, and that is worth naming because the examples above
+# are all shell-init and PATH shadowing. MEASURED in a real sandbox: a payload
+# writes the single word `insecure` into ~/.curlrc (or
+# $XDG_CONFIG_HOME/curlrc), and the next `curl` in that run silently stops
+# verifying TLS — `curl: (60) SSL certificate ... unable to get local issuer`
+# before, `hi` after. `cacert = <payload-written CA>` does the same. So the
+# class is not only "files that get EXECUTED" but "option tables a tool reads
+# from $HOME", and the bound is still the run: it dies with the sandbox and
+# reaches no host asset.
+#
 # Each of these is bounded: snug passes bwrap `--size`, per mount, defaulting to
 # policy.DefaultTmpfsSize and overridable by `tmpfs_size_mib` in
 # ~/.config/snug/config.toml. The number lives in that constant and is
