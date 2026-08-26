@@ -50,6 +50,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	snugcli "github.com/gomoni/snug/internal/cli"
+	"github.com/gomoni/snug/internal/engine"
 	"github.com/gomoni/snug/internal/policy"
 )
 
@@ -69,6 +70,11 @@ type engineResolution struct {
 	// deliberately pointed-at engine silently not being tested, with a green
 	// run to show for it.
 	named string
+	// unsupported is engine.UnsupportedPodmanReason(versionLine) — "" when the
+	// resolved engine is in engine.SupportedPodmanSet. Computed with the
+	// resolution rather than at each call site so the answer cannot differ
+	// between two tests in one run.
+	unsupported string
 }
 
 var (
@@ -117,7 +123,12 @@ func resolveHostEngineOnce() engineResolution {
 			abs = p
 		}
 		out, _ := exec.Command(abs, "--version").Output()
-		hostEngineResult = engineResolution{path: abs, versionLine: strings.TrimSpace(string(out))}
+		line := strings.TrimSpace(string(out))
+		hostEngineResult = engineResolution{
+			path:        abs,
+			versionLine: line,
+			unsupported: engine.UnsupportedPodmanReason(line),
+		}
 	})
 	return hostEngineResult
 }
@@ -150,6 +161,30 @@ func hostEngine(t *testing.T) string {
 	if r.path == "" {
 		engineNoneOnce.Do(func() { t.Logf("snug-engine-none: no podman resolved") })
 		t.Skip("SKIP: no podman on PATH and $SNUG_PODMAN unset — no engine on this host to test against")
+	}
+	// An engine outside engine.SupportedPodmanSet is a WARNING on a developer
+	// host and a FAILURE in CI, and the split is the whole point (issue #395).
+	// The version floats with the distribution since the pin was retired
+	// (#384), so an unconditional fatal would block every developer whose
+	// distro moved ahead of or behind the set — the result stays readable and
+	// nobody is stopped. A lane that set $SNUG_REQUIRE_ENGINE asked this run to
+	// MEAN something, and a green run against an engine nobody supports is the
+	// same lie as a green run that skipped everything.
+	if r.unsupported != "" {
+		if os.Getenv("SNUG_REQUIRE_ENGINE") != "" {
+			t.Fatalf("SNUG_REQUIRE_ENGINE is set and the resolved engine is not one snug "+
+				"supports: %s\n      Resolved: %q at %s\n"+
+				"      Fix: run this lane against %s, or widen "+
+				"engine.SupportedPodmanMajor and record the run that justifies it.",
+				r.unsupported, r.versionLine, r.path, engine.SupportedPodmanSet)
+		}
+		versionOnce.Do(func() {
+			// The reason rides on the SAME marker line the Makefile already
+			// greps, so its "N of 33 ran — <version>" summary carries it with
+			// no second marker to teach that recipe about.
+			t.Logf("snug-engine-version: %s at %s [UNSUPPORTED: %s]", r.versionLine, r.path, r.unsupported)
+		})
+		return r.path
 	}
 	versionOnce.Do(func() {
 		t.Logf("snug-engine-version: %s at %s", r.versionLine, r.path)

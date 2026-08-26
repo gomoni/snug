@@ -356,3 +356,133 @@ jobs:
           SNUG_TEST_NET: '1'
         run: make ${{ matrix.suite }}
 
+
+  # Tier 3d: the ENGINE tier, against a real podman (issue #395).
+  #
+  # Every job above runs on `ubuntu-latest`, which has no container engine snug
+  # will accept, so all 33 engine tests SKIP there and have since the tier was
+  # written — a green run measuring nothing, which is the defect #395 exists to
+  # remove rather than a coverage wish.
+  #
+  # Three things make this job MEAN something, and each closes one half of that
+  # defect:
+  #
+  #   SNUG_REQUIRE_ENGINE=1   "no usable real container engine" becomes t.Fatal
+  #                           instead of t.Skip (containerengine_test.go's
+  #                           requireRealEngine). The skip predicate is narrow
+  #                           enough to trust — only exit 69 (exitUnavail)
+  #                           counts as an absent engine; 77/64/70 are fatal
+  #                           regardless — so this cannot convert a test bug
+  #                           into "the runner has no podman".
+  #   the engine floor        `make integration-sandbox` fails when fewer than
+  #                           SNUG_ENGINE_FLOOR distinct tests reached the
+  #                           "snug-engine-ran:" marker. Membership is REACHING
+  #                           the marker, never a name sweep.
+  #   the supported set       engine.SupportedPodmanSet is podman 6.x, and with
+  #                           SNUG_REQUIRE_ENGINE set an engine outside it is a
+  #                           t.Fatal, not a warning. A green run against an
+  #                           unsupported podman is the same lie as a green run
+  #                           that skipped everything.
+  #
+  # openSUSE Tumbleweed, not Ubuntu, and that is the point: the engine version
+  # floats with the host distribution since the pinned engine bundle was retired
+  # (#384), so CI is only informative about a developer's result if it runs the
+  # same major. Ubuntu 24.04's podman is 4.9.x — a different engine from the
+  # 6.0.2 anyone here develops against, and one the supported set would refuse.
+  #
+  # The job runs as a NON-ROOT user inside the container. CLAUDE.md invariant 4
+  # is "no root", the engine tier's whole subject is rootless podman with a
+  # delegated subuid range, and a root run would be testing a different program.
+  # A GHA job container runs as root by default, so the user is created here and
+  # given the subuid/subgid ranges rootless podman needs.
+  engine:
+    name: real engine behaviour (Tumbleweed, podman 6.x)
+    if: ${{ github.event.pull_request.draft != true }}
+    runs-on: ubuntu-latest
+    container:
+      image: registry.opensuse.org/opensuse/tumbleweed:latest
+      # Deliberately NOT --privileged. Unknown 3 of #395 is "what privileges
+      # are actually required, and is --privileged avoidable" — a privileged
+      # container to test a sandbox is a shape that has to be a measured
+      # necessity, not a default. These three are the narrow answers:
+      #
+      #   apparmor=unconfined  docker-default denies mount(2), and bwrap mounts
+      #                        inside its own user namespace.
+      #   seccomp=unconfined   nothing in the default profile is known to be
+      #                        needed; it is here so a first failure is not
+      #                        ambiguous between two filters, and comes OUT
+      #                        once the job is green. See the numbers below.
+      #   --device /dev/fuse   rootless podman's fuse-overlayfs storage driver.
+      options: >-
+        --security-opt apparmor=unconfined
+        --security-opt seccomp=unconfined
+        --device /dev/fuse
+    # The engine half of integration-sandbox measured 335.98s on a developer
+    # host with a real podman (Makefile's own note), and zypper plus a first
+    # image pull sit on top of that. The three nested bounds still have to
+    # nest — budget() per test, `go test -timeout 8m` per suite, this per job.
+    timeout-minutes: 25
+    steps:
+      # Before checkout, because actions/checkout wants git and setup-go wants
+      # tar, and the Tumbleweed base image carries neither. libstdc++6 is for
+      # the runner's own node, which GHA mounts into the container.
+      - name: Install the engine and the suite's host tools
+        run: |
+          zypper -n --gpg-auto-import-keys refresh
+          zypper -n install --no-recommends \
+            tar gzip git which curl \
+            libstdc++6 \
+            podman fuse-overlayfs \
+            bubblewrap passt \
+            python3 shadow util-linux
+          podman --version
+          bwrap --version
+          pasta --version
+
+      # Same reasoning as every other job: nothing here pushes or calls the
+      # API, and this one runs the repository's own code against a real engine.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26'
+          check-latest: true
+
+      # The harness makes the same check (requirePasta); this step exists so a
+      # passt too old for --map-host-loopback is reported by the step that
+      # installed it rather than twenty tests later.
+      - name: Check pasta is new enough
+        run: |
+          if ! pasta --help 2>&1 | grep -q -- --map-host-loopback; then
+            echo "::error::this pasta predates --map-host-loopback (2024_08_21); snug cannot close the host loopback on it, so nothing below would be testing what it claims"
+            exit 1
+          fi
+
+      # XDG_RUNTIME_DIR is pinned SHORT on purpose. The engine's proxy socket
+      # is <runtime>/snug/run-<pid>/podman.sock and AF_UNIX's sun_path has 107
+      # usable bytes; a runtime dir inherited from a long workspace path
+      # overshot it at 110 and the suite rendered that as "no usable real
+      # container engine" — a skip predicate absorbing the test's own defect
+      # (issue #33). /run/user/1001 is 14 bytes and cannot.
+      - name: Create the non-root test user and delegate a subuid range
+        run: |
+          useradd --create-home --uid 1001 --shell /bin/bash snug
+          # A range inside the container's own uid space. newuidmap is setuid
+          # and needs these to map anything at all; without them rootless
+          # podman fails "write to uid_map failed: Operation not permitted".
+          echo 'snug:100000:65536' >> /etc/subuid
+          echo 'snug:100000:65536' >> /etc/subgid
+          install -d -m 0700 -o snug -g users /run/user/1001
+          chown -R snug: "$GITHUB_WORKSPACE"
+
+      - name: doctor, build and the engine suite
+        run: |
+          runuser -u snug -- env \
+            HOME=/home/snug \
+            PATH="$PATH" \
+            XDG_RUNTIME_DIR=/run/user/1001 \
+            SNUG_REQUIRE_SANDBOX=1 \
+            SNUG_REQUIRE_ENGINE=1 \
+            SNUG_TEST_NET=1 \
+            bash -c 'set -x; make build && ./bin/snug doctor; make integration-sandbox'
