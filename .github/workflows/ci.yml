@@ -377,7 +377,10 @@ jobs:
   #   the engine floor        `make integration-sandbox` fails when fewer than
   #                           SNUG_ENGINE_FLOOR distinct tests reached the
   #                           "snug-engine-ran:" marker. Membership is REACHING
-  #                           the marker, never a name sweep.
+  #                           the marker, never a name sweep. MEASURED working:
+  #                           run 32940873115 ended "engine tests: 0 of 33 ran
+  #                           — podman version 6.0.2 at /bin/podman" and failed
+  #                           the job.
   #   the supported set       engine.SupportedPodmanSet is podman 6.x, and with
   #                           SNUG_REQUIRE_ENGINE set an engine outside it is a
   #                           t.Fatal, not a warning. A green run against an
@@ -389,169 +392,147 @@ jobs:
   # (#384), so CI is only informative about a developer's result if it runs the
   # same major. Ubuntu 24.04's podman is 4.9.x — a different engine from the
   # 6.0.2 anyone here develops against, and one the supported set would refuse.
+  # Tumbleweed's is podman-6.0.2-1.1, MEASURED identical to the development
+  # host's, so CI matches by construction rather than by luck.
   #
-  # The job runs as a NON-ROOT user inside the container. CLAUDE.md invariant 4
-  # is "no root", the engine tier's whole subject is rootless podman with a
-  # delegated subuid range, and a root run would be testing a different program.
-  # A GHA job container runs as root by default, so the user is created here and
-  # given the subuid/subgid ranges rootless podman needs.
+  # # Why the container is LAUNCHED here rather than named in `container:`
+  #
+  # A GHA `container:` job runs every step inside the container via
+  # `docker exec`, and it has no host shell at all. That makes
+  # `kernel.apparmor_restrict_unprivileged_userns` unreachable: it is a HOST
+  # sysctl, it is not namespaced, and a write from inside the container gets
+  # EPERM. The three jobs above set it to 0 on their own runners — each job is a
+  # fresh VM, so that does nothing for this one.
+  #
+  # MEASURED inside a `container:` job (run 32941285136), which is why this is
+  # a shape and not a preference:
+  #
+  #   kernel/apparmor_restrict_unprivileged_userns = 1
+  #   user/max_user_namespaces = 63838          (so NOT a nesting limit)
+  #   CapBnd: 00000000a80425fb                  (docker default: no SYS_ADMIN)
+  #   unshare --user --map-root-user -- true
+  #     → unshare: write failed /proc/self/uid_map: Operation not permitted
+  #
+  # One root cause, two different-looking symptoms: `unshare` writes its own
+  # uid_map from inside the new userns and is denied, while bwrap writes it from
+  # the parent, gets through, and is then denied the netlink operation inside
+  # the userns — run 32940873115's `bwrap: loopback: Failed RTM_NEWADDR:
+  # Operation not permitted`. Do not read that message as a capability
+  # shortage; adding `--cap-add` would have papered over it.
+  #
+  # So the job stays on the runner, sets the sysctl where it works, and launches
+  # the Tumbleweed container itself. It is also NOT `--privileged` (#395's
+  # unknown 3): with the restriction lifted host-wide, bwrap creates its own
+  # userns and holds capabilities inside it, so the container needs only
+  # apparmor=unconfined (docker-default denies mount(2)), seccomp=unconfined
+  # (comes OUT once this job is green — it is here so a first failure is not
+  # ambiguous between two filters) and /dev/fuse for rootless fuse-overlayfs.
+  #
+  # The Go toolchain is MOUNTED from the runner rather than installed by zypper.
+  # snug is cgo-free by constraint (.claude/design/NOCGO.md) and the Go
+  # toolchain's own binaries are static Go, so the runner's toolchain executes
+  # unchanged on Tumbleweed's glibc — and the version stays the one every other
+  # job used instead of drifting with a distribution package.
   engine:
     name: real engine behaviour (Tumbleweed, podman 6.x)
     if: ${{ github.event.pull_request.draft != true }}
     runs-on: ubuntu-latest
-    container:
-      image: registry.opensuse.org/opensuse/tumbleweed:latest
-      # Deliberately NOT --privileged. Unknown 3 of #395 is "what privileges
-      # are actually required, and is --privileged avoidable" — a privileged
-      # container to test a sandbox is a shape that has to be a measured
-      # necessity, not a default. These three are the narrow answers:
-      #
-      #   apparmor=unconfined  docker-default denies mount(2), and bwrap mounts
-      #                        inside its own user namespace.
-      #   seccomp=unconfined   nothing in the default profile is known to be
-      #                        needed; it is here so a first failure is not
-      #                        ambiguous between two filters, and comes OUT
-      #                        once the job is green. See the numbers below.
-      #   --device /dev/fuse   rootless podman's fuse-overlayfs storage driver.
-      options: >-
-        --security-opt apparmor=unconfined
-        --security-opt seccomp=unconfined
-        --device /dev/fuse
     # The engine half of integration-sandbox measured 335.98s on a developer
-    # host with a real podman (Makefile's own note), and zypper plus a first
-    # image pull sit on top of that. The three nested bounds still have to
-    # nest — budget() per test, `go test -timeout 8m` per suite, this per job.
+    # host with a real podman (Makefile's own note), and the image pull plus
+    # zypper sit on top of that — MEASURED at 11s and 14s respectively (run
+    # 32940873115). The three nested bounds still have to nest: budget() per
+    # test, `go test -timeout 8m` per suite, this per job.
     timeout-minutes: 25
     steps:
-      # Before checkout, because actions/checkout wants git and setup-go wants
-      # tar, and the Tumbleweed base image carries neither — nor make.
-      # libstdc++6 is for the runner's own node, which GHA mounts into the
-      # container.
-      #
-      # bash, bash-sh, coreutils, gawk, grep, sed, findutils and diffutils are
-      # named EXPLICITLY, and that is a measured requirement rather than
-      # belt-and-braces. Without them `zypper -n install --no-recommends`
-      # satisfied the new dependencies with busybox variants and REMOVED what
-      # the base image had ("214.9 MiB … released by packages that will be
-      # removed", run 32940231386): /bin/sh went with them and the NEXT step
-      # died with `exec: "sh": executable file not found in $PATH` — a job that
-      # failed for its own packaging rather than for anything about snug.
-      # Naming the real tools leaves zypper nothing to swap.
-      - name: Install the engine and the suite's host tools
-        run: |
-          zypper -n --gpg-auto-import-keys refresh
-          zypper -n install --no-recommends \
-            bash bash-sh coreutils gawk grep sed findutils diffutils \
-            make tar gzip git which curl \
-            libstdc++6 \
-            podman fuse-overlayfs \
-            bubblewrap passt \
-            python3 shadow util-linux
-          command -v bash sh make grep sed
-
-          # The Tumbleweed image declares NO Config.Env — MEASURED, its config
-          # blob (sha256:fff90a94…) carries `"Env": null` — so the image names
-          # no PATH at all. The runner reads Config.Env at "Initialize
-          # containers" and hands the result to every later `docker exec`, so
-          # the moment an action rewrites PATH (setup-go does, to add the Go
-          # toolchain) the PATH a step runs with contains ONLY what that action
-          # added. Runs 32940231386 and 32940552970 both died on the step after
-          # setup-go with `exec: "sh"/"bash": executable file not found in
-          # $PATH`, exit 127, having installed a working bash at /usr/bin/bash
-          # one step earlier.
-          #
-          # $GITHUB_PATH is the fix rather than a job-level `env: PATH`: an
-          # action's own addPath prepends to what this leaves, so the toolchain
-          # still wins and the system directories stay reachable underneath.
-          printf '%s\n' /usr/local/bin /usr/bin /bin /usr/local/sbin /usr/sbin /sbin >> "$GITHUB_PATH"
-
-          podman --version
-          bwrap --version
-          pasta --version
-
-      # Same reasoning as every other job: nothing here pushes or calls the
-      # API, and this one runs the repository's own code against a real engine.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # See the gate job: this one has more reason still, since it launches
+          # real sandboxes running real payloads, inside a container.
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.26'
           check-latest: true
 
-      # The harness makes the same check (requirePasta); this step exists so a
-      # passt too old for --map-host-loopback is reported by the step that
-      # installed it rather than twenty tests later.
-      - name: Check pasta is new enough
-        shell: bash
+      # Ubuntu 24.04+ ships kernel.apparmor_restrict_unprivileged_userns=1,
+      # which breaks bwrap — here AND one level down inside the container, since
+      # the knob is not namespaced.
+      #
+      # Unlike the sibling jobs this one does NOT end at `|| true`. A value that
+      # is still 1 after the write means nothing below is testing what it claims
+      # (the whole reason this job exists), and `|| true` on its own would leave
+      # that invisible: run 32941285136 read 1 inside the container and reported
+      # it as `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`
+      # twenty tests later. So the value is READ BACK and the job stops here if
+      # it did not take.
+      - name: Allow unprivileged user namespaces, and prove it took
         run: |
-          if ! pasta --help 2>&1 | grep -q -- --map-host-loopback; then
-            echo "::error::this pasta predates --map-host-loopback (2024_08_21); snug cannot close the host loopback on it, so nothing below would be testing what it claims"
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "$knob" ] && [ "$(cat "$knob")" != 0 ]; then
+            echo "::error::$knob is $(cat "$knob") after the write. bwrap cannot hold capabilities in its own user namespace with this set, so the engine suite below would fail on the first sandbox and report it as a loopback or uid_map error."
             exit 1
           fi
 
-      # XDG_RUNTIME_DIR is pinned SHORT on purpose. The engine's proxy socket
-      # is <runtime>/snug/run-<pid>/podman.sock and AF_UNIX's sun_path has 107
-      # usable bytes; a runtime dir inherited from a long workspace path
-      # overshot it at 110 and the suite rendered that as "no usable real
-      # container engine" — a skip predicate absorbing the test's own defect
-      # (issue #33). /run/user/1001 is 14 bytes and cannot.
-      # What the CONTAINER can actually do, printed before anything depends on
-      # it. Run 32940873115 failed with `bwrap: loopback: Failed RTM_NEWADDR:
-      # Operation not permitted` and `stage: starting P1: fork/exec
-      # /proc/self/exe: permission denied`, and bwrap on Tumbleweed is NOT
-      # setuid (0755, measured on the development host), so the userns path is
-      # the one being taken and something is refusing capabilities inside it.
-      # Ubuntu's kernel.apparmor_restrict_unprivileged_userns is the candidate:
-      # it lets an unprivileged userns be CREATED and then denies the
-      # capability-requiring operations inside it, which is exactly this
-      # symptom — and it is a HOST sysctl a `container:` job cannot write.
-      #
-      # This step never fails the job. It answers #395's unknowns 1 and 3 with
-      # measurements instead of the argument above.
-      - name: What this container can do
-        shell: bash
-        continue-on-error: true
+      - name: The engine suite, in a Tumbleweed container
         run: |
-          set -x
-          ls -l /bin/bwrap /bin/pasta /bin/podman
-          grep -E '^Cap(Prm|Eff|Bnd)' /proc/self/status
-          for f in kernel/apparmor_restrict_unprivileged_userns \
-                   kernel/unprivileged_userns_clone \
-                   user/max_user_namespaces \
-                   user/max_net_namespaces; do
-            echo -n "$f = "; cat "/proc/sys/$f" 2>&1
-          done
-          echo '--- userns alone'
-          unshare --user --map-root-user -- true && echo userns-ok
-          echo '--- userns + netns, then bring up loopback (the failing operation)'
-          unshare --user --map-root-user --net -- sh -c 'ip link set lo up && echo lo-up-ok' 2>&1
-          echo '--- userns + netns + mountns, what doctor says to try'
-          unshare --user --net --mount -- true && echo three-ns-ok
-          echo '--- bwrap on its own, no snug'
-          bwrap --unshare-all --ro-bind /usr /usr --dev /dev --proc /proc -- /bin/true && echo bwrap-unshare-all-ok
-          bwrap --unshare-user --unshare-pid --ro-bind /usr /usr -- /bin/true && echo bwrap-no-net-ok
+          set -euo pipefail
+          docker run --rm \
+            --security-opt apparmor=unconfined \
+            --security-opt seccomp=unconfined \
+            --device /dev/fuse \
+            -v "$PWD":/src \
+            -v "$(go env GOROOT)":/usr/local/go:ro \
+            registry.opensuse.org/opensuse/tumbleweed:latest \
+            bash -euxo pipefail -c '
+              # bash, coreutils, gawk, grep, sed, findutils, diffutils and make
+              # are named EXPLICITLY, and that is a measured requirement.
+              # Without them `--no-recommends` satisfied the new dependencies
+              # with busybox variants and REMOVED what the image had ("214.9
+              # MiB … released by packages that will be removed", run
+              # 32940231386), taking /bin/sh with it.
+              zypper -n --gpg-auto-import-keys refresh
+              zypper -n install --no-recommends \
+                bash bash-sh coreutils gawk grep sed findutils diffutils \
+                make tar gzip git which curl \
+                podman fuse-overlayfs \
+                bubblewrap passt iproute2 \
+                python3 shadow util-linux
+              export PATH=/usr/local/go/bin:$PATH
+              command -v bash make go podman bwrap pasta python3
+              podman --version
+              bwrap --version
+              pasta --version | head -1
 
-      - name: Create the non-root test user and delegate a subuid range
-        shell: bash
-        run: |
-          useradd --create-home --uid 1001 --shell /bin/bash snug
-          # A range inside the container's own uid space. newuidmap is setuid
-          # and needs these to map anything at all; without them rootless
-          # podman fails "write to uid_map failed: Operation not permitted".
-          echo 'snug:100000:65536' >> /etc/subuid
-          echo 'snug:100000:65536' >> /etc/subgid
-          install -d -m 0700 -o snug -g users /run/user/1001
-          chown -R snug: "$GITHUB_WORKSPACE"
+              # The harness makes the same check (requirePasta); this is here so
+              # a passt too old for --map-host-loopback is reported by the step
+              # that installed it rather than twenty tests later.
+              pasta --help 2>&1 | grep -q -- --map-host-loopback
 
-      - name: doctor, build and the engine suite
-        shell: bash
-        run: |
-          runuser -u snug -- env \
-            HOME=/home/snug \
-            PATH="$PATH" \
-            XDG_RUNTIME_DIR=/run/user/1001 \
-            SNUG_REQUIRE_SANDBOX=1 \
-            SNUG_REQUIRE_ENGINE=1 \
-            SNUG_TEST_NET=1 \
-            bash -c 'set -x; make build && ./bin/snug doctor; make integration-sandbox'
+              # uid 1001 matches the GHA runner user, so the workspace mounted
+              # at /src is already owned by this uid and nothing has to be
+              # chowned back.
+              useradd --create-home --uid 1001 --shell /bin/bash snug
+              # A range inside the container own uid space. newuidmap is setuid
+              # and needs these to map anything at all; without them rootless
+              # podman fails "write to uid_map failed: Operation not permitted".
+              echo snug:100000:65536 >> /etc/subuid
+              echo snug:100000:65536 >> /etc/subgid
+              # XDG_RUNTIME_DIR is pinned SHORT on purpose: the proxy socket is
+              # <runtime>/snug/run-<pid>/podman.sock and AF_UNIX sun_path has
+              # 107 usable bytes. A runtime dir inherited from a long workspace
+              # path overshot it at 110 and the suite rendered that as "no
+              # usable real container engine" — a skip predicate absorbing the
+              # test own defect (issue #33). /run/user/1001 is 14 bytes.
+              install -d -m 0700 -o snug -g users /run/user/1001
+
+              runuser -u snug -- env \
+                HOME=/home/snug \
+                PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin \
+                XDG_RUNTIME_DIR=/run/user/1001 \
+                SNUG_REQUIRE_SANDBOX=1 \
+                SNUG_REQUIRE_ENGINE=1 \
+                SNUG_TEST_NET=1 \
+                bash -c "cd /src && make build && ./bin/snug doctor; make integration-sandbox"
+            '
