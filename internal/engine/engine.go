@@ -423,6 +423,15 @@ func New(pol *policy.Policy) (*Engine, error) {
 	// The name is allocated FIRST and the paths are computed from it, so that
 	// what this function creates and what --dry-run predicts (PlannedPaths)
 	// come out of one arithmetic rather than two copies of it — see paths.go.
+	// Before this run claims a name, reclaim the directories of runs that
+	// died holding theirs. It runs HERE, on the way in, because that is the
+	// only place left: a SIGKILLed run executes nothing on its way out
+	// (issue #85's argument, applied to the directory issue #425 measured
+	// still leaking). It is also what keeps a leftover from being a landmine
+	// for this very call — the name below carries our pid and
+	// MustCreateSubdir refuses to reuse an existing entry.
+	sweepStaleEngineRunDirs()
+
 	name := runDirName(os.Getuid(), pid)
 	planned, err := planPaths(pol, name)
 	if err != nil {

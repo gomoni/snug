@@ -267,10 +267,19 @@ func TestAHostRegistriesConfDoesNotSteerTheEnginesPull(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := envWith(engineSpecEnv(t), "HOME", home)
+	env, eng := engineSpecEnvWithSignaturePolicy(t, `{"default":[{"type":"insecureAcceptAnything"}]}`)
+	env = envWith(env, "HOME", home)
 	const image = "registry.snug-test.invalid/snug/nothing:1"
 
-	control := runPodman(t, envWithout(env, "CONTAINERS_REGISTRIES_CONF"), "pull", image)
+	// storeArgs is required here: this probe runs podman on the HOST, and the
+	// generated storage.conf (named by CONTAINERS_STORAGE_CONF) names the
+	// GUEST paths — see engineSpecEnvWithSignaturePolicy's own doc comment.
+	// Without it the pull never reaches registries.conf parsing at all and
+	// instead fails on the store:
+	//
+	//	creating runtime static files directory "/snug/engine/store/libpod":
+	//	mkdir /snug: permission denied
+	control := runPodman(t, envWithout(env, "CONTAINERS_REGISTRIES_CONF"), storeArgs(eng, "pull", image)...)
 	if !strings.Contains(control, planted) {
 		t.Skipf("SKIP: the control did not read the planted registries.conf, so this podman "+
 			"resolves it from somewhere else and there is nothing to regress: %s", control)
@@ -280,7 +289,7 @@ func TestAHostRegistriesConfDoesNotSteerTheEnginesPull(t *testing.T) {
 	// only past this Skipf is the test actually going to exercise the engine.
 	markEngineRan(t, hostEngine(t))
 
-	got := runPodman(t, env, "pull", image)
+	got := runPodman(t, env, storeArgs(eng, "pull", image)...)
 	if strings.Contains(got, planted) {
 		t.Fatalf("the engine read the HOST's registries.conf (%s), so a file snug does not "+
 			"control decides which bytes become an image (issue #137):\n%s", planted, got)
