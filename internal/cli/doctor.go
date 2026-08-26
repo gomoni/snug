@@ -687,6 +687,19 @@ func requiredPodmanHelpers() []string {
 	return []string{"conmon", "netavark", "aardvark-dns", "catatonit"}
 }
 
+// ociRuntimeMissing is the decision, separated from the three filesystem
+// lookups that feed it so the whole table is testable on any host — including
+// one where the case that produced the 500 cannot be constructed. Same reason
+// classifyUserns is split out from probeUserns.
+func ociRuntimeMissing(crun, runc, cgroupsDisabled bool) bool {
+	if crun {
+		return false
+	}
+	// runc alone is enough only where cgroups are usable. Where P5 selects
+	// cgroups=disabled it is not: podman refuses the create outright.
+	return !runc || cgroupsDisabled
+}
+
 // reportPodmanHelpers prints one line per missing helper and one summary line
 // when nothing is missing. Named the way the other checks here are: the message
 // carries the package to install, because a vague answer in an odd environment
@@ -698,12 +711,29 @@ func reportPodmanHelpers() {
 			missing = append(missing, h)
 		}
 	}
-	// One OCI runtime is enough. podman needs crun OR runc, so neither is
-	// "missing" while the other is present, and reporting both would tell a
-	// working host it is broken.
-	crun, runc := findPodmanHelper("crun"), findPodmanHelper("runc")
-	if crun == "" && runc == "" {
+	// "podman needs crun OR runc" is true of podman and FALSE of snug's own
+	// configuration, which is what this command is asked about.
+	//
+	// P5 (containerpreflight.go) selects podman's `cgroups = "disabled"`
+	// whenever this host's cgroup delegation is not usable — every container
+	// inside a container, for instance — and runc does not implement that mode.
+	// MEASURED in a Tumbleweed CI container with runc present and crun absent
+	// (run 32944442005): the build returned 200 and the create returned
+	//
+	//	500 {"cause":"invalid argument","message":"container create: requested
+	//	OCI runtime runc is not compatible with NoCgroups: invalid argument"}
+	//
+	// while doctor said "podman's helper binaries are all findable". That is
+	// the shape this whole command exists to refuse: a green tick for a host
+	// where the run then fails.
+	crun, runc := findPodmanHelper("crun") != "", findPodmanHelper("runc") != ""
+	switch {
+	case !crun && !runc:
 		missing = append(missing, "crun or runc")
+	case ociRuntimeMissing(crun, runc, preflightCgroupsDisabled()):
+		// runc is present and cannot serve here. Named as crun specifically,
+		// because "crun or runc" would be the advice that produced the 500.
+		missing = append(missing, "crun (runc is present, and cannot run with cgroups disabled on this host)")
 	}
 
 	if len(missing) == 0 {

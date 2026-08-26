@@ -170,3 +170,43 @@ func TestTheUnrecognisedBlockerClaimsNoCauseAndOffersNoFix(t *testing.T) {
 		}
 	}
 }
+
+// "podman needs crun OR runc" is true of podman and false of snug when P5
+// selects cgroups=disabled: runc returns
+// `requested OCI runtime runc is not compatible with NoCgroups` at container
+// create, MEASURED in a Tumbleweed CI container that had runc and no crun
+// while doctor reported "podman's helper binaries are all findable" (run
+// 32944442005).
+//
+// The runtime lookup reads the real filesystem, so this asserts the DECISION
+// TABLE the report is built from rather than re-probing the host: for each
+// (crun present?, runc present?, cgroups disabled?) it states whether crun
+// must be named as missing.
+func TestRuncAloneIsNotEnoughWhenCgroupsAreDisabled(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		crun, runc      bool
+		cgroupsDisabled bool
+		wantMissing     bool
+	}{
+		{"neither runtime, cgroups fine", false, false, false, true},
+		{"neither runtime, cgroups disabled", false, false, true, true},
+		{"crun present, cgroups disabled", true, false, true, false},
+		{"crun present, cgroups fine", true, false, false, false},
+		{"both present, cgroups disabled", true, true, true, false},
+		// The measured case, and the only row the old "either/or" rule got
+		// wrong: runc is there, crun is not, and the run needs NoCgroups.
+		{"runc only, cgroups disabled", false, true, true, true},
+		// And the row that must NOT regress into a false alarm: runc alone is
+		// genuinely sufficient where cgroups are usable.
+		{"runc only, cgroups fine", false, true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ociRuntimeMissing(tc.crun, tc.runc, tc.cgroupsDisabled)
+			if got != tc.wantMissing {
+				t.Errorf("ociRuntimeMissing(crun=%v, runc=%v, cgroupsDisabled=%v) = %v, want %v",
+					tc.crun, tc.runc, tc.cgroupsDisabled, got, tc.wantMissing)
+			}
+		})
+	}
+}

@@ -142,7 +142,7 @@ provision() {
 	zypper -n install --no-recommends \
 		bash bash-sh coreutils gawk grep sed findutils diffutils \
 		make tar gzip git which curl \
-		podman fuse-overlayfs \
+		podman crun fuse-overlayfs \
 		bubblewrap passt iproute2 \
 		python3 shadow util-linux
 
@@ -161,10 +161,23 @@ provision() {
 	# so anything this user writes must land owned by whoever ran the target.
 	useradd --create-home --uid "$SNUG_ENGINE_UID" --shell /bin/bash snug
 	# A range inside the container's own uid space. newuidmap is setuid and
-	# needs these to map anything at all; without them rootless podman fails
+	# needs one to map anything at all; without it rootless podman fails
 	# "write to uid_map failed: Operation not permitted".
-	echo snug:100000:65536 >>/etc/subuid
-	echo snug:100000:65536 >>/etc/subgid
+	#
+	# ONLY IF USERADD DID NOT ALREADY ALLOCATE ONE. openSUSE's shadow gives
+	# useradd a SUB_UID_COUNT in /etc/login.defs, so it allocates a subuid range
+	# by itself; appending a second one unconditionally left podman building a
+	# map with the same outer range twice and newuidmap refusing it — MEASURED
+	# in run 32944442005:
+	#
+	#	running `/usr/bin/newuidmap 15015 0 1001 1 1 100000 65536 65537 100000 65536`
+	#	Error: cannot set up namespace using "/usr/bin/newuidmap": exit status 1
+	#
+	# (1 -> 100000 count 65536, then 65537 -> 100000 count 65536: the same outer
+	# range mapped twice.)
+	grep -q '^snug:' /etc/subuid || echo snug:100000:65536 >>/etc/subuid
+	grep -q '^snug:' /etc/subgid || echo snug:100000:65536 >>/etc/subgid
+	echo "subuid: $(grep '^snug:' /etc/subuid)  subgid: $(grep '^snug:' /etc/subgid)"
 	# XDG_RUNTIME_DIR is pinned SHORT on purpose: the proxy socket is
 	# <runtime>/snug/run-<pid>/podman.sock and AF_UNIX's sun_path has 107 usable
 	# bytes. A runtime dir inherited from a long workspace path overshot it at
