@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/gomoni/snug/internal/policy"
@@ -72,11 +73,20 @@ func doctor(argv []string) int {
 		verdict, detail := probeUserns(bwrap)
 		switch verdict {
 		case usernsFailed:
-			fmt.Println("  ❌ cannot create a user namespace here")
+			// WHICH of the three things bwrap does at startup failed, not
+			// "the first one". probeBase asks for the whole run's topology at
+			// once, so any of the userns, the netns or the /proc mount landing
+			// here reads as a userns failure unless something narrows it —
+			// and the advice for the other two is different advice.
+			blocker, ladder := locateBwrapFailure(bwrap)
+			fmt.Printf("  ❌ %s\n", blocker.headline())
 			fmt.Printf("     💬 bwrap said: %s\n", detail)
-			fmt.Println("     🔧 sysctl kernel.unprivileged_userns_clone           must be 1")
-			fmt.Println("     🔧 sysctl user.max_user_namespaces                   must be > 0")
-			fmt.Println("     🔧 Ubuntu 24.04+: kernel.apparmor_restrict_unprivileged_userns=0")
+			if ladder != "" {
+				fmt.Printf("     🔬 %s\n", ladder)
+			}
+			for _, line := range blocker.advice() {
+				fmt.Printf("     %s\n", line)
+			}
 			ok = false
 		case usernsSilentlySkipped:
 			// The reason this probe reads a namespace id at all (issue #98).
@@ -207,6 +217,22 @@ func doctor(argv []string) int {
 		fmt.Println("     🔒 offline sandboxes work fine without it")
 	} else {
 		fmt.Printf("  ✅ %s\n     📍 %s\n", firstLine(capture(pasta, "--version")), pasta)
+		// A version is not a capability, and this line used to be the whole
+		// pasta check. MEASURED in a GitHub Actions container (issue #395, run
+		// 32942207790): doctor printed this ✅ and every `-p @net` run then died
+		// with `pasta exited before the network came up: Failed to open()
+		// /dev/net/tun: No such file or directory`. doctor is supposed to give
+		// the answer a run gives, so it opens the device pasta needs rather
+		// than reporting that pasta can print its own version.
+		if detail, tunOK := tunDeviceUsable(tunClonePath); !tunOK {
+			fmt.Println("  ❌ /dev/net/tun is not usable — `-p @net` will fail after the sandbox starts")
+			fmt.Printf("     💬 %s\n", detail)
+			fmt.Println("     🔧 pasta puts a tap device in the sandbox's netns and needs this node")
+			fmt.Println("     🔧 docker:  --device /dev/net/tun    podman:  --device /dev/net/tun")
+			fmt.Println("     🔧 bare host: modprobe tun")
+			fmt.Println("     🔒 offline sandboxes do not use pasta and are unaffected")
+			ok = false
+		}
 	}
 
 	if ok, detail := podmanClientUsable(); ok {
@@ -402,6 +428,223 @@ func probeBase() []string {
 	)
 }
 
+// tunClonePath is the tun clone device pasta opens. Named once so the check
+// and its test cannot drift.
+const tunClonePath = "/dev/net/tun"
+
+// tunDeviceUsable reports whether /dev/net/tun can be OPENED, not whether it
+// exists. The two differ in exactly the environment this check was written
+// for: a container can carry the node and still refuse it, and pasta's failure
+// is an open(2), so an existence test would produce the green tick this
+// replaces.
+//
+// O_RDWR because that is what pasta does; a read-only open of the tun clone
+// device succeeds in places a read-write one does not.
+//
+// The path is a parameter so both branches are testable on any host: the
+// failing one cannot be constructed at /dev/net/tun by a test that is not
+// root, and a check with an untested failure branch is how the wrong message
+// ships.
+func tunDeviceUsable(dev string) (string, bool) {
+	f, err := os.OpenFile(dev, os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Sprintf("%v", err), false
+	}
+	_ = f.Close()
+	return "", true
+}
+
+// ── which part of a sandbox startup was refused ─────────────────────────────
+
+// bwrapBlocker names the narrowest thing measured to be refused when
+// probeBase cannot start.
+//
+// This exists because a diagnostic that names the wrong cause costs more than
+// no diagnostic. MEASURED twice in one afternoon, both inside a GitHub Actions
+// job container running the engine suite (issue #395):
+//
+//	❌ cannot create a user namespace here
+//	   💬 bwrap said: bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+//
+//	❌ cannot create a user namespace here
+//	   💬 bwrap said: bwrap: Can't mount proc on /newroot/proc: Operation not permitted
+//	✅ the stage starts — clone, uid map, loopback, and the netns move
+//
+// The second is doctor contradicting itself in one screen: the stage check
+// creates a userns, writes a uid map and moves a netns, so the userns plainly
+// worked. In both cases the three sysctls printed as the fix were irrelevant,
+// and the real fixes (a host sysctl for the first, a container's masked /proc
+// for the second) went unnamed. CLAUDE.md: errors name the fix.
+type bwrapBlocker int
+
+const (
+	// blockerUnknown: the ladder below all passed and the full topology still
+	// failed. Say so and quote bwrap — never guess a cause.
+	blockerUnknown bwrapBlocker = iota
+	blockerUserns
+	// blockerUsernsSeccomp: the userns rung failed while every sysctl that
+	// could explain it is already permissive AND this process runs under a
+	// seccomp filter. Its own blocker because the advice has nothing in common
+	// with blockerUserns's.
+	blockerUsernsSeccomp
+	blockerNetns
+	blockerProcMount
+)
+
+// headline is the ❌ line. Each one states what WORKS as well as what does
+// not, because "the user namespace works, but …" is the sentence that stops a
+// reader chasing the userns sysctls for an hour.
+func (b bwrapBlocker) headline() string {
+	switch b {
+	case blockerUserns:
+		return "cannot create a user namespace here"
+	case blockerUsernsSeccomp:
+		return "a seccomp filter is denying the user namespace, not the kernel settings"
+	case blockerNetns:
+		return "user namespaces work, but the sandbox's own network namespace does not"
+	case blockerProcMount:
+		return "user namespaces work, but /proc cannot be mounted inside one"
+	default:
+		return "bwrap cannot start a sandbox here, and the reason is not one this probe recognises"
+	}
+}
+
+func (b bwrapBlocker) advice() []string {
+	switch b {
+	case blockerUserns:
+		return []string{
+			"🔧 sysctl kernel.unprivileged_userns_clone           must be 1",
+			"🔧 sysctl user.max_user_namespaces                   must be > 0",
+			"🔧 Ubuntu 24.04+: kernel.apparmor_restrict_unprivileged_userns=0",
+		}
+	case blockerUsernsSeccomp:
+		// MEASURED (run 32946939204): a docker container with every one of the
+		// three sysctls above already correct, where bwrap still said "No
+		// permissions to create a new namespace, likely because the kernel does
+		// not allow non-privileged user namespaces" and the stage said
+		// "fork/exec /proc/self/exe: operation not permitted". docker's default
+		// seccomp profile denies clone(2) with CLONE_NEWUSER for a process
+		// without CAP_SYS_ADMIN. Every sysctl doctor printed as the fix was
+		// already set, which is the whole reason this is a separate blocker.
+		return []string{
+			"🔧 the sysctls are already permissive and this process runs under a seccomp",
+			"   filter (/proc/self/status Seccomp is non-zero). docker's default profile",
+			"   denies clone(2) with CLONE_NEWUSER without CAP_SYS_ADMIN.",
+			"🔧 docker:  --security-opt seccomp=unconfined",
+			"🔧 podman:  --security-opt seccomp=unconfined",
+			"   (prefer that over --cap-add SYS_ADMIN, which buys much more than this needs)",
+		}
+	case blockerNetns:
+		return []string{
+			"🔧 Ubuntu 24.04+: kernel.apparmor_restrict_unprivileged_userns=0 — with it set,",
+			"   the namespace is CREATED and the operations inside it are then denied, which",
+			"   is why this is not a userns failure. It is a HOST sysctl: inside a container",
+			"   it is not writable and must be set on the machine running the container.",
+			"🔧 sysctl user.max_net_namespaces                    must be > 0",
+		}
+	case blockerProcMount:
+		return []string{
+			"🔧 a container that masks entries under /proc with its own submounts: the kernel",
+			"   refuses a fresh procfs mount in a user namespace while the mounter's view of",
+			"   /proc is obstructed.",
+			"🔧 docker:  --security-opt systempaths=unconfined",
+			"🔧 podman:  --security-opt unmask=/proc",
+		}
+	default:
+		return nil
+	}
+}
+
+// classifyUsernsRefusal decides WHY a user namespace was refused when the
+// narrowest rung failed. Separated from the two /proc reads that feed it so
+// both answers are testable on a host that can only produce one of them.
+//
+// The rule: naming the sysctls is only honest when a sysctl could actually be
+// the cause. Where they are already permissive and a seccomp filter is
+// installed, the filter is the remaining explanation and the sysctl advice is
+// noise a reader spends an hour on.
+func classifyUsernsRefusal(sysctlsPermissive, seccompFiltered bool) bwrapBlocker {
+	if sysctlsPermissive && seccompFiltered {
+		return blockerUsernsSeccomp
+	}
+	return blockerUserns
+}
+
+// usernsSysctlsPermissive reports whether every sysctl that can refuse an
+// unprivileged user namespace is already set to allow one. An ABSENT knob is
+// permissive: kernel.unprivileged_userns_clone exists only on Debian-family
+// kernels, and reading its absence as a refusal would blame it on every other
+// distribution.
+func usernsSysctlsPermissive() bool {
+	readInt := func(path string, absent int) int {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return absent
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil {
+			return absent
+		}
+		return n
+	}
+	return readInt("/proc/sys/kernel/unprivileged_userns_clone", 1) == 1 &&
+		readInt("/proc/sys/user/max_user_namespaces", 1) > 0 &&
+		readInt("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", 0) == 0
+}
+
+// seccompFilterInstalled reads this process's own Seccomp mode from
+// /proc/self/status: 0 disabled, 1 strict, 2 filter. Non-zero means something
+// outside snug is filtering syscalls here — a container runtime's default
+// profile, typically.
+func seccompFilterInstalled() bool {
+	data, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if rest, ok := strings.CutPrefix(line, "Seccomp:"); ok {
+			n, err := strconv.Atoi(strings.TrimSpace(rest))
+			return err == nil && n != 0
+		}
+	}
+	return false
+}
+
+// locateBwrapFailure walks a ladder of ever-larger bwrap invocations and
+// returns the narrowest one that failed, plus a one-line record of what the
+// ladder measured.
+//
+// The order is bwrap's own: it creates namespaces before it mounts into them,
+// and the netns is created with the userns, so a netns refusal surfaces before
+// a mount refusal. Each rung adds EXACTLY ONE thing to the rung below, which
+// is what makes the answer a measurement rather than an inference.
+func locateBwrapFailure(bwrap string) (bwrapBlocker, string) {
+	// The loader and a binary to exec, and nothing else — no /proc, no netns.
+	base := []string{
+		"--ro-bind", "/usr", "/usr",
+		"--symlink", "usr/bin", "/bin",
+		"--symlink", "usr/lib", "/lib",
+		"--symlink", "usr/lib64", "/lib64",
+		"--die-with-parent",
+	}
+	run := func(extra ...string) bool {
+		argv := append(append([]string{"--unshare-user"}, base...), extra...)
+		return exec.Command(bwrap, append(argv, "--", "/bin/true")...).Run() == nil
+	}
+	userns := run()
+	if !userns {
+		return classifyUsernsRefusal(usernsSysctlsPermissive(), seccompFilterInstalled()),
+			"userns alone was refused"
+	}
+	if !run("--unshare-net") {
+		return blockerNetns, "a userns alone works; adding --unshare-net is what fails"
+	}
+	if !run("--proc", "/proc") {
+		return blockerProcMount, "a userns and a netns work; mounting /proc is what fails"
+	}
+	return blockerUnknown, "a userns, a netns and a /proc mount each work on their own"
+}
+
 func capture(name string, args ...string) string {
 	out, err := exec.Command(name, args...).CombinedOutput()
 	if err != nil {
@@ -525,6 +768,19 @@ func requiredPodmanHelpers() []string {
 	return []string{"conmon", "netavark", "aardvark-dns", "catatonit"}
 }
 
+// ociRuntimeMissing is the decision, separated from the three filesystem
+// lookups that feed it so the whole table is testable on any host — including
+// one where the case that produced the 500 cannot be constructed. Same reason
+// classifyUserns is split out from probeUserns.
+func ociRuntimeMissing(crun, runc, cgroupsDisabled bool) bool {
+	if crun {
+		return false
+	}
+	// runc alone is enough only where cgroups are usable. Where P5 selects
+	// cgroups=disabled it is not: podman refuses the create outright.
+	return !runc || cgroupsDisabled
+}
+
 // reportPodmanHelpers prints one line per missing helper and one summary line
 // when nothing is missing. Named the way the other checks here are: the message
 // carries the package to install, because a vague answer in an odd environment
@@ -536,12 +792,29 @@ func reportPodmanHelpers() {
 			missing = append(missing, h)
 		}
 	}
-	// One OCI runtime is enough. podman needs crun OR runc, so neither is
-	// "missing" while the other is present, and reporting both would tell a
-	// working host it is broken.
-	crun, runc := findPodmanHelper("crun"), findPodmanHelper("runc")
-	if crun == "" && runc == "" {
+	// "podman needs crun OR runc" is true of podman and FALSE of snug's own
+	// configuration, which is what this command is asked about.
+	//
+	// P5 (containerpreflight.go) selects podman's `cgroups = "disabled"`
+	// whenever this host's cgroup delegation is not usable — every container
+	// inside a container, for instance — and runc does not implement that mode.
+	// MEASURED in a Tumbleweed CI container with runc present and crun absent
+	// (run 32944442005): the build returned 200 and the create returned
+	//
+	//	500 {"cause":"invalid argument","message":"container create: requested
+	//	OCI runtime runc is not compatible with NoCgroups: invalid argument"}
+	//
+	// while doctor said "podman's helper binaries are all findable". That is
+	// the shape this whole command exists to refuse: a green tick for a host
+	// where the run then fails.
+	crun, runc := findPodmanHelper("crun") != "", findPodmanHelper("runc") != ""
+	switch {
+	case !crun && !runc:
 		missing = append(missing, "crun or runc")
+	case ociRuntimeMissing(crun, runc, preflightCgroupsDisabled()):
+		// runc is present and cannot serve here. Named as crun specifically,
+		// because "crun or runc" would be the advice that produced the 500.
+		missing = append(missing, "crun (runc is present, and cannot run with cgroups disabled on this host)")
 	}
 
 	if len(missing) == 0 {

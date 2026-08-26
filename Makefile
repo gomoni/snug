@@ -1,6 +1,6 @@
 BIN := bin/snug
 
-.PHONY: all build test gate integration integration-sandbox integration-signals integration-hostless forkstress golden clean install
+.PHONY: all build test gate integration integration-sandbox integration-signals integration-hostless integration-engine forkstress golden clean install
 
 all: build
 
@@ -267,31 +267,62 @@ SNUG_SIGNAL_TESTS = TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox|TestA
 # SNUG_REQUIRE_SANDBOX=1 with no working engine promised anywhere in that
 # environment. This is #395's seam — set SNUG_REQUIRE_ENGINE=1 once a lane
 # can promise 32/32, and not before.
-SNUG_ENGINE_FLOOR = 33
+# 33 is THIS host's number and it is a FLOOR, not a total. A second environment
+# now exists and reports a different one: the Tumbleweed CI container measured 42
+# distinct tests on two independent green runs (32945338390 and 32945827262).
+# More tests reach the marker where the engine works fully than on a host that
+# cannot start a container at all — this one cannot (#401), so a chunk of them
+# skip here and the create-only class in the #406 note is forced.
+#
+# So the floor is PER ENVIRONMENT, like SNUG_SANDBOX_TIMEOUT and for the same
+# reason: a single constant is either too low to catch a regression in the strong
+# environment or too high to pass in the weak one. 33 here; 42 in the container,
+# set by test/engine-container.sh. `?=` so the environment can override it — with
+# `=` a Make variable ignores the environment.
+#
+# It also corrects this constant's provenance. It was derived from a token sweep
+# that found 32 candidates; the real population is at least 42, so the sweep
+# undercounted by ten and the marker is doing more work than the number implied.
+SNUG_ENGINE_FLOOR ?= 33
+
+# The per-SUITE bound, and it is a VARIABLE because the same target runs in two
+# environments whose job bounds differ, and the three bounds must keep nesting:
+# budget() per test, this per suite, timeout-minutes per job. An inner bound
+# larger than the outer can never fire, and then a slow suite reads as a bare
+# job kill naming nothing.
+#
+#   8m   ubuntu-latest, where the engine tier SKIPS and the suite takes ~70s,
+#        under a 12-minute job.
+#   18m  the Tumbleweed engine container, where the tier really runs, under a
+#        30-minute job. 8m was sized for a runner where it skipped: with a
+#        working engine it fired at `panic: test timed out after 8m0s` having
+#        run 19 of 33 engine tests and still progressing (run 32943468831).
+#        Set by test/engine-container.sh, which owns that environment.
+SNUG_SANDBOX_TIMEOUT ?= 8m
 
 integration-sandbox:
 	@SNUG_TEST_NET=$${SNUG_TEST_NET:-$${SNUG_REQUIRE_SANDBOX:+1}} \
-		go test -tags integration -timeout 8m -v \
+		go test -tags integration -timeout $(SNUG_SANDBOX_TIMEOUT) -v \
 			-skip '$(SNUG_SIGNAL_TESTS)' ./test/integration/... 2>&1 \
 		| tee $(SANDBOX_LOG); \
 	status=$${PIPESTATUS[0]}; \
 	ran=$$(grep -o 'snug-engine-ran: [^ ]*' $(SANDBOX_LOG) | sort -u | wc -l); \
 	if [ "$$ran" -ge "$(SNUG_ENGINE_FLOOR)" ] && grep -q 'snug-engine-version:' $(SANDBOX_LOG); then \
 		version=$$(grep -m1 'snug-engine-version:' $(SANDBOX_LOG) | sed 's/.*snug-engine-version: //'); \
-		echo "engine tests: $$ran of $(SNUG_ENGINE_FLOOR) ran — $$version"; \
+		echo "engine tests: $$ran ran, floor $(SNUG_ENGINE_FLOOR) — $$version"; \
 	elif grep -q 'snug-engine-none:' $(SANDBOX_LOG); then \
-		echo "engine tests: $$ran of $(SNUG_ENGINE_FLOOR) ran — no podman resolved"; \
+		echo "engine tests: $$ran ran, floor $(SNUG_ENGINE_FLOOR) — no podman resolved"; \
 	elif grep -q 'snug-engine-failed:' $(SANDBOX_LOG); then \
 		reason=$$(grep -m1 'snug-engine-failed:' $(SANDBOX_LOG) | sed 's/.*snug-engine-failed: //'); \
-		echo "engine tests: $$ran of $(SNUG_ENGINE_FLOOR) ran — $$reason"; \
+		echo "engine tests: $$ran ran, floor $(SNUG_ENGINE_FLOOR) — $$reason"; \
 	elif grep -q 'snug-engine-version:' $(SANDBOX_LOG); then \
 		version=$$(grep -m1 'snug-engine-version:' $(SANDBOX_LOG) | sed 's/.*snug-engine-version: //'); \
-		echo "engine tests: $$ran of $(SNUG_ENGINE_FLOOR) ran — $$version"; \
+		echo "engine tests: $$ran ran, floor $(SNUG_ENGINE_FLOOR) — $$version"; \
 	else \
-		echo "engine tests: $$ran of $(SNUG_ENGINE_FLOOR) ran — no engine marker of any kind was seen"; \
+		echo "engine tests: $$ran ran, floor $(SNUG_ENGINE_FLOOR) — no engine marker of any kind was seen"; \
 	fi; \
 	if [ -n "$$SNUG_REQUIRE_ENGINE" ] && [ "$$ran" -lt "$(SNUG_ENGINE_FLOOR)" ]; then \
-		echo "ERROR: SNUG_REQUIRE_ENGINE is set and only $$ran/$(SNUG_ENGINE_FLOOR) engine tests ran."; \
+		echo "ERROR: SNUG_REQUIRE_ENGINE is set and only $$ran engine tests ran, below the floor of $(SNUG_ENGINE_FLOOR)."; \
 		exit 1; \
 	fi; \
 	exit $$status
@@ -370,6 +401,21 @@ forkstress:
 
 # Regenerate the golden argv files, then READ THE DIFF. A change to a golden
 # file is a change to the sandbox boundary.
+# The engine tier in a throwaway Tumbleweed container (issue #395).
+#
+# Same script CI's `engine` job runs, so a CI failure reproduces with one
+# command instead of a push — which is worth stating as a measurement: bringing
+# that job up cost seven runs, and every one of the first six failed on the
+# CONTAINER rather than on snug (a zypper package swap that removed /bin/sh, an
+# image with no Config.Env so PATH lost /usr/bin, a host sysctl a `container:`
+# job cannot write, docker's masked /proc, a missing /dev/net/tun, and the
+# engine store on overlayfs).
+#
+# Needs docker or podman. Override the pieces with SNUG_ENGINE_RUNTIME,
+# SNUG_ENGINE_IMAGE or SNUG_ENGINE_STORE; the script names what each is for.
+integration-engine:
+	./test/engine-container.sh
+
 golden:
 	go test ./internal/policy -update
 

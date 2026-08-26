@@ -340,7 +340,16 @@ func fakeHostEtc(t *testing.T, content string) string {
 	// below are, and they are what stops a silently empty copy from turning
 	// every test using this harness into a confusing pass.
 	out, _ := exec.Command("cp", "-a", "/etc/.", dir+"/").CombinedOutput()
-	for _, must := range []string{"passwd", "nsswitch.conf"} {
+	// nsswitch.conf is deliberately NOT in this list, and the omission is a
+	// measurement rather than a relaxation: `cp -a /etc/. dir/` cannot produce
+	// a file /etc/ does not have, and openSUSE container images ship nsswitch
+	// only at /usr/etc/nsswitch.conf (measured: none in /etc on
+	// registry.opensuse.org/opensuse/tumbleweed:latest). glibc reads the vendor
+	// copy by itself and @sys already binds /usr read-only, so a sandbox built
+	// on this fake /etc resolves names there without it. Requiring it here
+	// would fail every test in this file on such a host for a reason none of
+	// them is about.
+	for _, must := range []string{"passwd"} {
 		if _, err := os.Stat(filepath.Join(dir, must)); err != nil {
 			t.Fatalf("the /etc copy this harness binds is missing %s, so the sandbox "+
 				"below would be failing for that reason rather than the one under "+

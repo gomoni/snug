@@ -356,3 +356,168 @@ jobs:
           SNUG_TEST_NET: '1'
         run: make ${{ matrix.suite }}
 
+
+  # Tier 3d: the ENGINE tier, against a real podman (issue #395).
+  #
+  # Every job above runs on `ubuntu-latest`, which has no container engine snug
+  # will accept, so all 33 engine tests SKIP there and have since the tier was
+  # written — a green run measuring nothing, which is the defect #395 exists to
+  # remove rather than a coverage wish.
+  #
+  # Three things make this job MEAN something, and each closes one half of that
+  # defect:
+  #
+  #   SNUG_REQUIRE_ENGINE=1   "no usable real container engine" becomes t.Fatal
+  #                           instead of t.Skip (containerengine_test.go's
+  #                           requireRealEngine). The skip predicate is narrow
+  #                           enough to trust — only exit 69 (exitUnavail)
+  #                           counts as an absent engine; 77/64/70 are fatal
+  #                           regardless — so this cannot convert a test bug
+  #                           into "the runner has no podman".
+  #   the engine floor        `make integration-sandbox` fails when fewer than
+  #                           SNUG_ENGINE_FLOOR distinct tests reached the
+  #                           "snug-engine-ran:" marker. Membership is REACHING
+  #                           the marker, never a name sweep. MEASURED working:
+  #                           run 32940873115 ended "engine tests: 0 of 33 ran
+  #                           — podman version 6.0.2 at /bin/podman" and failed
+  #                           the job.
+  #   the supported set       engine.SupportedPodmanSet is podman 6.x, and with
+  #                           SNUG_REQUIRE_ENGINE set an engine outside it is a
+  #                           t.Fatal, not a warning. A green run against an
+  #                           unsupported podman is the same lie as a green run
+  #                           that skipped everything.
+  #
+  # openSUSE Tumbleweed, not Ubuntu, and that is the point: the engine version
+  # floats with the host distribution since the pinned engine bundle was retired
+  # (#384), so CI is only informative about a developer's result if it runs the
+  # same major. Ubuntu 24.04's podman is 4.9.x — a different engine from the
+  # 6.0.2 anyone here develops against, and one the supported set would refuse.
+  # Tumbleweed's is podman-6.0.2-1.1, MEASURED identical to the development
+  # host's, so CI matches by construction rather than by luck.
+  #
+  # # Why the container is LAUNCHED here rather than named in `container:`
+  #
+  # A GHA `container:` job runs every step inside the container via
+  # `docker exec`, and it has no host shell at all. That makes
+  # `kernel.apparmor_restrict_unprivileged_userns` unreachable: it is a HOST
+  # sysctl, it is not namespaced, and a write from inside the container gets
+  # EPERM. The three jobs above set it to 0 on their own runners — each job is a
+  # fresh VM, so that does nothing for this one.
+  #
+  # MEASURED inside a `container:` job (run 32941285136), which is why this is
+  # a shape and not a preference:
+  #
+  #   kernel/apparmor_restrict_unprivileged_userns = 1
+  #   user/max_user_namespaces = 63838          (so NOT a nesting limit)
+  #   CapBnd: 00000000a80425fb                  (docker default: no SYS_ADMIN)
+  #   unshare --user --map-root-user -- true
+  #     → unshare: write failed /proc/self/uid_map: Operation not permitted
+  #
+  # One root cause, two different-looking symptoms: `unshare` writes its own
+  # uid_map from inside the new userns and is denied, while bwrap writes it from
+  # the parent, gets through, and is then denied the netlink operation inside
+  # the userns — run 32940873115's `bwrap: loopback: Failed RTM_NEWADDR:
+  # Operation not permitted`. Do not read that message as a capability
+  # shortage; adding `--cap-add` would have papered over it.
+  #
+  # So the job stays on the runner, sets the sysctl where it works, and launches
+  # the Tumbleweed container itself. It is also NOT `--privileged` (#395's
+  # unknown 3): with the restriction lifted host-wide, bwrap creates its own
+  # userns and holds capabilities inside it, so the container needs only
+  # apparmor=unconfined (docker-default denies mount(2)), seccomp=unconfined
+  # (comes OUT once this job is green — it is here so a first failure is not
+  # ambiguous between two filters), systempaths=unconfined, and /dev/fuse for
+  # rootless fuse-overlayfs.
+  #
+  # --tmpfs /tmp is the FOURTH blocker, and it is the only one that is about
+  # snug's own layout rather than the container's. The engine runroot is
+  # os.TempDir()-rooted (internal/engine/paths.go:123, `filepath.Join(os.TempDir(),
+  # "snug-engines-<uid>-<key>", "rr")`), docker's container root is overlayfs, and
+  # the kernel refuses an overlay whose lower layer is itself overlayfs — so
+  # buildah's build-context overlay failed EINVAL and every engine test read as
+  # "a build succeeded but its RUN step never actually executed a container"
+  # (run 32942740758):
+  #
+  #   mounting an overlay over build context directory: … lowerdir=/snug/engine/
+  #   runroot/tmp/libpod_builder…, upperdir=…, workdir=…, userxattr: invalid argument
+  #
+  # A tmpfs at /tmp takes the runroot off overlayfs. `exec` because things run
+  # from there; mode=1777 because it is /tmp. This is issue #399's subject
+  # ("ephemeral per-run state belongs in /run/user/<uid> rather than /tmp") seen
+  # from the outside: a runroot on /run/user/<uid> would not have needed a flag
+  # here, since that path is a tmpfs on any systemd host.
+  #
+  # /dev/net/tun is the THIRD blocker, and it is a device node rather than a
+  # policy knob: pasta puts a tap device in the sandbox's netns, docker does not
+  # give a container the tun clone device, and every `-p @net` run died with
+  # `pasta exited before the network came up: Failed to open() /dev/net/tun: No
+  # such file or directory` (run 32942207790). doctor now opens that node itself
+  # rather than reporting pasta's version, so a host missing it says so before a
+  # test does.
+  #
+  # systempaths=unconfined is the narrowest answer to the SECOND blocker, which
+  # only became visible once the sysctl cleared the first. Run 32941695379:
+  # doctor reported `the stage starts — clone, uid map, loopback, and the netns
+  # move` as OK, and then `bwrap: Can't mount proc on /newroot/proc: Operation
+  # not permitted`. Docker masks entries under /proc with its own submounts, and
+  # the kernel refuses a fresh procfs mount inside a user namespace when the
+  # mounter's view of /proc is obstructed — so this is docker's masked paths,
+  # not a capability, and --cap-add would not have touched it. The flag replaces
+  # docker's MaskedPaths and ReadonlyPaths for this container; it does not make
+  # the container privileged.
+  #
+  # The Go toolchain is MOUNTED from the runner rather than installed by zypper.
+  # snug is cgo-free by constraint (.claude/design/NOCGO.md) and the Go
+  # toolchain's own binaries are static Go, so the runner's toolchain executes
+  # unchanged on Tumbleweed's glibc — and the version stays the one every other
+  # job used instead of drifting with a distribution package.
+  engine:
+    name: real engine behaviour (Tumbleweed, podman 6.x)
+    if: ${{ github.event.pull_request.draft != true }}
+    runs-on: ubuntu-latest
+    # MEASURED, run 32943468831: 8m53s to reach `panic: test timed out after
+    # 8m0s` with 19 of 33 engine tests run and still progressing. The suite bound
+    # is 18m there (SNUG_SANDBOX_TIMEOUT, set by test/engine-container.sh), so
+    # this has to sit above it — budget() per test, the suite bound, then this.
+    # The fixed cost underneath is small: image pull 11s, zypper 14s, setup-go
+    # 9s, `make build` 12s.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # See the gate job: this one has more reason still, since it launches
+          # real sandboxes running real payloads, inside a container.
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26'
+          check-latest: true
+
+      # Ubuntu 24.04+ ships kernel.apparmor_restrict_unprivileged_userns=1,
+      # which breaks bwrap — here AND one level down inside the container, since
+      # the knob is not namespaced.
+      #
+      # Unlike the sibling jobs this one does NOT end at `|| true`. A value that
+      # is still 1 after the write means nothing below is testing what it claims
+      # (the whole reason this job exists), and `|| true` on its own would leave
+      # that invisible: run 32941285136 read 1 inside the container and reported
+      # it as `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`
+      # twenty tests later. So the value is READ BACK and the job stops here if
+      # it did not take.
+      - name: Allow unprivileged user namespaces, and prove it took
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "$knob" ] && [ "$(cat "$knob")" != 0 ]; then
+            echo "::error::$knob is $(cat "$knob") after the write. bwrap cannot hold capabilities in its own user namespace with this set, so the engine suite below would fail on the first sandbox and report it as a loopback or uid_map error."
+            exit 1
+          fi
+
+      # Everything about the container — its flags, its packages, its non-root
+      # user, its subuid range — lives in test/engine-container.sh, which
+      # `make integration-engine` also runs. A workflow file is the one place
+      # those instructions must NOT live: nobody can run a yaml step locally,
+      # so a failure here would only ever reproduce by pushing again.
+      - name: The engine suite, in a Tumbleweed container
+        run: make integration-engine

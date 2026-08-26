@@ -1,0 +1,283 @@
+package cli
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// The ladder's four outcomes, each driven for real through a fake bwrap that
+// refuses exactly one flag. A host cannot be put into three of these four
+// states on demand — the whole reason the ladder exists is that two of them
+// were first seen in a CI container — so the fake is what makes the SET
+// testable rather than the one outcome this machine happens to produce.
+func TestLocateBwrapFailureFindsTheNarrowestRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		refuse      string // fail when this string appears in argv; "" = never
+		want        bwrapBlocker
+		wantLadder  string
+		alsoRefuses string // a second flag refused at the same time
+	}{
+		{
+			name:       "userns itself is refused",
+			refuse:     "--unshare-user",
+			want:       blockerUserns,
+			wantLadder: "userns alone was refused",
+		},
+		{
+			// MEASURED shape: GitHub Actions job container with
+			// kernel.apparmor_restrict_unprivileged_userns=1, where bwrap
+			// created the namespace and then said
+			// "loopback: Failed RTM_NEWADDR: Operation not permitted".
+			name:       "the netns is refused and the userns is not",
+			refuse:     "--unshare-net",
+			want:       blockerNetns,
+			wantLadder: "adding --unshare-net is what fails",
+		},
+		{
+			// MEASURED shape: the same container with the sysctl fixed, where
+			// bwrap said "Can't mount proc on /newroot/proc: Operation not
+			// permitted" because docker masks entries under /proc.
+			name:       "the proc mount is refused and the namespaces are not",
+			refuse:     "--proc",
+			want:       blockerProcMount,
+			wantLadder: "mounting /proc is what fails",
+		},
+		{
+			// The honest answer, and the one that must NOT name a cause: every
+			// rung passes and the full topology still failed.
+			name:       "every rung passes",
+			refuse:     "",
+			want:       blockerUnknown,
+			wantLadder: "each work on their own",
+		},
+		{
+			// Ordering, which is bwrap's own: namespaces before mounts, and
+			// the netns is created with the userns. A host refusing both must
+			// report the netns, because that is the one a reader hits first.
+			name:        "both the netns and the proc mount are refused",
+			refuse:      "--unshare-net",
+			alsoRefuses: "--proc",
+			want:        blockerNetns,
+			wantLadder:  "adding --unshare-net is what fails",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := fakeBwrap(t, tc.refuse, tc.alsoRefuses)
+			got, ladder := locateBwrapFailure(fake)
+			if got != tc.want {
+				t.Errorf("locateBwrapFailure = %v (%q), want %v", got, ladder, tc.want)
+			}
+			if !strings.Contains(ladder, tc.wantLadder) {
+				t.Errorf("ladder record = %q, does not contain %q", ladder, tc.wantLadder)
+			}
+		})
+	}
+}
+
+// fakeBwrap writes a script that exits 1 when any refused flag appears in its
+// argv and 0 otherwise. It is a stand-in for the KERNEL's answer, not for
+// bwrap: what the ladder measures is which invocation is refused, and a script
+// refuses on command.
+func fakeBwrap(t *testing.T, refuse ...string) string {
+	t.Helper()
+	var conds []string
+	for _, r := range refuse {
+		if r != "" {
+			conds = append(conds, "*"+r+"*) exit 1 ;;")
+		}
+	}
+	script := "#!/bin/sh\ncase \" $* \" in\n" + strings.Join(conds, "\n") + "\nesac\nexit 0\n"
+	path := filepath.Join(t.TempDir(), "bwrap")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Positive control: with nothing refused the script must exit 0, or every
+	// case above would read as "refused" and the test would pass vacuously.
+	if _, ladder := locateBwrapFailure(path); len(conds) == 0 && !strings.Contains(ladder, "each work on their own") {
+		t.Fatalf("control: a fake bwrap refusing nothing produced %q", ladder)
+	}
+	return path
+}
+
+// The advice is the half a human acts on, so it is asserted rather than
+// assumed. Each blocker names its own fix and none of them names another's:
+// the two CI failures this ladder exists for both printed the USERNS sysctls
+// as their fix, which is what sent a reader to the wrong knob.
+func TestEachBlockerNamesItsOwnFixAndNotAnothers(t *testing.T) {
+	for _, tc := range []struct {
+		blocker  bwrapBlocker
+		mustSay  []string
+		mustNot  []string
+		headline string
+	}{
+		{
+			blocker:  blockerUserns,
+			mustSay:  []string{"kernel.unprivileged_userns_clone", "user.max_user_namespaces", "apparmor_restrict_unprivileged_userns"},
+			mustNot:  []string{"systempaths", "unmask"},
+			headline: "cannot create a user namespace",
+		},
+		{
+			blocker: blockerNetns,
+			// It must say the namespace was CREATED — that sentence is the
+			// whole correction over the old single label.
+			mustSay:  []string{"CREATED", "apparmor_restrict_unprivileged_userns", "HOST sysctl"},
+			mustNot:  []string{"systempaths", "unmask"},
+			headline: "network namespace does not",
+		},
+		{
+			blocker:  blockerProcMount,
+			mustSay:  []string{"systempaths=unconfined", "unmask=/proc", "masks entries under /proc"},
+			mustNot:  []string{"unprivileged_userns_clone", "max_user_namespaces"},
+			headline: "/proc cannot be mounted",
+		},
+	} {
+		t.Run(tc.headline, func(t *testing.T) {
+			body := tc.blocker.headline() + "\n" + strings.Join(tc.blocker.advice(), "\n")
+			if !strings.Contains(tc.blocker.headline(), tc.headline) {
+				t.Errorf("headline = %q, want it to contain %q", tc.blocker.headline(), tc.headline)
+			}
+			for _, want := range tc.mustSay {
+				if !strings.Contains(body, want) {
+					t.Errorf("%v does not name %q:\n%s", tc.blocker, want, body)
+				}
+			}
+			for _, never := range tc.mustNot {
+				if strings.Contains(body, never) {
+					t.Errorf("%v names %q, which belongs to a different blocker:\n%s", tc.blocker, never, body)
+				}
+			}
+		})
+	}
+}
+
+// blockerUnknown is the one that must stay silent about causes. A probe that
+// cannot tell must say it cannot tell — inventing a fix here is how the two
+// measured misdiagnoses happened.
+func TestTheUnrecognisedBlockerClaimsNoCauseAndOffersNoFix(t *testing.T) {
+	if advice := blockerUnknown.advice(); advice != nil {
+		t.Errorf("blockerUnknown.advice() = %q, want none", advice)
+	}
+	h := blockerUnknown.headline()
+	if !strings.Contains(h, "not one this probe recognises") {
+		t.Errorf("blockerUnknown.headline() = %q, want it to admit the probe cannot tell", h)
+	}
+	for _, never := range []string{"sysctl", "apparmor", "systempaths"} {
+		if strings.Contains(strings.ToLower(h), never) {
+			t.Errorf("blockerUnknown.headline() names %q, which is a cause it did not measure: %q", never, h)
+		}
+	}
+}
+
+// "podman needs crun OR runc" is true of podman and false of snug when P5
+// selects cgroups=disabled: runc returns
+// `requested OCI runtime runc is not compatible with NoCgroups` at container
+// create, MEASURED in a Tumbleweed CI container that had runc and no crun
+// while doctor reported "podman's helper binaries are all findable" (run
+// 32944442005).
+//
+// The runtime lookup reads the real filesystem, so this asserts the DECISION
+// TABLE the report is built from rather than re-probing the host: for each
+// (crun present?, runc present?, cgroups disabled?) it states whether crun
+// must be named as missing.
+func TestRuncAloneIsNotEnoughWhenCgroupsAreDisabled(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		crun, runc      bool
+		cgroupsDisabled bool
+		wantMissing     bool
+	}{
+		{"neither runtime, cgroups fine", false, false, false, true},
+		{"neither runtime, cgroups disabled", false, false, true, true},
+		{"crun present, cgroups disabled", true, false, true, false},
+		{"crun present, cgroups fine", true, false, false, false},
+		{"both present, cgroups disabled", true, true, true, false},
+		// The measured case, and the only row the old "either/or" rule got
+		// wrong: runc is there, crun is not, and the run needs NoCgroups.
+		{"runc only, cgroups disabled", false, true, true, true},
+		// And the row that must NOT regress into a false alarm: runc alone is
+		// genuinely sufficient where cgroups are usable.
+		{"runc only, cgroups fine", false, true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ociRuntimeMissing(tc.crun, tc.runc, tc.cgroupsDisabled)
+			if got != tc.wantMissing {
+				t.Errorf("ociRuntimeMissing(crun=%v, runc=%v, cgroupsDisabled=%v) = %v, want %v",
+					tc.crun, tc.runc, tc.cgroupsDisabled, got, tc.wantMissing)
+			}
+		})
+	}
+}
+
+// The userns refusal splits two ways, and the split is the point: doctor
+// printed three sysctls as the fix in an environment where all three were
+// ALREADY correct (run 32946939204, a docker container whose job step had
+// verified kernel.apparmor_restrict_unprivileged_userns=0 on the host). The
+// real cause was docker's default seccomp profile denying clone(CLONE_NEWUSER),
+// visible as `stage: starting P1: fork/exec /proc/self/exe: operation not
+// permitted`.
+func TestAUsernsRefusalBlamesSeccompOnlyWhenTheSysctlsAreAlreadyFine(t *testing.T) {
+	for _, tc := range []struct {
+		name                             string
+		sysctlsPermissive, seccompFilter bool
+		want                             bwrapBlocker
+	}{
+		{"a sysctl really is in the way", false, false, blockerUserns},
+		// A filter is installed AND a sysctl is wrong: name the sysctl, which
+		// is the one the reader can act on without changing how they launch.
+		{"both could explain it", false, true, blockerUserns},
+		{"no filter, sysctls fine — do not invent a cause", true, false, blockerUserns},
+		{"the measured case", true, true, blockerUsernsSeccomp},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyUsernsRefusal(tc.sysctlsPermissive, tc.seccompFilter); got != tc.want {
+				t.Errorf("classifyUsernsRefusal(sysctls=%v, seccomp=%v) = %v, want %v",
+					tc.sysctlsPermissive, tc.seccompFilter, got, tc.want)
+			}
+		})
+	}
+}
+
+// The seccomp blocker must not repeat the sysctl advice that sent a reader to
+// the wrong knob, and must name the flag that fixes it.
+func TestTheSeccompBlockerNamesTheFlagAndNotTheSysctls(t *testing.T) {
+	body := blockerUsernsSeccomp.headline() + "\n" + strings.Join(blockerUsernsSeccomp.advice(), "\n")
+	for _, want := range []string{"seccomp=unconfined", "CLONE_NEWUSER", "Seccomp"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("blockerUsernsSeccomp does not name %q:\n%s", want, body)
+		}
+	}
+	for _, never := range []string{"unprivileged_userns_clone", "max_user_namespaces"} {
+		if strings.Contains(body, never) {
+			t.Errorf("blockerUsernsSeccomp names %q, the knob that was already correct:\n%s", never, body)
+		}
+	}
+}
+
+// The two /proc readers, on this host, against what /proc actually says. Not a
+// tautology: it pins the ABSENT-knob rule, which is what stops a
+// non-Debian-family kernel being told its missing sysctl is the problem.
+func TestUsernsSysctlReadersTreatAnAbsentKnobAsPermissive(t *testing.T) {
+	// Positive control: this suite runs where sandboxes work, so the sysctls
+	// must read permissive. If this fails, the reader is wrong, not the host.
+	if !usernsSysctlsPermissive() {
+		t.Skip("this host genuinely refuses unprivileged user namespaces; the reader cannot be checked here")
+	}
+	// /proc/self/status always carries a Seccomp line on a kernel with seccomp
+	// compiled in; the reader must agree with it rather than guess.
+	data, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Skip("no /proc/self/status")
+	}
+	var want bool
+	for _, line := range strings.Split(string(data), "\n") {
+		if rest, ok := strings.CutPrefix(line, "Seccomp:"); ok {
+			want = strings.TrimSpace(rest) != "0"
+		}
+	}
+	if got := seccompFilterInstalled(); got != want {
+		t.Errorf("seccompFilterInstalled() = %v, but /proc/self/status says %v", got, want)
+	}
+}

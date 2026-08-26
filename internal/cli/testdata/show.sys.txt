@@ -24,7 +24,7 @@ defined in  builtin:base.toml
                    /sbin -> usr/sbin
                    /lib -> usr/lib
                    /lib64 -> usr/lib64
-  optional         /opt /etc/ld.so.conf.d /etc/ssl /etc/pki /etc/ca-certificates /etc/ca-certificates.conf /etc/crypto-policies /var/lib/ca-certificates /usr/share/ca-certificates /etc/localtime /etc/os-release /etc/alternatives
+  optional         /opt /etc/ld.so.conf.d /etc/ssl /etc/pki /etc/ca-certificates /etc/ca-certificates.conf /etc/crypto-policies /var/lib/ca-certificates /usr/share/ca-certificates /etc/nsswitch.conf /etc/localtime /etc/os-release /etc/alternatives
 
 To see what this actually produces for a directory:
   snug --dry-run -p @sys <dir>

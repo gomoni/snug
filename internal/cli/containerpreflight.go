@@ -65,7 +65,7 @@ func runContainerPreflight(env policy.Environ, pol *policy.Policy) (containerPre
 		return containerPreflight{}, fmt.Errorf("the container engine needs a delegated subuid/"+
 			"subgid range and could not get one: %w", err)
 	}
-	cgroupsDisabled := preflightCgroupsWritable()
+	cgroupsDisabled := preflightCgroupsDisabled()
 	toolchainRoot, err := preflightToolchainRoot(env, podman)
 	if err != nil {
 		return containerPreflight{}, err
@@ -388,9 +388,14 @@ func preflightPodmanBinary(env policy.Environ, pol *policy.Policy) (string, erro
 	return pol.ResolveEngineBinary(env, path)
 }
 
-// preflightCgroupsWritable is P5: a real (if approximate) probe of whether
+// preflightCgroupsDisabled is P5: a real (if approximate) probe of whether
 // this host's cgroup delegation is usable, so podman does not fail opaquely
-// mid-run the first time it tries to write a controller file. It is NOT a
+// mid-run the first time it tries to write a controller file.
+//
+// It returns TRUE when cgroups must be DISABLED — i.e. when the probe could
+// not write. It was named ...Writable while returning exactly that, which is
+// the opposite of what the name says; the caller's own variable
+// (`cgroupsDisabled`) had it right. It is NOT a
 // fatal probe — it SELECTS podman's `cgroups = "disabled"` default
 // (engine.go's Spec) rather than refusing, per ENGINE-WIRING.md §4 P5.
 //
@@ -406,7 +411,7 @@ func preflightPodmanBinary(env policy.Environ, pol *policy.Policy) (string, erro
 // inside __inengine still fails loudly (never silently) — this probe only
 // affects which default podman starts with, not whether an actual failure
 // is reported.
-func preflightCgroupsWritable() bool {
+func preflightCgroupsDisabled() bool {
 	data, err := os.ReadFile("/proc/self/cgroup")
 	if err != nil {
 		return true // cannot tell; ask podman to assume the worse case

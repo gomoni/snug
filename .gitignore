@@ -51,3 +51,4 @@ poc/
 # races the source sweeps in internal/policy (issue #350). An instruction a
 # routine `git add -A` can quietly undo is not a rule.
 snug-dryrun-fixture-*/
+.engine-store/
