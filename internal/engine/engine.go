@@ -151,7 +151,12 @@ const quietBudget = 2 * time.Second
 const killBudget = 3 * time.Second
 
 // RunLabelKey is the container label snug stamps every container it creates
-// with, so that teardown can reach this run's containers and only those.
+// with, so the PROXY can tell this run's containers from an earlier run's.
+//
+// Its reader is internal/dockerproxy/ownership.go, which refuses a removal
+// naming a container that carries anyone else's label (issue #339). NOT
+// teardown: teardown is pid-namespace collapse and filters on nothing. The
+// Engine literal in New() states the same thing at length.
 //
 // A dotted, namespaced key rather than a bare word: labels are a flat namespace
 // shared with whatever the image and the user set, and `run` alone would be a
@@ -602,7 +607,8 @@ func (e *Engine) SockDir() string { return e.sockDir }
 func (e *Engine) ConfDir() string { return e.confDir }
 
 // RunLabel is the `key=value` this run's containers are stamped with. The proxy
-// applies it at create; teardown filters on it.
+// applies it at create and refuses a removal naming another run's (issue #339);
+// teardown filters on nothing, being pid-namespace collapse.
 func (e *Engine) RunLabel() string { return e.runLabel }
 
 // Spec builds the stage.EngineSpec that Stage.StartEngine consumes: exactly
@@ -1193,8 +1199,13 @@ func setEnv(env []string, key, value string) []string {
 //   - $HOME/.config/containers/policy.json — the signature policy. It decides
 //     whether an image may be used at all, it is REQUIRED (podman refuses to
 //     pull without one), and it is the one file here with NO environment
-//     variable and no flag: podman 5.8.4 has no --signature-policy at all,
-//     and a per-command flag would not reach an API-driven pull anyway. A
+//     variable and no flag that reaches it: MEASURED on podman 5.8.4,
+//     --signature-policy is a HIDDEN flag on `pull` and `push` and exists on
+//     neither `system service` nor the global command, so it cannot reach the
+//     API-driven pull the container proxy makes (signaturepolicy.go, same
+//     package, carries the same measurement). Stated PER SUBCOMMAND because
+//     the flat version — "no --signature-policy at all" — is what let a false
+//     claim stand next to the true one. A
 //     home of our own is the only lever, which is the same conclusion
 //     the research measurements reached independently. What that lever
 //     carries is the HOST's own policy, projected — signaturepolicy.go — so

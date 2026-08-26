@@ -696,11 +696,18 @@ func parseNetDev(out string) []string {
 //	       /usr/libexec/podman /usr/lib/podman /usr/bin]
 //
 // podman resolves a helper by looking in ABSOLUTE DIRECTORIES. It never walks a
-// prefix, so a relocated bundle's helpers are invisible unless
-// helper_binaries_dir names the directory they are in — and a relocated engine
-// splits them across usr/local/bin (crun, runc, pasta, podman) and
-// usr/local/lib/podman (conmon, netavark, aardvark-dns, catatonit,
-// rootlessport), of which snug's generated config names only the first.
+// prefix, so helpers are invisible unless helper_binaries_dir names the
+// directory they are in — and snug's generated value
+// (engine.helperBinariesDirs) is {/usr/libexec/podman, /usr/lib/podman,
+// /usr/bin}, the distribution spellings. That is a superset of what any one
+// host has, not three directories that exist: measured on this host (podman
+// 6.0.2, openSUSE Tumbleweed) /usr/lib/podman does NOT.
+//
+// podmanHelperDirs below is DELIBERATELY WIDER than that generated value. It
+// is the list libpod's own error messages name, so what a user is checked
+// against is what podman actually searched — a helper this check finds in a
+// directory the generated config does not name is still a real diagnosis, and
+// the two lists answer different questions.
 //
 // doctor exists so a user diagnoses that before their first run rather than
 // during it, which is why this is a check and not a paragraph in the README.
