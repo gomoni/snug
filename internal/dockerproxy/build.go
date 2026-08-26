@@ -41,7 +41,7 @@ import (
 //	--device /dev/fuse       devices=["/dev/fuse"]               host device
 //	--network=none          networkmode=1 AND nsoptions=[...]   TWO independent spellings
 //	--network=bridge/pasta  networkmode=2, name in nsoptions    the name rides in Path
-//	--cgroup-parent foo      cgroupparent=foo                    a cgroup outside the sandbox's
+//	--cgroup-parent foo      cgroupparent=foo                    a cgroup snug did not choose
 //	--add-host h:1.2.3.4     extrahosts=[...]                    name redirection
 //	--security-opt seccomp=  seccomp=unconfined | /host/path     hardening downgrade, host read
 //
@@ -262,8 +262,8 @@ const (
 
 	resourceLimit = "A hostile process inside the sandbox can use these to choose how much memory, " +
 		"CPU and shared memory its own build may use. They bound the build rather than widening " +
-		"it, and cgroupparent — the one parameter that would move it into a cgroup outside this " +
-		"sandbox's own — is refused."
+		"it, and cgroupparent — the one parameter that would name a cgroup snug did not choose " +
+		"— is refused."
 
 	// Inert for an ordinary build, measured in the source rather than assumed:
 	// buildah 1.44.1 imagebuildah/stage_executor.go:2748-2756 applies
@@ -322,12 +322,21 @@ var buildParams = map[string]buildParamCheck{
 	"devices": refuseBuildParam("the engine's /dev is the sandbox's own synthetic tree since " +
 		"Tier C (issue #125), with no host device nodes, and the engine holds no CAP_MKNOD to " +
 		"make one — so a device request has nothing host-shaped to pass through"),
-	"cgroupparent": refuseBuildParam("it places the build in a cgroup outside this sandbox's own"),
-	"isolation":    checkIsolation,
-	"extrahosts":   refuseBuildParam("name redirection"),
-	"dnsservers":   refuseBuildParam("resolver redirection"),
-	"dnsoptions":   refuseBuildParam("resolver redirection"),
-	"dnssearch":    refuseBuildParam("resolver redirection"),
+	// The create-side twin, refusalReason["CgroupParent"], is the wording this
+	// matches: the engine is forked with CLONE_NEWCGROUP
+	// (internal/stage/enginefork.go) and mounts a fresh cgroup2 over
+	// /sys/fs/cgroup (modelled in internal/cli/engineview.go), so a client-named
+	// parent is resolved against the ENGINE's cgroup root, not the host's. This said
+	// "outside this sandbox's own" — the pre-Tier-C model the create side was
+	// already corrected for, and the same door on the other path (issue #372).
+	"cgroupparent": refuseBuildParam("snug authors the build's cgroup placement; a " +
+		"client-named parent is a path snug did not choose, resolved inside the engine's " +
+		"own cgroup namespace"),
+	"isolation":  checkIsolation,
+	"extrahosts": refuseBuildParam("name redirection"),
+	"dnsservers": refuseBuildParam("resolver redirection"),
+	"dnsoptions": refuseBuildParam("resolver redirection"),
+	"dnssearch":  refuseBuildParam("resolver redirection"),
 	"addcapabilities": refuseBuildParam(
 		"added capabilities apply to the host kernel, not to the sandbox"),
 	"runtime": refuseBuildParam("an alternate OCI runtime is an arbitrary host binary"),
@@ -1026,8 +1035,11 @@ func checkNetworkMode(_ *Proxy, v string) (string, error) {
 // name allowlist closes: handing the engine a namespace request under a name
 // snug has never judged, and getting whatever the runtime does with it.
 //
-// Two names are exceptions to "Host:true means the HOST's namespace, which is
-// outside this sandbox", each named rather than pattern-matched:
+// Host:true never reaches the MACHINE's namespace for any of the six names,
+// which is why the refusal below says "the namespace the engine calls host":
+// the engine clones pid, ipc, uts and cgroup for itself
+// (internal/stage/enginefork.go). Two of the six are accepted, each named
+// rather than pattern-matched:
 //
 //   - `user`, the rootless default the CLI always sends — the engine already
 //     runs in that user namespace.
@@ -1071,8 +1083,11 @@ func checkNSOptions(_ *Proxy, v string) (string, error) {
 				o.Name)
 		}
 		if o.Host && name != "user" && name != "network" {
-			return "", fmt.Errorf("%q asks for the HOST's %s namespace, which is outside this "+
-				"sandbox", o.Name, name)
+			return "", fmt.Errorf("%q asks for the %s namespace the engine calls \"host\", "+
+				"which is the ENGINE's own and not the machine's — it clones pid, ipc, uts "+
+				"and cgroup for itself. Refused because snug authors this build's "+
+				"namespaces, and joining the engine's own is what HostConfig.PidMode is "+
+				"refused for at create", o.Name, name)
 		}
 		if name == "network" && o.Host {
 			continue // Host:true means N, this sandbox's own netns (issue #401).

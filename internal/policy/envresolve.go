@@ -406,12 +406,16 @@ func (p *Policy) SandboxView() View {
 // exactly the shape the #125 PATH sweep exists to catch (issue #55, finding
 // F1). Do not restore the false premise; the loop below is the fix.
 //
-// ok is false when there are no grafts — which is every topology that ships
-// today, where the engine's mount namespace is a private COPY of the host tree
-// and this Policy does not model it at all (internal/stage/inengine.go's own
-// doc comment). Deriving nothing and calling it a view would put a fiction on
+// ok is false when there are no grafts, which is a Policy that never reached a
+// container run rather than a topology that ships: startContainers calls
+// installEngineViewGrafts before its --dry-run branch, and Engine.GraftInto
+// records the store, runroot, sock and conf grafts, so every container run
+// models some. Deriving nothing and calling it a view would put a fiction on
 // the --dry-run screen: len(p.Grafts) == 0 must render as "there is no engine
-// view to show", not as "the engine view happens to equal the sandbox's".
+// view to show", not as "the engine view happens to equal the sandbox's" —
+// and checkEnginePATH, the only other caller, refuses with the missing call
+// named rather than answering "no writable slots" about a view nothing
+// modelled.
 func (p *Policy) EngineView() (View, bool) {
 	if len(p.Grafts) == 0 {
 		return View{}, false

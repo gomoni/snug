@@ -200,11 +200,21 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// allowed()), and the generic message would leave a reader guessing at
 		// an alternative. There is one, and it goes through the mount boundary
 		// this proxy actually enforces.
-		p.deny(w, "the container archive endpoint (%s /%s) is not permitted; it is "+
-			"serviced by the ENGINE, outside the sandbox, as the host uid, so it is not "+
-			"bounded by this sandbox's mount grants the way `exec` is. Read or write the "+
-			"file with `docker exec <container> cat <path>` or `... | docker exec -i "+
-			"<container> tar -x ...` instead.", r.Method, strings.Join(segs, "/"))
+		//
+		// The message said the endpoint is "not bounded by this sandbox's mount
+		// grants the way `exec` is" (issue #372). Since Tier C (issue #125) it
+		// IS bounded by them: the engine's view is the sandbox's own plus this
+		// run's grafts (internal/stage/inengine.go step 4). The distinction is
+		// WHICH set, not bounded versus unbounded — same wording as
+		// refusalReason's ContainerIDFile and LogConfig, same fact about the
+		// same engine.
+		p.deny(w, "the container archive endpoint (%s /%s) is not permitted; the ENGINE "+
+			"services it, resolving the path in its DERIVED view — the sandbox's own tree "+
+			"plus this run's grafts, the read-write container store among them — which is "+
+			"a WIDER set of paths than the container rootfs that bounds `exec`, and archive "+
+			"path resolution is where a symlink out of that rootfs escapes into it. Read or "+
+			"write the file with `docker exec <container> cat <path>` or `... | docker exec "+
+			"-i <container> tar -x ...` instead.", r.Method, strings.Join(segs, "/"))
 	case allowed(segs, r.Method):
 		p.forward(w, r, nil)
 	default:
@@ -470,16 +480,19 @@ func allowed(segs []string, method string) bool {
 			switch segs[2] {
 			case "archive", "export":
 				// NOT because these are "unbounded by the mount policy" — that
-				// reasoning, which used to live here, would indict `exec`
-				// equally, and `exec` is (correctly) allowed below. The real
-				// distinction is WHERE the request runs and AS WHOM: archive and
-				// export are serviced by the ENGINE, outside the sandbox, as the
-				// HOST UID — not confined by the container's own mount namespace
-				// the way `exec` is — and archive path resolution is the home of
-				// the CVE-2018-15664 symlink-escape class. Allowing it would rest
-				// safety on PODMAN's path resolution rather than on snug's own
-				// boundary (redteam, CONTAINER-CLIENT.md §9). isArchive() above
-				// gives the refusal a named alternative; this stays a hard no.
+				// reasoning would indict `exec` equally, and `exec` is
+				// (correctly) allowed below. The real distinction is WHOSE VIEW
+				// resolves the path: archive and export are serviced by the
+				// ENGINE, which resolves it in the DERIVED view of issue #125's
+				// Tier C — the sandbox's own tree plus this run's grafts, the
+				// read-write container store among them — rather than in the
+				// container rootfs that confines `exec`, and archive path
+				// resolution is the home of the CVE-2018-15664 symlink-escape
+				// class. Allowing it would rest safety on PODMAN's path
+				// resolution rather than on snug's own boundary (redteam,
+				// CONTAINER-CLIENT.md §9, which reads the pre-Tier-C engine and
+				// is a dated record of it). isArchive() above gives the refusal
+				// a named alternative; this stays a hard no.
 				return false
 			case "commit", "update":
 				// commit turns a container into an image snug never inspected;
