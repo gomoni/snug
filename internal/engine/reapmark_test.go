@@ -30,7 +30,7 @@ func TestTeardownMatchesTheArgvTheEngineIsStartedWith(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman",
-		[]string{"PATH=/usr/bin"}, false, noSignaturePolicy(t))
+		[]string{"PATH=/usr/bin"}, false, "", noSignaturePolicy(t))
 	if err != nil {
 		t.Fatal(err)
 	}

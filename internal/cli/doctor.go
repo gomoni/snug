@@ -826,7 +826,12 @@ func reportPodmanHelpers() {
 	case ociRuntimeMissing(crun, runc, preflightCgroupsDisabled()):
 		// runc is present and cannot serve here. Named as crun specifically,
 		// because "crun or runc" would be the advice that produced the 500.
-		missing = append(missing, "crun (runc is present, and cannot run with cgroups disabled on this host)")
+		// The run REFUSES on this, before the engine starts (preflight P10,
+		// which calls this same predicate). Saying only "missing" would
+		// under-state it: a doctor that reports a gap where the code refuses
+		// leaves the reader expecting a container that fails at create.
+		missing = append(missing, "crun (runc is present, and cannot run with cgroups disabled "+
+			"on this host — the run refuses before the engine starts)")
 	}
 
 	if len(missing) == 0 {

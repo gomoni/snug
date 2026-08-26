@@ -58,7 +58,7 @@ func TestStopEscalatesToSIGKILLWhenTheEngineOutlivesTheCascade(t *testing.T) {
 	// no value of it changes the mark paths() records, which is all this test
 	// reads out of Spec.
 	if _, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}), "/usr/bin/podman",
-		[]string{"PATH=/usr/bin"}, false, noSignaturePolicy(t)); err != nil {
+		[]string{"PATH=/usr/bin"}, false, "", noSignaturePolicy(t)); err != nil {
 		t.Fatal(err)
 	}
 
