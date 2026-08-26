@@ -555,6 +555,55 @@ snug refuses three things, and none of them is "too dangerous for you":
 `snug doctor` may get louder about profiles that are dangerous but correct
 (issue #80). It will not refuse to run one.
 
+**A KNOWN GAP, and it is the sharpest one on this page: with `@claude`, the
+sandbox can reach your account's other Claude Code sessions.** `@claude` stages
+a working credential and `@net` gives egress — both deliberate, both what make
+the profile useful — and Claude Code's session mesh reaches peers over the
+network, through Anthropic's servers. snug's boundary is this MACHINE. The
+session mesh is your ACCOUNT.
+
+It is not a sandbox escape: no filesystem, no kernel, no host process, no
+namespace. It is an authority escape *iff the peer is less confined than the
+sender*, and the case that matters is a Remote Control session on another
+machine — unsandboxed, with that machine's files and credentials. A payload
+inside snug that can send it instructions has a deputy outside every boundary
+snug draws.
+
+**snug cannot close this and is not going to pretend otherwise.** The only
+mechanisms available are a filtering proxy over TLS to Anthropic — which would
+have to tell "the agent doing its job" from "the agent messaging a peer" on the
+same host, same credential, same protocol — or removing the credential or the
+egress, which is removing the feature. A filtering proxy that is 95% correct is
+a sandbox that is 0% sound.
+
+**snug sets two of Claude Code's own controls for you, and they are not a
+boundary.** The `~/.claude/settings.json` snug generates inside the sandbox
+carries `crossSessionInbound = "refuse"` — inbound peer messages are refused
+rather than parked for an approval nothing in there can give — and
+`isolatePeerMachines = true`, so reaching a peer session on *another* machine
+needs an explicit approval that `bypassPermissions` mode does not lift. Your
+host's own values for both keys are dropped, like every other remote-surface
+key. `snug --dry-run` prints both under `snug set`.
+
+Both are enforced **client-side by Claude Code**, so treat them as a default
+and not as a boundary: a payload with code execution holds the credential and
+can talk to the API with no client at all, it controls its own command line
+(`--settings` layers rather than replaces, and `--setting-sources
+project,local` drops user scope outright), and that settings file is writable
+inside the sandbox. What they do buy is real but bounded — against a
+prompt-injected *model*, which acts through the tools its client offers, they
+are upstream gates in front of exactly those tools; and because
+`crossSessionInbound` is enforced in the *receiving* client, a payload in one
+snug sandbox cannot address a session in another, at an enforcement point it
+does not control.
+
+snug deliberately does **not** author `permissions.deny` naming `SendMessage`
+and `ListAgents`. That is a denylist over a surface with at least three members
+— `SendMessage`, `SendFile` and `ObserverReport` — so it would leave peer file
+transfer, the worse half, wide open. `isolatePeerMachines` is upstream's own
+gate over the whole surface instead. Organisation *managed settings* remain the
+only variant a session cannot override.
+
 The complete goals and non-goals — what host state snug protects, what it
 deliberately does not, and worked prevented/not-prevented examples — live in
 [`.claude/design/THREAT-MODEL.md`](.claude/design/THREAT-MODEL.md).

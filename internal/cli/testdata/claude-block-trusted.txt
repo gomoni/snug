@@ -27,6 +27,18 @@ CLAUDE   ~/.claude.json is GENERATED, not copied — three keys, no host bytes
          settings   ~/.claude/settings.json is GENERATED from an allowlist of
                     the host's — not bound, never read-only
                     carried: theme
+         snug set   crossSessionInbound="refuse"  isolatePeerMachines=true
+                    snug AUTHORS these; your host's values for them are
+                    dropped like every other remote-surface key. Inbound peer
+                    messages are refused, and SendMessage/SendFile to a session
+                    on ANOTHER machine needs explicit approval (bypassImmune in
+                    claude 2.1.246 — bypassPermissions does not lift it)
+                    CLIENT-SIDE: a DEFAULT, not a boundary. The payload holds
+                    the credential, controls its own argv, and this file is
+                    writable — THREAT-MODEL.md 3.1
+         overridden crossSessionInbound
+                    the one class where both happen: your host's value dropped
+                    AND snug's own written
          unknown    someFuturePreference
                     on NEITHER list above (not the allowlist, not
                     ClaudeExecutingKeys) — not carried, and not otherwise

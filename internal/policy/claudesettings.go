@@ -164,6 +164,133 @@ var ClaudeSettingAllowlist = []ClaudeSettingKey{
 	},
 }
 
+// ClaudeAuthoredSetting is one key snug WRITES ITSELF into the user-scope
+// ~/.claude/settings.json — not carried from the host, not derived from any
+// host or target byte. Kind reuses ClaudeSettingKind, so the authored set is
+// scalar-only for the same structural reason the allowlist is: there is no
+// container constant to declare (R-SCALAR). Authoring `permissions` therefore
+// cannot be done by adding a row; it needs a type change, which is the review
+// gate it should need — see the refusal in condition 3.
+//
+// AUTHORING IS NOT CARRYING, and FilterClaudeSettings' doc comment on
+// disableAllHooks argues the negative case for CARRYING. What binds from it:
+// "a key is carried because it is provably safe, never because it happens to
+// tighten" (that is the allowlist's rule and it still holds), and "it would
+// make this fix APPEAR to close a channel it does not close" (that binds here,
+// and is answered by Why plus the disclosure at every sink, not by refusing).
+// What does not bind: invariant 1 is about GRANTS — which host paths are
+// visible, resolved as a union with no subtraction — and a key inside a file
+// snug wholly authors is not a grant and subtracts none. snug already authors
+// restriction into generated config: claudeStateJSON's autoUpdates=false, the
+// regenerated installed_plugins.json, registries.conf searching only
+// docker.io.
+//
+// Four conditions, all required:
+//  1. the value is a literal here — no host or target byte reaches it;
+//  2. the key's ABSENT-DEFAULT is the permissive value, so authoring changes
+//     behaviour (measured, claude 2.1.246: the binary's own restrictive table
+//     carries {path:["crossSessionInbound"],restrictive:["refuse","hold"]} and
+//     {path:["isolatePeerMachines"],restrictive:!0}). This is what refuses
+//     remoteControlAtStartup=false, channelsEnabled=false and
+//     autoUploadSessions=false: they default off, so authoring them is
+//     decoration;
+//  3. it is UPSTREAM'S OWN GATE over a whole surface, not an enumeration of
+//     tool names. permissions.deny:["SendMessage","ListAgents"] fails this and
+//     is refused: measured in 2.1.246 the outbound peer surface is at least
+//     SendMessageTool, SendFileTool and ObserverReport, so a deny of two names
+//     leaves file transfer to a peer open — the worse half. That is the
+//     denylist argument ClaudeExecutingKeys' own doc comment already refuses
+//     ("a denylist naming one spelling is bypassed by the other, in the
+//     upstream's own documentation, with no attacker required");
+//  4. it is a scalar.
+//
+// NONE OF THIS IS A BOUNDARY. Both keys are enforced CLIENT-SIDE by Claude
+// Code. A payload inside the sandbox holds the staged OAuth token and can
+// speak HTTP to the API with no client, controls its own argv (--settings
+// LAYERS rather than replaces; --setting-sources project,local drops user
+// scope outright) and can rewrite this file, which is rw by the gh precedent
+// and already an accepted residual (see stageClaudeSettings' doc comment).
+// What authoring buys is bounded and stated: against a prompt-injected MODEL
+// these are upstream gates in front of the tools it would use, and
+// crossSessionInbound is enforced in the RECEIVING client — so a payload in
+// one snug sandbox cannot address a session in another, at an enforcement
+// point it does not control.
+type ClaudeAuthoredSetting struct {
+	Name  string
+	Kind  ClaudeSettingKind
+	Value any    // string | bool | float64, matching Kind; a literal in this file
+	Why   string // one line, rendered by --dry-run's CLAUDE block
+}
+
+// ClaudeAuthoredSettings is the fixed, whole set of keys snug authors into the
+// user-scope ~/.claude/settings.json, unconditionally, on every run that
+// selects @claude. See ClaudeAuthoredSetting's doc comment for the four
+// conditions a key must meet to be here, and why `permissions.deny` was
+// refused rather than added.
+var ClaudeAuthoredSettings = []ClaudeAuthoredSetting{
+	{
+		Name: "crossSessionInbound", Kind: ClaudeString, Value: "refuse",
+		Why: "inbound peer messages are refused, not parked for an approval nothing in here can give",
+		// Schema, claude 2.1.246: m(["accept","hold","refuse"]).optional()
+		// .catch(void 0). "hold" is rejected on purpose: a held message waits
+		// for an approval a headless sandbox never gives, which is a queue,
+		// not a decision.
+		//
+		// This is the RECEIVE side, so it is not the outbound half issue #87
+		// calls sharp — it is the half whose enforcement point the attacker
+		// does not hold. Every snug run authors it, so a payload in sandbox A
+		// cannot drive a session in sandbox B, and B's rw target is a
+		// DIFFERENT persistent write authority from A's.
+		//
+		// IN-PROCESS SUBAGENTS ARE UNAFFECTED, which is what makes this
+		// shippable rather than a break. The gate's own origin classifier
+		// (2.1.246) routes only kind==="peer", plus a task-notification whose
+		// subkind is literally "peer-send-message", into the policy switch;
+		// every other origin classifies "ungated" and the switch returns
+		// "accept" unconditionally. A Task subagent's notification is neither.
+		// Read statically off the classifier, not from a live round-trip.
+		//
+		// Measured: a repo-scope value can only tighten ("a repo may only
+		// tighten, so your own \"accept\" cannot override it"), which is why
+		// user scope alone is enough and the project-scope generated file
+		// authors nothing.
+	},
+	{
+		Name: "isolatePeerMachines", Kind: ClaudeBool, Value: true,
+		Why: "SendMessage/SendFile to a session on ANOTHER machine needs explicit approval",
+		// Schema, claude 2.1.246: "Require explicit approval before
+		// SendMessage can reach a peer session on another machine via Remote
+		// Control", and it covers file transfer too ("isolatePeerMachines is
+		// enabled — file transfer to another session requires explicit
+		// approval"). One gate, whole surface: condition 3 above.
+		//
+		// The property no other key here has, from the binary's own table:
+		// isolatePeerMachines:{bypassImmune:!0,classifierRouted:!1}, with
+		// classifierApprovable:!1 on the decision. The check survives
+		// bypass-permissions mode and cannot be auto-approved. It is an ASK,
+		// not a deny: interactive, the human at the sandbox sees the prompt.
+		// The HEADLESS arm is NOT MEASURED — do not claim in any comment, Why
+		// string or screen that an unanswerable ask denies.
+		//
+		// It targets exactly the case issue #87 calls sharp: an unsandboxed
+		// Remote Control session on another machine, with that machine's files
+		// and credentials.
+	},
+}
+
+// ClaudeAuthoredNames returns the authored key names, sorted. Callers that
+// print the set enumerate through this and never hand-write the list — the
+// same rule the allowlist's own name helper exists for: prose that copies a
+// table drifts and no test fails.
+func ClaudeAuthoredNames() []string {
+	names := make([]string, 0, len(ClaudeAuthoredSettings))
+	for _, a := range ClaudeAuthoredSettings {
+		names = append(names, a.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // ClaudeExecutingKeys is a NAMED CATALOGUE of keys known to name a program,
 // select or fetch code, set a process environment variable, carry credential
 // state, or steer login/authentication — grouped and reasoned about in
@@ -241,7 +368,10 @@ var ClaudeExecutingKeys = map[string]string{
 	// name so a partial import would change how Claude Code's cross-source
 	// precedence resolves, which is why the WHOLE object is refused rather than
 	// picking "safe-looking" fields out of it.
-	"permissions":                       "allow/ask/deny/defaultMode/additionalDirectories — defaultMode can be bypassPermissions",
+	"permissions": "allow/ask/deny/defaultMode/additionalDirectories — defaultMode can be bypassPermissions" +
+		" — and snug authors no partial permissions object either: the outbound peer tool" +
+		" surface is at least SendMessage, SendFile and ObserverReport, so a deny of two" +
+		" names is a denylist",
 	"skipDangerousModePermissionPrompt": "suppresses the confirmation for bypassPermissions",
 	"allowManagedHooksOnly":             "policy toggle, meaningless without the managed layer @sys does not grant",
 	"allowManagedPermissionRulesOnly":   "same",
@@ -296,10 +426,10 @@ var ClaudeExecutingKeys = map[string]string{
 	"startDirectory":          "remote-session steering",
 	"remoteControlAtStartup":  "opens remote control",
 	"autoUploadSessions":      "uploads session data",
-	"crossSessionInbound":     "cross-session channel",
+	"crossSessionInbound":     "cross-session channel — snug authors its own value (see ClaudeAuthoredSettings)",
 	"channelsEnabled":         "remote channel",
 	"allowedChannelPlugins":   "remote channel, plugin-adjacent",
-	"isolatePeerMachines":     "remote peer topology",
+	"isolatePeerMachines":     "remote peer topology — snug authors its own value (see ClaudeAuthoredSettings)",
 	"teammateMode":            "remote collaboration",
 	"daemonColdStart":         "remote daemon steering",
 	"agentPushNotifEnabled":   "push notification channel",
@@ -392,7 +522,7 @@ type ClaudeSettingRefusal struct {
 }
 
 // ClaudeSettingDrops is everything FilterClaudeSettings did NOT carry from the
-// host's document, split by WHY — the three classes mean different things to
+// host's document, split by WHY — the four classes mean different things to
 // whoever reads them, and collapsing them loses that:
 //
 //   - Executing is a dropped key FilterClaudeSettings recognised, from
@@ -412,12 +542,20 @@ type ClaudeSettingRefusal struct {
 //     Upstream Claude Code ships new keys with no stable schema and no
 //     announcement; an Unknown entry is the only signal a maintainer gets that
 //     one has appeared and wants a classification.
+//   - Overridden is an authored key the HOST's file also set. It is the only
+//     class where both things happen: the host's value is dropped AND snug
+//     writes its own. It is split out of Executing because Executing's
+//     message ("each names a program to run, selects or fetches code, or sets
+//     a process environment variable") is FALSE for these two names, and
+//     CLAUDE.md's rule is that a message reading as a different bug is a
+//     defect, not a simplification.
 //
-// All three slices are sorted, for deterministic stderr and --dry-run output.
+// All four slices are sorted, for deterministic stderr and --dry-run output.
 type ClaudeSettingDrops struct {
-	Executing []string
-	Unknown   []string
-	Refused   []ClaudeSettingRefusal
+	Executing  []string
+	Unknown    []string
+	Refused    []ClaudeSettingRefusal
+	Overridden []string
 }
 
 // FilterClaudeSettings builds the allowlisted subset of a decoded host
@@ -481,6 +619,10 @@ type ClaudeSettingDrops struct {
 func FilterClaudeSettings(raw map[string]any) (ClaudeSettings, ClaudeSettingDrops) {
 	out := ClaudeSettings{}
 	allowed := make(map[string]bool, len(ClaudeSettingAllowlist))
+	authored := make(map[string]bool, len(ClaudeAuthoredSettings))
+	for _, a := range ClaudeAuthoredSettings {
+		authored[a.Name] = true
+	}
 	var refused []ClaudeSettingRefusal
 	refuse := func(name, reason string) { refused = append(refused, ClaudeSettingRefusal{Name: name, Reason: reason}) }
 
@@ -523,9 +665,19 @@ func FilterClaudeSettings(raw map[string]any) (ClaudeSettings, ClaudeSettingDrop
 		}
 	}
 
-	var droppedExecuting, unknown []string
+	var droppedExecuting, unknown, overridden []string
 	for name := range raw {
 		if allowed[name] {
+			continue
+		}
+		// Tested BEFORE ClaudeExecutingKeys: both authored names are also
+		// catalogued there (the host value is still refused, same as any other
+		// executing key), but a host setting one of them is the fourth,
+		// distinct class — see ClaudeSettingDrops' doc comment on Overridden —
+		// not an ordinary refusal-on-purpose with nothing for the human to act
+		// on.
+		if authored[name] {
+			overridden = append(overridden, name)
 			continue
 		}
 		if _, known := ClaudeExecutingKeys[name]; known {
@@ -541,8 +693,9 @@ func FilterClaudeSettings(raw map[string]any) (ClaudeSettings, ClaudeSettingDrop
 	}
 	sort.Strings(droppedExecuting)
 	sort.Strings(unknown)
+	sort.Strings(overridden)
 	sort.Slice(refused, func(i, j int) bool { return refused[i].Name < refused[j].Name })
-	return out, ClaudeSettingDrops{Executing: droppedExecuting, Unknown: unknown, Refused: refused}
+	return out, ClaudeSettingDrops{Executing: droppedExecuting, Unknown: unknown, Refused: refused, Overridden: overridden}
 }
 
 // ClaudeSettings is the allowlisted subset, keyed by name. Values are always
@@ -614,6 +767,62 @@ func ClaudeSettingsJSON(s ClaudeSettings) []byte {
 		// claudeStateJSON applies one layer down, for the same reason — an
 		// adapter that fails must degrade to "unconfigured", never crash the
 		// run CLAUDE.md's "Generate, don't bind" bullet promises stays boring).
+		return []byte("{}\n")
+	}
+	return append(b, '\n')
+}
+
+// ClaudeUserSettingsJSON renders the USER-scope file: the carried set exactly
+// as ClaudeSettingsJSON renders it, plus ClaudeAuthoredSettings. Two functions
+// rather than a flag, because the two files are different documents:
+// stageProjectClaudeSettings keeps ClaudeSettingsJSON, so the target's
+// reinterpreted .claude/settings.json states nothing about peer messaging (a
+// repo may only tighten, measured — user scope already applies, and the same
+// claim in three files is three things to keep true).
+//
+// Authored keys are written LAST. A collision cannot occur — the disjointness
+// test fails the build first, and FilterClaudeSettings only ever writes
+// allowlist names into the carried map — so the order is the belt and the test
+// is the braces.
+func ClaudeUserSettingsJSON(s ClaudeSettings) []byte {
+	out := make(map[string]any, len(s)+len(ClaudeAuthoredSettings))
+	for _, k := range ClaudeSettingAllowlist {
+		v, ok := s[k.Name]
+		if !ok {
+			continue
+		}
+		switch k.Kind {
+		case ClaudeString:
+			str, ok := v.(string)
+			if !ok || !validScalarString(str) {
+				continue
+			}
+			if k.Check != nil && !k.Check(str) {
+				continue
+			}
+			out[k.Name] = str
+		case ClaudeBool:
+			b, ok := v.(bool)
+			if !ok {
+				continue
+			}
+			out[k.Name] = b
+		case ClaudeNumber:
+			n, ok := v.(float64)
+			if !ok {
+				continue
+			}
+			out[k.Name] = n
+		}
+	}
+	for _, a := range ClaudeAuthoredSettings {
+		out[a.Name] = a.Value
+	}
+	b, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		// Unreachable — see ClaudeSettingsJSON's identical fallback comment;
+		// every value here is one of the same three Go kinds, host-derived or
+		// a literal declared in this file.
 		return []byte("{}\n")
 	}
 	return append(b, '\n')

@@ -41,7 +41,9 @@ import (
 //	                          were carried (nothing on the fake host to carry)
 //	claude-block-trusted.txt  host HAS trusted this exact path, AND its
 //	                          settings.json exercises the filter: some keys
-//	                          carried, some (consequential) keys dropped
+//	                          carried, some (consequential) keys dropped, and
+//	                          one authored key (issue #87) the host also set
+//	                          — the `overridden` block's only golden coverage
 //
 // Pairing the arms this way rather than writing four goldens keeps the review
 // artifact to two files while leaving no rendered sentence unpinned; each arm's
@@ -96,10 +98,13 @@ func goldenClaudeBlock(t *testing.T, name string, hostTrusts, exerciseSettingsFi
 	}
 	// The real staging code, against the fake host's home. /home/u does not
 	// exist, so the credentials copy is skipped, the ~/.claude.json trust entry
-	// is absent, and stageClaudeSettings' own host read comes back "absent" too
-	// — settings.json is staged with an empty allowlisted set ("{}\n"). That IS
-	// the untrusted arm, reached the way a real host reaches it rather than by
-	// poking the policy.
+	// is absent, and stageClaudeSettings' own host read comes back "absent"
+	// too — settings.json is staged with an empty ALLOWLISTED set, but the two
+	// authored keys (issue #87) are unconditional, so the rendered file is not
+	// "{}\n" here: that empty document is only ever reachable for the
+	// project-scope file (policy.ClaudeSettingsJSON, unchanged by #87), never
+	// for this one. That IS the untrusted arm, reached the way a real host
+	// reaches it rather than by poking the policy.
 	if err := claudeFiles(p, ctx.Home, false); err != nil {
 		t.Fatalf("claudeFiles: %v", err)
 	}
@@ -133,14 +138,17 @@ func goldenClaudeBlock(t *testing.T, name string, hostTrusts, exerciseSettingsFi
 		// in memory rather than written to ctx.Home (which does not exist on any
 		// machine, same reason the trust arm above uses a separate temp directory
 		// instead). One carried key, one dropped-and-catalogued key, one key on
-		// NEITHER catalogue: enough to show all three lines of the disclosure
-		// without turning the golden into a second copy of
-		// TestClaudeSettingsFilterDropsEveryExecutingKey. The third is the
-		// regression fixture for the defect this golden exists to pin: a
-		// dropped key on no list was previously reported nowhere.
+		// NEITHER catalogue, one authored key the host also set: enough to show
+		// all four lines of the disclosure without turning the golden into a
+		// second copy of TestClaudeSettingsFilterDropsEveryExecutingKey. The
+		// third is the regression fixture for the defect this golden exists to
+		// pin: a dropped key on no list was previously reported nowhere. The
+		// fourth (issue #87) is what puts the `overridden` block, and the `snug
+		// set` block above it, into a golden rather than leaving them pinned
+		// only by a unit test.
 		raw := map[string]any{
 			"theme": "dark", "apiKeyHelper": "/bin/cat /etc/passwd",
-			"someFuturePreference": true,
+			"someFuturePreference": true, "crossSessionInbound": "accept",
 		}
 		carried, drops := policy.FilterClaudeSettings(raw)
 		if _, ok := carried["theme"]; !ok {
@@ -156,11 +164,17 @@ func goldenClaudeBlock(t *testing.T, name string, hostTrusts, exerciseSettingsFi
 			t.Fatal("control: the filter did not report `someFuturePreference` as an unknown " +
 				"key, so this arm would not exercise the class this golden exists to pin")
 		}
-		// stageClaudeSettings sets this on the Policy REGARDLESS of -v (see its
-		// own comment); this fixture does the same rather than going through
-		// stageClaudeSettings itself, for the same reason the trust arm above
-		// builds its mount by hand instead of calling claudeFiles a second time.
+		if len(drops.Overridden) == 0 {
+			t.Fatal("control: the filter did not report `crossSessionInbound` as overridden, " +
+				"so this arm would not exercise the `overridden` block this golden exists to pin")
+		}
+		// stageClaudeSettings sets both fields on the Policy REGARDLESS of -v
+		// (see its own comment); this fixture does the same rather than going
+		// through stageClaudeSettings itself, for the same reason the trust arm
+		// above builds its mount by hand instead of calling claudeFiles a
+		// second time.
 		p.ClaudeSettingsUnknown = drops.Unknown
+		p.ClaudeSettingsOverridden = drops.Overridden
 		perm := uint32(0o600)
 		p.Replace(policy.Mount{
 			Guest: filepath.Join(ctx.Home, ".claude", "settings.json"), Kind: policy.KindData,

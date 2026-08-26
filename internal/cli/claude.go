@@ -274,6 +274,13 @@ const maxCredentialsBytes = 64 << 10
 // privilege-free; this function does the one thing that package must not: read
 // a host path.
 //
+// The generated file also carries policy.ClaudeAuthoredSettings — two keys
+// snug writes itself, unconditionally, regardless of what the host's file
+// said about them (see that table's own doc comment for the four conditions a
+// key must meet to be there, and issue #87). policy.ClaudeUserSettingsJSON is
+// what adds them; policy.ClaudeSettingsJSON, which this function used to call
+// and stageProjectClaudeSettings still does, does not.
+//
 // UNCONDITIONAL AND WRITABLE, unlike the read-only OPTIONAL bind it replaces,
 // and both are deliberate:
 //
@@ -363,6 +370,18 @@ func stageClaudeSettings(pol *policy.Policy, home string, verbose bool) {
 	for _, r := range drops.Refused {
 		fmt.Fprintf(os.Stderr, "snug: ~/.claude/settings.json: dropping %q — %s\n", r.Name, r.Reason)
 	}
+	// Overridden is a FOURTH kind of line, and unconditional like Executing
+	// above rather than gated on -v: it is the one class where the host's
+	// value is dropped AND snug writes its own (policy.ClaudeSettingDrops'
+	// doc comment on Overridden). No visibleValue on drops.Overridden: unlike
+	// drops.Unknown, FilterClaudeSettings only ever puts a name in this slice
+	// by testing it against snug's own authored-key set, so every string here
+	// is one of snug's own constants, never a byte the host's file chose.
+	if len(drops.Overridden) > 0 {
+		fmt.Fprintf(os.Stderr, "snug: ~/.claude/settings.json: %s — your value is dropped and "+
+			"snug writes its own (%s): a client-side default, not a sandbox boundary\n",
+			strings.Join(drops.Overridden, ", "), strings.Join(claudeAuthoredPairs(), ", "))
+	}
 	// drops.Unknown is a THIRD kind of line again: a key on neither catalogue,
 	// which is dropped by the allowlist exactly like a named one but was
 	// previously reported nowhere — see policy.ClaudeSettingDrops' doc comment
@@ -400,6 +419,11 @@ func stageClaudeSettings(pol *policy.Policy, home string, verbose bool) {
 	// file's content: the generated file is the ALLOWLISTED subset, so the
 	// names of what did NOT make it are not present anywhere inside it.
 	pol.ClaudeSettingsUnknown = drops.Unknown
+	// Same rule, same reason, one field over: --dry-run's CLAUDE block reads
+	// this to render the `overridden` line, and the generated file itself
+	// carries snug's OWN value for these two names, so the fact that the
+	// host's file ALSO set one is not recoverable from that file's content.
+	pol.ClaudeSettingsOverridden = drops.Overridden
 	// NO visibleValue HERE, AND THE REASON IS THE KEYS' PROVENANCE RATHER THAN
 	// THE SINK'S. This line renders the same class of thing the `Unknown` line
 	// above does — key names, on stderr, from a host file — and it is safe for
@@ -417,9 +441,14 @@ func stageClaudeSettings(pol *policy.Policy, home string, verbose bool) {
 		}
 		sort.Strings(names)
 		fmt.Fprintf(os.Stderr, "snug: ~/.claude/settings.json carried: %s\n", strings.Join(names, ", "))
+		// Always printed alongside `carried:`, never gated on drops.Overridden:
+		// snug authors these two keys into EVERY user-scope settings.json, not
+		// only the runs where the host's file happened to also set one.
+		fmt.Fprintf(os.Stderr, "snug: ~/.claude/settings.json authored: %s\n",
+			strings.Join(claudeAuthoredPairs(), ", "))
 	}
 
-	body := policy.ClaudeSettingsJSON(carried)
+	body := policy.ClaudeUserSettingsJSON(carried)
 	perm := uint32(0o600)
 	pol.Replace(policy.Mount{
 		Guest: path, Kind: policy.KindData, Access: policy.AccessRW,
@@ -773,6 +802,33 @@ func claudeAllowlistNames() string {
 	return strings.Join(names, ", ")
 }
 
+// claudeAuthoredPairs renders policy.ClaudeAuthoredSettings as `name=value`
+// tokens, in table order, with a string Value double-quoted. It is the one
+// source both the unconditional stderr line and the `-v` line in
+// stageClaudeSettings, and --dry-run's CLAUDE block, render the two authored
+// keys from — so a value changing in the table cannot leave one of the three
+// screens stating the old one.
+func claudeAuthoredPairs() []string {
+	pairs := make([]string, len(policy.ClaudeAuthoredSettings))
+	for i, a := range policy.ClaudeAuthoredSettings {
+		pairs[i] = claudeAuthoredPair(a)
+	}
+	return pairs
+}
+
+// claudeAuthoredPair renders one authored key as `name=value`, quoting a string
+// so `crossSessionInbound="refuse"` reads as the JSON it becomes. Split out of
+// claudeAuthoredPairs because claudeGuidance renders one per line with its Why
+// beside it, and two renderers of the same pair is how the screens drift apart.
+func claudeAuthoredPair(a policy.ClaudeAuthoredSetting) string {
+	switch v := a.Value.(type) {
+	case string:
+		return fmt.Sprintf("%s=%q", a.Name, v)
+	default:
+		return fmt.Sprintf("%s=%v", a.Name, v)
+	}
+}
+
 // claudeGuidance is the ~/.claude/CLAUDE.md snug injects.
 //
 // It is generated from the ACTUAL resolved policy rather than written once, so a
@@ -855,6 +911,23 @@ func claudeGuidance(pol *policy.Policy) []byte {
 	b.WriteString("Settings you change here do not persist: it is a writable file on the\n")
 	b.WriteString("`~/.claude` tmpfs, and dies with this session along with the rest of that\n")
 	b.WriteString("directory, so `/theme`, `/model` and friends will not stick.\n\n")
+	// The AGENT is told what snug decided, not how to get around it (issue
+	// #87). Enumerated from policy.ClaudeAuthoredSettings rather than written
+	// out, and NOT because enumerating is tidier: prose that counts a table
+	// ("snug also SETS two keys") is a copy of that table's state, so a third
+	// authored key makes this screen quietly false with no test failing. The
+	// Why strings ARE the description, which is what they exist for.
+	//
+	// The "client-side, not a boundary" half deliberately stays off this
+	// screen: that qualifier is for the HUMAN deciding whether to trust snug,
+	// not for the model whose tool calls these keys gate.
+	b.WriteString("snug also SETS these keys in that file, and they are not yours to change:\n")
+	for _, a := range policy.ClaudeAuthoredSettings {
+		fmt.Fprintf(&b, "  %s — %s\n", claudeAuthoredPair(a), a.Why)
+	}
+	b.WriteString("Other sessions of this account are out of scope for this sandbox — `ListAgents`\n")
+	b.WriteString("finding nothing and a send being refused are the design, not a fault. Do not\n")
+	b.WriteString("work around it; say what you needed.\n\n")
 	// The exception, stated because "settings do not persist" is otherwise
 	// absolute and the target is writable AND persistent — which is exactly where
 	// Claude Code puts a project-scope permission grant.
