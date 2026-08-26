@@ -165,7 +165,7 @@ func TestSpecRefusesAGraftlessPolicyBeforeItReachesThePATHCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &policy.Policy{Podman: policy.PodmanSocket, Mounts: roUsr()}
-	if _, err := e.Spec(p, "/usr/bin/podman", []string{"PATH=/usr/bin"}, false, "", noSignaturePolicy(t)); err == nil {
+	if _, err := e.Spec(p, "/usr/bin/podman", []string{"PATH=/usr/bin"}, false, "", "", noSignaturePolicy(t)); err == nil {
 		t.Fatal("Spec accepted a policy with no grafts")
 	} else if !strings.Contains(err.Error(), "cannot see") {
 		t.Errorf("Spec refused a graftless policy for some reason other than an unmappable host "+

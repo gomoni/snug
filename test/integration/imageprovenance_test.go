@@ -98,7 +98,7 @@ func engineSpecEnvWithSignaturePolicy(t *testing.T, hostPolicy string) ([]string
 	// crun is absent it REFUSES rather than reaching Spec at all. Passing a
 	// resolved-from-PATH runtime here would let this fixture construct a
 	// combination the production path cannot produce.
-	spec, err := e.Spec(pol, hostEngine(t), []string{"PATH=/usr/bin:/bin"}, true, "crun", sig)
+	spec, err := e.Spec(pol, hostEngine(t), []string{"PATH=/usr/bin:/bin"}, true, "crun", "/usr/bin/crun", sig)
 	if err != nil {
 		t.Fatal(err)
 	}

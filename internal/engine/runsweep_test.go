@@ -9,6 +9,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/targetkey"
 )
 
 // plantRunDir creates one directory under dir with the given name, and a lock
@@ -170,5 +171,89 @@ func TestStopRemovesTheRunDirectory(t *testing.T) {
 		t.Fatalf("Stop left %s behind. It holds this run's engine socket and generated config, "+
 			"and a directory snug could not clean up is state that survives the user "+
 			"(invariant 4)", runDir)
+	}
+}
+
+// TestSweepNeverTouchesTheSharedTmpDirectory is red-team finding F1, and it is
+// the reason this sweep matches a name SHAPE rather than a prefix.
+//
+// internal/cli's hostTmpDirPath builds `@tmp-shared`'s per-project host
+// directory as os.TempDir()/snug-<uid>-<targetkey.Hash(target)>, which shares
+// the "snug-<uid>-" prefix exactly, is mode 0700, and is owned by this uid — so
+// vdir.OpenForRemoval cannot tell it apart. And `@tmp-shared` grants the
+// PAYLOAD rw on it, so the sandbox itself can create the `lock` file that was
+// the only remaining gate. Measured before the fix: a container run on one
+// project deleted another project's shared /tmp with its contents, and a live
+// sandbox had its /tmp unlinked underneath it mid-run.
+//
+// The name is built from targetkey.Hash rather than a literal on purpose: if
+// hostTmpDirPath's shape ever changes, this test follows it instead of pinning
+// a spelling that has drifted away from the thing it is protecting.
+func TestSweepNeverTouchesTheSharedTmpDirectory(t *testing.T) {
+	uid := os.Getuid()
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+
+	// Exactly hostTmpDirPath's shape, for a target that does not have to exist.
+	shared := plantRunDir(t, tmp, fmt.Sprintf("snug-%d-%s", uid, targetkey.Hash("/home/u/proj")), true)
+	payload := filepath.Join(shared, "precious-build-cache")
+	if err := os.WriteFile(payload, []byte("a whole project's shared /tmp"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The positive control, so a filter that matches NOTHING cannot pass this.
+	stale := plantRunDir(t, tmp, fmt.Sprintf("snug-%d-999995", uid), true)
+
+	sweepStaleEngineRunDirs()
+
+	if !exists(t, shared) || !exists(t, payload) {
+		t.Errorf("the sweep removed %s — that is @tmp-shared's per-project host directory, and "+
+			"the payload can create the lock file that let this through. Deleting it destroys "+
+			"another project's persistent /tmp, and unlinks a live sandbox's /tmp underneath it",
+			shared)
+	}
+	if exists(t, stale) {
+		t.Fatalf("CONTROL FAILED: the sweep also left %s, which it must remove, so this test "+
+			"proves nothing about the name filter", stale)
+	}
+}
+
+// TestEngineRunDirNameShapeIsWhatRunDirNameProduces pins the filter against the
+// generator directly, in both directions. The accept rows come from
+// runDirName's own two formats; the refuse rows are every other snug-owned
+// name shape that shares os.TempDir().
+func TestEngineRunDirNameShapeIsWhatRunDirNameProduces(t *testing.T) {
+	uid := os.Getuid()
+
+	// What runDirName actually emits, taken from the function rather than
+	// retyped: the first call in a process gets the plain name, the next gets
+	// a numbered suffix.
+	first, second := runDirName(uid, 4242), runDirName(uid, 4242)
+	for _, name := range []string{first, second} {
+		if !isEngineRunDirName(name) {
+			t.Errorf("isEngineRunDirName(%q) = false, but runDirName produced it — the sweep "+
+				"cannot reclaim a directory this process can create", name)
+		}
+	}
+
+	for _, tc := range []struct{ name, why string }{
+		{fmt.Sprintf("snug-%d-%s", uid, targetkey.Hash("/home/u/proj")),
+			"@tmp-shared's per-project host directory (internal/cli's hostTmpDirPath) — " +
+				"payload-writable, and finding F1"},
+		{fmt.Sprintf("snug-%d", uid),
+			"internal/cli's runtime directory when $XDG_RUNTIME_DIR is unset"},
+		{fmt.Sprintf("snug-engines-%d-sha256_deadbeef", uid),
+			"the per-target runroot, shared across runs in time"},
+		{fmt.Sprintf("snug-%d-", uid), "a trailing dash with no pid at all"},
+		{fmt.Sprintf("snug-%d-12x", uid), "not decimal"},
+		{fmt.Sprintf("snug-%d--1", uid), "a sign is not something %d emits here"},
+		{fmt.Sprintf("snug-%d-1-2-3", uid), "three components; runDirName emits at most two"},
+		{fmt.Sprintf("snug-%d-1-", uid), "an empty second component"},
+		{fmt.Sprintf("snug-%d-sha256_abc", uid), "the target-keyed shape, short form"},
+	} {
+		if isEngineRunDirName(tc.name) {
+			t.Errorf("isEngineRunDirName(%q) = true, but that is %s — the sweep would delete it",
+				tc.name, tc.why)
+		}
 	}
 }

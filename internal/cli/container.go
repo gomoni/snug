@@ -279,7 +279,7 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		return containerRun{}, err
 	}
 
-	spec, err := eng.Spec(pol, pf.Podman, nil, pf.CgroupsDisabled, pf.OCIRuntime, sig)
+	spec, err := eng.Spec(pol, pf.Podman, nil, pf.CgroupsDisabled, pf.OCIRuntime, pf.OCIRuntimePath, sig)
 	if err != nil {
 		return containerRun{}, err
 	}

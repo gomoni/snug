@@ -96,7 +96,7 @@ func TestContainerPreflightPodmanFieldHasExactlyTwoReaders(t *testing.T) {
 
 	want := []string{
 		"pol.CheckEngineBinary(pf.Podman)",
-		"eng.Spec(pol, pf.Podman, nil, pf.CgroupsDisabled, pf.OCIRuntime, sig)",
+		"eng.Spec(pol, pf.Podman, nil, pf.CgroupsDisabled, pf.OCIRuntime, pf.OCIRuntimePath, sig)",
 	}
 	if len(hits) != len(want) {
 		t.Fatalf("expected exactly %d readers of containerPreflight.Podman (both sources land "+

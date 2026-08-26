@@ -128,10 +128,18 @@ func lockEngineRunDir(root *os.Root, path string) (*os.File, error) {
 	}
 	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		lock.Close()
-		return nil, fmt.Errorf("engine run directory: locking %s/lock: %w — a directory named "+
-			"after this process's own pid is already locked by something else, which should be "+
-			"impossible on a live system (pids are unique); refusing rather than reusing it",
-			path, err)
+		// "which should be impossible on a live system (pids are unique)" is
+		// what this said, and it was FALSE — measured under contention: 8179
+		// of 133330 openRunDirs calls landed here, and the "something else"
+		// was snug's OWN sweep in another process, holding its LOCK_NB probe
+		// for the microseconds between our create and our flock. A refusal
+		// that tells the reader their situation cannot happen is worse than a
+		// bare errno, because it sends them looking for a corrupted system.
+		return nil, fmt.Errorf("engine run directory: locking %s/lock: %w — this directory is "+
+			"named after this process's own pid, so the holder is either a concurrently "+
+			"starting snug's sweep (sweepStaleEngineRunDirs probes this exact lock) or a "+
+			"process that outlived its pid's reuse; refusing rather than reusing it. Retrying "+
+			"the run is the fix if it was the sweep", path, err)
 	}
 	linked, lerr := stillLinked(lock)
 	if lerr != nil {

@@ -82,7 +82,7 @@ func TestNoGeneratedConfigNamesAPayloadWritablePath(t *testing.T) {
 		}
 	}
 
-	spec, err := e.Spec(p, filepath.Join(bin, "podman"), []string{"PATH=/usr/bin"}, true, "crun", noSignaturePolicy(t))
+	spec, err := e.Spec(p, filepath.Join(bin, "podman"), []string{"PATH=/usr/bin"}, true, "crun", "/usr/bin/crun", noSignaturePolicy(t))
 	if err != nil {
 		t.Fatalf("Spec refused, so this fixture never reaches the generated configs — the "+
 			"precondition is an engine INSIDE a writable grant, and without it this test "+

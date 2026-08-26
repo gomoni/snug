@@ -47,6 +47,23 @@ type containerPreflight struct {
 	// or "crun" — see preflightOCIRuntime.
 	OCIRuntime string
 
+	// OCIRuntimePath is the absolute path P10 found that name at, and it is
+	// authored ALONGSIDE the name so podman's own runtime search list stops
+	// being a second, invisible author.
+	//
+	// Measured on this host: podmanHelperDirs() and podman's default
+	// [engine.runtimes] search list are DIFFERENT sets — snug also stats
+	// /usr/libexec/podman, /usr/local/libexec/podman, /usr/lib/podman, which
+	// podman does not search for a RUNTIME (they are the helper lookup, which
+	// is what helper_binaries_dir covers, and a runtime is not a helper). A
+	// crun installed only under one of those made P10 author runtime = "crun"
+	// for a podman that could then resolve nothing — the exact "fails at
+	// create in podman's voice" outcome P10 exists to prevent, reintroduced by
+	// P10's own arm. Naming the file removes the disagreement rather than
+	// copying podman's list into snug, which would be a copy of state that
+	// drifts on a podman upgrade.
+	OCIRuntimePath string
+
 	// ResolvConfBind is P7's answer: nil when snug's generated resolv.conf can
 	// be bound over the engine's own, non-nil (naming why) when it cannot.
 	// Not fatal — see preflightResolvConfBind.
@@ -71,10 +88,17 @@ func runContainerPreflight(env policy.Environ, pol *policy.Policy) (containerPre
 			"subgid range and could not get one: %w", err)
 	}
 	cgroupsDisabled := preflightCgroupsDisabled()
-	ociRuntime, err := preflightOCIRuntime(
-		findPodmanHelper("crun") != "", findPodmanHelper("runc") != "", cgroupsDisabled)
+	crunPath, runcPath := findPodmanHelper("crun"), findPodmanHelper("runc")
+	ociRuntime, err := preflightOCIRuntime(crunPath != "", runcPath != "", cgroupsDisabled)
 	if err != nil {
 		return containerPreflight{}, err
+	}
+	// The decision above is a pure table over three booleans so it stays
+	// testable on a host where the failing case cannot be constructed; the
+	// PATH is looked up here, beside it, because only "crun" is ever returned.
+	ociRuntimePath := ""
+	if ociRuntime == "crun" {
+		ociRuntimePath = crunPath
 	}
 	toolchainRoot, err := preflightToolchainRoot(env, podman)
 	if err != nil {
@@ -84,6 +108,7 @@ func runContainerPreflight(env policy.Environ, pol *policy.Policy) (containerPre
 		Podman:          podman,
 		CgroupsDisabled: cgroupsDisabled,
 		OCIRuntime:      ociRuntime,
+		OCIRuntimePath:  ociRuntimePath,
 		ResolvConfBind:  preflightResolvConfBind(),
 		ToolchainRoot:   toolchainRoot,
 	}, nil

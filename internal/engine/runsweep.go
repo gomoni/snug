@@ -11,20 +11,63 @@ import (
 	"github.com/gomoni/snug/internal/vdir"
 )
 
-// engineRunDirPrefix is the name prefix sweepStaleEngineRunDirs claims, and it
-// is written here once so the sweep and runDirName cannot drift apart. The
-// TRAILING DASH is load-bearing twice over:
+// isEngineRunDirName reports whether name is one runDirName could have
+// produced: "snug-<uid>-<pid>" or "snug-<uid>-<pid>-<n>", every component
+// after the uid being decimal digits.
 //
-//   - "snug-<uid>" with no dash is internal/cli's runtime directory when
-//     $XDG_RUNTIME_DIR is unset (runtimeBase), which this sweep must never
-//     touch — sweepStaleRunDirs owns it and sweeps one level further down.
-//   - "snug-engines-<uid>-<key>" is the per-TARGET runroot (paths.go), which is
-//     not per-run state at all: it is keyed by sha256(target), shared across
-//     runs in time, and reclaimed by `snug engine gc` rather than here.
+// IT MATCHES THE SHAPE, NOT A PREFIX, AND THAT IS THE WHOLE OF ISSUE #425's
+// RED-TEAM FINDING F1. A prefix of "snug-<uid>-" also matches
+// internal/cli's hostTmpDirPath (tmpdir.go) — `@tmp-shared`'s per-project host
+// directory, `os.TempDir()/snug-<uid>-sha256_<64hex>` — which is 0700, owned by
+// this uid, and therefore indistinguishable to vdir.OpenForRemoval. Worse, that
+// profile grants the PAYLOAD rw on it ("{host_tmpdir}:/tmp" in base.toml), so a
+// sandbox only had to write a file called `lock` — the single most ordinary
+// name in /tmp, and what `flock /tmp/lock`, python filelock and any build
+// script produce — to have the next container-enabled run on the machine
+// delete another project's persistent shared /tmp, contents and all. MEASURED
+// end to end: a `@podman-socket` run on project B destroyed project A's
+// directory, and a live `@tmp-shared` sandbox had its /tmp unlinked underneath
+// it mid-run (nlink 0, every subsequent write ENOENT).
 //
-// Both live in the same os.TempDir() as the entries this does claim, so a
-// looser prefix would have this function deleting another mechanism's state.
-func engineRunDirPrefix() string { return fmt.Sprintf("snug-%d-", os.Getuid()) }
+// So the filter is derived from the ONE function that authors these names,
+// and a `snug-<uid>-<anything-else>` mechanism added later fails it
+// structurally rather than needing to be remembered here. The trailing dash
+// still matters — it is what separates "snug-<uid>" and
+// "snug-engines-<uid>-<key>" — but a dash alone was never enough.
+func isEngineRunDirName(name string) bool {
+	rest, ok := strings.CutPrefix(name, fmt.Sprintf("snug-%d-", os.Getuid()))
+	if !ok {
+		return false
+	}
+	// At most two components: runDirName emits "<pid>" for the first engine in
+	// a process and "<pid>-<n>" for every one after it.
+	parts := strings.Split(rest, "-")
+	if len(parts) > 2 {
+		return false
+	}
+	for _, p := range parts {
+		if !allDigits(p) {
+			return false
+		}
+	}
+	return true
+}
+
+// allDigits is deliberately not strconv.Atoi: Atoi accepts a leading "+" or
+// "-" and silently overflows on a long run of digits, and neither is a name
+// runDirName can produce. The question here is "could this string have come
+// out of %d", which is exactly one or more ASCII digits.
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
 
 // sweepStaleEngineRunDirs removes /tmp/snug-<uid>-<pid>[-<n>]/ directories
 // whose owning process is gone.
@@ -76,13 +119,12 @@ func sweepStaleEngineRunDirs() {
 	if err != nil {
 		return
 	}
-	prefix := engineRunDirPrefix()
 	for _, e := range entries {
 		// IsDir() on a ReadDir entry does not follow symlinks, so a symlink
 		// pointing at a directory is already excluded here; OpenForRemoval
 		// refuses one again from its own Lstat, which is the check that
 		// matters if this loop is ever restructured.
-		if !e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
+		if !e.IsDir() || !isEngineRunDirName(e.Name()) {
 			continue
 		}
 		if err := removeIfStale(parent, base, e.Name()); err != nil {

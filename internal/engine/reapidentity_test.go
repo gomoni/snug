@@ -39,7 +39,7 @@ func TestEngineArgvNamesOnlyGuestPaths(t *testing.T) {
 	// service`, which is the subcommand this test sweeps — so no value of it
 	// puts a path in this argv.
 	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}),
-		"/usr/bin/podman", []string{"PATH=/usr/bin"}, false, "", noSignaturePolicy(t))
+		"/usr/bin/podman", []string{"PATH=/usr/bin"}, false, "", "", noSignaturePolicy(t))
 	if err != nil {
 		t.Fatalf("Spec: %v", err)
 	}
