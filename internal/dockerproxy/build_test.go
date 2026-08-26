@@ -143,8 +143,8 @@ func TestBuildRefusesTheHostReachingOptions(t *testing.T) {
 			"the ENGINE fetches"},
 		{"a host device", "--device /dev/fuse",
 			"devices=%5B%22%2Fdev%2Ffuse%22%5D", "no host device nodes"},
-		{"a cgroup outside the sandbox", "--cgroup-parent foo",
-			"cgroupparent=foo", "outside this sandbox"},
+		{"a client-named cgroup parent", "--cgroup-parent foo",
+			"cgroupparent=foo", "the engine's own cgroup namespace"},
 		{"name redirection", "--add-host h:1.2.3.4",
 			"extrahosts=%5B%22h%3A1.2.3.4%22%5D", "name redirection"},
 		{"an alternate isolation", "--isolation chroot",
@@ -589,14 +589,21 @@ func TestNetworkHostFalseKeepsItsOwnMessage(t *testing.T) {
 // TestEveryBuildValidatorIsExercised reports nsoptions "covered" purely
 // because SOME case drives it, and every existing nsoptions case either
 // names "network" or "user" — none put Host:true on pid/ipc/uts/cgroup. This
-// fails if that arm is ever changed to admit the host's pid/ipc/uts/cgroup
+// fails if that arm is ever changed to admit the engine's pid/ipc/uts/cgroup
 // namespace under a name other than user or network.
+//
+// The asserted phrase names the ENGINE's namespace, not the machine's, and
+// that is the same correction issue #372 made to the archive refusal: the
+// engine clones all four for itself (internal/stage/enginefork.go's
+// Cloneflags), so a message calling Host:true "the HOST's namespace" describes
+// a boundary C0 and #182 removed. TestNoRefusalTextPlacesTheEngineOutsideTheSandbox
+// guards the class.
 func TestCheckNSOptionsHostTrueOnNonNetworkName(t *testing.T) {
 	for _, name := range []string{"pid", "ipc", "uts", "cgroup"} {
 		t.Run(name, func(t *testing.T) {
 			sock, eng, _ := startBuildProxy(t)
 			u := buildURLOverride(t, nsOptionsQuery(nsOption{Name: name, Host: true, Path: ""}))
-			refuse(t, sock, eng, u, "", "asks for the HOST's")
+			refuse(t, sock, eng, u, "", "the ENGINE's own and not the machine's")
 		})
 	}
 }
@@ -930,7 +937,7 @@ func TestPodman602BaseStillFailsClosed(t *testing.T) {
 func TestBuildParameterLookupFoldsCase(t *testing.T) {
 	for _, tc := range []struct{ name, query, wantMsg string }{
 		{"a checked parameter, camel-cased", "Volume=%2Fetc%3A%2Fx", "cannot see /etc as writable"},
-		{"a refused parameter, camel-cased", "CgroupParent=foo", "outside this sandbox"},
+		{"a refused parameter, camel-cased", "CgroupParent=foo", "the engine's own cgroup namespace"},
 		{"a refused parameter, upper-cased", "DEVICES=%5B%22%2Fdev%2Ffuse%22%5D", "no host device nodes"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

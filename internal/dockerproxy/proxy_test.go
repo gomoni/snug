@@ -343,7 +343,7 @@ func TestEscapeFieldsAreRefused(t *testing.T) {
 		{"annotations, which podman routes to the OCI runtime",
 			`{"HostConfig":{"Annotations":{"run.oci.keep_original_groups":"1"}}}`,
 			"HostConfig.Annotations is not permitted"},
-		{"a cgroup outside this sandbox's own", `{"HostConfig":{"CgroupParent":"/"}}`,
+		{"a client-named cgroup parent", `{"HostConfig":{"CgroupParent":"/"}}`,
 			"HostConfig.CgroupParent is not permitted"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -530,14 +530,38 @@ func TestVolumeDriverOptionsAreRefused(t *testing.T) {
 }
 
 // `docker cp` stays refused — CONTAINER-CLIENT.md §9 found the equivalence
-// argument for allowing it unsound: archive/export run on the ENGINE, outside
-// the sandbox, as the host uid, and archive path resolution is the home of
-// the CVE-2018-15664 symlink-escape class. This pins the refusal AND that its
-// message names the alternative that IS bounded by the sandbox's own mount
-// namespace, rather than the generic "endpoint ... is not permitted".
+// argument for allowing it unsound: archive and export are serviced by the
+// ENGINE, which resolves the path in its own derived view rather than in the
+// container rootfs that confines `exec`, and archive path resolution is the
+// home of the CVE-2018-15664 symlink-escape class.
+//
+// Three assertions, and the second and third are what make the first mean
+// something (issue #372). The refusal must name the DERIVED VIEW, because the
+// message it replaced named a boundary Tier C removed and sent a reader looking
+// for a host-tree escape instead of the read-write store that is really there;
+// `export`, the adjacent endpoint on the same reasoning, must still be refused;
+// and `exec`, the alternative this message tells the user to type, must still be
+// permitted, or the refusal is advice that 403s.
 func TestDockerCpStaysRefusedWithTheExecTarAlternativeNamed(t *testing.T) {
 	sock, eng, _ := startProxy(t)
 	refuse(t, sock, eng, "/v1.41/containers/abc/archive", "", "docker exec")
+	refuse(t, sock, eng, "/v1.41/containers/abc/archive", "", "DERIVED view")
+
+	// ADJACENT, AND STILL CLOSED. export has no message of its own and falls to
+	// the generic refusal; what matters is that it does not reach the engine.
+	refuse(t, sock, eng, "/v1.41/containers/abc/export", "", "is not permitted")
+
+	// AND THE ALTERNATIVE IS OPEN. Asked of allowed() rather than over the
+	// socket: an exec create carries a body and a stream, and the only fact this
+	// case needs is the verdict.
+	segs, ok := normalise("/v1.41/containers/abc/exec")
+	if !ok {
+		t.Fatal("control: the exec path does not normalise")
+	}
+	if !allowed(segs, "POST") {
+		t.Error("the archive refusal tells the user to run `docker exec`, and allowed() " +
+			"refuses it — the message is advice that 403s")
+	}
 }
 
 // TestEndpointAllowlist is the review artifact for this file: there is no golden

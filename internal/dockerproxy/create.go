@@ -675,8 +675,7 @@ const (
 		"use, and — through ShmSize and Tmpfs — to allocate host RAM as a container filesystem. " +
 		"They bound the container rather than widening it: the RAM is the same RAM any process " +
 		"in the sandbox could allocate anyway, no value names a path or a device, and " +
-		"CgroupParent, the one field that would move the container into a cgroup outside this " +
-		"sandbox's own, is refused."
+		"CgroupParent, the one field that would name a cgroup snug did not choose, is refused."
 
 	ordinaryContainerBehaviour = "A hostile process inside the sandbox can use these to change " +
 		"how its own container is run and reaped: whether the engine removes it when it exits, " +
@@ -1101,10 +1100,12 @@ func stampRunLabel(req map[string]json.RawMessage, runLabel string) error {
 // isDefaultLogConfig reports whether a LogConfig asks for nothing at all.
 //
 // The hazard in LogConfig is entirely in its two fields: a `Type` selects a
-// driver, and `Config` carries the k8s-file/json-file `path` option that makes
-// conmon write a file ON THE HOST as your uid. {"Type":"","Config":{}} selects
-// no driver and sets no option — it is what the docker CLI sends on every
-// create, and refusing it refuses everything.
+// driver, and `Config` carries the k8s-file/json-file `path` option that conmon
+// opens as your uid, resolved in the engine's derived view — the wording the
+// refusal itself uses since issue #423, and the same fact.
+//
+// {"Type":"","Config":{}} selects no driver and sets no option — it is what the
+// docker CLI sends on every create, and refusing it refuses everything.
 //
 // Decoded into a pinned struct rather than pattern-matched on the raw bytes,
 // so key order, whitespace and a case variant of either field name all reach
