@@ -594,10 +594,8 @@ func TestCreateRefusesANetworkNamespaceOfItsOwn(t *testing.T) {
 // sends with no --network flag at all (testdata/docker-run-create-body.json),
 // so a refusal catching it would refuse every ordinary `docker run`.
 //
-// "none" is the DOCUMENTED DIVERGENCE from build's set, and it is a decision
-// rather than an omission: it needs no netlink if nobody brings `lo` up, and
-// nobody has measured it on the create path since the NET_ADMIN decision. It
-// is an unmeasured accept, and this row is where that is recorded.
+// "none" is deliberately NOT here: it is refused, measured, and its row lives
+// in TestBuildAndCreateRefuseTheSameNetworkWords with the errno.
 func TestCreateStillAcceptsTheNetworkModesThatWork(t *testing.T) {
 	for _, tc := range []struct{ name, body string }{
 		{"absent", `{"HostConfig":{}}`},
@@ -606,7 +604,6 @@ func TestCreateStillAcceptsTheNetworkModesThatWork(t *testing.T) {
 		{"host joins N", `{"HostConfig":{"NetworkMode":"host"}}`},
 		{"HOST folded", `{"HostConfig":{"NetworkMode":"HOST"}}`},
 		{"host padded", `{"HostConfig":{"NetworkMode":" host "}}`},
-		{"none, the unmeasured accept", `{"HostConfig":{"NetworkMode":"none"}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sock, eng, _ := startProxy(t)
@@ -665,10 +662,10 @@ func TestTheOtherNamespaceKeysKeepTheirDenylist(t *testing.T) {
 // accept path for filterBuildQuery's rewrite bookkeeping, which create's
 // p.deny site has no equivalent of.
 //
-// The `none` row is the one documented divergence and carries its reason
-// inline, so changing either side forces someone to read why.
+// There is no divergence row any more: "none" is refused on both paths, and
+// TestNoneIsRefusedBecauseCrunBringsLoUp carries the measurement that closed it.
 func TestBuildAndCreateRefuseTheSameNetworkWords(t *testing.T) {
-	for _, word := range []string{"bridge", "private", "slirp4netns", "pasta"} {
+	for _, word := range []string{"bridge", "private", "slirp4netns", "pasta", "none"} {
 		t.Run(word, func(t *testing.T) {
 			if _, err := checkNetworkMode(nil, word); err == nil {
 				t.Errorf("build accepts %q", word)
@@ -679,26 +676,31 @@ func TestBuildAndCreateRefuseTheSameNetworkWords(t *testing.T) {
 		})
 	}
 
-	t.Run("none: build refuses, create accepts, and that is deliberate", func(t *testing.T) {
-		if _, err := checkNetworkMode(nil, "none"); err == nil {
-			t.Error("build now accepts \"none\"; if that is intended, this divergence row is " +
-				"stale and the two sides have converged")
-		}
-		sock, eng, _ := startProxy(t)
-		before := eng.reached.Load()
-		code, resp := post(t, sock, "/v1.41/containers/create",
-			`{"HostConfig":{"NetworkMode":"none"}}`)
-		if code == http.StatusForbidden {
-			t.Fatalf("create refuses \"none\". It is an UNMEASURED ACCEPT on this path, not an "+
-				"oversight: it needs no netlink if nobody brings lo up, and refusing it would "+
-				"remove an isolation-INCREASING option while printing a reason (no "+
-				"CAP_NET_ADMIN) that would not be why it failed. Measure it before changing "+
-				"this: %s", denyMessage(resp))
-		}
-		if eng.reached.Load() == before {
-			t.Fatal("the create never reached the engine")
-		}
-	})
+}
+
+// TestNoneIsRefusedBecauseCrunBringsLoUp pins the one word whose refusal rests
+// on a measurement rather than on the shape of the request, so a future reader
+// who thinks "an empty namespace needs no netlink" finds the answer here
+// instead of re-deriving it wrongly, as this ticket's own first pass did.
+//
+// MEASURED, docker-compat create+start against podman 6.0.2 + crun running as
+// root in a user namespace with CapBnd 000001ffffffefff (CAP_NET_ADMIN absent,
+// which is what policy.EngineCapBounding gives the engine): create 201, start
+// 500, `crun: ioctl SIOCSIFFLAGS: Operation not permitted`. crun brings `lo` up
+// in any network namespace it creates, before it mounts devpts. The same
+// harness dropping CAP_SYS_BOOT instead gets past the network step, and so does
+// CAP_NET_ADMIN-dropped "host" — one bit and one mode are the only variables.
+//
+// The assertion is on the REFUSAL, not on the errno: the errno is the evidence,
+// and repeating it in an assertion would pin crun's wording rather than snug's
+// decision.
+func TestNoneIsRefusedBecauseCrunBringsLoUp(t *testing.T) {
+	if _, err := checkNetworkMode(nil, "none"); err == nil {
+		t.Error("build accepts \"none\"; the two paths have diverged again")
+	}
+	sock, eng, _ := startProxy(t)
+	refuse(t, sock, eng, "/v1.41/containers/create",
+		`{"HostConfig":{"NetworkMode":"none"}}`, "CAP_NET_ADMIN")
 }
 
 // quoteJSON renders one JSON string, so a table value carrying a space or a

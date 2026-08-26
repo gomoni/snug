@@ -1082,9 +1082,10 @@ func describeContainers(out io.Writer, p *policy.Policy, c *reportContainers) {
 	// to be closed by the engine's netlink failure. The paragraph above states
 	// the consequence of the cap drop; this states who enforces it.
 	fmt.Fprintf(out, "         A container may not ask for a network namespace of its own:\n")
-	fmt.Fprintf(out, "         'docker run --network=bridge', a named network, 'pasta' and\n")
-	fmt.Fprintf(out, "         'slirp4netns' are refused at the proxy, for the same reason.\n")
-	fmt.Fprintf(out, "         '--network=none' is allowed and gets an empty one.\n")
+	fmt.Fprintf(out, "         'docker run --network=bridge', a named network, 'pasta',\n")
+	fmt.Fprintf(out, "         'slirp4netns' and '--network=none' are refused at the proxy,\n")
+	fmt.Fprintf(out, "         for the same reason: crun brings 'lo' up in any namespace it\n")
+	fmt.Fprintf(out, "         creates, and that needs CAP_NET_ADMIN in that namespace.\n")
 	fmt.Fprintf(out, "         A container gets its own pid namespace and may not join another:\n")
 	fmt.Fprintf(out, "         'docker run --pid=host' is refused. Inside the sandbox 'host' would\n")
 	fmt.Fprintf(out, "         mean the ENGINE, and /proc/<pid>/root in a shared pid namespace\n")

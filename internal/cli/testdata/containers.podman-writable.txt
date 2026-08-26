@@ -28,9 +28,10 @@ CONTAINERS  a per-sandbox engine behind a filtering proxy at /snug/podman.sock
          'docker run -p N:80' is not supported — the engine holds no
          CAP_NET_ADMIN, so it cannot reconfigure this namespace to publish one.
          A container may not ask for a network namespace of its own:
-         'docker run --network=bridge', a named network, 'pasta' and
-         'slirp4netns' are refused at the proxy, for the same reason.
-         '--network=none' is allowed and gets an empty one.
+         'docker run --network=bridge', a named network, 'pasta',
+         'slirp4netns' and '--network=none' are refused at the proxy,
+         for the same reason: crun brings 'lo' up in any namespace it
+         creates, and that needs CAP_NET_ADMIN in that namespace.
          A container gets its own pid namespace and may not join another:
          'docker run --pid=host' is refused. Inside the sandbox 'host' would
          mean the ENGINE, and /proc/<pid>/root in a shared pid namespace

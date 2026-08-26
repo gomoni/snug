@@ -217,28 +217,49 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 		// "a netns of my own" for NetworkMode, which is a category error, not a
 		// spelling.
 		//
-		// "none" is ACCEPTED and that is a decision, not an omission. It needs no
-		// netlink if nobody brings `lo` up, and ENGINE-NETNS.md §2 records
-		// "--network=none works" — from BEFORE the NET_ADMIN decision, in a
-		// paragraph whose own banner calls it a feasibility proof rather than the
-		// shipped shape, so it is not authority for today's tree either. Nobody
-		// has measured it on the create path since, so refusing it would risk both
-		// removing a real isolation-INCREASING capability and printing a false
-		// reason ("no CAP_NET_ADMIN" would not be why it failed). It is an
-		// UNMEASURED ACCEPT, named as one.
+		// "none" is REFUSED, and it CONVERGES with build.go rather than diverging
+		// from it. The reasoning that once kept it accepted was that a netns
+		// nobody brings `lo` up in needs no netlink. That is wrong, and this is
+		// the measurement: crun brings `lo` up ITSELF whenever it creates a
+		// network namespace — before it mounts devpts — and that ioctl needs
+		// CAP_NET_ADMIN in the new namespace.
 		//
-		// ABUSE, on what stays accepted: "none" gets a netns of its own with no
-		// route out and no way to configure one — the bounding set that denies the
-		// engine CAP_NET_ADMIN denies its children in U too — so strictly less
-		// reach than the accepted default; "host" is N, which the sandbox already
+		// MEASURED on the docker-compat create+start path, podman 6.0.2 + crun,
+		// against a podman running as root in a user namespace whose bounding set
+		// has bit 12 cleared (CapBnd 000001ffffffefff — CAP_NET_ADMIN absent,
+		// which is what policy.EngineCapBounding gives the engine):
+		//
+		//	NetworkMode:"none"    create 201, start 500
+		//	                      crun: ioctl SIOCSIFFLAGS: Operation not permitted
+		//	NetworkMode:"bridge"  create 201, start 500
+		//	                      netavark: setns: IO error: Operation not permitted
+		//	NetworkMode:"host"    create 201, start past network setup entirely
+		//
+		// Isolated, because "it failed" is not "it failed for THIS reason": the
+		// same harness dropping CAP_SYS_BOOT instead of CAP_NET_ADMIN gets past
+		// the network step, and so does CAP_NET_ADMIN-dropped "host". One bit and
+		// one mode are the only variables. With a FULL bounding set "none" runs to
+		// completion with `lo` up in a netns of its own — which is why a plain
+		// rootless podman on the host reports that it works and the engine does
+		// not, and why ENGINE-NETNS.md §2's "--network=none works" (measured with
+		// the cap present, before the NET_ADMIN decision) is not authority here.
+		//
+		// So accepting it returned 201 for a container that cannot start: snug
+		// admitting a capability the engine refuses, which is invariant 5 facing
+		// the other way.
+		//
+		// ABUSE, on what stays accepted: "host" is N, which the sandbox already
 		// has. What the refusal CLOSES: a create body naming a namespace snug did
 		// not author, forwarded unjudged, on an engine that may one day satisfy it
-		// (enginecaps.go records a regained CAP_NET_ADMIN in a nested userns)
-		// while --dry-run still tells the human containers run in N.
-		if k == "NetworkMode" && norm != "default" && norm != "none" {
+		// (enginecaps.go records a bounding set reset to full inside a NESTED
+		// userns — which a rootless podman creates per container and this engine,
+		// running as root in U, does not) while --dry-run still tells the human
+		// containers run in N.
+		if k == "NetworkMode" && norm != "default" {
 			p.deny(w, "HostConfig.NetworkMode = %q: %s.\n"+
 				"       Fix: drop --network, or use --network=host (which is this sandbox's own "+
-				"network), or --network=none for no network at all.", mode, noNetnsOfItsOwn)
+				"network). --network=none is refused too: crun brings `lo` up in any namespace "+
+				"it creates and that ioctl needs the same capability.", mode, noNetnsOfItsOwn)
 			return
 		}
 	}
@@ -432,8 +453,9 @@ var namespaceModeKeys = []string{
 // word set cannot cover all six — "none" means "no IPC sharing" for IpcMode and
 // "a netns of my own" for NetworkMode.
 //
-// For NetworkMode (issue #424): accepted are absent, "", "default", "host" and
-// "none"; everything else is refused BY SNUG. It was a denylist, and
+// For NetworkMode (issue #424): accepted are absent, "", "default" and "host";
+// everything else is refused BY SNUG, "none" included — build.go refuses the
+// same word and the two sets agree. It was a denylist, and
 // "bridge"/"private"/"pasta"/"slirp4netns" were forwarded to be closed by the
 // engine failing (netavark: Netlink error: Operation not permitted) rather than
 // by snug — which left the guarantee --dry-run prints ("a container has the
