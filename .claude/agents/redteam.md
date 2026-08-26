@@ -143,6 +143,28 @@ kernel 0-days, hardware side channels, a determined human attacker with local
 root. Do not spend effort on the out-of-scope items, and do not report them as
 findings — but do report if a change *lowers the bar* to one of them.
 
+**The HOST is trusted, and anything that modifies it before or during a run is
+out of scope.** snug reads the host to build a policy — it stats grant sources,
+resolves symlinks, reads the profile set from outside the sandboxed material —
+and every one of those reads happens at some instant, with the run starting at a
+later one. An attacker who can change what those paths mean in between is an
+attacker who can already change the profiles, the binary and the kernel, so a
+round spent on that window measures the shape of "read then act" rather than
+anything snug decides. snug may CHECK before trusting, and does where a check is
+cheap and meaningful; there is a limit to what any process can verify about a
+system it does not control, and that limit is not a finding.
+
+The concrete case, because a round has already spent time on it: `Optional`
+grants are consulted at resolve time and rendered as bwrap's `--ro-bind-try`,
+which tolerates an absent source at exec time. The gap between the two was
+measured at ~78 ms and is real. It is still not a finding — there is no atomic
+multi-mount API to compare against (bwrap does two sequential `mount(2)` calls
+per bind, MEASURED: `MS_BIND` then `MS_REMOUNT|MS_RDONLY`, no
+`open_tree`/`move_mount` anywhere), and winning it requires write access to a
+root-owned host path. What WOULD be a finding is an absence that WEAKENS rather
+than denies: a missing CA store that makes a client accept anything rather than
+fail closed. Aim there instead.
+
 **The profile author is not your adversary, and this is the boundary that
 decides half of what you should stop reporting.** snug's line runs between the
 sandbox and the host: inside it the payload is hostile by assumption, and that is

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/gomoni/snug/internal/policy"
@@ -481,6 +482,11 @@ const (
 	// failed. Say so and quote bwrap — never guess a cause.
 	blockerUnknown bwrapBlocker = iota
 	blockerUserns
+	// blockerUsernsSeccomp: the userns rung failed while every sysctl that
+	// could explain it is already permissive AND this process runs under a
+	// seccomp filter. Its own blocker because the advice has nothing in common
+	// with blockerUserns's.
+	blockerUsernsSeccomp
 	blockerNetns
 	blockerProcMount
 )
@@ -492,6 +498,8 @@ func (b bwrapBlocker) headline() string {
 	switch b {
 	case blockerUserns:
 		return "cannot create a user namespace here"
+	case blockerUsernsSeccomp:
+		return "a seccomp filter is denying the user namespace, not the kernel settings"
 	case blockerNetns:
 		return "user namespaces work, but the sandbox's own network namespace does not"
 	case blockerProcMount:
@@ -508,6 +516,23 @@ func (b bwrapBlocker) advice() []string {
 			"🔧 sysctl kernel.unprivileged_userns_clone           must be 1",
 			"🔧 sysctl user.max_user_namespaces                   must be > 0",
 			"🔧 Ubuntu 24.04+: kernel.apparmor_restrict_unprivileged_userns=0",
+		}
+	case blockerUsernsSeccomp:
+		// MEASURED (run 32946939204): a docker container with every one of the
+		// three sysctls above already correct, where bwrap still said "No
+		// permissions to create a new namespace, likely because the kernel does
+		// not allow non-privileged user namespaces" and the stage said
+		// "fork/exec /proc/self/exe: operation not permitted". docker's default
+		// seccomp profile denies clone(2) with CLONE_NEWUSER for a process
+		// without CAP_SYS_ADMIN. Every sysctl doctor printed as the fix was
+		// already set, which is the whole reason this is a separate blocker.
+		return []string{
+			"🔧 the sysctls are already permissive and this process runs under a seccomp",
+			"   filter (/proc/self/status Seccomp is non-zero). docker's default profile",
+			"   denies clone(2) with CLONE_NEWUSER without CAP_SYS_ADMIN.",
+			"🔧 docker:  --security-opt seccomp=unconfined",
+			"🔧 podman:  --security-opt seccomp=unconfined",
+			"   (prefer that over --cap-add SYS_ADMIN, which buys much more than this needs)",
 		}
 	case blockerNetns:
 		return []string{
@@ -528,6 +553,61 @@ func (b bwrapBlocker) advice() []string {
 	default:
 		return nil
 	}
+}
+
+// classifyUsernsRefusal decides WHY a user namespace was refused when the
+// narrowest rung failed. Separated from the two /proc reads that feed it so
+// both answers are testable on a host that can only produce one of them.
+//
+// The rule: naming the sysctls is only honest when a sysctl could actually be
+// the cause. Where they are already permissive and a seccomp filter is
+// installed, the filter is the remaining explanation and the sysctl advice is
+// noise a reader spends an hour on.
+func classifyUsernsRefusal(sysctlsPermissive, seccompFiltered bool) bwrapBlocker {
+	if sysctlsPermissive && seccompFiltered {
+		return blockerUsernsSeccomp
+	}
+	return blockerUserns
+}
+
+// usernsSysctlsPermissive reports whether every sysctl that can refuse an
+// unprivileged user namespace is already set to allow one. An ABSENT knob is
+// permissive: kernel.unprivileged_userns_clone exists only on Debian-family
+// kernels, and reading its absence as a refusal would blame it on every other
+// distribution.
+func usernsSysctlsPermissive() bool {
+	readInt := func(path string, absent int) int {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return absent
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil {
+			return absent
+		}
+		return n
+	}
+	return readInt("/proc/sys/kernel/unprivileged_userns_clone", 1) == 1 &&
+		readInt("/proc/sys/user/max_user_namespaces", 1) > 0 &&
+		readInt("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", 0) == 0
+}
+
+// seccompFilterInstalled reads this process's own Seccomp mode from
+// /proc/self/status: 0 disabled, 1 strict, 2 filter. Non-zero means something
+// outside snug is filtering syscalls here — a container runtime's default
+// profile, typically.
+func seccompFilterInstalled() bool {
+	data, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if rest, ok := strings.CutPrefix(line, "Seccomp:"); ok {
+			n, err := strconv.Atoi(strings.TrimSpace(rest))
+			return err == nil && n != 0
+		}
+	}
+	return false
 }
 
 // locateBwrapFailure walks a ladder of ever-larger bwrap invocations and
@@ -553,7 +633,8 @@ func locateBwrapFailure(bwrap string) (bwrapBlocker, string) {
 	}
 	userns := run()
 	if !userns {
-		return blockerUserns, "userns alone was refused"
+		return classifyUsernsRefusal(usernsSysctlsPermissive(), seccompFilterInstalled()),
+			"userns alone was refused"
 	}
 	if !run("--unshare-net") {
 		return blockerNetns, "a userns alone works; adding --unshare-net is what fails"

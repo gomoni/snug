@@ -210,3 +210,74 @@ func TestRuncAloneIsNotEnoughWhenCgroupsAreDisabled(t *testing.T) {
 		})
 	}
 }
+
+// The userns refusal splits two ways, and the split is the point: doctor
+// printed three sysctls as the fix in an environment where all three were
+// ALREADY correct (run 32946939204, a docker container whose job step had
+// verified kernel.apparmor_restrict_unprivileged_userns=0 on the host). The
+// real cause was docker's default seccomp profile denying clone(CLONE_NEWUSER),
+// visible as `stage: starting P1: fork/exec /proc/self/exe: operation not
+// permitted`.
+func TestAUsernsRefusalBlamesSeccompOnlyWhenTheSysctlsAreAlreadyFine(t *testing.T) {
+	for _, tc := range []struct {
+		name                             string
+		sysctlsPermissive, seccompFilter bool
+		want                             bwrapBlocker
+	}{
+		{"a sysctl really is in the way", false, false, blockerUserns},
+		// A filter is installed AND a sysctl is wrong: name the sysctl, which
+		// is the one the reader can act on without changing how they launch.
+		{"both could explain it", false, true, blockerUserns},
+		{"no filter, sysctls fine — do not invent a cause", true, false, blockerUserns},
+		{"the measured case", true, true, blockerUsernsSeccomp},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyUsernsRefusal(tc.sysctlsPermissive, tc.seccompFilter); got != tc.want {
+				t.Errorf("classifyUsernsRefusal(sysctls=%v, seccomp=%v) = %v, want %v",
+					tc.sysctlsPermissive, tc.seccompFilter, got, tc.want)
+			}
+		})
+	}
+}
+
+// The seccomp blocker must not repeat the sysctl advice that sent a reader to
+// the wrong knob, and must name the flag that fixes it.
+func TestTheSeccompBlockerNamesTheFlagAndNotTheSysctls(t *testing.T) {
+	body := blockerUsernsSeccomp.headline() + "\n" + strings.Join(blockerUsernsSeccomp.advice(), "\n")
+	for _, want := range []string{"seccomp=unconfined", "CLONE_NEWUSER", "Seccomp"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("blockerUsernsSeccomp does not name %q:\n%s", want, body)
+		}
+	}
+	for _, never := range []string{"unprivileged_userns_clone", "max_user_namespaces"} {
+		if strings.Contains(body, never) {
+			t.Errorf("blockerUsernsSeccomp names %q, the knob that was already correct:\n%s", never, body)
+		}
+	}
+}
+
+// The two /proc readers, on this host, against what /proc actually says. Not a
+// tautology: it pins the ABSENT-knob rule, which is what stops a
+// non-Debian-family kernel being told its missing sysctl is the problem.
+func TestUsernsSysctlReadersTreatAnAbsentKnobAsPermissive(t *testing.T) {
+	// Positive control: this suite runs where sandboxes work, so the sysctls
+	// must read permissive. If this fails, the reader is wrong, not the host.
+	if !usernsSysctlsPermissive() {
+		t.Skip("this host genuinely refuses unprivileged user namespaces; the reader cannot be checked here")
+	}
+	// /proc/self/status always carries a Seccomp line on a kernel with seccomp
+	// compiled in; the reader must agree with it rather than guess.
+	data, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Skip("no /proc/self/status")
+	}
+	var want bool
+	for _, line := range strings.Split(string(data), "\n") {
+		if rest, ok := strings.CutPrefix(line, "Seccomp:"); ok {
+			want = strings.TrimSpace(rest) != "0"
+		}
+	}
+	if got := seccompFilterInstalled(); got != want {
+		t.Errorf("seccompFilterInstalled() = %v, but /proc/self/status says %v", got, want)
+	}
+}

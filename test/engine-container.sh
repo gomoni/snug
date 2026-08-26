@@ -82,11 +82,19 @@ launch() {
 	#
 	#   apparmor=unconfined     docker-default denies mount(2); bwrap mounts
 	#                           inside its own user namespace.
-	#   (seccomp=unconfined is GONE. It was here only so a first failure could
-	#   not be ambiguous between two filters, and the job went green on run
-	#   32945827262 — 42 of 33 engine tests, no failures — so it was removed and
-	#   the next run measured whether the default profile is in the way. Do not
-	#   re-add it to make a failure go away without saying which syscall.)
+	#   seccomp=unconfined      REQUIRED, and the syscall is named. Removed once
+	#                           the job was green (run 32945827262) to measure
+	#                           whether docker's default profile was in the way;
+	#                           run 32946939204 says it is. With the default
+	#                           profile and every userns sysctl already correct,
+	#                           bwrap said "No permissions to create a new
+	#                           namespace" and the stage said "fork/exec
+	#                           /proc/self/exe: operation not permitted" — the
+	#                           profile denies clone(2) with CLONE_NEWUSER for a
+	#                           process without CAP_SYS_ADMIN, and the whole
+	#                           engine floor went to 0. Preferred over
+	#                           --cap-add SYS_ADMIN, which would buy far more
+	#                           than this needs.
 	#   the unmask flag         docker masks entries under /proc with its own
 	#                           submounts, and the kernel refuses a fresh
 	#                           procfs mount in a userns while the mounter's
@@ -110,6 +118,7 @@ launch() {
 	# shellcheck disable=SC2086 # $unmask is two words on purpose
 	exec "$RUNTIME" run --rm \
 		--security-opt apparmor=unconfined \
+		--security-opt seccomp=unconfined \
 		$unmask \
 		--device /dev/fuse \
 		--device /dev/net/tun \
