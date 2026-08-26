@@ -33,33 +33,31 @@ import (
 // a missing policy.json and an unparsable registries.conf both surface before
 // the first DNS lookup.
 
-// engineSpecEnv returns the environment snug's engine is started with, built
-// by calling engine.Spec itself.
-//
-// Calling the real thing matters more here than convenience: the whole
-// subject of these tests is which variables that function sets, so a test
-// that assembled its own environment would be grading a copy. bundleStorage
-// is added on top because the pinned bundle needs to be told where its store
-// is (snug passes --root/--runroot on the ARGV, which these probes do not
-// use) and because a test must never touch the developer's own store.
-func engineSpecEnv(t *testing.T) []string {
-	t.Helper()
-	// Accept-anything, planted rather than inherited. Since issue #307 the
-	// engine's policy.json is a PROJECTION of the host's, so a probe that let
-	// the developer's own ~/.config/containers/policy.json through would grade
-	// a different file on every machine.
-	env, _ := engineSpecEnvWithSignaturePolicy(t, `{"default":[{"type":"insecureAcceptAnything"}]}`)
-	return env
-}
-
-// engineSpecEnvWithSignaturePolicy is engineSpecEnv with the HOST's signature
+// engineSpecEnvWithSignaturePolicy returns the environment snug's engine is
+// started with, built by calling engine.Spec itself, with the HOST's signature
 // policy chosen by the caller. hostPolicy is planted under a temporary home and
 // projected exactly as a run projects it, so what podman ends up reading came
 // out of snug's real projection rather than out of a fixture.
 //
-// It returns the Engine as well, because a probe that runs podman on the HOST
-// has to pass --root and --runroot itself: the generated storage.conf names the
-// GUEST paths, and a real run supplies the host ones on the argv.
+// Calling the real thing matters more here than convenience: the whole subject
+// of these tests is which variables that function sets, so a test that
+// assembled its own environment would be grading a copy.
+//
+// THERE IS DELIBERATELY NO ENV-ONLY WRAPPER. One existed — it called this and
+// threw the Engine away — and BOTH of its callers were silently broken by that:
+// a probe that runs podman on the HOST has to pass --root and --runroot itself
+// (storeArgs), because the generated storage.conf names the GUEST paths and a
+// real run supplies the host ones on the argv. With no Engine there is nothing
+// to build those from, so both died on
+//
+//	creating runtime static files directory "/snug/engine/store/libpod":
+//	mkdir /snug: permission denied
+//
+// inside their own CONTROL, and skipped saying "there is nothing to regress" —
+// issue #137's registries.conf regression and issue #142's host-credential
+// regression, both inert behind a green line (issue #425). Returning the Engine
+// unconditionally is what makes forgetting it impossible rather than merely
+// discouraged.
 func engineSpecEnvWithSignaturePolicy(t *testing.T, hostPolicy string) ([]string, *engine.Engine) {
 	t.Helper()
 	data := t.TempDir()
@@ -220,17 +218,33 @@ func TestTheEngineResolvesNoHostRegistryCredential(t *testing.T) {
 	budget(t, 90*time.Second)
 
 	home, registry, user := hostHomeWithDockerCredential(t)
-	env := envWith(engineSpecEnv(t), "HOME", home)
+	baseEnv, eng := engineSpecEnvWithSignaturePolicy(t, `{"default":[{"type":"insecureAcceptAnything"}]}`)
+	env := envWith(baseEnv, "HOME", home)
+
+	// storeArgs for the same reason TestAHostRegistriesConfDoesNotSteerTheEnginesPull
+	// needs it (issue #425): this probe runs podman on the HOST, and the
+	// generated storage.conf named by CONTAINERS_STORAGE_CONF carries the GUEST
+	// paths. Without it `login` never reaches the credential lookup and dies on
+	// the store instead —
+	//
+	//	creating runtime static files directory "/snug/engine/store/libpod":
+	//	mkdir /snug: permission denied
+	//
+	// — which the control below then reported as "there is nothing to regress",
+	// leaving issue #142's regression inert with a green line to show for it.
+	// Found by reading the suite's own output after fixing the two tests #425
+	// named; this is a third instance of the same defect.
 
 	// CONTROL FIRST: without snug's variable the credential must be found, or
 	// this test cannot fail and proves nothing.
-	control := runPodman(t, envWithout(env, "REGISTRY_AUTH_FILE"), "login", "--get-login", registry)
+	control := runPodman(t, envWithout(env, "REGISTRY_AUTH_FILE"),
+		storeArgs(eng, "login", "--get-login", registry)...)
 	if !strings.Contains(control, user) {
 		t.Skipf("SKIP: the control did not resolve the planted credential, so this podman does "+
 			"not read ~/.docker/config.json at all and there is nothing to regress: %s", control)
 	}
 
-	got := runPodman(t, env, "login", "--get-login", registry)
+	got := runPodman(t, env, storeArgs(eng, "login", "--get-login", registry)...)
 	if strings.Contains(got, user) {
 		t.Fatalf("the engine resolved the HOST user's registry credential for %s: a payload "+
 			"with @net can pull private images and push as %s (issue #142).\n%s",
