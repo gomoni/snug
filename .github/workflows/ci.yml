@@ -429,6 +429,24 @@ jobs:
   # ambiguous between two filters), systempaths=unconfined, and /dev/fuse for
   # rootless fuse-overlayfs.
   #
+  # --tmpfs /tmp is the FOURTH blocker, and it is the only one that is about
+  # snug's own layout rather than the container's. The engine runroot is
+  # os.TempDir()-rooted (internal/engine/paths.go:123, `filepath.Join(os.TempDir(),
+  # "snug-engines-<uid>-<key>", "rr")`), docker's container root is overlayfs, and
+  # the kernel refuses an overlay whose lower layer is itself overlayfs — so
+  # buildah's build-context overlay failed EINVAL and every engine test read as
+  # "a build succeeded but its RUN step never actually executed a container"
+  # (run 32942740758):
+  #
+  #   mounting an overlay over build context directory: … lowerdir=/snug/engine/
+  #   runroot/tmp/libpod_builder…, upperdir=…, workdir=…, userxattr: invalid argument
+  #
+  # A tmpfs at /tmp takes the runroot off overlayfs. `exec` because things run
+  # from there; mode=1777 because it is /tmp. This is issue #399's subject
+  # ("ephemeral per-run state belongs in /run/user/<uid> rather than /tmp") seen
+  # from the outside: a runroot on /run/user/<uid> would not have needed a flag
+  # here, since that path is a tmpfs on any systemd host.
+  #
   # /dev/net/tun is the THIRD blocker, and it is a device node rather than a
   # policy knob: pasta puts a tap device in the sandbox's netns, docker does not
   # give a container the tun clone device, and every `-p @net` run died with
@@ -504,6 +522,7 @@ jobs:
             --security-opt systempaths=unconfined \
             --device /dev/fuse \
             --device /dev/net/tun \
+            --tmpfs /tmp:exec,mode=1777 \
             -v "$PWD":/src \
             -v "$(go env GOROOT)":/usr/local/go:ro \
             registry.opensuse.org/opensuse/tumbleweed:latest \
