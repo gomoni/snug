@@ -172,7 +172,7 @@
       "from": [
         "@sys"
       ],
-      "optional": false,
+      "optional": true,
       "authored": false,
       "executable": false,
       "yielded": false
@@ -720,7 +720,7 @@
       "--ro-bind",
       "/etc/ld.so.conf",
       "/etc/ld.so.conf",
-      "--ro-bind",
+      "--ro-bind-try",
       "/etc/nsswitch.conf",
       "/etc/nsswitch.conf",
       "--ro-bind",

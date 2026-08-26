@@ -426,7 +426,19 @@ jobs:
   # userns and holds capabilities inside it, so the container needs only
   # apparmor=unconfined (docker-default denies mount(2)), seccomp=unconfined
   # (comes OUT once this job is green — it is here so a first failure is not
-  # ambiguous between two filters) and /dev/fuse for rootless fuse-overlayfs.
+  # ambiguous between two filters), systempaths=unconfined, and /dev/fuse for
+  # rootless fuse-overlayfs.
+  #
+  # systempaths=unconfined is the narrowest answer to the SECOND blocker, which
+  # only became visible once the sysctl cleared the first. Run 32941695379:
+  # doctor reported `the stage starts — clone, uid map, loopback, and the netns
+  # move` as OK, and then `bwrap: Can't mount proc on /newroot/proc: Operation
+  # not permitted`. Docker masks entries under /proc with its own submounts, and
+  # the kernel refuses a fresh procfs mount inside a user namespace when the
+  # mounter's view of /proc is obstructed — so this is docker's masked paths,
+  # not a capability, and --cap-add would not have touched it. The flag replaces
+  # docker's MaskedPaths and ReadonlyPaths for this container; it does not make
+  # the container privileged.
   #
   # The Go toolchain is MOUNTED from the runner rather than installed by zypper.
   # snug is cgo-free by constraint (.claude/design/NOCGO.md) and the Go
@@ -481,6 +493,7 @@ jobs:
           docker run --rm \
             --security-opt apparmor=unconfined \
             --security-opt seccomp=unconfined \
+            --security-opt systempaths=unconfined \
             --device /dev/fuse \
             -v "$PWD":/src \
             -v "$(go env GOROOT)":/usr/local/go:ro \

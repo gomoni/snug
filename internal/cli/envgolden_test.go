@@ -63,7 +63,13 @@ func newEnvFakeEnv() *envFakeEnv {
 			// @sys's non-optional /etc entries. Without these Resolve refuses,
 			// because a grant that is not marked optional must exist.
 			"/etc/ld.so.cache": true, "/etc/ld.so.conf": true,
-			"/etc/nsswitch.conf": true, "/etc/passwd": true, "/etc/group": true,
+			"/etc/passwd": true, "/etc/group": true,
+			// nsswitch.conf IS optional (openSUSE ships it only under /usr/etc
+			// on its container images), and it is present here on purpose: it
+			// is the only optional grant this fixture provides, so it is the
+			// positive control for the `--ro-bind-try` rendering. Remove it and
+			// nothing in any golden shows what an optional mount looks like.
+			"/etc/nsswitch.conf": true,
 			// the fixture home and project
 			"/home/u": true, "/home/u/proj": true, "/home/u/proj/sub": true,
 			// @claude's binary. Present on purpose, and it is a POSITIVE
