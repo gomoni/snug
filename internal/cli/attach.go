@@ -515,6 +515,8 @@ func readCapLastCap() (int, error) {
 }
 
 func readCapLastCapFrom(path string) (int, error) {
+	// HOSTREAD-EXEMPT: path is capLastCapPath, "/proc/sys/kernel/cap_last_cap",
+	// made a parameter only so a test can point it at a fake file.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0, err

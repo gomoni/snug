@@ -356,6 +356,8 @@ func openPTY() (master, slave *os.File, err error) {
 		m.Close()
 		return nil, nil, err
 	}
+	// HOSTREAD-EXEMPT: ptsPath(n) is always "/dev/pts/<n>", the slave the
+	// TIOCGPTN ioctl just allocated above.
 	s, err := os.OpenFile(ptsPath(n), os.O_RDWR|unix.O_NOCTTY, 0)
 	if err != nil {
 		m.Close()

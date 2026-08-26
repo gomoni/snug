@@ -54,9 +54,24 @@ var attachTopologies = []struct {
 // attach`'s discovery only ever sees runs THIS test started — the same
 // isolation baseEnv already gives XDG_CONFIG_HOME, applied to the directory
 // state.json now lives under.
+//
+// Rooted at os.MkdirTemp("", …), not t.TempDir(): the container proxy's
+// socket lands at "<XDG_RUNTIME_DIR>/snug/run-<pid>/podman.sock", and
+// t.TempDir() names its directory after the calling test function — long
+// enough, on this suite's longest test names, to push that path past
+// AF_UNIX's ~108-byte sun_path. Every one of attachEnv's callers inherits
+// this, which is what makes the length a suite-wide default rather than a
+// per-test opt-in: an opt-in leaves every other call site one rename away
+// from a failure that only reproduces on the random suffix os.MkdirTemp
+// happened to draw.
 func attachEnv(t *testing.T) (env []string, xdgRuntime string) {
 	t.Helper()
-	xdgRuntime = t.TempDir()
+	dir, err := os.MkdirTemp("", "snug-attach")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	xdgRuntime = dir
 	return baseEnv("XDG_RUNTIME_DIR=" + xdgRuntime), xdgRuntime
 }
 
@@ -1430,7 +1445,7 @@ func TestAttachFindsTheRunByASymlinkToItsTarget(t *testing.T) {
 func TestAttachOnANonexistentTargetReportsNoLiveRunCleanly(t *testing.T) {
 	budget(t)
 	requireSandbox(t)
-	env := baseEnv("XDG_RUNTIME_DIR=" + t.TempDir())
+	env := baseEnv("XDG_RUNTIME_DIR=" + shortRuntimeDir(t))
 
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 	out, code := cli(t, env, "attach", missing, "--", "/bin/true")
@@ -2671,8 +2686,10 @@ func TestAttachFindsARunStartedUnderADifferentEnvironment(t *testing.T) {
 
 	proj, _ := target(t)
 
-	// HOLDER: the interactive-shell shape.
-	holderEnv := baseEnv("XDG_RUNTIME_DIR="+t.TempDir(), "TMPDIR="+t.TempDir())
+	// HOLDER: the interactive-shell shape. shortRuntimeDir, not t.TempDir(),
+	// for XDG_RUNTIME_DIR (runtimedir_test.go's own comment) — TMPDIR is not
+	// the socket's root and stays as t.TempDir().
+	holderEnv := baseEnv("XDG_RUNTIME_DIR="+shortRuntimeDir(t), "TMPDIR="+t.TempDir())
 	bg := startAttachSandbox(t, holderEnv, nil, proj,
 		`echo IN-SANDBOX-TMPFS-HOME > "$HOME/home-marker"; sleep 300`)
 	bg.ready(t)

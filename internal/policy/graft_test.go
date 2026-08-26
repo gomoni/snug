@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/gomoni/snug/test/modroot"
 )
 
 // ── §7 item 1 (the model half) ───────────────────────────────────────────────
@@ -1057,7 +1059,7 @@ func graftLiteralsWithoutWhy(filename, src string) []string {
 }
 
 // graftCallSitesWithoutWhy runs graftLiteralsWithoutWhy over every non-test
-// .go file under the module root (moduleRoot, authoredwriters_test.go) —
+// .go file under the module root (modroot.Find) —
 // not just internal/, so a call site in cmd/snug is in scope too (issue
 // #353). It also returns the directories it visited: requireWalked
 // (norestriction_test.go) is the walk's own positive control, shared with
@@ -1065,10 +1067,13 @@ func graftLiteralsWithoutWhy(filename, src string) []string {
 // shipping green.
 func graftCallSitesWithoutWhy(t *testing.T) ([]string, map[string]bool) {
 	t.Helper()
-	root := moduleRoot(t)
+	root, err := modroot.Find()
+	if err != nil {
+		t.Fatal(err)
+	}
 	var bad []string
 	dirs := map[string]bool{}
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		// A source sweep walks a tree other packages' tests are writing in. An entry
 		// that vanished between its parent's ReadDir and this call is not a source
 		// file and is not this sweep's business: skipping it keeps a failure in
@@ -1306,15 +1311,18 @@ var engineOwnedWriteRE = regexp.MustCompile(`\.EngineOwnedHostPaths\s*(\[[^]]*\]
 // makes OwnEngineHostPath's writer discipline checkable rather than merely
 // documented.
 func TestOnlyOneWriterOfEngineOwnedHostPaths(t *testing.T) {
-	// The walk root is the module root (moduleRoot, authoredwriters_test.go),
+	// The walk root is the module root (modroot.Find),
 	// not internal/ — a write in cmd/snug is in scope (issue #353). dirs is
 	// the walk's own positive control (requireWalked,
 	// norestriction_test.go): without it a future narrowing of root ships
 	// green again.
-	root := moduleRoot(t)
+	root, err := modroot.Find()
+	if err != nil {
+		t.Fatal(err)
+	}
 	var hits []string
 	dirs := map[string]bool{}
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		// A source sweep walks a tree other packages' tests are writing in. An entry
 		// that vanished between its parent's ReadDir and this call is not a source
 		// file and is not this sweep's business: skipping it keeps a failure in

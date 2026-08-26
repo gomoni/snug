@@ -34,9 +34,10 @@ func TestEngineArgvNamesOnlyGuestPaths(t *testing.T) {
 	// refuses outright as a caller that skipped ProjectHostSignaturePolicy
 	// (#307). It is the neutral input here rather than a claim this test
 	// measures: the signature policy reaches the engine as a generated
-	// policy.json under its own $HOME, and podman 5.8.4 has no
-	// --signature-policy flag at all, so no value of it puts a path in the
-	// argv this test sweeps.
+	// policy.json under its own $HOME, and on podman 5.8.4 --signature-policy
+	// is a hidden flag on `pull` and `push` only — absent from `system
+	// service`, which is the subcommand this test sweeps — so no value of it
+	// puts a path in this argv.
 	spec, err := e.Spec(specPolicy(t, e, "", policy.NetPolicy{}),
 		"/usr/bin/podman", []string{"PATH=/usr/bin"}, false, noSignaturePolicy(t))
 	if err != nil {

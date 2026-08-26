@@ -666,6 +666,8 @@ func run(cfg config) int {
 // hostNameservers reads the host's resolvers. Only the routable ones survive
 // into the sandbox; see policy.NetPolicy.ResolvConf.
 func hostNameservers() []string {
+	// HOSTREAD-EXEMPT: /etc/resolv.conf is read before any sandbox exists,
+	// so nothing this run confines can have substituted it.
 	data, err := os.ReadFile("/etc/resolv.conf")
 	if err != nil {
 		return nil

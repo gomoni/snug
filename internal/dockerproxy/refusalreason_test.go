@@ -76,6 +76,14 @@ func TestNoRefusalReasonDescribesTheHostSideEngine(t *testing.T) {
 		// (issue #146, #257).
 		"hardware the sandbox cannot see",
 		"reaches hardware",
+		// LogConfig's reason justified the refusal by conmon writing the file
+		// "ON THE HOST as your uid" (issue #423). Same class again — Tier C
+		// (issue #125) made the engine resolve a client-named path in its
+		// DERIVED view, so "on the host" is the pre-Tier-C model, and none of
+		// the five phrases above matched it. ContainerIDFile, the sibling of
+		// identical shape, says "resolved in the engine's derived view" and is
+		// unaffected by this phrase.
+		"on the host as your uid",
 	}
 
 	for field, reason := range refusalReason {
@@ -103,6 +111,7 @@ func TestNoRefusalReasonDescribesTheHostSideEngine(t *testing.T) {
 		"published ports land where the sandbox cannot reach them",
 		"the engine's side of the world is unreachable, a host-visible surface outside this sandbox's own netns",
 		"device passthrough reaches hardware the sandbox cannot see",
+		"conmon then writes that file on the host as your uid",
 	}
 	for _, phrase := range stale {
 		caught := false

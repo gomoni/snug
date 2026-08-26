@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/gomoni/snug/test/modroot"
 )
 
 // ── the source sweeps must survive `go test ./...` ──────────────────────────
@@ -46,35 +48,17 @@ import (
 // fs.ErrNotExist that turns another package's cleanup into a skipped entry.
 const vanishTolerance = "fs.ErrNotExist"
 
-// moduleRoot finds the directory holding go.mod by walking UP, never by
-// counting ".." segments — a hardcoded subroot is how a sweep came to walk a
-// subdirectory of the module and miss cmd/snug entirely (issue #291).
-func moduleRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := filepath.Abs(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("no go.mod above the test's working directory")
-		}
-		dir = parent
-	}
-}
-
 // testFiles hands every _test.go file in the module to fn. It is itself a
 // module-root walk, so it obeys the rule it checks — and it is its own first
 // customer, which is the only way this file is not exempt from its own claim.
 func testFiles(t *testing.T, fn func(rel string, f *ast.File, fset *token.FileSet)) int {
 	t.Helper()
-	root := moduleRoot(t)
+	root, err := modroot.Find()
+	if err != nil {
+		t.Fatal(err)
+	}
 	n := 0
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				return nil
@@ -244,6 +228,8 @@ func f() { root := filepath.Join("..", ".."); filepath.WalkDir(root, fn) }`,
 func f() { filepath.WalkDir(filepath.Join("..", "..", "internal"), fn) }`,
 			`package p
 func f(t *testing.T) { r := repoRoot(t); filepath.WalkDir(r, fn) }`,
+			`package p
+func f() { root, _ := modroot.Find(); filepath.WalkDir(root, fn) }`,
 		} {
 			if !hasModuleSourceWalk(t, src) {
 				t.Errorf("not recognised as a module-source walk:\n%s", src)
@@ -311,12 +297,16 @@ func isSelector(e ast.Expr, pkg, name string) bool {
 }
 
 // rootsAtModuleSource reports whether a walk root names this module's own
-// source: a helper whose name ends in "Root", or a filepath.Join starting at
-// "..". Either way the tree is one other packages write in.
+// source: a helper whose name ends in "Root", modroot.Find, or a
+// filepath.Join starting at "..". Either way the tree is one other packages
+// write in.
 func rootsAtModuleSource(e ast.Expr) bool {
 	switch v := e.(type) {
 	case *ast.CallExpr:
 		if id, ok := v.Fun.(*ast.Ident); ok && strings.HasSuffix(id.Name, "Root") {
+			return true
+		}
+		if isSelector(v.Fun, "modroot", "Find") {
 			return true
 		}
 		if isSelector(v.Fun, "filepath", "Join") && len(v.Args) > 0 {

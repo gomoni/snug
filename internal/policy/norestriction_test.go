@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/gomoni/snug/test/modroot"
 )
 
 // ── the no-restriction invariant, swept for as a property ────────────────────
@@ -109,12 +111,15 @@ func (s writeSite) key() string { return s.file + " " + s.fn + " (" + s.how + ")
 // part 1b).
 func sweepModule(t *testing.T, detect func(file string, f *ast.File, fset *token.FileSet) []writeSite) ([]writeSite, map[string]bool) {
 	t.Helper()
-	root := moduleRoot(t)
+	root, err := modroot.Find()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var sites []writeSite
 	dirs := map[string]bool{}
 
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		// A source sweep walks a tree other packages' tests are writing in. An entry
 		// that vanished between its parent's ReadDir and this call is not a source
 		// file and is not this sweep's business: skipping it keeps a failure in

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gomoni/snug/test/modroot"
 )
 
 // ── issue #393 §7: nothing in-tree may name the retired static-podman bundle ─
@@ -64,7 +66,10 @@ func TestNoTrackedFileNamesTheRetiredPodmanStaticBundle(t *testing.T) {
 			"would report a clean tree even with the retired bundle's name reintroduced", needle)
 	}
 
-	root := moduleRoot(t)
+	root, err := modroot.Find()
+	if err != nil {
+		t.Fatal(err)
+	}
 	out, err := exec.Command("git", "-C", root, "ls-files").Output()
 	if err != nil {
 		t.Fatalf("git -C %s ls-files: %v", root, err)

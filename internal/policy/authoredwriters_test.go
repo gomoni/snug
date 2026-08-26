@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/gomoni/snug/test/modroot"
 )
 
 // authoredField is the field name both Mount and Graft declare and both
@@ -247,29 +249,6 @@ func elementTypeName(e ast.Expr) string {
 	return ""
 }
 
-// moduleRoot is the directory holding go.mod, found by walking up rather than
-// by counting `..` segments — the previous sweep hardcoded
-// filepath.Join("..","..","internal") and that literal WAS the bug: it made
-// the walk root a subdirectory of the module, so a writer in cmd/snug shipped
-// green (issue #291, part 1b).
-func moduleRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := filepath.Abs(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("no go.mod above the test's working directory, so the sweep has no module to walk")
-		}
-		dir = parent
-	}
-}
-
 // TestAuthoredWriteDetectorCatchesEverySpelling is the mandatory positive
 // control, and it is the whole reason this rewrite exists. The regexp it
 // replaces could not fail on three of the shapes below, and NOTHING said so —
@@ -385,7 +364,10 @@ func f(m Mount) bool { if m.Authored { return true }; return m.Authored == false
 // pointing at the comments whose argument would then be incomplete rather than
 // merely out of date.
 func TestAuthoredWritersAreTheThreeTheCommentsName(t *testing.T) {
-	root := moduleRoot(t)
+	root, err := modroot.Find()
+	if err != nil {
+		t.Fatal(err)
+	}
 	sites, filesSeen, err := findAuthoredWrites(root)
 	if err != nil {
 		t.Fatal(err)

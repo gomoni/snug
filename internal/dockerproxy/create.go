@@ -502,10 +502,19 @@ var refusalReason = map[string]string{
 		"no CAP_NET_ADMIN",
 	"PublishAllPorts": "the container already shares this sandbox's network namespace, so " +
 		"every port it binds is reachable from inside without publishing anything",
+	// The reason said conmon "writes that file ON THE HOST as your uid" and
+	// named a $HOME "the sandbox sees only as an empty tmpfs". That was true
+	// when a redteam round used it to plant a file, and Tier C (issue #125)
+	// narrowed it: the engine resolves a client-named path in its DERIVED
+	// view, not on the host. Its sibling ContainerIDFile below was corrected
+	// for exactly this and is the wording to match. No measurement of the
+	// write is claimed here — unlike ContainerIDFile, this one has not been
+	// re-measured against a post-Tier-C engine, and the refusal does not rest
+	// on it either way.
 	"LogConfig": "podman's k8s-file/json-file drivers honour a `path` option, and conmon " +
-		"then writes that file ON THE HOST as your uid — an arbitrary host-file write, " +
-		"needing no privileges. The redteam agent used it to create a file in a $HOME " +
-		"the sandbox sees only as an empty tmpfs",
+		"then opens that file as your uid, resolved in the engine's derived view — the " +
+		"sandbox's own tree plus this run's grafts, the read-write container store among " +
+		"them. snug names what a container may touch",
 	// Issue #305, found by a redteam sweep of this proxy. Same SHAPE as
 	// LogConfig one line up — a client-named path an engine component opens on
 	// snug's side of the proxy — and it was the one field of that shape the

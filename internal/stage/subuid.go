@@ -55,6 +55,9 @@ type idRange struct {
 // error. Doing the same match here first is what lets the refusal name the
 // fix ("add a line for this user") instead of relayed newuidmap stderr.
 func lookupIDRange(path string, id int) (idRange, error) {
+	// HOSTREAD-EXEMPT: every caller passes a literal, "/etc/subuid" or
+	// "/etc/subgid"; path is a parameter only so a test can point it at a
+	// fixture.
 	f, err := os.Open(path)
 	if err != nil {
 		return idRange{}, fmt.Errorf("reading %s: %w", path, err)

@@ -27,6 +27,22 @@ import (
 // is the cheaper of the two to stand up — no engine required — so both
 // tests use it, and neither needs the sandboxed payload to actually run ssh.
 
+// shortRuntimeDir is a fresh $XDG_RUNTIME_DIR rooted at os.MkdirTemp("", …)
+// rather than t.TempDir(): both tests here actually bind a socket under it
+// (the ssh-agent proxy, via ssh_mode = "agent-proxy"), and t.TempDir() names
+// its directory after the calling test, which on this file's longer test
+// name leaves little headroom before AF_UNIX's ~108-byte sun_path — the same
+// margin dryrunleak_test.go's runtimeDir spends its own comment on.
+func shortRuntimeDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "snug-rtdir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 // waitForLockFile polls for a run directory's lock file to appear, which is
 // the last thing runLock creates before returning — so its presence is what
 // tells this test "that snug process has finished claiming its runtime
@@ -56,7 +72,7 @@ func TestStaleRuntimeDirectoryIsSweptOnTheNextRun(t *testing.T) {
 	projSweep := t.TempDir()
 	pub, sock := sshAgentAndKey(t)
 
-	runtimeScratch := t.TempDir()
+	runtimeScratch := shortRuntimeDir(t)
 	snugDir := filepath.Join(runtimeScratch, "snug")
 	env := writeProfile(t, "[profile.pinned]\n"+
 		"description = \"one throwaway key, for the integration suite\"\n"+
@@ -157,7 +173,7 @@ func TestSymlinkAtTheSharedRuntimeDirectoryIsRefusedEndToEnd(t *testing.T) {
 		"ssh_mode = \"agent-proxy\"\n" +
 		"ssh_key = \"" + pub + "\"\n"
 
-	trapBase := t.TempDir()
+	trapBase := shortRuntimeDir(t)
 	trapTarget := filepath.Join(trapBase, "attacker-owned")
 	if err := os.MkdirAll(trapTarget, 0o700); err != nil {
 		t.Fatal(err)
@@ -182,7 +198,7 @@ func TestSymlinkAtTheSharedRuntimeDirectoryIsRefusedEndToEnd(t *testing.T) {
 	// $XDG_RUNTIME_DIR, must actually run. Without this, the refusal above
 	// could mean the identity/profile setup itself is broken rather than the
 	// symlink guard firing.
-	clean := t.TempDir()
+	clean := shortRuntimeDir(t)
 	cleanEnv := writeProfile(t, profile, "SSH_AUTH_SOCK="+sock, "XDG_RUNTIME_DIR="+clean)
 	ctrl := runEnv(t, cleanEnv, []string{"-p", "pinned"}, proj, "echo MARKER").mustRun(t)
 	if !strings.Contains(ctrl.out, "MARKER") {

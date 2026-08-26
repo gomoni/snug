@@ -99,6 +99,14 @@ func podmanClientUsable() (ok bool, detail string) {
 
 	// A shell script wrapper is the other common shape. A real podman is an ELF
 	// binary; anything starting with #! is forwarding somewhere.
+	//
+	// HOSTREAD-EXEMPT: resolved comes from exec.LookPath("podman") on this
+	// user's own $PATH, the same trust boundary as the shell that set it — a
+	// hostile PATH entry can already run arbitrary code as this user, so a
+	// FIFO here blocking this one doctor check is not a new capability. Not
+	// hostread.Optional: the cap that guards against an oversized read would
+	// reject a real multi-MB podman binary before this ever reaches the
+	// two-byte magic check below.
 	if f, err := os.Open(resolved); err == nil {
 		defer f.Close()
 		var magic [2]byte
