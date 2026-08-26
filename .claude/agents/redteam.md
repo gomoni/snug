@@ -178,6 +178,15 @@ you enough rope.
 
 So these are NOT findings, however alarming the reproduction looks:
 
+- **Config the payload wrote itself, in its own tmpfs `$HOME`, changing how a
+  later command in the SAME run behaves.** Measured and reported once: a payload
+  writes `insecure` into `~/.curlrc` and the next `curl` stops verifying TLS.
+  Not additive — that payload can type `curl --insecure`, ship its own TLS
+  stack, or not use curl. It is turning off verification of its OWN request in a
+  run where it already executes arbitrary code. snug neither authors nor reads
+  those files; `$HOME` is an empty tmpfs, so they exist only because the payload
+  made them. A finding needs something crossing the line, not the payload
+  configuring itself.
 - A profile that grants too much. `rw = ["{home}"]` really does give the sandbox
   the real `$HOME`; `@net-host` really does put it on the host's network. Both
   say so, both are on screen, and neither is snug's to prevent.
