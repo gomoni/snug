@@ -555,6 +555,36 @@ snug refuses three things, and none of them is "too dangerous for you":
 `snug doctor` may get louder about profiles that are dangerous but correct
 (issue #80). It will not refuse to run one.
 
+**A KNOWN GAP, and it is the sharpest one on this page: with `@claude`, the
+sandbox can reach your account's other Claude Code sessions.** `@claude` stages
+a working credential and `@net` gives egress — both deliberate, both what make
+the profile useful — and Claude Code's session mesh reaches peers over the
+network, through Anthropic's servers. snug's boundary is this MACHINE. The
+session mesh is your ACCOUNT.
+
+It is not a sandbox escape: no filesystem, no kernel, no host process, no
+namespace. It is an authority escape *iff the peer is less confined than the
+sender*, and the case that matters is a Remote Control session on another
+machine — unsandboxed, with that machine's files and credentials. A payload
+inside snug that can send it instructions has a deputy outside every boundary
+snug draws.
+
+**snug cannot close this and is not going to pretend otherwise.** The only
+mechanisms available are a filtering proxy over TLS to Anthropic — which would
+have to tell "the agent doing its job" from "the agent messaging a peer" on the
+same host, same credential, same protocol — or removing the credential or the
+egress, which is removing the feature. A filtering proxy that is 95% correct is
+a sandbox that is 0% sound.
+
+**What you can do, and it is worth doing:** Claude Code has its own controls —
+`crossSessionInbound: "refuse"` in a settings file, and `permissions.deny`
+naming `SendMessage` and `ListAgents`, which removes those tools from the
+session's context entirely. Directional: inbound and outbound are separate.
+Organisation *managed settings* are the only variant a session cannot override.
+Everything else is enforced client-side by Claude Code, so treat it as a
+default, not as a boundary — a payload holding the credential can talk to the
+API without the client's help.
+
 The complete goals and non-goals — what host state snug protects, what it
 deliberately does not, and worked prevented/not-prevented examples — live in
 [`.claude/design/THREAT-MODEL.md`](.claude/design/THREAT-MODEL.md).

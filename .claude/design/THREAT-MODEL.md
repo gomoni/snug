@@ -99,6 +99,46 @@ So code can download bad podman images, mine bitcoin, try to hack HuggingFace
 (DO NOT DO IT), or try to escape the containment using claude's remote
 abilities. And `snug` itself is not going to prevent this.
 
+**The remote abilities deserve naming, because they are the one non-goal on this
+page that reaches beyond this machine.** With `@claude`, the sandbox holds a
+working credential and egress — both deliberate; they are what the profile is
+for — and Claude Code's session mesh reaches other sessions of the same ACCOUNT
+over the network. Measured from inside a live sandbox: `curl` to
+`https://api.anthropic.com/v1/messages` returns **405**, the wrong verb on a
+POST endpoint, i.e. the request arrived.
+
+It is not a sandbox escape — no filesystem, no kernel, no host process, no
+namespace. It is an authority escape **iff the peer is less confined than the
+sender**. Another snug session gains nothing; a cloud session runs in
+Anthropic's own sandbox; a **Remote Control session on another machine** is the
+sharp case, being unsandboxed with that machine's files and credentials.
+
+**snug's boundary is the MACHINE. The session mesh is the ACCOUNT.** That is
+why this is a non-goal and not a bug: closing it needs a filtering proxy over
+TLS to Anthropic, distinguishing "the agent doing its job" from "the agent
+messaging a peer" on the same host, same credential, same protocol — the shape
+[INDEX.md](INDEX.md) §7.4 already refuses for D-Bus, in these words: *a
+filtering proxy that is 95% correct is a sandbox that is 0% sound*. The
+alternatives are removing the credential or the egress, which is removing the
+feature.
+
+**The LOCAL half is closed, structurally.** Cross-session messaging on one
+machine is unix sockets, not the API — the opposite of the obvious hypothesis,
+which is why it was measured rather than reasoned about. `/tmp` inside is snug's
+private tmpfs, so `/tmp/cc-socks/` holds only this session's own socket, and
+`@tmp-shared` does not open it either: `prepareHostTmpDir` ALLOCATES a
+per-sandbox directory rather than binding the host's `/tmp`. It holds because
+the guiding principle paid out on a surface nobody had looked at.
+
+**Claude Code's own controls exist and are worth setting, but they are not a
+boundary.** `crossSessionInbound: "refuse"` and `permissions.deny` naming
+`SendMessage`/`ListAgents` (a bare deny removes the tool from the session's
+context) are enforced CLIENT-side by Claude Code; only organisation *managed
+settings* cannot be overridden by a session. A payload holding the credential
+can reach the API without the client, and it controls its own command line
+inside the sandbox — `--settings` layers rather than replaces. So: a default,
+not a guarantee. Invariant 5 is about not letting a user believe otherwise.
+
 ### 3.2 Resource management
 
 `snug` itself does not control filesystem quotas, rlimits, or cgroups.
