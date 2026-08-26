@@ -429,6 +429,14 @@ jobs:
   # ambiguous between two filters), systempaths=unconfined, and /dev/fuse for
   # rootless fuse-overlayfs.
   #
+  # /dev/net/tun is the THIRD blocker, and it is a device node rather than a
+  # policy knob: pasta puts a tap device in the sandbox's netns, docker does not
+  # give a container the tun clone device, and every `-p @net` run died with
+  # `pasta exited before the network came up: Failed to open() /dev/net/tun: No
+  # such file or directory` (run 32942207790). doctor now opens that node itself
+  # rather than reporting pasta's version, so a host missing it says so before a
+  # test does.
+  #
   # systempaths=unconfined is the narrowest answer to the SECOND blocker, which
   # only became visible once the sysctl cleared the first. Run 32941695379:
   # doctor reported `the stage starts — clone, uid map, loopback, and the netns
@@ -495,6 +503,7 @@ jobs:
             --security-opt seccomp=unconfined \
             --security-opt systempaths=unconfined \
             --device /dev/fuse \
+            --device /dev/net/tun \
             -v "$PWD":/src \
             -v "$(go env GOROOT)":/usr/local/go:ro \
             registry.opensuse.org/opensuse/tumbleweed:latest \
