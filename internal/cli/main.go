@@ -582,7 +582,7 @@ func run(cfg config) int {
 		return refuse(cfg, exitPolicy, err)
 	}
 
-	idCleanup, err := startIdentity(pol, cfg.verbose, cfg.iKnow, cfg.dryRun)
+	idCleanup, err := startIdentity(pol, cfg.verbose, cfg.dryRun)
 	if err != nil {
 		return refuse(cfg, exitPolicy, err)
 	}

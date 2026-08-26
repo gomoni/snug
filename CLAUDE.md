@@ -158,6 +158,29 @@ with the tests passing:
 - **Write the abuse sentence first.** Before implementing any grant: "a hostile
   process inside the sandbox can use this to ___". It goes in the profile TOML as
   a comment. If you cannot write it, the grant is not ready.
+
+- **`--i-know` is not a design tool. A capability whose entire safety is a CLI
+  flag is a capability that will be used.** People find the flag, and agents
+  find it faster — a flag is documented, greppable, and sits in the error
+  message telling you exactly what to type. So the gate does not bound the
+  capability; it bounds nothing and records that somebody once thought about
+  it. Do not answer "this grant is too wide" with a flag. Either the narrow
+  version of the grant is the whole feature, or the feature does not ship.
+
+  **Measured, twice, on one flag.** `ssh_mode = "host-agent"` forwarded the
+  entire agent and three separate places said it required `--i-know` — nothing
+  checked it, and the red team enumerated every key and signed with one the
+  profile had not pinned (`.claude/agents/sandbox-tester.md`). The gate was then
+  implemented, and issue #411 found it had no test, so deleting the `if !iKnow`
+  block left `make gate` green. The mode was REMOVED rather than tested: it
+  reached the same already-unlocked host agent `agent-proxy` reaches and only
+  bounded which key answers, so the narrow version was the whole feature all
+  along. `policy.ParseSSHMode` refuses it by name.
+
+  **`@net-host` is the one that remains**, and it is not an exception so much as
+  the open question: it shares the host netns, which no narrower grant
+  approximates, so there is nothing to fall back to. Read it as a debt, not a
+  precedent — a new `--i-know` needs the maintainer.
 - **Write the account AS the work happens, not afterwards — and when a detail
   cannot be recovered exactly, write "not recovered" rather than reconstructing
   it.** An account written after the fact is rebuilt from a memory of the

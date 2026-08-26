@@ -305,9 +305,28 @@ func TestDryRunAnnotationDoesNotUnderstateWriteAccess(t *testing.T) {
 
 	// And the noise control: an ephemeral tmpfs below an ephemeral tmpfs is not
 	// a surprise and must NOT be listed, or the line becomes one people skip.
+	//
+	// The GUEST path, built from the resolved policy's own Home, not the bare
+	// string ".cache". The bare string was a substring match against a line
+	// that quotes HOST paths, so it failed whenever the fixture itself landed
+	// under a directory named .cache — which testTree does the moment $HOME is
+	// under /tmp, since snug mounts /tmp itself and the fixture falls back to
+	// os.UserCacheDir(). Measured with HOME under /tmp: `HOME lists tmpfs
+	// children as if they were surprises: "(tmpfs, ephemeral; WRITABLE and
+	// PERSISTS below: /home/michal/.cache/snug-dryrun-fixture-2863779639/home/u/
+	// proj/sub)"` — a pass/fail decided by where the test happened to run.
 	def := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro"})
-	if got := homeAnnotation(def); strings.Contains(got, ".cache") {
-		t.Errorf("HOME lists tmpfs children as if they were surprises: %q", got)
+	got = homeAnnotation(def)
+	// POSITIVE CONTROL, and it is what makes the suppression a measurement:
+	// @home's .cache is a tmpfs, so writableBelow can never list it whatever
+	// the code does. Without something the walk DOES report, "the tmpfs is not
+	// listed" is a fact about the assertion, not about the annotation.
+	if !strings.Contains(got, "WRITABLE and PERSISTS below") {
+		t.Fatalf("control: @cwd-rw grants a writable bind inside the HOME tmpfs, so the "+
+			"walk below HOME should report one; got %q", got)
+	}
+	if cache := filepath.Join(def.Home, ".cache"); strings.Contains(got, cache) {
+		t.Errorf("HOME lists tmpfs children as if they were surprises: %q names %s", got, cache)
 	}
 }
 

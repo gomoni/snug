@@ -749,6 +749,44 @@ and they are the narrower alternatives this refusal exists to stop a mount
 from replacing. The exemption is keyed on `Mount.Authored`, which only
 `Policy.Replace` sets and nothing a profile can write reaches.
 
+### 4b-2. `agent-proxy` is the only ssh mode there is (issue #411)
+
+`ssh_mode = "host-agent"` bound the host's `SSH_AUTH_SOCK` straight through —
+every key enumerable, every key a signing oracle — behind a `--i-know` flag. It
+is gone, and the point of checking it by hand is that a REMOVAL must refuse
+rather than quietly resolve as something narrower.
+
+```bash
+D=$SC/ha; rm -rf $D; mkdir -p $D/snug/profiles.d
+printf 'ssh-ed25519 AAAA-not-a-real-key decoy\n' > $SC/decoy.pub
+printf '[profile.ha]\n[profile.ha.identity]\nssh_mode = "host-agent"\nssh_key = "%s"\n' \
+  $SC/decoy.pub > $D/snug/profiles.d/ha.toml
+XDG_CONFIG_HOME=$D ./bin/snug --dry-run -p ha $SC/proj/sub -- true; echo "exit=$?"
+XDG_CONFIG_HOME=$D ./bin/snug --dry-run --i-know -p ha $SC/proj/sub -- true; echo "exit=$?"
+```
+
+Both exit 77, with the same message and no policy printed — `--i-know` does not
+bring it back:
+
+```
+snug: profile "ha": ssh_mode = "host-agent" has been removed.
+
+      It forwarded your ENTIRE ssh-agent: every key loaded became enumerable
+      AND usable as a signing oracle, not just the pinned one, and anything the
+      sandbox signed was indistinguishable from you.
+
+      Use ssh_mode = "agent-proxy" with ssh_key set. It reaches the same
+      already-unlocked host agent, exposes exactly ONE key, and refuses
+      enumeration.
+exit=77
+```
+
+Refused **by name**, not as `unknown ssh_mode`: a profile written while the mode
+existed is told what happened and what to write instead. Change the one line to
+`ssh_mode = "agent-proxy"` and the same file resolves — a refusal with an
+accepted spelling of the same intent is not a denial, the same test §6l applies
+to every refusal on its list.
+
 ### 4c. What the payload learns about its supervisor (issue #272, accepted)
 
 The sandbox cannot see, signal or `/proc`-inspect the `snug` process supervising

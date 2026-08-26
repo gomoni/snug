@@ -40,7 +40,7 @@ func TestDryRunStartsNoSSHAgentProxy(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", fakeUpstreamAgent(t, fixtures))
 
 	dry := identityPolicy(key)
-	cleanup, err := startIdentity(dry, false, false, true)
+	cleanup, err := startIdentity(dry, false, true)
 	if err != nil {
 		t.Fatalf("a dry run refused an identity profile: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestDryRunStartsNoSSHAgentProxy(t *testing.T) {
 	// assertions above pass on a build where startIdentity does nothing at
 	// all — which is exactly the shape issue #21's own test note warns about.
 	real := identityPolicy(key)
-	realCleanup, err := startIdentity(real, false, false, false)
+	realCleanup, err := startIdentity(real, false, false)
 	if err != nil {
 		t.Fatalf("control: a real run could not start the agent proxy: %v", err)
 	}

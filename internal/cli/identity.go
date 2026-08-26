@@ -108,11 +108,11 @@ func ghToken(host, user string) policy.Secret {
 // with no agent running could not inspect an identity profile at all.
 // failing on host state would make --dry-run refuse a policy the real run
 // might well accept. An UNREADABLE ssh_key is still refused here, by the
-// staging read below, for both modes.
+// staging read below.
 //
 // dryRun also still decides what a MISSING gh token means: a refusal for a
 // real run, a warning for a dry run, for exactly the same reason.
-func startIdentity(pol *policy.Policy, verbose, iKnow, dryRun bool) (cleanup func(), err error) {
+func startIdentity(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), err error) {
 	id := pol.Identity
 	if id == nil || id.SSHMode == policy.SSHNone {
 		return func() {}, nil
@@ -149,30 +149,6 @@ func startIdentity(pol *policy.Policy, verbose, iKnow, dryRun bool) (cleanup fun
 	upstream := os.Getenv("SSH_AUTH_SOCK")
 
 	switch id.SSHMode {
-	case policy.SSHHostAgent:
-		// No filtering at all: every key in your agent, usable by the sandbox.
-		//
-		// This gate was documented in three places and implemented in none —
-		// the redteam agent walked in and signed with a key the profile had not
-		// pinned. A weakening this large must be a human act at the CLI, never
-		// something a profile can assert on its own (INDEX §2.3).
-		if !iKnow {
-			cleanup()
-			return nil, fmt.Errorf(`refusing ssh_mode = "host-agent" without --i-know.
-
-      This forwards your ENTIRE ssh-agent into the sandbox: every key you have
-      loaded becomes enumerable AND usable as a signing oracle, not just the
-      pinned one. Anything the sandbox signs is indistinguishable from you.
-
-      If you meant "the sandbox needs one key", use ssh_mode = "agent-proxy"
-      with ssh_key set. To proceed anyway, add --i-know.`)
-		}
-		if upstream == "" {
-			cleanup()
-			return nil, fmt.Errorf("ssh_mode = \"host-agent\" but no agent is running on the host")
-		}
-		pol.BindSocket(upstream, policy.AgentSocketGuest, "(identity)")
-
 	case policy.SSHAgentProxy:
 		if id.SSHKey == "" {
 			cleanup()
@@ -205,12 +181,14 @@ func startIdentity(pol *policy.Policy, verbose, iKnow, dryRun bool) (cleanup fun
 	// The pinned PUBLIC key, so the generated ~/.ssh/config's IdentityFile
 	// resolves. Public material only; the private half stays in the host agent.
 	//
-	// OUTSIDE the switch, and that placement is a bug fix of its own: an earlier
-	// draft put it inside `case SSHAgentProxy`, which quietly dropped it for
-	// `host-agent` — while resolve.go generates ~/.ssh/config for EVERY mode
-	// except none, with `IdentitiesOnly yes` and an IdentityFile naming the very
-	// file that was no longer staged. SSHConfig's own doc comment says that
-	// state "would have broken agent auth". Found by review, not by a test.
+	// OUTSIDE the switch, and it stays there now that agent-proxy is the only
+	// mode left: resolve.go generates ~/.ssh/config for EVERY mode except none,
+	// with `IdentitiesOnly yes` and an IdentityFile naming this very file, so
+	// the staging answers to the CONFIG's coverage and not to one branch's. A
+	// draft that put it inside `case SSHAgentProxy` left the second mode with
+	// an IdentityFile pointing at nothing — SSHConfig's own doc comment says
+	// that state "would have broken agent auth" — and a mode added here later
+	// would inherit that bug from the same placement.
 	//
 	// Read HERE rather than before Resolve, which is the other half of the fix:
 	// the pre-resolve version read the profile's raw text and understood `~/`
@@ -228,8 +206,9 @@ func startIdentity(pol *policy.Policy, verbose, iKnow, dryRun bool) (cleanup fun
 		// stay a hard error naming the path, exactly as os.ReadFile's did.
 		data, rerr := hostread.Required(id.SSHKey, hostread.MaxSSHPublicKeyBytes)
 		if rerr != nil {
-			// Reachable in practice only for host-agent mode: agent-proxy has
-			// already read the same file through sshproxy.New and failed there.
+			// Reachable on a DRY RUN, which breaks out of the switch above
+			// before sshproxy.New exists to read the same file and fail
+			// there first. A real agent-proxy run has already refused.
 			cleanup()
 			return nil, fmt.Errorf("ssh_key %q: %w\n\n"+
 				"      This is the PUBLIC half of the key the sandbox may sign with. snug\n"+

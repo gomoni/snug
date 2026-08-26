@@ -249,11 +249,8 @@ func (m NetMode) Join(o NetMode) NetMode { if o > m { return o }; return m }
 type SSHMode string
 
 const (
-    SSHAgentProxy SSHMode = "agent-proxy" // RECOMMENDED: filter the host agent to one key
-    SSHAgentOwn   SSHMode = "agent"       // private one-key agent; prompts for the passphrase once
-    SSHKeyFile    SSHMode = "key-file"    // stage the encrypted private key in. Weakest.
-    SSHHostAgent  SSHMode = "host-agent"  // forward the WHOLE host agent. Discouraged.
-    SSHNone       SSHMode = "none"
+    SSHAgentProxy SSHMode = "agent-proxy" // filter the host agent to one pinned key
+    SSHNone       SSHMode = "none"        // the default
 )
 
 // ── Podman ───────────────────────────────────────────────────────────────────
@@ -1097,13 +1094,12 @@ Every surface below is off by default and reached by naming a profile. Each is a
 
 **Recommendation: `ssh_mode = "agent-proxy"`, unconditionally, for every real workflow.** The alternatives exist to be rejected in writing. [`SECRETS.md`](SECRETS.md) §3.4 generalises this shape into the pattern the rest of the credential work is measured against.
 
-| Mode | What it does | Verdict |
-|---|---|---|
-| **`agent-proxy`** | `snug` binds a private socket, hands it to the sandbox as `SSH_AUTH_SOCK`, and forwards to the host's **already-unlocked** agent, exposing exactly one pinned key. | **Recommended.** No key material in the sandbox. No passphrase prompt. The sandbox cannot enumerate or use your other keys. |
-| `agent` | A private one-key agent; `ssh-add` prompts once at startup. | Fallback when no host agent is running. Key material lives in a process `snug` owns, still not in the sandbox. |
-| `key-file` | Stage the (encrypted) private key into the sandbox. | **Weakest.** The key bytes are inside the blast radius. Only for keys you would not mind rotating. |
-| `host-agent` | Bind the host `SSH_AUTH_SOCK` straight through. | **Discouraged**, and `snug` requires `--i-know`. Every key, every identity, no filtering. This is the one where the gate was documented in three places and enforced in none — see CLAUDE.md. |
-| `none` | No ssh. | The default. |
+| Mode | What it does |
+|---|---|
+| **`agent-proxy`** | `snug` binds a private socket, hands it to the sandbox as `SSH_AUTH_SOCK`, and forwards to the host's **already-unlocked** agent, exposing exactly one pinned key. No key material in the sandbox. No passphrase prompt. The sandbox cannot enumerate or use your other keys. |
+| `none` | No ssh. The default. |
+
+**Those are the whole set** — `ParseSSHMode` accepts nothing else, and a profile naming a mode that is not here is refused rather than resolved as something narrower. `host-agent` (bind the host `SSH_AUTH_SOCK` straight through) is refused BY NAME, because a profile written when it existed deserves to be told what to write instead; the refusal carries its own reasoning. A private one-key agent prompting for a passphrase, and staging an encrypted private key inside, were both considered and are not built: neither reaches a capability `agent-proxy` lacks, and the second puts key bytes in the blast radius.
 
 **The proxy's rules.** It speaks the agent protocol (`golang.org/x/crypto/ssh/agent`), fresh upstream dial per connection (the protocol is not safe to interleave), and is fail-closed on anything it does not understand:
 
