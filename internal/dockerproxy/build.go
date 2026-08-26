@@ -942,8 +942,9 @@ func checkAdditionalContexts(p *Proxy, v string) (string, error) {
 // Accepting "2"/"host" grants nothing the accepted default does not:
 // networkmode=2 puts the RUN step in exactly the netns the default already
 // puts it in, MEASURED. The engine is guaranteed to be running inside this
-// sandbox's own netns because internal/cli/container.go refuses @net-host
-// together with any container profile outright.
+// sandbox's own netns by construction: deriveTopology's podman branch raises
+// Netns to at least NetnsStage, which is the top of that order, so no
+// selection can hand the engine a namespace that is not this sandbox's.
 //
 // v is returned UNCHANGED on the accept path rather than normalised to one
 // spelling — filterBuildQuery marks a build "rewritten" when the forwarded
