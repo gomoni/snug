@@ -55,7 +55,6 @@ var policyKeys = []string{"mounts", "environment", "network", "bwrap", "target"}
 //	@parent-ro binds an ancestor of $HOME       0
 //	unknown profile                             0
 //	target does not exist                       0
-//	@net-host without --i-know                  0
 //	@tmp-shared grant missing                   0
 //	unparseable profile file                    0
 //
@@ -177,15 +176,6 @@ func TestEveryRefusalClassProducesAParseableDocument(t *testing.T) {
 			outcome:  "refused",
 			resolved: true,
 			says:     "floor of the lattice",
-		},
-		{
-			name:     "net-host without --i-know",
-			cfg:      config{dryRun: true, json: true, target: proj, profiles: []policy.ProfileName{"@net-host"}},
-			xdg:      goodCfg,
-			code:     77,
-			outcome:  "refused",
-			resolved: true,
-			says:     "--i-know",
 		},
 		// The success arm, which is what makes the assertions below mean
 		// something: a build that emitted the refusal document unconditionally

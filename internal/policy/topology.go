@@ -8,16 +8,17 @@ type NetnsOwner uint8
 
 const (
 	NetnsSandbox NetnsOwner = iota // bwrap creates it. Today's shape, and the floor.
-	NetnsStage                     // P1 creates it, pins it, LEAVES it, forks bwrap back in.
-	NetnsHost                      // the host's own. --share-net, --i-know.
+	NetnsStage                     // P1 creates it, pins it, LEAVES it, forks bwrap back in. THE TOP.
 )
+
+// Two points, and no third: every topology gets a network namespace of its own,
+// created either by bwrap or by the stage. NeedsStage below is monotone over
+// this order.
 
 func (o NetnsOwner) String() string {
 	switch o {
 	case NetnsStage:
 		return "stage"
-	case NetnsHost:
-		return "host"
 	default:
 		return "sandbox"
 	}
@@ -104,26 +105,29 @@ func (t Topology) String() string {
 // NeedsStage reports whether this policy requires a second long-lived process
 // (P1, the namespace holder — see SUPERVISOR-DESIGN.md §2) ahead of bwrap.
 //
-// It is deliberately NOT monotone over Netns: false at the floor (NetnsSandbox),
-// true in the middle (NetnsStage), false at the top (NetnsHost). Raising
-// NetnsStage -> NetnsHost REMOVES the stage while strictly WIDENING the grant —
-// that looks alarming until you read it as: the lattice orders REACHABILITY,
-// and the stage is a construction detail for one point on that lattice, not a
-// grant in its own right. NetHost inherits the host's own netns directly; there
-// is nothing for a stage to hold.
+// Monotone over Netns: false at the floor (NetnsSandbox), true at the top
+// (NetnsStage). That holds because the lattice orders REACHABILITY and the
+// stage is what CONSTRUCTS the reachable point — a third owner above
+// NetnsStage would break it, which is the thing to check before adding one.
 //
-// Subuid==SubuidFull is ALSO a trigger (issue #63, Tier B): a container engine
-// needs a stage to own its U — the full delegated subuid range and the private
-// mount namespace the engine forks into — independently of which netns it
-// joins. That keeps a stage for the `@net-host + @podman-socket` --i-know edge,
-// where Netns stays NetnsHost (the engine inherits the host netns there) but
-// Subuid is still SubuidFull. Because deriveTopology only ever sets
-// SubuidFull from the podman branch below, "SubuidFull implies podman implies
-// stage" — so this disjunct never changes NeedsStage for a non-podman
-// selection; TestPodmanSelectsAStage and TestNeedsStageIsFalseForOfflineAndHost
-// pin both halves.
+// Subuid==SubuidFull is ALSO a trigger (issue #63): a container engine needs a
+// stage to own its U — the full delegated subuid range and the private mount
+// namespace the engine forks into — independently of which netns it joins.
+// deriveTopology sets SubuidFull only from the podman branch below, and that
+// branch raises Netns to at least NetnsStage in the same breath, so the
+// disjunct never decides the answer for anything Resolve produces. It stays
+// because the two facts are separately true and a future producer of
+// SubuidFull must not silently lose its stage; TestPodmanSelectsAStage pins
+// the podman half.
 func (t Topology) NeedsStage() bool {
-	return t.Netns == NetnsStage || t.Subuid == SubuidFull
+	// `>=`, not `==`, and the difference is the monotonicity above rather than
+	// style. `==` is an upward-closed test only at the maximum, so on today's
+	// two-point lattice both spellings have the same truth table — and a point
+	// added above NetnsStage would silently make `==` NON-monotone in the
+	// direction that hurts: the new top would lose its stage and nothing would
+	// fail. `>=` makes a new top inherit "keeps a stage" and forces whoever
+	// adds it to think.
+	return t.Netns >= NetnsStage || t.Subuid >= SubuidFull
 }
 
 // deriveTopology is the ONLY producer of a Topology, called once at the end of
@@ -135,8 +139,6 @@ func (t Topology) NeedsStage() bool {
 func deriveTopology(n NetMode, pm PodmanMode) Topology {
 	t := Topology{Subuid: SubuidNone}
 	switch n {
-	case NetHost:
-		t.Netns = NetnsHost
 	case NetEgress:
 		t.Netns = NetnsStage
 	default:
@@ -148,9 +150,16 @@ func deriveTopology(n NetMode, pm PodmanMode) Topology {
 	// delegated subuid range to chown across without ever touching a host uid it
 	// was not given. Both are RAISED here, never granted: `pm` is the only input
 	// this reads, it comes from the join-by-max of the resolved profile set, and
-	// this is the single place it is consumed. Raising is monotone (a lattice
-	// field only moves up); the `<` guard preserves NetnsHost for the --i-know
-	// @net-host+podman edge, where the engine inherits the host netns.
+	// this is the single place it is consumed.
+	//
+	// THE `<` GUARD CANNOT FIRE FALSE TODAY and is kept anyway, which is a
+	// choice and not an oversight: NetnsStage is the top of the order, so the
+	// only value reaching here below it is NetnsSandbox and the guard is
+	// equivalent to a plain assignment. It spells a monotone RAISE — a lattice
+	// field only moves up — and a plain assignment would silently LOWER a
+	// NetnsOwner added above NetnsStage later. The failure it prevents is one
+	// no test can have yet, because the value it would protect does not
+	// exist; that is exactly when the shape has to carry the intent.
 	if pm != PodmanOff {
 		if t.Netns < NetnsStage {
 			t.Netns = NetnsStage

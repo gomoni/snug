@@ -5,10 +5,12 @@ import (
 	"testing"
 )
 
-// allNetnsOwners is every value of the lattice, iterated rather than listed at
-// each call site: a fourth NetnsOwner is then covered by these tests the day it
-// is added, instead of the day someone remembers to extend a table.
-var allNetnsOwners = []NetnsOwner{NetnsSandbox, NetnsStage, NetnsHost}
+// allNetnsOwners is every value of the lattice, in ONE place rather than at
+// each call site. It is a hand-maintained list and not a sweep — Go cannot
+// enumerate the values of an iota constant — so adding a NetnsOwner means
+// adding it here, and having one list makes that a single edit instead of a
+// hunt. Do not describe it as covering a value automatically; it does not.
+var allNetnsOwners = []NetnsOwner{NetnsSandbox, NetnsStage}
 
 // TestUnshareFlagsUserIsAlwaysStrict pins issue #24's ruling at the authority
 // rather than inside one branch of an if.
@@ -81,10 +83,12 @@ func TestStageTopologyNeverUnsharesNet(t *testing.T) {
 // positive control, and without it that test passes on a UnshareFlags that
 // returns nil.
 //
-// It is also the assertion in its own right: dropping net here would silently
-// restore host networking, the worst outcome available from this function.
+// It is also the assertion in its own right, and the sharpest one in this file:
+// dropping net here would silently restore host networking, the worst outcome
+// available from this function. This flag is the ONLY thing standing between
+// the payload and the host's network namespace.
 func TestEveryNonStageTopologyUnsharesNet(t *testing.T) {
-	for _, owner := range []NetnsOwner{NetnsSandbox, NetnsHost} {
+	for _, owner := range []NetnsOwner{NetnsSandbox} {
 		t.Run(owner.String(), func(t *testing.T) {
 			got := Topology{Netns: owner}.UnshareFlags()
 			if !slices.Contains(got, "--unshare-net") {
@@ -92,29 +96,6 @@ func TestEveryNonStageTopologyUnsharesNet(t *testing.T) {
 					"networking: %v", owner, got)
 			}
 		})
-	}
-	// The host arm gets --unshare-net here and --share-net later in BwrapFlags,
-	// and that is deliberate: relaxing a namespace snug created is a different
-	// decision from never creating one, and only the first is visible in the
-	// argv a human reads.
-	//
-	// Note which field gates the relaxation. --share-net is emitted for
-	// Net.Mode == NetHost, NOT for Topology.Netns == NetnsHost — the two travel
-	// together through deriveTopology but are separate fields, and asserting
-	// the wrong one is how this test failed when it was first written. A
-	// Topology alone does not reopen the network.
-	host := &Policy{
-		Net:      NetPolicy{Mode: NetHost},
-		Topology: Topology{Netns: NetnsHost},
-	}
-	if !slices.Contains(host.BwrapFlags(0, 0, nil), "--share-net") {
-		t.Error("NetHost does not emit --share-net, so unsharing net above is not relaxed anywhere")
-	}
-	// The control for that: the same policy WITHOUT NetHost must not relax it,
-	// or the assertion above passes on a BwrapFlags that always emits it.
-	offline := &Policy{Topology: Topology{Netns: NetnsSandbox}}
-	if slices.Contains(offline.BwrapFlags(0, 0, nil), "--share-net") {
-		t.Error("an offline policy emits --share-net, which reopens the host network")
 	}
 }
 

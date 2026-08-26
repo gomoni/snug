@@ -133,9 +133,12 @@ All five, in order. A milestone is not finished until the last one is.
    same shape elsewhere", not "worth tracking", not a list of places to visit
    later: that is a chore list, and a chore-list row is a copy of tree state,
    so it is stale the moment it is written and the staleness is found by
-   whoever tries to close it. Trackers `#33` and `#34` were retired for exactly
-   that (8 of `#369`'s 9 rows pointed at closed tickets; 2 of `#34`'s 3 body
-   rows were FALSE when finally read).
+   whoever tries to close it. Two trackers were retired for exactly that, and
+   the measurement is the argument: 8 of one's 9 rows pointed at tickets that
+   were already closed, and 2 of the other's 3 body rows were FALSE when
+   somebody finally read them. Numbers are omitted on purpose — a retired
+   tracker gets split into real tickets, so citing it sends the next reader
+   somewhere dead.
 
    When a ticket IS right, it carries its severity label
    (`sev:high`/`sev:medium`/`sev:low`), the measurement that confirmed it, and
@@ -159,28 +162,30 @@ with the tests passing:
   process inside the sandbox can use this to ___". It goes in the profile TOML as
   a comment. If you cannot write it, the grant is not ready.
 
-- **`--i-know` is not a design tool. A capability whose entire safety is a CLI
-  flag is a capability that will be used.** People find the flag, and agents
-  find it faster — a flag is documented, greppable, and sits in the error
-  message telling you exactly what to type. So the gate does not bound the
-  capability; it bounds nothing and records that somebody once thought about
-  it. Do not answer "this grant is too wide" with a flag. Either the narrow
-  version of the grant is the whole feature, or the feature does not ship.
+- **A CLI flag is not a bound. Never answer "this grant is too wide" with one.**
+  A capability whose entire safety is a flag is a capability that will be used:
+  people find flags, and agents find them faster, because a flag is documented,
+  greppable, and sits in the error message telling you exactly what to type. So
+  the gate bounds nothing; it records that somebody once thought about it.
+  Either the narrow version of the grant is the whole feature, or the feature
+  does not ship. **snug has no flag of this shape and adding one needs the
+  maintainer** — "it would be useful" is the argument that produces them.
 
-  **Measured, twice, on one flag.** `ssh_mode = "host-agent"` forwarded the
-  entire agent and three separate places said it required `--i-know` — nothing
-  checked it, and the red team enumerated every key and signed with one the
-  profile had not pinned (`.claude/agents/sandbox-tester.md`). The gate was then
-  implemented, and issue #411 found it had no test, so deleting the `if !iKnow`
-  block left `make gate` green. The mode was REMOVED rather than tested: it
-  reached the same already-unlocked host agent `agent-proxy` reaches and only
-  bounded which key answers, so the narrow version was the whole feature all
-  along. `policy.ParseSSHMode` refuses it by name.
+  **The narrow version is usually one flag on a HELPER, and the urge to reach
+  for the coarse grant is invariant 2's corollary pointing at it.** "Host
+  loopback, but only `:5432`" is `pasta`'s `-T 5432` where `pastaArgs` passes
+  `-T none`. "The agent needs one key" is `ssh_mode = "agent-proxy"` with
+  `ssh_key` set, not the whole agent. Where the narrow grant is not built,
+  **say so and leave it unbuilt** rather than shipping the wide one: today no
+  profile reaches a host-local service, and that cost is stated in INDEX §4.6
+  rather than papered over.
 
-  **`@net-host` is the one that remains**, and it is not an exception so much as
-  the open question: it shares the host netns, which no narrower grant
-  approximates, so there is nothing to fall back to. Read it as a debt, not a
-  precedent — a new `--i-know` needs the maintainer.
+  **An unrecognised value REFUSES; it is never read as the nearest thing it
+  resembles.** `ParseNetMode` and `ParseSSHMode` each accept a named set and
+  quote what to write instead — no per-spelling arms, which is what lets the
+  accepted set be read as the whole set. Narrowing silently would hand the
+  author a sandbox their profile does not describe: invariant 5.
+
 - **Write the account AS the work happens, not afterwards — and when a detail
   cannot be recovered exactly, write "not recovered" rather than reconstructing
   it.** An account written after the fact is rebuilt from a memory of the

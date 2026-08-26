@@ -810,9 +810,6 @@ func claudeGuidance(pol *policy.Policy) []byte {
 			b.WriteString("Ports you bind are NOT visible to the host.\n")
 		}
 		b.WriteString("\n")
-	case policy.NetHost:
-		b.WriteString("You share the host's network namespace. Everything the host can reach, you\n")
-		b.WriteString("can reach. Be correspondingly careful.\n\n")
 	}
 
 	b.WriteString("## Tooling\n\n")

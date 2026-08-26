@@ -1,9 +1,0 @@
-
-TOPOLOGY
-  processes       2 — every long-lived process this run starts, snug included:
-                    snug        this process — resolves the policy and supervises
-                    bwrap       the sandbox itself, and the payload inside it
-                  No stage, no privileged ancestor namespace.
-  netns owner     host
-  subuid          none (no delegated range; nothing needs one yet)
-  control         none — there is no stage to control.

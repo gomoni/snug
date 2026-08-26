@@ -83,8 +83,7 @@ if build_scratch_probe():
     # CAP_NET_ADMIN) with a 500 that reads identically to an ownership
     # refusal on any assertion weaker than the exact 403 + message this test
     # checks (issue #386's own measurement, podman 5.8.4).
-    body = json.dumps({"Image": "localhost/%[1]s",
-                        "HostConfig": {"NetworkMode": "host"}}).encode()
+    body = json.dumps({"Image": "localhost/%[1]s"}).encode()
     status, resp = req("POST", "/v1.41/containers/create", body, {"Content-Type": "application/json"})
     print("A-CREATE: %%d %%s" %% (status, resp.decode(errors="replace")[:300]), flush=True)
     if status == 201:
@@ -153,8 +152,7 @@ for label, method, path, rbody in routes:
 
 # ── POSITIVE CONTROL: run B's OWN create -> start -> exec -> rm round trip ──
 if build_scratch_holder():
-    body = json.dumps({"Image": "localhost/%[2]s", "Cmd": ["own-token"],
-                        "HostConfig": {"NetworkMode": "host"}}).encode()
+    body = json.dumps({"Image": "localhost/%[2]s", "Cmd": ["own-token"]}).encode()
     status, resp = req("POST", "/v1.41/containers/create", body, {"Content-Type": "application/json"})
     print("B-CREATE: %%d %%s" %% (status, resp.decode(errors="replace")[:300]), flush=True)
     if status == 201:

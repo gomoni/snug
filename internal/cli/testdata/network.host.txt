@@ -1,4 +1,0 @@
-NETWORK  HOST — the sandbox SHARES your network namespace.
-         Every 127.0.0.1 service, every abstract socket (X11 keylogging and
-         screenshots included), and the LAN as you. Requires --i-know.
-         dns             NONE — no resolver is named inside; lookups fail fast

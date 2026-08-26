@@ -306,21 +306,12 @@ P1–P4 and P6 gate the run; P5 sets an `EngineSpec` flag. Because the engine is
 eager, all of this happens before the stage forks anything, so a failure costs
 one message and no half-built namespace tree.
 
-**Edge to settle, not crash on:** `@net-host` + a podman profile. `deriveTopology`
-keeps `Netns=NetnsHost` (the `<` guard) but sets `Subuid=SubuidFull`, so
-`NeedsStage()` is true — yet `stage.Start` **refuses any `Netns != NetnsStage`**.
-That combination currently cannot run. Simplest correct answer, consistent with
-`@net-host` already being an `--i-know` "process with a different filesystem
-view": a preflight **refusal** of `@net-host`+podman (or an explicit host-netns
-engine that matches `@net-host`'s stated contract). Flagged for the maintainer;
-do not leave it as a `stage.Start` panic.
+**The engine runs in a netns the stage made, always.** `deriveTopology`'s podman
+branch raises `Netns` to at least `NetnsStage`, and `NetnsStage` is the top of
+that order, so no selection can hand the engine a namespace `stage.Start`
+refuses. `stage.Start`'s `Netns != NetnsStage` guard is therefore a statement
+about hand-built topologies, not about anything `Resolve` produces.
 
-> **SETTLED: refuse.** `startContainers` (`internal/cli/container.go`) refuses
-> the combination before a single namespace exists, with a message naming both
-> ways out. `TestStartContainersRefusesNetHostPlusPodman` is the guard. (The original text
-> pointed at "§9" for the flag, which was the build-plan section and never
-> carried it — one of the two dangling *section* references that showed nobody
-> had followed a citation into this file.)
 
 ---
 
@@ -569,10 +560,9 @@ tests are in `test/integration/containerengine_test.go`.
    bookkeeping, which also runs on the SIGKILL path, so its POSITION buys
    nothing observable; it is kept where it is because moving it is an
    independent decision with its own review.
-2. **`@net-host` + podman (§4): refuse at preflight**, consistent with
-   `@net-host` already being an `--i-know` escape hatch. `startContainers`
-   refuses the combination before anything is created, so it never reaches
-   `stage.Start` as an unhandled `NetnsHost`.
+2. **A container gets the sandbox's own netns and no other** (§4).
+   `deriveTopology`'s podman branch raises `Netns` to `NetnsStage`, the top of
+   that order, so it cannot produce a topology `stage.Start` rejects.
 3. **OPEN — retiring the lifeline entirely.** With `Pdeathsig` cascading engine death
    and preflight refusing wrappers, the lifeline's *teardown* rationale is gone;
    it survives only to keep a finite-timeout engine alive during idle. An

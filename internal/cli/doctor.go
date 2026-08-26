@@ -408,9 +408,8 @@ func probeBase() []string {
 	//
 	// NetnsSandbox is named explicitly rather than taken as the zero value,
 	// because it is the topology that demands the MOST of the kernel: the stage
-	// topology asks bwrap for fewer namespaces (the stage already made the
-	// netns) and NetnsHost asks for the same set and then relaxes it with
-	// --share-net. A host that passes this probe satisfies all three.
+	// topology asks bwrap for FEWER namespaces, the stage having already made
+	// the netns. A host that passes this probe satisfies both.
 	//
 	// probeUserns compares namespace ids on top of this rather than trusting it,
 	// because "strict flag" and "namespace actually created" are the two things

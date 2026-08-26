@@ -6,8 +6,8 @@
 // the topology diagram this package builds, and §1 for what was measured
 // before any of it was written.
 //
-// A bare `snug <dir>` starts no stage: NeedsStage() is false at both ends of
-// the NetnsOwner lattice and true only in the middle (policy.NetnsStage), so
+// A bare `snug <dir>` starts no stage: NeedsStage() is false at the floor of
+// the NetnsOwner lattice (policy.NetnsSandbox, where bwrap owns everything), so
 // this package is reached only when a policy actually asks for it.
 package stage
 
@@ -41,9 +41,10 @@ type Config struct {
 	// screen and nothing else, leaving --dry-run — the one artifact by which a
 	// human can trust snug at all — making a claim no code keeps. Issue #25.
 	//
-	// Netns must be policy.NetnsStage and Subuid must be policy.SubuidNone.
-	// Anything else is a programming error and Start refuses rather than
-	// guessing.
+	// Netns must be policy.NetnsStage; Subuid may be either mode, since a
+	// container engine selects a stage for the delegated range alone. Anything
+	// else is a programming error and Start refuses rather than guessing —
+	// see the check in Start, which is the authority on this.
 	Topology policy.Topology
 
 	// Sandbox are the descriptors bwrap needs, in the exact order P0 put them

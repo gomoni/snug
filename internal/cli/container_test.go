@@ -75,34 +75,6 @@ func TestContainerSocketNeverExposesEngineSocketDir(t *testing.T) {
 	}
 }
 
-// TestStartContainersRefusesNetHostPlusPodman is the settled edge from
-// ENGINE-WIRING.md §4: @net-host keeps NetnsHost (deriveTopology's own `<`
-// guard) while a container profile still raises Subuid to SubuidFull, and
-// nothing downstream (stage.Start, __inengine) has a namespace for a
-// host-netns engine to join. startContainers refuses the COMBINATION
-// cleanly, before anything is created, rather than let it reach stage.Start
-// as an unhandled case. This check runs BEFORE preflight, so it does not
-// need a real podman/subuid-capable host to assert.
-//
-// Positive control: the same profile set WITHOUT @net-host (offline
-// @podman-socket, still exercising the same preflight-adjacent code path via
-// dryRun=true so no host capability is required) is not refused by this
-// specific check — see TestStartContainersDryRunNeedsNoHostCapability.
-func TestStartContainersRefusesNetHostPlusPodman(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_RUNTIME_DIR", dir)
-
-	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@net-host", "@podman-socket"})
-	_, err := startContainers(policy.OSEnviron{}, p, false, false)
-	if err == nil {
-		t.Fatal("startContainers accepted @net-host + @podman-socket; the container engine has " +
-			"no sandbox network namespace to join under @net-host")
-	}
-	if !strings.Contains(err.Error(), "@net-host") {
-		t.Errorf("error does not name @net-host, the profile to drop: %v", err)
-	}
-}
-
 // TestStartContainersOffPodmanIsANoop is the positive control for the checks
 // above: a policy with NO container profile selected must not be refused by
 // anything in this file, whatever the host looks like.
@@ -125,9 +97,9 @@ func TestStartContainersOffPodmanIsANoop(t *testing.T) {
 	ctr.cleanup()
 }
 
-// TestStartContainersDryRunNeedsNoHostCapability is the other half of the
-// @net-host refusal test above: --dry-run's own promise is "having started
-// nothing" (CLAUDE.md), so it must not require a real podman, a real
+// TestStartContainersDryRunNeedsNoHostCapability: --dry-run's own promise is
+// "having started nothing" (CLAUDE.md), so it must not require a real podman,
+// a real
 // /etc/subuid range, or any of the other host capabilities preflight checks
 // for — describing a policy is not the same act as running the engine it
 // describes. Without this, `--dry-run -p @podman-socket` would fail on a CI

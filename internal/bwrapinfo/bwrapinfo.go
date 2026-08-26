@@ -5,7 +5,7 @@
 // different topologies, and a format with two parsers is a format with two
 // authorities (invariant 6, one layer down):
 //
-//   - internal/sandbox, on the offline / host-network arm, where P0 forks bwrap
+//   - internal/sandbox, on the unstaged arm, where P0 forks bwrap
 //     itself and holds the read end;
 //   - internal/stage, on the staged arm, where P1 forks bwrap and holds the read
 //     end — because P1 is the process that must KILL bwrap's init if anything

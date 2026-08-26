@@ -290,19 +290,29 @@ func TestBuildRefusesAPrivateNetworkNamespaceInBothSpellings(t *testing.T) {
 	}
 }
 
-// TestBuildAcceptsHostNetworkingInBothSpellings is the positive control for
-// the test above: `--network=host` sends the same two parameters, and since
-// Tier B "host" means the ENGINE's own network namespace, which is this
-// sandbox's — the same place a build with no --network flag already lands,
-// via the containers.conf pin (issue #401). A check still reading the
-// pre-#401 rule would refuse exactly this pair.
-func TestBuildAcceptsHostNetworkingInBothSpellings(t *testing.T) {
+// TestBuildRefusesHostNetworkingInBothSpellings is the network half of
+// `network = "host"` being refused everywhere snug can refuse it, asserted in
+// both spellings a real `podman build --network=host` sends. RECORDED, podman
+// 6.0.2 into a listening recorder: networkmode=2 AND
+// nsoptions=[{"Name":"network","Host":true,"Path":""},{"Name":"user",...}].
+//
+// Each half is pinned to ITS OWN message, as
+// TestBuildRefusesAPrivateNetworkNamespaceInBothSpellings' cases are, so one
+// check cannot cover for the other's absence. The compound case (what the CLI
+// actually sends) is pinned to the NETWORKMODE message, because
+// filterBuildQuery walks the parameters sorted and "networkmode" sorts before
+// "nsoptions" — a compound request is refused by the first of the two.
+//
+// The negative control this needs is TestAnOrdinaryBuildIsAllowed and
+// TestCheckNSOptionsStillAcceptsRealClients: no --network flag at all is the
+// only form that still works, and it must still work.
+func TestBuildRefusesHostNetworkingInBothSpellings(t *testing.T) {
 	hostNS := `nsoptions=%5B%7B%22Name%22%3A%22network%22%2C%22Host%22%3Atrue%2C%22Path%22%3A%22%22%7D%2C%7B%22Name%22%3A%22user%22%2C%22Host%22%3Atrue%2C%22Path%22%3A%22%22%7D%5D`
 
-	for _, tc := range []struct{ name, q string }{
-		{"networkmode alone", "networkmode=2"},
-		{"nsoptions alone", hostNS},
-		{"both, as the CLI sends them", "networkmode=2&" + hostNS},
+	for _, tc := range []struct{ name, q, wantMsg string }{
+		{"networkmode alone", "networkmode=2", "refuses `network=host`"},
+		{"nsoptions alone", hostNS, "nsoptions spelling of --network=host"},
+		{"both, as the CLI sends them", "networkmode=2&" + hostNS, "refuses `network=host`"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sock, eng, _ := startBuildProxy(t)
@@ -317,14 +327,7 @@ func TestBuildAcceptsHostNetworkingInBothSpellings(t *testing.T) {
 			for k, v := range over {
 				base[k] = v
 			}
-			before := eng.reached.Load()
-			code, resp := post(t, sock, "/v5.8.3/libpod/build?"+base.Encode(), "")
-			if code != 200 {
-				t.Fatalf("--network=host build refused (status %d): %s", code, resp)
-			}
-			if eng.reached.Load() == before {
-				t.Fatal("the build never reached the engine")
-			}
+			refuse(t, sock, eng, "/v5.8.3/libpod/build?"+base.Encode(), "", tc.wantMsg)
 		})
 	}
 }
@@ -336,7 +339,7 @@ func TestBuildAcceptsHostNetworkingInBothSpellings(t *testing.T) {
 // exercising the rule it was written for while staying green.
 //
 // This is deliberately BROADER than the libpod CLI's own recorded query
-// (TestBuildAcceptsHostNetworkingInBothSpellings /
+// (TestBuildRefusesHostNetworkingInBothSpellings /
 // TestBuildRefusesAPrivateNetworkNamespaceInBothSpellings, which drive
 // networkmode=1/2 the way `podman build` actually encodes them alongside an
 // nsoptions entry): the literal words ("none", "bridge", "private",
@@ -345,6 +348,12 @@ func TestBuildAcceptsHostNetworkingInBothSpellings(t *testing.T) {
 // checkNetworkMode is the one function judging both. "" and "default" are
 // accepted for robustness (checkNetworkMode's own comment: no measured
 // client sends either), not because a real caller does.
+//
+// The three accepted rows are the whole accepted set, and they are all
+// spellings of NO REQUEST. Every value that names a network is refused, the
+// host spellings ("2", "host") included — which is what makes the two control
+// subtests below load-bearing rather than decorative: a refusal this broad is
+// one row away from refusing the ordinary build too.
 func TestCheckNetworkModeRecordedSpellings(t *testing.T) {
 	for _, tc := range []struct {
 		name, value, wantMsg string
@@ -353,9 +362,9 @@ func TestCheckNetworkModeRecordedSpellings(t *testing.T) {
 		{"empty (no --network flag at all)", "", "", true},
 		{"explicit 0", "0", "", true},
 		{"the word default", "default", "", true},
-		{"the libpod int for host", "2", "", true},
-		{"the word host", "host", "", true},
-		{"the word HOST, case-folded", "HOST", "", true},
+		{"the libpod int for host", "2", "refuses `network=host`", false},
+		{"the word host", "host", "refuses `network=host`", false},
+		{"the word HOST, case-folded", "HOST", "refuses `network=host`", false},
 		{"the libpod int for a private netns", "1",
 			"ioctl SIOCSIFFLAGS", false},
 		{"the word none", "none", "ioctl SIOCSIFFLAGS", false},
@@ -468,6 +477,11 @@ func TestCheckNetworkModeOnTheCompatEndpoint(t *testing.T) {
 		{"none", "none", "ioctl SIOCSIFFLAGS"},
 		{"private", "private", "ioctl SIOCSIFFLAGS"},
 		{"pasta", "pasta", "ioctl SIOCSIFFLAGS"},
+		// The host spellings, in the encoding a docker-compat client uses:
+		// the word, not the libpod integer. A docker client asking for the
+		// host network must meet the same refusal the podman CLI does.
+		{"the word host", "host", "refuses `network=host`"},
+		{"the libpod int for host, on the compat path", "2", "refuses `network=host`"},
 		{"container:abc", "container:abc", "snug did not author"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -481,11 +495,12 @@ func TestCheckNetworkModeOnTheCompatEndpoint(t *testing.T) {
 		})
 	}
 
-	// POSITIVE CONTROL for the row above: the accepted spellings must reach
-	// the engine on THIS endpoint too, at the numeric AND the word spelling —
-	// a docker client asking for --network=host must not meet a stricter rule
-	// than the podman CLI's own libpod endpoint does (refs #369).
-	for _, v := range []string{"2", "host", "default", ""} {
+	// POSITIVE CONTROL for the rows above: the accepted spellings must reach
+	// the engine on THIS endpoint too. They are the two spellings of NO
+	// REQUEST, which is the whole accepted set — docker 29.4.0-ce omits the
+	// parameter for no-flag and for --network=default, so between them these
+	// two are every ordinary compat build there is.
+	for _, v := range []string{"default", ""} {
 		t.Run("accept networkmode="+v, func(t *testing.T) {
 			sock, eng, _ := startBuildProxy(t)
 			base, err := url.ParseQuery(buildDefaults)
@@ -582,6 +597,56 @@ func TestNetworkHostFalseKeepsItsOwnMessage(t *testing.T) {
 	sock, eng, _ := startBuildProxy(t)
 	u := buildURLOverride(t, nsOptionsQuery(nsOption{Name: "network", Host: false, Path: ""}))
 	refuse(t, sock, eng, u, "", "Host:false")
+}
+
+// TestCheckNSOptionsRefusesHostNetwork pins the `network`+Host:true arm:
+// `network = "host"` is refused wherever snug can refuse it, and the nsoptions
+// entry is the second of the two places a build can spell it.
+//
+// It asserts the MESSAGE, not just the 403, because this arm sits in front of
+// the generic Host:true refusal and must not fall into it: "asks for the
+// HOST's network namespace, which is outside this sandbox" would be FALSE here
+// — the engine's netns is this sandbox's, so the request is for somewhere
+// reachable. It is refused for naming the host network, not for escaping, and
+// the fix it names ("drop the --network flag") is different from the one a
+// genuine out-of-sandbox namespace request would get.
+func TestCheckNSOptionsRefusesHostNetwork(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opt  nsOption
+	}{
+		{"as podman sends it for --network=host",
+			nsOption{Name: "network", Host: true, Path: ""}},
+		{"case-folded, which the name switch lowercases before judging",
+			nsOption{Name: "NETWORK", Host: true, Path: ""}},
+		{"with a Path beside it, which must not slip past into the Path arm",
+			nsOption{Name: "network", Host: true, Path: "pasta"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sock, eng, _ := startBuildProxy(t)
+			u := buildURLOverride(t, nsOptionsQuery(tc.opt))
+			refuse(t, sock, eng, u, "", "nsoptions spelling of --network=host")
+		})
+	}
+
+	// ADJACENT, AND STILL OPEN. `user` with Host:true is the entry the
+	// rootless CLI sends on EVERY build including one with no flag at all
+	// (RECORDED, podman 5.8.3 and 6.0.2 — it is in buildDefaults and
+	// buildDefaults602 verbatim), so a refusal that generalised from
+	// "network+Host:true" to "any Host:true" would refuse every build.
+	t.Run("adjacent: user with Host:true is still accepted", func(t *testing.T) {
+		sock, eng, _ := startBuildProxy(t)
+		u := buildURLOverride(t, nsOptionsQuery(nsOption{Name: "user", Host: true, Path: ""}))
+		before := eng.reached.Load()
+		code, resp := post(t, sock, u, "")
+		if code != 200 {
+			t.Fatalf("nsoptions user/Host:true — the entry EVERY rootless build sends — was "+
+				"refused (status %d): %s", code, resp)
+		}
+		if eng.reached.Load() == before {
+			t.Fatal("the build never reached the engine")
+		}
+	})
 }
 
 // TestCheckNSOptionsHostTrueOnNonNetworkName pins a branch that predates

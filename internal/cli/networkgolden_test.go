@@ -18,8 +18,8 @@ import (
 // dnsscreen_test.go and visible_test.go both call describeNetwork, but only
 // ever assert a handful of substrings, never the whole block. So the two arms
 // #288 actually rewrote (NetIsolated and NetEgress) had no golden diff to
-// review the wording change against, and NetHost — unrewritten, and the one
-// case that genuinely shares the host's own netns — had none either.
+// review the wording change against — and they are the whole set now that host
+// mode is gone.
 //
 // Modelled on TestGoldenTopology (topologygolden_test.go): the REAL builtin
 // profiles, one case per NetMode, `-update` to regenerate.
@@ -35,7 +35,6 @@ func TestGoldenNetwork(t *testing.T) {
 	}{
 		{"isolated", []policy.ProfileName{"@sys", "@cwd-rw"}},
 		{"egress", []policy.ProfileName{"@sys", "@cwd-rw", "@net"}},
-		{"host", []policy.ProfileName{"@sys", "@cwd-rw", "@net-host"}},
 	}
 
 	for _, tc := range cases {

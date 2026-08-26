@@ -217,9 +217,8 @@ complete document. The human refusal text is still on stderr.
 **And for a refusal that happens BEFORE a policy exists — the half that wrote
 zero bytes for a milestone (issue #334).** `pol != nil` was the real boundary:
 `policy.Resolve` hands back a policy only for a `Validate` failure, so an
-unknown profile, a target that does not exist, `@net-host` without `--i-know`, a
-missing `@tmp-shared` grant and an unparseable profile file never entered the
-JSON path at all. Each produced exactly the empty file the paragraph above says
+unknown profile, a target that does not exist, a missing `@tmp-shared` grant
+and an unparseable profile file never entered the JSON path at all. Each produced exactly the empty file the paragraph above says
 the format prevents:
 
 ```bash
@@ -748,44 +747,6 @@ block with `ssh_mode = "agent-proxy"`) and the container proxy are sockets,
 and they are the narrower alternatives this refusal exists to stop a mount
 from replacing. The exemption is keyed on `Mount.Authored`, which only
 `Policy.Replace` sets and nothing a profile can write reaches.
-
-### 4b-2. `agent-proxy` is the only ssh mode there is (issue #411)
-
-`ssh_mode = "host-agent"` bound the host's `SSH_AUTH_SOCK` straight through —
-every key enumerable, every key a signing oracle — behind a `--i-know` flag. It
-is gone, and the point of checking it by hand is that a REMOVAL must refuse
-rather than quietly resolve as something narrower.
-
-```bash
-D=$SC/ha; rm -rf $D; mkdir -p $D/snug/profiles.d
-printf 'ssh-ed25519 AAAA-not-a-real-key decoy\n' > $SC/decoy.pub
-printf '[profile.ha]\n[profile.ha.identity]\nssh_mode = "host-agent"\nssh_key = "%s"\n' \
-  $SC/decoy.pub > $D/snug/profiles.d/ha.toml
-XDG_CONFIG_HOME=$D ./bin/snug --dry-run -p ha $SC/proj/sub -- true; echo "exit=$?"
-XDG_CONFIG_HOME=$D ./bin/snug --dry-run --i-know -p ha $SC/proj/sub -- true; echo "exit=$?"
-```
-
-Both exit 77, with the same message and no policy printed — `--i-know` does not
-bring it back:
-
-```
-snug: profile "ha": ssh_mode = "host-agent" has been removed.
-
-      It forwarded your ENTIRE ssh-agent: every key loaded became enumerable
-      AND usable as a signing oracle, not just the pinned one, and anything the
-      sandbox signed was indistinguishable from you.
-
-      Use ssh_mode = "agent-proxy" with ssh_key set. It reaches the same
-      already-unlocked host agent, exposes exactly ONE key, and refuses
-      enumeration.
-exit=77
-```
-
-Refused **by name**, not as `unknown ssh_mode`: a profile written while the mode
-existed is told what happened and what to write instead. Change the one line to
-`ssh_mode = "agent-proxy"` and the same file resolves — a refusal with an
-accepted spelling of the same intent is not a denial, the same test §6l applies
-to every refusal on its list.
 
 ### 4c. What the payload learns about its supervisor (issue #272, accepted)
 
@@ -2156,24 +2117,28 @@ The cross-check is the point of running both commands rather than either one.
 A screen that agrees with a file is worth more than either alone: issue #28 was
 exactly a screen that described an interception the sandbox was not doing.
 
-**`@net-host` has a dns line now, and that is the point of issue #164.** It
-shares the host's network namespace and runs no pasta, so it used to be handed
-the interception address with nothing behind it — DNS simply did not work — and
-the NETWORK block printed no dns line at all, so nothing said so:
+**Host loopback and the host's abstract AF_UNIX sockets are unreachable under
+every profile.** The netns is the sandbox's own in every mode, and `pastaArgs`
+passes `--map-host-loopback none -T none -U none` — §7c below measures it. There
+are two network modes and `ParseNetMode` accepts nothing else, so a profile
+naming anything else is refused rather than read as the nearest thing it
+resembles:
 
 ```bash
-./bin/snug --dry-run -p @net-host --i-know $SC/proj/sub -- true | grep -A2 '^ *dns '
-./bin/snug -p @net-host --i-know $SC/proj/sub -- /bin/sh -c \
-  'grep ^nameserver /etc/resolv.conf; timeout 5 getent hosts example.com >/dev/null \
-     && echo RESOLVED || echo RESOLVE-FAILED'
+D=$SC/nh; rm -rf $D; mkdir -p $D/snug/profiles.d
+printf '[profile.nh]\nnetwork = "bridge"\n' > $D/snug/profiles.d/nh.toml
+XDG_CONFIG_HOME=$D ./bin/snug --dry-run -p nh $SC/proj/sub -- true 2>&1 | head -2
+XDG_CONFIG_HOME=$D ./bin/snug --dry-run -p nh $SC/proj/sub -- true >/dev/null 2>&1; echo "exit=$?"
 ```
 
-Expect the screen and the file to name **the host's own resolvers**, and
-`RESOLVED`. On a `systemd-resolved` host that means `127.0.0.53` appears inside,
-and that is correct rather than a leak: the netns *is* the host's, so that
-address is reachable, and naming it discloses strictly less than the namespace
-this profile has already handed over. `169.254.1.1` must not appear — no pasta
-runs here to intercept it.
+```
+snug: profile "nh": unknown network mode "bridge" (want isolated or egress)
+exit=77
+```
+
+The message quotes the offending value and names the accepted set — the two
+things a reader needs to fix their own file. `ssh_mode` behaves identically:
+`agent-proxy` and `none`, anything else refused with the same shape.
 
 **And the forwarder's destination is named.** Under `@net-anon` the dns line
 reads `169.254.1.1 -> pasta -> <addr>`, where `<addr>` is the host's first
@@ -3712,6 +3677,66 @@ avoid: `network` with `Host:false` was ALREADY refused, with its own message,
 before any of this. If the new name switch ever grew to cover that case too,
 every assertion above would still pass while the older, more specific
 refusal quietly stopped existing.
+
+### 9q2. A build cannot ask for the host network, in either spelling
+
+`network = "host"` is refused wherever snug can refuse it, and a build is one of
+those places. A real `podman build --network=host` sends it TWICE — RECORDED on
+podman 6.0.2 against a listening recorder of our own:
+
+```
+no flag            networkmode=0   nsoptions=[{"Name":"user","Host":true,"Path":""}]
+--network=host     networkmode=2   nsoptions=[{"Name":"network","Host":true,...},{"Name":"user",...}]
+--network=none     networkmode=1   nsoptions=[{"Name":"network","Host":false,"Path":""},...]
+--network=private  networkmode=2   nsoptions=[{"Name":"network","Host":false,"Path":""},...]
+--network=bridge   networkmode=2   nsoptions=[{"Name":"network","Host":false,"Path":"bridge"},...]
+--network=pasta    networkmode=2   nsoptions=[{"Name":"network","Host":false,"Path":"pasta"},...]
+```
+
+Read the first row against the rest: **only a build with no `--network` flag at
+all is accepted**, and that is the form that already gets what the others were
+asking for — the engine's own network namespace, which is this sandbox's.
+
+No engine needed for the gate itself:
+
+```bash
+go test -run 'TestBuildRefusesHostNetworkingInBothSpellings|TestCheckNSOptionsRefusesHostNetwork|TestCheckNetworkModeRecordedSpellings|TestAnOrdinaryBuildIsAllowed' -v ./internal/dockerproxy/
+```
+
+Expect `PASS`, and read three specific subtests rather than the verdict:
+
+- `TestBuildRefusesHostNetworkingInBothSpellings/networkmode alone` and
+  `/nsoptions alone` — each pinned to its OWN message, so neither can cover for
+  the other going missing. This is the pasta lesson: three of four closing flags
+  were once passed and every host loopback service stayed reachable.
+- `TestCheckNSOptionsRefusesHostNetwork/adjacent: user with Host:true is still
+  accepted` — the adjacent thing that must stay OPEN. The rootless CLI sends
+  `{"Name":"user","Host":true}` on **every** build including one with no flag,
+  so a refusal generalised from "network+Host:true" to "any Host:true" would
+  refuse every build in the world while every negative assertion above still
+  passed.
+- `TestAnOrdinaryBuildIsAllowed` — the control. After this refusal, no
+  `--network` spelling works at all, so "an ordinary build still builds" is the
+  only thing standing between the filter and a proxy that refuses everything.
+
+**End to end, with a real engine**, which is where "no flag still works" is
+actually proved rather than argued:
+
+```bash
+SNUG_REQUIRE_SANDBOX=1 go test -tags integration -v \
+  -run 'TestABuildsRunStepRunsInTheSandboxsNetns|TestPodmanBuildIsFilteredEndToEnd' ./test/integration/
+```
+
+Expect `PASS`. `TestABuildsRunStepRunsInTheSandboxsNetns` posts the no-flag wire
+form (`networkmode=0`, `nsoptions` naming only `user`) and asserts the RUN step's
+netns **inode** equals the sandbox payload's — so the accepted form is not merely
+un-refused, it lands where the refused ones were asking to go.
+`TestPodmanBuildIsFilteredEndToEnd` must print `ordinary build: 200` and
+`BUILT-INSIDE-SNUG` alongside `host network: 403` and `host ns: 403`.
+
+The refusal must also name a fix that is not itself refused —
+`TestBuildRefusesTheCompatNetworkModeSpellingWithAMessageNamingTheFix` asserts
+the 403 body says `drop the --network flag` and does NOT say `--network=host`.
 
 ### 9r. A container can actually USE the sandbox's netns, not merely sit in it (issue #369)
 

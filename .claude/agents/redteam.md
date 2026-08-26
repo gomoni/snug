@@ -188,8 +188,8 @@ So these are NOT findings, however alarming the reproduction looks:
   made them. A finding needs something crossing the line, not the payload
   configuring itself.
 - A profile that grants too much. `rw = ["{home}"]` really does give the sandbox
-  the real `$HOME`; `@net-host` really does put it on the host's network. Both
-  say so, both are on screen, and neither is snug's to prevent.
+  the real `$HOME`. It says so, it is on screen, and it is not snug's to
+  prevent.
 - A typo, a copy-paste, or a profile that is simply wrong. A misconfigured
   profile is a real security hole and a **user-inflicted** one.
 - A profile setting a variable whose value is a program — `EDITOR`,

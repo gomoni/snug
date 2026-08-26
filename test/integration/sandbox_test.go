@@ -2212,9 +2212,9 @@ func serveBanner(t *testing.T, ln net.Listener) {
 // Abstract AF_UNIX sockets are scoped by the NETWORK namespace, not by the
 // filesystem, so no mount grant can hide one and no mount grant is what keeps
 // them out. X11 and D-Bus both listen on abstract sockets; if the sandbox could
-// reach them it could log keystrokes and screenshot the desktop. This property
-// is the reason `net-host` needs --i-know, and nothing else in the suite covers
-// it (INDEX §12.4).
+// reach them it could log keystrokes and screenshot the desktop. snug has no
+// mode that shares the host's network namespace, so this is an unconditional
+// property of every run; nothing else in the suite covers it (INDEX §12.4).
 func TestAbstractSocketsAreUnreachable(t *testing.T) {
 	budget(t)
 	requireSandbox(t)
@@ -2633,28 +2633,6 @@ func TestEgressWorks(t *testing.T) {
 			"127.0.0.53, which is what most CI images use — takes snug's pasta "+
 			"--dns-forward path, and that path is the one with known client "+
 			"compatibility limits (see internal/policy/net.go):\n%s", r.code, r.out)
-	}
-}
-
-// net-host is a knowingly-large hole — it shares the HOST network namespace,
-// which means host loopback services and abstract AF_UNIX sockets (X11, D-Bus)
-// are all reachable. Selecting the profile must not be enough; the human has to
-// say --i-know. This needs no sandbox to run, so it is checked with --dry-run.
-func TestNetHostIsRefusedWithoutIKnow(t *testing.T) {
-	budget(t)
-	proj, _ := target(t)
-
-	out, code := cli(t, nil, "--dry-run", "-p", "@net-host", proj)
-	if code == 0 {
-		t.Fatalf("net-host was accepted without --i-know:\n%s", out)
-	}
-	if !strings.Contains(out, "--i-know") {
-		t.Errorf("the refusal should name the flag that overrides it:\n%s", out)
-	}
-
-	out, code = cli(t, nil, "--dry-run", "--i-know", "-p", "@net-host", proj)
-	if code != 0 {
-		t.Errorf("net-host with --i-know should be accepted (exit %d):\n%s", code, out)
 	}
 }
 
@@ -3265,9 +3243,12 @@ func TestPodmanBuildIsFilteredEndToEnd(t *testing.T) {
 
 	r := run(t, []string{"-p", "@podman-build", "-p", "@net"}, proj, `python3 probe.py`).mustRun(t)
 
-	// THE CONTROL FIRST. Without a build that actually succeeds, every refusal
-	// below is equally true of a proxy that refuses all builds, and the profile
-	// would be useless with this test green.
+	// THE CONTROL FIRST, and it carries more weight than it used to: no
+	// --network spelling is accepted any more, so a build carrying NO
+	// --network flag is the ONLY form that works. Without a build that
+	// actually succeeds, every refusal below is equally true of a proxy that
+	// refuses all builds, and the profile would be useless with this test
+	// green.
 	if !strings.Contains(r.out, "ordinary build: 200") {
 		t.Fatalf("an ordinary build did not succeed, so the refusals below prove "+
 			"nothing about filtering:\n%s", r.out)
@@ -3281,14 +3262,13 @@ func TestPodmanBuildIsFilteredEndToEnd(t *testing.T) {
 
 	for _, want := range []struct{ marker, why string }{
 		{"host bind: 403", "`build -v /etc:/x` binds a host path the sandbox cannot see"},
-		// Since issue #401's containers.conf pin, "--network=host" joins the
-		// ENGINE's own netns, which since Tier B is THIS sandbox's — the same
-		// place a build with no --network flag already lands — so both
-		// spellings of it must now be ACCEPTED rather than refused.
-		{"host network: 200", "`build --network=host` (networkmode spelling) is this sandbox's own network, and must be accepted"},
-		{"host ns: 200", "`build --network=host` (nsoptions spelling) is this sandbox's own network, and must be accepted"},
-		// What actually needs refusing now: a network namespace of the BUILD
-		// STEP's own, which needs CAP_NET_ADMIN the engine does not have.
+		// `network = "host"` is refused wherever snug can refuse it, and a
+		// build names it in TWO independent spellings — either alone would
+		// carry the request past a check that read only the other.
+		{"host network: 403", "`build --network=host` (networkmode spelling) names the host network and must be refused"},
+		{"host ns: 403", "`build --network=host` (nsoptions spelling) names the host network and must be refused"},
+		// A network namespace of the BUILD STEP's own is refused for a second,
+		// independent reason: it needs CAP_NET_ADMIN the engine does not have.
 		{"private network: 403", "a build asking for a network namespace of its own (networkmode=1) must still fail closed"},
 		{"private ns: 403", "a build asking for a network namespace of its own (nsoptions Host:false) must still fail closed"},
 		{"unknown option: 403", "an option snug has not been taught about must fail closed"},
@@ -3320,16 +3300,15 @@ func TestPodmanBuildIsFilteredEndToEnd(t *testing.T) {
 // The docker-compat build endpoint is deliberately the one exercised here,
 // not the podman-CLI (libpod) one TestPodmanBuildIsFilteredEndToEnd drives:
 // build.go's own doc comment table records that the real `podman build
-// --network=bridge` CLI invocation encodes it as networkmode=2 (which PASSES
-// checkNetworkMode outright, since 2/"host" is accepted since issue #401) AND
-// a SEPARATE nsoptions entry naming "bridge" in Path — so an integration
-// probe reproducing that exact CLI shape would be refused by checkNSOptions
-// instead, whose own message points at "the networkmode refusal" rather than
-// restating it. Sending the bare word "bridge" as networkmode — the shape a
-// docker-compat client (not the podman CLI) sends, and the one
-// internal/dockerproxy/build_test.go's compat-endpoint cases exercise as a
-// unit — is what actually reaches checkNetworkMode's OWN refusal, Fix line
-// included, in one request.
+// --network=bridge` CLI invocation encodes it as networkmode=2 AND a SEPARATE
+// nsoptions entry naming "bridge" in Path, so that shape is refused by the
+// networkmode=2 arm — the arm for a build that NAMES the host network, whose
+// message is about `network = "host"` rather than about bridge. Sending the
+// bare word "bridge" as networkmode — the shape a docker-compat client (not
+// the podman CLI) sends, and the one internal/dockerproxy/build_test.go's
+// compat-endpoint cases exercise as a unit — is what reaches the arm written
+// for a network namespace of the BUILD STEP's own, Fix line included, in one
+// request.
 func TestBuildRefusesTheCompatNetworkModeSpellingWithAMessageNamingTheFix(t *testing.T) {
 	budget(t, 60*time.Second)
 	requireSandbox(t)
@@ -3382,10 +3361,18 @@ print("PROBE-COMPLETE", flush=True)
 	if !ok {
 		t.Fatalf("the refusal's own response body was not captured:\n%s", r.out)
 	}
-	if !strings.Contains(body, "--network=host") || !strings.Contains(body, "drop the --network flag") {
+	if !strings.Contains(body, "drop the --network flag") {
 		t.Errorf("the refusal for --network=bridge does not NAME THE FIX end to end — expected "+
-			"both \"--network=host\" and \"drop the --network flag\" in the response body a real "+
-			"client would read, got:\n%s", body)
+			"\"drop the --network flag\" in the response body a real client would read, got:"+
+			"\n%s", body)
+	}
+	// AND IT MUST NOT NAME A FIX THAT IS ITSELF REFUSED. `network = "host"` is
+	// refused wherever snug can refuse it, so a refusal steering the user to
+	// --network=host would send them from one 403 to another — the worst kind
+	// of "errors name the fix", because it reads like it was checked.
+	if strings.Contains(body, "--network=host") {
+		t.Errorf("the refusal for --network=bridge points at --network=host, which is itself "+
+			"refused; the only working form is no --network flag at all:\n%s", body)
 	}
 }
 
@@ -3514,14 +3501,15 @@ def build(label, extra):
 # can silently stop controlling is the failure mode this suite exists to avoid.
 build("ordinary build", {"nocache": "1"})
 build("host bind", {"volume": "/etc:/x"})
-# Since issue #401 pins containers.conf's netns to the engine's own — which is
-# THIS sandbox's since Tier B — "--network=host" no longer joins anything
-# outside the sandbox, and a build must be able to ask for it explicitly.
+# network = "host" is refused wherever snug can refuse it, in both spellings
+# a real "podman build --network=host" sends. The build still GETS the engine's
+# network namespace, which is this sandbox's own — by naming nothing, which is
+# what the control above does.
 build("host network", {"networkmode": "2"})
 build("host ns", {"nsoptions": '[{"Name":"network","Host":true,"Path":""}]'})
-# A network namespace of the BUILD STEP's own is what actually needs
-# refusing now: it needs CAP_NET_ADMIN to bring lo up and the engine does
-# not have it, so these two spellings must still 403.
+# A network namespace of the BUILD STEP's own is refused for a second,
+# independent reason: it needs CAP_NET_ADMIN to bring lo up and the engine does
+# not have it, so these two spellings 403 as well.
 build("private network", {"networkmode": "1"})
 build("private ns", {"nsoptions": '[{"Name":"network","Host":false,"Path":""}]'})
 build("unknown option", {"mountfromhost": "/etc"})

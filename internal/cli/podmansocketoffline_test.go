@@ -32,7 +32,7 @@ func TestPodmanSocketDoesNotImplyEgress(t *testing.T) {
 		t.Errorf("@podman-socket alone resolved Net.Mode = %s, want NetIsolated (offline)", off.Net.Mode)
 	}
 	for _, name := range off.Profiles {
-		if name == "@net" || name == "@net-anon" || name == "@net-host" {
+		if name == "@net" || name == "@net-anon" {
 			t.Errorf("@podman-socket alone pulled in %s — it must not include any network profile", name)
 		}
 	}

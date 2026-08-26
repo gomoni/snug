@@ -400,22 +400,16 @@ gateway  = "10.13.13.1"
 address6 = "fd00:5e79:1::2/64"
 gateway6 = "fd00:5e79:1::1"
 
-# ABUSE: EVERYTHING. The host's loopback (every service you run locally), every
-# abstract AF_UNIX socket including X11 — which means keylogging and screenshots
-# of your whole desktop — and the LAN with the host's identity. This is not a
-# sandbox with networking; it is a process with a different filesystem view.
-# Exists so "I need to debug a host service" does not become "so I stopped using
-# snug". Requires --i-know.
-[profile.net-host]
-description = "DANGEROUS. Shares the HOST network namespace. Requires --i-know."
-network = "host"
-# DNS is named here so the sandbox is told the host's OWN resolvers, 127.0.0.53
-# included. They are reachable because the netns IS the host's, and learning
-# their addresses discloses strictly less than the namespace this profile has
-# already handed over. Without this key the sandbox was told to use pasta's
-# interception address while no pasta runs, so DNS simply did not work inside
-# the one profile whose purpose is reaching host services (issue #164).
-dns = true
+# THERE IS NO `network = "host"`, and its absence is the grant this file does
+# not make. Sharing the host's network namespace means every service on the
+# host's loopback, every abstract AF_UNIX socket including X11 — keylogging and
+# screenshots of the whole desktop — and the LAN with the host's identity: not a
+# sandbox with networking, but a process with a different filesystem view.
+#
+# Reaching ONE host-local service is the thing that makes people want it, and
+# that is an enumerated grant spelled coarsely (invariant 2's corollary). The
+# narrow version is a pasta flag: `-T <port>` where the argv above passes
+# `-T none`, the outbound mirror of `publish`. Whoever needs it adds THAT.
 
 # ── what a bare `snug <dir>` selects ─────────────────────────────────────────
 # There is deliberately NO [profile.default] here. What a bare `snug <dir>`

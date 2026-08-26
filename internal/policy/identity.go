@@ -14,40 +14,19 @@ const (
 	SSHNone SSHMode = "none"
 )
 
-// ParseSSHMode is one of the doors a profile takes into the policy model, so
-// it is where a retired mode has to die: `host-agent` — bind the host's
-// SSH_AUTH_SOCK straight through, every key enumerable and usable as a signing
-// oracle — is REFUSED by name rather than falling into the unknown-mode
-// message. Two reasons, and the second is the invariant.
+// ParseSSHMode is one of the four doors into policy.SSHMode, and it accepts
+// two values. Anything else is unknown — there is no catalogue of spellings it
+// judges individually, which is what keeps the accepted set readable as the
+// whole set.
 //
-// It carried no capability agent-proxy does not: both reach the host's already
-// unlocked agent, and only one bounds which key answers. What it added was a
-// mode whose ENTIRE safety was a CLI flag, and the flag had been documented in
-// three places and implemented in none — the redteam agent walked in and signed
-// with a key the profile had not pinned. A weakening that large has no honest
-// form in a profile.
-//
-// And a profile that still says `host-agent` must be refused rather than
-// quietly resolved as something narrower. Silently reading it as agent-proxy
-// (no pinned key) or as none would hand the user a sandbox that does not do
-// what their profile says — CLAUDE.md invariant 5, no silent downgrade, which
-// binds a REMOVAL as much as an unavailable capability.
+// The empty string is `none`, so a profile with an identity block and no
+// ssh_mode gets no agent rather than a refusal.
 func ParseSSHMode(s string) (SSHMode, error) {
 	switch SSHMode(s) {
 	case SSHAgentProxy, SSHNone:
 		return SSHMode(s), nil
 	case "":
 		return SSHNone, nil
-	case "host-agent":
-		return "", fmt.Errorf(`ssh_mode = "host-agent" has been removed.
-
-      It forwarded your ENTIRE ssh-agent: every key loaded became enumerable
-      AND usable as a signing oracle, not just the pinned one, and anything the
-      sandbox signed was indistinguishable from you.
-
-      Use ssh_mode = "agent-proxy" with ssh_key set. It reaches the same
-      already-unlocked host agent, exposes exactly ONE key, and refuses
-      enumeration.`)
 	default:
 		return "", fmt.Errorf("unknown ssh_mode %q (want agent-proxy or none)", s)
 	}

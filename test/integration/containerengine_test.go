@@ -573,9 +573,9 @@ func TestContainerEgressFollowsNetProfile(t *testing.T) {
 	const tag = "snugegress"
 	probeBin := egressprobeBin(t)
 
-	// "host" as the container's NetworkMode, the same as every other container
-	// in this file: it means the ENGINE's network namespace, which since Tier B
-	// is the sandbox's own N. That is the namespace whose egress is under test.
+	// The container names no network, like every container in this file, so it
+	// lands in the ENGINE's network namespace — which since Tier B is the
+	// sandbox's own N. That is the namespace whose egress is under test.
 	script := buildScratchProbeImageFor(tag, "egressprobe") + runContainerAndCollectFn + fmt.Sprintf(`
 status, _ = req("GET", "/v1.41/version")
 print("version: %%d" %% status, flush=True)
@@ -587,7 +587,7 @@ if build_scratch_probe():
     # first address to dial. Measured, first run of this test: "RESULT
     # /egressprobe REFUSED dial tcp: address /egressprobe: missing port in
     # address".
-    run_and_collect(%q, [%q], "host")
+    run_and_collect(%q, [%q])
 print("SCRIPT-COMPLETE", flush=True)
 `, tag, addr)
 
@@ -899,29 +899,22 @@ func buildScratchProbeImage(tag string) string {
 
 // runContainerAndCollect creates, starts, waits for and removes a container
 // from tag, returning its stdout/stderr (Tty=true, so the compat logs
-// endpoint needs no stream-framing decode). network is HostConfig.NetworkMode
-// verbatim — "host" is what every caller in this file has always passed
-// explicitly, rather than relying on podman's own default.
+// endpoint needs no stream-framing decode).
 //
-// That comment used to say "host" is the ONLY mode this tier supports. Since
-// issue #401's containers.conf pin (netns = "host" in
-// internal/engine/engine.go's writeContainersConf) that is no longer true in
-// the way it reads: an UNSET NetworkMode now lands in the same place "host"
-// does — the engine's own netns, which is this sandbox's own since Tier B —
-// so a caller could equally well omit HostConfig.NetworkMode entirely.
-// Nothing here does, on purpose: this function's job is to be the STABLE
-// helper every pre-#401 test already depends on, and
-// TestAContainerThatNamesNoNetworkModeJoinsTheSandboxsNetns below is what
-// actually exercises the omitted-key path, deliberately kept out of this
-// shared helper so a caller that wants "host" spelled out still gets it.
+// IT NAMES NO NETWORK, and there is no parameter for one. A container's netns
+// is snug's to author: the containers.conf pin (netns = "host" in
+// internal/engine/engine.go's writeContainersConf, issue #401) puts a create
+// that asks for nothing into the engine's own netns, which since Tier B is
+// this sandbox's. A create that DOES name one is refused by the proxy
+// (internal/dockerproxy's namespaceModeKeys loop), so "ask for nothing" is
+// both the only spelling that works and the one every caller wants.
 const runContainerAndCollectFn = `
-def run_and_collect(tag, cmd, network):
+def run_and_collect(tag, cmd):
     # A freshly built LOCAL image is tagged "localhost/<tag>", not "<tag>" --
     # podman's own default short-name resolution otherwise expands the bare
     # tag to "docker.io/library/<tag>" and 404s ("image not known") on a
     # perfectly real image this same run just built.
-    body = json.dumps({"Image": "localhost/" + tag, "Cmd": cmd, "Tty": True,
-                        "HostConfig": {"NetworkMode": network}}).encode()
+    body = json.dumps({"Image": "localhost/" + tag, "Cmd": cmd, "Tty": True}).encode()
     status, resp = req("POST", "/v1.41/containers/create", body, {"Content-Type": "application/json"})
     print("CREATE: %d %s" % (status, resp.decode(errors="replace")[:300]), flush=True)
     if status != 201:
@@ -1000,7 +993,7 @@ func TestHostLoopbackClosedFromContainer(t *testing.T) {
 		// could not fail for a milestone.
 		script := buildScratchProbeImage(tag) + runContainerAndCollectFn + fmt.Sprintf(`
 if build_scratch_probe():
-    run_and_collect(%q, ["%d"], "host")
+    run_and_collect(%q, ["%d"])
 print("PROBE-COMPLETE", flush=True)
 `, tag, port)
 		if err := os.WriteFile(filepath.Join(proj, "loopback.py"), []byte(script), 0o644); err != nil {
@@ -1257,14 +1250,12 @@ func mustRead(t *testing.T, path string) []byte {
 // ── issue #401: the container netns pin, checked as an effect rather than a
 //    grep of containers.conf's own bytes ───────────────────────────────────
 
-// runContainerAndCollectDefaultFn is runContainerAndCollectFn's twin with NO
-// HostConfig.NetworkMode key at all — the shape a client that never mentions
-// --network actually sends, and which nothing else in this file exercises:
-// every existing caller of runContainerAndCollectFn passes "host" explicitly
-// (that function's own doc comment names why). Before issue #401 that
-// omission had no settled answer; the containers.conf pin is what gives it
-// one, and this is the helper that asks the question the pin is supposed to
-// answer.
+// runContainerAndCollectDefaultFn is runContainerAndCollectFn's twin sending an
+// EMPTY HostConfig object rather than omitting the key. Both are "no network
+// request" and both must land in the same place; they are kept apart because
+// they are different bytes on the wire, and a filter that read one as a request
+// and not the other would be caught by exactly one of them. The containers.conf
+// pin (issue #401) is what gives the shape its answer.
 const runContainerAndCollectDefaultFn = `
 def run_and_collect_default(tag, cmd):
     body = json.dumps({"Image": "localhost/" + tag, "Cmd": cmd, "Tty": True,
@@ -1369,17 +1360,18 @@ func outerNetnsMarker(out string) (string, bool) {
 // an unset network mode resolve to the ENGINE's own netns, which since Tier
 // B is this sandbox's.
 //
-// Before this test nothing in the suite exercised the omitted-key path at
-// all — every existing container test passes NetworkMode="host" explicitly
-// (runContainerAndCollectFn's own doc comment), which is why the pin's own
-// property had no coverage. The explicit "host" path is this test's
-// POSITIVE CONTROL rather than an assumption: it must land in the identical
-// namespace the omitted-key path does, or the comparison this test relies on
-// is not meaningful even for the well-established case. And the
-// DISCRIMINATING CONTROL is that the sandbox payload's own namespace must
-// differ from this TEST PROCESS's (the host's) — without it, "the
-// container's netns equals the payload's" would also be (trivially) true of
-// a sandbox that got no network isolation of its own at all.
+// Both spellings of "no request" are driven — an empty HostConfig and no
+// HostConfig key at all — because they are different bytes on the wire and a
+// filter could read one as a request and not the other. There is no third arm
+// naming a network to compare against: a create that NAMES one is refused by
+// the proxy (internal/dockerproxy's namespaceModeKeys loop), so asking for
+// nothing is the only path a container has to a network.
+//
+// THE DISCRIMINATING CONTROL is that the sandbox payload's own namespace must
+// differ from this TEST PROCESS's (the host's). Without it, "the container's
+// netns equals the payload's" would also be (trivially) true of a sandbox that
+// got no network isolation of its own at all — the assertion would hold for
+// the worst outcome available as readily as for the right one.
 func TestAContainerThatNamesNoNetworkModeJoinsTheSandboxsNetns(t *testing.T) {
 	budget(t, 120*time.Second)
 	requireSandbox(t)
@@ -1398,7 +1390,7 @@ func TestAContainerThatNamesNoNetworkModeJoinsTheSandboxsNetns(t *testing.T) {
 print("OUTERNS " + os.readlink("/proc/self/ns/net"), flush=True)
 if build_scratch_probe():
     run_and_collect_default(%[1]q, [])
-    run_and_collect(%[1]q, [], "host")
+    run_and_collect(%[1]q, [])
 print("PROBE-COMPLETE", flush=True)
 `, tag)
 	if err := os.WriteFile(filepath.Join(proj, "netns401.py"), []byte(script), 0o644); err != nil {
@@ -1432,23 +1424,20 @@ print("PROBE-COMPLETE", flush=True)
 
 	got := netnsMarkers(r.out)
 	if len(got) != 2 {
-		t.Fatalf("expected exactly 2 NETNS lines (no-NetworkMode container, then the explicit "+
-			"\"host\" one), got %d: %v\n%s", len(got), got, r.out)
+		t.Fatalf("expected exactly 2 NETNS lines (empty HostConfig, then no HostConfig at "+
+			"all), got %d: %v\n%s", len(got), got, r.out)
 	}
-	noModeNS, hostModeNS := got[0], got[1]
-
-	if hostModeNS != payloadNS {
-		t.Fatalf("CONTROL FAILED: a container created with explicit NetworkMode=\"host\" (netns "+
-			"%s) is not in the sandbox payload's own netns (%s) — every other test in this file "+
-			"relies on that equality holding, so this run's engine is not in the state the rest "+
-			"of the suite assumes", hostModeNS, payloadNS)
-	}
-
-	if noModeNS != payloadNS {
-		t.Errorf("a container created with NO NetworkMode at all is in netns %s, not the "+
-			"sandbox payload's own %s — issue #401's containers.conf pin (netns = \"host\" in "+
-			"writeContainersConf) is supposed to make an UNSET network mode land here, exactly "+
-			"as an explicit \"host\" one does", noModeNS, payloadNS)
+	// Both spellings of "I am not asking for a network", because they are
+	// different bytes and a filter could read one as a request and not the
+	// other.
+	for i, spelling := range []string{"an EMPTY HostConfig", "no HostConfig key at all"} {
+		if got[i] != payloadNS {
+			t.Errorf("a container created with %s is in netns %s, not the sandbox payload's "+
+				"own %s — issue #401's containers.conf pin (netns = \"host\" in "+
+				"writeContainersConf) is what puts a container that asks for nothing here, "+
+				"and it is the only way in: naming a network is refused by the proxy",
+				spelling, got[i], payloadNS)
+		}
 	}
 }
 
@@ -1662,7 +1651,7 @@ print(self_out, flush=True)
 print("SELF-END", flush=True)
 
 if build_scratch_probe():
-    run_and_collect(%[1]q, [str(port)], "host")
+    run_and_collect(%[1]q, [str(port)])
     run_and_collect_default(%[1]q, [str(port)])
 print("PROBE-COMPLETE", flush=True)
 `, tag, sandboxOwnListenerBanner)
@@ -2564,7 +2553,7 @@ print("PAYLOAD-RESOLV-BEGIN", flush=True)
 print(payload_resolv, flush=True)
 print("PAYLOAD-RESOLV-END", flush=True)
 if build_scratch_probe():
-    run_and_collect(%q, [], "host")
+    run_and_collect(%q, [])
 print("PROBE-COMPLETE", flush=True)
 `, tag)
 	if err := os.WriteFile(filepath.Join(proj, "resolvconf.py"), []byte(script), 0o644); err != nil {
@@ -2687,7 +2676,7 @@ def start_holder(tag, token):
     # The host-side scan below matches on cmdline, so it survived that either
     # way -- which is the reason it went unnoticed, not a reason to keep it.
     body = json.dumps({"Image": "localhost/" + tag, "Cmd": [token],
-                        "Tty": True, "HostConfig": {"NetworkMode": "host"}}).encode()
+                        "Tty": True}).encode()
     status, resp = req("POST", "/v1.41/containers/create", body, {"Content-Type": "application/json"})
     print("CREATE: %%d %%s" %% (status, resp.decode(errors="replace")[:300]), flush=True)
     if status != 201:
@@ -3014,7 +3003,7 @@ func TestHostContainersConfAuthorsNothingInAContainer(t *testing.T) {
 	tag := "snugtest-hostconf:1"
 	script := buildScratchProbeImageFor(tag, "confprobe") + runContainerAndCollectFn + fmt.Sprintf(`
 if build_scratch_probe():
-    run_and_collect(%q, [], "host")
+    run_and_collect(%q, [])
 print("PROBE-COMPLETE-OUTER", flush=True)
 `, tag)
 	if err := os.WriteFile(filepath.Join(proj, "hostconf.py"), []byte(script), 0o644); err != nil {
@@ -3562,11 +3551,11 @@ func TestContainerCannotJoinTheEnginesPidNamespace(t *testing.T) {
 if build_scratch_probe():
     # POSITIVE CONTROL: the identical container, WITHOUT PidMode, actually
     # runs through the real engine.
-    run_and_collect(%q, [], "host")
+    run_and_collect(%q, [])
 
     # The refusal under test: the same create, PLUS PidMode="host".
     body = json.dumps({"Image": "localhost/%s", "Cmd": ["/pidnsprobe"], "Tty": True,
-                        "HostConfig": {"NetworkMode": "host", "PidMode": "host"}}).encode()
+                        "HostConfig": {"PidMode": "host"}}).encode()
     status, resp = req("POST", "/v1.41/containers/create", body, {"Content-Type": "application/json"})
     print("PIDHOST-CREATE: %%d %%s" %% (status, resp.decode(errors="replace")[:400]), flush=True)
 print("PROBE-COMPLETE", flush=True)
@@ -3639,7 +3628,7 @@ func TestContainerSeesOnlyItsOwnPids(t *testing.T) {
 	tag := "snugtest-ownpids:1"
 	script := buildScratchProbeImageFor(tag, "pidnsprobe") + runContainerAndCollectFn + fmt.Sprintf(`
 if build_scratch_probe():
-    run_and_collect(%q, [], "host")
+    run_and_collect(%q, [])
 print("PROBE-COMPLETE", flush=True)
 `, tag)
 	if err := os.WriteFile(filepath.Join(proj, "ownpids.py"), []byte(script), 0o644); err != nil {
@@ -3744,8 +3733,7 @@ func TestEngineProcfsIsNotBindMountable(t *testing.T) {
 if build_scratch_probe():
     # The refusal under test.
     body = json.dumps({"Image": "localhost/%s",
-                        "HostConfig": {"NetworkMode": "host",
-                                       "Mounts": [{"Type": "bind", "Source": "/proc",
+                        "HostConfig": {"Mounts": [{"Type": "bind", "Source": "/proc",
                                                     "Target": "/hostproc"}]}}).encode()
     status, resp = req("POST", "/v1.41/containers/create", body, {"Content-Type": "application/json"})
     print("PROCBIND-CREATE: %%d %%s" %% (status, resp.decode(errors="replace")[:400]), flush=True)
@@ -3758,8 +3746,7 @@ if build_scratch_probe():
     # through the plain, payload-renameable directory names the anchored source
     # rule now refuses -- see TestASwappedBindSourceCannotReachTheEngineGrafts.
     body2 = json.dumps({"Image": "localhost/%s",
-                         "HostConfig": {"NetworkMode": "host",
-                                        "Mounts": [{"Type": "bind", "Source": "/usr",
+                         "HostConfig": {"Mounts": [{"Type": "bind", "Source": "/usr",
                                                      "Target": "/hostusr", "ReadOnly": True}]}}).encode()
     status2, resp2 = req("POST", "/v1.41/containers/create", body2, {"Content-Type": "application/json"})
     print("USRBIND-CREATE: %%d %%s" %% (status2, resp2.decode(errors="replace")[:400]), flush=True)
@@ -4372,7 +4359,6 @@ cid = create("ordinary create", {
     "Labels": {"mine": "kept"},
     "AttachStdout": True, "AttachStderr": True,
     "NetworkingConfig": {"EndpointsConfig": {}},
-    "HostConfig": {"NetworkMode": "host"},
 }, want_id=True)
 
 # Read the values BACK, so "201" cannot pass on an engine that dropped them.
@@ -4392,11 +4378,10 @@ if cid:
         print("recorded-cmd: inspect-%d" % st, flush=True)
 
 # ── the ergonomic floor ──────────────────────────────────────────────
-create("empty unmodelled", {"Image": IMG, "FieldPodmanAddsIn2027": None,
-                            "HostConfig": {"NetworkMode": "host"}})
+create("empty unmodelled", {"Image": IMG, "FieldPodmanAddsIn2027": None})
 # The endpoint object a real docker CLI really sends: structurally non-empty,
 # semantically all-zero. Refusing it would ban 'docker run'.
-create("stock networkingconfig", {"Image": IMG, "HostConfig": {"NetworkMode": "host"},
+create("stock networkingconfig", {"Image": IMG,
     "NetworkingConfig": {"EndpointsConfig": {"default": {
         "IPAMConfig": None, "Links": None, "Aliases": None, "DriverOpts": None,
         "GwPriority": 0, "NetworkID": "", "EndpointID": "", "Gateway": "",

@@ -39,20 +39,20 @@ import (
 //	-v /etc:/x               volume=/etc:/x                      host bind during RUN
 //	--build-context x=/etc   additionalbuildcontexts={...}       host bind by another name
 //	--device /dev/fuse       devices=["/dev/fuse"]               host device
+//	--network=host          networkmode=2 + nsoptions Host:true the host network, named
 //	--network=none          networkmode=1 AND nsoptions=[...]   TWO independent spellings
 //	--network=bridge/pasta  networkmode=2, name in nsoptions    the name rides in Path
 //	--cgroup-parent foo      cgroupparent=foo                    a cgroup outside the sandbox's
 //	--add-host h:1.2.3.4     extrahosts=[...]                    name redirection
 //	--security-opt seccomp=  seccomp=unconfined | /host/path     hardening downgrade, host read
 //
-// A private network namespace for the build step is the one to look at twice
-// (issue #401). It sets networkmode AND an nsoptions entry, either of which
-// alone gives the RUN step a netns of its own — the same shape as pasta's
-// --map-host-loopback and -T/-U, where closing three of four flags left the
-// hole wide open. Both are checked here, and both have a test.
-// `--network=host` is NOT in this table: since the containers.conf pin
-// (engine.go's writeContainersConf), it names this sandbox's own network
-// namespace, not the machine's, and is accepted rather than refused.
+// The network rows are the ones to look at twice. EVERY --network spelling
+// sets networkmode AND an nsoptions entry, either of which alone would carry
+// the request past a check that only read the other — the same shape as
+// pasta's --map-host-loopback and -T/-U, where closing three of four flags
+// left the hole wide open. Both are checked, both have a test, and between
+// them no --network value is accepted at all: a build gets the engine's
+// network namespace, which is this sandbox's own, by naming nothing.
 func (p *Proxy) handleBuild(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
@@ -901,49 +901,63 @@ func checkAdditionalContexts(p *Proxy, v string) (string, error) {
 	return string(out), nil
 }
 
-// checkNetworkMode refuses a build step a network namespace of its own
-// (issue #401), which since the containers.conf pin (engine.go's
-// writeContainersConf) is the only network mode this tier's engine can
-// actually deliver.
+// checkNetworkMode permits a build that names no network and refuses every
+// build that names one.
 //
 // The libpod endpoint sends an integer and the compat one a string, so both
 // spellings are enumerated. Default-deny: an unrecognised value is refused
 // rather than assumed benign, because the numbers are buildah's internal enum
 // and a new one could mean anything.
 //
-// Inverted from the pre-#401 reading, which refused exactly the one value
-// that works and admitted everything that does not:
-//
-//	accept  ""  "0"  "default"   — not a request; the containers.conf pin
-//	                                decides, and it decides N.
-//	accept  "2" "host"           — Tier B's inversion: here "host" means the
-//	                                ENGINE's netns, which is N, not the
-//	                                machine's.
+//	accept  ""  "0"  "default"   — not a request. containers.conf's
+//	                               netns = "host" pin (engine.go's
+//	                               writeContainersConf) is what decides, and
+//	                               it decides N, this sandbox's own netns.
+//	refuse  "2" "host"           — a build that NAMES the host network.
+//	                               `network = "host"` is refused everywhere
+//	                               snug can refuse it, and this is one of the
+//	                               places it can.
 //	refuse  "1" "none" "private" "bridge" "slirp4netns" "pasta" — every one
-//	                                of these asks buildah to give the RUN
-//	                                step a network namespace OF ITS OWN,
-//	                                which needs CAP_NET_ADMIN to bring lo up
-//	                                in that namespace and the engine does not
-//	                                have it (policy.EngineCapBounding,
-//	                                2026-08-18). MEASURED dead on both podman
-//	                                5.8.4 and 6.0.2, with and without the
-//	                                pin: `ioctl SIOCSIFFLAGS: Operation not
-//	                                permitted` (crun) or `netavark: Netlink
-//	                                error: Operation not permitted` (libpod).
+//	                               of these asks buildah to give the RUN step
+//	                               a network namespace OF ITS OWN, which needs
+//	                               CAP_NET_ADMIN to bring lo up in that
+//	                               namespace and the engine does not have it
+//	                               (policy.EngineCapBounding, 2026-08-18).
+//	                               MEASURED dead on both podman 5.8.4 and
+//	                               6.0.2, with and without the pin: `ioctl
+//	                               SIOCSIFFLAGS: Operation not permitted`
+//	                               (crun) or `netavark: Netlink error:
+//	                               Operation not permitted` (libpod).
 //
-// "" and "default" are kept for robustness rather than for a known caller —
-// no measured client sends either; the podman CLI's libpod endpoint only
-// ever sends 0, 1 or 2 (no flag -> 0, --network=none -> 1, --network=host ->
-// 2, everything else -> 2 with the name carried in nsoptions instead), and
-// docker 29.4.0-ce's compat endpoint omits the parameter for no-flag AND for
-// --network=default. They are safe to accept because they are not a
-// request: the containers.conf pin is what binds them, not this check.
+// The only build that passes is therefore one carrying no --network flag at
+// all, and that costs nothing a build could otherwise have had: the refused
+// namespace-of-its-own set is dead in the engine, and "2"/"host" lands the RUN
+// step in exactly the netns the pin already puts it in (MEASURED — see
+// test/integration's TestABuildsRunStepRunsInTheSandboxsNetns for the no-flag
+// half, which asserts the RUN step's netns inode equals the payload's).
 //
-// Accepting "2"/"host" grants nothing the accepted default does not:
-// networkmode=2 puts the RUN step in exactly the netns the default already
-// puts it in, MEASURED. The engine is guaranteed to be running inside this
-// sandbox's own netns because internal/cli/container.go refuses @net-host
-// together with any container profile outright.
+// THE VALUE DOES NOT IDENTIFY THE FLAG, which is why the refusal message does
+// not guess. RECORDED against podman 6.0.2, `podman --remote --url
+// unix://<sock> build` into a listening recorder:
+//
+//	no flag            networkmode=0
+//	--network=host     networkmode=2
+//	--network=none     networkmode=1
+//	--network=private  networkmode=2   (nsoptions carries Host:false)
+//	--network=bridge   networkmode=2   (nsoptions carries Path:"bridge")
+//	--network=pasta    networkmode=2   (nsoptions carries Path:"pasta")
+//
+// "" and "default" are kept for robustness rather than for a known caller — no
+// measured client sends either on the libpod endpoint, and docker 29.4.0-ce's
+// compat endpoint omits the parameter for no-flag AND for --network=default.
+// They are safe to accept because they are not a request: the containers.conf
+// pin is what binds them, not this check.
+//
+// A FLAG IS THE ONLY SOURCE, so no host or sandbox configuration can turn an
+// ordinary build into a refused one. MEASURED, podman 6.0.2: with all six of
+// netns/userns/ipcns/utsns/pidns/cgroupns set to "host" in a containers.conf
+// named by BOTH CONTAINERS_CONF and CONTAINERS_CONF_OVERRIDE, a no-flag build
+// still sends networkmode=0 and an nsoptions list naming only `user`.
 //
 // v is returned UNCHANGED on the accept path rather than normalised to one
 // spelling — filterBuildQuery marks a build "rewritten" when the forwarded
@@ -957,18 +971,23 @@ func checkNetworkMode(_ *Proxy, v string) (string, error) {
 	// name the fix" that a default-deny hides.
 	norm := strings.ToLower(strings.TrimSpace(v))
 	switch norm {
-	case "", "0", "default", "2", "host":
+	case "", "0", "default":
 		return v, nil
+	case "2", "host":
+		return "", fmt.Errorf("%q is not permitted: it NAMES a network, and snug refuses "+
+			"`network=host` wherever it can refuse it. The libpod spelling `2` is what the "+
+			"podman CLI sends for --network=host, bridge, private and pasta alike (MEASURED, "+
+			"podman 6.0.2), so this one refusal covers all four.\n"+
+			"       Fix: drop the --network flag — it is already the default, and it gives the "+
+			"build this sandbox's own network.", v)
 	case "1", "none", "private", "bridge", "slirp4netns", "pasta":
 		return "", fmt.Errorf("%q is not permitted: it asks for a network namespace of the "+
 			"BUILD STEP's own, and the engine holds no CAP_NET_ADMIN to configure one (a "+
 			"deliberate limit — a compromised engine must not be able to reconfigure this "+
 			"sandbox's network). A build that gets one dies at "+
-			"`ioctl SIOCSIFFLAGS: Operation not permitted`. Inside this sandbox "+
-			"`--network=host` does NOT mean the machine's network: the engine runs in THIS "+
-			"sandbox's own network namespace, so it means exactly what the sandbox itself "+
-			"has, and it is what a build with no --network flag already gets.\n"+
-			"       Fix: drop the --network flag, or use --network=host.", v)
+			"`ioctl SIOCSIFFLAGS: Operation not permitted`.\n"+
+			"       Fix: drop the --network flag — it is already the default, and it gives the "+
+			"build this sandbox's own network.", v)
 	}
 	if strings.HasPrefix(norm, "container:") || strings.HasPrefix(norm, "ns:") {
 		return "", fmt.Errorf("%q is not permitted: it names a network namespace snug did not "+
@@ -979,29 +998,36 @@ func checkNetworkMode(_ *Proxy, v string) (string, error) {
 		"refuses the rest, so a value it has not been taught about fails closed", v)
 }
 
-// checkNSOptions is the second spelling of the same request checkNetworkMode
-// judges (issue #401 both narrowed and widened this): `--network=host` sets
-// networkmode AND an nsoptions entry, and either alone can re-open a request
-// checkNetworkMode already refused or accepted differently. That is the shape
-// of the pasta bug this project already paid for once: three of four closing
-// flags passed, and the fourth left every host loopback service reachable.
+// checkNSOptions is the second spelling of the request checkNetworkMode
+// judges: `--network=<anything>` sets networkmode AND an nsoptions entry, and
+// either alone would re-open what the other refuses. That is the shape of the
+// pasta bug this project already paid for once: three of four closing flags
+// passed, and the fourth left every host loopback service reachable.
+//
+// THE RULE FOR `network` IS THAT THERE IS NO ACCEPTED FORM OF IT. Host:true is
+// the nsoptions spelling of --network=host and is refused because
+// `network = "host"` is refused wherever snug can refuse it; Host:false, with
+// or without a name in Path, asks for a network namespace of the BUILD STEP's
+// own and is MEASURED dead — it needs CAP_NET_ADMIN to bring lo up and the
+// engine does not have it. A build gets the engine's network namespace, which
+// is this sandbox's own, by naming nothing.
 //
 // The NAME axis fails closed, and did not always: the loop judged Host and
 // Path and let any other name with Host:false and an empty Path fall through
 // to the accept. `nsoptions=[{"Name":"net","Host":false}]` was ACCEPTED here,
 // and what refused it was buildah — `adding new "net" namespace for run:
 // unrecognized namespace "net"`, from runtime-tools' mapStrToNamespace. Closed
-// by the helper rather than by snug, which is the arrangement checkNetworkMode
-// one screen up already argues against, and closed only by luck of spelling:
+// by the helper rather than by snug, and closed only by luck of spelling:
 // buildah's setupNamespaces has no default: arm, so `mount` and `time` — both
 // accepted by mapStrToNamespace — were configured into the OCI spec verbatim.
 //
-// The accepted set is the six names a real client can send, RECORDED from
-// `podman --remote build` 6.0.2 against a listening socket of our own: `user`
-// always (the rootless default, sent with no flag at all), plus one entry per
-// namespace flag — `network`, `pid`, `ipc`, `uts`, `cgroup`. A FLAG is the
-// only source: a containers.conf naming all six of netns/pidns/ipcns/utsns/
-// cgroupns/userns contributed nothing to nsoptions (measured). docker
+// The modelled set is the six names a real client can send, RECORDED from
+// `podman --remote build` (5.8.3 and 6.0.2, re-recorded on 6.0.2 against a
+// listening socket of our own): `user` always — the rootless default, sent
+// with no flag at all, as `{"Name":"user","Host":true,"Path":""}` — plus one
+// entry per namespace flag: `network`, `pid`, `ipc`, `uts`, `cgroup`. A FLAG
+// is the only source: a containers.conf naming all six of netns/pidns/ipcns/
+// utsns/cgroupns/userns contributed nothing to nsoptions (measured). docker
 // 29.4.0-ce's compat builder sends no nsoptions at all — it spells --network
 // as a word in networkmode, which checkNetworkMode judges.
 //
@@ -1013,29 +1039,22 @@ func checkNetworkMode(_ *Proxy, v string) (string, error) {
 // invariant 2 calls a design smell, and it would leave every future name open.
 //
 // Host:false with an empty Path on pid/ipc/uts/cgroup asks for one of the
-// BUILD STEP's own, which is strictly less than it had, so `--pid=private`
-// and its three siblings stay accepted. Unlike `network` that is NOT measured
-// to need a capability the engine lacks — it is accepted today and this
-// allowlist carries no new grant.
+// BUILD STEP's own, which is strictly less than it had, so `--pid=private` and
+// its three siblings stay accepted. That is NOT measured to need a capability
+// the engine lacks, unlike `network`.
+//
+// `user` with Host:true is the one name where Host:true does not mean the
+// machine's namespace: the engine already runs in that user namespace, and the
+// rootless CLI sends the entry on every build including one with no flag at
+// all — refusing it would refuse every build.
 //
 // A hostile process inside the sandbox can use the accept path to put a build
-// step in the engine's own network or user namespace (Host:true on network/
-// user) — N and U, which the sandbox already has — or in a fresh pid/ipc/uts/
-// cgroup namespace of its own, which is strictly less than it had. What the
-// name allowlist closes: handing the engine a namespace request under a name
-// snug has never judged, and getting whatever the runtime does with it.
-//
-// Two names are exceptions to "Host:true means the HOST's namespace, which is
-// outside this sandbox", each named rather than pattern-matched:
-//
-//   - `user`, the rootless default the CLI always sends — the engine already
-//     runs in that user namespace.
-//   - `network`, since Tier B: the engine's own network namespace IS this
-//     sandbox's (N), so Host:true here means N, not the machine's — the same
-//     inversion checkNetworkMode applies to networkmode=2/"host". Host:false
-//     on `network` is the other spelling of asking for a namespace of the
-//     BUILD STEP's own, MEASURED dead for the same reason networkmode=1 is:
-//     it needs CAP_NET_ADMIN to bring lo up and the engine does not have it.
+// step in the ENGINE's own user namespace (Host:true on `user`) — U, which the
+// sandbox already has — or in a fresh pid/ipc/uts/cgroup namespace of its own,
+// which is strictly less than it had. It cannot use this parameter to choose a
+// network at all. What the name allowlist closes: handing the engine a
+// namespace request under a name snug has never judged, and getting whatever
+// the runtime does with it.
 func checkNSOptions(_ *Proxy, v string) (string, error) {
 	var opts []struct {
 		Name string
@@ -1069,12 +1088,22 @@ func checkNSOptions(_ *Proxy, v string) (string, error) {
 				"judgement for what Host and Path mean for it — not in the fall-through.",
 				o.Name)
 		}
-		if o.Host && name != "user" && name != "network" {
+		// BEFORE the generic Host:true arm, because the generic message —
+		// "the HOST's network namespace, which is outside this sandbox" —
+		// would be false here: the engine's own netns IS this sandbox's, so
+		// what this entry actually asks for is reachable. It is refused
+		// because it NAMES the host network, not because it would escape, and
+		// a refusal that gives the wrong reason teaches the wrong fix.
+		if name == "network" && o.Host {
+			return "", fmt.Errorf("%q with Host:true is the nsoptions spelling of "+
+				"--network=host, and snug refuses `network=host` wherever it can refuse it. "+
+				"A build does not have to name a network: the engine's own namespace, which "+
+				"is this sandbox's, is what it gets by naming nothing.\n"+
+				"       Fix: drop the --network flag — it is already the default.", o.Name)
+		}
+		if o.Host && name != "user" {
 			return "", fmt.Errorf("%q asks for the HOST's %s namespace, which is outside this "+
 				"sandbox", o.Name, name)
-		}
-		if name == "network" && o.Host {
-			continue // Host:true means N, this sandbox's own netns (issue #401).
 		}
 		if o.Path != "" {
 			if name == "network" {

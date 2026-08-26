@@ -92,7 +92,6 @@ func TestTheNetworkBlockDoesNotClaimPathnameSocketsAreNetnsScoped(t *testing.T) 
 		"dryrun.go describeNetwork, NetEgress arm":   egress,
 		"doctor.go doctorNetnsOKMessage":             doctorNetnsOKMessage,
 		"config.go networkConsequence(\"egress\")":   networkConsequence("egress"),
-		"config.go networkConsequence(\"host\")":     networkConsequence("host"),
 	}
 	for name, unit := range units {
 		if unit == "" {
@@ -109,9 +108,8 @@ func TestTheNetworkBlockDoesNotClaimPathnameSocketsAreNetnsScoped(t *testing.T) 
 // D-Bus, Wayland or "abstract" would also pass
 // TestTheNetworkBlockDoesNotClaimPathnameSocketsAreNetnsScoped, for having
 // nothing left to misattribute. These assert the corrected text still says
-// the TRUE things — abstract sockets ARE netns-scoped, host loopback IS
-// closed by the netns, and @net-host's warning still says abstract sockets
-// ARE reachable there.
+// the TRUE things — abstract sockets ARE netns-scoped, and host loopback IS
+// closed by the netns.
 func TestTheNetworkBlockStillMakesItsTrueClaims(t *testing.T) {
 	isolated := networkBlock(t, resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw"}))
 	if !strings.Contains(isolated, "abstract unix sockets (netns-scoped)") {
@@ -133,16 +131,6 @@ func TestTheNetworkBlockStillMakesItsTrueClaims(t *testing.T) {
 			"remains TRUE (closed by the netns):\n%s", egress)
 	}
 
-	hostConsequence := networkConsequence("host")
-	if !strings.Contains(hostConsequence, "ARE reachable") {
-		t.Errorf("networkConsequence(\"host\") no longer says abstract sockets ARE "+
-			"reachable under @net-host, which remains TRUE — this mode genuinely shares "+
-			"the host's own netns:\n%s", hostConsequence)
-	}
-	if !strings.Contains(hostConsequence, "abstract") {
-		t.Errorf("networkConsequence(\"host\") no longer mentions abstract sockets at "+
-			"all:\n%s", hostConsequence)
-	}
 }
 
 // TestDryRunDoesNotContradictAGrantThatExposesAPathnameSocket is the

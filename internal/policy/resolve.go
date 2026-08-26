@@ -511,8 +511,8 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		// NetPolicy.Resolver's egress arm, where the mode is known, and
 		// NetPolicy.DNSHost deliberately does not apply it at all because
 		// pasta runs on the host. Filtering here decided half of that question
-		// in a place that could not see the other half, which is how
-		// @net-host ended up pointed at an address nothing answers (#164).
+		// in a place that could not see the other half, which is how a sandbox
+		// ended up pointed at an address nothing answers (#164).
 		p.Net.Nameservers = ctx.HostNameservers
 	}
 

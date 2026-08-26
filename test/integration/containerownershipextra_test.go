@@ -60,8 +60,7 @@ func spawnForeignLeftoverContainer(t *testing.T, env []string, tag string) (proj
 	}
 	script := buildScratchProbeImageFor(tag, "buildmarker") + fmt.Sprintf(`
 if build_scratch_probe():
-    body = json.dumps({"Image": "localhost/%[1]s",
-                        "HostConfig": {"NetworkMode": "host"}}).encode()
+    body = json.dumps({"Image": "localhost/%[1]s"}).encode()
     status, resp = req("POST", "/v1.41/containers/create", body, {"Content-Type": "application/json"})
     print("A-CREATE: %%d %%s" %% (status, resp.decode(errors="replace")[:300]), flush=True)
     if status == 201:
@@ -183,8 +182,7 @@ attack("libpod-attach-empty", "GET",
 # start — proves the six refusals above are not a proxy refusing the whole
 # API.
 if build_scratch_holder():
-    body = json.dumps({"Image": "localhost/%[2]s", "Cmd": ["own-token"],
-                        "HostConfig": {"NetworkMode": "host"}}).encode()
+    body = json.dumps({"Image": "localhost/%[2]s", "Cmd": ["own-token"]}).encode()
     status, resp = req("POST", "/v1.41/containers/create", body, {"Content-Type": "application/json"})
     print("B-CREATE: %%d %%s" %% (status, resp.decode(errors="replace")[:300]), flush=True)
     if status == 201:
@@ -280,8 +278,7 @@ for label, method, path in [
 
 # ── positive control: run B's OWN container, addressed the libpod way ──
 if build_scratch_holder():
-    body = json.dumps({"Image": "localhost/%[2]s", "Cmd": ["own-token"],
-                        "HostConfig": {"NetworkMode": "host"}}).encode()
+    body = json.dumps({"Image": "localhost/%[2]s", "Cmd": ["own-token"]}).encode()
     status, resp = req("POST", "/v1.41/containers/create", body, {"Content-Type": "application/json"})
     print("B-CREATE: %%d %%s" %% (status, resp.decode(errors="replace")[:300]), flush=True)
     if status == 201:
@@ -393,8 +390,7 @@ for label, method, path in [
 # ── positive control: run B's OWN container, addressed by ITS OWN 12-hex
 # prefix ──
 if build_scratch_holder():
-    body = json.dumps({"Image": "localhost/%[2]s", "Cmd": ["own-token"],
-                        "HostConfig": {"NetworkMode": "host"}}).encode()
+    body = json.dumps({"Image": "localhost/%[2]s", "Cmd": ["own-token"]}).encode()
     status, resp = req("POST", "/v1.41/containers/create", body, {"Content-Type": "application/json"})
     print("B-CREATE: %%d %%s" %% (status, resp.decode(errors="replace")[:300]), flush=True)
     if status == 201:
@@ -554,8 +550,7 @@ for label, method, path in routes:
 # container, with no odd shape — proves raw_req itself works and that the
 # five refusals above are not an artefact of a broken raw request.
 if build_scratch_holder():
-    body = json.dumps({"Image": "localhost/" + tag_b, "Cmd": ["own-token"],
-                        "HostConfig": {"NetworkMode": "host"}}).encode()
+    body = json.dumps({"Image": "localhost/" + tag_b, "Cmd": ["own-token"]}).encode()
     status, resp = req("POST", "/v1.41/containers/create", body, {"Content-Type": "application/json"})
     print("B-CREATE: %%d %%s" %% (status, resp.decode(errors="replace")[:300]), flush=True)
     if status == 201:

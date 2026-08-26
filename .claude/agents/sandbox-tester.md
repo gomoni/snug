@@ -64,25 +64,23 @@ coverage in every review.
   payload instead — `--seccomp` was once passed, accepted, and never installed,
   with a zero exit code and no warning. `Seccomp: 0` in `/proc/self/status` was
   the only evidence. Assert the effect, not the argv.
-- **A gate that is documented but not implemented is not a gate.**
-  `ssh_mode = "host-agent"` forwarded the entire ssh-agent, and three separate
-  places — the profile, the mode's doc comment, and the code comment at the call
-  site — said it required `--i-know`. Nothing checked it, and the red team
-  enumerated every key in the agent and signed with one the profile had not
-  pinned. **When a comment says "requires X", grep for X before believing it,
-  then write the test that makes it true — and say in the comment where it is
-  checked.**
+- **A gate that is documented but not implemented is not a gate.** A mode that
+  forwarded the entire ssh-agent was described in three separate places — the
+  profile, the mode's doc comment, and the code comment at the call site — as
+  gated. Nothing checked it, and the red team enumerated every key in the agent
+  and signed with one the profile had not pinned. **When a comment says
+  "requires X", grep for X before believing it, then write the test that makes
+  it true — and say in the comment where it is checked.**
 
-  *And the second half, because writing the test was not the answer here.* The
-  gate was then implemented, and issue #411 found it still had no test —
-  deleting the `if !iKnow` block left `make gate` green. The mode was REMOVED
-  instead, and CLAUDE.md's working agreement now says why: a capability whose
-  entire safety is a CLI flag is a capability that will be used, because the
-  flag is documented, greppable, and named in the error telling you what to
-  type. `policy.ParseSSHMode` refuses `host-agent` by name and
-  `TestHostAgentIsRefusedAndNamesAgentProxy` pins the refusal — in
-  `internal/cli`, not `test/integration`, because #411's whole complaint was
-  about `make gate`.
+  *Writing the test is not always the answer.* Issue #411 found that same gate
+  implemented and still untested — deleting the check left `make gate` green.
+  The gated capability went instead of the test, because CLAUDE.md's working
+  agreement says a CLI flag is not a bound. **When you find a gate with no
+  test, ask whether the gated thing should exist before you reach for the
+  test.** `TestHostAgentIsRefusedAndNamesAgentProxy`, `TestNoHostNetworkMode`
+  and `TestProfileShowSaysARemovedValueIsRefused` all live in `internal/cli`
+  rather than `test/integration`, because #411's complaint was about `make
+  gate` specifically.
 
   *The same shape hides in this suite's own helpers, where it costs diagnosis
   rather than security.* `requireInternet` was named for the internet and

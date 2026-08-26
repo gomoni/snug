@@ -353,13 +353,6 @@ func TestDryRunJSONRedirectIsNeverZeroBytes(t *testing.T) {
 			args: []string{"--dry-run", "--json", filepath.Join(proj, "nope")},
 			says: "no such file",
 		},
-		{
-			name:     "net-host without --i-know",
-			env:      baseEnv(),
-			args:     []string{"--dry-run", "--json", "-p", "@net-host", proj},
-			resolved: true,
-			says:     "--i-know",
-		},
 	}
 
 	for _, tc := range cases {

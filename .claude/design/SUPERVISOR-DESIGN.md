@@ -110,9 +110,9 @@ spelling numbered the images `__stage1`/`__stage2`, which read as P1 and P2 and
 meant neither.
 
 **A bare `snug <dir>` starts no stage.** The stage exists only where something
-other than bwrap must own the sandbox's namespaces. Ordinary offline runs and
-`--i-know` host-network runs take the previous code path byte for byte. That is
-deny-by-default applied to snug's own process tree.
+other than bwrap must own the sandbox's namespaces; an ordinary offline run has
+no such thing and bwrap owns everything. That is deny-by-default applied to
+snug's own process tree.
 
 *Two things select a stage.* Egress is one; selecting a container engine is the
 other ([#63](https://github.com/gomoni/snug/issues/63)) — for the full delegated subuid
@@ -138,18 +138,18 @@ the phase-1 reasoning, not today's trigger set.
 
 Under `Topology.Netns == NetnsStage`, `BwrapFlags` emits
 `--unshare-user-try --unshare-ipc --unshare-pid --unshare-uts --unshare-cgroup-try`
-and **omits `--unshare-net`**. Every other topology emits `--unshare-all` exactly
-as before, and `--share-net` is still emitted **only** for `Net.Mode == NetHost`.
+and **omits `--unshare-net`**. Every other topology emits `--unshare-all`.
+**`--share-net` is emitted nowhere at all**, which is what makes a grep for it a
+complete answer.
 
-The rejected alternative was to reuse `--unshare-all --share-net` for the stage,
-on the sound objection that an enumeration is a keep-list and a bwrap that grows
-a namespace type would silently stop unsharing it. It lost for two reasons it
-cannot answer: it puts **two meanings on one flag** — `--share-net` today means
-"the host's network namespace, and the CLI demanded `--i-know`" — so no grep, no
-golden and no future review could distinguish the most dangerous network posture
-snug can produce from an ordinary one; and it would force the edit of a test
-whose entire content is "host mode is the only mode that inherits a netns", when
-nothing about host networking changed.
+The rejected alternative was `--unshare-all --share-net` for the stage, on the
+sound objection that an enumeration is a keep-list and a bwrap that grows a
+namespace type would silently stop unsharing it. It loses on a point it cannot
+answer: `--share-net` relaxes a namespace snug created, and the stage's netns is
+one snug created and pinned deliberately. Spelling "P1 already made N" with the
+same flag that would spell "give the payload whatever netns bwrap was started
+in" puts two meanings on one token, and no grep, golden or review could then
+separate them.
 
 The keep-list objection is answered rather than dismissed, by a test that parses
 `bwrap --help` for every `--unshare-<name>` and fails if the stage set does not
@@ -169,17 +169,17 @@ https://github.com/gomoni/snug/issues/24.
 ### 3.2 The stage runs only when it is needed
 
 `Topology.NeedsStage()` is derived, and true when either
-`Topology.Netns == NetnsStage` or `Subuid == SubuidFull` (§2's note). The rejected alternative started a stage for
-every run — cloning without `CLONE_NEWNET` for host mode — so that there would be
-one process shape to reason about. It loses because an unconditional stage hands
+`Topology.Netns == NetnsStage` or `Subuid == SubuidFull` (§2's note). The
+rejected alternative started a stage for every run, so that there would be one
+process shape to reason about. It loses because an unconditional stage hands
 every default `snug <dir>` a privileged ancestor user namespace in exchange for
 **no capability at all**.
 
-Consequence, written down rather than discovered: `NeedsStage()` is **not**
-monotone over the `NetnsOwner` lattice — false at the floor, true in the middle,
-false at the top. Raising `NetnsStage → NetnsHost` removes the stage while
-strictly *widening* the grant. That is correct. The lattice orders reachability;
-the stage is a construction detail, not a grant.
+Consequence, written down rather than discovered: `NeedsStage()` is monotone
+over the `NetnsOwner` lattice only because `NetnsStage` is its top. The lattice
+orders reachability and the stage is a construction detail rather than a grant,
+so an owner ABOVE `NetnsStage` would take the stage away while strictly
+*widening* the grant. Check that before adding one.
 
 ### 3.3 No control listener at all
 

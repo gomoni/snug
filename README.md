@@ -140,7 +140,6 @@ $ snug profile dot | dot -Tpng -o profiles.png
 | `@tmp-shared` | A per-project host directory as `/tmp`. Survives the sandbox. |
 | `@net` | Internet access. Host loopback unreachable. |
 | `@net-anon` | As `@net`, but the sandbox gets a synthetic address in both families instead of your host's. |
-| `@net-host` | **Dangerous.** Shares the host network namespace. Needs `--i-know`. |
 | `@claude` | Claude Code: binary and skills read-only, credentials staged as writable copies. |
 | `@podman-socket` | Run containers, via a filtering proxy over a per-sandbox engine. |
 | `@podman-build` | As `@podman-socket`, plus `podman build` with a filtered option set. |
@@ -529,11 +528,15 @@ Your own profiles. snug's line runs between the sandbox and the host: inside is
 hostile by assumption, outside stands you, picking profiles. It does not
 second-guess you.
 
-`rw = ["{home}"]` really does hand over your real `$HOME`. `@net-host` really
-does put the sandbox on the host's network. `environ.set EDITOR =
+`rw = ["{home}"]` really does hand over your real `$HOME`. `environ.set EDITOR =
 "/tmp/upload-everything"` really does give the next `git commit` a program you
 chose. All holes, all on screen in `--dry-run`, all yours. Unix tool, enough
 rope.
+
+What snug does not offer is a command-line flag that hands over everything at
+once. A capability whose only bound is a flag is one that gets used — the flag is
+documented, greppable, and named in the error telling you what to type — so every
+grant is a profile you can read on a screen instead.
 
 What snug owes you is that the screen does not lie. Every grant traces to one
 profile that named it, nothing is visible that no profile granted, and a row

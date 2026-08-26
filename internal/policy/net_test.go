@@ -177,30 +177,9 @@ func TestNetModeJoinsPermissiveWard(t *testing.T) {
 	for _, tc := range []struct{ a, b, want NetMode }{
 		{NetIsolated, NetEgress, NetEgress},
 		{NetEgress, NetIsolated, NetEgress},
-		{NetEgress, NetHost, NetHost},
-		{NetHost, NetIsolated, NetHost},
 	} {
 		if got := tc.a.Join(tc.b); got != tc.want {
 			t.Errorf("%s.Join(%s) = %s, want %s", tc.a, tc.b, got, tc.want)
-		}
-	}
-}
-
-// Host networking must be the ONLY mode that inherits the host netns, and it
-// must be visible in the bwrap argv rather than implied.
-func TestShareNetOnlyForHostMode(t *testing.T) {
-	for _, tc := range []struct {
-		mode NetMode
-		want bool
-	}{
-		{NetIsolated, false},
-		{NetEgress, false},
-		{NetHost, true},
-	} {
-		p := &Policy{Net: NetPolicy{Mode: tc.mode}, Hostname: "snug", Mounts: map[string]Mount{}}
-		got := slices.Contains(p.BwrapFlags(1000, 1000, func(string) int { return 9 }), "--share-net")
-		if got != tc.want {
-			t.Errorf("mode %s: --share-net present = %v, want %v", tc.mode, got, tc.want)
 		}
 	}
 }
@@ -275,7 +254,6 @@ func TestDNSForwardingAgreesWithTheGeneratedResolvConf(t *testing.T) {
 		{"systemd-resolved host", NetPolicy{Mode: NetEgress, DNS: true}},
 		{"anonymised, routable host resolver", NetPolicy{Mode: NetEgress, DNS: true, Nameservers: routable, Address: netip.MustParsePrefix("10.13.13.2/24")}},
 		{"anonymised, systemd-resolved host", NetPolicy{Mode: NetEgress, DNS: true, Address: netip.MustParsePrefix("10.13.13.2/24")}},
-		{"host netns, anonymised too", NetPolicy{Mode: NetHost, DNS: true, Nameservers: routable, Address: netip.MustParsePrefix("10.13.13.2/24")}},
 		{"offline", NetPolicy{Mode: NetIsolated}},
 		{"egress without dns", NetPolicy{Mode: NetEgress, Nameservers: routable}},
 	} {
@@ -295,51 +273,6 @@ func TestDNSForwardingAgreesWithTheGeneratedResolvConf(t *testing.T) {
 					map[bool]string{true: "carries", false: "does not carry"}[forwarding])
 			}
 		})
-	}
-}
-
-// AN ANONYMISING PROFILE MUST NOT BREAK DNS WHERE NO PASTA RUNS.
-//
-// This is a regression this file's own anonymising branch caused, caught in
-// review and measured on both binaries before being fixed: `-p @net-host -p
-// @net-anon --i-know` resolved on main and returned RESOLVE-FAILED with the
-// branch ungated. Mode joins permissive-ward to host, DNS ORs true, Address is
-// set — and pasta runs only in egress mode, so the interception address the
-// branch installs has nothing behind it.
-//
-// "Adding a profile made a capability stop working" is the shape invariant 1
-// exists to keep out of the model. Address has no effect in host mode anyway:
-// there is nothing to anonymise about a sandbox sharing the host's namespace.
-func TestAnonymisingDoesNotBreakDNSWhereNoPastaRuns(t *testing.T) {
-	const hostNS = "192.168.1.1"
-	n := NetPolicy{Mode: NetHost, DNS: true, Nameservers: []string{hostNS}, Address: netip.MustParsePrefix("10.13.13.2/24")}
-
-	rc := string(n.ResolvConf())
-	if strings.Contains(rc, dnsForwardAddr) {
-		t.Errorf("a host-netns sandbox is told to use pasta's interception address, and "+
-			"no pasta runs in host mode, so every lookup inside waits out a timeout:\n%s", rc)
-	}
-	if !strings.Contains(rc, hostNS) {
-		t.Errorf("a host-netns sandbox is not told the resolvers it can actually reach:\n%s", rc)
-	}
-	if n.NeedsDNSForward() {
-		t.Error("NeedsDNSForward() is true in host mode, where there is no pasta to give " +
-			"the flag to")
-	}
-
-	// CONTROL: the same anonymising address in EGRESS mode still intercepts.
-	// Without it, this test passes equally on a build where the anonymising
-	// branch was deleted outright rather than gated — which would reopen
-	// issue #162.
-	e := n
-	e.Mode = NetEgress
-	if !strings.Contains(string(e.ResolvConf()), dnsForwardAddr) {
-		t.Errorf("control: an anonymised EGRESS sandbox no longer intercepts, so the gate "+
-			"above removed the #162 fix rather than scoping it:\n%s", e.ResolvConf())
-	}
-	if strings.Contains(string(e.ResolvConf()), hostNS) {
-		t.Errorf("control: an anonymised EGRESS sandbox names the host resolver again:\n%s",
-			e.ResolvConf())
 	}
 }
 
@@ -447,49 +380,6 @@ func TestNetworkAddressAndGatewayRefuseAForgingRune(t *testing.T) {
 	}
 }
 
-// A SANDBOX SHARING THE HOST'S NETNS IS TOLD THE HOST'S OWN RESOLVERS,
-// LOOPBACK INCLUDED. Issue #164: @net-host runs no pasta, so interception is
-// not available to it, and RoutableNameservers' premise — the sandbox cannot
-// reach host loopback — is exactly false in the one mode where the netns IS
-// the host's. Filtering there left the profile whose purpose is reaching host
-// services unable to resolve anything at all.
-//
-// Naming 127.0.0.53 here discloses strictly less than the namespace this
-// profile has already handed over, which is the argument for doing it.
-func TestHostNetnsUsesTheHostsResolversIncludingLoopback(t *testing.T) {
-	n := NetPolicy{Mode: NetHost, DNS: true, Nameservers: []string{"127.0.0.53", "192.168.1.1"}}
-
-	rc := string(n.ResolvConf())
-	if !strings.Contains(rc, "127.0.0.53") {
-		t.Errorf("a host-netns sandbox is not told the loopback resolver it can actually "+
-			"reach, so DNS does not work in the profile whose point is reaching host "+
-			"services:\n%s", rc)
-	}
-	if strings.Contains(rc, dnsForwardAddr) {
-		t.Errorf("a host-netns sandbox is told to use pasta's interception address, and no "+
-			"pasta runs in this mode:\n%s", rc)
-	}
-	if n.NeedsDNSForward() {
-		t.Error("NeedsDNSForward() is true in host mode, where there is no pasta to give " +
-			"the flag to")
-	}
-
-	// CONTROL: the same host list in EGRESS mode still drops the loopback
-	// entry. Without it this test passes equally on a build where the filter
-	// was deleted rather than scoped — which would put a private-netns sandbox
-	// on an address it cannot reach, the defect the filter exists for.
-	e := n
-	e.Mode = NetEgress
-	erc := string(e.ResolvConf())
-	if strings.Contains(erc, "127.0.0.53") {
-		t.Errorf("control: a PRIVATE-netns sandbox is told to use a loopback resolver, so the "+
-			"filter was removed rather than moved:\n%s", erc)
-	}
-	if !strings.Contains(erc, "192.168.1.1") {
-		t.Errorf("control: the routable resolver did not survive into an egress sandbox:\n%s", erc)
-	}
-}
-
 // NO SANDBOX WITH A PRIVATE NETNS MAY BE TOLD A LOOPBACK RESOLVER. The sweep
 // the renamed test above no longer makes on its own: asserted over the whole
 // state space rather than at one fixture, so the claim covers every mode
@@ -564,5 +454,51 @@ func TestTheDNSForwardDestinationIsNamedAndIncludesLoopback(t *testing.T) {
 	c := NetPolicy{Mode: NetEgress, DNS: true, Nameservers: []string{"192.168.1.1"}}
 	if slices.Contains((&Policy{Net: c}).PastaArgs(PastaTargetChild(1)), "--dns-host") {
 		t.Error("control: --dns-host is passed on a run that does not intercept DNS")
+	}
+}
+
+// TestParseNetModeAcceptsTwoModesAndNothingElse states the accepted set as the
+// WHOLE set.
+//
+// snug has two network modes. The interesting assertion is the closed one — a
+// value the parser has not been taught about fails rather than being read as
+// the nearest thing it resembles, so a profile can never resolve to a sandbox
+// it does not describe (invariant 5).
+//
+// The unknown values below are a sample, not a catalogue: there is no
+// per-spelling arm in the parser to keep them in step with, which is exactly
+// what lets the accepted set be read as the whole set. `EGRESS` is in the list
+// because the match is case-sensitive, and `""` because resolve.go guards
+// `prof.Network != ""` before calling — an unset key never reaches here, so
+// this function refusing it is correct.
+func TestParseNetModeAcceptsTwoModesAndNothingElse(t *testing.T) {
+	for _, tc := range []struct {
+		text string
+		want NetMode
+	}{
+		{"isolated", NetIsolated},
+		{"egress", NetEgress},
+	} {
+		got, err := ParseNetMode(tc.text)
+		if err != nil || got != tc.want {
+			t.Errorf("ParseNetMode(%q) = %v, %v; want %v, nil", tc.text, got, err, tc.want)
+		}
+	}
+
+	for _, text := range []string{"bridge", "slirp4netns", "none", "EGRESS", ""} {
+		got, err := ParseNetMode(text)
+		if err == nil {
+			t.Errorf("ParseNetMode(%q) = %v, nil — an unknown mode must fail rather than "+
+				"resolve as the nearest thing it resembles", text, got)
+			continue
+		}
+		// The message names the accepted set, which is what a reader needs and
+		// the only thing it should name.
+		for _, says := range []string{"isolated", "egress"} {
+			if !strings.Contains(err.Error(), says) {
+				t.Errorf("ParseNetMode(%q) does not name %q as an accepted mode: %v",
+					text, says, err)
+			}
+		}
 	}
 }

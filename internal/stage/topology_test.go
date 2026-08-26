@@ -82,7 +82,7 @@ func TestStartRefusesEveryTopologyFieldItDoesNotImplement(t *testing.T) {
 	}
 
 	t.Run("a netns owner the stage does not own is refused", func(t *testing.T) {
-		for _, owner := range []policy.NetnsOwner{policy.NetnsSandbox, policy.NetnsHost} {
+		for _, owner := range []policy.NetnsOwner{policy.NetnsSandbox} {
 			_, err := Start(Config{Topology: policy.Topology{Netns: owner}})
 			if err == nil {
 				t.Errorf("Start accepted Netns=%s — only the stage topology has a stage", owner)

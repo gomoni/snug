@@ -260,12 +260,11 @@ func writeProfiles(t *testing.T, tomls map[string]string, extraEnv ...string) []
 // failed: both modes still started, and the breakage only showed up when ssh
 // declined to offer an identity to a real server.
 //
-// THE TABLE HAS ONE ROW NOW, and it stays a table for that reason rather than
-// in spite of it: `agent-proxy` is the only mode left that stages anything
-// (`host-agent` was removed — see policy.ParseSSHMode), and the bug this pins
-// is a per-branch one that only reappears when a SECOND mode is added. A row
-// is what the next mode is added to; an inlined single case is what it is
-// added beside.
+// ONE ROW, and it stays a table for that reason rather than in spite of it:
+// `agent-proxy` is the only mode that stages anything, and the bug this pins is
+// per-branch — it can only reappear when a SECOND mode exists. A row is what
+// the next mode gets added to; an inlined single case is what it gets added
+// beside.
 func TestThePinnedPublicKeyIsStagedInEverySSHMode(t *testing.T) {
 	pub, sock := sshAgentAndKey(t)
 	proj, _ := target(t)

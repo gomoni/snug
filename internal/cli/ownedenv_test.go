@@ -158,11 +158,10 @@ func TestResolvedPolicyAuthorsOnlyOwnedNames(t *testing.T) {
 	}
 
 	var sel []policy.ProfileName
-	for name, p := range reg {
-		// @net-host wants the host network namespace and @tmp-shared wants a
-		// host directory the caller allocates; neither adds an env writer, and
-		// both would make this fixture about something else.
-		if p.Network == "host" || name == "@tmp-shared" {
+	for name := range reg {
+		// @tmp-shared wants a host directory the caller allocates; it adds no
+		// env writer and would make this fixture about something else.
+		if name == "@tmp-shared" {
 			continue
 		}
 		sel = append(sel, name)
