@@ -82,10 +82,11 @@ launch() {
 	#
 	#   apparmor=unconfined     docker-default denies mount(2); bwrap mounts
 	#                           inside its own user namespace.
-	#   seccomp=unconfined      nothing in the default profile is known to be
-	#                           needed. It is here so a first failure is not
-	#                           ambiguous between two filters, and it should
-	#                           come OUT once this is reliably green.
+	#   (seccomp=unconfined is GONE. It was here only so a first failure could
+	#   not be ambiguous between two filters, and the job went green on run
+	#   32945827262 — 42 of 33 engine tests, no failures — so it was removed and
+	#   the next run measured whether the default profile is in the way. Do not
+	#   re-add it to make a failure go away without saying which syscall.)
 	#   the unmask flag         docker masks entries under /proc with its own
 	#                           submounts, and the kernel refuses a fresh
 	#                           procfs mount in a userns while the mounter's
@@ -109,7 +110,6 @@ launch() {
 	# shellcheck disable=SC2086 # $unmask is two words on purpose
 	exec "$RUNTIME" run --rm \
 		--security-opt apparmor=unconfined \
-		--security-opt seccomp=unconfined \
 		$unmask \
 		--device /dev/fuse \
 		--device /dev/net/tun \

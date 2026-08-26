@@ -5232,6 +5232,84 @@ structural obstacle as section 17, one door over. The unit test
 and is where the run-vs-screen equivalence for this exact refusal is actually
 proven.
 
+## 19. The engine tier really runs, on a machine that is not this one (issue #395)
+
+Every CI job before this one ran on `ubuntu-latest`, which has no engine snug
+will accept, so all the engine tests SKIPped and the suite was green having
+measured nothing. This section is the by-hand half: it runs the same container
+the `engine` job runs, on your own machine.
+
+```console
+$ make integration-engine
+```
+
+Needs `docker` or `podman` and a host where
+`kernel.apparmor_restrict_unprivileged_userns` is 0 — the script refuses in one
+second, naming the sysctl, rather than letting bwrap fail twenty tests later. It
+launches `registry.opensuse.org/opensuse/tumbleweed:latest`, installs podman
+6.x, and runs the suite as a NON-ROOT user with a delegated subuid range. There
+is no root run and no `--privileged`.
+
+Expect, near the end:
+
+```
+engine tests: 42 of 33 ran — podman version 6.0.2 at /usr/bin/podman
+```
+
+The number is a FLOOR, not an equality (`SNUG_ENGINE_FLOOR`). 42 there against
+33 on a development host is the mechanism working: more tests reach the marker
+where the engine runs fully than on a host that cannot start a container at all.
+What must never appear is a low count with a green exit — that is the defect this
+whole section exists to make impossible, and `SNUG_REQUIRE_ENGINE=1` plus the
+floor is what makes the run FAIL instead:
+
+```
+engine tests: 0 of 33 ran — podman version 6.0.2 at /bin/podman
+ERROR: SNUG_REQUIRE_ENGINE is set and only 0/33 engine tests ran.
+```
+
+`snug doctor` runs first inside the container, and on a correctly-set-up host
+prints (MEASURED, run 32945827262):
+
+```
+🩺 snug doctor
+
+  ✅ bubblewrap 0.11.2
+  ✅ unprivileged user namespaces work
+  ✅ private network namespace — loopback only
+  ✅ the stage starts — clone, uid map, loopback, and the netns move
+  ✅ pasta 20260612.a9c61ff-1.3
+  ✅ podman client is usable inside a sandbox
+  ✅ podman's helper binaries are all findable
+  ✅ TIOCSTI disabled kernel-wide — job control works inside the sandbox
+  📦 running inside a docker container — supported
+  ✅ profiles load cleanly
+
+🎉 This host can run snug.
+```
+
+Timing, same run: 5m04s for the whole job, of which the suite is 220.370s. The
+fixed cost underneath is small — image pull 11s, zypper ~20s, setup-go 9s,
+`make build` 12s — which is why no image caching is used.
+
+### 19a. What doctor says when the host is wrong, and why each line is its own
+
+Four host conditions that all used to read as "cannot create a user namespace",
+each now naming its own fix. Reproduce whichever your machine allows:
+
+| condition | doctor says |
+|---|---|
+| `kernel.apparmor_restrict_unprivileged_userns=1` | `user namespaces work, but the sandbox's own network namespace does not` — the namespace IS created and the operations inside it are then denied |
+| a container masking `/proc` | `user namespaces work, but /proc cannot be mounted inside one`, naming `--security-opt systempaths=unconfined` / `unmask=/proc` |
+| no `/dev/net/tun` | `/dev/net/tun is not usable — \`-p @net\` will fail after the sandbox starts`, naming `--device /dev/net/tun` and `modprobe tun` |
+| `runc` present, `crun` absent, cgroups disabled | `podman helper binaries not found: crun (runc is present, and cannot run with cgroups disabled on this host)` |
+
+The last one is the sharpest: doctor used to print `✅ podman's helper binaries
+are all findable` on that host, and every container create then returned
+`500 … requested OCI runtime runc is not compatible with NoCgroups`. A green
+tick in front of a run that cannot work is the one output this command must
+never produce.
+
 ## If a check fails
 
 1. Re-run it with `--dry-run` and compare what snug *claimed* against what you

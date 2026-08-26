@@ -267,6 +267,12 @@ SNUG_SIGNAL_TESTS = TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox|TestA
 # SNUG_REQUIRE_SANDBOX=1 with no working engine promised anywhere in that
 # environment. This is #395's seam — set SNUG_REQUIRE_ENGINE=1 once a lane
 # can promise 32/32, and not before.
+# SECOND MEASUREMENT, and it is why this stays a FLOOR rather than an equality:
+# the Tumbleweed CI container reports 42 distinct tests (run 32945827262, green,
+# `engine tests: 42 of 33 ran`) against this host's 33. More tests reach the
+# marker where the engine works fully than on a host that cannot start a
+# container — the create-only class in the #406 note is not forced there. 42
+# passing a floor of 33 is the mechanism working, not a number to chase.
 SNUG_ENGINE_FLOOR = 33
 
 # The per-SUITE bound, and it is a VARIABLE because the same target runs in two
