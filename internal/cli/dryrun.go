@@ -1088,6 +1088,15 @@ func describeContainers(out io.Writer, p *policy.Policy, c *reportContainers) {
 	fmt.Fprintf(out, "         sandbox's view rather than being a copy of the host tree, so the\n")
 	fmt.Fprintf(out, "         filter now refuses by name what the namespace does not contain\n")
 	fmt.Fprintf(out, "         anyway (see the TOPOLOGY and ENGINE VIEW blocks).\n")
+	// A STATEMENT OF POLICY, never a probe result. This screen deliberately
+	// runs no host probes (see this file's own note on why a screen probing
+	// SOME of preflight is worse than one probing none), so it says what the
+	// run WILL do about a host it has not measured — which is what makes the
+	// line host-independent and the goldens stable.
+	fmt.Fprintf(out, "         Where this host's cgroup delegation is unusable, containers run with\n")
+	fmt.Fprintf(out, "         cgroups disabled, and only crun implements that mode: the run REFUSES\n")
+	fmt.Fprintf(out, "         before starting the engine if crun is absent, rather than serving a\n")
+	fmt.Fprintf(out, "         container API that fails at 'create'.\n")
 	describeImageProvenance(out, c)
 }
 

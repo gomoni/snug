@@ -93,7 +93,12 @@ func engineSpecEnvWithSignaturePolicy(t *testing.T, hostPolicy string) ([]string
 	if err != nil {
 		t.Fatalf("projecting the planted host signature policy: %v", err)
 	}
-	spec, err := e.Spec(pol, hostEngine(t), []string{"PATH=/usr/bin:/bin"}, true, sig)
+	// "crun" is the only value Spec is ever handed alongside cgroupsDisabled
+	// = true: P10 (preflightOCIRuntime) returns exactly that pair, and where
+	// crun is absent it REFUSES rather than reaching Spec at all. Passing a
+	// resolved-from-PATH runtime here would let this fixture construct a
+	// combination the production path cannot produce.
+	spec, err := e.Spec(pol, hostEngine(t), []string{"PATH=/usr/bin:/bin"}, true, "crun", sig)
 	if err != nil {
 		t.Fatal(err)
 	}

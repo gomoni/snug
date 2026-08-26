@@ -40,6 +40,10 @@ CONTAINERS  a per-sandbox engine behind a filtering proxy at /snug/podman.sock
          sandbox's view rather than being a copy of the host tree, so the
          filter now refuses by name what the namespace does not contain
          anyway (see the TOPOLOGY and ENGINE VIEW blocks).
+         Where this host's cgroup delegation is unusable, containers run with
+         cgroups disabled, and only crun implements that mode: the run REFUSES
+         before starting the engine if crun is absent, rather than serving a
+         container API that fails at 'create'.
 IMAGES   provenance is snug's, not this host's (issue #137)
          search      docker.io and nothing else — no mirror, no rewrite, no
                      insecure registry. A generated registries.conf, pointed
