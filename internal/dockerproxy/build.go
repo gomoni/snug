@@ -962,6 +962,23 @@ func checkAdditionalContexts(p *Proxy, v string) (string, error) {
 	return string(out), nil
 }
 
+// noNetnsOfItsOwn is the one clause both wire protocols state, and the one that
+// stops being true if the NET_ADMIN decision is ever reversed
+// (policy.EngineCapBounding, maintainer decision 2026-08-18, pinned by
+// TestEngineCapBoundingExcludesTheStandingGate) — so it is written here once
+// and cited from create.go rather than copied into it.
+//
+// What is NOT shared is the judgement: build's accepted set includes buildah's
+// numeric enum ("0"/"1"/"2") and create's does not, because on create those are
+// network NAMES. Sharing the whole check would need a which-wire flag, and a
+// policy function with a mode flag is two functions with one bug surface. The
+// invariant-6 guarantee comes from a test over both sites
+// (TestBuildAndCreateRefuseTheSameNetworkWords), not from shared code.
+const noNetnsOfItsOwn = "it asks for a network namespace of its own, and the engine holds no " +
+	"CAP_NET_ADMIN to configure one (a deliberate limit — a compromised engine must not be " +
+	"able to reconfigure this sandbox's network). Inside this sandbox `host` does NOT mean " +
+	"the machine's network: the engine runs in THIS sandbox's own network namespace"
+
 // checkNetworkMode refuses a build step a network namespace of its own
 // (issue #401), which since the containers.conf pin (engine.go's
 // writeContainersConf) is the only network mode this tier's engine can

@@ -557,3 +557,156 @@ func mustHostConfig(t *testing.T, eng *fakeEngine) string {
 	}
 	return string(fwd["HostConfig"])
 }
+
+// TestCreateRefusesANetworkNamespaceOfItsOwn is issue #424's third bullet.
+// create's value axis for NetworkMode was a DENYLIST over
+// host/container:/ns:, so bridge, private, pasta and slirp4netns were
+// FORWARDED and closed only by the engine failing at `netavark: Netlink error:
+// Operation not permitted`. That left the guarantee --dry-run prints — "a
+// container has the sandbox's own network" — resting on the engine's cap count
+// rather than on a refusal snug owns.
+//
+// The load-bearing assertion is that the engine is NOT REACHED: the
+// pre-change behaviour was a 200 and a forward, so a test that only checked
+// the status code would have passed against the old denylist for the wrong
+// reason on any value the engine happened to reject.
+func TestCreateRefusesANetworkNamespaceOfItsOwn(t *testing.T) {
+	for _, mode := range []string{
+		"bridge", "private", "slirp4netns", "pasta",
+		// Numbers are buildah's enum on the BUILD query only; on create,
+		// HostConfig.NetworkMode is docker's namespace-spec string, so these
+		// are networks NAMED 0/1/2.
+		"0", "1", "2",
+		"podman", "myproject_default", "some-future-mode",
+		// Case and whitespace, which norm folds before the arms run.
+		"Bridge", " bridge ",
+	} {
+		t.Run(mode, func(t *testing.T) {
+			sock, eng, _ := startProxy(t)
+			body := `{"HostConfig":{"NetworkMode":` + quoteJSON(mode) + `}}`
+			refuse(t, sock, eng, "/v1.41/containers/create", body, "CAP_NET_ADMIN")
+		})
+	}
+}
+
+// TestCreateStillAcceptsTheNetworkModesThatWork is the half that keeps the
+// change from being a compatibility break. "default" is what a stock docker
+// sends with no --network flag at all (testdata/docker-run-create-body.json),
+// so a refusal catching it would refuse every ordinary `docker run`.
+//
+// "none" is the DOCUMENTED DIVERGENCE from build's set, and it is a decision
+// rather than an omission: it needs no netlink if nobody brings `lo` up, and
+// nobody has measured it on the create path since the NET_ADMIN decision. It
+// is an unmeasured accept, and this row is where that is recorded.
+func TestCreateStillAcceptsTheNetworkModesThatWork(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"absent", `{"HostConfig":{}}`},
+		{"empty", `{"HostConfig":{"NetworkMode":""}}`},
+		{"default", `{"HostConfig":{"NetworkMode":"default"}}`},
+		{"host joins N", `{"HostConfig":{"NetworkMode":"host"}}`},
+		{"HOST folded", `{"HostConfig":{"NetworkMode":"HOST"}}`},
+		{"host padded", `{"HostConfig":{"NetworkMode":" host "}}`},
+		{"none, the unmeasured accept", `{"HostConfig":{"NetworkMode":"none"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sock, eng, _ := startProxy(t)
+			before := eng.reached.Load()
+			code, resp := post(t, sock, "/v1.41/containers/create", tc.body)
+			if code == http.StatusForbidden {
+				t.Fatalf("a NetworkMode that works today was refused: %s", denyMessage(resp))
+			}
+			if eng.reached.Load() == before {
+				t.Fatal("the create never reached the engine")
+			}
+		})
+	}
+}
+
+// TestTheOtherNamespaceKeysKeepTheirDenylist is the test that catches an
+// implementer applying NetworkMode's word set to all six keys. Every value
+// below is LEGAL for its own key — "private" is PidMode's and CgroupnsMode's
+// default, "none" and "shareable" are IpcMode values, "keep-id"/"nomap"/"auto"
+// are UsernsMode values — so refusing them would break working requests.
+// "none" carrying two unrelated meanings across two keys is the whole reason
+// the allowlist is scoped to one key.
+func TestTheOtherNamespaceKeysKeepTheirDenylist(t *testing.T) {
+	for _, tc := range []struct{ key, value string }{
+		{"PidMode", "private"},
+		{"IpcMode", "shareable"},
+		{"IpcMode", "none"},
+		{"IpcMode", "private"},
+		{"UTSMode", "private"},
+		{"CgroupnsMode", "private"},
+		{"UsernsMode", "keep-id"},
+		{"UsernsMode", "nomap"},
+		{"UsernsMode", "auto"},
+	} {
+		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
+			sock, eng, _ := startProxy(t)
+			before := eng.reached.Load()
+			body := `{"HostConfig":{"` + tc.key + `":` + quoteJSON(tc.value) + `}}`
+			code, resp := post(t, sock, "/v1.41/containers/create", body)
+			if code == http.StatusForbidden {
+				t.Fatalf("%s=%q is a legal value for that key and was refused — NetworkMode's "+
+					"word set has been applied to a key it does not belong to: %s",
+					tc.key, tc.value, denyMessage(resp))
+			}
+			if eng.reached.Load() == before {
+				t.Fatal("the create never reached the engine")
+			}
+		})
+	}
+}
+
+// TestBuildAndCreateRefuseTheSameNetworkWords is the invariant-6 guarantee for
+// this pair, and it is a TEST rather than shared code on purpose: the two
+// accepted sets genuinely differ (build takes buildah's "0"/"1"/"2", create
+// does not), and checkNetworkMode must return its value UNCHANGED on the
+// accept path for filterBuildQuery's rewrite bookkeeping, which create's
+// p.deny site has no equivalent of.
+//
+// The `none` row is the one documented divergence and carries its reason
+// inline, so changing either side forces someone to read why.
+func TestBuildAndCreateRefuseTheSameNetworkWords(t *testing.T) {
+	for _, word := range []string{"bridge", "private", "slirp4netns", "pasta"} {
+		t.Run(word, func(t *testing.T) {
+			if _, err := checkNetworkMode(nil, word); err == nil {
+				t.Errorf("build accepts %q", word)
+			}
+			sock, eng, _ := startProxy(t)
+			refuse(t, sock, eng, "/v1.41/containers/create",
+				`{"HostConfig":{"NetworkMode":`+quoteJSON(word)+`}}`, "CAP_NET_ADMIN")
+		})
+	}
+
+	t.Run("none: build refuses, create accepts, and that is deliberate", func(t *testing.T) {
+		if _, err := checkNetworkMode(nil, "none"); err == nil {
+			t.Error("build now accepts \"none\"; if that is intended, this divergence row is " +
+				"stale and the two sides have converged")
+		}
+		sock, eng, _ := startProxy(t)
+		before := eng.reached.Load()
+		code, resp := post(t, sock, "/v1.41/containers/create",
+			`{"HostConfig":{"NetworkMode":"none"}}`)
+		if code == http.StatusForbidden {
+			t.Fatalf("create refuses \"none\". It is an UNMEASURED ACCEPT on this path, not an "+
+				"oversight: it needs no netlink if nobody brings lo up, and refusing it would "+
+				"remove an isolation-INCREASING option while printing a reason (no "+
+				"CAP_NET_ADMIN) that would not be why it failed. Measure it before changing "+
+				"this: %s", denyMessage(resp))
+		}
+		if eng.reached.Load() == before {
+			t.Fatal("the create never reached the engine")
+		}
+	})
+}
+
+// quoteJSON renders one JSON string, so a table value carrying a space or a
+// capital cannot be pasted into a body unquoted.
+func quoteJSON(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}

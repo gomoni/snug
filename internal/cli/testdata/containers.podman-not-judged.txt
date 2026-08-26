@@ -21,10 +21,14 @@ CONTAINERS  a per-sandbox engine behind a filtering proxy at /snug/podman.sock
          '@net', a container has no egress either; with '@net', full egress
          via the sandbox's pasta, exactly as the NETWORK block above states.
          A container has the sandbox's own network with NO port mapping:
-         'podman run -p N:80' is not supported — the engine holds no
+         'docker run -p N:80' is not supported — the engine holds no
          CAP_NET_ADMIN, so it cannot reconfigure this namespace to publish one.
+         A container may not ask for a network namespace of its own:
+         'docker run --network=bridge', a named network, 'pasta' and
+         'slirp4netns' are refused at the proxy, for the same reason.
+         '--network=none' is allowed and gets an empty one.
          A container gets its own pid namespace and may not join another:
-         'podman run --pid=host' is refused. Inside the sandbox 'host' would
+         'docker run --pid=host' is refused. Inside the sandbox 'host' would
          mean the ENGINE, and /proc/<pid>/root in a shared pid namespace
          reaches that process's entire filesystem view.
          A container may mount only a path the sandbox can already see,
