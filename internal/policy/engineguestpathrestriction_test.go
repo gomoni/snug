@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/gomoni/snug/test/modroot"
 )
 
 // engineGuestPathCallRE matches a call to the EXPORTED (*Policy).EngineGuestPath
@@ -38,20 +40,23 @@ var engineGuestPathCallRE = regexp.MustCompile(`\.EngineGuestPath\(`)
 // internal/engine is that mistake being made again.
 //
 // Modelled on the sweep skeleton in dockerproxy/hostpathauthor_test.go and
-// norestriction_test.go's sweepModule (this package): moduleRoot found by
+// norestriction_test.go's sweepModule (this package): modroot.Find found by
 // walking UP to go.mod (issue #291 part 1b — a hardcoded subroot silently
 // skips cmd/snug), dotted directories and vendor skipped, and the WALK itself
 // gets a positive control — the directories it actually visited — because a
 // sweep that silently walked nothing would report "one caller" for the wrong
 // reason.
 func TestEngineGuestPathIsAskedOnlyByTheEngineWiring(t *testing.T) {
-	root := moduleRoot(t)
+	root, err := modroot.Find()
+	if err != nil {
+		t.Fatal(err)
+	}
 	visited := map[string]bool{}
 	// hits maps a module-root-relative directory to whether it contains a
 	// call. internal/engine is the one allowed to.
 	hits := map[string][]string{} // dir -> files (relative) with a call
 
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		// A source sweep walks a tree other packages' tests may be writing
 		// in concurrently. An entry that vanished between its parent's
 		// ReadDir and this call is not a source file and is not this

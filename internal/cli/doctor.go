@@ -445,6 +445,9 @@ const tunClonePath = "/dev/net/tun"
 // root, and a check with an untested failure branch is how the wrong message
 // ships.
 func tunDeviceUsable(dev string) (string, bool) {
+	// HOSTREAD-EXEMPT: dev is tunClonePath, the "/dev/net/tun" const above,
+	// made a parameter only so the failing branch is testable without root
+	// (doctortun_test.go passes a missing path and /dev/null).
 	f, err := os.OpenFile(dev, os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Sprintf("%v", err), false
@@ -576,6 +579,9 @@ func classifyUsernsRefusal(sysctlsPermissive, seccompFiltered bool) bwrapBlocker
 // distribution.
 func usernsSysctlsPermissive() bool {
 	readInt := func(path string, absent int) int {
+		// HOSTREAD-EXEMPT: every call below passes a /proc/sys literal; the
+		// parameter exists to give the three of them one
+		// absent-is-permissive rule rather than three copies.
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return absent

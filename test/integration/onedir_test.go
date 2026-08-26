@@ -56,8 +56,9 @@ func TestOneLiveSandboxPerDirectory(t *testing.T) {
 	// A private runtime directory shared by every snug in this test, so they
 	// contend on the same per-target lock and never on the developer's real
 	// $XDG_RUNTIME_DIR. os/exec keeps the last duplicate, so this wins over the
-	// inherited one in baseEnv.
-	runtimeDir := t.TempDir()
+	// inherited one in baseEnv. shortRuntimeDir, not t.TempDir() (this file's
+	// other test has its own comment on why).
+	runtimeDir := shortRuntimeDir(t)
 	env := baseEnv("XDG_RUNTIME_DIR=" + runtimeDir)
 
 	dirA := t.TempDir()
@@ -150,8 +151,11 @@ func TestOneLiveSandboxPerDirectoryHoldsAcrossXDGRuntimeDir(t *testing.T) {
 
 	dir := t.TempDir()
 
-	// Holder: $XDG_RUNTIME_DIR SET (interactive-shell shape).
-	holderEnv := baseEnv("XDG_RUNTIME_DIR=" + t.TempDir())
+	// Holder: $XDG_RUNTIME_DIR SET (interactive-shell shape). shortRuntimeDir,
+	// not t.TempDir(): every $XDG_RUNTIME_DIR built in this suite is short-
+	// rooted uniformly (attachEnv's own comment), not case by case on whether
+	// this particular run happens to bind a proxy socket under it.
+	holderEnv := baseEnv("XDG_RUNTIME_DIR=" + shortRuntimeDir(t))
 	// Contender: $XDG_RUNTIME_DIR ABSENT (cron/ssh shape). baseEnv carries the
 	// developer's real value via os.Environ(); strip it so the two runs genuinely
 	// disagree on the mutable base the bug depended on.

@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/gomoni/snug/test/modroot"
 )
 
 // TestHostPathVisibleHasOneAuthor is §7 item 13 of issue #55's specification:
@@ -101,14 +103,17 @@ var hostPathVisibleCallRE = regexp.MustCompile(`\.HostPathVisible\(`)
 // that inventory honest: it fails the moment a caller appears that the doc
 // comment does not know about.
 func TestHostPathVisibleCallersAreInventoried(t *testing.T) {
-	// moduleRoot, not filepath.Join("..", "..", "internal"): a hardcoded
+	// modroot.Find, not filepath.Join("..", "..", "internal"): a hardcoded
 	// subroot makes the walk a subdirectory of the module, so a caller in
 	// cmd/snug ships green (issue #291 part 1b). visited below asserts the
 	// walk really reached outside internal/.
-	root := moduleRoot(t)
+	root, err := modroot.Find()
+	if err != nil {
+		t.Fatal(err)
+	}
 	visited := map[string]bool{}
 	hits := map[string]bool{}
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		// A source sweep walks a tree other packages' tests are writing in. An entry
 		// that vanished between its parent's ReadDir and this call is not a source
 		// file and is not this sweep's business: skipping it keeps a failure in
@@ -313,29 +318,5 @@ func TestResolveExistingHasOneAuthor(t *testing.T) {
 	if !evalSymlinksLoopRE.MatchString(oldShape) {
 		t.Fatalf("control: evalSymlinksLoopRE does not match the pre-#55 shape of resolveExisting's " +
 			"own loop — it would not catch a reintroduced copy either")
-	}
-}
-
-// moduleRoot finds the directory holding go.mod by walking UP, never by
-// counting ".." segments: a hardcoded subroot made this sweep walk a
-// subdirectory of the module and miss cmd/snug entirely (issue #291 part 1b).
-// internal/policy and test/guard each carry the same twelve lines, because Go
-// has no way to share a test helper across packages without a non-test package
-// to put it in.
-func moduleRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := filepath.Abs(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("no go.mod above the test's working directory")
-		}
-		dir = parent
 	}
 }

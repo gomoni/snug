@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/gomoni/snug/test/modroot"
 )
 
 // TestEngineToolchainAdmitsExactlyItselfAndOnlyReadOnly is G4's third source
@@ -154,14 +156,17 @@ func TestEngineToolchainRunsTheSameHygieneAsTheOtherG4Source(t *testing.T) {
 var engineToolchainWriteRE = regexp.MustCompile(`\.EngineToolchainRoot\s*=`)
 
 func TestOnlyOneWriterOfEngineToolchainRoot(t *testing.T) {
-	// moduleRoot, not filepath.Join("..", "..", "internal"): a hardcoded
+	// modroot.Find, not filepath.Join("..", "..", "internal"): a hardcoded
 	// subroot makes the walk a subdirectory of the module, so a writer in
 	// cmd/snug ships green (issue #291 part 1b). visited below asserts the
 	// walk really reached outside internal/.
-	root := moduleRoot(t)
+	root, err := modroot.Find()
+	if err != nil {
+		t.Fatal(err)
+	}
 	visited := map[string]bool{}
 	var hits []string
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		// A source sweep walks a tree other packages' tests are writing in. An entry
 		// that vanished between its parent's ReadDir and this call is not a source
 		// file and is not this sweep's business: skipping it keeps a failure in
