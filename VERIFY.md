@@ -1140,17 +1140,16 @@ Expect a refusal naming `ghost-plugin-xyz` and listing the installed plugins,
 and the payload does NOT run — a plugin the run asked for and did not get is an
 error, not a silent omission.
 
-**The checks above assert what snug WRITES. What the real `claude` binary DOES
-with it** — a plugin absent from the regenerated manifest does not fire its
-`SessionStart` hook, one present does — is asserted by
-`TestManifestGatesPluginHookFiring` (host-level, `-tags integration`), not by
-hand here: firing needs a real `claude` session, and on claude 2.1.238 it needs
-BOTH the manifest entry AND `enabledPlugins` in `settings.json`. That second
-gate is why the assertion is host-level and not run inside a sandbox — snug's
-own `settings.json` filter drops `enabledPlugins`, so inside `@claude` nothing
-fires and no positive control could exist there. Run it with
-`go test -tags integration -run TestManifestGatesPluginHookFiring ./test/integration/`;
-it skips where `claude` is absent.
+**The checks above assert what snug WRITES, and that is the whole of what this
+repository asserts.** What the real `claude` binary DOES with the regenerated
+manifest — a plugin absent from it does not fire its `SessionStart` hook, one
+present does — was MEASURED on claude 2.1.238 and is recorded in
+`.claude/design/CLAUDE-SETTINGS.md`; no test drives it. Observing it needs the
+proprietary binary, which no distribution ships, and every other third-party
+program this suite runs (`bwrap`, `podman`, `crun`, `git`, `ssh`, `python3`,
+`pasta`) is packaged. So the gate on the binary's side carries a version number
+and no ratchet: `enabledPlugins` already moved from `~/.claude.json` to
+`settings.json` once, and a move like it would not turn anything here red.
 
 ### 6g-ter. The target's own `.claude/settings.json` is reinterpreted read-only where it exists (issue #73)
 

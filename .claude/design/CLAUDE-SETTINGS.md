@@ -660,8 +660,7 @@ section first named.
 **Measured on claude 2.1.238, 2026-08-21.** A plugin's
 `SessionStart` hook fires only when it is BOTH named in
 `installed_plugins.json` AND enabled in `settings.json`'s `enabledPlugins` — two
-AND-gates, measured with a two-plugin fixture driven headless
-(`TestManifestGatesPluginHookFiring`, whose three rows are that matrix). The
+AND-gates, measured with a two-plugin fixture driven headless. The
 imprecision is itself the
 lesson this file keeps recording: `enabledPlugins` moved from `~/.claude.json`
 to `settings.json` between versions, so a sentence about a third party's binary
@@ -702,13 +701,14 @@ channel), and it must not become a fourth by overclaiming:
 > snug regenerates `installed_plugins.json` to name only the allowlisted
 > plugins. Unit tests assert the MANIFEST snug WRITES
 > (`TestFilterKeepsExactlyTheAllowlistedPlugins`, the staged-set tests, VERIFY
-> 6g-bis by hand), and `TestManifestGatesPluginHookFiring` asserts what the real
-> `claude` binary DOES with it: a plugin enabled in `settings.json` but absent
-> from the regenerated manifest does not fire its `SessionStart` hook, while one
-> present in the manifest does (the positive control). That test covers the
-> **manifest gate** on the binary; it does NOT exercise the sandbox MOUNT that
-> delivers the file inside a run (that is `claudestagedset_test.go` and the
-> in-sandbox inventory test).
+> 6g-bis by hand). What the real `claude` binary DOES with it is MEASURED above
+> and not asserted by anything: a plugin enabled in `settings.json` but absent
+> from the regenerated manifest did not fire its `SessionStart` hook on 2.1.238,
+> while one present in the manifest did. Observing that needs the proprietary
+> binary, which is in no distribution, so this repository does not test it and
+> a version bump can move it silently. Nothing here exercises the sandbox MOUNT
+> that delivers the file inside a run either (that is `claudestagedset_test.go`
+> and the in-sandbox inventory test).
 
 **The live assertion is host-level, and cannot be otherwise on 2.1.238** — worth
 one line so nobody tries to move it. Inside `@claude` the `settings.json` filter
