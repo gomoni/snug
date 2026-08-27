@@ -206,8 +206,8 @@ func hostEngine(t *testing.T) string {
 		}
 		versionOnce.Do(func() {
 			// The reason rides on the SAME marker line the Makefile already
-			// greps, so its "N of 33 ran — <version>" summary carries it with
-			// no second marker to teach that recipe about.
+			// greps, so its "N ran, floor M — <version>" summary carries it
+			// with no second marker to teach that recipe about.
 			t.Logf("snug-engine-version: %s at %s [UNSUPPORTED: %s]", r.versionLine, r.path, r.unsupported)
 		})
 		t.Skip(unsupportedEngineSkipReason(r))

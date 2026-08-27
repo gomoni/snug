@@ -206,11 +206,15 @@ provision() {
 	install -d -m 0700 -o snug -g users "/run/user/$SNUG_ENGINE_UID"
 	chown snug: /enginestore
 
-	# SNUG_ENGINE_FLOOR is 42 HERE and 33 on a development host: this container
-	# can actually start containers, so more tests reach the marker. MEASURED at
-	# 42 on two independent green runs (32945338390, 32945827262). The point of
-	# raising it is that CI silently losing nine engine tests would otherwise
-	# still clear a floor of 33.
+	# SNUG_ENGINE_FLOOR is 42 HERE, MEASURED on two independent green runs
+	# (32945338390, 32945827262). It is the whole point of the variable that the
+	# number is per environment: CI silently losing nine engine tests must not
+	# still clear the floor.
+	#
+	# 42 is now BELOW the Makefile default (46, this host with podman 6.0.2) and
+	# has not been re-measured against the commit points issue #458 added, so it
+	# understates what this container reaches. Raise it from a green run's own
+	# count, never from the other environment's number.
 	#
 	# SNUG_SANDBOX_TIMEOUT raises the per-suite `go test -timeout` from the 8m
 	# that fits a runner where the engine tier skips. With the tier really

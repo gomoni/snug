@@ -243,6 +243,12 @@ func TestTheEngineResolvesNoHostRegistryCredential(t *testing.T) {
 		t.Skipf("SKIP: the control did not resolve the planted credential, so this podman does "+
 			"not read ~/.docker/config.json at all and there is nothing to regress: %s", control)
 	}
+	// COMMIT POINT for the run-count floor (issue #393 §4), same place and same
+	// reason as TestTheEngineReadsItsOwnRegistriesConf's: past this Skipf the
+	// control has proved this podman really resolves the planted credential, so
+	// issue #142's regression is about to be exercised. Without this line the
+	// floor cannot see this test go inert (issue #458).
+	markEngineRan(t, hostEngine(t))
 
 	got := runPodman(t, env, storeArgs(eng, "login", "--get-login", registry)...)
 	if strings.Contains(got, user) {
@@ -571,6 +577,13 @@ func TestTheEngineEnforcesTheProjectedSignaturePolicy(t *testing.T) {
 		t.Skipf("SKIP: this host cannot reach the registry, and podman evaluates the policy "+
 			"only after initializing the source, so there is nothing to observe:\n%s", got)
 	}
+	// COMMIT POINT for the run-count floor (issue #393 §4). It is AFTER the
+	// reachedNoRegistry skip and not at the top: the pull above may die on the
+	// network, in which case nothing was graded and the floor must not count
+	// this test. Past it, podman got as far as evaluating the policy, so issue
+	// #307's assertion is live. Without this line the floor cannot see this
+	// test go inert (issue #458).
+	markEngineRan(t, hostEngine(t))
 	if !strings.Contains(got, rejected) {
 		t.Errorf("a host policy of {\"default\":[{\"type\":\"reject\"}]} was projected and the "+
 			"pull was NOT refused for a signature-policy reason. The engine is enforcing "+
