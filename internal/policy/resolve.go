@@ -153,6 +153,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	var identityOwner, gitOwner ProfileName
 	var addressOwner, gatewayOwner, address6Owner, gateway6Owner, mtuOwner ProfileName
 	publish := map[int]bool{}
+	var publishOwners []ProfileName
 	pluginAllow := map[string]bool{}
 	// Environment claims are ACCUMULATED here and resolved after the fold — see
 	// envresolve.go for why deciding during the fold cannot name every claimant.
@@ -338,6 +339,12 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		for _, port := range prof.Publish {
 			publish[port] = true
 		}
+		// Which profiles asked, so the refusal below can name a line to change
+		// rather than just a missing capability. Appended in the sorted fold
+		// order, so the message is the same however the selection was written.
+		if len(prof.Publish) > 0 {
+			publishOwners = append(publishOwners, name)
+		}
 
 		// Plugins: a SET unioned across profiles, same reasoning as Publish —
 		// two profiles naming "caveman" must resolve to one, not two, and the
@@ -459,6 +466,18 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		"address6": address6Owner, "gateway6": gateway6Owner,
 	}); err != nil {
 		return nil, err
+	}
+
+	// `publish` without egress was a SILENT no-op, and the two audit surfaces
+	// disagreed about it: pasta is the only thing that forwards a port and it
+	// runs only under NetEgress, so nothing was published — while
+	// `--dry-run --json` reported `"egress": false` and `"publish": [8090]` in
+	// one document, `--dry-run`'s isolated arm printed no publish line at all,
+	// and `snug show` rendered the capability with its consequence sentence
+	// regardless. A human who asked for a forward got nothing and the document
+	// they audit did not say so: invariant 5.
+	if len(publish) > 0 && p.Net.Mode != NetEgress {
+		return nil, publishWithoutEgressError(p.Net.Publish, publishOwners)
 	}
 
 	// 3b. If podman resolves to a host-escape shim on this host AND a podman

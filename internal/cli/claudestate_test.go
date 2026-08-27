@@ -631,3 +631,72 @@ func TestClaudeGuidanceDoesNotClaimSiblingProjectsAreAbsent(t *testing.T) {
 		}
 	})
 }
+
+// ── the network paragraph is derived, and the publish arm ENUMERATES ───────
+//
+// `publish` is a named SET, so "Ports you bind ARE visible to the host on its
+// 127.0.0.1" was false for every port outside it: with publish = [8090], port
+// 3000 is forwarded by nothing, and an agent reading the unqualified sentence
+// tells the human to open it. No test named the string anywhere in the tree,
+// which is how it survived in the file whose own header says it describes what
+// is actually true — the same shape as the sibling-directory claim above.
+//
+// BOTH arms are asserted for the reason that test gives: one arm alone passes on
+// a paragraph that was simply deleted.
+
+func TestClaudeGuidancePublishArmNamesTheActualPorts(t *testing.T) {
+	pol := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@claude", "@net"})
+	pol.Net.Publish = []int{8090, 8099}
+	got := string(claudeGuidance(pol))
+
+	for _, want := range []string{"8090", "8099"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the guidance says ports are forwarded but never names %s, so an agent "+
+				"cannot tell which ones:\n%s", want, got)
+		}
+	}
+	// The unqualified claim must be gone, not merely supplemented: an agent that
+	// reads it stops there.
+	if strings.Contains(got, "Ports you bind ARE visible") {
+		t.Errorf("the unqualified sentence is still present, so the enumeration below it is "+
+			"advice the agent has already been told it does not need:\n%s", got)
+	}
+	// And the guidance must say the OTHER ports are not forwarded, or an agent
+	// reads the list as an example rather than as the whole set.
+	if !strings.Contains(got, "not in that list") {
+		t.Errorf("the guidance enumerates the forwarded ports but does not say a port outside "+
+			"the list reaches nothing, so the list reads as illustrative:\n%s", got)
+	}
+}
+
+func TestClaudeGuidanceNetworkPostureIsDerived(t *testing.T) {
+	sel := []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@claude", "@net"}
+
+	withPublish := resolveFor(t, sel)
+	withPublish.Net.Publish = []int{8090}
+	published := string(claudeGuidance(withPublish))
+
+	none := string(claudeGuidance(resolveFor(t, sel)))
+
+	// The pair, not either alone. A hardcoded paragraph satisfies every
+	// content assertion above and fails only this one.
+	if published == none {
+		t.Fatal("the network paragraph is IDENTICAL with and without publish, so it is a " +
+			"hardcoded sentence rather than something derived from the policy — which is " +
+			"exactly the defect this pair exists to catch")
+	}
+	if !strings.Contains(none, "reachable from nowhere") && !strings.Contains(none, "reachable from outside") {
+		t.Errorf("with no publish, the guidance no longer states the posture at all — the "+
+			"sentence was deleted rather than derived:\n%s", none)
+	}
+	// MEASURED, and the reason the negative arm does not stop at the host:
+	// pasta is passed -t none -u none -T none -U none, and its tcp_listen/
+	// udp_listen have exactly one caller, which walks only the forwarding rule
+	// table. No rules means no listening sockets, so nothing outside can reach
+	// a bound port either — "not visible to the host" understated it in the
+	// direction that invited the wrong inference (issue #471).
+	if strings.Contains(none, "NOT visible to the host") {
+		t.Errorf("the negative arm still speaks only about the host, which is the sentence "+
+			"#471 was filed against:\n%s", none)
+	}
+}

@@ -724,6 +724,31 @@ func (n NetPolicy) checkAddressPair(owners map[string]ProfileName) error {
 				"the pasta command below it — so write the bare address",
 				pr.keyGW, VisibleText(pr.gw.String()), VisibleText(pr.gw.Zone()))
 		}
+		// V8, IPv6 ONLY: pasta PARSES the inline v6 prefix and then throws it
+		// away. There is no c->ip6.prefix_len field; the namespace address is
+		// configured with a literal 64 (`nl_addr_set(..., AF_INET6, &c->ip6.addr,
+		// 64)`) and the RA's Prefix Information option carries a hardcoded
+		// .prefix_len = 64. pasta's own man page says so under `-a`: "If a prefix
+		// length is assigned to an IPv6 address using this method, it will in the
+		// current code version be overridden by the default value of 64."
+		//
+		// So `address6 = "fd00::2/112"` used to resolve and hand the sandbox a
+		// /64 — a WIDER on-link set than the author wrote, silently, which is the
+		// silent downgrade invariant 5 forbids. Refusing is the only honest
+		// answer: snug cannot deliver the narrower prefix, and narrowing the
+		// author's value to the nearest thing pasta accepts is what an
+		// unrecognised value must never be read as.
+		//
+		// The v4 half needs no such rule — pasta keeps it
+		// (`c->ip4.prefix_len = prefix_len - 96`) — which is why this is keyed on
+		// want4 rather than applied to the pair.
+		if pr.addr.IsValid() && !pr.want4 && pr.addr.Bits() != 64 {
+			return fmt.Errorf("network %s %s is a /%d: pasta discards an inline IPv6 prefix and "+
+				"configures the address as a /64 regardless (its own man page says so under "+
+				"`-a`), so the sandbox would treat a WIDER set of addresses as on-link than "+
+				"this profile asks for. Write %s/64, or pick a narrower ADDRESS",
+				pr.keyAddr, VisibleText(pr.addr.String()), pr.addr.Bits(), pr.addr.Addr())
+		}
 		if pr.addr.IsValid() && pr.gw.IsValid() {
 			// V3: pasta refuses a gateway outside its address's prefix
 			// ("No route to host", measured).
@@ -924,10 +949,15 @@ func (p *Policy) PastaArgs(t PastaTarget) []string {
 		// ONE -a per family, and the prefix INLINE in both. pasta's -n is a
 		// single GLOBAL netmask, not a per-family one: with -n present, an
 		// inline prefix in ANY -a is "Redundant prefix length specification"
-		// and exit 1 (measured), and there is no v6 -n at all. Leaving the v6
-		// prefix off works only because pasta defaults it to /64 — a helper
-		// default for a value that decides what the sandbox treats as
-		// on-link, which is what this file refuses to inherit.
+		// and exit 1 (`conf.c` dies in both orders, exact string), and there is
+		// no v6 -n at all.
+		//
+		// The v6 prefix travels inline and is DISCARDED: pasta parses it, keeps
+		// no c->ip6.prefix_len, and configures a literal 64. snug does not
+		// inherit that as a default — checkAddressPair's V8 refuses any v6
+		// address that is not a /64, so the only value reaching this line is the
+		// one pasta will actually deliver. The v4 prefix IS honoured
+		// (`c->ip4.prefix_len = prefix_len - 96`), which is why V8 is v6-only.
 		//
 		// pair.gw is always valid here too: checkAddressPair's V6 (all four
 		// values or none) has already run by the time a Policy reaches this
@@ -966,4 +996,36 @@ func publishSpec(n NetPolicy) string {
 		}
 	}
 	return "127.0.0.1/" + strings.Join(out, ",")
+}
+
+// publishWithoutEgressError refuses `publish` on a policy with no egress.
+//
+// It refuses rather than warns, and that is the same rule halfAnonymisedError
+// states from the other side: warn when the missing thing makes the sandbox do
+// LESS, refuse when a human is left believing a capability they do not have.
+// Nothing is leaking here — the ports simply were not forwarded — but the belief
+// is the damage, and `--dry-run` is the mechanism by which snug is trustable at
+// all.
+func publishWithoutEgressError(ports []int, owners []ProfileName) error {
+	list := make([]string, len(ports))
+	for i, p := range ports {
+		list[i] = strconv.Itoa(p)
+	}
+	who := "the selection"
+	if len(owners) == 1 {
+		who = fmt.Sprintf("profile %q", owners[0])
+	} else if len(owners) > 1 {
+		names := make([]string, len(owners))
+		for i, o := range owners {
+			names[i] = fmt.Sprintf("%q", o)
+		}
+		who = "profiles " + strings.Join(names, ", ")
+	}
+	return fmt.Errorf("%s publishes host->sandbox port(s) %s, but this policy has no egress, "+
+		"so nothing forwards them: pasta is what binds a published port and it runs only for a "+
+		"network profile.\n"+
+		"       Add the '@net' profile, or drop the publish key. snug refuses rather than "+
+		"starting a sandbox\n"+
+		"       whose --dry-run document names a capability it does not have.",
+		who, strings.Join(list, ", "))
 }
