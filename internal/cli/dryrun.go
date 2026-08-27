@@ -1076,10 +1076,18 @@ func describeContainers(out io.Writer, p *policy.Policy, c *reportContainers) {
 	fmt.Fprintf(out, "         '@net', a container has no egress either; with '@net', full egress\n")
 	fmt.Fprintf(out, "         via the sandbox's pasta, exactly as the NETWORK block above states.\n")
 	fmt.Fprintf(out, "         A container has the sandbox's own network with NO port mapping:\n")
-	fmt.Fprintf(out, "         'podman run -p N:80' is not supported — the engine holds no\n")
+	fmt.Fprintf(out, "         'docker run -p N:80' is not supported — the engine holds no\n")
 	fmt.Fprintf(out, "         CAP_NET_ADMIN, so it cannot reconfigure this namespace to publish one.\n")
+	// Issue #424: the proxy refuses this by name now, rather than forwarding it
+	// to be closed by the engine's netlink failure. The paragraph above states
+	// the consequence of the cap drop; this states who enforces it.
+	fmt.Fprintf(out, "         A container may not ask for a network namespace of its own:\n")
+	fmt.Fprintf(out, "         'docker run --network=bridge', a named network, 'pasta',\n")
+	fmt.Fprintf(out, "         'slirp4netns' and '--network=none' are refused at the proxy,\n")
+	fmt.Fprintf(out, "         for the same reason: crun brings 'lo' up in any namespace it\n")
+	fmt.Fprintf(out, "         creates, and that needs CAP_NET_ADMIN in that namespace.\n")
 	fmt.Fprintf(out, "         A container gets its own pid namespace and may not join another:\n")
-	fmt.Fprintf(out, "         'podman run --pid=host' is refused. Inside the sandbox 'host' would\n")
+	fmt.Fprintf(out, "         'docker run --pid=host' is refused. Inside the sandbox 'host' would\n")
 	fmt.Fprintf(out, "         mean the ENGINE, and /proc/<pid>/root in a shared pid namespace\n")
 	fmt.Fprintf(out, "         reaches that process's entire filesystem view.\n")
 	fmt.Fprintf(out, "         A container may mount only a path the sandbox can already see,\n")

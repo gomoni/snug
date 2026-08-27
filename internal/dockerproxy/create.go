@@ -177,13 +177,15 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 			// network gets N — the engine's own netns, which is this sandbox's.
 			// MEASURED (podman 6.0.2): absent and "" both come back recorded as
 			// "host" and the container's /proc/self/ns/net is the payload's.
-			// "default" reaches the same place by the other route, falling through
-			// the checks below unrefused. Do NOT turn this into a gate that
-			// substitutes "host": that is translating a request nobody made, and
-			// the pin is the place that binds it. What the pin does NOT do is
-			// override a request that IS made — NetworkMode="bridge" still reaches
-			// the engine and still fails (netavark: Netlink error: Operation not
-			// permitted), which is why build.go's allowlist is not cosmetic.
+			// "default" reaches the same place by the other route, accepted by the
+			// allowlist below. Do NOT turn this into a gate that substitutes
+			// "host": that is translating a request nobody made, and the pin is the
+			// place that binds it.
+			//
+			// What the pin does not do is judge a request that IS made. That is the
+			// allowlist below (issue #424): a NetworkMode naming a namespace of its
+			// own is refused HERE, by snug, rather than forwarded to fail inside the
+			// engine at `netavark: Netlink error: Operation not permitted`.
 			continue
 		}
 		// Normalised ONCE and used by every arm below, the same correction
@@ -196,11 +198,68 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 		// point: a refusal snug states must not depend on the answer. Folding
 		// can only refuse more; it cannot grant.
 		norm := strings.ToLower(strings.TrimSpace(mode))
-		if k == "NetworkMode" && norm == "host" {
-			continue
-		}
+		// The prefix and "host" arms run FIRST, so container:/ns: keep
+		// namespaceModeReason's own text rather than being swallowed by the
+		// NetworkMode allowlist below.
 		if norm == "host" || strings.HasPrefix(norm, "container:") || strings.HasPrefix(norm, "ns:") {
+			if k == "NetworkMode" && norm == "host" {
+				continue
+			}
 			p.deny(w, "HostConfig.%s = %q: %s", k, mode, namespaceModeReason[k])
+			return
+		}
+		// NetworkMode's value axis is an ALLOWLIST; the other five keys keep the
+		// denylist above. Issue #424's third bullet, and the scoping is the
+		// load-bearing half: "private" is PidMode's and CgroupnsMode's DEFAULT,
+		// "none" and "shareable" are legal IpcMode values, and "keep-id"/"nomap"/
+		// "auto" are legal UsernsMode values. One word set over six keys would
+		// refuse working requests — "none" means "no IPC sharing" for IpcMode and
+		// "a netns of my own" for NetworkMode, which is a category error, not a
+		// spelling.
+		//
+		// "none" is REFUSED, and it CONVERGES with build.go rather than diverging
+		// from it. The reasoning that once kept it accepted was that a netns
+		// nobody brings `lo` up in needs no netlink. That is wrong, and this is
+		// the measurement: crun brings `lo` up ITSELF whenever it creates a
+		// network namespace — before it mounts devpts — and that ioctl needs
+		// CAP_NET_ADMIN in the new namespace.
+		//
+		// MEASURED on the docker-compat create+start path, podman 6.0.2 + crun,
+		// against a podman running as root in a user namespace whose bounding set
+		// has bit 12 cleared (CapBnd 000001ffffffefff — CAP_NET_ADMIN absent,
+		// which is what policy.EngineCapBounding gives the engine):
+		//
+		//	NetworkMode:"none"    create 201, start 500
+		//	                      crun: ioctl SIOCSIFFLAGS: Operation not permitted
+		//	NetworkMode:"bridge"  create 201, start 500
+		//	                      netavark: setns: IO error: Operation not permitted
+		//	NetworkMode:"host"    create 201, start past network setup entirely
+		//
+		// Isolated, because "it failed" is not "it failed for THIS reason": the
+		// same harness dropping CAP_SYS_BOOT instead of CAP_NET_ADMIN gets past
+		// the network step, and so does CAP_NET_ADMIN-dropped "host". One bit and
+		// one mode are the only variables. With a FULL bounding set "none" runs to
+		// completion with `lo` up in a netns of its own — which is why a plain
+		// rootless podman on the host reports that it works and the engine does
+		// not, and why ENGINE-NETNS.md §2's "--network=none works" (measured with
+		// the cap present, before the NET_ADMIN decision) is not authority here.
+		//
+		// So accepting it returned 201 for a container that cannot start: snug
+		// admitting a capability the engine refuses, which is invariant 5 facing
+		// the other way.
+		//
+		// ABUSE, on what stays accepted: "host" is N, which the sandbox already
+		// has. What the refusal CLOSES: a create body naming a namespace snug did
+		// not author, forwarded unjudged, on an engine that may one day satisfy it
+		// (enginecaps.go records a bounding set reset to full inside a NESTED
+		// userns — which a rootless podman creates per container and this engine,
+		// running as root in U, does not) while --dry-run still tells the human
+		// containers run in N.
+		if k == "NetworkMode" && norm != "default" {
+			p.deny(w, "HostConfig.NetworkMode = %q: %s.\n"+
+				"       Fix: drop --network, or use --network=host (which is this sandbox's own "+
+				"network). --network=none is refused too: crun brings `lo` up in any namespace "+
+				"it creates and that ioctl needs the same capability.", mode, noNetnsOfItsOwn)
 			return
 		}
 	}
@@ -382,27 +441,38 @@ var namespaceModeKeys = []string{
 // still name the MACHINE's (the engine unshares neither — issue #182), userns
 // names U, and network is the one key that is not always refused at all.
 //
+// NetworkMode's value axis is an ALLOWLIST; the other five keys are a denylist —
+// say it out loud, because each reason string below reads as though its key were
+// closed either way.
+//
+// For the five: what the loop refuses is "host", "container:<id>" and
+// "ns:<path>", and every other value is FORWARDED to the engine unjudged.
+// Spellings that legitimately go through today: PidMode "private", IpcMode
+// "shareable"/"none", CgroupnsMode "private", UsernsMode
+// "keep-id"/"nomap"/"auto". Their legal values are per-key, which is why one
+// word set cannot cover all six — "none" means "no IPC sharing" for IpcMode and
+// "a netns of my own" for NetworkMode.
+//
+// For NetworkMode (issue #424): accepted are absent, "", "default" and "host";
+// everything else is refused BY SNUG, "none" included — build.go refuses the
+// same word and the two sets agree. It was a denylist, and
+// "bridge"/"private"/"pasta"/"slirp4netns" were forwarded to be closed by the
+// engine failing (netavark: Netlink error: Operation not permitted) rather than
+// by snug — which left the guarantee --dry-run prints ("a container has the
+// sandbox's own network") resting on a cap count rather than on a refusal snug
+// owns.
+//
+// "" AND "default" MUST stay accepted, and this is the measurement that says so:
+// a stock docker 29.4.0-ce sends NetworkMode:"default" on a plain `docker run`
+// with no --network flag (testdata/docker-run-create-body.json, re-measured
+// against API v1.54 — every --network=X spelling maps 1:1 onto NetworkMode:"X",
+// so "default" is the no-flag value and nothing else produces it). podman's
+// compat handler maps "" and "default" through the containers.conf netns pin
+// to N.
+//
 // PidMode is worth reading in full: joining a pid namespace is not "seeing
 // more pids", it is acquiring procfs's naming rights into everything every
 // member holds, and the engine is what sits behind pid 1 there.
-// The value axis here is a DENYLIST, and build.go's is an allowlist — say it
-// out loud, because each reason string below reads as though the key were
-// closed. What the loop refuses is "host", "container:<id>" and "ns:<path>";
-// every OTHER value is FORWARDED to the engine unjudged. Real spellings that
-// go through today: NetworkMode "bridge"/"none"/"private"/"pasta"/
-// "slirp4netns", PidMode "private", IpcMode "shareable"/"none", CgroupnsMode
-// "private", UsernsMode "keep-id"/"nomap"/"auto". They are closed by the
-// engine failing (netavark: Netlink error: Operation not permitted), not by
-// snug. Making this an allowlist is an ergonomic behaviour change on a path
-// that works today by FAILING — the engine refuses, not snug — so it is a
-// maintainer call, not something to fold into an unrelated change. Whoever
-// takes it must keep "" AND "default" accepted, and this is the measurement
-// that says so: a stock docker 29.4.0-ce sends NetworkMode:"default" on a
-// plain `docker run` with no --network flag (testdata/docker-run-create-body.json,
-// re-measured against API v1.54 — every --network=X spelling maps 1:1 onto
-// NetworkMode:"X", so "default" is the no-flag value and nothing else produces
-// it). podman's compat handler maps "" and "default" through the
-// containers.conf netns pin to N.
 var namespaceModeReason = map[string]string{
 	"NetworkMode": `"host" is allowed here and means THIS sandbox's own network ` +
 		`namespace N (issue #63, Tier B). What is refused is naming a namespace ` +

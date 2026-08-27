@@ -2,6 +2,7 @@ package dockerproxy
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/url"
 	"slices"
 	"sort"
@@ -777,7 +778,7 @@ func TestEveryBuildValidatorIsExercised(t *testing.T) {
 		"volume": true, "volumes": true, "additionalbuildcontexts": true,
 		"networkmode": true, "nsoptions": true, "seccomp": true,
 		"isolation": true, "dockerfile": true, "secrets": true, "version": true,
-		"idmappingoptions": true,
+		"idmappingoptions": true, "output": true,
 	}
 	// `check == nil` is not skipped: buildParams has no nil entry, and a
 	// parameter forwarded unexamined lives in unexaminedBuildParams with its
@@ -945,4 +946,132 @@ func TestBuildParameterLookupFoldsCase(t *testing.T) {
 			refuse(t, sock, eng, buildURL(tc.query), "", tc.wantMsg)
 		})
 	}
+}
+
+// TestBuildOutputIsATagOnly is issue #424's second bullet. `output` was
+// forwarded unexamined under notYetAnalysed with the note "podman sends the tag
+// here too", and podman's own --output accepts `type=local,dest=<path>` — a
+// filesystem destination.
+//
+// MEASURED against podman 6.0.2 before writing the check, by raw POST to
+// /v5.0.0/libpod/build against a real `podman system service`, bypassing the
+// CLI (the CLI is not the boundary — checkBuildSecrets records why that
+// reasoning is a trap): output=type=local,dest=/tmp/pwn424 with no `t` built
+// the image and created NOTHING at that path, and output=plaintag424:v1 with no
+// `t` produced an image tagged <none>:<none>. So the endpoint ignores the
+// parameter outright and the tag comes from `t`.
+//
+// That is a fact about podman 6.0.2, not a property, which is why this is a
+// value check and not a pass: a later podman honouring `output` would silently
+// gain a destination behind a parameter snug had waved through — the shape
+// cacheto and cachefrom are already refused for.
+func TestBuildOutputIsATagOnly(t *testing.T) {
+	for _, tc := range []struct{ name, value string }{
+		{"local dest", "type=local,dest=/tmp/pwn"},
+		{"tar dest", "type=tar,dest=/tmp/x.tar"},
+		{"bare type", "type=local"},
+		{"dest alone", "dest=/etc"},
+		{"a comma with no equals", "probe:x,probe:y"},
+		{"dest into the engine's own conf", "type=local,dest=/snug/engine/conf"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sock, eng, _ := startBuildProxy(t)
+			refuse(t, sock, eng, buildURLOverride(t, "output="+url.QueryEscape(tc.value)), "",
+				"names a destination the ENGINE writes")
+		})
+	}
+}
+
+// TestBuildOutputAcceptsThePlainTagPodmanSends is the other half, and it is the
+// one that makes the check narrow enough to ship: an ORDINARY build must still
+// work. Both recorded fixtures carry output=probe%3Ax beside t=probe%3Ax, so a
+// refusal that caught a plain tag would refuse every build.
+//
+// `=` and `,` are the discriminator because neither can occur in a legal image
+// reference, and both are structural to type=<kind>,dest=<path>. The rows below
+// are the reference grammar's own characters.
+func TestBuildOutputAcceptsThePlainTagPodmanSends(t *testing.T) {
+	for _, tc := range []struct{ name, value string }{
+		{"the recorded default", "probe:x"},
+		{"no tag", "probe"},
+		{"a registry-shaped name", "registry.example.com/ns/probe:v1.2.3"},
+		{"a digest", "probe@sha256:" + strings.Repeat("a", 64)},
+		{"underscores and dashes", "my_proj/some-image:v1_2-3"},
+		{"empty", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sock, eng, _ := startBuildProxy(t)
+			before := eng.reached.Load()
+			code, resp := post(t, sock, buildURLOverride(t, "output="+url.QueryEscape(tc.value)), "")
+			if code == http.StatusForbidden {
+				t.Fatalf("a plain image tag was refused, which refuses every ordinary build "+
+					"(both recorded fixtures send output beside t): %s", denyMessage(resp))
+			}
+			if eng.reached.Load() == before {
+				t.Fatal("the build never reached the engine")
+			}
+		})
+	}
+}
+
+// TestManifestNamesALocalList is issue #424's first bullet. `manifest` sat under
+// notYetAnalysed, and forceCompressionFormat's own justification named it as the
+// parameter that would supply a non-local destination.
+//
+// MEASURED against podman 6.0.2, same raw-POST method: manifest=mylist424:1
+// produced localhost/mylist424:1 in the engine's store, and
+// manifest=registry.snug-test.invalid/x:1 produced
+// registry.snug-test.invalid/x:1 in the store with NO network dial and no push
+// — the run did not fail on an unreachable registry, because nothing tried to
+// reach one. A registry-shaped name is a local name with a registry-shaped
+// prefix, which `podman tag` can already produce.
+//
+// So it stays forwarded, and this test pins that it is forwarded WITH a
+// justification rather than under notYetAnalysed — the assertion is on the map,
+// because "forwarded" is not what changed; the analysis is.
+func TestManifestNamesALocalList(t *testing.T) {
+	got, ok := unexaminedBuildParams["manifest"]
+	if !ok {
+		t.Fatal("manifest is no longer in unexaminedBuildParams; if it became judged or " +
+			"refused, this test should be asserting that instead")
+	}
+	if got == notYetAnalysed {
+		t.Error("manifest still carries notYetAnalysed. Issue #424's first bullet is that what " +
+			"an unexamined one buys was not established; it now is, and the measurement is in " +
+			"manifestNamesALocalList")
+	}
+	if got != manifestNamesALocalList {
+		t.Errorf("manifest's justification is not the measured one:\n%s", got)
+	}
+
+	// A registry-shaped list name is the case the ticket worried about, and it
+	// must still be forwarded — refusing it would refuse what `podman tag`
+	// already does.
+	sock, eng, _ := startBuildProxy(t)
+	before := eng.reached.Load()
+	code, resp := post(t, sock,
+		buildURLOverride(t, "manifest="+url.QueryEscape("registry.snug-test.invalid/x:1")), "")
+	if code == http.StatusForbidden {
+		t.Fatalf("a registry-shaped manifest list name was refused: %s", denyMessage(resp))
+	}
+	if eng.reached.Load() == before {
+		t.Fatal("the build never reached the engine")
+	}
+}
+
+// TestTheCompatBuildOutputsSpellingFailsClosed pins the plural. The compat
+// endpoint's parameter is `outputs`, not `output`, and it is in NEITHER map — so
+// it must fail closed as an unknown name rather than slip past the singular's
+// new check. MEASURED: a raw /v1.41/build?outputs=type=local,dest=... against a
+// real service also wrote nothing, so this is belt and braces on a parameter
+// podman ignores today, which is exactly the reason the singular is judged.
+func TestTheCompatBuildOutputsSpellingFailsClosed(t *testing.T) {
+	if knownBuildParam("outputs") {
+		t.Fatal("`outputs` is now a known parameter; it needs its own check or justification, " +
+			"and this test should assert that instead of fail-closed")
+	}
+	sock, eng, _ := startBuildProxy(t)
+	refuse(t, sock, eng,
+		buildURLOverride(t, "outputs="+url.QueryEscape("type=local,dest=/tmp/pwn")), "",
+		"is not permitted")
 }
