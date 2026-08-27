@@ -473,6 +473,10 @@ func run(cfg config) int {
 		HostSSHConfig:  sshValues,
 		HostShims:      detectHostShims(),
 		TmpfsSizeBytes: tmpfsSizeBytes,
+		// The directories the registry above was loaded from, so Resolve can
+		// refuse a writable grant reaching them. Same call profile.Load makes,
+		// so the check cannot disagree with what was actually read.
+		ProfileDirs: profile.ConfigDirs(),
 	}
 
 	pol, err := policy.Resolve(reg, selected, ctx, env)

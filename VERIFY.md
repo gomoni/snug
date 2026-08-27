@@ -748,6 +748,51 @@ and they are the narrower alternatives this refusal exists to stop a mount
 from replacing. The exemption is keyed on `Mount.Authored`, which only
 `Policy.Replace` sets and nothing a profile can write reaches.
 
+### 4b-bis. A writable grant reaching the trusted profile store is refused
+
+The profile set comes from outside the sandboxed material, and nothing enforced
+it. MEASURED before the fix, with the real binary on a scratch `$HOME`: `snug -p
+@cwd-rw ~/.config/snug/profiles.d` resolved, and `--dry-run` printed the store
+as `(writable)` with `HOME … WRITABLE and PERSISTS below:` naming it. A payload
+there writes a `*.toml` that a LATER run loads — a sandbox granting itself
+permissions. What hid it is that `snug ~/.config/snug` is refused one level up,
+by the ephemeral-target rule and for an unrelated reason, so every obvious
+spelling already failed.
+
+The check is over writable GRANTS, not over the target, because the target's
+writability IS a grant: `@cwd-rw` grants `{target}`. One rule therefore also
+covers a hand-written profile granting `rw` over `~/.config`.
+
+```bash
+X=$(mktemp -d); mkdir -p $X/snug/profiles.d
+XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p @cwd-rw $X/snug/profiles.d; echo "exit=$?"
+```
+
+Expect the refusal at `--dry-run`, naming the profile that did it and the fix:
+
+```
+snug: refusing to grant WRITE access to /tmp/tmp.XXXX/snug/profiles.d: profile "@cwd-rw" grants /tmp/tmp.XXXX/snug/profiles.d, and snug reads its trusted profiles from there.
+       A process inside could write a profile file that a LATER run loads, which is a
+       sandbox granting itself permissions — the one thing the profile set being outside
+       the sandboxed material prevents. Edit profiles on the host, or keep the copy you
+       want to edit somewhere else and install it with cp.
+exit=77
+```
+
+**Three positive controls, because a rule that refused everything would pass the
+above and make snug useless.** `mkdir -p $X/snug/notes` and sandbox that instead
+— it resolves, being beside the store rather than inside it. A profile granting
+`ro` over the store resolves too: read access is not the hole, a profile is not a
+secret, and `@sys`'s `/usr` already carries snug's own builtins. And `rw` over an
+unrelated `~/.config/nvim` resolves, which is what keeps `~/.config` granular
+rather than forbidden.
+
+NOTE what this does NOT cover: a grant of a directory that is a *symlink* to the
+store resolves to the store first (grants are canonicalised at resolve time), so
+that case is caught — but a store directory created *after* resolution, at a path
+some grant already covers, is not, for the same reason issue #287 gives about
+sockets appearing later inside a granted directory.
+
 ### 4c. What the payload learns about its supervisor (issue #272, accepted)
 
 The sandbox cannot see, signal or `/proc`-inspect the `snug` process supervising
