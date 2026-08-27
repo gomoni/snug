@@ -158,7 +158,7 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 	// it, so a refusal after New leaks a run directory that a later run with a
 	// recycled pid then refuses to reuse. Refusing here creates nothing at all,
 	// and copies no host key material into /tmp on a run that will not start.
-	sig, err := engine.ProjectHostSignaturePolicy(pol.Home)
+	sig, err := engine.ProjectHostSignaturePolicy(pol.Home, env.Getenv("XDG_CONFIG_HOME"))
 	if err != nil {
 		return containerRun{}, err
 	}

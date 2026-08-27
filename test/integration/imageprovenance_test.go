@@ -87,7 +87,7 @@ func engineSpecEnvWithSignaturePolicy(t *testing.T, hostPolicy string) ([]string
 	if err := e.GraftInto(policy.OSEnviron{}, pol); err != nil {
 		t.Fatal(err)
 	}
-	sig, err := engine.ProjectHostSignaturePolicy(plantHostSignaturePolicy(t, hostPolicy))
+	sig, err := engine.ProjectHostSignaturePolicy(plantHostSignaturePolicy(t, hostPolicy), "")
 	if err != nil {
 		t.Fatalf("projecting the planted host signature policy: %v", err)
 	}
