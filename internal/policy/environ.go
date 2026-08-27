@@ -65,6 +65,16 @@ type Context struct {
 	// expressed none, and Resolve substitutes DefaultTmpfsSize.
 	TmpfsSizeBytes uint64
 
+	// ProfileDirs are the directories the trusted profile set was READ from,
+	// passed in rather than derived here so profile.ConfigDirs stays the single
+	// author of that path — a resolver recomputing it would be a second copy
+	// that drifts. Resolve refuses a writable grant covering any of them:
+	// invariant 3 says the trusted profile set comes from outside the sandboxed
+	// material, and a payload that can write a profile grants itself
+	// permissions for the NEXT run. Empty disables the check, which is what a
+	// unit test wanting to resolve without a host profile store gets.
+	ProfileDirs []string
+
 	// HostNameservers is the host's /etc/resolv.conf nameserver list, read by the
 	// caller. Resolve keeps only the routable ones; see NetPolicy.ResolvConf.
 	HostNameservers []string
