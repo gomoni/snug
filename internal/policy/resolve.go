@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -152,9 +153,8 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 
 	var identityOwner, gitOwner ProfileName
 	var addressOwner, gatewayOwner, address6Owner, gateway6Owner, mtuOwner ProfileName
-	publish := map[int]bool{}
-	var publishOwners []ProfileName
 	pluginAllow := map[string]bool{}
+	httpDoors := map[string]bool{}
 	// Environment claims are ACCUMULATED here and resolved after the fold — see
 	// envresolve.go for why deciding during the fold cannot name every claimant.
 	envClaims := newEnvClaims()
@@ -332,23 +332,21 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		}
 		p.Net.DNS = p.Net.DNS || prof.DNS
 
-		// Publish is a SET, unioned — not a list appended to. Appending made
-		// `publish = [3000]` in two profiles resolve to [3000 3000] and reach
-		// pasta's -t as a duplicate, and it made the value depend on the fold
-		// order, which the model does not have. INDEX §2.3 already said "union".
-		for _, port := range prof.Publish {
-			publish[port] = true
-		}
-		// Which profiles asked, so the refusal below can name a line to change
-		// rather than just a missing capability. Appended in the sorted fold
-		// order, so the message is the same however the selection was written.
-		if len(prof.Publish) > 0 {
-			publishOwners = append(publishOwners, name)
+		// listen_names doors: a SET unioned across profiles, same reasoning as
+		// Plugins — two profiles naming "web" resolve to ONE door,
+		// not two, and the resolved value must not depend on fold order. The
+		// name grammar is checked here rather than post-fold so the refusal can
+		// name the profile that wrote it.
+		for _, door := range prof.ListenNames {
+			if err := checkHTTPDoorName(name, door); err != nil {
+				return nil, err
+			}
+			httpDoors[door] = true
 		}
 
-		// Plugins: a SET unioned across profiles, same reasoning as Publish —
-		// two profiles naming "caveman" must resolve to one, not two, and the
-		// value must not depend on fold order (issue #68).
+		// Plugins: a SET unioned across profiles, same reasoning as the doors
+		// above — two profiles naming "caveman" must resolve to one, not two, and
+		// the value must not depend on fold order (issue #68).
 		for _, name := range prof.Plugins {
 			pluginAllow[name] = true
 		}
@@ -437,15 +435,13 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		}
 	}
 
-	// A set has no order, so the one rendered here is sorted rather than the one
-	// profiles happened to be folded in.
-	if len(publish) > 0 {
-		p.Net.Publish = sortedInts(publish)
-	}
-	// Not gated on publish (a plugin allowlist has nothing to do with ports):
-	// @claude names plugins and publishes no port, so this must run regardless.
+	// Unconditional: @claude names plugins and declares no door, so a policy
+	// with one and not the other must still resolve both.
 	if len(pluginAllow) > 0 {
 		p.PluginAllowlist = sortedKeys(pluginAllow)
+	}
+	if len(httpDoors) > 0 {
+		p.ListenNames = sortedKeys(httpDoors)
 	}
 
 	// V6 (all four network-address keys, or none) is checked HERE — POST-FOLD,
@@ -466,18 +462,6 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		"address6": address6Owner, "gateway6": gateway6Owner,
 	}); err != nil {
 		return nil, err
-	}
-
-	// `publish` without egress was a SILENT no-op, and the two audit surfaces
-	// disagreed about it: pasta is the only thing that forwards a port and it
-	// runs only under NetEgress, so nothing was published — while
-	// `--dry-run --json` reported `"egress": false` and `"publish": [8090]` in
-	// one document, `--dry-run`'s isolated arm printed no publish line at all,
-	// and `snug show` rendered the capability with its consequence sentence
-	// regardless. A human who asked for a forward got nothing and the document
-	// they audit did not say so: invariant 5.
-	if len(publish) > 0 && p.Net.Mode != NetEgress {
-		return nil, publishWithoutEgressError(p.Net.Publish, publishOwners)
 	}
 
 	// 3b. If podman resolves to a host-escape shim on this host AND a podman
@@ -507,6 +491,41 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			})
 			break
 		}
+	}
+
+	// The http door's descriptor handover. Staged in StagedBinDir like every
+	// other executable snug puts in front of the payload, and PREPENDED to the
+	// command: it is the sandbox's entry, and it execs the payload, so the
+	// process tree gains nothing and the payload keeps the pid LISTEN_PID names.
+	//
+	// Ordering matters against HasStagedBin, which decides whether
+	// StagedBinDir joins PATH: this mount makes it non-empty, so a door alone
+	// puts snug's own directory first on the payload's PATH. That is already the
+	// rule for the podman stub above, and the directory is EROFS under
+	// --remount-ro / either way.
+	if len(p.ListenNames) > 0 {
+		if !p.shellIsVisible() {
+			return nil, HTTPDoorShellError(p.ListenNames, httpDoorShimShell)
+		}
+		perm := uint32(0755)
+		p.Replace(Mount{
+			Guest: HTTPDoorShimPath(), Kind: KindData, Access: AccessRO,
+			Perms: &perm, Content: []byte(httpDoorShim), From: []string{"(snug)"},
+		})
+		p.Command = append([]string{HTTPDoorShimPath()}, p.Command...)
+
+		// The systemd socket-activation protocol, and the spelling is copied
+		// rather than invented for one reason: Go, python's
+		// socket.socket(fileno=3), node's listen({fd:3}) and anything using
+		// sd_listen_fds already speak it. snug implements only the env-and-
+		// descriptor half, so no dependency is added.
+		//
+		// LISTEN_PID is deliberately NOT here — it is the one value snug cannot
+		// know from outside, and the staged script sets it from the payload's own
+		// pid. These two travel in the audited argv where a human reading
+		// --dry-run can see them.
+		p.AuthorEnv("LISTEN_FDS", strconv.Itoa(len(p.ListenNames)))
+		p.AuthorEnv("LISTEN_FDNAMES", strings.Join(p.ListenNames, ":"))
 	}
 
 	// 4. Mounts snug authors ITSELF, in every sandbox. /proc needs the pid
@@ -920,7 +939,7 @@ func Expand(reg map[ProfileName]*Profile, selected []ProfileName) (map[ProfileNa
 // mapped to what replaces them. A retired name is not "unknown" — the mistake
 // is not a typo, it is that the thing it asked for no longer exists as a
 // profile — so it gets a specific error rather than the generic "see: snug
-// profile list", the same shape TestRetiredPublishAutoIsAHardError already
+// profile list", the same shape a retired key's generic unknown-key error already
 // uses for a retired TOML key.
 var retiredProfiles = map[ProfileName]string{
 	"null": "there is no @null profile: a profile that grants nothing " +

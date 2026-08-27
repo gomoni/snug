@@ -422,6 +422,17 @@ type Policy struct {
 	// is snug's, never a profile's.
 	PluginAllowlist []string
 
+	// ListenNames is the union of the selected profiles' `listen_names` lists,
+	// sorted and deduplicated: the doors a human may open with `snug proxy`.
+	//
+	// Declaring a door creates a listening unix socket on the HOST before the
+	// sandbox starts and hands the descriptor in — so the payload can accept on
+	// it and can never create a second one. Nothing is reachable until a human
+	// runs `snug proxy`, and what opening one costs is stated in base.toml's
+	// abuse sentence and printed on the human's own terminal before the door
+	// binds.
+	ListenNames []string
+
 	// SystemSSHConfigs is every guest path where snug replaced this host's
 	// system-wide ssh_config for this run, in the order it decided them. It
 	// is the RECORD of a decision, written only by replaceSystemSSHConfig,

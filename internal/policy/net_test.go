@@ -31,8 +31,6 @@ func TestPastaArgsAlwaysCloseHostLoopback(t *testing.T) {
 	}{
 		{"plain", NetPolicy{Mode: NetEgress}},
 		{"dns", NetPolicy{Mode: NetEgress, DNS: true}},
-		{"publish", NetPolicy{Mode: NetEgress, Publish: []int{3000}}},
-		{"many ports", NetPolicy{Mode: NetEgress, Publish: []int{3000, 8080, 9229}}},
 		{"anon", NetPolicy{
 			Mode:    NetEgress,
 			Address: netip.MustParsePrefix("10.13.13.2/24"), Gateway: netip.MustParseAddr("10.13.13.1"),
@@ -71,44 +69,6 @@ func TestPastaArgsAlwaysCloseHostLoopback(t *testing.T) {
 				t.Errorf("--map-host-loopback appears %d times, want exactly 1: %v", n, args)
 			}
 		})
-	}
-}
-
-// Every host->sandbox forward must be scoped to 127.0.0.1. The unscoped form
-// binds on ALL host addresses, publishing the agent's dev server to the LAN —
-// something the human did not ask for and would not see.
-func TestPublishIsScopedToLoopback(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		net  NetPolicy
-		want string
-	}{
-		{"closed by default", NetPolicy{Mode: NetEgress}, "none"},
-		{"named ports", NetPolicy{Mode: NetEgress, Publish: []int{8080, 3000}}, "127.0.0.1/3000,8080"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			args := (&Policy{Net: tc.net}).PastaArgs(PastaTargetChild(1))
-			i := slices.Index(args, "-t")
-			if i < 0 {
-				t.Fatal("-t missing")
-			}
-			if args[i+1] != tc.want {
-				t.Errorf("-t %q, want %q", args[i+1], tc.want)
-			}
-			if strings.Contains(args[i+1], "/") && !strings.HasPrefix(args[i+1], "127.0.0.1/") {
-				t.Errorf("-t %q is not scoped to loopback; the LAN would see the sandbox", args[i+1])
-			}
-		})
-	}
-}
-
-// Ports are sorted and deduplicated so the argv is a pure function of the
-// resolved policy, not of the order profiles happened to contribute them.
-func TestPublishPortsAreCanonical(t *testing.T) {
-	a := (&Policy{Net: NetPolicy{Mode: NetEgress, Publish: []int{8080, 3000, 8080}}}).PastaArgs(PastaTargetChild(1))
-	b := (&Policy{Net: NetPolicy{Mode: NetEgress, Publish: []int{3000, 8080}}}).PastaArgs(PastaTargetChild(1))
-	if strings.Join(a, " ") != strings.Join(b, " ") {
-		t.Error("publish port order or duplicates changed the pasta argv")
 	}
 }
 

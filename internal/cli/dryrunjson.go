@@ -513,7 +513,6 @@ type jsonNetwork struct {
 	DNS             []string `json:"dns"`
 	DNSForwarded    bool     `json:"dns_forwarded"`
 	DNSHost         string   `json:"dns_host"`
-	Publish         []int    `json:"publish"`
 	Anonymised      bool     `json:"anonymised"`
 	Address         string   `json:"address"`
 	Address6        string   `json:"address6"`
@@ -712,7 +711,6 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			DNS:             rep.Network.DNS,
 			DNSForwarded:    rep.Network.DNSForwarded,
 			DNSHost:         rep.Network.DNSHost,
-			Publish:         rep.Network.Publish,
 			Anonymised:      rep.Network.Anonymised,
 			Address:         rep.Network.Address,
 			Address6:        rep.Network.Address6,

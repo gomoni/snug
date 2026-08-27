@@ -328,7 +328,7 @@ func TestStateFileIsWrittenSixOhOhInASevenHundredDirectory(t *testing.T) {
 			"mnt": 1, "pid": 2, "net": 3, "ipc": 4, "uts": 5, "cgroup": 6,
 		},
 	}
-	if err := writeRunState(pol, info); err != nil {
+	if err := writeRunState(pol, info, ""); err != nil {
 		t.Fatal(err)
 	}
 

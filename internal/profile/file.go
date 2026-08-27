@@ -43,6 +43,7 @@ type rawProfile struct {
 	Symlink     []policy.Symlink `toml:"symlink"`
 	Optional    []string         `toml:"optional"`
 	Plugins     []string         `toml:"plugins"`
+	ListenNames []string         `toml:"listen_names"`
 
 	// Environ is the five verbs, nested under one key. Nested rather than five
 	// root keys for three reasons, the load-bearing one being that `environ` is
@@ -64,7 +65,6 @@ type rawProfile struct {
 
 	Network string `toml:"network"`
 	DNS     bool   `toml:"dns"`
-	Publish []int  `toml:"publish"`
 	Address string `toml:"address"`
 	Gateway string `toml:"gateway"`
 	// Address6/Gateway6 are the IPv6 half of an anonymising profile's
@@ -223,8 +223,8 @@ func checkName(name, source string) error {
 // The grammar is checkName's plus one character, and the difference is the
 // whole reason this is a separate function instead of a bool argument. A user's
 // profile including a builtin — include = ["@net"] — is a supported spelling,
-// exercised by base.toml's own comments and by TestRetiredPublishAutoIsAHardError,
-// so a reference may carry the leading mark that a DEFINITION may never carry.
+// exercised by base.toml's own comments, so a reference may carry the leading
+// mark that a DEFINITION may never carry.
 // One mark, not two: "@@net" is not a name anything can define.
 //
 // Refused here rather than left to resolve time because the FILE is what is
@@ -334,10 +334,10 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 			Symlink:     r.Symlink,
 			Optional:    r.Optional,
 			Plugins:     r.Plugins,
+			ListenNames: r.ListenNames,
 			Environ:     environ,
 			Network:     r.Network,
 			DNS:         r.DNS,
-			Publish:     r.Publish,
 			Address:     r.Address,
 			Gateway:     r.Gateway,
 			Address6:    r.Address6,
@@ -386,9 +386,9 @@ func toEnvGrants(r rawProfile, name, source string) (policy.EnvGrants, error) {
 // The two retired keys, and why they are FIELDS on rawProfile rather than
 // deletions.
 //
-// `publish_auto` was retired by deleting its struct field and letting
-// DisallowUnknownFields fire, which yields the generic "unknown key" message.
-// That is right for a key that never should have existed and wrong for a key
+// A key that never should have existed is retired by deleting its struct field
+// and letting DisallowUnknownFields fire, which yields the generic "unknown key"
+// message. That is right for such a key and wrong for one
 // whose MEANING MOVED: `env = [...]` is still a thing a profile wants to say,
 // and the reader needs to be told the new spelling rather than told the key does
 // not exist. So both fields stay, and both errors name the replacement — spelled

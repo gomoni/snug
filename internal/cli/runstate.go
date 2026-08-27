@@ -52,6 +52,17 @@ type runState struct {
 	Seccomp  runStateSeccomp `json:"seccomp"`
 	Env      [][2]string     `json:"env"`
 	Revision string          `json:"revision,omitempty"`
+
+	// RunDir is this run's own runtime directory, and it is here for one
+	// consumer: `snug proxy` has to find the http-doors file the run published
+	// beside its sockets. Optional, like Revision — a run with no doors has
+	// nothing there to read, and an older state file simply does not carry it.
+	//
+	// It is NOT how `snug attach` finds anything. That still goes through the
+	// TARGET-keyed path, for the reason the comment below gives: the two
+	// processes need not agree on $XDG_RUNTIME_DIR, and a path published by one
+	// of them is a fact rather than an agreement.
+	RunDir string `json:"run_dir,omitempty"`
 }
 
 type runStateSandbox struct {
@@ -84,7 +95,7 @@ var runStateNamespaceKinds = []string{"mnt", "pid", "net", "ipc", "uts", "cgroup
 // info.InitPID names the process whose /proc/<pid>/stat this reads
 // immediately: field 22 (starttime), the second half of the pid-reuse guard
 // alongside the six namespace inodes info already carries.
-func writeRunState(pol *policy.Policy, info sandbox.RunInfo) error {
+func writeRunState(pol *policy.Policy, info sandbox.RunInfo, runDirPath string) error {
 	starttime, err := procStartTime(info.InitPID)
 	if err != nil {
 		return fmt.Errorf("run state: reading start time of pid %d: %w", info.InitPID, err)
@@ -136,6 +147,7 @@ func writeRunState(pol *policy.Policy, info sandbox.RunInfo) error {
 		Seccomp:  seccomp,
 		Env:      snugAuthoredEnvPairs(pol),
 		Revision: buildRevision(),
+		RunDir:   runDirPath,
 	}
 
 	// Published to the TARGET-keyed path (targetstate.go), not into this

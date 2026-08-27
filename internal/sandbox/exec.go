@@ -24,6 +24,21 @@ type Options struct {
 	NoSeccomp bool
 	Warn      func(string) // where degradation notices go; never silently dropped
 
+	// HTTPDoors are listening unix sockets the CALLER created on the host, one
+	// per name in p.HTTPDoors and in that order, to be handed to the payload as
+	// LISTEN_FDS descriptors.
+	//
+	// Created by the caller and not here, for the reason every host fact in this
+	// tree is: the socket needs a path in the run's runtime directory and that
+	// path has to be published to run state so `snug proxy` can find it, both of
+	// which are internal/cli's job. This package only passes the descriptors.
+	//
+	// THEY GO FIRST in ExtraFiles, so the payload sees them at fd 3.., which is
+	// what LISTEN_FDS=n means. Measured: bwrap closes only the descriptors it
+	// consumes and renumbers nothing, so a socket appended after the memfds
+	// would arrive at a number LISTEN_FDS cannot name.
+	HTTPDoors []*os.File
+
 	// OnInfo, if non-nil, is called exactly once, as soon as bwrap has
 	// reported its own info-fd JSON. It is the hook `snug attach`'s run-state
 	// file is written through, which is why WHEN it runs is a security
@@ -147,6 +162,10 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 
 	// Child fd numbers: exec.Cmd maps ExtraFiles[i] to 3+i.
 	nextFD := func() int { return 3 + len(extra) }
+
+	// The door sockets are appended BEFORE anything else, so they occupy fd
+	// 3..3+n-1 exactly as LISTEN_FDS promises. See Options.HTTPDoors.
+	extra = append(extra, opts.HTTPDoors...)
 
 	// Generated files (resolv.conf today; hosts/passwd/group later) travel as
 	// anonymous memfds, so nothing lands on disk.

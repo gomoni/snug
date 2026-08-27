@@ -57,16 +57,28 @@ type Profile struct {
 	// profiles like Publish.
 	Plugins []string
 
+	// ListenNames names the doors a human may open into this sandbox with
+	// `snug proxy` — one NAME per door, never a port. Unioned across selected
+	// profiles like Plugins.
+	//
+	// A name and not a port because a port is a thing the payload could have
+	// chosen: snug creates the listening socket itself and hands the sandbox a
+	// descriptor, so nothing inside decides what is reachable. The name is what
+	// the human types, what LISTEN_FDNAMES carries, and what --dry-run labels.
+	//
+	// Named for what the values BECOME: LISTEN_FDNAMES, the systemd
+	// socket-activation variable the payload reads. The key was called
+	// `http_proxy` first, which collided with the well-known environment variable
+	// of that name — and that one means an OUTBOUND forward proxy, the opposite
+	// direction. This is inbound, and it is the one grant in snug a human opens
+	// after the sandbox is already running.
+	ListenNames []string
+
 	// Network is "isolated" | "egress" | "host", joined by max. There is
 	// deliberately no "offline": offline is the ABSENCE of a net profile, so it
 	// cannot be re-enabled by adding one.
 	Network string
 	DNS     bool
-
-	// Publish names the ports the host's 127.0.0.1 forwards into the sandbox.
-	// The human names them, one at a time. There is deliberately no "publish
-	// everything the sandbox binds" — see NetPolicy.Publish.
-	Publish []int
 
 	// Address/Gateway and Address6/Gateway6 are raw profile TEXT, deliberately
 	// NOT typed here: this struct must not depend on internal/policy's own

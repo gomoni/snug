@@ -404,19 +404,48 @@ there is no path to not-mount.
 Offline is the **absence** of the `@net` profile, not a setting — so it cannot be
 switched back on by adding something.
 
-Host→sandbox publishing is off, and opening it means naming the ports yourself:
+Nothing is forwarded INTO the sandbox. A listener a human wants to reach is
+served by `snug proxy`, which holds a descriptor snug created and can check who
+is asking — see below.
 
-```toml
-[profile.myports]
-include = ["@net"]
-publish = [3000, 8080]     # bound to the host's 127.0.0.1 only, never the LAN
+### Opening one HTTP door to your own browser
+
+`listen_names = ["web"]` in a profile declares a door **by name** — never a port,
+because a port is a thing the sandbox could have chosen. Declaring it creates a
+listening socket on the host and hands the payload the descriptor; nothing is
+reachable until a human runs `snug proxy`, and opening a door can open a sandbox
+escape, which that command says plainly before it binds.
+
+The server inside must accept on the descriptor (`LISTEN_FDS`, fd 3) rather than
+bind a port — `examples/http-door-server.py` is a working one. Servers you cannot
+edit (Java, .NET, anything in a container) need the adapter in issue #476.
+
+`snug proxy` prints a URL carrying a one-time credential:
+
+```
+Open:  http://127.74.62.160:8080/?snug-token=1a8d1c69601879942577f178030c5a2e
 ```
 
-There is deliberately no "publish whatever the sandbox binds": that would let the
-*sandbox* choose what appears on your loopback, and a prompt-injected agent could
-squat `127.0.0.1:8080` ahead of your own dev server. A `@net-publish` profile
-that did exactly that used to ship, and it never forwarded a single port — see
-`internal/profile/profiles/base.toml` for why.
+**What `?snug-token=` is.** 128 bits of randomness, new every run. Opening that
+URL is a *bootstrap*: the door checks the token, sets an `HttpOnly`,
+`SameSite=Strict` cookie, and redirects to the same path with the parameter
+removed — so your address bar lands on the app's own URL, the token is never
+shown again, and **the app never sees it**. Every later request is admitted by
+the cookie, which is why the app owns the whole path space. It is a query
+parameter rather than a path segment because a path prefix breaks every app that
+emits absolute URLs: the browser asks the origin root for `/style.css`, which
+would carry no token.
+
+**Why it exists at all.** Checking the `Host` header authenticates the *target*,
+never the *initiator* — a page you already have open reaches the door with a
+perfectly correct `Host`. The token makes possession of the URL the gate, and
+`SameSite=Strict` means a browser will not attach the cookie to a request a
+cross-site page started, so the credential is missing exactly when the initiator
+is one the door refuses anyway.
+
+**The walkthrough and the measured admission matrix are VERIFY.md §20.** They
+live there rather than here because this is not settled yet, and a user guide
+that churns ahead of the code is worse than a pointer.
 
 ## Containers, and the `podman` shim
 

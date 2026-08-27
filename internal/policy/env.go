@@ -194,6 +194,8 @@ var SnugOwnedEnv = []string{
 	"GIT_CONFIG_GLOBAL",
 	"HOME",
 	"LANG",
+	"LISTEN_FDNAMES",
+	"LISTEN_FDS",
 	"LOGNAME",
 	"PATH",
 	"PS1",

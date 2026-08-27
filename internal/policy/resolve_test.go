@@ -260,7 +260,7 @@ func testRegistry() map[ProfileName]*Profile {
 		// the v4 half no longer resolves at all, and this fixture is used
 		// alone (topology_test.go's "egress" base) as well as combined with
 		// netty-too below.
-		"netty": {Name: "netty", Network: "egress", DNS: true, Publish: []int{4000, 3000},
+		"netty": {Name: "netty", Network: "egress", DNS: true,
 			Address: "10.13.13.2/24", Gateway: "10.13.13.1",
 			Address6: "fd00:5e79:1::2/64", Gateway6: "fd00:5e79:1::1",
 			MTU: 1400, Podman: "socket", Plugins: []string{"caveman", "superpowers"}},
@@ -268,7 +268,7 @@ func testRegistry() map[ProfileName]*Profile {
 		// join, not conflict, whichever order they are folded in. Both
 		// families, matching netty's — TestPublishUnionsAndAddressesAgree
 		// resolves the two together.
-		"netty-too": {Name: "netty-too", Network: "egress", Publish: []int{3000},
+		"netty-too": {Name: "netty-too", Network: "egress",
 			Address: "10.13.13.2/24", Address6: "fd00:5e79:1::2/64",
 			Plugins: []string{"superpowers", "code-review"}},
 		// THERE IS NO `network = "host"` FIXTURE, and the absence is deliberate
@@ -280,7 +280,7 @@ func testRegistry() map[ProfileName]*Profile {
 		// is asserted, at the parser, where it lives.
 		// Sigil-marked and mirroring the real @podman-socket in base.toml
 		// (include sys+home+net, podman=socket) rather than reusing `netty`,
-		// which also carries scalars (address/gateway/mtu/publish) that would
+		// which also carries scalars (address/gateway/mtu) that would
 		// make the podman-socket golden noisy with values unrelated to what
 		// it is meant to review — the stub and the container proxy hole.
 		"@podman-socket": {Name: "@podman-socket", Include: []ProfileName{"@sys", "@home"},
@@ -346,7 +346,7 @@ func mustResolve(t *testing.T, sel ...ProfileName) *Policy {
 //
 // It covers the SCALARS as well, and that is not decoration. It used to render
 // Mounts and Env only, so TestResolveIsCommutative could not see a break in
-// Net.Address, Net.Publish, Identity or Podman — and three of those were
+// Net.Address, Identity or Podman — and three of those were
 // last-writer-wins at the time, decided by which profile the sorted fold reached
 // last. A commutativity test that does not render a field does not test it.
 func canon(p *Policy) string {
@@ -375,8 +375,8 @@ func canon(p *Policy) string {
 			fmt.Fprintf(&b, "env %s drop %s %s %v\n", name, d.Value, d.Reason, d.From)
 		}
 	}
-	fmt.Fprintf(&b, "net mode=%s dns=%v publish=%v nameservers=%v address=%s gateway=%s address6=%s gateway6=%s mtu=%d\n",
-		p.Net.Mode, p.Net.DNS, p.Net.Publish, p.Net.Nameservers,
+	fmt.Fprintf(&b, "net mode=%s dns=%v nameservers=%v address=%s gateway=%s address6=%s gateway6=%s mtu=%d\n",
+		p.Net.Mode, p.Net.DNS, p.Net.Nameservers,
 		p.Net.Address, p.Net.Gateway, p.Net.Address6, p.Net.Gateway6, p.Net.MTU)
 	fmt.Fprintf(&b, "podman %s\n", p.Podman)
 	// Git joins by max like every other scalar, and it was added without this
@@ -1056,7 +1056,7 @@ func mountGuests(p *Policy) []string {
 
 // A profile name snug used to ship and deliberately removed is a different
 // mistake from a typo: the fix is not "see: snug profile list", it is "here is
-// what replaced it". Mirrors TestRetiredPublishAutoIsAHardError's shape
+// what replaced it". Mirrors the retired-key shape
 // (internal/profile/file_test.go), which does the same for a retired TOML key.
 //
 // Both routes that used to reach @null go through UnknownProfile: -p @null via
@@ -1167,7 +1167,7 @@ func TestSysStyleNestedBindOfTheSameTreeIsAllowed(t *testing.T) {
 // duplicate and depending on fold order for WHICH copy survived where. Two
 // profiles agreeing on an address, and one repeating a port the other already
 // named, must join cleanly rather than conflict or duplicate.
-func TestPublishUnionsAndAddressesAgree(t *testing.T) {
+func TestScalarsAndSetsAgreeAcrossProfiles(t *testing.T) {
 	p := mustResolve(t, "@sys", "@cwd-rw", "netty", "netty-too")
 
 	if want := netip.MustParsePrefix("10.13.13.2/24"); p.Net.Address != want {
@@ -1175,16 +1175,6 @@ func TestPublishUnionsAndAddressesAgree(t *testing.T) {
 	}
 	if want := netip.MustParsePrefix("fd00:5e79:1::2/64"); p.Net.Address6 != want {
 		t.Errorf("address6 = %s, want %s — two profiles agreeing on a scalar must join, not conflict", p.Net.Address6, want)
-	}
-
-	want := []int{3000, 4000}
-	if len(p.Net.Publish) != len(want) {
-		t.Fatalf("publish = %v, want %v — repeating a port across profiles must not duplicate it", p.Net.Publish, want)
-	}
-	for i, v := range want {
-		if p.Net.Publish[i] != v {
-			t.Errorf("publish = %v, want %v", p.Net.Publish, want)
-		}
 	}
 
 	// Plugins union the same way (issue #68): netty names caveman+superpowers,

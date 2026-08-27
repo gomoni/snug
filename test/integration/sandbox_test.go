@@ -2322,22 +2322,35 @@ func TestSandboxPortsAreNotPublishedByDefault(t *testing.T) {
 	proj, _ := target(t)
 	writeListener(t, proj)
 
-	// THE CONTROL. A profile that publishes exactly one port, so the host's probe
-	// is known to be able to observe a reachable sandbox listener at all — and,
-	// just as importantly, so the half-second accept window the negative half
-	// relies on is shown to be enough to catch a connection that really happened.
-	// A negative result is worth only as much as the positive one beside it.
-	pub := probeSandboxPort(t, proj, publishProfileEnv(t, 0), "-p", "published")
-	if pub.dialErr != nil {
-		t.Fatalf("control: the host could not reach a port the profile explicitly "+
-			"publishes (%v). Until that works, the check below cannot fail and "+
-			"proves nothing:\n%s", pub.dialErr, pub.out)
+	// THE CONTROL, and it has to be here rather than assumed: a negative result
+	// is worth only as much as the positive one beside it, and "the host could
+	// not connect" reads identically whether nothing was listening or the probe
+	// itself is broken.
+	//
+	// It proves the DIAL half — that a listener on this host's loopback really is
+	// reachable by this code, on this machine, right now. The other half, that
+	// the host can reach a listener INSIDE a sandbox when a human opens a door
+	// for it, is proved by TestSnugProxyServesTheDoorToTheHost; there is no way
+	// to reach one otherwise, which is the property this test exists to pin.
+	ctl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("control: this host will not accept a loopback listener at all: %v", err)
 	}
-	if !strings.Contains(pub.out, "HOST-REACHED-THE-SANDBOX") {
-		t.Fatalf("control: the host connected but the sandbox's listener did not see "+
-			"it within its accept window, so that window is too short for the check "+
-			"below to be trusted:\n%s", pub.out)
+	ctlAddr := ctl.Addr().String()
+	go func() {
+		c, aerr := ctl.Accept()
+		if aerr == nil {
+			c.Close()
+		}
+	}()
+	if c, derr := net.DialTimeout("tcp", ctlAddr, 5*time.Second); derr != nil {
+		ctl.Close()
+		t.Fatalf("control: the probe cannot reach a listener on this host's own loopback "+
+			"(%v), so the refusal asserted below would prove nothing", derr)
+	} else {
+		c.Close()
 	}
+	ctl.Close()
 
 	// THE ASSERTION. Same payload, same probe, same machine — only the profile
 	// differs, so a difference in outcome is attributable to the profile alone.
@@ -2363,31 +2376,6 @@ func TestSandboxPortsAreNotPublishedByDefault(t *testing.T) {
 	if !strings.Contains(def.out, "nobody connected") {
 		t.Errorf("the in-sandbox listener never reported its verdict, so the checks "+
 			"above prove nothing:\n%s", def.out)
-	}
-}
-
-// The other side of the same coin, named so it cannot be lost: when the human
-// asks for a port to be published it must actually appear on the host's
-// loopback. This is the control above, standing on its own — a `publish` that
-// quietly did nothing would make every "not published by default" assertion in
-// this file vacuous, and that is precisely what was found when the negative test
-// was first run against a publishing profile.
-func TestPublishedPortsAreReachable(t *testing.T) {
-	budget(t)
-	requireSandbox(t)
-	requirePasta(t)
-	requirePython(t)
-	proj, _ := target(t)
-	writeListener(t, proj)
-
-	got := probeSandboxPort(t, proj, publishProfileEnv(t, 0), "-p", "published")
-	if got.dialErr != nil {
-		t.Fatalf("the host could not reach 127.0.0.1:%d, which the profile publishes: %v\n%s",
-			got.port, got.dialErr, got.out)
-	}
-	if !strings.Contains(got.out, "HOST-REACHED-THE-SANDBOX") {
-		t.Errorf("the host's connect succeeded but the sandbox's listener never "+
-			"accepted it:\n%s", got.out)
 	}
 }
 
@@ -2477,33 +2465,6 @@ func probeSandboxPort(t *testing.T, proj string, env []string, args ...string) p
 		t.Fatalf("the payload never ran, so this probe would prove nothing:\n%s", out)
 	}
 	return portProbe{port: port, dialErr: err, dialTook: took, out: out}
-}
-
-// publishProfileEnv writes a throwaway profile that publishes one specific port
-// and returns an environment selecting it, along with the port encoded in
-// SNUG_TEST_PORT so probeSandboxPort uses the same one.
-//
-// A named port rather than net-publish's publish_auto: `auto` asks pasta to
-// discover ports the sandbox binds after the fact, which is a different
-// mechanism with its own failure mode, and a control has to be the mechanism
-// that is simplest to be sure of.
-func publishProfileEnv(t *testing.T, port int) []string {
-	t.Helper()
-	if port == 0 {
-		port = freeHostPort(t)
-	}
-	cfg := t.TempDir()
-	dir := filepath.Join(cfg, "snug", "profiles.d")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	toml := fmt.Sprintf("[profile.published]\n"+
-		"description = \"publish exactly one port, as a control\"\n"+
-		"include = [\"@net\"]\npublish = [%d]\n", port)
-	if err := os.WriteFile(filepath.Join(dir, "published.toml"), []byte(toml), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return baseEnv("XDG_CONFIG_HOME="+cfg, fmt.Sprintf("SNUG_TEST_PORT=%d", port))
 }
 
 func portFromEnv(env []string) int {
