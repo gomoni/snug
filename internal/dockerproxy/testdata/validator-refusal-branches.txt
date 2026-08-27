@@ -1,0 +1,17 @@
+# Refusal branches per build validator, counted from build.go's source.
+# A changed number means a refusal arm was ADDED or REMOVED. Adding one is
+# adding a decision, so it needs a case that drives it — issue #369 is five
+# such arms shipping unexercised while the name-level accounting stayed green.
+
+checkAdditionalContexts      11
+checkAutoUserNsOpts          2
+checkBuildOutput             1
+checkBuildSecrets            2
+checkBuildVolume             2
+checkBuilderVersion          1
+checkDockerfile              1
+checkIDMappingOptions        1
+checkIsolation               1
+checkNSOptions               6
+checkNetworkMode             3
+checkSeccompProfile          4
