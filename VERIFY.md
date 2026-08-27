@@ -3636,9 +3636,21 @@ graft layout**, which is the map a `-v` request navigates by.
 FIELD does not close the MECHANISM: an image's own `HEALTHCHECK` instruction
 reaches the same `createTimer` with no `Healthcheck` key in any create body, and
 `/v1.41/build` is an allowed route, so the payload can author that image itself.
-The barrier that would be snug's own policy is `DISABLE_HC_SYSTEMD=true` in the
-engine's authored environment — it short-circuits unconditionally, whatever the
-healthcheck's origin — and that is an engine change, not a proxy one.
+What DOES close it is `DISABLE_HC_SYSTEMD=true` in the engine's authored
+environment (issue #397) — it short-circuits unconditionally, whatever the
+healthcheck's origin. That is an engine change rather than a proxy one, which is
+why it is not in this section. **It is not visible from `--dry-run` at all** —
+the engine's authored environment is not part of the machine document — so the
+check is the unit test that owns it:
+
+```
+$ go test ./internal/engine -run TestTheEngineNeverSchedulesAHealthcheckOnTheHost
+ok  	github.com/gomoni/snug/internal/engine
+```
+
+The field refusal is still worth having: it tells a client that asked for a
+healthcheck that it will not get one, rather than silently accepting and never
+running it.
 
 ### 9q. A build cannot name a namespace snug never judged (issue #369)
 

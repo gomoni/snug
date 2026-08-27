@@ -815,6 +815,50 @@ func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgrou
 	finalEnv = setEnv(finalEnv, "CONTAINERS_CONF", guestConfPath)
 	finalEnv = setEnv(finalEnv, "CONTAINERS_CONF_OVERRIDE", guestConfPath)
 
+	// DISABLE_HC_SYSTEMD is the one barrier against a healthcheck becoming
+	// SCHEDULED WORK ON THE HOST that is snug's own POLICY rather than an
+	// accident of configuration (issue #397).
+	//
+	// A container with a healthcheck makes the engine run
+	// `systemd-run --user --unit <cid> --on-unit-inactive=<interval> podman
+	// healthcheck run <cid>` (libpod/healthcheck_linux.go) — a transient unit
+	// and timer on the HOST USER's session manager, work scheduled outside the
+	// sandbox, as the host uid, that can outlive the run.
+	// libpod's disableHealthCheckSystemd returns true on this variable
+	// UNCONDITIONALLY, before RunsOnSystemd and before the D-Bus dial, so
+	// createTimer is never reached whatever the healthcheck's ORIGIN.
+	//
+	// ORIGIN is why the proxy cannot close this and this line has to.
+	// dockerproxy refuses the create body's `Healthcheck` field at every
+	// spelling (toplevel.go), but with no Test in the body podman's
+	// CompleteSpec takes the IMAGE's HEALTHCHECK and applyHealthCheckOverrides
+	// defaults Interval to 30s — an identical non-nil HealthCheckConfig and an
+	// identical createTimer call, with no Healthcheck key in any request. The
+	// payload can author that image itself, because /v1.41/build is allowed.
+	// So the field refusal narrows the surface and does not close the
+	// mechanism; refusing the field and stopping there would have been a
+	// claimed closure.
+	//
+	// THREE BARRIERS ALREADY STOOD HERE AND NONE WAS POLICY. Each lapses on
+	// ordinary reconfiguration, which is the whole argument for this line:
+	//   - RunsOnSystemd() stats /run/systemd/system in the engine's own view,
+	//     which is a fresh empty tmpfs graft (cli/engineview.go). Anything that
+	//     creates one directory in a writable tmpfs lapses it, and issue #399
+	//     proposes putting per-run state under /run.
+	//   - rootless ConnectToDBUS dials $XDG_RUNTIME_DIR/systemd/private, and
+	//     snug repoints XDG_RUNTIME_DIR at this run's runroot. It moves if the
+	//     runroot moves.
+	//   - the retired pinned bundle's podman was built WITHOUT the systemd
+	//     build tag. The distribution's 6.0.2 that snug now resolves HAS it, so
+	//     that barrier was a property of a binary and left with the bundle.
+	//
+	// Severity bound, said out loud so nobody reads this as an escape: the
+	// healthcheck's Test runs INSIDE the container (healthCheckExec), never on
+	// snug's side; the unit name is not client-chosen; and the only
+	// client-influenced value in the systemd-run argv is the interval, via
+	// time.Duration.String(). No argv injection was ever available here.
+	finalEnv = setEnv(finalEnv, "DISABLE_HC_SYSTEMD", "true")
+
 	guestStore, err := e.guestPath(pol, "--root (the image store)", e.store)
 	if err != nil {
 		return stage.EngineSpec{}, err

@@ -226,11 +226,14 @@ var topLevelRefusalReason = map[string]string{
 	// an identical createTimer call with NO Healthcheck key in any create body.
 	// The payload can author that image itself: /v1.41/build is allowed.
 	//
-	// The one barrier that would be snug's OWN policy is DISABLE_HC_SYSTEMD=true
-	// in the engine's authored env — disableHealthCheckSystemd returns true on it
-	// unconditionally, before RunsOnSystemd and before D-Bus, whatever the
-	// healthcheck's origin. That is an engine-env change rather than a proxy one,
-	// so it is filed rather than smuggled in here.
+	// WHAT DOES close the mechanism is DISABLE_HC_SYSTEMD=true in the engine's
+	// authored env (issue #397, engine.go's Spec) — disableHealthCheckSystemd
+	// returns true on it unconditionally, before RunsOnSystemd and before D-Bus,
+	// whatever the healthcheck's origin. It is engine-env rather than proxy, and
+	// it is the barrier that is snug's own POLICY; the three that stood before it
+	// were accidents of configuration. This refusal is still worth having: it
+	// tells a client that asked for a healthcheck that it will not get one,
+	// rather than silently accepting and never running it.
 	//
 	// Refused rather than normalised (standing ruling): normalising Interval
 	// would hand back a container whose configured healthcheck silently never
