@@ -162,14 +162,40 @@ func hostEngine(t *testing.T) string {
 		engineNoneOnce.Do(func() { t.Logf("snug-engine-none: no podman resolved") })
 		t.Skip("SKIP: no podman on PATH and $SNUG_PODMAN unset — no engine on this host to test against")
 	}
-	// An engine outside engine.SupportedPodmanSet is a WARNING on a developer
-	// host and a FAILURE in CI, and the split is the whole point (issue #395).
-	// The version floats with the distribution since the pin was retired
-	// (#384), so an unconditional fatal would block every developer whose
-	// distro moved ahead of or behind the set — the result stays readable and
-	// nobody is stopped. A lane that set $SNUG_REQUIRE_ENGINE asked this run to
-	// MEAN something, and a green run against an engine nobody supports is the
-	// same lie as a green run that skipped everything.
+	// An engine outside engine.SupportedPodmanSet is a SKIP on a developer host
+	// and a FAILURE where a lane promised an engine, and the split is the whole
+	// point (issue #395). The version floats with the distribution since the
+	// pin was retired (#384), so an unconditional fatal would block every
+	// developer whose distro moved ahead of or behind the set. A lane that set
+	// $SNUG_REQUIRE_ENGINE asked this run to MEAN something, and a green run
+	// against an engine nobody supports is the same lie as a green run that
+	// skipped everything.
+	//
+	// THE SKIP IS HERE, AND IT NAMES THE VERSION (issue #458). It used to
+	// merely warn and return the path, so the tests ran, failed to start a
+	// container, and were excused much further downstream by a message naming a
+	// DIFFERENT condition:
+	//
+	//	SKIP: no usable real container engine in this environment: a build
+	//	succeeded but its RUN step never actually executed a container --
+	//	this host's engine cannot really run one
+	//
+	// MEASURED on run 33054984495, the `real sandbox behaviour` job: that string
+	// excused 27 tests while the real condition — podman 5.8.4, which this very
+	// function had already logged as UNSUPPORTED — went unsaid. A skip must name
+	// the ONE condition it excuses, and "this host's engine cannot really run
+	// one" is not it; the engine runs fine, it is the wrong major.
+	//
+	// This is not a coverage loss on a shared runner, and the reason is worth
+	// recording because it is not obvious: podman 6.x IS NOT PACKAGED FOR UBUNTU
+	// AT ALL. Measured against Launchpad — every podman ever published to the
+	// Ubuntu archive tops out at 5.8.6 (26.04 LTS carries 5.7.0), the podman
+	// project's own installation docs point Ubuntu users at that archive and
+	// offer no PPA, and the old upstream route
+	// (OBS devel:kubic:libcontainers:stable) is 404 with the surviving
+	// `unstable` repo carrying no podman package at all. So the supported-engine
+	// coverage lives where it can: the Tumbleweed container, which runs THESE
+	// SAME tests via `make integration-sandbox` with SNUG_REQUIRE_ENGINE=1.
 	if r.unsupported != "" {
 		if os.Getenv("SNUG_REQUIRE_ENGINE") != "" {
 			t.Fatalf("SNUG_REQUIRE_ENGINE is set and the resolved engine is not one snug "+
@@ -184,12 +210,29 @@ func hostEngine(t *testing.T) string {
 			// no second marker to teach that recipe about.
 			t.Logf("snug-engine-version: %s at %s [UNSUPPORTED: %s]", r.versionLine, r.path, r.unsupported)
 		})
-		return r.path
+		t.Skip(unsupportedEngineSkipReason(r))
 	}
 	versionOnce.Do(func() {
 		t.Logf("snug-engine-version: %s at %s", r.versionLine, r.path)
 	})
 	return r.path
+}
+
+// unsupportedEngineSkipReason writes the one sentence a reader of a skipped
+// engine test needs: WHICH version was found, why that decides it, and where
+// the coverage actually happens. Split out of hostEngine so a test can read the
+// message rather than restate it — a copy of the wording in a test cannot
+// disagree with the wording in the code out loud, which is how the message it
+// replaces survived excusing 27 tests for the wrong reason.
+func unsupportedEngineSkipReason(r engineResolution) string {
+	return fmt.Sprintf("SKIP: %s — resolved %q at %s.\n"+
+		"      This is the ONE condition excused here: the engine is present and works, it is "+
+		"the wrong major, so nothing it does would be evidence about %s.\n"+
+		"      The supported-engine coverage runs these same tests in the Tumbleweed container "+
+		"(test/engine-container.sh).\n"+
+		"      Fix: run against %s, or set SNUG_REQUIRE_ENGINE=1 to make this a failure "+
+		"instead of a skip.",
+		r.unsupported, r.versionLine, r.path, engine.SupportedPodmanSet, engine.SupportedPodmanSet)
 }
 
 // describeResolvedEngine renders the resolved engine for the negative
