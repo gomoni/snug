@@ -77,7 +77,7 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 	}
 	describeNetwork(out, p)
 	describeTopology(out, p)
-	describeGrafts(out, p)
+	describeGrafts(out, rep, p)
 	describeContainers(out, p, rep.Containers)
 	describeGit(out, p)
 	describeSSH(out, p)
@@ -2332,7 +2332,7 @@ func wrapGraftField(label, text string) []string {
 // reason. Guest, Host and HostAsked print VERBATIM (never through
 // wrapGraftField, see its own comment, finding F9); only prose (Why, the
 // destination note, the "resolved:" line) is wrapped.
-func describeGrafts(out io.Writer, p *policy.Policy) {
+func describeGrafts(out io.Writer, rep Report, p *policy.Policy) {
 	if len(p.Grafts) == 0 {
 		return
 	}
@@ -2399,8 +2399,22 @@ func describeGrafts(out io.Writer, p *policy.Policy) {
 		// were the only two words it could hold: "cgroup2-rw" is ten, and a
 		// column that overflows shifts every field after it on that row only,
 		// which is exactly the kind of ragged block a human stops reading.
+		guestField := visibleValue(gr.Guest)
+		// The bound goes on this row for the same reason dryrun.go's own
+		// FILESYSTEM block puts one on a payload's tmpfs (#281): a size a
+		// payload's engine could fill the host's RAM with is exactly what
+		// this screen exists to disclose, and the engine's two tmpfs are NOT
+		// bounded by p.TmpfsSizeBytes the way a payload mount is — showing
+		// the payload's cap here would be wrong, and showing none would hide
+		// the engine's cap entirely. Read from rep.GraftTmpfsSizeBytes, not
+		// recomputed with policy.EngineTmpfsSize here: buildReport calls it
+		// once so the JSON document cannot carry a different number
+		// (TestEveryFactProducerTheHumanScreenCallsIsAlsoInTheReport).
+		if bound, ok := rep.GraftTmpfsSizeBytes[gr.Guest]; ok {
+			guestField = fmt.Sprintf("%s (max %s)", guestField, policy.FormatBytes(bound))
+		}
 		fmt.Fprintf(out, "  %-10s  %-44s  %s\n",
-			gr.Kind.String()+"-"+access, visibleValue(gr.Guest),
+			gr.Kind.String()+"-"+access, guestField,
 			visibleValue(strings.Join(gr.From, "+")))
 		// A HOST-shaped graft names the tree it clones; a fresh mount has no
 		// host path at all, and printing "from " with nothing after it said

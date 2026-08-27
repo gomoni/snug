@@ -886,6 +886,21 @@ func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgrou
 		"unix://" + guestSock,
 	}
 
+	// The engine's own two tmpfs (__inengine's /run and /var/tmp mounts) are
+	// bounded here, from the resolved Policy, and nowhere downstream — the
+	// stage carries these numbers, it does not compute them (invariant 6).
+	// Both guests are ones policy.EngineTmpfsSize knows; an !ok here would
+	// mean this function asked about a guest nobody taught it, which is a
+	// programming error in this file, not a runtime condition to tolerate.
+	runSize, ok := policy.EngineTmpfsSize("/run", pol.TmpfsSizeBytes)
+	if !ok {
+		return stage.EngineSpec{}, errors.New("engine: policy.EngineTmpfsSize does not know /run")
+	}
+	varTmpSize, ok := policy.EngineTmpfsSize("/var/tmp", pol.TmpfsSizeBytes)
+	if !ok {
+		return stage.EngineSpec{}, errors.New("engine: policy.EngineTmpfsSize does not know /var/tmp")
+	}
+
 	// Podman and Argv are what the ENGINE is exec'd with, so they are guest
 	// paths. Sock is what P1 WAITS for on the host side (enginefork.go's
 	// waitForSocket) and what the container proxy dials, so it stays the host
@@ -893,7 +908,9 @@ func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgrou
 	// of a graft and the one place this file must not "tidy" them into one.
 	return stage.EngineSpec{
 		Podman: guestPodman, Argv: argv, Env: finalEnv, Sock: e.sock,
-		Grafts: engineGrafts(pol),
+		Grafts:          engineGrafts(pol),
+		RunSizeBytes:    runSize,
+		VarTmpSizeBytes: varTmpSize,
 	}, nil
 }
 

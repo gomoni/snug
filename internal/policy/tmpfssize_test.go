@@ -259,3 +259,23 @@ func TestFormatBytes(t *testing.T) {
 		}
 	}
 }
+
+// TestEngineTmpfsSize covers the two known guests and, critically, that an
+// unknown one refuses rather than defaulting — that refusal is what stops a
+// third engine tmpfs shipping with no bound at all (issue #281).
+func TestEngineTmpfsSize(t *testing.T) {
+	const tmpfsSizeBytes = 3 << 20 // a non-default value, so a /run test that
+	// silently read DefaultTmpfsSize instead would still fail.
+
+	if got, ok := EngineTmpfsSize("/run", tmpfsSizeBytes); !ok || got != tmpfsSizeBytes {
+		t.Errorf(`EngineTmpfsSize("/run", %d) = (%d, %v), want (%d, true)`,
+			tmpfsSizeBytes, got, ok, tmpfsSizeBytes)
+	}
+	if got, ok := EngineTmpfsSize("/var/tmp", tmpfsSizeBytes); !ok || got != DefaultEngineScratchSize {
+		t.Errorf(`EngineTmpfsSize("/var/tmp", %d) = (%d, %v), want (%d, true)`,
+			tmpfsSizeBytes, got, ok, DefaultEngineScratchSize)
+	}
+	if got, ok := EngineTmpfsSize("/dev/shm", tmpfsSizeBytes); ok {
+		t.Errorf(`EngineTmpfsSize("/dev/shm", ...) = (%d, true), want (_, false)`, got)
+	}
+}

@@ -219,7 +219,9 @@ func TestGoldenEngineViewOwnMounts(t *testing.T) {
 	if err := installEngineViewGrafts(newEnvFakeEnv(), p); err != nil {
 		t.Fatal(err)
 	}
-	got := captureFile(t, func(f io.Writer) { describeGrafts(f, p) })
+	rep := Report{TmpfsSizeBytes: p.TmpfsSizeBytes, Grafts: sortedGrafts(p)}
+	rep.GraftTmpfsSizeBytes = graftTmpfsSizeBytes(rep.Grafts, rep.TmpfsSizeBytes)
+	got := captureFile(t, func(f io.Writer) { describeGrafts(f, rep, p) })
 
 	path := filepath.Join("testdata", "engineview.enginemounts.txt")
 	if *update {
@@ -250,5 +252,50 @@ func TestGoldenEngineViewOwnMounts(t *testing.T) {
 		t.Error("the ENGINE VIEW block claims G4's EngineOwnedHostPaths admitted one of the " +
 			"engine's own mounts; G4 is skipped for a mount the stage makes itself, so that " +
 			"sentence describes a check that did not run")
+	}
+}
+
+// TestGraftTmpfsSizeBytesReachesTheJSONDocument is TestGoldenEngineViewOwnMounts's
+// missing other half: that golden pins the HUMAN screen's "(max N)" text, but
+// a golden diff alone would not catch jsonGraft.SizeBytes silently reading 0
+// or being left unset — this asserts the actual numbers, on both renderers,
+// against policy.EngineTmpfsSize directly (issue #281).
+func TestGraftTmpfsSizeBytesReachesTheJSONDocument(t *testing.T) {
+	p := engineViewPolicy(t)
+	if err := installEngineViewGrafts(newEnvFakeEnv(), p); err != nil {
+		t.Fatal(err)
+	}
+	rep := Report{TmpfsSizeBytes: p.TmpfsSizeBytes, Grafts: sortedGrafts(p)}
+	rep.GraftTmpfsSizeBytes = graftTmpfsSizeBytes(rep.Grafts, rep.TmpfsSizeBytes)
+
+	for _, guest := range []string{"/run", "/var/tmp"} {
+		want, ok := policy.EngineTmpfsSize(guest, p.TmpfsSizeBytes)
+		if !ok {
+			t.Fatalf("PRECONDITION: policy.EngineTmpfsSize(%q, ...) = (_, false)", guest)
+		}
+		if got := rep.GraftTmpfsSizeBytes[guest]; got != want {
+			t.Errorf("rep.GraftTmpfsSizeBytes[%q] = %d, want %d", guest, got, want)
+		}
+	}
+	// CONTROL: a non-tmpfs graft (the fresh procfs) has no entry at all —
+	// not a zero, which would read as "unbounded" to a JSON consumer.
+	if _, ok := rep.GraftTmpfsSizeBytes["/proc"]; ok {
+		t.Error(`rep.GraftTmpfsSizeBytes["/proc"] has an entry; /proc is not a tmpfs`)
+	}
+
+	var e lossyEncoder
+	doc := e.document(rep)
+	seen := map[string]uint64{}
+	for _, jg := range doc.EngineView {
+		seen[jg.Guest] = jg.SizeBytes
+	}
+	for _, guest := range []string{"/run", "/var/tmp"} {
+		want, _ := policy.EngineTmpfsSize(guest, p.TmpfsSizeBytes)
+		if seen[guest] != want {
+			t.Errorf("JSON grafts[%q].size_bytes = %d, want %d", guest, seen[guest], want)
+		}
+	}
+	if got, ok := seen["/proc"]; ok && got != 0 {
+		t.Errorf(`JSON grafts["/proc"].size_bytes = %d, want omitted (0)`, got)
 	}
 }

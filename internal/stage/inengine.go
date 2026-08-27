@@ -155,53 +155,109 @@ type engineGraft struct {
 	tree     int
 }
 
-func EnterEngine(argv []string) error {
+// enterEngineArgv is the pure parse of EnterEngine's positional argv,
+// decomposed from it so the wire protocol — the env block, the two tmpfs
+// size bounds, the graft count and grafts, the podman argv — can be tested
+// without a network namespace, a mount namespace, or root to setns with:
+// none of that is touched until EnterEngine itself calls this and proceeds.
+type enterEngineArgv struct {
+	netnsFD    int
+	mntFD      int
+	env        []string
+	runSize    uint64
+	varTmpSize uint64
+	grafts     []engineGraft
+	podmanArgv []string
+}
+
+func parseEnterEngineArgv(argv []string) (enterEngineArgv, error) {
 	if len(argv) < 4 {
-		return fmt.Errorf("__inengine: usage: __inengine NETNSFD MNTFD NENV [ENV...] " +
-			"NGRAFTS [HOST GUEST ro|rw]... PODMAN [ARGS...]")
+		return enterEngineArgv{}, fmt.Errorf("__inengine: usage: __inengine NETNSFD MNTFD NENV [ENV...] " +
+			"RUNSIZE VARTMPSIZE NGRAFTS [HOST GUEST ro|rw]... PODMAN [ARGS...]")
 	}
 	fd := atoiOrZero(argv[0])
 	if fd <= 0 {
-		return fmt.Errorf("__inengine: bad netns fd %q", argv[0])
+		return enterEngineArgv{}, fmt.Errorf("__inengine: bad netns fd %q", argv[0])
 	}
 	mntFD := atoiOrZero(argv[1])
 	if mntFD <= 0 {
-		return fmt.Errorf("__inengine: bad sandbox-mount-namespace fd %q", argv[1])
+		return enterEngineArgv{}, fmt.Errorf("__inengine: bad sandbox-mount-namespace fd %q", argv[1])
 	}
 	nEnv, err := strconv.Atoi(argv[2])
 	if err != nil || nEnv < 0 {
-		return fmt.Errorf("__inengine: bad env count %q", argv[2])
+		return enterEngineArgv{}, fmt.Errorf("__inengine: bad env count %q", argv[2])
 	}
 	rest := argv[3:]
 	if len(rest) < nEnv+1 {
-		return fmt.Errorf("__inengine: argv too short for %d env pair(s)", nEnv)
+		return enterEngineArgv{}, fmt.Errorf("__inengine: argv too short for %d env pair(s)", nEnv)
 	}
 	env := rest[:nEnv]
 	rest = rest[nEnv:]
 
+	// The two tmpfs size bounds (issue #281), positioned after the env block
+	// and before NGRAFTS. Both come from policy.EngineTmpfsSize by way of
+	// EngineSpec — this shim never computes a bound itself — so zero or
+	// unparseable is a wire-protocol defect, not a "use the kernel default"
+	// signal: the KERNEL defaults a tmpfs mounted with no size= to half of
+	// host RAM (these are unix.Mount calls in the engine's own namespace, not
+	// bwrap argv), and silently falling back to that here is exactly the
+	// unbounded engine tmpfs this change exists to close.
+	if len(rest) < 2 {
+		return enterEngineArgv{}, fmt.Errorf("__inengine: argv too short for the /run and /var/tmp tmpfs size bounds")
+	}
+	runSize, err := strconv.ParseUint(rest[0], 10, 64)
+	if err != nil || runSize == 0 {
+		return enterEngineArgv{}, fmt.Errorf("__inengine: bad /run tmpfs size %q", rest[0])
+	}
+	varTmpSize, err := strconv.ParseUint(rest[1], 10, 64)
+	if err != nil || varTmpSize == 0 {
+		return enterEngineArgv{}, fmt.Errorf("__inengine: bad /var/tmp tmpfs size %q", rest[1])
+	}
+	rest = rest[2:]
+
 	nGrafts, err := strconv.Atoi(rest[0])
 	if err != nil || nGrafts < 0 {
-		return fmt.Errorf("__inengine: bad graft count %q", rest[0])
+		return enterEngineArgv{}, fmt.Errorf("__inengine: bad graft count %q", rest[0])
 	}
 	rest = rest[1:]
 	if len(rest) < nGrafts*3+1 {
-		return fmt.Errorf("__inengine: argv too short for %d graft(s) and a podman path", nGrafts)
+		return enterEngineArgv{}, fmt.Errorf("__inengine: argv too short for %d graft(s) and a podman path", nGrafts)
 	}
 	grafts := make([]engineGraft, 0, nGrafts)
 	for i := 0; i < nGrafts; i++ {
 		host, guest, access := rest[i*3], rest[i*3+1], rest[i*3+2]
 		if host == "" || guest == "" {
-			return fmt.Errorf("__inengine: graft %d has an empty host or guest path", i)
+			return enterEngineArgv{}, fmt.Errorf("__inengine: graft %d has an empty host or guest path", i)
 		}
 		switch access {
 		case "ro", "rw":
 		default:
-			return fmt.Errorf("__inengine: graft %d (%s) has access %q, want ro or rw",
+			return enterEngineArgv{}, fmt.Errorf("__inengine: graft %d (%s) has access %q, want ro or rw",
 				i, guest, access)
 		}
 		grafts = append(grafts, engineGraft{host: host, guest: guest, readOnly: access == "ro"})
 	}
 	podmanArgv := rest[nGrafts*3:]
+
+	return enterEngineArgv{
+		netnsFD: fd, mntFD: mntFD, env: env,
+		runSize: runSize, varTmpSize: varTmpSize,
+		grafts: grafts, podmanArgv: podmanArgv,
+	}, nil
+}
+
+func EnterEngine(argv []string) error {
+	a, err := parseEnterEngineArgv(argv)
+	if err != nil {
+		return err
+	}
+	fd := a.netnsFD
+	mntFD := a.mntFD
+	env := a.env
+	runSize := a.runSize
+	varTmpSize := a.varTmpSize
+	grafts := a.grafts
+	podmanArgv := a.podmanArgv
 	podman := podmanArgv[0]
 
 	runtime.LockOSThread()
@@ -389,7 +445,19 @@ func EnterEngine(argv []string) error {
 	// the HOST's /run is exposed here — while the mechanism it assumed
 	// (needing no mount at all) was simply wrong. XDG_RUNTIME_DIR is recreated empty on it for the same reason
 	// podman's own per-container netns bind-mount path looks there.
-	if err := unix.Mount("tmpfs", "/run", "tmpfs", 0, ""); err != nil {
+	//
+	// Bounded to policy.EngineTmpfsSize's /run figure — tmpfs_size_mib's own
+	// number, because what podman actually writes here (locks, sockets,
+	// /run/libpod state) is kilobytes and there is no reason to give it a
+	// ceiling of its own. Unbounded, an empty mount(2) data string here
+	// defaults to half of host RAM, the same defect DefaultTmpfsSize closed
+	// for a payload's own tmpfs (issue #281). A write past the bound returns
+	// ENOSPC from whatever wrote it, an ordinary disk-full error, not a snug
+	// message. This bounds one mount, not the sum of them — issue #283 is the
+	// aggregate bound, and a per-mount bound described as "tmpfs exhaustion
+	// is fixed" is worse than no bound, because the next reviewer stops
+	// looking.
+	if err := unix.Mount("tmpfs", "/run", "tmpfs", 0, fmt.Sprintf("size=%d", runSize)); err != nil {
 		return fmt.Errorf("__inengine: mounting a fresh tmpfs on /run: %w", err)
 	}
 	if err := unix.Mkdir("/run/lock", 0o1777); err != nil {
@@ -403,7 +471,15 @@ func EnterEngine(argv []string) error {
 	// image_copy_tmp_dir and $TMPDIR — both of which snug also sets — left
 	// every build failing at the commit step. A fresh, empty tmpfs: nothing of
 	// the host's /var/tmp is in it, and it dies with the engine.
-	if err := unix.Mount("tmpfs", "/var/tmp", "tmpfs", 0, ""); err != nil {
+	//
+	// Bounded to policy.DefaultEngineScratchSize, a fixed 8 GiB unrelated to
+	// tmpfs_size_mib: a whole image layer unpacks here while committing, so
+	// the cap has to clear the biggest base image a user pulls rather than
+	// track a payload's own tmpfs preference — coupling the two would fail an
+	// ordinary pull the moment somebody tuned tmpfs_size_mib down. A write
+	// past the bound returns ENOSPC from whatever wrote it, an ordinary
+	// disk-full error, not a snug message.
+	if err := unix.Mount("tmpfs", "/var/tmp", "tmpfs", 0, fmt.Sprintf("size=%d", varTmpSize)); err != nil {
 		return fmt.Errorf("__inengine: mounting a fresh tmpfs on /var/tmp for the engine's own "+
 			"image-commit scratch space: %w", err)
 	}

@@ -438,6 +438,8 @@ func (s *Stage) StartSandbox(bwrapPath string, argv []string, spec *EngineSpec, 
 		req.EngineEnv = spec.Env
 		req.EngineSock = spec.Sock
 		req.EngineGrafts = spec.Grafts
+		req.EngineRunSizeBytes = spec.RunSizeBytes
+		req.EngineVarTmpSizeBytes = spec.VarTmpSizeBytes
 	}
 	if err := sendRequest(s.control, req); err != nil {
 		return bwrapinfo.Info{}, fmt.Errorf("stage: sending the start request: %w", err)
@@ -510,6 +512,14 @@ type EngineSpec struct {
 	// P0 authors this list from the resolved Policy's own p.Grafts, so the
 	// engine's view and the model of it have one author (invariant 6).
 	Grafts []EngineGraft
+
+	// RunSizeBytes and VarTmpSizeBytes bound the two tmpfs __inengine mounts
+	// for itself (/run, /var/tmp) — both come from policy.EngineTmpfsSize,
+	// never computed here: the stage carries the numbers, it does not invent
+	// them (invariant 6, one policy one author). Both are hard-refused by
+	// EnterEngine if zero or unparseable on the wire.
+	RunSizeBytes    uint64
+	VarTmpSizeBytes uint64
 }
 
 // Wait blocks until the payload exits and returns its raw wait status, so
