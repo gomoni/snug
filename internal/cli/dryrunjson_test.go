@@ -3,10 +3,12 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -54,6 +56,13 @@ func jsonGoldenReport(t *testing.T, sel []policy.ProfileName, refused bool) stri
 // still never read from the developer's host: the caller supplies a literal, so
 // the document stays host-independent for the same reason the cleared case does.
 func jsonGoldenReportWithEngine(t *testing.T, sel []policy.ProfileName, refused bool, engineBin string) string {
+	return jsonGoldenReportFull(t, sel, refused, engineBin, "", pinnedSignaturePolicy())
+}
+
+// jsonGoldenReportFull adds the signature-policy axis. It is separate so every
+// existing caller keeps the ordinary host (nothing configured) without saying
+// so, and only the case that pins a refusal has to name one.
+func jsonGoldenReportFull(t *testing.T, sel []policy.ProfileName, refused bool, engineBin, engineRoot string, sig engine.SignaturePolicySummary) string {
 	t.Helper()
 	reg, err := profile.Builtins()
 	if err != nil {
@@ -70,6 +79,10 @@ func jsonGoldenReportWithEngine(t *testing.T, sel []policy.ProfileName, refused 
 		env.env["SNUG_PODMAN"] = engineBin
 		env.files[engineBin] = true
 	}
+	if engineRoot != "" {
+		env.env["SNUG_PODMAN_ROOT"] = engineRoot
+		env.dirs[engineRoot] = true
+	}
 
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), env)
 	switch {
@@ -80,7 +93,8 @@ func jsonGoldenReportWithEngine(t *testing.T, sel []policy.ProfileName, refused 
 		t.Fatalf("Resolve(%v): %v", sel, err)
 	}
 
-	rep := buildReport(env, p, p.BwrapArgs(0, 0), config{json: true}, err, pinnedSignaturePolicy)
+	rep := buildReport(env, p, p.BwrapArgs(0, 0), config{json: true}, err,
+		func() engine.SignaturePolicySummary { return sig })
 	rep.Seccomp = jsonGoldenSeccomp
 
 	var buf bytes.Buffer
@@ -108,20 +122,25 @@ func TestGoldenDryRunJSON(t *testing.T) {
 		// engineBin pins $SNUG_PODMAN for the case. Empty clears it, which is
 		// what every case but the last one wants.
 		engineBin string
+		// sig pins the signature policy. The zero value is the ordinary host
+		// with nothing configured, which is what every case but the last wants.
+		sig engine.SignaturePolicySummary
+		// engineRoot pins $SNUG_PODMAN_ROOT, the third refusal-bearing field.
+		engineRoot string
 	}{
 		// The document a bare `snug --dry-run --json <dir>` produces.
-		{"defaults", profile.BuiltinDefaults(), false, ""},
+		{"defaults", profile.BuiltinDefaults(), false, "", engine.SignaturePolicySummary{}, ""},
 		// An engine run: the CONTAINERS block appears, the topology grows the
 		// engine process and its capability bounding set, and the FILESYSTEM
 		// block gains the staged podman stub — the one mount whose
 		// "executable" is true, which is the fact behind the human column's
 		// "exec" word.
-		{"podman-socket", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, false, ""},
+		{"podman-socket", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, false, "", engine.SignaturePolicySummary{}, ""},
 		// A REFUSED policy still writes a complete document, and exits 77
 		// separately. `snug --dry-run --json x > policy.json` yielding a
 		// parseable file on a refusal is the property this format is designed
 		// for; clang's SARIF does the opposite (0 bytes on redirect).
-		{"refused", []policy.ProfileName{"@parent-ro"}, true, ""},
+		{"refused", []policy.ProfileName{"@parent-ro"}, true, "", engine.SignaturePolicySummary{}, ""},
 		// ISSUE #405, and it is here because the refusal has TWO SINKS: the
 		// human CONTAINERS block and this document. A wording change asserted
 		// in one is not asserted in the other, and CLAUDE.md's rule is to name
@@ -130,12 +149,27 @@ func TestGoldenDryRunJSON(t *testing.T) {
 		// spelling — so engine_binary_refusal is populated here and nowhere
 		// else in this table.
 		{"engine-writable", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, false,
-			"/home/u/proj/sub/bin/podman"},
+			"/home/u/proj/sub/bin/podman", engine.SignaturePolicySummary{}, ""},
+		// ISSUE #420. signature_policy_refusal was "" in EVERY golden, so the
+		// only refusal-bearing field with no pinned literal was the one whose
+		// sink nobody had exercised. Same argument as engine-writable above: a
+		// refusal reaches two sinks and a wording change asserted in neither is
+		// not asserted at all. TestEveryRefusalFieldIsPinnedBySomeGolden is what
+		// makes a THIRD such field inherit this rather than need its own row.
+		{"signature-policy-refused", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, false, "",
+			engine.SignaturePolicySummary{Refusal: errors.New("/etc/containers/policy.json requires signatures snug cannot verify inside the sandbox")}, ""},
+		// The THIRD refusal-bearing field, and it was found by
+		// TestEveryRefusalFieldIsPinnedBySomeGolden rather than by anybody
+		// noticing — which is the argument for asserting the set. #420 named
+		// signature_policy_refusal and engine_binary_refusal; toolchain_root_refusal
+		// was unpinned too and nobody had said so.
+		{"toolchain-root-writable", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, false, "",
+			engine.SignaturePolicySummary{}, "/home/u/proj/sub/toolchain"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := jsonGoldenReportWithEngine(t, tc.sel, tc.refused, tc.engineBin)
+			got := jsonGoldenReportFull(t, tc.sel, tc.refused, tc.engineBin, tc.engineRoot, tc.sig)
 
 			path := filepath.Join("testdata", "json."+tc.name+".json")
 			if *update {
@@ -753,4 +787,76 @@ func TestSubcommandsRejectAFormatFlag(t *testing.T) {
 // measured, and it is the difference between a green local gate and a red CI one.
 func pinnedSignaturePolicy() engine.SignaturePolicySummary {
 	return engine.SignaturePolicySummary{}
+}
+
+// TestEveryRefusalFieldIsPinnedBySomeGolden is issue #420's second item, and it
+// is written as a SET over the fields rather than a row per field on purpose.
+//
+// The defect it closes: `signature_policy_refusal` was `""` in every golden
+// document while `engine_binary_refusal` was populated in one. A refusal-bearing
+// field with no pinned literal anywhere is a field whose wording no golden diff
+// would show — and these documents are an INTERFACE other people's CI asserts
+// on, so a silent change to a refusal string is a silent change to that
+// interface.
+//
+// Doing it as a set is what makes a THIRD `_refusal` field inherit the guard
+// instead of needing its own row. That is the difference between this and a
+// hand-maintained list, and it is the same argument as
+// TestEveryRefusalProducerIsRegistered in internal/policy: the check is over
+// what the code DECLARES, not over what somebody remembered to enumerate.
+//
+// The `_bytes` siblings are excluded deliberately: they are `omitempty` byte
+// renderings of the same string, so pinning the string pins them.
+func TestEveryRefusalFieldIsPinnedBySomeGolden(t *testing.T) {
+	goldens, err := filepath.Glob(filepath.Join("testdata", "json.*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(goldens) == 0 {
+		t.Fatal("no JSON goldens were found at all, so this sweep is inert rather than clean")
+	}
+
+	// The field names come from the struct tags, so a renamed or added field is
+	// picked up without this test being edited.
+	var want []string
+	rt := reflect.TypeOf(jsonContainers{})
+	for i := 0; i < rt.NumField(); i++ {
+		name := strings.SplitN(rt.Field(i).Tag.Get("json"), ",", 2)[0]
+		if strings.HasSuffix(name, "_refusal") {
+			want = append(want, name)
+		}
+	}
+	if len(want) == 0 {
+		t.Fatal("no `*_refusal` field was found on jsonContainers. Either they have been " +
+			"renamed and this sweep is now inert, or the struct is not the one carrying them")
+	}
+
+	populated := map[string]string{}
+	for _, g := range goldens {
+		b, err := os.ReadFile(g)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct {
+			Containers map[string]any `json:"containers"`
+		}
+		if err := json.Unmarshal(b, &doc); err != nil {
+			t.Fatalf("%s is not valid JSON: %v", g, err)
+		}
+		for _, f := range want {
+			if s, ok := doc.Containers[f].(string); ok && s != "" {
+				populated[f] = filepath.Base(g)
+			}
+		}
+	}
+
+	for _, f := range want {
+		if populated[f] == "" {
+			t.Errorf("no golden document populates %q, so its wording is not pinned anywhere "+
+				"and a change to it would produce no golden diff. These documents are an "+
+				"interface other people's CI asserts on. Add a case to TestGoldenDryRunJSON "+
+				"that makes this refusal fire — see the signature-policy-refused and "+
+				"engine-writable rows for the two axes that already exist", f)
+		}
+	}
 }

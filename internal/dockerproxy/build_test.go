@@ -2,8 +2,15 @@ package dockerproxy
 
 import (
 	"encoding/json"
+	"flag"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -469,6 +476,12 @@ func TestCheckNetworkModeOnTheCompatEndpoint(t *testing.T) {
 		{"none", "none", "ioctl SIOCSIFFLAGS"},
 		{"private", "private", "ioctl SIOCSIFFLAGS"},
 		{"pasta", "pasta", "ioctl SIOCSIFFLAGS"},
+		// slirp4netns was in the libpod table and missing from THIS one
+		// (issue #421). The two endpoints share checkNetworkMode, so its
+		// absence proved nothing about the code — but a table that drives
+		// five of six words is a table whose sixth row nobody would miss,
+		// and the endpoints are asserted separately here on purpose.
+		{"slirp4netns", "slirp4netns", "ioctl SIOCSIFFLAGS"},
 		{"container:abc", "container:abc", "snug did not author"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -770,8 +783,17 @@ func TestBuildVersionSelectorAllowsClassicOnly(t *testing.T) {
 // TestCheckNSOptionsNetworkPathNamesTheMode,
 // TestCheckNSOptionsPathOnNonNetworkName,
 // TestCheckNSOptionsRejectsMalformedJSON) — this loop does not, and cannot,
-// confirm they exist; a per-branch check would need a coverage hook this
-// package does not have, and this comment is the substitute for one.
+// confirm they exist.
+//
+// THE COMMENT IS NO LONGER THE SUBSTITUTE FOR A CHECK (issue #421). It used to
+// end "a per-branch check would need a coverage hook this package does not
+// have, and this comment is the substitute for one". Half of that is still
+// true — proving a branch is EXERCISED does need coverage. Noticing a branch
+// was ADDED does not: TestGoldenValidatorRefusalBranches counts the
+// error-returning statements per validator from build.go's own source and pins
+// the numbers, so a new refusal arm cannot land silently the way #369's five
+// did. This loop still answers "is the validator exercised at all"; that one
+// answers "did the set of decisions change".
 func TestEveryBuildValidatorIsExercised(t *testing.T) {
 	// The validators with a real decision to make, each covered above.
 	covered := map[string]bool{
@@ -1075,3 +1097,155 @@ func TestTheCompatBuildOutputsSpellingFailsClosed(t *testing.T) {
 		buildURLOverride(t, "outputs="+url.QueryEscape("type=local,dest=/tmp/pwn")), "",
 		"is not permitted")
 }
+
+// TestNetworkModeIsFilteredOnEveryBuildPath is issue #421's fourth item.
+//
+// TestBothBuildPathsAreFiltered claims in prose that the filter applies
+// whatever the path prefix, and TestNSOptionsIsFilteredOnEveryBuildPath drives
+// all three paths to earn that claim for `nsoptions`. For `networkmode` the
+// claim was INFERENCE ONLY: TestCheckNetworkModeOnTheCompatEndpoint drives
+// `/v1.41/build` alone, so the bare `/build` and libpod prefixes were never
+// exercised for this parameter.
+//
+// The inference is sound today — routing happens before the parameter maps are
+// consulted — but "sound today" is what a test is for. The cost of the doubt is
+// one table.
+func TestNetworkModeIsFilteredOnEveryBuildPath(t *testing.T) {
+	for _, p := range []string{"/v1.41/build", "/build", "/v5.8.3/libpod/build"} {
+		t.Run(p+"/refused", func(t *testing.T) {
+			sock, eng, _ := startBuildProxy(t)
+			base, err := url.ParseQuery(buildDefaults)
+			if err != nil {
+				t.Fatal(err)
+			}
+			base.Set("networkmode", "slirp4netns")
+			refuse(t, sock, eng, p+"?"+base.Encode(), "", "ioctl SIOCSIFFLAGS")
+		})
+		// The control, per path: without it a refusal on every path would be
+		// equally true of a proxy that refuses every build on that path.
+		t.Run(p+"/accepted", func(t *testing.T) {
+			sock, eng, _ := startBuildProxy(t)
+			base, err := url.ParseQuery(buildDefaults)
+			if err != nil {
+				t.Fatal(err)
+			}
+			base.Set("networkmode", "host")
+			before := eng.reached.Load()
+			code, resp := post(t, sock, p+"?"+base.Encode(), "")
+			if code != 200 {
+				t.Fatalf("networkmode=host on %s was refused (status %d): %s", p, code, resp)
+			}
+			if eng.reached.Load() == before {
+				t.Fatalf("networkmode=host on %s never reached the engine", p)
+			}
+		})
+	}
+}
+
+// TestGoldenValidatorRefusalBranches is issue #421's last item, and it is the
+// table rather than the recorded decision not to build one.
+//
+// TestEveryBuildValidatorIsExercised's own comment concedes the gap it cannot
+// close: "exercised" means a validator's NAME is in `covered`, which says
+// nothing about how many of that validator's branches a case reaches, and "a
+// per-branch check would need a coverage hook this package does not have".
+// #369 is what that costs — checkNSOptions had five unexercised refusal
+// branches while the accounting stayed green throughout.
+//
+// A coverage hook is not the only way to notice a NEW branch. A refusal branch
+// is an error-returning statement, and those are countable from the SOURCE.
+// This pins the count per validator. Adding a refusal arm changes a number and
+// reddens this test, which is the "fails closed when a new branch appears"
+// property the accounting above lacks — it does not prove the new arm is
+// tested, but it does make it impossible to add one silently, and the failure
+// message says what to do about it.
+//
+// What it deliberately does NOT do is assert the message TEXT per branch. The
+// texts are asserted where they are driven, by the cases that exercise them;
+// duplicating them here would be a second copy of state going stale in the
+// usual direction.
+//
+// Regenerate with: go test ./internal/dockerproxy -update-branches
+func TestGoldenValidatorRefusalBranches(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "build.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parsing build.go: %v", err)
+	}
+
+	counts := map[string]int{}
+	for _, d := range f.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok || fn.Body == nil || !strings.HasPrefix(fn.Name.Name, "check") {
+			continue
+		}
+		n := 0
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			ret, ok := node.(*ast.ReturnStmt)
+			if !ok {
+				return true
+			}
+			// A refusal is a return whose last result is a non-nil error
+			// expression — in this file, always an fmt.Errorf or errors.New
+			// call. A `return nil` or a bare value return is the accept path.
+			if len(ret.Results) == 0 {
+				return true
+			}
+			if call, ok := ret.Results[len(ret.Results)-1].(*ast.CallExpr); ok {
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+					if id, ok := sel.X.(*ast.Ident); ok &&
+						(id.Name == "fmt" || id.Name == "errors") {
+						n++
+					}
+				}
+			}
+			return true
+		})
+		if n > 0 {
+			counts[fn.Name.Name] = n
+		}
+	}
+	if len(counts) == 0 {
+		t.Fatal("the walk found no check* function returning an error, so it is broken " +
+			"rather than clean — a detector that cannot see its subject reports the same " +
+			"thing as a file with nothing to count")
+	}
+
+	names := make([]string, 0, len(counts))
+	for k := range counts {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	b.WriteString("# Refusal branches per build validator, counted from build.go's source.\n" +
+		"# A changed number means a refusal arm was ADDED or REMOVED. Adding one is\n" +
+		"# adding a decision, so it needs a case that drives it — issue #369 is five\n" +
+		"# such arms shipping unexercised while the name-level accounting stayed green.\n\n")
+	for _, n := range names {
+		fmt.Fprintf(&b, "%-28s %d\n", n, counts[n])
+	}
+	got := b.String()
+
+	path := filepath.Join("testdata", "validator-refusal-branches.txt")
+	if *updateBranches {
+		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%v (run: go test ./internal/dockerproxy -update-branches)", err)
+	}
+	if got != string(want) {
+		t.Errorf("a build validator's refusal-branch count changed.\n"+
+			"If you ADDED a refusal arm, add a case that drives it and asserts its message "+
+			"— TestEveryBuildValidatorIsExercised will stay green either way, which is the "+
+			"whole reason this file exists (issue #369, #421).\n"+
+			"--- want (%s)\n+++ got\n%s", path, got)
+	}
+}
+
+// updateBranches regenerates testdata/validator-refusal-branches.txt.
+var updateBranches = flag.Bool("update-branches", false,
+	"rewrite testdata/validator-refusal-branches.txt")

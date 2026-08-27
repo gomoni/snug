@@ -2,9 +2,11 @@ package dockerproxy
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -289,5 +291,108 @@ func TestBuildContextRefusesAUnicodeFoldFieldSpelling(t *testing.T) {
 			// it to loosen the test.
 			refuse(t, sock, eng, buildURL(buildContextQuery(tc.entry)), "", "context \"x\"")
 		})
+	}
+}
+
+// TestAdditionalBuildContextFieldsAreAllScalars is issue #335's item 3 and
+// issue #327's item 2 — one test, because they are the same property.
+//
+// The premise it guards is stated at checkAdditionalContexts' struct decode:
+// snug unmarshals the ORIGINAL entry bytes with the same encoding/json
+// semantics buildah uses, so for these fields what snug judges is
+// definitionally what the engine computes. That holds ONLY while every field is
+// a scalar. A map route collapses a repeated key to the last occurrence; a
+// struct route merges duplicate OBJECT fields field by field. The two can
+// disagree only where a field is an object, so an all-scalar struct is what
+// makes the disagreement unrepresentable rather than merely unlikely.
+//
+// The assumption was load-bearing and unstated before this test existed, and it
+// is a future BUILDAH release that breaks it, not a change in this repository —
+// which is exactly why it needs a guard here rather than a comment.
+func TestAdditionalBuildContextFieldsAreAllScalars(t *testing.T) {
+	rt := reflect.TypeOf(additionalContextEntry{})
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		switch f.Type.Kind() {
+		case reflect.Bool, reflect.String,
+			reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+			reflect.Float32, reflect.Float64:
+		default:
+			t.Errorf("additionalContextEntry.%s is %s, not a scalar. A map route takes the "+
+				"LAST of a repeated key and a struct route MERGES duplicate object fields, "+
+				"so a non-scalar field here lets snug and the engine read one request two "+
+				"ways (issue #323). Either keep the field scalar, or refuse a repeated key "+
+				"outright the way #326 did for idmappingoptions",
+				f.Name, f.Type.Kind())
+		}
+	}
+}
+
+// TestEveryModelledContextFieldIsAccountedFor pins the two lists against each
+// other, so a field added to one and not the other cannot pass unnoticed.
+// additionalContextFields is the default-deny allowlist; additionalContextEntry
+// is the subset snug decodes and acts on. DownloadedCache is in the first and
+// deliberately not the second — it is refused unless empty rather than used.
+func TestEveryModelledContextFieldIsAccountedFor(t *testing.T) {
+	canon := map[string]bool{}
+	for _, v := range additionalContextFields {
+		canon[v] = true
+	}
+	want := map[string]bool{"IsURL": true, "IsImage": true, "Value": true, "DownloadedCache": true}
+	if !reflect.DeepEqual(canon, want) {
+		t.Errorf("additionalContextFields' canonical names are %v, want %v. A fifth field is "+
+			"a field snug has not been taught about reaching the engine unexamined; if it is "+
+			"genuinely harmless, add it here with the note saying why", canon, want)
+	}
+
+	rt := reflect.TypeOf(additionalContextEntry{})
+	for i := 0; i < rt.NumField(); i++ {
+		if !canon[rt.Field(i).Name] {
+			t.Errorf("additionalContextEntry.%s is decoded and acted on but is not in "+
+				"additionalContextFields, so the allowlist would refuse the very field the "+
+				"decode depends on", rt.Field(i).Name)
+		}
+	}
+}
+
+// TestARepeatedContextFieldCannotReachTheEngine is issue #327's guard for the
+// BUILD site. checkAdditionalContexts is duplicate-key-safe only because it
+// re-marshals from its own decoded map — a side effect of #313's rewrite,
+// never chosen as a duplicate-key defence and, until #327, never stated.
+//
+// MUTATION THAT MUST REDDEN IT: replace the `json.Marshal(fields)` re-marshal
+// with a verbatim forward of the client's original bytes. Do NOT check this by
+// deleting the field-level dedup — that is a different check, and deleting it
+// would leave this test passing for the wrong reason.
+func TestARepeatedContextFieldCannotReachTheEngine(t *testing.T) {
+	sock, eng, target := startBuildProxy(t)
+	// Same key twice, exactly — not two case variants, which the field-level
+	// dedup refuses on its own and which would therefore never reach the
+	// re-marshal this test is about.
+	entry := `{"IsURL":false,"IsImage":false,"Value":"` + target + `","Value":"` + target + `"}`
+	code, resp := post(t, sock, buildURL(buildContextQuery(entry)), "")
+	if code == http.StatusForbidden {
+		t.Fatalf("a repeated scalar key was refused; this test is about the re-marshal that "+
+			"COLLAPSES it, so it needs a request that is forwarded (status %d): %s",
+			code, denyMessage(resp))
+	}
+	uri := eng.lastURI.Load().(string)
+	i := strings.Index(uri, "?")
+	if i < 0 {
+		t.Fatalf("the forwarded request has no query at all: %s", uri)
+	}
+	q, err := url.ParseQuery(uri[i+1:])
+	if err != nil {
+		t.Fatalf("the forwarded query does not parse: %v", err)
+	}
+	raw := q.Get("additionalbuildcontexts")
+	if n := strings.Count(raw, `"Value"`); n != 1 {
+		t.Errorf("the forwarded entry carries %q %d times, want exactly 1: %s\n"+
+			"A repeated key reached the engine. snug decoded it into a map (last wins) and "+
+			"the engine decodes into a struct, so the two can read one request two ways "+
+			"(issue #323). The re-marshal is what collapses it — forwarding the client's "+
+			"original bytes here reopens the class with nothing else failing",
+			`"Value"`, n, raw)
 	}
 }

@@ -1,12 +1,14 @@
 package dockerproxy
 
 import (
+	"flag"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -485,3 +487,63 @@ func TestNoRefusalTextOverclaimsWhatTheFilterDoes(t *testing.T) {
 			"the literal-only parse is then belt without braces, which is fine")
 	}
 }
+
+// TestGoldenRefusalReasons is issue #420's third item, and it is deliberately
+// NOT a seventh phrase.
+//
+// The blocklist above catches staleness in ONE direction: a reason that places
+// the engine outside the sandbox, the pre-Tier-B model. It cannot catch a reason
+// stale the OTHER way — one that describes a mechanism as contained when it is
+// not, or that keeps a justification after the thing justifying it moved. No
+// phrase list can, because the wording of a defect nobody has written yet is not
+// enumerable. Every phrase in that list was added AFTER a real reason went
+// stale, one issue at a time (#146, #257, #423); the list is a record of past
+// misses, and a record of past misses is not a guard against future ones.
+//
+// So this is the guard, and it is the repo's standing answer: make the change
+// VISIBLE. Every reason string is rendered into a golden a human reads as a
+// diff. A reason edited in either direction — or added, or deleted — shows up
+// in review, where the question "is this still true of the tier we ship" can
+// actually be asked. That is the same argument the bwrap argv golden makes, and
+// it is why a security change that produces no golden diff is suspicious.
+//
+// Regenerate with: go test ./internal/dockerproxy -update-refusals
+func TestGoldenRefusalReasons(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("# Every HostConfig refusal reason, rendered as a review artifact.\n" +
+		"# A diff here is a change to what snug TELLS A HUMAN it refuses and why.\n" +
+		"# Read it as one: the phrase blocklist in this file catches only the\n" +
+		"# pre-Tier-B direction, and this catches the rest by making you look.\n\n")
+	fields := make([]string, 0, len(refusalReason))
+	for f := range refusalReason {
+		fields = append(fields, f)
+	}
+	sort.Strings(fields)
+	for _, f := range fields {
+		b.WriteString(f + ":\n  " + strings.ReplaceAll(refusalReason[f], "\n", "\n  ") + "\n\n")
+	}
+	got := b.String()
+
+	path := filepath.Join("testdata", "refusal-reasons.txt")
+	if *updateRefusals {
+		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%v (run: go test ./internal/dockerproxy -update-refusals)", err)
+	}
+	if got != string(want) {
+		t.Errorf("a HostConfig refusal reason changed. This is what snug tells a human, and "+
+			"it is a REVIEW ARTIFACT — read the diff as one and ask whether the new wording "+
+			"is true of the tier this repository ships today.\n--- want (%s)\n+++ got\n%s",
+			path, got)
+	}
+}
+
+// updateRefusals regenerates testdata/refusal-reasons.txt. Its own flag rather
+// than a shared -update: this golden is prose a human approves, and folding it
+// into a package-wide rewrite is how an unreviewed wording change lands.
+var updateRefusals = flag.Bool("update-refusals", false, "rewrite testdata/refusal-reasons.txt")

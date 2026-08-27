@@ -2,6 +2,10 @@ package policy
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/printer"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1320,4 +1324,70 @@ func refusalGraftToolchainRootWritable(t testing.TB) error {
 	g.Host = "/home/u/proj/sub"
 	g.Access = AccessRO
 	return p.Graft(env, g)
+}
+
+// TestEveryRefusalProducerIsRegistered is issue #420's first item.
+//
+// refusals.txt is the golden a HUMAN reads to approve a security change, and it
+// was OPT-IN: a `func refusal*` had to be hand-listed in TestGoldenRefusals'
+// cases table to appear in it. Nothing checked the two agreed, so a new refusal
+// could ship with a clean refusals.txt diff — the review artifact silently not
+// covering the thing under review.
+//
+// The sweep is over the SOURCE rather than over a list, because a list of the
+// producers would be the same opt-in problem one file further away. It parses
+// this file, collects every top-level `func refusal*`, and requires each name to
+// appear somewhere in TestGoldenRefusals' body — which is where the cases table
+// lives, whether a producer is named directly or wrapped in a closure.
+//
+// POSITIVE CONTROL, mandatory: zero hits from a broken detector is
+// indistinguishable from zero violations, so the test fails if the walk finds
+// no producers or no registrations at all.
+func TestEveryRefusalProducerIsRegistered(t *testing.T) {
+	const src = "refusals_test.go"
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, src, nil, 0)
+	if err != nil {
+		t.Fatalf("parsing %s: %v", src, err)
+	}
+
+	var producers []string
+	var registry string
+	for _, d := range f.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(fn.Name.Name, "refusal"):
+			producers = append(producers, fn.Name.Name)
+		case fn.Name.Name == "TestGoldenRefusals":
+			var b strings.Builder
+			if err := printer.Fprint(&b, fset, fn.Body); err != nil {
+				t.Fatalf("printing TestGoldenRefusals' body: %v", err)
+			}
+			registry = b.String()
+		}
+	}
+
+	// The control. Both halves, because either being empty makes every
+	// assertion below vacuous in a different way.
+	if len(producers) == 0 {
+		t.Fatal("the walk found no `func refusal*` at all, so it is broken rather than " +
+			"clean — a detector that cannot see its subject reports the same thing as a " +
+			"tree with nothing wrong in it")
+	}
+	if registry == "" {
+		t.Fatal("the walk did not find TestGoldenRefusals, so there is nothing to check " +
+			"registration against. It has been renamed, and this sweep is now inert")
+	}
+
+	for _, name := range producers {
+		if !strings.Contains(registry, name) {
+			t.Errorf("%s produces a refusal but is not registered in TestGoldenRefusals, so "+
+				"it never reaches refusals.txt — the golden a human reads to approve a "+
+				"security change. Add a case for it, or, if it is deliberately not a "+
+				"golden-bearing refusal, rename it so it does not match this sweep", name)
+		}
+	}
 }

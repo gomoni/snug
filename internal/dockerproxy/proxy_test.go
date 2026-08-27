@@ -1535,3 +1535,80 @@ func TestAllowedBuildIsNotDrainedByTheProxy(t *testing.T) {
 			"consumed or altered the body on the ALLOWED path", got)
 	}
 }
+
+// TestStructuredBindOptionsNeverReachTheEngine is issue #421's first item.
+//
+// The legacy STRING form of a propagation mode is tested — `Binds:
+// ["<t>:/src:rshared"]` is refused by the option parser, with a control beside
+// it. The STRUCTURED form was guarded by a comment where a test could stand:
+// `BindOptions` appeared exactly once in this package, in mount's doc comment,
+// and zero times in any test.
+//
+// The two are not refused the same way and that is the point. The string form
+// is REFUSED by the option parser; the structured form is DROPPED, because
+// HostConfig.Mounts is re-serialised through `mount`'s four fields rather than
+// forwarded verbatim, so anything unmodelled simply does not survive. mount's
+// comment calls that load-bearing for CheckEngineBindSource's M4 clause (issue
+// #284): an unmodelled propagation setting is exactly what could make a
+// submount visible or invisible in a way the anchored-source rule did not
+// account for.
+//
+// So the assertion is on the FORWARDED BYTES, not on the status code. A test
+// that only checked for a 200 would pass just as happily if BindOptions were
+// forwarded intact.
+//
+// MUTATION, and #421's own proposal is INSUFFICIENT — MEASURED, both arms:
+//
+//	add BindOptions to the `mount` struct                      -> still PASSES
+//	that, AND `c.BindOptions = m.BindOptions` in checkedMounts  -> FAILS
+//
+// The ticket names only the first. It does not redden anything, because there
+// are TWO barriers here and the struct shape is only one of them: checkedMounts
+// decodes the client's Mounts into `mount` but then appends what `checkOne`
+// RETURNS — a freshly built mount — so the decoded value is discarded whatever
+// fields it has. checkOne's own comment already says it is a REWRITER rather
+// than a validator; this is that sentence paying off in a second place.
+//
+// Keep both barriers. Either alone would close this, which is the point of
+// writing the measurement down instead of the ticket's guess.
+func TestStructuredBindOptionsNeverReachTheEngine(t *testing.T) {
+	sock, eng, target := startProxy(t)
+	body := `{"HostConfig":{"Mounts":[{"Type":"bind","Source":"` + target + `","Target":"/src",` +
+		`"BindOptions":{"Propagation":"rshared","NonRecursive":true}}]}}`
+	code, resp := post(t, sock, "/v1.41/containers/create", body)
+	if code != 200 {
+		t.Fatalf("status %d, want 200. The structured form is DROPPED by re-serialisation, "+
+			"not refused — if it is being refused instead, this test no longer measures the "+
+			"re-serialisation: %s", code, resp)
+	}
+	// Asserted over the DECODED key set, not with strings.Contains. The mount
+	// Source is a t.TempDir() path, and t.TempDir() names its directory after
+	// the calling test — so a substring search for "BindOptions" in this body
+	// matches the SOURCE PATH of a test called ...BindOptions... and passes or
+	// fails for a reason that has nothing to do with the proxy. Caught here by
+	// the check reddening against a body that plainly had no BindOptions in it.
+	fwd, _ := eng.lastBody.Load().(string)
+	var got struct {
+		HostConfig struct {
+			Mounts []map[string]json.RawMessage `json:"Mounts"`
+		} `json:"HostConfig"`
+	}
+	if err := json.Unmarshal([]byte(fwd), &got); err != nil {
+		t.Fatalf("the forwarded body is not JSON the engine could read: %v\n%s", err, fwd)
+	}
+	if len(got.HostConfig.Mounts) != 1 {
+		t.Fatalf("the forwarded body carries %d mount(s), want 1: %s",
+			len(got.HostConfig.Mounts), fwd)
+	}
+	modelled := map[string]bool{"Type": true, "Source": true, "Target": true, "ReadOnly": true}
+	for k := range got.HostConfig.Mounts[0] {
+		if !modelled[k] {
+			t.Errorf("the forwarded mount carries the unmodelled key %q: %s\n"+
+				"HostConfig.Mounts is re-serialised through mount's four fields precisely so "+
+				"an unmodelled field cannot be smuggled to the engine. A propagation mode "+
+				"that survives can make a submount visible or invisible in a way "+
+				"CheckEngineBindSource's anchored-source rule did not account for (issue "+
+				"#284)", k, fwd)
+		}
+	}
+}

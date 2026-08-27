@@ -866,3 +866,60 @@ func TestALowercaseLabelsKeyDoesNotDiscardTheRunLabel(t *testing.T) {
 		}
 	}
 }
+
+// TestAnEmptyEndpointsConfigIsAcceptedAndForwardedUnchanged is issue #421's
+// second item, and it is the ERGONOMIC FLOOR under checkNetworkingConfig.
+//
+// `"EndpointsConfig":{}` is what a real client sends when it is asking for
+// nothing — the LogConfig shape, one object further in. checkNetworkingConfig
+// walks it and `continue`s past every empty value, so the empty map takes the
+// accept path at three nested levels: the sibling loop, the per-network loop,
+// and the per-field loop. None of that was asserted; the parameter was accepted
+// unexamined by the suite, so a change making the empty map refuse would have
+// broken every ordinary `docker run` with nothing failing here.
+//
+// Paired with `NetworkMode:"host"` deliberately. Since #401 pinned the container
+// to the engine's netns, `host` is the mode that can actually start a container
+// in this sandbox, so this is the combination a working client sends.
+//
+// WHAT IS NOT DONE HERE, and #421's item 2 asks for it: a second create-body
+// FIXTURE recorded from a real client. That needs a live docker or podman, and
+// this machine's rootless podman is broken. The recorded set is the oracle for
+// what a client sends; this test asserts snug's behaviour over a hand-written
+// body, which is a weaker thing and is labelled as such.
+func TestAnEmptyEndpointsConfigIsAcceptedAndForwardedUnchanged(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"empty EndpointsConfig",
+			`{"Image":"alpine","HostConfig":{"NetworkMode":"host"},` +
+				`"NetworkingConfig":{"EndpointsConfig":{}}}`},
+		{"a named network with an empty endpoint",
+			`{"Image":"alpine","HostConfig":{"NetworkMode":"host"},` +
+				`"NetworkingConfig":{"EndpointsConfig":{"bridge":{}}}}`},
+		{"an empty NetworkingConfig",
+			`{"Image":"alpine","HostConfig":{"NetworkMode":"host"},` +
+				`"NetworkingConfig":{}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sock, eng, _ := startProxy(t)
+			before := eng.reached.Load()
+			code, resp := post(t, sock, "/v1.41/containers/create", tc.body)
+			if code == http.StatusForbidden {
+				t.Fatalf("a body that asks for nothing was refused, which breaks every "+
+					"ordinary client: %s", denyMessage(resp))
+			}
+			if eng.reached.Load() == before {
+				t.Fatal("the create never reached the engine")
+			}
+		})
+	}
+
+	// The negative beside the floor, so "accepted" is not mistaken for "not
+	// examined": a POPULATED endpoint is still refused.
+	t.Run("a populated endpoint is still refused", func(t *testing.T) {
+		sock, eng, _ := startProxy(t)
+		refuse(t, sock, eng, "/v1.41/containers/create",
+			`{"Image":"alpine","NetworkingConfig":{"EndpointsConfig":`+
+				`{"bridge":{"IPAMConfig":{"IPv4Address":"10.0.0.5"}}}}}`,
+			"is not permitted")
+	})
+}
