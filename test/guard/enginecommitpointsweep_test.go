@@ -45,14 +45,11 @@ const engineMarkFunc = "markEngineRan"
 // entry starts marking, so a stale row cannot survive the fix that made it
 // stale.
 var engineCommitPointExempt = map[string]string{
-	// Issue #458. Its control cannot fire on an ordinary machine — the pull
-	// dies at DNS (registry.snug-test.invalid never resolves, and podman
-	// pings the registry before consulting the signature policy), and any
-	// host with a distribution /usr/share/containers/policy.json cannot
-	// produce the missing-policy refusal at all. A commit point here would
-	// claim engine coverage this test does not have; it gets one when the
-	// assertion is rewritten to one that can execute.
-	"TestTheEngineCarriesItsOwnSignaturePolicy": "issue #458: the control cannot fire, so there is no coverage to claim",
+	// EMPTY, and that is the point rather than an oversight: every test that
+	// drives the host engine through runPodman reaches the floor today. An
+	// entry here is a test claiming no engine coverage, and
+	// TestEngineCommitPointExemptionsAreStillNeeded fails when one starts
+	// marking, so a row cannot outlive the fix that made it stale.
 }
 
 // engineTestMarks reports, for one *ast.FuncDecl, whether it calls
