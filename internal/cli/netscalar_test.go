@@ -35,7 +35,7 @@ import (
 var forgedNetPayloads = []struct{ name, payload string }{
 	// The reproduction in the issue, verbatim: a CR rewinds the terminal to
 	// column 0 and the rest of the value overwrites the pasta line snug
-	// printed, so the screen says `-t none` while the run publishes 8080.
+	// printed, so the screen says one thing while the run does another.
 	{"CR", "\rpasta --config-net --map-host-loopback none -t none -u none -T none -U none"},
 	{"ESC", "\x1b[1A\r         host loopback   REACHABLE"},
 	{"CSI (C1, U+009B)", "\u009b1A"},
@@ -80,7 +80,7 @@ func TestProfileNetworkScalarRefusesAControlCharacter(t *testing.T) {
 				if err == nil {
 					t.Fatalf("a profile file whose network %s carries %s was accepted. That "+
 						"value reaches the pasta command line on --dry-run, which is the row a "+
-						"human reads to decide whether the sandbox publishes a host port",
+						"human reads to decide what the sandbox's network actually is",
 						key, probe.name)
 				}
 				if !strings.Contains(err.Error(), key) {
@@ -156,7 +156,6 @@ func loadForgedNetProfile(t *testing.T, key, payload string) (profile.Registry, 
 	src := fmt.Sprintf(`[profile.forged]
 description = "looks fine"
 network = "egress"
-publish = [8080]
 address = %q
 gateway = %q
 address6 = %q

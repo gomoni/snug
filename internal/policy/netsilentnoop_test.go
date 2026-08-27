@@ -5,75 +5,13 @@ import (
 	"testing"
 )
 
-// ── two network grants that used to resolve and deliver something else ─────
+// ── a network grant that resolves and delivers something else ──────────────
 //
-// Same shape twice, and it is invariant 5's: the profile author wrote a value,
-// snug accepted it, and the sandbox got something the author did not ask for
-// with nothing on screen saying so. Refusing is the only honest answer in both
-// cases, because narrowing an author's value to the nearest thing the helper
-// accepts is exactly what an unrecognised value must never be read as.
-
-// `publish` needs pasta, and pasta runs only for an egress policy. Without it
-// nothing was forwarded — while `--dry-run --json` reported `"egress": false`
-// alongside `"publish": [8090]` in one document, `--dry-run`'s isolated arm
-// printed no publish line at all, and `snug show` rendered the capability
-// regardless. Reproduced with a user profile before the fix.
-func TestPublishWithoutEgressIsRefused(t *testing.T) {
-	reg := testRegistry()
-	reg["pub"] = &Profile{Name: "pub", Publish: []int{8090}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@home", "@cwd-rw", "pub"}, testCtx(), newFakeEnv())
-	if err == nil {
-		t.Fatal("accepted `publish` on a policy with no egress: pasta is what binds a " +
-			"published port and it does not run here, so the human asked for a forward and " +
-			"got nothing")
-	}
-	got := err.Error()
-	for _, want := range []string{
-		"8090",   // WHICH port
-		"pub",    // WHICH profile asked
-		"@net",   // the fix, by name
-		"egress", // why it does not work
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("the refusal does not contain %q:\n%s", want, got)
-		}
-	}
-}
-
-// Several profiles publishing is one refusal naming all of them, in fold order
-// so the message does not depend on how the selection was written.
-func TestPublishWithoutEgressNamesEveryProfileThatAsked(t *testing.T) {
-	reg := testRegistry()
-	reg["pub-a"] = &Profile{Name: "pub-a", Publish: []int{8090}}
-	reg["pub-b"] = &Profile{Name: "pub-b", Publish: []int{9000}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@home", "@cwd-rw", "pub-b", "pub-a"}, testCtx(), newFakeEnv())
-	if err == nil {
-		t.Fatal("accepted two profiles publishing with no egress")
-	}
-	got := err.Error()
-	if !strings.Contains(got, "pub-a") || !strings.Contains(got, "pub-b") {
-		t.Errorf("the refusal blames only one of the two profiles that asked, so the other "+
-			"line stays unedited:\n%s", got)
-	}
-	if !strings.Contains(got, `"pub-a", "pub-b"`) {
-		t.Errorf("the profiles are not named in sorted fold order, so the message depends on "+
-			"how the -p flags happened to be written:\n%s", got)
-	}
-}
-
-// POSITIVE CONTROL: with egress the same profile resolves and keeps the port.
-func TestPublishWithEgressStillResolves(t *testing.T) {
-	reg := testRegistry()
-	reg["pub"] = &Profile{Name: "pub", Network: "egress", Publish: []int{8090}}
-	p, err := Resolve(reg, []ProfileName{"@sys", "@home", "@cwd-rw", "pub"}, testCtx(), newFakeEnv())
-	if err != nil {
-		t.Fatalf("publish alongside egress was refused, which would make the rule above a "+
-			"ban on the feature rather than on the silent no-op: %v", err)
-	}
-	if len(p.Net.Publish) != 1 || p.Net.Publish[0] != 8090 {
-		t.Errorf("publish = %v, want [8090]", p.Net.Publish)
-	}
-}
+// Invariant 5's shape: the profile author wrote a value, snug accepted it, and
+// the sandbox got something the author did not ask for with nothing on screen
+// saying so. Refusing is the only honest answer, because narrowing an author's
+// value to the nearest thing the helper accepts is exactly what an unrecognised
+// value must never be read as.
 
 // pasta PARSES an inline IPv6 prefix and throws it away: there is no
 // c->ip6.prefix_len, the address is configured with a literal 64, and the RA's

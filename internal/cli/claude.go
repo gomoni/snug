@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -916,21 +915,18 @@ func claudeGuidance(pol *policy.Policy) []byte {
 	case policy.NetEgress:
 		b.WriteString("You have internet access. You **cannot** reach services on the host's\n")
 		b.WriteString("`127.0.0.1`; this is intentional and is not a misconfiguration.\n")
-		// ENUMERATED, not "ports you bind ARE visible": publish is a named set,
-		// so the unqualified sentence was false for every port outside it, and an
-		// agent reading it will tell the human to open a port nothing forwards.
-		// The negative arm states the measured posture rather than only the
-		// host's half — with pasta's -t/-u/-T/-U all `none` there are no
-		// listening sockets at all, so "not visible to the host" understates it
-		// in a direction that invites the wrong inference.
-		if len(pol.Net.Publish) > 0 {
-			ports := make([]string, len(pol.Net.Publish))
-			for i, p := range pol.Net.Publish {
-				ports[i] = strconv.Itoa(p)
-			}
-			fmt.Fprintf(&b, "Exactly these ports are forwarded from the host's `127.0.0.1` into "+
-				"this sandbox: %s.\nA port you bind that is not in that list is reachable from "+
-				"nowhere outside.\n", strings.Join(ports, ", "))
+		// ENUMERATED, and derived. A door is reachable only while a human is
+		// running `snug proxy`, and only the doors this policy declares exist at
+		// all — so an agent must be told which names those are rather than left
+		// to infer that binding something makes it visible. Nothing the payload
+		// does can open one.
+		if len(pol.ListenNames) > 0 {
+			fmt.Fprintf(&b, "This sandbox declares %d http door(s): %s. A human can serve one to\n"+
+				"their own browser with `snug proxy`; you cannot open one, and nothing is\n"+
+				"reachable unless they do. Accept on the descriptor snug hands you\n"+
+				"(LISTEN_FDS, fd 3) rather than binding a port — a port you bind is reachable\n"+
+				"from nowhere outside.\n",
+				len(pol.ListenNames), strings.Join(pol.ListenNames, ", "))
 		} else {
 			b.WriteString("No port you bind is reachable from outside this sandbox — not from the\n")
 			b.WriteString("host, and not from anything on the network. Nothing forwards inbound\n")

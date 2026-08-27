@@ -338,7 +338,7 @@ The prior generation (`agent-sandbox`) let a profile *override* a scalar, with t
 | Key | Domain | Join | Permissive direction |
 |---|---|---|---|
 | `network` | `isolated < egress < host` | `max` | more reachability |
-| `publish` | `[]int` | union (a SET) | more ports |
+| `listen_names` | name set | union (a SET) | more doors |
 | `podman` | `off < socket < build` | `max` | more engine surface |
 | `dns` | `bool` | `OR` | working DNS |
 | `ro` / `rw` / `dev` | path sets | union + `Access.Join` | more access |
@@ -347,7 +347,7 @@ The prior generation (`agent-sandbox`) let a profile *override* a scalar, with t
 
 **No key in the model is last-writer-wins**, and `address`, `gateway` and `mtu` are the three that would most easily become it — taking whichever profile the sorted fold reached last, which is exactly the shape of dependence §2.2 forbids. There is no "more open" IP address, so they cannot be joins either: two profiles disagreeing is a **symmetric ERROR naming both profiles and both values**, as `identity` is. They remain pasta cosmetics — they change which address the sandbox *sees*, never what it can reach — and the refusal costs nothing, because selecting two profiles that each pin a different synthetic address was never a coherent request.
 
-`publish` is a **set**, and appending was a second, smaller version of the same bug: `publish = [3000]` in two profiles resolved to `[3000 3000]` and reached pasta's `-t` as a duplicate, with the rendered order depending on the fold. This table already said "union"; the code now agrees.
+`listen_names` is a **set** for the same reason every other set-valued key is: two profiles naming `"web"` declare ONE door, and the resolved value must not depend on which profile the fold reached first.
 
 **The rule for any new scalar:** a genuine permissive-ward join, or an error naming both profiles. Nothing in between.
 
@@ -362,7 +362,7 @@ Keys that would only ever *weaken* the sandbox in a way profiles must not contro
 Three properties together make "a profile can never tighten the sandbox" a *structural* fact rather than a review convention:
 
 1. **The base is empty, and the emitter has no removal operation.** `snug`'s bwrap emitter can produce `--bind`, `--ro-bind`, `--dev-bind`, `--tmpfs`, `--symlink`, `--proc`, `--dev`, `--file`, `--ro-bind-data`, `--dir`, `--setenv`. There is no `--mask`, no deny path, no "hide" verb, because nothing needs hiding — **VERIFIED**: `bwrap`'s new root is a fresh, empty tmpfs. With `--ro-bind /usr /usr` and a bind of one project directory, `ls /home/u/projects` lists exactly `work` and nothing else, with no `--tmpfs` anywhere in the command line. Siblings are invisible because they were never mounted.
-2. **The grant language cannot express negation.** TOML keys are `ro`, `rw`, `dev`, `tmpfs`, `symlink`, `env`, `path`, `publish`, `include`. There is no `mask`, no `hide`, no `deny`, no `remove`, no `!`-prefix, no `unset`. This is enforced by strict decoding: unknown keys are a fatal parse error, so a future key cannot be smuggled in by a config written for a different tool.
+2. **The grant language cannot express negation.** TOML keys are `ro`, `rw`, `dev`, `tmpfs`, `symlink`, `env`, `path`, `listen_names`, `include`. There is no `mask`, no `hide`, no `deny`, no `remove`, no `!`-prefix, no `unset`. This is enforced by strict decoding: unknown keys are a fatal parse error, so a future key cannot be smuggled in by a config written for a different tool.
 3. **Resolution is a join over semilattices.** For any profile sets *A* and *B*, `Resolve(A ∪ B) ⊒ Resolve(A)` and `⊒ Resolve(B)` — the result is above both in the grant lattice. Adding a profile can only move you up.
 
 The one place order matters is *emission*, and emission order is computed from the resolved set by a deterministic sort (§3.2), not from the order profiles were named. So the argv is a pure function of the resolved policy.
@@ -418,7 +418,7 @@ symlink  = [ { at = "/bin", target = "usr/bin" } ]
 optional = ["{home}/.gitconfig"]  # -try semantics: skip silently when absent
 network  = "egress"               # isolated < egress < host
 dns      = true
-publish  = [3000]                 # host 127.0.0.1 -> sandbox, named ports only
+listen_names = ["web"]            # a door a human may open with `snug proxy`
 podman   = "socket"               # off < socket < build
 
   [profile.example.environ.set]   # snug authors the value (§9.6)
@@ -822,8 +822,8 @@ pasta \
                                         #   joining via --netns (VERIFIED: without it the tap
                                         #   interface exists but stays DOWN with no address)
   --map-host-loopback none \            # do not translate any address to the host's loopback
-  -t none \                             # host -> ns TCP forwards. `publish = [...]` renders
-                                        #   `127.0.0.1/3000,8080` here instead
+  -t none \                             # host -> ns TCP forwards: none, always. A door
+                                        #   (§4.6a) is served by `snug proxy`, not by pasta
   -u none \                             # host -> ns UDP forwards: none
   -T none \                             # ns -> host-init TCP forwards: NONE. *** THE FIX ***
   -U none \                             # ns -> host-init UDP forwards: NONE. *** THE FIX ***
@@ -858,15 +858,23 @@ Deliberately **not** passed:
 |---|---|---|
 | *(none)* | `bwrap --unshare-all`, no `pasta`. Netns with `lo` only. | No network at all. This is the floor and requires no helper binary — *provided no container profile is selected*: one of those raises the topology to `NetnsStage` and starts a stage even offline (§4.4). |
 | `@net` | topology (b) + the argv in §4.5 | Full internet in/out. Host loopback unreachable. Host cannot reach sandbox ports. |
-| `publish = [3000, 8080]` in a profile | `@net`, `-t 127.0.0.1/3000,8080` | Those ports, bound inside the sandbox, become reachable on the **host's** `127.0.0.1` — and only there. **VERIFIED**: a listener answered `200` from the host at `127.0.0.1:18099` and was **refused** at `192.168.1.120:18099`. The LAN never sees it. |
+| `listen_names = ["web"]` in a profile | a listening unix socket snug creates on the host, handed in as fd 3 (`LISTEN_FDS`) | Declares a door. Nothing is reachable until a human runs `snug proxy`, which binds a per-run `127.64.0.0/10` address, checks the initiator and a per-run token, and forwards over that socket (§4.6a). |
 | `@net-anon` | `@net` + `-a/-g` **for BOTH families** (no `-n`), and DNS forced onto interception | Sandbox does not learn the host's LAN address in either family (issue #165) — nor, since issue #162, the host's LAN *resolver*, which discloses the same prefix (§4.7). **Costs a reach**: hiding the address is what makes the host's own services (any address it binds, including `0.0.0.0`/`::`) reachable from inside — the packet stops being refused by the sandbox's own stack and instead leaves the netns for `pasta` to open on the host (issue #176). Host loopback stays closed throughout; `--dry-run` states the trade. |
 | `@podman-socket` / `@podman-build` | topology (b) via the **stage**, engine forked into N, no `pasta` of its own | No egress on its own. Selects a stage and the full subuid range; a container gets exactly the sandbox's network, whatever that is (§4.4). |
 
 **Host loopback and the host's abstract AF_UNIX sockets (X11, D-Bus) are unreachable from every sandbox snug builds, under every profile.** There is no mode that shares the host's network namespace and no flag that opens one — a capability whose only bound is a command-line flag is one that gets used, because the flag is documented, greppable, and named in the error telling you what to type. `pastaArgs` passes `--map-host-loopback none -T none -U none`, and `ParseNetMode` accepts `isolated` and `egress` and nothing else.
 
-**The cost, stated: no profile reaches a host-local service.** Wanting one — a dev database on `:5432`, a local registry — is invariant 2's corollary, an enumerated grant spelled coarsely. Its narrow form is `pasta`'s `-T <port>` in place of `-T none`, the outbound mirror of `publish`, and it is not built.
+**The cost, stated: no profile reaches a host-local service.** Wanting one — a dev database on `:5432`, a local registry — is invariant 2's corollary, an enumerated grant spelled coarsely. Its narrow form is `pasta`'s `-T <port>` in place of `-T none`, and it is not built.
 
-**There is deliberately no `@net-publish` profile and no `publish_auto`.** One shipped once and was removed. The reason: with `-t auto`, **the sandbox chooses which host loopback ports appear**. That inverts the guiding principle — the agent, not the human, would author a host-visible surface, and a prompt-injected agent could squat `127.0.0.1:8080` ahead of your own dev server and intercept your browser. With `publish = [3000]` the human named the port and the hole is exactly one port wide. `base.toml`'s comment above the `publish` key is the standing statement of this; this is the decision in the whole networking section most likely to be revisited.
+**Nothing is forwarded INTO the sandbox.** `pastaArgs` passes `-t none -u none`, unconditionally and with no key that changes it. A raw forward would be bound on host loopback for the whole run, reachable by every uid on the machine, and — because pasta operates at L4 — unable to check anything about who is connecting. A door (§4.6a) is bound only while a human runs `snug proxy`, and that process is what makes an initiator check possible at all.
+
+### 4.6a One HTTP door, opened by a human
+
+`listen_names = ["web"]` declares a door. snug creates the listening unix socket on the HOST before the sandbox starts and passes the descriptor in, so the payload accepts on it and can never bind a second one; `LISTEN_FDS`/`LISTEN_FDNAMES` are the systemd socket-activation spelling, chosen because the ecosystem already speaks it. `LISTEN_PID` is the one value snug cannot predict — a fresh pid namespace, and bwrap reports only the outer pid — so the sandbox's entry is a staged two-line script doing `export LISTEN_PID=$$; exec "$@"`, which makes it correct by construction.
+
+`snug proxy` is the human's half, and being a separate command is the property rather than an ergonomic choice: the payload cannot reach the run state it reads. It binds a per-run address in `127.64.0.0/10` — a distinct cookie host, because cookies ignore port (RFC 6265 §8.5) — and admits a request only if `Sec-Fetch-Site` is absent, `none` or `same-origin`, `Origin` is its own or absent, `Host` is exactly its address, and a per-run token is present. The token arrives once as `?snug-token=`, becomes an `HttpOnly; SameSite=Strict` cookie, and is redirected away, so the app owns the whole path space and its absolute URLs work.
+
+**The escape is stated, not bounded.** A page served this way runs on an origin the browser treats as local, beside the human's real sessions; `snug proxy` says so on the terminal before it binds, which is a channel the payload cannot rewrite — unlike the generated preamble, which lives in the writable project tree.
 
 ### 4.7 DNS, on both kinds of host
 
@@ -1074,7 +1082,6 @@ The previous generation (`/home/u/projects/work/team/agent-sandbox`, ~45 Go file
 | `env` | **kept** | Allowlist. |
 | `match` | **kept in the design, not built** (§9.2) | Convenient; the failure mode must be stated. |
 | `[identity]` + all fields | **kept** | Already the right answer. |
-| `expose = [ports]` | **renamed `publish`**, scoped to `127.0.0.1` | `expose` reads like "make visible to the world"; the semantics are the opposite. Scoping to host loopback is a genuine posture change (§4.6). |
 | `network = "host"\|"offline"\|"private"` | **kept as `"host"\|"egress"\|"isolated"`**, joined by max | `private` was ambiguous about egress. `offline` removed. |
 | `docker`, `docker_build` | **`podman = "off"\|"socket"\|"build"`** | One key, one lattice, and the name matches the engine. |
 | `allowlist_root`, `mask` | **removed** | §6.2 |
@@ -1652,7 +1659,7 @@ The issues carry the *known gaps with severities*; this is the list of things th
 
 **Open questions**, each a decision that real use is most likely to reverse:
 
-- **Q1 — Should `publish` gain an `auto` form after all?** §4.6 argues no, on the principle that the agent should not author a host-visible surface. One shipped once and was removed; this is the most likely decision to be revisited.
+- **Q1 — Should a door work for a server that only binds a port?** §4.6a requires the payload to accept on the inherited descriptor, which excludes Java, .NET and anything in a container. Issue #476 carries the staged adapter that would close that gap, and the accounting for what it costs.
 - **Q2 — Credential sync-back scope.** Should it extend beyond Claude's credentials to, say, a `gh` token refresh? Current answer: no, add cases only with a demonstrated need and a structural validator each time. [`SECRETS.md`](SECRETS.md) §5 is where this is settled.
 - **Q3 — Multiple simultaneous sandboxes on the same target.** Two `snug` runs against the same directory both get write access and will fight. `bwrap` has a `--lock-file`. Leaning: warn by default, `--exclusive` to refuse.
 - **Q4 — The 32-bit compat arch** is a documented seccomp gap (§5.4). Closing it needs `SECCOMP_RET_USER_NOTIF` and a supervisor thread. Worth it, or is the namespace boundary sufficient?

@@ -753,14 +753,11 @@ func showCapabilities(p *policy.Profile, show func(string, []string)) {
 		show("dns", capRows("yes",
 			"a generated /etc/resolv.conf names a resolver inside the sandbox"))
 	}
-	if len(p.Publish) > 0 {
-		ports := make([]string, len(p.Publish))
-		for i, n := range p.Publish {
-			ports[i] = strconv.Itoa(n)
-		}
-		show("publish", capRows(strings.Join(ports, " "),
-			"the HOST's 127.0.0.1 forwards these INTO the sandbox, so anything "+
-				"a hostile process listens on there is reachable from your browser"))
+	if len(p.ListenNames) > 0 {
+		show("listen_names", capRows(strings.Join(p.ListenNames, " "),
+			"a human can run `snug proxy` to serve these doors to their own browser, and a "+
+				"hostile process inside answers whatever it likes on the origin they typed — "+
+				"THIS IS A SANDBOX ESCAPE, and it lands only if somebody opens the URL"))
 	}
 	if len(p.Plugins) > 0 {
 		show("plugins", capRows(strings.Join(p.Plugins, " "),

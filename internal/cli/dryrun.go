@@ -1902,11 +1902,10 @@ func describeNetwork(out io.Writer, p *policy.Policy) {
 			fmt.Fprintf(out, "                         reached through ordinary egress — a LAN resolver address\n")
 			fmt.Fprintf(out, "                         discloses the network the host sits on)\n")
 		}
-		if len(p.Net.Publish) > 0 {
-			fmt.Fprintf(out, "         host -> sandbox ports %v, on the host's 127.0.0.1 only\n", p.Net.Publish)
-		} else {
-			fmt.Fprintf(out, "         host -> sandbox CLOSED (publish = [3000] in a profile opens one)\n")
-		}
+		fmt.Fprintf(out, "         host -> sandbox CLOSED — nothing is forwarded into this\n")
+		fmt.Fprintf(out, "                         namespace. A door a human can open is declared with\n")
+		fmt.Fprintf(out, "                         listen_names in a profile; see below.\n")
+		renderHTTPDoors(out, p)
 		// THIS BLOCK USED TO SAY "the host's LAN address is hidden", full
 		// stop, and that was false on any dual-stack host: `address` named
 		// only an IPv4 value, and pasta's IPv6 default — copy the addresses
@@ -3087,4 +3086,40 @@ func yieldedMark(p *policy.Policy, m policy.Mount) string {
 			m.Guest, m.Guest)
 	}
 	return ""
+}
+
+// renderHTTPDoors describes the doors a human MAY open, and deliberately does
+// not name the URL.
+//
+// The address and the token are per-run values generated when the sandbox
+// actually starts, so a document written before the run cannot state them
+// truthfully — and a screen that printed a plausible-looking URL nobody can open
+// would be worse than one that says where the real one appears. That is the same
+// rule plannedSocket follows one indirection up: name the path, create nothing.
+//
+// It says CLOSED even when doors are declared, because that is the honest word.
+// Declaring a door creates a socket the payload can accept on; it does not make
+// anything reachable, and nothing inside the sandbox can change that.
+func renderHTTPDoors(out io.Writer, p *policy.Policy) {
+	if len(p.ListenNames) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "         http doors      %s — declared, CLOSED until a human runs `snug proxy`\n",
+		strings.Join(p.ListenNames, " "))
+	for _, name := range p.ListenNames {
+		path, err := plannedSocket("door-" + name + ".sock")
+		if err != nil {
+			// Unreachable through Resolve, which already refused any name this
+			// could reject. Printed rather than swallowed for the reason every
+			// degradation in this file is named: a row missing from --dry-run is
+			// a capability a human cannot audit.
+			fmt.Fprintf(out, "                         %s: NO SOCKET PATH (%v)\n", name, err)
+			continue
+		}
+		fmt.Fprintf(out, "                         %s -> %s (0600, this run only)\n", name, path)
+	}
+	fmt.Fprintf(out, "                         Opening one serves whatever the sandbox answers into\n")
+	fmt.Fprintf(out, "                         YOUR browser on a local-looking origin. THAT IS A\n")
+	fmt.Fprintf(out, "                         SANDBOX ESCAPE; snug does not bound it. The address and\n")
+	fmt.Fprintf(out, "                         the URL token are per-run and are printed by `snug proxy`.\n")
 }

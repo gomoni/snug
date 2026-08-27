@@ -202,7 +202,6 @@ type reportNetwork struct {
 	// no host resolver address is named inside (NeedsDNSForward).
 	DNSForwarded bool
 	DNSHost      string
-	Publish      []int
 	Anonymised   bool
 	Address      string
 	Address6     string
@@ -560,7 +559,6 @@ func buildNetworkReport(p *policy.Policy) reportNetwork {
 		HostLoopback:    false,
 		AbstractSockets: false,
 		DNS:             p.Net.Resolver().Servers,
-		Publish:         p.Net.Publish,
 		Anonymised:      p.Net.Anonymised(),
 	}
 	// NeedsDNSForward and DNSHost only mean anything where a pasta actually

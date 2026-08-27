@@ -100,6 +100,8 @@ func Main() {
 			os.Exit(configCmd(argv[1:]))
 		case "attach":
 			os.Exit(attachCmd(argv[1:]))
+		case "proxy":
+			os.Exit(proxyCmd(argv[1:]))
 		case "engine":
 			os.Exit(engineCmd(argv[1:]))
 		case "help":
@@ -142,6 +144,7 @@ usage:
   snug config                             show the resolved configuration
   snug doctor                             check whether this host can run snug
   snug attach [dir]                       join a sandbox that is already running
+  snug proxy [dir]                        serve a declared http door to your browser
 
 flags:
   -p, --profile NAME   add a profile (repeatable; order is irrelevant)
@@ -592,6 +595,37 @@ func run(cfg config) int {
 		return refusePolicy(cfg, exitPolicy, err, pol, env)
 	}
 
+	// The http doors. Created BEFORE bwrap, because the descriptors have to
+	// exist to be handed over — and after Validate, because a policy that will
+	// not run should not leave sockets behind. Ordering against runDir's own
+	// cleanup is why these are not opened earlier: the defer above removes the
+	// directory these live in, and it must run last.
+	// --dry-run does NOT plan these: the address and the token are per-run
+	// values, and a document written before the run must not name a URL that
+	// will not exist. dryrun.go renders the door section from the policy and
+	// plannedSocket instead.
+	var doorFiles []*os.File
+	if len(pol.ListenNames) > 0 && !cfg.dryRun {
+		doors, derr := planHTTPDoors(pol, runDir.Socket)
+		if derr != nil {
+			return refuse(cfg, exitPolicy, derr)
+		}
+		f, ferr := openHTTPDoorSockets(doors)
+		if ferr != nil {
+			return refuse(cfg, exitPolicy, ferr)
+		}
+		doorFiles = f
+		defer func() {
+			for _, f := range doorFiles {
+				f.Close()
+			}
+		}()
+		if err := publishHTTPDoors(runDir, doors); err != nil {
+			return refuse(cfg, exitPolicy, err)
+		}
+		announceHTTPDoors(os.Stderr, doors)
+	}
+
 	args := pol.BwrapArgs(env.Uid(), env.Gid())
 
 	if cfg.dryRun {
@@ -603,6 +637,7 @@ func run(cfg config) int {
 
 	code, err := sandbox.Run(pol, env.Uid(), env.Gid(), sandbox.Options{
 		NoSeccomp: cfg.noSeccomp,
+		HTTPDoors: doorFiles,
 		// OnInfo publishes state.json once bwrap has reported its own
 		// --info-fd answer. A failure here is warn-only, deliberately unlike
 		// the runtimeDir() refusal above: by the time this callback runs, a
@@ -611,7 +646,11 @@ func run(cfg config) int {
 		// one without reintroducing the parked-payload window this file's
 		// own history (runStaged's doc comment) already removed on purpose.
 		OnInfo: func(info sandbox.RunInfo) {
-			if werr := writeRunState(pol, info); werr != nil {
+			runDirPath := ""
+			if runDir != nil {
+				runDirPath = runDir.Path()
+			}
+			if werr := writeRunState(pol, info, runDirPath); werr != nil {
 				fmt.Fprintf(os.Stderr, "snug: this run will not be attachable (%v)\n", werr)
 				return
 			}

@@ -1,0 +1,145 @@
+package policy
+
+import (
+	"fmt"
+	"strings"
+)
+
+// MaxHTTPDoorNameLen bounds a door name. The name reaches three places that
+// each have their own limit or hazard, and this is the smallest of them: it is a
+// path component of the run's unix socket, where AF_UNIX gives 107 usable bytes
+// for the WHOLE path (test/guard/runtimedirlengthsweep_test.go is the ratchet
+// and the scratchpad path alone already exceeds it); it is a LISTEN_FDNAMES
+// element, which is colon-separated; and it is what a human types after
+// `snug proxy`. 32 leaves room for every legible name and cannot be the reason a
+// socket path overruns.
+const MaxHTTPDoorNameLen = 32
+
+// checkHTTPDoorName enforces the name grammar.
+//
+// Lowercase ASCII letters, digits and single interior dashes. The set is narrow
+// on purpose rather than "anything without a slash": the name becomes a
+// filesystem path component AND a colon-separated LISTEN_FDNAMES element, so a
+// colon, a slash, a dot-dot or a leading dash each turn one grant into a
+// different one somewhere downstream. Refusing the whole class is one rule;
+// escaping it correctly in three places is three rules and a future bug.
+//
+// An unrecognised name REFUSES and is never narrowed to the nearest thing it
+// resembles — the same rule ParseNetMode and ParseSSHMode follow, and the reason
+// the accepted set can be read as the whole set.
+func checkHTTPDoorName(name ProfileName, raw string) error {
+	bad := func(why string) error {
+		return fmt.Errorf("profile %q: listen_names door name %s %s.\n"+
+			"       A door name is lowercase letters, digits and interior dashes, at most %d "+
+			"characters —\n"+
+			"       it becomes a path component of this run's socket and an entry in "+
+			"LISTEN_FDNAMES, so\n"+
+			"       the narrow set is what keeps one grant from meaning something else "+
+			"downstream. Try \"web\".",
+			name, VisibleText(raw), why, MaxHTTPDoorNameLen)
+	}
+	switch {
+	case raw == "":
+		return bad("is empty")
+	case len(raw) > MaxHTTPDoorNameLen:
+		return bad(fmt.Sprintf("is %d characters", len(raw)))
+	case strings.HasPrefix(raw, "-"), strings.HasSuffix(raw, "-"):
+		return bad("starts or ends with a dash")
+	case strings.Contains(raw, "--"):
+		return bad("contains a double dash")
+	}
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+		default:
+			return bad(fmt.Sprintf("contains %s", VisibleText(string(r))))
+		}
+	}
+	return nil
+}
+
+// HTTPDoorShellError refuses a door on a selection with no shell.
+//
+// The descriptor handover needs one: snug cannot predict the payload's pid
+// inside a fresh pid namespace, so the sandbox's entry command is a generated
+// script that does `export LISTEN_PID=$$; exec "$@"` — `exec` replaces the shell
+// without forking, which makes the pid it names the pid the payload runs under,
+// correct by construction rather than by prediction.
+//
+// Refusing beats the alternatives. Predicting the pid would be a value that
+// works until a bwrap release adds a process, and a wrong LISTEN_PID makes every
+// conforming client SILENTLY ignore the descriptor — the door would then reach a
+// sandbox where nothing ever accepts, which is invariant 5 with extra steps.
+func HTTPDoorShellError(doors []string, shell string) error {
+	return fmt.Errorf("this selection opens the http door(s) %s but has no %s inside, and the "+
+		"descriptor handover needs a shell:\n"+
+		"       snug hands the sandbox a listening socket and sets LISTEN_PID from the "+
+		"payload's own pid,\n"+
+		"       which it does with `exec` in a two-line staged script. Add the '@sys' profile, "+
+		"which grants\n"+
+		"       the shell — or drop listen_names from the profile.",
+		strings.Join(doors, ", "), VisibleText(shell))
+}
+
+// HTTPDoorShimName is the staged script's name in StagedBinDir. Distinct from
+// any command a payload might run: it is the sandbox's ENTRY, prepended to the
+// payload argv, not something on PATH anyone is meant to invoke.
+const HTTPDoorShimName = "http-door-handover"
+
+// httpDoorShim is the descriptor handover, and every line of it is load-bearing.
+//
+//	export LISTEN_PID=$$      the pid the payload will run under, because
+//	exec "$@"                 exec REPLACES this shell without forking
+//
+// snug cannot compute that pid from outside: the payload runs in a fresh pid
+// namespace whose numbering starts after bwrap's own init, and bwrap reports
+// only the OUTER pid. `exec` makes the question moot.
+//
+// LISTEN_FDS and LISTEN_FDNAMES do not depend on the pid and are set by bwrap's
+// --setenv, so this script does not mention them: a value that can be set in the
+// audited argv should not be set somewhere a reader has to find.
+//
+// `set -e` is deliberately ABSENT. There is nothing here that can fail
+// separately from the exec, and the exec is the last statement — a shell option
+// implying otherwise would be decoration.
+const httpDoorShim = `#!/bin/sh
+# Generated by snug. Hands the payload the listening descriptor(s) snug created
+# on the HOST before this sandbox started, using the one mechanism that gets
+# LISTEN_PID right: exec preserves the pid, so $$ IS the payload's pid.
+export LISTEN_PID=$$
+exec "$@"
+`
+
+// HTTPDoorShimPath is where the handover script is staged.
+func HTTPDoorShimPath() string { return StagedBinDir + "/" + HTTPDoorShimName }
+
+// httpDoorShimShell is the interpreter the handover script names, and the path
+// shellIsVisible has to find. Written once here rather than parsed back out of
+// the script: two spellings of one fact is how the shebang and the check come to
+// disagree.
+const httpDoorShimShell = "/bin/sh"
+
+// shellIsVisible reports whether the handover script's interpreter can exist
+// inside.
+//
+// Deliberately COARSE, and the coarseness is the honest part: a shell arrives
+// either as a bind covering /usr (with /bin a symlink into it, which is @sys's
+// shape) or as one covering /bin directly. Statting the guest path is not
+// available here — internal/policy touches no filesystem, and the path does not
+// exist yet anyway, since the mounts describe a sandbox nothing has built.
+//
+// So this answers "could a shell be there", and a selection where the answer is
+// no is refused. The opposite error — a selection that passes here and still has
+// no shell, because /usr was bound from somewhere without one — surfaces as the
+// payload failing to exec, loudly, in the run itself.
+func (p *Policy) shellIsVisible() bool {
+	for guest, m := range p.Mounts {
+		if m.Kind == KindSymlink {
+			continue
+		}
+		if covers(guest, httpDoorShimShell) || covers(guest, "/usr"+httpDoorShimShell) {
+			return true
+		}
+	}
+	return false
+}

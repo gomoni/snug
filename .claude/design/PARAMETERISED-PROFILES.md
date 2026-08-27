@@ -42,7 +42,7 @@ Parameterisation earns its place in exactly two cases, neither buildable today:
 
 1. **A bundle of grants sharing one argument** — `worktree:PATH` → `ro {path}` +
    `rw {path}/target` + an env var. Nothing on the roadmap wants this yet.
-2. **`net-publish:PORT`** — see "Why to keep the door open" below. This one is
+2. **`http-door:NAME`** — see "Why to keep the door open" below. This one is
    genuinely elegant and arrives with networking.
 
 ---
@@ -152,24 +152,22 @@ origin there is.
 
 ---
 
-## Why to keep the door open: `net-publish`
+## Why to keep the door open: a parameterised door
 
-Today `publish = [3000, 8080]` would be a scalar list needing a hand-written
-union join. As a template:
+Today `listen_names = ["web", "api"]` is a set a profile writes out in full, and
+a human wanting a second door edits the file. A parameterised profile would let
+one definition serve any name:
 
 ```toml
-[profile.net-publish]
-include = ["net"]
-params  = [{ name = "port", kind = "port" }]
-publish = ["{port}"]
+[profile.http-door]
+description = "a door named {name}"
+listen_names = ["{name}"]
 ```
 
-`-p net-publish:3000 -p net-publish:8080` gives two set members, each
-contributing one port, and **the union falls out of set membership.** The
-list-union join stops being a special case and becomes a consequence of the
-identity rule. That is the strongest argument for templates.
+`-p http-door:web -p http-door:api` would give two set members, each traceable to
+the argument that produced it — which is the property that makes this shape worth
+keeping open rather than the ergonomics.
 
----
 
 ## Findings that are not about parameterisation
 
@@ -271,7 +269,7 @@ change.
   which masking is attempted. Fold `ctx.Grants` after the profile loop with
   `From: []string{"(command line)"}`. Add a `GRANTS` header to `--dry-run`; do
   **not** add them to `SNUG_PROFILES` — they are not profiles.
-- **M-b** `--publish PORT`, with networking.
+- **M-b** `--door NAME`, with networking.
 - **M-c** §2.7: `--config`, `Profile.Trusted` actually read, privileged-grant
   classification. **Prerequisite for M-d.**
 - **M-d** templates, as specified above.

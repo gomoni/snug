@@ -160,7 +160,6 @@
     "dns": null,
     "dns_forwarded": false,
     "dns_host": "",
-    "publish": null,
     "anonymised": false,
     "address": "",
     "address6": ""

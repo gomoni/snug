@@ -46,8 +46,8 @@ var probes = map[string]string{
 	"Optional":    "/probe-optional",
 	"Network":     "egress",
 	"DNS":         "resolv.conf",
-	"Publish":     "31415",
 	"Plugins":     "probe-plugin",
+	"ListenNames": "probe-door",
 	"Address":     "10.99.99.2/24",
 	"Gateway":     "10.99.99.1",
 	"Address6":    "fd00:99::2/64",
@@ -82,8 +82,8 @@ optional = ["/probe-optional"]
 symlink  = [{at = "/probe-link", target = "/probe-ro"}]
 network  = "egress"
 dns      = true
-publish  = [31415]
 plugins  = ["probe-plugin"]
+listen_names = ["probe-door"]
 address  = "10.99.99.2/24"
 gateway  = "10.99.99.1"
 address6 = "fd00:99::2/64"
@@ -215,7 +215,7 @@ func TestProfileShowCapabilityRowsFitAnEightyColumnScreen(t *testing.T) {
 }
 
 var capabilityLabels = map[string]bool{
-	"network": true, "dns": true, "publish": true, "address": true,
+	"network": true, "dns": true, "address": true, "listen_names": true,
 	"address6": true, "mtu": true, "podman": true, "git": true, "identity": true,
 }
 

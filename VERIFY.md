@@ -793,30 +793,20 @@ that case is caught — but a store directory created *after* resolution, at a p
 some grant already covers, is not, for the same reason issue #287 gives about
 sockets appearing later inside a granted directory.
 
-### 4b-ter. Two network grants snug cannot deliver, both refused
-
-Same shape twice, both invariant 5: the author wrote a value, snug accepted it,
-and the sandbox got something else with nothing saying so.
-
-`publish` needs pasta, and pasta runs only for an egress policy — so without
-`@net` nothing was forwarded, while `--dry-run --json` reported `"egress":
-false` alongside `"publish": [8090]` in one document and `--dry-run`'s isolated
-arm printed no publish line at all.
+### 4b-ter. An IPv6 prefix snug cannot deliver is refused
 
 `address6` carries its prefix inline, and pasta PARSES it and throws it away:
 there is no `c->ip6.prefix_len`, the address is configured with a literal 64,
 and the RA's Prefix Information option hardcodes 64. Its man page says so under
 `-a`: *"it will in the current code version be overridden by the default value
 of 64"*. So `address6 = "fd00::2/112"` used to resolve and hand the sandbox a
-**/64** — a wider on-link set than the profile asked for. The v4 half needs no
-rule; pasta keeps that prefix.
+**/64** — a wider on-link set than the profile asked for, which is the silent
+downgrade invariant 5 forbids. The v4 half needs no rule; pasta keeps that
+prefix.
 
 ```bash
 X=$(mktemp -d); mkdir -p $X/snug/profiles.d
 cat > $X/snug/profiles.d/p.toml <<'PROF'
-[profile.pub]
-description = "publish with no @net"
-publish = [8090]
 [profile.pfx]
 description = "a v6 prefix pasta cannot deliver"
 network  = "egress"
@@ -825,22 +815,18 @@ gateway  = "10.13.13.1"
 address6 = "fd00::2/112"
 gateway6 = "fd00::1"
 PROF
-XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p pub $SC/proj/sub; echo "exit=$?"
 XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p pfx $SC/proj/sub; echo "exit=$?"
 ```
 
-Expect two refusals, each naming the profile and the fix, both `exit=77`:
+Expect a refusal naming the profile and the fix, `exit=77`:
 
 ```
-snug: profile "pub" publishes host->sandbox port(s) 8090, but this policy has no egress, so nothing forwards them: pasta is what binds a published port and it runs only for a network profile.
-       Add the '@net' profile, or drop the publish key. ...
 snug: network address6 fd00::2/112 is a /112: pasta discards an inline IPv6 prefix and configures the address as a /64 regardless (its own man page says so under `-a`), so the sandbox would treat a WIDER set of addresses as on-link than this profile asks for. Write fd00::2/64, or pick a narrower ADDRESS
 ```
 
-**Positive controls.** `-p @net -p pub` resolves and the NETWORK section prints
-`host -> sandbox ports [8090], on the host's 127.0.0.1 only`. And `address6`
-changed to `fd00::2/64` resolves, as does a v4 `address` of `/16` or `/30` —
-the rule is v6-only, so a working v4 prefix must not be caught by it.
+**Positive controls.** `address6` changed to `fd00::2/64` resolves, as does a v4
+`address` of `/16` or `/30` — the rule is v6-only, so a working v4 prefix must
+not be caught by it.
 
 ### 4c. What the payload learns about its supervisor (issue #272, accepted)
 
@@ -5420,6 +5406,160 @@ are all findable` on that host, and every container create then returned
 `500 … requested OCI runtime runc is not compatible with NoCgroups`. A green
 tick in front of a run that cannot work is the one output this command must
 never produce.
+
+## 20. `@http-proxy`: a door only a human can open (issues #470, #471)
+
+A profile DECLARES a door; the sandbox cannot open one. snug creates the
+listening unix socket on the host before the sandbox starts and hands the
+descriptor in, so the payload may `accept()` and can never bind a second one.
+Nothing is reachable until a human runs `snug proxy`.
+
+```bash
+mkdir -p $X/snug/profiles.d
+cat > $X/snug/profiles.d/door.toml <<'PROF'
+[profile.mydev]
+description = "an http door for my dev server"
+listen_names = ["web"]
+PROF
+XDG_CONFIG_HOME=$X ./bin/snug -p mydev $SC/proj/sub -- /bin/sh -c \
+  'env | grep -i listen; ls -l /proc/self/fd/3'
+```
+
+Expect the escape sentence on YOUR terminal before anything runs, and the
+socket-activation protocol inside:
+
+```
+snug: http door "web" is declared. Nothing is reachable yet — run `snug proxy` to open it.
+      Opening one serves whatever the sandbox answers into YOUR browser, on an origin
+      your browser treats as local. THAT IS A SANDBOX ESCAPE and snug does not bound it.
+      The cost lands while the proxy runs, not only when you open the URL.
+LISTEN_FDS=1
+LISTEN_PID=2
+LISTEN_FDNAMES=web
+/proc/self/fd/3 -> socket:[...]
+```
+
+**`LISTEN_FDS` is a COUNT, not a descriptor number** — the descriptors are 3, 4,
+… in `LISTEN_FDNAMES` order, so one door means `LISTEN_FDS=1` on fd 3.
+
+`LISTEN_PID` matching the payload's own pid is the load-bearing one: snug cannot
+predict a pid inside a fresh pid namespace, so a two-line staged script does
+`export LISTEN_PID=$$; exec "$@"` — `exec` preserves the pid. A wrong value makes
+every conforming client SILENTLY ignore the descriptor, which is a door onto a
+sandbox where nothing ever accepts.
+
+### 20a. Serving something real, and what the server has to be
+
+The server must ACCEPT on the descriptor rather than bind a port.
+`examples/http-door-server.py` is a working one; `python3 -m http.server` cannot
+be used at all, and servers you cannot edit (Java, .NET, anything in a container)
+need the adapter in issue #476.
+
+```bash
+cp examples/http-door-server.py $SC/proj/sub/serve.py
+echo '<!doctype html><link rel="stylesheet" href="/style.css"><h1>hello</h1>' > $SC/proj/sub/index.html
+echo 'body{color:red}' > $SC/proj/sub/style.css
+XDG_CONFIG_HOME=$X ./bin/snug -p mydev $SC/proj/sub -- python3 serve.py
+XDG_CONFIG_HOME=$X ./bin/snug proxy $SC/proj/sub          # another terminal
+```
+
+`snug proxy` prints the URL only AFTER the listener is bound — a URL printed
+before the bind is refused for a moment and is a lie outright if the bind fails:
+
+```
+      Open:  http://127.77.164.95:8099/33249ab6d4315a41202de7c32c20bea4/
+      Stop:  Ctrl-C
+```
+
+`-p 8080` picks the host port, docker-style and host-first; `-p 8080:api` also
+says which door when a run declares several, and `-p :api` takes that door on its
+default port. Only this side has a port — a door is NAMED, and there is none
+inside the sandbox. A run declaring several doors gives each the next port
+(8099, 8100, …), so two can be open at once; a second proxy on a port already
+bound REFUSES rather than relocating:
+
+```
+snug: httpdoor: web: 127.87.234.95:8099 is already bound; stop whatever is
+      listening there or choose a different door address
+```
+
+### 20b. `?snug-token=` is a BOOTSTRAP, not a path the app lives under
+
+MEASURED with the token as a path prefix first: the page loads and then **every
+absolute reference in it misses** — the browser asks the origin ROOT for
+`/style.css`, which carries no token and is refused 403 before the backend sees
+it. That breaks every framework emitting absolute URLs.
+
+It is therefore a QUERY parameter. The first request carrying it is compared
+constant-time, gets a cookie, and is redirected (303) to the same path with the
+parameter REMOVED — so the address bar lands on the app's own URL, the token is
+never seen again, and the app never sees it at all:
+
+```bash
+curl -s -c /tmp/jar -L -o /dev/null -w 'page  %{http_code} -> %{url_effective}\n' "$URL"
+curl -s -b /tmp/jar -o /dev/null -w 'style %{http_code}\n' "http://$ADDR/style.css"
+curl -s          -o /dev/null -w 'style without the cookie %{http_code}\n' "http://$ADDR/style.css"
+```
+
+```
+page  200 -> http://127.77.164.95:8080/
+style 200
+style without the cookie 403
+```
+
+The cookie is `HttpOnly` (the page's own scripts cannot read the credential back
+out) and `SameSite=Strict`, which is doing security work rather than tidiness: a
+browser will not attach it to a request a cross-site page initiated, so the
+credential is absent exactly when the initiator is one this door refuses.
+
+### 20c. The measured admission matrix
+
+Against a live door with a hostile backend sending `Access-Control-Allow-Origin: *`:
+
+| request | result |
+|---|---|
+| the human's own (no `Sec-Fetch-Site`) | `200`, the payload's body |
+| `Sec-Fetch-Site: none` / `same-origin` | `200` |
+| `Sec-Fetch-Site: cross-site` / `same-site` | `403` |
+| `Origin: https://evil.example` | `403` |
+| the door's own `Origin` | `200` |
+| the cookie missing, or holding a wrong token | `403` |
+| a rebound `Host` (`--resolve evil.test:8099:<addr>`) | `403` |
+| `Upgrade: websocket` | `501` — WebSocket and SSE are not proxied in this version |
+| `CONNECT` | `403` — the door is not a forward proxy |
+| the backend's `Access-Control-Allow-*` | **stripped** (0 occurrences in the response) |
+
+The `Sec-Fetch-Site` rows are the point: `Host` allowlisting authenticates the
+TARGET, never the INITIATOR, so a page you already have open reaches the door
+with a perfectly correct `Host`. Its absence is allowed because curl and older
+browsers send none, and treating absence as a lie would refuse the human's own
+request.
+
+### 20d. Teardown, and one routine error that looks alarming
+
+After the run exits the socket is gone with the run directory:
+
+```bash
+ls /run/user/$(id -u)/snug/run-* 2>/dev/null; echo "exit=$?"
+```
+
+Expect no run directories. A door still listening on the host after teardown is a
+leaked inbound hole and rates with a policy leak, not with litter.
+
+**`BrokenPipeError` in the payload is ROUTINE**, not a bug: the door closes the
+backend connection when the human stops `snug proxy`, when its round-trip
+deadline passes, or when the browser goes away. Stock `socketserver` prints a
+full traceback for it; `examples/http-door-server.py` handles it, and MEASURED —
+interrupting `snug proxy` mid-transfer produced the traceback before that
+handling and produces nothing after it, with the payload still serving.
+
+### 20e. What this does NOT do
+
+The door's outside leg is a loopback TCP listener, and loopback TCP is not
+access-controlled — every uid on the machine can reach it while the proxy runs.
+The `0600` unix socket protects the INSIDE leg only. What snug buys by refusing a
+raw forwarded port is that the hole's lifetime is the human's command rather than
+the whole run, plus the initiator checks above.
 
 ## If a check fails
 

@@ -116,7 +116,7 @@ func TestTheKillRecordIsRemovedOnceStateJSONLands(t *testing.T) {
 		InitPID:    pid,
 		Namespaces: map[string]uint64{"mnt": 1, "pid": 2, "net": 3, "ipc": 4, "uts": 5, "cgroup": 6},
 	}
-	if err := writeRunState(pol, info); err != nil {
+	if err := writeRunState(pol, info, ""); err != nil {
 		t.Fatalf("writeRunState: %v", err)
 	}
 	if err := removeInitState(target); err != nil {
@@ -151,7 +151,7 @@ func TestTheKillRecordSurvivesAFailedStateWrite(t *testing.T) {
 	// without calling removeInitState.
 	pol := &policy.Policy{Target: target, Chdir: target, Env: map[string]policy.EnvVar{}}
 	info := sandbox.RunInfo{InitPID: pid}
-	if err := writeRunState(pol, info); err == nil {
+	if err := writeRunState(pol, info, ""); err == nil {
 		t.Fatal("PRECONDITION: writeRunState succeeded with no namespaces recorded, so this " +
 			"test is not exercising the failure path it claims to")
 	}
@@ -193,7 +193,7 @@ func TestKillRecordAndStateFileAgreeOnTheInitIdentity(t *testing.T) {
 	}
 	pol := &policy.Policy{Target: target, Chdir: target, Env: map[string]policy.EnvVar{}}
 	info := sandbox.RunInfo{InitPID: pid, Namespaces: ns}
-	if err := writeRunState(pol, info); err != nil {
+	if err := writeRunState(pol, info, ""); err != nil {
 		t.Fatalf("writeRunState: %v", err)
 	}
 

@@ -747,6 +747,26 @@ var envNotes = map[string]envNote{
 	//
 	//	LD_PRELOAD=$W/libpre.so /bin/echo hi  -> LD-PRELOAD-RAN, then hi
 	//	                        /bin/echo hi  -> hi              (control)
+	// The socket-activation pair snug authors for @http-proxy. Rows exist because
+	// a name with none renders "unchecked: snug has no type for this name" — a
+	// true statement about a profile's value and a false one about snug's own.
+	//
+	// shapeOpaque for both: a count and a colon-separated name list, neither of
+	// them a path. What they DO is hand a descriptor over, and the descriptor is
+	// the grant — these two only tell a conforming client to look for it.
+	//
+	// MEASURED, through a bwrap invocation mirroring the flags internal/sandbox
+	// builds rather than through snug itself: a descriptor placed in ExtraFiles
+	// arrives inside at the same number with cloexec=false and acceptconn=1, and
+	// bwrap closes only the descriptors it consumes. The end-to-end path through
+	// snug is asserted by the integration test named at HTTPDoorShimPath's
+	// caller, not by this row.
+	"LISTEN_FDS": both(shapeOpaque, "tells the payload how many listening descriptors snug handed it "+
+		"at fd 3.. — the door(s) a human may open with `snug proxy` (measured: the descriptor "+
+		"arrives at fd 3 with acceptconn=1)"),
+	"LISTEN_FDNAMES": both(shapeOpaque, "names those descriptors, colon-separated and in the same "+
+		"order, so a payload with more than one door can tell them apart (measured alongside "+
+		"LISTEN_FDS)"),
 	"LD_PRELOAD": both(shapePath, "every process in the sandbox loads this library before its own code "+
 		"(measured, glibc 2.43, with the control)"),
 	// Measured, glibc 2.43, with the control. An audit library needs only

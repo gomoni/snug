@@ -300,33 +300,41 @@ description = "Internet access via a private network namespace. Host loopback un
 network = "egress"
 dns = true
 
-# ── publishing a port back to the host ───────────────────────────────────────
-# ABUSE: the named port on the host's 127.0.0.1 reaches whatever the sandbox has
-# listening there — so anything you publish, a hostile process inside can answer.
-# The forward is bound to 127.0.0.1 only, never the LAN.
+# ── an HTTP door your own browser can open ────────────────────────────────────
+# ABUSE: a hostile process inside the sandbox can use this to serve a page of its
+# own writing into YOUR browser, on an origin your browser treats as local. THIS
+# IS A SANDBOX ESCAPE and snug does not bound it — the grant IS the hole. What
+# snug owes you is that a human named the door, that nothing inside can open it,
+# and that you are told on your own terminal before anything binds.
 #
-# There is no builtin for this, and no "publish whatever the sandbox binds".
-# Write the ports you mean, in your own profile:
+# THE COST LANDS WHILE `snug proxy` RUNS, not only when you open the URL. Any
+# page already open in your browser can reach the door; snug refuses requests
+# that admit a cross-site initiator (Sec-Fetch-Site, Origin), requires an
+# unguessable per-run token in the URL, and those checks are the whole bound.
 #
-#   [profile.myports]
-#   include = ["@net"]
-#   publish = [3000, 8080]
+# Cookies are NOT isolated by port (RFC 6265 section 8.5 — web-platform spec, not
+# something snug measured), so the door gets its own 127.64.x.y address, which IS
+# a distinct cookie host. localStorage is port-scoped and unaffected. The origin
+# ACCUMULATES BROWSER STATE — service workers, caches, permission grants — that
+# outlives the sandbox; the address and the token are per-run so a stale one is
+# never reached again, and "clear site data" is the remedy if you want it gone.
 #
-# Two reasons it is a human naming ports rather than a switch.
+# NOT the `listen_names` environment variable, which names an OUTBOUND forward
+# proxy. This is inbound.
 #
-# The design reason (INDEX §4.6): with `auto` the SANDBOX chooses what appears
-# on your loopback, which inverts the guiding principle — a prompt-injected agent
-# could squat 127.0.0.1:8080 ahead of your own dev server and intercept your
-# browser.
+# There is no builtin, and no form where the sandbox picks. Name your doors in
+# your own profile:
 #
-# The empirical one: a `net-publish` profile shipped here with publish_auto, and
-# it NEVER WORKED. pasta's `-t 127.0.0.1/auto` scans the namespace for bound
-# ports once, when pasta starts — which is before the payload exists, so there is
-# nothing to find and nothing is ever forwarded. Measured at 3, 10, 20 and 30
-# seconds after a listener came up inside: connection refused every time, while
-# --dry-run said "EVERY port the sandbox binds". A claim snug does not deliver is
-# invariant 5's territory, and the honest fix for a capability that cannot work
-# is to stop offering it.
+#   [profile.mydev]
+#   include    = ["@net"]
+#   listen_names = ["web"]
+#
+# Your server must accept on the descriptor snug hands it (LISTEN_FDS, fd 3) —
+# one line in Go, `socket.socket(fileno=3)` in Python, `listen({fd:3})` in node,
+# `--fd 3` for uvicorn. snug does not forward a port, and there is deliberately
+# no mode where it dials a port your payload chose to bind: the port number would
+# be public inside, so a hostile postinstall could bind it first and serve your
+# browser its own page.
 
 # The sandbox does not learn your LAN address. pasta copies the host's addresses
 # into the namespace by default, which is a small information disclosure.
@@ -409,7 +417,7 @@ gateway6 = "fd00:5e79:1::1"
 # Reaching ONE host-local service is the thing that makes people want it, and
 # that is an enumerated grant spelled coarsely (invariant 2's corollary). The
 # narrow version is a pasta flag: `-T <port>` where the argv above passes
-# `-T none`, the outbound mirror of `publish`. Whoever needs it adds THAT.
+# `-T none`. Whoever needs it adds THAT.
 
 # ── what a bare `snug <dir>` selects ─────────────────────────────────────────
 # There is deliberately NO [profile.default] here. What a bare `snug <dir>`

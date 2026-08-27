@@ -249,6 +249,8 @@ LD_AUDIT                 path      (no row)     REFUSED
 LD_LIBRARY_PATH          path      path         REFUSED
 LD_PRELOAD               path      path         REFUSED
 LESSOPEN                 program   -            accepted
+LISTEN_FDNAMES           opaque    (no row)     accepted
+LISTEN_FDS               opaque    (no row)     accepted
 LOCPATH                  path      (no row)     REFUSED
 MAKEFLAGS                opaque    (no row)     accepted
 MALLOC_TRACE             path      (no row)     REFUSED

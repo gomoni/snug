@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -29,10 +28,10 @@ const (
 	// and -T/-U.
 	//
 	// Reaching ONE host-local service is an enumerated grant (invariant 2's
-	// corollary), spelled `-T <port>` where pastaArgs passes `-T none`: the
-	// outbound mirror of Publish. It is not built. A mode that hands over the
-	// whole namespace is not the fallback for it — a capability whose only
-	// bound is a CLI flag is one that gets used (CLAUDE.md, working agreement).
+	// corollary), spelled `-T <port>` where pastaArgs passes `-T none`. It is not
+	// built. A mode that hands over the whole namespace is not the fallback for
+	// it — a capability whose only bound is a CLI flag is one that gets used
+	// (CLAUDE.md, working agreement).
 )
 
 func (m NetMode) Join(o NetMode) NetMode {
@@ -64,10 +63,6 @@ func ParseNetMode(s string) (NetMode, error) {
 
 type NetPolicy struct {
 	Mode NetMode
-
-	// Publish names ports the HOST's 127.0.0.1 should forward into the sandbox.
-	// A human names each one; there is no "whatever the sandbox binds" form.
-	Publish []int
 
 	// DNS installs a generated /etc/resolv.conf, and pasta's --dns-forward when
 	// the host has no nameserver the sandbox could reach directly.
@@ -909,8 +904,12 @@ func (p *Policy) PastaArgs(t PastaTarget) []string {
 
 		"--map-host-loopback", "none",
 
-		// host -> ns forwards
-		"-t", publishSpec(n),
+		// host -> ns forwards. Nothing is forwarded INTO the namespace: a
+		// listener a human wants to reach is served by `snug proxy`, which holds
+		// a descriptor snug created and can check who is asking. A raw forward
+		// here would be bound for the whole run, reachable by every uid on the
+		// machine, and unable to inspect anything.
+		"-t", "none",
 		"-u", "none",
 
 		// ns -> host forwards. THE FIX. Never remove these.
@@ -974,58 +973,4 @@ func (p *Policy) PastaArgs(t PastaTarget) []string {
 		// Joining a netns needs CAP_SYS_ADMIN in the userns that owns it.
 		"--userns", t.UsernsPath,
 	)
-}
-
-// publishSpec renders the host->sandbox forwarding rule.
-//
-// Every form is scoped to 127.0.0.1. The unscoped form binds on ALL host
-// addresses, which would publish the agent's dev server to the LAN — a thing
-// the human did not ask for and would not see.
-func publishSpec(n NetPolicy) string {
-	if len(n.Publish) == 0 {
-		return "none"
-	}
-	ports := append([]int(nil), n.Publish...)
-	sort.Ints(ports)
-	seen := map[int]bool{}
-	var out []string
-	for _, p := range ports {
-		if !seen[p] {
-			seen[p] = true
-			out = append(out, strconv.Itoa(p))
-		}
-	}
-	return "127.0.0.1/" + strings.Join(out, ",")
-}
-
-// publishWithoutEgressError refuses `publish` on a policy with no egress.
-//
-// It refuses rather than warns, and that is the same rule halfAnonymisedError
-// states from the other side: warn when the missing thing makes the sandbox do
-// LESS, refuse when a human is left believing a capability they do not have.
-// Nothing is leaking here — the ports simply were not forwarded — but the belief
-// is the damage, and `--dry-run` is the mechanism by which snug is trustable at
-// all.
-func publishWithoutEgressError(ports []int, owners []ProfileName) error {
-	list := make([]string, len(ports))
-	for i, p := range ports {
-		list[i] = strconv.Itoa(p)
-	}
-	who := "the selection"
-	if len(owners) == 1 {
-		who = fmt.Sprintf("profile %q", owners[0])
-	} else if len(owners) > 1 {
-		names := make([]string, len(owners))
-		for i, o := range owners {
-			names[i] = fmt.Sprintf("%q", o)
-		}
-		who = "profiles " + strings.Join(names, ", ")
-	}
-	return fmt.Errorf("%s publishes host->sandbox port(s) %s, but this policy has no egress, "+
-		"so nothing forwards them: pasta is what binds a published port and it runs only for a "+
-		"network profile.\n"+
-		"       Add the '@net' profile, or drop the publish key. snug refuses rather than "+
-		"starting a sandbox\n"+
-		"       whose --dry-run document names a capability it does not have.",
-		who, strings.Join(list, ", "))
 }
