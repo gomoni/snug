@@ -4073,13 +4073,23 @@ func TestTheEnginesViewIsDerivedAndCarriesNoHostTree(t *testing.T) {
 // This asserts the two mounts report policy.EngineTmpfsSize's own numbers
 // instead.
 //
-// findmnt reads the engine's mountinfo via --tab-file rather than nsenter-ing
-// its mount namespace: SIZE is a fact --tab-file's plain text parse already
-// carries, and this codebase already trusts a plain read of
-// /proc/<enginePID>/mountinfo for the engine's own namespace
-// (TestTheEnginesViewIsDerivedAndCarriesNoHostTree, above) — a second,
-// privilege-crossing mechanism for the same fact would be worth having only
-// if the first were in doubt.
+// It reads the SUPERBLOCK OPTIONS out of /proc/<enginePID>/mountinfo, not
+// findmnt's SIZE column, and the difference is the whole correctness of this
+// test. MEASURED: `findmnt -F <other pid's mountinfo> -o SIZE` uses the file
+// only to locate the mount ENTRY and takes SIZE from a statfs(2) that findmnt
+// performs in ITS OWN namespace. Against a 1 MiB tmpfs mounted inside an
+// `unshare -Urm`, the process inside read 1048576 while an outside findmnt -F
+// on its mountinfo read 29290938368 — byte-identical to what /tmp is in the
+// OUTER namespace. So that column silently reports the reader's filesystem,
+// and the first CI run of this test failed with /run and /var/tmp reporting
+// the SAME 154894188544, which was the CI container's own filesystem and not
+// two unbounded tmpfs.
+//
+// The superblock options need no statfs and no namespace entry: tmpfs renders
+// its size there as `size=<N>k`. Note the value is the discriminator and its
+// PRESENCE is not — an unbounded tmpfs also carries a size=, the kernel's own
+// half-of-RAM default materialised (measured: size=28604432k on a host /tmp
+// nothing bounded).
 func TestEngineTmpfsAreBounded(t *testing.T) {
 	budget(t, 60*time.Second)
 	env, _ := containerEngineEnv(t)
@@ -4092,10 +4102,15 @@ func TestEngineTmpfsAreBounded(t *testing.T) {
 
 	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
 	mountinfo := fmt.Sprintf("/proc/%d/mountinfo", enginePID)
+	raw, err := os.ReadFile(mountinfo)
+	if err != nil {
+		t.Fatalf("reading the engine's own mountinfo (pid %d): %v", enginePID, err)
+	}
 
 	// This run set no tmpfs_size_mib, so /run tracks policy.DefaultTmpfsSize
 	// — the same number a payload's own tmpfs use, per EngineTmpfsSize's own
 	// contract.
+	got := map[string]uint64{}
 	for _, tc := range []struct {
 		guest string
 		want  uint64
@@ -4103,20 +4118,71 @@ func TestEngineTmpfsAreBounded(t *testing.T) {
 		{"/run", policy.DefaultTmpfsSize},
 		{"/var/tmp", policy.DefaultEngineScratchSize},
 	} {
-		out, err := exec.Command("findmnt", "-F", mountinfo, "-k", "-b", "-no", "SIZE", tc.guest).Output()
-		if err != nil {
-			t.Fatalf("findmnt %s against the engine's own mountinfo (pid %d): %v",
-				tc.guest, enginePID, err)
+		n, ok := tmpfsSuperblockSize(string(raw), tc.guest)
+		if !ok {
+			t.Fatalf("the engine's %s is not a tmpfs carrying a size= in its superblock options, "+
+				"so this test cannot say whether it is bounded:\n%s", tc.guest, raw)
 		}
-		got, perr := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
-		if perr != nil {
-			t.Fatalf("findmnt %s printed %q, not a byte count: %v", tc.guest, out, perr)
-		}
-		if got != tc.want {
-			t.Errorf("the engine's %s tmpfs reports SIZE=%d, want %d (policy.EngineTmpfsSize's own "+
-				"bound) — an unbounded tmpfs here defaults to half of host RAM", tc.guest, got, tc.want)
+		got[tc.guest] = n
+		if n != tc.want {
+			t.Errorf("the engine's %s tmpfs has size=%d bytes, want %d (policy.EngineTmpfsSize's "+
+				"own bound) — an unbounded tmpfs here defaults to half of host RAM",
+				tc.guest, n, tc.want)
 		}
 	}
+
+	// CONTROL, and it is the one the first version of this test lacked: the two
+	// bounds are deliberately DIFFERENT numbers, so a reader that resolved the
+	// wrong filesystem reports them as equal. That is exactly how the broken
+	// findmnt -o SIZE version failed — both mounts read 154894188544 — and an
+	// equality here means the parse is not seeing these two mounts, whatever
+	// the values above happen to be.
+	if got["/run"] == got["/var/tmp"] {
+		t.Errorf("/run and /var/tmp both read %d, but EngineTmpfsSize gives them different bounds "+
+			"(%d and %d) — this parse is not reading the engine's two tmpfs",
+			got["/run"], policy.DefaultTmpfsSize, policy.DefaultEngineScratchSize)
+	}
+}
+
+// tmpfsSuperblockSize is the size= a tmpfs mounted at guest reports in the
+// SUPERBLOCK OPTIONS field of a mountinfo dump, in bytes.
+//
+// mountinfo's shape: fields up to the " - " separator describe the mount, and
+// the three after it are fstype, source and super options. tmpfs writes its
+// size there in KILOBYTES ("size=1048576k"), which is why this multiplies.
+//
+// The LAST match wins: mounts stack, and the topmost one at a path is the one
+// a process there actually writes into.
+func tmpfsSuperblockSize(dump, guest string) (uint64, bool) {
+	var out uint64
+	var found bool
+	for _, line := range strings.Split(dump, "\n") {
+		left, right, ok := strings.Cut(line, " - ")
+		if !ok {
+			continue
+		}
+		lf := strings.Fields(left)
+		if len(lf) < 5 || lf[4] != guest {
+			continue
+		}
+		rf := strings.Fields(right)
+		if len(rf) < 3 || rf[0] != "tmpfs" {
+			continue
+		}
+		for _, opt := range strings.Split(rf[2], ",") {
+			kb, cut := strings.CutPrefix(opt, "size=")
+			if !cut {
+				continue
+			}
+			kb = strings.TrimSuffix(kb, "k")
+			n, err := strconv.ParseUint(kb, 10, 64)
+			if err != nil {
+				continue
+			}
+			out, found = n*1024, true
+		}
+	}
+	return out, found
 }
 
 // mountPointsOf is the set of mount points in a mountinfo dump — field 5,
@@ -4546,3 +4612,52 @@ create("volumes", {"Image": IMG, "Volumes": {"/data": {}}})
 
 print("PROBE-COMPLETE", flush=True)
 `
+
+// TestTmpfsSuperblockSizeReadsTheBoundAndNotTheReadersFilesystem is
+// tmpfsSuperblockSize's own control, and it exists because the mechanism it
+// replaced could not be tested at all: findmnt's SIZE column against another
+// process's mountinfo reports a statfs of the READER's namespace, so it looked
+// right locally, skipped on every host without an engine, and only failed once
+// it reached a CI runner whose filesystem was a different size.
+//
+// The fixture lines are REAL mountinfo, captured from a 1 MiB tmpfs mounted
+// inside `unshare -Urm` and from a host /tmp nothing had bounded.
+func TestTmpfsSuperblockSizeReadsTheBoundAndNotTheReadersFilesystem(t *testing.T) {
+	const dump = `8286 1974 0:44 / /tmp rw,nosuid,nodev shared:1816 - tmpfs tmpfs rw,seclabel,size=28604432k,nr_inodes=1048576,inode64
+8952 8286 0:127 / /run rw,relatime - tmpfs tmpfs rw,seclabel,size=1024k,uid=1000,gid=1000,inode64
+8953 8286 0:128 / /var/tmp rw,relatime - tmpfs tmpfs rw,seclabel,size=8388608k,inode64
+1975 1974 0:7 / /dev rw,nosuid shared:1541 - devtmpfs devtmpfs rw,seclabel,size=28471436k,nr_inodes=7117859,mode=755,inode64
+8955 8286 0:130 / /srv rw,relatime - tmpfs tmpfs rw,seclabel,inode64`
+
+	for _, tc := range []struct {
+		guest string
+		want  uint64
+		ok    bool
+	}{
+		// The bound this test is really about, in the units mountinfo uses.
+		{"/run", 1024 * 1024, true},
+		{"/var/tmp", 8 << 30, true},
+		// POSITIVE CONTROL that the parse distinguishes mounts rather than
+		// returning one number for everything: /tmp is a THIRD value, and it is
+		// the shape the broken version returned for every guest.
+		{"/tmp", 28604432 * 1024, true},
+		// A tmpfs with no size= at all: refuse rather than report 0 as a bound.
+		{"/srv", 0, false},
+		// NOT a tmpfs, and it really does carry a size= — a real host devtmpfs
+		// line, which is why this case is the one that makes the fstype guard
+		// load-bearing. An earlier fixture used an ext4 line with no size= at
+		// all, so removing the guard left the test green: it proved nothing.
+		{"/dev", 0, false},
+		// Absent entirely.
+		{"/nonexistent", 0, false},
+	} {
+		got, ok := tmpfsSuperblockSize(dump, tc.guest)
+		if ok != tc.ok {
+			t.Errorf("tmpfsSuperblockSize(%s) ok=%v, want %v", tc.guest, ok, tc.ok)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("tmpfsSuperblockSize(%s) = %d, want %d", tc.guest, got, tc.want)
+		}
+	}
+}
