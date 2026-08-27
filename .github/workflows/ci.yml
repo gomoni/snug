@@ -359,10 +359,16 @@ jobs:
 
   # Tier 3d: the ENGINE tier, against a real podman (issue #395).
   #
-  # Every job above runs on `ubuntu-latest`, which has no container engine snug
-  # will accept, so all 33 engine tests SKIP there and have since the tier was
-  # written — a green run measuring nothing, which is the defect #395 exists to
-  # remove rather than a coverage wish.
+  # Every job above runs on `ubuntu-latest`, whose container engine snug does
+  # not accept, so its engine tests do not really run — a green run measuring
+  # nothing, which is the defect #395 exists to remove rather than a coverage
+  # wish. MEASURED on run 33054984495: podman 5.8.4 at /usr/local/bin/podman,
+  # logged UNSUPPORTED, 27 tests skipping on `crun: unknown version specified`
+  # and 3 reaching their marker. Since issue #458 that combination FAILS the
+  # sandbox job rather than warning: containerengine_test.go's
+  # unsupportedEngineIsFatal treats $CI as a second trigger beside
+  # SNUG_REQUIRE_ENGINE, because the runner's podman is configuration and
+  # therefore fixable. A runner with NO podman still skips.
   #
   # Three things make this job MEAN something, and each closes one half of that
   # defect:
@@ -390,8 +396,9 @@ jobs:
   # openSUSE Tumbleweed, not Ubuntu, and that is the point: the engine version
   # floats with the host distribution since the pinned engine bundle was retired
   # (#384), so CI is only informative about a developer's result if it runs the
-  # same major. Ubuntu 24.04's podman is 4.9.x — a different engine from the
-  # 6.0.2 anyone here develops against, and one the supported set would refuse.
+  # same major. The ubuntu-latest runner's podman is not 6.x — 5.8.4 when last
+  # measured, a different engine from the 6.0.2 anyone here develops against,
+  # and one the supported set refuses.
   # Tumbleweed's is podman-6.0.2-1.1, MEASURED identical to the development
   # host's, so CI matches by construction rather than by luck.
   #

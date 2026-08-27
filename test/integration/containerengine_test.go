@@ -170,13 +170,31 @@ func hostEngine(t *testing.T) string {
 	// nobody is stopped. A lane that set $SNUG_REQUIRE_ENGINE asked this run to
 	// MEAN something, and a green run against an engine nobody supports is the
 	// same lie as a green run that skipped everything.
+	//
+	// $CI IS THE SECOND TRIGGER, and it is what makes the paragraph above true
+	// rather than intended (issue #458). Only test/engine-container.sh sets
+	// SNUG_REQUIRE_ENGINE, so "a FAILURE in CI" reached exactly one of the two
+	// CI jobs that resolve an engine. MEASURED on run 33054984495, the `real
+	// sandbox behaviour` job: podman 5.8.4 at /usr/local/bin/podman, this very
+	// line logging UNSUPPORTED, and then 27 tests skipping downstream on
+	// `crun: unknown version specified` under a message that names none of it —
+	// a green tick for an environment snug declines to support. The runner's
+	// podman is CI configuration and therefore fixable, which is why this is a
+	// failure rather than a narrower skip: MAINTAINER'S DECISION, recorded here
+	// because the ticket asked the question and the answer is not derivable
+	// from the code.
+	//
+	// $CI and not SNUG_REQUIRE_ENGINE for the sandbox job, deliberately: the
+	// latter also arms the run-count floor (Makefile) and turns an absent
+	// engine into a fatal, neither of which this decision asked for. A runner
+	// with NO podman still skips.
 	if r.unsupported != "" {
-		if os.Getenv("SNUG_REQUIRE_ENGINE") != "" {
-			t.Fatalf("SNUG_REQUIRE_ENGINE is set and the resolved engine is not one snug "+
+		if why := unsupportedEngineIsFatal(); why != "" {
+			t.Fatalf("%s and the resolved engine is not one snug "+
 				"supports: %s\n      Resolved: %q at %s\n"+
 				"      Fix: run this lane against %s, or widen "+
 				"engine.SupportedPodmanMajor and record the run that justifies it.",
-				r.unsupported, r.versionLine, r.path, engine.SupportedPodmanSet)
+				why, r.unsupported, r.versionLine, r.path, engine.SupportedPodmanSet)
 		}
 		versionOnce.Do(func() {
 			// The reason rides on the SAME marker line the Makefile already
@@ -190,6 +208,20 @@ func hostEngine(t *testing.T) string {
 		t.Logf("snug-engine-version: %s at %s", r.versionLine, r.path)
 	})
 	return r.path
+}
+
+// unsupportedEngineIsFatal names the reason an engine outside the supported set
+// must fail this run, or "" where it may only warn. Two triggers, and the
+// message quotes whichever fired so the reader can turn it off knowingly.
+func unsupportedEngineIsFatal() string {
+	if os.Getenv("SNUG_REQUIRE_ENGINE") != "" {
+		return "SNUG_REQUIRE_ENGINE is set"
+	}
+	if os.Getenv("CI") != "" {
+		return "$CI is set, so this is a CI lane whose engine is configuration rather than " +
+			"a developer's distribution"
+	}
+	return ""
 }
 
 // describeResolvedEngine renders the resolved engine for the negative
