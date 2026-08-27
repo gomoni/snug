@@ -546,9 +546,12 @@ gateway6 = "fd00:5e79:1::1"
 # fires only when the plugin is BOTH in installed_plugins.json AND enabled in
 # settings.json — two gates, and snug closes both (this regeneration, plus the
 # settings.json filter that drops enabledPlugins), so #68 is defence-in-depth.
-# TestManifestGatesPluginHookFiring drives the real binary and asserts an
-# unnamed plugin's hook does not fire. See
-# https://github.com/gomoni/snug/issues/68.
+# What snug WRITES is asserted by internal/policy's plugin tests. What the
+# binary DOES with it is the measurement above and nothing more: asserting it
+# needs the real proprietary binary, which is in no distro, so no test in this
+# repo drives it. A version bump can move that behaviour without anything here
+# turning red -- enabledPlugins already moved from ~/.claude.json to
+# settings.json once. See https://github.com/gomoni/snug/issues/68.
 #
 # THE PROJECT-SETTINGS DOOR, both directions, closed where the file exists
 # (issue #73). The TARGET's own .claude/settings.json and settings.local.json
