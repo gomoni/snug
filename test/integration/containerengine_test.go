@@ -3907,8 +3907,18 @@ print("PROBE-COMPLETE", flush=True)
 	if !strings.Contains(r.out, "PROCBIND-CREATE: 403") {
 		t.Errorf("`-v /proc:/hostproc` was not refused with 403:\n%s", r.out)
 	}
-	if !strings.Contains(r.out, "cannot see /proc") {
-		t.Errorf("the refusal does not say the sandbox cannot see /proc, the actual mechanism:\n%s", r.out)
+	// The refusal must name the mechanism this test's own doc comment states:
+	// HostPathVisible matches KindBind mounts only and /proc is KindProc. It
+	// used to say "cannot see /proc as writable", which is FALSE — the payload
+	// reads /proc perfectly well, and issue #463 was filed on the same
+	// sentence said about /tmp.
+	if !strings.Contains(r.out, "/proc is not a bind of a host directory") {
+		t.Errorf("the refusal does not name the actual mechanism (no host directory behind "+
+			"/proc):\n%s", r.out)
+	}
+	if strings.Contains(r.out, "cannot see /proc") {
+		t.Errorf("the refusal claims the sandbox cannot see /proc, which it can (issue "+
+			"#463):\n%s", r.out)
 	}
 }
 

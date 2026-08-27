@@ -102,8 +102,12 @@ gate:
 # on whatever test the alarm happened to catch. The three heaviest:
 #
 #   TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox   52.15s
-#   TestManifestGatesPluginHookFiring                        18.26s
 #   TestAKilledSnugCannotReleaseTheParkedPayload              9.10s
+#
+# The second-heaviest of that run, 18.26s, was TestManifestGatesPluginHookFiring
+# and it has since been deleted -- it drove the proprietary `claude` binary, the
+# only non-distro dependency the suite had. The 242.09s total therefore includes
+# it; no replacement number is written here because none was measured.
 #
 # Sequentially, as two suites, the same host: 176.61s and 67.73s of `go test`,
 # 4m15s wall for the whole target including both compiles. Neither suite is
