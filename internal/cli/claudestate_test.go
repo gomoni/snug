@@ -574,3 +574,60 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// TestClaudeGuidanceDoesNotClaimSiblingProjectsAreAbsent.
+//
+// The sentence this pins was UNCONDITIONAL and false under the DEFAULT
+// selection. It read "every other project on this machine [is] not hidden —
+// [it was] never mounted, and read as **absent**", and the defaults are
+// `@sys @home @cwd-rw @parent-ro`: @parent-ro binds the target's PARENT
+// read-only, so every sibling of the target is readable. Reported from inside a
+// real run (issue #461) — "Sibling project directories alongside the target ...
+// are present and fully readable from inside the sandbox."
+//
+// Both arms are asserted, because only the pair distinguishes "derived" from
+// "the sentence was deleted". The negative control is the second arm: with no
+// read-only ancestor grant the absence claim is TRUE and must still be made,
+// otherwise this test would pass on a guidance file that had simply stopped
+// saying anything about other projects.
+//
+// Why a test and not just the fix: the shipped sentence had no test at all,
+// which is how a false claim about the read boundary survived in the one file
+// whose own header says it "describes what is actually true".
+func TestClaudeGuidanceDoesNotClaimSiblingProjectsAreAbsent(t *testing.T) {
+	t.Run("with @parent-ro the guidance says reads are NOT confined", func(t *testing.T) {
+		sel := []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro", "@claude"}
+		pol := resolveFor(t, sel)
+		got := string(claudeGuidance(pol))
+
+		if strings.Contains(got, "every other project on this machine") {
+			t.Errorf("@parent-ro grants the target's parent read-only, so sibling projects ARE "+
+				"readable, and the guidance still makes the unconditional absence claim:\n%s", got)
+		}
+		if !strings.Contains(got, "Reads are NOT confined") {
+			t.Errorf("the guidance does not tell the agent that reads reach outside the "+
+				"project:\n%s", got)
+		}
+		// The grant must be NAMED. "reads are unconfined" without the path is a
+		// warning an agent cannot act on.
+		parent := filepath.Dir(pol.Target)
+		if !strings.Contains(got, parent) {
+			t.Errorf("the guidance warns that reads are unconfined but never names %q, the "+
+				"grant that makes them so:\n%s", parent, got)
+		}
+	})
+
+	t.Run("control: without it the absence claim is true and is still made", func(t *testing.T) {
+		sel := []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@claude"}
+		got := string(claudeGuidance(resolveFor(t, sel)))
+
+		if strings.Contains(got, "Reads are NOT confined") {
+			t.Errorf("no read-only ancestor of the target is granted here, so nothing makes "+
+				"a sibling readable, and the guidance warns about one anyway:\n%s", got)
+		}
+		if !strings.Contains(got, "reads as\n**absent**") {
+			t.Errorf("the guidance no longer says other projects read as absent, which is "+
+				"TRUE for this selection — the sentence was deleted rather than derived:\n%s", got)
+		}
+	})
+}

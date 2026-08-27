@@ -195,12 +195,21 @@ func warnAboutPodmanClient() {
 	// test is now "not GET or HEAD, and not examined", which also covers the
 	// DELETE routes the old wording never named. `ps`, `images` and `info` are
 	// read-only libpod routes and answer truthfully; `run` and `pull` do not.
-	// See CONTAINER-CLIENT.md §3.
+	//
+	// `podman build` DOES work and the message says so, because omitting it read
+	// as "podman cannot build here" to the one person who selected the profile
+	// for building. POST /libpod/build is the single state-changing libpod route
+	// the filter has read — libpodExamined is isBuild — and it is filterable by
+	// the SAME code as /build because a build's parameters travel in the query
+	// string, not in a body (handleBuild starts at r.URL.Query()). MEASURED:
+	// `podman build -t probe:1 .` pulled alpine:3.20, ran its RUN step and
+	// committed localhost/probe:1 through this proxy. See CONTAINER-CLIENT.md §3
+	// and issue #459 for whether the libpod split should survive at all.
 	fmt.Fprint(os.Stderr,
 		"snug: podman here is genuine, but `run` and `pull` will not work through this\n"+
 			"      sandbox's proxy — podman's CLI speaks the libpod-native API, and snug\n"+
 			"      refuses a libpod request that changes state unless its own filter has read\n"+
-			"      it (it filters the docker-compat schema only). `podman ps`, `podman images`\n"+
-			"      and `podman info` are read-only libpod routes and work fine. For `run` and\n"+
-			"      `pull`, use `docker` instead.\n")
+			"      it (it filters the docker-compat schema only). Working: `podman build`,\n"+
+			"      and the read-only routes `podman ps`, `podman images`, `podman info`.\n"+
+			"      For `run` and `pull`, use `docker` instead. Issue #459.\n")
 }

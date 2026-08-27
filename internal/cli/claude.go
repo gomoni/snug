@@ -836,6 +836,34 @@ func claudeAuthoredPair(a policy.ClaudeAuthoredSetting) string {
 // is not politeness: every sentence here removes a class of wasted turns, and a
 // class of confusing failure that an agent would otherwise try to "fix" by
 // disabling something.
+// readableAncestors is the set of read-only bind grants that are proper
+// ancestors of the target, i.e. the grants through which a SIBLING of the target
+// becomes readable. @parent-ro is the one in the default selection.
+//
+// Proper ancestors only, and binds only. The target itself is not one (it is the
+// writable grant the guidance already names), and /usr and /etc are not the
+// claim being made — nobody reads "every other project on this machine" as a
+// statement about the system tree. A tmpfs is excluded because it holds nothing
+// of the host's: $HOME under @home is a fresh filesystem, so it discloses no
+// sibling even though it is an ancestor.
+func readableAncestors(pol *policy.Policy) []string {
+	var out []string
+	for _, m := range pol.Mounts {
+		if m.Kind != policy.KindBind || m.Access != policy.AccessRO {
+			continue
+		}
+		if m.Guest == "/" || m.Guest == pol.Target {
+			continue
+		}
+		if !strings.HasPrefix(pol.Target, m.Guest+"/") {
+			continue
+		}
+		out = append(out, m.Guest)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func claudeGuidance(pol *policy.Policy) []byte {
 	var b strings.Builder
 	b.WriteString("# You are running inside snug\n\n")
@@ -848,9 +876,36 @@ func claudeGuidance(pol *policy.Policy) []byte {
 	b.WriteString("but **ephemeral — they are gone when this session ends**. Put anything meant\n")
 	b.WriteString("to survive in the project tree.\n\n")
 	b.WriteString("Everything else is read-only or absent. Secrets (`~/.ssh`, `~/.gnupg`, cloud\n")
-	b.WriteString("credentials), personal data, and every other project on this machine are not\n")
-	b.WriteString("hidden — they were never mounted, and read as **absent**. Do not try to reach\n")
-	b.WriteString("them; there is nothing there and it wastes your turns.\n\n")
+	b.WriteString("credentials) and personal data are not hidden — they were never mounted, and\n")
+	b.WriteString("read as **absent**. Do not try to reach them; there is nothing there and it\n")
+	b.WriteString("wastes your turns.\n\n")
+	// The sibling clause is DERIVED, because the unconditional version was false
+	// under the DEFAULT selection. It read "every other project on this machine
+	// [is] not hidden — [it was] never mounted, and read as absent", and the
+	// defaults are `@sys @home @cwd-rw @parent-ro`: @parent-ro binds the target's
+	// PARENT read-only, so every sibling project is readable. Reported from
+	// inside a real run (issue #461): "Sibling project directories alongside the
+	// target — other projects of mine, unrelated to the one snug was pointed at —
+	// are present and fully readable from inside the sandbox."
+	//
+	// This file's own claim is that it "describes what is actually true", and an
+	// agent told a path is absent does not try to read it while an agent told
+	// reads are unconfined treats what it finds as its own responsibility. The
+	// wrong way round is the one that shipped, so the sentence has to come from
+	// the policy rather than from a constant.
+	if ro := readableAncestors(pol); len(ro) > 0 {
+		b.WriteString("Reads are NOT confined to the project. These directories are mounted\n")
+		b.WriteString("read-only and everything inside them — sibling projects included — is\n")
+		b.WriteString("readable, though nothing in them is writable:\n\n")
+		for _, g := range ro {
+			fmt.Fprintf(&b, "- `%s`\n", g)
+		}
+		b.WriteString("\nTreat what you find there as somebody else's. Nothing requires you to read\n")
+		b.WriteString("it, and the sandbox will not stop you.\n\n")
+	} else {
+		b.WriteString("Every other project on this machine was never mounted and reads as\n")
+		b.WriteString("**absent** too.\n\n")
+	}
 
 	b.WriteString("## Network\n\n")
 	switch pol.Net.Mode {

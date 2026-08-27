@@ -29,7 +29,14 @@ type recorder struct {
 	// which is what lets a case assert the gate asked before it forwarded.
 	inspect     func(ref string) (int, string)
 	execInspect func(ref string) (int, string)
-	requests    atomic.Int32
+	// hijack, when set, is offered every request before the default
+	// record-and-200 handling and may take the connection over itself (via
+	// http.Hijacker) instead of answering as a normal response. It reports
+	// whether it did. Needed for the one case fakeEngine and the default
+	// handler below cannot serve: raw bytes written to the client on a timing
+	// the test controls, rather than a canned request/response.
+	hijack   func(w http.ResponseWriter, r *http.Request) bool
+	requests atomic.Int32
 	// inspects counts the gate's own lookups, which requests counts too but
 	// seen()/seenURIs() deliberately do not record.
 	inspects atomic.Int32
@@ -143,6 +150,9 @@ func startRecordedWith(t *testing.T, runLabel string, rec *recorder) (string, *r
 			code, body := answer(ref)
 			w.WriteHeader(code)
 			_, _ = w.Write([]byte(body))
+			return
+		}
+		if rec.hijack != nil && rec.hijack(w, r) {
 			return
 		}
 		rec.record(r.Method, r.URL.Path, r.URL.RequestURI())
