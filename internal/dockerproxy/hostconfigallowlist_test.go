@@ -712,3 +712,40 @@ func quoteJSON(s string) string {
 	}
 	return string(b)
 }
+
+// TestARepeatedHostConfigKeyCannotReachTheEngine is issue #327's guard for the
+// CREATE site, and the sibling of TestARepeatedContextFieldCannotReachTheEngine
+// on the build side. Both sites are duplicate-key-safe only because something
+// downstream re-marshals, and until #327 neither said so.
+//
+// The class, measured in #323: snug decodes into map[string]json.RawMessage and
+// Go collapses a repeated key to the LAST occurrence before any check runs; the
+// engine decodes into a STRUCT, where duplicate object fields are MERGED field
+// by field, so the first occurrence's scalar survives an empty second. The
+// re-encode at handleCreate step 8 is what stops the two ever seeing different
+// bytes — a side effect of rebuilding the request, not a defence anybody chose.
+//
+// MUTATION THAT MUST REDDEN IT: forward the client's original body instead of
+// `json.Marshal(req)`. That is the reasonable-looking optimisation — keep an
+// unchanged request byte-identical — and it is the one change that silently
+// undoes this.
+func TestARepeatedHostConfigKeyCannotReachTheEngine(t *testing.T) {
+	sock, eng, _ := startProxy(t)
+	body := `{"Image":"alpine","HostConfig":{"NetworkMode":"host","NetworkMode":"host"}}`
+	code, resp := post(t, sock, "/v1.41/containers/create", body)
+	if code == http.StatusForbidden {
+		t.Fatalf("a repeated key was refused; this test is about the re-encode that "+
+			"COLLAPSES it, so it needs a request that is forwarded: %s", denyMessage(resp))
+	}
+	if eng.reached.Load() == 0 {
+		t.Fatal("the create never reached the engine")
+	}
+	fwd, _ := eng.lastBody.Load().(string)
+	if n := strings.Count(fwd, `"NetworkMode"`); n != 1 {
+		t.Errorf("the forwarded body carries %q %d times, want exactly 1: %s\n"+
+			"A repeated key reached the engine. snug read the LAST occurrence out of a map "+
+			"and the engine merges duplicates field by field, so the two can read one "+
+			"request two ways (issue #323). Forwarding the client's original bytes here "+
+			"reopens the class with nothing else failing", `"NetworkMode"`, n, fwd)
+	}
+}
