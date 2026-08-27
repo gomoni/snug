@@ -402,6 +402,22 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	// 8. Re-encode from our own map. This is a second, independent drift guard:
 	//    only what survived the checks above reaches the engine.
+	//
+	//    IT IS ALSO WHAT COLLAPSES A REPEATED KEY, and issue #327 is that
+	//    nothing here said so. `req` and `hc` are maps, so Go's decoder has
+	//    already reduced a repeated key to its LAST occurrence; the engine
+	//    decodes into a STRUCT, where duplicate object fields are merged field
+	//    by field, so the FIRST occurrence's scalar survives an empty second
+	//    ({"AutoUserNsOpts":{"PasswdFile":"/etc/passwd"},"AutoUserNsOpts":{}}
+	//    is #323's measured case). Marshalling from our own maps is what stops
+	//    the two sides ever seeing different bytes — a side effect of rebuilding
+	//    the request, not a defence anybody chose.
+	//
+	//    So FORWARDING THE CLIENT'S ORIGINAL BYTES HERE REOPENS #323. Keeping an
+	//    unchanged request byte-identical is a reasonable-looking optimisation
+	//    and it is the one change that silently undoes this. Guarded by
+	//    TestARepeatedHostConfigKeyCannotReachTheEngine, which must be
+	//    mutation-checked by making this a verbatim forward.
 	encHC, err := json.Marshal(hc)
 	if err != nil {
 		p.deny(w, "%v", err)

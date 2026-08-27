@@ -792,20 +792,67 @@ func checkAutoUserNsOpts(rawOpts json.RawMessage, key string) error {
 // fields, and it is the same rule buildParams applies to the query one level
 // up — applied one level down, which is where issues #310 and #311 both live.
 //
-// RECORDED, not guessed, in the spelling this file's other fixtures follow: a
-// `podman 6.0.2 build --build-context extra=<dir>` against a listening socket
-// sends exactly
+// RECORDED, not guessed, in the spelling this file's other fixtures follow:
 //
 //	{"extra":{"IsURL":false,"IsImage":false,"Value":"<dir>","DownloadedCache":""}}
 //
 // so four fields, with DownloadedCache empty on an ordinary build. A fifth one
 // arriving is a field snug has not been taught about reaching the engine
 // unexamined, which is precisely what the parameter-level rule refuses.
+//
+// WHICH PODMAN THAT IS, because this comment named the wrong one (issue #335).
+// It said "podman 6.0.2 build --build-context extra=<dir> sends exactly" the
+// object above. It does not. The recording is a client encoding that predates
+// the 5.6.0 server, and the tests that exercise it drive `/v5.8.3/libpod/build`
+// — a real legacy encoding, just not the version the prose claimed.
+//
+// A podman 6.0.2 CLI sends `--build-context` as multipart/form-data — a
+// `name="MainContext"` part and one `build-context-<name>` part each — with NO
+// `additionalbuildcontexts` query parameter at all. And 6.0.2's own
+// `handleBuildContexts` reads that parameter as `name=prefix:value`, recognising
+// only `url:` and `image:`; it never JSON-decodes, so `strings.Cut` over a JSON
+// blob errors the build.
+//
+// The consequence, stated so nobody reads more into this check than it does:
+// against a 6.0.2 engine `checkAdditionalContexts` is UNREACHABLE-BUT-SAFE, and
+// #310's primitive is only triggerable against an API predating 5.6.0. That
+// does NOT retire the check — snug does not choose the engine it is pointed at,
+// and an older API is a supported configuration.
+//
+// REASONED, NOT MEASURED, and it stays labelled that way: the 6.0.2 multipart
+// shape and the engine-side rejection above were read from the handler source
+// and from #335's own round, never POSTed to a live engine by this code's
+// author. #335 item 4 — whether a recording against a 6.0.2 multipart build is
+// worth a third fixture — is open for the same reason. The recorded set is the
+// oracle here; prose about what a client sends is not, which is the whole
+// lesson of the sentence this replaced.
 var additionalContextFields = map[string]string{
 	"isurl":           "IsURL",
 	"isimage":         "IsImage",
 	"value":           "Value",
 	"downloadedcache": "DownloadedCache",
+}
+
+// additionalContextEntry is the shape checkAdditionalContexts decodes ONE
+// build context into, and it is a named type rather than an anonymous struct
+// so a test can reflect over it (issue #335 item 3, and #327's item 2, which
+// are the same test).
+//
+// EVERY FIELD MUST STAY SCALAR. That is not style: it is the premise of the
+// definitional-equality argument at the decode site. A map route collapses a
+// repeated key to the last occurrence, while a struct route MERGES duplicate
+// object fields field by field — so the two disagree only when a field is an
+// object. All of these are scalars, so they cannot. A future buildah giving
+// any of them a struct type reopens #323 here, silently, and
+// TestAdditionalBuildContextFieldsAreAllScalars is what fails when it does.
+//
+// DownloadedCache is deliberately absent: it is modelled in
+// additionalContextFields and refused unless empty, never decoded into a value
+// snug acts on, and so gets none of this guarantee.
+type additionalContextEntry struct {
+	IsURL   bool
+	IsImage bool
+	Value   string
 }
 
 // checkAdditionalContexts judges `--build-context name=VALUE`.
@@ -908,11 +955,31 @@ func checkAdditionalContexts(p *Proxy, v string) (string, error) {
 				"not resolve or judge. Only an empty value is permitted", name, k)
 		}
 
-		var c struct {
-			IsURL   bool
-			IsImage bool
-			Value   string
-		}
+		// WHY THIS DECODE IS SOUND, and it is the reason the fix above is
+		// sound rather than merely careful (issue #335). This unmarshals the
+		// ORIGINAL entry bytes — raw[name], not the `fields` map — into a
+		// struct with the same three names and the same encoding/json
+		// semantics buildah uses at the other end. For IsURL, IsImage and
+		// Value, what snug JUDGES is therefore DEFINITIONALLY what the engine
+		// COMPUTES: both sides run the same decoder over the same bytes, so
+		// there is no spelling, casing or repetition the two could resolve
+		// differently.
+		//
+		// That is what makes the duplicate-key class (#323) inert HERE and not
+		// merely unlikely: a repeated key is resolved identically on both
+		// sides because it is the same code doing it. The field-level dedup
+		// above is DEFENCE IN DEPTH over this, not the thing holding the
+		// property up — its real work is DownloadedCache, which is NOT in this
+		// struct and so gets none of this guarantee, and the canonical
+		// re-marshal.
+		//
+		// Say it out loud because a reader who does not know it will treat the
+		// dedup as load-bearing and be reluctant to touch it — and, worse, will
+		// not notice the day the definitional property breaks. It breaks if
+		// this decode is ever fed the re-marshalled `fields` instead of
+		// raw[name], or if buildah gives any of these three a non-scalar type
+		// (TestAdditionalBuildContextFieldsAreAllScalars is the guard).
+		var c additionalContextEntry
 		if err := json.Unmarshal(raw[name], &c); err != nil {
 			return "", fmt.Errorf("context %q is not the JSON object podman sends", name)
 		}
@@ -943,6 +1010,26 @@ func checkAdditionalContexts(p *Proxy, v string) (string, error) {
 		}
 		fields["Value"] = enc
 
+		// THE RE-MARSHAL IS WHAT COLLAPSES A REPEATED KEY, and issue #327 is
+		// that neither of the proxy's two map-route decoders said so.
+		//
+		// `fields` is a map, and Go's decoder collapses a repeated key to the
+		// LAST occurrence before any check here runs. Rebuilding the bytes from
+		// that map is what stops the duplicate reaching the engine — a side
+		// effect of #313's rewrite, never chosen as a duplicate-key defence.
+		// A repeated key always lands here rather than in the `!changed`
+		// short-circuit below, because `out` is canonical and `raw[name]` still
+		// carries both copies, so the two strings differ.
+		//
+		// FORWARDING THE CLIENT'S ORIGINAL BYTES HERE REOPENS #323's
+		// DIVERGENCE. That is a reasonable-looking optimisation — keep a
+		// request that changed nothing byte-identical — and it is exactly the
+		// instinct handleBuild already applies one layer up to RawQuery. Do not
+		// apply it here.
+		//
+		// TestARepeatedContextFieldCannotReachTheEngine is the guard, and it
+		// must be mutation-checked by replacing this re-marshal with a verbatim
+		// forward, never by deleting the check.
 		out, err := json.Marshal(fields)
 		if err != nil {
 			return "", fmt.Errorf("context %q: %v", name, err)
