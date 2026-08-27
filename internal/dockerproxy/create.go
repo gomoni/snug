@@ -1458,31 +1458,59 @@ func (p *Proxy) bindRefusalRemedy(needWrite bool) string {
 }
 
 // acceptableBindSource answers "is there a source this run would forward, and
-// what is it" by running the candidate through checkOne's OWN gauntlet rather
+// what is it" by running each candidate through checkOne's OWN gauntlet rather
 // than re-deriving the conditions. That is what keeps the advice and the
 // refusal one author (invariant 6): a candidate that stops passing stops being
 // advertised, with no second copy of the rule to update.
 //
-// The candidate is the target and only the target. It is the one path a user
-// of this sandbox certainly has, and enumerating grants to find a "best" one
-// would put a second implementation of the bind rule here — the thing the
-// paragraph above exists to avoid.
+// IT ENUMERATES, and the first version did not — it asked about the target
+// alone and said "nothing this run grants is an acceptable source" whenever
+// the target failed. That sentence was FALSE the first time a real engine saw
+// it: TestEngineProcfsIsNotBindMountable refused `-v /proc:/hostproc` with it
+// while its own positive control bound /usr read-only in the same run and got
+// 201. A claim about every grant has to READ every grant, or issue #463's
+// defect is reproduced by its own fix.
+//
+// The target is tried first because it is the path a user of this sandbox
+// actually wants; the rest follow in SortedMounts order so the advice does not
+// depend on map iteration. This is not a second implementation of "can the
+// sandbox see this host path" — it selects candidates and delegates every
+// verdict to the predicates below, which is what the one-author rule that
+// hostpathauthor_test.go guards actually asks for.
+//
+// The mount's GUEST path is the candidate, as checkOne's own source is: a bind
+// requires Guest == Host, and a divergent spelling is refused by
+// CheckEngineForwardedPath rather than quietly advertised (issue #371).
+func (p *Proxy) acceptableBindSource(needWrite bool) (string, bool) {
+	if t := filepath.Clean(p.pol.Target); p.forwardableBindSource(t, needWrite) {
+		return t, true
+	}
+	for _, m := range p.pol.SortedMounts() {
+		if m.Kind != policy.KindBind {
+			continue
+		}
+		if p.forwardableBindSource(m.Guest, needWrite) {
+			return m.Guest, true
+		}
+	}
+	return "", false
+}
+
+// forwardableBindSource is checkOne's gauntlet asked as a question, so the
+// refusal message and the check it precedes cannot drift apart.
 //
 // resolveForwardable is the single step not repeated: it touches the
-// filesystem, and Target is a path snug resolved before the sandbox existed.
-func (p *Proxy) acceptableBindSource(needWrite bool) (string, bool) {
-	t := filepath.Clean(p.pol.Target)
-	if !filepath.IsAbs(t) {
-		return "", false
+// filesystem, and every candidate here is a path snug resolved before the
+// sandbox existed.
+func (p *Proxy) forwardableBindSource(candidate string, needWrite bool) bool {
+	if !filepath.IsAbs(candidate) {
+		return false
 	}
-	if !p.hostPathVisible(t, needWrite) {
-		return "", false
+	if !p.hostPathVisible(candidate, needWrite) {
+		return false
 	}
-	if err := p.pol.CheckEngineForwardedPath(t); err != nil {
-		return "", false
+	if err := p.pol.CheckEngineForwardedPath(candidate); err != nil {
+		return false
 	}
-	if err := p.pol.CheckEngineBindSource(t); err != nil {
-		return "", false
-	}
-	return t, true
+	return p.pol.CheckEngineBindSource(candidate) == nil
 }

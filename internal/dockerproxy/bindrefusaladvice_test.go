@@ -149,3 +149,56 @@ func TestBindRefusalNamesNoSourceWhenNoneIsAcceptable(t *testing.T) {
 			"reproduce the no-acceptable-source condition at all: %s", code, resp)
 	}
 }
+
+// TestBindRefusalDoesNotClaimUnavailableWhileAnotherGrantIsBindable is the
+// regression for a defect this ticket's own first fix introduced, and a real
+// engine caught within the hour.
+//
+// acceptableBindSource asked about the target alone, then printed "nothing it
+// already grants is an acceptable source" whenever the target failed.
+// TestEngineProcfsIsNotBindMountable refused `-v /proc:/hostproc` with exactly
+// that sentence while its positive control bound /usr read-only in the same
+// run and got 201 — a claim about every grant, made without reading any grant
+// but one. That is issue #463's defect reproduced by its own fix, so the
+// sentence is now earned by enumeration.
+func TestBindRefusalDoesNotClaimUnavailableWhileAnotherGrantIsBindable(t *testing.T) {
+	var tmpfs string
+	sock, _, target := startProxyWithPolicy(t, policy.PodmanSocket,
+		func(dir, target string) *policy.Policy {
+			tmpfs = filepath.Dir(dir)
+			return &policy.Policy{Mounts: map[string]policy.Mount{
+				tmpfs:  {Guest: tmpfs, Kind: policy.KindTmpfs, Access: policy.AccessRW},
+				target: {Guest: target, Host: target, Kind: policy.KindBind, Access: policy.AccessRW},
+				// The engine test's own control: every name on /usr's path is
+				// anchored, so a read-only bind of it IS forwardable.
+				"/usr": {Guest: "/usr", Host: "/usr", Kind: policy.KindBind, Access: policy.AccessRO},
+			}}
+		})
+
+	// Read-only, so the read-only grant qualifies — the shape the engine test
+	// measured.
+	_, resp := post(t, sock, "/v1.41/containers/create",
+		`{"HostConfig":{"Mounts":[{"Type":"bind","Source":"`+tmpfs+`","Target":"/x","ReadOnly":true}]}}`)
+	msg := denyMessage(resp)
+	if strings.Contains(msg, "Bind mounts are unavailable in this run") {
+		t.Errorf("the refusal claims no grant is bindable while /usr is:\n  %s", msg)
+	}
+	m := advertisedSource.FindStringSubmatch(msg)
+	if m == nil || m[1] != "/usr" {
+		t.Errorf("the refusal does not advertise /usr, the one forwardable grant here:\n  %s", msg)
+	}
+
+	// POSITIVE CONTROL for the other direction: asked WRITABLE, /usr no longer
+	// qualifies and neither does the target, so the "unavailable" sentence is
+	// the true one and must still be reachable.
+	_, resp = post(t, sock, "/v1.41/containers/create",
+		`{"HostConfig":{"Binds":["`+tmpfs+`:/x"]}}`)
+	msg = denyMessage(resp)
+	if !strings.Contains(msg, "Bind mounts are unavailable in this run") {
+		t.Errorf("control: no grant is writable-forwardable here, so the refusal should say "+
+			"so:\n  %s", msg)
+	}
+	if strings.Contains(msg, target) {
+		t.Errorf("control: the refusal names the target, which is not forwardable:\n  %s", msg)
+	}
+}
