@@ -377,7 +377,12 @@ func TestTheEngineCarriesItsOwnSignaturePolicy(t *testing.T) {
 	// could be a malformed fixture, an unreadable tar or a podman that refuses
 	// archive transports outright, and the assertion would pass for a reason
 	// that has nothing to do with issue #137.
-	control := runPodman(t, envWith(env, "HOME",
+	// XDG_CONFIG_HOME comes OUT for the control, and that is not tidying: it
+	// BEATS $HOME for policy.json (measured on 6.0.2, see Spec's own comment
+	// where it is set), so a control that only moved HOME would still be
+	// reading the rejecting policy under the engine's own home and would skip
+	// this test on every run.
+	control := runPodman(t, envWith(envWithout(env, "XDG_CONFIG_HOME"), "HOME",
 		plantHostSignaturePolicy(t, `{"default":[{"type":"insecureAcceptAnything"}]}`)),
 		storeArgs(eng, "pull", archive)...)
 	if strings.Contains(control, rejectedByPolicy) {

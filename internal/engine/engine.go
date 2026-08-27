@@ -743,6 +743,24 @@ func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgrou
 		return stage.EngineSpec{}, err
 	}
 	finalEnv = setEnv(finalEnv, "HOME", guestHome)
+	// XDG_CONFIG_HOME IS THE VARIABLE THAT DECIDES WHERE policy.json IS FOUND,
+	// and it BEATS $HOME. Measured on podman 6.0.2, an archive pull with
+	// HOME=<home whose policy accepts> and XDG_CONFIG_HOME=<dir whose policy
+	// rejects>:
+	//
+	//	Error: ... Source image rejected: ... is rejected by policy.
+	//
+	// The signature policy is the one channel with no variable of its own
+	// (issue #137), so it is reached through whichever of these two podman
+	// believes — and it believes this one. Left unset it would be whatever
+	// baseEnv carried: @base sets XDG_CONFIG_HOME = "{home}/.config", a
+	// directory INSIDE the sandbox that the payload can write, and the
+	// engine would then take its signature policy from a file the payload
+	// authored. Nothing exploits that today, because the only production
+	// caller passes baseEnv nil (internal/cli/container.go) — which makes the
+	// guarantee a property of that call site rather than of this function.
+	// Setting it here is what makes it a property of this function.
+	finalEnv = setEnv(finalEnv, "XDG_CONFIG_HOME", filepath.Join(guestHome, ".config"))
 
 	registriesPath, err := e.writeRegistriesConf()
 	if err != nil {
