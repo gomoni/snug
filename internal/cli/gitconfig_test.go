@@ -104,6 +104,71 @@ func TestExtractGitConfigDropsAValueThatWouldAuthorADirective(t *testing.T) {
 	}
 }
 
+// TestExtractGitConfigMergesTheTwoGlobalFilesHomeWins exercises the ONE
+// branch of globalGitFiles (gitconfig.go:134) that every other test in this
+// file steps around: the two-file return at gitconfig.go:142 fires only when
+// GIT_CONFIG_GLOBAL is unset, and TestExtractGitConfigHonoursGitdirIncludes,
+// TestExtractGitConfigDropsAValueThatWouldAuthorADirective and
+// TestExtractGitConfigCarriesNoKeyThatNamesAProgram all t.Setenv it, so that
+// branch has never actually run.
+//
+// Setting it to the empty string rather than never setting it at all: the
+// function reads it with `os.Getenv("GIT_CONFIG_GLOBAL")` and only checks
+// `f != ""`, so a blank value is indistinguishable from an absent one to the
+// code under test, and t.Setenv restores the surrounding environment
+// afterwards — an os.Unsetenv with no matching restore would leak into
+// whatever test runs next in this package.
+func TestExtractGitConfigMergesTheTwoGlobalFilesHomeWins(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	xdg := filepath.Join(root, "xdgconfig")
+	if err := os.MkdirAll(filepath.Join(xdg, "git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// CONFLICTING user.email in both files, so a merge that picked the wrong
+	// one, or the wrong ORDER, is visible rather than accidentally correct.
+	if err := os.WriteFile(filepath.Join(xdg, "git", "config"), []byte(
+		"[user]\n\temail = xdg@example.invalid\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte(
+		"[user]\n\temail = dotfile@example.invalid\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GIT_CONFIG_GLOBAL", "")
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+
+	got, err := extractGitConfig(home, filepath.Join(root, "proj"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// POSITIVE CONTROL: something was extracted at all, so a globalGitFiles
+	// that silently returned no files (or two files neither of which is
+	// readable) would not read as a pass below.
+	if len(got) == 0 {
+		t.Fatal("nothing extracted, so this test cannot tell a real two-file merge from a no-op")
+	}
+	// globalGitFiles lists $XDG_CONFIG_HOME/git/config FIRST and
+	// ~/.gitconfig SECOND — the same order git itself reads them, where the
+	// LAST file read wins a conflicting single-valued key (measured: real
+	// git with both files present and XDG_CONFIG_HOME/HOME pointed at this
+	// same fixture also reports the ~/.gitconfig value). If this reads
+	// "xdg@example.invalid" instead, either the order in globalGitFiles
+	// changed or only one of the two files is being read at all.
+	if got["user.email"] != "dotfile@example.invalid" {
+		t.Errorf("user.email = %q, want %q (the ~/.gitconfig value) — globalGitFiles lists "+
+			"it AFTER $XDG_CONFIG_HOME/git/config, and a later file must win a conflicting key",
+			got["user.email"], "dotfile@example.invalid")
+	}
+}
+
 func TestExtractGitConfigCarriesNoKeyThatNamesAProgram(t *testing.T) {
 	globalFile, work, _ := writeGitFixture(t)
 	t.Setenv("GIT_CONFIG_GLOBAL", globalFile)
