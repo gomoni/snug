@@ -17,6 +17,38 @@ import (
 // "podman system service coming up, ~1-2s, plus overlay store init").
 const engineSocketWaitTimeout = 30 * time.Second
 
+// buildEnterEngineArgv is the encode half of __inengine's positional wire
+// protocol; parseEnterEngineArgv (inengine.go) is the decode half, and a test
+// exercising both is a genuine round trip through the one place either is
+// spelled out — not a second, hand-written copy of the encoding that could
+// drift from it.
+//
+// Everything __inengine needs travels on ITS OWN argv, never in an
+// environment variable — the same discipline fds.go states for descriptor
+// numbers ("nothing travels in the environment") applied to the engine's
+// env too: fd 3 (the netns descriptor), fd 4 (the sandbox's mount namespace),
+// then the env count and the env pairs themselves, then the two tmpfs size
+// bounds (/run, /var/tmp — issue #281), then the graft count and the grafts,
+// then the podman path, then podman's own argv.
+func buildEnterEngineArgv(req request) []string {
+	argv := []string{"__inengine", "3", "4", strconv.Itoa(len(req.EngineEnv))}
+	argv = append(argv, req.EngineEnv...)
+	argv = append(argv,
+		strconv.FormatUint(req.EngineRunSizeBytes, 10),
+		strconv.FormatUint(req.EngineVarTmpSizeBytes, 10))
+	argv = append(argv, strconv.Itoa(len(req.EngineGrafts)))
+	for _, g := range req.EngineGrafts {
+		access := "rw"
+		if g.ReadOnly {
+			access = "ro"
+		}
+		argv = append(argv, g.Host, g.Guest, access)
+	}
+	argv = append(argv, req.EnginePodman)
+	argv = append(argv, req.EngineArgv...)
+	return argv
+}
+
 // startEngine forks the container engine (podman `system service`) as a
 // SECOND long-lived child of P1, alongside bwrap — EAGERLY, inside the one
 // "start" request and while the sandbox's payload is still parked on
@@ -67,25 +99,7 @@ func startEngine(netnsN *os.File, initPID int, req request) error {
 	}
 	defer mntNS.Close()
 
-	// Everything __inengine needs travels on ITS OWN argv, never in an
-	// environment variable — the same discipline fds.go states for descriptor
-	// numbers ("nothing travels in the environment") applied to the engine's
-	// env too: the resolv.conf path to bind over /etc/resolv.conf, then fd 3
-	// (the netns descriptor), then the env count and the env pairs
-	// themselves, then the podman path, then podman's own argv. See
-	// EnterEngine for the matching decode.
-	argv := []string{"__inengine", "3", "4", strconv.Itoa(len(req.EngineEnv))}
-	argv = append(argv, req.EngineEnv...)
-	argv = append(argv, strconv.Itoa(len(req.EngineGrafts)))
-	for _, g := range req.EngineGrafts {
-		access := "rw"
-		if g.ReadOnly {
-			access = "ro"
-		}
-		argv = append(argv, g.Host, g.Guest, access)
-	}
-	argv = append(argv, req.EnginePodman)
-	argv = append(argv, req.EngineArgv...)
+	argv := buildEnterEngineArgv(req)
 
 	cmd := exec.Command("/proc/self/exe", argv...)
 	cmd.Args[0] = "snug"

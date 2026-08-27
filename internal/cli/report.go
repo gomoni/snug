@@ -105,6 +105,14 @@ type Report struct {
 	// p.Grafts is a separate map (issue #55).
 	Grafts []policy.Graft
 
+	// GraftTmpfsSizeBytes carries policy.EngineTmpfsSize(guest,
+	// TmpfsSizeBytes) for every graft in Grafts whose Kind is KindTmpfs
+	// (issue #281), keyed by Guest — computed once here, so both renderers
+	// read a field rather than each calling policy.EngineTmpfsSize on its
+	// own (TestEveryFactProducerTheHumanScreenCallsIsAlsoInTheReport is what
+	// a second call site would fail).
+	GraftTmpfsSizeBytes map[string]uint64
+
 	NotGranted []string
 
 	Network     reportNetwork
@@ -428,6 +436,7 @@ func buildReport(env policy.Environ, p *policy.Policy, args []string, cfg config
 		rep.ExitCode = exitPolicy
 	}
 	rep.MountNotes = buildMountNotes(p, rep.Mounts)
+	rep.GraftTmpfsSizeBytes = graftTmpfsSizeBytes(rep.Grafts, rep.TmpfsSizeBytes)
 	// See BwrapIncomplete's own comment: this is the SAME condition
 	// describeBwrap's NetnsStage arm branches on, read here rather than
 	// recomputed independently so the two cannot disagree about which runs
@@ -520,6 +529,22 @@ func sortedGrafts(p *policy.Policy) []policy.Graft {
 	out := make([]policy.Graft, 0, len(guests))
 	for _, g := range guests {
 		out = append(out, p.Grafts[g])
+	}
+	return out
+}
+
+// graftTmpfsSizeBytes computes GraftTmpfsSizeBytes: policy.EngineTmpfsSize
+// for every KindTmpfs graft, called exactly ONCE per build so neither
+// renderer needs to call it again on its own.
+func graftTmpfsSizeBytes(grafts []policy.Graft, tmpfsSizeBytes uint64) map[string]uint64 {
+	out := map[string]uint64{}
+	for _, g := range grafts {
+		if g.Kind != policy.KindTmpfs {
+			continue
+		}
+		if bound, ok := policy.EngineTmpfsSize(g.Guest, tmpfsSizeBytes); ok {
+			out[g.Guest] = bound
+		}
 	}
 	return out
 }

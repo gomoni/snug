@@ -492,6 +492,12 @@ type jsonGraft struct {
 	// snug's own text, Validate refuses an empty one, and there is no fact
 	// behind it to carry instead.
 	Why string `json:"why"`
+	// SizeBytes is Report.GraftTmpfsSizeBytes[Guest], populated for the
+	// engine's own KindTmpfs grafts only (issue #281) — omitempty for the
+	// same reason jsonMount's own SizeBytes carries it: a non-tmpfs graft
+	// reporting "size_bytes": 0 would read as "unbounded" to a consumer
+	// rather than "not a tmpfs; this field does not apply".
+	SizeBytes uint64 `json:"size_bytes,omitempty"`
 }
 
 type jsonNotGranted struct {
@@ -773,6 +779,9 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			Kind:   g.Kind.String(),
 			Access: g.Access.String(),
 			Why:    g.Why,
+		}
+		if bound, ok := rep.GraftTmpfsSizeBytes[g.Guest]; ok {
+			jg.SizeBytes = bound
 		}
 		jg.Guest, jg.GuestBytes = e.text(g.Guest)
 		jg.Host, jg.HostBytes = e.text(g.Host)

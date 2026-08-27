@@ -12,7 +12,7 @@ ENGINE VIEW  (grafts — mounts in the ENGINE's derived mount namespace, NOT the
             process's cmdline, environ and fd table with it
             note: this graft's destination coincides with an existing proc grant
             (access rw) in the sandbox's own view.
-  tmpfs-rw    /run                                          (snug)
+  tmpfs-rw    /run (max 1 GiB)                              (snug)
             from (nothing — the stage mounts a fresh tmpfs here; no host path is opened)
             abuse: write anything it likes into a tmpfs that dies with the run —
             podman needs /run/libpod writable and does not self-mount one when
@@ -35,7 +35,7 @@ ENGINE VIEW  (grafts — mounts in the ENGINE's derived mount namespace, NOT the
             tmpfs and IS visible to the payload — empty, and unwritable once /
             is remounted read-only. The mount namespace is private; the tmpfs
             superblock is not (ENGINE-NETNS.md §5.1).
-  tmpfs-rw    /var/tmp                                      (snug)
+  tmpfs-rw    /var/tmp (max 8 GiB)                          (snug)
             from (nothing — the stage mounts a fresh tmpfs here; no host path is opened)
             abuse: write anything it likes into a second tmpfs that dies with
             the run — containers/image hardcodes /var/tmp for the temporary

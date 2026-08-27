@@ -106,6 +106,12 @@ type request struct {
 	// host directory, with the guest path it is attached at. See EngineSpec's
 	// own field for why the clone happens before the namespace join.
 	EngineGrafts []EngineGraft `json:"engine_grafts,omitempty"`
+	// EngineRunSizeBytes and EngineVarTmpSizeBytes are EngineSpec's own
+	// RunSizeBytes and VarTmpSizeBytes, carried across the wire so
+	// __inengine's own tmpfs mounts get a bound from policy.EngineTmpfsSize
+	// rather than defaulting to half of host RAM (issue #281).
+	EngineRunSizeBytes    uint64 `json:"engine_run_size_bytes,omitempty"`
+	EngineVarTmpSizeBytes uint64 `json:"engine_var_tmp_size_bytes,omitempty"`
 }
 
 // event is a P1 -> P0 message. Six shapes: "needmap", sent at most once,

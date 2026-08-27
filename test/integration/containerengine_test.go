@@ -4065,6 +4065,60 @@ func TestTheEnginesViewIsDerivedAndCarriesNoHostTree(t *testing.T) {
 	}
 }
 
+// TestEngineTmpfsAreBounded is the integration half of issue #281's engine
+// scope: before this change __inengine's own /run and /var/tmp tmpfs carried
+// no size= data at all, which defaults a tmpfs to half of host RAM — a
+// payload with a podman engine could `dd` into either and take the HOST
+// down, the same defect DefaultTmpfsSize closed for a payload's own tmpfs.
+// This asserts the two mounts report policy.EngineTmpfsSize's own numbers
+// instead.
+//
+// findmnt reads the engine's mountinfo via --tab-file rather than nsenter-ing
+// its mount namespace: SIZE is a fact --tab-file's plain text parse already
+// carries, and this codebase already trusts a plain read of
+// /proc/<enginePID>/mountinfo for the engine's own namespace
+// (TestTheEnginesViewIsDerivedAndCarriesNoHostTree, above) — a second,
+// privilege-crossing mechanism for the same fact would be worth having only
+// if the first were in doubt.
+func TestEngineTmpfsAreBounded(t *testing.T) {
+	budget(t, 60*time.Second)
+	env, _ := containerEngineEnv(t)
+	requireRealEngine(t, env)
+	proj, _ := target(t)
+
+	bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
+	bg.ready(t)
+	bg.waitForState(t)
+
+	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
+	mountinfo := fmt.Sprintf("/proc/%d/mountinfo", enginePID)
+
+	// This run set no tmpfs_size_mib, so /run tracks policy.DefaultTmpfsSize
+	// — the same number a payload's own tmpfs use, per EngineTmpfsSize's own
+	// contract.
+	for _, tc := range []struct {
+		guest string
+		want  uint64
+	}{
+		{"/run", policy.DefaultTmpfsSize},
+		{"/var/tmp", policy.DefaultEngineScratchSize},
+	} {
+		out, err := exec.Command("findmnt", "-F", mountinfo, "-k", "-b", "-no", "SIZE", tc.guest).Output()
+		if err != nil {
+			t.Fatalf("findmnt %s against the engine's own mountinfo (pid %d): %v",
+				tc.guest, enginePID, err)
+		}
+		got, perr := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
+		if perr != nil {
+			t.Fatalf("findmnt %s printed %q, not a byte count: %v", tc.guest, out, perr)
+		}
+		if got != tc.want {
+			t.Errorf("the engine's %s tmpfs reports SIZE=%d, want %d (policy.EngineTmpfsSize's own "+
+				"bound) — an unbounded tmpfs here defaults to half of host RAM", tc.guest, got, tc.want)
+		}
+	}
+}
+
 // mountPointsOf is the set of mount points in a mountinfo dump — field 5,
 // which is the one field of that format this comparison needs.
 func mountPointsOf(t *testing.T, dump string) map[string]bool {

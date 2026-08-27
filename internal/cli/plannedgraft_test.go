@@ -184,7 +184,7 @@ func TestGoldenEngineViewPlannedPaths(t *testing.T) {
 		}
 	}
 
-	raw := captureFile(t, func(f io.Writer) { describeGrafts(f, p) })
+	raw := captureFile(t, func(f io.Writer) { describeGrafts(f, Report{}, p) })
 
 	// BOTH SUBSTITUTIONS MUST FIRE, asserted on the raw screen before either
 	// runs. The failure is not pedantry: if PlannedPaths stops embedding uid
