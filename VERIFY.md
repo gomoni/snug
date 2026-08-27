@@ -793,6 +793,55 @@ that case is caught — but a store directory created *after* resolution, at a p
 some grant already covers, is not, for the same reason issue #287 gives about
 sockets appearing later inside a granted directory.
 
+### 4b-ter. Two network grants snug cannot deliver, both refused
+
+Same shape twice, both invariant 5: the author wrote a value, snug accepted it,
+and the sandbox got something else with nothing saying so.
+
+`publish` needs pasta, and pasta runs only for an egress policy — so without
+`@net` nothing was forwarded, while `--dry-run --json` reported `"egress":
+false` alongside `"publish": [8090]` in one document and `--dry-run`'s isolated
+arm printed no publish line at all.
+
+`address6` carries its prefix inline, and pasta PARSES it and throws it away:
+there is no `c->ip6.prefix_len`, the address is configured with a literal 64,
+and the RA's Prefix Information option hardcodes 64. Its man page says so under
+`-a`: *"it will in the current code version be overridden by the default value
+of 64"*. So `address6 = "fd00::2/112"` used to resolve and hand the sandbox a
+**/64** — a wider on-link set than the profile asked for. The v4 half needs no
+rule; pasta keeps that prefix.
+
+```bash
+X=$(mktemp -d); mkdir -p $X/snug/profiles.d
+cat > $X/snug/profiles.d/p.toml <<'PROF'
+[profile.pub]
+description = "publish with no @net"
+publish = [8090]
+[profile.pfx]
+description = "a v6 prefix pasta cannot deliver"
+network  = "egress"
+address  = "10.13.13.2/24"
+gateway  = "10.13.13.1"
+address6 = "fd00::2/112"
+gateway6 = "fd00::1"
+PROF
+XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p pub $SC/proj/sub; echo "exit=$?"
+XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p pfx $SC/proj/sub; echo "exit=$?"
+```
+
+Expect two refusals, each naming the profile and the fix, both `exit=77`:
+
+```
+snug: profile "pub" publishes host->sandbox port(s) 8090, but this policy has no egress, so nothing forwards them: pasta is what binds a published port and it runs only for a network profile.
+       Add the '@net' profile, or drop the publish key. ...
+snug: network address6 fd00::2/112 is a /112: pasta discards an inline IPv6 prefix and configures the address as a /64 regardless (its own man page says so under `-a`), so the sandbox would treat a WIDER set of addresses as on-link than this profile asks for. Write fd00::2/64, or pick a narrower ADDRESS
+```
+
+**Positive controls.** `-p @net -p pub` resolves and the NETWORK section prints
+`host -> sandbox ports [8090], on the host's 127.0.0.1 only`. And `address6`
+changed to `fd00::2/64` resolves, as does a v4 `address` of `/16` or `/30` —
+the rule is v6-only, so a working v4 prefix must not be caught by it.
+
 ### 4c. What the payload learns about its supervisor (issue #272, accepted)
 
 The sandbox cannot see, signal or `/proc`-inspect the `snug` process supervising

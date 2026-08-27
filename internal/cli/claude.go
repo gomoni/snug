@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -915,10 +916,25 @@ func claudeGuidance(pol *policy.Policy) []byte {
 	case policy.NetEgress:
 		b.WriteString("You have internet access. You **cannot** reach services on the host's\n")
 		b.WriteString("`127.0.0.1`; this is intentional and is not a misconfiguration.\n")
+		// ENUMERATED, not "ports you bind ARE visible": publish is a named set,
+		// so the unqualified sentence was false for every port outside it, and an
+		// agent reading it will tell the human to open a port nothing forwards.
+		// The negative arm states the measured posture rather than only the
+		// host's half — with pasta's -t/-u/-T/-U all `none` there are no
+		// listening sockets at all, so "not visible to the host" understates it
+		// in a direction that invites the wrong inference.
 		if len(pol.Net.Publish) > 0 {
-			b.WriteString("Ports you bind ARE visible to the host on its 127.0.0.1.\n")
+			ports := make([]string, len(pol.Net.Publish))
+			for i, p := range pol.Net.Publish {
+				ports[i] = strconv.Itoa(p)
+			}
+			fmt.Fprintf(&b, "Exactly these ports are forwarded from the host's `127.0.0.1` into "+
+				"this sandbox: %s.\nA port you bind that is not in that list is reachable from "+
+				"nowhere outside.\n", strings.Join(ports, ", "))
 		} else {
-			b.WriteString("Ports you bind are NOT visible to the host.\n")
+			b.WriteString("No port you bind is reachable from outside this sandbox — not from the\n")
+			b.WriteString("host, and not from anything on the network. Nothing forwards inbound\n")
+			b.WriteString("connections here at all.\n")
 		}
 		b.WriteString("\n")
 	}
