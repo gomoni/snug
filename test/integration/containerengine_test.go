@@ -171,10 +171,10 @@ func hostEngine(t *testing.T) string {
 	// MEAN something, and a green run against an engine nobody supports is the
 	// same lie as a green run that skipped everything.
 	//
-	// $CI IS THE SECOND TRIGGER, and it is what makes the paragraph above true
-	// rather than intended (issue #458). Only test/engine-container.sh sets
-	// SNUG_REQUIRE_ENGINE, so "a FAILURE in CI" reached exactly one of the two
-	// CI jobs that resolve an engine. MEASURED on run 33054984495, the `real
+	// $CI PLUS $SNUG_REQUIRE_SANDBOX IS THE SECOND TRIGGER, and it is what makes
+	// the paragraph above true rather than intended (issue #458). Only
+	// test/engine-container.sh sets SNUG_REQUIRE_ENGINE, so "a FAILURE in CI"
+	// reached exactly one of the two CI jobs that resolve an engine. MEASURED on run 33054984495, the `real
 	// sandbox behaviour` job: podman 5.8.4 at /usr/local/bin/podman, this very
 	// line logging UNSUPPORTED, and then 27 tests skipping downstream on
 	// `crun: unknown version specified` under a message that names none of it —
@@ -184,10 +184,10 @@ func hostEngine(t *testing.T) string {
 	// because the ticket asked the question and the answer is not derivable
 	// from the code.
 	//
-	// $CI and not SNUG_REQUIRE_ENGINE for the sandbox job, deliberately: the
-	// latter also arms the run-count floor (Makefile) and turns an absent
-	// engine into a fatal, neither of which this decision asked for. A runner
-	// with NO podman still skips.
+	// Not SNUG_REQUIRE_ENGINE for the sandbox job, deliberately: it also arms
+	// the run-count floor (Makefile) and turns an ABSENT engine into a fatal,
+	// neither of which this decision asked for. A runner with NO podman still
+	// skips, in every lane.
 	if r.unsupported != "" {
 		if why := unsupportedEngineIsFatal(); why != "" {
 			t.Fatalf("%s and the resolved engine is not one snug "+
@@ -211,15 +211,25 @@ func hostEngine(t *testing.T) string {
 }
 
 // unsupportedEngineIsFatal names the reason an engine outside the supported set
-// must fail this run, or "" where it may only warn. Two triggers, and the
-// message quotes whichever fired so the reader can turn it off knowingly.
+// must fail this run, or "" where it may only warn. The message quotes whichever
+// trigger fired, so a reader can turn it off knowingly.
+//
+// $CI ALONE IS NOT ENOUGH, and the first version of this got it wrong in a way
+// CI caught immediately: it fatal'd in the `hostless` lane too, which
+// deliberately does NOT set SNUG_REQUIRE_SANDBOX (ci.yml) because it tests
+// dry-run and refusals and promises no sandbox, let alone an engine. 8 tests
+// failed there for an engine that lane never claimed to exercise. The pair is
+// the predicate: $CI says the engine is configuration somebody can fix rather
+// than a developer's distribution, and SNUG_REQUIRE_SANDBOX says this lane
+// asked its run to MEAN something. Neither alone licenses a failure.
 func unsupportedEngineIsFatal() string {
 	if os.Getenv("SNUG_REQUIRE_ENGINE") != "" {
 		return "SNUG_REQUIRE_ENGINE is set"
 	}
-	if os.Getenv("CI") != "" {
-		return "$CI is set, so this is a CI lane whose engine is configuration rather than " +
-			"a developer's distribution"
+	if os.Getenv("CI") != "" && os.Getenv("SNUG_REQUIRE_SANDBOX") != "" {
+		return "$CI and $SNUG_REQUIRE_SANDBOX are both set, so this is a CI lane that asked " +
+			"its run to mean something and whose engine is configuration rather than a " +
+			"developer's distribution"
 	}
 	return ""
 }

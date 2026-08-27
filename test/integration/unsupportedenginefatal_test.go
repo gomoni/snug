@@ -16,19 +16,25 @@ import "testing"
 // logged UNSUPPORTED and went green with 27 tests skipped.
 func TestUnsupportedEngineIsFatalInCI(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		requireEng string
-		ci         string
-		wantFatal  bool
+		name                        string
+		requireEng, ci, requireSbox string
+		wantFatal                   bool
 	}{
-		{"a developer host: neither set", "", "", false},
-		{"the engine job", "1", "", true},
-		{"any CI lane", "", "true", true},
-		{"both, as the engine job in CI actually runs", "1", "true", true},
+		{"a developer host: nothing set", "", "", "", false},
+		{"a developer running the sandbox suite", "", "", "1", false},
+		{"the engine job", "1", "", "", true},
+		{"the sandbox matrix job", "", "true", "1", true},
+		{"the engine job as it actually runs in CI", "1", "true", "1", true},
+
+		// THE REGRESSION. $CI alone fatal'd the `hostless` lane, which
+		// deliberately leaves SNUG_REQUIRE_SANDBOX unset (ci.yml) — 8 tests
+		// failed there for an engine that lane never claimed to exercise.
+		{"the hostless lane: CI, but it promises no sandbox", "", "true", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("SNUG_REQUIRE_ENGINE", tc.requireEng)
 			t.Setenv("CI", tc.ci)
+			t.Setenv("SNUG_REQUIRE_SANDBOX", tc.requireSbox)
 			why := unsupportedEngineIsFatal()
 			if (why != "") != tc.wantFatal {
 				t.Fatalf("unsupportedEngineIsFatal() = %q, want fatal=%v", why, tc.wantFatal)
