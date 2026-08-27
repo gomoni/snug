@@ -22,27 +22,33 @@ func noSignaturePolicy(t *testing.T) *SignaturePolicy {
 	return hostConfiguredNoSignaturePolicy()
 }
 
-// hostWithPolicy plants a host policy.json under a temporary home, points the
-// SYSTEM candidate at a path that does not exist, and returns the home.
+// hostWithPolicy plants a host policy.json under a temporary home, points BOTH
+// non-home candidates at paths that do not exist, and returns the home.
 //
-// Pointing the system candidate away is not tidiness: /etc/containers/policy.json
-// is a real file on some hosts, and a test asserting "this host configured
-// none" would otherwise pass or fail by which machine ran it.
+// Pointing them away is not tidiness: /etc/containers/policy.json is a real
+// file on some hosts and /usr/share/containers/policy.json is one on more of
+// them — openSUSE ships it, so the machine this was written on had it — and a
+// test asserting "this host configured none" would otherwise pass or fail by
+// which machine ran it.
 func hostWithPolicy(t *testing.T, body string) string {
 	t.Helper()
-	saved := systemSignaturePolicyPath
-	t.Cleanup(func() { systemSignaturePolicyPath = saved })
-	systemSignaturePolicyPath = filepath.Join(t.TempDir(), "no-system-policy.json")
+	savedSystem, savedShare := systemSignaturePolicyPath, usrShareSignaturePolicyPath
+	t.Cleanup(func() {
+		systemSignaturePolicyPath, usrShareSignaturePolicyPath = savedSystem, savedShare
+	})
+	dir := t.TempDir()
+	systemSignaturePolicyPath = filepath.Join(dir, "no-system-policy.json")
+	usrShareSignaturePolicyPath = filepath.Join(dir, "no-usrshare-policy.json")
 
 	home := t.TempDir()
 	if body == "" {
 		return home
 	}
-	dir := filepath.Join(home, ".config", "containers")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	cfgDir := filepath.Join(home, ".config", "containers")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "policy.json"), []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(cfgDir, "policy.json"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return home
@@ -90,7 +96,7 @@ func requirementTypes(t *testing.T, body []byte) []string {
 func projectAndWrite(t *testing.T, hostBody string) ([]byte, string, error) {
 	t.Helper()
 	home := hostWithPolicy(t, hostBody)
-	sp, err := ProjectHostSignaturePolicy(home)
+	sp, err := ProjectHostSignaturePolicy(home, "")
 	if err != nil {
 		return nil, "", err
 	}
@@ -421,7 +427,7 @@ func TestNothingFallsBackToAcceptAnything(t *testing.T) {
 // for nothing. Both produce insecureAcceptAnything; only one of them is a
 // decision snug made.
 func TestAHostWithNoPolicySaysSoInTheGeneratedFile(t *testing.T) {
-	sp, err := ProjectHostSignaturePolicy(hostWithPolicy(t, ""))
+	sp, err := ProjectHostSignaturePolicy(hostWithPolicy(t, ""), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -552,7 +558,7 @@ func TestAnUnreadableHostPolicyRefuses(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		sp, err := ProjectHostSignaturePolicy(home)
+		sp, err := ProjectHostSignaturePolicy(home, "")
 		done <- result{sp, err}
 	}()
 
@@ -907,7 +913,7 @@ func TestADuplicateKeyRefusesRatherThanTakingTheLastValue(t *testing.T) {
 // decision was made. The same commit's own integration control asserts that
 // exact string.
 func TestTheAbsentHostPolicyBranchDoesNotClaimStockPodmanAgrees(t *testing.T) {
-	sp, err := ProjectHostSignaturePolicy(hostWithPolicy(t, ""))
+	sp, err := ProjectHostSignaturePolicy(hostWithPolicy(t, ""), "")
 	if err != nil {
 		t.Fatal(err)
 	}

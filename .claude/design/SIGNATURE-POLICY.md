@@ -2,10 +2,25 @@
 
 ## The lever
 
-podman resolves a signature policy from `$HOME/.config/containers/policy.json`,
-then `/etc/containers/policy.json`. It is the one file podman requires — no
-policy, no pull — and the home directory snug gives the engine is the only way
-to choose it.
+podman resolves a signature policy from three paths in order:
+`$XDG_CONFIG_HOME/containers/policy.json` (falling back to
+`$HOME/.config/containers/policy.json`), then `/etc/containers/policy.json`,
+then `/usr/share/containers/policy.json`. MEASURED on podman 6.0.2 by hiding
+`/usr/share/containers` behind a bind mount inside `unshare -U -r -m` and
+reading podman's own list back:
+
+```
+Error: config file not found: no policy.json file found; searched paths:
+  ["<config>/containers/policy.json" "/etc/containers/policy.json"
+   "/usr/share/containers/policy.json"]
+```
+
+The third is a distribution default — openSUSE ships one — so on such a host
+"the user configured no policy" and "podman finds no policy" are different
+statements, and only the second licenses generating an accept-anything file.
+
+It is the one file podman requires — no policy, no pull — and the home directory
+snug gives the engine is the only way to choose it.
 
 MEASURED, podman 5.8.4: `--signature-policy` exists as a **hidden** flag on
 `pull` and `push`. It is absent from the global command and from `system

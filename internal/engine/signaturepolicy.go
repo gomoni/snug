@@ -3,8 +3,11 @@ package engine
 // signaturepolicy.go projects the HOST's container signature policy into the
 // one this run's engine reads.
 //
-// podman resolves a signature policy from $HOME/.config/containers/policy.json
-// and then /etc/containers/policy.json. It is the one file it REQUIRES — no
+// podman resolves a signature policy from three paths in order —
+// $XDG_CONFIG_HOME (or $HOME/.config) /containers/policy.json,
+// /etc/containers/policy.json, /usr/share/containers/policy.json — measured on
+// 6.0.2 and pinned by hostSignaturePolicyPaths, whose comment carries the
+// measurement. It is the one file it REQUIRES — no
 // policy, no pull — and the one with no lever but the home directory: MEASURED
 // on podman 5.8.4, `--signature-policy` exists as a HIDDEN flag on `pull` and
 // `push` and on neither `system service` nor the global command, so it cannot
@@ -149,24 +152,47 @@ const (
 // literal would agree with the first until somebody changed one.
 const SignatureKeyDir = "sigkeys"
 
-// hostSignaturePolicyPaths are the two files containers/image reads a signature
-// policy from, in order: the user's home first, then the system one. The same
-// order podman prints when it finds neither:
+// hostSignaturePolicyPaths are the THREE files containers/image reads a
+// signature policy from, in order. MEASURED on podman 6.0.2 by hiding
+// /usr/share/containers behind a bind mount inside `unshare -U -r -m` and
+// letting podman print its own list:
 //
-//	Error: no policy.json file found at any of the following:
-//	  "/home/u/.config/containers/policy.json", "/etc/containers/policy.json"
+//	Error: config file not found: no policy.json file found; searched paths:
+//	  ["<config>/containers/policy.json" "/etc/containers/policy.json"
+//	   "/usr/share/containers/policy.json"]
 //
-// A distribution file outside these two (openSUSE ships
-// /usr/share/containers/policy.json) is deliberately not read: podman 5.8.4
-// does not look at it, so projecting it would enforce something the host does
-// not.
+// THE THIRD PATH IS NOT OPTIONAL, and reading only the first two was a live
+// defect on every distribution that ships a default there — openSUSE does, and
+// so this machine did. snug read neither of its two, concluded "the host
+// configured no policy", and generated an accept-anything one, while --dry-run
+// told the human "this host has no policy.json where podman looks, so a podman
+// here refuses every pull outright". Both halves false: podman looks at
+// /usr/share, and a pull on that host SUCCEEDS (measured,
+// `podman pull docker.io/library/alpine:3.20` with an empty home). Invariant 7
+// is that snug interprets the host's configuration rather than substituting its
+// own, and a search path snug does not know about is that invariant failing
+// quietly.
 //
-// home IS A PARAMETER, and that is not a convenience. os.Getenv("HOME") with
-// $HOME unset makes filepath.Join produce a RELATIVE path, resolved against
-// snug's own working directory — so `snug` run inside a checked-out repo that
-// ships .config/containers/policy.json would read that repo's file as the
-// host's, which is invariant 3 with the repo choosing which host paths snug
-// then copies.
+// The comment this replaced said podman "does not look at it" and cited 5.8.4.
+// That was true of 5.8.4 and is false of the 6.x snug supports — which is the
+// whole hazard of a version-shaped fact: nothing turns red when the version
+// moves. The list above is quoted from the binary rather than from memory for
+// that reason, and re-measuring it is how it stays true.
+//
+// xdgConfigHome COMES FIRST WHERE IT IS SET, because containers/image resolves
+// the per-user file under $XDG_CONFIG_HOME and only falls back to
+// $HOME/.config. Measured on 6.0.2: with XDG_CONFIG_HOME=<dir>, podman's own
+// list names <dir>/containers/policy.json; with it unset, $HOME/.config. Where
+// the two diverge, reading HOME would project a file podman never loads and
+// miss the one it does.
+//
+// home AND xdgConfigHome ARE PARAMETERS, and that is not a convenience.
+// os.Getenv("HOME") with $HOME unset makes filepath.Join produce a RELATIVE
+// path, resolved against snug's own working directory — so `snug` run inside a
+// checked-out repo that ships .config/containers/policy.json would read that
+// repo's file as the host's, which is invariant 3 with the repo choosing which
+// host paths snug then copies. A signedBy requirement carries keyPaths, so the
+// repo would also be choosing which host files snug reads key material out of.
 //
 // BE PRECISE ABOUT WHY policy.Policy.Home IS SAFE HERE, because the obvious
 // reason is the wrong one: Resolve refuses an EMPTY home, not a relative one.
@@ -175,18 +201,39 @@ const SignatureKeyDir = "sigkeys"
 // --no-defaults -p @sys …` refuses. The guarantee holds through a profile rather
 // than through Resolve, so a future profile set reaching this code without
 // @home would need its own check.
-func hostSignaturePolicyPaths(home string) []string {
-	return []string{
-		filepath.Join(home, ".config", "containers", "policy.json"),
-		systemSignaturePolicyPath,
+//
+// A RELATIVE xdgConfigHome HAS NO SUCH GUARANTEE BEHIND IT and is refused here
+// rather than ignored. Falling back to $HOME/.config would read a different
+// file than podman, which is invariant 5: the sandbox would enforce a posture
+// its own screen does not describe.
+func hostSignaturePolicyPaths(home, xdgConfigHome string) ([]string, error) {
+	perUser := filepath.Join(home, ".config", "containers", "policy.json")
+	if xdgConfigHome != "" {
+		if !filepath.IsAbs(xdgConfigHome) {
+			return nil, fmt.Errorf("XDG_CONFIG_HOME is %s, which is not an absolute path.\n"+
+				"       podman resolves the signature policy under it, and snug will not guess "+
+				"what a relative one names from here — reading a different file than the engine "+
+				"does would make the sandbox enforce a posture this run cannot describe.\n"+
+				"       Fix: set XDG_CONFIG_HOME to an absolute path, or unset it so "+
+				"$HOME/.config is used.", policy.VisibleText(xdgConfigHome))
+		}
+		perUser = filepath.Join(xdgConfigHome, "containers", "policy.json")
 	}
+	return []string{
+		perUser,
+		systemSignaturePolicyPath,
+		usrShareSignaturePolicyPath,
+	}, nil
 }
 
-// systemSignaturePolicyPath is the second candidate, a variable only so a test
-// can point it somewhere that does not exist — otherwise this package's verdict
-// would depend on whether the machine running it has one. There is no other
+// systemSignaturePolicyPath and usrShareSignaturePolicyPath are the second and
+// third candidates, variables only so a test can point them somewhere that does
+// not exist — otherwise this package's verdict would depend on whether the
+// machine running it has one, and on this machine it does. There is no other
 // writer.
 var systemSignaturePolicyPath = "/etc/containers/policy.json"
+
+var usrShareSignaturePolicyPath = "/usr/share/containers/policy.json"
 
 // hostPolicyDoc is the decoded host file: the two top-level keys
 // containers/image defines and nothing else.
@@ -272,8 +319,8 @@ type SignaturePolicySummary struct {
 
 // SummariseSignaturePolicy answers the projection's questions for a screen. It
 // reads the host's policy and every key it names, and writes nothing.
-func SummariseSignaturePolicy(home string) SignaturePolicySummary {
-	sp, err := ProjectHostSignaturePolicy(home)
+func SummariseSignaturePolicy(home, xdgConfigHome string) SignaturePolicySummary {
+	sp, err := ProjectHostSignaturePolicy(home, xdgConfigHome)
 	if err != nil {
 		return SignaturePolicySummary{Refusal: err}
 	}
@@ -294,13 +341,17 @@ func SummariseSignaturePolicy(home string) SignaturePolicySummary {
 // A path that is a symlink to something absent gives ENOENT and falls through to
 // the system file, which is what podman does too — the existence check upstream
 // makes is on the resolved file. Deliberate; do not "fix" it into a refusal.
-func ProjectHostSignaturePolicy(home string) (*SignaturePolicy, error) {
+func ProjectHostSignaturePolicy(home, xdgConfigHome string) (*SignaturePolicy, error) {
 	if home == "" {
 		return nil, errors.New("the container signature policy cannot be projected: this " +
 			"policy has no home directory, so snug does not know where to read the host's " +
 			"policy.json from. This is a snug bug, not a host misconfiguration")
 	}
-	for _, path := range hostSignaturePolicyPaths(home) {
+	paths, err := hostSignaturePolicyPaths(home, xdgConfigHome)
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range paths {
 		// hostread.Required rather than os.ReadFile: a FIFO at this path would
 		// hang the run in open(2) with nothing on any screen, and a symlink to
 		// /dev/zero would read until memory ran out (issue #337).
@@ -1026,11 +1077,12 @@ func (sp *SignaturePolicy) sidecar(copies map[string]string) []byte {
 	b.WriteString("snug generated the policy.json beside this file for one run.\n\n")
 	if sp.Source == "" {
 		b.WriteString("This host has no policy.json where podman looks " +
-			"(~/.config/containers, /etc/containers), so there was no posture to preserve and " +
+			"($XDG_CONFIG_HOME or ~/.config/containers, /etc/containers, " +
+			"/usr/share/containers), so there was no posture to preserve and " +
 			"the generated file accepts any image.\n\n" +
 			"That IS a decision snug made, and it goes the permissive way. A podman on this " +
 			"host with no policy.json refuses every pull outright (\"no policy.json file " +
-			"found at any of the following\"); snug generates one so the sandbox can pull at " +
+			"found\"); snug generates one so the sandbox can pull at " +
 			"all. Nothing your host configured has been weakened, because your host " +
 			"configured nothing — but the sandbox verifies less than the bare host, not the " +
 			"same.\n\n" +

@@ -41,7 +41,7 @@ func dryRun(env policy.Environ, out io.Writer, p *policy.Policy, args []string, 
 	// golden, every unit test — pins the summary, so no fixture's verdict
 	// depends on what this machine has in /etc/containers.
 	rep := buildReport(env, p, args, cfg, refusedBy, func() engine.SignaturePolicySummary {
-		return engine.SummariseSignaturePolicy(p.Home)
+		return engine.SummariseSignaturePolicy(p.Home, env.Getenv("XDG_CONFIG_HOME"))
 	})
 	if cfg.json {
 		return renderJSON(out, rep)

@@ -646,7 +646,7 @@ func TestTheGeneratedSignaturePolicyIsTheHostsOwn(t *testing.T) {
 		t.Fatal(err)
 	}
 	pol := specPolicy(t, e, "", policy.NetPolicy{})
-	sig, err := ProjectHostSignaturePolicy(hostWithPolicy(t, hostPolicy))
+	sig, err := ProjectHostSignaturePolicy(hostWithPolicy(t, hostPolicy), "")
 	if err != nil {
 		t.Fatalf("a host policy snug should project was refused: %v", err)
 	}
