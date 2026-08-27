@@ -670,10 +670,34 @@ func (p *Proxy) hijack(w http.ResponseWriter, r *http.Request) {
 	}
 	defer client.Close()
 
-	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(up, client); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(client, up); done <- struct{}{} }()
-	<-done
+	// Wait on the ENGINE -> CLIENT direction and only that one: it is the
+	// direction carrying the response, so it ends when the exchange does.
+	//
+	// Waiting on whichever copy finished FIRST lost container stdout entirely.
+	// MEASURED, `snug -p @podman-build -p @net`, image built in the same run:
+	//
+	//	docker run --rm localhost/probe:1 cat /marker            -> no output, exit 0
+	//	docker run --rm localhost/probe:1 cat /marker </dev/null -> no output, exit 0
+	//	(sleep 3; echo) | docker run --rm -i ... cat /marker      -> "hi"
+	//
+	// The third line is the control and it names the cause: a client with
+	// nothing to send closes its write side at once, io.Copy(up, client)
+	// returns, and the deferred Close()s tear down the other copy before the
+	// container's stdout has crossed it. The engine logged the far end of
+	// exactly that -- `Writing header for container <id> attach connection
+	// error: write unix .../podman-<pid>.sock->@: write: broken pipe`.
+	//
+	// So stdin EOF is a HALF-CLOSE, never a teardown. The engine must SEE it (a
+	// container reading stdin to EOF hangs without it) and must still be able to
+	// write back afterwards. Both conns are unix sockets, so CloseWrite exists;
+	// the assertion is there because neither type is guaranteed by a signature.
+	go func() {
+		_, _ = io.Copy(up, client)
+		if cw, ok := up.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
+		}
+	}()
+	_, _ = io.Copy(client, up)
 }
 
 func flush(w http.ResponseWriter) {
