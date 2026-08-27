@@ -53,8 +53,9 @@ func loadTestRegistry(t *testing.T) profile.Registry {
 //     red team lost twenty minutes to it before deciding the tree was innocent.
 //
 // So the root is one the test OWNS: $SNUG_TEST_FIXTURE_ROOT if the caller set
-// one, else $HOME, else os.UserCacheDir() ($XDG_CACHE_HOME, which can name a
-// writable place when $HOME is not one). NEVER a path inside the checkout: a
+// one, else os.UserCacheDir() ($XDG_CACHE_HOME), else $HOME. Cache first is a
+// LITTER choice and nothing more — see the comment on the roots slice below.
+// NEVER a path inside the checkout: a
 // fixture under the module root appears and vanishes while other packages' tests
 // walk that tree, and a leftover is committable by a routine `git add -A`
 // (issue #350). If none of the three works the fixture is a FATAL error naming
@@ -71,15 +72,27 @@ func loadTestRegistry(t *testing.T) profile.Registry {
 func testTree(t *testing.T) (home, target string) {
 	t.Helper()
 
+	// THE CACHE DIRECTORY IS TRIED BEFORE $HOME, and the reason is litter
+	// rather than correctness: both are equally valid fixture roots, but only
+	// one of them is a directory the user reads. A `go test` killed outright —
+	// SIGKILL, or the `panic: test timed out` the signal suite produces — runs
+	// no t.Cleanup and no defer, so whatever fixture root was in use keeps its
+	// directory. MEASURED: 93 empty snug-dryrun-fixture-<digits> directories in
+	// $HOME, all stamped the same minute, from one such run.
+	//
+	// ~/.cache is where throwaway state belongs and where nobody notices it;
+	// $HOME stays as the fallback for a host with no cache directory. Neither
+	// ordering is more correct, because floorMountCovering below judges every
+	// candidate the same way and rejects any that snug mounts itself.
 	var roots []string
 	if r := os.Getenv("SNUG_TEST_FIXTURE_ROOT"); r != "" {
 		roots = append(roots, r)
 	}
-	if h, err := os.UserHomeDir(); err == nil && h != "" {
-		roots = append(roots, h)
-	}
 	if c, err := os.UserCacheDir(); err == nil && c != "" {
 		roots = append(roots, c)
+	}
+	if h, err := os.UserHomeDir(); err == nil && h != "" {
+		roots = append(roots, h)
 	}
 
 	var abs string
@@ -90,6 +103,13 @@ func testTree(t *testing.T) (home, target string) {
 			rejected = append(rejected, fmt.Sprintf("%s (%v)", base, err))
 			continue
 		}
+		// Registered HERE, one line after the directory exists, and not after
+		// the loop where it used to be. Every path out of this loop body then
+		// reclaims it, including the ones that do not return: floorMountCovering
+		// calls t.Fatal on a profile-registry error, and a t.Fatal below the old
+		// registration point abandoned the directory. os.RemoveAll on a path a
+		// rejection arm already removed returns nil, so the double is free.
+		t.Cleanup(func() { os.RemoveAll(r) })
 		a, err := filepath.Abs(r)
 		if err != nil {
 			os.RemoveAll(r)
@@ -122,7 +142,6 @@ func testTree(t *testing.T) (home, target string) {
 			"by a routine `git add -A` (issue #350).",
 			strings.Join(rejected, "; "))
 	}
-	t.Cleanup(func() { os.RemoveAll(abs) })
 	home = filepath.Join(abs, "home", "u")
 	target = filepath.Join(home, "proj", "sub")
 	return home, target
