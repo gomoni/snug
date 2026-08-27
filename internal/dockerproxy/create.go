@@ -937,13 +937,7 @@ func (p *Proxy) checkOne(source, dest string, ro bool) (mount, error) {
 	source = real
 
 	if !p.hostPathVisible(source, !ro) {
-		access := "read-only"
-		if !ro {
-			access = "writable"
-		}
-		return mount{}, fmt.Errorf("this sandbox cannot see %s as %s, so a container may not "+
-			"mount it either. Grant it to the sandbox first, or mount a path inside %s",
-			source, access, p.pol.Target)
+		return mount{}, fmt.Errorf("%s%s", p.bindRefusalReason(source, !ro), p.bindRefusalRemedy(!ro))
 	}
 
 	// The engine resolves a bind SOURCE in its own derived view, not in the
@@ -1413,4 +1407,82 @@ func danglingSymlinkOn(source string) (string, bool) {
 // unchanged.
 func (p *Proxy) hostPathVisible(host string, needWrite bool) bool {
 	return p.pol.HostPathVisible(host, needWrite)
+}
+
+// bindRefusalReason states why checkOne will not forward a bind source.
+//
+// The three arms exist because ONE sentence used to serve all of them and was
+// FALSE for the middle one (issue #463): `-v /tmp:/mnt` was refused with "this
+// sandbox cannot see /tmp as writable" in the same run where `touch /tmp/x`
+// succeeded and snug's own generated CLAUDE.md listed /tmp among the writable
+// paths. hostPathVisible walks KindBind mounts only, so a path snug created
+// for this run — a tmpfs, /dev, procfs, a generated KindData file — fails it
+// while being perfectly visible and often writable. The true predicate is "is
+// there a host directory behind this name", and the message now says that.
+//
+// The other two arms keep the original sentence because for them it is true:
+// nothing covers the path at all, or a bind covers it read-only and the client
+// asked for writable.
+func (p *Proxy) bindRefusalReason(source string, needWrite bool) string {
+	if p.pol.GrantsGuestPath(source) && !p.pol.HostPathVisible(source, false) {
+		return fmt.Sprintf("%s is not a bind of a host directory — snug created it for this "+
+			"run, so there is no host source to forward. The sandbox can see it; that is a "+
+			"different question.", source)
+	}
+	access := "read-only"
+	if needWrite {
+		access = "writable"
+	}
+	return fmt.Sprintf("this sandbox cannot see %s as %s, so a container may not mount it "+
+		"either. Grant it to the sandbox first.", source, access)
+}
+
+// bindRefusalRemedy names a source this run would actually forward, or says
+// plainly that there is none.
+//
+// It exists because the refusal used to advertise "mount a path inside
+// <target>" unconditionally, and the check one line further down then rejected
+// exactly that: a name inside the target sits in a directory the payload can
+// write, so the anchored-source rule refuses it (issue #463, and it is the
+// remedy a user reliably tries next). Where the target itself is acceptable
+// the advice is to bind THE TARGET and address the subdirectory inside the
+// container — the same wording policy.swappableFix uses for the same
+// situation, so the two refusals a user meets in sequence agree.
+func (p *Proxy) bindRefusalRemedy(needWrite bool) string {
+	if src, ok := p.acceptableBindSource(needWrite); ok {
+		return fmt.Sprintf(" Or bind %s — the deepest source this run accepts — and address "+
+			"the subdirectory inside the container.", src)
+	}
+	return " Bind mounts are unavailable in this run: nothing it already grants is an " +
+		"acceptable source (issue #376)."
+}
+
+// acceptableBindSource answers "is there a source this run would forward, and
+// what is it" by running the candidate through checkOne's OWN gauntlet rather
+// than re-deriving the conditions. That is what keeps the advice and the
+// refusal one author (invariant 6): a candidate that stops passing stops being
+// advertised, with no second copy of the rule to update.
+//
+// The candidate is the target and only the target. It is the one path a user
+// of this sandbox certainly has, and enumerating grants to find a "best" one
+// would put a second implementation of the bind rule here — the thing the
+// paragraph above exists to avoid.
+//
+// resolveForwardable is the single step not repeated: it touches the
+// filesystem, and Target is a path snug resolved before the sandbox existed.
+func (p *Proxy) acceptableBindSource(needWrite bool) (string, bool) {
+	t := filepath.Clean(p.pol.Target)
+	if !filepath.IsAbs(t) {
+		return "", false
+	}
+	if !p.hostPathVisible(t, needWrite) {
+		return "", false
+	}
+	if err := p.pol.CheckEngineForwardedPath(t); err != nil {
+		return "", false
+	}
+	if err := p.pol.CheckEngineBindSource(t); err != nil {
+		return "", false
+	}
+	return t, true
 }
