@@ -1200,3 +1200,65 @@ func TestThePinnedRuntimeNamesItsFile(t *testing.T) {
 			"authored:\n%s", plain)
 	}
 }
+
+// TestTheEngineNeverSchedulesAHealthcheckOnTheHost is issue #397's regression
+// test, and the value it pins is the one barrier here that is snug's own POLICY
+// rather than an accident of the environment.
+//
+// A container carrying a healthcheck makes the engine run `systemd-run --user
+// --unit <cid> --on-unit-inactive=<interval> podman healthcheck run <cid>` — a
+// transient unit and timer on the HOST USER's session manager, work scheduled
+// outside the sandbox, as the host uid, able to outlive the run. libpod's
+// disableHealthCheckSystemd returns true on DISABLE_HC_SYSTEMD
+// UNCONDITIONALLY, before RunsOnSystemd and before the D-Bus dial, so
+// createTimer is never reached whatever the healthcheck's ORIGIN.
+//
+// ORIGIN is why this test lives here and not in dockerproxy. The proxy refuses
+// the create body's Healthcheck field at every spelling, but with no Test in
+// the body podman takes the IMAGE's HEALTHCHECK and defaults Interval to 30s —
+// the same createTimer call with no Healthcheck key in any request — and the
+// payload can author that image, because /v1.41/build is allowed. A test on the
+// proxy's refusal cannot see that path at all.
+//
+// Set for EVERY topology, not only the ones with a network: the healthcheck
+// path has nothing to do with networking, and a variable authored on one arm of
+// a switch is the shape that goes stale when a second arm is added.
+//
+// It also asserts the variable is set ONCE. setEnv replaces rather than
+// appends, and a duplicate would mean somebody had reintroduced an append —
+// which for this variable would leave whichever copy podman reads last
+// deciding, and it is a bool parsed from a string.
+func TestTheEngineNeverSchedulesAHealthcheckOnTheHost(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		net  policy.NetPolicy
+	}{
+		{"offline", policy.NetPolicy{}},
+		{"egress", policy.NetPolicy{Mode: policy.NetEgress, DNS: true,
+			Nameservers: []string{"192.0.2.53"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, env := specConf(t, tc.net, false, "", "")
+			v, n := envValue(env, "DISABLE_HC_SYSTEMD")
+			switch {
+			case n == 0:
+				t.Error("Spec authored no DISABLE_HC_SYSTEMD, so a container with a " +
+					"healthcheck — the create body's, or the IMAGE's own, which the proxy " +
+					"cannot refuse — makes the engine create a transient systemd unit and " +
+					"timer on the HOST user's session manager (issue #397). The three " +
+					"barriers standing without it are all accidents of configuration: an " +
+					"empty /run tmpfs, a repointed XDG_RUNTIME_DIR, and a podman built " +
+					"without the systemd tag")
+			case n > 1:
+				t.Errorf("DISABLE_HC_SYSTEMD is set %d times; podman reads one of them and "+
+					"this is a bool parsed from a string. setEnv REPLACES for exactly this "+
+					"reason — an append has been reintroduced", n)
+			case v != "true":
+				t.Errorf("DISABLE_HC_SYSTEMD is %q, want \"true\". libpod parses it with "+
+					"strconv.ParseBool and treats an unparseable value as UNSET, so a "+
+					"spelling that looks affirmative but does not parse is the same as not "+
+					"authoring it at all", v)
+			}
+		})
+	}
+}

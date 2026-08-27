@@ -371,7 +371,17 @@ type jsonDoc struct {
 }
 
 type jsonMeta struct {
-	Format  int    `json:"format"`
+	Format int `json:"format"`
+	// Outcome reports POLICY RESOLUTION and nothing else, and a consumer that
+	// reads it as "this run would succeed" is reading it wrongly (issue #420).
+	// A document with outcome "ok" can still carry a populated
+	// `containers.*_refusal`: those are refusals a REAL RUN would hit — an
+	// engine binary a grant makes writable, a signature policy snug cannot
+	// satisfy, a toolchain root inside a rw grant — and none of them is a
+	// policy-resolution failure. They must be read INDIVIDUALLY. There is no
+	// aggregate field that rolls them up, deliberately: an aggregate would be a
+	// second author of the same fact and would go stale the day a fourth
+	// refusal field is added.
 	Outcome string `json:"outcome"`
 	Lossy   bool   `json:"lossy"`
 	// ExitCode is the process exit status this document accompanies, so a

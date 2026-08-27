@@ -1,0 +1,95 @@
+# Every HostConfig refusal reason, rendered as a review artifact.
+# A diff here is a change to what snug TELLS A HUMAN it refuses and why.
+# Read it as one: the phrase blocklist in this file catches only the
+# pre-Tier-B direction, and this catches the rest by making you look.
+
+Annotations:
+  podman honours run.oci.* annotations, which reach the runtime
+
+BlkioDeviceReadBps:
+  it names a host path the ENGINE stats, and snug neither resolves nor rewrites it — unlike a bind source, which checkOne resolves and forwards as the resolved string. Inside this sandbox the field cannot do its job at all: block-IO throttling needs a block device node, an ordinary bind is nodev, and the sandbox's /dev is bwrap's synthetic character-device tree. What is left is a stat oracle — measured against podman 6.0.2, `not a block device` and `no such file or directory` are distinguishable, one bit per request, over the engine's derived view. There is no narrower spelling to ask for: podman's own guard is lexical (must be under /dev/) and /dev/../ defeats it
+
+BlkioDeviceReadIOps:
+  it names a host path the ENGINE stats, and snug neither resolves nor rewrites it — unlike a bind source, which checkOne resolves and forwards as the resolved string. Inside this sandbox the field cannot do its job at all: block-IO throttling needs a block device node, an ordinary bind is nodev, and the sandbox's /dev is bwrap's synthetic character-device tree. What is left is a stat oracle — measured against podman 6.0.2, `not a block device` and `no such file or directory` are distinguishable, one bit per request, over the engine's derived view. There is no narrower spelling to ask for: podman's own guard is lexical (must be under /dev/) and /dev/../ defeats it
+
+BlkioDeviceWriteBps:
+  it names a host path the ENGINE stats, and snug neither resolves nor rewrites it — unlike a bind source, which checkOne resolves and forwards as the resolved string. Inside this sandbox the field cannot do its job at all: block-IO throttling needs a block device node, an ordinary bind is nodev, and the sandbox's /dev is bwrap's synthetic character-device tree. What is left is a stat oracle — measured against podman 6.0.2, `not a block device` and `no such file or directory` are distinguishable, one bit per request, over the engine's derived view. There is no narrower spelling to ask for: podman's own guard is lexical (must be under /dev/) and /dev/../ defeats it
+
+BlkioDeviceWriteIOps:
+  it names a host path the ENGINE stats, and snug neither resolves nor rewrites it — unlike a bind source, which checkOne resolves and forwards as the resolved string. Inside this sandbox the field cannot do its job at all: block-IO throttling needs a block device node, an ordinary bind is nodev, and the sandbox's /dev is bwrap's synthetic character-device tree. What is left is a stat oracle — measured against podman 6.0.2, `not a block device` and `no such file or directory` are distinguishable, one bit per request, over the engine's derived view. There is no narrower spelling to ask for: podman's own guard is lexical (must be under /dev/) and /dev/../ defeats it
+
+BlkioWeightDevice:
+  it names a host path the ENGINE stats, and snug neither resolves nor rewrites it — unlike a bind source, which checkOne resolves and forwards as the resolved string. Inside this sandbox the field cannot do its job at all: block-IO throttling needs a block device node, an ordinary bind is nodev, and the sandbox's /dev is bwrap's synthetic character-device tree. What is left is a stat oracle — measured against podman 6.0.2, `not a block device` and `no such file or directory` are distinguishable, one bit per request, over the engine's derived view. There is no narrower spelling to ask for: podman's own guard is lexical (must be under /dev/) and /dev/../ defeats it
+
+CapAdd:
+  added capabilities apply to the host kernel, not to the sandbox
+
+Cgroup:
+  it names another container's cgroup (container:<id>), which snug did not author — the same grant CgroupParent and CgroupnsMode are refused for, spelled a third way. Measured ignored by podman 6.0.2, so it is latent rather than open; it is refused so that it does not become open when podman starts honouring it
+
+CgroupParent:
+  snug authors the container's cgroup placement; a client-named parent is a path snug did not choose, resolved inside the engine's own cgroup namespace
+
+ContainerIDFile:
+  it is a client-named host path the engine records against the container and UNLINKS when the container is removed — measured on podman 6.0.2: create then delete, no start needed, and a file planted at that path was gone. That is an arbitrary host-file delete, running as your uid, resolved in the engine's derived view — the sandbox's own tree plus this run's grafts, the read-write container store among them. snug names what a container may touch
+
+DNS:
+  resolver redirection
+
+DNSOptions:
+  resolver redirection
+
+DNSSearch:
+  resolver redirection
+
+DeviceCgroupRules:
+  device passthrough would name a host device, but since Tier C (issue #125) the engine's /dev is the sandbox's own synthetic tree (measured: null, zero, tty, pts, shm, random and the like, with none of the host's nvme/dri/kvm/mem nodes), and the engine holds no CAP_MKNOD to create one — so there is no host device to pass through. Refused as defence-in-depth, not as the only barrier
+
+DeviceRequests:
+  device passthrough would name a host device, but since Tier C (issue #125) the engine's /dev is the sandbox's own synthetic tree (measured: null, zero, tty, pts, shm, random and the like, with none of the host's nvme/dri/kvm/mem nodes), and the engine holds no CAP_MKNOD to create one — so there is no host device to pass through. Refused as defence-in-depth, not as the only barrier
+
+Devices:
+  device passthrough would name a host device, but since Tier C (issue #125) the engine's /dev is the sandbox's own synthetic tree (measured: null, zero, tty, pts, shm, random and the like, with none of the host's nvme/dri/kvm/mem nodes), and the engine holds no CAP_MKNOD to create one — so there is no host device to pass through. Refused as defence-in-depth, not as the only barrier
+
+ExtraHosts:
+  name redirection
+
+Isolation:
+  an isolation mode is a runtime selector by another name
+
+LogConfig:
+  podman's k8s-file/json-file drivers honour a `path` option, and conmon then opens that file as your uid, resolved in the engine's derived view — the sandbox's own tree plus this run's grafts, the read-write container store among them. snug names what a container may touch
+
+MaskedPaths:
+  it edits the container's own /proc protections
+
+PortBindings:
+  there is nothing to publish TO — the container already shares this sandbox's network namespace, so it is reachable from inside at the port it binds. Publishing would also need the engine to reconfigure that namespace, and it holds no CAP_NET_ADMIN
+
+Privileged:
+  it disables essentially every container protection at once
+
+PublishAllPorts:
+  the container already shares this sandbox's network namespace, so every port it binds is reachable from inside without publishing anything
+
+ReadonlyPaths:
+  it edits the container's own /proc protections
+
+Runtime:
+  an alternate OCI runtime is an arbitrary host binary
+
+SecurityOpt:
+  snug sets this itself; a client value could undo no-new-privileges or seccomp
+
+StorageOpt:
+  storage driver options reach the host's storage layer
+
+Sysctls:
+  kernel tunables are not namespaced the way you would hope
+
+VolumeDriver:
+  a non-local driver can name a host path or a remote share
+
+VolumesFrom:
+  it inherits another container's mounts, which snug never approved
+
