@@ -553,5 +553,49 @@ jobs:
       # runs, so the rule above is untouched — the instructions stay in the
       # script and this file still only names it. TestTheEngineJobRunsTheScript
       # NotMake in test/guard is the ratchet.
+      # THE PROVISIONED IMAGE IS CACHED, so this job reaches openSUSE at most
+      # weekly instead of several times a day (issue #478).
+      #
+      # What it removes: on a cache hit, `zypper refresh` and `zypper install`
+      # do not run and no package is downloaded — those two are the measured
+      # ways this job dies printing no test name. What it does NOT remove: the
+      # base image is still resolved against registry.opensuse.org, so a
+      # registry outage can still fail the build. This narrows the failure
+      # surface; it does not close it, and the job stays red when it fires.
+      #
+      # CACHE_EPOCH is the expiry, and it is explicit because nothing else
+      # expires the layer: a layer's cache key is its command text, so the
+      # provisioning step would otherwise be reused for as long as the Actions
+      # cache retains it. `date -u +%G-W%V` is the ISO year and week, so the
+      # string changes on the first run of each week — at most seven days of
+      # drift. That is the middle ground on purpose: rebuilding every run is
+      # what was costing the mirrors several downloads a day, and never
+      # rebuilding would test snug against a Tumbleweed that no longer exists.
+      # openSUSE/cnf's own pr_check.yml caches its Tumbleweed images the same
+      # way, with type=gha.
+      - name: Cache epoch, one week wide
+        id: epoch
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Bake the provisioned Tumbleweed image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: test/engine-container.dockerfile
+          build-args: CACHE_EPOCH=${{ steps.epoch.outputs.week }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          load: true
+          push: false
+          tags: local/snug-engine-ci:latest
+
+      # SNUG_ENGINE_IMAGE names the baked image, which the script already
+      # supports and which is all the wiring the cache needs: engine-container.sh
+      # sees the image is local and does not pull, and provision sees the tools
+      # are present and does not run zypper. Unset — a developer running
+      # `make integration-engine` — it pulls Tumbleweed and provisions at run
+      # time exactly as before.
       - name: The engine suite, in a Tumbleweed container
-        run: ./test/engine-container.sh
+        run: SNUG_ENGINE_IMAGE=local/snug-engine-ci:latest ./test/engine-container.sh
