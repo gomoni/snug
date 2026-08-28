@@ -70,8 +70,46 @@ this development host's `/proc/self/uid_map` (`0→1 ×1000`, `1000→0 ×1`,
 a live `/etc/subuid` is not a thing to do to a working box:
 
 ```
-     🔧 add this line to BOTH /etc/subuid and /etc/subgid:  michal:1001:64535
+     🔧 run `sudo snug fix subuid -w`, which appends michal:1001:64535 to
+        /etc/subuid and /etc/subgid. Without -w it prints and changes nothing.
         (not the conventional 100000 — this namespace's uid_map cannot map it)
+     📦 /etc/subuid is part of this container's image, so it goes away on every
+        rebuild. Put `snug fix subuid <user> -w` in a distrobox init_hook to
+        have it reapplied — it exits 0 when there is nothing to do, so a hook
+        calling it can never be why the box fails to start.
+```
+
+`snug fix subuid` is that same derivation as a command, and **`snug doctor` is
+its dry run** — both read `/proc/self/uid_map` and call the same
+`subuidSuggestion`, so there is one preview rather than two to keep in step.
+Check it says nothing on a host that is already configured, which is this one:
+
+```bash
+./bin/snug fix subuid; echo "exit=$?"
+```
+
+Expect **no stdout at all**, the reason on stderr, and `exit=0`:
+
+```
+snug: michal already has a range in /etc/subuid and /etc/subgid; nothing to do
+exit=0
+```
+
+That exit status is the contract, not a detail: the command exists to be called
+from a `distrobox` `init_hook`, and `distrobox-init` runs hooks under
+`set -o errexit`, so a nonzero exit would not report a problem — it would stop
+the box from coming up at all.
+
+And it refuses rather than naming the wrong account, which is the trap the
+obvious implementation falls into (under `sudo`, `os.Getuid()` is 0):
+
+```bash
+./bin/snug fix subuid nosuchuser42; echo "exit=$?"
+```
+
+```
+snug: no such user nosuchuser42 on this host: user: unknown user nosuchuser42
+exit=64
 ```
 
 The conventional `100000:65536` — which `subuid(5)`, `useradd` and the

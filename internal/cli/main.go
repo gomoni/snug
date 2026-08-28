@@ -104,6 +104,8 @@ func Main() {
 			os.Exit(proxyCmd(argv[1:]))
 		case "engine":
 			os.Exit(engineCmd(argv[1:]))
+		case "fix":
+			os.Exit(fixCmd(argv[1:]))
 		case "help":
 			usage()
 			os.Exit(0)

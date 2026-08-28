@@ -43,16 +43,26 @@ func reportSubuidDelegation(check func() error, h subuidHost) {
 	// map rather than from a marker file.
 	base, size, okSuggest := subuidSuggestion(h.idMap, uint64(h.uid))
 	if okSuggest {
-		fmt.Printf("     🔧 add this line to BOTH /etc/subuid and /etc/subgid:  %s:%d:%d\n",
+		// The COMMAND, not a line to transcribe and not a recipe to follow.
+		// This used to name the line and then, inside a container, describe a
+		// shell script the user had to write and maintain — which was a second
+		// implementation of subuidSuggestion living outside the repo, untested
+		// and not in CI (issue #502). `snug fix subuid` is that derivation with
+		// the tests attached, and doctor is its dry run: both read the same map
+		// and compute the same range, so there is one preview rather than two.
+		fmt.Printf("     🔧 run `sudo snug fix subuid -w`, which appends %s:%d:%d to\n",
 			h.name, base, size)
+		fmt.Println("        /etc/subuid and /etc/subgid. Without -w it prints and changes nothing.")
 		if base != conventionalSubuidBase {
 			fmt.Printf("        (not the conventional %d — this namespace's uid_map cannot map it)\n",
 				conventionalSubuidBase)
 		}
 	}
 	if h.container != "" {
-		fmt.Println("     📦 /etc/subuid lives in the container image, so it goes away on every")
-		fmt.Println("        rebuild of this box and has to be added again")
+		fmt.Println("     📦 /etc/subuid is part of this container's image, so it goes away on every")
+		fmt.Println("        rebuild. Put `snug fix subuid <user> -w` in a distrobox init_hook to")
+		fmt.Println("        have it reapplied — it exits 0 when there is nothing to do, so a hook")
+		fmt.Println("        calling it can never be why the box fails to start.")
 	}
 	fmt.Println("     🔒 only the container profiles need this; offline and net sandboxes are unaffected")
 }
