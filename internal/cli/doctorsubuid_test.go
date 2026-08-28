@@ -48,10 +48,48 @@ func TestDoctorWarnsAboutAMissingSubuidRangeAndDoesNotCondemnTheHost(t *testing.
 	if !strings.Contains(out, "goes away on every") {
 		t.Fatalf("inside a container the report must say /etc/subuid is part of the image:\n%s", out)
 	}
+	// Issue #502: a line to transcribe is not a fix, and a recipe the user has
+	// to maintain is worse than one. Doctor names the COMMAND, and the range it
+	// computed has to survive into that sentence — otherwise a reader has two
+	// numbers to reconcile.
+	if !strings.Contains(out, "sudo snug fix subuid -w") {
+		t.Fatalf("the report named a range but not the command that applies it:\n%s", out)
+	}
+	if !strings.Contains(out, "tester:1001:64535") {
+		t.Fatalf("the computed range did not reach the advice:\n%s", out)
+	}
+	if !strings.Contains(out, "Without -w it prints and changes nothing") {
+		t.Fatalf("doctor named a writing command without saying the default is safe:\n%s", out)
+	}
+	// The persistence half, gated on being in a container. The exit-0 promise
+	// is the load-bearing part: a hook that can stop the box from starting is a
+	// far worse outcome than a container that cannot run.
+	if !strings.Contains(out, "init_hook") || !strings.Contains(out, "exits 0") {
+		t.Errorf("the rebuild note stops short of the fix again:\n%s", out)
+	}
+	t.Logf("the warn path, in full:\n%s", out)
 
 	out = captureStdout(t, func() { reportSubuidDelegation(func() error { return nil }, host) })
 	if !strings.Contains(out, "✅") || strings.Contains(out, "⚠️") {
 		t.Fatalf("a present range did not read as a tick:\n%s", out)
+	}
+	// A tick says nothing else: a host that already has a range must not be
+	// handed a command to run against it.
+	if strings.Contains(out, "snug fix") || strings.Contains(out, "init_hook") {
+		t.Errorf("a present range carried the fix advice anyway:\n%s", out)
+	}
+
+	// The distrobox recipe is gated on being IN a container; on a bare host
+	// /etc/subuid survives a reboot and the hook advice is noise. The COMMAND
+	// is not gated — a bare host needs it just as much.
+	bare := host
+	bare.container = ""
+	out = captureStdout(t, func() { reportSubuidDelegation(absent, bare) })
+	if !strings.Contains(out, "sudo snug fix subuid -w") {
+		t.Errorf("a bare host lost the command, which it needs as much as a container does:\n%s", out)
+	}
+	if strings.Contains(out, "init_hook") {
+		t.Errorf("a bare host was given the distrobox rebuild recipe:\n%s", out)
 	}
 
 	// The exit code is unchanged BY CONSTRUCTION: the report answers nothing a
