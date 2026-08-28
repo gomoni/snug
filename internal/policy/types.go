@@ -433,6 +433,27 @@ type Policy struct {
 	// binds.
 	ListenNames []string
 
+	// EngineBinds is every `engine_binds` entry the selected profiles declared,
+	// resolved and sorted by Host — the host paths this run's ENGINE may bind
+	// into a container even though the anchored-source rule refuses their
+	// spelling (issue #376).
+	//
+	// ABUSE: a hostile process inside the sandbox can use one to bind the
+	// declared host tree into a container of its own choosing — its own image,
+	// its own command, running as root in this run's user namespace and in the
+	// ENGINE's network namespace rather than the sandbox's — at the access the
+	// sandbox itself has, so a writable declaration is a host-write channel out
+	// of a container. What it cannot do is choose the path: only a path a
+	// trusted profile named is forwarded, only at its declared root, and never
+	// with a tail of the payload's own (EngineBindForwarded).
+	//
+	// A row here is not itself a mount. It becomes one — a KindGraft under
+	// EngineBindsDir — when Tier C installs this run's grafts, and it is that
+	// graft that --dry-run's ENGINE VIEW block renders. The two are separate
+	// because the graft is installed after Resolve, while BwrapFlags needs the
+	// destination directory pre-created in the same argv (p.engineMountpoints).
+	EngineBinds []EngineBind
+
 	// SystemSSHConfigs is every guest path where snug replaced this host's
 	// system-wide ssh_config for this run, in the order it decided them. It
 	// is the RECORD of a decision, written only by replaceSystemSSHConfig,

@@ -65,6 +65,21 @@ func TestGoldenBwrapArgs(t *testing.T) {
 		// supplies the OS-runtime grant Validate requires, deliberately at /bin
 		// rather than /usr, so it cannot accidentally cover the ssh path itself.
 		{"system-ssh-uncovered", []ProfileName{"@home", "@cwd-rw", "@parent-ro", "runtime-bin"}, testCtx(), sysSSHProbeEnv},
+		// The review artifact for issue #376. Without it the whole grant
+		// produces ZERO argv diff: the podman-socket case above pre-creates
+		// EngineMountpoints and nothing else, so the three lines this adds —
+		// /snug/engine/binds and one directory per declared entry — appear
+		// nowhere. Two declarations, so a reviewer sees that the destinations
+		// are per-entry rather than one shared directory, and that both sit on
+		// the read-only root rather than inside any grant.
+		//
+		// Read the diff against podman-socket.bwrap.txt and check three things:
+		// the new --dir lines come AFTER /snug and /snug/engine (bwrap's --dir
+		// creates no ancestors and the root is read-only by the end), nothing
+		// binds a host path at either destination (the mount happens in the
+		// ENGINE's namespace, which no bwrap argv can express), and the
+		// payload's own view gains two empty directories and nothing else.
+		{"engine-binds", []ProfileName{"@sys", "@cwd-rw", "engine-binds", "engine-binds-two"}, testCtx(), nil},
 	}
 
 	for _, tc := range cases {

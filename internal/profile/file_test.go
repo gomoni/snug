@@ -775,6 +775,7 @@ func TestNoTOMLKeyProducesATopology(t *testing.T) {
 		nil, // Optional
 		nil, // Plugins
 		nil, // ListenNames
+		nil, // EngineBinds
 		nil, // Environ
 		nil, // Env (retired spelling)
 		nil, // Path (retired spelling)

@@ -74,6 +74,41 @@ type Profile struct {
 	// after the sandbox is already running.
 	ListenNames []string
 
+	// EngineBinds names host paths the ENGINE may bind into a container, in
+	// addition to whatever the anchored-source rule already accepts. Paths, one
+	// per entry, `{variables}` expanded exactly as `ro`/`rw` are; unioned across
+	// selected profiles like Plugins and ListenNames.
+	//
+	// ABUSE: a hostile process inside the sandbox can use one to bind the named
+	// host tree into a container it starts itself — its own image, its own
+	// command, running as root in this run's user namespace and in the ENGINE's
+	// network namespace rather than the sandbox's — at the access the sandbox
+	// already has at that path. Declaring a path the sandbox can write is
+	// therefore a host-write channel out of a container, and declaring one it
+	// can only read hands the bytes to arbitrary container code.
+	//
+	// Named for what the values BECOME: the set of host paths the engine may
+	// bind into a container. Same convention as ListenNames, which is named for
+	// LISTEN_FDNAMES rather than for the door a human opens.
+	//
+	// WHY THE GRANT EXISTS AT ALL, and why it is a declaration and not a flag
+	// (issue #376). The anchored-source rule refuses any bind source with a
+	// still-re-pointable component, which is every path strictly inside the
+	// target: `podman run -v ./data:/data` is a 403 in every layout, and
+	// correctly so, because the engine re-resolves the forwarded STRING at
+	// container start and the payload can swap a name in the gap. A declared
+	// entry stops being a string: snug open_tree(2)-clones the host path into
+	// the engine's own view under EngineBindsDir and forwards THAT path, which
+	// has no payload-writable component anywhere on it. The declaration has to
+	// come from the trusted profile set rather than from the request, because a
+	// path resolved at request time is a path resolved after the payload has
+	// run — and it is resolved before the payload has EVER run only because the
+	// payload is parked behind bwrap's --block-fd until the engine is up.
+	//
+	// There is deliberately no `host:guest` form: snug chooses the guest path
+	// (EngineBindGuest), the same way it chooses where a staged binary lands.
+	EngineBinds []string
+
 	// Network is "isolated" | "egress" | "host", joined by max. There is
 	// deliberately no "offline": offline is the ABSENCE of a net profile, so it
 	// cannot be re-enabled by adding one.

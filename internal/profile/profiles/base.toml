@@ -763,18 +763,64 @@ NO_COLOR = true
 # Always anchored, and therefore always still mountable: a read-only bind of
 # /usr (201 against a real engine), and $HOME itself.
 #
-# So, plainly: `-v` works for paths OUTSIDE the sandbox's writable trees and
-# for the target ROOT at shallow depth, and NEVER for anything inside the
-# target. Where the root is accepted, bind it and address the subdirectory
-# inside the container; at three levels and deeper there is no workaround, and
-# the refusal message does not pretend there is.
+# So, plainly: an UNDECLARED `-v` works for paths OUTSIDE the sandbox's
+# writable trees and for the target ROOT at shallow depth, and NEVER for
+# anything inside the target. Where the root is accepted, bind it and address
+# the subdirectory inside the container.
 #
 # That is a refusal, never a silent narrowing: nothing is mounted with less
 # than what was asked for, and no container gains reach the sandbox lacks.
-# Widening it back needs a source path snug OWNS in the engine's view — a
-# per-bind graft under /snug/engine, so the engine is handed a MOUNT rather
-# than a re-resolvable string. Issue #376, a design decision and not a tweak
-# to this rule.
+#
+# ── engine_binds: the way a path inside the target comes back ────────────────
+# The rule above cannot be relaxed, so the SOURCE stops being a string. A
+# profile DECLARES the path; snug open_tree(2)-clones that host directory into
+# the engine's own view under /snug/engine/binds/<base name> before the payload
+# has ever run, and forwards THAT path when a container asks for the declared
+# one. A guest path on snug's read-only root has no re-pointable component, so
+# there is nothing left for a create/start swap to aim at. Issue #376.
+#
+# In ~/.config/snug/profiles.d/work.toml — a user's own file, so the builtins
+# it includes carry the @ that this file's own includes do not:
+#
+#   [profile.work]
+#   include      = ["@podman-socket", "@cwd-rw"]
+#   engine_binds = ["{target}/data"]
+#
+# `podman run -v ./data:/data` then works, at any depth of target.
+#
+# ABUSE: a hostile process inside the sandbox can use a declared bind to mount
+# that host tree into a container of its OWN choosing — its own image, its own
+# command, running as root in this run's user namespace and in the ENGINE's
+# network namespace rather than the sandbox's — at the access the sandbox
+# already has there. A writable declaration is therefore a host-write channel
+# out of an arbitrary container, and a read-only one hands the bytes to
+# arbitrary container code. What it does NOT give away is the choice of path:
+# only a path a profile named is forwarded, only at that exact root, and never
+# with a tail the request supplied — `-v {target}/data/sub:/x` stays a 403 under
+# the same declaration, because the graft pins an inode at its root and says
+# nothing about any name beneath it.
+#
+# THREE THINGS IT IS NOT, each of which was the tempting version:
+#
+#   NOT a flag. A capability whose entire safety is a CLI flag is a capability
+#   that will be used, and the payload can read the flag out of the error
+#   message. This is a declaration from the trusted profile set, which is the
+#   one place the sandboxed material cannot reach (invariant 3).
+#
+#   NOT a grant of access. The graft's ro/rw is whatever the SANDBOX itself has
+#   at that path — G4 admits nothing wider — so the profile must also grant the
+#   path with `ro`/`rw`, and a tmpfs is not enough: there is no host directory
+#   behind one to clone. Declaring a path adds a route, never a permission.
+#
+#   NOT a per-request mount. Nothing here happens at container-create time.
+#   The set of grafts is fixed before the sandbox starts, snug performs no
+#   privileged mount once the engine is running, and `--dry-run`'s ENGINE VIEW
+#   block lists every one of them with its abuse sentence — which is this
+#   ticket's own standard: a mount the payload asked for is a mount a human
+#   should be able to see before it exists.
+#
+# What it does not cover: a source the payload picks at runtime and nobody
+# declared. That is refused, and stays refused.
 #
 # The engine runs in the SANDBOX's netns now (issue #63, Tier B), so
 # `@podman-socket` without `@net` is genuinely offline, containers included.

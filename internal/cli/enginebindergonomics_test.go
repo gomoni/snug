@@ -149,8 +149,16 @@ func TestErgonomicCostOfTheAnchoredSourceRule(t *testing.T) {
 				}
 				// The refusal must not offer a fix it cannot deliver. Where
 				// the target root is itself refused, there is no usable
-				// substitute source and the message says so.
+				// substitute SOURCE and the message says so — and since issue
+				// #376 landed, BOTH arms must also name the remedy that works
+				// at any depth, which is a declaration rather than another
+				// source.
 				msg := err.Error()
+				if !strings.Contains(msg, "engine_binds") {
+					t.Errorf("-v %s:/x is refused without naming engine_binds, so a user at this "+
+						"layout is told to give up when one line of profile would work:\n%s",
+						inside, msg)
+				}
 				if tc.wantRoot && !strings.Contains(msg, "Fix: bind "+tc.target) {
 					t.Errorf("-v %s:/x is refused without offering the substitute that DOES work "+
 						"here (bind %s and address the subdirectory inside the container):\n%s",
@@ -160,7 +168,7 @@ func TestErgonomicCostOfTheAnchoredSourceRule(t *testing.T) {
 					t.Errorf("-v %s:/x is refused with a \"Fix: bind\" line, but the target root is "+
 						"refused too in this layout, so the ancestor being offered is a filesystem "+
 						"snug created for this run and does not hold the caller's files. The message "+
-						"must admit there is no substitute (#376):\n%s", inside, msg)
+						"must admit there is no substitute SOURCE:\n%s", inside, msg)
 				}
 			}
 

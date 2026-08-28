@@ -1,0 +1,80 @@
+--unshare-user
+--unshare-ipc
+--unshare-pid
+--unshare-uts
+--unshare-cgroup-try
+--uid 1000
+--gid 1000
+--hostname snug
+--die-with-parent
+--cap-drop ALL
+--perms 0755
+--dir /home
+--perms 0755
+--dir /run
+--perms 0755
+--dir /snug
+--perms 0755
+--dir /snug/engine
+--perms 0755
+--dir /snug/engine/store
+--perms 0755
+--dir /snug/engine/runroot
+--perms 0755
+--dir /snug/engine/sock
+--perms 0755
+--dir /snug/engine/conf
+--perms 0755
+--dir /snug/engine/toolchain
+--perms 0755
+--dir /sys
+--perms 0755
+--dir /sys/fs
+--perms 0755
+--dir /sys/fs/cgroup
+--perms 0755
+--dir /var/tmp
+--perms 0755
+--dir /snug/engine/binds
+--perms 0755
+--dir /snug/engine/binds/build
+--perms 0755
+--dir /snug/engine/binds/data
+--symlink usr/bin /bin
+--dev /dev
+--ro-bind /etc /etc
+--ro-bind-try /opt /opt
+--proc /proc
+--size 1073741824
+--tmpfs /tmp
+--ro-bind /usr /usr
+--ro-bind-data 10 /etc/resolv.conf
+--size 1073741824
+--tmpfs /home/u
+--size 1073741824
+--tmpfs /home/u/.cache
+--size 1073741824
+--tmpfs /home/u/.config
+--size 1073741824
+--tmpfs /home/u/.local/share
+--size 1073741824
+--tmpfs /home/u/.local/state
+--bind /home/u/proj/sub /home/u/proj/sub
+--remount-ro /
+--clearenv
+--setenv HOME /home/u
+--setenv LOGNAME u
+--setenv PATH /usr/bin:/bin:/usr/sbin:/sbin
+--setenv PS1 🔒 snug:\w\$ 
+--setenv SHELL /bin/sh
+--setenv SNUG 1
+--setenv SNUG_PROFILES @cwd-rw,@home,@sys,engine-binds,engine-binds-two
+--setenv SNUG_TARGET /home/u/proj/sub
+--setenv TMPDIR /tmp
+--setenv USER u
+--setenv XDG_CACHE_HOME /home/u/.cache
+--setenv XDG_CONFIG_HOME /home/u/.config
+--setenv XDG_DATA_HOME /home/u/.local/share
+--setenv XDG_STATE_HOME /home/u/.local/state
+--chdir /home/u/proj/sub
+-- /bin/sh

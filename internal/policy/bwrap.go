@@ -176,12 +176,16 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 		a = append(a, "--perms", "0755", "--dir", d)
 	}
 
-	// EngineMountpoints — /sys, /sys/fs, /sys/fs/cgroup — ONLY when this run
-	// selects a container engine. These are not grants: no profile exposes
-	// /sys, and nothing here makes it visible to the PAYLOAD either (the
-	// payload's own view is unaffected — these directories sit empty and
-	// unremarked on the sandbox's root tmpfs, same as any other skeleton dir,
-	// until --remount-ro / makes them permanently so). They exist so the
+	// p.engineMountpoints() — /sys, /sys/fs, /sys/fs/cgroup, and one directory
+	// per declared engine_binds entry — ONLY when this run selects a container
+	// engine. None of these is a grant of what lands on it: no profile exposes
+	// /sys, an `engine_binds` entry names a path the ENGINE may bind and never
+	// one the payload may see, and nothing here makes anything visible to the
+	// PAYLOAD (the payload's own view is unaffected — these directories sit
+	// empty and unremarked on the sandbox's root tmpfs, same as any other
+	// skeleton dir, until --remount-ro / makes them permanently so, which is
+	// what stops the destination of a declared bind being a shadow slot). They
+	// exist so the
 	// STAGE has somewhere to move_mount(2) the engine's own cgroup2 mount in
 	// the DERIVED view (issue #125's design pass §1) — the sandbox's root is
 	// read-only by the time the engine forks, so a destination not created
@@ -193,7 +197,7 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 	// picture) and a container run must not have G3 accept a destination
 	// this loop did not actually create.
 	if p.Podman != PodmanOff {
-		for _, d := range EngineMountpoints {
+		for _, d := range p.engineMountpoints() {
 			a = append(a, "--perms", "0755", "--dir", d)
 		}
 	}

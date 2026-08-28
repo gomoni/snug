@@ -155,6 +155,13 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	var addressOwner, gatewayOwner, address6Owner, gateway6Owner, mtuOwner ProfileName
 	pluginAllow := map[string]bool{}
 	httpDoors := map[string]bool{}
+	// engine_binds declarations, host path -> the profiles that wrote it. A
+	// MAP, because the key is UNIONED across profiles like plugins and doors:
+	// two profiles naming one path is one graft, not two, and nothing about the
+	// result may depend on which of them the fold reached first. Judged after
+	// the fold — resolveEngineBinds asks about the whole mount set and the
+	// joined p.Podman, and neither exists yet here.
+	engineBindDecls := map[string][]string{}
 	// Environment claims are ACCUMULATED here and resolved after the fold — see
 	// envresolve.go for why deciding during the fold cannot name every claimant.
 	envClaims := newEnvClaims()
@@ -241,6 +248,55 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			}
 			if err := p.join(Mount{Guest: filepath.Clean(at), Kind: KindSymlink, Host: s.Target, Access: AccessRO, From: []string{string(name)}}); err != nil {
 				return nil, err
+			}
+		}
+		// engine_binds. The host side gets EXACTLY what add() gives a bind's
+		// host side, and for the same two reasons: canonicalise while the
+		// filesystem is still trusted, and refuse a redirect out of the target
+		// that a PREVIOUS run's payload could have planted (the target
+		// persists, and so does /tmp under @tmp-shared). What it does not get
+		// is `optional` — checkGraft refuses Optional on a graft outright,
+		// because a graft that silently did not happen leaves the engine with
+		// a confinement --dry-run did not describe — so a declared path that
+		// is absent refuses the run here rather than at open_tree(2) time.
+		//
+		// There is no splitSpec call and no `host:guest` form: snug chooses the
+		// guest path, so a colon here is part of a filename like any other
+		// byte, the same as in `tmpfs` and `optional`.
+		for _, s := range prof.EngineBinds {
+			host, err := expandVars(s, vars)
+			if err != nil {
+				return nil, fmt.Errorf("profile %q: engine_binds: %w", name, err)
+			}
+			host = filepath.Clean(host)
+			if !filepath.IsAbs(host) {
+				return nil, fmt.Errorf("profile %q: engine_binds %q is not an absolute path; a "+
+					"declared bind names a host directory, and a relative name has nothing to "+
+					"resolve against — snug refuses the same spelling in a container's own `-v`",
+					name, s)
+			}
+			if host == "/" {
+				return nil, fmt.Errorf("profile %q: engine_binds may not declare \"/\": the whole "+
+					"host filesystem is not a named hole, and there is no base name to derive a "+
+					"destination from", name)
+			}
+			real, err := env.EvalSymlinks(host)
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					return nil, fmt.Errorf("profile %q declares engine_binds = [%q], which does not "+
+						"exist. A graft cannot be optional — the engine would be confined "+
+						"differently from what --dry-run described — so create the directory or "+
+						"remove the entry", name, host)
+				}
+				return nil, fmt.Errorf("profile %q: engine_binds %s: %w", name, host, err)
+			}
+			if err := underTargetIsLiteral(target, host, real); err != nil {
+				return nil, fmt.Errorf("profile %q: engine_binds: %w", name, err)
+			}
+			// Not appended blindly: one profile may list the same path twice,
+			// and the value reaches a refusal message and the graft's Why.
+			if !slices.Contains(engineBindDecls[real], string(name)) {
+				engineBindDecls[real] = append(engineBindDecls[real], string(name))
 			}
 		}
 		// Identity does NOT join. Two profiles pinning different accounts is a
@@ -442,6 +498,13 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	}
 	if len(httpDoors) > 0 {
 		p.ListenNames = sortedKeys(httpDoors)
+	}
+	if len(engineBindDecls) > 0 {
+		binds, err := resolveEngineBinds(p, engineBindDecls)
+		if err != nil {
+			return nil, err
+		}
+		p.EngineBinds = binds
 	}
 
 	// V6 (all four network-address keys, or none) is checked HERE — POST-FOLD,

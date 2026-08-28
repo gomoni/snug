@@ -87,6 +87,16 @@ func newFakeEnv() *fakeEnv {
 			// the sanitise-C fixtures (nested-bin) need this to exist so it can be
 			// GRANTED as well as named (§2.5's coupling rule).
 			"/home/u/.local/bin/tool": true,
+			// The engine_binds fixtures (issue #376). Two directories INSIDE
+			// the target, which is the case the grant exists for — the
+			// anchored-source rule refuses every name strictly below the
+			// target — plus one outside every grant, so a fixture can exercise
+			// G4's refusal, and two sharing a base name for the collision.
+			"/home/u/proj/sub/data":       true,
+			"/home/u/proj/sub/build":      true,
+			"/home/u/proj/sub/nest/build": true,
+			"/home/u/proj/sub/nest":       true,
+			"/home/u/ungranted":           true,
 		},
 		links: map[string]string{},
 		// EDITOR is here so a fixture profile can actually re-admit something
@@ -290,6 +300,31 @@ func testRegistry() map[ProfileName]*Profile {
 		// PATH deliberately, not PKG_CONFIG_PATH — the band ordering that makes
 		// the finding exploitable is PATH's, because it precedes /usr/bin.
 		"sanity-path": {Name: "sanity-path", Environ: EnvGrants{Sanitise: []string{"PATH"}}},
+		// The engine_binds fixtures (issue #376). Each carries `podman` itself
+		// rather than including @podman-socket, so a selection can pair one
+		// with @cwd-rw and nothing else: Resolve refuses engine_binds on a run
+		// with no engine, which is what makes these usable alone.
+		//
+		// `engine-binds` declares a path INSIDE the target — the case the grant
+		// exists for — and @cwd-rw's rw bind of {target} is what makes it
+		// visible, so the graft comes out AccessRW. `engine-binds-ro` declares
+		// the same shape against a read-only grant. `engine-binds-two` declares
+		// a second path, for the union. `engine-binds-collide` declares a
+		// second path with the SAME base name. `engine-binds-ungranted`
+		// declares a path no grant exposes.
+		"engine-binds": {Name: "engine-binds", Podman: "socket",
+			EngineBinds: []string{"{target}/data"}},
+		"engine-binds-two": {Name: "engine-binds-two", Podman: "socket",
+			EngineBinds: []string{"{target}/build"}},
+		"engine-binds-collide": {Name: "engine-binds-collide", Podman: "socket",
+			EngineBinds: []string{"{target}/nest/build"}},
+		"engine-binds-ungranted": {Name: "engine-binds-ungranted", Podman: "socket",
+			EngineBinds: []string{"{home}/ungranted"}},
+		"engine-binds-ro": {Name: "engine-binds-ro", Podman: "socket",
+			RO:          []string{"/opt/tools/bin"},
+			EngineBinds: []string{"/opt/tools/bin"}},
+		"engine-binds-no-engine": {Name: "engine-binds-no-engine",
+			EngineBinds: []string{"{target}/data"}},
 		// A bind nested INSIDE @home's tmpfs, mirroring @claude's real shape
 		// (base.toml: {home}/.local/bin/claude). Its own directory,
 		// {home}/.local/bin, is NOT granted — only the file below it is — which
@@ -379,6 +414,14 @@ func canon(p *Policy) string {
 		p.Net.Mode, p.Net.DNS, p.Net.Nameservers,
 		p.Net.Address, p.Net.Gateway, p.Net.Address6, p.Net.Gateway6, p.Net.MTU)
 	fmt.Fprintf(&b, "podman %s\n", p.Podman)
+	// engine_binds, entry by entry with its derived guest path, access and
+	// provenance — the same reason the environment is rendered per entry rather
+	// than joined: the union is order-independent only if every field of every
+	// row is, and a field canon does not render is a field the commutativity
+	// and idempotence properties say nothing about.
+	for _, eb := range p.EngineBinds {
+		fmt.Fprintf(&b, "enginebind %s -> %s %s %v\n", eb.Host, eb.Guest, eb.Access, eb.From)
+	}
 	// Git joins by max like every other scalar, and it was added without this
 	// line — the exact omission this function's own comment warns about, three
 	// scalars later. A commutativity test that does not render a field does not
@@ -395,8 +438,14 @@ func canon(p *Policy) string {
 // Resolve must be commutative. If it is not, the order profiles are named
 // changes what the sandbox grants, and "profiles only relax" becomes unprovable.
 func TestResolveIsCommutative(t *testing.T) {
+	// engine-binds and engine-binds-two are here because engine_binds is a
+	// UNIONED key like plugins and doors, and the union is only order-free if
+	// canon renders it — which is the trap canon's own comment records for the
+	// network scalars and for `git`. Two profiles rather than one: a single
+	// declaring profile cannot fail an order test.
 	all := []ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro", "cwd-ro", "netty", "netty-too",
-		"envy", "envy-too", "setty", "firsty", "sanity", "dupe-path", "gitty", "gitty-too"}
+		"envy", "envy-too", "setty", "firsty", "sanity", "dupe-path", "gitty", "gitty-too",
+		"engine-binds", "engine-binds-two"}
 	want := canon(mustResolve(t, all...))
 
 	rng := rand.New(rand.NewSource(1))
@@ -411,7 +460,7 @@ func TestResolveIsCommutative(t *testing.T) {
 
 // Selecting a profile twice must be identical to selecting it once.
 func TestResolveIsIdempotent(t *testing.T) {
-	for _, name := range []ProfileName{"@sys", "@cwd-rw", "@parent-ro", "combo"} {
+	for _, name := range []ProfileName{"@sys", "@cwd-rw", "@parent-ro", "combo", "engine-binds"} {
 		once := canon(mustResolve(t, "@sys", "@cwd-rw", name))
 		twice := canon(mustResolve(t, "@sys", "@cwd-rw", name, name))
 		if once != twice {

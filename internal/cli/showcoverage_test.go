@@ -48,6 +48,7 @@ var probes = map[string]string{
 	"DNS":         "resolv.conf",
 	"Plugins":     "probe-plugin",
 	"ListenNames": "probe-door",
+	"EngineBinds": "/probe-engine-bind",
 	"Address":     "10.99.99.2/24",
 	"Gateway":     "10.99.99.1",
 	"Address6":    "fd00:99::2/64",
@@ -84,6 +85,7 @@ network  = "egress"
 dns      = true
 plugins  = ["probe-plugin"]
 listen_names = ["probe-door"]
+engine_binds = ["/probe-engine-bind"]
 address  = "10.99.99.2/24"
 gateway  = "10.99.99.1"
 address6 = "fd00:99::2/64"

@@ -1,0 +1,62 @@
+
+ENGINE VIEW  (grafts — mounts in the ENGINE's derived mount namespace, NOT the
+  payload's. The payload cannot see any of these; no profile can ask for one.)
+  (an engine outside every grant this sandbox makes adds a fifth graft at /snug/engine/toolchain — whether
+  this host needs one is a preflight answer, and --dry-run runs no preflight.)
+  proc-rw     /proc                                         (snug)
+            from (nothing — the stage mounts a fresh proc here; no host path is opened)
+            abuse: read the process table of the engine's own pid namespace —
+            which is what a container engine legitimately needs, and is why this
+            is a FRESH procfs rather than the host's: without it the engine
+            would carry the stage's copy of the HOST /proc, and every host
+            process's cmdline, environ and fd table with it
+            note: this graft's destination coincides with an existing proc grant
+            (access rw) in the sandbox's own view.
+  tmpfs-rw    /run (max 1 GiB)                              (snug)
+            from (nothing — the stage mounts a fresh tmpfs here; no host path is opened)
+            abuse: write anything it likes into a tmpfs that dies with the run —
+            podman needs /run/libpod writable and does not self-mount one when
+            it reads itself as root-like (the full delegated subuid range), and
+            the sandbox's own /run is a directory on the read-only root. Nothing
+            of the HOST's /run is in it: this is a fresh, empty filesystem, not
+            a graft of anything
+            note: this graft's destination is created on the sandbox's own root
+            tmpfs and IS visible to the payload — empty, and unwritable once /
+            is remounted read-only. The mount namespace is private; the tmpfs
+            superblock is not (ENGINE-NETNS.md §5.1).
+  graft-rw    /snug/engine/binds/data                       (snug)
+            from /home/u/proj/sub/data
+            abuse: bind this host tree into a container of its OWN choosing —
+            its own image, its own command, running as root in this run's user
+            namespace and in the ENGINE's network namespace rather than the
+            sandbox's — at READ-WRITE access, because that is what the sandbox
+            itself has at /home/u/proj/sub/data. Declared by work with
+            engine_binds, which is why the payload cannot choose the path: only
+            this root is forwarded, and never with a tail of the payload's own
+            note: this graft's destination is created on the sandbox's own root
+            tmpfs and IS visible to the payload — empty, and unwritable once /
+            is remounted read-only. The mount namespace is private; the tmpfs
+            superblock is not (ENGINE-NETNS.md §5.1).
+  cgroup2-rw  /sys/fs/cgroup                                (snug)
+            from (nothing — the stage mounts a fresh cgroup2 here; no host path is opened)
+            abuse: write cgroup controller files for the containers it starts —
+            a fresh cgroup2 rooted at the engine's OWN cgroup namespace, so what
+            it can write is the delegated subtree and not the host's cgroup
+            tree, which is what the inherited mount would still have been rooted
+            at
+            note: this graft's destination is created on the sandbox's own root
+            tmpfs and IS visible to the payload — empty, and unwritable once /
+            is remounted read-only. The mount namespace is private; the tmpfs
+            superblock is not (ENGINE-NETNS.md §5.1).
+  tmpfs-rw    /var/tmp (max 8 GiB)                          (snug)
+            from (nothing — the stage mounts a fresh tmpfs here; no host path is opened)
+            abuse: write anything it likes into a second tmpfs that dies with
+            the run — containers/image hardcodes /var/tmp for the temporary
+            directory it creates while committing a layer, with no configuration
+            key and no environment variable that reaches it (measured: every
+            build 500'd on `stat /var/tmp` until this existed). Nothing of the
+            HOST's /var/tmp is in it
+            note: this graft's destination is created on the sandbox's own root
+            tmpfs and IS visible to the payload — empty, and unwritable once /
+            is remounted read-only. The mount namespace is private; the tmpfs
+            superblock is not (ENGINE-NETNS.md §5.1).

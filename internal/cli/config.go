@@ -759,6 +759,14 @@ func showCapabilities(p *policy.Profile, show func(string, []string)) {
 				"hostile process inside answers whatever it likes on the origin they typed — "+
 				"THIS IS A SANDBOX ESCAPE, and it lands only if somebody opens the URL"))
 	}
+	if len(p.EngineBinds) > 0 {
+		show("engine_binds", capRows(strings.Join(p.EngineBinds, " "),
+			"a container this sandbox starts may bind these HOST paths — snug clones each into "+
+				"the engine's own view before the payload runs and forwards that mount, which "+
+				"is what makes a path inside the target bindable at all (issue #376). At the "+
+				"access the sandbox itself has: a writable one is a host-write channel out of "+
+				"a container of the payload's choosing"))
+	}
 	if len(p.Plugins) > 0 {
 		show("plugins", capRows(strings.Join(p.Plugins, " "),
 			"regenerates ~/.claude/plugins/installed_plugins.json naming only these, so "+

@@ -328,6 +328,10 @@ func (p *Policy) Validate(env Environ) error {
 		}
 	}
 
+	if err := p.checkEngineBinds(); err != nil {
+		return err
+	}
+
 	if err := p.rejectGeneratedOntoHost(); err != nil {
 		return err
 	}

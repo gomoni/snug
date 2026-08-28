@@ -191,19 +191,30 @@ func (p *Policy) CheckEngineBindSource(guest string) error {
 //     send someone to mount an ephemeral empty directory and wonder why their
 //     project is not in it. This is the case that fires once the target sits
 //     three or more levels below $HOME, where the deepest anchored ancestor is
-//     the $HOME tmpfs itself. There is no workaround there and the message
-//     says so rather than inventing one (issue #376 is the widening).
+//     the $HOME tmpfs itself.
+//
+// BOTH ARMS NOW NAME `engine_binds` AS WELL (issue #376), and the second arm
+// needs it: there is no substitute SOURCE there, and for a whole milestone the
+// message said so and stopped. Declaring the path is not a substitute source —
+// it is the same source, reached through a mount snug owns in the engine's view
+// instead of through a name the payload can re-point — so it is the one remedy
+// that works at any depth. It is a PROFILE change and the message says that
+// much: whoever runs the sandbox has to write it, which is invariant 3 and not
+// an inconvenience.
 func swappableFix(mounts map[string]Mount, parent string) string {
+	declare := "       Or DECLARE this exact source in a profile: engine_binds = [\"<the source>\"].\n" +
+		"       snug then clones it into the engine's own view before the payload starts and\n" +
+		"       forwards that mount instead of this name, so there is nothing left to re-point.\n" +
+		"       It is a profile change, not a flag: the declaration has to come from outside the\n" +
+		"       sandboxed material."
 	if m, ok := deepestNonSymlinkCover(mounts, parent); ok && m.Kind == KindBind {
 		return "       Fix: bind " + parent + " — the deepest ancestor of this source whose whole\n" +
 			"       path this sandbox cannot rewrite — and address the subdirectory inside the\n" +
-			"       container."
+			"       container.\n" + declare
 	}
 	return "       The deepest ancestor this rule accepts is " + parent + ", which is not a bind of a\n" +
 		"       host directory — it is a filesystem snug created for this run, so binding it would\n" +
-		"       not mount what you asked for. There is NO substitute source for this one: see\n" +
-		"       issue #376, which tracks handing the engine a per-bind graft under /snug/engine\n" +
-		"       (a mount) instead of a path string it re-resolves."
+		"       not mount what you asked for, and there is no substitute SOURCE for this one.\n" + declare
 }
 
 // pathComponents returns the cumulative absolute paths from "/" up to and

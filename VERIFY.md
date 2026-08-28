@@ -3034,13 +3034,11 @@ intermediate directory is a plain name in the home tmpfs. The `$SC/proj/sub`
 target this section uses is itself three levels below `/tmp`, which is why the
 refusal above names the temp-root directory and not `realdir`.
 
-So, plainly: **`-v` works for paths outside the sandbox's writable trees, and
-for the target root at shallow depth, and never for anything inside the
-target.** Where the root is accepted, bind it and address the subdirectory
-inside the container. At three levels and deeper there is no workaround, and
-the refusal message does not pretend otherwise. `.claude/design` tracks the
-widening (issue #376): a per-bind graft under `/snug/engine`, handing the
-engine a mount instead of a re-resolvable string.
+So, plainly: an **undeclared** `-v` works for paths outside the sandbox's
+writable trees, and for the target root at shallow depth, and never for
+anything inside the target. Where the root is accepted, bind it and address
+the subdirectory inside the container. At any depth, `engine_binds` is the
+remedy the refusal now names — see 9c-quinquies.
 
 This is a refusal, never a silent narrowing. Nothing mounts with less than what
 was asked for, and no container gains reach the sandbox lacks.
@@ -3075,6 +3073,92 @@ snug ~/snugtest2/sub -- sh -c 'cd "$HOME"; mv snugtest2 other'
 ```
 
 Expect `mv: cannot move 'snugtest2' to 'other': Device or resource busy`.
+
+## 9c-quinquies. A DECLARED source inside the target IS bindable (issue #376)
+
+Needs a working container engine (see 9c). The rule above cannot be relaxed, so
+the source stops being a string: a profile DECLARES the host path, snug clones
+it into the engine's own view before the payload has ever run, and the proxy
+forwards that guest path instead of the one the client wrote. The forwarded
+name sits on snug's read-only root, so nothing on it can be re-pointed between
+`create` and `start`.
+
+`engine_binds` is a **profile** key, never a flag — the declaration has to come
+from outside the sandboxed material (invariant 3).
+
+```bash
+mkdir -p $SC/proj/sub/data ~/.config/snug/profiles.d
+cat > ~/.config/snug/profiles.d/verify376.toml <<'EOF'
+[profile.verify376]
+include      = ["@podman-socket", "@cwd-rw"]
+engine_binds = ["{target}/data"]
+EOF
+snug --dry-run --no-defaults -p verify376 $SC/proj/sub | grep -A2 'engine/binds'
+```
+
+Expect two rows naming the same pair of paths — the argv that pre-creates the
+destination, and the graft that lands on it:
+
+```
+  graft-rw    /snug/engine/binds/data
+            from <$SC>/proj/sub/data
+```
+
+That row, and not the run, is the answer to this ticket's own standard: a mount
+the payload asked for is a mount a human can see before it exists. Then the run
+itself:
+
+```bash
+snug --no-defaults -p verify376 $SC/proj/sub -- sh -c '
+  export PATH=/snug/bin:$PATH; cd "$SNUG_TARGET"
+  podman run --rm -v ./data:/data alpine:3.20 stat -c %n /data
+'
+```
+
+Expect `/data`. The same command without the profile is a 403 (9c-quater).
+
+Three negatives, all still refused with the declaration in place:
+
+```bash
+snug --no-defaults -p verify376 $SC/proj/sub -- sh -c '
+  export PATH=/snug/bin:$PATH; cd "$SNUG_TARGET"
+  mkdir -p data/sub other
+  podman create -v ./data/sub:/x alpine:3.20 true   # a tail the REQUEST supplied
+  podman create -v ./other:/x    alpine:3.20 true   # a sibling, undeclared
+  podman create -v ./data:/x:rw  alpine:3.20 true   # accepted: the target is rw
+'
+```
+
+Expect a refusal for the first two and a container ID for the third. The first
+is the one that matters: `open_tree(OPEN_TREE_CLONE)` pins an inode at the
+graft's ROOT, and crun re-resolves the whole forwarded string at container
+start, so graft-root-plus-a-tail would reopen #284 through the graft.
+
+Two refusals the profile itself gets, neither of which needs an engine:
+
+```bash
+cat > ~/.config/snug/profiles.d/verify376bad.toml <<'EOF'
+[profile.v376-noengine]
+include      = ["@cwd-rw"]
+engine_binds = ["{target}/data"]
+
+[profile.v376-ungranted]
+include      = ["@podman-socket", "@cwd-rw"]
+engine_binds = ["/etc/ssh"]
+EOF
+snug --dry-run --no-defaults -p v376-noengine  $SC/proj/sub
+snug --dry-run --no-defaults -p v376-ungranted $SC/proj/sub
+```
+
+Expect, respectively, `no profile in this selection starts a container engine,
+so there is nothing to bind into and the declaration would silently do nothing`
+and `this sandbox's own grants do not expose that host path at all`. A
+declaration is a route, never a permission: the sandbox has to grant the path
+too, and the graft's `ro`/`rw` is whatever the sandbox itself has there.
+
+```bash
+rm -f ~/.config/snug/profiles.d/verify376.toml ~/.config/snug/profiles.d/verify376bad.toml
+```
 
 ## 9d. `@podman-socket` without `@net` is offline, containers included
 

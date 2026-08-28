@@ -159,10 +159,19 @@ func TestCheckEngineBindSource(t *testing.T) {
 			// ephemeral directory and wonder where their project went.
 			//
 			// So the message must NOT say "Fix: bind", and must say plainly
-			// that there is no substitute. Asserted in BOTH directions,
+			// that there is no substitute SOURCE. Asserted in BOTH directions,
 			// because only the negative half catches the regression that
 			// matters — a later edit collapsing the two branches back into
 			// one unconditional "Fix:" line.
+			//
+			// It must ALSO name `engine_binds` now (issue #376). Declaring the
+			// path is not a substitute source — it is the same source reached
+			// through a mount snug owns in the engine's view — so it is the one
+			// remedy that works at this depth, and for a whole milestone this
+			// message said "there is no workaround" and stopped. The two
+			// assertions are not redundant: the first keeps the message from
+			// offering an ancestor that would mount an empty tmpfs, the second
+			// keeps it from being a dead end.
 			name: "deepest anchored ancestor is a tmpfs -> refusal offers NO substitute",
 			mounts: map[string]Mount{
 				"/home/u":                  {Guest: "/home/u", Kind: KindTmpfs, Access: AccessRW},
@@ -173,8 +182,9 @@ func TestCheckEngineBindSource(t *testing.T) {
 			wantErr:       true,
 			wantComponent: "/home/u/src",
 			wantRule:      true,
-			wantInMsg:     []string{"There is NO substitute source", "#376"},
-			wantNotInMsg:  []string{"Fix: bind"},
+			wantInMsg: []string{"no substitute SOURCE for this one",
+				"engine_binds = [\"<the source>\"]"},
+			wantNotInMsg: []string{"Fix: bind"},
 		},
 		{
 			// POSITIVE CONTROL: the exact #284-primitive policy above, with

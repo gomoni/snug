@@ -105,6 +105,23 @@ const (
 	EngineToolchainGuest = EngineDir + "/toolchain"
 )
 
+// EngineBindsDir is the ONE place a profile's `engine_binds` declaration lands
+// in the engine's view: one directory under it per declared host path, each
+// holding an open_tree(2) clone of that path.
+//
+// It is not in the const block above because those five are snug's own
+// artefacts — the store, the runroot, the two halves of the run directory, the
+// toolchain — and there is exactly one of each. This one names a DIRECTORY
+// whose children are decided by the selected profiles, so the paths under it
+// are per-run and are derived by EngineBindGuest rather than declared here.
+//
+// Why a subdirectory rather than /snug/engine/<name> directly: G1b admits a
+// graft anywhere under EngineDir, so a declared bind called `store` would
+// otherwise collide with EngineStoreGuest and Policy.Graft would refuse the
+// second — a profile's own choice of directory name deciding whether snug's
+// engine wiring resolves. Under a name of snug's own, the two sets cannot meet.
+const EngineBindsDir = EngineDir + "/binds"
+
 // graftAllowedInSnugDir reports whether a graft may land at this guest path,
 // for the half of the namespace rule that applies to p.Grafts.
 //

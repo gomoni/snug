@@ -899,11 +899,13 @@ func (p *Proxy) checkedMounts(hc map[string]json.RawMessage) ([]mount, error) {
 // turns on.
 //
 // It does not answer "may the client have this path". It returns the mount snug
-// will ask the engine for — `mount{Source: filepath.Clean(real)}` — and
-// handleCreate then deletes Binds and Mounts and re-encodes only what came back.
-// So the engine is asked for THE PATH SNUG APPROVED, not the path the client
-// wrote, and the residual TOCTOU is bounded by that rewrite rather than by the
-// check.
+// will ask the engine for — the resolved host path, or, for a source a profile
+// declared with `engine_binds`, the GUEST path of the graft snug cloned that
+// host directory into (issue #376) — and handleCreate then deletes Binds and
+// Mounts and re-encodes only what came back. So the engine is asked for THE
+// SOURCE SNUG APPROVED, not the one the client wrote, and the residual TOCTOU
+// is bounded by that rewrite rather than by the check: for a declared bind it
+// is not bounded but absent, because a mount cannot be re-resolved at all.
 //
 // The consequence for anything added to this file later, which is why the
 // sentence is here and not only at its one current use (blkioPathField): a
@@ -938,6 +940,40 @@ func (p *Proxy) checkOne(source, dest string, ro bool) (mount, error) {
 
 	if !p.hostPathVisible(source, !ro) {
 		return mount{}, fmt.Errorf("%s%s", p.bindRefusalReason(source, !ro), p.bindRefusalRemedy(!ro))
+	}
+
+	// A DECLARED engine bind is forwarded as the GRAFT ROOT, and the two checks
+	// below it — CheckEngineForwardedPath and CheckEngineBindSource — are
+	// skipped, because both judge a path STRING the engine re-resolves, which
+	// is exactly what a graft stops this being (issue #376). Both would refuse
+	// this source, and correctly, about the thing snug is no longer doing.
+	//
+	// Asked AFTER hostPathVisible, deliberately. Authorization stays a
+	// host-space question with one author (invariant 6): the declaration's own
+	// Access is Policy.HostPathVisible's answer for this same host path, so
+	// letting the wrapper above speak first means a writable request on a
+	// read-only tree is refused by the sentence that already explains it,
+	// rather than by a lookup that would have to re-derive the same fact.
+	//
+	// THIS IS A TRANSLATION, and CheckEngineForwardedPath's own "Refuse, never
+	// translate" paragraph is about why snug does not do this in general: if
+	// the client's string and the engine's string differ, substituting one is
+	// snug authoring a request nobody made. What makes this the exception is
+	// not that it is convenient, it is that the two strings name THE SAME
+	// INODES: the graft is an open_tree(OPEN_TREE_CLONE) of precisely this host
+	// directory, at precisely the access just checked, installed by snug before
+	// the payload ever ran. Nothing is widened and nothing is substituted — the
+	// same tree is asked for by a name with no payload-writable component on
+	// it, which is the whole of #376.
+	//
+	// The client's own resolved source is what is matched, never a prefix of a
+	// declaration: EngineBindForwarded's doc comment has why (a graft root plus
+	// a payload-supplied tail reopens #284 through the graft, because crun
+	// re-resolves the tail at start).
+	if guest, ok := p.pol.EngineBindForwarded(source, !ro); ok {
+		p.audit(fmt.Sprintf("mount source %s is a declared engine bind; forwarding the graft at %s",
+			source, guest))
+		return mount{Type: "bind", Source: guest, Target: dest, ReadOnly: ro}, nil
 	}
 
 	// The engine resolves a bind SOURCE in its own derived view, not in the
@@ -1449,12 +1485,25 @@ func (p *Proxy) bindRefusalReason(source string, needWrite bool) string {
 // container — the same wording policy.swappableFix uses for the same
 // situation, so the two refusals a user meets in sequence agree.
 func (p *Proxy) bindRefusalRemedy(needWrite bool) string {
+	// A DECLARED bind first, because it is the only remedy that needs no
+	// caveat: it is the exact source, not an ancestor of it, so there is no
+	// "and address the subdirectory inside the container" to get wrong. Read
+	// off p.pol.EngineBinds, which Resolve sorted by Host, so the sentence does
+	// not depend on map order.
+	for _, b := range p.pol.EngineBinds {
+		if needWrite && b.Access != policy.AccessRW {
+			continue
+		}
+		return fmt.Sprintf(" Or bind %s, which a profile declared with engine_binds — snug hands "+
+			"the engine a mount it cloned itself, so that source has no re-pointable name on it.",
+			b.Host)
+	}
 	if src, ok := p.acceptableBindSource(needWrite); ok {
 		return fmt.Sprintf(" Or bind %s — the deepest source this run accepts — and address "+
 			"the subdirectory inside the container.", src)
 	}
 	return " Bind mounts are unavailable in this run: nothing it already grants is an " +
-		"acceptable source (issue #376)."
+		"acceptable source, and no profile declared one with engine_binds (issue #376)."
 }
 
 // acceptableBindSource answers "is there a source this run would forward, and
@@ -1508,6 +1557,13 @@ func (p *Proxy) forwardableBindSource(candidate string, needWrite bool) bool {
 	}
 	if !p.hostPathVisible(candidate, needWrite) {
 		return false
+	}
+	// checkOne's declared-bind arm, in the same position: a declared source is
+	// forwarded as its graft root and the three string checks below it never
+	// run, so asking them here would report "not forwardable" about a source
+	// this run demonstrably forwards (issue #376).
+	if _, ok := p.pol.EngineBindForwarded(candidate, needWrite); ok {
+		return true
 	}
 	if err := p.pol.CheckEngineForwardedPath(candidate); err != nil {
 		return false

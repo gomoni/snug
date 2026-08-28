@@ -107,6 +107,14 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		return containerRun{}, err
 	}
 
+	// The declared engine binds, in the same position and for the same reason
+	// (issue #376). Kept a separate call rather than folded into the one above:
+	// these are open_tree(2) clones of HOST directories, which is the mechanism
+	// engineview.go's own header says it does not deal in.
+	if err := installEngineBindGrafts(env, pol); err != nil {
+		return containerRun{}, err
+	}
+
 	if dryRun {
 		// --dry-run's own promise is "having started nothing" (CLAUDE.md).
 		// Binding the proxy's LISTENING socket is not starting the engine —
