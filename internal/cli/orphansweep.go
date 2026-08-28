@@ -46,11 +46,19 @@ import (
 //     been recycled since the state was written has a different start time
 //     and is left alone.
 //
-// WHAT IT STILL DOES NOT CATCH: an init that never answers --info-fd at all,
-// parked in read() on one of BWRAP's OWN eventfds (its uid-map sync). No
-// record can name it — the pid it would carry is the one bwrap has not
-// reported yet — and this is upstream's window, closable only by arming the
-// init's PDEATHSIG before that read.
+// AN INIT THAT NEVER ANSWERS --info-fd AT ALL — parked in read() on one of
+// BWRAP's OWN eventfds, its uid-map sync — used to be listed here as
+// uncatchable, on the ground that no record can name it because its pid is
+// the one bwrap has not reported yet. That ground is false, and was measured
+// so: the init is the DIRECT CHILD of the bwrap process snug started, so
+// /proc/<bwrap>/task/*/children names it with bwrap reporting nothing.
+// internal/sandbox's initwatch.go walks it and publishes the same ".starting"
+// record, guarded by the one thing that separates an init from any other
+// child — it lives in a user namespace that is not ours.
+//
+// WHAT IS STILL NOT CAUGHT is the STAGED arm of that same window: there the
+// stage forks bwrap, so P0 has no pid to walk from and no watcher is started.
+// The same walk would close it, one process further in.
 //
 // The wide gap that used to follow it is issue #236: exec.go's OnInfo
 // publishes state.json only AFTER the mount settle and, on a container run,
