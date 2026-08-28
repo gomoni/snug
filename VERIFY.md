@@ -49,6 +49,37 @@ Expect ✅ on bubblewrap, user namespaces, and a private network namespace. A �
 names the exact sysctl or package to fix. Running inside distrobox/podman is
 reported and supported.
 
+Some lines are ⚠️ rather than ❌ and deliberately leave the exit code alone,
+because each gates ONE capability and not snug — pasta, the podman client,
+podman's helper binaries, and the container engine's delegated subuid/subgid
+range. To see the last one say no; the condition it exists for is a fresh
+distrobox, where `/etc/subuid` is part of the image and goes away on every
+rebuild:
+
+```bash
+sudo cp /etc/subuid /etc/subuid.bak && sudo truncate -s 0 /etc/subuid
+./bin/snug doctor; echo "exit=$?"
+sudo cp /etc/subuid.bak /etc/subuid
+```
+
+Expect `⚠️  no delegated subuid/subgid range — container profiles will refuse
+to start`, **`exit=0`**, and a 🔧 line naming a range this namespace can
+actually map. The 🔧 lines below are MEASURED — the real report run against
+this development host's `/proc/self/uid_map` (`0→1 ×1000`, `1000→0 ×1`,
+`1001→1001 ×64535`) with only the checker's verdict stubbed, because emptying
+a live `/etc/subuid` is not a thing to do to a working box:
+
+```
+     🔧 add this line to BOTH /etc/subuid and /etc/subgid:  michal:1001:64535
+        (not the conventional 100000 — this namespace's uid_map cannot map it)
+```
+
+The conventional `100000:65536` — which `subuid(5)`, `useradd` and the
+checker's own error all name — maps nothing inside a keep-id box: the uid_map
+ends at 65535. Before issue #483 doctor said nothing at all here and finished
+with `🎉 This host can run snug`, and the refusal arrived later from container
+preflight P2, fatally, in a different command.
+
 **The user-namespace line is measured, not inferred from an exit code**
 (issue #98). To see it answer a host it cannot serve — and to check that the
 line can say no at all, which is the half a green tick never proves:
@@ -5385,6 +5416,11 @@ prints (MEASURED, run 32945827262):
 🎉 This host can run snug.
 ```
 
+That transcript is ten ticks; issue #483 added an eleventh,
+`✅ a delegated subuid/subgid range the container engine can use`, between the
+helper-binaries and TIOCSTI lines. It is not in the transcript because the
+transcript is a measurement, and this container has not been re-measured since.
+
 Timing, same run: 5m04s for the whole job, of which the suite is 220.370s. The
 fixed cost underneath is small — image pull 11s, zypper ~20s, setup-go 9s,
 `make build` 12s — which is why no image caching is used.
@@ -5400,6 +5436,7 @@ each now naming its own fix. Reproduce whichever your machine allows:
 | a container masking `/proc` | `user namespaces work, but /proc cannot be mounted inside one`, naming `--security-opt systempaths=unconfined` / `unmask=/proc` |
 | no `/dev/net/tun` | `/dev/net/tun is not usable — \`-p @net\` will fail after the sandbox starts`, naming `--device /dev/net/tun` and `modprobe tun` |
 | `runc` present, `crun` absent, cgroups disabled | `podman helper binaries not found: crun (runc is present, and cannot run with cgroups disabled on this host)` |
+| no line for this user in `/etc/subuid` | `no delegated subuid/subgid range — container profiles will refuse to start`, naming a base this namespace can map (§1). ⚠️, exit code unchanged |
 
 The last one is the sharpest: doctor used to print `✅ podman's helper binaries
 are all findable` on that host, and every container create then returned
