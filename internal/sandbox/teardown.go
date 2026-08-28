@@ -22,18 +22,42 @@ import (
 //
 // The root cause, measured (see the issue and .claude/scratchpad's settlement
 // on it): bwrap arms --die-with-parent (PR_SET_PDEATHSIG) on the sandbox's
-// OWN init late, after that init's own setup — roughly 40ms in. Before that,
-// killing the process bwrap runs as (the "outer" process P0 directly forked)
-// does not take the init with it: the init has not yet registered to be told.
-// This is true on BOTH topologies snug has (a bare `snug <dir>` and `-p @net`
-// alike), for every catchable signal, because nothing in either topology
-// installed a handler at all — the default disposition just let P0 die.
+// OWN init late, after that init's own setup. Before that, killing the process
+// bwrap runs as (the "outer" process P0 directly forked) does not take the
+// init with it: the init has not yet registered to be told. This is true for
+// every catchable signal, because nothing installed a handler at all — the
+// default disposition just let P0 die.
 //
-// The fix does not try to out-guess that 40ms window. It kills the process P0
-// itself forked (bwrap for the offline topology, the stage for @net) and then
-// actively hunts down and kills anything still alive underneath it, rather
-// than hoping the kernel's own cascade already armed in time. See
-// confirmTeardown.
+// THE WINDOW IS WIDER THAN THIS COMMENT SAID. It read "roughly 40ms in" for
+// several milestones. Re-measured on this host with the payload writing a
+// control file at startup, SIGKILL of snug at a fixed offset, 4-6 runs per
+// offset, WITHOUT the offline arm's intermediate pid namespace:
+//
+//	offset  86  90  94 ms -> 0 leaks / 4     (payload has not started yet)
+//	offset  98        ms -> 3 leaks / 4
+//	offset 102        ms -> 4 leaks / 4
+//	offset 110 130 160 ms -> 8 leaks / 8 each
+//
+// A "leak" is the strong form: the payload RAN — its control file appeared —
+// after snug was already dead, and then held the target, writable and
+// unsupervised. Payload start latency is ~206ms, measured 5x, which is why the
+// low offsets look clean: nothing had started to be left behind.
+//
+// The fix has never tried to out-guess that window, which is why the number
+// being wrong cost nothing. It kills the process P0 itself forked (bwrap for
+// the offline topology, the stage for @net) and then actively hunts down and
+// kills anything still alive underneath it, rather than hoping the kernel's
+// own cascade already armed in time. See confirmTeardown.
+//
+// ON THE OFFLINE ARM THE WINDOW IS NOW CLOSED OUTRIGHT, by construction rather
+// than by the sweep. bwrap is pid 1 of the intermediate pid namespace snug
+// forks it into (exec.go's SysProcAttr, issue #101), so bwrap's own
+// --die-with-parent SIGKILL fires and zap_pid_ns_processes then SIGKILLs the
+// sandbox init before it has forked a payload at all. Measured 0 leaks across
+// 18 offsets from 0 to 1200ms, 144+ trials, against the table above on the
+// same host in the same session. The sweep is still what the guarantee rests
+// on — a construction that happens to win a race is not a boundary — but this
+// arm no longer needs it to win.
 //
 // The sweep is HOST-SIDE — it walks the host's own /proc and the host's own
 // PPid values — and therefore crosses PID-namespace boundaries: a pid
@@ -130,12 +154,15 @@ import (
 // is actually gone before giving up and exiting anyway with a diagnostic.
 // teardownPollInterval is how often it rechecks while doing so.
 //
-// 250ms is generous against the ~40ms window above: by the time this budget
-// is halfway spent, bwrap's own init has certainly either armed its pdeathsig
-// (in which case killing bwrap directly already closed it) or forked nothing
-// at all (in which case there was nothing to leak). What the budget actually
-// buys is time for confirmTeardown's OWN sweep-and-kill loop to catch a
-// descendant that was mid-fork at the moment bwrap was killed.
+// 250ms is NOT a margin against the arming window above, and the earlier
+// version of this comment claimed it was — "by the time this budget is halfway
+// spent, bwrap's own init has certainly either armed its pdeathsig or forked
+// nothing at all". The measurements in this file's header refute the
+// certainty: leaks were still 8/8 at a 160ms offset. What the budget actually
+// buys is the only thing it ever bought — time for confirmTeardown's OWN
+// sweep-and-kill loop to catch a descendant that was mid-fork at the moment
+// bwrap was killed. That loop does not wait for any cascade to arm, which is
+// why the wrong number never became a wrong behaviour.
 const (
 	teardownPollBudget   = 250 * time.Millisecond
 	teardownPollInterval = 5 * time.Millisecond
@@ -222,7 +249,8 @@ func becomeSubreaper() error {
 //
 // This is deliberately active rather than passive. Merely killing directChild
 // and waiting is exactly the experiment issue #13 measured as failing 3/3 in
-// the ~5-40ms window: bwrap's own init has not yet armed the pdeathsig that
+// the arming window (see this file's header for its measured width): bwrap's
+// own init has not yet armed the pdeathsig that
 // would make it notice directChild's death, so killing directChild alone
 // leaves it running, indefinitely, with no further signal ever arriving.
 // warn is called at most once, only if something outlived the whole budget.
@@ -476,12 +504,21 @@ func killPinned(pid, root int, exclude map[int]bool) {
 
 // ── /proc process-tree walking ───────────────────────────────────────────
 //
-// No /proc/<pid>/task/<tid>/children here: measured absent on the development
-// host (CONFIG_CHECKPOINT_RESTORE not set), so descendantsOf walks ancestry
-// UP from every candidate pid instead, exactly as the integration suite's own
-// findDescendant does. With becomeSubreaper active this needs very few hops
-// for a reparented orphan (it lands on root directly); the bound below is
-// generous for a genuinely deep, still-live process tree instead.
+// No /proc/<pid>/task/<tid>/children here, and the reason is NOT the one this
+// comment used to give. It said the file was "measured absent on the
+// development host (CONFIG_CHECKPOINT_RESTORE not set)". Re-measured: this
+// host has CONFIG_CHECKPOINT_RESTORE=y and `cat /proc/$$/task/$$/children`
+// returns children. The claim was also self-refuting, since internal/initwalk
+// reads that exact file and issue #236's measurements show it working.
+//
+// The real reason is a difference in what the two callers owe. initwalk NAMES
+// an init and has a fallback when it cannot — the run is merely not
+// attachable. This sweep is the teardown GUARANTEE and has none, so it is
+// built on ancestry walked UP from every candidate pid, which needs no kernel
+// config option at all, exactly as the integration suite's own findDescendant
+// does. With becomeSubreaper active this needs very few hops for a reparented
+// orphan (it lands on root directly); the bound below is generous for a
+// genuinely deep, still-live process tree instead.
 
 const descendantHopLimit = 32
 

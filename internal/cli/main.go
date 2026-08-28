@@ -75,6 +75,13 @@ func Main() {
 			exitOnStageError(stage.EnterNetns(argv[1:]))
 		case "__inengine":
 			exitOnStageError(stage.EnterEngine(argv[1:]))
+		case "__inpidns":
+			// The offline arm's one intermediate process, and only until its
+			// own exec: it mounts a procfs of the pid namespace snug's clone
+			// made and becomes bwrap. Like __probebind it joins nothing — its
+			// namespaces came from that clone — and it refuses outright when
+			// it is not pid 1, which is the only shape the clone produces.
+			exitOnStageError(sandbox.EnterPidNS(argv[1:]))
 		case "__probebind":
 			// Preflight P7's child (containerpreflight.go). Unlike the verbs
 			// above it joins nothing: its user and mount namespaces were

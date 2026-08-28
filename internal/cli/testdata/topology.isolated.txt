@@ -3,7 +3,25 @@ TOPOLOGY
   processes       2 — every long-lived process this run starts, snug included:
                     snug        this process — resolves the policy and supervises
                     bwrap       the sandbox itself, and the payload inside it
-                  No stage, no privileged ancestor namespace.
+                  No stage, no PRIVILEGED ancestor namespace — but see pid
+                  nesting below: snug does create an unprivileged one.
   netns owner     sandbox
+  pid nesting     depth 2 — snug forks bwrap into an intermediate user, pid AND
+                  mount namespace of its own making, so bwrap is pid 1 THERE and
+                  the sandbox's own pid namespace nests below it. A process left
+                  at the intermediate level has no /proc entry inside the
+                  sandbox: unaddressable, not merely unreadable.
+                  snug re-execs itself there as `snug __inpidns`, which mounts a
+                  procfs of that pid namespace over /proc and then EXECS the
+                  bwrap below — still two processes. bwrap resolves its own
+                  child's pid against that mount when it answers --info-fd; on
+                  the host's it reads a stranger, or nothing at all.
+                  That mount is why the intermediate user namespace maps this
+                  uid to root INSIDE it. It is a rootless root: it reaches one
+                  host uid, yours, and bwrap maps the payload back down — the
+                  payload's own uid, gid and capability sets are unchanged.
+                  Cost: one more of the kernel's 32 user-namespace nesting
+                  levels, and this run needs at least 2 each of
+                  /proc/sys/user/max_user_namespaces and max_pid_namespaces.
   subuid          none (no delegated range; nothing needs one yet)
   control         none — there is no stage to control.

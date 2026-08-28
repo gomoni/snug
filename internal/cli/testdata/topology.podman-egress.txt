@@ -9,6 +9,8 @@ TOPOLOGY
                   (__innetns is a setns shim that BECOMES bwrap rather than
                   running beside it, so it is not one of the 5.)
   netns owner     stage
+  pid nesting     depth 1 — bwrap is pid 1 of the sandbox's own pid namespace,
+                  and bwrap itself runs in the host's.
                   the sandbox's user namespace has a PRIVILEGED ANCESTOR: the
                   stage is root in its own user namespace (U) for the whole run,
                   holding CAP_SYS_ADMIN over the sandbox's network namespace (N)

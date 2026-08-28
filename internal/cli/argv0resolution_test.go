@@ -126,9 +126,19 @@ func TestBothRenderersStateTheSameArgv0Resolution(t *testing.T) {
 // profile named — the note must change with it, and this is the failure that
 // says so.
 func TestTheArgv0NoteIsTrueOfHowSnugStartsTheHelper(t *testing.T) {
-	for _, tc := range []struct{ helper, file string }{
-		{"bwrap", filepath.Join("..", "sandbox", "exec.go")},
-		{"pasta", filepath.Join("..", "sandbox", "netns.go")},
+	for _, tc := range []struct{ helper, file, handoff, execFile, execSite string }{
+		{
+			helper:   "bwrap",
+			file:     filepath.Join("..", "sandbox", "exec.go"),
+			handoff:  `"__inpidns", strconv.Itoa(len(extra)), bwrap}`,
+			execFile: filepath.Join("..", "sandbox", "inpidns.go"),
+			execSite: `syscall.Exec(path, append([]string{path}, rest...)`,
+		},
+		{
+			helper:  "pasta",
+			file:    filepath.Join("..", "sandbox", "netns.go"),
+			handoff: "exec.Command(pasta,",
+		},
 	} {
 		b, err := os.ReadFile(tc.file)
 		if err != nil {
@@ -143,14 +153,31 @@ func TestTheArgv0NoteIsTrueOfHowSnugStartsTheHelper(t *testing.T) {
 				"the start moved to another file and this sweep is reading the wrong one.",
 				tc.file, lookPath, tc.helper)
 		}
-		// exec.Command(<the LookPath result>, ...) is the half that makes the
-		// executed argv[0] an absolute path rather than the bare word: os/exec
-		// sets Args[0] to the string it is handed. A change to
-		// exec.Command("<name>", ...) would make the printed word correct and
-		// the note wrong in the other direction.
-		if !strings.Contains(src, "exec.Command("+tc.helper+",") {
-			t.Errorf("%s does not hand the LookPath result to exec.Command; the note claims "+
-				"the executed argv[0] is the absolute path that search returned", tc.file)
+		// The second half: the LookPath result must be what the exec actually
+		// receives as argv[0], an absolute path rather than the bare word. A
+		// change to exec.Command("<name>", ...) would make the printed word
+		// correct and the note wrong in the other direction.
+		//
+		// pasta is exec.Command's own argv[0]. bwrap is NOT, and has not been
+		// since the offline arm gained its intermediate namespace: snug execs
+		// /proc/self/exe as the __inpidns verb and hands it the resolved path,
+		// which the verb execs as argv[0] after mounting a procfs. Two links,
+		// so both are checked — an argv[0] that becomes a bare word in either
+		// place makes the same note false.
+		if tc.handoff != "" && !strings.Contains(src, tc.handoff) {
+			t.Errorf("%s does not hand the LookPath result on as %q; the note claims the "+
+				"executed argv[0] is the absolute path that search returned", tc.file, tc.handoff)
+		}
+		if tc.execFile != "" {
+			vb, err := os.ReadFile(tc.execFile)
+			if err != nil {
+				t.Fatalf("reading %s: %v", tc.execFile, err)
+			}
+			if !strings.Contains(string(vb), tc.execSite) {
+				t.Errorf("%s does not exec %q as argv[0]; %s resolves the path but this file "+
+					"is what execs it, so the note is only true if both links hold",
+					tc.execFile, tc.execSite, tc.file)
+			}
 		}
 	}
 	// POSITIVE CONTROL: both loops above are "the file contains X", which a
