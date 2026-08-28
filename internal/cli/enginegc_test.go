@@ -167,12 +167,20 @@ func TestEngineGCBareInvocationRemovesNothing(t *testing.T) {
 	}
 }
 
-// TestEngineGCNeverCreatesALockFile is the regression test for the real
-// incident: an earlier O_CREATE probe in the liveness check left permanent
-// 0-byte lock files in the real /run/user/<uid>/snug, including under
-// --dry-run, which promises it creates no file. This asserts the delta is
-// ZERO across bare, --older-than --dry-run, and --unattributed --dry-run.
-func TestEngineGCNeverCreatesALockFile(t *testing.T) {
+// TestEngineGCCreatesNoLockFileWhereItPromisedNotTo is the regression test for
+// the real incident: an earlier O_CREATE probe in the liveness check left
+// permanent 0-byte lock files in the real /run/user/<uid>/snug, including
+// under --dry-run, which promises it creates no file. This asserts the delta
+// is ZERO across bare, --older-than --dry-run, and --unattributed --dry-run.
+//
+// It is NOT "gc never creates a lock file", which is what this test used to
+// be called and what the reclaim path stopped doing: liveHoldForReclaim takes
+// the same lock a run takes, creating the file when the sweep has already
+// removed it, because a target with no lock file is the ordinary steady state
+// now and a read-only probe of one cannot hold a store safe. The three shapes
+// below are exactly the ones that reclaim nothing, and they keep the promise.
+// See TestEngineGCHoldsTheTargetLockWhenItsFileWasSwept for the other half.
+func TestEngineGCCreatesNoLockFileWhereItPromisedNotTo(t *testing.T) {
 	dataHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", dataHome)
 	snugDir := useTargetLockBase(t)

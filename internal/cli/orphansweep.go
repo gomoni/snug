@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -45,11 +46,19 @@ import (
 //     been recycled since the state was written has a different start time
 //     and is left alone.
 //
-// WHAT IT STILL DOES NOT CATCH: an init that never answers --info-fd at all,
-// parked in read() on one of BWRAP's OWN eventfds (its uid-map sync). No
-// record can name it — the pid it would carry is the one bwrap has not
-// reported yet — and this is upstream's window, closable only by arming the
-// init's PDEATHSIG before that read.
+// AN INIT THAT NEVER ANSWERS --info-fd AT ALL — parked in read() on one of
+// BWRAP's OWN eventfds, its uid-map sync — used to be listed here as
+// uncatchable, on the ground that no record can name it because its pid is
+// the one bwrap has not reported yet. That ground is false, and was measured
+// so: the init is the DIRECT CHILD of the bwrap process snug started, so
+// /proc/<bwrap>/task/*/children names it with bwrap reporting nothing.
+// internal/sandbox's initwatch.go walks it and publishes the same ".starting"
+// record, guarded by the one thing that separates an init from any other
+// child — it lives in a user namespace that is not ours.
+//
+// WHAT IS STILL NOT CAUGHT is the STAGED arm of that same window: there the
+// stage forks bwrap, so P0 has no pid to walk from and no watcher is started.
+// The same walk would close it, one process further in.
 //
 // The wide gap that used to follow it is issue #236: exec.go's OnInfo
 // publishes state.json only AFTER the mount settle and, on a container run,
@@ -117,8 +126,49 @@ func sweepOrphanedSandboxesIn(snugRoot *os.Root, snugPath string) {
 		}
 	}
 	for _, name := range locks {
-		sweepOneStaleLock(snugRoot, snugPath, name, interrupted[strings.TrimSuffix(name, ".lock")])
+		stem := strings.TrimSuffix(name, ".lock")
+		sweepOneStaleLock(snugRoot, snugPath, name, interrupted[stem])
+		delete(interrupted, stem)
 	}
+	// Whatever is LEFT has no lock file beside it, and nothing can be writing
+	// it: writeTargetFile only ever produces one of these while holding the
+	// target lock, and holding a lock requires a lock file to hold. So the
+	// stems still in this map name writes whose lock has already been swept —
+	// by an earlier run, or by the pass above after one Remove failed — and
+	// they were unreachable until now, because the whole .tmp- cleanup hung
+	// off a .lock the same pass deletes.
+	for _, names := range interrupted {
+		for _, tmp := range names {
+			if rerr := snugRoot.Remove(tmp); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+				fmt.Fprintf(os.Stderr, "snug: could not remove the leftover of an interrupted run-state write %s: %v\n",
+					filepath.Join(snugPath, tmp), rerr)
+			}
+		}
+	}
+}
+
+// nameStillNames reports whether name, resolved without following a final
+// symlink, is the very file f refers to — same device, same inode.
+//
+// An flock says nothing about the NAME: it is held on the open file
+// description, and the directory entry that produced it can be renamed over,
+// hardlinked and swapped, or replaced entirely while the lock is held. So
+// "we locked it" and "this name is it" are two facts, and only the second
+// licenses an unlink of that name.
+func nameStillNames(snugRoot *os.Root, name string, f *os.File) bool {
+	var onFd unix.Stat_t
+	if err := unix.Fstat(int(f.Fd()), &onFd); err != nil {
+		return false
+	}
+	fi, err := snugRoot.Lstat(name)
+	if err != nil {
+		return false
+	}
+	onName, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false
+	}
+	return uint64(onName.Dev) == onFd.Dev && onName.Ino == onFd.Ino
 }
 
 // sweepOneStaleLock removes a per-target lock file nobody holds, and any
@@ -138,9 +188,12 @@ func sweepOrphanedSandboxesIn(snugRoot *os.Root, snugPath string) {
 // WHY REMOVING A LOCK FILE IS SAFE, in the two halves lockRunDir already
 // splits it into one directory up:
 //
-//   - THIS side unlinks only while HOLDING the exclusive flock, so no live
-//     run's lock is removed and no contender can acquire the file between the
-//     unlink and the release.
+//   - THIS side unlinks only while HOLDING the exclusive flock, and only after
+//     confirming that the NAME still resolves to the inode it locked. The
+//     flock alone is not that guarantee, which a redteam round measured: a
+//     planted hardlink plus a rename swaps a different file under the name
+//     between the lock and the unlink, and `Nlink > 0` reads the same either
+//     way. It is st_dev/st_ino that separates them.
 //   - The CREATING side revalidates. flock on an unlinked descriptor succeeds
 //     exactly as it does on a live one, so openAndHoldTargetLock and
 //     targetLockIsHeld both check Nlink after their own flock and retry
@@ -164,6 +217,12 @@ func sweepOneStaleLock(snugRoot *os.Root, snugPath, name string, interrupted []s
 	}
 	if linked, lerr := stillLinked(lock); lerr != nil || !linked {
 		return // another process's sweep got here first
+	}
+	if !nameStillNames(snugRoot, name, lock) {
+		// Something replaced the name between the open and here. Unlinking
+		// now would remove a file this function never locked — a live run's,
+		// if that is what now carries the name.
+		return
 	}
 
 	for _, tmp := range interrupted {
