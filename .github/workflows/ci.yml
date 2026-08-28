@@ -411,6 +411,10 @@ jobs:
   # Tumbleweed's is podman-6.0.2-1.1, MEASURED identical to the development
   # host's, so CI matches by construction rather than by luck.
   #
+  # Rolling, and pinning the repositories to a dated snapshot was refused
+  # (issue #478): a job that must report when a NEW engine breaks snug cannot
+  # be reading a frozen one. Reasoning at test/engine-container.sh's IMAGE=.
+  #
   # # Why the container is LAUNCHED here rather than named in `container:`
   #
   # A GHA `container:` job runs every step inside the container via

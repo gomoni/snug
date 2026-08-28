@@ -30,6 +30,29 @@
 # package added.
 set -euo pipefail
 
+# ── `:latest`, and the repositories stay UNPINNED (issue #478, ruled) ────────
+#
+# The tag is rolling on purpose, and the purpose is the job: snug drives podman,
+# crun, passt and bubblewrap, and it must FIND OUT when a recent version of one
+# of them breaks it. podman 5.x -> 6.x is the measured example of how large that
+# change can be — the supported set refuses 5.8.4, which is what the
+# ubuntu-latest runner ships, so `ci.yml`'s engine job runs Tumbleweed for the
+# 6.x it carries. A pinned tree tests snug against a distribution that has
+# stopped existing, and it fails by going GREEN.
+#
+# So pinning `repo-oss` to `http://download.opensuse.org/history/<snapshot>/`
+# was proposed with a measurement and REFUSED. What it would have bought is
+# real and is not enough: that tree serves payloads from openSUSE's own
+# `downloadcontentcdn.opensuse.org` rather than a volunteer mirror, a frozen
+# index cannot rotate under the client, and it drops `codecs.opensuse.org`
+# entirely. What it costs is the point of the job, plus a monthly bump against
+# ~4-week snapshot retention — a chore nobody does is how the pin ends up three
+# months stale.
+#
+# The cost of rolling is accepted and it is LABELLED rather than removed: every
+# network step below classifies its own failure and exits EX_TEMPFAIL, so an
+# openSUSE incident says it is one. Measured rate over 57 concluded jobs in 40
+# hours: 1 infra incident against 5 real test failures.
 IMAGE=${SNUG_ENGINE_IMAGE:-registry.opensuse.org/opensuse/tumbleweed:latest}
 RUNTIME=${SNUG_ENGINE_RUNTIME:-$(command -v docker || command -v podman || true)}
 
