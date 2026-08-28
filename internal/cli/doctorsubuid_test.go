@@ -25,9 +25,14 @@ func TestDoctorWarnsAboutAMissingSubuidRangeAndDoesNotCondemnTheHost(t *testing.
 		return errors.New("/etc/subuid has no range for tester (id 1000); add one")
 	}
 
-	out := captureStdout(t, func() {
-		reportSubuidDelegation(absent, distroboxMap, "running inside a container (distrobox/podman)")
-	})
+	host := subuidHost{
+		idMap:     distroboxMap,
+		uid:       1000,
+		name:      "tester",
+		container: "running inside a container (distrobox/podman)",
+	}
+
+	out := captureStdout(t, func() { reportSubuidDelegation(absent, host) })
 	if !strings.Contains(out, "⚠️") {
 		t.Fatalf("a missing range printed no warning:\n%s", out)
 	}
@@ -44,7 +49,7 @@ func TestDoctorWarnsAboutAMissingSubuidRangeAndDoesNotCondemnTheHost(t *testing.
 		t.Fatalf("inside a container the report must say /etc/subuid is part of the image:\n%s", out)
 	}
 
-	out = captureStdout(t, func() { reportSubuidDelegation(func() error { return nil }, distroboxMap, "") })
+	out = captureStdout(t, func() { reportSubuidDelegation(func() error { return nil }, host) })
 	if !strings.Contains(out, "✅") || strings.Contains(out, "⚠️") {
 		t.Fatalf("a present range did not read as a tick:\n%s", out)
 	}
@@ -169,17 +174,21 @@ func TestTheSubuidReportNamesTheUnconventionalBaseAsUnconventional(t *testing.T)
 	absent := func() error { return errors.New("no range") }
 
 	out := captureStdout(t, func() {
-		reportSubuidDelegation(absent, "0 1 1000\n1000 0 1\n1001 1001 64535\n", "")
+		reportSubuidDelegation(absent, subuidHost{
+			idMap: "0 1 1000\n1000 0 1\n1001 1001 64535\n", uid: 1000, name: "tester",
+		})
 	})
-	if !strings.Contains(out, ":1001:64535") {
+	if !strings.Contains(out, "tester:1001:64535") {
 		t.Fatalf("the report did not suggest the range this namespace can map:\n%s", out)
 	}
 	if !strings.Contains(out, "100000") {
 		t.Fatalf("the report suggested an unconventional base without saying so:\n%s", out)
 	}
 
-	out = captureStdout(t, func() { reportSubuidDelegation(absent, "0 0 4294967295\n", "") })
-	if !strings.Contains(out, ":100000:65536") {
+	out = captureStdout(t, func() {
+		reportSubuidDelegation(absent, subuidHost{idMap: "0 0 4294967295\n", uid: 1000, name: "tester"})
+	})
+	if !strings.Contains(out, "tester:100000:65536") {
 		t.Fatalf("a bare host must get the conventional line:\n%s", out)
 	}
 	if strings.Contains(out, "cannot map it") {

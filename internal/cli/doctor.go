@@ -247,7 +247,7 @@ func doctor(argv []string) int {
 	// After the two podman probes, because it is the third thing a container
 	// run needs and the one they stopped short of (issue #483). WARN only: it
 	// deliberately does not touch ok.
-	reportSubuidDelegation(stage.CheckSubuidDelegation, readIDMap(), containerMarker())
+	reportSubuidDelegation(stage.CheckSubuidDelegation, currentSubuidHost())
 
 	if legacyTIOCSTI() {
 		fmt.Println("  ⚠️  this kernel still allows the TIOCSTI ioctl")

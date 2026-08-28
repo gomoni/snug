@@ -26,7 +26,7 @@ import (
 // SubuidFull only from the podman branch (internal/policy/topology.go). @net
 // does not need one either. Turning a usable host red for a capability nobody
 // asked for is the same bug facing the other way.
-func reportSubuidDelegation(check func() error, idMap string, container string) {
+func reportSubuidDelegation(check func() error, h subuidHost) {
 	err := check()
 	if err == nil {
 		fmt.Println("  ✅ a delegated subuid/subgid range the container engine can use")
@@ -41,20 +41,51 @@ func reportSubuidDelegation(check func() error, idMap string, container string) 
 	// ends at 65535, so `100000:65536` is a range this namespace cannot map.
 	// Suggest the line THIS namespace can actually delegate, computed from the
 	// map rather than from a marker file.
-	base, size, okSuggest := subuidSuggestion(idMap, uint64(os.Getuid()))
+	base, size, okSuggest := subuidSuggestion(h.idMap, uint64(h.uid))
 	if okSuggest {
 		fmt.Printf("     🔧 add this line to BOTH /etc/subuid and /etc/subgid:  %s:%d:%d\n",
-			subuidEntryName(), base, size)
+			h.name, base, size)
 		if base != conventionalSubuidBase {
 			fmt.Printf("        (not the conventional %d — this namespace's uid_map cannot map it)\n",
 				conventionalSubuidBase)
 		}
 	}
-	if container != "" {
+	if h.container != "" {
 		fmt.Println("     📦 /etc/subuid lives in the container image, so it goes away on every")
 		fmt.Println("        rebuild of this box and has to be added again")
 	}
 	fmt.Println("     🔒 only the container profiles need this; offline and net sandboxes are unaffected")
+}
+
+// subuidHost is everything the report reads about the machine, gathered by
+// currentSubuidHost and passed in rather than looked up inside.
+//
+// Not a style preference: the first version called os.Getuid() and
+// user.LookupId() from inside the printer, so its test asserted whatever the
+// machine running it happened to be. Green here (uid 1000, suggestion
+// `michal:1001:64535`) and RED in CI, where the runner is uid 1001 and the
+// same map yields `runner:1002:64534`. A test that reads the host cannot
+// assert what the host should have been told.
+type subuidHost struct {
+	// idMap is /proc/self/uid_map, "" when it could not be read — the
+	// suggestion is then omitted rather than guessed.
+	idMap string
+	// uid is the caller's own id, which delegateSubuid spends on the child
+	// map's namespace-0 line and so cannot also delegate.
+	uid int
+	// name is the owner column an /etc/subuid line needs.
+	name string
+	// container is containerMarker(), "" on a bare host.
+	container string
+}
+
+func currentSubuidHost() subuidHost {
+	return subuidHost{
+		idMap:     readIDMap(),
+		uid:       os.Getuid(),
+		name:      subuidEntryName(),
+		container: containerMarker(),
+	}
 }
 
 // conventionalSubuidBase is the base every distribution's useradd writes and
