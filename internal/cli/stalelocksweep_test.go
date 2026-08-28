@@ -3,8 +3,11 @@ package cli
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -169,4 +172,157 @@ func TestOneRunPerTargetSurvivesTheLockFileBeingSwept(t *testing.T) {
 	if !errors.As(err, &busy) {
 		t.Errorf("the second acquisition failed with %v, not the busy refusal that names `snug attach`", err)
 	}
+}
+
+// F6's case, from a redteam round: the whole `.tmp-` cleanup used to hang off
+// a `.lock` the same pass deletes, so a leftover whose lock file was already
+// swept survived every later sweep. Nothing can be writing one — producing a
+// `.tmp-` requires holding a lock file that does not exist — so it is
+// collectable on its own.
+func TestSweepRemovesAnInterruptedWriteWithNoLockFileBesideIt(t *testing.T) {
+	dir, root := stateDirForTest(t)
+	target := "/tmp/a-target-whose-lock-was-already-swept"
+	leftover := targetStateName(target) + ".tmp-999999"
+	if err := os.WriteFile(filepath.Join(dir, leftover), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sweepOrphanedSandboxesIn(root, dir)
+
+	if _, err := os.Stat(filepath.Join(dir, leftover)); !os.IsNotExist(err) {
+		t.Errorf("an interrupted write with no lock file beside it survived the sweep (err=%v); "+
+			"it was unreachable because the cleanup hung off a lock the same pass deletes", err)
+	}
+}
+
+// An flock says nothing about the NAME: it is held on the open file
+// description, and the directory entry that produced it can be renamed over
+// while the lock is held. A redteam round turned that into an unlink of a LIVE
+// run's lock — hardlink the file, let the sweep lock it, swap the name, and
+// `Nlink > 0` still reads 1. st_dev/st_ino is what separates the two.
+func TestTheSweepWillNotUnlinkANameItDidNotLock(t *testing.T) {
+	dir, root := stateDirForTest(t)
+	name := targetLockName("/tmp/a-target-whose-name-gets-swapped")
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	locked, err := root.OpenFile(name, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locked.Close()
+
+	// CONTROL first: unswapped, the name is the file, and a sweep may unlink.
+	if !nameStillNames(root, name, locked) {
+		t.Fatal("control failed: an untouched name did not resolve to the file opened from it")
+	}
+
+	// The swap. The hardlink is what keeps the locked inode's Nlink above
+	// zero once the name stops pointing at it, so stillLinked cannot see this.
+	if err := os.Link(filepath.Join(dir, name), filepath.Join(dir, "pin")); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(dir, "impostor")
+	if err := os.WriteFile(other, []byte("2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(other, filepath.Join(dir, name)); err != nil {
+		t.Fatal(err)
+	}
+
+	if linked, lerr := stillLinked(locked); lerr != nil || !linked {
+		t.Fatalf("the premise of this test is that Nlink cannot see the swap: linked=%v err=%v", linked, lerr)
+	}
+	if nameStillNames(root, name, locked) {
+		t.Error("the sweep would have unlinked a name it never locked — a live run's lock file, " +
+			"if that is what now carries the name")
+	}
+}
+
+// The refusal is what a user reads when a second run is refused, and it used
+// to name whatever pid the lock file last carried — including a corpse's,
+// because the pid is written once and never cleared. A redteam round printed
+// `held by: snug (pid 999999)` for a process that did not exist.
+func TestABusyRefusalDoesNotNameADeadPid(t *testing.T) {
+	snugDir := useTargetLockBase(t)
+	if err := os.MkdirAll(snugDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	real, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dead := exec.Command("/bin/true")
+	if err := dead.Run(); err != nil {
+		t.Fatal(err)
+	}
+	deadPID := dead.Process.Pid
+
+	path := filepath.Join(snugDir, targetLockName(real))
+	if err := os.WriteFile(path, []byte(strconv.Itoa(deadPID)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if ferr := unix.Flock(int(held.Fd()), unix.LOCK_EX|unix.LOCK_NB); ferr != nil {
+		t.Fatal(ferr)
+	}
+
+	_, lerr := lockTarget(target)
+	var busy *targetBusyError
+	if !errors.As(lerr, &busy) {
+		t.Fatalf("a held target lock did not produce the busy refusal: %v", lerr)
+	}
+	if busy.holder == deadPID {
+		t.Errorf("the refusal named pid %d, which exited before this test wrote it into the "+
+			"lock file; the reader is sent to `ps` for a process that does not exist", deadPID)
+	}
+	if busy.holder != 0 {
+		t.Errorf("holder = %d, want 0 (the message degrades to `held by: snug`)", busy.holder)
+	}
+}
+
+// The mirror of the case above: sweepOneStaleLock takes LOCK_EX on every
+// unheld lock file it finds, so a concurrently starting snug's sweep is
+// indistinguishable, from the acquiring side, from a live run. A redteam round
+// measured one spurious "a sandbox is already live" in 3413 acquisitions
+// across 401 lock files. The retry waits that window out.
+//
+// The margin is 6x: the holder below releases after 1 ms and the retry budget
+// is three sleeps of targetLockRetryDelay.
+func TestABriefHolderIsWaitedOutRatherThanRefused(t *testing.T) {
+	snugDir := useTargetLockBase(t)
+	if err := os.MkdirAll(snugDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	real, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(snugDir, targetLockName(real))
+	held, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ferr := unix.Flock(int(held.Fd()), unix.LOCK_EX|unix.LOCK_NB); ferr != nil {
+		t.Fatal(ferr)
+	}
+	go func() {
+		time.Sleep(time.Millisecond)
+		_ = unix.Flock(int(held.Fd()), unix.LOCK_UN)
+		held.Close()
+	}()
+
+	unlock, lerr := lockTarget(target)
+	if lerr != nil {
+		t.Fatalf("a lock held for 1 ms was refused as a live run: %v", lerr)
+	}
+	unlock()
 }
