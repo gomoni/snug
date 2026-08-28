@@ -322,6 +322,14 @@ snug cannot graft /var/tmp into the engine's view: nothing in this policy
        rewrites the same host name through its own rw grant.
        Fix: point $SNUG_PODMAN_ROOT at the installation directory itself, or drop the rw
        grant that covers the name above.
+       NOTE THE LIMIT of this refusal: it resolves a name to its host FIXED POINT in
+       one step, so it sees the first name in the chain and the last, never a middle one.
+       A host-owned symlink pointing at a payload-writable name that is ITSELF a symlink
+       to a clean toolchain root crosses unseen: the outer name is not the payload's to
+       rewrite, the final root is clean, and the writable name in between is never
+       separately asked about. Closing it needs a second, hop-by-hop resolver in this
+       package — the thing TestResolveExistingHasOneAuthor exists to keep this package
+       from growing.
 
 == graft_toolchain_root_is_payload_writable ==
 cannot graft /home/u/proj/sub/toolchain into the engine's view: /home/u/proj/sub cannot be this run's engine toolchain root: a grant of this sandbox makes it

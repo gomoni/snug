@@ -3,10 +3,13 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/gomoni/snug/internal/policy"
 )
@@ -200,5 +203,164 @@ func TestPreflightToolchainRootNamesRatherThanGuesses(t *testing.T) {
 	t.Setenv("SNUG_PODMAN_ROOT", podman)
 	if _, err := preflightToolchainRoot(policy.OSEnviron{}, podman); err == nil {
 		t.Error("a $SNUG_PODMAN_ROOT naming a FILE was accepted")
+	}
+}
+
+// TestPreflightToolchainRootAgreesWithTheScreenOnOrdinarySpellings is issue
+// #417 F2: P9 used to compare the resolved engine against the RAW
+// $SNUG_PODMAN_ROOT string, while buildContainersReport's screen judges the
+// same variable through JudgeEngineToolchain, which resolves it first. A
+// trailing slash, a `..` segment, and root itself being a symlink into the
+// real installation directory (a versioned install kept current by
+// relinking, e.g. /opt/podman -> /opt/podman-1.2.3) are all ordinary human
+// spellings that CLEARED on the screen and were REFUSED at P9 — a screen/run
+// disagreement of exactly the kind issue #422 removed everywhere else.
+func TestPreflightToolchainRootAgreesWithTheScreenOnOrdinarySpellings(t *testing.T) {
+	base := t.TempDir()
+	versionedRoot := filepath.Join(base, "pod-1.0")
+	binDir := filepath.Join(versionedRoot, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	podman := filepath.Join(binDir, "podman")
+	if err := os.WriteFile(podman, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	symlinkedRoot := filepath.Join(base, "pod")
+	if err := os.Symlink(versionedRoot, symlinkedRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := loadTestRegistry(t)
+	home, target := testTree(t)
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	screenPolicy, err := policy.Resolve(reg,
+		[]policy.ProfileName{"@sys", "@home", "@cwd-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
+	if err != nil {
+		t.Fatalf("building the screen's own policy: %v", err)
+	}
+
+	spellings := []struct {
+		name string
+		root string
+	}{
+		{"control: canonical", versionedRoot},
+		{"trailing slash", versionedRoot + string(filepath.Separator)},
+		// filepath.Join would clean this lexically before it ever reached
+		// $SNUG_PODMAN_ROOT, defeating the case — built with string
+		// concatenation so the literal `..` survives into the env var, the
+		// same way a human's shell would leave it.
+		{"a `..` segment", versionedRoot + string(filepath.Separator) + ".." +
+			string(filepath.Separator) + filepath.Base(versionedRoot)},
+		{"symlinked install directory", symlinkedRoot},
+	}
+	for _, sp := range spellings {
+		t.Run(sp.name, func(t *testing.T) {
+			t.Setenv("SNUG_PODMAN_ROOT", sp.root)
+			_, p9Err := preflightToolchainRoot(policy.OSEnviron{}, podman)
+			_, screenErr := screenPolicy.JudgeEngineToolchain(policy.OSEnviron{}, sp.root)
+			if p9Err != nil {
+				t.Errorf("preflight P9 refused an ordinary spelling of the installation root "+
+					"that the screen clears: %v", p9Err)
+			}
+			if screenErr != nil {
+				t.Errorf("fixture: the screen's own JudgeEngineToolchain refused %q, so this row "+
+					"cannot show a screen/run disagreement: %v", sp.root, screenErr)
+			}
+			if (p9Err != nil) != (screenErr != nil) {
+				t.Errorf("P9 and the screen disagree about %q: P9=%v screen=%v", sp.root, p9Err, screenErr)
+			}
+		})
+	}
+}
+
+// TestPreflightPodmanBinaryRefusesNonRegularObjects is issue #417 F3: P1 used
+// to refuse only `err != nil || fi.IsDir()`, so a FIFO, a bound AF_UNIX
+// socket or a device node at $SNUG_PODMAN was accepted and exec'd — none of
+// them is a directory — while describeEngineSource's screen already required
+// `fi.Mode().IsRegular()` to clear, rendering NOT JUDGED for exactly these
+// objects. This needs a REAL filesystem: envFakeEnv's Stat reports every
+// non-directory path as a regular file, so the committed equivalence
+// fixtures (TestScreenRefusalAgreesWithTheRunForEverySpelling) cannot see
+// this class at all.
+//
+// Every object here sits outside every grant this fixture's policy makes, so
+// CheckEngineBinary's own writability question never enters into it — this
+// is purely about the KIND gate P1 runs before that question is even asked.
+func TestPreflightPodmanBinaryRefusesNonRegularObjects(t *testing.T) {
+	base := t.TempDir()
+
+	fifo := filepath.Join(base, "fifo")
+	if err := unix.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// sun_path is 107 bytes and t.TempDir()'s own path alone already exceeds
+	// it on this machine's /tmp, so the listener binds at a short name
+	// directly under /tmp rather than inside base.
+	sock := fmt.Sprintf("/tmp/snug-417-f3-%d.sock", os.Getpid())
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("binding a control AF_UNIX socket at %s (%d bytes): %v", sock, len(sock), err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		os.Remove(sock)
+	})
+
+	dir := filepath.Join(base, "a-directory")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	clean := filepath.Join(base, "podman")
+	if err := os.WriteFile(clean, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	missing := filepath.Join(base, "does-not-exist")
+
+	reg := loadTestRegistry(t)
+	home, target := testTree(t)
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	pol, err := policy.Resolve(reg,
+		[]policy.ProfileName{"@sys", "@home", "@cwd-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
+	if err != nil {
+		t.Fatalf("building the fixture policy: %v", err)
+	}
+
+	cases := []struct {
+		name    string
+		path    string
+		refused bool
+	}{
+		{"CONTROL: a clean regular file", clean, false},
+		{"a FIFO", fifo, true},
+		{"a bound AF_UNIX socket", sock, true},
+		{"a device node: /dev/null", "/dev/null", true},
+		{"a directory", dir, true},
+		{"missing", missing, true},
+	}
+
+	env := policy.OSEnviron{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SNUG_PODMAN", tc.path)
+			_, runErr := preflightPodmanBinary(env, pol)
+			if (runErr != nil) != tc.refused {
+				t.Errorf("preflightPodmanBinary(%q): refused=%v (err=%v), want refused=%v",
+					tc.path, runErr != nil, runErr, tc.refused)
+			}
+			// The predicate this test is pinning: describeEngineSource's own
+			// clearance gate (dryrun.go) is fi.Mode().IsRegular(), so P1's
+			// refusal must agree with it exactly, independent of this
+			// fixture's own `refused` table above.
+			fi, statErr := env.Stat(tc.path)
+			screenClears := statErr == nil && fi.Mode().IsRegular()
+			if screenClears == (runErr != nil) {
+				t.Errorf("P1 and the screen's own IsRegular gate disagree about %q: "+
+					"P1 refused=%v, screen would clear=%v", tc.path, runErr != nil, screenClears)
+			}
+		})
 	}
 }

@@ -1148,12 +1148,17 @@ func describeEngineSource(out io.Writer, c *reportContainers) {
 		case !c.EngineBinaryIsRegularFile:
 			fmt.Fprintf(out, "                     NOT JUDGED: no regular file at that path on this host, so\n")
 			fmt.Fprintf(out, "                     the writability question has no object — preflight P1\n")
-			fmt.Fprintf(out, "                     stats it and refuses a run whose engine is missing or a\n")
-			fmt.Fprintf(out, "                     directory\n")
+			fmt.Fprintf(out, "                     stats it and refuses a run whose engine is missing or is\n")
+			fmt.Fprintf(out, "                     not a regular file (a directory, a FIFO, a socket, a\n")
+			fmt.Fprintf(out, "                     device node)\n")
 		default:
-			fmt.Fprintf(out, "                     no grant of this sandbox makes that path, or any name on\n")
-			fmt.Fprintf(out, "                     the way to it, writable — the engine is not\n")
-			fmt.Fprintf(out, "                     payload-controlled (issue #405)\n")
+			fmt.Fprintf(out, "                     no grant of this sandbox makes that path, or the first or\n")
+			fmt.Fprintf(out, "                     last name on the way to it, writable (issue #405). NOTE THE\n")
+			fmt.Fprintf(out, "                     LIMIT: a writable name strictly BETWEEN the first and last\n")
+			fmt.Fprintf(out, "                     hop of a symlink chain is never asked about, so a host-owned\n")
+			fmt.Fprintf(out, "                     symlink into a writable name that itself points somewhere\n")
+			fmt.Fprintf(out, "                     clean is not caught. Keep the engine off any path that\n")
+			fmt.Fprintf(out, "                     symlinks through a directory an rw grant covers\n")
 			describeEngineResolution(out, c.EngineBinary, c.EngineBinaryResolved)
 		}
 	} else {
@@ -1177,17 +1182,23 @@ func describeEngineSource(out io.Writer, c *reportContainers) {
 			fmt.Fprintf(out, "                     there is no tree to walk — preflight P9 stats it and\n")
 			fmt.Fprintf(out, "                     refuses the run\n")
 		default:
-			fmt.Fprintf(out, "                     no grant makes the root, the tree below it, or any name\n")
-			fmt.Fprintf(out, "                     on the way to it, writable (issue #405)\n")
+			fmt.Fprintf(out, "                     no grant makes the root, the tree below it, or the first\n")
+			fmt.Fprintf(out, "                     or last name on the way to it, writable (issue #405). NOTE\n")
+			fmt.Fprintf(out, "                     THE LIMIT: a writable name strictly BETWEEN the first and\n")
+			fmt.Fprintf(out, "                     last hop of a symlink chain is never asked about, so a\n")
+			fmt.Fprintf(out, "                     host-owned symlink into a writable name that itself points\n")
+			fmt.Fprintf(out, "                     at a clean root is not caught. Point $SNUG_PODMAN_ROOT at\n")
+			fmt.Fprintf(out, "                     the installation directory itself to avoid the question\n")
 			describeEngineResolution(out, c.ToolchainRoot, c.ToolchainRootResolved)
 		}
 	}
 	if c.EngineSource == "SNUG_PODMAN" || c.ToolchainRoot != "" {
 		fmt.Fprintf(out, "                     judged by the functions the run judges with, against this\n")
-		fmt.Fprintf(out, "                     host as it is NOW: snug resolves each path above and every\n")
-		fmt.Fprintf(out, "                     name on the way to it, so a symlink rewritten after this\n")
-		fmt.Fprintf(out, "                     screen is judged again — and refused again — when the run\n")
-		fmt.Fprintf(out, "                     starts\n")
+		fmt.Fprintf(out, "                     host as it is NOW: snug resolves each path above and checks\n")
+		fmt.Fprintf(out, "                     the first and last name on its symlink chain, never a name\n")
+		fmt.Fprintf(out, "                     strictly between them, so a symlink rewritten after this\n")
+		fmt.Fprintf(out, "                     screen is judged again — and refused again where that\n")
+		fmt.Fprintf(out, "                     changes the verdict — when the run starts\n")
 	}
 }
 

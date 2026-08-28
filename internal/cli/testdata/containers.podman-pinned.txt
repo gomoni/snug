@@ -3,18 +3,28 @@ CONTAINERS  a per-sandbox engine behind a filtering proxy at /snug/podman.sock
                      resolution bypassed on purpose; refused if it is
                      itself a host-escape shim (a testing seam, not a
                      supported way to install an engine)
-                     no grant of this sandbox makes that path, or any name on
-                     the way to it, writable — the engine is not
-                     payload-controlled (issue #405)
+                     no grant of this sandbox makes that path, or the first or
+                     last name on the way to it, writable (issue #405). NOTE THE
+                     LIMIT: a writable name strictly BETWEEN the first and last
+                     hop of a symlink chain is never asked about, so a host-owned
+                     symlink into a writable name that itself points somewhere
+                     clean is not caught. Keep the engine off any path that
+                     symlinks through a directory an rw grant covers
                      toolchain root /opt/snug-podman ($SNUG_PODMAN_ROOT) — named, not
                      derived from the binary path, and must contain it
-                     no grant makes the root, the tree below it, or any name
-                     on the way to it, writable (issue #405)
+                     no grant makes the root, the tree below it, or the first
+                     or last name on the way to it, writable (issue #405). NOTE
+                     THE LIMIT: a writable name strictly BETWEEN the first and
+                     last hop of a symlink chain is never asked about, so a
+                     host-owned symlink into a writable name that itself points
+                     at a clean root is not caught. Point $SNUG_PODMAN_ROOT at
+                     the installation directory itself to avoid the question
                      judged by the functions the run judges with, against this
-                     host as it is NOW: snug resolves each path above and every
-                     name on the way to it, so a symlink rewritten after this
-                     screen is judged again — and refused again — when the run
-                     starts
+                     host as it is NOW: snug resolves each path above and checks
+                     the first and last name on its symlink chain, never a name
+                     strictly between them, so a symlink rewritten after this
+                     screen is judged again — and refused again where that
+                     changes the verdict — when the run starts
          Containers run in THIS sandbox's own network namespace: with no
          '@net', a container has no egress either; with '@net', full egress
          via the sandbox's pasta, exactly as the NETWORK block above states.

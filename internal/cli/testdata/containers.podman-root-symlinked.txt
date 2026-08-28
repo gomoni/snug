@@ -20,10 +20,11 @@ CONTAINERS  a per-sandbox engine behind a filtering proxy at /snug/podman.sock
                      executes as root.
                      Fix: put the engine somewhere no rw grant covers, or drop the rw grant.
                      judged by the functions the run judges with, against this
-                     host as it is NOW: snug resolves each path above and every
-                     name on the way to it, so a symlink rewritten after this
-                     screen is judged again — and refused again — when the run
-                     starts
+                     host as it is NOW: snug resolves each path above and checks
+                     the first and last name on its symlink chain, never a name
+                     strictly between them, so a symlink rewritten after this
+                     screen is judged again — and refused again where that
+                     changes the verdict — when the run starts
          Containers run in THIS sandbox's own network namespace: with no
          '@net', a container has no egress either; with '@net', full egress
          via the sandbox's pasta, exactly as the NETWORK block above states.
