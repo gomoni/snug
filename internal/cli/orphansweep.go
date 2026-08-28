@@ -62,9 +62,11 @@ import (
 // it through the SAME killOrphanInit, so a leftover from either window is
 // killed the same way.
 //
-// It also removes the stale state file itself, which nothing did before:
+// It also removes the FILES a dead run left behind, which nothing did before:
 // a state file was published per run and removed by nobody, so a development
-// box accumulated 1099 of them.
+// box accumulated 1099 of them; sweepOneStaleLock does the same for the
+// per-target lock (738 measured beside 2 live records) and for the leftover of
+// a state write a SIGKILL interrupted.
 func sweepOrphanedSandboxes() {
 	snugRoot, snugPath, err := openTargetStateDir(false)
 	if err != nil {
@@ -86,6 +88,13 @@ func sweepOrphanedSandboxesIn(snugRoot *os.Root, snugPath string) {
 	if err != nil {
 		return
 	}
+	// Two passes, and the ORDER is load-bearing rather than tidy: the record
+	// sweeps below probe the per-target lock through targetLockIsHeld, which
+	// opens it with O_CREATE. A lock removed before them is recreated behind
+	// them, and the sweep would leave the directory exactly as full as it
+	// found it.
+	interrupted := map[string][]string{}
+	var locks []string
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasPrefix(name, "target-") {
@@ -96,7 +105,76 @@ func sweepOrphanedSandboxesIn(snugRoot *os.Root, snugPath string) {
 			sweepOneOrphan(snugRoot, snugPath, name)
 		case strings.HasSuffix(name, ".starting"):
 			sweepOneStartingOrphan(snugRoot, snugPath, name)
+		case strings.HasSuffix(name, ".lock"):
+			locks = append(locks, name)
+		case strings.Contains(name, ".tmp-"):
+			// writeTargetFile's temporary name. The stem is everything before
+			// the first dot: targetKeyPrefix is "target-sha256_<64 hex>" and
+			// legacyTargetKeyPrefix is "target-<64 hex>", neither of which
+			// contains one, so this splits both generations correctly.
+			stem, _, _ := strings.Cut(name, ".")
+			interrupted[stem] = append(interrupted[stem], name)
 		}
+	}
+	for _, name := range locks {
+		sweepOneStaleLock(snugRoot, snugPath, name, interrupted[strings.TrimSuffix(name, ".lock")])
+	}
+}
+
+// sweepOneStaleLock removes a per-target lock file nobody holds, and any
+// interrupted state write sitting beside it.
+//
+// Neither was removed by anything before this function. The lock file is
+// created once per target ever sandboxed and kept for the life of the boot,
+// and writeTargetFile's temporary only ever removes the name carrying its OWN
+// pid, so a write interrupted by a SIGKILL leaves a file no later run's name
+// can match. Measured on one development box after two days: 738 lock files
+// against 2 live records, and one `target-<hash>.json.tmp-<pid>`.
+//
+// That is invariant 4 — "no state that survives them" — and the same answer
+// #85 gave for the run directory and issue #236 gave for state.json: nothing
+// can be cleaned up at the instant of a SIGKILL, so the next run does it.
+//
+// WHY REMOVING A LOCK FILE IS SAFE, in the two halves lockRunDir already
+// splits it into one directory up:
+//
+//   - THIS side unlinks only while HOLDING the exclusive flock, so no live
+//     run's lock is removed and no contender can acquire the file between the
+//     unlink and the release.
+//   - The CREATING side revalidates. flock on an unlinked descriptor succeeds
+//     exactly as it does on a live one, so openAndHoldTargetLock and
+//     targetLockIsHeld both check Nlink after their own flock and retry
+//     against the NAME when it is zero. Without that half, two runs would
+//     serialise on two different inodes for one target and both proceed —
+//     issues #119 and #122.
+//
+// The interrupted writes go first and go through the SAME held lock, because
+// the only thing that writes them is a process holding it.
+func sweepOneStaleLock(snugRoot *os.Root, snugPath, name string, interrupted []string) {
+	// No O_CREATE, unlike every other opener of this name: a lock file that
+	// vanished between the readdir and here is not one to bring back.
+	lock, err := snugRoot.OpenFile(name, os.O_RDWR, 0)
+	if err != nil {
+		return
+	}
+	defer lock.Close()
+
+	if flockErr := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); flockErr != nil {
+		return // a live run holds it, or a lock this process may not probe
+	}
+	if linked, lerr := stillLinked(lock); lerr != nil || !linked {
+		return // another process's sweep got here first
+	}
+
+	for _, tmp := range interrupted {
+		if rerr := snugRoot.Remove(tmp); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "snug: could not remove the leftover of an interrupted run-state write %s: %v\n",
+				filepath.Join(snugPath, tmp), rerr)
+		}
+	}
+	if rerr := snugRoot.Remove(name); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+		fmt.Fprintf(os.Stderr, "snug: could not remove the stale target lock %s: %v\n",
+			filepath.Join(snugPath, name), rerr)
 	}
 }
 

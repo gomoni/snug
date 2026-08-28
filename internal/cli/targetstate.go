@@ -254,22 +254,53 @@ func readTargetState(real string) (st runState, live bool, err error) {
 // It opens with O_CREATE for the same reason lockTarget does: the lock file is
 // the thing being probed, and a probe that refused to create it would report
 // "no live run" and "cannot tell" identically. The file it may create is
-// empty, 0600, inside an already-verified 0700 directory, and is never
-// unlinked — exactly the lifecycle the lock itself has.
+// empty, 0600, inside an already-verified 0700 directory.
+//
+// The Nlink recheck is openAndHoldTargetLock's, for the same window and the
+// same reason, and the CONSEQUENCE here is the sharper one: this probe's
+// answer decides whether killOrphanInit fires. A shared lock taken on an
+// inode sweepOneStaleLock has already unlinked would report "nobody holds
+// it" while a live run holds the file that now carries the name — and the
+// sweep would kill that live run's init. So a swept descriptor is retried
+// against the name, and an exhausted retry is an ERROR, not "not held":
+// every caller reads err as "not our business" and leaves the record alone.
 func targetLockIsHeld(snugRoot *os.Root, snugPath, real string) (bool, error) {
 	name := targetLockName(real)
-	f, err := snugRoot.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return false, fmt.Errorf("run state: opening %s: %w", filepath.Join(snugPath, name), err)
+	for attempt := 0; attempt < targetLockAttempts; attempt++ {
+		held, retry, err := probeTargetLockOnce(snugRoot, snugPath, name)
+		if !retry {
+			return held, err
+		}
+	}
+	return false, fmt.Errorf("run state: %s was removed by a concurrent sweep on %d consecutive attempts",
+		filepath.Join(snugPath, name), targetLockAttempts)
+}
+
+// probeTargetLockOnce is one attempt of the loop above. retry is true, and
+// the other two results meaningless, exactly when the file it locked had
+// already been unlinked.
+func probeTargetLockOnce(snugRoot *os.Root, snugPath, name string) (held, retry bool, err error) {
+	f, ferr := snugRoot.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)
+	if ferr != nil {
+		return false, false, fmt.Errorf("run state: opening %s: %w", filepath.Join(snugPath, name), ferr)
 	}
 	defer f.Close()
 
 	if flockErr := unix.Flock(int(f.Fd()), unix.LOCK_SH|unix.LOCK_NB); flockErr != nil {
 		if errors.Is(flockErr, unix.EWOULDBLOCK) {
-			return true, nil
+			return true, false, nil
 		}
-		return false, fmt.Errorf("run state: probing %s: %w", filepath.Join(snugPath, name), flockErr)
+		return false, false, fmt.Errorf("run state: probing %s: %w", filepath.Join(snugPath, name), flockErr)
 	}
-	_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
-	return false, nil
+	defer func() { _ = unix.Flock(int(f.Fd()), unix.LOCK_UN) }()
+
+	linked, lerr := stillLinked(f)
+	if lerr != nil {
+		return false, false, fmt.Errorf("run state: checking whether %s is still linked: %w",
+			filepath.Join(snugPath, name), lerr)
+	}
+	if !linked {
+		return false, true, nil
+	}
+	return false, false, nil
 }

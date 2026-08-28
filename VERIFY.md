@@ -4860,6 +4860,46 @@ kill -9 %1; wait
 
 Expect `still alive: ok`.
 
+### 13d. The per-target lock and an interrupted state write are swept too
+
+`13c` covers the run directory. The per-TARGET files are elsewhere and were
+covered by nothing: one `target-sha256_<hex>.lock` per target ever sandboxed,
+kept for the life of the boot, plus `target-sha256_<hex>.json.tmp-<pid>`
+whenever a SIGKILL interrupts a state write (`writeTargetFile` removes only the
+temp name carrying its own pid).
+
+They live in the UID-derived directory and deliberately NOT under
+`$XDG_RUNTIME_DIR` (issue #122), so this one counts the real directory rather
+than a fixture:
+
+```bash
+ls /run/user/$(id -u)/snug | wc -l           # before
+./bin/snug $SC/proj/sub -- true
+ls /run/user/$(id -u)/snug
+```
+
+Expect exactly the current run's own two files, `target-sha256_<hex>.json` and
+`target-sha256_<hex>.lock`, and nothing else. Measured on one development box
+after two days of suite runs: **741 -> 2**, of which 738 were lock files and one
+was a `.json.tmp-<pid>`.
+
+A HELD lock must survive — without this half, the check above also passes on a
+sweep that removes every lock it finds:
+
+```bash
+./bin/snug $SC/proj/sub -- sleep 30 &
+sleep 1
+held=$(ls /run/user/$(id -u)/snug | grep '\.lock$')
+./bin/snug $SC/other -- true                 # an unrelated run, and it sweeps
+ls /run/user/$(id -u)/snug | grep -q "$held" && echo "still held: ok" || echo "REMOVED A LIVE RUN'S LOCK: bug"
+kill -9 %1; wait
+```
+
+Expect `still held: ok`. Removing a held target lock is not litter-collection
+with an edge case — it is issues #119 and #122 arrived at from inside the
+cleanup path: the killed run's successor creates a fresh inode at the same name
+and two runs then hold "the" lock for one target.
+
 ---
 
 ## 14. `snug attach` — a second shell in the *same* sandbox, equally confined

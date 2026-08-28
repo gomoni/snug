@@ -216,26 +216,9 @@ func lockTarget(abs string) (unlock func(), err error) {
 	}
 	defer snugRoot.Close()
 
-	name := targetLockName(real)
-	lock, err := snugRoot.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)
+	lock, err := openAndHoldTargetLock(snugRoot, filepath.Join(base, snugName), targetLockName(real), real)
 	if err != nil {
-		return noop, fmt.Errorf("target lock: creating the lock file %s/%s: %w - the directory is usable but "+
-			"this file is not; check free space and inodes on that filesystem", filepath.Join(base, snugName), name, err)
-	}
-
-	if flockErr := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); flockErr != nil {
-		// EWOULDBLOCK: a live run holds it. Read its pid to name it, then
-		// refuse. Any other flock error is reported verbatim rather than
-		// guessed at.
-		if errors.Is(flockErr, unix.EWOULDBLOCK) {
-			holder := readHolderPID(lock)
-			lock.Close()
-			return noop, &targetBusyError{target: real, holder: holder}
-		}
-		lock.Close()
-		return noop, fmt.Errorf("target lock: flock on %s/%s: %w - NOT the busy case, which is handled above "+
-			"and names `snug attach`; this is flock itself failing, which usually means the "+
-			"filesystem does not support it. Put the runtime directory on a local filesystem", filepath.Join(base, snugName), name, flockErr)
+		return noop, err
 	}
 
 	// We hold it. Record our pid so the next contender can name us. The lock
@@ -244,6 +227,68 @@ func lockTarget(abs string) (unlock func(), err error) {
 	writeHolderPID(lock)
 
 	return func() { lock.Close() }, nil
+}
+
+// targetLockAttempts bounds the retry below. Two would do — the only thing
+// that unlinks a target lock is sweepOneStaleLock, which runs once per snug
+// process, after that process already holds its own target lock — so a second
+// sweep landing in the same window would have to come from a third process
+// whose own sweep is also in flight. Four so that a pathological interleaving
+// refuses with a message rather than spinning.
+const targetLockAttempts = 4
+
+// openAndHoldTargetLock opens the per-target lock file and takes LOCK_EX on
+// it, returning the held descriptor. dir is the lock file's directory, used
+// only for messages; real is the target, used only to name a live holder.
+//
+// The retry is the CREATING side of the argument in sweepOneStaleLock's doc
+// comment, and it is lockRunDir's Nlink check one directory up rather than a
+// new idea: between the open and the flock, a concurrently starting snug's
+// sweep can hold this same file's lock and unlink it, and flock on an
+// unlinked descriptor succeeds exactly as it does on a live one. Nlink is
+// what separates them. Serialising on an inode nothing points at any more is
+// how two runs would both "hold the lock" for one target — the failure issues
+// #119 and #122 exist to prevent.
+func openAndHoldTargetLock(snugRoot *os.Root, dir, name, real string) (*os.File, error) {
+	for attempt := 0; attempt < targetLockAttempts; attempt++ {
+		lock, err := snugRoot.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			return nil, fmt.Errorf("target lock: creating the lock file %s/%s: %w - the directory is usable but "+
+				"this file is not; check free space and inodes on that filesystem", dir, name, err)
+		}
+
+		if flockErr := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); flockErr != nil {
+			// EWOULDBLOCK: a live run holds it. Read its pid to name it, then
+			// refuse. Any other flock error is reported verbatim rather than
+			// guessed at.
+			if errors.Is(flockErr, unix.EWOULDBLOCK) {
+				holder := readHolderPID(lock)
+				lock.Close()
+				return nil, &targetBusyError{target: real, holder: holder}
+			}
+			lock.Close()
+			return nil, fmt.Errorf("target lock: flock on %s/%s: %w - NOT the busy case, which is handled above "+
+				"and names `snug attach`; this is flock itself failing, which usually means the "+
+				"filesystem does not support it. Put the runtime directory on a local filesystem", dir, name, flockErr)
+		}
+
+		linked, lerr := stillLinked(lock)
+		if lerr != nil {
+			lock.Close()
+			return nil, fmt.Errorf("target lock: checking whether %s/%s is still linked: %w - snug needs to know "+
+				"whether a concurrent sweep removed it, and refuses rather than serialising on an inode "+
+				"no name points at", dir, name, lerr)
+		}
+		if linked {
+			return lock, nil
+		}
+		// Swept between our open and our flock. The name is free again;
+		// go round and take the lock on whatever lives there now.
+		lock.Close()
+	}
+	return nil, fmt.Errorf("target lock: %s/%s was removed by a concurrent sweep on %d consecutive attempts - "+
+		"snug refuses rather than running unserialised against another run on the same target",
+		dir, name, targetLockAttempts)
 }
 
 // writeHolderPID truncates the lock file and writes this process's decimal
