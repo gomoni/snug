@@ -209,6 +209,80 @@ func TestContainersScreenDoesNotClearAnAbsentObject(t *testing.T) {
 	})
 }
 
+// TestContainersScreenDoesNotOverclaimAcrossAWritableMiddleHop is issue #417's
+// F1: writableNameOnChain's own doc comment already states it never asks
+// about a name strictly BETWEEN the first and last hop of a symlink chain,
+// and a redteam round found the CONTAINERS block's clearance sentences
+// asserting the opposite unqualified. The fixture puts a payload-writable
+// NAME on exactly that middle hop:
+//
+//	rw grant    /base/proj
+//	writable    /base/proj/toolchain -> /base/bundleA (the NAME sits inside the rw grant)
+//	host-owned  /base/engine-root -> /base/bundleA     (outside every grant; models what a
+//	                                                     real filesystem collapses a two-hop
+//	                                                     chain through /base/proj/toolchain to)
+//	clean       /base/bundleA/bin/podman                (outside every grant)
+//
+// Both JudgeEngineToolchain and ResolveEngineBinary clear $SNUG_PODMAN_ROOT
+// and $SNUG_PODMAN here — the fixture assertions below are what prove this
+// test is about the inversion rather than an ordinary refusal — because
+// resolution collapses straight to the clean fixed point and never visits
+// /base/proj/toolchain, exactly as ResolveEngineBinary's own NOTE THE LIMIT
+// paragraph describes.
+func TestContainersScreenDoesNotOverclaimAcrossAWritableMiddleHop(t *testing.T) {
+	env := newEnvFakeEnv()
+	env.dirs["/base/proj"] = true
+	env.dirs["/base/bundleA"] = true
+	env.dirs["/base/bundleA/bin"] = true
+	env.files["/base/bundleA/bin/podman"] = true
+	env.links["/base/proj/toolchain"] = "/base/bundleA"
+	env.links["/base/engine-root"] = "/base/bundleA"
+	// env.Stat does not itself follow env.links (unlike a real host's
+	// os.Stat, which follows a symlink chain to the final inode) — these two
+	// entries are what a real os.Stat through the chain above would report.
+	env.dirs["/base/engine-root"] = true
+	env.files["/base/engine-root/bin/podman"] = true
+	env.env["SNUG_PODMAN"] = "/base/engine-root/bin/podman"
+	env.env["SNUG_PODMAN_ROOT"] = "/base/engine-root"
+
+	reg, err := profile.Builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
+		[]policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"},
+		policy.Context{Target: "/base/proj", Home: "/home/u", Shell: "/usr/bin/bash", Command: []string{"/bin/sh"}},
+		env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !p.HostPathVisible("/base/proj/toolchain", true) {
+		t.Fatalf("fixture: /base/proj/toolchain is not write-visible, so the fixture does not put a " +
+			"writable name on the middle hop and this test proves nothing about the chain limit")
+	}
+	if _, err := p.ResolveEngineBinary(env, env.env["SNUG_PODMAN"]); err != nil {
+		t.Fatalf("fixture: the run refuses the engine binary, so this test cannot be about a "+
+			"clearance overclaiming: %v", err)
+	}
+	if _, err := p.JudgeEngineToolchain(env, env.env["SNUG_PODMAN_ROOT"]); err != nil {
+		t.Fatalf("fixture: the run refuses the toolchain root, so this test cannot be about a "+
+			"clearance overclaiming: %v", err)
+	}
+
+	got := captureFile(t, func(f io.Writer) { describeContainers(f, p, containersFor(env, p)) })
+	// Joined on whitespace, not a raw Contains: the screen wraps this sentence
+	// across two source lines ("...is not\npayload-controlled..."), and a
+	// literal Contains of the joined phrase would never match either wording —
+	// pinning nothing rather than pinning the inversion.
+	normalized := strings.Join(strings.Fields(got), " ")
+	if strings.Contains(normalized, "the engine is not payload-controlled") {
+		t.Errorf("the CONTAINERS block clears the engine as \"not payload-controlled\" while "+
+			"/base/proj/toolchain — a middle hop of the resolution chain — IS payload-writable; "+
+			"this is the disclosure inversion issue #417 F1 exists to remove:\n%s", got)
+	}
+}
+
 // TestContainersScreenExistenceOnlyDowngradesAClearance is the other
 // direction from the test above: a path INSIDE a writable grant that does not
 // exist on this host must still render THIS RUN WILL REFUSE, never NOT

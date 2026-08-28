@@ -211,15 +211,20 @@ func preflightOCIRuntime(crun, runc, cgroupsDisabled bool) (string, error) {
 // The one check it makes is the one that can be made: the resolved engine
 // binary must be INSIDE the named root. A root that does not contain the
 // binary is a misconfiguration whose symptom would otherwise be an engine
-// that cannot exec, and naming it here costs one stat.
+// that cannot exec, and naming it here costs one stat and one resolution of
+// root to the same fixed point JudgeEngineToolchain resolves it to — a
+// trailing slash, a `..` segment or root itself being a symlink into the
+// real installation directory must judge the same way here as it does
+// there, or this containment test and JudgeEngineToolchain's own disagree
+// about an ordinary human spelling (issue #417 F2).
 //
-// The variable and the stat both come off the INJECTED Environ, not os
-// directly. Identical in production (OSEnviron.Getenv is os.Getenv,
-// OSEnviron.Stat is os.Stat), and the point is that the run and --dry-run read
-// ONE host: buildContainersReport judges this same value through
-// JudgeEngineToolchain off the same seam (issue #422), and a preflight reading
-// a second sample is how the two screens start disagreeing about which string
-// was judged.
+// The variable, the stat and the resolution all come off the INJECTED
+// Environ, not os directly. Identical in production (OSEnviron.Getenv is
+// os.Getenv, OSEnviron.Stat is os.Stat), and the point is that the run and
+// --dry-run read ONE host: buildContainersReport judges this same value
+// through JudgeEngineToolchain off the same seam (issue #422), and a
+// preflight reading a second sample is how the two screens start
+// disagreeing about which string was judged.
 func preflightToolchainRoot(env policy.Environ, podman string) (string, error) {
 	root := env.Getenv("SNUG_PODMAN_ROOT")
 	if root == "" {
@@ -245,7 +250,20 @@ func preflightToolchainRoot(env policy.Environ, podman string) (string, error) {
 			"so snug cannot check that the engine lives inside the root it was told about.\n"+
 			"      Set $SNUG_PODMAN to an absolute path.", podman)
 	}
-	if podman != root && !strings.HasPrefix(podman, root+string(filepath.Separator)) {
+	// podman is already policy.ResolveEngineBinary's fully-resolved return
+	// (preflightPodmanBinary's own doc comment), so comparing it against root
+	// AS SPELLED judges two different samples of the host: a trailing slash, a
+	// `..` segment, or root itself being a symlink into the real installation
+	// directory (a versioned install kept current by relinking, e.g.
+	// /opt/podman -> /opt/podman-1.2.3) all made this containment test fail
+	// while JudgeEngineToolchain (graft.go), which resolves root the same way
+	// this does, clears the identical string — a screen/run disagreement of
+	// exactly the kind issue #422 removed everywhere else.
+	resolvedRoot, err := policy.ResolveExistingHostPath(env, root)
+	if err != nil {
+		resolvedRoot = filepath.Clean(root)
+	}
+	if podman != resolvedRoot && !strings.HasPrefix(podman, resolvedRoot+string(filepath.Separator)) {
 		return "", fmt.Errorf("$SNUG_PODMAN_ROOT=%s does not contain the engine snug resolved (%s).\n"+
 			"      The root is what the engine will be able to execute out of once its view is\n"+
 			"      derived from the sandbox's, so a root that does not contain the binary is an\n"+
@@ -433,7 +451,13 @@ func preflightPodmanBinary(env policy.Environ, pol *policy.Policy) (string, erro
 	// shim itself, so $SNUG_PODMAN pointing at a host-escape helper is
 	// accepted by the function whose whole purpose is refusing one.
 	if custom := env.Getenv("SNUG_PODMAN"); custom != "" {
-		if fi, err := env.Stat(custom); err != nil || fi.IsDir() {
+		// !IsRegular, not IsDir: a FIFO, a bound AF_UNIX socket or a device
+		// node all pass fi.IsDir() == false and were exec'd unrefused, while
+		// describeEngineSource's screen already required IsRegular to clear —
+		// a screen/run disagreement (issue #417 F3) on top of an exec that
+		// would fail in whatever voice the object answers with, not this
+		// one's.
+		if fi, err := env.Stat(custom); err != nil || !fi.Mode().IsRegular() {
 			return "", fmt.Errorf("$SNUG_PODMAN=%s does not name a usable file", custom)
 		}
 		// ISSUE #396. The named path gets the SAME shim check as a path from

@@ -220,10 +220,12 @@ func selectionClause(name, asked string) string {
 //     strictly-below direction this function never asks about
 //     (CheckEngineToolchainTree is the tree half). Discharged ONE LEVEL UP,
 //     at ResolveEngineBinary's callers, because that is where a stat is
-//     possible — preflightPodmanBinary's fi.IsDir() refusal and os/exec's own
-//     refusal to return a directory from LookPath for the run;
-//     buildContainersReport's env.Stat for --dry-run, which renders NOT
-//     JUDGED rather than judge a name with no regular file behind it (#422).
+//     possible — preflightPodmanBinary's `!fi.Mode().IsRegular()` refusal
+//     (a FIFO, a socket or a device node refuses here too, not only a
+//     directory: issue #417 F3) and os/exec's own refusal to return a
+//     directory from LookPath for the run; buildContainersReport's env.Stat
+//     for --dry-run, which renders NOT JUDGED rather than judge a name with
+//     no regular file behind it (#422).
 //
 // TWO CALLERS: ResolveEngineBinary (above) and container.go's field gate.
 func (p *Policy) CheckEngineBinary(path string) error {
