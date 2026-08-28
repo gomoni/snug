@@ -121,6 +121,97 @@ footgun, not a feature. To open another shell in the sandbox that is already
 running, use `snug attach <dir>`. "Same directory" is resolved by realpath, so a
 symlink to the target counts as the same target.
 
+## What actually runs — the process tree
+
+You never have to know this to use snug. It is here because "what is running on
+my machine, and what happens when I kill it" is a fair question to ask of
+anything that claims to contain something.
+
+There is **no daemon**. Nothing survives you. Every process below is a child of
+the `snug` you typed, and every one of them dies when it does.
+
+### The plain shape — no network
+
+```
+    your shell
+      |
+      +-- snug                         <-- the one you typed; stays on the host
+            |
+            +-- bwrap                   the sandbox builder
+                  |
+                +-+------------------------ sandbox boundary -------------+
+                | +-- init (pid 1)     bwrap's reaper, inside the sandbox |
+                |       |                                                |
+                |       +-- your command (pid 2)                         |
+                +--------------------------------------------------------+
+```
+
+Inside that box the world is: an empty tmpfs root with only what a profile
+granted, its own empty network namespace, its own pid numbering starting at 1,
+and an empty environment.
+
+### With `@net` — one more process, and it is the point
+
+`pasta` gives the sandbox internet access without giving it your network. It
+needs a network namespace to attach to *before* the sandbox exists, and an
+unprivileged process cannot hand one over after the fact. So snug builds one
+first, in a helper called the **stage**:
+
+```
+    your shell
+      |
+      +-- snug
+            |
+            +-- pasta                  translates sandbox traffic <-> internet
+            |                          (attached to N, from outside)
+            |
+            +-- stage                  makes N, the sandbox's network namespace,
+                  |                    and holds it open by a descriptor
+                  |
+                  +-- bwrap
+                        |
+                      +-+---------------- sandbox boundary ---------------+
+                      | +-- init (pid 1)                                  |
+                      |       |                                           |
+                      |       +-- your command (pid 2)     network = N    |
+                      +---------------------------------------------------+
+```
+
+The order is the security property, not an implementation detail:
+
+```
+    1. stage makes N          -- an empty network namespace, nobody in it
+    2. pasta attaches to N    -- and configures the sandbox's only interface
+    3. stage confirms N is up -- from inside N, not by guessing
+    4. bwrap builds the sandbox
+    5. only NOW does your command exist
+```
+
+Nothing is ever running with a half-configured network, because at every step
+before the last one there is nothing inside to run.
+
+### What dies when
+
+```
+    you press Ctrl-C     -> reaches your command directly; snug is not in the way
+    snug exits normally  -> stage, pasta, bwrap, init and your command all go
+    snug is SIGKILLed    -> same: every helper is armed to die with its parent
+                            before it is useful, so there is no window where
+                            killing snug leaves the sandbox behind
+```
+
+That last line is why there is no `snug stop` and no stale-state file to clean
+up by hand. If you want to check rather than trust, `VERIFY.md` has the
+by-hand version and the integration suite asserts it on every run.
+
+### `snug attach`
+
+`snug attach <dir>` puts a second shell inside a sandbox that is already
+running. It joins that run's namespaces, so it sees the same filesystem, the
+same network and the same pid numbering as the command already in there — which
+also means it is **not** a way to look at a sandbox from outside. There is no
+outside view; that is the same fact as "there is no daemon".
+
 ## Profiles
 
 ```console

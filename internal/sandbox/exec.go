@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -353,6 +354,72 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	// is rebuilt entirely through --setenv — so empty costs nothing.
 	cmd.Env = []string{}
 
+	// The intermediate PID namespace — called NP here, never N: runStaged's
+	// comment in this same file uses N for the sandbox's NETWORK namespace,
+	// and two namespaces sharing one letter in one file is how a reader ends
+	// up reasoning about the wrong boundary. Issue #101's nesting, with no
+	// inner init and no stub process.
+	//
+	// Cloneflags apply to the process being exec'd, so bwrap ITSELF becomes
+	// pid 1 of NP, and bwrap's own unconditional --unshare-pid then nests the
+	// sandbox's namespace Q underneath it. MEASURED on this host, the same
+	// bwrap argv both times:
+	//
+	//	today: bwrap ns/pid=pid:[4026531836] (the host's), init+payload pid:[4026533209]
+	//	this:  bwrap ns/pid=pid:[4026533206] (NP),          init+payload pid:[4026533717]
+	//
+	// Three levels instead of two. What it buys is a level to PUT things at:
+	// a process left in NP is unaddressable from the payload, /proc/<pid> being
+	// ENOENT there, so neither its fd directory nor its mem is reachable.
+	// MEASURED that it buys nothing on its own — two payloads bwrap started
+	// are still co-resident in Q and still read each other's /proc/<pid>/fd/7,
+	// identically to today. This does not shrink issue #47.
+	//
+	// CLONE_NEWUSER is required rather than incidental: unshare(CLONE_NEWPID)
+	// needs CAP_SYS_ADMIN, which an ordinary uid has nowhere, and creating a
+	// user namespace in the SAME clone is what grants it. bwrap's --pidns
+	// route is the one that cannot be combined with --unshare-user (bwrap:
+	// "Setting pidns failed: Operation not permitted"), because joining a
+	// pinned namespace needs CAP_SYS_ADMIN in the user namespace that owns it;
+	// nothing here joins anything, so nothing conflicts.
+	//
+	// The map is IDENTITY, not the map-to-0 form internal/stage uses:
+	// BwrapFlags passes --uid/--gid explicitly, so the payload's uid must
+	// still be mapped one level down in bwrap's own user namespace. MEASURED
+	// that map-to-0 gives a payload running as uid 0, and that with the
+	// identity map the payload is byte-identical to today — uid, gid, CapEff,
+	// CapBnd, NoNewPrivs and the numeric /proc entry count all unchanged.
+	//
+	// initwatch needs no change and was checked rather than assumed:
+	// ForeignUsernsChild walks the children of BWRAP, and the init's user
+	// namespace is foreign to snug's here exactly as it is today. bwrap's own
+	// namespace becoming foreign to snug does not reach that walk.
+	//
+	// TWO CONSEQUENCES WORTH KNOWING BEFORE READING TEARDOWN CODE.
+	//
+	// It CLOSES issue #13's residual on this arm rather than merely surviving
+	// it: bwrap's own --die-with-parent SIGKILL fires and zap_pid_ns_processes
+	// then reaches the sandbox init before it has forked a payload. Measured
+	// 0 leaks over 18 kill offsets and 144+ trials, against 8/8 leaks at a
+	// 160ms offset without it. See teardown.go's header for the table.
+	//
+	// And bwrap becomes immune to every catchable signal, because pid 1 of a
+	// namespace ignores signals it has no handler for. MEASURED: kill -TERM
+	// then -INT on bwrap leave it alive, -9 kills it. Nothing in snug depends
+	// on the difference — confirmTeardown and orphansweep both go through
+	// PidfdSendSignal(SIGKILL) — but a human reaching for `kill -TERM` or
+	// `pkill bwrap` on a stuck sandbox will find it does nothing.
+	//
+	// The bwrap argv does not change, so no golden file does either. --dry-run
+	// carries the construction instead, under TOPOLOGY's "pid nesting" rows;
+	// that is not a courtesy, it is the only place a human can read a security
+	// property no argv shows.
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWPID,
+		UidMappings: []syscall.SysProcIDMap{{ContainerID: uid, HostID: os.Getuid(), Size: 1}},
+		GidMappings: []syscall.SysProcIDMap{{ContainerID: gid, HostID: os.Getgid(), Size: 1}},
+	}
+
 	// No Setpgid anywhere in this chain: the tree stays in the terminal's
 	// foreground process group so Ctrl-C reaches the payload and job control
 	// works for an interactive shell inside the sandbox.
@@ -367,6 +434,23 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	defer guard.stop()
 
 	if err := cmd.Start(); err != nil {
+		// ENOSPC here is a ucount budget, not a full disk, and "no space left
+		// on device" sends a reader to df. snug's own clone is what asks for
+		// the intermediate namespaces above, so snug is the only thing that
+		// can say so — bwrap has not run yet and its own (much better) message
+		// never gets a chance. MEASURED with max_user_namespaces=0 in an outer
+		// userns: bare "fork/exec /usr/bin/bwrap: no space left on device",
+		// against bwrap's own "Creating new namespace failed: nesting depth or
+		// /proc/sys/user/max_*_namespaces exceeded (ENOSPC)" one step later.
+		if errors.Is(err, unix.ENOSPC) {
+			return 0, fmt.Errorf("cannot create the intermediate user and pid namespace this run "+
+				"needs (%w). snug forks bwrap into a user and pid namespace of its own before "+
+				"bwrap builds the sandbox, so this run needs at least 2 each of "+
+				"/proc/sys/user/max_user_namespaces and /proc/sys/user/max_pid_namespaces, and "+
+				"one free level of the kernel's 32-deep user-namespace nesting limit. Check "+
+				"those two sysctls, and whether this process is already inside a user namespace "+
+				"(a container, or another snug)", err)
+		}
 		return 0, err
 	}
 	// TWO sources for one fact, and exactly one call. reportInfo carries
@@ -375,8 +459,11 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	// the same reporter, which fires OnInit ONCE — see initReporter for the
 	// measured reason that is not optional.
 	var named initReporter
-	reportInfo(infoR, runInfo, opts, &named)
-	watchForInit(cmd.Process.Pid, opts, &named)
+	bwrapPid := cmd.Process.Pid
+	reportInfo(infoR, runInfo, opts, &named, func(reported int) (int, bool) {
+		return hostInitPID(bwrapPid, reported, opts)
+	})
+	watchForInit(bwrapPid, opts, &named)
 
 	// THE UNSTAGED ARM, which today means offline: bwrap made its own network
 	// namespace and there is no helper to attach, so the payload is already
@@ -385,7 +472,7 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	// needs a helper. Named for the TOPOLOGY rather than for its one member,
 	// because which arm a reader is in is a question about the topology.
 	//
-	// guard.wait, not a bare wait(cmd): a TERM/INT/HUP arriving in the ~40ms
+	// guard.wait, not a bare wait(cmd): a TERM/INT/HUP arriving in the pdeathsig-arming window
 	// before bwrap's own init arms its pdeathsig used to leave that init
 	// running, reparented, holding the payload — issue #13. See teardown.go.
 	return guard.wait(cmd.Process.Pid, func() (int, error) {
@@ -575,7 +662,7 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 	// From here on a payload exists, forked by the STAGE, not by this process.
 	// guard.wait is what closes issue #13's window on this topology: the
 	// stage's own child (bwrap) can be orphaned exactly as the offline
-	// topology's bwrap can, by the same ~40ms pdeathsig-arming gap, and
+	// topology's bwrap can, by the same pdeathsig-arming gap, and
 	// confirmTeardown's sweep is what reaches it once the stage is dead.
 	return guard.wait(st.Pid(), func() (int, error) {
 		ws, err := st.Wait()
@@ -631,13 +718,25 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 //
 // infoR is closed here, once, regardless of outcome: this is its only
 // reader and its only closer.
-func reportInfo(infoR *os.File, base RunInfo, opts Options, named *initReporter) {
+func reportInfo(infoR *os.File, base RunInfo, opts Options, named *initReporter, translate func(int) (int, bool)) {
 	go func() {
 		defer infoR.Close()
 		info, err := bwrapinfo.Read(infoR, infoFDTimeout)
 		if err != nil {
 			opts.warn(fmt.Sprintf("this run will not be attachable (%v)", err))
 			return
+		}
+		// bwrap's number is relative to bwrap's own pid namespace. Everything
+		// downstream — fillMissingNamespaceIDs' /proc reads, the record attach
+		// joins, killOrphanInit's target — is a HOST pid. See hostInitPID.
+		if translate != nil {
+			pid, ok := translate(info.InitPID)
+			if !ok {
+				opts.warn("this run will not be attachable (the sandbox init could not be " +
+					"named on the host; bwrap's own answer is relative to its pid namespace)")
+				return
+			}
+			info.InitPID = pid
 		}
 		named.report(opts, info.InitPID)
 		publishInfo(info, base, opts)

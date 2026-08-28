@@ -70,6 +70,28 @@ func TestTheStagedInitIsTheForeignUsernsChildOfItsBwrap(t *testing.T) {
 			"name bwrap instead of the init", init, initNS)
 	}
 
+	// internal/stage/serve.go's own fallback passes P1's namespace
+	// (os.Getpid() there), not bwrap's — the opposite of the offline arm's
+	// hostInitPID/watchForInit, which issue #101 had to switch to bwrap's OWN
+	// namespace once its bwrap stopped sharing snug's (redteam finding F4,
+	// see internal/sandbox/initwatch_test.go). serve.go's spelling is only
+	// correct because P1's namespace and bwrap's happen to be the SAME thing
+	// on this arm — asserted here rather than assumed, because that equality
+	// is exactly the fact that stops holding on the offline arm and is the
+	// whole reason F4 exists: the moment bwrap has a namespace of its own
+	// P1 does not share, "P1's own namespace" and "bwrap's own namespace"
+	// name two different things and only one of them is safe to use.
+	grandparent, ok := ppidOf(parent)
+	if !ok || grandparent <= 1 {
+		t.Fatalf("could not read the parent of bwrap pid %d", parent)
+	}
+	if stageNS := usernsOf(t, grandparent); stageNS != parentNS {
+		t.Fatalf("the stage (pid %d) does not share its bwrap's (pid %d) user namespace "+
+			"(%d vs %d) — internal/stage/serve.go's fallback passes os.Getpid()'s namespace "+
+			"as bwrap's, and that stopped being true, so it needs the same fix issue #101 "+
+			"gave internal/sandbox/initwatch.go", grandparent, parent, stageNS, parentNS)
+	}
+
 	// The walk itself, over exactly what internal/stage passes it: the stage's
 	// own user namespace is the bwrap parent's (measured above), so this is
 	// the same question P1 asks.

@@ -2063,12 +2063,35 @@ func describeTopology(out io.Writer, p *policy.Policy) {
 		fmt.Fprintf(out, "                    %-11s %s\n", pr.name, pr.role)
 	}
 	if !p.Topology.NeedsStage() {
-		fmt.Fprintf(out, "                  No stage, no privileged ancestor namespace.\n")
+		fmt.Fprintf(out, "                  No stage, no PRIVILEGED ancestor namespace — but see pid\n")
+		fmt.Fprintf(out, "                  nesting below: snug does create an unprivileged one.\n")
 	} else {
 		fmt.Fprintf(out, "                  (__innetns is a setns shim that BECOMES bwrap rather than\n")
 		fmt.Fprintf(out, "                  running beside it, so it is not one of the %d.)\n", len(procs))
 	}
 	fmt.Fprintf(out, "  netns owner     %s\n", p.Topology.Netns)
+	// PID NESTING, and it is on this screen because nothing else shows it.
+	// The bwrap argv is IDENTICAL on both arms — the nesting is entirely in
+	// how snug forks bwrap (internal/sandbox/exec.go's SysProcAttr) — so no
+	// golden argv file moves when it changes and --dry-run is the only place a
+	// human can read it. A security-relevant construction that appears on no
+	// screen is the shape this project has been bitten by before, which is why
+	// the depth is printed rather than the flag that produces it.
+	if p.Topology.NeedsStage() {
+		fmt.Fprintf(out, "  pid nesting     depth 1 — bwrap is pid 1 of the sandbox's own pid namespace,\n")
+		fmt.Fprintf(out, "                  and bwrap itself runs in the host's.\n")
+	} else {
+		fmt.Fprintf(out, "  pid nesting     depth 2 — snug forks bwrap into an intermediate user AND pid\n")
+		fmt.Fprintf(out, "                  namespace of its own making, so bwrap is pid 1 THERE and the\n")
+		fmt.Fprintf(out, "                  sandbox's own pid namespace nests below it. A process left at\n")
+		fmt.Fprintf(out, "                  the intermediate level has no /proc entry inside the sandbox:\n")
+		fmt.Fprintf(out, "                  unaddressable, not merely unreadable.\n")
+		fmt.Fprintf(out, "                  The intermediate user namespace is UNPRIVILEGED: identity\n")
+		fmt.Fprintf(out, "                  uid/gid map, and no capabilities survive bwrap's exec into it.\n")
+		fmt.Fprintf(out, "                  Cost: one more of the kernel's 32 user-namespace nesting\n")
+		fmt.Fprintf(out, "                  levels, and this run needs at least 2 each of\n")
+		fmt.Fprintf(out, "                  /proc/sys/user/max_user_namespaces and max_pid_namespaces.\n")
+	}
 	if p.Topology.NeedsStage() {
 		fmt.Fprintf(out, "                  the sandbox's user namespace has a PRIVILEGED ANCESTOR: the\n")
 		fmt.Fprintf(out, "                  stage is root in its own user namespace (U) for the whole run,\n")
