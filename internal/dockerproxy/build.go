@@ -317,11 +317,12 @@ const (
 	//
 	// A registry-shaped name is therefore just a local name with a
 	// registry-shaped prefix — the same thing `podman tag` can already produce.
-	// Pushing is a separate endpoint with its own gate, it needs egress the
-	// engine only has when the sandbox itself does (a container runs in N), and
-	// REGISTRY_AUTH_FILE points at snug's own generated auth.json, so a push
-	// authenticates as nobody (issue #142's regression is that the host's
-	// credentials stay unreachable).
+	// Pushing is a separate endpoint and it is ALLOWED — there is no gate on
+	// it; `allowed`'s `case "images"` says so and names what bounds it instead.
+	// It needs egress the engine only has when the sandbox itself does (a
+	// container runs in N), and REGISTRY_AUTH_FILE points at snug's own
+	// generated auth.json, so a push authenticates as nobody (issue #142's
+	// regression is that the host's credentials stay unreachable).
 	manifestNamesALocalList = "A hostile process inside the sandbox can use this to create a " +
 		"manifest list in the engine's own store under a name it chooses, including one shaped " +
 		"like a registry reference. That is a store object, not a destination: it is written " +
