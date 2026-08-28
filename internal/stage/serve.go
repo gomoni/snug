@@ -12,6 +12,7 @@ import (
 
 	"github.com/gomoni/snug/internal/bwrapinfo"
 	"github.com/gomoni/snug/internal/fdseal"
+	"github.com/gomoni/snug/internal/initwalk"
 )
 
 // MainServe is __stage-serve: P1 after the move — same pid, same mount/user/cgroup
@@ -233,6 +234,17 @@ func watchLifeline(f *os.File) {
 	os.Exit(1)
 }
 
+// initWalkGrace is how late bwrap's --info-fd answer has to be before P1 will
+// name the init from the process tree instead (issue #236, internal/initwalk).
+//
+// It is a GRACE and not a poll interval: bwrap answers in single-digit
+// milliseconds, so on every ordinary run this timer never fires and the
+// "forked" event carries bwrap's own answer exactly as before. Two orders of
+// magnitude above that answer's measured latency, and two below
+// bwrapInfoTimeout, so the walk speaks only in the interval where the
+// alternative is no record at all.
+const initWalkGrace = 500 * time.Millisecond
+
 // bwrapInfoTimeout bounds how long P1 waits for bwrap's --info-fd answer.
 // bwrap writes it after building the whole mount tree and BEFORE parking on
 // --block-fd (measured), so this is generous against a slow host rather than
@@ -388,13 +400,71 @@ func runOneSandbox(control, netnsN, infoR *os.File, req request) error {
 		infoCh <- infoResult{i, e}
 	}()
 
+	// "forked" is sent exactly once per start request — stage.go's client loop
+	// refuses a second — so this closure is the one place it leaves P1, and
+	// both sources below go through it.
+	forkedSent := 0
+	sendForked := func(pid int) error {
+		if forkedSent != 0 || pid <= 1 {
+			return nil
+		}
+		forkedSent = pid
+		return sendEvent(control, event{Op: "forked", InitPID: pid})
+	}
+
+	// The walk (issue #236, internal/initwalk) is the answer for a bwrap that
+	// NEVER answers --info-fd: the orphan that ticket measured was parked in
+	// read(2) on one of bwrap's own eventfds, so on that shape the info read
+	// below times out and P0 never learns which process to record. Measured on
+	// this arm, and it is why the walk works here at all — bwrap ITSELF shares
+	// P1's user namespace and only the init has its own:
+	//
+	//	pid 663014 exe     user=4026533424   <- P1
+	//	pid 663038 bwrap   user=4026533424   <- P1's own user ns
+	//	pid 663045 bwrap   user=4026533635   <- the recorded init
+	//
+	// IT IS THE FALLBACK AND NOT THE SOURCE, which is the whole shape of this
+	// block: bwrap's own answer is authoritative and arrives in single-digit
+	// milliseconds, so the ordinary run reports exactly what it always did,
+	// byte for byte. Only once the answer is initWalkGrace late does the walk
+	// get to speak — and by then "a record naming a process this bwrap forked
+	// into its own user namespace" beats no record at all. One attempt, not a
+	// loop: the init exists from bwrap's clone, so a walk that finds nothing
+	// after the grace is a bwrap that has not forked one and never will.
 	var info bwrapinfo.Info
 	var infoErr error
-	select {
-	case r := <-infoCh:
-		info, infoErr = r.info, r.err
-	case <-waitDone:
-		infoErr = fmt.Errorf("bwrap exited before answering on --info-fd")
+	grace := time.NewTimer(initWalkGrace)
+	defer grace.Stop()
+	walked := false
+awaitInfo:
+	for {
+		select {
+		case r := <-infoCh:
+			info, infoErr = r.info, r.err
+			break awaitInfo
+		case <-waitDone:
+			infoErr = fmt.Errorf("bwrap exited before answering on --info-fd")
+			break awaitInfo
+		case <-grace.C:
+			if walked {
+				continue
+			}
+			walked = true
+			ours, nerr := initwalk.NamespaceInode(os.Getpid(), "user")
+			if nerr != nil {
+				// No identity test means no candidate. Say nothing rather
+				// than name a process on weaker grounds than the record that
+				// gets SIGKILLed off it deserves.
+				continue
+			}
+			pid, found, _ := initwalk.ForeignUsernsChild(cmd.Process.Pid, ours)
+			if !found {
+				continue
+			}
+			if err := sendForked(pid); err != nil {
+				return abort(fmt.Errorf("__stage-serve: reporting forked (walked): %w", err))
+			}
+		}
 	}
 
 	if req.Gated {
@@ -419,12 +489,25 @@ func runOneSandbox(control, netnsN, infoR *os.File, req request) error {
 	// before whatever is slow on the way to "enginestarted" — the mount
 	// settle and the engine's cold start below, when there is an engine at
 	// all — rather than after it, so P0's orphan-kill record no longer waits
-	// out that whole interval with nothing naming this init. Skipped when
-	// bwrap never answered (info.InitPID <= 1).
-	if info.InitPID > 1 {
-		if err := sendEvent(control, event{Op: "forked", InitPID: info.InitPID}); err != nil {
-			return abort(fmt.Errorf("__stage-serve: reporting forked: %w", err))
-		}
+	// out that whole interval with nothing naming this init. A no-op when
+	// bwrap never answered (info.InitPID <= 1), and a no-op when the walk
+	// above already sent one: the protocol allows exactly one.
+	if err := sendForked(info.InitPID); err != nil {
+		return abort(fmt.Errorf("__stage-serve: reporting forked: %w", err))
+	}
+	if forkedSent > 1 && info.InitPID > 1 && forkedSent != info.InitPID {
+		// The walk and bwrap disagree, which the identity guard is supposed to
+		// make impossible: the walked candidate is a child of THIS bwrap in a
+		// user namespace of its own. It is said out loud rather than swallowed
+		// because the protocol allows one "forked" per start request, so P0's
+		// orphan-kill record already names the walked pid and nothing here can
+		// correct it — invariant 5's rule applied to a record instead of a
+		// capability. Not fatal: the run is fine and the payload is unaffected;
+		// what is degraded is which process a later sweep would kill.
+		fmt.Fprintf(os.Stderr, "snug: stage: the sandbox init named from the process tree (pid %d) "+
+			"is not the one bwrap reported (pid %d); the orphan-kill record for this run names "+
+			"the first, and a sweep acting on it would confirm identity against that pid\n",
+			forkedSent, info.InitPID)
 	}
 
 	// The engine, EAGERLY and inside this one request: it shares N with the

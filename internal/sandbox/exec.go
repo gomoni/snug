@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -368,12 +369,14 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
-	reportInfo(infoR, runInfo, opts)
-	// The second, earlier source for the same fact — see initwatch.go. It
-	// exists for the bwrap that never answers reportInfo at all, where the
-	// window between the fork and a record naming the init is not a few
-	// milliseconds but unbounded (issue #236).
-	watchForInit(cmd.Process.Pid, opts)
+	// TWO sources for one fact, and exactly one call. reportInfo carries
+	// bwrap's own answer; watchForInit walks the process tree for the bwrap
+	// that never gives one (issue #236, see initwatch.go). Both go through
+	// the same reporter, which fires OnInit ONCE — see initReporter for the
+	// measured reason that is not optional.
+	var named initReporter
+	reportInfo(infoR, runInfo, opts, &named)
+	watchForInit(cmd.Process.Pid, opts, &named)
 
 	// THE UNSTAGED ARM, which today means offline: bwrap made its own network
 	// namespace and there is no helper to attach, so the payload is already
@@ -628,7 +631,7 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 //
 // infoR is closed here, once, regardless of outcome: this is its only
 // reader and its only closer.
-func reportInfo(infoR *os.File, base RunInfo, opts Options) {
+func reportInfo(infoR *os.File, base RunInfo, opts Options, named *initReporter) {
 	go func() {
 		defer infoR.Close()
 		info, err := bwrapinfo.Read(infoR, infoFDTimeout)
@@ -636,9 +639,40 @@ func reportInfo(infoR *os.File, base RunInfo, opts Options) {
 			opts.warn(fmt.Sprintf("this run will not be attachable (%v)", err))
 			return
 		}
-		notifyInit(opts, info.InitPID)
+		named.report(opts, info.InitPID)
 		publishInfo(info, base, opts)
 	}()
+}
+
+// initReporter makes "this run's init is named" a once-per-run event, however
+// many sources race to name it.
+//
+// IT IS NOT TIDINESS, and the cost of learning that is worth writing down. The
+// unstaged arm has two namers — reportInfo's goroutine and watchForInit's —
+// and letting both call OnInit put two concurrent writers into
+// internal/cli's writeTargetFile, whose temporary file is named
+// "<final>.tmp-<pid>". Same process, same pid, same temp name: the second
+// writer's opening Remove deleted the first's file and the first's rename then
+// failed. MEASURED by the integration suite on the first run after the walk
+// landed, as a run whose init was never recorded at all:
+//
+//	snug: could not record this run's sandbox init (run state: renaming
+//	target-<hash>.starting.tmp-723985 to target-<hash>.starting: renameat …:
+//	no such file or directory)
+//
+// targetstate.go's own comment had called that shape "defence against a bug
+// rather than against a race the design allows". This is the bug it meant.
+//
+// The consequence of firing once is that the FIRST namer wins and bwrap's
+// later answer cannot correct it. That is the same trade the staged arm makes
+// for a different reason — its protocol allows one "forked" event per start
+// request — and it is what the walk's foreign-user-namespace guard is for:
+// the only pid it can hand over is a child of this run's own bwrap living in
+// a user namespace of its own.
+type initReporter struct{ once sync.Once }
+
+func (r *initReporter) report(opts Options, pid int) {
+	r.once.Do(func() { notifyInit(opts, pid) })
 }
 
 // notifyInit is the one place both arms of Run turn "bwrap named its init"
