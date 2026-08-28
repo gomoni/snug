@@ -41,6 +41,45 @@ STORE=${SNUG_ENGINE_STORE:-${RUNNER_TEMP:-$PWD/.engine-store}/store}
 SNUG_ENGINE_UID=${SNUG_ENGINE_UID:-$(id -u)}
 if [ "$SNUG_ENGINE_UID" = 0 ]; then SNUG_ENGINE_UID=1001; fi
 
+# ── an infrastructure failure says so, in one line, without the log ──────────
+#
+# Everything this job needs from the network arrives BEFORE a single test runs:
+# the base image from registry.opensuse.org, then repository metadata and
+# packages from download.opensuse.org's mirror pool. When one of those fails
+# the job dies in setup, prints no test name, no `--- FAIL` and no
+# `engine tests: N ran` line, and surfaces as the exit code of whichever tool
+# gave up — `make: *** [Makefile:394: integration-engine] Error 4`, which is
+# zypper's 4 and reads to a skimming human like a count of failed tests.
+#
+# MEASURED over 57 concluded engine jobs (2026-08-26T15:22Z..2026-08-28T07:29Z):
+# 8 failures, 5 of them real test failures and 3 of them one openSUSE mirror
+# event caught three times inside 54 minutes — runs 33112408141, 33116498388,
+# 33116787758, byte-identical text down to the repodata hash. The two classes
+# are perfectly separated by duration in that window (infra 24-32s, test
+# failures 199-215s, successes 189-280s), which is exactly the tell that is
+# invisible unless somebody opens the log and looks at the clock.
+#
+# So the classification is made HERE, by the step that knows, instead of being
+# inferred later. The job still FAILS — invariant 5: a refresh that leaves the
+# container unusable must not read as green, and "retry until green" is the
+# reflex issue #478 is about — but it fails saying which of the two it is.
+#
+# Exit 75 is EX_TEMPFAIL from sysexits(3), "temporary failure; the user is
+# invited to retry", and it is chosen so the code itself carries the
+# classification: 75 out of this script means no test ran.
+readonly EX_TEMPFAIL=75
+
+infra_fail() {
+	local what=$1 rc=$2 blame=$3
+	if [ -n "${GITHUB_ACTIONS:-}" ]; then
+		echo "::error title=openSUSE infrastructure, not snug::$what exited $rc. NO TEST RAN — this is $blame, not a change in this diff. Re-running is legitimate here and only here."
+	fi
+	echo "engine-container: $what exited $rc." >&2
+	echo "                  NO TEST RAN. This is $blame, not a snug regression." >&2
+	echo "                  Exiting $EX_TEMPFAIL (EX_TEMPFAIL) so the code says so too." >&2
+	exit "$EX_TEMPFAIL"
+}
+
 launch() {
 	if [ -z "$RUNTIME" ]; then
 		echo "engine-container: no docker or podman on PATH." >&2
@@ -115,6 +154,15 @@ launch() {
 	*podman*) unmask='--security-opt unmask=all' ;;
 	esac
 
+	# The pull is done HERE rather than implicitly by `run`, for one reason: it
+	# is a separate network dependency on a separate host (registry.opensuse.org,
+	# whose certificate expiry took this job out on 2026-08-27) and `run` would
+	# blend its failure into the container's own exit code. Split, each can name
+	# itself.
+	local rc=0
+	"$RUNTIME" pull "$IMAGE" || rc=$?
+	[ "$rc" -eq 0 ] || infra_fail "$RUNTIME pull $IMAGE" "$rc" "the container registry"
+
 	# shellcheck disable=SC2086 # $unmask is two words on purpose
 	exec "$RUNTIME" run --rm \
 		--security-opt apparmor=unconfined \
@@ -147,14 +195,29 @@ provision() {
 	# variants and REMOVED what the image had — "214.9 MiB … released by
 	# packages that will be removed" (run 32940231386) — taking /bin/sh with it,
 	# and the next step died `exec: "sh": executable file not found in $PATH`.
-	zypper -n --gpg-auto-import-keys refresh
+	# Both of these are network, both are before any test, and both are the
+	# measured way this job dies without naming a test. `|| rc=$?` rather than
+	# `if !`, because `set -e` is on and the exit code is the thing being
+	# reported.
+	#
+	# The refresh is NOT optional and cannot be dropped to remove the
+	# dependency: MEASURED, registry.opensuse.org/opensuse/tumbleweed:latest
+	# ships an EMPTY /var/cache/zypp, so `zypper install` would simply
+	# auto-refresh and fail in the same place with a less specific message.
+	local rc=0
+	zypper -n --gpg-auto-import-keys refresh || rc=$?
+	[ "$rc" -eq 0 ] || infra_fail "zypper refresh" "$rc" \
+		"openSUSE repository metadata — mirror lag, a dead mirror or a CDN timeout"
+
+	rc=0
 	zypper -n install --no-recommends \
 		bash bash-sh coreutils gawk grep sed findutils diffutils \
 		make tar gzip git which curl \
 		podman crun fuse-overlayfs \
 		bubblewrap passt iproute2 \
 		python3 shadow util-linux util-linux-systemd \
-		openssh-clients
+		openssh-clients || rc=$?
+	[ "$rc" -eq 0 ] || infra_fail "zypper install" "$rc" "an openSUSE mirror or the package set it served"
 
 	# util-linux-systemd, not util-linux: openSUSE puts findmnt there (measured,
 	# `rpm -qf $(command -v findmnt)` = util-linux-systemd-2.42.2). Without it

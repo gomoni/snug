@@ -5444,6 +5444,29 @@ are all findable` on that host, and every container create then returned
 tick in front of a run that cannot work is the one output this command must
 never produce.
 
+### 19b. An infrastructure failure says so, without the log
+
+Everything this job needs from the network happens before a single test runs.
+Each step classifies its own failure and exits **75** (`EX_TEMPFAIL`), so the
+exit code carries the verdict instead of relaying zypper's 4:
+
+```bash
+SNUG_ENGINE_RUNTIME=/bin/false make integration-engine; echo "exit=$?"
+```
+
+Expect `NO TEST RAN. This is the container registry, not a snug regression.`
+and `exit=75`. Under `GITHUB_ACTIONS` the same failure also emits an
+`::error title=openSUSE infrastructure, not snug::` annotation, which is the
+only part visible without opening the log.
+
+The job still goes RED — invariant 5 with CI as the capability: a refresh that
+leaves the container unusable must not read as green. What changes is that a
+red run says which kind of red it is. MEASURED over 57 concluded engine jobs
+(2026-08-26T15:22Z … 2026-08-28T07:29Z): 8 failures, 5 real test failures at
+199–215s and 3 at 24–32s that were one openSUSE mirror event caught three times
+in 54 minutes (runs 33112408141, 33116498388, 33116787758 — byte-identical text
+down to the repodata hash).
+
 ## 20. `@http-proxy`: a door only a human can open (issues #470, #471)
 
 A profile DECLARES a door; the sandbox cannot open one. snug creates the
