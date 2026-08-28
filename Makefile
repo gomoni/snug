@@ -238,12 +238,16 @@ SNUG_SIGNAL_TESTS = TestSignallingSnugDuringStartupLeavesNoOrphanedSandbox|TestA
 #
 #   46  this host, MEASURED once (podman 6.0.2, SNUG_REQUIRE_SANDBOX=1
 #       SNUG_TEST_NET=1, 312s, one SKIP in the whole suite — issue #458's).
-#   42  the Tumbleweed CI container, two green runs (32945338390, 32945827262),
-#       set by test/engine-container.sh.
+#   46  the Tumbleweed CI container, set by test/engine-container.sh, which
+#       carries its own runs.
 #
-# The container's number is LOWER than this host's and is not re-measured
-# against the commit points issue #458 added, so it understates. `?=` so the
-# environment can override — `=` would make Make ignore it.
+# A NUMBER HERE IS A MINIMUM OVER RUNS, NOT A RUN'S COUNT. The container
+# measured 47 and then 46 against the same tree, differing by exactly one test
+# — TestAHostRegistriesConfDoesNotSteerTheEnginesPull marks only when its own
+# control fires. Taking the larger reading would build a floor that cannot be
+# cleared, which is a red run that caught nothing.
+#
+# `?=` so the environment can override — `=` would make Make ignore it.
 #
 # The count is PRINTED on every run and names WHICH case produced it: no
 # podman resolved (green, legitimately), podman resolved but could not run a
