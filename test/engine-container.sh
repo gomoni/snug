@@ -206,15 +206,21 @@ provision() {
 	install -d -m 0700 -o snug -g users "/run/user/$SNUG_ENGINE_UID"
 	chown snug: /enginestore
 
-	# SNUG_ENGINE_FLOOR is 42 HERE, MEASURED on two independent green runs
-	# (32945338390, 32945827262). It is the whole point of the variable that the
-	# number is per environment: CI silently losing nine engine tests must not
-	# still clear the floor.
+	# SNUG_ENGINE_FLOOR is 46 HERE, MEASURED on three independent green runs of
+	# this container: 33147986207 (job 98773191199) reported 47, 33148019154
+	# (job 98773292664) reported 46, and 33150580747 (job 98781426659) reported
+	# 46. It is the whole point of the variable that the number is per
+	# environment: CI silently losing engine tests must not still clear the
+	# floor.
 	#
-	# 42 is now BELOW the Makefile default (46, this host with podman 6.0.2) and
-	# has not been re-measured against the commit points issue #458 added, so it
-	# understates what this container reaches. Raise it from a green run's own
-	# count, never from the other environment's number.
+	# THE FLOOR IS THE MINIMUM OVER RUNS, NOT ONE RUN'S COUNT. The readings
+	# differ by exactly one test — TestAHostRegistriesConfDoesNotSteerTheEnginesPull
+	# marks only when its own control fires. A floor at 47 would go red on the
+	# two runs where it did not, which is a test that cannot pass rather than a
+	# test that caught something.
+	#
+	# Raise it from a green run of THIS container, never from the Makefile
+	# default: that one is a development host and reaches a different set.
 	#
 	# SNUG_SANDBOX_TIMEOUT raises the per-suite `go test -timeout` from the 8m
 	# that fits a runner where the engine tier skips. With the tier really
@@ -231,7 +237,7 @@ provision() {
 		PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin \
 		XDG_RUNTIME_DIR=/run/user/"$SNUG_ENGINE_UID" \
 		XDG_DATA_HOME=/enginestore \
-		SNUG_ENGINE_FLOOR=42 \
+		SNUG_ENGINE_FLOOR=46 \
 		SNUG_SANDBOX_TIMEOUT=18m \
 		SNUG_REQUIRE_SANDBOX=1 \
 		SNUG_REQUIRE_ENGINE=1 \
