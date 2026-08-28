@@ -450,7 +450,20 @@ awaitInfo:
 				continue
 			}
 			walked = true
-			ours, nerr := initwalk.NamespaceInode(os.Getpid(), "user")
+			// BWRAP's user namespace, not P1's, and the two agree only by
+			// coincidence today: bwrap shares P1's user namespace on this
+			// arm, so either spelling selects the init. initwalk's package
+			// comment states the rule and the drift — "Comparing against
+			// bwrap's own namespace is the spelling that cannot drift,
+			// because the property being tested is 'bwrap put this child in
+			// a user namespace of its own', which is a fact about bwrap" —
+			// and the failure it names is this walk landing the wrong pid in
+			// a record killOrphanInit later SIGKILLs. The offline arm passes
+			// bwrap's already (internal/sandbox/initwatch.go's
+			// watchForInit); this was the one caller left spelling it as the
+			// caller's, which is what would break the moment anything gives
+			// bwrap a user namespace of its own on this arm.
+			ours, nerr := initwalk.NamespaceInode(cmd.Process.Pid, "user")
 			if nerr != nil {
 				// No identity test means no candidate. Say nothing rather
 				// than name a process on weaker grounds than the record that
