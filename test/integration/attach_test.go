@@ -1829,7 +1829,15 @@ func TestAttachPTYReturnsPromptlyWhenADescendantHoldsTheSlave(t *testing.T) {
 			attachHangReport(t, p, master))
 	}
 	elapsed := time.Since(start)
-	out := drainPTY(t, master)
+	// Not drainPTY: the outer shell exits the instant it has echoed
+	// OUTER-DONE, so `snug attach` can return — correctly, that is what this
+	// test measures — before the BACKGROUNDED subshell has been scheduled at
+	// all. A single drain then captures the outer shell's two lines and none
+	// of the descendant's, and the control below fails having proved nothing
+	// about the code under test. MEASURED in CI, run 33157723000: the whole
+	// case took 0.03s against ~2.0s for its passing pipe twin, with the
+	// output holding the marker and OUTER-DONE and no DESCENDANT-PID.
+	out := drainPTYUntil(t, master, descendantFDListEnd)
 
 	if !strings.Contains(out, marker) || !strings.Contains(out, "OUTER-DONE") {
 		t.Fatalf("the attached command's own output never appeared through the pty, so this "+
@@ -2241,6 +2249,47 @@ func TestAttachRestoresClientTerminalOnExit(t *testing.T) {
 // siblings already use: master is never closed by these tests (it stands in
 // for a real, still-open client terminal), so a plain io.ReadAll would block
 // on an EOF that never comes.
+// descendantFDListEnd is the last thing the backgrounded subshell writes
+// before it sleeps. It is the sentinel rather than DESCENDANT-PID= because
+// assertDescendantHeldStdio needs the WHOLE fd listing, and a drain that
+// stopped at the pid would race the listing the same way.
+const descendantFDListEnd = "---FDLIST-END---"
+
+// drainPTYUntil is drainPTY with a thing it is waiting FOR. It keeps reading
+// until sentinel appears or the budget runs out, refreshing the read deadline
+// each time round, and returns whatever it has either way — a caller that got
+// less than it wanted reports that itself, in its own words, with the output
+// in hand.
+//
+// The budget is drainPTY's own, and deliberately not longer: what is being
+// waited out here is a subshell that has already been forked getting its
+// first slice of CPU, not any part of the behaviour under test.
+func drainPTYUntil(t *testing.T, master *os.File, sentinel string) string {
+	t.Helper()
+	var out bytes.Buffer
+	buf := make([]byte, 4096)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		master.SetReadDeadline(deadline)
+		n, err := master.Read(buf)
+		if n > 0 {
+			out.Write(buf[:n])
+			if strings.Contains(out.String(), sentinel) {
+				return out.String()
+			}
+		}
+		if err != nil {
+			// An error is NOT the end here, which is the whole difference
+			// from drainPTY: a master whose every slave is momentarily
+			// closed reads EIO, and that is a state this pty passes through
+			// while the descendant is between fork and its first write. The
+			// deadline above is what ends the wait; nothing else does.
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	return out.String()
+}
+
 func drainPTY(t *testing.T, master *os.File) string {
 	t.Helper()
 	var out bytes.Buffer
