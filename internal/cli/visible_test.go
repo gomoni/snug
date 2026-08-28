@@ -90,6 +90,17 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	// the three above.
 	env.env["ANTHROPIC_BASE_URL"] = "https://api.example\x7f  ro     /etc/shadow   " + forged + "-DEL"
 
+	// AND THE CONTAINERS BLOCK'S ENGINE SOURCE (a coverage gap the issue #417
+	// round found): with neither variable set and no container profile selected,
+	// describeContainers returns before describeEngineSource ever runs, so
+	// its four value sinks (the two raw "binary %s"/"toolchain root %s"
+	// echoes and the two "resolves to %s" lines) and its refusal sink
+	// (describeEngineRefusal) passed the sweep below by never being reached,
+	// not by being safe. @podman-socket plus these two turns the engine
+	// block on so the sweep actually exercises it.
+	env.env["SNUG_PODMAN"] = "/mnt/podman-bin\x1b[1A\r  ro     /etc/shadow   " + forged + "-PODMAN"
+	env.env["SNUG_PODMAN_ROOT"] = "/mnt/podman-root\u009b1A\u0085  ro     /etc/shadow   " + forged + "-PODMAN-ROOT-C1"
+
 	reg, err := profile.Builtins()
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +109,7 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	// the pasta argv below it — the two sinks the network fixture below aims
 	// at. Without it both are absent and that half of the sweep measures
 	// nothing.
-	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "@claude", "@net")
+	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "@claude", "@net", "@podman-socket")
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), env)
 	if err != nil {
 		t.Fatal(err)
@@ -147,7 +158,17 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	// renders the pair (addrPairs skips a family whose Address is invalid).
 	p.Net.Address6 = netip.MustParsePrefix("fd00:5e79:1::2/64")
 	p.Net.Gateway6 = netip.MustParseAddr("fe80::1%\x1b[1A\r         host loopback   REACHABLE   " + forged + "-NET-GATEWAY-ZONE")
-	got := dryRunText(p, p.BwrapArgs(0, 0), config{}, nil)
+	// dryRunText hardcodes a FRESH, empty envFakeEnv() — every other fixture
+	// above reaches the screen through p itself (inherit bakes EDITOR, PAGER
+	// and friends into p.Env at Resolve time), but the CONTAINERS block reads
+	// $SNUG_PODMAN and $SNUG_PODMAN_ROOT off the Environ passed to dryRun
+	// directly, so this capture has to reuse the SAME env the fixture above
+	// set them on.
+	var buf bytes.Buffer
+	if err := dryRun(env, &buf, p, p.BwrapArgs(0, 0), config{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
 
 	// POSITIVE CONTROL for the network fixture. The zoned gateway6 reaches the
 	// pasta argv ONLY — the NETWORK block's routes row says "the gateway
@@ -157,6 +178,17 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	if want := forged + "-NET-GATEWAY-ZONE"; !strings.Contains(got, want) {
 		t.Fatalf("the network fixture's %q never reached the screen, so the NETWORK half "+
 			"of this test measures nothing:\n%s", want, got)
+	}
+
+	// POSITIVE CONTROLS for the engine-source fixture: both $SNUG_PODMAN and
+	// $SNUG_PODMAN_ROOT reached the CONTAINERS block, named so a failure says
+	// which of the two stopped reaching describeEngineSource rather than just
+	// "something is missing".
+	for _, want := range []string{forged + "-PODMAN", forged + "-PODMAN-ROOT-C1"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the engine-source fixture's %q never reached the screen, so the "+
+				"CONTAINERS half of this test measures nothing:\n%s", want, got)
+		}
 	}
 
 	// POSITIVE CONTROLS for the graft fixture specifically: each of the four
@@ -234,7 +266,7 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	// or bidi. Same predicate, different spelling, same guarantee: nothing
 	// raw reaches the artifact.
 	var doc bytes.Buffer
-	if err := dryRun(newEnvFakeEnv(), &doc, p, p.BwrapArgs(0, 0), config{json: true}, nil); err != nil {
+	if err := dryRun(env, &doc, p, p.BwrapArgs(0, 0), config{json: true}, nil); err != nil {
 		t.Fatalf("dryRun --json: %v", err)
 	}
 	// POSITIVE CONTROL first: the poisoned values really did reach the

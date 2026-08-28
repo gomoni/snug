@@ -237,7 +237,15 @@ func (p *Policy) JudgeEngineToolchain(env Environ, root string) (string, error) 
 			"       Grafting it read-only does not help: `ro` restrains the ENGINE, and the payload\n"+
 			"       rewrites the same host name through its own rw grant.\n"+
 			"       Fix: point $SNUG_PODMAN_ROOT at the installation directory itself, or drop the rw\n"+
-			"       grant that covers the name above.", asGiven, selectionClause(name, asked))
+			"       grant that covers the name above.\n"+
+			"       NOTE THE LIMIT of this refusal: it resolves a name to its host FIXED POINT in\n"+
+			"       one step, so it sees the first name in the chain and the last, never a middle one.\n"+
+			"       A host-owned symlink pointing at a payload-writable name that is ITSELF a symlink\n"+
+			"       to a clean toolchain root crosses unseen: the outer name is not the payload's to\n"+
+			"       rewrite, the final root is clean, and the writable name in between is never\n"+
+			"       separately asked about. Closing it needs a second, hop-by-hop resolver in this\n"+
+			"       package — the thing TestResolveExistingHasOneAuthor exists to keep this package\n"+
+			"       from growing.", asGiven, selectionClause(name, asked))
 	}
 	return root, nil
 }
