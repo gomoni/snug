@@ -11,13 +11,23 @@
 # decoration — six of them are the difference between the engine tier running
 # and the suite reporting green having measured nothing.
 #
-# Two subcommands, and the second one is NOT for a real machine:
+# Three subcommands, and only the first is for a real machine:
 #
-#   launch      (default) start the container and run `provision` inside it
-#   provision   zypper, a non-root user, a subuid range, then the suite
+#   launch           (default) start the container and run `provision` inside it
+#   provision        packages if they are missing, a user, a subuid range, the suite
+#   install-packages the zypper half of provision, ALONE — this is what
+#                    test/engine-container.dockerfile calls, so that CI can bake
+#                    and cache a provisioned image and reach the network zero
+#                    times on a cache hit (issue #478)
 #
-# `provision` installs packages and creates a user, so it refuses to run unless
-# $SNUG_ENGINE_CONTAINER says a throwaway container is what it is in.
+# `provision` and `install-packages` change the machine they run on, so both
+# refuse unless $SNUG_ENGINE_CONTAINER says a throwaway container is what they
+# are in.
+#
+# THE PACKAGE LIST LIVES IN EXACTLY ONE PLACE, install_packages below, and the
+# dockerfile calls this script rather than repeating it. A second copy in a
+# dockerfile is this project's recurring defect and would drift on the first
+# package added.
 set -euo pipefail
 
 IMAGE=${SNUG_ENGINE_IMAGE:-registry.opensuse.org/opensuse/tumbleweed:latest}
@@ -159,9 +169,20 @@ launch() {
 	# whose certificate expiry took this job out on 2026-08-27) and `run` would
 	# blend its failure into the container's own exit code. Split, each can name
 	# itself.
+	#
+	# SKIPPED when the image is already local, which is how the CI cache pays
+	# off: the workflow bakes a provisioned image with buildx, loads it, and
+	# names it in SNUG_ENGINE_IMAGE. There is nothing to fetch, and a `pull` of
+	# a local-only tag would fail against a registry that never had it. This is
+	# a presence check, not a freshness one — the workflow owns how old a baked
+	# image may get, and does it by rotating the build's cache key weekly.
 	local rc=0
-	"$RUNTIME" pull "$IMAGE" || rc=$?
-	[ "$rc" -eq 0 ] || infra_fail "$RUNTIME pull $IMAGE" "$rc" "the container registry"
+	if "$RUNTIME" image inspect "$IMAGE" >/dev/null 2>&1; then
+		echo "engine-container: $IMAGE is already present locally; not pulling." >&2
+	else
+		"$RUNTIME" pull "$IMAGE" || rc=$?
+		[ "$rc" -eq 0 ] || infra_fail "$RUNTIME pull $IMAGE" "$rc" "the container registry"
+	fi
 
 	# shellcheck disable=SC2086 # $unmask is two words on purpose
 	exec "$RUNTIME" run --rm \
@@ -180,14 +201,32 @@ launch() {
 		/src/test/engine-container.sh provision
 }
 
-provision() {
+# throwaway_only refuses a subcommand that changes the machine it runs on unless
+# $SNUG_ENGINE_CONTAINER says a throwaway container is what it is in.
+throwaway_only() {
 	if [ "${SNUG_ENGINE_CONTAINER:-}" != 1 ]; then
-		echo "engine-container: 'provision' installs packages and creates a user." >&2
+		echo "engine-container: '$1' installs packages and changes the machine." >&2
 		echo "                  It is meant for a throwaway container, not a real machine." >&2
 		echo "                  Run 'make integration-engine' instead." >&2
 		exit 1
 	fi
-	set -x
+}
+
+# engine_tools_present is the verify step's list MINUS go, and the omission is
+# the whole correctness of it: go is MOUNTED at /usr/local/go by launch, not
+# installed by zypper, and it is not on provision's own PATH. Asking for it here
+# would report "not provisioned" on a perfectly baked image and run zypper
+# anyway — the cache would be built, stored, restored, and then ignored, which
+# is worse than not having one because it looks like it works.
+engine_tools_present() {
+	command -v bash make podman bwrap pasta python3 findmnt ssh >/dev/null 2>&1
+}
+
+# install_packages is the ONLY place the package list exists. Called from
+# provision when the tools are missing, and from
+# test/engine-container.dockerfile so CI can bake and cache the result.
+install_packages() {
+	throwaway_only install-packages
 
 	# bash, bash-sh, coreutils, gawk, grep, sed, findutils, diffutils and make
 	# are named EXPLICITLY, and that is measured rather than defensive: without
@@ -218,6 +257,28 @@ provision() {
 		python3 shadow util-linux util-linux-systemd \
 		openssh-clients || rc=$?
 	[ "$rc" -eq 0 ] || infra_fail "zypper install" "$rc" "an openSUSE mirror or the package set it served"
+}
+
+provision() {
+	throwaway_only provision
+	set -x
+
+	# The packages may already be here, because CI bakes them into a cached
+	# image (see install-packages and test/engine-container.dockerfile). Then
+	# BOTH remaining network steps are skipped and this job reaches the network
+	# zero times before its first test — which is the whole of issue #478's
+	# measured failure surface.
+	#
+	# Detected rather than flagged. A flag would say "somebody meant to
+	# pre-provision"; this says "the tools are here", which is the thing the
+	# suite actually needs and is true however they arrived. If the detection is
+	# wrong in the cautious direction it costs one redundant zypper run, and in
+	# the other direction the verify step below fails naming the missing tool.
+	if engine_tools_present; then
+		echo "engine-container: every required tool is already present; skipping zypper." >&2
+	else
+		install_packages
+	fi
 
 	# util-linux-systemd, not util-linux: openSUSE puts findmnt there (measured,
 	# `rpm -qf $(command -v findmnt)` = util-linux-systemd-2.42.2). Without it
@@ -311,8 +372,9 @@ provision() {
 case ${1:-launch} in
 launch) launch ;;
 provision) provision ;;
+install-packages) install_packages ;;
 *)
-	echo "engine-container: unknown subcommand $(printf %q "$1") (want launch or provision)" >&2
+	echo "engine-container: unknown subcommand $(printf %q "$1") (want launch, provision or install-packages)" >&2
 	exit 1
 	;;
 esac
