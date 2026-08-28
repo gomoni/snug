@@ -4034,6 +4034,48 @@ and the kernel releases it only when that process dies — and only when the
 recorded start time still matches `/proc/<pid>/stat` field 22, which is the
 pid-reuse guard `snug attach` already relies on.
 
+### 11c-ter. The init is nameable before bwrap reports it, on both arms (issue #236)
+
+The sweep above needs a record. The record used to wait for bwrap's `--info-fd`
+answer, so an init parked before that answer — the wedged case #236 measured,
+`read(2)` on one of bwrap's own eventfds — was never named at all, and no later
+sweep could find it. `internal/initwalk` names it from the process tree
+instead, and the whole safety of that is one fact you can check by hand.
+
+Start a **staged** run (`@net` is what selects that arm) and look at the tree:
+
+```bash
+./bin/snug -p @net $SC/proj/sub -- /bin/sleep 60 & SNUG=$!
+sleep 2
+SP=/run/user/$(id -u)/snug/target-sha256_$(printf %s "$(readlink -f $SC/proj/sub)" | sha256sum | cut -d' ' -f1).json
+INIT=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['sandbox']['init_pid'])" $SP)
+BWRAP=$(awk '/^PPid:/{print $2}' /proc/$INIT/status)
+for p in $SNUG $BWRAP $INIT; do
+  printf '%-8s %-8s user=%s\n' $p "$(cat /proc/$p/comm)" "$(stat -Lc %i /proc/$p/ns/user)"
+done
+kill -9 $SNUG
+```
+
+Expect the init's parent to be **bwrap**, and the user namespace ids to say
+which of the two the walk may name:
+
+```
+663002   snug     user=4026533102
+663038   bwrap    user=4026533424     <- shares the STAGE's user namespace
+663045   bwrap    user=4026533635     <- a namespace of its own: the recorded init
+```
+
+(The stage itself is between the two, not printed by the loop above; it is the
+process that carries `user=4026533424` first, which is why bwrap has it.)
+
+That third column is the identity guard. bwrap itself shares the stage's user
+namespace, so "the first child of bwrap in a user namespace that is not ours"
+is the init and cannot be bwrap. A record built on a weaker test would name a
+process `killOrphanInit` later SIGKILLs.
+
+`TestTheStagedInitIsTheForeignUsernsChildOfItsBwrap` asserts exactly this, so a
+future bwrap that changed the shape fails the suite rather than the sweep.
+
 The same pass removes the stale state file, which nothing did before: one was
 published per run and removed by nobody, so this box had accumulated 1099 of
 them.
