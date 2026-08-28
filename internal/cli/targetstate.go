@@ -264,6 +264,19 @@ func readTargetState(real string) (st runState, live bool, err error) {
 // sweep would kill that live run's init. So a swept descriptor is retried
 // against the name, and an exhausted retry is an ERROR, not "not held":
 // every caller reads err as "not our business" and leaves the record alone.
+//
+// WHAT THAT RETRY DOES NOT COVER, stated because the paragraph above reads
+// like a closed hole and is not one: it covers snug's OWN sweep, which
+// unlinks only while holding LOCK_EX. It does not cover an unlink by anything
+// else. One same-uid `rm` of a live run's lock file makes this function
+// create a fresh inode, take LOCK_SH on it unopposed, see Nlink == 1, and
+// answer "not held" while that run is very much alive — and the sweep then
+// kills its init. MEASURED, issue #489. The record's other guards cannot see
+// it: the name hash, the start time and the six namespace inodes establish
+// IDENTITY, and the record genuinely names that live init, so all three pass
+// by construction. Liveness has exactly one source in this design — the
+// flock — and the unlink is what detaches it from the name. Same-uid
+// tampering is where runtimedir.go's own sweep already draws this line.
 func targetLockIsHeld(snugRoot *os.Root, snugPath, real string) (bool, error) {
 	name := targetLockName(real)
 	for attempt := 0; attempt < targetLockAttempts; attempt++ {
