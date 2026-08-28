@@ -336,7 +336,19 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 		return runStaged(p, bwrap, argv, extra, stdin, stdout, stderr, opts, infoR, release, runInfo)
 	}
 
-	cmd := exec.Command(bwrap, argv...)
+	// NOT bwrap directly: /proc/self/exe re-executed as the __inpidns verb,
+	// which mounts a procfs of the intermediate pid namespace over /proc and
+	// then EXECS bwrap with exactly this argv. Still two processes — the verb
+	// becomes bwrap rather than supervising it — and still this argv, so no
+	// golden file moves. inpidns.go carries the measurement that makes the
+	// mount mandatory: bwrap resolves its own child's pid against whatever
+	// /proc it opened, and without this it reads the pid namespace ABOVE.
+	//
+	// The descriptor count travels as an argument so the verb's keep-list is
+	// derived from the request rather than written down twice; extra is
+	// complete by here and nothing may be appended to it after this line.
+	verbArgv := append([]string{"__inpidns", strconv.Itoa(len(extra)), bwrap}, argv...)
+	cmd := exec.Command("/proc/self/exe", verbArgv...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
 	cmd.ExtraFiles = extra
 
@@ -383,12 +395,20 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	// pinned namespace needs CAP_SYS_ADMIN in the user namespace that owns it;
 	// nothing here joins anything, so nothing conflicts.
 	//
-	// The map is IDENTITY, not the map-to-0 form internal/stage uses:
-	// BwrapFlags passes --uid/--gid explicitly, so the payload's uid must
-	// still be mapped one level down in bwrap's own user namespace. MEASURED
-	// that map-to-0 gives a payload running as uid 0, and that with the
-	// identity map the payload is byte-identical to today — uid, gid, CapEff,
-	// CapBnd, NoNewPrivs and the numeric /proc entry count all unchanged.
+	// The map is TO 0, the same form internal/stage uses, and that is what
+	// buys __inpidns its CAP_SYS_ADMIN: capabilities are dropped at execve for
+	// a non-root euid, so an identity-mapped verb cannot mount anything —
+	// MEASURED, "making the intermediate namespace's mounts private:
+	// operation not permitted", with the run then dying exactly as it does
+	// without the mount. Root in NP is a rootless-container root: it maps to
+	// one host uid, this process's own, and reaches nothing an ordinary
+	// process could not.
+	//
+	// The PAYLOAD is unaffected, which is the thing to check rather than
+	// assume. BwrapFlags passes --uid/--gid, and bwrap maps them into its own
+	// user namespace from whatever it is in NP. MEASURED with the same argv:
+	// payload `id -u` 1000, `id -g` 1000, /proc/self/uid_map "1000 0 1" —
+	// byte-identical to the flat topology.
 	//
 	// initwatch needs no change and was checked rather than assumed:
 	// ForeignUsernsChild walks the children of BWRAP, and the init's user
@@ -414,10 +434,19 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	// carries the construction instead, under TOPOLOGY's "pid nesting" rows;
 	// that is not a courtesy, it is the only place a human can read a security
 	// property no argv shows.
+	// CLONE_NEWNS joins the other two because bwrap needs a procfs of NP to
+	// read its own child out of — see inpidns.go, which is what runs in this
+	// mount namespace before bwrap does. The mount namespace is a COPY of the
+	// host's, so every bind source in the argv still resolves; only /proc is
+	// replaced, and only for this branch of the tree.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWPID,
-		UidMappings: []syscall.SysProcIDMap{{ContainerID: uid, HostID: os.Getuid(), Size: 1}},
-		GidMappings: []syscall.SysProcIDMap{{ContainerID: gid, HostID: os.Getgid(), Size: 1}},
+		Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWPID | syscall.CLONE_NEWNS,
+		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+		// Written as deny before the gid map, without which an unprivileged
+		// process cannot write that map at all — the same line, for the same
+		// reason, as internal/cli's preflightResolvConfBind.
+		GidMappingsEnableSetgroups: false,
 	}
 
 	// No Setpgid anywhere in this chain: the tree stays in the terminal's
@@ -443,8 +472,8 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 		// against bwrap's own "Creating new namespace failed: nesting depth or
 		// /proc/sys/user/max_*_namespaces exceeded (ENOSPC)" one step later.
 		if errors.Is(err, unix.ENOSPC) {
-			return 0, fmt.Errorf("cannot create the intermediate user and pid namespace this run "+
-				"needs (%w). snug forks bwrap into a user and pid namespace of its own before "+
+			return 0, fmt.Errorf("cannot create the intermediate user, pid and mount namespaces "+
+				"this run needs (%w). snug forks bwrap into namespaces of its own before "+
 				"bwrap builds the sandbox, so this run needs at least 2 each of "+
 				"/proc/sys/user/max_user_namespaces and /proc/sys/user/max_pid_namespaces, and "+
 				"one free level of the kernel's 32-deep user-namespace nesting limit. Check "+
