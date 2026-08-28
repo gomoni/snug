@@ -5631,12 +5631,12 @@ sandbox where nothing ever accepts.
 ### 20a. Serving something real, and what the server has to be
 
 The server must ACCEPT on the descriptor rather than bind a port.
-`examples/http-door-server.py` is a working one; `python3 -m http.server` cannot
+`scripts/http-door-server.py` is a working one; `python3 -m http.server` cannot
 be used at all, and servers you cannot edit (Java, .NET, anything in a container)
 need the adapter in issue #476.
 
 ```bash
-cp examples/http-door-server.py $SC/proj/sub/serve.py
+cp scripts/http-door-server.py $SC/proj/sub/serve.py
 echo '<!doctype html><link rel="stylesheet" href="/style.css"><h1>hello</h1>' > $SC/proj/sub/index.html
 echo 'body{color:red}' > $SC/proj/sub/style.css
 XDG_CONFIG_HOME=$X ./bin/snug -p mydev $SC/proj/sub -- python3 serve.py
@@ -5729,7 +5729,7 @@ leaked inbound hole and rates with a policy leak, not with litter.
 **`BrokenPipeError` in the payload is ROUTINE**, not a bug: the door closes the
 backend connection when the human stops `snug proxy`, when its round-trip
 deadline passes, or when the browser goes away. Stock `socketserver` prints a
-full traceback for it; `examples/http-door-server.py` handles it, and MEASURED —
+full traceback for it; `scripts/http-door-server.py` handles it, and MEASURED —
 interrupting `snug proxy` mid-transfer produced the traceback before that
 handling and produces nothing after it, with the payload still serving.
 
@@ -5740,6 +5740,113 @@ access-controlled — every uid on the machine can reach it while the proxy runs
 The `0600` unix socket protects the INSIDE leg only. What snug buys by refusing a
 raw forwarded port is that the hole's lifetime is the human's command rather than
 the whole run, plus the initiator checks above.
+
+## 21. The offline arm's bwrap is pid 1 of a namespace of its own (issue #101)
+
+`scripts/pid-nesting.py` reads this from both sides. Copy it into the target
+first — the sandbox cannot see this repository:
+
+```bash
+cp scripts/pid-nesting.py $SC/proj/sub/
+cd $SC/proj/sub && ./bin/snug . -- python3 pid-nesting.py inside
+```
+
+It waits up to 20s for the host side, which names bwrap and writes its pid where
+the payload polls (`BWRAP_PID` in the sandbox's own working directory):
+
+```bash
+python3 scripts/pid-nesting.py host
+```
+
+Expect, on the host side:
+
+```
+host  ns/pid=pid:[4026531836]  ns/user=user:[4026532916]
+
+snug 16451:
+     16451  snug        ns/pid=pid:[4026531836]  ns/user=user:[4026532916]
+       16463  bwrap       ns/pid=pid:[4026532831]  ns/user=user:[4026532630]
+         16465  bwrap       ns/pid=pid:[4026532836]  ns/user=user:[4026532921]
+           16466  python3     ns/pid=pid:[4026532836]  ns/user=user:[4026532921]
+
+  snug   ns/pid = pid:[4026531836]
+  bwrap  ns/pid = pid:[4026532831]   <- NP
+  init   ns/pid = pid:[4026532836]   <- Q
+  => nesting PRESENT
+```
+
+**Three pid namespaces, and the middle one is the check.** snug is in the host's;
+the bwrap snug forked is pid 1 of an intermediate namespace NP; the init bwrap
+forked, and the payload under it, are in the sandbox's own Q. `bwrap ns/pid` and
+`snug ns/pid` being DIFFERENT is the whole property — equal is what a bwrap
+snug did not nest looks like. `--dry-run`'s TOPOLOGY block claims the same
+construction before the run, under its `pid nesting` rows; the two disagreeing is
+a finding.
+
+Expect, on the payload side:
+
+```
+pid inside : 2
+uid/gid    : 1000/1000
+ns/pid     : pid:[4026532836]
+ns/user    : user:[4026532921]
+ns/net     : net:[4026532854]
+ns/mnt     : mnt:[4026532833]
+pids seen  : [1, 2]
+pid 1 is   : bwrap
+NSpid      : 2
+CapEff     : 0000000000000000
+CapBnd     : 0000000000000000
+NoNewPrivs : 1
+Seccomp    : 2
+
+the intermediate bwrap, host pid 16463:
+  stat /proc/16463          -> No such file or directory
+  stat /proc/16463/fd       -> No such file or directory
+  stat /proc/16463/mem      -> No such file or directory
+```
+
+`ns/pid` matching the host side's Q line is the same fact read from inside. The
+payload state below it is the invariant the nesting must NOT have moved: uid
+1000, both capability sets empty, `NoNewPrivs 1`, seccomp filtering.
+
+**ENOENT, not EPERM, and that is the level's only security content.** procfs
+exposes members of the namespace it was mounted for and nothing else, so a
+process left at NP's level has no `/proc` entry in the sandbox at all — its fds
+and its memory are not merely refused, they are unnamed. Read this reading
+honestly, though: a host pid is absent from Q whether or not the nesting exists,
+so this section's proof is the host side. What the nesting buys is that there is
+now a level to PUT something at.
+
+It buys nothing between siblings. Two payloads bwrap started share Q and still
+read each other's `/proc/<pid>/fd/N`, exactly as they do without the nesting;
+`TestSiblingSandboxProcessesStillShareOneNamespace` keeps that stated in the
+suite.
+
+**The staged arm (`@net`) is not nested, and the script says so** rather than
+reporting an absence it did not check. Its bwrap is forked by the stage, in the
+host's pid namespace:
+
+```bash
+./bin/snug -p @net . -- sleep 20 &
+python3 scripts/pid-nesting.py host
+```
+
+```
+snug 16598:
+     16598  snug        ns/pid=pid:[4026531836]  ns/user=user:[4026532916]
+       16609  exe         ns/pid=pid:[4026531836]  ns/user=user:[4026532630]
+         16634  bwrap       ns/pid=pid:[4026531836]  ns/user=user:[4026532630]
+           16642  bwrap       ns/pid=pid:[4026533099]  ns/user=user:[4026533101]
+             16644  sleep       ns/pid=pid:[4026533099]  ns/user=user:[4026533101]
+       16620  pasta.avx2  ns/pid=<Permission denied>  ns/user=<Permission denied>
+  no bwrap child: this is the STAGED arm (@net), whose bwrap is forked by the stage
+  and is not nested — see the tree above
+```
+
+`exe` is the re-exec'd stage. `pasta`'s own namespace links are not readable by
+this script; it prints the errno rather than guessing at a reason, and no line of
+this check depends on them.
 
 ## If a check fails
 

@@ -508,7 +508,7 @@ reachable until a human runs `snug proxy`, and opening a door can open a sandbox
 escape, which that command says plainly before it binds.
 
 The server inside must accept on the descriptor (`LISTEN_FDS`, fd 3) rather than
-bind a port — `examples/http-door-server.py` is a working one. Servers you cannot
+bind a port — `scripts/http-door-server.py` is a working one. Servers you cannot
 edit (Java, .NET, anything in a container) need the adapter in issue #476.
 
 `snug proxy` prints a URL carrying a one-time credential:
