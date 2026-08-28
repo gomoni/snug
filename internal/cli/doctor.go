@@ -244,6 +244,11 @@ func doctor(argv []string) int {
 
 	reportPodmanHelpers()
 
+	// After the two podman probes, because it is the third thing a container
+	// run needs and the one they stopped short of (issue #483). WARN only: it
+	// deliberately does not touch ok.
+	reportSubuidDelegation(stage.CheckSubuidDelegation, readIDMap(), containerMarker())
+
 	if legacyTIOCSTI() {
 		fmt.Println("  ⚠️  this kernel still allows the TIOCSTI ioctl")
 		fmt.Println("     🛡️  snug will add --new-session to stop the sandbox typing into your")
@@ -252,10 +257,8 @@ func doctor(argv []string) int {
 		fmt.Println("  ✅ TIOCSTI disabled kernel-wide — job control works inside the sandbox")
 	}
 
-	if _, err := os.Stat("/run/.containerenv"); err == nil {
-		fmt.Println("  📦 running inside a container (distrobox/podman) — supported")
-	} else if _, err := os.Stat("/.dockerenv"); err == nil {
-		fmt.Println("  📦 running inside a docker container — supported")
+	if marker := containerMarker(); marker != "" {
+		fmt.Printf("  📦 %s — supported\n", marker)
 	}
 
 	// A host can be perfectly capable and snug still refuse to start because the
@@ -845,4 +848,17 @@ func reportPodmanHelpers() {
 	fmt.Println("     🔒 only the container profiles need these; every other sandbox is unaffected")
 	fmt.Println("     📍 podman searches these directories and does NOT walk a bundle prefix:")
 	fmt.Printf("        %s\n", strings.Join(podmanHelperDirs(), " "))
+}
+
+// containerMarker names the container this process is running in, or "" on a
+// bare host. Two readers: the 📦 line, and the subuid warning, which adds that
+// /etc/subuid is part of the image and does not survive a rebuild.
+func containerMarker() string {
+	if _, err := os.Stat("/run/.containerenv"); err == nil {
+		return "running inside a container (distrobox/podman)"
+	}
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return "running inside a docker container"
+	}
+	return ""
 }
