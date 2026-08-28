@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -34,8 +35,17 @@ import (
 // intermediate pid namespace on the staged arm into a wrong-process SIGKILL.
 //
 // The guard is deliberately over a NamespaceInode call in the same function
-// rather than over a name: what must not come back is os.Getpid(), whatever
-// the surrounding code is called after the next refactor.
+// rather than over a name: what must not come back is the CALLER's own pid,
+// whatever the surrounding code is called after the next refactor.
+//
+// It matched the literal `os.Getpid()` only, and a redteam round pointed out
+// the gap rather than exploiting it: a refactor passing the same value through
+// a variable — `snugPid`, `myPid`, `selfPid` — reads as a different argument
+// and slipped past. So the check is now on the shape of the argument, and the
+// two directions are asymmetric on purpose. An argument naming BWRAP is
+// accepted; anything naming this process, however spelled, is refused; and an
+// argument the guard cannot classify FAILS, because a source guard that waves
+// through what it does not recognise is the permissive default issue #340 was.
 func TestEveryForeignUsernsChildCallerPassesBwrapsNamespace(t *testing.T) {
 	files := []string{
 		filepath.Join("..", "..", "internal", "stage", "serve.go"),
@@ -59,14 +69,14 @@ func TestEveryForeignUsernsChildCallerPassesBwrapsNamespace(t *testing.T) {
 		}
 		for _, m := range matches {
 			found++
-			arg := string(m[1])
-			if arg == "os.Getpid()" {
-				t.Errorf("%s passes os.Getpid() to initwalk.NamespaceInode: that is the CALLER's user "+
+			arg := strings.TrimSpace(string(m[1]))
+			if selfPidSpelling(arg) {
+				t.Errorf("%s passes %s to initwalk.NamespaceInode: that is the CALLER's user "+
 					"namespace, and the identity guard needs BWRAP's. See internal/initwalk's package "+
 					"comment — with the caller's id, every child of bwrap is foreign the moment bwrap "+
 					"stops sharing the caller's user namespace, the walk admits all of them, and the "+
 					"first one lands in a record killOrphanInit later SIGKILLs. Pass the pid of the "+
-					"bwrap whose children are being walked", f)
+					"bwrap whose children are being walked", f, arg)
 			}
 		}
 	}
@@ -77,5 +87,70 @@ func TestEveryForeignUsernsChildCallerPassesBwrapsNamespace(t *testing.T) {
 		t.Fatalf("control: found %d NamespaceInode call(s) across %v, expected at least 2 — one per "+
 			"arm. A caller was removed, or this guard is no longer reading the files that have them",
 			found, files)
+	}
+}
+
+// selfPidSpelling reports whether an argument names THIS process's pid, and it
+// is the half a name-blind guard cannot do. Three families, and the third is
+// why the classifier exists at all:
+//
+//	os.Getpid(), syscall.Getpid(), unix.Getpid()   the direct call
+//	os.Getpid() wrapped in a conversion            e.g. int32(os.Getpid())
+//	a variable whose name says self                selfPid, myPid, snugPid, ownPid
+//
+// An argument mentioning bwrap is accepted whatever else it says, because that
+// IS the property being asserted and a name like `bwrapSelfPid` would
+// otherwise trip the self family.
+func selfPidSpelling(arg string) bool {
+	lower := strings.ToLower(arg)
+	if strings.Contains(lower, "bwrap") {
+		return false
+	}
+	if strings.Contains(arg, "Getpid()") {
+		return true
+	}
+	for _, self := range []string{"selfpid", "mypid", "ownpid", "snugpid", "callerpid", "parentpid"} {
+		if strings.Contains(lower, self) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestTheSelfPidClassifierRefusesTheSpellingsItCameFrom is the classifier's own
+// test, and it exists because the guard above cannot fail while the tree is
+// correct: every assertion in it is vacuous until somebody writes the defect,
+// so the only way to know the classifier still works is to hand it the
+// spellings directly.
+func TestTheSelfPidClassifierRefusesTheSpellingsItCameFrom(t *testing.T) {
+	for _, arg := range []string{
+		"os.Getpid()",
+		"int32(os.Getpid())",
+		"syscall.Getpid()",
+		"selfPid",
+		"snugPid",
+		"myPid",
+		"callerPID",
+		"p.parentPid",
+	} {
+		if !selfPidSpelling(arg) {
+			t.Errorf("selfPidSpelling(%q) = false — the guard would accept an argument naming "+
+				"the CALLER's pid, which is the whole thing it exists to refuse", arg)
+		}
+	}
+
+	// The other direction, and it must stay wide enough that the real callers
+	// pass: an argument naming bwrap is the correct one.
+	for _, arg := range []string{
+		"bwrapPID",
+		"info.BwrapPID",
+		"cmd.Process.Pid",
+		"bwrapSelfPid",
+		"req.BwrapPid",
+	} {
+		if selfPidSpelling(arg) {
+			t.Errorf("selfPidSpelling(%q) = true — the guard would refuse a correct caller, "+
+				"which makes it a test that has to be deleted rather than satisfied", arg)
+		}
 	}
 }
