@@ -33,6 +33,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gomoni/snug/internal/targetkey"
 	"github.com/gomoni/snug/internal/vdir"
@@ -237,6 +238,12 @@ func lockTarget(abs string) (unlock func(), err error) {
 // refuses with a message rather than spinning.
 const targetLockAttempts = 4
 
+// targetLockRetryDelay separates the EWOULDBLOCK retries above. It is sized
+// against what it is waiting out — sweepOneStaleLock's window is an fstat, an
+// Lstat and an unlink on a tmpfs — not against a run, which holds the lock for
+// minutes and is refused after the last attempt regardless.
+const targetLockRetryDelay = 2 * time.Millisecond
+
 // openAndHoldTargetLock opens the per-target lock file and takes LOCK_EX on
 // it, returning the held descriptor. dir is the lock file's directory, used
 // only for messages; real is the target, used only to name a live holder.
@@ -258,10 +265,24 @@ func openAndHoldTargetLock(snugRoot *os.Root, dir, name, real string) (*os.File,
 		}
 
 		if flockErr := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); flockErr != nil {
-			// EWOULDBLOCK: a live run holds it. Read its pid to name it, then
-			// refuse. Any other flock error is reported verbatim rather than
-			// guessed at.
+			// EWOULDBLOCK: something holds it. Almost always a live run —
+			// but sweepOneStaleLock takes LOCK_EX on every unheld lock file
+			// it finds, so a concurrently starting snug's sweep holds this
+			// one for the length of an fstat and an unlink, and from here
+			// that is indistinguishable from a run. A redteam round measured
+			// the false refusal: 401 lock files, 3413 acquisitions, one
+			// spurious "a sandbox is already live" in 20 ms.
+			//
+			// So EWOULDBLOCK is retried on the same budget as the swept case
+			// rather than believed the first time. A REAL holder keeps the
+			// lock for its whole run, so the retries cost it nothing but the
+			// sleeps below and it refuses exactly as before.
 			if errors.Is(flockErr, unix.EWOULDBLOCK) {
+				if attempt < targetLockAttempts-1 {
+					lock.Close()
+					time.Sleep(targetLockRetryDelay)
+					continue
+				}
 				holder := readHolderPID(lock)
 				lock.Close()
 				return nil, &targetBusyError{target: real, holder: holder}
@@ -306,8 +327,16 @@ func writeHolderPID(lock *os.File) {
 
 // readHolderPID reads the decimal pid a live holder wrote. It returns 0 on
 // any problem — an empty file (the holder acquired the lock but has not yet
-// written its pid), a torn read, an unparseable line — because the message
-// this feeds degrades cleanly to "held by: snug" without a pid.
+// written its pid), a torn read, an unparseable line, or a pid that is no
+// longer there — because the message this feeds degrades cleanly to
+// "held by: snug" without a pid.
+//
+// The last of those is the one worth naming: the pid in the file is written
+// once and never cleared, so a file left by a run that has since exited still
+// carries it. A refusal that prints a dead pid sends the reader to `ps` for a
+// process that does not exist, and a redteam round produced exactly that
+// (`held by: snug (pid 999999)` for a corpse). Nothing is deduced from the
+// answer either way — the flock is the truth; this is the courtesy half.
 func readHolderPID(lock *os.File) int {
 	if _, err := lock.Seek(0, 0); err != nil {
 		return 0
@@ -320,6 +349,15 @@ func readHolderPID(lock *os.File) int {
 	line := strings.TrimSpace(strings.SplitN(string(buf[:n]), "\n", 2)[0])
 	pid, err := strconv.Atoi(line)
 	if err != nil || pid <= 0 {
+		return 0
+	}
+	// Signal 0 is the existence check and nothing else: it delivers nothing
+	// and only reports whether a process with this number is there for this
+	// uid to signal. A number that has been recycled since the file was
+	// written passes it, and that is acceptable here — this feeds a message,
+	// never a decision, and "held by: snug (pid N)" pointing at the wrong
+	// live process is a far smaller wrong than pointing at a corpse.
+	if err := unix.Kill(pid, 0); err != nil {
 		return 0
 	}
 	return pid
