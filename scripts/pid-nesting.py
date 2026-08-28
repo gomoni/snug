@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Observe the sandbox's pid-namespace nesting, from both sides of it.
+"""Show, in plain words, how deep the sandbox's pid namespace sits.
 
     # terminal 1 — the payload
     snug $SC/proj/sub -- python3 /path/to/snug/scripts/pid-nesting.py inside
@@ -7,6 +7,7 @@
     # terminal 2, within 20s — the host
     python3 scripts/pid-nesting.py host
 
+It reads like `snug doctor`: a ✅ or ❌ per claim, the evidence under it.
 VERIFY.md §21 carries the expected output of both.
 
 WHY BOTH SIDES, AND WHY THE HOST SIDE IS THE ONE THAT PROVES ANYTHING. snug's
@@ -15,8 +16,8 @@ offline arm forks bwrap into a pid namespace of its own (NP), and bwrap's own
 where a plain bwrap has two. From INSIDE, that is invisible on purpose: a host
 pid never appears in Q's procfs whether the nesting exists or not, so the
 `inside` probe reads identically with and without it. The load-bearing line is
-the host one, `bwrap ns/pid != snug ns/pid`, which is false without the nesting
-and true with it.
+the host one, bwrap's pid namespace differing from snug's, which is false
+without the nesting and true with it.
 
 The `inside` probe is still worth running, for the negative it states: the
 intermediate bwrap is ENOENT rather than EPERM there — procfs exposes only
@@ -38,6 +39,22 @@ import time
 # Not tempfile: the two sides share a filesystem only where the target bind
 # makes them, so the default has to be a path inside the sandbox.
 PID_FILE = os.environ.get("PID_FILE") or os.path.join(os.getcwd(), "BWRAP_PID")
+
+
+def ok(line):
+    print(f"  ✅ {line}")
+
+
+def bad(line):
+    print(f"  ❌ {line}")
+
+
+def warn(line):
+    print(f"  ⚠️  {line}")
+
+
+def detail(line):
+    print(f"     {line}".rstrip())
 
 
 def ns(pid, kind):
@@ -69,61 +86,122 @@ def children(pid):
     return out
 
 
-def descend(pid, depth=0, seen=None):
+def descend(pid, own, depth=0, seen=None, parent=""):
+    """One line per process, marking only where a NEW pid namespace begins.
+
+    Marking every process that is "not the host's" says the same thing four
+    times and hides the two lines that matter — the two levels snug creates.
+    """
     seen = set() if seen is None else seen
     if pid in seen:
         return
     seen.add(pid)
-    print(f"  {'  ' * depth}{pid:>8}  {comm(pid):<10}"
-          f"  ns/pid={ns(pid, 'pid')}  ns/user={ns(pid, 'user')}")
+    mine = ns(pid, "pid")
+    if mine.startswith("<"):
+        # Unreadable is NOT a new level: pasta's own /proc entry reads
+        # "Permission denied" here, and calling that a namespace boundary
+        # would put a mark on the one line we know least about.
+        note = "(this process's namespace is not readable from here)"
+    elif depth == 0:
+        note = "the host's own pid namespace"
+    elif mine != parent:
+        note = "← a NEW pid namespace starts here"
+    else:
+        note = ""
+    detail(f"{'  ' * depth}{pid:>7}  {comm(pid):<12}{mine:<22}{note}")
     for child in children(pid):
-        descend(child, depth + 1, seen)
+        descend(child, own, depth + 1, seen, mine)
 
 
 def host():
     snugs = [int(d.rsplit("/", 1)[1]) for d in glob.glob("/proc/[0-9]*")
              if comm(int(d.rsplit("/", 1)[1])) == "snug"]
+    print("\nLooking for a running snug\n")
     if not snugs:
-        sys.exit("no running snug found — start one first, e.g. "
-                 "snug $SC/proj/sub -- sleep 300 &")
+        bad("no running snug found")
+        detail("start one first, then run this again while it is up:")
+        detail("    snug $SC/proj/sub -- sleep 300 &")
+        sys.exit(1)
 
-    print(f"host  ns/pid={ns('self', 'pid')}  ns/user={ns('self', 'user')}")
+    own = ns("self", "pid")
     for snug in snugs:
-        print(f"\nsnug {snug}:")
-        descend(snug)
+        ok(f"found snug, pid {snug}")
+        print()
+        detail("who is running, and which pid namespace each one lives in:")
+        print()
+        descend(snug, own)
+        print()
 
         bwraps = [p for p in children(snug) if comm(p) == "bwrap"]
         if not bwraps:
-            print("  no bwrap child: this is the STAGED arm (@net), whose bwrap "
-                  "is forked by the stage and is not nested — see the tree above")
+            warn("no bwrap directly under snug — this is the @net sandbox")
+            detail("Its bwrap is started by the stage instead, and it is NOT nested;")
+            detail("the tree above shows the whole chain. Only the offline arm nests.")
+            print()
             continue
+
         bwrap = bwraps[0]
-        nested = ns(bwrap, "pid") != ns(snug, "pid")
-        print(f"\n  snug   ns/pid = {ns(snug, 'pid')}")
-        print(f"  bwrap  ns/pid = {ns(bwrap, 'pid')}   <- NP")
+        if ns(bwrap, "pid") == own:
+            bad("bwrap is in the same pid namespace as snug — the sandbox is NOT nested")
+            detail("This is what snug looked like before issue #101: two levels, not three.")
+            detail(f"snug  {own}")
+            detail(f"bwrap {ns(bwrap, 'pid')}")
+            print()
+            continue
+
+        ok("the sandbox sits one level deeper than snug — the nesting is there")
+        detail(f"snug   {ns(snug, 'pid'):<22}the host's, same as this terminal")
+        detail(f"bwrap  {ns(bwrap, 'pid'):<22}snug made this one; bwrap is pid 1 in it")
         for init in children(bwrap):
-            print(f"  init   ns/pid = {ns(init, 'pid')}   <- Q")
-        print(f"  => nesting {'PRESENT' if nested else 'ABSENT'}")
+            detail(f"init   {ns(init, 'pid'):<22}the sandbox's own, below bwrap's")
+        detail("")
+        detail("So nothing inside the sandbox has a number for bwrap at all, and when")
+        detail("bwrap dies the kernel tears down everything at its level with it.")
+        print()
+
         try:
             with open(PID_FILE, "w") as f:
                 f.write(str(bwrap))
-            print(f"  wrote {PID_FILE} for the payload to probe")
+            ok(f"told the payload which pid to look for (bwrap is host pid {bwrap})")
+            detail(f"📍 {PID_FILE}")
         except OSError as e:
-            print(f"  could not write {PID_FILE}: {e}; "
-                  f"pass HOST_BWRAP_PID={bwrap} to the payload instead")
+            warn(f"could not write {PID_FILE}: {e}")
+            detail(f"Run the payload with HOST_BWRAP_PID={bwrap} in its environment instead.")
+        print()
 
 
 def inside():
-    print(f"pid inside : {os.getpid()}")
-    print(f"uid/gid    : {os.getuid()}/{os.getgid()}")
-    for kind in ("pid", "user", "net", "mnt"):
-        print(f"ns/{kind:<7} : {ns('self', kind)}")
-    print(f"pids seen  : {sorted(int(d.rsplit('/', 1)[1]) for d in glob.glob('/proc/[0-9]*'))}")
-    print(f"pid 1 is   : {comm(1)}")
+    print("\nInside the sandbox\n")
+    pids = sorted(int(d.rsplit("/", 1)[1]) for d in glob.glob("/proc/[0-9]*"))
+    ok(f"you are pid {os.getpid()}, and the whole visible world is {pids}")
+    detail(f"pid 1 is {comm(1)} — bwrap's own init, the only thing above you")
+
     with open("/proc/self/status") as f:
         status = dict(line.split(":", 1) for line in f.read().splitlines() if ":" in line)
-    for key in ("NSpid", "CapEff", "CapBnd", "NoNewPrivs", "Seccomp"):
-        print(f"{key:<11}: {status.get(key, '<absent>').strip()}")
+
+    def field(key):
+        return status.get(key, "").strip()
+
+    if set(field("CapEff") + field("CapBnd")) <= {"0"}:
+        ok("no capabilities at all — CapEff and CapBnd are both empty")
+    else:
+        bad(f"this process holds capabilities: CapEff {field('CapEff')}, "
+            f"CapBnd {field('CapBnd')}")
+    if field("NoNewPrivs") == "1":
+        ok("no_new_privs is set — nothing here can gain privilege by exec'ing")
+    else:
+        bad("no_new_privs is NOT set")
+    if field("Seccomp") == "2":
+        ok("a seccomp filter is installed and enforcing (mode 2)")
+    else:
+        warn(f"seccomp is in mode {field('Seccomp') or '<unknown>'}, not 2")
+    ok(f"running as uid {os.getuid()}, gid {os.getgid()}")
+
+    print()
+    detail("the namespaces you are in:")
+    for kind in ("pid", "user", "net", "mnt"):
+        detail(f"   {kind:<6}{ns('self', kind)}")
+    print()
 
     probe = os.environ.get("HOST_BWRAP_PID")
     deadline = time.time() + 20
@@ -134,17 +212,29 @@ def inside():
         except OSError:
             time.sleep(0.1)
     if not probe:
-        print(f"\nno HOST_BWRAP_PID and nothing at {PID_FILE} after 20s — "
-              "run the host side while this one waits")
+        warn("nobody told me which pid to look for, so the last check is skipped")
+        detail(f"Run `python3 scripts/pid-nesting.py host` on the host while this waits,")
+        detail(f"or pass HOST_BWRAP_PID=<pid>. Expected the answer at {PID_FILE}.")
+        print()
         return
 
-    print(f"\nthe intermediate bwrap, host pid {probe}:")
+    missing = []
     for path in (f"/proc/{probe}", f"/proc/{probe}/fd", f"/proc/{probe}/mem"):
         try:
             os.stat(path)
-            print(f"  stat {path:<20} -> VISIBLE")
         except OSError as e:
-            print(f"  stat {path:<20} -> {e.strerror}")
+            missing.append((path, e.strerror))
+    if len(missing) == 3:
+        ok(f"the bwrap that built this sandbox (host pid {probe}) does not exist in here")
+        for path, why in missing:
+            detail(f"{path:<20}{why}")
+        detail("")
+        detail("Absent, not forbidden: procfs only lists processes of the namespace it")
+        detail("was mounted for, so there is no fd list to read and no memory to attach.")
+    else:
+        bad(f"host pid {probe} is visible from inside the sandbox")
+        detail("A process at bwrap's level should have no /proc entry here at all.")
+    print()
 
 
 if __name__ == "__main__":

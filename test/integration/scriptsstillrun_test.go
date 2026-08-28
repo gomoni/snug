@@ -57,10 +57,11 @@ func TestTheNestingScriptStillReadsALiveSandbox(t *testing.T) {
 		t.Fatalf("scripts/pid-nesting.py host exited %v:\n%s", err, got)
 	}
 
-	// The verdict line, not the namespace ids: the ids differ every run, and
-	// a test that pinned them would fail for the one reason that is never a
-	// finding.
-	if !strings.Contains(got, "=> nesting PRESENT") {
+	// The verdict SENTENCE, not the namespace ids: the ids differ every run,
+	// and a test that pinned them would fail for the one reason that is never
+	// a finding. The script reports like `snug doctor` — a ✅ per claim — so
+	// this is the ✅ that says the nesting is there.
+	if !strings.Contains(got, "the sandbox sits one level deeper than snug") {
 		t.Errorf("the script did not reach a verdict on a live offline run. Either it has "+
 			"drifted from the process tree it reads, or the nesting itself is gone — the "+
 			"tests named in this file's comment say which:\n%s", got)
