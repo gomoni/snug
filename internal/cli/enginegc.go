@@ -472,7 +472,14 @@ func processCandidate(root *os.Root, rootPath string, c engineGCCandidate, opts 
 	var unlock func()
 	var err error
 	if c.attributed() {
-		live, unlock, err = targetLive(c.bc.Target)
+		// A --dry-run reclaims nothing, so it needs the answer and not the
+		// lock; every other run of this command is about to rename a store
+		// aside and must hold the target not-live while it does.
+		mode := liveHoldForReclaim
+		if opts.dryRun {
+			mode = liveProbeOnly
+		}
+		live, unlock, err = targetLive(c.bc.Target, mode)
 	} else {
 		live, err = anyRunLive()
 		unlock = func() {}
@@ -604,13 +611,53 @@ func humanBytes(n int64) string {
 // instead, which overrides the package-level canonicalRuntimeDir var these
 // functions actually consult and points it at a t.TempDir().
 
+// targetLiveMode is the difference between ASKING whether a target is live
+// and HOLDING it not-live, and it exists because those are two questions with
+// two correct implementations rather than one function with a flag.
+//
+// The distinction became load-bearing when sweepOneStaleLock started removing
+// unheld lock files: "this target has no lock file" is now the ordinary
+// steady state for a target whose last run has ended, where before it could
+// only mean "no run has ever locked this target". A read-only probe that
+// answers "not live" on ENOENT is still telling the truth about the instant
+// it looked — and the truth about an instant is not what a reclaim needs.
+type targetLiveMode int
+
+const (
+	// liveProbeOnly answers the question and creates nothing. --dry-run's
+	// mode, and it is a promise --dry-run makes in those words. It cannot
+	// keep the answer true, so nothing may act on it.
+	liveProbeOnly targetLiveMode = iota
+	// liveHoldForReclaim takes the same exclusive lock a run takes, creating
+	// the file if the sweep has already removed it, and keeps holding it. The
+	// answer is then true for as long as the caller holds unlock — which is
+	// the property engine gc's phase 1 needs and the read-only probe cannot
+	// give it.
+	liveHoldForReclaim
+)
+
 // targetLive is Arm A: real, an EXACT target string a breadcrumb named. See
 // this file's package comment for why it computes the lock's name directly
 // rather than scanning, and why the run-state JSON is a corroborating
 // refusal only. unlock is non-nil and must be called (whether or not live)
 // once the caller is done with whatever it decided under the lock — a no-op
 // when there was nothing to unlock.
-func targetLive(real string) (live bool, unlock func(), err error) {
+//
+// WHY MODE IS NOT A CONVENIENCE. Under liveProbeOnly an absent lock file
+// means "no run is live right now"; under liveHoldForReclaim it means
+// "nothing is live and nothing can become live until you let go", and only
+// the second is a fact a caller may reclaim a store under. The gap between
+// them is a whole run's startup: lockTarget creates the file and locks it,
+// so a run beginning one instruction after a probe returned ENOENT is a run
+// gc never sees.
+//
+// The O_CREATE this mode brings back was removed once for a measured reason —
+// an earlier probe left two 0-byte locks in /run/user/<uid>/snug/ for targets
+// that never existed, under --dry-run, which promises it creates no file.
+// Both halves of that objection are now paid for: --dry-run keeps the
+// read-only probe, and any lock file this path creates is collected by
+// sweepOneStaleLock on the next run.
+func targetLive(real string, mode targetLiveMode) (live bool, unlock func(), err error) {
 	noop := func() {}
 
 	base, snugName, err := targetLockBase()
@@ -624,6 +671,38 @@ func targetLive(real string) (live bool, unlock func(), err error) {
 	}
 	defer root.Close()
 
+	snugPath := filepath.Join(base, snugName)
+	name := targetLockName(real)
+
+	if mode == liveHoldForReclaim {
+		// SecureSubdir, not OpenExistingSubdir: this arm holds the lock, and
+		// a directory that does not exist yet is one a run starting a moment
+		// from now would create — the same reason lockTarget creates it.
+		snugRoot, _, serr := vdir.SecureSubdir(root, base, snugName)
+		if serr != nil {
+			return false, noop, fmt.Errorf("checking whether %s is live: %w", real, serr)
+		}
+		lock, lerr := openAndHoldTargetLock(snugRoot, snugPath, name, real)
+		if lerr != nil {
+			var busy *targetBusyError
+			if errors.As(lerr, &busy) {
+				snugRoot.Close()
+				return true, noop, nil
+			}
+			snugRoot.Close()
+			return false, noop, fmt.Errorf("checking whether %s is live: %w", real, lerr)
+		}
+		if targetProvablyLive(snugRoot, snugPath, real) {
+			lock.Close()
+			snugRoot.Close()
+			return true, noop, nil
+		}
+		return false, func() {
+			lock.Close()
+			snugRoot.Close()
+		}, nil
+	}
+
 	snugRoot, err := vdir.OpenExistingSubdir(root, base, snugName)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -636,61 +715,35 @@ func targetLive(real string) (live bool, unlock func(), err error) {
 		}
 		return false, noop, fmt.Errorf("checking whether %s is live: %w", real, err)
 	}
+	defer snugRoot.Close()
 
-	name := targetLockName(real)
-	snugPath := filepath.Join(base, snugName)
-	// READ-ONLY, and NEVER O_CREATE. This is a query, and a query that
-	// creates a file is not one: the lock directory is never unlinked (it
-	// clears at reboot, which is what lets the guard fail closed), so an
-	// O_CREATE probe here would leave one permanent lock file per attributed
-	// store it examined — and it would do so under --dry-run, which promises
-	// it "creates no file". MEASURED: an earlier O_CREATE|O_RDWR version of
-	// this line left two 0-byte locks in /run/user/<uid>/snug/ for targets
-	// that never existed.
-	//
-	// ENOENT therefore means not live, and that is sound rather than
-	// convenient: lockTarget creates this file before a run does anything
-	// else (targetlock.go), so a live run's lock necessarily exists. flock(2)
-	// takes LOCK_EX on an O_RDONLY descriptor — unlike fcntl(2) POSIX locks,
-	// it does not require write access — so the exclusive probe below is
-	// unaffected.
+	// READ-ONLY, and NEVER O_CREATE: see liveProbeOnly. flock(2) takes LOCK_EX
+	// on an O_RDONLY descriptor — unlike fcntl(2) POSIX locks, it does not
+	// require write access — so the exclusive probe below is unaffected.
 	f, err := snugRoot.Open(name)
 	if errors.Is(err, fs.ErrNotExist) {
-		snugRoot.Close()
 		return false, noop, nil
 	}
 	if err != nil {
-		snugRoot.Close()
 		return false, noop, fmt.Errorf("checking whether %s is live: opening %s: %w",
 			real, filepath.Join(snugPath, name), err)
 	}
+	defer f.Close()
 
 	if flockErr := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); flockErr != nil {
-		f.Close()
-		snugRoot.Close()
 		if errors.Is(flockErr, unix.EWOULDBLOCK) {
 			return true, noop, nil
 		}
 		return false, noop, fmt.Errorf("checking whether %s is live: flock %s: %w",
 			real, filepath.Join(snugPath, name), flockErr)
 	}
+	unix.Flock(int(f.Fd()), unix.LOCK_UN)
 
-	// We hold the lock exclusively: by the lock's own contract, nothing owns
-	// it right now. Corroborate with the state file regardless — see this
-	// function's doc comment on why its absence proves nothing but its
-	// presence can still refuse.
-	if targetProvablyLive(snugRoot, snugPath, real) {
-		unix.Flock(int(f.Fd()), unix.LOCK_UN)
-		f.Close()
-		snugRoot.Close()
-		return true, noop, nil
-	}
-
-	return false, func() {
-		unix.Flock(int(f.Fd()), unix.LOCK_UN)
-		f.Close()
-		snugRoot.Close()
-	}, nil
+	// Nothing held it at the instant we looked. Corroborate with the state
+	// file regardless — see this function's doc comment on why its absence
+	// proves nothing but its presence can still refuse. The answer is not
+	// kept true past this return, which is what liveProbeOnly means.
+	return targetProvablyLive(snugRoot, snugPath, real), noop, nil
 }
 
 // targetProvablyLive is Arm A's corroborating signal: the run-state JSON at
