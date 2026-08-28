@@ -449,12 +449,22 @@ func allowed(segs []string, method string) bool {
 		return safeMethod(method)
 
 	case "images":
-		// Pull, list, inspect, tag, remove — prune is taken by isPrune above,
-		// for every segment, before this switch runs. `load` and `import` bring in a
-		// filesystem image from a stream the engine did not fetch and snug never
-		// saw, so they stay refused. `create` is routed to handleImageCreate,
-		// which distinguishes a pull from an import by query string — blocking it
-		// outright breaks `docker pull` entirely, which it did.
+		// Pull, list, inspect, tag — and PUSH, which this list did not name and
+		// which nothing below refuses. Push is allowed because it reaches
+		// nothing the payload cannot already reach: it needs egress, a
+		// container's network IS the sandbox's (ENGINE-NETNS.md §0), so with no
+		// `@net` there is nothing to dial and with `@net` the payload has
+		// arbitrary egress of its own; and REGISTRY_AUTH_FILE names snug's own
+		// generated auth.json, so it authenticates as nobody (issue #142's
+		// regression is that the host's credentials stay unreachable).
+		// DELETE is taken by its own case in ServeHTTP before this runs, and so
+		// is prune, for every segment.
+		//
+		// `load` and `import` bring in a filesystem image from a stream the
+		// engine did not fetch and snug never saw, so they stay refused.
+		// `create` is routed to handleImageCreate, which distinguishes a pull
+		// from an import by query string — blocking it outright breaks
+		// `docker pull` entirely, which it did.
 		if len(segs) >= 2 && (segs[1] == "load" || segs[1] == "import") {
 			return false
 		}

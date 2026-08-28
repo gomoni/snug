@@ -592,6 +592,12 @@ func TestEndpointAllowlist(t *testing.T) {
 		{"POST", "/v1.41/containers/abc/commit", false},
 		{"POST", "/v1.41/build", false},
 		{"POST", "/v1.41/images/load", false},
+		// Push is ALLOWED, and these two rows exist because the comment on
+		// `case "images"` did not say so for as long as the code did it. What
+		// bounds a push is not this allowlist: no egress without `@net`, and a
+		// REGISTRY_AUTH_FILE that authenticates as nobody.
+		{"POST", "/v1.41/images/alpine/push", true},
+		{"POST", "/v5.0.0/libpod/images/alpine/push", true},
 		{"POST", "/v1.41/commit", false},
 		// Issue #339. Reading the engine's state is not destroying it, and the
 		// pairs are deliberately adjacent: what changed is the verb, not the
