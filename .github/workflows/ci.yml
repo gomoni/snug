@@ -535,5 +535,23 @@ jobs:
       # `make integration-engine` also runs. A workflow file is the one place
       # those instructions must NOT live: nobody can run a yaml step locally,
       # so a failure here would only ever reproduce by pushing again.
+      #
+      # THE SCRIPT DIRECTLY, NOT THROUGH MAKE (issue #505). The script
+      # classifies its own network failures and exits 75, EX_TEMPFAIL, saying
+      # "so the code says so too" — and through make that sentence is false.
+      # GNU make exits 2 on any recipe failure whatever the recipe exited,
+      # MEASURED:
+      #
+      #   $ printf 't:\n\t@exit 75\n' > Makefile.probe
+      #   $ make -f Makefile.probe t; echo "make exit=$?"
+      #   make: *** [Makefile.probe:2: t] Error 75
+      #   make exit=2
+      #
+      # It cannot be fixed inside the Makefile: re-raising 75 still exits 2,
+      # and swallowing it would exit 0 and turn an infra incident green, which
+      # #486 refused on purpose. This is the SAME single command the recipe
+      # runs, so the rule above is untouched — the instructions stay in the
+      # script and this file still only names it. TestTheEngineJobRunsTheScript
+      # NotMake in test/guard is the ratchet.
       - name: The engine suite, in a Tumbleweed container
-        run: make integration-engine
+        run: ./test/engine-container.sh
