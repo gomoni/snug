@@ -43,7 +43,14 @@ func reportSubuidDelegation(check func() error, h subuidHost) {
 	// map rather than from a marker file.
 	base, size, okSuggest := subuidSuggestion(h.idMap, uint64(h.uid))
 	if okSuggest {
-		fmt.Printf("     🔧 add this line to BOTH /etc/subuid and /etc/subgid:  %s:%d:%d\n",
+		// A COMMAND, not a line to transcribe. Doctor knows the name, the base
+		// and the size, so leaving the user to work out how to append to two
+		// root-owned files is leaving them a step this function can take —
+		// and the obvious alternative has an off-by-one waiting in it, since
+		// usermod --add-subuids takes FIRST-LAST rather than base:count
+		// (issue #500).
+		fmt.Println("     🔧 run this, then start snug again:")
+		fmt.Printf("          printf '%s:%d:%d\\n' | sudo tee -a /etc/subuid /etc/subgid\n",
 			h.name, base, size)
 		if base != conventionalSubuidBase {
 			fmt.Printf("        (not the conventional %d — this namespace's uid_map cannot map it)\n",
@@ -51,8 +58,18 @@ func reportSubuidDelegation(check func() error, h subuidHost) {
 		}
 	}
 	if h.container != "" {
-		fmt.Println("     📦 /etc/subuid lives in the container image, so it goes away on every")
-		fmt.Println("        rebuild of this box and has to be added again")
+		// The rebuild note used to stop here, one sentence short of the fix,
+		// and this is the box where the warning fires most often. The three
+		// facts below are the ones a user does not derive: a hook that is a
+		// FILE, a range re-derived rather than remembered, and exit 0 — all
+		// three measured while setting snug up on a second distrobox (#500).
+		fmt.Println("     📦 /etc/subuid is part of this container's image, so it goes away on")
+		fmt.Println("        every rebuild. To make it survive, add a distrobox init_hook that")
+		fmt.Println("        runs a SCRIPT FILE (not an inline command — distrobox-assemble")
+		fmt.Println("        re-quotes hooks and then evals them), re-derives the range from")
+		fmt.Println("        /proc/self/uid_map rather than hardcoding it, and EXITS 0 when it")
+		fmt.Println("        finds none: distrobox-init runs under `set -o errexit`, so a")
+		fmt.Println("        nonzero hook does not report a problem, it stops the box starting.")
 	}
 	fmt.Println("     🔒 only the container profiles need this; offline and net sandboxes are unaffected")
 }

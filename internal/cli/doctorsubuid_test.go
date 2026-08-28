@@ -45,13 +45,44 @@ func TestDoctorWarnsAboutAMissingSubuidRangeAndDoesNotCondemnTheHost(t *testing.
 	if !strings.Contains(out, "/etc/subuid has no range for tester") {
 		t.Fatalf("the checker's own detail was swallowed:\n%s", out)
 	}
-	if !strings.Contains(out, "goes away on every") {
+	if !strings.Contains(out, "goes away on") {
 		t.Fatalf("inside a container the report must say /etc/subuid is part of the image:\n%s", out)
 	}
+	// Issue #500: a line to transcribe is not a fix. The report must hand over
+	// something runnable, carrying the range it just computed.
+	if !strings.Contains(out, "printf 'tester:1001:64535\\n' | sudo tee -a /etc/subuid /etc/subgid") {
+		t.Fatalf("the report named a range but no command that applies it:\n%s", out)
+	}
+	// The three facts a user does not derive, each asserted by the word that
+	// carries it. Without these the rebuild note states the problem and stops.
+	for _, want := range []string{"init_hook", "SCRIPT FILE", "/proc/self/uid_map", "EXITS 0", "errexit"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the persistence advice does not mention %q, which is one of the three "+
+				"constraints a user cannot derive:\n%s", want, out)
+		}
+	}
+	t.Logf("the warn path, in full:\n%s", out)
 
 	out = captureStdout(t, func() { reportSubuidDelegation(func() error { return nil }, host) })
 	if !strings.Contains(out, "✅") || strings.Contains(out, "⚠️") {
 		t.Fatalf("a present range did not read as a tick:\n%s", out)
+	}
+	// A tick says nothing else. A host that already has a range must not be
+	// handed a command to run against it.
+	if strings.Contains(out, "sudo tee") || strings.Contains(out, "init_hook") {
+		t.Errorf("a present range carried the fix advice anyway:\n%s", out)
+	}
+
+	// The persistence half is gated on being IN a container: on a bare host
+	// /etc/subuid survives a reboot and the distrobox recipe is noise.
+	bare := host
+	bare.container = ""
+	out = captureStdout(t, func() { reportSubuidDelegation(absent, bare) })
+	if !strings.Contains(out, "sudo tee") {
+		t.Errorf("a bare host lost the command, which it needs as much as a container does:\n%s", out)
+	}
+	if strings.Contains(out, "init_hook") {
+		t.Errorf("a bare host was given the distrobox rebuild recipe:\n%s", out)
 	}
 
 	// The exit code is unchanged BY CONSTRUCTION: the report answers nothing a

@@ -70,9 +70,27 @@ this development host's `/proc/self/uid_map` (`0→1 ×1000`, `1000→0 ×1`,
 a live `/etc/subuid` is not a thing to do to a working box:
 
 ```
-     🔧 add this line to BOTH /etc/subuid and /etc/subgid:  michal:1001:64535
+     🔧 run this, then start snug again:
+          printf 'michal:1001:64535\n' | sudo tee -a /etc/subuid /etc/subgid
         (not the conventional 100000 — this namespace's uid_map cannot map it)
+     📦 /etc/subuid is part of this container's image, so it goes away on
+        every rebuild. To make it survive, add a distrobox init_hook that
+        runs a SCRIPT FILE (not an inline command — distrobox-assemble
+        re-quotes hooks and then evals them), re-derives the range from
+        /proc/self/uid_map rather than hardcoding it, and EXITS 0 when it
+        finds none: distrobox-init runs under `set -o errexit`, so a
+        nonzero hook does not report a problem, it stops the box starting.
 ```
+
+The 📦 half is gated on being inside a container; a bare host gets the command
+and not the recipe. Its three constraints are the ones a user does not derive,
+and each was paid for while setting snug up on a second distrobox (issue #500):
+`distrobox-assemble` wraps a hook containing a double quote in SINGLE quotes and
+then `eval`s it, so an inline `awk` program is broken by its own quotes; the
+conventional `100000:65536` names nothing here so the range must be re-read from
+the map; and `distrobox-init` runs under `set -o errexit`, so a hook that exits
+nonzero when it finds no range does not report that — **it stops the box from
+coming up at all**, which is a far worse symptom pointing nowhere near the hook.
 
 The conventional `100000:65536` — which `subuid(5)`, `useradd` and the
 checker's own error all name — maps nothing inside a keep-id box: the uid_map
