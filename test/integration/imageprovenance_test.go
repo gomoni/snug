@@ -3,10 +3,13 @@
 package integration
 
 import (
+	"archive/tar"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -322,47 +325,152 @@ func TestAHostRegistriesConfDoesNotSteerTheEnginesPull(t *testing.T) {
 }
 
 // TestTheEngineCarriesItsOwnSignaturePolicy is issue #137's other half, and
-// the one file with no environment variable at all: podman looks for
-// policy.json under $HOME/.config/containers and then /etc/containers, and
-// REFUSES TO PULL without one. snug generates it into a home of its own.
+// the one channel with no environment variable at all: policy.json is found
+// through $HOME (or $XDG_CONFIG_HOME, which BEATS it — see below), and snug
+// generates one into a home of its own. It is therefore the one assertion in
+// this file that depends on the HOME override actually working: on a podman
+// that derives a rootless home from the passwd entry it fails, and that
+// failure is information rather than flake.
 //
-// This is therefore the one assertion here that depends on the HOME override
-// working, which is why it is stated separately rather than folded into the
-// two above: on a podman that derives a rootless home from the passwd entry
-// this would fail, and that failure is information rather than flake.
+// WHAT THIS ASSERTS AND WHY IT CAN EXECUTE (issue #458). The obvious
+// assertion — an engine home with NO policy.json produces podman's
+// "no policy.json file found" — cannot execute anywhere, and skipped in every
+// environment for a year while looking green. Two independent reasons, both
+// measured on podman 6.0.2: the reference it pulled was
+// registry.snug-test.invalid, which RFC 2606 reserves never to resolve, and
+// podman pings the registry BEFORE consulting the policy, so the pull died at
+// DNS; and podman searches THREE paths, the third being
+// /usr/share/containers/policy.json, which openSUSE and most distributions
+// ship — so the missing-policy condition is not observable on an ordinary
+// machine at all.
+//
+// So this asserts the inverse, which needs no file to be absent and no name
+// to resolve: snug projects a REJECTING policy, and the pull must be REFUSED.
+// Every OTHER file podman could have obeyed — the distribution default under
+// /usr/share, /etc/containers, the invoking user's own home — accepts, so a
+// refusal can only have come from the file under the engine's own home. The
+// pull is a docker-archive off local disk (signaturePolicyFixtureArchive), so
+// there is no registry, no DNS and no network.
+//
+// MEASURED both directions on podman 6.0.2, which is the ticket's own
+// standing instruction — a control that has never fired is the defect:
+//
+//	HOME=<home with {"default":[{"type":"reject"}]}>
+//	  Error: ... Source image rejected: ... is rejected by policy.
+//	HOME=<home with {"default":[{"type":"insecureAcceptAnything"}]}>
+//	  Writing manifest to image destination   (pull succeeds)
 func TestTheEngineCarriesItsOwnSignaturePolicy(t *testing.T) {
 	budget(t, 90*time.Second)
 
 	// probeRuntime, for the same reason the enforcement test below needs it:
 	// podman validates conmon and its network helper before it reaches the
-	// signature policy, and on the host those live inside the pinned bundle
-	// rather than at the absolute paths podman looks in. Without it the CONTROL
+	// signature policy, and on the host those live at absolute paths the
+	// generated helper_binaries_dir does not name. Without it the CONTROL
 	// below never fires and this test skips on every run.
-	baseEnv, eng := engineSpecEnvWithSignaturePolicy(t,
-		`{"default":[{"type":"insecureAcceptAnything"}]}`)
+	baseEnv, eng := engineSpecEnvWithSignaturePolicy(t, `{"default":[{"type":"reject"}]}`)
 	env := probeRuntime(t, baseEnv)
-	const image = "registry.snug-test.invalid/snug/nothing:1"
+	archive := "docker-archive:" + signaturePolicyFixtureArchive(t)
 
-	// CONTROL: a home with no policy.json, on a host that has no system one
-	// either, must produce podman's refusal. Where /etc/containers/policy.json
-	// exists the control cannot fire and the assertion below would pass for
-	// the system file's reason rather than snug's.
-	if _, err := os.Stat("/etc/containers/policy.json"); err == nil {
-		t.Skip("SKIP: this host has /etc/containers/policy.json, so a missing per-home policy " +
-			"is not observable and the control cannot fail")
+	// CONTROL FIRST, and it is the opposite direction rather than the same
+	// pull with a variable taken away: the same podman, the same archive, HOME
+	// pointed at a home that ACCEPTS must SUCCEED. Without it a refusal below
+	// could be a malformed fixture, an unreadable tar or a podman that refuses
+	// archive transports outright, and the assertion would pass for a reason
+	// that has nothing to do with issue #137.
+	control := runPodman(t, envWith(env, "HOME",
+		plantHostSignaturePolicy(t, `{"default":[{"type":"insecureAcceptAnything"}]}`)),
+		storeArgs(eng, "pull", archive)...)
+	if strings.Contains(control, rejectedByPolicy) {
+		t.Skipf("SKIP: an accept-anything policy ALSO refused this archive, so the refusal "+
+			"below would not be about the projected policy: %s", control)
 	}
-	control := runPodman(t, envWith(env, "HOME", t.TempDir()),
-		storeArgs(eng, "pull", image)...)
-	if !strings.Contains(control, "no policy.json file found") {
-		t.Skipf("SKIP: the control did not produce podman's missing-policy refusal, so this "+
-			"podman finds a signature policy some other way: %s", control)
+	if !strings.Contains(control, "Writing manifest to image destination") {
+		t.Skipf("SKIP: this podman could not pull the local archive at all, so a refusal below "+
+			"proves nothing about the signature policy: %s", control)
 	}
+	// COMMIT POINT for the run-count floor (issue #393 §4). Past the two skips
+	// above, this podman is known to pull the fixture when the policy allows
+	// it, so the assertion is live. A commit point ABOVE them would have the
+	// floor count a test that went on to assert nothing (issue #458).
+	markEngineRan(t, hostEngine(t))
 
-	got := runPodman(t, env, storeArgs(eng, "pull", image)...)
-	if strings.Contains(got, "no policy.json file found") {
-		t.Fatalf("the engine has no signature policy of its own, so whether an image may be "+
-			"used at all is decided by the host, or not at all (issue #137):\n%s", got)
+	got := runPodman(t, env, storeArgs(eng, "pull", archive)...)
+	if !strings.Contains(got, rejectedByPolicy) {
+		t.Fatalf("snug projected a REJECTING signature policy into the engine's own home and "+
+			"the pull was NOT refused, so the engine obeyed some other policy.json — the "+
+			"distribution default under /usr/share, /etc/containers, or the invoking user's "+
+			"home. Whether an image may be used at all is then decided by a file snug does "+
+			"not control (issue #137). The control above pulled the same archive under an "+
+			"accepting home, so the fixture is not at fault:\n%s", got)
 	}
+}
+
+// rejectedByPolicy is podman's refusal when the signature policy in force
+// rejects the source image — "Source image rejected: Running image
+// docker-archive:/… is rejected by policy." on 6.0.2, and the substring is
+// the version-stable part.
+const rejectedByPolicy = "rejected by policy"
+
+// signaturePolicyFixtureArchive writes a docker-archive tar to a temporary
+// directory and returns its path, for a pull that reaches the signature
+// policy with NO registry, NO name resolution and NO container engine
+// involved in building it.
+//
+// WHY IT IS BUILT HERE AND NOT BY THE ENGINE. `podman build` of a FROM
+// scratch image then `podman save` produces a usable archive, and that was
+// measured working — but it needs a working engine to construct the fixture
+// for a test about policy, needs $TMPDIR on a filesystem overlayfs can mount
+// over (this project's own distrobox has /var/tmp on overlayfs, where a build
+// over a context directory fails with "userxattr: invalid argument"), and
+// makes the fixture's bytes depend on the engine under test. A tar written
+// here has none of those properties.
+//
+// WHAT PODMAN ACTUALLY NEEDS, measured rather than assumed: manifest.json and
+// the config blob it names, and NOTHING ELSE. A layerless image is enough —
+// the policy is evaluated at "initializing source", before any layer is
+// copied. It is NOT enough to hand podman a garbage tar: the archive is
+// opened before the policy is consulted, and a tar with no manifest.json
+// fails with `loading tar component "manifest.json": unexpected EOF` under
+// BOTH a rejecting and an accepting policy, which is the vacuous pass this
+// fixture exists to avoid.
+func signaturePolicyFixtureArchive(t *testing.T) string {
+	t.Helper()
+	const config = `{"architecture":"amd64","os":"linux","config":{},` +
+		`"rootfs":{"type":"layers","diff_ids":[]},"history":[]}`
+	configName := fmt.Sprintf("%x.json", sha256.Sum256([]byte(config)))
+	manifest := fmt.Sprintf(`[{"Config":%q,"RepoTags":["localhost/snug-signature-fixture:1"],"Layers":[]}]`,
+		configName)
+
+	path := filepath.Join(t.TempDir(), "fixture.tar")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	tw := tar.NewWriter(f)
+	// manifest.json FIRST: podman reads it to find the config blob, and a tar
+	// is a stream.
+	for _, e := range []struct{ name, body string }{
+		{"manifest.json", manifest},
+		{configName, config},
+	} {
+		if err := tw.WriteHeader(&tar.Header{
+			Name: e.name, Mode: 0o644, Size: int64(len(e.body)), Typeflag: tar.TypeReg,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(tw, e.body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // hostSideEnv maps the four guest roots in a spec's environment back to the
