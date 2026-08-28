@@ -745,3 +745,75 @@ func TestSpecReplacesACallerSuppliedPATH(t *testing.T) {
 			"newuidmap through %q, which contains directories the payload can write", path)
 	}
 }
+
+// TestTheEngineEnvironmentPinsXDGConfigHomeAtItsOwnHome is the other half of
+// the signature policy's wiring, and it is about a variable rather than a
+// file.
+//
+// policy.json is the one channel with no variable of its own (issue #137), so
+// podman finds it through a home — and the home it believes for per-user
+// config is $XDG_CONFIG_HOME, which BEATS $HOME. Measured on podman 6.0.2, an
+// archive pull with HOME=<home whose policy accepts> and
+// XDG_CONFIG_HOME=<dir whose policy rejects>:
+//
+//	Error: ... Source image rejected: ... is rejected by policy.
+//
+// So HOME alone does not decide anything. If XDG_CONFIG_HOME reaches the
+// engine from the payload's environment it wins, and @base sets it to
+// "{home}/.config" — a directory inside the sandbox that the payload can
+// write. The engine would then take its signature policy from a file the
+// payload authored, and the projection this file's other tests pin would be
+// advisory.
+//
+// The caller-supplied environment is the test's subject for that reason: the
+// only production caller passes nil today, which makes the guarantee a
+// property of that call site rather than of Spec. This asserts Spec's.
+func TestTheEngineEnvironmentPinsXDGConfigHomeAtItsOwnHome(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	e, err := New(testPol([]policy.ProfileName{"@podman-socket"}, "/proj"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pol := specPolicy(t, e, "", policy.NetPolicy{})
+	sig, err := ProjectHostSignaturePolicy(hostWithPolicy(t,
+		`{"default":[{"type":"insecureAcceptAnything"}]}`), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A HOSTILE inherited value, exactly the shape @base produces: a path
+	// inside the sandbox, writable by the payload.
+	hostile := "/home/u/.config"
+	spec, err := e.Spec(pol, "/usr/bin/podman", []string{"XDG_CONFIG_HOME=" + hostile}, false, "", "", sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	home, n := envValue(spec.Env, "HOME")
+	if n != 1 {
+		t.Fatalf("the engine's environment carries HOME %d times, want exactly once", n)
+	}
+	// EXACTLY ONCE, not merely present: the caller's entry must be REPLACED
+	// rather than shadowed. execve does not deduplicate, and which of two
+	// entries wins is the reader's business — setEnv's own first-wins hazard.
+	got, n := envValue(spec.Env, "XDG_CONFIG_HOME")
+	if n == 0 {
+		t.Fatalf("the engine's environment carries no XDG_CONFIG_HOME, so which policy.json "+
+			"podman reads is decided by whatever the payload's environment carried — and it "+
+			"beats the HOME snug set (%s)", home)
+	}
+	if n != 1 {
+		t.Fatalf("the engine's environment carries XDG_CONFIG_HOME %d times; the caller's "+
+			"entry was shadowed rather than replaced, and which one podman reads is then "+
+			"not this function's decision", n)
+	}
+	if got == hostile {
+		t.Fatalf("XDG_CONFIG_HOME reached the engine as the caller's %s. It beats $HOME for "+
+			"policy.json, and @base points it inside the sandbox, so the payload would choose "+
+			"the engine's own signature policy (issue #137)", hostile)
+	}
+	if want := filepath.Join(home, ".config"); got != want {
+		t.Errorf("XDG_CONFIG_HOME is %s, want %s — the .config directory of the home snug "+
+			"generated, which is where writeEngineHome puts policy.json", got, want)
+	}
+}
