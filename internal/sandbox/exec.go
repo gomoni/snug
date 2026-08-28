@@ -369,6 +369,11 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 		return 0, err
 	}
 	reportInfo(infoR, runInfo, opts)
+	// The second, earlier source for the same fact — see initwatch.go. It
+	// exists for the bwrap that never answers reportInfo at all, where the
+	// window between the fork and a record naming the init is not a few
+	// milliseconds but unbounded (issue #236).
+	watchForInit(cmd.Process.Pid, opts)
 
 	// THE UNSTAGED ARM, which today means offline: bwrap made its own network
 	// namespace and there is no helper to attach, so the payload is already
