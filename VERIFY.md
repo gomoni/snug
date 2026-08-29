@@ -3073,7 +3073,7 @@ State the rule rather than the outcome, because the outcome depends on where
 `@parent-ro`'s bind happens to land and is otherwise not something a user can
 predict. Measured, defaults plus `@podman-socket`:
 
-| target | `-v $SNUG_TARGET:/work` | `-v $SNUG_TARGET/subdir:/x` |
+| source (as `CheckEngineBindSource` alone judges it) | `$SNUG_TARGET` itself | `$SNUG_TARGET/subdir` |
 |---|---|---|
 | `~/proj/sub`, `~/src/proj` (2 below `$HOME`) | accepted | **refused** |
 | `~/src/projects/foo` (3 below) | **refused** | **refused** |
@@ -3081,22 +3081,25 @@ predict. Measured, defaults plus `@podman-socket`:
 | `$TMPDIR/build-123/proj` (2 below `$TMPDIR`) | accepted | **refused** |
 | `-v /usr:/u:ro`, `-v $HOME:/h` | accepted | — |
 
-Read off the rule, both columns follow. **Nothing inside the target is ever
-accepted**, at any depth: the target is a read-write bind, so every name in it
-has a writable parent. The target **root** is accepted exactly while
-`@parent-ro`'s own bind sits directly inside a mount root — true two levels
-below `$HOME` and under `$TMPDIR/<dir>/`, false at three levels, where the
-intermediate directory is a plain name in the home tmpfs. The `$SC/proj/sub`
-target this section uses is itself three levels below `/tmp`, which is why the
-refusal above names the temp-root directory and not `realdir`.
+That table is the anchored-source rule's OWN verdict, asked directly of a
+source string — it is what a build's `seccomp=` parameter or any other path
+this proxy still judges as a re-resolvable NAME gets, and it is still
+depth-dependent exactly as shown. **A real `-v $SNUG_TARGET:/work` no longer
+goes through it at all** (issue #376): `checkOne` matches the target's
+RESOLVED source against the installed target graft — an `open_tree(2)` clone
+of the target, not a name the engine re-resolves — before it ever reaches
+this rule, so the target root is now **accepted at every depth**, left column
+included. **Nothing inside the target is ever accepted**, at any depth,
+unchanged: the graft is a fixed root, exact match only, never a tail (`-v
+$SNUG_TARGET/subdir:/x` still walks straight into this table's right column),
+and every name inside the target has a writable parent regardless of where
+`@parent-ro`'s own bind lands.
 
-So, plainly: **`-v` works for paths outside the sandbox's writable trees, and
-for the target root at shallow depth, and never for anything inside the
-target.** Where the root is accepted, bind it and address the subdirectory
-inside the container. At three levels and deeper there is no workaround, and
-the refusal message does not pretend otherwise. `.claude/design` tracks the
-widening (issue #376): a per-bind graft under `/snug/engine`, handing the
-engine a mount instead of a re-resolvable string.
+So, plainly: **`-v $SNUG_TARGET:/work` now works at any depth, `-v
+$SNUG_TARGET/subdir:/x` never does — bind the target and address the
+subdirectory inside the container.** The refusal for the second case says
+exactly that (`Fix: bind $SNUG_TARGET — snug hands the engine a mount it
+cloned itself…`), whatever the target's own depth.
 
 This is a refusal, never a silent narrowing. Nothing mounts with less than what
 was asked for, and no container gains reach the sandbox lacks.
