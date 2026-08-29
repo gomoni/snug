@@ -745,36 +745,32 @@ NO_COLOR = true
 # not re-pointable (renaming one from inside is EBUSY — measured, M1) and
 # anchors the walk.
 #
-# ERGONOMIC COST, and it is LARGE — measured, not estimated. Two consequences
-# fall out of that one rule:
+# WHAT THE RULE COSTS, measured, not estimated:
 #
 #   NOTHING INSIDE THE TARGET IS EVER ACCEPTED, at any depth. The target is a
 #   read-write bind, so every name in it has a writable parent. `-v
 #   $SNUG_TARGET/build:/out` and `-v ./data:/data` are refused on every layout.
 #
-#   THE TARGET ROOT is accepted exactly while @parent-ro's own bind sits
-#   DIRECTLY inside a mount root. Measured with defaults + @podman-socket:
-#   accepted at ~/proj/sub and ~/src/proj (two levels below $HOME) and at
-#   $TMPDIR/<dir>/proj; REFUSED at ~/src/projects/foo and deeper, where the
-#   intermediate directory is a plain renameable name in the home tmpfs.
-#   Measured directly: with the target at $HOME/x/y/proj/sub the payload ran
-#   `mv "$HOME/x" other` successfully, carrying BOTH mounts with it.
+#   THE TARGET ROOT ITSELF is not subject to the rule at all. snug grafts the
+#   target at /snug/engine/binds/<basename> on every engine run and the proxy
+#   forwards that graft on an exact match, so `-v .:/x` works at any depth
+#   (issue #376). What the engine gets is a MOUNT, not a re-resolvable string:
+#   open_tree(OPEN_TREE_CLONE) pins the root inode, so the second resolution
+#   crun performs at container start has no name left to re-point.
+#
+#   EXACT MATCH IS THE SAFETY PROPERTY, not conservatism. A tail under the
+#   graft root would be re-pointable again — it lives in the payload's own
+#   writable project — so `-v ./data:/data` stays refused and the answer is
+#   `-v .:/x` plus /x/data inside the container.
 #
 # Always anchored, and therefore always still mountable: a read-only bind of
 # /usr (201 against a real engine), and $HOME itself.
 #
-# So, plainly: `-v` works for paths OUTSIDE the sandbox's writable trees and
-# for the target ROOT at shallow depth, and NEVER for anything inside the
-# target. Where the root is accepted, bind it and address the subdirectory
-# inside the container; at three levels and deeper there is no workaround, and
-# the refusal message does not pretend there is.
+# So, plainly: `-v` works for the target ROOT at any depth, for paths OUTSIDE
+# the sandbox's writable trees, and NEVER for anything inside the target.
 #
 # That is a refusal, never a silent narrowing: nothing is mounted with less
 # than what was asked for, and no container gains reach the sandbox lacks.
-# Widening it back needs a source path snug OWNS in the engine's view — a
-# per-bind graft under /snug/engine, so the engine is handed a MOUNT rather
-# than a re-resolvable string. Issue #376, a design decision and not a tweak
-# to this rule.
 #
 # The engine runs in the SANDBOX's netns now (issue #63, Tier B), so
 # `@podman-socket` without `@net` is genuinely offline, containers included.
