@@ -232,7 +232,9 @@ func TestTheEphemeralTargetRefusalEscapesEveryPathItPrints(t *testing.T) {
 	for _, tc := range []struct{ base, why string }{
 		{"pro\nj", "a newline forges a row in the suggested command"},
 		{"pro\x1b[31mj", "an ESC repaints the terminal from inside a path"},
-		{"pro‮j", "RLO reverses the rest of the line"},
+		// \u202e, not the character: a raw RLO in this file would be the very
+		// trojan-source hazard the test is about, and GitHub flags it on sight.
+		{"pro\u202ej", "RLO reverses the rest of the line"},
 	} {
 		target := "/home/u/" + tc.base
 		err := ephemeralTargetError(target, "/home/u", "/home/u", "/home/u", "@home")
