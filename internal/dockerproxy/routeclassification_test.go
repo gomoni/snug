@@ -134,7 +134,11 @@ var classifiedPaths = map[string]bool{
 	// The compat spelling of the same import, on the libpod path. Recorded
 	// false rather than omitted: it is the parameter handleImagePull's
 	// default-deny refuses by name in imagepull_test.go.
-	"containers/create": false,
+	// Issue #459 phase 2: podman's own SpecGenerator body is read by
+	// handleLibpodContainerCreate against a default-deny catalogue
+	// (libpodcreate.go), the same shape images/pull earned its own entry
+	// with.
+	"containers/create": true,
 	"volumes/create":    false,
 }
 

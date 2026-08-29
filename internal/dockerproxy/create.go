@@ -17,6 +17,13 @@ import (
 // memory-exhaustion primitive aimed at snug itself.
 const maxBody = 4 << 20
 
+// compatFieldSpelling renders a canonical judge key ("Privileged",
+// "NetworkMode", "RestartPolicy", ...) in docker-compat's own spelling, for
+// judgeAskedField/judgeNamespaceMode/judgeRestartPolicyName — every one of
+// these fields lives under HostConfig on this wire. libpodcreate.go supplies
+// its own spelling function for the same keys.
+func compatFieldSpelling(canonical string) string { return "HostConfig." + canonical }
+
 // handleCreate is the security core of this package.
 //
 // Strategy: every key of the create body is either judged, allowlisted with an
@@ -114,7 +121,7 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 			delete(hc, k)
 			continue
 		}
-		p.deny(w, "HostConfig.%s is not permitted: %s", k, refusalReason[k])
+		p.deny(w, "%v", judgeAskedField(k, compatFieldSpelling))
 		return
 	}
 
@@ -188,78 +195,13 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 			// engine at `netavark: Netlink error: Operation not permitted`.
 			continue
 		}
-		// Normalised ONCE and used by every arm below, the same correction
-		// checkNetworkMode already carries on its side (build.go): the arms
-		// compared the raw value, so "Container:abc" and "HOST" fell past
-		// them. On BUILD, falling past a refusal arm lands in a generic
-		// default-deny; here it lands in FORWARD, so the two files disagreed
-		// about which direction a missed spelling fails in. Whether the engine
-		// then honoured such a spelling was never measured here — which is the
-		// point: a refusal snug states must not depend on the answer. Folding
-		// can only refuse more; it cannot grant.
-		norm := strings.ToLower(strings.TrimSpace(mode))
-		// The prefix and "host" arms run FIRST, so container:/ns: keep
-		// namespaceModeReason's own text rather than being swallowed by the
-		// NetworkMode allowlist below.
-		if norm == "host" || strings.HasPrefix(norm, "container:") || strings.HasPrefix(norm, "ns:") {
-			if k == "NetworkMode" && norm == "host" {
-				continue
-			}
-			p.deny(w, "HostConfig.%s = %q: %s", k, mode, namespaceModeReason[k])
-			return
-		}
-		// NetworkMode's value axis is an ALLOWLIST; the other five keys keep the
-		// denylist above. Issue #424's third bullet, and the scoping is the
-		// load-bearing half: "private" is PidMode's and CgroupnsMode's DEFAULT,
-		// "none" and "shareable" are legal IpcMode values, and "keep-id"/"nomap"/
-		// "auto" are legal UsernsMode values. One word set over six keys would
-		// refuse working requests — "none" means "no IPC sharing" for IpcMode and
-		// "a netns of my own" for NetworkMode, which is a category error, not a
-		// spelling.
-		//
-		// "none" is REFUSED, and it CONVERGES with build.go rather than diverging
-		// from it. The reasoning that once kept it accepted was that a netns
-		// nobody brings `lo` up in needs no netlink. That is wrong, and this is
-		// the measurement: crun brings `lo` up ITSELF whenever it creates a
-		// network namespace — before it mounts devpts — and that ioctl needs
-		// CAP_NET_ADMIN in the new namespace.
-		//
-		// MEASURED on the docker-compat create+start path, podman 6.0.2 + crun,
-		// against a podman running as root in a user namespace whose bounding set
-		// has bit 12 cleared (CapBnd 000001ffffffefff — CAP_NET_ADMIN absent,
-		// which is what policy.EngineCapBounding gives the engine):
-		//
-		//	NetworkMode:"none"    create 201, start 500
-		//	                      crun: ioctl SIOCSIFFLAGS: Operation not permitted
-		//	NetworkMode:"bridge"  create 201, start 500
-		//	                      netavark: setns: IO error: Operation not permitted
-		//	NetworkMode:"host"    create 201, start past network setup entirely
-		//
-		// Isolated, because "it failed" is not "it failed for THIS reason": the
-		// same harness dropping CAP_SYS_BOOT instead of CAP_NET_ADMIN gets past
-		// the network step, and so does CAP_NET_ADMIN-dropped "host". One bit and
-		// one mode are the only variables. With a FULL bounding set "none" runs to
-		// completion with `lo` up in a netns of its own — which is why a plain
-		// rootless podman on the host reports that it works and the engine does
-		// not, and why ENGINE-NETNS.md §2's "--network=none works" (measured with
-		// the cap present, before the NET_ADMIN decision) is not authority here.
-		//
-		// So accepting it returned 201 for a container that cannot start: snug
-		// admitting a capability the engine refuses, which is invariant 5 facing
-		// the other way.
-		//
-		// ABUSE, on what stays accepted: "host" is N, which the sandbox already
-		// has. What the refusal CLOSES: a create body naming a namespace snug did
-		// not author, forwarded unjudged, on an engine that may one day satisfy it
-		// (enginecaps.go records a bounding set reset to full inside a NESTED
-		// userns — which a rootless podman creates per container and this engine,
-		// running as root in U, does not) while --dry-run still tells the human
-		// containers run in N.
-		if k == "NetworkMode" && norm != "default" {
-			p.deny(w, "HostConfig.NetworkMode = %q: %s.\n"+
-				"       Fix: drop --network, or use --network=host (which is this sandbox's own "+
-				"network). --network=none is refused too: crun brings `lo` up in any namespace "+
-				"it creates and that ioctl needs the same capability.", mode, noNetnsOfItsOwn)
+		// compatNSMode is the classification this loop used to do inline
+		// (Container:/HOST folded through strings.ToLower, "container:"/"ns:"
+		// matched by prefix); judgeNamespaceMode is namespaceModeKeys' verdict,
+		// shared with libpodcreate.go's own decoder (issue #459 phase 1) so the
+		// six reasons below are decided ONCE regardless of which wire asked.
+		if err := judgeNamespaceMode(k, compatNSMode(mode), compatFieldSpelling); err != nil {
+			p.deny(w, "%v", err)
 			return
 		}
 	}
@@ -822,13 +764,7 @@ func checkRestartPolicy(raw json.RawMessage) error {
 	if err := json.Unmarshal(raw, &rp); err != nil {
 		return fmt.Errorf("HostConfig.RestartPolicy is not the docker-compat shape: %v", err)
 	}
-	switch rp.Name {
-	case "", "no":
-		return nil
-	}
-	return fmt.Errorf("HostConfig.RestartPolicy = %q is not permitted; only \"no\" is. A "+
-		"container the engine restarts outlives the request that created it, and nobody has "+
-		"established what it outlives inside this sandbox", rp.Name)
+	return judgeRestartPolicyName(rp.Name, compatFieldSpelling)
 }
 
 // checkedMounts validates every mount the client asked for against what the
@@ -838,7 +774,7 @@ func checkRestartPolicy(raw json.RawMessage) error {
 // paths the sandbox already has, or it is refused with the offending path in the
 // message.
 func (p *Proxy) checkedMounts(hc map[string]json.RawMessage) ([]mount, error) {
-	var out []mount
+	var reqs []mount
 
 	// Legacy "src:dst[:opts]" strings.
 	if raw, ok := hc["Binds"]; ok && !isEmptyJSON(raw) {
@@ -853,23 +789,15 @@ func (p *Proxy) checkedMounts(hc map[string]json.RawMessage) ([]mount, error) {
 			}
 			ro := false
 			if len(parts) == 3 {
-				for _, o := range strings.Split(parts[2], ",") {
-					switch o {
-					case "ro":
-						ro = true
-					case "rw", "z", "Z", "":
-					default:
-						// Option smuggling is a real class: propagation modes
-						// like rshared reach back out of the container.
-						return nil, fmt.Errorf("bind option %q is not permitted", o)
-					}
+				var oerr error
+				// judgeBindOptions, not an allowlist spelled here: this one and
+				// libpodcreate.go's mounts[] decoder judged bind options
+				// separately, and they drifted (issue #459).
+				if ro, _, oerr = judgeBindOptions(strings.Split(parts[2], ",")); oerr != nil {
+					return nil, oerr
 				}
 			}
-			m, err := p.checkOne(parts[0], parts[1], ro)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, m)
+			reqs = append(reqs, mount{Type: "bind", Source: parts[0], Target: parts[1], ReadOnly: ro})
 		}
 	}
 
@@ -885,14 +813,13 @@ func (p *Proxy) checkedMounts(hc map[string]json.RawMessage) ([]mount, error) {
 				// harmless but unnecessary; neither is worth the surface.
 				return nil, fmt.Errorf("mount type %q is not permitted; only bind is", m.Type)
 			}
-			c, err := p.checkOne(m.Source, m.Target, m.ReadOnly)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, c)
+			reqs = append(reqs, m)
 		}
 	}
-	return out, nil
+	// The REQUEST is fully parsed at this point; everything past here — run
+	// each one through checkOne, rewrite Source to the resolved path — is
+	// shared with libpodcreate.go's own mount decoder (issue #459 phase 1).
+	return p.checkMountRequests(reqs)
 }
 
 // checkOne is a REWRITER, not a validator, and that is the sentence this file

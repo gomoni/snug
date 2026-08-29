@@ -277,6 +277,41 @@ func TestContainerCannotMountWhatTheSandboxCannot(t *testing.T) {
 	})
 }
 
+// bindOptionsThatReachSomething is every bind-mount option judgeBindOptions'
+// own comment names as reaching past a grant if forwarded: suid/dev/exec
+// strip the nodev/nosuid a bind otherwise carries, shared/rshared/slave/rslave
+// change mount propagation so a submount reaches back out of the container,
+// and U/idmap ask the ENGINE to chown or id-map the bind SOURCE on the host.
+var bindOptionsThatReachSomething = []string{
+	"suid", "dev", "exec", "shared", "rshared", "slave", "rslave", "U", "idmap",
+}
+
+// TestBindOptionSmugglingRefusedOnBothWires fails if EITHER protocol decoder
+// ever again forwards one of these options to the engine — issue #459: the
+// docker-compat Binds parser judged bind options against an allowlist while
+// libpodcreate.go's mounts[] decoder read only "ro" out of the same field and
+// forwarded the rest of Options verbatim, so a body compat refused with a 403
+// reached the engine, 200, through the libpod route. Both wires now call the
+// one shared judge, judgeBindOptions; this is a paired test on purpose — a
+// suite that only drove one wire would still be green if the other one
+// regressed.
+func TestBindOptionSmugglingRefusedOnBothWires(t *testing.T) {
+	sock, eng, target := startProxy(t)
+
+	for _, opt := range bindOptionsThatReachSomething {
+		t.Run(opt, func(t *testing.T) {
+			compatBody := `{"HostConfig":{"Binds":["` + target + `:/src:ro,` + opt + `"]}}`
+			refuse(t, sock, eng, "/v1.41/containers/create", compatBody,
+				`bind option "`+opt+`" is not permitted`)
+
+			libpodBody := `{"mounts":[{"type":"bind","source":"` + target +
+				`","destination":"/src","options":["ro","` + opt + `"]}]}`
+			refuse(t, sock, eng, "/v6.0.2/libpod/containers/create", libpodBody,
+				`bind option "`+opt+`" is not permitted`)
+		})
+	}
+}
+
 // The common legitimate case must still work, or nobody will use the profile.
 func TestContainerMayMountTheTarget(t *testing.T) {
 	sock, eng, target := startProxy(t)
@@ -370,7 +405,13 @@ func TestEscapeFieldsAreRefused(t *testing.T) {
 // allowlist and judges `reference` and `authfile` (issue #459, imagepull.go).
 // The escape body below is not what that route carries — every pull parameter
 // is in the query string — so the case that replaced it asserts the refusals
-// that route has of its own, in imagepull_test.go. Five routes remain here.
+// that route has of its own, in imagepull_test.go.
+//
+// containers/create has since moved too (issue #459 phase 2,
+// libpodcreate.go): the escape body below IS what that route carries, and it
+// is refused there now BY THE CATALOGUE — see the case below that asserts
+// "privileged is not permitted" rather than the schema-confusion message.
+// Three routes remain refused outright here.
 //
 // This test enumerates the routes the escape was measured on, and that is
 // all it can prove — issue #340 was two segments it does not name. The
@@ -386,9 +427,21 @@ func TestLibpodNativeBodyIsRefusedRatherThanForwardedUnexamined(t *testing.T) {
 	            "cap_add":["SYS_ADMIN"],
 	            "mounts":[{"type":"bind","source":"/","destination":"/host"}]}`
 
+	// containers/create is READ now (issue #459 phase 2): the escape above is
+	// refused by libpodcreate.go's own catalogue — "privileged" fires first,
+	// libpodRefusedFields' own order — rather than by the schema-confusion
+	// message every libpod route used to share uniformly. That the message
+	// CHANGED here and nowhere else is the fix.
 	for _, path := range []string{
 		"/v5.0.0/libpod/containers/create",
 		"/libpod/containers/create",
+	} {
+		t.Run(path, func(t *testing.T) {
+			refuse(t, sock, eng, path, escape, "privileged is not permitted")
+		})
+	}
+
+	for _, path := range []string{
 		"/v4.0.0/libpod/volumes/create",
 		"/v5.0.0/libpod/pods/create",
 		"/v5.0.0/libpod/play/kube",
