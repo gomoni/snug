@@ -277,6 +277,41 @@ func TestContainerCannotMountWhatTheSandboxCannot(t *testing.T) {
 	})
 }
 
+// bindOptionsThatReachSomething is every bind-mount option judgeBindOptions'
+// own comment names as reaching past a grant if forwarded: suid/dev/exec
+// strip the nodev/nosuid a bind otherwise carries, shared/rshared/slave/rslave
+// change mount propagation so a submount reaches back out of the container,
+// and U/idmap ask the ENGINE to chown or id-map the bind SOURCE on the host.
+var bindOptionsThatReachSomething = []string{
+	"suid", "dev", "exec", "shared", "rshared", "slave", "rslave", "U", "idmap",
+}
+
+// TestBindOptionSmugglingRefusedOnBothWires fails if EITHER protocol decoder
+// ever again forwards one of these options to the engine — issue #459: the
+// docker-compat Binds parser judged bind options against an allowlist while
+// libpodcreate.go's mounts[] decoder read only "ro" out of the same field and
+// forwarded the rest of Options verbatim, so a body compat refused with a 403
+// reached the engine, 200, through the libpod route. Both wires now call the
+// one shared judge, judgeBindOptions; this is a paired test on purpose — a
+// suite that only drove one wire would still be green if the other one
+// regressed.
+func TestBindOptionSmugglingRefusedOnBothWires(t *testing.T) {
+	sock, eng, target := startProxy(t)
+
+	for _, opt := range bindOptionsThatReachSomething {
+		t.Run(opt, func(t *testing.T) {
+			compatBody := `{"HostConfig":{"Binds":["` + target + `:/src:ro,` + opt + `"]}}`
+			refuse(t, sock, eng, "/v1.41/containers/create", compatBody,
+				`bind option "`+opt+`" is not permitted`)
+
+			libpodBody := `{"mounts":[{"type":"bind","source":"` + target +
+				`","destination":"/src","options":["ro","` + opt + `"]}]}`
+			refuse(t, sock, eng, "/v6.0.2/libpod/containers/create", libpodBody,
+				`bind option "`+opt+`" is not permitted`)
+		})
+	}
+}
+
 // The common legitimate case must still work, or nobody will use the profile.
 func TestContainerMayMountTheTarget(t *testing.T) {
 	sock, eng, target := startProxy(t)

@@ -326,6 +326,35 @@ func TestLibpodMountsShareCheckOneWithDockerCompat(t *testing.T) {
 	})
 }
 
+// TestLibpodBindOptionsAreForwardedCanonicalRatherThanCopied is issue #459's
+// fix, pinned on the accepting path rather than only the refusing one: a
+// legitimate options array reaches the engine REBUILT from judgeBindOptions'
+// return, not copied through unchanged. "rw" and "" are the default and
+// judgeBindOptions never spells them back, so the forwarded body must not
+// carry the literal string "rw" the client sent — a future refactor that
+// validates m.Options but then forwards the ORIGINAL array on success (rather
+// than the rebuilt one judgeLibpodMounts assigns back into m.Options today)
+// would still refuse every case TestBindOptionSmugglingRefusedOnBothWires
+// covers, since judgeBindOptions itself still errors on those, and would only
+// show up here, in what actually reaches the engine on a request that is
+// accepted.
+func TestLibpodBindOptionsAreForwardedCanonicalRatherThanCopied(t *testing.T) {
+	sock, eng, target := startProxy(t)
+	body := withLibpodField(t, "mounts",
+		`[{"type":"bind","source":"`+target+`","destination":"/src","options":["rw","ro","z"]}]`)
+	code, resp := post(t, sock, "/v6.0.2/libpod/containers/create", body)
+	if code != 200 && code != 201 {
+		t.Fatalf("status %d, want 2xx: %s", code, resp)
+	}
+	sent, _ := eng.lastBody.Load().(string)
+	if !strings.Contains(sent, `"options":["ro","z"]`) {
+		t.Errorf("forwarded mount options are not the canonical [\"ro\",\"z\"]: %s", sent)
+	}
+	if strings.Contains(sent, `"rw"`) {
+		t.Errorf("the client's \"rw\" was forwarded verbatim instead of being rebuilt away: %s", sent)
+	}
+}
+
 // TestLibpodUnmodelledFieldFailsClosed is the whole point of this file's own
 // design comment: a field this catalogue has never heard of refuses rather
 // than forwarding unread, whether or not it happens to be dangerous.

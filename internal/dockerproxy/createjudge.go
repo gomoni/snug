@@ -159,3 +159,31 @@ func (p *Proxy) checkMountRequests(reqs []mount) ([]mount, error) {
 	}
 	return out, nil
 }
+
+// judgeBindOptions is the ONE allowlist of bind-mount options, and it is
+// shared by both wires on purpose. Option smuggling is a real class:
+// propagation modes like rshared reach back out of the container, `dev` and
+// `suid` strip the nodev/nosuid a bind otherwise gets, and podman's `U`
+// recursively chowns the bind SOURCE — a mutation of granted host files.
+//
+// It returns the options to FORWARD rather than echoing what arrived, because
+// the libpod wire carries them as an array snug re-marshals: copying that
+// array through is how the two decoders came to disagree (issue #459). Only
+// ro/z/Z survive; rw and "" are the default and need not be spelled.
+func judgeBindOptions(opts []string) (ro bool, forward []string, err error) {
+	for _, o := range opts {
+		switch o {
+		case "ro":
+			ro = true
+		case "rw", "":
+		case "z", "Z":
+			forward = append(forward, o)
+		default:
+			return false, nil, fmt.Errorf("bind option %q is not permitted", o)
+		}
+	}
+	if ro {
+		forward = append([]string{"ro"}, forward...)
+	}
+	return ro, forward, nil
+}

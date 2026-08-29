@@ -789,16 +789,12 @@ func (p *Proxy) checkedMounts(hc map[string]json.RawMessage) ([]mount, error) {
 			}
 			ro := false
 			if len(parts) == 3 {
-				for _, o := range strings.Split(parts[2], ",") {
-					switch o {
-					case "ro":
-						ro = true
-					case "rw", "z", "Z", "":
-					default:
-						// Option smuggling is a real class: propagation modes
-						// like rshared reach back out of the container.
-						return nil, fmt.Errorf("bind option %q is not permitted", o)
-					}
+				var oerr error
+				// judgeBindOptions, not an allowlist spelled here: this one and
+				// libpodcreate.go's mounts[] decoder judged bind options
+				// separately, and they drifted (issue #459).
+				if ro, _, oerr = judgeBindOptions(strings.Split(parts[2], ",")); oerr != nil {
+					return nil, oerr
 				}
 			}
 			reqs = append(reqs, mount{Type: "bind", Source: parts[0], Target: parts[1], ReadOnly: ro})

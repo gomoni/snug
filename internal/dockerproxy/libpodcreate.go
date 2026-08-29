@@ -726,7 +726,16 @@ func judgeLibpodMounts(p *Proxy, raw json.RawMessage) ([]libpodMount, error) {
 	for i, m := range ms {
 		switch m.Type {
 		case "bind":
-			binds = append(binds, mount{Type: "bind", Source: m.Source, Target: m.Destination, ReadOnly: hasOpt(m.Options, "ro")})
+			// The forwarded Options are REBUILT from judgeBindOptions, never
+			// copied from m: this array is the one place the libpod wire can
+			// carry a mount flag compat's Binds parser refuses, and copying it
+			// through is exactly how the two decoders disagreed (issue #459).
+			ro, forward, oerr := judgeBindOptions(m.Options)
+			if oerr != nil {
+				return nil, oerr
+			}
+			m.Options = forward
+			binds = append(binds, mount{Type: "bind", Source: m.Source, Target: m.Destination, ReadOnly: ro})
 			bindIdx = append(bindIdx, i)
 			out = append(out, m)
 		case "tmpfs":
@@ -759,15 +768,6 @@ type libpodMount struct {
 	Source      string   `json:"source"`
 	Destination string   `json:"destination"`
 	Options     []string `json:"options,omitempty"`
-}
-
-func hasOpt(opts []string, want string) bool {
-	for _, o := range opts {
-		if o == want {
-			return true
-		}
-	}
-	return false
 }
 
 // stampLibpodRunLabel is stampRunLabel's libpod twin: the same merge
