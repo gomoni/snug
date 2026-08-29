@@ -521,7 +521,27 @@ func stateFor(target string, v testVictim) runState {
 			// them (#285). A fixture testing the MISMATCH overrides this map.
 			Namespaces: v.namespaces,
 		},
+		// An orphan's record names a snug that has exited — otherwise
+		// killOrphanInit's #489 gate refuses the kill, and every case here
+		// that asserts a kill would be asserting nothing.
+		Owner: goneOwner(),
 	}
+}
+
+// goneOwner names a run owner that is provably not there: this test process's
+// own pid with a start time it cannot have. ownerProvablyGone reads that as
+// the number having been recycled since the record was written, which is what
+// an orphan's record looks like once its snug is gone. Deterministic, and it
+// needs no second process to spawn and reap.
+func goneOwner() stateOwner {
+	start, _ := procStartTime(os.Getpid())
+	return stateOwner{PID: os.Getpid(), Starttime: start + 1}
+}
+
+// liveOwner is its opposite: a process that really is running, with the start
+// time it really has.
+func liveOwner(v testVictim) stateOwner {
+	return stateOwner{PID: v.pid, Starttime: v.starttime}
 }
 
 func writeStateFor(t *testing.T, dir, target string, v testVictim) {

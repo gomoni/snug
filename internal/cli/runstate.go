@@ -53,6 +53,11 @@ type runState struct {
 	Env      [][2]string     `json:"env"`
 	Revision string          `json:"revision,omitempty"`
 
+	// Owner is the snug process that holds this target's lock, and it is the
+	// sweep's second liveness signal — the one an `rm` or an `mv` of the lock
+	// file cannot detach from the run (issue #489). See stateowner.go.
+	Owner stateOwner `json:"owner"`
+
 	// RunDir is this run's own runtime directory, and it is here for one
 	// consumer: `snug proxy` has to find the http-doors file the run published
 	// beside its sockets. Optional, like Revision — a run with no doors has
@@ -129,6 +134,11 @@ func writeRunState(pol *policy.Policy, info sandbox.RunInfo, runDirPath string) 
 		seccomp = runStateSeccomp{State: "active", Digest: info.SeccompDigest}
 	}
 
+	owner, err := currentOwner()
+	if err != nil {
+		return fmt.Errorf("run state: %w", err)
+	}
+
 	profiles := make([]string, 0, len(pol.Selected))
 	for _, p := range pol.Selected {
 		profiles = append(profiles, string(p))
@@ -144,6 +154,7 @@ func writeRunState(pol *policy.Policy, info sandbox.RunInfo, runDirPath string) 
 			InitStarttime: starttime,
 			Namespaces:    namespaces,
 		},
+		Owner:    owner,
 		Seccomp:  seccomp,
 		Env:      snugAuthoredEnvPairs(pol),
 		Revision: buildRevision(),
@@ -193,16 +204,10 @@ func snugAuthoredEnvPairs(pol *policy.Policy) [][2]string {
 // rather than splitting naively on whitespace — the standard, and only
 // correct, way to parse this file.
 func procStartTime(pid int) (uint64, error) {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	fields, err := procStatAfterComm(pid)
 	if err != nil {
 		return 0, err
 	}
-	s := string(data)
-	i := strings.LastIndexByte(s, ')')
-	if i < 0 || i+2 > len(s) {
-		return 0, fmt.Errorf("unrecognised /proc/%d/stat format", pid)
-	}
-	fields := strings.Fields(s[i+2:])
 	// After the comm field, field 3 (state) is fields[0]; field 22
 	// (starttime) is therefore fields[22-3] = fields[19].
 	const starttimeIndex = 22 - 3
@@ -215,6 +220,23 @@ func procStartTime(pid int) (uint64, error) {
 		return 0, fmt.Errorf("parsing starttime field of /proc/%d/stat: %w", pid, err)
 	}
 	return v, nil
+}
+
+// procStatAfterComm is the parse both readers of /proc/<pid>/stat share, so
+// the comm-field rule above is stated once. It returns the whitespace-split
+// fields FROM field 3 (state) onwards: fields[0] is the state character and
+// fields[n-3] is field n of proc(5).
+func procStatAfterComm(pid int) ([]string, error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return nil, err
+	}
+	s := string(data)
+	i := strings.LastIndexByte(s, ')')
+	if i < 0 || i+2 > len(s) {
+		return nil, fmt.Errorf("unrecognised /proc/%d/stat format", pid)
+	}
+	return strings.Fields(s[i+2:]), nil
 }
 
 // buildRevision is debug.ReadBuildInfo()'s vcs.revision, if present — used

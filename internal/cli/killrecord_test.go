@@ -33,6 +33,9 @@ func initStateFor(target string, v testVictim) initState {
 		InitPID:       v.pid,
 		InitStarttime: v.starttime,
 		Namespaces:    v.namespaces,
+		// As in stateFor: an orphan's record names a snug that has exited, or
+		// killOrphanInit's #489 gate refuses every kill these cases assert.
+		Owner: goneOwner(),
 	}
 }
 
@@ -255,7 +258,7 @@ func TestSweepIgnoresTheKillRecordInTheStateJSONBranch(t *testing.T) {
 
 // TestKillRecordIsNotReadableAsRunState is decodeRunState's own refusal of a
 // ".starting" record's bytes: the shapes are different JSON documents (a
-// flat five keys here, "sandbox.namespaces" nested there), so even a record
+// flat six keys here, "sandbox.namespaces" nested there), so even a record
 // handed to the WRONG decoder by a future bug is refused rather than
 // silently misread as a live run with no recorded namespaces.
 func TestKillRecordIsNotReadableAsRunState(t *testing.T) {
@@ -276,14 +279,15 @@ func TestKillRecordIsNotReadableAsRunState(t *testing.T) {
 }
 
 // TestKillRecordCarriesNoSeccompOrEnvironment is the structural twin of
-// TestGoldenInitState (initstate_test.go): that one pins the five keys
-// byte-for-byte in a golden file, which a patch adding a sixth key AND
+// TestGoldenInitState (initstate_test.go): that one pins the six keys
+// byte-for-byte in a golden file, which a patch adding a seventh key AND
 // updating the golden together would still pass. This one reflects over the
 // Go type directly, so the same patch fails here regardless of whether the
 // golden file was updated to match.
 func TestKillRecordCarriesNoSeccompOrEnvironment(t *testing.T) {
 	want := map[string]bool{
-		"Schema": true, "Target": true, "InitPID": true, "InitStarttime": true, "Namespaces": true,
+		"Schema": true, "Target": true, "InitPID": true, "InitStarttime": true,
+		"Namespaces": true, "Owner": true,
 	}
 	typ := reflect.TypeOf(initState{})
 	if typ.NumField() != len(want) {
