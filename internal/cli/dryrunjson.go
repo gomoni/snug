@@ -234,9 +234,9 @@ func (e *lossyEncoder) texts(in []string) ([]string, []byteList) {
 // the finished document as JSON's own \uXXXX escape.
 //
 // WHY IT IS NEEDED. Measured on this host, encoding/json escapes C0 for free —
-// ESC becomes , newline becomes \n — and leaves the rest raw:
+// ESC becomes ^[, newline becomes \n — and leaves the rest raw:
 //
-//	ESC   U+001B  ->          escaped
+//	ESC   U+001B  ->  ^[        escaped
 //	CSI   U+009B  ->  raw bytes     NOT escaped
 //	NEL   U+0085  ->  raw bytes     NOT escaped
 //	RLO   U+202E  ->  raw bytes     NOT escaped
@@ -248,7 +248,7 @@ func (e *lossyEncoder) texts(in []string) ([]string, []byteList) {
 // once each already.
 //
 // WHY IT IS NOT VisibleText, AND NOT A SECOND VOCABULARY. This changes no
-// value: `‮` IS U+202E to every JSON decoder, so the document round-trips
+// value: `\u202e` IS U+202E to every JSON decoder, so the document round-trips
 // byte for byte and a typed consumer never sees the escape at all. It is JSON's
 // native spelling of a character, not snug's rendering of one — which is why it
 // does NOT set snug.lossy: nothing was lost. The PREDICATE is shared with every

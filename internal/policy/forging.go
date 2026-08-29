@@ -136,8 +136,8 @@ func forgingRuneReason(r rune) string {
 // with a host directory whose name carries U+202E:
 //
 //	ro = ["/tmp/host<RLO>OLR:/opt/x"]
-//	  FILESYSTEM block   ro /opt/x (from /tmp/host‮OLR)   <- escaped
-//	  --ro-bind line     /tmp/host‮OLR /opt/x             <- escaped
+//	  FILESYSTEM block   ro /opt/x (from /tmp/host<RLO>OLR)   <- escaped
+//	  --ro-bind line     /tmp/host<RLO>OLR /opt/x             <- escaped
 //	  the masking REFUSAL that same run printed:
 //	    profile hostbidi puts a bind of /tmp/host<RLO>OLR at /opt/x…   <- RAW
 //

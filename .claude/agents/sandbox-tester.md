@@ -125,6 +125,15 @@ responsibility as much as writing the tests is.
 
 ## Comments
 
+
+- **Never write a raw forging rune into source.** A bidi control (U+202A-202E,
+  U+2066-2069) or a C0/C1 control other than tab renders as content it does not
+  contain, in a review UI and in this repository's own screens. GitHub flags it,
+  and `make gate` refuses it in any tracked file. Escape it in a string literal
+  (`"\u202e"`, `"\u009b"`, `"\x1b"`) or name it in a comment (`U+202E`, `ESC`,
+  or the `<RLO>` placeholder `internal/policy/forging.go` uses). This applies to
+  the test fixture that NEEDS the character most of all: the value under test is
+  identical either way, and only the source file stops lying.
 **Read `.claude/agents/go-implementer.md` § Comments before writing a comment;
 it applies here unchanged** — scope limit included (only tests you write or
 touch this task), and no invented issue number, measurement or quoted string.
