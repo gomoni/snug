@@ -47,9 +47,9 @@ func TestAllJumpsLandInsideTheProgram(t *testing.T) {
 	}
 }
 
-// The last two instructions are the return values everything branches to. If
-// the allow/deny pair ever stopped being reachable the filter would still
-// assemble and would deny nothing.
+// The last instructions are the return values everything branches to. If the
+// allow/deny pair ever stopped being reachable the filter would still assemble
+// and would deny nothing.
 func TestProgramEndsWithAllowThenDeny(t *testing.T) {
 	prog, ok, _ := BuildFilter()
 	if !ok {
@@ -62,9 +62,14 @@ func TestProgramEndsWithAllowThenDeny(t *testing.T) {
 	readOp := func(i int) uint16 {
 		return binary.NativeEndian.Uint16(prog[i*8 : i*8+2])
 	}
-	// Three returns, in emission order: allow, deny(EPERM), nosys(ENOSYS).
-	// Everything branches forward to one of them.
-	for i, want := range map[int]uint32{n - 3: seccompRetAllow, n - 2: retEPERM, n - 1: retENOSYS} {
+	// Four returns, in emission order: allow, deny(EPERM), nosys(ENOSYS),
+	// foreignarch(KILL_PROCESS). Everything branches forward to one of them.
+	for i, want := range map[int]uint32{
+		n - 4: seccompRetAllow,
+		n - 3: retEPERM,
+		n - 2: retENOSYS,
+		n - 1: seccompRetKillProcess,
+	} {
 		if readOp(i) != bpfRetK || readK(i) != want {
 			t.Errorf("instruction %d is not RET(%#x)", i, want)
 		}

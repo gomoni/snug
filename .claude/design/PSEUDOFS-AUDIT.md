@@ -136,7 +136,7 @@ Correct outcomes today; each depends on something snug does not own.
 | P10b | /proc | `/proc/sysrq-trigger` — write → EPERM. OCI runtimes bind `/dev/null` over it; snug does not | same |
 | P10c | /proc,/dev | `/proc/kcore` (EACCES), and **`/dev/core → /proc/kcore`** — the path exists twice. Same for `kmsg`, `slabinfo`, `vmallocinfo`, `timer_list` | same — if the uid mapping ever became 0, `/dev/core` is physical memory |
 | P11 | /proc | `/proc/sys/net/*` is owned `<user>:<user>` mode 0644 — DAC alone would permit the write; what refuses it is `CAP_NET_ADMIN`. The one procfs region protected by a capability check rather than ownership | `CapBnd = 0` |
-| P13 | /proc | procfs re-mount / namespace-regain: native paths closed (`unshare(CLONE_NEWUSER)` seccomp-denied, `clone3`→ENOSYS, `mount`→EPERM). **Residual:** the filter ALLOWs non-native arches, so a 32-bit `unshare` is unfiltered, and the remount target is real (`/` tmpfs and `/usr` overlay superblocks are both `rw`; the `ro` comes from the bind). INDEX §5.4 calls the i386 path "a bypass" without saying what it buys | seccomp non-native ALLOW |
+| P13 | /proc | procfs re-mount / namespace-regain: native paths closed (`unshare(CLONE_NEWUSER)` seccomp-denied, `clone3`→ENOSYS, `mount`→EPERM), and the 32-bit path is closed too — a non-native audit arch is `SECCOMP_RET_KILL_PROCESS` (R11, issue #529), so the 32-bit `unshare` dies with SIGSYS before it reaches the kernel, and so does the `int $0x80` spelling of it from a native 64-bit binary. The remount TARGET is still real (`/` tmpfs and `/usr` overlay superblocks are both `rw`; the `ro` comes from the bind), so this row is closed at the syscall, not at the target | closed |
 | D4 | /dev | devpts is a fresh `newinstance`; no host pty enumerable; TIOCSTI EPERM on both a fresh pty and `/dev/tty` | seccomp + host `legacy_tiocsti=0` — working |
 
 ## What bwrap can and cannot do (the honesty section — all run live)
@@ -220,8 +220,8 @@ demote-in-place.
   `yama/ptrace_scope`, `unprivileged_bpf_disabled`. "No silent downgrade" applied
   to an *inherited* guarantee. snug checks none today.
 - **R6 — SHIPPED.** `Validate` refuses any non-authored bind whose HOST end is
-  `/proc`, `/dev` or `/sys` — by path, and by `statfs` type for a procfs or
-  sysfs mounted somewhere else — at any access, and refuses any grant at or
+  `/proc`, `/dev` or `/sys` — by path, and by the mount table's filesystem name
+  for one of the three mounted somewhere else — at any access, and refuses any grant at or
   under guest `/sys` (`internal/policy/validate.go`, RULE 5/5b; issue #527).
   Closes Y2. `ro` is not an escape hatch for any of the three: read-only does
   not restrain a device node, and it does not restrain a `/proc/PID/root`
@@ -266,9 +266,27 @@ demote-in-place.
   D-Bus-proxy mistake in another costume. For CI/hooks/tests, losing job control
   costs nothing and closes the channel outright. Meanwhile state the channel in
   INDEX §5.2, `VERIFY.md`, and the injected `~/.claude/CLAUDE.md`.
-- **R11 — Consider `SECCOMP_RET_ERRNO` on non-native audit arches (i386/x32)
-  rather than falling through to ALLOW (P13).** Nothing snug supports needs a
-  32-bit payload; "no silent downgrade" argues for failing loudly.
+- **R11 — SHIPPED.** A syscall arriving under a non-native audit arch is
+  `SECCOMP_RET_KILL_PROCESS` (`internal/sandbox/seccomp.go`, the `foreignarch`
+  label; issue #529). Closes P13's residual.
+
+  `SECCOMP_RET_ERRNO` is NOT what the filter returns there, and the reason is
+  the same one that makes the row a hole: the program's numbers are the native
+  table's, so under a foreign arch it does not know which call it is answering.
+  An errno would be a guess, and the process would limp on with every call
+  failing. x32 is a different case and stays `EPERM` — it shares x86_64's audit
+  arch, so the arch rule never sees it, and it is caught by its own JSET on
+  `__X32_SYSCALL_BIT`.
+
+  Measured before the fix, filter on, same source built twice: the 386 build got
+  `EINVAL` from `unshare(CLONE_NEWUSER)` and success from `ptrace` — the
+  KERNEL's answers — where the amd64 build got `EPERM` twice. **And it never
+  needed a 32-bit binary:** `int $0x80` from a NATIVE 64-bit program enters the
+  same i386 table, and the redteam round on the fix measured that spelling
+  creating a user namespace (`unshare(CLONE_NEWUSER)` returning 0) with the
+  filter on. `TestInt80FromANativeBinaryIsKilled` is the regression. Cost: a 32-bit
+  binary does not run inside the sandbox, `--dry-run`'s SECCOMP block says so on
+  x86_64, and `--no-seccomp` lifts it. INDEX §5.4.
 - **R12 — Close the invariant-3 gap.** S1, S2, D2, D3, Y2, Y3 are all gated on it;
   the combined payoff is a full host device tree, the outer process table, and
   cgroup kill/freeze over out-of-sandbox processes. The current TODO framing ("low

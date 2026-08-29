@@ -24,21 +24,21 @@ import (
 //
 // The real block is the only host-dependent thing in this document: Arch is
 // runtime.GOARCH, Installed depends on whether sandbox.BuildFilter has a
-// syscall table for it, and CompatArchGap is amd64-only. A golden containing
+// syscall table for it, and CompatArch is set only where the arch has a compat table. A golden containing
 // any of the three would be an amd64 fixture nobody else's CI could pass —
 // the same trap testdata/seccomp.active.txt already sidesteps with
-// assertKnownGapParagraph.
+// assertCompatArchParagraph.
 //
 // It is substituted rather than stripped so the KEYS stay in the golden: the
 // field set is part of the format, and a renamed key must still show up as a
 // diff here. TestSeccompFactsAreDerivedNotGolden asserts the real block on the
 // host actually running the test.
 var jsonGoldenSeccomp = reportSeccomp{
-	Requested:     true,
-	Installed:     true,
-	Arch:          "GOARCH",
-	Denied:        []string{"golden"},
-	CompatArchGap: false,
+	Requested:  true,
+	Installed:  true,
+	Arch:       "GOARCH",
+	Denied:     []string{"golden"},
+	CompatArch: "",
 }
 
 // jsonGoldenReport resolves a selection against the same fixture host the
@@ -253,9 +253,17 @@ func TestSeccompFactsAreDerivedNotGolden(t *testing.T) {
 			t.Errorf("BuildFilter assembled but the report says installed=%v reason=%q",
 				on.Installed, on.Reason)
 		}
-		if want := runtime.GOARCH == "amd64"; on.CompatArchGap != want {
-			t.Errorf("compat_arch_gap is %v on GOARCH=%s, want %v",
-				on.CompatArchGap, runtime.GOARCH, want)
+		// Asserted against sandbox.CompatArchName, NOT against a
+		// runtime.GOARCH test written here. A second `== "amd64"` in the
+		// test is what let the first version of this field ship: the test
+		// agreed with the renderer, both were wrong on arm64, and the
+		// filter killed aarch32 while the document said nothing. The test
+		// must grade the renderer against the FILTER's own answer.
+		want, _ := sandbox.CompatArchName()
+		if on.CompatArch != want {
+			t.Errorf("compat_arch is %q on GOARCH=%s, want %q — the filter kills every "+
+				"non-native audit arch, so the document must name the one this "+
+				"architecture has", on.CompatArch, runtime.GOARCH, want)
 		}
 	}
 

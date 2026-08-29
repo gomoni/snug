@@ -6226,6 +6226,176 @@ Expect `procfd-ok`, a `/dev` of exactly `core fd full null ptmx pts random shm
 stderr stdin stdout tty urandom zero`, and `ls: cannot access '/sys': No such
 file or directory`.
 
+## 26. A 32-bit binary is killed, not run unfiltered (issue #529)
+
+The seccomp filter's numbers are the NATIVE syscall table's. A syscall issued
+under any other audit arch matches none of them, so before this the i386 compat
+ABI on x86_64 walked past the whole filter — and building a 32-bit binary costs
+a payload nothing.
+
+Needs a Go toolchain to produce the 32-bit binary; nothing else.
+
+```bash
+D=$(mktemp -d); cd $D
+cat > go.mod <<'GOMOD'
+module probe
+
+go 1.24
+GOMOD
+cat > main.go <<'GO'
+package main
+
+import (
+	"fmt"
+	"syscall"
+)
+
+func main() {
+	_, _, e := syscall.Syscall(syscall.SYS_UNSHARE, 0x10000000, 0, 0)
+	fmt.Printf("unshare(CLONE_NEWUSER) errno=%v\n", e)
+	_, _, e2 := syscall.Syscall(syscall.SYS_PTRACE, 0, 0, 0)
+	fmt.Printf("ptrace errno=%v\n", e2)
+}
+GO
+GOARCH=386 CGO_ENABLED=0 go build -o probe32 .
+GOARCH=amd64 CGO_ENABLED=0 go build -o probe64 .
+cd -
+./bin/snug $D -- ./probe64; echo "64-bit exit=$?"
+./bin/snug $D -- ./probe32; echo "32-bit exit=$?"
+./bin/snug --no-seccomp $D -- ./probe32; echo "32-bit --no-seccomp exit=$?"
+```
+
+The 64-bit probe must print `operation not permitted` for BOTH calls and
+`64-bit exit=0` — the filter is doing its job on the native arch.
+
+The 32-bit probe must print NOTHING and `32-bit exit=159`. 159 is 128+31, i.e.
+SIGSYS: `SECCOMP_RET_KILL_PROCESS`, before the program's first line of output.
+
+The third run must print
+
+```
+unshare(CLONE_NEWUSER) errno=invalid argument
+ptrace errno=errno 0
+```
+
+and `32-bit --no-seccomp exit=0`. That is the stated lift: the refusal is the
+filter's, so the flag that removes the filter removes it. Read those two errnos
+— they are the KERNEL's, not the filter's, and they are exactly what the bug
+looked like.
+
+**What it looked like before the fix**, and the reason the kill is not
+belt-and-braces — same probe, same host, snug built from the parent commit, with
+the filter ON and no flags:
+
+```
+unshare(CLONE_NEWUSER) errno=invalid argument
+ptrace errno=errno 0
+32-bit exit=0
+```
+
+`EINVAL` from `unshare` and errno 0 from `ptrace` are the KERNEL's answers: both
+calls reached it. The 64-bit probe's `EPERM` on the same host is the filter's.
+So a 32-bit binary had ptrace, bpf, keyctl, `process_vm_writev` and
+`clone(CLONE_NEWUSER)` while a 64-bit one did not — which is the same output the
+`--no-seccomp` run above still produces, on purpose.
+
+`--dry-run` says so on x86_64, in the SECCOMP block:
+
+```bash
+./bin/snug --dry-run . | grep -A5 '32-bit binaries'
+```
+
+```
+         32-bit binaries do NOT run on this architecture: they issue their
+         syscalls under the i386 compat audit arch, whose numbers mean
+         something else, so the filter KILLS the process (SIGSYS) rather
+         than allowing it through unfiltered. --no-seccomp lifts this.
+         A 64-bit binary reaches that same table with `int $0x80`, and is
+         killed for it too.
+```
+
+and the machine format carries the arch by name:
+
+```bash
+./bin/snug --dry-run --json . | grep compat_arch
+```
+
+```
+    "compat_arch": "i386"
+```
+
+The paragraph names the compat arch this architecture has — `i386` under amd64,
+`aarch32` under arm64 — and is absent where there is none. It is rendered from
+`sandbox.CompatArchName`, not from a `GOARCH == "amd64"` test in the renderer:
+the filter's arch rule is unconditional, so a renderer with its own opinion
+about which architectures it applies to was wrong on arm64 the moment it was
+written.
+
+### 26b. The same bypass without a 32-bit binary: `int 0x80`
+
+The interesting half, and the reason §26 is not a courtesy to people who ship
+32-bit programs. Reaching the i386 syscall table needs no 32-bit toolchain, no
+32-bit libc and no 32-bit ELF — `int $0x80` in an ordinary 64-bit program enters
+the compat table and reports `AUDIT_ARCH_I386` to seccomp.
+
+```bash
+D=$(mktemp -d); cd $D
+cat > go.mod <<'GOMOD'
+module int80
+
+go 1.24
+GOMOD
+cat > int80_amd64.s <<'ASM'
+#include "textflag.h"
+
+// func int80(nr, a1, a2, a3 uintptr) uintptr
+TEXT ·int80(SB), NOSPLIT, $0-40
+	MOVQ nr+0(FP), AX
+	MOVQ a1+8(FP), BX
+	MOVQ a2+16(FP), CX
+	MOVQ a3+24(FP), DX
+	INT  $0x80
+	MOVQ AX, ret+32(FP)
+	RET
+ASM
+cat > main.go <<'GO'
+package main
+
+import "fmt"
+
+func int80(nr, a1, a2, a3 uintptr) uintptr
+
+func main() {
+	fmt.Println("start=OK")
+	// i386 __NR_unshare is 310, NOT x86_64's 272.
+	fmt.Printf("int80_unshare_ret=%d\n", int64(int80(310, 0x10000000, 0, 0)))
+	fmt.Println("survived=OK")
+}
+GO
+CGO_ENABLED=0 go build -o int80probe .
+cd -
+./bin/snug $D -- ./int80probe; echo "exit=$?"
+./bin/snug --no-seccomp $D -- ./int80probe; echo "--no-seccomp exit=$?"
+```
+
+The first run must print `start=OK` and nothing more, and `exit=159`. The
+`start=OK` matters: the write(2) that produced it is a NATIVE syscall and is
+allowed, so the kill is landing on the `int 0x80` and not on the program
+starting. This is a plain amd64 ELF.
+
+The second must print
+
+```
+start=OK
+int80_unshare_ret=-22
+survived=OK
+```
+
+and `--no-seccomp exit=0`. The raw i386 convention returns `-errno`, so `-1`
+would be `EPERM` — snug's filter's answer — and `-22` is `EINVAL`, the kernel's
+(`unshare(CLONE_NEWUSER)` refuses a multithreaded caller, and the Go runtime is
+one). The call reached the kernel.
+
 ## If a check fails
 
 1. Re-run it with `--dry-run` and compare what snug *claimed* against what you

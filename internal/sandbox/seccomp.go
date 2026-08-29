@@ -39,6 +39,24 @@ const (
 	seccompRetErrno = 0x00050000 // | (errno & 0xffff)
 	retEPERM        = seccompRetErrno | uint32(unix.EPERM)
 	retENOSYS       = seccompRetErrno | uint32(unix.ENOSYS)
+
+	// SECCOMP_RET_KILL_PROCESS: SIGSYS the whole thread group. Used for one
+	// case only — a syscall arriving under an audit arch this program has no
+	// numbers for (issue #529). EPERM is deliberately NOT used there: the
+	// numbers are unknown, so every EPERM would be a guess wearing the
+	// costume of a rule, and a foreign-arch process would limp on with each
+	// call failing, which reads like a broken program rather than a refusal.
+	//
+	// The value looks like the LEAST severe of the actions and is the most.
+	// linux/seccomp.h: "The upper 16-bits are ordered from least permissive
+	// values to most, AS A SIGNED VALUE (so 0x8000000 is negative). The
+	// ordering ensures that a min_t() over composed return values always
+	// selects the least permissive choice." So 0x80000000 is negative, and
+	// when filters are composed — the engine's payload runs under this one
+	// and whatever else is installed — this one wins over another filter's
+	// ALLOW (0x7fff0000). An unsigned comparison would give the opposite
+	// answer, which is why the constant is worth a paragraph.
+	seccompRetKillProcess = 0x80000000
 )
 
 // Offsets into struct seccomp_data: nr, arch, instruction_pointer, args[6].
@@ -56,6 +74,31 @@ const (
 	auditArchX86_64  = 0xC000003E
 	auditArchAArch64 = 0xC00000B7
 )
+
+// CompatArchName names the SECOND syscall table a kernel for this GOARCH also
+// serves — the 32-bit compat ABI — or reports false where there is none this
+// filter would ever meet. It is exported for internal/cli's --dry-run SECCOMP
+// block, which must disclose that a binary built for that arch is killed
+// rather than run (issue #529).
+//
+// Derived here rather than spelled out again in internal/cli, for the reason
+// DeniedSyscallNames exists: the arch rule in BuildFilter is unconditional, so
+// a `runtime.GOARCH == "amd64"` test beside the RENDERER is a second opinion
+// about what the FILTER does, and it was wrong for arm64 the moment it was
+// written — aarch32 is killed there and the screen said nothing.
+func CompatArchName() (string, bool) {
+	switch runtime.GOARCH {
+	case "amd64":
+		return "i386", true
+	case "arm64":
+		// True whether or not this kernel was built with CONFIG_COMPAT: with
+		// it, aarch32 syscalls arrive under AUDIT_ARCH_ARM and are killed;
+		// without it the binary does not run at all. Either way "a 32-bit
+		// binary does not run here" is the sentence to print.
+		return "aarch32", true
+	}
+	return "", false
+}
 
 func nativeAuditArch() (uint32, bool) {
 	switch runtime.GOARCH {
@@ -312,13 +355,22 @@ func BuildFilter() (prog []byte, ok bool, err error) {
 	// Guard on architecture first. x86_64 numbers applied to i386 numbers would
 	// deny the wrong calls, which is worse than denying none.
 	//
-	// KNOWN GAP, documented rather than silently patched: a non-native audit
-	// arch falls through to ALLOW, so the x86_64 i386-compat path bypasses this
-	// filter entirely. Closing it means denying the compat arch outright, which
-	// breaks 32-bit binaries. Seccomp here is defence in depth on top of the
-	// namespace boundary, so the trade has been taken deliberately.
+	// A non-native audit arch is KILLED, not allowed (issue #529). Every
+	// comparison below is a number in the NATIVE table, so a syscall arriving
+	// under any other arch matches none of them: falling through to ALLOW
+	// meant the x86_64 i386-compat ABI bypassed this filter entirely, and a
+	// 32-bit binary — which any payload can build or download — ran with
+	// ptrace, bpf, keyctl, process_vm_writev and clone(CLONE_NEWUSER)
+	// unfiltered. The same holds for aarch32 under arm64.
+	//
+	// The cost, stated: a 32-bit binary does not run inside the sandbox at
+	// all. That is the whole of it, it is not silent (SIGSYS, and --dry-run's
+	// SECCOMP block says so), and it is liftable the day a per-arch table
+	// exists — the filter would then compare the compat numbers instead of
+	// refusing them. --no-seccomp already lifts it for a payload that needs a
+	// 32-bit binary today.
 	a.emit(bpfLdWAbs, "", "", offArch)
-	a.emit(bpfJeqK, "", "allow", arch)
+	a.emit(bpfJeqK, "", "foreignarch", arch)
 
 	// On x86_64 the x32 ABI shares the audit arch and marks its syscalls with
 	// __X32_SYSCALL_BIT (0x40000000), so an x32 caller's numbers would miss
@@ -367,6 +419,8 @@ func BuildFilter() (prog []byte, ok bool, err error) {
 	a.emit(bpfRetK, "", "", retEPERM)
 	a.mark("nosys")
 	a.emit(bpfRetK, "", "", retENOSYS)
+	a.mark("foreignarch")
+	a.emit(bpfRetK, "", "", seccompRetKillProcess)
 
 	raw, err := a.assemble()
 	if err != nil {

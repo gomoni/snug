@@ -367,7 +367,7 @@
     "denied": [
       "golden"
     ],
-    "compat_arch_gap": false
+    "compat_arch": ""
   },
   "tty": {
     "new_session": false
