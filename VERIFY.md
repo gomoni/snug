@@ -2150,6 +2150,62 @@ The automated equivalent is
 `TestKnownOpenResidualSiblingReopensAnythingButASocket`; both are deliberately
 asserting that a reach is **open** (issue #47), except for the last line.
 
+### 6c-bis. The caps a payload can regain are INERT against snug's namespaces (issue #417)
+
+With `--no-seccomp` the payload can create a user namespace of its own, and that
+hands it the full capability set back — `CapBnd 000001ffffffffff`, CAP_NET_ADMIN
+and CAP_SYS_ADMIN included. `internal/policy/enginecaps.go`'s CAP_NET_ADMIN
+exclusion is worth something only because none of it reaches the namespaces snug
+made. Both network arms, because `-p @net` makes N the STAGE's namespace rather
+than bwrap's:
+
+```bash
+mkdir -p $SC/proj/sub/m
+cat > $SC/proj/sub/probe.sh <<'EOF'
+readlink /proc/self/ns/net
+unshare -U -r sh -c '
+  grep -E "^Cap(Eff|Bnd)" /proc/self/status
+  ip link set lo down;                             echo "in-N-ip rc=$?"
+  unshare -n sh -c "ip link set lo up;             echo own-netns-ip rc=\$?"
+  unshare -m sh -c "mount -o remount,rw,bind /usr; echo remount-usr rc=\$?"
+  unshare -m sh -c "mount -t tmpfs t ./m;          echo own-tmpfs rc=\$?"
+'
+EOF
+
+./bin/snug --no-seccomp --no-defaults -p @sys -p @cwd-rw       $SC/proj/sub -- /bin/sh probe.sh
+./bin/snug --no-seccomp --no-defaults -p @sys -p @cwd-rw -p @net $SC/proj/sub -- /bin/sh probe.sh
+```
+
+Expect the same eight lines from both, the inode aside:
+
+```
+net:[4026532857]
+CapEff:	000001ffffffffff
+CapBnd:	000001ffffffffff
+RTNETLINK answers: Operation not permitted
+in-N-ip rc=2
+own-netns-ip rc=0
+mount: /usr: permission denied.
+remount-usr rc=32
+own-tmpfs rc=0
+```
+
+The PAIRS are the measurement, not the refusals: `ip link set lo down` on snug's
+N is EPERM while the identical command in a netns the payload unshared for itself
+succeeds, and `remount,rw /usr` is refused while a tmpfs of its own mounts. Either
+refusal alone would read the same on a nested namespace that regained no
+privilege at all.
+
+NOT reachable this way, and it is the third assertion: `setns` back into N with a
+descriptor saved before the unshare. From inside the nested namespace this uid is
+unmapped, so `nsenter --net=/proc/1/ns/net` dies at EACCES on the OPEN — a
+different refusal from the EPERM being measured, and a verdict whose reason is
+the wrong syscall is not a verdict. That half needs an fd held across the
+unshare, which no shell can express: it is pinned by
+`TestNestedUserNamespaceCapsCannotReachSnugsNamespaces` and
+`test/integration/testdata/capregainprobe`, which is also the automated
+equivalent of everything above.
+
 ## 7. The network namespace
 
 ```bash
