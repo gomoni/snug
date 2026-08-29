@@ -113,8 +113,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.deny(w, "snug does not filter the libpod-native API for %s /%s, so it refuses it. "+
 			"snug reads the docker-compat request schema; the libpod schema is a different "+
 			"shape, and what this filter has not read it does not forward. Read-only libpod "+
-			"routes (GET, HEAD), /libpod/build and /libpod/images/pull are the exceptions. "+
-			"Use `docker` against the docker-compat endpoint (/v1.41/...) instead.",
+			"routes (GET, HEAD), /libpod/build, /libpod/images/pull and /libpod/containers/create "+
+			"are the exceptions. Use `docker` against the docker-compat endpoint (/v1.41/...) "+
+			"instead.",
 			r.Method, strings.Join(segs, "/"))
 		return
 	}
@@ -166,7 +167,18 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		p.handleBuild(w, r)
 	case isContainerCreate(segs):
-		p.handleCreate(w, r)
+		// segs is identical for /v1.41/containers/create and
+		// /v5.0.0/libpod/containers/create — normaliseFull already stripped
+		// the "libpod" segment — so the two wires are told apart by the
+		// libpod flag closed over from ServeHTTP's own normaliseFull call,
+		// not by segs. Two decoders for one route, per issue #459 phase 2's
+		// design: a normalised judge (createjudge.go) both feed, never two
+		// independent allowlists.
+		if libpod {
+			p.handleLibpodContainerCreate(w, r)
+		} else {
+			p.handleCreate(w, r)
+		}
 	case isExecCreate(segs, r.Method):
 		p.handleExecCreate(w, r)
 	case isVolumeCreate(segs):
@@ -306,7 +318,15 @@ func normaliseFull(path string) (segs []string, prefix int, libpod bool, ok bool
 // that are not metadata. The body is empty; every parameter is in the query
 // string, which is why this route can be read at all while
 // libpod/containers/create cannot.
-func libpodExamined(segs []string) bool { return isBuild(segs) || isImagePull(segs) }
+//
+// containers/create is the third entry (issue #459 phase 2): podman's own
+// SpecGenerator body, read by handleLibpodContainerCreate in libpodcreate.go
+// against a default-deny field catalogue — an unmodelled or unrecognised
+// field refuses by name rather than forwarding unread, the same fail-closed
+// rule build's context and images/pull's query already keep.
+func libpodExamined(segs []string) bool {
+	return isBuild(segs) || isImagePull(segs) || isContainerCreate(segs)
+}
 
 // safeMethod is the other half of the gate: a GET or a HEAD changes nothing and
 // carries no schema to misread.

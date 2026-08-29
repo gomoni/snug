@@ -185,31 +185,23 @@ func warnAboutPodmanClient() {
 		return
 	}
 
-	// podman resolves to a genuine binary, and it STILL cannot `run` or `pull`
-	// here: podman's own CLI speaks the libpod-native API against
-	// $CONTAINER_HOST, and snug refuses a libpod request that changes state
-	// unless its own filter has read it — the filter reads the docker-compat
-	// schema, and a libpod body is a different shape it cannot inspect
-	// (internal/dockerproxy). "body-bearing" is what this said until issue #340
-	// inverted the gate from a denylist of segments to `libpodExamined`; the
-	// test is now "not GET or HEAD, and not examined", which also covers the
-	// DELETE routes the old wording never named. `ps`, `images` and `info` are
-	// read-only libpod routes and answer truthfully; `run` and `pull` do not.
-	//
-	// `podman build` DOES work and the message says so, because omitting it read
-	// as "podman cannot build here" to the one person who selected the profile
-	// for building. POST /libpod/build is the single state-changing libpod route
-	// the filter has read — libpodExamined is isBuild — and it is filterable by
-	// the SAME code as /build because a build's parameters travel in the query
-	// string, not in a body (handleBuild starts at r.URL.Query()). MEASURED:
-	// `podman build -t probe:1 .` pulled alpine:3.20, ran its RUN step and
-	// committed localhost/probe:1 through this proxy. See CONTAINER-CLIENT.md §3
-	// and issue #459 for whether the libpod split should survive at all.
+	// podman resolves to a genuine binary. podman's own CLI speaks the
+	// libpod-native API against $CONTAINER_HOST, and snug refuses a libpod
+	// request that changes state unless its own filter has read it — the
+	// test is "not GET or HEAD, and not examined" (libpodExamined). `build`
+	// (query-string parameters, shared with /build) and `pull`
+	// (query-string, issue #513) both work end to end. `run`'s own
+	// `containers/create` is read now too (podman's SpecGenerator body,
+	// issue #459 phase 2), so a `run` reaches CREATE — but MEASURED against
+	// a live engine this session, `run` still fails one step later: podman's
+	// own POST .../start and .../attach carry no body worth reading and are
+	// refused anyway, because they are POST and nothing has named them
+	// examined. That is the next gap, not this one; `docker run` is
+	// unaffected; it never speaks this API.
 	fmt.Fprint(os.Stderr,
-		"snug: podman here is genuine, but `run` and `pull` will not work through this\n"+
-			"      sandbox's proxy — podman's CLI speaks the libpod-native API, and snug\n"+
-			"      refuses a libpod request that changes state unless its own filter has read\n"+
-			"      it (it filters the docker-compat schema only). Working: `podman build`,\n"+
-			"      and the read-only routes `podman ps`, `podman images`, `podman info`.\n"+
-			"      For `run` and `pull`, use `docker` instead. Issue #459.\n")
+		"snug: podman here is genuine. `podman build` and `podman pull` work through\n"+
+			"      this sandbox's proxy end to end. `podman run` reaches container CREATE\n"+
+			"      now (issue #459) but still fails at START — podman's own start/attach\n"+
+			"      routes carry no body worth reading and are refused anyway, being POST\n"+
+			"      and unexamined. `docker run` is unaffected. Issue #459.\n")
 }
