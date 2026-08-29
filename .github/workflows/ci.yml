@@ -553,9 +553,10 @@ jobs:
       # runs, so the rule above is untouched — the instructions stay in the
       # script and this file still only names it. TestTheEngineJobRunsTheScript
       # NotMake in test/guard is the ratchet.
-      # A cache for the provisioned Tumbleweed image, and nothing more: use a
-      # cached image up to 7 days old, otherwise build one. It has no opinion
-      # about which ref it runs on and no way to fail — a miss builds.
+      # A cache for the provisioned Tumbleweed image: use a cached image up to 7
+      # days old, otherwise build one. A miss builds rather than failing, on any
+      # ref — but only main stores what it built, so the image everything else
+      # runs on came from merged code.
       #
       # The cached unit is the image tarball rather than buildkit layers. Layers
       # were tried and did not expire the way this needs: the base digest moves
@@ -631,8 +632,14 @@ jobs:
           push: false
           tags: local/snug-engine-ci:latest
 
+      # Only main stores an image. A pull request builds when it has to, so it
+      # never fails, but its build stays in the run — the stored image every
+      # other run consumes is one that main built from merged code.
+      #
+      # The cost, since a passing PR hides it: a PR that has to build repeats
+      # that build on every push, because it has nothing to restore from.
       - name: Save it under today's key
-        if: steps.decide.outputs.build == 'true'
+        if: steps.decide.outputs.build == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           mkdir -p /tmp/snug-engine-image
           docker save local/snug-engine-ci:latest -o /tmp/snug-engine-image/image.tar
@@ -641,7 +648,7 @@ jobs:
       # A key is immutable, so a second build on the same day warns instead of
       # replacing. The action logs that and carries on; it never fails the job.
       - name: Cache it
-        if: steps.decide.outputs.build == 'true'
+        if: steps.decide.outputs.build == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/snug-engine-image/image.tar
