@@ -621,13 +621,13 @@ type jsonEnvDrop struct {
 }
 
 type jsonSeccomp struct {
-	Requested     bool     `json:"requested"`
-	Installed     bool     `json:"installed"`
-	Reason        string   `json:"reason"`
-	Error         string   `json:"error"`
-	Arch          string   `json:"arch"`
-	Denied        []string `json:"denied"`
-	CompatArchGap bool     `json:"compat_arch_gap"`
+	Requested  bool     `json:"requested"`
+	Installed  bool     `json:"installed"`
+	Reason     string   `json:"reason"`
+	Error      string   `json:"error"`
+	Arch       string   `json:"arch"`
+	Denied     []string `json:"denied"`
+	CompatArch string   `json:"compat_arch"`
 }
 
 type jsonTTY struct {
@@ -725,13 +725,13 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			ProcfsClosureNote:     rep.Topology.ProcfsClosureNote,
 		},
 		Seccomp: jsonSeccomp{
-			Requested:     rep.Seccomp.Requested,
-			Installed:     rep.Seccomp.Installed,
-			Reason:        rep.Seccomp.Reason,
-			Error:         rep.Seccomp.Error,
-			Arch:          rep.Seccomp.Arch,
-			Denied:        rep.Seccomp.Denied,
-			CompatArchGap: rep.Seccomp.CompatArchGap,
+			Requested:  rep.Seccomp.Requested,
+			Installed:  rep.Seccomp.Installed,
+			Reason:     rep.Seccomp.Reason,
+			Error:      rep.Seccomp.Error,
+			Arch:       rep.Seccomp.Arch,
+			Denied:     rep.Seccomp.Denied,
+			CompatArch: rep.Seccomp.CompatArch,
 		},
 		TTY: jsonTTY{NewSession: rep.NewSession},
 	}

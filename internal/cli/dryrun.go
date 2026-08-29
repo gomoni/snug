@@ -262,11 +262,12 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 //     this architecture" would print that sentence on a fully supported
 //     amd64 host with a broken filter, naming the wrong fix on the one
 //     screen that exists so a human can trust what snug tells them.
-//  3. The "active" branch states a KNOWN GAP that BuildFilter's own doc
-//     comment already carries twelve lines up: on x86_64, a 32-bit (i386
-//     compat) payload runs under a different audit arch and this filter
-//     denies it NOTHING. Saying "active" with no qualifier on such a host is
-//     the unqualified-guarantee shape this whole block exists to avoid.
+//  3. The "active" branch states what happens on the compat audit arch,
+//     because that is a REFUSAL and not a detail: on x86_64 a 32-bit (i386
+//     compat) payload issues syscalls under a different audit arch, matches
+//     none of the filter's numbers, and is killed (issue #529). Saying
+//     "active" with no qualifier on such a host would leave a human to find
+//     out from a SIGSYS that their 32-bit binary is refused.
 //
 // describeAttach is §9 of the attach design, rendered rather than paraphrased
 // because the honesty requirements are load-bearing: --dry-run starts
@@ -336,10 +337,20 @@ func describeSeccomp(out io.Writer, sc reportSeccomp) {
 	}
 	fmt.Fprintln(out, "         — plus clone3 (ENOSYS), ioctl(_, TIOCSTI, _), and")
 	fmt.Fprintln(out, "         clone/unshare(CLONE_NEWUSER).")
-	if sc.CompatArchGap {
-		fmt.Fprintln(out, "         KNOWN GAP on this architecture: a 32-bit (i386 compat) payload runs")
-		fmt.Fprintln(out, "         under a DIFFERENT audit arch, and this filter denies it NOTHING —")
-		fmt.Fprintln(out, "         see BuildFilter's doc comment in internal/sandbox/seccomp.go.")
+	if sc.CompatArch != "" {
+		fmt.Fprintf(out, "         32-bit binaries do NOT run on this architecture: they issue their\n")
+		fmt.Fprintf(out, "         syscalls under the %s compat audit arch, whose numbers mean\n", sc.CompatArch)
+		fmt.Fprintln(out, "         something else, so the filter KILLS the process (SIGSYS) rather")
+		fmt.Fprintln(out, "         than allowing it through unfiltered. --no-seccomp lifts this.")
+		if sc.CompatArch == "i386" {
+			// Not a footnote. The rule reads as being about 32-bit binaries
+			// and is not: `int $0x80` reaches the same table from an
+			// ORDINARY 64-bit program, which is how the gap was reachable
+			// with no 32-bit toolchain at all. A human deciding whether this
+			// refusal can affect them needs the second sentence.
+			fmt.Fprintln(out, "         A 64-bit binary reaches that same table with `int $0x80`, and is")
+			fmt.Fprintln(out, "         killed for it too.")
+		}
 	}
 	fmt.Fprintln(out, "         Defence in depth on the payload tree, not a guarantee that")
 	fmt.Fprintln(out, "         co-resident payloads are isolated from each other: a sibling still")

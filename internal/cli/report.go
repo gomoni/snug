@@ -385,11 +385,21 @@ type reportSeccomp struct {
 	Error  string
 	Arch   string
 	Denied []string
-	// CompatArchGap is BuildFilter's known gap: on x86_64 a 32-bit (i386
-	// compat) payload runs under a different audit arch and this filter denies
-	// it nothing. Saying "installed" without it would be the unqualified
-	// guarantee the human block is careful not to make.
-	CompatArchGap bool
+	// CompatArch names the second, 32-bit audit arch this architecture's
+	// kernel also serves — "i386" under amd64, "aarch32" under arm64 — and is
+	// empty where there is none. A syscall arriving under it matches none of
+	// this filter's numbers, so BuildFilter kills the process rather than
+	// allowing it (issue #529). It is reported because it is a REFUSAL a
+	// payload can hit: a 32-bit binary does not run inside the sandbox, and a
+	// human reading this screen should not have to discover that from a
+	// SIGSYS.
+	//
+	// It comes from sandbox.CompatArchName, not from a runtime.GOARCH test
+	// here. The first version of this field was `== "amd64"`, which named the
+	// gap on x86_64 and stayed silent on arm64 while the filter killed
+	// aarch32 there just the same — a renderer holding its own opinion about
+	// what the filter does. Found by the redteam round on this change.
+	CompatArch string
 }
 
 // buildReport derives every fact both renderers need, once. It reads the same
@@ -757,7 +767,7 @@ func buildSeccompReport(cfg config) reportSeccomp {
 		s.Reason = "unsupported-arch"
 	default:
 		s.Installed = true
-		s.CompatArchGap = runtime.GOARCH == "amd64"
+		s.CompatArch, _ = sandbox.CompatArchName()
 	}
 	return s
 }

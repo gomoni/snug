@@ -90,6 +90,19 @@ gate:
 	# anonymous Docker Hub pull. Built lazily by containerengine_test.go's
 	# egressprobeBin. Same fix, same reasoning as the seven above.
 	go vet ./test/integration/testdata/egressprobe
+	# testdata/arch32probe (issue #529) is the ninth: one source file built
+	# for GOARCH 386 AND for the native arch, so a filtered run can be
+	# compared against itself with only the audit arch differing. Built
+	# lazily by compatarch_test.go's buildArch32Probe. Vetted natively —
+	# the 386 build happens in the test, not here. Same fix, same reasoning
+	# as the eight above.
+	go vet ./test/integration/testdata/arch32probe
+	# testdata/int80probe (issue #529) is the tenth: a NATIVE 64-bit program
+	# with two bytes of assembly, `int 0x80`, which the kernel serves from
+	# the i386 syscall table. It is the same bypass as arch32probe without
+	# needing a 32-bit toolchain at all. Built lazily by compatarch_test.go.
+	# Same fix, same reasoning as the nine above.
+	go vet ./test/integration/testdata/int80probe
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This

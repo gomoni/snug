@@ -11,13 +11,25 @@ import (
 	"github.com/gomoni/snug/internal/sandbox"
 )
 
-// knownGapParagraph is the amd64-only i386-compat warning describeSeccomp's
-// "active" branch renders (dryrun.go, `if runtime.GOARCH == "amd64"`), copied
-// here verbatim rather than derived, so a change to either side is visible as
-// a diff instead of two copies silently drifting apart.
-const knownGapParagraph = "         KNOWN GAP on this architecture: a 32-bit (i386 compat) payload runs\n" +
-	"         under a DIFFERENT audit arch, and this filter denies it NOTHING —\n" +
-	"         see BuildFilter's doc comment in internal/sandbox/seccomp.go.\n"
+// compatArchParagraph is the compat-arch REFUSAL describeSeccomp's "active"
+// branch renders on an architecture that has a second, 32-bit audit arch. The
+// wording is copied here verbatim rather than derived, so a change to either
+// side is visible as a diff instead of two copies silently drifting apart —
+// but the ARCH NAME in it is not: it comes from sandbox.CompatArchName, the
+// same source the renderer reads, because a hardcoded "i386" here would make
+// this test amd64-only in the one place whose job is proving the screen is
+// right on every architecture.
+func compatArchParagraph(name string) string {
+	p := "         32-bit binaries do NOT run on this architecture: they issue their\n" +
+		"         syscalls under the " + name + " compat audit arch, whose numbers mean\n" +
+		"         something else, so the filter KILLS the process (SIGSYS) rather\n" +
+		"         than allowing it through unfiltered. --no-seccomp lifts this.\n"
+	if name == "i386" {
+		p += "         A 64-bit binary reaches that same table with `int $0x80`, and is\n" +
+			"         killed for it too.\n"
+	}
+	return p
+}
 
 // TestGoldenSeccomp is the review artifact for issue #23's own gap: before
 // this fix `snug --dry-run` contained ZERO matches for
@@ -50,13 +62,13 @@ const knownGapParagraph = "         KNOWN GAP on this architecture: a 32-bit (i3
 //     GOARCH and running the test there, not asserting the
 //     strings.Contains it would print.
 //  2. On every ARCHITECTURE THAT DOES have a syscall table, "active" renders
-//     — but arm64 (which has one) does NOT get the i386-compat KNOWN GAP
+//     — but arm64 (which has one) does NOT get the i386-compat refusal
 //     paragraph, because that paragraph is specifically about x86_64's
 //     32-bit compat ABI (`if runtime.GOARCH == "amd64"` in dryrun.go). A
 //     golden generated on amd64 and compared verbatim on arm64 would fail
 //     there with no defect present — skipping the golden case entirely
 //     would "fix" that by leaving the WHOLE SECCOMP screen unchecked on
-//     arm64, which is worse. So instead: assertKnownGapParagraph (below)
+//     arm64, which is worse. So instead: assertCompatArchParagraph (below)
 //     checks the paragraph is present, verbatim, on amd64 and ABSENT
 //     everywhere else with a syscall table, then strips it out before the
 //     golden comparison — making testdata/seccomp.active.txt one file that
@@ -99,7 +111,7 @@ func TestGoldenSeccomp(t *testing.T) {
 			got := captureFile(t, func(f io.Writer) { describeSeccomp(f, buildSeccompReport(tc.cfg)) })
 
 			if tc.name == "active" {
-				got = assertKnownGapParagraph(t, got)
+				got = assertCompatArchParagraph(t, got)
 			}
 
 			path := filepath.Join("testdata", "seccomp."+tc.name+".txt")
@@ -125,25 +137,28 @@ func TestGoldenSeccomp(t *testing.T) {
 	}
 }
 
-// assertKnownGapParagraph checks describeSeccomp's amd64-only i386-compat
-// paragraph is exactly where it should be — present, verbatim, on amd64;
-// absent everywhere else with a syscall table — and returns `got` with it
-// removed, so the golden comparison this feeds into is the same file on
-// every architecture. See TestGoldenSeccomp's doc comment for why this is
-// preferred over an amd64-only golden or a non-amd64 skip.
-func assertKnownGapParagraph(t *testing.T, got string) string {
+// assertCompatArchParagraph checks describeSeccomp's compat-arch paragraph is
+// exactly where it should be — present and verbatim wherever
+// sandbox.CompatArchName reports one, absent where it does not — and returns
+// `got` with it removed, so the golden comparison this feeds into is the same
+// file on every architecture. See TestGoldenSeccomp's doc comment for why this
+// is preferred over an amd64-only golden or a non-amd64 skip.
+func assertCompatArchParagraph(t *testing.T, got string) string {
 	t.Helper()
-	if runtime.GOARCH == "amd64" {
-		if !strings.Contains(got, knownGapParagraph) {
-			t.Fatalf("GOARCH=amd64 must render the i386-compat KNOWN GAP paragraph verbatim, "+
-				"and did not:\n%s", got)
+	name, has := sandbox.CompatArchName()
+	if has {
+		want := compatArchParagraph(name)
+		if !strings.Contains(got, want) {
+			t.Fatalf("GOARCH=%s has a %s compat audit arch, which the filter kills, so the "+
+				"SECCOMP block must render the refusal paragraph verbatim — and did not. "+
+				"A payload finding this out from a SIGSYS instead of from --dry-run is "+
+				"invariant 5's shape:\n%s", runtime.GOARCH, name, got)
 		}
-		return strings.Replace(got, knownGapParagraph, "", 1)
+		return strings.Replace(got, want, "", 1)
 	}
-	if strings.Contains(got, "KNOWN GAP on this architecture") {
-		t.Fatalf("GOARCH=%s rendered the amd64-only i386-compat KNOWN GAP paragraph — that "+
-			"warning is specifically about x86_64's 32-bit compat ABI and should not appear "+
-			"here:\n%s", runtime.GOARCH, got)
+	if strings.Contains(got, "32-bit binaries do NOT run on this architecture") {
+		t.Fatalf("GOARCH=%s has no compat audit arch this filter would meet, so the refusal "+
+			"paragraph must not appear:\n%s", runtime.GOARCH, got)
 	}
 	return got
 }
