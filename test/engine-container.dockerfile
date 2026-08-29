@@ -21,14 +21,9 @@
 ARG BASE_IMAGE=registry.opensuse.org/opensuse/tumbleweed:latest
 FROM ${BASE_IMAGE}
 
-# CACHE_EPOCH is how "at most 7 days old" is enforced, and it has to be an
-# explicit input because nothing else expires this layer. A layer's cache key is
-# the command text, so `RUN … install-packages` would be reused for as long as
-# the Actions cache retains it — the workflow passes an ISO year-week here, so
-# the string changes on the first run of each week and the layer is rebuilt
-# against live repositories. Middle ground on purpose: a rebuild every run wastes
-# the mirrors' bandwidth and reintroduces the flakiness, and never rebuilding
-# tests snug against a Tumbleweed that no longer exists.
+# CACHE_EPOCH records the build date in the image so a log says how old the
+# provisioning is. Expiry is not enforced here: the workflow caches the built
+# image and rebuilds when the cached one is more than 7 days old.
 ARG CACHE_EPOCH=unset
 RUN echo "cache epoch: ${CACHE_EPOCH}"
 
