@@ -553,39 +553,33 @@ jobs:
       # runs, so the rule above is untouched — the instructions stay in the
       # script and this file still only names it. TestTheEngineJobRunsTheScript
       # NotMake in test/guard is the ratchet.
-      # Provisioned Tumbleweed image: restored here, baked only by a push to
-      # main (issue #478). The point is keeping openSUSE out of PR jobs, so a PR
-      # that finds no image refuses rather than baking one — a fallback would be
-      # the dependency this removes.
+      # A cache for the provisioned Tumbleweed image, and nothing more: use a
+      # cached image up to 7 days old, otherwise build one. It has no opinion
+      # about which ref it runs on and no way to fail — a miss builds.
       #
-      # The cached unit is the image tarball, not buildkit layers, because a
-      # layer cache cannot express "do not build".
+      # The cached unit is the image tarball rather than buildkit layers. Layers
+      # were tried and did not expire the way this needs: the base digest moves
+      # when tumbleweed:latest is republished, which invalidates the install
+      # layer under it regardless of any build-arg, so the real rebuild rate was
+      # Tumbleweed's publish rate rather than the interval asked for.
       #
-      # The key carries the ISO week, so main rebakes weekly and the engine keeps
-      # rolling. restore-keys drops the week, letting a PR opened just after the
-      # rollover run on last week's image instead of going red.
-      #
-      # hashFiles covers the two provisioning files: a PR editing either matches
-      # nothing and is refused until it lands on main. Deliberate — the
-      # alternative runs that diff against the image it just changed.
+      # The key ends in the build date and restore-keys drops it, so a restore
+      # returns the newest image on hand and the step below reads its age out of
+      # the key it matched. hashFiles covers the two provisioning files, so
+      # editing either builds rather than reusing an image that predates the
+      # change.
       - name: Cache key for the provisioned image
         id: img
         run: |
-          week=$(date -u +%G-W%V)
+          today=$(date -u +%Y-%m-%d)
           prefix="snug-engine-image-${{ runner.os }}-${{ hashFiles('test/engine-container.sh', 'test/engine-container.dockerfile') }}-"
           {
-            echo "week=$week"
+            echo "today=$today"
             echo "prefix=$prefix"
-            echo "key=${prefix}${week}"
+            echo "key=${prefix}${today}"
           } >> "$GITHUB_OUTPUT"
-          # The one condition under which this job may reach openSUSE.
-          if [ "${{ github.event_name }}" = push ] && [ "${{ github.ref }}" = refs/heads/main ]; then
-            echo "bakes=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "bakes=false" >> "$GITHUB_OUTPUT"
-          fi
 
-      - name: Restore the provisioned image
+      - name: Restore the newest provisioned image
         id: restore
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -593,63 +587,61 @@ jobs:
           key: ${{ steps.img.outputs.key }}
           restore-keys: ${{ steps.img.outputs.prefix }}
 
-      # cache-hit is an exact primary-key match; cache-matched-key also fires on
-      # a restore-keys prefix. Gate the bake on the latter and main matches last
-      # week's entry forever, never rebakes, and the engine stops rolling.
-      - name: Decide whether this run may bake
+      # Rule 1 and rule 2, and every path that is not "fresh image in hand"
+      # builds — a missing key, an unreadable date, an image older than a week.
+      - name: Use it, or decide to build
         id: decide
         run: |
-          if [ "${{ steps.restore.outputs.cache-hit }}" = true ]; then
-            echo "bake=false" >> "$GITHUB_OUTPUT"
-          elif [ "${{ steps.img.outputs.bakes }}" = true ]; then
-            echo "bake=true" >> "$GITHUB_OUTPUT"
+          matched='${{ steps.restore.outputs.cache-matched-key }}'
+          if [ -z "$matched" ]; then
+            echo "no cached image; building one"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          stamp=$(printf '%s' "$matched" | tail -c 10)
+          if ! built=$(date -u -d "$stamp" +%s 2>/dev/null); then
+            echo "no date in $matched; building one"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          age=$(( ( $(date -u +%s) - built ) / 86400 ))
+          if [ "$age" -gt 7 ]; then
+            echo "cached image is $age days old (built $stamp); building one"
+            echo "build=true" >> "$GITHUB_OUTPUT"
           else
-            echo "bake=false" >> "$GITHUB_OUTPUT"
+            echo "using cached image, $age days old (built $stamp)"
+            echo "build=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Load the restored image
-        if: steps.restore.outputs.cache-matched-key != '' && steps.decide.outputs.bake != 'true'
-        run: |
-          docker load -i /tmp/snug-engine-image/image.tar
-          echo "restored ${{ steps.restore.outputs.cache-matched-key }} (this week is ${{ steps.img.outputs.key }})"
-
-      # Exit 75 is EX_TEMPFAIL, the code test/engine-container.sh already uses for
-      # "no test ran, and not because of this diff" (issue #505).
-      - name: Refuse to bake outside main
-        if: steps.restore.outputs.cache-matched-key == '' && steps.decide.outputs.bake != 'true'
-        run: |
-          echo "::error title=No baked engine image in the cache::NO TEST RAN. The provisioned Tumbleweed image is baked only by a push to main (issue #478), and no entry matched ${{ steps.img.outputs.prefix }}*. This is not a change in this diff. Re-run once main has pushed, or bake by pushing to main."
-          echo "engine-container: no cache entry matched ${{ steps.img.outputs.prefix }}*." >&2
-          echo "                  NO TEST RAN. Only a push to main bakes the image." >&2
-          echo "                  If this diff edits test/engine-container.sh or" >&2
-          echo "                  test/engine-container.dockerfile, the key hashes both, so" >&2
-          echo "                  nothing can match until the change is on main." >&2
-          echo "                  Exiting 75 (EX_TEMPFAIL) so the code says so too." >&2
-          exit 75
+      - name: Load the cached image
+        if: steps.decide.outputs.build != 'true'
+        run: docker load -i /tmp/snug-engine-image/image.tar
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-        if: steps.decide.outputs.bake == 'true'
+        if: steps.decide.outputs.build == 'true'
 
-      - name: Bake the provisioned Tumbleweed image
-        if: steps.decide.outputs.bake == 'true'
+      - name: Build the provisioned Tumbleweed image
+        if: steps.decide.outputs.build == 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: test/engine-container.dockerfile
-          build-args: CACHE_EPOCH=${{ steps.img.outputs.week }}
+          build-args: CACHE_EPOCH=${{ steps.img.outputs.today }}
           load: true
           push: false
           tags: local/snug-engine-ci:latest
 
-      - name: Save the provisioned image for every other job
-        if: steps.decide.outputs.bake == 'true'
+      - name: Save it under today's key
+        if: steps.decide.outputs.build == 'true'
         run: |
           mkdir -p /tmp/snug-engine-image
           docker save local/snug-engine-ci:latest -o /tmp/snug-engine-image/image.tar
           ls -l /tmp/snug-engine-image/image.tar
 
-      - name: Cache it under this week's key
-        if: steps.decide.outputs.bake == 'true'
+      # A key is immutable, so a second build on the same day warns instead of
+      # replacing. The action logs that and carries on; it never fails the job.
+      - name: Cache it
+        if: steps.decide.outputs.build == 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/snug-engine-image/image.tar
