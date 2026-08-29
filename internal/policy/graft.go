@@ -1019,6 +1019,32 @@ var EngineMountpoints = []string{
 	"/var/tmp",
 }
 
+// engineMountpoints is the whole list BwrapFlags pre-creates for a container
+// run: EngineMountpoints, plus EngineBindsDir and the target graft's
+// destination when EngineTargetGraft says there is one (issue #376).
+//
+// It exists so that the argv and G3's fourth disjunct read the SAME list even
+// though the last two entries are per-run. Gating on EngineTargetGraft's own
+// ok, rather than on p.Podman alone, is what makes EngineTargetGraft's own
+// root refusal airtight: with no graft there is no --dir EngineBindsDir, so G3
+// refuses a graft at EngineBindsDir for want of a destination as well as by
+// G2.
+//
+// DEPTH-ASCENDING, like EngineMountpoints and skeletonDirs and for the same
+// measured reason: bwrap's --dir creates no ancestors, and the root is
+// read-only after --remount-ro /, so EngineBindsDir has to be a directory
+// before the target's destination under it can be created. EngineMountpoints
+// already contains /snug and /snug/engine above it.
+func (p *Policy) engineMountpoints() []string {
+	guest, _, ok := p.EngineTargetGraft()
+	if !ok {
+		return EngineMountpoints
+	}
+	out := make([]string, 0, len(EngineMountpoints)+2)
+	out = append(out, EngineMountpoints...)
+	return append(out, EngineBindsDir, guest)
+}
+
 // existsInSandbox is G3: a graft's destination must already be a directory
 // inside the SANDBOX's own mount namespace before move_mount(2) can land
 // anything on it. ENGINE-NETNS.md §5.1 measured mkdir failing with EROFS on
@@ -1034,11 +1060,13 @@ var EngineMountpoints = []string{
 //     mounted AT it;
 //   - it sits inside a writable grant (KindBind rw, or KindTmpfs) — the STAGE
 //     can mkdir it there before move_mount runs;
-//   - it is one of EngineMountpoints, AND this run selects a container
+//   - it is one of p.engineMountpoints(), AND this run selects a container
 //     engine (p.Podman != PodmanOff) — BwrapFlags pre-creates exactly this
 //     list, under exactly this condition, so the fourth disjunct has to
 //     match the same condition or it would accept a graft destination
-//     nothing in THIS run's argv actually creates.
+//     nothing in THIS run's argv actually creates. The list is a METHOD and
+//     not the EngineMountpoints constant because the target graft's
+//     destination is per-run (issue #376).
 //
 // THE THIRD DISJUNCT IS A SOUNDNESS APPROXIMATION, NOT A FACT, and must be
 // read as one: "the stage can create this" is not the same claim as "this
@@ -1049,7 +1077,7 @@ var EngineMountpoints = []string{
 // runtime open_tree/mount_setattr/mkdir/move_mount failure FATAL rather than
 // treating this check as the last word. The two are not redundant: this is
 // where an approximation that guessed wrong surfaces. The FOURTH disjunct is
-// not this kind of approximation — EngineMountpoints and BwrapFlags's
+// not this kind of approximation — p.engineMountpoints() and BwrapFlags's
 // emission of it are the SAME list, so this is a fact about the argv this
 // run will actually produce, not a guess about the filesystem.
 //
@@ -1074,7 +1102,7 @@ func existsInSandbox(p *Policy, guest string) bool {
 		}
 	}
 	if p.Podman != PodmanOff {
-		for _, mp := range EngineMountpoints {
+		for _, mp := range p.engineMountpoints() {
 			if mp == guest {
 				return true
 			}
@@ -1100,7 +1128,7 @@ func existsInSandbox(p *Policy, guest string) bool {
 // Every caller therefore owes it a path already put through
 // ResolveExistingHostPath, and must USE the resolved path afterwards rather than
 // the one it asked about — resolving and then passing the literal onward moves
-// the hole instead of closing it. There are exactly FIVE non-test callers,
+// the hole instead of closing it. There are exactly SIX non-test callers,
 // and every one either discharges the obligation immediately before calling,
 // or is reading a value some OTHER caller already discharged it for:
 //
@@ -1128,6 +1156,10 @@ func existsInSandbox(p *Policy, guest string) bool {
 //     ResolveExistingHostPath a few lines above where it calls this file's B1
 //     check, or (from checkGraft's G4b) a Graft.Host Policy.Graft already
 //     resolved — the same fixed point checkGraft's own entry above relies on.
+//   - policy.(*Policy).EngineTargetGraft (enginetarget.go, issue #376) — asks
+//     about p.Target, which Resolve canonicalised with env.EvalSymlinks
+//     (resolve.go:52) before storing it. The obligation is discharged at
+//     write time; resolving again here would sample the host twice.
 //   - policy.(*Policy).writableNameOnChain (engineexec.go) — the one caller
 //     that deliberately asks about UNRESOLVED and INTERMEDIATE spellings. It
 //     is asking "can the payload rewrite this NAME", which only has an
@@ -1135,7 +1167,7 @@ func existsInSandbox(p *Policy, guest string) bool {
 //     owes this function nothing; do not "fix" it by resolving its argument
 //     first — that is precisely the defect it exists to close.
 //
-// TestHostPathVisibleCallersAreInventoried fails when a SIXTH caller
+// TestHostPathVisibleCallersAreInventoried fails when a SEVENTH caller
 // appears. Adding one means writing its resolution obligation (or its reason
 // for owing none, as describeGrafts's entry does) into this list: a tripwire
 // on the SET is the only enforceable form of an obligation that cannot be

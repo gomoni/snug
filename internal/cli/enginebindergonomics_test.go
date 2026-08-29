@@ -8,44 +8,37 @@ import (
 	"github.com/gomoni/snug/internal/profile"
 )
 
-// TestErgonomicCostOfTheAnchoredSourceRule pins what `-v` a user can actually
-// pass under the anchored source rule (issue #284), against the REAL builtins,
-// for the target layouts people really have.
+// TestErgonomicCostOfTheAnchoredSourceRule pins policy.CheckEngineBindSource's
+// own rule (issue #284) against the REAL builtins, for the target layouts
+// people really have.
 //
-// # WHY THIS TEST EXISTS RATHER THAN A PARAGRAPH
-//
-// internal/profile/profiles/base.toml and VERIFY.md §9c-quater both carry this
-// table in prose, because a user has to be able to predict the refusal — an
-// outcome nobody can predict reads as a bug rather than as a boundary. A table
-// in prose is a copy of state held in policy.CheckEngineBindSource, and this
-// repository has a measured base rate for how those age: the ergonomics note
-// this test replaces was itself wrong in BOTH directions when it was measured
-// (it claimed `-v $SNUG_TARGET:/work` is "normally refused" — true only at
-// depth three and beyond — and claimed a target under /tmp is refused, which
-// is false when @parent-ro's own bind lands directly in the tmpfs).
-//
-// So the prose is checkable now. Change the rule and this test says which row
-// moved; then go fix both documents, deliberately.
+// SINCE ISSUE #376, THIS RULE NO LONGER GOVERNS `-v $SNUG_TARGET:/work`. The
+// container proxy's checkOne asks EngineTargetForwarded before it ever reaches
+// CheckEngineBindSource, and that graft accepts the target root at any depth
+// whenever the sandbox itself can see it — so the depth dependence this test
+// used to pin for the ROOT is gone from the user-visible behaviour. rootErr
+// below still calls CheckEngineBindSource directly and still varies by depth,
+// because the RULE this file exercises is unchanged; it documents what
+// happens to a source the graft's exact match does not cover, not what a
+// client's `-v $SNUG_TARGET:/work` actually gets.
 //
 // # WHAT THE ROWS MEAN
 //
 // The rule: a source is forwarded only if EVERY component from it up to / is
 // anchored. A name whose parent the payload can write is re-pointable; a mount
-// root is not. Both columns below follow from that one sentence:
+// root is not.
 //
-//   - NOTHING INSIDE THE TARGET is ever accepted, at any depth. The target is
-//     a read-write bind, so every name inside it has a writable parent. This
-//     is the ergonomically expensive half — `-v ./data:/data` is the commonest
-//     container invocation there is, and it is a 403 on every layout.
-//   - THE TARGET ROOT is accepted exactly while @parent-ro's own bind sits
-//     directly inside a mount root. True two levels below $HOME and under
-//     $TMPDIR/<dir>/; false at three, where the intermediate directory is a
-//     plain renameable name in the home tmpfs.
-//
-// The way out is issue #376 — a per-bind graft under /snug/engine, handing the
-// engine a mount rather than a path string it re-resolves. Until then this
-// table is the boundary, and it is a refusal rather than a silent narrowing:
-// nothing mounts with less than what was asked for.
+//   - NOTHING INSIDE THE TARGET is ever accepted through this rule, at any
+//     depth. The target is a read-write bind, so every name inside it has a
+//     writable parent. `-v ./data:/data` is still a 403 on every layout — the
+//     graft is a fixed root, never a tail (issue #284 reopened through it
+//     otherwise) — but the fix it now offers is uniform: bind the target
+//     itself and address the subdirectory inside the container.
+//   - CheckEngineBindSource, asked about the bare target directly, still
+//     accepts it exactly while @parent-ro's own bind sits directly inside a
+//     mount root (true two levels below $HOME and under $TMPDIR/<dir>/, false
+//     at three) — a fact about the fallback rule, superseded for the real
+//     proxy path by the graft.
 func TestErgonomicCostOfTheAnchoredSourceRule(t *testing.T) {
 	// Extra fixture directories for the deeper layouts. envFakeEnv's own set
 	// stops at /home/u/proj/sub, and Resolve refuses a target it cannot stat.
@@ -138,7 +131,12 @@ func TestErgonomicCostOfTheAnchoredSourceRule(t *testing.T) {
 			}
 
 			// INSIDE the target: refused in every row, no exceptions. This is
-			// the layout-independent half and the expensive one.
+			// the layout-independent half and the expensive one — the graft
+			// is a fixed root and never forwards a tail, so a client still
+			// has to bind the target and address the subdirectory inside the
+			// container. Since #376 that fix is uniform across every row: it
+			// is always the target, never "there is no substitute", because
+			// binding the target itself is always what actually works now.
 			for _, inside := range []string{tc.target + "/subdir", tc.target + "/a/b"} {
 				err := p.CheckEngineBindSource(inside)
 				if err == nil {
@@ -147,20 +145,11 @@ func TestErgonomicCostOfTheAnchoredSourceRule(t *testing.T) {
 						"replaced with a symlink between create and start (#284)", inside)
 					continue
 				}
-				// The refusal must not offer a fix it cannot deliver. Where
-				// the target root is itself refused, there is no usable
-				// substitute source and the message says so.
 				msg := err.Error()
-				if tc.wantRoot && !strings.Contains(msg, "Fix: bind "+tc.target) {
+				if !strings.Contains(msg, "Fix: bind "+tc.target) {
 					t.Errorf("-v %s:/x is refused without offering the substitute that DOES work "+
 						"here (bind %s and address the subdirectory inside the container):\n%s",
 						inside, tc.target, msg)
-				}
-				if !tc.wantRoot && strings.Contains(msg, "Fix: bind") {
-					t.Errorf("-v %s:/x is refused with a \"Fix: bind\" line, but the target root is "+
-						"refused too in this layout, so the ancestor being offered is a filesystem "+
-						"snug created for this run and does not hold the caller's files. The message "+
-						"must admit there is no substitute (#376):\n%s", inside, msg)
 				}
 			}
 

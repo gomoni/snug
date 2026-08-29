@@ -940,6 +940,18 @@ func (p *Proxy) checkOne(source, dest string, ro bool) (mount, error) {
 		return mount{}, fmt.Errorf("%s%s", p.bindRefusalReason(source, !ro), p.bindRefusalRemedy(!ro))
 	}
 
+	// The target graft, exact match (issue #376): source is already the
+	// resolved path, so a client whose bind names p.Target reaches snug's own
+	// clone rather than the string the engine would otherwise re-resolve.
+	// AFTER hostPathVisible — a ro graft must not be forwarded with
+	// ReadOnly: false for a client's rw request against a read-only target —
+	// and BEFORE CheckEngineForwardedPath and CheckEngineBindSource, both of
+	// which judge a path string the engine re-resolves, which the graft stops
+	// this being.
+	if guest, ok := p.pol.EngineTargetForwarded(source, !ro); ok {
+		return mount{Type: "bind", Source: guest, Target: dest, ReadOnly: ro}, nil
+	}
+
 	// The engine resolves a bind SOURCE in its own derived view, not in the
 	// sandbox's — sound only while the two name it identically. checkOne has
 	// so far sampled the HOST filesystem and is about to forward the host
@@ -1450,6 +1462,11 @@ func (p *Proxy) bindRefusalReason(source string, needWrite bool) string {
 // situation, so the two refusals a user meets in sequence agree.
 func (p *Proxy) bindRefusalRemedy(needWrite bool) string {
 	if src, ok := p.acceptableBindSource(needWrite); ok {
+		if src == filepath.Clean(p.pol.Target) {
+			return fmt.Sprintf(" Or bind %s — snug hands the engine a mount it cloned itself, so "+
+				"that source has no re-pointable name on it — and address the subdirectory "+
+				"inside the container.", src)
+		}
 		return fmt.Sprintf(" Or bind %s — the deepest source this run accepts — and address "+
 			"the subdirectory inside the container.", src)
 	}
@@ -1508,6 +1525,12 @@ func (p *Proxy) forwardableBindSource(candidate string, needWrite bool) bool {
 	}
 	if !p.hostPathVisible(candidate, needWrite) {
 		return false
+	}
+	// Same arm and position as checkOne's: a candidate matching the installed
+	// target graft is forwardable through it, without asking the two checks
+	// below about a path string the graft makes irrelevant.
+	if _, ok := p.pol.EngineTargetForwarded(candidate, needWrite); ok {
+		return true
 	}
 	if err := p.pol.CheckEngineForwardedPath(candidate); err != nil {
 		return false

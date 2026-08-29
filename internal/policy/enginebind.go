@@ -146,7 +146,7 @@ func (p *Policy) CheckEngineBindSource(guest string) error {
 				"       anchored. A name whose parent this sandbox can write is re-pointable; a mount\n"+
 				"       root is not.\n"+
 				"%s",
-				guest, filepath.Base(child), parent, swappableFix(p.Mounts, parent))
+				guest, filepath.Base(child), parent, swappableFix(p.Mounts, parent, p.Target))
 		}
 
 		if rwBindCovers(p.Mounts, parent) {
@@ -191,9 +191,12 @@ func (p *Policy) CheckEngineBindSource(guest string) error {
 //     send someone to mount an ephemeral empty directory and wonder why their
 //     project is not in it. This is the case that fires once the target sits
 //     three or more levels below $HOME, where the deepest anchored ancestor is
-//     the $HOME tmpfs itself. There is no workaround there and the message
-//     says so rather than inventing one (issue #376 is the widening).
-func swappableFix(mounts map[string]Mount, parent string) string {
+//     the $HOME tmpfs itself. Both arms now end at the same place: the target
+//     graft (issue #376) makes the target itself forwardable regardless of
+//     depth, so the fix is to bind the target and address the subdirectory
+//     inside the container — checkOne never reaches this rule at all for the
+//     target itself; it is caught by the graft first.
+func swappableFix(mounts map[string]Mount, parent, target string) string {
 	if m, ok := deepestNonSymlinkCover(mounts, parent); ok && m.Kind == KindBind {
 		return "       Fix: bind " + parent + " — the deepest ancestor of this source whose whole\n" +
 			"       path this sandbox cannot rewrite — and address the subdirectory inside the\n" +
@@ -201,9 +204,10 @@ func swappableFix(mounts map[string]Mount, parent string) string {
 	}
 	return "       The deepest ancestor this rule accepts is " + parent + ", which is not a bind of a\n" +
 		"       host directory — it is a filesystem snug created for this run, so binding it would\n" +
-		"       not mount what you asked for. There is NO substitute source for this one: see\n" +
-		"       issue #376, which tracks handing the engine a per-bind graft under /snug/engine\n" +
-		"       (a mount) instead of a path string it re-resolves."
+		"       not mount what you asked for.\n" +
+		"       Fix: bind " + target + " — snug hands the engine a mount it cloned itself, so that\n" +
+		"       source has no re-pointable name on it — and address the subdirectory inside the\n" +
+		"       container."
 }
 
 // pathComponents returns the cumulative absolute paths from "/" up to and

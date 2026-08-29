@@ -1,7 +1,7 @@
 
 ENGINE VIEW  (grafts — mounts in the ENGINE's derived mount namespace, NOT the
   payload's. The payload cannot see any of these; no profile can ask for one.)
-  (an engine outside every grant this sandbox makes adds a fifth graft at /snug/engine/toolchain — whether
+  (an engine outside every grant this sandbox makes adds a graft at /snug/engine/toolchain — whether
   this host needs one is a preflight answer, and --dry-run runs no preflight.)
   proc-rw     /proc                                         (snug)
             from (nothing — the stage mounts a fresh proc here; no host path is opened)

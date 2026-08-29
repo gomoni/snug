@@ -176,10 +176,11 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 		a = append(a, "--perms", "0755", "--dir", d)
 	}
 
-	// EngineMountpoints — /sys, /sys/fs, /sys/fs/cgroup — ONLY when this run
-	// selects a container engine. These are not grants: no profile exposes
-	// /sys, and nothing here makes it visible to the PAYLOAD either (the
-	// payload's own view is unaffected — these directories sit empty and
+	// p.engineMountpoints() — /sys, /sys/fs, /sys/fs/cgroup, plus the target
+	// graft's own destination when there is one (issue #376) — ONLY when this
+	// run selects a container engine. These are not grants: no profile
+	// exposes /sys, and nothing here makes it visible to the PAYLOAD either
+	// (the payload's own view is unaffected — these directories sit empty and
 	// unremarked on the sandbox's root tmpfs, same as any other skeleton dir,
 	// until --remount-ro / makes them permanently so). They exist so the
 	// STAGE has somewhere to move_mount(2) the engine's own cgroup2 mount in
@@ -193,7 +194,7 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 	// picture) and a container run must not have G3 accept a destination
 	// this loop did not actually create.
 	if p.Podman != PodmanOff {
-		for _, d := range EngineMountpoints {
+		for _, d := range p.engineMountpoints() {
 			a = append(a, "--perms", "0755", "--dir", d)
 		}
 	}

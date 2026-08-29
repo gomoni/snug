@@ -105,6 +105,23 @@ const (
 	EngineToolchainGuest = EngineDir + "/toolchain"
 )
 
+// EngineBindsDir holds the target graft's destination:
+// EngineBindsDir + "/" + basename(target) (issue #376).
+//
+// It is not in the const block above because those five are snug's own
+// artefacts — the store, the runroot, the two halves of the run directory, the
+// toolchain — and there is exactly one of each, fixed at compile time. This
+// one names a directory whose one child is the target's basename, which is
+// decided by the run.
+//
+// Why a subdirectory rather than /snug/engine/<basename> directly: G1b admits
+// a graft anywhere under EngineDir, so a target named store, conf, sock,
+// runroot or toolchain would otherwise collide with one of the five above and
+// Policy.Graft would refuse the second — the payload's own directory name
+// deciding whether snug's engine wiring resolves. Under a name of snug's own,
+// the two sets cannot meet.
+const EngineBindsDir = EngineDir + "/binds"
+
 // graftAllowedInSnugDir reports whether a graft may land at this guest path,
 // for the half of the namespace rule that applies to p.Grafts.
 //
