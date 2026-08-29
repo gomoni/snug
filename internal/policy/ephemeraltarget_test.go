@@ -213,3 +213,35 @@ func TestOnlyEphemeralDirectoriesRootedAtHomeRefuseATarget(t *testing.T) {
 			"other side", err)
 	}
 }
+
+// filepath.Base(target) skipped VisibleText, so a base name carrying a newline
+// and an ESC was escaped three times and rendered live in the suggested command.
+//
+// Asserts no raw forging rune survives anywhere in the message rather than
+// matching a fixed string, so a seventh path needs no new test.
+func TestTheEphemeralTargetRefusalEscapesEveryPathItPrints(t *testing.T) {
+	for _, tc := range []struct{ base, why string }{
+		{"pro\nj", "a newline forges a row in the suggested command"},
+		{"pro\x1b[31mj", "an ESC repaints the terminal from inside a path"},
+		// \u202e, not the character: a raw RLO in this file would be the very
+		// trojan-source hazard the test is about, and GitHub flags it on sight.
+		{"pro\u202ej", "RLO reverses the rest of the line"},
+	} {
+		target := "/home/u/" + tc.base
+		err := ephemeralTargetError(target, "/home/u", "/home/u", "/home/u", "@home")
+		if err == nil {
+			t.Fatalf("%q: no error to inspect", tc.base)
+		}
+		got := err.Error()
+		for _, r := range got {
+			if IsForgingRune(r) && r != '\n' {
+				t.Errorf("%q (%s): the message carries a RAW %q. Every path it prints must "+
+					"go through VisibleText:\n%s", tc.base, tc.why, r, got)
+				break
+			}
+		}
+		if strings.Contains(got, tc.base) {
+			t.Errorf("%q (%s): the base name appears unescaped in:\n%s", tc.base, tc.why, got)
+		}
+	}
+}

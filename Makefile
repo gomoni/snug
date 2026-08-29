@@ -1,6 +1,10 @@
 BIN := bin/snug
 
-.PHONY: all build test gate integration integration-sandbox integration-signals integration-hostless integration-engine forkstress golden clean install
+# Bidi and control characters that render as something other than what they say.
+FORGING_RUNES := [\x{202A}-\x{202E}\x{2066}-\x{2069}\x{2028}\x{2029}\x{0000}-\x{0008}\x{000B}\x{000C}\x{000E}-\x{001F}\x{007F}-\x{009F}]
+
+
+.PHONY: all build test gate forging-pattern integration integration-sandbox integration-signals integration-hostless integration-engine forkstress golden clean install
 
 all: build
 
@@ -14,6 +18,14 @@ test:
 
 gate:
 	gofmt -l . | (! grep .) || (echo "gofmt needed"; exit 1)
+	# No raw forging rune in tracked source: escape it in a literal (\u202e) or
+	# name it in a comment (U+202E). Every tracked file, not only .go.
+	# Lists files, not lines — printing the line emits the character.
+	@if git grep -lIP '$(FORGING_RUNES)' -- . ; then \
+		echo 'raw forging rune in the files above; escape it or name it.'; \
+		echo 'to see where:  git grep -nIP "$$(make -s forging-pattern)" | cat -v'; \
+		exit 1; \
+	fi
 	go vet ./...
 	# Same reason as the integration line below, for the other build tag in
 	# this tree: internal/attach's fork-stress arm is `forkstress`-tagged, so
@@ -403,3 +415,7 @@ install: build
 clean:
 	rm -rf bin
 
+
+# Prints the pattern so the gate's own hint can be copy-pasted.
+forging-pattern:
+	@printf '%s' '$(FORGING_RUNES)'

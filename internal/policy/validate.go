@@ -1225,7 +1225,8 @@ func ephemeralTargetError(target, parent, ephemeral, home, from string) error {
 		"       project sitting directly in an ephemeral directory is the wrong thing to\n"+
 		"       sandbox, and one answer beats a fork somebody guesses at.",
 		VisibleText(target), VisibleText(ephemeral), from,
-		VisibleText(target), VisibleText(home), VisibleText(home), filepath.Base(target))
+		VisibleText(target), VisibleText(home), VisibleText(home),
+		VisibleText(filepath.Base(target)))
 }
 
 // rejectUnboundedTmpfs refuses a policy that would emit a tmpfs with no

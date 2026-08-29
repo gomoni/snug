@@ -140,6 +140,15 @@ edited, other functions, files you only read — leave, however bad. No drive-by
 cleanup. Two exceptions: a comment your change made FALSE is a bug, fix or
 delete it; a comment handed to you in a specification is not yours to cut.
 
+- **Never write a raw forging rune into source.** A bidi control (U+202A-202E,
+  U+2066-2069) or a C0/C1 control other than tab renders as content it does not
+  contain, in a review UI and in this repository's own screens. GitHub flags it,
+  and `make gate` refuses it in any tracked file. Escape it in a string literal
+  (`"\u202e"`, `"\u009b"`, `"\x1b"`) or name it in a comment (`U+202E`, `ESC`,
+  or the `<RLO>` placeholder `internal/policy/forging.go` uses). This applies to
+  the test fixture that NEEDS the character most of all: the value under test is
+  identical either way, and only the source file stops lying.
+
 - **Never narrate.** `// lock the mutex`, `// loop over mounts`, `// Step 1:
   validate`, `// now uses os.Root`, `// unchanged`, banners restating file
   structure. A comment saying what the code says is a copy of state one line

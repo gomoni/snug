@@ -492,9 +492,9 @@ func refusalScalarConflict(t testing.TB, key string) error {
 		// "FORGED-BY-AN-ADDRESS" after the override. The second value carries
 		// the C1 spelling so the golden pins both halves of IsForgingRune.
 		reg["addr-a"] = &Profile{Name: "addr-a", Network: "egress",
-			Address: "10.0.0.2/24 ‮SSERDDA-NA-YB-DEGROF"}
+			Address: "10.0.0.2/24 \u202eSSERDDA-NA-YB-DEGROF"}
 		reg["addr-b"] = &Profile{Name: "addr-b", Network: "egress",
-			Address: "10.0.0.3/24 1AFORGED-BY-A-C1"}
+			Address: "10.0.0.3/24 \u009b1AFORGED-BY-A-C1"}
 		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "addr-a", "addr-b"}, testCtx(), newFakeEnv())
 		return err
 	case "gateway":
