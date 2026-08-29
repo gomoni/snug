@@ -18,8 +18,8 @@ package cli
 // It is deliberately NOT a view over runState: a field added to state.json
 // (a command, an argv, a seccomp digest, anything else runstate.go's own
 // abuse-sentence list forbids there) must not be able to reach this file by
-// sharing its type. Five keys, checked byte-for-byte by
-// testdata/initstate.golden.json, so a sixth key shows up in review rather
+// sharing its type. Six keys, checked byte-for-byte by
+// testdata/initstate.golden.json, so a seventh key shows up in review rather
 // than arriving silently through an embedded runState.
 //
 // WHY THIS FILE IS MORE SENSITIVE THAN state.json, NOT LESS, and why nothing
