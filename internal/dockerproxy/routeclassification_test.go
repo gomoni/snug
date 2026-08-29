@@ -99,10 +99,11 @@ func routerSegments(t *testing.T) []string {
 // them usable. Recording them as false is the honest entry: if podman ever
 // serves a POST under /libpod/info, nothing here quietly permits it.
 //
-// Examination is a property of the whole PATH, not of the first segment, and
-// today segment-level acknowledgement is exact because the one examined route
-// (isBuild) is one segment long. A future route examined only for some of its
-// sub-paths makes this test too coarse and it must grow a path column then.
+// Examination is a property of the whole PATH, not of the first segment. That
+// future arrived with issue #459: `images/pull` is examined and the rest of
+// `images` is not, so this map records the SEGMENT verdict (false for images —
+// a libpod POST to images/anything-else is refused) and classifiedPaths below
+// carries the path column it predicted.
 var classified = map[string]bool{
 	"_ping":      false,
 	"version":    false,
@@ -115,6 +116,61 @@ var classified = map[string]bool{
 	"volumes":    false,
 	"containers": false,
 	"exec":       false,
+}
+
+// classifiedPaths is the path column, and it exists because examination is now
+// finer than a segment: handleImagePull READS POST /libpod/images/pull, while
+// every other POST under `images` stays refused by the segment verdict above.
+//
+// Same rule as classified: the value is the DECISION, and it must agree with
+// libpodExamined, which is what the proxy consults. An entry whose first
+// segment is examined at segment level would be redundant and is refused
+// below, so this map cannot drift into a second, weaker copy of the other one.
+var classifiedPaths = map[string]bool{
+	"images/pull":   true,
+	"images/create": false,
+	"images/load":   false,
+	"images/import": false,
+	// The compat spelling of the same import, on the libpod path. Recorded
+	// false rather than omitted: it is the parameter handleImagePull's
+	// default-deny refuses by name in imagepull_test.go.
+	"containers/create": false,
+	"volumes/create":    false,
+}
+
+func TestEveryExaminedLibpodPathIsClassified(t *testing.T) {
+	for path, want := range classifiedPaths {
+		segs := strings.Split(path, "/")
+		if got := libpodExamined(segs); got != want {
+			t.Errorf("path %q: classifiedPaths says examined=%v, libpodExamined says %v — "+
+				"the acknowledgement and the code the proxy consults disagree", path, want, got)
+		}
+		if classified[segs[0]] {
+			t.Errorf("path %q is acknowledged per-path while its segment %q is already "+
+				"examined as a whole — the entry says nothing and would go stale silently",
+				path, segs[0])
+		}
+	}
+
+	// The half that keeps the map from being a list of trues: at least one
+	// examined path and one refused path under the SAME segment, which is the
+	// configuration issue #459 introduced and the reason this column exists.
+	var examinedUnderImages, refusedUnderImages bool
+	for path, want := range classifiedPaths {
+		if !strings.HasPrefix(path, "images/") {
+			continue
+		}
+		if want {
+			examinedUnderImages = true
+		} else {
+			refusedUnderImages = true
+		}
+	}
+	if !examinedUnderImages || !refusedUnderImages {
+		t.Error("no segment has both an examined and a refused path, so this test is not " +
+			"measuring what it was added for (issue #459: images/pull is read, the rest " +
+			"of images is not)")
+	}
 }
 
 func TestEveryRouteTheRouterCanReachIsClassifiedForLibpod(t *testing.T) {

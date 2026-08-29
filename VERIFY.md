@@ -5923,6 +5923,54 @@ python3 scripts/pid-nesting.py host
 this script; it prints the errno rather than guessing at a reason, and no line of
 this check depends on them.
 
+## 22. `podman pull` works and `podman pull dir:/etc` does not (issue #459)
+
+Needs a live engine, so it runs where §19 runs — not in a distrobox sharing the
+host's podman state. The point of the check is that the two clients agree: the
+libpod route the podman CLI actually posts is now READ, and the import spelling
+of it is refused the way the docker-compat path refuses `fromSrc`.
+
+```bash
+cd $SC/proj && ../../bin/snug -p @podman-socket -p @net . -- sh -c '
+  podman pull alpine:3.20            # expect: pulled, a digest printed
+  podman pull docker://alpine:3.20   # expect: pulled
+  podman pull dir:/etc               # expect: 403, "names a directory of blobs"
+  podman pull docker-archive:/tmp/x.tar  # expect: 403, "an IMPORT wearing a pull s spelling"
+  podman pull --authfile /etc/passwd alpine:3.20  # expect: 403, REGISTRY_AUTH_FILE named
+'
+```
+
+`podman run` still refuses, and the refusal must name containers/create rather
+than the pull:
+
+```bash
+cd $SC/proj && ../../bin/snug -p @podman-socket -p @net . -- \
+  podman run --rm alpine:3.20 true
+# expect: 403 for POST /containers/create — "snug does not filter the
+# libpod-native API". `docker run` is the client that works.
+```
+
+What is measured on any host, engine or not — the wire the CLI speaks, captured
+against a socket that logs and answers:
+
+```bash
+python3 - <<'EOF' &
+import socket, os
+p = "/run/user/$(id -u)/pullwire.sock"
+try: os.unlink(p)
+except FileNotFoundError: pass
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.bind(p); s.listen(4)
+while True:
+    c, _ = s.accept()
+    print(c.recv(65536).split(b"\r\n")[0].decode())
+    c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+    c.close()
+EOF
+podman --url unix:///run/user/$(id -u)/pullwire.sock pull dir:/etc
+# expect the transport to arrive VERBATIM in the query string:
+#   POST /v6.0.2/libpod/images/pull?...&reference=dir%3A%2Fetc
+```
+
 ## If a check fails
 
 1. Re-run it with `--dry-run` and compare what snug *claimed* against what you

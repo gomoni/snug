@@ -113,8 +113,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.deny(w, "snug does not filter the libpod-native API for %s /%s, so it refuses it. "+
 			"snug reads the docker-compat request schema; the libpod schema is a different "+
 			"shape, and what this filter has not read it does not forward. Read-only libpod "+
-			"routes (GET, HEAD) and /libpod/build are the exceptions. Use `docker` against "+
-			"the docker-compat endpoint (/v1.41/...) instead.", r.Method, strings.Join(segs, "/"))
+			"routes (GET, HEAD), /libpod/build and /libpod/images/pull are the exceptions. "+
+			"Use `docker` against the docker-compat endpoint (/v1.41/...) instead.",
+			r.Method, strings.Join(segs, "/"))
 		return
 	}
 
@@ -172,6 +173,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.handleVolumeCreate(w, r)
 	case isImageCreate(segs):
 		p.handleImageCreate(w, r)
+	case isImagePull(segs):
+		p.handleImagePull(w, r)
 	case isImageDelete(segs, r.Method):
 		p.deny(w, "removing image %q is not permitted. The engine's image store is this "+
 			"PROJECT's, not this run's — it is keyed on the target directory and persists "+
@@ -295,7 +298,15 @@ func normaliseFull(path string) (segs []string, prefix int, libpod bool, ok bool
 // already read. It is also the PRIMARY spelling — the podman CLI posts to
 // /libpod/build, not to /v1.41/build (build.go), and two integration tests plus
 // the whole of build_test.go depend on it.
-func libpodExamined(segs []string) bool { return isBuild(segs) }
+// images/pull is the second entry, and it is the route the podman CLI needs for
+// its core loop: `podman pull` and `podman run` both post it, `podman run` with
+// `policy=missing` even when the image is already in the store (issue #459).
+// It earns the entry the same way build does — handleImagePull parses the query
+// exhaustively against a default-deny allowlist and JUDGES the two parameters
+// that are not metadata. The body is empty; every parameter is in the query
+// string, which is why this route can be read at all while
+// libpod/containers/create cannot.
+func libpodExamined(segs []string) bool { return isBuild(segs) || isImagePull(segs) }
 
 // safeMethod is the other half of the gate: a GET or a HEAD changes nothing and
 // carries no schema to misread.
@@ -334,6 +345,14 @@ func isBuild(s []string) bool {
 
 func isImageCreate(s []string) bool {
 	return len(s) == 2 && s[0] == "images" && s[1] == "create"
+}
+
+// isImagePull matches podman's own POST /libpod/images/pull. There is no
+// docker-compat spelling — compat says the same thing as
+// POST /images/create?fromImage=, which isImageCreate takes — so this route is
+// reachable only over /libpod and only the podman CLI posts it.
+func isImagePull(s []string) bool {
+	return len(s) == 2 && s[0] == "images" && s[1] == "pull"
 }
 
 // isArchive matches GET/PUT /containers/{id}/archive — `docker cp`'s

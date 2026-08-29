@@ -63,8 +63,23 @@ func EnterPidNS(argv []string) error {
 
 	// A pid namespace of our own is the precondition, not an assumption: run
 	// directly from a shell this verb would mount a procfs over the caller's
-	// /proc in whatever mount namespace it inherited. os.Getpid() == 1 is what
-	// the clone in exec.go produces and nothing else does.
+	// /proc in whatever mount namespace it inherited.
+	//
+	// os.Getpid() == 1 is what the clone in exec.go produces, and it is NOT
+	// unique to it — a redteam round reached this verb as pid 1 from a host
+	// shell:
+	//
+	//	unshare -Urpf --mount-proc snug __inpidns 0 /bin/echo
+	//
+	// which is harmless and stays harmless for a reason worth stating, because
+	// the earlier version of this comment claimed uniqueness and would have
+	// been the thing a reader trusted: that caller ALREADY holds the privilege
+	// to make the namespaces, so the verb hands it nothing, and the procfs
+	// lands in the throwaway mount namespace `unshare` just made. What the
+	// guard is for is the payload, which has an empty capability bounding set
+	// (bwrap.go's --cap-drop ALL) and cannot create a pid namespace at all —
+	// measured EPERM on unshare -U -r from inside the sandbox — and which has
+	// no snug binary to run in the first place.
 	if os.Getpid() != 1 {
 		return fmt.Errorf("__inpidns: this process is pid %d, not pid 1 — the verb is reachable "+
 			"only through snug's own clone (CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNS) and refuses "+
