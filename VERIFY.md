@@ -509,12 +509,15 @@ change to an interface and is reviewed as one.
 
 ```bash
 ./bin/snug $SC/proj/sub -- /bin/sh -c '
-for d in / /home /usr /etc /var /proc; do
+for d in / /home /usr /etc /var /proc /dev; do
   touch $d/ZZ 2>/dev/null && echo "WRITABLE: $d  <-- FAIL" || echo "ro: $d"
 done'
 ```
 
-Expect every line `ro:`. Anything reported WRITABLE is a real finding.
+Expect every line `ro:`. Anything reported WRITABLE is a real finding. `/dev` is
+in that list on purpose: its root is remounted read-only right after bwrap
+creates it, so the only writable path on that tmpfs is `/dev/shm`, which gets a
+mount and a size bound of its own (issue #281).
 
 The complete writable surface is **eight** paths, and only the first survives
 the sandbox:
@@ -525,7 +528,7 @@ the sandbox:
 | `/tmp` | tmpfs | no |
 | `$HOME` | tmpfs | no |
 | `$HOME/.cache`, `$HOME/.config`, `$HOME/.local/state`, `$HOME/.local/share` | tmpfs | no |
-| `/dev` | tmpfs (bwrap's synthetic `/dev`) | no |
+| `/dev/shm` | tmpfs, bounded by `tmpfs_size_mib` | no |
 
 Do not trust that table — it is prose, and prose drifts. It said **seven** for a
 milestone after `@home` grew `{home}/.local/share`. Enumerate the set instead:
@@ -533,8 +536,8 @@ milestone after `@home` grew `{home}/.local/share`. Enumerate the set instead:
 ```bash
 ./bin/snug $SC/proj/sub -- /bin/sh -c '
 awk '"'"'$4 ~ /^rw(,|$)/ {print $2}'"'"' /proc/self/mounts |
-  sed -e "s#^/dev/.*#/dev#" -e "s#^$HOME#\$HOME#" -e "s#^/tmp/tmp\.[A-Za-z0-9]*#\$SC#" |
-  grep -v "^/proc" | sort -u; echo PROBE-RAN'
+  sed -e "s#^$HOME#\$HOME#" -e "s#^/tmp/tmp\.[A-Za-z0-9]*#\$SC#" |
+  grep -vE "^/proc|^/dev/(full|null|pts|random|tty|urandom|zero)$" | sort -u; echo PROBE-RAN'
 ```
 
 Expect exactly these nine lines:
@@ -546,34 +549,37 @@ $HOME/.config
 $HOME/.local/share
 $HOME/.local/state
 $SC/proj/sub
-/dev
+/dev/shm
 /tmp
 PROBE-RAN
 ```
 
-The three `sed` expressions only normalise names that vary per host and per run:
-bwrap's synthetic device nodes collapse to `/dev`, your real `$HOME` and the
-`mktemp` directory get their symbolic names back. `/proc` is dropped because it
-is a procfs, not a writable surface in the sense this section means. `PROBE-RAN`
-is the positive control — without it an empty result reads as a pass on a
-sandbox that never started.
+The two `sed` expressions only normalise names that vary per host and per run:
+your real `$HOME` and the `mktemp` directory get their symbolic names back. The
+`grep` drops `/proc` (a procfs, not a writable surface in the sense this section
+means) and bwrap's synthetic device nodes, which are individual rw binds of the
+host's own `/dev/null` and friends — writable by design, and not files you can
+put anything in. `/dev` itself does NOT appear: read-only since #281.
+`PROBE-RAN` is the positive control — without it an empty result reads as a pass
+on a sandbox that never started.
 
 A line you do not recognise is a finding. A missing line means a grant went
 away, which is a documentation bug at least.
 
-`/dev` being writable surprises people (it surprised the author — it was found
-by this checklist, not by design review). It is bwrap's own minimal `/dev` on a
-private tmpfs, so it is contained. Confirm that yourself rather than believing
-it:
+`/dev/shm` is writable because POSIX shared memory needs it, and it is contained
+on a private tmpfs sized by `tmpfs_size_mib`. Confirm both halves yourself
+rather than believing it:
 
 ```bash
+./bin/snug $SC/proj/sub -- /bin/sh -c 'echo pwned > /dev/shm/ESCAPE_PROBE'
+ls /dev/shm/ESCAPE_PROBE                                     # host: No such file
+./bin/snug $SC/proj/sub -- /bin/sh -c 'ls /dev/shm/ESCAPE_PROBE'   # next run: gone
 ./bin/snug $SC/proj/sub -- /bin/sh -c 'echo pwned > /dev/ESCAPE_PROBE'
-ls /dev/ESCAPE_PROBE                                    # host: No such file
-./bin/snug $SC/proj/sub -- /bin/sh -c 'ls /dev/ESCAPE_PROBE'   # next run: gone
 ```
 
-Expect both to report the file missing. The write never reached the host and did
-not survive the sandbox.
+The first two report the file missing — the write never reached the host and did
+not survive the sandbox. The last prints `Read-only file system` and exits 1:
+`/dev/shm`'s bound cannot be sidestepped by writing one directory up.
 
 ## 4. What must be absent
 
