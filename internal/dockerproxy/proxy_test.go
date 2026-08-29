@@ -365,7 +365,14 @@ func TestEscapeFieldsAreRefused(t *testing.T) {
 // state-changing libpod endpoint this filter has not read is refused outright
 // rather than forwarded.
 //
-// This test enumerates the six routes the escape was measured on, and that is
+// /v5.0.0/libpod/images/pull was the sixth route here and has MOVED, because it
+// is now READ: handleImagePull parses its whole query against a default-deny
+// allowlist and judges `reference` and `authfile` (issue #459, imagepull.go).
+// The escape body below is not what that route carries — every pull parameter
+// is in the query string — so the case that replaced it asserts the refusals
+// that route has of its own, in imagepull_test.go. Five routes remain here.
+//
+// This test enumerates the routes the escape was measured on, and that is
 // all it can prove — issue #340 was two segments it does not name. The
 // rule-shaped sweep, derived from allowed()'s own switch so a route cannot
 // arrive unexamined, is TestEveryRouteTheRouterCanReachIsClassifiedForLibpod
@@ -383,7 +390,6 @@ func TestLibpodNativeBodyIsRefusedRatherThanForwardedUnexamined(t *testing.T) {
 		"/v5.0.0/libpod/containers/create",
 		"/libpod/containers/create",
 		"/v4.0.0/libpod/volumes/create",
-		"/v5.0.0/libpod/images/pull",
 		"/v5.0.0/libpod/pods/create",
 		"/v5.0.0/libpod/play/kube",
 	} {

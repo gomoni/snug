@@ -62,7 +62,11 @@ package policy
 // fd, CLONE_NEWNET) -> EPERM, where the same fd and syscall from a process
 // that stayed in U succeed. The constraint on N is OWNERSHIP of N, which this
 // list cannot grant; the cap count is how the engine's own reach is bounded,
-// not what makes N unreachable.
+// not what makes N unreachable. Both refusals, and the controls that stop them
+// reading as "the nested namespace got no privilege", are pinned by
+// TestNestedUserNamespaceCapsCannotReachSnugsNamespaces
+// (test/integration/nestedusernscaps_test.go) on both network arms; the
+// engine's own nested namespace, which crun creates, is not measured there.
 var EngineCapBounding = []string{
 	// Each comment is "why podman needs it" then ABUSE: "a compromised engine
 	// holding it in U can ___" (the working agreement's abuse sentence, which
