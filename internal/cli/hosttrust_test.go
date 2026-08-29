@@ -2,11 +2,16 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/gomoni/snug/internal/policy"
 )
@@ -241,6 +246,73 @@ func TestASessionStartHookNeedsTheHumanAndOnlyLosesTheDIALOG(t *testing.T) {
 				m.Content)
 		}
 	})
+
+	// describeTrustGrant used to name only the two settings.json files, so a
+	// repo shipping .mcp.json and nothing else produced ZERO "it already
+	// ships" lines — which a human reads as "nothing here will run" rather
+	// than as the truth. Issue #460.
+	t.Run("a repo whose only grant-bearer is .mcp.json is still named", func(t *testing.T) {
+		home, target := testTree(t)
+		mcp := filepath.Join(target, ".mcp.json")
+		if err := os.WriteFile(mcp, []byte(`{"mcpServers":{}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// CONTROL: nothing under .claude/ exists at all, so any "it already
+		// ships" line the preview prints has to be about .mcp.json.
+		if _, err := os.Stat(filepath.Join(target, ".claude")); err == nil {
+			t.Fatal("control: a .claude directory exists; this fixture does not isolate .mcp.json")
+		}
+		_, errOut, code := hostTrust(t, home, target, false)
+		if code != 0 {
+			t.Fatalf("the preview exited %d: %s", code, errOut)
+		}
+		if !strings.Contains(errOut, mcp) {
+			t.Errorf("the preview never names %s:\n%s", mcp, errOut)
+		}
+	})
+
+	// os.Lstat on a symlinked settings.json prints the LINK's own size, not
+	// what running it actually means: MEASURED at 28 bytes for a link
+	// pointing at a 9 KB file, on the exact line that says "read it before
+	// granting this". Issue #460.
+	t.Run("a symlinked settings.json is described by what it points AT", func(t *testing.T) {
+		home, target := testTree(t)
+		big := filepath.Join(home, "big-settings.json")
+		bigContent := []byte(`{"hooks":{}}` + strings.Repeat(" ", 9000))
+		if err := os.WriteFile(big, bigContent, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		dotClaude := filepath.Join(target, ".claude")
+		if err := os.MkdirAll(dotClaude, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(dotClaude, "settings.json")
+		if err := os.Symlink(big, link); err != nil {
+			t.Fatal(err)
+		}
+		// CONTROL: the link itself is far smaller than what it points at, so
+		// a size match below can only come from following it.
+		li, err := os.Lstat(link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if li.Size() >= int64(len(bigContent)) {
+			t.Fatalf("control: the symlink's own size (%d) is not smaller than its target's "+
+				"(%d), so this fixture cannot show a difference", li.Size(), len(bigContent))
+		}
+
+		_, errOut, code := hostTrust(t, home, target, false)
+		if code != 0 {
+			t.Fatalf("the preview exited %d: %s", code, errOut)
+		}
+		if want := fmt.Sprintf("%d bytes", len(bigContent)); !strings.Contains(errOut, want) {
+			t.Errorf("the preview does not print the TARGET's size (%s); an os.Lstat on the "+
+				"link would print its own %d bytes instead:\n%s", want, li.Size(), errOut)
+		}
+		if !strings.Contains(errOut, "symlink to") {
+			t.Errorf("the preview does not disclose that %s is a symlink:\n%s", link, errOut)
+		}
+	})
 }
 
 // TestHostTrustPreservesEveryOtherByte is the host-mutation half. ~/.claude.json
@@ -266,6 +338,22 @@ func TestHostTrustPreservesEveryOtherByte(t *testing.T) {
 		{name: "no projects key at all", insertion: true, doc: "{\n  \"numStartups\": 3\n}\n"},
 		{name: "empty projects object", insertion: true, doc: "{\n  \"projects\": {}\n}\n"},
 		{name: "compact, one line", insertion: true, doc: `{"numStartups":3,"projects":{"/home/u/other":{"hasTrustDialogAccepted":true}}}`},
+		// The three rows below are the ones jsonMember.lead got wrong: strict JSON
+		// allows whitespace on BOTH sides of the member separator, and
+		// TrimPrefix(span, ",") only ever strips a LEADING comma. Each inserts a
+		// fresh key after an existing member whose own lead carries a comma
+		// somewhere other than at the front, which is the shape dropSeparator
+		// (splitting positionally on the comma) fixed. Project entries are
+		// objects (as Claude Code actually writes them) rather than claudetrust.go
+		// comment's illustrative `"/x": 1`, so hostTrustsTarget's typed decode
+		// below can succeed on every member, not just the one this table cares
+		// about.
+		{name: "the separator has a space on both sides of the comma", insertion: true,
+			doc: `{"projects": {"/x": {"hasTrustDialogAccepted": false} , "/y": {"hasTrustDialogAccepted": false}}}`},
+		{name: "the comma sits alone on its own indented line", insertion: true,
+			doc: "{\n  \"projects\": {\n    \"/x\": {\"hasTrustDialogAccepted\": false}\n    ,\n    \"/y\": {\"hasTrustDialogAccepted\": false}\n  }\n}\n"},
+		{name: "a tab precedes the comma with no leading space", insertion: true,
+			doc: "{\"projects\": {\"/x\":{\"hasTrustDialogAccepted\":false}\t,\"/y\":{\"hasTrustDialogAccepted\":false}}}"},
 		{name: "the entry exists and says false", doc: `{
   "projects": {
     "TARGET": {
@@ -294,6 +382,17 @@ func TestHostTrustPreservesEveryOtherByte(t *testing.T) {
 			after, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
+			}
+			// The missing assertion this table exists to add: every splice must
+			// leave a file that RE-PARSES as strict JSON, checked directly rather
+			// than through hostTrustsTarget, whose silent false-on-parse-error
+			// return would otherwise report "the write did not take" for what is
+			// actually invalid output. jsonMember.lead's TrimPrefix bug produced
+			// `..., "/y": 2, , "/k": {...true , }}` — two stray commas — with
+			// exit 0 and "snug: updated", and no case in this table caught it.
+			var reparsed map[string]any
+			if err := json.Unmarshal(after, &reparsed); err != nil {
+				t.Fatalf("the written file does not re-parse as strict JSON (%v):\n%s", err, after)
 			}
 			if !hostTrustsTarget(home, key) {
 				t.Fatalf("the write did not take: %s", after)
@@ -644,6 +743,132 @@ func TestHostTrustRefusesToOverwriteAConcurrentWrite(t *testing.T) {
 		}
 		assertNoTempLeftBehind(t, home)
 	})
+
+	// The window the two subtests above do NOT reach: they both mutate the
+	// file AFTER planClaudeTrust has already returned, which is the window
+	// commitClaudeTrust's own re-stat has always covered. This one mutates it
+	// WHILE planClaudeTrust is reading — between the read and whatever names
+	// plan.before — using an inotify IN_OPEN watcher to land the rename the
+	// instant snug's open(2) on the path completes. Winning that race (the
+	// rename actually completing before planClaudeTrust returns, rather than
+	// merely after) is not certain on any single attempt, so
+	// raceDuringTheRead retries a bounded number of times, confirming the
+	// win by TIMESTAMP rather than by the very outcome under test — padding
+	// the file is what makes it converge quickly: MEASURED (this session,
+	// 300 trials each), a one-line file wins on the first attempt roughly 1
+	// time in 15, a ~500 KB one roughly 5 times in 7.
+	t.Run("the file changed WHILE snug was reading it, not merely afterward", func(t *testing.T) {
+		home, path, theirs, plan := raceDuringTheRead(t)
+
+		// THE DURABLE ASSERTION. plan.before must name the file the bytes
+		// were actually read from (ours), not whatever sits at path now
+		// (theirs) — dev/ino rather than size/mtime, because a rename is
+		// exactly the case that gives the intruder a fresh inode. A
+		// plan.before computed from a FRESH os.Stat(path) taken after the
+		// read returns — the shape the fix replaced — would name theirs here.
+		before, ok := plan.before.Sys().(*syscall.Stat_t)
+		if !ok {
+			t.Fatal("plan.before carries no *syscall.Stat_t")
+		}
+		now, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nowSt := now.Sys().(*syscall.Stat_t)
+		if before.Dev == nowSt.Dev && before.Ino == nowSt.Ino {
+			t.Fatalf("plan.before names dev/ino %d/%d, the same as what is at %s NOW (the "+
+				"concurrent writer's file) rather than the file snug actually read — a fresh "+
+				"os.Stat taken after the read would get exactly this wrong", before.Dev, before.Ino, path)
+		}
+
+		// THE DEMONSTRATION: acting on that plan must still refuse, and the
+		// concurrent writer's file must survive.
+		if err := commitClaudeTrust(plan); err == nil {
+			t.Fatal("committed a plan built from a read that a concurrent writer landed inside of; " +
+				"that is a lost update even though plan.before named the right file")
+		} else if !strings.Contains(err.Error(), "changed on disk") {
+			t.Errorf("the refusal does not say what happened: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != theirs {
+			t.Errorf("the concurrent writer's file was clobbered anyway:\n%s", got)
+		}
+		assertNoTempLeftBehind(t, home)
+	})
+}
+
+// raceDuringTheRead lands a concurrent rename on ~/.claude.json before
+// planClaudeTrust's own read of it returns, confirmed by TIMESTAMP so the
+// retry loop's stopping condition is independent of plan.before, which is
+// the very thing the caller goes on to examine — retrying on plan.before
+// itself would silently forgive a mutated implementation that only fails
+// the race some of the time.
+func raceDuringTheRead(t *testing.T) (home, path, theirs string, plan claudeTrustPlan) {
+	t.Helper()
+	_, target := testTree(t)
+	for attempt := 0; attempt < 8; attempt++ {
+		home = t.TempDir()
+		path = filepath.Join(home, ".claude.json")
+		// Padded well past a real ~/.claude.json's smallest case: a bigger
+		// read takes measurably longer in wall-clock terms, which is what
+		// gives the watcher goroutine time to wake and rename before
+		// planClaudeTrust's call returns.
+		ours := `{"numStartups": 1, "padding": "` + strings.Repeat("a", 500_000) + `"}`
+		if err := os.WriteFile(path, []byte(ours), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		theirs = `{"numStartups": 2, "installMethod": "native"}`
+		replacement := path + ".theirs"
+		if err := os.WriteFile(replacement, []byte(theirs), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		ifd, err := unix.InotifyInit1(unix.IN_CLOEXEC)
+		if err != nil {
+			t.Skipf("inotify unavailable, cannot drive the race: %v", err)
+		}
+		if _, err := unix.InotifyAddWatch(ifd, path, unix.IN_OPEN); err != nil {
+			unix.Close(ifd)
+			t.Skipf("inotify watch unavailable, cannot drive the race: %v", err)
+		}
+
+		renamedAt := make(chan time.Time, 1)
+		renameErr := make(chan error, 1)
+		go func() {
+			buf := make([]byte, unix.SizeofInotifyEvent+64)
+			if _, err := unix.Read(ifd, buf); err != nil {
+				renameErr <- err
+				return
+			}
+			// snug's open(2) on path just landed; replace it under the
+			// descriptor it already holds.
+			err := os.Rename(replacement, path)
+			renamedAt <- time.Now()
+			renameErr <- err
+		}()
+
+		var perr error
+		plan, perr = planClaudeTrust(home, mustEval(t, target))
+		returnedAt := time.Now()
+		if perr != nil {
+			t.Fatal(perr)
+		}
+		if err := <-renameErr; err != nil {
+			unix.Close(ifd)
+			t.Fatalf("the concurrent rename failed: %v", err)
+		}
+		unix.Close(ifd)
+		if (<-renamedAt).After(returnedAt) {
+			continue // the rename landed too late this attempt; try again
+		}
+		return home, path, theirs, plan
+	}
+	t.Fatal("the concurrent rename never landed before planClaudeTrust returned in 8 attempts; " +
+		"cannot drive this test on this machine")
+	return "", "", "", claudeTrustPlan{}
 }
 
 func assertNoTempLeftBehind(t *testing.T, home string) {
@@ -735,46 +960,93 @@ func TestHostTrustKeepsADotfileSymlink(t *testing.T) {
 // every screen escapes it, this command's included. The FILE still gets the raw
 // key, because that is the string Claude Code matches; only the screens escape.
 func TestHostTrustRendersAHostPathThatCannotForgeALine(t *testing.T) {
-	home, target := testTree(t)
-	// U+202E as an escape, never as the character: a raw one in tracked source
-	// is the trojan-source hazard this test is about, and `make gate` refuses
-	// it in any tracked file.
-	hostile := filepath.Join(target, "pro\u202ejx")
-	if err := os.MkdirAll(hostile, 0o755); err != nil {
-		t.Skipf("this filesystem will not hold the fixture name: %v", err)
-	}
-
-	// BOTH runs, because they print different things: only the preview emits
-	// the stdout content line, and only the write emits the confirmation.
-	preStdout, preErr, code := hostTrust(t, home, hostile, false)
-	if code != 0 {
-		t.Fatalf("the preview exited %d: %s", code, preErr)
-	}
-	if !strings.Contains(preStdout, "hasTrustDialogAccepted") {
-		t.Fatalf("control: the preview printed no content line, so the stdout sweep below "+
-			"measures nothing: %q", preStdout)
-	}
-	stdout, errOut, code := hostTrust(t, home, hostile, true)
-	if code != 0 {
-		t.Fatalf("exited %d: %s", code, errOut)
-	}
-	for name, screen := range map[string]string{
-		"the preview's stdout": preStdout,
-		"the preview's stderr": preErr,
-		"stdout":               stdout,
-		"stderr":               errOut,
-	} {
-		if r, bad := rawForgingRune(screen); bad {
-			t.Errorf("%s renders U+%04X raw, so a directory name can author the rest of the "+
-				"line", name, r)
+	t.Run("a bidi override is escaped on every screen, and the FILE gets the raw key", func(t *testing.T) {
+		home, target := testTree(t)
+		// U+202E as an escape, never as the character: a raw one in tracked source
+		// is the trojan-source hazard this test is about, and `make gate` refuses
+		// it in any tracked file.
+		hostile := filepath.Join(target, "pro\u202ejx")
+		if err := os.MkdirAll(hostile, 0o755); err != nil {
+			t.Skipf("this filesystem will not hold the fixture name: %v", err)
 		}
-	}
-	// CONTROL, and it is the half that makes the escaping a rendering decision
-	// rather than a mangled key: the FILE carries the real path, so the sandbox
-	// finds it.
-	if !hostTrustsTarget(home, mustEval(t, hostile)) {
-		body, _ := os.ReadFile(filepath.Join(home, ".claude.json"))
-		t.Errorf("the escaped rendering reached the FILE; the key no longer names the "+
-			"directory:\n%s", body)
-	}
+
+		// BOTH runs, because they print different things: only the preview emits
+		// the stdout content line, and only the write emits the confirmation.
+		preStdout, preErr, code := hostTrust(t, home, hostile, false)
+		if code != 0 {
+			t.Fatalf("the preview exited %d: %s", code, preErr)
+		}
+		if !strings.Contains(preStdout, "hasTrustDialogAccepted") {
+			t.Fatalf("control: the preview printed no content line, so the stdout sweep below "+
+				"measures nothing: %q", preStdout)
+		}
+		stdout, errOut, code := hostTrust(t, home, hostile, true)
+		if code != 0 {
+			t.Fatalf("exited %d: %s", code, errOut)
+		}
+		for name, screen := range map[string]string{
+			"the preview's stdout": preStdout,
+			"the preview's stderr": preErr,
+			"stdout":               stdout,
+			"stderr":               errOut,
+		} {
+			if r, bad := rawForgingRune(screen); bad {
+				t.Errorf("%s renders U+%04X raw, so a directory name can author the rest of the "+
+					"line", name, r)
+			}
+		}
+		// CONTROL, and it is the half that makes the escaping a rendering decision
+		// rather than a mangled key: the FILE carries the real path, so the sandbox
+		// finds it.
+		if !hostTrustsTarget(home, mustEval(t, hostile)) {
+			body, _ := os.ReadFile(filepath.Join(home, ".claude.json"))
+			t.Errorf("the escaped rendering reached the FILE; the key no longer names the "+
+				"directory:\n%s", body)
+		}
+	})
+
+	// A name with an invalid UTF-8 byte cannot be escaped the way a bidi
+	// override is — it needs REFUSING outright, because JSON strings are
+	// UTF-8 and Linux paths are not: encoding/json would substitute U+FFFD,
+	// so the written key would never name this directory, "will not ask
+	// about it again" would be printed for a key that does not match, and
+	// two directories differing only in the invalid byte would collide on
+	// the same substituted key. Issue #460.
+	t.Run("a name with an invalid UTF-8 byte refuses instead of writing a substituted key", func(t *testing.T) {
+		home, target := testTree(t)
+		hostile := filepath.Join(target, "pro\x81jx")
+		if err := os.MkdirAll(hostile, 0o755); err != nil {
+			t.Skipf("this filesystem will not hold the fixture name: %v", err)
+		}
+		path := filepath.Join(home, ".claude.json")
+		const preexisting = `{"numStartups": 1}`
+		if err := os.WriteFile(path, []byte(preexisting), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		// Run it TWICE: idempotence is trivial once nothing is ever written,
+		// but that is exactly the property the pre-fix code lacked — three
+		// runs against the substituted key produced three duplicate members
+		// (issue #460, measured), because the written key never matched what
+		// a re-read computed. Two runs here are enough to show the file is
+		// byte-identical every time, not just the first.
+		for i := 0; i < 2; i++ {
+			_, errOut, code := hostTrust(t, home, hostile, true)
+			if code != exitUsage {
+				t.Fatalf("run %d: `snug host trust -w` on a name with an invalid UTF-8 byte "+
+					"exited %d, want %d (exitUsage)", i, code, exitUsage)
+			}
+			if !strings.Contains(errOut, "not valid UTF-8") {
+				t.Errorf("run %d: the refusal does not say why:\n%s", i, errOut)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != preexisting {
+				t.Errorf("run %d: the refusal changed ~/.claude.json anyway:\n--- before\n%s\n"+
+					"--- after\n%s", i, preexisting, after)
+			}
+		}
+	})
 }

@@ -68,38 +68,48 @@ const MaxSSHPublicKeyBytes = 64 << 10
 // in front of it and get one sentence. Clause below hands it over unchanged;
 // Optional and Required supply "it" so their existing callers read as before.
 func read(path string, maxBytes int64) (data []byte, openErr error, problem string) {
+	data, _, openErr, problem = readStat(path, maxBytes)
+	return data, openErr, problem
+}
+
+// readStat is read, plus the FileInfo of the DESCRIPTOR the bytes came from.
+// A caller that later rewrites the file needs that identity rather than a
+// fresh os.Stat: between the read and a second stat the file can be replaced,
+// and a guard built on the second stat would then compare the intruder
+// against itself and pass. Issue #460.
+func readStat(path string, maxBytes int64) (data []byte, info os.FileInfo, openErr error, problem string) {
 	// O_NONBLOCK applies to the OPEN; for a regular file it has no further
 	// effect on the read below. It exists solely so opening a FIFO returns
 	// instead of blocking forever — the whole of issue #337.
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return nil, err, ""
+		return nil, nil, err, ""
 	}
 	defer f.Close()
 
 	fi, err := f.Stat()
 	if err != nil {
-		return nil, nil, fmt.Sprintf("could not be inspected (%v)", err)
+		return nil, nil, nil, fmt.Sprintf("could not be inspected (%v)", err)
 	}
 	if !fi.Mode().IsRegular() {
-		return nil, nil, fmt.Sprintf("is not a regular file (mode %s). snug reads that path as "+
+		return nil, nil, nil, fmt.Sprintf("is not a regular file (mode %s). snug reads that path as "+
 			"data and will not read a FIFO, a device or a directory there", fi.Mode())
 	}
 	if fi.Size() > maxBytes {
-		return nil, nil, fmt.Sprintf("is %d bytes, over the %d-byte cap snug reads for it",
+		return nil, nil, nil, fmt.Sprintf("is %d bytes, over the %d-byte cap snug reads for it",
 			fi.Size(), maxBytes)
 	}
 	data, err = io.ReadAll(io.LimitReader(f, maxBytes+1))
 	if err != nil {
-		return nil, nil, fmt.Sprintf("could not be read (%v)", err)
+		return nil, nil, nil, fmt.Sprintf("could not be read (%v)", err)
 	}
 	// The real cap. A file whose st_size lied — /dev/zero through a symlink,
 	// anything under /proc, a file that grew since the stat — lands here.
 	if int64(len(data)) > maxBytes {
-		return nil, nil, fmt.Sprintf("produced more than the %d-byte cap snug reads for it "+
+		return nil, nil, nil, fmt.Sprintf("produced more than the %d-byte cap snug reads for it "+
 			"(its reported size was %d)", maxBytes, fi.Size())
 	}
-	return data, nil, ""
+	return data, fi, nil, ""
 }
 
 // Optional reads path the way a file whose ABSENCE is an ordinary state must
@@ -166,12 +176,21 @@ func itIs(clause string) string {
 // becoming a fatal error while "a config file that exists but will not read"
 // stays one (invariant 5: no silent downgrade).
 func Required(path string, maxBytes int64) ([]byte, error) {
-	data, openErr, problem := read(path, maxBytes)
+	data, _, err := RequiredStat(path, maxBytes)
+	return data, err
+}
+
+// RequiredStat is Required, plus the FileInfo of the descriptor the bytes were
+// read from. Only a caller that goes on to REWRITE the file needs it, and it
+// needs it because os.Stat afterwards names whatever is at the path then,
+// which is not necessarily what it just read.
+func RequiredStat(path string, maxBytes int64) ([]byte, os.FileInfo, error) {
+	data, fi, openErr, problem := readStat(path, maxBytes)
 	if openErr != nil {
-		return nil, openErr
+		return nil, nil, openErr
 	}
 	if problem != "" {
-		return nil, fmt.Errorf("%s: %s", path, itIs(problem))
+		return nil, nil, fmt.Errorf("%s: %s", path, itIs(problem))
 	}
-	return data, nil
+	return data, fi, nil
 }

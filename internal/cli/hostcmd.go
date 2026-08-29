@@ -42,13 +42,25 @@ package cli
 //   - The sandbox has its own network namespace, so there is no host-local
 //     socket to ask a host-side snug through.
 //
-// THE RESIDUAL IS SOCIAL, and it is the reason describeTrustGrant exists: a
-// hostile repo (or an agent it has captured) can print "run `snug host trust .`
-// on the host". Nothing stops a human typing that, so the command answers it by
-// naming the file that gains the right to run, with its size and mode, before
-// anything is written. For the same reason the command is NOT named on the
-// guidance file the agent reads inside the sandbox — only on --dry-run, which
-// only a human on the host sees.
+// THE RESIDUAL IS SOCIAL, PLUS ANY HOST-EXECUTION CHANNEL THE TARGET ALREADY
+// GRANTS. The social half is the reason describeTrustGrant exists: a hostile
+// repo (or an agent it has captured) can print "run `snug host trust .` on the
+// host", and nothing stops a human typing that — so the command names the
+// files that gain the right to run, with size and mode, before anything is
+// written, and is NOT named on the guidance file the agent reads inside the
+// sandbox, only on --dry-run, which only a human on the host sees.
+//
+// The other half is not social and no screen in this command can cover it: the
+// target bind is read-write and persists, so a payload writes .git/hooks/post-
+// commit and the human's next ordinary `git commit` sets this key on the host
+// without ever seeing the preview. MEASURED end to end. That channel is
+// already known and pinned (.claude/design/SECRETS.md, .git/hooks; and
+// test/integration/gitrepolocalexec_test.go), and git does not track hooks, so
+// the `git status` mitigation that covers the .claude/settings.json residual
+// does not reach it. What this file must not claim is that the preview is the
+// only way the key gets set. The abuse sentence above survives literally — the
+// payload never invokes this command — and that is exactly why it is not the
+// whole answer.
 
 import (
 	"fmt"
@@ -56,6 +68,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 func hostUsage() {
@@ -165,6 +178,22 @@ func runHostTrust(out, errOut io.Writer, home, dir string, write bool) int {
 			"looks up later\n", visibleValue(abs), err)
 		return exitUsage
 	}
+	// JSON strings are UTF-8 and Linux paths are byte strings, so a name that
+	// is not valid UTF-8 cannot be written as a key that names it: encoding/json
+	// substitutes U+FFFD. MEASURED before this refusal — snug wrote the key,
+	// said "will not ask about it again", and --dry-run on the same directory
+	// immediately reported it absent (invariant 5, exactly). Worse, the written
+	// key never matched on re-read, so each run appended ANOTHER member: three
+	// runs, three identical keys in `projects` — the duplicate-key state
+	// claudetrust.go's own header says must refuse, authored by snug. And two
+	// different directories differing only in an invalid byte produce the SAME
+	// key, so the grant would cover a directory the human never named. Issue #460.
+	if !utf8.ValidString(key) {
+		fmt.Fprintf(errOut, "snug: %s has a name that is not valid UTF-8, and a JSON key cannot "+
+			"spell it — snug would record a different path than the one you named, and would "+
+			"record it again on every run. Rename the directory and re-run\n", visibleValue(key))
+		return exitUsage
+	}
 	if fi, serr := os.Stat(key); serr != nil {
 		fmt.Fprintf(errOut, "snug: %s: %v\n", visibleValue(key), serr)
 		return exitUsage
@@ -222,6 +251,25 @@ func runHostTrust(out, errOut io.Writer, home, dir string, write bool) int {
 // grant: the dialog's measured job is blocking repo-controlled startup config
 // (claudeStateJSON's A/B), so a target that already ships one is the case where
 // the human most needs to look before typing -w.
+// grantBearingProjectFiles are the repo-supplied files this preview names,
+// relative to the target. The first two are projectClaudeSettingsFiles (issue
+// #73: a SessionStart hook in either runs with no gate once trusted).
+//
+// `.mcp.json` is here and deliberately NOT in projectClaudeSettingsFiles: that
+// list is one mount decision per file and .mcp.json is gated by
+// enableAllProjectMcpServers (claude.go:463). This list answers a different
+// question — what is the human approving — and the gate does not settle it,
+// because enableAllProjectMcpServers is itself settable from the repo's own
+// .claude/settings.local.json. A repo shipping both had this preview print
+// nothing at all, which a human reads as "nothing here will run". Issue #460.
+var grantBearingProjectFiles = func() []string {
+	out := make([]string, 0, len(projectClaudeSettingsFiles)+1)
+	for _, name := range projectClaudeSettingsFiles {
+		out = append(out, filepath.Join(".claude", name))
+	}
+	return append(out, ".mcp.json")
+}()
+
 func describeTrustGrant(errOut io.Writer, plan claudeTrustPlan, key string) {
 	if plan.created {
 		fmt.Fprintf(errOut, "snug: %s does not exist; it would be CREATED, mode 0600, holding only this key\n",
@@ -238,12 +286,25 @@ func describeTrustGrant(errOut io.Writer, plan claudeTrustPlan, key string) {
 	fmt.Fprintf(errOut, "snug: from then on that directory's own .claude/settings.json runs at startup with "+
 		"nothing asking first — a SessionStart hook there is what the dialog exists to stop, and a "+
 		"@claude sandbox holds your Anthropic OAuth token\n")
-	for _, name := range projectClaudeSettingsFiles {
-		p := filepath.Join(key, ".claude", name)
-		if fi, err := os.Lstat(p); err == nil {
-			fmt.Fprintf(errOut, "snug: it already ships %s (%d bytes, %s) — read it before granting this\n",
-				visibleValue(p), fi.Size(), fi.Mode())
+	// os.Stat, not the os.Lstat claude.go uses. There the question is "does a
+	// file exist to project", and following a link would be a decision about
+	// the host; here the question is "what is the human about to approve", and
+	// a link's own 28 bytes understated a 9 KB settings.json by 300× on the
+	// line that says READ IT. Issue #460.
+	for _, name := range grantBearingProjectFiles {
+		p := filepath.Join(key, name)
+		fi, err := os.Stat(p)
+		if err != nil {
+			continue
 		}
+		via := ""
+		if li, lerr := os.Lstat(p); lerr == nil && li.Mode()&os.ModeSymlink != 0 {
+			if real, rerr := filepath.EvalSymlinks(p); rerr == nil {
+				via = " → symlink to " + visibleValue(real)
+			}
+		}
+		fmt.Fprintf(errOut, "snug: it already ships %s (%d bytes, %s)%s — read it before granting this\n",
+			visibleValue(p), fi.Size(), fi.Mode(), via)
 	}
 	fmt.Fprintf(errOut, "snug: EXACTLY that path — a subdirectory of it is not trusted by this, and "+
 		"neither is its parent\n")

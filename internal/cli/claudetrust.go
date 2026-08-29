@@ -85,7 +85,7 @@ func planClaudeTrust(home, key string) (claudeTrustPlan, error) {
 	// read on the sandbox path degrades to (hostTrustsTarget). Only ENOENT is
 	// an ordinary state here, and it is the state a host that has never run
 	// Claude Code is in — which is the host issue #460 is about.
-	doc, err := hostread.Required(path, maxClaudeJSONBytes)
+	doc, readInfo, err := hostread.RequiredStat(path, maxClaudeJSONBytes)
 	switch {
 	case err == nil:
 	case errors.Is(err, fs.ErrNotExist):
@@ -96,9 +96,15 @@ func planClaudeTrust(home, key string) (claudeTrustPlan, error) {
 		return plan, fmt.Errorf("%w — nothing was written; snug will not replace a file it "+
 			"could not read whole", err)
 	}
-	if fi, serr := os.Stat(plan.write); serr == nil {
-		plan.before = fi
-	}
+	// readInfo, NOT a fresh os.Stat. A stat taken after the read names whatever
+	// is at the path THEN, so a writer landing between the two would be ADOPTED
+	// as the baseline and claudeJSONUnchanged would compare it against itself
+	// and pass — a guaranteed lost update rather than a raced one, and a wider
+	// window than the stat-to-rename gap this file's header describes.
+	// MEASURED with an inotify IN_OPEN watcher renaming a pre-staged file the
+	// instant snug opens this one: before, exit 0 and the other writer's key
+	// gone; after, exit 70 and its key intact. Issue #460.
+	plan.before = readInfo
 
 	next, changed, perr := claudeTrustPatch(doc, key)
 	if perr != nil {
@@ -259,7 +265,7 @@ func jsonObjectMembers(obj []byte) (members []jsonMember, closeAt int, err error
 		end := int(dec.InputOffset())
 		members = append(members, jsonMember{
 			key:      k,
-			lead:     strings.TrimPrefix(string(obj[cursor:keyStart]), ","),
+			lead:     dropSeparator(string(obj[cursor:keyStart])),
 			valStart: end - len(raw),
 			valEnd:   end,
 		})
@@ -351,6 +357,26 @@ func deeperLead(lead string) string {
 // whether the decoder refused or the shape did.
 func notStrictJSON(err error) error {
 	return fmt.Errorf("does not parse as strict JSON (%v)", err)
+}
+
+// dropSeparator removes the member separator from the span between one value
+// and the next key, leaving only the whitespace — which is what an INSERTED
+// member has to wear to match the file's own layout.
+//
+// TrimPrefix is WRONG here and it wrote invalid JSON: strict JSON allows
+// whitespace on BOTH sides of the comma, so `"/x": 1 , "/y": 2` gives a span
+// of " , " with the comma in the middle, and a lead that still contains a
+// comma is then emitted twice — once as the separator before the new member
+// and once as the closing lead inside it. MEASURED before the fix: that file
+// became `..., "/y": 2, , "/k": {...true , }}` — two stray commas, exit 0,
+// "snug: updated". Strict JSON guarantees at most one comma in the span, so
+// removing it positionally is exact rather than a heuristic. Issue #460.
+func dropSeparator(span string) string {
+	i := strings.IndexByte(span, ',')
+	if i < 0 {
+		return span
+	}
+	return span[:i] + span[i+1:]
 }
 
 func splice(b []byte, from, to int, with []byte) []byte {
