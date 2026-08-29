@@ -5980,6 +5980,76 @@ podman --url unix:///run/user/$(id -u)/pullwire.sock pull dir:/etc
 #   POST /v6.0.2/libpod/images/pull?...&reference=dir%3A%2Fetc
 ```
 
+## 23. `podman run -d` works, and foreground `podman run` still stops at attach (issue #459)
+
+Needs a live engine for the first half, so it runs where §19 runs. The second
+half runs anywhere, and it is the one to read: it says which route the refusal
+comes from, and that route is a deliberate exclusion rather than an omission.
+
+```bash
+cd $SC/proj && ../../bin/snug -p @podman-socket -p @net . -- sh -c '
+  podman run -d --rm alpine:3.20 sleep 5   # expect: a container id printed
+  podman wait $(podman ps -q | head -1)    # expect: an exit status
+'
+```
+
+Foreground, which is what most people type, still refuses — and the refusal must
+name the libpod schema gate, not `containers/start`:
+
+```bash
+cd $SC/proj && ../../bin/snug -p @podman-socket -p @net . -- \
+  podman run --rm alpine:3.20 true
+# expect: 403, "snug does not filter the libpod-native API for
+#         POST /containers/<id>/attach"
+```
+
+**Why that is the expected output and not a bug**, because a reader hitting it
+will otherwise file one: foreground `podman run` posts `attach` BEFORE `start`,
+and attach is a HIJACK — the CLI wants `101 UPGRADED`. Admitting it is a decision
+about the libpod attach stream (issues #465, #508), not about an empty body.
+`docker run` over the docker-compat endpoint is the client that works today.
+
+What is measurable on any host, engine or not — the wire each invocation speaks,
+against a socket that logs the request and answers it plausibly enough for the
+CLI to continue. Same method as §22, with `create` answering an Id and `pull`
+answering a results stream:
+
+```
+podman run -d --rm alpine:3.20 true
+  POST /v6.0.2/libpod/containers/create
+  POST /v6.0.2/libpod/containers/<id>/start?recursive=true
+
+podman run --rm alpine:3.20 true          # and -it is the same shape
+  POST /v6.0.2/libpod/containers/create
+  GET  /v6.0.2/libpod/containers/<id>/json?size=false
+  POST /v6.0.2/libpod/containers/<id>/attach?detachKeys=...&stderr=true&stdout=true&stream=true
+```
+
+The default-deny half — a parameter the filter has not read refuses and names
+itself. It needs a container THIS RUN created, because the ownership gate runs
+BEFORE the parameter check and an unknown id refuses there instead, for a
+different and correct reason:
+
+```bash
+cd $SC/proj && ../../bin/snug -p @podman-socket -p @net . -- sh -c '
+  id=$(podman create --rm alpine:3.20 true)
+  sock=${CONTAINER_HOST#unix://}
+  curl --unix-socket "$sock" -s -X POST \
+    "http://d/v6.0.2/libpod/containers/$id/start?recursive=true&mountfrom=/host"
+  echo
+  curl --unix-socket "$sock" -s -X POST \
+    "http://d/v6.0.2/libpod/containers/$id/start?recursive=true"
+'
+# expect, in order:
+#   403, "the start parameter `mountfrom` is one snug's filter has not read"
+#   the start is accepted
+```
+
+Reading it against an id the run does NOT own is the other half, and it must
+refuse EARLIER — at the ownership gate, naming the container rather than the
+parameter. If a bad parameter and a foreign id ever produce the same message,
+the gate ordering has moved.
+
 ## If a check fails
 
 1. Re-run it with `--dry-run` and compare what snug *claimed* against what you

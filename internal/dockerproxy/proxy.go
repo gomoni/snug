@@ -109,13 +109,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// endpoint that CHANGES STATE and that this filter has not read is refused
 	// rather than forwarded unexamined — read-only libpod routes carry no schema
 	// to misread and stay allowed.
-	if libpod && !safeMethod(r.Method) && !libpodExamined(segs) {
+	if libpod && !safeMethod(r.Method) && !libpodExamined(segs, r.Method) {
 		p.deny(w, "snug does not filter the libpod-native API for %s /%s, so it refuses it. "+
 			"snug reads the docker-compat request schema; the libpod schema is a different "+
 			"shape, and what this filter has not read it does not forward. Read-only libpod "+
-			"routes (GET, HEAD), /libpod/build, /libpod/images/pull and /libpod/containers/create "+
-			"are the exceptions. Use `docker` against the docker-compat endpoint (/v1.41/...) "+
-			"instead.",
+			"routes (GET, HEAD), /libpod/build, /libpod/images/pull, /libpod/containers/create "+
+			"and POST /libpod/containers/{id}/{start,wait} are the exceptions. Use `docker` "+
+			"against the docker-compat endpoint (/v1.41/...) instead.",
 			r.Method, strings.Join(segs, "/"))
 		return
 	}
@@ -187,6 +187,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.handleImageCreate(w, r)
 	case isImagePull(segs):
 		p.handleImagePull(w, r)
+	case libpodLifecycleCase(segs, r.Method, libpod):
+		// Gated on `libpod` for the same reason isContainerCreate is: segs are
+		// identical for both wires, and the compat spellings keep going through
+		// allowed() unchanged. This case reads the LIBPOD query surface, which
+		// is the one that was measured.
+		route, _ := isLibpodLifecycle(segs, r.Method)
+		p.handleLibpodLifecycle(w, r, route)
 	case isImageDelete(segs, r.Method):
 		p.deny(w, "removing image %q is not permitted. The engine's image store is this "+
 			"PROJECT's, not this run's — it is keyed on the target directory and persists "+
@@ -319,12 +326,25 @@ func normaliseFull(path string) (segs []string, prefix int, libpod bool, ok bool
 // string, which is why this route can be read at all while
 // libpod/containers/create cannot.
 //
+// containers/{id}/start and .../wait are the fourth and fifth (issue #459):
+// body-less like images/pull, every parameter in the query string, read
+// exhaustively by handleLibpodLifecycle in libpodlifecycle.go. They are the
+// routes `podman run -d` needs after create. attach is NOT among them and the
+// reason is not an oversight — it is a hijack, so admitting it is a decision
+// about the libpod attach stream (issues #465/#508), not about an empty body.
+// This predicate takes the METHOD for them: the lifecycle routes are POST-only,
+// and their GET spellings are a different thing the safe-method half already
+// covers.
+//
 // containers/create is the third entry (issue #459 phase 2): podman's own
 // SpecGenerator body, read by handleLibpodContainerCreate in libpodcreate.go
 // against a default-deny field catalogue — an unmodelled or unrecognised
 // field refuses by name rather than forwarding unread, the same fail-closed
 // rule build's context and images/pull's query already keep.
-func libpodExamined(segs []string) bool {
+func libpodExamined(segs []string, method string) bool {
+	if _, ok := isLibpodLifecycle(segs, method); ok {
+		return true
+	}
 	return isBuild(segs) || isImagePull(segs) || isContainerCreate(segs)
 }
 

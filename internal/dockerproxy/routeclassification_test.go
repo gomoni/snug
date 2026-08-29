@@ -142,10 +142,64 @@ var classifiedPaths = map[string]bool{
 	"volumes/create":    false,
 }
 
+// classifiedLifecycle is the third column, and it exists because the lifecycle
+// routes are the first examined paths that carry an OBJECT ID in the middle:
+// POST /libpod/containers/{id}/start is three segments, not two, so neither map
+// above can express it. Same rule as both — the value is the decision and it
+// must agree with libpodExamined.
+//
+// attach is here as FALSE and that is the entry worth reading: it is body-less
+// like the two trues, and it is refused anyway because it is a HIJACK. Recording
+// it false rather than omitting it is what stops "body-less" being read as the
+// whole rule (issues #465/#508).
+var classifiedLifecycle = map[string]bool{
+	"start":   true,
+	"wait":    true,
+	"attach":  false,
+	"stop":    false,
+	"kill":    false,
+	"restart": false,
+	"pause":   false,
+	"resize":  false,
+}
+
+func TestEveryLifecycleVerbIsClassified(t *testing.T) {
+	for verb, want := range classifiedLifecycle {
+		segs := []string{"containers", "0123456789ab", verb}
+		if got := libpodExamined(segs, http.MethodPost); got != want {
+			t.Errorf("POST containers/{id}/%s: classifiedLifecycle says examined=%v, "+
+				"libpodExamined says %v — the acknowledgement and the code the proxy "+
+				"consults disagree", verb, want, got)
+		}
+	}
+
+	// A verb nobody has heard of is NOT examined: the same permissive-default
+	// check the segment map makes, on the finer column.
+	for _, verb := range []string{"verb-podman-adds-in-2027", "", "create"} {
+		if libpodExamined([]string{"containers", "id", verb}, http.MethodPost) {
+			t.Errorf("POST containers/{id}/%s is examined — the lifecycle table has a "+
+				"permissive default", verb)
+		}
+	}
+
+	// METHOD is half the predicate. The lifecycle routes are POST-only, and a
+	// GET spelling must not inherit their entry: safeMethod is what makes a GET
+	// reachable, and a route examined for the wrong method would be a second,
+	// weaker gate.
+	for verb := range classifiedLifecycle {
+		for _, m := range []string{http.MethodGet, http.MethodDelete, http.MethodPut} {
+			if libpodExamined([]string{"containers", "id", verb}, m) {
+				t.Errorf("%s containers/{id}/%s is examined — the lifecycle entry is "+
+					"POST-only and this method inherited it", m, verb)
+			}
+		}
+	}
+}
+
 func TestEveryExaminedLibpodPathIsClassified(t *testing.T) {
 	for path, want := range classifiedPaths {
 		segs := strings.Split(path, "/")
-		if got := libpodExamined(segs); got != want {
+		if got := libpodExamined(segs, http.MethodPost); got != want {
 			t.Errorf("path %q: classifiedPaths says examined=%v, libpodExamined says %v — "+
 				"the acknowledgement and the code the proxy consults disagree", path, want, got)
 		}
@@ -191,7 +245,7 @@ func TestEveryRouteTheRouterCanReachIsClassifiedForLibpod(t *testing.T) {
 				"unexamined the way networks and system did (issue #340).", s, s)
 			continue
 		}
-		if examined := libpodExamined([]string{s}); examined != want {
+		if examined := libpodExamined([]string{s}, http.MethodPost); examined != want {
 			t.Errorf("route %q: classified says examined=%v, libpodExamined says %v — "+
 				"the acknowledgement and the code the proxy consults disagree", s, want, examined)
 		}
@@ -216,7 +270,7 @@ func TestEveryRouteTheRouterCanReachIsClassifiedForLibpod(t *testing.T) {
 	// enumerating: a segment nobody has heard of is NOT examined. Without it the
 	// assertions above are satisfied by any function whose default is true.
 	for _, seg := range []string{"segment-podman-adds-in-2027", "", "networks", "system"} {
-		if libpodExamined([]string{seg}) {
+		if libpodExamined([]string{seg}, http.MethodPost) {
 			t.Errorf("libpodExamined(%q) = true — the gate has a permissive default, which "+
 				"is the denylist shape issue #340 was", seg)
 		}
@@ -241,7 +295,7 @@ func TestNoUnexaminedLibpodBodyReachesTheEngine(t *testing.T) {
 	sock, eng, _ := startProxyMode(t, policy.PodmanBuild)
 
 	for _, seg := range routerSegments(t) {
-		if libpodExamined([]string{seg}) {
+		if libpodExamined([]string{seg}, http.MethodPost) {
 			continue
 		}
 		for _, m := range []struct{ method, path string }{
