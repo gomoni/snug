@@ -596,6 +596,15 @@ jobs:
       # a PR opened after the rollover but before main's next push runs against
       # LAST week's image rather than going red — at most seven days of drift,
       # and the drift is visible in the step's own log line.
+      #
+      # THE KEY HASHES THE TWO PROVISIONING FILES, and the consequence is worth
+      # knowing before it is debugged: a pull request that EDITS
+      # test/engine-container.sh or test/engine-container.dockerfile changes the
+      # prefix, matches nothing, and is refused below — it cannot run the engine
+      # suite in CI until its change is on main. That is deliberate. Leaving the
+      # hash out would run such a PR against the OLD image, which tests the one
+      # thing the diff changed by not exercising it; a refusal is loud and a
+      # silent pass is not (invariant 5).
       - name: Cache key for the provisioned image
         id: img
         run: |
@@ -621,8 +630,29 @@ jobs:
           key: ${{ steps.img.outputs.key }}
           restore-keys: ${{ steps.img.outputs.prefix }}
 
+      # WHICH OUTPUT GATES THE BAKE, because the two are not interchangeable and
+      # picking the wrong one silently freezes the image forever. `cache-hit` is
+      # 'true' only on an EXACT match of the primary key; `cache-matched-key` is
+      # also set by a `restore-keys` prefix match. Since the primary key carries
+      # the ISO week and the restore key does not, gating the bake on
+      # `cache-matched-key` would mean main matches LAST week's entry on the
+      # first push of every new week, skips the bake, and never bakes again —
+      # the engine would stop rolling, which is the other half of #478's ruling.
+      # So: main bakes on an exact MISS, and a pull request is refused only on a
+      # total miss.
+      - name: Decide whether this run may bake
+        id: decide
+        run: |
+          if [ "${{ steps.restore.outputs.cache-hit }}" = true ]; then
+            echo "bake=false" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.img.outputs.bakes }}" = true ]; then
+            echo "bake=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "bake=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Load the restored image
-        if: steps.restore.outputs.cache-matched-key != ''
+        if: steps.restore.outputs.cache-matched-key != '' && steps.decide.outputs.bake != 'true'
         run: |
           docker load -i /tmp/snug-engine-image/image.tar
           echo "restored ${{ steps.restore.outputs.cache-matched-key }} (this week is ${{ steps.img.outputs.key }})"
@@ -633,19 +663,22 @@ jobs:
       # "no test ran, and it is not this diff's fault" — issue #505's rule, so
       # anything keying on the code sees one meaning, not two.
       - name: Refuse to bake outside main
-        if: steps.restore.outputs.cache-matched-key == '' && steps.img.outputs.bakes != 'true'
+        if: steps.restore.outputs.cache-matched-key == '' && steps.decide.outputs.bake != 'true'
         run: |
           echo "::error title=No baked engine image in the cache::NO TEST RAN. The provisioned Tumbleweed image is baked only by a push to main (issue #478), and no entry matched ${{ steps.img.outputs.prefix }}*. This is not a change in this diff. Re-run once main has pushed, or bake by pushing to main."
           echo "engine-container: no cache entry matched ${{ steps.img.outputs.prefix }}*." >&2
           echo "                  NO TEST RAN. Only a push to main bakes the image." >&2
+          echo "                  If this diff edits test/engine-container.sh or" >&2
+          echo "                  test/engine-container.dockerfile, the key hashes both, so" >&2
+          echo "                  nothing can match until the change is on main." >&2
           echo "                  Exiting 75 (EX_TEMPFAIL) so the code says so too." >&2
           exit 75
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-        if: steps.restore.outputs.cache-matched-key == '' && steps.img.outputs.bakes == 'true'
+        if: steps.decide.outputs.bake == 'true'
 
       - name: Bake the provisioned Tumbleweed image
-        if: steps.restore.outputs.cache-matched-key == '' && steps.img.outputs.bakes == 'true'
+        if: steps.decide.outputs.bake == 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -659,14 +692,14 @@ jobs:
       # header: what a PR needs is an image it can load without building, and a
       # layer cache cannot refuse to build.
       - name: Save the provisioned image for every other job
-        if: steps.restore.outputs.cache-matched-key == '' && steps.img.outputs.bakes == 'true'
+        if: steps.decide.outputs.bake == 'true'
         run: |
           mkdir -p /tmp/snug-engine-image
           docker save local/snug-engine-ci:latest -o /tmp/snug-engine-image/image.tar
           ls -l /tmp/snug-engine-image/image.tar
 
       - name: Cache it under this week's key
-        if: steps.restore.outputs.cache-matched-key == '' && steps.img.outputs.bakes == 'true'
+        if: steps.decide.outputs.bake == 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/snug-engine-image/image.tar
