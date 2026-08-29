@@ -44,6 +44,9 @@
 --dir /snug/engine/binds/sub
 --symlink usr/bin /bin
 --dev /dev
+--remount-ro /dev
+--size 1073741824
+--tmpfs /dev/shm
 --ro-bind /etc /etc
 --ro-bind-try /opt /opt
 --proc /proc

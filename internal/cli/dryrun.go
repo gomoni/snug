@@ -3097,7 +3097,7 @@ func partialLines(name string, beneath int, generated bool) []string {
 // TMPDIR pointing into it — no refusal, and nothing on screen saying so.
 //
 // Two things stop being true for that run, and the first is a documented count:
-// CLAUDE.md says the writable surface is EIGHT paths with /tmp among them, and
+// INDEX.md says the writable surface is EIGHT paths with /tmp among them, and
 // here it is seven. A user believing a guarantee that no longer holds is
 // invariant 5's whole subject, and the guarantee changed silently.
 //

@@ -19,6 +19,9 @@
 --dir /snug/bin
 --symlink usr/bin /bin
 --dev /dev
+--remount-ro /dev
+--size 1073741824
+--tmpfs /dev/shm
 --symlink usr/lib /lib
 --symlink usr/lib64 /lib64
 --proc /proc

@@ -224,25 +224,14 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 		case KindProc:
 			a = append(a, "--proc", m.Guest)
 		case KindDev:
-			// MEASURED (bwrap 0.11.2): /dev/shm is NOT a mount under --dev /dev —
-			// `findmnt -T /dev/shm -no TARGET,FSTYPE,SIZE` reports `/dev tmpfs
-			// 27.3G`, i.e. shm is a plain directory on bwrap's own /dev tmpfs.
-			// `dd if=/dev/zero of=/dev/shm/x bs=1M count=32` wrote 32 MiB and
-			// /dev's AVAIL dropped by the same amount; the same superblock is
-			// reachable at any other path under /dev too (e.g. /dev/big), so a
-			// bound placed only at /dev/shm is a two-character path change away
-			// from being defeated and is NOT done here (issue #281).
-			//
-			// bwrap's --dev takes no --size of its own (measured: `bwrap: --size
-			// must be followed by --tmpfs`, exit 1, when --size precedes --dev).
-			// The candidate fix — `--dev /dev … --remount-ro /dev --size <N>
-			// --tmpfs /dev/shm` — was measured clean (/dev root EROFS, /dev/null
-			// and /dev/urandom intact, pty allocation intact, /dev/shm bounded)
-			// but REMOVES /dev from snug's documented writable surface: it is a
-			// base-grant change with its own golden diff and abuse sentence, and
-			// changes CLAUDE.md's "eight paths" count — a maintainer decision, not
-			// this lane's.
-			a = append(a, "--dev", m.Guest)
+			// --dev takes no --size, and /dev/shm is a directory on that
+			// tmpfs rather than a mount, so any path under /dev is an
+			// unbounded write into host RAM. Remount-ro closes every path;
+			// the fresh tmpfs over shm is a new mount, so the parent's
+			// read-only flag does not reach it. Issue #281.
+			a = append(a, "--dev", m.Guest,
+				"--remount-ro", m.Guest,
+				"--size", strconv.FormatUint(p.TmpfsSizeBytes, 10), "--tmpfs", filepath.Join(m.Guest, "shm"))
 		case KindData:
 			// Mounting over a path inside a read-only bind is fine: bwrap does
 			// it in its own mount namespace before the payload ever runs.

@@ -15,6 +15,9 @@
 --dir /home
 --ro-bind /opt /bin
 --dev /dev
+--remount-ro /dev
+--size 1073741824
+--tmpfs /dev/shm
 --proc /proc
 --size 1073741824
 --tmpfs /tmp

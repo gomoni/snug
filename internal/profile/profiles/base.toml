@@ -534,7 +534,7 @@ gateway6 = "fd00:5e79:1::1"
 # The exact list is policy.ClaudeSettingAllowlist, and this comment
 # deliberately does NOT restate it as a count. It said "ten … and seven
 # booleans" for one draft, which is a copy of state held in that slice —
-# CLAUDE.md's "the writable surface is eight paths" bullet records what
+# INDEX.md's "the writable surface is eight paths" bullet records what
 # happens next: the list grows, the prose does not, and no test can fail. The
 # injected ~/.claude/CLAUDE.md enumerates the real names at runtime rather
 # than counting them (claudeAllowlistNames, internal/cli/claude.go).

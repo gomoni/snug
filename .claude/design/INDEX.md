@@ -1396,7 +1396,7 @@ A tmpfs, because: it must be writable (every tool expects to write dotfiles), an
 
 **VERIFIED**: `--tmpfs /home/u` combined with `--remount-ro /` gives a writable `$HOME` on a read-only skeleton, and the ordering (tmpfs at depth 2 emitted before binds at depth 3+) falls out of the depth sort with no special case.
 
-**The writable surface is eight paths, not one.** The target bind is the only one that *persists*; `/tmp`, `$HOME`, `$HOME/.cache`, `$HOME/.config`, `$HOME/.local/state`, `$HOME/.local/share` and `/dev` are all writable tmpfs that die with the sandbox. Say "the only writable thing that persists", never "the only writable thing".
+**The writable surface is eight paths, not one.** The target bind is the only one that *persists*; `/tmp`, `$HOME`, `$HOME/.cache`, `$HOME/.config`, `$HOME/.local/state`, `$HOME/.local/share` and `/dev/shm` are all writable tmpfs that die with the sandbox. `/dev`'s own root is read-only — bwrap.go's KindDev arm remounts it immediately after creating it, so `/dev/shm` is the one writable path on that superblock, not the whole tree (issue #281). Say "the only writable thing that persists", never "the only writable thing".
 
 This paragraph also listed `$XDG_RUNTIME_DIR` for a milestone, and **no profile grants it** — measured, the variable is unset inside and `/run/user/$(id -u)` does not exist. Two errors in one sentence, in opposite directions: a real tmpfs missing (`$HOME/.local/share`, added to `@home` in PR #10) and an imaginary one present. Enumerate rather than assert — `VERIFY.md` §3 carries the probe that reads `/proc/self/mounts`.
 

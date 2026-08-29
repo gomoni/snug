@@ -216,59 +216,55 @@ echo MARKER_BIG`, tc.path, tc.path, tc.path)).mustRun(t)
 	}
 }
 
-// TestDevTmpfsIsUnboundedResidual is the HONEST test for the deliberate
-// non-fix documented at bwrap.go's KindDev arm: /dev/shm is a directory on
-// bwrap's own /dev tmpfs, not a mount of its own, so `--size` — which snug
-// applies only to the KindTmpfs mounts it emits — never reaches it.
+// A bound on /dev/shm alone is a two-character path change from defeat, so
+// this asserts both halves: shm capped at the configured size, and every
+// other path under /dev not writable at all.
 //
-// MEASURED (bwrap 0.11.2, this host): under `--dev /dev`, `findmnt -T
-// /dev/shm -no TARGET,FSTYPE,SIZE` reports `/dev tmpfs 27.3G` — i.e. shm is
-// plain space on /dev's own superblock, sized from host RAM like every
-// unsized tmpfs bwrap creates. `dd if=/dev/zero of=/dev/shm/x bs=1M count=32`
-// wrote the full 32 MiB with exit 0.
-//
-// This test does not assert a bug — it asserts the LIMIT of this lane's fix,
-// on purpose, so the follow-up (fixing it costs `/dev` from snug's documented
-// eight-path writable surface, per bwrap.go's own comment — a maintainer
-// decision, not this lane's) has a test to FLIP rather than a paragraph to
-// rediscover. Issue #281.
-func TestDevTmpfsIsUnboundedResidual(t *testing.T) {
+// MEASURED (bwrap 0.11.2, this host): `touch /dev/escape` and `dd of=/dev/big`
+// both fail "Read-only file system"; `findmnt -T /dev/shm -no SIZE` reports
+// the configured bound, not host RAM. Issue #281.
+func TestDevShmIsBoundedAndDevRootIsReadOnly(t *testing.T) {
 	budget(t)
 	requireSandbox(t)
 	proj, _ := target(t)
 
-	r := run(t, nil, proj, `echo TMP_SIZE=$(findmnt -no SIZE -T /tmp | tr -d " ")
-dd if=/dev/zero of=/dev/shm/x bs=1M count=32 2>&1
+	cfg := writeTmpfsConfig(t, "tmpfs_size_mib = 16\n")
+	env := baseEnv("XDG_CONFIG_HOME=" + cfg)
+
+	r := runEnv(t, env, nil, proj, `dd if=/dev/zero of=/dev/shm/x bs=1M count=32 2>&1
 echo SHM_RC=$?
 echo SHM_BYTES=$(stat -c %s /dev/shm/x)
 echo SHM_SIZE=$(findmnt -no SIZE -T /dev/shm | tr -d " ")
+touch /dev/escape 2>&1
+echo TOUCH_RC=$?
+dd if=/dev/zero of=/dev/big bs=1M count=32 2>&1
+echo BIG_RC=$?
 echo MARKER_DONE`).mustRun(t)
 	if !strings.Contains(r.out, "MARKER_DONE") {
 		t.Fatalf("the payload did not reach its own marker:\n%s", r.out)
 	}
 
-	// POSITIVE CONTROL: /tmp IS bounded at the default 1 GiB in this same
-	// sandbox, so the /dev/shm finding below cannot be explained by a sandbox
-	// that applies no bound anywhere, or one that never started.
-	if !strings.Contains(r.out, "TMP_SIZE=1G") {
-		t.Fatalf("control: /tmp is not reported as bounded (want TMP_SIZE=1G) in this same "+
-			"run, so the /dev/shm assertions below prove nothing:\n%s", r.out)
+	// /dev/shm is bounded at the configured 16 MiB, the same shape as every
+	// other snug tmpfs: capped, not merely slow or refused outright.
+	if strings.Contains(r.out, "SHM_RC=0") {
+		t.Errorf("a 32 MiB write into /dev/shm with a 16 MiB bound configured SUCCEEDED:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "SHM_BYTES=16777216") {
+		t.Errorf("the file at /dev/shm/x is not exactly the 16 MiB bound after the capped write:\n%s",
+			r.out)
+	}
+	if !strings.Contains(r.out, "SHM_SIZE=16M") {
+		t.Errorf("findmnt does not report /dev/shm as its own 16M mount:\n%s", r.out)
 	}
 
-	if !strings.Contains(r.out, "SHM_RC=0") {
-		t.Errorf("a 32 MiB write to /dev/shm did NOT succeed — if this /dev/shm has become "+
-			"bounded, the abuse sentence at bwrap.go's KindDev arm needs updating and this test "+
-			"should be flipped to a negative assertion:\n%s", r.out)
+	// /dev's root is read-only, so the bound above cannot be sidestepped by
+	// writing to a path that is not /dev/shm.
+	if strings.Contains(r.out, "TOUCH_RC=0") {
+		t.Errorf("touch /dev/escape SUCCEEDED — /dev's root is not read-only, so the /dev/shm "+
+			"bound above can be defeated at any other path under /dev:\n%s", r.out)
 	}
-	if !strings.Contains(r.out, "SHM_BYTES=33554432") {
-		t.Errorf("the file at /dev/shm/x is not the full 32 MiB written, which is a different "+
-			"finding than this test documents:\n%s", r.out)
-	}
-	// /dev/shm's reported size must NOT equal /tmp's 1G bound — it comes from
-	// the host's RAM via bwrap's own --dev default, not from anything snug set.
-	if strings.Contains(r.out, "SHM_SIZE=1G") {
-		t.Errorf("findmnt reports /dev/shm at 1G, the same as /tmp's configured bound — this "+
-			"would mean /dev/shm has started being sized by snug, contradicting this test's own "+
-			"premise:\n%s", r.out)
+	if strings.Contains(r.out, "BIG_RC=0") {
+		t.Errorf("a 32 MiB write to /dev/big SUCCEEDED — /dev/shm's bound is sidesteppable:\n%s",
+			r.out)
 	}
 }
