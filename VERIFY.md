@@ -6050,6 +6050,57 @@ refuse EARLIER — at the ownership gate, naming the container rather than the
 parameter. If a bad parameter and a foreign id ever produce the same message,
 the gate ordering has moved.
 
+## 24. Removing a live run's lock file does not kill its sandbox (issue #489)
+
+The per-target lock is held on an INODE and consulted by NAME, so one `rm` — or
+one `mv`, which leaves no `(deleted)` trail anywhere — detaches the two and made
+the next run's sweep read a live run as dead and SIGKILL its sandbox init. The
+kill is now gated on the owning snug's own process, which no rename reaches.
+
+```bash
+TGT=$(mktemp -d); OTHER=$(mktemp -d)
+./bin/snug $TGT -- sleep 60 & SNUG=$!
+sleep 3
+D=/run/user/$(id -u)/snug
+H=$(printf %s "$(readlink -f $TGT)" | sha256sum | cut -d' ' -f1)
+INIT=$(python3 -c "import json;print(json.load(open('$D/target-sha256_$H.json'))['sandbox']['init_pid'])")
+OWNER=$(python3 -c "import json;print(json.load(open('$D/target-sha256_$H.json'))['owner']['pid'])")
+echo "init=$INIT owner=$OWNER snug=$SNUG"   # expect: owner == snug
+rm $D/target-sha256_$H.lock
+./bin/snug $OTHER -- true                    # an unrelated run; its sweep runs
+test -d /proc/$INIT && echo ALIVE || echo KILLED
+kill $SNUG
+```
+
+Expect `owner == snug` and `ALIVE`. Measured on the fix:
+
+```
+init=273551 owner=273508 snugpid=273508
+init alive after sweep: YES
+```
+
+`mv $D/target-sha256_$H.lock $D/decoy.lock` in place of the `rm` is the same
+check with no trail on the victim's `/proc/<pid>/fd`, and must also print
+`ALIVE`.
+
+The negative half — the sweep must still do its job. A genuine orphan is one
+whose snug is GONE, so SIGKILL the snug itself and leave the init behind:
+
+```bash
+TGT=$(mktemp -d); OTHER=$(mktemp -d)
+./bin/snug $TGT -- sleep 60 & SNUG=$!
+sleep 3
+D=/run/user/$(id -u)/snug
+H=$(printf %s "$(readlink -f $TGT)" | sha256sum | cut -d' ' -f1)
+INIT=$(python3 -c "import json;print(json.load(open('$D/target-sha256_$H.json'))['sandbox']['init_pid'])")
+kill -9 $SNUG
+./bin/snug $OTHER -- true
+test -d /proc/$INIT && echo STILL-ALIVE-BUG || echo SWEPT
+```
+
+Expect `SWEPT`. Without this half, a sweep that had simply stopped killing
+anything would pass the check above.
+
 ## If a check fails
 
 1. Re-run it with `--dry-run` and compare what snug *claimed* against what you

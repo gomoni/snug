@@ -270,31 +270,34 @@ func readTargetState(real string) (st runState, live bool, err error) {
 // unlinks only while holding LOCK_EX. It does not cover an unlink by anything
 // else. One same-uid `rm` of a live run's lock file makes this function
 // create a fresh inode, take LOCK_SH on it unopposed, see Nlink == 1, and
-// answer "not held" while that run is very much alive — and the sweep then
-// kills its init. MEASURED, issue #489.
+// answer "not held" while that run is very much alive. MEASURED, issue #489.
 //
-// AND `mv` IS THE SAME HOLE WITH NO TRAIL, which this paragraph named only
-// as `rm` for a milestone. A rename detaches the flock from the NAME exactly
-// as an unlink does, and the fd follows it, so nothing anywhere reports a
-// deleted file: the kernel appends " (deleted)" to /proc/<pid>/fd/N on
-// unlink and appends nothing on rename. MEASURED against a live run, with
-// the rename alone as the control:
+// AND `mv` IS THE SAME HOLE WITH NO TRAIL. A rename detaches the flock from
+// the NAME exactly as an unlink does, and the fd follows it, so nothing
+// anywhere reports a deleted file: the kernel appends " (deleted)" to
+// /proc/<pid>/fd/N on unlink and appends nothing on rename. MEASURED against
+// a live run, with the rename alone as the control:
 //
 //	victim snug=147894 init=147906, init alive BEFORE: YES (comm=bwrap)
 //	after mv target-<hash>.lock decoy.lock, no sweep yet: YES-still-alive
 //	victim fd5 -> /run/user/1000/snug/decoy.lock   <- no "(deleted)"
 //	after a second snug on another target sweeps:   NO-KILLED-BY-SWEEP
 //
-// That is why no fix for #489 can be built on the lock file's NAME, however
-// it is compared: a same-uid attacker owns the string that fd resolves to.
-// The sweep's own "WHY REMOVING A LOCK FILE IS SAFE" paragraph
-// (orphansweep.go) already reasons about a planted hardlink plus a RENAME on
-// the unlink side; this side had only the unlink. The record's other guards cannot see
-// it: the name hash, the start time and the six namespace inodes establish
-// IDENTITY, and the record genuinely names that live init, so all three pass
-// by construction. Liveness has exactly one source in this design — the
-// flock — and the unlink is what detaches it from the name. Same-uid
-// tampering is where runtimedir.go's own sweep already draws this line.
+// So this function's answer is not, on its own, a fact about whether a run is
+// live, and no fix can make it one: a same-uid attacker owns the string that
+// fd resolves to, however the name is compared. The record's other guards
+// cannot help either — the name hash, the start time and the six namespace
+// inodes establish IDENTITY, and a record genuinely names its live init, so
+// all three pass by construction.
+//
+// WHAT THE CONSEQUENCE IS BOUNDED BY. The kill this answer used to license on
+// its own is now gated on a second signal that lives outside the filesystem:
+// killOrphanInit refuses to signal an init unless the snug that OWNED the run
+// is provably gone (stateowner.go). An `rm` or an `mv` of the lock file still
+// makes this function answer "not held" — a `snug` on that target will start a
+// second run, which is issues #119 and #122's guarantee and not this one's —
+// but it no longer reaches a live sandbox's init. Same-uid tampering is where
+// runtimedir.go's own sweep already draws this line.
 func targetLockIsHeld(snugRoot *os.Root, snugPath, real string) (bool, error) {
 	name := targetLockName(real)
 	for attempt := 0; attempt < targetLockAttempts; attempt++ {

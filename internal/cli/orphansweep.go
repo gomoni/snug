@@ -29,7 +29,7 @@ import (
 // #85 made for the run DIRECTORY: nothing can be cleaned up at the instant of
 // a SIGKILL, so the next run cleans it up instead.
 //
-// WHY IT CANNOT KILL A LIVE SANDBOX. Three independent conditions, all
+// WHY IT CANNOT KILL A LIVE SANDBOX. Four independent conditions, all
 // required:
 //
 //   - The per-target lock is not held. A live run takes that lock in run()
@@ -45,6 +45,11 @@ import (
 //     is the pid-reuse guard `snug attach` already relies on: a pid that has
 //     been recycled since the state was written has a different start time
 //     and is left alone.
+//   - The snug that OWNED the run is provably gone (stateowner.go, issue
+//     #489). The first condition is read by NAME while the lock is held on an
+//     INODE, so one same-uid `rm` — or `mv`, which leaves no trail at all —
+//     detaches the two and makes a live run read as unheld. The owner is a
+//     process rather than a file, and no rename reaches it.
 //
 // AN INIT THAT NEVER ANSWERS --info-fd AT ALL — parked in read() on one of
 // BWRAP's OWN eventfds, its uid-map sync — used to be listed here as
@@ -322,6 +327,7 @@ func sweepOneStartingOrphan(snugRoot *os.Root, snugPath, name string) {
 			InitStarttime: st.InitStarttime,
 			Namespaces:    st.Namespaces,
 		},
+		Owner: st.Owner,
 	}
 	if killOrphanInit(rs, full) == orphanUnresolved {
 		return
@@ -464,6 +470,18 @@ func killOrphanInit(st runState, statePath string) orphanVerdict {
 			// process never leaves them, so this is not our init.
 			return orphanGone
 		}
+	}
+	// THE SECOND LIVENESS SIGNAL (issue #489). Everything above establishes
+	// IDENTITY — this really is the init the record named — and identity is
+	// not liveness of the RUN. The caller reached here because the per-target
+	// lock read as unheld, and one same-uid `rm` or `mv` of the lock file
+	// makes it read that way about a run that is very much alive
+	// (targetstate.go measures both). So the kill is gated on a signal no
+	// unlink can detach: the owning snug's own process. Fails CLOSED —
+	// anything short of a positive confirmation keeps the record and the
+	// init, which is the direction this whole function already fails in.
+	if !ownerProvablyGone(st.Owner) {
+		return orphanUnresolved
 	}
 	if err := unix.PidfdSendSignal(pidfd, unix.SIGKILL, nil, 0); err != nil {
 		fmt.Fprintf(os.Stderr, "snug: could not kill the orphaned sandbox init pid %d named by "+

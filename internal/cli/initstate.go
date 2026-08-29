@@ -18,8 +18,8 @@ package cli
 // It is deliberately NOT a view over runState: a field added to state.json
 // (a command, an argv, a seccomp digest, anything else runstate.go's own
 // abuse-sentence list forbids there) must not be able to reach this file by
-// sharing its type. Five keys, checked byte-for-byte by
-// testdata/initstate.golden.json, so a sixth key shows up in review rather
+// sharing its type. Six keys, checked byte-for-byte by
+// testdata/initstate.golden.json, so a seventh key shows up in review rather
 // than arriving silently through an embedded runState.
 //
 // WHY THIS FILE IS MORE SENSITIVE THAN state.json, NOT LESS, and why nothing
@@ -51,8 +51,9 @@ import (
 // files are separate formats that must be free to version independently.
 const initStateSchema = 1
 
-// initState is initstate.go's own JSON shape: schema, target and the four
-// identity fields killOrphanInit needs to confirm a pid before signalling it.
+// initState is initstate.go's own JSON shape: schema, target, the three
+// identity fields killOrphanInit needs to confirm a pid before signalling it,
+// and the owner record its #489 gate reads.
 // Nothing else — see this file's own doc comment for why that absence is the
 // point.
 type initState struct {
@@ -61,6 +62,12 @@ type initState struct {
 	InitPID       int               `json:"init_pid"`
 	InitStarttime uint64            `json:"init_starttime"`
 	Namespaces    map[string]uint64 `json:"namespaces"`
+
+	// Owner carries the same second liveness signal state.json does, for the
+	// same reason and read by the same gate — see stateowner.go and issue
+	// #489. A gate present in only one of the two records would leave the
+	// hole open for whichever window the other covers.
+	Owner stateOwner `json:"owner"`
 }
 
 // initStateName is targetStateName's sibling, keyed by the same
@@ -104,12 +111,18 @@ func writeInitState(target string, pid int) error {
 		return err
 	}
 
+	owner, err := currentOwner()
+	if err != nil {
+		return fmt.Errorf("init state: %w", err)
+	}
+
 	st := initState{
 		Schema:        initStateSchema,
 		Target:        target,
 		InitPID:       pid,
 		InitStarttime: starttime,
 		Namespaces:    namespaces,
+		Owner:         owner,
 	}
 	return writeTargetFile(initStateName(target), st)
 }

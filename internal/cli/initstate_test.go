@@ -8,7 +8,7 @@ import (
 )
 
 // TestGoldenInitState is the review artifact for initState's wire shape
-// (issue #236): five keys, asserted byte-for-byte, so a patch adding a sixth
+// (issue #236): six keys, asserted byte-for-byte, so a patch adding a seventh
 // — a command, an argv, a seccomp digest, anything runstate.go's own
 // abuse-sentence list forbids in this file — shows up as a diff here rather
 // than arriving silently.
@@ -21,6 +21,7 @@ func TestGoldenInitState(t *testing.T) {
 		Namespaces: map[string]uint64{
 			"mnt": 111, "pid": 222, "net": 333, "ipc": 444, "uts": 555, "cgroup": 666,
 		},
+		Owner: stateOwner{PID: 4200, Starttime: 987000},
 	}
 
 	blob, err := json.MarshalIndent(st, "", "  ")
