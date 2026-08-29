@@ -513,7 +513,11 @@ gateway6 = "fd00:5e79:1::1"
 # configured here (a .mcp.json committed in the TARGET still is — it is in the
 # project tree, not the host's config); tool approvals given in a host session
 # are asked again inside; and a directory you have not trusted on the host is
-# asked about once per run.
+# asked about once per run. `snug host trust <dir>` answers that last one on the
+# HOST, deliberately, from outside any sandbox — the only host dotfile snug
+# writes, and it writes one key. Nothing inside can reach it: MEASURED in a real
+# `-p @claude` run, there is no snug on PATH and ~/.claude.json inside is a
+# 61-byte tmpfs file rather than a bind of the host's.
 #
 # ~/.claude/settings.json is GENERATED, never bound, because it is a COMMAND
 # TABLE. hooks (shell commands on ~34 tool events), apiKeyHelper (a program

@@ -5980,6 +5980,101 @@ podman --url unix:///run/user/$(id -u)/pullwire.sock pull dir:/etc
 #   POST /v6.0.2/libpod/images/pull?...&reference=dir%3A%2Fetc
 ```
 
+## 23. `snug host trust` — the one host dotfile snug writes (issue #460)
+
+Everywhere else, snug only ever READS the host's `~/.claude.json`, and it reads
+one boolean out of it: has the human already accepted Claude Code's "Quick
+safety check" for **this exact directory**. snug never records that answer by
+itself, and the reason is measured — a target whose only content is a
+`.claude/settings.json` with a `SessionStart` hook fires that hook the moment
+the key is present, with no dialog, inside a sandbox holding the staged
+Anthropic OAuth token.
+
+So the answer is a command a human types, on the host, naming a directory.
+Use a throwaway `HOME`; this is the one check in this file that writes a dotfile.
+
+```console
+$ h=$(mktemp -d)/u && mkdir -p "$h"
+$ mkdir -p $SC/proj/sub/.claude
+$ printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"id > /tmp/FIRED"}]}]}}\n' \
+    > $SC/proj/sub/.claude/settings.json
+
+$ HOME=$h ./bin/snug --dry-run -p @claude $SC/proj/sub | sed -n '/^         trust/,/without -w/p'
+         trust      NOT pre-answered — your host ~/.claude.json does not
+                    record this exact path as trusted:
+                    projects.".../proj/sub"
+                    is absent, and so is the whole projects key, so Claude
+                    Code asks "Quick safety check" for it once per run —
+                    the prompt that stops a repository's own
+                    .claude/settings.json hooks running at startup
+                    To answer it once, deliberately, on the host:
+                    snug host trust ".../proj/sub"
+                    It prints what that grants and writes nothing without -w
+
+$ HOME=$h ./bin/snug host trust $SC/proj/sub; echo "exit=$?"
+snug: .../u/.claude.json does not exist; it would be CREATED, mode 0600, holding only this key
+snug: this ANSWERS Claude Code's "Quick safety check" for .../proj/sub, for good, on the host
+      and inside every snug sandbox for that directory
+snug: from then on that directory's own .claude/settings.json runs at startup with nothing
+      asking first — a SessionStart hook there is what the dialog exists to stop, and a
+      @claude sandbox holds your Anthropic OAuth token
+snug: it already ships .../proj/sub/.claude/settings.json (88 bytes, -rw-r--r--) — read it
+      before granting this
+snug: EXACTLY that path — a subdirectory of it is not trusted by this, and neither is its parent
+projects.".../proj/sub".hasTrustDialogAccepted = true
+snug: nothing was changed — run `snug host trust .../proj/sub -w` to record it
+exit=0
+
+$ ls "$h"          # the preview wrote NOTHING
+$ HOME=$h ./bin/snug host trust $SC/proj/sub -w | tail -1
+snug: created .../u/.claude.json — Claude Code will not ask about .../proj/sub again, on the
+      host or in a snug sandbox for it
+$ cat "$h/.claude.json"
+{
+  "projects": {
+    ".../proj/sub": {
+      "hasTrustDialogAccepted": true
+    }
+  }
+}
+$ HOME=$h ./bin/snug host trust $SC/proj/sub -w
+snug: .../u/.claude.json already records .../proj/sub as trusted; nothing to do
+```
+
+(The transcript elides the temporary paths to `...`; everything else is
+verbatim. The stdout line is the one-line CONTENT, the `snug:` lines are on
+stderr — the same split `snug fix subuid` uses.)
+
+What to check:
+
+1. **Nothing happens without `-w`.** The preview prints the grant and creates
+   no file. `ls "$h"` is empty.
+2. **The grant is printed, not just performed** — including the target's own
+   `.claude/settings.json`, by name and size, because that file is what gains
+   the right to run at startup.
+3. **The key is the one snug looks up.** Re-run the `--dry-run` above and the
+   block flips to `trust CARRIED`. Type the path with a symlink or a `.` in it
+   and the same key is written: it is canonicalised exactly as `policy.Resolve`
+   canonicalises `pol.Target`.
+4. **No prefix match, in either direction.** `mkdir $SC/proj/sub/inner` and
+   `--dry-run` on it still says `NOT pre-answered`; so does `$SC/proj`. Claude
+   Code keys trust per directory and so does this.
+5. **Trust removes the DIALOG and nothing else.** With the directory trusted,
+   `--dry-run` still shows the repo's own `.claude/settings.json` projected
+   read-only with its `hooks` dropped (§ the `project` line of the CLAUDE
+   block, issue #73). A trusted directory is not permission for a repository's
+   command table to enter the sandbox.
+6. **It refuses rather than clobbers.** Put a `//` comment in `$h/.claude.json`
+   — which Claude Code accepts and snug does not — and the command exits 69
+   with `does not parse as strict JSON ... nothing was written`, leaving the
+   file byte-identical. Same for a top level that is not an object, a duplicate
+   `projects` key, and a FIFO at that path.
+7. **A real file keeps its bytes.** Copy your actual `~/.claude.json` into the
+   throwaway home first and `diff` it afterwards: the only change is the
+   inserted entry, correctly indented, with every other key in its original
+   order and spelling. Measured on this host's 3491-line file: **3 added lines,
+   nothing else.**
+
 ## If a check fails
 
 1. Re-run it with `--dry-run` and compare what snug *claimed* against what you

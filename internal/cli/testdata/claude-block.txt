@@ -12,7 +12,10 @@ CLAUDE   ~/.claude.json is GENERATED, not copied — two keys, no host bytes
                     Code asks "Quick safety check" for it once per run —
                     the prompt that stops a repository's own
                     .claude/settings.json hooks running at startup
-         not here   the host file's 62 KB: every project path on this machine,
+                    To answer it once, deliberately, on the host:
+                    snug host trust "/home/u/proj/sub"
+                    It prints what that grants and writes nothing without -w
+         not here   the host file: every project path on this machine,
                     org, email, account UUIDs, machine ID, MCP servers, and the
                     host's per-project tool approvals — so tools you approved on
                     the host are asked again in here

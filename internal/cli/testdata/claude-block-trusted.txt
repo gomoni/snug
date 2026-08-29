@@ -11,7 +11,7 @@ CLAUDE   ~/.claude.json is GENERATED, not copied — three keys, no host bytes
                     One boolean about the ONE directory you named on the
                     command line; no other directory appears in the file, and
                     snug decides nothing here — it carries your answer
-         not here   the host file's 62 KB: every project path on this machine,
+         not here   the host file: every project path on this machine,
                     org, email, account UUIDs, machine ID, MCP servers, and the
                     host's per-project tool approvals — so tools you approved on
                     the host are asked again in here

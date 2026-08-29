@@ -113,6 +113,8 @@ func Main() {
 			os.Exit(engineCmd(argv[1:]))
 		case "fix":
 			os.Exit(fixCmd(argv[1:]))
+		case "host":
+			os.Exit(hostCmd(argv[1:]))
 		case "help":
 			usage()
 			os.Exit(0)

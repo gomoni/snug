@@ -1578,8 +1578,15 @@ func describeClaude(out io.Writer, p *policy.Policy) {
 		fmt.Fprintf(out, "                    Code asks \"Quick safety check\" for it once per run —\n")
 		fmt.Fprintf(out, "                    the prompt that stops a repository's own\n")
 		fmt.Fprintf(out, "                    .claude/settings.json hooks running at startup\n")
+		// The named fix, and the only place snug offers it. It is NOT on the
+		// guidance file the agent reads inside the sandbox: that screen would
+		// be a hostile repo's script for asking the human to grant it startup
+		// execution, which is the one thing this key does (issue #460).
+		fmt.Fprintf(out, "                    To answer it once, deliberately, on the host:\n")
+		fmt.Fprintf(out, "                    snug host trust %q\n", p.Target)
+		fmt.Fprintf(out, "                    It prints what that grants and writes nothing without -w\n")
 	}
-	fmt.Fprintf(out, "         not here   the host file's 62 KB: every project path on this machine,\n")
+	fmt.Fprintf(out, "         not here   the host file: every project path on this machine,\n")
 	fmt.Fprintf(out, "                    org, email, account UUIDs, machine ID, MCP servers, and the\n")
 	fmt.Fprintf(out, "                    host's per-project tool approvals — so tools you approved on\n")
 	fmt.Fprintf(out, "                    the host are asked again in here\n")
