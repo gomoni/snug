@@ -42,6 +42,10 @@ type fakeEnv struct {
 	// read — and would be a fixture that lies, in a file whose whole job is to
 	// stand in for a host.
 	files map[string]bool
+	// mounts is the fixture host's mount table, for RULE 5's filesystem half.
+	// Empty is the right default: a fixture that does not care about the rule
+	// has no pseudo-filesystem anywhere.
+	mounts []HostMount
 	// sockets is the third kind, for issue #219: a bind whose SOURCE is a unix
 	// socket is refused, detected by mode rather than by path text. A fixture
 	// that could only be a file or a directory could not express the case.
@@ -102,6 +106,8 @@ func newFakeEnv() *fakeEnv {
 		},
 	}
 }
+
+func (f *fakeEnv) HostMounts() ([]HostMount, error) { return f.mounts, nil }
 
 func (f *fakeEnv) EvalSymlinks(p string) (string, error) {
 	if t, ok := f.links[p]; ok {

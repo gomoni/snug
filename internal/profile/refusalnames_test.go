@@ -31,7 +31,8 @@ type refusalFakeEnv struct {
 	sockets map[string]bool
 }
 
-func (e refusalFakeEnv) EvalSymlinks(p string) (string, error) { return p, nil }
+func (e refusalFakeEnv) EvalSymlinks(p string) (string, error)   { return p, nil }
+func (e refusalFakeEnv) HostMounts() ([]policy.HostMount, error) { return nil, nil }
 
 func (e refusalFakeEnv) Stat(p string) (fs.FileInfo, error) {
 	if e.sockets[p] {

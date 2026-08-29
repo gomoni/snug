@@ -219,9 +219,37 @@ demote-in-place.
   depends on:** `kptr_restrict`, `dmesg_restrict`, `perf_event_paranoid`,
   `yama/ptrace_scope`, `unprivileged_bpf_disabled`. "No silent downgrade" applied
   to an *inherited* guarantee. snug checks none today.
-- **R6 — `Validate`-time refusal of a **rw** grant at or under `/sys`, naming
-  cgroup delegation. Closes Y2.** Keep **ro** `/sys` expressible (DESIGN Q6's
-  escape hatch; Y3 shows it mostly inert). Record the ro/rw asymmetry.
+- **R6 — SHIPPED.** `Validate` refuses any non-authored bind whose HOST end is
+  `/proc`, `/dev` or `/sys` — by path, and by `statfs` type for a procfs or
+  sysfs mounted somewhere else — at any access, and refuses any grant at or
+  under guest `/sys` (`internal/policy/validate.go`, RULE 5/5b; issue #527).
+  Closes Y2. `ro` is not an escape hatch for any of the three: read-only does
+  not restrain a device node, and it does not restrain a `/proc/PID/root`
+  magic symlink, which resolves in the host's mount tree.
+
+  Three halves, each measured breaking the absence of the next:
+
+  - **By name only.** `ro = ["/run/host/proc:/mnt/p"]` resolved and ran —
+    `/mnt/p` listed the host's process table, `/mnt/p/1/cmdline` read
+    `/usr/lib/systemd/systemd`, and `ls /mnt/p/self/root/` listed the HOST
+    ROOT. `/run/host/proc` is a procfs on any host running a toolbox container.
+  - **By the grant root only.** `ro = ["/run/host:/host"]` resolved and ran.
+    `--dry-run` printed one innocuous `ro /host (from /run/host)` row, and
+    inside the sandbox `/host/proc` came up type `proc` with the host's pid 1
+    cmdline, `/host/sys` type `sysfs`, `/host/dev/dm-0` a real block device.
+    bwrap's bind is RECURSIVE: every pseudo-filesystem BENEATH a granted
+    ordinary directory rides in as a submount, and `/run` is a very ordinary
+    thing to grant. So `Validate` reads the host mount table
+    (`Environ.HostMounts`) and refuses a grant with one of these mounted under
+    it, naming the submount.
+  - **By type only** would lose `/dev`: devtmpfs is not distinguishable from an
+    ordinary tmpfs by `statfs`, which is why the rule reads mountinfo's
+    filesystem NAME rather than a `statfs` magic.
+
+  The container path inherits this rather than duplicating it:
+  `dockerproxy`'s `hostPathVisible` judges a `-v` source against the same
+  resolved Policy, so a grant refused here is a `-v` refused there
+  (invariant 6).
 - **R7 — Route `dryrun.go:162`'s trailing literal through `covered()`. Closes
   Y5.** One line; the only screen a human has for trusting snug.
 - **R8 — Bound the tmpfs (`--tmpfs /dev/shm` with `size=`). Closes D5.** A
