@@ -553,43 +553,124 @@ jobs:
       # runs, so the rule above is untouched — the instructions stay in the
       # script and this file still only names it. TestTheEngineJobRunsTheScript
       # NotMake in test/guard is the ratchet.
-      # THE PROVISIONED IMAGE IS CACHED, so this job reaches openSUSE at most
-      # weekly instead of several times a day (issue #478).
+      # ── THE PROVISIONED IMAGE IS RESTORED HERE, AND BAKED ONLY ON main ──────
       #
-      # What it removes: on a cache hit, `zypper refresh` and `zypper install`
-      # do not run and no package is downloaded — those two are the measured
-      # ways this job dies printing no test name. What it does NOT remove: the
-      # base image is still resolved against registry.opensuse.org, so a
-      # registry outage can still fail the build. This narrows the failure
-      # surface; it does not close it, and the job stays red when it fires.
+      # Issue #478's aim is to take openSUSE out of the day-to-day jobs, and the
+      # previous arrangement did not achieve it. MEASURED 2026-08-29 over five
+      # open PRs, `gh api repos/gomoni/snug/actions/caches`:
       #
-      # CACHE_EPOCH is the expiry, and it is explicit because nothing else
-      # expires the layer: a layer's cache key is its command text, so the
-      # provisioning step would otherwise be reused for as long as the Actions
-      # cache retains it. `date -u +%G-W%V` is the ISO year and week, so the
-      # string changes on the first run of each week — at most seven days of
-      # drift. That is the middle ground on purpose: rebuilding every run is
-      # what was costing the mirrors several downloads a day, and never
-      # rebuilding would test snug against a Tumbleweed that no longer exists.
-      # openSUSE/cnf's own pr_check.yml caches its Tumbleweed images the same
-      # way, with type=gha.
-      - name: Cache epoch, one week wide
-        id: epoch
-        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      #   refs/heads/main      145MB buildkit-blob sha256:c7e34faa…  base 84c5006d…
+      #   refs/pull/512..516   145MB FIVE DISTINCT shas              base 0d6936c5…
+      #
+      # Five bakes in about 2.5 hours, each running `zypper refresh` and
+      # `zypper install` against download.opensuse.org, one of which failed
+      # there (#516's first attempt: `repo-oss primary.xml.zst` not found on
+      # medium, exit 4, classified 75, green on a re-run of the job alone).
+      #
+      # THE CAUSE WAS NOT THE WEEKLY EPOCH, and that is why this is a change of
+      # mechanism rather than a longer expiry. All five PRs share ONE base blob
+      # while main holds a different one, so `tumbleweed:latest` MOVED between
+      # main's bake and those PRs; a new base digest invalidates the
+      # `RUN … install-packages` layer beneath it, so the ISO-week build-arg
+      # never becomes the binding constraint — the real rebuild rate is
+      # Tumbleweed's publish rate. GHA cache scoping then finishes the job: a PR
+      # reads main's scope but never another PR's, so every PR that misses bakes
+      # its own copy.
+      #
+      # So the unit that is cached is the IMAGE, not the layers: `docker save`
+      # on main, `docker load` everywhere. A layer cache cannot express "do not
+      # build" — buildkit has no fail-on-cache-miss — and that sentence is the
+      # whole feature here.
+      #
+      # WHO MAY REACH openSUSE: a push to main, and nothing else. A pull request
+      # that misses the cache REFUSES with EX_TEMPFAIL instead of baking
+      # (invariant 5 — a capability that is not available is a refusal, not a
+      # quieter run). It does not fall back, because a fallback is exactly the
+      # openSUSE dependency this removes.
+      #
+      # WHY THE ENGINE STILL MOVES, which is the other half of #478's ruling
+      # (the repositories stay rolling — see test/engine-container.sh's IMAGE=):
+      # the key carries the ISO week, so the first push to main in a new week
+      # misses and bakes against live Tumbleweed. Within a week main restores
+      # like everyone else. `restore-keys` is the same key without the week, so
+      # a PR opened after the rollover but before main's next push runs against
+      # LAST week's image rather than going red — at most seven days of drift,
+      # and the drift is visible in the step's own log line.
+      - name: Cache key for the provisioned image
+        id: img
+        run: |
+          week=$(date -u +%G-W%V)
+          prefix="snug-engine-image-${{ runner.os }}-${{ hashFiles('test/engine-container.sh', 'test/engine-container.dockerfile') }}-"
+          {
+            echo "week=$week"
+            echo "prefix=$prefix"
+            echo "key=${prefix}${week}"
+          } >> "$GITHUB_OUTPUT"
+          # The one condition under which this job may reach openSUSE.
+          if [ "${{ github.event_name }}" = push ] && [ "${{ github.ref }}" = refs/heads/main ]; then
+            echo "bakes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "bakes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore the provisioned image
+        id: restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/snug-engine-image/image.tar
+          key: ${{ steps.img.outputs.key }}
+          restore-keys: ${{ steps.img.outputs.prefix }}
+
+      - name: Load the restored image
+        if: steps.restore.outputs.cache-matched-key != ''
+        run: |
+          docker load -i /tmp/snug-engine-image/image.tar
+          echo "restored ${{ steps.restore.outputs.cache-matched-key }} (this week is ${{ steps.img.outputs.key }})"
+
+      # The refusal, and it is the point of the whole arrangement: no bake
+      # outside main, so a pull request never downloads a package from openSUSE.
+      # Exit 75 is EX_TEMPFAIL, the same code test/engine-container.sh uses for
+      # "no test ran, and it is not this diff's fault" — issue #505's rule, so
+      # anything keying on the code sees one meaning, not two.
+      - name: Refuse to bake outside main
+        if: steps.restore.outputs.cache-matched-key == '' && steps.img.outputs.bakes != 'true'
+        run: |
+          echo "::error title=No baked engine image in the cache::NO TEST RAN. The provisioned Tumbleweed image is baked only by a push to main (issue #478), and no entry matched ${{ steps.img.outputs.prefix }}*. This is not a change in this diff. Re-run once main has pushed, or bake by pushing to main."
+          echo "engine-container: no cache entry matched ${{ steps.img.outputs.prefix }}*." >&2
+          echo "                  NO TEST RAN. Only a push to main bakes the image." >&2
+          echo "                  Exiting 75 (EX_TEMPFAIL) so the code says so too." >&2
+          exit 75
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        if: steps.restore.outputs.cache-matched-key == '' && steps.img.outputs.bakes == 'true'
 
       - name: Bake the provisioned Tumbleweed image
+        if: steps.restore.outputs.cache-matched-key == '' && steps.img.outputs.bakes == 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: test/engine-container.dockerfile
-          build-args: CACHE_EPOCH=${{ steps.epoch.outputs.week }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          build-args: CACHE_EPOCH=${{ steps.img.outputs.week }}
           load: true
           push: false
           tags: local/snug-engine-ci:latest
+
+      # Saved as a tarball rather than as buildkit layers, for the reason in the
+      # header: what a PR needs is an image it can load without building, and a
+      # layer cache cannot refuse to build.
+      - name: Save the provisioned image for every other job
+        if: steps.restore.outputs.cache-matched-key == '' && steps.img.outputs.bakes == 'true'
+        run: |
+          mkdir -p /tmp/snug-engine-image
+          docker save local/snug-engine-ci:latest -o /tmp/snug-engine-image/image.tar
+          ls -l /tmp/snug-engine-image/image.tar
+
+      - name: Cache it under this week's key
+        if: steps.restore.outputs.cache-matched-key == '' && steps.img.outputs.bakes == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/snug-engine-image/image.tar
+          key: ${{ steps.img.outputs.key }}
 
       # SNUG_ENGINE_IMAGE names the baked image, which the script already
       # supports and which is all the wiring the cache needs: engine-container.sh
