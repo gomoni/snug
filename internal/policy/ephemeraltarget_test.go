@@ -213,3 +213,42 @@ func TestOnlyEphemeralDirectoriesRootedAtHomeRefuseATarget(t *testing.T) {
 			"other side", err)
 	}
 }
+
+// Every path this refusal prints goes through VisibleText, INCLUDING the base
+// name in the `snug <home>/src/<base>` half of the suggested command.
+//
+// It did not. Six of the seven arguments were escaped and filepath.Base(target)
+// was passed raw, so a directory legally named with a newline and an ESC was
+// escaped three times and then rendered live on the fourth — a suggested
+// command that breaks across a row and repaints the terminal, in the one
+// message whose whole job is "run this". Found by a redteam round against
+// #376; the target is launcher-controlled, so this is a screen-lie rather than
+// an escalation, and the fix is the sink, not the caller.
+//
+// Asserted as "no raw forging rune survives anywhere in the message" rather
+// than against the fixed string, so a seventh path added later is covered by
+// the test that already exists.
+func TestTheEphemeralTargetRefusalEscapesEveryPathItPrints(t *testing.T) {
+	for _, tc := range []struct{ base, why string }{
+		{"pro\nj", "a newline forges a row in the suggested command"},
+		{"pro\x1b[31mj", "an ESC repaints the terminal from inside a path"},
+		{"pro‮j", "RLO reverses the rest of the line"},
+	} {
+		target := "/home/u/" + tc.base
+		err := ephemeralTargetError(target, "/home/u", "/home/u", "/home/u", "@home")
+		if err == nil {
+			t.Fatalf("%q: no error to inspect", tc.base)
+		}
+		got := err.Error()
+		for _, r := range got {
+			if IsForgingRune(r) && r != '\n' {
+				t.Errorf("%q (%s): the message carries a RAW %q. Every path it prints must "+
+					"go through VisibleText:\n%s", tc.base, tc.why, r, got)
+				break
+			}
+		}
+		if strings.Contains(got, tc.base) {
+			t.Errorf("%q (%s): the base name appears unescaped in:\n%s", tc.base, tc.why, got)
+		}
+	}
+}
