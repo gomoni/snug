@@ -33,8 +33,8 @@ func TestTheDryRunHeaderNeverRendersAHostPathRaw(t *testing.T) {
 	const markerTarget = "HTAP-A-YB-DEGROF"
 	const markerHome = "FORGED-BY-A-HOME"
 
-	target := "/home/u/proj/w‮" + markerTarget
-	home := "/home/u1A\r" + markerHome
+	target := "/home/u/proj/w\u202e" + markerTarget
+	home := "/home/u\u009b1A\r" + markerHome
 	ctx := policy.Context{
 		Target:  target,
 		Home:    home,
@@ -92,7 +92,7 @@ func TestTheDryRunHeaderNeverRendersAHostPathRaw(t *testing.T) {
 	}
 	// The verbatim check, because rawForgingRune exempts '\n' and therefore
 	// structurally cannot see a newline smuggled in through a directory name.
-	for _, probe := range []string{"‮" + markerTarget, "1A"} {
+	for _, probe := range []string{"\u202e" + markerTarget, "\u009b1A"} {
 		if strings.Contains(got, probe) {
 			t.Errorf("--dry-run rendered the probe %q verbatim", probe)
 		}
@@ -117,7 +117,7 @@ func TestProfileShowNeverRendersItsSourcePathRaw(t *testing.T) {
 	if err := os.MkdirAll(dir+"/snug/profiles.d", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	path := dir + "/snug/profiles.d/tools‮" + marker + ".toml"
+	path := dir + "/snug/profiles.d/tools\u202e" + marker + ".toml"
 	if err := os.WriteFile(path, []byte("[profile.mytools]\ndescription = \"ok\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestProfileShowNeverRendersItsSourcePathRaw(t *testing.T) {
 	if r, found := rawForgingRune(got); found {
 		t.Errorf("profile show rendered %q raw in its \"defined in\" row:\n%s", r, got)
 	}
-	if strings.Contains(got, "‮") {
+	if strings.Contains(got, "\u202e") {
 		t.Errorf("the source path reached the screen unescaped:\n%q", got)
 	}
 }

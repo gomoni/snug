@@ -593,7 +593,7 @@ func mappedV4Error(name ProfileName, key, raw, suggestion string) error {
 //
 // err's own text is escaped too (VisibleText, not %v) even though it is
 // SAFE today — measured: netip.ParsePrefix/ParseAddr already quote the raw
-// input inside their own error (`‮`, not the raw byte) — because this
+// input inside their own error (`\u202e`, not the raw byte) — because this
 // refusal must not depend on a standard-library error format staying that
 // way, which is the same reasoning that keeps visibleValue on a Prefix's own
 // String() even though String() cannot forge either.

@@ -214,20 +214,11 @@ func TestOnlyEphemeralDirectoriesRootedAtHomeRefuseATarget(t *testing.T) {
 	}
 }
 
-// Every path this refusal prints goes through VisibleText, INCLUDING the base
-// name in the `snug <home>/src/<base>` half of the suggested command.
+// filepath.Base(target) skipped VisibleText, so a base name carrying a newline
+// and an ESC was escaped three times and rendered live in the suggested command.
 //
-// It did not. Six of the seven arguments were escaped and filepath.Base(target)
-// was passed raw, so a directory legally named with a newline and an ESC was
-// escaped three times and then rendered live on the fourth — a suggested
-// command that breaks across a row and repaints the terminal, in the one
-// message whose whole job is "run this". Found by a redteam round against
-// #376; the target is launcher-controlled, so this is a screen-lie rather than
-// an escalation, and the fix is the sink, not the caller.
-//
-// Asserted as "no raw forging rune survives anywhere in the message" rather
-// than against the fixed string, so a seventh path added later is covered by
-// the test that already exists.
+// Asserts no raw forging rune survives anywhere in the message rather than
+// matching a fixed string, so a seventh path needs no new test.
 func TestTheEphemeralTargetRefusalEscapesEveryPathItPrints(t *testing.T) {
 	for _, tc := range []struct{ base, why string }{
 		{"pro\nj", "a newline forges a row in the suggested command"},
