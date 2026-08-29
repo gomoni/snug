@@ -101,6 +101,10 @@ func newEnvFakeEnv() *envFakeEnv {
 	}
 }
 
+// HostMounts: a fixture host has no pseudo-filesystem anywhere, so RULE 5's
+// filesystem half never fires here.
+func (f *envFakeEnv) HostMounts() ([]policy.HostMount, error) { return nil, nil }
+
 func (f *envFakeEnv) EvalSymlinks(p string) (string, error) {
 	if t, ok := f.links[p]; ok {
 		return t, nil

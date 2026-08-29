@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 )
 
 // Environ is every host lookup the resolver needs. It exists so that Resolve is
@@ -34,6 +36,14 @@ type Environ interface {
 	// what "the way the host shell would" means precisely.
 	LookPath(file string) (string, error)
 
+	// HostMounts is the host's mount table. RULE 5 reads it two ways, and it
+	// needs both: the filesystem type UNDER a grant's host path, because a
+	// procfs mounted somewhere other than /proc is still a procfs
+	// (/run/host/proc, wherever a toolbox container runs), and the types of
+	// everything mounted BENEATH it, because bwrap's bind is RECURSIVE and
+	// carries them in.
+	HostMounts() ([]HostMount, error)
+
 	Uid() int
 	Gid() int
 }
@@ -46,8 +56,66 @@ func (OSEnviron) Stat(p string) (fs.FileInfo, error)    { return os.Stat(p) }
 func (OSEnviron) Getenv(k string) string                { return os.Getenv(k) }
 func (OSEnviron) LookupEnv(k string) (string, bool)     { return os.LookupEnv(k) }
 func (OSEnviron) LookPath(f string) (string, error)     { return exec.LookPath(f) }
-func (OSEnviron) Uid() int                              { return os.Getuid() }
-func (OSEnviron) Gid() int                              { return os.Getgid() }
+
+// HostMount is one entry of the host's mount table.
+type HostMount struct {
+	Path   string // the mount point
+	FSType string // as the kernel names it in mountinfo
+}
+
+func (OSEnviron) HostMounts() ([]HostMount, error) {
+	b, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return nil, err
+	}
+	return parseMountinfo(string(b)), nil
+}
+
+// parseMountinfo reads mount point and filesystem type out of mountinfo's
+// variable-width format: the optional fields between the mount source and the
+// type are terminated by a lone "-", so the type is the field after it rather
+// than at a fixed index.
+func parseMountinfo(s string) []HostMount {
+	var out []HostMount
+	for _, line := range strings.Split(s, "\n") {
+		f := strings.Fields(line)
+		sep := -1
+		for i, v := range f {
+			if v == "-" {
+				sep = i
+				break
+			}
+		}
+		if sep < 5 || sep+1 >= len(f) {
+			continue
+		}
+		out = append(out, HostMount{Path: unescapeMountinfo(f[4]), FSType: f[sep+1]})
+	}
+	return out
+}
+
+// unescapeMountinfo undoes the octal escaping the kernel applies to the space,
+// tab, newline and backslash in a mount point.
+func unescapeMountinfo(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) {
+			if v, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
+				b.WriteByte(byte(v))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+func (OSEnviron) Uid() int { return os.Getuid() }
+func (OSEnviron) Gid() int { return os.Getgid() }
 
 // Context is the per-invocation input to resolution: what the human asked for,
 // plus the host facts the variables expand against.

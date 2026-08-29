@@ -6100,6 +6100,131 @@ test -d /proc/$INIT && echo STILL-ALIVE-BUG || echo SWEPT
 
 Expect `SWEPT`. Without this half, a sweep that had simply stopped killing
 anything would pass the check above.
+## 25. A profile cannot bind the host's /proc, /dev or /sys (issue #527)
+
+No profile may bind FROM one of the kernel's own trees, at any access. `ro` is
+not offered as an alternative and is refused too: read-only does not restrain a
+device node (the kernel clears MAY_WRITE for one before it consults
+MNT_READONLY, issue #287), and it does not restrain a `/proc/PID/root` magic
+symlink, which the kernel resolves in the HOST's mount tree.
+
+```bash
+D=$(mktemp -d); mkdir -p $D/snug/profiles.d
+cat > $D/snug/profiles.d/kt.toml <<'TOML'
+[profile.hostproc]
+ro = ["/proc:/mnt/p"]
+[profile.hostdev]
+ro = ["/dev:/mnt/d"]
+[profile.hostcg]
+rw = ["/sys/fs/cgroup:/mnt/cg"]
+[profile.guestsys]
+tmpfs = ["/sys/fs/cgroup"]
+TOML
+T=$(mktemp -d)
+for p in hostproc hostdev hostcg guestsys; do
+  XDG_CONFIG_HOME=$D ./bin/snug -p $p -p @cwd-rw $T --dry-run >/dev/null 2>&1
+  echo "$p exit=$?"
+done
+```
+
+All four must print `exit=77`. The guest paths in the first three are `/mnt/*`,
+under none of the three trees — the rule is on the HOST end, which is the half a
+guest-only rule misses. The fourth is RULE 5b: snug creates `/sys`, `/sys/fs`
+and `/sys/fs/cgroup` itself for an engine run and grafts a cgroup2 at the last
+of them.
+
+The refusal must name the tree and the abuse, or the author's next move is to
+widen something else:
+
+```
+REFUSED: profile hostproc binds the host's /proc at /mnt/p, but /proc is one of the kernel's
+       own trees and no profile may bind from it, at any access:
+       it is the host's process table. /proc/PID/environ and /proc/PID/cmdline are
+       readable for every host process this user owns, and a token passed in an
+       environment variable or on a command line is exactly the host secret snug
+       exists to keep out. ...
+```
+
+**BY TYPE, not only by name.** A path rule alone is defeated by a procfs mounted
+somewhere other than `/proc`, and an ordinary host has one — `/run/host/proc` is
+a procfs wherever a toolbox container runs. Check this host first; skip the case
+if it publishes none:
+
+```bash
+findmnt -rno FSTYPE,TARGET | awk '$1=="proc" || $1=="sysfs"' | grep -v ' /proc$' | grep -v ' /sys$'
+```
+
+```bash
+cat > $D/snug/profiles.d/alt.toml <<'TOML'
+[profile.altproc]
+ro = ["/run/host/proc:/mnt/p"]
+TOML
+XDG_CONFIG_HOME=$D ./bin/snug -p altproc -p @cwd-rw $T -- \
+  sh -c 'tr "\0" "\n" < /mnt/p/1/cmdline; ls /mnt/p/self/root/'
+echo "exit=$?"
+```
+
+Expect exit 77, and the refusal must name `/proc` even though the grant does
+not. With the path rule alone this RESOLVED and RAN, printing
+`/usr/lib/systemd/systemd` and the host root's directory listing.
+
+**BENEATH the grant, not only AT it.** bwrap's bind is recursive, so a
+pseudo-filesystem mounted under a granted ordinary directory rides in as a
+submount — and the grant names nothing suspicious:
+
+```bash
+cat > $D/snug/profiles.d/anc.toml <<'TOML'
+[profile.anc]
+ro = ["/run/host:/host"]
+TOML
+XDG_CONFIG_HOME=$D ./bin/snug -p anc -p @cwd-rw $T -- \
+  sh -c 'stat -f -c %T /host/proc; tr "\0" " " < /host/proc/1/cmdline'
+echo "exit=$?"
+```
+
+Expect exit 77, and the refusal must NAME the submount:
+
+```
+REFUSED: profile anc binds the host's /run/host at /host.
+       /run/host/dev is mounted BENEATH it, and bwrap's bind is RECURSIVE, so
+       /dev — one of the kernel's own trees — comes too. ...
+```
+
+Before this rule it resolved, `--dry-run` printed one innocuous
+`ro  /host (from /run/host)` row, and the sandbox got `proc` at `/host/proc`
+with the host's pid 1 cmdline.
+
+`/dev` is why the rule reads mountinfo's filesystem NAME rather than a `statfs`
+magic: devtmpfs reports `TMPFS_MAGIC` and is indistinguishable from an ordinary
+tmpfs by type.
+
+**The negatives**, which are what say the rule is not "refuse anything that
+looks like a kernel path":
+
+```bash
+cat > $D/snug/profiles.d/ok.toml <<'TOML'
+[profile.lookalike]
+ro = ["/tmp:/system", "/tmp:/sysroot", "/tmp:/devel", "/tmp:/procedures"]
+TOML
+XDG_CONFIG_HOME=$D ./bin/snug -p lookalike -p @cwd-rw $T --dry-run >/dev/null; echo "exit=$?"
+./bin/snug -p @podman-socket -p @cwd-rw $T --dry-run | grep -E 'cgroup2-rw|--dir /sys'
+```
+
+The lookalikes must resolve (`exit=0`) — each tree is a path COMPONENT, not a
+string prefix. The `@podman-socket` line must still print
+`cgroup2-rw  /sys/fs/cgroup  (snug)`: the engine's `/sys` is `--dir`
+mountpoints and a graft, never a Mount, so the rule cannot reach it.
+
+The sandbox's own pseudo-filesystems are untouched by all of this, and this is
+the check that says so:
+
+```bash
+./bin/snug $T -- sh -c 'ls /proc/self/fd >/dev/null && echo procfd-ok; ls /dev; ls /sys'
+```
+
+Expect `procfd-ok`, a `/dev` of exactly `core fd full null ptmx pts random shm
+stderr stdin stdout tty urandom zero`, and `ls: cannot access '/sys': No such
+file or directory`.
 
 ## If a check fails
 

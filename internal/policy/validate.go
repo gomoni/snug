@@ -92,6 +92,13 @@ func (p *Policy) Validate(env Environ) error {
 		}
 	}
 
+	// Read once: RULE 5 asks the same table of every bind, and a run has dozens.
+	// A table snug cannot read is not a refusal — see kernelTreeAt.
+	hostMounts, err := env.HostMounts()
+	if err != nil {
+		hostMounts = nil
+	}
+
 	guests := make([]string, 0, len(p.Mounts))
 	for g := range p.Mounts {
 		guests = append(guests, g)
@@ -227,6 +234,51 @@ func (p *Policy) Validate(env Environ) error {
 				"       Stage the FILE, never the directory:\n"+
 				"         ro = [\"/host/path/tool:%s/tool\"]",
 				provenance(m), describeNode(m), g, SnugDir, StagedBinDir, StagedBinDir)
+		}
+		// RULE 5: no profile may bind FROM /proc, /dev or /sys, at any access.
+		// The abuse each one carries is in kernelTrees, below.
+		//
+		// The HOST end, because the guest end says nothing about it: a redteam
+		// round broke a guest-only version with `rw = ["/sys/fs/cgroup:/mnt/cg"]`,
+		// measured inside the sandbox as cgroup2 rw with `mkdir
+		// /mnt/cg/snugpwn_redteam` succeeding.
+		if t, under, ok := kernelTreeAt(hostMounts, m); ok {
+			what := fmt.Sprintf("That is %s, one of the kernel's own trees, and no profile may\n"+
+				"       bind from one at any access.", t.path)
+			instead := t.instead
+			if under != "" {
+				what = fmt.Sprintf("%s is mounted BENEATH it, and bwrap's bind is RECURSIVE, so\n"+
+					"       %s — one of the kernel's own trees — comes too. No profile may bind from\n"+
+					"       one at any access.", VisibleText(under), t.path)
+				instead = "Grant the parts of that directory you meant instead. Naming the parent is not\n" +
+					"       a narrower grant than naming the child, and nothing on screen says what a\n" +
+					"       recursive bind brought with it."
+			}
+			return fmt.Errorf("profile %s binds the host's %s at %s.\n"+
+				"       %s\n"+
+				"       %s\n"+
+				"       Read-only is not a bound here, so `ro` is refused too.\n"+
+				"       %s",
+				provenance(m), VisibleText(m.Host), VisibleText(g), what, t.abuse, instead)
+		}
+		// RULE 5b: the GUEST end, /sys only. Nothing judges a Mount against
+		// EngineMountpoints, so a profile mount there collides with the
+		// engine's --dir entries and the cgroup2 graft, and argv order decides.
+		//
+		// /proc and /dev are NOT here on purpose. Their guest end is closed at
+		// and above by RULE 4 and strictly inside by checkNesting, which runs
+		// from rejectMasking AFTER this loop — an arm here would preempt it and
+		// replace a message naming the outer pseudo-filesystem with this one.
+		if !m.Authored {
+			if t, ok := namesKernelTree(g); ok && t.path == "/sys" {
+				return fmt.Errorf("profile %s puts %s at %s, but /sys inside the sandbox is snug's own:\n"+
+					"       snug creates /sys, /sys/fs and /sys/fs/cgroup for a container engine run and\n"+
+					"       grafts a fresh cgroup2 at the last of them, and a mount at or under /sys\n"+
+					"       collides with those — which one survives is decided by argv order.\n"+
+					"       There is nothing to grant: a sandbox has no /sys unless an engine run needs\n"+
+					"       one, and that one is snug's.",
+					provenance(m), describeNode(m), VisibleText(g))
+			}
 		}
 		// A TOMBSTONE, and it is deliberately a refusal rather than silence.
 		//
@@ -1251,4 +1303,140 @@ func (p *Policy) rejectUnboundedTmpfs() error {
 			VisibleText(m.Guest))
 	}
 	return nil
+}
+
+// kernelTree is one of the kernel's own pseudo-filesystems a profile may not
+// bind from: the ABUSE a bind of the host's copy carries, and what to write
+// instead.
+type kernelTree struct {
+	path    string
+	abuse   string
+	instead string
+}
+
+var kernelTrees = []kernelTree{
+	{
+		path: "/proc",
+		abuse: "it is the host's process table. /proc/PID/environ and /proc/PID/cmdline are\n" +
+			"       readable for every host process this user owns, and a token passed in an\n" +
+			"       environment variable or on a command line is exactly the host secret snug\n" +
+			"       exists to keep out. /proc/PID/root, /proc/PID/cwd and /proc/PID/fd/* are\n" +
+			"       worse still: the kernel resolves them to that process's own root, cwd and\n" +
+			"       open files, so they land in the HOST's mount tree and read-only bounds\n" +
+			"       nothing — the file reached through the symlink is in the host's mount, not\n" +
+			"       in this one.",
+		instead: "Remove the grant. snug mounts a procfs bound to the sandbox's OWN pid namespace\n" +
+			"       at /proc in every sandbox, and that is the only procfs a sandbox may have.",
+	},
+	{
+		path: "/dev",
+		abuse: "it is the host's device tree, every block device and every input device,\n" +
+			"       and read-only does not restrain a device node: the kernel clears MAY_WRITE\n" +
+			"       for one before it consults MNT_READONLY (issue #287).",
+		instead: "Remove the grant. snug mounts bwrap's synthetic minimal device set at /dev in\n" +
+			"       every sandbox; one more device node is a change to snug, not a grant a profile\n" +
+			"       can make.",
+	},
+	{
+		path: "/sys",
+		abuse: "it is the kernel's own write surface, and /sys/fs/cgroup is cgroup\n" +
+			"       delegation: a delegated cgroup's cgroup.procs and cgroup.freeze reach\n" +
+			"       processes OUTSIDE the sandbox.",
+		instead: "Remove the grant. Nothing a profile needs lives there; a sandbox that must read a\n" +
+			"       kernel attribute is a change to snug, not a grant a profile can make.",
+	},
+}
+
+// kernelFSTypes recognises the kernel's own trees by FILESYSTEM rather than by
+// name, mapped to the kernelTrees entry whose abuse they carry. Both halves are
+// load-bearing, and each was measured breaking the other's absence:
+//
+//   - by name only: `ro = ["/run/host/proc:/mnt/p"]` resolved and ran — /mnt/p
+//     listed the host's process table and /mnt/p/self/root listed the HOST ROOT.
+//     /run/host/proc is a procfs wherever a toolbox container runs.
+//   - by the grant root only: `ro = ["/run/host:/host"]` resolved and ran, and
+//     /host/proc came up type proc with the host's pid 1 cmdline, /host/sys
+//     type sysfs, /host/dev/dm-0 a real block device. bwrap's bind is
+//     RECURSIVE, so every pseudo-filesystem BENEATH a granted regular directory
+//     rides in as a submount. (redteam.)
+var kernelFSTypes = map[string]string{
+	"proc":        "/proc",
+	"nsfs":        "/proc",
+	"devtmpfs":    "/dev",
+	"devpts":      "/dev",
+	"sysfs":       "/sys",
+	"cgroup":      "/sys",
+	"cgroup2":     "/sys",
+	"debugfs":     "/sys",
+	"tracefs":     "/sys",
+	"bpf":         "/sys",
+	"securityfs":  "/sys",
+	"pstore":      "/sys",
+	"efivarfs":    "/sys",
+	"binfmt_misc": "/sys",
+	"configfs":    "/sys",
+	"fusectl":     "/sys",
+	"selinuxfs":   "/sys",
+}
+
+// kernelTreeAt reports which of the kernel's own trees a mount binds FROM: by
+// path, by the filesystem under its host path, and by anything of that kind
+// mounted beneath it. The second return is the submount that decided, empty
+// when the grant root itself is the hit.
+//
+// KindBind is load-bearing: Mount.Host is a bind's host path and a SYMLINK's
+// link target (types.go), so without it a profile symlink to /proc/self/fd —
+// the sandbox's own procfs — is refused for naming a host path it does not
+// name. A mount table snug could not read leaves only the path half, which is
+// the pre-existing behaviour rather than a new hole.
+func kernelTreeAt(mounts []HostMount, m Mount) (kernelTree, string, bool) {
+	if m.Authored || m.Kind != KindBind {
+		return kernelTree{}, "", false
+	}
+	if t, ok := namesKernelTree(m.Host); ok {
+		return t, "", true
+	}
+	var under HostMount
+	for _, hm := range mounts {
+		root, ok := kernelFSTypes[hm.FSType]
+		if !ok {
+			continue
+		}
+		if strings.HasPrefix(hm.Path, strings.TrimSuffix(m.Host, "/")+"/") {
+			return treeNamed(root), hm.Path, true
+		}
+		// The deepest kernel filesystem covering the grant root is the one it
+		// is actually on; a shallower one is a tree it merely sits inside.
+		if covers(hm.Path, m.Host) && len(hm.Path) > len(under.Path) {
+			under = hm
+		}
+	}
+	if root, ok := kernelFSTypes[under.FSType]; ok {
+		return treeNamed(root), "", true
+	}
+	return kernelTree{}, "", false
+}
+
+func treeNamed(path string) kernelTree {
+	for _, t := range kernelTrees {
+		if t.path == path {
+			return t
+		}
+	}
+	return kernelTree{}
+}
+
+// namesKernelTree reports which of the kernel's own trees a path names — the
+// tree itself or anything under it.
+//
+// A path COMPONENT, never a string prefix: /system, /sysroot, /devel and
+// /procedures are ordinary paths. Paths are canonical here — splitSpec runs
+// filepath.Clean over each — so this compares rather than re-normalises.
+func namesKernelTree(p string) (kernelTree, bool) {
+	for _, t := range kernelTrees {
+		if p == t.path || strings.HasPrefix(p, t.path+"/") {
+			return t, true
+		}
+	}
+	return kernelTree{}, false
 }
