@@ -4094,6 +4094,12 @@ func TestTheEnginesViewIsDerivedAndCarriesNoHostTree(t *testing.T) {
 		policy.EngineStoreGuest: true, policy.EngineRunrootGuest: true,
 		policy.EngineSockGuest: true, policy.EngineConfGuest: true,
 		policy.EngineToolchainGuest: true,
+		// The always-on target graft (issue #376) lands at
+		// EngineBindsDir+"/"+basename(target), a destination this test does
+		// not know the name of in advance — EngineBindsDir itself is
+		// listed, and the "under" check below (a submount carried in by a
+		// graft) is what admits the actual per-run child.
+		policy.EngineBindsDir: true,
 	}
 	for p := range points {
 		if sandbox[p] || engineOwn[p] {

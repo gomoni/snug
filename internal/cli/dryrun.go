@@ -2384,9 +2384,9 @@ func describeGrafts(out io.Writer, rep Report, p *policy.Policy) {
 	// discovered by diffing a dry run against a real one (issue #252). The
 	// toolchain graft's source is a preflight answer — which host directory
 	// this engine's own program files live in — and --dry-run runs no
-	// preflight, so on a host that needs one this block is four grafts where
-	// the run makes five. An absent row that nothing explains is the same
-	// defect this issue was filed for, one graft smaller.
+	// preflight, so on a host that needs one this block is missing a row the
+	// run makes. An absent row that nothing explains is the same defect this
+	// issue was filed for, one graft smaller.
 	//
 	// Written as len(...) == 0 rather than == "": TestOnlyOneWriterOfEngine\
 	// ToolchainRoot greps for `\.EngineToolchainRoot\s*=`, which a COMPARISON
@@ -2411,7 +2411,7 @@ func describeGrafts(out io.Writer, rep Report, p *policy.Policy) {
 	// comment records for /etc/containers/policy.json. `snug doctor` is where
 	// host-capability probes belong; it promises to start nothing.
 	if p.Podman != policy.PodmanOff && len(p.EngineToolchainRoot) == 0 {
-		fmt.Fprintln(out, "  (an engine outside every grant this sandbox makes adds a fifth graft at "+
+		fmt.Fprintln(out, "  (an engine outside every grant this sandbox makes adds a graft at "+
 			policy.EngineToolchainGuest+" — whether")
 		fmt.Fprintln(out, "  this host needs one is a preflight answer, and --dry-run runs no preflight.)")
 	}

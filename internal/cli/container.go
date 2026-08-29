@@ -107,6 +107,13 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		return containerRun{}, err
 	}
 
+	// The target graft, always on for a container run (issue #376): see
+	// enginetarget.go. Same position rule as the engine-view grafts above —
+	// before dryRun, so the ENGINE VIEW block renders it too.
+	if err := installEngineTargetGraft(env, pol); err != nil {
+		return containerRun{}, err
+	}
+
 	if dryRun {
 		// --dry-run's own promise is "having started nothing" (CLAUDE.md).
 		// Binding the proxy's LISTENING socket is not starting the engine —

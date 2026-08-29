@@ -38,6 +38,10 @@
 --dir /sys/fs/cgroup
 --perms 0755
 --dir /var/tmp
+--perms 0755
+--dir /snug/engine/binds
+--perms 0755
+--dir /snug/engine/binds/sub
 --symlink usr/bin /bin
 --dev /dev
 --ro-bind /etc /etc

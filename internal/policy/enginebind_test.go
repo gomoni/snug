@@ -15,6 +15,7 @@ func TestCheckEngineBindSource(t *testing.T) {
 		mounts  map[string]Mount
 		grafts  map[string]Graft
 		guest   string
+		target  string
 		wantErr bool
 		// wantComponent, when set, must appear in the error text — the
 		// refusal must name the offending COMPONENT, not merely the source.
@@ -148,33 +149,27 @@ func TestCheckEngineBindSource(t *testing.T) {
 			wantComponent: "/snug/engine/store",
 		},
 		{
-			// THE NO-WORKAROUND BRANCH, and the reason it exists (measured
-			// against the real builtins: a target three or more levels below
-			// $HOME). The walk stops at /home/u/src, whose parent is the
-			// $HOME tmpfs — so the deepest ancestor this rule ACCEPTS is
-			// /home/u itself. Accepted is not the same as usable: that tmpfs
-			// is a filesystem snug created for this run, and the caller's
-			// files sit behind further mounts stacked on top of it, so
-			// offering it as "the fix" would send someone to mount an empty
-			// ephemeral directory and wonder where their project went.
-			//
-			// So the message must NOT say "Fix: bind", and must say plainly
-			// that there is no substitute. Asserted in BOTH directions,
-			// because only the negative half catches the regression that
-			// matters — a later edit collapsing the two branches back into
-			// one unconditional "Fix:" line.
-			name: "deepest anchored ancestor is a tmpfs -> refusal offers NO substitute",
+			// THE TARGET-GRAFT BRANCH (issue #376). The walk stops at
+			// /home/u/src, whose parent is the $HOME tmpfs — so the deepest
+			// ancestor this rule ACCEPTS is /home/u itself, which is not a
+			// bind and offers no usable substitute directly. In real use
+			// checkOne never reaches this rule for the target: the target
+			// graft's exact-match rewrite catches it first. This case calls
+			// CheckEngineBindSource directly, bypassing that, to pin what
+			// the rule says on its own — bind the target, at any depth.
+			name: "deepest anchored ancestor is a tmpfs -> refusal points at the target graft",
 			mounts: map[string]Mount{
 				"/home/u":                  {Guest: "/home/u", Kind: KindTmpfs, Access: AccessRW},
 				"/home/u/src/projects":     {Guest: "/home/u/src/projects", Kind: KindBind, Host: "/home/u/src/projects", Access: AccessRO},
 				"/home/u/src/projects/foo": {Guest: "/home/u/src/projects/foo", Kind: KindBind, Host: "/home/u/src/projects/foo", Access: AccessRW},
 			},
 			guest:         "/home/u/src/projects/foo",
+			target:        "/home/u/src/projects/foo",
 			wantErr:       true,
 			wantComponent: "/home/u/src",
 			wantRule:      true,
-			wantInMsg:     []string{"There is NO substitute source", "#376"},
-			wantNotInMsg:  []string{"Fix: bind"},
+			wantInMsg:     []string{"Fix: bind /home/u/src/projects/foo"},
+			wantNotInMsg:  []string{"There is NO substitute source"},
 		},
 		{
 			// POSITIVE CONTROL: the exact #284-primitive policy above, with
@@ -192,7 +187,7 @@ func TestCheckEngineBindSource(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p := &Policy{Mounts: tc.mounts, Grafts: tc.grafts}
+			p := &Policy{Mounts: tc.mounts, Grafts: tc.grafts, Target: tc.target}
 			err := p.CheckEngineBindSource(tc.guest)
 			if tc.wantErr && err == nil {
 				t.Fatalf("CheckEngineBindSource(%q) = nil; want a refusal", tc.guest)
