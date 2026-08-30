@@ -6056,6 +6056,51 @@ refuse EARLIER — at the ownership gate, naming the container rather than the
 parameter. If a bad parameter and a foreign id ever produce the same message,
 the gate ordering has moved.
 
+## 23a. A device rule nested inside `resource_limits` refuses like the top-level one
+
+The redteam round on the libpod schema gate: `resource_limits` was forwarded to
+the engine unexamined, on the claim that it carries numbers. Two of the OCI
+`LinuxResources` sub-objects are not numbers — `devices` is the exact content
+`device_cgroup_rule` is refused for, and `unified` is an open key/value channel
+into the cgroup filesystem. The check is that the nested spelling and the
+top-level one refuse TOGETHER; a filter where one refuses and the other forwards
+is the divergence invariant 6 exists to prevent.
+
+Talks to the proxy socket directly, because no `podman` flag writes
+`resource_limits.devices` — the CLI puts a device rule at the top level. A client
+posting raw JSON is not limited to the CLI's spelling, which is the reason this
+is judged at all. Needs the socket but not a working engine: the refusal happens
+before anything is forwarded.
+
+```bash
+cd $SC/proj && ../../bin/snug -p @podman-socket -p @net . -- sh -c '
+  sock=${CONTAINER_HOST#unix://}
+  curl --unix-socket "$sock" -s -X POST -H "Content-Type: application/json" \
+    -d "{\"image\":\"alpine:3.20\",\"resource_limits\":{\"devices\":[{\"allow\":true,\"type\":\"a\",\"access\":\"rwm\"}]}}" \
+    "http://d/v6.0.2/libpod/containers/create"; echo
+  curl --unix-socket "$sock" -s -X POST -H "Content-Type: application/json" \
+    -d "{\"image\":\"alpine:3.20\",\"resource_limits\":{\"unified\":{\"cgroup.subtree_control\":\"+memory\"}}}" \
+    "http://d/v6.0.2/libpod/containers/create"; echo
+  curl --unix-socket "$sock" -s -o /dev/null -w "%{http_code}\n" -X POST -H "Content-Type: application/json" \
+    -d "{\"image\":\"alpine:3.20\",\"resource_limits\":{\"memory\":{\"limit\":104857600}}}" \
+    "http://d/v6.0.2/libpod/containers/create"
+'
+```
+
+Expect, in order — the first two refused by snug, the third NOT:
+
+```
+{"cause":"snug policy","message":"snug refused this request: resource_limits.devices is not permitted: device passthrough would name a host device, ... It is device_cgroup_rule's own content one level down, and the two spellings refuse together"}
+{"cause":"snug policy","message":"snug refused this request: resource_limits.unified is not permitted: it writes arbitrary cgroup-v2 controller keys, ..."}
+404
+```
+
+The third line is the positive control and the reason it is a status code rather
+than a body: `--memory 100m` is the ONE of these three an ordinary user types, and
+judging `resource_limits` must not break it. Any status that is not 403 means the
+filter let it through — 404 above is the ENGINE answering, on a host with no
+`alpine:3.20` pulled. A 403 there would be a regression, not a stricter sandbox.
+
 ## 24. Removing a live run's lock file does not kill its sandbox (issue #489)
 
 The per-target lock is held on an INODE and consulted by NAME, so one `rm` — or

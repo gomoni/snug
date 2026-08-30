@@ -43,7 +43,14 @@ import (
 //
 // Both routes are gated on `libpod` at the call site, like containers/create.
 // The compat spellings keep going through allowed() unchanged — this file is
-// the libpod wire's reader, not a new rule for docker's.
+// the libpod wire's reader, not a new rule for docker's. So
+// `POST /v1.41/containers/{id}/start?checkpoint=/host/x` is FORWARDED where
+// the libpod spelling refuses, and that is deliberate twice over: podman's
+// compat start handler honours only detachKeys (measured, redteam round on
+// this file), and admitting a parameter set here on anything but a
+// measurement of the client that sends it is the rule this file is built on —
+// the docker CLI is the client of that wire and measuring it is what a compat
+// twin waits for.
 
 // lifecycleRoute is one admitted route: the parameters it may carry, each with
 // the reason it needs no judgement. Default-deny — a parameter outside the map
