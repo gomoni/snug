@@ -1,8 +1,13 @@
 package stage
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // stageCloneflags is the exact clone(2) flag set Start passes when it forks
@@ -108,6 +113,11 @@ const (
 	// one of the sandbox's own, bwrap would read it as --args or --seccomp or
 	// --block-fd, and the run would fail as an unexplained parse error one
 	// process further in — which gets debugged in the wrong package.
+	//
+	// checkFDBudget covers the block growing INTO this number. requireFDFree
+	// covers the other direction and is the half checkFDBudget cannot see:
+	// this process's OWN descriptors, allocated above the block by the Go
+	// runtime rather than by any policy, landing here first.
 	fdNetnsN = 63
 )
 
@@ -140,4 +150,44 @@ func checkFDBudget(n int) error {
 			n, fdSandboxBase, fdSandboxBase+n-1, fdNetnsN, maxPassthrough)
 	}
 	return nil
+}
+
+// requireFDFree refuses a dup3 TARGET that is already open. checkFDBudget
+// bounds how far the pass-through block may grow; this checks the other half
+// of the same fact, and it checks it rather than predicting it.
+//
+// Why both are needed. dup3(2) onto an occupied descriptor CLOSES it and
+// reports success, so a collision here has no error to notice. Measured at the
+// permitted maximum (K = maxPassthrough): the block ends at fd 61, this
+// process's own descriptors then land immediately above it — the Go runtime's
+// epoll and eventfd among them, allocated the first time anything in the
+// process opens an *os.File — and `dup3(src, 62)` reports success while
+// closing whatever was there. The symptom is not a crash: it is a Go runtime
+// whose netpoller descriptor has silently gone, one process deep inside a
+// namespace nothing has attached to yet.
+//
+// The number is snug's own free choice, not a kernel constant, so the fix this
+// message names is the same one checkFDBudget names: raise the reserved
+// descriptor above the block.
+func requireFDFree(fd int, what string) error {
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != nil {
+		if errors.Is(err, unix.EBADF) {
+			return nil
+		}
+		return fmt.Errorf("stage: cannot tell whether fd %d (%s) is free: %w", fd, what, err)
+	}
+	// Best effort, and only for the message: an occupied descriptor is a
+	// refusal whether or not procfs will say what is on it.
+	occupant, err := os.Readlink("/proc/self/fd/" + strconv.Itoa(fd))
+	if err != nil || occupant == "" {
+		occupant = "unknown"
+	}
+	return fmt.Errorf("stage: fd %d, where %s must be parked, is ALREADY OPEN (%s), and dup3 "+
+		"onto an occupied descriptor closes it and reports success — so this refuses instead "+
+		"of taking a live descriptor out of this process with no error to notice.\n"+
+		"      The pass-through block plus this process's own descriptors have reached the "+
+		"reserved range. The fix is to RAISE fdNetSock and fdNetnsN in internal/stage/fds.go "+
+		"above it, exactly as checkFDBudget's message says: both are a free choice, not "+
+		"kernel constants",
+		fd, what, occupant)
 }

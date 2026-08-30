@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/gomoni/snug/internal/policy"
+	"golang.org/x/sys/unix"
 )
 
 // TestTheFDBudgetRefusesACollisionWithThePinnedNetns is the regression for the
@@ -113,5 +114,106 @@ func TestStageStartRefusesASandboxLargeEnoughToReachThePinnedNetns(t *testing.T)
 		t.Errorf("PRECONDITION: a Sandbox slice exactly at the budget was refused by "+
 			"checkFDBudget itself, so the assertion above would not isolate the over-budget "+
 			"case: %v", err)
+	}
+}
+
+// TestParkingRefusesADescriptorThatIsAlreadyOpen is the permanent regression
+// for issue #525. checkFDBudget bounds how far the pass-through block may
+// grow; nothing checked that the descriptors the block grows TOWARDS were free
+// at the instant __stage-setup dup3's onto them, and dup3 onto an occupied
+// descriptor closes it and reports success.
+//
+// MEASURED, on this host, before the fix: with the block filling 3..61 (K =
+// maxPassthrough, the permitted maximum) the process's own descriptors land on
+// 62 and 63 — the Go runtime's epoll and eventfd among them — and
+// `dup3(src, 62)` returned nil while /proc/self/fd/62 changed from
+// `net:[...]` to the new socket. The failure has no error in it, which is why
+// the check is on the fact rather than on a prediction of what the runtime
+// will allocate.
+func TestParkingRefusesADescriptorThatIsAlreadyOpen(t *testing.T) {
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devNull.Close()
+
+	// A number well above anything this package reserves, so the test cannot
+	// disturb the descriptors the test binary itself is using.
+	const probe = 200
+	if err := requireFDFree(probe, "the probe"); err != nil {
+		t.Fatalf("PRECONDITION: fd %d was already open, so this test cannot tell a "+
+			"working refusal from a broken one: %v", probe, err)
+	}
+
+	if err := unix.Dup3(int(devNull.Fd()), probe, 0); err != nil {
+		t.Fatalf("occupying fd %d: %v", probe, err)
+	}
+	// Closed again below; a second Close returns EBADF and is ignored, which
+	// is what keeps this cleanup correct on either path out.
+	defer func() { _ = unix.Close(probe) }()
+
+	err = requireFDFree(probe, "the N socket")
+	if err == nil {
+		t.Fatalf("an OCCUPIED descriptor (fd %d) was accepted as a dup3 target; dup3 would "+
+			"have closed it and reported success", probe)
+	}
+	// "Errors name the fix" — and the reader of this one has a live descriptor
+	// missing, not a message they can guess the cause of.
+	for _, want := range []string{"fdNetSock", "fdNetnsN", "internal/stage/fds.go", "ALREADY OPEN"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q, so it does not name the fix:\n%v", want, err)
+		}
+	}
+
+	// Positive control on the other side of the branch: once the occupant is
+	// gone the same descriptor is accepted again, so the refusal is about the
+	// descriptor being open and not about the number.
+	if err := unix.Close(probe); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireFDFree(probe, "the N socket"); err != nil {
+		t.Errorf("a FREE descriptor (fd %d) was refused: %v", probe, err)
+	}
+}
+
+// TestBothParkedDescriptorsAreGuarded pins the OTHER half of #525: the check
+// is worthless unless every dup3 whose target is one of this package's fixed
+// descriptors calls it. Both live in MainSetup, which needs a user namespace
+// and a clone, so this reads the source rather than running it — a change that
+// added a third parking, or deleted a guard from an existing one, is exactly
+// the change this must fail on.
+func TestBothParkedDescriptorsAreGuarded(t *testing.T) {
+	src, err := os.ReadFile("setup.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+
+	for _, target := range []string{"fdNetSock", "fdNetnsN"} {
+		guard := "requireFDFree(" + target
+		park := "fdNetSock, 0)"
+		if target == "fdNetnsN" {
+			park = "fdNetnsN, 0)"
+		}
+		gi := strings.Index(text, guard)
+		pi := strings.Index(text, park)
+		if pi < 0 {
+			t.Errorf("no dup3 onto %s found in setup.go; if the parking moved, move this test with it", target)
+			continue
+		}
+		if gi < 0 {
+			t.Errorf("the dup3 onto %s is NOT preceded by requireFDFree(%s): dup3 onto an "+
+				"occupied descriptor closes it and reports success (issue #525)", target, target)
+			continue
+		}
+		if gi > pi {
+			t.Errorf("requireFDFree(%s) appears AFTER the dup3 onto it, so the descriptor is "+
+				"already gone by the time it is checked", target)
+		}
+	}
+
+	if n := strings.Count(text, "unix.Dup3("); n != 2 {
+		t.Errorf("setup.go has %d dup3 call(s), want 2 — a new one needs its own "+
+			"requireFDFree and its own row in this test (issue #525)", n)
 	}
 }
