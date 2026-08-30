@@ -123,9 +123,23 @@ const (
 
 // maxPassthrough is how many descriptors the pass-through block can hold before
 // it reaches the LOWEST reserved descriptor above it. Derived, never written
-// down twice: it follows fdNetSock, which is now the first thing the block
-// would collide with — adding a second reserved fd above the block without
-// moving this bound is exactly the collision checkFDBudget exists to refuse.
+// down twice: it follows fdNetSock, which is the first thing the block would
+// collide with — adding a second reserved fd above the block without moving
+// this bound is exactly the collision checkFDBudget exists to refuse.
+//
+// This subtraction is only the true bound because reserveParkingFDs claims
+// both reserved numbers at P1's first instant. Without that it counts the
+// BLOCK and nothing else, while __stage-setup goes on to allocate three more
+// descriptors above the block before the second parking — the N socket, plus
+// the Go runtime's netpoll epoll and eventfd, which any background timer arms
+// — so the reachable maximum was three lower than the number this constant
+// (and checkFDBudget's message) stated. MEASURED at K = 53, 54, 55, 56 with
+// the block inherited from P0: 53 ran, and 54/55/56 were refused at the
+// parking with fd 62 already holding an eventfd, an eventpoll and the N
+// socket respectively. Raising the reserved numbers does not fix that shape,
+// because the kernel allocates the lowest free descriptor and the runtime's
+// pair follows the block wherever it goes; claiming the numbers first does,
+// and it makes this constant exact rather than approximately right.
 const maxPassthrough = fdNetSock - fdSandboxBase
 
 // checkFDBudget refuses a pass-through block that would collide with the
@@ -141,9 +155,9 @@ func checkFDBudget(n int) error {
 		return fmt.Errorf("stage: this policy needs %d pass-through descriptors, so the block "+
 			"would run from fd %d to fd %d and swallow the pinned network namespace "+
 			"descriptor at fd %d (the budget is %d).\n"+
-			"      The fix is to RAISE fdNetnsN in internal/stage/fds.go above the block — it "+
-			"is a free choice, not a kernel constant, and the descriptor is dup3'd to it "+
-			"explicitly. Do not lower the descriptor count: it is what the resolved policy "+
+			"      The fix is to RAISE fdNetSock and fdNetnsN in internal/stage/fds.go above "+
+			"the block — they are a free choice, not kernel constants, and each descriptor is "+
+			"dup3'd to its number explicitly. Do not lower the descriptor count: it is what the resolved policy "+
 			"actually needs (one per generated file, one for the seccomp filter, one for "+
 			"bwrap's --info-fd, two more for the --block-fd/--sync-fd gate on a container "+
 			"run, and one for the args memfd)",
@@ -152,23 +166,24 @@ func checkFDBudget(n int) error {
 	return nil
 }
 
-// requireFDFree refuses a dup3 TARGET that is already open. checkFDBudget
-// bounds how far the pass-through block may grow; this checks the other half
-// of the same fact, and it checks it rather than predicting it.
+// requireFDFree refuses a dup3 TARGET that is already open. It guards
+// reserveParkingFDs, which is the ONE place in this package that dup3s onto a
+// number nothing has claimed yet. checkFDBudget bounds how far the
+// pass-through block may grow from the count P0 resolved; this checks the same
+// fact from the descriptor table, and it checks it rather than predicting it —
+// two trust positions, neither a duplicate of the other.
 //
-// Why both are needed. dup3(2) onto an occupied descriptor CLOSES it and
-// reports success, so a collision here has no error to notice. Measured at the
-// permitted maximum (K = maxPassthrough): the block ends at fd 61, this
-// process's own descriptors then land immediately above it — the Go runtime's
-// epoll and eventfd among them, allocated the first time anything in the
-// process opens an *os.File — and `dup3(src, 62)` reports success while
-// closing whatever was there. The symptom is not a crash: it is a Go runtime
-// whose netpoller descriptor has silently gone, one process deep inside a
-// namespace nothing has attached to yet.
+// Why it matters. dup3(2) onto an occupied descriptor CLOSES it and reports
+// success, so a collision here has no error to notice. The only thing that can
+// occupy fdNetSock or fdNetnsN at P1's first instant is the inherited
+// pass-through block, whose size is policy-dependent: with K = 57 the block
+// runs 6..62 and swallows fdNetSock. P0's checkFDBudget refuses that count
+// first, and this refuses it again from the other side, because MainSetup does
+// not have the count and is not entitled to assume P0 checked it.
 //
-// The number is snug's own free choice, not a kernel constant, so the fix this
-// message names is the same one checkFDBudget names: raise the reserved
-// descriptor above the block.
+// The numbers are snug's own free choice, not kernel constants, so the fix
+// this message names is the same one checkFDBudget names: raise both reserved
+// descriptors above the block.
 func requireFDFree(fd int, what string) error {
 	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != nil {
 		if errors.Is(err, unix.EBADF) {
@@ -190,4 +205,62 @@ func requireFDFree(fd int, what string) error {
 		"above it, exactly as checkFDBudget's message says: both are a free choice, not "+
 		"kernel constants",
 		fd, what, occupant)
+}
+
+// reserveParkingFDs claims fdNetSock and fdNetnsN at P1's first instant, before
+// this process has allocated a descriptor of its own, so that every later
+// allocation avoids them BY CONSTRUCTION rather than by a check racing an
+// allocator snug does not control.
+//
+// Why claiming beats checking. The descriptors that would collide are not
+// snug's: the Go runtime creates its netpoll epoll and eventfd from a
+// background goroutine the first time a timer is armed, so nothing orders them
+// against a check, and `requireFDFree(62)` returning nil says nothing about fd
+// 62 two lines later. MEASURED, the same tree at the same K with only the body
+// of requireFDFree changed: one run laid out socket(61), epoll(62), eventfd(63)
+// and the other socket(62), netns(63), epoll(61), eventfd(64) — the position of
+// the runtime's pair relative to the parking is not a property snug decides.
+// Claiming the numbers first removes the window; no check can.
+//
+// The placeholder is fdControl, dup3'd with O_CLOEXEC. CLOEXEC is what makes
+// the SubuidFull re-exec work: the placeholder dies at that execve and the
+// second __stage-setup re-reserves from a clean table, while the REAL
+// descriptors parked onto these numbers later are dup3'd with flags 0 and so
+// survive the execve into __stage-serve, which is the whole point of the
+// numbers being fixed.
+func reserveParkingFDs() error {
+	for _, r := range []struct {
+		fd   int
+		what string
+	}{
+		{fdNetSock, "the N socket"},
+		{fdNetnsN, "the pinned netns descriptor"},
+	} {
+		if err := requireFDFree(r.fd, r.what); err != nil {
+			return err
+		}
+		if err := unix.Dup3(fdControl, r.fd, unix.O_CLOEXEC); err != nil {
+			return fmt.Errorf("stage: reserving fd %d for %s: %w", r.fd, r.what, err)
+		}
+	}
+	return nil
+}
+
+// requireFDReserved is the parking-site half of the same invariant, and it is
+// the INVERSE check: by the time __stage-setup parks the N socket or the
+// pinned netns descriptor, reserveParkingFDs has already claimed that number,
+// so the target must be OPEN. An EBADF here means the reservation was closed
+// by something in this process that did not own it, and the number may since
+// have been handed to an allocation that a dup3 would silently destroy — the
+// same failure requireFDFree exists to refuse, arriving from the other
+// direction.
+func requireFDReserved(fd int, what string) error {
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != nil {
+		return fmt.Errorf("stage: fd %d, where %s must be parked, is NOT the descriptor "+
+			"reserveParkingFDs claimed at this process's first instant (%w). Something closed "+
+			"a descriptor it does not own, so this number may now belong to another "+
+			"allocation, and dup3 onto an occupied descriptor closes it and reports success",
+			fd, what, err)
+	}
+	return nil
 }

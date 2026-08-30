@@ -17,7 +17,13 @@ import (
 // THE ORDER IS THE SPECIFICATION (SUPERVISOR-DESIGN.md §4 Step 4, extended
 // by issue #63 Tier B's step 0):
 //
-//  0. IF the uid/gid map was left for P0 to write (Config.Topology.Subuid ==
+//  0. Reserve fdNetSock and fdNetnsN, before this process has allocated a
+//     descriptor of its own. Both are parked onto later, and dup3 onto an
+//     occupied descriptor closes it and reports success — so the numbers are
+//     CLAIMED here rather than checked at the parking, where the allocator
+//     that would collide with them is the Go runtime's and nothing orders it
+//     against a check. See reserveParkingFDs.
+//  1. IF the uid/gid map was left for P0 to write (Config.Topology.Subuid ==
 //     SubuidFull — see stage.go's own comment on why), ask for it over the
 //     control socket, block until it lands, and RE-EXEC __stage-setup itself
 //     before doing anything else. The re-exec is not optional and not
@@ -35,23 +41,31 @@ import (
 //     when U already carries the single-uid map Go wrote itself during the
 //     clone (SubuidNone, still the default) — that map exists before the
 //     first and only execve, so the bypass already fires there.
-//  1. uid 0 / full caps, or refuse.
-//  2. make / private.
-//  3. open a socket IN N and bring lo up through it, then park that socket at
+//  2. uid 0 / full caps, or refuse.
+//  3. make / private.
+//  4. open a socket IN N and bring lo up through it, then park that socket at
 //     fdNetSock without CLOEXEC — both halves must happen while still in N,
 //     because a socket's namespace is fixed at creation and lo is configured
 //     in whichever namespace the caller is in. Both parkings (this one and
-//     step 6) refuse a target that is already open: dup3 onto an occupied
-//     descriptor closes it and reports success.
-//  4. lock the OS thread.
-//  5. pin N via /proc/thread-self/ns/net.
-//  6. dup3 it to fdNetnsN WITHOUT CLOEXEC — it must survive the exec that
+//     step 7) dup3 onto a number step 0 already reserved, and both refuse if
+//     that reservation is gone.
+//  5. lock the OS thread.
+//  6. pin N via /proc/thread-self/ns/net.
+//  7. dup3 it to fdNetnsN WITHOUT CLOEXEC — it must survive the exec that
 //     follows.
-//  7. unshare(CLONE_NEWNET); refuse if the calling thread did not move.
-//  8. exec __stage-serve with NOTHING in between and an EMPTY environment.
+//  8. unshare(CLONE_NEWNET); refuse if the calling thread did not move.
+//  9. exec __stage-serve with NOTHING in between and an EMPTY environment.
 func MainSetup() error {
 	requireFD(fdControl, "control")
 	requireFD(fdLife, "lifeline")
+
+	// FIRST, before the control-socket exchange below or anything else in this
+	// process can allocate a descriptor: claim the two numbers the parkings
+	// need. reserveParkingFDs' own comment carries the measurement for why
+	// this is a claim and not a check.
+	if err := reserveParkingFDs(); err != nil {
+		return fmt.Errorf("__stage-setup: %w", err)
+	}
 
 	if os.Getuid() != 0 {
 		// The map was deliberately left unwritten by Start (SubuidFull): this
@@ -112,10 +126,10 @@ func MainSetup() error {
 	if err != nil {
 		return fmt.Errorf("__stage-setup: %w", err)
 	}
-	// The target has to be FREE, and that is checked rather than assumed: dup3
-	// onto an occupied descriptor closes it and reports success (issue #525,
-	// requireFDFree's own comment carries the measurement).
-	if err := requireFDFree(fdNetSock, "the N socket"); err != nil {
+	// The target is the number step 0 reserved, so it must still be OPEN —
+	// the inverse of the check this used to make, and the one that matches
+	// what the reservation guarantees (issue #525).
+	if err := requireFDReserved(fdNetSock, "the N socket"); err != nil {
 		unix.Close(netSock)
 		return fmt.Errorf("__stage-setup: %w", err)
 	}
@@ -135,10 +149,10 @@ func MainSetup() error {
 	if err != nil {
 		return fmt.Errorf("__stage-setup: pinning N: %w", err)
 	}
-	// Checked here, with f already open, rather than before the Open: the fact
-	// that matters is whether the target is occupied at the instant of the
-	// dup3, and f is one of the descriptors that can occupy it (issue #525).
-	if err := requireFDFree(fdNetnsN, "the pinned netns descriptor"); err != nil {
+	// Same inverse check as the N socket's parking: fdNetnsN is reserved, so
+	// its reservation must still be there at the instant of the dup3. f cannot
+	// have taken the number — the reservation is what stopped it (issue #525).
+	if err := requireFDReserved(fdNetnsN, "the pinned netns descriptor"); err != nil {
 		f.Close()
 		return fmt.Errorf("__stage-setup: %w", err)
 	}

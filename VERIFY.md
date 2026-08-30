@@ -6745,21 +6745,71 @@ two are at 14 and 15 rather than at 6 and 7 — and it is closed again by the
 time this snapshot is taken, which is why the listing skips from 5 to 14.
 
 So the runtime's descriptors follow the block wherever it ends. On a shipped
-profile the block is small and they land in the teens, as here. At `K =
-maxPassthrough` (56, the permitted maximum) the block fills 6..61 and they land
-on 62 and 63 instead — measured — and the parking then closes them with no
-error.
+profile the block is small and they land in the teens, as here. Which is why
+the two numbers 62 and 63 are CLAIMED at P1's first instant —
+`reserveParkingFDs` dup3's `fdControl` onto both before this process has
+allocated anything of its own — rather than checked at the parking: the
+descriptors that would collide are the Go runtime's, created from a background
+goroutine when a timer is armed, and nothing orders them against a check.
 
 One thing about running this by hand: `pgrep -f __stage-serve` matches EVERY
 snug on the machine, so quit your other sandboxes first, or the listing you get
 is somebody else's run rather than the one you just started.
 
-No shipped profile reaches that descriptor count, so the refusal itself is not
-reachable by hand: it is `requireFDFree` in `internal/stage/fds.go`, called
-immediately before each `dup3`, and
-`TestParkingRefusesADescriptorThatIsAlreadyOpen` is the regression.
-`go test ./internal/stage -run TestGoldenStageSpec` is the golden that says what
-the two numbers should be.
+## 28a. The budget P0 accepts is one the stage can actually build
+
+No shipped profile is large enough to reach the boundary, but a profile of your
+own is: `listen_names` is the knob that grows the block, at K = doors + 9 under
+`@net`. This is the check that P0's arithmetic and P1's descriptor table agree
+— they did not, and the divergence was invisible to both, because each side was
+right on its own.
+
+```bash
+mkdir -p $X/snug/profiles.d
+n=47                        # K = 56, exactly the budget
+{ echo '[profile.doors]'
+  echo 'description = "fd budget probe"'
+  printf 'listen_names = ['
+  for i in $(seq 1 $n); do printf '"d%02d",' $i; done
+  echo ']'
+} > $X/snug/profiles.d/doors.toml
+
+XDG_CONFIG_HOME=$X ./bin/snug -p @net -p doors $SC/proj -- sh -c 'echo PAYLOAD-RAN'
+```
+
+Expect `PAYLOAD-RAN`, after 47 door declarations. Then raise `n` to 48 (K = 57)
+and re-run:
+
+```
+snug: stage: this policy needs 57 pass-through descriptors, so the block would
+      run from fd 6 to fd 62 and swallow the pinned network namespace descriptor
+      at fd 63 (the budget is 56).
+```
+
+The point is that the boundary is in ONE place. Before the reservation, K = 54,
+55 and 56 were all accepted by that arithmetic and then refused three
+descriptors later, by the parking — `fd 62 ... is ALREADY OPEN
+(anon_inode:[eventfd])` — because `__stage-setup` allocates the N socket and
+the runtime allocates its epoll and eventfd above the block before the second
+parking. Raising the two numbers would not have fixed it: a new descriptor takes
+the lowest free one, so the runtime's pair follows the block wherever it goes.
+
+The stage's own table at K = 56, which is §28's shape at any K:
+
+```
+$ ls -l /proc/$(pgrep -f __stage-serve)/fd | awk 'NR>1 {print $9, $10, $11}' | sort -n | tail -4
+20 -> anon_inode:[eventpoll]
+21 -> anon_inode:[eventfd]
+62 -> socket:[128949]
+63 -> net:[4026532452]
+```
+
+`TestTheFDBudgetPolicySnugAcceptsIsOneTheStageCanActuallyBuild` (integration) is
+the automated form and drives all three cases;
+`TestTheReservationIsWhatMakesTheBudgetExact` and
+`TestParkingRefusesADescriptorThatIsAlreadyOpen` in `internal/stage` are the
+unit regressions. `go test ./internal/stage -run TestGoldenStageSpec` is the
+golden that says what the two numbers should be.
 
 ## If a check fails
 
