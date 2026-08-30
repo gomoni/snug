@@ -223,10 +223,13 @@ demote-in-place.
   is where these are least likely to be set and `/proc/sys` is read-only
   there, so disclosure is what "no silent downgrade" asks for on an
   *inherited* guarantee, not a refusal. `snug fix sysctl` prints the settings
-  and `-w` applies them and writes `/etc/sysctl.d/99-snug.conf`; only the WEAK
-  rows are ever written, so a host stricter than snug asks for is never walked
-  back to snug's minimum, and an ABSENT knob (no Yama, no BPF) is reported as
-  unreadable and never fixed. Container preflight P6's `ptrace_scope` refusal
+  and `-w` applies them and writes `/etc/sysctl.d/00-snug.conf`. That file is a
+  function of the TABLE, not of this boot: every READABLE row at
+  `max(want, current)`, so it can never lower a knob the kernel is already
+  running stricter, and `00-` so a deliberate host file later in `sysctl.d`'s
+  order overrides it — snug raises a floor. An ABSENT knob (no Yama, no BPF)
+  is reported as absent and never written, because a `sysctl.d` line for a
+  knob the kernel lacks fails on every boot. Container preflight P6's `ptrace_scope` refusal
   reads its threshold from the same row, so the report and the refusal cannot
   disagree about the number. Issue #526; `VERIFY.md` §27.
 - **R6 — SHIPPED.** `Validate` refuses any non-authored bind whose HOST end is

@@ -16,17 +16,27 @@ import (
 // doctorNetnsOKMessage is a named constant rather than an inline fmt.Println
 // sequence so a test can assert its wording WITHOUT running the userns/netns
 // probes above it, which need real unprivileged-userns support and so cannot
-// be part of Layer 1/2. Issue #288: this used to attribute X11/D-Bus/Wayland's
-// absence to the netns (they are pathname sockets on a typical desktop and are
-// closed by the MOUNT POLICY, by absence — see CLAUDE.md). The netns closes the
-// ABSTRACT instance only. Kept in step with dryrun.go's two describeNetwork
-// arms and config.go's networkConsequence by
-// TestTheNetworkBlockDoesNotClaimPathnameSocketsAreNetnsScoped, which drives
-// all four and applies one shared predicate rather than one test per site.
+// be part of Layer 1/2.
+//
+// IT STATES WHAT THE PROBE MEASURED AND STOPS. The probe unshares a network
+// namespace and reads /proc/net/dev inside it; the answer is "this kernel
+// gives snug a real, empty netns". That is not a statement about what a RUN
+// can reach and must not be read as one: `-p @net` has full egress and
+// `@http-proxy` has a door, and doctor has no profile selected at all.
+//
+// The two consequence lines that used to be here said "no egress, no host
+// loopback, no abstract unix sockets" and then footnoted X11/D-Bus/Wayland.
+// The first three are false the moment a net profile is selected, and the
+// footnote was a repair (issue #288) for a claim that did not belong on this
+// row in the first place: those are pathname sockets, closed by the MOUNT
+// POLICY, by absence — see CLAUDE.md. The netns closes the ABSTRACT instance
+// only. The versions that CAN say this live where the profiles are known —
+// dryrun.go's two describeNetwork arms and config.go's networkConsequence —
+// and this constant is still swept alongside them by
+// TestTheNetworkBlockDoesNotClaimPathnameSocketsAreNetnsScoped.
 const doctorNetnsOKMessage = "" +
-	"  ✅ private network namespace — loopback only\n" +
-	"     🔒 no egress, no host loopback, no abstract unix sockets (netns-scoped)\n" +
-	"     ℹ️  X11/D-Bus/Wayland are pathname sockets — a mount question, not this probe's\n"
+	"  ✅ an unshared network namespace comes up empty — loopback and nothing else\n" +
+	"     ℹ️  what a RUN can reach is the profiles' answer, not this probe's — `snug config`\n"
 
 // doctor reports whether this host can run snug, so a user diagnoses a machine
 // before their first run rather than during it.
@@ -125,6 +135,16 @@ func doctor(argv []string) int {
 
 	fmt.Println()
 	fmt.Println("🐧 kernel — what this kernel lets snug build")
+	// FIRST in this section, because it is the only part of it a reader can
+	// change today: five sysctls, each with a value to write. Everything
+	// below is what this kernel was built and booted to allow — a different
+	// kernel, a different container runtime, or a boot parameter, none of
+	// them a thing to act on while reading a report.
+	//
+	// Five knobs snug depends on and never read until issue #526. WARN only,
+	// and it deliberately does not touch ok (hostsysctl.go says why).
+	reportHostSysctls(readHostSysctls(readProcSysFile))
+
 	// The real test is not a sysctl read but whether a sandbox actually starts:
 	// AppArmor on Ubuntu 24.04+, seccomp policy in CI containers, and nested
 	// userns limits all fail in different places.
@@ -267,8 +287,11 @@ func doctor(argv []string) int {
 		ok = false
 	} else {
 		_ = st.Close()
-		fmt.Println("  ✅ the stage starts — clone, uid map, loopback, and the netns move")
-		fmt.Println("     🔒 offline sandboxes do not use it and are unaffected either way")
+		// One line. The second one said offline sandboxes are unaffected,
+		// which is a consequence of a profile selection doctor does not
+		// have — the same thing that was wrong with the netns row's old
+		// sub-lines.
+		fmt.Println("  ✅ snug's own stage starts — clone, uid map, loopback, netns move, re-exec")
 	}
 
 	if legacyTIOCSTI() {
@@ -278,10 +301,6 @@ func doctor(argv []string) int {
 	} else {
 		fmt.Println("  ✅ TIOCSTI disabled kernel-wide — job control works inside the sandbox")
 	}
-
-	// Five knobs snug depends on and never read until issue #526. WARN only,
-	// and it deliberately does not touch ok (hostsysctl.go says why).
-	reportHostSysctls(readHostSysctls(readProcSysFile))
 
 	fmt.Println()
 	fmt.Println("🏠 host configuration — files and settings outside the kernel")
@@ -829,6 +848,40 @@ func ociRuntimeMissing(crun, runc, cgroupsDisabled bool) bool {
 	return !runc || cgroupsDisabled
 }
 
+// ociRuntimeRow is the ONE row the OCI runtime gets, naming the runtime
+// podman will actually use here — not a row each for crun and runc.
+//
+// Listing both reads as "snug wants two runtimes", and worse, it prints
+// runc's path beside a 📍 on a host where ociRuntimeMissing has already
+// decided runc cannot serve: every host where preflight P5 selects
+// cgroups=disabled, which is every container inside a container. MEASURED in
+// a Tumbleweed CI container with runc present and crun absent (run
+// 32944442005): the create returned 500 `requested OCI runtime runc is not
+// compatible with NoCgroups`.
+//
+// It decides nothing ociRuntimeMissing does not; it is that decision's
+// rendering, and it is a separate function for the same reason
+// ociRuntimeMissing is: the three arms are three different sentences and none
+// of them can be constructed on the host that runs the tests.
+func ociRuntimeRow(crunPath, runcPath string, cgroupsDisabled bool) (name, path, note string) {
+	switch {
+	case crunPath != "":
+		// No note: crun serves on every host, so there is nothing
+		// conditional to say, and a line saying so is a line to read.
+		return "crun", crunPath, ""
+	case runcPath != "" && !cgroupsDisabled:
+		// runc alone, on a host whose cgroups are usable. Accepted by
+		// ociRuntimeMissing, and the note says what makes that conditional
+		// so a reader is not surprised the day this host disables them.
+		return "runc", runcPath, "OCI runtime — serves here because this host's cgroups are usable; " +
+			"a host that disables them needs crun"
+	case runcPath != "":
+		return "runc", runcPath, "present and CANNOT serve here — this host disables cgroups, " +
+			"which runc does not implement"
+	}
+	return "", "", ""
+}
+
 // reportPodmanHelpers prints one line per missing helper and one summary line
 // when nothing is missing. Named the way the other checks here are: the message
 // carries the package to install, because a vague answer in an odd environment
@@ -843,9 +896,13 @@ func reportPodmanHelpers() {
 	// path was computed and thrown away.
 	type helperRow struct {
 		name, path string
-		// required is false for the OCI runtime pair: crun and runc are
-		// alternatives, so an absent runc is not a fault of its own and must
-		// not be printed as one. The pair's verdict is the switch below.
+		// note carries the OCI runtime row's role, which is the one row
+		// whose presence does not mean the same thing as the other four's:
+		// crun and runc are alternatives, and whether runc is enough is a
+		// question about this host's cgroups, not about runc.
+		note string
+		// required is false for the OCI runtime row: its verdict is the
+		// switch below, not the bare presence of the file.
 		required bool
 	}
 	var rows []helperRow
@@ -874,8 +931,12 @@ func reportPodmanHelpers() {
 	// the shape this whole command exists to refuse: a green tick for a host
 	// where the run then fails.
 	crunPath, runcPath := findPodmanHelper("crun"), findPodmanHelper("runc")
-	rows = append(rows, helperRow{name: "crun", path: crunPath}, helperRow{name: "runc", path: runcPath})
 	crun, runc := crunPath != "", runcPath != ""
+
+	if name, path, note := ociRuntimeRow(crunPath, runcPath, preflightCgroupsDisabled()); name != "" {
+		rows = append(rows, helperRow{name: name, path: path, note: note})
+	}
+
 	switch {
 	case !crun && !runc:
 		missing = append(missing, "crun or runc")
@@ -897,15 +958,13 @@ func reportPodmanHelpers() {
 	}
 	for _, r := range rows {
 		switch {
+		case r.path != "" && r.note != "":
+			fmt.Printf("     📍 %-13s %s\n", r.name, r.path)
+			fmt.Printf("        %s\n", r.note)
 		case r.path != "":
 			fmt.Printf("     📍 %-13s %s\n", r.name, r.path)
 		case r.required:
 			fmt.Printf("     ❌ %-13s not in any directory podman searches\n", r.name)
-		default:
-			// The alternative that is absent. Stated, because a reader
-			// looking at a crun row and no runc row cannot tell "absent"
-			// from "not looked for".
-			fmt.Printf("     ➖ %-13s absent\n", r.name)
 		}
 	}
 	if len(missing) == 0 {

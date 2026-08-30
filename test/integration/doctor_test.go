@@ -45,7 +45,7 @@ func TestDoctorRunsCleanOnAHostThatCanRunSnug(t *testing.T) {
 	// The stage line specifically, because it is the one this test was written
 	// for and the one whose caller is unique. A clean exit alone would also pass
 	// on a doctor that stopped probing the stage altogether.
-	if !strings.Contains(report, "the stage starts") {
+	if !strings.Contains(report, "stage starts") {
 		t.Errorf("doctor's report does not mention the stage probe at all, so a clean exit "+
 			"here proves nothing about it:\n%s", report)
 	}

@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,7 +19,12 @@ func fakeSysctlHost(values map[string]string) func(string) (string, error) {
 			if s.path() == path {
 				v, ok := values[s.knob]
 				if !ok {
-					return "", errors.New("no such file or directory")
+					// fs.ErrNotExist, not a lookalike: the report and the
+					// fix distinguish "this kernel does not have the knob"
+					// from "the knob is there and would not read", and a
+					// fixture that fakes absence with a bare error tests
+					// neither arm.
+					return "", fmt.Errorf("open %s: %w", path, fs.ErrNotExist)
 				}
 				return v + "\n", nil
 			}
@@ -116,21 +122,27 @@ func TestTheDoctorReportNamesTheWeakKnobItsValueAndWhatItCosts(t *testing.T) {
 // on a kernel with no Yama names a sysctl the machine will refuse to set,
 // and `snug fix sysctl -w` would then write a drop-in that fails on every
 // boot.
-func TestAnAbsentKnobIsReportedAsUnreadableAndIsNeverFixed(t *testing.T) {
+func TestAnAbsentKnobIsReportedAsAbsentAndIsNeverFixed(t *testing.T) {
 	values := allSet()
 	delete(values, "kernel.yama.ptrace_scope")
 	readings := readHostSysctls(fakeSysctlHost(values))
 
 	out := captureStdout(t, func() { reportHostSysctls(readings) })
-	if !strings.Contains(out, "kernel.yama.ptrace_scope — not readable") {
-		t.Errorf("an absent knob was not reported as unreadable:\n%s", out)
+	if !strings.Contains(out, "kernel.yama.ptrace_scope — this kernel does not have it") {
+		t.Errorf("an absent knob was not reported as absent:\n%s", out)
 	}
 	if strings.Contains(out, "kernel.yama.ptrace_scope = 0") {
 		t.Errorf("an absent knob was reported as a value of 0:\n%s", out)
 	}
-	for _, l := range sysctlFixLines(readings) {
+	for _, l := range sysctlWeakLines(readings) {
 		if strings.Contains(l, "ptrace_scope") {
-			t.Errorf("`snug fix sysctl` would write %q for a knob this kernel does not have", l)
+			t.Errorf("`snug fix sysctl` would apply %q for a knob this kernel does not have", l)
+		}
+	}
+	for _, l := range sysctlDropInLines(readings) {
+		if strings.Contains(l, "ptrace_scope") {
+			t.Errorf("the drop-in would carry %q — a sysctl.d line for a knob this kernel does "+
+				"not have fails on every boot", l)
 		}
 	}
 
@@ -140,8 +152,8 @@ func TestAnAbsentKnobIsReportedAsUnreadableAndIsNeverFixed(t *testing.T) {
 	if strings.Contains(out, "does not set every kernel knob") {
 		t.Errorf("a kernel that lacks the knob was reported as a host that failed to set it:\n%s", out)
 	}
-	if !strings.Contains(out, "could not be read here") {
-		t.Errorf("the unreadable-only headline never appeared:\n%s", out)
+	if !strings.Contains(out, "have no usable value here") {
+		t.Errorf("the no-usable-value headline never appeared:\n%s", out)
 	}
 }
 
@@ -165,7 +177,7 @@ func TestFixSysctlNeverWritesALineForAKnobThatIsAlreadyAtLeastAsStrict(t *testin
 	values["kernel.perf_event_paranoid"] = "0"         // weak
 	delete(values, "kernel.unprivileged_bpf_disabled") // absent
 
-	lines := sysctlFixLines(readHostSysctls(fakeSysctlHost(values)))
+	lines := sysctlWeakLines(readHostSysctls(fakeSysctlHost(values)))
 	want := []string{"kernel.perf_event_paranoid = 2"}
 	if len(lines) != len(want) || lines[0] != want[0] {
 		t.Fatalf("lines = %q, want %q", lines, want)
@@ -180,11 +192,12 @@ func TestFixSysctlNeverWritesALineForAKnobThatIsAlreadyAtLeastAsStrict(t *testin
 	}
 }
 
-// Nothing to do prints nothing, which is the contract that makes this
-// callable from a distrobox init_hook under `set -o errexit`.
-func TestFixSysctlHasNothingToSayAboutAHostThatIsAlreadySet(t *testing.T) {
-	if lines := sysctlFixLines(readHostSysctls(fakeSysctlHost(allSet()))); len(lines) != 0 {
-		t.Errorf("a fully-set host produced %q, want nothing at all", lines)
+// A fully-set host has nothing to APPLY. It still has a file to persist —
+// see TestTheDropInIsWrittenEvenWhenTheRunningKernelNeedsNothing below, which
+// is the half this assertion used to be read as covering.
+func TestFixSysctlHasNothingToApplyOnAHostThatIsAlreadySet(t *testing.T) {
+	if lines := sysctlWeakLines(readHostSysctls(fakeSysctlHost(allSet()))); len(lines) != 0 {
+		t.Errorf("a fully-set host produced %q to apply, want nothing at all", lines)
 	}
 }
 
@@ -257,70 +270,324 @@ func captureSplitStreams(t *testing.T, f func()) (stdout, stderr string) {
 	return string(o), string(e)
 }
 
-// `snug fix sysctl > /etc/sysctl.d/99-snug.conf` must produce a file the
-// kernel will read, so stdout carries the settings and NOTHING else. This is
-// `snug fix subuid`'s contract, and it is the one a stray Println breaks
-// without any test noticing.
-func TestFixSysctlPutsOnlyTheSettingsOnStdout(t *testing.T) {
+// ── the drop-in is a function of the TABLE, not of this boot ────────────────
+//
+// Every test below is a redteam finding made permanent. The shape they share:
+// `snug doctor` reads the RUNNING kernel and the drop-in governs the NEXT
+// BOOT, and every defect in this family came from answering the second
+// question with the first one's data.
+
+// F1a. A drop-in derived from the weak rows alone DELETES hardening it wrote
+// itself. Measured: a five-line 00-snug.conf on a host where a developer had
+// loosened one knob at runtime (`sysctl -w kernel.perf_event_paranoid=-1` to
+// profile something) was truncated to that one line — four persistent
+// settings gone, exit 0, and doctor answering ✅ for all five because the
+// runtime was fine.
+func TestTheDropInCarriesEveryReadableRowAndNotOnlyTheWeakOnes(t *testing.T) {
 	values := allSet()
-	values["kernel.kptr_restrict"] = "0"
-	values["kernel.dmesg_restrict"] = "0"
+	values["kernel.perf_event_paranoid"] = "-1"
 	readings := readHostSysctls(fakeSysctlHost(values))
 
-	stdout, stderr := captureSplitStreams(t, func() {
-		if code := printSysctlFixPreview(readings, sysctlFixLines(readings)); code != 0 {
-			t.Errorf("the preview exited %d; it changes nothing and must always exit 0", code)
-		}
-	})
+	if weak := sysctlWeakLines(readings); len(weak) != 1 {
+		t.Fatalf("this fixture is meant to have exactly one weak knob, got %q", weak)
+	}
+	lines := sysctlDropInLines(readings)
+	if len(lines) != len(inheritedSysctls) {
+		t.Fatalf("the drop-in carries %d line(s) for a host with %d readable knobs: %q\n"+
+			"a file with fewer lines than the last one DELETES the settings it is missing",
+			len(lines), len(inheritedSysctls), lines)
+	}
+}
 
-	want := "kernel.kptr_restrict = 1\nkernel.dmesg_restrict = 1\n"
-	if stdout != want {
-		t.Errorf("stdout = %q, want exactly %q", stdout, want)
+// F1/F3. The drop-in is a FLOOR. A host running stricter than snug asks for
+// must never be lowered by the file snug wrote to harden it — and the value
+// that would lower it is exactly the one `want` alone produces.
+func TestTheDropInNeverPersistsAValueBelowWhatTheKernelIsAlreadyRunning(t *testing.T) {
+	values := allSet()
+	values["kernel.kptr_restrict"] = "2" // stricter than want=1
+	lines := sysctlDropInLines(readHostSysctls(fakeSysctlHost(values)))
+
+	found := false
+	for _, l := range lines {
+		if strings.HasPrefix(l, "kernel.kptr_restrict ") {
+			found = true
+			if l != "kernel.kptr_restrict = 2" {
+				t.Errorf("the drop-in says %q on a host running 2 — the next boot would be WEAKER "+
+					"than the host was before the fix", l)
+			}
+		}
+	}
+	if !found {
+		t.Error("the drop-in carries no kptr_restrict line at all")
+	}
+}
+
+// F1b. `-w` has two independent jobs. Measured: once the runtime was strict,
+// -w said "nothing to do" and exited 0 with the drop-in DELETED — an image
+// rebuild, an ansible run, a package upgrade — so the persistence could never
+// be restored until a reboot made the knobs weak again. `snug fix` names that
+// exact failure mode for the sibling noun and this one had it with no
+// recovery.
+func TestTheDropInIsWrittenEvenWhenTheRunningKernelNeedsNothing(t *testing.T) {
+	dir := t.TempDir()
+	dropIn := filepath.Join(dir, "00-snug.conf")
+	readings := readHostSysctls(fakeSysctlHost(allSet()))
+	body := sysctlDropInBody(sysctlDropInLines(readings))
+
+	applied := 0
+	code := captureCode(t, func() int {
+		return applySysctlFix(readings, body, 0, "", dropIn, func(string, int) error {
+			applied++
+			return nil
+		})
+	})
+	if code != 0 {
+		t.Errorf("exit %d on a host that needed only its drop-in restored", code)
+	}
+	if applied != 0 {
+		t.Errorf("%d knob(s) were written to the running kernel, which needed none", applied)
+	}
+	got, err := os.ReadFile(dropIn)
+	if err != nil {
+		t.Fatalf("the drop-in was not restored: %v", err)
+	}
+	if string(got) != body {
+		t.Errorf("the drop-in holds %q, want %q", got, body)
+	}
+}
+
+// The same call twice must not rewrite a file that is already correct — the
+// "already current" arm exists so a distrobox init_hook calling this on every
+// start is not a write on every start.
+func TestASecondRunLeavesACurrentDropInAlone(t *testing.T) {
+	dir := t.TempDir()
+	dropIn := filepath.Join(dir, "00-snug.conf")
+	readings := readHostSysctls(fakeSysctlHost(allSet()))
+	body := sysctlDropInBody(sysctlDropInLines(readings))
+
+	captureCode(t, func() int {
+		return applySysctlFix(readings, body, 0, "", dropIn, func(string, int) error { return nil })
+	})
+	first, err := os.Stat(dropIn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, stderr := captureSplitStreams(t, func() {
+		applySysctlFix(readings, body, 0, "", dropIn, func(string, int) error { return nil })
+	})
+	if !strings.Contains(stderr, "already current") {
+		t.Errorf("the second run did not report the drop-in as already current:\n%s", stderr)
+	}
+	second, err := os.Stat(dropIn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.ModTime().Equal(second.ModTime()) {
+		t.Error("a correct drop-in was rewritten by a second run")
+	}
+}
+
+// F2. `snug fix sysctl > 00-snug.conf` is documented as doing what it looks
+// like. Printing nothing when the running kernel is fine made that
+// instruction TRUNCATE the drop-in to zero bytes — measured, 148 bytes before
+// and 0 after, exit 0. Stdout is the complete file, always.
+func TestThePreviewPrintsTheWholeFileEvenWhenNothingIsWeak(t *testing.T) {
+	readings := readHostSysctls(fakeSysctlHost(allSet()))
+	body := sysctlDropInBody(sysctlDropInLines(readings))
+
+	stdout, stderr := captureSplitStreams(t, func() {
+		printSysctlFixPreview(readings, sysctlWeakLines(readings), body)
+	})
+	if stdout != body {
+		t.Errorf("stdout is not the file -w would write.\n got: %q\nwant: %q", stdout, body)
+	}
+	if stdout == "" {
+		t.Error("redirecting this into the drop-in would empty it")
 	}
 	if !strings.Contains(stderr, "nothing was changed") {
 		t.Errorf("stderr never said the host was left alone:\n%s", stderr)
 	}
-	// The cost of each weak knob belongs on stderr, next to the line that
-	// would fix it — a number with no consequence attached is advice nobody
-	// can weigh.
+}
+
+// And on a weak host the two streams still divide the same way: the file on
+// stdout, the reason each knob is weak on stderr.
+func TestThePreviewKeepsTheCostOnStderrAndTheFileOnStdout(t *testing.T) {
+	values := allSet()
+	values["kernel.kptr_restrict"] = "0"
+	readings := readHostSysctls(fakeSysctlHost(values))
+	body := sysctlDropInBody(sysctlDropInLines(readings))
+
+	stdout, stderr := captureSplitStreams(t, func() {
+		printSysctlFixPreview(readings, sysctlWeakLines(readings), body)
+	})
+	if stdout != body {
+		t.Errorf("stdout = %q, want the whole file %q", stdout, body)
+	}
+	if strings.Contains(stdout, "snug:") {
+		t.Errorf("commentary reached stdout, so the redirect writes an invalid file:\n%s", stdout)
+	}
 	if !strings.Contains(stderr, "KASLR") {
 		t.Errorf("stderr does not say what kptr_restrict=0 costs:\n%s", stderr)
 	}
 }
 
-// -w runs as ROOT, so a symlink at the drop-in path must be REFUSED rather
-// than followed and rewritten. os.WriteFile would follow it. /etc/sysctl.d
-// is root-owned so planting one is not an unprivileged step, and that is
-// exactly the argument this refusal exists to stop being made file by file
-// (appendLine states the same for /etc/subuid).
-func TestTheSysctlDropInIsNotWrittenThroughASymlink(t *testing.T) {
+// F5. Inside a container there is, by snug's own refusal, nothing that can be
+// done — which is the definition of nothing to do, and `snug fix` states in
+// capitals that nothing to do exits 0 because distrobox-init runs hooks under
+// `set -o errexit`. Measured at 69 before this: a hook that aborted box
+// startup with a message about sysctls.
+func TestTheContainerArmExitsZeroBecauseAnInitHookRunsUnderErrexit(t *testing.T) {
 	dir := t.TempDir()
-	victim := filepath.Join(dir, "victim")
-	if err := os.WriteFile(victim, []byte("do not touch\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(dir, "99-snug.conf")
-	if err := os.Symlink(victim, link); err != nil {
-		t.Fatal(err)
-	}
+	readings := readHostSysctls(fakeSysctlHost(map[string]string{}))
+	body := sysctlDropInBody(sysctlDropInLines(readings))
 
-	if err := writeDropIn(link, "kernel.kptr_restrict = 1\n"); err == nil {
-		t.Error("writeDropIn followed a symlink instead of refusing it")
+	var code int
+	_, stderr := captureSplitStreams(t, func() {
+		code = applySysctlFix(readings, body, 0, "running inside a container (distrobox/podman)",
+			filepath.Join(dir, "00-snug.conf"), func(string, int) error {
+				t.Error("a knob was written to the running kernel from inside a container")
+				return nil
+			})
+	})
+	if code != 0 {
+		t.Errorf("exit %d — an init_hook under `set -o errexit` stops the box coming up", code)
 	}
-	got, err := os.ReadFile(victim)
+	if !strings.Contains(stderr, "on the host instead") {
+		t.Errorf("the refusal does not name where to run it:\n%s", stderr)
+	}
+}
+
+// The non-root arm keeps its nonzero status, and the difference is not
+// arbitrary: asking to write and being unable to is a failure to do what was
+// asked, where the container arm is a correct refusal to do anything.
+func TestWritingWithoutRootIsAFailureAndSaysHowToRetry(t *testing.T) {
+	readings := readHostSysctls(fakeSysctlHost(allSet()))
+	var code int
+	_, stderr := captureSplitStreams(t, func() {
+		code = applySysctlFix(readings, "", 1000, "", filepath.Join(t.TempDir(), "x.conf"),
+			func(string, int) error { return nil })
+	})
+	if code == 0 {
+		t.Error("-w as a non-root user reported success")
+	}
+	if !strings.Contains(stderr, "sudo snug fix sysctl -w") {
+		t.Errorf("the refusal does not name the fix:\n%s", stderr)
+	}
+}
+
+// F4 and its symlink sibling. -w runs as ROOT, so anything at the drop-in
+// path that is a second name for another file must be REFUSED rather than
+// written through. O_NOFOLLOW alone stopped the symlink and a hard link
+// walked straight past it, overwriting the victim under the user's sudo.
+func TestTheDropInIsNeverWrittenThroughASecondNameForAnotherFile(t *testing.T) {
+	const untouched = "PRECIOUS-HOST-FILE\n"
+
+	for _, tc := range []struct {
+		name string
+		link func(t *testing.T, victim, at string)
+		want string
+	}{
+		{name: "symlink", want: "will not write through one", link: func(t *testing.T, victim, at string) {
+			if err := os.Symlink(victim, at); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "hard link", want: "hard link", link: func(t *testing.T, victim, at string) {
+			if err := os.Link(victim, at); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			victim := filepath.Join(dir, "victim.conf")
+			if err := os.WriteFile(victim, []byte(untouched), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			at := filepath.Join(dir, "00-snug.conf")
+			tc.link(t, victim, at)
+
+			err := writeDropIn(at, "kernel.kptr_restrict = 1\n")
+			if err == nil {
+				t.Fatal("writeDropIn wrote through it instead of refusing")
+			}
+			// CLAUDE.md: errors name the fix. The bare O_NOFOLLOW error was
+			// `too many levels of symbolic links`, which reads as a symlink
+			// loop rather than as snug declining to follow one.
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the refusal does not say what it refused: %v", err)
+			}
+			if got, _ := os.ReadFile(victim); string(got) != untouched {
+				t.Errorf("the other name's file was rewritten: %q", got)
+			}
+		})
+	}
+}
+
+// The ordinary path still works, and leaves no temporary behind — or the
+// refusals above would prove nothing and the directory would fill with them.
+func TestTheDropInIsWrittenAtomicallyAndLeavesNoTemporary(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "00-snug.conf")
+	const body = "kernel.kptr_restrict = 1\n"
+	if err := writeDropIn(path, body); err != nil {
+		t.Fatalf("writeDropIn refused an ordinary path: %v", err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != body {
+		t.Errorf("the drop-in holds %q", b)
+	}
+	// And again over the file it just wrote: an existing regular file with
+	// one link is the ordinary case, not something to refuse.
+	if err := writeDropIn(path, body+"kernel.dmesg_restrict = 1\n"); err != nil {
+		t.Fatalf("writeDropIn refused to replace its own file: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != "do not touch\n" {
-		t.Errorf("the symlink target was rewritten: %q", got)
+	for _, e := range entries {
+		if e.Name() != "00-snug.conf" {
+			t.Errorf("left %s behind in the drop-in directory", e.Name())
+		}
 	}
+}
 
-	// And the ordinary path still works, or the refusal above proves nothing.
-	plain := filepath.Join(dir, "plain.conf")
-	if err := writeDropIn(plain, "kernel.kptr_restrict = 1\n"); err != nil {
-		t.Fatalf("writeDropIn refused an ordinary path: %v", err)
+// The three not-a-value states are three different sentences, because they
+// send a reader to three different places. A redteam round found all three
+// printed as the single word "not readable".
+func TestTheThreeWaysAKnobHasNoValueAreToldApart(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		read  func(string) (string, error)
+		want  string
+		never string
+	}{
+		{name: "absent", want: "this kernel does not have it", never: "= 0",
+			read: func(path string) (string, error) {
+				return "", fmt.Errorf("open %s: %w", path, fs.ErrNotExist)
+			}},
+		{name: "unreadable", want: "could not be read", never: "does not have it",
+			read: func(string) (string, error) { return "", errors.New("permission denied") }},
+		{name: "not a number", want: `holds "garbage", which is not a number`, never: "could not be read",
+			read: func(string) (string, error) { return "garbage\n", nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := captureStdout(t, func() { reportHostSysctls(readHostSysctls(tc.read)) })
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("the report never said %q:\n%s", tc.want, out)
+			}
+			if strings.Contains(out, tc.never) {
+				t.Errorf("the report said %q, which belongs to a different state:\n%s", tc.never, out)
+			}
+		})
 	}
-	if b, _ := os.ReadFile(plain); string(b) != "kernel.kptr_restrict = 1\n" {
-		t.Errorf("the drop-in content is %q", b)
-	}
+}
+
+// captureCode is captureStdout for a function that returns an exit status:
+// the screen is swallowed, the status is what the caller asserts on.
+func captureCode(t *testing.T, f func() int) int {
+	t.Helper()
+	var code int
+	captureStdout(t, func() { code = f() })
+	return code
 }

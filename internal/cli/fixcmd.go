@@ -28,7 +28,7 @@ package cli
 //	snug fix subuid       print what this host needs; change nothing
 //	snug fix subuid -w    apply it
 //	snug fix sysctl       print the kernel knobs this host is missing (issue #526)
-//	snug fix sysctl -w    apply them, and write /etc/sysctl.d/99-snug.conf
+//	snug fix sysctl -w    apply them, and write /etc/sysctl.d/00-snug.conf
 //	snug fix              list the nouns; act on nothing
 //
 // MEASURED, `gofmt -h`: "-w  write result to (source) file instead of stdout".
@@ -67,7 +67,7 @@ usage:
   snug fix subuid [USER]        print the delegated id range this host needs
   snug fix subuid [USER] -w     write it to /etc/subuid and /etc/subgid
   snug fix sysctl               print the kernel hardening this host is missing
-  snug fix sysctl -w            apply it and write /etc/sysctl.d/99-snug.conf
+  snug fix sysctl -w            apply it and write /etc/sysctl.d/00-snug.conf
 
 Prints and changes NOTHING without -w. Printing nothing means there is nothing
 to do, and the exit status is 0 either way, so this is safe to call from a

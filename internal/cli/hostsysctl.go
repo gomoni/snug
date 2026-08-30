@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
-	"os"
+	"io/fs"
 	"strconv"
 	"strings"
+
+	"github.com/gomoni/snug/internal/hostread"
 )
 
 // hostsysctl.go is issue #526 (R5 of .claude/design/PSEUDOFS-AUDIT.md): the
@@ -84,7 +87,7 @@ var inheritedSysctls = []hostSysctl{
 			"process_vm_readv/writev are seccomp-denied, but /proc/<pid>/mem is the same " +
 			"effect through open(2)+pread/pwrite(2) and no classic-BPF filter can single it " +
 			"out; Yama is its second lock (issue #47, seccomp.go's own measurement).",
-		enforcedBy: "container preflight P6 refuses a container run at 0",
+		enforcedBy: "container preflight P6 refuses a container run at anything weaker",
 	},
 	{
 		knob: "kernel.unprivileged_bpf_disabled", want: 1,
@@ -102,21 +105,65 @@ func (s hostSysctl) path() string {
 	return "/proc/sys/" + strings.ReplaceAll(s.knob, ".", "/")
 }
 
-// sysctlReading is one row's answer on this host. An unreadable knob is its
-// own outcome and is NEVER folded into "weak": kernel.yama.ptrace_scope does
-// not exist without the Yama LSM, and unprivileged_bpf_disabled is absent on
+// sysctlFault is WHY a row has no usable value, and the three are not one
+// state: "this kernel does not have the knob", "the knob is there and could
+// not be read", and "it was read and holds something that is not a number"
+// send a reader to three different places. A redteam round found all three
+// printed as the single word "not readable".
+type sysctlFault int
+
+const (
+	sysctlReadable   sysctlFault = iota // a number was read
+	sysctlAbsent                        // ENOENT: this kernel has no such knob
+	sysctlUnreadable                    // present, and the read failed
+	sysctlNotANumber                    // read, and the content is not one
+)
+
+// sysctlReading is one row's answer on this host. A faulted knob is its own
+// outcome and is NEVER folded into "weak": kernel.yama.ptrace_scope does not
+// exist without the Yama LSM, and unprivileged_bpf_disabled is absent on
 // kernels built without BPF — reporting either as "0, fix it" would name a
 // sysctl the machine will refuse to set.
 type sysctlReading struct {
 	sysctl hostSysctl
 	value  int
+	raw    string // what the file held, for the not-a-number arm only
+	fault  sysctlFault
 	err    error
 }
 
-func (r sysctlReading) readable() bool { return r.err == nil }
+func (r sysctlReading) readable() bool { return r.fault == sysctlReadable }
 
 // ok is the whole rule: readable, and at least as strict as want.
-func (r sysctlReading) ok() bool { return r.err == nil && r.value >= r.sysctl.want }
+func (r sysctlReading) ok() bool { return r.readable() && r.value >= r.sysctl.want }
+
+// desired is what the PERSISTENT file should carry for this row, and it is
+// deliberately not `want`.
+//
+// A drop-in derived from the weak rows alone is a file that lowers hardening:
+// a host running kptr_restrict=2 whose knob snug persists at 1 is weaker
+// after the next boot than before the fix, because of the file written to
+// harden it. max() makes the drop-in a FLOOR — it can never set a knob below
+// what this kernel is already doing.
+func (r sysctlReading) desired() int {
+	if r.value > r.sysctl.want {
+		return r.value
+	}
+	return r.sysctl.want
+}
+
+// fault renders the three not-a-value states as a clause with no subject, so
+// the caller supplies "kernel.foo" and gets one sentence.
+func (r sysctlReading) faultClause() string {
+	switch r.fault {
+	case sysctlAbsent:
+		return "this kernel does not have it"
+	case sysctlNotANumber:
+		return fmt.Sprintf("holds %q, which is not a number", r.raw)
+	default:
+		return fmt.Sprintf("could not be read: %v", r.err)
+	}
+}
 
 // readHostSysctls reads every row through the injected reader, which is what
 // lets the report and the fix command be tested against a host that is not
@@ -129,12 +176,15 @@ func readHostSysctls(read func(path string) (string, error)) []sysctlReading {
 		r := sysctlReading{sysctl: s}
 		raw, err := read(s.path())
 		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			r.fault, r.err = sysctlAbsent, err
 		case err != nil:
-			r.err = err
+			r.fault, r.err = sysctlUnreadable, err
 		default:
-			n, cerr := strconv.Atoi(strings.TrimSpace(raw))
+			r.raw = strings.TrimSpace(raw)
+			n, cerr := strconv.Atoi(r.raw)
 			if cerr != nil {
-				r.err = fmt.Errorf("%s does not hold a number: %q", s.path(), strings.TrimSpace(raw))
+				r.fault = sysctlNotANumber
 			} else {
 				r.value = n
 			}
@@ -145,18 +195,28 @@ func readHostSysctls(read func(path string) (string, error)) []sysctlReading {
 }
 
 // readProcSysFile is the host reader readHostSysctls takes in production.
+//
+// hostread and NOT os.ReadFile, even for a /proc/sys literal, because the
+// obvious exemption is FALSE here and a redteam round measured it: /proc/sys
+// is exactly a path a container runtime bind-mounts over, key feature 3 says
+// snug must run inside a container, and a FIFO at one of these five paths
+// takes `snug doctor` to a read that never returns — issue #337's shape, rc
+// 124 under `timeout 5`. hostread's O_NONBLOCK open and regular-file refusal
+// cost nothing for five files read once.
 func readProcSysFile(path string) (string, error) {
-	// HOSTREAD-EXEMPT: path is always one of inheritedSysctls' own
-	// /proc/sys literals, joined by hostSysctl.path from a constant table —
-	// a kernel pseudo-file, on a filesystem no host path snug reads can be
-	// swapped for, the same exemption usernsSysctlsPermissive states one
-	// file over.
-	data, err := os.ReadFile(path)
+	data, err := hostread.Required(path, maxProcSysBytes)
 	if err != nil {
 		return "", err
 	}
 	return string(data), nil
 }
+
+// maxProcSysBytes bounds that read. Every one of these knobs holds a small
+// integer and a newline; 64 bytes is far past any honest value and far below
+// anything that hurts. The cap is the LimitReader rather than a size check —
+// a /proc file stats as zero bytes, which is precisely why hostread does not
+// bound on the stat.
+const maxProcSysBytes = 64
 
 // reportHostSysctls is doctor's block. WARN only — it does not touch
 // doctor's ok, for the reason at the top of this file.
@@ -183,7 +243,10 @@ func reportHostSysctls(readings []sysctlReading) {
 	// from the reader: a weak knob is a decision they can make, an
 	// unreadable one is a kernel that does not have it and nothing to do.
 	if weak == 0 {
-		fmt.Printf("  ⚠️  %d of the %d kernel knobs snug's threat model inherits could not be read here\n",
+		// "no usable value", not "could not be read": one of the three
+		// faults is a knob that read perfectly well and holds something
+		// that is not a number.
+		fmt.Printf("  ⚠️  %d of the %d kernel knobs snug's threat model inherits have no usable value here\n",
 			unreadable, len(readings))
 	} else {
 		fmt.Println("  ⚠️  this host does not set every kernel knob snug's threat model inherits")
@@ -193,8 +256,8 @@ func reportHostSysctls(readings []sysctlReading) {
 	for _, r := range readings {
 		switch {
 		case !r.readable():
-			// Absent is not weak. Say which it is.
-			fmt.Printf("     ❔ %s — not readable: %v\n", r.sysctl.knob, r.err)
+			// A fault is not weakness. Say WHICH fault it is.
+			fmt.Printf("     ❔ %s — %s\n", r.sysctl.knob, r.faultClause())
 		case r.ok():
 			fmt.Printf("     ✅ %s = %d\n", r.sysctl.knob, r.value)
 		default:
