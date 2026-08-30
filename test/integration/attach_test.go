@@ -1723,18 +1723,59 @@ func attachHangReport(t *testing.T, p *bgProc, master *os.File) string {
 // sake. The pipe topology below needs no such thing: A never becomes a
 // session leader on that path, so there is no session-death SIGHUP for its
 // backgrounded descendant to receive in the first place.
+//
+// The `$ready` handshake — the outer shell does not exit until the
+// descendant has written its whole fd listing — is what makes the trap
+// above RELIABLE rather than merely present. `trap` runs AFTER the fork, so
+// a descendant that has not been scheduled yet when the session leader
+// exits is killed by the session-death SIGHUP before it ever installs the
+// handler, and the window is the outer shell's remaining work: one builtin
+// echo. That window is lost on a loaded runner. MEASURED on this host with
+// a plain `script -qec` pty and no snug involved: the same subshell with
+// the empty HUP trap installed first SURVIVED its session leader, and with
+// `sleep 0.3` before the trap it was KILLED — the window is real, only
+// narrow.
+//
+// The flake this closes is CI run 33275603368 (Tumbleweed engine job,
+// PASSED in the real-sandbox job of the same run, rerun of the failed job
+// passed): `the background descendant never reported its own pid`, with the
+// marker and OUTER-DONE present and DESCENDANT-PID absent. That is
+// precisely the shape a descendant killed before its trap produces: there
+// is no DESCENDANT-PID to relay, then or ever. REPRODUCED here by widening
+// the window rather than by waiting for CI — `sleep 0.5` inserted before
+// the trap, against THIS file at 1b17496, failed in 2.69s with the output
+// holding the marker and OUTER-DONE and nothing else, verbatim the CI
+// signature; the same delay against the handshake below PASSES (3.25s). The
+// same signature is recorded once already for CI run 33157723000, where it
+// was read as the test draining too early; the sentinel drain added there
+// did not stop it recurring, because output that was never written cannot
+// be waited for.
+//
+// A descendant that is merely SLOW (alive, but more than drainTimeout from
+// its first byte after A exits) produces the same missing DESCENDANT-PID
+// with the output legitimately dropped by the client. The handshake covers
+// that case too: by the time A exits, everything the assertions read has
+// already crossed the relay.
 func descendantHoldsStdioScript(marker string) string {
 	return fmt.Sprintf(`
+ready=/tmp/%s.ready
 echo %s
 (
   trap '' HUP
   echo DESCENDANT-PID=$BASHPID
   ls -1 /proc/$BASHPID/fd
-  echo ---FDLIST-END---
+  echo %s
+  : > "$ready"
   sleep 60
 ) &
+i=0
+while [ ! -e "$ready" ] && [ $i -lt 200 ]; do
+  sleep 0.05
+  i=$((i+1))
+done
+[ -e "$ready" ] || echo DESCENDANT-NEVER-READY
 echo OUTER-DONE
-`, marker)
+`, marker, marker, descendantFDListEnd)
 }
 
 // assertDescendantHeldStdio is the positive control the working agreement
@@ -1829,14 +1870,11 @@ func TestAttachPTYReturnsPromptlyWhenADescendantHoldsTheSlave(t *testing.T) {
 			attachHangReport(t, p, master))
 	}
 	elapsed := time.Since(start)
-	// Not drainPTY: the outer shell exits the instant it has echoed
-	// OUTER-DONE, so `snug attach` can return — correctly, that is what this
-	// test measures — before the BACKGROUNDED subshell has been scheduled at
-	// all. A single drain then captures the outer shell's two lines and none
-	// of the descendant's, and the control below fails having proved nothing
-	// about the code under test. MEASURED in CI, run 33157723000: the whole
-	// case took 0.03s against ~2.0s for its passing pipe twin, with the
-	// output holding the marker and OUTER-DONE and no DESCENDANT-PID.
+	// Sentinel drain rather than drainPTY, as the cheaper half of a belt and
+	// braces: the payload's own $ready handshake is what GUARANTEES the
+	// descendant's listing crossed the relay before A exited (see
+	// descendantHoldsStdioScript), so by here it is already in this pty's
+	// buffer; waiting for the sentinel only costs a loop if a read splits it.
 	out := drainPTYUntil(t, master, descendantFDListEnd)
 
 	if !strings.Contains(out, marker) || !strings.Contains(out, "OUTER-DONE") {
