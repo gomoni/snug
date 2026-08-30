@@ -862,6 +862,20 @@ func judgeLibpodMounts(p *Proxy, raw json.RawMessage) ([]libpodMount, error) {
 			bindIdx = append(bindIdx, i)
 			out = append(out, m)
 		case "tmpfs":
+			// Options are forwarded UNREAD, unlike a bind's, and this is the
+			// asymmetry a reader will otherwise take for an oversight. A
+			// tmpfs entry carries no host source, so there is nothing for
+			// checkMountRequests to judge, and the two options worth naming
+			// reach nothing: `dev` needs a device node, and creating one in
+			// a userns-owned mount is refused by the kernel to an
+			// unprivileged user; `suid` on fresh RAM the container itself
+			// writes yields a uid inside the container's OWN userns, which
+			// the container's root already has. MEASURED, podman 6.0.2:
+			// `--tmpfs /x` sends no options, `--tmpfs /x:rw,size=64m,exec`
+			// sends ["rw","size=64m","exec"], `--mount
+			// type=tmpfs,destination=/y,tmpfs-size=1m` sends ["size=1m"].
+			// Same claim containerResourceLimit makes for the docker-compat
+			// HostConfig.Tmpfs this matches — the two wires agree.
 			out = append(out, m)
 		default:
 			return nil, fmt.Errorf("mount type %q is not permitted; only bind and tmpfs are "+
