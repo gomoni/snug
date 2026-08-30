@@ -360,7 +360,7 @@ func TestDryRunAnnotationDoesNotUnderstateWriteAccess(t *testing.T) {
 // A caller that wants those set says so on the fake.
 func dryRunText(p *policy.Policy, args []string, cfg config, refusedBy error) string {
 	var buf bytes.Buffer
-	dryRun(newEnvFakeEnv(), &buf, p, args, cfg, refusedBy)
+	dryRun(newEnvFakeEnv(), &buf, p, args, cfg, nil, refusedBy)
 	return buf.String()
 }
 
@@ -776,7 +776,7 @@ func TestFilesystemBlockRendersTheStubAsExec(t *testing.T) {
 	// dryRun takes an io.Writer (issue #52's prerequisite), so this no longer
 	// redirects the real os.Stdout — it hands the renderer a buffer.
 	var buf bytes.Buffer
-	dryRun(newEnvFakeEnv(), &buf, p, args, config{}, nil)
+	dryRun(newEnvFakeEnv(), &buf, p, args, config{}, nil, nil)
 	got := buf.String()
 
 	if !strings.Contains(got, "exec   "+policy.StagedBinDir+"/podman") {

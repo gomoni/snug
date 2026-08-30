@@ -81,7 +81,11 @@ func TestTheGitExtractionBandNeverRendersHostTextRaw(t *testing.T) {
 	run := func(global string) string {
 		t.Setenv("GIT_CONFIG_GLOBAL", global)
 		return captureStdout(t, func() {
-			_, err := hostGitValues(reg, sel, root, target, true, true)
+			// A collector writing to os.Stderr, built INSIDE the capture:
+			// captureStdout swaps the stream around this closure, and a notes
+			// built outside would hold the real one. verbose, because the
+			// `git config extracted:` line this test sweeps is an aside.
+			_, err := hostGitValues(reg, sel, root, target, newNotes(os.Stderr, true), true)
 			if err != nil {
 				// dryRun=true, so hostGitValues prints and returns nil; anything
 				// else would mean this test is measuring a different path.

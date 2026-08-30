@@ -475,9 +475,26 @@ func TestNoResolverHostFailsFastAndSaysSo(t *testing.T) {
 	// The host-side warning (internal/cli/main.go), on the real run rather
 	// than --dry-run — the message says it is suppressed there because the
 	// NETWORK block already carries the fact.
-	warn := runWithFakeHostResolvConf(t, "", []string{"-p", "@net"}, proj, `true`).mustRun(t)
+	//
+	// UNDER -v, and the flag is the assertion rather than a way to make the
+	// test pass. This is an ASIDE in the collector's sense (internal/cli/notes.go,
+	// issue #541): the warning's own comment at the site says why it is not an
+	// invariant-5 downgrade — "a missing resolver is not a guarantee that no
+	// longer holds; the sandbox is unchanged, a payload with no DNS is strictly
+	// less capable". A boundary that got weaker prints unconditionally; a
+	// sandbox that can do less waits to be asked.
+	warn := runWithFakeHostResolvConf(t, "", []string{"-v", "-p", "@net"}, proj, `true`).mustRun(t)
 	if !strings.Contains(warn.out, "this host names no nameserver") {
-		t.Errorf("no warning was printed for a host naming no resolver at all while a "+
-			"profile asked for DNS:\n%s", warn.out)
+		t.Errorf("no warning was printed under -v for a host naming no resolver at all while "+
+			"a profile asked for DNS:\n%s", warn.out)
+	}
+	// AND THE NEGATIVE, which is the half that is actually new: without -v the
+	// same run says nothing. Issue #541's complaint was a wall of startup text
+	// erased by the TUI that started a moment later, and a "quiet by default"
+	// that still printed this line would not have fixed it.
+	quiet := runWithFakeHostResolvConf(t, "", []string{"-p", "@net"}, proj, `true`).mustRun(t)
+	if strings.Contains(quiet.out, "this host names no nameserver") {
+		t.Errorf("the no-resolver warning still reached a quiet run's stderr. It is an aside: "+
+			"-v and both screens carry it, an ordinary run does not (issue #541):\n%s", quiet.out)
 	}
 }

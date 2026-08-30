@@ -19,12 +19,12 @@ import (
 // a profile cannot express: files that must be WRITABLE COPIES, a file whose
 // content depends on the resolved policy, and a file that must be RECONSTRUCTED
 // from an allowlist of the host's rather than either bound or copied.
-func claudeFiles(pol *policy.Policy, home string, verbose bool) error {
+func claudeFiles(pol *policy.Policy, home string, n *notes) error {
 	if !hasProfile(pol, "@claude") {
 		return nil
 	}
 
-	stageClaudeCredentials(pol, home)
+	stageClaudeCredentials(pol, home, n)
 
 	// The MOUNT is unconditional, unlike stage() above: a host that has never run
 	// Claude Code still gets a file here, so the sandbox never opens on the theme
@@ -50,7 +50,7 @@ func claudeFiles(pol *policy.Policy, home string, verbose bool) error {
 		})
 	}
 
-	stageClaudeSettings(pol, home, verbose)
+	stageClaudeSettings(pol, home, n)
 
 	// installed_plugins.json regenerated from the profile's allowlist (issue
 	// #68). This one CAN fail the run — a named plugin that is not installed is
@@ -62,7 +62,7 @@ func claudeFiles(pol *policy.Policy, home string, verbose bool) error {
 
 	// The TARGET's own project-scope settings, projected read-only where they
 	// exist (issue #73). See stageProjectClaudeSettings.
-	stageProjectClaudeSettings(pol, verbose)
+	stageProjectClaudeSettings(pol, n)
 
 	guest := filepath.Join(home, ".claude", "CLAUDE.md")
 	pol.Replace(policy.Mount{
@@ -150,7 +150,7 @@ func stageInstalledPlugins(pol *policy.Policy, home string) error {
 // That fallback is the exact thing this change removes, and restoring it by
 // accident would undo the change with nothing on screen to say so. So: warn,
 // and stage nothing.
-func stageClaudeCredentials(pol *policy.Policy, home string) {
+func stageClaudeCredentials(pol *policy.Policy, home string, n *notes) {
 	path := filepath.Join(home, ".claude", ".credentials.json")
 
 	// BOUNDED AND REGULAR, not os.ReadFile. That is what this was, and a
@@ -172,7 +172,7 @@ func stageClaudeCredentials(pol *policy.Policy, home string) {
 	// The cap is small on purpose: the real file is 508 bytes.
 	raw, note := hostread.Optional(path, maxCredentialsBytes)
 	if note != "" {
-		fmt.Fprintf(os.Stderr, "snug: not staging ~/.claude/.credentials.json: %s\n"+
+		n.aside("snug: not staging ~/.claude/.credentials.json: %s\n"+
 			"      The sandbox will start LOGGED OUT rather than receive a credential file snug\n"+
 			"      could not read — copying it verbatim would hand the sandbox a refresh token\n"+
 			"      that outlives it (issue #58).\n", note)
@@ -205,7 +205,7 @@ func stageClaudeCredentials(pol *policy.Policy, home string) {
 		// ControlCharacter, drives dryRun's STDOUT — this message is stderr,
 		// written before dry-run renders anything, so it was structurally
 		// invisible to it.
-		fmt.Fprintf(os.Stderr, "snug: not staging %s: %s\n"+
+		n.aside("snug: not staging %s: %s\n"+
 			"      The sandbox will start LOGGED OUT rather than receive a credential file snug\n"+
 			"      could not read — copying it verbatim would hand the sandbox a refresh token\n"+
 			"      that outlives it (issue #58).\n"+
@@ -221,7 +221,7 @@ func stageClaudeCredentials(pol *policy.Policy, home string) {
 	// egress, and "errors name the fix" is worth more before the run than a
 	// 401 from inside one.
 	if expiresAt > 0 && time.UnixMilli(expiresAt).Before(time.Now()) {
-		fmt.Fprintf(os.Stderr, "snug: the staged Anthropic access token expired %s.\n"+
+		n.aside("snug: the staged Anthropic access token expired %s.\n"+
 			"      snug stages the access token only, not the refresh token, so nothing inside\n"+
 			"      the sandbox can renew it (issue #58).\n"+
 			"      Fix: run `claude` on the host to refresh it, then start snug again.\n",
@@ -343,18 +343,18 @@ const maxCredentialsBytes = 64 << 10
 // parser to track Claude Code's own is out of scope for what this profile
 // buys, and a human who hits it is told why on stderr instead of left to
 // wonder why their theme did not carry over.
-func stageClaudeSettings(pol *policy.Policy, home string, verbose bool) {
+func stageClaudeSettings(pol *policy.Policy, home string, n *notes) {
 	const readCap = 1 << 20 // 1 MiB — §5.6's read cap
 	path := filepath.Join(home, ".claude", "settings.json")
 
 	raw, degraded := loadHostClaudeSettings(path, "~/.claude/settings.json", readCap)
 	if degraded != "" {
-		fmt.Fprintf(os.Stderr, "snug: %s\n", degraded)
+		n.aside("snug: %s\n", degraded)
 	}
 
 	carried, drops := policy.FilterClaudeSettings(raw)
 	if len(drops.Executing) > 0 {
-		fmt.Fprintf(os.Stderr, "snug: ~/.claude/settings.json: dropped %s — each names a "+
+		n.aside("snug: ~/.claude/settings.json: dropped %s — each names a "+
 			"program, selects or fetches code, or sets a process environment variable; a "+
 			"read-only bind would have supplied it, so snug does not carry it into the "+
 			"generated file (see policy.ClaudeExecutingKeys)\n", strings.Join(drops.Executing, ", "))
@@ -368,17 +368,22 @@ func stageClaudeSettings(pol *policy.Policy, home string, verbose bool) {
 	// preference silently did not survive. See policy.FilterClaudeSettings' doc
 	// comment for the measurement that found this missing.
 	for _, r := range drops.Refused {
-		fmt.Fprintf(os.Stderr, "snug: ~/.claude/settings.json: dropping %q — %s\n", r.Name, r.Reason)
+		n.aside("snug: ~/.claude/settings.json: dropping %q — %s\n", r.Name, r.Reason)
 	}
-	// Overridden is a FOURTH kind of line, and unconditional like Executing
-	// above rather than gated on -v: it is the one class where the host's
+	// Overridden is a FOURTH kind of line, and an aside like Executing above.
+	// Both were unconditional until issue #541 made every note but the
+	// http-door escape wait to be asked; this comment said "unconditional like
+	// Executing above rather than gated on -v" for a while after that stopped
+	// being true, which is the copy-of-state shape CLAUDE.md names — a comment
+	// describing a sibling's behaviour instead of its own reason. The reason
+	// it is a separate KIND of line survives the change: it is the one class where the host's
 	// value is dropped AND snug writes its own (policy.ClaudeSettingDrops'
 	// doc comment on Overridden). No visibleValue on drops.Overridden: unlike
 	// drops.Unknown, FilterClaudeSettings only ever puts a name in this slice
 	// by testing it against snug's own authored-key set, so every string here
 	// is one of snug's own constants, never a byte the host's file chose.
 	if len(drops.Overridden) > 0 {
-		fmt.Fprintf(os.Stderr, "snug: ~/.claude/settings.json: %s — your value is dropped and "+
+		n.aside("snug: ~/.claude/settings.json: %s — your value is dropped and "+
 			"snug writes its own (%s): a client-side default, not a sandbox boundary\n",
 			strings.Join(drops.Overridden, ", "), strings.Join(claudeAuthoredPairs(), ", "))
 	}
@@ -402,12 +407,12 @@ func stageClaudeSettings(pol *policy.Policy, home string, verbose bool) {
 	// key name in a crafted settings.json must not be able to forge a line on
 	// this screen (see dryrun.go's visibleValue and
 	// TestNoSnugScreenEmitsARawControlCharacter).
-	if verbose && len(drops.Unknown) > 0 {
+	if n.isVerbose() && len(drops.Unknown) > 0 {
 		escaped := make([]string, len(drops.Unknown))
 		for i, name := range drops.Unknown {
 			escaped[i] = visibleValue(name)
 		}
-		fmt.Fprintf(os.Stderr, "snug: ~/.claude/settings.json: %d key(s) on neither catalogue, not "+
+		n.aside("snug: ~/.claude/settings.json: %d key(s) on neither catalogue, not "+
 			"carried and not individually classified — most likely ordinary preferences upstream "+
 			"added since this list was written, but if one of these matters it is a snug change: "+
 			"%s\n", len(drops.Unknown), strings.Join(escaped, ", "))
@@ -434,17 +439,17 @@ func stageClaudeSettings(pol *policy.Policy, home string, verbose bool) {
 	// the difference is three files away; if FilterClaudeSettings ever carries a
 	// key under the name the host spelled, this line needs the escape the one
 	// above has.
-	if verbose {
+	if n.isVerbose() {
 		names := make([]string, 0, len(carried))
 		for k := range carried {
 			names = append(names, k)
 		}
 		sort.Strings(names)
-		fmt.Fprintf(os.Stderr, "snug: ~/.claude/settings.json carried: %s\n", strings.Join(names, ", "))
+		n.aside("snug: ~/.claude/settings.json carried: %s\n", strings.Join(names, ", "))
 		// Always printed alongside `carried:`, never gated on drops.Overridden:
 		// snug authors these two keys into EVERY user-scope settings.json, not
 		// only the runs where the host's file happened to also set one.
-		fmt.Fprintf(os.Stderr, "snug: ~/.claude/settings.json authored: %s\n",
+		n.aside("snug: ~/.claude/settings.json authored: %s\n",
 			strings.Join(claudeAuthoredPairs(), ", "))
 	}
 
@@ -513,7 +518,7 @@ var projectClaudeSettingsFiles = []string{"settings.json", "settings.local.json"
 // AccessRO throughout, unlike the user-scope file (rw, because Claude Code
 // rewrites it — the gh precedent). Project scope is read-only on purpose: that
 // writability IS the outbound channel.
-func stageProjectClaudeSettings(pol *policy.Policy, verbose bool) {
+func stageProjectClaudeSettings(pol *policy.Policy, n *notes) {
 	const readCap = 1 << 20 // the user-scope cap
 	for _, name := range projectClaudeSettingsFiles {
 		guest := filepath.Join(pol.Target, ".claude", name)
@@ -530,25 +535,25 @@ func stageProjectClaudeSettings(pol *policy.Policy, verbose bool) {
 
 		raw, degraded := loadHostClaudeSettings(guest, label, readCap)
 		if degraded != "" {
-			fmt.Fprintf(os.Stderr, "snug: %s\n", degraded)
+			n.aside("snug: %s\n", degraded)
 		}
 		carried, drops := policy.FilterClaudeSettings(raw)
 		if len(drops.Executing) > 0 {
-			fmt.Fprintf(os.Stderr, "snug: %s: dropped %s — a repo's own settings file may name a "+
+			n.aside("snug: %s: dropped %s — a repo's own settings file may name a "+
 				"program or a hook, and snug reinterprets it into the allowlist rather than binding "+
 				"it, so a hostile repo's hooks do not run inside (issue #73)\n",
 				label, strings.Join(drops.Executing, ", "))
 		}
 		for _, r := range drops.Refused {
-			fmt.Fprintf(os.Stderr, "snug: %s: dropping %q — %s\n", label, r.Name, r.Reason)
+			n.aside("snug: %s: dropping %q — %s\n", label, r.Name, r.Reason)
 		}
-		if verbose && len(carried) > 0 {
+		if n.isVerbose() && len(carried) > 0 {
 			names := make([]string, 0, len(carried))
 			for k := range carried {
 				names = append(names, k)
 			}
 			sort.Strings(names)
-			fmt.Fprintf(os.Stderr, "snug: %s carried: %s\n", label, strings.Join(names, ", "))
+			n.aside("snug: %s carried: %s\n", label, strings.Join(names, ", "))
 		}
 
 		body := policy.ClaudeSettingsJSON(carried)

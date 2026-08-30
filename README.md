@@ -44,8 +44,11 @@ Main properties are
 
 ## Usage
 
-In the default mode `snug` enables following profiles. One can use `snug --dry-run` to inspect `ALL` the
-details of how given sandbox will be constructed.
+In the default mode `snug` enables following profiles. Two flags read the
+sandbox back to you and start nothing: `snug --explain` says in prose what the
+sandbox would be and — the part no other output can give you — what it would
+NOT have, and `snug --dry-run` prints `ALL` the details of how a given sandbox
+will be constructed. Both page through `$PAGER` on a terminal.
 
  * `@sys`: read-only `/usr`, `/bin`, and 14 enumerated `/etc` entries.
  * `@home`: tmpfs `$HOME` plus `.cache`, `.config`, `.local/state`, `.local/share` and `XDG` env variables.

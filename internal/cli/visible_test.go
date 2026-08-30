@@ -166,7 +166,7 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	// directly, so this capture has to reuse the SAME env the fixture above
 	// set them on.
 	var buf bytes.Buffer
-	if err := dryRun(env, &buf, p, p.BwrapArgs(0, 0), config{}, nil); err != nil {
+	if err := dryRun(env, &buf, p, p.BwrapArgs(0, 0), config{}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	got := buf.String()
@@ -267,7 +267,7 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	// or bidi. Same predicate, different spelling, same guarantee: nothing
 	// raw reaches the artifact.
 	var doc bytes.Buffer
-	if err := dryRun(env, &doc, p, p.BwrapArgs(0, 0), config{json: true}, nil); err != nil {
+	if err := dryRun(env, &doc, p, p.BwrapArgs(0, 0), config{json: true}, nil, nil); err != nil {
 		t.Fatalf("dryRun --json: %v", err)
 	}
 	// POSITIVE CONTROL first: the poisoned values really did reach the
@@ -549,4 +549,130 @@ func captureStdout(t *testing.T, f func()) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// TestExplainScreenEmitsNoRawControlCharacter is the same sweep for the screen
+// --explain renders (issue #541).
+//
+// It needs a fixture of its own rather than an arm on the dry-run sweep above,
+// and the reason is the whole point of writing it: the two screens have
+// DIFFERENT sinks. That fixture poisons environment variables, and --explain
+// renders no environment block at all — an arm reusing it would sweep a screen
+// the poison never reached and pass by measuring nothing, which is the failure
+// this file exists to prevent. So the values go into the sinks --explain
+// actually has: the two paths, the command, a writable mount's guest path and
+// a declared door's name.
+func TestExplainScreenEmitsNoRawControlCharacter(t *testing.T) {
+	const forged = "FORGED-BY-A-VALUE"
+
+	env := newEnvFakeEnv()
+	reg, err := profile.Builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "@podman-socket")
+	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// TARGET and HOME are HOST paths, and a host path is not snug's to refuse —
+	// the attacker controls only a directory name, and `mkdir` is not a grant
+	// (dryrun.go says the same about its own two rows). Rendering is the only
+	// guard these have, on either screen.
+	p.Target = "/tmp/proj\x1b[1A\r  writable   /etc/shadow   " + forged + "-TARGET"
+	// PURE C1 in the second sink, so that no ASCII control in the same value
+	// can make %q escape these on snug's behalf. U+009B is CSI, so the value
+	// below carries the 8-bit spelling of the cursor-up above, and U+0085
+	// (NEL) is a line break a C1-mode terminal acts on.
+	p.Home = "/home/u\u009b1A\u0085  writable   /etc/shadow   " + forged + "-HOME-C1"
+	// AND THE BIDI SPELLING. U+202E is category Cf, not Cc, so a widening that
+	// stopped at unicode.IsControl could not see it. It forges no row and
+	// erases none; it reverses the order the rest of the line READS in, which
+	// is the same lie by another mechanism. The marker is written backwards in
+	// the source: a bidi-rendering terminal shows "FORGED-BY-A-VALUE-RLO"
+	// after the override.
+	p.Command = []string{"sh\u202eOLR-EULAV-A-YB-DEGROF"}
+	// DEL alone in a fourth sink (issue #333's rune), reaching the FILESYSTEM
+	// block's writable list — the sink that has no equivalent on --dry-run,
+	// because that screen renders every mount and this one renders only the
+	// writable ones.
+	p.Replace(policy.Mount{
+		Guest:  "/srv/data\x7f  writable   /etc/shadow   " + forged + "-MOUNT-DEL",
+		Kind:   policy.KindBind,
+		Host:   "/srv/data",
+		Access: policy.AccessRW,
+		From:   []string{"@test"},
+	})
+	// And the door name, the one sink that is also an escape note.
+	p.ListenNames = []string{"web\x1b[1A\r  " + forged + "-DOOR"}
+
+	var buf bytes.Buffer
+	if err := explain(env, &buf, p, p.BwrapArgs(0, 0), config{}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+
+	// POSITIVE CONTROLS, named one by one so a failure says WHICH sink stopped
+	// being reached rather than "something is missing". Without these, a screen
+	// that rendered none of them would pass every assertion below.
+	for _, want := range []string{
+		forged + "-TARGET", forged + "-HOME-C1", forged + "-MOUNT-DEL", forged + "-DOOR",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the fixture's %q never reached the --explain screen, so that sink is "+
+				"measuring nothing:\n%s", want, got)
+		}
+	}
+	// The bidi value's marker is reversed in the source, so it is asserted by
+	// its ESCAPED spelling rather than by the forged marker: the sweep below
+	// would also pass if the COMMAND line had silently vanished.
+	if !strings.Contains(got, `\u202e`) {
+		t.Fatalf("the COMMAND sink's bidi value never reached the screen escaped, so the "+
+			"bidi half is measuring nothing:\n%s", got)
+	}
+
+	// isForgingRune is the RENDERER'S OWN predicate, so this asserts the
+	// property ("nothing on this screen can author a line") rather than a copy
+	// of a character list that could drift away from it.
+	if i := strings.IndexFunc(got, func(r rune) bool { return r != '\n' && isForgingRune(r) }); i >= 0 {
+		t.Errorf("--explain emitted a raw control character (%q at byte %d). Some sink on this "+
+			"screen renders text snug did not write, verbatim — find it and route it through "+
+			"visibleValue:\n%s", []rune(got[i:])[0], i, strings.ReplaceAll(got, "\x1b", "<ESC>"))
+	}
+}
+
+// TestExplainSaysWhatIsNotThere pins the section that has no equivalent on
+// --dry-run and is the reason the flag earns its code: --dry-run renders what
+// IS, and on a deny-by-default model the absences leave no row, so a human
+// cannot derive them by reading the grants. CLAUDE.md states the rule this
+// implements — a missing capability is a feature to state plainly, not a gap
+// to apologise for.
+func TestExplainSaysWhatIsNotThere(t *testing.T) {
+	env := newEnvFakeEnv()
+	reg, err := profile.Builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
+		profile.BuiltinDefaults(), envGoldenCtx(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := explain(env, &buf, p, p.BwrapArgs(0, 0), config{}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	for _, want := range []string{
+		"No X11 and no Wayland",
+		"No D-Bus",
+		"No host loopback",
+		"No ~/.ssh",
+		"No root, no setuid",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("--explain no longer states %q. The stated absences ARE the feature:\n%s", want, got)
+		}
+	}
 }

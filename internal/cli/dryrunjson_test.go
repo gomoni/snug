@@ -338,7 +338,7 @@ func TestHumanAndJSONFilesystemBlocksAgree(t *testing.T) {
 	human := dryRunText(p, args, config{}, nil)
 
 	var jsonOut bytes.Buffer
-	if err := dryRun(newEnvFakeEnv(), &jsonOut, p, args, config{json: true}, nil); err != nil {
+	if err := dryRun(newEnvFakeEnv(), &jsonOut, p, args, config{json: true}, nil, nil); err != nil {
 		t.Fatalf("dryRun --json: %v", err)
 	}
 	var doc struct {

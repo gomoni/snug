@@ -69,7 +69,7 @@ func TestGoldenClaudeBlock(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
 		}
-		if err := claudeFiles(plain, ctx.Home, false); err != nil {
+		if err := claudeFiles(plain, ctx.Home, nil); err != nil {
 			t.Fatalf("claudeFiles: %v", err)
 		}
 		if got := captureFile(t, func(f io.Writer) { describeClaude(f, plain) }); got != "" {
@@ -105,7 +105,7 @@ func goldenClaudeBlock(t *testing.T, name string, hostTrusts, exerciseSettingsFi
 	// project-scope file (policy.ClaudeSettingsJSON, unchanged by #87), never
 	// for this one. That IS the untrusted arm, reached the way a real host
 	// reaches it rather than by poking the policy.
-	if err := claudeFiles(p, ctx.Home, false); err != nil {
+	if err := claudeFiles(p, ctx.Home, nil); err != nil {
 		t.Fatalf("claudeFiles: %v", err)
 	}
 	if hostTrusts {

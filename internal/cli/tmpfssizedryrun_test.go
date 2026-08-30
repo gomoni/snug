@@ -83,7 +83,7 @@ func TestDryRunJSONCarriesTheTmpfsBound(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := dryRun(newEnvFakeEnv(), &buf, p, p.BwrapArgs(0, 0), config{json: true}, nil); err != nil {
+	if err := dryRun(newEnvFakeEnv(), &buf, p, p.BwrapArgs(0, 0), config{json: true}, nil, nil); err != nil {
 		t.Fatalf("dryRun --json: %v", err)
 	}
 

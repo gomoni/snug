@@ -86,7 +86,7 @@ func TestGoldenClaudeArgv(t *testing.T) {
 	// exist, so the credentials copy is skipped and ~/.claude.json carries no
 	// trust entry, but ~/.claude/settings.json is still generated
 	// unconditionally (issue #17) and is exactly the mount PR #74 added.
-	if err := claudeFiles(p, ctx.Home, false); err != nil {
+	if err := claudeFiles(p, ctx.Home, nil); err != nil {
 		t.Fatalf("claudeFiles: %v", err)
 	}
 	// CONTROL: the two mounts PR #74 is about must really be in the policy, or
@@ -141,7 +141,7 @@ func TestClaudeArgvIsByteIdenticalAcrossTrustArms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve(%v): %v", sel, err)
 	}
-	if err := claudeFiles(untrustedPolicy, ctx.Home, false); err != nil {
+	if err := claudeFiles(untrustedPolicy, ctx.Home, nil); err != nil {
 		t.Fatalf("claudeFiles: %v", err)
 	}
 	untrusted := untrustedPolicy.BwrapArgs(1000, 1000)
@@ -153,7 +153,7 @@ func TestClaudeArgvIsByteIdenticalAcrossTrustArms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve(%v): %v", sel, err)
 	}
-	if err := claudeFiles(trustedPolicy, ctx.Home, false); err != nil {
+	if err := claudeFiles(trustedPolicy, ctx.Home, nil); err != nil {
 		t.Fatalf("claudeFiles: %v", err)
 	}
 	hostHome := t.TempDir()

@@ -100,7 +100,7 @@ func TestSSHConfigChainOnThisHost(t *testing.T) {
 		t.Skip("no ssh on this host; there is nothing to ask")
 	}
 	home := t.TempDir() // not the real home: this asserts the filter, not the host
-	chain, _ := probeSSHConfig(home, false)
+	chain, _ := probeSSHConfig(home, nil)
 	for _, p := range chain {
 		if !strings.HasPrefix(p, "/") {
 			t.Errorf("chain entry %q is not absolute", p)
@@ -218,7 +218,7 @@ func TestProbeSSHConfigOnThisHost(t *testing.T) {
 	if _, err := exec.LookPath("ssh"); err != nil {
 		t.Skip("no ssh on this host; there is nothing to ask")
 	}
-	_, values := probeSSHConfig(t.TempDir(), false)
+	_, values := probeSSHConfig(t.TempDir(), nil)
 	for k, v := range values {
 		if !slices.Contains(policy.SSHKeyWhitelist, k) {
 			t.Errorf("probe returned %q, which is not in the whitelist", k)

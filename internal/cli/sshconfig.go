@@ -71,7 +71,7 @@ const sshProbeTimeout = 5 * time.Second
 // non-zero — IS named on stderr, because that is the case where snug tried to
 // find out and could not, and the human is the only one who can tell whether
 // their host is one of the exotic ones.
-func probeSSHConfig(home string, verbose bool) ([]string, policy.SSHValues) {
+func probeSSHConfig(home string, n *notes) ([]string, policy.SSHValues) {
 	ssh, err := exec.LookPath("ssh")
 	if err != nil {
 		return nil, nil
@@ -98,7 +98,7 @@ func probeSSHConfig(home string, verbose bool) ([]string, policy.SSHValues) {
 	// the user's config inherits it, and a probe is not a place for something
 	// to start reading the terminal snug was launched from.
 	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "snug: could not ask ssh which configuration files it reads (%v), "+
+		n.aside("snug: could not ask ssh which configuration files it reads (%v), "+
 			"so snug falls back to the two spellings it knows (%s) and to OpenSSH's\n"+
 			"      compiled-in algorithm defaults. On a host that spells it a third way, ssh "+
 			"inside the sandbox will fail with `Bad owner or permissions`.\n",
@@ -107,14 +107,14 @@ func probeSSHConfig(home string, verbose bool) ([]string, policy.SSHValues) {
 	}
 	chain := parseSSHConfigChain(stderr.String(), home)
 	values := sshValuesDelta(parseSSHValues(stdout.String()), sshDefaultValues(ctx, ssh))
-	if verbose {
+	if n.isVerbose() {
 		if len(chain) == 0 {
-			fmt.Fprintf(os.Stderr, "snug: ssh named no system-wide config file\n")
+			n.aside("snug: ssh named no system-wide config file\n")
 		} else {
-			fmt.Fprintf(os.Stderr, "snug: ssh reads system-wide config from %s\n",
+			n.aside("snug: ssh reads system-wide config from %s\n",
 				policy.VisibleText(strings.Join(chain, " ")))
 		}
-		fmt.Fprintf(os.Stderr, "snug: ssh config carried into the sandbox: %s\n", sshValuesLine(values))
+		n.aside("snug: ssh config carried into the sandbox: %s\n", sshValuesLine(values))
 	}
 	return chain, values
 }

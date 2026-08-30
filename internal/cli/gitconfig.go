@@ -38,7 +38,7 @@ import (
 // crafted remote URL pulled in a host config file carrying
 // `credential.helper = !command`. That condition hands the choice of which host
 // file is read to the repository — invariant 3, exactly.
-func extractGitConfig(home, target string) (policy.GitValues, error) {
+func extractGitConfig(home, target string, n *notes) (policy.GitValues, error) {
 	git, err := exec.LookPath("git")
 	if err != nil {
 		// Invariant 5. The profile promises the sandbox gets the name and email
@@ -70,7 +70,7 @@ func extractGitConfig(home, target string) (policy.GitValues, error) {
 	out := policy.GitValues{}
 	seen := map[string]bool{}
 	for _, f := range globalGitFiles(home) {
-		if err := readGitFile(git, f, home, gitDir, out, seen, 0); err != nil {
+		if err := readGitFile(git, f, home, gitDir, out, seen, 0, n); err != nil {
 			return nil, err
 		}
 	}
@@ -86,27 +86,27 @@ func extractGitConfig(home, target string) (policy.GitValues, error) {
 // dryRun follows the identity band exactly (stageGhConfig): a real run refuses,
 // a dry run warns and prints the policy anyway, because --dry-run is how a
 // profile gets inspected on a host that cannot satisfy it.
-func hostGitValues(reg profileRegistry, selected []policy.ProfileName, home, target string, verbose, dryRun bool) (policy.GitValues, error) {
+func hostGitValues(reg profileRegistry, selected []policy.ProfileName, home, target string, n *notes, dryRun bool) (policy.GitValues, error) {
 	if !gitExtractSelected(reg, selected) {
 		return nil, nil
 	}
-	v, err := extractGitConfig(home, target)
+	v, err := extractGitConfig(home, target, n)
 	if err != nil {
 		if !dryRun {
 			return nil, err
 		}
-		fmt.Fprintf(os.Stderr, "snug: %v\n      (dry run: continuing with no git config)\n", err)
+		n.aside("snug: %v\n      (dry run: continuing with no git config)\n", err)
 		return nil, nil
 	}
 	if len(v) == 0 {
 		// Not an error — a host may genuinely set none of these — but it is the
 		// difference between "the profile did nothing" and "the profile did its
 		// job", and inside the sandbox both look identical until `git commit`.
-		fmt.Fprintln(os.Stderr, "snug: the host's git config has none of the keys this profile "+
+		n.aside("%s\n", "snug: the host's git config has none of the keys this profile "+
 			"carries (user.name, user.email, init.defaultBranch), so the sandbox has no git identity")
 	}
-	if verbose {
-		fmt.Fprintf(os.Stderr, "snug: git config extracted: %s\n", gitValuesLine(v))
+	if n.isVerbose() {
+		n.aside("snug: git config extracted: %s\n", gitValuesLine(v))
 	}
 	return v, nil
 }
@@ -150,7 +150,7 @@ func globalGitFiles(home string) []string {
 // 2^8 times. A missing file is not an error — git treats an include of a file
 // that is not there as a no-op, and so does an absent ~/.gitconfig. A file that
 // git REFUSES TO PARSE is a different thing entirely, and it is reported.
-func readGitFile(git, file, home, gitDir string, out policy.GitValues, seen map[string]bool, depth int) error {
+func readGitFile(git, file, home, gitDir string, out policy.GitValues, seen map[string]bool, depth int, n *notes) error {
 	if depth > 8 {
 		return nil
 	}
@@ -241,7 +241,7 @@ func readGitFile(git, file, home, gitDir string, out policy.GitValues, seen map[
 				// `lower` is one of policy.GitKeyWhitelist — it got here by comparing
 				// equal to one — so it is snug's own text. `file` is not: an
 				// include.path VALUE in the host's own config chooses it.
-				fmt.Fprintf(os.Stderr, "snug: dropping git %s from %s: the value contains a "+
+				n.aside("snug: dropping git %s from %s: the value contains a "+
 					"control character, which would author directives in the config snug "+
 					"generates rather than being carried as a value\n", lower, policy.VisibleText(file))
 				continue
@@ -257,7 +257,7 @@ func readGitFile(git, file, home, gitDir string, out policy.GitValues, seen map[
 			// nothing said. git applies it wherever the line sits; so does this,
 			// because the recursion happens inside the same loop.
 			if err := readGitFile(git, resolveIncludePath(value, home, file),
-				home, gitDir, out, seen, depth+1); err != nil {
+				home, gitDir, out, seen, depth+1, n); err != nil {
 				return err
 			}
 
@@ -277,7 +277,7 @@ func readGitFile(git, file, home, gitDir string, out policy.GitValues, seen map[
 				continue
 			}
 			if err := readGitFile(git, resolveIncludePath(value, home, file),
-				home, gitDir, out, seen, depth+1); err != nil {
+				home, gitDir, out, seen, depth+1, n); err != nil {
 				return err
 			}
 
@@ -295,7 +295,7 @@ func readGitFile(git, file, home, gitDir string, out policy.GitValues, seen map[
 				cond = "onbranch:…"
 			}
 			// `cond` is one of the two constants above; `file` is host text.
-			fmt.Fprintf(os.Stderr, "snug: ignoring an `includeIf %q` in %s: that condition is "+
+			n.aside("snug: ignoring an `includeIf %q` in %s: that condition is "+
 				"decided by the repository being sandboxed, so honouring it would let the "+
 				"sandboxed material choose which of your files snug reads\n",
 				cond, policy.VisibleText(file))

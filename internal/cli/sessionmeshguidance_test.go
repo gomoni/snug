@@ -28,7 +28,7 @@ func TestClaudeGuidanceDoesNotClaimTheSessionMeshIsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve(%v): %v", sel, err)
 	}
-	if err := claudeFiles(p, home, false); err != nil {
+	if err := claudeFiles(p, home, nil); err != nil {
 		t.Fatalf("claudeFiles: %v", err)
 	}
 

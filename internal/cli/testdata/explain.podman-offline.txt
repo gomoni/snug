@@ -1,0 +1,66 @@
+snug — what this sandbox would be. Nothing was started.
+
+The project directory, writable from inside:
+  /home/u/proj/sub
+Your home directory:
+  /home/u
+Both keep the exact path they have on your host. snug never relocates a path,
+because a tool that prints an absolute path inside should print one that means
+the same thing outside.
+
+Selected profiles:
+  @sys @home @cwd-rw @parent-ro @podman-socket
+A profile only ever GRANTS. There is no rule anywhere that takes something
+away, so adding a profile can only ever make the sandbox see more, and the way
+to see less is to select fewer.
+
+FILESYSTEM
+  The root is an empty tmpfs. It has 11 paths read-only, 9 writable, and
+  1 file snug generates itself rather than binding from your host.
+  Everything else on this machine is not missing by a rule — it was never
+  granted, so there is nothing there to deny.
+
+  Writable, which is the half worth reading twice:
+    /dev
+    /home/u
+    /home/u/.cache
+    /home/u/.config
+    /home/u/.local/share
+    /home/u/.local/state
+    /home/u/proj/sub
+    /proc
+    /tmp
+
+WHAT IS NOT IN HERE
+  No X11 and no Wayland: a GUI program will not open a window, and nothing
+  inside can read your screen or your keystrokes.
+  No D-Bus, session or system. No host abstract sockets of any kind.
+  No host loopback. A service you are running on 127.0.0.1 is unreachable
+  from inside, under every profile, including the networked ones.
+  No ~/.ssh. Your private keys are not in this filesystem at all.
+  No root, no setuid, and no process snug did not start — everything here
+  dies with the sandbox.
+
+NETWORK
+  None. The sandbox has its own empty network namespace with nothing in it
+  but loopback, and no helper process to carry packets anywhere. This is
+  the absence of a network profile rather than a setting, so it cannot be
+  switched back on by accident.
+
+CONTAINERS
+  There is a real container engine for this run, and it is snug's own — a
+  sibling process, not the host's podman and not something inside the sandbox.
+  What the sandbox talks to is a filtering proxy: a request that would change
+  state and that the filter has not read is refused rather than forwarded.
+  The engine sees a view DERIVED from this policy, not your host tree.
+  This run therefore starts a stage process even with no network profile: the
+  engine needs the stage for its user namespace, not for the network.
+  A container gets the sandbox's network, which here is no network. It also
+  means `podman run -p 8080:80` publishes nothing your host can reach.
+
+COMMAND
+  /bin/sh
+
+This is the summary. `snug --dry-run` has the complete list — every mount, every
+environment variable, the bwrap argv — and is the screen to read when you are
+checking snug rather than orienting yourself.
