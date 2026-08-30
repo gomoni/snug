@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -101,5 +102,57 @@ func TestRequiredPodmanHelpersExcludesRootlessport(t *testing.T) {
 			t.Errorf("%q is in the required set, but crun and runc are an either/or — "+
 				"requiring one reports a working host as broken", h)
 		}
+	}
+}
+
+// The OCI runtime is ONE row, and which binary it names is a question about
+// this host's cgroups rather than about which files exist. Listing crun and
+// runc side by side printed runc's path beside a 📍 on a host where
+// ociRuntimeMissing had already ruled it out — every container inside a
+// container, where preflight P5 selects cgroups=disabled and podman answers
+// the create with 500 `requested OCI runtime runc is not compatible with
+// NoCgroups`.
+func TestTheOCIRuntimeRowNamesTheRuntimeThatWillActuallyServe(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		crun, runc       string
+		cgroupsDisabled  bool
+		wantName, wantIn string
+		wantNoteEmpty    bool
+	}{
+		{name: "crun wins wherever it is present", crun: "/usr/bin/crun", runc: "/usr/bin/runc",
+			wantName: "crun", wantIn: "/usr/bin/crun", wantNoteEmpty: true},
+		{name: "crun wins even with cgroups disabled", crun: "/usr/bin/crun", cgroupsDisabled: true,
+			wantName: "crun", wantIn: "/usr/bin/crun", wantNoteEmpty: true},
+		{name: "runc alone serves where cgroups are usable", runc: "/usr/bin/runc",
+			wantName: "runc", wantIn: "cgroups are usable"},
+		// THE ONE THAT MATTERS: runc is present, so a bare existence check
+		// says the host is fine, and the run then fails at create.
+		{name: "runc alone cannot serve where cgroups are disabled", runc: "/usr/bin/runc",
+			cgroupsDisabled: true, wantName: "runc", wantIn: "CANNOT serve here"},
+		{name: "neither gets no row at all", wantName: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			name, path, note := ociRuntimeRow(tc.crun, tc.runc, tc.cgroupsDisabled)
+			if name != tc.wantName {
+				t.Fatalf("row names %q, want %q", name, tc.wantName)
+			}
+			if name == "" {
+				return
+			}
+			if tc.wantNoteEmpty {
+				if note != "" {
+					t.Errorf("note = %q, want none — crun serves everywhere and a line saying so "+
+						"is a line to read", note)
+				}
+				if path != tc.wantIn {
+					t.Errorf("path = %q, want %q", path, tc.wantIn)
+				}
+				return
+			}
+			if !strings.Contains(note, tc.wantIn) {
+				t.Errorf("note = %q, want it to contain %q", note, tc.wantIn)
+			}
+		})
 	}
 }

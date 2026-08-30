@@ -81,11 +81,17 @@ func detectHostShims() []policy.HostShim {
 // snug's own engine still works in this situation — it runs on snug's side of
 // the fence, where the shim resolves. Only the CLIENT inside the sandbox is
 // broken, which is why this is a warning rather than a refusal.
-func podmanClientUsable() (ok bool, detail string) {
-	path, err := exec.LookPath("podman")
+// The RESOLVED path is returned as well as the verdict: `snug doctor` prints
+// it beside the tick the way it prints bwrap's and pasta's, and it was already
+// computed here. Two callers asking the PATH separately would be two answers
+// to "which podman", which is the question the shim arms below exist to get
+// right.
+func podmanClientUsable() (ok bool, path, detail string) {
+	found, err := exec.LookPath("podman")
 	if err != nil {
-		return false, "podman is not installed"
+		return false, "", "podman is not installed"
 	}
+	path = found
 
 	resolved := path
 	if r, err := filepath.EvalSymlinks(path); err == nil {
@@ -93,7 +99,7 @@ func podmanClientUsable() (ok bool, detail string) {
 	}
 	if strings.Contains(filepath.Base(resolved), "host-exec") ||
 		strings.Contains(resolved, "distrobox") {
-		return false, fmt.Sprintf("%s is a distrobox shim (%s) that forwards to the host",
+		return false, resolved, fmt.Sprintf("%s is a distrobox shim (%s) that forwards to the host",
 			path, resolved)
 	}
 
@@ -111,10 +117,10 @@ func podmanClientUsable() (ok bool, detail string) {
 		defer f.Close()
 		var magic [2]byte
 		if n, _ := f.Read(magic[:]); n == 2 && magic[0] == '#' && magic[1] == '!' {
-			return false, fmt.Sprintf("%s is a shell wrapper, not the podman binary", resolved)
+			return false, resolved, fmt.Sprintf("%s is a shell wrapper, not the podman binary", resolved)
 		}
 	}
-	return true, ""
+	return true, resolved, ""
 }
 
 // warnAboutPodmanClient prints the explanation once, when the profile that needs
@@ -152,7 +158,7 @@ func podmanClientUsable() (ok bool, detail string) {
 // through this proxy", and `docker run --rm alpine echo` works today. See
 // CONTAINER-CLIENT.md §5.
 func warnAboutPodmanClient() {
-	ok, detail := podmanClientUsable()
+	ok, _, detail := podmanClientUsable()
 	if !ok {
 		_, staged := DetectHostShim("podman")
 		fmt.Fprintf(os.Stderr,

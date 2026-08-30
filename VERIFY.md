@@ -5606,6 +5606,12 @@ That transcript is ten ticks; issue #483 added an eleventh,
 helper-binaries and TIOCSTI lines. It is not in the transcript because the
 transcript is a measurement, and this container has not been re-measured since.
 
+The transcript also PREDATES the report being grouped into `🧰 programs`,
+`🐧 kernel` and `🏠 host configuration`, so its flat order is not what a run
+prints today. Same reason it is left alone: rewriting a measurement into what
+it would have said is the one thing a measurement must not be. §27 below
+carries a current transcript.
+
 Timing, same run: 5m04s for the whole job, of which the suite is 220.370s. The
 fixed cost underneath is small — image pull 11s, zypper ~20s, setup-go 9s,
 `make build` 12s — which is why no image caching is used.
@@ -6395,6 +6401,316 @@ and `--no-seccomp exit=0`. The raw i386 convention returns `-errno`, so `-1`
 would be `EPERM` — snug's filter's answer — and `-22` is `EINVAL`, the kernel's
 (`unshare(CLONE_NEWUSER)` refuses a multithreaded caller, and the Go runtime is
 one). The call reached the kernel.
+
+## 27. The kernel hardening snug inherits, reported and fixable (issue #526)
+
+Five kernel knobs are load-bearing for snug's threat model and belong to the
+HOST, not to snug: `kernel.kptr_restrict`, `kernel.dmesg_restrict`,
+`kernel.perf_event_paranoid`, `kernel.yama.ptrace_scope`,
+`kernel.unprivileged_bpf_disabled`. snug read none of them until this section
+existed. This is invariant 5 — no silent downgrade — applied to a guarantee
+snug INHERITS: `doctor` discloses, and nothing new refuses.
+
+On a host that sets all five, one line — and the whole report, MEASURED on
+this development host, showing where that line sits now that `doctor` groups
+by WHO FIXES IT (a package manager, the kernel, or a file):
+
+```bash
+./bin/snug doctor; echo "exit=$?"
+```
+
+```
+🩺 snug doctor
+
+🧰 programs — the binaries this host has to provide
+  ✅ bubblewrap 0.11.2
+     📍 /usr/bin/bwrap
+  ✅ pasta 20260612.a9c61ff-1.3
+     📍 /usr/bin/pasta
+  ✅ podman client is usable inside a sandbox
+     📍 /usr/bin/podman
+  ✅ podman's helper binaries are all findable
+     📍 conmon        /usr/bin/conmon
+     📍 netavark      /usr/libexec/podman/netavark
+     📍 aardvark-dns  /usr/libexec/podman/aardvark-dns
+     📍 catatonit     /usr/libexec/podman/catatonit
+     📍 crun          /usr/bin/crun
+
+🐧 kernel — what this kernel lets snug build
+  ✅ the 5 kernel knobs snug's threat model inherits from this host are set
+  ✅ unprivileged user namespaces work
+  ✅ an unshared network namespace comes up empty — loopback and nothing else
+     ℹ️  what a RUN can reach is the profiles' answer, not this probe's — `snug config`
+  ✅ snug's own stage starts — clone, uid map, loopback, netns move, re-exec
+  ✅ TIOCSTI disabled kernel-wide — job control works inside the sandbox
+
+🏠 host configuration — files and settings outside the kernel
+  ✅ a delegated subuid/subgid range the container engine can use
+  📦 running inside a container (distrobox/podman) — supported
+  ✅ profiles load cleanly
+
+🎉 This host can run snug.
+exit=0
+```
+
+The helper rows carry the PATH podman will actually use, which is the question
+on a machine with more than one podman installation — this one is a distrobox
+over a host podman. `findPodmanHelper` searches podman's own directory list
+and not `$PATH`, and it computed those paths already; they were thrown away.
+The OCI runtime gets ONE row, naming the runtime podman will actually use.
+`crun` and `runc` are alternatives and listing both reads as "snug wants two"
+— worse, it prints `runc`'s path beside a 📍 on a host where `ociRuntimeMissing`
+has already ruled it out. `runc` alone serves only where cgroups are usable:
+preflight P5 selects `cgroups = "disabled"` wherever cgroup delegation is not,
+which is every container inside a container, and runc does not implement that
+mode (MEASURED in a Tumbleweed CI container, run 32944442005: create returned
+500 `requested OCI runtime runc is not compatible with NoCgroups`). So the row
+is `crun` where crun exists, and where it does not it is `runc` carrying
+whichever of the two verdicts this host's cgroups earn it.
+
+The kernel section leads with the five sysctls because they are the only part
+of it anyone can change today — each is a value to write. Everything under
+them is what this kernel was built and booted to allow.
+
+The netns row states what the PROBE measured and stops. It unshares a network
+namespace and reads `/proc/net/dev` inside it; the answer is that this kernel
+gives snug a real, empty one. It is not a statement about what a run can
+reach — `-p @net` has full egress — and `doctor` has no profile selected, so
+that question belongs to `snug config` and `--dry-run`.
+
+```bash
+./bin/snug fix sysctl; echo "exit=$?"
+```
+
+stdout is the COMPLETE drop-in, byte for byte what `-w` writes, even though
+this host needs nothing applied — and that is a fix rather than noise, see
+§27d:
+
+```
+# Written by `snug fix sysctl -w`.
+# The kernel hardening snug's threat model inherits from this host;
+# `snug doctor` reports it. 00- so a deliberate host file later in
+# sysctl.d's order overrides this one; snug raises a floor.
+kernel.kptr_restrict = 1
+kernel.dmesg_restrict = 1
+kernel.perf_event_paranoid = 2
+kernel.yama.ptrace_scope = 1
+kernel.unprivileged_bpf_disabled = 2
+```
+
+with the commentary on stderr and **`exit=0`**:
+
+```
+snug: the running kernel already has every knob this kernel provides; the file above is what makes that survive a reboot
+snug: nothing was changed — `sudo snug fix sysctl -w` writes /etc/sysctl.d/00-snug.conf
+exit=0
+```
+
+`kernel.unprivileged_bpf_disabled = 2` is the floor rule in one line: snug
+asks for 1, this host runs 2, and the file persists **2**. A drop-in that
+wrote `want` would leave this machine weaker after its next boot than it is
+now.
+
+**No stdout at all** from `fix`, and `exit=0` — the same contract `snug fix
+subuid` states above, for the same `distrobox` `init_hook` reason.
+
+### 27a. The weak host, WITHOUT touching this machine's sysctls
+
+A user namespace can bind a file over a `/proc/sys` entry, so the report is
+checked against a fabricated weak host with no root and no change to the real
+one. Four knobs are made 0 and `ptrace_scope` is left alone:
+
+```bash
+echo 0 > /tmp/zero
+unshare -Urm --propagation private sh -c '
+  for k in kptr_restrict dmesg_restrict perf_event_paranoid unprivileged_bpf_disabled; do
+    mount --bind /tmp/zero /proc/sys/kernel/$k
+  done
+  ./bin/snug doctor; echo "exit=$?"'
+```
+
+Expect the four named with their value and the value wanted, `ptrace_scope`
+still ticked, and — the property that matters — **`🎉 This host can run snug.`
+with `exit=0`**:
+
+```
+  ⚠️  this host does not set every kernel knob snug's threat model inherits
+     ℹ️  snug does not provide these and cannot: they are the host's, and the
+        sandbox is weaker than the design describes where they are off
+     ⚠️  kernel.kptr_restrict = 0, want 1 or stricter
+        💬 the sandbox's /proc/kallsyms and /proc/modules carry REAL kernel symbol addresses — a KASLR base leak snug does not mask (audit P4). At 1 they read as zeros for the payload.
+     ⚠️  kernel.dmesg_restrict = 0, want 1 or stricter
+     ⚠️  kernel.perf_event_paranoid = 0, want 2 or stricter
+     ✅ kernel.yama.ptrace_scope = 1
+     ⚠️  kernel.unprivileged_bpf_disabled = 0, want 1 or stricter
+     🔧 `snug fix sysctl` prints what this host is missing and changes nothing;
+        `sudo snug fix sysctl -w` applies it and makes it survive a reboot
+```
+
+(💬 lines elided for the middle three; each carries what that knob costs.)
+
+WARN, never fail, is deliberate: key feature 3 says snug must work inside a
+container, and a container is exactly where `/proc/sys` is read-only and these
+values are the host's anyway. Refusing would make snug unusable on the hosts
+`.claude/design/PSEUDOFS-AUDIT.md` was written about.
+
+The same fabricated host, asked for the fix:
+
+```bash
+unshare -Urm --propagation private sh -c '
+  for k in kptr_restrict dmesg_restrict perf_event_paranoid unprivileged_bpf_disabled; do
+    mount --bind /tmp/zero /proc/sys/kernel/$k
+  done
+  ./bin/snug fix sysctl'
+```
+
+stdout is the file and nothing else — `snug fix sysctl > 00-snug.conf` does what
+it looks like — with every word of explanation on stderr:
+
+```
+# Written by `snug fix sysctl -w`.
+# The kernel hardening snug's threat model inherits from this host;
+# `snug doctor` reports it. 00- so a deliberate host file later in
+# sysctl.d's order overrides this one; snug raises a floor.
+kernel.kptr_restrict = 1
+kernel.dmesg_restrict = 1
+kernel.perf_event_paranoid = 2
+kernel.yama.ptrace_scope = 1
+kernel.unprivileged_bpf_disabled = 1
+```
+
+```
+snug: nothing was changed — `sudo snug fix sysctl -w` applies the 4 setting(s) below to the running kernel and writes /etc/sysctl.d/00-snug.conf
+snug: kernel.kptr_restrict = 0 — the sandbox's /proc/kallsyms and /proc/modules carry REAL kernel symbol addresses — a KASLR base leak snug does not mask (audit P4). At 1 they read as zeros for the payload.
+...
+```
+
+**Four** settings are applied and **five** lines are written:
+`kernel.yama.ptrace_scope` is already at 1 on this fabricated host so there is
+nothing to apply for it, and it is in the file because the file's job is the
+next boot. §27d is why that distinction is the whole design.
+
+### 27b. A knob this kernel does not have is not a knob the host failed to set
+
+`kernel.yama.ptrace_scope` does not exist without the Yama LSM.
+
+```bash
+mkdir -p /tmp/empty
+unshare -Urm --propagation private sh -c '
+  mount --bind /tmp/empty /proc/sys/kernel/yama
+  ./bin/snug doctor | grep -A1 "could not be read"
+  ./bin/snug fix sysctl; echo "exit=$?"'
+```
+
+```
+  ⚠️  1 of the 5 kernel knobs snug's threat model inherits have no usable value here
+     ℹ️  snug does not provide these and cannot: they are the host's, and the
+snug: kernel.yama.ptrace_scope this kernel does not have it — not fixable, and no line for it will be written
+exit=0
+```
+
+Never `= 0`, and never a line in the drop-in: a `sysctl.d` file naming a knob
+the kernel does not have fails on every boot, and it would be a file snug left
+behind.
+
+Three states, three sentences, because they send a reader to three different
+places: **this kernel does not have it** (ENOENT, above), **could not be read**
+(it is there and the read failed), and **holds "…", which is not a number**.
+All three used to print as the single phrase "not readable".
+
+### 27d. The drop-in is a function of the TABLE, not of this boot
+
+Four defects a redteam round measured, all one root cause: `snug doctor` reads
+the RUNNING kernel and `/etc/sysctl.d/00-snug.conf` governs the NEXT BOOT, and
+each defect came from answering the second question with the first one's data.
+
+**It writes every readable row, not only the weak ones.** A drop-in derived
+from the weak rows alone DELETES hardening it wrote itself: a five-line file,
+on a host where a developer had loosened one knob at runtime to profile
+something, was truncated to that one line — four persistent settings gone,
+`exit=0`, and `snug doctor` answering ✅ for all five because the runtime was
+fine. Both halves honest; together they asserted a hardening that would not
+survive a reboot.
+
+**It never persists below what the kernel is already running.** Every line is
+`max(want, current)`. §27 above shows it on this host:
+`kernel.unprivileged_bpf_disabled = 2` where snug asks for 1.
+
+**`-w` has two independent jobs.** Applying knobs and maintaining the file are
+separate, and running the second only when the first had work meant that once
+the runtime was strict, `-w` said "nothing to do" and exited 0 **with the file
+deleted** — an image rebuild, an ansible run, a package upgrade — so the
+persistence could never be restored until a reboot made the knobs weak again.
+`snug fix` names that exact failure mode for `subuid` ("part of this
+container's image, so it goes away on every rebuild"); this noun had it with
+no recovery. A second run over a correct file reports `is already current` and
+does not rewrite it.
+
+**Stdout is the whole file, always.** The redirect this command documents,
+`snug fix sysctl > /etc/sysctl.d/00-snug.conf`, truncated the target to zero
+bytes on any host that needed nothing — measured, 148 bytes before, 0 after,
+`exit=0`. "Nothing to do prints nothing" is right for a noun whose content is
+a LINE TO APPEND and wrong for one whose content is a WHOLE FILE, so the
+promise is made true rather than withdrawn.
+
+**`00-`, not `99-`.** `sysctl.d` applies files in lexicographic order and the
+LAST one to set a knob wins, so snug's file is read FIRST and any deliberate
+host file overrides it. At `99-` a host whose admin had persisted
+`kernel.kptr_restrict = 2` in `50-hardening.conf`, and whose runtime was still
+at the distro value because the machine had not rebooted, got **1** from the
+next boot onward — lowered by the file snug wrote to harden it. The cost,
+stated: a later file that sets one of these knobs weaker also wins, and
+`snug doctor` reports that on the next run.
+
+### 27e. -w runs as root, so the drop-in path is checked before it is written
+
+`O_NOFOLLOW` refuses a symlink and says nothing about a HARD LINK. With
+`ln victim.conf /etc/sysctl.d/00-snug.conf` in place, the victim's content was
+replaced by the drop-in under the user's `sudo`. Both are refused now, by
+`Lstat` before the write, and the refusals name the fix rather than surfacing
+as `too many levels of symbolic links` — which a human reads as a symlink
+loop, not as snug declining to follow one. The write itself goes to a
+temporary in the same directory and is `rename(2)`d into place, so a
+concurrent `sysctl --system` never reads a half-written file.
+
+Planting either link needs write access to `/etc/sysctl.d`, which is
+root-owned. That is not a reason to skip it: "the attacker would already be
+root" is exactly the argument this discipline exists to stop being made file
+by file.
+
+### 27f. Inside a container, `-w` exits 0
+
+There is nothing it can do — `/proc/sys` is read-only and the knobs are the
+host kernel's — which is the definition of nothing to do, and `snug fix`
+states in capitals that nothing to do exits 0 because `distrobox-init` runs
+hooks under `set -o errexit`. It exited **69** before, so a hook calling it on
+a weak host aborted box startup with a message about sysctls.
+
+```bash
+./bin/snug fix sysctl -w; echo "exit=$?"
+```
+
+on this development host, which is a distrobox:
+
+```
+snug: running inside a container (distrobox/podman) — these are the HOST kernel's knobs and /proc/sys is read-only here; run `sudo snug fix sysctl -w` on the host instead
+exit=0
+```
+
+The non-root arm keeps its nonzero status, and the difference is not
+arbitrary: asking to write and being unable to is a failure to do what was
+asked, where the container arm is a correct refusal to do anything.
+
+### 27c. The threshold is one number, not two
+
+Container preflight P6 (`internal/cli/containerpreflight.go`) REFUSES a
+container run at `ptrace_scope=0`, and it now reads that threshold from the
+same table row `doctor` reports — so the refusal and the report cannot drift
+into disagreeing. The refusal's own text names the new command:
+
+```
+      Fix: sysctl kernel.yama.ptrace_scope=1 (or stricter), or `sudo snug fix sysctl -w`
+```
 
 ## If a check fails
 
