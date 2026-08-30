@@ -215,10 +215,20 @@ demote-in-place.
 - **R4 — Emit `--ro-bind /proc/sys /proc/sys`.** Makes the whole write side snug's
   instead of the kernel's; costs nothing (only IPC/PID-ns noise is writable today);
   matches crun; future-proofs P10a/P10b/P11 against any uid-mapping change.
-- **R5 — Teach `snug doctor` to read and report the host hardening it silently
-  depends on:** `kptr_restrict`, `dmesg_restrict`, `perf_event_paranoid`,
-  `yama/ptrace_scope`, `unprivileged_bpf_disabled`. "No silent downgrade" applied
-  to an *inherited* guarantee. snug checks none today.
+- **R5 — SHIPPED.** `snug doctor` reads and reports the host hardening snug
+  inherits — `kptr_restrict`, `dmesg_restrict`, `perf_event_paranoid`,
+  `yama/ptrace_scope`, `unprivileged_bpf_disabled` — from one table
+  (`internal/cli/hostsysctl.go`), naming each weak knob's value, the value
+  wanted and what the weak setting costs the payload. WARN only: a container
+  is where these are least likely to be set and `/proc/sys` is read-only
+  there, so disclosure is what "no silent downgrade" asks for on an
+  *inherited* guarantee, not a refusal. `snug fix sysctl` prints the settings
+  and `-w` applies them and writes `/etc/sysctl.d/99-snug.conf`; only the WEAK
+  rows are ever written, so a host stricter than snug asks for is never walked
+  back to snug's minimum, and an ABSENT knob (no Yama, no BPF) is reported as
+  unreadable and never fixed. Container preflight P6's `ptrace_scope` refusal
+  reads its threshold from the same row, so the report and the refusal cannot
+  disagree about the number. Issue #526; `VERIFY.md` §27.
 - **R6 — SHIPPED.** `Validate` refuses any non-authored bind whose HOST end is
   `/proc`, `/dev` or `/sys` — by path, and by the mount table's filesystem name
   for one of the three mounted somewhere else — at any access, and refuses any grant at or

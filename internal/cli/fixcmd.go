@@ -27,6 +27,8 @@ package cli
 //
 //	snug fix subuid       print what this host needs; change nothing
 //	snug fix subuid -w    apply it
+//	snug fix sysctl       print the kernel knobs this host is missing (issue #526)
+//	snug fix sysctl -w    apply them, and write /etc/sysctl.d/99-snug.conf
 //	snug fix              list the nouns; act on nothing
 //
 // MEASURED, `gofmt -h`: "-w  write result to (source) file instead of stdout".
@@ -41,9 +43,10 @@ package cli
 //
 // THE NOUN IS MANDATORY. Bare `snug fix` never acts, the same rule `snug
 // engine gc` states for itself ("nothing is ever reclaimed without a selector
-// naming it"). The namespace is expected to grow — package installs were named
-// as a candidate — and the day a second noun exists, a "fix everything"
-// default would run one nobody asked for.
+// naming it"). There are two nouns and the namespace is expected to grow, so a
+// "fix everything" default would now run something nobody asked for — and the
+// two it would run are not comparable: one appends a line to /etc/subuid, the
+// other rewrites kernel knobs on a running machine.
 
 import (
 	"errors"
@@ -63,6 +66,8 @@ func fixUsage() {
 usage:
   snug fix subuid [USER]        print the delegated id range this host needs
   snug fix subuid [USER] -w     write it to /etc/subuid and /etc/subgid
+  snug fix sysctl               print the kernel hardening this host is missing
+  snug fix sysctl -w            apply it and write /etc/sysctl.d/99-snug.conf
 
 Prints and changes NOTHING without -w. Printing nothing means there is nothing
 to do, and the exit status is 0 either way, so this is safe to call from a
@@ -75,20 +80,22 @@ because a range delegated to root is a line that looks right and does nothing.
 
 func fixCmd(argv []string) int {
 	if len(argv) == 0 || strings.HasPrefix(argv[0], "-") {
-		fmt.Fprintln(os.Stderr, "snug: `snug fix` takes one subject: subuid")
+		fmt.Fprintln(os.Stderr, "snug: `snug fix` takes one subject: subuid or sysctl")
 		fixUsage()
 		return exitUsage
 	}
 	switch argv[0] {
 	case "subuid":
 		return fixSubuidCmd(argv[1:])
+	case "sysctl":
+		return fixSysctlCmd(argv[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "snug: `snug fix` has no subject %s (only: subuid)\n", visibleValue(argv[0]))
+		fmt.Fprintf(os.Stderr, "snug: `snug fix` has no subject %s (only: subuid, sysctl)\n", visibleValue(argv[0]))
 		return exitUsage
 	}
 }
 
-// fixSubuidCmd is the one noun. It reads the same map and calls the same
+// fixSubuidCmd reads the same map and calls the same
 // subuidSuggestion `snug doctor` does, which is the point: doctor is this
 // command's dry run, so there is no second preview to keep in step.
 func fixSubuidCmd(argv []string) int {

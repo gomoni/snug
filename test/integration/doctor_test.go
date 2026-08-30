@@ -52,4 +52,15 @@ func TestDoctorRunsCleanOnAHostThatCanRunSnug(t *testing.T) {
 	if strings.Contains(report, "❌") {
 		t.Errorf("doctor reported a hard failure on a host that can run snug:\n%s", report)
 	}
+
+	// The inherited-hardening block (issue #526), by the one phrase all three
+	// of its arms share — all five set, some weak, or some absent — because
+	// which arm fires depends on the host and this test runs on several.
+	// Without this, doctor could stop reading those five knobs entirely and
+	// every assertion above would still pass: the block is WARN-only by
+	// design, so its disappearance costs no ❌ and no exit code.
+	if !strings.Contains(report, "threat model inherits") {
+		t.Errorf("doctor's report says nothing about the kernel knobs snug's threat model "+
+			"inherits from the host (issue #526):\n%s", report)
+	}
 }

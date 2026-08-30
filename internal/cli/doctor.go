@@ -257,6 +257,12 @@ func doctor(argv []string) int {
 		fmt.Println("  ✅ TIOCSTI disabled kernel-wide — job control works inside the sandbox")
 	}
 
+	// After the TIOCSTI row and before the container marker: both are
+	// "what does this KERNEL give you", and this one is the larger half —
+	// five knobs snug depends on and never read until issue #526. WARN
+	// only, and it deliberately does not touch ok (hostsysctl.go says why).
+	reportHostSysctls(readHostSysctls(readProcSysFile))
+
 	if marker := containerMarker(); marker != "" {
 		fmt.Printf("  📦 %s — supported\n", marker)
 	}

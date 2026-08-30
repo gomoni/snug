@@ -389,22 +389,44 @@ func probeBindResolvConf(argv []string) error {
 // So: REFUSE the run, never warn-and-continue (maintainer decision,
 // 2026-08-18; invariant 5). 2 and 3 are STRICTER than 1 (they narrow ptrace
 // further) and pass.
+// The THRESHOLD is not typed here. It is inheritedSysctl's row (issue #526),
+// which `snug doctor` reports from and this function refuses on, so the two
+// cannot drift into disagreeing about the number — the ticket asks for
+// exactly that, and a second literal `1` in this file is how it would fail.
 func preflightPtraceScope() error {
-	data, err := os.ReadFile("/proc/sys/kernel/yama/ptrace_scope")
-	if err != nil {
+	row := inheritedSysctl("kernel.yama.ptrace_scope")
+	// HOSTREAD-EXEMPT: row.path() is "/proc/sys/kernel/yama/ptrace_scope"
+	// built from the constant table, a kernel pseudo-file — the same
+	// exemption hostsysctl.go's own reader states.
+	data, err := os.ReadFile(row.path())
+	return judgePtraceScope(row, string(data), err)
+}
+
+// judgePtraceScope is P6's DECISION with the host read out of it, so the
+// refusal is tested at every value rather than at whatever the machine
+// running the suite happens to be set to. The threshold is the caller's row,
+// never a literal here.
+func judgePtraceScope(row hostSysctl, data string, readErr error) error {
+	if readErr != nil {
 		// Absent means no Yama LSM at all, i.e. the kernel enforces nothing
 		// beyond the ordinary same-uid rule — the same failure mode as 0.
-		return fmt.Errorf("cannot read /proc/sys/kernel/yama/ptrace_scope (%w): the container "+
+		return fmt.Errorf("cannot read %s (%w): the container "+
 			"engine's capability drop is only a meaningful boundary against a same-uid peer when "+
-			"Yama's ptrace_scope is enforced at 1 or stricter; refusing rather than assuming it is", err)
+			"Yama's ptrace_scope is enforced at %d or stricter; refusing rather than assuming it is",
+			row.path(), readErr, row.want)
 	}
-	scope := strings.TrimSpace(string(data))
-	if scope == "0" {
-		return fmt.Errorf("this host's /proc/sys/kernel/yama/ptrace_scope is 0: any same-uid " +
-			"process can ptrace any other, with no capability check at all — the container " +
-			"engine's own capability drop (dropping CAP_SYS_PTRACE) is not a meaningful boundary " +
-			"under this setting, and snug will not run a container engine while pretending it is.\n" +
-			"      Fix: sysctl kernel.yama.ptrace_scope=1 (or stricter)")
+	scope, cerr := strconv.Atoi(strings.TrimSpace(data))
+	if cerr != nil {
+		return fmt.Errorf("%s does not hold a number (%q): refusing rather than assuming Yama "+
+			"is enforcing", row.path(), strings.TrimSpace(data))
+	}
+	if scope < row.want {
+		return fmt.Errorf("this host's %s is %d: any same-uid "+
+			"process can ptrace any other, with no capability check at all — the container "+
+			"engine's own capability drop (dropping CAP_SYS_PTRACE) is not a meaningful boundary "+
+			"under this setting, and snug will not run a container engine while pretending it is.\n"+
+			"      Fix: sysctl %s=%d (or stricter), or `sudo snug fix sysctl -w`",
+			row.path(), scope, row.knob, row.want)
 	}
 	return nil
 }

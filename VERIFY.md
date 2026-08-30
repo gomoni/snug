@@ -6396,6 +6396,131 @@ would be `EPERM` — snug's filter's answer — and `-22` is `EINVAL`, the kerne
 (`unshare(CLONE_NEWUSER)` refuses a multithreaded caller, and the Go runtime is
 one). The call reached the kernel.
 
+## 27. The kernel hardening snug inherits, reported and fixable (issue #526)
+
+Five kernel knobs are load-bearing for snug's threat model and belong to the
+HOST, not to snug: `kernel.kptr_restrict`, `kernel.dmesg_restrict`,
+`kernel.perf_event_paranoid`, `kernel.yama.ptrace_scope`,
+`kernel.unprivileged_bpf_disabled`. snug read none of them until this section
+existed. This is invariant 5 — no silent downgrade — applied to a guarantee
+snug INHERITS: `doctor` discloses, and nothing new refuses.
+
+On a host that sets all five, one line:
+
+```bash
+./bin/snug doctor | grep 'kernel knob'
+./bin/snug fix sysctl; echo "exit=$?"
+```
+
+```
+  ✅ the 5 kernel knobs snug's threat model inherits from this host are set
+snug: this host already sets every kernel knob snug's threat model inherits; nothing to do
+exit=0
+```
+
+**No stdout at all** from `fix`, and `exit=0` — the same contract `snug fix
+subuid` states above, for the same `distrobox` `init_hook` reason.
+
+### 27a. The weak host, WITHOUT touching this machine's sysctls
+
+A user namespace can bind a file over a `/proc/sys` entry, so the report is
+checked against a fabricated weak host with no root and no change to the real
+one. Four knobs are made 0 and `ptrace_scope` is left alone:
+
+```bash
+echo 0 > /tmp/zero
+unshare -Urm --propagation private sh -c '
+  for k in kptr_restrict dmesg_restrict perf_event_paranoid unprivileged_bpf_disabled; do
+    mount --bind /tmp/zero /proc/sys/kernel/$k
+  done
+  ./bin/snug doctor; echo "exit=$?"'
+```
+
+Expect the four named with their value and the value wanted, `ptrace_scope`
+still ticked, and — the property that matters — **`🎉 This host can run snug.`
+with `exit=0`**:
+
+```
+  ⚠️  this host does not set every kernel knob snug's threat model inherits
+     ℹ️  snug does not provide these and cannot: they are the host's, and the
+        sandbox is weaker than the design describes where they are off
+     ⚠️  kernel.kptr_restrict = 0, want 1 or stricter
+        💬 the sandbox's /proc/kallsyms and /proc/modules carry REAL kernel symbol addresses — a KASLR base leak snug does not mask (audit P4). At 1 they read as zeros for the payload.
+     ⚠️  kernel.dmesg_restrict = 0, want 1 or stricter
+     ⚠️  kernel.perf_event_paranoid = 0, want 2 or stricter
+     ✅ kernel.yama.ptrace_scope = 1
+     ⚠️  kernel.unprivileged_bpf_disabled = 0, want 1 or stricter
+     🔧 `snug fix sysctl` prints what this host is missing and changes nothing;
+        `sudo snug fix sysctl -w` applies it and makes it survive a reboot
+```
+
+(💬 lines elided for the middle three; each carries what that knob costs.)
+
+WARN, never fail, is deliberate: key feature 3 says snug must work inside a
+container, and a container is exactly where `/proc/sys` is read-only and these
+values are the host's anyway. Refusing would make snug unusable on the hosts
+`.claude/design/PSEUDOFS-AUDIT.md` was written about.
+
+The same fabricated host, asked for the fix:
+
+```bash
+unshare -Urm --propagation private sh -c '
+  for k in kptr_restrict dmesg_restrict perf_event_paranoid unprivileged_bpf_disabled; do
+    mount --bind /tmp/zero /proc/sys/kernel/$k
+  done
+  ./bin/snug fix sysctl'
+```
+
+stdout is the file and nothing else — `snug fix sysctl > 99-snug.conf` does what
+it looks like — with every word of explanation on stderr:
+
+```
+kernel.kptr_restrict = 1
+kernel.dmesg_restrict = 1
+kernel.perf_event_paranoid = 2
+kernel.unprivileged_bpf_disabled = 1
+```
+
+`kernel.yama.ptrace_scope` is absent from that list because this host already
+has it at 1. **Only the weak rows are ever written**: a host at
+`kptr_restrict=2` must not be walked back to snug's minimum of 1 by the very
+file that claims to harden it.
+
+### 27b. A knob this kernel does not have is not a knob the host failed to set
+
+`kernel.yama.ptrace_scope` does not exist without the Yama LSM.
+
+```bash
+mkdir -p /tmp/empty
+unshare -Urm --propagation private sh -c '
+  mount --bind /tmp/empty /proc/sys/kernel/yama
+  ./bin/snug doctor | grep -A1 "could not be read"
+  ./bin/snug fix sysctl; echo "exit=$?"'
+```
+
+```
+  ⚠️  1 of the 5 kernel knobs snug's threat model inherits could not be read here
+     ℹ️  snug does not provide these and cannot: they are the host's, and the
+snug: kernel.yama.ptrace_scope is not readable on this host (open /proc/sys/kernel/yama/ptrace_scope: no such file or directory) — not fixable, and no line for it will be written
+snug: nothing here is fixable — every knob this kernel has is set, and the 1 it does not have cannot be
+exit=0
+```
+
+Never `= 0`, and never a line in the drop-in: a `sysctl.d` file naming a knob
+the kernel does not have fails on every boot, and it would be a file snug left
+behind.
+
+### 27c. The threshold is one number, not two
+
+Container preflight P6 (`internal/cli/containerpreflight.go`) REFUSES a
+container run at `ptrace_scope=0`, and it now reads that threshold from the
+same table row `doctor` reports — so the refusal and the report cannot drift
+into disagreeing. The refusal's own text names the new command:
+
+```
+      Fix: sysctl kernel.yama.ptrace_scope=1 (or stricter), or `sudo snug fix sysctl -w`
+```
+
 ## If a check fails
 
 1. Re-run it with `--dry-run` and compare what snug *claimed* against what you
