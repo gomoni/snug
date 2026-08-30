@@ -13,10 +13,12 @@ DESCRIPTORS (fixed; nothing travels in the environment — fds.go)
   fd 4    lifeline      read end of an anonymous pipe; P0 holds the write end
   fd 5    bwrap-info    READ end of bwrap's --info-fd pipe; the stage parses it, P0 does not
   fd 6   .. sandbox     K descriptors, dup3'd to 3..3+K-1 in the bwrap child
-  fd 62   N-socket      AF_INET socket CREATED IN N; still answers for N after the move
-  fd 63   netns-N       the descriptor P1 pins on N before it leaves (not CLOEXEC until __stage-serve)
+  fd 62  .. slack       4 numbers left free for what the Go runtime opens BEFORE main and keeps
+  fd 66   N-socket      AF_INET socket CREATED IN N; still answers for N after the move
+  fd 67   netns-N       the descriptor P1 pins on N before it leaves (not CLOEXEC until __stage-serve)
   budget        K <= 56, checked on BOTH sides of the control socket (checkFDBudget)
-  parking       fd 62 and fd 63 are dup3 TARGETS; each is refused if already open (requireFDFree)
+  reservation   fd 66 and fd 67 are CLAIMED at P1's first instant (reserveParkingFDs, refused if already open)
+  parking       the same two are dup3 TARGETS later; each is refused if its reservation is gone (requireFDReserved)
 
 BWRAP UNSHARE SET under policy.NetnsStage (internal/policy/bwrap.go)
   --unshare-user

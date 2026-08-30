@@ -8,6 +8,7 @@ import (
 	"github.com/gomoni/snug/internal/engine"
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/sandbox"
+	"github.com/gomoni/snug/internal/stage"
 )
 
 // Report is the DATA layer under --dry-run: the facts about one resolved
@@ -165,7 +166,7 @@ type reportMountNote struct {
 
 // reportPasta is the pasta invocation snug would run for this policy's
 // egress, and the same placeholder every --dry-run screen already prints
-// instead of a real pid: PastaTargetStage(0, 63) under the stage topology
+// instead of a real pid: PastaTargetStage(0, stage.NetnsFD) under the stage
 // (dryrun.go's NetnsStage arm), PastaTargetChild(0) otherwise. See
 // policy.PastaTarget's doc comment for why a single pid cannot always name
 // both namespaces pasta needs.
@@ -517,7 +518,7 @@ func buildPastaReport(p *policy.Policy) *reportPasta {
 	if p.Topology.Netns == policy.NetnsStage {
 		return &reportPasta{
 			Exec: execResolution("pasta"),
-			Argv: p.PastaArgs(policy.PastaTargetStage(0, 63)),
+			Argv: p.PastaArgs(policy.PastaTargetStage(0, stage.NetnsFD)),
 			Placeholder: "/proc/0/fd/63 is a placeholder; the real pid is the stage's, " +
 				"and 63 is fdNetnsN (internal/stage/fds.go)",
 		}

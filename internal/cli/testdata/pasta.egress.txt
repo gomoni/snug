@@ -1,1 +1,1 @@
-pasta --config-net --map-host-loopback none -t none -u none -T none -U none --ns-ifname snug0 --no-netns-quit --quiet --foreground --netns /proc/0/fd/63 --userns /proc/0/ns/user
+pasta --config-net --map-host-loopback none -t none -u none -T none -U none --ns-ifname snug0 --no-netns-quit --quiet --foreground --netns /proc/0/fd/67 --userns /proc/0/ns/user

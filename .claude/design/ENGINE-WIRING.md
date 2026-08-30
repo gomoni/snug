@@ -144,7 +144,7 @@ downgrade.
 
 ### 2.3 Passing N to the engine child
 
-`MainServe` marks `fdNetnsN` (63) **CLOEXEC** at step 1, so it will not survive
+`MainServe` marks `fdNetnsN` **CLOEXEC** at step 1, so it will not survive
 the exec into `__inengine`. Use the identical trick `runOneSandbox` uses for
 bwrap: wrap it with `os.NewFile(uintptr(fdNetnsN), "netns-N")` and pass it in
 the engine child's `ExtraFiles` (Go `dup3`s it into the child **without**

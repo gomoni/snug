@@ -14,6 +14,7 @@ import (
 
 	"github.com/gomoni/snug/internal/engine"
 	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/stage"
 )
 
 // dryRun is not a debugging convenience. It is the mechanism by which a human
@@ -194,9 +195,9 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 		// named from outside as /proc/<stage>/fd/<n>.
 		pastaExec := execResolution("pasta")
 		if p.Topology.Netns == policy.NetnsStage {
-			fmt.Fprintln(out, pastaExec.Argv0+" "+visibleArgs(p.PastaArgs(policy.PastaTargetStage(0, 63))))
-			fmt.Fprintln(out, "  (/proc/0/fd/63 is a placeholder; the real pid is the stage's, "+
-				"and 63 is fdNetnsN)")
+			fmt.Fprintln(out, pastaExec.Argv0+" "+visibleArgs(p.PastaArgs(policy.PastaTargetStage(0, stage.NetnsFD))))
+			fmt.Fprintf(out, "  (/proc/0/fd/%d is a placeholder; the real pid is the stage's, "+
+				"and %d is fdNetnsN)\n", stage.NetnsFD, stage.NetnsFD)
 		} else {
 			fmt.Fprintln(out, pastaExec.Argv0+" "+visibleArgs(p.PastaArgs(policy.PastaTargetChild(0))))
 			fmt.Fprintln(out, "  (/proc/0/... is a placeholder; the real pid is bwrap's child)")

@@ -6760,27 +6760,27 @@ into disagreeing. The refusal's own text names the new command:
 ## 28. The stage's two parked descriptors are where fds.go says (issue #525)
 
 P1 parks two descriptors at fixed numbers: an `AF_INET` socket created inside N
-at fd 62, and the pinned network namespace at fd 63. Both arrive there by
+at fd 66, and the pinned network namespace at fd 67. Both arrive there by
 `dup3`, and **`dup3` onto an occupied descriptor closes it and reports
 success** — so a collision has no error in it. Look at a live stage:
 
 ```
-$ snug -p @net . -- sh -c 'sleep 8' &
+$ snug -p @net . -- sh -c 'sleep 10' >/tmp/snugrun.out 2>&1 &
 $ ls -l /proc/$(pgrep -f __stage-serve)/fd | awk 'NR>1 {print $9, $10, $11}' | sort -n
-0 -> /dev/pts/5
-1 -> /dev/pts/5
-2 -> /dev/pts/5
-3 -> socket:[4061981]
-4 -> pipe:[4061982]
-5 -> pipe:[4061979]
+0 -> /dev/null
+1 -> /tmp/snugrun.out
+2 -> /tmp/snugrun.out
+3 -> socket:[4688751]
+4 -> pipe:[4688752]
+5 -> pipe:[4688749]
 14 -> anon_inode:[eventpoll]
 15 -> anon_inode:[eventfd]
 18 -> anon_inode:[pidfd]
-62 -> socket:[4063935]
-63 -> net:[4026532422]
+66 -> socket:[4696344]
+67 -> net:[4026533692]
 ```
 
-Rows 3, 4 and 5 are `fdControl`, `fdLife` and `fdBwrapInfo`. Rows 62 and 63 are
+Rows 3, 4 and 5 are `fdControl`, `fdLife` and `fdBwrapInfo`. Rows 66 and 67 are
 the two parked descriptors, and `socket:` / `net:` is what says they are the
 right ones. Rows 14 and 15 are the pair that make this a bug rather than a
 comment: they are **the Go runtime's own epoll and eventfd, and they sit
@@ -6790,21 +6790,126 @@ two are at 14 and 15 rather than at 6 and 7 — and it is closed again by the
 time this snapshot is taken, which is why the listing skips from 5 to 14.
 
 So the runtime's descriptors follow the block wherever it ends. On a shipped
-profile the block is small and they land in the teens, as here. At `K =
-maxPassthrough` (56, the permitted maximum) the block fills 6..61 and they land
-on 62 and 63 instead — measured — and the parking then closes them with no
-error.
+profile the block is small and they land in the teens, as here. Which is why
+the two numbers 66 and 67 are CLAIMED at P1's first instant —
+`reserveParkingFDs` dup3's `fdControl` onto both before this process has
+allocated anything of its own — rather than checked at the parking: the
+descriptors that would collide are the Go runtime's, and nothing orders them
+against a check.
+
+A claim is not enough by itself, because some of the runtime's descriptors are
+opened BEFORE `main` and cannot be preempted by anything snug does: the cgroup
+CPU limit file `defaultGOMAXPROCSInit` opens and keeps (one under cgroup v2,
+two under v1), and netpoll's pair when a timer is armed that early. `fd 62..65`
+is the slack left free for them — four numbers between the largest permitted
+block and fd 66 — and §28a is where you can see them land in it.
 
 One thing about running this by hand: `pgrep -f __stage-serve` matches EVERY
 snug on the machine, so quit your other sandboxes first, or the listing you get
 is somebody else's run rather than the one you just started.
 
-No shipped profile reaches that descriptor count, so the refusal itself is not
-reachable by hand: it is `requireFDFree` in `internal/stage/fds.go`, called
-immediately before each `dup3`, and
-`TestParkingRefusesADescriptorThatIsAlreadyOpen` is the regression.
-`go test ./internal/stage -run TestGoldenStageSpec` is the golden that says what
-the two numbers should be.
+## 28a. The budget P0 accepts is one the stage can actually build
+
+No shipped profile is large enough to reach the boundary, but a profile of your
+own is: `listen_names` is the knob that grows the block. This is the check that
+P0's arithmetic and P1's descriptor table agree — they did not, and the
+divergence was invisible to both, because each side was right on its own.
+
+Ask snug where the boundary is rather than counting: a deliberately over-large
+profile is refused, and the refusal states both what the policy costs and what
+the budget is.
+
+```bash
+mkdir -p $X/snug/profiles.d
+doors() {
+  { echo '[profile.doors]'
+    echo 'description = "fd budget probe"'
+    printf 'listen_names = ['
+    for i in $(seq 1 $1); do printf '"d%03d",' $i; done
+    echo ']'
+  } > $X/snug/profiles.d/doors.toml
+}
+
+doors 200
+XDG_CONFIG_HOME=$X ./bin/snug -p @net -p doors $SC/proj -- true
+```
+
+```
+snug: stage: this policy needs 209 pass-through descriptors, so the block would
+      run from fd 6 to fd 214 and reach the numbers reserved above it: fd 62..65,
+      the slack the Go runtime's pre-main descriptors need (fdPremainSlack), and
+      then the N socket at fd 66 and the pinned network namespace descriptor at
+      fd 67 (the budget is 56).
+```
+
+209 for 200 doors, so on THIS host everything besides the doors costs 9 — one
+per generated file, one for the seccomp filter, one for bwrap's `--info-fd`,
+two for the netns handshake pair, one for the args memfd. That number differs
+with what your host makes snug generate, which is why it is read here and not
+memorised: the largest policy the budget accepts is `budget - overhead` doors,
+56 - 9 = 47 here.
+
+```bash
+doors 47 && XDG_CONFIG_HOME=$X ./bin/snug -p @net -p doors $SC/proj -- sh -c 'echo PAYLOAD-RAN'
+doors 48 && XDG_CONFIG_HOME=$X ./bin/snug -p @net -p doors $SC/proj -- sh -c 'echo PAYLOAD-RAN'
+```
+
+Expect `PAYLOAD-RAN` from the first, after 47 door declarations, and from the
+second:
+
+```
+snug: stage: this policy needs 57 pass-through descriptors, so the block would
+      run from fd 6 to fd 62 and reach the numbers reserved above it: fd 62..65,
+      the slack the Go runtime's pre-main descriptors need (fdPremainSlack), and
+      then the N socket at fd 66 and the pinned network namespace descriptor at
+      fd 67 (the budget is 56).
+```
+
+The point is that the boundary is in ONE place, and it took two corrections to
+get there. Before the reservation, K = 54, 55 and 56 were all accepted by that
+arithmetic and then refused three descriptors later, by the parking — `fd 62
+... is ALREADY OPEN (anon_inode:[eventfd])` — because `__stage-setup` allocates
+the N socket and the runtime allocates its epoll and eventfd above the block
+before the second parking. Raising the two numbers would not have fixed that: a
+new descriptor takes the lowest free one, so the runtime's pair follows the
+block wherever it goes.
+
+The reservation closes that, and then the SLACK closes what a reservation
+cannot. Run the 47-door case again and look at the stage while the payload
+sleeps:
+
+```
+$ ls -l /proc/$(pgrep -f __stage-serve)/fd | awk 'NR>1 {print $9, $10, $11}' | sort -n | tail -6
+5 -> pipe:[4561731]
+62 -> anon_inode:[eventpoll]
+63 -> anon_inode:[eventfd]
+66 -> socket:[4551085]
+67 -> net:[4026533482]
+68 -> anon_inode:[pidfd]
+```
+
+62 and 63 are the numbers the two parked descriptors used to occupy, and here
+the runtime's epoll and eventfd are sitting on them — with the block at its
+maximum they land exactly there, which is what the four free numbers are for.
+On a host whose `/proc/self/cgroup` resolves, one more of them is the cgroup
+CPU limit file the runtime opens before `main` and keeps; that is the one that
+failed CI at exactly this K while passing here, where `/proc/self/cgroup` reads
+`0::/../../app.slice/...` and `cgroup.OpenCPU` finds nothing to open:
+
+```
+snug: __stage-setup: stage: fd 62, where the N socket must be parked, is ALREADY
+      OPEN (/sys/fs/cgroup/cpu.max)
+```
+
+`TestTheFDBudgetPolicySnugAcceptsIsOneTheStageCanActuallyBuild` (integration) is
+the automated form and drives all three cases;
+`TestTheReservationSurvivesWhatTheRuntimeOpensBeforeMain`,
+`TestTheReservationIsWhatMakesTheBudgetExact` and
+`TestParkingRefusesADescriptorThatIsAlreadyOpen` in `internal/stage` are the
+unit regressions — the first builds a block of the maximum permitted size in a
+child process and opens the runtime's four descriptors by hand, so it does not
+wait for a host that holds a cgroup descriptor. `go test ./internal/stage -run
+TestGoldenStageSpec` is the golden that says what the numbers should be.
 
 ## If a check fails
 
