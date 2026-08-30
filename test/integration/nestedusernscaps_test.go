@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ── caps regained in a self-made user namespace, and what they do not reach ──
@@ -238,4 +239,140 @@ func TestNestedUserNamespaceCapsCannotReachSnugsNamespaces(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ── the same argument, for CAP_SYS_PTRACE and a real process in U ──────────
+
+// buildPtraceRegainProbe compiles testdata/ptraceregainprobe, the same
+// build-a-small-Go-binary idiom buildCapregainProbe uses just above, for the
+// same reason: an exact errno (EPERM vs EACCES vs ENOENT) is not something a
+// shell one-liner can assert reliably.
+func buildPtraceRegainProbe(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "ptraceregainprobe")
+	cmd := exec.Command("go", "build", "-o", bin, "./testdata/ptraceregainprobe")
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	var out strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("building test/integration/testdata/ptraceregainprobe: %v: %s", err, out.String())
+	}
+	return bin
+}
+
+// TestTheSandboxsPayloadRegainsPtraceInItsOwnUsernsAndItReachesNothingInU is
+// issue #61 part (a)'s negative: it is what stops the userns-reset property
+// stagecaps.go documents (a nested user namespace hands its creator the full
+// bounding set back, CAP_SYS_PTRACE included) from being read as a hole in
+// the gate the rest of this file's test and TestNothingSnugPutsInUHoldsCapSysPtrace
+// (stageptracegate_test.go) pin.
+//
+// COVERAGE THIS DOES NOT CLAIM, stated the way the file-level comment above
+// states its own gap: the attacking process here is NOT the sandboxed
+// payload's own pid-namespace-confined process. It cannot be, and running it
+// there would test something WEAKER than intended: bwrap always creates a
+// fresh pid namespace for the sandbox (policy.Topology.UnshareFlags, "pid"),
+// and a pid namespace's own visibility rule means a process inside it has NO
+// number at all for an ancestor-namespace process like P1 — /proc/<P1>/mem
+// would not even resolve (ENOENT), which says something about pid-namespace
+// opacity, not about the user-namespace hierarchy stagecaps.go's own claim
+// rests on. So this probe runs in P1's OWN pid namespace (sharing it, since
+// stageCloneflags carries no CLONE_NEWPID and P1's pid is therefore resolvable
+// here) and creates ONLY a nested USER namespace of its own — isolating the
+// one mechanism under test. What this does NOT measure is layered on top of
+// what it does: an actual sandboxed payload gets BOTH protections (pid
+// opacity AND the userns hierarchy), and this test is only the second.
+func TestTheSandboxsPayloadRegainsPtraceInItsOwnUsernsAndItReachesNothingInU(t *testing.T) {
+	budget(t, 15*time.Second)
+	requireSandbox(t)
+	requirePasta(t)
+	requireNestedUserNamespace(t)
+
+	bin := buildPtraceRegainProbe(t)
+	proj, _ := target(t)
+
+	cmd := exec.Command(snugBin, "-p", "@net", proj, "--", "/bin/sleep", "10")
+	cmd.Env = baseEnv()
+	cmd.WaitDelay = waitDelay
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	killed := false
+	t.Cleanup(func() {
+		if !killed {
+			cmd.Process.Kill()
+			cmd.Wait()
+		}
+	})
+
+	stagePID, ok := findDescendant(cmd.Process.Pid, isStageProcess, 5*time.Second)
+	if !ok {
+		t.Fatal("PRECONDITION: the stage (P1) never appeared")
+	}
+	if _, ok := findDescendant(cmd.Process.Pid, isComm("sleep"), 5*time.Second); !ok {
+		t.Fatal("PRECONDITION: the payload ('sleep') never appeared")
+	}
+
+	out, err := exec.Command(bin, strconv.Itoa(stagePID)).CombinedOutput()
+
+	cmd.Process.Kill()
+	cmd.Wait()
+	killed = true
+
+	if err != nil {
+		t.Fatalf("ptraceregainprobe exited non-zero: %v\n%s", err, out)
+	}
+	f := parseProbeFields(string(out))
+	field := func(name string) string {
+		t.Helper()
+		v, ok := f[name]
+		if !ok {
+			t.Fatalf("ptraceregainprobe never printed a %q line, so nothing drawn from it "+
+				"can be asserted:\n%s", name, out)
+		}
+		return v
+	}
+	eq := func(name, want, why string) {
+		t.Helper()
+		if got := field(name); got != want {
+			t.Errorf("%s=%s, want %s — %s:\n%s", name, got, want, why, out)
+		}
+	}
+
+	// PRECONDITION: the target it attacked really is the pid this test found
+	// for P1 — a probe that silently attacked pid 0 or misparsed its argv
+	// would make every refusal below meaningless.
+	if got, want := field("target-pid"), strconv.Itoa(stagePID); got != want {
+		t.Fatalf("target-pid=%s, want %s — the probe attacked the wrong process:\n%s", got, want, out)
+	}
+	// PRECONDITION: the nested namespace was actually created.
+	eq("nested-userns", "OK", "the probe could not create a user namespace of its own, so "+
+		"this test measures nothing")
+
+	// THE FACT, STATED PLAINLY: the nested namespace DID regain CAP_SYS_PTRACE.
+	// What stops the attack below is namespace ownership, not this bit's
+	// absence — hiding this reading would let the test look like it is about
+	// a capability that is simply missing, which is not stagecaps.go's claim.
+	const capSysPtraceBit = 19
+	bnd := capMask(t, "nested-capbnd", field("nested-capbnd"), string(out))
+	if bnd&(1<<capSysPtraceBit) == 0 {
+		t.Fatalf("nested-capbnd=%s does not carry CAP_SYS_PTRACE, so the refusals below could "+
+			"be explained by the nested namespace holding no privilege at all — which is not "+
+			"the property this test is about:\n%s", field("nested-capbnd"), out)
+	}
+
+	// ── the negative: a real process in U ───────────────────────────────
+	eq("vm-readv-target", "operation not permitted", "full CAP_SYS_PTRACE in a self-made "+
+		"user namespace must not let process_vm_readv reach a process in U — the namespace "+
+		"is a SIBLING of U, never an ancestor of it")
+	eq("open-mem-target", "permission denied", "same target, the /proc/<pid>/mem path — the "+
+		"kernel reports this one as EACCES rather than process_vm_readv's EPERM, and both are "+
+		"asserted by their own exact errno rather than merely \"not OK\"")
+
+	// ── the positive control: a peer inside the SAME nested namespace ──
+	eq("vm-readv-peer", "OK", "the identical call, against a process the attacker's own "+
+		"nested namespace really does own, must succeed — otherwise the refusals above could "+
+		"be a broken probe rather than a namespace boundary")
+	eq("open-mem-peer", "OK", "same control, the /proc/<pid>/mem path")
 }

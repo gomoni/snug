@@ -923,27 +923,45 @@ func TestDescribeSSHNamesRequiredRSASizeWhenItIsNotCarried(t *testing.T) {
 	}
 }
 
-// TestDryRunAttachBlockNamesThePathPatternAndSaysItGatesNothing is §13.7 test
-// 28: the ATTACH block's honesty requirements are load-bearing (describeAttach's
-// own doc comment), so this pins them directly rather than trusting review.
-func TestDryRunAttachBlockNamesThePathPatternAndSaysItGatesNothing(t *testing.T) {
+// TestDryRunAttachBlockNamesTheFileAttachActuallyReads pins the ATTACH block's
+// honesty requirements directly rather than trusting review (describeAttach's
+// own doc comment).
+//
+// It used to be named ...NamesThePathPattern and asserted "run-<pid>", from
+// when the state file lived under runtimeBase(). Issue #123 moved it to a
+// TARGET-keyed name under the uid-derived targetLockBase(), and the assertion
+// went stale in the worst direction available to a --dry-run test: it kept
+// PASSING while the screen named a file that does not exist, with the wrong
+// basename, under a base the run need not even use. The pid half of the old
+// argument survives and is asserted harder below — there is now no pid in the
+// path at all.
+func TestDryRunAttachBlockNamesTheFileAttachActuallyReads(t *testing.T) {
+	// Points runtimeBase() somewhere obviously wrong. The ATTACH block must
+	// NOT render it: that is the env-derived base the file no longer lives in,
+	// and naming it is exactly the bug this test now guards.
 	t.Setenv("XDG_RUNTIME_DIR", "/fake-runtime-dir-for-this-test")
 
-	got := captureFile(t, describeAttach)
+	pol := &policy.Policy{Target: "/home/u/proj"}
+	got := captureFile(t, func(w io.Writer) { describeAttach(w, pol) })
 
-	if !strings.Contains(got, "run-<pid>") {
-		t.Errorf("ATTACH block does not name the run-<pid> PATTERN:\n%s", got)
+	base, snugName, err := targetLockBase()
+	if err != nil {
+		t.Skipf("this host has no per-user runtime directory, so there is no path to render: %v", err)
 	}
-	// The pattern, never a fabricated pid: --dry-run's own pid is not the
-	// pid a real run would use, and printing one would be exactly the "small
-	// lie" CLAUDE.md says makes the artifact untrustworthy.
-	myPid := strconv.Itoa(os.Getpid())
-	if strings.Contains(got, "run-"+myPid+string(filepath.Separator)) ||
-		strings.Contains(got, "run-"+myPid+"/") {
-		t.Errorf("ATTACH block printed THIS process's own pid instead of the pattern:\n%s", got)
+	want := filepath.Join(base, snugName, targetStateName(pol.Target))
+	if !strings.Contains(got, want) {
+		t.Errorf("ATTACH block does not name the file `snug attach` actually reads (%s):\n%s",
+			want, got)
 	}
-	if !strings.Contains(got, "/fake-runtime-dir-for-this-test") {
-		t.Errorf("ATTACH block did not render the actual runtime base directory:\n%s", got)
+	if strings.Contains(got, "/fake-runtime-dir-for-this-test") {
+		t.Errorf("ATTACH block rendered the env-derived runtimeBase(), which is NOT where the "+
+			"state file lands (issue #123):\n%s", got)
+	}
+	// No pid anywhere in the path, fabricated or otherwise — the target-keyed
+	// name has no room for one, and printing this process's own pid would be
+	// the "small lie" CLAUDE.md says makes the artifact untrustworthy.
+	if strings.Contains(got, "run-"+strconv.Itoa(os.Getpid())) || strings.Contains(got, "run-<pid>") {
+		t.Errorf("ATTACH block still names a per-run directory:\n%s", got)
 	}
 	if !strings.Contains(got, "0600") || !strings.Contains(got, "0700") {
 		t.Errorf("ATTACH block does not state the file/directory modes:\n%s", got)

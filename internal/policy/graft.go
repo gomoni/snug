@@ -720,8 +720,9 @@ func (p *Policy) checkGraft(env Environ, g Graft) error {
 	// (issue #125's design pass, §0(a)): since Tier B, internal/cli/container.go
 	// passes nil for ensureEngine ("the engine is EAGER now, forked and
 	// confirmed well before StartSandbox ever forks the payload"), and
-	// internal/sandbox/exec.go runs StartEngine + OnEngineReady strictly
-	// BEFORE StartSandbox. THIS run's payload has never executed when
+	// the stage forks the engine INSIDE the one
+	// "start" request, while bwrap's payload is still parked on --block-fd,
+	// so OnEngineReady runs before any payload exists at all. THIS run's payload has never executed when
 	// Policy.Graft or Validate run, full stop — there is no "payload has
 	// already been able to write to the target" window today, and there
 	// never was under the code that actually shipped.

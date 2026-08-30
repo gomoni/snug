@@ -471,7 +471,7 @@ func attachRecordedShell(st runState) (string, error) {
 // attachEnviron is §5.3: the recorded environment verbatim, with ONE
 // deliberate exception — PS1 is replaced so the session reads as attached
 // rather than as the payload's own. TERM is the RECORDED value, not this
-// process's own (§17's default): "the environment is authored by the run's
+// process's own (ATTACH.md §5.3): "the environment is authored by the run's
 // policy" has no exception to remember.
 func attachEnviron(st runState) []string {
 	out := make([]string, 0, len(st.Env)+1)

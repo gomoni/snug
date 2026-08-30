@@ -403,8 +403,8 @@ of deriving the view, not an artefact of the harness.
 `setns(CLONE_NEWNS)` is closed to a multithreaded Go process;
 [`NOCGO.md`](NOCGO.md) §3 then measured the way around that — a raw `fork` yields
 a child that is single-threaded and owns its own `fs_struct`, the two states the
-kernel checks — and `internal/stage` already does it. Phase 2 reimplements these
-four steps in Go, in the stage. `CGO_ENABLED=0` is not negotiable.
+kernel checks. `internal/stage`'s `EnterEngine` (`inengine.go`) performs these
+four steps in Go. `CGO_ENABLED=0` is not negotiable.
 
 ### Against a REAL snug sandbox, three of the four grafts collide
 
@@ -435,8 +435,13 @@ grants, and:
 
 - `PATH` still leads with `/snug/bin`, but **nothing is staged there any
   more** — the staged `claude` stops resolving, because the graft covered the
-  very directory `PATH`'s head names. A Phase 2 that grafts `/run` silently
-  removes every command snug staged.
+  very directory `PATH`'s head names. Grafting `/run` silently removes every
+  command snug staged. *(Measured against the layout of the day, which put the
+  staged directory under `/run`; snug stages at a top-level `/snug/bin` now, so
+  the engine view's own `/run` tmpfs — `internal/cli/engineview.go` — does not
+  reproduce this. The cost of a graft landing on a directory `PATH` names is
+  what survives, and it is the reason the destination is chosen rather than
+  inherited.)*
 - It brings the host's `/run/user/<uid>` in with it. Measured present in the
   derived view, each against a host control: the **ssh-agent socket**
   (`$SSH_AUTH_SOCK`), the **session D-Bus socket**, the **Wayland socket** and
@@ -447,16 +452,21 @@ grants, and:
 
 ### The shadow slot, one layer below `Validate`
 
-This is the finding to carry into Phase 2. It is pre-registered rather than live:
-nothing implements grafts yet.
+This finding is answered by requirement 7 above, and the answer is
+`policy.View`: `IsShadowSlot` is a method on a *view* (`envresolve.go`), and
+`EngineView()` is the view that includes `p.Grafts`. So the question "can the
+payload own this path" is asked of the engine's derived view with the grafts
+in it, by the same code that asks it of the sandbox's, rather than by a second
+implementation that could drift. What follows is the measurement that made the
+requirement.
 
 A **writable** graft at `/run` — or a fresh tmpfs there, which is the wording an
 earlier plan used — makes `PATH`'s head writable. Measured with capabilities
 dropped, which is the authority a payload has: a process in the derived view
 creates `/snug/bin`, writes a `claude` into it, and **that file is what
 runs**. The planted file persists on the host side of the graft. The sandbox's
-own `/snug/bin` is untouched, so this is the derived view only — but the
-derived view is exactly where Phase 2 puts the engine.
+own `/snug/bin` is untouched, so this is the derived view only — and the
+derived view is exactly where the engine lives.
 
 `CLAUDE.md` states the rule this defeats: snug adds `/snug/bin` to `PATH`
 only when something is staged there, and the directory is in `snugsOwn` so that a
@@ -468,10 +478,11 @@ see a graft:
 | a profile with `ro = ["/run"]` alongside `@claude` | **REFUSED** by `Validate`, naming the collision at `/snug/bin/claude` — a bind snug did not author |
 | the same with `@podman-socket` instead | **accepted**: every grant under `/run` there is snug-authored, so nothing is masked |
 | a profile with `tmpfs = ["/run"]` and `@podman-socket` | accepted by `Validate`, but `IsShadowSlot` catches it and `--dry-run` prints `/snug/bin IS WRITABLE from inside, which it must never be`. Measured exploitable: the payload wrote `/snug/bin/git` and shadowed the real one |
-| the same directory arriving as a **graft** | nothing refuses it, nothing warns, and `--dry-run` does not mention it |
+| the same directory arriving as a **graft**, when this was measured | nothing refused it, nothing warned, and `--dry-run` did not mention it |
 
-The difference is one line: `IsShadowSlot` asks `coveringMount`, and a graft is
-not in `p.Mounts`. `CLAUDE.md` already records that this rule was "defeated by
-the layer beneath the one it was written about" twice. A graft would be the
-third — and this time it is known in advance, which is what requirement 7 above
-is for.
+The difference was one line: `IsShadowSlot` asked `coveringMount`, and a graft
+is not in `p.Mounts`. `CLAUDE.md` already records that this rule was "defeated
+by the layer beneath the one it was written about" twice. A graft would have
+been the third, and it is the one case that was known in advance — which is
+what requirement 7 is for, and why the predicate is a method on a **view** now
+rather than a function over `p.Mounts`.

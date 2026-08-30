@@ -64,6 +64,20 @@ func spec() string {
 	}
 	fmt.Fprintln(&b)
 
+	fmt.Fprintln(&b, "CAPABILITIES (P1, dropped from its own BOUNDING set at the __stage-setup -> __stage-serve execve)")
+	for _, c := range policy.StageCapDrop {
+		fmt.Fprintf(&b, "  %s\n", c)
+	}
+	fmt.Fprintln(&b, "  mechanism     PR_CAPBSET_DROP is per-THREAD; the execve is what makes it the whole")
+	fmt.Fprintln(&b, "                process's, recomputes permitted/effective from it, and hands it to")
+	fmt.Fprintln(&b, "                everything P1 forks afterwards. __stage-serve REFUSES to serve if any")
+	fmt.Fprintln(&b, "                thread still holds it (requireCapDropped).")
+	fmt.Fprintln(&b, "  reach         __innetns, the outer bwrap and the container engine, which stay in U.")
+	fmt.Fprintln(&b, "  NOT reached   bwrap's init, the payload and every container: a new user namespace")
+	fmt.Fprintln(&b, "                resets the bounding set to full, and the regained bit holds only in")
+	fmt.Fprintln(&b, "                that namespace, never in U.")
+	fmt.Fprintln(&b)
+
 	fmt.Fprintln(&b, "UID MAP")
 	fmt.Fprintln(&b, "  0 <hostuid> 1")
 	fmt.Fprintln(&b, "GID MAP")

@@ -103,6 +103,16 @@ gate:
 	# needing a 32-bit toolchain at all. Built lazily by compatarch_test.go.
 	# Same fix, same reasoning as the nine above.
 	go vet ./test/integration/testdata/int80probe
+	# testdata/ptraceregainprobe (issue #61) is the eleventh: it makes a
+	# nested user namespace, states that CAP_SYS_PTRACE comes BACK there
+	# (create_user_ns resets the bounding set to full), and then measures that
+	# the regained bit reaches nothing in the parent namespace. Same fix, same
+	# reasoning as the ten above — and note what the enumeration costs: this
+	# probe shipped once already without a line here, so it was written,
+	# committed and never vetted. `go vet ./...` does not reach a testdata
+	# directory, which is why the list exists; adding to the list is part of
+	# adding a probe.
+	go vet ./test/integration/testdata/ptraceregainprobe
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This

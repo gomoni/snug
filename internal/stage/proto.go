@@ -13,16 +13,17 @@ import (
 // no length prefix and no framing to get wrong.
 //
 // Strict decode, typed structs, default-deny dispatch — the internal/dockerproxy
-// house style, applied here because this IS the enforcement point Phase 2
-// inherits when a pathname socket and a second client show up. Getting the
-// discipline right costs nothing today and is exactly the kind of thing that
-// would otherwise be bolted on under schedule pressure later.
+// house style, applied here because this channel makes P1 execve a path as uid 0
+// with a full capability set in U. There is one client, P0, and there will never
+// be a second: issue #61's listener was cut on measurement (SUPERVISOR-DESIGN.md
+// §3.3). The discipline is not a deposit against that second client, then — it is
+// what keeps the ONE client's messages from being trusted because of where they
+// came from.
 //
 // Two things are absent from the schema ON PURPOSE, and the absence is stronger
 // than a validation rule would be: there is no field for a capability drop (a
 // client cannot even express the request), and no field naming a target sandbox
-// by pid (a future attach target is an opaque handle P1 issues, never a raw
-// pid it is asked to trust).
+// by pid (a pid on this wire is a pid P1 would have to trust).
 //
 // That second absence survived issue #125's gate, and it is the reason the
 // engine's start moved INTO "start" rather than into a request of its own. A

@@ -137,7 +137,8 @@ func requireFilterIsSelectiveAndInstalled(t *testing.T, r pidfdProbeRun) {
 	if got := requireProbeField(t, r, "pidfd_open"); got != "OK" {
 		t.Fatalf("pidfd_open=%s: it must still succeed under the filter — the fix is "+
 			"scoped to pidfd_getfd/process_vm_readv/process_vm_writev and pidfd_open "+
-			"stays allowed for Phase 2's attach path. If this failed, everything below "+
+			"stays allowed because a handle with no way to become a descriptor buys "+
+			"an attacker nothing. If this failed, everything below "+
 			"is not measuring what it claims to:\n%s", got, r.out)
 	}
 	if got := requireProbeField(t, r, "seccomp_status"); got != "2" {

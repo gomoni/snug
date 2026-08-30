@@ -1081,16 +1081,18 @@ sandbox's memory, environment or filesystem"* — is struck. No test asserts it,
 
 ##### m. Cost, and what it depends on
 
-- **D requires `SUPERVISOR-DESIGN.md` §8's deferred control listener**, and that
-  is the largest item, omitted from the first draft entirely. §3.3 of that
-  document makes the stage channel's *unreachability* the load-bearing property,
-  because one `start` request makes the stage `execve` an arbitrary path **as uid
-  0 with a full capability set in U**; §7 records that the protocol was kept a
-  two-op state machine specifically so it would not become a server; §8 defers
-  hardening the stage, which keeps a full capability set, `NoNewPrivs 0` and no
-  seccomp filter, and names its own entry condition. D makes **the untrusted
-  payload the stage's second client**. The `start` op must not live on any socket
-  the payload can name. Until that is designed, D cannot be costed.
+- **D requires a control channel the stage does not have, and snug decided not
+  to build one**, which is the largest item and was omitted from the first draft
+  entirely. `SUPERVISOR-DESIGN.md` §3.3 makes the stage channel's
+  *unreachability* the load-bearing property, because one `start` request makes
+  the stage `execve` an arbitrary path **as uid 0 with a full capability set in
+  U**; §7 records that the protocol was kept a two-op state machine specifically
+  so it would not become a server; and the listener that would have given it a
+  second client was **cut on measurement** (issue #61). D makes **the untrusted
+  payload the stage's second client**, so D does not inherit a mechanism — it
+  has to propose one, against a decision that went the other way, and the
+  `start` op must not live on any socket the payload can name. Until that is
+  designed, D cannot be costed.
 - **Q6 stops being optional.** D *is* snug-inside-snug.
 - **Invariant 6 is restated per sandbox, with a cross-policy rule** (j).
 - **Launch cost is measured, and it is not the problem. [M]** 245 ms and ≈53 MB
@@ -2088,11 +2090,12 @@ three changes that matter to a reader of §5:
    Measured: a payload-authored `.git/hooks/pre-push` and `core.fsmonitor` execute
    under snug's own git neutering, with no argv involved. So **`gh` is out of
    scope for D** — see D6 and §3.10.
-3. **D's first step is `SUPERVISOR-DESIGN.md` §8's deferred control listener**, on
-   a stage where one `start` request `execve`s an arbitrary path as uid 0 with a
-   full capability set, and which §7 deliberately kept from becoming a server. D
-   makes the untrusted payload its second client. Until that is designed, D cannot
-   be costed.
+3. **D's first step is a control listener snug decided not to build** (issue
+   #61, cut on measurement), on a stage where one `start` request `execve`s an
+   arbitrary path as uid 0 with a full capability set, and which
+   `SUPERVISOR-DESIGN.md` §7 deliberately kept from becoming a server. D makes
+   the untrusted payload its second client. Until that is designed, D cannot be
+   costed.
 
 **Settled scope:** D is the mechanism for a tool with a **closed verb set and no
 repository as input** — §3.3.5's own best candidate, `npm`/`cargo` publish. If it
@@ -2191,10 +2194,12 @@ decided to build it. What remains open is not whether but at what cost —
 The supervisor stage (`SUPERVISOR-DESIGN.md`, merged) is what makes the mechanism
 affordable: the supervisor already builds a sandbox from a `Policy` and the stage
 already holds the namespaces, so a sibling is a normal operation rather than a
-fork of `main`. **And it is also where D's largest cost sits**: §8 defers the
-control listener, and §9 records that a same-uid ancestor can already steal the
-supervisor's socketpair end in the `ready`→`start` window. D would make the
-untrusted payload a client of exactly that op. See §3.3.6 (m).
+fork of `main`. **And it is also where D's largest cost sits**: there is no
+control listener and none is coming (issue #61, cut), and a same-uid ancestor
+can already steal the supervisor's socketpair end in the `ready`→`start` window
+— which is out of the threat model by the same rule as everything same-uid, and
+is not out of it once the payload is a client. D would make the untrusted
+payload a client of exactly that op. See §3.3.6 (m).
 
 **Q7 — GitHub: build an adapter, or document §3.1 and stop? ANSWERED 2026-08-13,
 and the answer is better than either option as posed.** §3.10 opens the space

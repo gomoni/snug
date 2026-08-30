@@ -33,9 +33,10 @@ compare two namespace ids without refusing the empty case.
 started through `@podman-socket` runs on the *engine's* network, not the
 sandbox's, so the sandbox's network guarantees do not cover it. Moving the engine
 into the sandbox's network namespace fixes that, and doing so requires something
-other than bwrap to own the namespace. That engine move is a later phase; this
-document covers the topology change that makes it possible, which shipped on its
-own with the explicit contract that **it adds no user-visible capability**.
+other than bwrap to own the namespace. The stage is that owner. It shipped
+FIRST, on its own, under the explicit contract that **it adds no user-visible
+capability** — and the engine now runs as its second child (§2), which is what
+the contract was making room for.
 
 ---
 
@@ -89,19 +90,33 @@ P0  snug                          host userns, host netns, host mount tree
  │        started SECOND, while N still has no process in it at all
  │
  └── P1  snug __stage-setup → __stage-serve   THE NAMESPACE HOLDER
-      │   U: user ns, ONE uid mapped (root inside)
+      │   U: user ns — ONE uid mapped, or the delegated range (§3.6)
       │   N: network ns, private — created by the clone, PINNED by a descriptor,
       │      and then LEFT: after __stage-serve, P1 is in a fresh empty netns
       │   + own mount ns (MS_REC|MS_PRIVATE)
       │   + an AF_INET socket CREATED IN N, kept: how it answers "is snug0 up?"
       │     after it has left N (§7)
-      │   NO control socket on any filesystem. NO listener.
+      │   NO control socket on any filesystem. NO listener, and none coming (§3.3).
       │
-      └── snug __innetns <fd> bwrap ...       a setns shim, one execve deep
-           │                                  forked LAST, once the network is up
-           └── bwrap (in N)                   THE SANDBOX, unchanged in every respect
-                └── payload
+      ├── snug __innetns <fd> bwrap ...       a setns shim, one execve deep
+      │    │                                  forked FIRST once the network is up;
+      │    └── bwrap (in N)                   THE SANDBOX, unchanged in every respect
+      │         └── bwrap (init, pid 1)
+      │              └── payload              PARKED on --block-fd where an engine
+      │                                       is selected, released by P0
+      │
+      └── snug __inengine <netnsfd> <mntfd>   forked SECOND, inside the same one
+           │                                  "start" request, while the payload
+           │                                  is still parked
+           └── podman system service          THE ENGINE, in N by setns, in a
+                                              DERIVED mount view, dropped to
+                                              policy.EngineCapBounding
 ```
+
+**Both legs are children of P1, and only where a container engine is selected
+is there a second one.** They are siblings: the engine is not inside the
+sandbox's mount or pid namespace, and the sandbox is not inside the engine's.
+What they share is N and U.
 
 **Read the two names as two axes.** `P0/P1` are distinct *processes*.
 `__stage-setup`/`__stage-serve` are successive *exec images of P1* — same pid
@@ -118,8 +133,7 @@ snug's own process tree.
 other ([#63](https://github.com/gomoni/snug/issues/63)) — for the full delegated subuid
 range and the private mount namespace the engine forks into — so an **offline**
 `@podman-socket` run starts one too, with no pasta and an N holding only
-loopback. `Topology.NeedsStage()` is the live answer; §3.2 and §3.6 below record
-the phase-1 reasoning, not today's trigger set.
+loopback. `Topology.NeedsStage()` is the live answer, and §3.2 is its argument.
 
 *The abuse sentence for the whole topology, and it is on screen in `--dry-run`:*
 
@@ -213,13 +227,23 @@ cannot deliver a descriptor even to a peer that sends `SCM_RIGHTS`.
 
 The third of those four — no pid to name — is a fact about pid-namespace
 visibility and holds regardless of the seccomp filter. Issue #23's fix (denying
-`pidfd_getfd`, `internal/sandbox/seccomp.go`) adds a second, independent lock on
-the same door for when Phase 2 actually opens a listener: even a payload that
-somehow *did* have a pid to name for `pidfd_open` (a same-pid-namespace
-listener, which nothing here is yet) could not then steal the accepted
-connection's descriptor out of another process's table. Two locks, two
-different reasons they hold — namespace invisibility today, a denied syscall
-whenever that stops being true — rather than one fact doing both jobs.
+`pidfd_getfd`, `internal/sandbox/seccomp.go`) is a second, independent lock on
+the same door: even a payload that somehow *did* have a pid to name for
+`pidfd_open` could not then steal a descriptor out of another process's table.
+Two locks, two different reasons they hold — namespace invisibility, and a
+denied syscall for whatever makes that stop being true — rather than one fact
+doing both jobs.
+
+**There will be no listener.** It was designed, scheduled as issue #61's
+part (d), and cut on measurement: the namespaces this channel would let a
+client reach are joinable by descriptor by any same-uid host process already,
+confirmed five ways on both topologies, so the listener is a second route to
+authority the kernel already grants, behind a weaker gate than the kernel's.
+`snug attach` is that feature, built client-side against
+`pidfd_open` + one `setns`, and its content is confinement rather than entry
+([`ATTACH.md`](ATTACH.md)). The protocol's strictness below is therefore the
+guard on the one client that exists — P0 — and not a deposit against a second
+one.
 
 *`--dry-run` says all of this*, and says it precisely: a line reading "no
 socket" is the half a reviewer would use to decide there is nothing here to
@@ -274,20 +298,42 @@ SIGKILL snug, and everything is gone with no leaked netns. Pdeathsig is the only
 thing that can do that. The wrong comment was actively dangerous: it told a
 future maintainer the line was dead weight.
 
-### 3.6 One uid mapped in U, and no `newuidmap`/`newgidmap`
+### 3.6 Two uid maps, and the setuid helpers are on exactly one of them
 
-Phase 1 delegates no subuids. The engine still runs on the host, so a delegated
-range would be a capability with no consumer, granted under `--no-defaults`,
-traceable to no profile — and it would make `snug -p @podman-socket` fail on any
-host with no `/etc/subuid` entry.
+`Topology.Subuid` picks the shape, and there are two:
 
-The map is a single uid written through Go's `SysProcAttr.UidMappings`, which
-deletes `newuidmap`/`newgidmap` and the privileged re-exec that would have been
-needed to use them. That keeps "no root, no setuid" literally true on this path,
-and it removes the CLOEXEC-clearing dance that produced a confirmed descriptor
-leak in review. It was adopted **gated on re-measuring it against snug's real
-`BwrapFlags` and its two-user-namespace structure** rather than against a
-hand-built bwrap invocation — see §4 Step 0. It held.
+- **`SubuidNone`** — one uid, namespace 0 to this process's own real id,
+  written by Go's `SysProcAttr.UidMappings` in the child itself. This is the
+  one self-map the kernel allows an unprivileged writer to make, so it needs
+  no `newuidmap`/`newgidmap`, no `/etc/subuid` line, and no privileged
+  re-exec. **"No root, no setuid" is literally true on this path**, and it
+  removed the CLOEXEC-clearing dance that produced a confirmed descriptor leak
+  in review. Adopted gated on re-measuring it against snug's real `BwrapFlags`
+  and its two-user-namespace structure rather than a hand-built bwrap
+  invocation (§4 Step 0). It held, and it is what every run without a
+  container engine still gets.
+
+- **`SubuidFull`** — namespace 0 to the real id *plus* the delegated
+  `/etc/subuid` range. A container engine needs it: an image whose content is
+  owned by a non-root uid has nowhere to land in a single-uid map.
+  `deriveTopology` raises it from the podman branch and from nowhere else, so
+  the setuid dependency is **podman's rootless model adopted at its boundary**,
+  not something the sandbox itself grew.
+
+  A two-range map is not the self-map special case, so an unprivileged write of
+  it is EPERM — which is what `newuidmap`/`newgidmap` exist for.
+  `SysProcAttr.UidMappings` is left **nil**; `__stage-setup` notices its own uid
+  is still the overflow id after the clone, asks P0 over the control socket
+  ("needmap"), and blocks. P0 runs the two setuid helpers against P1's pid
+  (`delegateSubuid`) and answers "mapped". **P0 runs them, not P1** — the
+  privileged tools stay in the process that already had the host's authority,
+  and P1 never execs one.
+
+  A user namespace's map may be written **once, ever**. There is no "self-map
+  now, widen later", which is why the whole range has to be asked for at clone
+  time and why a failure here is fatal rather than a fallback to the map that
+  was not asked for (invariant 5). `CheckSubuidDelegation` is the preflight that
+  refuses early, naming the missing `/etc/subuid` line or the missing tool.
 
 ### 3.7 The stage brings `lo` up itself
 
@@ -467,27 +513,33 @@ Three consequences worth stating:
   ten-second one that a human interrupts before reading.
 - **The protocol grew a second op, and deliberately not a loop.** `netready` may
   be asked once, before `start`; `start` remains strictly one-shot. A loop would
-  have been shorter and would have quietly turned a one-shot stage into a server
-  — which matters when Phase 2 gives it a pathname socket and a second client.
+  have been shorter and would have quietly turned a one-shot stage into a
+  server, and the stage is not one: it answers a fixed number of requests from
+  the single parent that forked it, and returns.
 
 ---
 
-## 8. Deferred, with reasons
+## 8. Nothing here is deferred
 
-- **The control listener** — a pathname socket, an accept loop, the 108-byte
-  `sockaddr_un` budget. There is no client but the stage's own parent yet, and a
-  socket with no operation is pure attack surface. When it arrives, the
-  `--dry-run` `control` line changes from an anonymous pair to a path: a visible,
-  reviewed security change rather than something that was already there.
-- **Hardening the stage itself.** It keeps a full capability set, `NoNewPrivs 0`,
-  no seccomp filter, and the launcher's IPC and UTS namespaces, for the whole
-  run — needing capabilities only twice, both before it forks. Nothing can reach
-  it today. It becomes the entry condition for the listener above, because at
-  that moment "parses input from a second client" and "holds `CAP_SYS_ADMIN` over
-  the sandbox's mounts with no `no_new_privs` and no filter" become one sentence.
-- **Subuid delegation and `Topology.Attach`.** No consumer until an engine moves
-  into the stage. The floor and the lattice law exist; nothing raises them.
-- **The engine in the sandbox's netns** — the thing all of this is for.
-  [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §2 measured that it works and §3 measured
-  where it does not; the engine is the host's own podman
-  that makes the measurement runnable on a host whose `podman` is a shim.
+Every item this section used to list is now either built or cut, and each one
+is stated where it is enforced rather than here:
+
+- **The control listener is CUT**, not pending — §3.3, and the settlement on
+  issue [#61](https://github.com/gomoni/snug/issues/61). `snug attach` is the
+  feature it was for, built client-side ([`ATTACH.md`](ATTACH.md)).
+- **The stage's own hardening is DONE**, in the one form that was measured to
+  work: it drops `CAP_SYS_PTRACE` from its bounding set at the
+  `__stage-setup` -> `__stage-serve` execve, `__stage-serve` refuses to serve
+  if that did not stick, and `--dry-run` says so. `policy.StageCapDrop` carries
+  the reasoning, the scope, the abuse sentence and the split with Yama — the
+  capability closes the cross-uid route, `ptrace_scope` closes the same-uid
+  sibling route, and preflight P6 refuses a container run where the second one
+  is off rather than keeping an argument that no longer holds. `NoNewPrivs`, a seccomp
+  filter on P1, and P1's own IPC/UTS namespaces were each measured and each
+  rejected — the reasons are on that constant and in `internal/stage`'s
+  clone-flag comments, because a rejected option is only worth recording where
+  someone would otherwise add it.
+- **Subuid delegation is DONE** — §3.6. `Topology.Attach` is CUT along with the
+  listener: attach is not a topology (`internal/policy/topology.go`).
+- **The engine in the sandbox's netns is DONE** — §2's second leg, and
+  [`ENGINE-WIRING.md`](ENGINE-WIRING.md) for how it composes with this stage.

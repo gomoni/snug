@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/netip"
 	"os"
 	"strings"
@@ -424,7 +425,9 @@ func TestProfileShowEscapesEveryValue(t *testing.T) {
 // catch there yet — this test pins that fact directly rather than leaving it
 // implicit, so it fails the moment the help text stops being static.
 func TestAttachScreensAreCoveredByTheControlCharacterSweep(t *testing.T) {
-	attachOut := captureFile(t, describeAttach)
+	attachOut := captureFile(t, func(w io.Writer) {
+		describeAttach(w, &policy.Policy{Target: "/home/u/proj"})
+	})
 	if attachOut == "" {
 		t.Fatal("describeAttach produced no output at all, so the sweep in " +
 			"TestNoSnugScreenEmitsARawControlCharacter cannot be said to cover it")

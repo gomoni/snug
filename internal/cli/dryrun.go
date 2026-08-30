@@ -91,7 +91,7 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 		fmt.Fprintf(out, "TTY      shared session — job control works (TIOCSTI is disabled kernel-wide)\n")
 	}
 	describeSeccomp(out, rep.Seccomp)
-	describeAttach(out)
+	describeAttach(out, p)
 	fmt.Fprintln(out)
 
 	fmt.Fprintln(out, "FILESYSTEM  (deny-by-default; every line is a grant, there are no deny rules)")
@@ -270,18 +270,31 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 //     "active" with no qualifier on such a host would leave a human to find
 //     out from a SIGSYS that their 32-bit binary is refused.
 //
-// describeAttach is §9 of the attach design, rendered rather than paraphrased
-// because the honesty requirements are load-bearing: --dry-run starts
-// nothing, so it must not create the run directory, and the path it prints
-// is the PATTERN (run-<pid>), never a fabricated pid — this run's own pid is
-// not the pid a real run would use for its directory name (the pid in the
-// name is a human-readable label only; nothing parses it back out), and
-// inventing one would be the kind of small lie CLAUDE.md says makes the
-// whole artifact untrustworthy.
-func describeAttach(out io.Writer) {
-	base, snugName := runtimeBase()
-	pattern := filepath.Join(base, snugName, "run-<pid>", "state.json")
-	fmt.Fprintf(out, "ATTACH   this run publishes %s (0600,\n", pattern)
+// describeAttach names the file `snug attach` reads, and the honesty
+// requirements on it are load-bearing: --dry-run starts nothing, so it must
+// not create anything it names.
+//
+// It prints the EXACT path, which is possible only because the state file is
+// TARGET-keyed (issue #123, targetstate.go): the name is
+// targetStateName(p.Target) under the uid-derived targetLockBase(), so this
+// run's own pid never enters it and there is nothing to fabricate. It used to
+// print `run-<pid>/state.json` under runtimeBase() — the pre-#123 location —
+// as a PATTERN, for the good reason that inventing a pid would be the kind of
+// small lie CLAUDE.md says makes the whole artifact untrustworthy. That reason
+// still stands and no longer applies here: after the move the pattern was not
+// merely vague, it named a path with the wrong FILENAME under a base
+// ($XDG_RUNTIME_DIR/$TMPDIR-derived) that need not be the one the file lands
+// in — which is issue #123's own failure mode, reappearing on the screen whose
+// job is to be trusted.
+//
+// The per-run directory under runtimeBase() still exists and still holds this
+// run's sockets; it is simply not where attach looks.
+func describeAttach(out io.Writer, p *policy.Policy) {
+	path := "(this host has no per-user runtime directory; see the refusal a real run prints)"
+	if base, snugName, err := targetLockBase(); err == nil {
+		path = filepath.Join(base, snugName, targetStateName(p.Target))
+	}
+	fmt.Fprintf(out, "ATTACH   this run publishes %s (0600,\n", path)
 	fmt.Fprintln(out, "         in a 0700 directory snug owns), so `snug attach <dir>` can join it.")
 	fmt.Fprintln(out, "         The file names the sandbox's init pid, its start time and its six")
 	fmt.Fprintln(out, "         namespace ids. It carries no command, no argv and no secret.")
@@ -2127,17 +2140,54 @@ func describeTopology(out io.Writer, p *policy.Policy) {
 		fmt.Fprintf(out, "                  stage is root in its own user namespace (U) for the whole run,\n")
 		fmt.Fprintf(out, "                  holding CAP_SYS_ADMIN over the sandbox's network namespace (N)\n")
 		fmt.Fprintf(out, "                  and over the sandbox's own mounts.\n")
+		// The BOUND, not just the fact: a human deciding whether to trust this
+		// topology needs to know where the drop stops holding, or the line is
+		// a guarantee they will over-read. policy.StageCapDrop carries the
+		// measurement.
+		fmt.Fprintf(out, "                  It does NOT hold CAP_SYS_PTRACE: the stage drops it from its own\n")
+		fmt.Fprintf(out, "                  bounding set before it forks anything, so bwrap and the container\n")
+		fmt.Fprintf(out, "                  engine never receive it either. Bound: a process that makes its OWN\n")
+		fmt.Fprintf(out, "                  user namespace — the payload, every container — has it again there,\n")
+		fmt.Fprintf(out, "                  where it reaches nothing outside that namespace.\n")
 	}
 	fmt.Fprintf(out, "  subuid          %s", p.Topology.Subuid)
 	if p.Topology.Subuid == policy.SubuidNone {
-		fmt.Fprintf(out, " (no delegated range; nothing needs one yet)\n")
+		// WHO writes the map differs by arm, and this line must not credit a
+		// process that does not exist on this one. SubuidNone covers BOTH the
+		// staged arm (P1 writes its own single-uid map through
+		// SysProcAttr.UidMappings) and the stage-less one (no P1 at all; the
+		// map belongs to the intermediate user namespace __inpidns creates,
+		// which the pid-nesting paragraph above already describes). A red team
+		// caught the first version of this saying "mapped by the stage itself"
+		// unconditionally, on the same screen that says "control none — there
+		// is no stage to control" four lines further down. The half that is
+		// TRUE on both arms — no /etc/subuid, no helper, no setuid binary — is
+		// the half worth stating, so it is stated once and the author is named
+		// per arm.
+		who := "the intermediate user namespace snug creates"
+		if p.Topology.NeedsStage() {
+			who = "the stage itself"
+		}
+		fmt.Fprintf(out, " (one uid, mapped by %s:\n", who)
+		fmt.Fprintf(out, "                  no /etc/subuid line, no newuidmap/newgidmap, no setuid binary\n")
+		fmt.Fprintf(out, "                  on this path)\n")
 	} else {
-		fmt.Fprintln(out)
+		// Named rather than left as a bare "full": this is the ONE path on
+		// which snug reaches for a setuid binary, and a reader deciding
+		// whether to trust the "no root, no setuid" line elsewhere needs to
+		// see where it stops holding. P0 runs the helpers, never the stage.
+		fmt.Fprintf(out, " (this uid's whole /etc/subuid + /etc/subgid range, written by\n")
+		fmt.Fprintf(out, "                  newuidmap/newgidmap — the only setuid binaries snug invokes.\n")
+		fmt.Fprintf(out, "                  The container engine needs it: image content owned by a\n")
+		fmt.Fprintf(out, "                  non-root uid has nowhere to land in a one-uid map.)\n")
 	}
 	if p.Podman != policy.PodmanOff {
-		// The engine (issue #63, Tier B): a second process the stage forks
-		// into its OWN user + network namespace, as a sibling of bwrap, so a
-		// container it starts shares exactly the sandbox's own N. Its mount
+		// The engine (issue #63, Tier B): a second process the stage forks as
+		// a sibling of bwrap. Its clone carries CLONE_NEWNS|NEWCGROUP|NEWPID|
+		// NEWIPC|NEWUTS and deliberately NOT CLONE_NEWUSER or CLONE_NEWNET
+		// (stage/enginefork.go): it INHERITS U — it would have no CAP_SYS_ADMIN
+		// over N otherwise — and joins N by setns, so a container it starts
+		// shares exactly the sandbox's own N. Its mount
 		// namespace is DERIVED from the sandbox's view since Tier C (#245):
 		// its root IS the sandbox's own root with the grafts under ENGINE VIEW
 		// on top, so an ungranted path is not there to be named. The proxy's

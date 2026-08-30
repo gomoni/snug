@@ -524,6 +524,7 @@ type jsonTopology struct {
 	Netns             string   `json:"netns"`
 	Subuid            string   `json:"subuid"`
 	EngineCapBounding []string `json:"engine_cap_bounding,omitempty"`
+	StageCapDrop      []string `json:"stage_cap_drop,omitempty"`
 	// ProcfsClosuresSkipped is Report.Topology.ProcfsClosuresSkipped —
 	// CLAUDE.md invariant 1's third named exception, stated rather than left
 	// derivable from Containers != nil. Refs #332 F1c.
@@ -721,6 +722,7 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			Netns:                 rep.Topology.Netns,
 			Subuid:                rep.Topology.Subuid,
 			EngineCapBounding:     rep.Topology.EngineCapBounding,
+			StageCapDrop:          rep.Topology.StageCapDrop,
 			ProcfsClosuresSkipped: rep.Topology.ProcfsClosuresSkipped,
 			ProcfsClosureNote:     rep.Topology.ProcfsClosureNote,
 		},

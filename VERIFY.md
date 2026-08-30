@@ -4619,6 +4619,62 @@ because it created the netns it ran in; under the stage, bwrap does not create
 still inside — losing this silently is exactly the kind of regression a user
 finds, not a golden diff.
 
+### 12a-bis. The stage does not hold `CAP_SYS_PTRACE`, and neither does anything it forks into U (issue #61)
+
+The stage is root in its own user namespace U for the whole run, and so is
+everything it forks that stays there — `__innetns`, the outer bwrap, the
+container engine. A full-capability peer in U can read and write every other
+process in U, and hardening the *target* does not stop it (issue #61's
+settlement, case F). Taking the capability away from the *peers* is what does
+(case G), so P1 drops it from its own bounding set at the
+`__stage-setup` -> `__stage-serve` execve and every descendant inherits the
+reduced ceiling.
+
+Start a staged run and leave it up:
+
+```bash
+./bin/snug -p @net $SC/proj/sub -- sleep 30 &
+sleep 3
+# Match on the EXE, not just the cmdline: a stage left over from an earlier
+# run of a DIFFERENT build answers `pgrep -f __stage-serve` too, and reading
+# its capabilities is how you conclude the drop does not work when it does.
+S=$(for p in $(pgrep -f '__stage-serve'); do
+      [ "$(readlink /proc/$p/exe)" = "$PWD/bin/snug" ] && echo $p; done | tail -1)
+grep -E '^Cap(Bnd|Prm|Eff)' /proc/$S/status
+for t in /proc/$S/task/*; do grep -H ^CapBnd $t/status; done
+B=$(pgrep -P $S | head -1); echo "child $B is $(cat /proc/$B/comm)"; grep ^CapBnd /proc/$B/status
+```
+
+Expect `000001fffff7ffff` on the stage's three lines, on **every** one of its
+threads, and on the outer bwrap. **Read both halves of that number**: bit 19
+(`0x80000`) is clear — that is `CAP_SYS_PTRACE`, gone — and bit 21 (`0x200000`)
+is still set — that is `CAP_SYS_ADMIN`, which the stage needs and keeps. A
+bounding set reading all zeroes is not a better result; it means the process
+you found is not the stage.
+
+The per-thread sweep is not belt and braces. `PR_CAPBSET_DROP` is per-task, and
+`/proc/<pid>/status` reports the thread group leader, so a drop performed
+anywhere but on the locked thread before the execve leaves most threads
+privileged while that one file reads clean. `__stage-serve` refuses to serve if
+any thread still holds the bit.
+
+**The payload gets the capability back, and that is not a hole** — say it out
+loud rather than hiding it:
+
+```bash
+./bin/snug -p @net $SC/proj/sub -- grep ^CapBnd /proc/self/status
+```
+
+Expect `0000000000000000` — bwrap zeroes the payload's set outright. A
+*container* is the case where it comes back: creating a user namespace resets
+the bounding set to full, so a container holds `CAP_SYS_PTRACE` inside its own
+namespace, where a capability reaches only that namespace and its descendants
+and never an ancestor. `--dry-run` states this bound rather than claiming more:
+
+```bash
+./bin/snug --dry-run -p @net $SC/proj/sub | grep -A4 'does NOT hold'
+```
+
 ### 12b. The C2 gate — a killed snug cannot release a parked container payload (issue #125)
 
 A container run (`-p @podman-socket`/`-p @podman-build`) cannot start the

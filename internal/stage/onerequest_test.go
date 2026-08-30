@@ -107,8 +107,9 @@ func TestTheStageReadsNoRequestAfterStart(t *testing.T) {
 	// stage`, so the unexported field is reachable) — StartSandbox's own
 	// public API has no way to express "send a request and do not wait for an
 	// answer", which is exactly the point: nothing a legitimate caller can do
-	// reaches this. A confused or hostile SECOND client on Phase 2's future
-	// pathname socket is what this stands in for.
+	// reaches this. What it stands in for is a P0 that has been confused or
+	// taken over — the one client this channel has — not a second client, of
+	// which there is none and never will be (SUPERVISOR-DESIGN.md §3.3).
 	if err := sendRequest(st.control, request{
 		Op: "start", Bwrap: "/definitely/not/a/real/bwrap-binary", Passthrough: 0,
 	}); err != nil {
