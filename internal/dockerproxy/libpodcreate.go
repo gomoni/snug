@@ -141,6 +141,20 @@ func (p *Proxy) handleLibpodContainerCreate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// resource_limits is an OCI LinuxResources OBJECT, not a number, and two
+	// of its sub-objects are the NESTED spelling of content refused above:
+	// resource_limits.devices carries device_cgroup_rule's own content, and
+	// resource_limits.unified is an open key/value channel into the
+	// container's cgroup. Judged rather than forwarded whole — see
+	// judgeLibpodResourceLimits for the sub-key table and its measurements.
+	examined["resource_limits"] = true
+	if raw, ok := req["resource_limits"]; ok && !isEmptyJSON(raw) {
+		if err := judgeLibpodResourceLimits(raw); err != nil {
+			p.deny(w, "%v", err)
+			return
+		}
+	}
+
 	// volumes: the anonymous/named-volume array, MEASURED distinct from
 	// `mounts` — `podman run --mount type=volume,source=myvol,destination=/data`
 	// produces volumes=[{"Name":"myvol","Dest":"/data",...}], never touching
@@ -505,8 +519,9 @@ var libpodUnexaminedFields = func() map[string]bool {
 		"stdin", "terminal", "stop_timeout",
 		// resolved/echoed by the engine, container-scoped
 		"raw_image_name", "image_volume_mode",
-		// resource limits — numbers, no path, no namespace
-		"resource_limits", "shm_size", "r_limits", "oom_score_adj",
+		// resource limits — numbers, no path, no namespace. resource_limits
+		// is NOT here: it is an object, and judgeLibpodResourceLimits reads it.
+		"shm_size", "r_limits", "oom_score_adj",
 		// ordinary container behaviour
 		"remove", "volatile", "init", "init_container_type",
 		"read_only_filesystem", "read_write_tmpfs", "umask", "cap_drop",
@@ -616,6 +631,114 @@ func judgeLibpodNetworks(raw json.RawMessage) error {
 				"carries. An entry that asks for NOTHING is accepted, which is what a plain "+
 				"`podman run` sends", name, f, string(settings[f]))
 		}
+	}
+	return nil
+}
+
+// libpodResourceLimitFields is every OCI LinuxResources sub-object snug
+// forwards inside `resource_limits`, and it is a NAMED SET for the same
+// reason the top-level sweep is one: a sub-object this file has not read
+// fails closed rather than reaching the engine inside a field whose abuse
+// sentence (containerResourceLimit) promises "no value names a path or a
+// device".
+//
+// MEASURED, podman 6.0.2, `podman create <flag> alpine true` posted to a
+// socket that logs the body (VERIFY.md §22's method):
+//
+//	no flag              resource_limits absent (null)
+//	--memory 100m        {"memory":{"limit":104857600,"swap":209715200}}
+//	--oom-kill-disable   {"memory":{"disableOOMKiller":true}}
+//	--cpus 1             {"cpu":{"quota":100000,"period":100000}}
+//	--cpuset-cpus 0      {"cpu":{"cpus":"0"}}
+//	--pids-limit 10      {"pids":{"limit":10}}
+//	--blkio-weight 100   {"blockIO":{"weight":100}}
+//	--cgroup-conf memory.high=1G  {"unified":{"memory.high":"1G"}}
+//
+// No flag writes `devices`, and the two DEVICE-naming flags write a TOP-LEVEL
+// field rather than a nested one — `--blkio-weight-device /dev/null:100` and
+// `--device-read-bps /dev/null:1mb` both leave `blockIO` as `{}` and set
+// weightDevice / throttleReadBpsDevice keyed by the host path. A client
+// posting raw JSON is not limited to the CLI's spelling, which is the whole
+// reason this is judged rather than forwarded.
+// `blockio` is not here: it has its own named set one level down.
+var libpodResourceLimitFields = map[string]bool{
+	"memory": true,
+	"cpu":    true,
+	"pids":   true,
+}
+
+// libpodBlockIOFields is the same named set one level further down. The four
+// throttle arrays and the nested weightDevice identify a device by
+// major:minor instead of by the path the top-level spelling uses, so
+// blkioPathField's sentence does not fit them and they get their own.
+var libpodBlockIOFields = map[string]bool{
+	"weight":     true,
+	"leafweight": true,
+}
+
+// judgeLibpodResourceLimits refuses the two sub-objects of the OCI
+// LinuxResources shape that are the nested spelling of content refused at
+// the top level, and refuses by name anything else it has not measured.
+//
+// `devices` is device_cgroup_rule's own content: refusing one spelling and
+// forwarding the other is the divergence invariant 6 exists to prevent, and
+// it is the "same danger, different spelling" shape issue #459 was about,
+// one level down. `unified` is an open key/value channel into the cgroup
+// filesystem — the catalogue that makes this file safe cannot bound a field
+// whose keys are the kernel's, not podman's.
+func judgeLibpodResourceLimits(raw json.RawMessage) error {
+	lim, err := decodeLibpodObject(raw)
+	if err != nil {
+		return fmt.Errorf("resource_limits: %v", err)
+	}
+	for _, k := range sortedKeysOf(lim) {
+		if isEmptyJSON(lim[k]) {
+			continue
+		}
+		switch strings.ToLower(k) {
+		case "devices":
+			return fmt.Errorf("resource_limits.%s is not permitted: %s. It is %s's own "+
+				"content one level down, and the two spellings refuse together", k,
+				refusalReason["DeviceCgroupRules"], libpodFieldSpelling("DeviceCgroupRules"))
+		case "unified":
+			return fmt.Errorf("resource_limits.%s is not permitted: it writes arbitrary "+
+				"cgroup-v2 controller keys, so its key space is the kernel's rather than "+
+				"podman's and this file's catalogue cannot bound it. The numeric limits "+
+				"beside it (memory, cpu, pids, blockIO.weight) are forwarded", k)
+		case "blockio":
+			if err := judgeLibpodBlockIO(k, lim[k]); err != nil {
+				return err
+			}
+		default:
+			if libpodResourceLimitFields[strings.ToLower(k)] {
+				continue
+			}
+			return fmt.Errorf("resource_limits.%s is not permitted. snug reads a named set "+
+				"of the OCI LinuxResources sub-objects and refuses the rest, so one it has "+
+				"not been taught about fails closed rather than reaching the engine inside "+
+				"a field documented as carrying numbers", k)
+		}
+	}
+	return nil
+}
+
+// judgeLibpodBlockIO refuses every blockIO sub-field that identifies a
+// device, leaving the two container-wide weights. The top-level weightDevice
+// is already refused; this is the nested spelling, which no measured flag
+// writes but a raw client can.
+func judgeLibpodBlockIO(spelling string, raw json.RawMessage) error {
+	bio, err := decodeLibpodObject(raw)
+	if err != nil {
+		return fmt.Errorf("resource_limits.%s: %v", spelling, err)
+	}
+	for _, k := range sortedKeysOf(bio) {
+		if isEmptyJSON(bio[k]) || libpodBlockIOFields[strings.ToLower(k)] {
+			continue
+		}
+		return fmt.Errorf("resource_limits.%s.%s is not permitted: it names a device by "+
+			"major:minor, which is the nested spelling of the top-level %s this file "+
+			"already refuses. Only the container-wide weight and leafWeight are forwarded",
+			spelling, k, libpodFieldSpelling("weightDevice"))
 	}
 	return nil
 }
@@ -739,6 +862,20 @@ func judgeLibpodMounts(p *Proxy, raw json.RawMessage) ([]libpodMount, error) {
 			bindIdx = append(bindIdx, i)
 			out = append(out, m)
 		case "tmpfs":
+			// Options are forwarded UNREAD, unlike a bind's, and this is the
+			// asymmetry a reader will otherwise take for an oversight. A
+			// tmpfs entry carries no host source, so there is nothing for
+			// checkMountRequests to judge, and the two options worth naming
+			// reach nothing: `dev` needs a device node, and creating one in
+			// a userns-owned mount is refused by the kernel to an
+			// unprivileged user; `suid` on fresh RAM the container itself
+			// writes yields a uid inside the container's OWN userns, which
+			// the container's root already has. MEASURED, podman 6.0.2:
+			// `--tmpfs /x` sends no options, `--tmpfs /x:rw,size=64m,exec`
+			// sends ["rw","size=64m","exec"], `--mount
+			// type=tmpfs,destination=/y,tmpfs-size=1m` sends ["size=1m"].
+			// Same claim containerResourceLimit makes for the docker-compat
+			// HostConfig.Tmpfs this matches — the two wires agree.
 			out = append(out, m)
 		default:
 			return nil, fmt.Errorf("mount type %q is not permitted; only bind and tmpfs are "+
