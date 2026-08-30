@@ -63,4 +63,36 @@ func TestDoctorRunsCleanOnAHostThatCanRunSnug(t *testing.T) {
 		t.Errorf("doctor's report says nothing about the kernel knobs snug's threat model "+
 			"inherits from the host (issue #526):\n%s", report)
 	}
+
+	// The three sections, in order, and one row placed INSIDE the right one.
+	// Asserting the headers alone would pass on a doctor that printed all
+	// three and then every row under the last of them — which is what a
+	// careless reorder produces, and it reads as fine until someone is
+	// looking for what to install.
+	programs := strings.Index(report, "🧰 programs")
+	kernel := strings.Index(report, "🐧 kernel")
+	host := strings.Index(report, "🏠 host configuration")
+	if programs < 0 || kernel < 0 || host < 0 {
+		t.Fatalf("doctor's report is missing a section header (programs=%d kernel=%d host=%d):\n%s",
+			programs, kernel, host, report)
+	}
+	if !(programs < kernel && kernel < host) {
+		t.Errorf("doctor's sections are out of order (programs=%d kernel=%d host=%d):\n%s",
+			programs, kernel, host, report)
+	}
+	// bubblewrap is a binary a package manager installs; the userns probe is
+	// what the kernel does or does not allow. They were adjacent before the
+	// grouping and belong in different sections now.
+	if bwrap := strings.Index(report, "bubblewrap"); bwrap < programs || bwrap > kernel {
+		t.Errorf("the bubblewrap row is not in the programs section (at %d, section %d..%d):\n%s",
+			bwrap, programs, kernel, report)
+	}
+	if knobs := strings.Index(report, "threat model inherits"); knobs < kernel || knobs > host {
+		t.Errorf("the inherited-sysctl row is not in the kernel section (at %d, section %d..%d):\n%s",
+			knobs, kernel, host, report)
+	}
+	if prof := strings.Index(report, "profiles load"); prof < host {
+		t.Errorf("the profile-set row is not in the host-configuration section (at %d, section "+
+			"starts %d):\n%s", prof, host, report)
+	}
 }

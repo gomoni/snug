@@ -5606,6 +5606,12 @@ That transcript is ten ticks; issue #483 added an eleventh,
 helper-binaries and TIOCSTI lines. It is not in the transcript because the
 transcript is a measurement, and this container has not been re-measured since.
 
+The transcript also PREDATES the report being grouped into `🧰 programs`,
+`🐧 kernel` and `🏠 host configuration`, so its flat order is not what a run
+prints today. Same reason it is left alone: rewriting a measurement into what
+it would have said is the one thing a measurement must not be. §27 below
+carries a current transcript.
+
 Timing, same run: 5m04s for the whole job, of which the suite is 220.370s. The
 fixed cost underneath is small — image pull 11s, zypper ~20s, setup-go 9s,
 `make build` 12s — which is why no image caching is used.
@@ -6405,15 +6411,63 @@ HOST, not to snug: `kernel.kptr_restrict`, `kernel.dmesg_restrict`,
 existed. This is invariant 5 — no silent downgrade — applied to a guarantee
 snug INHERITS: `doctor` discloses, and nothing new refuses.
 
-On a host that sets all five, one line:
+On a host that sets all five, one line — and the whole report, MEASURED on
+this development host, showing where that line sits now that `doctor` groups
+by WHO FIXES IT (a package manager, the kernel, or a file):
 
 ```bash
-./bin/snug doctor | grep 'kernel knob'
+./bin/snug doctor; echo "exit=$?"
+```
+
+```
+🩺 snug doctor
+
+🧰 programs — the binaries this host has to provide
+  ✅ bubblewrap 0.11.2
+     📍 /usr/bin/bwrap
+  ✅ pasta 20260612.a9c61ff-1.3
+     📍 /usr/bin/pasta
+  ✅ podman client is usable inside a sandbox
+     📍 /usr/bin/podman
+  ✅ podman's helper binaries are all findable
+     📍 conmon        /usr/bin/conmon
+     📍 netavark      /usr/libexec/podman/netavark
+     📍 aardvark-dns  /usr/libexec/podman/aardvark-dns
+     📍 catatonit     /usr/libexec/podman/catatonit
+     📍 crun          /usr/bin/crun
+     📍 runc          /usr/bin/runc
+
+🐧 kernel — what this kernel lets snug build
+  ✅ unprivileged user namespaces work
+  ✅ private network namespace — loopback only
+     🔒 no egress, no host loopback, no abstract unix sockets (netns-scoped)
+     ℹ️  X11/D-Bus/Wayland are pathname sockets — a mount question, not this probe's
+  ✅ the stage starts — clone, uid map, loopback, and the netns move
+     🔒 offline sandboxes do not use it and are unaffected either way
+  ✅ TIOCSTI disabled kernel-wide — job control works inside the sandbox
+  ✅ the 5 kernel knobs snug's threat model inherits from this host are set
+
+🏠 host configuration — files and settings outside the kernel
+  ✅ a delegated subuid/subgid range the container engine can use
+  📦 running inside a container (distrobox/podman) — supported
+  ✅ profiles load cleanly
+
+🎉 This host can run snug.
+exit=0
+```
+
+The helper rows carry the PATH podman will actually use, which is the question
+on a machine with more than one podman installation — this one is a distrobox
+over a host podman. `findPodmanHelper` searches podman's own directory list
+and not `$PATH`, and it computed those paths already; they were thrown away.
+`runc` is shown with `➖` rather than `❌` when absent: it is `crun`'s
+alternative, not a requirement of its own.
+
+```bash
 ./bin/snug fix sysctl; echo "exit=$?"
 ```
 
 ```
-  ✅ the 5 kernel knobs snug's threat model inherits from this host are set
 snug: this host already sets every kernel knob snug's threat model inherits; nothing to do
 exit=0
 ```

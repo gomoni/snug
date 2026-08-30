@@ -34,6 +34,24 @@ const doctorNetnsOKMessage = "" +
 // The messages name the exact sysctl or package to change. snug runs in odd
 // environments — distrobox, CI containers, hardened kernels — and a vague error
 // there costs an hour.
+//
+// # Three sections, and the split is by WHO FIXES IT
+//
+//	🧰 programs             a package manager fixes it
+//	🐧 kernel               a sysctl, a module, or a different kernel fixes it
+//	🏠 host configuration   a file outside the kernel fixes it
+//
+// Not by subject, and not by which check is most alarming. A reader arrives
+// here holding one of three questions — what do I install, what does this
+// kernel refuse me, what have I misconfigured — and a flat list answered none
+// of them: the bwrap row sat four lines from the userns probe that needs it
+// while pasta's row sat between the stage and podman's client, so a human
+// scanning for "what do I install" read every line to find four.
+//
+// ORDER WITHIN A SECTION STILL MATTERS and is not free to shuffle: the
+// programs section resolves bwrap, and the kernel section's probes need that
+// path. The guard between them is bwrapFound and deliberately NOT ok — see
+// the comment at its declaration.
 func doctor(argv []string) int {
 	// argv was DROPPED here until issue #52, which made `snug doctor --json`
 	// exit 0 with the human report and the flag silently ignored. That is the
@@ -56,7 +74,13 @@ func doctor(argv []string) int {
 	fmt.Println("🩺 snug doctor")
 	fmt.Println()
 
+	fmt.Println("🧰 programs — the binaries this host has to provide")
 	bwrap, err := exec.LookPath("bwrap")
+	// NOT `ok`: the programs section below can clear ok (a missing
+	// /dev/net/tun does), and the kernel probes need to know only whether
+	// there is a bwrap to probe WITH. Riding on ok would silently skip them
+	// on a host that has bubblewrap and is missing something else.
+	bwrapFound := err == nil
 	if err != nil {
 		fmt.Println("  ❌ bubblewrap (bwrap) not found on PATH")
 		fmt.Println("     📦 zypper in bubblewrap  |  apt install bubblewrap  |  dnf install bubblewrap")
@@ -65,11 +89,47 @@ func doctor(argv []string) int {
 		fmt.Printf("  ✅ %s\n     📍 %s\n", firstLine(capture(bwrap, "--version")), bwrap)
 	}
 
+	if pasta, err := exec.LookPath("pasta"); err != nil {
+		fmt.Println("  ⚠️  pasta not found — the 'net' profile will refuse to run")
+		fmt.Println("     📦 zypper in passt  |  apt install passt  |  dnf install passt")
+		fmt.Println("     🔒 offline sandboxes work fine without it")
+	} else {
+		fmt.Printf("  ✅ %s\n     📍 %s\n", firstLine(capture(pasta, "--version")), pasta)
+		// A version is not a capability, and this line used to be the whole
+		// pasta check. MEASURED in a GitHub Actions container (issue #395, run
+		// 32942207790): doctor printed this ✅ and every `-p @net` run then died
+		// with `pasta exited before the network came up: Failed to open()
+		// /dev/net/tun: No such file or directory`. doctor is supposed to give
+		// the answer a run gives, so it opens the device pasta needs rather
+		// than reporting that pasta can print its own version.
+		if detail, tunOK := tunDeviceUsable(tunClonePath); !tunOK {
+			fmt.Println("  ❌ /dev/net/tun is not usable — `-p @net` will fail after the sandbox starts")
+			fmt.Printf("     💬 %s\n", detail)
+			fmt.Println("     🔧 pasta puts a tap device in the sandbox's netns and needs this node")
+			fmt.Println("     🔧 docker:  --device /dev/net/tun    podman:  --device /dev/net/tun")
+			fmt.Println("     🔧 bare host: modprobe tun")
+			fmt.Println("     🔒 offline sandboxes do not use pasta and are unaffected")
+			ok = false
+		}
+	}
+
+	if usable, podmanPath, detail := podmanClientUsable(); usable {
+		fmt.Println("  ✅ podman client is usable inside a sandbox")
+		fmt.Printf("     📍 %s\n", podmanPath)
+	} else {
+		fmt.Printf("  ⚠️  podman CLI will not work inside a sandbox — %s\n", detail)
+		fmt.Println("     🔒 snug's engine and proxy still work; drive the API at $CONTAINER_HOST")
+	}
+
+	reportPodmanHelpers()
+
+	fmt.Println()
+	fmt.Println("🐧 kernel — what this kernel lets snug build")
 	// The real test is not a sysctl read but whether a sandbox actually starts:
 	// AppArmor on Ubuntu 24.04+, seccomp policy in CI containers, and nested
 	// userns limits all fail in different places.
 	usernsWorks := false
-	if ok {
+	if bwrapFound {
 		verdict, detail := probeUserns(bwrap)
 		switch verdict {
 		case usernsFailed:
@@ -211,44 +271,6 @@ func doctor(argv []string) int {
 		fmt.Println("     🔒 offline sandboxes do not use it and are unaffected either way")
 	}
 
-	if pasta, err := exec.LookPath("pasta"); err != nil {
-		fmt.Println("  ⚠️  pasta not found — the 'net' profile will refuse to run")
-		fmt.Println("     📦 zypper in passt  |  apt install passt  |  dnf install passt")
-		fmt.Println("     🔒 offline sandboxes work fine without it")
-	} else {
-		fmt.Printf("  ✅ %s\n     📍 %s\n", firstLine(capture(pasta, "--version")), pasta)
-		// A version is not a capability, and this line used to be the whole
-		// pasta check. MEASURED in a GitHub Actions container (issue #395, run
-		// 32942207790): doctor printed this ✅ and every `-p @net` run then died
-		// with `pasta exited before the network came up: Failed to open()
-		// /dev/net/tun: No such file or directory`. doctor is supposed to give
-		// the answer a run gives, so it opens the device pasta needs rather
-		// than reporting that pasta can print its own version.
-		if detail, tunOK := tunDeviceUsable(tunClonePath); !tunOK {
-			fmt.Println("  ❌ /dev/net/tun is not usable — `-p @net` will fail after the sandbox starts")
-			fmt.Printf("     💬 %s\n", detail)
-			fmt.Println("     🔧 pasta puts a tap device in the sandbox's netns and needs this node")
-			fmt.Println("     🔧 docker:  --device /dev/net/tun    podman:  --device /dev/net/tun")
-			fmt.Println("     🔧 bare host: modprobe tun")
-			fmt.Println("     🔒 offline sandboxes do not use pasta and are unaffected")
-			ok = false
-		}
-	}
-
-	if ok, detail := podmanClientUsable(); ok {
-		fmt.Println("  ✅ podman client is usable inside a sandbox")
-	} else {
-		fmt.Printf("  ⚠️  podman CLI will not work inside a sandbox — %s\n", detail)
-		fmt.Println("     🔒 snug's engine and proxy still work; drive the API at $CONTAINER_HOST")
-	}
-
-	reportPodmanHelpers()
-
-	// After the two podman probes, because it is the third thing a container
-	// run needs and the one they stopped short of (issue #483). WARN only: it
-	// deliberately does not touch ok.
-	reportSubuidDelegation(stage.CheckSubuidDelegation, currentSubuidHost())
-
 	if legacyTIOCSTI() {
 		fmt.Println("  ⚠️  this kernel still allows the TIOCSTI ioctl")
 		fmt.Println("     🛡️  snug will add --new-session to stop the sandbox typing into your")
@@ -257,11 +279,16 @@ func doctor(argv []string) int {
 		fmt.Println("  ✅ TIOCSTI disabled kernel-wide — job control works inside the sandbox")
 	}
 
-	// After the TIOCSTI row and before the container marker: both are
-	// "what does this KERNEL give you", and this one is the larger half —
-	// five knobs snug depends on and never read until issue #526. WARN
-	// only, and it deliberately does not touch ok (hostsysctl.go says why).
+	// Five knobs snug depends on and never read until issue #526. WARN only,
+	// and it deliberately does not touch ok (hostsysctl.go says why).
 	reportHostSysctls(readHostSysctls(readProcSysFile))
+
+	fmt.Println()
+	fmt.Println("🏠 host configuration — files and settings outside the kernel")
+	// The third thing a container run needs, and the one the two podman
+	// probes stop short of (issue #483). WARN only: it deliberately does not
+	// touch ok — an offline sandbox needs no delegated range.
+	reportSubuidDelegation(stage.CheckSubuidDelegation, currentSubuidHost())
 
 	if marker := containerMarker(); marker != "" {
 		fmt.Printf("  📦 %s — supported\n", marker)
@@ -807,9 +834,27 @@ func ociRuntimeMissing(crun, runc, cgroupsDisabled bool) bool {
 // carries the package to install, because a vague answer in an odd environment
 // costs an hour.
 func reportPodmanHelpers() {
+	// One row per helper WITH its resolved path, the same shape the bwrap and
+	// pasta rows have. A summary alone answered "is anything missing" and
+	// nothing else: on a host with several podman installations — a distrobox
+	// over a host podman is the ordinary case here — WHICH conmon podman will
+	// find is the question a human is actually holding, and findPodmanHelper
+	// already knows (it searches podman's own directory list, not $PATH). The
+	// path was computed and thrown away.
+	type helperRow struct {
+		name, path string
+		// required is false for the OCI runtime pair: crun and runc are
+		// alternatives, so an absent runc is not a fault of its own and must
+		// not be printed as one. The pair's verdict is the switch below.
+		required bool
+	}
+	var rows []helperRow
+
 	missing := []string{}
 	for _, h := range requiredPodmanHelpers() {
-		if findPodmanHelper(h) == "" {
+		path := findPodmanHelper(h)
+		rows = append(rows, helperRow{name: h, path: path, required: true})
+		if path == "" {
 			missing = append(missing, h)
 		}
 	}
@@ -828,7 +873,9 @@ func reportPodmanHelpers() {
 	// while doctor said "podman's helper binaries are all findable". That is
 	// the shape this whole command exists to refuse: a green tick for a host
 	// where the run then fails.
-	crun, runc := findPodmanHelper("crun") != "", findPodmanHelper("runc") != ""
+	crunPath, runcPath := findPodmanHelper("crun"), findPodmanHelper("runc")
+	rows = append(rows, helperRow{name: "crun", path: crunPath}, helperRow{name: "runc", path: runcPath})
+	crun, runc := crunPath != "", runcPath != ""
 	switch {
 	case !crun && !runc:
 		missing = append(missing, "crun or runc")
@@ -845,9 +892,26 @@ func reportPodmanHelpers() {
 
 	if len(missing) == 0 {
 		fmt.Println("  ✅ podman's helper binaries are all findable")
+	} else {
+		fmt.Printf("  ⚠️  podman helper binaries not found: %s\n", strings.Join(missing, ", "))
+	}
+	for _, r := range rows {
+		switch {
+		case r.path != "":
+			fmt.Printf("     📍 %-13s %s\n", r.name, r.path)
+		case r.required:
+			fmt.Printf("     ❌ %-13s not in any directory podman searches\n", r.name)
+		default:
+			// The alternative that is absent. Stated, because a reader
+			// looking at a crun row and no runc row cannot tell "absent"
+			// from "not looked for".
+			fmt.Printf("     ➖ %-13s absent\n", r.name)
+		}
+	}
+	if len(missing) == 0 {
 		return
 	}
-	fmt.Printf("  ⚠️  podman helper binaries not found: %s\n", strings.Join(missing, ", "))
+	fmt.Printf("     🔎 searched %s\n", strings.Join(podmanHelperDirs(), " "))
 	fmt.Println("     📦 zypper in conmon netavark aardvark-dns catatonit crun  |  apt install")
 	fmt.Println("        conmon netavark aardvark-dns catatonit crun  |  dnf install conmon")
 	fmt.Println("        netavark aardvark-dns catatonit crun")
