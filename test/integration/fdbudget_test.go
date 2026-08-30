@@ -38,13 +38,15 @@ func TestTheFDBudgetPolicySnugAcceptsIsOneTheStageCanActuallyBuild(t *testing.T)
 	requireInternet(t)
 	proj, _ := target(t)
 
-	// K = doors + 9 under @net (measured: at 48 doors snug says "this policy
-	// needs 57 pass-through descriptors"), so the largest policy the budget
-	// accepts is the one that fills it exactly. Derived from what snug itself
-	// reports rather than from a copy of maxPassthrough, so a change to either
-	// constant moves this test with it instead of falsifying it.
-	const doorsPerK = 9
-	atBudget := reportedFDBudget(t, proj) - doorsPerK
+	// Both halves come from snug's own refusal, and NEITHER is written down
+	// here: the budget, and how many descriptors a policy costs BEYOND its
+	// doors. The second is not a constant — it is one per generated file plus
+	// the seccomp filter, the --info-fd, the netns handshake pair and the args
+	// memfd, so it differs with what the host makes snug generate. A first
+	// version of this test hardcoded 9 (measured on the author's machine) and
+	// passed there while failing on CI, where the same profile costs less.
+	budget, perDoorOverhead := reportedFDBudget(t, proj)
+	atBudget := budget - perDoorOverhead
 
 	for _, tc := range []struct {
 		name  string
@@ -80,25 +82,49 @@ func TestTheFDBudgetPolicySnugAcceptsIsOneTheStageCanActuallyBuild(t *testing.T)
 	}
 }
 
-// reportedFDBudget asks snug for the budget rather than copying it: a
-// deliberately over-large profile is refused, and the refusal states the
-// number. A test that re-typed maxPassthrough would keep passing after a
-// change that moved it.
-func reportedFDBudget(t *testing.T, proj string) int {
+// reportedFDBudget asks snug for BOTH numbers this test needs rather than
+// copying either: one deliberately over-large profile is refused, and the
+// refusal states the budget AND what that policy costs, so the difference
+// between the cost and the door count is everything the policy needs besides
+// its doors.
+//
+//	snug: stage: this policy needs 209 pass-through descriptors, ...
+//	      ... (the budget is 56).
+//
+// A test that re-typed either number would keep passing after a change that
+// moved it, and a test that re-typed the overhead passes only on the host it
+// was measured on.
+func reportedFDBudget(t *testing.T, proj string) (budget, overhead int) {
 	t.Helper()
-	out, err := runWithDoors(t, proj, 200)
+	const probeDoors = 200
+	out, err := runWithDoors(t, proj, probeDoors)
 	if err == nil {
-		t.Fatalf("a policy of 200 doors was accepted; nothing here can find the boundary:\n%s", out)
+		t.Fatalf("a policy of %d doors was accepted; nothing here can find the boundary:\n%s",
+			probeDoors, out)
 	}
-	const marker = "(the budget is "
+	cost := readNumberAfter(t, out, "this policy needs ")
+	budget = readNumberAfter(t, out, "(the budget is ")
+	overhead = cost - probeDoors
+	if overhead < 0 || budget <= overhead {
+		t.Fatalf("snug reports a policy of %d doors costing %d descriptors against a budget of "+
+			"%d, which leaves no room for any door at all — this test cannot size a policy "+
+			"from those numbers:\n%s", probeDoors, cost, budget, out)
+	}
+	return budget, overhead
+}
+
+// readNumberAfter pulls the integer following a marker out of snug's refusal,
+// failing with the whole output rather than a zero when the wording has moved.
+func readNumberAfter(t *testing.T, out, marker string) int {
+	t.Helper()
 	i := strings.Index(out, marker)
 	if i < 0 {
-		t.Fatalf("the over-large refusal does not state the budget, so this test cannot "+
-			"derive the boundary from snug itself:\n%s", out)
+		t.Fatalf("the refusal does not contain %q, so this test cannot derive the boundary "+
+			"from snug itself:\n%s", marker, out)
 	}
 	var n int
 	if _, err := fmt.Sscanf(out[i+len(marker):], "%d", &n); err != nil || n <= 0 {
-		t.Fatalf("could not read the budget out of %q: %v", out[i:], err)
+		t.Fatalf("could not read a number after %q: %v", marker, err)
 	}
 	return n
 }

@@ -6759,26 +6759,49 @@ is somebody else's run rather than the one you just started.
 ## 28a. The budget P0 accepts is one the stage can actually build
 
 No shipped profile is large enough to reach the boundary, but a profile of your
-own is: `listen_names` is the knob that grows the block, at K = doors + 9 under
-`@net`. This is the check that P0's arithmetic and P1's descriptor table agree
-— they did not, and the divergence was invisible to both, because each side was
-right on its own.
+own is: `listen_names` is the knob that grows the block. This is the check that
+P0's arithmetic and P1's descriptor table agree — they did not, and the
+divergence was invisible to both, because each side was right on its own.
+
+Ask snug where the boundary is rather than counting: a deliberately over-large
+profile is refused, and the refusal states both what the policy costs and what
+the budget is.
 
 ```bash
 mkdir -p $X/snug/profiles.d
-n=47                        # K = 56, exactly the budget
-{ echo '[profile.doors]'
-  echo 'description = "fd budget probe"'
-  printf 'listen_names = ['
-  for i in $(seq 1 $n); do printf '"d%02d",' $i; done
-  echo ']'
-} > $X/snug/profiles.d/doors.toml
+doors() {
+  { echo '[profile.doors]'
+    echo 'description = "fd budget probe"'
+    printf 'listen_names = ['
+    for i in $(seq 1 $1); do printf '"d%03d",' $i; done
+    echo ']'
+  } > $X/snug/profiles.d/doors.toml
+}
 
-XDG_CONFIG_HOME=$X ./bin/snug -p @net -p doors $SC/proj -- sh -c 'echo PAYLOAD-RAN'
+doors 200
+XDG_CONFIG_HOME=$X ./bin/snug -p @net -p doors $SC/proj -- true
 ```
 
-Expect `PAYLOAD-RAN`, after 47 door declarations. Then raise `n` to 48 (K = 57)
-and re-run:
+```
+snug: stage: this policy needs 209 pass-through descriptors, so the block would
+      run from fd 6 to fd 214 and swallow the pinned network namespace descriptor
+      at fd 63 (the budget is 56).
+```
+
+209 for 200 doors, so on THIS host everything besides the doors costs 9 — one
+per generated file, one for the seccomp filter, one for bwrap's `--info-fd`,
+two for the netns handshake pair, one for the args memfd. That number differs
+with what your host makes snug generate, which is why it is read here and not
+memorised: the largest policy the budget accepts is `budget - overhead` doors,
+56 - 9 = 47 here.
+
+```bash
+doors 47 && XDG_CONFIG_HOME=$X ./bin/snug -p @net -p doors $SC/proj -- sh -c 'echo PAYLOAD-RAN'
+doors 48 && XDG_CONFIG_HOME=$X ./bin/snug -p @net -p doors $SC/proj -- sh -c 'echo PAYLOAD-RAN'
+```
+
+Expect `PAYLOAD-RAN` from the first, after 47 door declarations, and from the
+second:
 
 ```
 snug: stage: this policy needs 57 pass-through descriptors, so the block would
