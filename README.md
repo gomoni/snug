@@ -167,6 +167,53 @@ first, in a helper called the **stage**:
                       +---------------------------------------------------+
 ```
 
+### With a container engine — a fourth process, and it is a SIBLING of the sandbox
+
+`@podman-socket` gives the payload a `podman` that is not your host's: snug
+starts one engine per sandbox and joins it to the sandbox's own network
+namespace. The payload never talks to that engine either — it talks to a
+filtering proxy snug serves on a socket bound in at `/snug/podman.sock`.
+
+```
+    your shell
+      |
+      +-- snug                         also serves the filtering proxy the
+            |                          payload's podman client talks to
+            |
+            +-- pasta                  only with @net
+            |
+            +-- stage                  makes N; holds it open by a descriptor
+                  |
+                  +-- bwrap            THE SANDBOX
+                  |     |
+                  |   +-+---------------- sandbox boundary ---------------+
+                  |   | +-- init (pid 1)                                  |
+                  |   |       |                                           |
+                  |   |       +-- your command (pid 2)    network = N     |
+                  |   +---------------------------------------------------+
+                  |
+                  +-- podman           THE ENGINE: also network = N, joined by
+                        |              setns; its own mount view, DERIVED from
+                        +-- container  the sandbox's; 12 capabilities, no
+                                       CAP_NET_ADMIN, no CAP_SYS_PTRACE
+```
+
+- **A container's network IS the sandbox's.** There is no per-container bridge
+  and no `podman run -p`. With `@net` a container reaches the internet; without
+  it, a container reaches nothing. That is the whole reason the engine sits
+  where it sits.
+- **An offline run starts a stage too, and no pasta.** The engine needs the
+  stage for its user namespace, not for the network:
+  `snug --dry-run -p @podman-socket .` lists four processes and pasta is not
+  one of them.
+- **The engine sees a DERIVED view, not the host tree.** Its root is the
+  sandbox's root plus the grafts `--dry-run` lists under ENGINE VIEW. Your home
+  directory is not in it, so `~/.ssh` is not something a container can bind —
+  structurally, not by a rule that names it.
+- **The payload never reaches the host's podman.** It reaches the proxy, which
+  judges each request and refuses what is not on its list; foreground
+  `podman run` is one of the refusals.
+
 ### What dies when
 
 ```
