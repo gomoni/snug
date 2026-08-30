@@ -6712,6 +6712,55 @@ into disagreeing. The refusal's own text names the new command:
       Fix: sysctl kernel.yama.ptrace_scope=1 (or stricter), or `sudo snug fix sysctl -w`
 ```
 
+## 28. The stage's two parked descriptors are where fds.go says (issue #525)
+
+P1 parks two descriptors at fixed numbers: an `AF_INET` socket created inside N
+at fd 62, and the pinned network namespace at fd 63. Both arrive there by
+`dup3`, and **`dup3` onto an occupied descriptor closes it and reports
+success** — so a collision has no error in it. Look at a live stage:
+
+```
+$ snug -p @net . -- sh -c 'sleep 8' &
+$ ls -l /proc/$(pgrep -f __stage-serve)/fd | awk 'NR>1 {print $9, $10, $11}' | sort -n
+0 -> /dev/pts/5
+1 -> /dev/pts/5
+2 -> /dev/pts/5
+3 -> socket:[4061981]
+4 -> pipe:[4061982]
+5 -> pipe:[4061979]
+14 -> anon_inode:[eventpoll]
+15 -> anon_inode:[eventfd]
+18 -> anon_inode:[pidfd]
+62 -> socket:[4063935]
+63 -> net:[4026532422]
+```
+
+Rows 3, 4 and 5 are `fdControl`, `fdLife` and `fdBwrapInfo`. Rows 62 and 63 are
+the two parked descriptors, and `socket:` / `net:` is what says they are the
+right ones. Rows 14 and 15 are the pair that make this a bug rather than a
+comment: they are **the Go runtime's own epoll and eventfd, and they sit
+immediately above the pass-through block**. The block was open when they were
+allocated — a new descriptor takes the lowest free number, which is why these
+two are at 14 and 15 rather than at 6 and 7 — and it is closed again by the
+time this snapshot is taken, which is why the listing skips from 5 to 14.
+
+So the runtime's descriptors follow the block wherever it ends. On a shipped
+profile the block is small and they land in the teens, as here. At `K =
+maxPassthrough` (56, the permitted maximum) the block fills 6..61 and they land
+on 62 and 63 instead — measured — and the parking then closes them with no
+error.
+
+One thing about running this by hand: `pgrep -f __stage-serve` matches EVERY
+snug on the machine, so quit your other sandboxes first, or the listing you get
+is somebody else's run rather than the one you just started.
+
+No shipped profile reaches that descriptor count, so the refusal itself is not
+reachable by hand: it is `requireFDFree` in `internal/stage/fds.go`, called
+immediately before each `dup3`, and
+`TestParkingRefusesADescriptorThatIsAlreadyOpen` is the regression.
+`go test ./internal/stage -run TestGoldenStageSpec` is the golden that says what
+the two numbers should be.
+
 ## If a check fails
 
 1. Re-run it with `--dry-run` and compare what snug *claimed* against what you

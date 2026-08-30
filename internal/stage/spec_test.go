@@ -78,6 +78,7 @@ func spec() string {
 	fmt.Fprintf(&b, "  fd %-4d N-socket      AF_INET socket CREATED IN N; still answers for N after the move\n", fdNetSock)
 	fmt.Fprintf(&b, "  fd %-4d netns-N       the descriptor P1 pins on N before it leaves (not CLOEXEC until __stage-serve)\n", fdNetnsN)
 	fmt.Fprintf(&b, "  budget        K <= %d, checked on BOTH sides of the control socket (checkFDBudget)\n", maxPassthrough)
+	fmt.Fprintf(&b, "  parking       fd %d and fd %d are dup3 TARGETS; each is refused if already open (requireFDFree)\n", fdNetSock, fdNetnsN)
 	fmt.Fprintln(&b)
 
 	fmt.Fprintln(&b, "BWRAP UNSHARE SET under policy.NetnsStage (internal/policy/bwrap.go)")

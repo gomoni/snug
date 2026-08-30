@@ -40,7 +40,9 @@ import (
 //  3. open a socket IN N and bring lo up through it, then park that socket at
 //     fdNetSock without CLOEXEC — both halves must happen while still in N,
 //     because a socket's namespace is fixed at creation and lo is configured
-//     in whichever namespace the caller is in.
+//     in whichever namespace the caller is in. Both parkings (this one and
+//     step 6) refuse a target that is already open: dup3 onto an occupied
+//     descriptor closes it and reports success.
 //  4. lock the OS thread.
 //  5. pin N via /proc/thread-self/ns/net.
 //  6. dup3 it to fdNetnsN WITHOUT CLOEXEC — it must survive the exec that
@@ -110,6 +112,13 @@ func MainSetup() error {
 	if err != nil {
 		return fmt.Errorf("__stage-setup: %w", err)
 	}
+	// The target has to be FREE, and that is checked rather than assumed: dup3
+	// onto an occupied descriptor closes it and reports success (issue #525,
+	// requireFDFree's own comment carries the measurement).
+	if err := requireFDFree(fdNetSock, "the N socket"); err != nil {
+		unix.Close(netSock)
+		return fmt.Errorf("__stage-setup: %w", err)
+	}
 	// Same dup3-with-flags-0 discipline as the netns descriptor below: NOT
 	// CLOEXEC, because it has to survive the execve into __stage-serve.
 	if err := unix.Dup3(netSock, fdNetSock, 0); err != nil {
@@ -125,6 +134,13 @@ func MainSetup() error {
 	f, err := os.Open("/proc/thread-self/ns/net")
 	if err != nil {
 		return fmt.Errorf("__stage-setup: pinning N: %w", err)
+	}
+	// Checked here, with f already open, rather than before the Open: the fact
+	// that matters is whether the target is occupied at the instant of the
+	// dup3, and f is one of the descriptors that can occupy it (issue #525).
+	if err := requireFDFree(fdNetnsN, "the pinned netns descriptor"); err != nil {
+		f.Close()
+		return fmt.Errorf("__stage-setup: %w", err)
 	}
 	// dup3 with flags 0: the new descriptor is deliberately NOT CLOEXEC. It has
 	// to survive the very execve that makes the move stick — marking it
