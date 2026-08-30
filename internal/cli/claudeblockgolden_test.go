@@ -49,11 +49,15 @@ import (
 // artifact to two files while leaving no rendered sentence unpinned; each arm's
 // condition is also asserted directly below, so a swap cannot pass by accident.
 func TestGoldenClaudeBlock(t *testing.T) {
-	t.Run("untrusted target, nothing carried into settings.json", func(t *testing.T) {
-		goldenClaudeBlock(t, "claude-block.txt", false, false, false)
+	t.Run("nothing carried into settings.json", func(t *testing.T) {
+		goldenClaudeBlock(t, "claude-block.txt", false, false)
 	})
-	t.Run("host-trusted target, settings.json filter exercised", func(t *testing.T) {
-		goldenClaudeBlock(t, "claude-block-trusted.txt", true, true, true)
+	// The second golden no longer differs in the TRUST arm — since issue #460 the
+	// trust entry is unconditional and there is one arm — but it still exercises
+	// the settings.json filter and the credentials block, which is what the two
+	// goldens are for now.
+	t.Run("settings.json filter and credentials exercised", func(t *testing.T) {
+		goldenClaudeBlock(t, "claude-block-trusted.txt", true, true)
 	})
 
 	t.Run("no @claude, no block", func(t *testing.T) {
@@ -78,7 +82,7 @@ func TestGoldenClaudeBlock(t *testing.T) {
 	})
 }
 
-func goldenClaudeBlock(t *testing.T, name string, hostTrusts, exerciseSettingsFilter, stageCredentials bool) {
+func goldenClaudeBlock(t *testing.T, name string, exerciseSettingsFilter, stageCredentials bool) {
 	t.Helper()
 	reg, err := profile.Builtins()
 	if err != nil {
@@ -97,8 +101,8 @@ func goldenClaudeBlock(t *testing.T, name string, hostTrusts, exerciseSettingsFi
 		t.Fatalf("Resolve: %v", err)
 	}
 	// The real staging code, against the fake host's home. /home/u does not
-	// exist, so the credentials copy is skipped, the ~/.claude.json trust entry
-	// is absent, and stageClaudeSettings' own host read comes back "absent"
+	// exist, so the credentials copy is skipped and stageClaudeSettings' own
+	// host read comes back "absent"
 	// too — settings.json is staged with an empty ALLOWLISTED set, but the two
 	// authored keys (issue #87) are unconditional, so the rendered file is not
 	// "{}\n" here: that empty document is only ever reachable for the
@@ -108,30 +112,6 @@ func goldenClaudeBlock(t *testing.T, name string, hostTrusts, exerciseSettingsFi
 	if err := claudeFiles(p, ctx.Home, nil); err != nil {
 		t.Fatalf("claudeFiles: %v", err)
 	}
-	if hostTrusts {
-		// The trusted arm, produced by the REAL generator against a REAL host file
-		// that records this exact path. Only the host home is faked out (the
-		// golden's ctx.Home does not exist on any machine); the decision, the
-		// lookup and the bytes are claudeStateJSON's own.
-		hostHome := t.TempDir()
-		body := []byte(`{"projects":{"` + ctx.Target + `":{"hasTrustDialogAccepted":true}}}`)
-		if err := os.WriteFile(filepath.Join(hostHome, ".claude.json"), body, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		gen := claudeStateJSON(p, hostHome)
-		if !strings.Contains(string(gen), "hasTrustDialogAccepted") {
-			t.Fatalf("control: the generator produced no trust entry for a host that trusts "+
-				"%q, so this arm would silently golden the untrusted block:\n%s",
-				ctx.Target, gen)
-		}
-		perm := uint32(0o600)
-		p.Replace(policy.Mount{
-			Guest: filepath.Join(ctx.Home, ".claude.json"), Kind: policy.KindData,
-			Access: policy.AccessRW, Content: policy.Secret(gen),
-			Perms: &perm, From: []string{"@claude"},
-		})
-	}
-
 	if exerciseSettingsFilter {
 		// The filter arm, produced by the REAL filter (policy.FilterClaudeSettings,
 		// policy.ClaudeSettingsJSON) against a document shaped like a host's, built
@@ -239,12 +219,14 @@ func goldenClaudeBlock(t *testing.T, name string, hostTrusts, exerciseSettingsFi
 			"now (issue #17), so its absence here means stageClaudeSettings silently stopped " +
 			"running rather than that this arm has nothing to say")
 	}
-	// CONTROL: each arm is in the state it says it is. Otherwise a bug that made
-	// claudeTrustCarried always answer the same way would leave two goldens
-	// quietly pinning one arm twice.
-	if got := claudeTrustCarried(p, m); got != hostTrusts {
-		t.Fatalf("control: claudeTrustCarried = %v, want %v — this golden is not pinning "+
-			"the arm it names", got, hostTrusts)
+	// CONTROL: the trust entry the block describes is really in the staged file.
+	// The block has a second arm for a generated file that carries no entry, and
+	// nothing reaches it today (issue #460 made the key unconditional) — a golden
+	// that silently started pinning THAT arm would be recording a sandbox where
+	// Claude Code asks its safety question, which is not the sandbox snug builds.
+	if !claudeTrustCarried(p, m) {
+		t.Fatal("control: the staged ~/.claude.json carries no trust entry, so this golden " +
+			"is pinning the unreachable arm of the block rather than what snug does")
 	}
 
 	// The CLAUDE block renders how long the staged token has left, so the

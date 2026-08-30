@@ -354,29 +354,24 @@ func TestClaudeStagedSetIsExactlyThisTable(t *testing.T) {
 			strings.Join(d, "\n  "))
 	}
 
-	// The target is not part of the table above but is part of the claim, and it
-	// has two arms. This fixture is a host that has NOT trusted the target, so
-	// the generated file must not name it at all: naming it would pre-answer
-	// Claude Code's trust dialog for a directory nobody has ever trusted, which
-	// is what lets a repository's own .claude/settings.json hooks run at startup.
-	if got := string(pol.Mounts[filepath.Join(home, ".claude.json")].Content); strings.Contains(got, target) {
-		t.Errorf("the generated ~/.claude.json names the target %q on a host whose "+
-			"~/.claude.json does not record it as trusted. snug carries the human's own "+
-			"answer for one directory; it never asserts one:\n%s", target, got)
-	}
-
-	// The other arm, on a host that HAS accepted it — and this is the positive
-	// control for the assertion above, not a separate feature test: without it,
-	// "the file does not name the target" would also pass on a generator that can
-	// never name it.
+	// The target is not part of the table above but is part of the claim: the
+	// generated file names the target and NO other path, on every host. Since
+	// issue #460 the trust entry is snug's own answer for the directory the human
+	// typed rather than the host's answer carried across, so this is one arm, not
+	// two — what must never come back is a SECOND path, which is the host
+	// inventory issue #19 removed.
 	// pol.Target, not the raw fixture path: it is the canonicalised form, which
-	// is both the key the generator looks up and the key it writes.
-	trusted, thome, _ := claudeFixtureHome(t, true)
-	ttarget := trusted.Target
-	if got := string(trusted.Mounts[filepath.Join(thome, ".claude.json")].Content); !strings.Contains(got, ttarget) {
-		t.Errorf("the generated ~/.claude.json does not name the target %q even though the "+
-			"host's file records that exact path as trusted. The carry is the whole "+
-			"mechanism; without it the check above measures nothing:\n%s", ttarget, got)
+	// is the key the generator writes.
+	body := string(pol.Mounts[filepath.Join(home, ".claude.json")].Content)
+	if !strings.Contains(body, target) {
+		t.Errorf("the generated ~/.claude.json does not name the target %q, so Claude Code "+
+			"asks its trust question for the one directory the human typed (issue "+
+			"#460):\n%s", target, body)
+	}
+	if strings.Contains(body, hostTrustedOtherProject) {
+		t.Errorf("the generated ~/.claude.json names %q, a project from the HOST's own file. "+
+			"snug answers for the directory on the command line and for no other:\n%s",
+			hostTrustedOtherProject, body)
 	}
 }
 
@@ -546,11 +541,11 @@ func jsonKeySet(t *testing.T, body []byte) map[string]bool {
 // TestGeneratedClaudeJSONCarriesNoDisclosureKey checks the content half of the
 // same claim as a set operation in both directions.
 //
-// Run against BOTH host states. The disclosure question is the same in each —
-// no host key, no host path other than the target — but the answers differ in
-// exactly one place, and running only the trusting arm would leave the file
-// snug generates for an UNFAMILIAR repository (the common case, and the one the
-// review workflow uses) unchecked.
+// Run against BOTH host states. Since issue #460 the two must produce the same
+// answer — no host key, no host path other than the target, exactly one projects
+// entry — and running only one arm would leave a reader that crept back in
+// unmeasured. TestTheGeneratedClaudeJSONDoesNotVaryWITHTheHost states the
+// equality directly; this states what each arm must independently contain.
 func TestGeneratedClaudeJSONCarriesNoDisclosureKey(t *testing.T) {
 	t.Run("host trusts the target", func(t *testing.T) {
 		generatedClaudeJSONDisclosure(t, true)
@@ -599,12 +594,10 @@ func generatedClaudeJSONDisclosure(t *testing.T, hostTrusts bool) {
 	// single entry under projects. Allowing it here is not a hole — it is
 	// allowed for this exact string only, so any other path-shaped key fails,
 	// and the block at the end of this test says the same thing again in the
-	// terms the issue is written in (a host-filesystem inventory). It is allowed
-	// only in the arm where the host's own file records it as trusted; in the
-	// other arm the target is as forbidden as any other path.
-	if hostTrusts {
-		allowed[target] = true
-	}
+	// terms the issue is written in (a host-filesystem inventory). It is the
+	// path the human typed on the command line, which the payload can read from
+	// pwd; every OTHER path is a fact about the host.
+	allowed[target] = true
 	var unexpected []string
 	for k := range got {
 		if !allowed[k] {
@@ -630,8 +623,7 @@ func generatedClaudeJSONDisclosure(t *testing.T, hostTrusts bool) {
 		// rather than quietly allowed: the disclosure is the LIST OF PATHS, not
 		// the key. The host's named all seven projects on the machine and
 		// pre-accepted trust for each; snug's names at most the one directory the
-		// human typed, which the payload can already learn from pwd — and names
-		// it only when the host's own file already recorded that answer.
+		// human typed, which the payload can already learn from pwd.
 		if k == "projects" {
 			continue
 		}
@@ -657,19 +649,16 @@ func generatedClaudeJSONDisclosure(t *testing.T, hostTrusts bool) {
 				"machine, whichever of them the payload cd'd to.", p, target)
 		}
 	}
-	// The count is the arm, and it is the whole of F1's fix. A host that has
-	// accepted the trust dialog for this directory gets its answer carried in; a
-	// host that has not gets no projects key, so Claude Code asks — and asking is
-	// what stops a repository's own .claude/settings.json hooks running at
-	// startup, measured A/B (claudeStateJSON's doc comment).
-	want := 0
-	if hostTrusts {
-		want = 1
-	}
-	if len(doc.Projects) != want {
-		t.Errorf("projects has %d entries, want %d (hostTrusts=%v). With the host trusting "+
-			"this path snug carries the one boolean; without it snug must write NO projects "+
-			"key at all — never assert trust on the human's behalf for a directory they have "+
-			"never seen.", len(doc.Projects), want, hostTrusts)
+	// EXACTLY ONE entry, in both arms. The count is what the host used to decide
+	// and no longer does (issue #460): snug answers for the directory on the
+	// command line whatever the host's own file says, so a SECOND entry is the
+	// host inventory coming back and ZERO is the trust dialog coming back — the
+	// prompt issue #460 exists to remove, and one this test would otherwise let
+	// return silently.
+	if len(doc.Projects) != 1 {
+		t.Errorf("projects has %d entries, want exactly 1 (hostTrusts=%v). Two is the "+
+			"host's project list reaching the sandbox (issue #19); none is Claude Code "+
+			"asking \"Quick safety check\" for the directory the human typed (issue "+
+			"#460).", len(doc.Projects), hostTrusts)
 	}
 }

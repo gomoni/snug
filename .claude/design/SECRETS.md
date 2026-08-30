@@ -116,7 +116,7 @@ column that matters most is the last, and the earlier audit did not have it.
 |---|---|---|---|---|---|
 | 1a | Anthropic OAuth **access** token | `KindData` writable-tmpfs copy at `~/.claude/.credentials.json` (`internal/cli/claude.go:49`) | every process in the sandbox | `user:inference`, `user:profile`, `user:file_upload`, `user:mcp_servers`, `user:sessions:claude_code` **[M]** | **yes, ~8 h** **[M]** |
 | 1b | Anthropic OAuth **refresh** token | *same file, same line* | same | mints new access tokens | **yes, ~20 days remaining of a rolling window** **[M]** |
-| 2 | ~~`~/.claude.json`, 56 500 bytes verbatim~~ | **FIXED** (issue #19) — GENERATED, at most three keys, no host bytes (`claudeStateJSON`, `internal/cli/claude.go`); measured 284 bytes inside, against 62 274 on this host. The third key is the host's own trust answer for the target, carried only when the host already gave it (§3.5) | — | — | — |
+| 2 | ~~`~/.claude.json`, 56 500 bytes verbatim~~ | **FIXED** (issue #19) — GENERATED, at most three keys, no host bytes (`claudeStateJSON`, `internal/cli/claude.go`); measured 284 bytes inside, against 62 274 on this host. The third key is snug's own trust answer for the target, in that sandbox only (§3.5, issue #460) | — | — | — |
 | 3 | ~~`ANTHROPIC_API_KEY`~~ | **FIXED** — removed from `@claude`'s `env`; Claude now authenticates from the staged `.credentials.json` | — | — | — |
 | 4 | GitHub token from `gh auth token` | `oauth_token:` in a generated `hosts.yml` (`identity.go:192`) | every process in the sandbox | on this host: `admin:public_key`, `gist`, `read:org`, `repo` **[M]** | **yes, indefinitely** |
 | 5 | ssh private keys | **never** (`internal/sshproxy`) | nothing — no key material crosses | signing oracle, one pinned key | **no** — dies with the proxy |
@@ -451,7 +451,7 @@ The last three break ties rather than deciding:
 | **Anthropic refresh token** | ~20 days | **yes, renews** | same scopes | same, for weeks, and it rotates | **materially worse than 1a and currently indistinguishable from it** |
 | **`ANTHROPIC_API_KEY`** | indefinite | no | often org-wide (A7) | quota, org-wide, rotating it is someone else's problem | never in the environment; §1.1 shows it also *wins* over the OAuth token |
 | **GitHub token, `admin:public_key`+`repo`** | indefinite | **yes, mints an SSH key** | broad, user-wide | **account takeover + code execution via CI** | **never inject.** Fails A1, A2 and A4 simultaneously |
-| **`~/.claude.json`** | ~~permanent (disclosure)~~ | n/a | n/a | ~~host inventory: 7 project paths, org, email, account UUIDs, machine ID~~ | **FIXED** (issue #19): generated, at most three keys, no host bytes — the third being the host's own trust answer for the target, carried and never invented (§3.5). §3.5 predicted this fix; it landed |
+| **`~/.claude.json`** | ~~permanent (disclosure)~~ | n/a | n/a | ~~host inventory: 7 project paths, org, email, account UUIDs, machine ID~~ | **FIXED** (issue #19): generated, at most three keys, no host bytes — the third being snug's own trust answer for the target, scoped to the run (§3.5, issue #460). §3.5 predicted this fix; it landed |
 
 ### 2.3 What falls out
 
@@ -1166,42 +1166,48 @@ Claude Code connects and works — no login prompt, so nothing here was
 load-bearing for AUTH — but it does block on the theme picker and then the trust
 dialog, on every run, because `$HOME` is a fresh tmpfs. So stop-staging was the
 wrong shape (two interactive prompts per run, and Claude Code then writes its own
-35 KB file anyway), and *generated minimal* was the right one: two keys always —
-`hasCompletedOnboarding` and `autoUpdates=false` — plus a third,
-`projects.<target>.hasTrustDialogAccepted`, **iff the host's own
-`~/.claude.json` already records that exact path as trusted**. 284 bytes measured
-inside against 62 274 on this host.
+35 KB file anyway), and *generated minimal* was the right one: three keys —
+`hasCompletedOnboarding`, `autoUpdates=false` and
+`projects.<target>.hasTrustDialogAccepted`, the last being snug's own answer for
+the ONE directory named on the command line, in that sandbox only. Nothing here
+is read from the host. 284 bytes measured inside against 62 274 on this host.
 
-**The third key was written unconditionally first, and that was a security
-regression rather than a scoping decision.** Measured A/B on one hostile fixture
-— a target containing only `.claude/settings.json` with a `SessionStart` hook:
+**The trust key removes Claude Code's dialog for the target, and what pays for
+that is the projection rather than the dialog** (issue #460). Measured A/B,
+claude 2.1.251, on one hostile fixture — a target containing only
+`.claude/settings.json` with a `SessionStart` hook:
 
 | build | trust dialog | repo hook |
 |---|---|---|
-| host file copied (pre-#19) | "Quick safety check" blocks | not fired |
-| key written unconditionally | none, opens on "Welcome back!" | **fired** |
-| key carried from the host (now) | "Quick safety check" blocks | not fired |
+| key omitted | "Quick safety check" blocks (interactive) | not fired |
+| key written (now) | none, opens on the prompt | not fired |
+| the same fixture, on the HOST | none | **fired** |
 
-Deleting the `projects` key inside the sandbox and relaunching restores the
-dialog, so that key is precisely what enables repo-controlled config to execute
-at startup — with the staged Anthropic OAuth token in the same sandbox and
-`@claude` commonly combined with `@net`. Carrying the host's answer makes the
-sandbox's trust behaviour identical to the copied file's (which pre-accepted only
-what the human had already accepted) while keeping the disclosure fix.
+The hook fires in neither sandbox arm because `stageProjectClaudeSettings`
+reinterprets the target's `settings.json` and drops its `hooks` block before
+Claude Code reads it. `claude -p` shows no dialog in either arm — the headless
+mode does not gate on trust at all — so the dialog was only ever an interactive
+prompt, and it was gating a channel the projection had already closed.
 
-**What the residual actually is, stated as the measurement.** It is NOT "strictly
-narrower than the seven paths the copied file pre-accepted" — that sentence was
-written here and in two places in the code, and it is false in both directions.
-Measured: the old set was the host's SEVEN project paths, the new set is at most
-`{target}`, and neither contains the other. The old seven were also **inert** —
-all seven are absent inside a `@claude` sandbox, so no entry could open anything
-— while `{target}` is the one directory that IS mounted, writable and persistent,
-i.e. the only live entry either version ever had. The bytes got smaller and the
-one live entry stayed one live entry; what changed is who decides it, and that is
-the half the reassurance hid. It is the mirror of the bug issue #19 fixed: a
-comment understating what is handed over. Both arms are printed in `--dry-run`'s
-`CLAUDE` block (`internal/cli/testdata/claude-block.txt` and
-`claude-block-trusted.txt`), so a scoped decision stays a visible one.
+`.mcp.json` is the same question with a sharper answer: a target whose only
+content is a `.mcp.json` naming `sh -c "touch MCP-FIRED"` ran that command with
+the key omitted, with it written, AND on the host in a never-trusted directory.
+The trust key never gated that file, so `stageProjectMCPJSON` reinterprets it
+into one naming no servers. The cost is stated rather than flagged around: an MCP
+server a project legitimately commits does not run inside a snug sandbox.
+
+**What the residual is, stated as the measurement.** It is NOT "strictly narrower
+than the seven paths the copied file pre-accepted" — that sentence was written
+here and in two places in the code, and it is false in both directions. Measured:
+the old set was the host's SEVEN project paths, the new set is `{target}`, and
+neither contains the other. The old seven were also **inert** — all seven are
+absent inside a `@claude` sandbox, so no entry could open anything — while
+`{target}` is the one directory that IS mounted, writable and persistent, i.e.
+the only live entry either version ever had. The bytes got smaller and the one
+live entry stayed one live entry; what changed is who decides it. snug decides it
+now, which is why `--dry-run`'s `CLAUDE` block says PRE-ANSWERED BY SNUG in those
+words (`internal/cli/testdata/claude-block.txt`) — a decision made on the human's
+behalf has to be one they can read.
 
 ### 3.6 Staged injection under an explicitly-named profile
 

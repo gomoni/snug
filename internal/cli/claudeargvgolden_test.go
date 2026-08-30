@@ -122,13 +122,17 @@ func TestGoldenClaudeArgv(t *testing.T) {
 	}
 }
 
-// TestClaudeArgvIsByteIdenticalAcrossTrustArms is the control for
-// TestGoldenClaudeArgv shipping only one golden. It drives the SAME two arms
-// claudeblockgolden_test.go's TestGoldenClaudeBlock does — host does not trust
-// the target versus host trusts this exact path, via the real claudeStateJSON
-// — and asserts the resulting argv is identical, so "one golden is enough" is
-// verified by execution rather than assumed by omission.
-func TestClaudeArgvIsByteIdenticalAcrossTrustArms(t *testing.T) {
+// TestClaudeArgvDoesNotVaryWithMountContent is the control for
+// TestGoldenClaudeArgv shipping ONE golden: bwrap's argv carries paths, modes
+// and fd numbers, never the bytes behind a KindData mount, so a golden argv
+// cannot pin content and does not need an arm per content.
+//
+// It used to drive the two TRUST arms — host trusts the target versus host does
+// not — and that subject is gone: since issue #460 the trust entry is written
+// unconditionally and there is one arm. The premise it was really checking is
+// the one above, so it is checked directly, with the largest KindData file
+// @claude authors standing in for all of them.
+func TestClaudeArgvDoesNotVaryWithMountContent(t *testing.T) {
 	reg, err := profile.Builtins()
 	if err != nil {
 		t.Fatal(err)
@@ -136,66 +140,35 @@ func TestClaudeArgvIsByteIdenticalAcrossTrustArms(t *testing.T) {
 	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "@claude")
 	ctx := envGoldenCtx()
 
-	// Untrusted arm: same shape as TestGoldenClaudeArgv above.
-	untrustedPolicy, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, ctx, newEnvFakeEnv())
-	if err != nil {
-		t.Fatalf("Resolve(%v): %v", sel, err)
-	}
-	if err := claudeFiles(untrustedPolicy, ctx.Home, nil); err != nil {
-		t.Fatalf("claudeFiles: %v", err)
-	}
-	untrusted := untrustedPolicy.BwrapArgs(1000, 1000)
-
-	// Trusted arm: same recipe claudeblockgolden_test.go uses — a real host
-	// home in a temp dir whose ~/.claude.json records this exact target as
-	// trusted, fed through the real generator.
-	trustedPolicy, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, ctx, newEnvFakeEnv())
-	if err != nil {
-		t.Fatalf("Resolve(%v): %v", sel, err)
-	}
-	if err := claudeFiles(trustedPolicy, ctx.Home, nil); err != nil {
-		t.Fatalf("claudeFiles: %v", err)
-	}
-	hostHome := t.TempDir()
-	body := []byte(`{"projects":{"` + ctx.Target + `":{"hasTrustDialogAccepted":true}}}`)
-	if err := os.WriteFile(filepath.Join(hostHome, ".claude.json"), body, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	gen := claudeStateJSON(trustedPolicy, hostHome)
-	if !strings.Contains(string(gen), "hasTrustDialogAccepted") {
-		t.Fatalf("control: the generator produced no trust entry for a host that trusts %q, "+
-			"so this test would compare the untrusted arm against itself:\n%s", ctx.Target, gen)
-	}
-	perm := uint32(0o600)
-	trustedPolicy.Replace(policy.Mount{
-		Guest: filepath.Join(ctx.Home, ".claude.json"), Kind: policy.KindData,
-		Access: policy.AccessRW, Content: policy.Secret(gen),
-		Perms: &perm, From: []string{"@claude"},
-	})
-	trusted := trustedPolicy.BwrapArgs(1000, 1000)
-
-	// CONTROL: the two arms really are in the states they claim, or a
-	// byte-for-byte match below proves nothing about trust.
-	if claudeTrustCarried(untrustedPolicy, mustMount(t, untrustedPolicy, filepath.Join(ctx.Home, ".claude.json"))) {
-		t.Fatal("control: the untrusted arm's ~/.claude.json already carries a trust entry")
-	}
-	if !claudeTrustCarried(trustedPolicy, mustMount(t, trustedPolicy, filepath.Join(ctx.Home, ".claude.json"))) {
-		t.Fatal("control: the trusted arm's ~/.claude.json does not carry the trust entry it was built to carry")
+	argv := func(t *testing.T, content string) []string {
+		t.Helper()
+		p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, ctx, newEnvFakeEnv())
+		if err != nil {
+			t.Fatalf("Resolve(%v): %v", sel, err)
+		}
+		if err := claudeFiles(p, ctx.Home, nil); err != nil {
+			t.Fatalf("claudeFiles: %v", err)
+		}
+		guest := filepath.Join(ctx.Home, ".claude.json")
+		m, ok := p.Mounts[guest]
+		if !ok {
+			t.Fatalf("control: nothing staged at %s, so this test would compare two "+
+				"identical policies and prove nothing", guest)
+		}
+		m.Content = policy.Secret(content)
+		p.Replace(m)
+		return p.BwrapArgs(1000, 1000)
 	}
 
-	if strings.Join(untrusted, "\x00") != strings.Join(trusted, "\x00") {
-		t.Errorf("the bwrap argv differs between the untrusted and trusted arms — this test's "+
-			"premise (bwrap carries paths and fd numbers, never mount content) no longer holds, "+
-			"and TestGoldenClaudeArgv needs a second golden for the trusted arm.\n--- untrusted\n%s"+
-			"\n--- trusted\n%s", goldenFormat(untrusted), goldenFormat(trusted))
-	}
-}
+	// Two documents of DIFFERENT lengths: --ro-bind-data/--file carry an fd
+	// number and a path, and a length that reached the argv would show here.
+	short := argv(t, "{}\n")
+	long := argv(t, `{"autoUpdates":false,"hasCompletedOnboarding":true,"projects":{}}`+"\n")
 
-func mustMount(t *testing.T, p *policy.Policy, guest string) policy.Mount {
-	t.Helper()
-	m, ok := p.Mounts[guest]
-	if !ok {
-		t.Fatalf("no mount at %s", guest)
+	if strings.Join(short, "\x00") != strings.Join(long, "\x00") {
+		t.Errorf("the bwrap argv differs between two ~/.claude.json contents — this test's "+
+			"premise (bwrap carries paths and fd numbers, never mount content) no longer "+
+			"holds, and TestGoldenClaudeArgv needs a golden per content.\n--- short\n%s"+
+			"\n--- long\n%s", goldenFormat(short), goldenFormat(long))
 	}
-	return m
 }
