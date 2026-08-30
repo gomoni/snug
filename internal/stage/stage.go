@@ -323,8 +323,8 @@ func (s *Stage) killAndClose() {
 	_ = s.life.Close()
 }
 
-// Target is what pasta must be aimed at. NetnsPath names /proc/<P1>/fd/63 —
-// the descriptor P1 pinned BEFORE it moved — never /proc/<P1>/ns/net, which
+// Target is what pasta must be aimed at. NetnsPath names /proc/<P1>/fd/<fdNetnsN>
+// — the descriptor P1 pinned BEFORE it moved — never /proc/<P1>/ns/net, which
 // after the move names P1's own empty namespace and which pasta accepts
 // SILENTLY (measured, SUPERVISOR-DESIGN.md §1, --pasta-naive).
 func (s *Stage) Target() policy.PastaTarget {
