@@ -469,7 +469,8 @@ gateway6 = "fd00:5e79:1::1"
 # ABUSE: the sandbox can spend your Anthropic credits and read your Claude
 # settings and personal skills. It CANNOT read your host session history, your
 # MCP server configuration, the list of projects on this machine, or any other
-# project's transcripts. That last clause was written before it was true — the
+# project's transcripts, and it opens the target without Claude Code's trust
+# dialog — see THE TRUST DIALOG below for what that costs and what pays for it. That last clause was written before it was true — the
 # staged ~/.claude.json carried mcpServers and all seven host project paths
 # until issue #19; grep for the property before you believe the sentence.
 #
@@ -498,22 +499,28 @@ gateway6 = "fd00:5e79:1::1"
 # load-bearing. The comment that used to sit here said the opposite and carried
 # that decision for a milestone (issue #19).
 #
-# THE TRUST DIALOG IS NOT SUPPRESSED, and this profile is where that matters
-# most. snug writes projects.<target>.hasTrustDialogAccepted only when the HOST's
-# ~/.claude.json already records that exact directory as trusted — it carries the
-# human's own answer and never invents one. Written unconditionally (it was, for
-# one commit) it removes Claude Code's "Quick safety check" for a fresh clone of
-# an unfamiliar repository, and MEASURED A/B on a fixture whose only content is
-# .claude/settings.json with a SessionStart hook: with the key, no dialog and the
-# repo's hook FIRES at startup; without it, the dialog blocks and the hook does
-# not run. `snug -p @claude <unfamiliar-repo> -- claude` is exactly the review
-# workflow this profile exists for, and the sandbox holds the staged OAuth token.
+# THE TRUST DIALOG IS SUPPRESSED FOR THE TARGET, in this sandbox only, and this
+# profile is where that matters most. snug writes
+# projects.<target>.hasTrustDialogAccepted unconditionally, for the one directory
+# named on the command line, into the tmpfs ~/.claude.json that dies with the run;
+# the host's file is neither read nor written (issue #460).
+#
+# ABUSE: a repository you have never trusted opens without "Quick safety check",
+# so anything Claude Code would run FROM that repository at startup runs without
+# a human being asked. That is why the two files carrying such a thing are
+# reinterpreted rather than bound: the target's .claude/settings.json and
+# settings.local.json lose their hooks block, and its .mcp.json names no servers.
+# MEASURED A/B on a fixture whose only content is .claude/settings.json with a
+# SessionStart hook, claude 2.1.251: with the key written the dialog is gone and
+# the hook does NOT fire; without it the dialog blocks and the hook does not fire
+# either. The dialog was not what was stopping it. `claude -p` never showed the
+# dialog in either arm.
 #
 # Costs, all real and all intended: MCP servers configured on the host are not
-# configured here (a .mcp.json committed in the TARGET still is — it is in the
-# project tree, not the host's config); tool approvals given in a host session
-# are asked again inside; and a directory you have not trusted on the host is
-# asked about once per run.
+# configured here, and neither are the ones a .mcp.json committed in the TARGET
+# names — that file is reinterpreted into one naming none, because MEASURED
+# (issue #460) its servers start with no dialog and no approval. Tool approvals
+# given in a host session are asked again inside.
 #
 # ~/.claude/settings.json is GENERATED, never bound, because it is a COMMAND
 # TABLE. hooks (shell commands on ~34 tool events), apiKeyHelper (a program

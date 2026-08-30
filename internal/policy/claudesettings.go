@@ -827,3 +827,32 @@ func ClaudeUserSettingsJSON(s ClaudeSettings) []byte {
 	}
 	return append(b, '\n')
 }
+
+// ClaudeProjectMCPJSON is the `.mcp.json` a sandbox sees in place of the
+// target's own: the same "generate, don't bind" reinterpretation the settings
+// files get, applied to a file whose ONLY key names programs to run.
+//
+// A repo's `.mcp.json` is `{"mcpServers": {NAME: {"command": ..., "args": ...,
+// "env": ...}}}` and nothing else, so the allowlist that survives filtering is
+// EMPTY and this function takes no argument. The generated file keeps the key
+// present and the map empty rather than being absent, so Claude Code reads a
+// project with no servers rather than a project it has to guess about.
+//
+// WHY, as a measurement rather than a principle. A target whose only content is
+// a `.mcp.json` naming `sh -c "touch MCP-FIRED; exec cat"` ran that command
+// inside a @claude sandbox, on claude 2.1.251, with no dialog, no approval and
+// no `projects` entry in `~/.claude.json` — with the trust key omitted, with it
+// written, and on the host in a directory Claude Code had never trusted. Three
+// arms, three executions. `enableAllProjectMcpServers` and `enabledMcpjsonServers`
+// are refused settings keys (see the refusal table above) and that refusal was
+// read as a gate on this file; it is not one. Repo config is sandboxed material
+// (CLAUDE.md invariant 3) and a hostile repo granting itself a process at
+// session start defeats the model, in a sandbox holding the staged Anthropic
+// OAuth token and commonly run with @net.
+//
+// THE COST, stated rather than hidden: an MCP server a project legitimately
+// commits does not run inside a snug sandbox. There is no flag for it — a flag
+// is what a hostile repo's README would tell the human to type.
+func ClaudeProjectMCPJSON() []byte {
+	return []byte("{\n  \"mcpServers\": {}\n}\n")
+}

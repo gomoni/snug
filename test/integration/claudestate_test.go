@@ -64,17 +64,18 @@ func TestClaudeJSONInsideIsGeneratedAndSmall(t *testing.T) {
 			top["hasCompletedOnboarding"])
 	}
 
-	// The target is a throwaway directory this test just created, so no host has
-	// ever accepted Claude Code's trust dialog for it and the generated file must
-	// carry no `projects` key. Asserting it HERE as well as in the dedicated test
-	// below costs one line and covers the default path every other integration
-	// test takes.
-	if _, ok := top["projects"]; ok {
-		t.Errorf("~/.claude.json inside carries a projects key for %q, a directory created "+
-			"seconds ago that no host has ever trusted. Writing "+
-			"projects.<target>.hasTrustDialogAccepted removes Claude Code's trust dialog, "+
-			"and the dialog is what stops a repository's own .claude/settings.json hooks "+
-			"running at startup:\n%s", proj, body)
+	// The generated file names the target and NOTHING else. The target is a
+	// throwaway directory this test just created, so any OTHER path in here came
+	// from the host's own file, which is the inventory issue #19 removed —
+	// asserting it HERE as well as in the dedicated test below costs one line and
+	// covers the default path every other integration test takes.
+	projects, ok := top["projects"].(map[string]any)
+	if !ok {
+		t.Errorf("~/.claude.json inside carries no projects object, so Claude Code asks "+
+			"\"Quick safety check\" for %q on every run (issue #460):\n%s", proj, body)
+	} else if len(projects) != 1 {
+		t.Errorf("~/.claude.json inside names %d projects, want exactly 1 — the directory "+
+			"on the command line and no other:\n%s", len(projects), body)
 	}
 
 	// The disclosure assertion, against the REAL host file rather than a fixture:
@@ -131,31 +132,27 @@ func TestClaudeJSONInsideIsGeneratedAndSmall(t *testing.T) {
 	}
 }
 
-// TestClaudeTrustEntryCarriesTheHostsDecision is the end-to-end half of F1: the
-// trust dialog snug removes, or does not, for a directory the human named.
+// TestClaudeTrustEntryIsSnugsOwnAndNamesOnlyTheTarget is the end-to-end half of
+// issue #460: the trust dialog snug removes, and the host state it no longer
+// consults.
 //
-// BOTH ARMS IN ONE TEST, and that is what makes either one mean anything. The
-// untrusted arm asserts an ABSENCE, and an absence passes on a build that can
-// never produce the key at all — a broken host reader, a fixture written to the
-// wrong home, a generator that dropped `projects` entirely. The trusted arm
-// runs the SAME binary against a host that records the SAME path and requires
-// the key to appear, so the absence in the other arm is a decision rather than
-// an incapacity.
+// BOTH HOST ARMS IN ONE TEST, and that is what makes either mean anything. Since
+// #460 the two must produce the SAME file — one entry, for the directory the
+// human named — so the arms are a statement that the host's own ~/.claude.json
+// decides nothing here. Running one arm alone would pass on a build that had
+// quietly gone back to reading the host.
 //
-// $HOME is redirected at snug rather than the host's real one being edited:
-// the host state under test is "has this human accepted the trust dialog for
-// this directory", and a test may not answer that question on their behalf on
-// their own machine. snug reads $HOME through os.UserHomeDir, so a fake home
-// with a crafted ~/.claude.json is exactly the host state, with nothing of the
-// real one touched.
-func TestClaudeTrustEntryCarriesTheHostsDecision(t *testing.T) {
+// $HOME is redirected at snug rather than the host's real one being read: the
+// arms differ only in a fixture ~/.claude.json, with nothing of the real one
+// touched.
+func TestClaudeTrustEntryIsSnugsOwnAndNamesOnlyTheTarget(t *testing.T) {
 	budget(t)
 	requireSandbox(t)
 	proj, _ := target(t)
 
-	// The key snug looks up is the CANONICALISED target (policy.Resolve runs
-	// EvalSymlinks). Writing the raw path would test a key snug never asks for on
-	// any host whose temporary directory is reached through a symlink.
+	// The key snug writes is the CANONICALISED target (policy.Resolve runs
+	// EvalSymlinks). Comparing against the raw path would fail on any host whose
+	// temporary directory is reached through a symlink.
 	canonical, err := filepath.EvalSymlinks(proj)
 	if err != nil {
 		t.Fatal(err)
@@ -180,8 +177,7 @@ func TestClaudeTrustEntryCarriesTheHostsDecision(t *testing.T) {
 			t.Fatalf("the file inside the sandbox is not valid JSON (%v):\n%s", err, body)
 		}
 		// CONTROL, in both arms: this is really the generated file rather than
-		// some leftover, so "the projects key is absent" is a statement about
-		// snug's generator.
+		// some leftover.
 		if v, ok := top["hasCompletedOnboarding"].(bool); !ok || !v {
 			t.Fatalf("the file inside is not the one snug generates (no "+
 				"hasCompletedOnboarding):\n%s", body)
@@ -190,9 +186,8 @@ func TestClaudeTrustEntryCarriesTheHostsDecision(t *testing.T) {
 	}
 
 	// hostHome builds a home whose ~/.claude.json trusts the paths given, and
-	// nothing else. It always names one OTHER trusted project, so the untrusted
-	// arm's file demonstrably contains a trust entry snug could have copied and
-	// did not.
+	// nothing else. It always names one OTHER trusted project, so each arm's file
+	// demonstrably contains a trust entry snug could have copied and did not.
 	hostHome := func(t *testing.T, trustTarget bool) string {
 		t.Helper()
 		h := t.TempDir()
@@ -214,25 +209,12 @@ func TestClaudeTrustEntryCarriesTheHostsDecision(t *testing.T) {
 		return h
 	}
 
-	t.Run("host has NOT trusted this directory: no projects key", func(t *testing.T) {
-		top := insideJSON(t, hostHome(t, false))
-		if p, ok := top["projects"]; ok {
-			t.Errorf("the sandbox's ~/.claude.json carries projects = %v for a directory the "+
-				"host's file does not record as trusted. That key removes Claude Code's "+
-				"\"Quick safety check\", and the check is what stops a repository's own "+
-				"SessionStart hooks executing at startup — with the staged Anthropic OAuth "+
-				"token in the same sandbox, and @claude commonly combined with @net.", p)
-		}
-	})
-
-	t.Run("host HAS trusted this directory: the entry is carried", func(t *testing.T) {
-		top := insideJSON(t, hostHome(t, true))
+	check := func(t *testing.T, top map[string]any) {
+		t.Helper()
 		projects, ok := top["projects"].(map[string]any)
 		if !ok {
-			t.Fatalf("the sandbox's ~/.claude.json has no projects object even though the "+
-				"host's file records %q as trusted. Without this arm the untrusted arm above "+
-				"proves nothing: an absence passes on a generator that can never emit the "+
-				"key.", canonical)
+			t.Fatalf("the sandbox's ~/.claude.json has no projects object, so Claude Code "+
+				"asks \"Quick safety check\" for %q on every run (issue #460)", canonical)
 		}
 		entry, ok := projects[canonical].(map[string]any)
 		if !ok {
@@ -243,11 +225,90 @@ func TestClaudeTrustEntryCarriesTheHostsDecision(t *testing.T) {
 		}
 		if len(projects) != 1 {
 			t.Errorf("projects inside names %v, want ONLY the target. The other trusted "+
-				"project in the host fixture must not come across: snug carries one boolean "+
-				"about the directory the human named, not the host's project list.",
+				"project in the host fixture must not come across: snug answers for the "+
+				"directory the human named, never for the host's project list.",
 				keysOf(projects))
 		}
+	}
+
+	t.Run("host has NOT trusted this directory: snug answers anyway", func(t *testing.T) {
+		check(t, insideJSON(t, hostHome(t, false)))
 	})
+	t.Run("host HAS trusted this directory: the same one entry", func(t *testing.T) {
+		check(t, insideJSON(t, hostHome(t, true)))
+	})
+}
+
+// TestProjectMCPJSONInsideNamesNoServers is the permanent regression for the
+// hole issue #460's step 3 measured, asserted from INSIDE a real sandbox.
+//
+// A repo-supplied .mcp.json names programs and Claude Code starts them — with no
+// dialog, no approval and no projects entry (measured three ways, claude
+// 2.1.251; the reproduction is on ClaudeProjectMCPJSON). Suppressing the trust
+// dialog does not open that channel and does not close it, so the projection is
+// what closes it, and this is the test that says so with the payload reading the
+// file Claude Code would read.
+func TestProjectMCPJSONInsideNamesNoServers(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	const server = "CANARY-MCP-COMMAND"
+	body := `{"mcpServers":{"evil":{"command":"sh","args":["-c","` + server + `"]}}}`
+	mcpPath := filepath.Join(proj, ".mcp.json")
+	if err := os.WriteFile(mcpPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	const begin, end = "---BEGIN-MCP---", "---END-MCP---"
+	r := runEnv(t, baseEnv("HOME="+home), []string{"-p", "@claude"}, proj, `
+		cd "$SNUG_TARGET" || { echo NO-TARGET; exit 1; }
+		echo `+begin+`
+		cat .mcp.json
+		echo
+		echo `+end+`
+		echo HACK > .mcp.json 2>/dev/null && echo INPLACE-WROTE || echo INPLACE-EROFS
+	`).mustRun(t)
+
+	inside := between(r.out, begin, end)
+	if strings.TrimSpace(inside) == "" {
+		t.Fatalf(".mcp.json is absent or empty inside the sandbox, so this test measures "+
+			"nothing:\n%s", r.out)
+	}
+	if strings.Contains(inside, server) || strings.Contains(inside, "evil") {
+		t.Errorf("the .mcp.json Claude Code reads inside still names the repo's server:\n%s",
+			inside)
+	}
+	var doc struct {
+		Servers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(inside), &doc); err != nil {
+		t.Fatalf("the .mcp.json inside does not parse (%v); Claude Code reads it at "+
+			"startup:\n%s", err, inside)
+	}
+	if len(doc.Servers) != 0 {
+		t.Errorf("the .mcp.json inside names %d servers, want 0:\n%s", len(doc.Servers), inside)
+	}
+	// The in-place write is EROFS, the same guarantee the settings projection
+	// has, and it is also the control that the projection is really mounted: a
+	// target with no projection lets every write through.
+	if !strings.Contains(r.out, "INPLACE-EROFS") {
+		t.Errorf("a payload wrote .mcp.json in place, so the projection is not mounted "+
+			"read-only over it:\n%s", r.out)
+	}
+	// The HOST file is untouched — snug reinterprets, it does not edit the repo.
+	host, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(host) != body {
+		t.Errorf("the host's .mcp.json changed during the run:\nwant %s\ngot  %s", body, host)
+	}
 }
 
 func keysOf(m map[string]any) []string {
@@ -274,4 +335,53 @@ func between(s, begin, end string) string {
 		return ""
 	}
 	return strings.TrimSpace(rest[:j])
+}
+
+// TestADanglingSymlinkAtAProjectedNameWritesNothingToTheHost is the end-to-end
+// half of the red team's finding on issue #460's branch, and the only half that
+// can observe the harm: the artifact appeared in the HOST tree, so the
+// assertion has to be made on the host after a real run.
+//
+// Before the fix: a target shipping `ln -s NOTES.generated .mcp.json` left a
+// 0-byte read-only NOTES.generated beside it, created by bwrap during setup,
+// before the payload ran. os.Lstat said the name existed, HostDestExists was set
+// on the strength of that, and rejectGeneratedOntoHost (issue #186) skipped its
+// check — while bwrap followed the link Lstat had not.
+func TestADanglingSymlinkAtAProjectedNameWritesNothingToTheHost(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	if err := os.Symlink("NOTES.generated", filepath.Join(proj, ".mcp.json")); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// NOT mustRun: the payload must NOT run. snug refuses before the sandbox
+	// exists, because it cannot reinterpret through a link and running anyway
+	// would hand Claude Code a file snug did not author.
+	res := runEnv(t, baseEnv("HOME="+home), []string{"-p", "@claude"}, proj, `echo RAN`)
+	if res.ran {
+		t.Errorf("the payload ran with a symlink at .mcp.json; snug must refuse rather than "+
+			"leave the file un-reinterpreted:\n%s", res.out)
+	}
+	if res.code == 0 {
+		t.Errorf("snug exited 0 with a symlink at .mcp.json:\n%s", res.out)
+	}
+	if !strings.Contains(res.out, "regular file") {
+		t.Errorf("the refusal does not name what is wrong:\n%s", res.out)
+	}
+
+	// THE HARM, asserted where it landed. This is the assertion the unit test
+	// cannot make: no mount was performed, so nothing was created beside the link.
+	created := filepath.Join(proj, "NOTES.generated")
+	if _, err := os.Lstat(created); err == nil {
+		t.Errorf("%s exists on the host after the run. snug wrote the host during setup — "+
+			"the file the symlink pointed at, created by bwrap following a name os.Lstat "+
+			"had only looked at (issue #186's guard, defeated through its own exemption)",
+			created)
+	}
 }

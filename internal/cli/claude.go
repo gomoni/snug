@@ -30,10 +30,9 @@ func claudeFiles(pol *policy.Policy, home string, n *notes) error {
 	// Claude Code still gets a file here, so the sandbox never opens on the theme
 	// picker for a reason that is about the host rather than about this run.
 	//
-	// Its CONTENT is not unconditional, and the one variable part is deliberate:
-	// claudeStateJSON reads the host's ~/.claude.json for a single boolean about a
-	// single directory (see its doc comment). Nothing else about the host reaches
-	// this file, and the read cannot fail the run.
+	// Its CONTENT reads NOTHING from the host: three keys snug authors itself
+	// plus the target path the human typed (see its doc comment, and issue #460
+	// for why the trust key stopped being a host boolean).
 	//
 	// A nil body means json.Marshal failed, which is unreachable for a
 	// map[string]any of bools and strings. It skips the mount rather than
@@ -41,7 +40,7 @@ func claudeFiles(pol *policy.Policy, home string, n *notes) error {
 	// the sandbox, which is the bound CLAUDE.md puts on every per-tool adapter —
 	// an adapter that stops working must degrade to "that tool is unconfigured
 	// in here", never to a leak or to a file snug did not author.
-	if body := claudeStateJSON(pol, home); body != nil {
+	if body := claudeStateJSON(pol); body != nil {
 		perm := uint32(0o600)
 		pol.Replace(policy.Mount{
 			Guest: filepath.Join(home, ".claude.json"), Kind: policy.KindData,
@@ -62,7 +61,19 @@ func claudeFiles(pol *policy.Policy, home string, n *notes) error {
 
 	// The TARGET's own project-scope settings, projected read-only where they
 	// exist (issue #73). See stageProjectClaudeSettings.
-	stageProjectClaudeSettings(pol, n)
+	// Both CAN fail the run, unlike the host-scope settings which degrade to
+	// carrying nothing: a target file snug cannot reinterpret is a file it would
+	// leave un-reinterpreted, and that is the hole these close (invariant 5).
+	if err := stageProjectClaudeSettings(pol, n); err != nil {
+		return err
+	}
+
+	// The TARGET's own .mcp.json, same treatment, and measured to be the same
+	// hole: issue #460's step 3 ran a repo-supplied server command three ways
+	// and it executed every time. See stageProjectMCPJSON.
+	if err := stageProjectMCPJSON(pol, n); err != nil {
+		return err
+	}
 
 	guest := filepath.Join(home, ".claude", "CLAUDE.md")
 	pol.Replace(policy.Mount{
@@ -465,8 +476,9 @@ func stageClaudeSettings(pol *policy.Policy, home string, n *notes) {
 // Code reads inside a target and — MEASURED, issue #73 — runs on the host with
 // no gate: a SessionStart hook in either fired from `claude -p` on a directory
 // claude had never trusted, no dialog, no approval, no entry in ~/.claude.json.
-// `.mcp.json` is deliberately NOT here: it is gated by enableAllProjectMcpServers
-// (measured weaker), and this is one decision per file (issue #73).
+// `.mcp.json` is not here because it is not in `.claude/` and carries no
+// allowlisted key — it gets its own mount, on the same argument and the same
+// mechanism: stageProjectMCPJSON.
 var projectClaudeSettingsFiles = []string{"settings.json", "settings.local.json"}
 
 // stageProjectClaudeSettings projects the target's own .claude/settings.json and
@@ -494,8 +506,8 @@ var projectClaudeSettingsFiles = []string{"settings.json", "settings.local.json"
 //     It is not silent — the mount is EBUSY-pinned into `.claudeOLD/`, so both
 //     that directory and the modified `.claude/settings.json` show in `git status`.
 //
-// ONLY WHERE THE FILE EXISTS, and that boundary is load-bearing rather than an
-// optimisation. A generated mount over an ABSENT path does not overmount an
+// ONLY WHERE A REGULAR FILE EXISTS (projectableTargetFile carries the
+// measurement), and that boundary is load-bearing rather than an optimisation. A generated mount over an ABSENT path does not overmount an
 // inode, it CREATES the mountpoint FILE on the host — measured with bwrap: a
 // 0-byte read-only settings.local.json appeared in the host repo (issue #73).
 // snug must not write the host during setup (issue #186's rejectGeneratedOntoHost
@@ -518,18 +530,17 @@ var projectClaudeSettingsFiles = []string{"settings.json", "settings.local.json"
 // AccessRO throughout, unlike the user-scope file (rw, because Claude Code
 // rewrites it — the gh precedent). Project scope is read-only on purpose: that
 // writability IS the outbound channel.
-func stageProjectClaudeSettings(pol *policy.Policy, n *notes) {
+func stageProjectClaudeSettings(pol *policy.Policy, n *notes) error {
 	const readCap = 1 << 20 // the user-scope cap
 	for _, name := range projectClaudeSettingsFiles {
 		guest := filepath.Join(pol.Target, ".claude", name)
 		label := "the target's .claude/" + name
 
-		// The existence decision, in the cli because internal/policy has no
-		// filesystem. os.Lstat, not the safe open below: existence is the
-		// question, and a FIFO or a directory at that path still EXISTS, so
-		// overmounting it writes nothing to the host — the content just carries
-		// nothing (loadHostClaudeSettings degrades it).
-		if _, err := os.Lstat(guest); err != nil {
+		project, err := projectableTargetFile(guest, label)
+		if err != nil {
+			return err
+		}
+		if !project {
 			continue // absent: mount nothing, write nothing
 		}
 
@@ -564,6 +575,115 @@ func stageProjectClaudeSettings(pol *policy.Policy, n *notes) {
 			HostDestExists: true,
 		})
 	}
+	return nil
+}
+
+// projectableTargetFile is the existence decision both project-scope
+// projections make, and it is a REGULAR-FILE decision rather than an existence
+// one — measured, and the reason is bwrap rather than snug.
+//
+// A generated mount carries HostDestExists, which is what tells
+// rejectGeneratedOntoHost (issue #186) that this overmount lands on a file that
+// already exists and therefore writes nothing to the host. os.Lstat answers "is
+// there a NAME here"; bwrap's --ro-bind-data FOLLOWS the name. The two disagree
+// on every shape that is not a regular file, and each disagreement is its own
+// failure:
+//
+//   - A DANGLING SYMLINK is Lstat-existing, so the guard was skipped, and bwrap
+//     created the link's target ON THE HOST — measured: a repo shipping
+//     `ln -s NOTES.generated .mcp.json` left a 0-byte read-only NOTES.generated
+//     in the host tree before the payload ran. That is precisely the host write
+//     issue #186's guard exists to refuse, reached through the guard's own
+//     exemption.
+//   - A SYMLINK TO AN EXISTING FILE binds over whatever it RESOLVES to inside
+//     the sandbox, which a repo chooses: `ln -s {home}/.ssh/known_hosts` masks a
+//     file snug generated, from sandboxed material (invariant 3).
+//   - A DIRECTORY, or a symlink whose parent is absent, aborts bwrap setup with
+//     "Can't create file … Is a directory" / "No such file or directory", so a
+//     hostile repo denies the human the ability to run claude on it at all.
+//
+// So a non-regular file REFUSES rather than being skipped, and the refusal is
+// invariant 5: skipping would leave the file un-reinterpreted while snug ran
+// anyway, which for a symlink pointing at a sibling in the same repo means the
+// repo's own hooks or MCP servers reach Claude Code — the whole thing these
+// projections exist to stop. A repo that ships a symlink here is anomalous;
+// the error says so and names what to do.
+func projectableTargetFile(guest, label string) (bool, error) {
+	fi, err := os.Lstat(guest)
+	if err != nil {
+		return false, nil // absent: mount nothing, write nothing
+	}
+	if fi.Mode().IsRegular() {
+		return true, nil
+	}
+	return false, fmt.Errorf("%s is %s, not a regular file. snug reinterprets this file "+
+		"rather than binding it, and it cannot do that through a link or a directory: "+
+		"bwrap follows the name, so it would either write your host or refuse to start. "+
+		"Replace %s with a regular file, or run without @claude",
+		label, fileShape(fi.Mode()), guest)
+}
+
+// fileShape names what is at a path in the words an error message needs.
+func fileShape(m os.FileMode) string {
+	switch {
+	case m&os.ModeSymlink != 0:
+		return "a symlink"
+	case m.IsDir():
+		return "a directory"
+	case m&os.ModeNamedPipe != 0:
+		return "a FIFO"
+	case m&os.ModeSocket != 0:
+		return "a socket"
+	case m&os.ModeDevice != 0:
+		return "a device node"
+	}
+	return "not a regular file"
+}
+
+// stageProjectMCPJSON projects the target's own .mcp.json read-only, WHERE IT
+// ALREADY EXISTS, replacing it with a file that names no servers
+// (policy.ClaudeProjectMCPJSON, which carries the measurement).
+//
+// Same mechanism and same boundary as stageProjectClaudeSettings, for the same
+// reason, so read that function's doc comment for the parts that are identical:
+// generate rather than bind, AccessRO, and mount ONLY where an os.Lstat confirms
+// the path exists — a generated mount over an absent path CREATES the file on
+// the host (issue #73), which snug must not do (issue #186's
+// rejectGeneratedOntoHost is the guard, and HostDestExists is what tells it).
+//
+// The two differences from the settings files, both of which follow from the
+// file's shape rather than from a separate decision:
+//
+//   - Nothing is carried. `.mcp.json` has one key and it names programs, so
+//     the filter's output is empty for every input and the file need not be
+//     READ at all — existence is the whole question. That also keeps a
+//     payload-controlled server NAME off every screen snug prints.
+//   - It is at the target's ROOT, not under `.claude/`.
+//
+// THE RESIDUAL is the settings files' residual, unchanged: a payload that
+// CREATES a .mcp.json where none existed, or that renames the file out from
+// under the mount (issue #286), writes the host copy that the NEXT run then
+// projects. Post-startup and visible in `git status`; not a guarantee, and not
+// nothing.
+func stageProjectMCPJSON(pol *policy.Policy, n *notes) error {
+	guest := filepath.Join(pol.Target, ".mcp.json")
+	project, err := projectableTargetFile(guest, "the target's .mcp.json")
+	if err != nil {
+		return err
+	}
+	if !project {
+		return nil // absent: mount nothing, write nothing
+	}
+	n.aside("snug: the target's .mcp.json: dropped mcpServers — a repo's own MCP servers " +
+		"are programs it asks Claude Code to run, and MEASURED (issue #460) they start with " +
+		"no dialog and no approval, so snug reinterprets the file into one naming none\n")
+	perm := uint32(0o600)
+	pol.Replace(policy.Mount{
+		Guest: guest, Kind: policy.KindData, Access: policy.AccessRO,
+		Content: policy.Secret(policy.ClaudeProjectMCPJSON()), Perms: &perm,
+		From: []string{"@claude"}, HostDestExists: true,
+	})
+	return nil
 }
 
 // loadHostClaudeSettings reads and decodes the host's ~/.claude/settings.json,
@@ -651,55 +771,63 @@ func hasProfile(pol *policy.Policy, name policy.ProfileName) bool {
 //     self-update inside can only fail. MEASURED: it prints "Auto-update failed
 //     · Run claude doctor" over the prompt. A preference.
 //
-//   - projects.<target>.hasTrustDialogAccepted — CONDITIONAL, and the condition
-//     IS the key: it is written if and only if the HOST's ~/.claude.json already
-//     records hasTrustDialogAccepted = true for that exact path. snug CARRIES the
-//     human's own decision about one directory across into the sandbox; it never
-//     makes one on their behalf.
+//   - projects.<target>.hasTrustDialogAccepted — UNCONDITIONAL, and it is snug's
+//     own answer for THIS SANDBOX rather than the host's answer carried across.
+//     The maintainer's ruling on issue #460: "the intent was to write the
+//     ~/.claude.json INSIDE the sandbox - and this will enable the directory
+//     only in the sandbox". The key lives on the tmpfs KindData file that dies
+//     with the run, so what it grants is scoped to this run and to the ONE
+//     directory named on the command line. The host's ~/.claude.json is not read
+//     here at all any more, so nothing about the host reaches this file.
 //
-//     Written unconditionally, it removes Claude Code's trust dialog for a
-//     directory nobody has ever trusted — and that dialog is not cosmetic. A/B
-//     MEASURED on one hostile fixture, a target whose only content is
-//     .claude/settings.json carrying a SessionStart hook:
+//     WHAT MADE IT CONDITIONAL, AND WHAT CLOSED IT. The key removes Claude
+//     Code's trust dialog, and that dialog was what stopped a hostile target's
+//     .claude/settings.json hooks executing at startup. Re-MEASURED against this
+//     tree on the same hostile fixture — a target whose only content is
+//     .claude/settings.json carrying a SessionStart hook — claude 2.1.251:
 //
-//     host file copied (pre-#19)   "Quick safety check" blocks   hook NOT fired
-//     key written unconditionally  no dialog, "Welcome back!"    hook FIRED
-//     key omitted (this code)      "Quick safety check" blocks   hook NOT fired
+//     key omitted        "Quick safety check" blocks (interactive)  hook NOT fired
+//     key unconditional  no dialog, opens on the prompt             hook NOT fired
 //
-//     Deleting the projects key inside a sandbox and relaunching restores the
-//     dialog, so that key is precisely what enables repo-controlled config to
-//     execute at startup. `snug -p @claude <unfamiliar-repo> -- claude` is the
-//     review workflow this profile exists for, the sandbox holds the staged
-//     Anthropic OAuth token, and @claude is commonly combined with @net — a
-//     SessionStart hook is then one line from exfiltrating it. Omitting the key
-//     makes the sandbox's trust behaviour identical to what the copied host file
-//     produced (MEASURED pre-#19: an untrusted target was not in `projects`, so
-//     the dialog appeared), which is what stops the disclosure fix from also
-//     being a trust regression.
+//     The hook fires in NEITHER arm, because stageProjectClaudeSettings
+//     reinterprets the target's settings.json and drops its hooks block before
+//     Claude Code reads it. The dialog is no longer what stands between a repo's
+//     command table and a shell, so keeping it conditional costs a prompt on
+//     every run against an unfamiliar repository and buys nothing the projection
+//     does not already hold. A control run confirms the fixture is live: the
+//     same hook fires from `claude -p` on the host.
 //
-//     ABSENT OR UNPARSEABLE host file: omit the key, do not fail. A host that has
-//     never run Claude Code has trusted nothing, and a run must not die on a file
-//     snug only consults.
+//     `claude -p` shows NO dialog in either arm — the headless mode does not
+//     gate on trust at all — so this was only ever an interactive prompt, and
+//     the friction issue #460 reports is the interactive one.
+//
+//     .mcp.json IS PART OF THE SAME ANSWER, and it is why stageProjectMCPJSON
+//     exists. Measured on this tree with a target whose only content is a
+//     .mcp.json naming `sh -c "touch MCP-FIRED"`: the command ran with the key
+//     omitted, with the key written, and on the host in a directory Claude Code
+//     had never trusted — three arms, three executions. The trust key was never
+//     what gated that file, so it is no reason to keep the key conditional; it
+//     is the reason .mcp.json is now projected like the settings files.
 //
 //     PATH MATCHING is exact, against pol.Target — the path Resolve has already
 //     put through EvalSymlinks, which is the same shape Claude Code records
-//     (node's cwd is resolved). Claude keys trust PER DIRECTORY, so a
-//     subdirectory of a trusted target is NOT trusted (launching claude from
-//     {target}/sub prompts once) and a trusted subdirectory does not trust its
-//     parent. Both directions fail towards the prompt, which is the safe one; a
-//     prefix match would be snug widening a decision the human did not make.
+//     (node's cwd is resolved). Claude keys trust PER DIRECTORY, so launching
+//     claude from {target}/sub still prompts once: snug answers for the
+//     directory the human named and for no other, and widening that to a prefix
+//     would be snug deciding about directories nobody typed.
 //
-// WHAT THIS DISCLOSES, as the measurement rather than as a reassurance. It is NOT
-// "strictly narrower than what shipped before", and saying so was this file's own
-// version of the bug issue #19 fixed — a comment understating what is handed
-// over. Measured: the old set was the host's SEVEN project paths, the new set is
-// at most {target}, and neither contains the other. The old seven were also
-// INERT — all seven are absent inside a @claude sandbox, so no entry could open
-// anything — while {target} is the one directory that IS mounted, writable and
-// persistent, i.e. the only live entry either version ever had. The bytes got
-// smaller; the DECISION got bigger, and that is the half the old sentence hid.
-// Carrying the host's answer rather than asserting one is what makes the entry
-// a projection of the human's decision instead of snug's.
+// WHAT THIS DISCLOSES ABOUT THE HOST: nothing. Every key here is snug's own or
+// the target path the human typed, and no host file is read to build it — the
+// host read this function used to do (hostTrustsTarget) is gone with the
+// condition it served. Issue #19's copy staged the host's SEVEN project paths;
+// this file names at most {target}, which the human supplied on the command
+// line and which --dry-run already prints twice.
+//
+// WHAT IT PRE-ANSWERS, which is the half worth stating plainly (invariant 5): the
+// trust dialog for {target}, inside this sandbox only. That is a decision snug
+// makes on the human's behalf, and the measurement above is the whole of its
+// justification — the repo-controlled channels the dialog used to gate are
+// reinterpreted before Claude Code sees them.
 //
 // DELIBERATELY NOT HERE, each one a stated behaviour change rather than an
 // oversight: oauthAccount (email, organizationName/Uuid, accountUuid),
@@ -719,75 +847,22 @@ func hasProfile(pol *policy.Policy, name policy.ProfileName) bool {
 // json.MarshalIndent plus a trailing newline, because a human who cats this file
 // inside the sandbox is entitled to read it; a map[string]any marshals with
 // sorted keys, so the bytes are deterministic and golden-diffable.
-func claudeStateJSON(pol *policy.Policy, home string) []byte {
+func claudeStateJSON(pol *policy.Policy) []byte {
 	state := map[string]any{
 		"autoUpdates":            false,
 		"hasCompletedOnboarding": true,
 	}
-	// No `projects` key at all when the host has not trusted this directory —
-	// not an empty object and not `false`. Claude Code prompts on a missing
-	// entry, which is the behaviour being restored; an explicit `false` is a
-	// third state nothing has measured.
-	if hostTrustsTarget(home, pol.Target) {
-		state["projects"] = map[string]any{
-			pol.Target: map[string]any{"hasTrustDialogAccepted": true},
-		}
+	// One entry, for the one directory the human named. Not the host's project
+	// list, and not a prefix of {target}: Claude Code keys trust per directory
+	// and snug answers for exactly the directory on the command line.
+	state["projects"] = map[string]any{
+		pol.Target: map[string]any{"hasTrustDialogAccepted": true},
 	}
 	b, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return nil
 	}
 	return append(b, '\n')
-}
-
-// hostTrustsTarget answers exactly one question about the host: had the human
-// already accepted Claude Code's trust dialog for THIS directory?
-//
-// It is the only thing the generated ~/.claude.json reads from the host, and it
-// reads it as DATA in the sense .claude/design/GIT-CONFIG.md uses the word — one
-// boolean is extracted, nothing is bound, and no host string leaves this
-// function. The host's file is a command table's neighbour (mcpServers names
-// programs, projects[*].allowedTools names approvals) and none of that is
-// touched: the decoder below names two fields and json.Unmarshal drops the rest,
-// so a key added by a future Claude Code release cannot arrive by accident.
-//
-// Every failure is the same failure — "not trusted" — because the only cost of
-// being wrong in that direction is one prompt the human answers once, while the
-// cost in the other direction is a repo-controlled SessionStart hook running
-// without anyone being asked. Absent file, unreadable file, invalid JSON, a
-// `projects` value that is not an object: all false.
-//
-// home is main.go's raw os.UserHomeDir() (the same value stage() reads host
-// files from), while target is the canonicalised pol.Target — see
-// claudeStateJSON's doc comment on why the match is exact.
-// maxClaudeJSONBytes bounds the read of the host's ~/.claude.json. Only one
-// boolean is ever extracted (see the doc comment above), but the file itself
-// carries an object per tracked project plus MCP server config; a few
-// hundred tracked projects is still well under a megabyte. 4 MiB is
-// generous headroom without being a memory-exhaustion primitive on a file
-// read on every run that selects @claude (issue #337: a FIFO here used to
-// hang before the sandbox existed, and a giant file used to be read whole).
-const maxClaudeJSONBytes = 4 << 20
-
-func hostTrustsTarget(home, target string) bool {
-	// hostread.Optional, not os.ReadFile: this is the host user's own file,
-	// not payload-reachable, but the FIFO/symlink primitive issue #337
-	// measured elsewhere applies here identically, and "every failure is the
-	// same failure — not trusted" (see above) already means a note here gets
-	// no different treatment than an absent file.
-	b, note := hostread.Optional(filepath.Join(home, ".claude.json"), maxClaudeJSONBytes)
-	if note != "" || b == nil {
-		return false
-	}
-	var doc struct {
-		Projects map[string]struct {
-			HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
-		} `json:"projects"`
-	}
-	if err := json.Unmarshal(b, &doc); err != nil {
-		return false
-	}
-	return doc.Projects[target].HasTrustDialogAccepted
 }
 
 // claudeAllowlistNames renders policy.ClaudeSettingAllowlist as a prose list,
@@ -947,9 +1022,10 @@ func claudeGuidance(pol *policy.Policy) []byte {
 	b.WriteString("`~/.claude.json` here is GENERATED by snug and holds at most three keys. The\n")
 	b.WriteString("host's file was not copied in, so **there are no MCP servers configured** from\n")
 	b.WriteString("the host's user config — `/mcp` shows nothing from there by design, not because\n")
-	b.WriteString("it is broken. That statement is scoped to the HOST's configuration: a\n")
-	b.WriteString("`.mcp.json` committed in this project lives in the target tree, snug does not\n")
-	b.WriteString("remove it, and Claude Code still reads it.\n")
+	b.WriteString("it is broken. A `.mcp.json` committed in THIS PROJECT does not configure one\n")
+	b.WriteString("either: snug reinterprets that file the way it reinterprets the project's\n")
+	b.WriteString("`.claude/settings.json`, so the copy Claude Code reads in here names no\n")
+	b.WriteString("servers. Neither is a fault to diagnose and neither has a flag.\n")
 	b.WriteString("No host project list, session history or cost data is present. Tool permissions\n")
 	b.WriteString("approved in a host session were not carried in either, so you may be asked to\n")
 	b.WriteString("approve a tool the human already approved outside. None of this is a fault to\n")

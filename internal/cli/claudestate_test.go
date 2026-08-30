@@ -44,8 +44,9 @@ var claudeCanaries = []string{
 
 // hostTrustedOtherProject is the one directory the host fixture below has
 // accepted the trust dialog for, and it is deliberately NOT the target. It is
-// what makes "the target is not trusted" a statement about the PATH rather than
-// about a reader that cannot see a trust entry at all.
+// what makes "the generated file names the target and nothing else" a statement
+// about the host's project list being refused, rather than about a fixture with
+// nothing in it to leak.
 const hostTrustedOtherProject = "/home/u/secret-project"
 
 // hostClaudeJSON writes the host fixture with hostTrustedOtherProject trusted
@@ -222,20 +223,18 @@ func TestCopyingTheHostFileWouldTripTheCanarySweep(t *testing.T) {
 // was argued one line at a time in claudeStateJSON's doc comment; a fourth has
 // not been.
 //
-// BOTH ARMS ARE REQUIRED, and the second is the security one. The first version
-// of this test asserted `hasTrustDialogAccepted = true` unconditionally, which
-// locked in a regression rather than guarding against one: writing that key for
-// a directory the human has never trusted REMOVES Claude Code's trust dialog,
-// and the dialog is what stops a repository's own .claude/settings.json hooks
-// running at startup (A/B measured — see claudeStateJSON's doc comment). The key
-// is legitimate only as a carry of the host's own answer.
+// ALL THREE HOST ARMS ARE REQUIRED, and they assert the SAME file: since issue
+// #460 the trust key is snug's own answer for the directory the human named, so
+// a host reader creeping back in shows up as one arm differing from the others.
+// What the key removes — Claude Code's trust dialog — and what pays for that are
+// argued in claudeStateJSON's doc comment, and the two channels the dialog used
+// to gate are the subject of TestProjectSettingsProjectionDropsHooksWhereTheFileExists
+// and TestProjectMCPJSONIsProjectedAndNamesNoServers.
 func TestClaudeDotJSONKeySetIsExactlyTheDefensibleThree(t *testing.T) {
 	const why = "\nAdding a key here is a policy change — argue why it is not disclosure, " +
 		"see issue #19."
 
-	// The two keys that are true of every snug run on every host. Asserted in
-	// both arms, because a change that dropped one of them while getting the
-	// trust arm right would otherwise pass.
+	// The two keys that are true of every snug run on every host.
 	constantKeys := func(t *testing.T, top map[string]any) {
 		t.Helper()
 		if v, ok := top["hasCompletedOnboarding"].(bool); !ok || !v {
@@ -250,132 +249,109 @@ func TestClaudeDotJSONKeySetIsExactlyTheDefensibleThree(t *testing.T) {
 		}
 	}
 
-	t.Run("host already trusts the target: the key is CARRIED", func(t *testing.T) {
-		m, home, target := stageClaude(t, hostTrustsTheTarget)
-		top := parseJSON(t, []byte(m.Content))
+	// One body for all three host states, because since issue #460 the host is
+	// not consulted: the trust entry is snug's own answer for the ONE directory
+	// the human typed, written into a tmpfs file that dies with the run.
+	for _, tc := range []struct {
+		name string
+		host hostClaude
+	}{
+		{"host has never run Claude Code", noHostClaudeFile},
+		{"host has a file and trusts some other directory", hostTrustsOther},
+		{"host has a file and already trusts the target", hostTrustsTheTarget},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _, target := stageClaude(t, tc.host)
+			top := parseJSON(t, []byte(m.Content))
 
-		// CONTROL: the fixture really does record this exact path, so a key found
-		// below is a carry rather than an assertion snug invented.
-		if !hostTrustsTarget(home, target) {
-			t.Fatalf("control: the fixture host ~/.claude.json does not trust %q, so this "+
-				"arm is not exercising the carry path", target)
-		}
+			if got, want := sortedKeys(top), []string{"autoUpdates", "hasCompletedOnboarding", "projects"}; !equalStrings(got, want) {
+				t.Fatalf("top-level keys are %v, want exactly %v.%s", got, want, why)
+			}
+			constantKeys(t, top)
 
-		if got, want := sortedKeys(top), []string{"autoUpdates", "hasCompletedOnboarding", "projects"}; !equalStrings(got, want) {
-			t.Fatalf("top-level keys are %v, want exactly %v.%s", got, want, why)
-		}
-		constantKeys(t, top)
-
-		projects, ok := top["projects"].(map[string]any)
-		if !ok {
-			t.Fatalf("projects is %T, want an object.%s", top["projects"], why)
-		}
-		if got, want := sortedKeys(projects), []string{target}; !equalStrings(got, want) {
-			t.Fatalf("projects names %v, want exactly the ONE directory the human typed on "+
-				"the command line, %v. The host's file pre-accepted trust for every project "+
-				"path on the machine, including %q; snug's carries the answer for the target "+
-				"and no other.%s", got, want, hostTrustedOtherProject, why)
-		}
-		entry, ok := projects[target].(map[string]any)
-		if !ok {
-			t.Fatalf("projects[%q] is %T, want an object.%s", target, projects[target], why)
-		}
-		if got, want := sortedKeys(entry), []string{"hasTrustDialogAccepted"}; !equalStrings(got, want) {
-			t.Fatalf("projects[%q] carries %v, want exactly %v — allowedTools above all must "+
-				"NOT be here: an approval given in a host session is not an approval given "+
-				"inside the sandbox.%s", target, got, want, why)
-		}
-		if v, ok := entry["hasTrustDialogAccepted"].(bool); !ok || !v {
-			t.Errorf("hasTrustDialogAccepted = %v, want true — the host records this exact "+
-				"directory as trusted, so snug carries that answer and Claude Code does not "+
-				"ask a question the human has already answered", entry["hasTrustDialogAccepted"])
-		}
-		if len(m.Content) > 1024 {
-			t.Errorf("the generated file is %d bytes; three keys cannot need that. Something "+
-				"host-derived has got in.%s", len(m.Content), why)
-		}
-	})
-
-	// The regression arm. A host file exists and DOES record a trusted project —
-	// just not this one.
-	t.Run("host has not trusted the target: NO projects key at all", func(t *testing.T) {
-		m, home, target := stageClaude(t, hostTrustsOther)
-		top := parseJSON(t, []byte(m.Content))
-
-		// POSITIVE CONTROL, and it is what makes the absence below mean anything:
-		// the very same reader, over the very same file, DOES find the trust entry
-		// for the other project. So "false for the target" is a fact about the
-		// path, not a parser that cannot see a trust entry, a fixture that was
-		// never written, or a home the lookup is not reading.
-		if !hostTrustsTarget(home, hostTrustedOtherProject) {
-			t.Fatalf("control: hostTrustsTarget cannot see the trust entry the fixture "+
-				"records for %q, so its answer for the target measures the reader rather "+
-				"than the host's decision", hostTrustedOtherProject)
-		}
-		if hostTrustsTarget(home, target) {
-			t.Fatalf("control: the fixture host ~/.claude.json trusts the target %q; this "+
-				"arm must exercise an UNTRUSTED directory", target)
-		}
-
-		if got, want := sortedKeys(top), []string{"autoUpdates", "hasCompletedOnboarding"}; !equalStrings(got, want) {
-			t.Fatalf("top-level keys are %v, want exactly %v — with the host not trusting "+
-				"this directory there must be NO projects key.\n"+
-				"Writing projects.%q.hasTrustDialogAccepted here removes Claude Code's "+
-				"trust dialog for a directory nobody has ever trusted. MEASURED A/B on a "+
-				"target whose only content is .claude/settings.json with a SessionStart "+
-				"hook: with the key, no dialog and the HOOK FIRES; without it, \"Quick "+
-				"safety check\" blocks and the hook does not run. The sandbox holds the "+
-				"staged Anthropic OAuth token and @claude is commonly combined with @net.%s",
-				got, want, target, why)
-		}
-		constantKeys(t, top)
-	})
-
-	t.Run("host has never run Claude Code: NO projects key either", func(t *testing.T) {
-		m, home, _ := stageClaude(t, noHostClaudeFile)
-		top := parseJSON(t, []byte(m.Content))
-
-		// CONTROL: there really is no host file, so this is the absent-file path
-		// rather than a fixture that quietly wrote one.
-		if _, err := os.Stat(filepath.Join(home, ".claude.json")); err == nil {
-			t.Fatal("control: the fixture home HAS a ~/.claude.json")
-		}
-		if got, want := sortedKeys(top), []string{"autoUpdates", "hasCompletedOnboarding"}; !equalStrings(got, want) {
-			t.Fatalf("top-level keys are %v, want exactly %v. A host with no ~/.claude.json "+
-				"has trusted nothing, and an unreadable or unparseable file is the same "+
-				"answer: omit the key, never fail the run.%s", got, want, why)
-		}
-		constantKeys(t, top)
-	})
+			projects, ok := top["projects"].(map[string]any)
+			if !ok {
+				t.Fatalf("projects is %T, want an object.%s", top["projects"], why)
+			}
+			if got, want := sortedKeys(projects), []string{target}; !equalStrings(got, want) {
+				t.Fatalf("projects names %v, want exactly the ONE directory the human typed on "+
+					"the command line, %v. Claude Code keys trust PER DIRECTORY, and snug "+
+					"answers for the directory it was given and for no other — a second entry "+
+					"here, or a prefix of the target, is snug deciding about a directory "+
+					"nobody named. The host's own file pre-accepts trust for every project on "+
+					"the machine, including %q, and none of that is read any more.%s",
+					got, want, hostTrustedOtherProject, why)
+			}
+			entry, ok := projects[target].(map[string]any)
+			if !ok {
+				t.Fatalf("projects[%q] is %T, want an object.%s", target, projects[target], why)
+			}
+			if got, want := sortedKeys(entry), []string{"hasTrustDialogAccepted"}; !equalStrings(got, want) {
+				t.Fatalf("projects[%q] carries %v, want exactly %v — allowedTools above all must "+
+					"NOT be here: an approval given in a host session is not an approval given "+
+					"inside the sandbox.%s", target, got, want, why)
+			}
+			if v, ok := entry["hasTrustDialogAccepted"].(bool); !ok || !v {
+				t.Errorf("hasTrustDialogAccepted = %v, want true (issue #460)",
+					entry["hasTrustDialogAccepted"])
+			}
+			if len(m.Content) > 1024 {
+				t.Errorf("the generated file is %d bytes; three keys cannot need that. Something "+
+					"host-derived has got in.%s", len(m.Content), why)
+			}
+		})
+	}
 }
 
-// TestWritingTheTrustKeyUnconditionallyFailsTheUntrustedArm is that arm's
-// positive control, and it is not ceremony: the shape it reconstructs SHIPPED,
-// and the test that was supposed to catch it asserted the key must be present.
+// TestTheGeneratedClaudeJSONDoesNotVaryWITHTheHost is the ratchet issue #460
+// leaves behind, and it is the negative the key-set test cannot state on its
+// own: the three host states produce BYTE-IDENTICAL files.
 //
-// It rebuilds the pre-fix generator — the trust entry written for pol.Target
-// with no reference to the host at all — and asserts the untrusted arm's
-// predicate (the top-level key set) fires on it.
-func TestWritingTheTrustKeyUnconditionallyFailsTheUntrustedArm(t *testing.T) {
-	_, _, target := stageClaude(t, hostTrustsOther)
-
-	preFix, err := json.MarshalIndent(map[string]any{
-		"autoUpdates":            false,
-		"hasCompletedOnboarding": true,
-		"projects": map[string]any{
-			target: map[string]any{"hasTrustDialogAccepted": true},
-		},
-	}, "", "  ")
-	if err != nil {
-		t.Fatal(err)
+// The trust key stopped being a fact about the host and became snug's own
+// answer, scoped to the sandbox. A reader re-introduced here — for this key or
+// for any other — would make the sandbox's Claude state a function of the host's
+// again, which is the shape issue #19 removed and the one the canary sweep
+// polices from the other side. This test fails on the first byte of difference,
+// including one nobody thought to write a canary for.
+func TestTheGeneratedClaudeJSONDoesNotVaryWITHTheHost(t *testing.T) {
+	// Same target for all three, or the trust entry's key differs for a reason
+	// that is not the host: stageClaude builds its own tree per call, so the
+	// comparison is on the document with that one host-independent path removed.
+	strip := func(t *testing.T, m policy.Mount, target string) string {
+		t.Helper()
+		top := parseJSON(t, []byte(m.Content))
+		projects, ok := top["projects"].(map[string]any)
+		if !ok {
+			t.Fatalf("projects is %T, want an object", top["projects"])
+		}
+		if _, ok := projects[target]; !ok {
+			t.Fatalf("projects has no entry for the target %q, so this comparison would "+
+				"succeed on two files that both lack the key", target)
+		}
+		projects["snug-test-target"] = projects[target]
+		delete(projects, target)
+		b, err := json.MarshalIndent(top, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
 	}
 
-	got := sortedKeys(parseJSON(t, preFix))
-	if equalStrings(got, []string{"autoUpdates", "hasCompletedOnboarding"}) {
-		t.Fatalf("the pre-fix arrangement — projects.<target>.hasTrustDialogAccepted written "+
-			"unconditionally — has the key set %v, which is the one the untrusted arm of "+
-			"TestClaudeDotJSONKeySetIsExactlyTheDefensibleThree accepts. That assertion "+
-			"therefore cannot fail on the shape it exists to forbid", got)
+	mNone, _, tNone := stageClaude(t, noHostClaudeFile)
+	mOther, _, tOther := stageClaude(t, hostTrustsOther)
+	mTarget, _, tTarget := stageClaude(t, hostTrustsTheTarget)
+
+	none, other, trusted := strip(t, mNone, tNone), strip(t, mOther, tOther), strip(t, mTarget, tTarget)
+	if none != other {
+		t.Errorf("a host with no ~/.claude.json and a host whose file trusts some OTHER "+
+			"directory produced different files. Nothing in ~/.claude.json is host-derived "+
+			"any more (issue #460).\nno host file:\n%s\nhost trusts another project:\n%s",
+			none, other)
+	}
+	if none != trusted {
+		t.Errorf("a host that already trusts the target produced a different file from one "+
+			"with no ~/.claude.json. The host's answer is not consulted (issue #460).\n"+
+			"no host file:\n%s\nhost trusts the target:\n%s", none, trusted)
 	}
 }
 

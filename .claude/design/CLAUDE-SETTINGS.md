@@ -158,8 +158,8 @@ contribution.
 
 Two sources remain outside this fix, and both are stated rather than implied:
 
-- **`projectSettings` / `localSettings` live in the target tree, and snug now
-  projects them read-only WHERE THEY EXIST (issue #73).** The inbound-only
+- **`projectSettings`, `localSettings` and `.mcp.json` live in the target tree,
+  and snug projects all three read-only WHERE THEY EXIST (issues #73, #460).** The inbound-only
   framing this bullet once carried — "the target is sandboxed material, gated by
   Claude Code's trust dialog" — was true one direction and wrong the other: the
   payload can WRITE a `.claude/settings.json` hook into the target, which
@@ -604,16 +604,20 @@ credential. Both failure modes are reachable, they are selected by the host's
 value, and snug cannot tell which from the key name — which is precisely why the
 key is dropped rather than validated.
 
-### 4.2 `hooks` re-opened, from the host side, the startup-execution path the trust dialog closes
+### 4.2 `hooks` re-opened, from the host side, and the trust dialog is not what closes it
 
-`claudeStateJSON` writes `hasTrustDialogAccepted` only when the host already
-trusted that exact directory, and the A/B measurement in `internal/cli/claude.go`
-shows why: with the key written unconditionally, a target whose only content was
-`.claude/settings.json` with a `SessionStart` hook **fired that hook at startup,
-in a sandbox holding the staged Anthropic OAuth token**.
+`claudeStateJSON` writes `hasTrustDialogAccepted` for the target
+unconditionally, into the tmpfs `~/.claude.json` that dies with the run
+(issue #460): the dialog does not appear, and the host's own file is not read.
+What pays for that is §4.5 — the two repo-supplied command tables Claude Code
+would read are reinterpreted before it reads them. MEASURED, claude 2.1.251, on
+a target whose only content is `.claude/settings.json` with a `SessionStart`
+hook: the hook fires in NEITHER arm, with the key written and without it, while
+the same fixture fires on the host. The dialog was gating a channel the
+projection had already closed.
 
-A host-scope `hooks.SessionStart` fires in every session, including that one,
-and it is not gated by the repository's trust state. Two consequences:
+A host-scope `hooks.SessionStart` fires in every session, and it is not gated by
+the repository's trust state at all. Two consequences:
 
 - A hook command's cwd is the target. A host hook that invokes a
   project-resident program — `npm run …`, `make fmt`, `./scripts/…`, `npx …` —
@@ -735,8 +739,32 @@ MEASURED (claude 2.1.238): a `SessionStart` hook in a target's
 dialog, no approval, and no entry recorded in `~/.claude.json`**, on a directory
 claude had never seen; `settings.local.json` behaved identically; an interactive
 `claude` on an already-trusted target fires it too. Two of the three realistic
-host scenarios have no gate. `.mcp.json` is the exception and is left alone — it
-is gated by `enableAllProjectMcpServers` (measured weaker), one decision per file.
+host scenarios have no gate.
+
+**All three are projected only where a REGULAR FILE exists, and a non-regular
+one REFUSES the run.** `os.Lstat` answers "is there a name here"; bwrap's
+`--ro-bind-data` follows it. Measured: a target shipping
+`ln -s NOTES.generated .mcp.json` left a 0-byte read-only `NOTES.generated` in
+the HOST tree before the payload ran — `HostDestExists` was set on Lstat's
+answer, so `rejectGeneratedOntoHost` (issue #186) skipped the mount, and the
+guard was defeated through its own exemption. A directory at the name, or a
+symlink whose parent is absent, aborts bwrap setup instead
+(`Can't create file … Is a directory`), which lets a hostile repo deny the run.
+Skipping the projection is not the fix: a symlink to a sibling in the same repo
+would then feed Claude Code the repo's own hooks or servers. So
+`projectableTargetFile` refuses, naming the shape and the path.
+
+`.mcp.json` is the THIRD file and gets the same treatment, on a sharper
+measurement (issue #460, claude 2.1.251). A target whose only content is a
+`.mcp.json` naming `sh -c "touch MCP-FIRED"` ran that command three ways: inside
+a `@claude` sandbox with the trust key omitted, inside one with it written, and
+on the host in a directory Claude Code had never trusted. `enableAllProjectMcpServers`
+and `enabledMcpjsonServers` are refused *settings* keys and were read as a gate on
+this *file*; they are not one. The file has one key and it names programs, so the
+allowlist that survives is empty: `policy.ClaudeProjectMCPJSON` generates
+`{"mcpServers": {}}` and `stageProjectMCPJSON` mounts it `AccessRO` where the
+file exists. The cost, stated: an MCP server a project legitimately commits does
+not run inside a snug sandbox, and there is no flag for it.
 
 **The fix is this document's own mechanism, applied to project scope.** snug
 projects each file read-only through the SAME `ClaudeSettingAllowlist` — not a

@@ -40,6 +40,7 @@ func explain(env policy.Environ, out io.Writer, p *policy.Policy, args []string,
 	explainWhat(out, p)
 	explainFilesystem(out, p)
 	explainAbsent(out, p)
+	explainClaudeTrust(out, p)
 	explainNetwork(out, p)
 	explainEngine(out, p)
 	explainCommand(out, p)
@@ -191,6 +192,49 @@ func explainAbsent(out io.Writer, p *policy.Policy) {
 	// that dies with the sandbox (CLAUDE.md invariant 4).
 	fmt.Fprintln(out, "  No root, no setuid, and no process snug did not start — everything here")
 	fmt.Fprintln(out, "  dies with the sandbox.")
+	fmt.Fprintln(out)
+}
+
+// explainClaudeTrust states the one decision snug makes on the human's behalf
+// inside a @claude sandbox: Claude Code's "Quick safety check" is pre-answered
+// for the target (issue #460).
+//
+// It is on THIS screen and not only on --dry-run because a decision taken for
+// someone is the thing they most need to read first, and because the shape of
+// the argument is the one --explain exists for — what is NOT here. The dialog is
+// gone AND the two repo-supplied command tables it used to gate are gone with
+// it; a reader who sees only the first half has been handed a downgrade
+// (invariant 5).
+//
+// Gated on the resolved mount, like every other block here: no @claude, no
+// generated ~/.claude.json, nothing to say. claudeTrustCarried reads the staged
+// CONTENT rather than recomputing, so this screen and --dry-run's CLAUDE block
+// cannot disagree.
+func explainClaudeTrust(out io.Writer, p *policy.Policy) {
+	m, ok := claudeStateMount(p)
+	if !ok || !claudeTrustCarried(p, m) {
+		return
+	}
+	fmt.Fprintln(out, "CLAUDE CODE'S SAFETY CHECK")
+	fmt.Fprintln(out, "  Pre-answered by snug for the directory you named, and for no other. Claude")
+	fmt.Fprintln(out, "  Code opens straight on its prompt in here, without asking whether you trust")
+	fmt.Fprintln(out, "  this folder. The answer lives on this sandbox's own tmpfs and dies with the")
+	fmt.Fprintln(out, "  run; your host ~/.claude.json is neither read nor written.")
+	// The pay-for half, and it is derived: the projection is what makes the
+	// suppression safe, so name the files that were actually reinterpreted.
+	if projected := projectedTargetSettings(p); len(projected) > 0 {
+		fmt.Fprintln(out, "  What that check used to gate is reinterpreted instead. These files of")
+		fmt.Fprintln(out, "  this project's reach Claude Code with their hooks and MCP servers gone:")
+		// One per line rather than a joined sentence: the list is one to three
+		// names today and a fourth would push a joined line past 80 columns.
+		for _, name := range projected {
+			fmt.Fprintf(out, "    %s\n", name)
+		}
+	} else {
+		fmt.Fprintln(out, "  This project ships no .claude/settings.json, settings.local.json or")
+		fmt.Fprintln(out, "  .mcp.json, so there is nothing to reinterpret — and a NEW one written")
+		fmt.Fprintln(out, "  inside is not closed.")
+	}
 	fmt.Fprintln(out)
 }
 

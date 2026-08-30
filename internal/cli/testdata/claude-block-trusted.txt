@@ -5,12 +5,14 @@ CLAUDE   ~/.claude.json is GENERATED, not copied — three keys, no host bytes
                     a private tmpfs copy that dies with this session)
          autoUpdates=false       the binary is a read-only bind; a self-update
                     inside can only fail
-         trust      CARRIED from your host ~/.claude.json, which already
-                    records this exact path as trusted:
+         trust      PRE-ANSWERED BY SNUG, in this sandbox only:
                     projects."/home/u/proj/sub".hasTrustDialogAccepted = true
-                    One boolean about the ONE directory you named on the
-                    command line; no other directory appears in the file, and
-                    snug decides nothing here — it carries your answer
+                    so Claude Code does not ask "Quick safety check" for it.
+                    One entry, for the ONE directory you named on the command
+                    line; the entry is on this tmpfs and dies with the run,
+                    and your host ~/.claude.json is neither read nor written.
+                    What that dialog used to gate is dropped instead — see
+                    the project line below (issue #460)
          not here   the host file's 62 KB: every project path on this machine,
                     org, email, account UUIDs, machine ID, MCP servers, and the
                     host's per-project tool approvals — so tools you approved on
@@ -49,6 +51,7 @@ CLAUDE   ~/.claude.json is GENERATED, not copied — three keys, no host bytes
                     enabledPlugins, extraKnownMarketplaces, permissions — each
                     names a program, selects/fetches code, or sets env; see
                     policy.ClaudeExecutingKeys for the full catalogue
-         project    the target ships no .claude/settings.json or
-                    settings.local.json, so none is projected — a NEW one
-                    the payload writes there is NOT closed (issue #73)
+         project    the target ships no .claude/settings.json,
+                    settings.local.json or .mcp.json, so none is
+                    projected — a NEW one the payload writes there is NOT
+                    closed (issue #73)

@@ -1545,17 +1545,15 @@ func describeCommands(out io.Writer, p *policy.Policy) {
 // pre-answered for this run, which is the residual of issue #19's fix and the
 // reason the block is mandatory rather than nice to have.
 //
-// The trust line has two arms and must keep both. snug writes the trust entry
-// only when the HOST's ~/.claude.json already records this exact path as
-// trusted (claudeStateJSON), so on an unfamiliar repository there is no entry
-// and Claude Code prompts — and a block that printed the pre-answered sentence
-// unconditionally would be describing a decision snug did not make. What must
-// NOT be written here is the retired reassurance that the entry is "strictly
-// narrower than the seven paths the copied file answered for": measured, the old
-// set was the host's seven paths and the new one is at most {target}, neither
-// contains the other, and the seven were inert inside the sandbox while {target}
-// is the one live entry. State the measurement; invariant 5 is what makes saying
-// it out loud the difference between a scoped decision and a silent downgrade.
+// The trust line says that snug PRE-ANSWERS Claude Code's safety prompt for the
+// target, because since issue #460 it does — unconditionally, for the one
+// directory the human named, inside this sandbox only (claudeStateJSON carries
+// the measurement that made it safe). That is a decision snug makes on the
+// human's behalf, so invariant 5 puts it on this screen in those words rather
+// than leaving it to be discovered: a human reading --dry-run must be able to
+// see that the dialog they are used to will not appear, and what replaced it.
+// The second arm remains for a generated file that carries no entry, which is
+// unreachable today and is still cheaper than a screen that can lie.
 //
 // Modelled on describeGit and describeSSH, and gated the same way: on the
 // AUTHORED KindData mount actually being in the resolved policy, so the screen
@@ -1569,6 +1567,9 @@ func describeClaude(out io.Writer, p *policy.Policy) {
 		return
 	}
 	trusted := claudeTrustCarried(p, m)
+	// Read off the staged content, not counted by hand: the trust key is
+	// unconditional now, but a screen that hardcodes "three keys" is a copy of
+	// state held in claudeStateJSON.
 	keys := "two keys"
 	if trusted {
 		keys = "three keys"
@@ -1593,20 +1594,20 @@ func describeClaude(out io.Writer, p *policy.Policy) {
 	// (see visibleValue, and TestNoSnugScreenEmitsARawControlCharacter, which
 	// asserts the SET of sinks rather than any one of them).
 	if trusted {
-		fmt.Fprintf(out, "         trust      CARRIED from your host ~/.claude.json, which already\n")
-		fmt.Fprintf(out, "                    records this exact path as trusted:\n")
+		fmt.Fprintf(out, "         trust      PRE-ANSWERED BY SNUG, in this sandbox only:\n")
 		fmt.Fprintf(out, "                    projects.%q.hasTrustDialogAccepted = true\n", p.Target)
-		fmt.Fprintf(out, "                    One boolean about the ONE directory you named on the\n")
-		fmt.Fprintf(out, "                    command line; no other directory appears in the file, and\n")
-		fmt.Fprintf(out, "                    snug decides nothing here — it carries your answer\n")
+		fmt.Fprintf(out, "                    so Claude Code does not ask \"Quick safety check\" for it.\n")
+		fmt.Fprintf(out, "                    One entry, for the ONE directory you named on the command\n")
+		fmt.Fprintf(out, "                    line; the entry is on this tmpfs and dies with the run,\n")
+		fmt.Fprintf(out, "                    and your host ~/.claude.json is neither read nor written.\n")
+		fmt.Fprintf(out, "                    What that dialog used to gate is dropped instead — see\n")
+		fmt.Fprintf(out, "                    the project line below (issue #460)\n")
 	} else {
-		fmt.Fprintf(out, "         trust      NOT pre-answered — your host ~/.claude.json does not\n")
-		fmt.Fprintf(out, "                    record this exact path as trusted:\n")
+		fmt.Fprintf(out, "         trust      NOT pre-answered — the generated ~/.claude.json carries\n")
+		fmt.Fprintf(out, "                    no entry for:\n")
 		fmt.Fprintf(out, "                    projects.%q\n", p.Target)
-		fmt.Fprintf(out, "                    is absent, and so is the whole projects key, so Claude\n")
-		fmt.Fprintf(out, "                    Code asks \"Quick safety check\" for it once per run —\n")
-		fmt.Fprintf(out, "                    the prompt that stops a repository's own\n")
-		fmt.Fprintf(out, "                    .claude/settings.json hooks running at startup\n")
+		fmt.Fprintf(out, "                    so Claude Code asks \"Quick safety check\" for it once per\n")
+		fmt.Fprintf(out, "                    run\n")
 	}
 	fmt.Fprintf(out, "         not here   the host file's 62 KB: every project path on this machine,\n")
 	fmt.Fprintf(out, "                    org, email, account UUIDs, machine ID, MCP servers, and the\n")
@@ -1746,12 +1747,14 @@ func describeClaude(out io.Writer, p *policy.Policy) {
 		if len(projected) > 0 {
 			fmt.Fprintf(out, "         project    the TARGET's own %s reinterpreted read-only:\n",
 				strings.Join(projected, " and "))
-			fmt.Fprintf(out, "                    a hostile repo's hooks do not run inside, and the\n")
-			fmt.Fprintf(out, "                    payload cannot write one that runs on your host later\n")
+			fmt.Fprintf(out, "                    a hostile repo's hooks and MCP servers do not run\n")
+			fmt.Fprintf(out, "                    inside, and the payload cannot write one that runs on\n")
+			fmt.Fprintf(out, "                    your host later\n")
 		} else {
-			fmt.Fprintf(out, "         project    the target ships no .claude/settings.json or\n")
-			fmt.Fprintf(out, "                    settings.local.json, so none is projected — a NEW one\n")
-			fmt.Fprintf(out, "                    the payload writes there is NOT closed (issue #73)\n")
+			fmt.Fprintf(out, "         project    the target ships no .claude/settings.json,\n")
+			fmt.Fprintf(out, "                    settings.local.json or .mcp.json, so none is\n")
+			fmt.Fprintf(out, "                    projected — a NEW one the payload writes there is NOT\n")
+			fmt.Fprintf(out, "                    closed (issue #73)\n")
 		}
 	}
 }
@@ -1768,6 +1771,14 @@ func projectedTargetSettings(p *policy.Policy) []string {
 		if m, ok := p.Mounts[guest]; ok && m.Kind == policy.KindData && m.HostDestExists {
 			out = append(out, ".claude/"+name)
 		}
+	}
+	// .mcp.json is the same projection on the same argument (issue #460's step
+	// 3), and it is read from the resolved mounts for the same reason — the two
+	// lists are one row on this screen because a human reading it is asking one
+	// question: which of this repo's command tables did snug reinterpret.
+	guest := filepath.Join(p.Target, ".mcp.json")
+	if m, ok := p.Mounts[guest]; ok && m.Kind == policy.KindData && m.HostDestExists {
+		out = append(out, ".mcp.json")
 	}
 	return out
 }
