@@ -157,11 +157,16 @@ func podmanClientUsable() (ok bool, path, detail string) {
 // denylist it replaced "refused every `docker run` there has ever been
 // through this proxy", and `docker run --rm alpine echo` works today. See
 // CONTAINER-CLIENT.md §5.
-func warnAboutPodmanClient() {
+func warnAboutPodmanClient(n *notes) {
 	ok, _, detail := podmanClientUsable()
 	if !ok {
 		_, staged := DetectHostShim("podman")
-		fmt.Fprintf(os.Stderr,
+		// Built into ONE string and emitted as ONE note, rather than the
+		// three consecutive writes this used to be: a note is the unit the
+		// collector gates and renders, and three notes would let -v or the
+		// NOTES block interleave a blank line into the middle of a single
+		// paragraph of English.
+		msg := fmt.Sprintf(
 			"snug: the podman CLI will not work inside this sandbox — %s.\n"+
 				"      snug's own engine and filtering proxy are fine; it is the client binary\n"+
 				"      that cannot reach the host from inside. podman's own error for this is\n"+
@@ -171,23 +176,22 @@ func warnAboutPodmanClient() {
 				"        - the API at $CONTAINER_HOST / $DOCKER_HOST (both point at the proxy)\n"+
 				"        - any docker-compatible client, e.g. `docker`, if one is installed\n", detail)
 		if staged {
-			fmt.Fprint(os.Stderr,
-				"\n"+
-					"      snug staged a `podman` on PATH ahead of this one: a dispatcher that\n"+
-					"      forwards a fixed set of docker subcommands to `docker`, byte for byte,\n"+
-					"      and refuses the rest by name — see the COMMANDS block in\n"+
-					"      `snug --dry-run`. /usr/bin/podman is untouched and still reachable by\n"+
-					"      its absolute path; this file is read-only and only comes first on PATH.\n"+
-					"      It is not podman — the two CLIs diverge past run/ps/images — but `run`,\n"+
-					"      `pull`, `ps`, `images` and the rest of docker's command set now work.\n")
+			msg += "\n" +
+				"      snug staged a `podman` on PATH ahead of this one: a dispatcher that\n" +
+				"      forwards a fixed set of docker subcommands to `docker`, byte for byte,\n" +
+				"      and refuses the rest by name — see the COMMANDS block in\n" +
+				"      `snug --dry-run`. /usr/bin/podman is untouched and still reachable by\n" +
+				"      its absolute path; this file is read-only and only comes first on PATH.\n" +
+				"      It is not podman — the two CLIs diverge past run/ps/images — but `run`,\n" +
+				"      `pull`, `ps`, `images` and the rest of docker's command set now work.\n"
 		} else {
-			fmt.Fprint(os.Stderr,
-				"\n"+
-					"      snug did not stage a replacement here: this is not one of the host-escape\n"+
-					"      helpers it covers (distrobox-host-exec, host-spawn, flatpak-spawn). To get\n"+
-					"      a real podman back, install a genuine binary in this container — check\n"+
-					"      with `rpm -V podman` or your distro's equivalent.\n")
+			msg += "\n" +
+				"      snug did not stage a replacement here: this is not one of the host-escape\n" +
+				"      helpers it covers (distrobox-host-exec, host-spawn, flatpak-spawn). To get\n" +
+				"      a real podman back, install a genuine binary in this container — check\n" +
+				"      with `rpm -V podman` or your distro's equivalent.\n"
 		}
+		n.aside("%s", msg)
 		return
 	}
 
@@ -204,11 +208,11 @@ func warnAboutPodmanClient() {
 	// decision about the libpod attach stream (issues #465/#508) that the
 	// maintainer has ruled stays unmade. `docker run` is unaffected; it
 	// never speaks this API.
-	fmt.Fprint(os.Stderr,
-		"snug: podman here is genuine. `podman build`, `pull`, `run -d`, `stop`, `kill`,\n"+
-			"      `restart`, `pause`, `unpause`, `wait`, `rm` and the volume verbs all work\n"+
-			"      through this sandbox's proxy end to end. FOREGROUND `podman run` (without\n"+
-			"      -d) is the exception: it opens an attach stream this proxy does not frame,\n"+
-			"      and is refused there. Use `podman run -d` and `podman logs`, or `docker`,\n"+
+	n.aside(
+		"snug: podman here is genuine. `podman build`, `pull`, `run -d`, `stop`, `kill`,\n" +
+			"      `restart`, `pause`, `unpause`, `wait`, `rm` and the volume verbs all work\n" +
+			"      through this sandbox's proxy end to end. FOREGROUND `podman run` (without\n" +
+			"      -d) is the exception: it opens an attach stream this proxy does not frame,\n" +
+			"      and is refused there. Use `podman run -d` and `podman logs`, or `docker`,\n" +
 			"      which is unaffected.\n")
 }

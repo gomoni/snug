@@ -2,8 +2,6 @@ package cli
 
 import (
 	"errors"
-	"fmt"
-	"os"
 
 	"github.com/gomoni/snug/internal/dockerproxy"
 	"github.com/gomoni/snug/internal/engine"
@@ -35,12 +33,12 @@ const containerSocketGuest = policy.ContainerSocketGuest
 //
 // One line per call, so whole-string escaping (VisibleText) is right: an audit
 // message has no legitimate newline in it.
-func containerAudit(verbose bool) func(string) {
-	if !verbose {
+func containerAudit(n *notes) func(string) {
+	if !n.isVerbose() {
 		return func(string) {}
 	}
 	return func(msg string) {
-		fmt.Fprintln(os.Stderr, "snug: containers: "+policy.VisibleText(msg))
+		n.aside("%s\n", "snug: containers: "+policy.VisibleText(msg))
 	}
 }
 
@@ -87,7 +85,7 @@ type containerRun struct {
 // file's own doc comment for why, and what covers it instead (__inengine's
 // own mount call, which still refuses loudly, just one step later than the
 // design's own probe would).
-func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun bool) (containerRun, error) {
+func startContainers(env policy.Environ, pol *policy.Policy, n *notes, verbose, dryRun bool) (containerRun, error) {
 	if pol.Podman == policy.PodmanOff {
 		return containerRun{cleanup: func() {}}, nil
 	}
@@ -175,7 +173,7 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		return containerRun{}, err
 	}
 
-	warnAboutPodmanClient()
+	warnAboutPodmanClient(n)
 
 	// Issue #405, first half: pf.Podman is a single field carrying BOTH
 	// sources preflight can name it from ($SNUG_PODMAN or a PATH lookup), so
@@ -219,7 +217,7 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 	// refusing over lost ergonomics.
 	var probeUnavailable *probeUnavailableError
 	if err := pf.ResolvConfBind; err != nil && !errors.As(err, &probeUnavailable) {
-		fmt.Fprintf(os.Stderr, "snug: this host cannot bind a file over /etc/resolv.conf, so the "+
+		n.aside("snug: this host cannot bind a file over /etc/resolv.conf, so the "+
 			"container engine will keep the host's own resolver configuration.\n"+
 			"      Containers are NOT affected: their DNS comes from snug's generated "+
 			"containers.conf.\n"+
@@ -240,8 +238,8 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 	// examples): the store still works, it will just be reported
 	// unattributed by `snug engine gc` (issue #308) until a later run's
 	// write succeeds.
-	if eng.BreadcrumbWarning != nil && verbose {
-		fmt.Fprintf(os.Stderr, "snug: %v\n", eng.BreadcrumbWarning)
+	if eng.BreadcrumbWarning != nil && n.isVerbose() {
+		n.aside("snug: %v\n", eng.BreadcrumbWarning)
 	}
 
 	// EVERY error path from here to the successful return removes this run's
@@ -311,7 +309,7 @@ func startContainers(env policy.Environ, pol *policy.Policy, verbose, dryRun boo
 		return containerRun{}, err
 	}
 
-	audit := containerAudit(verbose)
+	audit := containerAudit(n)
 
 	// ensureEngine is nil: the engine is EAGER now, forked and confirmed
 	// (its socket exists) well before StartSandbox ever forks the payload —

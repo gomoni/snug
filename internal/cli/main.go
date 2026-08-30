@@ -10,6 +10,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,7 +48,29 @@ type config struct {
 	noSeccomp  bool
 	noDefaults bool
 	verbose    bool
+	// explain is --dry-run's twin for a human who wants the sentence rather
+	// than the table: same resolution, same "starts nothing" promise, prose
+	// instead of blocks (issue #541). It is a SEPARATE flag rather than a
+	// verbosity of --dry-run because the two answer different questions —
+	// --dry-run is the trust artifact, complete and checkable, and --explain
+	// is the thing you read before you trust it.
+	explain bool
 }
+
+// startsNothing is the property both screens promise and is the ONE place that
+// decides it. --dry-run's first line is "nothing was started" and --explain's
+// says the same, and before this predicate existed the promise was eight
+// separate `!cfg.dryRun` guards — the target lock, the host tmp directory, the
+// git probe, the runtime directory, the identity proxy, the container engine,
+// the http door sockets and the resolver warning. Adding a second screen by
+// threading `|| cfg.explain` through eight sites is a copy of state in the
+// shape this repo keeps paying for: one missed site is not a cosmetic bug, it
+// is a screen that claims it started nothing while holding a socket on the
+// host (issue #21 is what that looked like the first time).
+//
+// A NINTH guard added tomorrow gets this method by name or it is wrong for
+// --explain, and the compiler cannot tell you which.
+func (c config) startsNothing() bool { return c.dryRun || c.explain }
 
 // Main is the whole CLI, run from cmd/snug/main.go's own main(). It calls
 // os.Exit itself and never returns, exactly as the package-main function it
@@ -161,6 +184,9 @@ flags:
                        (-p adds to the defaults setting; --no-defaults declines it)
       --no-seccomp     run without the seccomp filter (debugging; weakens defence in depth)
   -n, --dry-run        print the resolved policy and the bwrap command, run nothing
+      --explain        say in prose what this sandbox would be, and what it would
+                       NOT have, and run nothing. --dry-run is the complete
+                       artifact; this is the one to read first
   -j, --json           with --dry-run: emit that policy as one JSON document instead
   -v, --verbose        audit lines from the ssh-agent proxy
   -h, --help           this
@@ -215,6 +241,11 @@ func parseArgs(argv []string) (config, error) {
 			cfg.noSeccomp = true
 		case a == "-n" || a == "--dry-run":
 			cfg.dryRun = true
+		case a == "--explain":
+			// No short form. -e is unclaimed, but a one-letter flag is what a
+			// human reaches for in a hurry, and this screen is for the
+			// unhurried reading.
+			cfg.explain = true
 		case a == "-j" || a == "--json":
 			// -j/--json rather than -o/--format. Both nearest neighbours
 			// converge there (iproute2 `-j[son]`, systemd `-j`); `-o` collides
@@ -247,9 +278,23 @@ func parseArgs(argv []string) (config, error) {
 // it can read. It names --dry-run rather than saying "invalid combination",
 // because an error that names the fix is worth the sentence.
 func checkFlagCombination(cfg config) error {
+	// The --explain pair FIRST, and the order is the whole reason it is a
+	// separate arm: `snug --explain --json` satisfies both conditions, and
+	// under the general rule below it would be told "--json needs --dry-run",
+	// which is true and unhelpful — the caller did not forget --dry-run, they
+	// asked for a document and a prose screen at once. Written after that arm,
+	// this one is unreachable.
+	if cfg.json && cfg.explain {
+		return fmt.Errorf("--json cannot be combined with --explain: --explain is prose for a " +
+			"human, --json is a document for a program; use --dry-run --json for the document")
+	}
 	if cfg.json && !cfg.dryRun {
 		return fmt.Errorf("--json needs --dry-run: it replaces that screen with one JSON " +
 			"document, and there is no machine-readable form of an actual run")
+	}
+	if cfg.dryRun && cfg.explain {
+		return fmt.Errorf("--dry-run and --explain are two renderings of the same resolved " +
+			"policy; ask for one: --dry-run for the complete table, --explain for the prose")
 	}
 	return nil
 }
@@ -321,13 +366,27 @@ func refuseVerbatim(cfg config, code int, text, message string) int {
 // Both renderers describing the same refusal is the point: a policy visible in
 // one and absent from the other is the drift Report exists to prevent.
 func refusePolicy(cfg config, code int, err error, pol *policy.Policy, env policy.Environ) int {
-	if !cfg.dryRun || pol == nil {
+	if !cfg.startsNothing() || pol == nil {
 		return refuse(cfg, code, err)
+	}
+	// --explain gets the SAME treatment as --dry-run here rather than falling
+	// through to the bare refusal, and that is the harder half of the two to
+	// get right: a human asked what this sandbox would be, and "it was
+	// refused" without the shape they asked about sends them to read the
+	// profile files instead. Both screens carry a refusedBy arm that says at
+	// the top that nothing below can run.
+	render := func(w io.Writer) error {
+		return dryRun(env, w, pol, pol.BwrapArgs(env.Uid(), env.Gid()), cfg, nil, err)
+	}
+	if cfg.explain {
+		render = func(w io.Writer) error {
+			return explain(env, w, pol, pol.BwrapArgs(env.Uid(), env.Gid()), cfg, nil, err)
+		}
 	}
 	// The refusal is still the run's outcome and still returns code below. A
 	// render failure is reported and does not replace it: "the policy was
 	// refused" is the fact the caller must not lose.
-	if derr := dryRun(env, os.Stdout, pol, pol.BwrapArgs(env.Uid(), env.Gid()), cfg, err); derr != nil {
+	if derr := render(os.Stdout); derr != nil {
 		fmt.Fprintf(os.Stderr, "snug: %v\n", derr)
 	}
 	fmt.Fprintf(os.Stderr, "snug: %v\n", err)
@@ -354,6 +413,17 @@ func refuseWithoutDocument(code int, err error) int {
 }
 
 func run(cfg config) int {
+	// The run's notes, created before anything can produce one. live is
+	// os.Stderr for a real run and nil for the two screens that render the
+	// collected set themselves — a note landing on stderr in the middle of a
+	// paged --dry-run would be the wall of text issue #541 is about, moved
+	// rather than fixed.
+	live := io.Writer(os.Stderr)
+	if cfg.startsNothing() {
+		live = nil
+	}
+	notes := newNotes(live, cfg.verbose)
+
 	reg, bad, err := profile.Load()
 	if err != nil {
 		return refuse(cfg, exitPolicy, err)
@@ -393,7 +463,7 @@ func run(cfg config) int {
 	// that. A dry run creates nothing and must never be refused, so it takes no
 	// lock. Invariant 5: the refusal is fatal and there is no fallback to a
 	// second run.
-	if !cfg.dryRun {
+	if !cfg.startsNothing() {
 		unlock, err := lockTarget(abs)
 		if err != nil {
 			var busy *targetBusyError
@@ -438,7 +508,7 @@ func run(cfg config) int {
 	hostTmp := ""
 	if need, err := needsHostTmpDir(reg, selected); err != nil {
 		return refuse(cfg, exitPolicy, err)
-	} else if need && cfg.dryRun {
+	} else if need && cfg.startsNothing() {
 		// Name it, do not create it. A dry run that leaves a directory behind
 		// contradicts its own first line, and the path is all --dry-run needs to
 		// show what would be mounted. The ownership and symlink checks below the
@@ -456,12 +526,12 @@ func run(cfg config) int {
 	// Reading the host's git config can fail in ways that must not be silent —
 	// no git installed, a file git refuses to parse — so it happens here, where
 	// the error can still be reported, rather than inside the pure resolver.
-	hostGit, err := hostGitValues(reg, selected, home, abs, cfg.verbose, cfg.dryRun)
+	hostGit, err := hostGitValues(reg, selected, home, abs, notes, cfg.startsNothing())
 	if err != nil {
 		return refuse(cfg, exitPolicy, err)
 	}
 
-	sshConfigs, sshValues := probeSSHConfig(home, cfg.verbose)
+	sshConfigs, sshValues := probeSSHConfig(home, notes)
 
 	tmpfsSizeBytes, _ := tmpfsSizeSetting()
 
@@ -502,10 +572,13 @@ func run(cfg config) int {
 		// run below, whichever shape came back.
 		return refusePolicy(cfg, exitPolicy, err, pol, env)
 	}
-	// WARN, do not exit — the rule that unifies this with the refusal above
-	// (invariant 5's two shapes, issue #162's remnant): warn when the missing
-	// thing makes the sandbox do LESS, refuse when it makes the sandbox LEAK
-	// MORE. A missing resolver is not a guarantee that no longer holds — the
+	// NOTE, do not exit — the rule that unifies this with the refusal above
+	// (invariant 5's two shapes, issue #162's remnant): say something when the
+	// missing thing makes the sandbox do LESS, refuse when it makes the
+	// sandbox LEAK MORE. It is an ASIDE rather than an unconditional warning,
+	// which is the same distinction one level down: the sandbox is unchanged
+	// and no boundary got weaker, so this waits to be asked (-v, or either
+	// screen's NOTES block) where the http-door escape does not. A missing resolver is not a guarantee that no longer holds — the
 	// sandbox is unchanged, a payload with no DNS is strictly less capable,
 	// and the absence is loudly visible from inside within milliseconds
 	// rather than the 40-second stall naming a forwarder with nothing behind
@@ -518,8 +591,17 @@ func run(cfg config) int {
 	// host names was either absent or failed to parse (net.go's
 	// parsedNameservers) — the same fate Resolver() gives an anonymising
 	// profile with no usable resolver of either family.
-	if pol.Net.DNS && pol.Net.Mode != policy.NetIsolated && len(pol.Net.Resolver().Servers) == 0 && !cfg.dryRun {
-		fmt.Fprintln(os.Stderr, `snug: this host names no nameserver in /etc/resolv.conf, so the sandbox gets NO
+	// NOT gated on startsNothing, unlike every other host-touching branch in
+	// run. It touches nothing — it only records a note — and the guard it used
+	// to carry meant the note was COLLECTED nowhere: silent on a real run
+	// without -v (it is an aside) and absent from the NOTES block on both
+	// screens, so the one class of note whose subject is a requested
+	// capability that did not materialise was the one class with no reader at
+	// all (red team, issue #541). The NETWORK block's `dns NONE` arm and
+	// explainNetwork's `DNS: none` arm still say it in one line each; this
+	// note is the paragraph that says what to do about it.
+	if pol.Net.DNS && pol.Net.Mode != policy.NetIsolated && len(pol.Net.Resolver().Servers) == 0 {
+		notes.aside("%s\n", `snug: this host names no nameserver in /etc/resolv.conf, so the sandbox gets NO
       resolver — a profile asked for DNS (dns = true) and snug has nothing to
       forward to. Lookups inside will fail immediately (2 ms) rather than stall.
       Naming pasta's interception address with no resolver behind it costs 40
@@ -546,7 +628,7 @@ func run(cfg config) int {
 	// ssh-agent and container proxy sockets it holds have already been
 	// closed by their own cleanups, not out from under a live listener.
 	var runDir *runtimeDir
-	if !cfg.dryRun {
+	if !cfg.startsNothing() {
 		d, rerr := openRuntimeDir()
 		if rerr != nil {
 			const cannotPublish = "This run cannot publish its state, so `snug attach` could " +
@@ -571,17 +653,17 @@ func run(cfg config) int {
 		}
 	}()
 
-	if err := claudeFiles(pol, home, cfg.verbose); err != nil {
+	if err := claudeFiles(pol, home, notes); err != nil {
 		return refuse(cfg, exitPolicy, err)
 	}
 
-	idCleanup, err := startIdentity(pol, cfg.verbose, cfg.dryRun)
+	idCleanup, err := startIdentity(pol, cfg.verbose, cfg.startsNothing())
 	if err != nil {
 		return refuse(cfg, exitPolicy, err)
 	}
 	defer idCleanup()
 
-	ctr, err := startContainers(env, pol, cfg.verbose, cfg.dryRun)
+	ctr, err := startContainers(env, pol, notes, cfg.verbose, cfg.startsNothing())
 	if err != nil {
 		return refuse(cfg, exitPolicy, err)
 	}
@@ -614,7 +696,7 @@ func run(cfg config) int {
 	// will not exist. dryrun.go renders the door section from the policy and
 	// plannedSocket instead.
 	var doorFiles []*os.File
-	if len(pol.ListenNames) > 0 && !cfg.dryRun {
+	if len(pol.ListenNames) > 0 && !cfg.startsNothing() {
 		doors, derr := planHTTPDoors(pol, runDir.Socket)
 		if derr != nil {
 			return refuse(cfg, exitPolicy, derr)
@@ -632,13 +714,26 @@ func run(cfg config) int {
 		if err := publishHTTPDoors(runDir, doors); err != nil {
 			return refuse(cfg, exitPolicy, err)
 		}
-		announceHTTPDoors(os.Stderr, doors)
+		announceHTTPDoors(notes, doors)
 	}
 
 	args := pol.BwrapArgs(env.Uid(), env.Gid())
 
-	if cfg.dryRun {
-		if derr := dryRun(env, os.Stdout, pol, args, cfg, nil); derr != nil {
+	// ONE branch for both screens, and ONE refuseWithoutDocument inside it.
+	// Not a tidy-up: TestEveryRefusalInRunGoesThroughAFunnel reads this
+	// function's AST and holds refuseWithoutDocument to exactly one call site,
+	// because it is the single named exemption from "every refusal writes a
+	// document" and a second one is a decision to argue rather than a line to
+	// add. --explain is a second RENDERER of the same resolved policy, not a
+	// second exemption, so it selects the closure and shares the funnel — and
+	// "both screens start nothing" becomes structural here rather than a
+	// property two sibling branches happen to have.
+	if cfg.startsNothing() {
+		render := func(w io.Writer) error { return dryRun(env, w, pol, args, cfg, notes, nil) }
+		if cfg.explain {
+			render = func(w io.Writer) error { return explain(env, w, pol, args, cfg, notes, nil) }
+		}
+		if derr := pageHuman(os.Stdout, cfg.json, render); derr != nil {
 			return refuseWithoutDocument(exitInternal, derr)
 		}
 		return 0

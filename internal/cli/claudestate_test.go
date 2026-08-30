@@ -149,7 +149,7 @@ func stageClaude(t *testing.T, host hostClaude) (policy.Mount, string, string) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if err := claudeFiles(pol, home, false); err != nil {
+	if err := claudeFiles(pol, home, nil); err != nil {
 		t.Fatalf("claudeFiles: %v", err)
 	}
 	m, ok := pol.Mounts[filepath.Join(home, ".claude.json")]

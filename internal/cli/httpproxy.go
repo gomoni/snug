@@ -5,11 +5,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/gomoni/snug/internal/hostread"
 	"github.com/gomoni/snug/internal/policy"
@@ -299,14 +299,29 @@ func readHTTPDoors(runPath string) ([]httpDoor, error) {
 // an agent following instructions planted in that tree. The party that would
 // otherwise relay "this is a sandbox escape" is the party the model assumes is
 // compromised. stderr is a channel it cannot reach.
-func announceHTTPDoors(w io.Writer, doors []httpDoor) {
+// noteEscape, not noteAside, and that is the whole distinction notes.go
+// exists to make: every other startup note went quiet by default under issue
+// #541, and this one did not. The paragraph above says why — the party that
+// would otherwise relay this sentence is the party the threat model assumes is
+// compromised — and a warning only -v prints is a warning addressed to the
+// people who already know.
+//
+// It costs a quiet run nothing: a door exists only where a profile named one
+// in listen_names (policy.Policy.ListenNames), so a selection that declares no
+// door reaches this function with an empty slice and says nothing at all.
+func announceHTTPDoors(n *notes, doors []httpDoor) {
+	if len(doors) == 0 {
+		return
+	}
+	var b strings.Builder
 	for _, d := range doors {
-		fmt.Fprintf(w, "snug: http door %q is declared. Nothing is reachable yet — run "+
+		fmt.Fprintf(&b, "snug: http door %q is declared. Nothing is reachable yet — run "+
 			"`snug proxy` to open it.\n", d.Name)
 	}
-	fmt.Fprint(w, "      Opening one serves whatever the sandbox answers into YOUR browser, on an "+
-		"origin\n"+
-		"      your browser treats as local. THAT IS A SANDBOX ESCAPE and snug does not bound "+
-		"it.\n"+
+	b.WriteString("      Opening one serves whatever the sandbox answers into YOUR browser, on an " +
+		"origin\n" +
+		"      your browser treats as local. THAT IS A SANDBOX ESCAPE and snug does not bound " +
+		"it.\n" +
 		"      The cost lands while the proxy runs, not only when you open the URL.\n")
+	n.escape("%s", b.String())
 }

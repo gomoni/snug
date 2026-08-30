@@ -37,7 +37,7 @@ func TestTargetGraftIsRenderedInTheEngineViewBlock(t *testing.T) {
 	p := engineViewPolicy(t) // @sys @cwd-rw @podman-socket, target /home/u/proj/sub
 	env := newEnvFakeEnv()
 
-	ctr, err := startContainers(env, p, false, true)
+	ctr, err := startContainers(env, p, nil, false, true)
 	if err != nil {
 		t.Fatalf("startContainers: %v", err)
 	}

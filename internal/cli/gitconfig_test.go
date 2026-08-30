@@ -46,7 +46,7 @@ func TestExtractGitConfigHonoursGitdirIncludes(t *testing.T) {
 	globalFile, work, other := writeGitFixture(t)
 	t.Setenv("GIT_CONFIG_GLOBAL", globalFile)
 
-	got, err := extractGitConfig("/home/u", work)
+	got, err := extractGitConfig("/home/u", work, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestExtractGitConfigHonoursGitdirIncludes(t *testing.T) {
 
 	// The control: a target outside the pattern keeps the global identity. A
 	// matcher that always fires would pass the assertion above.
-	got, err = extractGitConfig("/home/u", other)
+	got, err = extractGitConfig("/home/u", other, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestExtractGitConfigDropsAValueThatWouldAuthorADirective(t *testing.T) {
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", global)
 
-	got, err := extractGitConfig("/home/u", filepath.Join(root, "proj"))
+	got, err := extractGitConfig("/home/u", filepath.Join(root, "proj"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestExtractGitConfigMergesTheTwoGlobalFilesHomeWins(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", "")
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 
-	got, err := extractGitConfig(home, filepath.Join(root, "proj"))
+	got, err := extractGitConfig(home, filepath.Join(root, "proj"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestExtractGitConfigCarriesNoKeyThatNamesAProgram(t *testing.T) {
 	globalFile, work, _ := writeGitFixture(t)
 	t.Setenv("GIT_CONFIG_GLOBAL", globalFile)
 
-	got, err := extractGitConfig("/home/u", work)
+	got, err := extractGitConfig("/home/u", work, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -34,7 +34,7 @@ import (
 // renderer that cannot attach to the block helpers would have to re-derive
 // what they know, which is the copy-with-no-link-back shape this repo keeps
 // paying for.
-func dryRun(env policy.Environ, out io.Writer, p *policy.Policy, args []string, cfg config, refusedBy error) error {
+func dryRun(env policy.Environ, out io.Writer, p *policy.Policy, args []string, cfg config, n *notes, refusedBy error) error {
 	// ONE Report, then ONE renderer. --json REPLACES the human form; it never
 	// adds to it, because the document is the whole of stdout (renderJSON's
 	// doc comment says why that matters on a refusal).
@@ -48,6 +48,10 @@ func dryRun(env policy.Environ, out io.Writer, p *policy.Policy, args []string, 
 		return renderJSON(out, rep)
 	}
 	renderHuman(out, rep, p, args, cfg, refusedBy)
+	// The NOTES block last, and only on the human screen: --json's document
+	// is a schema, and adding a field for prose snug would otherwise have said
+	// on stderr is a change to that schema rather than a rendering detail.
+	n.render(out)
 	return nil
 }
 
@@ -1895,6 +1899,16 @@ func describeNetwork(out io.Writer, p *policy.Policy) {
 		fmt.Fprintf(out, "         Pathname sockets (X11, D-Bus, Wayland, ssh-agent) are a MOUNT\n")
 		fmt.Fprintf(out, "         question, not a network one — see FILESYSTEM for what is granted.\n")
 		fmt.Fprintf(out, "         Add the '@net' profile for egress.\n")
+		// An http door is an INBOUND descriptor handover and needs no egress,
+		// so `listen_names` without '@net' is a working configuration — and
+		// this arm rendered nothing about it. The screen therefore omitted the
+		// "THAT IS A SANDBOX ESCAPE" sentence for exactly the selections that
+		// declare a door and no network, while the real run and --explain both
+		// printed it: three renderings of one policy, two of which named an
+		// escape (red team, issue #541). The only trace left here was
+		// /snug/bin/http-door-handover in COMMANDS, which does not say what it
+		// is.
+		renderHTTPDoors(out, p)
 	case policy.NetEgress:
 		fmt.Fprintf(out, "NETWORK  egress — private netns (one per sandbox) with a pasta helper.\n")
 		fmt.Fprintf(out, "         host loopback   UNREACHABLE (--map-host-loopback none, -T none, -U none)\n")

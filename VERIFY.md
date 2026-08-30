@@ -505,6 +505,178 @@ Goldens: `internal/cli/testdata/json.defaults.json`,
 `json.podman-socket.json`, `json.refused.json`. A change to any of them is a
 change to an interface and is reviewed as one.
 
+### 2c. `--explain` says what the sandbox is NOT (issue #541)
+
+`--dry-run` renders what IS. On a deny-by-default model the absences leave no
+row anywhere, so a human cannot derive them by reading the grants — and the
+absences are the product. `--explain` states them, in prose, and starts nothing:
+
+```bash
+./bin/snug --explain $SC/proj/sub | sed -n '/WHAT IS NOT IN HERE/,/dies with the sandbox/p'
+```
+
+Measured:
+
+```
+WHAT IS NOT IN HERE
+  No X11 and no Wayland: a GUI program will not open a window, and nothing
+  inside can read your screen or your keystrokes.
+  No D-Bus, session or system. No host abstract sockets of any kind.
+  No host loopback. A service you are running on 127.0.0.1 is unreachable
+  from inside, under every profile, including the networked ones.
+  No ~/.ssh. Your private keys are not in this filesystem at all.
+  No root, no setuid, and no process snug did not start — everything here
+  dies with the sandbox.
+```
+
+Every one of those sentences is DERIVED, and that is the half worth checking:
+grant the X11 socket directory and the screen inverts rather than lying.
+
+```bash
+CH=$(mktemp -d); mkdir -p $CH/snug/profiles.d
+printf '[profile.gui]\ndescription = "the X11 socket DIRECTORY"\nro = ["/tmp/.X11-unix"]\n' \
+  > $CH/snug/profiles.d/gui.toml
+XDG_CONFIG_HOME=$CH ./bin/snug --explain -p gui $SC/proj/sub | sed -n '/WHAT IS NOT/,/D-Bus/p'
+```
+
+Measured:
+
+```
+WHAT IS NOT IN HERE
+  X11 or Wayland IS reachable — a profile granted the socket:
+    /tmp/.X11-unix
+  Anything in this sandbox can then read your screen, read your keystrokes
+  and inject input into your session. That is a sandbox escape.
+```
+
+The first version of this section printed four of its five sentences as
+constants, and a red-team pass opened the host X server from inside a sandbox
+whose screen said "nothing inside can read your keystrokes". The `~/.ssh` line
+was conditional and still wrong, testing only the guest path, so a profile
+granting `{home}/keys` — a symlink to `~/.ssh` — read the private key under a
+screen claiming the keys were "not in this filesystem at all". Both now test
+the mount's HOST source as well as its guest name, and both directions of
+containment, so `ro = ["/tmp"]` is caught too. Tmpfs mounts are excluded: the
+tmpfs `$HOME` that `@home` mounts is not the host's home directory.
+
+It makes the same "starts nothing" promise `--dry-run` does, through the same
+predicate (`config.startsNothing`, pinned by `TestRunReadsNoDryRunFlagDirectly`
+reading run's own AST), so §2a's checks hold for it too — the `--explain` arms
+of `TestDryRunLeavesNoRunDirectoryOrSocket` run them on the real binary.
+
+The two screens are not combinable, because they are not two verbosities of one
+thing:
+
+```bash
+./bin/snug --explain --dry-run $SC/proj/sub; echo "exit=$?"
+./bin/snug --explain --json $SC/proj/sub;    echo "exit=$?"
+```
+
+Expect exit 64 from both. The second names the real conflict — "--json cannot
+be combined with --explain … use --dry-run --json for the document" — rather
+than the older and true-but-useless "--json needs --dry-run": the caller did not
+forget a flag, they asked for prose and a document at once.
+
+### 2d. A startup says almost nothing, and the exception is the point (issue #541)
+
+snug used to print a wall of notes on every run — dropped settings keys, what
+`podman run` does and does not do here, an `/etc/resolv.conf` the engine could
+not replace — and a full-screen TUI erased all of it a moment later. Text that
+is always printed and never read trains a human to skip the place snug says
+important things.
+
+An ordinary run now says nothing at all:
+
+```bash
+RT=$(mktemp -d /tmp/snugvrt.XXXXXX)
+XDG_RUNTIME_DIR=$RT ./bin/snug -p @podman-socket $SC/proj/sub -- /bin/true 2>&1 >/dev/null | wc -l
+XDG_RUNTIME_DIR=$RT ./bin/snug -v -p @podman-socket $SC/proj/sub -- /bin/true 2>&1 >/dev/null | grep -c '^snug:'
+```
+
+Measured: `0` then `4`. Nothing was lost: `-v` still has every line, and the two
+screens above carry the notes they reach in a `NOTES` block.
+
+That block is deliberately NOT a complete list, and the heading does not claim
+to be one. A screen collects only the notes its own path produced, and both
+screens stop early on purpose — `startContainers` returns at its `--dry-run`
+branch before the podman-client note and the `/etc/resolv.conf` probe, because
+those belong to an engine that is not being started. So `--dry-run -p
+@podman-socket` shows no `NOTES` block while the real run under `-v` prints two.
+That is §2a's "starts nothing" being kept.
+
+**The exception, and it is the whole reason the notes have kinds at all.** A
+declared HTTP door is a sandbox escape, and that sentence is printed whether or
+not you asked, because the OTHER place it is written is the generated
+`CLAUDE.md` in a writable project tree — and snug's threat model assumes the
+payload reading that tree may be hostile. The party that would otherwise relay
+"this is a sandbox escape" is the party assumed to be compromised. stderr is the
+channel it cannot reach, so a warning only `-v` prints is a warning addressed to
+the people who already know.
+
+```bash
+CH=$(mktemp -d); mkdir -p $CH/snug/profiles.d
+printf '[profile.door]\ndescription = "a door for VERIFY"\ninclude = ["@sys", "@home", "@cwd-rw"]\nlisten_names = ["web"]\n' \
+  > $CH/snug/profiles.d/door.toml
+XDG_CONFIG_HOME=$CH ./bin/snug -p door $SC/proj/sub -- /bin/true 2>&1 >/dev/null
+```
+
+Measured — with no `-v`, on a run that is otherwise silent:
+
+```
+snug: http door "web" is declared. Nothing is reachable yet — run `snug proxy` to open it.
+      Opening one serves whatever the sandbox answers into YOUR browser, on an origin
+      your browser treats as local. THAT IS A SANDBOX ESCAPE and snug does not bound it.
+      The cost lands while the proxy runs, not only when you open the URL.
+```
+
+It costs a quiet run nothing: a door exists only where a profile named one in
+`listen_names`, so a selection that declares none reaches this code with an
+empty slice and says nothing. Pinned by `TestHTTPDoorNoteIsAnEscape` and
+`TestNoDoorSaysNothing`.
+
+### 2e. Both screens page, and only on a terminal
+
+`--dry-run` and `--explain` go through `$PAGER` when stdout is an interactive
+terminal, exactly as git does — and there is deliberately no `SNUG_PAGER`, since
+a per-tool pager variable is one more thing to discover.
+
+The half worth checking by hand is the NEGATIVE, because it is what every pipe,
+every script and every test in this repo depends on: a non-terminal stdout must
+never reach a pager.
+
+```bash
+PAGER=/bin/false ./bin/snug --explain $SC/proj/sub | head -1
+```
+
+Expect the screen's first line, `snug — what this sandbox would be. Nothing was
+started.` — not an empty output. `/bin/false` would have swallowed it, and the
+pipe is what prevents it from ever being started. `TERM=dumb`, an unset `TERM`,
+an empty `PAGER` and `PAGER=cat` are the other four ways off, all pinned in
+`TestPagerCmd`.
+
+And the same on a real terminal, with a `$PAGER` that does not exist — the case
+that cost the entire screen while this was being written:
+
+```bash
+PAGER=nonexistent-pager-xyz script -qec "./bin/snug --explain $SC/proj/sub" /dev/null | head -1
+```
+
+Expect the same first line. And the case that is not a typo at all:
+
+```bash
+PAGER=false script -qec "./bin/snug --dry-run $SC/proj/sub" /dev/null | wc -c
+```
+
+Expect the screen's byte count, not `0`. This took three wrong fixes. `cmd.Start`
+does not catch it, because `/bin/sh` starts fine and the SHELL fails to exec;
+counting consumed bytes does not either, because the kernel's 64 KiB pipe
+absorbs them whether or not anything reads; and testing for exit 127 caught only
+the typo it was written against — `PAGER=false` (exit 1) and a pager killed by a
+signal (`ExitCode()` is -1) still delivered 0 bytes under exit 0. The rule is now
+the blunt one: any non-zero exit reprints the screen, which is safe because
+quitting a pager early is not a failure — `less`, `more` and `head -1` all exit
+0. Pinned by `TestAFailingPagerNeverCostsTheScreen`.
+
 ## 3. The writable surface
 
 ```bash

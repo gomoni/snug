@@ -244,7 +244,7 @@ func claudeFixtureHome(t *testing.T, trustTarget bool) (*policy.Policy, string, 
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if err := claudeFiles(pol, home, false); err != nil {
+	if err := claudeFiles(pol, home, nil); err != nil {
 		t.Fatalf("claudeFiles: %v", err)
 	}
 	return pol, home, target

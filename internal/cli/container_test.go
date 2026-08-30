@@ -83,7 +83,7 @@ func TestStartContainersOffPodmanIsANoop(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 
 	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw"})
-	ctr, err := startContainers(policy.OSEnviron{}, p, false, false)
+	ctr, err := startContainers(policy.OSEnviron{}, p, nil, false, false)
 	if err != nil {
 		t.Fatalf("startContainers refused a policy with no container profile: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestStartContainersDryRunNeedsNoHostCapability(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 
 	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@podman-socket"})
-	ctr, err := startContainers(policy.OSEnviron{}, p, false, true)
+	ctr, err := startContainers(policy.OSEnviron{}, p, nil, false, true)
 	if err != nil {
 		t.Fatalf("startContainers(dryRun=true) refused a podman-selected policy: %v", err)
 	}

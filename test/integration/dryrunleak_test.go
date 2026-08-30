@@ -75,6 +75,35 @@ func TestDryRunLeavesNoRunDirectoryOrSocket(t *testing.T) {
 			"case from issue #21, where no cleanup runs at all:\n%s", left, pipedOut)
 	}
 
+	// AND THE SAME TWO SHAPES FOR --explain (issue #541). It is a second
+	// renderer of the same resolved policy and makes the same promise in its
+	// own first line, so it reaches startIdentity by the same path and would
+	// leak by the same mechanism. The arms live in THIS test rather than in
+	// one of their own because the positive control below is what makes any of
+	// these assertions mean anything, and it costs a real sandbox: a separate
+	// test would either duplicate that cost or go without it and assert
+	// "nothing appeared" about a binary that never looked.
+	explainOut, code := cli(t, env, "--explain", "-p", "pinned", proj)
+	if code != 0 {
+		t.Fatalf("snug --explain exited %d:\n%s", code, explainOut)
+	}
+	// CONTROL for this arm: --explain does not name the agent socket (it says
+	// what the sandbox IS, not which paths it binds), so the evidence that it
+	// resolved a real policy is that it rendered the screen at all.
+	if !strings.Contains(explainOut, "WHAT IS NOT IN HERE") {
+		t.Fatalf("--explain did not render its screen, so the assertions below are about a "+
+			"run that stopped early:\n%s", explainOut)
+	}
+	if left := entriesUnder(t, runtimeDir); len(left) != 0 {
+		t.Errorf("`snug --explain` created %v under $XDG_RUNTIME_DIR. It promises the same "+
+			"\"nothing was started\" --dry-run does (issue #541):\n%s", left, explainOut)
+	}
+	pipedExplain := pipedThroughHead(t, env, "--explain", "-p", "pinned", proj)
+	if left := entriesUnder(t, runtimeDir); len(left) != 0 {
+		t.Errorf("`snug --explain ... | head` left %v under $XDG_RUNTIME_DIR — the SIGPIPE "+
+			"case, where no cleanup runs at all:\n%s", left, pipedExplain)
+	}
+
 	// POSITIVE CONTROL: the same profile on a REAL run does create both.
 	requireSandbox(t)
 	ready := filepath.Join(proj, "READY")

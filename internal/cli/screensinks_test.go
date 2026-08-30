@@ -40,7 +40,11 @@ func TestTheContainerAuditLineEscapesPayloadText(t *testing.T) {
 	const marker = "OLR-DEGROF"
 	poisoned := "mount source /srv/a\u202e" + marker + " resolves to /srv/b\u009b1A"
 
-	got := captureStdout(t, func() { containerAudit(true)(poisoned) })
+	// verbose, or containerAudit returns the no-op writer and this test sweeps
+	// an empty string. Built inside the capture for the same reason the git
+	// and credential screens build theirs there: the stream is swapped around
+	// the closure.
+	got := captureStdout(t, func() { containerAudit(newNotes(os.Stderr, true))(poisoned) })
 
 	if !strings.Contains(got, marker) {
 		t.Fatalf("the audit line never reached the screen, so this test measures nothing: %q", got)
@@ -56,11 +60,13 @@ func TestTheContainerAuditLineEscapesPayloadText(t *testing.T) {
 	// everything would pass the assertions above and make -v useless — and the
 	// non-verbose sink prints nothing at all, which is what makes the audit
 	// channel opt-in.
-	plain := captureStdout(t, func() { containerAudit(true)("container create: 2 mount(s) allowed") })
+	plain := captureStdout(t, func() { containerAudit(newNotes(os.Stderr, true))("container create: 2 mount(s) allowed") })
 	if !strings.Contains(plain, "snug: containers: container create: 2 mount(s) allowed") {
 		t.Errorf("an ordinary audit message was mangled: %q", plain)
 	}
-	if quiet := captureStdout(t, func() { containerAudit(false)(poisoned) }); quiet != "" {
+	// A collector that is NOT verbose, which is now what makes the channel
+	// opt-in: containerAudit asks the collector rather than a bare bool.
+	if quiet := captureStdout(t, func() { containerAudit(newNotes(os.Stderr, false))(poisoned) }); quiet != "" {
 		t.Errorf("the audit channel printed without -v: %q", quiet)
 	}
 }

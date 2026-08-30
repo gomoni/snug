@@ -32,7 +32,12 @@ func writeHostCredential(t *testing.T, body string) string {
 func stagedCredential(t *testing.T, home string) (policy.Mount, bool) {
 	t.Helper()
 	p := &policy.Policy{Mounts: map[string]policy.Mount{}, Home: home}
-	stageClaudeCredentials(p, home)
+	// A collector writing to os.Stderr, built HERE rather than by the caller:
+	// captureStderr swaps os.Stderr for a pipe around the call, and a notes
+	// built before the swap would hold the real one and the capture would read
+	// an empty buffer. verbose, so asides print — these notices are what the
+	// assertions are about.
+	stageClaudeCredentials(p, home, newNotes(os.Stderr, true))
 	m, ok := p.Mounts[filepath.Join(home, ".claude", ".credentials.json")]
 	return m, ok
 }
@@ -195,7 +200,7 @@ func TestTheCredsBlockNeverDeniesACredentialItStaged(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &policy.Policy{Mounts: map[string]policy.Mount{}, Home: canonical}
-	stageClaudeCredentials(p, home) // staged under `home`, not `canonical`
+	stageClaudeCredentials(p, home, nil) // staged under `home`, not `canonical`
 
 	out := captureFile(t, func(f io.Writer) { describeCredsOnly(t, f, p) })
 	if strings.Contains(out, "staged NOTHING") {
