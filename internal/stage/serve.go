@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/gomoni/snug/internal/bwrapinfo"
 	"github.com/gomoni/snug/internal/fdseal"
 	"github.com/gomoni/snug/internal/initwalk"
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // MainServe is __stage-serve: P1 after the move — same pid, same mount/user/cgroup
@@ -80,6 +82,17 @@ func MainServe() error {
 			"(tids %v) — the move did not survive the exec into __stage-serve", len(stuck), pinned, stuck)
 	}
 
+	// Same shape, same place and same reason as the thread sweep directly
+	// above: a per-task transition the PREVIOUS stage performed is verified in
+	// this one rather than assumed. __stage-setup dropped policy.StageCapDrop
+	// from the locked thread's bounding set and then exec'd, which is what
+	// makes it the whole process's — and if any of that did not happen, the
+	// gate issue #61 settled on is simply absent, invisibly. Invariant 5: the
+	// run refuses instead.
+	if err := requireCapDropped(policy.StageCapDrop); err != nil {
+		return fmt.Errorf("__stage-serve: %w", err)
+	}
+
 	control := os.NewFile(fdControl, "control")
 	life := os.NewFile(fdLife, "lifeline")
 	go watchLifeline(life)
@@ -115,9 +128,12 @@ func MainServe() error {
 	// a request answered without returning is a request after which recvRequest
 	// runs AGAIN, with a fully built sandbox on the other side. A loop would
 	// have been shorter and would have quietly turned a one-shot stage into a
-	// server. The channel has no name and no listener, so nothing could reach
-	// it to abuse that today — which is precisely the argument that would let
-	// it rot into Phase 2, when there IS a second client.
+	// server. The channel has no name and no listener — and no listener is ever
+	// coming, issue #61's part (d) having been cut on measurement
+	// (SUPERVISOR-DESIGN.md §3.3) — so the only client is the parent that
+	// forked this process. The shape is kept anyway because the argument for it
+	// never rested on a second client: it is what makes "one-shot" a property
+	// of the code rather than of the caller's discipline.
 	netReadyAsked, netReadyOK := false, false
 	for {
 		req, err := recvRequest(control)
@@ -159,9 +175,8 @@ func MainServe() error {
 			// #63, Tier B; ENGINE-WIRING.md §1 item 2).
 			//
 			// A red team found it stated nowhere but in runStaged's call
-			// sequence, which is the wrong place: proto.go's own header calls
-			// this "the enforcement point Phase 2 inherits", and Phase 2 gives
-			// the stage a pathname socket and a second client. A stolen or
+			// sequence, which is the wrong place: an ordering a caller happens
+			// to observe is not an ordering anything enforces. A stolen or
 			// confused client that sends "start" first would otherwise get a
 			// sandbox in an unconfigured namespace, with no netready ever asked.
 			if !netReadyOK {
@@ -296,8 +311,30 @@ func runOneSandbox(control, netnsN, infoR *os.File, req request) error {
 		return err
 	}
 
+	// The path this request names is what P1 hands __innetns to syscall.Exec,
+	// as uid 0 with a full capability set in U, inside N. It is the widest
+	// thing on this wire, so it is bounded HERE, on the side that acts on it —
+	// P0 resolved it with exec.LookPath("bwrap") (internal/sandbox/exec.go),
+	// and the two ends are different trust positions, exactly as for
+	// Passthrough below.
+	//
+	// A hostile process inside the sandbox can use this to run an arbitrary
+	// program as root-in-U — IF it can write to this channel at all, which is
+	// what SUPERVISOR-DESIGN.md §3.3's four locks are about. This check is not
+	// that boundary and does not claim to be: the channel has no name, no
+	// listener and exactly one client, and issue #61's listener was cut, so
+	// nothing reaches it. It is the door not being wider than the room. What
+	// it removes is the step from "P0 was confused or taken over" to "P1
+	// execve'd /bin/sh as root-in-U": after it, a P0 in that state can still
+	// pick WHICH bwrap, but not WHETHER it is bwrap.
 	if req.Bwrap == "" {
 		return fail(fmt.Errorf("__stage-serve: malformed start request: no bwrap path"))
+	}
+	if !filepath.IsAbs(req.Bwrap) || filepath.Base(req.Bwrap) != "bwrap" {
+		return fail(fmt.Errorf("__stage-serve: refusing a \"start\" naming %q: this channel carries "+
+			"an absolute path whose base name is \"bwrap\" and nothing else — P0 resolves it with "+
+			"exec.LookPath(\"bwrap\") before the request is built, so any other shape is a caller "+
+			"bug or a confused client, never a host with an unusual layout", req.Bwrap))
 	}
 	// Passthrough arrives over the control socket, so it is INPUT here, not a
 	// local fact — P0 checked the same bound against the resolved policy, and
@@ -328,9 +365,8 @@ func runOneSandbox(control, netnsN, infoR *os.File, req request) error {
 	// No SysProcAttr{PidFD: ...} here. It used to request one into a local that
 	// went out of scope unread and unclosed, so P1 held two pidfds for its one
 	// child: Go's own (os.Process is pidfd-backed, and every kill and wait
-	// already goes through it) and a second with no consumer. Phase 2's pidfd
-	// table is the thing that would justify one; it can request it at the point
-	// it has something to do with it.
+	// already goes through it) and a second with no consumer. Nothing here has
+	// a use for a raw one; whatever grows a use for it can ask at that point.
 
 	if err := fdseal.SealFor(cmd); err != nil {
 		return fail(err)

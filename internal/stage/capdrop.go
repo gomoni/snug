@@ -116,6 +116,120 @@ func dropCapsToExactly(keep []string) error {
 	return nil
 }
 
+// dropFromBounding lowers the CALLING THREAD's bounding set by the named
+// capabilities and nothing else — the subtractive counterpart to
+// dropCapsToExactly, and the numeric half of policy.StageCapDrop.
+//
+// PER-THREAD, which is the whole reason its one caller sits on a locked thread
+// immediately before an execve. MEASURED, from a 10-thread Go process: the
+// prctl leaves /proc/self/status completely unchanged, because that file
+// reports the group leader and not the caller — so a naive call reads as a
+// no-op AND leaves every other thread privileged. It is the execve that makes
+// it the process's: it kills every other thread, recomputes permitted and
+// effective from the caller's bounding set, and hands the reduced set to
+// everything forked afterwards. Measured after the exec: CapBnd
+// 000001fffff7ffff and 0 of 9 threads holding anything wider.
+//
+// Called anywhere in this package OTHER than on a locked thread with an execve
+// at the end of it, this is a no-op that looks like it worked. __stage-serve
+// does not take that on trust — requireCapDropped sweeps every thread and
+// refuses.
+func dropFromBounding(names []string) error {
+	for _, name := range names {
+		bit, ok := engineCapBit[name]
+		if !ok {
+			return fmt.Errorf("dropFromBounding: %q is not a capability this package knows the "+
+				"kernel bit for (see engineCapBit in internal/stage/capdrop.go)", name)
+		}
+		if err := unix.Prctl(unix.PR_CAPBSET_DROP, uintptr(bit), 0, 0, 0); err != nil {
+			return fmt.Errorf("dropFromBounding: PR_CAPBSET_DROP(%s=%d): %w", name, bit, err)
+		}
+	}
+	return nil
+}
+
+// requireCapDropped refuses unless EVERY thread of this process has already
+// lost the named capabilities from its bounding set, effective set and
+// permitted set.
+//
+// It is the enforcement, and the prctl in __stage-setup is only the mechanism.
+// Invariant 5: if the drop did not stick, the run refuses rather than
+// proceeding with a guarantee it does not have. The sweep is over
+// /proc/self/task/*/status and not /proc/self/status, for exactly the reason
+// dropFromBounding's own comment gives — a per-task transition performed by
+// the previous stage is verified in the next one, the same shape and the same
+// place as threadsInNamespace directly above the caller.
+//
+// The task list is read ONCE and a thread could in principle appear after it.
+// That is not a gap, and the reason is a kernel property rather than timing: a
+// bounding set can only ever be LOWERED (there is no PR_CAPBSET_RAISE), and a
+// new thread clones its credentials from the one that made it. So every thread
+// this process will ever have descends from the leader whose set the execve
+// already reduced, and none of them can hold more than it does. Re-reading the
+// directory in a loop would buy nothing and would only look careful.
+func requireCapDropped(names []string) error {
+	tids, err := os.ReadDir("/proc/self/task")
+	if err != nil {
+		return fmt.Errorf("reading /proc/self/task to verify the capability drop: %w", err)
+	}
+	if len(tids) == 0 {
+		return fmt.Errorf("/proc/self/task is empty, so the capability drop cannot be verified")
+	}
+	for _, name := range names {
+		bit, ok := engineCapBit[name]
+		if !ok {
+			return fmt.Errorf("requireCapDropped: %q is not a capability this package knows the "+
+				"kernel bit for (see engineCapBit in internal/stage/capdrop.go)", name)
+		}
+		for _, tid := range tids {
+			for _, field := range []string{"CapBnd", "CapPrm", "CapEff"} {
+				set, err := readCapField("/proc/self/task/"+tid.Name()+"/status", field)
+				if err != nil {
+					return fmt.Errorf("verifying the capability drop: %w", err)
+				}
+				if set&(1<<uint(bit)) != 0 {
+					return fmt.Errorf("the stage still holds %s (%s bit %d) on thread %s: the "+
+						"PR_CAPBSET_DROP in __stage-setup did not survive the execve into "+
+						"__stage-serve, so the gate issue #61 settled on — nothing snug puts in "+
+						"the stage's user namespace may hold %s — does not hold for this run. "+
+						"Refusing rather than running a sandbox whose supervisor can ptrace the "+
+						"container engine. See policy.StageCapDrop",
+						name, field, bit, tid.Name(), name)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// readCapField parses one CapBnd/CapPrm/CapEff line out of a
+// /proc/<pid>/status file. The value is a 16-digit hex mask with no 0x
+// prefix.
+func readCapField(path, field string) (uint64, error) {
+	// HOSTREAD-EXEMPT: the only caller builds path as
+	// "/proc/self/task/<tid>/status" from a directory entry this process just
+	// read out of its OWN /proc/self/task. It is procfs, and it is this
+	// process's own, so issue #337's hazard — a FIFO planted at a host path
+	// turning ReadFile into an open(2) that never returns — has nothing to
+	// plant on. path is a parameter only so the sweep can name each thread.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, fmt.Errorf("reading %s: %w", path, err)
+	}
+	for line := range strings.SplitSeq(string(data), "\n") {
+		name, value, ok := strings.Cut(line, ":")
+		if !ok || name != field {
+			continue
+		}
+		mask, err := strconv.ParseUint(strings.TrimSpace(value), 16, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parsing %s from %s (%q): %w", field, path, value, err)
+		}
+		return mask, nil
+	}
+	return 0, fmt.Errorf("%s names no %s line", path, field)
+}
+
 // capLastCap reads /proc/sys/kernel/cap_last_cap — the running kernel's own
 // highest-numbered capability — rather than trusting unix.CAP_LAST_CAP, the
 // value the x/sys/unix package this binary was BUILT against happened to

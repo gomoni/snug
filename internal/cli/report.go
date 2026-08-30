@@ -221,6 +221,12 @@ type reportTopology struct {
 	// when an engine runs. Widening it is a golden diff here as well as on the
 	// human screen.
 	EngineCapBounding []string
+	// StageCapDrop is policy.StageCapDrop, present only when a stage runs: the
+	// capabilities P1 takes out of its OWN bounding set before it forks, and
+	// therefore out of every descendant that stays in its user namespace. A
+	// consumer asserting "the supervisor cannot ptrace the engine" reads this;
+	// shrinking it is a golden diff on both surfaces.
+	StageCapDrop []string
 	// ProcfsClosuresSkipped is policy.ProcfsClosuresSkipped(p): true exactly
 	// when this run starts a container engine, so NONE of snug's /proc
 	// closures (config.gz, keys, key-users, /proc/sys) apply — CLAUDE.md
@@ -607,6 +613,9 @@ func buildTopologyReport(p *policy.Policy) reportTopology {
 	}
 	if p.Podman != policy.PodmanOff {
 		t.EngineCapBounding = policy.EngineCapBounding
+	}
+	if t.NeedsStage {
+		t.StageCapDrop = policy.StageCapDrop
 	}
 	if t.ProcfsClosuresSkipped {
 		t.ProcfsClosureNote = policy.ProcfsClosureExemptionNote

@@ -527,10 +527,43 @@ type EngineSpec struct {
 // reaps bwrap itself (it is bwrap's real parent across every exec in this
 // chain) and reports the status back over the control socket, because P0 is
 // not bwrap's parent under this topology and cannot waitpid() on it directly.
+//
+// # Why this read carries no timeout and no pidfd (issue #524)
+//
+// It is the ONE read on the control socket with no deadline, and deliberately.
+// A timeout cannot be the bound: this legitimately blocks for the payload's
+// whole lifetime, so any constant here is either a cap on how long a sandbox
+// may run or no bound at all.
+//
+// The ticket proposed racing it against a pidfd on P1 instead, so that "P1 is
+// gone and sent no exited" reported itself. MEASURED, both halves, and the
+// proposal buys nothing:
+//
+//   - P1 GONE is already bounded, by EOF. Start closes its copy of P1's end of
+//     the socketpair the instant the fork returns, and fdseal.SealFor marks
+//     every descriptor CLOEXEC before each of P1's own forks — so no
+//     descendant holds a duplicate, and P1's death closes the last write end.
+//     recvOn's Read then returns io.EOF and this function reports the error
+//     below rather than blocking.
+//   - P1 STOPPED — the ticket's own reproduction, SIGSTOP after the payload
+//     finished — does NOT make a pidfd readable. Measured: poll(POLLIN) on a
+//     pidfd returns n=0 revents=0x0 while the target is stopped, and n=1
+//     revents=0x11 (POLLIN|POLLHUP) once it exits. A pidfd race would have
+//     left the reported case exactly as it is.
+//
+// What is left is a stopped P1, and nothing distinguishes that from a working
+// payload except time, which is the bound already ruled out. It needs a
+// same-uid host process to cause, which is out of the threat model by the same
+// rule as everything same-uid, and the operator's own SIGINT still ends the
+// run — P1's Pdeathsig then collapses the tree.
 func (s *Stage) Wait() (syscall.WaitStatus, error) {
 	ev, err := recvEvent(s.control)
 	if err != nil {
-		return 0, fmt.Errorf("stage: waiting for the payload to exit: %w", err)
+		return 0, fmt.Errorf("stage: the stage (pid %d) closed the control channel without "+
+			"reporting the payload's exit: %w\n"+
+			"  The payload's own exit status is lost with it — the stage is what reaps bwrap.\n"+
+			"  Check dmesg for an OOM kill of pid %d, and `snug --dry-run` for the topology "+
+			"this run asked for.", s.pid, err, s.pid)
 	}
 	s.waited = true
 	if ev.Op != "exited" {

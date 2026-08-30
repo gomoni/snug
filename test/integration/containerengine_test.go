@@ -2251,6 +2251,19 @@ func runUnderMaskedSubuid(t *testing.T, env []string, args ...string) (string, i
 // instrumenting the production EnterEngine path itself, which is out of
 // scope for a test-only change (CLAUDE.md's "do not touch feature code");
 // this is the documented fallback the task's own spec names.
+//
+// SECOND JOB (issue #61 part (a)): P1's own capability bounding set is now
+// reduced by policy.StageCapDrop before this engine is ever forked from it.
+// stagecaps.go's own doc comment argues that reduction is a CEILING the
+// engine's bounding set sits under, not a floor it competes with — the two
+// lists are disjoint (TestStageCapDropAndEngineCapBoundingAreDisjoint,
+// internal/policy), so removing CAP_SYS_PTRACE from P1 costs the engine
+// nothing it already needed. This test is what would catch it if that
+// argument were wrong: it reads the engine's OWN running capability set
+// against the SAME wantMask this test already asserted before P1's own set
+// was ever touched, so a regression that let the ceiling clip the engine's
+// bounding set shows up here as a mismatch against the measured twelve,
+// not as a silent under-capped container.
 func TestEngineCapBoundingInU(t *testing.T) {
 	budget(t, 60*time.Second)
 	env, _ := containerEngineEnv(t)

@@ -3,6 +3,17 @@ CLONE FLAGS (P1, __stage-setup — stageCloneflags)
   CLONE_NEWNET
   CLONE_NEWNS
 
+CAPABILITIES (P1, dropped from its own BOUNDING set at the __stage-setup -> __stage-serve execve)
+  CAP_SYS_PTRACE
+  mechanism     PR_CAPBSET_DROP is per-THREAD; the execve is what makes it the whole
+                process's, recomputes permitted/effective from it, and hands it to
+                everything P1 forks afterwards. __stage-serve REFUSES to serve if any
+                thread still holds it (requireCapDropped).
+  reach         __innetns, the outer bwrap and the container engine, which stay in U.
+  NOT reached   bwrap's init, the payload and every container: a new user namespace
+                resets the bounding set to full, and the regained bit holds only in
+                that namespace, never in U.
+
 UID MAP
   0 <hostuid> 1
 GID MAP

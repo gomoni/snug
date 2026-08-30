@@ -128,11 +128,15 @@ func nativeAuditArch() (uint32, bool) {
 //	                 fresh open. Read that as what pidfd_getfd REACHES, not as
 //	                 what only it reaches — procfs reopens most of that list
 //	                 too; see the residual paragraph below. pidfd_open (a handle,
-//	                 no descriptors) stays allowed — Phase 2's attach path wants
-//	                 it, and the stage's control channel has an independent lock
+//	                 no descriptors) stays allowed: denying it buys nothing once
+//	                 the call that turns a handle into a descriptor is denied,
+//	                 and the stage's control channel has an independent lock
 //	                 against it anyway (SUPERVISOR-DESIGN.md §3.3: the stage is
 //	                 not in the payload's pid namespace, so there is no pid to
-//	                 name). See issue #23: on this host (yama ptrace_scope=1) the
+//	                 name). `snug attach` does NOT depend on this line — its own
+//	                 pidfd_open runs on the host, in internal/cli/attach.go,
+//	                 before the raw-fork child installs this filter at all.
+//	                 See issue #23: on this host (yama ptrace_scope=1) the
 //	                 syscall is ALREADY refused sibling-to-sibling by Yama, not
 //	                 by anything here — this filter is the lock for the hosts
 //	                 (containers, hardened-off Yama) where that sysctl is 0.

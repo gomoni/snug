@@ -1,6 +1,6 @@
 package cli
 
-// attachstdio.go implements §5.4/§17's stdio relay, in both shapes the
+// attachstdio.go implements ATTACH.md §5.4's stdio relay, in both shapes the
 // maintainer settled on for this ticket: a fresh pty for an interactive
 // session, and a pair of pipes for a redirected one. Either way, the host
 // FILE DESCRIPTOR the attaching human's stdin/stdout/stderr point at never

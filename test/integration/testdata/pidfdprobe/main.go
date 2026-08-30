@@ -450,7 +450,8 @@ func selfProbe() {
 
 	// POSITIVE CONTROL: pidfd_open on SELF must succeed whether or not the
 	// filter is installed. Issue #23 deliberately leaves it allowed — it hands
-	// out a handle, not a descriptor, and Phase 2's attach path wants it. This
+	// out a handle, not a descriptor, and pidfd_getfd is the call that turns
+	// one into the other. This
 	// line proves the family is reachable at all and that the filter (once
 	// installed) is selective rather than the syscall being unavailable on this
 	// host/kernel.

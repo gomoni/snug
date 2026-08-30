@@ -23,5 +23,7 @@ TOPOLOGY
                   Cost: one more of the kernel's 32 user-namespace nesting
                   levels, and this run needs at least 2 each of
                   /proc/sys/user/max_user_namespaces and max_pid_namespaces.
-  subuid          none (no delegated range; nothing needs one yet)
+  subuid          none (one uid, mapped by the intermediate user namespace snug creates:
+                  no /etc/subuid line, no newuidmap/newgidmap, no setuid binary
+                  on this path)
   control         none — there is no stage to control.

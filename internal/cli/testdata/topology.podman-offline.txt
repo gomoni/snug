@@ -14,7 +14,15 @@ TOPOLOGY
                   stage is root in its own user namespace (U) for the whole run,
                   holding CAP_SYS_ADMIN over the sandbox's network namespace (N)
                   and over the sandbox's own mounts.
-  subuid          full
+                  It does NOT hold CAP_SYS_PTRACE: the stage drops it from its own
+                  bounding set before it forks anything, so bwrap and the container
+                  engine never receive it either. Bound: a process that makes its OWN
+                  user namespace — the payload, every container — has it again there,
+                  where it reaches nothing outside that namespace.
+  subuid          full (this uid's whole /etc/subuid + /etc/subgid range, written by
+                  newuidmap/newgidmap — the only setuid binaries snug invokes.
+                  The container engine needs it: image content owned by a
+                  non-root uid has nowhere to land in a one-uid map.)
   engine          joins THIS sandbox's own network namespace (N) — a container has
                   exactly the sandbox's own network, nothing more.
                   mount namespace: DERIVED from this sandbox's view — the

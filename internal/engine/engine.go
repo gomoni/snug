@@ -19,7 +19,7 @@
 // now forked by internal/stage, EAGERLY, as a second long-lived child of the
 // stage (P1) alongside bwrap — this package no longer starts it directly. It
 // computes the paths (Engine.New), builds the stage.EngineSpec the stage's
-// StartEngine consumes (Engine.Spec), and tears the result down again
+// "start" request carries (Engine.Spec), and tears the result down again
 // (Engine.Stop) — the fork, the setns into N, the private mount-namespace
 // copy and the capability drop all live in internal/stage (EnterEngine,
 // __inengine) because they need the stage's own raw-fork machinery and its
@@ -620,7 +620,8 @@ func (e *Engine) ConfDir() string { return e.confDir }
 // teardown filters on nothing, being pid-namespace collapse.
 func (e *Engine) RunLabel() string { return e.runLabel }
 
-// Spec builds the stage.EngineSpec that Stage.StartEngine consumes: exactly
+// Spec builds the stage.EngineSpec that Stage.StartSandbox carries in its one
+// "start" request, and that stage.startEngine consumes: exactly
 // what this run's engine execs into, chosen entirely by P0. podman is the
 // preflight-checked path to a real binary; baseEnv is the explicit, minimal
 // environment the caller built — XDG_RUNTIME_DIR is added here, pointing at
@@ -1683,7 +1684,8 @@ func (e *Engine) ReaperPIDs() []int {
 // DialLifeline opens the keepalive stream (lifeline.go) that ties the
 // engine's lifetime to this sandbox. Unlike ArmReaper, this NEEDS the
 // engine's socket to already exist, so the caller runs it from
-// sandbox.Options.OnEngineReady — after Stage.StartEngine has confirmed the
+// sandbox.Options.OnEngineReady — after the stage's "enginestarted" event has
+// confirmed the
 // socket is there, before the payload is forked. A failure here is fatal to
 // the whole run (invariant 5): without the lifeline a hard-killed snug would
 // leave a finite-timeout-but-not-yet-expired engine running for up to

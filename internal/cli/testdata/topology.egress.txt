@@ -14,7 +14,14 @@ TOPOLOGY
                   stage is root in its own user namespace (U) for the whole run,
                   holding CAP_SYS_ADMIN over the sandbox's network namespace (N)
                   and over the sandbox's own mounts.
-  subuid          none (no delegated range; nothing needs one yet)
+                  It does NOT hold CAP_SYS_PTRACE: the stage drops it from its own
+                  bounding set before it forks anything, so bwrap and the container
+                  engine never receive it either. Bound: a process that makes its OWN
+                  user namespace — the payload, every container — has it again there,
+                  where it reaches nothing outside that namespace.
+  subuid          none (one uid, mapped by the stage itself:
+                  no /etc/subuid line, no newuidmap/newgidmap, no setuid binary
+                  on this path)
   control         an anonymous SOCK_SEQPACKET socketpair, inherited, between snug
                   and the stage. UNREACHABLE from the sandbox: no pathname, no
                   listener, and no descriptor for it in the payload's table. It

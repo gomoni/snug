@@ -6,6 +6,8 @@ import (
 	"runtime"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // MainSetup is __stage-setup: P1's first instant of life after the clone that created
@@ -54,7 +56,16 @@ import (
 //  7. dup3 it to fdNetnsN WITHOUT CLOEXEC — it must survive the exec that
 //     follows.
 //  8. unshare(CLONE_NEWNET); refuse if the calling thread did not move.
-//  9. exec __stage-serve with NOTHING in between and an EMPTY environment.
+//  9. drop policy.StageCapDrop from this THREAD's bounding set. It has to be
+//     here, on the locked thread, with the execve immediately after it:
+//     PR_CAPBSET_DROP is per-task, and the execve is the only join point at
+//     which a multithreaded Go process's credentials become the whole
+//     process's — the same fact step 5 exists for. Anywhere else it is a
+//     no-op that looks like it worked (dropFromBounding's own comment carries
+//     the measurement).
+//  10. exec __stage-serve with the drop as the ONLY thing in between and an
+//     EMPTY environment. __stage-serve verifies the drop landed on every
+//     thread and refuses to serve if it did not.
 func MainSetup() error {
 	requireFD(fdControl, "control")
 	requireFD(fdLife, "lifeline")
@@ -181,6 +192,13 @@ func MainSetup() error {
 	// moves as a whole (measured, SUPERVISOR-DESIGN.md §1). /proc/self/exe,
 	// never a path from the environment: a path taken from the environment is a
 	// same-uid replacement window the previous generation's review found.
+	//
+	// The one thing between the netns move and that execve, and it must be
+	// between them rather than earlier or later: see step 9, and
+	// dropFromBounding on why the locked thread is load-bearing.
+	if err := dropFromBounding(policy.StageCapDrop); err != nil {
+		return fmt.Errorf("__stage-setup: %w", err)
+	}
 	return execSelf("__stage-serve")
 }
 

@@ -1,18 +1,22 @@
-# `snug attach` — the design
+# `snug attach` — the design, as built
 
-Issue [#61](https://github.com/gomoni/snug/issues/61) part (e). Written from the
-settlement of 2026-08-17 ("Settled by an independent two-sided review") and its
-`#101` follow-up, plus the measurements in §2, taken **on this host on
-2026-08-18** against real snug sandboxes started from `origin/main`
-(`312742d`).
+`snug attach <dir>` runs a command inside a sandbox that is already running. It
+is a **client**: it joins namespaces the kernel already lets any same-uid
+process join, and everything it adds is confinement. This document is what it
+does and why it is shaped that way; §2 holds the measurements the shape rests
+on, taken on the development host on **2026-08-18** against real snug
+sandboxes.
 
-## 1. What is settled, and is not reopened here
+## 1. What this feature is not, and none of it is reopened here
 
-From the settlement, restated so a reader of this file alone cannot get it wrong:
+Stated first, because each is a thing a reader arrives expecting:
 
-- **There is no control listener.** #61(b) and (d) are cut: no pathname socket,
-  no accept loop, no `start`-request authentication, no nonce, no pidfd table.
-  Attach joins **by descriptor**, from the host, as a client.
+- **There is no control listener, and none is coming.** Issue #61's parts (b)
+  and (d) were cut on measurement: no pathname socket, no accept loop, no
+  `start`-request authentication, no nonce, no pidfd table
+  (`SUPERVISOR-DESIGN.md` §3.3). Attach joins **by descriptor**, from the host.
+  A listener would have been a second route to authority the kernel already
+  grants, behind a weaker gate.
 - **Attach gates nothing.** Any same-uid process can already join these
   namespaces, confirmed five ways on both topologies. The help text says so.
 - **Teardown is free**, because the pid namespace is the leash. Re-measured here
@@ -21,7 +25,7 @@ From the settlement, restated so a reader of this file alone cannot get it wrong
   attaches unconfined; §2 re-measures what that costs.
 - **`Bwrap`/`Argv` never travels on a wire that snug then `syscall.Exec`s.** This
   design carries **no executable path and no argv** in any file it reads, with
-  exactly one bounded exception that is named and justified in §8.4.
+  exactly one bounded exception that is named and justified in §8.3.
 - **It cannot run a different policy in the same namespaces.** Attach resolves no
   profiles, reads no TOML, loads no config. If that is ever wanted it is a
   different feature with a different name.
@@ -246,7 +250,7 @@ program the user asked for has not been exec'd yet.
 
 ### 4.3 What the exec is, and what it is not
 
-`execve` by path, of a path that came from the user's own command line (§8.4).
+`execve` by path, of a path that came from the user's own command line (§8.3).
 There is no fd-exec here and no `/proc/self/exe`: attach runs *the user's*
 program inside the sandbox, not snug's own image. Nothing about the argv arrives
 over a channel from another process.
@@ -288,19 +292,30 @@ The four cases, all closed:
 
 There is **no `snug attach --no-seccomp`.** Weakening is the human's prerogative
 at the point the sandbox is created, and the run already made that choice; a
-second knob would be a second author. (§16.4 records the counter-argument.)
+second knob would be a second author. The counter-argument is real and is paid
+rather than answered: debugging an already-running sandbox with `ptrace` is not
+possible without restarting it. The confinement guarantee stays
+unconditional.
 
 ### 5.2 Capabilities and the bounding set
 
 - **When:** after the last namespace-entering syscall (§4.2 step 5–6), before the
   exec. Both halves are forced by the kernel: nothing before the join survives it,
   and nothing after the exec can be applied by us.
-- **Bounding set:** empty. Loop `PR_CAPBSET_DROP` over `0..cap_last_cap` read from
-  `/proc/sys/kernel/cap_last_cap` at run time. This is the line that matters for
-  the review's case G — *nothing snug puts in U may hold `CAP_SYS_PTRACE`* — and
-  an empty bounding set is the strongest available spelling of it. Case F says
-  hardening the *target* does not stop a full-capability peer; this drop is about
-  not **being** such a peer.
+- **Bounding set:** empty. Loop `PR_CAPBSET_DROP` over `0..cap_last_cap` read
+  from `/proc/sys/kernel/cap_last_cap` at run time. This is the line that
+  matters for issue #61's case G — *nothing snug puts in U may hold
+  `CAP_SYS_PTRACE`* — and an empty bounding set is the strongest available
+  spelling of it. Case F says hardening the *target* does not stop a
+  full-capability peer; this drop is about not **being** such a peer.
+
+  Attach is one of two enforcement points for that gate, and it is the stricter
+  one. The other is `policy.StageCapDrop`: the stage drops `CAP_SYS_PTRACE`
+  from its own bounding set before it forks, so P1, the outer bwrap and the
+  container engine never hold it either. The two are independent — an attach
+  from a build without the stage drop, or onto the offline arm where there is
+  no stage, still confines itself — and neither may be relaxed on the argument
+  that the other exists.
 - **Effective / permitted / inheritable:** zeroed with one `capset(v3)`. Ambient
   is emptied by the kernel when permitted is.
 - **`NoNewPrivs`: 1**, set before seccomp (which requires it) and inherited by A.
@@ -350,7 +365,10 @@ question one turn later.
 
 `TERM` comes from the **recorded** policy, not from the attach client, so that
 the sentence "the environment is authored by the run's policy, full stop" has no
-exception to remember. §16.2 records the cost.
+exception to remember. The cost: attaching from a terminal the run never saw
+gets the run's `TERM`, not yours, and a mismatch shows up as wrong rendering in
+a full-screen program. A low-stakes default taken in favour of the rule with no
+exceptions.
 
 ### 5.4 stdio, cwd and inherited descriptors — the measured hole
 
@@ -408,74 +426,81 @@ so it is relayed, and reads of a dirfd return EISDIR into a pipe nobody reads.
 Keep the sentence "a directory descriptor would let the sandbox reach the host
 filesystem through `/proc/self/fd/N`" in the code anyway — it is the reason.
 
-### 5.5 A finding this design tripped over, which is not about attach
+### 5.5 A finding this design tripped over, which was not about attach
 
-M24 was taken to justify the relay and contradicts shipped code. Both of these
-are wrong today:
-
-- `internal/sandbox/seccomp.go`, on the `pidfd_getfd` denial: *"a socket cannot be
-  reopened through `/proc/<pid>/fd` at all (ENXIO), and pipes, memfds, deleted and
-  O_TMPFILE files have no path to reopen through `/proc/<pid>/fd/N` in the first
-  place — `pidfd_getfd` is the only route to any of those."*
-- `CLAUDE.md`, Status: *"What denying `pidfd_getfd` does buy is the one thing
-  procfs cannot reach — theft of a non-file open file description: a socket, a
-  pipe, a memfd, a deleted file."*
+M24 was taken to justify the relay and contradicted shipped comments in two
+places. Both said, in different words, that `pidfd_getfd` was the only route to
+a non-file open file description — *"a socket cannot be reopened through
+`/proc/<pid>/fd` at all (ENXIO), and pipes, memfds, deleted and O_TMPFILE files
+have no path to reopen"*.
 
 Measured cross-process, same uid, `ptrace_scope = 1`: **pipe reopenable (both
 ends, verified by a write through one process's write end read back through its
 read end), memfd reopenable (contents read back), deleted file reopenable
-(contents read back), socket refused with ENXIO.** Three of the four examples are
-wrong; the residual value of the denial is **sockets** (and whatever O_TMPFILE
-does, untested).
+(contents read back), socket refused with ENXIO.** Three of the four examples
+were wrong. Each of those objects has a backing inode, and `open(2)` on the
+magic link re-derives a working descriptor once
+`ptrace_may_access(PTRACE_MODE_READ_FSCREDS)` passes — which same-uid does, and
+which Yama never gates.
 
-This does not change whether `pidfd_getfd` should be denied — it should, it costs
-nothing — and it changes nothing about attach beyond the wording in §5.4. It is
-the "abuse sentence written once, nothing re-reads it" shape the working
-agreement names, in a comment that is now three residuals out of date, and by the
-milestone rule it is a **GitHub issue with its measurement**, filed separately
-from this ticket. Do not let it ride along in an attach PR.
+**The socket survives for a structural reason rather than a permission one**:
+sockfs installs `sock_no_open`, so the reopen is ENXIO for root as well. That is
+what keeps `SUPERVISOR-DESIGN.md` §3.3's control-channel argument standing while
+the other three examples fell.
+
+It changed nothing about whether `pidfd_getfd` should be denied — it should, it
+costs nothing — and nothing about attach beyond §5.4's wording. It was issue
+#115, it is fixed, and `TestKnownOpenResidualSiblingReopensAnythingButASocket`
+pins the corrected claim. Recorded here because the shape recurs: an abuse
+sentence written once that nothing re-reads.
 
 ---
 
 ## 6. The state file
 
-### 6.1 Where, and fitted to the machinery that already exists
+### 6.1 Where the state file lives, and why it is not where you would guess
 
-`state.json`, in **this run's own directory** — the one `runtimeDir()` creates,
-verifies and locks as of `dfe6ac8`. Nothing new is invented: the directory is
-opened through `*os.Root`, refuses a wrong owner or mode rather than repairing it,
-refuses a symlink at either name it owns, and carries the `flock` that already
-distinguishes a live run from a dead one.
+`state.json` is **keyed by the TARGET DIRECTORY**, not by the run:
+`<targetLockBase()>/snug/target-sha256_<hex>.json`, beside the per-target lock
+that already enforces one live run per directory. `internal/cli/targetstate.go`
+owns it.
 
-Consequences, all of which are implementation work:
+**`targetLockBase()` is derived from the uid alone** — `/run/user/<uid>`, or
+`/tmp/snug-<uid>` where that does not exist — and never from `$XDG_RUNTIME_DIR`
+or `$TMPDIR`. That is the whole reason for the shape. Those two variables
+differ between an interactive shell and cron, systemd or ssh, so a run started
+under one environment published its state where an attach launched under
+another would never look (issue #123). Repointing only the READER could not fix
+it: the writer was env-derived too.
 
-- **`runtimeDir()` must now be called on every run**, not only when the identity
-  or container proxies need it (M23). The stale-directory sweep therefore also
-  runs on every run, which is #85 getting stronger, not weaker.
-- **Failing to publish state must never fail a run.** If `runtimeDir()` returns an
-  error and nothing else needed it, snug **warns** — naming what is lost ("`snug
-  attach` will not find this run") — and continues. A debugging convenience may
-  not acquire the power to stop a sandbox from starting. Where another consumer
-  needs the directory, today's fatal behaviour is unchanged.
+Three properties follow, and each removes code rather than adding it:
 
-  > **THE CODE DIVERGES FROM THIS, AND THE CODE IS RIGHT.** §17 overruled the
-  > paragraph above and settled §16.3 as **fail, not warn**. What shipped is
-  > neither, and the split is the interesting part: `runtimeDir()` failing is
-  > **fatal** — that is §17's ruling, and `internal/cli/main.go` refuses the
-  > run rather than falling back to a per-env path (issue #122's fail-open) —
-  > while `writeRunState` failing inside the `OnInfo` callback is
-  > **warn-only**, because by the time that callback runs a payload already
-  > exists, or is about to on the staged topology, and there is no way left to
-  > un-start one without reintroducing the parked-payload window
-  > `runStaged` deliberately removed
-  > ([INDEX](INDEX.md) §4.3). `main.go` carries the reasoning at the call
-  > site. Recorded here rather than silently rewritten, because "the design
-  > said fail, the code warns" is the kind of gap a reader should be able to
-  > see and judge.
-- **One owner for the run directory's lifetime.** Today `identity.go` does
-  `os.RemoveAll(dir)` in its cleanup; with the directory now created for every
-  run, creation and removal belong to one place, and the removal must not race a
-  second consumer's cleanup.
+- **Discovery is a LOOKUP, not a scan.** The target's realpath hashes to
+  exactly one filename. There is no directory listing, no per-entry
+  parse-and-skip, and no "more than one live run matches" branch — issue #119
+  made at most one run live per target, and a target-keyed name makes that
+  structural, because two runs on one target cannot produce two names.
+- **Liveness is the target lock**, the same fact `snug <dir>` consults when it
+  refuses a second sandbox. It used to be a second, parallel `flock` on each
+  run directory, so "is this run live" had two answers that could disagree.
+- **A stale state file cannot be read as a live run.** The lock is the truth;
+  the JSON beside it is only what the live holder published.
+
+**The per-run directory still exists and is still env-derived.** It holds this
+run's sockets — the ssh-agent proxy, the container proxy — and its own lock,
+and none of that needs cross-run agreement, because a socket path is handed to
+the sandbox by the same process that created it. It is simply not where attach
+looks, and `--dry-run` names the target-keyed file rather than that directory
+(§9).
+
+**Publishing failure is not run failure, and the split is deliberate.** The
+runtime directory failing to open is **fatal** — refusing beats falling back to
+a per-environment path, which is issue #122's fail-open. `writeRunState`
+failing inside the `OnInfo` callback is **warn-only**: by the time that
+callback runs a payload already exists, or is about to on the staged topology,
+and there is no way left to un-start one without reintroducing the
+parked-payload window `runStaged` deliberately removed ([INDEX](INDEX.md)
+§4.3). `internal/cli/main.go` carries the reasoning at the call site.
 
 ### 6.2 Contents
 
@@ -495,67 +520,87 @@ Consequences, all of which are implementation work:
   },
   "seccomp": { "state": "active", "digest": "sha256:…" },
   "env": [["HOME", "/home/u"], ["PATH", "…"], ["PS1", "…"], ["…", "…"]],
+  "owner": { "…": "…" },
+  "run_dir": "/run/user/1000/snug/run-1323240",
   "revision": "abc1234"
 }
 ```
 
 - `schema` — an int. Attach refuses anything it does not equal; there is no
-  best-effort partial read.
+  best-effort partial read. Every key is tagged explicitly in `runState`
+  rather than left to reflection's default casing, so a struct-field rename
+  cannot silently change the file.
 - `init_pid`, `init_starttime`, `namespaces` — from `bwrap --info-fd` (§7) plus
-  `/proc/<pid>/stat` field 22 read by snug immediately after. Six inodes, not
-  one: see §4.1 step 4.
-- `seccomp` — §5.1. Digest only; never the program bytes.
+  `/proc/<pid>/stat` field 22, read immediately after. Six inodes, not one: see
+  §4.1 step 4. `runStateNamespaceKinds` is the one list both the writer and the
+  reader range over, so a namespace cannot be added under two spellings.
+- `seccomp` — §5.1. Digest only; never the program bytes. `state` is the word
+  `"active"` or `"none"` rather than a bool, so a reader printing it never has
+  to invent the wording.
 - `env` — §5.3. Snug-authored names only.
-- `revision` — `debug.ReadBuildInfo()`'s `vcs.revision` if present, **used only to
-  make the skew message concrete**. No decision may read it; the digest is the
+- `owner` — the snug process holding this target's lock, and the sweep's
+  **second** liveness signal: the one an `rm` or `mv` of the lock file cannot
+  detach from the run (issue #489, `stateowner.go`).
+- `run_dir` — this run's own env-derived runtime directory. One consumer:
+  `snug proxy`, which has to find the http-doors file published beside the
+  run's sockets. Optional, and **not** how attach finds anything — that stays
+  on the target-keyed path (§6.1), because two processes need not agree on
+  `$XDG_RUNTIME_DIR` and a path published by one of them is a fact rather than
+  an agreement.
+- `revision` — `debug.ReadBuildInfo()`'s `vcs.revision` if present, **used only
+  to make the skew message concrete**. No decision reads it; the digest is the
   decision.
 - **No command, no argv, no executable path**, other than what `env` already
-  carries as `SHELL` (§8.4).
+  carries as `SHELL` (§8.3).
 
 ### 6.3 Mode, owner, writer, and what attach refuses
 
-- Written by the run's own process (P0), through the run directory's `*os.Root`
-  (`Root.OpenFile`), `O_CREAT|O_EXCL|O_WRONLY`, mode **0600**, owner the running
-  uid. It lives inside a directory already proven 0700 and owned, so this is
-  belt and braces rather than the only guard.
-- Written **once**, after bwrap reports (§7), never rewritten. A rewrite would
-  need a rename dance for atomicity and there is nothing to update.
-- Removed with the run directory when the run ends. A `SIGKILL`ed run leaves it
-  behind, and the next run's sweep removes the directory the lock says is dead —
-  which is exactly why attach checks the lock (§6.4) rather than trusting a file's
-  presence.
+- Written by the run's own process (P0), through the target-state directory's
+  `*os.Root`, mode **0600**, owner the running uid, into a directory
+  `vdir.SecureSubdir` has already proven owned and 0700 — so the mode is belt
+  and braces rather than the only guard.
+- Written **once**, after bwrap answers on `--info-fd` (§7), never rewritten. A
+  rewrite would need a rename dance for atomicity and there is nothing to
+  update.
+- A `SIGKILL`ed run leaves it behind, which is exactly why attach checks the
+  **lock** rather than trusting a file's presence.
 
 Attach refuses, loudly and by name:
 
 | condition | why |
 |---|---|
-| directory owner ≠ us, or mode ≠ 0700, or a symlink at either owned name | reuse `verifyOwnedAndPrivate`/`secureSubroot` unchanged |
-| the run's `lock` is **not** held | the owning snug is gone; this is a corpse the next run will sweep |
+| directory owner ≠ us, or mode ≠ 0700, or a symlink at a name snug owns | `vdir`'s verification, unchanged |
+| the target's lock is **not** held | the owning snug is gone; this is a corpse, not a run |
 | `state.json` missing, unparsable, or `schema` ≠ 1 | no partial reads |
 | `init_starttime` ≠ `/proc/<pid>/stat` field 22 | pid reuse |
 | any of the six namespace inodes differs | wrong sandbox, or pid reuse whose start time collided |
 | the target's `ns/user` == ours | not a sandbox; §4.1 step 5 |
 | seccomp digest mismatch | §5.1 |
 
-The liveness probe is `flock(LOCK_SH|LOCK_NB)` on the run's `lock`, released
+The liveness probe is `flock(LOCK_SH|LOCK_NB)` on the target lock, released
 immediately: `EWOULDBLOCK` means a live owner, success means nobody holds it.
-Attach **never** removes anything — sweeping is `runtimeDir()`'s job on the way
-in, and a second remover would race it.
+Attach **never** removes anything — sweeping belongs to the run that comes in
+next, and a second remover would race it.
 
-One convenience, bounded: if the lock is held but `state.json` is not there yet,
-attach polls for up to **2 s** at 50 ms. That is the startup window between
-`runtimeDir()` and bwrap's `--info-fd` answer, and a user who types `snug attach`
-a beat too early should not have to think about it.
+One convenience, bounded: if the lock is held but `state.json` is not there
+yet, attach polls for up to **2 s** at 50 ms. That is the startup window
+between the lock and bwrap's `--info-fd` answer, and a user who types `snug
+attach` a beat too early should not have to think about it.
 
 ### 6.4 The stage-less/staged asymmetry, and why it does not appear here
 
-The brief warns that on the offline topology the pid attach needs may not be the
-pid the state file most obviously wants to name. Measured, it is worse than that:
-**on *both* topologies the pid snug knows is useless.** Offline, P0 forks the
-outer bwrap, which is in every one of the host's namespaces (M1). Staged, P0 forks
-P1 and the init is a great-grandchild it never learns of (M2). The obvious pid is
-wrong in the same way in both cases, which is a relief: §7 is one mechanism, not
-two, and there is no per-topology branch anywhere in attach.
+The pid snug directly forks is useless on **both** topologies, in the same way,
+which is a relief rather than a problem: §7 is one mechanism, not two, and
+there is no per-topology branch anywhere in attach.
+
+- **Offline**, P0 forks `__inpidns` (`internal/sandbox/inpidns.go`), which
+  becomes pid 1 of an intermediate pid namespace and execs bwrap; the sandbox's
+  init is bwrap's child below that.
+- **Staged**, P0 forks P1 and the init is a great-grandchild it never learns
+  of (M2).
+
+Either way the obvious pid is the wrong one, and bwrap's own `--info-fd` answer
+is what names the right one.
 
 ---
 
@@ -563,31 +608,35 @@ two, and there is no per-topology branch anywhere in attach.
 
 `bwrap --info-fd N` writes one JSON object to N **before** exec'ing the payload,
 carrying `child-pid` and six namespace inodes (M22). That is precisely the state
-file's `sandbox` block, from bwrap itself, with no procfs scanning, no
-`PPid` walking and no race.
+file's `sandbox` block, from bwrap itself, with no procfs scanning, no `PPid`
+walking and no race.
 
-Plumbing, and it deliberately touches no protocol:
+The pipe is created in `internal/sandbox.Run`; the write end joins `extra` and
+gets a number from `nextFD()`, exactly as the `--seccomp` memfd does, and
+`--info-fd <n>` is appended to `flags` **before the `snug-args` memfd snapshot**
+— nothing may be appended after that — and therefore before bwrap's `--`.
 
-- A pipe is created in `internal/sandbox.Run`; the write end joins `extra` and
-  therefore gets a number via `nextFD()`, exactly as the `--seccomp` memfd does;
-  `--info-fd <n>` is appended to `flags` **before the `snug-args` memfd
-  snapshot** (nothing may be appended after it) and therefore before bwrap's
-  `--`.
-- On the staged topology this needs **no change to the stage's protocol at all**:
-  the descriptor rides the existing `Config.Sandbox` pass-through, is renumbered
-  to the same `3+i` bwrap already expects, and P1 closes its copy at the fork like
-  every other one. `checkFDBudget` already covers the extra descriptor.
-- P0 reads with `json.Decoder.Decode` — **one value, not until EOF**, because P0
-  keeps its own copy of the write end open for the life of the run and would
-  otherwise wait forever. Bound it with the house-style goroutine+`select`
-  timeout.
-- If bwrap never answers (an old bwrap, a failed start), snug **warns** that this
-  run will not be attachable and carries on. Same rule as §6.1.
+**Who reads the answer depends on the topology, and the staged arm's answer is
+not the one this design first assumed.**
 
-`--info-fd`, not `--json-status-fd`: one document, not a stream, and the stream's
-deletion along with `--block-fd` was a simplification worth keeping.
+- **Offline**, P0 forks bwrap directly, so P0 reads: `reportInfo` does it in a
+  background goroutine, bounded by `infoFDTimeout`.
+- **Staged**, the read end belongs to **P1**. It rides the control protocol as a
+  fixed descriptor, `fdBwrapInfo`, marked CLOEXEC at `__stage-serve`'s first
+  instant like every other descriptor P1 keeps, and P1 parses it with
+  `bwrapinfo.Read` and reports the result to P0 in an **event**. So the stage's
+  protocol did grow a member for this. It had to: issue #125's gate parks the
+  payload and starts the engine inside the one `start` request, and the pid to
+  release — or to kill on an abort — is the pid this answer carries. A pid P1
+  reads itself, on a descriptor it owns, about a process it is the grandparent
+  of, is not the hazard a pid arriving in a REQUEST would be (`proto.go`).
 
----
+The read is one value, not a read to EOF, because the writing side's copy stays
+open for the life of the run and an EOF would never come. If bwrap never answers
+— an old bwrap, a failed start — snug **warns** that the run will not be
+attachable and carries on.
+
+`--info-fd`, not `--json-status-fd`: one document, not a stream.
 
 ## 8. The CLI surface
 
@@ -595,7 +644,6 @@ deletion along with `--block-fd` was a simplification worth keeping.
 
 ```
 snug attach [dir] [-- command ...]
-snug attach --list
 ```
 
 - `attach` joins `doctor`, `profile`, `config` and `help` as a reserved first
@@ -603,91 +651,56 @@ snug attach --list
   these, write it as a path" sentence covers `./attach`.
 - `dir` is positional and defaults to `.`, matching `snug <dir>` — the directory
   *is* the thing, as with `git clone <url>`.
-- The run is selected by matching `filepath.Abs(dir)` against each live run's
-  `state.json.target`. Zero matches and more-than-one matches are both errors, and
-  both name `snug attach --list`.
-- `--run <name>` disambiguates by run-directory name when one target has two live
-  runs.
+- The run is selected by `filepath.Abs(dir)`, hashed to the one target-keyed
+  state file (§6.1). One target, one live run (issue #119), one candidate.
 - **There is no `--pid`.** Not because naming a pid would be unsafe — the kernel
   gates that, not snug — but because it is a second way to name the same thing
   with worse failure modes (M8's EINVAL), and a CLI surface is a thing to keep
   small.
+- **There is no `--run` either.** It existed in this design to disambiguate one
+  target with two live runs, and issue #119 removed the situation.
+- **There is no `--list` yet.** `parseAttachArgs` refuses every flag and says so
+  in the refusal, which is the honest shape for a convenience that is not built:
+  the message names what a bare `snug attach [dir]` does instead of implying a
+  flag that would work if spelled right.
 - `-v/--verbose` is not added. There is nothing to audit here.
 
-### 8.2 `snug attach --list`
+### 8.2 The help text
 
-One line per live run: run directory name, target, profiles, init pid. Derived
-from the same read+verify path attach itself uses, so a run that `--list` shows is
-a run that attach can join.
+The honesty requirements are load-bearing, so `attachUsage` is written out
+rather than described, and its three paragraphs each answer a question a user
+would otherwise get wrong: attach **gates nothing** (any same-uid process can
+join these namespaces; what attach adds is confinement); the attached process
+**is inside and the payload can address it** (so whatever your stdio points at,
+the payload reaches too); and it **cannot run a different policy** in the same
+sandbox (attach resolves no profiles and reads no configuration).
 
-### 8.3 The help text — exact words
+`internal/cli/attach.go` is the text. It is static — nothing is interpolated
+into it — and `TestAttachScreensAreCoveredByTheControlCharacterSweep` pins that,
+so the moment it stops being static the control-character sweep has to be
+re-argued.
 
-The honesty requirements are load-bearing, so this is written out rather than
-described:
-
-```
-snug attach — run a command inside a sandbox that is already running
-
-usage:
-  snug attach [dir] [-- command ...]     join the live run on dir (default: .)
-  snug attach --list                     list the runs that can be joined
-
-Joins the namespaces of the live snug run whose target is dir and runs command
-inside it — the run's own seccomp filter, an empty capability set and bounding
-set, no-new-privs, and the environment that run's policy authored. With no
-command it runs that run's shell.
-
-ATTACH IS NOT A PERMISSION. It gates nothing. Any process running as your uid
-can join a sandbox's namespaces with or without snug — the kernel's rule is
-"same uid as the owner of the sandbox's user namespace", and it was confirmed
-five ways on both topologies. What snug attach adds is CONFINEMENT, not entry:
-a plain nsenter joins with no seccomp filter, a full capability bounding set,
-and your host environment, and everything it carries in is readable to the
-payload out of /proc.
-
-THE ATTACHED PROCESS IS INSIDE, AND THE PAYLOAD CAN ADDRESS IT. It appears in
-the sandbox's /proc; the payload can read its environment and its open
-descriptors, and on a host with kernel.yama.ptrace_scope=0 its memory (issue
-#47 — not something a seccomp filter can reach). So whatever your stdin,
-stdout and stderr point at, the payload can reach too. snug relays a
-non-terminal descriptor through a pipe, so the payload reaches the stream but
-not the file behind it; a terminal is passed through as it is. Do not attach
-with a descriptor open on something the sandbox must not have.
-
-It cannot run a DIFFERENT policy inside the same sandbox. Attach resolves no
-profiles and reads no configuration; it reproduces the run's confinement and
-nothing else. If you want different grants, start a different sandbox.
-```
-
-The top-level `usage()` gains one line:
-
-```
-  snug attach [dir]                       join a sandbox that is already running
-```
-
-### 8.4 The one path that comes from a file
+### 8.3 The one path that comes from a file
 
 With no `-- command`, attach runs the `SHELL` value recorded in the run's
 environment. That is the single executable path this feature takes from a file
-rather than from the user's own words, and it is bounded on purpose: the value was
-authored by the run's policy, the file is 0600 inside a 0700 directory snug
+rather than from the user's own words, and it is bounded on purpose: the value
+was authored by the run's policy, the file is 0600 inside a 0700 directory snug
 verified, and a same-uid attacker able to rewrite it can simply run the program
 directly. Attach still validates it — absolute path, no control characters — and
 `execve` failure is reported as itself.
 
-This is *not* the `Bwrap`/`Argv` shape the settlement kept out: nothing hands
-attach an argv over a channel from another process, and attach never execs
-`/proc/self/exe`.
-
----
+This is *not* the `Bwrap`/`Argv` shape issue #61's settlement kept off the wire:
+nothing hands attach an argv over a channel from another process, and attach
+never execs `/proc/self/exe`.
 
 ## 9. `--dry-run`
 
-`snug --dry-run` starts nothing, so it may not create the run directory. It gains
-one block, after SECCOMP, in the existing style:
+`snug --dry-run` starts nothing, so it may not create anything it names. It
+carries one block after SECCOMP, in the existing style:
 
 ```
-ATTACH   this run publishes $XDG_RUNTIME_DIR/snug/run-<pid>/state.json (0600,
+ATTACH   this run publishes /run/user/1000/snug/target-sha256_<hex>.json (0600,
          in a 0700 directory snug owns), so `snug attach <dir>` can join it.
          The file names the sandbox's init pid, its start time and its six
          namespace ids. It carries no command, no argv and no secret.
@@ -697,10 +710,21 @@ ATTACH   this run publishes $XDG_RUNTIME_DIR/snug/run-<pid>/state.json (0600,
          plain nsenter has none of the three.
 ```
 
-The path is printed as the **pattern** (`run-<pid>`), never a fabricated pid:
-`--dry-run`'s own pid is not the run's, and inventing one is the kind of small
-lie that makes the whole artifact untrustworthy. This mirrors the host-tmp rule
-already in `run()`: name it, do not create it.
+**It prints the EXACT path, and that is possible only because the file is
+target-keyed** (§6.1): the name is `sha256(realpath)` under the uid-derived
+`targetLockBase()`, so this run's own pid never enters it and there is nothing
+to fabricate.
+
+It used to print `run-<pid>/state.json` under the env-derived `runtimeBase()`,
+deliberately as a *pattern*, on the sound argument that inventing a pid would
+be the kind of small lie that makes the whole artifact untrustworthy. That
+argument still holds and no longer applies here. What made the old rendering
+wrong was not vagueness: after issue #123 it named a file that does not exist,
+with the wrong basename, under a base the run need not even use — issue #123's
+own failure mode, reappearing on the one screen whose job is to be trusted.
+`TestDryRunAttachBlockNamesTheFileAttachActuallyReads` is the pin, and its
+predecessor is the cautionary half: it kept passing while the screen was wrong,
+because it asserted the pattern rather than the file.
 
 `snug attach` itself gets **no** `--dry-run`. It starts a process; there is no
 policy to print, because it resolves none.
@@ -710,7 +734,7 @@ policy to print, because it resolves none.
 ## 10. The abuse sentences
 
 For the profile TOML equivalent — there is no profile here, so these belong in
-`attach.go`'s package comment, in the help text (§8.3) and in `VERIFY.md`:
+`attach.go`'s package comment, in the help text (§8.2) and in `VERIFY.md`:
 
 > A hostile process inside the sandbox can use an attached session to reach
 > whatever the attaching human's stdin, stdout and stderr point at — by listing
@@ -754,26 +778,26 @@ each row above a test.
 ## 12. Where the code lives
 
 - `internal/cli/attach.go` — the subcommand: argument parsing, run selection,
-  every check in §4.1, the report/gate pipes, stdio relay, exit-code propagation,
-  `--list`. `cmd/snug` is `main.go` alone since `dfe6ac8`; **any brief that quotes
-  `cmd/snug/claude.go` or `cmd/snug/dryrun.go` is quoting a tree that no longer
-  exists.**
-- `internal/cli/runstate.go` — writing and reading `state.json`, next to
-  `runtimedir.go` because it needs that file's `*os.Root` machinery, which is
-  package-private and must stay that way.
-- `internal/attach/` (new, small) — the raw-fork child and its syscall sequence
-  (§4.2), by analogy with `internal/stage`: namespace surgery lives in its own
-  package, annotated as hard as `EnterNetns` is, and is testable on its own.
-- `internal/sandbox/exec.go` — the `--info-fd` pipe (§7), beside the `--seccomp`
-  descriptor and **above** the args-memfd snapshot comment.
-- `internal/cli/dryrun.go` — the ATTACH block (§9).
+  every check in §4.1, the report/gate pipes, exit-code propagation.
+- `internal/cli/attachstdio.go` — the stdio relay, both shapes (§5.4).
+- `internal/cli/runstate.go` — `state.json`'s Go shape and its writer;
+  `internal/cli/targetstate.go` — where the file lives and how it is found
+  (§6.1). The split is the point: one file knows the CONTENT, the other knows
+  the LOCATION, and issue #123 moved only the second.
+- `internal/attach/` — the raw-fork child and its syscall sequence (§4.2), by
+  analogy with `internal/stage`: namespace surgery lives in its own package,
+  annotated as hard as `EnterNetns` is, and is testable on its own.
+- `internal/sandbox/exec.go` — the `--info-fd` pipe (§7), beside the
+  `--seccomp` descriptor and **above** the args-memfd snapshot comment.
+- `internal/cli/dryrun.go` — `describeAttach` (§9).
 - `internal/cli/main.go` — one line in `usage()`, one case in the subcommand
   switch, above the flag parsing and below the hidden-verb dispatch.
 
+`cmd/snug` is `main.go` alone. Any brief quoting `cmd/snug/claude.go` or
+`cmd/snug/dryrun.go` is quoting a tree that no longer exists.
+
 Nothing is added to `internal/policy`: attach makes no policy decision, and the
 package stays pure.
-
----
 
 ## 13. The tests
 
@@ -788,37 +812,29 @@ grepping for the name and finding nothing is not evidence of a gap here.
 
 - **No listener, no socket, no protocol.** (Settled.)
 - **No `--pid`.** §8.1.
-- **No hardening of the attached process against the payload.** M17 measured that
-  the only cheap instrument does not survive `execve`, and case F of the review's
-  matrix says it would not be sufficient anyway. The instrument that works is
-  #101's inner pid namespace, which **does not exist**; do not write code that
-  reads as though it does.
+- **No hardening of the attached process against the payload.** M17 measured
+  that the only cheap instrument, `PR_SET_DUMPABLE 0`, does not survive
+  `execve`, and case F of issue #61's review matrix says it would not be
+  sufficient anyway.
+
+  The instrument that was proposed instead — an inner pid namespace making the
+  attached process unaddressable (#101) — **now exists on the OFFLINE arm and
+  not on the staged one**: `internal/sandbox/inpidns.go`'s `__inpidns` puts
+  bwrap in an intermediate pid namespace, and #506 measured what that bought
+  (issue #13's orphan window closed by construction, 0 leaks over 18 offsets;
+  the staged arm already covered the same window with the parked gate, P1's
+  `Pdeathsig` and the lifeline, so it deliberately did not follow).
+
+  **It does not change this design**, and #101's own measurement is why: an
+  intermediate level buys nothing for addressability on its own — two payloads
+  bwrap starts are still co-resident and still read each other's
+  `/proc/<pid>/fd/N`. Attach joins the namespaces of `state.json`'s
+  `sandbox.init_pid`, which is bwrap's own `--info-fd` answer, so it lands
+  where the payload is, on both arms. Do not write code that reads as though
+  attach has a level to choose.
 - **No sync-back of anything.** Attach writes nothing to the host except what the
   user's own redirection makes it write.
 - **No policy resolution.** No profiles, no config, no TOML, no `Resolve`.
 - **No second weakening knob.** §5.1.
 
 ---
-
-## 15. Decisions, settled 2026-08-18
-
-Each names its reason and stands on its own.
-
-- **stdio relay — pipe relay AND pty, both in this ticket.** Not "pipe now,
-  file pty". Build the pty relay so the attached session gets a terminal that
-  exists only for attach, narrowing what the payload can inject/read. Reason: the
-  automation invocation (`snug -p @claude … > log`) is exactly where a
-  passed-through terminal is new reach, and that is the invocation attach exists
-  for. This enlarges E5's scope — say so to the implementer.
-- **`--no-seccomp` — does NOT exist.** Attach always applies the run's
-  filter. The debug-an-already-running-sandbox case pays the cost (no ptrace
-  without restart); the confinement guarantee stays unconditional.
-- **TERM — DEFAULT TAKEN: recorded value**, no exception to "the
-  environment is authored by the run's policy". Maintainer may override; flagged
-  as a low-stakes default, not an explicit ruling.
-- **Unpublishable state — DEFAULT TAKEN: FAIL, not warn** (leans against the
-  doc's recommendation). `runtimeDir()`'s refusals are all "a directory snug owns
-  is wrong", and continuing past one is the shape invariant 5 forbids. Flagged for
-  explicit maintainer override if the debugging-convenience argument wins.
-- **`--list` — DEFAULT TAKEN: NOT in this ticket** (convenience, not
-  mechanism; next ticket). Error messages that name it should degrade gracefully.
