@@ -411,3 +411,73 @@ func TestLibpodNoNewPrivilegesIsForcedRegardlessOfClient(t *testing.T) {
 		t.Errorf("no_new_privileges:true was not injected: %s", eng.lastBody.Load())
 	}
 }
+
+// TestLibpodResourceLimitsRefuseTheNestedDeviceSpellings pins the redteam
+// round on #531: `resource_limits` was forwarded unexamined, so
+// `resource_limits.devices` carried the exact content the top-level
+// `device_cgroup_rule` is refused for, and `resource_limits.unified` carried
+// arbitrary cgroup-v2 keys. Both spellings of the device rule are asserted
+// side by side, so the two can never disagree again.
+func TestLibpodResourceLimitsRefuseTheNestedDeviceSpellings(t *testing.T) {
+	sock, eng, _ := startProxy(t)
+
+	cases := []struct{ name, value, wantMsg string }{
+		{"devices allow-all", `{"devices":[{"allow":true,"type":"a","access":"rwm"}]}`,
+			"resource_limits.devices is not permitted"},
+		{"devices one node", `{"devices":[{"allow":true,"type":"c","major":1,"minor":1,"access":"rwm"}]}`,
+			"resource_limits.devices is not permitted"},
+		{"unified", `{"unified":{"cgroup.subtree_control":"+memory"}}`,
+			"resource_limits.unified is not permitted"},
+		{"blockIO weightDevice", `{"blockIO":{"weightDevice":[{"major":8,"minor":0,"weight":100}]}}`,
+			"resource_limits.blockIO.weightDevice is not permitted"},
+		{"blockIO throttleReadBpsDevice", `{"blockIO":{"throttleReadBpsDevice":[{"major":8,"minor":0,"rate":1048576}]}}`,
+			"resource_limits.blockIO.throttleReadBpsDevice is not permitted"},
+		{"unmodelled sub-object", `{"rdma":{"foo":{"hcaHandles":1}}}`,
+			"resource_limits.rdma is not permitted"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := withLibpodField(t, "resource_limits", tc.value)
+			refuse(t, sock, eng, "/v6.0.2/libpod/containers/create", body, tc.wantMsg)
+		})
+	}
+
+	// The top-level spelling, asserted in the same test so the pair is read
+	// together — this is the one that was already refused.
+	t.Run("device_cgroup_rule, the top-level spelling", func(t *testing.T) {
+		body := withLibpodField(t, "device_cgroup_rule", `[{"allow":true,"type":"a","access":"rwm"}]`)
+		refuse(t, sock, eng, "/v6.0.2/libpod/containers/create", body,
+			"device_cgroup_rule is not permitted")
+	})
+}
+
+// TestLibpodResourceLimitsForwardTheNumbers is the positive control:
+// judging resource_limits must not break the flags that write it. Every
+// value below is MEASURED from `podman create <flag> alpine true` (podman
+// 6.0.2) posted to a logging socket.
+func TestLibpodResourceLimitsForwardTheNumbers(t *testing.T) {
+	sock, eng, _ := startProxy(t)
+
+	cases := []struct{ name, value string }{
+		{"--memory 100m", `{"memory":{"limit":104857600,"swap":209715200}}`},
+		{"--oom-kill-disable", `{"memory":{"disableOOMKiller":true}}`},
+		{"--cpus 1", `{"cpu":{"quota":100000,"period":100000}}`},
+		{"--cpuset-cpus 0", `{"cpu":{"cpus":"0"}}`},
+		{"--pids-limit 10", `{"pids":{"limit":10}}`},
+		{"--blkio-weight 100", `{"blockIO":{"weight":100}}`},
+		{"--device-read-bps leaves blockIO empty", `{"blockIO":{}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := eng.reached.Load()
+			body := withLibpodField(t, "resource_limits", tc.value)
+			code, resp := post(t, sock, "/v6.0.2/libpod/containers/create", body)
+			if code != 200 && code != 201 {
+				t.Fatalf("status %d, want 2xx: %s", code, resp)
+			}
+			if eng.reached.Load() == before {
+				t.Fatal("a measured resource limit was refused; it should have reached the engine")
+			}
+		})
+	}
+}
