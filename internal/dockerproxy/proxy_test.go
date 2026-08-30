@@ -228,20 +228,18 @@ func TestContainerCannotMountWhatTheSandboxCannot(t *testing.T) {
 		{"/usr writable, granted only read-only", `{"HostConfig":{"Binds":["/usr:/u"]}}`,
 			"cannot see /usr as writable"},
 
-		// The absolute-path rule, pinned by its own message. As `../..` this case
-		// was refused by the VISIBILITY check instead — the proxy resolves a
-		// relative source against snug's cwd, which is never a granted path — so
-		// deleting filepath.IsAbs left it passing.
+		// A source that is neither an absolute path nor a volume NAME. Since
+		// issue #464 a non-absolute source is read as a volume name, so the
+		// message this pins is the one that separates the two — and `../..`
+		// must land HERE rather than in the volume gate, because a `..` reaching
+		// the engine as a name would be resolved relative to its store.
 		{"a relative source", `{"HostConfig":{"Binds":["../..:/x"]}}`,
-			"must be an absolute path"},
-		{"a bare relative source", `{"HostConfig":{"Binds":["build:/x"]}}`,
-			"must be an absolute path"},
+			"is neither an absolute path nor a volume name"},
+		{"a relative source with a slash in it", `{"HostConfig":{"Binds":["a/b:/x"]}}`,
+			"is neither an absolute path nor a volume name"},
 
 		// The structured Mounts form, which nothing covered at all: every escape
 		// below can equally be written this way, and `docker run --mount` does.
-		{"a volume mount, whose backing store is not knowable here",
-			`{"HostConfig":{"Mounts":[{"Type":"volume","Source":"v","Target":"/v"}]}}`,
-			`mount type "volume" is not permitted`},
 		{"a tmpfs mount",
 			`{"HostConfig":{"Mounts":[{"Type":"tmpfs","Target":"/t"}]}}`,
 			`mount type "tmpfs" is not permitted`},
@@ -442,7 +440,6 @@ func TestLibpodNativeBodyIsRefusedRatherThanForwardedUnexamined(t *testing.T) {
 	}
 
 	for _, path := range []string{
-		"/v4.0.0/libpod/volumes/create",
 		"/v5.0.0/libpod/pods/create",
 		"/v5.0.0/libpod/play/kube",
 	} {
@@ -450,6 +447,16 @@ func TestLibpodNativeBodyIsRefusedRatherThanForwardedUnexamined(t *testing.T) {
 			refuse(t, sock, eng, path, escape, "snug does not filter the libpod-native API")
 		})
 	}
+
+	// volumes/create is READ now (issue #464), for the same reason
+	// containers/create is: the body is where snug's own ownership stamp goes.
+	// So the escape is refused by that handler's default-deny field set rather
+	// than by the schema-confusion message — and the message CHANGING here is
+	// the record of the route moving.
+	t.Run("/v4.0.0/libpod/volumes/create", func(t *testing.T) {
+		refuse(t, sock, eng, "/v4.0.0/libpod/volumes/create", escape,
+			"is one snug's filter has not read")
+	})
 
 	// CONTROL, and it is the half that keeps the test honest: the same escape on
 	// the DOCKER-COMPAT path reaches handleCreate and is refused there, by a

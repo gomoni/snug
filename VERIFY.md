@@ -6013,7 +6013,9 @@ cd $SC/proj && ../../bin/snug -p @podman-socket -p @net . -- \
 will otherwise file one: foreground `podman run` posts `attach` BEFORE `start`,
 and attach is a HIJACK — the CLI wants `101 UPGRADED`. Admitting it is a decision
 about the libpod attach stream (issues #465, #508), not about an empty body.
-`docker run` over the docker-compat endpoint is the client that works today.
+`docker run` over the docker-compat endpoint is the client that works today, and
+so is `podman run -d` plus `podman logs`. The maintainer's ruling is that attach
+stays refused — YAGNI, revisit if a foreground `podman run` is ever needed.
 
 What is measurable on any host, engine or not — the wire each invocation speaks,
 against a socket that logs the request and answers it plausibly enough for the
@@ -6055,6 +6057,153 @@ Reading it against an id the run does NOT own is the other half, and it must
 refuse EARLIER — at the ownership gate, naming the container rather than the
 parameter. If a bad parameter and a foreign id ever produce the same message,
 the gate ordering has moved.
+
+## 23b. The lifecycle verbs work, and `podman rm --depend` does not (issue #459)
+
+Needs a live engine, so it runs where §19 runs. On this machine one comes up with
+an isolated store — the host's default store is in the broken-lock state #465
+names, and `/proc/self/cgroup` reads `0::/../../app.slice/...` so podman looks for
+`/sys/app.slice/.../cgroup.controllers`:
+
+```bash
+podman --root /tmp/s459/root --runroot /tmp/s459/runroot \
+       --cgroup-manager=cgroupfs --runtime crun \
+       system service --time 0 unix:///tmp/s459/engine.sock
+```
+
+`runc` refuses `--cgroups=disabled` ("requested OCI runtime runc is not compatible
+with NoCgroups: invalid argument"); crun accepts it. Keep the socket path SHORT —
+`sun_path` holds 108 bytes and the failure surfaces as podman's generic "Cannot
+connect to Podman".
+
+The positive half. Use a FULLY QUALIFIED image name: a short name sends podman
+looking for `/var/cache/containers/short-name-aliases.conf` and it dies with
+`mkdir /var/cache: read-only file system`, which reads like a snug refusal and is
+not one.
+
+```bash
+cd $SC/proj && ../../bin/snug -p @podman-build -p @net . -- sh -c '
+  I=docker.io/library/alpine:3.20
+  podman run -d --name c1 $I sleep 120
+  podman stop -t 1 c1 && podman start c1 && podman restart -t 1 c1
+  podman kill -s SIGKILL c1 && podman rm -f c1
+'
+# expect: the container name echoed by each verb, no refusal
+```
+
+`podman start` on an EXISTING container is the case that is easy to miss: it
+sends `?detachkeys=ctrl-p,ctrl-q` where `run -d`'s start sends `?recursive=true`,
+so a table built from one capture refuses the other. Note the LOWERCASE spelling
+— `attach` sends both `detachKeys` and `detachkeys`, `start` sends only the
+lowercase one, and `url.Values` is case-sensitive.
+
+The negative half, and it is the reason the route was admitted carefully:
+
+```bash
+cd $SC/proj && ../../bin/snug -p @podman-build -p @net . -- sh -c '
+  podman run -d --name dep docker.io/library/alpine:3.20 sleep 30
+  podman rm --depend --force dep      # expect: 403 naming `depend`
+  podman rm -f dep                    # expect: dep
+'
+```
+
+**What `depend` does, measured rather than assumed.** Against a real engine, two
+containers created by two different runs, the second declaring the first as its
+network:
+
+```
+DELETE /v6.0.2/libpod/containers/victimbase?depend=true&force=true
+  -> 200 [{"Id":"451e869a..."},{"Id":"86e439cb..."}]   BOTH destroyed
+```
+
+`otherrun` carried a DIFFERENT `snug.run` label and the ownership gate never saw
+it — the gate is arity-1 by construction, one reference inspected and one segment
+canonicalised. The compat wire does NOT decode `depend`, measured against the same
+store seconds later (`500 "has dependent containers which must be removed before
+it"`, both containers surviving); it is refused there anyway, because that is a
+fact about one engine version and invariant 5 does not let a boundary rest on one.
+
+**A repeated parameter refuses**, and this is a measurement too:
+
+```
+DELETE /v6.0.2/libpod/containers/v2?depend=false&depend=true&force=true
+  -> 200, the container AND its dependent destroyed
+```
+
+The engine reads the LAST value; Go's `url.Values.Get` reads the FIRST. A check
+written as `q.Get("depend") == "false"` passes that request while the engine
+cascades, so multiplicity is refused rather than reasoned about:
+
+```bash
+sock=${CONTAINER_HOST#unix://}
+curl --unix-socket "$sock" -s -X DELETE \
+  "http://d/v6.0.2/libpod/containers/$id?depend=false&depend=true"
+# expect: 403, "appears more than once"
+```
+
+## 23c. Named volumes work, and one that hides a host path does not (issue #464)
+
+```bash
+cd $SC/proj && ../../bin/snug -p @podman-build -p @net . -- sh -c '
+  I=docker.io/library/alpine:3.20
+  podman volume create MYVOL
+  podman run -d --name c1 -v MYVOL:/data $I sh -c "echo hi > /data/f; sleep 30"
+  sleep 1; podman rm -f c1
+  podman run -d --name c2 -v MYVOL:/data $I sh -c "cat /data/f; sleep 5"
+  sleep 1; podman logs c2; podman rm -f c2
+  podman volume rm MYVOL
+'
+# expect: MYVOL, two container ids, `hi` from the second container, MYVOL
+```
+
+The `hi` is the point: the volume outlives the container that wrote it.
+
+**Why a name needs a check at all.** A volume name is a reference snug forwards
+UNRESOLVED — the ENGINE resolves it, in a store keyed on the target directory and
+shared with every later run and with any host process using the same `--root`. So
+the string snug judged is not the thing that gets mounted. Measured:
+
+```
+podman volume create --opt type=none --opt o=bind --opt device=$HOME/.ssh EVIL
+GET /v1.41/volumes/EVIL
+  {"Driver":"local", ..., "Options":{"device":"...","o":"bind","type":"none"}}
+podman run --rm -v EVIL:/x alpine ls /x
+  -> the host's private keys, listed
+```
+
+READ THE DRIVER: still `"local"`. A driver check alone clears that volume; the
+OPTIONS are what separate it from an ordinary one, and `GET /volumes/{name}`
+carries them, which is what makes the use-time check possible. snug asks the
+engine what the name holds before forwarding it, and refuses anything but the
+`local` driver with NO options.
+
+**The through-snug arm of that negative is NOT measured on this machine**, and the
+reason is worth recording rather than working around: snug's store pins its own
+guest path in the libpod database (`database static dir "/snug/engine/store" does
+not match our static dir ...`), and this distrobox has a read-only `/`, so a host
+process cannot open the same store to plant the volume. The refusal is covered by
+`TestAHostBindVolumeIsRefusedByName`, driven with the inspect body measured above.
+
+Removal is scoped by a label snug stamps at create time. Run this TWICE, in two
+separate runs:
+
+```bash
+cd $SC/proj && ../../bin/snug -p @podman-build -p @net . -- podman volume create CROSSRUN
+cd $SC/proj && ../../bin/snug -p @podman-build -p @net . -- podman volume rm CROSSRUN
+# expect: CROSSRUN, then
+#   403, `volume "CROSSRUN" was created by another sandbox run (snug.run=...)`
+```
+
+The second run can still MOUNT it — sharing the store is what makes a warm start
+warm — but it may not destroy what another run wrote.
+
+**The two wires spell the label field differently**, and getting it wrong is
+silent: `podman volume create --label a=b` sends
+`{"Name":...,"Driver":"local","Label":{"a":"b"},"Labels":null,...}` on the libpod
+wire, and docker-compat uses `Labels`. A stamp written into the field the engine
+does not read leaves every volume unowned while looking stamped. A libpod body
+carrying BOTH is refused: libpod honours EITHER field (measured), so two label
+maps are two answers to what the volume is labelled, and snug's stamp is in one.
 
 ## 23a. A device rule nested inside `resource_limits` refuses like the top-level one
 

@@ -1,6 +1,7 @@
 package dockerproxy
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -155,16 +156,25 @@ func (p *Proxy) handleLibpodContainerCreate(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	// volumes: the anonymous/named-volume array, MEASURED distinct from
-	// `mounts` — `podman run --mount type=volume,source=myvol,destination=/data`
-	// produces volumes=[{"Name":"myvol","Dest":"/data",...}], never touching
-	// `mounts`. Same reason as docker-compat's top-level Volumes: an
-	// anonymous volume is a host path allocated in the engine's own store,
-	// not one the client named and snug can check.
+	// volumes: the named/anonymous volume array, MEASURED distinct from
+	// `mounts` — `podman run -v NAMEDVOL:/data` and
+	// `--mount type=volume,source=NAMEDVOL,destination=/m` both produce
+	// volumes=[{"Name":"NAMEDVOL","Dest":"/data",...}] and never touch
+	// `mounts`. NAMED entries are judged (issue #464); an ANONYMOUS one is
+	// still refused, for the reason docker-compat's top-level Volumes is.
 	examined["volumes"] = true
 	if raw, ok := req["volumes"]; ok && !isEmptyJSON(raw) {
-		p.deny(w, "%s is not permitted: %s", libpodFieldSpelling("volumes"), topLevelRefusalReason["Volumes"])
-		return
+		judged, err := judgeLibpodVolumes(r.Context(), p, raw)
+		if err != nil {
+			p.deny(w, "%v", err)
+			return
+		}
+		enc, err := json.Marshal(judged)
+		if err != nil {
+			p.deny(w, "re-encoding volumes: %v", err)
+			return
+		}
+		req["volumes"] = enc
 	}
 
 	// healthconfig: MEASURED, `podman run --health-cmd=true` sets
@@ -381,7 +391,7 @@ func (p *Proxy) handleLibpodContainerCreate(w http.ResponseWriter, r *http.Reque
 	// anything but "bind" or "tmpfs".
 	examined["mounts"] = true
 	if raw, ok := req["mounts"]; ok && !isEmptyJSON(raw) {
-		out, err := judgeLibpodMounts(p, raw)
+		out, err := judgeLibpodMounts(r.Context(), p, raw)
 		if err != nil {
 			p.deny(w, "%v", err)
 			return
@@ -838,7 +848,7 @@ func usernsRawValue(req map[string]json.RawMessage) string {
 // checkedMounts calls — passing tmpfs entries through untouched. Any other
 // type refuses: MEASURED, `--mount type=volume,...` never appears in
 // `mounts` at all (it is the separate `volumes` array, refused above).
-func judgeLibpodMounts(p *Proxy, raw json.RawMessage) ([]libpodMount, error) {
+func judgeLibpodMounts(ctx context.Context, p *Proxy, raw json.RawMessage) ([]libpodMount, error) {
 	var ms []libpodMount
 	if err := json.Unmarshal(raw, &ms); err != nil {
 		return nil, fmt.Errorf("mounts is not a list of mounts: %v", err)
@@ -883,7 +893,7 @@ func judgeLibpodMounts(p *Proxy, raw json.RawMessage) ([]libpodMount, error) {
 		}
 	}
 	if len(binds) > 0 {
-		checked, err := p.checkMountRequests(binds)
+		checked, err := p.checkMountRequests(ctx, binds)
 		if err != nil {
 			return nil, err
 		}
@@ -893,6 +903,71 @@ func judgeLibpodMounts(p *Proxy, raw json.RawMessage) ([]libpodMount, error) {
 		}
 	}
 	return out, nil
+}
+
+// judgeLibpodVolumes decodes podman's `volumes` array — the one a `-v` or a
+// `--mount type=volume` lands in — and runs every NAMED entry through
+// checkMountRequests, the same function the bind path uses, so the two wires
+// cannot disagree about what a volume name means (issue #464).
+//
+// MEASURED, podman 6.0.2, element by element:
+//
+//	-v NAMEDVOL:/data        {"Name":"NAMEDVOL","Dest":"/data","Options":null,"IsAnonymous":false,"SubPath":""}
+//	--mount type=volume,...  {"Name":"NAMEDVOL","Dest":"/m","Options":null,"IsAnonymous":false,"SubPath":""}
+//	-v NAMEDVOL:/ro:ro       {"Name":"NAMEDVOL","Dest":"/ro","Options":["ro"],...}
+//	-v NAMEDVOL:/z:z         {"Name":"NAMEDVOL","Dest":"/z","Options":["z"],...}
+//	-v /anon                 {"Name":"","Dest":"/anon","Options":null,"IsAnonymous":false,"SubPath":""}
+//
+// READ THE LAST LINE TWICE. An anonymous volume arrives with an EMPTY Name and
+// `IsAnonymous: FALSE` — the engine fills both in later. So anonymity is
+// detected by the empty name, and a check written on IsAnonymous would forward
+// every anonymous volume while looking like it refused them.
+func judgeLibpodVolumes(ctx context.Context, p *Proxy, raw json.RawMessage) ([]libpodVolume, error) {
+	var vs []libpodVolume
+	if err := json.Unmarshal(raw, &vs); err != nil {
+		return nil, fmt.Errorf("volumes is not a list of volumes: %v", err)
+	}
+	var reqs []mount
+	for i, v := range vs {
+		if v.Name == "" {
+			return nil, fmt.Errorf("%s is not permitted for an anonymous volume: %s",
+				libpodFieldSpelling("volumes"), topLevelRefusalReason["Volumes"])
+		}
+		// SubPath names a directory INSIDE the volume, and a path is never
+		// metadata (checkOne's rule). Measured empty on every capture; a
+		// non-empty one is resolved by the engine inside a directory snug does
+		// not walk, so it is refused rather than forwarded unread.
+		if v.SubPath != "" {
+			return nil, fmt.Errorf("volumes[%d].SubPath %q is not permitted: it is a path "+
+				"resolved by the ENGINE inside the volume, and snug neither walks that "+
+				"directory nor forwards a path it did not resolve. Mount the volume at its "+
+				"root", i, v.SubPath)
+		}
+		// The forwarded Options are REBUILT from judgeBindOptions rather than
+		// copied, for the reason judgeLibpodMounts rebuilds a bind's: this array
+		// is where the libpod wire can carry a flag the compat parser refuses.
+		ro, forward, err := judgeBindOptions(v.Options)
+		if err != nil {
+			return nil, err
+		}
+		vs[i].Options = forward
+		reqs = append(reqs, mount{Type: "volume", Source: v.Name, Target: v.Dest, ReadOnly: ro})
+	}
+	if _, err := p.checkMountRequests(ctx, reqs); err != nil {
+		return nil, err
+	}
+	return vs, nil
+}
+
+// libpodVolume is podman's own volumes[] element shape. Only the fields snug
+// judges are modelled; re-serialising through this struct is what stops an
+// unmodelled sibling reaching the engine, the same reason `mount` is four
+// fields and no more.
+type libpodVolume struct {
+	Name    string   `json:"Name"`
+	Dest    string   `json:"Dest"`
+	Options []string `json:"Options,omitempty"`
+	SubPath string   `json:"SubPath,omitempty"`
 }
 
 // libpodMount is podman's own mounts[] element shape — snake_case, and

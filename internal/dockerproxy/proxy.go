@@ -113,8 +113,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.deny(w, "snug does not filter the libpod-native API for %s /%s, so it refuses it. "+
 			"snug reads the docker-compat request schema; the libpod schema is a different "+
 			"shape, and what this filter has not read it does not forward. Read-only libpod "+
-			"routes (GET, HEAD), /libpod/build, /libpod/images/pull, /libpod/containers/create "+
-			"and POST /libpod/containers/{id}/{start,wait} are the exceptions. Use `docker` "+
+			"routes (GET, HEAD), /libpod/build, /libpod/images/pull, /libpod/containers/create, "+
+			"/libpod/volumes/create, DELETE /libpod/volumes/{name}, "+
+			"DELETE /libpod/containers/{name} and POST /libpod/containers/{id}/"+
+			"{start,stop,kill,restart,pause,unpause,wait} are the exceptions. Use `docker` "+
 			"against the docker-compat endpoint (/v1.41/...) instead.",
 			r.Method, strings.Join(segs, "/"))
 		return
@@ -182,7 +184,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case isExecCreate(segs, r.Method):
 		p.handleExecCreate(w, r)
 	case isVolumeCreate(segs):
-		p.handleVolumeCreate(w, r)
+		p.handleVolumeCreate(w, r, libpod)
 	case isImageCreate(segs):
 		p.handleImageCreate(w, r)
 	case isImagePull(segs):
@@ -202,11 +204,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"pull restores it. Build or pull under a fresh tag inside this run instead. To "+
 			"reclaim the store, remove it from the host.", strings.Join(segs[1:], "/"))
 	case isVolumeDelete(segs, r.Method):
-		p.deny(w, "removing volume %q is not permitted. Volumes live in the engine's store, "+
-			"which is keyed on the target directory and persists across runs, so a volume "+
-			"holds data an earlier run of this project wrote and is not this run's to "+
-			"delete. Use a fresh volume name inside this run instead.",
-			strings.Join(segs[1:], "/"))
+		// Scoped rather than refused outright since issue #464: snug stamps its
+		// run label at volume create, so there is now a question to ask, and
+		// handleVolumeDelete asks the engine it. A volume without the stamp, or
+		// with another run's, still refuses.
+		p.handleVolumeDelete(w, r, segs)
+	case isContainerDelete(segs, r.Method):
+		// BEFORE allowed(), and on BOTH wires. allowed()'s containers clause
+		// used to answer this route by forwarding the query unread; the single
+		// author of removal semantics is containerremove.go now, and allowed()
+		// refuses the shape outright so it cannot silently re-author.
+		p.handleContainerRemove(w, r, libpod)
 	case isPrune(segs, r.Method):
 		p.deny(w, "pruning (%s /%s) is not permitted. A prune names no object, so this "+
 			"proxy has nothing to check it against, and what it deletes OUTLIVES this "+
@@ -345,7 +353,28 @@ func libpodExamined(segs []string, method string) bool {
 	if _, ok := isLibpodLifecycle(segs, method); ok {
 		return true
 	}
-	return isBuild(segs) || isImagePull(segs) || isContainerCreate(segs)
+	// Removal is read by containerremove.go, which is the single author of its
+	// parameter semantics for BOTH wires. It must be named here because this
+	// gate runs before the ownership gate and before the switch, so without it
+	// the libpod spelling dies at the schema gate.
+	if isContainerDelete(segs, method) {
+		return true
+	}
+	// `podman volume rm` (issue #464 step 3). handleVolumeDelete reads the whole
+	// route — the name is the only thing it carries — and asks the engine whose
+	// volume it is. Without this the libpod spelling dies at the schema gate
+	// while the compat spelling is scoped, which is the by-spelling boundary
+	// safeMethod's own comment names as the thing to avoid.
+	if isVolumeDelete(segs, method) {
+		return true
+	}
+	// `podman volume create` (issue #464). handleVolumeCreate is wire-agnostic —
+	// isVolumeCreate matches normalised segments — and the libpod body was
+	// MEASURED field by field: {"Name":...,"Driver":"local","Label":{...},
+	// "Labels":null,"Options":{},"IgnoreIfExists":false,"UID":null,"GID":null}.
+	// It has to be examined here because a named volume is only usable if this
+	// run can CREATE one, and only stamped as this run's if snug reads the body.
+	return isBuild(segs) || isImagePull(segs) || isContainerCreate(segs) || isVolumeCreate(segs)
 }
 
 // safeMethod is the other half of the gate: a GET or a HEAD changes nothing and
@@ -399,14 +428,15 @@ func isImagePull(s []string) bool {
 // endpoint. Matched separately from allowed() (which already refuses it, see
 // the case "archive", "export" comment below) purely so the refusal can name
 // the alternative rather than fall through to the generic "not permitted".
-// DELETE /containers/{id} — `docker rm`, and what `docker run --rm` issues
-// after the container exits — has no case of its own any more. It is one of the
-// container-addressed routes the ownership gate takes before this switch runs
-// (ownership.go), and it then falls through to allowed()'s containers clause
-// like every other operation on a container this run created.
-//
-// Deleted rather than kept beside the gate on purpose: two ownership checks in
-// one package is the shape where one gets updated and the other does not.
+// DELETE /containers/{id} — `docker rm`, `podman rm`, and what `--rm` issues
+// after the container exits — has a case again, and it is isContainerDelete in
+// containerremove.go. The ownership gate still takes the route first and still
+// answers the only two questions it has ever answered (is this container this
+// run's, and what is its immutable id); what it does not read is the QUERY
+// STRING, and `?depend=true` makes the engine destroy containers the gate never
+// saw. There is still exactly one ownership check: the gate authors ADDRESSING,
+// containerremove.go authors removal PARAMETERS, and they are not two spellings
+// of one rule.
 
 // isImageDelete and isVolumeDelete match `docker rmi` and `docker volume rm`.
 //
@@ -545,6 +575,14 @@ func allowed(segs []string, method string) bool {
 		if len(segs) == 1 {
 			return true // list
 		}
+		if method == http.MethodDelete && len(segs) == 2 {
+			// isContainerDelete takes this in ServeHTTP before allowed() runs.
+			// Refused here rather than left to fall through to `return true`
+			// below, so that a future edit removing that case does not quietly
+			// restore "forward the removal query unread" — which is what this
+			// clause did until containerremove.go became its author.
+			return false
+		}
 		if len(segs) >= 3 {
 			switch segs[2] {
 			case "archive", "export":
@@ -576,7 +614,7 @@ func allowed(segs []string, method string) bool {
 		// shell in it grants nothing running it did not. Refusing attach broke
 		// `docker run` outright, which fails with the memorable
 		// "unable to upgrade to tcp, received 403".
-		return true // start, stop, wait, logs, inspect, kill, rm, stats, attach, exec
+		return true // start, stop, wait, logs, inspect, kill, stats, attach, exec
 
 	case "exec":
 		// An exec INSTANCE is created by containers/{id}/exec, which the clause

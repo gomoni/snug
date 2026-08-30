@@ -1,6 +1,7 @@
 package dockerproxy
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -148,9 +149,23 @@ func judgeRestartPolicyName(name string, spell func(string) string) error {
 // one through checkOne and returns the set to forward. This is the part
 // create.go's own comment calls already schema-free: checkOne takes a path
 // and a bool, nothing about docker or podman.
-func (p *Proxy) checkMountRequests(reqs []mount) ([]mount, error) {
+func (p *Proxy) checkMountRequests(ctx context.Context, reqs []mount) ([]mount, error) {
 	var out []mount
 	for _, m := range reqs {
+		// A named volume is judged by namedvolume.go, not by checkOne: it names
+		// no host path, so there is nothing for checkOne to resolve or rewrite,
+		// and what makes it safe is an answer from the ENGINE about what the
+		// name holds (issue #464). It is forwarded as the name, which is the one
+		// place this package forwards a reference it did not resolve itself —
+		// permitted only because the engine resolves it inside its own store and
+		// the check proves the store entry is an option-free local directory.
+		if m.Type == "volume" {
+			if err := p.checkNamedVolume(ctx, m.Source); err != nil {
+				return nil, err
+			}
+			out = append(out, m)
+			continue
+		}
 		c, err := p.checkOne(m.Source, m.Target, m.ReadOnly)
 		if err != nil {
 			return nil, err

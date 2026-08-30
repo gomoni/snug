@@ -139,7 +139,11 @@ var classifiedPaths = map[string]bool{
 	// (libpodcreate.go), the same shape images/pull earned its own entry
 	// with.
 	"containers/create": true,
-	"volumes/create":    false,
+	// Issue #464: handleVolumeCreate reads this body on BOTH wires — the libpod
+	// spelling was measured field by field — because a named volume is only
+	// usable if this run can create one, and only OWNED by this run if snug
+	// stamps the label on the way through.
+	"volumes/create": true,
 }
 
 // classifiedLifecycle is the third column, and it exists because the lifecycle
@@ -148,19 +152,28 @@ var classifiedPaths = map[string]bool{
 // above can express it. Same rule as both — the value is the decision and it
 // must agree with libpodExamined.
 //
-// attach is here as FALSE and that is the entry worth reading: it is body-less
-// like the two trues, and it is refused anyway because it is a HIJACK. Recording
-// it false rather than omitting it is what stops "body-less" being read as the
-// whole rule (issues #465/#508).
+// The falses are the entries worth reading: every one of them is body-less like
+// the trues, and each is refused for its own reason. Recording them rather than
+// omitting them is what stops "body-less" being read as the whole rule.
 var classifiedLifecycle = map[string]bool{
 	"start":   true,
 	"wait":    true,
-	"attach":  false,
-	"stop":    false,
-	"kill":    false,
-	"restart": false,
-	"pause":   false,
-	"resize":  false,
+	"stop":    true,
+	"kill":    true,
+	"restart": true,
+	"pause":   true,
+	"unpause": true,
+	// attach is FALSE and it is the entry worth reading: body-less like every
+	// true above, and refused anyway because it is a HIJACK.
+	"attach": false,
+	// resize frames a stream this proxy does not frame.
+	"resize": false,
+	// checkpoint and restore are the sharpest falses. They are body-less too,
+	// and their `export=`/`import=` name a HOST PATH the ENGINE resolves in its
+	// derived view — checkOne's rule, applied to a query parameter. A path is
+	// never metadata, however empty the body.
+	"checkpoint": false,
+	"restore":    false,
 }
 
 func TestEveryLifecycleVerbIsClassified(t *testing.T) {
@@ -295,9 +308,6 @@ func TestNoUnexaminedLibpodBodyReachesTheEngine(t *testing.T) {
 	sock, eng, _ := startProxyMode(t, policy.PodmanBuild)
 
 	for _, seg := range routerSegments(t) {
-		if libpodExamined([]string{seg}, http.MethodPost) {
-			continue
-		}
 		for _, m := range []struct{ method, path string }{
 			{http.MethodPost, "/v5.0.0/libpod/" + seg + "/create"},
 			{http.MethodPost, "/libpod/" + seg + "/prune"},
@@ -306,6 +316,17 @@ func TestNoUnexaminedLibpodBodyReachesTheEngine(t *testing.T) {
 			// engine over a schema this filter does not read.
 			{http.MethodDelete, "/v5.0.0/libpod/" + seg + "/abc"},
 		} {
+			// Asked of the WHOLE PATH, not of the first segment. Examination has
+			// been finer than a segment since issue #459 (images/pull), and with
+			// issue #464 it is finer for a METHOD too: `volumes` is unexamined
+			// for POST and examined for DELETE, because handleVolumeDelete reads
+			// that route. A segment-level skip would drive an examined route
+			// here and then read snug's own ownership question to the engine as
+			// the client's request reaching it unexamined.
+			segs, _, _, ok := normaliseFull(m.path)
+			if !ok || libpodExamined(segs, m.method) {
+				continue
+			}
 			t.Run(m.method+" "+m.path, func(t *testing.T) {
 				before := eng.reached.Load()
 				code, resp := do(t, sock, m.method, m.path, escape)

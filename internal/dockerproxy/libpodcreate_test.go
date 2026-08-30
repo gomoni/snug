@@ -115,8 +115,15 @@ func TestLibpodRefusedFieldsFailClosed(t *testing.T) {
 		{"publish_image_ports", "publish_image_ports", "true", "publish_image_ports"},
 		{"weightDevice", "weightDevice",
 			`{"/dev/null":{"major":0,"minor":0,"weight":100}}`, "weightDevice is not permitted"},
-		{"volumes", "volumes",
-			`[{"Name":"myvol","Dest":"/data","IsAnonymous":false}]`, "volumes is not permitted"},
+		// An ANONYMOUS volume, and the payload is the measured one: podman sends
+		// an empty Name with IsAnonymous FALSE beside it (`-v /anon`), so a
+		// check written on IsAnonymous would forward every one of them. A NAMED
+		// volume is admitted since issue #464 and is covered by
+		// namedvolume_test.go.
+		{"volumes, anonymous", "volumes",
+			`[{"Name":"","Dest":"/anon","IsAnonymous":false}]`, "volumes is not permitted"},
+		{"volumes, named with a SubPath — a path the engine resolves inside it", "volumes",
+			`[{"Name":"myvol","Dest":"/data","SubPath":"../../etc"}]`, "SubPath"},
 		{"healthconfig", "healthconfig",
 			`{"Test":["CMD-SHELL","true"],"Interval":30000000000,"Timeout":30000000000,"Retries":3}`,
 			"healthconfig is not permitted"},
