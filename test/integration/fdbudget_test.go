@@ -25,7 +25,16 @@ import (
 // MEASURED with the binary as shipped at the time, K = N doors + 9 under
 // @net: K=53 ran 15/15; K=54, 55, 56 refused 20/20 with fd 62 already holding
 // an eventfd, an eventpoll and the N socket respectively; K=57 refused earlier
-// by checkFDBudget. After the fix, K=54, 55 and 56 all run.
+// by checkFDBudget. After the reservation, K=54, 55 and 56 all run.
+//
+// The reservation alone was not the whole fix, and THIS test is what found the
+// rest: it was written on a host whose /proc/self/cgroup does not resolve, and
+// went red on both CI runners at "exactly the budget" with `fd 62 ... ALREADY
+// OPEN (/sys/fs/cgroup/cpu.max)` — a descriptor the Go runtime opens before
+// main and keeps, which no reservation can preempt. fdPremainSlack is the
+// answer, and internal/stage's
+// TestTheReservationSurvivesWhatTheRuntimeOpensBeforeMain is the
+// host-independent regression for it.
 //
 // This test drives the boundary from OUTSIDE snug, because that divergence is
 // between two processes and no unit test in internal/stage can see it: P0's

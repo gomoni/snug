@@ -75,10 +75,13 @@ func spec() string {
 	fmt.Fprintf(&b, "  fd %-4d lifeline      read end of an anonymous pipe; P0 holds the write end\n", fdLife)
 	fmt.Fprintf(&b, "  fd %-4d bwrap-info    READ end of bwrap's --info-fd pipe; the stage parses it, P0 does not\n", fdBwrapInfo)
 	fmt.Fprintf(&b, "  fd %-4d.. sandbox     K descriptors, dup3'd to 3..3+K-1 in the bwrap child\n", fdSandboxBase)
+	fmt.Fprintf(&b, "  fd %-4d.. slack       %d numbers left free for what the Go runtime opens BEFORE main and keeps\n",
+		fdSandboxBase+maxPassthrough, fdPremainSlack)
 	fmt.Fprintf(&b, "  fd %-4d N-socket      AF_INET socket CREATED IN N; still answers for N after the move\n", fdNetSock)
 	fmt.Fprintf(&b, "  fd %-4d netns-N       the descriptor P1 pins on N before it leaves (not CLOEXEC until __stage-serve)\n", fdNetnsN)
 	fmt.Fprintf(&b, "  budget        K <= %d, checked on BOTH sides of the control socket (checkFDBudget)\n", maxPassthrough)
-	fmt.Fprintf(&b, "  parking       fd %d and fd %d are dup3 TARGETS; each is refused if already open (requireFDFree)\n", fdNetSock, fdNetnsN)
+	fmt.Fprintf(&b, "  reservation   fd %d and fd %d are CLAIMED at P1's first instant (reserveParkingFDs, refused if already open)\n", fdNetSock, fdNetnsN)
+	fmt.Fprintf(&b, "  parking       the same two are dup3 TARGETS later; each is refused if its reservation is gone (requireFDReserved)\n")
 	fmt.Fprintln(&b)
 
 	fmt.Fprintln(&b, "BWRAP UNSHARE SET under policy.NetnsStage (internal/policy/bwrap.go)")

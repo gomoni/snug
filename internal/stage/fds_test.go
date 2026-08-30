@@ -1,7 +1,9 @@
 package stage
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -311,4 +313,137 @@ func TestTheReservationIsWhatMakesTheBudgetExact(t *testing.T) {
 	if !strings.Contains(err.Error(), "reserveParkingFDs") {
 		t.Errorf("the refusal does not name what should have claimed the descriptor:\n%v", err)
 	}
+}
+
+// measuredPremainFDs is how many descriptors the Go runtime was MEASURED to
+// open before main and keep: the cgroup CPU limit file(s) that
+// defaultGOMAXPROCSInit leaves open (two under cgroup v1 — cpu.cfs_quota_us
+// and cpu.cfs_period_us; one under v2 — cpu.max), plus netpoll's eventpoll and
+// eventfd, observed at fd 3 and fd 4 in a Go program's descriptor table at its
+// first statement. It is a fact about the runtime, where fdPremainSlack is
+// snug's policy about it, and the test asserts the second covers the first.
+const measuredPremainFDs = 4
+
+// fillToTheBudgetEnv switches this test binary into its child role. The child
+// has to rearrange its own descriptor table wholesale, which no test sharing a
+// process with the rest of the package could survive.
+const fillToTheBudgetEnv = "SNUG_TEST_FILL_TO_THE_BUDGET"
+
+// TestTheReservationSurvivesWhatTheRuntimeOpensBeforeMain is the permanent
+// regression for the CI failure of the reservation itself (GitHub Actions run
+// 33301432323, both the ubuntu and the Tumbleweed job, at exactly the budget):
+//
+//	stage: fd 62, where the N socket must be parked, is ALREADY OPEN
+//	(/sys/fs/cgroup/cpu.max)
+//
+// reserveParkingFDs claims the two numbers at P1's first instant, which is
+// early enough for every descriptor P1 opens ITSELF and too late for the ones
+// the Go runtime opens before main — the cgroup CPU limit file it keeps for
+// the life of the process, and netpoll's pair. The kernel hands out the lowest
+// free descriptor, so with the block at its maximum those land exactly on the
+// reserved numbers, and the reservation can only refuse. fdPremainSlack is the
+// gap that keeps them below it.
+//
+// The failure is invisible on a host whose /proc/self/cgroup does not resolve
+// (the author's reads `0::/../../app.slice/...`, so cgroup.OpenCPU fails with
+// ErrNoCgroup and the runtime holds nothing), which is exactly why this test
+// does not wait for a host to supply the collision: the child builds a block
+// of the maximum permitted size and then opens measuredPremainFDs descriptors
+// of its own, which is the same descriptor table by construction, on any host.
+func TestTheReservationSurvivesWhatTheRuntimeOpensBeforeMain(t *testing.T) {
+	if os.Getenv(fillToTheBudgetEnv) != "" {
+		fillToTheBudgetAndReserve(t)
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$", "-test.v")
+	cmd.Env = append(os.Environ(), fillToTheBudgetEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("with a pass-through block of exactly %d descriptors and %d more opened "+
+			"above it, the reservation did not survive — that is the collision fdPremainSlack "+
+			"exists to prevent: %v\n%s", maxPassthrough, measuredPremainFDs, err, out)
+	}
+	if !strings.Contains(string(out), "FD-SLACK-CHILD-RESERVED") {
+		t.Fatalf("the child exited 0 without reaching the reservation, so this test asserted "+
+			"nothing:\n%s", out)
+	}
+}
+
+// fillToTheBudgetAndReserve is the child half. It occupies every free
+// descriptor from fdSandboxBase up to the top of the permitted block, exactly
+// as an inherited pass-through block at the budget would, then opens
+// fdPremainSlack more — standing in for the runtime's pre-main descriptors,
+// which cannot be created on demand but occupy numbers the same way — and only
+// then reserves.
+func fillToTheBudgetAndReserve(t *testing.T) {
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devNull.Close()
+
+	// reserveParkingFDs dup3's fdControl as its placeholder, so that number
+	// must hold something. In this binary it is whatever the runtime put there;
+	// dup3 from it is valid either way, and it is only ever a SOURCE here.
+	if err := requireFDFree(fdControl, "the control socket"); err == nil {
+		if err := unix.Dup3(int(devNull.Fd()), fdControl, 0); err != nil {
+			t.Fatalf("standing in for the control socket at fd %d: %v", fdControl, err)
+		}
+	}
+
+	// Only free numbers are taken: an occupied one already counts towards the
+	// block, and dup3'ing over a descriptor this binary is using (the test
+	// framework's, the runtime's) would break the child for a reason that has
+	// nothing to do with the subject.
+	for fd := fdSandboxBase; fd < fdSandboxBase+maxPassthrough; fd++ {
+		if err := requireFDFree(fd, "a block slot"); err != nil {
+			continue
+		}
+		if err := unix.Dup3(int(devNull.Fd()), fd, 0); err != nil {
+			t.Fatalf("filling the pass-through block at fd %d: %v", fd, err)
+		}
+	}
+
+	// The property the slack exists for: with the block full, the next
+	// descriptors the kernel hands out must still be BELOW the reserved
+	// numbers. Pre-fix, with fdNetSock at 62 and no slack term, the first of
+	// these landed on it — which is what CI reported.
+	//
+	// The count is the MEASUREMENT, deliberately not fdPremainSlack: a test
+	// that opened as many descriptors as the constant permits would move with
+	// the constant and could never fail, which is exactly how the pre-fix
+	// arithmetic went unnoticed. It is compared against the constant instead.
+	if fdPremainSlack < measuredPremainFDs {
+		t.Fatalf("fdPremainSlack is %d, but the Go runtime was measured to open %d "+
+			"descriptors before main and keep them; the reservation cannot preempt any of "+
+			"them, so the block may not grow within %d of fdNetSock",
+			fdPremainSlack, measuredPremainFDs, measuredPremainFDs)
+	}
+	for i := 0; i < measuredPremainFDs; i++ {
+		f, err := os.Open(os.DevNull)
+		if err != nil {
+			t.Fatalf("opening stand-in descriptor %d: %v", i, err)
+		}
+		defer f.Close()
+		if int(f.Fd()) >= fdNetSock {
+			t.Fatalf("with the pass-through block at its maximum (%d), descriptor %d of %d "+
+				"opened above it landed on fd %d, at or above fdNetSock (%d) — the slack is "+
+				"too small for the descriptors this process did not open itself",
+				maxPassthrough, i+1, measuredPremainFDs, f.Fd(), fdNetSock)
+		}
+	}
+
+	if err := reserveParkingFDs(); err != nil {
+		t.Fatalf("the reservation was refused with a block at exactly the budget: %v", err)
+	}
+	for _, r := range []struct {
+		fd   int
+		what string
+	}{{fdNetSock, "the N socket"}, {fdNetnsN, "the pinned netns descriptor"}} {
+		if err := requireFDReserved(r.fd, r.what); err != nil {
+			t.Errorf("reserveParkingFDs returned nil but %s is not claimed: %v", r.what, err)
+		}
+	}
+	fmt.Println("FD-SLACK-CHILD-RESERVED")
 }

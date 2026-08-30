@@ -8,6 +8,7 @@ import (
 
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/profile"
+	"github.com/gomoni/snug/internal/stage"
 )
 
 // pastaGoldenCtx pins HostNameservers to ONE routable address so the golden
@@ -50,10 +51,10 @@ func TestGoldenPastaArgv(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Resolve(%v): %v", tc.sel, err)
 			}
-			// PastaTargetStage(0, 63), exactly as dryrun.go's own NetnsStage
+			// PastaTargetStage(0, stage.NetnsFD), exactly as dryrun.go's own NetnsStage
 			// arm calls it (dryrun.go:~1500) — the placeholder every real
 			// --dry-run prints, not a fixture invented for this test.
-			args := p.PastaArgs(policy.PastaTargetStage(0, 63))
+			args := p.PastaArgs(policy.PastaTargetStage(0, stage.NetnsFD))
 			got := "pasta " + strings.Join(args, " ") + "\n"
 
 			path := filepath.Join("testdata", "pasta."+tc.name+".txt")
@@ -84,7 +85,7 @@ func TestGoldenPastaArgv(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		args := strings.Join(p.PastaArgs(policy.PastaTargetStage(0, 63)), " ")
+		args := strings.Join(p.PastaArgs(policy.PastaTargetStage(0, stage.NetnsFD)), " ")
 		for _, mustNotContain := range []string{"-a ", "-g ", "fd00:5e79"} {
 			if strings.Contains(args, mustNotContain) {
 				t.Errorf("@net's argv contains %q — @net copies the host's addresses and must "+

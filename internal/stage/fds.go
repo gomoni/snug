@@ -98,7 +98,7 @@ const (
 	// started BEFORE pasta and parked until pasta came up. That parking is what
 	// a SIGKILL of snug could release early. One descriptor removes the whole
 	// ordering constraint.
-	fdNetSock = 62
+	fdNetSock = 66
 
 	// fdNetnsN is the descriptor P1 pins on N before it leaves. Chosen high so
 	// it never collides with the pass-through block above, whose size is
@@ -118,29 +118,78 @@ const (
 	// covers the other direction and is the half checkFDBudget cannot see:
 	// this process's OWN descriptors, allocated above the block by the Go
 	// runtime rather than by any policy, landing here first.
-	fdNetnsN = 63
+	fdNetnsN = 67
 )
 
-// maxPassthrough is how many descriptors the pass-through block can hold before
-// it reaches the LOWEST reserved descriptor above it. Derived, never written
-// down twice: it follows fdNetSock, which is the first thing the block would
-// collide with — adding a second reserved fd above the block without moving
-// this bound is exactly the collision checkFDBudget exists to refuse.
+// fdPremainSlack is how many descriptor numbers are left free BETWEEN the top
+// of the pass-through block and fdNetSock, for the descriptors the Go runtime
+// opens BEFORE main and keeps for the life of the process.
 //
-// This subtraction is only the true bound because reserveParkingFDs claims
-// both reserved numbers at P1's first instant. Without that it counts the
-// BLOCK and nothing else, while __stage-setup goes on to allocate three more
-// descriptors above the block before the second parking — the N socket, plus
-// the Go runtime's netpoll epoll and eventfd, which any background timer arms
-// — so the reachable maximum was three lower than the number this constant
-// (and checkFDBudget's message) stated. MEASURED at K = 53, 54, 55, 56 with
-// the block inherited from P0: 53 ran, and 54/55/56 were refused at the
-// parking with fd 62 already holding an eventfd, an eventpoll and the N
-// socket respectively. Raising the reserved numbers does not fix that shape,
-// because the kernel allocates the lowest free descriptor and the runtime's
-// pair follows the block wherever it goes; claiming the numbers first does,
-// and it makes this constant exact rather than approximately right.
-const maxPassthrough = fdNetSock - fdSandboxBase
+// It exists because reserveParkingFDs cannot claim a number the runtime took
+// first, and the runtime runs first by construction:
+// runtime/cgroup_linux.go's own comment says defaultGOMAXPROCSInit reads
+// /proc/self/cgroup and /proc/self/mountinfo "to find our current CPU cgroup
+// and open its limit file(s), which remain open". internal/runtime/cgroup's
+// CPU is {quotaFD, periodFD}: ONE descriptor under cgroup v2 (cpu.max), TWO
+// under v1 (cpu.cfs_quota_us, cpu.cfs_period_us). Netpoll's epoll and eventfd
+// are the other two, and they are pre-main as well whenever anything arms a
+// timer that early — MEASURED on the author's host, a Go program's descriptor
+// table at its first statement: 3=anon_inode:[eventpoll], 4=anon_inode:[eventfd].
+//
+// So four, and each one is named rather than rounded. The kernel hands out the
+// LOWEST free descriptor, so all four land immediately above the inherited
+// block; with the block at its maximum they land exactly on the reserved
+// numbers, which is what CI measured (GitHub Actions run 33301432323, both the
+// ubuntu and the Tumbleweed job, at exactly the budget): "fd 62, where the N
+// socket must be parked, is ALREADY OPEN (/sys/fs/cgroup/cpu.max)". It was
+// green on the author's machine because /proc/self/cgroup there reads
+// `0::/../../app.slice/...` — a relative path from a namespaced cgroup view,
+// so cgroup.OpenCPU fails with ErrNoCgroup and the runtime holds nothing.
+//
+// A future runtime that opens a FIFTH pre-main descriptor is not a silent
+// failure: reserveParkingFDs refuses it loudly and requireFDFree's message
+// names this constant.
+const fdPremainSlack = 4
+
+// maxPassthrough is how many descriptors the pass-through block can hold
+// before it reaches the descriptors reserved above it. Derived, never written
+// down twice: it follows fdNetSock, the first thing the block would collide
+// with, less the slack the Go runtime's own pre-main descriptors need — adding
+// a second reserved fd above the block without moving this bound is exactly
+// the collision checkFDBudget exists to refuse.
+//
+// BOTH terms are load-bearing, and each was a separate defect.
+//
+// The subtraction of fdSandboxBase alone counts the BLOCK and nothing else,
+// while __stage-setup goes on to allocate three more descriptors above the
+// block before the second parking — the N socket, plus the Go runtime's
+// netpoll epoll and eventfd. MEASURED at K = 53, 54, 55, 56 with the block
+// inherited from P0: 53 ran, and 54/55/56 were refused at the parking with fd
+// 62 already holding an eventfd, an eventpoll and the N socket respectively.
+// reserveParkingFDs is what closes that, by claiming the numbers before any of
+// those allocations happen.
+//
+// fdPremainSlack is the rest of it, and it is the part a reservation CANNOT
+// close: the runtime opens the cgroup CPU limit file, and often netpoll's
+// pair, before main runs at all, so those numbers are gone before P1 executes
+// its first statement. MEASURED on CI, where the author's host holds no cgroup
+// descriptor and so never saw it: at exactly the budget, "fd 62 ... is ALREADY
+// OPEN (/sys/fs/cgroup/cpu.max)". See fdPremainSlack.
+//
+// Raising the reserved numbers alone fixes neither shape, because the kernel
+// allocates the lowest free descriptor and every one of these allocations
+// follows the block wherever it goes. Claiming the numbers first plus leaving
+// slack below them is what makes this constant exact rather than approximately
+// right.
+const maxPassthrough = fdNetSock - fdSandboxBase - fdPremainSlack
+
+// NetnsFD is fdNetnsN under an exported name, for the one caller outside this
+// package that has to NAME the descriptor rather than hold it: `snug --dry-run`
+// prints the pasta argv, and pasta is aimed at /proc/<stage>/fd/<n>. A number
+// re-typed there is a copy of state that goes stale the instant this file
+// moves it, and the screen it goes stale on is the one CLAUDE.md calls "the
+// mechanism by which a human can trust snug at all".
+const NetnsFD = fdNetnsN
 
 // checkFDBudget refuses a pass-through block that would collide with the
 // pinned netns descriptor, LOUDLY and by name, at the two points where the
@@ -153,15 +202,18 @@ func checkFDBudget(n int) error {
 	}
 	if n > maxPassthrough {
 		return fmt.Errorf("stage: this policy needs %d pass-through descriptors, so the block "+
-			"would run from fd %d to fd %d and swallow the pinned network namespace "+
-			"descriptor at fd %d (the budget is %d).\n"+
+			"would run from fd %d to fd %d and reach the numbers reserved above it: fd %d..%d, "+
+			"the slack the Go runtime's pre-main descriptors need (fdPremainSlack), and then "+
+			"the N socket at fd %d and the pinned network namespace descriptor at fd %d "+
+			"(the budget is %d).\n"+
 			"      The fix is to RAISE fdNetSock and fdNetnsN in internal/stage/fds.go above "+
 			"the block — they are a free choice, not kernel constants, and each descriptor is "+
 			"dup3'd to its number explicitly. Do not lower the descriptor count: it is what the resolved policy "+
 			"actually needs (one per generated file, one for the seccomp filter, one for "+
 			"bwrap's --info-fd, two more for the --block-fd/--sync-fd gate on a container "+
 			"run, and one for the args memfd)",
-			n, fdSandboxBase, fdSandboxBase+n-1, fdNetnsN, maxPassthrough)
+			n, fdSandboxBase, fdSandboxBase+n-1, fdSandboxBase+maxPassthrough, fdNetSock-1,
+			fdNetSock, fdNetnsN, maxPassthrough)
 	}
 	return nil
 }
@@ -174,16 +226,19 @@ func checkFDBudget(n int) error {
 // two trust positions, neither a duplicate of the other.
 //
 // Why it matters. dup3(2) onto an occupied descriptor CLOSES it and reports
-// success, so a collision here has no error to notice. The only thing that can
-// occupy fdNetSock or fdNetnsN at P1's first instant is the inherited
-// pass-through block, whose size is policy-dependent: with K = 57 the block
-// runs 6..62 and swallows fdNetSock. P0's checkFDBudget refuses that count
-// first, and this refuses it again from the other side, because MainSetup does
-// not have the count and is not entitled to assume P0 checked it.
+// success, so a collision here has no error to notice. Two things can occupy
+// fdNetSock or fdNetnsN at P1's first instant. One is the inherited
+// pass-through block, whose size is policy-dependent: a block one over the
+// budget reaches fdNetSock. P0's checkFDBudget refuses that count first, and
+// this refuses it again from the other side, because MainSetup does not have
+// the count and is not entitled to assume P0 checked it. The other is a
+// descriptor the Go runtime opened before main, which no reservation can
+// preempt — that is what fdPremainSlack leaves room for, and this refusal is
+// what a runtime opening more of them than the slack anticipates looks like.
 //
 // The numbers are snug's own free choice, not kernel constants, so the fix
 // this message names is the same one checkFDBudget names: raise both reserved
-// descriptors above the block.
+// descriptors, and the slack below them, above the block.
 func requireFDFree(fd int, what string) error {
 	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != nil {
 		if errors.Is(err, unix.EBADF) {
@@ -200,10 +255,12 @@ func requireFDFree(fd int, what string) error {
 	return fmt.Errorf("stage: fd %d, where %s must be parked, is ALREADY OPEN (%s), and dup3 "+
 		"onto an occupied descriptor closes it and reports success — so this refuses instead "+
 		"of taking a live descriptor out of this process with no error to notice.\n"+
-		"      The pass-through block plus this process's own descriptors have reached the "+
-		"reserved range. The fix is to RAISE fdNetSock and fdNetnsN in internal/stage/fds.go "+
-		"above it, exactly as checkFDBudget's message says: both are a free choice, not "+
-		"kernel constants",
+		"      The pass-through block plus the descriptors this process did not open itself "+
+		"have reached the reserved range. If the occupant above is one of the Go runtime's "+
+		"(a cgroup cpu limit file, an eventpoll, an eventfd), it was opened before main and "+
+		"no reservation can preempt it: RAISE fdPremainSlack in internal/stage/fds.go. "+
+		"Otherwise RAISE fdNetSock and fdNetnsN above the block, exactly as checkFDBudget's "+
+		"message says. All three are a free choice, not kernel constants",
 		fd, what, occupant)
 }
 
