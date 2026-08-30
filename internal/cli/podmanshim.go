@@ -194,20 +194,21 @@ func warnAboutPodmanClient() {
 	// podman resolves to a genuine binary. podman's own CLI speaks the
 	// libpod-native API against $CONTAINER_HOST, and snug refuses a libpod
 	// request that changes state unless its own filter has read it — the
-	// test is "not GET or HEAD, and not examined" (libpodExamined). `build`
-	// (query-string parameters, shared with /build) and `pull`
-	// (query-string, issue #513) both work end to end. `run`'s own
-	// `containers/create` is read now too (podman's SpecGenerator body,
-	// issue #459 phase 2), so a `run` reaches CREATE — but MEASURED against
-	// a live engine this session, `run` still fails one step later: podman's
-	// own POST .../start and .../attach carry no body worth reading and are
-	// refused anyway, because they are POST and nothing has named them
-	// examined. That is the next gap, not this one; `docker run` is
-	// unaffected; it never speaks this API.
+	// test is "not GET or HEAD, and not examined" (libpodExamined).
+	//
+	// The whole `podman run -d` chain is read now: build and pull (query
+	// string), containers/create (the SpecGenerator body), the lifecycle
+	// verbs and removal. FOREGROUND `podman run` is the one that still
+	// stops, and it stops for a REASON rather than an omission: it posts
+	// `attach` before start, as a HIJACK, and admitting that route is a
+	// decision about the libpod attach stream (issues #465/#508) that the
+	// maintainer has ruled stays unmade. `docker run` is unaffected; it
+	// never speaks this API.
 	fmt.Fprint(os.Stderr,
-		"snug: podman here is genuine. `podman build` and `podman pull` work through\n"+
-			"      this sandbox's proxy end to end. `podman run` reaches container CREATE\n"+
-			"      now (issue #459) but still fails at START — podman's own start/attach\n"+
-			"      routes carry no body worth reading and are refused anyway, being POST\n"+
-			"      and unexamined. `docker run` is unaffected. Issue #459.\n")
+		"snug: podman here is genuine. `podman build`, `pull`, `run -d`, `stop`, `kill`,\n"+
+			"      `restart`, `pause`, `unpause`, `wait`, `rm` and the volume verbs all work\n"+
+			"      through this sandbox's proxy end to end. FOREGROUND `podman run` (without\n"+
+			"      -d) is the exception: it opens an attach stream this proxy does not frame,\n"+
+			"      and is refused there. Use `podman run -d` and `podman logs`, or `docker`,\n"+
+			"      which is unaffected.\n")
 }

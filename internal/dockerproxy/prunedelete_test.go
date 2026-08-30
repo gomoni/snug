@@ -2,6 +2,7 @@ package dockerproxy
 
 import (
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -29,6 +30,13 @@ type recorder struct {
 	// which is what lets a case assert the gate asked before it forwarded.
 	inspect     func(ref string) (int, string)
 	execInspect func(ref string) (int, string)
+	// volumeInspect answers GET /volumes/{name} — the lookup namedvolume.go
+	// makes both to judge a named-volume mount and to scope a volume removal
+	// (issue #464). Recorded for the same reason the two above are.
+	volumeInspect func(ref string) (int, string)
+	// body is the last forwarded request body, for the assertions that read
+	// what snug rewrote rather than only whether it forwarded.
+	body atomic.Value
 	// hijack, when set, is offered every request before the default
 	// record-and-200 handling and may take the connection over itself (via
 	// http.Hijacker) instead of answering as a normal response. It reports
@@ -59,6 +67,14 @@ func (rec *recorder) ownershipLookup(r *http.Request) (string, func(string) (int
 		return "", nil, false
 	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	// A VOLUME inspect has no /json tail — `GET /v1.41/volumes/{name}` is the
+	// whole route — so it is matched before the container/exec shape rather
+	// than being counted as a forwarded client request. Same reason the split
+	// exists at all: snug asking a question is not the client's operation
+	// reaching the engine.
+	if len(parts) >= 3 && parts[len(parts)-2] == "volumes" && rec.volumeInspect != nil {
+		return parts[len(parts)-1], rec.volumeInspect, true
+	}
 	if len(parts) < 4 || parts[len(parts)-1] != "json" {
 		return "", nil, false
 	}
@@ -79,6 +95,11 @@ func (rec *recorder) ownershipLookup(r *http.Request) (string, func(string) (int
 // seenURIs is seen() with the query string kept. Canonical addressing and
 // query-string preservation are both assertions about the forwarded URI, and
 // r.URL.Path cannot carry either.
+func (rec *recorder) lastBody() string {
+	v, _ := rec.body.Load().(string)
+	return v
+}
+
 func (rec *recorder) seenURIs() []string {
 	v, _ := rec.uris.Load().([]string)
 	return v
@@ -156,6 +177,13 @@ func startRecordedWith(t *testing.T, runLabel string, rec *recorder) (string, *r
 			return
 		}
 		rec.record(r.Method, r.URL.Path, r.URL.RequestURI())
+		// The forwarded BODY, so a case can assert what snug rewrote rather than
+		// only that something arrived. Needed by the volume-create stamp (issue
+		// #464): a stamp written into the field the engine does not read is
+		// invisible to every assertion about status codes.
+		if b, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)); err == nil {
+			rec.body.Store(string(b))
+		}
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte(`{"Id":"deadbeef"}`))
 	}))
@@ -357,14 +385,20 @@ func TestContainerRemovalFailsClosedWhenOwnershipCannotBeChecked(t *testing.T) {
 	})
 }
 
-// TestImageAndVolumeRemovalAreRefused.
+// TestImageRemovalIsRefused.
 //
-// Neither noun admits a truthful partition by run: snug stamps CONTAINERS, and
-// podman has no "label on pull", so a label-scoped image removal would answer
-// 200 and delete nothing — a capability the user asked for, silently doing
-// nothing, which is CLAUDE.md invariant 5. And the loss is not a cache: an image
-// an earlier run BUILT exists nowhere else and no re-pull restores it.
-func TestImageAndVolumeRemovalAreRefused(t *testing.T) {
+// An image admits no truthful partition by run: podman has no "label on pull",
+// so a label-scoped image removal would answer 200 and delete nothing — a
+// capability the user asked for, silently doing nothing, which is CLAUDE.md
+// invariant 5. And the loss is not a cache: an image an earlier run BUILT exists
+// nowhere else and no re-pull restores it.
+//
+// VOLUMES USED TO BE HERE and are not any more. They admit the partition images
+// do not, because snug stamps its run label at volume create since issue #464,
+// so `docker volume rm` is SCOPED rather than refused — namedvolume_test.go owns
+// that, including the negative half (another run's volume, and an unstamped one,
+// both still refuse).
+func TestImageRemovalIsRefused(t *testing.T) {
 	sock, rec := startRecorded(t, "snug.run=1234", nil)
 
 	for _, path := range []string{
@@ -373,8 +407,6 @@ func TestImageAndVolumeRemovalAreRefused(t *testing.T) {
 		// segment count would refuse one spelling and forward the other.
 		"/v1.41/images/localhost/warmcache:v1",
 		"/v5.0.0/libpod/images/93b60fc641",
-		"/v1.41/volumes/scratch",
-		"/v5.0.0/libpod/volumes/scratch",
 	} {
 		t.Run(path, func(t *testing.T) {
 			before := rec.requests.Load()

@@ -7,9 +7,14 @@ import (
 	"strings"
 )
 
-// libpodlifecycle.go is POST /libpod/containers/{id}/start and .../wait —
-// the two body-less lifecycle routes `podman run -d` needs after
-// containers/create (issue #459).
+// libpodlifecycle.go is the body-less POST lifecycle routes of the libpod wire —
+// start, stop, kill, restart, pause, unpause and wait — the set `podman run -d`
+// and the verbs that follow it need after containers/create (issue #459).
+//
+// REMOVAL IS NOT HERE. `DELETE /containers/{name}` has a compat twin, so its
+// parameters are authored once for both wires in containerremove.go; this file
+// is the libpod wire's reader and mixing a two-wire rule into it is how the two
+// spellings drift apart.
 //
 // WHY THESE CAN BE READ. Both carry an EMPTY body and put every parameter in
 // the query string, the property that already earned /libpod/build and
@@ -23,6 +28,19 @@ import (
 //	podman wait <id>
 //	  POST /containers/<id>/wait?interval=250ms
 //
+//	podman start <id>            # an EXISTING container, unlike `run -d`'s start
+//	  POST /containers/<id>/start?detachkeys=ctrl-p%2Cctrl-q
+//
+//	podman stop / kill / restart / pause / unpause <id>
+//	  POST /containers/<id>/stop?ignore=false&timeout=1
+//	  POST /containers/<id>/stop?ignore=true&timeout=3
+//	  POST /containers/<id>/stop?ignore=false                 # no -t
+//	  POST /containers/<id>/kill?signal=KILL                  # no -s
+//	  POST /containers/<id>/kill?signal=SIGTERM
+//	  POST /containers/<id>/restart?timeout=1
+//	  POST /containers/<id>/pause                             # no query at all
+//	  POST /containers/<id>/unpause                           # no query at all
+//
 // WHAT IS NOT HERE, and it is the half a reader needs: FOREGROUND `podman run`
 // does not reach start at all. It posts attach BEFORE it, as a HIJACK —
 //
@@ -31,9 +49,18 @@ import (
 // — and the CLI aborts with "incorrect server response code 200, expected 101"
 // against anything that answers it as an ordinary request. Admitting that route
 // is a decision about the libpod attach STREAM, not about an empty body, and it
-// belongs to issues #465/#508. stop, kill, restart, pause and resize are absent
-// for a smaller reason: their query surface was not measured, and a route is
-// admitted here on a measurement or not at all.
+// belongs to issues #465/#508, and the maintainer's ruling is that it stays
+// refused. `podman run -d` completes end to end without it.
+//
+// STILL ABSENT, and each for its own reason. `resize` frames a stream this
+// proxy does not frame. `checkpoint` and `restore` sit in the same CLI
+// lifecycle family and are the sharpest thing to keep out: `checkpoint?export=`
+// names a HOST PATH resolved in the ENGINE's derived view, which is isArchive's
+// argument verbatim, and checkOne's rule — a field carrying a path is
+// allowlistable only if snug both RESOLVES it and FORWARDS the resolved string
+// — applies to a query parameter exactly as it applies to a body field. A path
+// is never metadata. `init`, `mount`, `unmount`, `commit`, `update`, `rename`
+// and `export` need no arm: default-deny already has them.
 //
 // THE ABUSE SENTENCE. A hostile process inside the sandbox can use this to
 // start or wait on a container THIS RUN CREATED, and nothing else. The
@@ -72,8 +99,62 @@ var libpodLifecycleRoutes = map[string]lifecycleRoute{
 			// default-deny, so `dependencyContainers` refuses there. recursive
 			// therefore has nothing to reach that create did not already admit.
 			"recursive": "also start the container's declared dependencies (`--requires` at create)",
+			// MEASURED, and it is the lowercase spelling that is sent:
+			//
+			//	podman start <name>
+			//	  POST /containers/<id>/start?detachkeys=ctrl-p%2Cctrl-q
+			//
+			// `podman run -d` does not send it; `podman start` on an EXISTING
+			// container always does, which is why the first capture of this
+			// route missed it. It names the key sequence that detaches from an
+			// attached stream — no object, no path — and on a start with
+			// nothing attached the engine ignores it.
+			//
+			// The CAMEL spelling `detachKeys` is deliberately NOT admitted:
+			// podman's own `attach` sends BOTH spellings and its `start` sends
+			// only this one, so admitting the other would be admitting a
+			// parameter no measured client sends on this route.
+			"detachkeys": "the key sequence that detaches from an attached stream (`--detach-keys`)",
 		},
 	},
+	// EVERY parameter below changes how the ADDRESSED container behaves. None
+	// of them changes WHICH containers the engine acts on — that criterion is
+	// containerremove.go's, written out there because removal is where it bites,
+	// and it is the question to ask of anything added here.
+	"stop": {
+		verb: "stop",
+		metadata: map[string]string{
+			"ignore":  "answer 200 rather than 404 when the container is already gone (`--ignore`)",
+			"timeout": "seconds to wait for a graceful stop before the kill (`-t`)",
+		},
+	},
+	"kill": {
+		verb: "kill",
+		metadata: map[string]string{
+			// Metadata, and the justification has to be checkable rather than
+			// "it is just a number": the signal is delivered to PID 1 of a
+			// container THIS RUN CREATED, inside that container. A payload that
+			// can stop it can already end it. A signal name podman does not
+			// know is podman's to refuse.
+			//
+			// This holds because `signal` is the COMPLETE measured surface of
+			// the route. Do NOT extend it by analogy to a parameter that selects
+			// WHICH PROCESSES are signalled; default-deny already refuses one.
+			"signal": "the signal delivered to PID 1 of this run's container (`-s`)",
+		},
+	},
+	"restart": {
+		verb: "restart",
+		metadata: map[string]string{
+			// A restart re-runs the spec containers/create already judged. It
+			// reads no new spec and takes no new configuration.
+			"timeout": "seconds to wait for a graceful stop before the kill (`-t`)",
+		},
+	},
+	// pause and unpause carry NO query at all, measured. The empty map is the
+	// whole surface and default-deny gives the refusal for free.
+	"pause":   {verb: "pause", metadata: map[string]string{}},
+	"unpause": {verb: "unpause", metadata: map[string]string{}},
 	"wait": {
 		verb: "wait",
 		metadata: map[string]string{
@@ -115,6 +196,26 @@ func (p *Proxy) handleLibpodLifecycle(w http.ResponseWriter, r *http.Request, ro
 		return
 	}
 
+	// A repeated parameter is refused on this route for the reason
+	// containerremove.go refuses one, and it retro-hardens start and wait:
+	// MEASURED against podman 6.0.2, the engine reads the LAST value of a
+	// repeated query parameter where Go's own url.Values.Get reads the FIRST.
+	// No rule here should depend on two parsers agreeing about which end wins.
+	var repeated []string
+	for name, values := range q {
+		if len(values) > 1 {
+			repeated = append(repeated, name)
+		}
+	}
+	if len(repeated) > 0 {
+		sort.Strings(repeated)
+		p.deny(w, "the %s parameter %s appears more than once, and snug refuses a repeated "+
+			"parameter rather than picking an end: the engine reads the LAST value where Go's "+
+			"own parser reads the FIRST (measured, podman 6.0.2). Send each parameter once.",
+			route.verb, quoteList(repeated))
+		return
+	}
+
 	var unknown []string
 	for name := range q {
 		if _, ok := route.metadata[name]; !ok {
@@ -128,7 +229,7 @@ func (p *Proxy) handleLibpodLifecycle(w http.ResponseWriter, r *http.Request, ro
 			"measured parameter set (%s); a parameter outside it may name a host path, a "+
 			"container this run does not own or a stream this proxy does not frame, and it "+
 			"cannot be waved through on the strength of not being recognised.",
-			route.verb, quoteList(unknown), strings.Join(lifecycleParameterNames(route), ", "))
+			route.verb, quoteList(unknown), lifecycleParameterSet(route))
 		return
 	}
 
@@ -137,13 +238,16 @@ func (p *Proxy) handleLibpodLifecycle(w http.ResponseWriter, r *http.Request, ro
 
 // lifecycleParameterNames renders a route's admitted set for its refusal, in a
 // stable order so the message is the same on every run.
-func lifecycleParameterNames(route lifecycleRoute) []string {
+func lifecycleParameterSet(route lifecycleRoute) string {
+	if len(route.metadata) == 0 {
+		return "none — this route carries no query string at all"
+	}
 	names := make([]string, 0, len(route.metadata))
 	for name := range route.metadata {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	return names
+	return strings.Join(names, ", ")
 }
 
 // libpodLifecycleCase is the switch's predicate: a lifecycle route on the

@@ -1,6 +1,7 @@
 package dockerproxy
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -279,7 +280,7 @@ func (p *Proxy) handleCreate(w http.ResponseWriter, r *http.Request) {
 	//    bind /etc was dropped and forwarded, so the container started happily
 	//    without it. A user whose legitimate -v vanishes has no way to tell that
 	//    from a bug. Refusing names the path and the reason.
-	mounts, err := p.checkedMounts(hc)
+	mounts, err := p.checkedMounts(r.Context(), hc)
 	if err != nil {
 		p.deny(w, "%v", err)
 		return
@@ -773,7 +774,7 @@ func checkRestartPolicy(raw json.RawMessage) error {
 // Nothing is invented and nothing is silently dropped: a request either names
 // paths the sandbox already has, or it is refused with the offending path in the
 // message.
-func (p *Proxy) checkedMounts(hc map[string]json.RawMessage) ([]mount, error) {
+func (p *Proxy) checkedMounts(ctx context.Context, hc map[string]json.RawMessage) ([]mount, error) {
 	var reqs []mount
 
 	// Legacy "src:dst[:opts]" strings.
@@ -797,7 +798,20 @@ func (p *Proxy) checkedMounts(hc map[string]json.RawMessage) ([]mount, error) {
 					return nil, oerr
 				}
 			}
-			reqs = append(reqs, mount{Type: "bind", Source: parts[0], Target: parts[1], ReadOnly: ro})
+			// A source that is not a path is a VOLUME NAME (issue #464). The
+			// two are told apart the way the engine tells them apart — a
+			// leading `/` — and anything that is neither is refused by
+			// checkNamedVolume rather than falling through to checkOne's
+			// "must be an absolute path", which named the wrong problem.
+			//
+			// MEASURED, podman 6.0.2: the engine accepts this on the compat
+			// wire in both spellings, `Binds:["NAMEDVOL:/data"]` and
+			// `Mounts:[{"Type":"volume","Source":"NAMEDVOL",...}]`, each 201.
+			kind := "bind"
+			if !strings.HasPrefix(parts[0], "/") {
+				kind = "volume"
+			}
+			reqs = append(reqs, mount{Type: kind, Source: parts[0], Target: parts[1], ReadOnly: ro})
 		}
 	}
 
@@ -808,10 +822,13 @@ func (p *Proxy) checkedMounts(hc map[string]json.RawMessage) ([]mount, error) {
 			return nil, fmt.Errorf("HostConfig.Mounts is not a list of mounts")
 		}
 		for _, m := range ms {
-			if m.Type != "bind" {
-				// A volume's backing store is not knowable here, and tmpfs is
-				// harmless but unnecessary; neither is worth the surface.
-				return nil, fmt.Errorf("mount type %q is not permitted; only bind is", m.Type)
+			// "volume" joins "bind" with issue #464. A volume's backing store
+			// IS knowable — the engine is asked what the name holds before the
+			// mount is forwarded (namedvolume.go) — which is what changed. tmpfs
+			// is still absent: harmless but unnecessary, and not worth the
+			// surface.
+			if m.Type != "bind" && m.Type != "volume" {
+				return nil, fmt.Errorf("mount type %q is not permitted; only bind and volume are", m.Type)
 			}
 			reqs = append(reqs, m)
 		}
@@ -819,7 +836,7 @@ func (p *Proxy) checkedMounts(hc map[string]json.RawMessage) ([]mount, error) {
 	// The REQUEST is fully parsed at this point; everything past here — run
 	// each one through checkOne, rewrite Source to the resolved path — is
 	// shared with libpodcreate.go's own mount decoder (issue #459 phase 1).
-	return p.checkMountRequests(reqs)
+	return p.checkMountRequests(ctx, reqs)
 }
 
 // checkOne is a REWRITER, not a validator, and that is the sentence this file
@@ -967,7 +984,7 @@ func (p *Proxy) handleExecCreate(w http.ResponseWriter, r *http.Request) {
 // That single rule kills `type=none,o=bind,device=/host`, `device=/dev/*`, and
 // NFS/CIFS `o=addr=` remotes at their source — the separate call that plants a
 // host path under a volume name, to be referenced innocently later.
-func (p *Proxy) handleVolumeCreate(w http.ResponseWriter, r *http.Request) {
+func (p *Proxy) handleVolumeCreate(w http.ResponseWriter, r *http.Request, libpod bool) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
 	if err != nil {
 		p.deny(w, "reading request: %v", err)
@@ -977,6 +994,27 @@ func (p *Proxy) handleVolumeCreate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		p.deny(w, "volume create body: %v", err)
 		return
+	}
+
+	// DEFAULT-DENY over the whole field set, which this handler earned when the
+	// libpod body was measured field by field for issue #464:
+	//
+	//	compat  {"Name":...,"Driver":...,"DriverOpts":{},"Labels":{},"ClusterVolumeSpec":...}
+	//	libpod  {"Name":...,"Driver":"local","Label":{...},"Labels":null,
+	//	         "Options":{},"IgnoreIfExists":false,"UID":null,"GID":null}
+	//
+	// Forwarding what it did not refuse was defensible while this route was the
+	// only one of its kind; it is not, now that the route is libpodExamined and
+	// the body is the thing the stamp is written into. A field outside the set
+	// refuses by name rather than riding along unread (invariant 5).
+	for k := range req {
+		if !volumeCreateFields[k] {
+			p.deny(w, "the volume create field %q is one snug's filter has not read, so it "+
+				"refuses the request rather than forwarding it unexamined. snug reads this "+
+				"body's whole measured field set (%s); a field outside it may name a host "+
+				"path or a driver this proxy cannot judge.", k, strings.Join(volumeCreateFieldNames(), ", "))
+			return
+		}
 	}
 
 	var driver string
@@ -994,7 +1032,125 @@ func (p *Proxy) handleVolumeCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	p.forward(w, r, body)
+	// UID and GID chown the volume's directory. MEASURED null on every capture
+	// (`podman volume create` sends "UID":null,"GID":null), so refusing them
+	// costs `--uid`/`--gid` and nothing else — and a field snug has not read is
+	// not forwarded, which is the rule this handler is built on.
+	for _, k := range []string{"UID", "GID"} {
+		if v, ok := req[k]; ok && !isEmptyJSON(v) && string(v) != "null" {
+			p.deny(w, "volume %s is not permitted: it chowns the volume's directory, and snug "+
+				"has measured the CLI sending it null on every create, so it has never read "+
+				"what a value there does. Create the volume without it.", k)
+			return
+		}
+	}
+
+	// Stamp this run's label, so that removing the volume can be scoped the way
+	// removing a container is (issue #464 step 2). Without it there is no
+	// question `DELETE /volumes/{name}` could ask, and the asymmetry — a run
+	// that may create a volume but never clean one up — is the one this closes.
+	//
+	// THE TWO WIRES SPELL IT DIFFERENTLY, and getting this wrong is silent:
+	// MEASURED, `podman volume create --label a=b` sends
+	// {"Name":...,"Driver":"local","Label":{"a":"b"},"Labels":null,"Options":{},...}
+	// on the libpod wire — `Label`, singular, with `Labels` present and NULL
+	// beside it. docker-compat uses `Labels`. A stamp written into the field the
+	// engine does not read would leave every volume unowned while looking
+	// stamped, so the key is chosen by wire rather than written to both.
+	key := "Labels"
+	if libpod {
+		key = "Label"
+		// `Labels` alongside `Label` on this wire is refused rather than
+		// merged. MEASURED (redteam round on this branch): libpod honours BOTH
+		// fields, so a body carrying two label maps has two answers to "what is
+		// this volume labelled" and snug's own stamp is in only one of them.
+		// Refusing is what makes the stamp's survival a property rather than a
+		// race between two maps.
+		if v, ok := req["Labels"]; ok && !isEmptyJSON(v) {
+			p.deny(w, "volume create on the libpod wire carries both `Label` and `Labels`, "+
+				"and snug has measured only that the CLI fills `Label` (with `Labels` null "+
+				"beside it). Which one the engine reads when both are set decides whether "+
+				"snug's own ownership stamp survives, so this is refused rather than guessed "+
+				"at. Send the labels in `Label`.")
+			return
+		}
+	}
+	labels := map[string]string{}
+	if raw, ok := req[key]; ok && !isEmptyJSON(raw) {
+		if err := json.Unmarshal(raw, &labels); err != nil {
+			p.deny(w, "volume %s is not a map of strings", key)
+			return
+		}
+	}
+	lk, lv, ok := strings.Cut(p.runLabel, "=")
+	if !ok {
+		p.deny(w, "internal: run label %q is not key=value", p.runLabel)
+		return
+	}
+	labels[lk] = lv
+	enc, err := json.Marshal(labels)
+	if err != nil {
+		p.deny(w, "re-encoding volume %s: %v", key, err)
+		return
+	}
+	req[key] = enc
+
+	out, err := json.Marshal(req)
+	if err != nil {
+		p.deny(w, "re-encoding volume create body: %v", err)
+		return
+	}
+	p.forward(w, r, out)
+}
+
+// volumeCreateFields is the union of both wires' MEASURED field sets. Several
+// entries are here only so their refusal can name them — Options, DriverOpts,
+// ClusterVolumeSpec, UID and GID are all refused when non-empty below — because
+// a field refused by name reads better than the same field refused as unknown.
+var volumeCreateFields = map[string]bool{
+	"Name":              true,
+	"Driver":            true,
+	"Labels":            true, // compat's label map; on libpod it is null beside Label
+	"Label":             true, // libpod's label map, the one the CLI fills
+	"DriverOpts":        true, // refused non-empty
+	"Options":           true, // refused non-empty
+	"ClusterVolumeSpec": true, // refused non-empty
+	"IgnoreIfExists":    true, // a bool; names no path and selects no driver
+	"UID":               true, // refused non-null
+	"GID":               true, // refused non-null
+}
+
+func volumeCreateFieldNames() []string {
+	names := make([]string, 0, len(volumeCreateFields))
+	for k := range volumeCreateFields {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// handleVolumeDelete scopes `docker volume rm` / `podman volume rm` to volumes
+// THIS RUN created (issue #464 step 3). It is the third of the three steps that
+// make a named volume safe, and it is last on purpose: symmetry with a label is
+// create/rm for this run's own volumes, symmetry WITHOUT one is cross-run
+// destruction, so the label has to be stamped before the removal is scoped.
+func (p *Proxy) handleVolumeDelete(w http.ResponseWriter, r *http.Request, segs []string) {
+	if len(segs) != 2 {
+		p.deny(w, "removing volume %q is not permitted: a volume name carries no slash, so "+
+			"snug does not recognise this as a volume reference", strings.Join(segs[1:], "/"))
+		return
+	}
+	name := segs[1]
+	if !isVolumeName(name) {
+		p.deny(w, "%q is not a volume name ([a-zA-Z0-9][a-zA-Z0-9_.-]*), so snug refuses to "+
+			"forward it rather than letting the engine decide what it means", name)
+		return
+	}
+	if err := p.volumeOwnedByThisRun(r.Context(), name); err != nil {
+		p.deny(w, "%v.", err)
+		return
+	}
+	p.forward(w, r, nil)
 }
 
 // decodeObject decodes a JSON object into a map whose keys are spelled the way
