@@ -1186,21 +1186,24 @@ func resolveLinkForEnv(links map[string]string, g string) string {
 // rejectTargetInAnEphemeralDirectory refuses a target that sits directly in — or
 // IS — a directory some profile provides as an ephemeral tmpfs rooted at $HOME.
 //
-// THE CASE (issue #179). `mkdir ~/proj && snug ~/proj` was refused by the default
-// selection with a conflict: @home wants a tmpfs at {home}, @parent-ro wants a
-// read-only bind of the target's parent, and for a home-child target that parent
-// IS $HOME. The refusal was correct — there is no join between a tmpfs and a
-// bind, and inventing one is what invariant 1 forbids — but it named no working
-// command, and ~/myproject is an extremely common layout.
+// THE CASE (issue #179). `mkdir ~/proj && snug ~/proj`: @home wants a tmpfs at
+// {home}, and for a home-child target that tmpfs IS the target's parent.
 //
-// WHY THIS REFUSES RATHER THAN SUGGESTING. A selection without @parent-ro does
-// resolve, and it is a perfectly good sandbox. The maintainer's call is that a
-// project directly in the home directory is the wrong thing to sandbox in the
-// first place, so snug refuses it outright and says to move the project — one
-// answer rather than a fork, and nobody can reach for the other branch by
-// mistake. The other branch used to be lethal; #220 closed it, so this is now a
-// usability rule rather than a security one, and the message says so plainly
-// instead of implying no working selection exists.
+// IT IS A USABILITY RULE AND THE MESSAGE MUST NOT DRESS IT AS A CONFLICT.
+// MEASURED, with this check lifted and the default selection of the day
+// (@sys @home @cwd-rw, since issue #550 dropped @parent-ro): `snug ~/proj`
+// resolves and runs correctly — the target is read-write, $HOME is the empty
+// tmpfs holding only the XDG directories and the target, ~/.ssh is absent.
+// There is no mount collision to report, so reporting one would be a false
+// reason for a true refusal. The maintainer's call is that a project living
+// directly in the directory snug replaces with an empty tmpfs is the wrong
+// thing to sandbox, and one answer beats a fork somebody guesses at.
+//
+// A COLLISION DOES EXIST for `-p @parent-ro`, which grants "the target's
+// parent" — the tmpfs itself for a home-child target, and there is no join
+// between a tmpfs and a bind (invariant 1). That is a second, real reason in
+// exactly one selection, and the message names it as such rather than as the
+// reason for the refusal.
 //
 // NOT KEYED ON $HOME, and that is the part measured before it was written.
 // @home provides FIVE tmpfs paths — {home} and the four XDG directories — so
@@ -1239,7 +1242,11 @@ func (p *Policy) rejectTargetInAnEphemeralDirectory() error {
 			continue
 		}
 		if p.Target == m.Guest || parent == m.Guest {
-			return ephemeralTargetError(p.Target, parent, m.Guest, p.Home, provenance(m))
+			// A resolved policy cannot hold a bind AND a tmpfs at one guest —
+			// Mounts is keyed by guest and join would have reported the kind
+			// conflict — so the collision the pre-fold half can see is
+			// unrepresentable here.
+			return ephemeralTargetError(p.Target, parent, m.Guest, p.Home, provenance(m), false)
 		}
 	}
 	return nil
@@ -1258,7 +1265,7 @@ func (p *Policy) rejectTargetInAnEphemeralDirectory() error {
 //     selection sandboxes those — @cwd-rw includes @home, so a bind of the target
 //     and the tmpfs collide however you select. Telling that user to "select
 //     differently" would be advice that cannot be followed.
-func ephemeralTargetError(target, parent, ephemeral, home, from string) error {
+func ephemeralTargetError(target, parent, ephemeral, home, from string, collides bool) error {
 	if target == ephemeral {
 		return fmt.Errorf("refusing to sandbox %s: it IS a directory %s provides as an empty, "+
 			"ephemeral tmpfs.\n"+
@@ -1268,17 +1275,25 @@ func ephemeralTargetError(target, parent, ephemeral, home, from string) error {
 			"           mkdir -p %s/src/myproject && snug %s/src/myproject",
 			VisibleText(target), from, VisibleText(home), VisibleText(home))
 	}
+	why := "This selection RESOLVES — nothing collides — and snug refuses the shape\n" +
+		"       anyway: a project living directly in the directory snug replaces with an\n" +
+		"       empty tmpfs is the wrong thing to sandbox, and one answer beats a fork\n" +
+		"       somebody guesses at. (Add -p @parent-ro and it collides too: that grant's\n" +
+		"       \"the target's parent\" IS the tmpfs.)"
+	if collides {
+		why = "This selection ALSO COLLIDES — a grant in it binds the same path the tmpfs\n" +
+			"       claims — and the shape is refused either way: a project living directly in\n" +
+			"       the directory snug replaces with an empty tmpfs is the wrong thing to\n" +
+			"       sandbox, and one answer beats a fork somebody guesses at."
+	}
 	return fmt.Errorf("refusing to sandbox %s: it sits directly in %s, which %s provides as an "+
 		"empty, ephemeral tmpfs.\n"+
-		"       So the parent snug would grant IS that directory, and a read-only bind of it\n"+
-		"       cannot coexist with the tmpfs. Move the project one level down:\n"+
+		"       Move the project one level down:\n"+
 		"           mv %s %s/src/ && snug %s/src/%s\n"+
-		"       A selection without @parent-ro does resolve; snug does not offer it here. A\n"+
-		"       project sitting directly in an ephemeral directory is the wrong thing to\n"+
-		"       sandbox, and one answer beats a fork somebody guesses at.",
+		"       %s",
 		VisibleText(target), VisibleText(ephemeral), from,
 		VisibleText(target), VisibleText(home), VisibleText(home),
-		VisibleText(filepath.Base(target)))
+		VisibleText(filepath.Base(target)), why)
 }
 
 // rejectUnboundedTmpfs refuses a policy that would emit a tmpfs with no

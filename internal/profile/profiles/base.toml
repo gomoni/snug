@@ -232,8 +232,12 @@ rw = ["{target}"]
 # The target's parent is readable. Everything under higher ancestors stays
 # invisible — not hidden, never granted. This is one line because the model has
 # no hiding operation to get wrong.
+# Since issue #550 this is a profile a human TYPES, so the description carries
+# the abuse sentence's first clause: `profile list`, `profile show` and the
+# refusal messages are the only places a user meets this grant, and a name plus
+# "the parent is readable" does not say that the siblings come with it.
 [profile.parent-ro]
-description = "The target's parent directory is readable."
+description = "The target's parent directory is readable — every sibling project in it too."
 ro = ["{target_parent}"]
 
 # ── a /tmp the host can also see ─────────────────────────────────────────────

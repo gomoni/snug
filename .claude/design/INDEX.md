@@ -393,7 +393,7 @@ It runs in both directions, and both are load-bearing:
 
 | arrangement | effect | who depends on it |
 |---|---|---|
-| `ro {parent}` + `rw {target}` | target is writable inside a read-only parent | the default selection — `@cwd-rw` over `@parent-ro` |
+| `ro {parent}` + `rw {target}` | target is writable inside a read-only parent | `@cwd-rw` over `@parent-ro`, which is `snug -p @parent-ro <dir>` — the parent is not in the defaults |
 | `rw {target}` + `ro {target}/.git` | `.git` is read-only inside a writable target | the arrangement invariant 2 recommends for "X but not Y" |
 | tmpfs `$HOME` + `ro ~/.gitconfig` | a read-only host file inside a writable ephemeral home | `@git-ro`, `@claude`, every generated identity file |
 
@@ -437,7 +437,11 @@ podman   = "socket"               # off < socket < build
 
 There is deliberately no `[profile.null]`. It was tried and removed: a profile that grants nothing is a preference wearing a profile's clothes, and it is unreachable by its own documented purpose besides — `-p` only ever ADDS to `defaults`, so `-p @null` cannot subtract them, and cannot show "the true empty base" it claimed to. The floor of the lattice does not need a name in this file; it is what `Resolve` returns for an empty selection, and it is reachable directly with `snug --no-defaults --dry-run <dir>`. `-p @null` is a retired name that errors, naming `--no-defaults`.
 
-Nor is there a `[profile.default]`. **What a bare `snug <dir>` selects is the `defaults` *setting***, built in at `internal/profile/defaults.go` (`@sys @home @cwd-rw @parent-ro`) and replaceable wholesale by `defaults = [...]` in `~/.config/snug/config.toml`, because a default *selection* is a preference and a profile is a *grant*. `-p` adds to it; `--no-defaults` declines it.
+Nor is there a `[profile.default]`. **What a bare `snug <dir>` selects is the `defaults` *setting***, built in at `internal/profile/defaults.go` (`@sys @home @cwd-rw`) and replaceable wholesale by `defaults = [...]` in `~/.config/snug/config.toml`, because a default *selection* is a preference and a profile is a *grant*. `-p` adds to it; `--no-defaults` declines it.
+
+**Three names, not four: the target's PARENT is not in them.** `@sys` is a fixed enumeration, `@home` is an empty tmpfs and `@cwd-rw` is the directory the user named — each bounded by the grant itself. `@parent-ro` grants a directory the user did NOT name, and what that reaches depends on where the target happens to sit: every sibling project, their `.git/config`, their `.env` files, and any socket or FIFO in the tree. A grant whose blast radius is a property of the user's directory layout cannot be the one that is always on. It still ships, and `snug -p @parent-ro <dir>` is how a monorepo or a subdirectory target asks for it — the cost being that a target below a repository root does not see the `.git` above it until someone says so, and that a container `-v` of a SIBLING directory is refused where the target's own graft still works.
+
+**The ungranted parent is a writable ephemeral skeleton, not a read-only one.** bwrap creates the target's mount point inside whatever filesystem covers the parent path, and with no grant there that is `@home`'s tmpfs (or snug's own `/tmp` for a `/tmp` target). So `echo x > ../x` SUCCEEDS inside and evaporates at teardown — the host's `~/src` is untouched either way. It also means the parent is a directory the payload can rename, and `rename(2)` refuses only when the dentry being renamed is itself a mount point: renaming one that merely CONTAINS the target's mount point moves the mount and frees the path, after which `$SNUG_TARGET` is the payload's own directory and `snug attach` chdirs into it ([#553](https://github.com/gomoni/snug/issues/553)). Nothing written there reaches the host. `@parent-ro` anchored exactly one rung of that chain and never the ones above it.
 
 **Names are written bare here and published with a leading `@`.** `[profile.sys]` in `base.toml` is `@sys` everywhere a human meets it — on the command line, in `--dry-run` provenance, in `$SNUG_PROFILES`. The mark means *snug ships this*, and it is added by `profile.builtins()` when the embedded file is loaded rather than written into the file. `checkName` refuses a leading `@` in **every** file it parses, `base.toml` included, so the mark is unforgeable in both directions: a builtin cannot miss it, a profile in `~/.config/snug/profiles.d` cannot claim it.
 
@@ -1475,7 +1479,7 @@ Dependencies: `github.com/pelletier/go-toml/v2` (strict decode), `github.com/doc
 snug [flags] [dir] [-- cmd ...]
 ```
 
-`dir` defaults to `.`. A bare `snug <dir>` selects the **`defaults` setting** — built-in `@sys @home @cwd-rw @parent-ro` (`internal/profile/defaults.go`), replaced wholesale by `defaults = [...]` in `~/.config/snug/config.toml`. `-p` **adds** to it; `--no-defaults` declines it. There is no `[profile.default]`, because a default selection is a preference and a profile is a grant — one idea, one mechanism. `@net` is not in the list and must not be added: offline is the *absence* of the `@net` profile, so it cannot be re-enabled by accident.
+`dir` defaults to `.`. A bare `snug <dir>` selects the **`defaults` setting** — built-in `@sys @home @cwd-rw` (`internal/profile/defaults.go`), replaced wholesale by `defaults = [...]` in `~/.config/snug/config.toml`. `-p` **adds** to it; `--no-defaults` declines it. There is no `[profile.default]`, because a default selection is a preference and a profile is a grant — one idea, one mechanism. `@net` is not in the list and must not be added: offline is the *absence* of the `@net` profile, so it cannot be re-enabled by accident.
 
 There is no flag that grants less. A read-only project means not selecting `@cwd-rw`: `snug --no-defaults -p @sys -p @home -p @parent-ro <dir>`. Verbose on purpose (§2.5).
 

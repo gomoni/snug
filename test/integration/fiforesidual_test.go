@@ -99,7 +99,10 @@ func TestAFifoInAGrantedDirectoryStillReachesTheHost(t *testing.T) {
 			"printf '%%s' %s > %s\n",
 		filepath.Join(parent, "newfifo"), marker, pipe)
 
-	r := run(t, nil, proj, script).mustRun(t)
+	// @parent-ro is NAMED: the residual is the profile's, and since issue #550
+	// the profile is not in the default selection. What is being measured — a
+	// FIFO in a granted directory reaching the host — is unchanged.
+	r := run(t, []string{"-p", "@parent-ro"}, proj, script).mustRun(t)
 
 	if !strings.Contains(r.out, "Read-only file system") {
 		t.Errorf("mkfifo inside the read-only @parent-ro bind did not report a read-only "+

@@ -153,7 +153,7 @@ EDITOR            = true
 
 ```toml
 # ~/.config/snug/config.toml — preferences, no grants
-defaults = ["@sys", "@home", "@cwd-rw", "@parent-ro"]
+defaults = ["@sys", "@home", "@cwd-rw"]
 prompt   = "{lock} snug[{profiles}]:{cwd}$ "
 ```
 

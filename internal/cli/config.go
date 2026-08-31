@@ -298,7 +298,10 @@ func configCmd(args []string) int {
 	fmt.Println("REPLACES the built-in list rather than adding to it. -p NAME then adds to")
 	fmt.Println("whatever it resolved to, and --no-defaults declines it entirely:")
 	fmt.Println()
-	fmt.Println("  defaults = [\"@sys\", \"@home\", \"@cwd-rw\", \"@parent-ro\"]")
+	// DERIVED, not retyped. This line is an example a user copies into their
+	// own config.toml, and a copy of the shipped list drifts the moment the
+	// list changes — which it did when @parent-ro left it (issue #550).
+	fmt.Printf("  defaults = [%s]   # the built-in list, to edit\n", quotedNames(profile.BuiltinDefaults()))
 	fmt.Println()
 	fmt.Println("Nothing grants less: profiles only ever grant, and no flag reduces a resolved")
 	fmt.Println("policy. A read-only project is --no-defaults plus the profiles you do want.")
@@ -884,4 +887,15 @@ func showIdentity(id *policy.Identity, show func(string, []string)) {
 		rows = append(rows, "gh "+id.GhUser+" @ "+host)
 	}
 	show("identity", rows)
+}
+
+// quotedNames renders profile names as a TOML array body: "@sys", "@home".
+// Used by the two screens that show the built-in defaults as something to copy,
+// so neither can disagree with profile.BuiltinDefaults().
+func quotedNames(names []policy.ProfileName) string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		out = append(out, fmt.Sprintf("%q", string(n)))
+	}
+	return strings.Join(out, ", ")
 }

@@ -78,6 +78,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -659,8 +660,18 @@ func TestTargetWritableParentReadOnly(t *testing.T) {
 	if r := run(t, nil, proj, `touch ok`).mustRun(t); r.code != 0 {
 		t.Errorf("target should be writable: %s", r.out)
 	}
-	if r := run(t, nil, proj, `touch ../NOPE`).mustRun(t); r.code == 0 {
-		t.Error("the parent directory should be read-only")
+	// The parent is READ-ONLY under -p @parent-ro, and since issue #550 that is
+	// the only way it is granted at all. Both halves are asserted: the write
+	// fails with the grant (it is a ro bind), and the whole directory is absent
+	// without it — which is a stronger property than read-only and the reason
+	// the grant left the defaults.
+	if r := run(t, []string{"-p", "@parent-ro"}, proj, `touch ../NOPE`).mustRun(t); r.code == 0 {
+		t.Error("with @parent-ro the parent directory should be read-only")
+	}
+	r := run(t, nil, proj, `ls .. ; touch ../NOPE 2>&1`).mustRun(t)
+	if strings.Contains(r.out, "sibling") {
+		t.Errorf("a bare `snug <dir>` reached the target's sibling; the parent is not in the "+
+			"default selection since issue #550:\n%s", r.out)
 	}
 }
 
@@ -813,7 +824,7 @@ func TestDotdotGrantsTheParentAndNothingAbove(t *testing.T) {
 	requireSandbox(t)
 	proj, secret := target(t)
 
-	r := run(t, nil, proj, `ls ..`).mustRun(t)
+	r := run(t, []string{"-p", "@parent-ro"}, proj, `ls ..`).mustRun(t)
 	for _, want := range []string{"sibling", "sub"} {
 		if !strings.Contains(r.out, want) {
 			t.Errorf("dotdot should expose the parent's contents; %q missing from:\n%s", want, r.out)
@@ -931,31 +942,42 @@ func TestProfileFlagAddsToTheDefaultRatherThanReplacingIt(t *testing.T) {
 
 	// --no-defaults is the escape hatch, and it really does start from nothing.
 	//
-	// The name of the profile being looked for is load-bearing, and the previous
-	// version of this check got it wrong in the way this file exists to prevent:
-	// it asserted the absence of "dotdot", a profile that was renamed to
-	// `parent-ro` and therefore could never appear in SNUG_PROFILES at all. The
-	// assertion was structurally unable to fail. The guard against a repeat is
-	// the positive half below — the same string MUST be present without
-	// --no-defaults, so a future rename turns this into a failure rather than
-	// into silence.
-	const fromDefaults = "@parent-ro"
-
-	withDefaults := run(t, nil, proj, `echo "$SNUG_PROFILES"`).mustRun(t)
-	if !strings.Contains(withDefaults.out, fromDefaults) {
-		t.Fatalf("the defaults no longer include %q, so asserting its ABSENCE below "+
-			"would prove nothing. Update the constant to a profile the defaults "+
-			"really contain:\n%s", fromDefaults, withDefaults.out)
+	// ON --dry-run, AND ON A SELECTION THAT CANNOT RUN, because no runnable one
+	// can tell the flag from a no-op: the defaults are @sys @home @cwd-rw, every
+	// one of which a sandbox that starts at all needs (@cwd-rw includes home),
+	// so `--no-defaults` plus the profiles a run needs resolves to exactly the
+	// default list either way.
+	//
+	// REDTEAM, issue #550's round: the shape here asserted the absence of
+	// @git-ro — a profile nothing in the defaults names, so it was absent
+	// whether or not --no-defaults did anything. Two shapes before it asserted
+	// the absence of @parent-ro (a default then, not now) and of "dotdot" (a
+	// profile renamed to parent-ro and therefore unable to appear at all). Three
+	// assertions that could not fail. This one requires SNUG_PROFILES to be
+	// EXACTLY the one profile this command named, and the control below is the
+	// same command without the flag, which resolves to three.
+	profiles := func(t *testing.T, args ...string) string {
+		t.Helper()
+		out, _ := cli(t, nil, args...)
+		m := regexp.MustCompile(`SNUG_PROFILES\s+(\S+)`).FindStringSubmatch(out)
+		if m == nil {
+			t.Fatalf("snug %s printed no SNUG_PROFILES row, so nothing below is being "+
+				"asserted:\n%s", strings.Join(args, " "), out)
+		}
+		return m[1]
 	}
 
-	r = run(t, []string{"--no-defaults", "-p", "@sys", "-p", "@home", "-p", "@cwd-rw"},
-		proj, `echo "$SNUG_PROFILES"`).mustRun(t)
-	if strings.Contains(r.out, fromDefaults) {
-		t.Errorf("--no-defaults should not pull in the defaults' profiles:\n%s", r.out)
+	// CONTROL: without the flag the same command resolves the whole default
+	// list. Exit code is ignored on purpose — the --no-defaults arm exits 77,
+	// "target is not visible inside the sandbox: no profile grants it", which is
+	// the correct answer for a selection holding only @sys.
+	if got, want := profiles(t, "--dry-run", "-p", "@sys", proj), "@cwd-rw,@home,@sys"; got != want {
+		t.Fatalf("fixture: `snug -p @sys` resolved %q, want %q — if the defaults changed, "+
+			"the assertion below is measuring something else", got, want)
 	}
-	if !strings.Contains(r.out, "@sys") {
-		t.Errorf("SNUG_PROFILES was not printed at all, so the check above is "+
-			"satisfied by empty output:\n%s", r.out)
+	if got, want := profiles(t, "--dry-run", "--no-defaults", "-p", "@sys", proj), "@sys"; got != want {
+		t.Errorf("--no-defaults left %q selected; the run named one profile and the flag "+
+			"declined the rest, so @sys is the whole of it", got)
 	}
 }
 

@@ -16,12 +16,13 @@ import (
 // control proving the path really WOULD be refused if the predicate were
 // "visible at all" rather than "writable, at or above".
 func TestCheckEngineBinary(t *testing.T) {
-	// A1: a READ-ONLY ancestor. /home/u/proj is granted ro by @parent-ro, and
+	// A1: a READ-ONLY ancestor. /home/u/proj is granted ro by @parent-ro, which
+	// this row SELECTS (issue #550 took it out of the defaults), and
 	// /home/u/proj/other/podman sits under it but nowhere near @cwd-rw's rw
 	// grant at /home/u/proj/sub — so the only mount that covers it at all is
 	// read-only, and CheckEngineBinary must not refuse on visibility alone.
 	t.Run("A1: read-only ancestor is accepted", func(t *testing.T) {
-		p := resolveDefaults(t)
+		p := mustResolve(t, withParentRo()...)
 		const path = "/home/u/proj/other/podman"
 		if !p.HostPathVisible(path, false) {
 			t.Fatalf("fixture: %s is not visible at all, so this row asserts nothing about a "+
