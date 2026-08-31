@@ -265,3 +265,70 @@ func TestSSHConfigDirectoryCannotBeRenamedAway(t *testing.T) {
 			"in effect is not the one this test pinned:\n%s", r.out)
 	}
 }
+
+// TestMovingTheParentAcrossAnAnchorDeletesTheHostFiles pins the COST of the
+// anchors that close issue #553, and the assertion is the cost, not a fix.
+//
+// An anchor is a mount, so it is a filesystem boundary, so rename(2) across it
+// is EXDEV — and GNU mv answers EXDEV by copying and then deleting the source.
+// The delete descends through the read-write target bind and reaches the HOST,
+// while the copy lands in a tmpfs that evaporates at teardown.
+//
+// Measured against a main-built binary on the same layout, so the trade is on
+// the record rather than asserted:
+//
+//	inside                      before anchors        with anchors
+//	mv src/proj/sub/a.txt .     host file DESTROYED   host file DESTROYED
+//	mv src/proj /tmp/p          host file DESTROYED   host file DESTROYED
+//	mv src/proj p               host file SURVIVES    host file DESTROYED
+//
+// Only the third row moved. Its "before" column is not a safe outcome — it IS
+// issue #553: the rename succeeded because it carried the target's mount with
+// it, so the host was untouched only in the sense that everything reading
+// $SNUG_TARGET afterwards was reading the payload's own directory. The first
+// two rows are ordinary Unix and predate anchors entirely: every mount in a
+// snug sandbox is a boundary already.
+//
+// Found by the redteam agent in this change's own round. If this test ever
+// fails because the files SURVIVE, do not delete it — find out which of the
+// two mechanisms came back, because a surviving file here means either the
+// anchor is gone (#553 is open again) or something is no longer nested under
+// the target's rw bind.
+func TestMovingTheParentAcrossAnAnchorDeletesTheHostFiles(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	keep := filepath.Join(proj, "work.txt")
+	if err := os.WriteFile(keep, []byte("REAL-HOST-CONTENT\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The destination has to be on ANOTHER mount for rename(2) to answer EXDEV
+	// — $HOME, here. A move to a sibling name in the same anchor is EBUSY and
+	// harmless, which is worth knowing and is why this script is not the
+	// shorter one: `mv proj moved` beside itself destroys nothing.
+	r := run(t, nil, proj, `
+		parent="$(dirname "$SNUG_TARGET")"
+		cd "$(dirname "$parent")" || exit 1
+		mv "$(basename "$parent")" "$HOME/moved" 2>&1
+		echo "copy: $(cat "$HOME/moved/$(basename "$SNUG_TARGET")/work.txt" 2>&1)"`).mustRun(t)
+
+	if !strings.Contains(r.out, "copy: REAL-HOST-CONTENT") {
+		t.Fatalf("mv did not copy the file across the anchor, so this run says nothing "+
+			"about the delete that follows it:\n%s", r.out)
+	}
+	// mv cannot remove the mount point itself, and says so. That is the anchor
+	// and the target bind refusing the rename half; the files underneath are
+	// already gone by then.
+	if !strings.Contains(r.out, "Device or resource busy") {
+		t.Errorf("expected mv to fail removing the target's mount point (EBUSY) after "+
+			"copying:\n%s", r.out)
+	}
+
+	if _, err := os.Stat(keep); !os.IsNotExist(err) {
+		t.Errorf("the host file at %s survived (%v). Read this test's comment before "+
+			"changing anything: a survivor means either the anchor is gone and #553 is "+
+			"open again, or the target is no longer a read-write bind", keep, err)
+	}
+}

@@ -19,7 +19,9 @@ const anchorFrom = "(snug anchor)"
 const AnchorNote = "(snug anchor) rows are snug's own empty tmpfs at an ancestor of a grant. " +
 	"They hold nothing and grant nothing — the payload could already write that path through " +
 	"the tmpfs covering it — and they exist so it cannot rename the path out from under a " +
-	"mount (issue #553)."
+	"mount (issue #553). Each one is a filesystem BOUNDARY: moving a granted directory across " +
+	"one is a copy followed by a delete, and the copy lands in ephemeral storage while the " +
+	"delete reaches your host."
 
 // InstallAnchors mounts an empty tmpfs at every ancestor of a mount that a
 // payload could otherwise rename out from under it (issue #553).
@@ -100,6 +102,32 @@ const AnchorNote = "(snug anchor) rows are snug's own empty tmpfs at an ancestor
 // KindTmpfs and is itself a KindTmpfs, so re-running cannot change any
 // verdict. That is what lets internal/cli call it a second time after its own
 // post-Resolve mounts.
+//
+// # THE COST: an anchor is a filesystem boundary, and rename(2) will not cross one
+//
+// rename(2) returns EXDEV across mounts, and GNU mv answers EXDEV by copying
+// and then deleting the source. The delete descends through whatever rw grant
+// is nested under the path being moved, so it reaches the HOST, while the copy
+// lands in a tmpfs that evaporates at teardown. Measured inside a default
+// sandbox with target $HOME/src/proj/sub:
+//
+//	inside                      before anchors        with anchors
+//	mv src/proj/sub/a.txt .     host file DESTROYED   host file DESTROYED
+//	mv src/proj /tmp/p          host file DESTROYED   host file DESTROYED
+//	mv src/proj p               host file SURVIVES    host file DESTROYED
+//
+// The first two rows are ordinary Unix and predate this change: every mount in
+// a snug sandbox is already a boundary, so moving anything out of the target
+// into an ungranted path has always copied-and-deleted. The third row is what
+// anchoring costs, and its "before" column is not a safe outcome — it is
+// issue #553 itself: the rename SUCCEEDED because it carried the target's
+// mount with it, so the host was untouched only in the sense that the sandbox
+// had been deceived about where it was. A recoverable deception is not
+// obviously better than a destructive move, and the maintainer's call was to
+// close the deception; the cost is disclosed on --dry-run (AnchorNote) rather
+// than left for someone to find with their own files.
+//
+// TestMovingTheParentAcrossAnAnchorDeletesTheHostFiles pins the third row.
 func (p *Policy) InstallAnchors() {
 	seen := map[string]bool{}
 	for g := range p.Mounts {

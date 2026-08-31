@@ -39,4 +39,7 @@ FILESYSTEM  (deny-by-default; every line is a grant, there are no deny rules)
                        ancestor of a grant. They hold nothing and grant nothing
                        — the payload could already write that path through the
                        tmpfs covering it — and they exist so it cannot rename
-                       the path out from under a mount (issue #553).
+                       the path out from under a mount (issue #553). Each one is
+                       a filesystem BOUNDARY: moving a granted directory across
+                       one is a copy followed by a delete, and the copy lands in
+                       ephemeral storage while the delete reaches your host.

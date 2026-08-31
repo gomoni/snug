@@ -447,6 +447,17 @@ What it is NOT is renameable. `rename(2)` refuses only when the dentry being ren
 
 The rule is stated over every mount's ancestor chain rather than the target's, because the class is not target-specific: `{home}/.ssh` is tmpfs-covered too, and renaming it strands snug's generated read-only `~/.ssh/config` behind the old name while the payload authors its own with a `ProxyCommand` in it. Measured on an identity-pinned run: `mv: cannot move '$HOME/.ssh' to '$HOME/.sshOLD': Device or resource busy`.
 
+**An anchor is a filesystem boundary, and that costs something real.** `rename(2)` returns EXDEV across mounts and GNU `mv` answers EXDEV by copying and then deleting, so a move that crosses an anchor deletes the source through whatever rw grant is nested under it — on the HOST — while the copy lands in a tmpfs that evaporates at teardown. Measured against a `main`-built binary on the same layout, target `$HOME/src/proj/sub`:
+
+| inside the sandbox | before anchors | with anchors |
+|---|---|---|
+| `mv src/proj/sub/a.txt .` | host file DESTROYED | host file DESTROYED |
+| `mv src/proj /tmp/p` | host file DESTROYED | host file DESTROYED |
+| `mv src/proj p` | host file SURVIVES | host file DESTROYED |
+| `mv src/proj src/proj2` | (deception) | EBUSY, nothing touched |
+
+Only the third row moved, and its "before" column is not a safe outcome — it is #553 itself: the rename succeeded because it carried the target's mount, so the host was untouched only in the sense that everything reading `$SNUG_TARGET` afterwards read the payload's directory. The first two rows are ordinary Unix and predate anchors: every mount in a snug sandbox is already a boundary. The cost is disclosed on `--dry-run` (`policy.AnchorNote`) and pinned by `TestMovingTheParentAcrossAnAnchorDeletesTheHostFiles`. Found by the `redteam` agent in this change's own round.
+
 An anchor grants nothing — the payload could already read, traverse and write that path through the tmpfs covering it — which is why it is exempt from `rejectMasking` and why it is placed only where the cover is a tmpfs. **The residual is an ancestor covered by a read-WRITE bind**: an empty tmpfs there would hide real host content, so none is placed, and the rename succeeds and reaches the host. No shipped builtin reaches that shape (`@tmp-shared` looks like it should and does not: a target under `/tmp` makes `@cwd-rw`'s bind nest inside it and the whole selection is refused as masking); a user profile granting `rw` over a directory containing the target does, and that is what an `rw` grant of a tree means.
 
 Under that one shape `snug attach` still lands wherever the recorded chdir STRING resolves — `internal/cli/attach.go` passes `st.Chdir`, a path recorded at start and resolved inside the sandbox's mount namespace after the payload has had arbitrary time to act — so it can chdir into a payload-authored directory with no warning. The check that would refuse it is `st_dev`/`st_ino` recorded beside `Chdir` in `state.json` and compared at attach time; it is NOT built. `test/integration/targetrepoint_test.go` pins the residual, host-side rename included.

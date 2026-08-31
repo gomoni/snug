@@ -1168,6 +1168,24 @@ GRANDparent:
 
 Expect `mv: cannot move 'proj' to 'proj2': Device or resource busy`.
 
+**What an anchor costs.** It is a mount, so it is a filesystem boundary, and
+`rename(2)` will not cross one: `mv` falls back to copy-then-delete, the delete
+reaches your host through the target's read-write bind, and the copy lands in a
+tmpfs that evaporates at teardown.
+
+```bash
+mkdir -p $SC/proj/sub && echo REAL > $SC/proj/sub/keep.txt
+./bin/snug $SC/proj/sub -- /bin/sh -c 'cd "$(dirname $(dirname $SNUG_TARGET))" && mv proj "$HOME/moved"'
+cat $SC/proj/sub/keep.txt
+```
+
+Expect `mv: cannot remove '…/proj/sub': Device or resource busy` and then **no
+such file** for `keep.txt` — the file was copied into the sandbox's ephemeral
+`$HOME` and deleted from the host. A move to a sibling name in the SAME anchor
+(`mv proj proj2`) is EBUSY instead and touches nothing. Before anchors the same
+command left the host alone, and that was issue #553: the rename succeeded
+because it carried the target's mount with it.
+
 Anchors are visible on the `--dry-run` FILESYSTEM block as `tmpfs` rows with the
 provenance `(snug anchor)`, with a trailer saying they grant nothing: the
 payload could already write those paths through the tmpfs covering them. What
