@@ -89,7 +89,8 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		TmpfsSizeBytes: tmpfsSize(ctx.TmpfsSizeBytes),
 		Env:            map[string]EnvVar{},
 		Selected:       append([]ProfileName(nil), selected...),
-		NewSession:     ctx.LegacyTIOCSTI,
+		NewSessionWhy:  newSessionReasons(ctx),
+		StdioTerminals: ctx.StdioTerminals,
 	}
 
 	// 3. Fold every profile's grants into map[Guest]Mount, in sorted name order.

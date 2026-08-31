@@ -101,7 +101,7 @@ kernel bug — correct today) vs *snug-level* (a leak snug could close).
 | P8 | /proc | Hardening-posture sysctls readable | Low |
 | P9 | /proc | Structural: procfs `rw`, no `hidepid=`, no `subset=pid`; `--remount-ro /` does not reach it. The cause behind every row above | Low as finding, High as cause |
 | P12 | /proc | `/proc/1/environ` is 0 bytes (the 106-var fix holds). But PID 1 is bwrap at the same uid and `ptrace_scope=1` restricts ATTACH not READ, so `/proc/1/fd` is enumerable. Equals the known stdio hazard by a second route; `safeStdio` mitigates | Low |
-| D1 | /dev | `/dev/console` is a bind of the operator's real host pty and `/dev/tty` is the inherited controlling terminal (`--new-session` deliberately omitted on this kernel). TIOCSTI is dead twice over, but **no rule inspects bytes written to a tty** — OSC 52 clipboard, title query, CSI reports all reach the emulator and the reply lands on a descriptor the sandbox can read | Medium |
+| D1 | /dev | `/dev/tty` is the inherited controlling terminal, and `/dev/console` is a bind of the operator's real host pty **when snug's own STDOUT is a terminal, and only then** — measured with one pty on one descriptor at a time: `crw--w---- michal nobody 136,7` inside for stdout, "No such file or directory" for stdin-only and stderr-only, while the channel to the operator is open in all three because the payload holds the pty on that descriptor. TIOCSTI is dead twice over, but **no rule inspects bytes written to a tty** — OSC 52 clipboard, title query, CSI reports all reach the emulator and the reply lands on a descriptor the sandbox can read. Half closed by R10 below; the other half is inherent | Medium, and split |
 | D5 | /dev | `/dev` and `/dev/shm` are unbounded tmpfs (= host RAM, no `size=`), and `/dev` is writable. Host RAM exhaustion. The engine's own containers get `size=64000k` | Low (DoS only) |
 | Y5 | /sys | `internal/cli/dryrun.go:162` appends the literal `/sys /tmp/.X11-unix …` to the NOT-GRANTED block **without consulting the policy** — so with `/sys` granted, `--dry-run` prints `ro /sys` *and* "never mounted" on one screen | Low sev, **high leverage** (the trust artifact) |
 
@@ -274,11 +274,26 @@ demote-in-place.
   profile must enumerate leaves because **bwrap binds are recursive**); amend N5 to
   name `/proc/interrupts`; add one sentence to the `@podman-socket` ABUSE comment;
   add the time-namespace and `nodev`-on-ordinary-binds facts to CLAUDE.md.
-- **R10 — Offer `--new-session` as an opt-in for non-interactive payloads (D1).**
+- **R10 — SHIPPED, and it is smaller than this line asked for.** A run where
+  NONE of snug's own descriptors (0, 1, 2) is a terminal gets `--new-session`,
+  as a second reason held apart from the TIOCSTI one so a kernel upgrade
+  retiring that one cannot retire this one (`policy.NewSessionReason`). It is
+  a fact snug OBSERVES, never a profile key or a flag: **an opt-in was the
+  wrong shape, and the measurement is why.** `setsid()` closes the `/dev/tty`
+  route — measured, `open` is `ENXIO` inside and the operator's pty received
+  nothing where it had received the marker without the flag — but it takes
+  nothing away from a payload that was HANDED a terminal: the payload holds the
+  pty on whichever of fd 0/1/2 carried it, and for the stdout case bwrap binds
+  that same node as `/dev/console` as well (measured, one descriptor at a
+  time), so the flag would close one spelling while costing job control. A profile cannot know at authoring time
+  which shape a run takes, and a key promising a closure that does not happen
+  is worse than the open channel it names.
   **Do not filter escape sequences** — a 95%-correct terminal filter is the
-  D-Bus-proxy mistake in another costume. For CI/hooks/tests, losing job control
-  costs nothing and closes the channel outright. Meanwhile state the channel in
-  INDEX §5.2, `VERIFY.md`, and the injected `~/.claude/CLAUDE.md`.
+  D-Bus-proxy mistake in another costume. The shared-terminal half is stated as
+  a non-goal in `THREAT-MODEL.md` §3.6, on `--dry-run`'s TTY block, in
+  `VERIFY.md` and in the injected `~/.claude/CLAUDE.md`, and both halves are
+  pinned by `TestNonInteractiveRunCannotWriteToTheOperatorTerminal` and
+  `TestKnownOpenResidualPayloadWritesToASharedTerminal`.
 - **R11 — SHIPPED.** A syscall arriving under a non-native audit arch is
   `SECCOMP_RET_KILL_PROCESS` (`internal/sandbox/seccomp.go`, the `foreignarch`
   label; issue #529). Closes P13's residual.
@@ -361,8 +376,10 @@ Each gets a **positive control** (the `pasta.avx2` lesson):
 - `@podman-socket` transitively grants read-only host sysfs/procfs to containers,
   copyable back via `-v <target>:/out` (Y4) — Medium.
 - `/dev/console` + `/dev/tty` OSC-52 / escape-sequence channel to the operator's
-  terminal (D1) — Medium; R10's opt-in `--new-session` is the mitigation, not a
-  filter.
+  terminal (D1) — Medium, and now two findings rather than one. The run with no
+  terminal on snug's stdio is CLOSED by `--new-session` (R10). The run that was
+  handed a terminal keeps the channel on its own descriptors, and that half is
+  inherent: it is a non-goal, not a mitigation waiting to be built.
 - `ro=["/sys"]` is recursively ten filesystems and leaks host NIC names + real
   MACs despite the private netns (Y3) — Medium; record that sysfs net entries are
   netns-tagged at mount time (counterexample to "a private netns hides interfaces

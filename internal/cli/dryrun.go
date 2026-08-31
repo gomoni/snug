@@ -88,12 +88,7 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 	describeSSH(out, p)
 	describeCommands(out, p)
 	describeClaude(out, p)
-	if rep.NewSession {
-		fmt.Fprintf(out, "TTY      --new-session (this kernel allows TIOCSTI, so the sandbox is kept\n")
-		fmt.Fprintf(out, "         out of your terminal — the cost is no job control inside)\n")
-	} else {
-		fmt.Fprintf(out, "TTY      shared session — job control works (TIOCSTI is disabled kernel-wide)\n")
-	}
+	describeTTY(out, rep)
 	describeSeccomp(out, rep.Seccomp)
 	describeAttach(out, p)
 	fmt.Fprintln(out)
@@ -3250,4 +3245,75 @@ func renderHTTPDoors(out io.Writer, p *policy.Policy) {
 	fmt.Fprintf(out, "                         YOUR browser on a local-looking origin. THAT IS A\n")
 	fmt.Fprintf(out, "                         SANDBOX ESCAPE; snug does not bound it. The address and\n")
 	fmt.Fprintf(out, "                         the URL token are per-run and are printed by `snug proxy`.\n")
+}
+
+// describeTTY renders the terminal block. It answers TWO questions that look
+// like one and are not: whether snug asked bwrap for a session of its own, and
+// whether a terminal is shared with the payload.
+//
+// THEY ARE ORTHOGONAL, AND READING ONE OFF THE OTHER IS A LIE A REDTEAM ROUND
+// CAUGHT. --new-session has two reasons; only one of them ("nothing snug was
+// started with is a terminal") implies no terminal is shared. On a kernel where
+// legacy_tiocsti is 1 — or one that has no such knob, where legacyTIOCSTI()
+// fails safe to true, which is every kernel before the sysctl existed — an
+// ORDINARY interactive run gets the flag for the TIOCSTI reason while the
+// payload holds the operator's pty on all three descriptors. The block used to
+// print "the sandbox is kept out of your terminal" for that run. Measured with
+// the sysctl forced to 1: the flag was emitted, /dev/tty was ENXIO, and an OSC
+// 52 written to fd 1 still reached the operator's emulator.
+//
+// So the reason set decides the FIRST paragraph, and StdioTerminals decides
+// whether the second one is printed at all.
+func describeTTY(out io.Writer, rep Report) {
+	why := rep.NewSessionWhy
+	switch {
+	case why.Has(policy.NewSessionNoTerminal) && why.Has(policy.NewSessionTIOCSTI):
+		fmt.Fprintf(out, "TTY      --new-session (nothing snug was started with is a terminal, and this\n")
+		fmt.Fprintf(out, "         kernel still allows TIOCSTI — /dev/tty inside is ENXIO, and there is\n")
+		fmt.Fprintf(out, "         no job control to lose)\n")
+	case why.Has(policy.NewSessionNoTerminal):
+		fmt.Fprintf(out, "TTY      --new-session (nothing snug was started with is a terminal, so the\n")
+		fmt.Fprintf(out, "         sandbox cannot open /dev/tty and write to yours; no job control to lose)\n")
+	case why.Has(policy.NewSessionTIOCSTI):
+		fmt.Fprintf(out, "TTY      --new-session (this kernel allows TIOCSTI, so the sandbox cannot type\n")
+		fmt.Fprintf(out, "         into your terminal — the cost is no job control inside)\n")
+	default:
+		fmt.Fprintf(out, "TTY      shared session — job control works (TIOCSTI is disabled kernel-wide).\n")
+	}
+	if !rep.StdioTerminals.Any() {
+		return
+	}
+	fmt.Fprintf(out, "         Your terminal IS shared: the payload holds it on snug's\n")
+	fmt.Fprintf(out, "         %s, and escape sequences it writes (OSC 52\n", joinWords(rep.StdioTerminals.Names()))
+	fmt.Fprintf(out, "         clipboard, title and cursor queries) reach your emulator, whose\n")
+	fmt.Fprintf(out, "         replies land on a descriptor the sandbox reads. Nothing filters\n")
+	fmt.Fprintf(out, "         those bytes and nothing will.\n")
+	if rep.StdioTerminals.Has(policy.StdoutTerminal) {
+		fmt.Fprintf(out, "         bwrap binds that same pty as /dev/console too, because snug's\n")
+		fmt.Fprintf(out, "         stdout is a terminal.\n")
+	} else {
+		fmt.Fprintf(out, "         There is no /dev/console here — bwrap creates it only when snug's\n")
+		fmt.Fprintf(out, "         stdout is a terminal — and the channel above is open regardless.\n")
+	}
+	if rep.NewSession {
+		fmt.Fprintf(out, "         --new-session above shuts /dev/tty and costs job control; it does\n")
+		fmt.Fprintf(out, "         NOT take back the descriptors named here.\n")
+	}
+	fmt.Fprintf(out, "         Closing this takes ALL THREE of snug's stdin, stdout and stderr\n")
+	fmt.Fprintf(out, "         off the terminal; redirecting one is not enough.\n")
+}
+
+// joinWords renders a short list as English: "stdin", "stdin and stderr",
+// "stdin, stdout and stderr". The TTY block names descriptors, and a bare
+// "[stdin stderr]" on a screen a human reads to decide whether to trust snug is
+// the kind of detail that makes them stop reading it.
+func joinWords(w []string) string {
+	switch len(w) {
+	case 0:
+		return "stdio"
+	case 1:
+		return w[0]
+	default:
+		return strings.Join(w[:len(w)-1], ", ") + " and " + w[len(w)-1]
+	}
 }

@@ -122,7 +122,15 @@ type Report struct {
 	Environment []reportEnvVar
 	Seccomp     reportSeccomp
 	NewSession  bool
-	BwrapArgv   []string
+	// NewSessionWhy is the reason set behind NewSession — rendered, never
+	// summarised, because "the sandbox is out of your terminal" is true for
+	// two different reasons that cost different things.
+	NewSessionWhy policy.NewSessionReason
+	// StdioTerminals is which of snug's own descriptors are terminals. The TTY
+	// block needs the identity, not the count: the /dev/console clause and the
+	// redirect advice are true for the stdout case and false for the others.
+	StdioTerminals policy.StdioSet
+	BwrapArgv      []string
 	// BwrapIncomplete is true when BwrapArgv, run standalone, will NOT
 	// reproduce this policy's actual network posture — see
 	// BwrapIncompleteReason for why. Refs #332 F1d: making the argv look more
@@ -443,7 +451,9 @@ func buildReport(env policy.Environ, p *policy.Policy, args []string, cfg config
 		Topology:       buildTopologyReport(p),
 		Containers:     buildContainersReport(env, p, sig),
 		Seccomp:        buildSeccompReport(cfg),
-		NewSession:     p.NewSession,
+		NewSession:     p.NewSession(),
+		NewSessionWhy:  p.NewSessionWhy,
+		StdioTerminals: p.StdioTerminals,
 		BwrapArgv:      args,
 	}
 	if refusedBy != nil {

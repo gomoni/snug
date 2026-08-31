@@ -65,6 +65,14 @@ func TestGoldenBwrapArgs(t *testing.T) {
 		// supplies the OS-runtime grant Validate requires, deliberately at /bin
 		// rather than /usr, so it cannot accidentally cover the ssh path itself.
 		{"system-ssh-uncovered", []ProfileName{"@home", "@cwd-rw", "@parent-ro", "runtime-bin"}, testCtx(), sysSSHProbeEnv},
+		// The review artifact for the OSC-52 half of --new-session (issue
+		// #528): a run whose stdio carries no terminal — a pipe, a redirect, a
+		// CI job, a hook. Byte-identical to "defaults" except for the single
+		// --new-session line, which is the whole reviewable content: it makes
+		// open("/dev/tty") ENXIO inside, and there is no job control to lose.
+		// Every other golden here is the interactive shape (testCtx), so the
+		// pair is what shows the flag tracks the run and not the profile.
+		{"no-terminal", testDefaults, noTerminalCtx(), nil},
 	}
 
 	for _, tc := range cases {
@@ -218,21 +226,96 @@ func TestRemountRoIsLastFilesystemOp(t *testing.T) {
 	}
 }
 
-// --new-session keeps the sandbox from typing into the terminal that launched
-// snug, but costs job control. It is worth paying for only where the kernel
-// still allows TIOCSTI — and it must be present whenever it does.
-func TestNewSessionTracksTIOCSTI(t *testing.T) {
-	for _, legacy := range []bool{true, false} {
+// The no-terminal REASON and the empty descriptor SET are the same fact, and
+// nothing else may pair them. A test that pairs NewSessionTIOCSTI with an empty
+// set is describing a run that cannot happen — and that exact pairing in
+// internal/cli's table is what hid a screen claiming "the sandbox is kept out
+// of your terminal" for an interactive run on a legacy-TIOCSTI kernel. Pin the
+// equivalence here, where it is decided, so the renderers' tables can be
+// checked against it.
+func TestTheNoTerminalReasonIsExactlyTheEmptyDescriptorSet(t *testing.T) {
+	all := StdinTerminal | StdoutTerminal | StderrTerminal
+	for _, terminals := range []StdioSet{0, StdinTerminal, StdoutTerminal, StderrTerminal,
+		StdinTerminal | StdoutTerminal, StdinTerminal | StderrTerminal,
+		StdoutTerminal | StderrTerminal, all} {
+		for _, legacy := range []bool{false, true} {
+			ctx := testCtx()
+			ctx.StdioTerminals = terminals
+			ctx.LegacyTIOCSTI = legacy
+
+			p, err := Resolve(testRegistry(), testDefaults, ctx, newFakeEnv())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := p.NewSessionWhy.Has(NewSessionNoTerminal), !terminals.Any(); got != want {
+				t.Errorf("terminals=%v legacy_tiocsti=%v: NewSessionNoTerminal=%v, want %v",
+					terminals.Names(), legacy, got, want)
+			}
+			if p.StdioTerminals != terminals {
+				t.Errorf("terminals=%v: policy carries %v", terminals.Names(), p.StdioTerminals.Names())
+			}
+		}
+	}
+}
+
+// noTerminalCtx is testCtx as a non-interactive run: snug started with a pipe,
+// a redirect or nothing at all on 0/1/2.
+func noTerminalCtx() Context {
+	ctx := testCtx()
+	ctx.StdioTerminals = 0
+	return ctx
+}
+
+// --new-session keeps the sandbox out of the terminal that launched snug, and
+// it has TWO independent reasons: the kernel still allows TIOCSTI keystroke
+// injection, or no descriptor snug was started with is a terminal (issue #528,
+// the OSC-52 channel through /dev/tty). Either alone must produce the flag.
+//
+// THE MATRIX IS THE TEST. A single-condition version passed for a year while
+// the second reason did not exist, and the failure mode it guards is not "the
+// flag is missing" but "the flag is present for one reason and silently
+// disappears when that reason expires" — a modern kernel retires TIOCSTI, and
+// with it, in a folded implementation, a protection that has nothing to do
+// with TIOCSTI.
+func TestNewSessionHasTwoIndependentReasons(t *testing.T) {
+	all := StdinTerminal | StdoutTerminal | StderrTerminal
+	for _, tc := range []struct {
+		legacyTIOCSTI bool
+		terminals     StdioSet
+		want          bool
+		wantWhy       NewSessionReason
+	}{
+		{legacyTIOCSTI: false, terminals: all, want: false, wantWhy: 0},
+		{legacyTIOCSTI: true, terminals: all, want: true, wantWhy: NewSessionTIOCSTI},
+		{legacyTIOCSTI: false, terminals: 0, want: true, wantWhy: NewSessionNoTerminal},
+		{legacyTIOCSTI: true, terminals: 0, want: true, wantWhy: NewSessionTIOCSTI | NewSessionNoTerminal},
+		// ONE descriptor is enough to make it a shared terminal, and each of
+		// the three alone must be: `snug ... > log` keeps it on stderr, and a
+		// version keyed on stdin alone would cut the session while that route
+		// stayed open.
+		{legacyTIOCSTI: false, terminals: StdinTerminal, want: false, wantWhy: 0},
+		{legacyTIOCSTI: false, terminals: StdoutTerminal, want: false, wantWhy: 0},
+		{legacyTIOCSTI: false, terminals: StderrTerminal, want: false, wantWhy: 0},
+	} {
 		ctx := testCtx()
-		ctx.LegacyTIOCSTI = legacy
+		ctx.LegacyTIOCSTI = tc.legacyTIOCSTI
+		ctx.StdioTerminals = tc.terminals
 
 		p, err := Resolve(testRegistry(), testDefaults, ctx, newFakeEnv())
 		if err != nil {
 			t.Fatal(err)
 		}
 		has := slicesContains(p.BwrapArgs(1000, 1000), "--new-session")
-		if has != legacy {
-			t.Errorf("legacy_tiocsti=%v: --new-session present=%v, want %v", legacy, has, legacy)
+		if has != tc.want {
+			t.Errorf("legacy_tiocsti=%v terminals=%v: --new-session present=%v, want %v",
+				tc.legacyTIOCSTI, tc.terminals.Names(), has, tc.want)
+		}
+		if p.NewSessionWhy != tc.wantWhy {
+			t.Errorf("legacy_tiocsti=%v terminals=%v: NewSessionWhy=%b, want %b",
+				tc.legacyTIOCSTI, tc.terminals.Names(), p.NewSessionWhy, tc.wantWhy)
+		}
+		if p.NewSession() != (p.NewSessionWhy != 0) {
+			t.Errorf("NewSession()=%v disagrees with NewSessionWhy=%b", p.NewSession(), p.NewSessionWhy)
 		}
 	}
 }

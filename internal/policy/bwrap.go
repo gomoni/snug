@@ -165,7 +165,7 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 	// Own TTY session, which blocks TIOCSTI input injection into the terminal
 	// that launched snug — but also breaks job control for an interactive
 	// shell. Only worth paying for where the kernel still allows TIOCSTI at all.
-	if p.NewSession {
+	if p.NewSession() {
 		a = append(a, "--new-session")
 	}
 

@@ -216,11 +216,32 @@ idea and not a plan: it is not scheduled and it is not promised here. Until it
 exists, everything running inside one sandbox is one trust domain. Two payloads
 that must not reach each other need two sandboxes.
 
-### 3.6 Linux
+### 3.6 The operator's terminal
+
+A payload the operator hands their terminal to — the ordinary interactive run,
+where the sandbox writes to the same screen the human is watching — can write
+anything a terminal reads as a command rather than as text. OSC 52 sets the
+clipboard; other sequences ask the emulator for its title, its colours or the
+cursor position, and the emulator's answer arrives on a descriptor the sandbox
+can read. Sharing a terminal is sharing a bidirectional channel with whatever
+program is drawing on it.
+
+snug does not filter those bytes and will not. A filter over a terminal stream
+is a catalogue of dangerous spellings that has to stay complete forever, and an
+incomplete one grants the confidence without the protection.
+
+What is closed is the run with no terminal on it — a hook, a CI job, a piped
+invocation. There the sandbox leads a session of its own, so it cannot reach
+the terminal that started snug at all, and nothing is given up in exchange
+because nothing inside wanted a terminal. Anything else shares a terminal
+because it was given one: a payload that must not reach the operator's screen
+is run without one.
+
+### 3.7 Linux
 
 Kernel bugs are out of scope.
 
-### 3.7 Knowledge about the sandbox
+### 3.8 Knowledge about the sandbox
 
 `snug` pretends it's a stripped-down Linux system, but never tries to hide that
 it is one. The `~/.claude/CLAUDE.md` provided when the `@claude` profile is
