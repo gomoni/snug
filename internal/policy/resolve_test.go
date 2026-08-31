@@ -317,8 +317,17 @@ func testRegistry() map[ProfileName]*Profile {
 // diverges, the goldens are describing a sandbox no user gets.
 var testDefaults = []ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro"}
 
+// testCtx is an INTERACTIVE run: all three descriptors are terminals, which is
+// what a human typing `snug <dir>` at a terminal produces, and what every
+// golden in this package pins. The non-interactive shape is one extra argv line
+// (--new-session) and has its own golden rather than being folded in here —
+// see the "no-terminal" case in TestGoldenBwrapArgs. Leaving the field at its
+// zero value would put --new-session in every golden in the tree and make the
+// common run the one nothing pins.
 func testCtx() Context {
-	return Context{Target: "/home/u/proj/sub", Home: "/home/u", Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	return Context{Target: "/home/u/proj/sub", Home: "/home/u", Shell: "/bin/sh",
+		Command:        []string{"/bin/sh"},
+		StdioTerminals: StdinTerminal | StdoutTerminal | StderrTerminal}
 }
 
 // testCtxWithPodmanShim is testCtx plus a detected podman shim — the fixture

@@ -1148,8 +1148,9 @@ without reading that issue** — the absence is the answer, not an oversight.
 
 `processWrapper` is an argv prefix for every process Claude Code spawns —
 `LD_PRELOAD`'s shape for this tool — and the schema says the environment
-variable **takes precedence when set**. It is now named:
-`internal/policy/envtypes.go:1320`, asserted by `envtypes_test.go:733`.
+variable **takes precedence when set**. It is now named twice — the `envType`
+row at `internal/policy/envtypes.go:1357` and `inlineConfigNames` at `:1928` —
+asserted by `envtypes_test.go:733`.
 
 ### 10.5 `@claude`'s bwrap-argv golden — CLOSED, issue #71
 

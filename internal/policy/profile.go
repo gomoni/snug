@@ -125,8 +125,15 @@ type Profile struct {
 	Environ EnvGrants
 
 	// Source is the file this profile came from, and Trusted records whether
-	// that file was a trusted layer. Profiles from an explicitly-named config
-	// may not carry privileged grants — see .claude/design/INDEX.md §2.7.
+	// that file was a trusted layer.
+	//
+	// TRUSTED IS WRITTEN AND NEVER READ. profile.Load sets it; nothing
+	// consults it, and a grep for the identifier is the check rather than
+	// this comment. The gate it was named for — an explicitly-named config
+	// whose profiles may not carry privileged grants — is DESIGNED AND NOT
+	// BUILT (.claude/design/INDEX.md §2.7), so every layer ConfigDirs
+	// returns is trusted equally, $XDG_CONFIG_HOME included. Do not read
+	// this field as a decision that has been made about a profile.
 	Source  string
 	Trusted bool
 }

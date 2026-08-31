@@ -545,6 +545,7 @@ func run(cfg config) int {
 		TZ:              os.Getenv("TZ"),
 		Command:         command,
 		LegacyTIOCSTI:   legacyTIOCSTI(),
+		StdioTerminals:  stdioTerminals(),
 		HostNameservers: hostNameservers(),
 		KnownHosts:      knownHostsFor(identityHost(reg, selected)),
 		HostGit:         hostGit,
@@ -837,4 +838,29 @@ func legacyTIOCSTI() bool {
 		return true // fail safe: assume the ioctl exists
 	}
 	return strings.TrimSpace(string(b)) != "0"
+}
+
+// stdioTerminals reports WHICH of the descriptors snug was started with refer
+// to a terminal. It answers policy.Context.StdioTerminals, whose doc comment
+// and policy.StdioSet carry what the answer buys.
+//
+// ALL THREE, AND KEPT APART. Each of 0, 1 and 2 is a bidirectional handle on a
+// pty when it is one: `snug ... | tee log` leaves the payload writing to the
+// operator's terminal through stderr, and `snug ... < /dev/null` through
+// stdout. A predicate over stdin alone would cut the session while two live
+// routes to the same emulator stayed open. Reducing the three to one bool is
+// not enough either: the screens have to name the descriptor, because bwrap
+// creates /dev/console for the stdout case only and "redirect snug's output"
+// is wrong advice for the other two.
+func stdioTerminals() policy.StdioSet {
+	var s policy.StdioSet
+	for _, e := range []struct {
+		fd  int
+		bit policy.StdioSet
+	}{{0, policy.StdinTerminal}, {1, policy.StdoutTerminal}, {2, policy.StderrTerminal}} {
+		if isTerminal(e.fd) {
+			s |= e.bit
+		}
+	}
+	return s
 }

@@ -466,11 +466,16 @@ type Policy struct {
 	// key or a CLI flag. See topology.go.
 	Topology Topology
 
-	// NewSession asks bwrap for a fresh TTY session, which blocks TIOCSTI input
-	// injection into the parent terminal. It also breaks job control for an
-	// interactive shell, so snug only asks for it on hosts where TIOCSTI is
-	// actually available. See Context.LegacyTIOCSTI.
-	NewSession bool
+	// NewSessionWhy records the reasons this policy asks bwrap for a session of
+	// its own — a set, never a single condition, because the two reasons expire
+	// independently and folding them together is how a capability disappears on
+	// an unrelated kernel upgrade. See NewSessionReason and NewSession.
+	NewSessionWhy NewSessionReason
+
+	// StdioTerminals is Context.StdioTerminals carried through, because the
+	// screens that speak about the terminal must say WHICH descriptor carries
+	// it — see StdioSet, where the measurement is.
+	StdioTerminals StdioSet
 
 	// Profiles is the resolved, sorted profile set — everything that contributed
 	// a grant, including whatever `include` pulled in. Sorted because resolution

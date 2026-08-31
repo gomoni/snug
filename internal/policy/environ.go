@@ -207,6 +207,21 @@ type Context struct {
 	// generation stays a pure function and the golden tests stay deterministic.
 	LegacyTIOCSTI bool
 
+	// StdioTerminals is which of the descriptors snug itself was started with
+	// (0, 1, 2) refer to a terminal. Empty means a non-interactive run — a
+	// pipe, a redirect, a CI job, a hook — and is the second, independent
+	// reason for --new-session: see NewSessionReason, which measures what
+	// setsid() closes and what it cannot. Non-empty is the shape where the
+	// payload can write to the operator's terminal whatever snug does, and
+	// StdioSet says through which descriptor, which is not decoration: bwrap
+	// creates /dev/console only for the stdout case.
+	//
+	// EMPTY IS THE FAIL-SAFE ZERO VALUE, matching LegacyTIOCSTI: a caller that
+	// does not know gets the session cut rather than the terminal shared. The
+	// impure half — an ioctl per descriptor — lives in internal/cli, for the
+	// same reason LegacyTIOCSTI's /proc read does.
+	StdioTerminals StdioSet
+
 	// HostShims records commands snug looked up on PATH that resolve to a
 	// host-escape helper (distrobox-host-exec, host-spawn, flatpak-spawn)
 	// rather than the genuine binary — detected by internal/cli via

@@ -633,6 +633,33 @@ type jsonSeccomp struct {
 
 type jsonTTY struct {
 	NewSession bool `json:"new_session"`
+	// Reasons is the reason set behind NewSession, as stable identifiers:
+	// "tiocsti" (the kernel still allows keystroke injection) and
+	// "no_terminal" (nothing snug was started with is a terminal). Empty when
+	// NewSession is false, which is the shape where the payload SHARES the
+	// operator's terminal — a consumer wanting that fact reads the empty set,
+	// not a missing key.
+	Reasons []string `json:"reasons"`
+	// StdioTerminals names which of snug's own descriptors are terminals
+	// ("stdin", "stdout", "stderr"), in fd order. Empty when none is, which is
+	// exactly when NewSession is true for the no_terminal reason. It is the
+	// identity and not a count because bwrap creates /dev/console for the
+	// stdout case only.
+	StdioTerminals []string `json:"stdio_terminals"`
+}
+
+// ttyReasons renders the reason set for the JSON document. Order is fixed
+// rather than derived from the bitmask, so a document diff never moves a line
+// that did not change.
+func ttyReasons(why policy.NewSessionReason) []string {
+	out := []string{}
+	if why.Has(policy.NewSessionTIOCSTI) {
+		out = append(out, "tiocsti")
+	}
+	if why.Has(policy.NewSessionNoTerminal) {
+		out = append(out, "no_terminal")
+	}
+	return out
 }
 
 // jsonBwrap.Argv[0] is the bare name "bwrap", PREPENDED to Report.BwrapArgv
@@ -735,7 +762,11 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			Denied:     rep.Seccomp.Denied,
 			CompatArch: rep.Seccomp.CompatArch,
 		},
-		TTY: jsonTTY{NewSession: rep.NewSession},
+		TTY: jsonTTY{
+			NewSession:     rep.NewSession,
+			Reasons:        ttyReasons(rep.NewSessionWhy),
+			StdioTerminals: namesOrEmpty(rep.StdioTerminals.Names()),
+		},
 	}
 	if rep.Refusal != "" {
 		// The message is snug's own text about a policy, but it QUOTES host
@@ -863,4 +894,14 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 		doc.Environment = append(doc.Environment, jv)
 	}
 	return doc
+}
+
+// namesOrEmpty renders a nil slice as [] rather than null: the JSON document's
+// contract is that every key is present with its type, so a consumer can read
+// the empty set without special-casing null.
+func namesOrEmpty(n []string) []string {
+	if n == nil {
+		return []string{}
+	}
+	return n
 }

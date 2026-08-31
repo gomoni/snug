@@ -987,6 +987,48 @@ func claudeGuidance(pol *policy.Policy) []byte {
 		b.WriteString("**absent** too.\n\n")
 	}
 
+	// DERIVED, like the sibling clause above and for the same reason: the two
+	// shapes are opposite facts, and a constant would state one of them on
+	// every run. The interactive arm is the one that matters — an agent that
+	// does not know its stdout is a human's real terminal has no way to know
+	// that an escape sequence it emits is an action on the operator's machine
+	// rather than a character on a screen (PSEUDOFS-AUDIT.md D1,
+	// THREAT-MODEL.md §3.6).
+	b.WriteString("## Terminal\n\n")
+	// THE BRANCH IS ON THE DESCRIPTORS, NOT ON --new-session, and a redteam
+	// round is why. The flag has a second reason (this kernel still allows
+	// TIOCSTI, which is also what a kernel with no such sysctl reports), and
+	// under that reason an ordinary interactive run gets the flag while the
+	// agent still holds the operator's pty on its own stdio. Telling it "no
+	// program here can reach the terminal snug was started from" was measured
+	// false for exactly that run.
+	if !pol.StdioTerminals.Any() {
+		b.WriteString("You have **no controlling terminal**: `/dev/tty` does not open, and no\n")
+		b.WriteString("program here can reach the terminal snug was started from. Tools that\n")
+		b.WriteString("insist on a tty (pagers, full-screen editors, interactive prompts) will\n")
+		b.WriteString("fail — run them non-interactively rather than looking for a way around it.\n\n")
+	} else {
+		// The descriptors are NAMED, from the policy, because they differ per
+		// run: `snug ... > log` from a terminal leaves the pty on stderr
+		// alone, and an agent told "your stdout is a terminal" when it is a
+		// file has been told something it can check and find false — which is
+		// the fastest way to make it disbelieve the rest of this file.
+		fmt.Fprintf(&b, "Your %s %s the **operator's real terminal**, shared with the\n",
+			joinWords(pol.StdioTerminals.Names()),
+			map[bool]string{true: "is", false: "are"}[len(pol.StdioTerminals.Names()) == 1])
+		b.WriteString("human watching it. A terminal reads some bytes as commands rather than as\n")
+		b.WriteString("text: `OSC 52` sets THEIR clipboard, other sequences ask their emulator\n")
+		b.WriteString("questions whose answers arrive back on that same descriptor. Nothing\n")
+		b.WriteString("filters those bytes, so an escape sequence you write is an action on the\n")
+		b.WriteString("operator's machine, outside this sandbox. Write text; do not drive their\n")
+		b.WriteString("terminal.\n\n")
+		if pol.NewSession() {
+			b.WriteString("`/dev/tty` itself does not open here and you have no job control: snug put\n")
+			b.WriteString("this run in a session of its own. That takes away one route to the\n")
+			b.WriteString("terminal, not the descriptors above.\n\n")
+		}
+	}
+
 	b.WriteString("## Network\n\n")
 	switch pol.Net.Mode {
 	case policy.NetIsolated:

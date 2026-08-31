@@ -7347,6 +7347,100 @@ child process and opens the runtime's four descriptors by hand, so it does not
 wait for a host that holds a cgroup descriptor. `go test ./internal/stage -run
 TestGoldenStageSpec` is the golden that says what the numbers should be.
 
+## 29. A run with no terminal cannot write to yours; a run with one can (issue #528)
+
+A terminal reads some bytes as commands rather than as text — `OSC 52` sets the
+clipboard. What this check is about is the COVERT routes — `/dev/tty` and
+`/dev/console`, which a payload opens for itself — and whether they exist
+depends on ONE thing, and it is not a profile: whether snug itself was started
+with a terminal on fd 0, 1 or 2. (Anything you pipe snug's own output through
+and then render on your terminal — `| cat`, `| tee` — hands those bytes to your
+emulator yourself; that is true of every program's output, and no sandbox flag
+changes it.)
+
+**Piped, redirected, or from a hook — the channel is closed.** Note the
+redirections: all three descriptors have to be off the terminal, so
+`| cat` alone is not enough (stderr and stdin are still yours).
+
+```
+$ snug . -- sh -c 'printf X > /dev/tty; echo "status=$?"' < /dev/null 2>&1 | cat
+sh: line 1: /dev/tty: No such device or address
+status=1
+```
+
+`--dry-run` says the same thing about the same run, and the pipe is what makes
+it that run:
+
+```
+$ snug --dry-run . < /dev/null | grep -A1 '^TTY'
+TTY      --new-session (nothing snug was started with is a terminal, so the
+         sandbox cannot open /dev/tty and write to yours; no job control to lose)
+```
+
+**At a terminal, the channel is open, and the screen says so.** This is the
+default interactive run:
+
+```
+$ snug --dry-run . | grep -A10 '^TTY'
+TTY      shared session — job control works (TIOCSTI is disabled kernel-wide).
+         Your terminal IS shared: the payload holds it on snug's
+         stdin, stdout and stderr, and escape sequences it writes (OSC 52
+         clipboard, title and cursor queries) reach your emulator, whose
+         replies land on a descriptor the sandbox reads. Nothing filters
+         those bytes and nothing will.
+         bwrap binds that same pty as /dev/console too, because snug's
+         stdout is a terminal.
+         Closing this takes ALL THREE of snug's stdin, stdout and stderr
+         off the terminal; redirecting one is not enough, and --new-session
+         cannot do it.
+```
+
+**ONE descriptor is enough, and the three are not the same.** Redirect only
+stdout and the terminal is still on stderr — the channel is open and the block
+says so, without the `/dev/console` sentence, because `bwrap` creates that one
+for the stdout case alone:
+
+```
+$ snug --dry-run . > /tmp/dr.txt        # stderr is still your terminal
+TTY      shared session — job control works (TIOCSTI is disabled kernel-wide).
+         Your terminal IS shared: the payload holds it on snug's
+         stderr, and escape sequences it writes (OSC 52
+         ...
+         There is no /dev/console here — bwrap creates it only when snug's
+         stdout is a terminal — and the channel above is open regardless.
+```
+
+That is the check that shows why the flag cannot fix this shape. Interactive,
+from the inside:
+
+```
+$ snug . -- sh -c 'ls -l /dev/console; readlink /proc/self/fd/0'
+crw--w----. 1 michal nobody 136, 6 Aug 31 11:05 /dev/console
+/dev/pts/6
+```
+
+`136, 6` is your own pty, arriving twice: once as `/dev/console` and once as
+the payload's own stdin. `--new-session` takes away neither — it only closes
+`/dev/tty`. Piped, there is nothing to take away:
+
+```
+$ snug . -- sh -c 'ls -l /dev/console; readlink /proc/self/fd/0' < /dev/null 2>&1 | cat
+ls: cannot access '/dev/console': No such file or directory
+/dev/null
+```
+
+There is no filter over terminal bytes and there will not be one: a filter is a
+catalogue of dangerous spellings that has to stay complete forever.
+`THREAT-MODEL.md` §3.6 states the shared terminal as a non-goal. The automated
+equivalents are `TestNonInteractiveRunCannotWriteToTheOperatorTerminal` and
+`TestKnownOpenResidualPayloadWritesToASharedTerminal` (integration), which
+build their own pty so they never depend on how the suite was launched — the
+second is a table over the pty on stdin alone, stdout alone, stderr alone and
+all three, asserting the channel is open in every one and `/dev/console` exists
+in the stdout ones only. `TestNewSessionHasTwoIndependentReasons`
+(`internal/policy`) covers the argv and `TestDescribeTTYNamesEveryReasonAndTheResidual`
+(`internal/cli`) the four screens.
+
 ## If a check fails
 
 1. Re-run it with `--dry-run` and compare what snug *claimed* against what you

@@ -614,7 +614,13 @@
     "compat_arch": ""
   },
   "tty": {
-    "new_session": false
+    "new_session": false,
+    "reasons": [],
+    "stdio_terminals": [
+      "stdin",
+      "stdout",
+      "stderr"
+    ]
   },
   "bwrap": {
     "argv": [

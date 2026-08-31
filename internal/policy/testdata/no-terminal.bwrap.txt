@@ -1,0 +1,60 @@
+--unshare-user
+--unshare-ipc
+--unshare-pid
+--unshare-uts
+--unshare-cgroup-try
+--unshare-net
+--uid 1000
+--gid 1000
+--hostname snug
+--die-with-parent
+--cap-drop ALL
+--new-session
+--perms 0755
+--dir /home
+--symlink usr/bin /bin
+--dev /dev
+--remount-ro /dev
+--size 1073741824
+--tmpfs /dev/shm
+--ro-bind /etc /etc
+--ro-bind-try /opt /opt
+--proc /proc
+--size 1073741824
+--tmpfs /tmp
+--ro-bind /usr /usr
+--ro-bind-data 10 /etc/resolv.conf
+--size 1073741824
+--tmpfs /home/u
+--ro-bind-data 11 /proc/config.gz
+--ro-bind-data 12 /proc/key-users
+--ro-bind-data 13 /proc/keys
+--ro-bind /proc/sys /proc/sys
+--size 1073741824
+--tmpfs /home/u/.cache
+--size 1073741824
+--tmpfs /home/u/.config
+--ro-bind /home/u/proj /home/u/proj
+--size 1073741824
+--tmpfs /home/u/.local/share
+--size 1073741824
+--tmpfs /home/u/.local/state
+--bind /home/u/proj/sub /home/u/proj/sub
+--remount-ro /
+--clearenv
+--setenv HOME /home/u
+--setenv LOGNAME u
+--setenv PATH /usr/bin:/bin:/usr/sbin:/sbin
+--setenv PS1 🔒 snug:\w\$ 
+--setenv SHELL /bin/sh
+--setenv SNUG 1
+--setenv SNUG_PROFILES @cwd-rw,@home,@parent-ro,@sys
+--setenv SNUG_TARGET /home/u/proj/sub
+--setenv TMPDIR /tmp
+--setenv USER u
+--setenv XDG_CACHE_HOME /home/u/.cache
+--setenv XDG_CONFIG_HOME /home/u/.config
+--setenv XDG_DATA_HOME /home/u/.local/share
+--setenv XDG_STATE_HOME /home/u/.local/state
+--chdir /home/u/proj/sub
+-- /bin/sh

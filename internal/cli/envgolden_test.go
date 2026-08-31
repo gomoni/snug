@@ -167,6 +167,12 @@ func envGoldenCtx() policy.Context {
 		Home:    "/home/u",
 		Shell:   "/usr/bin/bash",
 		Command: []string{"/bin/sh"},
+		// An INTERACTIVE run, which is what these goldens pin: a human at a
+		// terminal, all three descriptors on it. The non-interactive shape
+		// adds --new-session (issue #528) and is pinned once, in
+		// internal/policy's "no-terminal" golden, rather than in every argv
+		// file here.
+		StdioTerminals: policy.StdinTerminal | policy.StdoutTerminal | policy.StderrTerminal,
 	}
 }
 

@@ -448,9 +448,12 @@ two kinds that must never be confused:
   (`TestNoBuiltinHandsOverAnInlineConfigVariable`), not only at the parse-time
   table — `PIP_*` and `npm_config_*` are refused for `inherit` only, so `set`
   reaches the resolved policy. Adding a name to the pointer set is a policy
-  change: ask what the name makes the tool DO. (`policy.IsInlineConfigEnv` does
-  not yet name `CLAUDE_CODE_PROCESS_WRAPPER`: issue #69, a gap in the mechanical
-  check rather than a live leak, since nothing sets it.)
+  change: ask what the name makes the tool DO. (`policy.IsInlineConfigEnv` names
+  `CLAUDE_CODE_PROCESS_WRAPPER` — `inlineConfigNames`,
+  `internal/policy/envtypes.go:1928` — so the sink sweep covers the argv prefix
+  that outranks the `processWrapper` settings key, and the entry is annotation
+  only: a refusal there would bind the profile author while the agent sets its
+  own environment anyway.)
 
 ### 7.1 When the tool has a pointer: generate elsewhere and point
 
